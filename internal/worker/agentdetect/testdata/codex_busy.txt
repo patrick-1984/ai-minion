@@ -1,0 +1,9 @@
+› Add tests for the parser
+
+• Reading internal/parser/parse.go
+
+▌ Working (7s • esc to interrupt)
+
+› Ask Codex to do anything
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit

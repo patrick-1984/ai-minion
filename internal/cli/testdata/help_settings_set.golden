@@ -1,0 +1,24 @@
+Set or unset a Hub setting in the panel unless the environment sets it.
+
+This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket.
+Accepted actions: manage.
+
+This is a write. The result reports the outcome, the reason, whether the refusal is forceable and any warnings.
+Exit status: 0 delivered, 3 failed_not_sent, 4 partial or unknown, 1 error, 2 usage.
+A FORCE refusal is repeated with --force only when you pass it.
+
+Usage:
+  minion settings_set [flags]
+
+Flags:
+      --force                          override FORCE guards in this call (only when you pass it)
+  -h, --help                           help for settings_set
+      --hub-ca-file string             PEM file with the private CA of the Hub's certificate (env MINION_HUB_CA)
+      --hub-insecure string[="true"]   skip the verification of the Hub's certificate for this client only (warns) (env MINION_HUB_INSECURE)
+      --hub-url string                 call this Hub over its REST API instead of the local Worker; the API key is read from the file named by MINION_API_KEY_FILE (env MINION_HUB_URL)
+      --hub-worker string              id (UUIDv7) of the Worker that runs operations whose arguments name none (sessions_list, session_create) (env MINION_HUB_WORKER)
+      --json                           print the result as JSON (one line; one line per element for a stream)
+      --key string                     key; "-" reads it from standard input
+      --request-id string              request id, a UUIDv7 (default: a new one); a repeat of the same id within 10 minutes is answered from the Worker's cache and never delivers twice
+      --unset                          unset
+      --value value                    the new value; "-" reads it from standard input (for a secret setting the value is read from standard input only)

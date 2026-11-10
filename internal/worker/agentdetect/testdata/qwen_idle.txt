@@ -1,0 +1,10 @@
+  Qwen Code
+
+Tips for getting started:
+1. Ask questions, edit files, or run commands.
+2. /help for more information.
+
+╭────────────────────────────────────────────────────────────────╮
+│ > Type your message or @path/to/file                           │
+╰────────────────────────────────────────────────────────────────╯
+~/project   no sandbox   qwen3-coder-plus (100% context left)

@@ -1,0 +1,16 @@
+  hello
+
+  Hi, how can I help?
+
+  Summarise the README
+
+  The README describes a Worker that drives tmux sessions.
+  It lists ins
+
+  ⠴ Thinking
+
+   ┃                                                 ┃
+   ┃  Ask anything... "Fix a TODO in the codebase"  ┃
+   ┃                                                 ┃
+
+   esc interrupt   tab agents   ctrl+p commands

@@ -1,0 +1,2 @@
+501
+{"error":{"code":"unsupported_op","message":"the operation is not available on this Hub","details":{"op":"share_get"}}}

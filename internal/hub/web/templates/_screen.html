@@ -1,0 +1,2 @@
+{{define "screen"}}<pre class="term" id="screen" tabindex="0" aria-label="Terminal screen">{{range .Lines}}{{range .Runs}}{{if .Class}}<span class="{{.Class}}">{{.Text}}</span>{{else}}{{.Text}}{{end}}{{end}}
+{{end}}</pre>{{end}}

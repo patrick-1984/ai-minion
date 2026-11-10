@@ -1,0 +1,12 @@
+in:  "a\u0080b\u009bc\u009dd\u009ce\u0090f\u009fg"
+out: "abcdefg"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "abcdefg"
+  ],
+  "spans": [],
+  "cursor": null
+}

@@ -1,0 +1,536 @@
+[
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Answer the dialog a session pane shows. A Worker that is older than this server and lacks the reviewed-answer safeguard refuses the call before anything is sent; update and restart the Worker.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "choice": {
+          "description": "The option to choose: a decimal number is the 1-based position of the option in the dialog you reviewed (it always means the position, even if an option has a numeric label); otherwise an option label or key such as yes or no.",
+          "type": "string"
+        },
+        "expect": {
+          "additionalProperties": false,
+          "description": "The pane and dialog you reviewed, copied from the pane object of the session_snapshot or session_capture result: pane_id (its id), pid, command, session_created and dialog_digest. The answer is only sent to that dialog; if it changed the result is failed_not_sent with pane_changed or dialog_changed, which force never overrides. Take a new snapshot, review the dialog and answer again.",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "dialog_digest": {
+              "type": "string"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "pid": {
+              "type": "integer"
+            },
+            "session_created": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pane_id",
+            "pid",
+            "command",
+            "session_created",
+            "dialog_digest"
+          ],
+          "type": "object"
+        },
+        "force": {
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "type": "boolean"
+        },
+        "request_id": {
+          "description": "Optional. A UUIDv7 that makes a retry of this write safe; the server generates one when it is omitted. The id that was used is returned as request_id in the result and in every error of a write. After an unknown outcome, retry with that same request_id, never with a new one.",
+          "type": "string"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "target",
+        "choice",
+        "expect"
+      ],
+      "type": "object"
+    },
+    "name": "answer"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read the stored pipe turns of a session.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after_turn_id": {
+          "description": "Only turns after this turn id (UUIDv7); empty starts at the oldest retained turn, or means only new turns for pipe_wait.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of turns to return; 0 means the default.",
+          "type": "integer"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "pipe_read"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Send a pipe message to an agent session: it is pasted and submitted with Enter. A text of more than one line to a Worker that is older than this server and lacks the verbatim paste is refused before anything is sent.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "force": {
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "type": "boolean"
+        },
+        "request_id": {
+          "description": "Optional. A UUIDv7 that makes a retry of this write safe; the server generates one when it is omitted. The id that was used is returned as request_id in the result and in every error of a write. After an unknown outcome, retry with that same request_id, never with a new one.",
+          "type": "string"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        },
+        "text": {
+          "description": "The message to send, pasted verbatim into the agent's input. Tab and line feed are allowed; other control characters are refused. pipe_send always presses Enter after the message, in the same request: there is no submit argument, and the agent receives the message as a prompt.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "pipe_send"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Stream the next pipe turns of a session as they arrive. On MCP it returns as soon as the first turn arrives, or when the wait ends without one; call it again with after_turn_id for more.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after_turn_id": {
+          "description": "Only turns after this turn id (UUIDv7); empty starts at the oldest retained turn, or means only new turns for pipe_wait.",
+          "type": "string"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        },
+        "timeout_ms": {
+          "description": "End the wait after this many milliseconds without a turn; 0 means the default.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "pipe_wait"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Send named keys to a session pane.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "force": {
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "type": "boolean"
+        },
+        "keys": {
+          "description": "tmux key names such as Enter, Escape, Up or C-c, or single printable characters. Free text belongs in send_text.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "request_id": {
+          "description": "Optional. A UUIDv7 that makes a retry of this write safe; the server generates one when it is omitted. The id that was used is returned as request_id in the result and in every error of a write. After an unknown outcome, retry with that same request_id, never with a new one.",
+          "type": "string"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "target",
+        "keys"
+      ],
+      "type": "object"
+    },
+    "name": "send_keys"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Type text into a session pane. No Enter is added unless submit is true. With submit, or a text of more than one line, a Worker that is older than this server and lacks the safeguard refuses the call before anything is sent; update and restart the Worker.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "force": {
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "type": "boolean"
+        },
+        "request_id": {
+          "description": "Optional. A UUIDv7 that makes a retry of this write safe; the server generates one when it is omitted. The id that was used is returned as request_id in the result and in every error of a write. After an unknown outcome, retry with that same request_id, never with a new one.",
+          "type": "string"
+        },
+        "submit": {
+          "description": "Optional. Set true to press Enter after the text in the same request, on the same pane. If the text went out and the Enter did not, the outcome is partial or unknown, never failed_not_sent. Default false.",
+          "type": "boolean"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        },
+        "text": {
+          "description": "The text to type, pasted verbatim. Tab and line feed are allowed; other control characters are refused (use send_keys for keys). No Enter is added unless submit is true.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "send_text"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return scrollback lines of a session pane.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "lines": {
+          "description": "Number of scrollback lines to return, counted from the bottom; 0 means the default.",
+          "type": "integer"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "session_capture"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Create a detached session, named minion-N unless a name is given.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "description": "A program and its arguments to run directly in the pane without a shell; empty starts the user's shell.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cwd": {
+          "description": "Starting directory; empty means the Worker's default.",
+          "type": "string"
+        },
+        "force": {
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Name of the new session; empty lets the Worker choose minion-N.",
+          "type": "string"
+        },
+        "request_id": {
+          "description": "Optional. A UUIDv7 that makes a retry of this write safe; the server generates one when it is omitted. The id that was used is returned as request_id in the result and in every error of a write. After an unknown outcome, retry with that same request_id, never with a new one.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "session_create"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return the visible screen of a session pane.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "session_snapshot"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "List the sessions the Worker shares.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "sessions_list"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Set the task text of a session.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "force": {
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "type": "boolean"
+        },
+        "request_id": {
+          "description": "Optional. A UUIDv7 that makes a retry of this write safe; the server generates one when it is omitted. The id that was used is returned as request_id in the result and in every error of a write. After an unknown outcome, retry with that same request_id, never with a new one.",
+          "type": "string"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        },
+        "task": {
+          "description": "The task text; an empty string clears the task.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "task"
+      ],
+      "type": "object"
+    },
+    "name": "set_task"
+  }
+]

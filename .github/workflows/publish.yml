@@ -1,0 +1,196 @@
+# Publish gate (Story 9.7, AD-24, A-13, A-14). Actions are pinned to commit SHAs
+# (the comment gives the tag).
+#
+# release.yml builds a DRAFT release and pushes the image tagged with the exact
+# version, and never publishes. This workflow starts when release.yml has
+# succeeded for a tag, runs the install smoke tests of the exact artifacts
+# (smoke.yml, called as a reusable workflow so that "needs" is the gate) and
+# only when every smoke job passed:
+#
+#   vX.Y.Z-rc.N  publishes the draft as a public GitHub PRERELEASE (assets
+#                installable and downloadable by "minion update --version").
+#                It moves no channel tag and no image tag: the only image tag
+#                of a candidate is the vX.Y.Z-rc.N that goreleaser pushed.
+#   vX.Y.Z       publishes the draft and moves the image tags X.Y, X and
+#                latest (test/smoke/channels.sh decides which: a channel never
+#                moves backwards) to the digest of vX.Y.Z. The image is
+#                signed by digest at build time, so the moved tags carry the
+#                signature; the step verifies it for every tag it moved.
+#
+# Exact artifacts: release.yml may rerun while a release is still a draft (it
+# replaces the assets and pushes the image tag again). So "resolve" downloads
+# every asset of the draft and records the complete asset set ("<sha256>  <name>"
+# for each file: archives, packages, SBOMs, checksums.txt, release-manifest.json,
+# bootstrap.sh and every cosign bundle; checksums.txt alone lists only part of
+# them), the smoke jobs refuse any other checksums.txt and the image job outputs
+# the digest it tested. Right before the draft is published, test/smoke/pin.sh
+# checks that the draft has exactly the recorded assets, that their signatures
+# verify and that the image tag still resolves to the tested digest; the channel
+# tags then move to the tested digest, not to one that is looked up again.
+#
+# Locks (two, always taken in this order):
+#   1. The whole run holds the concurrency group "release-refs/tags/<tag>",
+#      which is the group release.yml uses for a tag push. A rebuild of that tag
+#      therefore cannot run (draft check, goreleaser upload, extras upload,
+#      image push) while this workflow resolves, smoke-tests, pins or
+#      publishes it, and this workflow cannot start while a rebuild runs.
+#   2. The publish job holds the global group "publish-channels": the plan,
+#      the publication, the GitHub "latest" designation and every image channel
+#      move of all versions are serialized, and the plan is read from the live
+#      list of public releases inside the lock (not from a snapshot taken
+#      before). v1.2.3 finishing after v1.2.4 therefore finds v1.2.4 public and
+#      moves no channel (test/smoke/promote.sh, TestOverlappingPromotions).
+# GitHub keeps one running and one pending run per group: a newer pending
+# publish job replaces an older pending one. A replaced job leaves its release
+# a draft (nothing is changed); run this workflow again (workflow_dispatch)
+# for that tag.
+#
+# Failures: everything that can fail before the release changes (the pin, the
+# image signature, the plan, the previous state of the channels) runs before the
+# publication. test/smoke/promote.sh rolls back what it changed when anything
+# fails after the publication (the public download check, a channel move): the
+# image tags return to their recorded digests, the release returns to a draft
+# and the previous "latest" release gets its designation back. A release that
+# was public before the run is never unpublished. A rerun (workflow_dispatch,
+# for example after a flaky smoke job) is safe: an already public release is
+# not touched again, the channel step repeats.
+name: publish
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to smoke-test and publish, vX.Y.Z or vX.Y.Z-rc.N
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# The same group as release.yml (release-${{ github.ref }} of the tag push), so a
+# rebuild and a promotion of one tag exclude each other.
+concurrency:
+  group: release-refs/tags/${{ github.event.workflow_run.head_branch || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  COSIGN_VERSION: v3.1.4
+  OIDC_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  resolve:
+    name: resolve the tag and the draft
+    # Only a successful release run for a pushed tag (the release workflow
+    # also runs for pull requests, which never publish).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # list draft releases
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      checksums_sha256: ${{ steps.resolve.outputs.checksums_sha256 }}
+      assets_manifest: ${{ steps.resolve.outputs.assets_manifest }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      EVENT_NAME: ${{ github.event_name }}
+      RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+      RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+      INPUT_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag is a release tag, points at the built commit and has a draft or published release
+        id: resolve
+        run: |
+          set -euo pipefail
+          . test/smoke/common.sh
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then tag=$INPUT_TAG; else tag=$RUN_TAG; fi
+          smoke_require_tag "$tag"
+          # A branch named like a tag must not publish: the tag ref must exist
+          # and, for a workflow run, point at the commit that was built.
+          sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')
+          type=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')
+          if [ "$type" = tag ]; then sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha'); fi
+          if [ "$EVENT_NAME" = workflow_run ] && [ "$sha" != "$RUN_SHA" ]; then
+            smoke_die "tag $tag points at $sha, the release run built $RUN_SHA"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"${tag}\") | if .draft then \"draft\" else \"published\" end" >"$RUNNER_TEMP/state"
+          [ "$(wc -l <"$RUNNER_TEMP/state")" -eq 1 ] || smoke_die "expected exactly one release for $tag, found $(wc -l <"$RUNNER_TEMP/state")"
+          state=$(cat "$RUNNER_TEMP/state")
+          # Record the complete asset set: every file of this draft (or
+          # release), signatures and separately signed files included. The
+          # smoke jobs and the publish job refuse a draft that has another one.
+          mkdir "$RUNNER_TEMP/pin"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/pin"
+          smoke_require_signed_assets "$RUNNER_TEMP/pin"
+          smoke_asset_manifest "$RUNNER_TEMP/pin" >"$RUNNER_TEMP/assets.manifest"
+          [ -s "$RUNNER_TEMP/assets.manifest" ] || smoke_die "release $tag has no assets"
+          pin=$(smoke_sha256 "$RUNNER_TEMP/pin/checksums.txt")
+          printf '%s\n' "$pin" | grep -Eq '^[0-9a-f]{64}$' || smoke_die "could not hash the checksums.txt of $tag"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "checksums_sha256=$pin" >>"$GITHUB_OUTPUT"
+          {
+            echo "assets_manifest<<ASSETS_MANIFEST_END"
+            cat "$RUNNER_TEMP/assets.manifest"
+            echo "ASSETS_MANIFEST_END"
+          } >>"$GITHUB_OUTPUT"
+          echo "release $tag is a $state; $(wc -l <"$RUNNER_TEMP/assets.manifest" | tr -d ' ') assets recorded; checksums.txt sha256 $pin"
+
+  # Every smoke job must pass; the called workflow fails otherwise.
+  smoke:
+    name: install smoke tests
+    needs: resolve
+    uses: ./.github/workflows/smoke.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      checksums_sha256: ${{ needs.resolve.outputs.checksums_sha256 }}
+    permissions:
+      contents: write # read the draft release
+      packages: read # pull the image
+
+  publish:
+    name: publish the release
+    needs: [resolve, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The global channel lock: one publication at a time for all versions.
+    concurrency:
+      group: publish-channels
+      cancel-in-progress: false
+    permissions:
+      contents: write # publish the release
+      packages: write # move the image tags
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      ASSETS_MANIFEST: ${{ needs.resolve.outputs.assets_manifest }}
+      TESTED_DIGEST: ${{ needs.smoke.outputs.image_digest }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SMOKE_IMAGE: ghcr.io/patrick-1984/minion
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - name: The draft (every asset) and the image are still exactly the tested ones
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          printf '%s\n' "$ASSETS_MANIFEST" >"$RUNNER_TEMP/assets.manifest"
+          test/smoke/pin.sh "$TAG" "$RUNNER_TEMP/assets.manifest" "$TESTED_DIGEST"
+      # Plan from the live releases, preflight, publication, public check and
+      # channel moves, with a rollback of what it changed (see the script).
+      - name: Publish and move the channels (a candidate publishes a prerelease and moves nothing)
+        run: |
+          set -euo pipefail
+          test/smoke/promote.sh "$TAG" "$RUNNER_TEMP/assets.manifest" "$TESTED_DIGEST"

@@ -1,0 +1,12 @@
+in:  "a\x1b]52;c;SGVsbG8=\ab"
+out: "ab"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "ab"
+  ],
+  "spans": [],
+  "cursor": null
+}

@@ -1,0 +1,26 @@
+# Minion Worker, one instance per Unix user: minion-worker@<user>.service
+# runs "minion worker run" as <user>, so that the Worker sees the tmux
+# sessions of that user (AD-24, A-6). This file is created and owned by
+# Story 9.1, shipped in the deb and rpm packages as
+# /usr/lib/systemd/system/minion-worker@.service and validated by Story 4.11
+# ("minion worker up" installs exactly this content). Do not edit it anywhere
+# else.
+[Unit]
+Description=Minion Worker for %i
+Documentation=https://github.com/patrick-1984/ai-minion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=~
+ExecStart=/usr/bin/minion worker run
+Restart=always
+RestartSec=5
+# Stopping or restarting the Worker must not end the tmux sessions of the user:
+# only the Worker process is signalled, a tmux server stays alive.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

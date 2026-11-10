@@ -1,0 +1,31 @@
+{{define "content"}}
+<div class="inspect-layout" id="inspect-layout">
+<div class="inspect-main" data-modal-inert>
+{{template "inspector_kept"}}
+<div class="page-head">
+  <div><h1>Workers</h1><p>Machines that host terminal sessions. Search and filter the list; it updates live.</p></div>
+  <div class="page-actions"><a class="btn" href="/workers/add">{{template "icon" "i-plus"}}<span>Add worker</span></a></div>
+</div>
+{{if .Data.CanFilter}}<nav aria-label="Whose workers" class="scope" id="scope-switch">
+  <a href="{{.Data.MineURL}}"{{if eq .Data.Scope "mine"}} aria-current="true"{{end}}>Mine</a>
+  <a href="{{.Data.AllURL}}"{{if eq .Data.Scope "all"}} aria-current="true"{{end}}>All users</a>
+</nav>
+{{end}}<form class="toolbar" method="get" action="/workers" role="search" aria-label="Search workers">
+  {{if eq .Data.Scope "all"}}<input type="hidden" name="scope" value="all">{{end}}
+  {{if .Data.Filter.Worker}}<input type="hidden" name="worker" value="{{.Data.Filter.Worker}}">{{end}}
+  <div class="field grow"><label for="f-q">Search</label><input type="search" id="f-q" name="q" value="{{.Data.Filter.Query}}" autocomplete="off" spellcheck="false" maxlength="128" placeholder="Name or owner"></div>
+  <div class="field"><label for="f-status">Status</label><select id="f-status" name="status"><option value="">Any</option>{{range .Data.Statuses}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}</select></div>
+  <div class="field"><label for="f-kind">Kind</label><select id="f-kind" name="kind"><option value="">Any</option>{{range .Data.Kinds}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}</select></div>
+  {{if .Data.Owners}}<div class="field"><label for="f-owner">Owner</label><select id="f-owner" name="owner"><option value="">Anyone</option>{{range .Data.Owners}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}</select></div>{{end}}
+  <div class="row"><button type="submit">Search</button>{{if .Data.Filter.Active}}<a class="btn btn-secondary" href="{{.Data.ClearURL}}">Clear filters</a>{{end}}</div>
+</form>
+{{if .Data.Filter.Worker}}<p class="filters-active"><span class="chip">Worker: {{if .Data.WorkerName}}{{.Data.WorkerName}}{{else}}selected{{end}}</span></p>{{end}}
+<p class="sr-only" id="list-announce" role="status" aria-live="polite"></p>
+<div id="list-result" aria-live="polite"></div>
+<div id="results" data-live-list sse-connect="{{.Data.LiveURL}}" sse-swap="dashboard" hx-swap="innerHTML">{{template "workers_results" .Data}}</div>
+</div>
+{{template "inspector" .Data.Context}}
+</div>
+<script src="/static/live-list.js" defer></script>
+<script src="/static/inspector.js" defer></script>
+{{end}}

@@ -1,0 +1,24 @@
+{{define "content"}}
+<section class="card auth-card">
+  <h1>Sign in</h1>
+  <form method="post" action="/auth/login" data-json-action="/auth/login" data-next="{{.Data.Next}}">
+    <p class="form-error" role="alert" data-form-error hidden></p>
+    <div class="field">
+      <label for="username">Username or e-mail</label>
+      <input type="text" id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit">Sign in</button>
+  </form>
+  {{if .Data.Providers}}
+  <div class="providers" role="group" aria-label="Other sign-in methods">
+    {{range .Data.Providers}}<a class="btn btn-secondary" href="{{.Path}}">Sign in with {{.Label}}</a>
+    {{end}}
+  </div>
+  {{end}}
+  <noscript><p class="muted">Signing in needs JavaScript in this browser.</p></noscript>
+</section>
+{{end}}

@@ -1,0 +1,12 @@
+╭──────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.1)                       │
+│                                              │
+│ model:     gpt-5-codex   /model to change    │
+│ directory: ~/project                         │
+╰──────────────────────────────────────────────╯
+
+  To get started, describe a task or try one of these commands:
+
+› Find and fix a bug in @filename
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit   ? for shortcuts

@@ -1,0 +1,187 @@
+<main id="content" tabindex="-1">
+
+<div class="page-head"><div><h1>Identity &amp; sign-in</h1><p>Providers let people sign in with your identity provider. A provider that the environment or the settings describe is read-only here.</p></div></div>
+
+<div class="stack">
+
+<section class="panel" aria-labelledby="p-default">
+  <h2 id="p-default">Company SSO <span class="muted">(default)</span></h2>
+  <p class="muted">set by environment variable or the settings page</p>
+  
+  <form method="post" hx-post="/admin/oidc/providers" hx-target="#save-default" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <input type="hidden" name="id" value="default">
+    
+    <div class="field">
+      <label for="p-default-name">Name (shown on the login button)</label>
+      <input type="text" id="p-default-name" name="name" value="Company SSO" autocomplete="off" required maxlength="512" disabled>
+    </div>
+    <div class="field">
+      <label for="p-default-issuer">Issuer URL</label>
+      <input type="text" id="p-default-issuer" name="issuer" value="https://sso.example.com" autocomplete="off" spellcheck="false" required maxlength="512" disabled>
+    </div>
+    <div class="field">
+      <label for="p-default-client-id">Client ID</label>
+      <input type="text" id="p-default-client-id" name="client_id" value="minion" autocomplete="off" spellcheck="false" required maxlength="512" disabled>
+    </div>
+    <div class="field">
+      <label for="p-default-secret">Client secret (set)</label>
+      <input type="password" id="p-default-secret" name="client_secret" autocomplete="new-password" placeholder="leave empty to keep the secret" disabled>
+    </div>
+    <div class="field">
+      <label for="p-default-claim">Role claim</label>
+      <input type="text" id="p-default-claim" name="role_claim" value="groups" autocomplete="off" spellcheck="false" maxlength="512" disabled>
+    </div>
+    <div class="field">
+      <label for="p-default-scopes">Scopes (space separated)</label>
+      <input type="text" id="p-default-scopes" name="scopes" value="openid email" autocomplete="off" spellcheck="false" maxlength="512" disabled>
+    </div>
+    <div class="field">
+      <label for="p-default-ca">CA file (path on the Hub host)</label>
+      <input type="text" id="p-default-ca" name="ca_file" value="" autocomplete="off" spellcheck="false" maxlength="512" disabled>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="tls_insecure_skip_verify" value="1" disabled> Do not verify the TLS certificate of this provider (insecure)</label>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="enabled" value="1" checked disabled> Enabled</label>
+    </div>
+
+    
+    <div id="save-default" aria-live="polite"></div>
+  </form>
+  <h3>Role rules</h3>
+  <p class="muted">A person gets the role when the role claim holds one of the values (one per line). Admin wins over user.</p>
+  <form method="post" hx-post="/admin/oidc/providers/default/roles" hx-target="#roles-default" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="default-admin-values">Values that give the admin role</label>
+      <textarea id="default-admin-values" name="admin_values" rows="3" spellcheck="false" disabled>minion-admins</textarea>
+    </div>
+    <div class="field">
+      <label for="default-user-values">Values that give the user role</label>
+      <textarea id="default-user-values" name="user_values" rows="3" spellcheck="false" disabled></textarea>
+    </div>
+    
+    <div id="roles-default" aria-live="polite"></div>
+  </form>
+  
+</section>
+
+<section class="panel" aria-labelledby="p-lab">
+  <h2 id="p-lab">Lab Keycloak <span class="muted">(lab)</span></h2>
+  
+  
+  <form method="post" hx-post="/admin/oidc/providers" hx-target="#save-lab" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <input type="hidden" name="id" value="lab">
+    
+    <div class="field">
+      <label for="p-lab-name">Name (shown on the login button)</label>
+      <input type="text" id="p-lab-name" name="name" value="Lab Keycloak" autocomplete="off" required maxlength="512">
+    </div>
+    <div class="field">
+      <label for="p-lab-issuer">Issuer URL</label>
+      <input type="text" id="p-lab-issuer" name="issuer" value="https://kc.lab.example.com/realms/lab" autocomplete="off" spellcheck="false" required maxlength="512">
+    </div>
+    <div class="field">
+      <label for="p-lab-client-id">Client ID</label>
+      <input type="text" id="p-lab-client-id" name="client_id" value="minion-lab" autocomplete="off" spellcheck="false" required maxlength="512">
+    </div>
+    <div class="field">
+      <label for="p-lab-secret">Client secret (not set)</label>
+      <input type="password" id="p-lab-secret" name="client_secret" autocomplete="new-password" placeholder="not set">
+    </div>
+    <div class="field">
+      <label for="p-lab-claim">Role claim</label>
+      <input type="text" id="p-lab-claim" name="role_claim" value="roles" autocomplete="off" spellcheck="false" maxlength="512">
+    </div>
+    <div class="field">
+      <label for="p-lab-scopes">Scopes (space separated)</label>
+      <input type="text" id="p-lab-scopes" name="scopes" value="" autocomplete="off" spellcheck="false" maxlength="512">
+    </div>
+    <div class="field">
+      <label for="p-lab-ca">CA file (path on the Hub host)</label>
+      <input type="text" id="p-lab-ca" name="ca_file" value="" autocomplete="off" spellcheck="false" maxlength="512">
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="tls_insecure_skip_verify" value="1"> Do not verify the TLS certificate of this provider (insecure)</label>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="enabled" value="1" checked> Enabled</label>
+    </div>
+
+    <button type="submit">Save the provider</button>
+    <div id="save-lab" aria-live="polite"></div>
+  </form>
+  <h3>Role rules</h3>
+  <p class="muted">A person gets the role when the role claim holds one of the values (one per line). Admin wins over user.</p>
+  <form method="post" hx-post="/admin/oidc/providers/lab/roles" hx-target="#roles-lab" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="lab-admin-values">Values that give the admin role</label>
+      <textarea id="lab-admin-values" name="admin_values" rows="3" spellcheck="false">admin
+ops</textarea>
+    </div>
+    <div class="field">
+      <label for="lab-user-values">Values that give the user role</label>
+      <textarea id="lab-user-values" name="user_values" rows="3" spellcheck="false">dev</textarea>
+    </div>
+    <button type="submit">Save the role rules</button>
+    <div id="roles-lab" aria-live="polite"></div>
+  </form>
+  
+  <form method="post" hx-post="/admin/oidc/providers/lab/delete" hx-target="#delete-lab" hx-swap="innerHTML" hx-confirm="Delete this provider? People can no longer sign in with it." hx-disabled-elt="find button">
+    <button type="submit" class="btn-danger">Delete the provider</button>
+    <div id="delete-lab" aria-live="polite"></div>
+  </form>
+  
+</section>
+
+<section class="panel" aria-labelledby="add-provider">
+  <h2 id="add-provider">Add a provider</h2>
+  <form method="post" hx-post="/admin/oidc/providers" hx-target="#save-new" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="new-id">Id (lower-case letters, digits, - and _)</label>
+      <input type="text" id="new-id" name="id" autocomplete="off" spellcheck="false" required pattern="[a-z0-9][a-z0-9_\-]{0,31}" maxlength="32">
+    </div>
+    
+    <div class="field">
+      <label for="new-name">Name (shown on the login button)</label>
+      <input type="text" id="new-name" name="name" value="" autocomplete="off" required maxlength="512">
+    </div>
+    <div class="field">
+      <label for="new-issuer">Issuer URL</label>
+      <input type="text" id="new-issuer" name="issuer" value="" autocomplete="off" spellcheck="false" required maxlength="512">
+    </div>
+    <div class="field">
+      <label for="new-client-id">Client ID</label>
+      <input type="text" id="new-client-id" name="client_id" value="" autocomplete="off" spellcheck="false" required maxlength="512">
+    </div>
+    <div class="field">
+      <label for="new-secret">Client secret (not set)</label>
+      <input type="password" id="new-secret" name="client_secret" autocomplete="new-password" placeholder="not set">
+    </div>
+    <div class="field">
+      <label for="new-claim">Role claim</label>
+      <input type="text" id="new-claim" name="role_claim" value="" autocomplete="off" spellcheck="false" maxlength="512">
+    </div>
+    <div class="field">
+      <label for="new-scopes">Scopes (space separated)</label>
+      <input type="text" id="new-scopes" name="scopes" value="" autocomplete="off" spellcheck="false" maxlength="512">
+    </div>
+    <div class="field">
+      <label for="new-ca">CA file (path on the Hub host)</label>
+      <input type="text" id="new-ca" name="ca_file" value="" autocomplete="off" spellcheck="false" maxlength="512">
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="tls_insecure_skip_verify" value="1"> Do not verify the TLS certificate of this provider (insecure)</label>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="enabled" value="1" checked> Enabled</label>
+    </div>
+
+    <button type="submit">Add the provider</button>
+    <div id="save-new" aria-live="polite"></div>
+  </form>
+</section>
+</div>
+<noscript><p class="muted">Changing providers needs JavaScript in this browser.</p></noscript>
+
+    </main>

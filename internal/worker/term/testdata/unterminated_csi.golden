@@ -1,0 +1,12 @@
+in:  "before\x1b[31"
+out: "before"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "before"
+  ],
+  "spans": [],
+  "cursor": null
+}

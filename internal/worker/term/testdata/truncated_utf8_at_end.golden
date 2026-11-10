@@ -1,0 +1,12 @@
+in:  "abc\xe2\x82"
+out: "abc�"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "abc�"
+  ],
+  "spans": [],
+  "cursor": null
+}

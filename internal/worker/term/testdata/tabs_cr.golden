@@ -1,0 +1,13 @@
+in:  "a\tb\r\nc\rd"
+out: "a\tb\r\nc\rd"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "a       b",
+    "d"
+  ],
+  "spans": [],
+  "cursor": null
+}

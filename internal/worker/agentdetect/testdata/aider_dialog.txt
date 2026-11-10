@@ -1,0 +1,7 @@
+Aider v0.86.0
+Main model: gpt-5 with diff edit format
+
+> Update the tests
+
+internal/parser/parse_test.go
+Add file to the chat? (Y)es/(N)o/(A)ll/(S)kip all/(D)on't ask again [Yes]:

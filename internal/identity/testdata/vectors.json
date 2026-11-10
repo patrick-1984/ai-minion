@@ -1,0 +1,187 @@
+{
+  "description": "Independently generated with Python cryptography (Ed25519 is deterministic). Seeds are 32 bytes; signed message is 'minion/v1/'+purpose+0x00+data.",
+  "keys": [
+    {
+      "name": "seq",
+      "seed_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "pub_b64": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "fingerprint": "kzdvvj2umnduyauf35o36k6kw462mujvra46tn3uqgzovmihocga",
+      "signatures": [
+        {
+          "purpose": "hs-hub",
+          "data_b64": "",
+          "sig_b64": "pwRYMgWhmi3tq1w4nddPxe4Or_fvs9CrO_46uA3kkXbWVxu8uAIS6rc_dpAJt4UtPLGIRsW4Prh6cSn1YhwJDg"
+        },
+        {
+          "purpose": "hs-hub",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "C3_sESr3WE1Wa-6kjv6KZb6lmZ2SSFQQdtg-DPD1Nf3saQYrN1IonHRvxHxn3m8TpcPA7dVcurFhsnNN755CDA"
+        },
+        {
+          "purpose": "hs-worker",
+          "data_b64": "",
+          "sig_b64": "FIi1BHHnPqLP33NNM0XNCgnomZ4FHBf-UFIkOAK51yLiCd2J5DSVjwG-bpn03kp46k7A0oogYlQfc7EYGEECDA"
+        },
+        {
+          "purpose": "hs-worker",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "r93faMoTiLclSlwIr0OAm7Y57LVlHevkYKE3zSbXKryKOntw7S3bHgtjJEDuqQaU5Ve-0EgOw-AQprPqhRntBw"
+        },
+        {
+          "purpose": "transition",
+          "data_b64": "",
+          "sig_b64": "IHk2C2BKFH7Y7fBXTIAPFF0rfUsxtrmBwkMtQN8lQG54VPoFui8Q2fFmsgIcnp1LFUXzywNOs9E5kPHt_H5TDw"
+        },
+        {
+          "purpose": "transition",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "z8oe1eMKUft6B17joF4_QLxB3Qpvb-FoYt_-g6JDbchkrYf3yhyK9-wGXabM6cpTSPCcWsbtHBaRIoa2ztHDBQ"
+        },
+        {
+          "purpose": "revoke",
+          "data_b64": "",
+          "sig_b64": "pYkljPApeJXw4EPzTAD4iT_jsIAE86x6CRf4CjRE973-gxIg92jsiOgBove3NOPsKrA1xAer8OnR4cjQP2r2BA"
+        },
+        {
+          "purpose": "revoke",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "suOzfhe9rm-rAMq6Lb8kaNeUsihJq1OwXDH9kTqNqorZc8Fe_9fhmWHKb7dS2JLxQrmwq6YomZbOXVi3IabYBQ"
+        },
+        {
+          "purpose": "pake-confirm",
+          "data_b64": "",
+          "sig_b64": "5TCWXFmSiZIjf498Dt8UqfZe0073Mf3Uo-tnyBmIizbfxZk0HF4C4ZK2uDCZAvi3CxAgxV2wCTGCgX_Uzhq3Bg"
+        },
+        {
+          "purpose": "pake-confirm",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "a4LCECBjcQsSn-j7wMCyamMK115CJg25j_0HLyrc7LCKZRH0sDmA74ONhrQBRpgdAhBc501i6nKQ8j4WKWUHCA"
+        }
+      ]
+    },
+    {
+      "name": "zero",
+      "seed_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "pub_b64": "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik",
+      "fingerprint": "copdsqhgjnkjc4rardm2bv2bmkh4qjxasr25gqnhqcwn4pclqbya",
+      "signatures": [
+        {
+          "purpose": "hs-hub",
+          "data_b64": "",
+          "sig_b64": "wswuCAy0ndl8Elu-FqErWwulHLnZXyPnGvl1nnzFteXilitIonXwcZCDNj3gbG41XyrWhzRrTmckzpnlNMdqCw"
+        },
+        {
+          "purpose": "hs-hub",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "K0tSiN4trTh9FBd0dettUfz0Y5JMQUjXLFNLyE1HSjg65gALJ5xYLqfQQLES6uHZTMxgfMQ1cUe1QN09xhMHAA"
+        },
+        {
+          "purpose": "hs-worker",
+          "data_b64": "",
+          "sig_b64": "l6uAdDW4rbx93nTM93kgyPwoSrRfOEZwJGIfaQOZQVLiQeTtRVHR45IMMs9QGg1RE_gr9nam60v6EemvP9q6DQ"
+        },
+        {
+          "purpose": "hs-worker",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "aN1fZIDk0gdfDaS9_hpLbnIJnXwdhS48ypGJHWZpTTkwcyhusnDna4QL5yjPUcJ4o2Xn7dlzM0PgbEgGsc_HAw"
+        },
+        {
+          "purpose": "transition",
+          "data_b64": "",
+          "sig_b64": "-YC9LFht05ExnbwnvA8Of145wGu6MsAw6bkPMeIIA_ME1beOLlUM1u2Zu1MdHZeV5Qa5ubyiMlJabbjqTF0IAg"
+        },
+        {
+          "purpose": "transition",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "IByTmCTiTBtizkWn04AxT8A9toqCvUE8FCtXq_hvORbxtw_ip_YG4Eu83JFdWExyFelBKYbNwbd52rd8pZVvBQ"
+        },
+        {
+          "purpose": "revoke",
+          "data_b64": "",
+          "sig_b64": "xBZgmwYxRrQEZToaB8sj-57q_Z155ZhaQ2tBJap5_z3gpMkfsv6_2SJtMreiiyWwD-zuMIvVFzQAD4S3M4LnAw"
+        },
+        {
+          "purpose": "revoke",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "f1x_fUTfYogv0pKKGUyqcbDYJWMgEVmKR9HM0gfgL6LlcC0J-eHNvzDGPaB4ll3hr9cVBnihLbb3uNwHfbG2BQ"
+        },
+        {
+          "purpose": "pake-confirm",
+          "data_b64": "",
+          "sig_b64": "uYPDkMaZgiHyPMWVuy6vDUckWLxy1yFOmJRRonhbYAKPmCWc4_NF9vUNcxZMGxbATkjwajylZKniwIDxItqoBw"
+        },
+        {
+          "purpose": "pake-confirm",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "_2-wtiyOtar75kLE1gLqqXCJNAUXYYusDv2lIOUDdpe9skjfirlxEMHVZP1oah2Sk2HP-UTX5ZdBOShPo3qUBg"
+        }
+      ]
+    },
+    {
+      "name": "ff",
+      "seed_b64": "__________________________________________8",
+      "pub_b64": "dqFZIESm5PURJlvKc6YE2QsFKdHfYCvjChmpJXZg0fU",
+      "fingerprint": "v6bcswhs25npxepyvd2nujjsgdldx27yyphi7knc4j24ftjvivxa",
+      "signatures": [
+        {
+          "purpose": "hs-hub",
+          "data_b64": "",
+          "sig_b64": "k1hyB2mWmCgwfxxoo5OGUURw5dRl8kL7W6YKejkxf6-M6zmw7-mjqTJp1wkO-OkbmDXLxsHB1WTSC4vc1oRdBw"
+        },
+        {
+          "purpose": "hs-hub",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "WP9AAZoh5_Y7YG7U_iykB4dXFyEU602LuIaePSL1gWS5U3_m8AX_vqDjks37XwD3jy04RE7mAT73qn-jjYakDQ"
+        },
+        {
+          "purpose": "hs-worker",
+          "data_b64": "",
+          "sig_b64": "XN5alwIVA0MNGIQjhsYLud1kqdXp51yJZiOqdq-jBqP0Jii80gM2_BGlRhwQ7vkzhsCrLu3thGE2TC-L7fWGAA"
+        },
+        {
+          "purpose": "hs-worker",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "W3hdggkEsPnzdGoS-ccjcXZxxzSXjwNbrXwJzX_HtNAN5H_MoTmz0surcYlmWcmNJY1MxUGN4NRdIhkvJpXBBw"
+        },
+        {
+          "purpose": "transition",
+          "data_b64": "",
+          "sig_b64": "ttWZox_5N0-_UAIxPkmW6nfFPFGktWqvrCt-MCmJ-3yNQb1LtsvMkPxnU22d3MPD5r1RJlx8xD-VRgrkGaCJCQ"
+        },
+        {
+          "purpose": "transition",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "3ByO7nuYL9Gh0Ak3GDQRIygvN7fyEjmo1HDzoqBwCjnweaN7gGC2zve1ekqCP7owImNGcZihlAK0bsM4qDIjDA"
+        },
+        {
+          "purpose": "revoke",
+          "data_b64": "",
+          "sig_b64": "c2v6IYfnlm3xN_DXJfF3KzgumGqTuYRAL2WiiWa2BRVfOVH8AdN_1XWrWrrSa0UiN6Av67kjUbFuR5_bi1BbBg"
+        },
+        {
+          "purpose": "revoke",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "GqnXougzJQEyxD5bYvXauwhk3chJ2yvOYK9Bs3IR_8Jh4iQCu_-9Ymvl0bXhG1fzzv1Xp1WsYV-wajW7uA1TDQ"
+        },
+        {
+          "purpose": "pake-confirm",
+          "data_b64": "",
+          "sig_b64": "Lxjl5JKuMcqQ-OTiRENPBbXU2hrwVsZ7ENL7erZExZalqlIad3-sXw_2ebu0TQPPghn9EphXHtEOCEOKhwT6BQ"
+        },
+        {
+          "purpose": "pake-confirm",
+          "data_b64": "aGVsbG8",
+          "sig_b64": "jl0694trOEvXSv_br3p65CzZJCgy5J8EZiohJRN4_QQv1ucmX5C9KVxOnoXsJ2YdevZ9OMQB_eB-ChjdjvRECw"
+        }
+      ]
+    }
+  ],
+  "transition": {
+    "seq": 1,
+    "old_pub": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+    "new_pub": "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik",
+    "created_at": "2023-11-14T22:13:20.000Z",
+    "sig_by_old": "Bt7Ihpm2PvKILBMCW79Trh3tOY11pqvLJwO3h6PruHD1QxmQ0bGnfDXPmIjneUt_-YRI3LaeMTDxdLIme-ePBA"
+  },
+  "transition_note": "created_at signed as int64 Unix milliseconds big endian: seq||old_pub||new_pub||created_at_ms (80 bytes), purpose transition. 1700000000000 ms = 2023-11-14T22:13:20.000Z."
+}

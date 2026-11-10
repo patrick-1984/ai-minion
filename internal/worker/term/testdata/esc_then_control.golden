@@ -1,0 +1,13 @@
+in:  "a\x1b\nb"
+out: "a\nb"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "a",
+    "b"
+  ],
+  "spans": [],
+  "cursor": null
+}

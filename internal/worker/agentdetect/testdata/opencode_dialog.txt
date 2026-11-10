@@ -1,0 +1,8 @@
+  Run the build
+
+   ┃ Permission required: bash
+   ┃   make build
+   ┃
+   ┃  Allow once    Allow always    Reject
+   ┃
+   ⇆ select   enter confirm

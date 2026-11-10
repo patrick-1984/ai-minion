@@ -1,0 +1,6 @@
+# Exemptions for scripts/check-english.sh. See the header of that script for
+# the format; an entry may carry a trailing "# reason" comment. Keep this list short and justify each entry in a comment.
+#
+# Example entries (none needed yet):
+#   internal/worker/term/sanitise_test.go                 # whole file: terminal test data
+#   internal/worker/term/screen_test.go:wide characters   # only lines with this text

@@ -1,0 +1,74 @@
+{{define "apikey_secret"}}<div class="secret" role="status">
+  <p><strong>API key "{{.Name}}" created.</strong> Scope: {{.Scope}}. Expires: {{.Expires}}.</p>
+  <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
+  <div class="field">
+    <label for="api-key">API key</label>
+    <input type="text" id="api-key" value="{{.Key}}" readonly autocomplete="off" spellcheck="false">
+    <button type="button" data-copy="#api-key">Copy the key</button>
+  </div>
+  <p class="muted">Send it to {{.Server}} as <code>Authorization: Bearer &lt;key&gt;</code>, or save it as the only line of a file and point <code>MINION_API_KEY_FILE</code> at that file (for example for <code>minion mcp</code>). It is listed afterwards as <code>{{.Hint}}</code>.</p>
+  <p><a href="/api-keys">Back to the API keys</a></p>
+</div>{{end}}
+{{define "content"}}
+<div class="page-head"><div><h1>API keys</h1><p>An API key lets a tool or script use the Hub on your behalf, limited to what you choose here. A key can never do more than you can.</p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="create-apikey">
+  <h2 id="create-apikey">Create an API key</h2>
+  <form method="post" hx-post="/api-keys" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    <div class="field">
+      <label for="key-name">Name</label>
+      <input type="text" id="key-name" name="name" autocomplete="off" required maxlength="64">
+    </div>
+    <fieldset class="field">
+      <legend>What the key may reach</legend>
+      {{range $i, $c := .Data.Resources}}<label class="check" for="res-{{$i}}"><input type="checkbox" id="res-{{$i}}" name="resource" value="{{$c.Value}}"{{if $c.Selected}} checked{{end}}> {{$c.Label}} <span class="muted">({{$c.Help}})</span></label>
+      {{end}}
+      {{if .Data.ResourceNote}}<span class="muted">{{.Data.ResourceNote}}</span>{{end}}
+    </fieldset>
+    <div class="field">
+      <label for="key-session">Only one session (optional)</label>
+      <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help">
+      <span id="key-session-help" class="muted">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
+    </div>
+    <fieldset class="field">
+      <legend>What the key may do</legend>
+      {{range $i, $c := .Data.Actions}}<label class="check" for="act-{{$i}}"><input type="checkbox" id="act-{{$i}}" name="action" value="{{$c.Value}}"{{if $c.Selected}} checked{{end}}> {{$c.Label}} <span class="muted">({{$c.Help}})</span></label>
+      {{end}}
+    </fieldset>
+    <div class="field">
+      <label for="key-expires">Valid for</label>
+      <select id="key-expires" name="expires">
+        {{range .Data.Expiries}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </div>
+    <button type="submit">Create the key</button>
+    <div id="create-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
+</section>
+<section aria-labelledby="apikey-list">
+  <h2 id="apikey-list">Your API keys</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Name</th><th scope="col">Key</th><th scope="col">Reaches and may do</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    {{range .Data.Keys}}<tr>
+      <th scope="row">{{.Name}}</th>
+      <td><code>{{.Hint}}</code></td>
+      <td>{{.Scope}}</td>
+      <td>{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}}</td>
+      <td>{{.LastUsed}}</td>
+      <td>{{.State}}</td>
+      <td>{{if .CanRevoke}}<form method="post" hx-post="/api-keys/{{.ID}}/revoke" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+          <button type="submit" class="btn-danger">Revoke {{.Name}}</button>
+          <span id="revoke-{{.ID}}" aria-live="polite"></span>
+        </form>{{else}}<span class="muted">none</span>{{end}}</td>
+    </tr>
+    {{else}}<tr><td colspan="7" class="muted">You have no API keys yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table></div>
+</section>
+</div>
+<script src="/onboarding.js" defer></script>
+{{end}}

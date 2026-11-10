@@ -1,0 +1,26 @@
+in:  "\x1b[38;2;255;128;0mfg\x1b[48;2;0;0;64mbg\x1b[0m"
+out: "\x1b[38;2;255;128;0mfg\x1b[48;2;0;0;64mbg\x1b[0m"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "fgbg"
+  ],
+  "spans": [
+    {
+      "line": 0,
+      "start": 0,
+      "end": 2,
+      "fg": "#ff8000"
+    },
+    {
+      "line": 0,
+      "start": 2,
+      "end": 4,
+      "fg": "#ff8000",
+      "bg": "#000040"
+    }
+  ],
+  "cursor": null
+}

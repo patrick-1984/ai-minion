@@ -1,0 +1,16 @@
+Aider v0.86.0
+Main model: gpt-5 with diff edit format
+
+> hello
+
+Hi.
+
+> Summarise the README
+
+The README describes a Worker that drives tmux sessions.
+
+
+
+
+
+Waiting for gpt-5

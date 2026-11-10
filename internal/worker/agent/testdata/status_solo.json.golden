@@ -1,0 +1,26 @@
+{
+  "version": "dev",
+  "name": "laptop",
+  "mode": "solo",
+  "hub_url": "",
+  "connection": {
+    "state": "none",
+    "live": false,
+    "reason": "no Hub URL is configured"
+  },
+  "hub_fingerprint": "",
+  "worker_fingerprint": "",
+  "paired": false,
+  "owner": "",
+  "pending_pairing_code": "",
+  "pairing_state": "unknown",
+  "share": {
+    "mode": "later",
+    "configured": false,
+    "sessions": []
+  },
+  "preview_only": false,
+  "preview_only_hub": false,
+  "tmux_socket": "/tmp/tmux-1000/default",
+  "sessions": null
+}

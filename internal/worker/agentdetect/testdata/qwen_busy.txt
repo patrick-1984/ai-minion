@@ -1,0 +1,8 @@
+> List the packages
+
+⠙ Working on it... (esc to cancel, 2s)
+
+╭────────────────────────────────────────────────────────────────╮
+│ >   Type your message or @path/to/file                         │
+╰────────────────────────────────────────────────────────────────╯
+~/project   no sandbox   qwen3-coder-plus (98% context left)

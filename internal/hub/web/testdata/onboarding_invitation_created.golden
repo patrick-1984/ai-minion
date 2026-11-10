@@ -1,0 +1,86 @@
+<div class="secret" role="status">
+  <p><strong>Invitation key "build-farm" created.</strong> It is reusable, kind private, and expires: 2026-11-16 08:30 UTC.</p>
+  <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
+  <div class="field">
+    <label for="invite-key">Invitation key</label>
+    <input type="text" id="invite-key" value="mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm" readonly autocomplete="off" spellcheck="false">
+    <button type="button" data-copy="#invite-key">Copy the key</button>
+  </div>
+  <h3>Start a Worker with one command</h3>
+  <p class="muted">Run this on the machine that should become a Worker. The key is visible in the process list while the command runs; use the file variant below on shared machines.</p>
+  <pre id="invite-oneliner">minion worker up --server https://hub.example.com --invite-key mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm</pre>
+  <button type="button" data-copy="#invite-oneliner">Copy the command</button>
+  <h3>Same, with the key in a file</h3>
+  <pre id="invite-file">(
+  umask 077 &amp;&amp;
+  dir=$(mktemp -d &#34;${TMPDIR:-/tmp}/minion-invite.XXXXXX&#34;) &amp;&amp;
+  trap &#39;rm -rf &#34;$dir&#34;&#39; EXIT &amp;&amp;
+  cat &gt; &#34;$dir/invite.key&#34; &lt;&lt;&#39;EOF&#39; &amp;&amp;
+mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm
+EOF
+  minion worker up --server https://hub.example.com --invite-key &#34;$dir/invite.key&#34;
+)
+</pre>
+  <button type="button" data-copy="#invite-file">Copy the commands</button>
+  <h3>Docker Compose</h3>
+  <p class="muted">A complete Compose project that needs only Docker, <code>bootstrap.sh</code> from the release and the key in a file. The key stays in a secret file; the container reads it through <code>MINION_INVITE_KEY_FILE</code>.</p>
+  <pre id="invite-compose"># A Minion Worker in Docker, started from the invitation key. Before you start:
+# 1. Put bootstrap.sh next to this file. It is a file of the Minion release:
+#    https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh
+# 2. Save the key as the only line of invite_key.txt next to this file.
+# 3. Run: docker compose up -d
+# The image is built from Alpine with tmux (the Worker drives its sessions through tmux);
+# bootstrap.sh downloads and verifies the minion binary on the first start and keeps it in
+# the cache volume. The Worker runs as user 10001:10001 and enrolls once: after that the key
+# is not needed, but KEEP the file invite_key.txt: Docker needs the mounted file to exist
+# whenever the container is restarted or recreated, and the Worker reads it on every start.
+# An empty file is safe (an enrolled Worker ignores the key), a missing one stops the start.
+# After enrollment erase the secret in place. The init service made the file belong to user
+# 10001:10001 (mode 600), so your own shell may not write to it; let the root init service do it:
+#    docker compose run --rm --no-deps init sh -c &#39;: &gt; /invite_key.txt&#39;
+# That truncates the same file (do not delete, move or replace it with an editor). To remove
+# the file itself instead, first remove invite_key.txt from init&#39;s volumes, the secret and
+# MINION_INVITE_KEY_FILE, then run: docker compose up -d --remove-orphans
+services:
+  init:
+    image: alpine:3.22
+    user: &#34;0:0&#34;
+    command: [&#34;sh&#34;, &#34;-c&#34;, &#34;chown -R 10001:10001 /data /cache &amp;&amp; chown 10001:10001 /invite_key.txt &amp;&amp; chmod 600 /invite_key.txt&#34;]
+    volumes:
+      - ./worker-data:/data
+      - minion-cache:/cache
+      - ./invite_key.txt:/invite_key.txt
+  minion-worker:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM alpine:3.22
+        RUN apk add --no-cache tmux
+    user: &#34;10001:10001&#34;
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    entrypoint: [&#34;/bin/sh&#34;, &#34;/bootstrap.sh&#34;]
+    command: [&#34;worker&#34;, &#34;up&#34;]
+    environment:
+      MINION_SERVER: &#34;https://hub.example.com&#34;
+      MINION_VERSION: ${MINION_VERSION:-latest}
+      MINION_CACHE_DIR: /cache
+      MINION_STATE_DIR: /data
+      MINION_INVITE_KEY_FILE: /run/secrets/minion_invite_key
+    volumes:
+      - ./bootstrap.sh:/bootstrap.sh:ro
+      - ./worker-data:/data
+      - minion-cache:/cache
+    secrets:
+      - minion_invite_key
+secrets:
+  minion_invite_key:
+    file: ./invite_key.txt
+volumes:
+  minion-cache:
+</pre>
+  <button type="button" data-copy="#invite-compose">Copy the Compose file</button>
+  <p><a href="/invitations">Back to the invitation keys</a></p>
+</div>

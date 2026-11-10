@@ -1,0 +1,10 @@
+> Refactor the parser
+
+● I'll start by reading the parser module.
+
+✻ Thinking… (12s · ↑ 1.2k tokens · esc to interrupt)
+
+╭───────────────────────────────────────────────────────────────────────╮
+│ >                                                                     │
+╰───────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

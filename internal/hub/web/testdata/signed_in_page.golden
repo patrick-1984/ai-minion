@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sessions - Minion</title>
+<meta name="csrf-token" content="csrf-root">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/minion.css">
+<script src="/static/theme.js"></script>
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/sse.js" defer></script>
+<script src="/static/forms.js" defer></script>
+<script src="/static/shell.js" defer></script>
+</head>
+<body hx-headers='{"X-Minion-CSRF":"csrf-root"}' hx-ext="sse">
+<a class="skip-link" href="#content" data-modal-inert>Skip to content</a>
+
+
+<svg class="icon-sprite" aria-hidden="true" focusable="false" width="0" height="0" xmlns="http://www.w3.org/2000/svg">
+<symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></symbol>
+<symbol id="i-workers" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+<symbol id="i-sessions" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 10l3 2-3 2M13 15h4"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-invite" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 3-6 6.5-6s6.5 2.5 6.5 6M16 4.5a3.5 3.5 0 010 7M18 14c2 .7 3.5 2.6 3.5 6"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></symbol>
+<symbol id="i-audit" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+<symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+<symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 4H5a2 2 0 00-2 2v12a2 2 0 002 2h4M16 8l4 4-4 4M20 12H9"/></symbol>
+</svg>
+<div class="shell">
+  <aside class="rail" id="site-rail" aria-label="Minion" data-modal-inert>
+    <div class="rail-head">
+      <a class="brand" href="/"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="8" fill="#285bc5"/><path d="M8 23V10l8 8 8-8v13" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><rect x="20" y="22" width="5" height="2.5" rx="1" fill="#98b9ff"/></svg><span>Minion</span></a>
+      <button type="button" class="rail-close" id="menu-close"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"/></svg><span>Close menu</span></button>
+    </div>
+    <nav aria-label="Main" id="site-nav">
+      <div class="nav-group">
+        <h2 class="nav-label" id="nav-workspace">Workspace</h2>
+        <ul class="nav-list" aria-labelledby="nav-workspace">
+          <li><a href="/sessions" aria-current="page"><span>Sessions</span></a></li>
+          
+        </ul>
+      </div>
+      <div class="nav-group">
+        <h2 class="nav-label" id="nav-admin">Administration</h2>
+        <ul class="nav-list" aria-labelledby="nav-admin">
+          <li><a href="/admin/users"><span>Users</span></a></li>
+          
+        </ul>
+      </div>
+      
+    </nav>
+    <div class="rail-foot">
+      <a class="identity" href="/account">
+        <span class="avatar" aria-hidden="true">RO</span>
+        <span class="identity-text"><span class="identity-name">root</span><span class="identity-role">Administrator</span></span>
+      </a>
+      <form data-json-action="/auth/logout" data-next="/login">
+        <button type="submit" class="btn"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-logout"/></svg><span>Sign out</span></button>
+      </form>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+  <div class="main-col">
+    <header class="topbar" data-modal-inert>
+      <button type="button" class="btn btn-secondary menu-btn" id="menu-button" aria-expanded="false" aria-controls="site-rail"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-menu"/></svg><span>Menu</span></button>
+      <nav class="crumbs" aria-label="Breadcrumb"><ol>
+        <li><a href="/">Control center</a></li>
+        <li><span aria-current="page">Sessions</span></li>
+        
+      </ol></nav>
+      <div class="top-tools">
+        <label class="theme-picker"><span>Theme</span>
+          <select data-theme-select>
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+      </div>
+    </header>
+    <div id="banner-slot" data-modal-inert><div class="banner banner-warning" role="status"><span>Acting as ann</span>
+      <form data-json-action="/api/v1/ops/act_as_stop"><button type="submit" class="btn-secondary">Stop</button></form></div></div>
+    <div id="flash-area" aria-live="polite" data-modal-inert><div class="flash flash-danger" role="status">Backup is older than a week</div></div>
+    <main id="content" tabindex="-1">
+<h1>Sessions</h1><p id="data"></p>
+    </main>
+  </div>
+</div>
+
+</body>
+</html>
+

@@ -1,0 +1,14 @@
+Version:             v0.1.0
+Name:                lab-pi
+Mode:                Hub
+Hub URL:             https://hub.example:8443
+Connection:          backoff
+Last error:          dial: connection refused
+Hub fingerprint:     none (not paired)
+Worker fingerprint:  ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq
+Owner:               not paired
+Pairing code:        MN-ABCD-EFGH
+Share mode:          all
+Preview only:        yes
+tmux socket:         /run/user/1000/tmux-1000/default
+Sessions:            3

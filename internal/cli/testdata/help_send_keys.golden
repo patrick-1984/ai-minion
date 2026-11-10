@@ -1,0 +1,23 @@
+Send named keys to a session pane.
+
+This is a Worker operation. It runs on the local Worker through its control socket, or through the Hub when one is configured (MINION_HUB_URL and MINION_API_KEY_FILE, --hub-url); a configured Hub is never replaced by the local Worker.
+Accepted actions: operate.
+
+This is a write. The result reports the outcome, the reason, whether the refusal is forceable and any warnings.
+Exit status: 0 delivered, 3 failed_not_sent, 4 partial or unknown, 1 error, 2 usage.
+A FORCE refusal is repeated with --force only when you pass it.
+
+Usage:
+  minion send_keys [flags]
+
+Flags:
+      --force                                      override FORCE guards in this call (only when you pass it)
+  -h, --help                                       help for send_keys
+      --hub-ca-file string                         PEM file with the private CA of the Hub's certificate (env MINION_HUB_CA)
+      --hub-insecure string[="true"]               skip the verification of the Hub's certificate for this client only (warns) (env MINION_HUB_INSECURE)
+      --hub-url string                             call this Hub over its REST API instead of the local Worker; the API key is read from the file named by MINION_API_KEY_FILE (env MINION_HUB_URL)
+      --hub-worker string                          id (UUIDv7) of the Worker that runs operations whose arguments name none (sessions_list, session_create) (env MINION_HUB_WORKER)
+      --json                                       print the result as JSON (one line; one line per element for a stream)
+      --keys stringArray                           a tmux key name such as Enter or C-c; repeat the flag for more keys
+      --request-id string                          request id, a UUIDv7 (default: a new one); a repeat of the same id within 10 minutes is answered from the Worker's cache and never delivers twice
+      --target [worker-id:]session[:window.pane]   target session as [worker-id:]session[:window.pane] (default: the current tmux session)

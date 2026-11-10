@@ -1,0 +1,16 @@
+╭───────────────────────────────────────────────────╮
+│ ✻ Welcome to Claude Code!                         │
+│                                                   │
+│   /help for help, /status for your current setup  │
+│                                                   │
+│   cwd: /home/user/project                         │
+╰───────────────────────────────────────────────────╯
+
+> Summarise the README
+
+● The README describes a Worker that drives tmux sessions.
+
+╭───────────────────────────────────────────────────────────────────────╮
+│ >                                                                     │
+╰───────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

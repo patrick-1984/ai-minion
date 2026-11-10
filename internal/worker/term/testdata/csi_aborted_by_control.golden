@@ -1,0 +1,13 @@
+in:  "a\x1b[3\n1mb"
+out: "a\n1mb"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "a",
+    "1mb"
+  ],
+  "spans": [],
+  "cursor": null
+}

@@ -1,0 +1,126 @@
+# Continuous integration (AD-24, AD-25). Every job runs on pull requests and on
+# pushes to main. Actions are pinned to commit SHAs (the comment gives the tag).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOLANGCI_LINT_VERSION: v2.15.0
+  TMUX_VERSION: "3.8"
+  TMUX_SHA256: e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
+  MINION_REQUIRE_TMUX: "1"
+
+jobs:
+  lint:
+    name: vet, lint and import rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install golangci-lint (built with the project Go version)
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
+      - name: go vet, golangci-lint (release GOOS/GOARCH, tmux and e2e tags), tmux, English, documentation-link and skeleton checks
+        run: make lint
+      - name: Negative check of the import rules (forbidden imports must fail)
+        run: make lint-negative
+      - name: Validate the deploy Compose files (docker compose config, dummy environment, no daemon)
+        run: make check-compose
+
+  test-distro-tmux:
+    name: test (race, distribution tmux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install tmux from the distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
+      - name: go test -race -tags tmux ./...
+        run: make test-race TAGS=tmux
+      - name: CPace vector tests (internal/pake)
+        run: go test -race -count=1 -v -run Vector ./internal/pake/...
+
+  test-tmux-3-8:
+    name: test (race, tmux 3.8 from source)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Identify the runner image (part of the tmux cache key)
+        id: img
+        run: echo "id=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
+      - name: Cache tmux ${{ env.TMUX_VERSION }}
+        id: tmux-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/tmux-${{ env.TMUX_VERSION }}
+          key: tmux-${{ env.TMUX_VERSION }}-${{ steps.img.outputs.id }}-${{ runner.arch }}-1
+      - name: Install libevent and ncurses (build and run time of tmux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libncurses-dev
+      - name: Build tmux ${{ env.TMUX_VERSION }} from source
+        if: steps.tmux-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y build-essential bison pkg-config
+          curl -fsSL -o tmux.tar.gz "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz"
+          echo "${TMUX_SHA256}  tmux.tar.gz" | sha256sum -c -
+          tar xzf tmux.tar.gz
+          cd "tmux-${TMUX_VERSION}"
+          ./configure --prefix="$HOME/tmux-${TMUX_VERSION}"
+          make -j"$(nproc)"
+          make install
+      - name: Put tmux ${{ env.TMUX_VERSION }} first on PATH and check the version
+        run: |
+          echo "$HOME/tmux-${TMUX_VERSION}/bin" >> "$GITHUB_PATH"
+          "$HOME/tmux-${TMUX_VERSION}/bin/tmux" -V | grep -F "tmux ${TMUX_VERSION}"
+      - name: go test -race -tags tmux ./...
+        run: make test-race TAGS=tmux
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck (golang.org/x/vuln v1.9.0)
+        run: make vuln
+
+  cross:
+    name: cross-build (CGO_ENABLED=0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build every release target
+        run: make cross
+      - name: Version, commit and date are injected through -ldflags
+        run: |
+          make build VERSION=ci COMMIT=cafe0123 DATE=2026-01-02T03:04:05Z
+          out="$(./bin/minion version)"
+          echo "$out"
+          echo "$out" | grep -Fx "version: ci"
+          echo "$out" | grep -Fx "commit: cafe0123"
+          echo "$out" | grep -Fx "built: 2026-01-02T03:04:05Z"

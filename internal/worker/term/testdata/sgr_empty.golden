@@ -1,0 +1,12 @@
+in:  "\x1b[mreset"
+out: "\x1b[0mreset"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "reset"
+  ],
+  "spans": [],
+  "cursor": null
+}

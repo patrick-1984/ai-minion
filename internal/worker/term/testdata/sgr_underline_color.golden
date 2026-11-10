@@ -1,0 +1,19 @@
+in:  "\x1b[58;5;1mx\x1b[58;2;1;2;3;1my"
+out: "x\x1b[1my"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "xy"
+  ],
+  "spans": [
+    {
+      "line": 0,
+      "start": 1,
+      "end": 2,
+      "bold": true
+    }
+  ],
+  "cursor": null
+}

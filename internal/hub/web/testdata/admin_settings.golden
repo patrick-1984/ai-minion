@@ -1,0 +1,180 @@
+<main id="content" tabindex="-1">
+
+<div class="page-head"><div><h1>Hub settings</h1><p>Every setting of the Hub with the environment variable that sets it. A field that an environment variable sets is read-only here. A secret is never shown again: it is only "set" or "not set".</p></div></div>
+
+<div class="settings-list">
+  <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+  <ul>
+
+  <li>
+  <form class="srow" method="post" hx-post="/admin/settings/listen" hx-target="#result-listen" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-listen" id="h-listen">listen</label>
+      <span class="s-env"><code>MINION_LISTEN</code></span>
+    </div>
+    <div class="s-value">
+      <input type="text" id="v-listen" value=":8443" disabled aria-describedby="why-listen m-listen d-listen">
+      
+    </div>
+    <div class="s-actions">
+      <span id="why-listen" class="s-locked">set by environment variable</span>
+      
+    </div>
+    <div class="s-desc">
+      <p id="d-listen" class="s-help">Address the Hub listens on</p>
+      <p id="m-listen" class="s-meta">Source: env. Applies after the Hub restarts.</p>
+      
+    </div>
+    <div id="result-listen" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  <li>
+  <form class="srow" method="post" hx-post="/admin/settings/tls" hx-target="#result-tls" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-tls" id="h-tls">tls</label>
+      <span class="s-env"><code>MINION_TLS</code></span>
+    </div>
+    <div class="s-value">
+      <select id="v-tls" name="value" aria-describedby="m-tls d-tls">
+        <option value="auto" selected>auto</option>
+        <option value="off">off</option>
+        
+      </select>
+      
+    </div>
+    <div class="s-actions">
+      <button type="submit" name="action" value="set">Save</button>
+      <button type="submit" name="action" value="unset" class="btn-secondary">Use the default</button>
+    </div>
+    <div class="s-desc">
+      <p id="d-tls" class="s-help">TLS mode</p>
+      <p id="m-tls" class="s-meta">Source: default. Applies after the Hub restarts.</p>
+      
+    </div>
+    <div id="result-tls" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  <li>
+  <form class="srow" method="post" hx-post="/admin/settings/public_url" hx-target="#result-public_url" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-public_url" id="h-public_url">public_url</label>
+      <span class="s-env"><code>MINION_PUBLIC_URL</code></span>
+    </div>
+    <div class="s-value">
+      <input type="text" id="v-public_url" name="value" value="https://hub.example.com" autocomplete="off" spellcheck="false" aria-describedby="m-public_url d-public_url">
+    </div>
+    <div class="s-actions">
+      <button type="submit" name="action" value="set">Save</button>
+      <button type="submit" name="action" value="unset" class="btn-secondary">Use the default</button>
+    </div>
+    <div class="s-desc">
+      <p id="d-public_url" class="s-help">External URL of the Hub</p>
+      <p id="m-public_url" class="s-meta">Source: panel. Applies after the Hub restarts. <strong>A changed value waits for the next restart.</strong></p>
+      
+    </div>
+    <div id="result-public_url" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  <li>
+  <form class="srow" method="post" hx-post="/admin/settings/oidc_client_secret" hx-target="#result-oidc_client_secret" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-oidc_client_secret" id="h-oidc_client_secret">oidc_client_secret</label>
+      <span class="s-env"><code>MINION_OIDC_CLIENT_SECRET</code> or <code>MINION_OIDC_CLIENT_SECRET_FILE</code> (a file that holds the value)</span>
+    </div>
+    <div class="s-value">
+      <input type="password" id="v-oidc_client_secret" value="" disabled aria-describedby="why-oidc_client_secret m-oidc_client_secret d-oidc_client_secret">
+      
+    </div>
+    <div class="s-actions">
+      <span id="why-oidc_client_secret" class="s-locked">set by environment variable</span>
+      
+    </div>
+    <div class="s-desc">
+      <p id="d-oidc_client_secret" class="s-help">Client secret</p>
+      <p id="m-oidc_client_secret" class="s-meta">Secret: set. Source: env. Applies after the Hub restarts.</p>
+      
+    </div>
+    <div id="result-oidc_client_secret" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  <li>
+  <form class="srow" method="post" hx-post="/admin/settings/smtp_password" hx-target="#result-smtp_password" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-smtp_password" id="h-smtp_password">smtp_password</label>
+      <span class="s-env"><code>MINION_SMTP_PASSWORD</code> or <code>MINION_SMTP_PASSWORD_FILE</code> (a file that holds the value)</span>
+    </div>
+    <div class="s-value">
+      <input type="password" id="v-smtp_password" name="value" autocomplete="new-password" placeholder="set" aria-describedby="m-smtp_password d-smtp_password">
+      <input type="hidden" name="secret" value="1">
+      
+    </div>
+    <div class="s-actions">
+      <button type="submit" name="action" value="set">Save</button>
+      <button type="submit" name="action" value="unset" class="btn-secondary">Remove</button>
+    </div>
+    <div class="s-desc">
+      <p id="d-smtp_password" class="s-help">SMTP password</p>
+      <p id="m-smtp_password" class="s-meta">Secret: set. Source: panel. Applies after the Hub restarts.</p>
+      
+    </div>
+    <div id="result-smtp_password" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  <li>
+  <form class="srow" method="post" hx-post="/admin/settings/backup_key" hx-target="#result-backup_key" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-backup_key" id="h-backup_key">backup_key</label>
+      <span class="s-env"><code>MINION_BACKUP_KEY</code> or <code>MINION_BACKUP_KEY_FILE</code> (a file that holds the value)</span>
+    </div>
+    <div class="s-value">
+      <input type="password" id="v-backup_key" name="value" autocomplete="new-password" placeholder="not set" aria-describedby="m-backup_key d-backup_key">
+      <input type="hidden" name="secret" value="1">
+      
+    </div>
+    <div class="s-actions">
+      <button type="submit" name="action" value="set">Save</button>
+      <button type="submit" name="action" value="unset" class="btn-secondary">Remove</button>
+    </div>
+    <div class="s-desc">
+      <p id="d-backup_key" class="s-help">Backup key</p>
+      <p id="m-backup_key" class="s-meta">Secret: not set. Source: default. Applies after the Hub restarts.</p>
+      
+    </div>
+    <div id="result-backup_key" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  <li>
+  <form class="srow" method="post" hx-post="/admin/settings/data_dir" hx-target="#result-data_dir" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-data_dir" id="h-data_dir">data_dir</label>
+      <span class="s-env"><code>MINION_DATA_DIR</code></span>
+    </div>
+    <div class="s-value">
+      <input type="text" id="v-data_dir" value="/data" disabled aria-describedby="why-data_dir m-data_dir d-data_dir">
+      
+    </div>
+    <div class="s-actions">
+      <span id="why-data_dir" class="s-locked">cannot be changed in the panel</span>
+      
+    </div>
+    <div class="s-desc">
+      <p id="d-data_dir" class="s-help">Data directory</p>
+      <p id="m-data_dir" class="s-meta">Source: default. Applies after the Hub restarts.</p>
+      
+    </div>
+    <div id="result-data_dir" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  </ul>
+</div>
+
+<noscript><p class="muted">Changing settings needs JavaScript in this browser.</p></noscript>
+
+    </main>

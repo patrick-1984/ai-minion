@@ -1,0 +1,16 @@
+  hello
+
+  Hi, how can I help?
+
+  Summarise the README
+
+  I will start by reading the parser module.
+  Reading internal/parser/parse.go
+
+  ⠴ Thinking
+
+   ┃                                                 ┃
+   ┃  Ask anything... "Fix a TODO in the codebase"  ┃
+   ┃                                                 ┃
+
+   esc interrupt   tab agents   ctrl+p commands

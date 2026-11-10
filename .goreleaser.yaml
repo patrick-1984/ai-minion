@@ -1,0 +1,190 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+#
+# Release pipeline (Story 9.1, AD-24, AD-1). Only .github/workflows/release.yml
+# pins goreleaser (v2.20.0). "make snapshot" runs whatever goreleaser is on
+# PATH, so a local snapshot needs v2.20.0 on PATH.
+#
+# Flow: tag -> CI tests on that commit -> goreleaser builds, packages, signs
+# and creates a DRAFT release. Publishing the draft and moving channel tags
+# (X.Y, X, latest) is Story 9.7, after the install smoke tests. This file never
+# moves a channel tag: the image is tagged with the exact version only.
+#
+# Not configured here on purpose (workflow steps instead, because the files do
+# not exist while goreleaser runs): bootstrap.sh (Story 9.3, once merged) and
+# release-manifest.json. See .github/workflows/release.yml.
+version: 2
+
+project_name: minion
+
+before:
+  hooks:
+    - go mod download
+
+report_sizes: true
+
+builds:
+  - id: minion
+    main: ./cmd/minion
+    binary: minion
+    env:
+      - CGO_ENABLED=0 # AD-1: every target is a pure Go build
+    flags:
+      - -trimpath
+    # Reproducible binaries: file times come from the commit.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64, arm]
+    goarm: ["7"]
+    ignore:
+      # armv7 is a linux-only target.
+      - { goos: darwin, goarch: arm }
+      - { goos: windows, goarch: arm }
+    ldflags:
+      - -s -w
+      - -X github.com/patrick-1984/ai-minion/internal/version.Version=v{{ .Version }}
+      - -X github.com/patrick-1984/ai-minion/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/patrick-1984/ai-minion/internal/version.Date={{ .CommitDate }}
+
+archives:
+  - id: minion
+    ids: [minion]
+    formats: [tar.gz]
+    # minion_0.1.0_linux_armv7.tar.gz, minion_0.1.0_windows_amd64_preview.zip
+    # (the Windows Worker is a preview in release 1, R98).
+    name_template: >-
+      minion_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ if eq .Os "windows" }}_preview{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+nfpms:
+  - id: packages
+    package_name: minion
+    ids: [minion]
+    formats: [deb, rpm]
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: Minion
+    maintainer: Minion maintainers <noreply@users.noreply.github.com>
+    homepage: https://github.com/patrick-1984/ai-minion
+    description: Minion Hub and Minion Worker, one binary for tmux agent sessions.
+    license: Apache-2.0
+    section: utils
+    priority: optional
+    bindir: /usr/bin
+    # The Worker drives tmux; the system tmux is a hard dependency (the static
+    # tmux is deferred, see the spine).
+    dependencies:
+      - tmux
+    contents:
+      - src: minion
+        dst: /usr/bin/mn
+        type: symlink
+      - src: deploy/systemd/minion-worker@.service
+        dst: /usr/lib/systemd/system/minion-worker@.service
+        file_info:
+          mode: 0644
+      - src: LICENSE
+        dst: /usr/share/doc/minion/LICENSE
+        file_info:
+          mode: 0644
+    scripts:
+      postinstall: deploy/nfpm/postinstall.sh
+      preremove: deploy/nfpm/preremove.sh
+
+# One SBOM per archive (syft, installed by the workflow).
+sboms:
+  - id: archives
+    artifacts: archive
+    documents:
+      - "${artifact}.sbom.json"
+    cmd: syft
+    args: ["${artifact}", "--output", "spdx-json=${document}"]
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# checksums.txt is signed with cosign keyless (GitHub OIDC): the bundle
+# checksums.txt.sigstore.json carries the certificate, the signature and the
+# Rekor entry. Verification identity: AD-24, Story 9.2.
+#
+# goreleaser signs even in snapshot mode, and keyless signing needs an OIDC
+# token (it would open a browser on a developer machine). The small wrapper
+# therefore signs only a real release and writes a clearly marked placeholder
+# in snapshot mode, so that "make snapshot" runs anywhere without publishing.
+signs:
+  - id: checksums
+    cmd: sh
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    # goreleaser expands ${artifact} and ${signature} itself (a plain $1 would
+    # be expanded to nothing), so the script has no shell variables.
+    args:
+      - -c
+      - |
+        if [ "{{ .IsSnapshot }}" = "true" ]; then
+          echo "snapshot build: checksums are not signed" > ${signature}
+        else
+          exec cosign sign-blob --yes --bundle=${signature} ${artifact}
+        fi
+    output: true
+
+# ko through goreleaser (ko v0.19.1 is pinned for .ko.yaml and for
+# scripts/assert-image-platforms.sh). Tagged vX.Y.Z (or vX.Y.Z-rc.N) only:
+# X.Y, X and latest are moved by Story 9.7 after the smoke tests. No ko SBOM
+# is attached, because it would add extra tags to the repository.
+kos:
+  - id: minion
+    build: minion
+    repositories:
+      - ghcr.io/patrick-1984/minion
+    base_image: gcr.io/distroless/static-debian12:nonroot
+    platforms:
+      - linux/amd64
+      - linux/arm64
+      - linux/arm/v7
+    tags:
+      - "{{ .Tag }}"
+    bare: true
+    sbom: none
+    creation_time: "{{ .CommitTimestamp }}"
+    ko_data_creation_time: "{{ .CommitTimestamp }}"
+    labels:
+      org.opencontainers.image.title: minion
+      org.opencontainers.image.description: Minion Hub and Minion Worker
+      org.opencontainers.image.source: https://github.com/patrick-1984/ai-minion
+      org.opencontainers.image.licenses: Apache-2.0
+      org.opencontainers.image.version: "{{ .Tag }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+
+# The image index is signed by digest (keyless, same identity as checksums).
+docker_signs:
+  - id: images
+    cmd: cosign
+    artifacts: manifests
+    args:
+      - sign
+      - --yes
+      - ${artifact}@${digest}
+    output: true
+
+release:
+  github:
+    owner: patrick-1984
+    name: ai-minion
+  # AD-24: always a draft. Story 9.7 publishes it after the smoke tests (an
+  # -rc.N as a GitHub prerelease, A-13).
+  draft: true
+  prerelease: auto
+  replace_existing_draft: true
+  name_template: "{{ .Tag }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

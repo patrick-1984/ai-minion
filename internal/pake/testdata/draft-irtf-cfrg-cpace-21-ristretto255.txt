@@ -1,0 +1,500 @@
+Verbatim excerpt of draft-irtf-cfrg-cpace-21 (23 April 2026),
+Appendix A.1 to A.3 (string utility functions) and Appendix B.3
+(test vectors for CPace using group ristretto255 and hash SHA-512).
+
+Source: https://www.ietf.org/archive/id/draft-irtf-cfrg-cpace-21.txt
+SHA-256 of the source file as fetched: ed2772c26c21d43a199d490c1ebe5c5d2431a7dbce50d2124d4fa40957fbf58f
+
+Only page headers, page footers and form feeds were removed. All other
+lines are copied unchanged. The tests in ../vectors_test.go decode the
+"Testvectors as JSON file encoded as BASE64" blocks from this file and
+compare the human-readable hex values against them as well.
+
+Copyright (c) 2026 IETF Trust and the persons identified as the
+document authors. All rights reserved.
+
+-----8<----- begin excerpt -----8<-----
+Appendix A.  CPace function definitions
+
+A.1.  Definition and test vectors for string utility functions
+
+A.1.1.  prepend_len function
+
+   def prepend_len(data):
+       "prepend LEB128 encoding of length"
+       length = len(data)
+       length_encoded = b""
+       while True:
+           if length < 128:
+               length_encoded += bytes([length])
+           else:
+               length_encoded += bytes([(length & 0x7f) + 0x80])
+           length = int(length >> 7)
+           if length == 0:
+               break;
+       return length_encoded + data
+
+A.1.2.  prepend_len test vectors
+
+     prepend_len(b""): (length: 1 bytes)
+       00
+     prepend_len(b"1234"): (length: 5 bytes)
+       0431323334
+     prepend_len(bytes(range(127))): (length: 128 bytes)
+       7f000102030405060708090a0b0c0d0e0f101112131415161718191a1b
+       1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738
+       393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455
+       565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172
+       737475767778797a7b7c7d7e
+     prepend_len(bytes(range(128))): (length: 130 bytes)
+       8001000102030405060708090a0b0c0d0e0f101112131415161718191a
+       1b1c1d1e1f202122232425262728292a2b2c2d2e2f3031323334353637
+       38393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f5051525354
+       55565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f7071
+       72737475767778797a7b7c7d7e7f
+
+A.1.2.1.  Testvectors as JSON file encoded as BASE64
+
+    #eyJwcmVwZW5kX2xlbihiJycpIjogIjAwIiwgImInMTIzNCciOiAiMzEzMjMzMzQiLC
+    #AicHJlcGVuZF9sZW4oYicxMjM0JykiOiAiMDQzMTMyMzMzNCIsICJwcmVwZW5kX2xl
+    #bihieXRlcyhyYW5nZSgxMjcpKSkiOiAiN0YwMDAxMDIwMzA0MDUwNjA3MDgwOTBBME
+    #IwQzBEMEUwRjEwMTExMjEzMTQxNTE2MTcxODE5MUExQjFDMUQxRTFGMjAyMTIyMjMy
+    #NDI1MjYyNzI4MjkyQTJCMkMyRDJFMkYzMDMxMzIzMzM0MzUzNjM3MzgzOTNBM0IzQz
+    #NEM0UzRjQwNDE0MjQzNDQ0NTQ2NDc0ODQ5NEE0QjRDNEQ0RTRGNTA1MTUyNTM1NDU1
+    #NTY1NzU4NTk1QTVCNUM1RDVFNUY2MDYxNjI2MzY0NjU2NjY3Njg2OTZBNkI2QzZENk
+    #U2RjcwNzE3MjczNzQ3NTc2Nzc3ODc5N0E3QjdDN0Q3RSIsICJwcmVwZW5kX2xlbihi
+    #eXRlcyhyYW5nZSgxMjgpKSkiOiAiODAwMTAwMDEwMjAzMDQwNTA2MDcwODA5MEEwQj
+    #BDMEQwRTBGMTAxMTEyMTMxNDE1MTYxNzE4MTkxQTFCMUMxRDFFMUYyMDIxMjIyMzI0
+    #MjUyNjI3MjgyOTJBMkIyQzJEMkUyRjMwMzEzMjMzMzQzNTM2MzczODM5M0EzQjNDM0
+    #QzRTNGNDA0MTQyNDM0NDQ1NDY0NzQ4NDk0QTRCNEM0RDRFNEY1MDUxNTI1MzU0NTU1
+    #NjU3NTg1OTVBNUI1QzVENUU1RjYwNjE2MjYzNjQ2NTY2Njc2ODY5NkE2QjZDNkQ2RT
+    #ZGNzA3MTcyNzM3NDc1NzY3Nzc4Nzk3QTdCN0M3RDdFN0YifQ==
+
+A.1.3.  lv_cat function
+
+     def lv_cat(*args):
+         result = b""
+         for arg in args:
+             result += prepend_len(arg)
+         return result
+
+A.1.4.  Testvector for lv_cat()
+
+     lv_cat(b"1234",b"5",b"",b"678"): (length: 12 bytes)
+       043132333401350003363738
+
+A.1.4.1.  Testvectors as JSON file encoded as BASE64
+
+    #eyJiJzEyMzQnIjogIjMxMzIzMzM0IiwgImInNSciOiAiMzUiLCAiYic2NzgnIjogIj
+    #M2MzczOCIsICJsdl9jYXQoYicxMjM0JyxiJzUnLGInJyxiJzY3OCcpIjogIjA0MzEz
+    #MjMzMzQwMTM1MDAwMzM2MzczOCJ9
+
+A.2.  Definition of generator_string function.
+
+   def generator_string(DSI,PRS,CI,sid,s_in_bytes):
+       # Concat all input fields with prepended length information.
+       # Add zero padding in the first hash block after DSI and PRS.
+       len_zpad = max(0,s_in_bytes - 1 - len(prepend_len(PRS))
+                        - len(prepend_len(DSI)))
+       return lv_cat(DSI, PRS, zero_bytes(len_zpad),
+                              CI, sid)
+
+A.3.  Definitions and test vector ordered concatenation
+
+A.3.1.  Definitions for lexiographical ordering
+
+   For ordered concatenation lexiographical ordering of byte sequences
+   is used:
+
+      def lexiographically_larger(bytes1,bytes2):
+         "Returns True if bytes1>bytes2 using lexiographical ordering."
+         min_len = min (len(bytes1), len(bytes2))
+         for m in range(min_len):
+             if bytes1[m] > bytes2[m]:
+                 return True;
+             elif bytes1[m] < bytes2[m]:
+                 return False;
+         return len(bytes1) > len(bytes2)
+
+A.3.2.  Definitions for ordered concatenation
+
+   With the above definition of lexiographical ordering ordered
+   concatenation is specified as follows.
+
+     def o_cat(bytes1,bytes2):
+         if lexiographically_larger(bytes1,bytes2):
+             return b"oc" + bytes1 + bytes2
+         else:
+             return b"oc" + bytes2 + bytes1
+
+A.3.3.  Test vectors ordered concatenation
+
+     string comparison for o_cat:
+       lexiographically_larger(b"\0", b"\0\0") == False
+       lexiographically_larger(b"\1", b"\0\0") == True
+       lexiographically_larger(b"\0\0", b"\0") == True
+       lexiographically_larger(b"\0\0", b"\1") == False
+       lexiographically_larger(b"\0\1", b"\1") == False
+       lexiographically_larger(b"ABCD", b"BCD") == False
+
+     o_cat(b"ABCD",b"BCD"): (length: 9 bytes)
+       6f6342434441424344
+     o_cat(b"BCD",b"ABCDE"): (length: 10 bytes)
+       6f634243444142434445
+
+A.3.3.1.  Testvectors as JSON file encoded as BASE64
+
+    #eyJiJ0FCQ0QnIjogIjQxNDI0MzQ0IiwgImInQkNEJyI6ICI0MjQzNDQiLCAiYidBQk
+    #NERSciOiAiNDE0MjQzNDQ0NSIsICJvX2NhdChiJ0FCQ0QnLGInQkNEJykiOiAiNkY2
+    #MzQyNDM0NDQxNDI0MzQ0IiwgIm9fY2F0KGInQkNEJyxiJ0FCQ0RFJykiOiAiNkY2Mz
+    #QyNDM0NDQxNDI0MzQ0NDUifQ==
+
+A.3.4.  Definitions for transcript_ir function
+
+   def transcript_ir(Ya,ADa,Yb,ADb):
+       result = lv_cat(Ya,ADa) + lv_cat(Yb,ADb)
+       return result
+
+A.3.5.  Test vectors transcript_ir function
+
+     transcript_ir(b"123", b"PartyA", b"234",b"PartyB"):
+     (length: 22 bytes)
+       03313233065061727479410332333406506172747942
+     transcript_ir(b"3456",b"PartyA",b"2345",b"PartyB"):
+     (length: 24 bytes)
+       043334353606506172747941043233343506506172747942
+
+A.3.5.1.  Testvectors as JSON file encoded as BASE64
+
+    #eyJiJzEyMyciOiAiMzEzMjMzIiwgImInMjM0JyI6ICIzMjMzMzQiLCAiYidQYXJ0eU
+    #EnIjogIjUwNjE3Mjc0Nzk0MSIsICJiJ1BhcnR5QiciOiAiNTA2MTcyNzQ3OTQyIiwg
+    #ImInMzQ1NiciOiAiMzMzNDM1MzYiLCAiYicyMzQ1JyI6ICIzMjMzMzQzNSIsICJ0cm
+    #Fuc2NyaXB0X2lyKGInMTIzJyxiJ1BhcnR5QScsYicyMzQnLGInUGFydHlCJykiOiAi
+    #MDMzMTMyMzMwNjUwNjE3Mjc0Nzk0MTAzMzIzMzM0MDY1MDYxNzI3NDc5NDIiLCAidH
+    #JhbnNjcmlwdF9pcihiJzM0NTYnLGInUGFydHlBJyxiJzIzNDUnLGInUGFydHlCJyki
+    #OiAiMDQzMzM0MzUzNjA2NTA2MTcyNzQ3OTQxMDQzMjMzMzQzNTA2NTA2MTcyNzQ3OT
+    #QyIn0=
+
+A.3.6.  Definitions for transcript_oc function
+
+   def transcript_oc(Ya,ADa,Yb,ADb):
+       result = o_cat(lv_cat(Ya,ADa),lv_cat(Yb,ADb))
+       return result
+
+A.3.7.  Test vectors for transcript_oc function
+
+     transcript_oc(b"123", b"PartyA", b"234",b"PartyB"):
+     (length: 24 bytes)
+       6f6303323334065061727479420331323306506172747941
+     transcript_oc(b"3456",b"PartyA",b"2345",b"PartyB"):
+     (length: 26 bytes)
+       6f63043334353606506172747941043233343506506172747942
+
+A.3.7.1.  Testvectors as JSON file encoded as BASE64
+
+    #eyJiJzEyMyciOiAiMzEzMjMzIiwgImInMjM0JyI6ICIzMjMzMzQiLCAiYidQYXJ0eU
+    #EnIjogIjUwNjE3Mjc0Nzk0MSIsICJiJ1BhcnR5QiciOiAiNTA2MTcyNzQ3OTQyIiwg
+    #ImInMzQ1NiciOiAiMzMzNDM1MzYiLCAiYicyMzQ1JyI6ICIzMjMzMzQzNSIsICJ0cm
+    #Fuc2NyaXB0X29jKGInMTIzJyxiJ1BhcnR5QScsYicyMzQnLGInUGFydHlCJykiOiAi
+    #NkY2MzAzMzIzMzM0MDY1MDYxNzI3NDc5NDIwMzMxMzIzMzA2NTA2MTcyNzQ3OTQxIi
+    #wgInRyYW5zY3JpcHRfb2MoYiczNDU2JyxiJ1BhcnR5QScsYicyMzQ1JyxiJ1BhcnR5
+    #QicpIjogIjZGNjMwNDMzMzQzNTM2MDY1MDYxNzI3NDc5NDEwNDMyMzMzNDM1MDY1MD
+    #YxNzI3NDc5NDIifQ==
+
+B.3.  Test vector for CPace using group ristretto255 and hash SHA-512
+
+B.3.1.  Test vectors for calculate_generator with group ristretto255
+
+     Inputs
+       H   = SHA-512 with input block size 128 bytes.
+       PRS = b'Password' ; ZPAD length: 100 ;
+       DSI = b'CPaceRistretto255'
+       CI = b'\x0bA_initiator\x0bB_responder'
+       CI = 0b415f696e69746961746f720b425f726573706f6e646572
+       sid = 7e4b4791d6a8ef019b936c79fb7f2c57
+     Outputs
+       generator_string(G.DSI,PRS,CI,sid,H.s_in_bytes):
+       (length: 170 bytes)
+         11435061636552697374726574746f3235350850617373776f726464
+         00000000000000000000000000000000000000000000000000000000
+         00000000000000000000000000000000000000000000000000000000
+         00000000000000000000000000000000000000000000000000000000
+         00000000000000000000000000000000180b415f696e69746961746f
+         720b425f726573706f6e646572107e4b4791d6a8ef019b936c79fb7f
+         2c57
+       hash result: (length: 64 bytes)
+         da6d3ddc8802fca9058755ffd3ebde08a9c2c74945901a258482a288
+         b6663af06bf645c93cd1c51512307199c80e84908916d983b34af772
+         05f90851a657ee27
+       encoded generator g: (length: 32 bytes)
+         222b6b195fe84b1652badb6f6a3ae3d24341e7306967f0b8115b40d5
+         698c7e56
+
+B.3.1.1.  Testvectors as JSON file encoded as BASE64
+
+    #eyJIIjogIlNIQS01MTIiLCAiSC5zX2luX2J5dGVzIjogMTI4LCAiUFJTIjogIjUwNj
+    #E3MzczNzc2RjcyNjQiLCAiWlBBRCBsZW5ndGgiOiAxMDAsICJEU0kiOiAiNDM1MDYx
+    #NjM2NTUyNjk3Mzc0NzI2NTc0NzQ2RjMyMzUzNSIsICJDSSI6ICIwQjQxNUY2OTZFNj
+    #k3NDY5NjE3NDZGNzIwQjQyNUY3MjY1NzM3MDZGNkU2NDY1NzIiLCAic2lkIjogIjdF
+    #NEI0NzkxRDZBOEVGMDE5QjkzNkM3OUZCN0YyQzU3IiwgImdlbmVyYXRvcl9zdHJpbm
+    #coRy5EU0ksUFJTLENJLHNpZCxILnNfaW5fYnl0ZXMpIjogIjExNDM1MDYxNjM2NTUy
+    #Njk3Mzc0NzI2NTc0NzQ2RjMyMzUzNTA4NTA2MTczNzM3NzZGNzI2NDY0MDAwMDAwMD
+    #AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw
+    #MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD
+    #AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw
+    #MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxODBCND
+    #E1RjY5NkU2OTc0Njk2MTc0NkY3MjBCNDI1RjcyNjU3MzcwNkY2RTY0NjU3MjEwN0U0
+    #QjQ3OTFENkE4RUYwMTlCOTM2Qzc5RkI3RjJDNTciLCAiaGFzaCByZXN1bHQiOiAiRE
+    #E2RDNEREM4ODAyRkNBOTA1ODc1NUZGRDNFQkRFMDhBOUMyQzc0OTQ1OTAxQTI1ODQ4
+    #MkEyODhCNjY2M0FGMDZCRjY0NUM5M0NEMUM1MTUxMjMwNzE5OUM4MEU4NDkwODkxNk
+    #Q5ODNCMzRBRjc3MjA1RjkwODUxQTY1N0VFMjciLCAiZW5jb2RlZCBnZW5lcmF0b3Ig
+    #ZyI6ICIyMjJCNkIxOTVGRTg0QjE2NTJCQURCNkY2QTNBRTNEMjQzNDFFNzMwNjk2N0
+    #YwQjgxMTVCNDBENTY5OEM3RTU2In0=
+
+B.3.2.  Test vector for message from A
+
+     Inputs
+       ADa = b'ADa'
+       ya (little endian): (length: 32 bytes)
+         da3d23700a9e5699258aef94dc060dfda5ebb61f02a5ea77fad53f4f
+         f0976d08
+     Outputs
+       Ya: (length: 32 bytes)
+         d6bac480f2c386c394efc7c47adb9925dcd2630b64f240c50f8d0eec
+         482b9157
+
+B.3.3.  Test vector for message from B
+
+     Inputs
+       ADb = b'ADb'
+       yb (little endian): (length: 32 bytes)
+         d2316b454718c35362d83d69df6320f38578ed5984651435e2949762
+         d900b80d
+     Outputs
+       Yb: (length: 32 bytes)
+         3ea7e0b19560d7c0b0f5734f63b955286dfa8232b5ebe63324e2d9e7
+         433f7258
+
+B.3.4.  Test vector for secret points K
+
+       scalar_mult_vfy(ya,Yb): (length: 32 bytes)
+         80b69a8a76457ab6a4d7f887a4bf6b55a2f80ac19c333f917a05fc98
+         87c8b40f
+       scalar_mult_vfy(yb,Ya): (length: 32 bytes)
+         80b69a8a76457ab6a4d7f887a4bf6b55a2f80ac19c333f917a05fc98
+         87c8b40f
+
+B.3.5.  Test vector for ISK calculation initiator/responder
+
+       transcript_ir(Ya,ADa,Yb,ADb): (length: 74 bytes)
+         20d6bac480f2c386c394efc7c47adb9925dcd2630b64f240c50f8d0e
+         ec482b915703414461203ea7e0b19560d7c0b0f5734f63b955286dfa
+         8232b5ebe63324e2d9e7433f725803414462
+       DSI = G.DSI_ISK, b'CPaceRistretto255_ISK':
+       (length: 21 bytes)
+         435061636552697374726574746f3235355f49534b
+       lv_cat(DSI,sid,K)||transcript_ir(Ya,ADa,Yb,ADb):
+       (length: 146 bytes)
+         15435061636552697374726574746f3235355f49534b107e4b4791d6
+         a8ef019b936c79fb7f2c572080b69a8a76457ab6a4d7f887a4bf6b55
+         a2f80ac19c333f917a05fc9887c8b40f20d6bac480f2c386c394efc7
+         c47adb9925dcd2630b64f240c50f8d0eec482b915703414461203ea7
+         e0b19560d7c0b0f5734f63b955286dfa8232b5ebe63324e2d9e7433f
+         725803414462
+       ISK result: (length: 64 bytes)
+         b69effbf61b51d56401c0f65601abe428de8206feaaf0e32198896dc
+         ae7b35cd2b38950a39dfd5d4a79164614c2984f7daa460b588c1e80c
+         3fa2068af7900447
+
+B.3.6.  Test vector for ISK calculation parallel execution
+
+       transcript_oc(Ya,ADa,Yb,ADb): (length: 76 bytes)
+         6f6320d6bac480f2c386c394efc7c47adb9925dcd2630b64f240c50f
+         8d0eec482b915703414461203ea7e0b19560d7c0b0f5734f63b95528
+         6dfa8232b5ebe63324e2d9e7433f725803414462
+       DSI = G.DSI_ISK, b'CPaceRistretto255_ISK':
+       (length: 21 bytes)
+         435061636552697374726574746f3235355f49534b
+       lv_cat(DSI,sid,K)||transcript_oc(Ya,ADa,Yb,ADb):
+       (length: 148 bytes)
+         15435061636552697374726574746f3235355f49534b107e4b4791d6
+         a8ef019b936c79fb7f2c572080b69a8a76457ab6a4d7f887a4bf6b55
+         a2f80ac19c333f917a05fc9887c8b40f6f6320d6bac480f2c386c394
+         efc7c47adb9925dcd2630b64f240c50f8d0eec482b91570341446120
+         3ea7e0b19560d7c0b0f5734f63b955286dfa8232b5ebe63324e2d9e7
+         433f725803414462
+       ISK result: (length: 64 bytes)
+         544199d71f62f8d9a1fee55727e24fe4a45844593c2b6013c4fa3969
+         d0e5debb2244675c0b43397cbb68d342b01fc0f98fc961469a25134d
+         e9f0f813c1a57476
+
+B.3.7.  Test vector for optional output of session id
+
+       H.hash(b"CPaceSidOutput" + transcript_ir(Ya,ADa, Yb,ADb)):
+       (length: 64 bytes)
+         bb1c449b35f0ea79a65c209f329a693d475e0ce2387bed9fe4b78f60
+         b2a27c219813fb2cfe175ef40d2222d9261e66da7d78f7c55a303b1b
+         8611dcdfab880c47
+       H.hash(b"CPaceSidOutput" + transcript_oc(Ya,ADa, Yb,ADb)):
+       (length: 64 bytes)
+         10d5941d4933497fe31b9188d690b84465e2a2d158332a7267284a07
+         1a8d0876fc5c8c329dc735d59a9f8ef6623ee23924704a2f929dd631
+         ca981227ee82fff2
+
+B.3.8.  Corresponding C programming language initializers
+
+   const unsigned char tc_PRS[] = {
+    0x50,0x61,0x73,0x73,0x77,0x6f,0x72,0x64,
+   };
+   const unsigned char tc_CI[] = {
+    0x0b,0x41,0x5f,0x69,0x6e,0x69,0x74,0x69,0x61,0x74,0x6f,0x72,
+    0x0b,0x42,0x5f,0x72,0x65,0x73,0x70,0x6f,0x6e,0x64,0x65,0x72,
+   };
+   const unsigned char tc_sid[] = {
+    0x7e,0x4b,0x47,0x91,0xd6,0xa8,0xef,0x01,0x9b,0x93,0x6c,0x79,
+    0xfb,0x7f,0x2c,0x57,
+   };
+   const unsigned char tc_g[] = {
+    0x22,0x2b,0x6b,0x19,0x5f,0xe8,0x4b,0x16,0x52,0xba,0xdb,0x6f,
+    0x6a,0x3a,0xe3,0xd2,0x43,0x41,0xe7,0x30,0x69,0x67,0xf0,0xb8,
+    0x11,0x5b,0x40,0xd5,0x69,0x8c,0x7e,0x56,
+   };
+   const unsigned char tc_ya[] = {
+    0xda,0x3d,0x23,0x70,0x0a,0x9e,0x56,0x99,0x25,0x8a,0xef,0x94,
+    0xdc,0x06,0x0d,0xfd,0xa5,0xeb,0xb6,0x1f,0x02,0xa5,0xea,0x77,
+    0xfa,0xd5,0x3f,0x4f,0xf0,0x97,0x6d,0x08,
+   };
+   const unsigned char tc_ADa[] = {
+    0x41,0x44,0x61,
+   };
+   const unsigned char tc_Ya[] = {
+    0xd6,0xba,0xc4,0x80,0xf2,0xc3,0x86,0xc3,0x94,0xef,0xc7,0xc4,
+    0x7a,0xdb,0x99,0x25,0xdc,0xd2,0x63,0x0b,0x64,0xf2,0x40,0xc5,
+    0x0f,0x8d,0x0e,0xec,0x48,0x2b,0x91,0x57,
+   };
+   const unsigned char tc_yb[] = {
+    0xd2,0x31,0x6b,0x45,0x47,0x18,0xc3,0x53,0x62,0xd8,0x3d,0x69,
+    0xdf,0x63,0x20,0xf3,0x85,0x78,0xed,0x59,0x84,0x65,0x14,0x35,
+    0xe2,0x94,0x97,0x62,0xd9,0x00,0xb8,0x0d,
+   };
+   const unsigned char tc_ADb[] = {
+
+    0x41,0x44,0x62,
+   };
+   const unsigned char tc_Yb[] = {
+    0x3e,0xa7,0xe0,0xb1,0x95,0x60,0xd7,0xc0,0xb0,0xf5,0x73,0x4f,
+    0x63,0xb9,0x55,0x28,0x6d,0xfa,0x82,0x32,0xb5,0xeb,0xe6,0x33,
+    0x24,0xe2,0xd9,0xe7,0x43,0x3f,0x72,0x58,
+   };
+   const unsigned char tc_K[] = {
+    0x80,0xb6,0x9a,0x8a,0x76,0x45,0x7a,0xb6,0xa4,0xd7,0xf8,0x87,
+    0xa4,0xbf,0x6b,0x55,0xa2,0xf8,0x0a,0xc1,0x9c,0x33,0x3f,0x91,
+    0x7a,0x05,0xfc,0x98,0x87,0xc8,0xb4,0x0f,
+   };
+   const unsigned char tc_ISK_IR[] = {
+    0xb6,0x9e,0xff,0xbf,0x61,0xb5,0x1d,0x56,0x40,0x1c,0x0f,0x65,
+    0x60,0x1a,0xbe,0x42,0x8d,0xe8,0x20,0x6f,0xea,0xaf,0x0e,0x32,
+    0x19,0x88,0x96,0xdc,0xae,0x7b,0x35,0xcd,0x2b,0x38,0x95,0x0a,
+    0x39,0xdf,0xd5,0xd4,0xa7,0x91,0x64,0x61,0x4c,0x29,0x84,0xf7,
+    0xda,0xa4,0x60,0xb5,0x88,0xc1,0xe8,0x0c,0x3f,0xa2,0x06,0x8a,
+    0xf7,0x90,0x04,0x47,
+   };
+   const unsigned char tc_ISK_SY[] = {
+    0x54,0x41,0x99,0xd7,0x1f,0x62,0xf8,0xd9,0xa1,0xfe,0xe5,0x57,
+    0x27,0xe2,0x4f,0xe4,0xa4,0x58,0x44,0x59,0x3c,0x2b,0x60,0x13,
+    0xc4,0xfa,0x39,0x69,0xd0,0xe5,0xde,0xbb,0x22,0x44,0x67,0x5c,
+    0x0b,0x43,0x39,0x7c,0xbb,0x68,0xd3,0x42,0xb0,0x1f,0xc0,0xf9,
+    0x8f,0xc9,0x61,0x46,0x9a,0x25,0x13,0x4d,0xe9,0xf0,0xf8,0x13,
+    0xc1,0xa5,0x74,0x76,
+   };
+   const unsigned char tc_sid_out_ir[] = {
+    0xbb,0x1c,0x44,0x9b,0x35,0xf0,0xea,0x79,0xa6,0x5c,0x20,0x9f,
+    0x32,0x9a,0x69,0x3d,0x47,0x5e,0x0c,0xe2,0x38,0x7b,0xed,0x9f,
+    0xe4,0xb7,0x8f,0x60,0xb2,0xa2,0x7c,0x21,0x98,0x13,0xfb,0x2c,
+    0xfe,0x17,0x5e,0xf4,0x0d,0x22,0x22,0xd9,0x26,0x1e,0x66,0xda,
+    0x7d,0x78,0xf7,0xc5,0x5a,0x30,0x3b,0x1b,0x86,0x11,0xdc,0xdf,
+    0xab,0x88,0x0c,0x47,
+   };
+   const unsigned char tc_sid_out_oc[] = {
+    0x10,0xd5,0x94,0x1d,0x49,0x33,0x49,0x7f,0xe3,0x1b,0x91,0x88,
+    0xd6,0x90,0xb8,0x44,0x65,0xe2,0xa2,0xd1,0x58,0x33,0x2a,0x72,
+    0x67,0x28,0x4a,0x07,0x1a,0x8d,0x08,0x76,0xfc,0x5c,0x8c,0x32,
+    0x9d,0xc7,0x35,0xd5,0x9a,0x9f,0x8e,0xf6,0x62,0x3e,0xe2,0x39,
+    0x24,0x70,0x4a,0x2f,0x92,0x9d,0xd6,0x31,0xca,0x98,0x12,0x27,
+    0xee,0x82,0xff,0xf2,
+   };
+
+B.3.9.  Testvectors as JSON file encoded as BASE64
+
+    #eyJQUlMiOiAiNTA2MTczNzM3NzZGNzI2NCIsICJDSSI6ICIwQjQxNUY2OTZFNjk3ND
+    #Y5NjE3NDZGNzIwQjQyNUY3MjY1NzM3MDZGNkU2NDY1NzIiLCAic2lkIjogIjdFNEI0
+    #NzkxRDZBOEVGMDE5QjkzNkM3OUZCN0YyQzU3IiwgImciOiAiMjIyQjZCMTk1RkU4NE
+    #IxNjUyQkFEQjZGNkEzQUUzRDI0MzQxRTczMDY5NjdGMEI4MTE1QjQwRDU2OThDN0U1
+    #NiIsICJ5YSI6ICJEQTNEMjM3MDBBOUU1Njk5MjU4QUVGOTREQzA2MERGREE1RUJCNj
+    #FGMDJBNUVBNzdGQUQ1M0Y0RkYwOTc2RDA4IiwgIkFEYSI6ICI0MTQ0NjEiLCAiWWEi
+    #OiAiRDZCQUM0ODBGMkMzODZDMzk0RUZDN0M0N0FEQjk5MjVEQ0QyNjMwQjY0RjI0ME
+    #M1MEY4RDBFRUM0ODJCOTE1NyIsICJ5YiI6ICJEMjMxNkI0NTQ3MThDMzUzNjJEODNE
+    #NjlERjYzMjBGMzg1NzhFRDU5ODQ2NTE0MzVFMjk0OTc2MkQ5MDBCODBEIiwgIkFEYi
+    #I6ICI0MTQ0NjIiLCAiWWIiOiAiM0VBN0UwQjE5NTYwRDdDMEIwRjU3MzRGNjNCOTU1
+    #Mjg2REZBODIzMkI1RUJFNjMzMjRFMkQ5RTc0MzNGNzI1OCIsICJLIjogIjgwQjY5QT
+    #hBNzY0NTdBQjZBNEQ3Rjg4N0E0QkY2QjU1QTJGODBBQzE5QzMzM0Y5MTdBMDVGQzk4
+    #ODdDOEI0MEYiLCAiSVNLX0lSIjogIkI2OUVGRkJGNjFCNTFENTY0MDFDMEY2NTYwMU
+    #FCRTQyOERFODIwNkZFQUFGMEUzMjE5ODg5NkRDQUU3QjM1Q0QyQjM4OTUwQTM5REZE
+    #NUQ0QTc5MTY0NjE0QzI5ODRGN0RBQTQ2MEI1ODhDMUU4MEMzRkEyMDY4QUY3OTAwND
+    #Q3IiwgIklTS19TWSI6ICI1NDQxOTlENzFGNjJGOEQ5QTFGRUU1NTcyN0UyNEZFNEE0
+    #NTg0NDU5M0MyQjYwMTNDNEZBMzk2OUQwRTVERUJCMjI0NDY3NUMwQjQzMzk3Q0JCNj
+    #hEMzQyQjAxRkMwRjk4RkM5NjE0NjlBMjUxMzRERTlGMEY4MTNDMUE1NzQ3NiIsICJz
+    #aWRfb3V0cHV0X2lyIjogIkJCMUM0NDlCMzVGMEVBNzlBNjVDMjA5RjMyOUE2OTNEND
+    #c1RTBDRTIzODdCRUQ5RkU0Qjc4RjYwQjJBMjdDMjE5ODEzRkIyQ0ZFMTc1RUY0MEQy
+    #MjIyRDkyNjFFNjZEQTdENzhGN0M1NUEzMDNCMUI4NjExRENERkFCODgwQzQ3IiwgIn
+    #NpZF9vdXRwdXRfb2MiOiAiMTBENTk0MUQ0OTMzNDk3RkUzMUI5MTg4RDY5MEI4NDQ2
+    #NUUyQTJEMTU4MzMyQTcyNjcyODRBMDcxQThEMDg3NkZDNUM4QzMyOURDNzM1RDU5QT
+    #lGOEVGNjYyM0VFMjM5MjQ3MDRBMkY5MjlERDYzMUNBOTgxMjI3RUU4MkZGRjIifQ==
+
+B.3.10.  Test case for scalar_mult with valid inputs
+
+       s: (length: 32 bytes)
+         7cd0e075fa7955ba52c02759a6c90dbbfc10e6d40aea8d283e407d88
+         cf538a05
+       X: (length: 32 bytes)
+         2c3c6b8c4f3800e7aef6864025b4ed79bd599117e427c41bd47d93d6
+         54b4a51c
+       G.scalar_mult(s,decode(X)): (length: 32 bytes)
+         7c13645fe790a468f62c39beb7388e541d8405d1ade69d1778c5fe3e
+         7f6b600e
+       G.scalar_mult_vfy(s,X): (length: 32 bytes)
+         7c13645fe790a468f62c39beb7388e541d8405d1ade69d1778c5fe3e
+         7f6b600e
+
+B.3.11.  Invalid inputs for scalar_mult_vfy
+
+   For these test cases scalar_mult_vfy(y,.) MUST return the
+   representation of the neutral element G.I.  When points Y_i1 or Y_i2
+   are included in message of A or B the protocol MUST abort.
+
+       s: (length: 32 bytes)
+         7cd0e075fa7955ba52c02759a6c90dbbfc10e6d40aea8d283e407d88
+         cf538a05
+       Y_i1: (length: 32 bytes)
+         2b3c6b8c4f3800e7aef6864025b4ed79bd599117e427c41bd47d93d6
+         54b4a51c
+       Y_i2 == G.I: (length: 32 bytes)
+         00000000000000000000000000000000000000000000000000000000
+         00000000
+       G.scalar_mult_vfy(s,Y_i1) = G.scalar_mult_vfy(s,Y_i2) = G.I
+
+B.3.11.1.  Testvectors as JSON file encoded as BASE64
+
+    #eyJWYWxpZCI6IHsicyI6ICI3Q0QwRTA3NUZBNzk1NUJBNTJDMDI3NTlBNkM5MERCQk
+    #ZDMTBFNkQ0MEFFQThEMjgzRTQwN0Q4OENGNTM4QTA1IiwgIlgiOiAiMkMzQzZCOEM0
+    #RjM4MDBFN0FFRjY4NjQwMjVCNEVENzlCRDU5OTExN0U0MjdDNDFCRDQ3RDkzRDY1NE
+    #I0QTUxQyIsICJHLnNjYWxhcl9tdWx0KHMsZGVjb2RlKFgpKSI6ICI3QzEzNjQ1RkU3
+    #OTBBNDY4RjYyQzM5QkVCNzM4OEU1NDFEODQwNUQxQURFNjlEMTc3OEM1RkUzRTdGNk
+    #I2MDBFIiwgIkcuc2NhbGFyX211bHRfdmZ5KHMsWCkiOiAiN0MxMzY0NUZFNzkwQTQ2
+    #OEY2MkMzOUJFQjczODhFNTQxRDg0MDVEMUFERTY5RDE3NzhDNUZFM0U3RjZCNjAwRS
+    #J9LCAiSW52YWxpZCBZMSI6ICIyQjNDNkI4QzRGMzgwMEU3QUVGNjg2NDAyNUI0RUQ3
+    #OUJENTk5MTE3RTQyN0M0MUJENDdEOTNENjU0QjRBNTFDIiwgIkludmFsaWQgWTIiOi
+    #AiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw
+    #MDAwMDAwMDAwMDAwMDAwMCJ9
+
+-----8<----- end excerpt -----8<-----

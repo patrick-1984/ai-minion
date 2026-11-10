@@ -1,0 +1,53 @@
+{{define "dashboard"}}
+{{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
+{{end}}{{if .TotalWorkers}}
+<div class="summary" data-summary="{{.WorkersText}}; {{.SessionsText}}">
+  <div class="summary-item"><strong>{{.OnlineWorkers}} of {{.TotalWorkers}}</strong><span>workers online</span></div>
+  <div class="summary-item"><strong>{{.TotalSessions}}</strong><span>sessions</span></div>
+  <div class="summary-item"><strong>{{.WaitingSessions}}</strong><span>waiting for an answer</span></div>
+</div>
+{{if .Attention}}<section aria-labelledby="attention-h">
+  <div class="section-head"><h2 id="attention-h">Needs attention</h2></div>
+  <ul class="attention">
+    {{range .Attention}}<li{{if .Session}} data-worker="{{.WorkerID}}" data-session="{{.Session}}" data-key="a-{{.WorkerID}}-{{.Session}}"{{end}}><span>{{.Text}}</span> <a href="{{.Link}}"{{if .Session}} data-inspect data-inspect-label="{{.Target}}" data-control="open" aria-label="Open session {{.Target}}"{{end}}>{{.LinkText}}</a></li>
+    {{end}}
+  </ul>
+</section>
+{{end}}{{else if not .Notice}}{{template "no_workers"}}{{end}}
+<section aria-labelledby="workers-h">
+  <div class="section-head"><h2 id="workers-h">Workers</h2><a href="/workers">All workers</a></div>
+  {{if .Workers}}{{template "worker_table" .}}{{else}}<div class="table-wrap"><table class="rtable worker-table">
+    <thead><tr><th scope="col">Worker</th>{{if .ShowOwner}}<th scope="col">Owner</th>{{end}}<th scope="col">Status</th><th scope="col">Kind</th><th scope="col">Sessions</th><th scope="col">Protocol</th><th scope="col">Actions</th></tr></thead>
+    <tbody><tr><td colspan="{{if .ShowOwner}}7{{else}}6{{end}}" class="empty">No workers connected.</td></tr></tbody>
+  </table></div>{{end}}
+</section>
+<section aria-labelledby="sessions-h">
+  <div class="section-head"><h2 id="sessions-h">Sessions</h2><a href="/sessions">All sessions</a></div>
+  {{if .Sessions}}{{template "session_table" .}}{{else}}<div class="table-wrap"><table class="rtable session-table">
+    <thead><tr><th scope="col">Session</th><th scope="col">Task</th><th scope="col">Worker</th>{{if .ShowOwner}}<th scope="col">Owner</th>{{end}}<th scope="col">Kind</th><th scope="col">State</th></tr></thead>
+    <tbody><tr><td colspan="{{if .ShowOwner}}6{{else}}5{{end}}" class="empty">No sessions yet. A connected worker can host a new session.</td></tr></tbody>
+  </table></div>{{end}}
+</section>
+{{end}}
+
+{{define "content"}}
+<div class="inspect-layout" id="inspect-layout">
+<div class="inspect-main" data-modal-inert>
+{{template "inspector_kept"}}
+<div class="page-head">
+  <div><h1>Control center</h1><p>Your workers and sessions, updated live.</p></div>
+  <div class="page-actions"><a class="btn" href="/workers/add">{{template "icon" "i-plus"}}<span>Add worker</span></a></div>
+</div>
+{{if .Data.CanFilter}}<nav aria-label="Whose workers and sessions" class="scope" id="scope-switch">
+  <a href="{{.Data.MineURL}}"{{if eq .Data.Scope "mine"}} aria-current="true"{{end}}>Mine</a>
+  <a href="{{.Data.AllURL}}"{{if eq .Data.Scope "all"}} aria-current="true"{{end}}>All users</a>
+</nav>
+{{end}}<p class="sr-only" id="list-announce" role="status" aria-live="polite"></p>
+<div id="list-result" aria-live="polite"></div>
+<div id="dashboard" class="stack" data-live-list sse-connect="{{.Data.LiveURL}}" sse-swap="dashboard" hx-swap="innerHTML">{{template "dashboard" .Data}}</div>
+</div>
+{{template "inspector" .Data.Context}}
+</div>
+<script src="/static/live-list.js" defer></script>
+<script src="/static/inspector.js" defer></script>
+{{end}}

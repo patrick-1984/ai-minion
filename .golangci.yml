@@ -1,0 +1,272 @@
+# golangci-lint configuration (v2). The depguard rules below enforce the
+# import boundaries of the architecture spine (AD-1): the library allow-list,
+# the Hub/Worker separation and the shared kernel. scripts/lint-negative.sh
+# proves that every rule family fails on a violation.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - depguard
+    - misspell
+  settings:
+    depguard:
+      rules:
+        # Hub and Worker meet only on the wire.
+        hub-not-worker:
+          files:
+            - "**/internal/hub/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal/worker
+              desc: the Hub must not import the Worker (AD-1)
+        worker-not-hub:
+          files:
+            - "**/internal/worker/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal/hub
+              desc: the Worker must not import the Hub (AD-1)
+
+        # Shared kernel: proto, ops, identity, pake, config, logx, version,
+        # ratelimit, pipe and sqlmigrate import no non-kernel internal package
+        # (this includes internal/testutil). The rule is an allow-list, so a
+        # package added later is non-kernel by default. In depguard's lax list
+        # mode the longest matching entry wins: the ten kernel packages are
+        # allowed, every other internal package is denied. The allow entries
+        # end in "$" (exact match): a bare prefix would also admit a package
+        # that merely starts with the name, such as internal/configloader.
+        kernel-is-closed:
+          list-mode: lax
+          files:
+            - "**/internal/proto/**"
+            - "**/internal/ops/**"
+            - "**/internal/identity/**"
+            - "**/internal/pake/**"
+            - "**/internal/config/**"
+            - "**/internal/logx/**"
+            - "**/internal/version/**"
+            - "**/internal/ratelimit/**"
+            - "**/internal/pipe/**"
+            - "**/internal/sqlmigrate/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: a kernel package must not import a non-kernel package (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/proto$
+            - github.com/patrick-1984/ai-minion/internal/ops$
+            - github.com/patrick-1984/ai-minion/internal/identity$
+            - github.com/patrick-1984/ai-minion/internal/pake$
+            - github.com/patrick-1984/ai-minion/internal/config$
+            - github.com/patrick-1984/ai-minion/internal/logx$
+            - github.com/patrick-1984/ai-minion/internal/version$
+            - github.com/patrick-1984/ai-minion/internal/ratelimit$
+            - github.com/patrick-1984/ai-minion/internal/pipe$
+            - github.com/patrick-1984/ai-minion/internal/sqlmigrate$
+
+        # Kernel edges (AD-1): a kernel package imports no other kernel
+        # package, with one exception: ops imports proto. One rule per package
+        # so that each rule allows only its own package (exact match).
+        # uniq-by-line is off (see "issues" below) so that this rule and
+        # kernel-is-closed both report.
+        kernel-edges-proto:
+          list-mode: lax
+          files:
+            - "**/internal/proto/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/proto$
+        kernel-edges-ops:
+          list-mode: lax
+          files:
+            - "**/internal/ops/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/ops$
+            - github.com/patrick-1984/ai-minion/internal/proto$
+        kernel-edges-identity:
+          list-mode: lax
+          files:
+            - "**/internal/identity/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/identity$
+        kernel-edges-pake:
+          list-mode: lax
+          files:
+            - "**/internal/pake/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/pake$
+        kernel-edges-config:
+          list-mode: lax
+          files:
+            - "**/internal/config/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/config$
+        kernel-edges-logx:
+          list-mode: lax
+          files:
+            - "**/internal/logx/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/logx$
+        kernel-edges-version:
+          list-mode: lax
+          files:
+            - "**/internal/version/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/version$
+        kernel-edges-ratelimit:
+          list-mode: lax
+          files:
+            - "**/internal/ratelimit/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/ratelimit$
+        kernel-edges-pipe:
+          list-mode: lax
+          files:
+            - "**/internal/pipe/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/pipe$
+        kernel-edges-sqlmigrate:
+          list-mode: lax
+          files:
+            - "**/internal/sqlmigrate/**"
+          deny:
+            - pkg: github.com/patrick-1984/ai-minion/internal
+              desc: kernel packages do not import each other (AD-1)
+          allow:
+            - github.com/patrick-1984/ai-minion/internal/sqlmigrate$
+
+        # Library allow-list: each library has one owning package (AD-1).
+        lib-cobra:
+          files:
+            - $all
+            - "!**/internal/cli/**"
+          deny:
+            - pkg: github.com/spf13/cobra
+              desc: only internal/cli may import cobra (AD-1)
+        lib-sqlite:
+          files:
+            - $all
+            - "!**/internal/hub/store/**"
+            - "!**/internal/worker/store/**"
+          deny:
+            - pkg: modernc.org/sqlite
+              desc: only hub/store and worker/store may import the SQLite driver (AD-1)
+        lib-transport:
+          files:
+            - $all
+            - "!**/internal/transport/**"
+          deny:
+            - pkg: github.com/hashicorp/yamux
+              desc: only internal/transport may import yamux (AD-1)
+            - pkg: github.com/coder/websocket
+              desc: only internal/transport may import websocket (AD-1)
+        lib-oidc:
+          files:
+            - $all
+            - "!**/internal/hub/auth/oidc/**"
+          deny:
+            - pkg: github.com/coreos/go-oidc
+              desc: only hub/auth/oidc may import go-oidc (AD-1)
+            - pkg: golang.org/x/oauth2
+              desc: only hub/auth/oidc may import oauth2 (AD-1)
+        lib-argon2:
+          files:
+            - $all
+            - "!**/internal/hub/auth/local/**"
+          deny:
+            - pkg: golang.org/x/crypto/argon2
+              desc: only hub/auth/local may import argon2 (AD-1)
+        lib-mcp:
+          files:
+            - $all
+            - "!**/internal/mcp/**"
+          deny:
+            - pkg: github.com/modelcontextprotocol/go-sdk
+              desc: only internal/mcp may import the MCP SDK (AD-1)
+        lib-service:
+          files:
+            - $all
+            - "!**/internal/worker/service/**"
+          deny:
+            - pkg: github.com/kardianos/service
+              desc: only worker/service may import kardianos/service (AD-1)
+        lib-pty:
+          files:
+            - $all
+            - "!**/internal/worker/term/conpty/**"
+          deny:
+            - pkg: github.com/aymanbagabas/go-pty
+              desc: only worker/term/conpty may import go-pty (AD-1)
+        lib-winio:
+          files:
+            - $all
+            - "!**/internal/worker/localapi/**"
+            # The client test listens on a pipe name of its own, so that it
+            # never holds the pipe of a real Worker.
+            - "!**/internal/client/*_windows_test.go"
+          deny:
+            - pkg: github.com/Microsoft/go-winio
+              desc: only worker/localapi (listen and dial) may import go-winio (AD-1, AD-22); the client dials through localapi.DialContext
+        lib-sigstore:
+          files:
+            - $all
+            - "!**/internal/version/**"
+          deny:
+            - pkg: github.com/sigstore/sigstore-go
+              desc: only internal/version may import sigstore-go (AD-1)
+
+  exclusions:
+    rules:
+      # internal/pake (Story 1.7) uses ristretto255.NewElement, which the
+      # library deprecated. The owner story migrates it; do not fail lint
+      # for that single, known deprecation.
+      - path: internal/pake/
+        linters:
+          - staticcheck
+        text: "SA1019"
+      # The sqlmigrate tests run the runner against a real SQLite database,
+      # so they import the driver; the kernel package itself never does.
+      - path: internal/sqlmigrate/.*_test\.go
+        linters:
+          - depguard
+        text: "modernc.org/sqlite"
+      # Unchecked Close in deferred test cleanup is accepted.
+      - path: _test\.go
+        linters:
+          - errcheck
+        text: "Close"
+
+issues:
+  # Report every violated depguard rule, not only the first one on a line.
+  uniq-by-line: false
+
+formatters:
+  enable:
+    - gofmt

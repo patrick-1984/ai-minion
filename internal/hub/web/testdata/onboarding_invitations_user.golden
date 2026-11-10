@@ -1,0 +1,88 @@
+<main id="content" tabindex="-1">
+
+<div class="page-head"><div><h1>Invitation keys</h1><p>An invitation key lets a machine enroll itself as a Worker in your space. Expiry only stops new enrollments: a Worker that has enrolled keeps working.</p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="create-invitation">
+  <h2 id="create-invitation">Create an invitation key</h2>
+  <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    <div class="field">
+      <label for="inv-mode">Use</label>
+      <select id="inv-mode" name="mode">
+        <option value="one_time" selected>One-time (enrolls one Worker)</option>
+        <option value="reusable">Reusable (enrolls any number of Workers until it expires)</option>
+        
+      </select>
+    </div>
+    <div class="field">
+      <label for="inv-ttl">Valid for</label>
+      <select id="inv-ttl" name="ttl">
+        <option value="1h">1 hour</option>
+        <option value="4h">4 hours</option>
+        <option value="8h">8 hours</option>
+        <option value="24h" selected>24 hours</option>
+        <option value="1w">1 week</option>
+        <option value="1m">1 month</option>
+        <option value="unlimited">Unlimited</option>
+        
+      </select>
+    </div>
+    <div class="field">
+      <label for="inv-name">Name (optional, to recognise the key in the list)</label>
+      <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64">
+    </div>
+    
+    <button type="submit">Create the key</button>
+    <div id="create-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
+</section>
+<section aria-labelledby="invitation-list">
+  <h2 id="invitation-list">Your invitation keys</h2>
+  
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Name</th><th scope="col">Use</th><th scope="col">Kind</th><th scope="col">Uses</th><th scope="col">Expires</th><th scope="col">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    <tr>
+      <th scope="row">build-farm</th>
+      <td>reusable</td>
+      <td>private</td>
+      <td>3</td>
+      <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
+      <td>active</td>
+      
+      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
+          <button type="submit" class="btn-danger">Revoke build-farm</button>
+          <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" aria-live="polite"></span>
+        </form></td>
+    </tr>
+    <tr>
+      <th scope="row">laptop</th>
+      <td>one-time</td>
+      <td>private</td>
+      <td>0 of 1</td>
+      <td>never</td>
+      <td>active</td>
+      
+      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
+          <button type="submit" class="btn-danger">Revoke laptop</button>
+          <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" aria-live="polite"></span>
+        </form></td>
+    </tr>
+    <tr>
+      <th scope="row">old</th>
+      <td>one-time</td>
+      <td>private</td>
+      <td>1 of 1</td>
+      <td><time datetime="2026-11-09T08:30:00Z">2026-11-09 08:30 UTC</time></td>
+      <td>exhausted</td>
+      
+      <td><span class="muted">none</span></td>
+    </tr>
+    
+    </tbody>
+  </table></div>
+</section>
+</div>
+<script src="/onboarding.js" defer></script>
+
+    </main>

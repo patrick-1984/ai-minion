@@ -1,0 +1,69 @@
+{
+  "comment": "Independent vectors (Python, hashlib/hmac/cryptography). Transcript: SHA-256 over 'minion-hs-v1', then uint32-BE length and bytes of the worker hello, then of the hub hello. KDF: HKDF-SHA256, IKM = X25519 secret || CPace ISK (pair_code only), salt = transcript_hash, info = 'minion-hs-v1 key worker-to-hub' / 'minion-hs-v1 key hub-to-worker', 32 bytes each. Record: 12-byte nonce = 4 zero bytes || uint64-BE counter; AAD = the 4-byte big-endian ciphertext length; wire = length || ciphertext.",
+  "transcript": [
+    {
+      "name": "connect",
+      "worker_hello": "{\"type\":\"hello\",\"proto_min\":\"1.0\",\"proto_max\":\"1.0\",\"ops\":[\"list_sessions\",\"snapshot\"],\"worker_pub\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\",\"eph_w\":\"B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw\",\"nonce\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\",\"mode\":\"connect\",\"name\":\"lab-pi\"}",
+      "hub_hello": "{\"type\":\"hello\",\"version\":\"1.0\",\"hub_pub\":\"yMnKy8zNzs_Q0dLT1NXW19jZ2tvc3d7f4OHi4-Tl5uc\",\"eph_h\":\"VxR2nRFr92Q2rnS8eT0sMK0ZA8WaxSc4BcfiaYtBDDY\",\"nonce\":\"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"}",
+      "hash": "596cf92223aafaf284c98ab0109871967fcb7e9768238c4c279c45b06d6913e1"
+    },
+    {
+      "name": "empty-ish",
+      "worker_hello": "{\"type\":\"hello\"}",
+      "hub_hello": "{\"type\":\"hello\"}",
+      "hash": "6a6cf555ed9e729960b371af7bdea9b7ff950b7bf83e7431163f083fe5cc3df5"
+    }
+  ],
+  "kdf": [
+    {
+      "name": "connect",
+      "eph_w_priv": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "eph_h_priv": "65666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f8081828384",
+      "eph_w_pub": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
+      "eph_h_pub": "5714769d116bf76436ae74bc793d2c30ad1903c59ac5273805c7e2698b410c36",
+      "dh": "c9ea6a3f79a000b60b076d4afc990b272f3f0b5aaa3f0b8713c209273e363863",
+      "isk": "",
+      "transcript_hash": "596cf92223aafaf284c98ab0109871967fcb7e9768238c4c279c45b06d6913e1",
+      "worker_to_hub": "15afb371a9b7b9553cd41773fb725597650a720589c1f492cb10dee8d1ae368a",
+      "hub_to_worker": "c8aef372b6cf8bbe55ecadc1e07cf262478b1f864d6f05e1c1efa58a811b30d1"
+    },
+    {
+      "name": "pair_code",
+      "eph_w_priv": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "eph_h_priv": "65666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f8081828384",
+      "eph_w_pub": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
+      "eph_h_pub": "5714769d116bf76436ae74bc793d2c30ad1903c59ac5273805c7e2698b410c36",
+      "dh": "c9ea6a3f79a000b60b076d4afc990b272f3f0b5aaa3f0b8713c209273e363863",
+      "isk": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bc",
+      "transcript_hash": "596cf92223aafaf284c98ab0109871967fcb7e9768238c4c279c45b06d6913e1",
+      "worker_to_hub": "adb0f16d6f2fe7bb75210d60533d24e8cce931d373f3dae87908b896b0632cfd",
+      "hub_to_worker": "213d9fa11e3394d0c789949d3171b85da7b0623d6ba32d54e52652ba49fc98a4"
+    }
+  ],
+  "records": [
+    {
+      "key": "15afb371a9b7b9553cd41773fb725597650a720589c1f492cb10dee8d1ae368a",
+      "counter": 0,
+      "plaintext": "68656c6c6f206368616e6e656c",
+      "wire": "0000001de858e7e547007de4cd112591280072292f7b6b28b778d9933bfb2aa299"
+    },
+    {
+      "key": "15afb371a9b7b9553cd41773fb725597650a720589c1f492cb10dee8d1ae368a",
+      "counter": 1,
+      "plaintext": "7365636f6e64",
+      "wire": "00000016184fbc85d499cb0a4c76e0fb0467180bae7909e24ac6"
+    },
+    {
+      "key": "15afb371a9b7b9553cd41773fb725597650a720589c1f492cb10dee8d1ae368a",
+      "counter": 2,
+      "plaintext": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "wire": "000002100e64c9ef3b41e328d338a135ceb5d26548f318990baaafeb7856f3acacd9712f24319c481269d1504dbc4dab203833f6552412d5207cc6b2b518bd9e58b4ea0fb7dcded7ea112cc8164fa2b583ebef31d8ccdc450aeb1ef4761b5387256c1ffcf58db2c1ab2965f63b535c5c86c792c11d13af8eac847bd1512a38e1227506667be349cfbe11fad3cbe78aafe417671e7958f7469320f0b9309434039cb49c09f32047a469c30e832ee365c89c9c90504fb2813781c0870fc5d056e636a22b4f4ae9d60dd5fd5cbc74aaaf7e4dd7455c9ceb9df1441ffd2fcf8a6c14d5d28eaf912ca3b86d6a477e74baf3daa52cdecf88155ca7194a7e6dff38603c8b218705f0661a1b0b295da06c29c44748c27b02e6684fd558694f51b9dfd72bf3dc79d8aace1645975764dab45f7053667f88e7b8ca15d85bc128f6083c66ce9df07d8317291ab3c2027313ce0030dfeb1771f3012d28edf424cf07f2f3c00f78c1611f20150b8219f54be1bdcbc8a852eda632bd74b0f53b0a172eebdef6cbd051423e31a370738615a06fe03df455dd9b0eda5b3c49bf520276ef27d91def7bab2387b8f1f8eac16a0932338166fa694c12586ce4608cf48aee8ffaf0e77bfc798b53263ad985cf64602662c066bdc1c34e721dcd1f04814751f2f1c08578ffa6de3907349fd1a65718c95a51bd71b3f7f53e69ebb5d02ab456657d43665ae9c4bdb69520f99a3c70dfb152acfdc936cc2dc6"
+    },
+    {
+      "key": "15afb371a9b7b9553cd41773fb725597650a720589c1f492cb10dee8d1ae368a",
+      "counter": 4294967295,
+      "plaintext": "78",
+      "wire": "00000011251e1679c9283749a90cc823264ce3015b"
+    }
+  ]
+}

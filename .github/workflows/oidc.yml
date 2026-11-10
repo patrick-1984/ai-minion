@@ -1,0 +1,73 @@
+# Keycloak integration test (Story 6.10, AD-25, AD-10). The OIDC login of the
+# Hub runs against a real Keycloak container with the realm of
+# test/oidc/realm.json. It runs on pull requests that touch the OIDC code and
+# every night, and by hand. Actions are pinned to commit SHAs (the comment
+# gives the tag).
+name: oidc
+
+on:
+  pull_request:
+    paths:
+      - 'internal/hub/auth/oidc/**'
+      - 'internal/hub/auth/session/**'
+      - 'internal/hub/store/oidc*.go'
+      - 'test/oidc/**'
+      - '.github/workflows/oidc.yml'
+      - 'go.mod'
+      - 'go.sum'
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oidc-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KEYCLOAK_IMAGE: quay.io/keycloak/keycloak:26.2.5
+  MINION_KEYCLOAK_URL: http://127.0.0.1:8080
+  # The test fails (instead of skipping) when Keycloak does not come up.
+  MINION_REQUIRE_KEYCLOAK: "1"
+
+jobs:
+  keycloak:
+    name: Keycloak login test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Validate the realm file
+        run: python3 -c 'import json,sys; json.load(open("test/oidc/realm.json"))'
+      - name: Start Keycloak with the imported realm
+        run: |
+          docker run -d --name keycloak -p 127.0.0.1:8080:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            -v "$PWD/test/oidc/realm.json:/opt/keycloak/data/import/realm.json:ro" \
+            "$KEYCLOAK_IMAGE" start-dev --import-realm
+      - name: Wait for the realm
+        run: |
+          for i in $(seq 1 90); do
+            if curl -fsS "$MINION_KEYCLOAK_URL/realms/minion/.well-known/openid-configuration" >/dev/null; then
+              echo "Keycloak is ready after about $((i * 2)) s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Keycloak did not become ready" >&2
+          docker logs keycloak >&2 || true
+          exit 1
+      - name: go test -race -tags keycloak ./test/oidc/...
+        run: CGO_ENABLED=1 go test -race -count=1 -v -tags keycloak ./test/oidc/...
+      - name: Keycloak log (on failure)
+        if: failure()
+        run: docker logs --tail 200 keycloak || true
+      - name: Stop Keycloak
+        if: always()
+        run: docker rm -f keycloak || true

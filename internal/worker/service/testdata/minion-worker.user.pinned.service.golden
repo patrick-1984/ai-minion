@@ -1,0 +1,20 @@
+# Minion Worker as a systemd user service, installed by "minion worker up".
+# It runs "minion worker run" as the user that owns this unit; it starts at
+# boot only when lingering is enabled for the user (loginctl enable-linger).
+[Unit]
+Description=Minion Worker
+Documentation=https://github.com/patrick-1984/ai-minion
+
+[Service]
+Type=simple
+WorkingDirectory=~
+ExecStart=/home/ann/bin/minion worker run
+Environment="MINION_STATE_DIR=/home/ann/.xdg-state/minion"
+Restart=always
+RestartSec=5
+# Stopping or restarting the Worker must not end the tmux sessions of the user:
+# only the Worker process is signalled, a tmux server stays alive.
+KillMode=process
+
+[Install]
+WantedBy=default.target

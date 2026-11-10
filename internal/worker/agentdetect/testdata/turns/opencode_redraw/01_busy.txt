@@ -1,0 +1,16 @@
+
+  hello
+
+  Hi, how can I help?
+
+  Summarise the README
+
+  The README describes
+
+  ⠴ Thinking
+
+   ┃                                                 ┃
+   ┃  Ask anything... "Fix a TODO in the codebase"  ┃
+   ┃                                                 ┃
+
+   esc interrupt   tab agents   ctrl+p commands

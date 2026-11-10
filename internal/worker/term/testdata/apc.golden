@@ -1,0 +1,12 @@
+in:  "a\x1b_Gi=1,a=q;AAAA\x1b\\b"
+out: "ab"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "ab"
+  ],
+  "spans": [],
+  "cursor": null
+}

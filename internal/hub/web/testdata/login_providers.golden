@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in - Minion</title>
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/minion.css">
+<script src="/static/theme.js"></script>
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/sse.js" defer></script>
+<script src="/static/forms.js" defer></script>
+<script src="/static/shell.js" defer></script>
+</head>
+<body hx-ext="sse">
+<a class="skip-link" href="#content" data-modal-inert>Skip to content</a>
+
+
+<header class="topbar anon">
+  <a class="brand" href="/"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="8" fill="#285bc5"/><path d="M8 23V10l8 8 8-8v13" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><rect x="20" y="22" width="5" height="2.5" rx="1" fill="#98b9ff"/></svg><span>Minion</span></a>
+</header>
+<div id="banner-slot"></div>
+<div id="flash-area" aria-live="polite"></div>
+<main id="content" tabindex="-1">
+
+<section class="card auth-card">
+  <h1>Sign in</h1>
+  <form method="post" action="/auth/login" data-json-action="/auth/login" data-next="/sessions">
+    <p class="form-error" role="alert" data-form-error hidden></p>
+    <div class="field">
+      <label for="username">Username or e-mail</label>
+      <input type="text" id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit">Sign in</button>
+  </form>
+  
+  <div class="providers" role="group" aria-label="Other sign-in methods">
+    <a class="btn btn-secondary" href="/auth/demo/start">Sign in with Demo</a>
+    <a class="btn btn-secondary" href="/auth/oidc/start">Sign in with Authentik SSO</a>
+    
+  </div>
+  
+  <noscript><p class="muted">Signing in needs JavaScript in this browser.</p></noscript>
+</section>
+
+</main>
+
+</body>
+</html>
+

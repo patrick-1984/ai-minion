@@ -1,0 +1,12 @@
+in:  "a\x9b31mb\x9d52;c;AAAA\ac"
+out: "a�31mb�52;c;AAAAc"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "a�31mb�52;c;AAAAc"
+  ],
+  "spans": [],
+  "cursor": null
+}

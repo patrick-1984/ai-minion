@@ -1,0 +1,12 @@
+in:  "\x1b]8;id=1;javascript:alert(1)\ax\x1b]8;;\a"
+out: "x"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "x"
+  ],
+  "spans": [],
+  "cursor": null
+}

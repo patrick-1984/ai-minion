@@ -1,0 +1,28 @@
+# ko configuration (Story 9.1, AD-24). ko v0.19.1.
+#
+# The release itself runs ko through goreleaser (.goreleaser.yaml, section
+# "kos"), which does not read this file. This file serves the standalone ko
+# calls: scripts/assert-image-platforms.sh builds the full multi-platform
+# image index into a disposable OCI layout with exactly these settings, so the
+# assertion checks the same image that is released.
+#
+# Keep the base image, the platforms and the build settings in sync with
+# .goreleaser.yaml (checked by scripts/releasecheck (TestKoConfigMatchesGoreleaser,
+# TestGoreleaserImage)).
+defaultBaseImage: gcr.io/distroless/static-debian12:nonroot
+defaultPlatforms:
+  - linux/amd64
+  - linux/arm64
+  - linux/arm/v7
+builds:
+  - id: minion
+    main: ./cmd/minion
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/patrick-1984/ai-minion/internal/version.Version={{ .Env.MINION_VERSION }}
+      - -X github.com/patrick-1984/ai-minion/internal/version.Commit={{ .Env.MINION_COMMIT }}
+      - -X github.com/patrick-1984/ai-minion/internal/version.Date={{ .Env.MINION_DATE }}

@@ -1,0 +1,28 @@
+{{define "worker_row"}}<tr data-worker="{{.ID}}" data-key="w-{{.ID}}" data-row-link="worker">
+  <th scope="row"><a href="{{.URL}}" data-control="name" data-worker-link>{{.Name}}</a></th>
+  {{if .ShowOwner}}<td data-label="Owner">{{.Owner}}</td>
+  {{end}}<td data-label="Status">{{if .Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</td>
+  <td data-label="Kind"><span class="badge plain" data-kind="{{.Kind}}">{{.Kind}}</span></td>
+  <td data-label="Sessions" class="num">{{if .SessionCount}}<a href="{{.SessionsURL}}" data-control="sessions">{{.SessionCount}}<span class="sr-only"> sessions on {{.Name}}</span></a>{{else}}0{{end}}{{if and .Disclose .Sessions}}
+    <details class="worker-sessions" data-keep-open="ws-{{.ID}}">
+      <summary data-control="sessions-toggle">Show sessions<span class="sr-only"> on {{.Name}}</span></summary>
+      <ul class="worker-session-list" aria-label="Sessions on {{.Name}}">
+        {{range .Sessions}}<li data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="ws-{{.WorkerID}}-{{.Name}}"><a href="{{.Path}}" data-control="session:{{.Name}}" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}" aria-label="Open session {{.Name}} on {{.Worker}}">{{.Name}}</a> <span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></li>
+        {{end}}
+      </ul>{{if gt .SessionCount (len .Sessions)}}
+      <a class="worker-session-more" href="{{.SessionsURL}}" data-control="sessions-all">All {{.SessionCount}} sessions</a>{{end}}
+    </details>{{end}}</td>
+  <td data-label="Protocol">{{if .Version}}{{.Version}}{{else}}<span class="muted">-</span>{{end}}</td>
+  <td data-label="Actions">{{if .Online}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
+    <button type="submit" class="btn btn-secondary" data-control="new-session" aria-label="New session on {{.Name}}">New session</button>
+  </form>{{else}}<span class="muted">Offline</span>{{end}}</td>
+</tr>{{end}}
+
+{{define "session_row"}}<tr data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="s-{{.WorkerID}}-{{.Name}}" data-row-link="session">
+  <th scope="row"><a href="{{.Path}}" data-control="name" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}">{{.Name}}</a></th>
+  <td data-label="Task">{{if .Task}}{{.Task}}{{else}}<span class="muted">No task</span>{{end}}</td>
+  {{if not .HideWorker}}<td data-label="Worker"><a href="{{.WorkerURL}}" data-control="worker" data-worker-link>{{.Worker}}</a>{{if not .Online}} <span class="badge muted" data-online="false">offline</span>{{end}}</td>
+  {{end}}{{if .ShowOwner}}<td data-label="Owner">{{.Owner}}</td>
+  {{end}}<td data-label="Kind">{{.Kind}}</td>
+  <td data-label="State"><span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></td>
+</tr>{{end}}

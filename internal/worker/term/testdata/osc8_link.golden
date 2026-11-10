@@ -1,0 +1,12 @@
+in:  "see \x1b]8;;https://evil.example/x\x1b\\click\x1b]8;;\x1b\\ here"
+out: "see click here"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "see click here"
+  ],
+  "spans": [],
+  "cursor": null
+}

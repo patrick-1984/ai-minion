@@ -1,0 +1,21 @@
+List audit log events, newest first.
+
+This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket.
+Accepted actions: manage.
+
+Usage:
+  minion audit_list [flags]
+
+Flags:
+      --action string                  action; "-" reads it from standard input
+      --actor string                   actor; "-" reads it from standard input
+      --cursor string                  cursor; "-" reads it from standard input
+      --from timestamp                 from as an RFC 3339 timestamp
+  -h, --help                           help for audit_list
+      --hub-ca-file string             PEM file with the private CA of the Hub's certificate (env MINION_HUB_CA)
+      --hub-insecure string[="true"]   skip the verification of the Hub's certificate for this client only (warns) (env MINION_HUB_INSECURE)
+      --hub-url string                 call this Hub over its REST API instead of the local Worker; the API key is read from the file named by MINION_API_KEY_FILE (env MINION_HUB_URL)
+      --hub-worker string              id (UUIDv7) of the Worker that runs operations whose arguments name none (sessions_list, session_create) (env MINION_HUB_WORKER)
+      --json                           print the result as JSON (one line; one line per element for a stream)
+      --limit int                      maximum number of results (0: the default)
+      --to timestamp                   to as an RFC 3339 timestamp

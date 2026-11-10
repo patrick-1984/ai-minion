@@ -1,0 +1,16 @@
+Aider v0.86.0
+Main model: gpt-5 with diff edit format
+
+> hello
+
+Hi.
+
+> Summarise the README
+
+paragraph 1 line 1: the quick brown fox jumps over the lazy dog
+paragraph 1 line 2: the quick brown fox jumps over the lazy dog
+paragraph 1 line 3: the quick brown fox jumps over the lazy dog
+
+
+
+Waiting for gpt-5

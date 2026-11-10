@@ -1,0 +1,16 @@
+│ >_ OpenAI Codex (v0.1)                                               │
+╰──────────────────────────────────────────────────────────────────────╯
+
+› hello
+
+• Hi, how can I help?
+
+› Summarise the README
+
+• The README describes
+
+▌ Working (1s • esc to interrupt)
+
+› Ask Codex to do anything
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit

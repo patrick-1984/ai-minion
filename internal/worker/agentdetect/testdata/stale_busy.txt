@@ -1,0 +1,24 @@
+✻ Thinking… (1s · esc to interrupt)
+
+● Done. The change is in place.
+
+● Here is the summary of the work.
+  - one
+  - two
+  - three
+  - four
+  - five
+  - six
+  - seven
+  - eight
+  - nine
+  - ten
+  - eleven
+  - twelve
+  - thirteen
+  - fourteen
+
+╭───────────────────────────────────────────────────────────────────────╮
+│ >                                                                     │
+╰───────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

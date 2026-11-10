@@ -1,0 +1,67 @@
+{{define "worker_table"}}<div class="table-wrap"><table class="rtable worker-table">
+    <thead><tr><th scope="col">Worker</th>{{if .ShowOwner}}<th scope="col">Owner</th>{{end}}<th scope="col">Status</th><th scope="col">Kind</th><th scope="col">Sessions</th><th scope="col">Protocol</th><th scope="col">Actions</th></tr></thead>
+    <tbody>
+    {{range .Workers}}{{template "worker_row" .}}
+    {{end}}
+    </tbody>
+  </table></div>{{end}}
+
+{{define "session_table"}}<div class="table-wrap"><table class="rtable session-table">
+    <thead><tr><th scope="col">Session</th><th scope="col">Task</th>{{if not .OnWorker}}<th scope="col">Worker</th>{{end}}{{if .ShowOwner}}<th scope="col">Owner</th>{{end}}<th scope="col">Kind</th><th scope="col">State</th></tr></thead>
+    <tbody>
+    {{range .Sessions}}{{template "session_row" .}}
+    {{end}}
+    </tbody>
+  </table></div>{{end}}
+
+{{define "no_workers"}}<div class="empty-state">
+  <h2>No workers connected</h2>
+  <p>A worker is a machine that hosts terminal sessions for you. Add one to start working with it here.</p>
+  <a class="btn" href="/workers/add">{{template "icon" "i-plus"}}<span>Add worker</span></a>
+</div>{{end}}
+
+{{define "no_sessions"}}<div class="empty-state">
+  <h2>No sessions yet</h2>
+  <p>A connected worker can host a new session. Choose New session on a worker that is online.</p>
+  <a class="btn btn-secondary" href="/workers">Open workers</a>
+</div>{{end}}
+
+{{define "no_match"}}<div class="empty-state">
+  <h2>{{.Title}}</h2>
+  <p>{{.Scope}}{{if .Query}} Search: <strong>{{.Query}}</strong>.{{end}}{{if .Filters}} Filters: {{.Filters}}.{{end}} Change the filters or clear them to see everything in this scope.</p>
+  <a class="btn btn-secondary" href="{{.ClearURL}}">Clear filters</a>
+</div>{{end}}
+
+{{define "workers_results"}}<p class="result-count" data-summary="{{.WorkersText}}">{{.WorkersText}}{{if .Filter.Active}} shown{{end}}.</p>
+{{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
+{{end}}{{if .Workers}}{{template "worker_table" .}}{{else if not .TotalWorkers}}{{template "no_workers"}}{{else}}{{template "no_match" (.NoMatch "workers")}}{{end}}{{end}}
+
+{{define "sessions_results"}}<p class="result-count" data-summary="{{.SessionsText}}">{{.SessionsText}}{{if .Filter.Active}} shown{{end}}.</p>
+{{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
+{{end}}{{if .Sessions}}{{template "session_table" .}}{{else if not .TotalSessions}}{{template "no_sessions"}}{{else}}{{template "no_match" (.NoMatch "sessions")}}{{end}}{{end}}
+
+
+{{/* The Worker detail page (/workers/<id>): the fragment the live stream replaces. Its two controls keep the keyboard focus
+across that replacement (static/live-list.js) because each has an identity: a data-key on the group that is the same on every
+update (the canonical Worker id) and its own data-control. Neither is derived from a position or from the session list. */}}
+{{define "worker_results"}}{{if .Gone}}<div class="empty-state">
+  <h2>This worker is no longer in your list</h2>
+  <p>It was removed, or it is not available to you in this scope. Go back to the Workers list.</p>
+</div>{{else}}<p class="result-count" data-summary="{{.Worker.Name}}: {{if .Worker.Online}}online{{else}}offline{{end}}; {{.SessionsText}}">{{.SessionsText}}.</p>
+{{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
+{{end}}<section class="panel worker-facts" aria-label="Worker facts">
+  <dl class="facts-grid">
+    <div><dt>Status</dt><dd>{{if .Worker.Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</dd></div>
+    <div><dt>Kind</dt><dd><span class="badge plain" data-kind="{{.Worker.Kind}}">{{.Worker.Kind}}</span></dd></div>
+    {{if .Worker.Owner}}<div><dt>Owner</dt><dd>{{.Worker.Owner}}</dd></div>
+    {{end}}<div><dt>Protocol</dt><dd>{{if .Worker.Version}}{{.Worker.Version}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
+    <div><dt>Worker id</dt><dd><code>{{.Worker.ID}}</code></dd></div>
+  </dl>
+  {{if .Operate}}<form method="post" action="{{.Worker.NewURL}}" hx-post="{{.Worker.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions" data-key="worker-actions-{{.Worker.ID}}">
+    <button type="submit" class="btn" data-control="new-session" aria-label="New session on {{.Worker.Name}}">New session</button>
+  </form>{{end}}
+</section>
+<section aria-labelledby="worker-sessions-h">
+  <div class="section-head" data-key="worker-sessions-{{.Worker.ID}}"><h2 id="worker-sessions-h">Sessions</h2>{{if .Sessions}}<a href="{{.SessionsURL}}" data-control="session-list">In the session list</a>{{end}}</div>
+  {{if .Sessions}}{{template "session_table" .}}{{else}}<div class="empty-state"><h2>No sessions on this worker</h2><p>{{if .Worker.Online}}{{if .Operate}}Choose New session to start one.{{else}}A session appears here when the worker hosts one that you may see.{{end}}{{else}}The worker is offline, so no session is listed.{{end}}</p></div>{{end}}
+</section>{{end}}{{end}}

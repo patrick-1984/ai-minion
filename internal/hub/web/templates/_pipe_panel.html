@@ -1,0 +1,22 @@
+{{define "pipe_turns"}}{{if .Turns}}{{if or .Walk .Behind}}<li hidden data-pipe-walk="{{.Walk}}"{{if .Behind}} data-pipe-behind="1"{{end}}></li>{{end}}{{if .Behind}}<li class="pipe-note" data-pipe-note="behind">Loading the newest turns. The turns shown are not the newest yet.</li>{{end}}{{if .Truncated}}<li class="pipe-note" data-pipe-note="older">Older turns exist and are not shown.</li>{{end}}{{range .Turns}}<li class="pipe-turn pipe-{{.Direction}}" data-turn="{{.ID}}" data-dir="{{.Direction}}"><p class="pipe-meta"><strong>{{.Who}}</strong>{{if .At}} <time datetime="{{.AtISO}}">{{.At}}</time>{{end}}</p><pre class="pipe-text">{{.Text}}</pre></li>{{end}}{{else}}<li class="pipe-empty" data-pipe-empty>No messages yet. Messages sent to this session through the pipe, and the replies the Worker could read with certainty, appear here.</li>{{end}}{{end}}
+{{define "pipe_panel"}}<div class="pipe-chat" id="pipe-chat" data-pipe-read="{{.ReadURL}}" data-pipe-target="{{.Target}}">
+  <p class="help" id="pipe-help">Send messages to <strong>{{.Session}}</strong> on <strong>{{.Worker}}</strong>. The pipe submits them to the session. Check the delivery result for each send. Replies appear when the Worker can capture them reliably: a supported agent, tmux 3.8 or later, a normal screen and no resize. Use the screen when replies are unavailable, and Text or Keys for direct terminal control.</p>
+  {{if .Unavailable}}<p class="notice notice-warning" id="pipe-unavailable" role="status">{{.Unavailable}}</p>{{end}}
+  {{if .Withheld}}<p class="notice notice-warning" id="pipe-withheld" role="status">{{.Withheld}} turn(s) were withheld by the Hub because the source is not trusted.{{if .Notice}} {{.Notice}}{{end}}</p>{{end}}
+  <div class="pipe-log-wrap">
+    <ol class="pipe-log" id="pipe-turns" role="log" aria-live="off" aria-label="Conversation with {{.Target}}" tabindex="0" data-latest="{{.Latest}}">{{if .ReadError}}<li class="pipe-note" data-pipe-error>{{.ReadError}}</li>{{else}}{{template "pipe_turns" .}}{{end}}</ol>
+    <button type="button" class="btn btn-secondary pipe-jump" id="pipe-jump" hidden>Jump to latest <span id="pipe-unread"></span></button>
+  </div>
+  <p class="sr-only" id="pipe-live" role="status" aria-live="polite"></p>
+  <p class="help pipe-status" id="pipe-status" role="status" aria-live="polite" data-pipe-status></p>
+  <p class="help pipe-status" id="pipe-live-state" role="status" aria-live="polite"></p>
+  {{if .Operate}}<form method="post" action="{{.SendURL}}" hx-post="{{.SendURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-sync="this:drop" aria-label="Send a pipe message to {{.Target}}" id="pipe-form" data-write data-pipe>
+    <div class="field">
+      <label for="pipe-text">Message to {{.Session}}</label>
+      <textarea id="pipe-text" name="text" rows="3" autocomplete="off" spellcheck="false" data-draft aria-describedby="pipe-send-help pipe-note"{{if not .Sendable}} aria-disabled="true"{{end}}></textarea>
+      <span id="pipe-send-help" class="help">Enter sends the message. Shift+Enter adds a line break.</span>
+      <span id="pipe-note" class="help" role="status" aria-live="polite"></span>
+    </div>
+    <div class="form-actions"><button type="submit" id="pipe-send"{{if not .Sendable}} disabled data-unavailable="true"{{end}}>Send message</button><span class="dock-target">to <strong>{{.Session}}</strong> on <strong>{{.Worker}}</strong></span></div>
+  </form>{{end}}
+</div>{{end}}

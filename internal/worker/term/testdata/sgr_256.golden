@@ -1,0 +1,26 @@
+in:  "\x1b[38;5;208morange\x1b[48;5;17mnavybg\x1b[0m"
+out: "\x1b[38;5;208morange\x1b[48;5;17mnavybg\x1b[0m"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "orangenavybg"
+  ],
+  "spans": [
+    {
+      "line": 0,
+      "start": 0,
+      "end": 6,
+      "fg": "p208"
+    },
+    {
+      "line": 0,
+      "start": 6,
+      "end": 12,
+      "fg": "p208",
+      "bg": "p17"
+    }
+  ],
+  "cursor": null
+}

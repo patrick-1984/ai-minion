@@ -1,0 +1,16 @@
+Aider v0.86.0
+Main model: gpt-5 with diff edit format
+
+> hello
+
+Hi.
+
+> Summarise the README
+
+I will start by reading the parser module.
+Reading internal/parser/parse.go
+
+
+
+
+Waiting for gpt-5

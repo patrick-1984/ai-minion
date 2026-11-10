@@ -1,0 +1,10 @@
+in:  "\x1b[1;2;3H\x1b[1;2A\x1b[5s\x1b[1:2H\x1b[?2A"
+out: ""
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [],
+  "spans": [],
+  "cursor": null
+}

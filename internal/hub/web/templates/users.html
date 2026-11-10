@@ -1,0 +1,146 @@
+{{define "user_secret"}}<div class="secret" role="status">
+  <p><strong>{{if .Created}}Account {{.Username}} created.{{else}}New temporary password for {{.Username}}.{{end}}</strong></p>
+  <p>Temporary password (shown once, copy it now):</p>
+  <p><code id="temporary-password">{{.Password}}</code></p>
+  <p class="muted">Give it to the user in person. The user must choose a new password at the first sign-in. It cannot be shown again; reset the password to get a new one.</p>
+  <p><a href="/admin/users">Back to the accounts</a></p>
+</div>{{end}}
+{{define "content"}}
+{{with .Data.Detail}}{{template "user_detail" .}}{{else}}{{template "user_list" .Data}}{{end}}
+{{end}}
+{{define "user_list"}}
+<div class="page-head"><div><h1>Users</h1><p>Accounts of this Hub. Roles from an identity provider follow the provider's rules.</p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="create-user">
+  <h2 id="create-user">Create a local user</h2>
+  <form method="post" hx-post="/admin/users" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="new-username">Username</label>
+      <input type="text" id="new-username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="64">
+    </div>
+    <div class="field">
+      <label for="new-email">E-mail (optional)</label>
+      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254">
+    </div>
+    <div class="field">
+      <label for="new-role">Role</label>
+      <select id="new-role" name="role">
+        <option value="user" selected>user</option>
+        <option value="admin">admin</option>
+      </select>
+    </div>
+    <button type="submit">Create user</button>
+    <div id="create-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Creating users needs JavaScript in this browser.</p></noscript>
+</section>
+<section aria-labelledby="accounts">
+  <div class="section-head"><h2 id="accounts">Accounts</h2></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Username</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">State</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    {{range .Users}}<tr>
+      <th scope="row">{{.Username}}</th>
+      <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">none</span>{{end}}</td>
+      <td>{{.Role}}{{if .AdminSources}} <span class="muted">({{range $i, $s := .AdminSources}}{{if $i}}, {{end}}{{$s}}{{end}})</span>{{end}}</td>
+      <td>{{if .Active}}active{{else}}deactivated{{end}}</td>
+      <td>{{if not .HasPassword}}none (single sign-on){{else if .MustChangePassword}}temporary{{else}}set{{end}}</td>
+      <td><time datetime="{{.CreatedAt.Time.Format "2006-01-02T15:04:05Z07:00"}}">{{.CreatedAt.Time.Format "2006-01-02"}}</time></td>
+      <td><a href="/admin/users/{{.ID}}">Manage {{.Username}}</a></td>
+    </tr>
+    {{else}}<tr><td colspan="7" class="muted">There are no accounts.</td></tr>
+    {{end}}
+    </tbody>
+  </table></div>
+</section>
+</div>
+{{end}}
+{{define "user_detail"}}
+{{$id := .User.ID}}
+<div class="page-head"><div><h1>{{.User.Username}}</h1><p><a href="/admin/users">All users</a></p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="account-state">
+  <h2 id="account-state">Account</h2>
+  <dl>
+    <dt>E-mail</dt><dd>{{if .User.Email}}{{.User.Email}}{{else}}<span class="muted">none</span>{{end}}</dd>
+    <dt>Role</dt><dd>{{.User.Role}}{{if .IdPAdmin}} (admin through the identity provider){{end}}{{if .LocalAdmin}} (local admin){{end}}</dd>
+    <dt>State</dt><dd>{{if .User.Active}}active{{else}}deactivated{{end}}</dd>
+    <dt>Password</dt><dd>{{if not .User.HasPassword}}none (single sign-on){{else if .User.MustChangePassword}}temporary, the user must change it{{else}}set{{end}}</dd>
+  </dl>
+</section>
+{{if .User.Active}}
+<section class="panel" aria-labelledby="role-actions">
+  <h2 id="role-actions">Role</h2>
+  <p class="muted">Only the local admin role can be changed here. A role that the identity provider gives follows the provider's rules.</p>
+  <form method="post" hx-post="/admin/users/{{$id}}/role" hx-target="#role-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+    {{if .LocalAdmin}}<input type="hidden" name="role" value="user">
+    <button type="submit">Remove the local admin role</button>
+    {{else}}<input type="hidden" name="role" value="admin">
+    <button type="submit">Make a local admin</button>{{end}}
+    <div id="role-result" aria-live="polite"></div>
+  </form>
+</section>
+{{end}}
+{{if .CanReset}}
+<section class="panel" aria-labelledby="reset-password">
+  <h2 id="reset-password">Reset the password</h2>
+  <p class="muted">A new temporary password is shown once, and the user is signed out everywhere.</p>
+  <form method="post" hx-post="/admin/users/{{$id}}/reset-password" hx-target="#reset-result" hx-swap="innerHTML" hx-confirm="Reset the password of this account? The user is signed out everywhere." hx-disabled-elt="find button">
+    <input type="hidden" name="username" value="{{.User.Username}}">
+    <button type="submit">Reset the password</button>
+    <div id="reset-result" aria-live="polite"></div>
+  </form>
+</section>
+{{end}}
+{{if .User.Active}}
+<section class="panel" aria-labelledby="act-as">
+  <h2 id="act-as">Act as this user</h2>
+  <p class="muted">You see the Hub as this user until the time is up or you exit. Everything you do is audited with your name.</p>
+  <form method="post" hx-post="/admin/users/{{$id}}/act-as" hx-target="#actas-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="act-as-minutes">For</label>
+      <select id="act-as-minutes" name="minutes">
+        {{range .ActAsChoices}}<option value="{{.}}"{{if eq . 60}} selected{{end}}>{{.}} minutes</option>
+        {{end}}
+      </select>
+    </div>
+    <button type="submit">Start acting as {{.User.Username}}</button>
+    <div id="actas-result" aria-live="polite"></div>
+  </form>
+</section>
+{{end}}
+<section class="panel" aria-labelledby="identities">
+  <h2 id="identities">Linked identities</h2>
+  {{if .Identities}}
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Provider</th><th scope="col">Issuer</th><th scope="col">Subject</th><th scope="col">E-mail</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    {{range .Identities}}<tr>
+      <th scope="row">{{.Label}}</th>
+      <td>{{.Issuer}}</td>
+      <td>{{.Subject}}</td>
+      <td>{{.Email}}</td>
+      <td>
+        <form method="post" hx-post="/admin/users/{{$id}}/identities/{{.ID}}/detach" hx-target="#detach-{{.ID}}" hx-swap="innerHTML" hx-confirm="Detach this identity? The user can no longer sign in with it." hx-disabled-elt="find button">
+          <button type="submit" class="btn-secondary">Detach</button>
+          <span id="detach-{{.ID}}" aria-live="polite"></span>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}<p class="muted">{{.IdentitiesNote}}</p>{{end}}
+</section>
+{{if .User.Active}}
+<section class="panel" aria-labelledby="deactivate">
+  <h2 id="deactivate">Deactivate the account</h2>
+  <p class="muted">The user cannot sign in, the sessions and API keys end, and the Workers stay with the account.</p>
+  <form method="post" hx-post="/admin/users/{{$id}}/deactivate" hx-target="#deactivate-result" hx-swap="innerHTML" hx-confirm="Deactivate this account?" hx-disabled-elt="find button">
+    <button type="submit" class="btn-danger">Deactivate {{.User.Username}}</button>
+    <div id="deactivate-result" aria-live="polite"></div>
+  </form>
+</section>
+{{end}}
+</div>
+{{end}}

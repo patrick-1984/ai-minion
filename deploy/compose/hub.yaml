@@ -1,0 +1,60 @@
+# Minion Hub from the registry image (docs/install/hub-docker.md).
+#
+# Preparation, once, in the directory that holds this file:
+#
+#   1. The admin password goes in a file that must exist before the first start
+#      (Docker would create a directory under that name otherwise):
+#        printf '%s' 'choose-a-strong-password' > admin_password.txt
+#   2. docker compose -f hub.yaml up -d
+#
+# The image runs as UID 65532. The "init" service gives that user the data
+# directory and the password file (it is the same as running, on the host,
+#   sudo mkdir -p ./hub-data && sudo chown 65532:65532 ./hub-data
+#   sudo chown 65532:65532 ./admin_password.txt && sudo chmod 0400 ./admin_password.txt
+# before "docker compose up"; do that instead if you prefer to run no root container).
+#
+# MINION_VERSION selects the image tag: an exact version (v0.5.0), which is the
+# default here, or a channel tag such as 0.5 or latest.
+#
+# The Hub speaks HTTPS on 8443 with a certificate it generates on first start
+# (its fingerprint is in the log). The port is published on the loopback
+# interface only: put a reverse proxy in front (docs/guides/reverse-proxy.md), or
+# publish "8443:8443" to reach the Hub directly from other machines.
+services:
+  init:
+    image: busybox:1.37
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - chown -R 65532:65532 /data && chown 65532:65532 /secret && chmod 0400 /secret
+    volumes:
+      - ./hub-data:/data
+      - ./admin_password.txt:/secret
+
+  hub:
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.5.0}
+    command: ["hub", "serve"]
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      MINION_DATA_DIR: /data
+      MINION_ADMIN_PASSWORD_FILE: /run/secrets/minion_admin_password
+      # Behind a reverse proxy that ends TLS, uncomment these three (see
+      # docs/guides/reverse-proxy.md). The trusted proxy is the exact address or
+      # network of the proxy, never 0.0.0.0/0.
+      # MINION_TLS: "off"
+      # MINION_PUBLIC_URL: https://hub.example.com
+      # MINION_TRUSTED_PROXIES: 172.18.0.2/32
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ./hub-data:/data
+    secrets:
+      - minion_admin_password
+
+secrets:
+  minion_admin_password:
+    file: ./admin_password.txt

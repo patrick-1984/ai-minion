@@ -1,0 +1,91 @@
+# Container end-to-end job (Story 9.6, AD-25). run.sh sets every variable below, the project name (-p)
+# and starts exactly one profile at a time under a project name of its own:
+#
+#   direct  the Hub image on its own TLS port (MINION_TLS=auto, self-signed)
+#   proxy   the Hub image with MINION_TLS=off behind a TLS-terminating reverse
+#           proxy (test/e2e/docker/proxy), which is the only published port
+#
+# The Hub runs as the non-root UID 65532 of the image (A-14) on a bind-mounted
+# /data that the init service gives to that UID, and reads its admin secret from
+# a file (MINION_ADMIN_PASSWORD_FILE), never from the environment. Only
+# loopback ports are published. The proxy variant trusts forwarding headers
+# from the proxy's one address and from nothing else.
+
+x-hub: &hub
+  image: ${E2E_IMAGE:?}
+  user: "65532:65532"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  command: ["hub", "serve"]
+  volumes:
+    - ${E2E_DATA_DIR:?}:/data
+  secrets:
+    - admin_password
+  depends_on:
+    init:
+      condition: service_completed_successfully
+
+services:
+  # The documented preparation step: the data directory belongs to 65532.
+  init:
+    image: ${E2E_HELPER_IMAGE:-alpine:3.22}
+    user: "0:0"
+    command: ["chown", "65532:65532", "/data", "/certs"]
+    volumes:
+      - ${E2E_DATA_DIR:?}:/data
+      - ${E2E_CERT_DIR:?}:/certs
+    profiles: [direct, proxy]
+
+  hub:
+    <<: *hub
+    environment:
+      MINION_DATA_DIR: /data
+      MINION_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    ports:
+      - "127.0.0.1::8443"
+    profiles: [direct]
+
+  hub-proxied:
+    <<: *hub
+    environment:
+      MINION_DATA_DIR: /data
+      MINION_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      MINION_TLS: "off"
+      MINION_PUBLIC_URL: ${E2E_PUBLIC_URL:?}
+      # The proxy's address and only that: not the whole network.
+      MINION_TRUSTED_PROXIES: 10.89.77.10/32
+    networks:
+      e2e:
+    profiles: [proxy]
+
+  proxy:
+    image: ${E2E_HELPER_IMAGE:-alpine:3.22}
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: ["/proxy", "-listen", ":8443", "-upstream", "http://hub-proxied:8443", "-cert-dir", "/certs"]
+    volumes:
+      - ${E2E_PROXY_BIN:?}:/proxy:ro
+      - ${E2E_CERT_DIR:?}:/certs
+    ports:
+      - "127.0.0.1:${E2E_PROXY_PORT:?}:8443"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      hub-proxied:
+        condition: service_started
+    networks:
+      e2e:
+        ipv4_address: 10.89.77.10
+    profiles: [proxy]
+
+secrets:
+  admin_password:
+    file: ${E2E_ADMIN_PASSWORD_FILE:?}
+
+networks:
+  e2e:
+    ipam:
+      config:
+        - subnet: 10.89.77.0/24

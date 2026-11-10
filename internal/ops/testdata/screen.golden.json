@@ -1,0 +1,38 @@
+{
+  "width": 20,
+  "height": 3,
+  "lines": [
+    "$ ls --color",
+    "file.txt  dir",
+    ""
+  ],
+  "spans": [
+    {
+      "line": 0,
+      "start": 0,
+      "end": 1,
+      "fg": "p2",
+      "bold": true
+    },
+    {
+      "line": 1,
+      "start": 0,
+      "end": 8,
+      "fg": "#ff8800",
+      "bg": "p0",
+      "underline": true
+    },
+    {
+      "line": 1,
+      "start": 10,
+      "end": 13,
+      "fg": "p4",
+      "italic": true,
+      "inverse": true
+    }
+  ],
+  "cursor": {
+    "row": 2,
+    "col": 0
+  }
+}

@@ -1,0 +1,12 @@
+in:  "\x1b]0;owned\a\x1b]2;owned\x1b\\ok"
+out: "ok"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "ok"
+  ],
+  "spans": [],
+  "cursor": null
+}

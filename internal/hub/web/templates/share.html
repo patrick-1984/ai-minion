@@ -1,0 +1,19 @@
+{{/* The share panel of the Worker detail page (Story 4.15). Names only. The form is the same element before and after a save (its id and the
+data-key of the group are the Worker's canonical id), so the keyboard focus can stay on it when the answer replaces the panel. */}}
+{{define "share_panel"}}{{range .Results}}<div class="result result-{{.Kind}}" role="status"><p class="result-title"><strong>{{.Label}}:</strong> {{.Summary}}</p></div>
+{{end}}{{if .Note}}<p class="notice notice-info" role="status" data-share-note>{{.Note}}</p>
+{{end}}{{if .Mode}}<form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#share-panel" hx-swap="innerHTML" hx-disabled-elt="find button" id="share-form-{{.WorkerID}}" data-key="share-{{.WorkerID}}" aria-label="Choose the shared sessions of {{.Worker}}">
+  <p class="help" id="share-help-{{.WorkerID}}">Now: {{if eq .Mode "all"}}all sessions are shared, also new ones{{else if eq .Mode "none"}}no session is shared{{else if eq .Mode "select"}}only the chosen sessions are shared{{else}}nothing is shared until you choose{{end}}. Sessions that are not shared are listed by name only; the Hub never shows their content.</p>
+  <fieldset{{if .Locked}} disabled{{end}} aria-describedby="share-help-{{.WorkerID}}">
+    <legend>Share</legend>
+    <label><input type="radio" name="mode" value="all" data-control="share-all"{{if eq .Selected "all"}} checked{{end}}> All sessions, also new ones</label>
+    <label><input type="radio" name="mode" value="select" data-control="share-select"{{if eq .Selected "select"}} checked{{end}}> Only the sessions I choose</label>
+    <label><input type="radio" name="mode" value="none" data-control="share-none"{{if eq .Selected "none"}} checked{{end}}> No session</label>
+  </fieldset>
+  <fieldset{{if .Locked}} disabled{{end}}>
+    <legend>Sessions</legend>
+    {{if .Entries}}{{range .Entries}}<label class="share-name"><input type="checkbox" name="name" value="{{.Name}}"{{if .Shared}} checked{{end}}> {{.Name}}{{if not .Shared}} <span class="muted">(not shared)</span>{{end}}</label>
+    {{end}}<p class="help">The checked sessions apply to "Only the sessions I choose".</p>{{else}}<p class="help">The worker has no session.</p>{{end}}
+  </fieldset>
+  <div class="form-actions"><button type="submit" data-control="share-apply"{{if .Locked}} disabled{{end}}>Apply sharing</button></div>
+</form>{{end}}{{end}}

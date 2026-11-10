@@ -1,0 +1,27 @@
+{
+  "version": "v0.1.0",
+  "name": "lab-pi",
+  "mode": "hub",
+  "hub_url": "https://hub.example:8443",
+  "connection": {
+    "state": "backoff",
+    "live": true,
+    "last_error": "dial: connection refused",
+    "last_error_at": "2026-11-10T12:30:00.000Z"
+  },
+  "hub_fingerprint": "",
+  "worker_fingerprint": "ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq",
+  "paired": false,
+  "owner": "",
+  "pending_pairing_code": "MN-ABCD-EFGH",
+  "pairing_state": "pending",
+  "share": {
+    "mode": "all",
+    "configured": true,
+    "sessions": []
+  },
+  "preview_only": true,
+  "preview_only_hub": false,
+  "tmux_socket": "/run/user/1000/tmux-1000/default",
+  "sessions": 3
+}

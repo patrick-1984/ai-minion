@@ -1,0 +1,16 @@
+╰──────────────────────────────────────────────────────────────────────╯
+
+> hello
+
+● Hi, how can I help?
+
+> Summarise the README
+
+● The README describes a Worker that drives tmux sessions.
+
+✻ Thinking… (2s · ↑ 1.2k tokens · esc to interrupt)
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ >                                                                    │
+╰──────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

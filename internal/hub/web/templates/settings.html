@@ -1,0 +1,43 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Hub settings</h1><p>Every setting of the Hub with the environment variable that sets it. A field that an environment variable sets is read-only here. A secret is never shown again: it is only "set" or "not set".</p></div></div>
+{{if .Data.Settings}}
+<div class="settings-list">
+  <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+  <ul>
+{{range .Data.Settings}}
+  <li>
+  <form class="srow" method="post" hx-post="/admin/settings/{{.Key}}" hx-target="#result-{{.Key}}" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-{{.Key}}" id="h-{{.Key}}">{{.Key}}</label>
+      <span class="s-env"><code>{{.Env}}</code>{{if .EnvFile}} or <code>{{.EnvFile}}</code> (a file that holds the value){{end}}</span>
+    </div>
+    <div class="s-value">
+      {{if .Locked}}<input type="{{if .Secret}}password{{else}}text{{end}}" id="v-{{.Key}}" value="{{.Value}}" disabled aria-describedby="why-{{.Key}} m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
+      {{else if .Choices}}<select id="v-{{.Key}}" name="value" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
+        {{$v := .Value}}{{range .Choices}}<option value="{{.}}"{{if eq . $v}} selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+      {{else if .Secret}}<input type="password" id="v-{{.Key}}" name="value" autocomplete="new-password" placeholder="{{.SecretState}}" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
+      <input type="hidden" name="secret" value="1">
+      {{else}}<input type="text" id="v-{{.Key}}" name="value" value="{{.Value}}" autocomplete="off" spellcheck="false" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">{{end}}
+    </div>
+    <div class="s-actions">
+      {{if .Locked}}<span id="why-{{.Key}}" class="s-locked">{{.LockedText}}</span>
+      {{else}}<button type="submit" name="action" value="set">Save</button>
+      <button type="submit" name="action" value="unset" class="btn-secondary">{{if .Secret}}Remove{{else}}Use the default{{end}}</button>{{end}}
+    </div>
+    <div class="s-desc">
+      {{if .Help}}<p id="d-{{.Key}}" class="s-help">{{.Help}}</p>{{end}}
+      <p id="m-{{.Key}}" class="s-meta">{{if .Secret}}Secret: {{.SecretState}}. {{end}}Source: {{.Source}}. {{if .Live}}Applies without a restart.{{else}}Applies after the Hub restarts.{{end}}{{if .PendingRestart}} <strong>A changed value waits for the next restart.</strong>{{end}}</p>
+      {{if .Error}}<p class="form-error s-error" role="alert">The current value is not valid: {{.Error}}</p>{{end}}
+    </div>
+    <div id="result-{{.Key}}" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+{{end}}
+  </ul>
+</div>
+{{else}}<p class="muted">There are no settings.</p>
+{{end}}
+<noscript><p class="muted">Changing settings needs JavaScript in this browser.</p></noscript>
+{{end}}

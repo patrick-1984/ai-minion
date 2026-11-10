@@ -1,0 +1,38 @@
+{
+ "width": 100,
+ "height": 16,
+ "frames": [
+  {
+   "file": "00_delivered.txt",
+   "top": 0
+  },
+  {
+   "file": "01_busy.txt",
+   "top": 1
+  },
+  {
+   "file": "02_busy.txt",
+   "top": 1
+  },
+  {
+   "file": "03_busy.txt",
+   "top": 1
+  },
+  {
+   "file": "04_busy.txt",
+   "top": 2
+  },
+  {
+   "file": "05_busy.txt",
+   "top": 2
+  },
+  {
+   "file": "06_stable.txt",
+   "top": 2
+  },
+  {
+   "file": "07_stable.txt",
+   "top": 2
+  }
+ ]
+}

@@ -1,0 +1,16 @@
+╭──────────────────────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.1)                                               │
+╰──────────────────────────────────────────────────────────────────────╯
+
+› hello
+
+• Hi, how can I help?
+
+
+
+
+
+
+› Find and fix a bug in @filename
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit   ? for shortcuts

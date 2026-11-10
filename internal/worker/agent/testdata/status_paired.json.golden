@@ -1,0 +1,29 @@
+{
+  "version": "v0.1.0",
+  "name": "lab-pi",
+  "mode": "hub",
+  "hub_url": "https://hub.example:8443",
+  "connection": {
+    "state": "connected",
+    "live": true,
+    "connected_since": "2026-11-10T12:30:00.000Z"
+  },
+  "hub_fingerprint": "gr2q7gf5lh6pzfdnurnkvputhpqvjjfvbfhbysv7ikdgkbptzf7a",
+  "worker_fingerprint": "ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq",
+  "paired": true,
+  "owner": "alice",
+  "pending_pairing_code": "",
+  "pairing_state": "none",
+  "share": {
+    "mode": "select",
+    "configured": true,
+    "sessions": [
+      "build",
+      "docs"
+    ]
+  },
+  "preview_only": false,
+  "preview_only_hub": false,
+  "tmux_socket": "/run/user/1000/tmux-1000/default",
+  "sessions": 3
+}

@@ -1,0 +1,51 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Audit</h1><p>Who did what and when. Events never contain secrets or terminal content.</p></div></div>
+<form method="get" action="/admin/audit" class="toolbar" aria-label="Filter the audit log">
+  <div class="field">
+    <label for="f-actor">Actor (user id, or key:id)</label>
+    <input type="text" id="f-actor" name="actor" value="{{.Data.Filter.Actor}}" autocomplete="off" spellcheck="false" maxlength="256">
+  </div>
+  <div class="field">
+    <label for="f-action">Action (for example settings.set)</label>
+    <input type="text" id="f-action" name="action" value="{{.Data.Filter.Action}}" autocomplete="off" spellcheck="false" maxlength="256">
+  </div>
+  <div class="field">
+    <label for="f-from">From (date or time, UTC)</label>
+    <input type="text" id="f-from" name="from" value="{{.Data.Filter.From}}" autocomplete="off" placeholder="2026-11-01">
+  </div>
+  <div class="field">
+    <label for="f-to">To (date or time, UTC)</label>
+    <input type="text" id="f-to" name="to" value="{{.Data.Filter.To}}" autocomplete="off" placeholder="2026-11-09">
+  </div>
+  <div class="field">
+    <label for="f-limit">Events per page</label>
+    <select id="f-limit" name="limit">
+      {{$cur := .Data.Filter.Limit}}{{range .Data.Limits}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+  </div>
+  <div class="row"><button type="submit">Filter</button>
+  <a class="btn btn-secondary" href="/admin/audit">Clear</a></div>
+</form>
+{{if .Data.Error}}<p class="form-error" role="alert">{{.Data.Error}}</p>{{end}}
+<div class="table-wrap"><table>
+  <caption class="muted">Newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
+  <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Acting as</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th></tr></thead>
+  <tbody>
+  {{range .Data.Events}}<tr>
+    <td><time datetime="{{.TS.Time.Format "2006-01-02T15:04:05.000Z07:00"}}">{{.TS.Time.Format "2006-01-02 15:04:05"}}</time></td>
+    <td>{{.Actor}}</td>
+    <td>{{if .ActingAs}}{{.ActingAs}}{{else}}<span class="muted">-</span>{{end}}</td>
+    <td>{{.Action}}</td>
+    <td>{{if .Target}}{{.Target}}{{else}}<span class="muted">-</span>{{end}}</td>
+    <td>{{.Outcome}}</td>
+  </tr>
+  {{else}}<tr><td colspan="6" class="muted">{{if .Data.Error}}No events are listed.{{else}}No events match.{{end}}</td></tr>
+  {{end}}
+  </tbody>
+</table></div>
+<p>
+  {{if .Data.FirstURL}}<a href="{{.Data.FirstURL}}">Newest events</a>{{end}}
+  {{if .Data.NextURL}}<a href="{{.Data.NextURL}}" rel="next">Older events</a>{{end}}
+</p>
+{{end}}

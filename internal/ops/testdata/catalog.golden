@@ -1,0 +1,11 @@
+answer | worker | actions operate | write=true stream=false | args AnswerArgs | result WriteResult | guards target_recheck:KEEP(pane.identity),writer_lock:KEEP(pane.lock),dialog_binding:KEEP(pane.dialog)
+pipe_read | worker | actions read | write=false stream=false | args PipeReadArgs | result PipeReadResult | guards -
+pipe_send | worker | actions message|operate | write=true stream=false | args PipeSendArgs | result WriteResult | guards target_recheck:KEEP(pane.identity),writer_lock:KEEP(pane.lock),pipe_limits:KEEP(pipe.budget),pane_busy:FORCE(pane.state),pane_dialog:FORCE(pane.state),pane_shell:FORCE(pane.kind),readiness_unknown:WARN(pane.state)
+pipe_wait | worker | actions read | write=false stream=true | args PipeWaitArgs | result PipeTurn | guards -
+send_keys | worker | actions operate | write=true stream=false | args SendKeysArgs | result WriteResult | guards target_recheck:KEEP(pane.identity),writer_lock:KEEP(pane.lock),pane_busy:FORCE(pane.state),pane_dialog:FORCE(pane.state),pane_shell:FORCE(pane.kind),readiness_unknown:WARN(pane.state)
+send_text | worker | actions operate | write=true stream=false | args SendTextArgs | result WriteResult | guards target_recheck:KEEP(pane.identity),writer_lock:KEEP(pane.lock),pane_busy:FORCE(pane.state),pane_dialog:FORCE(pane.state),pane_shell:FORCE(pane.kind),readiness_unknown:WARN(pane.state)
+session_capture | worker | actions read | write=false stream=false | args SessionCaptureArgs | result SessionCaptureResult | guards -
+session_create | worker | actions operate | write=true stream=false | args SessionCreateArgs | result WriteResult | guards session_name_free:KEEP(session.name)
+session_snapshot | worker | actions read | write=false stream=false | args SessionSnapshotArgs | result SessionSnapshotResult | guards -
+sessions_list | worker | actions read | write=false stream=false | args SessionsListArgs | result SessionsListResult | guards -
+set_task | worker | actions operate | write=true stream=false | args SetTaskArgs | result WriteResult | guards session_exists:KEEP(session.name)

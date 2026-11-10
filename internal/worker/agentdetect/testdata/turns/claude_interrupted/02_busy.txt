@@ -1,0 +1,16 @@
+
+> hello
+
+● Hi, how can I help?
+
+> Summarise the README
+
+● I will start by reading the parser module.
+  Reading internal/parser/parse.go
+
+✻ Thinking… (4s · ↑ 1.2k tokens · esc to interrupt)
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ >                                                                    │
+╰──────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

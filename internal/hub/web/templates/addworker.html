@@ -1,0 +1,37 @@
+{{define "worker_added"}}<div class="notice notice-positive" role="status">
+  <div>
+  <p><strong>{{.Name}} is now in your space.</strong></p>
+  {{range .Warnings}}<p class="muted">{{.}}</p>
+  {{end}}
+  <p>It appears in your <a href="/workers">workers</a> as soon as it connects. To add another one, enter its code below.</p>
+  </div>
+</div>{{end}}
+{{define "content"}}
+<div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
+<div class="method-grid">
+<section class="panel" aria-labelledby="pair-form">
+  <h2 id="pair-form">Pair with a code</h2>
+  <p class="muted">Start pairing on the machine that should become a Worker (for example with <code>minion worker pair</code>). It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
+  <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    <div class="field">
+      <label for="pair-code">Pairing code</label>
+      <input type="text" id="pair-code" name="code" placeholder="MN-ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32" aria-describedby="pair-code-help">
+      <span id="pair-code-help" class="muted">Capital or small letters, with or without hyphens.</span>
+    </div>
+    <div class="field">
+      <label for="pair-name">Name (optional)</label>
+      <input type="text" id="pair-name" name="name" autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxName}}" aria-describedby="pair-name-help">
+      <span id="pair-name-help" class="muted">Without a name, the Worker keeps the name it announces.</span>
+    </div>
+    <button type="submit">Add the Worker</button>
+    <div id="pair-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Adding a Worker needs JavaScript in this browser.</p></noscript>
+</section>
+<section class="panel" aria-labelledby="invite-method">
+  <h2 id="invite-method">Use an invitation</h2>
+  <p class="muted">An invitation key lets a machine enroll itself, for example from a script or a Compose file. The key is shown once when you create it, together with commands to start the Worker.</p>
+  <a class="btn btn-secondary" href="/invitations">Create an invitation key</a>
+</section>
+</div>
+{{end}}

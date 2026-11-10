@@ -1,0 +1,2 @@
+The README describes a Worker that drives tmux sessions.
+It lists install steps and the supported agents.

@@ -1,0 +1,7 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Administration</h1><p>Areas for administrators. Every page checks your role on the server.</p></div></div>
+<ul class="link-cards">
+  {{range .Data.Areas}}<li><a href="{{.Path}}"><strong>{{template "icon" .Icon}}<span>{{.Label}}</span></strong><span class="muted">{{.Text}}</span></a></li>
+  {{end}}
+</ul>
+{{end}}

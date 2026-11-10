@@ -1,0 +1,12 @@
+in:  "a\x1bP junk\x1avisible"
+out: "avisible"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "avisible"
+  ],
+  "spans": [],
+  "cursor": null
+}

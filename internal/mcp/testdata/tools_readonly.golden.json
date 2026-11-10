@@ -1,0 +1,196 @@
+[
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read the stored pipe turns of a session.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after_turn_id": {
+          "description": "Only turns after this turn id (UUIDv7); empty starts at the oldest retained turn, or means only new turns for pipe_wait.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of turns to return; 0 means the default.",
+          "type": "integer"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "pipe_read"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Stream the next pipe turns of a session as they arrive. On MCP it returns as soon as the first turn arrives, or when the wait ends without one; call it again with after_turn_id for more.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "after_turn_id": {
+          "description": "Only turns after this turn id (UUIDv7); empty starts at the oldest retained turn, or means only new turns for pipe_wait.",
+          "type": "string"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        },
+        "timeout_ms": {
+          "description": "End the wait after this many milliseconds without a turn; 0 means the default.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "pipe_wait"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return scrollback lines of a session pane.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "lines": {
+          "description": "Number of scrollback lines to return, counted from the bottom; 0 means the default.",
+          "type": "integer"
+        },
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "session_capture"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return the visible screen of a session pane.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "additionalProperties": false,
+          "description": "The session to address. The session name is the identity of the target.",
+          "properties": {
+            "pane": {
+              "description": "Optional window.pane index pair such as 0.1; empty means the active pane.",
+              "type": "string"
+            },
+            "session_name": {
+              "description": "Name of the tmux session, for example minion-1.",
+              "type": "string"
+            },
+            "worker_id": {
+              "description": "Worker id (UUIDv7). Leave empty in Solo mode.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_name"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "session_snapshot"
+  },
+  {
+    "annotations": {
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "List the sessions the Worker shares.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "sessions_list"
+  }
+]

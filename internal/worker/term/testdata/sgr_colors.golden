@@ -1,0 +1,39 @@
+in:  "\x1b[31mred\x1b[92mbrightgreen\x1b[44mbgblue\x1b[105mbgbrightmagenta\x1b[39;49m"
+out: "\x1b[31mred\x1b[92mbrightgreen\x1b[44mbgblue\x1b[105mbgbrightmagenta\x1b[39;49m"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "redbrightgreenbgbluebgbrightmagenta"
+  ],
+  "spans": [
+    {
+      "line": 0,
+      "start": 0,
+      "end": 3,
+      "fg": "p1"
+    },
+    {
+      "line": 0,
+      "start": 3,
+      "end": 14,
+      "fg": "p10"
+    },
+    {
+      "line": 0,
+      "start": 14,
+      "end": 20,
+      "fg": "p10",
+      "bg": "p4"
+    },
+    {
+      "line": 0,
+      "start": 20,
+      "end": 35,
+      "fg": "p10",
+      "bg": "p13"
+    }
+  ],
+  "cursor": null
+}

@@ -1,0 +1,90 @@
+{{define "oidc_fields"}}
+    <div class="field">
+      <label for="{{.Prefix}}-name">Name (shown on the login button)</label>
+      <input type="text" id="{{.Prefix}}-name" name="name" value="{{.Name}}" autocomplete="off" required maxlength="512"{{if not .Editable}} disabled{{end}}>
+    </div>
+    <div class="field">
+      <label for="{{.Prefix}}-issuer">Issuer URL</label>
+      <input type="text" id="{{.Prefix}}-issuer" name="issuer" value="{{.Issuer}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if not .Editable}} disabled{{end}}>
+    </div>
+    <div class="field">
+      <label for="{{.Prefix}}-client-id">Client ID</label>
+      <input type="text" id="{{.Prefix}}-client-id" name="client_id" value="{{.ClientID}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if not .Editable}} disabled{{end}}>
+    </div>
+    <div class="field">
+      <label for="{{.Prefix}}-secret">Client secret ({{if .ClientSecretSet}}set{{else}}not set{{end}})</label>
+      <input type="password" id="{{.Prefix}}-secret" name="client_secret" autocomplete="new-password" placeholder="{{if .ClientSecretSet}}leave empty to keep the secret{{else}}not set{{end}}"{{if not .Editable}} disabled{{end}}>
+    </div>
+    <div class="field">
+      <label for="{{.Prefix}}-claim">Role claim</label>
+      <input type="text" id="{{.Prefix}}-claim" name="role_claim" value="{{.RoleClaim}}" autocomplete="off" spellcheck="false" maxlength="512"{{if not .Editable}} disabled{{end}}>
+    </div>
+    <div class="field">
+      <label for="{{.Prefix}}-scopes">Scopes (space separated)</label>
+      <input type="text" id="{{.Prefix}}-scopes" name="scopes" value="{{.Scopes}}" autocomplete="off" spellcheck="false" maxlength="512"{{if not .Editable}} disabled{{end}}>
+    </div>
+    <div class="field">
+      <label for="{{.Prefix}}-ca">CA file (path on the Hub host)</label>
+      <input type="text" id="{{.Prefix}}-ca" name="ca_file" value="{{.CAFile}}" autocomplete="off" spellcheck="false" maxlength="512"{{if not .Editable}} disabled{{end}}>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="tls_insecure_skip_verify" value="1"{{if .TLSInsecureSkipVerify}} checked{{end}}{{if not .Editable}} disabled{{end}}> Do not verify the TLS certificate of this provider (insecure)</label>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="enabled" value="1"{{if .Enabled}} checked{{end}}{{if not .Editable}} disabled{{end}}> Enabled</label>
+    </div>
+{{end}}
+{{define "content"}}
+<div class="page-head"><div><h1>Identity &amp; sign-in</h1><p>Providers let people sign in with your identity provider. A provider that the environment or the settings describe is read-only here.</p></div></div>
+{{if .Data.InsecureTLS}}<div class="notice notice-danger" id="insecure-tls-warning" role="alert"><span><strong>Warning.</strong> {{.Data.InsecureTLSWarning}}</span></div>
+{{end}}
+<div class="stack">
+{{range .Data.Providers}}
+<section class="panel" aria-labelledby="p-{{.ID}}">
+  <h2 id="p-{{.ID}}">{{.Name}} <span class="muted">({{.ID}})</span></h2>
+  {{if not .Editable}}<p class="muted">{{.LockedText}}</p>{{end}}
+  {{if and .TLSInsecureSkipVerify .Enabled}}<p class="form-error" role="alert">TLS verification is off for this provider.</p>{{end}}
+  <form method="post" hx-post="/admin/oidc/providers" hx-target="#save-{{.ID}}" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <input type="hidden" name="id" value="{{.ID}}">
+    {{template "oidc_fields" .}}
+    {{if .Editable}}<button type="submit">Save the provider</button>{{end}}
+    <div id="save-{{.ID}}" aria-live="polite"></div>
+  </form>
+  <h3>Role rules</h3>
+  <p class="muted">A person gets the role when the role claim holds one of the values (one per line). Admin wins over user.</p>
+  <form method="post" hx-post="/admin/oidc/providers/{{.ID}}/roles" hx-target="#roles-{{.ID}}" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="{{.ID}}-admin-values">Values that give the admin role</label>
+      <textarea id="{{.ID}}-admin-values" name="admin_values" rows="3" spellcheck="false"{{if not .Editable}} disabled{{end}}>{{.AdminLines}}</textarea>
+    </div>
+    <div class="field">
+      <label for="{{.ID}}-user-values">Values that give the user role</label>
+      <textarea id="{{.ID}}-user-values" name="user_values" rows="3" spellcheck="false"{{if not .Editable}} disabled{{end}}>{{.UserLines}}</textarea>
+    </div>
+    {{if .Editable}}<button type="submit">Save the role rules</button>{{end}}
+    <div id="roles-{{.ID}}" aria-live="polite"></div>
+  </form>
+  {{if .Editable}}
+  <form method="post" hx-post="/admin/oidc/providers/{{.ID}}/delete" hx-target="#delete-{{.ID}}" hx-swap="innerHTML" hx-confirm="Delete this provider? People can no longer sign in with it." hx-disabled-elt="find button">
+    <button type="submit" class="btn-danger">Delete the provider</button>
+    <div id="delete-{{.ID}}" aria-live="polite"></div>
+  </form>
+  {{end}}
+</section>
+{{else}}<p class="muted">No provider is configured.</p>
+{{end}}
+<section class="panel" aria-labelledby="add-provider">
+  <h2 id="add-provider">Add a provider</h2>
+  <form method="post" hx-post="/admin/oidc/providers" hx-target="#save-new" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="new-id">Id (lower-case letters, digits, - and _)</label>
+      <input type="text" id="new-id" name="id" autocomplete="off" spellcheck="false" required pattern="[a-z0-9][a-z0-9_\-]{0,31}" maxlength="32">
+    </div>
+    {{template "oidc_fields" .Data.NewProvider}}
+    <button type="submit">Add the provider</button>
+    <div id="save-new" aria-live="polite"></div>
+  </form>
+</section>
+</div>
+<noscript><p class="muted">Changing providers needs JavaScript in this browser.</p></noscript>
+{{end}}

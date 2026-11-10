@@ -1,0 +1,16 @@
+
+✦ Hi, how can I help?
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Summarise the README                                               │
+╰──────────────────────────────────────────────────────────────────────╯
+
+✦ I will start by reading the parser module.
+  Reading internal/parser/parse.go
+
+⠙ Thinking... (esc to cancel, 4s)
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Type your message or @path/to/file                                 │
+╰──────────────────────────────────────────────────────────────────────╯
+~/project   no sandbox (see /docs)   gemini-2.5-pro (100% context left)

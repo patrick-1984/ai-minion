@@ -1,0 +1,74 @@
+{
+  "realm": "minion",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "groups": [
+    { "name": "minion-admins", "path": "/minion-admins" },
+    { "name": "minion-users", "path": "/minion-users" }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Admin",
+      "email": "alice@example.test",
+      "credentials": [{ "type": "password", "value": "alice-test-password", "temporary": false }],
+      "groups": ["/minion-admins"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "User",
+      "email": "bob@example.test",
+      "credentials": [{ "type": "password", "value": "bob-test-password", "temporary": false }],
+      "groups": ["/minion-users"]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "Nogroup",
+      "email": "carol@example.test",
+      "credentials": [{ "type": "password", "value": "carol-test-password", "temporary": false }]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "minion-hub",
+      "name": "Minion Hub (integration test)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "keycloak-test-client-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:18765/auth/oidc/callback"],
+      "webOrigins": [],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.claim": "true",
+            "claim.name": "groups"
+          }
+        }
+      ]
+    }
+  ]
+}

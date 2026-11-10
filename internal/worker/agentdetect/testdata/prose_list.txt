@@ -1,0 +1,12 @@
+● There are three options:
+
+  1. Keep the current layout
+  2. Move the parser into its own package
+  3. Drop the parser
+
+  Tell me which one you prefer.
+
+╭───────────────────────────────────────────────────────────────────────╮
+│ >                                                                     │
+╰───────────────────────────────────────────────────────────────────────╯
+  ? for shortcuts

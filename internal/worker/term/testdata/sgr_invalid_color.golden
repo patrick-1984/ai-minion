@@ -1,0 +1,12 @@
+in:  "\x1b[38;5;999mx\x1b[38;2;1;2mx\x1b[38;9mx\x1b[1m"
+out: "xxx\x1b[1m"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "xxx"
+  ],
+  "spans": [],
+  "cursor": null
+}

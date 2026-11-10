@@ -1,0 +1,19 @@
+in:  "a\x1b]0;title\x1b[31mred\x1b[0mb"
+out: "a\x1b[31mred\x1b[0mb"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "aredb"
+  ],
+  "spans": [
+    {
+      "line": 0,
+      "start": 1,
+      "end": 4,
+      "fg": "p1"
+    }
+  ],
+  "cursor": null
+}

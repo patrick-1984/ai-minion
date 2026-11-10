@@ -1,0 +1,68 @@
+<main id="content" tabindex="-1">
+
+
+<div class="page-head"><div><h1>Users</h1><p>Accounts of this Hub. Roles from an identity provider follow the provider's rules.</p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="create-user">
+  <h2 id="create-user">Create a local user</h2>
+  <form method="post" hx-post="/admin/users" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="new-username">Username</label>
+      <input type="text" id="new-username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="64">
+    </div>
+    <div class="field">
+      <label for="new-email">E-mail (optional)</label>
+      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254">
+    </div>
+    <div class="field">
+      <label for="new-role">Role</label>
+      <select id="new-role" name="role">
+        <option value="user" selected>user</option>
+        <option value="admin">admin</option>
+      </select>
+    </div>
+    <button type="submit">Create user</button>
+    <div id="create-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Creating users needs JavaScript in this browser.</p></noscript>
+</section>
+<section aria-labelledby="accounts">
+  <div class="section-head"><h2 id="accounts">Accounts</h2></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Username</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">State</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    <tr>
+      <th scope="row">alice</th>
+      <td>alice@example.com</td>
+      <td>admin <span class="muted">(local)</span></td>
+      <td>active</td>
+      <td>set</td>
+      <td><time datetime="2026-11-09T08:30:00Z">2026-11-09</time></td>
+      <td><a href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000001">Manage alice</a></td>
+    </tr>
+    <tr>
+      <th scope="row">bob</th>
+      <td><span class="muted">none</span></td>
+      <td>user</td>
+      <td>active</td>
+      <td>temporary</td>
+      <td><time datetime="2026-11-09T08:30:00Z">2026-11-09</time></td>
+      <td><a href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002">Manage bob</a></td>
+    </tr>
+    <tr>
+      <th scope="row">carol</th>
+      <td><span class="muted">none</span></td>
+      <td>admin <span class="muted">(idp)</span></td>
+      <td>deactivated</td>
+      <td>none (single sign-on)</td>
+      <td><time datetime="2026-11-09T08:30:00Z">2026-11-09</time></td>
+      <td><a href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000003">Manage carol</a></td>
+    </tr>
+    
+    </tbody>
+  </table></div>
+</section>
+</div>
+
+
+    </main>

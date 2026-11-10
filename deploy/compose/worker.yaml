@@ -1,0 +1,97 @@
+# Minion Worker in a container (docs/install/worker-docker.md).
+#
+# This file runs a Worker that serves the tmux sessions of ONE Unix user on the
+# Docker host: it mounts that user's tmux socket directory and runs as the same
+# UID. The container can then do to those sessions whatever that user can; it is
+# not a sandbox against that user. Linux hosts only: Docker Desktop on macOS or
+# Windows runs containers in a virtual machine that cannot reach a host tmux.
+#
+# The image needs a tmux whose version EQUALS the tmux server on the host (a
+# client and a server of different versions refuse each other). Check
+#   tmux -V
+# on the host and pick the base image below accordingly, or remove the socket
+# mount and MINION_TMUX_SOCKET: the Worker then runs its own tmux inside the
+# container and serves sessions that live in the container.
+#
+# Preparation, in the directory that holds this file and bootstrap.sh (download
+# bootstrap.sh from the release, next to this file):
+#   1. Create an invitation key in the Hub (Workers, Add worker, Create an
+#      invitation key) and save it:   printf '%s' 'mnk_...' > invite_key.txt
+#   2. export WORKER_UID=$(id -u) WORKER_GID=$(id -g)
+#   3. MINION_SHARE_EXISTING=later docker compose -f worker.yaml up -d --build
+#      (all, none or later; later shares nothing until you choose in the Hub)
+#
+# The Worker reads the key from a file (MINION_INVITE_KEY_FILE); a literal key
+# on a command line is visible in the process list. The file must be owned by
+# the Worker's user and closed to everyone else: the init service does that.
+# After the first start the Worker is enrolled and keeps its identity in
+# ./worker-data; an enrolled Worker ignores the key. KEEP the file: Docker needs
+# the mounted file to exist whenever the container is restarted or recreated.
+# To erase the secret in place, let the root init service empty the same file:
+#   docker compose -f worker.yaml run --rm --no-deps init sh -c ': > /secret'
+# (do not delete, move or replace the file with an editor; an empty file is safe).
+services:
+  init:
+    image: busybox:1.37
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - >-
+        chown -R ${WORKER_UID:?set WORKER_UID}:${WORKER_GID:?set WORKER_GID} /data /cache &&
+        chown ${WORKER_UID}:${WORKER_GID} /secret && chmod 0400 /secret
+    volumes:
+      - ./worker-data:/data
+      - minion-worker-cache:/cache
+      - ./invite_key.txt:/secret
+
+  worker:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM debian:12-slim
+        RUN apt-get update \
+         && apt-get install -y --no-install-recommends tmux curl ca-certificates \
+         && rm -rf /var/lib/apt/lists/*
+        COPY bootstrap.sh /usr/local/bin/bootstrap.sh
+    user: "${WORKER_UID:?set WORKER_UID}:${WORKER_GID:?set WORKER_GID}"
+    restart: unless-stopped
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/usr/local/bin/bootstrap.sh"]
+    command: ["worker", "up", "--foreground"]
+    environment:
+      # An exact version, or a channel (0.5, 0, latest). With an exact version
+      # you may add MINION_SHA256, the archive checksum from checksums.txt of
+      # that release; without it the signature of the release is verified.
+      MINION_VERSION: ${MINION_VERSION:-v0.5.0}
+      MINION_CACHE_DIR: /cache
+      MINION_STATE_DIR: /data
+      MINION_SERVER: ${MINION_SERVER:-https://hub.example.com}
+      MINION_INVITE_KEY_FILE: /run/secrets/minion_invite_key
+      # What the Hub may see: all, none or later. A container has no terminal
+      # to ask on, so a Worker that has no saved choice needs it: give it on the
+      # FIRST start (MINION_SHARE_EXISTING=later docker compose ... up -d). The
+      # Worker applies the value at every start while it is set, replacing a
+      # choice made in the Hub, so leave it unset afterwards: the saved choice,
+      # including the Hub's, then stays.
+      MINION_SHARE_EXISTING: ${MINION_SHARE_EXISTING:-}
+      MINION_NAME: ${MINION_NAME:-docker-worker}
+      # The host user's tmux server (remove these two lines for sessions that
+      # live in the container). The default socket of UID 1000 is
+      # /tmp/tmux-1000/default; adjust the host path to your UID.
+      MINION_TMUX_SOCKET: /tmux/default
+    volumes:
+      - ./worker-data:/data
+      - minion-worker-cache:/cache
+      - /tmp/tmux-${WORKER_UID:-1000}:/tmux
+    secrets:
+      - minion_invite_key
+
+secrets:
+  minion_invite_key:
+    file: ./invite_key.txt
+
+volumes:
+  minion-worker-cache:

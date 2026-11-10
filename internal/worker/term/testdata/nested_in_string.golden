@@ -1,0 +1,12 @@
+in:  "a\x1b]52;c;\x1b]52;c;AAAA\a tail\ab"
+out: "a tailb"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "a tailb"
+  ],
+  "spans": [],
+  "cursor": null
+}

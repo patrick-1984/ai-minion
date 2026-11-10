@@ -1,0 +1,16 @@
+
+  paragraph 3 line 1: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 2: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 3: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 4: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 5: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 6: the quick brown fox jumps over the lazy dog
+
+  paragraph 4 line 1: the quick brown fox jumps over the lazy dog
+
+⠙ Thinking... (esc to cancel, 8s)
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Type your message or @path/to/file                                 │
+╰──────────────────────────────────────────────────────────────────────╯
+~/project   no sandbox (see /docs)   qwen3-coder-plus (100% context left)

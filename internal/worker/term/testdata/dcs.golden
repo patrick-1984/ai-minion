@@ -1,0 +1,12 @@
+in:  "a\x1bP1$r0m\x1b\\b\x1bP+q544e\ac"
+out: "abc"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "abc"
+  ],
+  "spans": [],
+  "cursor": null
+}

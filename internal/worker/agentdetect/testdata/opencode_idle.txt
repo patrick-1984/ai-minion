@@ -1,0 +1,8 @@
+
+                     opencode
+
+   ┃                                                 ┃
+   ┃  Ask anything... "Fix a TODO in the codebase"   ┃
+   ┃                                                 ┃
+
+   tab agents   ctrl+p commands

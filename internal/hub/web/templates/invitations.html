@@ -1,0 +1,84 @@
+{{define "invitation_key"}}<div class="secret" role="status">
+  <p><strong>Invitation key{{if .Name}} "{{.Name}}"{{end}} created.</strong> It is {{.Mode}}, kind {{.Kind}}, and expires: {{.Expires}}.</p>
+  <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
+  <div class="field">
+    <label for="invite-key">Invitation key</label>
+    <input type="text" id="invite-key" value="{{.Key}}" readonly autocomplete="off" spellcheck="false">
+    <button type="button" data-copy="#invite-key">Copy the key</button>
+  </div>
+  <h3>Start a Worker with one command</h3>
+  <p class="muted">Run this on the machine that should become a Worker. The key is visible in the process list while the command runs; use the file variant below on shared machines.</p>
+  <pre id="invite-oneliner">{{.OneLiner}}</pre>
+  <button type="button" data-copy="#invite-oneliner">Copy the command</button>
+  <h3>Same, with the key in a file</h3>
+  <pre id="invite-file">{{.FileVariant}}</pre>
+  <button type="button" data-copy="#invite-file">Copy the commands</button>
+  <h3>Docker Compose</h3>
+  <p class="muted">A complete Compose project that needs only Docker, <code>bootstrap.sh</code> from the release and the key in a file. The key stays in a secret file; the container reads it through <code>MINION_INVITE_KEY_FILE</code>.</p>
+  <pre id="invite-compose">{{.Compose}}</pre>
+  <button type="button" data-copy="#invite-compose">Copy the Compose file</button>
+  <p><a href="/invitations">Back to the invitation keys</a></p>
+</div>{{end}}
+{{define "content"}}
+<div class="page-head"><div><h1>Invitation keys</h1><p>An invitation key lets a machine enroll itself as a Worker in your space. Expiry only stops new enrollments: a Worker that has enrolled keeps working.</p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="create-invitation">
+  <h2 id="create-invitation">Create an invitation key</h2>
+  <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    <div class="field">
+      <label for="inv-mode">Use</label>
+      <select id="inv-mode" name="mode">
+        {{range .Data.Modes}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="inv-ttl">Valid for</label>
+      <select id="inv-ttl" name="ttl">
+        {{range .Data.TTLs}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="inv-name">Name (optional, to recognise the key in the list)</label>
+      <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64">
+    </div>
+    {{if .Data.Admin}}<div class="field">
+      <label for="inv-kind">Kind</label>
+      <select id="inv-kind" name="kind">
+        <option value="private" selected>Private (the Worker joins your space)</option>
+        <option value="infrastructure">Infrastructure (shared, only an admin can reassign it)</option>
+      </select>
+    </div>{{end}}
+    <button type="submit">Create the key</button>
+    <div id="create-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
+</section>
+<section aria-labelledby="invitation-list">
+  <h2 id="invitation-list">{{if .Data.All}}All invitation keys{{else}}Your invitation keys{{end}}</h2>
+  {{if .Data.Admin}}<p class="muted">{{if .Data.All}}<a href="/invitations">Show only my keys</a>{{else}}<a href="/invitations?all=1">Show the keys of every user</a>{{end}}</p>{{end}}
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Name</th><th scope="col">Use</th><th scope="col">Kind</th><th scope="col">Uses</th><th scope="col">Expires</th><th scope="col">State</th>{{if .Data.All}}<th scope="col">Created by</th>{{end}}<th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    {{range .Data.Invitations}}<tr>
+      <th scope="row">{{.Name}}</th>
+      <td>{{.Mode}}</td>
+      <td>{{.Kind}}</td>
+      <td>{{.Uses}}</td>
+      <td>{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}}</td>
+      <td>{{.Status}}</td>
+      {{if $.Data.All}}<td>{{.CreatorID}}</td>{{end}}
+      <td>{{if .CanRevoke}}<form method="post" hx-post="/invitations/{{.ID}}/revoke" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
+          <button type="submit" class="btn-danger">Revoke{{if .Name}} {{.Name}}{{end}}</button>
+          <span id="revoke-{{.ID}}" aria-live="polite"></span>
+        </form>{{else}}<span class="muted">none</span>{{end}}</td>
+    </tr>
+    {{else}}<tr><td colspan="{{if .Data.All}}8{{else}}7{{end}}" class="muted">There are no invitation keys yet.</td></tr>
+    {{end}}
+    </tbody>
+  </table></div>
+</section>
+</div>
+<script src="/onboarding.js" defer></script>
+{{end}}

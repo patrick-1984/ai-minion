@@ -1,0 +1,6 @@
+Aider v0.86.0
+Main model: gpt-5 with diff edit format
+
+> Rename the helper
+
+Waiting for gpt-5

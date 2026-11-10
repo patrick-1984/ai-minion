@@ -1,0 +1,39 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Account</h1><p>The person this browser is signed in as.</p></div></div>
+<div class="stack">
+  <section class="panel" aria-labelledby="who-h">
+    <h2 id="who-h">Identity</h2>
+    <dl>
+      <dt>Name</dt><dd>{{.Data.Username}}</dd>
+      <dt>Role</dt><dd>{{.Data.RoleLabel}}</dd>
+      {{if .Data.ActingAs}}<dt>Acting as</dt><dd>{{.Data.ActingAs}} (everything you do is audited with your own name)</dd>{{end}}
+      {{if not .Data.ExpiresAt.IsZero}}<dt>Signed in until</dt><dd><time datetime="{{.Data.ExpiresAt.Format "2006-01-02T15:04:05Z07:00"}}">{{.Data.ExpiresAt.Format "2006-01-02 15:04"}} UTC</time></dd>{{end}}
+    </dl>
+  </section>
+  <section class="panel" aria-labelledby="pw-h">
+    <h2 id="pw-h">Password</h2>
+    <p class="muted">Change the password of this account. Accounts that sign in through an identity provider keep their password there.</p>
+    <a class="btn btn-secondary" href="/account/password">Change password</a>
+  </section>
+  <section class="panel" aria-labelledby="keys-h">
+    <h2 id="keys-h">API keys</h2>
+    <p class="muted">Keys let tools and scripts act for you, limited to what you choose.</p>
+    <a class="btn btn-secondary" href="/api-keys">Manage API keys</a>
+  </section>
+  <section class="panel" aria-labelledby="theme-h">
+    <h2 id="theme-h">Appearance</h2>
+    <p class="muted">The theme is saved in this browser only. System follows your operating system.</p>
+    <div class="field"><label for="theme-account">Theme</label>
+      <select id="theme-account" data-theme-select>
+        <option value="system">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </div>
+  </section>
+  <section class="panel" aria-labelledby="out-h">
+    <h2 id="out-h">Sign out</h2>
+    <form data-json-action="/auth/logout" data-next="/login"><button type="submit" class="btn btn-secondary">Sign out</button></form>
+  </section>
+</div>
+{{end}}

@@ -1,0 +1,16 @@
+in:  "a\x1b[2Ab\x1b[3Bc\x1b[4Cd\x1b[5De\x1b[1Ef\x1b[2Fg\x1b[7Gh"
+out: "a\x1b[2Ab\x1b[3Bc\x1b[4Cd\x1b[5De\x1b[1Ef\x1b[2Fg\x1b[7Gh"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "ab",
+    "",
+    "g     h",
+    "  ce   d",
+    "f"
+  ],
+  "spans": [],
+  "cursor": null
+}

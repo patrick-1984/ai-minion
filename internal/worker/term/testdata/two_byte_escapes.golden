@@ -1,0 +1,12 @@
+in:  "\x1bc\x1b7\x1b8\x1bM\x1b=\x1b>\x1b(B\x1b)0\x1b#8x"
+out: "x"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "x"
+  ],
+  "spans": [],
+  "cursor": null
+}

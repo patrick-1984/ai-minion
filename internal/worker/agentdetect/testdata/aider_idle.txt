@@ -1,0 +1,12 @@
+Aider v0.86.0
+Main model: gpt-5 with diff edit format
+Git repo: .git with 42 files
+Repo-map: using 4096 tokens, auto refresh
+
+> Add a --verbose flag
+
+I added the flag to cmd/main.go.
+
+Tokens: 3.1k sent, 210 received.
+
+> 

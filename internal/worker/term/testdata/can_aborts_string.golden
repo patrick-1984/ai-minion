@@ -1,0 +1,12 @@
+in:  "a\x1b]52;c;AAAA\x18visible"
+out: "avisible"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "avisible"
+  ],
+  "spans": [],
+  "cursor": null
+}

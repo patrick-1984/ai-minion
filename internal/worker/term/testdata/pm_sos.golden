@@ -1,0 +1,12 @@
+in:  "a\x1b^private\x1b\\b\x1bXsos\ac"
+out: "abc"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "abc"
+  ],
+  "spans": [],
+  "cursor": null
+}

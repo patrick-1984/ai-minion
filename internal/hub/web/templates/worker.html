@@ -1,0 +1,25 @@
+{{define "content"}}
+<div class="inspect-layout" id="inspect-layout">
+<div class="inspect-main" data-modal-inert>
+{{template "inspector_kept"}}
+<div class="page-head">
+  <div><h1>{{.Data.Name}}</h1><p>A worker and its sessions. The table updates live.</p></div>
+  <div class="page-actions"><a class="btn btn-secondary" href="{{.Data.ListURL}}">All workers</a></div>
+</div>
+{{if .Data.CanFilter}}<nav aria-label="Whose workers" class="scope" id="scope-switch">
+  <a href="{{.Data.MineURL}}"{{if eq .Data.Scope "mine"}} aria-current="true"{{end}}>Mine</a>
+  <a href="{{.Data.AllURL}}"{{if eq .Data.Scope "all"}} aria-current="true"{{end}}>All users</a>
+</nav>
+{{end}}<p class="sr-only" id="list-announce" role="status" aria-live="polite"></p>
+<div id="list-result" aria-live="polite"></div>
+<div id="results" class="stack" data-live-list sse-connect="{{.Data.LiveURL}}" sse-swap="dashboard" hx-swap="innerHTML">{{template "worker_results" .Data.WorkerView}}</div>
+{{if .Data.ShareURL}}<section class="panel" aria-labelledby="share-h" id="share-section">
+  <h2 id="share-h">Sharing</h2>
+  <div id="share-panel" hx-get="{{.Data.ShareURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the sharing choice...</p></div>
+</section>
+{{end}}</div>
+{{template "inspector" .Data.Context}}
+</div>
+<script src="/static/live-list.js" defer></script>
+<script src="/static/inspector.js" defer></script>
+{{end}}

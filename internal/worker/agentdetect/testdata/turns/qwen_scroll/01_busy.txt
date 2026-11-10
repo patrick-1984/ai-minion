@@ -1,0 +1,16 @@
+✦ Hi, how can I help?
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Summarise the README                                               │
+╰──────────────────────────────────────────────────────────────────────╯
+
+✦ paragraph 1 line 1: the quick brown fox jumps over the lazy dog
+  paragraph 1 line 2: the quick brown fox jumps over the lazy dog
+  paragraph 1 line 3: the quick brown fox jumps over the lazy dog
+
+⠙ Thinking... (esc to cancel, 1s)
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Type your message or @path/to/file                                 │
+╰──────────────────────────────────────────────────────────────────────╯
+~/project   no sandbox (see /docs)   qwen3-coder-plus (100% context left)

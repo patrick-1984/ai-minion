@@ -1,0 +1,12 @@
+in:  "a\U000e0049\U000e0067\U000e006eb\U000e007f"
+out: "ab"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "ab"
+  ],
+  "spans": [],
+  "cursor": null
+}

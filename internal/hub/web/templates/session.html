@@ -1,0 +1,164 @@
+{{define "panel"}}<div id="screen-panel">
+  <p class="screen-meta" id="pane-status"><span class="badge" data-state="{{.State}}">{{.StateLabel}}</span> {{if .Kind}}Kind: {{.Kind}}. {{end}}{{if .State}}State: {{.State}}. {{end}}{{if .Width}}Size: {{.Width}}x{{.Height}}.{{end}}{{if .Captured}} Captured <time datetime="{{.CapturedAt}}">{{.Captured}}</time>.{{end}}</p>
+  {{template "screen" .Screen}}
+  {{with .Answer}}<section class="answer" aria-labelledby="answer-h">
+    <h3 id="answer-h">The pane shows a dialog</h3>
+    <p class="help">Select an option or type another answer, then choose Send answer. The page cannot read the option labels: compare with the screen above. A change of the dialog cancels your choice.</p>
+    {{/* One form, one submit button: pressing Enter in the answer box submits it with
+         that button, and a choice is only sent by the separate Send answer button. */}}
+    <form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" data-write data-answer-form>
+      {{range .Reviewed}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+      {{end}}<fieldset class="choices">
+        <legend class="sr-only">Options</legend>
+        {{range .Choices}}<label class="choice"><input type="radio" name="choice" value="{{.}}"> {{.}}</label>
+        {{end}}
+      </fieldset>
+      <div class="field">
+        <label for="answer-choice">Other answer</label>
+        <input type="text" id="answer-choice" name="choice_text" autocomplete="off" spellcheck="false" maxlength="64" data-draft>
+      </div>
+      <div class="form-actions"><button type="submit">Send answer</button></div>
+    </form>
+  </section>{{else}}{{if .AnswerNote}}<p class="notice notice-warning" role="status">{{.AnswerNote}}</p>{{end}}{{end}}
+</div>{{end}}
+
+{{define "result"}}{{range .Results}}<div class="result result-{{.Kind}}" role="status">
+  <p class="result-title"><strong>{{.Label}}:</strong> {{.Summary}}{{if .Reason}} <code>{{.Reason}}</code>{{end}}</p>
+  {{range .Warnings}}<span class="session-warning">Warning: {{.}}</span>
+  {{end}}{{if .Submitted}}<details><summary>The text that was submitted</summary><pre>{{.Submitted}}</pre></details>
+  {{end}}{{with .Force}}<form method="post" action="{{.Action}}" hx-post="{{.Action}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" data-write data-force data-target="{{.Target}}">
+    {{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+    {{end}}<input type="hidden" name="force" value="1">
+    <button type="submit" class="btn-danger">Send anyway</button>
+    <dialog class="force-dialog" aria-labelledby="force-h">
+      <h2 id="force-h">Send anyway to {{.Target}}?</h2>
+      <p>The session may have changed since the screen was captured. This can run a command. Nothing is sent until you confirm.</p>
+      <div class="form-actions">
+        <button type="button" class="btn-secondary" data-dialog-cancel autofocus>Cancel</button>
+        <button type="submit" class="btn-danger-solid">Send anyway</button>
+      </div>
+    </dialog>
+  </form>{{end}}
+  {{if .Target}}<p class="result-meta">{{.Target}}{{if .At}} at {{.At}}{{end}}</p>{{end}}
+</div>
+{{end}}{{end}}
+
+{{define "skiplinks"}}{{if .Data.Operate}}<a class="skip-link" href="#session-controls" data-modal-inert>Skip to session controls</a>{{end}}{{end}}
+
+{{define "content"}}
+{{$panes := and .Data.Panes (not .Embed)}}
+<div id="session-view"{{if .Embed}} data-embed="true"{{end}} data-context="{{.Data.Context}}" data-events-url="{{.Data.EventsURL}}" data-screen-url="{{.Data.ScreenURL}}" data-worker-id="{{.Data.WorkerID}}" data-session="{{.Data.Session}}" data-online="{{if .Data.Online}}true{{else}}false{{end}}" data-target="{{.Data.Session}} on {{.Data.Worker}}">
+  <header class="session-head">
+    <div class="session-title">
+      <h1>{{.Data.Session}} <span class="muted">on {{.Data.Worker}}</span></h1>
+      <div class="row">
+        {{if $panes}}<button type="button" class="btn btn-secondary" id="pane-toggle" aria-expanded="false" aria-controls="session-pane" hidden>{{template "icon" "i-panel"}}<span>{{if gt (len .Data.Panes) 1}}Conversation and details{{else}}Details{{end}}</span></button>{{end}}
+        {{if and .Data.Operate (not .Embed)}}<form method="post" action="{{.Data.NewURL}}" hx-post="{{.Data.NewURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="New session">
+          <button type="submit" class="btn btn-secondary">New session on {{.Data.Worker}}</button>
+        </form>{{end}}
+      </div>
+    </div>
+    <ul class="facts" aria-label="Session facts">
+      <li>Worker <strong>{{.Data.Worker}}</strong> <span class="badge" data-online="{{if .Data.Online}}true{{else}}false{{end}}">{{if .Data.Online}}online{{else}}offline{{end}}</span></li>
+      {{if .Data.Owner}}<li>Owner <strong>{{.Data.Owner}}</strong></li>{{end}}
+      <li>Access <strong>{{if .Data.Operate}}You can send input{{else}}View only{{end}}</strong></li>
+    </ul>
+  </header>
+  {{if .Data.Notice}}<p class="notice notice-warning" role="status">{{.Data.Notice}}</p>{{end}}
+  {{if and .Data.Online (not .Data.Operate)}}<p class="notice notice-info" role="status">You can view this session. You don't have permission to send input.</p>{{end}}
+  <div class="session-grid{{if $panes}} has-pane{{end}}" id="session-grid">
+    <div class="terminal-card">
+      {{if .Data.Online}}<div class="terminal-bar">
+        <span class="conn" id="conn" data-conn="connecting">Connecting</span>
+        <span class="muted" id="age"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-secondary" id="pause-toggle" aria-pressed="false" hidden>{{template "icon" "i-pause"}}<span>Pause</span></button>
+        <button type="button" class="btn btn-secondary" id="copy-screen" hidden>{{template "icon" "i-copy"}}<span>Copy screen</span></button>
+        <button type="button" class="btn btn-secondary" id="text-view" aria-pressed="false" hidden><span>Text view</span></button>
+      </div>
+      <p class="screen-meta" id="conn-note" hidden></p>
+      <p class="sr-only" id="conn-live" role="status" aria-live="polite"></p>
+      {{template "panel" .Data.Panel}}{{end}}
+      {{if .Data.Operate}}<div class="dock" id="session-controls" tabindex="-1">
+        <div class="dock-head"><h2 class="sr-only">Send input</h2><p class="dock-target">Input goes to <strong>{{.Data.Session}}</strong> on <strong>{{.Data.Worker}}</strong>.</p></div>
+        <div id="session-unknown" aria-live="polite"></div>
+        <div id="session-result" aria-live="polite"></div>
+        <div class="tabs" role="tablist" aria-label="Kind of input" id="dock-tabs" hidden>
+          <button type="button" role="tab" id="tab-text" aria-controls="dock-text" aria-selected="true" tabindex="0">Text</button>
+          <button type="button" role="tab" id="tab-keys" aria-controls="dock-keys" aria-selected="false" tabindex="-1">Keys</button>
+          <button type="button" role="tab" id="tab-task" aria-controls="dock-task" aria-selected="false" tabindex="-1">Task</button>
+          {{if and .Embed .Data.Conversation}}<button type="button" role="tab" id="tab-pipe" aria-controls="dock-pipe" aria-selected="false" tabindex="-1">Conversation</button>{{end}}
+        </div>
+        <section class="dock-section" id="dock-text" role="tabpanel" aria-labelledby="tab-text">
+          <h3>Text</h3>
+          {{/* Send is ONE request: the text with enter=1, which the Hub sends as one send_text call with submit=true (the text and
+               its Enter in one pane, under one lock). Enter in the box and the Send button are the same action. "Paste without
+               Enter" is the separate, clearly labelled secondary action that sends the text with no Enter. The two buttons are
+               the ONLY source of the enter field (no checkbox, no hidden field, so no duplicate value). hx-sync="this:drop": while a
+               request of this form is on its way another is dropped, never queued (htmx would otherwise queue it and send it later). */}}
+          <form method="post" action="{{.Data.TextURL}}" hx-post="{{.Data.TextURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-sync="this:drop" aria-label="Send text" data-write>
+            <div class="field">
+              <label for="send-text">Text to send</label>
+              <textarea id="send-text" name="text" rows="3" autocomplete="off" spellcheck="false" data-draft aria-describedby="send-help send-note"></textarea>
+              <span id="send-help" class="help">Enter sends the text and presses Enter in the session. Shift+Enter adds a line break. Line breaks are sent as typed, and in a shell a line break can run the line before it.</span>
+              <span id="send-note" class="help" role="status" aria-live="polite"></span>
+            </div>
+            <div class="form-actions"><button type="submit" id="send-primary" name="enter" value="1">Send</button><button type="submit" id="send-paste" name="enter" value="0" class="btn-secondary" aria-describedby="paste-help">Paste without Enter</button><span class="dock-target">to <strong>{{.Data.Session}}</strong> on <strong>{{.Data.Worker}}</strong></span></div>
+            <span id="paste-help" class="help">Paste without Enter types the text into the session and does not press Enter.</span>
+          </form>
+        </section>
+        <section class="dock-section" id="dock-keys" role="tabpanel" aria-labelledby="tab-keys">
+          <h3>Keys</h3>
+          <form method="post" action="{{.Data.KeysURL}}" hx-post="{{.Data.KeysURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-sync="this:drop" aria-label="Send a key" data-write data-keys>
+            <div class="key-grid">
+              {{range .Data.Keys}}<button type="submit" name="key" value="{{.Key}}" class="btn-secondary">{{.Label}}</button>
+              {{end}}
+            </div>
+            <p class="help">Each key is sent once, when you choose it. Interrupt can stop a command that is running.</p>
+          </form>
+          {{/* The explicit keyboard surface: only while IT has the focus, a named key goes to the session, by pressing the very
+               button above (so every guard of the button applies). It is shown by the script. It is not the page: Tab and
+               Escape leave it and are never sent, and the button leaves it too. */}}
+          <div class="key-surface" id="remote-keys" tabindex="0" role="group" aria-label="Keyboard for {{.Data.Session}} on {{.Data.Worker}}" aria-describedby="remote-keys-help remote-keys-state" hidden>
+            <p class="key-surface-title"><strong>Use the keyboard on the session</strong></p>
+            <p class="help" id="remote-keys-help">Click here or Tab to this box, then press an arrow key, Enter, Space, Backspace, Delete or Ctrl+C to send that one key to <strong>{{.Data.Session}}</strong> on <strong>{{.Data.Worker}}</strong>. A held key is sent once. Tab, Shift+Tab and Escape leave this box and are never sent; they have their own buttons above.</p>
+            <p class="key-surface-state" id="remote-keys-state" role="status" aria-live="polite"></p>
+            <button type="button" id="remote-keys-leave" class="btn-secondary">Back to the page</button>
+          </div>
+        </section>
+        <section class="dock-section" id="dock-task" role="tabpanel" aria-labelledby="tab-task">
+          <h3>Task</h3>
+          <form method="post" action="{{.Data.TaskURL}}" hx-post="{{.Data.TaskURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="Set the task">
+            <div class="field">
+              <label for="task-text">Task</label>
+              <input type="text" id="task-text" name="task" value="{{.Data.Task}}" data-saved="{{.Data.Task}}" autocomplete="off" spellcheck="false" maxlength="1024" aria-describedby="task-help">
+              <span id="task-help" class="help">Task is a label for this session. Saving it does not send terminal input.</span>
+            </div>
+            <div class="form-actions"><button type="submit">Save task</button><span class="draft-state" id="task-state" hidden>Unsaved changes</span></div>
+          </form>
+        </section>
+        {{if and .Embed .Data.Conversation}}<section class="dock-section" id="dock-pipe" role="tabpanel" aria-labelledby="tab-pipe">
+          <h3>Conversation</h3>
+          {{.Data.Conversation}}
+        </section>{{end}}
+      </div>{{end}}
+      {{if and .Embed .Data.Conversation (not .Data.Operate)}}<section class="dock pipe-readonly" id="pipe-readonly" aria-labelledby="pipe-readonly-h"><h2 id="pipe-readonly-h">Conversation</h2>{{.Data.Conversation}}</section>{{end}}
+    </div>
+    {{if $panes}}<aside class="session-pane" id="session-pane" aria-labelledby="pane-title">
+      <div class="session-pane-head"><h2 id="pane-title">{{if eq (len .Data.Panes) 1}}{{(index .Data.Panes 0).Label}}{{else}}Session{{end}}</h2><button type="button" class="btn btn-secondary" id="pane-close" hidden>{{template "icon" "i-close"}}<span>Close</span></button></div>
+      {{if gt (len .Data.Panes) 1}}<div class="pane-tabs" role="tablist" aria-label="Session views">
+        {{range $i, $p := .Data.Panes}}<button type="button" role="tab" id="pane-tab-{{$p.ID}}" aria-controls="pane-view-{{$p.ID}}" aria-selected="{{if eq $i 0}}true{{else}}false{{end}}" tabindex="{{if eq $i 0}}0{{else}}-1{{end}}">{{$p.Label}}</button>
+        {{end}}
+      </div>{{end}}
+      {{range $i, $p := .Data.Panes}}<div class="session-pane-body pane-view" id="pane-view-{{$p.ID}}"{{if gt (len $.Data.Panes) 1}} role="tabpanel" aria-labelledby="pane-tab-{{$p.ID}}"{{if ne $i 0}} hidden{{end}}{{end}}>{{$p.HTML}}</div>
+      {{end}}
+    </aside>
+    <div class="pane-scrim" id="pane-scrim"></div>{{end}}
+  </div>
+  <noscript><p class="muted">Typing and live updates need JavaScript in this browser.</p></noscript>
+</div>
+<script src="/static/terminal-input.js" defer></script>
+<script src="/static/session-ui.js" defer></script>
+{{if .Data.HasConversation}}<script src="/static/pipe-chat.js" defer></script>{{end}}
+{{if .Embed}}<script src="/static/frame-child.js" defer></script>
+{{end}}{{end}}

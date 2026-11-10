@@ -1,0 +1,12 @@
+in:  "a\u202eb\u202ac\u2066d\u2069e\u202ef"
+out: "abcdef"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "abcdef"
+  ],
+  "spans": [],
+  "cursor": null
+}

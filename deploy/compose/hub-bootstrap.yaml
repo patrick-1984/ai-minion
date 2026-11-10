@@ -1,0 +1,65 @@
+# Minion Hub without a registry pull (Story 9.3, R33): an ordinary base image
+# plus bootstrap.sh, which downloads, verifies and caches the minion binary.
+#
+# Preparation:
+#   1. Download bootstrap.sh from the release next to this file (or from
+#      https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh).
+#   2. printf '%s' 'choose-a-strong-password' > admin_password.txt
+#   3. docker compose -f hub-bootstrap.yaml up -d
+#
+# MINION_VERSION is an exact version (v1.4.2), a channel (1.4, 1, latest) or
+# empty (= latest). MINION_SHA256 (the archive checksum from that release's
+# checksums.txt) is allowed only with an exact version; with a channel the
+# script verifies the cosign signature instead. After the first start the
+# cache volume lets the Hub start without network: it then runs the newest
+# verified cached version matching the selector.
+#
+# Outbound connections of the hub container while it installs (open these in a
+# firewall): api.github.com (release list, channels only), github.com release
+# downloads (the Minion archive and, for the cosign path, checksums.txt, its
+# bundle and the pinned sigstore/cosign binary; GitHub redirects them to its
+# release-asset hosts) and tuf-repo-cdn.sigstore.dev (cosign fetches the Sigstore
+# trusted root there). With an exact MINION_VERSION plus MINION_SHA256 only the
+# archive download is needed, and nothing at all once it is cached.
+#
+# The Hub runs as UID 65532, like the registry image. The init service prepares
+# the bind-mounted data directory and the cache volume for that user (A-14).
+services:
+  init:
+    image: alpine:3.22
+    user: "0:0"
+    command: ["chown", "-R", "65532:65532", "/data", "/cache"]
+    volumes:
+      - ./hub-data:/data
+      - minion-cache:/cache
+
+  hub:
+    image: alpine:3.22
+    user: "65532:65532"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    command: ["hub", "serve"]
+    environment:
+      MINION_VERSION: ${MINION_VERSION:-latest}
+      MINION_SHA256: ${MINION_SHA256:-}
+      MINION_CACHE_DIR: /cache
+      MINION_DATA_DIR: /data
+      MINION_ADMIN_PASSWORD_FILE: /run/secrets/minion_admin_password
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./bootstrap.sh:/bootstrap.sh:ro
+      - ./hub-data:/data
+      - minion-cache:/cache
+    secrets:
+      - minion_admin_password
+
+secrets:
+  minion_admin_password:
+    file: ./admin_password.txt
+
+volumes:
+  minion-cache:

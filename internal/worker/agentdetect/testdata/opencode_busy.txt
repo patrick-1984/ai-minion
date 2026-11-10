@@ -1,0 +1,8 @@
+  Refactor the parser
+
+  ⠴ Thinking
+
+   ┃                                                 ┃
+   ┃                                                 ┃
+
+   esc interrupt   tab agents   ctrl+p commands

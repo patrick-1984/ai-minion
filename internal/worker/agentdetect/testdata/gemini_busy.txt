@@ -1,0 +1,8 @@
+> Explain main.go
+
+⠏ Thinking... (esc to cancel, 4s)
+
+╭────────────────────────────────────────────────────────────────╮
+│ >   Type your message or @path/to/file                         │
+╰────────────────────────────────────────────────────────────────╯
+~/project   no sandbox (see /docs)   gemini-2.5-pro (99% context left)

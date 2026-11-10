@@ -1,0 +1,12 @@
+in:  "\x1b]7;file:///etc\a\x1b]133;A\a\x1b]1337;File=inline=1:AAAA\az"
+out: "z"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "z"
+  ],
+  "spans": [],
+  "cursor": null
+}

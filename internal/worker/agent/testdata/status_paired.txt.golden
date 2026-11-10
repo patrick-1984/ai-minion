@@ -1,0 +1,14 @@
+Version:             v0.1.0
+Name:                lab-pi
+Mode:                Hub
+Hub URL:             https://hub.example:8443
+Connection:          connected (since 2026-11-10T12:30:00Z)
+Last error:          none
+Hub fingerprint:     gr2q7gf5lh6pzfdnurnkvputhpqvjjfvbfhbysv7ikdgkbptzf7a
+Worker fingerprint:  ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq
+Owner:               paired to alice
+Pairing code:        none pending
+Share mode:          select (build, docs)
+Preview only:        no
+tmux socket:         /run/user/1000/tmux-1000/default
+Sessions:            3

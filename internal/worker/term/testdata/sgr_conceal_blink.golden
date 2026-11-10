@@ -1,0 +1,12 @@
+in:  "\x1b[8mhidden\x1b[28m\x1b[5mblink\x1b[25m"
+out: "hiddenblink"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "hiddenblink"
+  ],
+  "spans": [],
+  "cursor": null
+}

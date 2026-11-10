@@ -1,0 +1,12 @@
+in:  "ok \xff\xfe bad \xc3 \xe2\x82 \xf0\x9f\x98 end"
+out: "ok �� bad � �� ��� end"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "ok �� bad � �� ��� end"
+  ],
+  "spans": [],
+  "cursor": null
+}

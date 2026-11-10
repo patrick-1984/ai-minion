@@ -1,0 +1,53 @@
+in:  "\x1b[1mbold\x1b[2mdim\x1b[3mital\x1b[4mul\x1b[7minv\x1b[0m plain"
+out: "\x1b[1mbold\x1b[2mdim\x1b[3mital\x1b[4mul\x1b[7minv\x1b[0m plain"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "bolddimitalulinv plain"
+  ],
+  "spans": [
+    {
+      "line": 0,
+      "start": 0,
+      "end": 4,
+      "bold": true
+    },
+    {
+      "line": 0,
+      "start": 4,
+      "end": 7,
+      "bold": true,
+      "dim": true
+    },
+    {
+      "line": 0,
+      "start": 7,
+      "end": 11,
+      "bold": true,
+      "dim": true,
+      "italic": true
+    },
+    {
+      "line": 0,
+      "start": 11,
+      "end": 13,
+      "bold": true,
+      "dim": true,
+      "italic": true,
+      "underline": true
+    },
+    {
+      "line": 0,
+      "start": 13,
+      "end": 16,
+      "bold": true,
+      "dim": true,
+      "italic": true,
+      "underline": true,
+      "inverse": true
+    }
+  ],
+  "cursor": null
+}

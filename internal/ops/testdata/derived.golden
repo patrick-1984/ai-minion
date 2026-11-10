@@ -1,0 +1,11 @@
+answer | rest POST /api/v1/ops/answer | wire answer | mcp answer | cli answer
+pipe_read | rest POST,GET /api/v1/ops/pipe_read | wire pipe_read | mcp pipe_read | cli pipe_read
+pipe_send | rest POST /api/v1/ops/pipe_send | wire pipe_send | mcp pipe_send | cli pipe_send
+pipe_wait | rest POST,GET /api/v1/ops/pipe_wait | wire pipe_wait | mcp pipe_wait | cli pipe_wait
+send_keys | rest POST /api/v1/ops/send_keys | wire send_keys | mcp send_keys | cli send_keys
+send_text | rest POST /api/v1/ops/send_text | wire send_text | mcp send_text | cli send_text
+session_capture | rest POST,GET /api/v1/ops/session_capture | wire session_capture | mcp session_capture | cli session_capture
+session_create | rest POST /api/v1/ops/session_create | wire session_create | mcp session_create | cli session_create
+session_snapshot | rest POST,GET /api/v1/ops/session_snapshot | wire session_snapshot | mcp session_snapshot | cli session_snapshot
+sessions_list | rest POST,GET /api/v1/ops/sessions_list | wire sessions_list | mcp sessions_list | cli sessions_list
+set_task | rest POST /api/v1/ops/set_task | wire set_task | mcp set_task | cli set_task

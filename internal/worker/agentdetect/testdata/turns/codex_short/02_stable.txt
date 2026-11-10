@@ -1,0 +1,16 @@
+│ >_ OpenAI Codex (v0.1)                                               │
+╰──────────────────────────────────────────────────────────────────────╯
+
+› hello
+
+• Hi, how can I help?
+
+› Summarise the README
+
+• The README describes a Worker that drives tmux sessions.
+  It lists install steps and the supported agents.
+
+
+› Find and fix a bug in @filename
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit   ? for shortcuts

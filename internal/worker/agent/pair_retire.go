@@ -1,0 +1,475 @@
+package agent
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/transport"
+)
+
+// Revoking a replaced Worker identity (AD-8, AD-9, Story 4.7).
+//
+// `minion worker pair --new-code` gives the Worker a new key. The old key is
+// still enrolled at the old Hub, and anyone who kept a copy of it could connect
+// as this Worker. So the old identity is retired at its Hub: the Worker
+// connects once more with the OLD key, authenticated by the old pin like any
+// connect (the handshake proves the key, nothing else is trusted), and asks the
+// Hub to remove that enrollment with the catalog op [RetireOp]
+// (ops.OpWorkerRetire, Hub scope, integrator amendment A-16) on a call stream.
+// The Hub (internal/hub/workers, calls.go) removes the Worker row of the
+// authenticated key, leaves a tombstone (AD-9) and ends the connection, so every
+// later connect with the old key gets the signed revoke. Until then the old identity is kept in a private file in the state
+// directory (a "pending revocation"): the Hub may be offline, the CLI may be run
+// on a machine without the service, the service may be restarted. The record is
+// deleted only after the Hub answered the request, or answered the old key's
+// connect with a revoke it signed (already removed) or not_enrolled (it does not
+// know the key, so there is nothing to revoke).
+
+// RetireOp is the name of the catalog op (`op.request` on a `ca` stream) with
+// which a Worker asks its Hub to remove the enrollment of the key that
+// authenticated the connection. A Hub that does not implement it answers
+// unsupported_op (or not at all), and the pending revocation stays.
+const RetireOp = ops.OpWorkerRetire
+
+const (
+	retiredDirName = "retired"
+	// retireCallTimeout bounds the wait for the Hub's answer to RetireOp.
+	retireCallTimeout = 15 * time.Second
+	// DefaultAdmittedRetry is the least wait before another attempt after a
+	// connect that the Hub admitted ("welcome") but whose retirement it did
+	// not carry out. Each such attempt makes the old identity appear online at
+	// the Hub, so a Hub that does not support the op (an older release) must
+	// not see it every minute.
+	DefaultAdmittedRetry = 10 * time.Minute
+	// DefaultRetirePoll is how often the running retirer looks for pending
+	// revocations that another process (the CLI) added.
+	DefaultRetirePoll = 30 * time.Second
+)
+
+// RetiredIdentity is an old Worker identity whose enrollment still has to be
+// revoked at its Hub.
+type RetiredIdentity struct {
+	// Key is the old Worker key. It is a secret, kept in a private file.
+	Key *identity.Key
+	// HubURL is the Hub the old key was enrolled with.
+	HubURL string
+	// Pin is the Hub key the old enrollment pinned (the Hub is authenticated
+	// by it when the revocation connects).
+	Pin identity.Pin
+	// WorkerID is the Worker id the Hub gave the old identity (informational).
+	WorkerID string
+	// RetiredAt is when the identity was replaced.
+	RetiredAt time.Time
+}
+
+// Fingerprint returns the fingerprint of the old key.
+func (r RetiredIdentity) Fingerprint() string { return string(r.Key.Fingerprint()) }
+
+type retiredMeta struct {
+	Version   int          `json:"version"`
+	HubURL    string       `json:"hub_url"`
+	HubPub    identity.B64 `json:"hub_pub"`
+	PinSeq    uint64       `json:"pin_seq"`
+	WorkerID  string       `json:"worker_id,omitempty"`
+	RetiredAt time.Time    `json:"retired_at"`
+}
+
+// RetiredStore holds the pending revocations: for each old identity a private
+// key file and a private metadata file in the "retired" directory of the state
+// directory.
+type RetiredStore struct{ dir string }
+
+// NewRetiredStore returns the store of the state directory stateDir.
+func NewRetiredStore(stateDir string) *RetiredStore {
+	return &RetiredStore{dir: filepath.Join(stateDir, retiredDirName)}
+}
+
+// RetiredStore returns the pending revocations of this Worker's state
+// directory.
+func (e *Enrollments) RetiredStore() *RetiredStore { return NewRetiredStore(e.stateDir) }
+
+func (s *RetiredStore) paths(fp string) (keyPath, metaPath string) {
+	return filepath.Join(s.dir, fp+".key"), filepath.Join(s.dir, fp+".json")
+}
+
+// Add stores r durably. The key goes first, the metadata last: a record exists
+// only when both are complete, and adding the same identity again replaces it.
+func (s *RetiredStore) Add(r RetiredIdentity) error {
+	if r.Key == nil || len(r.Pin.Pub) == 0 || r.HubURL == "" {
+		return errors.New("agent: a retired identity needs its key, the Hub pin and the Hub URL")
+	}
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return fmt.Errorf("agent: create %s: %w", s.dir, err)
+	}
+	keyPath, metaPath := s.paths(r.Fingerprint())
+	if err := identity.SaveKey(keyPath, r.Key); err != nil {
+		return fmt.Errorf("agent: save the retired Worker key: %w", err)
+	}
+	if r.RetiredAt.IsZero() {
+		r.RetiredAt = time.Now()
+	}
+	raw, err := json.Marshal(retiredMeta{
+		Version: 1, HubURL: r.HubURL, HubPub: identity.B64(r.Pin.Pub), PinSeq: r.Pin.Seq,
+		WorkerID: r.WorkerID, RetiredAt: r.RetiredAt.UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	if err := identity.WritePrivate(metaPath, raw); err != nil {
+		return fmt.Errorf("agent: save the pending revocation: %w", err)
+	}
+	return nil
+}
+
+// List returns the pending revocations, oldest first. A record that cannot be
+// read is reported in the error and skipped; the others are still returned.
+func (s *RetiredStore) List() ([]RetiredIdentity, error) {
+	entries, err := os.ReadDir(s.dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("agent: read %s: %w", s.dir, err)
+	}
+	var out []RetiredIdentity
+	var errs []error
+	for _, ent := range entries {
+		fp, ok := strings.CutSuffix(ent.Name(), ".json")
+		if !ok || ent.IsDir() {
+			continue
+		}
+		r, err := s.load(fp)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("pending revocation %s: %w", fp, err))
+			continue
+		}
+		out = append(out, r)
+	}
+	for i := 1; i < len(out); i++ { // insertion sort: a handful of records
+		for j := i; j > 0 && out[j].RetiredAt.Before(out[j-1].RetiredAt); j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out, errors.Join(errs...)
+}
+
+func (s *RetiredStore) load(fp string) (RetiredIdentity, error) {
+	keyPath, metaPath := s.paths(fp)
+	raw, err := os.ReadFile(metaPath)
+	if err != nil {
+		return RetiredIdentity{}, err
+	}
+	var m retiredMeta
+	if err := json.Unmarshal(raw, &m); err != nil || m.Version != 1 {
+		return RetiredIdentity{}, errors.New("unreadable metadata")
+	}
+	k, err := identity.LoadKey(keyPath)
+	if err != nil {
+		return RetiredIdentity{}, fmt.Errorf("load the key: %w", err)
+	}
+	return RetiredIdentity{
+		Key: k, HubURL: m.HubURL, Pin: identity.Pin{Pub: ed25519.PublicKey(m.HubPub), Seq: m.PinSeq}, WorkerID: m.WorkerID, RetiredAt: m.RetiredAt,
+	}, nil
+}
+
+// Remove deletes the record of the identity with fingerprint fp. The metadata
+// goes first, so a crash never leaves a record without its key.
+func (s *RetiredStore) Remove(fp string) error {
+	keyPath, metaPath := s.paths(fp)
+	for _, p := range []string{metaPath, keyPath} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// RetirerConfig configures a [Retirer]. Store and Dialer are required.
+type RetirerConfig struct {
+	Store *RetiredStore
+	// Dialer is the connect transport (the same port as the connector's).
+	Dialer Dialer
+	// Name is the Worker's display name for the hello.
+	Name string
+	// Protocols is the supported protocol range; zero means proto.Current.
+	Protocols proto.Range
+	// Session tunes the yamux session.
+	Session transport.SessionOptions
+	// Clock and Backoff pace the retries; nil means the system clock and the
+	// default sequence.
+	Clock   transport.Clock
+	Backoff *transport.Backoff
+	// Poll is how often [Retirer.Run] looks for new pending revocations; zero
+	// means [DefaultRetirePoll].
+	Poll time.Duration
+	// AdmittedRetry is the least wait after an attempt that was admitted but
+	// not retired; zero means [DefaultAdmittedRetry].
+	AdmittedRetry time.Duration
+	// Logger receives operational messages, never key material. Nil discards
+	// them.
+	Logger *slog.Logger
+}
+
+// Retirer carries out the pending revocations of replaced Worker identities.
+type Retirer struct {
+	cfg RetirerConfig
+	log *slog.Logger
+	clk transport.Clock
+	bo  *transport.Backoff
+
+	mu       sync.Mutex
+	lastFail map[string]string // fingerprint -> last failure that was logged at Warn
+	admitted bool              // the last RunOnce had an attempt that was admitted but not retired
+}
+
+// admittedError marks an attempt that the Hub admitted (welcome) but that did
+// not end in a retirement.
+type admittedError struct{ err error }
+
+func (e *admittedError) Error() string { return e.err.Error() }
+func (e *admittedError) Unwrap() error { return e.err }
+
+// NewRetirer validates cfg and returns a retirer.
+func NewRetirer(cfg RetirerConfig) (*Retirer, error) {
+	switch {
+	case cfg.Store == nil:
+		return nil, errors.New("agent: the retirer needs the store of pending revocations")
+	case cfg.Dialer == nil:
+		return nil, errors.New("agent: the retirer needs a dialer")
+	}
+	r := &Retirer{cfg: cfg, log: cfg.Logger, clk: cfg.Clock, bo: cfg.Backoff, lastFail: map[string]string{}}
+	if r.log == nil {
+		r.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	if r.clk == nil {
+		r.clk = transport.SystemClock
+	}
+	if r.bo == nil {
+		r.bo = &transport.Backoff{}
+	}
+	if r.cfg.Poll <= 0 {
+		r.cfg.Poll = DefaultRetirePoll
+	}
+	if r.cfg.AdmittedRetry <= 0 {
+		r.cfg.AdmittedRetry = DefaultAdmittedRetry
+	}
+	return r, nil
+}
+
+// RunOnce makes one attempt for every pending revocation and returns how many
+// are still pending (including records it could not read). A revocation that
+// the Hub confirmed is deleted.
+func (r *Retirer) RunOnce(ctx context.Context) (remaining int, err error) {
+	r.setAdmitted(false)
+	list, listErr := r.cfg.Store.List()
+	if listErr != nil {
+		r.log.Warn("some pending revocations cannot be read", "error", listErr.Error())
+		remaining++
+	}
+	for _, id := range list {
+		if ctx.Err() != nil {
+			return remaining + len(list), ctx.Err()
+		}
+		fp := id.Fingerprint()
+		done, err := r.retireOne(ctx, id)
+		if err != nil {
+			remaining++
+			var ae *admittedError
+			if errors.As(err, &ae) {
+				r.setAdmitted(true)
+			}
+			r.logFail(fp, id, err)
+			continue
+		}
+		if err := r.cfg.Store.Remove(fp); err != nil {
+			remaining++
+			r.logFail(fp, id, fmt.Errorf("delete the record: %w", err))
+			continue
+		}
+		r.clearFail(fp)
+		r.log.Info("revoked the old Worker identity at the hub", "hub", hubLabel(id.HubURL), "old_fingerprint", fp, "result", done)
+	}
+	return remaining, nil
+}
+
+// Run carries out pending revocations until ctx ends: a failing attempt is
+// retried with the AD-3 backoff without any time limit (and, when the Hub
+// admitted the old key but did not retire it, after at least
+// [RetirerConfig.AdmittedRetry]), and with nothing pending it looks again after
+// the poll interval, because the CLI adds records from another process.
+func (r *Retirer) Run(ctx context.Context) {
+	for ctx.Err() == nil {
+		remaining, err := r.RunOnce(ctx)
+		if err != nil {
+			return
+		}
+		var werr error
+		if remaining == 0 {
+			r.bo.Reset()
+			select {
+			case <-r.clk.After(r.cfg.Poll):
+			case <-ctx.Done():
+				werr = ctx.Err()
+			}
+		} else {
+			d := r.bo.Next()
+			if r.wasAdmitted() {
+				d = max(d, r.cfg.AdmittedRetry)
+			}
+			select {
+			case <-r.clk.After(d):
+			case <-ctx.Done():
+				werr = ctx.Err()
+			}
+		}
+		if werr != nil {
+			return
+		}
+	}
+}
+
+func (r *Retirer) setAdmitted(v bool) {
+	r.mu.Lock()
+	r.admitted = v
+	r.mu.Unlock()
+}
+
+func (r *Retirer) wasAdmitted() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.admitted
+}
+
+func (r *Retirer) logFail(fp string, id RetiredIdentity, err error) {
+	msg := err.Error()
+	r.mu.Lock()
+	repeat := r.lastFail[fp] == msg
+	r.lastFail[fp] = msg
+	r.mu.Unlock()
+	if repeat {
+		r.log.Debug("revoking the old Worker identity failed again", "old_fingerprint", fp, "error", msg)
+		return
+	}
+	r.log.Warn("cannot revoke the old Worker identity at the hub yet; retrying with backoff",
+		"hub", hubLabel(id.HubURL), "old_fingerprint", fp, "error", msg)
+}
+
+func (r *Retirer) clearFail(fp string) {
+	r.mu.Lock()
+	delete(r.lastFail, fp)
+	r.mu.Unlock()
+}
+
+// retireOne connects with the old key and revokes its enrollment. It returns a
+// short result word for the log, or an error when the revocation is still
+// pending.
+func (r *Retirer) retireOne(ctx context.Context, id RetiredIdentity) (string, error) {
+	att, err := r.cfg.Dialer.Connect(ctx, ConnectParams{
+		HubURL:    id.HubURL,
+		Key:       id.Key,
+		Name:      r.cfg.Name,
+		Protocols: r.cfg.Protocols,
+		Pin:       id.Pin,
+		Session:   r.cfg.Session,
+	})
+	if err != nil {
+		return "", fmt.Errorf("connect with the old key: %w", err)
+	}
+	switch att.Reply.Type {
+	case proto.TypeRevoke:
+		if err := identity.Verify(att.Pin.Pub, identity.PurposeRevoke, att.TranscriptHash, att.Reply.RevokeSig); err != nil {
+			return "", errors.New("the hub answered with a revoke that the pinned hub key did not sign for this connection")
+		}
+		return "already_revoked", nil
+	case proto.TypeNotEnrolled:
+		return "not_enrolled", nil
+	case proto.TypeWelcome:
+		if att.Session == nil {
+			return "", errors.New("welcome without a session")
+		}
+		// Ending ctx aborts everything below at once: the session is closed,
+		// which fails the open and the read, so a stop is never held up by a
+		// Hub that does not answer.
+		stop := context.AfterFunc(ctx, func() { _ = att.Session.Close() })
+		defer func() {
+			stop()
+			_ = att.Session.Close()
+		}()
+		if err := retireCall(ctx, att.Session); err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			return "", &admittedError{err}
+		}
+		return "retired", nil
+	}
+	if att.Session != nil {
+		_ = att.Session.Close()
+	}
+	return "", fmt.Errorf("unexpected control frame %q", att.Reply.Type)
+}
+
+// retireCall asks the Hub, on a call stream of the connection that the old key
+// authenticated, to remove that key's enrollment. It returns when the Hub
+// answered, [retireCallTimeout] passed or ctx ended (the stream is reset).
+func retireCall(ctx context.Context, sess Session) error {
+	st, err := sess.OpenCall(ctx)
+	if err != nil {
+		return fmt.Errorf("open the call stream: %w", err)
+	}
+	defer st.Reset()
+	// ctx ending aborts a blocked write or read of the stream at once.
+	stop := context.AfterFunc(ctx, func() {
+		_ = st.SetDeadline(time.Now())
+		st.Reset()
+	})
+	defer stop()
+	_ = st.SetDeadline(time.Now().Add(retireCallTimeout))
+	id := ops.NewUUIDv7()
+	args := ops.WorkerRetireArgs{WriteArgs: ops.WriteArgs{RequestID: id}}
+	if err := st.WriteFrame(map[string]any{"type": proto.TypeOpRequest, "op": RetireOp, "request_id": id, "args": args}); err != nil {
+		return fmt.Errorf("send %s: %w", RetireOp, err)
+	}
+	body, err := st.ReadFrame()
+	if err != nil {
+		return fmt.Errorf("read the answer to %s: %w", RetireOp, err)
+	}
+	typ, err := proto.FrameType(body)
+	if err != nil {
+		return err
+	}
+	switch typ {
+	case proto.TypeOpResult:
+		var f struct {
+			Result ops.WriteResult `json:"result"`
+		}
+		if err := proto.DecodeFrame(body, &f); err != nil {
+			return err
+		}
+		if f.Result.Outcome != ops.OutcomeDelivered {
+			return fmt.Errorf("the hub answered %s with outcome %q (%s)", RetireOp, f.Result.Outcome, f.Result.Reason)
+		}
+		return nil
+	case proto.TypeError:
+		var f proto.ErrorFrame
+		if err := proto.DecodeFrame(body, &f); err != nil {
+			return err
+		}
+		return f.Err()
+	}
+	return fmt.Errorf("the hub answered %s with a %q frame", RetireOp, typ)
+}

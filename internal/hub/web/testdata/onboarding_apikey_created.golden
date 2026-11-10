@@ -1,0 +1,11 @@
+<div class="secret" role="status">
+  <p><strong>API key "ci" created.</strong> Scope: Worker pi: read. Expires: 2026-11-16 08:30 UTC.</p>
+  <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
+  <div class="field">
+    <label for="api-key">API key</label>
+    <input type="text" id="api-key" value="mn_mfrggzdfmztwq2lknnwg23tpobyxe43uov3ho6dzpiyto5lq" readonly autocomplete="off" spellcheck="false">
+    <button type="button" data-copy="#api-key">Copy the key</button>
+  </div>
+  <p class="muted">Send it to http://example.com as <code>Authorization: Bearer &lt;key&gt;</code>, or save it as the only line of a file and point <code>MINION_API_KEY_FILE</code> at that file (for example for <code>minion mcp</code>). It is listed afterwards as <code>mn_mfrggzdf...</code>.</p>
+  <p><a href="/api-keys">Back to the API keys</a></p>
+</div>

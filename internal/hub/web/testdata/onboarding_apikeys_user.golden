@@ -1,0 +1,92 @@
+<main id="content" tabindex="-1">
+
+<div class="page-head"><div><h1>API keys</h1><p>An API key lets a tool or script use the Hub on your behalf, limited to what you choose here. A key can never do more than you can.</p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="create-apikey">
+  <h2 id="create-apikey">Create an API key</h2>
+  <form method="post" hx-post="/api-keys" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    <div class="field">
+      <label for="key-name">Name</label>
+      <input type="text" id="key-name" name="name" autocomplete="off" required maxlength="64">
+    </div>
+    <fieldset class="field">
+      <legend>What the key may reach</legend>
+      <label class="check" for="res-0"><input type="checkbox" id="res-0" name="resource" value="user:0190a1b2-c3d4-7e5f-8a6b-0000000000b0" checked> My account <span class="muted">(all my Workers and sessions, now and later)</span></label>
+      <label class="check" for="res-1"><input type="checkbox" id="res-1" name="resource" value="worker:0190a1b2-c3d4-7e5f-8a6b-0000000000c1"> Worker pi <span class="muted">(this Worker and all its sessions)</span></label>
+      <label class="check" for="res-2"><input type="checkbox" id="res-2" name="resource" value="worker:0190a1b2-c3d4-7e5f-8a6b-0000000000c2"> Worker nuc <span class="muted">(this Worker and all its sessions)</span></label>
+      
+      
+    </fieldset>
+    <div class="field">
+      <label for="key-session">Only one session (optional)</label>
+      <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help">
+      <span id="key-session-help" class="muted">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
+    </div>
+    <fieldset class="field">
+      <legend>What the key may do</legend>
+      <label class="check" for="act-0"><input type="checkbox" id="act-0" name="action" value="read" checked> Read <span class="muted">(see Workers, sessions and screens)</span></label>
+      <label class="check" for="act-1"><input type="checkbox" id="act-1" name="action" value="operate"> Operate <span class="muted">(type, send keys, create sessions, answer dialogs)</span></label>
+      <label class="check" for="act-2"><input type="checkbox" id="act-2" name="action" value="message"> Message <span class="muted">(send messages to agent sessions only)</span></label>
+      
+    </fieldset>
+    <div class="field">
+      <label for="key-expires">Valid for</label>
+      <select id="key-expires" name="expires">
+        <option value="30d">30 days</option>
+        <option value="90d" selected>90 days</option>
+        <option value="1y">1 year</option>
+        <option value="never">Never</option>
+        
+      </select>
+    </div>
+    <button type="submit">Create the key</button>
+    <div id="create-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
+</section>
+<section aria-labelledby="apikey-list">
+  <h2 id="apikey-list">Your API keys</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Name</th><th scope="col">Key</th><th scope="col">Reaches and may do</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    <tr>
+      <th scope="row">ci</th>
+      <td><code>mn_mfrggzdf...</code></td>
+      <td>Worker pi: read, operate</td>
+      <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
+      <td>2026-11-09 07:30 UTC</td>
+      <td>active</td>
+      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+          <button type="submit" class="btn-danger">Revoke ci</button>
+          <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" aria-live="polite"></span>
+        </form></td>
+    </tr>
+    <tr>
+      <th scope="row">mcp</th>
+      <td><code>mn_mztwq2lk...</code></td>
+      <td>my account: read</td>
+      <td>never</td>
+      <td>never used</td>
+      <td>active</td>
+      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+          <button type="submit" class="btn-danger">Revoke mcp</button>
+          <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" aria-live="polite"></span>
+        </form></td>
+    </tr>
+    <tr>
+      <th scope="row">gone</th>
+      <td><code>mn_nnwg23tp...</code></td>
+      <td>session build on nuc: message</td>
+      <td>never</td>
+      <td>never used</td>
+      <td>revoked</td>
+      <td><span class="muted">none</span></td>
+    </tr>
+    
+    </tbody>
+  </table></div>
+</section>
+</div>
+<script src="/onboarding.js" defer></script>
+
+    </main>

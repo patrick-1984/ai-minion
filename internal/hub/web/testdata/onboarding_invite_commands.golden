@@ -1,0 +1,68 @@
+minion worker up --server https://hub.example.com --invite-key mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm
+---
+(
+  umask 077 &&
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/minion-invite.XXXXXX") &&
+  trap 'rm -rf "$dir"' EXIT &&
+  cat > "$dir/invite.key" <<'EOF' &&
+mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm
+EOF
+  minion worker up --server https://hub.example.com --invite-key "$dir/invite.key"
+)
+---
+# A Minion Worker in Docker, started from the invitation key. Before you start:
+# 1. Put bootstrap.sh next to this file. It is a file of the Minion release:
+#    https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh
+# 2. Save the key as the only line of invite_key.txt next to this file.
+# 3. Run: docker compose up -d
+# The image is built from Alpine with tmux (the Worker drives its sessions through tmux);
+# bootstrap.sh downloads and verifies the minion binary on the first start and keeps it in
+# the cache volume. The Worker runs as user 10001:10001 and enrolls once: after that the key
+# is not needed, but KEEP the file invite_key.txt: Docker needs the mounted file to exist
+# whenever the container is restarted or recreated, and the Worker reads it on every start.
+# An empty file is safe (an enrolled Worker ignores the key), a missing one stops the start.
+# After enrollment erase the secret in place. The init service made the file belong to user
+# 10001:10001 (mode 600), so your own shell may not write to it; let the root init service do it:
+#    docker compose run --rm --no-deps init sh -c ': > /invite_key.txt'
+# That truncates the same file (do not delete, move or replace it with an editor). To remove
+# the file itself instead, first remove invite_key.txt from init's volumes, the secret and
+# MINION_INVITE_KEY_FILE, then run: docker compose up -d --remove-orphans
+services:
+  init:
+    image: alpine:3.22
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 10001:10001 /data /cache && chown 10001:10001 /invite_key.txt && chmod 600 /invite_key.txt"]
+    volumes:
+      - ./worker-data:/data
+      - minion-cache:/cache
+      - ./invite_key.txt:/invite_key.txt
+  minion-worker:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM alpine:3.22
+        RUN apk add --no-cache tmux
+    user: "10001:10001"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    command: ["worker", "up"]
+    environment:
+      MINION_SERVER: "https://hub.example.com"
+      MINION_VERSION: ${MINION_VERSION:-latest}
+      MINION_CACHE_DIR: /cache
+      MINION_STATE_DIR: /data
+      MINION_INVITE_KEY_FILE: /run/secrets/minion_invite_key
+    volumes:
+      - ./bootstrap.sh:/bootstrap.sh:ro
+      - ./worker-data:/data
+      - minion-cache:/cache
+    secrets:
+      - minion_invite_key
+secrets:
+  minion_invite_key:
+    file: ./invite_key.txt
+volumes:
+  minion-cache:

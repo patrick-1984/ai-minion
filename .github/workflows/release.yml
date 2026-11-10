@@ -1,0 +1,416 @@
+# Release pipeline (Story 9.1, AD-24). Actions are pinned to commit SHAs (the
+# comment gives the tag).
+#
+# A vX.Y.Z or vX.Y.Z-rc.N tag runs the full CI test suite on that exact commit
+# ("tests-*" jobs below, the same commands as ci.yml) and only then goreleaser
+# v2.20.0, which builds, packages, signs and creates a DRAFT release plus the
+# ghcr.io/patrick-1984/minion image tagged with the exact version. The draft is
+# published, and the channel tags (X.Y, X, latest) move, only by Story 9.7
+# after the install smoke tests. This workflow never publishes and never moves
+# a channel tag.
+#
+# On pull requests that touch release files only the "snapshot" job runs: it
+# checks the goreleaser configuration, builds a snapshot without publishing,
+# runs the native snapshot smoke tests and asserts the image platforms.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+  pull_request:
+    paths:
+      - .goreleaser.yaml
+      - .ko.yaml
+      - .github/workflows/release.yml
+      - deploy/**
+      - scripts/assert-image-platforms.sh
+      - scripts/release-manifest.sh
+      - scripts/releasecheck/**
+      - Makefile
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GORELEASER_VERSION: v2.20.0
+  KO_VERSION: v0.19.1
+  COSIGN_VERSION: v3.1.4
+  SYFT_VERSION: v1.20.0
+  GOLANGCI_LINT_VERSION: v2.15.0
+  TMUX_VERSION: "3.8"
+  TMUX_SHA256: e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
+  MINION_REQUIRE_TMUX: "1"
+  # PLACEHOLDER (both values): the supported wire protocol range (AD-4), written
+  # to release-manifest.json for "minion update" (A-10). Follow-up: derive the
+  # range from internal/proto once Story 1.2 is merged; the integrator
+  # schedules this with Story 1.2/9.2. It matters because the value goes into a
+  # signed public manifest that A-10 update refusals depend on, so it must not
+  # go stale without anyone noticing.
+  MINION_PROTOCOL_MIN: "1.0"
+  MINION_PROTOCOL_MAX: "1.0"
+
+jobs:
+  # ---------------------------------------------------------------- PR and tag
+  snapshot:
+    name: snapshot build and smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install syft (SBOM per archive)
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+      - name: Install ko ${{ env.KO_VERSION }}
+        uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
+        with:
+          version: ${{ env.KO_VERSION }}
+      - name: Install rpm (to list the rpm packages)
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      # goreleaser must be on PATH before the tests: TestGoreleaserCheck, the one
+      # test that executes goreleaser, skips itself when it is missing.
+      - name: Install goreleaser ${{ env.GORELEASER_VERSION }}
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: ${{ env.GORELEASER_VERSION }}
+          install-only: true
+      - name: Release scripts and configuration tests
+        run: go test -race -count=1 ./scripts/releasecheck/...
+      - name: goreleaser check
+        run: goreleaser check
+      - name: Snapshot build (make snapshot, nothing is published)
+        run: make snapshot
+      - name: Native snapshot smoke tests (host binary, deb and rpm file lists)
+        run: |
+          set -euo pipefail
+          bin=$(ls dist/minion_linux_amd64_*/minion)
+          out="$("$bin" version)"
+          echo "$out"
+          echo "$out" | grep -E '^version: v.+'
+          unit=/usr/lib/systemd/system/minion-worker@.service
+          for deb in dist/*_amd64.deb dist/*_arm64.deb dist/*_armhf.deb; do
+            echo "== $deb"
+            list="$(dpkg-deb -c "$deb")"
+            echo "$list" | grep -F ' ./usr/bin/minion'
+            echo "$list" | grep -F ' ./usr/bin/mn -> minion'
+            echo "$list" | grep -F " .$unit"
+            dpkg-deb -f "$deb" Depends | grep -w tmux
+            # The packaged unit is exactly the file under deploy/systemd.
+            dpkg-deb --fsys-tarfile "$deb" | tar -xO ".$unit" | diff - deploy/systemd/minion-worker@.service
+            dpkg-deb -e "$deb" "$RUNNER_TEMP/ctl-$(basename "$deb")"
+            test -x "$RUNNER_TEMP/ctl-$(basename "$deb")/postinst"
+            test -x "$RUNNER_TEMP/ctl-$(basename "$deb")/prerm"
+          done
+          for rpm in dist/*.x86_64.rpm dist/*.aarch64.rpm dist/*.armv7hl.rpm; do
+            echo "== $rpm"
+            list="$(rpm -qlp "$rpm")"
+            echo "$list" | grep -Fx /usr/bin/minion
+            echo "$list" | grep -Fx /usr/bin/mn
+            echo "$list" | grep -Fx "$unit"
+            rpm -qp --requires "$rpm" | grep -w tmux
+          done
+      - name: Assert the image platforms on a full OCI index (not the snapshot image)
+        run: scripts/assert-image-platforms.sh
+
+  # ------------------------------------------------------------------ tag only
+  # The same checks as ci.yml, run on the exact tagged commit (ci.yml does not
+  # run for tags). Keep the commands in step with ci.yml;
+  # scripts/releasecheck verifies that.
+  tests-lint:
+    name: vet, lint and import rules
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install golangci-lint (built with the project Go version)
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
+      - name: go vet, golangci-lint (linux, windows, darwin), tmux, English, documentation-link and skeleton checks
+        run: make lint
+      - name: Negative check of the import rules (forbidden imports must fail)
+        run: make lint-negative
+      - name: Validate the deploy Compose files (docker compose config, dummy environment, no daemon)
+        run: make check-compose
+
+  tests-distro-tmux:
+    name: test (race, distribution tmux)
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install tmux from the distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
+      - name: go test -race -tags tmux ./...
+        run: make test-race TAGS=tmux
+      - name: CPace vector tests (internal/pake)
+        run: go test -race -count=1 -v -run Vector ./internal/pake/...
+
+  tests-tmux-3-8:
+    name: test (race, tmux 3.8 from source)
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Identify the runner image (part of the tmux cache key)
+        id: img
+        run: echo "id=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
+      - name: Cache tmux ${{ env.TMUX_VERSION }}
+        id: tmux-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/tmux-${{ env.TMUX_VERSION }}
+          key: tmux-${{ env.TMUX_VERSION }}-${{ steps.img.outputs.id }}-${{ runner.arch }}-1
+      - name: Install libevent and ncurses (build and run time of tmux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libncurses-dev
+      - name: Build tmux ${{ env.TMUX_VERSION }} from source
+        if: steps.tmux-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y build-essential bison pkg-config
+          curl -fsSL -o tmux.tar.gz "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz"
+          echo "${TMUX_SHA256}  tmux.tar.gz" | sha256sum -c -
+          tar xzf tmux.tar.gz
+          cd "tmux-${TMUX_VERSION}"
+          ./configure --prefix="$HOME/tmux-${TMUX_VERSION}"
+          make -j"$(nproc)"
+          make install
+      - name: Put tmux ${{ env.TMUX_VERSION }} first on PATH and check the version
+        run: |
+          echo "$HOME/tmux-${TMUX_VERSION}/bin" >> "$GITHUB_PATH"
+          "$HOME/tmux-${TMUX_VERSION}/bin/tmux" -V | grep -F "tmux ${TMUX_VERSION}"
+      - name: go test -race -tags tmux ./...
+        run: make test-race TAGS=tmux
+
+  tests-vuln:
+    name: govulncheck
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck (golang.org/x/vuln v1.9.0)
+        run: make vuln
+
+  tests-cross:
+    name: cross-build (CGO_ENABLED=0)
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build every release target
+        run: make cross
+      - name: Version, commit and date are injected through -ldflags
+        run: |
+          make build VERSION=ci COMMIT=cafe0123 DATE=2026-01-02T03:04:05Z
+          out="$(./bin/minion version)"
+          echo "$out"
+          echo "$out" | grep -Fx "version: ci"
+          echo "$out" | grep -Fx "commit: cafe0123"
+          echo "$out" | grep -Fx "built: 2026-01-02T03:04:05Z"
+
+  # The end-to-end jobs of e2e.yml (Stories 9.4 to 9.6), repeated on the tagged
+  # commit: the release job needs both. Keep the commands in step with e2e.yml;
+  # scripts/releasecheck verifies that.
+  tests-e2e:
+    name: in-process end-to-end tests (race)
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install tmux from the distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
+      - name: make e2e (go test -race -tags e2e ./test/e2e/...)
+        run: make e2e
+
+  e2e-docker:
+    name: Hub image and native Worker (direct and behind a reverse proxy)
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install ko ${{ env.KO_VERSION }}
+        uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
+        with:
+          version: ${{ env.KO_VERSION }}
+      - name: Install tmux from the distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
+      - name: Vet the container checks (build tag dockere2e)
+        run: go vet -tags dockere2e ./test/e2e/docker/...
+      - name: Hub image and native Worker, direct and behind a reverse proxy
+        run: test/e2e/docker/run.sh all
+
+  # goreleaser runs only when every test job passed on this exact commit.
+  release:
+    name: goreleaser (draft release)
+    if: github.ref_type == 'tag'
+    needs:
+      - snapshot
+      - tests-lint
+      - tests-distro-tmux
+      - tests-tmux-3-8
+      - tests-vuln
+      - tests-cross
+      - tests-e2e
+      - e2e-docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the draft release and upload assets
+      packages: write # push ghcr.io/patrick-1984/minion
+      id-token: write # keyless cosign signatures (GitHub OIDC)
+    env:
+      TAG: ${{ github.ref_name }}
+      SIGNER_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+      OIDC_ISSUER: https://token.actions.githubusercontent.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag must be vX.Y.Z or vX.Y.Z-rc.N
+        run: |
+          echo "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install cosign ${{ env.COSIGN_VERSION }}
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - name: Install syft (SBOM per archive)
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          syft-version: ${{ env.SYFT_VERSION }}
+      - name: Log in to ghcr.io (the token goes through stdin, not argv)
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      # goreleaser pushes the image before it uploads the release assets, and
+      # "draft: true" does not reject an existing public release. A rerun after
+      # promotion (Story 9.7) must therefore fail here, before anything is
+      # pushed. A failed lookup also fails the step (fail closed).
+      - name: The release must be absent or still a draft (before anything is pushed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"${TAG}\") | .draft" > "$RUNNER_TEMP/release-draft-state"
+          if grep -qFxv true "$RUNNER_TEMP/release-draft-state"; then
+            echo "release ${TAG} is already published; refusing to rebuild it" >&2
+            exit 1
+          fi
+      - name: goreleaser release (draft)
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Bind goreleaser to the triggering tag. Without it goreleaser picks
+          # the newest tag on the commit by version sort, and vX.Y.Z-rc.N sorts
+          # after vX.Y.Z when both point at the same commit.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+      - name: Verify the signatures just made (checksums and image)
+        run: |
+          set -euo pipefail
+          cosign verify-blob \
+            --bundle dist/checksums.txt.sigstore.json \
+            --certificate-identity "$SIGNER_IDENTITY" \
+            --certificate-oidc-issuer "$OIDC_ISSUER" \
+            dist/checksums.txt
+          cosign verify "ghcr.io/patrick-1984/minion:${TAG}" \
+            --certificate-identity "$SIGNER_IDENTITY" \
+            --certificate-oidc-issuer "$OIDC_ISSUER" >/dev/null
+      - name: The pushed image is a full index with linux/arm/v7
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "ghcr.io/patrick-1984/minion:${TAG}" --raw |
+            jq -e '[.manifests[].platform | select(.os == "linux") | .architecture + (if .architecture == "arm" then "/" + .variant else "" end)]
+                   | contains(["amd64", "arm64", "arm/v7"])'
+      - name: release-manifest.json and bootstrap.sh, signed and attached to the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          extras=()
+          # bootstrap.sh is added by Story 9.3; attach it once it exists.
+          if [ -f deploy/bootstrap.sh ]; then
+            cp deploy/bootstrap.sh dist/bootstrap.sh
+            extras+=(--extra dist/bootstrap.sh)
+          fi
+          scripts/release-manifest.sh --version "$TAG" \
+            --protocol-min "$MINION_PROTOCOL_MIN" --protocol-max "$MINION_PROTOCOL_MAX" \
+            --checksums dist/checksums.txt "${extras[@]}" --output dist/release-manifest.json
+          assets=(dist/release-manifest.json)
+          for f in dist/release-manifest.json dist/bootstrap.sh; do
+            [ -f "$f" ] || continue
+            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+            assets+=("$f.sigstore.json")
+          done
+          [ ! -f dist/bootstrap.sh ] || assets+=(dist/bootstrap.sh)
+          gh release upload "$TAG" "${assets[@]}" --clobber
+      - name: The release must still be a draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"${TAG}\") | .draft" | grep -Fx true

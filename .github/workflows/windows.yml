@@ -1,0 +1,246 @@
+# Windows runner (AD-25). Story 8.1: the ConPTY session host; its tests start
+# real programs (cmd, pwsh) in a real pseudo console, so they run on a Windows
+# runner only. Story 8.2: the Windows-tagged tests of the identity and store
+# packages (A-11: protected DACLs), the named pipe and the Windows service
+# packages, a foreground Worker that the CLI reaches over its named pipe and
+# that runs session operations, and the real Windows service (install, start,
+# restart after a crash, stop, state still readable by the installing user).
+# Actions are pinned to commit SHAs (the comment gives the tag).
+name: windows
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conpty:
+    name: ConPTY session host
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the Worker packages for Windows (CGO_ENABLED=0)
+        shell: bash
+        run: CGO_ENABLED=0 go build ./...
+      - name: ConPTY tests against real pseudo consoles (CGO_ENABLED=0, as released)
+        shell: bash
+        run: CGO_ENABLED=0 go test -count=1 -v ./internal/worker/term/conpty/
+      - name: ConPTY tests with the race detector
+        shell: bash
+        run: CGO_ENABLED=1 go test -race -count=1 ./internal/worker/term/conpty/
+
+  windows-tagged:
+    name: Windows-tagged tests (DACLs, named pipe, service)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # Story 1.6 (internal/identity/perm_windows_test.go: protected DACL for
+      # the owner SID and SYSTEM, save into a permissive directory, refusal to
+      # load a key whose DACL grants others read), Story 2.3 (Worker state
+      # files), Story 8.2 (named pipe, pipe client, Windows service, and the
+      # private DACL of a SYSTEM service that serves the installing user).
+      # The identity, store and service packages also hold tests of Unix
+      # behaviour (modes, uids, chown), so those three run the Windows and
+      # platform-neutral tests of this story by name; the localapi and client
+      # packages run completely.
+      - name: Windows-tagged tests (CGO_ENABLED=0, as released)
+        shell: bash
+        run: |
+          set -eu
+          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName)$'
+          store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied)'
+          CGO_ENABLED=0 go test -count=1 -v -run "$identity" ./internal/identity/
+          CGO_ENABLED=0 go test -count=1 -v -run "$store" ./internal/worker/store/
+          CGO_ENABLED=0 go test -count=1 -v -run "$service" ./internal/worker/service/
+          CGO_ENABLED=0 go test -count=1 -v ./internal/worker/localapi/ ./internal/client/
+          version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary)$'
+          CGO_ENABLED=0 go test -count=1 -v -run "$version" ./internal/version/
+      - name: Windows-tagged tests with the race detector
+        shell: bash
+        run: |
+          set -eu
+          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName)$'
+          store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied)'
+          CGO_ENABLED=1 go test -race -count=1 -run "$identity" ./internal/identity/
+          CGO_ENABLED=1 go test -race -count=1 -run "$store" ./internal/worker/store/
+          CGO_ENABLED=1 go test -race -count=1 -run "$service" ./internal/worker/service/
+          CGO_ENABLED=1 go test -race -count=1 ./internal/worker/localapi/ ./internal/client/
+          version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary)$'
+          CGO_ENABLED=1 go test -race -count=1 -run "$version" ./internal/version/
+
+  worker-foreground:
+    name: Foreground Worker over the named pipe
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build minion.exe (CGO_ENABLED=0, as released)
+        shell: bash
+        run: CGO_ENABLED=0 go build -o minion.exe ./cmd/minion
+      - name: Start a foreground Worker and reach it over its pipe
+        shell: bash
+        run: |
+          set -eu
+          export MINION_STATE_DIR="$RUNNER_TEMP/minion-state"
+          ./minion.exe worker up --foreground --share-existing all > worker.log 2>&1 &
+          worker=$!
+          ok=0
+          for _ in $(seq 1 30); do
+            if ./minion.exe worker status --json > status.json 2>status.err && grep -q '"live": true' status.json; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          cat status.json || true
+          ./minion.exe worker status || true
+          # sessions_list, session_create (a ConPTY session), send_text and
+          # sessions_list again, over the pipe, against this running Worker
+          # (test/e2e/windows_pipe_test.go; the `mn` CLI of Story 2.9 is not
+          # part of the gate).
+          e2e=0
+          if [ "$ok" = 1 ]; then
+            MINION_E2E_PIPE=1 CGO_ENABLED=0 go test -tags e2e -count=1 -v -run TestWindowsPipeSessionOps ./test/e2e/ || e2e=1
+          fi
+          kill "$worker" 2>/dev/null || true
+          if [ "$e2e" != 0 ]; then
+            echo "the session operations over the named pipe failed"
+            cat worker.log || true
+            exit 1
+          fi
+          if [ "$ok" != 1 ]; then
+            echo "the CLI did not reach the foreground Worker over its named pipe"
+            cat worker.log status.err || true
+            exit 1
+          fi
+          # The preview label (R98) and the pipe of this user.
+          grep -q '"platform": "windows"' status.json
+          grep -q '"preview": true' status.json
+          grep -q 'control socket listening' worker.log
+          grep -q 'minion-worker-S-1-' worker.log
+
+  worker-service:
+    name: Windows service (install, start, restart, stop)
+    runs-on: windows-latest # runs elevated, which installing a service needs
+    timeout-minutes: 15
+    env:
+      MSYS_NO_PATHCONV: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # The runner context is not available in a job-level env block.
+      - name: State directory of the service test
+        shell: bash
+        run: echo "MINION_STATE_DIR=$(cygpath -w "$RUNNER_TEMP")\\minion-state" >> "$GITHUB_ENV"
+      - name: Build minion.exe (CGO_ENABLED=0, as released)
+        shell: bash
+        run: CGO_ENABLED=0 go build -o minion.exe ./cmd/minion
+      - name: Install and start the service (minion worker up, no --foreground)
+        shell: bash
+        run: |
+          set -eu
+          ./minion.exe worker up 2>&1 | tee up.log
+          grep -q 'MinionWorker' up.log
+          # Automatic start at boot and restart on failure (AC2).
+          sc.exe qc MinionWorker | tee qc.txt
+          grep -q 'AUTO_START' qc.txt
+          sc.exe qfailure MinionWorker | tee qfailure.txt
+          grep -q 'RESTART' qfailure.txt
+          # The reset period is 86400 seconds (one day), not 10.
+          grep -q '86400' qfailure.txt
+      - name: The CLI reaches the service over the pipe of this user
+        shell: bash
+        run: |
+          set -eu
+          ok=0
+          for _ in $(seq 1 60); do
+            if ./minion.exe worker status --json > status.json 2> status.err \
+              && grep -q '"live": true' status.json \
+              && ! grep -q '"problems"' status.json; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          cat status.json || true
+          cat status.err || true
+          sc.exe query MinionWorker || true
+          if [ "$ok" != 1 ]; then
+            echo "the CLI did not reach the Windows service over its named pipe"
+            exit 1
+          fi
+          grep -q '"preview": true' status.json
+          grep -q '"platform": "windows"' status.json
+      - name: The service restarts after its process is killed
+        shell: bash
+        # A new instance (another process id, or the same id with another
+        # creation time) that is running and answers over the pipe. The
+        # script writes every command to a file and checks its exit status;
+        # a failure prints the polls, the last outputs, the SCM state and the
+        # event log. Failure actions are the ones the install set (qfailure
+        # above); nothing here changes them.
+        run: scripts/windows-service-restart-probe.sh
+      - name: Stop the service; the installing user still reads the state
+        shell: bash
+        run: |
+          set -eu
+          sc.exe stop MinionWorker
+          stopped=0
+          # The query goes to a file and is read from there: grep -q on a pipe
+          # makes the producer fail, and pipefail then makes that false.
+          for _ in $(seq 1 60); do
+            sc.exe query MinionWorker > query.txt 2> query.err || true
+            if grep -q 'STOPPED' query.txt; then
+              stopped=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$stopped" != 1 ]; then
+            echo "the service did not stop"
+            cat query.txt query.err || true
+            exit 1
+          fi
+          # The service ran as LocalSystem. This process runs as the runner
+          # user: the state directory and the database must still be readable
+          # (the private DACL names the installing user and SYSTEM), and the
+          # CLI must report them without a problem.
+          ./minion.exe worker status --json > after.json
+          cat after.json
+          if grep -q '"problems"' after.json; then
+            echo "the installing user cannot use the state after the service ran"
+            exit 1
+          fi
+          grep -q '"live": false' after.json
+          # The state of the service is also deletable by this user.
+          test -f "$MINION_STATE_DIR/worker.db"
+          cp "$MINION_STATE_DIR/worker.db" "$RUNNER_TEMP/worker.db.copy"
+      - name: Remove the service
+        if: always()
+        shell: bash
+        run: |
+          sc.exe stop MinionWorker || true
+          sc.exe delete MinionWorker || true

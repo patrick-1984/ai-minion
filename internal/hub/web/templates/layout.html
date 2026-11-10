@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{if .Title}}{{.Title}} - {{end}}Minion</title>
+{{if .CSRF}}<meta name="csrf-token" content="{{.CSRF}}">
+{{end}}<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/minion.css">
+<script src="/static/theme.js"></script>
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/sse.js" defer></script>
+<script src="/static/forms.js" defer></script>
+<script src="/static/shell.js" defer></script>
+</head>
+<body{{if .Embed}} class="embed"{{end}}{{if .CSRF}} hx-headers='{"X-Minion-CSRF":"{{.CSRF}}"}'{{end}} hx-ext="sse">
+<a class="skip-link" href="#content" data-modal-inert>Skip to content</a>
+{{block "skiplinks" .}}{{end}}
+{{if and .SignedIn .Embed}}
+{{template "icons"}}
+<main id="content" tabindex="-1">
+{{template "content" .}}
+</main>
+{{else if .SignedIn}}
+{{template "icons"}}
+<div class="shell">
+  <aside class="rail" id="site-rail" aria-label="Minion" data-modal-inert>
+    <div class="rail-head">
+      <a class="brand" href="/">{{template "brandmark"}}<span>Minion</span></a>
+      <button type="button" class="rail-close" id="menu-close">{{template "icon" "i-close"}}<span>Close menu</span></button>
+    </div>
+    <nav aria-label="Main" id="site-nav">
+      {{range .NavGroups}}<div class="nav-group">
+        <h2 class="nav-label" id="nav-{{.ID}}">{{if .Path}}<a href="{{.Path}}">{{.Label}}</a>{{else}}{{.Label}}{{end}}</h2>
+        <ul class="nav-list" aria-labelledby="nav-{{.ID}}">
+          {{range .Links}}<li><a href="{{.Path}}"{{if .Active}} aria-current="page"{{end}}>{{if .Icon}}{{template "icon" .Icon}}{{end}}<span>{{.Label}}</span></a></li>
+          {{end}}
+        </ul>
+      </div>
+      {{end}}
+    </nav>
+    <div class="rail-foot">
+      <a class="identity" href="/account"{{if eq .Path "/account"}} aria-current="page"{{end}}>
+        <span class="avatar" aria-hidden="true">{{.Initials}}</span>
+        <span class="identity-text"><span class="identity-name">{{.Username}}</span><span class="identity-role">{{.RoleLabel}}</span></span>
+      </a>
+      <form data-json-action="/auth/logout" data-next="/login">
+        <button type="submit" class="btn">{{template "icon" "i-logout"}}<span>Sign out</span></button>
+      </form>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+  <div class="main-col">
+    <header class="topbar" data-modal-inert>
+      <button type="button" class="btn btn-secondary menu-btn" id="menu-button" aria-expanded="false" aria-controls="site-rail">{{template "icon" "i-menu"}}<span>Menu</span></button>
+      <nav class="crumbs" aria-label="Breadcrumb"><ol>
+        {{range .Crumbs}}<li>{{if .Path}}<a href="{{.Path}}">{{.Label}}</a>{{else}}<span aria-current="page">{{.Label}}</span>{{end}}</li>
+        {{end}}
+      </ol></nav>
+      <div class="top-tools">
+        <label class="theme-picker"><span>Theme</span>
+          <select data-theme-select>
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+      </div>
+    </header>
+    <div id="banner-slot" data-modal-inert>{{range .Banners}}<div class="banner banner-{{.Kind}}" role="status"><span>{{.Text}}</span>{{with .Action}}
+      <form data-json-action="{{.URL}}"><button type="submit" class="btn-secondary">{{.Label}}</button></form>{{end}}</div>{{end}}</div>
+    <div id="flash-area" aria-live="polite" data-modal-inert>{{range .Flashes}}<div class="flash flash-{{.Level}}" role="status">{{.Text}}</div>{{end}}</div>
+    <main id="content" tabindex="-1">
+{{template "content" .}}
+    </main>
+  </div>
+</div>
+{{else}}
+<header class="topbar anon">
+  <a class="brand" href="/">{{template "brandmark"}}<span>Minion</span></a>
+</header>
+<div id="banner-slot"></div>
+<div id="flash-area" aria-live="polite">{{range .Flashes}}<div class="flash flash-{{.Level}}" role="status">{{.Text}}</div>{{end}}</div>
+<main id="content" tabindex="-1">
+{{template "content" .}}
+</main>
+{{end}}
+</body>
+</html>
+{{define "content"}}{{if .Message}}<div class="page-head"><h1>{{.Message}}</h1></div>
+{{if and .SignedIn (not .Embed)}}<p class="muted">{{if eq .Status 403}}Your account does not have access to this page. Open another page from the menu.{{else}}Open another page from the menu, or go back to the <a href="/">control center</a>.{{end}}</p>{{end}}{{else}}<div class="page-head"><h1>Welcome, {{.Username}}</h1></div>
+<p class="muted">Use the menu to open a page.</p>{{end}}{{end}}

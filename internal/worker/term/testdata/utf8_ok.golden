@@ -1,0 +1,12 @@
+in:  "héllo wörld 日本語 😀 \u202f"
+out: "héllo wörld 日本語 😀 \u202f"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "héllo wörld 日本語 😀  "
+  ],
+  "spans": [],
+  "cursor": null
+}

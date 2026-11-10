@@ -1,0 +1,6 @@
+.loki/
+/dist/
+/bin/
+*.db
+*.db-wal
+*.db-shm

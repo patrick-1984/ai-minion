@@ -1,0 +1,12 @@
+in:  "before\x1b]52;c;AAAA payload with no end\nmore text"
+out: "before"
+screen:
+{
+  "width": 0,
+  "height": 0,
+  "lines": [
+    "before"
+  ],
+  "spans": [],
+  "cursor": null
+}

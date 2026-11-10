@@ -1,0 +1,16 @@
+  paragraph 2 line 6: the quick brown fox jumps over the lazy dog
+
+  paragraph 3 line 1: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 2: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 3: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 4: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 5: the quick brown fox jumps over the lazy dog
+  paragraph 3 line 6: the quick brown fox jumps over the lazy dog
+
+  paragraph 4 line 1: the quick brown fox jumps over the lazy dog
+
+▌ Working (8s • esc to interrupt)
+
+› Ask Codex to do anything
+
+  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit

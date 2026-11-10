@@ -1,0 +1,71 @@
+<main id="content" tabindex="-1">
+
+<div class="page-head"><div><h1>Audit</h1><p>Who did what and when. Events never contain secrets or terminal content.</p></div></div>
+<form method="get" action="/admin/audit" class="toolbar" aria-label="Filter the audit log">
+  <div class="field">
+    <label for="f-actor">Actor (user id, or key:id)</label>
+    <input type="text" id="f-actor" name="actor" value="abc" autocomplete="off" spellcheck="false" maxlength="256">
+  </div>
+  <div class="field">
+    <label for="f-action">Action (for example settings.set)</label>
+    <input type="text" id="f-action" name="action" value="settings.set" autocomplete="off" spellcheck="false" maxlength="256">
+  </div>
+  <div class="field">
+    <label for="f-from">From (date or time, UTC)</label>
+    <input type="text" id="f-from" name="from" value="" autocomplete="off" placeholder="2026-11-01">
+  </div>
+  <div class="field">
+    <label for="f-to">To (date or time, UTC)</label>
+    <input type="text" id="f-to" name="to" value="" autocomplete="off" placeholder="2026-11-09">
+  </div>
+  <div class="field">
+    <label for="f-limit">Events per page</label>
+    <select id="f-limit" name="limit">
+      <option value="25">25</option>
+      <option value="50" selected>50</option>
+      <option value="100">100</option>
+      <option value="200">200</option>
+      
+    </select>
+  </div>
+  <div class="row"><button type="submit">Filter</button>
+  <a class="btn btn-secondary" href="/admin/audit">Clear</a></div>
+</form>
+
+<div class="table-wrap"><table>
+  <caption class="muted">Newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
+  <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Acting as</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th></tr></thead>
+  <tbody>
+  <tr>
+    <td><time datetime="2026-11-09T12:00:05.000Z">2026-11-09 12:00:05</time></td>
+    <td>0190a1b2-c3d4-7e5f-8a6b-000000000001</td>
+    <td><span class="muted">-</span></td>
+    <td>settings.set</td>
+    <td>public_url</td>
+    <td>ok</td>
+  </tr>
+  <tr>
+    <td><time datetime="2026-11-09T11:00:00.000Z">2026-11-09 11:00:00</time></td>
+    <td>0190a1b2-c3d4-7e5f-8a6b-000000000001</td>
+    <td>0190a1b2-c3d4-7e5f-8a6b-000000000002</td>
+    <td>worker.delete</td>
+    <td>w1</td>
+    <td>success</td>
+  </tr>
+  <tr>
+    <td><time datetime="2026-11-08T09:00:00.000Z">2026-11-08 09:00:00</time></td>
+    <td>anonymous</td>
+    <td><span class="muted">-</span></td>
+    <td>auth.login</td>
+    <td><span class="muted">-</span></td>
+    <td>failed</td>
+  </tr>
+  
+  </tbody>
+</table></div>
+<p>
+  
+  <a href="/admin/audit?action=settings.set&amp;actor=abc&amp;cursor=CUR2" rel="next">Older events</a>
+</p>
+
+    </main>

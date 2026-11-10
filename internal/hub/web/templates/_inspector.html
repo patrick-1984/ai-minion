@@ -1,0 +1,30 @@
+{{define "inspector_kept"}}<p class="notice notice-danger inspector-alert" id="inspector-alert" role="alert" hidden></p>
+<div class="inspector-kept notice notice-warning" id="inspector-kept" role="status" hidden>
+  <p id="inspector-kept-text">Unsent input is kept for these sessions:</p>
+  <ul class="inspector-kept-list" id="inspector-kept-list"></ul>
+</div>{{end}}
+
+{{/* The session inspector: a contextual right pane that shows the compact session view
+     (/s/<worker>/<session>?embed=1) in a same-origin frame, next to a list that stays as it
+     is. It is hidden until static/inspector.js opens it; without the script every session
+     link is an ordinary link to the full session. */}}
+{{define "inspector"}}<aside class="inspector" id="inspector" aria-labelledby="inspector-title" data-context="{{.}}" hidden>
+  <div class="inspector-head">
+    <div class="inspector-id">
+      <h2 id="inspector-title" tabindex="-1">Session</h2>
+    </div>
+    <div class="inspector-tools">
+      <a class="btn btn-secondary" id="inspector-open" href="/sessions">Open full session</a>
+      <button type="button" class="btn btn-secondary" id="inspector-close">{{template "icon" "i-close"}}<span>Close</span></button>
+    </div>
+  </div>
+  <p class="notice notice-info inspector-status" id="inspector-status" role="status" hidden></p>
+  <div class="inspector-frames" id="inspector-frames"></div>
+</aside>
+<div class="inspector-scrim" id="inspector-scrim"></div>
+<dialog class="force-dialog" id="inspector-capacity" aria-labelledby="inspector-capacity-h">
+  <h2 id="inspector-capacity-h">Too many sessions with unsent input</h2>
+  <p id="inspector-capacity-text">The inspector keeps up to four sessions that hold unsent input, a request on its way or an unknown delivery. Nothing is discarded unless you choose it.</p>
+  <ul class="capacity-list" id="inspector-capacity-list"></ul>
+  <div class="form-actions"><button type="button" class="btn-secondary" id="inspector-capacity-cancel" autofocus>Cancel</button></div>
+</dialog>{{end}}

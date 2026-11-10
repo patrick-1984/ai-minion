@@ -1,0 +1,3 @@
+I will start by reading the parser module.
+Reading internal/parser/parse.go
+[Request interrupted by user]

@@ -1,0 +1,96 @@
+<main id="content" tabindex="-1">
+
+
+
+<div class="page-head"><div><h1>bob</h1><p><a href="/admin/users">All users</a></p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="account-state">
+  <h2 id="account-state">Account</h2>
+  <dl>
+    <dt>E-mail</dt><dd><span class="muted">none</span></dd>
+    <dt>Role</dt><dd>user</dd>
+    <dt>State</dt><dd>active</dd>
+    <dt>Password</dt><dd>temporary, the user must change it</dd>
+  </dl>
+</section>
+
+<section class="panel" aria-labelledby="role-actions">
+  <h2 id="role-actions">Role</h2>
+  <p class="muted">Only the local admin role can be changed here. A role that the identity provider gives follows the provider's rules.</p>
+  <form method="post" hx-post="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002/role" hx-target="#role-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <input type="hidden" name="role" value="admin">
+    <button type="submit">Make a local admin</button>
+    <div id="role-result" aria-live="polite"></div>
+  </form>
+</section>
+
+
+<section class="panel" aria-labelledby="reset-password">
+  <h2 id="reset-password">Reset the password</h2>
+  <p class="muted">A new temporary password is shown once, and the user is signed out everywhere.</p>
+  <form method="post" hx-post="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002/reset-password" hx-target="#reset-result" hx-swap="innerHTML" hx-confirm="Reset the password of this account? The user is signed out everywhere." hx-disabled-elt="find button">
+    <input type="hidden" name="username" value="bob">
+    <button type="submit">Reset the password</button>
+    <div id="reset-result" aria-live="polite"></div>
+  </form>
+</section>
+
+
+<section class="panel" aria-labelledby="act-as">
+  <h2 id="act-as">Act as this user</h2>
+  <p class="muted">You see the Hub as this user until the time is up or you exit. Everything you do is audited with your name.</p>
+  <form method="post" hx-post="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002/act-as" hx-target="#actas-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="act-as-minutes">For</label>
+      <select id="act-as-minutes" name="minutes">
+        <option value="15">15 minutes</option>
+        <option value="30">30 minutes</option>
+        <option value="60" selected>60 minutes</option>
+        <option value="120">120 minutes</option>
+        <option value="240">240 minutes</option>
+        <option value="480">480 minutes</option>
+        
+      </select>
+    </div>
+    <button type="submit">Start acting as bob</button>
+    <div id="actas-result" aria-live="polite"></div>
+  </form>
+</section>
+
+<section class="panel" aria-labelledby="identities">
+  <h2 id="identities">Linked identities</h2>
+  
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Provider</th><th scope="col">Issuer</th><th scope="col">Subject</th><th scope="col">E-mail</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    <tr>
+      <th scope="row">Okta</th>
+      <td>https://idp.example.com</td>
+      <td>sub-123</td>
+      <td>bob@example.com</td>
+      <td>
+        <form method="post" hx-post="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002/identities/id-1/detach" hx-target="#detach-id-1" hx-swap="innerHTML" hx-confirm="Detach this identity? The user can no longer sign in with it." hx-disabled-elt="find button">
+          <button type="submit" class="btn-secondary">Detach</button>
+          <span id="detach-id-1" aria-live="polite"></span>
+        </form>
+      </td>
+    </tr>
+    
+    </tbody>
+  </table></div>
+  
+</section>
+
+<section class="panel" aria-labelledby="deactivate">
+  <h2 id="deactivate">Deactivate the account</h2>
+  <p class="muted">The user cannot sign in, the sessions and API keys end, and the Workers stay with the account.</p>
+  <form method="post" hx-post="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002/deactivate" hx-target="#deactivate-result" hx-swap="innerHTML" hx-confirm="Deactivate this account?" hx-disabled-elt="find button">
+    <button type="submit" class="btn-danger">Deactivate bob</button>
+    <div id="deactivate-result" aria-live="polite"></div>
+  </form>
+</section>
+
+</div>
+
+
+    </main>

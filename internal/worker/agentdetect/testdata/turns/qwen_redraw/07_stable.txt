@@ -1,0 +1,16 @@
+
+✦ Hi, how can I help?
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Summarise the README                                               │
+╰──────────────────────────────────────────────────────────────────────╯
+
+✦ The README describes a Worker that drives tmux sessions.
+  It lists install steps and the supported agents.
+
+
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Type your message or @path/to/file                                 │
+╰──────────────────────────────────────────────────────────────────────╯
+~/project   no sandbox (see /docs)   qwen3-coder-plus (100% context left)

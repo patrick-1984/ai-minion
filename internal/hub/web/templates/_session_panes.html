@@ -1,0 +1,15 @@
+{{define "session_details"}}<dl>
+  <dt>Session</dt><dd>{{.Session}}</dd>
+  <dt>Worker</dt><dd>{{.Worker}}{{if .Online}} (online){{else}} (offline){{end}}</dd>
+  {{if .Owner}}<dt>Owner</dt><dd>{{.Owner}}</dd>{{end}}
+  {{if .Kind}}<dt>Worker kind</dt><dd>{{.Kind}}</dd>{{end}}
+  <dt>Your access</dt><dd>{{if .Operate}}You can view this session and send input to it.{{else}}You can view this session. You don't have permission to send input.{{end}}</dd>
+  {{if .Task}}<dt>Task</dt><dd>{{.Task}}</dd>{{end}}
+</dl>
+<details>
+  <summary>Technical details</summary>
+  <dl>
+    <dt>Worker id</dt><dd><code>{{.WorkerID}}</code></dd>
+    {{if .Version}}<dt>Protocol</dt><dd>{{.Version}}</dd>{{end}}
+  </dl>
+</details>{{end}}

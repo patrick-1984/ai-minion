@@ -1,0 +1,14 @@
+Version:             dev
+Name:                laptop
+Mode:                Solo
+Hub URL:             none (Solo)
+Connection:          none (no Hub URL is configured)
+Last error:          none
+Hub fingerprint:     none (not paired)
+Worker fingerprint:  none yet (created at the first pairing)
+Owner:               not paired
+Pairing code:        unknown (only a running Worker knows it)
+Share mode:          later (not decided yet)
+Preview only:        no
+tmux socket:         /tmp/tmux-1000/default
+Sessions:            unknown

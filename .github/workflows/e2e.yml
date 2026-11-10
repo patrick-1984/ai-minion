@@ -1,0 +1,112 @@
+# End-to-end tests (Stories 9.4 to 9.6, AD-24, AD-25). Actions are pinned to
+# commit SHAs (the comment gives the tag).
+#
+#   in-process  "make e2e": the Hub and the Worker together in one test process
+#               (lifecycle, pairing, operations, pipe turns), with -race and
+#               every tmux use through internal/testutil/tmuxtest.
+#   container   test/e2e/docker/run.sh: the Hub image that ko builds from this
+#               commit in a container (non-root UID 65532, a /data bind mount, a
+#               secret file), the native minion binary as a foreground Worker on
+#               a private tmux socket, REST for login, invitation, session,
+#               text and screen, a Hub restart that the Worker survives, and a
+#               second variant behind a reverse proxy (MINION_TLS=off,
+#               MINION_PUBLIC_URL, MINION_TRUSTED_PROXIES). It asserts that the
+#               default tmux socket was never created.
+#
+# It runs on pull requests that touch transport, Hub, Worker or release files,
+# and on every tag. release.yml repeats both jobs on the tagged commit and its
+# release job needs them, so a tag cannot reach goreleaser with a failing
+# end-to-end job (scripts/releasecheck verifies that the two files run the
+# same commands).
+name: e2e
+
+on:
+  pull_request:
+    paths:
+      - cmd/**
+      - internal/hub/**
+      - internal/worker/**
+      - internal/transport/**
+      - internal/proto/**
+      - internal/ops/**
+      - internal/identity/**
+      - internal/pake/**
+      - internal/pipe/**
+      - internal/config/**
+      - internal/cli/**
+      - internal/client/**
+      - internal/testutil/**
+      - test/e2e/**
+      - go.mod
+      - go.sum
+      - Makefile
+      - .goreleaser.yaml
+      - .ko.yaml
+      - deploy/**
+      - .github/workflows/e2e.yml
+      # Every path that makes release.yml's own pull request run, because
+      # that workflow runs the end-to-end jobs on tags only: a change to the
+      # release pipeline must run them here, before it can be tagged.
+      - .github/workflows/release.yml
+      - scripts/assert-image-platforms.sh
+      - scripts/release-manifest.sh
+      - scripts/releasecheck/**
+  push:
+    tags:
+      - "**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  KO_VERSION: v0.19.1
+  MINION_REQUIRE_TMUX: "1"
+
+jobs:
+  in-process:
+    name: in-process end-to-end tests (race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install tmux from the distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
+      - name: make e2e (go test -race -tags e2e ./test/e2e/...)
+        run: make e2e
+
+  container:
+    name: Hub image and native Worker (direct and behind a reverse proxy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install ko ${{ env.KO_VERSION }}
+        uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
+        with:
+          version: ${{ env.KO_VERSION }}
+      - name: Install tmux from the distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
+      - name: Vet the container checks (build tag dockere2e)
+        run: go vet -tags dockere2e ./test/e2e/docker/...
+      - name: Hub image and native Worker, direct and behind a reverse proxy
+        run: test/e2e/docker/run.sh all
