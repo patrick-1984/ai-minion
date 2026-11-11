@@ -34,7 +34,7 @@ for f in "${files[@]}"; do
   # Nothing from the caller's environment leaks in: only the documented
   # variables, with dummy values (the Worker file requires WORKER_UID/GID).
   if env -i PATH="$PATH" HOME="$scratch" DOCKER_HOST="unix://$scratch/no-daemon.sock" \
-      WORKER_UID=1000 WORKER_GID=1000 MINION_VERSION=v0.6.1 \
+      WORKER_UID=1000 WORKER_GID=1000 MINION_VERSION=v0.6.2 \
       "$docker_cmd" compose -f "$dir/$name" config --quiet; then
     echo "check-compose: $name ok"
   else

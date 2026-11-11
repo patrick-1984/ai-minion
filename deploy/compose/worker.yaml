@@ -69,7 +69,7 @@ services:
       # An exact version, or a channel (0.6, 0, latest). With an exact version
       # you may add MINION_SHA256, the archive checksum from checksums.txt of
       # that release; without it the signature of the release is verified.
-      MINION_VERSION: ${MINION_VERSION:-v0.6.1}
+      MINION_VERSION: ${MINION_VERSION:-v0.6.2}
       MINION_CACHE_DIR: /cache
       MINION_STATE_DIR: /data
       MINION_SERVER: ${MINION_SERVER:-https://hub.example.com}

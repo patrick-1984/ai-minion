@@ -45,6 +45,10 @@ sd_booted() {
 # sd_exec COMMAND...: runs a command as root in the container.
 sd_exec() { docker exec "$SD_CID" "$@"; }
 
+# sd_as USER CMD...: runs CMD as USER in the container (docker exec -u: some
+# images, such as current Fedora, ship no su).
+sd_as() { local u=$1; shift; docker exec -u "$u" -w "/home/$u" -e "HOME=/home/$u" "$SD_CID" "$@"; }
+
 # sd_sh SCRIPT: runs an sh script as root in the container.
 sd_sh() { docker exec "$SD_CID" sh -ec "$1"; }
 
@@ -93,13 +97,13 @@ sd_check_worker() {
 	# its local socket; an unpaired Worker is "idle (not enrolled)".
 	local i st
 	for i in $(seq 1 30); do
-		st=$(docker exec "$SD_CID" su -s /bin/sh "$user" -c 'minion worker status --server http://127.0.0.1:8443' 2>&1) &&
+		st=$(sd_as "$user" minion worker status --server http://127.0.0.1:8443 2>&1) &&
 			printf '%s\n' "$st" | grep -Eq '^Connection: +(idle|connecting|connected|reconnecting)' && break
 		[ "$i" -lt 30 ] || smoke_die "timed out after 30s waiting for minion worker status to reach the running Worker
 --- last status output:
 $st
 --- su environment (runtime and temp dirs):
-$(docker exec "$SD_CID" su -s /bin/sh "$user" -c 'id; env | grep -E "^(XDG_RUNTIME_DIR|TMPDIR|HOME)=" ; ls -la /tmp /run/user 2>&1 | head -40' 2>&1)
+$(sd_as "$user" sh -c 'id; env | grep -E "^(XDG_RUNTIME_DIR|TMPDIR|HOME)=" ; ls -la /tmp /run/user 2>&1 | head -40' 2>&1)
 --- sockets:
 $(docker exec "$SD_CID" sh -c 'find /tmp /run/user -name worker.sock -exec ls -la {} \; 2>&1; ls -lad /tmp/minion-* /run/user/*/minion 2>&1' 2>&1)
 --- unit environment:
@@ -108,7 +112,7 @@ $(sd_exec systemctl show "minion-worker@$user" -p Environment -p User -p Private
 $(sd_exec journalctl -u "minion-worker@$user" --no-pager -n 40 2>&1 | tail -n 40)"
 		sleep 1
 	done
-	status=$(sd_exec su -s /bin/sh "$user" -c 'minion worker status --server http://127.0.0.1:8443')
+	status=$(sd_as "$user" minion worker status --server http://127.0.0.1:8443)
 	printf '%s\n' "$status" | grep -Eq '^Hub URL: +http://127\.0\.0\.1:8443' ||
 		smoke_die "worker status does not show the test Hub URL: $status"
 	printf '%s\n' "$status" | grep -Eq "^Version: +$SMOKE_TAG\$" ||

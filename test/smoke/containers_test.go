@@ -13,7 +13,9 @@ case "$1" in
   run) echo cid123; exit 0 ;;
   rm | rmi) exit 0 ;;
   exec)
-    shift 2
+    shift
+    while :; do case "$1" in -u | -w | -e) shift 2 ;; *) break ;; esac; done
+    shift
     cmd="$*"
     case "$cmd" in
       "systemctl is-system-running") echo running ;;
@@ -72,7 +74,7 @@ func TestDebSmoke(t *testing.T) {
 				"systemd-run --unit=smoke-hub",
 				"MINION_ADMIN_PASSWORD_FILE=/root/admin.pw",
 				"systemctl enable --now minion-worker@smokeuser",
-				"su -s /bin/sh smokeuser -c minion worker status --server http://127.0.0.1:8443",
+				"exec -u smokeuser -w /home/smokeuser -e HOME=/home/smokeuser cid123 minion worker status --server http://127.0.0.1:8443",
 				"docker rm -f cid123",
 			} {
 				if !strings.Contains(calls, want) {
@@ -146,7 +148,7 @@ func TestRpmSmoke(t *testing.T) {
 		"docker build --platform linux/amd64",
 		"dnf install -y /assets/minion-0.1.0-1.x86_64.rpm",
 		"systemctl enable --now minion-worker@smokeuser",
-		"su -s /bin/sh smokeuser -c minion worker status",
+		"exec -u smokeuser -w /home/smokeuser -e HOME=/home/smokeuser cid123 minion worker status",
 	} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("missing docker call %q; calls:\n%s", want, calls)

@@ -193,7 +193,13 @@ wait_for_worker
 status=$("$minion" worker status --tmux-socket "$sock") || smoke_die "minion worker status failed (exit $?) after it had reached the Worker"
 grep -Eq "^Version: +$tag\$" <<<"$status" || smoke_die "worker status shows another version: $(printf '%s\n' "$status" | excerpt 30 400)"
 grep -Eq '^Sessions: +1$' <<<"$status" || smoke_die "worker status does not count the private tmux session: $(printf '%s\n' "$status" | excerpt 30 400)"
-grep -Fq "$sock" <<<"$status" || smoke_die "worker status does not show the private tmux socket: $(printf '%s\n' "$status" | excerpt 30 400)"
+# The status prints the cleaned socket path: on macOS TMPDIR ends with "/" (so the
+# raw path may hold "//") and /var is a symlink to /private/var; accept the
+# cleaned logical or physical spelling of the same file.
+sock_dir=$(dirname "$sock")
+sock_logical="$(cd "$sock_dir" && pwd -L)/$(basename "$sock")"
+sock_physical="$(cd "$sock_dir" && pwd -P)/$(basename "$sock")"
+{ grep -Fq "$sock_logical" <<<"$status" || grep -Fq "$sock_physical" <<<"$status" || grep -Fq "$sock" <<<"$status"; } || smoke_die "worker status does not show the private tmux socket: $(printf '%s\n' "$status" | excerpt 30 400)"
 
 kill -0 "$worker_pid" 2>/dev/null || smoke_die "the Worker was gone before the smoke test ended"
 kill "$worker_pid"

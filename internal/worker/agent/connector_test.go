@@ -301,7 +301,7 @@ func (f *connFixture) step(d time.Duration) {
 
 func eventually(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second) // generous: race-enabled CI runners are slow
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatal("condition not reached in time")

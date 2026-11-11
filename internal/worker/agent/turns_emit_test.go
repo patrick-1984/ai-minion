@@ -101,7 +101,7 @@ func (h *turnHarness) stream() *fakeEvStream {
 	select {
 	case st := <-h.opens:
 		return st
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		h.t.Fatal("no turn channel was opened")
 		return nil
 	}

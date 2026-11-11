@@ -28,10 +28,15 @@ func TestRunKeepalivePingsEvery30sAndDiesAfter2min(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	for i := 1; i <= 3; i++ {
+		// The loop re-arms its timer after each ping; advance only once it waits,
+		// or the advance is lost on a slow machine.
+		for clk.waiters() == 0 {
+			time.Sleep(time.Millisecond)
+		}
 		clk.Advance(30 * time.Second)
 		select {
 		case <-pings:
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatalf("no ping after %d x 30s", i)
 		}
 		select {

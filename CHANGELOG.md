@@ -1,8 +1,8 @@
 # Changelog
 
-## v0.6.1
+## v0.6.2
 
-The first published release of 0.6. A `v0.6.0` tag exists but was never published as a release; everything below applies to 0.6.1.
+The first published release of 0.6. The `v0.6.0` and `v0.6.1` tags exist but were never published as releases (their install smoke tests failed); everything below applies to 0.6.2.
 
 Released 2026-11-11.
 
