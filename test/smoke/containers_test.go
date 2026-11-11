@@ -17,7 +17,7 @@ case "$1" in
     cmd="$*"
     case "$cmd" in
       "systemctl is-system-running") echo running ;;
-      "minion version" | "mn version") printf 'version: %s\ncommit: abc\nbuilt: now\ngo: go1.27.3\n' "${STUB_VERSION:-v0.1.0}" ;;
+      "minion version" | "mn version") printf 'version: %s\ncommit: abc\nbuilt: now\ngo: go1.27.4\n' "${STUB_VERSION:-v0.1.0}" ;;
       "systemctl is-active --quiet "*) [ -z "${STUB_WORKER_DOWN:-}" ] || exit 3 ;;
       *"worker status"*)
         case "$cmd" in

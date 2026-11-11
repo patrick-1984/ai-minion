@@ -18,6 +18,8 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 )
 
+var plainBackup = hubBackupOpts{unencrypted: true}
+
 func TestHubBackupAndRestoreAreRegistered(t *testing.T) {
 	root := NewRoot()
 	for _, name := range []string{"backup", "restore"} {
@@ -55,7 +57,7 @@ func TestHubBackupThenRestoreIntoNewDir(t *testing.T) {
 	// The data dir comes from the environment, like "minion hub serve".
 	d := hubBackupDeps{lookupEnv: envOf(map[string]string{"MINION_DATA_DIR": src})}
 	var out bytes.Buffer
-	if err := runHubBackup(context.Background(), &out, d, "", archive); err != nil {
+	if err := runHubBackup(context.Background(), &out, d, "", archive, plainBackup); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Backup written to "+archive) || !strings.Contains(out.String(), "secret keys") {
@@ -66,14 +68,14 @@ func TestHubBackupThenRestoreIntoNewDir(t *testing.T) {
 			t.Fatalf("archive: %v %v", st, err)
 		}
 	}
-	if err := runHubBackup(context.Background(), &out, d, "", archive); err == nil {
+	if err := runHubBackup(context.Background(), &out, d, "", archive, plainBackup); err == nil {
 		t.Fatal("second backup overwrote the archive")
 	}
 
 	dst := filepath.Join(t.TempDir(), "new")
 	out.Reset()
 	hostOnly := hubBackupDeps{containerDir: func(string) containerKind { return notContainer }}
-	if err := runHubRestore(context.Background(), &out, hostOnly, dst, archive, false); err != nil {
+	if err := runHubRestore(context.Background(), &out, hostOnly, dst, archive, false, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Restored 3 files into "+dst) || strings.Contains(out.String(), "chown") {
@@ -93,18 +95,18 @@ func TestHubBackupThenRestoreIntoNewDir(t *testing.T) {
 	}
 
 	// A non-empty dir needs --force.
-	err = runHubRestore(context.Background(), &out, hostOnly, dst, archive, false)
+	err = runHubRestore(context.Background(), &out, hostOnly, dst, archive, false, "", 0)
 	if err == nil || !strings.Contains(err.Error(), "--force") {
 		t.Fatalf("err = %v", err)
 	}
-	if err := runHubRestore(context.Background(), &out, hostOnly, dst, archive, true); err != nil {
+	if err := runHubRestore(context.Background(), &out, hostOnly, dst, archive, true, "", 0); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestHubBackupNeedsADataDir(t *testing.T) {
 	d := hubBackupDeps{lookupEnv: envOf(map[string]string{"MINION_DATA_DIR": filepath.Join(t.TempDir(), "none")})}
-	err := runHubBackup(context.Background(), &bytes.Buffer{}, d, "", filepath.Join(t.TempDir(), "x"))
+	err := runHubBackup(context.Background(), &bytes.Buffer{}, d, "", filepath.Join(t.TempDir(), "x"), plainBackup)
 	if err == nil || !strings.Contains(err.Error(), "not a Hub data directory") {
 		t.Fatalf("err = %v", err)
 	}
@@ -149,7 +151,7 @@ func TestRestorePrintsChownReminderForContainerDir(t *testing.T) {
 	}
 	_ = s.Close()
 	archive := filepath.Join(t.TempDir(), "a.tar.gz")
-	if err := runHubBackup(context.Background(), &bytes.Buffer{}, hubBackupDeps{}, src, archive); err != nil {
+	if err := runHubBackup(context.Background(), &bytes.Buffer{}, hubBackupDeps{}, src, archive, plainBackup); err != nil {
 		t.Fatal(err)
 	}
 	restore := func(kind containerKind) string {
@@ -157,7 +159,7 @@ func TestRestorePrintsChownReminderForContainerDir(t *testing.T) {
 		dst := filepath.Join(t.TempDir(), "d")
 		var out bytes.Buffer
 		d := hubBackupDeps{containerDir: func(string) containerKind { return kind }}
-		if err := runHubRestore(context.Background(), &out, d, dst, archive, false); err != nil {
+		if err := runHubRestore(context.Background(), &out, d, dst, archive, false, "", 0); err != nil {
 			t.Fatal(err)
 		}
 		return strings.ReplaceAll(out.String(), dst, "<DST>")
@@ -212,7 +214,7 @@ func TestRestoreIntoTrimmedDirDoesNotCreateASiblingDir(t *testing.T) {
 	}
 	_ = s.Close()
 	archive := filepath.Join(t.TempDir(), "a.tar.gz")
-	if err := runHubBackup(context.Background(), &bytes.Buffer{}, hubBackupDeps{}, src, archive); err != nil {
+	if err := runHubBackup(context.Background(), &bytes.Buffer{}, hubBackupDeps{}, src, archive, plainBackup); err != nil {
 		t.Fatal(err)
 	}
 	parent := t.TempDir()
@@ -221,7 +223,7 @@ func TestRestoreIntoTrimmedDirDoesNotCreateASiblingDir(t *testing.T) {
 		lookupEnv:    envOf(map[string]string{"MINION_DATA_DIR": dst + " \r"}),
 		containerDir: func(string) containerKind { return notContainer },
 	}
-	if err := runHubRestore(context.Background(), &bytes.Buffer{}, d, "", archive, false); err != nil {
+	if err := runHubRestore(context.Background(), &bytes.Buffer{}, d, "", archive, false, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(parent)
@@ -336,7 +338,8 @@ func TestBackupRestoreThenHubStarts(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "hub.tar.gz")
 	var out bytes.Buffer
 	d := hubBackupDeps{lookupEnv: envOf(map[string]string{"MINION_DATA_DIR": data})}
-	if err := runHubBackup(context.Background(), &out, d, "", archive); err != nil {
+	pf := writePassphraseFile(t, "integration passphrase\n")
+	if err := runHubBackup(context.Background(), &out, d, "", archive, hubBackupOpts{passphraseFile: pf}); err != nil {
 		t.Fatalf("backup of a running Hub: %v", err)
 	}
 	if got := readyz(t, addr); got != 200 {
@@ -347,7 +350,10 @@ func TestBackupRestoreThenHubStarts(t *testing.T) {
 	// Restore into a new directory and start the Hub on it.
 	restored := filepath.Join(t.TempDir(), "restored")
 	hostOnly := hubBackupDeps{containerDir: func(string) containerKind { return notContainer }}
-	if err := runHubRestore(context.Background(), &out, hostOnly, restored, archive, false); err != nil {
+	if raw, err := os.ReadFile(archive); err != nil || !strings.HasPrefix(string(raw), "age-encryption.org/v1") {
+		t.Fatalf("the archive is not age-encrypted: %v", err)
+	}
+	if err := runHubRestore(context.Background(), &out, hostOnly, restored, archive, false, pf, 0); err != nil {
 		t.Fatal(err)
 	}
 	addr2, stop2, logs2 := startHub(t, restored)

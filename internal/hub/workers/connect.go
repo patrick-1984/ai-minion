@@ -44,8 +44,16 @@ type Welcome struct {
 	WorkerID string `json:"worker_id"`
 	Name     string `json:"name"`
 	Owner    string `json:"owner"`
-	Kind     string `json:"kind"`
-	Policy   Policy `json:"policy"`
+	// OwnerID is the stable id of the Worker's owner (protocol 2.0); Owner is
+	// the display name. The Worker uses OwnerID for pipe_accept_from.
+	OwnerID string `json:"owner_id"`
+	Kind    string `json:"kind"`
+	// Pending (F-02) tells the Worker that it is enrolled but not approved
+	// yet: the Hub sends it no operations and refuses its calls (except
+	// retiring itself) until its owner or an admin approves it. Approval ends
+	// the connection, and the reconnect is welcomed without it.
+	Pending bool   `json:"pending,omitempty"`
+	Policy  Policy `json:"policy"`
 	proto.Range
 }
 
@@ -672,7 +680,9 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		WorkerID: w.ID,
 		Name:     w.Name,
 		Owner:    owner,
+		OwnerID:  w.OwnerID,
 		Kind:     w.Kind,
+		Pending:  w.Pending,
 		Policy:   pol,
 		Range:    proto.SupportedRange(h.cfg.Current),
 	}); err != nil {
@@ -707,6 +717,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		// The hello is covered by the transcript hash that both peers signed
 		// (AD-6): these are what the authenticated Worker announced.
 		Features: c.res.Worker.Features,
+		Pending:  w.Pending,
 
 		TranscriptHash: append([]byte(nil), c.res.TranscriptHash[:]...),
 	}, host)
@@ -759,6 +770,17 @@ func (h *Handler) recheckAdmitted(ctx context.Context, c *Conn, w store.WorkerRo
 	case !errors.Is(err, store.ErrWorkerNotFound):
 		h.log.Warn("worker connect: the removal check failed; the connection is ended", "worker_id", w.ID, "error", err.Error())
 	default:
+		if w.Pending {
+			// An approval that committed between the read of the row and the
+			// registration found the Worker offline and could not end a
+			// connection that did not exist yet. The Worker is registered now:
+			// an approval from here on finds it online.
+			cur, rerr := h.cfg.Repository.WorkerByPub(ctx, []byte(c.res.WorkerPub))
+			if rerr != nil || !cur.Pending {
+				h.log.Info("worker was approved while it connected; the connection is ended to start it approved", "worker_id", w.ID)
+				break
+			}
+		}
 		if h.cfg.Policy == nil {
 			return
 		}

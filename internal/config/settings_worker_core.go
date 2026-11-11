@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -18,6 +19,10 @@ const (
 	KeyShareExisting = "share_existing"
 	KeyPreviewOnly   = "preview_only"
 	KeyShareLock     = "share_lock"
+	// KeyCallAPIKeyFile names the file of the Worker call key (F-01).
+	KeyCallAPIKeyFile = "call_api_key_file"
+	// KeyPipeAcceptFrom is the receiver policy for messages from other Workers.
+	KeyPipeAcceptFrom = "pipe_accept_from"
 )
 
 // Values of share_existing. They match the share modes of the Worker state
@@ -34,7 +39,8 @@ const MaxNameLength = 64
 func init() { declareWorkerCore(Default) }
 
 // declareWorkerCore declares the settings every Worker run needs. The flags
-// are --tmux-socket, --name, --share-existing, --preview-only and --share-lock.
+// are --tmux-socket, --name, --share-existing, --preview-only, --share-lock,
+// --call-api-key-path (call_api_key_file) and --pipe-accept-from.
 func declareWorkerCore(r *Registry) {
 	r.Declare(Setting{
 		Key:   KeyTmuxSocket,
@@ -71,6 +77,129 @@ func declareWorkerCore(r *Registry) {
 		Default: "false",
 		Choices: []string{"true", "false"},
 	})
+	r.Declare(Setting{
+		Key:   KeyCallAPIKeyFile,
+		Scope: ScopeWorker,
+		// The registry reserves names ending in _FILE for the file form of
+		// secrets; the key lives in the file, so this setting is a path.
+		Env: "MINION_CALL_API_KEY_PATH",
+		Help: "File with the Worker-bound API key (mn_...) that this Worker's local commands and local MCP use for " +
+			"calls to other Workers through the Hub. Mode 0600, owned by the Worker's user; read again on every call. " +
+			"Unset: this Worker can message only itself",
+	})
+	r.Declare(Setting{
+		Key:   KeyPipeAcceptFrom,
+		Scope: ScopeWorker,
+		Help: "Which other Workers may send messages (pipe_send, send_text, send_keys, answer, set_task) to sessions of " +
+			"this Worker: none (default), owner-workers (Workers of the same owner), or a comma-separated list of " +
+			"Worker ids or fingerprints. Messages from the Worker itself are always accepted. Local setting only; " +
+			"the Hub cannot change it",
+		Default: PipeAcceptNone,
+	})
+}
+
+// Values of pipe_accept_from besides a list of Worker ids and fingerprints.
+const (
+	PipeAcceptNone         = "none"
+	PipeAcceptOwnerWorkers = "owner-workers"
+)
+
+// MaxPipeAcceptEntries bounds the list form of pipe_accept_from.
+const MaxPipeAcceptEntries = 256
+
+// PipeAcceptFrom is the resolved pipe_accept_from. The zero value is none.
+type PipeAcceptFrom struct {
+	// OwnerWorkers accepts every Worker whose owner is the owner of this Worker.
+	OwnerWorkers bool
+	// Allow lists the accepted Workers: ids as written, fingerprints in
+	// canonical lowercase. Empty with OwnerWorkers false is none.
+	Allow []string
+}
+
+// String returns the setting form: none, owner-workers or the list.
+func (a PipeAcceptFrom) String() string {
+	switch {
+	case a.OwnerWorkers:
+		return PipeAcceptOwnerWorkers
+	case len(a.Allow) == 0:
+		return PipeAcceptNone
+	}
+	return strings.Join(a.Allow, ",")
+}
+
+// ParsePipeAcceptFrom parses the value of pipe_accept_from. The empty string
+// is none. The error never repeats the value.
+func ParsePipeAcceptFrom(v string) (PipeAcceptFrom, error) {
+	v = strings.TrimSpace(v)
+	switch strings.ToLower(v) {
+	case "", PipeAcceptNone:
+		return PipeAcceptFrom{}, nil
+	case PipeAcceptOwnerWorkers:
+		return PipeAcceptFrom{OwnerWorkers: true}, nil
+	}
+	var out PipeAcceptFrom
+	for _, e := range strings.Split(v, ",") {
+		e = strings.TrimSpace(e)
+		switch {
+		case e == "":
+			return PipeAcceptFrom{}, fmt.Errorf("the list has an empty entry")
+		case strings.EqualFold(e, PipeAcceptNone) || strings.EqualFold(e, PipeAcceptOwnerWorkers):
+			return PipeAcceptFrom{}, fmt.Errorf("%s cannot be combined with other entries", PipeAcceptNone+" and "+PipeAcceptOwnerWorkers)
+		case len(e) == 52:
+			e = strings.ToLower(e)
+			if !validFingerprintEntry(e) {
+				return PipeAcceptFrom{}, fmt.Errorf("an entry is neither a Worker id nor a fingerprint")
+			}
+		default:
+			if !validWorkerIDEntry(e) {
+				return PipeAcceptFrom{}, fmt.Errorf("an entry is neither a Worker id nor a fingerprint")
+			}
+		}
+		if !slices.Contains(out.Allow, e) {
+			out.Allow = append(out.Allow, e)
+		}
+		if len(out.Allow) > MaxPipeAcceptEntries {
+			return PipeAcceptFrom{}, fmt.Errorf("the list has more than %d entries", MaxPipeAcceptEntries)
+		}
+	}
+	return out, nil
+}
+
+// validFingerprintEntry is the syntactic check of a lowercase fingerprint (AD-5):
+// 52 characters of the RFC 4648 base32 alphabet, the last one canonical (the
+// 4 unused bits of 256 bits are zero, so it is "a" or "q"). The config package
+// may not import internal/identity (AD-1), so the check is repeated here; the
+// consumer compares the entry with real fingerprints, so a lookalike never
+// matches anything.
+func validFingerprintEntry(e string) bool {
+	if len(e) != 52 {
+		return false
+	}
+	for _, r := range e {
+		if (r < 'a' || r > 'z') && (r < '2' || r > '7') {
+			return false
+		}
+	}
+	return e[51] == 'a' || e[51] == 'q'
+}
+
+// validWorkerIDEntry accepts the shape of a Worker id, a UUID in the canonical
+// 8-4-4-4-12 hexadecimal form, and nothing else.
+func validWorkerIDEntry(e string) bool {
+	if len(e) != 36 {
+		return false
+	}
+	for i, r := range e {
+		switch {
+		case i == 8 || i == 13 || i == 18 || i == 23:
+			if r != '-' {
+				return false
+			}
+		case (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F'):
+			return false
+		}
+	}
+	return true
 }
 
 // defaultWorkerName is the host name, or "minion" when the OS reports none.
@@ -118,6 +247,11 @@ type WorkerCore struct {
 	PreviewOnly bool
 	// ShareLock refuses a change of the share selection from the Hub (share_set).
 	ShareLock bool
+	// CallAPIKeyFile is the file of the Worker call key; empty when unset. It is
+	// the path only: the key is read again on every call.
+	CallAPIKeyFile string
+	// PipeAcceptFrom is the receiver policy for messages from other Workers.
+	PipeAcceptFrom PipeAcceptFrom
 }
 
 // ResolveWorkerCore resolves the core Worker settings with res (a Worker
@@ -179,6 +313,22 @@ func ResolveWorkerCore(res *Resolver) (WorkerCore, error) {
 	}
 	if wc.ShareLock, err = strconv.ParseBool(lock.Value); err != nil {
 		return wc, fmt.Errorf("setting %q (%s): invalid value %q, expected true or false", KeyShareLock, lock.Source, lock.Value)
+	}
+	ck, err := get(KeyCallAPIKeyFile)
+	if err != nil {
+		return wc, err
+	}
+	if p := strings.TrimSpace(ck.Value); p != "" {
+		if wc.CallAPIKeyFile, err = filepath.Abs(p); err != nil {
+			return wc, fmt.Errorf("setting %q: %w", KeyCallAPIKeyFile, err)
+		}
+	}
+	acc, err := get(KeyPipeAcceptFrom)
+	if err != nil {
+		return wc, err
+	}
+	if wc.PipeAcceptFrom, err = ParsePipeAcceptFrom(acc.Value); err != nil {
+		return wc, fmt.Errorf("setting %q (%s): %w", KeyPipeAcceptFrom, acc.Source, err)
 	}
 	return wc, nil
 }

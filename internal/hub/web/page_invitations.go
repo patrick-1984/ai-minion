@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -275,6 +276,19 @@ type InvitationsPage struct {
 	Admin bool
 	// All is true while the list shows the keys of every user.
 	All bool
+	// MaxUsesDefault and MaxUsesLimit are the use limit offered for a reusable
+	// key; MaxUsesLimit is 0 for an admin (no upper limit besides the Hub's).
+	MaxUsesDefault int
+	MaxUsesLimit   int
+	// Notices are the texts the upgrade left on keys it limited (F-02), so the
+	// owner learns why a key now expires or runs out.
+	Notices []InvitationNotice
+}
+
+// InvitationNotice is the upgrade notice of one key.
+type InvitationNotice struct {
+	Name string
+	Text string
 }
 
 // InvitationRow is one invitation key as the list shows it. It has no secret.
@@ -290,6 +304,8 @@ type InvitationRow struct {
 	CreatorID string
 	// CanRevoke is true for a key that can still enroll Workers.
 	CanRevoke bool
+	// Notice is the text the upgrade to 0.6.0 left on the key.
+	Notice string
 }
 
 var invitationModes = []Choice{
@@ -302,10 +318,15 @@ var invitationTTLLabels = map[string]string{
 	ops.TTL1w: "1 week", ops.TTL1m: "1 month", ops.TTLUnlimited: "Unlimited",
 }
 
-// invitationTTLChoices lists the TTLs of the catalog; 24 hours is preselected.
-func invitationTTLChoices() []Choice {
+// invitationTTLChoices lists the TTLs a person may choose; 24 hours is
+// preselected. Only an admin may choose a key that is valid longer than a week.
+func invitationTTLChoices(admin bool) []Choice {
 	var out []Choice
+	max, _ := ops.InvitationTTLDuration(ops.NonAdminMaxInvitationTTL)
 	for _, t := range ops.InvitationTTLs() {
+		if d, _ := ops.InvitationTTLDuration(t); !admin && (d == 0 || d > max) {
+			continue
+		}
 		out = append(out, Choice{Value: t, Label: invitationTTLLabels[t], Selected: t == ops.TTL24h})
 	}
 	return out
@@ -315,10 +336,14 @@ func invitationRow(i ops.InvitationInfo) InvitationRow {
 	row := InvitationRow{
 		ID: i.ID, Name: i.Name, Kind: i.Kind, Status: i.Status, CreatorID: i.CreatorID,
 		Expires: formatTime(i.ExpiresAt, "never"), ExpiresAt: isoTime(i.ExpiresAt),
-		CanRevoke: i.Status == ops.InvitationActive,
+		CanRevoke: i.Status == ops.InvitationActive, Notice: i.Notice,
 	}
 	if row.Name == "" {
 		row.Name = "(no name)"
+	}
+	if i.Source == "infra_file" {
+		row.Name += " (MINION_INFRA_INVITE_KEY_FILE)"
+		row.CreatorID = "the key file"
 	}
 	row.Mode = "one-time"
 	if i.Mode == ops.InvitationReusable {
@@ -338,9 +363,17 @@ func invitationsData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 	if err := c.CallOp(r, ops.OpInvitationList, ops.InvitationListArgs{All: all}, &res); err != nil {
 		return nil, err
 	}
-	page := InvitationsPage{Modes: invitationModes, TTLs: invitationTTLChoices(), Admin: u.Admin, All: all}
+	page := InvitationsPage{Modes: invitationModes, TTLs: invitationTTLChoices(u.Admin), Admin: u.Admin, All: all,
+		MaxUsesDefault: ops.DefaultReusableMaxUses}
+	if !u.Admin {
+		page.MaxUsesLimit = ops.MaxReusableUsesNonAdmin
+	}
 	for _, i := range res.Invitations {
-		page.Invitations = append(page.Invitations, invitationRow(i))
+		row := invitationRow(i)
+		page.Invitations = append(page.Invitations, row)
+		if row.Notice != "" && i.Status == ops.InvitationActive {
+			page.Notices = append(page.Notices, InvitationNotice{Name: row.Name, Text: row.Notice})
+		}
 	}
 	return page, nil
 }
@@ -417,6 +450,7 @@ func composeFile(server string) string {
 	c.WriteString("#    https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh\n")
 	c.WriteString("# 2. Save the key as the only line of invite_key.txt next to this file.\n")
 	c.WriteString("# 3. Run: docker compose up -d\n")
+	c.WriteString("# 4. Approve the new Worker in the Hub (Workers page): it starts pending and gets no operations until you do.\n")
 	c.WriteString("# The image is built from Alpine with tmux (the Worker drives its sessions through tmux);\n")
 	c.WriteString("# bootstrap.sh downloads and verifies the minion binary on the first start and keeps it in\n")
 	c.WriteString("# the cache volume. The Worker runs as user " + uid + " and enrolls once: after that the key\n")
@@ -477,7 +511,9 @@ type inviteResult struct {
 	Mode    string
 	Kind    string
 	Expires string
-	Key     string
+	// Limit is "N enrollments" for a key with a use limit.
+	Limit string
+	Key   string
 	InviteCommands
 }
 
@@ -490,6 +526,14 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 		Name: strings.TrimSpace(r.PostFormValue("name")),
 		Kind: r.PostFormValue("kind"),
 	}
+	if v := strings.TrimSpace(r.PostFormValue("max_uses")); v != "" && args.Mode == ops.InvitationReusable {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeResultError(w, "The number of uses must be a whole number.")
+			return
+		}
+		args.MaxUses = n
+	}
 	var res ops.InvitationCreateResult
 	if err := c.CallOp(r, ops.OpInvitationCreate, args, &res); err != nil {
 		writeResultError(w, failureText(err))
@@ -501,6 +545,9 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	}
 	if res.Mode == ops.InvitationReusable {
 		out.Mode = "reusable"
+	}
+	if res.MaxUses != nil {
+		out.Limit = fmt.Sprintf("%d %s", *res.MaxUses, map[bool]string{true: "enrollment", false: "enrollments"}[*res.MaxUses == 1])
 	}
 	writeFragmentTemplate(w, invitationFragments(), "invitation_key", out)
 }

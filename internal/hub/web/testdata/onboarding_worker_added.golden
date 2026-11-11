@@ -3,6 +3,6 @@
   <p><strong>kitchen-nuc is now in your space.</strong></p>
   <p class="muted">the name was already in use in your space; the Worker is called kitchen-nuc</p>
   
-  <p>It appears in your <a href="/workers">workers</a> as soon as it connects. To add another one, enter its code below.</p>
+  <p>It appears in your <a href="/workers">workers</a> as <strong>pending approval</strong>. Check its fingerprint and source address there and approve it; until then the Hub sends it no operations. To add another one, enter its code below.</p>
   </div>
 </div>

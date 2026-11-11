@@ -48,6 +48,11 @@ type Online struct {
 	// cannot inherit the features of the build before it.
 	Features    []string
 	ConnectedAt time.Time
+	// Pending is true while the Worker waits for approval (F-02). A pending
+	// Worker is registered so that it shows as connected, but no op stream
+	// is opened towards it and no Registry hook sees it; its approval ends
+	// the connection, and the reconnect is registered as approved.
+	Pending bool
 	// TranscriptHash identifies the handshake of this connection. A signed
 	// revoke that the Hub sends over the live connection is signed over it
 	// (AD-9), so that it cannot be replayed on another connection. It is not
@@ -114,8 +119,10 @@ func (r *Registry) Add(info Online, sess OpSession) {
 	if old != nil {
 		_ = old.sess.Close()
 	}
-	for _, h := range hooks {
-		h(clone(info), sess)
+	if !info.Pending {
+		for _, h := range hooks {
+			h(clone(info), sess)
+		}
 	}
 	go func() {
 		<-sess.Done()
@@ -200,9 +207,10 @@ func (r *Registry) OpenOp(ctx context.Context, workerID, op string, need ...stri
 		sess      OpSession
 		announced bool
 		missing   string
+		pending   bool
 	)
 	if e != nil {
-		sess, announced = e.sess, e.info.Announces(op)
+		sess, announced, pending = e.sess, e.info.Announces(op), e.info.Pending
 		for _, f := range need {
 			if !e.info.HasFeature(f) {
 				missing = f
@@ -215,6 +223,8 @@ func (r *Registry) OpenOp(ctx context.Context, workerID, op string, need ...stri
 	switch {
 	case e == nil:
 		return nil, proto.NewError(proto.CodeWorkerOffline, "the Worker is not connected to the Hub")
+	case pending:
+		return nil, proto.NewError(proto.CodeWorkerPending, "the Worker is waiting for approval; approve it first")
 	case !announced:
 		return nil, proto.NewError(proto.CodeUnsupportedOp, fmt.Sprintf("the Worker does not support the operation %q", op))
 	case missing != "":

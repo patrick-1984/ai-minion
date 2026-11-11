@@ -1182,7 +1182,7 @@ func (a *restAccounts) CreateUser(_ context.Context, _ local.Actor, req local.Cr
 	return local.CreatedUser{User: row, TemporaryPassword: logx.Secret(tempPassword)}, nil
 }
 
-func (a *restAccounts) ResetPassword(context.Context, local.Actor, string) (logx.Secret, error) {
+func (a *restAccounts) ResetPassword(context.Context, local.Actor, string, bool) (logx.Secret, error) {
 	return "", errors.New("unused")
 }
 func (a *restAccounts) SetRole(context.Context, local.Actor, string, string) (string, error) {

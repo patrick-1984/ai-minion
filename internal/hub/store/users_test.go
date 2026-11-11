@@ -213,8 +213,14 @@ func TestRoleIsAdminOnlyWithAnAdminGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	u, err := s.UserByID(ctx, "u1")
-	if err != nil || u.Role != "user" {
-		t.Fatalf("role = %q, %v", u.Role, err)
+	if err != nil || u.Role != "" {
+		t.Fatalf("an account without grants has role %q, %v; want none (F-07)", u.Role, err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO user_roles VALUES ('u1', 'user', 'local')`); err != nil {
+		t.Fatal(err)
+	}
+	if u, err = s.UserByID(ctx, "u1"); err != nil || u.Role != "user" {
+		t.Fatalf("role with a user grant = %q, %v", u.Role, err)
 	}
 	if _, err := s.db.Exec(`INSERT INTO user_roles VALUES ('u1', 'admin', 'idp')`); err != nil {
 		t.Fatal(err)

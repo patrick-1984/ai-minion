@@ -124,7 +124,7 @@ The edges in this diagram are the only dependency directions allowed. The rules:
 - **Binds:** `internal/proto`, `internal/ops`, `/api/v1` (v3 §6)
 - **Prevents:** the wire silently breaking between releases.
 - **Rule:**
-  - **Version format.** The protocol version is `major.minor`, independent of the product semver.
+  - **Version format.** The protocol version is `major.minor`, independent of the product semver. The wire protocol is **2.0**: the mandatory request origin (AD-12) changed the meaning of `op.request`, so the major version was bumped. v0.5 was never released, so there is no 1.x fallback and no downgrade: negotiation accepts only 2.x, and the signed release manifest carries `protocol_range` `2.0..2.0`.
   - **Negotiation.** The Worker's hello carries its supported version range, the list of ops it supports and, since AM-13, the list of features it implements. The Hub picks the version, and never dispatches an op the Worker did not announce, nor a request that relies on a feature the Worker did not announce.
   - **Compatibility rules.**
     - A minor change is additive only. Receivers ignore unknown fields, and an unknown op returns `unsupported_op`.
@@ -180,7 +180,11 @@ The edges in this diagram are the only dependency directions allowed. The rules:
     - `one_time` or `reusable`;
     - a TTL of 1h, 4h, 8h, 24h, 1w, 1m or unlimited;
     - name, use counter, creator and the revoked flag;
-    - `kind`, which is `private`, or `infrastructure` for an admin key or `MINION_INFRA_INVITE_KEY_FILE`.
+    - `kind`, which is `private`, or `infrastructure` for an admin key or `MINION_INFRA_INVITE_KEY_FILE`;
+    - `source`, which is `user`, or `infra_file` for the row of `MINION_INFRA_INVITE_KEY_FILE`.
+  - **Creation caps (F-02).** A non-admin cannot create a key that is valid longer than 1w (no `1m`, no `unlimited`), and a reusable key of a non-admin has a `max_uses` (default 10, at most 100). Admins are not capped (an admin's reusable key without `max_uses` is unlimited). The caps are checked in the invitation service, so the API, the web page and the CLI give the same answer.
+  - **The infrastructure key file (F-02).** `MINION_INFRA_INVITE_KEY_FILE` is stored as a row keyed by the SHA-256 of its secret, created at the first load with an expiry (`infra_invite_key_days`, default 30, 0 for none, which logs a warning at every start; the setting applies only when the row is first created, so changing the lifetime later needs a new secret in the file or a revocation of the row), a use counter and the revoked flag. A reload (`INSERT OR IGNORE`) never changes the row, so expiry, counter and revocation survive restarts; the row enrolls only while the file currently holds its secret (`EnrollParams.Infra`), and a user key is never accepted as the file. It is listed to admins and revoked like any key.
+  - **Every enrollment starts pending (F-02, AD-9).** A Worker created from an invitation key, a pairing code or the key file has `approval = 'pending'`; see AD-9.
   - **Worker steps.**
     - Persist its key pair before connecting.
     - Use `enroll_invite`, which accepts no transition chain.
@@ -221,6 +225,12 @@ The edges in this diagram are the only dependency directions allowed. The rules:
   - **Destructive answers.** A Worker wipes its pairing only on a signed `revoke`, sent either over a live channel or as the answer to a connect from a tombstoned key. The `revoke` is signed with purpose `revoke` over the current `transcript_hash`.
   - **Unknown keys.** Any other unknown key gets a non-destructive `not_enrolled`. The Worker keeps its state and retries.
   - **Expiry of other keys.** The expiry of an invitation key or an API key never affects an enrolled Worker.
+  - **Pending Workers (F-02, enrollment is not authorization).**
+    - Every Worker enrolled by an invitation key, a pairing code or the infrastructure key file is `pending` (`workers.approval`, default `pending`, so a row written without saying anything stays closed; the Hub's insert states the value, and the 0020 migration approved every existing row). The welcome says `pending: true`.
+    - A pending Worker may connect and stays registered (`Online.Pending`), but no op stream is opened towards it (`Registry.OpenOp` answers `worker_pending`), no `Registry.OnAdd` hook (events, share) takes its session, the routing `Directory` does not list it (it cannot be resolved as a target, appears in no session list, and cannot be the source of a request), and `Router.ListWorkers` shows it with `pending`, its key fingerprint and its source address for the approval.
+    - Its call streams (`ca`) are refused with `worker_pending` for every op except `worker_retire`, which stays allowed (`Handler.requireApproved`, read against the row, so a refusal is never stale).
+    - Approval is the op `worker_approve` (catalog action `operate` or `manage` on the Worker: the owner and admins hold operate, an admin key holds manage by scope; a Worker identity and a key bound to that Worker never approve it). It sets `approval = 'approved'` and writes `worker.approve` in one transaction, then disconnects the Worker, whose reconnect is registered as approved (a pending connection that finds the row approved at its admission recheck ends itself, so an approval during the connect is not lost). An optional `fingerprint` argument must match the key. CLI: `minion hub worker approve <fingerprint|id>`.
+    - Audit: `worker.enroll` / `worker.pair` with outcome `pending`, then `worker.approve`.
 
 ### AD-10: Principals, sessions, roles and the auth boundary
 
@@ -236,6 +246,7 @@ The edges in this diagram are the only dependency directions allowed. The rules:
   - **Roles.** The roles are `admin` and `user`, each with a source of `local` or `idp`.
     - IdP sync replaces only the rows with source `idp`, in one transaction. Local grants are never touched.
     - IdP demotion applies even to the last admin. The seed admin is local.
+    - **Effective access (F-07).** An account with no effective grant (no local row and no current IdP row in `user_roles`) has the empty role and **no access for any principal kind**: browser session, API key, Worker identity and act-as target. The grant is read from SQLite on every decision (`authz` user state: active and role `user` or `admin`). Losing every IdP grant therefore makes keys and Workers inert at once, while the account, its Workers, its keys, its linked local grants and the restore-on-next-valid-login semantics stay. Administrative deactivation is a separate explicit action. Local accounts always hold an explicit local grant (migration 0019; a first local password or detaching the last identity of an account with a password also ensures a local `user` grant).
   - **OIDC rules.**
     - Identity is (issuer, subject), which is unique.
     - An ID token is required.
@@ -243,12 +254,13 @@ The edges in this diagram are the only dependency directions allowed. The rules:
     - E-mail linking needs a provider flag, `email_verified` and an allowed domain. Linking an admin account also needs consent in the panel.
     - Every OIDC call has a deadline.
   - **Refresh.**
-    - A background refresh runs every 24 h by default. It counts only if it returns fresh claims.
+    - A background refresh runs every 24 h by default. It counts only if it returns fresh claims. Accounts that hold an IdP admin grant are re-checked at least every hour whatever the interval (`AdminRefreshInterval`): hourly passes touch only those accounts.
+    - An IdP admin grant is made only when a refresh token is stored or issued at that sign-in; otherwise the admin role is withheld and the other roles apply. Migration 0019 suspends existing source-idp admin grants whose account has no stored refresh token (local grants stay, one `role.suspend` audit event each); recovery is to sign in again.
     - An unreachable IdP changes nothing.
     - A rejected refresh token suspends the IdP roles until the next OIDC login.
   - **Local accounts.**
     - Passwords use Argon2id with 64 MiB, 3 iterations and parallelism 2.
-    - A password change compares `credential_version`, bumps it and revokes the other sessions.
+    - A password change compares `credential_version`, bumps it, revokes the other sessions and, in the same transaction, revokes all of the user's API keys. An admin password reset does the same unless the request carries `keep_api_keys=true`.
     - Logout reports a failed server-side revocation as a failure.
   - **Admin seed.** The seed runs once, in a transaction with a marker, and only on an empty user table. It never resets a password later.
   - **Act-as.**
@@ -266,7 +278,8 @@ The edges in this diagram are the only dependency directions allowed. The rules:
   - **Key format and storage.**
     - A key is `mn_` followed by 32 random bytes in base32 (lowercase, no padding).
     - Only the SHA-256 is stored. The key is shown once, and the listing shows an 8-character hint.
-    - Keys carry an expiry and can be revoked.
+    - Keys carry an expiry and can be revoked. A key created without a named expiry expires after 90 days. A key without an expiry (`never`) can be created by an admin only.
+    - **Issuance revision (F-07).** Key creation carries the `credential_version` of the authenticating session (`apikey.WithIssuerVersion`, from the resolved session). The insert transaction compares it with the owner's current version and refuses (`store.ErrStaleIssuer`) when they differ, so a request authenticated before a password reset or change cannot mint a key after it.
   - **Scope.** A scope has an owner, resources and actions.
     - Resources are one of: `everything` (admin only), chosen users, chosen workers, or chosen `{worker_id, session_name}`.
     - Actions are `read`, `operate`, `message`, and `manage` (admin only).
@@ -285,6 +298,9 @@ The edges in this diagram are the only dependency directions allowed. The rules:
 - **Prevents:** permission checks that depend on stale pane data, guards that read different states, and the Hub bypassing local restrictions.
 - **Rule:**
   - **The request carries permissions.** Each `op.request` carries `actions`, the caller's effective set computed by the Hub for the resolved target.
+  - **The request carries its origin (protocol 2.0, F-01).** Each `op.request` carries a structured `origin` that the Hub derives on the server side from the authenticated principal, on the REST path and on the call-stream path alike (`Router.prepare`), and never from caller JSON: `{kind: user|apikey|worker, user_id, actor_id (act-as), key_id, key_bound_worker_id, source_worker_id, source_worker_fp, source_worker_owner_id}`. A Worker identity, and an API key bound to a Worker, name that Worker as the source Worker; for a bound key the source owner is the bound Worker's owner, whoever owns the key. The Hub validates the field consistency before it sends. The `welcome` frame carries the receiver Worker's stable `owner_id` (the display `owner` stays separate). A Worker refuses a message-class op (`pipe_send`, `send_text`, `send_keys`, `answer`, `set_task`) whose origin is missing or malformed with `pipe_origin_refused` (fail closed; there is no compatibility mode).
+  - **Worker-to-Worker messages (F-01).** Hub authz gives a Worker identity `read` and `message` only on its own Worker and that Worker's sessions. Reaching another Worker takes a Worker-bound API key with a scope naming the target, which the Worker presents from its local setting `call_api_key_file` (mode 0600, owner-checked like the Worker key, read again on every call, so rotation takes effect at once). The receiving Worker then applies its local setting `pipe_accept_from` to message-class ops whose origin names a source Worker other than itself: `none` (default), `owner-workers` (the origin's `source_worker_owner_id` equals the receiver's `owner_id` from its welcome) or a list of Worker ids or fingerprints. An origin naming the receiver itself is always accepted, so "A to itself" works with `none`; users and unbound keys are the Hub's own decision. `pipe_accept_from` changes only through the local settings and `minion worker config`; no Hub operation touches it. A refusal is `pipe_origin_refused` and is written to the Worker's local audit with the origin.
+  - **Claim.** This protects every Worker against a compromised peer Worker or its agent as long as the Hub is honest. It does not protect against a compromised Hub or admin: they supply the origin and already control `session_create`.
   - **Pane classification.** The Worker resolves the pane. `agentdetect` alone reports `{kind, state}` from closed sets:
     - kind: `agent:<cli>`, `shell`, `other` or `unknown`;
     - state: `stable`, `busy`, `dialog` or `unknown`.
@@ -352,6 +368,8 @@ The edges in this diagram are the only dependency directions allowed. The rules:
     - Each database has its own set of embedded `NNNN_name.sql` files. They are forward-only and applied by the in-house runner, in one transaction, at start.
     - Before applying a migration, the runner writes a `VACUUM INTO` backup.
     - A binary refuses a database whose schema is newer than it knows.
+    - Migration 0020 (F-02) adds `workers.approval` (default `pending`; existing rows become `approved` with `approved_by = 'migration'`), `enroll_addr`, `approved_at`, `approved_by`, and `invitation_keys.source` and `notice`; it caps the invitation keys of non-admins that were created under the old rules (no expiry: expires 7 days after the migration; reusable without `max_uses`: `max_uses = uses + 10`; a `notice` on each limited key, shown on the invitations page). It is forward-only and runs in one transaction.
+    - Migration 0019 (F-07) gives every local account without role rows an explicit local `user` grant and suspends source-idp admin grants without a stored refresh token (audit event each); it is idempotent in effect and never deletes local grants.
   - **SQL ownership.** Only the store packages contain SQL. Each table has one owning domain package:
 
     | Domain package | Owned tables |
@@ -368,7 +386,8 @@ The edges in this diagram are the only dependency directions allowed. The rules:
     - enrollment;
     - role replacement by source;
     - reassignment together with dropping trust and revoking bound keys;
-    - key creation together with its grants;
+    - key creation together with its grants and the issuer `credential_version` check;
+    - password reset and password change together with the revocation of the user's keys;
     - the admin seed.
   - **Identifiers.** IDs are UUIDv7 text.
   - **Secret columns.**
@@ -384,6 +403,7 @@ The edges in this diagram are the only dependency directions allowed. The rules:
   - **Kinds and reassignment.**
     - `kind` is either `private` or `infrastructure`. Only an admin can reassign, and only an `infrastructure` Worker.
     - Reassignment applies the AD-16 transaction: it deletes every trust row for the Worker and its sessions, the admin's included, and revokes bound keys. A name collision makes the Hub refuse the reassignment.
+  - **Audit origin.** The Worker's local audit rows carry the `origin` of the request (the Hub-derived JSON, `local` for the local entry points, or `missing` / `malformed` for a refused request); the Hub's audit actor stays `worker:<id>` or `key:<id>`.
   - **Trust.** Trust is stored as `(receiver_user_id, worker_id, session_name?)`. It only decides whether a model reads the output as trusted, and it never restricts the admin.
 
 ### AD-18: HTTP API and public URL
@@ -543,10 +563,10 @@ The edges in this diagram are the only dependency directions allowed. The rules:
 
 | Name | Version |
 | --- | --- |
-| Go | 1.27.3 |
+| Go | 1.27.4 |
 | github.com/coreos/go-oidc/v3 | v3.21.0 |
 | golang.org/x/oauth2 | v0.38.0 |
-| golang.org/x/crypto (argon2, chacha20poly1305) | v0.58.0 |
+| golang.org/x/crypto (argon2, chacha20poly1305) | v0.58.1-0.20261009181718-2f1f834330b2 |
 | golang.org/x/sys | v0.50.0 |
 | modernc.org/sqlite | v1.62.0 |
 | github.com/hashicorp/yamux | v0.1.2 |
@@ -666,7 +686,7 @@ graph LR
 | Unit | How it runs |
 | --- | --- |
 | Hub, Docker | Image `ghcr.io/patrick-1984/minion` runs as UID 65532; `/data` (DB, data key, identity key, TLS material) is a bind-mounted host directory prepared with `chown 65532:65532` (or an init container), and the Hub checks at startup that it is writable and prints the exact fix if not. Port `:8443` TLS 1.3. Behind a proxy: `MINION_TLS=off` + `MINION_PUBLIC_URL` + `MINION_TRUSTED_PROXIES`. The proxy must pass WebSocket upgrades and have an idle timeout above 30 s. Update: `docker compose pull && up -d`. The no-registry variant is any base image plus `bootstrap.sh`. |
-| Hub, binary | The same binary, run as `minion hub serve`. The data directory follows OS conventions, or `MINION_DATA_DIR`. `minion hub backup` writes one archive (`VACUUM INTO`, data key, identity key, TLS material). Restore is stop, then `minion hub restore <archive>`. There is no DB downgrade. Single instance. Health checks: `/healthz` and `/readyz`. |
+| Hub, binary | The same binary, run as `minion hub serve`. The data directory follows OS conventions, or `MINION_DATA_DIR`. `minion hub backup` writes one archive (`VACUUM INTO`, data key, Hub identity key including a pending `identity.key.next` chosen to match the snapshot, TLS certificate and key; the key-file list is one list in `hub/store`, so the two-tier identity files join it by one line). The archive is encrypted by default with `filippo.io/age` (scrypt passphrase recipient): `--passphrase-file FILE` (a private file, opened like `identity.OpenPrivate`) or an explicit `--unencrypted` (warns); neither flag is an error. Restore is stop, then `minion hub restore <archive> [--passphrase-file FILE]`: it detects age versus a legacy plain tar, decrypts and verifies the whole archive in a private temp area before touching the data directory, and a wrong passphrase changes nothing. There is no DB downgrade. Single instance. Health checks: `/healthz` and `/readyz`. |
 | Worker, native Linux/Pi | deb, rpm or a script. The systemd service `minion-worker` runs as the user who owns the sessions, with `Restart=always`. The variant without sudo is a systemd user service with `loginctl enable-linger`, which is checked after enabling. That variant is systemd-only. |
 | Worker, macOS | A launchd agent. tmux comes from the system or a package manager. |
 | Worker, container | `minion worker up` detects that no service manager exists and runs in the foreground. It is configured by env (`MINION_SERVER`, `MINION_INVITE_KEY_FILE`, `MINION_SHARE_EXISTING`), keeps its identity in `/data`, and restarts through `restart: unless-stopped`. tmux must be present in the user's image. |

@@ -1,5 +1,6 @@
 {{define "invitation_key"}}<div class="secret" role="status">
-  <p><strong>Invitation key{{if .Name}} "{{.Name}}"{{end}} created.</strong> It is {{.Mode}}, kind {{.Kind}}, and expires: {{.Expires}}.</p>
+  <p><strong>Invitation key{{if .Name}} "{{.Name}}"{{end}} created.</strong> It is {{.Mode}}, kind {{.Kind}}, {{if .Limit}}allows {{.Limit}}, {{end}}and expires: {{.Expires}}.</p>
+  <p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="invite-key">Invitation key</label>
@@ -22,6 +23,8 @@
 {{define "content"}}
 <div class="page-head"><div><h1>Invitation keys</h1><p>An invitation key lets a machine enroll itself as a Worker in your space. Expiry only stops new enrollments: a Worker that has enrolled keeps working.</p></div></div>
 <div class="stack">
+{{range .Data.Notices}}<p class="notice notice-warning" role="status" data-invitation-notice><strong>{{.Name}}:</strong> {{.Text}}</p>
+{{end}}<p class="notice notice-info" role="note">A Worker that enrolls with a key starts as <strong>pending</strong> and receives no operations until you approve it on the Workers page. A stolen key therefore cannot operate anything by itself.</p>
 <section class="panel" aria-labelledby="create-invitation">
   <h2 id="create-invitation">Create an invitation key</h2>
   <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
@@ -33,7 +36,11 @@
       </select>
     </div>
     <div class="field">
-      <label for="inv-ttl">Valid for</label>
+      <label for="inv-maxuses">Enrollments (reusable keys only; {{if .Data.MaxUsesLimit}}blank is {{.Data.MaxUsesDefault}}, at most {{.Data.MaxUsesLimit}}{{else}}blank is no limit{{end}})</label>
+      <input type="number" id="inv-maxuses" name="max_uses" min="1"{{if .Data.MaxUsesLimit}} max="{{.Data.MaxUsesLimit}}" placeholder="{{.Data.MaxUsesDefault}}"{{end}} inputmode="numeric">
+    </div>
+    <div class="field">
+      <label for="inv-ttl">Valid for{{if not .Data.Admin}} (at most 1 week){{end}}</label>
       <select id="inv-ttl" name="ttl">
         {{range .Data.TTLs}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
         {{end}}
@@ -62,7 +69,7 @@
     <thead><tr><th scope="col">Name</th><th scope="col">Use</th><th scope="col">Kind</th><th scope="col">Uses</th><th scope="col">Expires</th><th scope="col">State</th>{{if .Data.All}}<th scope="col">Created by</th>{{end}}<th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range .Data.Invitations}}<tr>
-      <th scope="row">{{.Name}}</th>
+      <th scope="row">{{.Name}}{{if .Notice}}<br><span class="muted" data-invitation-notice>{{.Notice}}</span>{{end}}</th>
       <td>{{.Mode}}</td>
       <td>{{.Kind}}</td>
       <td>{{.Uses}}</td>

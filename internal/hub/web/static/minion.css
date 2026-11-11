@@ -254,6 +254,11 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .badge[data-state="dialog"], .badge[data-tone="warning"] { background: var(--warning-subtle); color: var(--warning); border-color: transparent; }
 .badge[data-state="dialog"]::before, .badge[data-tone="warning"]::before { border-radius: 1px; transform: rotate(45deg); }
 .badge[data-tone="danger"] { background: var(--danger-subtle); color: var(--danger); border-color: transparent; }
+.pending-facts { margin: 6px 0 0; font-size: 12px; }
+.pending-facts > div { display: block; }
+.pending-facts dt { display: inline; font-weight: 600; color: var(--muted); }
+.pending-facts dt::after { content: ":"; }
+.pending-facts dd { display: inline; margin: 0 0 0 4px; overflow-wrap: anywhere; }
 .badge[data-online="false"]::before { background: transparent; border: 2px solid currentColor; }
 .badge[data-kind] { color: var(--text); }
 .badge[data-kind="infrastructure"] { background: var(--warning-subtle); color: var(--warning); border-color: transparent; }

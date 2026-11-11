@@ -1108,3 +1108,31 @@ func TestConcurrentCallbackCannotRestoreAccessAfterRevocation(t *testing.T) {
 		t.Fatalf("valid sessions left: %d, %v", live, err)
 	}
 }
+
+// F-07: an IdP admin grant needs a refresh token, so the background refresh
+// can end it later.
+func TestAdminRoleWithoutARefreshTokenIsNotGranted(t *testing.T) {
+	h := newTestHub(t, nil)
+	h.idp.set(func(f *fakeIdP) { f.refreshToken = "" })
+	h.groups("minion-admins")
+	r := h.signIn()
+	if r.status != http.StatusForbidden {
+		t.Fatalf("admin-only sign-in without a refresh token = %d, want 403\n%s", r.status, r.body)
+	}
+	mustContain(t, r.body, "refresh token")
+	if h.countUsers() != 0 {
+		t.Error("an account was created for a tokenless admin")
+	}
+	// Admin and user: the user role is granted, admin is not.
+	h.groups("minion-admins", "minion-users")
+	sess, ok := h.sessionOf(h.signIn())
+	if !ok || sess.Role != "user" {
+		t.Fatalf("session = %+v, %v; want a user session", sess, ok)
+	}
+	// When the IdP issues a token at a later sign-in, admin is granted.
+	h.idp.set(func(f *fakeIdP) { f.refreshToken = "rt-new" })
+	sess, ok = h.sessionOf(h.signIn())
+	if !ok || sess.Role != "admin" {
+		t.Fatalf("session after a token was issued = %+v, %v; want admin", sess, ok)
+	}
+}

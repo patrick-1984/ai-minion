@@ -70,6 +70,11 @@ type Request struct {
 	Op      string
 	Actions []ops.Action
 	Args    json.RawMessage
+	// Origin is the Hub-derived provenance of a Hub request, taken from the
+	// op.request frame by the op server and never from the arguments. It is nil
+	// for a local caller (the local socket, MCP on this host): the entry point
+	// is the origin there. It only feeds the local audit.
+	Origin *proto.Origin
 }
 
 // Handler executes one op. The executor passes the request through unchanged;
@@ -181,6 +186,9 @@ func (e *Executor) Policy() *Policy { return e.policy }
 // comes back as an [*APIError]; everything that reached a pane is an outcome
 // inside a ops.WriteResult.
 func (e *Executor) Execute(ctx context.Context, rq Request) (json.RawMessage, error) {
+	if rq.Origin != nil {
+		ctx = context.WithValue(ctx, originCtxKey{}, rq.Origin)
+	}
 	e.mu.RLock()
 	h := e.handlers[rq.Op]
 	e.mu.RUnlock()
@@ -196,6 +204,22 @@ func (e *Executor) Execute(ctx context.Context, rq Request) (json.RawMessage, er
 		return nil, internalErr("encode result", err)
 	}
 	return b, nil
+}
+
+// originCtxKey carries the origin of a Hub request to the audit.
+type originCtxKey struct{}
+
+// auditOrigin is the text of the origin column of the local audit: the JSON
+// origin of a Hub request, or "local" when the caller came through a local
+// entry point.
+func auditOrigin(ctx context.Context) string {
+	if o, ok := ctx.Value(originCtxKey{}).(*proto.Origin); ok && o != nil {
+		if b, err := json.Marshal(o); err == nil {
+			return string(b)
+		}
+		return "malformed"
+	}
+	return "local"
 }
 
 // lookupOp returns the catalog entry of a Worker op.

@@ -3,6 +3,7 @@ package oidc
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,7 +17,11 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/hub/auth/apikey"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
 // ---- fakes ----------------------------------------------------------------------
@@ -43,6 +48,12 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	c.delays = append(c.delays, d)
 	c.waiters = append(c.waiters, clockWaiter{at: c.now.Add(d), ch: ch})
 	return ch
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
 }
 
 func (c *fakeClock) Advance(d time.Duration) {
@@ -295,6 +306,83 @@ func (rh *refreshHub) workerRows() string {
 	return s
 }
 
+// accessProbe asks the real key service and authorizer what the account's API
+// key and Worker identity may do now (F-07).
+type accessProbe struct {
+	rh  *refreshHub
+	svc *apikey.Service
+	az  *authz.Authorizer
+	key string
+}
+
+type probeUsers struct{ st *store.Store }
+
+func (u probeUsers) User(ctx context.Context, id string) (authz.UserState, error) {
+	row, err := u.st.UserByID(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return authz.UserState{}, authz.ErrNotFound
+	}
+	if err != nil {
+		return authz.UserState{}, err
+	}
+	return authz.UserState{Role: authz.Role(row.Role), Active: row.Active}, nil
+}
+
+type probeWorkers struct{ st *store.Store }
+
+func (w probeWorkers) WorkerOwner(ctx context.Context, id string) (string, error) {
+	o, err := w.st.WorkerOwner(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return "", authz.ErrNotFound
+	}
+	return o, err
+}
+
+// probe adds the Worker "w1" and an everything key (the account is an IdP
+// admin) and returns the probe.
+func (rh *refreshHub) probe() *accessProbe {
+	rh.t.Helper()
+	rh.addWorker()
+	az := authz.New(probeUsers{rh.st}, probeWorkers{rh.st})
+	svc, err := apikey.New(apikey.Config{Repo: rh.st, Authz: az, Users: probeUsers{rh.st}})
+	if err != nil {
+		rh.t.Fatal(err)
+	}
+	u, err := rh.st.UserByID(context.Background(), rh.userID)
+	if err != nil {
+		rh.t.Fatal(err)
+	}
+	ctx := apikey.WithIssuerVersion(context.Background(), u.CredentialVersion)
+	res, err := svc.Create(ctx, authz.NewSessionPrincipal(rh.userID), ops.APIKeyCreateArgs{
+		Name: "all", Resources: []ops.KeyResource{{Kind: ops.KeyResourceEverything}},
+		Actions: []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionManage}})
+	if err != nil {
+		rh.t.Fatal(err)
+	}
+	return &accessProbe{rh: rh, svc: svc, az: az, key: res.Key}
+}
+
+// keyAuthenticates reports whether the key authenticates at all.
+func (p *accessProbe) keyAuthenticates() bool {
+	_, err := p.svc.AuthenticateKey(context.Background(), p.key)
+	return err == nil
+}
+
+// keyCan reports whether the key authenticates and the authorizer allows action on the
+// account's own user resource.
+func (p *accessProbe) keyCan(action ops.Action) bool {
+	id, err := p.svc.AuthenticateKey(context.Background(), p.key)
+	if err != nil {
+		return false
+	}
+	return p.az.Decide(context.Background(), id.Principal, ops.MustActionSet(action), authz.UserResource{ID: p.rh.userID}) == nil
+}
+
+// workerCan reports whether the Worker identity "w1" may read its own Worker.
+func (p *accessProbe) workerCan() bool {
+	return p.az.Decide(context.Background(), authz.NewWorkerPrincipal("w1"), ops.MustActionSet(ops.ActionRead), authz.WorkerResource{ID: "w1"}) == nil
+}
+
 func (rh *refreshHub) auditHas(action, outcome string) bool { return rh.aud.has(action, outcome) }
 
 func wantRoles(t *testing.T, what string, got []string, want ...string) {
@@ -376,6 +464,10 @@ func TestRefreshWithNoMatchingGroupDropsRolesAndEndsSessions(t *testing.T) {
 			if !rh.sessionAlive(rh.token) {
 				t.Fatal("setup: the session is not alive")
 			}
+			pr := rh.probe()
+			if !pr.keyCan(ops.ActionManage) || !pr.workerCan() {
+				t.Fatal("setup: the admin key or the Worker identity does not work")
+			}
 			rh.idp.set(func(f *fakeIdP) { f.claims = claims })
 			sum := rh.run()
 			wantRoles(t, "roles", rh.idpRoles(rh.userID))
@@ -387,6 +479,25 @@ func TestRefreshWithNoMatchingGroupDropsRolesAndEndsSessions(t *testing.T) {
 			}
 			if rh.storedToken() != "rt-1" {
 				t.Error("fresh claims without roles must keep the token (the next sign-in or refresh may bring the roles back)")
+			}
+			// F-07: an account without any effective grant has no access for
+			// any principal. The key and the Worker identity are inert, the
+			// account and the key rows stay.
+			if pr.keyAuthenticates() || pr.keyCan(ops.ActionRead) || pr.workerCan() {
+				t.Error("the API key or the Worker identity still works after the account lost its last grant")
+			}
+			var revoked int
+			if err := rh.st.DB().QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NOT NULL`).Scan(&revoked); err != nil || revoked != 0 {
+				t.Errorf("revoked keys = %d, %v: the key must only be inert, not revoked", revoked, err)
+			}
+			// Group membership returns: the next valid sign-in restores
+			// the account, the key and the Worker.
+			rh.groups("minion-admins", "minion-users")
+			if r := rh.signIn(); r.status != http.StatusSeeOther {
+				t.Fatalf("sign-in after the roles returned = %d\n%s", r.status, r.body)
+			}
+			if !pr.keyCan(ops.ActionManage) || !pr.workerCan() {
+				t.Error("the key and the Worker did not come back with the roles")
 			}
 		})
 	}
@@ -488,7 +599,7 @@ func TestRotatedTokenIsKeptEvenWithoutClaims(t *testing.T) {
 func TestRejectedRefreshTokenSuspendsIdPRolesUntilNextLogin(t *testing.T) {
 	rh := newRefreshHub(t)
 	rh.grantLocal("user")
-	rh.addWorker()
+	pr := rh.probe()
 	workers := rh.workerRows()
 	if workers == "" {
 		t.Fatal("setup: no worker row")
@@ -514,6 +625,11 @@ func TestRejectedRefreshTokenSuspendsIdPRolesUntilNextLogin(t *testing.T) {
 	if !rh.auditHas(AuditActionRoleSuspend, OutcomeSuccess) {
 		t.Errorf("no role.suspend audit row: %+v", rh.aud.all())
 	}
+	// The linked local user grant survives: the account keeps user access,
+	// the everything key shrinks to it (no manage) and the Worker still works.
+	if !pr.keyCan(ops.ActionRead) || pr.keyCan(ops.ActionManage) || !pr.workerCan() {
+		t.Error("with a local user grant the key must work at user level only and the Worker must work")
+	}
 
 	// Suspended means suspended: the next pass has nothing to refresh and does
 	// not ask the IdP again, even when the IdP would accept the token now.
@@ -532,6 +648,9 @@ func TestRejectedRefreshTokenSuspendsIdPRolesUntilNextLogin(t *testing.T) {
 		t.Fatalf("sign-in = %d\n%s", r.status, r.body)
 	}
 	wantRoles(t, "idp roles after login", rh.idpRoles(rh.userID), "admin", "user")
+	if !pr.keyCan(ops.ActionManage) {
+		t.Error("the admin key did not come back with the IdP admin role")
+	}
 	if rh.storedToken() != "rt-1" {
 		t.Errorf("stored token after login = %q", rh.storedToken())
 	}
@@ -976,4 +1095,157 @@ func TestRunSurvivesAFailingPass(t *testing.T) {
 	if !strings.Contains(rh.rlogs.String(), "pass failed") {
 		t.Errorf("the failure was not logged:\n%s", rh.rlogs)
 	}
+}
+
+// F-07: an account with an IdP admin grant is re-checked at least hourly,
+// whatever the configured interval; the other accounts keep the interval.
+func TestAdminAccountsAreRefreshedAtLeastHourly(t *testing.T) {
+	rh := newRefreshHub(t)
+	cs := &countingStore{RefreshStore: rh.r.Store}
+	rh.r.Store = cs
+	rh.r.Interval = func(context.Context) (time.Duration, error) { return 24 * time.Hour, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = rh.r.Run(ctx) }()
+
+	waitFor(t, "the start timer", func() bool { return rh.clock.pending() == 1 })
+	rh.clock.Advance(DefaultRefreshStartDelay)
+	waitFor(t, "pass 1", func() bool { return cs.passes.Load() == 1 })
+	waitFor(t, "the next timer", func() bool { return rh.clock.pending() == 1 })
+	if got := rh.clock.requested(); got[len(got)-1] != AdminRefreshInterval {
+		t.Fatalf("wait after a pass with an IdP admin = %v, want %v", got[len(got)-1], AdminRefreshInterval)
+	}
+	// The admin loses the group between passes: the next hourly pass drops
+	// the role, and the schedule falls back to the configured interval.
+	rh.groups("minion-users")
+	rh.clock.Advance(AdminRefreshInterval)
+	waitFor(t, "pass 2", func() bool { return cs.passes.Load() == 2 })
+	waitFor(t, "the timer after the demotion", func() bool { return rh.clock.pending() == 1 && len(rh.clock.requested()) == 3 })
+	wantRoles(t, "roles after the hourly pass", rh.idpRoles(rh.userID), "user")
+	if got := rh.clock.requested(); got[len(got)-1] != 23*time.Hour {
+		t.Errorf("wait after the last admin was demoted = %v, want 23h (the rest of the interval)", got[len(got)-1])
+	}
+	if !strings.Contains(rh.rlogs.String(), "admin_only=true") {
+		t.Errorf("the hourly pass was not an admin-only pass:\n%s", rh.rlogs)
+	}
+}
+
+// promotingStore adds an IdP admin grant right after the first target listing
+// of a pass, like a sign-in that promotes an account while a pass runs.
+type promotingStore struct {
+	RefreshStore
+	db     *sql.DB
+	userID string
+	passes atomic.Int32
+}
+
+func (p *promotingStore) RefreshTargets(ctx context.Context) ([]Target, error) {
+	ts, err := p.RefreshStore.RefreshTargets(ctx)
+	if p.passes.Add(1) == 1 {
+		if _, e := p.db.Exec(`INSERT OR IGNORE INTO user_roles (user_id, role, source) VALUES (?, 'admin', 'idp')`, p.userID); e != nil {
+			panic(e)
+		}
+	}
+	return ts, err
+}
+
+// demote removes the IdP admin grant of the test account without touching its
+// refresh token.
+func (rh *refreshHub) demote() {
+	rh.t.Helper()
+	rh.groups("minion-users")
+	if sum := rh.run(); sum.Changed != 1 {
+		rh.t.Fatalf("demotion pass: %+v", sum)
+	}
+	wantRoles(rh.t, "roles after demotion", rh.idpRoles(rh.userID), "user")
+}
+
+// F-07: a promotion at sign-in while the loop sleeps a long interval brings
+// the next admin check within the hour (the loop sees no admin when it sleeps).
+func TestPromotionAtLoginDuringALongSleepShortensTheWait(t *testing.T) {
+	rh := newRefreshHub(t)
+	rh.demote()
+	rh.svc.AdminGranted = rh.r.Wake
+	cs := &countingStore{RefreshStore: rh.r.Store}
+	rh.r.Store = cs
+	rh.r.Interval = func(context.Context) (time.Duration, error) { return 24 * time.Hour, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = rh.r.Run(ctx) }()
+
+	waitFor(t, "the start timer", func() bool { return rh.clock.pending() == 1 })
+	rh.clock.Advance(DefaultRefreshStartDelay)
+	waitFor(t, "the long sleep", func() bool {
+		r := rh.clock.requested()
+		return len(r) == 2 && r[1] == 24*time.Hour
+	})
+	rh.groups("minion-admins", "minion-users")
+	if r := rh.signIn(); r.status >= 400 {
+		t.Fatalf("sign-in: %d %s", r.status, r.body)
+	}
+	wantRoles(t, "roles after the promotion", rh.idpRoles(rh.userID), "admin", "user")
+	waitFor(t, "the wait shortened to the admin cycle", func() bool {
+		r := rh.clock.requested()
+		return len(r) >= 3 && r[len(r)-1] == AdminRefreshInterval
+	})
+	// The hourly timer fires an admin-only pass.
+	rh.clock.Advance(AdminRefreshInterval)
+	waitFor(t, "an admin-only pass", func() bool { return cs.passes.Load() == 2 })
+}
+
+// F-07: an account promoted while a pass runs counts for the next wait.
+func TestPromotionDuringAPassKeepsTheHourlyCycle(t *testing.T) {
+	rh := newRefreshHub(t)
+	rh.demote()
+	rh.groups("minion-admins", "minion-users") // the IdP promoted the account meanwhile
+	ps := &promotingStore{RefreshStore: rh.r.Store, db: rh.st.DB(), userID: rh.userID}
+	rh.r.Store = ps
+	rh.r.Interval = func(context.Context) (time.Duration, error) { return 24 * time.Hour, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = rh.r.Run(ctx) }()
+
+	waitFor(t, "the start timer", func() bool { return rh.clock.pending() == 1 })
+	rh.clock.Advance(DefaultRefreshStartDelay)
+	waitFor(t, "pass 1", func() bool { return ps.passes.Load() == 1 })
+	waitFor(t, "the next timer", func() bool { return len(rh.clock.requested()) == 2 })
+	if got := rh.clock.requested(); got[1] != AdminRefreshInterval {
+		t.Fatalf("wait after a pass that promoted an admin = %v, want %v", got[1], AdminRefreshInterval)
+	}
+}
+
+// An admin promotion in the middle of a long sleep adds an admin check but
+// does not push the next full pass past its deadline (completion + interval).
+func TestPromotionDoesNotDelayTheFullPass(t *testing.T) {
+	rh := newRefreshHub(t)
+	rh.demote()
+	rh.svc.AdminGranted = rh.r.Wake
+	cs := &countingStore{RefreshStore: rh.r.Store}
+	rh.r.Store = cs
+	rh.r.Interval = func(context.Context) (time.Duration, error) { return 24 * time.Hour, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = rh.r.Run(ctx) }()
+
+	waitFor(t, "the start timer", func() bool { return rh.clock.pending() == 1 })
+	rh.clock.Advance(DefaultRefreshStartDelay)
+	waitFor(t, "the long sleep", func() bool {
+		r := rh.clock.requested()
+		return len(r) == 2 && r[1] == 24*time.Hour
+	})
+	rh.clock.Advance(22 * time.Hour)
+	rh.groups("minion-admins", "minion-users")
+	if r := rh.signIn(); r.status >= 400 {
+		t.Fatalf("sign-in: %d %s", r.status, r.body)
+	}
+	waitFor(t, "the admin check", func() bool {
+		r := rh.clock.requested()
+		return r[len(r)-1] == time.Hour
+	})
+	rh.clock.Advance(AdminRefreshInterval) // t0+23h: the admin-only check
+	waitFor(t, "the admin-only pass", func() bool { return cs.passes.Load() == 2 })
+	waitFor(t, "the next timer", func() bool { return len(rh.clock.requested()) >= 4 })
+	rh.clock.Advance(AdminRefreshInterval) // t0+24h: the full pass is still on time
+	waitFor(t, "the full pass", func() bool { return cs.passes.Load() == 3 })
+	waitFor(t, "the log of a full pass", func() bool { return strings.Contains(rh.rlogs.String(), "admin_only=false") })
 }

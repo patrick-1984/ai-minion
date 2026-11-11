@@ -20,17 +20,20 @@ type UserRow struct {
 	MustChangePassword bool
 	CredentialVersion  int64
 	Active             bool
-	Role               string // "admin" or "user", from user_roles
+	Role               string // "admin", "user" or "" (no effective grant: no access), from user_roles
 	CreatedAt          int64  // unix milliseconds
 	UpdatedAt          int64
 }
 
 // userColumns is the select list that matches scanUser. The role is admin
-// when any admin grant exists, whatever its source.
+// when any admin grant exists, whatever its source; user when only user
+// grants exist; and empty when the account has no grant at all (F-07: an
+// account without effective grants has no access for any principal).
 const userColumns = `u.id, u.username, u.email, u.password_hash, u.must_change_password,
     u.credential_version, u.active,
-    CASE WHEN EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id AND r.role = 'admin')
-         THEN 'admin' ELSE 'user' END,
+    CASE WHEN EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id AND r.role = 'admin') THEN 'admin'
+         WHEN EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id) THEN 'user'
+         ELSE '' END,
     u.created_at, u.updated_at`
 
 // userScan scans the columns of [userColumns].

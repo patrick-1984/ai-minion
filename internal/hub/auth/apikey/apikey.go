@@ -197,6 +197,21 @@ func (s *Service) Create(ctx context.Context, p authz.Principal, args ops.APIKey
 	if args.ExpiresAt != nil && !args.ExpiresAt.Time().After(now) {
 		return ops.APIKeyCreateResult{}, &ops.ArgumentError{Field: "expires_at", Reason: "must lie in the future"}
 	}
+	if args.Never {
+		// A key without an expiry is for admins only; the decision stays in
+		// authz, as for a key on everything.
+		if err := s.authz.Decide(ctx, p, ops.MustActionSet(ops.ActionManage), authz.UserResource{ID: p.UserID}); err != nil {
+			var pe *proto.Error
+			if errors.As(err, &pe) && (pe.Code == proto.CodeForbidden || pe.Code == proto.CodeNotFound) {
+				return ops.APIKeyCreateResult{}, s.refuse(ctx, p, forbidden("only an admin can create a key that never expires"))
+			}
+			return ops.APIKeyCreateResult{}, fmt.Errorf("apikey: check the key without expiry: %w", err)
+		}
+	}
+	issuerVersion, ok := IssuerVersionFrom(ctx)
+	if !ok {
+		return ops.APIKeyCreateResult{}, s.refuse(ctx, p, forbidden("a key is created from a signed-in browser session"))
+	}
 	grants, actions := canonicalGrants(args.Resources), canonicalActions(args.Actions)
 	if err := s.authorizeGrants(ctx, p, grants, actions, args.BoundWorkerID); err != nil {
 		return ops.APIKeyCreateResult{}, s.refuse(ctx, p, err)
@@ -212,10 +227,19 @@ func (s *Service) Create(ctx context.Context, p authz.Principal, args ops.APIKey
 		CreatedAt:     store.UnixMS(now),
 		Scopes:        scopeRows(grants),
 	}
-	if args.ExpiresAt != nil {
+	row.IssuerCredentialVersion = issuerVersion
+	switch {
+	case args.ExpiresAt != nil:
 		row.ExpiresAt = store.UnixMS(args.ExpiresAt.Time())
+	case !args.Never:
+		row.ExpiresAt = store.UnixMS(now.Add(ops.DefaultAPIKeyLifetime))
 	}
 	if err := s.repo.CreateAPIKey(ctx, row, s.audit(p, AuditActionCreate, row.ID)); err != nil {
+		if errors.Is(err, store.ErrStaleIssuer) {
+			// The session's credentials changed after it was authenticated.
+			s.auditAttempt(ctx, p, auditDenied)
+			return ops.APIKeyCreateResult{}, proto.NewError(proto.CodeUnauthenticated, "your credentials changed; sign in again")
+		}
 		s.auditAttempt(ctx, p, auditFailed)
 		return ops.APIKeyCreateResult{}, fmt.Errorf("apikey: create: %w", err)
 	}
@@ -240,6 +264,12 @@ func (s *Service) authorizeGrants(ctx context.Context, p authz.Principal, grants
 				return fmt.Errorf("apikey: check the grant for everything: %w", err)
 			}
 			continue
+		}
+		// manage is administration of the whole Hub: a narrower grant of it
+		// would let a key reach admin operations that are decided on one
+		// user, such as a role change or a password reset (F-03).
+		if slices.Contains(actions, ops.ActionManage) {
+			return forbidden("manage can be granted only on everything")
 		}
 		held, err := s.authz.EffectiveActions(ctx, p, resourceOf(g))
 		if err != nil {
@@ -371,7 +401,9 @@ func (s *Service) AuthenticateKey(ctx context.Context, token string) (Identity, 
 	if err != nil {
 		return Identity{}, fmt.Errorf("apikey: look up the owner: %w", err)
 	}
-	if !owner.Active {
+	if !owner.Active || (owner.Role != authz.RoleUser && owner.Role != authz.RoleAdmin) {
+		// A deactivated owner, or one without any effective grant, makes the
+		// key inert; the key itself stays and works again once a grant is back.
 		return Identity{}, ErrInvalidKey
 	}
 	// The key is valid: remember the use. It is bookkeeping for the key list, so
@@ -382,7 +414,7 @@ func (s *Service) AuthenticateKey(ctx context.Context, token string) (Identity, 
 	scope := NewScope(grantsOf(row.Scopes), actionsOf(row.Actions))
 	return Identity{
 		KeyID:     row.ID,
-		Principal: authz.NewAPIKeyPrincipal(row.OwnerID, scope, row.BoundWorkerID),
+		Principal: authz.NewAPIKeyPrincipal(row.OwnerID, scope, row.BoundWorkerID).WithKeyID(row.ID),
 	}, nil
 }
 
@@ -487,4 +519,21 @@ func info(r store.APIKeyRow) ops.APIKeyInfo {
 		out.LastUsedAt = &t
 	}
 	return out
+}
+
+type issuerKey struct{}
+
+// WithIssuerVersion returns ctx carrying the credential_version of the
+// session that authenticated the request. [Service.Create] requires it and
+// the insert refuses the key when the user's current version differs, so a
+// request authenticated before a password reset or change cannot mint a key
+// after it (F-07).
+func WithIssuerVersion(ctx context.Context, version int64) context.Context {
+	return context.WithValue(ctx, issuerKey{}, version)
+}
+
+// IssuerVersionFrom returns the version set by [WithIssuerVersion].
+func IssuerVersionFrom(ctx context.Context) (int64, bool) {
+	v, ok := ctx.Value(issuerKey{}).(int64)
+	return v, ok && v > 0
 }

@@ -172,6 +172,9 @@ func TestEnrollCreatesTheWorkerForTheCreator(t *testing.T) {
 	if err != nil || row.ID != w.WorkerID || row.OwnerID != "owner-1" || row.Kind != store.WorkerKindPrivate || row.Name != "pi" {
 		t.Fatalf("stored worker = %+v err=%v", row, err)
 	}
+	if !row.Pending || w.Pending != true || row.EnrollAddr == "" {
+		t.Errorf("an enrolled Worker must start pending, welcome=%v row=%+v", w.Pending, row)
+	}
 	if got := h.uses(inv.ID); got != 1 {
 		t.Errorf("uses = %d, want 1", got)
 	}
@@ -188,7 +191,7 @@ func TestEnrollCreatesTheWorkerForTheCreator(t *testing.T) {
 	if err != nil || len(page.Events) != 1 {
 		t.Fatalf("audit = %+v err=%v", page, err)
 	}
-	if e := page.Events[0]; e.Outcome != "success" || e.Target != w.WorkerID || !strings.HasPrefix(e.Actor, "worker:") {
+	if e := page.Events[0]; e.Outcome != "pending" || e.Target != w.WorkerID || !strings.HasPrefix(e.Actor, "worker:") {
 		t.Errorf("audit event = %+v", e)
 	}
 }
@@ -376,7 +379,7 @@ func TestInvalidKeysAreRefusedWithTheirCodes(t *testing.T) {
 			t.Errorf("audit event leaks a key: %+v", e)
 		}
 	}
-	if codes["invite_invalid"] != 5 || codes["invalid_argument"] != 1 || codes["invite_expired"] != 1 || codes["success"] != 1 {
+	if codes["invite_invalid"] != 5 || codes["invalid_argument"] != 1 || codes["invite_expired"] != 1 || codes["pending"] != 1 {
 		t.Errorf("audit outcomes = %v", codes)
 	}
 }
@@ -459,8 +462,11 @@ func TestInfrastructureKeyFileEnrollsForTheDefaultOwner(t *testing.T) {
 	if err != nil || row.OwnerID != admin || row.Kind != store.WorkerKindInfrastructure || w.Kind != "infrastructure" {
 		t.Fatalf("row = %+v err=%v welcome=%+v", row, err, w)
 	}
-	// The key is reusable and does not expire; the name gets its suffix.
-	h.clock.Advance(5 * 365 * 24 * time.Hour)
+	if !row.Pending {
+		t.Error("an infrastructure Worker must start pending too")
+	}
+	// The key is reusable and lasts 30 days from its first load; the name gets its suffix.
+	h.clock.Advance(20 * 24 * time.Hour)
 	if n := h.enroll(newKey(t), "edge", secretFrame(secret)).welcome(t).Name; n != "edge-2" {
 		t.Errorf("second name = %q", n)
 	}
@@ -483,10 +489,107 @@ func TestInfrastructureKeyFileEnrollsForTheDefaultOwner(t *testing.T) {
 	if c := h.enroll(newKey(t), "edge", secretFrame(secret)).code(); c != proto.CodeInternal {
 		t.Errorf("unknown owner: code = %q", c)
 	}
-	// The infrastructure key is not a stored invitation: it is not listed.
-	list, err := h.inv.List(context.Background(), InvitationCaller{UserID: admin, Actor: admin, Admin: true}, true)
-	if err != nil || len(list.Invitations) != 0 {
-		t.Errorf("list = %+v err=%v", list, err)
+	// The key file is a row of its own: an admin sees it in both views, with
+	// its use counter, and a user does not.
+	adminCaller := InvitationCaller{UserID: admin, Actor: admin, Admin: true}
+	for _, all := range []bool{true, false} {
+		list, err := h.inv.List(context.Background(), adminCaller, all)
+		if err != nil || len(list.Invitations) != 1 || list.Invitations[0].Source != "infra_file" || list.Invitations[0].Uses != 4 ||
+			list.Invitations[0].ExpiresAt == nil {
+			t.Fatalf("list(all=%v) = %+v err=%v", all, list, err)
+		}
+	}
+	if list, err := h.inv.List(context.Background(), InvitationCaller{UserID: user, Actor: user}, false); err != nil || len(list.Invitations) != 0 {
+		t.Errorf("a user sees the key file: %+v err=%v", list, err)
+	}
+	// 30 days after the first load the key has expired; the file is not reloaded.
+	h.enr.cfg.InfraOwner = ""
+	h.clock.Advance(11 * 24 * time.Hour)
+	if c := h.enroll(newKey(t), "late", secretFrame(secret)).code(); c != proto.CodeInviteExpired {
+		t.Errorf("after 31 days: code = %q, want invite_expired", c)
+	}
+}
+
+// The key file row keeps its expiry, counter and revocation when the Hub
+// starts again with the same file, and a revoked file key stays revoked until
+// the file holds another key.
+func TestInfrastructureKeyRowSurvivesAHubRestartAndRevocationSticks(t *testing.T) {
+	var infraKey identity.InviteKey
+	var infra *InfraKey
+	var fpr identity.Fingerprint
+	h := newEnrollHub(t, func(c *EnrollConfig) {
+		k, err := identity.NewInviteKey(c.HubFingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		infraKey, fpr = k, c.HubFingerprint
+		if infra, err = NewInfraKey(k.String(), c.HubFingerprint); err != nil {
+			t.Fatal(err)
+		}
+		c.Infra, c.InfraExpiry = infra, 10*24*time.Hour
+	})
+	ctx := context.Background()
+	admin := seedUser(t, h.st, "root", true)
+	secret := secretOf(t, infraKey.String())
+	h.enroll(newKey(t), "edge", secretFrame(secret)).welcome(t)
+
+	row := func() store.InvitationRow {
+		t.Helper()
+		l, err := h.st.ListInvitationsWithInfra(ctx, admin, true)
+		if err != nil || len(l) != 1 {
+			t.Fatalf("rows = %+v err=%v", l, err)
+		}
+		return l[0]
+	}
+	first := row()
+	if first.Uses != 1 || first.ExpiresAt == 0 {
+		t.Fatalf("row = %+v", first)
+	}
+	// "Restart": a new enroller over the same database, with another lifetime
+	// and a later clock. Nothing of the stored row changes.
+	h.clock.Advance(3 * 24 * time.Hour)
+	if _, err := NewEnroller(EnrollConfig{
+		Store: h.st, HubFingerprint: fpr, Infra: infra, InfraExpiry: 400 * 24 * time.Hour, Now: h.clock.Now, Logger: textLogger(h.logs),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if again := row(); again.ID != first.ID || again.ExpiresAt != first.ExpiresAt || again.Uses != 1 || again.CreatedAt != first.CreatedAt {
+		t.Errorf("a reload changed the row: %+v -> %+v", first, again)
+	}
+	// An admin revokes it through the invitations API; a reload does not undo it.
+	if err := h.inv.Revoke(ctx, InvitationCaller{UserID: admin, Actor: admin, Admin: true}, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewEnroller(EnrollConfig{Store: h.st, HubFingerprint: fpr, Infra: infra, Now: h.clock.Now, Logger: textLogger(h.logs)}); err != nil {
+		t.Fatal(err)
+	}
+	if c := h.enroll(newKey(t), "again", secretFrame(secret)).code(); c != proto.CodeInviteInvalid {
+		t.Errorf("revoked key file enrolled: code = %q", c)
+	}
+	if !row().Revoked {
+		t.Error("the revocation was lost")
+	}
+}
+
+// A key file without an expiry is allowed, and the Hub warns at start.
+func TestInfrastructureKeyWithoutExpiryWarnsAtStart(t *testing.T) {
+	h := newEnrollHub(t, func(c *EnrollConfig) {
+		k, err := identity.NewInviteKey(c.HubFingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Infra, err = NewInfraKey(k.String(), c.HubFingerprint); err != nil {
+			t.Fatal(err)
+		}
+		c.InfraExpiry = NoInfraExpiry
+	})
+	admin := seedUser(t, h.st, "root", true)
+	l, err := h.st.ListInvitationsWithInfra(context.Background(), admin, true)
+	if err != nil || len(l) != 1 || l[0].ExpiresAt != 0 {
+		t.Fatalf("rows = %+v err=%v", l, err)
+	}
+	if !strings.Contains(h.logs.String(), "has no expiry") {
+		t.Errorf("no start-up warning; log:\n%s", h.logs.String())
 	}
 }
 
@@ -512,7 +615,7 @@ func seedUser(t *testing.T, st *store.Store, name string, admin bool) string {
 		}
 		return id
 	}
-	if _, err := st.DB().Exec(`INSERT INTO users (id, username, active, created_at, updated_at) VALUES (?, ?, 1, 1, 1)`, id, name); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO users (id, username, active, created_at, updated_at) VALUES (?, ?, 1, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, id, name); err != nil {
 		t.Fatal(err)
 	}
 	return id

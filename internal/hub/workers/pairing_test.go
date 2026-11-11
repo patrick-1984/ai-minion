@@ -1105,7 +1105,7 @@ func TestPairingAuditsTheActorAndActingAsOfTheClaimAndTheAttempt(t *testing.T) {
 	if err != nil || len(page.Events) != 1 {
 		t.Fatalf("audit = %+v err=%v", page.Events, err)
 	}
-	if e := page.Events[0]; e.Actor != "admin-1" || e.ActingAs != "u-alice" || e.Outcome != "success" {
+	if e := page.Events[0]; e.Actor != "admin-1" || e.ActingAs != "u-alice" || e.Outcome != "pending" {
 		t.Errorf("worker.pair = %+v", e)
 	}
 	// The owner is still the target user, not the admin.

@@ -30,12 +30,21 @@
       
     </fieldset>
     <div class="field">
+      <label for="key-bound">Call key for a Worker (optional)</label>
+      <select id="key-bound" name="bound_worker" aria-describedby="key-bound-help">
+        <option value="">Not a call key</option>
+        <option value="0190a1b2-c3d4-7e5f-8a6b-0000000000c1">pi</option>
+        <option value="0190a1b2-c3d4-7e5f-8a6b-0000000000c2">nuc</option>
+        
+      </select>
+      <span id="key-bound-help" class="muted">Binds the key to that Worker so it can message the targets chosen above on its behalf. Use it with <code>call_api_key_file</code> on that Worker. A bound key works only on that Worker's own connection.</span>
+    </div>
+    <div class="field">
       <label for="key-expires">Valid for</label>
       <select id="key-expires" name="expires">
         <option value="30d">30 days</option>
         <option value="90d" selected>90 days</option>
         <option value="1y">1 year</option>
-        <option value="never">Never</option>
         
       </select>
     </div>

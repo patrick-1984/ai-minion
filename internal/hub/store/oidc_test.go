@@ -189,8 +189,12 @@ func TestOIDCLoginTransactionIsSingleUseAndExpires(t *testing.T) {
 }
 
 func syncParams(sub string, roles ...string) OIDCSyncParams {
-	return OIDCSyncParams{Issuer: "https://idp", Subject: sub, ProviderID: "default", PreferredUsername: "carol",
+	p := OIDCSyncParams{Issuer: "https://idp", Subject: sub, ProviderID: "default", PreferredUsername: "carol",
 		Roles: roles, CreateIfMissing: true, NowMS: 1000}
+	if slices.Contains(roles, "admin") {
+		p.RefreshToken = "rt-test" // an IdP admin grant needs a refresh token (F-07)
+	}
+	return p
 }
 
 func TestSyncOIDCLogin(t *testing.T) {

@@ -342,7 +342,7 @@ func validateSettingValue(reg *config.Registry, s config.Setting, value, stateDi
 			value = core.TmuxSocket
 		}
 		return value, nil
-	case config.KeyName, config.KeyPreviewOnly, config.KeyShareLock:
+	case config.KeyName, config.KeyPreviewOnly, config.KeyShareLock, config.KeyCallAPIKeyFile, config.KeyPipeAcceptFrom:
 		_, err := config.ResolveWorkerCore(res)
 		return value, err
 	}

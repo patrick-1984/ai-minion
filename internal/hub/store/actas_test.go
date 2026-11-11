@@ -16,7 +16,7 @@ func actAsFixture(t *testing.T) (s *Store, sessionID, adminID, userID string) {
 		t.Fatal(err)
 	}
 	adminID, userID, sessionID = p.User.ID, NewID(), NewID()
-	if _, err := s.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'ann', 1, 1)`, userID); err != nil {
+	if _, err := s.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'ann', 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, userID); err != nil {
 		t.Fatal(err)
 	}
 	row := SessionRow{ID: sessionID, TokenHash: "h", UserID: adminID, CredentialVersion: 1, CreatedAt: 1, ExpiresAt: 1 << 40}

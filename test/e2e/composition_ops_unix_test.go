@@ -36,7 +36,9 @@ func hubWrite(t *testing.T, svc *workers.Service, workerID, op string, actions [
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	if err := st.WriteFrame(map[string]any{"type": proto.TypeOpRequest, "op": op, "actions": actions, "args": args}); err != nil {
+	if err := st.WriteFrame(map[string]any{"type": proto.TypeOpRequest, "op": op, "actions": actions, "args": args,
+		// What the Hub derives from the caller (protocol 2.0): a Worker refuses a message-class op without it.
+		"origin": proto.Origin{Kind: proto.OriginUser, UserID: "user-1"}}); err != nil {
 		t.Fatal(err)
 	}
 	type answer struct {

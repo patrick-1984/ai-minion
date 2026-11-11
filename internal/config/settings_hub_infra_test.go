@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHubInfraSettingsDeclared(t *testing.T) {
@@ -28,8 +29,25 @@ func TestResolveHubInfraDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hi != (HubInfra{}) {
-		t.Fatalf("got %+v, want the zero value: no key file, the seed admin owns", hi)
+	if want := (HubInfra{InviteKeyLifetime: 30 * 24 * time.Hour}); hi != want {
+		t.Fatalf("got %+v, want %+v: no key file, the seed admin owns, 30 days of validity", hi, want)
+	}
+}
+
+func TestResolveHubInfraKeyDays(t *testing.T) {
+	for in, want := range map[string]time.Duration{"7": 7 * 24 * time.Hour, "0": 0, " 365 ": 365 * 24 * time.Hour} {
+		hi, err := ResolveHubInfra(hubEnv(map[string]string{"MINION_INFRA_INVITE_KEY_DAYS": in}))
+		if err != nil || hi.InviteKeyLifetime != want {
+			t.Errorf("days %q: %+v err=%v", in, hi, err)
+		}
+	}
+	for _, bad := range []string{"-1", "abc", "3651", "1.5", ""} {
+		if bad == "" {
+			continue
+		}
+		if _, err := ResolveHubInfra(hubEnv(map[string]string{"MINION_INFRA_INVITE_KEY_DAYS": bad})); err == nil {
+			t.Errorf("days %q was accepted", bad)
+		}
 	}
 }
 

@@ -211,11 +211,11 @@ var (
 	idBob   = "user-bob"
 	idRoot  = "user-root"
 
-	wAlicePi1 = WorkerRecord{ID: ops.NewUUIDv7(), Name: "pi-1", OwnerID: idAlice, Kind: "private"}
-	wAlicePi2 = WorkerRecord{ID: ops.NewUUIDv7(), Name: "pi-2", OwnerID: idAlice, Kind: "private"}
-	wBobPi1   = WorkerRecord{ID: ops.NewUUIDv7(), Name: "pi-1", OwnerID: idBob, Kind: "private"}
-	wBobBox   = WorkerRecord{ID: ops.NewUUIDv7(), Name: "box", OwnerID: idBob, Kind: "infrastructure"}
-	wRootLab  = WorkerRecord{ID: ops.NewUUIDv7(), Name: "lab", OwnerID: idRoot, Kind: "infrastructure"}
+	wAlicePi1 = WorkerRecord{ID: ops.NewUUIDv7(), Name: "pi-1", OwnerID: idAlice, Kind: "private", Fingerprint: "fp-alice-pi1"}
+	wAlicePi2 = WorkerRecord{ID: ops.NewUUIDv7(), Name: "pi-2", OwnerID: idAlice, Kind: "private", Fingerprint: "fp-alice-pi2"}
+	wBobPi1   = WorkerRecord{ID: ops.NewUUIDv7(), Name: "pi-1", OwnerID: idBob, Kind: "private", Fingerprint: "fp-bob-pi1"}
+	wBobBox   = WorkerRecord{ID: ops.NewUUIDv7(), Name: "box", OwnerID: idBob, Kind: "infrastructure", Fingerprint: "fp-bob-box"}
+	wRootLab  = WorkerRecord{ID: ops.NewUUIDv7(), Name: "lab", OwnerID: idRoot, Kind: "infrastructure", Fingerprint: "fp-root-lab"}
 )
 
 var ownerNames = map[string]string{idAlice: "alice", idBob: "bob", idRoot: "root"}
@@ -592,7 +592,7 @@ func TestAdminActionsIncludeManageAndAKeyGetsItsScope(t *testing.T) {
 
 	readOnly := authz.NewAPIKeyPrincipal(idAlice, scopeFunc(func(authz.ResolvedResource) []ops.Action {
 		return []ops.Action{ops.ActionRead}
-	}), "")
+	}), "").WithKeyID("k-ro")
 	st = newFakeStream(resultFrame(t, sessionsResult()))
 	r.script(st)
 	if _, err := r.rt.Call(context.Background(), CallRequest{Principal: readOnly, Op: ops.OpSessionsList, WorkerID: wAlicePi1.ID, Args: ops.SessionsListArgs{}}); err != nil {

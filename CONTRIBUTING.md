@@ -10,7 +10,7 @@ English.
 
 ## Requirements
 
-- Go 1.27.3 (see `go.mod`)
+- Go 1.27.4 (see `go.mod`)
 - `make`, `git`, `perl` (for `scripts/check-english.sh`)
 - [golangci-lint](https://golangci-lint.run/) v2, built with the Go version of
   this module (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0`)

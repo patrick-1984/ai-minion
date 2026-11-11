@@ -122,6 +122,12 @@ func (h *Handler) serveCall(ctx context.Context, w store.WorkerRow, sess callSes
 		h.retireWorker(ctx, w, sess, st, rq.Args)
 		return
 	}
+	// F-02: a Worker that waits for approval may retire itself (above) and
+	// nothing else. The row is read again, so a refusal is never stale.
+	if err := h.requireApproved(ctx, w); err != nil {
+		h.refuseCall(st, err)
+		return
+	}
 	if fn := h.callOp(rq.Op); fn != nil {
 		// The request was read inside callTimeout. What follows is the op's:
 		// an op that streams (pipe_wait) outlives it, and bounds itself with
@@ -132,6 +138,24 @@ func (h *Handler) serveCall(ctx context.Context, w store.WorkerRow, sess callSes
 		return
 	}
 	h.refuseCall(st, proto.NewError(proto.CodeUnsupportedOp, "the Hub does not serve this operation on a call stream"))
+}
+
+// requireApproved refuses the call of a Worker that is still pending. A Worker
+// that was approved when it connected needs no check (approval is never
+// undone); one that was pending is checked against the row.
+func (h *Handler) requireApproved(ctx context.Context, w store.WorkerRow) *proto.Error {
+	if !w.Pending {
+		return nil
+	}
+	cur, err := h.cfg.Repository.WorkerByPub(ctx, w.Pub)
+	switch {
+	case err != nil:
+		h.log.Warn("worker call: cannot read the approval state; the call is refused", "worker_id", w.ID, "error", err.Error())
+		return proto.NewError(proto.CodeWorkerPending, "the Worker is waiting for approval by its owner or an admin")
+	case cur.Pending:
+		return proto.NewError(proto.CodeWorkerPending, "the Worker is waiting for approval by its owner or an admin")
+	}
+	return nil
 }
 
 // Call is one call stream whose op.request was read, handed to a [CallOp].

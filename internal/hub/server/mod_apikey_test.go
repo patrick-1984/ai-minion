@@ -194,6 +194,7 @@ func TestAdminEverythingKeyAndOwnerDemotion(t *testing.T) {
 	}
 	// Demoting the owner reduces the key on the very next request.
 	ah.exec(t, `DELETE FROM user_roles WHERE user_id = ?`, boss)
+	ah.exec(t, `INSERT INTO user_roles (user_id, role, source) VALUES (?, 'user', 'local')`, boss)
 	if r := ah.call(t, "GET", "/api/v1/audit?limit=1", nil, asKey(key)); r.code != 403 {
 		t.Errorf("demoted owner's key audit = %d %s", r.code, r.body)
 	}
@@ -353,11 +354,12 @@ func TestCreateGrantLimitsOverREST(t *testing.T) {
 		return ah.call(t, "POST", "/api/v1/ops/apikey_create", body, sess)
 	}
 	for name, body := range map[string]map[string]any{
-		"everything":      {"name": "k", "resources": []map[string]any{{"kind": "everything"}}, "actions": []string{"read"}},
-		"manage":          {"name": "k", "resources": workerGrant(wAlice), "actions": []string{"manage"}},
-		"foreign worker":  {"name": "k", "resources": workerGrant(wBob), "actions": []string{"read"}},
-		"foreign user":    {"name": "k", "resources": []map[string]any{{"kind": "user", "user_id": bob}}, "actions": []string{"read"}},
-		"foreign session": {"name": "k", "resources": []map[string]any{{"kind": "session", "worker_id": wBob, "session_name": "main"}}, "actions": []string{"read"}},
+		"everything":         {"name": "k", "resources": []map[string]any{{"kind": "everything"}}, "actions": []string{"read"}},
+		"manage":             {"name": "k", "resources": workerGrant(wAlice), "actions": []string{"manage"}},
+		"manage on own user": {"name": "k", "resources": []map[string]any{{"kind": "user", "user_id": alice}}, "actions": []string{"read", "manage"}},
+		"foreign worker":     {"name": "k", "resources": workerGrant(wBob), "actions": []string{"read"}},
+		"foreign user":       {"name": "k", "resources": []map[string]any{{"kind": "user", "user_id": bob}}, "actions": []string{"read"}},
+		"foreign session":    {"name": "k", "resources": []map[string]any{{"kind": "session", "worker_id": wBob, "session_name": "main"}}, "actions": []string{"read"}},
 	} {
 		if r := create(body); r.code != 403 || r.err.Code != proto.CodeForbidden {
 			t.Errorf("%s: %d %s", name, r.code, r.body)
@@ -391,10 +393,10 @@ func TestCreateGrantLimitsOverREST(t *testing.T) {
 	if !created {
 		t.Error("no apikey.create audit row")
 	}
-	// Every refused grant left a denied row (AD-20); the five forbidden
+	// Every refused grant left a denied row (AD-20); the six forbidden
 	// requests above each produced one, and the past expiry is a typing error.
-	if denied != 5 {
-		t.Errorf("denied apikey.create rows = %d, want 5", denied)
+	if denied != 6 {
+		t.Errorf("denied apikey.create rows = %d, want 6", denied)
 	}
 }
 

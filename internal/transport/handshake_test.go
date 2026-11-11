@@ -804,32 +804,32 @@ func TestSignatureOfAnotherPurposeIsRejected(t *testing.T) {
 }
 
 func TestVersionNegotiation(t *testing.T) {
-	t.Run("hub one minor ahead still serves a 1.0 worker", func(t *testing.T) {
+	t.Run("hub one minor ahead still serves a 2.0 worker", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
-		hc.Current = proto.Version{Major: 1, Minor: 1}
+		hc.Current = proto.Version{Major: 2, Minor: 1}
 		o := runPair(t, wc, hc, nil)
 		o.mustSucceed(t)
 		defer o.worker.Channel.Close()
 		defer o.hub.Channel.Close()
-		if o.worker.Version != (proto.Version{Major: 1}) || o.hub.Version != o.worker.Version {
+		if o.worker.Version != (proto.Version{Major: 2}) || o.hub.Version != o.worker.Version {
 			t.Errorf("version %s / %s", o.worker.Version, o.hub.Version)
 		}
 	})
 	t.Run("worker range wins the highest common version", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
-		wc.Protocols = proto.Range{Min: proto.Version{Major: 1}, Max: proto.Version{Major: 1, Minor: 5}}
-		hc.Current = proto.Version{Major: 1, Minor: 2}
+		wc.Protocols = proto.Range{Min: proto.Version{Major: 2}, Max: proto.Version{Major: 2, Minor: 5}}
+		hc.Current = proto.Version{Major: 2, Minor: 2}
 		o := runPair(t, wc, hc, nil)
 		o.mustSucceed(t)
 		defer o.worker.Channel.Close()
 		defer o.hub.Channel.Close()
-		if o.worker.Version != (proto.Version{Major: 1, Minor: 2}) {
+		if o.worker.Version != (proto.Version{Major: 2, Minor: 2}) {
 			t.Errorf("version %s", o.worker.Version)
 		}
 	})
 	t.Run("major mismatch", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
-		hc.Current = proto.Version{Major: 2}
+		hc.Current = proto.Version{Major: 3}
 		o := runPair(t, wc, hc, nil)
 		if proto.CodeOf(o.workerErr) != proto.CodeProtoIncompatible || proto.CodeOf(o.hubErr) != proto.CodeProtoIncompatible {
 			t.Errorf("worker %v hub %v", o.workerErr, o.hubErr)
@@ -840,10 +840,21 @@ func TestVersionNegotiation(t *testing.T) {
 	})
 	t.Run("same major, disjoint minor range", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
-		wc.Protocols = proto.Range{Min: proto.Version{Major: 1, Minor: 5}, Max: proto.Version{Major: 1, Minor: 6}}
+		wc.Protocols = proto.Range{Min: proto.Version{Major: 2, Minor: 5}, Max: proto.Version{Major: 2, Minor: 6}}
 		o := runPair(t, wc, hc, nil)
 		if proto.CodeOf(o.workerErr) != proto.CodeProtoIncompatible {
 			t.Errorf("worker %v", o.workerErr)
+		}
+	})
+	t.Run("a 1.x Hub is refused (protocol 2.0 only, no fallback)", func(t *testing.T) {
+		wc, hc, _, _ := connectConfigs(t)
+		hc.Current = proto.Version{Major: 1, Minor: 0}
+		o := runPair(t, wc, hc, nil)
+		if proto.CodeOf(o.workerErr) != proto.CodeProtoIncompatible || proto.CodeOf(o.hubErr) != proto.CodeProtoIncompatible {
+			t.Errorf("worker %v hub %v", o.workerErr, o.hubErr)
+		}
+		if o.worker != nil || o.hub != nil {
+			t.Error("channel despite a 1.x Hub")
 		}
 	})
 }

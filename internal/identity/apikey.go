@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 )
@@ -72,3 +73,41 @@ func (k APIKey) Hint() string {
 // Hash returns the SHA-256 of the full key text, the only form meant for
 // storage.
 func (k APIKey) Hash() [sha256.Size]byte { return sha256.Sum256([]byte(k)) }
+
+// MaxAPIKeyFileBytes bounds an API key file; a real key is 55 bytes.
+const MaxAPIKeyFileBytes = 4 << 10
+
+// ReadAPIKeyFile reads a Minion API key from the file at path. The file is
+// opened with [OpenPrivate] (owner-checked: a regular file of this user that
+// group and others cannot access; a symbolic link, a pipe and a directory are
+// refused without blocking), holds exactly one line of at most
+// [MaxAPIKeyFileBytes] bytes, and that line must be a well-formed key. The
+// file is never repaired. It is meant to be called for every use, so that a
+// rotated key takes effect at once. The errors name the path and never the
+// content.
+func ReadAPIKeyFile(path string) (APIKey, error) {
+	if path == "" {
+		return "", newErr(kindInvalidArgument, "no API key file is configured")
+	}
+	f, err := OpenPrivate(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, MaxAPIKeyFileBytes+1))
+	if err != nil {
+		return "", newErr(kindInvalidArgument, "cannot read "+path)
+	}
+	if len(data) > MaxAPIKeyFileBytes {
+		return "", newErr(kindInvalidArgument, path+" is too large to be an API key file")
+	}
+	s := string(data)
+	if t, ok := strings.CutSuffix(s, "\n"); ok {
+		s = strings.TrimSuffix(t, "\r")
+	}
+	k, err := ParseAPIKey(s)
+	if err != nil {
+		return "", newErr(kindInvalidArgument, path+" does not hold a Minion API key (mn_...) as its only content")
+	}
+	return k, nil
+}

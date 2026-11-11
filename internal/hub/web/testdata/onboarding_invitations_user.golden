@@ -2,6 +2,7 @@
 
 <div class="page-head"><div><h1>Invitation keys</h1><p>An invitation key lets a machine enroll itself as a Worker in your space. Expiry only stops new enrollments: a Worker that has enrolled keeps working.</p></div></div>
 <div class="stack">
+<p class="notice notice-info" role="note">A Worker that enrolls with a key starts as <strong>pending</strong> and receives no operations until you approve it on the Workers page. A stolen key therefore cannot operate anything by itself.</p>
 <section class="panel" aria-labelledby="create-invitation">
   <h2 id="create-invitation">Create an invitation key</h2>
   <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
@@ -14,15 +15,17 @@
       </select>
     </div>
     <div class="field">
-      <label for="inv-ttl">Valid for</label>
+      <label for="inv-maxuses">Enrollments (reusable keys only; blank is 10, at most 100)</label>
+      <input type="number" id="inv-maxuses" name="max_uses" min="1" max="100" placeholder="10" inputmode="numeric">
+    </div>
+    <div class="field">
+      <label for="inv-ttl">Valid for (at most 1 week)</label>
       <select id="inv-ttl" name="ttl">
         <option value="1h">1 hour</option>
         <option value="4h">4 hours</option>
         <option value="8h">8 hours</option>
         <option value="24h" selected>24 hours</option>
         <option value="1w">1 week</option>
-        <option value="1m">1 month</option>
-        <option value="unlimited">Unlimited</option>
         
       </select>
     </div>

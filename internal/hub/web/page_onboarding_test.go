@@ -195,11 +195,13 @@ func TestBuildAPIKeyArgs(t *testing.T) {
 				t.Errorf("Validate: %v", err)
 			}
 		}},
-		{name: "never expires", form: base(url.Values{"expires": {"never"}}), u: user, chk: func(t *testing.T, a ops.APIKeyCreateArgs) {
-			if a.ExpiresAt != nil {
-				t.Errorf("expires = %v", a.ExpiresAt)
-			}
-		}},
+		{name: "never expires for an admin", form: url.Values{"name": {"n"}, "resource": {"everything"}, "action": {"read"}, "expires": {"never"}}, u: admin,
+			chk: func(t *testing.T, a ops.APIKeyCreateArgs) {
+				if a.ExpiresAt != nil || !a.Never {
+					t.Errorf("expires = %v never = %v", a.ExpiresAt, a.Never)
+				}
+			}},
+		{name: "never refused for a user (F-07)", form: base(url.Values{"expires": {"never"}}), u: user, err: "Only an admin can create a key that never expires"},
 		{name: "two workers two actions", form: url.Values{"name": {"w"}, "resource": {"worker:" + onbWorkerID, "worker:" + onbWorker2ID, "worker:" + onbWorkerID},
 			"action": {"read", "operate", "read"}}, u: user, chk: func(t *testing.T, a ops.APIKeyCreateArgs) {
 			if len(a.Resources) != 2 || len(a.Actions) != 2 || a.Actions[1] != ops.ActionOperate {
@@ -410,11 +412,14 @@ func TestInvitationFormChoices(t *testing.T) {
 	user := mainOf(t, onbGet(t, onbUser(t), pathInvitations).Body.String())
 	mustHave(t, user, `<option value="one_time" selected>`, `<option value="reusable">`, `name="name"`,
 		`<option value="1h">1 hour</option>`, `<option value="4h">4 hours</option>`, `<option value="8h">8 hours</option>`,
-		`<option value="24h" selected>24 hours</option>`, `<option value="1w">1 week</option>`, `<option value="1m">1 month</option>`,
-		`<option value="unlimited">Unlimited</option>`, "There are no invitation keys yet.")
-	mustNotHave(t, user, `name="kind"`, "infrastructure", "every user")
+		`<option value="24h" selected>24 hours</option>`, `<option value="1w">1 week</option>`,
+		`name="max_uses"`, `max="100"`, "There are no invitation keys yet.")
+	// F-02: a user cannot choose a key that is valid longer than a week.
+	mustNotHave(t, user, `name="kind"`, "infrastructure", "every user", `<option value="1m">`, `<option value="unlimited">`)
 	admin := mainOf(t, onbGet(t, onbAdmin(t), pathInvitations).Body.String())
-	mustHave(t, admin, `<select id="inv-kind" name="kind">`, `<option value="infrastructure">`, `/invitations?all=1`)
+	mustHave(t, admin, `<select id="inv-kind" name="kind">`, `<option value="infrastructure">`, `/invitations?all=1`,
+		`<option value="1m">1 month</option>`, `<option value="unlimited">Unlimited</option>`, `blank is no limit`)
+	mustNotHave(t, admin, `max="100"`)
 }
 
 func TestInvitationFormIsHiddenKindWhileActingAs(t *testing.T) {
@@ -631,6 +636,29 @@ func TestAPIKeyCreateErrors(t *testing.T) {
 	rec = onbPost(t, s, pathAPIKeys, url.Values{"name": {"ci"}, "resource": {"worker:" + onbWorkerID}, "action": {"read"}})
 	mustHave(t, rec.Body.String(), "you do not own that resource")
 	mustNotHave(t, rec.Body.String(), "mn_")
+}
+
+// An admin who picks manage with narrow resources gets the explanation and no Hub call.
+func TestAPIKeyAdminManageNeedsEverything(t *testing.T) {
+	cases := []struct {
+		name string
+		form url.Values
+	}{
+		{"chosen user", url.Values{"name": {"m"}, "resource": {"user:" + adminUserID}, "action": {"manage"}}},
+		{"chosen worker", url.Values{"name": {"m"}, "resource": {"worker:" + onbWorkerID}, "action": {"manage"}}},
+		{"chosen session", url.Values{"name": {"m"}, "resource": {"worker:" + onbWorkerID}, "session": {"build"}, "action": {"manage"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := apiKeyOps()
+			connect(t, f)
+			rec := onbPost(t, onbAdmin(t), pathAPIKeys, c.form)
+			mustHave(t, rec.Body.String(), "The manage action is available only for a key that reaches everything.")
+			if n := len(f.called(ops.OpAPIKeyCreate)); n != 0 {
+				t.Errorf("apikey_create called %d times", n)
+			}
+		})
+	}
 }
 
 func TestAPIKeyRevoke(t *testing.T) {
@@ -985,7 +1013,7 @@ func TestOnboardingFlowOverTheRESTPipeline(t *testing.T) {
 	// API key: pick the account and a Worker, see the key once.
 	rec = do("GET", pathAPIKeys, nil)
 	mustHave(t, rec.Body.String(), `value="user:`+onbUserID+`" checked`, `value="worker:`+onbWorkerID+`"`)
-	rec = do("POST", pathAPIKeys, url.Values{"name": {"ci"}, "resource": {"worker:" + onbWorkerID}, "action": {"read", "operate"}, "expires": {"never"}})
+	rec = do("POST", pathAPIKeys, url.Values{"name": {"ci"}, "resource": {"worker:" + onbWorkerID}, "action": {"read", "operate"}, "expires": {"90d"}})
 	mustHave(t, rec.Body.String(), `API key "ci" created.`, `value="`+sampleAPIKey+`"`, "Scope: Worker pi: read, operate")
 	rec = do("GET", pathAPIKeys, nil)
 	mustHave(t, rec.Body.String(), `<th scope="row">ci</th>`, "<code>mn_mfrggzdf...</code>", "Worker pi: read, operate")
@@ -1014,5 +1042,31 @@ func TestOnboardingFlowOverTheRESTPipeline(t *testing.T) {
 	root.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("a page without the session cookie = %d, want 404", rec.Code)
+	}
+}
+
+// F-01 (T2 round 2): the browser form binds a key to one of the user's
+// Workers (a call key); the target scope is chosen like for any key.
+func TestAPIKeyFormBindsAKeyToAWorker(t *testing.T) {
+	u := pageUser{ID: onbUserID}
+	form := url.Values{
+		"name": {"call"}, "resource": {"worker:" + onbWorker2ID}, "action": {"message", "read"},
+		"bound_worker": {onbWorkerID},
+	}
+	a, err := buildAPIKeyArgs(form, u, onbNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.BoundWorkerID != onbWorkerID || len(a.Resources) != 1 || a.Resources[0].WorkerID != onbWorker2ID {
+		t.Fatalf("args = %+v", a)
+	}
+	form.Del("bound_worker")
+	if a, err = buildAPIKeyArgs(form, u, onbNow); err != nil || a.BoundWorkerID != "" {
+		t.Fatalf("without the choice the key is unbound: %+v, %v", a, err)
+	}
+	ws := []ops.WorkerInfo{{ID: onbWorkerID, Name: "pi", OwnerID: onbUserID}, {ID: onbWorker2ID, Name: "other", OwnerID: "someone-else"}}
+	ch := apiKeyBoundWorkerChoices(u, ws)
+	if len(ch) != 1 || ch[0].Value != onbWorkerID {
+		t.Fatalf("choices = %+v, want only the user's own Worker", ch)
 	}
 }

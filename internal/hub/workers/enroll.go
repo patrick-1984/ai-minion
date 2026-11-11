@@ -47,7 +47,7 @@ const (
 // implements it.
 type EnrollStore interface {
 	EnrollWithInvitation(ctx context.Context, p store.EnrollParams) (store.EnrollResult, error)
-	EnrollInfrastructure(ctx context.Context, p store.InfraEnrollParams) (store.EnrollResult, error)
+	EnsureInfraKey(ctx context.Context, hash []byte, expiresAt, nowMS int64) (store.InvitationRow, error)
 	InfraOwnerID(ctx context.Context, name string) (string, error)
 }
 
@@ -70,6 +70,11 @@ type EnrollConfig struct {
 	// Infra is the Hub-wide infrastructure key (MINION_INFRA_INVITE_KEY_FILE),
 	// or nil when none is configured.
 	Infra *InfraKey
+	// InfraExpiry is how long the key file is valid from its first load (the
+	// default is [DefaultInfraKeyLifetime] when zero is not meant; use
+	// [NoInfraExpiry] for none). The first load stores the expiry in the
+	// key's row; a later load never changes it.
+	InfraExpiry time.Duration
 	// InfraOwner is infra_default_owner: the user name (or e-mail address)
 	// that owns Workers enrolled with Infra. Empty means the seeded admin.
 	InfraOwner string
@@ -105,7 +110,54 @@ func NewEnroller(cfg EnrollConfig) (*Enroller, error) {
 	if e.log == nil {
 		e.log = slog.Default()
 	}
+	if cfg.Infra != nil {
+		if err := e.loadInfra(); err != nil {
+			return nil, err
+		}
+	}
 	return e, nil
+}
+
+// Infrastructure key file lifetime (F-02). The key file is stored as a row keyed
+// by the hash of its secret; the first load gives it an expiry, a reload never
+// changes the row.
+const (
+	// DefaultInfraKeyLifetime is the lifetime of a new key file row when the
+	// setting infra_invite_key_days is left at its default (30 days).
+	DefaultInfraKeyLifetime = 30 * 24 * time.Hour
+	// NoInfraExpiry as InfraExpiry stores a key file row without expiry (the
+	// Hub warns at every start).
+	NoInfraExpiry time.Duration = -1
+)
+
+// loadInfra records the key file in the database. An existing row is left as it
+// is: its expiry, use counter and revocation survive every reload.
+func (e *Enroller) loadInfra() error {
+	now := e.now()
+	var expires int64
+	switch life := e.cfg.InfraExpiry; {
+	case life == 0:
+		expires = store.UnixMS(now.Add(DefaultInfraKeyLifetime))
+	case life > 0:
+		expires = store.UnixMS(now.Add(life))
+	}
+	row, err := e.cfg.Store.EnsureInfraKey(context.Background(), e.cfg.Infra.hash[:], expires, store.UnixMS(now))
+	if err != nil {
+		return fmt.Errorf("workers: record the infrastructure invitation key: %w", err)
+	}
+	switch {
+	case row.Revoked:
+		e.log.Warn("the infrastructure invitation key file holds a revoked key; it enrolls nothing until the file holds a new key",
+			"invitation_id", row.ID)
+	case row.ExpiresAt == 0:
+		e.log.Warn("the infrastructure invitation key has no expiry: anyone who obtains the file can enroll Workers for as long as it is loaded; "+
+			"set infra_invite_key_days AND rotate the key file secret (or revoke this key): "+
+			"changing the setting alone does not change an existing key", "invitation_id", row.ID)
+	case row.ExpiresAt <= store.UnixMS(now):
+		e.log.Warn("the infrastructure invitation key has expired; it enrolls nothing until the file holds a new key",
+			"invitation_id", row.ID)
+	}
+	return nil
 }
 
 // Handle runs one enrollment on an authenticated enroll_invite connection:
@@ -139,13 +191,19 @@ func (e *Enroller) Handle(ctx context.Context, c *Conn) error {
 	name := cleanWorkerName(c.Worker().Name)
 	now := e.now()
 	var res store.EnrollResult
+	params := store.EnrollParams{
+		SecretHash: hash[:], Pub: []byte(c.WorkerPub()), Name: name, WorkerID: store.NewID(), Now: store.UnixMS(now),
+		Audit: e.auditRow(c, now), Addr: c.ClientIP().String(),
+	}
 	if e.cfg.Infra != nil && e.cfg.Infra.matches(hash) {
-		res, err = e.enrollInfra(ctx, c, name, now)
-	} else {
-		res, err = e.cfg.Store.EnrollWithInvitation(ctx, store.EnrollParams{
-			SecretHash: hash[:], Pub: []byte(c.WorkerPub()), Name: name, WorkerID: store.NewID(), Now: store.UnixMS(now),
-			Audit: e.auditRow(c, now),
-		})
+		params.Infra = true
+		params.OwnerID, err = e.cfg.Store.InfraOwnerID(ctx, e.cfg.InfraOwner)
+		if err != nil {
+			err = fmt.Errorf("resolve the infrastructure owner (infra_default_owner): %w", err)
+		}
+	}
+	if err == nil {
+		res, err = e.cfg.Store.EnrollWithInvitation(ctx, params)
 	}
 	switch {
 	case err == nil:
@@ -162,29 +220,16 @@ func (e *Enroller) Handle(ctx context.Context, c *Conn) error {
 	if res.Existing {
 		e.log.Info("worker enroll: known key enrolled again", "worker_id", res.Worker.ID, "client_ip", c.ClientIP().String())
 	} else {
-		e.log.Info("worker enrolled", "worker_id", res.Worker.ID, "name", res.Worker.Name, "kind", res.Worker.Kind,
+		e.log.Info("worker enrolled; it is pending until its owner or an admin approves it", "worker_id", res.Worker.ID, "name", res.Worker.Name, "kind", res.Worker.Kind,
 			"owner", res.Worker.OwnerID, "client_ip", c.ClientIP().String())
 	}
 	return c.Welcome(ctx, res.Worker)
 }
 
-// enrollInfra enrolls with the Hub-wide key: kind infrastructure, owner
-// infra_default_owner.
-func (e *Enroller) enrollInfra(ctx context.Context, c *Conn, name string, now time.Time) (store.EnrollResult, error) {
-	owner, err := e.cfg.Store.InfraOwnerID(ctx, e.cfg.InfraOwner)
-	if err != nil {
-		return store.EnrollResult{}, fmt.Errorf("resolve the infrastructure owner (infra_default_owner): %w", err)
-	}
-	return e.cfg.Store.EnrollInfrastructure(ctx, store.InfraEnrollParams{
-		OwnerID: owner, Pub: []byte(c.WorkerPub()), Name: name, WorkerID: store.NewID(), Now: store.UnixMS(now),
-		Audit: e.auditRow(c, now),
-	})
-}
-
 func (e *Enroller) auditRow(c *Conn, now time.Time) *store.AuditRow {
 	return &store.AuditRow{
 		ID: store.NewID(), TS: store.UnixMS(now), Actor: "worker:" + c.fingerprint(),
-		Action: AuditWorkerEnroll, Outcome: auditSuccess,
+		Action: AuditWorkerEnroll, Outcome: auditPending,
 	}
 }
 
@@ -287,10 +332,12 @@ func cleanWorkerName(s string) string {
 }
 
 // InfraKey is the Hub-wide infrastructure invitation key read from
-// MINION_INFRA_INVITE_KEY_FILE. It enrolls infrastructure Workers owned by
-// infra_default_owner, is reusable, never expires and cannot be revoked in
-// the panel: removing the file setting and restarting the Hub withdraws it.
-// Only the hash of its secret is kept in memory.
+// MINION_INFRA_INVITE_KEY_FILE. It enrols infrastructure Workers owned by
+// infra_default_owner. Its secret hash is also a row of the invitation table
+// (see [Enroller] and [store.Store.EnsureInfraKey]) with an expiry, a use
+// counter and a revocation that survive reloads; removing the file setting
+// and restarting the Hub withdraws it. Only the hash of its secret is kept in
+// memory.
 type InfraKey struct {
 	hash [sha256.Size]byte
 }

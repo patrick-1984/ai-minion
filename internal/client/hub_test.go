@@ -42,7 +42,12 @@ type hubFixture struct {
 func writeFile(t *testing.T, dir, name string, data []byte) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, data, 0o600); err != nil {
+	write := identity.WritePrivate // key material: private DACL on Windows
+	if strings.HasSuffix(name, ".pem") {
+		// Public certificates keep a normal write.
+		write = func(path string, b []byte) error { return os.WriteFile(path, b, 0o600) }
+	}
+	if err := write(p, data); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -66,7 +71,11 @@ func newHubFixture(t *testing.T, h func(f *hubFixture, w http.ResponseWriter, r 
 	}))
 	t.Cleanup(f.srv.Close)
 	dir := t.TempDir()
-	f.keyFile = writeFile(t, dir, "key", []byte(f.key+"\n"))
+	f.keyFile = filepath.Join(dir, "key")
+	// Private key material: identity.WritePrivate gives Windows a private DACL.
+	if err := identity.WritePrivate(f.keyFile, []byte(f.key+"\n")); err != nil {
+		t.Fatal(err)
+	}
 	f.caFile = writeFile(t, dir, "ca.pem", certPEM(t, f.srv))
 	return f
 }
@@ -197,7 +206,7 @@ func TestHubKeyIsReadFromTheFileForEveryRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	rotated := identity.NewAPIKey().String()
-	if err := os.WriteFile(f.keyFile, []byte(rotated), 0o600); err != nil {
+	if err := identity.WritePrivate(f.keyFile, []byte(rotated)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.Call(context.Background(), ops.OpSessionsList, nil); err != nil {

@@ -186,8 +186,12 @@ func newOpServer(t testing.TB, ex OpExecutor, mut ...func(*OpServerConfig)) *OpS
 	return s
 }
 
+// opRequest is an op.request as the Hub sends it in protocol 2.0: it carries
+// the origin the Hub derives (here a user; the Worker refuses a message-class
+// op without one, see opserver_origin_test.go).
 func opRequest(op string, actions []ops.Action, args any) map[string]any {
-	m := map[string]any{"type": proto.TypeOpRequest, "op": op, "actions": actions}
+	m := map[string]any{"type": proto.TypeOpRequest, "op": op, "actions": actions,
+		"origin": proto.Origin{Kind: proto.OriginUser, UserID: "user-1"}}
 	if args != nil {
 		m["args"] = args
 	}

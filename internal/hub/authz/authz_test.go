@@ -459,8 +459,19 @@ func TestWorkerPrincipal(t *testing.T) {
 	own := authz.SessionResource{WorkerID: "w-alice", Name: "s"}
 	peer := authz.SessionResource{WorkerID: "w-alice2", Name: "s"}
 
-	// Own and same-owner resources: read and message.
-	for _, res := range []authz.Resource{own, peer, authz.WorkerResource{ID: "w-alice"}, authz.WorkerResource{ID: "w-alice2"}} {
+	// F-01: a same-owner peer Worker and its sessions are not reachable.
+	for _, res := range []authz.Resource{peer, authz.WorkerResource{ID: "w-alice2"}} {
+		for _, act := range []ops.Action{ops.ActionRead, ops.ActionMessage} {
+			if c := code(t, a.Decide(ctx, w, set(act), res)); c != proto.CodeNotFound {
+				t.Errorf("peer %T %+v %s: %q, want not_found", res, res, act, c)
+			}
+		}
+		if got, err := a.EffectiveActions(ctx, w, res); err != nil || len(got) != 0 {
+			t.Errorf("peer %+v effective: %v %v", res, got, err)
+		}
+	}
+	// Own Worker and its sessions: read and message.
+	for _, res := range []authz.Resource{own, authz.WorkerResource{ID: "w-alice"}} {
 		for _, act := range []ops.Action{ops.ActionRead, ops.ActionMessage} {
 			if err := a.Decide(ctx, w, set(act), res); err != nil {
 				t.Errorf("%T %+v %s: %v", res, res, act, err)
@@ -493,8 +504,8 @@ func TestWorkerPrincipal(t *testing.T) {
 			t.Errorf("worker reached user resource %s", id)
 		}
 	}
-	// Filter lists only the owner's.
-	items := []authz.Resource{own, peer, authz.WorkerResource{ID: "w-bob"}}
+	// Filter lists only the Worker's own Worker and sessions.
+	items := []authz.Resource{own, peer, authz.WorkerResource{ID: "w-alice"}, authz.WorkerResource{ID: "w-bob"}}
 	listed, err := authz.Filter(ctx, a, w, items, func(r authz.Resource) authz.Resource { return r })
 	if err != nil || len(listed) != 2 {
 		t.Errorf("Filter: %v %v", listed, err)
@@ -526,7 +537,7 @@ func TestWorkerPrincipalIsResolvedFreshOnEveryCall(t *testing.T) {
 	a := mk(st)
 	ctx := context.Background()
 	w := authz.NewWorkerPrincipal("w-alice")
-	peer := authz.SessionResource{WorkerID: "w-alice2", Name: "s"}
+	peer := authz.SessionResource{WorkerID: "w-alice", Name: "s"}
 	msg := set(ops.ActionMessage, ops.ActionOperate)
 	if err := a.Decide(ctx, w, msg, peer); err != nil {
 		t.Fatal(err)
@@ -557,18 +568,18 @@ func TestWorkerPrincipalIsResolvedFreshOnEveryCall(t *testing.T) {
 	st.mu.Lock()
 	st.workers["w-alice"] = "bob"
 	st.mu.Unlock()
-	if c := code(t, a.Decide(ctx, w, msg, peer)); c != proto.CodeNotFound {
-		t.Errorf("after reassignment: %q, want not_found", c)
+	if err := a.Decide(ctx, w, msg, peer); err != nil {
+		t.Errorf("own session after reassignment follows the Worker: %v", err)
 	}
-	if err := a.Decide(ctx, w, msg, authz.SessionResource{WorkerID: "w-bob", Name: "s"}); err != nil {
-		t.Errorf("new owner's worker: %v", err)
+	if c := code(t, a.Decide(ctx, w, msg, authz.SessionResource{WorkerID: "w-alice2", Name: "s"})); c != proto.CodeNotFound {
+		t.Errorf("former sibling: %q, want not_found", c)
 	}
 
 	// Removed Worker.
 	st.mu.Lock()
 	delete(st.workers, "w-alice")
 	st.mu.Unlock()
-	if c := code(t, a.Decide(ctx, w, msg, authz.SessionResource{WorkerID: "w-bob", Name: "s"})); c != proto.CodeForbidden {
+	if c := code(t, a.Decide(ctx, w, msg, peer)); c != proto.CodeForbidden {
 		t.Errorf("removed worker: %q, want forbidden", c)
 	}
 	if got, err := a.EffectiveActions(ctx, w, peer); err != nil || len(got) != 0 {

@@ -203,7 +203,11 @@ func TestResidualAnOlderAnswerCannotReopenAnUnknownLaterRevocation(t *testing.T)
 	e.putTurn("beta", privateReply+"-beta")
 	done := make(chan int, 1)
 	go func() { code, _, _ := e.shareSet(e.owner, "all"); done <- code }()
-	<-oldReady
+	select {
+	case <-oldReady:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the older share_set never reached the Worker")
+	}
 	if code, _, _ := e.shareSet(e.owner, "none"); code == 200 {
 		t.Fatal("setup requires an ambiguous post-commit failure")
 	}

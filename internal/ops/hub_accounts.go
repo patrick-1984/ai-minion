@@ -244,6 +244,9 @@ type UserResetPasswordArgs struct {
 	WriteArgs
 	// UserID is the account whose password is reset.
 	UserID string `json:"user_id"`
+	// KeepAPIKeys keeps the user's API keys. By default a reset revokes all of
+	// them in the same transaction (F-07).
+	KeepAPIKeys bool `json:"keep_api_keys,omitempty"`
 }
 
 // Validate checks the request id and the user id.

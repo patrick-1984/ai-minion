@@ -687,7 +687,7 @@ func TestExpiredInvitationAndAPIKeysNeverAffectAnEnrolledWorker(t *testing.T) {
 
 func insertUser(t *testing.T, st *store.Store, id string) {
 	t.Helper()
-	if _, err := st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1)`, id, id); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, id, id); err != nil {
 		t.Fatal(err)
 	}
 }

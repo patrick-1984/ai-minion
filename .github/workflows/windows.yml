@@ -63,27 +63,39 @@ jobs:
         shell: bash
         run: |
           set -eu
-          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName)$'
+          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
           service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied)'
+          hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
+          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
           CGO_ENABLED=0 go test -count=1 -v -run "$identity" ./internal/identity/
+          CGO_ENABLED=0 go test -count=1 -v -run "$hubstore" ./internal/hub/store/
+          CGO_ENABLED=0 go test -count=1 -v -run "$cli" ./internal/cli/
           CGO_ENABLED=0 go test -count=1 -v -run "$store" ./internal/worker/store/
           CGO_ENABLED=0 go test -count=1 -v -run "$service" ./internal/worker/service/
           CGO_ENABLED=0 go test -count=1 -v ./internal/worker/localapi/ ./internal/client/
+          agent='^(TestHubPipeModuleCallsWithTheWorkerCallKeyFile|TestCallKeySourceRereadsAndChecksTheKeyFile)$'
           version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary)$'
+          CGO_ENABLED=0 go test -count=1 -v -run "$agent" ./internal/worker/agent/
           CGO_ENABLED=0 go test -count=1 -v -run "$version" ./internal/version/
       - name: Windows-tagged tests with the race detector
         shell: bash
         run: |
           set -eu
-          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName)$'
+          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
           service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied)'
+          hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
+          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
           CGO_ENABLED=1 go test -race -count=1 -run "$identity" ./internal/identity/
+          CGO_ENABLED=1 go test -race -count=1 -run "$hubstore" ./internal/hub/store/
+          CGO_ENABLED=1 go test -race -count=1 -run "$cli" ./internal/cli/
           CGO_ENABLED=1 go test -race -count=1 -run "$store" ./internal/worker/store/
           CGO_ENABLED=1 go test -race -count=1 -run "$service" ./internal/worker/service/
           CGO_ENABLED=1 go test -race -count=1 ./internal/worker/localapi/ ./internal/client/
+          agent='^(TestHubPipeModuleCallsWithTheWorkerCallKeyFile|TestCallKeySourceRereadsAndChecksTheKeyFile)$'
           version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary)$'
+          CGO_ENABLED=1 go test -race -count=1 -run "$agent" ./internal/worker/agent/
           CGO_ENABLED=1 go test -race -count=1 -run "$version" ./internal/version/
 
   worker-foreground:
@@ -162,7 +174,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          ./minion.exe worker up 2>&1 | tee up.log
+          ./minion.exe worker up --share-existing none 2>&1 | tee up.log
           grep -q 'MinionWorker' up.log
           # Automatic start at boot and restart on failure (AC2).
           sc.exe qc MinionWorker | tee qc.txt

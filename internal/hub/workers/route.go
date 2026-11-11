@@ -23,7 +23,8 @@ package workers
 // result or error frame, after which the stream closes:
 //
 //	{"type":"op.request","op":"send_text","request_id":"<uuidv7>",
-//	 "args":{...the op's Go argument struct...},"actions":["operate","read"]}
+//	 "args":{...the op's Go argument struct...},"actions":["operate","read"],
+//	 "origin":{"kind":"worker","source_worker_id":"...",...}}
 //	{"type":"op.progress","data":{...}}      // zero or more; the elements of a streaming op
 //	{"type":"op.result","result":{...}}      // exactly one, or:
 //	{"type":"error","code":"forbidden","message":"..."}
@@ -37,6 +38,7 @@ package workers
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,6 +51,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -66,6 +69,10 @@ type OpRequest struct {
 	RequestID string          `json:"request_id"`
 	Args      json.RawMessage `json:"args"`
 	Actions   ops.ActionSet   `json:"actions"`
+	// Origin is the server-derived provenance of the request (protocol 2.0,
+	// mandatory). It is built from the authenticated principal and never from
+	// caller JSON (see [Router.originOf]).
+	Origin proto.Origin `json:"origin"`
 }
 
 // OpProgress is an op.progress frame: one element of a streaming op, or
@@ -118,16 +125,34 @@ func (b registryBackend) OpenOp(ctx context.Context, workerID, op string, need .
 
 // WorkerRecord is an enrolled Worker as the Hub stores it.
 type WorkerRecord struct {
-	ID        string
-	Name      string
-	OwnerID   string
-	Kind      string
-	CreatedAt time.Time
+	ID      string
+	Name    string
+	OwnerID string
+	Kind    string
+	// Fingerprint is the fingerprint of the Worker's public key (AD-5). The
+	// origin of a request from this Worker carries it.
+	Fingerprint string
+	CreatedAt   time.Time
+	// Pending is true while the Worker waits for approval (F-02); EnrollAddr is
+	// the client address it enrolled from. A [Directory] lists only approved
+	// Workers from Workers; the pending ones come from [AllWorkersDirectory].
+	Pending    bool
+	EnrollAddr string
 }
 
-// Directory lists the enrolled Workers. It reads current state on every call.
+// Directory lists the enrolled Workers that the Hub may route to: the
+// approved ones. A pending Worker (F-02) is not in this list, so it cannot be
+// resolved as a target, listed among sessions, or be the source of a request.
+// It reads current state on every call.
 type Directory interface {
 	Workers(ctx context.Context) ([]WorkerRecord, error)
+}
+
+// AllWorkersDirectory is a [Directory] that can also list the Workers that
+// wait for approval. Only the Workers list and the approval use it.
+type AllWorkersDirectory interface {
+	Directory
+	AllWorkers(ctx context.Context) ([]WorkerRecord, error)
 }
 
 // WorkerStore is the part of the store the Hub's Directory reads;
@@ -140,17 +165,30 @@ type WorkerStore interface {
 // holds no SQL (AD-16): it maps store rows to records.
 type StoreDirectory struct{ Store WorkerStore }
 
-// Workers returns every enrolled Worker, ordered by name, then id.
+// Workers returns every approved Worker, ordered by name, then id.
 func (d StoreDirectory) Workers(ctx context.Context) ([]WorkerRecord, error) {
+	all, err := d.AllWorkers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(all, func(w WorkerRecord) bool { return w.Pending }), nil
+}
+
+// AllWorkers returns every enrolled Worker, the pending ones included, ordered
+// by name, then id.
+func (d StoreDirectory) AllWorkers(ctx context.Context) ([]WorkerRecord, error) {
 	rows, err := d.Store.ListWorkers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("workers: list workers: %w", err)
 	}
 	out := make([]WorkerRecord, len(rows))
 	for i, w := range rows {
+		fp, _ := identity.FingerprintOf(ed25519.PublicKey(w.Pub)) // "" for an invalid key
 		out[i] = WorkerRecord{
 			ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Kind: w.Kind,
-			CreatedAt: time.UnixMilli(w.CreatedAt).UTC(),
+			Fingerprint: fp.String(),
+			CreatedAt:   time.UnixMilli(w.CreatedAt).UTC(),
+			Pending:     w.Pending, EnrollAddr: w.EnrollAddr,
 		}
 	}
 	return out, nil
@@ -220,21 +258,17 @@ func (rt *Router) ownerLabel(ctx context.Context, ownerID string) string {
 	return ownerID
 }
 
-// visible returns the Workers the principal may read. Without all, only the
-// Workers the principal's user owns: the principal of an act-as session is
-// the target user, so this is the act-as space. With all, every Worker; the
-// authorizer then keeps only those the principal may read, so all widens the
-// list for an admin and changes nothing for anyone else. The Hub filters by
-// scope too, so an API key sees only what its scope and its owner allow.
-func (rt *Router) visible(ctx context.Context, p authz.Principal, all bool) ([]WorkerRecord, error) {
-	return rt.visibleFor(ctx, p, all, func(w WorkerRecord) authz.Resource { return authz.WorkerResource{ID: w.ID} })
-}
-
-// visibleFor is [Router.visible] with the resource each candidate is tested
-// on: the Worker itself, or, to resolve a session target, the session, which
+// visibleFor returns the Workers the principal may read. Without all, only the
+// Workers the principal's user owns (the act-as space); with all, every Worker,
+// which the authorizer then narrows to those the principal may read. Each
+// candidate is tested on a resource: the Worker itself, or, to resolve a session target, the session, which
 // is what a key scoped to one session is allowed to read.
 func (rt *Router) visibleFor(ctx context.Context, p authz.Principal, all bool, res func(WorkerRecord) authz.Resource) ([]WorkerRecord, error) {
-	recs, err := rt.dir.Workers(ctx)
+	return rt.visibleFrom(ctx, rt.dir.Workers, p, all, res)
+}
+
+func (rt *Router) visibleFrom(ctx context.Context, list func(context.Context) ([]WorkerRecord, error), p authz.Principal, all bool, res func(WorkerRecord) authz.Resource) ([]WorkerRecord, error) {
+	recs, err := list(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("workers: read the Workers: %w", err)
 	}
@@ -247,10 +281,16 @@ func (rt *Router) visibleFor(ctx context.Context, p authz.Principal, all bool, r
 }
 
 // ListWorkers returns the Workers of workers_list: those visible to the
-// principal (see [Router.visible] for "mine" and all) with their online state,
+// principal (see [Router.visibleFor] for "mine" and all) with their online state,
 // ordered by name, then owner, then id.
 func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) ([]ops.WorkerInfo, error) {
-	recs, err := rt.visible(ctx, p, all)
+	// The list is the one place that shows the Workers waiting for approval:
+	// the owner and admins need them to approve or remove them.
+	list := rt.dir.Workers
+	if d, ok := rt.dir.(AllWorkersDirectory); ok {
+		list = d.AllWorkers
+	}
+	recs, err := rt.visibleFrom(ctx, list, p, all, func(w WorkerRecord) authz.Resource { return authz.WorkerResource{ID: w.ID} })
 	if err != nil {
 		return nil, err
 	}
@@ -262,11 +302,20 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			owner = rt.ownerLabel(ctx, w.OwnerID)
 			owners[w.OwnerID] = owner
 		}
-		info := ops.WorkerInfo{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Owner: owner, Kind: w.Kind}
+		info := ops.WorkerInfo{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Owner: owner, Kind: w.Kind,
+			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr}
+		if !w.CreatedAt.IsZero() {
+			at := ops.Timestamp(w.CreatedAt)
+			info.EnrolledAt = &at
+		}
 		if on, ok := rt.backend.Get(w.ID); ok {
 			at := ops.Timestamp(on.ConnectedAt)
 			info.Online, info.ProtoVersion, info.ConnectedAt, info.Ops = true, on.Version.String(), &at, on.Ops
 			info.Features = on.Features
+			if w.Pending {
+				// Nothing is routed to a pending Worker; do not offer what it announced.
+				info.Ops, info.Features = nil, nil
+			}
 		}
 		out = append(out, info)
 	}
@@ -548,6 +597,10 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.Args == nil || (reflect.ValueOf(req.Args).Kind() == reflect.Pointer && reflect.ValueOf(req.Args).IsNil()) {
 		args = []byte("{}")
 	}
+	origin, err := rt.originOf(ctx, req.Principal)
+	if err != nil {
+		return nil, err
+	}
 	id := ops.NewUUIDv7()
 	if op.Write {
 		var w struct {
@@ -564,9 +617,48 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		need:     requiredFeatures(op.Name, args),
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
-			Args: args, Actions: actions,
+			Args: args, Actions: actions, Origin: origin,
 		},
 	}, nil
+}
+
+// originOf derives the structured origin of a request from the authenticated
+// principal (AD-12, F-01). Nothing of it comes from the caller's JSON. A Worker
+// identity, and an API key bound to a Worker, name that Worker as the source
+// Worker, with its fingerprint and the id of its owner (for a bound key the
+// owner of the bound Worker, whoever owns the key). The origin is validated
+// before it is sent: a request whose origin cannot be derived is not sent.
+func (rt *Router) originOf(ctx context.Context, p authz.Principal) (proto.Origin, error) {
+	var o proto.Origin
+	sourceID := ""
+	switch p.Kind {
+	case authz.KindBrowserSession:
+		o = proto.Origin{Kind: proto.OriginUser, UserID: p.UserID}
+	case authz.KindActAs:
+		o = proto.Origin{Kind: proto.OriginUser, UserID: p.UserID, ActorID: p.ActorID}
+	case authz.KindAPIKey:
+		o = proto.Origin{Kind: proto.OriginAPIKey, UserID: p.UserID, KeyID: p.KeyID, KeyBoundWorkerID: p.WorkerID}
+		sourceID = p.WorkerID
+	case authz.KindWorker:
+		o = proto.Origin{Kind: proto.OriginWorker}
+		sourceID = p.WorkerID
+	}
+	if sourceID != "" {
+		recs, err := rt.dir.Workers(ctx)
+		if err != nil {
+			return proto.Origin{}, fmt.Errorf("workers: read the Workers: %w", err)
+		}
+		i := slices.IndexFunc(recs, func(w WorkerRecord) bool { return w.ID == sourceID })
+		if i < 0 {
+			return proto.Origin{}, proto.NewError(proto.CodeForbidden, "the calling Worker is not enrolled")
+		}
+		o.SourceWorkerID, o.SourceWorkerFP, o.SourceWorkerOwnerID = sourceID, recs[i].Fingerprint, recs[i].OwnerID
+	}
+	if err := o.Validate(); err != nil {
+		rt.log.Warn("workers: the origin of a request cannot be derived", "kind", string(p.Kind), "cause", err.Error())
+		return proto.Origin{}, proto.NewError(proto.CodeInternal, "the origin of the request could not be derived")
+	}
+	return o, nil
 }
 
 // lostError means the request was (or may have been) sent and no answer came:

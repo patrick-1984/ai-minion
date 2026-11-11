@@ -281,6 +281,13 @@ func (s *Store) DetachIdentity(ctx context.Context, p DetachIdentityParams) (Ide
 		if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ? AND source = 'idp'`, row.UserID); err != nil {
 			return fmt.Errorf("store: detach identity: drop idp roles: %w", err)
 		}
+		if u.PasswordHash != "" {
+			// The account keeps its local credential, so it keeps a local
+			// grant to use it with (F-07).
+			if err := ensureLocalUserGrant(ctx, tx, row.UserID); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET credential_version = credential_version + 1, updated_at = ? WHERE id = ?`, p.NowMS, row.UserID); err != nil {
 			return fmt.Errorf("store: detach identity: %w", err)
 		}
@@ -346,6 +353,12 @@ func (s *Store) SetFirstPassword(ctx context.Context, p SetFirstPasswordParams) 
 UPDATE users SET password_hash = ?, must_change_password = 1, email = ?, updated_at = ? WHERE id = ?`,
 			p.PasswordHash, email, p.NowMS, p.UserID); err != nil {
 			return fmt.Errorf("store: set first password: %w", err)
+		}
+		// A local credential is a local way in: the account holds an
+		// explicit local grant, so that losing its IdP roles does not leave
+		// the password without any access (F-07).
+		if err := ensureLocalUserGrant(ctx, tx, p.UserID); err != nil {
+			return err
 		}
 		return s.auditIn(ctx, tx, p.Audit)
 	})
@@ -555,4 +568,15 @@ ON CONFLICT (provider_id) DO UPDATE SET linking_allowed = excluded.linking_allow
 		}
 		return s.auditIn(ctx, tx, p.Audit)
 	})
+}
+
+// ensureLocalUserGrant gives the account a local "user" grant unless it holds
+// a local grant already.
+func ensureLocalUserGrant(ctx context.Context, tx *sql.Tx, userID string) error {
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_roles (user_id, role, source)
+SELECT ?1, 'user', 'local' WHERE NOT EXISTS (SELECT 1 FROM user_roles WHERE user_id = ?1 AND source = 'local')`, userID); err != nil {
+		return fmt.Errorf("store: grant the local user role: %w", err)
+	}
+	return nil
 }

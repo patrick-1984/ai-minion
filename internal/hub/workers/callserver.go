@@ -96,6 +96,13 @@ type KeyAuthenticator interface {
 
 var _ KeyAuthenticator = (*apikey.Service)(nil)
 
+// PrincipalChecker reports whether a principal still has any permission.
+type PrincipalChecker interface {
+	Valid(ctx context.Context, p authz.Principal) (bool, error)
+}
+
+var _ PrincipalChecker = (*authz.Authorizer)(nil)
+
 // TargetResolver resolves the human form of a target; *Router implements it.
 type TargetResolver interface {
 	Resolve(ctx context.Context, p authz.Principal, target string, all bool) (ops.Target, error)
@@ -137,6 +144,11 @@ type CallServerConfig struct {
 	Owners authz.WorkerLookup
 	// Catalog declares the ops; the default is ops.Default.
 	Catalog *ops.Registry
+	// Authz re-checks the Worker identity of a keyless call while it runs:
+	// the call ends when the Worker's owner lost access (F-07), as a call
+	// with an API key ends when its key stops authenticating. Nil skips the
+	// check. *authz.Authorizer implements it.
+	Authz PrincipalChecker
 	// Auditor records write ops and refused credentials. Nil disables it.
 	Auditor Auditor
 	// RequestTimeout, ReauthInterval and MaxCalls default to the constants
@@ -369,6 +381,8 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	}()
 	if key != "" {
 		go s.reauthenticate(cctx, cancel, workerID, key)
+	} else if s.cfg.Authz != nil {
+		go s.reauthorizeWorker(cctx, cancel, pr)
 	}
 
 	var res any
@@ -462,7 +476,11 @@ func (s *CallServer) authenticate(ctx context.Context, workerID, key string) (au
 		s.log.Error("workers: cannot authenticate a call key", "worker_id", workerID, "error", err.Error())
 		return authz.Principal{}, actor, proto.NewError(proto.CodeInternal, "")
 	}
-	return id.Principal, "key:" + id.KeyID, nil
+	pr := id.Principal
+	if pr.KeyID == "" {
+		pr = pr.WithKeyID(id.KeyID)
+	}
+	return pr, "key:" + id.KeyID, nil
 }
 
 // reauthenticate withdraws a running call when its key stops authenticating
@@ -484,6 +502,27 @@ func (s *CallServer) reauthenticate(ctx context.Context, cancel context.CancelCa
 			return
 		case errors.Is(err, apikey.ErrWrongWorker):
 			cancel(proto.NewError(proto.CodeForbidden, "the API key is not bound to this Worker"))
+			return
+		}
+	}
+}
+
+// reauthorizeWorker withdraws a running keyless call when its Worker identity
+// stops being valid: the Worker was removed, or its owner was deactivated or
+// holds no grant any more (F-07). A failing store is not a reason to end the
+// call.
+func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.CancelCauseFunc, pr authz.Principal) {
+	t := time.NewTicker(s.cfg.ReauthInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		ok, err := s.cfg.Authz.Valid(ctx, pr)
+		if err == nil && !ok {
+			cancel(proto.NewError(proto.CodeForbidden, "not allowed"))
 			return
 		}
 	}

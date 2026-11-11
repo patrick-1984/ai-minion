@@ -119,7 +119,8 @@
 //
 // Wire shapes and who owns them. The op stream shapes are wire-compatible with
 // the Hub side that Story 5.1 defines in internal/hub/workers/route.go:
-// OpRequest{type, op, request_id, args, actions} where request_id is always
+// OpRequest{type, op, request_id, args, actions, origin} where origin is the
+// Hub-derived provenance (protocol 2.0, required for message-class ops) and request_id is always
 // sent (a fresh UUIDv7 for a read, the arguments' request_id for a write) and
 // actions is an ops.ActionSet, a JSON array; OpProgress{type, data} and
 // OpResult{type, result}. [OpRequestFrame], [OpProgressFrame] and

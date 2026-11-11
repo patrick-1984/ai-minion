@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/pipe"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // Security regression (finding "Unsolicited turns can fill the shared Hub
@@ -712,5 +714,102 @@ func TestPressureRecoversAfterRetentionAndCheckpoint(t *testing.T) {
 				t.Fatalf("a turn after the recovery: %+v", ack)
 			}
 		})
+	}
+}
+
+// Round 2 (T2): a receiver that definitively refuses a message with
+// pipe_origin_refused delivered nothing, so refused sends must not use up the
+// recipient's hourly quota; a legitimate send still goes through afterwards.
+// Other errors may hide a delivery and keep their charge.
+func TestRefusedSendsDoNotConsumeTheHourlyQuota(t *testing.T) {
+	ctx := context.Background()
+	send := func(r *pipeRig, text string) error {
+		_, err := r.p.Send(ctx, authz.NewSessionPrincipal(idAlice),
+			ops.PipeSendArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: target(wAlicePi1, pipeSess), Text: text})
+		return err
+	}
+	t.Run("pipe_origin_refused is refunded", func(t *testing.T) {
+		r := newPipeRig(t, 100000)
+		r.rt.err = proto.NewError(proto.CodePipeOriginRefused, "refused")
+		for i := 0; i < pipe.SendsPerHour+20; i++ {
+			if err := send(r, "attempt"); err == nil {
+				t.Fatal("a refused send succeeded")
+			} else if strings.Contains(err.Error(), "limit") {
+				t.Fatalf("attempt %d hit the rate limit: %v", i, err)
+			}
+			r.clock.Advance(2 * time.Second) // attempt throttling still applies per second
+		}
+		r.rt.err = nil
+		if err := send(r, "legitimate"); err != nil {
+			t.Fatalf("a legitimate send after %d refusals: %v", pipe.SendsPerHour+20, err)
+		}
+	})
+	t.Run("attempt throttling stays", func(t *testing.T) {
+		r := newPipeRig(t, 100000)
+		r.rt.err = proto.NewError(proto.CodePipeOriginRefused, "refused")
+		throttled := false
+		for i := 0; i < pipe.SendBurst+3; i++ { // no clock advance: faster than 1/s
+			if err := send(r, "burst"); err != nil && strings.Contains(err.Error(), "fast") {
+				throttled = true
+			}
+		}
+		if !throttled {
+			t.Fatal("refunded sends bypassed the per-second attempt throttle")
+		}
+	})
+	t.Run("an unknown outcome keeps its charge", func(t *testing.T) {
+		r := newPipeRig(t, 100000)
+		r.rt.err = proto.NewError(proto.CodeInternal, "lost")
+		for i := 0; i < pipe.SendsPerHour; i++ {
+			_ = send(r, "attempt")
+			r.clock.Advance(2 * time.Second)
+		}
+		r.rt.err = nil
+		err := send(r, "legitimate")
+		if err == nil || !strings.Contains(err.Error(), "limit") {
+			t.Fatalf("charges for sends of unknown outcome were refunded: %v", err)
+		}
+	})
+}
+
+// failingDeleteStore fails every DeleteMessage.
+type failingDeleteStore struct{ PipeStore }
+
+func (failingDeleteStore) DeleteMessage(context.Context, int64) error { return errors.New("disk full") }
+
+// A refused send whose stored message cannot be deleted is not refunded and
+// the same request_id is never routed again.
+func TestRefusedSendWithFailedDeleteIsNotRefundedNorRerouted(t *testing.T) {
+	ctx := context.Background()
+	r := newPipeRigWith(t, 100000, func(c *PipeConfig) { c.Store = failingDeleteStore{c.Store} })
+	r.rt.err = proto.NewError(proto.CodePipeOriginRefused, "refused")
+	args := ops.PipeSendArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: target(wAlicePi1, pipeSess), Text: "x"}
+	pr := authz.NewSessionPrincipal(idAlice)
+	if _, err := r.p.Send(ctx, pr, args); err == nil {
+		t.Fatal("a refused send succeeded")
+	}
+	if n := r.rt.count(); n != 1 {
+		t.Fatalf("routed %d times, want 1", n)
+	}
+	// The retry with the same request_id answers with the recorded refusal.
+	r.rt.err = nil
+	wr, err := r.p.Send(ctx, pr, args)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if wr.Outcome == ops.OutcomeDelivered || r.rt.count() != 1 {
+		t.Fatalf("the retained request was routed again: %+v, calls=%d", wr, r.rt.count())
+	}
+	// No refund: the hourly quota stays charged by the refused send.
+	ok := 0
+	for i := 0; i < pipe.SendsPerHour+5; i++ {
+		r.clock.Advance(2 * time.Second)
+		_, err = r.p.Send(ctx, pr, ops.PipeSendArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: target(wAlicePi1, pipeSess), Text: "y"})
+		if err == nil {
+			ok++
+		}
+	}
+	if ok != pipe.SendsPerHour-1 {
+		t.Fatalf("%d sends fit after the refused one, want %d (the charge was refunded)", ok, pipe.SendsPerHour-1)
 	}
 }

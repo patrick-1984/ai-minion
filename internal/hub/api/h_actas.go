@@ -111,6 +111,8 @@ func actAsError(err error) error {
 		return NewError(proto.CodeNotFound, "not found")
 	case errors.Is(err, session.ErrActAsTargetInactive):
 		return NewError(proto.CodeConflict, "the user is deactivated")
+	case errors.Is(err, session.ErrActAsTargetNoAccess):
+		return NewError(proto.CodeConflict, "the user has no access")
 	case errors.Is(err, session.ErrActAsActive):
 		return NewError(proto.CodeConflict, "already acting as a user; exit first")
 	case errors.Is(err, session.ErrActAsUnavailable):

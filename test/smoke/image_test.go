@@ -102,6 +102,10 @@ func TestImageSmoke(t *testing.T) {
 	if fresh < 0 || backup < 0 || restore < 0 || restored < 0 || unprep < 0 {
 		t.Fatalf("scenarios missing or out of order: fresh %d backup %d restore %d restored %d unprepared %d\n%s", fresh, backup, restore, restored, unprep, calls)
 	}
+	if count("hub backup --out /backup/hub.tar.gz --passphrase-file /backup/pass") != 1 ||
+		count("hub restore /backup/hub.tar.gz --passphrase-file /backup/pass") != 1 {
+		t.Errorf("backup and restore must both get the passphrase file:\n%s", calls)
+	}
 	if count("/healthz") != 2 {
 		t.Errorf("health was probed %d times, want once per started Hub (2)", count("/healthz"))
 	}

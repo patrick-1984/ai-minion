@@ -123,6 +123,7 @@ func hubSendText(t *testing.T, svc *workers.Service, workerID, text string) map[
 	if err := st.WriteFrame(map[string]any{
 		"type": proto.TypeOpRequest, "op": ops.OpSendText,
 		"actions": []ops.Action{ops.ActionOperate, ops.ActionRead}, "args": args,
+		"origin": proto.Origin{Kind: proto.OriginUser, UserID: "user-1"},
 	}); err != nil {
 		t.Fatal(err)
 	}

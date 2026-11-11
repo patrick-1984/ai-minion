@@ -551,7 +551,8 @@ func handleUserCreate(w http.ResponseWriter, r *http.Request, c OpCaller) {
 }
 
 func handleUserReset(w http.ResponseWriter, r *http.Request, c OpCaller) {
-	args := ops.UserResetPasswordArgs{WriteArgs: newWriteArgs(), UserID: r.PathValue("id")}
+	args := ops.UserResetPasswordArgs{WriteArgs: newWriteArgs(), UserID: r.PathValue("id"),
+		KeepAPIKeys: r.PostFormValue("keep_api_keys") == "true"}
 	var res struct {
 		TemporaryPassword string `json:"temporary_password"`
 	}

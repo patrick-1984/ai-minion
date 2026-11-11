@@ -30,9 +30,20 @@ type pipeRuntime struct {
 	host   *anchorHost
 	dialer *pairDialer
 	client *client.LocalBackend
+	// runDir is the runtime directory that holds the local socket; the default
+	// socket lookup of the CLI finds it through XDG_RUNTIME_DIR and TMPDIR.
+	runDir string
+	sock   string
 }
 
 func startPipeRuntime(t *testing.T, dir string, host *anchorHost, cls *fakeClassifier, enrolled bool, share string) *pipeRuntime {
+	t.Helper()
+	return startPipeRuntimeWithCallKey(t, dir, host, cls, enrolled, share, "")
+}
+
+// startPipeRuntimeWithCallKey is startPipeRuntime with the Worker setting
+// call_api_key_file.
+func startPipeRuntimeWithCallKey(t *testing.T, dir string, host *anchorHost, cls *fakeClassifier, enrolled bool, share, callKeyFile string) *pipeRuntime {
 	t.Helper()
 	core := coreDeps{
 		openStore:  func(ctx context.Context, d string) (*store.Store, error) { return store.OpenContext(ctx, d) },
@@ -40,7 +51,8 @@ func startPipeRuntime(t *testing.T, dir string, host *anchorHost, cls *fakeClass
 		classifier: cls,
 	}
 	dialer := &pairDialer{hubs: make(chan *transport.Session, 4)}
-	sock := filepath.Join(shortRunDir(t), "minion", localapi.SocketName)
+	runDir := shortRunDir(t)
+	sock := filepath.Join(runDir, "minion", localapi.SocketName)
 	lad := defaultLocalAPIDeps()
 	lad.socketPath = func() (string, error) { return sock, nil }
 	r := NewRegistry()
@@ -62,7 +74,7 @@ func startPipeRuntime(t *testing.T, dir string, host *anchorHost, cls *fakeClass
 	}
 	rt := NewRuntime(r, Options{StopTimeout: 5 * time.Second})
 	err := rt.Start(context.Background(), Settings{
-		WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w", ShareExisting: share},
+		WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w", ShareExisting: share, CallAPIKeyFile: callKeyFile},
 		Resolver:   &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }},
 		Logger:     slog.New(slog.NewTextHandler(&logBuf{}, nil)),
 	})
@@ -70,7 +82,7 @@ func startPipeRuntime(t *testing.T, dir string, host *anchorHost, cls *fakeClass
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	return &pipeRuntime{rt: rt, host: host, dialer: dialer, client: client.Local(client.WithSocketPath(sock))}
+	return &pipeRuntime{rt: rt, host: host, dialer: dialer, client: client.Local(client.WithSocketPath(sock)), runDir: runDir, sock: sock}
 }
 
 func newAnchorHost(t *testing.T) (*anchorHost, *fakeClassifier) {
@@ -358,7 +370,8 @@ func TestPipeModuleHubModeKeepsAnUnsharedSessionsReplyOnTheWorker(t *testing.T) 
 // socket through the real local socket module, and returns a client on it.
 func serveLocalPipe(t *testing.T, ex *Executor, svc *PipeService, st *store.Store) *client.LocalBackend {
 	t.Helper()
-	sock := filepath.Join(shortRunDir(t), "minion", localapi.SocketName)
+	runDir := shortRunDir(t)
+	sock := filepath.Join(runDir, "minion", localapi.SocketName)
 	lad := defaultLocalAPIDeps()
 	lad.socketPath = func() (string, error) { return sock, nil }
 	r := NewRegistry()

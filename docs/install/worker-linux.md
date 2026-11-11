@@ -96,7 +96,7 @@ Run one Worker per Unix user. For test setups with more than one Worker of the s
 
 ```sh
 sudo minion update                  # the newest release
-sudo minion update --channel 0.5    # the newest 0.5.x
+sudo minion update --channel 0.6    # the newest 0.6.x
 sudo systemctl restart minion-worker@<user>
 ```
 

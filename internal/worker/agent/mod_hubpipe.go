@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -70,7 +71,7 @@ func (d hubPipeDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("turn emitter: %w", err)
 	}
-	cc := NewCallClient(CallConfig{})
+	cc := NewCallClient(CallConfig{Key: callKeySource(s.CallAPIKeyFile)})
 	if err := Provide(env, em); err != nil {
 		return nil, err
 	}
@@ -81,4 +82,24 @@ func (d hubPipeDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	c.OnLink("hub-call", cc.Serve)
 	log.Info("hub pipe links registered (turn channel and call client)")
 	return nil, nil
+}
+
+// callKeySource returns the CallConfig.Key of a Worker whose setting
+// call_api_key_file is path (F-01). With no path there is no key: the Worker
+// then speaks for its own identity, which the Hub lets reach only this Worker
+// and its sessions. With a path, the file is read again for every call
+// ([identity.ReadAPIKeyFile]: owner-checked like the Worker key), so a rotated
+// key takes effect at once and an unusable file fails the call, never the
+// Worker; the error names the path and never the key.
+func callKeySource(path string) func() (string, error) {
+	if path == "" {
+		return nil
+	}
+	return func() (string, error) {
+		k, err := identity.ReadAPIKeyFile(path)
+		if err != nil {
+			return "", err
+		}
+		return k.String(), nil
+	}
 }

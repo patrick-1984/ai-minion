@@ -118,7 +118,7 @@ func TestTTLTable(t *testing.T) {
 		t.Fatalf("the TTL table has %d entries, the test %d", len(ops.InvitationTTLs()), len(want))
 	}
 	for ttl, d := range want {
-		res, err := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ttl})
+		res, err := r.inv.Create(ctx, root, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ttl})
 		if err != nil {
 			t.Fatalf("%s: %v", ttl, err)
 		}
@@ -215,7 +215,7 @@ func TestListReportsUsesAndState(t *testing.T) {
 	ctx := context.Background()
 	oneTime, _ := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationOneTime, TTL: ops.TTL24h})
 	reusable, _ := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ops.TTL8h})
-	revoked, _ := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ops.TTLUnlimited})
+	revoked, _ := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ops.TTL1w})
 	if err := r.inv.Revoke(ctx, alice, revoked.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -235,10 +235,10 @@ func TestListReportsUsesAndState(t *testing.T) {
 	if i := m[oneTime.ID]; i.Status != ops.InvitationActive || i.MaxUses == nil || *i.MaxUses != 1 || i.Uses != 0 || i.CreatorID != "u-alice" {
 		t.Errorf("one-time = %+v", i)
 	}
-	if i := m[reusable.ID]; i.Status != ops.InvitationActive || i.MaxUses != nil || i.ExpiresAt == nil {
+	if i := m[reusable.ID]; i.Status != ops.InvitationActive || i.MaxUses == nil || *i.MaxUses != ops.DefaultReusableMaxUses || i.ExpiresAt == nil {
 		t.Errorf("reusable = %+v", i)
 	}
-	if i := m[revoked.ID]; i.Status != ops.InvitationRevoked || !i.Revoked || i.RevokedAt == nil || i.ExpiresAt != nil {
+	if i := m[revoked.ID]; i.Status != ops.InvitationRevoked || !i.Revoked || i.RevokedAt == nil {
 		t.Errorf("revoked = %+v", i)
 	}
 
@@ -341,5 +341,71 @@ func TestNewInvitationsValidatesItsConfig(t *testing.T) {
 	}
 	if _, err := NewInvitations(InvitationsConfig{Store: st}); err == nil {
 		t.Error("no fingerprint accepted")
+	}
+}
+
+// F-02: a non-admin cannot create a key that outlives a week, and a reusable
+// key needs a use limit (default 10, at most 100). Admins are not capped.
+func TestInvitationCapsApplyToNonAdminsOnly(t *testing.T) {
+	r := newInvRig(t)
+	ctx := context.Background()
+	code := func(err error) proto.Code { return codeOf(err) }
+
+	for _, ttl := range []string{ops.TTL1m, ops.TTLUnlimited} {
+		for _, mode := range []string{ops.InvitationOneTime, ops.InvitationReusable} {
+			_, err := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: mode, TTL: ttl})
+			if code(err) != proto.CodeInvalidArgument || !strings.Contains(err.Error(), "1 week") {
+				t.Errorf("non-admin %s %s: %v", mode, ttl, err)
+			}
+		}
+	}
+	for _, ttl := range []string{ops.TTL1h, ops.TTL4h, ops.TTL8h, ops.TTL24h, ops.TTL1w} {
+		if _, err := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationOneTime, TTL: ttl}); err != nil {
+			t.Errorf("non-admin one-time %s: %v", ttl, err)
+		}
+	}
+
+	// Reusable: default 10, explicit values up to 100, nothing above.
+	res, err := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ops.TTL1w})
+	if err != nil || res.MaxUses == nil || *res.MaxUses != 10 {
+		t.Fatalf("default max_uses: %+v err=%v", res, err)
+	}
+	res, err = r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ops.TTL1w, MaxUses: 100})
+	if err != nil || res.MaxUses == nil || *res.MaxUses != 100 {
+		t.Fatalf("max_uses 100: %+v err=%v", res, err)
+	}
+	if _, err := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ops.TTL1w, MaxUses: 101}); code(err) != proto.CodeInvalidArgument ||
+		!strings.Contains(err.Error(), "100") {
+		t.Errorf("max_uses 101: %v", err)
+	}
+	// The stored limit is what the enrollment enforces.
+	list, _ := r.inv.List(ctx, alice, false)
+	limits := map[int]bool{}
+	for _, i := range list.Invitations {
+		if i.Mode == ops.InvitationReusable {
+			limits[*i.MaxUses] = true
+		}
+	}
+	if !limits[10] || !limits[100] {
+		t.Errorf("stored limits = %v", limits)
+	}
+
+	// A one-time key never allows more than one enrollment.
+	one, err := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationOneTime, TTL: ops.TTL1h, MaxUses: 1})
+	if err != nil || one.MaxUses == nil || *one.MaxUses != 1 {
+		t.Errorf("one-time = %+v err=%v", one, err)
+	}
+	if _, err := r.inv.Create(ctx, alice, ops.InvitationCreateArgs{Mode: ops.InvitationOneTime, TTL: ops.TTL1h, MaxUses: 5}); err == nil {
+		t.Error("a one-time key with max_uses 5 was created (ops validation)")
+	}
+
+	// Admins: every TTL, reusable without a limit stays unlimited, or has the limit given.
+	free, err := r.inv.Create(ctx, root, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ops.TTLUnlimited})
+	if err != nil || free.MaxUses != nil || free.ExpiresAt != nil {
+		t.Errorf("admin unlimited reusable: %+v err=%v", free, err)
+	}
+	lim, err := r.inv.Create(ctx, root, ops.InvitationCreateArgs{Mode: ops.InvitationReusable, TTL: ops.TTL1m, MaxUses: 500})
+	if err != nil || lim.MaxUses == nil || *lim.MaxUses != 500 {
+		t.Errorf("admin max_uses 500: %+v err=%v", lim, err)
 	}
 }

@@ -48,6 +48,9 @@ var (
 	ErrActAsTargetUnknown = errors.New("session: no such user")
 	// ErrActAsTargetInactive is returned for a deactivated user.
 	ErrActAsTargetInactive = errors.New("session: the user is deactivated")
+	// ErrActAsTargetNoAccess is returned for a user without any effective
+	// grant: acting as it would trap the admin session (F-07).
+	ErrActAsTargetNoAccess = errors.New("session: the user has no access")
 	// ErrActAsDuration is returned for a duration outside the allowed range.
 	ErrActAsDuration = errors.New("session: the duration must be between 1 minute and 8 hours")
 )
@@ -100,7 +103,8 @@ func WithActAsStore(a ActAsStore) Option { return func(m *Manager) { m.actAs = a
 // transaction as the delete, and the session goes on as the plain session of
 // its user, when
 //   - it has expired (act_as.expire);
-//   - the target has been deactivated (act_as.end); or
+//   - the target has been deactivated, or has lost every effective grant
+//     (act_as.end); or
 //   - the session's user is no longer an active admin, for example after an
 //     IdP demotion (act_as.end).
 //
@@ -138,6 +142,12 @@ func (m *Manager) attachActAs(ctx context.Context, s *Session, row store.Session
 		action = AuditActionActAsExpire
 	case !info.TargetActive || user.Role != string(authz.RoleAdmin):
 		action = AuditActionActAsEnd
+	default:
+		// A target without any effective grant is denied everything, act_as_stop
+		// included (F-07): end the period. A failing read keeps it.
+		if t, err := m.actAs.UserByID(ctx, info.TargetID); err == nil && t.Role == "" {
+			action = AuditActionActAsEnd
+		}
 	}
 	if action != "" {
 		_, _ = m.actAs.EndActAsIf(ctx, info.ActAsRow, store.AuditRow{
@@ -192,6 +202,9 @@ func (m *Manager) StartActAs(ctx context.Context, s *Session, targetID string, d
 	}
 	if !target.Active {
 		return ActAs{}, ErrActAsTargetInactive
+	}
+	if target.Role == "" {
+		return ActAs{}, ErrActAsTargetNoAccess
 	}
 	now := m.now()
 	row := store.ActAsRow{

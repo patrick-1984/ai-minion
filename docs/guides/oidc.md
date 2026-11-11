@@ -49,13 +49,17 @@ Restart the Hub after you change environment variables. The same settings, and m
 - The claim may be one string or a list of strings; other values are ignored.
 - Roles are set at each sign-in from the ID token of that sign-in. Between sign-ins they change only as [described below](#background-role-updates).
 - Local grants and Worker pairings are never changed by the IdP.
+- **An account without any grant has no access.** If an account loses all its IdP roles and holds no local grant, its browser sessions, API keys and Worker identities stop working at once (the account, its keys and its Workers are not deleted). The next valid sign-in that gives a role restores everything. A local grant (for example the user role of an account that also has a local password) is never removed by the IdP and keeps its access.
+- **Admin needs a refresh token.** The Hub grants the IdP admin role only when the IdP issued a refresh token at that sign-in (or one is stored), because only a refresh token lets the Hub notice the removal later. Without one the person gets the other roles they match, or a message that explains the problem when admin was their only role. Allow `offline_access` (refresh tokens) for the client at the IdP.
 
 ## Background role updates
 
 Removing a person from the group at the IdP takes effect in the Hub in one of two ways, and only the first is automatic:
 
-- **With a stored refresh token:** the Hub re-checks the roles of every OIDC account that holds a refresh token, once per `MINION_OIDC_REFRESH_INTERVAL` (24 hours unless you set it; not instantly). It exchanges the refresh token and reads the roles from the fresh ID token the IdP returns, so the IdP must return an ID token with the role claim on a refresh. If the IdP permanently rejects the token, the person's IdP roles are suspended and their browser sessions end until they sign in again. An IdP that cannot be reached changes nothing, and the next pass tries again.
+- **With a stored refresh token:** the Hub re-checks the roles of every OIDC account that holds a refresh token, once per `MINION_OIDC_REFRESH_INTERVAL` (24 hours unless you set it; not instantly). Accounts that hold an IdP **admin** role are re-checked at least **every hour**, whatever the interval. It exchanges the refresh token and reads the roles from the fresh ID token the IdP returns, so the IdP must return an ID token with the role claim on a refresh. If the IdP permanently rejects the token, the person's IdP roles are suspended and their browser sessions end until they sign in again. An IdP that cannot be reached changes nothing, and the next pass tries again.
 - **Without a refresh token:** an account whose sign-in did not return a refresh token is **not** refreshed in the background. Its roles are renewed only at its next sign-in, so a removal at the IdP shows up only then.
+
+**Upgrading from 0.5:** at the first start of 0.6 the Hub suspends every existing IdP admin grant whose account has no stored refresh token (local grants stay; one `role.suspend` audit event per account). **Recovery: the person signs in again.** The admin role returns if the IdP issues a refresh token at that sign-in; if it does not, enable refresh tokens for the client first.
 
 When access must end **at once**, or for an account without a refresh token, do not rely on the IdP: deactivate the user in the Hub (**Admin**, **Users**, or `minion user_deactivate`). Do not assume background updates are on because OIDC sign-in works: sign-in succeeds without a refresh token.
 

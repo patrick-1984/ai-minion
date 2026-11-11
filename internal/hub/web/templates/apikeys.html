@@ -35,6 +35,15 @@
       {{range $i, $c := .Data.Actions}}<label class="check" for="act-{{$i}}"><input type="checkbox" id="act-{{$i}}" name="action" value="{{$c.Value}}"{{if $c.Selected}} checked{{end}}> {{$c.Label}} <span class="muted">({{$c.Help}})</span></label>
       {{end}}
     </fieldset>
+    {{if .Data.BoundWorkers}}<div class="field">
+      <label for="key-bound">Call key for a Worker (optional)</label>
+      <select id="key-bound" name="bound_worker" aria-describedby="key-bound-help">
+        <option value="">Not a call key</option>
+        {{range .Data.BoundWorkers}}<option value="{{.Value}}">{{.Label}}</option>
+        {{end}}
+      </select>
+      <span id="key-bound-help" class="muted">Binds the key to that Worker so it can message the targets chosen above on its behalf. Use it with <code>call_api_key_file</code> on that Worker. A bound key works only on that Worker's own connection.</span>
+    </div>{{end}}
     <div class="field">
       <label for="key-expires">Valid for</label>
       <select id="key-expires" name="expires">

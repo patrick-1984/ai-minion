@@ -111,12 +111,18 @@ docker stop minion-smoke-fresh >/dev/null
 
 # --- 3. data dir restored with "minion hub restore" -------------------------
 prepare "$work/backup"
+# The backup is encrypted: the passphrase goes through stdin into a private
+# file owned by the Hub user (never argv or the log); the Hub user reads it.
+passphrase=$(head -c 24 /dev/urandom | base64)
+printf '%s\n' "$passphrase" | docker run --rm -i -v "$work/backup:/b" "$HELPER_IMAGE" \
+	sh -c "umask 077 && cat > /b/pass && chown $UID_HUB:$UID_HUB /b/pass" ||
+	smoke_die "could not create the passphrase file"
 docker run --rm -u "$UID_HUB:$UID_HUB" -v "$work/fresh:/data" -v "$work/backup:/backup" \
-	-e MINION_DATA_DIR=/data "$ref" hub backup --out /backup/hub.tar.gz >/dev/null ||
+	-e MINION_DATA_DIR=/data "$ref" hub backup --out /backup/hub.tar.gz --passphrase-file /backup/pass >/dev/null ||
 	smoke_die "minion hub backup failed in the image"
 prepare "$work/restored"
 docker run --rm -u "$UID_HUB:$UID_HUB" -v "$work/restored:/data" -v "$work/backup:/backup:ro" \
-	-e MINION_DATA_DIR=/data "$ref" hub restore /backup/hub.tar.gz >/dev/null ||
+	-e MINION_DATA_DIR=/data "$ref" hub restore /backup/hub.tar.gz --passphrase-file /backup/pass >/dev/null ||
 	smoke_die "minion hub restore failed in the image"
 start_hub minion-smoke-restored "$work/restored"
 docker stop minion-smoke-restored >/dev/null

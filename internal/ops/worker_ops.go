@@ -31,6 +31,18 @@ var CoreWorkerOpNames = []string{
 	OpPipeSend, OpPipeRead, OpPipeWait,
 }
 
+// IsMessageClass reports whether op puts input into a session on behalf of a
+// caller: pipe_send, send_text, send_keys, answer and set_task. A Worker
+// refuses these from the Hub without a valid origin and applies its local
+// pipe_accept_from policy to them (AD-12, F-01).
+func IsMessageClass(op string) bool {
+	switch op {
+	case OpPipeSend, OpSendText, OpSendKeys, OpAnswer, OpSetTask:
+		return true
+	}
+	return false
+}
+
 // Argument limits shared by every surface.
 const (
 	// DefaultCaptureLines is used when session_capture.lines is 0.

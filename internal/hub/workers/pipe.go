@@ -435,7 +435,23 @@ func (p *Pipe) Send(ctx context.Context, pr authz.Principal, args ops.PipeSendAr
 	})
 	if err != nil {
 		if created { // nothing reached the session as far as the router knows
-			p.retract(ctx, msg)
+			deleted := p.retract(ctx, msg)
+			var pe *proto.Error
+			if errors.As(err, &pe) && pe.Code == proto.CodePipeOriginRefused {
+				// The receiver definitively refused: nothing was delivered, so
+				// the hourly reservation goes back to the sender, but only
+				// once the stored message is confirmed gone. The token stays
+				// spent (the attempt is still throttled). Any other error may
+				// hide a delivery and keeps its charge.
+				if deleted {
+					p.broker.RefundDelivery(msg)
+				} else {
+					// The message is still stored: keep the charge and record
+					// the definitive refusal, so that the same request_id is
+					// answered with it and never routed again.
+					p.recordRefusal(ctx, peer, msg)
+				}
+			}
 		}
 		return ops.WriteResult{}, err
 	}
@@ -535,10 +551,28 @@ func (p *Pipe) storeMessage(ctx context.Context, peer pipe.Peer, args ops.PipeSe
 }
 
 // retract removes a message that was refused before it reached the session.
-func (p *Pipe) retract(ctx context.Context, m pipe.Message) {
+// It reports whether the message is confirmed deleted.
+func (p *Pipe) retract(ctx context.Context, m pipe.Message) bool {
 	if err := p.store.DeleteMessage(context.WithoutCancel(ctx), m.ID); err != nil {
 		p.log.Warn("pipe: cannot retract an undelivered message", "worker_id", m.Peer.WorkerID, "error", err.Error())
+		return false
 	}
+	return true
+}
+
+// recordRefusal persists the definitive refusal of a message that could not be
+// deleted, so that a retained request cannot be routed again.
+func (p *Pipe) recordRefusal(ctx context.Context, peer pipe.Peer, m pipe.Message) {
+	wr := ops.WriteResult{Outcome: ops.OutcomeFailedNotSent, Reason: string(proto.CodePipeOriginRefused)}
+	b, err := json.Marshal(wr)
+	if err == nil {
+		err = p.store.SetMessageResult(context.WithoutCancel(ctx), m.ID, b)
+	}
+	if err != nil {
+		p.log.Error("pipe: cannot record the refusal of a retained message; it is not refunded", "worker_id", peer.WorkerID, "error", err.Error())
+		return
+	}
+	p.log.Warn("pipe: a refused message could not be deleted; its refusal is recorded and its charge kept", "worker_id", peer.WorkerID)
 }
 
 // PipeReadView is the result of pipe_read: the turns, and what was withheld
@@ -693,6 +727,9 @@ func (p *Pipe) Read(ctx context.Context, pr authz.Principal, args ops.PipeReadAr
 	if !p.visibleNow(ctx, peer) { // unshared while the page was read
 		return PipeReadView{}, notShared()
 	}
+	if err := p.az.Decide(ctx, pr, p.readActions, res); err != nil { // revoked while the page was read
+		return PipeReadView{}, err
+	}
 	kept, cut := cutPage(all)
 
 	view := PipeReadView{Turns: append(make([]ops.PipeTurn, 0, len(kept)), kept...)}
@@ -840,6 +877,12 @@ func (p *Pipe) Wait(ctx context.Context, pr authz.Principal, args ops.PipeWaitAr
 				// already fetched are not delivered after that.
 				if !p.visibleNow(ctx, peer) {
 					return notShared()
+				}
+				// The grants are asked again as well (F-07): a caller whose
+				// owner lost the last grant while the batch was written gets
+				// no further turn.
+				if err := p.az.Decide(ctx, pr, p.readActions, res); err != nil {
+					return err
 				}
 				if err := emit(receivedEntry(t)); err != nil {
 					return err

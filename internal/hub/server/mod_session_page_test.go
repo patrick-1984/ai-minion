@@ -207,7 +207,7 @@ func startSessionPageHubWith(t *testing.T, features []string) *sessionPageHub {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1)`, store.NewID(), "bob"); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, store.NewID(), "bob"); err != nil {
 		t.Fatal(err)
 	}
 	bob, err := st.UserByIdentifier(context.Background(), "bob")

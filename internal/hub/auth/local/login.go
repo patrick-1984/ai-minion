@@ -191,6 +191,10 @@ func (a *Authenticator) Authenticate(ctx context.Context, c Credentials) (store.
 		// caller sees the same answer as for a wrong password.
 		return fail(OutcomeInactive)
 	}
+	if user.Role == "" {
+		// An account without any effective grant has no access (F-07).
+		return fail(OutcomeInactive)
+	}
 	a.Limiter.BackoffReset(key)
 	return user, nil
 }

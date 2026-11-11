@@ -54,6 +54,9 @@ on:
   push:
     tags:
       - "**"
+  # A manual run on a pushed commit, so the end-to-end jobs can pass before
+  # the commit is tagged.
+  workflow_dispatch:
 
 permissions:
   contents: read

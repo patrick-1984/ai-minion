@@ -313,7 +313,7 @@ func TestMajorVersionMismatchIsProtoIncompatible(t *testing.T) {
 	key := newKey(t)
 	w := h.enrol(key, "owner-1", "pi")
 	cfg := h.workerConfig(key, "send_text")
-	cfg.Protocols = proto.Range{Min: proto.Version{Major: 2}, Max: proto.Version{Major: 2, Minor: 3}}
+	cfg.Protocols = proto.Range{Min: proto.Version{Major: 3}, Max: proto.Version{Major: 3, Minor: 3}}
 	_, err := h.dial(cfg)
 	if proto.CodeOf(err) != proto.CodeProtoIncompatible {
 		t.Fatalf("err = %v, want proto_incompatible", err)
@@ -593,7 +593,7 @@ func TestReconnectReplacesTheStaleConnection(t *testing.T) {
 	}
 }
 
-func TestWelcomeCarriesPolicyAndOwnerName(t *testing.T) {
+func TestWelcomeCarriesPolicyOwnerNameAndStableOwnerID(t *testing.T) {
 	h := newTestHub(t, func(o *ServiceOptions) {
 		o.Policy = func(_ context.Context, w store.WorkerRow) (Policy, error) {
 			return Policy{PreviewOnly: w.Name == "restricted"}, nil
@@ -608,7 +608,9 @@ func TestWelcomeCarriesPolicyAndOwnerName(t *testing.T) {
 			t.Fatal(err)
 		}
 		welcome := decodeWelcome(t, res)
-		if welcome.Policy.PreviewOnly != want || welcome.Owner != "user-42" {
+		// owner_id is the stable id (what pipe_accept_from=owner-workers
+		// compares); owner stays the display name.
+		if welcome.Policy.PreviewOnly != want || welcome.Owner != "user-42" || welcome.OwnerID != "42" {
 			t.Errorf("%s: welcome = %+v", name, welcome)
 		}
 		_ = res.Channel.Close()

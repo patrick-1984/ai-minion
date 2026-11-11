@@ -42,7 +42,8 @@ services:
       MINION_DATA_DIR: /data
       MINION_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
     ports:
-      - "127.0.0.1::8443"
+      # A fixed host port: an ephemeral one can change when the test restarts the Hub.
+      - "127.0.0.1:${E2E_HUB_PORT:?}:8443"
     profiles: [direct]
 
   hub-proxied:

@@ -540,7 +540,7 @@ func (ps *Pairings) Handle(ctx context.Context, c *Conn) error {
 	ps.mu.Lock()
 	ps.removeLocked(p)
 	ps.mu.Unlock()
-	ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: "worker.pair", Target: row.ID, Outcome: "success"})
+	ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: "worker.pair", Target: row.ID, Outcome: auditPending})
 	c.h.log.Info("worker paired", "worker_id", row.ID, "name", row.Name, "fingerprint", c.fingerprint())
 	cl.finish(claimOutcome{res: ClaimResult{WorkerID: row.ID, Name: row.Name, Renamed: renamed}})
 	return c.Welcome(ctx, row)
@@ -570,6 +570,8 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 	}
 	row := store.WorkerRow{
 		Pub: pub, OwnerID: cl.userID, Kind: store.WorkerKindPrivate, CreatedAt: store.UnixMS(ps.now()),
+		// F-02: a paired Worker waits for approval like any other new Worker.
+		Pending: true, EnrollAddr: c.ClientIP().String(),
 	}
 	for i := 1; i <= maxSuffixTries; i++ {
 		row.ID, row.Name = store.NewID(), suffixed(base, i)

@@ -271,7 +271,11 @@ func TestEnrollRefusesATombstonedKeyWithoutConsumingAUse(t *testing.T) {
 	if _, err := s.EnrollWithInvitation(ctx, enrollParams(r, 7, "old", 6)); !errors.Is(err, ErrWorkerTombstoned) {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := s.EnrollInfrastructure(ctx, InfraEnrollParams{OwnerID: "o", Pub: pub(7), Name: "old", WorkerID: NewID(), Now: 6}); !errors.Is(err, ErrWorkerTombstoned) {
+	ir, err := s.EnsureInfraKey(ctx, bytes.Repeat([]byte{9}, 32), 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnrollWithInvitation(ctx, EnrollParams{SecretHash: ir.SecretHash, Infra: true, OwnerID: "owner", Pub: pub(7), Name: "old", WorkerID: NewID(), Now: 6}); !errors.Is(err, ErrWorkerTombstoned) {
 		t.Fatalf("infra err = %v", err)
 	}
 	if got, _ := s.InvitationByID(ctx, r.ID); got.Uses != 0 {
@@ -335,21 +339,141 @@ func TestEnrollmentAuditCommitsWithTheEnrollment(t *testing.T) {
 	}
 }
 
-func TestEnrollInfrastructureCreatesInfrastructureWorkers(t *testing.T) {
+func TestEnrollWithTheInfrastructureKeyCreatesPendingInfrastructureWorkers(t *testing.T) {
 	s := openInviteTest(t)
 	ctx := context.Background()
-	p := InfraEnrollParams{OwnerID: "owner", Pub: pub(1), Name: "edge", WorkerID: NewID(), Now: 9}
-	res, err := s.EnrollInfrastructure(ctx, p)
-	if err != nil || res.Existing || res.InvitationID != "" || res.Worker.Kind != WorkerKindInfrastructure || res.Worker.OwnerID != "owner" {
+	hash := bytes.Repeat([]byte{4}, 32)
+	row, err := s.EnsureInfraKey(ctx, hash, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := EnrollParams{SecretHash: hash, Infra: true, OwnerID: "owner", Pub: pub(1), Name: "edge", WorkerID: NewID(), Now: 9, Addr: "192.0.2.7"}
+	res, err := s.EnrollWithInvitation(ctx, p)
+	if err != nil || res.Existing || res.InvitationID != row.ID || res.Worker.Kind != WorkerKindInfrastructure || res.Worker.OwnerID != "owner" {
 		t.Fatalf("res = %+v err=%v", res, err)
 	}
+	if !res.Worker.Pending || res.Worker.EnrollAddr != "192.0.2.7" {
+		t.Errorf("the new Worker must be pending with its address: %+v", res.Worker)
+	}
 	p.Pub, p.WorkerID = pub(2), NewID()
-	if res, err := s.EnrollInfrastructure(ctx, p); err != nil || res.Worker.Name != "edge-2" {
+	if res, err := s.EnrollWithInvitation(ctx, p); err != nil || res.Worker.Name != "edge-2" {
 		t.Errorf("second = %+v err=%v", res, err)
 	}
 	p.Pub, p.WorkerID = pub(1), NewID()
-	if res, err := s.EnrollInfrastructure(ctx, p); err != nil || !res.Existing || res.Worker.Name != "edge" {
+	if res, err := s.EnrollWithInvitation(ctx, p); err != nil || !res.Existing || res.Worker.Name != "edge" {
 		t.Errorf("repeat = %+v err=%v", res, err)
+	}
+	if got, _ := s.InvitationByID(ctx, row.ID); got.Uses != 2 {
+		t.Errorf("uses = %d, want 2 (the repeat consumes none)", got.Uses)
+	}
+}
+
+func TestInfrastructureKeyRowSurvivesReloadsAndRevocationIsSticky(t *testing.T) {
+	s := openInviteTest(t)
+	ctx := context.Background()
+	hash := bytes.Repeat([]byte{5}, 32)
+	first, err := s.EnsureInfraKey(ctx, hash, 50_000, 1_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ExpiresAt != 50_000 || first.Source != InvitationSourceInfraFile || first.Mode != InvitationReusable {
+		t.Fatalf("first = %+v", first)
+	}
+	p := EnrollParams{SecretHash: hash, Infra: true, OwnerID: "owner", Pub: pub(1), Name: "edge", WorkerID: NewID(), Now: 2_000}
+	if _, err := s.EnrollWithInvitation(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	// A reload (another start) with a later time and another expiry changes nothing.
+	again, err := s.EnsureInfraKey(ctx, hash, 999_999, 40_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != first.ID || again.ExpiresAt != 50_000 || again.Uses != 1 || again.CreatedAt != 1_000 {
+		t.Errorf("a reload changed the row: %+v", again)
+	}
+	// Revocation sticks across reloads.
+	if err := s.RevokeInvitation(ctx, first.ID, 41_000); err != nil {
+		t.Fatal(err)
+	}
+	again, err = s.EnsureInfraKey(ctx, hash, 999_999, 42_000)
+	if err != nil || !again.Revoked || again.RevokedAt != 41_000 {
+		t.Fatalf("revocation was undone: %+v err=%v", again, err)
+	}
+	p.Pub, p.WorkerID = pub(2), NewID()
+	if _, err := s.EnrollWithInvitation(ctx, p); !errors.Is(err, ErrInvitationRevoked) {
+		t.Errorf("revoked infra key: %v", err)
+	}
+	// Expiry is enforced.
+	h2 := bytes.Repeat([]byte{6}, 32)
+	if _, err := s.EnsureInfraKey(ctx, h2, 3_000, 1_000); err != nil {
+		t.Fatal(err)
+	}
+	p = EnrollParams{SecretHash: h2, Infra: true, OwnerID: "owner", Pub: pub(3), Name: "edge", WorkerID: NewID(), Now: 3_000}
+	if _, err := s.EnrollWithInvitation(ctx, p); !errors.Is(err, ErrInvitationExpired) {
+		t.Errorf("expired infra key: %v", err)
+	}
+}
+
+func TestInfrastructureRowOnlyEnrollsWhileTheFileHoldsItsSecret(t *testing.T) {
+	s := openInviteTest(t)
+	ctx := context.Background()
+	hash := bytes.Repeat([]byte{7}, 32)
+	if _, err := s.EnsureInfraKey(ctx, hash, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Presented as an ordinary invitation secret (the file no longer holds it):
+	p := EnrollParams{SecretHash: hash, Pub: pub(1), Name: "x", WorkerID: NewID(), Now: 5}
+	if _, err := s.EnrollWithInvitation(ctx, p); !errors.Is(err, ErrInvitationNotFound) {
+		t.Errorf("a withdrawn infra key enrolled: %v", err)
+	}
+	// And a user invitation is not accepted as the key file.
+	u := inviteRow("owner", InvitationReusable, 0, 8)
+	if err := s.InsertInvitation(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	p = EnrollParams{SecretHash: u.SecretHash, Infra: true, OwnerID: "owner", Pub: pub(2), Name: "x", WorkerID: NewID(), Now: 5}
+	if _, err := s.EnrollWithInvitation(ctx, p); !errors.Is(err, ErrInvitationNotFound) {
+		t.Errorf("a user invitation enrolled as the key file: %v", err)
+	}
+}
+
+func TestEnrollmentCreatesPendingWorkersAndApprovalIsAudited(t *testing.T) {
+	s := openInviteTest(t)
+	ctx := context.Background()
+	r := inviteRow("owner", InvitationReusable, 0, 1)
+	if err := s.InsertInvitation(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	p := enrollParams(r, 1, "pi", 10)
+	p.Addr = "203.0.113.9"
+	res, err := s.EnrollWithInvitation(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.WorkerByID(ctx, res.Worker.ID)
+	if err != nil || !w.Pending || w.EnrollAddr != "203.0.113.9" || w.ApprovedAt != 0 {
+		t.Fatalf("worker = %+v err=%v", w, err)
+	}
+	a := &AuditRow{ID: NewID(), TS: 20, Actor: "owner", Action: "worker.approve", Outcome: "success"}
+	got, err := s.ApproveWorker(ctx, w.ID, "owner", 20, a)
+	if err != nil || got.Pending || got.ApprovedBy != "owner" || got.ApprovedAt != 20 {
+		t.Fatalf("approved = %+v err=%v", got, err)
+	}
+	w, _ = s.WorkerByID(ctx, w.ID)
+	if w.Pending {
+		t.Error("the Worker is still pending")
+	}
+	// A second approval changes nothing and writes no second audit row.
+	a2 := &AuditRow{ID: NewID(), TS: 21, Actor: "owner", Action: "worker.approve", Outcome: "success"}
+	if _, err := s.ApproveWorker(ctx, w.ID, "owner", 21, a2); !errors.Is(err, ErrWorkerAlreadyApproved) {
+		t.Errorf("second approval: %v", err)
+	}
+	var n int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action = 'worker.approve' AND target = ?`, w.ID).Scan(&n); err != nil || n != 1 {
+		t.Errorf("approve audit rows = %d err=%v", n, err)
+	}
+	if _, err := s.ApproveWorker(ctx, NewID(), "owner", 22, nil); !errors.Is(err, ErrWorkerNotFound) {
+		t.Errorf("unknown worker: %v", err)
 	}
 }
 

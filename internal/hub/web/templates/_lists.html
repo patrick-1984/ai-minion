@@ -34,6 +34,7 @@
 
 {{define "workers_results"}}<p class="result-count" data-summary="{{.WorkersText}}">{{.WorkersText}}{{if .Filter.Active}} shown{{end}}.</p>
 {{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
+{{end}}{{if .PendingWorkers}}<p class="notice notice-warning" role="status" data-pending-banner>{{.PendingWorkers}} {{if eq .PendingWorkers 1}}worker is{{else}}workers are{{end}} waiting for approval. A new worker gets no operations until its owner or an admin approves it: compare the fingerprint, name and source address with the machine you started, then approve it, or remove it if you do not know it.</p>
 {{end}}{{if .Workers}}{{template "worker_table" .}}{{else if not .TotalWorkers}}{{template "no_workers"}}{{else}}{{template "no_match" (.NoMatch "workers")}}{{end}}{{end}}
 
 {{define "sessions_results"}}<p class="result-count" data-summary="{{.SessionsText}}">{{.SessionsText}}{{if .Filter.Active}} shown{{end}}.</p>
@@ -51,12 +52,15 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
 {{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
 {{end}}<section class="panel worker-facts" aria-label="Worker facts">
   <dl class="facts-grid">
-    <div><dt>Status</dt><dd>{{if .Worker.Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</dd></div>
+    <div><dt>Status</dt><dd>{{if .Worker.Pending}}<span class="badge" data-tone="warning" data-pending="true">pending approval</span>{{if .Worker.Online}} <span class="badge" data-online="true">connected</span>{{end}}{{else if .Worker.Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</dd></div>
     <div><dt>Kind</dt><dd><span class="badge plain" data-kind="{{.Worker.Kind}}">{{.Worker.Kind}}</span></dd></div>
     {{if .Worker.Owner}}<div><dt>Owner</dt><dd>{{.Worker.Owner}}</dd></div>
     {{end}}<div><dt>Protocol</dt><dd>{{if .Worker.Version}}{{.Worker.Version}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
     <div><dt>Worker id</dt><dd><code>{{.Worker.ID}}</code></dd></div>
   </dl>
+  {{if .Worker.Pending}}<p class="notice notice-warning" role="status" data-pending-banner>This worker is waiting for approval. The Hub sends it no operations and refuses its calls until its owner or an admin approves it. Compare these facts with the machine you started.</p>
+  {{template "worker_pending_facts" .Worker}}
+  {{template "worker_approval_buttons" .Worker}}{{end}}
   {{if .Operate}}<form method="post" action="{{.Worker.NewURL}}" hx-post="{{.Worker.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions" data-key="worker-actions-{{.Worker.ID}}">
     <button type="submit" class="btn" data-control="new-session" aria-label="New session on {{.Worker.Name}}">New session</button>
   </form>{{end}}

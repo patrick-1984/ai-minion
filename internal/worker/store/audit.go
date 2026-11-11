@@ -30,6 +30,10 @@ type AuditRecord struct {
 	// Forced reports that force=true overrode a FORCE guard.
 	Forced    bool
 	RequestID string
+	// Origin is who made the request: the JSON origin the Hub derived, "local"
+	// for a local caller, or "missing" or "malformed" for a refused request
+	// whose origin was not usable (F-01). Never terminal content.
+	Origin string
 }
 
 // AppendAudit adds a row to the local audit and trims the table to
@@ -46,9 +50,9 @@ func (s *Store) AppendAudit(ctx context.Context, rec AuditRecord) error {
 	defer func() { _ = tx.Rollback() }()
 	var id int64
 	if err := tx.QueryRowContext(ctx,
-		`INSERT INTO local_audit (ts, op, target, outcome, reason, forced, request_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-		now, rec.Op, rec.Target, rec.Outcome, rec.Reason, boolInt(rec.Forced), rec.RequestID).Scan(&id); err != nil {
+		`INSERT INTO local_audit (ts, op, target, outcome, reason, forced, request_id, origin)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		now, rec.Op, rec.Target, rec.Outcome, rec.Reason, boolInt(rec.Forced), rec.RequestID, rec.Origin).Scan(&id); err != nil {
 		return fmt.Errorf("store: append audit: %w", err)
 	}
 	if id > AuditCap {
@@ -68,7 +72,7 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditRecord, error)
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, ts, op, target, outcome, reason, forced, request_id
+		`SELECT id, ts, op, target, outcome, reason, forced, request_id, origin
 		 FROM local_audit ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list audit: %w", err)
@@ -81,7 +85,7 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditRecord, error)
 			ts     int64
 			forced int
 		)
-		if err := rows.Scan(&r.ID, &ts, &r.Op, &r.Target, &r.Outcome, &r.Reason, &forced, &r.RequestID); err != nil {
+		if err := rows.Scan(&r.ID, &ts, &r.Op, &r.Target, &r.Outcome, &r.Reason, &forced, &r.RequestID, &r.Origin); err != nil {
 			return nil, fmt.Errorf("store: list audit: %w", err)
 		}
 		r.TS, r.Forced = time.UnixMilli(ts).UTC(), forced != 0

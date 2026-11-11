@@ -68,6 +68,10 @@ func initOIDCRefresh(_ context.Context, env *Env, tune func(*oidc.Refresher)) er
 	if tune != nil {
 		tune(ref)
 	}
+	// A promotion to IdP admin at sign-in wakes the refresher (F-07).
+	if svc, err := Require[*oidc.Service](env); err == nil {
+		svc.AdminGranted = ref.Wake
+	}
 
 	// The refresher outlives the start context, so it has a context of its own
 	// that the stop hook cancels.

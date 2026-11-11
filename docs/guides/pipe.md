@@ -24,6 +24,27 @@ Without a Hub, leave the Worker out of the target (`--target <session>`): the co
 - The Hub is the broker: it checks the right to send (`message` or `operate` on the session), limits the rate (one message per second per session with a burst of five, and 120 per hour) and a **task budget** of messages per session per day (setting `pipe_budget_per_day`, default 200, 1 to 100000), and it never queues a refused message.
 - A send has a request id like every write: repeating the same `--request-id` within 10 minutes never delivers twice, and a result of `unknown` after a broken connection means the message may have arrived (see [API keys](api-keys-and-mcp.md#use-a-key)).
 
+## Agent to agent: the call key and `pipe_accept_from`
+
+A Worker, and the agent or MCP server on it, can talk to **its own** sessions without any setup. To message a session on **another** Worker, even one of your own, two things must be in place, because a compromised Worker or a prompt-injected agent must not be able to type into every other machine you own:
+
+1. **The sending Worker holds a call key.** Create an API key in the web UI bound to the sending Worker (the "Call key for a Worker" choice of the API keys form, see [API keys](api-keys-and-mcp.md#let-a-worker-call-other-workers)) with `message` on only the target Workers or sessions, save it in a file with mode 0600 and set `call_api_key_file` on the sending Worker. Without the key the Hub gives a Worker identity access to its own Worker and its sessions and to nothing else; another Worker looks like a target that does not exist.
+2. **The receiving Worker accepts the sender.** Set `pipe_accept_from` on the receiving Worker:
+   - `none` (the default): messages from other Workers are refused. Messages from people and from keys that are not bound to a Worker are not affected, and a Worker can always message itself.
+   - `owner-workers`: accept Workers of the same owner as this Worker.
+   - a comma-separated list of Worker ids or fingerprints: accept exactly those.
+
+```sh
+# on the receiving Worker (restart the Worker afterwards)
+minion worker config set pipe_accept_from owner-workers
+# on the sending Worker
+minion worker config set call_api_key_file /home/me/.config/minion-call-key
+```
+
+`pipe_accept_from` is a local setting. No Hub operation, key or administrator can change it; only someone with access to the Worker's own configuration can. A refused message is answered `pipe_origin_refused`, nothing reaches the session, and the Worker's local audit records the refusal with the origin the Hub reported. The same rule covers `send_text`, `send_keys`, `answer` and `set_task`, not only `pipe_send`. The Hub derives the origin from the authenticated caller (never from the request), and a Worker refuses a message that arrives without one.
+
+The honest limit: this protects each Worker against a compromised **peer Worker** (or its agent) while the Hub is honest. A compromised Hub or administrator can still reach the sessions it may reach ([security](../security.md)).
+
 ## When no reply turn appears
 
 A message is delivered whether or not a reply can be recorded. The Worker records a turn only when it can prove which part of the screen is the reply, and otherwise records none rather than guess. No turn appears:

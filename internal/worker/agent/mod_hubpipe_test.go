@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -73,6 +75,21 @@ func acceptTurnChannel(t *testing.T, hub *transport.Session) *transport.Stream {
 // stream, send the unacknowledged turn again after a reconnect, never send an
 // unshared session and forward a call to the Hub.
 func TestHubPipeModuleServesTurnsAndCallsOnEveryLink(t *testing.T) {
+	// Without call_api_key_file the Worker speaks as its own identity: the call
+	// carries no API key (F-01: that identity reaches only this Worker).
+	runHubPipeModule(t, "")
+}
+
+// With call_api_key_file the production CallConfig.Key reads the key from the
+// file and presents it on every call (F-01).
+func TestHubPipeModuleCallsWithTheWorkerCallKeyFile(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "call.key")
+	key := identity.NewAPIKey().String()
+	writePrivateKeyFile(t, keyFile, key)
+	runHubPipeModule(t, keyFile)
+}
+
+func runHubPipeModule(t *testing.T, callKeyFile string) {
 	dir := t.TempDir()
 	hubKey, _ := identity.GenerateKey()
 	st0, err := store.Open(dir)
@@ -105,7 +122,7 @@ func TestHubPipeModuleServesTurnsAndCallsOnEveryLink(t *testing.T) {
 	env := map[string]string{"MINION_SERVER": "https://hub.example", "MINION_SESSION_POLL_INTERVAL": "100ms"}
 	rt := NewRuntime(r, Options{})
 	err = rt.Start(context.Background(), Settings{
-		WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w"},
+		WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w", CallAPIKeyFile: callKeyFile},
 		Resolver:   &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }},
 		Logger:     slog.New(slog.NewTextHandler(&logBuf{}, nil)),
 	})
@@ -203,7 +220,11 @@ func TestHubPipeModuleServesTurnsAndCallsOnEveryLink(t *testing.T) {
 			Op     string `json:"op"`
 			APIKey string `json:"api_key"`
 		}
-		if !ok || json.Unmarshal(body, &rq) != nil || rq.Op != ops.OpPipeSend || rq.APIKey != "" {
+		wantKey := ""
+		if callKeyFile != "" {
+			wantKey = readKeyFile(t, callKeyFile)
+		}
+		if !ok || json.Unmarshal(body, &rq) != nil || rq.Op != ops.OpPipeSend || rq.APIKey != wantKey {
 			t.Fatalf("call request = %s", body)
 		}
 		if err := cst.WriteFrame(map[string]any{"type": proto.TypeOpResult, "result": ops.WriteResult{Outcome: ops.OutcomeDelivered}}); err != nil {
@@ -214,5 +235,69 @@ func TestHubPipeModuleServesTurnsAndCallsOnEveryLink(t *testing.T) {
 	}
 	if err := <-got; err != nil || res.Outcome != ops.OutcomeDelivered {
 		t.Fatalf("Do = %v, %+v", err, res)
+	}
+}
+
+func writePrivateKeyFile(t *testing.T, path, key string) {
+	t.Helper()
+	if err := identity.WritePrivate(path, []byte(key+"\n")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readKeyFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// The key source reads the file again for every call (a rotated key takes
+// effect at once), applies the owner-only checks of the Worker key and never
+// puts the key in an error.
+func TestCallKeySourceRereadsAndChecksTheKeyFile(t *testing.T) {
+	if callKeySource("") != nil {
+		t.Fatal("no path must mean no key source")
+	}
+	path := filepath.Join(t.TempDir(), "call.key")
+	src := callKeySource(path)
+	if _, err := src(); err == nil {
+		t.Fatal("a missing file was accepted")
+	}
+	k1 := identity.NewAPIKey().String()
+	writePrivateKeyFile(t, path, k1)
+	if got, err := src(); err != nil || got != k1 {
+		t.Fatalf("first read = %q, %v", got, err)
+	}
+	k2 := identity.NewAPIKey().String()
+	writePrivateKeyFile(t, path, k2) // rotation
+	if got, err := src(); err != nil || got != k2 {
+		t.Fatalf("after rotation = %q, %v", got, err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := src(); err == nil || strings.Contains(err.Error(), k2) {
+			t.Fatalf("a world-readable key file: err = %v", err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(t.TempDir(), "link.key")
+		if err := os.Symlink(path, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := callKeySource(link)(); err == nil {
+			t.Fatal("a symbolic link was accepted")
+		}
+	}
+	if err := identity.WritePrivate(path, []byte("not a key\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src(); err == nil || strings.Contains(err.Error(), "not a key") {
+		t.Fatalf("garbage content: err = %v", err)
 	}
 }

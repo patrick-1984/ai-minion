@@ -39,7 +39,19 @@ type APIKeyRow struct {
 	// when it never did (unix milliseconds). CreateAPIKey ignores it.
 	LastUsedAt int64
 	Scopes     []APIKeyScopeRow
+	// IssuerCredentialVersion is the credential_version of the authenticating
+	// session at the time the request was authenticated. CreateAPIKey refuses
+	// the insert while the owner's current version differs, so a request
+	// authenticated before a password reset or change cannot mint a key after
+	// it (F-07). 0 means "not checked"; the apikey service always sets it.
+	// It is not stored.
+	IssuerCredentialVersion int64
 }
+
+// ErrStaleIssuer is returned by CreateAPIKey when the credentials of the
+// issuing session changed (password reset or change, role loss) after the
+// request was authenticated.
+var ErrStaleIssuer = errors.New("store: the session that asked for the key is no longer current")
 
 // CreateAPIKey stores a key and its scope rows in one transaction (AD-16),
 // together with the optional audit row, so that a key never exists without its
@@ -49,6 +61,20 @@ func (s *Store) CreateAPIKey(ctx context.Context, k APIKeyRow, audit *AuditRow) 
 		return errors.New("store: an API key needs at least one scope row")
 	}
 	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if k.IssuerCredentialVersion != 0 {
+			var cur int64
+			var active int
+			err := tx.QueryRowContext(ctx, `SELECT credential_version, active FROM users WHERE id = ?`, k.OwnerID).Scan(&cur, &active)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrStaleIssuer
+			}
+			if err != nil {
+				return fmt.Errorf("store: create API key: read issuer: %w", err)
+			}
+			if cur != k.IssuerCredentialVersion || active != 1 {
+				return ErrStaleIssuer
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO api_keys (id, owner_id, name, hash, hint, actions, bound_worker_id, created_at, expires_at, revoked_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

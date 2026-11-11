@@ -92,6 +92,15 @@ type WorkerRow struct {
 	Owner  string
 	Kind   string
 	Online bool
+	// Pending (F-02) is true while the Worker waits for approval. Fingerprint
+	// and EnrollAddr are what the person who approves it compares; ApproveURL and
+	// RemoveURL are the posts of the two buttons (filled by [newFilteredView]
+	// for a pending Worker only).
+	Pending     bool
+	Fingerprint string
+	EnrollAddr  string
+	ApproveURL  string
+	RemoveURL   string
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
@@ -279,6 +288,7 @@ type DashboardView struct {
 	// whole scope, not the filtered rows.
 	TotalWorkers    int
 	OnlineWorkers   int
+	PendingWorkers  int
 	TotalSessions   int
 	WaitingSessions int
 	// Attention is built from real states only.
@@ -467,7 +477,13 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 	}
 	v.TotalWorkers, v.TotalSessions = len(d.Workers), len(d.Sessions)
 	for _, w := range d.Workers {
-		if w.Online {
+		if w.Pending {
+			v.PendingWorkers++
+			w.ApproveURL, w.RemoveURL = WorkerApprovePath(w.ID), WorkerRemovePath(w.ID)
+			if len(v.Attention) < maxAttention {
+				v.Attention = append(v.Attention, AttentionItem{Text: "Worker " + w.Name + " is waiting for approval.", Link: scopedLink("/workers", all, "worker", w.ID), LinkText: "Review worker"})
+			}
+		} else if w.Online {
 			v.OnlineWorkers++
 		} else if len(v.Attention) < maxAttention {
 			v.Attention = append(v.Attention, AttentionItem{Text: "Worker " + w.Name + " is offline.", Link: scopedLink("/workers", all, "worker", w.ID), LinkText: "View worker"})
@@ -1084,6 +1100,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	for _, w := range wl.Workers {
 		d.Workers = append(d.Workers, WorkerRow{
 			ID: w.ID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
+			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr,
 		})
 	}
 	for _, x := range sb.Sessions {

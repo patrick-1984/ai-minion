@@ -90,7 +90,7 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) addUser(name string) string {
 	h.t.Helper()
 	id := store.NewID()
-	if _, err := h.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1)`, id, name); err != nil {
+	if _, err := h.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, id, name); err != nil {
 		h.t.Fatal(err)
 	}
 	return id
@@ -107,7 +107,7 @@ func session(userID string) authz.Principal { return authz.NewSessionPrincipal(u
 
 func mustCreate(t *testing.T, h *harness, p authz.Principal, args ops.APIKeyCreateArgs) ops.APIKeyCreateResult {
 	t.Helper()
-	res, err := h.svc.Create(context.Background(), p, args)
+	res, err := h.svc.Create(issuerCtx(), p, args)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestNewNeedsItsPorts(t *testing.T) {
 
 func TestCreateReturnsTheKeyOnceAndStoresOnlyHashAndHint(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	res := mustCreate(t, h, session(h.alice), args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead, ops.ActionOperate))
 
 	key, err := identity.ParseAPIKey(res.Key)
@@ -250,13 +250,17 @@ func TestCreateGrantRules(t *testing.T) {
 		{"admin: everything", sAdmin, args([]ops.KeyResource{everything()}, ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage), ""},
 		{"admin: chosen users", sAdmin, args([]ops.KeyResource{userRef(h.alice), userRef(h.bob)}, ops.ActionRead), ""},
 		{"admin: a foreign worker", sAdmin, args([]ops.KeyResource{workerRef(h.wBob)}, ops.ActionOperate), ""},
-		{"admin: manage on a chosen user", sAdmin, args([]ops.KeyResource{userRef(h.admin)}, ops.ActionManage), ""},
+		{"admin: manage on a chosen user is refused (F-03)", sAdmin, args([]ops.KeyResource{userRef(h.admin)}, ops.ActionManage), proto.CodeForbidden},
+		{"admin: manage on a chosen user among others", sAdmin, args([]ops.KeyResource{userRef(h.alice)}, ops.ActionRead, ops.ActionManage), proto.CodeForbidden},
+		{"admin: manage on a worker is refused", sAdmin, args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionManage), proto.CodeForbidden},
+		{"admin: manage on a session is refused", sAdmin, args([]ops.KeyResource{sessionRef(h.wAlice, "main")}, ops.ActionManage), proto.CodeForbidden},
+		{"admin: a narrow key without manage is unaffected", sAdmin, args([]ops.KeyResource{userRef(h.alice)}, ops.ActionRead, ops.ActionOperate, ops.ActionMessage), ""},
 		{"admin: a worker that does not exist", sAdmin, args([]ops.KeyResource{workerRef(store.NewID())}, ops.ActionRead), proto.CodeForbidden},
 		{"admin: a user that does not exist", sAdmin, args([]ops.KeyResource{userRef(store.NewID())}, ops.ActionRead), proto.CodeForbidden},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := h.svc.Create(context.Background(), tc.p, tc.a)
+			_, err := h.svc.Create(issuerCtx(), tc.p, tc.a)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -287,12 +291,12 @@ func withBound(a ops.APIKeyCreateArgs, w string) ops.APIKeyCreateArgs {
 func TestCreateRefusesEverythingForADemotedOrDeactivatedAdmin(t *testing.T) {
 	h := newHarness(t)
 	h.exec(`UPDATE users SET active = 0 WHERE id = ?`, h.admin)
-	_, err := h.svc.Create(context.Background(), session(h.admin), args([]ops.KeyResource{everything()}, ops.ActionRead))
+	_, err := h.svc.Create(issuerCtx(), session(h.admin), args([]ops.KeyResource{everything()}, ops.ActionRead))
 	wantCode(t, err, proto.CodeForbidden)
 
 	h.exec(`UPDATE users SET active = 1 WHERE id = ?`, h.admin)
 	h.exec(`DELETE FROM user_roles WHERE user_id = ?`, h.admin)
-	_, err = h.svc.Create(context.Background(), session(h.admin), args([]ops.KeyResource{everything()}, ops.ActionRead))
+	_, err = h.svc.Create(issuerCtx(), session(h.admin), args([]ops.KeyResource{everything()}, ops.ActionRead))
 	wantCode(t, err, proto.CodeForbidden)
 }
 
@@ -308,7 +312,7 @@ func createRows(t *testing.T, h *harness) []store.AuditRow {
 
 func TestRefusedCreationsAreAuditedAsDenied(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	scope := NewScope([]Grant{{Kind: ops.KeyResourceEverything}}, allFour)
 	tests := []struct {
 		name              string
@@ -364,7 +368,7 @@ func TestAFailedCreationIsAuditedAsFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = svc.Create(context.Background(), session(h.alice), args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead))
+	_, err = svc.Create(issuerCtx(), session(h.alice), args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead))
 	if err == nil {
 		t.Fatal("Create succeeded")
 	}
@@ -376,7 +380,7 @@ func TestAFailedCreationIsAuditedAsFailed(t *testing.T) {
 
 func TestCreateValidatesAndRefusesPastExpiry(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	past := ops.Timestamp(h.clock.now().Add(-time.Second))
 	now := ops.Timestamp(h.clock.now())
 	for name, ts := range map[string]ops.Timestamp{"past": past, "now": now} {
@@ -397,7 +401,7 @@ func TestCreateValidatesAndRefusesPastExpiry(t *testing.T) {
 
 func TestOnlyBrowserSessionsCreateKeys(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	a := args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead)
 	scope := NewScope([]Grant{{Kind: ops.KeyResourceEverything}}, allFour)
 	for name, p := range map[string]authz.Principal{
@@ -492,11 +496,40 @@ func TestExpiredKeyFailsAsInvalidAtTheExpiryInstant(t *testing.T) {
 	if _, err := authenticate(h, res.Key); !errors.Is(err, ErrInvalidKey) {
 		t.Fatalf("at expiry: %v", err)
 	}
-	// A key without expiry never expires.
-	forever := mustCreate(t, h, session(h.alice), args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead))
+	// A key without a named expiry lives 90 days (F-07).
+	dflt := mustCreate(t, h, session(h.alice), args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead))
+	if dflt.Info.ExpiresAt == nil || !dflt.Info.ExpiresAt.Time().Equal(h.clock.now().Add(ops.DefaultAPIKeyLifetime).Truncate(time.Millisecond)) {
+		t.Errorf("default expiry = %v", dflt.Info.ExpiresAt)
+	}
+	h.clock.advance(ops.DefaultAPIKeyLifetime - time.Hour)
+	if _, err := authenticate(h, dflt.Key); err != nil {
+		t.Errorf("default key before 90 days: %v", err)
+	}
+	h.clock.advance(2 * time.Hour)
+	if _, err := authenticate(h, dflt.Key); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("default key after 90 days: %v", err)
+	}
+}
+
+func TestNeverExpiringKeysAreForAdminsOnly(t *testing.T) {
+	h := newHarness(t)
+	a := args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead)
+	a.Never = true
+	_, err := h.svc.Create(issuerCtx(), session(h.alice), a)
+	wantCode(t, err, proto.CodeForbidden)
+	res := mustCreate(t, h, session(h.admin), a)
+	if res.Info.ExpiresAt != nil {
+		t.Errorf("never key has expiry %v", res.Info.ExpiresAt)
+	}
 	h.clock.advance(100 * 365 * 24 * time.Hour)
-	if _, err := authenticate(h, forever.Key); err != nil {
-		t.Errorf("key without expiry: %v", err)
+	if _, err := authenticate(h, res.Key); err != nil {
+		t.Errorf("admin never key: %v", err)
+	}
+	both := a
+	exp := ops.Timestamp(h.clock.now().Add(time.Hour))
+	both.ExpiresAt = &exp
+	if err := both.Validate(); err == nil {
+		t.Error("never with expires_at validated")
 	}
 }
 
@@ -518,7 +551,7 @@ func TestRevokedKeyFailsImmediately(t *testing.T) {
 // through its own path (AC4: expiry never affects enrolled Workers).
 func TestKeyExpiryAndRevocationNeverAffectEnrolledWorkers(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	worker := authz.NewWorkerPrincipal(h.wAlice)
 	read := ops.MustActionSet(ops.ActionRead)
 	main := authz.SessionResource{WorkerID: h.wAlice, Name: "main"}
@@ -580,7 +613,7 @@ func TestDeactivatedOrDeletedOwnerInvalidatesTheKey(t *testing.T) {
 
 func TestDemotingTheOwnerReducesTheKeyOnTheNextRequest(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	// A second admin owns a key for everything.
 	boss := h.addUser("boss")
 	h.exec(`INSERT INTO user_roles (user_id, role, source) VALUES (?, 'admin', 'local')`, boss)
@@ -601,6 +634,7 @@ func TestDemotingTheOwnerReducesTheKeyOnTheNextRequest(t *testing.T) {
 	}
 	// Demote between two calls with the same stored key.
 	h.exec(`DELETE FROM user_roles WHERE user_id = ?`, boss)
+	h.exec(`INSERT INTO user_roles (user_id, role, source) VALUES (?, 'user', 'local')`, boss)
 	wantCode(t, decide(authz.WorkerResource{ID: h.wBob}, ops.ActionOperate), proto.CodeNotFound)
 	wantCode(t, decide(authz.UserResource{ID: boss}, ops.ActionManage), proto.CodeForbidden)
 	// The key still works for what the plain owner may do (own user data).
@@ -613,7 +647,7 @@ func TestDemotingTheOwnerReducesTheKeyOnTheNextRequest(t *testing.T) {
 
 func TestBoundKeyIsAcceptedOnlyOnItsWorkersCallStream(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	res := mustCreate(t, h, session(h.alice), withBound(args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionMessage), h.wAlice))
 	id, err := authenticate(h, res.Key)
 	if err != nil || id.Principal.WorkerID != h.wAlice {
@@ -666,7 +700,7 @@ func TestCheckCallBinding(t *testing.T) {
 
 func TestListScopesTheResultToTheCaller(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	a := mustCreate(t, h, session(h.alice), args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead))
 	b := mustCreate(t, h, session(h.bob), args([]ops.KeyResource{workerRef(h.wBob)}, ops.ActionRead))
 	root := mustCreate(t, h, session(h.admin), args([]ops.KeyResource{everything()}, ops.ActionRead))
@@ -713,7 +747,7 @@ func TestListScopesTheResultToTheCaller(t *testing.T) {
 
 func TestListShowsRevokedAndExpiredKeysWithTheirState(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	exp := ops.Timestamp(h.clock.now().Add(time.Hour))
 	a := args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead)
 	a.ExpiresAt = &exp
@@ -734,7 +768,7 @@ func TestListShowsRevokedAndExpiredKeysWithTheirState(t *testing.T) {
 
 func TestRevokeRules(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	mk := func(owner string, w string) ops.APIKeyInfo {
 		return mustCreate(t, h, session(owner), args([]ops.KeyResource{workerRef(w)}, ops.ActionRead)).Info
 	}
@@ -790,7 +824,7 @@ func TestRevokeRules(t *testing.T) {
 
 func TestActAsIsAuditedWithBothIdentities(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	res := mustCreate(t, h, session(h.alice), args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead))
 	act := authz.NewActAsPrincipal(h.admin, h.alice, h.clock.now().Add(time.Hour))
 	if r, err := h.svc.List(ctx, act, ops.APIKeyListArgs{}); err != nil || len(r.Keys) != 1 {
@@ -841,7 +875,7 @@ func TestAStoreFailureIsNotAFailedAttemptAndCarriesNoToken(t *testing.T) {
 // service.
 func TestListShowsTheLastUseOfAKeyThatAuthenticated(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := issuerCtx()
 	res := mustCreate(t, h, session(h.alice), args([]ops.KeyResource{workerRef(h.wAlice)}, ops.ActionRead))
 	lastUsed := func() *ops.Timestamp {
 		t.Helper()
@@ -910,5 +944,84 @@ func TestAFailingLastUseWriteDoesNotRefuseAGoodKey(t *testing.T) {
 	}
 	if _, err := svc.AuthenticateKey(context.Background(), res.Key); err != nil {
 		t.Fatalf("a failing last-use write refused the key: %v", err)
+	}
+}
+
+// issuerCtx is the context of a request authenticated by a session whose
+// credential_version is 1 (the version of every account in these tests).
+func issuerCtx() context.Context { return WithIssuerVersion(context.Background(), 1) }
+
+// raceRepo runs before between the authorization of a creation and its insert.
+type raceRepo struct {
+	Repository
+	before func()
+}
+
+func (r raceRepo) CreateAPIKey(ctx context.Context, k store.APIKeyRow, a *store.AuditRow) error {
+	r.before()
+	return r.Repository.CreateAPIKey(ctx, k, a)
+}
+
+// F-07 issuance race, deterministic: the request is authenticated and
+// authorized, then the password is reset (which revokes the keys), and only
+// then the insert runs. The insert must refuse; no key survives.
+func TestAKeyRequestAuthenticatedBeforeAPasswordResetCannotMintAKeyAfterIt(t *testing.T) {
+	for name, change := range map[string]func(h *harness){
+		"admin reset": func(h *harness) {
+			if err := h.st.ResetPassword(context.Background(), store.ResetPasswordParams{UserID: h.alice, PasswordHash: "new", NowMS: 5}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"self-service change": func(h *harness) {
+			if _, err := h.st.ChangePassword(context.Background(), store.ChangePasswordParams{UserID: h.alice, ExpectedVersion: 1, PasswordHash: "new", NowMS: 5}); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.exec(`UPDATE users SET password_hash = 'old' WHERE id = ?`, h.alice)
+			svc, err := New(Config{Repo: raceRepo{Repository: h.st, before: func() { change(h) }}, Authz: h.az, Users: sqlUsers{h.st}, Now: h.clock.now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = svc.Create(issuerCtx(), session(h.alice), args([]ops.KeyResource{userRef(h.alice)}, ops.ActionRead))
+			wantCode(t, err, proto.CodeUnauthenticated)
+			keys, err := h.st.ListAPIKeys(context.Background(), h.alice)
+			if err != nil || len(keys) != 0 {
+				t.Fatalf("keys after the race = %d, %v", len(keys), err)
+			}
+		})
+	}
+}
+
+func TestACreationWithoutASessionVersionIsRefused(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.svc.Create(context.Background(), session(h.alice), args([]ops.KeyResource{userRef(h.alice)}, ops.ActionRead))
+	wantCode(t, err, proto.CodeForbidden)
+}
+
+// An owner without any effective grant (all IdP roles gone) has an inert key
+// that works again when a grant returns.
+func TestAKeyOfAnOwnerWithoutGrantsIsInertUntilAGrantReturns(t *testing.T) {
+	h := newHarness(t)
+	res := mustCreate(t, h, session(h.alice), args([]ops.KeyResource{userRef(h.alice)}, ops.ActionRead))
+	if _, err := authenticate(h, res.Key); err != nil {
+		t.Fatal(err)
+	}
+	h.exec(`DELETE FROM user_roles WHERE user_id = ?`, h.alice)
+	if _, err := authenticate(h, res.Key); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("key of an owner without grants: %v", err)
+	}
+	// The authorizer refuses every kind of principal of that account too.
+	if err := h.az.Decide(context.Background(), session(h.alice), ops.MustActionSet(ops.ActionRead), authz.UserResource{ID: h.alice}); err == nil {
+		t.Error("a session principal of an account without grants was allowed")
+	}
+	if err := h.az.Decide(context.Background(), authz.NewWorkerPrincipal(h.wAlice), ops.MustActionSet(ops.ActionRead), authz.WorkerResource{ID: h.wAlice}); err == nil {
+		t.Error("a Worker principal of an owner without grants was allowed")
+	}
+	h.exec(`INSERT INTO user_roles (user_id, role, source) VALUES (?, 'user', 'idp')`, h.alice)
+	if _, err := authenticate(h, res.Key); err != nil {
+		t.Fatalf("key after the grant returned: %v", err)
 	}
 }

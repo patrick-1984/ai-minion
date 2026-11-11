@@ -45,12 +45,20 @@ var errEnrollmentChanged = errors.New("agent: the enrollment changed")
 // HubWelcome is the welcome frame, the Hub's answer to an enrolled Worker
 // (AD-6, AD-12). proto_min and proto_max are the Hub's supported range.
 type HubWelcome struct {
-	Type     string    `json:"type"`
-	WorkerID string    `json:"worker_id"`
-	Name     string    `json:"name"`
-	Owner    string    `json:"owner"`
-	Kind     string    `json:"kind"`
-	Policy   HubPolicy `json:"policy"`
+	Type     string `json:"type"`
+	WorkerID string `json:"worker_id"`
+	Name     string `json:"name"`
+	Owner    string `json:"owner"`
+	// OwnerID is the stable id of the Worker's owner (protocol 2.0). The
+	// receiver compares it with the source_worker_owner_id of an origin for
+	// pipe_accept_from=owner-workers; Owner is only the display name.
+	OwnerID string `json:"owner_id"`
+	Kind    string `json:"kind"`
+	// Pending (F-02) is set while the Hub has not approved this Worker yet:
+	// it is connected, but gets no operations and its calls are refused (except
+	// retiring itself) until its owner or an admin approves it.
+	Pending bool      `json:"pending,omitempty"`
+	Policy  HubPolicy `json:"policy"`
 	proto.Range
 }
 
@@ -329,6 +337,9 @@ func (c *Connector) OnLink(name string, h LinkHandler) {
 // startHandler runs h for r. The caller holds c.mu, which is what keeps
 // wg.Add before the wg.Wait of the end of the link.
 func (c *Connector) startHandler(r *running, nh namedHandler) {
+	if r.link.Welcome.Pending && !servesWhilePending(nh.name) {
+		return
+	}
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -340,6 +351,14 @@ func (c *Connector) startHandler(r *running, nh namedHandler) {
 		nh.h(r.link)
 	}()
 }
+
+// servesWhilePending says which link handlers run for a Worker that the Hub has
+// not approved yet (F-02). The Hub registers no event or turn channel for it and
+// refuses what it opens, so only the handlers that wait for the Hub (the op
+// server) and the call client (whose calls the Hub answers with worker_pending,
+// and which a retirement uses) run. The approval ends the connection, and the
+// reconnect starts everything.
+func servesWhilePending(name string) bool { return name != "events" && name != "turns" }
 
 // applyStoredPolicy applies the Hub policy of the last welcome before the
 // first connection: a restriction the Hub delivered stays in force while the
@@ -365,6 +384,19 @@ func (c *Connector) setWorkerID(enrolled bool, id string) {
 			id = ""
 		}
 		s.SetWorkerID(id)
+	}
+	if !enrolled {
+		c.setOwnerID("")
+	}
+}
+
+// setOwnerID tells the policy the stable id of this Worker's owner, from the
+// last welcome ("" when the Worker is not enrolled). It is connection state and
+// is never stored: a Worker that has not been welcomed knows no owner, so
+// pipe_accept_from=owner-workers accepts nobody until then.
+func (c *Connector) setOwnerID(id string) {
+	if s, ok := c.cfg.Policy.(interface{ SetOwnerID(string) }); ok {
+		s.SetOwnerID(id)
 	}
 }
 
@@ -685,6 +717,10 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		c.startHandler(r, nh)
 	}
 	c.mu.Unlock()
+	if w.Pending {
+		c.log.Warn("this Worker is waiting for approval: ask its owner or an admin to approve it in the Hub (Workers page, or `minion hub worker approve`); until then the Hub sends it no operations",
+			"worker_id", w.WorkerID, "name", w.Name)
+	}
 	c.log.Info("connected to hub",
 		"hub", hubLabel(c.cfg.HubURL), "hub_fingerprint", hubFingerprint(att.Pin),
 		"worker_id", w.WorkerID, "name", w.Name, "owner", w.Owner, "kind", w.Kind,
@@ -736,6 +772,7 @@ func (c *Connector) storeWelcome(ctx context.Context, gen uint64, w HubWelcome) 
 	if c.cfg.Policy != nil {
 		c.cfg.Policy.SetHubPreviewOnly(w.Policy.PreviewOnly)
 		c.setWorkerID(true, w.WorkerID)
+		c.setOwnerID(w.OwnerID)
 	}
 	return nil
 }

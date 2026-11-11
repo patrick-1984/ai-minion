@@ -389,7 +389,7 @@ func TestPipeReadOverACallStreamIsCutByEncodedSizeAndPagesOn(t *testing.T) {
 		w.clock.Advance(time.Millisecond)
 		want = append(want, text)
 	}
-	ww := w.workers[wAlicePi2.ID]
+	ww := w.workers[wAlicePi1.ID] // a Worker identity reads its own Worker's sessions
 	after := ""
 	var got []string
 	pages := 0
@@ -444,7 +444,7 @@ func TestOversizedAnswerOnACallStreamIsAnErrorFrameNotAReset(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ww := w.workers[wAlicePi2.ID]
+	ww := w.workers[wAlicePi1.ID] // a Worker identity reads its own Worker's sessions
 	// pipe_read of the big turn alone: an error frame, the call is answered.
 	code, _ := ww.call(t, ops.OpPipeRead, map[string]any{"target": "pi-1:minion-1", "after_turn_id": first}, "")
 	if code != proto.CodeFrameTooLarge {

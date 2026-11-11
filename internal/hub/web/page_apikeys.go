@@ -10,6 +10,7 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,7 +23,9 @@ type APIKeysPage struct {
 	Resources []Choice
 	Actions   []Choice
 	Expiries  []Choice
-	Admin     bool
+	// BoundWorkers are the Workers a key may be bound to (a call key).
+	BoundWorkers []Choice
+	Admin        bool
 	// ResourceNote says why the Worker choices are missing, when they are.
 	ResourceNote string
 }
@@ -55,9 +58,14 @@ var apiKeyExpiries = []struct {
 
 const defaultAPIKeyExpiry = "90d"
 
-func apiKeyExpiryChoices() []Choice {
+// apiKeyExpiryChoices lists the lifetimes; "Never" is offered to admins only
+// (F-07: a key without an expiry is for admins).
+func apiKeyExpiryChoices(admin bool) []Choice {
 	var out []Choice
 	for _, e := range apiKeyExpiries {
+		if e.Days == 0 && !admin {
+			continue
+		}
 		out = append(out, Choice{Value: e.Value, Label: e.Label, Selected: e.Value == defaultAPIKeyExpiry})
 	}
 	return out
@@ -97,6 +105,19 @@ func apiKeyResourceChoices(u pageUser, workers []ops.WorkerInfo) []Choice {
 			continue
 		}
 		out = append(out, Choice{Value: resWorkerPref + w.ID, Label: "Worker " + w.Name, Help: "this Worker and all its sessions"})
+	}
+	return out
+}
+
+// apiKeyBoundWorkerChoices lists the Workers of the user a call key can be
+// bound to; the Hub checks the binding again.
+func apiKeyBoundWorkerChoices(u pageUser, workers []ops.WorkerInfo) []Choice {
+	var out []Choice
+	for _, w := range workers {
+		if w.OwnerID != "" && w.OwnerID != u.ID {
+			continue
+		}
+		out = append(out, Choice{Value: w.ID, Label: w.Name})
 	}
 	return out
 }
@@ -175,7 +196,8 @@ func apiKeysData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 	}
 	page := APIKeysPage{
 		Resources: apiKeyResourceChoices(u, workers.Workers), Actions: apiKeyActionChoices(u.Admin),
-		Expiries: apiKeyExpiryChoices(), Admin: u.Admin, ResourceNote: note,
+		Expiries: apiKeyExpiryChoices(u.Admin), Admin: u.Admin, ResourceNote: note,
+		BoundWorkers: apiKeyBoundWorkerChoices(u, workers.Workers),
 	}
 	now := onboardingNow()
 	for _, k := range keys.Keys {
@@ -208,7 +230,8 @@ func (e errKeyForm) Error() string { return string(e) }
 // plain answers for the common mistakes before a round trip.
 //
 // Form fields: name; resource (repeated); action (repeated); session (optional,
-// needs exactly one Worker); expires.
+// needs exactly one Worker); bound_worker (optional, a call key for that
+// Worker); expires.
 func buildAPIKeyArgs(form map[string][]string, u pageUser, now time.Time) (ops.APIKeyCreateArgs, error) {
 	first := func(k string) string {
 		if v := form[k]; len(v) > 0 {
@@ -223,6 +246,7 @@ func buildAPIKeyArgs(form map[string][]string, u pageUser, now time.Time) (ops.A
 	if len(args.Name) > ops.MaxAPIKeyNameLen {
 		return args, errKeyForm(fmt.Sprintf("The name can have at most %d characters.", ops.MaxAPIKeyNameLen))
 	}
+	args.BoundWorkerID = first("bound_worker")
 	session := first("session")
 	workers := 0
 	for _, v := range dedupe(form["resource"]) {
@@ -262,6 +286,9 @@ func buildAPIKeyArgs(form map[string][]string, u pageUser, now time.Time) (ops.A
 		}
 		args.Actions = append(args.Actions, act)
 	}
+	if slices.Contains(args.Actions, ops.ActionManage) && !hasEverything(args.Resources) {
+		return args, errKeyForm("The manage action is available only for a key that reaches everything.")
+	}
 	if len(args.Actions) == 0 {
 		return args, errKeyForm("Choose at least one thing the key may do.")
 	}
@@ -275,6 +302,12 @@ func buildAPIKeyArgs(form map[string][]string, u pageUser, now time.Time) (ops.A
 			continue
 		}
 		found = true
+		if e.Days == 0 {
+			if !u.Admin {
+				return args, errKeyForm("Only an admin can create a key that never expires.")
+			}
+			args.Never = true
+		}
 		if e.Days > 0 {
 			ts := ops.Timestamp(now.UTC().Add(time.Duration(e.Days) * 24 * time.Hour).Truncate(time.Millisecond))
 			args.ExpiresAt = &ts

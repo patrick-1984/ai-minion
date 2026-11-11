@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -113,6 +114,10 @@ type Service struct {
 	// the sign-in when they do not. Nil means no linking: every unknown
 	// identity creates its own account.
 	Linker IdentityLinker
+	// AdminGranted, when set, is called after a sign-in left the account with
+	// an IdP admin grant, so the background refresh looks for admin targets
+	// within [AdminRefreshInterval] even when it sleeps for a long interval.
+	AdminGranted func()
 
 	// BaseURL returns the origin of the Hub for a request: the public URL when
 	// it is set. The redirect URI is BaseURL plus [CallbackPath].
@@ -397,17 +402,25 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "apply the sign-in", cfg.ID, err)
 		return
 	}
+	if s.AdminGranted != nil && slices.Contains(res.RolesAfter, "admin") {
+		s.AdminGranted()
+	}
 	switch {
 	case res.Inactive:
 		s.record(ctx, res.User.ID, sanitizeTarget(res.User.Username), OutcomeInactive)
 		s.errorPage(w, r, http.StatusForbidden, "Account deactivated", "This account is deactivated. Ask an administrator.")
 		return
-	case len(roles) == 0:
+	case len(res.RolesAfter) == 0:
 		actor, tgt := anonymousActor, target
 		if res.Found {
 			actor, tgt = res.User.ID, sanitizeTarget(res.User.Username)
 		}
 		s.record(ctx, actor, tgt, OutcomeDenied)
+		if res.AdminWithheld {
+			s.errorPage(w, r, http.StatusForbidden, "Admin access needs a refresh token",
+				"Your roles would make you an administrator, but the identity provider issued no refresh token, so the Hub cannot re-check the role later. Ask the provider administrator to allow the offline_access scope (or refresh tokens) for this client, then sign in again.")
+			return
+		}
 		s.errorPage(w, r, http.StatusForbidden, "No access",
 			"You signed in at the identity provider, but none of your roles gives access to this Hub. Ask an administrator to add you to a group that has access.")
 		return

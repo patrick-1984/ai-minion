@@ -6,20 +6,34 @@ Everything the web UI does is an **operation** of the Hub's REST API, and the `m
 
 ## Create an API key
 
-In the web UI open **API keys**. From the command line, once you have a first key (the first one is made in the UI):
+Keys are created **only in the web UI**, by a signed-in person: open **API keys**, give the key a name, choose what it may reach and do, and how long it is valid. A key can never create another key, so there is no command line way to create the first one or any other. The key is shown once; copy it then.
 
-```sh
-minion apikey_create --name ci-reader --actions read \
-  --resources '[{"kind":"worker","worker_id":"<worker-id>"}]' \
-  --expires-at 2027-01-01T00:00:00Z
-```
+Without a choice of lifetime the key lives 90 days.
 
 - **Resources** are what the key may touch: `{"kind":"worker","worker_id":"..."}`, `{"kind":"session","worker_id":"...","session_name":"..."}`, `{"kind":"user","user_id":"..."}` or `{"kind":"everything"}` (not combined with others). A user can grant only resources they own; `everything` is for administrators.
-- **Actions**: `read` (lists, snapshots, captures, pipe turns), `operate` (type, keys, tasks, create sessions, and `share_set`, which changes what the Hub may see), `message` (send messages to agent sessions through the pipe, nothing else) and `manage` (administration; administrators only). A key holds the chosen actions on every listed resource.
-- **Expiry** is optional and worth setting. **Bound Worker**: `--bound-worker-id` binds a key to one Worker's identity; it is accepted only on that Worker's own call streams and refused on REST.
-- The key (`mn_...`) is shown **once**. Only a hint (its first characters) is kept; `apikey_list` shows hints, scope and expiry, never the key. Revoke a key at once with `apikey_revoke`, or on the API keys page.
+- **Actions**: `read` (lists, snapshots, captures, pipe turns), `operate` (type, keys, tasks, create sessions, and `share_set`, which changes what the Hub may see), `message` (send messages to agent sessions through the pipe, nothing else) and `manage` (administration; administrators only, and only on an `everything` resource: a key limited to chosen users, Workers or sessions cannot hold it. Keys stored before this rule that combine `manage` with a narrow scope are refused every account operation). A key holds the chosen actions on every listed resource.
+- **Expiry**: a key with no lifetime chosen expires after **90 days**. A key that never expires ("Never" in the UI) can be created by an administrator only. A key is also **revoked when its owner's password is reset or changed** (the administrator can keep the keys of a reset with `--keep-api-keys`, or the checkbox in the UI; a change by the user always revokes them), and it stops working while its owner has no effective role (for example after the IdP removed every IdP role); it works again when a role returns. A key creation that was started before such a password change is refused: sign in again and repeat it. **Bound Worker**: the form's "Call key for a Worker" binds a key to one of your Workers; it is accepted only on that Worker's own call streams and refused on REST.
+- The key (`mn_...`) is shown **once**. Only a hint (its first characters) is kept; the API keys page shows hints, scope and expiry, never the key. Revoke a key at once on the API keys page.
 
 Give a program the least it needs: a monitoring script needs `read`; an agent that only has to talk to other agents needs `message`; typing into sessions or changing sharing needs `operate`.
+
+## Let a Worker call other Workers
+
+A Worker, and the local `minion` commands and local MCP server on its host, reach their own Worker with no key. To pipe to a session on **another** Worker (`pipe_send`, `pipe_read`, `pipe_wait` with a target there), the sending Worker needs a **call key**: an ordinary API key that you create in the browser **bound to that Worker**, with a scope naming only the target Workers or sessions and the actions you accept (`message` to send, `read` to read replies). The key owner's own permissions still bound it.
+
+1. In the web UI open **API keys**. Under "What the key may reach" tick the target Worker (the receiver) and, to narrow it to one session, type the session name under "Only one session". Under "What the key may do" tick `Message` (and `Read` to read replies).
+2. Under **Call key for a Worker** choose the *sending* Worker. Create the key and copy it; it is shown once.
+3. On the sending Worker's host save it as the only line of a file only that user can read, and point the setting at it:
+
+```sh
+printf '%s' 'mn_...' > ~/.config/minion-call-key && chmod 0600 ~/.config/minion-call-key
+minion worker config set call_api_key_file ~/.config/minion-call-key   # then restart the Worker
+```
+
+- `call_api_key_file` (flag `--call-api-key-path`, environment `MINION_CALL_API_KEY_PATH`) is a path, not the key. The file must be a regular file owned by the Worker's user, closed to group and others, not a symbolic link, with the key as its only line. It is **read again on every call**: to rotate, write the new key into the file (and revoke the old one); no restart is needed. If the file cannot be used, the call fails with an error that names the path and never the key.
+- The key works only on that Worker's own connection to the Hub (a bound key is refused on REST) and never reaches further than its scope.
+- The receiving Worker must also accept the sender: its local setting `pipe_accept_from` is `none` by default ([the pipe](pipe.md#agent-to-agent-the-call-key-and-pipe_accept_from)). The Hub tells the receiver who sent the message: for a bound key, the bound Worker is the sender and its owner is the sender's owner, whoever owns the key.
+- Anyone who can read the call key file can act as that Worker towards the targets in its scope. Keep it where only the Worker's user can read it, and give it the smallest scope.
 
 ## Use a key
 

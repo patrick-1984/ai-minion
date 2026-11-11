@@ -152,6 +152,7 @@ func initPipe(ctx context.Context, env *Env) error {
 		Keys:     keys,
 		Resolver: rt,
 		Owners:   svc.OwnerLookup(),
+		Authz:    az,
 		Auditor:  alog,
 		Logger:   log,
 	})

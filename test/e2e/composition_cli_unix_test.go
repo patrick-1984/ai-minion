@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -174,6 +175,26 @@ func TestRealCLIEnrollsWithAnInvitationKeyFileThenRestartsFromItsStateWithoutAKe
 		t.Fatalf("a key FILE is not the literal form, but the CLI printed its warning:\n%s", w.out.String())
 	}
 	id := rows[0].ID
+	// F-02: a newly enrolled Worker is pending, connected but not routable. An
+	// approval ends its connection and the real CLI Worker reconnects as an
+	// approved Worker.
+	if !rows[0].Pending {
+		t.Fatalf("the enrolled Worker is not pending: %+v", rows[0])
+	}
+	if on, ok := h.service().Registry().Get(id); !ok || !on.Pending {
+		t.Fatalf("the connected Worker is not registered as pending: %+v", on)
+	}
+	approver, err := workers.NewApprover(workers.ApproverConfig{Store: h.st, Connections: h.service().Registry()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := approver.Approve(context.Background(), workers.Actor{ID: "alice"}, id, ""); err != nil || !res.Changed || !res.Disconnected {
+		t.Fatalf("approve = %+v, %v", res, err)
+	}
+	eventually(t, "the approved CLI Worker to reconnect as approved", func() bool {
+		on, ok := h.service().Registry().Get(id)
+		return ok && !on.Pending
+	})
 	if err := w.stop(t); err != nil {
 		t.Fatalf("the CLI Worker did not exit cleanly: %v\n%s", err, w.out.String())
 	}

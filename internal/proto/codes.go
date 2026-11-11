@@ -48,6 +48,8 @@ const (
 	CodeDialogChanged           Code = "dialog_changed"
 	CodeConnectionLost          Code = "connection_lost"
 	CodeViewIncomplete          Code = "view_incomplete"
+	CodePipeOriginRefused       Code = "pipe_origin_refused"
+	CodeWorkerPending           Code = "worker_pending"
 )
 
 type codeInfo struct {
@@ -96,6 +98,8 @@ var codeTable = []codeInfo{
 	{CodeDialogChanged, 409, "The dialog changed since the caller reviewed it; nothing was sent."},
 	{CodeConnectionLost, 502, "The connection ended before the result arrived; the outcome is unknown."},
 	{CodeViewIncomplete, 409, "The visible screen could not be read completely; nothing was sent."},
+	{CodePipeOriginRefused, 403, "The receiving Worker does not accept messages from this origin (missing or malformed origin, or pipe_accept_from)."},
+	{CodeWorkerPending, 403, "The Worker is waiting for approval by its owner or an admin."},
 }
 
 var codeIndex = func() map[Code]codeInfo {

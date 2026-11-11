@@ -34,7 +34,7 @@ func idpAccount(t *testing.T, s *Store, issuer, subject string, roles ...string)
 	t.Helper()
 	res, err := s.SyncOIDCLogin(context.Background(), OIDCSyncParams{
 		Issuer: issuer, Subject: subject, ProviderID: "p", PreferredUsername: "idp-" + subject,
-		Roles: roles, CreateIfMissing: true, NowMS: 5,
+		Roles: roles, CreateIfMissing: true, NowMS: 5, RefreshToken: "rt-test",
 	})
 	if err != nil || !res.Created {
 		t.Fatalf("sync = %+v, %v", res, err)

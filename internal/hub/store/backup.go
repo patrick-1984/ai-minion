@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"math"
 	"net/url"
 	"os"
 	"path"
@@ -20,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"filippo.io/age"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/sqlmigrate"
@@ -41,6 +45,52 @@ const (
 	tlsKeyFile  = tlsDirName + "/key.pem"
 )
 
+// scryptWorkFactor is the age scrypt work factor (2^18) that Backup writes and
+// the only one Restore accepts: age's own limit (2^22, about 4 GiB of memory
+// and many seconds) would let a crafted archive burn resources before any
+// authentication.
+const scryptWorkFactor = 18
+
+// DefaultMaxRestoreBytes is the default limit of [Restore] on the decrypted
+// archive and on the total size of the files an archive declares (64 GiB, far
+// above a real Hub database). [WithRestoreLimit] changes it.
+const DefaultMaxRestoreBytes int64 = 64 << 30
+
+// maxTrailingBytes bounds what Restore reads after the last tar entry (tar
+// padding) on the way to the end of the gzip stream.
+const maxTrailingBytes = 1 << 20
+
+// archiveOverheadAllowance is added to the restore limit to form the
+// cumulative budget of the decompressed tar stream: tar headers, padding and
+// the manifest are not file content, so they are not part of the limit.
+const archiveOverheadAllowance = 4 << 20
+
+// errDecryptedTooLarge reports a decrypted archive over the restore limit.
+var errDecryptedTooLarge = errors.New("the decrypted archive is larger than the limit")
+
+// errArchiveBudget reports a decompressed archive stream over its budget.
+var errArchiveBudget = errors.New("the decompressed archive is larger than the limit")
+
+// restoreDirsHook, when set by a test, runs after the destination
+// directories exist and before anything is copied; an error fails the restore.
+var restoreDirsHook func(dir string) error
+
+// maxEntrySize is the largest size an archive entry may declare, for the
+// files that cannot be big. The database is bounded by the total limit only.
+func maxEntrySize(name string) (max int64, exact bool, limited bool) {
+	switch name {
+	case DataKeyFile:
+		return KeySize, true, true
+	case IdentityKeyFile:
+		return 4096, false, true // the cap of identity.LoadKey
+	case tlsCertFile:
+		return 1 << 20, false, true
+	case tlsKeyFile:
+		return 64 << 10, false, true
+	}
+	return 0, false, false
+}
+
 // ManifestFormat is the version of the archive layout described by
 // [Manifest].
 const ManifestFormat = 1
@@ -51,10 +101,44 @@ const maxManifestSize = 1 << 20
 // archiveFiles lists, in archive order after the manifest, every file that a
 // backup may hold and the restore accepts. Everything else is refused, so an
 // archive can never write outside the data directory or plant other files.
+//
+// This is the one place that names the secret and identity files of a Hub data
+// directory. A file that exists is archived as it is (the database last, from
+// its VACUUM copy), a missing one is skipped, and Restore, the manifest check
+// and the install/rollback logic all iterate over this list. A future key or
+// certificate file (the two-tier Hub identity adds root.key, op.key, hub.cert
+// and, for an interrupted rotation, op.key.next) is therefore a one-line
+// addition here, before DBFile. Only a file whose copy must match the database
+// snapshot (identity.key today, see [snapshotWithIdentity]) needs more.
 var archiveFiles = []string{DataKeyFile, IdentityKeyFile, tlsCertFile, tlsKeyFile, DBFile}
 
 // requiredFiles must be in every archive.
 var requiredFiles = []string{DBFile, DataKeyFile}
+
+// ErrPassphraseRequired is wrapped by the error of a restore of an encrypted
+// archive without a passphrase.
+var ErrPassphraseRequired = errors.New("the archive is encrypted and needs a passphrase")
+
+// ErrWrongPassphrase is wrapped by the error of a restore of an encrypted
+// archive with a passphrase that does not decrypt it.
+var ErrWrongPassphrase = errors.New("the passphrase does not decrypt the archive")
+
+// ageMagic starts every binary age file; a gzip archive starts with 0x1f 0x8b.
+const ageMagic = "age-encryption.org/v1\n"
+
+// WithBackupPassphrase makes [Backup] encrypt the whole archive with age and
+// the scrypt passphrase recipient. Without it Backup writes the plain tar.gz
+// of earlier versions; the command line asks the operator for an explicit
+// choice (a passphrase file or --unencrypted) before it calls Backup.
+func WithBackupPassphrase(passphrase string) Option {
+	return func(c *openConfig) { c.passphrase, c.hasPassphrase = passphrase, true }
+}
+
+// WithRestorePassphrase sets the passphrase [Restore] uses on an archive
+// encrypted by age. A plain archive ignores it.
+func WithRestorePassphrase(passphrase string) Option {
+	return func(c *openConfig) { c.passphrase, c.hasPassphrase = passphrase, true }
+}
 
 // ErrBackup is wrapped by every error that says the archive or the data
 // directory cannot be backed up or restored for a reason the operator can fix.
@@ -91,7 +175,8 @@ func isArchiveFile(name string) bool {
 	return false
 }
 
-// Backup writes one gzip-compressed tar archive of the Hub data directory
+// Backup writes one gzip-compressed tar archive (encrypted with age when
+// [WithBackupPassphrase] is given) of the Hub data directory
 // dataDir to out (created with mode 0600; an existing file is refused). The
 // archive holds manifest.json first, then data.key, identity.key and the
 // generated TLS certificate and key when they exist, and minion.db as a
@@ -197,9 +282,37 @@ func Backup(ctx context.Context, dataDir, out, version string, opts ...Option) (
 			_ = os.Remove(outAbs)
 		}
 	}()
-	if err = writeArchive(f, m, sources); err != nil {
+	var sink io.Writer = f
+	var enc io.WriteCloser
+	if cfg.hasPassphrase {
+		if cfg.passphrase == "" {
+			_ = f.Close()
+			err = fmt.Errorf("%w: the passphrase is empty", ErrBackup)
+			return Manifest{}, err
+		}
+		rcp, rerr := age.NewScryptRecipient(cfg.passphrase)
+		if rerr != nil {
+			_ = f.Close()
+			err = fmt.Errorf("%w: encrypt: %v", ErrBackup, rerr)
+			return Manifest{}, err
+		}
+		if enc, err = age.Encrypt(f, rcp); err != nil {
+			_ = f.Close()
+			err = fmt.Errorf("%w: encrypt: %v", ErrBackup, errnoReason(err))
+			return Manifest{}, err
+		}
+		sink = enc
+	}
+	if err = writeArchive(sink, m, sources); err != nil {
 		_ = f.Close()
 		return Manifest{}, err
+	}
+	if enc != nil {
+		if err = enc.Close(); err != nil {
+			_ = f.Close()
+			err = fmt.Errorf("%w: encrypt: %v", ErrBackup, errnoReason(err))
+			return Manifest{}, err
+		}
 	}
 	if err = f.Sync(); err != nil {
 		_ = f.Close()
@@ -493,6 +606,8 @@ type RestoreResult struct {
 	Dir string
 	// Files lists the restored files, relative to Dir.
 	Files []string
+	// Encrypted reports that the archive was encrypted with age.
+	Encrypted bool
 }
 
 // Restore unpacks the backup archive into the data directory dataDir, which
@@ -524,20 +639,45 @@ func Restore(ctx context.Context, archive, dataDir string, force bool, opts ...O
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%w: data directory %q: %v", ErrBackup, dataDir, err)
 	}
+	limit := cfg.maxRestoreBytes
+	if limit <= 0 {
+		limit = DefaultMaxRestoreBytes
+	}
 
 	af, err := os.Open(archive)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%w: cannot open the archive: %v", ErrBackup, errnoReason(err))
 	}
 	defer func() { _ = af.Close() }()
-	gz, err := gzip.NewReader(bufio.NewReader(af))
+	br := bufio.NewReader(af)
+	encrypted := false
+	if head, _ := br.Peek(len(ageMagic)); string(head) == ageMagic {
+		encrypted = true
+		if !cfg.hasPassphrase {
+			return RestoreResult{}, fmt.Errorf("%w: %w; pass the passphrase file with --passphrase-file", ErrBackup, ErrPassphraseRequired)
+		}
+		// Decrypt and authenticate the whole archive into a private temp
+		// area first: a wrong passphrase or a truncated file fails here,
+		// before the data directory is touched.
+		plain, cleanup, derr := decryptToTemp(ctx, br, cfg.passphrase, limit)
+		if derr != nil {
+			return RestoreResult{}, derr
+		}
+		defer cleanup()
+		br = bufio.NewReader(plain)
+	}
+	gz, err := gzip.NewReader(br)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("%w: the file is not a gzip archive: %v", ErrBackup, err)
 	}
 	defer func() { _ = gz.Close() }()
-	tr := tar.NewReader(gz)
+	// Every decompressed byte the tar reader consumes, including the PAX and
+	// GNU extension headers that Next reads internally, counts against one
+	// cumulative budget and is checked against the context.
+	budget := newBudgetReader(ctx, gz, limit)
+	tr := tar.NewReader(budget)
 
-	m, err := readManifest(tr)
+	m, err := readManifest(tr, limit)
 	if err != nil {
 		return RestoreResult{}, err
 	}
@@ -549,33 +689,75 @@ func Restore(ctx context.Context, archive, dataDir string, force bool, opts ...O
 	if err := checkTarget(dir, force); err != nil {
 		return RestoreResult{}, err
 	}
-	if err := mkdirAllPrivate(dir); err != nil {
-		return RestoreResult{}, fmt.Errorf("%w: cannot create the data directory %q: %v", ErrBackup, dir, errnoReason(err))
-	}
-	stage, err := mkdirTempPrivate(dir, ".restore-*")
-	if err != nil {
-		return RestoreResult{}, fmt.Errorf("%w: cannot write to the data directory %q: %v", ErrBackup, dir, errnoReason(err))
-	}
-	// The staging directory is removed unless a failed install could not put
-	// every previous file back: it then holds the only copy of those files.
-	keepStage := false
-	defer func() {
-		if !keepStage {
-			_ = os.RemoveAll(stage)
-		}
-	}()
 
-	if err := unpack(tr, m, stage); err != nil {
+	// Everything is unpacked and validated in a private staging directory
+	// outside the destination, which is created only when the archive passed.
+	vstage, err := mkdirTempPrivate(os.TempDir(), ".minion-restore-check-*")
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("%w: create a temporary directory: %v", ErrBackup, errnoReason(err))
+	}
+	defer func() { _ = os.RemoveAll(vstage) }()
+
+	if err := unpack(ctx, tr, m, vstage); err != nil {
 		return RestoreResult{}, err
 	}
-	schema, err := checkDatabase(ctx, filepath.Join(stage, DBFile))
+	// Read the gzip stream to its verified end (CRC and length trailer).
+	if err := drainGzip(ctx, budget); err != nil {
+		return RestoreResult{}, err
+	}
+	schema, err := checkDatabase(ctx, filepath.Join(vstage, DBFile))
 	if err != nil {
 		return RestoreResult{}, err
 	}
 	if schema != m.SchemaVersion {
 		return RestoreResult{}, fmt.Errorf("%w: the database has schema version %d but the manifest says %d", ErrBackup, schema, m.SchemaVersion)
 	}
-	if err := checkDataKeyFile(filepath.Join(stage, DataKeyFile)); err != nil {
+	if err := checkDataKeyFile(filepath.Join(vstage, DataKeyFile)); err != nil {
+		return RestoreResult{}, err
+	}
+	if err := checkStagedIdentity(ctx, vstage); err != nil {
+		return RestoreResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return RestoreResult{}, fmt.Errorf("%w: %w", ErrBackup, err)
+	}
+
+	// Validation passed: now the destination may be created. The missing
+	// directories this call creates are removed again (when still empty, in
+	// reverse order) on any failure, unless recovery files are kept in them.
+	created := missingDirs(dir)
+	stage := ""
+	keepStage := false
+	ok := false
+	defer func() {
+		if keepStage {
+			return
+		}
+		if stage != "" {
+			_ = os.RemoveAll(stage)
+		}
+		if ok {
+			return
+		}
+		for i := len(created) - 1; i >= 0; i-- {
+			_ = os.Remove(created[i]) // only when still empty
+		}
+	}()
+	if err := mkdirAllPrivate(dir); err != nil {
+		return RestoreResult{}, fmt.Errorf("%w: cannot create the data directory %q: %v", ErrBackup, dir, errnoReason(err))
+	}
+	stage, err = mkdirTempPrivate(dir, ".restore-*")
+	if err != nil {
+		stage = ""
+		return RestoreResult{}, fmt.Errorf("%w: cannot write to the data directory %q: %v", ErrBackup, dir, errnoReason(err))
+	}
+	if restoreDirsHook != nil {
+		if err := restoreDirsHook(dir); err != nil {
+			return RestoreResult{}, err
+		}
+	}
+
+	if err = copyStaged(ctx, vstage, stage, m); err != nil {
 		return RestoreResult{}, err
 	}
 	files, err := install(stage, dir, m)
@@ -583,7 +765,201 @@ func Restore(ctx context.Context, archive, dataDir string, force bool, opts ...O
 		keepStage = errors.Is(err, errRecoveryKept)
 		return RestoreResult{}, err
 	}
-	return RestoreResult{Manifest: m, Dir: dir, Files: files}, nil
+	ok = true
+	return RestoreResult{Manifest: m, Dir: dir, Files: files, Encrypted: encrypted}, nil
+}
+
+// checkStagedIdentity requires, when the staged database records a Hub
+// identity, a valid identity.key in the staged files whose public key is the
+// recorded one: the same rule the Hub applies at start, checked before
+// anything is installed.
+func checkStagedIdentity(ctx context.Context, stage string) error {
+	recorded, err := recordedIdentityOf(ctx, filepath.Join(stage, DBFile))
+	if err != nil {
+		return err
+	}
+	if recorded == nil {
+		return nil
+	}
+	key, err := identity.LoadKey(filepath.Join(stage, IdentityKeyFile))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("%w: the database in the archive records a Hub identity, but the archive has no %s; "+
+			"the Hub would not start, and a new key would strand every enrolled Worker; nothing was restored", ErrBackup, IdentityKeyFile)
+	case err != nil:
+		return fmt.Errorf("%w: the database in the archive records a Hub identity, but %s is not a usable identity key; nothing was restored", ErrBackup, IdentityKeyFile)
+	case !bytes.Equal(key.Public(), recorded):
+		return fmt.Errorf("%w: the %s in the archive is not the Hub identity that its database records; nothing was restored", ErrBackup, IdentityKeyFile)
+	}
+	return nil
+}
+
+// missingDirs returns the directories among dir and its ancestors that do not
+// exist yet, outermost first.
+func missingDirs(dir string) []string {
+	var missing []string
+	for p := dir; ; {
+		if _, err := os.Lstat(p); err == nil || !errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		missing = append([]string{p}, missing...)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	return missing
+}
+
+// budgetReader limits the cumulative bytes read from r to a budget and fails
+// reads once ctx is done.
+type budgetReader struct {
+	ctx    context.Context
+	r      io.Reader
+	left   int64
+	budget int64
+}
+
+func newBudgetReader(ctx context.Context, r io.Reader, limit int64) *budgetReader {
+	b := limit + archiveOverheadAllowance
+	if b < limit { // overflow
+		b = math.MaxInt64
+	}
+	return &budgetReader{ctx: ctx, r: r, left: b, budget: b}
+}
+
+func (b *budgetReader) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if b.left <= 0 {
+		// One more byte decides between exact end and an overrun.
+		var one [1]byte
+		n, err := b.r.Read(one[:])
+		if n > 0 {
+			return 0, fmt.Errorf("%w: %w (%d bytes, see --max-size)", ErrBackup, errArchiveBudget, b.budget)
+		}
+		return 0, err
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.r.Read(p)
+	b.left -= int64(n)
+	return n, err
+}
+
+// ctxReader fails reads once ctx is done.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
+
+// copyCtx copies at most max bytes from src to dst and reports whether src
+// held more; it stops with the context error when ctx is done.
+func copyCtx(ctx context.Context, dst io.Writer, src io.Reader, max int64) (n int64, tooBig bool, err error) {
+	lim := max
+	if lim < math.MaxInt64 {
+		lim++
+	}
+	n, err = io.Copy(dst, io.LimitReader(ctxReader{ctx, src}, lim))
+	if err == nil && n > max {
+		return max, true, nil
+	}
+	return n, false, err
+}
+
+// drainGzip reads the rest of the gzip stream (tar padding) up to
+// maxTrailingBytes and requires its verified end, which checks the CRC and
+// length trailer of the whole archive.
+func drainGzip(ctx context.Context, gz io.Reader) error {
+	_, tooBig, err := copyCtx(ctx, io.Discard, gz, maxTrailingBytes)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: the archive is damaged (gzip stream): %w", ErrBackup, err)
+	case tooBig:
+		return fmt.Errorf("%w: the archive has unexpected data after its last entry", ErrBackup)
+	}
+	return nil
+}
+
+// copyStaged copies the validated files from the private check directory into
+// the staging directory next to the destination (it may be on another file
+// system, so a rename is not enough) and verifies them again.
+func copyStaged(ctx context.Context, from, to string, m Manifest) error {
+	for _, e := range m.Files {
+		if err := copyStagedFile(ctx, filepath.Join(from, filepath.FromSlash(e.Name)), to, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyStagedFile(ctx context.Context, src, to string, e ManifestEntry) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("%w: restore %s: %v", ErrBackup, e.Name, errnoReason(err))
+	}
+	defer func() { _ = in.Close() }()
+	return writeStaged(ctx, in, e, to)
+}
+
+// decryptToTemp decrypts the age stream r with passphrase into a file in a new
+// private directory below the system temp directory and returns it opened for
+// reading, with a cleanup that removes it. age authenticates every chunk
+// and the end of the stream, so a nil error means the archive is complete and
+// unmodified.
+func decryptToTemp(ctx context.Context, r io.Reader, passphrase string, limit int64) (*os.File, func(), error) {
+	id, err := age.NewScryptIdentity(passphrase)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrBackup, err)
+	}
+	// Refuse an excessive work factor before the key derivation runs.
+	id.SetMaxWorkFactor(scryptWorkFactor)
+	dr, err := age.Decrypt(r, id)
+	if err != nil {
+		var nm *age.NoIdentityMatchError
+		if errors.As(err, &nm) {
+			return nil, nil, fmt.Errorf("%w: %w", ErrBackup, ErrWrongPassphrase)
+		}
+		return nil, nil, fmt.Errorf("%w: the encrypted archive cannot be decrypted: %v", ErrBackup, err)
+	}
+	tmp, err := mkdirTempPrivate(os.TempDir(), ".minion-restore-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: create a temporary directory: %v", ErrBackup, errnoReason(err))
+	}
+	cleanup := func() { _ = os.RemoveAll(tmp) }
+	f, err := createPrivate(filepath.Join(tmp, "archive.tar.gz"))
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("%w: create a temporary file: %v", ErrBackup, errnoReason(err))
+	}
+	if _, tooBig, err := copyCtx(ctx, f, dr, limit); err != nil || tooBig {
+		_ = f.Close()
+		cleanup()
+		if tooBig {
+			return nil, nil, fmt.Errorf("%w: %w of %d bytes (see --max-size)", ErrBackup, errDecryptedTooLarge, limit)
+		}
+		return nil, nil, fmt.Errorf("%w: the encrypted archive is damaged or truncated: %w", ErrBackup, err)
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("%w: write the decrypted archive: %v", ErrBackup, errnoReason(err))
+	}
+	rf, err := os.Open(f.Name())
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("%w: read the decrypted archive: %v", ErrBackup, errnoReason(err))
+	}
+	return rf, func() { _ = rf.Close(); cleanup() }, nil
 }
 
 // knownSchema returns the highest migration version of set.
@@ -599,10 +975,10 @@ func knownSchema(set migrationSet) (int, error) {
 }
 
 // readManifest reads and validates the first archive entry.
-func readManifest(tr *tar.Reader) (Manifest, error) {
+func readManifest(tr *tar.Reader, limit int64) (Manifest, error) {
 	h, err := tr.Next()
 	if err != nil {
-		return Manifest{}, fmt.Errorf("%w: the archive is empty or damaged: %v", ErrBackup, err)
+		return Manifest{}, fmt.Errorf("%w: the archive is empty or damaged: %w", ErrBackup, err)
 	}
 	if h.Name != ManifestFile || h.Typeflag != tar.TypeReg {
 		return Manifest{}, fmt.Errorf("%w: the file is not a Hub backup (first entry is not %s)", ErrBackup, ManifestFile)
@@ -625,6 +1001,7 @@ func readManifest(tr *tar.Reader) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("%w: the manifest has a negative schema version", ErrBackup)
 	}
 	seen := map[string]bool{}
+	var total int64
 	for _, e := range m.Files {
 		switch {
 		case !isArchiveFile(e.Name):
@@ -637,6 +1014,16 @@ func readManifest(tr *tar.Reader) (Manifest, error) {
 		if b, err := hex.DecodeString(e.SHA256); err != nil || len(b) != sha256.Size {
 			return Manifest{}, fmt.Errorf("%w: the manifest has an invalid checksum for %s", ErrBackup, e.Name)
 		}
+		max, exact, limited := maxEntrySize(e.Name)
+		switch {
+		case limited && exact && e.Size != max:
+			return Manifest{}, fmt.Errorf("%w: %s must be exactly %d bytes, the manifest says %d; the Hub could not use it", ErrBackup, e.Name, max, e.Size)
+		case limited && e.Size > max:
+			return Manifest{}, fmt.Errorf("%w: the manifest declares %d bytes for %s, more than the %d it can have", ErrBackup, e.Size, e.Name, max)
+		case e.Size > limit-total:
+			return Manifest{}, fmt.Errorf("%w: the archive declares more than the limit of %d bytes (see --max-size)", ErrBackup, limit)
+		}
+		total += e.Size
 		seen[e.Name] = true
 	}
 	for _, name := range requiredFiles {
@@ -671,7 +1058,7 @@ func checkTarget(dir string, force bool) error {
 // unpack extracts every remaining entry of tr into stage, verifying name,
 // type, size and checksum against m, and requires that every file of m is
 // present.
-func unpack(tr *tar.Reader, m Manifest, stage string) error {
+func unpack(ctx context.Context, tr *tar.Reader, m Manifest, stage string) error {
 	want := map[string]ManifestEntry{}
 	for _, e := range m.Files {
 		want[e.Name] = e
@@ -695,7 +1082,7 @@ func unpack(tr *tar.Reader, m Manifest, stage string) error {
 			return fmt.Errorf("%w: the entry %q has size %d, the manifest says %d", ErrBackup, h.Name, h.Size, e.Size)
 		}
 		delete(want, h.Name)
-		if err := extract(tr, e, stage); err != nil {
+		if err := extract(ctx, tr, e, stage); err != nil {
 			return err
 		}
 	}
@@ -712,8 +1099,14 @@ func unpack(tr *tar.Reader, m Manifest, stage string) error {
 
 // extract writes one entry to stage (readable by the owner only, created
 // exclusively) and verifies its checksum.
-func extract(r io.Reader, e ManifestEntry, stage string) error {
-	dst := filepath.Join(stage, filepath.FromSlash(e.Name))
+func extract(ctx context.Context, r io.Reader, e ManifestEntry, stage string) error {
+	return writeStaged(ctx, r, e, stage)
+}
+
+// writeStaged copies exactly e.Size bytes of r to the file e.Name below dir
+// (private, created exclusively), honouring ctx, and verifies the checksum.
+func writeStaged(ctx context.Context, r io.Reader, e ManifestEntry, dir string) error {
+	dst := filepath.Join(dir, filepath.FromSlash(e.Name))
 	if err := mkdirAllPrivate(filepath.Dir(dst)); err != nil {
 		return fmt.Errorf("%w: restore %s: %v", ErrBackup, e.Name, errnoReason(err))
 	}
@@ -722,12 +1115,12 @@ func extract(r io.Reader, e ManifestEntry, stage string) error {
 		return fmt.Errorf("%w: restore %s: %v", ErrBackup, e.Name, errnoReason(err))
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(r, e.Size))
+	n, _, err := copyCtx(ctx, io.MultiWriter(f, h), r, e.Size)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		return fmt.Errorf("%w: restore %s: %v", ErrBackup, e.Name, errnoReason(err))
+		return fmt.Errorf("%w: restore %s: %w", ErrBackup, e.Name, errnoReason(err))
 	}
 	if n != e.Size || hex.EncodeToString(h.Sum(nil)) != e.SHA256 {
 		return fmt.Errorf("%w: the checksum of %s does not match the manifest; the archive is damaged", ErrBackup, e.Name)

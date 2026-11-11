@@ -27,9 +27,10 @@
 
 <section class="panel" aria-labelledby="reset-password">
   <h2 id="reset-password">Reset the password</h2>
-  <p class="muted">A new temporary password is shown once, and the user is signed out everywhere.</p>
-  <form method="post" hx-post="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002/reset-password" hx-target="#reset-result" hx-swap="innerHTML" hx-confirm="Reset the password of this account? The user is signed out everywhere." hx-disabled-elt="find button">
+  <p class="muted">A new temporary password is shown once, and the user is signed out everywhere. All the user's API keys are revoked at the same time unless you tick the box below.</p>
+  <form method="post" hx-post="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002/reset-password" hx-target="#reset-result" hx-swap="innerHTML" hx-confirm="Reset the password of this account? The user is signed out everywhere and, unless you keep them, all API keys of the user are revoked." hx-disabled-elt="find button">
     <input type="hidden" name="username" value="bob">
+    <label class="check" for="keep-api-keys"><input type="checkbox" id="keep-api-keys" name="keep_api_keys" value="true"> Keep this user's API keys (leave unticked when the password may have been stolen)</label>
     <button type="submit">Reset the password</button>
     <div id="reset-result" aria-live="polite"></div>
   </form>

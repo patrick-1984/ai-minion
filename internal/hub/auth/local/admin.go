@@ -234,7 +234,10 @@ func (a *Admin) CreateUser(ctx context.Context, actor Actor, req CreateRequest) 
 //
 // An admin acting as a user must not change that user's password (AD-10): an
 // actor that acts as somebody gets [ErrActAsPasswordChange].
-func (a *Admin) ResetPassword(ctx context.Context, actor Actor, userID string) (logx.Secret, error) {
+//
+// The reset revokes all the user's API keys in the same transaction as the
+// credential change, unless keepAPIKeys is true (F-07).
+func (a *Admin) ResetPassword(ctx context.Context, actor Actor, userID string, keepAPIKeys bool) (logx.Secret, error) {
 	if actor.ActingAs != "" {
 		return "", ErrActAsPasswordChange
 	}
@@ -248,7 +251,7 @@ func (a *Admin) ResetPassword(ctx context.Context, actor Actor, userID string) (
 	}
 	ts := store.UnixMS(a.now())
 	err = a.Store.ResetPassword(ctx, store.ResetPasswordParams{
-		UserID: userID, PasswordHash: hash, NowMS: ts,
+		UserID: userID, PasswordHash: hash, KeepAPIKeys: keepAPIKeys, NowMS: ts,
 		Audit: a.audit(actor, AuditActionUserResetPassword, userID, ts),
 	})
 	if err != nil {

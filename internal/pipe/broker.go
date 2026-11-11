@@ -104,6 +104,16 @@ func (b *Broker) Send(ctx context.Context, peer Peer, text string) (Message, err
 	return m, nil
 }
 
+// RefundDelivery returns the hourly delivery reservation that Send charged for
+// m, after the receiving Worker definitively refused the message
+// (pipe_origin_refused) and the caller retracted it. The attempt keeps its
+// rate-limit token (attempt throttling stays); only the hour-window entry is
+// given back. It reports whether a reservation was found. A send of unknown
+// outcome is never refunded.
+func (b *Broker) RefundDelivery(m Message) bool {
+	return b.limiter.refund(m.Peer, m.At)
+}
+
 // CommitTurn stores a turn idempotently and answers with the turn.ack. A turn
 // already stored under the same turn_id is not stored again and gets the same
 // {status: "stored"} ack. An invalid turn is not stored and gets an

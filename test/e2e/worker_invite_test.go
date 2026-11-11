@@ -117,8 +117,8 @@ func TestWorkerEnrollsWithAnInvitationKeyAtTheRealHubAndThenConnectsWithNoTLSFla
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.st.WorkerByPub(context.Background(), ek.Public()); err != nil {
-		t.Fatalf("the Hub does not know the Worker's saved key pair: %v", err)
+	if row, err := h.st.WorkerByPub(context.Background(), ek.Public()); err != nil || !row.Pending {
+		t.Fatalf("the Hub does not know the Worker's saved key pair, or it is not pending: %+v %v", row, err)
 	}
 
 	// The connector the Worker runs next connects in connect mode with the new

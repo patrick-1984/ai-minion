@@ -175,7 +175,7 @@ func startAPIHub(t *testing.T) *apiHub {
 func (ah *apiHub) user(t *testing.T, name string) string {
 	t.Helper()
 	id := store.NewID()
-	if _, err := ah.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1)`, id, name); err != nil {
+	if _, err := ah.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, id, name); err != nil {
 		t.Fatal(err)
 	}
 	return id

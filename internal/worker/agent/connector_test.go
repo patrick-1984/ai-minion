@@ -991,3 +991,35 @@ func TestNewConnectorNeedsItsPorts(t *testing.T) {
 		}
 	}
 }
+
+// F-02: for a Worker the Hub has not approved yet the event and turn channels
+// are not opened (the Hub registers none for it); the others run.
+func TestPendingWelcomeDoesNotStartTheEventAndTurnHandlers(t *testing.T) {
+	f := newConnFixture(t)
+	w := okWelcome()
+	w.Pending = true
+	f.dial.script(f.welcomeStep(newFakeSession(), w))
+	started := make(chan string, 8)
+	for _, name := range []string{"op-server", "events", "turns", "hub-call"} {
+		f.conn.OnLink(name, func(*Link) { started <- name })
+	}
+	f.run()
+	f.waitState(ConnConnected)
+	got := map[string]bool{}
+	deadline := time.After(5 * time.Second)
+	for len(got) < 2 {
+		select {
+		case n := <-started:
+			got[n] = true
+		case <-deadline:
+			t.Fatalf("started = %v", got)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	for len(started) > 0 {
+		got[<-started] = true
+	}
+	if !got["op-server"] || !got["hub-call"] || got["events"] || got["turns"] {
+		t.Errorf("started = %v, want op-server and hub-call only", got)
+	}
+}

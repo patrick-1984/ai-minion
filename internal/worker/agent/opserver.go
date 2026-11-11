@@ -64,6 +64,11 @@ type OpRequestFrame struct {
 	RequestID string          `json:"request_id,omitempty"`
 	Actions   []ops.Action    `json:"actions"`
 	Args      json.RawMessage `json:"args,omitempty"`
+	// Origin is the Hub-derived provenance of the request (protocol 2.0). A
+	// message-class op without a valid one is refused; see [OpServer.parse].
+	// It is kept raw so that one of the wrong JSON type is refused as a
+	// malformed origin, not as an unreadable frame.
+	Origin json.RawMessage `json:"origin,omitempty"`
 }
 
 // OpProgressFrame is an "op.progress" frame: a short status of a long op.
@@ -432,9 +437,63 @@ func (s *OpServer) parse(body json.RawMessage) (rq Request, held []ops.Action, _
 			return Request{}, nil, errorAsProto(err)
 		}
 	}
+	origin, perr := s.checkOrigin(f)
+	if perr != nil {
+		return Request{}, nil, perr
+	}
 	held = IntersectActions(f.Actions, nil)
 	eff := IntersectActions(f.Actions, s.cfg.Policy)
-	return Request{Op: f.Op, Actions: eff, Args: args}, held, nil
+	return Request{Op: f.Op, Actions: eff, Args: args, Origin: origin}, held, nil
+}
+
+// OriginRefusalAuditor is the executor as the op server uses it to leave the
+// local audit row of a request refused for its origin. *Executor implements it.
+type OriginRefusalAuditor interface {
+	AuditOriginRefusal(ctx context.Context, op string, args json.RawMessage, origin *proto.Origin, reason string)
+}
+
+// checkOrigin enforces the origin rules of protocol 2.0 (AD-12, F-01): every
+// Hub op.request needs a well formed origin, whatever the op; for a
+// message-class op (ops.IsMessageClass), when it names a source Worker other
+// than this Worker, the local pipe_accept_from policy must accept it. A refusal
+// is audited with the origin and answered pipe_origin_refused; nothing reaches
+// a pane. The args of the request never take part: the origin is a member of
+// the frame that only the Hub's op.request carries.
+func (s *OpServer) checkOrigin(f OpRequestFrame) (*proto.Origin, *proto.Error) {
+	message := ops.IsMessageClass(f.Op)
+	refuse := func(reason string, origin *proto.Origin, err error) (*proto.Origin, *proto.Error) {
+		if a, ok := s.cfg.Executor.(OriginRefusalAuditor); ok {
+			a.AuditOriginRefusal(context.WithoutCancel(s.stopCtx), f.Op, f.Args, origin, reason)
+		}
+		var pe *proto.Error
+		if errors.As(err, &pe) {
+			return nil, pe
+		}
+		return nil, proto.NewError(proto.CodePipeOriginRefused, reason)
+	}
+	var origin *proto.Origin
+	if t := bytes.TrimSpace(f.Origin); len(t) > 0 && string(t) != "null" {
+		var o proto.Origin
+		dec := json.NewDecoder(bytes.NewReader(t))
+		if err := dec.Decode(&o); err != nil || dec.More() {
+			return refuse("malformed_origin", nil, proto.NewError(proto.CodePipeOriginRefused, "malformed origin"))
+		}
+		if err := o.Validate(); err != nil {
+			return refuse("malformed_origin", nil, err)
+		}
+		origin = &o
+	}
+	if origin == nil {
+		return refuse("missing_origin", nil, proto.NewError(proto.CodePipeOriginRefused, "the request carries no origin; the Worker refuses a Hub request without one"))
+	}
+	if !message {
+		// pipe_accept_from governs messages only.
+		return origin, nil
+	}
+	if err := s.cfg.Policy.CheckOrigin(*origin); err != nil {
+		return refuse("not_accepted", origin, err)
+	}
+	return origin, nil
 }
 
 // IntersectActions intersects the actions a caller holds with the local

@@ -208,7 +208,7 @@ func (e *Executor) lockFailure(err error, info *ops.PaneInfo) (ops.WriteResult, 
 // record writes the local audit row of a write: op, target, outcome, request
 // id, time, and never content (AD-20).
 func (e *Executor) record(ctx context.Context, op string, wa ops.WriteArgs, t ops.Target, res ops.WriteResult, err error) {
-	rec := store.AuditRecord{Op: op, Outcome: string(res.Outcome), Reason: res.Reason, Forced: res.Forced, RequestID: wa.RequestID}
+	rec := store.AuditRecord{Op: op, Outcome: string(res.Outcome), Reason: res.Reason, Forced: res.Forced, RequestID: wa.RequestID, Origin: auditOrigin(ctx)}
 	switch {
 	case t.SessionName != "":
 		rec.Target = t.String()
@@ -597,4 +597,45 @@ func (e *Executor) setTask(ctx context.Context, rq Request) (any, error) {
 		e.locate(ctx, &info)
 		return ops.WriteResult{Outcome: ops.OutcomeDelivered, Pane: &info}, nil
 	})
+}
+
+// AuditOriginRefusal leaves the local audit row of a message-class request
+// that the op server refused for its origin (F-01): the op, the target and the
+// request id when the arguments show them, the reason pipe_origin_refused and
+// the origin. reason is missing_origin, malformed_origin or not_accepted. It
+// never records content. It implements [OriginRefusalAuditor].
+func (e *Executor) AuditOriginRefusal(ctx context.Context, op string, args json.RawMessage, origin *proto.Origin, reason string) {
+	var a struct {
+		ops.WriteArgs
+		Target ops.Target `json:"target"`
+	}
+	_ = json.Unmarshal(args, &a) // best effort: the row is useful without them
+	rec := store.AuditRecord{
+		Op: op, Outcome: "error", Reason: string(proto.CodePipeOriginRefused),
+		RequestID: a.RequestID,
+	}
+	if !ops.ValidUUIDv7(rec.RequestID) {
+		rec.RequestID = ""
+	}
+	if a.Target.SessionName != "" && a.Target.Validate() == nil {
+		rec.Target = a.Target.String()
+	}
+	switch reason {
+	case "missing_origin":
+		rec.Origin = "missing"
+	case "malformed_origin":
+		rec.Origin = "malformed"
+	default:
+		rec.Origin = "malformed"
+		if origin != nil {
+			if b, err := json.Marshal(origin); err == nil {
+				rec.Origin = string(b)
+			}
+		}
+	}
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditTimeout)
+	defer cancel()
+	if aerr := e.state.AppendAudit(bctx, rec); aerr != nil {
+		e.log.Warn("cannot write the local audit", "op", op, "err", aerr)
+	}
 }

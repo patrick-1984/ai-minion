@@ -266,6 +266,9 @@ func (a *Authenticator) bearer(r *http.Request, ip netip.Addr, vals []string) (I
 		// Worker's call streams, never on the REST API.
 		return Identity{}, NewError(proto.CodeForbidden, "this API key is bound to a Worker and cannot call the REST API")
 	}
+	if p.KeyID == "" {
+		p = p.WithKeyID(ki.KeyID)
+	}
 	actor := p.UserID
 	if ki.KeyID != "" {
 		actor = "key:" + ki.KeyID

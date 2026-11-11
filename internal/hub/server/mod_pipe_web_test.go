@@ -212,7 +212,7 @@ func TestWebConversationAuthorizationAndCanonicalTarget(t *testing.T) {
 	}
 	// A second user who does not own pi-1: no read, no send, no pipe_send call, whatever the address.
 	id := store.NewID()
-	if _, err := ph.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1)`, id, "mallory"); err != nil {
+	if _, err := ph.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, id, "mallory"); err != nil {
 		t.Fatal(err)
 	}
 	row, err := ph.st.UserByIdentifier(ctx, "mallory")
@@ -666,7 +666,7 @@ func TestWebConversationPipeChangedFailsClosedOnPolicyAndAuthority(t *testing.T)
 
 	// A stranger (a user who owns no Worker) watches the same stream.
 	id := store.NewID()
-	if _, err := ph.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1)`, id, "mallory"); err != nil {
+	if _, err := ph.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, id, "mallory"); err != nil {
 		t.Fatal(err)
 	}
 	row, err := ph.st.UserByIdentifier(ctx, "mallory")

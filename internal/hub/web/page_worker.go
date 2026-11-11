@@ -114,7 +114,11 @@ func newWorkerView(d Dashboard, all bool, id string, operate bool) WorkerView {
 			out.Sessions = append(out.Sessions, x)
 		}
 	}
-	out.Operate = operate && out.Worker.Online
+	out.Operate = operate && out.Worker.Online && !out.Worker.Pending
+	if !operate {
+		// The approval buttons are offered to whoever may operate the Worker.
+		out.Worker.ApproveURL, out.Worker.RemoveURL = "", ""
+	}
 	out.SessionsText = countText(len(out.Sessions), len(out.Sessions), "session", "sessions")
 	out.SessionsURL = out.Worker.SessionsURL
 	return out

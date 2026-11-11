@@ -57,6 +57,16 @@ type WorkerInfo struct {
 	// that lacks one is refused the requests that rely on it; the list shows
 	// why, and that the Worker needs an update. Empty when offline.
 	Features []string `json:"features,omitempty"`
+	// Pending is true while the Worker waits for approval by its owner or an
+	// admin (F-02): it may be connected, but the Hub routes no operation to it.
+	Pending bool `json:"pending,omitempty"`
+	// Fingerprint is the fingerprint of the Worker's public key (52 base32
+	// characters), the value to compare before approving.
+	Fingerprint string `json:"fingerprint,omitempty"`
+	// EnrollAddr is the client address the Worker enrolled from.
+	EnrollAddr string `json:"enroll_addr,omitempty"`
+	// EnrolledAt is when the Worker enrolled.
+	EnrolledAt *Timestamp `json:"enrolled_at,omitempty"`
 }
 
 // WorkersListResult is the result of workers_list, ordered by Worker name,

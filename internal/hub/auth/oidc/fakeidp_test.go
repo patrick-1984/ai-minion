@@ -79,7 +79,7 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 	}
 	f := &fakeIdP{
 		t: t, key: key, ClientID: "minion", ClientSecret: "s3cret-for-tests",
-		subject: "user-1", codes: map[string]authRequest{}, claims: map[string]any{},
+		subject: "user-1", refreshToken: "rt-default", codes: map[string]authRequest{}, claims: map[string]any{},
 	}
 	ca, caKey := newCA(t)
 	leaf := newLeaf(t, ca, caKey)

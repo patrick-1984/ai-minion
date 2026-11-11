@@ -22,6 +22,9 @@ const (
 	AuditWorkerEnroll     = "worker.enroll"
 
 	auditSuccess = "success"
+	// auditPending is the outcome of an enrollment: the Worker exists but
+	// waits for approval.
+	auditPending = "pending"
 )
 
 // InvitationCaller is who creates, lists or revokes invitation keys. The
@@ -71,7 +74,7 @@ func (c InvitationCaller) validate() error {
 type InvitationStore interface {
 	InsertInvitation(ctx context.Context, r store.InvitationRow) error
 	InvitationByID(ctx context.Context, id string) (store.InvitationRow, error)
-	ListInvitations(ctx context.Context, creatorID string) ([]store.InvitationRow, error)
+	ListInvitationsWithInfra(ctx context.Context, creatorID string, withInfra bool) ([]store.InvitationRow, error)
 	RevokeInvitation(ctx context.Context, id string, nowMS int64) error
 }
 
@@ -136,6 +139,10 @@ func (s *Invitations) Create(ctx context.Context, caller InvitationCaller, a ops
 	if kind == ops.KindInfrastructure && !caller.Admin {
 		return ops.InvitationCreateResult{}, proto.NewError(proto.CodeForbidden, "only an admin can create an infrastructure invitation key")
 	}
+	maxUses, err := invitationCaps(caller, a)
+	if err != nil {
+		return ops.InvitationCreateResult{}, err
+	}
 	key, err := identity.NewInviteKey(s.fpr)
 	if err != nil {
 		return ops.InvitationCreateResult{}, fmt.Errorf("workers: create invitation key: %w", err)
@@ -149,15 +156,13 @@ func (s *Invitations) Create(ctx context.Context, caller InvitationCaller, a ops
 	if d, _ := ops.InvitationTTLDuration(a.TTL); d > 0 {
 		row.ExpiresAt = store.UnixMS(now.Add(d))
 	}
-	if a.Mode == ops.InvitationOneTime {
-		row.MaxUses = 1
-	}
+	row.MaxUses = maxUses
 	if err := s.st.InsertInvitation(ctx, row); err != nil {
 		return ops.InvitationCreateResult{}, err
 	}
 	s.record(ctx, caller, AuditInvitationCreate, row.ID, auditSuccess)
 	res := ops.InvitationCreateResult{
-		ID: row.ID, Key: key.String(), Name: row.Name, Mode: row.Mode, Kind: row.Kind, TTL: row.TTL,
+		ID: row.ID, Key: key.String(), Name: row.Name, Mode: row.Mode, Kind: row.Kind, TTL: row.TTL, MaxUses: maxUsesPtr(row.MaxUses),
 		CreatedAt: ops.Timestamp(store.FromUnixMS(row.CreatedAt)),
 	}
 	res.ExpiresAt = optTimestamp(row.ExpiresAt)
@@ -177,7 +182,9 @@ func (s *Invitations) List(ctx context.Context, caller InvitationCaller, all boo
 		}
 		creator = ""
 	}
-	rows, err := s.st.ListInvitations(ctx, creator)
+	// The row of the Hub-wide key file belongs to no user; an admin sees it in
+	// both views, so that it can be checked and revoked like any other key.
+	rows, err := s.st.ListInvitationsWithInfra(ctx, creator, caller.Admin)
 	if err != nil {
 		return ops.InvitationListResult{}, err
 	}
@@ -249,7 +256,10 @@ func invitationInfo(r store.InvitationRow, nowMS int64) ops.InvitationInfo {
 	info := ops.InvitationInfo{
 		ID: r.ID, Name: r.Name, Mode: r.Mode, Kind: r.Kind, TTL: r.TTL, CreatorID: r.CreatorID,
 		CreatedAt: ops.Timestamp(store.FromUnixMS(r.CreatedAt)), ExpiresAt: optTimestamp(r.ExpiresAt),
-		Uses: r.Uses, Revoked: r.Revoked, RevokedAt: optTimestamp(r.RevokedAt),
+		Uses: r.Uses, Revoked: r.Revoked, RevokedAt: optTimestamp(r.RevokedAt), Notice: r.Notice,
+	}
+	if r.Source == store.InvitationSourceInfraFile {
+		info.Source = r.Source
 	}
 	if r.MaxUses != 0 {
 		m := r.MaxUses
@@ -275,4 +285,41 @@ func optTimestamp(ms int64) *ops.Timestamp {
 	}
 	t := ops.Timestamp(store.FromUnixMS(ms))
 	return &t
+}
+
+func maxUsesPtr(n int) *int {
+	if n == 0 {
+		return nil
+	}
+	return &n
+}
+
+// invitationCaps applies the creation caps of F-02 and returns the max_uses of
+// the new key (0 for none). An admin is not capped. A non-admin cannot create a
+// key that is valid longer than a week or a reusable key without a use limit
+// (the default is ten uses, the most is one hundred). The messages say what is
+// allowed, so the web page, the API and the CLI show the same text.
+func invitationCaps(caller InvitationCaller, a ops.InvitationCreateArgs) (int, error) {
+	bad := func(msg string) error { return proto.NewError(proto.CodeInvalidArgument, msg) }
+	if !caller.Admin {
+		if d, _ := ops.InvitationTTLDuration(a.TTL); d == 0 || d > mustTTL(ops.NonAdminMaxInvitationTTL) {
+			return 0, bad("ttl: only an admin can create a key that is valid longer than 1 week; choose 1h, 4h, 8h, 24h or 1w")
+		}
+	}
+	switch {
+	case a.Mode == ops.InvitationOneTime:
+		return 1, nil
+	case caller.Admin:
+		return a.MaxUses, nil
+	case a.MaxUses == 0:
+		return ops.DefaultReusableMaxUses, nil
+	case a.MaxUses > ops.MaxReusableUsesNonAdmin:
+		return 0, bad(fmt.Sprintf("max_uses: a reusable key allows at most %d enrollments unless you are an admin", ops.MaxReusableUsesNonAdmin))
+	}
+	return a.MaxUses, nil
+}
+
+func mustTTL(label string) time.Duration {
+	d, _ := ops.InvitationTTLDuration(label)
+	return d
 }

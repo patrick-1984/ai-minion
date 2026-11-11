@@ -155,7 +155,7 @@ func (k *keyAPI) enrolFor(t *testing.T, h *connHub, pub []byte, name string) sto
 // secret the Hub shows once.
 func (k *keyAPI) issue(t *testing.T, name string, res []ops.KeyResource, actions ...ops.Action) string {
 	t.Helper()
-	out, err := k.keys.Create(context.Background(), authz.NewSessionPrincipal(k.owner), ops.APIKeyCreateArgs{
+	out, err := k.keys.Create(apikey.WithIssuerVersion(context.Background(), 1), authz.NewSessionPrincipal(k.owner), ops.APIKeyCreateArgs{
 		Name: name, Resources: res, Actions: actions,
 	})
 	if err != nil {

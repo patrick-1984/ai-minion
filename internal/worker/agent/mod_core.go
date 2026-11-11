@@ -83,6 +83,7 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	policy := NewPolicy(st)
 	policy.SetPreviewOnly(s.PreviewOnly)
 	policy.SetShareLock(s.ShareLock)
+	policy.SetPipeAcceptFrom(s.PipeAcceptFrom)
 
 	// The id the Hub gave this Worker, from its enrollment (the connector sets
 	// it again from every welcome): share operations that name a Worker are held
@@ -110,7 +111,8 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 
 	log.Info("worker core started",
 		"name", s.Name, "state_dir", st.Dir(), "tmux_socket", s.TmuxSocket,
-		"share", string(sel.Mode), "preview_only", s.PreviewOnly, "share_lock", s.ShareLock)
+		"share", string(sel.Mode), "preview_only", s.PreviewOnly, "share_lock", s.ShareLock,
+		"pipe_accept_from", s.PipeAcceptFrom.String(), "call_api_key_file", s.CallAPIKeyFile != "")
 	if !sel.Configured || sel.Mode == store.ShareLater {
 		log.Warn("no tmux session is shared yet; sessions stay hidden until you choose, for example with --share-existing all")
 	}

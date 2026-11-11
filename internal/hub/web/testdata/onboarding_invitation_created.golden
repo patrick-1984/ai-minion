@@ -1,5 +1,6 @@
 <div class="secret" role="status">
   <p><strong>Invitation key "build-farm" created.</strong> It is reusable, kind private, and expires: 2026-11-16 08:30 UTC.</p>
+  <p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="invite-key">Invitation key</label>
@@ -29,6 +30,7 @@ EOF
 #    https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh
 # 2. Save the key as the only line of invite_key.txt next to this file.
 # 3. Run: docker compose up -d
+# 4. Approve the new Worker in the Hub (Workers page): it starts pending and gets no operations until you do.
 # The image is built from Alpine with tmux (the Worker drives its sessions through tmux);
 # bootstrap.sh downloads and verifies the minion binary on the first start and keeps it in
 # the cache volume. The Worker runs as user 10001:10001 and enrolls once: after that the key

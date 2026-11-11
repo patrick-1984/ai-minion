@@ -116,6 +116,27 @@ func (l *sendLimiter) release(peer Peer, now time.Time) {
 	}
 }
 
+// refund removes the hour-window entry of the send charged at at (compared to
+// the millisecond, the resolution of a stored message), without giving the
+// token back: the attempt stays throttled, only the delivery reservation of
+// the hourly cap is returned. It reports whether an entry was found.
+func (l *sendLimiter) refund(peer Peer, at time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.peers[peer]
+	if !ok {
+		return false
+	}
+	ms := at.UnixMilli()
+	for i := len(st.sends) - 1; i >= 0; i-- {
+		if st.sends[i].UnixMilli() == ms {
+			st.sends = append(st.sends[:i], st.sends[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 func (st *peerState) trim(now time.Time) {
 	cut := now.Add(-HourWindow)
 	i := 0

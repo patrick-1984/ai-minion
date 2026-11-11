@@ -85,7 +85,9 @@ else
   # --local loads the image into the daemon as ko.local:<tag>; --bare keeps the
   # name free of the import path. The settings come from .ko.yaml, the same
   # file the platform assertion uses.
-  (cd "$root" && MINION_VERSION=e2e MINION_COMMIT="${commit:0:7}" MINION_DATE=1970-01-01T00:00:00Z \
+  # KO_DOCKER_REPO=ko.local: setup-ko exports ghcr.io/<repo>, which --local would
+  # otherwise use as the image name.
+  (cd "$root" && KO_DOCKER_REPO=ko.local MINION_VERSION=e2e MINION_COMMIT="${commit:0:7}" MINION_DATE=1970-01-01T00:00:00Z \
     ko build ./cmd/minion --local --bare --sbom=none --platform "linux/$(go env GOARCH)" --tags e2e >/dev/null)
   image=ko.local:e2e
 fi
@@ -126,6 +128,8 @@ run_variant() {
     # compose reads the whole file whatever the profile: the proxy-only
     # variables get placeholders that no direct-profile service uses.
     export E2E_PROXY_PORT=1 E2E_PUBLIC_URL=https://localhost:1
+    E2E_HUB_PORT=$(free_port)
+    export E2E_HUB_PORT
     "${cp[@]}" up -d hub
     port=$("${cp[@]}" port hub 8443 | head -n 1 | sed 's/.*://')
     [ -n "$port" ] || die "the Hub container publishes no port"
@@ -138,6 +142,7 @@ run_variant() {
     [ -s "$ca" ] || die "could not read the Hub certificate: $("${cp[@]}" logs hub 2>&1 | tail -n 5)"
   else
     svc=hub-proxied
+    export E2E_HUB_PORT=1 # placeholder: the direct-profile service is not started
     E2E_PROXY_PORT=$(free_port)
     export E2E_PROXY_PORT E2E_PUBLIC_URL=https://localhost:$E2E_PROXY_PORT
     "${cp[@]}" up -d proxy

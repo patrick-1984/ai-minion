@@ -263,6 +263,9 @@ func TestEveryOpCommandHasTheHubFlagsAndNoFlagForTheKey(t *testing.T) {
 			}
 		}
 		c.Flags().VisitAll(func(f *pflag.Flag) {
+			if f.Name == "keep-api-keys" {
+				return // a boolean that keeps the user's keys on a password reset, not a key (F-07)
+			}
 			if strings.Contains(f.Name, "api-key") || strings.Contains(f.Usage, "mn_") && !strings.Contains(f.Usage, "mn_...") {
 				t.Errorf("%s: flag --%s offers the key on the command line", c.Name(), f.Name)
 			}

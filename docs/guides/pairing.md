@@ -12,7 +12,7 @@ On the machine that should become a Worker, as the Unix user whose sessions you 
 minion worker pair --server https://hub.example.com
 ```
 
-The Worker shows a code like `MN-K7Q4-XY12` and waits. In the Hub, open **Workers**, choose **Add worker**, type the code (capital or small letters, with or without hyphens) and, if you like, a name. The Hub and the Worker confirm each other with the code, and the Worker appears in your space as a **private Worker**: it belongs to you.
+The Worker shows a code like `MN-K7Q4-XY12` and waits. In the Hub, open **Workers**, choose **Add worker**, type the code (capital or small letters, with or without hyphens) and, if you like, a name. The Hub and the Worker confirm each other with the code, and the Worker appears in your space as a **private Worker**: it belongs to you. It starts **pending**: see [Approve a new Worker](#approve-a-new-worker).
 
 - The code is valid for 10 minutes; a fresh one is shown when it expires or the Hub rejects it. It is printed on the console and in the log, so keep those logs private. (The other deliberately printed secret is the Hub's generated first administrator password, see [security](../security.md#credentials).)
 - The Worker does not look at the Hub's TLS certificate when it pairs: trust comes from the pairing handshake, and the Worker pins the Hub's identity key (its fingerprint is what `minion hub identity` prints). A Worker can therefore pair through a proxy or a tunnel whose certificate it does not trust.
@@ -27,7 +27,8 @@ The pairing handshake has not had an independent cryptographic review yet; see [
 An invitation key lets a machine enroll itself, for example from a script or a Compose file. In the Hub open **Invitations** (or **Add worker**, then **Create an invitation key**) and choose:
 
 - **mode**: `one_time` (enrolls exactly one Worker) or `reusable` (any number, until it expires or is revoked);
-- **lifetime**: 1h, 4h, 8h, 24h, 1w, 1m or unlimited (expiry stops new enrollments only; a Worker that has enrolled is never affected);
+- **lifetime**: 1h, 4h, 8h, 24h, 1w, 1m or unlimited (expiry stops new enrollments only; a Worker that has enrolled is never affected). Only an administrator can create a key that is valid longer than **1 week**;
+- **uses** (reusable keys): the number of Workers the key may enroll. A user's reusable key needs a limit: **10** when none is given, **100** at most. An administrator's reusable key without a limit stays unlimited (`--max-uses` on `invitation_create`);
 - **kind**: `private` (the Worker belongs to the user who creates the key) or `infrastructure` (a shared Worker; administrators only).
 
 The key, like `mnk_<fingerprint>.<secret>`, is shown **once**, with the commands to start the Worker. The same from the command line: `minion invitation_create --mode one_time --ttl 24h` against the Hub ([API keys and MCP](api-keys-and-mcp.md)). Revoke a key on the same page, or with `invitation_revoke`.
@@ -43,6 +44,26 @@ minion worker up --server https://hub.example.com --invite-key ./invite_key --sh
 Prefer the **file**. `--invite-key` takes the key itself, a file that holds it, or `-` to read it from standard input, and the environment form is `MINION_INVITE_KEY_FILE` (a file; `MINION_INVITE_KEY` holds the key itself). A key given literally on the command line is **visible in the process list** of the machine. The file must be owned by the user who runs the Worker and closed to everyone else. A key left on disk is a credential until it expires or you revoke it: delete the file once the Worker is enrolled (for a Worker in Docker, empty it in place instead, as [its guide](../install/worker-docker.md) shows), or revoke the key.
 
 The key carries the Hub's identity fingerprint, so a Worker that enrolls with it pins the right Hub without trusting any TLS certificate.
+
+A key does not make a Worker usable by itself: a Worker that enrolls with it is **pending** until you approve it, so a stolen or leaked key cannot operate anything.
+
+### Approve a new Worker
+
+Every new Worker starts **pending**, whichever way it joined: pairing code, invitation key or the Hub-wide infrastructure key. A pending Worker may connect, and the Hub shows it as such, but the Hub routes no operation to it (it cannot be a target of any user, key or other Worker), and the calls it makes to the Hub are refused with `worker_pending`. The one thing it may still do is retire itself (`minion worker reset` on its machine, or removing it in the Hub).
+
+The owner of the Worker, or an administrator, approves it:
+
+- **In the Hub:** the **Workers** page shows a *pending approval* badge and a banner. Each pending Worker shows its **fingerprint** (the fingerprint of its key), the **host name** it announced and the **source address** it enrolled from; compare them with the machine you just started, then choose **Approve**, or **Remove** if you do not recognise it. The Worker reconnects within moments and then receives operations.
+- **From the command line:** `minion hub worker approve <fingerprint|id>` with `MINION_HUB_URL` and `MINION_API_KEY_FILE` set. The argument is a Worker **id** or a **fingerprint**, and the two need different permissions. An id is approved directly and needs only *manage* (or *operate*) on that Worker, so an administrator's API key with *manage* alone can approve exactly the Worker that automation started, if it knows its id. A fingerprint is first looked up in the Workers list, so that form also needs *read* on the Worker. `minion workers_list --all` shows ids and fingerprints.
+- **Through the API:** the operation `worker_approve` (`worker_id`, and optionally the `fingerprint` you looked at; the Hub approves only if it matches). It needs *operate* or *manage* on the Worker; a Worker identity, and an API key bound to that very Worker, can never approve it.
+
+The Worker's log says `this Worker is waiting for approval` while it waits. Both the enrollment and the approval are in the audit log (`worker.enroll` with outcome `pending`, then `worker.approve`).
+
+Workers that existed when you upgraded to 0.6.0 were approved by the upgrade. Invitation keys of non-admin users that had no expiry now expire 7 days after the upgrade, and reusable keys without a limit allow 10 more enrollments; the Invitations page shows a notice on each key that was limited.
+
+### The infrastructure key file
+
+`MINION_INFRA_INVITE_KEY_FILE` names a file with one Hub-wide key that enrolls infrastructure Workers (owned by `infra_default_owner`, or the first administrator). The Hub keeps it as a row of the invitation list, keyed by the hash of its secret, with an **expiry** (`infra_invite_key_days`, default 30 days from the first load; `0` means none and the Hub warns at every start). The setting applies when the Hub first records a key: changing it later does **not** change the expiry of an existing key. To change the lifetime, set `infra_invite_key_days` **and** rotate the secret in the key file (or revoke the existing key), a **use counter** and a **revocation** that sticks. Restarting the Hub with the same file never resets the expiry or the counter and never undoes a revocation. Administrators see the row in **Invitations** and revoke it there (or with `invitation_revoke`) like any key; to rotate, put a new key in the file. Workers it enrolls are pending like all others.
 
 ## Choosing what the Hub sees
 
@@ -81,6 +102,6 @@ Ways to choose (any of them; the last change wins):
 
 ## After pairing
 
-- **Workers** in the Hub lists the Worker with its owner, kind and whether it is online. `minion worker status` shows the same from the Worker's side: the connection state, the pinned Hub fingerprint and the share choice.
+- **Workers** in the Hub lists the Worker with its owner, kind and whether it is online, or pending approval. `minion worker status` shows the same from the Worker's side: the connection state, the pinned Hub fingerprint and the share choice.
 - To end a pairing, remove the Worker in the Hub: it becomes a tombstone, its trust and bound API keys are deleted, and the Worker is told to wipe its pairing. From the machine's side, `minion worker reset` (the Hub is not told: remove the Worker in the Hub as well).
 - Hub administrators can rename, reassign and restrict Workers (to preview only, which refuses every write to a session while it is on).

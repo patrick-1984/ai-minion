@@ -230,7 +230,7 @@ func TestInsecureFlagWarnsInTheLogAndOnAdminPages(t *testing.T) {
 
 	// A plain user does not see it: admin pages only.
 	u := store.UserRow{ID: store.NewID(), Username: "plain", Active: true, CredentialVersion: 1}
-	if _, err := st.DB().Exec(`INSERT INTO users (id, username, credential_version, active, created_at, updated_at) VALUES (?, ?, 1, 1, 1, 1)`, u.ID, u.Username); err != nil {
+	if _, err := st.DB().Exec(`INSERT INTO users (id, username, credential_version, active, created_at, updated_at) VALUES (?, ?, 1, 1, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, u.ID, u.Username); err != nil {
 		t.Fatal(err)
 	}
 	issued, err := session.NewManager(st).Create(context.Background(), u, time.Hour)

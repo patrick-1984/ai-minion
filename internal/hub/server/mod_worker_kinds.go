@@ -34,6 +34,7 @@ func registerWorkerKindsModule(r *Registry) {
 	err := r.Register("worker_kinds", workerKindsModuleOrder, initWorkerKinds,
 		DeclaresService[*workers.Reassigner](),
 		DeclaresService[*workers.Restrictions](),
+		DeclaresService[*workers.Approver](),
 		DeclaresService[*authz.Trust](),
 	)
 	if err != nil {
@@ -78,6 +79,13 @@ func initWorkerKinds(_ context.Context, env *Env) error {
 	if err != nil {
 		return fmt.Errorf("build the restriction service: %w", err)
 	}
+	approver, err := workers.NewApprover(workers.ApproverConfig{Store: st, Connections: svc.Registry(), Logger: cfg.logger()})
+	if err != nil {
+		return fmt.Errorf("build the approval service: %w", err)
+	}
+	if err := api.RegisterWorkerApprove(handlers, approver); err != nil {
+		return fmt.Errorf("register worker_approve: %w", err)
+	}
 	trust := authz.NewTrust(api.TrustStore(st), nil)
 	svc.UsePolicy(restrictions.Policy)
 	if err := api.RegisterWorkerKindHandlers(handlers, reassigner, restrictions); err != nil {
@@ -90,6 +98,9 @@ func initWorkerKinds(_ context.Context, env *Env) error {
 		return err
 	}
 	if err := Provide(env, restrictions); err != nil {
+		return err
+	}
+	if err := Provide(env, approver); err != nil {
 		return err
 	}
 	return Provide(env, trust)

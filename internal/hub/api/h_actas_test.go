@@ -136,6 +136,7 @@ func TestActAsStartErrorsMapToCodes(t *testing.T) {
 		{session.ErrActAsDuration, proto.CodeInvalidArgument},
 		{session.ErrActAsTargetUnknown, proto.CodeNotFound},
 		{session.ErrActAsTargetInactive, proto.CodeConflict},
+		{session.ErrActAsTargetNoAccess, proto.CodeConflict},
 		{session.ErrActAsActive, proto.CodeConflict},
 		{session.ErrActAsUnavailable, proto.CodeInternal},
 		{errors.New("boom secret detail"), proto.CodeInternal},

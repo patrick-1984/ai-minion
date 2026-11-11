@@ -37,6 +37,7 @@ type fakeAccounts struct {
 	creq  local.CreateRequest
 	pw    local.PasswordChange
 	uid   string
+	keep  bool
 	role  string
 	err   error
 	rows  []store.UserAdminRow
@@ -79,9 +80,9 @@ func ifEmpty(s, d string) string {
 	return s
 }
 
-func (f *fakeAccounts) ResetPassword(_ context.Context, a local.Actor, id string) (logx.Secret, error) {
+func (f *fakeAccounts) ResetPassword(_ context.Context, a local.Actor, id string, keepAPIKeys bool) (logx.Secret, error) {
 	f.record("reset", a)
-	f.uid = id
+	f.uid, f.keep = id, keepAPIKeys
 	return logx.Secret("RESET-pass-0123456789abcdef"), f.err
 }
 
@@ -341,6 +342,32 @@ func TestAccountAuthorisationDeniesBeforeTheHandlerRuns(t *testing.T) {
 	}
 }
 
+// The keep_api_keys argument reaches the service end to end: absent means the
+// keys are revoked with the password, true keeps them (F-07).
+func TestResetPasswordPassesKeepAPIKeysThroughTheAPI(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args map[string]any
+		want bool
+	}{
+		{"unchecked", map[string]any{"user_id": acctTarget}, false},
+		{"explicitly false", map[string]any{"user_id": acctTarget, "keep_api_keys": false}, false},
+		{"checked", map[string]any{"user_id": acctTarget, "keep_api_keys": true}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newAcctRig(t, sessionIdentity(acctAdmin))
+			r.svc.keep = !c.want // the fake must overwrite it
+			w := r.do("POST", "/api/v1/ops/user_reset_password", body(c.args))
+			if w.Code != 200 {
+				t.Fatalf("reset = %d %s", w.Code, w.Body)
+			}
+			if r.svc.uid != acctTarget || r.svc.keep != c.want {
+				t.Errorf("service got uid %q keep %v; want %q %v", r.svc.uid, r.svc.keep, acctTarget, c.want)
+			}
+		})
+	}
+}
+
 func TestTargetedOperationsPassTheUserIDAndAudit(t *testing.T) {
 	r := newAcctRig(t, sessionIdentity(acctAdmin))
 	w := r.do("POST", "/api/v1/ops/user_reset_password", body(map[string]any{"user_id": acctTarget}))
@@ -545,5 +572,46 @@ func TestWriteOpsRefuseGET(t *testing.T) {
 	}
 	if len(r.svc.called()) != 0 {
 		t.Error("a GET reached the service")
+	}
+}
+
+// narrowScope grants the given actions on every resource except a user the
+// key was never given, like a stored user:X scope.
+type narrowScope []ops.Action
+
+func (s narrowScope) Actions(r authz.ResolvedResource) []ops.Action {
+	if r.UserID == acctTarget {
+		return s
+	}
+	return nil
+}
+
+func TestTargetedAccountOperationsRefuseAKeyLimitedToSomeUsers(t *testing.T) {
+	calls := []struct{ path, b string }{
+		{"/api/v1/ops/user_reset_password", body(map[string]any{"user_id": acctTarget})},
+		{"/api/v1/ops/user_set_role", body(map[string]any{"user_id": acctTarget, "role": "admin"})},
+		{"/api/v1/ops/user_deactivate", body(map[string]any{"user_id": acctTarget})},
+	}
+	narrow := Identity{Principal: authz.NewAPIKeyPrincipal(acctAdmin, narrowScope{ops.ActionManage, ops.ActionRead}, ""), Actor: "key:k1", Via: ViaAPIKey}
+	r := newAcctRig(t, narrow)
+	for _, c := range calls {
+		if w := r.do("POST", c.path, c.b); w.Code != 403 || decodeErr(t, w).Error.Code != proto.CodeForbidden {
+			t.Errorf("%s with a user:X manage key = %d %s", c.path, w.Code, w.Body)
+		}
+	}
+	if len(r.svc.called()) != 0 {
+		t.Errorf("a narrow key reached the service: %v", r.svc.called())
+	}
+	// An everything key and a browser admin session still succeed.
+	for name, id := range map[string]Identity{
+		"everything key": acctKeyIdentity(acctAdmin, ops.ActionManage, ops.ActionRead),
+		"admin session":  sessionIdentity(acctAdmin),
+	} {
+		r := newAcctRig(t, id)
+		for _, c := range calls {
+			if w := r.do("POST", c.path, c.b); w.Code != 200 {
+				t.Errorf("%s: %s = %d %s", name, c.path, w.Code, w.Body)
+			}
+		}
 	}
 }

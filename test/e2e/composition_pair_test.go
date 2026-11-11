@@ -175,8 +175,8 @@ func TestRealPairerAndHubPairWithTheRightCodeAndAWorkerRestartDoesNotPairAgain(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if row, err := h.st.WorkerByPub(context.Background(), ek.Public()); err != nil || row.ID != res.WorkerID {
-		t.Fatalf("the Hub's row = %+v, %v", row, err)
+	if row, err := h.st.WorkerByPub(context.Background(), ek.Public()); err != nil || row.ID != res.WorkerID || !row.Pending {
+		t.Fatalf("the Hub's row = %+v, %v (a paired Worker starts pending)", row, err)
 	}
 
 	// The paired Worker connects with the pin it stored.

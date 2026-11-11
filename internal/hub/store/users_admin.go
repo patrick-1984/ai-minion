@@ -126,12 +126,16 @@ type ResetPasswordParams struct {
 	UserID string
 	// PasswordHash is the PHC hash of the new temporary password.
 	PasswordHash string
-	NowMS        int64
-	Audit        *AuditRow
+	// KeepAPIKeys keeps the user's API keys. By default (false) the reset
+	// revokes every live key of the user in the same transaction (F-07).
+	KeepAPIKeys bool
+	NowMS       int64
+	Audit       *AuditRow
 }
 
 // ResetPassword stores a new temporary password hash, sets must-change, bumps
-// the credential version and deletes every session of the user, in one
+// the credential version, deletes every session of the user and, unless
+// KeepAPIKeys is set, revokes all the user's API keys, in one
 // transaction. It returns [ErrNotFound], [ErrUserInactive] or
 // [ErrNoLocalPassword] (an account without a local password, for example one
 // that signs in through an IdP, gets no password from a reset).
@@ -155,6 +159,11 @@ WHERE id = ?`, p.PasswordHash, p.NowMS, p.UserID); err != nil {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, p.UserID); err != nil {
 			return fmt.Errorf("store: reset password: revoke sessions: %w", err)
 		}
+		if !p.KeepAPIKeys {
+			if _, err := s.RevokeAPIKeysOfOwner(ctx, tx, p.UserID, p.NowMS); err != nil {
+				return err
+			}
+		}
 		return s.auditIn(ctx, tx, p.Audit)
 	})
 }
@@ -176,7 +185,8 @@ type ChangePasswordParams struct {
 }
 
 // ChangePassword replaces the password hash, clears must-change, bumps the
-// credential version and revokes the user's other sessions in one
+// credential version, revokes the user's other sessions and all the user's
+// API keys (F-07: a changed password must end a key a thief minted) in one
 // transaction. The update is conditional on ExpectedVersion: of two changes
 // that read the same version exactly one is applied and the other gets
 // [ErrVersionConflict]. It returns the new credential version.
@@ -206,6 +216,9 @@ WHERE id = ? AND credential_version = ? AND active = 1`, p.PasswordHash, p.NowMS
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id <> ?`, p.UserID, p.KeepSessionID); err != nil {
 			return fmt.Errorf("store: change password: revoke sessions: %w", err)
+		}
+		if _, err := s.RevokeAPIKeysOfOwner(ctx, tx, p.UserID, p.NowMS); err != nil {
+			return err
 		}
 		if p.KeepSessionID != "" {
 			// The kept session carries the version of the new credentials,

@@ -27,6 +27,13 @@ type UserState struct {
 	Active bool
 }
 
+// hasAccess reports whether the account may act at all: it is active and holds
+// at least one effective grant (role user or admin). An account without any
+// grant has no access for any principal kind (F-07).
+func (u UserState) hasAccess() bool {
+	return u.Active && (u.Role == RoleUser || u.Role == RoleAdmin)
+}
+
 // UserLookup is the port to the users table. Every call reads current state;
 // an implementation must not cache positive results, because Decide relies on
 // the answer being fresh (AD-11). Story 3.5 (store/users.go, mod_auth.go)

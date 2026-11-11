@@ -68,6 +68,10 @@ const (
 	// bound keeps a typo from hammering the IdP.
 	MinRefreshInterval = config.MinOIDCRefreshInterval
 	MaxRefreshInterval = config.MaxOIDCRefreshInterval
+	// AdminRefreshInterval caps the interval for accounts that hold an IdP
+	// admin grant: whatever the configured interval, they are re-checked at
+	// least this often (F-07).
+	AdminRefreshInterval = time.Hour
 	// DefaultRefreshStartDelay is how long after the Hub started the first
 	// refresh runs. A Hub that restarts more often than the interval would
 	// otherwise never refresh.
@@ -211,6 +215,9 @@ type Target struct {
 	LastLoginAt int64
 	// RefreshToken is the stored token, decrypted. It is a secret.
 	RefreshToken logx.Secret
+	// IdPAdmin is true while the account holds an IdP admin grant. These
+	// accounts are re-checked at least every [AdminRefreshInterval] (F-07).
+	IdPAdmin bool
 }
 
 // LogValue logs the ids, never the token.
@@ -263,6 +270,8 @@ type RefreshStore interface {
 	// RefreshTargets lists the accounts that hold a refresh token, active
 	// users only.
 	RefreshTargets(ctx context.Context) ([]Target, error)
+	// HasIdPAdmin reports whether any active account holds an IdP admin grant.
+	HasIdPAdmin(ctx context.Context) (bool, error)
 	// Apply applies one update atomically (see [Update]).
 	Apply(ctx context.Context, u Update) (UpdateResult, error)
 }
@@ -277,9 +286,44 @@ type Clock interface {
 	After(d time.Duration) <-chan time.Time
 }
 
+// nowClock is implemented by a [Clock] that also tells the time. Without it
+// the loop counts the time its timers fired.
+type nowClock interface{ Now() time.Time }
+
 type realClock struct{}
 
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+func (realClock) Now() time.Time                         { return time.Now() }
+
+// loopClock gives the refresh loop a notion of now on top of a [Clock].
+type loopClock struct {
+	Clock
+	virt    time.Time // time as counted by the fired timers
+	armedAt time.Time
+	armedD  time.Duration
+}
+
+func newLoopClock(c Clock) *loopClock {
+	return &loopClock{Clock: c, virt: time.Unix(0, 0)}
+}
+
+func (c *loopClock) Now() time.Time {
+	if n, ok := c.Clock.(nowClock); ok {
+		return n.Now()
+	}
+	return c.virt
+}
+
+// After arms a timer and remembers when and for how long.
+func (c *loopClock) After(d time.Duration) <-chan time.Time {
+	c.armedAt, c.armedD = c.Now(), d
+	return c.Clock.After(d)
+}
+
+// fired records that the last armed timer fired.
+func (c *loopClock) fired() {
+	c.virt = c.armedAt.Add(c.armedD)
+}
 
 // RunSummary counts what one pass did.
 type RunSummary struct {
@@ -296,6 +340,8 @@ type RunSummary struct {
 	// Skipped counts accounts whose provider is unknown, disabled or has
 	// another issuer now.
 	Skipped int
+	// AdminTargets is the number of targets that hold an IdP admin grant.
+	AdminTargets int
 }
 
 // Refresher re-checks the IdP roles of every account in the background.
@@ -320,6 +366,26 @@ type Refresher struct {
 
 	mu    sync.Mutex
 	cache map[string]cachedProvider
+	wake  chan struct{}
+}
+
+func (r *Refresher) wakeChan() chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.wake == nil {
+		r.wake = make(chan struct{}, 1)
+	}
+	return r.wake
+}
+
+// Wake tells a sleeping [Refresher.Run] that an IdP admin grant was added (a
+// promotion at sign-in): the next pass is then at most [AdminRefreshInterval]
+// away, whatever the configured interval is. It never blocks.
+func (r *Refresher) Wake() {
+	select {
+	case r.wakeChan() <- struct{}{}:
+	default:
+	}
 }
 
 func (r *Refresher) logger() *slog.Logger {
@@ -357,20 +423,69 @@ func (r *Refresher) Run(ctx context.Context) error {
 	if delay <= 0 {
 		delay = DefaultRefreshStartDelay
 	}
+	// The next full pass (every account) is due at lastFull + interval, an
+	// absolute deadline that admin-only checks never move. Between full passes
+	// the accounts with an IdP admin grant are re-checked at most
+	// [AdminRefreshInterval] apart (adminAt, zero when no admin is known), so
+	// an admin role never outlives the IdP membership by more than that (F-07).
+	// A wake (a promotion) only brings adminAt forward; the loop sleeps until
+	// the earlier of the two.
+	clk := newLoopClock(r.clock())
+	start := clk.Now()
+	lastFull := start.Add(delay - r.interval(ctx)) // the first full pass is due after the start delay
+	first := true
+	var adminAt time.Time
+	wake := r.wakeChan()
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-r.clock().After(delay):
+		fullAt := lastFull.Add(r.interval(ctx))
+		if first {
+			fullAt = start.Add(delay)
 		}
-		sum, err := r.RunOnce(ctx)
+		next := func() time.Time {
+			if !adminAt.IsZero() && adminAt.Before(fullAt) {
+				return adminAt
+			}
+			return fullAt
+		}
+		wait := func() time.Duration { return max(next().Sub(clk.Now()), MinRefreshInterval) }
+		timer := clk.After(wait())
+	sleep:
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer:
+				clk.fired()
+				break sleep
+			case <-wake:
+				// A promotion during a long sleep: add an admin check within the
+				// admin cycle, without moving the full-pass deadline.
+				if limit := clk.Now().Add(AdminRefreshInterval); next().After(limit) {
+					if ok, err := r.Store.HasIdPAdmin(ctx); err != nil || ok {
+						adminAt = limit
+						timer = clk.After(wait())
+					}
+				}
+			}
+		}
+		full := first || !clk.Now().Before(fullAt)
+		sum, err := r.runPass(ctx, !full)
 		if err != nil {
 			r.logger().Error("oidc refresh: pass failed", "error", err)
 		} else {
-			r.logger().Info("oidc refresh: pass done", "targets", sum.Targets, "refreshed", sum.Refreshed,
+			r.logger().Info("oidc refresh: pass done", "admin_only", !full, "targets", sum.Targets, "refreshed", sum.Refreshed,
 				"changed", sum.Changed, "suspended", sum.Suspended, "unchanged", sum.Unchanged, "skipped", sum.Skipped)
 		}
-		delay = r.interval(ctx)
+		if full {
+			lastFull, first = clk.Now(), false
+		}
+		// Decide at this moment, not from the pass: a promotion during the
+		// pass counts, and so does an admin the pass did not see. A failing
+		// query keeps the short cycle.
+		adminAt = time.Time{}
+		if ok, err := r.Store.HasIdPAdmin(ctx); err != nil || ok {
+			adminAt = clk.Now().Add(AdminRefreshInterval)
+		}
 	}
 }
 
@@ -379,6 +494,12 @@ func (r *Refresher) Run(ctx context.Context) error {
 // be listed or ctx ended; a failure of one account is counted and logged, and
 // the pass goes on.
 func (r *Refresher) RunOnce(ctx context.Context) (RunSummary, error) {
+	return r.runPass(ctx, false)
+}
+
+// runPass is [Refresher.RunOnce]; adminOnly limits it to the accounts that
+// hold an IdP admin grant.
+func (r *Refresher) runPass(ctx context.Context, adminOnly bool) (RunSummary, error) {
 	var sum RunSummary
 	cfgs, err := r.Configs.OIDCProviders(ctx)
 	if err != nil {
@@ -387,6 +508,14 @@ func (r *Refresher) RunOnce(ctx context.Context) (RunSummary, error) {
 	targets, err := r.Store.RefreshTargets(ctx)
 	if err != nil {
 		return sum, fmt.Errorf("oidc refresh: list accounts: %w", err)
+	}
+	for _, t := range targets {
+		if t.IdPAdmin {
+			sum.AdminTargets++
+		}
+	}
+	if adminOnly {
+		targets = slices.DeleteFunc(targets, func(t Target) bool { return !t.IdPAdmin })
 	}
 	sum.Targets = len(targets)
 	byID := make(map[string]Config, len(cfgs))
@@ -489,9 +618,15 @@ func (r *Refresher) apply(ctx context.Context, t Target, u Update, sum *RunSumma
 		r.logger().Info("oidc refresh: the account changed meanwhile, result dropped", "account", t)
 		sum.Unchanged++
 	case suspend:
+		if t.IdPAdmin {
+			sum.AdminTargets--
+		}
 		r.logger().Warn("oidc refresh: refresh token rejected, IdP roles suspended until the next OIDC login", "account", t)
 		sum.Suspended++
 	case u.ReplaceRoles:
+		if t.IdPAdmin && !slices.Contains(out.RolesAfter, "admin") {
+			sum.AdminTargets-- // no longer an IdP admin: the short cycle is not needed for it
+		}
 		sum.Refreshed++
 		if out.RolesChanged() {
 			sum.Changed++
@@ -546,10 +681,19 @@ func (s *SQLStore) RefreshTargets(ctx context.Context) ([]Target, error) {
 	for _, x := range rows {
 		out = append(out, Target{
 			IdentityID: x.IdentityID, UserID: x.UserID, Issuer: x.Issuer, Subject: x.Subject, ProviderID: x.ProviderID,
-			LastLoginAt: x.LastLoginAt, RefreshToken: logx.Secret(x.RefreshToken),
+			LastLoginAt: x.LastLoginAt, RefreshToken: logx.Secret(x.RefreshToken), IdPAdmin: x.IdPAdmin,
 		})
 	}
 	return out, nil
+}
+
+// HasIdPAdmin implements [RefreshStore].
+func (s *SQLStore) HasIdPAdmin(ctx context.Context) (bool, error) {
+	ok, err := s.Store.HasIdPAdminGrant(ctx)
+	if err != nil {
+		return false, fmt.Errorf("oidc: %w", err)
+	}
+	return ok, nil
 }
 
 // Apply implements [RefreshStore].

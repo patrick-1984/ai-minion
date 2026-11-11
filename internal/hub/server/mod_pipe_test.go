@@ -414,16 +414,25 @@ func TestDefaultHubServesRESTCallStreamsAndTurnsThroughOneBroker(t *testing.T) {
 		t.Fatalf("REST pipe_wait = %d %s", w.code, w.body)
 	}
 
-	// 4. A Worker's call stream: pipe_send as the Worker identity of pi-2.
+	// 4. A Worker's call stream. F-01: the Worker identity of pi-2 cannot reach
+	// a session of pi-1, a Worker of the same owner; pi-1 reaches its own.
 	typ, b := pi2.call(t, ops.OpPipeSend, map[string]any{"request_id": ops.NewUUIDv7(), "target": "pi-1:minion-1", "text": "from pi-2"})
+	if typ != proto.TypeError || !strings.Contains(string(b), string(proto.CodeTargetNotFound)) {
+		t.Fatalf("keyless cross-Worker pipe_send on a call stream = %s", b)
+	}
+	typ, b = pi1.call(t, ops.OpPipeSend, map[string]any{"request_id": ops.NewUUIDv7(), "target": "pi-1:minion-1", "text": "from pi-1 itself"})
 	if typ != proto.TypeOpResult || !strings.Contains(string(b), "delivered") {
 		t.Fatalf("pipe_send on a call stream = %s", b)
 	}
-	if msgs, _ := ph.st.Pipe().Messages(ctx, peer, 0, 0); len(msgs) == 0 || msgs[len(msgs)-1].Text != "from pi-2" {
+	if msgs, _ := ph.st.Pipe().Messages(ctx, peer, 0, 0); len(msgs) == 0 || msgs[len(msgs)-1].Text != "from pi-1 itself" {
 		t.Fatalf("history = %+v: the call stream did not pass through the broker", msgs)
 	}
 	typ, b = pi2.call(t, ops.OpPipeRead, map[string]any{"target": "pi-1:minion-1"})
-	if typ != proto.TypeOpResult || !strings.Contains(string(b), "from pi-2") {
+	if typ != proto.TypeError {
+		t.Fatalf("keyless cross-Worker pipe_read on a call stream = %s", b)
+	}
+	typ, b = pi1.call(t, ops.OpPipeRead, map[string]any{"target": "pi-1:minion-1"})
+	if typ != proto.TypeOpResult || !strings.Contains(string(b), "from pi-1 itself") {
 		t.Fatalf("pipe_read on a call stream = %s", b)
 	}
 	// What the Hub does not serve on a call stream is answered, not reset.

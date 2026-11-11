@@ -58,6 +58,9 @@ type Principal struct {
 	WorkerID string
 	// Scope limits an API key. Required for KindAPIKey, ignored otherwise.
 	Scope Scope
+	// KeyID is the stored id of the API key (KindAPIKey), for the origin of the
+	// requests it makes. It is set by the key service; it grants nothing.
+	KeyID string
 }
 
 // NewSessionPrincipal returns the principal of a browser session of userID.
@@ -70,6 +73,9 @@ func NewSessionPrincipal(userID string) Principal {
 func NewAPIKeyPrincipal(ownerID string, scope Scope, boundWorkerID string) Principal {
 	return Principal{Kind: KindAPIKey, UserID: ownerID, Scope: scope, WorkerID: boundWorkerID}
 }
+
+// WithKeyID returns p with the stored id of the API key it was built from.
+func (p Principal) WithKeyID(id string) Principal { p.KeyID = id; return p }
 
 // NewActAsPrincipal returns the principal of admin actorID acting as targetID
 // until expires.

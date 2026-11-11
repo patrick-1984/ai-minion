@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"time"
 	"unicode/utf8"
 )
 
@@ -81,14 +82,21 @@ func (r KeyResource) Validate() error {
 	return nil
 }
 
+// DefaultAPIKeyLifetime is how long a key lives when the creator names no
+// expiry and does not ask for a key that never expires (F-07).
+const DefaultAPIKeyLifetime = 90 * 24 * time.Hour
+
 // APIKeyCreateArgs are the arguments of apikey_create. The key belongs to the
 // caller; the resources and actions limit what it may do (AD-11).
 type APIKeyCreateArgs struct {
 	// Name is a display name, 1 to MaxAPIKeyNameLen bytes.
 	Name string `json:"name"`
-	// ExpiresAt ends the key; it must lie in the future. Omitted means the
-	// key does not expire.
+	// ExpiresAt ends the key; it must lie in the future. When omitted (and
+	// Never is false) the key expires after DefaultAPIKeyLifetime.
 	ExpiresAt *Timestamp `json:"expires_at,omitempty"`
+	// Never asks for a key without an expiry. Only an admin may; it cannot be
+	// combined with ExpiresAt.
+	Never bool `json:"never,omitempty"`
 	// Resources limits the key. A user can grant only resources they own;
 	// "everything" is for admins.
 	Resources []KeyResource `json:"resources"`
@@ -105,6 +113,9 @@ type APIKeyCreateArgs struct {
 func (a APIKeyCreateArgs) Validate() error {
 	if a.Name == "" || len(a.Name) > MaxAPIKeyNameLen || !utf8.ValidString(a.Name) || !validDisplayName(a.Name) {
 		return invalid("name", "must be 1 to %d characters without control characters or surrounding space", MaxAPIKeyNameLen)
+	}
+	if a.Never && a.ExpiresAt != nil {
+		return invalid("never", "cannot be combined with expires_at")
 	}
 	if len(a.Resources) == 0 || len(a.Resources) > MaxKeyResources {
 		return invalid("resources", "must list 1 to %d resources", MaxKeyResources)

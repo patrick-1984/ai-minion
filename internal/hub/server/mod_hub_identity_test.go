@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -149,13 +151,21 @@ func TestOnlyAnEverythingKeyWithManageRotatesTheHubIdentity(t *testing.T) {
 	sess := asSession(tok, csrf)
 	every := []map[string]any{{"kind": "everything"}}
 	readKey, _ := ah.newKey(t, sess, map[string]any{"name": "read", "resources": every, "actions": []string{"read"}})
-	userKey, _ := ah.newKey(t, sess, map[string]any{
-		"name": "own user only", "resources": []map[string]any{{"kind": "user", "user_id": admin.ID}}, "actions": []string{"manage"},
-	})
+	// The API refuses manage on a narrow scope (F-03), so this key simulates
+	// a row stored before that rule.
+	userKey := identity.NewAPIKey()
+	userHash := userKey.Hash()
+	if err := ah.st.CreateAPIKey(context.Background(), store.APIKeyRow{
+		ID: store.NewID(), OwnerID: admin.ID, Name: "own user only", Hash: userHash[:], Hint: userKey.Hint(),
+		Actions: []string{"manage"}, CreatedAt: store.UnixMS(time.Now()),
+		Scopes: []store.APIKeyScopeRow{{Kind: "user", UserID: admin.ID}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
 	manageKey, _ := ah.newKey(t, sess, map[string]any{"name": "manage", "resources": every, "actions": []string{"manage"}})
 	before := svc.Identity().Fingerprint()
 
-	for name, key := range map[string]string{"read-only key": readKey, "manage key limited to the admin user": userKey} {
+	for name, key := range map[string]string{"read-only key": readKey, "manage key limited to the admin user": userKey.String()} {
 		r := ah.call(t, "POST", "/api/v1/ops/hub_identity_rotate", rotateBody(), asKey(key))
 		if r.code != 403 || r.err.Code != proto.CodeForbidden {
 			t.Errorf("%s = %d %s", name, r.code, r.body)

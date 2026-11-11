@@ -86,7 +86,7 @@ func startDashHubAt(t *testing.T, dataDir string) *dashHub {
 func (d *dashHub) user(name string) string {
 	d.t.Helper()
 	id := store.NewID()
-	if _, err := d.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1)`, id, name); err != nil {
+	if _, err := d.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, id, name); err != nil {
 		d.t.Fatal(err)
 	}
 	return id

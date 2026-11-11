@@ -196,6 +196,9 @@ func (e *shareE2E) user(name string) (id string, sess map[string]string) {
 	if _, err := e.ph.st.DB().Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, ?, 1, 1)`, id, name); err != nil {
 		e.t.Fatal(err)
 	}
+	if _, err := e.ph.st.DB().Exec(`INSERT INTO user_roles (user_id, role, source) VALUES (?, 'user', 'local')`, id); err != nil {
+		e.t.Fatal(err)
+	}
 	row, err := e.ph.st.UserByIdentifier(context.Background(), name)
 	if err != nil {
 		e.t.Fatal(err)

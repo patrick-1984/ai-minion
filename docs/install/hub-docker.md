@@ -10,10 +10,10 @@ The example [`deploy/compose/hub.yaml`](../../deploy/compose/hub.yaml) runs the 
 
 | Tag | Meaning |
 | --- | --- |
-| `v0.5.0` | exactly that release |
-| `0.5`, `0`, `latest` | channels that follow the newest matching release; they move when a new release is published |
+| `v0.6.0` | exactly that release |
+| `0.6`, `0`, `latest` | channels that follow the newest matching release; they move when a new release is published |
 
-Use an exact tag for a Hub you do not want to change under you. The compose file reads `MINION_VERSION` (default `v0.5.0`).
+Use an exact tag for a Hub you do not want to change under you. The compose file reads `MINION_VERSION` (default `v0.6.0`).
 
 ## Prepare and start
 

@@ -51,10 +51,14 @@ var _ Store = (*store.Store)(nil)
 // Session is a valid browser session as the rest of the Hub sees it. It holds
 // no secret except CSRFToken, which belongs to the session's own browser.
 type Session struct {
-	ID                 string
-	UserID             string
-	Username           string
-	Role               authz.Role
+	ID       string
+	UserID   string
+	Username string
+	Role     authz.Role
+	// CredentialVersion is the credential_version of the account that the
+	// session was resolved against. The API-key issuance check compares it
+	// inside the insert transaction (F-07).
+	CredentialVersion  int64
 	MustChangePassword bool
 	ExpiresAt          time.Time
 	// CSRFToken is the token the browser must send in X-Minion-CSRF.
@@ -189,6 +193,7 @@ func toSession(row store.SessionRow, u store.UserRow, token string) Session {
 		UserID:             u.ID,
 		Username:           u.Username,
 		Role:               authz.Role(u.Role),
+		CredentialVersion:  u.CredentialVersion,
 		MustChangePassword: u.MustChangePassword,
 		ExpiresAt:          store.FromUnixMS(row.ExpiresAt),
 		CSRFToken:          CSRFToken(token),
@@ -210,7 +215,7 @@ func (m *Manager) Resolve(ctx context.Context, token string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !m.now().Before(store.FromUnixMS(row.ExpiresAt)) || !user.Active || row.CredentialVersion != user.CredentialVersion {
+	if !m.now().Before(store.FromUnixMS(row.ExpiresAt)) || !user.Active || user.Role == "" || row.CredentialVersion != user.CredentialVersion {
 		return nil, ErrNoSession
 	}
 	s := toSession(row, user, token)

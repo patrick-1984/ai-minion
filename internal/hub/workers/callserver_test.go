@@ -179,8 +179,8 @@ func errCodeOf(t *testing.T, frames []json.RawMessage) proto.Code {
 
 func TestCallStreamPipeSendAsWorkerIdentity(t *testing.T) {
 	r := newCallRig(t, nil)
-	// pi-2 sends to a session on pi-1 (same owner), by the human target form.
-	frames := r.call(t, wAlicePi2.ID, request(ops.OpPipeSend,
+	// pi-1 sends to a session on itself, by the human target form (A -> itself).
+	frames := r.call(t, wAlicePi1.ID, request(ops.OpPipeSend,
 		map[string]any{"request_id": ops.NewUUIDv7(), "target": "pi-1:minion-1", "text": "ping from pi-2"}, ""))
 	if len(frames) != 1 {
 		t.Fatalf("%d frames: %s", len(frames), frames)
@@ -203,7 +203,7 @@ func TestCallStreamPipeSendAsWorkerIdentity(t *testing.T) {
 		t.Fatalf("stored = %+v", msgs)
 	}
 	evs := r.audit.all()
-	if len(evs) != 1 || evs[0].Actor != "worker:"+wAlicePi2.ID || evs[0].Action != ops.OpPipeSend || evs[0].Outcome != "success" {
+	if len(evs) != 1 || evs[0].Actor != "worker:"+wAlicePi1.ID || evs[0].Action != ops.OpPipeSend || evs[0].Outcome != "success" {
 		t.Fatalf("audit = %+v", evs)
 	}
 }
@@ -216,7 +216,7 @@ func TestCallStreamWorkerIdentityIsCheckedAgainstItsOwnersSpace(t *testing.T) {
 		"pi-1:minion-1", // alice's pi-1, resolved in alice's space: allowed
 		map[string]any{"worker_id": wBobPi1.ID, "session_name": "minion-1"},
 	} {
-		frames := r.call(t, wAlicePi2.ID, request(ops.OpPipeSend,
+		frames := r.call(t, wAlicePi1.ID, request(ops.OpPipeSend,
 			map[string]any{"request_id": ops.NewUUIDv7(), "target": tgt, "text": "x"}, ""))
 		typ, _ := lastFrame(t, frames)
 		if _, isString := tgt.(string); isString {
@@ -233,7 +233,7 @@ func TestCallStreamWorkerIdentityIsCheckedAgainstItsOwnersSpace(t *testing.T) {
 		t.Fatalf("%d calls routed, want only the allowed one", r.rt.count())
 	}
 	// Another owner's name is not resolvable from alice's Worker.
-	frames := r.call(t, wAlicePi2.ID, request(ops.OpPipeSend,
+	frames := r.call(t, wAlicePi1.ID, request(ops.OpPipeSend,
 		map[string]any{"request_id": ops.NewUUIDv7(), "target": "box:minion-1", "text": "x"}, ""))
 	if code := errCodeOf(t, frames); code != proto.CodeTargetNotFound {
 		t.Fatalf("foreign name: code %q", code)
@@ -304,12 +304,12 @@ func TestCallStreamRateLimitAppliesToCallsToo(t *testing.T) {
 	r := newCallRig(t, nil)
 	tgt := map[string]any{"worker_id": wAlicePi1.ID, "session_name": "minion-1"}
 	for i := 0; i < pipe.SendBurst; i++ {
-		frames := r.call(t, wAlicePi2.ID, request(ops.OpPipeSend, map[string]any{"request_id": ops.NewUUIDv7(), "target": tgt, "text": "x"}, ""))
+		frames := r.call(t, wAlicePi1.ID, request(ops.OpPipeSend, map[string]any{"request_id": ops.NewUUIDv7(), "target": tgt, "text": "x"}, ""))
 		if typ, _ := lastFrame(t, frames); typ != proto.TypeOpResult {
 			t.Fatalf("send %d: %s", i, frames)
 		}
 	}
-	frames := r.call(t, wAlicePi2.ID, request(ops.OpPipeSend, map[string]any{"request_id": ops.NewUUIDv7(), "target": tgt, "text": "x"}, ""))
+	frames := r.call(t, wAlicePi1.ID, request(ops.OpPipeSend, map[string]any{"request_id": ops.NewUUIDv7(), "target": tgt, "text": "x"}, ""))
 	if code := errCodeOf(t, frames); code != proto.CodePipeRateLimited {
 		t.Fatalf("code %q", code)
 	}
@@ -387,8 +387,16 @@ func TestCallStreamPipeReadWithholdsUntrustedTurnsFromModels(t *testing.T) {
 	r := newCallRig(t, nil)
 	r.commit(t, wAlicePi1, "minion-1", "secret answer")
 	args := map[string]any{"target": map[string]any{"worker_id": wAlicePi1.ID, "session_name": "minion-1"}}
+	// A Worker identity reads its own Worker's sessions; a bound key arrives on
+	// the stream of the Worker it is bound to (pi-2) and reaches pi-1 by scope.
+	streamOf := func(key string) string {
+		if key == "" {
+			return wAlicePi1.ID
+		}
+		return wAlicePi2.ID
+	}
 	read := func(key string) PipeReadView {
-		frames := r.call(t, wAlicePi2.ID, request(ops.OpPipeRead, args, key))
+		frames := r.call(t, streamOf(key), request(ops.OpPipeRead, args, key))
 		typ, body := lastFrame(t, frames)
 		if typ != proto.TypeOpResult {
 			t.Fatalf("read: %s", body)
@@ -429,7 +437,7 @@ func TestCallStreamPipeWaitStreamsTheNextTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.cs.Serve(ctx, wAlicePi2.ID, st)
+		r.cs.Serve(ctx, wAlicePi1.ID, st)
 	}()
 	time.Sleep(30 * time.Millisecond)
 	r.commit(t, wAlicePi1, "minion-1", "the reply")
@@ -458,7 +466,7 @@ func TestCallStreamPipeWaitStreamsTheNextTurn(t *testing.T) {
 func TestCallStreamPipeWaitIsRefusedForUntrustedSources(t *testing.T) {
 	r := newCallRig(t, nil)
 	args := map[string]any{"target": map[string]any{"worker_id": wAlicePi1.ID, "session_name": "minion-1"}, "timeout_ms": 5000}
-	if code := errCodeOf(t, r.call(t, wAlicePi2.ID, request(ops.OpPipeWait, args, ""))); code != proto.CodeUntrustedPeer {
+	if code := errCodeOf(t, r.call(t, wAlicePi1.ID, request(ops.OpPipeWait, args, ""))); code != proto.CodeUntrustedPeer {
 		t.Fatalf("code %q", code)
 	}
 }
@@ -502,7 +510,7 @@ func TestCallStreamEndsQuietlyWhenTheCallerLeaves(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.cs.Serve(ctx, wAlicePi2.ID, st)
+		r.cs.Serve(ctx, wAlicePi1.ID, st)
 	}()
 	time.Sleep(30 * time.Millisecond)
 	st.Reset() // the Worker abandons the call
@@ -751,9 +759,23 @@ func TestHubWithTwoWorkersPipeSendAndTrustedReads(t *testing.T) {
 	w := newWorld(t, wAlicePi1, wAlicePi2)
 	sender, receiver := w.workers[wAlicePi2.ID], w.workers[wAlicePi1.ID]
 
-	// 1. `mn pipe_send` on pi-2 to a session on pi-1.
+	// 0. F-01: pi-2 speaking as its own Worker identity cannot reach a session
+	// of pi-1, a Worker of the same owner. It cannot even name it.
+	for _, tgt := range []any{"pi-1:minion-1", map[string]any{"worker_id": wAlicePi1.ID, "session_name": "minion-1"}} {
+		code, _ := sender.call(t, ops.OpPipeSend,
+			map[string]any{"request_id": ops.NewUUIDv7(), "target": tgt, "text": "no key"}, "")
+		if code != proto.CodeTargetNotFound && code != proto.CodeNotFound {
+			t.Fatalf("keyless cross-Worker pipe_send: code %q, want not found", code)
+		}
+	}
+	if n := len(receiver.requests()); n != 0 {
+		t.Fatalf("pi-1 received %d requests from a keyless peer", n)
+	}
+
+	// 1. `mn pipe_send` on pi-2 to a session on pi-1, with the call key of pi-2
+	// (call_api_key_file): an API key bound to pi-2.
 	code, res := sender.call(t, ops.OpPipeSend,
-		map[string]any{"request_id": ops.NewUUIDv7(), "target": "pi-1:minion-1", "text": "please run the tests"}, "")
+		map[string]any{"request_id": ops.NewUUIDv7(), "target": "pi-1:minion-1", "text": "please run the tests"}, keyBoundPi2)
 	var wr ops.WriteResult
 	if code != "" || json.Unmarshal(res, &wr) != nil || wr.Outcome != ops.OutcomeDelivered {
 		t.Fatalf("pipe_send over the call stream: code %q, result %s", code, res)
@@ -761,6 +783,15 @@ func TestHubWithTwoWorkersPipeSendAndTrustedReads(t *testing.T) {
 	reqs := receiver.requests()
 	if len(reqs) != 1 || reqs[0].Op != ops.OpPipeSend || !reqs[0].Actions.Permits(ops.ActionMessage) {
 		t.Fatalf("pi-1 received %+v", reqs)
+	}
+	// The origin is derived by the Hub from the key: the receiver sees the
+	// bound Worker as the source, with its fingerprint and its owner.
+	wantOrigin := proto.Origin{
+		Kind: proto.OriginAPIKey, UserID: idAlice, KeyID: "k-pi2", KeyBoundWorkerID: wAlicePi2.ID,
+		SourceWorkerID: wAlicePi2.ID, SourceWorkerFP: wAlicePi2.Fingerprint, SourceWorkerOwnerID: idAlice,
+	}
+	if reqs[0].Origin != wantOrigin {
+		t.Fatalf("origin = %+v, want %+v", reqs[0].Origin, wantOrigin)
 	}
 	var sent ops.PipeSendArgs
 	if err := json.Unmarshal(reqs[0].Args, &sent); err != nil || sent.Text != "please run the tests" || sent.Target.WorkerID != wAlicePi1.ID || sent.Target.SessionName != "minion-1" {
@@ -779,10 +810,14 @@ func TestHubWithTwoWorkersPipeSendAndTrustedReads(t *testing.T) {
 		t.Fatalf("%d turns stored", len(turns))
 	}
 
-	// 3. Trust off: a model on pi-2 (Worker identity, and a Worker-bound key)
-	// gets the sent message but not the reply.
+	// 3. Trust off: a model on pi-2 (through its Worker-bound call key) gets the
+	// sent message but not the reply. Its keyless Worker identity reads nothing
+	// of pi-1.
 	readArgs := map[string]any{"target": "pi-1:minion-1"}
-	for _, key := range []string{"", keyBoundPi2} {
+	if code, _ := sender.call(t, ops.OpPipeRead, readArgs, ""); code != proto.CodeTargetNotFound && code != proto.CodeNotFound {
+		t.Fatalf("keyless cross-Worker pipe_read: code %q, want not found", code)
+	}
+	for _, key := range []string{keyBoundPi2} {
 		code, res := sender.call(t, ops.OpPipeRead, readArgs, key)
 		var v PipeReadView
 		if code != "" || json.Unmarshal(res, &v) != nil {
@@ -802,7 +837,7 @@ func TestHubWithTwoWorkersPipeSendAndTrustedReads(t *testing.T) {
 	if err := w.trust.Set(ctx, idAlice, wAlicePi1.ID, "minion-1"); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"", keyBoundPi2} {
+	for _, key := range []string{keyBoundPi2} {
 		code, res := sender.call(t, ops.OpPipeRead, readArgs, key)
 		var v PipeReadView
 		if code != "" || json.Unmarshal(res, &v) != nil {
@@ -817,5 +852,44 @@ func TestHubWithTwoWorkersPipeSendAndTrustedReads(t *testing.T) {
 	code, _ = sender.call(t, ops.OpPipeRead, readArgs, keyBoundPi1)
 	if code != proto.CodeForbidden {
 		t.Fatalf("a Worker-bound key on another Worker's call stream: code %q, want forbidden", code)
+	}
+}
+
+// F-07: a running keyless Worker call ends when the Worker's owner loses the
+// last grant, like a call with an API key ends when its key is revoked.
+func TestCallStreamWithdrawsAKeylessCallWhenTheOwnerLosesAccess(t *testing.T) {
+	ctx := context.Background()
+	pr := newPipeRig(t, 0)
+	cs := NewCallServer(CallServerConfig{Authz: pr.az, ReauthInterval: 10 * time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
+	if err := cs.Handle(ops.OpPipeWait, func(ctx context.Context, _ *CallContext, _ func(any) error) (any, error) {
+		<-ctx.Done() // a long call that never asks the Authorizer itself
+		return nil, ctx.Err()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"target": map[string]any{"worker_id": wAlicePi1.ID, "session_name": "minion-1"}}
+	st := newCallStream(t, request(ops.OpPipeWait, args, ""))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cs.Serve(ctx, wAlicePi1.ID, st)
+	}()
+	time.Sleep(30 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the call ended while the owner still had access")
+	default:
+	}
+	pr.users.set(idAlice, authz.UserState{Role: "", Active: true})
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the keyless call kept running after its owner lost every grant")
+	}
+	st.mu.Lock()
+	frames := append([]json.RawMessage(nil), st.written...)
+	st.mu.Unlock()
+	if code := errCodeOf(t, frames); code != proto.CodeForbidden {
+		t.Fatalf("code %q, want forbidden", code)
 	}
 }

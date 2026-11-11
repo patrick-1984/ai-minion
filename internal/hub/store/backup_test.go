@@ -564,10 +564,10 @@ func TestRestoreRefusesBadArchives(t *testing.T) {
 			*es = append(*es, entry{hdr: regular("../escape"), body: []byte("x")})
 		}, "unexpected entry"},
 		"symlink": {func(m *Manifest, es *[]entry) {
-			(*es)[1].hdr.Typeflag = tar.TypeSymlink
-			(*es)[1].hdr.Linkname = "/etc/passwd"
-			(*es)[1].body = nil
-			m.Files[0].Size = 0
+			(*es)[2].hdr.Typeflag = tar.TypeSymlink
+			(*es)[2].hdr.Linkname = "/etc/passwd"
+			(*es)[2].body = nil
+			m.Files[1].Size = 0
 		}, "not a regular file"},
 		"manifest lists traversal": {func(m *Manifest, es *[]entry) {
 			m.Files = append(m.Files, ManifestEntry{Name: "../x", SHA256: strings.Repeat("0", 64)})
@@ -578,7 +578,7 @@ func TestRestoreRefusesBadArchives(t *testing.T) {
 			*es = (*es)[:2]
 		}, "does not contain"},
 		"wrong format":  {func(m *Manifest, es *[]entry) { m.Format = 99 }, "format"},
-		"size mismatch": {func(m *Manifest, es *[]entry) { m.Files[0].Size++ }, "size"},
+		"size mismatch": {func(m *Manifest, es *[]entry) { m.Files[1].Size++ }, "size"},
 		"manifest schema differs from database": {func(m *Manifest, es *[]entry) {
 			m.SchemaVersion = 1
 		}, "manifest says"},

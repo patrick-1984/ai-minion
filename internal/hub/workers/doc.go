@@ -26,7 +26,7 @@
 // Channel:
 //
 //	{"type":"welcome","worker_id":"...","name":"...","owner":"...","kind":"private|infrastructure",
-//	 "policy":{"preview_only":false},"proto_min":"1.0","proto_max":"1.0"}
+//	 "policy":{"preview_only":false},"proto_min":"2.0","proto_max":"2.0"}
 //	{"type":"revoke","sig":"<base64url>"}   // sig: purpose "revoke" over transcript_hash, by the Hub key
 //	{"type":"not_enrolled"}                 // non-destructive: the Worker keeps its state
 //

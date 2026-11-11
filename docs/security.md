@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md).
 
-Minion lets people, scripts and models read and type into terminal sessions on other machines. That is the product, and it defines what you are trusting. This page states the boundaries as they are in release 0.5.0, including what has not been reviewed yet.
+Minion lets people, scripts and models read and type into terminal sessions on other machines. That is the product, and it defines what you are trusting. This page states the boundaries as they are in release 0.6.0, including what has not been reviewed yet.
 
 ## Who sees what
 
@@ -12,9 +12,25 @@ Minion lets people, scripts and models read and type into terminal sessions on o
 - **The Worker's own user decides what is reachable.** A Worker runs as one Unix user (or Windows account) and can do to that user's tmux sessions everything the user can. A Worker in a container that mounts the host user's tmux socket has the same reach ([Docker Worker](install/worker-docker.md#the-trust-boundary)).
 - **Roles:** an administrator may do everything, including manage users, Workers and settings; the owner of a Worker may read, operate and message on it; nobody else has any access. An API key never has more than its owner has, and is further limited to the resources and actions it was created with.
 
+## Enrollment is not authorization: new Workers wait for approval
+
+An invitation key, a pairing code or the infrastructure key file lets a machine **enroll**; it does not let that machine be **operated**. Every new Worker starts *pending*: it may connect, but the Hub routes no operation to it (no user, key or other Worker can name it as a target), its calls to the Hub are refused with `worker_pending` (it may still retire itself), and its sessions are not listed or read. The owner of the Worker or an administrator approves it in the Hub after comparing its fingerprint, host name and source address, with `minion hub worker approve`, or through `worker_approve` ([Approve a new Worker](guides/pairing.md#approve-a-new-worker)). So a leaked invitation key alone gives an attacker a pending, inert Worker that you can see and remove, not a way to read or type into anything, and not a Worker that can call other Workers.
+
+What bounds a leaked key further: a user's key lasts at most one week, a user's reusable key allows at most 100 enrollments (10 by default), and the infrastructure key file expires (30 days by default), counts its uses and can be revoked from the Invitations page; reloading the file never resets any of this. Approve only a Worker you recognise: approval is the authorization, and an approved Worker has all the reach a Worker of its owner has.
+
+## Worker isolation: one compromised Worker does not reach the others
+
+A Worker identity can read and message **only its own Worker and that Worker's sessions**. It cannot reach another Worker, not even one of the same owner, unless the owner gives it a **call key**: an API key bound to that Worker with a narrow scope, set as `call_api_key_file` on the Worker ([API keys and MCP](guides/api-keys-and-mcp.md#let-a-worker-call-other-workers)). The receiving Worker then decides for itself with its local setting `pipe_accept_from` (`none` by default, `owner-workers`, or a list of Worker ids or fingerprints) whether it takes messages from another Worker ([the pipe](guides/pipe.md#agent-to-agent-the-call-key-and-pipe_accept_from)). The Hub tells every Worker who made each request (`origin`: user, API key or Worker, with the key and the sending Worker), and a Worker refuses a message-class request that has no valid origin. The setting can be changed only on the Worker itself, and each refusal is in the Worker's local audit.
+
+What this protects, and what it does not:
+
+- It protects every Worker against a **compromised peer Worker, or an agent on it that was talked into misbehaving**, as long as the **Hub is honest**. Enrolling a Worker, or stealing its identity key, no longer gives a way to type into the rest of the fleet.
+- It does **not** protect against a compromised Hub or a malicious administrator. The Hub supplies the origin, and a Hub or an administrator can already create sessions and act as users. Trust the Hub as described above.
+- Anything that runs as the Worker's own user can read that Worker's call key file and its local configuration (it can also change `pipe_accept_from` there). Run agents of different trust levels as different users or in different containers.
+
 ## A message can make an agent run commands
 
-Sending a message to an agent (`pipe_send`, `send_text`, `send_keys`, `answer`) is the same as typing into it. The agent, or the shell it sits in, may act on that text. Anything that can send, and anything a sender can talk into sending, can therefore cause commands to run on that machine, through that agent, with that agent's rights. The same is true of a model that reads a session and then writes to another: what it reads can steer what it types.
+Sending a message to an agent (`pipe_send`, `send_text`, `send_keys`, `answer`, `set_task`) is the same as typing into it. The agent, or the shell it sits in, may act on that text. Anything that can send, and anything a sender can talk into sending, can therefore cause commands to run on that machine, through that agent, with that agent's rights. The same is true of a model that reads a session and then writes to another: what it reads can steer what it types.
 
 Consequences you should draw:
 
@@ -25,9 +41,10 @@ Consequences you should draw:
 
 ## Credentials
 
-- **Invitation keys** (`mnk_...`) enroll Workers. **API keys** (`mn_...`) call the Hub. Both are shown once; keep them in files that only their user can read. A key given **literally on a command line is visible in the process list** of that machine to every local user; use a file (`--invite-key <file>`, `MINION_INVITE_KEY_FILE`, `MINION_API_KEY_FILE`). The API key file is checked: a regular file, owned by you, closed to group and others, not a symbolic link. A key left on disk is a credential until it expires or you revoke it.
+- **Invitation keys** (`mnk_...`) enroll Workers. **API keys** (`mn_...`) call the Hub. Both are shown once; keep them in files that only their user can read. A key given **literally on a command line is visible in the process list** of that machine to every local user; use a file (`--invite-key <file>`, `MINION_INVITE_KEY_FILE`, `MINION_API_KEY_FILE`). The API key file is checked: a regular file, owned by you, closed to group and others, not a symbolic link. A key left on disk is a credential until it expires or you revoke it. Even a stolen key only enrolls a pending Worker (see above).
 - Secrets are never accepted as command-line values and are redacted in logs. The one exception is the invitation key, which is meant for one-command setup and carries the warning above. A `curl` call to the Hub's HTTP API must not carry the key in its arguments either: give it the header on standard input ([API keys and MCP](guides/api-keys-and-mcp.md)).
-- **Backups and release caches are credentials too.** A Hub backup contains the data key and the Hub identity key ([backup and restore](guides/backup-restore.md)).
+- **Keys follow the person.** An API key or Worker identity has only the access its owner has now: when the owner has no effective role (the IdP removed every IdP role and no local grant remains) it is inert at once and returns with the role. Resetting or changing the owner's password revokes all the owner's API keys in the same transaction (an administrator can keep them on a reset). A key created without an expiry lives 90 days; only administrators can create keys that never expire. IdP admin roles are granted only with a refresh token and re-checked at least hourly; existing tokenless IdP admins were suspended on upgrade (sign in again).
+- **Backups and release caches are credentials too.** A Hub backup contains the data key, the Hub identity key and the TLS key. `minion hub backup` encrypts it with a passphrase by default (`--unencrypted` is an explicit opt-out), and the encryption protects the file at rest only: anyone who decrypts it, or who holds an unencrypted one, holds the Hub identity and can impersonate the Hub to its Workers and read what the Hub stores. Disclosure of a backup is therefore a **Hub identity compromise**. A compromised identity is not rotated; it is replaced by a new Hub identity and every Worker is enrolled again (reset on its machine, enrolled with a new invitation key; see [backup and restore](guides/backup-restore.md#if-a-backup-is-disclosed)). Keep the passphrase apart from the archive, and store the archive as you would store the Hub identity key.
 - **Two secrets are printed on purpose, and nothing else is.** Protect the logs that hold them (the Worker's console and log, and the Hub's first-start log), and do not paste them into tickets or chat.
   - A **pairing code** (`MN-XXXX-XXXX`) is valid for 10 minutes and is printed on the Worker's console and in its log.
   - A **generated administrator password**: when the Hub starts for the first time without `MINION_ADMIN_PASSWORD_FILE` (or `MINION_ADMIN_PASSWORD`), it makes a random password for the first administrator and logs it once, at error level, so that no log threshold hides it. It must be changed at the first sign-in, but until then the log line is a working credential. To avoid it, give the Hub a private password file (a regular file only the Hub's user can read, mode 0400) as in the [binary](install/hub-binary.md#run-it) and [Docker](install/hub-docker.md#prepare-and-start) guides; a configured password is never logged. If the password was generated, change it, then remove or rotate the log that shows it.
@@ -45,7 +62,7 @@ A Worker pins the Hub's **identity key** when it pairs or enrolls; later it trus
 - **Signed release (the default):** it verifies the same signature of the checksum list as `minion update` does (with a pinned `cosign`), then the archive against those checksums.
 - **Checksum-pinned (an exact version plus `MINION_SHA256`):** it checks only that the archive has the SHA-256 you supplied. It does not fetch or verify the checksums file, the signature or the transparency-log entry, so the signature guarantees above do **not** apply to this mode. Take the checksum from a source you trust independently of the download (for example the signed `checksums.txt` that you verified yourself), because the installer trusts it completely.
 
- There is no database downgrade: an older Hub refuses a database a newer one changed. A Worker whose protocol range does not overlap its Hub's refuses an update that would break the connection.
+ There is no database downgrade: an older Hub refuses a database a newer one changed. A Worker whose protocol range does not overlap its Hub's refuses an update that would break the connection. Release 0.6.0 speaks wire protocol **2.0** only (the signed release manifest carries the range `2.0..2.0`): a Hub and a Worker of an earlier build cannot connect, and mixed versions are not supported, so upgrade the Hub and all Workers together.
 
 ## When something is not known
 

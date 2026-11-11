@@ -360,28 +360,70 @@ func TestHubImageAndNativeWorker(t *testing.T) {
 
 	w := startWorker(t, bin, hubURL, work, inviteFile, tmuxSock)
 	workerID := ""
-	online := func() bool {
+	// listed returns the Worker docker-e2e as the Hub lists it, if it is there.
+	listed := func() (ops.WorkerInfo, bool) {
 		var list ops.WorkersListResult
 		if err := c.call(ops.OpWorkersList, struct{}{}, &list); err != nil {
-			return false
+			return ops.WorkerInfo{}, false
 		}
 		for _, wi := range list.Workers {
-			if wi.Name == "docker-e2e" && wi.Online {
-				workerID = wi.ID
-				return true
+			if wi.Name == "docker-e2e" {
+				return wi, true
 			}
+		}
+		return ops.WorkerInfo{}, false
+	}
+	// online: connected and approved, so that the Hub routes operations to it.
+	online := func() bool {
+		wi, ok := listed()
+		if ok && wi.Online && !wi.Pending {
+			workerID = wi.ID
+			return true
 		}
 		return false
 	}
-	t.Run("the native Worker enrolls with the literal key and comes online", func(t *testing.T) {
-		waitFor(t, "the Worker to be online at the Hub", 90*time.Second, func() bool {
+	t.Run("the native Worker enrolls with the literal key and waits for approval", func(t *testing.T) {
+		var pending ops.WorkerInfo
+		waitFor(t, "the Worker to be connected and pending at the Hub", 90*time.Second, func() bool {
+			if err, gone := w.exited(); gone {
+				t.Fatalf("the Worker process ended (%v):\n%s", err, tail(w.logText()))
+			}
+			wi, ok := listed()
+			pending = wi
+			return ok && wi.Online
+		})
+		if !pending.Pending || len(pending.Fingerprint) != 52 || pending.EnrollAddr == "" {
+			t.Fatalf("a newly enrolled Worker must be pending with its fingerprint and address: %+v", pending)
+		}
+		if !strings.Contains(w.logText(), "enrolled as docker-e2e") {
+			t.Fatalf("the Worker did not report its enrollment:\n%s", tail(w.logText()))
+		}
+		// F-02: until it is approved the Hub routes nothing to it.
+		err := c.call(ops.OpSessionCreate, createBody{
+			SessionCreateArgs: ops.SessionCreateArgs{WriteArgs: ops.WriteArgs{RequestID: uuid7()}, Name: "refused", Argv: []string{"cat"}},
+			WorkerID:          pending.ID,
+		}, nil)
+		if err == nil || !strings.Contains(err.Error(), "worker_pending") {
+			t.Fatalf("session_create on a pending Worker = %v, want worker_pending", err)
+		}
+		// The admin approves it (the owner or an admin could; automation would use
+		// an admin API key with `minion hub worker approve <fingerprint>`).
+		var res ops.WriteResult
+		if err := c.call(ops.OpWorkerApprove, ops.WorkerApproveArgs{
+			WriteArgs: ops.WriteArgs{RequestID: uuid7()}, WorkerID: pending.ID, Fingerprint: pending.Fingerprint,
+		}, &res); err != nil || res.Outcome != ops.OutcomeDelivered {
+			t.Fatalf("worker_approve = %+v, %v", res, err)
+		}
+	})
+	t.Run("the approved Worker reconnects and comes online", func(t *testing.T) {
+		waitFor(t, "the approved Worker to be online at the Hub", 90*time.Second, func() bool {
 			if err, gone := w.exited(); gone {
 				t.Fatalf("the Worker process ended (%v):\n%s", err, tail(w.logText()))
 			}
 			return online()
 		})
-		if !strings.Contains(w.logText(), "enrolled as docker-e2e") {
-			t.Fatalf("the Worker did not report its enrollment:\n%s", tail(w.logText()))
+		if n := strings.Count(w.logText(), "enrolled as docker-e2e"); n != 1 {
+			t.Fatalf("the Worker enrolled %d times; an approval must not enroll again", n)
 		}
 	})
 

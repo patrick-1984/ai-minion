@@ -180,7 +180,7 @@ func TestListAPIKeysFiltersByOwnerNewestFirst(t *testing.T) {
 	s, admin := keyFixture(t)
 	ctx := context.Background()
 	other := NewID()
-	if _, err := s.db.Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'bob', 1, 1)`, other); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'bob', 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, other); err != nil {
 		t.Fatal(err)
 	}
 	k1, k2, k3 := sampleKey(admin, 10, 100), sampleKey(admin, 11, 300), sampleKey(other, 12, 200)
@@ -299,7 +299,7 @@ func TestAPIKeysAreDeletedWithTheirOwner(t *testing.T) {
 	s, _ := keyFixture(t)
 	ctx := context.Background()
 	owner := NewID()
-	if _, err := s.db.Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'carol', 1, 1)`, owner); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO users (id, username, created_at, updated_at) VALUES (?, 'carol', 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, owner); err != nil {
 		t.Fatal(err)
 	}
 	k := sampleKey(owner, 40, 1)

@@ -363,10 +363,18 @@ type OIDCSyncResult struct {
 	// (AD-10: no matching rule means no access, so the earlier sessions end
 	// with this sign-in).
 	SessionsEnded int64
+	// AdminWithheld is true when the claims gave the admin role but no usable
+	// refresh token exists for the identity (the IdP issued none at this
+	// sign-in and none is stored), so the admin grant was not made: an IdP
+	// admin grant that nothing can re-check would never end (F-07). The
+	// other roles, if any, were applied.
+	AdminWithheld bool
 }
 
 // RolesChanged reports whether the sync changed the account's IdP roles.
 func (r OIDCSyncResult) RolesChanged() bool { return !slices.Equal(r.RolesBefore, r.RolesAfter) }
+
+var errNoGrantsForNewAccount = errors.New("store: no grant for a new OIDC account")
 
 // SyncOIDCLogin applies a successful IdP sign-in in one transaction: it finds
 // the account of (issuer, subject) or, when allowed, creates it, replaces its
@@ -406,6 +414,29 @@ func (s *Store) SyncOIDCLogin(ctx context.Context, p OIDCSyncParams) (OIDCSyncRe
 			return fmt.Errorf("store: read external identity: %w", err)
 		}
 
+		// An admin grant needs a refresh token that the background refresh can
+		// use to re-check it: the one this sign-in brought or one stored from an
+		// earlier sign-in. Without it the admin role is withheld.
+		eff := roles
+		if slices.Contains(eff, roleAdmin) {
+			hasToken := p.RefreshToken != ""
+			if !hasToken && res.Found && !res.Created {
+				ok, err := s.refreshTokenUsable(ctx, tx, identityID)
+				if err != nil {
+					return err
+				}
+				hasToken = ok
+			}
+			if !hasToken {
+				eff = slices.DeleteFunc(slices.Clone(eff), func(r string) bool { return r == roleAdmin })
+				res.AdminWithheld = true
+			}
+		}
+		if res.Created && len(eff) == 0 {
+			// Nothing to grant to a new account: do not keep it.
+			return errNoGrantsForNewAccount
+		}
+
 		user, err := queryUserTx(ctx, tx, userID)
 		if err != nil {
 			return err
@@ -415,7 +446,7 @@ func (s *Store) SyncOIDCLogin(ctx context.Context, p OIDCSyncParams) (OIDCSyncRe
 			res.Inactive = true
 			return nil
 		}
-		if res.RolesBefore, res.RolesAfter, err = replaceIDPRolesTx(ctx, tx, userID, roles); err != nil {
+		if res.RolesBefore, res.RolesAfter, err = replaceIDPRolesTx(ctx, tx, userID, eff); err != nil {
 			return err
 		}
 		if p.RefreshToken != "" {
@@ -440,7 +471,7 @@ func (s *Store) SyncOIDCLogin(ctx context.Context, p OIDCSyncParams) (OIDCSyncRe
 			p.NowMS, step, p.ProviderID, identityID); err != nil {
 			return fmt.Errorf("store: update external identity: %w", err)
 		}
-		if len(roles) == 0 {
+		if len(eff) == 0 {
 			// No matching rule means no access: the sessions of earlier
 			// sign-ins must not outlive the group membership that gave them.
 			r, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID)
@@ -468,6 +499,10 @@ func (s *Store) SyncOIDCLogin(ctx context.Context, p OIDCSyncParams) (OIDCSyncRe
 		}
 		return nil
 	})
+	if errors.Is(err, errNoGrantsForNewAccount) {
+		// Only the admin role matched and it was withheld: nothing is created.
+		return OIDCSyncResult{AdminWithheld: true}, nil
+	}
 	if err != nil {
 		return OIDCSyncResult{}, err
 	}

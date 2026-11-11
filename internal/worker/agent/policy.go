@@ -2,8 +2,12 @@ package agent
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync/atomic"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -35,6 +39,8 @@ type Policy struct {
 	hubPreviewOnly atomic.Bool
 	shareLock      atomic.Bool
 	workerID       atomic.Pointer[string]
+	ownerID        atomic.Pointer[string]
+	pipeAccept     atomic.Pointer[config.PipeAcceptFrom]
 }
 
 // NewPolicy returns a Policy that reads the share selection from share. A nil
@@ -112,4 +118,57 @@ func (p *Policy) Shared(ctx context.Context, session string) (bool, error) {
 		return false, err
 	}
 	return sel.Includes(session), nil
+}
+
+// SetOwnerID sets the stable id of this Worker's owner, from the last welcome
+// ("" when the Worker is not enrolled). It is connection state, never stored.
+func (p *Policy) SetOwnerID(id string) { p.ownerID.Store(&id) }
+
+// OwnerID returns the id of this Worker's owner from the last welcome, or "".
+func (p *Policy) OwnerID() string {
+	if id := p.ownerID.Load(); id != nil {
+		return *id
+	}
+	return ""
+}
+
+// SetPipeAcceptFrom sets the local receiver policy pipe_accept_from. It is read
+// from the settings at every start; no Hub operation reaches it.
+func (p *Policy) SetPipeAcceptFrom(a config.PipeAcceptFrom) { p.pipeAccept.Store(&a) }
+
+// PipeAcceptFrom returns the receiver policy; none when it was never set.
+func (p *Policy) PipeAcceptFrom() config.PipeAcceptFrom {
+	if p != nil {
+		if a := p.pipeAccept.Load(); a != nil {
+			return *a
+		}
+	}
+	return config.PipeAcceptFrom{}
+}
+
+// CheckOrigin applies pipe_accept_from to a validated origin of a message-class
+// op (F-01). An origin that names no source Worker (a user or an unbound API
+// key) is the Hub's own decision and passes. The Worker itself always passes.
+// Any other source Worker passes only when the policy accepts it: owner-workers
+// compares the owner id of the origin with the owner id of this Worker from its
+// welcome; a list names Worker ids or fingerprints. A nil Policy is none.
+func (p *Policy) CheckOrigin(o proto.Origin) error {
+	if !o.FromWorker() {
+		return nil
+	}
+	if p != nil {
+		if self := p.WorkerID(); self != "" && o.SourceWorkerID == self {
+			return nil
+		}
+	}
+	acc := p.PipeAcceptFrom()
+	switch {
+	case acc.OwnerWorkers:
+		if own := p.OwnerID(); own != "" && o.SourceWorkerOwnerID == own {
+			return nil
+		}
+	case slices.Contains(acc.Allow, o.SourceWorkerID), slices.Contains(acc.Allow, strings.ToLower(o.SourceWorkerFP)):
+		return nil
+	}
+	return proto.NewError(proto.CodePipeOriginRefused, "this Worker does not accept messages from that Worker (pipe_accept_from)")
 }

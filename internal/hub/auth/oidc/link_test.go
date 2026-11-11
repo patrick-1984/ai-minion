@@ -411,7 +411,7 @@ func TestAUserNameNeverLinks(t *testing.T) {
 	// now; the row is written directly): only the e-mail column links.
 	h := newLinkHub(t, linkingOn)
 	if _, err := h.st.DB().Exec(`INSERT INTO users (id, username, email, password_hash, credential_version, active, created_at, updated_at)
-VALUES (?, 'ann@example.com', '', 'x', 1, 1, 1, 1)`, store.NewID()); err != nil {
+VALUES (?, 'ann@example.com', '', 'x', 1, 1, 1, 1) ; INSERT INTO user_roles (user_id, role, source) SELECT id, 'user', 'local' FROM users WHERE id NOT IN (SELECT user_id FROM user_roles)`, store.NewID()); err != nil {
 		t.Fatal(err)
 	}
 	h.claims("ann@example.com", true)

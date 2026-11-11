@@ -78,6 +78,19 @@ const (
 	InvitationRevoked   = "revoked"
 )
 
+// Caps of the invitation keys of non-admins (F-02). A non-admin cannot create
+// a key that is valid longer than NonAdminMaxInvitationTTL (so no "1m" and no
+// "unlimited"), and a reusable key needs a use limit: DefaultReusableMaxUses
+// when none is given, at most MaxReusableUsesNonAdmin. Admins are not capped;
+// an admin's reusable key without max_uses stays unlimited.
+const (
+	NonAdminMaxInvitationTTL = TTL1w
+	DefaultReusableMaxUses   = 10
+	MaxReusableUsesNonAdmin  = 100
+	// MaxInvitationUses is the sanity bound of max_uses for everyone.
+	MaxInvitationUses = 1000000
+)
+
 // MaxInvitationNameLen caps an invitation name in characters.
 const MaxInvitationNameLen = 64
 
@@ -91,6 +104,12 @@ type InvitationCreateArgs struct {
 	Name string `json:"name,omitempty"`
 	// Kind is private (the default) or infrastructure (admin only).
 	Kind string `json:"kind,omitempty"`
+	// MaxUses limits a reusable key to that many enrollments. A non-admin gets
+	// DefaultReusableMaxUses when it is omitted and at most
+	// MaxReusableUsesNonAdmin; an admin's reusable key without it has no
+	// limit. A one-time key allows exactly one enrollment, so MaxUses is 0 or
+	// 1 for it.
+	MaxUses int `json:"max_uses,omitempty"`
 }
 
 // EffectiveKind returns Kind or private when it is empty.
@@ -115,6 +134,12 @@ func (a InvitationCreateArgs) Validate() error {
 	}
 	if k := a.EffectiveKind(); k != KindPrivate && k != KindInfrastructure {
 		return invalid("kind", "must be %s or %s", KindPrivate, KindInfrastructure)
+	}
+	if a.MaxUses < 0 || a.MaxUses > MaxInvitationUses {
+		return invalid("max_uses", "must be between 1 and %d", MaxInvitationUses)
+	}
+	if a.Mode == InvitationOneTime && a.MaxUses > 1 {
+		return invalid("max_uses", "a one-time key allows one enrollment; use a reusable key for more")
 	}
 	return nil
 }
@@ -143,6 +168,9 @@ type InvitationCreateResult struct {
 	TTL       string     `json:"ttl"`
 	CreatedAt Timestamp  `json:"created_at"`
 	ExpiresAt *Timestamp `json:"expires_at"` // null for ttl unlimited
+	// MaxUses is the use limit of the new key: 1 for a one-time key, null
+	// for an admin's reusable key without a limit.
+	MaxUses *int `json:"max_uses"`
 }
 
 // InvitationListArgs are the arguments of invitation_list.
@@ -172,6 +200,12 @@ type InvitationInfo struct {
 	// Status is active, expired, exhausted or revoked (checked in that
 	// order of precedence: revoked first).
 	Status string `json:"status"`
+	// Source is "infra_file" for the row of the Hub-wide key file
+	// (MINION_INFRA_INVITE_KEY_FILE) and omitted for a key made by a user.
+	Source string `json:"source,omitempty"`
+	// Notice is the text the upgrade to 0.6.0 left on a key it limited
+	// (expiry or use limit added); empty otherwise.
+	Notice string `json:"notice,omitempty"`
 }
 
 // InvitationListResult is the result of invitation_list, newest first.

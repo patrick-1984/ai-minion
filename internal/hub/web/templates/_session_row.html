@@ -1,7 +1,7 @@
 {{define "worker_row"}}<tr data-worker="{{.ID}}" data-key="w-{{.ID}}" data-row-link="worker">
   <th scope="row"><a href="{{.URL}}" data-control="name" data-worker-link>{{.Name}}</a></th>
   {{if .ShowOwner}}<td data-label="Owner">{{.Owner}}</td>
-  {{end}}<td data-label="Status">{{if .Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</td>
+  {{end}}<td data-label="Status">{{if .Pending}}<span class="badge" data-tone="warning" data-pending="true">pending approval</span>{{if .Online}} <span class="badge" data-online="true">connected</span>{{end}}{{template "worker_pending_facts" .}}{{else if .Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</td>
   <td data-label="Kind"><span class="badge plain" data-kind="{{.Kind}}">{{.Kind}}</span></td>
   <td data-label="Sessions" class="num">{{if .SessionCount}}<a href="{{.SessionsURL}}" data-control="sessions">{{.SessionCount}}<span class="sr-only"> sessions on {{.Name}}</span></a>{{else}}0{{end}}{{if and .Disclose .Sessions}}
     <details class="worker-sessions" data-keep-open="ws-{{.ID}}">
@@ -13,7 +13,7 @@
       <a class="worker-session-more" href="{{.SessionsURL}}" data-control="sessions-all">All {{.SessionCount}} sessions</a>{{end}}
     </details>{{end}}</td>
   <td data-label="Protocol">{{if .Version}}{{.Version}}{{else}}<span class="muted">-</span>{{end}}</td>
-  <td data-label="Actions">{{if .Online}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
+  <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else if .Online}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn btn-secondary" data-control="new-session" aria-label="New session on {{.Name}}">New session</button>
   </form>{{else}}<span class="muted">Offline</span>{{end}}</td>
 </tr>{{end}}
@@ -26,3 +26,18 @@
   {{end}}<td data-label="Kind">{{.Kind}}</td>
   <td data-label="State"><span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></td>
 </tr>{{end}}
+
+{{/* What the person who approves a new Worker compares: its key fingerprint, the host name it announced and the address it enrolled from. */}}
+{{define "worker_pending_facts"}}<dl class="pending-facts">
+  <div><dt>Fingerprint</dt><dd><code>{{.Fingerprint}}</code></dd></div>
+  <div><dt>Host name</dt><dd>{{.Name}}</dd></div>
+  <div><dt>Source address</dt><dd>{{if .EnrollAddr}}{{.EnrollAddr}}{{else}}<span class="muted">unknown</span>{{end}}</dd></div>
+</dl>{{end}}
+
+{{define "worker_approval_buttons"}}{{if .ApproveURL}}<form method="post" action="{{.ApproveURL}}" hx-post="{{.ApproveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Approve worker {{.Name}} with fingerprint {{.Fingerprint}} from {{.EnrollAddr}}? It receives operations as soon as it is approved. Approve only a machine you started." class="row-actions" data-key="worker-approve-{{.ID}}">
+    <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
+    <button type="submit" class="btn" data-control="approve" aria-label="Approve worker {{.Name}}">Approve</button>
+  </form>
+  <form method="post" action="{{.RemoveURL}}" hx-post="{{.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Remove worker {{.Name}} ({{.Fingerprint}})? It is told to forget this Hub and cannot connect again with its key." class="row-actions" data-key="worker-remove-{{.ID}}">
+    <button type="submit" class="btn btn-danger" data-control="remove" aria-label="Remove worker {{.Name}}">Remove</button>
+  </form>{{else}}<span class="muted">Waiting for approval</span>{{end}}{{end}}

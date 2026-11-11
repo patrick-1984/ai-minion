@@ -13,7 +13,9 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/local"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -42,7 +44,7 @@ func startAccountsHub(t *testing.T) *accountsHub {
 	t.Setenv("MINION_ADMIN_USERNAME", "root")
 	t.Setenv("MINION_ADMIN_PASSWORD", "root-integration-pw-1")
 	cat := ops.NewRegistry()
-	for _, n := range []string{ops.OpAuditList, ops.OpUsersList, ops.OpUserCreate, ops.OpUserResetPassword, ops.OpUserSetRole, ops.OpUserDeactivate, ops.OpPasswordChange} {
+	for _, n := range []string{ops.OpAuditList, ops.OpUsersList, ops.OpUserCreate, ops.OpUserResetPassword, ops.OpUserSetRole, ops.OpUserDeactivate, ops.OpPasswordChange, ops.OpAPIKeyCreate, ops.OpAPIKeyList, ops.OpAPIKeyRevoke} {
 		op, ok := ops.Lookup(n)
 		if !ok {
 			t.Fatalf("no op %s", n)
@@ -66,8 +68,16 @@ func startAccountsHub(t *testing.T) *accountsHub {
 	registerAuth(r)
 	registerAPI(r, cat)
 	registerAccounts(r, cat)
+	registerAPIKeyModule(r) // authenticates the stored keys of the F-03 tests
 	if err := r.Register("probe", 90, func(_ context.Context, env *Env) error {
 		var err error
+		az, err := Require[*authz.Authorizer](env)
+		if err != nil {
+			return err
+		}
+		if err := az.SetWorkerLookup(fakeWorkers{}); err != nil {
+			return err
+		}
 		if ah.st, err = Require[*store.Store](env); err != nil {
 			return err
 		}
@@ -488,5 +498,91 @@ func TestAccountsModuleNeedsTheRESTFramework(t *testing.T) {
 	k := NewKernel(r)
 	if err := k.Start(context.Background()); err != nil {
 		t.Errorf("empty catalog: %v", err)
+	}
+}
+
+// insertKey stores a key row directly, like data written before the grant
+// rules tightened, and returns its text.
+func (ah *accountsHub) insertKey(t *testing.T, owner string, actions []string, scope store.APIKeyScopeRow) string {
+	t.Helper()
+	key := identity.NewAPIKey()
+	hash := key.Hash()
+	row := store.APIKeyRow{
+		ID: store.NewID(), OwnerID: owner, Name: "stored", Hash: hash[:], Hint: key.Hint(),
+		Actions: actions, CreatedAt: store.UnixMS(time.Now()), Scopes: []store.APIKeyScopeRow{scope},
+	}
+	if err := ah.st.CreateAPIKey(context.Background(), row, nil); err != nil {
+		t.Fatal(err)
+	}
+	return key.String()
+}
+
+func (ah *accountsHub) keyOp(t *testing.T, key, name string, args map[string]any) result {
+	t.Helper()
+	args["request_id"] = ops.NewUUIDv7()
+	code, body, _ := newHubClient(t, ah.h, "https").do("POST", "/api/v1/ops/"+name, args, asKey(key))
+	res := result{code: code, body: body}
+	if code >= 400 {
+		var e struct {
+			Error struct {
+				Code proto.Code `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(body), &e)
+		res.err = e.Error.Code
+	}
+	return res
+}
+
+func TestStoredNarrowManageKeyCannotAdministerAccounts(t *testing.T) {
+	ah := startAccountsHub(t)
+	admin := ah.mustSignIn(t, "root", "root-integration-pw-1")
+	var created createdBody
+	if r := admin.op(ops.OpUserCreate, map[string]any{"username": "ann"}); r.code != 200 {
+		t.Fatalf("user_create = %d %s", r.code, r.body)
+	} else {
+		r.json(t, &created)
+	}
+	annID := created.User.ID
+	root := ah.listUsers(t, admin)["root"].ID
+
+	// A pre-upgrade row: manage on the single user ann.
+	narrow := ah.insertKey(t, root, []string{"manage", "read"}, store.APIKeyScopeRow{Kind: "user", UserID: annID})
+	for name, args := range map[string]map[string]any{
+		ops.OpUserSetRole:       {"user_id": annID, "role": "admin"},
+		ops.OpUserResetPassword: {"user_id": annID},
+		ops.OpUserDeactivate:    {"user_id": annID},
+	} {
+		if r := ah.keyOp(t, narrow, name, args); r.code != 403 || r.err != proto.CodeForbidden {
+			t.Errorf("%s with a stored user:X manage key = %d %s", name, r.code, r.body)
+		}
+	}
+	ann := ah.listUsers(t, admin)["ann"]
+	if ann.Role != "user" || !ann.Active || !ann.MustChangePassword {
+		t.Errorf("ann changed through a narrow key: %+v", ann)
+	}
+	if _, code, _ := ah.signIn(t, "ann", created.TemporaryPassword); code != 200 {
+		t.Errorf("ann's password was reset through a narrow key: %d", code)
+	}
+
+	// A narrow key without manage is refused as before.
+	readKey := ah.insertKey(t, root, []string{"read"}, store.APIKeyScopeRow{Kind: "user", UserID: annID})
+	if r := ah.keyOp(t, readKey, ops.OpUserSetRole, map[string]any{"user_id": annID, "role": "admin"}); r.code != 403 {
+		t.Errorf("read-only user:X key on user_set_role = %d %s", r.code, r.body)
+	}
+
+	// An everything key and the browser admin session still work.
+	all := ah.insertKey(t, root, []string{"manage", "read"}, store.APIKeyScopeRow{Kind: "everything"})
+	if r := ah.keyOp(t, all, ops.OpUserSetRole, map[string]any{"user_id": annID, "role": "admin"}); r.code != 200 {
+		t.Errorf("everything key user_set_role = %d %s", r.code, r.body)
+	}
+	if r := ah.keyOp(t, all, ops.OpUserResetPassword, map[string]any{"user_id": annID}); r.code != 200 {
+		t.Errorf("everything key user_reset_password = %d %s", r.code, r.body)
+	}
+	if r := admin.op(ops.OpUserSetRole, map[string]any{"user_id": annID, "role": "user"}); r.code != 200 {
+		t.Errorf("admin session user_set_role = %d %s", r.code, r.body)
+	}
+	if r := ah.keyOp(t, all, ops.OpUserDeactivate, map[string]any{"user_id": annID}); r.code != 200 {
+		t.Errorf("everything key user_deactivate = %d %s", r.code, r.body)
 	}
 }

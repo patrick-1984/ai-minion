@@ -109,8 +109,10 @@ func TestOIDCRefresherRunsWithTheHubAndStopsWithIt(t *testing.T) {
 	}
 	// The interval comes from the environment through the resolver (AD-19).
 	waitUntil(t, "the second wait", func() bool { return len(clock.waits()) == 2 })
-	if got := clock.waits(); got[0] != oidc.DefaultRefreshStartDelay || got[1] != 2*time.Hour {
-		t.Errorf("waits = %v, want [%v 2h]", got, oidc.DefaultRefreshStartDelay)
+	if got := clock.waits(); got[0] != oidc.DefaultRefreshStartDelay || got[1] != time.Hour {
+		// The configured 2h interval is capped at 1h while an account holds
+		// an IdP admin grant (F-07).
+		t.Errorf("waits = %v, want [%v 1h]", got, oidc.DefaultRefreshStartDelay)
 	}
 	if strings.Contains(logs, "rt-secret") {
 		t.Errorf("the refresh token reached the log:\n%s", logs)

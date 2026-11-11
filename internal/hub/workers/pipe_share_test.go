@@ -81,3 +81,34 @@ func TestPipeHistoryOfAnUnsharedSessionIsNotServed(t *testing.T) {
 		t.Fatalf("after sharing again = %+v, %v", v, err)
 	}
 }
+
+// F-07: the grants are asked again before every turn of a batch. The owner
+// loses the last grant while the first turn is emitted: no further turn leaves,
+// for a session principal and for the keyless Worker identity alike.
+func TestWaitStopsEmittingWhenTheOwnersLastGrantIsRevokedMidBatch(t *testing.T) {
+	for name, pr := range map[string]authz.Principal{
+		"session": authz.NewSessionPrincipal(idAlice),
+		"worker":  authz.NewWorkerPrincipal(wAlicePi1.ID),
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newPipeRig(t, 0)
+			if name == "worker" {
+				_ = r.ts.PutTrust(context.Background(), idAlice, wAlicePi1.ID, pipeSess, 0)
+			}
+			cursor := r.commit(t, wAlicePi1, pipeSess, "t0")
+			r.commit(t, wAlicePi1, pipeSess, "t1")
+			r.commit(t, wAlicePi1, pipeSess, "t2")
+			r.commit(t, wAlicePi1, pipeSess, "t3")
+			var got []string
+			err := r.p.Wait(context.Background(), pr, ops.PipeWaitArgs{Target: target(wAlicePi1, pipeSess), AfterTurnID: cursor, TimeoutMS: 2000},
+				func(e ops.PipeTurn) error {
+					got = append(got, e.Text)
+					r.users.set(idAlice, authz.UserState{Role: "", Active: true}) // the last grant goes
+					return nil
+				})
+			if err == nil || len(got) != 1 {
+				t.Fatalf("emitted %q, err %v; want one turn and a refusal", got, err)
+			}
+		})
+	}
+}

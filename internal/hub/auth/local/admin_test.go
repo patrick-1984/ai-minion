@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -174,7 +175,7 @@ func TestCreateUserRefusals(t *testing.T) {
 func TestResetPasswordReturnsANewTemporaryPassword(t *testing.T) {
 	st := newFakeAdminStore()
 	a := newAdmin(st)
-	pw, err := a.ResetPassword(ctxBG, adminActor, "u-1")
+	pw, err := a.ResetPassword(ctxBG, adminActor, "u-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +198,7 @@ func TestResetPasswordReturnsANewTemporaryPassword(t *testing.T) {
 		store.ErrNoLocalPassword: ErrNoLocalPassword,
 	} {
 		st.err = storeErr
-		if _, err := a.ResetPassword(ctxBG, adminActor, "u-1"); !errors.Is(err, want) {
+		if _, err := a.ResetPassword(ctxBG, adminActor, "u-1", false); !errors.Is(err, want) {
 			t.Errorf("store %v -> %v, want %v", storeErr, err, want)
 		}
 	}
@@ -208,7 +209,7 @@ func TestAnActingAdminCannotResetOrChangeAPassword(t *testing.T) {
 	st.users["u-1"] = store.UserRow{ID: "u-1", Active: true, PasswordHash: "x", CredentialVersion: 1}
 	a := newAdmin(st)
 	actAs := Actor{ID: "admin-1", ActingAs: "u-1"}
-	if _, err := a.ResetPassword(ctxBG, actAs, "u-1"); !errors.Is(err, ErrActAsPasswordChange) {
+	if _, err := a.ResetPassword(ctxBG, actAs, "u-1", false); !errors.Is(err, ErrActAsPasswordChange) {
 		t.Errorf("reset while acting as = %v", err)
 	}
 	err := a.ChangePassword(ctxBG, actAs, PasswordChange{UserID: "u-1", OldPassword: "a", NewPassword: "b"})
@@ -633,7 +634,7 @@ func TestResetPasswordRevokesAllSessionsAndFlagsMustChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	s1, s2 := r.sessionFor(t, u), r.sessionFor(t, u)
-	temp, err := r.a.ResetPassword(ctxBG, adminActor, u.ID)
+	temp, err := r.a.ResetPassword(ctxBG, adminActor, u.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +668,7 @@ func TestDeactivatedAccountCannotSignIn(t *testing.T) {
 	if err := r.a.ChangePassword(ctxBG, Actor{ID: u.ID}, PasswordChange{UserID: u.ID, OldPassword: logx.Secret(pw), NewPassword: "another-password-1"}); !errors.Is(err, ErrUserInactive) {
 		t.Errorf("password change of a deactivated account = %v", err)
 	}
-	if _, err := r.a.ResetPassword(ctxBG, adminActor, u.ID); !errors.Is(err, ErrUserInactive) {
+	if _, err := r.a.ResetPassword(ctxBG, adminActor, u.ID, false); !errors.Is(err, ErrUserInactive) {
 		t.Errorf("reset of a deactivated account = %v", err)
 	}
 	if _, err := r.a.SetRole(ctxBG, adminActor, u.ID, "admin"); !errors.Is(err, ErrUserInactive) {
@@ -733,7 +734,7 @@ func TestAccountOperationsWriteAuditRowsWithTheActorAndTheTarget(t *testing.T) {
 	if err := r.a.ChangePassword(ctxBG, Actor{ID: ann.ID}, PasswordChange{UserID: ann.ID, OldPassword: logx.Secret(pw), NewPassword: "my-own-new-password"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.a.ResetPassword(ctxBG, admin, ann.ID); err != nil {
+	if _, err := r.a.ResetPassword(ctxBG, admin, ann.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.a.SetRole(ctxBG, admin, ann.ID, "admin"); err != nil {
@@ -839,7 +840,62 @@ func TestGeneratedPasswordsAreNeverLoggedByTheAdmin(t *testing.T) {
 	if _, err := a.CreateUser(ctxBG, adminActor, CreateRequest{Username: "ann"}); err == nil {
 		t.Error("CreateUser succeeded without enough randomness")
 	}
-	if _, err := a.ResetPassword(ctxBG, adminActor, "u-1"); err == nil {
+	if _, err := a.ResetPassword(ctxBG, adminActor, "u-1", false); err == nil {
 		t.Error("ResetPassword succeeded without enough randomness")
+	}
+}
+
+// F-07: a reset or a change of the password revokes the user's API keys in
+// the same transaction; keep_api_keys keeps them on an admin reset.
+func TestPasswordResetAndChangeRevokeTheAPIKeys(t *testing.T) {
+	r := newRealRig(t)
+	u, _ := r.create(t, "ann", "user")
+	addKey := func() {
+		t.Helper()
+		sum := sha256.Sum256([]byte(store.NewID()))
+		k := store.APIKeyRow{ID: store.NewID(), OwnerID: u.ID, Name: "k", Hash: sum[:], Hint: "abcdefgh", Actions: []string{"read"},
+			CreatedAt: 1, Scopes: []store.APIKeyScopeRow{{Kind: "user", UserID: u.ID}}}
+		if err := r.st.CreateAPIKey(ctxBG, k, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := func() int {
+		t.Helper()
+		keys, err := r.st.ListAPIKeys(ctxBG, u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, k := range keys {
+			if k.RevokedAt == 0 {
+				n++
+			}
+		}
+		return n
+	}
+	addKey()
+	addKey()
+	if _, err := r.a.ResetPassword(ctxBG, adminActor, u.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if n := live(); n != 2 {
+		t.Fatalf("keys after a reset with keep_api_keys = %d, want 2", n)
+	}
+	if _, err := r.a.ResetPassword(ctxBG, adminActor, u.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := live(); n != 0 {
+		t.Fatalf("keys after a reset = %d, want 0", n)
+	}
+	addKey()
+	temp, err := r.a.ResetPassword(ctxBG, adminActor, u.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.a.ChangePassword(ctxBG, Actor{ID: u.ID}, PasswordChange{UserID: u.ID, OldPassword: temp, NewPassword: "my-own-new-password"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := live(); n != 0 {
+		t.Fatalf("keys after a password change = %d, want 0", n)
 	}
 }

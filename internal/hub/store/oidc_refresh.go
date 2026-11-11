@@ -33,6 +33,9 @@ type OIDCRefreshTarget struct {
 	// RefreshToken is the stored token, decrypted. It is a secret: it is
 	// redacted in logs and when printed.
 	RefreshToken string
+	// IdPAdmin is true while the user holds a source-idp admin grant. Such
+	// accounts are re-checked at the shorter admin interval (F-07).
+	IdPAdmin bool
 }
 
 func (t OIDCRefreshTarget) shownToken() string {
@@ -66,7 +69,8 @@ func (s *Store) ListOIDCRefreshTargets(ctx context.Context) (targets []OIDCRefre
 		sealed []byte
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT e.id, e.user_id, e.issuer, e.subject, e.provider_id, e.last_login_at, e.refresh_token_enc
+SELECT e.id, e.user_id, e.issuer, e.subject, e.provider_id, e.last_login_at, e.refresh_token_enc,
+  EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = e.user_id AND r.role = 'admin' AND r.source = 'idp')
 FROM external_identities e JOIN users u ON u.id = e.user_id
 WHERE u.active = 1 AND e.refresh_token_enc IS NOT NULL AND length(e.refresh_token_enc) > 0
 ORDER BY e.last_login_at, e.id`)
@@ -76,7 +80,7 @@ ORDER BY e.last_login_at, e.id`)
 	var raws []raw
 	for rows.Next() {
 		var x raw
-		if err := rows.Scan(&x.IdentityID, &x.UserID, &x.Issuer, &x.Subject, &x.ProviderID, &x.LastLoginAt, &x.sealed); err != nil {
+		if err := rows.Scan(&x.IdentityID, &x.UserID, &x.Issuer, &x.Subject, &x.ProviderID, &x.LastLoginAt, &x.sealed, &x.IdPAdmin); err != nil {
 			_ = rows.Close()
 			return nil, nil, fmt.Errorf("store: list refresh tokens: %w", err)
 		}
@@ -235,4 +239,16 @@ WHERE e.id = ? AND e.user_id = ?`, u.IdentityID, u.UserID).Scan(&sealed, &lastLo
 		return OIDCRefreshResult{}, err
 	}
 	return res, nil
+}
+
+// HasIdPAdminGrant reports whether an active account holds a source-idp admin
+// grant.
+func (s *Store) HasIdPAdminGrant(ctx context.Context) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM user_roles r JOIN users u ON u.id = r.user_id
+WHERE r.source = 'idp' AND r.role = 'admin' AND u.active = 1)`).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("store: look for idp admins: %w", err)
+	}
+	return n > 0, nil
 }

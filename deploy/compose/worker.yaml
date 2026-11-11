@@ -20,6 +20,10 @@
 #   2. export WORKER_UID=$(id -u) WORKER_GID=$(id -g)
 #   3. MINION_SHARE_EXISTING=later docker compose -f worker.yaml up -d --build
 #      (all, none or later; later shares nothing until you choose in the Hub)
+#   4. Approve the new Worker: it starts pending and gets no operations until
+#      its owner or an admin approves it in the Hub (Workers page: compare the
+#      fingerprint and source address, then Approve), or with
+#      minion hub worker approve <fingerprint>.
 #
 # The Worker reads the key from a file (MINION_INVITE_KEY_FILE); a literal key
 # on a command line is visible in the process list. The file must be owned by
@@ -62,10 +66,10 @@ services:
     entrypoint: ["/bin/sh", "/usr/local/bin/bootstrap.sh"]
     command: ["worker", "up", "--foreground"]
     environment:
-      # An exact version, or a channel (0.5, 0, latest). With an exact version
+      # An exact version, or a channel (0.6, 0, latest). With an exact version
       # you may add MINION_SHA256, the archive checksum from checksums.txt of
       # that release; without it the signature of the release is verified.
-      MINION_VERSION: ${MINION_VERSION:-v0.5.0}
+      MINION_VERSION: ${MINION_VERSION:-v0.6.0}
       MINION_CACHE_DIR: /cache
       MINION_STATE_DIR: /data
       MINION_SERVER: ${MINION_SERVER:-https://hub.example.com}

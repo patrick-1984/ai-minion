@@ -19,7 +19,7 @@ import (
 type AccountService interface {
 	ListUsers(ctx context.Context) ([]store.UserAdminRow, error)
 	CreateUser(ctx context.Context, actor local.Actor, req local.CreateRequest) (local.CreatedUser, error)
-	ResetPassword(ctx context.Context, actor local.Actor, userID string) (logx.Secret, error)
+	ResetPassword(ctx context.Context, actor local.Actor, userID string, keepAPIKeys bool) (logx.Secret, error)
 	SetRole(ctx context.Context, actor local.Actor, userID, role string) (string, error)
 	Deactivate(ctx context.Context, actor local.Actor, userID string) (bool, error)
 	ChangePassword(ctx context.Context, actor local.Actor, req local.PasswordChange) error
@@ -180,10 +180,13 @@ func (h *accountHandlers) resetPassword(ctx context.Context, c *Call) (any, erro
 	if !ok {
 		return nil, fmt.Errorf("api: user_reset_password was called with %T", c.Args)
 	}
+	if err := requireHubWideScope(c.Principal); err != nil {
+		return nil, err
+	}
 	if c.Principal.Kind == authz.KindActAs {
 		return nil, errActAsPassword
 	}
-	pw, err := h.svc.ResetPassword(ctx, actorOf(c), args.UserID)
+	pw, err := h.svc.ResetPassword(ctx, actorOf(c), args.UserID, args.KeepAPIKeys)
 	if err != nil {
 		return nil, accountError(err)
 	}
@@ -191,6 +194,9 @@ func (h *accountHandlers) resetPassword(ctx context.Context, c *Call) (any, erro
 }
 
 func (h *accountHandlers) setRole(ctx context.Context, c *Call, args ops.UserSetRoleArgs) (ops.WriteResult, error) {
+	if err := requireHubWideScope(c.Principal); err != nil {
+		return ops.WriteResult{}, err
+	}
 	if _, err := h.svc.SetRole(ctx, actorOf(c), args.UserID, args.Role); err != nil {
 		return ops.WriteResult{}, accountError(err)
 	}
@@ -198,6 +204,9 @@ func (h *accountHandlers) setRole(ctx context.Context, c *Call, args ops.UserSet
 }
 
 func (h *accountHandlers) deactivate(ctx context.Context, c *Call, args ops.UserDeactivateArgs) (ops.WriteResult, error) {
+	if err := requireHubWideScope(c.Principal); err != nil {
+		return ops.WriteResult{}, err
+	}
 	if _, err := h.svc.Deactivate(ctx, actorOf(c), args.UserID); err != nil {
 		return ops.WriteResult{}, accountError(err)
 	}

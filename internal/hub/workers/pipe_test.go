@@ -129,6 +129,7 @@ type pipeRig struct {
 	ts    *fakeTrustStore
 	clock *pipeClock
 	az    *authz.Authorizer
+	users *mutUsers
 }
 
 func newPipeRig(t *testing.T, budget int) *pipeRig { return newPipeRigWith(t, budget, nil) }
@@ -142,11 +143,12 @@ func newPipeRigWith(t *testing.T, budget int, mutate func(*PipeConfig)) *pipeRig
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	dir := &fakeDir{recs: []WorkerRecord{wAlicePi1, wAlicePi2, wBobPi1, wBobBox, wRootLab}}
-	az := authz.New(fakeUsers{
+	users := &mutUsers{m: fakeUsers{
 		idAlice: {Role: authz.RoleUser, Active: true},
 		idBob:   {Role: authz.RoleUser, Active: true},
 		idRoot:  {Role: authz.RoleAdmin, Active: true},
-	}, dir)
+	}}
+	az := authz.New(users, dir)
 	ts := &fakeTrustStore{dir: dir}
 	trust := authz.NewTrust(ts, nil)
 	clock := &pipeClock{t: time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)}
@@ -162,7 +164,7 @@ func newPipeRigWith(t *testing.T, budget int, mutate func(*PipeConfig)) *pipeRig
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &pipeRig{p: p, st: s.Pipe(), db: s, rt: rt, trust: trust, ts: ts, clock: clock, az: az}
+	return &pipeRig{p: p, st: s.Pipe(), db: s, rt: rt, trust: trust, ts: ts, clock: clock, az: az, users: users}
 }
 
 func target(w WorkerRecord, session string) ops.Target {
@@ -281,7 +283,8 @@ func TestSendNeedsMessageOrOperateOnTheSession(t *testing.T) {
 		{"key with read only", keyWith(idAlice, ops.ActionRead), proto.CodeForbidden},
 		{"key with no scope on the session", keyWith(idAlice), proto.CodeNotFound},
 		{"another user", authz.NewSessionPrincipal(idBob), proto.CodeNotFound},
-		{"a Worker identity of the same owner", authz.NewWorkerPrincipal(wAlicePi2.ID), ""},
+		{"the Worker identity of the session's own Worker", authz.NewWorkerPrincipal(wAlicePi1.ID), ""},
+		{"a Worker identity of a sibling Worker of the same owner (F-01)", authz.NewWorkerPrincipal(wAlicePi2.ID), proto.CodeNotFound},
 		{"a Worker identity of another owner", authz.NewWorkerPrincipal(wBobPi1.ID), proto.CodeNotFound},
 	}
 	for _, tc := range tests {
@@ -549,8 +552,8 @@ func TestModelReadsTurnsOnlyFromTrustedSources(t *testing.T) {
 		{"API key, trusts the whole Worker", modelAlice(), func(r *pipeRig) { _ = r.ts.PutTrust(ctx, idAlice, wAlicePi1.ID, "", 0) }, true},
 		{"API key, trusts another session only", modelAlice(), func(r *pipeRig) { _ = r.ts.PutTrust(ctx, idAlice, wAlicePi1.ID, "minion-9", 0) }, false},
 		{"API key, only another user trusts", modelAlice(), func(r *pipeRig) { _ = r.ts.PutTrust(ctx, idBob, wAlicePi1.ID, pipeSess, 0) }, false},
-		{"Worker identity, owner trusts", authz.NewWorkerPrincipal(wAlicePi2.ID), func(r *pipeRig) { _ = r.ts.PutTrust(ctx, idAlice, wAlicePi1.ID, pipeSess, 0) }, true},
-		{"Worker identity, no trust", authz.NewWorkerPrincipal(wAlicePi2.ID), nil, false},
+		{"Worker identity (own Worker), owner trusts", authz.NewWorkerPrincipal(wAlicePi1.ID), func(r *pipeRig) { _ = r.ts.PutTrust(ctx, idAlice, wAlicePi1.ID, pipeSess, 0) }, true},
+		{"Worker identity (own Worker), no trust", authz.NewWorkerPrincipal(wAlicePi1.ID), nil, false},
 		{"API key, trust lookup fails: fail closed", modelAlice(), func(r *pipeRig) {
 			_ = r.ts.PutTrust(ctx, idAlice, wAlicePi1.ID, pipeSess, 0)
 			r.ts.err = errors.New("db down")
@@ -777,4 +780,22 @@ func mustMessage(t *testing.T, st *store.PipeStore, workerID, session string) in
 		t.Fatal(err)
 	}
 	return m.ID
+}
+
+// mutUsers is a user lookup whose state a test changes while calls run.
+type mutUsers struct {
+	mu sync.Mutex
+	m  fakeUsers
+}
+
+func (u *mutUsers) User(ctx context.Context, id string) (authz.UserState, error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.m.User(ctx, id)
+}
+
+func (u *mutUsers) set(id string, st authz.UserState) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.m[id] = st
 }

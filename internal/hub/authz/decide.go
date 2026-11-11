@@ -106,8 +106,8 @@ var allActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessa
 // admin only, so the owner does not hold it.
 var ownerActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage}
 
-// workerActions is what a Worker identity holds on the Workers and sessions of
-// its owner. It never holds operate or manage.
+// workerActions is what a Worker identity holds on its own Worker and that
+// Worker's sessions. It never holds operate or manage.
 var workerActions = []ops.Action{ops.ActionRead, ops.ActionMessage}
 
 // Decide checks that principal p may perform an operation that accepts the
@@ -137,6 +137,14 @@ func (a *Authorizer) Decide(ctx context.Context, p Principal, accepted ops.Actio
 		return proto.NewError(proto.CodeNotFound, "not found")
 	}
 	return proto.NewError(proto.CodeForbidden, "not allowed")
+}
+
+// Valid reports whether p still has any permission at all (see subject):
+// its account is active and holds a grant, its act-as session is live, its
+// Worker exists and its owner has access. It reads the current state.
+func (a *Authorizer) Valid(ctx context.Context, p Principal) (bool, error) {
+	_, ok, err := a.subject(ctx, p, a.ports())
+	return ok, err
 }
 
 // EffectiveActions returns the actions p currently holds on res, sorted. It is
@@ -197,7 +205,7 @@ func (a *Authorizer) subject(ctx context.Context, p Principal, pt ports) (sub su
 		}
 	}
 	u, found, err := user(ctx, pt, p.UserID)
-	if err != nil || !found || !u.Active {
+	if err != nil || !found || !u.hasAccess() {
 		return subject{}, false, err
 	}
 	return subject{p: p, role: u.Role}, true, nil
@@ -235,12 +243,12 @@ func user(ctx context.Context, pt ports, id string) (UserState, bool, error) {
 // actions computes the permission of the subject on a resolved resource.
 func (s subject) actions(res ResolvedResource) ops.ActionSet {
 	if s.p.Kind == KindWorker {
-		// read and message on the Worker and session resources of the owner of
-		// this Worker identity. This is the plain-owner rule: even when the
-		// owner is an admin there is no Hub-wide reach, and user resources and
-		// the operate and manage actions are never granted. Reaching beyond the
-		// owner takes a Worker-bound API key with a scope.
-		if res.Kind != ResourceUser && res.OwnerID == s.ownerID {
+		// read and message on the Worker itself and on that Worker's sessions,
+		// nothing else (F-01). A Worker identity has no reach to other Workers
+		// of the same owner, user resources, or the operate and manage
+		// actions. Cross-Worker use takes a Worker-bound API key with a scope
+		// (AD-12, call_api_key_file) and the receiver's pipe_accept_from.
+		if res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
 			return canonical(workerActions)
 		}
 		return ops.ActionSet{}

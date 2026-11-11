@@ -20,11 +20,23 @@ func init() {
 	Register(func(root *cobra.Command) {
 		var dataDir string
 		var force bool
+		var passphraseFile string
+		var maxSize int64
 		cmd := &cobra.Command{
 			Use:   "restore <archive>",
 			Short: "Restore the Hub data directory from a backup archive (Hub stopped)",
 			Long: `Restore the Hub data directory from an archive written by "minion hub backup".
 Stop the Hub first.
+
+An archive encrypted with age is detected by its header; give the passphrase
+with --passphrase-file FILE (a private file, as for the backup). A plain
+archive from an earlier version or from --unencrypted is restored as it is. The
+whole archive is decrypted and checked in a temporary area before anything in
+the data directory is touched, so a wrong passphrase or a damaged file leaves
+the data directory as it was. The data directory is created only after the
+whole archive passed. A database that records a Hub identity needs the matching
+identity.key in the archive. --max-size limits the decrypted size and the total
+size of the files (default 64 GiB).
 
 The data directory is MINION_DATA_DIR unless --data-dir is given. A data
 directory that already has files is refused unless --force is given; --force
@@ -37,21 +49,34 @@ command. For a Docker data directory, run the printed chown on the host so
 that the Hub (UID 65532) can use the files.`,
 			Args: cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return runHubRestore(cmd.Context(), cmd.OutOrStdout(), hubBackupDeps{}, dataDir, args[0], force)
+				return runHubRestore(cmd.Context(), cmd.OutOrStdout(), hubBackupDeps{}, dataDir, args[0], force, passphraseFile, maxSize)
 			},
 		}
 		cmd.Flags().StringVar(&dataDir, "data-dir", "", "Hub data directory (default: MINION_DATA_DIR or the OS default)")
 		cmd.Flags().BoolVar(&force, "force", false, "replace the files of a non-empty data directory")
+		cmd.Flags().StringVar(&passphraseFile, "passphrase-file", "", "private file with the passphrase of an encrypted archive")
+		cmd.Flags().Int64Var(&maxSize, "max-size", 0, "limit in bytes on the decrypted size and on the total size of the files of the archive (default 64 GiB)")
 		hubCommand(root).AddCommand(cmd)
 	})
 }
 
-func runHubRestore(ctx context.Context, w io.Writer, d hubBackupDeps, dataDirFlag, archive string, force bool) error {
+func runHubRestore(ctx context.Context, w io.Writer, d hubBackupDeps, dataDirFlag, archive string, force bool, passphraseFile string, maxSize int64) error {
+	var opts []store.Option
+	if maxSize > 0 {
+		opts = append(opts, store.WithRestoreLimit(maxSize))
+	}
+	if passphraseFile != "" {
+		pass, err := readPassphraseFile(passphraseFile)
+		if err != nil {
+			return err
+		}
+		opts = append(opts, store.WithRestorePassphrase(pass))
+	}
 	dir, err := resolveDataDir(dataDirFlag, d)
 	if err != nil {
 		return err
 	}
-	res, err := store.Restore(ctx, archive, dir, force)
+	res, err := store.Restore(ctx, archive, dir, force, opts...)
 	if err != nil {
 		return err
 	}

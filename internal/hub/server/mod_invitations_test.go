@@ -163,11 +163,22 @@ func TestProductionStartupCreatesAnInvitationAndEnrollsAWorker(t *testing.T) {
 	// invitation_list shows the use.
 	code, body, _ = hc.do("POST", "/api/v1/ops/invitation_list", ops.InvitationListArgs{}, hdr)
 	var list ops.InvitationListResult
-	if code != 200 || json.Unmarshal([]byte(body), &list) != nil || len(list.Invitations) != 1 {
-		t.Fatalf("invitation_list = %d %s", code, body)
+	if code != 200 || json.Unmarshal([]byte(body), &list) != nil || len(list.Invitations) != 2 {
+		t.Fatalf("invitation_list = %d %s (want the user key and the key file row)", code, body)
 	}
-	if got := list.Invitations[0]; got.ID != created.ID || got.Uses != 1 || got.Status != "exhausted" {
-		t.Errorf("listed invitation = %+v", got)
+	var infraRow ops.InvitationInfo
+	for _, got := range list.Invitations {
+		switch got.Source {
+		case "infra_file":
+			infraRow = got
+		default:
+			if got.ID != created.ID || got.Uses != 1 || got.Status != "exhausted" {
+				t.Errorf("listed invitation = %+v", got)
+			}
+		}
+	}
+	if infraRow.ID == "" || infraRow.ExpiresAt == nil || infraRow.Kind != "infrastructure" {
+		t.Errorf("the key file has no row with an expiry: %+v", infraRow)
 	}
 
 	// MINION_INFRA_INVITE_KEY_FILE takes effect: the infrastructure key
@@ -178,6 +189,56 @@ func TestProductionStartupCreatesAnInvitationAndEnrollsAWorker(t *testing.T) {
 		if typ != proto.TypeWelcome || json.Unmarshal(ans, &w) != nil || w.Kind != "infrastructure" {
 			t.Fatalf("infrastructure enrollment answer = %s", ans)
 		}
+	}
+
+	// F-02: every one of them is pending. workers_list says so with the
+	// fingerprint; worker_approve (as the admin) approves one, and the other two
+	// stay pending. The key file row counted its uses and can be revoked like any key.
+	code, body, _ = hc.do("POST", "/api/v1/ops/workers_list", ops.WorkersListArgs{All: true}, hdr)
+	var wl ops.WorkersListResult
+	if code != 200 || json.Unmarshal([]byte(body), &wl) != nil || len(wl.Workers) != 3 {
+		t.Fatalf("workers_list = %d %s", code, body)
+	}
+	for _, x := range wl.Workers {
+		if !x.Pending || len(x.Fingerprint) != 52 || x.EnrollAddr == "" {
+			t.Errorf("an enrolled Worker is not pending with its facts: %+v", x)
+		}
+	}
+	first := wl.Workers[0]
+	code, body, _ = hc.do("POST", "/api/v1/ops/worker_approve",
+		ops.WorkerApproveArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, WorkerID: first.ID, Fingerprint: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, hdr)
+	if code != 409 {
+		t.Fatalf("worker_approve with a wrong fingerprint = %d %s, want 409", code, body)
+	}
+	code, body, _ = hc.do("POST", "/api/v1/ops/worker_approve",
+		ops.WorkerApproveArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, WorkerID: first.ID, Fingerprint: first.Fingerprint}, hdr)
+	if code != 200 {
+		t.Fatalf("worker_approve = %d %s", code, body)
+	}
+	code, body, _ = hc.do("POST", "/api/v1/ops/workers_list", ops.WorkersListArgs{All: true}, hdr)
+	wl = ops.WorkersListResult{}
+	if code != 200 || json.Unmarshal([]byte(body), &wl) != nil {
+		t.Fatalf("workers_list = %d %s", code, body)
+	}
+	pendingLeft := 0
+	for _, x := range wl.Workers {
+		if x.ID == first.ID && x.Pending {
+			t.Error("the approved Worker is still pending")
+		}
+		if x.Pending {
+			pendingLeft++
+		}
+	}
+	if pendingLeft != 2 {
+		t.Errorf("%d Workers pending after one approval, want 2", pendingLeft)
+	}
+	code, body, _ = hc.do("POST", "/api/v1/ops/invitation_revoke",
+		ops.InvitationRevokeArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, ID: infraRow.ID}, hdr)
+	if code != 200 {
+		t.Fatalf("revoking the key file row = %d %s", code, body)
+	}
+	if typ, ans = enrollWorker(t, h.srv.Addr(), hubFpr, "infra-3", infraSecret); typ != proto.TypeError {
+		t.Fatalf("a revoked key file enrolled a Worker: %s", ans)
 	}
 
 	// The audit log holds the creation and the enrollments, and no secret.
@@ -191,12 +252,12 @@ func TestProductionStartupCreatesAnInvitationAndEnrollsAWorker(t *testing.T) {
 	}
 	seen := map[string]int{}
 	for _, e := range events.Events {
-		if e.Outcome == "success" {
+		if e.Outcome == "success" || (e.Action == workers.AuditWorkerEnroll && e.Outcome == "pending") {
 			seen[e.Action]++
 		}
 	}
-	if seen[workers.AuditInvitationCreate] != 1 || seen[workers.AuditWorkerEnroll] != 3 {
-		t.Errorf("audit actions = %v, want 1 %s and 3 %s successes", seen, workers.AuditInvitationCreate, workers.AuditWorkerEnroll)
+	if seen[workers.AuditInvitationCreate] != 1 || seen[workers.AuditWorkerEnroll] != 3 || seen[workers.AuditWorkerApprove] != 1 {
+		t.Errorf("audit actions = %v, want 1 %s, 3 %s (pending) and 1 %s", seen, workers.AuditInvitationCreate, workers.AuditWorkerEnroll, workers.AuditWorkerApprove)
 	}
 	for _, secret := range []string{secretPart(t, created.Key), infraSecret, adminPW} {
 		if strings.Contains(body, secret) || strings.Contains(h.logs.String(), secret) {

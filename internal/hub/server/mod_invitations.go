@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
@@ -101,7 +102,7 @@ func initInvitations(_ context.Context, env *Env) error {
 	}
 	enr, err := workers.NewEnroller(workers.EnrollConfig{
 		Store: st, HubFingerprint: fpr, Limiter: limiter, Auditor: alog,
-		Infra: infraKey, InfraOwner: infra.DefaultOwner, Logger: cfg.logger(),
+		Infra: infraKey, InfraOwner: infra.DefaultOwner, InfraExpiry: infraExpiry(infra), Logger: cfg.logger(),
 	})
 	if err != nil {
 		return fmt.Errorf("invitations: %w", err)
@@ -113,4 +114,13 @@ func initInvitations(_ context.Context, env *Env) error {
 		return err
 	}
 	return Provide(env, enr)
+}
+
+// infraExpiry maps infra_invite_key_days to the lifetime the enroller gives a
+// new key file row: 0 days means no expiry.
+func infraExpiry(infra config.HubInfra) time.Duration {
+	if infra.InviteKeyLifetime <= 0 {
+		return workers.NoInfraExpiry
+	}
+	return infra.InviteKeyLifetime
 }

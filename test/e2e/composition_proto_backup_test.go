@@ -17,13 +17,15 @@ import (
 // backup, on the real Hub endpoint and the production connector with the
 // Worker state on disk.
 //
-// Fixture choice for "protocol N-1 minor accepted": release 1 speaks 1.0, and
-// minor 0 has no previous minor, so a Worker one minor behind cannot exist in
-// this build. The same window is exercised from the other side, with the real
-// Hub configured as protocol 1.1 (ServiceOptions.Current, the Hub's own knob)
-// and a Worker whose range is exactly 1.0: the Hub accepts the previous minor
-// of its major and negotiates it (proto.Supported). The major mismatch uses a
-// Worker whose range is exactly 2.0.
+// Fixture choice for "protocol N-1 minor accepted": this build speaks 2.0 (the
+// wire protocol was bumped to 2.0 with the mandatory request origin; there is
+// no 1.x fallback), and minor 0 has no previous minor, so a Worker one minor
+// behind cannot exist in this build. The same window is exercised from the
+// other side, with the real Hub configured as protocol 2.1
+// (ServiceOptions.Current, the Hub's own knob) and a Worker whose range is
+// exactly 2.0: the Hub accepts the previous minor of its major and negotiates
+// it (proto.Supported). The major mismatch uses a Worker whose range is exactly
+// 3.0, and a Worker that still speaks 1.x is refused as well.
 
 // enrolledCompWorker creates the Worker key, stores the pin of the Hub and has
 // the Hub enroll the key, as pairing or an invitation would.
@@ -41,14 +43,14 @@ func enrolledCompWorker(t *testing.T, h *connHub) (*compWorkerState, store.Worke
 }
 
 func TestHubAcceptsTheWorkersPreviousMinorAndNegotiatesIt(t *testing.T) {
-	h := newConnHubWith(t, proto.Version{Major: 1, Minor: 1}, nil)
+	h := newConnHubWith(t, proto.Version{Major: 2, Minor: 1}, nil)
 	w, row := enrolledCompWorker(t, h)
-	only10 := proto.Range{Min: proto.Version{Major: 1, Minor: 0}, Max: proto.Version{Major: 1, Minor: 0}}
-	conn, _, _ := w.connect(h, only10)
-	eventually(t, "the 1.0 Worker to be online at the 1.1 Hub", func() bool { return h.service().Registry().IsOnline(row.ID) })
+	only20 := proto.Range{Min: proto.Version{Major: 2, Minor: 0}, Max: proto.Version{Major: 2, Minor: 0}}
+	conn, _, _ := w.connect(h, only20)
+	eventually(t, "the 2.0 Worker to be online at the 2.1 Hub", func() bool { return h.service().Registry().IsOnline(row.ID) })
 	on, _ := h.service().Registry().Get(row.ID)
-	if on.Version != (proto.Version{Major: 1, Minor: 0}) {
-		t.Fatalf("negotiated %s, want 1.0 (the previous minor)", on.Version)
+	if on.Version != (proto.Version{Major: 2, Minor: 0}) {
+		t.Fatalf("negotiated %s, want 2.0 (the previous minor)", on.Version)
 	}
 	eventually(t, "the connector to be connected", func() bool { return conn.Status().State == wagent.ConnConnected })
 }
@@ -56,18 +58,36 @@ func TestHubAcceptsTheWorkersPreviousMinorAndNegotiatesIt(t *testing.T) {
 func TestHubAtTheBuildsVersionNegotiatesTheNewestSharedVersionWithANewerMinorWorker(t *testing.T) {
 	h := newConnHub(t)
 	w, row := enrolledCompWorker(t, h)
-	w.connect(h, proto.Range{Min: proto.Version{Major: 1, Minor: 0}, Max: proto.Version{Major: 1, Minor: 1}})
-	eventually(t, "the 1.0..1.1 Worker to be online", func() bool { return h.service().Registry().IsOnline(row.ID) })
+	w.connect(h, proto.Range{Min: proto.Version{Major: 2, Minor: 0}, Max: proto.Version{Major: 2, Minor: 1}})
+	eventually(t, "the 2.0..2.1 Worker to be online", func() bool { return h.service().Registry().IsOnline(row.ID) })
 	if on, _ := h.service().Registry().Get(row.ID); on.Version != proto.Current {
 		t.Fatalf("negotiated %s, want %s", on.Version, proto.Current)
+	}
+}
+
+// v0.5 was never released: a Worker that speaks only 1.x is refused, with no
+// fallback, and keeps its enrollment.
+func TestAOneDotXWorkerIsRefusedByTheTwoDotZeroHub(t *testing.T) {
+	h := newConnHub(t)
+	w, row := enrolledCompWorker(t, h)
+	only1 := proto.Range{Min: proto.Version{Major: 1}, Max: proto.Version{Major: 1, Minor: 9}}
+	conn, _, _ := w.connect(h, only1)
+	eventually(t, "the 1.x mismatch to be reported", func() bool {
+		return strings.Contains(conn.Status().LastError, string(proto.CodeProtoIncompatible))
+	})
+	if h.service().Registry().IsOnline(row.ID) {
+		t.Fatal("a 1.x Worker connected to a 2.0 Hub")
+	}
+	if _, ok, _ := w.enr.Load(context.Background()); !ok {
+		t.Fatal("a protocol mismatch wiped the enrollment")
 	}
 }
 
 func TestAMajorMismatchIsRetriedKeepsTheEnrollmentAndConnectsWhenTheHubCatchesUp(t *testing.T) {
 	h := newConnHub(t)
 	w, row := enrolledCompWorker(t, h)
-	only2 := proto.Range{Min: proto.Version{Major: 2}, Max: proto.Version{Major: 2}}
-	conn, logs, _ := w.connect(h, only2)
+	only3 := proto.Range{Min: proto.Version{Major: 3}, Max: proto.Version{Major: 3}}
+	conn, logs, _ := w.connect(h, only3)
 
 	eventually(t, "the mismatch to be reported", func() bool {
 		return strings.Contains(conn.Status().LastError, string(proto.CodeProtoIncompatible))
@@ -89,10 +109,10 @@ func TestAMajorMismatchIsRetriedKeepsTheEnrollmentAndConnectsWhenTheHubCatchesUp
 	h.mu.Lock()
 	addr := h.addr
 	h.mu.Unlock()
-	h.current = proto.Version{Major: 2}
+	h.current = proto.Version{Major: 3}
 	h.start(addr)
-	eventually(t, "the retrying Worker to connect at protocol 2.0", func() bool { return h.service().Registry().IsOnline(row.ID) })
-	if on, _ := h.service().Registry().Get(row.ID); on.Version != (proto.Version{Major: 2}) {
+	eventually(t, "the retrying Worker to connect at protocol 3.0", func() bool { return h.service().Registry().IsOnline(row.ID) })
+	if on, _ := h.service().Registry().Get(row.ID); on.Version != (proto.Version{Major: 3}) {
 		t.Fatalf("negotiated %s", on.Version)
 	}
 }

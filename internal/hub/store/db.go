@@ -41,12 +41,25 @@ type openConfig struct {
 	// afterSnapshot runs in Backup between the database snapshot and the
 	// capture of the identity key (tests only).
 	afterSnapshot func()
+	// passphrase and hasPassphrase select age encryption of a backup or the
+	// passphrase a restore tries on an encrypted archive.
+	passphrase    string
+	hasPassphrase bool
+	// maxRestoreBytes is the Restore size limit; 0 means the default.
+	maxRestoreBytes int64
 }
 
 // WithMigrations replaces the embedded Hub migrations with the NNNN_name.sql
 // files in dir of fsys. It exists for tests.
 func WithMigrations(fsys fs.FS, dir string) Option {
 	return func(c *openConfig) { c.migrations = migrationSet{fsys: fsys, dir: dir} }
+}
+
+// WithRestoreLimit sets the limit of [Restore] on the decrypted size of an
+// archive and on the total size of the files it declares, in bytes. The
+// default is [DefaultMaxRestoreBytes]; a value of 0 or less keeps the default.
+func WithRestoreLimit(n int64) Option {
+	return func(c *openConfig) { c.maxRestoreBytes = n }
 }
 
 // WithClock sets the clock that names backups. It exists for tests.
@@ -122,7 +135,12 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate database: %w", err)
 	}
-	return &Store{db: db, box: box, dir: abs}, nil
+	st := &Store{db: db, box: box, dir: abs}
+	if _, err := st.suspendUnusableIdPAdmins(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: reconcile IdP admin grants: %w", err)
+	}
+	return st, nil
 }
 
 // DB returns the database handle. There is exactly one per Hub.

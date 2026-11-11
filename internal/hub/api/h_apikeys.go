@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/auth/apikey"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -33,6 +34,11 @@ func RegisterAPIKeyHandlers(r *Registry, m KeyManager) error {
 		return fmt.Errorf("api: RegisterAPIKeyHandlers needs a key manager")
 	}
 	if err := HandleTyped(r, ops.OpAPIKeyCreate, func(ctx context.Context, c *Call, args ops.APIKeyCreateArgs) (ops.APIKeyCreateResult, error) {
+		// The session that authenticated this request, with the credential
+		// version it was resolved against; the insert compares it (F-07).
+		if c.Identity.Session != nil {
+			ctx = apikey.WithIssuerVersion(ctx, c.Identity.Session.CredentialVersion)
+		}
 		return m.Create(ctx, c.Principal, args)
 	}); err != nil {
 		return err

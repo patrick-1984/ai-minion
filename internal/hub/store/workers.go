@@ -41,6 +41,17 @@ type WorkerRow struct {
 	OwnerID   string
 	Kind      string // WorkerKindPrivate or WorkerKindInfrastructure
 	CreatedAt int64  // unix milliseconds
+	// Pending is true while the Worker waits for approval (F-02): it may
+	// connect, but receives no operations and may not make calls. The zero
+	// value is an approved Worker; enrollment sets it explicitly.
+	Pending bool
+	// EnrollAddr is the client address the Worker enrolled from, shown to
+	// whoever approves it.
+	EnrollAddr string
+	// ApprovedAt (unix milliseconds, 0 while pending) and ApprovedBy (the
+	// approving identity, or "migration") record the approval.
+	ApprovedAt int64
+	ApprovedBy string
 }
 
 // TombstoneRow is the record a removed Worker leaves behind (AD-9).
@@ -90,9 +101,16 @@ func (s *Store) InsertWorker(ctx context.Context, ex Execer, w WorkerRow) error 
 	if ex == nil {
 		ex = s.db
 	}
+	approval, approvedAt := "approved", any(w.CreatedAt)
+	if w.Pending {
+		approval, approvedAt = "pending", nil
+	} else if w.ApprovedAt != 0 {
+		approvedAt = w.ApprovedAt
+	}
 	_, err := ex.ExecContext(ctx,
-		`INSERT INTO workers (id, worker_pub, name, owner_id, kind, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		w.ID, w.Pub, w.Name, w.OwnerID, w.Kind, w.CreatedAt)
+		`INSERT INTO workers (id, worker_pub, name, owner_id, kind, created_at, approval, enroll_addr, approved_at, approved_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.Pub, w.Name, w.OwnerID, w.Kind, w.CreatedAt, approval, w.EnrollAddr, approvedAt, w.ApprovedBy)
 	if err != nil {
 		switch msg := err.Error(); {
 		case strings.Contains(msg, "workers.worker_pub"):
@@ -105,12 +123,41 @@ func (s *Store) InsertWorker(ctx context.Context, ex Execer, w WorkerRow) error 
 	return nil
 }
 
-const workerColumns = `id, worker_pub, name, owner_id, kind, created_at`
+const workerColumns = `id, worker_pub, name, owner_id, kind, created_at, approval = 'pending', enroll_addr, COALESCE(approved_at, 0), approved_by`
 
 func scanWorker(row interface{ Scan(...any) error }) (WorkerRow, error) {
 	var w WorkerRow
-	err := row.Scan(&w.ID, &w.Pub, &w.Name, &w.OwnerID, &w.Kind, &w.CreatedAt)
+	err := row.Scan(&w.ID, &w.Pub, &w.Name, &w.OwnerID, &w.Kind, &w.CreatedAt, &w.Pending, &w.EnrollAddr, &w.ApprovedAt, &w.ApprovedBy)
 	return w, err
+}
+
+// ErrWorkerAlreadyApproved: the Worker is not pending.
+var ErrWorkerAlreadyApproved = errors.New("store: the Worker is already approved")
+
+// ApproveWorker marks a pending Worker approved. It returns ErrWorkerNotFound
+// for an unknown id and ErrWorkerAlreadyApproved (with the row) when nothing
+// was pending, so that only the first approval is audited. a, when set, is
+// written in the same transaction (its Target is the Worker id).
+func (s *Store) ApproveWorker(ctx context.Context, id, by string, nowMS int64, a *AuditRow) (WorkerRow, error) {
+	var out WorkerRow
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		w, err := scanWorker(tx.QueryRowContext(ctx, `SELECT `+workerColumns+` FROM workers WHERE id = ?`, id))
+		if err := rowErr("read worker", err); err != nil {
+			return err
+		}
+		out = w
+		if !w.Pending {
+			return ErrWorkerAlreadyApproved
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE workers SET approval = 'approved', approved_at = ?, approved_by = ? WHERE id = ? AND approval = 'pending'`,
+			nowMS, by, id); err != nil {
+			return fmt.Errorf("store: approve worker: %w", err)
+		}
+		out.Pending, out.ApprovedAt, out.ApprovedBy = false, nowMS, by
+		return s.auditEnroll(ctx, tx, a, id)
+	})
+	return out, err
 }
 
 // WorkerByPub returns the Worker with the given public key, or ErrWorkerNotFound.

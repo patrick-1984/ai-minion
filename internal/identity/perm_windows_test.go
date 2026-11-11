@@ -507,3 +507,32 @@ func TestOpenPrivateRefusesAnExistingKeyWithAnUnprotectedDACL(t *testing.T) {
 		t.Error("the refused file was made protected by the check")
 	}
 }
+
+// LoadKey opens the key with OpenPrivate: a symbolic link is refused even when
+// its target is a private key, and a key that inherited a permissive DACL is
+// refused (the owner and DACL checks are those of OpenPrivate).
+func TestLoadKeyUsesOpenPrivateChecks(t *testing.T) {
+	private := filepath.Join(t.TempDir(), "id.key")
+	if err := SaveKey(private, mustKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadKey(private); err != nil {
+		t.Fatalf("a private key was refused: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(private, link); err != nil {
+		t.Logf("cannot create a symbolic link here: %v", err)
+	} else if _, err := LoadKey(link); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("a symbolic link was followed: %v", err)
+	}
+	exposed := filepath.Join(permissiveDir(t), "id.key")
+	if err := os.WriteFile(exposed, []byte(keyFileHeader+EncodeB64(make([]byte, 32))+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadKey(exposed); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("a key with an inherited permissive DACL was accepted: %v", err)
+	}
+	if _, err := LoadKey(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a missing key must stay os.ErrNotExist, got %v", err)
+	}
+}

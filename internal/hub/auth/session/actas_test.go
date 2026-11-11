@@ -241,6 +241,15 @@ func TestStartActAsRefusals(t *testing.T) {
 			t.Errorf("err = %v, want ErrActAsTargetInactive", err)
 		}
 	})
+	t.Run("target without any grant", func(t *testing.T) {
+		f := newActAsFixture(t)
+		none := bob
+		none.Role = ""
+		f.ms.users[bob.ID] = none
+		if _, err := f.m.StartActAs(ctx, f.sess, bob.ID, 0); !errors.Is(err, ErrActAsTargetNoAccess) {
+			t.Errorf("err = %v, want ErrActAsTargetNoAccess", err)
+		}
+	})
 	t.Run("no nesting", func(t *testing.T) {
 		f := newActAsFixture(t)
 		if _, err := f.m.StartActAs(ctx, f.sess, bob.ID, 0); err != nil {
@@ -329,6 +338,25 @@ func TestActAsEndsWhenTheTargetIsDeactivated(t *testing.T) {
 		t.Fatalf("session after the target was deactivated: ActAs = %+v, principal = %+v", s.ActAs, s.Principal())
 	}
 	f.resolve(t) // a later request adds nothing
+	f.requireOneEndAudit(t)
+}
+
+// F-07: a target that lost its last grant is denied everything, act_as_stop
+// included, so the period ends and the admin goes on as itself.
+func TestActAsEndsWhenTheTargetLosesEveryGrant(t *testing.T) {
+	f := newActAsFixture(t)
+	if _, err := f.m.StartActAs(context.Background(), f.sess, bob.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	none := bob
+	none.Role = ""
+	f.ms.users[bob.ID] = none
+
+	s := f.resolve(t)
+	if s.ActAs != nil || s.Principal().Kind != authz.KindBrowserSession || s.Principal().UserID != alice.ID {
+		t.Fatalf("session after the target lost its grants: ActAs = %+v, principal = %+v", s.ActAs, s.Principal())
+	}
+	f.resolve(t)
 	f.requireOneEndAudit(t)
 }
 

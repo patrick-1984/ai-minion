@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -107,14 +106,18 @@ func SaveKey(path string, k *Key) error {
 	return WritePrivate(path, []byte(content))
 }
 
-// LoadKey reads a key saved by SaveKey. It refuses a file that other users
-// can read (Unix: any group or world permission bit; Windows: a DACL that
-// grants access to another principal).
+// LoadKey reads a key saved by SaveKey. It opens the file with [OpenPrivate]
+// and so refuses a symbolic link, a file that is not owned by the current user
+// and a file that other users can access (Unix: any group or world permission
+// bit; Windows: a reparse point, a foreign owner or a DACL that grants access to
+// another principal). All checks are made on the opened handle.
 func LoadKey(path string) (*Key, error) {
-	if err := CheckPrivate(path); err != nil {
+	f, err := OpenPrivate(path)
+	if err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(path)
+	defer func() { _ = f.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(f, 4096))
 	if err != nil {
 		return nil, err
 	}
