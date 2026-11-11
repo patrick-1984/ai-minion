@@ -20,7 +20,7 @@ require (
 	github.com/sigstore/sigstore v1.11.1
 	github.com/sigstore/sigstore-go v1.4.0
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/theupdateframework/go-tuf/v2 v2.4.2
 	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
 	golang.org/x/net v0.62.0
