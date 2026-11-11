@@ -91,8 +91,23 @@ sd_check_worker() {
 
 	# "minion worker status" as the Worker's user asks the running Worker over
 	# its local socket; an unpaired Worker is "idle (not enrolled)".
-	smoke_wait_for 30 "minion worker status to reach the running Worker" \
-		docker exec "$SD_CID" su -s /bin/sh "$user" -c 'minion worker status --server http://127.0.0.1:8443 | grep -Eq "^Connection: +(idle|connecting|connected|reconnecting)"'
+	local i st
+	for i in $(seq 1 30); do
+		st=$(docker exec "$SD_CID" su -s /bin/sh "$user" -c 'minion worker status --server http://127.0.0.1:8443' 2>&1) &&
+			printf '%s\n' "$st" | grep -Eq '^Connection: +(idle|connecting|connected|reconnecting)' && break
+		[ "$i" -lt 30 ] || smoke_die "timed out after 30s waiting for minion worker status to reach the running Worker
+--- last status output:
+$st
+--- su environment (runtime and temp dirs):
+$(docker exec "$SD_CID" su -s /bin/sh "$user" -c 'id; env | grep -E "^(XDG_RUNTIME_DIR|TMPDIR|HOME)=" ; ls -la /tmp /run/user 2>&1 | head -40' 2>&1)
+--- sockets:
+$(docker exec "$SD_CID" sh -c 'find /tmp /run/user -name worker.sock -exec ls -la {} \; 2>&1; ls -lad /tmp/minion-* /run/user/*/minion 2>&1' 2>&1)
+--- unit environment:
+$(sd_exec systemctl show "minion-worker@$user" -p Environment -p User -p PrivateTmp 2>&1)
+--- journal:
+$(sd_exec journalctl -u "minion-worker@$user" --no-pager -n 40 2>&1 | tail -n 40)"
+		sleep 1
+	done
 	status=$(sd_exec su -s /bin/sh "$user" -c 'minion worker status --server http://127.0.0.1:8443')
 	printf '%s\n' "$status" | grep -Eq '^Hub URL: +http://127\.0\.0\.1:8443' ||
 		smoke_die "worker status does not show the test Hub URL: $status"

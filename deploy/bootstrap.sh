@@ -524,8 +524,11 @@ authenticate_entry() {
 
 # extract_binary ARCHIVE DIR: DIR/minion from the archive, a plain executable file.
 extract_binary() {
-	tar -xzf "$1" -C "$2" minion 2>/dev/null || die "$1 does not contain the minion binary"
-	[ -f "$2/minion" ] && [ ! -L "$2/minion" ] || die "$1 holds no regular file 'minion'"
+	# Stream the entry into a file this process creates: run as root, a plain
+	# "tar -x" would keep the uid recorded in the archive (the build user), and
+	# the cache trust check would then refuse the binary.
+	(umask 077 && tar -xzOf "$1" minion >"$2/minion") 2>/dev/null || die "$1 does not contain the minion binary"
+	[ -f "$2/minion" ] && [ ! -L "$2/minion" ] && [ -s "$2/minion" ] || die "$1 holds no regular file 'minion'"
 	chmod 755 "$2/minion" || die "cannot make the minion binary executable"
 }
 

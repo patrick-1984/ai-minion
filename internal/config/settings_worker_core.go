@@ -202,13 +202,32 @@ func validWorkerIDEntry(e string) bool {
 	return true
 }
 
-// defaultWorkerName is the host name, or "minion" when the OS reports none.
+// defaultWorkerName is the short host name (the part before the first dot),
+// cut to MaxNameLength characters, or "minion" when the OS reports none. A
+// long host name (CI runners, some cloud hosts) must not stop a Worker that
+// was given no name; an explicit name is still validated strictly.
 func defaultWorkerName() (string, error) {
 	h, err := os.Hostname()
-	if err != nil || strings.TrimSpace(h) == "" {
+	if err != nil {
 		return "minion", nil
 	}
-	return h, nil
+	return shortWorkerName(h), nil
+}
+
+// shortWorkerName derives the default Worker name from a host name.
+func shortWorkerName(host string) string {
+	h := strings.TrimSpace(host)
+	if i := strings.IndexByte(h, '.'); i > 0 {
+		h = h[:i]
+	}
+	if r := []rune(h); len(r) > MaxNameLength {
+		h = string(r[:MaxNameLength])
+	}
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return "minion"
+	}
+	return h
 }
 
 // TmuxSocket returns the socket a tmux client without -S and -L uses when it

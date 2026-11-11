@@ -38,6 +38,8 @@ This release tightens how Workers, API keys, accounts and backups are authorized
 
 ### Fixed
 
+- A Worker started without a name on a host with a long host name no longer refuses to start: the default name is the short host name, cut to 64 characters.
+- `bootstrap.sh` run as root no longer refuses its own cached binary: the binary is written by the script itself instead of keeping the owner recorded in the archive.
 - Windows CI: test fixtures now use private file permissions, and the service fixture passes `--share-existing`. Production permission checks are unchanged.
 - A running keyless call stream now ends when its owner loses access, instead of continuing until it finishes.
 - Starting a user act-as session for an account without any grant is refused, and an active one ends when the target loses its grants.
