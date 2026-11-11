@@ -2,7 +2,7 @@
 
 Back to the [README](../../README.md).
 
-The Windows Worker is a **preview** in release 0.6.0. It works differently from the Linux and macOS Worker, and some things are missing. Read the limits before you rely on it.
+The Windows Worker is a **preview** in release 0.6.1. It works differently from the Linux and macOS Worker, and some things are missing. Read the limits before you rely on it.
 
 ## What it is
 

@@ -85,14 +85,14 @@ func TestApproveAndRemoveButtonsCallTheCatalogOperations(t *testing.T) {
 func TestInvitationsPageShowsTheUpgradeNotice(t *testing.T) {
 	list := ops.InvitationListResult{Invitations: []ops.InvitationInfo{{
 		ID: "0190a1b2-c3d4-7e5f-8a6b-0000000000f1", Name: "old-key", Mode: ops.InvitationReusable, Kind: ops.KindPrivate,
-		Status: ops.InvitationActive, Notice: "Limited by the upgrade to 0.6.0: this key had no expiry.",
+		Status: ops.InvitationActive, Notice: "Limited by the upgrade to 0.6: this key had no expiry.",
 	}, {
 		ID: "0190a1b2-c3d4-7e5f-8a6b-0000000000f2", Name: "infrastructure key file", Mode: ops.InvitationReusable, Kind: ops.KindInfrastructure,
 		Status: ops.InvitationActive, Source: "infra_file",
 	}}}
 	connect(t, newFakeOps().reply(ops.OpInvitationList, list))
 	body := mainOf(t, onbGet(t, onbAdmin(t), pathInvitations).Body.String())
-	mustHave(t, body, "data-invitation-notice", "Limited by the upgrade to 0.6.0", "old-key", "MINION_INFRA_INVITE_KEY_FILE", "starts as <strong>pending</strong>")
+	mustHave(t, body, "data-invitation-notice", "Limited by the upgrade to 0.6", "old-key", "MINION_INFRA_INVITE_KEY_FILE", "starts as <strong>pending</strong>")
 }
 
 func TestInvitationCreateSendsMaxUsesOnlyForReusableKeys(t *testing.T) {

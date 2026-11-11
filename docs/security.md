@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md).
 
-Minion lets people, scripts and models read and type into terminal sessions on other machines. That is the product, and it defines what you are trusting. This page states the boundaries as they are in release 0.6.0, including what has not been reviewed yet.
+Minion lets people, scripts and models read and type into terminal sessions on other machines. That is the product, and it defines what you are trusting. This page states the boundaries as they are in release 0.6.1, including what has not been reviewed yet.
 
 ## Who sees what
 
@@ -62,7 +62,7 @@ A Worker pins the Hub's **identity key** when it pairs or enrolls; later it trus
 - **Signed release (the default):** it verifies the same signature of the checksum list as `minion update` does (with a pinned `cosign`), then the archive against those checksums.
 - **Checksum-pinned (an exact version plus `MINION_SHA256`):** it checks only that the archive has the SHA-256 you supplied. It does not fetch or verify the checksums file, the signature or the transparency-log entry, so the signature guarantees above do **not** apply to this mode. Take the checksum from a source you trust independently of the download (for example the signed `checksums.txt` that you verified yourself), because the installer trusts it completely.
 
- There is no database downgrade: an older Hub refuses a database a newer one changed. A Worker whose protocol range does not overlap its Hub's refuses an update that would break the connection. Release 0.6.0 speaks wire protocol **2.0** only (the signed release manifest carries the range `2.0..2.0`): a Hub and a Worker of an earlier build cannot connect, and mixed versions are not supported, so upgrade the Hub and all Workers together.
+ There is no database downgrade: an older Hub refuses a database a newer one changed. A Worker whose protocol range does not overlap its Hub's refuses an update that would break the connection. Release 0.6.1 speaks wire protocol **2.0** only (the signed release manifest carries the range `2.0..2.0`): a Hub and a Worker of an earlier build cannot connect, and mixed versions are not supported, so upgrade the Hub and all Workers together.
 
 ## When something is not known
 

@@ -123,14 +123,14 @@ func capDemotedAdminInvitations(ctx context.Context, tx *sql.Tx, userID string) 
 	expiry := time.Now().Add(7 * 24 * time.Hour).UnixMilli()
 	if _, err := tx.ExecContext(ctx, `UPDATE invitation_keys
    SET expires_at = ?,
-       notice = 'Limited by the upgrade to 0.6.0: this key had no expiry; it now expires 7 days after the upgrade.'
+       notice = 'Limited by the upgrade to 0.6: this key had no expiry; it now expires 7 days after the upgrade.'
  WHERE creator_id = ? AND revoked = 0 AND expires_at IS NULL`, expiry, userID); err != nil {
 		return fmt.Errorf("store: cap invitations of a demoted admin: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE invitation_keys
    SET max_uses = uses + 10,
        notice = CASE WHEN notice = '' THEN '' ELSE notice || ' ' END ||
-                'Limited by the upgrade to 0.6.0: this reusable key had no use limit; it now allows 10 more enrollments.'
+                'Limited by the upgrade to 0.6: this reusable key had no use limit; it now allows 10 more enrollments.'
  WHERE creator_id = ? AND revoked = 0 AND mode = 'reusable' AND max_uses IS NULL`, userID); err != nil {
 		return fmt.Errorf("store: cap invitations of a demoted admin: %w", err)
 	}

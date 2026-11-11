@@ -203,7 +203,7 @@ type InvitationInfo struct {
 	// Source is "infra_file" for the row of the Hub-wide key file
 	// (MINION_INFRA_INVITE_KEY_FILE) and omitted for a key made by a user.
 	Source string `json:"source,omitempty"`
-	// Notice is the text the upgrade to 0.6.0 left on a key it limited
+	// Notice is the text the upgrade to 0.6 left on a key it limited
 	// (expiry or use limit added); empty otherwise.
 	Notice string `json:"notice,omitempty"`
 }

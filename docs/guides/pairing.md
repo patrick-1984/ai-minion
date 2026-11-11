@@ -59,7 +59,7 @@ The owner of the Worker, or an administrator, approves it:
 
 The Worker's log says `this Worker is waiting for approval` while it waits. Both the enrollment and the approval are in the audit log (`worker.enroll` with outcome `pending`, then `worker.approve`).
 
-Workers that existed when you upgraded to 0.6.0 were approved by the upgrade. Invitation keys of non-admin users that had no expiry now expire 7 days after the upgrade, and reusable keys without a limit allow 10 more enrollments; the Invitations page shows a notice on each key that was limited.
+Workers that existed when you upgraded to 0.6 were approved by the upgrade. Invitation keys of non-admin users that had no expiry now expire 7 days after the upgrade, and reusable keys without a limit allow 10 more enrollments; the Invitations page shows a notice on each key that was limited.
 
 ### The infrastructure key file
 

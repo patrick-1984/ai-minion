@@ -304,7 +304,7 @@ type InvitationRow struct {
 	CreatorID string
 	// CanRevoke is true for a key that can still enroll Workers.
 	CanRevoke bool
-	// Notice is the text the upgrade to 0.6.0 left on the key.
+	// Notice is the text the upgrade to 0.6 left on the key.
 	Notice string
 }
 

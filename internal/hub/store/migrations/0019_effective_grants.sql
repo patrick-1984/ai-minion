@@ -1,4 +1,4 @@
--- F-07 (v0.6.0): an account without effective grants has no access.
+-- F-07 (v0.6): an account without effective grants has no access.
 --
 -- Until v0.5 an account without any user_roles row resolved to the role
 -- "user". From v0.6 it resolves to no role at all, so that losing every IdP

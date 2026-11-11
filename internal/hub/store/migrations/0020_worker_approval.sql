@@ -1,4 +1,4 @@
--- F-02 (v0.6.0): enrollment is not authorization.
+-- F-02 (v0.6): enrollment is not authorization.
 --
 -- A Worker that enrolls (invitation key, pairing code or the infrastructure key
 -- file) starts "pending": it may connect, but the Hub routes no operation to
@@ -32,7 +32,7 @@ ALTER TABLE invitation_keys ADD COLUMN notice TEXT NOT NULL DEFAULT '';
 -- An unlimited key expires seven days after the upgrade.
 UPDATE invitation_keys
    SET expires_at = (CAST(strftime('%s', 'now') AS INTEGER) + 7 * 24 * 3600) * 1000,
-       notice = 'Limited by the upgrade to 0.6.0: this key had no expiry; it now expires 7 days after the upgrade.'
+       notice = 'Limited by the upgrade to 0.6: this key had no expiry; it now expires 7 days after the upgrade.'
  WHERE revoked = 0
    AND expires_at IS NULL
    AND NOT EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = invitation_keys.creator_id AND r.role = 'admin');
@@ -41,7 +41,7 @@ UPDATE invitation_keys
 UPDATE invitation_keys
    SET max_uses = uses + 10,
        notice = CASE WHEN notice = '' THEN '' ELSE notice || ' ' END ||
-                'Limited by the upgrade to 0.6.0: this reusable key had no use limit; it now allows 10 more enrollments.'
+                'Limited by the upgrade to 0.6: this reusable key had no use limit; it now allows 10 more enrollments.'
  WHERE revoked = 0
    AND mode = 'reusable'
    AND max_uses IS NULL

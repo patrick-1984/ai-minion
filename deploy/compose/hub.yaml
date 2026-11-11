@@ -13,7 +13,7 @@
 #   sudo chown 65532:65532 ./admin_password.txt && sudo chmod 0400 ./admin_password.txt
 # before "docker compose up"; do that instead if you prefer to run no root container).
 #
-# MINION_VERSION selects the image tag: an exact version (v0.6.0), which is the
+# MINION_VERSION selects the image tag: an exact version (v0.6.1), which is the
 # default here, or a channel tag such as 0.6 or latest.
 #
 # The Hub speaks HTTPS on 8443 with a certificate it generates on first start
@@ -33,7 +33,7 @@ services:
       - ./admin_password.txt:/secret
 
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.6.0}
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.6.1}
     command: ["hub", "serve"]
     restart: unless-stopped
     depends_on:
