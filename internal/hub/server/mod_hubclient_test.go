@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"os"
 	"os/exec"
@@ -142,7 +143,7 @@ func startClientHub(t *testing.T) *clientHub {
 		t.Fatal(err)
 	}
 	registerAPIKeyModule(r)
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	ch.h = startHub(t, &Config{DataDir: data}, r)
 	ch.hc = newHubClient(t, ch.h, "https")
 	ch.baseURL = "https://" + ch.h.srv.Addr()

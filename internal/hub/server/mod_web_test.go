@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"net/url"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestWebModuleServesLoginAndGatesPages(t *testing.T) {
 	if err := wr.RegisterNav(web.NavItem{Label: "Sessions", Path: "/sessions"}); err != nil {
 		t.Fatal(err)
 	}
-	h := startHub(t, &Config{DataDir: t.TempDir()}, webRegistry(t, wr))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, webRegistry(t, wr))
 	hc := newHubClient(t, h, "https")
 
 	// Without a session "/" redirects to /login, which is the form.

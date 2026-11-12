@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"slices"
 	"strings"
 	"sync"
@@ -151,7 +152,7 @@ func TestOIDCRefreshIntervalIsAPanelSettingThatAppliesAtOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	startHub(t, &Config{DataDir: t.TempDir()}, r)
+	startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	ctx := context.Background()
 
 	res, err := svc.Set(ctx, admin, setArgs(config.KeyOIDCRefreshInterval, "6h"))

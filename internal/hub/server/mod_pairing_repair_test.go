@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ func TestAScopedAdminKeyCannotCompleteAnotherOwnersRepair(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	hubidtest.Provision(t, data)
 	h := startHub(t, &Config{DataDir: data}, reg)
 	ah := &apiHub{h: h, hc: newHubClient(t, h, "https"), st: st, mgr: mgr}

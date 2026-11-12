@@ -22,7 +22,7 @@ func TestMigration0023OnAV063Database(t *testing.T) {
 	if err := old.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}

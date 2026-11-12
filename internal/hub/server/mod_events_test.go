@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"net"
 	"net/http"
 	"strings"
@@ -98,7 +99,7 @@ func newEventsHub(t *testing.T) *eventsHub {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h := startHub(t, &Config{DataDir: t.TempDir()}, r)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	hc := newHubClient(t, h, "https")
 
 	admin, err := st.UserByIdentifier(context.Background(), "root")

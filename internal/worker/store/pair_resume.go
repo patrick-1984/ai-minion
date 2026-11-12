@@ -79,3 +79,15 @@ func (s *Store) DeletePairResume(ctx context.Context) (bool, error) {
 	n, _ := res.RowsAffected()
 	return n > 0, nil
 }
+
+// DeletePairResumeIf removes the record only when it is the one identified by
+// pairingID and code, and reports whether it did: a record that a successor
+// pairing wrote meanwhile is left alone.
+func (s *Store) DeletePairResumeIf(ctx context.Context, pairingID, code string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM pair_resume WHERE id = 1 AND pairing_id = ? AND code = ?`, pairingID, code)
+	if err != nil {
+		return false, fmt.Errorf("store: delete pairing resume record: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}

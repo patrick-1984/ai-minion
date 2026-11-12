@@ -5,6 +5,7 @@ package server
 import (
 	"bytes"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,7 +147,7 @@ func TestGeneratedKeyThatIsALinkIsRefused(t *testing.T) {
 
 // A first start never creates the key in a directory others can write.
 func TestKeyIsNotCreatedInAnUnsafeTLSDirectory(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	dir := filepath.Join(data, TLSDir)
 	if err := os.Mkdir(dir, 0o777); err != nil {
 		t.Fatal(err)
@@ -191,7 +192,7 @@ func TestReloadRefusesAKeyThatBecamePublic(t *testing.T) {
 // The operator's own key is held to the same rule; a public certificate is not.
 func TestOperatorSuppliedKeyMustBePrivate(t *testing.T) {
 	cert, key := ownPair(t, "own.example")
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	if err := os.Chmod(cert, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +228,7 @@ func TestOperatorSuppliedKeyMustBePrivate(t *testing.T) {
 // a link anyone else could redirect does not.
 func TestOperatorSuppliedKeyThroughALink(t *testing.T) {
 	cert, key := ownPair(t, "own.example")
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 
 	live := filepath.Join(t.TempDir(), "live")
 	if err := os.Mkdir(live, 0o755); err != nil {
@@ -270,7 +271,7 @@ func TestOperatorSuppliedKeyThroughALink(t *testing.T) {
 func TestOperatorKeyThatDoesNotMatchTheCertificateIsRefused(t *testing.T) {
 	cert, _ := ownPair(t, "a.example")
 	_, otherKey := ownPair(t, "b.example")
-	if _, err := LoadCertSource(CertOptions{DataDir: t.TempDir(), CertFile: cert, KeyFile: otherKey}); err == nil {
+	if _, err := LoadCertSource(CertOptions{DataDir: hubstore.Dir(t), CertFile: cert, KeyFile: otherKey}); err == nil {
 		t.Fatal("a mismatched key was accepted")
 	}
 }

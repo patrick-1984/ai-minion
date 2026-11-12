@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"net"
 	"net/netip"
@@ -293,7 +294,7 @@ func TestFailedAttemptsAreCountedAndTheFifthDropsThePairing(t *testing.T) {
 
 func TestFailedAttemptsSurviveAWorkerReconnectAndAHubRestart(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.Open(dir)
+	st, err := hubstore.Open(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}

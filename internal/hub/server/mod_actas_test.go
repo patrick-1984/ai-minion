@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"strings"
 	"testing"
 
@@ -101,7 +102,7 @@ func startActAsHub(t *testing.T) *actAsHub {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ah.h = startHub(t, &Config{DataDir: t.TempDir()}, r)
+	ah.h = startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	ah.hc = newHubClient(t, ah.h, "https")
 
 	h := &actAsHub{apiHub: ah, rootW: store.NewID(), aliceW: store.NewID(), bobW: store.NewID()}

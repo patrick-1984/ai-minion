@@ -30,7 +30,7 @@ func fixedClock() time.Time { return fixedTime }
 func newHubDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "hub")
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestBackupArchiveContentsAndManifest(t *testing.T) {
 
 func TestBackupOptionalFilesAreSkipped(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hub")
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestBackupOptionalFilesAreSkipped(t *testing.T) {
 
 func TestBackupWhileHubHasTheDatabaseOpen(t *testing.T) {
 	dir := newHubDir(t)
-	s, err := Open(dir) // a running Hub: WAL mode, connection open
+	s, err := openCached(t, dir) // a running Hub: WAL mode, connection open
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestBackupWhileHubHasTheDatabaseOpen(t *testing.T) {
 	if _, err := Restore(context.Background(), out, target, false); err != nil {
 		t.Fatal(err)
 	}
-	r, err := Open(target)
+	r, err := openCached(t, target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestRestoreRoundTrip(t *testing.T) {
 	}
 
 	// The restored directory opens as a Hub and reads the old data with the old key.
-	s, err := Open(target)
+	s, err := openCached(t, target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestRestoreForceReplacesDatabaseAndStaleWAL(t *testing.T) {
 	if readFile(t, filepath.Join(target, "data.key")) != readFile(t, filepath.Join(src, "data.key")) {
 		t.Error("data.key was not replaced")
 	}
-	s, err := Open(target)
+	s, err := openCached(t, target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +463,7 @@ func TestRestoreForceReplacesDatabaseAndStaleWAL(t *testing.T) {
 func TestRestoreForceRemovesIdentityNotInArchive(t *testing.T) {
 	ctx := context.Background()
 	src := filepath.Join(t.TempDir(), "hub")
-	s, err := Open(src) // a backup without identity key and TLS material
+	s, err := openCached(t, src) // a backup without identity key and TLS material
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestRestoreRefusesNewerSchema(t *testing.T) {
 func validParts(t *testing.T) (m Manifest, bodies map[string][]byte) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "hub")
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -758,7 +758,7 @@ func TestRestoreRefusesAnUnusableDataKeyAndKeepsTheOldHub(t *testing.T) {
 // "marker", which identifies one Hub.
 func openMarked(t *testing.T, dir string) string {
 	t.Helper()
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatalf("the Hub in %s cannot be opened: %v", dir, err)
 	}
@@ -774,7 +774,7 @@ func openMarked(t *testing.T, dir string) string {
 func markedHubDir(t *testing.T, name string) string {
 	t.Helper()
 	dir := newHubDir(t)
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -943,7 +943,7 @@ func TestRestoreDoesNotWriteThroughSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	bare := filepath.Join(t.TempDir(), "bare") // an archive without TLS material
-	s, err := Open(bare)
+	s, err := openCached(t, bare)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -74,7 +75,7 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "data"))
+	st, err := hubstore.Open(t, filepath.Join(t.TempDir(), "data"))
 	if err != nil {
 		t.Fatal(err)
 	}

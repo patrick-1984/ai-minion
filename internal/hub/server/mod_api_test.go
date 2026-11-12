@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -166,7 +167,7 @@ func startAPIHub(t *testing.T) *apiHub {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ah.h = startHub(t, &Config{DataDir: t.TempDir()}, r)
+	ah.h = startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	ah.hc = newHubClient(t, ah.h, "https")
 	return ah
 }
@@ -505,7 +506,7 @@ func TestAPIModuleWithoutKeyModuleRejectsEveryBearer(t *testing.T) {
 	registerAuthz(r)
 	registerAuth(r)
 	registerAPI(r, apiTestCatalog(t))
-	h := startHub(t, &Config{DataDir: t.TempDir()}, r)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	hc := newHubClient(t, h, "https")
 	code, body, _ := hc.do("GET", "/api/v1/ops/audit_list", nil, map[string]string{"Authorization": "Bearer mn_whatever"})
 	if code != http.StatusUnauthorized || !strings.Contains(body, `"unauthenticated"`) {
@@ -607,7 +608,7 @@ func TestRootWrapsEveryRequestIncludingMuxRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := startHub(t, &Config{DataDir: t.TempDir(), TLSOff: true}, r)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), TLSOff: true}, r)
 	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := c.Get("http://" + h.srv.Addr() + "/some//where")
 	if err != nil {

@@ -7,7 +7,7 @@ import (
 )
 
 func TestAuditCursorQueryUsesTheIndexRange(t *testing.T) {
-	s, err := Open(t.TempDir())
+	s, err := openCached(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

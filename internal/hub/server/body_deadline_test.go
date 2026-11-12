@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"net"
 	"net/http"
@@ -89,14 +90,14 @@ func bodyHubTLS(t *testing.T) *running {
 	t.Helper()
 	t.Setenv("MINION_ADMIN_USERNAME", "root")
 	t.Setenv("MINION_ADMIN_PASSWORD", "integration-password-1")
-	return startHub(t, &Config{DataDir: t.TempDir()}, bodyRegistry(t), WithBodyTimeout(testBodyTimeout))
+	return startHub(t, &Config{DataDir: hubstore.Dir(t)}, bodyRegistry(t), WithBodyTimeout(testBodyTimeout))
 }
 
 func bodyHubPlain(t *testing.T) *running {
 	t.Helper()
 	t.Setenv("MINION_ADMIN_USERNAME", "root")
 	t.Setenv("MINION_ADMIN_PASSWORD", "integration-password-1")
-	cfg := &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "https://hub.example.com", TrustedProxies: mustPrefixes(t, "127.0.0.0/8, ::1")}
+	cfg := &Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: "https://hub.example.com", TrustedProxies: mustPrefixes(t, "127.0.0.0/8, ::1")}
 	return startHub(t, cfg, bodyRegistry(t), WithBodyTimeout(testBodyTimeout))
 }
 
@@ -367,7 +368,7 @@ func TestWorkerWebSocketIdlesBeyondTheBodyDeadline(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	h := startHub(t, &Config{DataDir: data}, reg, WithBodyTimeout(testBodyTimeout))
 
 	wk, _ := identity.GenerateKey()

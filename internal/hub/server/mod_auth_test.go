@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -322,7 +323,7 @@ func TestAuthModuleGeneratedPasswordIsLoggedOnceAndMustChange(t *testing.T) {
 func TestAuthModuleCookieIsNotSecureForPlainHTTPLoopback(t *testing.T) {
 	t.Setenv("MINION_ADMIN_PASSWORD", "loopback-password-1")
 	var svc authServices
-	h := startHub(t, &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "http://127.0.0.1:8080"}, authRegistry(t, &svc))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: "http://127.0.0.1:8080"}, authRegistry(t, &svc))
 	hc := newHubClient(t, h, "http")
 	_, _, resp := hc.do("POST", "/auth/login", map[string]string{"username": "admin", "password": "loopback-password-1"}, nil)
 	var c *http.Cookie
@@ -339,7 +340,7 @@ func TestAuthModuleCookieIsNotSecureForPlainHTTPLoopback(t *testing.T) {
 func TestAuthModuleCookieIsSecureBehindAnHTTPSPublicURL(t *testing.T) {
 	t.Setenv("MINION_ADMIN_PASSWORD", "proxy-password-123")
 	var svc authServices
-	h := startHub(t, &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "https://hub.example.com"}, authRegistry(t, &svc))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: "https://hub.example.com"}, authRegistry(t, &svc))
 	hc := newHubClient(t, h, "http")
 	_, _, resp := hc.do("POST", "/auth/login", map[string]string{"username": "admin", "password": "proxy-password-123"}, nil)
 	for _, x := range resp.Cookies() {
@@ -356,7 +357,7 @@ func TestAuthModuleCookieIsSecureBehindAnHTTPSPublicURL(t *testing.T) {
 func TestAuthModuleRateLimitsRepeatedFailures(t *testing.T) {
 	t.Setenv("MINION_ADMIN_PASSWORD", "limited-password-123")
 	var svc authServices
-	h := startHub(t, &Config{DataDir: t.TempDir()}, authRegistry(t, &svc))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, authRegistry(t, &svc))
 	hc := newHubClient(t, h, "https")
 	limited := false
 	for range 25 {
@@ -395,7 +396,7 @@ func TestAuthModuleSessionTTLSettingApplies(t *testing.T) {
 	t.Setenv("MINION_ADMIN_PASSWORD", "ttl-password-12345")
 	t.Setenv("MINION_SESSION_TTL", "90m")
 	var svc authServices
-	h := startHub(t, &Config{DataDir: t.TempDir()}, authRegistry(t, &svc))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, authRegistry(t, &svc))
 	hc := newHubClient(t, h, "https")
 	_, _, resp := hc.do("POST", "/auth/login", map[string]string{"username": "admin", "password": "ttl-password-12345"}, nil)
 	for _, x := range resp.Cookies() {
@@ -412,7 +413,7 @@ func TestAuthModuleSessionTTLSettingApplies(t *testing.T) {
 func TestAuthModuleRejectsAnInvalidSetting(t *testing.T) {
 	t.Setenv("MINION_SESSION_TTL", "1s")
 	var svc authServices
-	cfg := &Config{DataDir: t.TempDir(), Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}
+	cfg := &Config{DataDir: hubstore.Dir(t), Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}
 	srv := New(cfg, authRegistry(t, &svc))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -425,7 +426,7 @@ func TestAuthModuleRejectsAnInvalidSetting(t *testing.T) {
 func TestAuthModuleWiresTheUserLookupAndUnknownUsersAreDenied(t *testing.T) {
 	t.Setenv("MINION_ADMIN_PASSWORD", "lookup-password-123")
 	var svc authServices
-	startHub(t, &Config{DataDir: t.TempDir()}, authRegistry(t, &svc))
+	startHub(t, &Config{DataDir: hubstore.Dir(t)}, authRegistry(t, &svc))
 	err := svc.authz.Decide(context.Background(), authz.NewSessionPrincipal("ghost"),
 		ops.MustActionSet(ops.ActionRead), authz.UserResource{ID: "ghost"})
 	if err == nil {
@@ -508,7 +509,7 @@ func TestAuthModuleRestartDoesNotNeedTheBootstrapSecretFile(t *testing.T) {
 
 	// An empty data directory still needs it: the seed must not silently
 	// generate a password when a configured file cannot be read.
-	cfg := &Config{DataDir: t.TempDir(), Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}
+	cfg := &Config{DataDir: hubstore.Dir(t), Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := New(cfg, authRegistry(t, &svc)).Run(ctx); err == nil {
@@ -519,7 +520,7 @@ func TestAuthModuleRestartDoesNotNeedTheBootstrapSecretFile(t *testing.T) {
 func TestAuthModuleCrossSiteLoginIsRefusedOverTLS(t *testing.T) {
 	t.Setenv("MINION_ADMIN_PASSWORD", "cross-site-password-1")
 	var svc authServices
-	h := startHub(t, &Config{DataDir: t.TempDir()}, authRegistry(t, &svc))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, authRegistry(t, &svc))
 	hc := newHubClient(t, h, "https")
 	body := map[string]string{"username": "admin", "password": "cross-site-password-1"}
 	for name, hdr := range map[string]map[string]string{

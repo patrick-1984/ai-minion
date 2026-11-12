@@ -194,7 +194,7 @@ func TestPutSettingRejectsEmptyKey(t *testing.T) {
 
 func TestSettingsSurviveReopen(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestSettingsSurviveReopen(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := Open(dir)
+	s2, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}

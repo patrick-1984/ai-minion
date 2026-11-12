@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -101,7 +102,7 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.Open(dir)
+	st, err := hubstore.Open(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}

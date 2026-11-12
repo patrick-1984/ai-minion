@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"sync"
 	"testing"
 	"time"
@@ -118,7 +119,7 @@ func Open(t testing.TB, st *store.Store, dir string, opts ...Option) *hubid.Serv
 // never does.
 func Provision(t testing.TB, dataDir string, opts ...Option) ed25519.PublicKey {
 	t.Helper()
-	st, err := store.Open(dataDir)
+	st, err := hubstore.Open(t, dataDir)
 	if err != nil {
 		t.Fatalf("hubidtest: open the store: %v", err)
 	}

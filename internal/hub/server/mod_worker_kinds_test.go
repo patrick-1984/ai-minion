@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,7 +136,7 @@ func TestProductionStartupServesWorkerKindsTrustAndRestriction(t *testing.T) {
 	}
 	t.Setenv("MINION_INFRA_INVITE_KEY_FILE", keyFile)
 
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	rootPub := hubidtest.Provision(t, data)
 	h := startHub(t, &Config{DataDir: data}, DefaultRegistry)
 	hubFpr, err := identity.FingerprintOf(rootPub)

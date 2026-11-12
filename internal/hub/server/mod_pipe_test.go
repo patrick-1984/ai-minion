@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"strings"
 	"sync"
 	"testing"
@@ -100,7 +101,7 @@ func startPipeHub(t *testing.T, env map[string]string, before func(r *Registry))
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ph.h = startHub(t, &Config{DataDir: t.TempDir()}, r)
+	ph.h = startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	ph.mgr = mgr
 	ph.hc = newHubClient(t, ph.h, "https")
 	var err error
@@ -521,7 +522,7 @@ func TestPipeModuleRefusesAnOpThatIsAlreadyServed(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	srv := New(&Config{DataDir: t.TempDir(), Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}, r)
+	srv := New(&Config{DataDir: hubstore.Dir(t), Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}, r)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	err := srv.Run(ctx)

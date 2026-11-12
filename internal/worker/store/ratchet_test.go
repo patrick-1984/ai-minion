@@ -171,3 +171,27 @@ func TestPairResumeRoundTripAndDeletedByEnrollmentAndReset(t *testing.T) {
 		t.Fatalf("delete of nothing = %v %v", ok, err)
 	}
 }
+
+func TestDeletePairResumeIfDeletesOnlyTheIdentifiedRecord(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, t.TempDir())
+	rec := PairResume{Code: "MN-P9R8-ZZ34", PairingID: "P9R8", ExpiresAt: time.UnixMilli(1_900_000_000_000).UTC(),
+		RootPub: pubKey(3), Serial: 7, CertSHA256: hash32(7)}
+	if err := s.SavePairResume(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	for _, other := range [][2]string{{"K7Q4", "MN-K7Q4-XY12"}, {"P9R8", "MN-K7Q4-XY12"}, {"K7Q4", rec.Code}} {
+		if ok, err := s.DeletePairResumeIf(ctx, other[0], other[1]); err != nil || ok {
+			t.Fatalf("delete of %v = %v %v, want nothing deleted", other, ok, err)
+		}
+	}
+	if _, err := s.LoadPairResume(ctx); err != nil {
+		t.Fatalf("the record of another code was deleted: %v", err)
+	}
+	if ok, err := s.DeletePairResumeIf(ctx, rec.PairingID, rec.Code); err != nil || !ok {
+		t.Fatalf("delete of the matching record = %v %v", ok, err)
+	}
+	if _, err := s.LoadPairResume(ctx); !errors.Is(err, ErrNoPairResume) {
+		t.Fatalf("after the matching delete: %v", err)
+	}
+}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 )
 
 func TestAuditModuleProvidesTheLogFromTheStore(t *testing.T) {
-	st, err := store.Open(t.TempDir())
+	st, err := hubstore.Open(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

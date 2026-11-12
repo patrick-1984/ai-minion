@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ func startKeyHub(t *testing.T) *apiHub {
 		t.Fatal(err)
 	}
 	registerAPIKeyModule(r)
-	ah.h = startHub(t, &Config{DataDir: t.TempDir()}, r)
+	ah.h = startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	ah.hc = newHubClient(t, ah.h, "https")
 	return ah
 }

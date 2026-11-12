@@ -900,15 +900,19 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 //
 // live is read before anything is applied and again inside the write's guard:
 // a welcome at or after the certificate's end changes neither the policy nor
-// the stored data (errGuardExpired).
+// the stored data (errGuardExpired). The restriction is enforced inside that
+// guard, after the generation and expiry checks, so that a welcome that
+// expires (or whose enrollment moves) while the write waits for the lock never
+// touches the policy.
 func (c *Connector) storeWelcome(ctx context.Context, gen uint64, w HubWelcome, live func() bool) error {
 	if !live() {
 		return errGuardExpired
 	}
+	var restrict func()
 	if c.cfg.Policy != nil && w.Policy.PreviewOnly {
-		c.cfg.Policy.SetHubPreviewOnly(true)
+		restrict = func() { c.cfg.Policy.SetHubPreviewOnly(true) }
 	}
-	if err := c.cfg.Enrollment.ApplyWelcomeIfLive(ctx, gen, w, live); err != nil {
+	if err := c.cfg.Enrollment.ApplyWelcomeIfLive(ctx, gen, w, live, restrict); err != nil {
 		return err
 	}
 	if c.cfg.Policy != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"net"
 	"net/http"
@@ -37,7 +38,7 @@ func TestStoreModuleReadyCheckFollowsTheDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := startHub(t, &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "http://hub.example"}, reg)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: "http://hub.example"}, reg)
 	url := "http://" + h.srv.Addr() + "/readyz"
 
 	if failing, ok := health.Ready(context.Background()); !ok {
@@ -79,7 +80,7 @@ func TestPublicURLIsSetWhileModulesInitialiseAndStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startHub(t, &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: public}, reg)
+	startHub(t, &Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: public}, reg)
 	if got, _ := inInit.Load().(string); got != public {
 		t.Errorf("server.PublicURL() in init = %q, want %q", got, public)
 	}
@@ -123,7 +124,7 @@ func TestHealthEndpointsAnswerWhileInitialisationIsBlocked(t *testing.T) {
 	}
 
 	addr := freeAddr(t)
-	srv := New(&Config{DataDir: t.TempDir(), Listen: addr, TLSOff: true, PublicURL: "http://hub.example", Logger: testLogger(io.Discard)}, reg)
+	srv := New(&Config{DataDir: hubstore.Dir(t), Listen: addr, TLSOff: true, PublicURL: "http://hub.example", Logger: testLogger(io.Discard)}, reg)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -198,7 +199,7 @@ func TestFailedInitialisationStopsTheListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := freeAddr(t)
-	srv := New(&Config{DataDir: t.TempDir(), Listen: addr, TLSOff: true, PublicURL: "http://hub.example", Logger: testLogger(io.Discard)}, reg)
+	srv := New(&Config{DataDir: hubstore.Dir(t), Listen: addr, TLSOff: true, PublicURL: "http://hub.example", Logger: testLogger(io.Discard)}, reg)
 	if err := srv.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("Run = %v", err)
 	}
@@ -244,7 +245,7 @@ func TestSchemeHonoursTrustedProxyOverBackendTLS(t *testing.T) {
 
 	// Over the network: the Hub terminates TLS and a trusted proxy (here the
 	// loopback client) says the browser used http.
-	h := startHub(t, &Config{DataDir: t.TempDir(), TrustedProxies: mustPrefixes(t, "127.0.0.0/8")}, registryWith(t, false, nil))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), TrustedProxies: mustPrefixes(t, "127.0.0.0/8")}, registryWith(t, false, nil))
 	req, _ := http.NewRequest(http.MethodGet, "https://"+h.srv.Addr()+"/whoami", nil)
 	req.Header.Set("X-Forwarded-Proto", "http")
 	resp, err := insecureClient(0).Do(req)

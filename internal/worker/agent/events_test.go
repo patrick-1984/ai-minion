@@ -103,7 +103,10 @@ func (c *manualClock) tickDue(t testing.TB, d time.Duration) {
 
 func waitFor2(t testing.TB, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// A failure-only deadline: a passing wait returns as soon as cond holds.
+	// It is generous because race-instrumented CI runners are several times
+	// slower than a developer machine and a 5 s bound flaked there.
+	deadline := time.Now().Add(30 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatal("condition not met in time")
@@ -216,8 +219,8 @@ func (s *fakeEvStream) next(t testing.TB) json.RawMessage {
 	select {
 	case f := <-s.frames:
 		return f
-	case <-time.After(5 * time.Second):
-		t.Fatal("no frame within 5 s")
+	case <-time.After(30 * time.Second): // failure-only bound, see waitFor2
+		t.Fatal("no frame within 30 s")
 		return nil
 	}
 }

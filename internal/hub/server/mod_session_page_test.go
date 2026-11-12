@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"net"
 	"net/http"
@@ -201,7 +202,7 @@ func startSessionPageHubWith(t *testing.T, features []string) *sessionPageHub {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h := startHub(t, &Config{DataDir: t.TempDir()}, r)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	sp := &sessionPageHub{hc: newHubClient(t, h, "https"), wk: &sessionWorker{}, wid: store.NewID()}
 
 	admin, err := st.UserByIdentifier(context.Background(), "root")

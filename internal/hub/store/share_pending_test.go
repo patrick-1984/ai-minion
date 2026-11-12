@@ -14,7 +14,7 @@ import (
 // to a sequence number) and survive a reopen.
 func TestPendingShareRestrictionsAreDurable(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestPendingShareRestrictionsAreDurable(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s, err = Open(dir) // a restart
+	s, err = openCached(t, dir) // a restart
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestPendingShareMigrationUpgradesAnExistingDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = old.Close()
-	cur, err := Open(dir)
+	cur, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}

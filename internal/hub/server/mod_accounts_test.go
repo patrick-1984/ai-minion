@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"strings"
 	"sync"
 	"testing"
@@ -103,7 +104,7 @@ func startAccountsHub(t *testing.T) *accountsHub {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ah.h = startHub(t, &Config{DataDir: t.TempDir()}, r)
+	ah.h = startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	return ah
 }
 

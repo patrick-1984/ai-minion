@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"log/slog"
 	"strings"
 	"sync"
@@ -33,7 +34,7 @@ func textLogger(w *syncBuf) *slog.Logger {
 
 func openStore(t *testing.T, dir string) *store.Store {
 	t.Helper()
-	st, err := store.Open(dir)
+	st, err := hubstore.Open(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}

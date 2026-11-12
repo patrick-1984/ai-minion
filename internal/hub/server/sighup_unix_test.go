@@ -3,6 +3,7 @@
 package server
 
 import (
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"os"
 	"strings"
 	"syscall"
@@ -14,7 +15,7 @@ import (
 // WithReloadSignal override, a real SIGHUP to this process.
 func TestRunReloadsCertificateOnRealSIGHUP(t *testing.T) {
 	cert, key := ownPair(t, "127.0.0.1")
-	h := startHub(t, &Config{DataDir: t.TempDir(), CertFile: cert, KeyFile: key}, registryWith(t, false, nil))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), CertFile: cert, KeyFile: key}, registryWith(t, false, nil))
 	url := "https://" + h.srv.Addr() + "/healthz"
 	seen := func() string {
 		_, _, resp := getBody(t, insecureClient(0), url)

@@ -76,6 +76,7 @@ type EnrollmentRepo interface {
 	SavePairResume(ctx context.Context, r store.PairResume) error
 	LoadPairResume(ctx context.Context) (store.PairResume, error)
 	DeletePairResume(ctx context.Context) (bool, error)
+	DeletePairResumeIf(ctx context.Context, pairingID, code string) (bool, error)
 	UpdateWelcome(ctx context.Context, w store.WelcomeInfo) error
 	WipeEnrollment(ctx context.Context) (bool, error)
 }
@@ -295,11 +296,18 @@ func (e *Enrollments) CommitRatchetIfLive(ctx context.Context, gen uint64, pin i
 }
 
 // ApplyWelcomeIfLive is [Enrollments.ApplyWelcomeIf] with an expiry check
-// inside the guard, immediately before the write.
-func (e *Enrollments) ApplyWelcomeIfLive(ctx context.Context, gen uint64, w HubWelcome, live func() bool) error {
+// inside the guard, immediately before the write. before, when not nil, runs
+// inside the guard after the generation and expiry checks passed and before
+// the write: a change it makes (the connector enforces a new restriction
+// there) happens only for a welcome that is still current and live, and it
+// stays when the write itself fails.
+func (e *Enrollments) ApplyWelcomeIfLive(ctx context.Context, gen uint64, w HubWelcome, live func() bool, before func()) error {
 	return e.lockedIf(ctx, gen, func() error {
 		if live != nil && !live() {
 			return errGuardExpired
+		}
+		if before != nil {
+			before()
 		}
 		return e.applyWelcome(ctx, w)
 	})
@@ -338,6 +346,18 @@ func (e *Enrollments) LoadPairResume(ctx context.Context) (r store.PairResume, o
 func (e *Enrollments) DeletePairResume(ctx context.Context) error {
 	_, err := e.repo.DeletePairResume(ctx)
 	return err
+}
+
+// DeletePairResumeIf deletes the pairing resume record of a retired code under
+// the state guard, only while the generation is still gen and only when the
+// stored record is the one identified by pairingID and code. A moved generation
+// returns [ErrEnrollmentChanged]; a record that is not this one (a successor
+// pairing saved its own after `--new-code`) is kept and no error is returned.
+func (e *Enrollments) DeletePairResumeIf(ctx context.Context, gen uint64, pairingID, code string) error {
+	return e.lockedIf(ctx, gen, func() error {
+		_, err := e.repo.DeletePairResumeIf(ctx, pairingID, code)
+		return err
+	})
 }
 
 // ApplyWelcome stores what the latest welcome said.

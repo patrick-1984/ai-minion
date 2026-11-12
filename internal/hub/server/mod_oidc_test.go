@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"net/http"
 	"os"
@@ -121,7 +122,7 @@ func sessionPage(t *testing.T) *web.Registry {
 func TestOIDCModuleShowsTheProviderOfTheEnvironment(t *testing.T) {
 	oidcEnv(t, nil)
 	var handlers *api.OIDCHandlers
-	h := startHub(t, &Config{DataDir: t.TempDir()}, oidcRegistry(t, sessionPage(t), &handlers, nil))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, oidcRegistry(t, sessionPage(t), &handlers, nil))
 	hc := newHubClient(t, h, "https")
 
 	code, body, _ := hc.do("GET", "/login", nil, nil)
@@ -163,7 +164,7 @@ func TestOIDCModuleShowsTheProviderOfTheEnvironment(t *testing.T) {
 func TestOIDCModuleWithoutProviderShowsNoButton(t *testing.T) {
 	t.Setenv("MINION_ADMIN_USERNAME", "root")
 	t.Setenv("MINION_ADMIN_PASSWORD", "integration-password-1")
-	h := startHub(t, &Config{DataDir: t.TempDir()}, oidcRegistry(t, sessionPage(t), nil, nil))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, oidcRegistry(t, sessionPage(t), nil, nil))
 	hc := newHubClient(t, h, "https")
 	code, body, _ := hc.do("GET", "/login", nil, nil)
 	if code != 200 || strings.Contains(body, "Sign in with") {
@@ -207,7 +208,7 @@ func TestOIDCModuleListsPanelProviders(t *testing.T) {
 func TestInsecureFlagWarnsInTheLogAndOnAdminPages(t *testing.T) {
 	oidcEnv(t, map[string]string{"MINION_OIDC_TLS_INSECURE_SKIP_VERIFY": "true"})
 	var st *store.Store
-	h := startHub(t, &Config{DataDir: t.TempDir()}, oidcRegistry(t, sessionPage(t), nil, &st))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, oidcRegistry(t, sessionPage(t), nil, &st))
 	hc := newHubClient(t, h, "https")
 
 	// A warning at start, without the secret.
@@ -270,7 +271,7 @@ func TestInsecureWarningForPanelProvider(t *testing.T) {
 func TestInvalidOIDCEnvironmentStopsTheStart(t *testing.T) {
 	t.Setenv("MINION_ADMIN_PASSWORD", "integration-password-1")
 	t.Setenv("MINION_OIDC_ISSUER", "https://idp.example") // no client id
-	srv := New(&Config{DataDir: t.TempDir(), Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}, oidcRegistry(t, sessionPage(t), nil, nil))
+	srv := New(&Config{DataDir: hubstore.Dir(t), Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}, oidcRegistry(t, sessionPage(t), nil, nil))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	err := srv.Run(ctx)

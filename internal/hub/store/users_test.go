@@ -10,7 +10,7 @@ import (
 
 func openTest(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(t.TempDir())
+	s, err := openCached(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

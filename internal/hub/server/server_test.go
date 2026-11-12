@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"log/slog"
 	"net/http"
@@ -138,7 +139,7 @@ func TestSelfSignedGeneratedOnceAndReused(t *testing.T) {
 }
 
 func TestTLSConfigRequiresTLS13(t *testing.T) {
-	cs, err := LoadCertSource(CertOptions{DataDir: t.TempDir()})
+	cs, err := LoadCertSource(CertOptions{DataDir: hubstore.Dir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +228,7 @@ func ownPair(t *testing.T, name string) (certFile, keyFile string) {
 
 func TestOwnCertificateIsUsedAndReloaded(t *testing.T) {
 	cert, key := ownPair(t, "own.example")
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	cs, err := LoadCertSource(CertOptions{DataDir: data, CertFile: cert, KeyFile: key})
 	if err != nil {
 		t.Fatal(err)
@@ -271,10 +272,10 @@ func TestOwnCertificateIsUsedAndReloaded(t *testing.T) {
 }
 
 func TestCertAndKeyFileMustComeTogether(t *testing.T) {
-	if _, err := LoadCertSource(CertOptions{DataDir: t.TempDir(), CertFile: "/x/cert.pem"}); err == nil {
+	if _, err := LoadCertSource(CertOptions{DataDir: hubstore.Dir(t), CertFile: "/x/cert.pem"}); err == nil {
 		t.Fatal("cert file without key file accepted")
 	}
-	if _, err := LoadCertSource(CertOptions{DataDir: t.TempDir(), CertFile: "/nonexistent/c.pem", KeyFile: "/nonexistent/k.pem"}); err == nil {
+	if _, err := LoadCertSource(CertOptions{DataDir: hubstore.Dir(t), CertFile: "/nonexistent/c.pem", KeyFile: "/nonexistent/k.pem"}); err == nil {
 		t.Fatal("missing own certificate accepted")
 	}
 }
@@ -808,7 +809,7 @@ func getBody(t *testing.T, c *http.Client, url string) (int, string, *http.Respo
 }
 
 func TestRunServesHealthOverTLS13WithSelfSignedCertificate(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	reg := registryWith(t, true, nil)
 	h := startHub(t, &Config{DataDir: data}, reg)
 	base := "https://" + h.srv.Addr()
@@ -855,7 +856,7 @@ func TestRunServesHealthOverTLS13WithSelfSignedCertificate(t *testing.T) {
 }
 
 func TestRunReusesCertificateAcrossRestarts(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	fps := make([]string, 2)
 	for i := range fps {
 		h := startHub(t, &Config{DataDir: data}, registryWith(t, false, nil))
@@ -874,7 +875,7 @@ func TestRunReusesCertificateAcrossRestarts(t *testing.T) {
 func TestRunWithOwnCertificateReloadsOnSignal(t *testing.T) {
 	cert, key := ownPair(t, "127.0.0.1")
 	reload := make(chan struct{}, 1)
-	h := startHub(t, &Config{DataDir: t.TempDir(), CertFile: cert, KeyFile: key}, registryWith(t, false, nil), WithReloadSignal(reload))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), CertFile: cert, KeyFile: key}, registryWith(t, false, nil), WithReloadSignal(reload))
 	url := "https://" + h.srv.Addr() + "/healthz"
 
 	seen := func() string {
@@ -944,7 +945,7 @@ func TestRunPlainHTTPWithTrustedProxy(t *testing.T) {
 }
 
 func TestRunIgnoresForwardedHeadersFromUntrustedPeers(t *testing.T) {
-	cfg := &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "http://hub.example.com"} // no trusted proxies
+	cfg := &Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: "http://hub.example.com"} // no trusted proxies
 	h := startHub(t, cfg, registryWith(t, false, nil))
 	req, _ := http.NewRequest(http.MethodGet, "http://"+h.srv.Addr()+"/whoami", nil)
 	req.Header.Set("X-Forwarded-For", "203.0.113.77")
@@ -966,7 +967,7 @@ func TestRunIgnoresForwardedHeadersFromUntrustedPeers(t *testing.T) {
 
 func TestRunReadinessFlipsAndShutdownDrains(t *testing.T) {
 	hooks := &testHooks{}
-	h := startHub(t, &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "http://hub.example.com"}, registryWith(t, true, hooks))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: "http://hub.example.com"}, registryWith(t, true, hooks))
 	url := "http://" + h.srv.Addr() + "/readyz"
 	if code, _, _ := getBody(t, http.DefaultClient, url); code != 200 {
 		t.Fatalf("/readyz = %d", code)
@@ -1021,8 +1022,8 @@ func TestRunStartsInFreshDataDir(t *testing.T) {
 }
 
 func TestRunFailsWhenAddressIsTaken(t *testing.T) {
-	h := startHub(t, &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "http://h.example"}, registryWith(t, false, nil))
-	srv := New(&Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "http://h.example", Listen: h.srv.Addr(), Logger: testLogger(io.Discard)}, registryWith(t, false, nil))
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: "http://h.example"}, registryWith(t, false, nil))
+	srv := New(&Config{DataDir: hubstore.Dir(t), TLSOff: true, PublicURL: "http://h.example", Listen: h.srv.Addr(), Logger: testLogger(io.Discard)}, registryWith(t, false, nil))
 	err := srv.Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "MINION_LISTEN") {
 		t.Fatalf("Run = %v", err)

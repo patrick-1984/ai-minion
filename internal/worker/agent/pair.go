@@ -516,7 +516,7 @@ func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
 			return Enrollment{}, err
 		}
 		if left, shown := life.remaining(p.clk.Now(), p.ttl); shown && left <= 0 {
-			life, notice = p.renew(life), "The pairing code expired."
+			life, notice = p.renew(gen, life), "The pairing code expired."
 			continue
 		}
 		res, held, err := p.attempt(ctx, key, life, notice, gen, moved)
@@ -528,19 +528,19 @@ func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
 		// enrollment or another attempt), a code that this attempt exposed
 		// without authenticating the Hub is retired first: its record goes, so
 		// that neither this run nor a restart can bring it back.
-		p.retireIfExposed(life, err)
+		p.retireIfExposed(gen, life, err)
 		if ctx.Err() != nil {
 			return Enrollment{}, ctx.Err()
 		}
 		if err := p.checkMoved(ctx, gen); err != nil {
 			return Enrollment{}, err
 		}
-		next, reason, penalty, fatal := p.classify(life, err)
+		next, reason, penalty, fatal := p.classify(gen, life, err)
 		if fatal != nil {
 			return Enrollment{}, fatal
 		}
 		if next {
-			life, notice = p.renew(life), reason
+			life, notice = p.renew(gen, life), reason
 			if penalty {
 				// The peer may have been an interceptor that tested a guess:
 				// the next code is shown only after the retry delay, which
@@ -668,7 +668,7 @@ func (p *Pairer) changed(ctx context.Context) error {
 // Hub's count still applies to every code it sees, but a real Worker never
 // reaches five attempts on one code, because it retires the code after the
 // first exposed failure. Integrator note A-17 records this.
-func (p *Pairer) classify(life *codeLife, err error) (next bool, reason string, penalty bool, fatal error) {
+func (p *Pairer) classify(gen uint64, life *codeLife, err error) (next bool, reason string, penalty bool, fatal error) {
 	if errors.Is(err, errCodeExpired) {
 		return true, "The pairing code expired.", false, nil
 	}
@@ -681,7 +681,7 @@ func (p *Pairer) classify(life *codeLife, err error) (next bool, reason string, 
 		p.log.Warn("the hub's pairing confirmation failed; pairing stopped, nothing was stored", "hub", hubLabel(p.cfg.HubURL))
 		// The confirmation was exposed and the Hub was not authenticated: the
 		// code (and a record that would bring it back) is retired.
-		p.dropResume(life)
+		p.dropResume(gen, life)
 		return false, "", false, fmt.Errorf("the server could not prove that it knows the pairing code, so the connection may be intercepted; "+
 			"nothing was stored and the code is not reused. Check the Hub address and the network, then run the command again for a new code: %w", err)
 	}
@@ -783,7 +783,7 @@ func (p *Pairer) newCode(prev identity.PairingCode) identity.PairingCode {
 // written in this attempt): its pair_resume record is deleted at once, on
 // every exit path. A serial verdict comes after sig_hub, so such an attempt
 // did authenticate the Hub and keeps the code (section 12.2).
-func (p *Pairer) retireIfExposed(life *codeLife, err error) {
+func (p *Pairer) retireIfExposed(gen uint64, life *codeLife, err error) {
 	if !life.wasExposed() || life.wasAuthenticated() {
 		return
 	}
@@ -792,15 +792,28 @@ func (p *Pairer) retireIfExposed(life *codeLife, err error) {
 		(refusal.Reason == transport.ReasonCertSerialTooLow || refusal.Reason == transport.ReasonCertSerialConflict) {
 		return
 	}
-	p.dropResume(life)
+	p.dropResume(gen, life)
 }
 
-// dropResume deletes the pair_resume record of a code that is retired.
-func (p *Pairer) dropResume(l *codeLife) {
+// dropResume deletes the pair_resume record of a code that is retired. The
+// delete runs under the state guard and only while the generation is still gen
+// and the stored record is this code's: after `--new-code` replaced the
+// identity, a record that a successor pairing saved is never touched.
+func (p *Pairer) dropResume(gen uint64, l *codeLife) {
 	if !l.hasRecord() {
 		return
 	}
-	if err := p.cfg.Enrollment.DeletePairResume(context.Background()); err != nil {
+	l.mu.Lock()
+	id, code := l.code.PairingID(), l.code.String()
+	if l.resume != nil {
+		id, code = l.resume.PairingID, l.resume.Code
+	}
+	l.mu.Unlock()
+	if err := p.cfg.Enrollment.DeletePairResumeIf(context.Background(), gen, id, code); err != nil {
+		if errors.Is(err, ErrEnrollmentChanged) {
+			p.log.Debug("the enrollment changed; the pairing resume record is left to its new owner")
+			return
+		}
 		p.log.Warn("cannot delete the pairing resume record of a retired code", "error", err.Error())
 		return
 	}
@@ -809,12 +822,12 @@ func (p *Pairer) dropResume(l *codeLife) {
 	l.mu.Unlock()
 }
 
-func (p *Pairer) renew(old *codeLife) *codeLife {
+func (p *Pairer) renew(gen uint64, old *codeLife) *codeLife {
 	if old.hasRecord() {
 		// The old code is abandoned (it expired, or an attempt exposed it
 		// without authenticating the Hub): its record goes, so that the next
 		// code starts clean and a restart cannot bring the code back.
-		p.dropResume(old)
+		p.dropResume(gen, old)
 	}
 	return &codeLife{code: p.newCode(old.code)}
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"html"
 	"net/url"
 	"regexp"
@@ -36,7 +37,7 @@ func TestInvitationCommandsUseTheConfiguredPublicURL(t *testing.T) {
 	}
 
 	t.Run("configured", func(t *testing.T) {
-		body, base := create(t, &Config{DataDir: t.TempDir(), PublicURL: "https://hub.public.example"})
+		body, base := create(t, &Config{DataDir: hubstore.Dir(t), PublicURL: "https://hub.public.example"})
 		if !strings.Contains(body, "--server https://hub.public.example ") || !strings.Contains(body, `MINION_SERVER: "https://hub.public.example"`) {
 			t.Errorf("the commands do not use the configured public URL:\n%s", body)
 		}
@@ -45,7 +46,7 @@ func TestInvitationCommandsUseTheConfiguredPublicURL(t *testing.T) {
 		}
 	})
 	t.Run("not configured", func(t *testing.T) {
-		body, base := create(t, &Config{DataDir: t.TempDir()})
+		body, base := create(t, &Config{DataDir: hubstore.Dir(t)})
 		if !strings.Contains(body, "--server "+base+" ") {
 			t.Errorf("without a public URL the commands should name %s:\n%s", base, body)
 		}
@@ -59,7 +60,7 @@ func TestAPIKeyPageShowsTheRealLastUse(t *testing.T) {
 	t.Setenv("MINION_ADMIN_USERNAME", "root")
 	t.Setenv("MINION_ADMIN_PASSWORD", "onboarding-integration-2")
 	t.Setenv("MINION_PUBLIC_URL", "")
-	h := startHub(t, &Config{DataDir: t.TempDir()}, DefaultRegistry)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, DefaultRegistry)
 	hc := newHubClient(t, h, "https")
 	code, _, csrf := hc.login("root", "onboarding-integration-2")
 	if code != 200 {

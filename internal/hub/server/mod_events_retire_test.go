@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func TestRetireAndLiveEventsWorkTogetherInTheComposedHub(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h := startHub(t, &Config{DataDir: t.TempDir()}, r)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	ctx := context.Background()
 	admin, err := st.UserByIdentifier(ctx, "root")
 	if err != nil {

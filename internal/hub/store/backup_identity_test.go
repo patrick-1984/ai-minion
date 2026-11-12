@@ -42,7 +42,7 @@ func mustT(t *testing.T, err error) {
 func newIDHub(t *testing.T, state string) *idHub {
 	t.Helper()
 	h := &idHub{dir: filepath.Join(t.TempDir(), "hub")}
-	s, err := Open(h.dir)
+	s, err := openCached(t, h.dir)
 	mustT(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 	h.s = s
@@ -190,7 +190,7 @@ func TestBackupRestoreRoundTripPerState(t *testing.T) {
 					t.Errorf("unexpected file %s", f)
 				}
 			}
-			r, err := Open(target)
+			r, err := openCached(t, target)
 			mustT(t, err)
 			defer r.Close()
 			rec, ok, err := r.GetSetting(ctx, "oidc_client_secret")
@@ -416,7 +416,7 @@ func TestRestoreOfFormat1Archives(t *testing.T) {
 		if v, err := schemaVersionOf(ctx, filepath.Join(target, DBFile)); err != nil || v < 21 {
 			t.Fatalf("schema = %d, %v", v, err)
 		}
-		r, err := Open(target)
+		r, err := openCached(t, target)
 		mustT(t, err)
 		defer r.Close()
 		if rec, ok, _ := r.GetSetting(ctx, "oidc_client_secret"); !ok || rec.Value != "s3cret-value" {
@@ -431,7 +431,7 @@ func TestRestoreOfFormat1Archives(t *testing.T) {
 		if res.IdentityState != IdentityStatePlain {
 			t.Fatalf("state = %q", res.IdentityState)
 		}
-		r, err := Open(target)
+		r, err := openCached(t, target)
 		mustT(t, err)
 		defer r.Close()
 		row, ok, err := r.HubIdentityV2(ctx)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func startRemoveHubWithService(t *testing.T) (*apiHub, *workers.Service) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	ah.h = startHub(t, &Config{DataDir: t.TempDir()}, r)
+	ah.h = startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	ah.hc = newHubClient(t, ah.h, "https")
 	return ah, svc
 }

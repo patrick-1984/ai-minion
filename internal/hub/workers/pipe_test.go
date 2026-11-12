@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"log/slog"
 	"strings"
 	"sync"
@@ -137,7 +138,7 @@ func newPipeRig(t *testing.T, budget int) *pipeRig { return newPipeRigWith(t, bu
 // newPipeRigWith is newPipeRig with a change to the pipe's configuration.
 func newPipeRigWith(t *testing.T, budget int, mutate func(*PipeConfig)) *pipeRig {
 	t.Helper()
-	s, err := store.Open(t.TempDir())
+	s, err := hubstore.Open(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

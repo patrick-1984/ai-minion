@@ -178,7 +178,7 @@ func TestChainRowsRejectLoopsAndShortKeys(t *testing.T) {
 // the main database file alone, without its WAL, already holds the new link.
 func TestRotationIsCheckpointedToTheDatabaseFile(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir)
+	s, err := openCached(t, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestRotationIsCheckpointedToTheDatabaseFile(t *testing.T) {
 	if err := identity.WritePrivate(filepath.Join(lone, DataKeyFile), key); err != nil {
 		t.Fatal(err)
 	}
-	copied, err := Open(lone)
+	copied, err := openCached(t, lone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestRotationIsCheckpointedToTheDatabaseFile(t *testing.T) {
 }
 
 func TestMakeDurableConfirmsAndReportsWhatItCannotProve(t *testing.T) {
-	s, err := Open(t.TempDir())
+	s, err := openCached(t, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

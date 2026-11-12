@@ -108,6 +108,12 @@ func (s *Service) bootstrap(ctx context.Context, actor Actor, scope string, sign
 	rootSHA := sha(back)
 	now := s.nowMs()
 	audit := []store.AuditRow{s.auditRow(actor, "hub_identity.passphrase_set", fmtTarget(actor.Channel, 0, rootPub, nil))}
+	// The change counts as unconfirmed from before its commit until the
+	// confirmation below: with no snapshot yet, InvitationRoot would otherwise
+	// offer the recorded root in the window between the two. Every exit that
+	// does not leave a recorded pending operation clears it again.
+	s.pendingChange.Store(true)
+	defer func() { s.pendingChange.Store(s.unconfirmed != nil) }()
 	if fromPlain {
 		err = s.st.SealExistingIdentity(ctx, rootPub, rootSHA, now, audit)
 	} else {
@@ -125,6 +131,7 @@ func (s *Service) bootstrap(ctx context.Context, actor Actor, scope string, sign
 		s.setUnconfirmed(&pendingOp{kind: "passphrase_set", finish: func(context.Context) (Result, error) { return res, nil }})
 		return Result{}, notDurable(err, "the passphrase")
 	}
+	s.pendingChange.Store(s.unconfirmed != nil) // confirmed: the recorded root may be offered
 	if err := s.point(PointBSDurable); err != nil {
 		return Result{}, err
 	}

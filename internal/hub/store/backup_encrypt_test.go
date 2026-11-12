@@ -53,7 +53,7 @@ func TestEncryptedBackupRoundTripDecryptsTheOIDCSecret(t *testing.T) {
 			t.Errorf("%s differs after restore", name)
 		}
 	}
-	s, err := Open(target)
+	s, err := openCached(t, target)
 	if err != nil {
 		t.Fatal(err)
 	}

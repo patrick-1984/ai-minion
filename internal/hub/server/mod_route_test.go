@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"strings"
 	"testing"
 	"time"
@@ -78,7 +79,7 @@ func TestHubComposedFromTheRegistryRoutesWorkerOps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h := startHub(t, &Config{DataDir: t.TempDir()}, r)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
 	hc := newHubClient(t, h, "https")
 
 	admin, err := st.UserByIdentifier(context.Background(), "root")

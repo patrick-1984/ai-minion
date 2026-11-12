@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"net/http"
 	"slices"
 	"strings"
@@ -86,7 +87,7 @@ func TestProductionHubPairsAWorkerThroughAnAuthenticatedRESTClaim(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h := startHub(t, &Config{DataDir: t.TempDir()}, reg)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, reg)
 	hc := newHubClient(t, h, "https")
 
 	code := identity.NewPairingCode()

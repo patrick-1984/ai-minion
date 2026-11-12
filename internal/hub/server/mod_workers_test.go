@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io/fs"
 	"net/http"
 	"os"
@@ -67,7 +68,7 @@ func TestWorkersModuleNamesMissingServices(t *testing.T) {
 // certificate check, the identity key on disk, the audit log and the authz
 // lookup wired.
 func TestHubServesTheWorkerConnectEndpoint(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	reg := workersRegistry(t)
 	var (
 		svc *workers.Service
@@ -174,7 +175,7 @@ func (f userLookupFunc) User(_ context.Context, id string) (authz.UserState, err
 }
 
 func TestHubIdentitySurvivesRestarts(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	var fps []string
 	for i := 0; i < 2; i++ {
 		var svc *workers.Service
@@ -234,7 +235,7 @@ func startAndObserve(t *testing.T, data string) identityRun {
 // certificate rotation" part of the identity AC: the TLS pair is deleted
 // between two starts, the Hub serves a new certificate and keeps its identity.
 func TestHubIdentityIsIndependentOfTheTLSCertificate(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	first := startAndObserve(t, data)
 	for _, f := range []string{TLSCertFile, TLSKeyFile} {
 		if err := os.Remove(filepath.Join(data, TLSDir, f)); err != nil {
@@ -255,7 +256,7 @@ func TestHubIdentityIsIndependentOfTheTLSCertificate(t *testing.T) {
 // empty data directory (a backup restore) and the Hub there has the same
 // identity, with its own fresh TLS certificate.
 func TestHubIdentitySurvivesARestoreIntoAFreshDataDir(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	first := startAndObserve(t, data) // the Hub is stopped: the database is checkpointed
 	restored := t.TempDir()
 	for _, name := range []string{"root.key.age", "op.key", store.DBFile, store.DBFile + "-wal", store.DBFile + "-shm", "data.key"} {
@@ -280,7 +281,7 @@ func TestHubIdentitySurvivesARestoreIntoAFreshDataDir(t *testing.T) {
 }
 
 func TestHubRefusesToStartWithoutItsSealedRoot(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	reg := workersRegistry(t)
 	h := startHub(t, &Config{DataDir: data}, reg)
 	h.stop(t)
@@ -303,7 +304,7 @@ func TestHubRefusesToStartWithoutItsSealedRoot(t *testing.T) {
 
 func TestConnectEndpointRequiresTheWorkerSubprotocol(t *testing.T) {
 	reg := workersRegistry(t)
-	h := startHub(t, &Config{DataDir: t.TempDir()}, reg)
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, reg)
 	req, _ := http.NewRequest(http.MethodGet, "https://"+h.srv.Addr()+transport.ConnectPath, nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
@@ -340,7 +341,7 @@ func TestConnectEndpointRequiresTheWorkerSubprotocol(t *testing.T) {
 // A pristine data directory (B0) starts the Hub without a Worker service and
 // without creating any key; the Worker endpoint answers 503 (design 9.7).
 func TestAPristineHubStartsWithoutKeysAndRefusesWorkers(t *testing.T) {
-	data := t.TempDir()
+	data := hubstore.Dir(t)
 	reg := workersRegistry(t)
 	var id *hubid.Service
 	if err := reg.Register("grab", 60, func(_ context.Context, env *Env) error {
@@ -412,7 +413,7 @@ func TestB1AndB2HubsRefuseWorkerConnections(t *testing.T) {
 		}, hubid.StateSealedNoCert},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			data := t.TempDir()
+			data := hubstore.Dir(t)
 			tc.setup(t, data)
 			reg := workersRegistry(t)
 			var id *hubid.Service
