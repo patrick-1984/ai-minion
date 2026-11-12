@@ -58,4 +58,4 @@ Open the Worker's page in the Hub and use "Apply sharing", or call `share_set` t
 
 ## Update
 
-Change `MINION_VERSION` (an exact version such as `v0.6.2`, or a channel) and run `docker compose -f worker.yaml up -d` again. With an exact version you may add `MINION_SHA256`, the archive checksum from `checksums.txt` of that release. Without it the release signature is verified; with it only the archive checksum is checked and the signature is not, so take the checksum from a source you trust independently ([security](../security.md#updates)).
+Change `MINION_VERSION` (an exact version such as `v0.6.3`, or a channel) and run `docker compose -f worker.yaml up -d` again. With an exact version you may add `MINION_SHA256`, the archive checksum from `checksums.txt` of that release. Without it the release signature is verified; with it only the archive checksum is checked and the signature is not, so take the checksum from a source you trust independently ([security](../security.md#updates)).

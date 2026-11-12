@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.3
+
+Released 2026-11-12. No change to the product behaviour of 0.6.2.
+
+### Fixed
+
+- Timing-sensitive tests (pairing, turn channel, keepalive, session retirement, enrollment) now synchronise on the event they wait for instead of a fixed timeout, so they no longer fail on slow CI machines.
+
+### Added
+
+- `docs/architecture/proposals/hub-identity-v2.md`: the draft design for the two-tier Hub identity planned for 0.7.0 (tracking issue #3).
+
 ## v0.6.2
 
 The first published release of 0.6. The `v0.6.0` and `v0.6.1` tags exist but were never published as releases (their install smoke tests failed); everything below applies to 0.6.2.
