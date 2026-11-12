@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -34,8 +35,15 @@ var (
 // build in a scratch directory (the real, slow path) and keeps the resulting
 // files in memory; later calls only write them. dir must not hold the files
 // yet.
+//
+// On Windows Seed does nothing: a copied private file would not carry the
+// owner-only DACL that the store requires, so the caller's real Open creates
+// the directory from scratch there.
 func Seed(t testing.TB, key, dir string, build func(dir string) error) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
 	mu.Lock()
 	e := entries[key]
 	if e == nil {
