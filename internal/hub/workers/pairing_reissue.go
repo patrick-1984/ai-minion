@@ -21,6 +21,18 @@ type RepairStore interface {
 	SetRepairWindow(ctx context.Context, workerID string, until int64) error
 }
 
+// OfflineGate runs a write only while a Worker has no live session and keeps
+// the Worker from coming online until the write is done; *Registry implements
+// it ([Registry.WhileOffline]).
+type OfflineGate interface {
+	WhileOffline(workerID string, fn func() error) (online bool, err error)
+}
+
+// errWorkerOnline refuses a re-issue or a repair while the Worker is online.
+func errWorkerOnline() *proto.Error {
+	return proto.NewError(proto.CodeConflict, "this Worker is online; a pairing can only be re-issued while it is offline")
+}
+
 // ReissueRequest is one worker_pairing_reissue call.
 type ReissueRequest struct {
 	WorkerID string
@@ -39,8 +51,14 @@ type ReissueRequest struct {
 // that has never completed a connect handshake (a Worker removed, or one that
 // existed before the upgrade, is not eligible: conflict). The eligibility
 // check and the write are one conditional update. Nothing else changes; the
-// owner then enters the new code the Worker shows.
-func ReissuePairing(ctx context.Context, st RepairStore, a Auditor, now time.Time, req ReissueRequest) error {
+// owner then enters the new code the Worker shows. A Worker with a live
+// session (a pair_code session is online before first_connected_at is set) is
+// refused with conflict: the online check and the write run under the
+// registry's add lock (gate), so no session registers in between.
+func ReissuePairing(ctx context.Context, st RepairStore, gate OfflineGate, a Auditor, now time.Time, req ReissueRequest) error {
+	if gate == nil {
+		return errors.New("workers: the pairing re-issue needs the registry of online Workers")
+	}
 	w, err := st.WorkerByID(ctx, req.WorkerID)
 	switch {
 	case errors.Is(err, store.ErrWorkerNotFound):
@@ -51,7 +69,12 @@ func ReissuePairing(ctx context.Context, st RepairStore, a Auditor, now time.Tim
 		// Do not reveal Workers of other owners.
 		return proto.NewError(proto.CodeNotFound, "no such Worker")
 	}
-	err = st.SetRepairWindow(ctx, w.ID, store.UnixMS(now.Add(RepairWindow)))
+	online, err := gate.WhileOffline(w.ID, func() error {
+		return st.SetRepairWindow(ctx, w.ID, store.UnixMS(now.Add(RepairWindow)))
+	})
+	if online {
+		return errWorkerOnline()
+	}
 	if errors.Is(err, store.ErrRepairNotAllowed) {
 		return proto.NewError(proto.CodeConflict, "this Worker cannot be re-paired: it has connected before, or it was removed")
 	}

@@ -83,8 +83,8 @@ func runHubRestore(ctx context.Context, w io.Writer, d hubBackupDeps, dataDirFla
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "Restored %d files into %s (schema version %d, written by minion %s).\nStart the Hub with \"minion hub serve\".\n",
-		len(res.Files), res.Dir, res.Manifest.SchemaVersion, res.Manifest.Version); err != nil {
+	if _, err := fmt.Fprintf(w, "Restored %d files into %s (archive schema %d, written by minion %s; installed schema %d).\nStart the Hub with \"minion hub serve\".\n",
+		len(res.Files), res.Dir, res.Manifest.SchemaVersion, res.Manifest.Version, res.InstalledSchema); err != nil {
 		return err
 	}
 	if err := printIdentityNotes(w, res); err != nil {

@@ -19,12 +19,15 @@ func init() {
 		identity := &cobra.Command{
 			Use:   "identity",
 			Short: "Print the fingerprint of the Hub identity key, or manage the Hub identity",
-			Long: `Print the fingerprint of the Hub identity key: 52 lowercase base32 characters.
+			Long: `Print the fingerprint of the Hub root (master) key: 52 lowercase base32 characters.
 
-The Hub creates its Ed25519 identity key in <data dir>/identity.key on the
-first start (minion hub serve) and keeps it for good: it does not change on
-restart, certificate rotation or restore. Workers pin it, and an invitation key
-(mnk_<fingerprint>.<secret>) carries it. The data directory is MINION_DATA_DIR.
+The root key is created when the owner sets the Hub passphrase (or, for a Hub
+upgraded from 0.6, is the former identity key) and is stored sealed with that
+passphrase in <data dir>/root.key.age. It does not change on restart,
+certificate re-issue or restore; only "rotate-master" replaces it. Workers pin
+it, and an invitation key (mnk_<fingerprint>.<secret>) carries it. This command
+reads the recorded public key and needs neither the passphrase nor the running
+Hub. The data directory is MINION_DATA_DIR.
 
 The subcommands status, set-passphrase, reissue, rotate-master and
 change-passphrase talk to the running Hub over its local admin socket in the

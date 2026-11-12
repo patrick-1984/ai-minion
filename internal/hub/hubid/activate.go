@@ -155,7 +155,7 @@ func (s *Service) activate(ctx context.Context, a *activation) (Result, error) {
 
 	// D3: nothing may use the new state before the commit is confirmed.
 	if err := s.confirm(2); err != nil {
-		s.unconfirmed = &pendingOp{kind: a.kind, activation: true, finish: func(ctx context.Context) (Result, error) { return s.finishActivation(ctx, pa) }}
+		s.setUnconfirmed(&pendingOp{kind: a.kind, activation: true, finish: func(ctx context.Context) (Result, error) { return s.finishActivation(ctx, pa) }})
 		s.log.Error("hub identity change committed but is not confirmed durable; keeping the previous state", "serial", serial, "error", err)
 		return Result{}, notDurable(err, "the change")
 	}

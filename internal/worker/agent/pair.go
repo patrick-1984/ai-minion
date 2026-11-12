@@ -182,10 +182,18 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 			if a.Expiry.Expired(p.Clock) {
 				return errEnrollExpired
 			}
-			if p.OnAuthenticated == nil {
-				return nil
+			if p.OnAuthenticated != nil {
+				if err := p.OnAuthenticated(a); err != nil {
+					return err
+				}
 			}
-			return p.OnAuthenticated(a)
+			// The durable record write can block: both clocks are read again
+			// before sig_worker (the transport reads them once more right
+			// before it sends the frame).
+			if a.Expiry.Expired(p.Clock) {
+				return errEnrollExpired
+			}
+			return nil
 		},
 	})
 	if err != nil {
@@ -516,6 +524,11 @@ func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
 		if err == nil {
 			return p.finish(ctx, gen, res)
 		}
+		// Whatever comes next (a fatal error, the end of ctx, a moved
+		// enrollment or another attempt), a code that this attempt exposed
+		// without authenticating the Hub is retired first: its record goes, so
+		// that neither this run nor a restart can bring it back.
+		p.retireIfExposed(life, err)
 		if ctx.Err() != nil {
 			return Enrollment{}, ctx.Err()
 		}
@@ -765,6 +778,23 @@ func (p *Pairer) newCode(prev identity.PairingCode) identity.PairingCode {
 	return c
 }
 
+// retireIfExposed retires the code of an attempt that sent the Worker's CPace
+// confirmation and did not authenticate the Hub (no sig_hub, or no record
+// written in this attempt): its pair_resume record is deleted at once, on
+// every exit path. A serial verdict comes after sig_hub, so such an attempt
+// did authenticate the Hub and keeps the code (section 12.2).
+func (p *Pairer) retireIfExposed(life *codeLife, err error) {
+	if !life.wasExposed() || life.wasAuthenticated() {
+		return
+	}
+	var refusal *transport.RefusalError
+	if errors.As(err, &refusal) &&
+		(refusal.Reason == transport.ReasonCertSerialTooLow || refusal.Reason == transport.ReasonCertSerialConflict) {
+		return
+	}
+	p.dropResume(life)
+}
+
 // dropResume deletes the pair_resume record of a code that is retired.
 func (p *Pairer) dropResume(l *codeLife) {
 	if !l.hasRecord() {
@@ -772,7 +802,11 @@ func (p *Pairer) dropResume(l *codeLife) {
 	}
 	if err := p.cfg.Enrollment.DeletePairResume(context.Background()); err != nil {
 		p.log.Warn("cannot delete the pairing resume record of a retired code", "error", err.Error())
+		return
 	}
+	l.mu.Lock()
+	l.authenticated = false
+	l.mu.Unlock()
 }
 
 func (p *Pairer) renew(old *codeLife) *codeLife {
@@ -843,7 +877,14 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 				Code: life.code.String(), PairingID: life.code.PairingID(), ExpiresAt: life.expiry(p.ttl),
 				RootPub: a.Root, Serial: a.Ratchet.MaxSerial, CertSHA256: a.Ratchet.CertSHA256,
 			}
-			if err := p.cfg.Enrollment.SavePairResumeIf(actx, gen, rec); err != nil {
+			// The expiry is checked inside the enrollment guard, immediately
+			// before the write (the wait for the lock is covered).
+			exp, clk := a.Expiry, p.cfg.WallMono
+			live := func() bool { return !exp.Expired(clk) }
+			if err := p.cfg.Enrollment.SavePairResumeIfLive(actx, gen, rec, live); err != nil {
+				if errors.Is(err, errGuardExpired) {
+					return errEnrollExpired
+				}
 				return fmt.Errorf("store the pairing resume record: %w", err)
 			}
 			life.authenticate(rec)
@@ -1004,6 +1045,10 @@ func (p *Pairer) clearFail() { p.lastFail = "" }
 //
 // A crash after step 2 leaves a Worker without an enrollment that still has the
 // old key and the pending revocation; running the command again repairs it.
+// renewAfterLoad is a test seam that runs right after the identity replacement
+// read the enrollment; nil in production.
+var renewAfterLoad func()
+
 func RenewWorkerIdentity(ctx context.Context, e *Enrollments) (*identity.Key, error) {
 	// The enrollment lock covers the whole replacement: no pairing or
 	// invitation enrollment creates or replaces a key, or commits, meanwhile.
@@ -1012,42 +1057,50 @@ func RenewWorkerIdentity(ctx context.Context, e *Enrollments) (*identity.Key, er
 		return nil, err
 	}
 	defer release()
-	enr, enrolled, err := e.Load(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read the enrollment: %w", err)
-	}
-	var old *identity.Key
-	// The Hub that authenticated this enrollment, never whatever the
-	// configuration says by now.
-	hubURL := enr.HubURL
-	if enrolled {
-		switch k, kerr := e.LoadKey(); {
-		case kerr == nil:
-			old = k
-		case errors.Is(kerr, ErrNoWorkerKey):
-			// Nothing to authenticate a revocation with, and nobody can use a
-			// key that does not exist: the identity is replaced regardless.
-		default:
-			return nil, fmt.Errorf("read the old Worker key: %w", kerr)
-		}
-		if old != nil && hubURL == "" {
-			return nil, ErrUnknownEnrollmentHub
-		}
-	}
 	k, err := identity.GenerateKey()
 	if err != nil {
 		return nil, fmt.Errorf("create the new Worker key: %w", err)
 	}
-	if old != nil {
+	// The state lock (the one the connector's ratchet and welcome commits take)
+	// is held from the read of the enrollment through the durable retired record
+	// to the wipe: a ratchet the connector commits either lands before the read,
+	// and is carried, or finds the generation moved and stores nothing.
+	_, err = e.ReplaceIdentity(ctx, func(enr Enrollment, enrolled bool) error {
+		if renewAfterLoad != nil {
+			renewAfterLoad()
+		}
+		if !enrolled {
+			return nil
+		}
+		var old *identity.Key
+		switch lk, kerr := e.LoadKey(); {
+		case kerr == nil:
+			old = lk
+		case errors.Is(kerr, ErrNoWorkerKey):
+			// Nothing to authenticate a revocation with, and nobody can use a
+			// key that does not exist: the identity is replaced regardless.
+			return nil
+		default:
+			return fmt.Errorf("read the old Worker key: %w", kerr)
+		}
+		// The Hub that authenticated this enrollment, never whatever the
+		// configuration says by now.
+		if enr.HubURL == "" {
+			return ErrUnknownEnrollmentHub
+		}
 		if err := e.RetiredStore().Add(RetiredIdentity{
-			Key: old, HubURL: hubURL, Pin: enr.Pin, WorkerID: enr.WorkerID, RetiredAt: time.Now(),
+			Key: old, HubURL: enr.HubURL, Pin: enr.Pin, WorkerID: enr.WorkerID, RetiredAt: time.Now(),
 			MaxSerial: enr.Ratchet.MaxSerial, CertSHA256: enr.Ratchet.CertSHA256, RatchetSeeded: true,
 		}); err != nil {
-			return nil, fmt.Errorf("keep the old identity for its revocation: %w", err)
+			return fmt.Errorf("keep the old identity for its revocation: %w", err)
 		}
-	}
-	if _, err := e.WipeForNewIdentity(ctx); err != nil {
-		return nil, fmt.Errorf("wipe the old enrollment: %w", err)
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrUnknownEnrollmentHub) {
+			return nil, ErrUnknownEnrollmentHub
+		}
+		return nil, err
 	}
 	keyInitMu.Lock()
 	err = identity.SaveKey(e.KeyPath(), k)

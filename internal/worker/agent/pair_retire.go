@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -122,16 +123,52 @@ func (s *RetiredStore) paths(fp string) (keyPath, metaPath string) {
 	return filepath.Join(s.dir, fp+".key"), filepath.Join(s.dir, fp+".json")
 }
 
+// retireLockWait bounds the wait for the lock of one pending revocation: its
+// holder keeps it for one retirement connection (handshake, answer and at most
+// retireCallTimeout).
+const retireLockWait = 2 * time.Minute
+
+// errRetiredGone is returned when the record of a pending revocation was
+// removed (by another process) while the caller waited for its lock.
+var errRetiredGone = errors.New("agent: the pending revocation was completed by another process")
+
+// lock takes the cross-process lock of the pending revocation with fingerprint
+// fp (the file <fp>.lock in the retired directory, created when missing and
+// never removed, so that the lock is never lost to an unlink). Every process
+// that reads a record in order to change it (Add, Advance, a retirement with
+// its disposition and the removal) holds it from the reload to the last write.
+// It is the innermost lock of the Worker (see enrollment_epoch.go).
+func (s *RetiredStore) lock(ctx context.Context, fp string) (func(), error) {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return nil, fmt.Errorf("agent: create %s: %w", s.dir, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, retireLockWait)
+	defer cancel()
+	unlock, err := lockFile(ctx, filepath.Join(s.dir, fp+".lock"))
+	if err != nil {
+		return nil, fmt.Errorf("agent: lock the pending revocation %s: %w", fp, err)
+	}
+	return unlock, nil
+}
+
 // Add stores r durably. The key goes first, the metadata last: a record exists
-// only when both are complete, and adding the same identity again replaces it.
+// only when both are complete. Adding the same identity again (a repeated
+// replacement after a crash) replaces the record but never lowers a ratchet
+// that a retirement connection advanced meanwhile under the same root.
 func (s *RetiredStore) Add(r RetiredIdentity) error {
 	if r.Key == nil || len(r.Pin.Pub) == 0 || r.HubURL == "" {
 		return errors.New("agent: a retired identity needs its key, the Hub pin and the Hub URL")
 	}
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return fmt.Errorf("agent: create %s: %w", s.dir, err)
+	fp := r.Fingerprint()
+	unlock, err := s.lock(context.Background(), fp)
+	if err != nil {
+		return err
 	}
-	keyPath, metaPath := s.paths(r.Fingerprint())
+	defer unlock()
+	keyPath, metaPath := s.paths(fp)
+	if cur, err := s.load(fp); err == nil {
+		r.Pin, r.MaxSerial, r.CertSHA256 = mergeRatchet(cur, r.Pin, transport.Ratchet{MaxSerial: r.MaxSerial, CertSHA256: r.CertSHA256})
+	}
 	if err := identity.SaveKey(keyPath, r.Key); err != nil {
 		return fmt.Errorf("agent: save the retired Worker key: %w", err)
 	}
@@ -139,6 +176,25 @@ func (s *RetiredStore) Add(r RetiredIdentity) error {
 		r.RetiredAt = time.Now()
 	}
 	return s.writeMeta(metaPath, r)
+}
+
+// mergeRatchet returns the pin and ratchet to store when a record holding cur
+// is to be updated with pin and rt: under the same root the serial never goes
+// down (an equal serial keeps the stored hash, unless none is stored); a root
+// further along the transition chain starts a new scope; anything else keeps
+// cur.
+func mergeRatchet(cur RetiredIdentity, pin identity.Pin, rt transport.Ratchet) (identity.Pin, uint64, []byte) {
+	if bytes.Equal(cur.Pin.Pub, pin.Pub) {
+		seq := max(cur.Pin.Seq, pin.Seq)
+		if rt.MaxSerial > cur.MaxSerial || (rt.MaxSerial == cur.MaxSerial && len(cur.CertSHA256) == 0) {
+			return identity.Pin{Pub: pin.Pub, Seq: seq}, rt.MaxSerial, rt.CertSHA256
+		}
+		return identity.Pin{Pub: cur.Pin.Pub, Seq: seq}, cur.MaxSerial, cur.CertSHA256
+	}
+	if pin.Seq > cur.Pin.Seq {
+		return pin, rt.MaxSerial, rt.CertSHA256
+	}
+	return cur.Pin, cur.MaxSerial, cur.CertSHA256
 }
 
 // writeMeta stores r as version-2 metadata, durably (temporary file, sync,
@@ -159,13 +215,44 @@ func (s *RetiredStore) writeMeta(metaPath string, r RetiredIdentity) error {
 }
 
 // Advance durably stores the ratchet (and the pin, when a chain transition moved
-// it) that a validated retirement connection saw. It rewrites the metadata as
-// version 2 (the migration of a version-1 file happens here, at the seed). A
-// failure leaves the previous file in place.
-func (s *RetiredStore) Advance(r RetiredIdentity, pin identity.Pin, rt transport.Ratchet) error {
-	_, metaPath := s.paths(r.Fingerprint())
-	r.Pin, r.MaxSerial, r.CertSHA256, r.RatchetSeeded = pin, rt.MaxSerial, rt.CertSHA256, true
-	return s.writeMeta(metaPath, r)
+// it) that a validated retirement connection saw. It takes the record's lock,
+// re-reads the record and never lowers it (see mergeRatchet): r may be a stale
+// copy. live, when not nil, is called under the lock immediately before the
+// write; when it reports false nothing is written (errGuardExpired). It
+// rewrites the metadata as version 2 (the migration of a version-1 file happens
+// here, at the seed). A failure leaves the previous file in place.
+func (s *RetiredStore) Advance(r RetiredIdentity, pin identity.Pin, rt transport.Ratchet, live func() bool) error {
+	fp := r.Fingerprint()
+	unlock, err := s.lock(context.Background(), fp)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	_, err = s.advanceLocked(fp, pin, rt, live)
+	return err
+}
+
+// advanceLocked is Advance for a caller that holds the record's lock. It
+// returns the record as stored.
+func (s *RetiredStore) advanceLocked(fp string, pin identity.Pin, rt transport.Ratchet, live func() bool) (RetiredIdentity, error) {
+	cur, err := s.load(fp)
+	if errors.Is(err, fs.ErrNotExist) {
+		return RetiredIdentity{}, errRetiredGone
+	}
+	if err != nil {
+		return RetiredIdentity{}, err
+	}
+	next := cur
+	next.Pin, next.MaxSerial, next.CertSHA256 = mergeRatchet(cur, pin, rt)
+	next.RatchetSeeded = true
+	if live != nil && !live() {
+		return RetiredIdentity{}, errGuardExpired
+	}
+	_, metaPath := s.paths(fp)
+	if err := s.writeMeta(metaPath, next); err != nil {
+		return RetiredIdentity{}, err
+	}
+	return next, nil
 }
 
 // List returns the pending revocations, oldest first. A record that cannot be
@@ -320,30 +407,61 @@ func (r *Retirer) RunOnce(ctx context.Context) (remaining int, err error) {
 		r.log.Warn("some pending revocations cannot be read", "error", listErr.Error())
 		remaining++
 	}
-	for _, id := range list {
+	for _, listed := range list {
 		if ctx.Err() != nil {
 			return remaining + len(list), ctx.Err()
 		}
-		fp := id.Fingerprint()
-		done, err := r.retireOne(ctx, id)
+		fp := listed.Fingerprint()
+		id, done, err := r.retireLocked(ctx, fp)
+		if errors.Is(err, errRetiredGone) {
+			// Another process (the CLI or the service) completed it meanwhile.
+			r.clearFail(fp)
+			continue
+		}
 		if err != nil {
 			remaining++
 			var ae *admittedError
 			if errors.As(err, &ae) {
 				r.setAdmitted(true)
 			}
-			r.logFail(fp, id, err)
-			continue
-		}
-		if err := r.cfg.Store.Remove(fp); err != nil {
-			remaining++
-			r.logFail(fp, id, fmt.Errorf("delete the record: %w", err))
+			r.logFail(fp, listed, err)
 			continue
 		}
 		r.clearFail(fp)
 		r.log.Info("revoked the old Worker identity at the hub", "hub", hubLabel(id.HubURL), "old_fingerprint", fp, "result", done)
 	}
 	return remaining, nil
+}
+
+// retireLocked serializes the retirement of one identity across processes: it
+// holds the record's lock from the reload through the connection, the
+// durable ratchet advance and the disposition to the removal of the record. A
+// listing taken before the lock is never acted on: the record is read again
+// under the lock, and errRetiredGone reports one that another process removed.
+func (r *Retirer) retireLocked(ctx context.Context, fp string) (RetiredIdentity, string, error) {
+	unlock, err := r.cfg.Store.lock(ctx, fp)
+	if err != nil {
+		return RetiredIdentity{}, "", err
+	}
+	defer unlock()
+	id, err := r.cfg.Store.load(fp)
+	if errors.Is(err, fs.ErrNotExist) {
+		return RetiredIdentity{}, "", errRetiredGone
+	}
+	if err != nil {
+		return RetiredIdentity{}, "", fmt.Errorf("read the record: %w", err)
+	}
+	if id.Key == nil || len(id.Pin.Pub) == 0 || id.HubURL == "" {
+		return id, "", errors.New("the pending revocation is incomplete")
+	}
+	done, err := r.retireOne(ctx, id)
+	if err != nil {
+		return id, "", err
+	}
+	if err := r.cfg.Store.Remove(fp); err != nil {
+		return id, "", fmt.Errorf("delete the record: %w", err)
+	}
+	return id, done, nil
 }
 
 // Run carries out pending revocations until ctx ends: a failing attempt is
@@ -462,11 +580,18 @@ func (r *Retirer) retireOne(ctx context.Context, id RetiredIdentity) (string, er
 	// and the first validated connection of a version-1 entry, are stored
 	// durably BEFORE the Worker acts on revoke, not_enrolled or welcome. A failed
 	// write ends the connection and keeps the entry.
+	// The caller holds the record's lock, and the record is re-read inside it
+	// right before the write, with both clocks read again immediately before
+	// it.
 	first := !id.RatchetSeeded
 	if first || att.PinChanged || att.RatchetChanged {
-		if err := r.cfg.Store.Advance(id, att.Pin, att.Ratchet); err != nil {
+		live := func() bool { return !guard.check() }
+		if _, err := r.cfg.Store.advanceLocked(id.Fingerprint(), att.Pin, att.Ratchet, live); err != nil {
 			if att.Session != nil {
 				_ = att.Session.Close()
+			}
+			if errors.Is(err, errGuardExpired) {
+				return "", errRetireExpired
 			}
 			return "", fmt.Errorf("cannot store the certificate ratchet; the pending revocation is kept: %w", err)
 		}
@@ -503,6 +628,10 @@ func (r *Retirer) retireOne(ctx context.Context, id RetiredIdentity) (string, er
 			stop()
 			_ = att.Session.Close()
 		}()
+		// Nothing is sent on the authenticated session after not_after.
+		if guard.check() {
+			return "", &admittedError{errRetireExpired}
+		}
 		if err := retireCall(ctx, att.Session); err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()

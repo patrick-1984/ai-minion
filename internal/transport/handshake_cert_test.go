@@ -254,7 +254,9 @@ func TestWindowBoundaries(t *testing.T) {
 		{"not_before - 1h accepted", nb - tol, nil, false},
 		{"not_before - 1h - 1ms refused", nb - tol - 1, identity.ErrCertNotYetValid, false},
 		{"inside the window", nb + 1000, nil, false},
-		{"now == not_after accepted, admits nothing", na, nil, true},
+		// The window check accepts now == not_after, but the >= rule of section
+		// 11.3 ends the connection before sig_worker (RC1 release gate).
+		{"now == not_after passes the window, closed before sig_worker", na, ErrExpiredBeforeSigWorker, true},
 		{"now == not_after + 1ms refused", na + 1, identity.ErrCertExpired, false},
 		{"far past not_after refused", na + 400*24*3600*1000, identity.ErrCertExpired, false},
 	}

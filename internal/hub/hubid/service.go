@@ -1,6 +1,7 @@
 package hubid
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -215,7 +216,10 @@ type Service struct {
 
 	state atomic.Int32
 	snap  atomic.Pointer[Snapshot]
-	gen   atomic.Uint64
+	// pendingChange mirrors unconfirmed != nil for readers without the mutex
+	// (InvitationRoot): a committed change is not confirmed durable yet.
+	pendingChange atomic.Bool
+	gen           atomic.Uint64
 
 	closerMu sync.Mutex
 	closer   func()
@@ -320,6 +324,40 @@ func (s *Service) Current() (Snapshot, error) {
 		return Snapshot{}, &Error{Code: CodeNotServing, Msg: "the Hub certificate has expired", Err: identity.ErrCertExpired}
 	}
 	return *sn, nil
+}
+
+// setUnconfirmed records (p != nil) or clears the change that committed but
+// is not confirmed durable. Called with the mutex held.
+func (s *Service) setUnconfirmed(p *pendingOp) {
+	s.unconfirmed = p
+	s.pendingChange.Store(p != nil)
+}
+
+// InvitationRoot returns the root fingerprint that a new invitation key may
+// carry: the root of the serving snapshot, the one Workers verify in the
+// handshake. While the recorded root differs from it (a rotation committed but
+// not confirmed durable keeps the previous snapshot serving, D3) it refuses
+// with CodeConflict, so that no key names an unconfirmed root. A Hub that has
+// not served yet (B1, B2) uses the recorded root unless a change of it is
+// unconfirmed; with no root at all (B0) it returns "".
+func (s *Service) InvitationRoot(ctx context.Context) (string, error) {
+	row, ok, err := s.st.HubIdentityV2(ctx)
+	if err != nil {
+		return "", err
+	}
+	if !ok || row.Fingerprint == "" {
+		return "", nil
+	}
+	if sn := s.snap.Load(); sn != nil {
+		if !bytes.Equal(sn.RootPub, row.Pub) {
+			return "", newErr(CodeConflict, "a Hub identity change is recorded but not confirmed yet; repeat it to confirm, then create the invitation")
+		}
+		return fingerprint(sn.RootPub), nil
+	}
+	if s.pendingChange.Load() {
+		return "", newErr(CodeConflict, "a Hub identity change is recorded but not confirmed yet; repeat it to confirm, then create the invitation")
+	}
+	return row.Fingerprint, nil
 }
 
 // Admit is the registry check of section 9.6: a connection that took its

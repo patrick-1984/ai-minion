@@ -87,6 +87,13 @@ func (s *fakeState) Load(context.Context) (Enrollment, bool, error) {
 	return *s.enr, true, nil
 }
 
+func (s *fakeState) CommitLive(ctx context.Context, e Enrollment, live func() bool) error {
+	if live != nil && !live() {
+		return errGuardExpired
+	}
+	return s.Commit(ctx, e)
+}
+
 func (s *fakeState) Commit(_ context.Context, e Enrollment) error {
 	s.log.add("commit")
 	if s.failSave {

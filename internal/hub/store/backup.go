@@ -577,6 +577,10 @@ type RestoreResult struct {
 	// RootRolledBack is true when the data directory that was replaced proves
 	// that the restored root was rotated away (see [RootRollbackWarning]).
 	RootRolledBack bool
+	// InstalledSchema is the newest schema version this minion knows; the
+	// Hub migrates the restored database (Manifest.SchemaVersion) to it at
+	// its next start.
+	InstalledSchema int
 }
 
 // restorePhase2Hook, when set by a test, runs after phase 2 with the verified
@@ -753,6 +757,7 @@ func Restore(ctx context.Context, archive, dataDir string, force bool, opts ...O
 	return RestoreResult{
 		Manifest: m, Dir: dir, Files: files, Encrypted: encrypted,
 		IdentityState: state, RootFingerprint: info.Fingerprint, Transitions: info.Transitions, RootRolledBack: rolledBack,
+		InstalledSchema: known,
 	}, nil
 }
 

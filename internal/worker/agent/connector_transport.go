@@ -42,6 +42,9 @@ func NewHubDialer() Dialer {
 type hubDialer struct {
 	dialTimeout      time.Duration
 	handshakeTimeout time.Duration
+	// afterReply is a test seam that runs right after the Hub's control frame
+	// was read; nil in production.
+	afterReply func()
 }
 
 func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, error) {
@@ -81,10 +84,24 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 	}
 	stopCh := context.AfterFunc(ctx, func() { _ = res.Channel.Close() })
 	stop()
+	// The channel is guarded from the end of the handshake (section 11.3): it
+	// is closed at the certificate's end, and both clocks are read again before
+	// the control frame is accepted. A reply that came in at or after not_after
+	// is not handed on, so nothing it says can be committed.
+	exp := res.Expiry
+	guard, stopGuard := enrollGuard(&exp, p.Clock, func() { _ = res.Channel.Close() })
+	defer stopGuard()
 	reply, err := readReply(res.Channel)
+	if d.afterReply != nil {
+		d.afterReply()
+	}
 	if !stopCh() {
 		_ = res.Channel.Close()
 		return nil, ctx.Err()
+	}
+	if guard.check() {
+		_ = res.Channel.Close()
+		return nil, ErrHubCertExpired
 	}
 	if err != nil {
 		_ = res.Channel.Close()

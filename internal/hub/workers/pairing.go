@@ -88,6 +88,11 @@ type PairingOptions struct {
 	// SweepInterval is how often [Pairings.Start] expires pending pairings.
 	SweepInterval time.Duration
 	Logger        *slog.Logger
+	// Online is the registry of online Workers: a repair (12.3) completes
+	// only while the Worker has no live session. The default of
+	// [Service.EnablePairing] is the Service's registry; [NewPairings] uses
+	// an empty registry when it is nil.
+	Online OfflineGate
 }
 
 // ClaimRequest is one pairing_claim call.
@@ -106,10 +111,13 @@ type ClaimRequest struct {
 	// Actor defaults to UserID.
 	Actor    string
 	ActingAs string
-	// Admin says that the claimant is an administrator. It lets the claim
-	// complete an owner re-issue of someone else's Worker (12.3); a resume
-	// still needs the commit's own owner.
-	Admin bool
+	// MayRepair decides whether the caller may complete the owner re-issue
+	// (12.3) of an existing Worker that UserID does not own. The Hub answers
+	// it with the caller's principal: an administrator who holds operate on
+	// that very Worker (an API key is judged by its scope, not by the role of
+	// its owner). nil refuses every repair of another owner's Worker. A
+	// resume still needs the commit's own owner.
+	MayRepair func(ctx context.Context, workerID string) (bool, error)
 }
 
 // ClaimResult describes the Worker a claim created.
@@ -161,6 +169,7 @@ func (e *RateLimitError) RetryAfter() time.Duration { return e.After }
 // and the password are never stored or logged.
 type Pairings struct {
 	store   PairingStore
+	online  OfflineGate
 	limiter Limiter
 	auditor Auditor
 	now     func() time.Time
@@ -180,6 +189,10 @@ type Pairings struct {
 	stop    chan struct{}
 	stopped sync.WaitGroup
 	started bool
+
+	// testSeam runs at the unlocked points of a claim (tests only): "waited"
+	// after the readiness wait, "decided" after the decision released the lock.
+	testSeam func(stage string)
 }
 
 // pending is one Worker connection waiting for its code.
@@ -211,11 +224,12 @@ type claim struct {
 	actingAs string // the user an admin acts as, or empty
 	name     string
 	password []byte
-	admin    bool              // the claimant is an administrator
-	reused   bool              // set by create: the Worker already existed (resume or repair)
-	digest   string            // one-way digest of the code, recorded when it is used
-	done     chan claimOutcome // capacity 1
-	once     sync.Once
+	// mayRepair is ClaimRequest.MayRepair.
+	mayRepair func(ctx context.Context, workerID string) (bool, error)
+	reused    bool              // set by create: the Worker already existed (resume or repair)
+	digest    string            // one-way digest of the code, recorded when it is used
+	done      chan claimOutcome // capacity 1
+	once      sync.Once
 }
 
 type claimOutcome struct {
@@ -238,13 +252,16 @@ func NewPairings(o PairingOptions) (*Pairings, error) {
 		return nil, errors.New("workers: the pairing service needs a store")
 	}
 	ps := &Pairings{
-		store: o.Store, limiter: o.Limiter, auditor: o.Auditor, now: o.Clock, log: o.Logger,
+		store: o.Store, online: o.Online, limiter: o.Limiter, auditor: o.Auditor, now: o.Clock, log: o.Logger,
 		ttl: o.TTL, maxAttempts: o.MaxAttempts, maxPending: o.MaxPending, maxPerIP: o.MaxPendingPerIP,
 		sweepEvery: o.SweepInterval,
 		live:       map[string]*pending{}, perIP: map[string]int{}, stop: make(chan struct{}),
 	}
 	if ps.now == nil {
 		ps.now = time.Now
+	}
+	if ps.online == nil {
+		ps.online = NewRegistry()
 	}
 	if ps.log == nil {
 		ps.log = slog.Default()
@@ -540,7 +557,7 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 		actor = req.UserID
 	}
 	digest := codeDigest(code)
-	c := &claim{userID: req.UserID, actor: actor, actingAs: req.ActingAs, admin: req.Admin, name: req.Name, password: code.Password(), digest: digest, done: make(chan claimOutcome, 1)}
+	c := &claim{userID: req.UserID, actor: actor, actingAs: req.ActingAs, mayRepair: req.MayRepair, name: req.Name, password: code.Password(), digest: digest, done: make(chan claimOutcome, 1)}
 
 	// The decision runs under ps.mu. The one database read of the plain path
 	// (is the code used?) releases the lock, so whenever the entry that the
@@ -564,10 +581,22 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 				return ClaimResult{}, ctx.Err()
 			}
 		}
+		ps.seam("waited")
 
 		now = ps.now()
 		ps.mu.Lock()
 		p = ps.live[code.PairingID()]
+		if p != nil && !isReady(p) {
+			// Another entry was reserved after the wait above and its row is
+			// still being read: its resume ticket is not known yet, so nothing
+			// can be decided on it. Wait for it and start over.
+			ps.mu.Unlock()
+			ps.seam("decided")
+			if attempt >= 2 {
+				return ClaimResult{}, pairingErr(proto.CodeConflict, "the pairing changed while the claim was checked; retry in a moment")
+			}
+			continue
+		}
 		if p != nil && p.resume != nil && now.Before(p.expires) && p.cur == nil {
 			// A resume (12.2 step 2): a used code is accepted only when the live
 			// entry carries a ticket for this very code and the claimant is the
@@ -585,8 +614,12 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 			}
 			break
 		}
+		// The selected entry (nil, or one whose row was read: readiness and
+		// resume ticket are final) is decided on after the unlocked read only
+		// when it is still the entry of the pairing id.
 		selected := p
 		ps.mu.Unlock()
+		ps.seam("decided")
 		if used, err := ps.store.PairingCodeUsed(ctx, digest); err != nil {
 			ps.log.Error("pairing: read used codes", "error", err.Error())
 			return ClaimResult{}, pairingErr(proto.CodeInternal, "")
@@ -595,7 +628,7 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 		}
 		ps.mu.Lock()
 		p = ps.live[code.PairingID()]
-		if p == selected && (p == nil || isReady(p)) {
+		if p == selected {
 			now = ps.now()
 			break
 		}
@@ -621,6 +654,13 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 		return o.res, o.err
 	case <-ctx.Done():
 		return ClaimResult{}, ctx.Err()
+	}
+}
+
+// seam is a test hook at the unlocked points of a claim.
+func (ps *Pairings) seam(stage string) {
+	if ps.testSeam != nil {
+		ps.testSeam(stage)
 	}
 }
 
@@ -766,8 +806,16 @@ func (ps *Pairings) existing(ctx context.Context, c *Conn, pairingID string, cl 
 		return known, false, nil
 	}
 	now := store.UnixMS(ps.now())
-	if known.RepairUntil > now && known.FirstConnectedAt == 0 && (known.OwnerID == cl.userID || cl.admin) {
-		if err := ps.store.RepairPairing(ctx, pairingID, cl.digest, known, now); err != nil {
+	if known.RepairUntil > now && known.FirstConnectedAt == 0 && ps.mayRepair(ctx, cl, known) {
+		// The Worker must be offline: the online check and the repair run
+		// under the registry's add lock, so no session registers between.
+		online, err := ps.online.WhileOffline(known.ID, func() error {
+			return ps.store.RepairPairing(ctx, pairingID, cl.digest, known, now)
+		})
+		if online {
+			return store.WorkerRow{}, false, errWorkerOnline()
+		}
+		if err != nil {
 			switch {
 			case errors.Is(err, store.ErrRepairNotAllowed):
 				return store.WorkerRow{}, false, alreadyPaired
@@ -788,6 +836,25 @@ func (ps *Pairings) existing(ctx context.Context, c *Conn, pairingID string, cl 
 		return cur, false, nil
 	}
 	return store.WorkerRow{}, false, alreadyPaired
+}
+
+// mayRepair reports whether the claimant may complete the repair of known:
+// its owner always, anyone else only when the Hub's MayRepair decision (an
+// administrator holding operate on this Worker) allows it. A failed decision
+// refuses.
+func (ps *Pairings) mayRepair(ctx context.Context, cl *claim, known store.WorkerRow) bool {
+	if known.OwnerID == cl.userID {
+		return true
+	}
+	if cl.mayRepair == nil {
+		return false
+	}
+	ok, err := cl.mayRepair(ctx, known.ID)
+	if err != nil {
+		ps.log.Error("pairing: authorize the repair", "worker_id", known.ID, "error", err.Error())
+		return false
+	}
+	return ok
 }
 
 // Audit actions of the pairing recovery.
@@ -970,6 +1037,9 @@ func (s *Service) EnablePairing(o PairingOptions) (*Pairings, error) {
 	}
 	if o.Limiter == nil {
 		o.Limiter = s.limiter
+	}
+	if o.Online == nil {
+		o.Online = s.registry
 	}
 	if o.Auditor == nil {
 		o.Auditor = s.handler.cfg.Auditor

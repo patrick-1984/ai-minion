@@ -341,7 +341,10 @@ func pairAuthenticatedStep(root []byte, err error) pairStep {
 	return func(_ context.Context, p PairParams) (PairResult, error) {
 		p.OnWaiting()
 		p.OnExposed()
-		if aerr := p.OnAuthenticated(transport.HubAuth{Root: root, Ratchet: transport.Ratchet{Root: root, MaxSerial: 4, CertSHA256: bytes.Repeat([]byte{2}, 32)}}); aerr != nil {
+		// A live certificate: the record write checks the expiry inside its guard.
+		exp := transport.Expiry{WallMs: time.Now().Add(time.Hour).UnixMilli(), DeadlineMono: transport.SystemWallMono.Mono() + time.Hour}
+		if aerr := p.OnAuthenticated(transport.HubAuth{Root: root, Expiry: exp,
+			Ratchet: transport.Ratchet{Root: root, MaxSerial: 4, CertSHA256: bytes.Repeat([]byte{2}, 32)}}); aerr != nil {
 			return PairResult{}, aerr
 		}
 		return PairResult{}, err

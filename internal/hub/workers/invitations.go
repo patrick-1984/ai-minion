@@ -92,6 +92,11 @@ type InvitationsConfig struct {
 	// each call and replaces HubFingerprint: the root can appear after start
 	// (the passphrase is set) and change (master-key rotation).
 	FingerprintFunc func() identity.Fingerprint
+	// RootFunc, when set, replaces both: it returns the root a new key may
+	// name (the serving root), or an error that refuses the creation (for
+	// example a conflict while a root change is not confirmed). An empty
+	// fingerprint means the Hub has no root yet.
+	RootFunc func(ctx context.Context) (identity.Fingerprint, error)
 	// Auditor records creation and revocation; nil disables it.
 	Auditor Auditor
 	// Now is the clock; nil means time.Now.
@@ -104,7 +109,7 @@ type InvitationsConfig struct {
 // SHA-256 is kept.
 type Invitations struct {
 	st    InvitationStore
-	fpr   func() identity.Fingerprint
+	root  func(ctx context.Context) (identity.Fingerprint, error)
 	audit Auditor
 	now   func() time.Time
 	log   *slog.Logger
@@ -115,15 +120,19 @@ func NewInvitations(cfg InvitationsConfig) (*Invitations, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("workers: the invitation service needs a store")
 	}
-	fpr := cfg.FingerprintFunc
-	if fpr == nil {
-		f, err := identity.ParseFingerprint(string(cfg.HubFingerprint))
-		if err != nil {
-			return nil, errors.New("workers: the invitation service needs the Hub fingerprint")
+	root := cfg.RootFunc
+	if root == nil {
+		fpr := cfg.FingerprintFunc
+		if fpr == nil {
+			f, err := identity.ParseFingerprint(string(cfg.HubFingerprint))
+			if err != nil {
+				return nil, errors.New("workers: the invitation service needs the Hub fingerprint")
+			}
+			fpr = func() identity.Fingerprint { return f }
 		}
-		fpr = func() identity.Fingerprint { return f }
+		root = func(context.Context) (identity.Fingerprint, error) { return fpr(), nil }
 	}
-	s := &Invitations{st: cfg.Store, fpr: fpr, audit: cfg.Auditor, now: cfg.Now, log: cfg.Logger}
+	s := &Invitations{st: cfg.Store, root: root, audit: cfg.Auditor, now: cfg.Now, log: cfg.Logger}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -160,7 +169,11 @@ func (s *Invitations) Create(ctx context.Context, caller InvitationCaller, a ops
 		row store.InvitationRow
 	)
 	for attempt := 0; ; attempt++ {
-		fpr, err := identity.ParseFingerprint(string(s.fpr()))
+		root, err := s.root(ctx)
+		if err != nil {
+			return ops.InvitationCreateResult{}, err
+		}
+		fpr, err := identity.ParseFingerprint(string(root))
 		if err != nil {
 			return ops.InvitationCreateResult{}, proto.NewError(proto.CodeConflict, "the Hub has no identity yet: set the Hub passphrase first")
 		}

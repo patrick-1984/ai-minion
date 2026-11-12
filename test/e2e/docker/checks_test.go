@@ -108,6 +108,8 @@ func (c *hubClient) do(method, path string, body any) (int, []byte, error) {
 	if c.csrf != "" {
 		req.Header.Set("X-Minion-CSRF", c.csrf)
 	}
+	// A browser sends its origin; the Hub identity operations require it.
+	req.Header.Set("Origin", c.base)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return 0, nil, err
@@ -332,6 +334,20 @@ func TestHubImageAndNativeWorker(t *testing.T) {
 			if c.login(adminUser, adminPassword) {
 				t.Fatal("the account still must change its password")
 			}
+		}
+	})
+
+	// A new 0.7 Hub serves no Workers and creates no invitation until the
+	// owner sets the Hub passphrase (state B0 to B3). The admin has just
+	// signed in with a password, which is a fresh authentication.
+	t.Run("the owner sets the Hub passphrase over REST", func(t *testing.T) {
+		pass := "e2e passphrase " + randomHex(t, 16)
+		if err := c.call(ops.OpHubIdentitySetPassphrase, ops.HubIdentitySetPassphraseArgs{Passphrase: pass, Confirm: pass}, nil); err != nil {
+			t.Fatal(err)
+		}
+		var st map[string]any
+		if err := c.call(ops.OpHubIdentityStatus, struct{}{}, &st); err != nil {
+			t.Fatal(err)
 		}
 	})
 

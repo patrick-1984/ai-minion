@@ -70,7 +70,13 @@ sudo -u minion-hub env \
   minion hub serve
 ```
 
-On the first start the Hub creates its data directory content, a self-signed certificate (the log shows its SHA-256 fingerprint), its identity key and the administrator. `minion hub identity` prints the identity fingerprint: 52 lowercase base32 characters. Workers pin that identity; it does not change on restart, certificate change or restore.
+On the first start the Hub creates its data directory content, a self-signed certificate (the log shows its SHA-256 fingerprint) and the administrator. It does **not** create its identity yet: a new Hub starts in the state B0 and **serves no Workers until you set the Hub passphrase**. Set it in a second shell, as the same user and with the same `MINION_DATA_DIR` (the command talks to the running Hub over `admin.sock` in the data directory and asks for the passphrase on the terminal):
+
+```sh
+sudo -u minion-hub env MINION_DATA_DIR=/var/lib/minion-hub/data minion hub identity set-passphrase
+```
+
+Or sign in at the web UI and use the banner "Set the Hub passphrase" (Administration, Hub identity; HTTPS and a sign-in from the last five minutes are required). The Hub then creates the identity key, seals it with the passphrase into `root.key.age` and issues the first certificate (180 days). The passphrase has at least 14 characters and cannot be recovered: see [Hub identity](../guides/hub-identity.md). After that `minion hub identity` prints the identity fingerprint: 52 lowercase base32 characters. Workers pin that identity; it does not change on restart, certificate change or restore.
 
 To run it as a service, write a systemd unit of your own, for example `/etc/systemd/system/minion-hub.service` (this file is an example, the packages do not ship a Hub unit):
 
@@ -97,7 +103,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now minion-hub
 ```
 
-Then sign in at `https://<host>:8443` and add Workers: [pairing and sharing](../guides/pairing.md). To put TLS you control in front, see the [reverse proxy guide](../guides/reverse-proxy.md).
+Set the passphrase as above before the first Worker connects (a Hub started as a service needs the same step once), then sign in at `https://<host>:8443` and add Workers: [pairing and sharing](../guides/pairing.md). To put TLS you control in front, see the [reverse proxy guide](../guides/reverse-proxy.md).
 
 ## Update
 

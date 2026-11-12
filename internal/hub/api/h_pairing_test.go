@@ -71,7 +71,7 @@ func TestPairingClaimPassesTheCallerAndTheCodeToTheService(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
-	if rec.got != (PairingClaim{UserID: "user-1", Code: "MN-K7Q4-9XTB", Name: "pi", IP: netip.MustParseAddr("192.0.2.7"), Actor: "user-1"}) {
+	if rec.got != (PairingClaim{UserID: "user-1", Code: "MN-K7Q4-9XTB", Name: "pi", IP: netip.MustParseAddr("192.0.2.7"), Actor: "user-1", Principal: testIdentity.Principal}) {
 		t.Errorf("service got %+v", rec.got)
 	}
 	var res ops.WriteResult

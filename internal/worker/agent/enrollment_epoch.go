@@ -25,6 +25,24 @@ import (
 // under the same lock, which makes "check, then write" one step across
 // processes. Without a state directory (unit tests of other packages) the
 // generation stays in memory.
+// Lock hierarchy of the Worker's durable state (RC1 release gate). A holder
+// takes the locks only in this order and never takes an outer one while it
+// holds an inner one:
+//
+//  1. <state>/.enroll.lock (lockEnroll): key creation and replacement,
+//     invitation and pairing commits, identity replacement. Held across
+//     network round trips.
+//  2. Enrollments.mu, then <state>/enrollment.lock (locked, lockedIf): every
+//     read-then-write of the enrollment, the pin, the ratchet, the welcome
+//     data and the pair_resume record. The generation is re-read and the
+//     expiry checked (the *Live writers) inside it, immediately before the
+//     write. Identity replacement holds it from the read of the enrollment
+//     through the durable retired record to the wipe.
+//  3. <state>/retired/<fingerprint>.lock (RetiredStore.lock): one pending
+//     revocation; held from the reload of its record through the retirement
+//     connection, the ratchet advance and the disposition to the removal.
+//
+// The connector takes only lock 2; the retirer takes only lock 3.
 const (
 	// enrollmentEpochFile holds the generation as a decimal number.
 	enrollmentEpochFile = "enrollment.epoch"

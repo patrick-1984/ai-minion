@@ -71,6 +71,11 @@ var (
 	ErrProtocol = errors.New("transport: handshake protocol violation")
 	// ErrConfig: an unusable handshake configuration.
 	ErrConfig = errors.New("transport: invalid handshake configuration")
+	// ErrExpiredBeforeSigWorker is returned when the Hub certificate reached
+	// its not_after (either clock) after the window check and before sig_worker
+	// was sent: the handshake ends without sig_worker. It wraps
+	// identity.ErrCertExpired.
+	ErrExpiredBeforeSigWorker = fmt.Errorf("transport: the Hub certificate reached its not_after before sig_worker: %w", identity.ErrCertExpired)
 )
 
 // ErrorCode maps a handshake or channel error to the wire code a peer sees.
@@ -410,6 +415,12 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 		if err := cfg.BeforeSigWorker(auth); err != nil {
 			return nil, err
 		}
+	}
+	// Both clocks are read again immediately before sig_worker (section 11.3):
+	// the PAKE, sig_hub and BeforeSigWorker (a durable write) can block, and no
+	// signature leaves after the certificate's end.
+	if expiry.Expired(clk) {
+		return nil, ErrExpiredBeforeSigWorker
 	}
 	sig, err := cfg.Key.Sign(identity.PurposeHandshakeWorker, hash[:])
 	if err != nil {

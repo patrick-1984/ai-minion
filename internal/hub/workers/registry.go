@@ -156,6 +156,24 @@ func (r *Registry) add(info Online, sess OpSession, signer *identity.Key, admit 
 	return true
 }
 
+// WhileOffline runs fn only while the Worker has no live session, and keeps
+// any registration of that Worker waiting until fn returned: it holds the
+// lock that orders whole adds, so a connection cannot become online between
+// the check and the write fn makes. It reports online = true (and does not run
+// fn) when a session of the Worker is registered. fn must not touch the
+// registry.
+func (r *Registry) WhileOffline(workerID string, fn func() error) (online bool, err error) {
+	r.addMu.Lock()
+	defer r.addMu.Unlock()
+	r.mu.Lock()
+	_, online = r.online[workerID]
+	r.mu.Unlock()
+	if online {
+		return true, nil
+	}
+	return false, fn()
+}
+
 // SignRevoke signs the revoke of the online connection of a Worker with the
 // operational key of that connection's snapshot, over its transcript hash.
 func (r *Registry) SignRevoke(workerID string) (RevokeFrame, bool, error) {

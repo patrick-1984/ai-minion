@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -26,6 +27,10 @@ type PairingClaim struct {
 	// admin acts as. UserID is the owner, never the audit actor.
 	Actor    string
 	ActingAs string
+	// Principal is who makes the call. The service decides with it whether
+	// the caller may complete the repair (design 12.3) of a Worker of another
+	// owner: operate on that Worker, so an API key counts with its scope.
+	Principal authz.Principal
 }
 
 // PairingClaimed is the Worker a claim created.
@@ -68,7 +73,7 @@ func RegisterPairing(r *Registry, c PairingClaimer) error {
 	return HandleTyped(r, ops.OpPairingClaim, func(ctx context.Context, call *Call, args ops.PairingClaimArgs) (ops.WriteResult, error) {
 		got, err := c.ClaimPairing(ctx, PairingClaim{
 			UserID: call.Principal.UserID, Code: args.Code, Name: args.Name, IP: call.IP,
-			Actor: call.Identity.Actor, ActingAs: call.Identity.ActingAs,
+			Actor: call.Identity.Actor, ActingAs: call.Identity.ActingAs, Principal: call.Principal,
 		})
 		if err != nil {
 			var ra interface{ RetryAfter() time.Duration }

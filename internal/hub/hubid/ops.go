@@ -133,7 +133,7 @@ func (s *Service) begin(ctx context.Context, kind string) (res *Result, resumed 
 			}
 			return nil, false, &Error{Code: code, Msg: "the previous " + p.kind + " is recorded but not confirmed durable; repeat the same command to confirm it", Err: err}
 		}
-		s.unconfirmed = nil
+		s.setUnconfirmed(nil)
 		if p.kind == "passphrase_set" && kind == p.kind && !p.activation {
 			// The sealed root is confirmed; the repetition goes on to issue
 			// the first certificate (recovery first: it removes plain residue).

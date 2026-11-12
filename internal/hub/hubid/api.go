@@ -122,7 +122,7 @@ func (s *Service) bootstrap(ctx context.Context, actor Actor, scope string, sign
 		return Result{}, err
 	}
 	if err := s.confirm(2); err != nil { // BS3: keep both files
-		s.unconfirmed = &pendingOp{kind: "passphrase_set", finish: func(context.Context) (Result, error) { return res, nil }}
+		s.setUnconfirmed(&pendingOp{kind: "passphrase_set", finish: func(context.Context) (Result, error) { return res, nil }})
 		return Result{}, notDurable(err, "the passphrase")
 	}
 	if err := s.point(PointBSDurable); err != nil {
@@ -409,7 +409,7 @@ func (s *Service) ChangePassphrase(ctx context.Context, actor Actor, oldPass, ne
 	}
 	finish := func(context.Context) (Result, error) { return s.finishChange(res) }
 	if err := s.confirm(2); err != nil { // W2
-		s.unconfirmed = &pendingOp{kind: "passphrase_change", finish: finish}
+		s.setUnconfirmed(&pendingOp{kind: "passphrase_change", finish: finish})
 		return Result{}, notDurable(err, "the passphrase change")
 	}
 	if err := s.point(PointWDurable); err != nil {

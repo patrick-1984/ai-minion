@@ -23,8 +23,14 @@ const hubidModuleOrder = 25
 var identityTickEvery = 24 * time.Hour
 
 // identityRetryEvery is the wait after a tick that found an identity operation
-// running.
-const identityRetryEvery = 30 * time.Second
+// running, and the first wait after a tick that failed; a failing tick is
+// retried with a doubling wait up to identityRetryMax until it succeeds, so an
+// error never postpones the closing of the sessions at not_after until the
+// daily tick. Variables so tests can shorten them.
+var (
+	identityRetryEvery = 30 * time.Second
+	identityRetryMax   = 5 * time.Minute
+)
 
 func init() { registerHubIDModule(DefaultRegistry) }
 
@@ -109,7 +115,7 @@ func HubIdentity(env *Env) (*hubid.Service, error) { return Require[*hubid.Servi
 // of the serving certificate. The activation hook of the service re-arms the
 // expiry timer after every activation (first certificate, re-issue, rotation).
 type expiryTimers struct {
-	svc    *hubid.Service
+	svc    identityTicker
 	log    *slog.Logger
 	now    func() time.Time
 	kick   chan struct{}
@@ -117,7 +123,14 @@ type expiryTimers struct {
 	done   chan struct{}
 }
 
-func newExpiryTimers(svc *hubid.Service, log *slog.Logger, now func() time.Time) *expiryTimers {
+// identityTicker is what the timers need from the identity service;
+// *hubid.Service implements it.
+type identityTicker interface {
+	Tick(ctx context.Context) (hubid.Status, error)
+	Current() (hubid.Snapshot, error)
+}
+
+func newExpiryTimers(svc identityTicker, log *slog.Logger, now func() time.Time) *expiryTimers {
 	return &expiryTimers{svc: svc, log: log, now: now, kick: make(chan struct{}, 1), done: make(chan struct{})}
 }
 
@@ -129,26 +142,51 @@ func (t *expiryTimers) rearm() {
 	}
 }
 
-// tick runs the expiry policy and reports whether to retry soon: an identity
-// operation that holds the rotation mutex is "retry later", not a failure.
-func (t *expiryTimers) tick(ctx context.Context) (retry bool) {
+// tickOutcome is the result of one run of the expiry policy.
+type tickOutcome int
+
+const (
+	tickDone   tickOutcome = iota // the policy ran
+	tickBusy                      // an identity operation held the mutex: retry soon
+	tickFailed                    // the policy failed: retry with backoff
+)
+
+// tick runs the expiry policy. An identity operation that holds the rotation
+// mutex is "retry soon", not a failure; any other error is a failure that the
+// loop retries with backoff.
+func (t *expiryTimers) tick(ctx context.Context) tickOutcome {
 	_, err := t.svc.Tick(ctx)
 	switch {
 	case err == nil:
-		return false
+		return tickDone
 	case errors.Is(err, hubid.ErrConflict):
 		t.log.Debug("hub identity: the expiry check waits for a running identity operation")
-		return true
+		return tickBusy
+	case ctx.Err() != nil:
+		return tickDone // stopping
 	}
-	t.log.Warn("hub identity: the expiry check failed", "error", err.Error())
-	return false
+	t.log.Warn("hub identity: the expiry check failed; it is retried", "error", err.Error())
+	return tickFailed
+}
+
+// retryAfter is the wait before the next run after outcome o, given the
+// number of failures in a row so far (o included).
+func retryAfter(o tickOutcome, failures int) time.Duration {
+	if o == tickBusy {
+		return identityRetryEvery
+	}
+	d := identityRetryEvery
+	for i := 1; i < failures && d < identityRetryMax; i++ {
+		d *= 2
+	}
+	return min(d, identityRetryMax)
 }
 
 func (t *expiryTimers) start(ctx context.Context) {
 	tctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	t.cancel = cancel
-	retry := t.tick(tctx)
-	go t.loop(tctx, retry)
+	first := t.tick(tctx)
+	go t.loop(tctx, first)
 }
 
 func (t *expiryTimers) stop() {
@@ -156,12 +194,25 @@ func (t *expiryTimers) stop() {
 	<-t.done
 }
 
-func (t *expiryTimers) loop(ctx context.Context, retry bool) {
+func (t *expiryTimers) loop(ctx context.Context, first tickOutcome) {
 	defer close(t.done)
+	failures := 0
+	// next records the outcome of a run and returns the wait before the next
+	// one; ok is false when the run succeeded (the regular schedule applies).
+	next := func(o tickOutcome) (time.Duration, bool) {
+		switch o {
+		case tickDone:
+			failures = 0
+			return 0, false
+		case tickFailed:
+			failures++
+		}
+		return retryAfter(o, failures), true
+	}
 	daily := time.NewTimer(identityTickEvery)
 	defer daily.Stop()
-	if retry {
-		daily.Reset(identityRetryEvery)
+	if d, retry := next(first); retry {
+		daily.Reset(d)
 	}
 	expiry := time.NewTimer(time.Hour)
 	defer expiry.Stop()
@@ -169,7 +220,7 @@ func (t *expiryTimers) loop(ctx context.Context, retry bool) {
 	// no serving certificate (or one that already expired and was handled) it
 	// stays stopped.
 	armed := false
-	arm := func() {
+	disarm := func() {
 		if armed && !expiry.Stop() {
 			select {
 			case <-expiry.C:
@@ -177,6 +228,9 @@ func (t *expiryTimers) loop(ctx context.Context, retry bool) {
 			}
 		}
 		armed = false
+	}
+	arm := func() {
+		disarm()
 		sn, err := t.svc.Current()
 		if err != nil {
 			return
@@ -197,18 +251,20 @@ func (t *expiryTimers) loop(ctx context.Context, retry bool) {
 			arm()
 		case <-expiry.C:
 			armed = false
-			if t.tick(ctx) {
-				expiry.Reset(identityRetryEvery)
+			// A failed or postponed check never stops the timer: it is run
+			// again until it succeeds (the sessions are closed then).
+			if d, retry := next(t.tick(ctx)); retry {
+				expiry.Reset(d)
 				armed = true
 			} else {
 				arm()
 			}
 		case <-daily.C:
-			next := identityTickEvery
-			if t.tick(ctx) {
-				next = identityRetryEvery
+			d, retry := next(t.tick(ctx))
+			if !retry {
+				d = identityTickEvery
 			}
-			daily.Reset(next)
+			daily.Reset(d)
 		}
 	}
 }

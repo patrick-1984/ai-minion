@@ -137,6 +137,10 @@ type InviteState interface {
 	LoadOrCreateKey() (*identity.Key, error)
 	Load(ctx context.Context) (Enrollment, bool, error)
 	Commit(ctx context.Context, e Enrollment) error
+	// CommitLive is Commit with live called inside the commit guard,
+	// immediately before the write; when it reports false nothing is stored
+	// and the error is errGuardExpired.
+	CommitLive(ctx context.Context, e Enrollment, live func() bool) error
 }
 
 var _ InviteState = (*Enrollments)(nil)
@@ -258,11 +262,21 @@ func (e *InviteEnroller) Enroll(ctx context.Context, invite identity.InviteKey) 
 		// revokes it there, whatever the configuration says by then.
 		HubURL: e.cfg.HubURL,
 	}
-	// The commit is the last step the certificate must cover.
-	if out.Expiry != nil && out.Expiry.Expired(e.wallMono()) {
-		return InviteResult{}, errEnrollExpired
+	// The commit is the last step the certificate must cover: both clocks are
+	// read before the commit and again inside its guard, immediately before
+	// the write (the wait for the state lock is covered).
+	var live func() bool
+	if out.Expiry != nil {
+		exp, clk := *out.Expiry, e.wallMono()
+		live = func() bool { return !exp.Expired(clk) }
+		if !live() {
+			return InviteResult{}, errEnrollExpired
+		}
 	}
-	if err := e.cfg.State.Commit(ctx, enr); err != nil {
+	if err := e.cfg.State.CommitLive(ctx, enr, live); err != nil {
+		if errors.Is(err, errGuardExpired) {
+			return InviteResult{}, errEnrollExpired
+		}
 		return InviteResult{}, fmt.Errorf("store the enrollment: %w", err)
 	}
 	e.log.Info("enrolled with an invitation key", "worker_id", enr.WorkerID, "owner", enr.Owner, "kind", enr.Kind)

@@ -614,15 +614,28 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 			_ = att.Session.Close()
 		}
 	}
+	// Nothing an answer at or after the certificate's not_after says is
+	// committed (section 11.3): both clocks are read now, and again inside the
+	// guard of every write below, immediately before it.
+	live := c.liveFunc(att.Expiry)
+	if !live() {
+		closeSession()
+		c.expiredAnswer()
+		return true
+	}
 	// The Hub is authenticated (pin after its transition chain, certificate,
 	// sig_hub). The pin the Hub proved and the certificate ratchet are stored in
 	// one transaction before anything relies on this connection (step 8), also
 	// when only the serial rose.
 	if att.PinChanged || att.RatchetChanged {
-		if err := c.cfg.Enrollment.CommitRatchetIf(ctx, gen, att.Pin, att.Ratchet); err != nil {
+		if err := c.cfg.Enrollment.CommitRatchetIfLive(ctx, gen, att.Pin, att.Ratchet, live); err != nil {
 			closeSession()
 			if errors.Is(err, ErrEnrollmentChanged) {
 				return false
+			}
+			if errors.Is(err, errGuardExpired) {
+				c.expiredAnswer()
+				return true
 			}
 			c.fail("cannot store the new Hub pin", err)
 			return true
@@ -687,6 +700,24 @@ func (c *Connector) onRevoke(ctx context.Context, gen uint64, att *Attempt) (bac
 	}
 	_, backoff = c.applyRevoke(ctx, gen, att.OpPub, att.TranscriptHash, att.Reply.RevokeSig, live)
 	return backoff
+}
+
+// liveFunc returns the expiry check of a connection: true while the Hub
+// certificate has not reached its end on either clock. A nil Expiry (a test
+// double) is always live.
+func (c *Connector) liveFunc(exp *transport.Expiry) func() bool {
+	if exp == nil {
+		return func() bool { return true }
+	}
+	e, clk := *exp, c.wallMono()
+	return func() bool { return !e.Expired(clk) }
+}
+
+// expiredAnswer records an answer of the Hub that is not applied because the
+// certificate of its connection ended first; nothing was stored.
+func (c *Connector) expiredAnswer() {
+	c.log.Warn("ignored the Hub's answer: its certificate reached not_after before the answer was applied; nothing was stored")
+	c.failMsg("ignored an answer after the Hub certificate expired")
 }
 
 func (c *Connector) wallMono() transport.WallMono {
@@ -771,10 +802,14 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		c.fail("connect", errors.New("the welcome has no worker id"))
 		return true
 	}
-	if err := c.storeWelcome(ctx, gen, w); err != nil {
+	if err := c.storeWelcome(ctx, gen, w, c.liveFunc(att.Expiry)); err != nil {
 		_ = att.Session.Close()
 		if errors.Is(err, ErrEnrollmentChanged) {
 			return false
+		}
+		if errors.Is(err, errGuardExpired) {
+			c.expiredAnswer()
+			return true
 		}
 		// The connection is not accepted as healthy before the welcome is
 		// stored: the retry goes through the backoff, with the new
@@ -862,11 +897,18 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 // just because SQLite said no (after a restart it would). A lifted restriction
 // takes effect only once it is stored, so that memory and disk never disagree
 // in the permissive direction.
-func (c *Connector) storeWelcome(ctx context.Context, gen uint64, w HubWelcome) error {
+//
+// live is read before anything is applied and again inside the write's guard:
+// a welcome at or after the certificate's end changes neither the policy nor
+// the stored data (errGuardExpired).
+func (c *Connector) storeWelcome(ctx context.Context, gen uint64, w HubWelcome, live func() bool) error {
+	if !live() {
+		return errGuardExpired
+	}
 	if c.cfg.Policy != nil && w.Policy.PreviewOnly {
 		c.cfg.Policy.SetHubPreviewOnly(true)
 	}
-	if err := c.cfg.Enrollment.ApplyWelcomeIf(ctx, gen, w); err != nil {
+	if err := c.cfg.Enrollment.ApplyWelcomeIfLive(ctx, gen, w, live); err != nil {
 		return err
 	}
 	if c.cfg.Policy != nil {

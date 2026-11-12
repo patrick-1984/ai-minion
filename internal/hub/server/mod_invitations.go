@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,8 +10,11 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
 )
 
@@ -94,8 +98,12 @@ func initInvitations(_ context.Context, env *Env) error {
 		}
 	}
 
+	idsvc, err := HubIdentity(env)
+	if err != nil {
+		return err
+	}
 	inv, err := workers.NewInvitations(workers.InvitationsConfig{
-		Store: st, FingerprintFunc: fpr, Auditor: alog, Logger: cfg.logger(),
+		Store: st, RootFunc: invitationRoot(idsvc), Auditor: alog, Logger: cfg.logger(),
 	})
 	if err != nil {
 		return fmt.Errorf("invitations: %w", err)
@@ -126,4 +134,23 @@ func infraExpiry(infra config.HubInfra) time.Duration {
 		return workers.NoInfraExpiry
 	}
 	return infra.InviteKeyLifetime
+}
+
+// invitationRoot is the root a new invitation key names: the root of the
+// serving snapshot (hubid.Service.InvitationRoot). While a recorded root
+// differs from it (a rotation that is not confirmed durable) the creation is
+// refused with conflict; the insert then compares the stored root with this
+// serving root in its own transaction (InsertInvitationForRoot).
+func invitationRoot(svc *hubid.Service) func(ctx context.Context) (identity.Fingerprint, error) {
+	return func(ctx context.Context) (identity.Fingerprint, error) {
+		fp, err := svc.InvitationRoot(ctx)
+		if err != nil {
+			var he *hubid.Error
+			if errors.As(err, &he) && he.Code == hubid.CodeConflict {
+				return "", proto.NewError(proto.CodeConflict, he.Msg)
+			}
+			return "", err
+		}
+		return identity.Fingerprint(fp), nil
+	}
 }

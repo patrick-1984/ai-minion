@@ -271,6 +271,52 @@ func (e *Enrollments) CommitRatchetIf(ctx context.Context, gen uint64, pin ident
 	})
 }
 
+// SavePairResumeIfLive is [Enrollments.SavePairResumeIf] with an expiry check
+// inside the guard, immediately before the write: nothing is stored
+// (errGuardExpired) when live reports false. A nil live always passes.
+func (e *Enrollments) SavePairResumeIfLive(ctx context.Context, gen uint64, r store.PairResume, live func() bool) error {
+	return e.lockedIf(ctx, gen, func() error {
+		if live != nil && !live() {
+			return errGuardExpired
+		}
+		return e.repo.SavePairResume(ctx, r)
+	})
+}
+
+// CommitRatchetIfLive is [Enrollments.CommitRatchetIf] with an expiry check
+// inside the guard, immediately before the write.
+func (e *Enrollments) CommitRatchetIfLive(ctx context.Context, gen uint64, pin identity.Pin, r transport.Ratchet, live func() bool) error {
+	return e.lockedIf(ctx, gen, func() error {
+		if live != nil && !live() {
+			return errGuardExpired
+		}
+		return e.repo.UpdatePinRatchet(ctx, pin.Pub, pin.Seq, r.MaxSerial, r.CertSHA256)
+	})
+}
+
+// ApplyWelcomeIfLive is [Enrollments.ApplyWelcomeIf] with an expiry check
+// inside the guard, immediately before the write.
+func (e *Enrollments) ApplyWelcomeIfLive(ctx context.Context, gen uint64, w HubWelcome, live func() bool) error {
+	return e.lockedIf(ctx, gen, func() error {
+		if live != nil && !live() {
+			return errGuardExpired
+		}
+		return e.applyWelcome(ctx, w)
+	})
+}
+
+// CommitLive is [Enrollments.Commit] with an expiry check inside the guard,
+// immediately before the commit (an invitation enrollment, whose welcome must
+// still be covered by the Hub certificate when it is stored).
+func (e *Enrollments) CommitLive(ctx context.Context, enr Enrollment, live func() bool) error {
+	return e.locked(ctx, func() error {
+		if live != nil && !live() {
+			return errGuardExpired
+		}
+		return e.commit(ctx, enr)
+	})
+}
+
 // SavePairResumeIf stores the pairing resume record durably for the pairing of
 // generation gen (design section 12.2); the pairer sends sig_worker only after
 // it returned.
@@ -321,18 +367,31 @@ func (e *Enrollments) Wipe(ctx context.Context) (wiped bool, err error) {
 	return wiped, err
 }
 
-// WipeForNewIdentity is [Enrollments.Wipe] for the replacement of the Worker
-// identity: the pairing resume record belongs to the old key (its code, its
-// authenticated Hub), so it is deleted durably in the same guard, before the
-// enrollment is wiped. When the record cannot be deleted nothing is wiped.
-func (e *Enrollments) WipeForNewIdentity(ctx context.Context) (wiped bool, err error) {
+// ReplaceIdentity is the wipe of `minion worker pair --new-code`. With the
+// state lock held throughout, it reloads the enrollment, runs keep (which
+// stores the old identity durably as a pending revocation), deletes the pairing
+// resume record of the old key, and wipes. An error from keep, or a record that
+// cannot be deleted, aborts before the wipe. Holding the lock across all steps
+// is what keeps a concurrent ratchet commit of the connector from being lost
+// between the read and the wipe (see the lock hierarchy in enrollment_epoch.go).
+func (e *Enrollments) ReplaceIdentity(ctx context.Context, keep func(enr Enrollment, enrolled bool) error) (wiped bool, err error) {
 	err = e.locked(ctx, func() error {
+		enr, enrolled, err := e.Load(ctx)
+		if err != nil {
+			return fmt.Errorf("read the enrollment: %w", err)
+		}
+		if err := keep(enr, enrolled); err != nil {
+			return err
+		}
 		if _, err := e.repo.DeletePairResume(ctx); err != nil {
 			return fmt.Errorf("delete the pairing resume record: %w", err)
 		}
 		var werr error
 		wiped, werr = e.wipe(ctx)
-		return werr
+		if werr != nil {
+			return fmt.Errorf("wipe the old enrollment: %w", werr)
+		}
+		return nil
 	})
 	return wiped, err
 }
@@ -348,7 +407,7 @@ func (e *Enrollments) WipeIf(ctx context.Context, gen uint64) (wiped bool, err e
 // errGuardExpired is returned by [Enrollments.WipeIfLive] and
 // [Enrollments.CommitIfLive] when the Hub certificate of the connection ended
 // before the change was applied.
-var errGuardExpired = errors.New("agent: the Hub certificate expired before the revoke was applied")
+var errGuardExpired = errors.New("agent: the Hub certificate expired before the change was applied")
 
 // WipeIfLive is [Enrollments.WipeIf] with an expiry check inside the guard:
 // live is called with the enrollment lock held, immediately before the wipe,

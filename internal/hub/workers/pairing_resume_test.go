@@ -207,7 +207,7 @@ func enrolUnconnected(t *testing.T, h *pairHub, key *identity.Key, owner string)
 }
 
 func reissue(h *pairHub, id, user string, admin bool) error {
-	return ReissuePairing(context.Background(), h.st, h.audit, h.clk.Now(), ReissueRequest{WorkerID: id, UserID: user, Admin: admin})
+	return ReissuePairing(context.Background(), h.st, h.svc.Registry(), h.audit, h.clk.Now(), ReissueRequest{WorkerID: id, UserID: user, Admin: admin})
 }
 
 func TestOwnerReissueRepairsAStuckWorkerWithItsIdNameAndApproval(t *testing.T) {
