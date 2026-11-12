@@ -223,7 +223,7 @@ func TestUnackedTurnsSurviveAReconnectInOrderAndWithoutDuplicates(t *testing.T) 
 
 	st1.endHub() // the connection drops
 	waitFor2(t, st1.wasReset)
-	h.clk.tick(t, 2*time.Second)
+	h.clk.tickDue(t, 2*time.Second)
 
 	st2 := h.stream()
 	st2.open(t)
@@ -272,7 +272,7 @@ func TestWriteFailureKeepsTheTurnAndReopens(t *testing.T) {
 	st1.failWrites(errors.New("broken pipe"))
 	id, _ := h.em.Emit(PendingTurn{MessageID: 7, Session: "minion-1", Text: "x"})
 	waitFor2(t, st1.wasReset)
-	h.clk.tick(t, 2*time.Second)
+	h.clk.tickDue(t, 2*time.Second)
 	st2 := h.stream()
 	st2.open(t)
 	if tf := st2.turn(t); tf.TurnID != id {
@@ -304,7 +304,7 @@ func TestOpenFailureIsRetriedAfterTheReopenDelay(t *testing.T) {
 		})
 		close(h.done)
 	}()
-	h.clk.tick(t, 2*time.Second)
+	h.clk.tickDue(t, 2*time.Second)
 	st := h.stream()
 	st.open(t)
 	st.turn(t)
@@ -860,7 +860,7 @@ func TestABusyHoldSurvivesAResetAndTheWholeChannelWaits(t *testing.T) {
 	// sent, not even the turns that never had a busy answer.
 	st1.endHub()
 	waitFor2(t, st1.wasReset)
-	h.clk.tick(t, 2*time.Second)
+	h.clk.tickDue(t, 2*time.Second)
 	st2 := h.stream()
 	st2.open(t)
 	st2.none(t)
@@ -870,7 +870,7 @@ func TestABusyHoldSurvivesAResetAndTheWholeChannelWaits(t *testing.T) {
 	// Another reset in the middle of the hold changes nothing.
 	st2.endHub()
 	waitFor2(t, st2.wasReset)
-	h.clk.tick(t, 2*time.Second)
+	h.clk.tickDue(t, 2*time.Second)
 	st3 := h.stream()
 	st3.open(t)
 	st3.none(t)

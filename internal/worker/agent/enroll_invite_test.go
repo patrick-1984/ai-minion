@@ -994,17 +994,38 @@ func TestForgetStoredInviteKeyKeepsASettingChangedMeanwhile(t *testing.T) {
 	}
 }
 
+type notifyingInviteReader struct {
+	io.Reader
+	started chan struct{}
+	once    sync.Once
+}
+
+func (r *notifyingInviteReader) Read(p []byte) (int, error) {
+	r.once.Do(func() { close(r.started) })
+	return r.Reader.Read(p)
+}
+
 func TestHookStdinWaitEndsWithTheContext(t *testing.T) {
 	pr, pw := io.Pipe()
-	defer func() { _ = pw.Close() }()
+	defer func() { _ = pw.Close(); _ = pr.Close() }()
 	var out bytes.Buffer
 	s := inviteSettings(t, inviteResolver(config.MapSource{config.KeyInviteKey: "-", config.KeyServer: "https://hub.example"}, nil, nil), &out, &logBuf{})
 	d := defaultInviteHookDeps()
-	d.stdin, d.stderr = pr, io.Discard
+	reading := make(chan struct{})
+	d.stdin, d.stderr = &notifyingInviteReader{Reader: pr, started: reading}, io.Discard
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- d.run(ctx, s) }()
-	time.Sleep(50 * time.Millisecond)
+	// State migration must finish before cancellation: this test exercises a
+	// blocked stdin read, not cancellation while opening the database.
+	select {
+	case <-reading:
+	case err := <-done:
+		t.Fatalf("the hook ended before reading stdin: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hook did not start reading stdin")
+	}
 	cancel()
 	select {
 	case err := <-done:

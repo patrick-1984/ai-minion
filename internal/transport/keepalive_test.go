@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -15,45 +16,48 @@ func TestKeepaliveConstants(t *testing.T) {
 }
 
 func TestRunKeepalivePingsEvery30sAndDiesAfter2min(t *testing.T) {
-	clk := newFakeClock()
-	start := clk.Now()
-	pings := make(chan struct{}, 16)
-	result := make(chan error, 1)
-	go func() {
-		result <- RunKeepalive(context.Background(), KeepaliveConfig{Clock: clk},
-			func() time.Time { return start },
-			func() error { pings <- struct{}{}; return nil })
-	}()
-	for clk.waiters() == 0 {
-		time.Sleep(time.Millisecond)
-	}
-	for i := 1; i <= 3; i++ {
-		// The loop re-arms its timer after each ping; advance only once it waits,
-		// or the advance is lost on a slow machine.
-		for clk.waiters() == 0 {
-			time.Sleep(time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		clk := newFakeClock()
+		start := clk.Now()
+		pings := make(chan struct{}, 16)
+		result := make(chan error, 1)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			result <- RunKeepalive(ctx, KeepaliveConfig{Clock: clk},
+				func() time.Time { return start },
+				func() error { pings <- struct{}{}; return nil })
+		}()
+		// Wait until the monitor has captured its start time and is receiving
+		// ticks. Ticker registration alone precedes that initialization.
+		synctest.Wait()
+		for i := 1; i <= 3; i++ {
+			// The ticker persists. Drain runnable work after each tick so the
+			// asynchronous ping has returned and released its in-flight flag.
+			clk.Advance(30 * time.Second)
+			synctest.Wait()
+			select {
+			case <-pings:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("no ping after %d x 30s", i)
+			}
+			select {
+			case err := <-result:
+				t.Fatalf("declared dead after %ds: %v", i*30, err)
+			default:
+			}
 		}
 		clk.Advance(30 * time.Second)
-		select {
-		case <-pings:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("no ping after %d x 30s", i)
-		}
+		synctest.Wait()
 		select {
 		case err := <-result:
-			t.Fatalf("declared dead after %ds: %v", i*30, err)
-		default:
+			if !errors.Is(err, ErrKeepaliveTimeout) {
+				t.Fatalf("got %v, want ErrKeepaliveTimeout", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("not declared dead after 2 min of silence")
 		}
-	}
-	clk.Advance(30 * time.Second)
-	select {
-	case err := <-result:
-		if !errors.Is(err, ErrKeepaliveTimeout) {
-			t.Fatalf("got %v, want ErrKeepaliveTimeout", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("not declared dead after 2 min of silence")
-	}
+	})
 }
 
 func TestRunKeepaliveTrafficKeepsConnectionAlive(t *testing.T) {

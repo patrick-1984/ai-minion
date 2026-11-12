@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -269,6 +270,13 @@ func (f *pairFixture) step(d time.Duration) {
 // served yet, and lets it pass.
 func (f *pairFixture) backoffStep() {
 	f.t.Helper()
+	f.clk.Advance(f.waitBackoff())
+}
+
+// waitBackoff waits for the retry timer, ignoring a code lifetime timer left
+// behind by an ended attempt. It returns the registered retry delay.
+func (f *pairFixture) waitBackoff() time.Duration {
+	f.t.Helper()
 	var d time.Duration
 	eventually(f.t, func() bool {
 		rec := f.clk.recorded()
@@ -281,7 +289,7 @@ func (f *pairFixture) backoffStep() {
 		}
 		return false
 	})
-	f.clk.Advance(d)
+	return d
 }
 
 func TestFailureLogsNeverContainTheCode(t *testing.T) {
@@ -395,7 +403,9 @@ func TestExpiredCodeIsReplacedWhenTheHubWasUnreachableMeanwhile(t *testing.T) {
 	f := newPairFixture(t, pairWaitStep(errors.New("connection lost")), pairWaitStep(nil))
 	f.codeSeq("K7Q4XY12", "B2C3D4E5")
 	f.run(f.pairer())
-	eventually(t, func() bool { return f.clk.pending() > 0 })
+	// OnWaiting also arms a lifetime timer, possibly after the attempt ends.
+	// Only the backoff timer proves the pairer is ready to retry.
+	f.waitBackoff()
 	f.clk.Advance(PairCodeTTL + time.Second)
 	eventually(t, func() bool { return len(f.shown()) == 2 })
 	if f.dial.call(1).Code.String() != "MN-B2C3-D4E5" {
@@ -731,12 +741,39 @@ func (h *stubPairHub) claim(code string) {
 	h.claims <- pc.Password()
 }
 
+// stubPairConn watches for a peer close while the password callback waits,
+// just as the real Hub does. A hijacked HTTP request context does not report a
+// WebSocket close. Peek preserves any byte for the next handshake Read, which
+// waits for Peek to finish before using the reader.
+type stubPairConn struct {
+	net.Conn
+	reader   *bufio.Reader
+	peekDone chan struct{}
+}
+
+func (c *stubPairConn) watch() <-chan struct{} {
+	c.peekDone = make(chan struct{})
+	go func() {
+		_, _ = c.reader.Peek(1)
+		close(c.peekDone)
+	}()
+	return c.peekDone
+}
+
+func (c *stubPairConn) Read(p []byte) (int, error) {
+	if c.peekDone != nil {
+		<-c.peekDone
+	}
+	return c.reader.Read(p)
+}
+
 func (h *stubPairHub) serve(w http.ResponseWriter, r *http.Request) {
 	h.connects.Add(1)
-	conn, err := transport.Accept(w, r)
+	raw, err := transport.Accept(w, r)
 	if err != nil {
 		return
 	}
+	conn := &stubPairConn{Conn: raw, reader: bufio.NewReader(raw)}
 	res, err := transport.HubHandshake(conn, transport.HubConfig{
 		Key:     h.key,
 		Timeout: 30 * time.Second,
@@ -758,8 +795,10 @@ func (h *stubPairHub) serve(w http.ResponseWriter, r *http.Request) {
 			select {
 			case pw := <-h.claims:
 				return pw, nil
-			case <-r.Context().Done():
+			case <-conn.watch():
 				return nil, errors.New("worker gone")
+			case <-r.Context().Done():
+				return nil, errors.New("request ended")
 			}
 		},
 	})
@@ -956,6 +995,7 @@ func TestPairerStopsOnContextCancelWhileWaiting(t *testing.T) {
 	h := newStubPairHub(t)
 	hp := newHubPairer(t, h.url())
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { _, err := hp.Run(ctx); done <- err }()
 	hp.code(t, 1)

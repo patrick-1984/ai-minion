@@ -128,6 +128,8 @@ func frameType(t *testing.T, m map[string]json.RawMessage) string {
 func decodeWelcome(t *testing.T, res *transport.WorkerResult) Welcome {
 	t.Helper()
 	_ = res.Channel.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// The connection becomes a long-lived yamux session after welcome.
+	defer func() { _ = res.Channel.SetReadDeadline(time.Time{}) }()
 	body, err := proto.ReadFrame(res.Channel, proto.StreamFrameLimit)
 	if err != nil {
 		t.Fatalf("reading welcome: %v", err)
