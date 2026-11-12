@@ -2,7 +2,7 @@
 
 ## v0.7.0
 
-Released YYYY-MM-DD.
+Released 2026-11-12.
 
 This release replaces the single plain Hub identity key with a two-tier identity: a master (root) key sealed with a passphrase that only the owner knows, and a short-lived operational key certified by it. It changes the network protocol to 3.0 and needs an owner action after the upgrade: see Upgrade notes.
 
