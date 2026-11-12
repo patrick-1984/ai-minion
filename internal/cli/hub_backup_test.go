@@ -16,6 +16,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 )
 
 var plainBackup = hubBackupOpts{unencrypted: true}
@@ -47,9 +48,19 @@ func TestHubBackupThenRestoreIntoNewDir(t *testing.T) {
 	if err := s.PutSetting(context.Background(), "k", "v", false, "t"); err != nil {
 		t.Fatal(err)
 	}
+	key, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.SaveKey(filepath.Join(src, store.IdentityKeyFile), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutHubIdentity(context.Background(), store.HubIdentityRow{Pub: key.Public(), Fingerprint: key.Fingerprint().String(), CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
 	_ = s.Close()
-	identity := []byte("identity-key-bytes")
-	if err := os.WriteFile(filepath.Join(src, store.IdentityKeyFile), identity, 0o600); err != nil {
+	want, err := os.ReadFile(filepath.Join(src, store.IdentityKeyFile))
+	if err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(t.TempDir(), "hub.tar.gz")
@@ -82,7 +93,7 @@ func TestHubBackupThenRestoreIntoNewDir(t *testing.T) {
 		t.Fatalf("output = %q", out.String())
 	}
 	got, err := os.ReadFile(filepath.Join(dst, store.IdentityKeyFile))
-	if err != nil || !bytes.Equal(got, identity) {
+	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("identity file after restore: %q %v", got, err)
 	}
 	r, err := store.Open(dst)
@@ -318,14 +329,26 @@ func readyz(t *testing.T, addr string) int {
 // and did not generate a new one (Story 4.3).
 func TestBackupRestoreThenHubStarts(t *testing.T) {
 	data := filepath.Join(t.TempDir(), "hub")
+	// A 0.6 Hub that has not set its passphrase yet (state B1) keeps its plain
+	// root in identity.key. 0.7 never generates one: a pristine Hub (B0) waits
+	// for the passphrase; the backup of a sealed Hub is increment I4.
+	if err := os.MkdirAll(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.SaveKey(filepath.Join(data, store.IdentityKeyFile), seed); err != nil {
+		t.Fatal(err)
+	}
 	addr, stop, _ := startHub(t, data)
 	if got := readyz(t, addr); got != 200 {
 		t.Fatalf("/readyz of the first Hub = %d", got)
 	}
-	// The first start generates the Hub identity (Story 4.3).
 	identity, err := os.ReadFile(filepath.Join(data, store.IdentityKeyFile))
 	if err != nil || len(identity) == 0 {
-		t.Fatalf("the first Hub did not create its identity key: %v", err)
+		t.Fatalf("the first Hub lost its identity key: %v", err)
 	}
 	id, err := workers.ReadIdentity(data)
 	if err != nil {
@@ -365,17 +388,11 @@ func TestBackupRestoreThenHubStarts(t *testing.T) {
 		t.Fatalf("the restored Hub presents another certificate: %x, want %x", got, wantCert)
 	}
 	log := logs2.String()
-	loaded := false
-	for _, line := range strings.Split(log, "\n") {
-		if strings.Contains(line, `msg="hub identity"`) && strings.Contains(line, "fingerprint="+wantFingerprint) {
-			loaded = true
-		}
-	}
-	if !loaded {
-		t.Fatalf("the restored Hub did not log \"hub identity\" with fingerprint %s:\n%s", wantFingerprint, log)
-	}
 	if strings.Contains(log, `msg="hub identity created"`) {
 		t.Fatalf("the restored Hub created a new identity:\n%s", log)
+	}
+	if id2, err := workers.ReadIdentity(restored); err != nil || id2.Fingerprint().String() != wantFingerprint {
+		t.Fatalf("restored identity = %v %v, want %s", id2, err, wantFingerprint)
 	}
 	got, err := os.ReadFile(filepath.Join(restored, store.IdentityKeyFile))
 	if err != nil || !bytes.Equal(got, identity) {

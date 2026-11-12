@@ -19,6 +19,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubcert"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -640,8 +641,12 @@ func TestTTLText(t *testing.T) {
 // is issued for another host name, and the Worker side under test is the
 // production pair dialer with no TLS option at all (A-15).
 type stubPairHub struct {
-	t    *testing.T
+	t *testing.T
+	// key is the root (what a Worker pins); hub holds the operational key and
+	// certificate the stub presents (protocol 3.0). Replace hub (under mu) to
+	// answer with another root or serial.
 	key  *identity.Key
+	hub  *hubcert.Hub
 	cert tls.Certificate
 
 	mu     sync.Mutex
@@ -656,15 +661,17 @@ type stubPairHub struct {
 
 	connects atomic.Int32
 	welcomed atomic.Int32
+	// afterAuth runs once the handshake succeeded (the Hub received sig_worker),
+	// before the welcome. dropBeforeWelcome closes that many authenticated
+	// connections without a welcome (a lost welcome).
+	afterAuth         func()
+	dropBeforeWelcome atomic.Int32
 }
 
 func newStubPairHub(t *testing.T) *stubPairHub {
 	t.Helper()
-	key, err := identity.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &stubPairHub{t: t, key: key, cert: wrongNameCert(t), claims: make(chan []byte, 8)}
+	hub := hubcert.New(t)
+	h := &stubPairHub{t: t, key: hub.Root, hub: hub, cert: wrongNameCert(t), claims: make(chan []byte, 8)}
 	h.start("127.0.0.1:0")
 	t.Cleanup(h.stop)
 	return h
@@ -774,36 +781,48 @@ func (h *stubPairHub) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn := &stubPairConn{Conn: raw, reader: bufio.NewReader(raw)}
-	res, err := transport.HubHandshake(conn, transport.HubConfig{
-		Key:     h.key,
-		Timeout: 30 * time.Second,
-		PairingPassword: func(id string) ([]byte, error) {
-			h.mu.Lock()
-			h.ids = append(h.ids, id)
-			var rej error
-			if len(h.reject) > 0 {
-				rej, h.reject = h.reject[0], h.reject[1:]
-			}
-			guess := h.guess
-			h.mu.Unlock()
-			if rej != nil {
-				return nil, rej
-			}
-			if guess != nil {
-				return guess, nil
-			}
-			select {
-			case pw := <-h.claims:
-				return pw, nil
-			case <-conn.watch():
-				return nil, errors.New("worker gone")
-			case <-r.Context().Done():
-				return nil, errors.New("request ended")
-			}
-		},
-	})
+	h.mu.Lock()
+	hc := h.hub.Config()
+	h.mu.Unlock()
+	hc.Timeout = 30 * time.Second
+	hc.PairingPassword = func(id string) ([]byte, error) {
+		h.mu.Lock()
+		h.ids = append(h.ids, id)
+		var rej error
+		if len(h.reject) > 0 {
+			rej, h.reject = h.reject[0], h.reject[1:]
+		}
+		guess := h.guess
+		h.mu.Unlock()
+		if rej != nil {
+			return nil, rej
+		}
+		if guess != nil {
+			return guess, nil
+		}
+		select {
+		case pw := <-h.claims:
+			return pw, nil
+		case <-conn.watch():
+			return nil, errors.New("worker gone")
+		case <-r.Context().Done():
+			return nil, errors.New("request ended")
+		}
+	}
+	res, err := transport.HubHandshake(conn, hc)
 	if err != nil {
 		return // a wrong code: the transport sent pairing_code_invalid
+	}
+	h.mu.Lock()
+	after := h.afterAuth
+	h.mu.Unlock()
+	if after != nil {
+		after()
+	}
+	if h.dropBeforeWelcome.Load() > 0 {
+		h.dropBeforeWelcome.Add(-1)
+		_ = res.Channel.Close()
+		return
 	}
 	if err := proto.WriteFrame(res.Channel, proto.StreamFrameLimit, map[string]any{
 		"type": proto.TypeWelcome, "worker_id": "w-" + res.Worker.Name, "name": res.Worker.Name, "owner": "alice",

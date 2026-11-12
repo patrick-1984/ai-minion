@@ -91,6 +91,10 @@ type Config struct {
 	PublicURL string
 	// TrustedProxies are the proxies whose forwarding headers are honoured.
 	TrustedProxies []netip.Prefix
+	// ManagementListen is the optional loopback address of the management
+	// listener: plain HTTP, the one place where a passphrase is accepted
+	// without HTTPS (contract section 8.1 item 5). Empty means none.
+	ManagementListen string
 	// Logger receives the Hub's log records; nil means [slog.Default].
 	Logger *slog.Logger
 }
@@ -119,6 +123,12 @@ func NewConfig(hs config.HubServer, logger *slog.Logger) (*Config, error) {
 	}
 	if cfg.TrustedProxies, err = ParseTrustedProxies(hs.TrustedProxies); err != nil {
 		return nil, err
+	}
+	if hs.ManagementListen != "" {
+		if err := checkManagementListen(hs.ManagementListen, cfg.Listen); err != nil {
+			return nil, err
+		}
+		cfg.ManagementListen = hs.ManagementListen
 	}
 	if cfg.TLSOff {
 		if cfg.PublicURL == "" {
@@ -248,6 +258,8 @@ type Server struct {
 
 	started chan struct{}
 	addr    atomic.Pointer[string]
+	// mgmtAddr is the address of the management listener, when there is one.
+	mgmtAddr atomic.Pointer[string]
 }
 
 // Option changes how [New] builds a Server. The defaults are what the Hub
@@ -281,6 +293,16 @@ func (s *Server) Started() <-chan struct{} { return s.started }
 // configured port was 0), or "" before [Server.Started] is closed.
 func (s *Server) Addr() string {
 	if p := s.addr.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// ManagementAddr returns the address of the management listener (with the real
+// port when the configured port was 0), or "" when there is none or the Hub has
+// not started.
+func (s *Server) ManagementAddr() string {
+	if p := s.mgmtAddr.Load(); p != nil {
 		return *p
 	}
 	return ""
@@ -355,6 +377,17 @@ func (s *Server) Run(ctx context.Context) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(serveLn) }()
 
+	var mgmt *managementServer
+	if cfg.ManagementListen != "" {
+		mgmt, err = startManagement(cfg.ManagementListen, startupGate(rs.health, rs.root), log, s.bodyTimeout)
+		if err != nil {
+			_ = srv.Close()
+			return err
+		}
+		defer mgmt.close()
+		s.mgmtAddr.Store(&mgmt.addr)
+	}
+
 	kernel := NewKernel(s.reg)
 	if err := kernel.Start(context.WithValue(ctx, runStateKey{}, rs)); err != nil {
 		_ = srv.Close() // the kernel has already stopped the modules it started
@@ -370,6 +403,9 @@ func (s *Server) Run(ctx context.Context) error {
 		scheme = "http"
 	}
 	log.Info("hub listening", "addr", addr, "scheme", scheme, "public_url", cfg.PublicURL, "modules", kernel.Modules())
+	if mgmt != nil {
+		log.Info("management listener", "addr", mgmt.addr, "scheme", "http")
+	}
 	close(s.started)
 
 	var runErr error
@@ -384,6 +420,9 @@ func (s *Server) Run(ctx context.Context) error {
 	rs.health.MarkStopping()
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.timeout)
 	defer cancel()
+	if mgmt != nil {
+		mgmt.shutdown(sctx)
+	}
 	if err := srv.Shutdown(sctx); err != nil {
 		_ = srv.Close()
 		log.Warn("graceful shutdown timed out; connections were closed", "error", err)

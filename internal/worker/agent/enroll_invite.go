@@ -102,6 +102,9 @@ type InviteParams struct {
 	Protocols proto.Range
 	// Invite is the invitation key.
 	Invite identity.InviteKey
+	// Clock supplies the wall and monotonic clock of the certificate window; nil
+	// means the system clocks.
+	Clock transport.WallMono
 }
 
 // InviteOutcome is what a successful enrollment attempt returns.
@@ -110,6 +113,14 @@ type InviteOutcome struct {
 	Pin identity.Pin
 	// Welcome is the Hub's welcome.
 	Welcome HubWelcome
+	// Ratchet is the certificate memory of the first session, scoped to Pin.Pub:
+	// the certificate's serial and hash. It is committed with the pin, and only
+	// after the welcome arrived (the enrollment is uncommitted until then).
+	Ratchet transport.Ratchet
+	// Expiry is the end of the connection the welcome arrived on; the enroller
+	// reads both clocks again before it commits. Nil means no enforcement (test
+	// doubles only).
+	Expiry *transport.Expiry
 }
 
 // InviteDialer is the transport port of invitation enrollment: it dials the
@@ -142,6 +153,9 @@ type InviteEnrollerConfig struct {
 	Name string
 	// Protocols is the supported protocol range; zero means proto.Current.
 	Protocols proto.Range
+	// WallMono supplies the wall and monotonic clock of the certificate window;
+	// nil means the system clocks.
+	WallMono transport.WallMono
 	// Attempts and RetryWait tune the retry of a transient failure (an
 	// unreachable Hub, a cut connection); zero means the defaults. A refusal
 	// of the Hub or of its identity is never retried.
@@ -222,7 +236,7 @@ func (e *InviteEnroller) Enroll(ctx context.Context, invite identity.InviteKey) 
 
 	// 2. Connect, verify the Hub, send the secret.
 	out, err := e.dialWithRetry(ctx, InviteParams{
-		HubURL: e.cfg.HubURL, Key: key, Name: e.cfg.Name, Protocols: e.cfg.Protocols, Invite: invite,
+		HubURL: e.cfg.HubURL, Key: key, Name: e.cfg.Name, Protocols: e.cfg.Protocols, Invite: invite, Clock: e.cfg.WallMono,
 	})
 	if err != nil {
 		return InviteResult{}, err
@@ -239,15 +253,27 @@ func (e *InviteEnroller) Enroll(ctx context.Context, invite identity.InviteKey) 
 		Owner:    out.Welcome.Owner,
 		Kind:     out.Welcome.Kind,
 		Policy:   out.Welcome.Policy,
+		Ratchet:  out.Ratchet,
 		// The Hub this key was enrolled at: a later identity replacement
 		// revokes it there, whatever the configuration says by then.
 		HubURL: e.cfg.HubURL,
+	}
+	// The commit is the last step the certificate must cover.
+	if out.Expiry != nil && out.Expiry.Expired(e.wallMono()) {
+		return InviteResult{}, errEnrollExpired
 	}
 	if err := e.cfg.State.Commit(ctx, enr); err != nil {
 		return InviteResult{}, fmt.Errorf("store the enrollment: %w", err)
 	}
 	e.log.Info("enrolled with an invitation key", "worker_id", enr.WorkerID, "owner", enr.Owner, "kind", enr.Kind)
 	return InviteResult{Enrollment: enr}, nil
+}
+
+func (e *InviteEnroller) wallMono() transport.WallMono {
+	if e.cfg.WallMono != nil {
+		return e.cfg.WallMono
+	}
+	return transport.SystemWallMono
 }
 
 func (e *InviteEnroller) dialWithRetry(ctx context.Context, p InviteParams) (*InviteOutcome, error) {
@@ -279,7 +305,9 @@ func (e *InviteEnroller) dialWithRetry(ctx context.Context, p InviteParams) (*In
 func permanentInviteError(err error) bool {
 	var pe *proto.Error
 	var fm *FingerprintMismatchError
-	return errors.As(err, &pe) || errors.As(err, &fm) ||
+	var re *transport.RefusalError
+	var ce *identity.CertError
+	return errors.As(err, &pe) || errors.As(err, &fm) || errors.As(err, &re) || errors.As(err, &ce) ||
 		errors.Is(err, transport.ErrFingerprintMismatch) || errors.Is(err, transport.ErrPinMismatch) ||
 		errors.Is(err, transport.ErrBadSignature) || errors.Is(err, transport.ErrChainInvalid) ||
 		errors.Is(err, transport.ErrProtocol) || errors.Is(err, transport.ErrConfig)
@@ -311,6 +339,10 @@ func NewInviteDialer() InviteDialer {
 type inviteDialer struct {
 	dialTimeout      time.Duration
 	handshakeTimeout time.Duration
+	// afterHandshake and afterReply are test seams that run right after the
+	// handshake and right after the Hub's answer was read; nil in production.
+	afterHandshake func()
+	afterReply     func()
 }
 
 // inviteSecretFrame is the frame of the enroll_invite mode (AD-7). The Hub
@@ -350,6 +382,7 @@ func (d inviteDialer) Enroll(ctx context.Context, p InviteParams) (*InviteOutcom
 		Protocols:      p.Protocols,
 		Mode:           transport.ModeEnrollInvite,
 		HubFingerprint: p.Invite.Fingerprint,
+		Clock:          p.Clock,
 	})
 	if err != nil {
 		stop()
@@ -366,10 +399,26 @@ func (d inviteDialer) Enroll(ctx context.Context, p InviteParams) (*InviteOutcom
 	stop()
 	defer stopCh()
 
-	// The Hub is authenticated: the secret goes out now, inside the channel.
+	// The Hub is authenticated, but its certificate ends at not_after: the
+	// channel is closed then, and both clocks are read again right before the
+	// secret leaves and before the welcome is accepted.
+	exp := res.Expiry
+	guard, stopGuard := enrollGuard(&exp, p.Clock, func() { _ = res.Channel.Close() })
+	defer stopGuard()
+	if d.afterHandshake != nil {
+		d.afterHandshake()
+	}
+	if guard.check() {
+		return nil, errEnrollExpired
+	}
+
+	// The secret goes out now, inside the channel.
 	secret := inviteSecretPart(p.Invite)
 	if err := proto.WriteFrame(res.Channel, proto.StreamFrameLimit,
 		inviteSecretFrame{Type: proto.TypeInviteSecret, Secret: secret}); err != nil {
+		if guard.check() {
+			return nil, errEnrollExpired
+		}
 		return nil, fmt.Errorf("send the invitation secret: %w", err)
 	}
 	reply, err := readReply(res.Channel)
@@ -377,11 +426,20 @@ func (d inviteDialer) Enroll(ctx context.Context, p InviteParams) (*InviteOutcom
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if guard.check() {
+			return nil, errEnrollExpired
+		}
 		return nil, err
+	}
+	if d.afterReply != nil {
+		d.afterReply()
+	}
+	if guard.check() {
+		return nil, errEnrollExpired
 	}
 	switch reply.Type {
 	case proto.TypeWelcome:
-		return &InviteOutcome{Pin: res.Pin, Welcome: reply.Welcome}, nil
+		return &InviteOutcome{Pin: res.Pin, Welcome: reply.Welcome, Ratchet: res.Ratchet, Expiry: &exp}, nil
 	case proto.TypeRevoke:
 		return nil, errors.New("the Hub has removed this Worker's identity; it cannot enroll again with this key pair " +
 			"(remove the Worker key in the state directory to start over)")

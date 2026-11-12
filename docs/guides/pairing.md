@@ -15,12 +15,18 @@ minion worker pair --server https://hub.example.com
 The Worker shows a code like `MN-K7Q4-XY12` and waits. In the Hub, open **Workers**, choose **Add worker**, type the code (capital or small letters, with or without hyphens) and, if you like, a name. The Hub and the Worker confirm each other with the code, and the Worker appears in your space as a **private Worker**: it belongs to you. It starts **pending**: see [Approve a new Worker](#approve-a-new-worker).
 
 - The code is valid for 10 minutes; a fresh one is shown when it expires or the Hub rejects it. It is printed on the console and in the log, so keep those logs private. (The other deliberately printed secret is the Hub's generated first administrator password, see [security](../security.md#credentials).)
-- The Worker does not look at the Hub's TLS certificate when it pairs: trust comes from the pairing handshake, and the Worker pins the Hub's identity key (its fingerprint is what `minion hub identity` prints). A Worker can therefore pair through a proxy or a tunnel whose certificate it does not trust.
+- The Worker does not look at the Hub's TLS certificate when it pairs: trust comes from the pairing handshake, and the Worker pins the Hub's identity key (its fingerprint is what `minion hub identity` prints; since 0.7.0 the pin is the Hub's root key, and the Hub proves it with a certificate, see [security](../security.md#two-keys-a-sealed-root-and-a-short-lived-operational-key)). A Worker can therefore pair through a proxy or a tunnel whose certificate it does not trust.
 - `minion worker join https://hub.example.com` is the same, and also keeps the address in the Worker's config file so that the Worker service connects to that Hub afterwards. A service that is already running keeps the address it started with: restart it.
 - A paired Worker refuses with `already_paired`. `--new-code` creates a new Worker key, wipes the old enrollment, revokes the old identity at its Hub and pairs again, after a confirmation unless you give `--yes`.
 - `minion worker setup` does the same inside its wizard.
 
 The pairing handshake has not had an independent cryptographic review yet; see [security](../security.md).
+
+### If pairing is interrupted
+
+Pairing is **idempotent per pairing code and Worker key**. If the connection ends after the Hub accepted the code but before the Worker recorded the result (a lost answer, a crash of the Worker), the Worker keeps the code and the Hub identity it authenticated, and on the next start says `Resuming pairing: enter the same code again in the Hub (Add worker)`. Enter the same code again, as the same user who entered it the first time, before it expires (10 minutes). The Hub returns the Worker it already created (same id, name and approval state; audit `worker.pair_resume`) instead of failing with `already_paired`. Only a Worker that holds the same key can resume, a wrong code counts against five attempts, and a Worker that finds a different Hub identity answering refuses it.
+
+If the 10 minutes have passed, the Hub has the Worker but the Worker has no pin. The owner (or an administrator) then opens the Worker from the **Workers** list and uses **Re-issue pairing** on its page (shown only while the Worker has never connected), or `minion hub worker repair-pairing <worker>` (the operation `worker_pairing_reissue`). It opens a **10-minute window** in which the Worker's next new code completes the pairing for the same Worker row. It is offered only for a Worker that has **never connected**; for any other Worker, or one that was removed, it answers `conflict`. Run `minion worker pair` on the Worker (or wait for its fresh code) and type the new code in the Hub. If the Worker's key itself is lost, remove the Worker in the Hub and enroll the new key. The Worker's own message for this case is: `The Hub already knows this Worker key. Ask the owner to use Re-issue pairing for this Worker.`
 
 ## Enroll with an invitation key
 

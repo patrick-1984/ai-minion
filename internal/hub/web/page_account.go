@@ -75,6 +75,7 @@ var adminAreas = []AdminArea{
 	{"Users", pathAdminUsers, "i-users", "Create local accounts, see roles and sign-in state, reset passwords, deactivate accounts or act as a user."},
 	{"Hub settings", pathAdminSettings, "i-settings", "Every setting of the Hub with its source, whether it applies live, and whether a restart is pending."},
 	{"Identity & sign-in", pathAdminOIDC, "i-shield", "OpenID Connect providers and the rules that turn provider claims into roles."},
+	{"Hub identity", pathAdminIdentity, "i-key", "The Hub key and certificate: state, expiry, and the passphrase operations (set the passphrase, re-issue the certificate, rotate the master key)."},
 	{"Audit", pathAdminAudit, "i-audit", "Who did what and when. Events never contain secrets or terminal content."},
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -104,6 +105,12 @@ type ConnectParams struct {
 	Protocols proto.Range
 	// Pin is the stored Hub pin.
 	Pin identity.Pin
+	// Ratchet is the stored certificate memory (max_serial and the hash of
+	// that certificate) scoped to the pinned root.
+	Ratchet transport.Ratchet
+	// Clock supplies the wall clock and the monotonic clock of the window
+	// check; nil means the system clocks.
+	Clock transport.WallMono
 	// Session tunes the yamux session (tests inject a clock).
 	Session transport.SessionOptions
 }
@@ -116,6 +123,20 @@ type Attempt struct {
 	// PinChanged is true when Pin differs from the stored pin; the connector
 	// rewrites the stored pin before it relies on the connection.
 	PinChanged bool
+	// OpPub is the operational key of the certificate validated in this
+	// handshake: the only key whose revoke counts on this connection.
+	OpPub ed25519.PublicKey
+	// Ratchet is the certificate memory after this connection and RatchetChanged
+	// says that it differs from the stored one (a commit is needed also when only
+	// the serial rose). The connector stores it with the pin before it relies on
+	// the connection.
+	Ratchet        transport.Ratchet
+	RatchetChanged bool
+	// Expiry is the end of this connection (Hub certificate not_after, fixed at
+	// the window check). Nil means no enforcement: only a test double that does
+	// not model the certificate leaves it nil; the production dialer always sets
+	// it.
+	Expiry *transport.Expiry
 	// TranscriptHash identifies this handshake; a revoke is signed over it.
 	TranscriptHash []byte
 	// Version is the protocol version the Hub chose.
@@ -158,6 +179,9 @@ type Link struct {
 	pin        identity.Pin
 	transcript []byte
 	gen        uint64
+	// opPub is the operational key of the certificate of this connection: the
+	// signer of a revoke on it (section 12.4).
+	opPub ed25519.PublicKey
 }
 
 // Context ends when the connection is lost or the Worker stops. For a lost
@@ -229,8 +253,12 @@ type ConnectorConfig struct {
 	// Dialer is the transport.
 	Dialer Dialer
 	// Clock is the time source of the backoff and the idle wait; nil means
-	// the system clock.
+	// the system clock. It also arms the expiry timer and tick of a connection.
 	Clock transport.Clock
+	// WallMono supplies the wall and the monotonic clock of the certificate
+	// window and of the expiry checks; nil means the system clocks. Tests move
+	// the two independently.
+	WallMono transport.WallMono
 	// Backoff produces the reconnect delays (AD-3: capped at 60 s, never
 	// gives up); nil means the default sequence.
 	Backoff *transport.Backoff
@@ -563,10 +591,17 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 		Features:  c.features(),
 		Protocols: c.cfg.Protocols,
 		Pin:       enr.Pin,
+		Ratchet:   enr.Ratchet,
+		Clock:     c.cfg.WallMono,
 		Session:   c.cfg.Session,
 	})
 	if err != nil {
 		if ctx.Err() == nil {
+			var re *transport.RefusalError
+			if errors.As(err, &re) && (re.Reason == transport.ReasonCertSerialTooLow || re.Reason == transport.ReasonCertSerialConflict) {
+				c.refuseSerial(re)
+				return true
+			}
 			c.fail("connect", err)
 		}
 		return true
@@ -579,10 +614,12 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 			_ = att.Session.Close()
 		}
 	}
-	// The Hub is authenticated (pin, after its transition chain). The pin the
-	// Hub proved is rewritten before anything relies on this connection.
-	if att.PinChanged {
-		if err := c.cfg.Enrollment.RewritePinIf(ctx, gen, att.Pin); err != nil {
+	// The Hub is authenticated (pin after its transition chain, certificate,
+	// sig_hub). The pin the Hub proved and the certificate ratchet are stored in
+	// one transaction before anything relies on this connection (step 8), also
+	// when only the serial rose.
+	if att.PinChanged || att.RatchetChanged {
+		if err := c.cfg.Enrollment.CommitRatchetIf(ctx, gen, att.Pin, att.Ratchet); err != nil {
 			closeSession()
 			if errors.Is(err, ErrEnrollmentChanged) {
 				return false
@@ -590,7 +627,9 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 			c.fail("cannot store the new Hub pin", err)
 			return true
 		}
-		c.log.Info("hub key pin advanced along the transition chain", "chain_position", att.Pin.Seq)
+		if att.PinChanged {
+			c.log.Info("hub key pin advanced along the transition chain", "chain_position", att.Pin.Seq)
+		}
 	}
 	switch att.Reply.Type {
 	case proto.TypeWelcome:
@@ -635,8 +674,45 @@ func (c *Connector) onRevoke(ctx context.Context, gen uint64, att *Attempt) (bac
 	if att.Session != nil {
 		_ = att.Session.Close()
 	}
-	_, backoff = c.applyRevoke(ctx, gen, att.Pin, att.TranscriptHash, att.Reply.RevokeSig)
+	if att.Expiry != nil && att.Expiry.Expired(c.wallMono()) {
+		// A revoke at or after the cut-off is not applied; the pairing stays.
+		c.log.Warn("ignored a revoke that arrived at or after the Hub certificate's not_after; nothing was deleted")
+		c.failMsg("ignored a revoke after the Hub certificate expired")
+		return true
+	}
+	var live func() bool
+	if att.Expiry != nil {
+		exp, clk := *att.Expiry, c.wallMono()
+		live = func() bool { return !exp.Expired(clk) }
+	}
+	_, backoff = c.applyRevoke(ctx, gen, att.OpPub, att.TranscriptHash, att.Reply.RevokeSig, live)
 	return backoff
+}
+
+func (c *Connector) wallMono() transport.WallMono {
+	if c.cfg.WallMono != nil {
+		return c.cfg.WallMono
+	}
+	return transport.SystemWallMono
+}
+
+// refuseSerial records a refusal of a Hub certificate by the serial ratchet
+// (section 6): one local line with the certificate's serial, this Worker's
+// max_serial and the exact command. Nothing is stored and nothing is sent to the
+// Hub.
+func (c *Connector) refuseSerial(re *transport.RefusalError) {
+	msg := re.Error()
+	c.mu.Lock()
+	c.status.LastError, c.status.LastErrorAt = msg, c.clk.Now()
+	repeat := c.lastLog == msg
+	c.lastLog = msg
+	c.mu.Unlock()
+	if repeat {
+		c.log.Debug("hub certificate refused again", "reason", re.Reason)
+		return
+	}
+	c.log.Warn("refused the Hub certificate: its serial is behind what this Worker has already seen; nothing was stored",
+		"reason", re.Reason, "cert_serial", re.Serial, "max_serial", re.MaxSerial, "command", re.Command())
 }
 
 // applyRevoke checks a revoke against the pinned Hub key and the transcript of
@@ -646,15 +722,24 @@ func (c *Connector) onRevoke(ctx context.Context, gen uint64, att *Attempt) (bac
 // wait follows: false after a wipe or a replaced enrollment, true when the
 // revoke was ignored or the wipe failed. wiped is true only when this call
 // deleted the pairing.
-func (c *Connector) applyRevoke(ctx context.Context, gen uint64, pin identity.Pin, transcript, sig []byte) (wiped, backoff bool) {
-	if err := identity.Verify(pin.Pub, identity.PurposeRevoke, transcript, sig); err != nil {
-		c.log.Warn("ignored a revoke that the pinned hub key did not sign for this connection; nothing was deleted")
+//
+// live, when not nil, is checked inside the enrollment guard right before the
+// wipe (after the signature check, any acknowledgement and the wait for the
+// lock): a revoke at or after the certificate's not_after is not applied.
+func (c *Connector) applyRevoke(ctx context.Context, gen uint64, opPub ed25519.PublicKey, transcript, sig []byte, live func() bool) (wiped, backoff bool) {
+	if err := identity.Verify(opPub, identity.PurposeRevoke, transcript, sig); err != nil {
+		c.log.Warn("ignored a revoke that the operational key of this connection did not sign for it; nothing was deleted")
 		c.mu.Lock()
 		c.status.LastError, c.status.LastErrorAt = "ignored an invalid revoke", c.clk.Now()
 		c.mu.Unlock()
 		return false, true
 	}
-	if _, err := c.cfg.Enrollment.WipeIf(ctx, gen); err != nil {
+	if _, err := c.cfg.Enrollment.WipeIfLive(ctx, gen, live); err != nil {
+		if errors.Is(err, errGuardExpired) {
+			c.log.Warn("ignored a revoke that reached the wipe at or after the Hub certificate's not_after; nothing was deleted")
+			c.failMsg("ignored a revoke after the Hub certificate expired")
+			return false, true
+		}
 		if errors.Is(err, ErrEnrollmentChanged) {
 			// The enrollment this Hub revoked is gone already (a reset or a
 			// re-enrollment): the replacement is not this Hub's to delete.
@@ -702,11 +787,26 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 	// The link context does not inherit ctx's cancellation, so that its cause
 	// is always ErrLinkLost (or the stop cause), never the cause of a dropped
 	// attempt.
-	linkCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	base := context.WithoutCancel(ctx)
+	var guard *expiryGuard
+	sess := att.Session
+	if att.Expiry != nil {
+		guard = &expiryGuard{exp: *att.Expiry, clk: c.wallMono(), log: c.log, onExpire: func() { _ = att.Session.Close() }}
+		base = withGuard(base, guard)
+		sess = guardedSession{Session: att.Session, g: guard}
+	}
+	linkCtx, cancel := context.WithCancelCause(base)
 	r := &running{link: &Link{
-		Welcome: w, Version: att.Version, Session: att.Session, ctx: linkCtx,
-		pin: att.Pin, transcript: att.TranscriptHash, gen: gen,
+		Welcome: w, Version: att.Version, Session: sess, ctx: linkCtx,
+		pin: att.Pin, transcript: att.TranscriptHash, gen: gen, opPub: att.OpPub,
 	}, cancel: cancel}
+	if guard != nil {
+		go guard.watch(linkCtx, c.clk)
+		if guard.check() {
+			// Accepted at exactly not_after: the connection admits nothing.
+			c.log.Info("the Hub certificate expires now; no operation is admitted")
+		}
+	}
 	c.mu.Lock()
 	c.status.State, c.status.Reason = ConnConnected, ""
 	c.status.ConnectedSince, c.status.Welcome = c.clk.Now(), w

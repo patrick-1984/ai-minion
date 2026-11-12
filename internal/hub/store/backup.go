@@ -37,6 +37,16 @@ import (
 const (
 	// IdentityKeyFile is the Hub identity key, <data>/identity.key.
 	IdentityKeyFile = "identity.key"
+	// SealedRootFile is the sealed root of the two-tier Hub identity,
+	// <data>/root.key.age (internal/hub/hubid owns the name).
+	SealedRootFile = "root.key.age"
+	// SealedRootNextFile is a staged sealed root that is not yet renamed.
+	SealedRootNextFile = SealedRootFile + ".next"
+	// OpKeyFile is the operational key, <data>/op.key.
+	OpKeyFile = "op.key"
+	// OpKeyNextFile is an operational key that is staged or whose certificate
+	// is committed and that is not yet renamed over op.key.
+	OpKeyNextFile = OpKeyFile + ".next"
 	// ManifestFile is the first entry of a backup archive.
 	ManifestFile = "manifest.json"
 
@@ -81,8 +91,10 @@ func maxEntrySize(name string) (max int64, exact bool, limited bool) {
 	switch name {
 	case DataKeyFile:
 		return KeySize, true, true
-	case IdentityKeyFile:
+	case IdentityKeyFile, OpKeyFile:
 		return 4096, false, true // the cap of identity.LoadKey
+	case SealedRootFile:
+		return maxSealedRootSize, false, true
 	case tlsCertFile:
 		return 1 << 20, false, true
 	case tlsKeyFile:
@@ -92,8 +104,16 @@ func maxEntrySize(name string) (max int64, exact bool, limited bool) {
 }
 
 // ManifestFormat is the version of the archive layout described by
-// [Manifest].
-const ManifestFormat = 1
+// [Manifest]. Format 2 adds the identity state of the two-tier Hub identity
+// and the sealed root and operational key entries; format 1 (0.6.x) is still
+// read.
+const ManifestFormat = 2
+
+// legacyManifestFormat is the 0.6.x layout.
+const legacyManifestFormat = 1
+
+// maxSealedRootSize bounds root.key.age (the sealed-root loader reads 8 KiB).
+const maxSealedRootSize = 8 << 10
 
 // maxManifestSize bounds the manifest that Restore reads into memory.
 const maxManifestSize = 1 << 20
@@ -110,7 +130,7 @@ const maxManifestSize = 1 << 20
 // and, for an interrupted rotation, op.key.next) is therefore a one-line
 // addition here, before DBFile. Only a file whose copy must match the database
 // snapshot (identity.key today, see [snapshotWithIdentity]) needs more.
-var archiveFiles = []string{DataKeyFile, IdentityKeyFile, tlsCertFile, tlsKeyFile, DBFile}
+var archiveFiles = []string{DataKeyFile, IdentityKeyFile, SealedRootFile, OpKeyFile, tlsCertFile, tlsKeyFile, DBFile}
 
 // requiredFiles must be in every archive.
 var requiredFiles = []string{DBFile, DataKeyFile}
@@ -162,8 +182,25 @@ type Manifest struct {
 	SchemaVersion int `json:"schema_version"`
 	// CreatedAt is the backup time, RFC 3339 UTC.
 	CreatedAt string `json:"created_at"`
+	// IdentityState is the bootstrap state of the saved database (format 2):
+	// none, plain, sealed_no_cert or established.
+	IdentityState string `json:"identity_state,omitempty"`
+	// RootFingerprint is the fingerprint of the recorded root (format 2; empty
+	// for state none).
+	RootFingerprint string `json:"root_fingerprint,omitempty"`
+	// TransitionCount is the number of root transition records in the saved
+	// database (format 2); the restore warning about a rotated-away root uses it.
+	TransitionCount int `json:"transition_count"`
 	// Files lists the other archive entries.
 	Files []ManifestEntry `json:"files"`
+}
+
+func validIdentityState(s string) bool {
+	switch s {
+	case IdentityStateNone, IdentityStatePlain, IdentityStateSealedNoCert, IdentityStateEstablished:
+		return true
+	}
+	return false
 }
 
 func isArchiveFile(name string) bool {
@@ -178,7 +215,9 @@ func isArchiveFile(name string) bool {
 // Backup writes one gzip-compressed tar archive (encrypted with age when
 // [WithBackupPassphrase] is given) of the Hub data directory
 // dataDir to out (created with mode 0600; an existing file is refused). The
-// archive holds manifest.json first, then data.key, identity.key and the
+// archive holds manifest.json first, then data.key, the identity files that
+// belong to the identity state of the database copy (none; the plain
+// identity.key; root.key.age; root.key.age and op.key; see [takeSnapshot]) and the
 // generated TLS certificate and key when they exist, and minion.db as a
 // VACUUM INTO copy that is consistent while the Hub runs. The backups
 // directory, WAL files and a user-supplied certificate outside <data>/tls are
@@ -226,18 +265,19 @@ func Backup(ctx context.Context, dataDir, out, version string, opts ...Option) (
 	}
 	defer func() { _ = os.RemoveAll(stage) }()
 	stagedDB := filepath.Join(stage, DBFile)
-	schema, stagedIdentity, err := snapshotWithIdentity(ctx, dir, stage, cfg.afterSnapshot)
+	snap, err := takeSnapshot(ctx, dir, stage, cfg.afterSnapshot)
 	if err != nil {
 		return Manifest{}, err
 	}
 
-	// Source path of every archived file.
+	// Source path of every archived file: the identity files come from the
+	// snapshot, the rest from the data directory.
 	sources := map[string]string{DBFile: stagedDB}
-	if stagedIdentity != "" {
-		sources[IdentityKeyFile] = stagedIdentity
+	for name, p := range snap.files {
+		sources[name] = p
 	}
 	for _, name := range archiveFiles {
-		if name == DBFile || (name == IdentityKeyFile && stagedIdentity != "") {
+		if name == DBFile || isIdentityArchiveName(name) {
 			continue
 		}
 		p := filepath.Join(dir, filepath.FromSlash(name))
@@ -253,10 +293,13 @@ func Backup(ctx context.Context, dataDir, out, version string, opts ...Option) (
 	}
 
 	m = Manifest{
-		Format:        ManifestFormat,
-		Version:       version,
-		SchemaVersion: schema,
-		CreatedAt:     now().UTC().Format(time.RFC3339),
+		Format:          ManifestFormat,
+		Version:         version,
+		SchemaVersion:   snap.schema,
+		CreatedAt:       now().UTC().Format(time.RFC3339),
+		IdentityState:   snap.state,
+		RootFingerprint: snap.info.Fingerprint,
+		TransitionCount: snap.info.Transitions,
 	}
 	for _, name := range archiveFiles {
 		src, ok := sources[name]
@@ -328,91 +371,6 @@ func Backup(ctx context.Context, dataDir, out, version string, opts ...Option) (
 // commit of a rotation and the replacement of identity.key (Story 4.9). A
 // backup may have to save it as identity.key.
 const PendingIdentityKeyFile = IdentityKeyFile + ".next"
-
-// maxSnapshotAttempts bounds how often Backup repeats the snapshot because a
-// rotation of the Hub identity ran between the database copy and the capture
-// of the key.
-const maxSnapshotAttempts = 5
-
-// snapshotWithIdentity copies the database into stage and captures, into
-// stage too, the identity key that belongs to that copy; it returns the schema
-// version and the staged key. The staged key is empty when the snapshot
-// records no identity; the caller then archives identity.key as it is, if any.
-//
-// The database and identity.key change together only in a rotation, and not
-// atomically: the commit comes first, the rename of identity.key.next over
-// identity.key afterwards. A backup that read the two at different moments
-// would hold a database and a private key that do not belong together, and
-// the Hub restored from it would refuse to start. So the key is chosen by
-// the snapshot: the one of identity.key and identity.key.next whose public key
-// the copied hub_identity row records. When neither matches (a rotation
-// finished between the copy and the capture), the snapshot is taken again.
-// An archive is never published without a matching key once the database
-// records an identity.
-func snapshotWithIdentity(ctx context.Context, dir, stage string, hook func()) (schema int, stagedKey string, err error) {
-	stagedDB := filepath.Join(stage, DBFile)
-	var lastWhy string
-	for attempt := 0; attempt < maxSnapshotAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return 0, "", fmt.Errorf("%w: %v", ErrBackup, err)
-		}
-		_ = os.Remove(stagedDB)
-		schema, err = vacuumCopy(ctx, filepath.Join(dir, DBFile), stagedDB)
-		if err != nil {
-			return 0, "", err
-		}
-		if hook != nil {
-			hook()
-		}
-		recorded, err := recordedIdentityOf(ctx, stagedDB)
-		if err != nil {
-			return 0, "", err
-		}
-		if recorded == nil {
-			// No identity recorded yet: the key file, when there is one, is
-			// recorded at the next start (a restore of the file alone).
-			return schema, "", nil
-		}
-		for i, name := range []string{IdentityKeyFile, PendingIdentityKeyFile} {
-			dst := filepath.Join(stage, fmt.Sprintf("identity-candidate-%d", i))
-			ok, why, err := stageMatchingKey(filepath.Join(dir, name), dst, recorded)
-			if err != nil {
-				return 0, "", err
-			}
-			if ok {
-				return schema, dst, nil
-			}
-			if why != "" {
-				lastWhy = name + " " + why
-			}
-		}
-	}
-	if lastWhy == "" {
-		lastWhy = IdentityKeyFile + " is missing"
-	}
-	return 0, "", fmt.Errorf("%w: the database records a Hub identity, but no private key matching the snapshot could be captured (%s); "+
-		"the backup would not start when restored; check that the Hub identity key files belong to this database and run the backup again",
-		ErrBackup, lastWhy)
-}
-
-// recordedIdentityOf returns the public key of the hub_identity row of the
-// database file at p, or nil when there is no row (or no such table).
-func recordedIdentityOf(ctx context.Context, p string) ([]byte, error) {
-	db, err := sql.Open("sqlite", "file:"+urlPath(p)+"?mode=ro")
-	if err != nil {
-		return nil, fmt.Errorf("%w: open database copy: %v", ErrBackup, err)
-	}
-	defer func() { _ = db.Close() }()
-	var pub []byte
-	err = db.QueryRowContext(ctx, `SELECT pub FROM hub_identity WHERE id = 1`).Scan(&pub)
-	switch {
-	case errors.Is(err, sql.ErrNoRows), err != nil && strings.Contains(err.Error(), "no such table"):
-		return nil, nil
-	case err != nil:
-		return nil, fmt.Errorf("%w: read the Hub identity of the database copy: %v", ErrBackup, err)
-	}
-	return pub, nil
-}
 
 // stageMatchingKey copies the identity key file src to the private file dst
 // and reports whether it holds the key whose public key is recorded. A missing
@@ -608,7 +566,22 @@ type RestoreResult struct {
 	Files []string
 	// Encrypted reports that the archive was encrypted with age.
 	Encrypted bool
+	// IdentityState is the bootstrap state of the restored Hub (none, plain,
+	// sealed_no_cert or established). A restore issues no certificate and
+	// needs no passphrase: the Hub is in the state of the backup.
+	IdentityState string
+	// RootFingerprint is the fingerprint of the restored root ("" for none).
+	RootFingerprint string
+	// Transitions is the number of root transition records in the backup.
+	Transitions int
+	// RootRolledBack is true when the data directory that was replaced proves
+	// that the restored root was rotated away (see [RootRollbackWarning]).
+	RootRolledBack bool
 }
+
+// restorePhase2Hook, when set by a test, runs after phase 2 with the verified
+// immutable directory and the transformed one (tests only).
+var restorePhase2Hook func(verified, transformed string)
 
 // Restore unpacks the backup archive into the data directory dataDir, which
 // is created (mode 0700) when it does not exist. The Hub must be stopped.
@@ -705,6 +678,8 @@ func Restore(ctx context.Context, archive, dataDir string, force bool, opts ...O
 	if err := drainGzip(ctx, budget); err != nil {
 		return RestoreResult{}, err
 	}
+	// Phase 1 ends here: vstage holds the verified archive and is not modified
+	// again.
 	schema, err := checkDatabase(ctx, filepath.Join(vstage, DBFile))
 	if err != nil {
 		return RestoreResult{}, err
@@ -715,12 +690,21 @@ func Restore(ctx context.Context, archive, dataDir string, force bool, opts ...O
 	if err := checkDataKeyFile(filepath.Join(vstage, DataKeyFile)); err != nil {
 		return RestoreResult{}, err
 	}
-	if err := checkStagedIdentity(ctx, vstage); err != nil {
-		return RestoreResult{}, err
-	}
 	if err := ctx.Err(); err != nil {
 		return RestoreResult{}, fmt.Errorf("%w: %w", ErrBackup, err)
 	}
+
+	// Phase 2: migrate and validate a transformed copy, then build the trusted
+	// install plan from it.
+	p2, plan, info, state, err := phase2(ctx, vstage, m, cfg)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	defer func() { _ = os.RemoveAll(p2) }()
+	if restorePhase2Hook != nil {
+		restorePhase2Hook(vstage, p2)
+	}
+	rolledBack := info.Present && existingRootRotatedAway(ctx, dir, info.Pub)
 
 	// Validation passed: now the destination may be created. The missing
 	// directories this call creates are removed again (when still empty, in
@@ -757,41 +741,19 @@ func Restore(ctx context.Context, archive, dataDir string, force bool, opts ...O
 		}
 	}
 
-	if err = copyStaged(ctx, vstage, stage, m); err != nil {
+	if err = copyStaged(ctx, p2, stage, plan); err != nil {
 		return RestoreResult{}, err
 	}
-	files, err := install(stage, dir, m)
+	files, err := install(stage, dir, plan)
 	if err != nil {
 		keepStage = errors.Is(err, errRecoveryKept)
 		return RestoreResult{}, err
 	}
 	ok = true
-	return RestoreResult{Manifest: m, Dir: dir, Files: files, Encrypted: encrypted}, nil
-}
-
-// checkStagedIdentity requires, when the staged database records a Hub
-// identity, a valid identity.key in the staged files whose public key is the
-// recorded one: the same rule the Hub applies at start, checked before
-// anything is installed.
-func checkStagedIdentity(ctx context.Context, stage string) error {
-	recorded, err := recordedIdentityOf(ctx, filepath.Join(stage, DBFile))
-	if err != nil {
-		return err
-	}
-	if recorded == nil {
-		return nil
-	}
-	key, err := identity.LoadKey(filepath.Join(stage, IdentityKeyFile))
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("%w: the database in the archive records a Hub identity, but the archive has no %s; "+
-			"the Hub would not start, and a new key would strand every enrolled Worker; nothing was restored", ErrBackup, IdentityKeyFile)
-	case err != nil:
-		return fmt.Errorf("%w: the database in the archive records a Hub identity, but %s is not a usable identity key; nothing was restored", ErrBackup, IdentityKeyFile)
-	case !bytes.Equal(key.Public(), recorded):
-		return fmt.Errorf("%w: the %s in the archive is not the Hub identity that its database records; nothing was restored", ErrBackup, IdentityKeyFile)
-	}
-	return nil
+	return RestoreResult{
+		Manifest: m, Dir: dir, Files: files, Encrypted: encrypted,
+		IdentityState: state, RootFingerprint: info.Fingerprint, Transitions: info.Transitions, RootRolledBack: rolledBack,
+	}, nil
 }
 
 // missingDirs returns the directories among dir and its ancestors that do not
@@ -893,9 +855,11 @@ func drainGzip(ctx context.Context, gz io.Reader) error {
 
 // copyStaged copies the validated files from the private check directory into
 // the staging directory next to the destination (it may be on another file
-// system, so a rename is not enough) and verifies them again.
-func copyStaged(ctx context.Context, from, to string, m Manifest) error {
-	for _, e := range m.Files {
+// system, so a rename is not enough) and verifies them against the install
+// plan (computed in this process from the transformed files, not the archive
+// manifest).
+func copyStaged(ctx context.Context, from, to string, plan []ManifestEntry) error {
+	for _, e := range plan {
 		if err := copyStagedFile(ctx, filepath.Join(from, filepath.FromSlash(e.Name)), to, e); err != nil {
 			return err
 		}
@@ -994,8 +958,14 @@ func readManifest(tr *tar.Reader, limit int64) (Manifest, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return Manifest{}, fmt.Errorf("%w: the manifest is not valid: %v", ErrBackup, err)
 	}
-	if m.Format != ManifestFormat {
-		return Manifest{}, fmt.Errorf("%w: unsupported archive format %d (this binary reads format %d)", ErrBackup, m.Format, ManifestFormat)
+	if m.Format != ManifestFormat && m.Format != legacyManifestFormat {
+		return Manifest{}, fmt.Errorf("%w: unsupported archive format %d (this binary reads formats %d and %d)", ErrBackup, m.Format, legacyManifestFormat, ManifestFormat)
+	}
+	if m.Format == ManifestFormat && !validIdentityState(m.IdentityState) {
+		return Manifest{}, fmt.Errorf("%w: the manifest has an unknown identity state %q", ErrBackup, m.IdentityState)
+	}
+	if m.TransitionCount < 0 {
+		return Manifest{}, fmt.Errorf("%w: the manifest has a negative transition count", ErrBackup)
 	}
 	if m.SchemaVersion < 0 {
 		return Manifest{}, fmt.Errorf("%w: the manifest has a negative schema version", ErrBackup)
@@ -1004,7 +974,7 @@ func readManifest(tr *tar.Reader, limit int64) (Manifest, error) {
 	var total int64
 	for _, e := range m.Files {
 		switch {
-		case !isArchiveFile(e.Name):
+		case !isArchiveFile(e.Name), m.Format == legacyManifestFormat && (e.Name == SealedRootFile || e.Name == OpKeyFile):
 			return Manifest{}, fmt.Errorf("%w: the manifest lists the unexpected file %q", ErrBackup, e.Name)
 		case seen[e.Name]:
 			return Manifest{}, fmt.Errorf("%w: the manifest lists %s twice", ErrBackup, e.Name)
@@ -1123,7 +1093,7 @@ func writeStaged(ctx context.Context, r io.Reader, e ManifestEntry, dir string) 
 		return fmt.Errorf("%w: restore %s: %w", ErrBackup, e.Name, errnoReason(err))
 	}
 	if n != e.Size || hex.EncodeToString(h.Sum(nil)) != e.SHA256 {
-		return fmt.Errorf("%w: the checksum of %s does not match the manifest; the archive is damaged", ErrBackup, e.Name)
+		return fmt.Errorf("%w: the checksum of %s does not match the expected value (manifest or install plan); the archive or the staged file is damaged", ErrBackup, e.Name)
 	}
 	return nil
 }
@@ -1175,7 +1145,7 @@ type move struct{ from, to string }
 // All paths are resolved through an [os.Root] on dir: a symlinked tls
 // directory or file that points outside dir is refused instead of followed,
 // and nothing outside dir is removed or replaced.
-func install(stage, dir string, m Manifest) (files []string, err error) {
+func install(stage, dir string, plan []ManifestEntry) (files []string, err error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("%w: open the data directory %q: %v", ErrBackup, dir, errnoReason(err))
@@ -1183,9 +1153,18 @@ func install(stage, dir string, m Manifest) (files []string, err error) {
 	defer func() { _ = root.Close() }()
 	stageRel := filepath.Base(stage)
 
-	present := map[string]bool{}
-	for _, e := range m.Files {
-		present[e.Name] = true
+	present := map[string]ManifestEntry{}
+	for _, e := range plan {
+		present[e.Name] = e
+	}
+	// Every staged file must still be what the plan says before the
+	// destination is touched, and again right before it is moved.
+	for _, name := range archiveFiles {
+		if e, ok := present[name]; ok {
+			if err := verifyPlanned(root, stageRel+"/"+name, e); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Refuse everything that cannot be replaced before touching anything.
@@ -1247,7 +1226,8 @@ func install(stage, dir string, m Manifest) (files []string, err error) {
 		moved = append(moved, mv)
 	}
 	for _, name := range archiveFiles {
-		if !present[name] {
+		pe, ok := present[name]
+		if !ok {
 			continue
 		}
 		if parent := path.Dir(name); parent != "." {
@@ -1267,6 +1247,9 @@ func install(stage, dir string, m Manifest) (files []string, err error) {
 			}
 		}
 		mv := move{from: stageRel + "/" + name, to: name}
+		if err := verifyPlanned(root, mv.from, pe); err != nil {
+			return nil, rollback(err)
+		}
 		if err := installRename(root, mv.from, mv.to); err != nil {
 			return nil, rollback(fmt.Errorf("%w: restore %s: %v", ErrBackup, name, errnoReason(err)))
 		}

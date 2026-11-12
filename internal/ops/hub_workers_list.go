@@ -67,6 +67,10 @@ type WorkerInfo struct {
 	EnrollAddr string `json:"enroll_addr,omitempty"`
 	// EnrolledAt is when the Worker enrolled.
 	EnrolledAt *Timestamp `json:"enrolled_at,omitempty"`
+	// NeverConnected is true while the Worker has never completed a connect
+	// handshake with the Hub; only such a Worker is eligible for
+	// worker_pairing_reissue.
+	NeverConnected bool `json:"never_connected,omitempty"`
 }
 
 // WorkersListResult is the result of workers_list, ordered by Worker name,

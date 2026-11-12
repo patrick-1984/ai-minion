@@ -21,6 +21,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubcert"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -207,8 +208,10 @@ func TestAdversarialHubGuessingTheCodeGetsOneGuessPerCodeAndNeverALongRunOfConne
 // (AD-9). The contract with the REAL Hub is tested in
 // test/e2e/worker_retire_test.go (go test -tags e2e ./test/e2e).
 type retireHub struct {
-	t    *testing.T
+	t *testing.T
+	// key is the root (the pin); hub holds the operational key and certificate.
 	key  *identity.Key
+	hub  *hubcert.Hub
 	cert tls.Certificate
 
 	mu          sync.Mutex
@@ -227,11 +230,8 @@ type retireHub struct {
 
 func newRetireHub(t *testing.T) *retireHub {
 	t.Helper()
-	key, err := identity.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &retireHub{t: t, key: key, cert: wrongNameCert(t), known: map[string]bool{}, tomb: map[string]bool{}}
+	hub := hubcert.New(t)
+	h := &retireHub{t: t, key: hub.Root, hub: hub, cert: wrongNameCert(t), known: map[string]bool{}, tomb: map[string]bool{}}
 	h.start("127.0.0.1:0")
 	t.Cleanup(h.stop)
 	return h
@@ -304,7 +304,11 @@ func (h *retireHub) serve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	res, err := transport.HubHandshake(conn, transport.HubConfig{Key: h.key, Timeout: 10 * time.Second})
+	h.mu.Lock()
+	hc := h.hub.Config()
+	h.mu.Unlock()
+	hc.Timeout = 10 * time.Second
+	res, err := transport.HubHandshake(conn, hc)
 	if err != nil {
 		return
 	}
@@ -313,7 +317,7 @@ func (h *retireHub) serve(w http.ResponseWriter, r *http.Request) {
 	known, tomb := h.state(pub)
 	switch {
 	case tomb:
-		signer := h.key
+		signer := hc.Key
 		h.mu.Lock()
 		if h.wrongSigner != nil {
 			signer = h.wrongSigner
@@ -424,7 +428,7 @@ func TestRetirerRevokesTheOldEnrollmentAndTheOldKeyIsRejectedOnTheNextConnect(t 
 		t.Fatalf("the confirmed record must be deleted: %d", len(p))
 	}
 	// The old key (a retained copy, say) is now refused: its connect is answered
-	// with a revoke that the pinned Hub key signed for that connection.
+	// with a revoke that the Hub operational key signed for that connection.
 	att, err := NewHubDialer().Connect(context.Background(), ConnectParams{
 		HubURL: h.url(), Key: old, Name: "copy", Pin: h.pin(),
 	})
@@ -434,7 +438,7 @@ func TestRetirerRevokesTheOldEnrollmentAndTheOldKeyIsRejectedOnTheNextConnect(t 
 	if att.Reply.Type != proto.TypeRevoke || att.Session != nil {
 		t.Fatalf("the old key must be rejected, got %q", att.Reply.Type)
 	}
-	if err := identity.Verify(att.Pin.Pub, identity.PurposeRevoke, att.TranscriptHash, att.Reply.RevokeSig); err != nil {
+	if err := identity.Verify(att.OpPub, identity.PurposeRevoke, att.TranscriptHash, att.Reply.RevokeSig); err != nil {
 		t.Fatalf("the revoke must be signed by the Hub: %v", err)
 	}
 }

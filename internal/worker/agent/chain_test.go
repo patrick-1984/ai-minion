@@ -15,6 +15,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubcert"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -26,16 +27,19 @@ import (
 // session. The Hub is a stub that sends the chain in its hello; the Worker is
 // the real connector with the production dialer over a real store.
 
+// certHubs maps a root public key to its certified Hub, for chainHub.
+var certHubs sync.Map
+
 // hubChain returns n+1 Hub keys and the chain of n transitions between them.
 func hubChain(t *testing.T, n int) ([]*identity.Key, []identity.Transition) {
 	t.Helper()
 	keys := make([]*identity.Key, n+1)
 	for i := range keys {
-		k, err := identity.GenerateKey()
-		if err != nil {
-			t.Fatal(err)
-		}
-		keys[i] = k
+		// Every root comes with an operational key and a certificate (protocol
+		// 3.0); chainHub finds them by the root's public key.
+		h := hubcert.New(t)
+		certHubs.Store(string(h.RootPub()), h)
+		keys[i] = h.Root
 	}
 	chain := make([]identity.Transition, n)
 	for i := range chain {
@@ -95,7 +99,14 @@ func (h *chainHub) serve(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	key, chain := h.key, h.chain
 	h.mu.Unlock()
-	res, err := transport.HubHandshake(conn, transport.HubConfig{Key: key, Chain: chain, Timeout: 10 * time.Second})
+	ch, ok := certHubs.Load(string(key.Public()))
+	if !ok {
+		h.t.Error("no certified hub for the chain hub's root")
+		return
+	}
+	hc := ch.(*hubcert.Hub).Config()
+	hc.Chain, hc.Timeout = chain, 10*time.Second
+	res, err := transport.HubHandshake(conn, hc)
 	if err != nil {
 		return // the Worker did not accept this Hub
 	}
@@ -129,7 +140,8 @@ func (h *chainHub) drop() {
 	}
 }
 
-// failingPinRepo is an enrollment repo whose pin update can be made to fail.
+// failingPinRepo is an enrollment repo whose pin update (the pin and the
+// certificate ratchet are one transaction) can be made to fail.
 type failingPinRepo struct {
 	EnrollmentRepo
 	fail     atomic.Bool
@@ -138,12 +150,12 @@ type failingPinRepo struct {
 
 var errPinWrite = errors.New("disk full")
 
-func (r *failingPinRepo) UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64) error {
+func (r *failingPinRepo) UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, h []byte) error {
 	r.attempts.Add(1)
 	if r.fail.Load() {
 		return errPinWrite
 	}
-	return r.EnrollmentRepo.UpdatePin(ctx, pub, seq)
+	return r.EnrollmentRepo.UpdatePinRatchet(ctx, pub, seq, maxSerial, h)
 }
 
 // chainWorker is a real connector over a real store, pinned to a Hub key.
@@ -162,6 +174,13 @@ type chainWorker struct {
 // enrollment repo the connector writes through.
 func startChainWorker(t *testing.T, hubURL string, pin identity.Pin, wrap func(EnrollmentRepo) EnrollmentRepo) *chainWorker {
 	t.Helper()
+	return startChainWorkerWith(t, hubURL, Enrollment{Pin: pin}, wrap)
+}
+
+// startChainWorkerWith is startChainWorker for a given stored enrollment (with
+// a certificate ratchet, for example).
+func startChainWorkerWith(t *testing.T, hubURL string, stored Enrollment, wrap func(EnrollmentRepo) EnrollmentRepo) *chainWorker {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(dir)
 	if err != nil {
@@ -175,7 +194,7 @@ func startChainWorker(t *testing.T, hubURL string, pin identity.Pin, wrap func(E
 	if _, err := enr.LoadOrCreateKey(); err != nil {
 		t.Fatal(err)
 	}
-	if err := enr.Commit(context.Background(), Enrollment{Pin: pin}); err != nil {
+	if err := enr.Commit(context.Background(), stored); err != nil {
 		t.Fatal(err)
 	}
 	conn, err := NewConnector(ConnectorConfig{

@@ -14,6 +14,7 @@ const (
 	PurposeTransition      Purpose = "transition"
 	PurposeRevoke          Purpose = "revoke"
 	PurposePAKEConfirm     Purpose = "pake-confirm"
+	PurposeHubCert         Purpose = "hub-cert"
 )
 
 const signPrefix = "minion/v1/"
@@ -21,7 +22,7 @@ const signPrefix = "minion/v1/"
 // Valid reports whether p is one of the accepted purposes.
 func (p Purpose) Valid() bool {
 	switch p {
-	case PurposeHandshakeHub, PurposeHandshakeWorker, PurposeTransition, PurposeRevoke, PurposePAKEConfirm:
+	case PurposeHandshakeHub, PurposeHandshakeWorker, PurposeTransition, PurposeRevoke, PurposePAKEConfirm, PurposeHubCert:
 		return true
 	}
 	return false

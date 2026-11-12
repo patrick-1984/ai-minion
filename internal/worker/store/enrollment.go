@@ -40,6 +40,11 @@ type Enrollment struct {
 	// PreviewOnly is the Hub-side policy from the last welcome. The Worker
 	// combines it with its local policy, and local restrictions always win.
 	PreviewOnly bool
+	// MaxSerial and CertSHA256 are the certificate ratchet scoped to HubPub:
+	// the highest Hub certificate serial seen and the SHA-256 of the
+	// certificate at that serial (nil when none). A pin from 0.6 has 0 and nil.
+	MaxSerial  uint64
+	CertSHA256 []byte
 	// EnrolledAt is when the enrollment was first stored. It is set by
 	// [Store.SaveEnrollment] and ignored on input.
 	EnrolledAt time.Time
@@ -61,36 +66,64 @@ func (s *Store) SaveEnrollment(ctx context.Context, e Enrollment) error {
 	if len(e.HubPub) != ed25519.PublicKeySize {
 		return fmt.Errorf("%w: the Hub key must be %d bytes", ErrInvalidEnrollment, ed25519.PublicKeySize)
 	}
+	if len(e.CertSHA256) != 0 && len(e.CertSHA256) != 32 {
+		return fmt.Errorf("%w: the certificate hash must be 32 bytes", ErrInvalidEnrollment)
+	}
 	now := s.clock.now().UnixMilli()
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: save enrollment: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO hub_enrollment
-		   (id, hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, updated_at)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   (id, hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, updated_at,
+		    max_serial, cert_sha256)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (id) DO UPDATE SET
 		   hub_pub = excluded.hub_pub, pin_seq = excluded.pin_seq, worker_id = excluded.worker_id,
 		   worker_name = excluded.worker_name, owner = excluded.owner, kind = excluded.kind,
 		   preview_only = excluded.preview_only, enrolled_at = excluded.enrolled_at,
-		   updated_at = excluded.updated_at`,
-		[]byte(e.HubPub), int64(e.PinSeq), e.WorkerID, e.Name, e.Owner, e.Kind, boolInt(e.PreviewOnly), now, now)
+		   updated_at = excluded.updated_at, max_serial = excluded.max_serial,
+		   cert_sha256 = excluded.cert_sha256`,
+		[]byte(e.HubPub), int64(e.PinSeq), e.WorkerID, e.Name, e.Owner, e.Kind, boolInt(e.PreviewOnly), now, now,
+		int64(e.MaxSerial), nullBytes(e.CertSHA256))
 	if err != nil {
+		return fmt.Errorf("store: save enrollment: %w", err)
+	}
+	// The enrollment commit ends a pairing: the resume record goes in the same
+	// transaction (design section 12.2).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pair_resume`); err != nil {
+		return fmt.Errorf("store: save enrollment: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: save enrollment: %w", err)
 	}
 	return nil
 }
 
+func nullBytes(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
 // LoadEnrollment returns the stored enrollment, or [ErrNotEnrolled].
 func (s *Store) LoadEnrollment(ctx context.Context) (Enrollment, error) {
 	var (
-		e        Enrollment
-		pub      []byte
-		seq      int64
-		preview  int64
-		enrolled int64
+		e         Enrollment
+		pub       []byte
+		seq       int64
+		preview   int64
+		enrolled  int64
+		maxSerial int64
+		certHash  []byte
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at
+		`SELECT hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, max_serial, cert_sha256
 		 FROM hub_enrollment WHERE id = 1`).
-		Scan(&pub, &seq, &e.WorkerID, &e.Name, &e.Owner, &e.Kind, &preview, &enrolled)
+		Scan(&pub, &seq, &e.WorkerID, &e.Name, &e.Owner, &e.Kind, &preview, &enrolled, &maxSerial, &certHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Enrollment{}, ErrNotEnrolled
 	}
@@ -99,6 +132,8 @@ func (s *Store) LoadEnrollment(ctx context.Context) (Enrollment, error) {
 	}
 	e.HubPub = ed25519.PublicKey(pub)
 	e.PinSeq = uint64(seq)
+	e.MaxSerial = uint64(maxSerial)
+	e.CertSHA256 = certHash
 	e.PreviewOnly = preview != 0
 	e.EnrolledAt = time.UnixMilli(enrolled).UTC()
 	return e, nil
@@ -138,6 +173,68 @@ func (s *Store) UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE hub_enrollment SET hub_pub = ?, pin_seq = ?, updated_at = ? WHERE id = 1`,
 		[]byte(pub), int64(seq), s.clock.now().UnixMilli()); err != nil {
+		return fmt.Errorf("store: update pin: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: update pin: %w", err)
+	}
+	return nil
+}
+
+// UpdatePinRatchet is the commit of step 8 of the handshake (connect mode): in
+// ONE transaction it moves the pin forward (as [Store.UpdatePin] does) and
+// records the certificate ratchet. A pin that changed the root starts a new
+// scope: max_serial and the hash are replaced by the given ones. Under the same
+// root max_serial never goes down: a higher serial replaces serial and hash, an
+// equal serial keeps the stored hash (or takes the given one when none is
+// stored), a lower serial changes nothing. A commit is needed also when only the
+// serial rose. [ErrNotEnrolled] when there is no enrollment.
+func (s *Store) UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, certSHA256 []byte) error {
+	if len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: the Hub key must be %d bytes", ErrInvalidEnrollment, ed25519.PublicKeySize)
+	}
+	if len(certSHA256) != 0 && len(certSHA256) != 32 {
+		return fmt.Errorf("%w: the certificate hash must be 32 bytes", ErrInvalidEnrollment)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: update pin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var (
+		cur     []byte
+		curSeq  int64
+		curMax  int64
+		curHash []byte
+	)
+	err = tx.QueryRowContext(ctx, `SELECT hub_pub, pin_seq, max_serial, cert_sha256 FROM hub_enrollment WHERE id = 1`).
+		Scan(&cur, &curSeq, &curMax, &curHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotEnrolled
+	}
+	if err != nil {
+		return fmt.Errorf("store: update pin: %w", err)
+	}
+	if int64(seq) < curSeq || int64(seq) == curSeq && !bytes.Equal(cur, pub) {
+		return ErrPinRegression
+	}
+	newMax, newHash := curMax, curHash
+	if !bytes.Equal(cur, pub) {
+		newMax, newHash = int64(maxSerial), certSHA256 // a new root: a new scope
+	} else {
+		switch {
+		case int64(maxSerial) > curMax:
+			newMax, newHash = int64(maxSerial), certSHA256
+		case int64(maxSerial) == curMax && len(curHash) == 0:
+			newHash = certSHA256
+		}
+	}
+	if bytes.Equal(cur, pub) && int64(seq) == curSeq && newMax == curMax && bytes.Equal(newHash, curHash) {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE hub_enrollment SET hub_pub = ?, pin_seq = ?, max_serial = ?, cert_sha256 = ?, updated_at = ? WHERE id = 1`,
+		[]byte(pub), int64(seq), newMax, nullBytes(newHash), s.clock.now().UnixMilli()); err != nil {
 		return fmt.Errorf("store: update pin: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

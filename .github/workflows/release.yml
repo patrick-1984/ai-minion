@@ -52,8 +52,8 @@ env:
   # schedules this with Story 1.2/9.2. It matters because the value goes into a
   # signed public manifest that A-10 update refusals depend on, so it must not
   # go stale without anyone noticing.
-  MINION_PROTOCOL_MIN: "2.0"
-  MINION_PROTOCOL_MAX: "2.0"
+  MINION_PROTOCOL_MIN: "3.0"
+  MINION_PROTOCOL_MAX: "3.0"
 
 jobs:
   # ---------------------------------------------------------------- PR and tag

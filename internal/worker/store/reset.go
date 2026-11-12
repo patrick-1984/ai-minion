@@ -53,6 +53,11 @@ func (s *Store) ResetPairing(ctx context.Context) (PairingReset, error) {
 			return out, err
 		}
 	}
+	// A pairing in progress ends with the reset: its resume record goes, so that
+	// a new code is shown (design section 12.2).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pair_resume`); err != nil {
+		return out, fmt.Errorf("store: reset pairing: %w", err)
+	}
 	// The turns the old Hub never acknowledged belong to the old enrollment: a
 	// new Hub must not receive them (Story 7.3).
 	if _, err := tx.ExecContext(ctx, `DELETE FROM pipe_outbox`); err != nil {

@@ -58,7 +58,7 @@ func startCallPeer(t *testing.T, ph *shareHub, ownerID, name, keyFile string) *c
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := enr.Commit(context.Background(), agent.Enrollment{Pin: identity.Pin{Pub: ph.wsv.Identity().Key().Public()}}); err != nil {
+	if err := enr.Commit(context.Background(), agent.Enrollment{Pin: identity.Pin{Pub: ph.wsv.Identity().Public()}}); err != nil {
 		t.Fatal(err)
 	}
 	p := &callPeer{wid: store.NewID(), tmux: tmuxtest.New(t)}

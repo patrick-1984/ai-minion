@@ -188,6 +188,21 @@ func (n *Network) Scheme(r *http.Request) string {
 	return "http"
 }
 
+// EffectiveHTTPS reports whether the browser's request arrived over HTTPS, for
+// the operations that accept a passphrase (contract section 8.1 item 5). The
+// decision is the effective scheme of [Network.Scheme]: the TLS state of the
+// connection itself, or a forwarded protocol header that counts only when the
+// immediate peer is inside the configured trusted-proxy networks. The loopback
+// address of the peer is never by itself a reason to accept cleartext, and a
+// forwarded header from an untrusted peer is ignored. The one exception is a
+// request that arrived on the configured management listener.
+func (n *Network) EffectiveHTTPS(r *http.Request) bool {
+	if onManagementListener(r) {
+		return true
+	}
+	return n.Scheme(r) == "https"
+}
+
 // The process-wide Network behind [ClientIP] and [PublicURL]. [Server.Run]
 // installs it while the Hub runs.
 var defaultNetwork atomic.Pointer[Network]

@@ -82,6 +82,13 @@ func ErrorCode(err error) proto.Code {
 		return ""
 	case errors.As(err, &pe):
 		return pe.Code
+	case errors.Is(err, ErrCertMissing), errors.Is(err, identity.ErrCertMalformed):
+		return proto.CodeInvalidArgument
+	case errors.Is(err, ErrCertSerialTooLow), errors.Is(err, ErrCertSerialConflict),
+		errors.Is(err, ErrResumeRootMismatch), errors.Is(err, ErrHubSigInvalid),
+		errors.Is(err, identity.ErrCertRootMismatch), errors.Is(err, identity.ErrCertBadSignature),
+		errors.Is(err, identity.ErrCertNotYetValid), errors.Is(err, identity.ErrCertExpired):
+		return proto.CodeUnauthenticated
 	case errors.Is(err, ErrPinMismatch), errors.Is(err, ErrFingerprintMismatch),
 		errors.Is(err, ErrChainInvalid), errors.Is(err, ErrBadSignature):
 		return proto.CodeUnauthenticated
@@ -111,10 +118,16 @@ type WorkerHello struct {
 }
 
 // HubHello is the Hub's reply. Chain is present in connect mode only.
+//
+// Protocol 3.0: HubPub is the ROOT public key and must equal the root of
+// HubCert; HubCert is the 153-byte certificate of the operational key, mandatory
+// in every mode. The certificate is part of the hello, so the transcript hash
+// binds it before any CPace message and any signature.
 type HubHello struct {
 	Type    string                `json:"type"`
 	Version proto.Version         `json:"version"`
 	HubPub  identity.B64          `json:"hub_pub"`
+	HubCert identity.B64          `json:"hub_cert"`
 	EphH    identity.B64          `json:"eph_h"`
 	Nonce   identity.B64          `json:"nonce"`
 	Chain   []identity.Transition `json:"chain,omitempty"`
@@ -164,6 +177,20 @@ type WorkerConfig struct {
 	HubFingerprint identity.Fingerprint
 	// PairingCode is the code shown by this Worker (pair_code).
 	PairingCode identity.PairingCode
+	// Ratchet is the stored certificate memory: in connect mode the
+	// enrollment's max_serial and cert_sha256 (its Root defaults to Pin.Pub);
+	// in pair_code mode the pair_resume record (candidate root, serial and
+	// hash), whose non-empty Root also binds the Hub's root (section 11.2 4b).
+	// Empty in enroll_invite mode and for a first pairing.
+	Ratchet Ratchet
+	// Clock supplies the wall clock and the monotonic clock of the window
+	// check; nil means SystemWallMono.
+	Clock WallMono
+	// BeforeSigWorker, when set, runs after the Hub is authenticated and no
+	// serial refusal is pending, and before sig_worker is sent. A pair_code
+	// Worker writes its pair_resume record here, durably; an error aborts the
+	// handshake and sig_worker is never sent (section 12.2).
+	BeforeSigWorker func(HubAuth) error
 	// Timeout bounds the whole handshake; zero means
 	// DefaultHandshakeTimeout.
 	Timeout time.Duration
@@ -186,6 +213,19 @@ type WorkerResult struct {
 	// or is new (other modes); the caller rewrites its stored pin atomically
 	// before relying on the connection.
 	PinChanged bool
+	// Cert is the Hub certificate validated in this handshake and OpPub its
+	// operational key: the key that signs a revoke on this connection and
+	// that was verified for sig_hub. CertSHA256 is the hash of its 153 bytes.
+	Cert       *identity.HubCert
+	OpPub      ed25519.PublicKey
+	CertSHA256 [32]byte
+	// Ratchet is the certificate memory to commit with the pin (step 8), scoped
+	// to Pin.Pub; RatchetChanged is true when it differs from the configured
+	// one (a commit is needed also when only the serial rose).
+	Ratchet        Ratchet
+	RatchetChanged bool
+	// Expiry is the end of this connection (section 11.3).
+	Expiry Expiry
 }
 
 func (cfg *WorkerConfig) validate() error {
@@ -279,14 +319,16 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 	if err := decode(hubBytes, &hub); err != nil {
 		return nil, err
 	}
-	if err := checkHubHello(&hub, cfg.Mode, cfg.Protocols); err != nil {
+	// Step a: shape, including the certificate's structure.
+	cert, err := checkHubHello(&hub, cfg.Mode, cfg.Protocols)
+	if err != nil {
 		return nil, err
 	}
 	hubPub := ed25519.PublicKey(hub.HubPub)
 	hash := TranscriptHash(workerBytes, hubBytes)
 
+	// Step b: the root. The candidate stays in memory until the commit.
 	pin := identity.Pin{Pub: bytes.Clone(hubPub)}
-	var session *pake.Session
 	switch cfg.Mode {
 	case ModeConnect:
 		if pin, err = resolvePin(cfg.Pin, hubPub, hub.Chain); err != nil {
@@ -297,13 +339,77 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 			return nil, ErrFingerprintMismatch
 		}
 	case ModePairCode:
-		if session, err = workerPake(conn, cfg, hash[:], hubPub); err != nil {
+		if len(cfg.Ratchet.Root) > 0 && !bytes.Equal(cfg.Ratchet.Root, hubPub) {
+			return nil, ErrResumeRootMismatch
+		}
+	}
+	candidate := ed25519.PublicKey(pin.Pub)
+
+	// Step c: the certificate under the candidate root.
+	if !bytes.Equal(cert.RootPub, hubPub) {
+		return nil, identity.ErrCertRootMismatch
+	}
+	if err := cert.Verify(candidate); err != nil {
+		return nil, err
+	}
+
+	// Step d: the window. The wall clock and the monotonic clock are read back
+	// to back.
+	clk := cfg.Clock
+	if clk == nil {
+		clk = SystemWallMono
+	}
+	now, mono0 := clk.Wall(), clk.Mono()
+	if err := cert.CheckWindow(now.UnixMilli()); err != nil {
+		return nil, err
+	}
+	expiry, err := newExpiry(cert, now.UnixMilli(), mono0)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step e: the serial scope. The verdict is kept and applied after sig_hub.
+	configured := cfg.Ratchet
+	if cfg.Mode == ModeConnect && len(configured.Root) == 0 {
+		configured.Root = cfg.Pin.Pub
+	}
+	scope := configured
+	if cfg.Mode == ModeEnrollInvite {
+		scope = Ratchet{}
+	}
+	certHashV := certHash(cert)
+	verdict := scope.verdict(candidate, cert.Serial, certHashV)
+
+	var session *pake.Session
+	if cfg.Mode == ModePairCode {
+		if session, err = workerPake(conn, cfg, hash[:], cert.OpPub); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := expectSig(conn, hubPub, identity.PurposeHandshakeHub, hash[:]); err != nil {
+	// sig_hub is made by the operational key of the certificate, never by the
+	// root.
+	if err := expectSig(conn, cert.OpPub, identity.PurposeHandshakeHub, hash[:]); err != nil {
+		if errors.Is(err, ErrBadSignature) {
+			return nil, fmt.Errorf("%w: %w", ErrHubSigInvalid, err)
+		}
 		return nil, err
+	}
+	if verdict != nil {
+		// Authenticated but refused: close without sig_worker; nothing was
+		// written.
+		return nil, verdict
+	}
+	newRatchet := scope.Raise(candidate, cert.Serial, certHashV)
+	auth := HubAuth{
+		Mode: cfg.Mode, Root: candidate, Pin: identity.Pin{Pub: bytes.Clone(pin.Pub), Seq: pin.Seq},
+		Cert: cert, CertSHA256: certHashV, Ratchet: newRatchet,
+		RatchetChanged: cfg.Mode != ModeConnect || !newRatchet.Equal(configured), Expiry: expiry,
+	}
+	if cfg.BeforeSigWorker != nil {
+		if err := cfg.BeforeSigWorker(auth); err != nil {
+			return nil, err
+		}
 	}
 	sig, err := cfg.Key.Sign(identity.PurposeHandshakeWorker, hash[:])
 	if err != nil {
@@ -324,10 +430,20 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 		TranscriptHash: hash,
 		Pin:            pin,
 		PinChanged:     cfg.Mode != ModeConnect || !bytes.Equal(pin.Pub, cfg.Pin.Pub) || pin.Seq != cfg.Pin.Seq,
+		Cert:           cert,
+		OpPub:          bytes.Clone(cert.OpPub),
+		CertSHA256:     certHashV,
+		Ratchet:        newRatchet,
+		RatchetChanged: auth.RatchetChanged,
+		Expiry:         expiry,
 	}, nil
 }
 
-func checkHubHello(h *HubHello, mode Mode, own proto.Range) error {
+// checkHubHello is step a of the Worker's validation: the lengths, the version
+// range, the chain only in connect mode, and a present, well-formed
+// certificate (the structural part of step c is in the shape tier of the
+// precedence, so a malformed certificate wins over a root mismatch).
+func checkHubHello(h *HubHello, mode Mode, own proto.Range) (*identity.HubCert, error) {
 	if err := checkLens(map[string]struct {
 		got  int
 		want int
@@ -336,16 +452,19 @@ func checkHubHello(h *HubHello, mode Mode, own proto.Range) error {
 		"eph_h":   {len(h.EphH), 32},
 		"nonce":   {len(h.Nonce), NonceSize},
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	if !own.Contains(h.Version) {
-		return proto.NewError(proto.CodeProtoIncompatible,
+		return nil, proto.NewError(proto.CodeProtoIncompatible,
 			fmt.Sprintf("hub chose protocol %s outside the supported range %s..%s", h.Version, own.Min, own.Max))
 	}
 	if len(h.Chain) > 0 && mode != ModeConnect {
-		return ErrUnexpectedChain
+		return nil, ErrUnexpectedChain
 	}
-	return nil
+	if len(h.HubCert) == 0 {
+		return nil, ErrCertMissing
+	}
+	return identity.ParseHubCert(h.HubCert)
 }
 
 func checkLens(m map[string]struct{ got, want int }) error {
@@ -381,7 +500,7 @@ func resolvePin(pin identity.Pin, hubPub ed25519.PublicKey, chain []identity.Tra
 // workerPake runs the Worker side of the AD-8 exchange: pake.msg, pake.msg,
 // pake.confirm in both directions. It returns the CPace session once the
 // Hub's confirmation tag and pake-confirm signature verified.
-func workerPake(conn net.Conn, cfg WorkerConfig, hash []byte, hubPub ed25519.PublicKey) (*pake.Session, error) {
+func workerPake(conn net.Conn, cfg WorkerConfig, hash []byte, opPub ed25519.PublicKey) (*pake.Session, error) {
 	params := pake.Params{Password: cfg.PairingCode.Password(), SessionID: hash}
 	init, msgA, err := pake.Start(params)
 	if err != nil {
@@ -405,7 +524,7 @@ func workerPake(conn net.Conn, cfg WorkerConfig, hash []byte, hubPub ed25519.Pub
 	if err := sendConfirm(conn, session, cfg.Key, hash); err != nil {
 		return nil, err
 	}
-	if err := expectConfirm(conn, session, hubPub, hash); err != nil {
+	if err := expectConfirm(conn, session, opPub, hash); err != nil {
 		return nil, err
 	}
 	return session, nil
@@ -415,8 +534,17 @@ func workerPake(conn net.Conn, cfg WorkerConfig, hash []byte, hubPub ed25519.Pub
 
 // HubConfig configures HubHandshake.
 type HubConfig struct {
-	// Key is the Hub's identity key.
+	// Key is the Hub's OPERATIONAL key: it makes sig_hub, the pake-confirm
+	// signature and (outside the handshake) the revoke of this connection.
 	Key *identity.Key
+	// Cert is the certificate of Key, issued by the root. Its root is sent as
+	// hub_pub and the certificate itself in hub_cert, in every mode. Key and
+	// Cert are one pair, taken together from the Hub identity service.
+	Cert *identity.HubCert
+	// Now is the Hub's wall clock; nil means time.Now. A certificate whose
+	// not_after has been reached (now >= not_after) is never sent: the
+	// handshake fails with hub_cert_expired.
+	Now func() time.Time
 	// Current is the Hub's protocol version; the Hub accepts it and its
 	// previous minor (AD-4). The zero value means proto.Current.
 	Current proto.Version
@@ -452,14 +580,18 @@ type HubResult struct {
 	TranscriptHash [TranscriptHashSize]byte
 }
 
-// HubHandshake runs the Hub side of the AD-6 handshake over conn. On any
+// HubHandshake runs the Hub side of the AD-6 handshake (protocol 3.0) over conn. On any
 // error conn is closed. In pair_code mode a failed confirmation returns
 // ErrPairingConfirm after an error frame pairing_code_invalid was sent, so the
 // caller can count the attempt (AD-8).
 func HubHandshake(conn net.Conn, cfg HubConfig) (res *HubResult, err error) {
-	if cfg.Key == nil {
+	if cfg.Key == nil || cfg.Cert == nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("%w: no identity key", ErrConfig)
+		return nil, fmt.Errorf("%w: no operational key or certificate", ErrConfig)
+	}
+	if !bytes.Equal(cfg.Cert.OpPub, cfg.Key.Public()) || len(cfg.Cert.Bytes()) != identity.HubCertSize {
+		_ = conn.Close()
+		return nil, fmt.Errorf("%w: the certificate does not belong to the operational key", ErrConfig)
 	}
 	if cfg.Current == (proto.Version{}) {
 		cfg.Current = proto.Current
@@ -487,6 +619,15 @@ func HubHandshake(conn net.Conn, cfg HubConfig) (res *HubResult, err error) {
 			return nil, abortWith(conn, err)
 		}
 	}
+	// The Hub sends its hello only with a certificate whose not_after is still
+	// in the future.
+	now := time.Now
+	if cfg.Now != nil {
+		now = cfg.Now
+	}
+	if now().UnixMilli() >= cfg.Cert.NotAfterMs {
+		return nil, abortWith(conn, proto.NewError(proto.CodeHubCertExpired, "the Hub certificate has expired"))
+	}
 	var password []byte
 	if wh.Mode == ModePairCode {
 		if cfg.PairingPassword == nil {
@@ -504,7 +645,8 @@ func HubHandshake(conn net.Conn, cfg HubConfig) (res *HubResult, err error) {
 	hh := HubHello{
 		Type:    proto.TypeHello,
 		Version: version,
-		HubPub:  identity.B64(cfg.Key.Public()),
+		HubPub:  identity.B64(cfg.Cert.RootPub),
+		HubCert: cfg.Cert.Bytes(),
 		EphH:    eph.PublicKey().Bytes(),
 		Nonce:   make([]byte, NonceSize),
 	}
@@ -513,6 +655,11 @@ func HubHandshake(conn net.Conn, cfg HubConfig) (res *HubResult, err error) {
 	}
 	if wh.Mode == ModeConnect {
 		hh.Chain = cfg.Chain
+	}
+	// PairingPassword may block (the Hub waits for the user to claim the code),
+	// so the deadline is read again right before the hello goes out.
+	if now().UnixMilli() >= cfg.Cert.NotAfterMs {
+		return nil, abortWith(conn, proto.NewError(proto.CodeHubCertExpired, "the Hub certificate has expired"))
 	}
 	hubBytes, err := sendFrame(conn, hh)
 	if err != nil {

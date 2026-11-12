@@ -42,6 +42,12 @@ type Op struct {
 	// as a new key). It is POST-only like a write, so that a cross-site GET
 	// cannot trigger it, and its handler audits it. A Write op needs no flag.
 	Mutates bool
+	// SessionOnly marks a Hub op that only a browser session may run, and only
+	// after a fresh re-authentication (the passphrase operations of the Hub
+	// identity). An API key, an act-as session and the generic command line
+	// are refused: producers derive no CLI command for it, and the REST
+	// dispatcher answers an API key with forbidden. It requires a Mutates op.
+	SessionOnly bool
 	// Stream marks ops whose result is a stream of Result values.
 	Stream bool
 	// Guards lists the action-contract class of each guard of a write op.
@@ -118,6 +124,9 @@ func (o Op) validate() error {
 	}
 	if o.Result == nil || o.Result.Kind() != reflect.Struct {
 		return fmt.Errorf("op %s: result type must be a struct", o.Name)
+	}
+	if o.SessionOnly && (!o.Mutates || o.Scope != ScopeHub) {
+		return fmt.Errorf("op %s: SessionOnly is for Hub ops that Mutate", o.Name)
 	}
 	if o.Stream && (o.Write || o.Mutates) {
 		return fmt.Errorf("op %s: a streaming op cannot be a write", o.Name)

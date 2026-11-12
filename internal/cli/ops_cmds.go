@@ -108,6 +108,11 @@ func defaultOpsDeps() opsDeps {
 // tests of the whole catalog catch.
 func addOpCommands(root *cobra.Command, deps opsDeps, list []ops.Op) {
 	for _, op := range list {
+		if op.SessionOnly {
+			// A passphrase operation has no generic command: `minion hub
+			// identity` asks for the passphrase on the terminal instead.
+			continue
+		}
 		cmd, err := newOpCmd(op, deps)
 		if err != nil {
 			panic("cli: op " + op.Name + ": " + err.Error())

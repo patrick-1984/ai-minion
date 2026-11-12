@@ -329,7 +329,7 @@ func (f *connFixture) welcomeStep(sess *fakeSession, w HubWelcome) dialStep {
 			w.Type = proto.TypeWelcome
 		}
 		return &Attempt{
-			Pin: p.Pin, TranscriptHash: randomHash(), Version: proto.Current,
+			Pin: p.Pin, OpPub: p.Pin.Pub, TranscriptHash: randomHash(), Version: proto.Current,
 			Reply: Reply{Type: proto.TypeWelcome, Welcome: w}, Session: sess,
 		}, nil
 	}
@@ -643,7 +643,7 @@ func TestNotEnrolledKeepsAllStateAndRetries(t *testing.T) {
 	}
 	before := f.storedEnrollment()
 	notEnrolled := func(p ConnectParams) (*Attempt, error) {
-		return &Attempt{Pin: p.Pin, TranscriptHash: randomHash(), Reply: Reply{Type: proto.TypeNotEnrolled}}, nil
+		return &Attempt{Pin: p.Pin, OpPub: p.Pin.Pub, TranscriptHash: randomHash(), Reply: Reply{Type: proto.TypeNotEnrolled}}, nil
 	}
 	f.dial.script(notEnrolled, notEnrolled, f.welcomeStep(newFakeSession(), okWelcome()))
 	f.run()
@@ -679,7 +679,7 @@ func (f *connFixture) revokeStep(signer *identity.Key, signedHash, transcript []
 				return nil, err
 			}
 		}
-		return &Attempt{Pin: p.Pin, TranscriptHash: transcript, Reply: Reply{Type: proto.TypeRevoke, RevokeSig: sig}}, nil
+		return &Attempt{Pin: p.Pin, OpPub: p.Pin.Pub, TranscriptHash: transcript, Reply: Reply{Type: proto.TypeRevoke, RevokeSig: sig}}, nil
 	}
 }
 
@@ -748,7 +748,7 @@ func TestInvalidRevokeIsIgnoredLoggedAndNothingIsDeleted(t *testing.T) {
 		{"wrong purpose", func(f *connFixture) dialStep {
 			return func(p ConnectParams) (*Attempt, error) {
 				sig, _ := f.hub.Sign(identity.PurposeHandshakeHub, hash)
-				return &Attempt{Pin: p.Pin, TranscriptHash: hash, Reply: Reply{Type: proto.TypeRevoke, RevokeSig: sig}}, nil
+				return &Attempt{Pin: p.Pin, OpPub: p.Pin.Pub, TranscriptHash: hash, Reply: Reply{Type: proto.TypeRevoke, RevokeSig: sig}}, nil
 			}
 		}},
 	}

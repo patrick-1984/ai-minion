@@ -31,7 +31,7 @@ func TestEncryptedBackupRoundTripDecryptsTheOIDCSecret(t *testing.T) {
 	if !strings.HasPrefix(string(raw), ageMagic) {
 		t.Fatalf("archive does not start with the age header: %q", raw[:24])
 	}
-	for _, secret := range []string{"identity-key-bytes", "TLSKEY", "SQLite format", "manifest.json"} {
+	for _, secret := range []string{"minion-ed25519-seed", "TLSKEY", "SQLite format", "manifest.json"} {
 		if bytes.Contains(raw, []byte(secret)) {
 			t.Errorf("the encrypted archive contains %q in clear", secret)
 		}
@@ -145,7 +145,7 @@ func TestLegacyPlainArchiveStillRestoresAndIgnoresAPassphrase(t *testing.T) {
 		if res.Encrypted {
 			t.Fatal("a plain archive was reported as encrypted")
 		}
-		if readFile(t, filepath.Join(target, IdentityKeyFile)) != "identity-key-bytes" {
+		if readFile(t, filepath.Join(target, IdentityKeyFile)) != readFile(t, filepath.Join(dir, IdentityKeyFile)) {
 			t.Fatal("identity.key differs")
 		}
 	}

@@ -117,7 +117,7 @@ func TestWorkerRetireRemovesTheEnrollmentAndTheOldKeyGetsASignedRevoke(t *testin
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyRevoke(res2.HubPub, res2.TranscriptHash[:], f); err != nil {
+	if err := VerifyRevoke(res2.OpPub, res2.TranscriptHash[:], f); err != nil {
 		t.Errorf("revoke signature: %v", err)
 	}
 	if h.svc.Registry().IsOnline(w.ID) {

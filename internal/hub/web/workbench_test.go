@@ -120,7 +120,7 @@ func TestNavigationGroupsFollowTheRoleAndKeepEveryDestination(t *testing.T) {
 	if got := navPaths(user); strings.Join(got, ",") != strings.Join(wantUser, ",") {
 		t.Errorf("user navigation = %v, want %v", got, wantUser)
 	}
-	wantAdmin := append(append([]string{}, wantUser...), "/admin/users", "/admin/settings", "/admin/oidc", "/admin/audit")
+	wantAdmin := append(append([]string{}, wantUser...), "/admin/users", "/admin/settings", "/admin/identity", "/admin/oidc", "/admin/audit")
 	if got := navPaths(admin); strings.Join(got, ",") != strings.Join(wantAdmin, ",") {
 		t.Errorf("admin navigation = %v, want %v", got, wantAdmin)
 	}
@@ -174,7 +174,7 @@ func TestAdministrationOverviewListsTheAreasForAnAdministrator(t *testing.T) {
 	}
 	body := rec.Body.String()
 	mustHave(t, body, "<title>Administration - Minion</title>", `<ul class="link-cards">`,
-		`<a href="/admin/users">`, `<a href="/admin/settings">`, `<a href="/admin/oidc">`, `<a href="/admin/audit">`,
+		`<a href="/admin/users">`, `<a href="/admin/settings">`, `<a href="/admin/identity">`, `<a href="/admin/oidc">`, `<a href="/admin/audit">`,
 		`<span aria-current="page">Administration</span>`, `<a href="/">Control center</a>`)
 	// A child page has the overview as a real ancestor.
 	mustHave(t, get(t, s, "/admin/audit", "X-Test-Session", adminHeader).Body.String(), `<li><a href="/admin">Administration</a></li>`)

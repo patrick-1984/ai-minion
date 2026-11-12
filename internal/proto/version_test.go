@@ -8,8 +8,8 @@ import (
 
 func v(maj, min uint16) Version { return Version{maj, min} }
 
-func TestCurrentIsTwoPointZero(t *testing.T) {
-	if Current != v(2, 0) || Current.String() != "2.0" {
+func TestCurrentIsThreePointZero(t *testing.T) {
+	if Current != v(3, 0) || Current.String() != "3.0" {
 		t.Fatalf("Current = %v", Current)
 	}
 }
@@ -92,9 +92,11 @@ func TestNegotiateMatrix(t *testing.T) {
 		{"major mismatch lower", Range{v(0, 1), v(0, 9)}, hub, v(0, 0), CodeProtoIncompatible},
 		{"major mismatch higher", Range{v(2, 0), v(2, 1)}, hub, v(0, 0), CodeProtoIncompatible},
 		{"range spanning majors", Range{v(0, 5), v(2, 0)}, hub, v(1, 3), ""},
-		{"release 2 both sides", Range{Current, Current}, Supported(Current), v(2, 0), ""},
-		{"a 1.x worker is refused by a 2.0 Hub", Range{v(1, 0), v(1, 9)}, Supported(Current), v(0, 0), CodeProtoIncompatible},
-		{"a 2.0 worker is refused by a 1.x Hub", Range{Current, Current}, Supported(v(1, 3)), v(0, 0), CodeProtoIncompatible},
+		{"release 3 both sides", Range{Current, Current}, Supported(Current), v(3, 0), ""},
+		{"a 1.x worker is refused by a 3.0 Hub", Range{v(1, 0), v(1, 9)}, Supported(Current), v(0, 0), CodeProtoIncompatible},
+		{"a 2.0 worker is refused by a 3.0 Hub (no 2.x fallback)", Range{v(2, 0), v(2, 0)}, Supported(Current), v(0, 0), CodeProtoIncompatible},
+		{"a 2.9 worker range is refused by a 3.0 Hub", Range{v(2, 0), v(2, 9)}, Supported(Current), v(0, 0), CodeProtoIncompatible},
+		{"a 3.0 worker is refused by a 2.0 Hub (no downgrade)", Range{Current, Current}, Supported(v(2, 0)), v(0, 0), CodeProtoIncompatible},
 		{"inverted worker range", Range{v(1, 3), v(1, 0)}, hub, v(0, 0), CodeInvalidArgument},
 		{"empty hub set", Range{v(1, 0), v(1, 0)}, nil, v(0, 0), CodeInvalidArgument},
 		{"hub set unordered", Range{v(1, 0), v(1, 9)}, []Version{v(1, 2), v(1, 3)}, v(1, 3), ""},

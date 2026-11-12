@@ -63,6 +63,7 @@ func startRemoveHubWithService(t *testing.T) (*apiHub, *workers.Service) {
 	registerAuditModule(r)
 	registerAuthz(r)
 	registerAuth(r)
+	registerHubIDModule(r)
 	registerWorkersModule(r)
 	registerAPI(r, ops.Default)
 	registerAPIKeyModule(r)
@@ -224,7 +225,7 @@ func TestWorkerRetireOnTheRealHubRevokesBoundKeysAndDeletesTrust(t *testing.T) {
 	}
 	res, err := transport.WorkerHandshake(conn, transport.WorkerConfig{
 		Key: wk, Name: "pi", Ops: []string{"send_text"}, Mode: transport.ModeConnect,
-		Pin: identity.Pin{Pub: svc.Identity().Key().Public()}, Timeout: 10 * time.Second,
+		Pin: identity.Pin{Pub: svc.Identity().Public()}, Timeout: 10 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

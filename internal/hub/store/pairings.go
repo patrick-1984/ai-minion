@@ -121,17 +121,155 @@ func (s *Store) CompletePairing(ctx context.Context, id, codeDigest string, w Wo
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrPairingNotPending
 		}
-		res, err = tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO used_pairing_codes (code_digest, used_at) VALUES (?, ?)`,
-			codeDigest, w.CreatedAt)
-		if err != nil {
-			return fmt.Errorf("store: record used pairing code: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return ErrPairingCodeUsed
+		if err := s.recordUsedCode(ctx, tx, id, codeDigest, w); err != nil {
+			return err
 		}
 		return s.InsertWorker(ctx, tx, w)
 	})
+}
+
+// recordUsedCode writes the digest of a used code together with the commit
+// (pairing id, Worker key, Worker, owner and the code's expiry, copied from the
+// pairing row) that lets the same Worker resume (hub-identity-v2 12.2).
+func (s *Store) recordUsedCode(ctx context.Context, tx *sql.Tx, id, codeDigest string, w WorkerRow) error {
+	var expires int64
+	if err := tx.QueryRowContext(ctx, `SELECT expires_at FROM pending_pairings WHERE pairing_id = ?`, id).Scan(&expires); err != nil {
+		return fmt.Errorf("store: read pairing expiry: %w", err)
+	}
+	res, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO used_pairing_codes
+		   (code_digest, used_at, pairing_id, worker_pub, worker_id, owner_id, expires_at, resume_attempts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+		codeDigest, w.CreatedAt, id, w.Pub, w.ID, w.OwnerID, expires)
+	if err != nil {
+		return fmt.Errorf("store: record used pairing code: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrPairingCodeUsed
+	}
+	return nil
+}
+
+// PairingCommit is the recorded commit of a pairing code (the row of
+// used_pairing_codes) that a resume relies on.
+type PairingCommit struct {
+	CodeDigest     string
+	PairingID      string
+	WorkerPub      []byte
+	WorkerID       string
+	OwnerID        string
+	ExpiresAt      int64
+	ResumeAttempts int
+}
+
+// MaxResumeAttempts is the number of wrong codes typed during a resume after
+// which the resume is closed.
+const MaxResumeAttempts = 5
+
+// ErrNoPairingCommit: no live commit row matches the pairing id and key.
+var ErrNoPairingCommit = errors.New("store: no pairing commit to resume")
+
+// PairingCommitFor returns the commit of the pairing id made for exactly this
+// Worker key, if it has not expired (expires_at > now) and fewer than
+// MaxResumeAttempts wrong codes were typed. Rows from before migration 0023
+// have no pairing data and never match.
+func (s *Store) PairingCommitFor(ctx context.Context, pairingID string, workerPub []byte, now int64) (PairingCommit, error) {
+	var c PairingCommit
+	err := s.db.QueryRowContext(ctx,
+		`SELECT code_digest, pairing_id, worker_pub, worker_id, owner_id, expires_at, resume_attempts
+		   FROM used_pairing_codes
+		  WHERE pairing_id = ? AND worker_pub = ? AND expires_at IS NOT NULL AND expires_at > ? AND resume_attempts < ?
+		  ORDER BY used_at DESC LIMIT 1`,
+		pairingID, workerPub, now, MaxResumeAttempts).
+		Scan(&c.CodeDigest, &c.PairingID, &c.WorkerPub, &c.WorkerID, &c.OwnerID, &c.ExpiresAt, &c.ResumeAttempts)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return PairingCommit{}, ErrNoPairingCommit
+	case err != nil:
+		return PairingCommit{}, fmt.Errorf("store: read pairing commit: %w", err)
+	}
+	return c, nil
+}
+
+// AddResumeFailure counts one wrong code typed during a resume against the
+// commit and returns the count after the change.
+func (s *Store) AddResumeFailure(ctx context.Context, codeDigest string) (int, error) {
+	var n int
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE used_pairing_codes SET resume_attempts = resume_attempts + 1 WHERE code_digest = ?`, codeDigest); err != nil {
+			return fmt.Errorf("store: count resume attempt: %w", err)
+		}
+		return tx.QueryRowContext(ctx, `SELECT resume_attempts FROM used_pairing_codes WHERE code_digest = ?`, codeDigest).Scan(&n)
+	})
+	return n, err
+}
+
+// RepairPairing completes the owner re-issue of section 12.3 in one
+// transaction: the new pending row becomes used, the new commit row is
+// recorded, and the repair window of the existing Worker is cleared with a
+// conditional update that must change exactly one row (the window is still
+// open and the Worker never completed a connect handshake). It returns
+// ErrRepairNotAllowed when the condition no longer holds; nothing changes.
+func (s *Store) RepairPairing(ctx context.Context, id, codeDigest string, w WorkerRow, now int64) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE workers SET repair_until = 0
+			  WHERE id = ? AND worker_pub = ? AND repair_until > ? AND first_connected_at IS NULL`, w.ID, w.Pub, now)
+		if err != nil {
+			return fmt.Errorf("store: close repair window: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrRepairNotAllowed
+		}
+		res, err = tx.ExecContext(ctx,
+			`UPDATE pending_pairings SET status = 'used', owner_id = ?, worker_id = ? WHERE pairing_id = ? AND status = 'pending'`,
+			w.OwnerID, w.ID, id)
+		if err != nil {
+			return fmt.Errorf("store: mark pairing used: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrPairingNotPending
+		}
+		return s.recordUsedCode(ctx, tx, id, codeDigest, w)
+	})
+}
+
+// ErrRepairNotAllowed: the Worker is not (or no longer) eligible for the
+// owner's pairing re-issue.
+var ErrRepairNotAllowed = errors.New("store: the Worker is not eligible for a pairing re-issue")
+
+// SetRepairWindow opens the owner's re-issue window of a Worker until the
+// given time. The eligibility check and the write are one conditional update:
+// the Worker must have a live row (a removed Worker has none, its tombstone is
+// in another table) and must never have completed a connect handshake. It
+// changes exactly one row or returns ErrRepairNotAllowed.
+func (s *Store) SetRepairWindow(ctx context.Context, workerID string, until int64) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE workers SET repair_until = ?
+			  WHERE id = ? AND first_connected_at IS NULL
+			    AND NOT EXISTS (SELECT 1 FROM worker_tombstones t WHERE t.worker_pub = workers.worker_pub)`, until, workerID)
+		if err != nil {
+			return fmt.Errorf("store: open repair window: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrRepairNotAllowed
+		}
+		return nil
+	})
+}
+
+// MarkFirstConnected records the first connect handshake of a Worker; later
+// calls change nothing. It reports whether this call set it.
+func (s *Store) MarkFirstConnected(ctx context.Context, workerID string, at int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workers SET first_connected_at = ?, repair_until = 0 WHERE id = ? AND first_connected_at IS NULL`, at, workerID)
+	if err != nil {
+		return false, fmt.Errorf("store: mark first connect: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // PairingCodeUsed reports whether the code with this digest already created a

@@ -43,6 +43,18 @@ func (fakeSessions) Wrap(next http.Handler) http.Handler {
 				ID: "s1", UserID: "u-" + parts[0], Username: parts[0], Role: authz.Role(parts[1]),
 				MustChangePassword: len(parts) > 2 && parts[2] == "must", CSRFToken: "csrf-" + parts[0],
 			}
+			// Further parts: "fresh" (a local sign-in just now), "oidc" (the
+			// session started through the provider "corp").
+			for _, extra := range parts[min(2, len(parts)):] {
+				switch extra {
+				case "fresh":
+					s.AuthAt, s.AuthMethod = time.Now(), session.AuthMethodLocal
+				case "oidc":
+					s.AuthMethod = "oidc:corp"
+				case "oidcfresh":
+					s.AuthAt, s.AuthMethod = time.Now(), "oidc:corp"
+				}
+			}
 			r = r.WithContext(session.WithSession(r.Context(), s))
 		}
 		next.ServeHTTP(w, r)

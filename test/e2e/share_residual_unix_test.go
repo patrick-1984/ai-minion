@@ -50,7 +50,7 @@ func startShareResidual(t *testing.T, interval time.Duration, hook func(*agent.E
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := enr.Commit(context.Background(), agent.Enrollment{Pin: identity.Pin{Pub: e.ph.wsv.Identity().Key().Public()}}); err != nil {
+	if err := enr.Commit(context.Background(), agent.Enrollment{Pin: identity.Pin{Pub: e.ph.wsv.Identity().Public()}}); err != nil {
 		t.Fatal(err)
 	}
 	e.wid = store.NewID()

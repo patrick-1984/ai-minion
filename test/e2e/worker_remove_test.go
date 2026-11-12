@@ -144,7 +144,7 @@ func newRemover(t *testing.T, h *connHub, grace time.Duration) *workers.Remover 
 	rm, err := workers.NewRemover(workers.RemoveConfig{
 		Store:   h.st,
 		Auditor: audit.New(h.st),
-		Live:    &workers.RegistryRevoker{Registry: svc.Registry(), Identity: svc.Identity(), Grace: grace},
+		Live:    &workers.RegistryRevoker{Registry: svc.Registry(), Grace: grace},
 	})
 	if err != nil {
 		t.Fatal(err)

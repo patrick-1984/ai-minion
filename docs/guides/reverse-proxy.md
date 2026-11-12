@@ -22,6 +22,8 @@ MINION_TRUSTED_PROXIES=127.0.0.1/32
 | `MINION_PUBLIC_URL` | **Required** with `MINION_TLS=off`. It is the address users and Workers use; it decides the redirect address of [OIDC](oidc.md) sign-in and whether cookies are marked secure. |
 | `MINION_TRUSTED_PROXIES` | Comma-separated addresses or CIDRs of the proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` headers the Hub honours. Name the **exact** address or the smallest network your proxy has. Never `0.0.0.0/0` or `::/0`: any client could then claim any address and scheme. |
 
+The Hub accepts a passphrase (the [Hub identity](hub-identity.md) operations) only on a request that arrived over HTTPS by these rules: with `MINION_TLS=off` the scheme comes from `X-Forwarded-Proto` of a trusted proxy, so `MINION_TRUSTED_PROXIES` must name your proxy and the proxy must set the header from its own connection. A loopback address is not by itself trusted.
+
 For the Docker Hub ([`deploy/compose/hub.yaml`](../../deploy/compose/hub.yaml)) uncomment the three variables in the file and keep the port published on `127.0.0.1`. When the proxy runs as a container on the same Compose network, its address is the address of that container on that network; give that address (or the network's subnet) as the trusted proxy.
 
 ## What the proxy must do

@@ -138,6 +138,10 @@ type WorkerRecord struct {
 	// Workers from Workers; the pending ones come from [AllWorkersDirectory].
 	Pending    bool
 	EnrollAddr string
+	// NeverConnected is true while the Worker has never completed a connect
+	// handshake (no first_connected_at): the owner may re-issue its pairing
+	// (design 12.3).
+	NeverConnected bool
 }
 
 // Directory lists the enrolled Workers that the Hub may route to: the
@@ -189,6 +193,7 @@ func (d StoreDirectory) AllWorkers(ctx context.Context) ([]WorkerRecord, error) 
 			Fingerprint: fp.String(),
 			CreatedAt:   time.UnixMilli(w.CreatedAt).UTC(),
 			Pending:     w.Pending, EnrollAddr: w.EnrollAddr,
+			NeverConnected: w.FirstConnectedAt == 0,
 		}
 	}
 	return out, nil
@@ -303,7 +308,7 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			owners[w.OwnerID] = owner
 		}
 		info := ops.WorkerInfo{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Owner: owner, Kind: w.Kind,
-			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr}
+			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected}
 		if !w.CreatedAt.IsZero() {
 			at := ops.Timestamp(w.CreatedAt)
 			info.EnrolledAt = &at

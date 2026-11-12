@@ -126,7 +126,7 @@ func TestConnectorModuleConnectsAndAnnouncesTheExecutorOps(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return &Attempt{
-			Pin: p.Pin, TranscriptHash: randomHash(), Version: proto.Current,
+			Pin: p.Pin, OpPub: p.Pin.Pub, TranscriptHash: randomHash(), Version: proto.Current,
 			Reply:   Reply{Type: proto.TypeWelcome, Welcome: okWelcome()},
 			Session: sess,
 		}, nil

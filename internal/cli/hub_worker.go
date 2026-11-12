@@ -17,6 +17,7 @@ func init() {
 		worker := &cobra.Command{Use: "worker", Short: "Manage the Workers of a Hub"}
 		hub.AddCommand(worker)
 		worker.AddCommand(newHubWorkerApprove(defaultOpsDeps()))
+		worker.AddCommand(newHubWorkerRepairPairing(defaultOpsDeps()))
 	})
 }
 
@@ -149,4 +150,91 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// newHubWorkerRepairPairing returns `minion hub worker repair-pairing
+// <fingerprint|id>` (design hub-identity-v2 12.3): the operation
+// worker_pairing_reissue for a Worker whose pairing the Hub committed but the
+// Worker never recorded, because its code expired before it could resume.
+func newHubWorkerRepairPairing(deps opsDeps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "repair-pairing <fingerprint|id>",
+		Short: "Re-issue pairing for a Worker that never connected",
+		Long: `Re-issue pairing for a Worker that never connected.
+
+When the pairing code expired after the Hub accepted it but before the Worker
+recorded the result, the Hub knows the Worker and the Worker knows no Hub. This
+opens a 10-minute window in which the next new pairing code of that Worker,
+entered by its owner or an administrator under Add worker, completes the
+pairing for the same Worker (same id, name and approval state). Then run
+"minion worker pair" on the Worker, or wait for its new code.
+
+Only the Worker's owner and administrators may do this, and only for a Worker
+that has never connected to the Hub; any other Worker, or one that was removed,
+answers conflict. Name the Worker by its id (a UUID) or by the fingerprint of
+its key (that form first lists the Workers, so it also needs the read action).`,
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runHubWorkerRepairPairing(cmd, deps, args[0])
+		},
+	}
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return &usageError{err} })
+	addHubFlags(cmd.Flags())
+	return cmd
+}
+
+func runHubWorkerRepairPairing(cmd *cobra.Command, deps opsDeps, ref string) error {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ref = strings.TrimSpace(ref)
+	byID := ops.ValidUUIDv7(ref)
+	if !byID && !validFingerprintArg(ref) {
+		return usagef("%q is neither a Worker id (a UUID) nor a fingerprint (52 lowercase base32 characters)", ref)
+	}
+	op, ok := ops.Lookup(ops.OpWorkerPairingReissue)
+	if !ok {
+		return fmt.Errorf("the catalog has no %s", ops.OpWorkerPairingReissue)
+	}
+	backend, _, err := pickBackend(cmd, deps, op)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	id := ref
+	if !byID {
+		raw, err := backend.Call(ctx, ops.OpWorkersList, json.RawMessage(`{"all":true}`))
+		if err != nil {
+			return fmt.Errorf("list the Workers (naming a Worker by fingerprint needs the read action; by id it does not): %w", err)
+		}
+		var list ops.WorkersListResult
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return fmt.Errorf("read the Workers list: %w", err)
+		}
+		id = ""
+		for _, w := range list.Workers {
+			if w.Fingerprint == ref {
+				id = w.ID
+				break
+			}
+		}
+		if id == "" {
+			return fmt.Errorf("no Worker with that fingerprint is visible to this key")
+		}
+	}
+	args := ops.WorkerPairingReissueArgs{WriteArgs: ops.WriteArgs{RequestID: deps.newID()}, WorkerID: id}
+	body, _ := json.Marshal(args)
+	raw, err := backend.Call(ctx, ops.OpWorkerPairingReissue, json.RawMessage(body))
+	if err != nil {
+		return failure(cmd, printer{w: out}, op, args.RequestID, err)
+	}
+	var res ops.WriteResult
+	if err := json.Unmarshal(raw, &res); err != nil || res.Outcome != ops.OutcomeDelivered {
+		return fmt.Errorf("the Hub did not confirm the re-issue (outcome %q)", res.Outcome)
+	}
+	_, err = fmt.Fprintf(out, "Pairing re-issued for Worker %s for 10 minutes. Run \"minion worker pair\" on the Worker (or wait for its new code) and enter the new code in the Hub (Add worker).\n", id)
+	return err
 }

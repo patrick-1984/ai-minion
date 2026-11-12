@@ -24,23 +24,9 @@ import (
 // real key saved as identity.key.
 func identityHub(t *testing.T) (dir string, key *identity.Key) {
 	t.Helper()
-	dir = newHubDir(t)
-	key, err := identity.GenerateKey()
+	dir = newHubDir(t) // already a B1 Hub with a plain identity.key
+	key, err := identity.LoadKey(filepath.Join(dir, IdentityKeyFile))
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(dir, IdentityKeyFile)); err != nil {
-		t.Fatal(err)
-	}
-	if err := identity.SaveKey(filepath.Join(dir, IdentityKeyFile), key); err != nil {
-		t.Fatal(err)
-	}
-	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if err := s.PutHubIdentity(context.Background(), HubIdentityRow{Pub: key.Public(), Fingerprint: key.Fingerprint().String(), CreatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	return dir, key

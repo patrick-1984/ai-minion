@@ -220,6 +220,17 @@ func initOIDC(ctx context.Context, env *Env, wr *web.Registry) error {
 		ClientIP: nw.ClientIP,
 	}
 	svc.Register(mux)
+	mw, err := Require[*session.Middleware](env)
+	if err != nil {
+		return err
+	}
+	var trusted []string
+	if o := originOf(nw.PublicURL()); o != "" {
+		trusted = append(trusted, o)
+	}
+	if err := svc.RegisterReauth(mux, mw, trusted...); err != nil {
+		return err
+	}
 
 	handlers := &api.OIDCHandlers{
 		Store: st, Audit: alog,

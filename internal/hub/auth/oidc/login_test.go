@@ -74,6 +74,12 @@ func (r *recAudit) all() []audit.Event {
 	return slices.Clone(r.events)
 }
 
+func (r *recAudit) reset() {
+	r.mu.Lock()
+	r.events = nil
+	r.mu.Unlock()
+}
+
 func (r *recAudit) has(action, outcome string) bool {
 	for _, e := range r.all() {
 		if e.Action == action && e.Outcome == outcome {
@@ -129,8 +135,9 @@ func newTestHub(t *testing.T, mod func(c *Config)) *testHub {
 		mod(&cfg)
 	}
 	h := &testHub{t: t, st: st, idp: idp, cfgs: &staticSource{cfgs: []Config{cfg}}, aud: &recAudit{}, logs: &bytes.Buffer{}}
+	mgr := session.NewManager(st)
 	h.svc = &Service{
-		Configs: h.cfgs, Store: st, Sessions: session.NewManager(st), Limiter: allowAll{}, Audit: h.aud,
+		Configs: h.cfgs, Store: st, Sessions: mgr, Limiter: allowAll{}, Audit: h.aud,
 		Log:      slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		TTL:      func(context.Context) (time.Duration, error) { return time.Hour, nil },
 		Secure:   func(*http.Request) bool { return false },
@@ -138,6 +145,9 @@ func newTestHub(t *testing.T, mod func(c *Config)) *testHub {
 	}
 	mux := http.NewServeMux()
 	h.svc.Register(mux)
+	if err := h.svc.RegisterReauth(mux, &session.Middleware{Manager: mgr}); err != nil {
+		t.Fatal(err)
+	}
 	h.srv = httptest.NewServer(mux)
 	t.Cleanup(h.srv.Close)
 	h.svc.BaseURL = func(*http.Request) string { return h.srv.URL }

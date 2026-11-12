@@ -52,7 +52,7 @@ func IsRevokeFrame(raw json.RawMessage) bool {
 
 // HandleRevoke handles a revoke frame that the Hub sent over the live
 // connection l, as the first frame of an op stream (AD-9). Only a signature by
-// the pinned Hub key with purpose "revoke" over the transcript hash of this
+// the operational key of this connection's certificate with purpose "revoke" over the transcript hash of this
 // very connection wipes the pairing; anything else is ignored and logged and
 // the Worker keeps its state. The wipe is the one of the revoke that answers a
 // connect: pin and enrollment go, the key pair, the share selection, the
@@ -71,17 +71,27 @@ func (c *Connector) HandleRevoke(l *Link, raw json.RawMessage, confirm func()) e
 		c.log.Warn("ignored a malformed revoke frame; nothing was deleted")
 		return ErrRevokeRejected
 	}
+	// A revoke at or after the certificate's not_after is not applied: the
+	// session closes and the pairing stays (section 11.3).
+	if l.Expired() {
+		c.log.Warn("ignored a revoke that arrived at or after the Hub certificate's not_after; nothing was deleted")
+		return ErrRevokeRejected
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(l.ctx), revokeTimeout)
 	defer cancel()
-	if err := identity.Verify(l.pin.Pub, identity.PurposeRevoke, l.transcript, f.Sig); err != nil {
+	// The deadline is read again inside the enrollment guard, right before the
+	// wipe: the signature check, the acknowledgement and the wait for the lock
+	// all happen after the check above.
+	live := func() bool { return !guardFrom(l.ctx).check() }
+	if err := identity.Verify(l.opPub, identity.PurposeRevoke, l.transcript, f.Sig); err != nil {
 		// Let applyRevoke log and record the refusal.
-		c.applyRevoke(ctx, l.gen, l.pin, l.transcript, f.Sig)
+		c.applyRevoke(ctx, l.gen, l.opPub, l.transcript, f.Sig, live)
 		return ErrRevokeRejected
 	}
 	if confirm != nil {
 		confirm()
 	}
-	if wiped, _ := c.applyRevoke(ctx, l.gen, l.pin, l.transcript, f.Sig); !wiped {
+	if wiped, _ := c.applyRevoke(ctx, l.gen, l.opPub, l.transcript, f.Sig, live); !wiped {
 		return ErrRevokeRejected
 	}
 	return nil

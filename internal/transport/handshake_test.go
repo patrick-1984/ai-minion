@@ -182,12 +182,13 @@ func (o outcome) roundTrip(t *testing.T) {
 
 func connectConfigs(t *testing.T) (WorkerConfig, HubConfig, *identity.Key, *identity.Key) {
 	t.Helper()
-	wk, hk := mustKey(t), mustKey(t)
+	wk, hub := mustKey(t), newHub(t)
+	hk := hub.root
 	return WorkerConfig{
 			Key: wk, Name: "lab-pi", Ops: []string{"snapshot"}, Mode: ModeConnect,
 			Pin: identity.Pin{Pub: hk.Public()},
 		},
-		HubConfig{Key: hk}, wk, hk
+		hub.cfg(), wk, hk
 }
 
 // ---------------------------------------------------------------- vectors
@@ -378,23 +379,27 @@ func TestConnectWrongPinSendsNoWorkerSignature(t *testing.T) {
 	}
 }
 
-func rotate(t *testing.T, n int) (keys []*identity.Key, chain []identity.Transition) {
+// rotate builds n master-key rotations: the roots A, B, C... and the signed
+// transitions between them, plus a certified Hub for every root.
+func rotate(t *testing.T, n int) (keys []*identity.Key, chain []identity.Transition, hubs []*tHub) {
 	t.Helper()
-	keys = []*identity.Key{mustKey(t)}
+	first := newHub(t)
+	keys, hubs = []*identity.Key{first.root}, []*tHub{first}
 	for i := 1; i <= n; i++ {
-		next := mustKey(t)
-		tr, err := identity.NewTransition(keys[i-1], next.Public(), uint64(i), time.Now())
+		next := newHub(t)
+		tr, err := identity.NewTransition(keys[i-1], next.root.Public(), uint64(i), time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
-		keys = append(keys, next)
+		keys = append(keys, next.root)
+		hubs = append(hubs, next)
 		chain = append(chain, tr)
 	}
-	return keys, chain
+	return keys, chain, hubs
 }
 
 func TestConnectAppliesTransitionChain(t *testing.T) {
-	keys, chain := rotate(t, 3) // A -> B -> C -> D
+	keys, chain, hubs := rotate(t, 3) // A -> B -> C -> D
 	cases := []struct {
 		name    string
 		pin     identity.Pin
@@ -409,7 +414,9 @@ func TestConnectAppliesTransitionChain(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			wc := WorkerConfig{Key: mustKey(t), Name: "w", Mode: ModeConnect, Pin: c.pin}
-			o := runPair(t, wc, HubConfig{Key: keys[3], Chain: chain}, nil)
+			hc := hubs[3].cfg()
+			hc.Chain = chain
+			o := runPair(t, wc, hc, nil)
 			o.mustSucceed(t)
 			if !bytes.Equal(o.worker.Pin.Pub, keys[3].Public()) || o.worker.Pin.Seq != c.wantSeq || o.worker.PinChanged != c.changed {
 				t.Errorf("pin %+v changed=%v, want seq %d changed=%v", o.worker.Pin, o.worker.PinChanged, c.wantSeq, c.changed)
@@ -420,28 +427,30 @@ func TestConnectAppliesTransitionChain(t *testing.T) {
 }
 
 func TestConnectRejectsBadChains(t *testing.T) {
-	keys, chain := rotate(t, 2) // A -> B -> C
+	keys, chain, hubs := rotate(t, 2) // A -> B -> C
 	forged := bytes.Clone(chain[1].SigByOld)
 	forged[0] ^= 1
 	badSig := []identity.Transition{chain[0], {Seq: 2, OldPub: chain[1].OldPub, NewPub: chain[1].NewPub, CreatedAt: chain[1].CreatedAt, SigByOld: forged}}
-	other := mustKey(t)
+	other := newHub(t)
 	cases := []struct {
 		name string
-		hub  *identity.Key
+		hub  *tHub
 		pin  identity.Pin
 		ch   []identity.Transition
 		want error
 	}{
-		{"link with a bad signature", keys[2], identity.Pin{Pub: keys[0].Public()}, badSig, ErrChainInvalid},
-		{"gap: first link missing", keys[2], identity.Pin{Pub: keys[0].Public()}, chain[1:], ErrPinMismatch},
+		{"link with a bad signature", hubs[2], identity.Pin{Pub: keys[0].Public()}, badSig, ErrChainInvalid},
+		{"gap: first link missing", hubs[2], identity.Pin{Pub: keys[0].Public()}, chain[1:], ErrPinMismatch},
 		{"chain ends at another key", other, identity.Pin{Pub: keys[0].Public()}, chain, ErrPinMismatch},
-		{"stale seq (rollback)", keys[1], identity.Pin{Pub: keys[0].Public(), Seq: 5}, chain[:1], ErrChainInvalid},
-		{"no chain, different key", keys[1], identity.Pin{Pub: keys[0].Public()}, nil, ErrPinMismatch},
+		{"stale seq (rollback)", hubs[1], identity.Pin{Pub: keys[0].Public(), Seq: 5}, chain[:1], ErrChainInvalid},
+		{"no chain, different key", hubs[1], identity.Pin{Pub: keys[0].Public()}, nil, ErrPinMismatch},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			wc := WorkerConfig{Key: mustKey(t), Name: "w", Mode: ModeConnect, Pin: c.pin}
-			o := runPair(t, wc, HubConfig{Key: c.hub, Chain: c.ch}, nil)
+			hc := c.hub.cfg()
+			hc.Chain = c.ch
+			o := runPair(t, wc, hc, nil)
 			if !errors.Is(o.workerErr, c.want) {
 				t.Fatalf("worker error %v, want %v", o.workerErr, c.want)
 			}
@@ -456,9 +465,10 @@ func TestConnectRejectsBadChains(t *testing.T) {
 
 func enrollConfigs(t *testing.T) (WorkerConfig, HubConfig, *identity.Key) {
 	t.Helper()
-	hk := mustKey(t)
+	hub := newHub(t)
+	hk := hub.root
 	return WorkerConfig{Key: mustKey(t), Name: "new-worker", Mode: ModeEnrollInvite, HubFingerprint: hk.Fingerprint()},
-		HubConfig{Key: hk}, hk
+		hub.cfg(), hk
 }
 
 func TestEnrollInviteHandshake(t *testing.T) {
@@ -492,7 +502,7 @@ func TestEnrollInviteWrongFingerprintSendsNoWorkerSignature(t *testing.T) {
 // The relay injects a transition chain into the Hub hello, whatever the mode,
 // to test that the Worker refuses it outside connect mode.
 func TestChainInHelloRejectedOutsideConnectMode(t *testing.T) {
-	keys, chain := rotate(t, 1)
+	keys, chain, hubs := rotate(t, 1)
 	for _, mode := range []Mode{ModeEnrollInvite, ModePairCode} {
 		t.Run(string(mode), func(t *testing.T) {
 			wc := WorkerConfig{Key: mustKey(t), Name: "w", Mode: mode, HubFingerprint: keys[1].Fingerprint()}
@@ -512,7 +522,8 @@ func TestChainInHelloRejectedOutsideConnectMode(t *testing.T) {
 				out, _ := json.Marshal(m)
 				return out
 			}
-			hc := HubConfig{Key: keys[1], PairingPassword: func(string) ([]byte, error) { return wc.PairingCode.Password(), nil }}
+			hc := hubs[1].cfg()
+			hc.PairingPassword = func(string) ([]byte, error) { return wc.PairingCode.Password(), nil }
 			o := runPair(t, wc, hc, inject)
 			if !errors.Is(o.workerErr, ErrUnexpectedChain) {
 				t.Fatalf("worker error %v, want ErrUnexpectedChain", o.workerErr)
@@ -525,9 +536,10 @@ func TestChainInHelloRejectedOutsideConnectMode(t *testing.T) {
 }
 
 func TestHubSendsChainOnlyInConnectMode(t *testing.T) {
-	keys, chain := rotate(t, 1)
-	wc, hc, _ := enrollConfigs(t)
-	hc.Key, hc.Chain = keys[1], chain
+	keys, chain, hubs := rotate(t, 1)
+	wc, _, _ := enrollConfigs(t)
+	hc := hubs[1].cfg()
+	hc.Chain = chain
 	wc.HubFingerprint = keys[1].Fingerprint()
 	o := runPair(t, wc, hc, nil)
 	o.mustSucceed(t)
@@ -586,12 +598,13 @@ func pairConfigs(t *testing.T) (WorkerConfig, HubConfig, identity.PairingCode) {
 	t.Helper()
 	code := identity.NewPairingCode()
 	wc := WorkerConfig{Key: mustKey(t), Name: "paired-pi", Mode: ModePairCode, PairingCode: code}
-	hc := HubConfig{Key: mustKey(t), PairingPassword: func(id string) ([]byte, error) {
+	hc := newHub(t).cfg()
+	hc.PairingPassword = func(id string) ([]byte, error) {
 		if id != code.PairingID() {
 			return nil, proto.NewError(proto.CodePairingCodeInvalid, "unknown pairing id")
 		}
 		return code.Password(), nil
-	}}
+	}
 	return wc, hc, code
 }
 
@@ -604,7 +617,7 @@ func TestPairCodeHandshake(t *testing.T) {
 	if seenID != code.PairingID() || o.hub.Worker.PairingID != code.PairingID() || o.hub.Worker.Mode != ModePairCode {
 		t.Errorf("pairing id %q / %+v", seenID, o.hub.Worker)
 	}
-	if !bytes.Equal(o.worker.Pin.Pub, hc.Key.Public()) || !o.worker.PinChanged {
+	if !bytes.Equal(o.worker.Pin.Pub, hc.Cert.RootPub) || !o.worker.PinChanged {
 		t.Error("pin not taken from the paired Hub")
 	}
 	// Frame order: hellos, pake.msg W, pake.msg H, pake.confirm W, pake.confirm H, sigs.
@@ -626,7 +639,7 @@ func TestPairCodeConfirmationIsSignedOverHashAndTag(t *testing.T) {
 	for _, side := range []struct {
 		wire []byte
 		pub  ed25519.PublicKey
-	}{{o.wWire, wc.Key.Public()}, {o.hWire, hc.Key.Public()}} {
+	}{{o.wWire, wc.Key.Public()}, {o.hWire, hc.Cert.OpPub}} {
 		r := bytes.NewReader(side.wire)
 		for r.Len() > 0 {
 			body, _ := proto.ReadFrame(r, proto.HandshakeFrameLimit)
@@ -804,32 +817,32 @@ func TestSignatureOfAnotherPurposeIsRejected(t *testing.T) {
 }
 
 func TestVersionNegotiation(t *testing.T) {
-	t.Run("hub one minor ahead still serves a 2.0 worker", func(t *testing.T) {
+	t.Run("hub one minor ahead still serves a 3.0 worker", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
-		hc.Current = proto.Version{Major: 2, Minor: 1}
+		hc.Current = proto.Version{Major: 3, Minor: 1}
 		o := runPair(t, wc, hc, nil)
 		o.mustSucceed(t)
 		defer o.worker.Channel.Close()
 		defer o.hub.Channel.Close()
-		if o.worker.Version != (proto.Version{Major: 2}) || o.hub.Version != o.worker.Version {
+		if o.worker.Version != (proto.Version{Major: 3}) || o.hub.Version != o.worker.Version {
 			t.Errorf("version %s / %s", o.worker.Version, o.hub.Version)
 		}
 	})
 	t.Run("worker range wins the highest common version", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
-		wc.Protocols = proto.Range{Min: proto.Version{Major: 2}, Max: proto.Version{Major: 2, Minor: 5}}
-		hc.Current = proto.Version{Major: 2, Minor: 2}
+		wc.Protocols = proto.Range{Min: proto.Version{Major: 3}, Max: proto.Version{Major: 3, Minor: 5}}
+		hc.Current = proto.Version{Major: 3, Minor: 2}
 		o := runPair(t, wc, hc, nil)
 		o.mustSucceed(t)
 		defer o.worker.Channel.Close()
 		defer o.hub.Channel.Close()
-		if o.worker.Version != (proto.Version{Major: 2, Minor: 2}) {
+		if o.worker.Version != (proto.Version{Major: 3, Minor: 2}) {
 			t.Errorf("version %s", o.worker.Version)
 		}
 	})
 	t.Run("major mismatch", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
-		hc.Current = proto.Version{Major: 3}
+		hc.Current = proto.Version{Major: 4}
 		o := runPair(t, wc, hc, nil)
 		if proto.CodeOf(o.workerErr) != proto.CodeProtoIncompatible || proto.CodeOf(o.hubErr) != proto.CodeProtoIncompatible {
 			t.Errorf("worker %v hub %v", o.workerErr, o.hubErr)
@@ -840,13 +853,13 @@ func TestVersionNegotiation(t *testing.T) {
 	})
 	t.Run("same major, disjoint minor range", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
-		wc.Protocols = proto.Range{Min: proto.Version{Major: 2, Minor: 5}, Max: proto.Version{Major: 2, Minor: 6}}
+		wc.Protocols = proto.Range{Min: proto.Version{Major: 3, Minor: 5}, Max: proto.Version{Major: 3, Minor: 6}}
 		o := runPair(t, wc, hc, nil)
 		if proto.CodeOf(o.workerErr) != proto.CodeProtoIncompatible {
 			t.Errorf("worker %v", o.workerErr)
 		}
 	})
-	t.Run("a 1.x Hub is refused (protocol 2.0 only, no fallback)", func(t *testing.T) {
+	t.Run("a 1.x Hub is refused (protocol 3.0 only, no fallback)", func(t *testing.T) {
 		wc, hc, _, _ := connectConfigs(t)
 		hc.Current = proto.Version{Major: 1, Minor: 0}
 		o := runPair(t, wc, hc, nil)
@@ -1211,7 +1224,8 @@ func TestPairCodeSessionIDIsTranscriptHash(t *testing.T) {
 // ISK from the key schedule, or changing the labels or the salt, breaks it.
 func TestPairCodeChannelKeysIncludeCPaceISK(t *testing.T) {
 	code := identity.NewPairingCode()
-	hubKey := mustKey(t)
+	hub := newHub(t)
+	hubKey := hub.op
 	wc := WorkerConfig{Key: mustKey(t), Name: "scripted", Mode: ModePairCode, PairingCode: code, Timeout: 5 * time.Second}
 
 	wEnd, hEnd := net.Pipe()
@@ -1236,7 +1250,7 @@ func TestPairCodeChannelKeysIncludeCPaceISK(t *testing.T) {
 	eph, err := ecdh.X25519().GenerateKey(rand.Reader)
 	must(err)
 	hh := HubHello{
-		Type: proto.TypeHello, Version: proto.Current, HubPub: identity.B64(hubKey.Public()),
+		Type: proto.TypeHello, Version: proto.Current, HubPub: identity.B64(hub.cert.RootPub), HubCert: hub.cert.Bytes(),
 		EphH: eph.PublicKey().Bytes(), Nonce: bytes.Repeat([]byte{7}, NonceSize),
 	}
 	hubBytes, err := sendFrame(hEnd, hh)

@@ -429,7 +429,7 @@ func (w *workerSide) accept(t *testing.T) *transport.Stream {
 }
 
 func revokerFor(h *testHub, grace time.Duration) *RegistryRevoker {
-	return &RegistryRevoker{Registry: h.svc.Registry(), Identity: h.svc.Identity(), Grace: grace}
+	return &RegistryRevoker{Registry: h.svc.Registry(), Grace: grace}
 }
 
 func TestRegistryRevokerSendsASignedRevokeOverTheLiveConnection(t *testing.T) {
@@ -458,12 +458,12 @@ func TestRegistryRevokerSendsASignedRevokeOverTheLiveConnection(t *testing.T) {
 		t.Fatalf("frame = %s (%v)", body, err)
 	}
 	// Signed by the Hub key, purpose revoke, over this connection's transcript.
-	if err := VerifyRevoke(ws.res.HubPub, ws.res.TranscriptHash[:], f); err != nil {
+	if err := VerifyRevoke(ws.res.OpPub, ws.res.TranscriptHash[:], f); err != nil {
 		t.Fatalf("the live revoke does not verify: %v", err)
 	}
 	other := bytes.Clone(ws.res.TranscriptHash[:])
 	other[1] ^= 0x55
-	if VerifyRevoke(ws.res.HubPub, other, f) == nil {
+	if VerifyRevoke(ws.res.OpPub, other, f) == nil {
 		t.Error("the live revoke verifies over another transcript")
 	}
 	// The Worker confirms; the Hub then ends the connection.
@@ -553,7 +553,7 @@ func TestRemoveOnlineWorkerDeliversTheLiveRevokeThroughTheRegistry(t *testing.T)
 		}
 		var f RevokeFrame
 		_ = json.Unmarshal(body, &f)
-		if VerifyRevoke(ws.res.HubPub, ws.res.TranscriptHash[:], f) == nil {
+		if VerifyRevoke(ws.res.OpPub, ws.res.TranscriptHash[:], f) == nil {
 			_ = st.WriteFrame(map[string]string{"type": proto.TypeOpResult, "op": "revoke"})
 		}
 		_ = st.Close()
@@ -604,7 +604,7 @@ func TestOfflineWorkerIsRevokedOnItsNextConnect(t *testing.T) {
 	var f RevokeFrame
 	raw, _ := json.Marshal(m)
 	_ = json.Unmarshal(raw, &f)
-	if err := VerifyRevoke(conn.HubPub, conn.TranscriptHash[:], f); err != nil {
+	if err := VerifyRevoke(conn.OpPub, conn.TranscriptHash[:], f); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
 	expectClosed(t, conn)

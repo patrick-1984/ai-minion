@@ -134,3 +134,33 @@ func TestConstantsMatchTable(t *testing.T) {
 		}
 	}
 }
+
+func TestHubCertExpiredIsA503(t *testing.T) {
+	if !CodeHubCertExpired.Known() || HTTPStatus(CodeHubCertExpired) != 503 || CodeHubCertExpired.String() != "hub_cert_expired" {
+		t.Fatalf("hub_cert_expired: known=%v status=%d", CodeHubCertExpired.Known(), HTTPStatus(CodeHubCertExpired))
+	}
+}
+
+// The codes of 0.7.0 from both sides of the identity work: hub_cert_expired
+// (protocol 3.0) and the four codes of the identity operations.
+func TestHubIdentityCodesAreDeclaredAfterTheOlderOnes(t *testing.T) {
+	want := map[Code]int{
+		CodeHubCertExpired: 503, CodeReauthRequired: 403, CodeReauthUnavailable: 403,
+		CodeTLSRequired: 403, CodePassphraseInvalid: 403,
+	}
+	all := Codes()
+	tail := all[len(all)-len(want):]
+	for _, c := range tail {
+		st, ok := want[c]
+		if !ok {
+			t.Errorf("code %q is among the last %d codes, want only the 0.7.0 codes", c, len(want))
+			continue
+		}
+		if HTTPStatus(c) != st {
+			t.Errorf("code %q: status %d, want %d", c, HTTPStatus(c), st)
+		}
+	}
+	if tail[0] != CodeHubCertExpired {
+		t.Errorf("the 0.7.0 codes start with %q, want hub_cert_expired", tail[0])
+	}
+}

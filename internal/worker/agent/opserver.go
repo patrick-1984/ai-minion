@@ -312,12 +312,24 @@ func (s *OpServer) ServeStream(linkCtx context.Context, st OpStream) {
 
 	out := &opOutput{st: st, timeout: s.cfg.WriteTimeout}
 	if typ, _ := proto.FrameType(body); typ == proto.TypeShareProbe {
+		if s.expired(linkCtx) {
+			st.Reset()
+			return
+		}
 		s.serveShareProbe(linkCtx, out, body)
 		return
 	}
 	rq, held, perr := s.parse(body)
 	if perr != nil {
 		out.fail(perr)
+		return
+	}
+	// Op admission recheck (section 11.3): the request was decoded before the
+	// Hub certificate's not_after, but it is admitted only if both clocks are
+	// still before it. The stream is reset; the Hub sees the outcome as unknown
+	// and nothing was started.
+	if s.expired(linkCtx) {
+		st.Reset()
 		return
 	}
 
@@ -380,6 +392,16 @@ func (s *OpServer) ServeStream(linkCtx context.Context, st OpStream) {
 		raw = json.RawMessage("null")
 	}
 	out.result(raw)
+}
+
+// expired reads both clocks of the link's certificate and reports whether the
+// connection is over (closing it the first time).
+func (s *OpServer) expired(linkCtx context.Context) bool {
+	if guardFrom(linkCtx).check() {
+		s.log.Info("an operation was not admitted: the Hub certificate reached its not_after")
+		return true
+	}
+	return false
 }
 
 // serveShareProbe answers the Hub's internal share probe on this stream: one

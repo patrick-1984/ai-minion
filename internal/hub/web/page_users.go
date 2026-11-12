@@ -109,7 +109,7 @@ func NewHandlerCaller(h http.Handler) *HandlerCaller { return &HandlerCaller{h: 
 
 // forwardedHeaders are the request headers that decide the client address and
 // the scheme in the Hub's trusted-proxy rules.
-var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Real-Ip", "Forwarded"}
+var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Real-Ip", "Forwarded", "Origin", "Sec-Fetch-Site"}
 
 // maxOpResponseBytes bounds the answer of one operation.
 const maxOpResponseBytes = 8 << 20

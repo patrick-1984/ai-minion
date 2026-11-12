@@ -74,7 +74,7 @@ func TestRetirerAgainstTheRealHubRemovesTheOldKeyAndTheNextConnectGetsASignedRev
 	if att.Reply.Type != proto.TypeRevoke || att.Session != nil {
 		t.Fatalf("the old key got %q after the retirement, want revoke", att.Reply.Type)
 	}
-	if err := identity.Verify(att.Pin.Pub, identity.PurposeRevoke, att.TranscriptHash, att.Reply.RevokeSig); err != nil {
+	if err := identity.Verify(att.OpPub, identity.PurposeRevoke, att.TranscriptHash, att.Reply.RevokeSig); err != nil {
 		t.Fatalf("the revoke must be signed by the Hub: %v", err)
 	}
 	if h.service().Registry().IsOnline(row.ID) {

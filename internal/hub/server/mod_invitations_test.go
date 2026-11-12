@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -120,12 +121,12 @@ func TestProductionStartupCreatesAnInvitationAndEnrollsAWorker(t *testing.T) {
 	t.Setenv("MINION_INFRA_INVITE_KEY_FILE", keyFile)
 
 	data := t.TempDir()
+	rootPub := hubidtest.Provision(t, data)
 	h := startHub(t, &Config{DataDir: data}, DefaultRegistry)
-	hubKey, err := identity.LoadKey(filepath.Join(data, workers.IdentityFile))
+	hubFpr, err := identity.FingerprintOf(rootPub)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hubFpr := hubKey.Fingerprint()
 
 	hc := newHubClient(t, h, "https")
 	code, body, csrf := hc.login("root", adminPW)

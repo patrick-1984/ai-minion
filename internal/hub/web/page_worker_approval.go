@@ -28,6 +28,18 @@ func handleWorkerApprove(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 		"The Worker is approved. It reconnects within moments and then receives operations.")
 }
 
+// WorkerRepairPairingPath is the path that re-issues the pairing of a Worker
+// that never connected (POST, design 12.3).
+func WorkerRepairPairingPath(id string) string {
+	return "/workers/" + url.PathEscape(id) + "/repair-pairing"
+}
+
+func handleWorkerRepairPairing(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
+	args := ops.WorkerPairingReissueArgs{WriteArgs: newWriteArgs(), WorkerID: r.PathValue("worker")}
+	writeOp(w, r, c, ops.OpWorkerPairingReissue, args,
+		"Pairing re-issued for 10 minutes. Run minion worker pair on the Worker (or wait for its new code) and enter the new code under Add worker.")
+}
+
 func handleWorkerRemove(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
 	args := ops.WorkerRemoveArgs{WriteArgs: newWriteArgs(), WorkerID: r.PathValue("worker")}
 	writeOp(w, r, c, ops.OpWorkerRemove, args, "The Worker is removed.")
@@ -36,4 +48,5 @@ func handleWorkerRemove(w http.ResponseWriter, r *http.Request, c OpCaller, _ pa
 func init() {
 	RegisterRoute(Route{Pattern: "POST /workers/{worker}/approve", Handler: userRoute(handleWorkerApprove)})
 	RegisterRoute(Route{Pattern: "POST /workers/{worker}/remove", Handler: userRoute(handleWorkerRemove)})
+	RegisterRoute(Route{Pattern: "POST /workers/{worker}/repair-pairing", Handler: userRoute(handleWorkerRepairPairing)})
 }

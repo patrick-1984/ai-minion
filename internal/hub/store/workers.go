@@ -52,6 +52,12 @@ type WorkerRow struct {
 	// approving identity, or "migration") record the approval.
 	ApprovedAt int64
 	ApprovedBy string
+	// FirstConnectedAt (unix milliseconds, 0 = never) is when a connect
+	// handshake first registered the Worker; rows that existed at migration
+	//  0023 carry their created_at. RepairUntil (0 = none) is the end of the
+	// owner's pairing re-issue window (hub-identity-v2 12.3).
+	FirstConnectedAt int64
+	RepairUntil      int64
 }
 
 // TombstoneRow is the record a removed Worker leaves behind (AD-9).
@@ -101,6 +107,10 @@ func (s *Store) InsertWorker(ctx context.Context, ex Execer, w WorkerRow) error 
 	if ex == nil {
 		ex = s.db
 	}
+	var firstConnected any
+	if w.FirstConnectedAt != 0 {
+		firstConnected = w.FirstConnectedAt
+	}
 	approval, approvedAt := "approved", any(w.CreatedAt)
 	if w.Pending {
 		approval, approvedAt = "pending", nil
@@ -108,9 +118,9 @@ func (s *Store) InsertWorker(ctx context.Context, ex Execer, w WorkerRow) error 
 		approvedAt = w.ApprovedAt
 	}
 	_, err := ex.ExecContext(ctx,
-		`INSERT INTO workers (id, worker_pub, name, owner_id, kind, created_at, approval, enroll_addr, approved_at, approved_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		w.ID, w.Pub, w.Name, w.OwnerID, w.Kind, w.CreatedAt, approval, w.EnrollAddr, approvedAt, w.ApprovedBy)
+		`INSERT INTO workers (id, worker_pub, name, owner_id, kind, created_at, approval, enroll_addr, approved_at, approved_by, first_connected_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.Pub, w.Name, w.OwnerID, w.Kind, w.CreatedAt, approval, w.EnrollAddr, approvedAt, w.ApprovedBy, firstConnected)
 	if err != nil {
 		switch msg := err.Error(); {
 		case strings.Contains(msg, "workers.worker_pub"):
@@ -123,11 +133,11 @@ func (s *Store) InsertWorker(ctx context.Context, ex Execer, w WorkerRow) error 
 	return nil
 }
 
-const workerColumns = `id, worker_pub, name, owner_id, kind, created_at, approval = 'pending', enroll_addr, COALESCE(approved_at, 0), approved_by`
+const workerColumns = `id, worker_pub, name, owner_id, kind, created_at, approval = 'pending', enroll_addr, COALESCE(approved_at, 0), approved_by, COALESCE(first_connected_at, 0), repair_until`
 
 func scanWorker(row interface{ Scan(...any) error }) (WorkerRow, error) {
 	var w WorkerRow
-	err := row.Scan(&w.ID, &w.Pub, &w.Name, &w.OwnerID, &w.Kind, &w.CreatedAt, &w.Pending, &w.EnrollAddr, &w.ApprovedAt, &w.ApprovedBy)
+	err := row.Scan(&w.ID, &w.Pub, &w.Name, &w.OwnerID, &w.Kind, &w.CreatedAt, &w.Pending, &w.EnrollAddr, &w.ApprovedAt, &w.ApprovedBy, &w.FirstConnectedAt, &w.RepairUntil)
 	return w, err
 }
 

@@ -63,9 +63,45 @@ type Session struct {
 	ExpiresAt          time.Time
 	// CSRFToken is the token the browser must send in X-Minion-CSRF.
 	CSRFToken string
+	// AuthAt is when the server last checked a credential for this session
+	// (a local password, or an OIDC callback with a verified auth_time); the
+	// zero time means it never did, and the session is then never fresh.
+	AuthAt time.Time
+	// AuthMethod is "local", "oidc:<provider id>" or "".
+	AuthMethod string
 	// ActAs is set while the session's admin is acting as another user (Story
 	// 6.5). UserID, Username and Role stay those of the admin, the actor.
 	ActAs *ActAs
+}
+
+// ReauthWindow is how recent the last credential check of a session must be
+// for an identity operation (section 8.1 item 2).
+const ReauthWindow = 5 * time.Minute
+
+// Auth methods of a session.
+const (
+	// AuthMethodLocal is a verified local password.
+	AuthMethodLocal = "local"
+	// AuthMethodOIDCPrefix starts "oidc:<provider id>".
+	AuthMethodOIDCPrefix = "oidc:"
+)
+
+// Auth is the authentication a session starts with or is raised to. The zero
+// value means "no verified authentication".
+type Auth struct {
+	At     time.Time
+	Method string
+}
+
+// Fresh reports whether the session's last credential check is at most
+// [ReauthWindow] old at now. A session without one is never fresh, and a time
+// in the future (a clock that went back) is not fresh either.
+func (s *Session) Fresh(now time.Time) bool {
+	if s == nil || s.AuthAt.IsZero() || s.AuthMethod == "" {
+		return false
+	}
+	age := now.Sub(s.AuthAt)
+	return age >= 0 && age <= ReauthWindow
 }
 
 // Principal returns the authz principal of the session (AD-10): the act-as
@@ -163,6 +199,14 @@ func ValidCSRF(token, presented string) bool {
 // Create starts a session of user that lasts ttl and returns it with the
 // cookie value.
 func (m *Manager) Create(ctx context.Context, user store.UserRow, ttl time.Duration) (Issued, error) {
+	return m.CreateAuth(ctx, user, ttl, Auth{})
+}
+
+// CreateAuth is [Manager.Create] for a session whose start was a credential
+// check that the server itself performed (a verified local password, an OIDC
+// callback with a verifiable auth_time). The zero Auth starts a session that
+// is never fresh.
+func (m *Manager) CreateAuth(ctx context.Context, user store.UserRow, ttl time.Duration, auth Auth) (Issued, error) {
 	if ttl <= 0 {
 		return Issued{}, errors.New("session: ttl must be positive")
 	}
@@ -181,6 +225,13 @@ func (m *Manager) Create(ctx context.Context, user store.UserRow, ttl time.Durat
 		CreatedAt:         store.UnixMS(now),
 		ExpiresAt:         store.UnixMS(now.Add(ttl)),
 	}
+	// The method says how the session was started even when no credential
+	// check can be proved (auth_at stays 0): the page then offers the right
+	// re-authentication.
+	row.AuthMethod = auth.Method
+	if !auth.At.IsZero() && auth.Method != "" {
+		row.AuthAt = store.UnixMS(auth.At)
+	}
 	if err := m.store.CreateSession(ctx, row, row.CreatedAt); err != nil {
 		return Issued{}, err
 	}
@@ -188,7 +239,7 @@ func (m *Manager) Create(ctx context.Context, user store.UserRow, ttl time.Durat
 }
 
 func toSession(row store.SessionRow, u store.UserRow, token string) Session {
-	return Session{
+	s := Session{
 		ID:                 row.ID,
 		UserID:             u.ID,
 		Username:           u.Username,
@@ -197,7 +248,12 @@ func toSession(row store.SessionRow, u store.UserRow, token string) Session {
 		MustChangePassword: u.MustChangePassword,
 		ExpiresAt:          store.FromUnixMS(row.ExpiresAt),
 		CSRFToken:          CSRFToken(token),
+		AuthMethod:         row.AuthMethod,
 	}
+	if row.AuthAt > 0 {
+		s.AuthAt = store.FromUnixMS(row.AuthAt)
+	}
+	return s
 }
 
 // Resolve returns the valid session named by the cookie value token. It
@@ -296,3 +352,50 @@ func isLoopbackHost(host string) bool {
 	}
 	return false
 }
+
+// AuthStore is the optional persistence port of [Manager.MarkAuthenticated];
+// *store.Store offers it.
+type AuthStore interface {
+	SetSessionAuth(ctx context.Context, sessionID string, authAt int64, method string) (bool, error)
+}
+
+// ErrNoAuthStore is returned by [Manager.MarkAuthenticated] when the store
+// cannot record an authentication.
+var ErrNoAuthStore = errors.New("session: the store cannot record an authentication")
+
+// MarkAuthenticated raises the session to a fresh authentication at now with
+// method. Only the server calls it, after a credential check it performed
+// itself (the local password re-entry, the OIDC re-authentication callback).
+// It returns [ErrNoSession] when the session no longer exists.
+func (m *Manager) MarkAuthenticated(ctx context.Context, sessionID, method string) (time.Time, error) {
+	return m.MarkAuthenticatedAt(ctx, sessionID, method, time.Time{})
+}
+
+// MarkAuthenticatedAt is [Manager.MarkAuthenticated] for a credential check
+// that happened at a known time (the verified auth_time of an identity
+// provider). A zero or future at is clamped to now. It returns the time stored.
+func (m *Manager) MarkAuthenticatedAt(ctx context.Context, sessionID, method string, at time.Time) (time.Time, error) {
+	a, ok := m.store.(AuthStore)
+	if !ok {
+		return time.Time{}, ErrNoAuthStore
+	}
+	if method == "" {
+		return time.Time{}, errors.New("session: an authentication needs a method")
+	}
+	now := m.now()
+	if at.IsZero() || at.After(now) {
+		at = now
+	}
+	found, err := a.SetSessionAuth(ctx, sessionID, store.UnixMS(at), method)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !found {
+		return time.Time{}, ErrNoSession
+	}
+	return at, nil
+}
+
+// Now returns the manager's clock; handlers that judge freshness use it so
+// that tests can drive the time.
+func (m *Manager) Now() time.Time { return m.now() }

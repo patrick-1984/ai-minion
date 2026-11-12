@@ -19,10 +19,12 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubcert"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
 
@@ -36,15 +38,27 @@ type testHub struct {
 	srv   *httptest.Server
 	audit *audit.Log
 	logs  *syncBuf
+	hub   *hubcert.Hub      // the certified Hub identity
+	id    *hubidtest.Static // its identity source
 }
 
 func newTestHub(t *testing.T, mutate func(*ServiceOptions)) *testHub {
 	t.Helper()
 	dir := t.TempDir()
 	st := openStore(t, dir)
+	hub := hubcert.New(t)
+	id := hubidtest.NewStatic(hub)
+	h := newTestHubOn(t, st, id, mutate)
+	h.hub, h.id = hub, id
+	return h
+}
+
+// newTestHubOn is a test Hub on a given store and identity source.
+func newTestHubOn(t *testing.T, st *store.Store, src IdentitySource, mutate func(*ServiceOptions)) *testHub {
+	t.Helper()
 	logs := &syncBuf{}
 	h := &testHub{t: t, st: st, audit: audit.New(st), logs: logs}
-	opts := ServiceOptions{DataDir: dir, Store: st, Auditor: h.audit, Logger: textLogger(logs)}
+	opts := ServiceOptions{Identity: src, Store: st, Auditor: h.audit, Logger: textLogger(logs)}
 	if mutate != nil {
 		mutate(&opts)
 	}
@@ -277,16 +291,16 @@ func TestTombstonedKeyGetsASignedRevoke(t *testing.T) {
 	}
 	// The signature verifies against the Hub key, purpose revoke, over the
 	// transcript hash of this very handshake.
-	if err := VerifyRevoke(res.HubPub, res.TranscriptHash[:], f); err != nil {
+	if err := VerifyRevoke(res.OpPub, res.TranscriptHash[:], f); err != nil {
 		t.Fatalf("revoke signature: %v", err)
 	}
-	if err := identity.Verify(res.HubPub, identity.PurposeRevoke, res.TranscriptHash[:], f.Sig); err != nil {
+	if err := identity.Verify(res.OpPub, identity.PurposeRevoke, res.TranscriptHash[:], f.Sig); err != nil {
 		t.Fatalf("revoke signature with the purpose spelled out: %v", err)
 	}
 	// ... and not over another transcript, for another purpose, or by another key.
 	other := bytes.Clone(res.TranscriptHash[:])
 	other[0] ^= 0xff
-	if VerifyRevoke(res.HubPub, other, f) == nil {
+	if VerifyRevoke(res.OpPub, other, f) == nil {
 		t.Error("the revoke verifies over a different transcript (replay)")
 	}
 	if identity.Verify(res.HubPub, identity.PurposeHandshakeHub, res.TranscriptHash[:], f.Sig) == nil {
@@ -315,7 +329,7 @@ func TestMajorVersionMismatchIsProtoIncompatible(t *testing.T) {
 	key := newKey(t)
 	w := h.enrol(key, "owner-1", "pi")
 	cfg := h.workerConfig(key, "send_text")
-	cfg.Protocols = proto.Range{Min: proto.Version{Major: 3}, Max: proto.Version{Major: 3, Minor: 3}}
+	cfg.Protocols = proto.Range{Min: proto.Version{Major: 2}, Max: proto.Version{Major: 2, Minor: 3}}
 	_, err := h.dial(cfg)
 	if proto.CodeOf(err) != proto.CodeProtoIncompatible {
 		t.Fatalf("err = %v, want proto_incompatible", err)

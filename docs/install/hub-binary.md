@@ -11,7 +11,7 @@ Releases are published on `https://github.com/patrick-1984/ai-minion/releases`. 
 Verify what you downloaded before you run it. The checksum list is signed by the release workflow of this project (keyless signature, recorded in the Sigstore transparency log):
 
 ```sh
-VERSION=0.6.3
+VERSION=0.7.0
 ARCHIVE=minion_${VERSION}_linux_amd64.tar.gz
 BASE=https://github.com/patrick-1984/ai-minion/releases/download/v${VERSION}
 curl -fsSLO "$BASE/$ARCHIVE"
@@ -53,6 +53,7 @@ The Hub has no command-line flags. It reads its settings from the environment:
 | `MINION_TLS_CERT_FILE`, `MINION_TLS_KEY_FILE` | A certificate and key to use instead of the generated one (both or neither). `SIGHUP` reloads them. The key must be a plain file (or a link to one in a directory only the Hub user or root can write) owned by the Hub user with mode 0600 or 0400; the Hub refuses a key that group or others can access and never changes it. |
 | `MINION_PUBLIC_URL` | The external URL, for example `https://hub.example.com`. |
 | `MINION_TRUSTED_PROXIES` | Comma-separated addresses or CIDRs of the reverse proxies whose `X-Forwarded-*` headers are trusted. |
+| `MINION_MANAGEMENT_LISTEN` | Optional loopback `host:port` (for example `127.0.0.1:8444`) that serves plain HTTP for the [Hub identity](../guides/hub-identity.md#the-https-rule) operations. Never point a reverse proxy at it. |
 | `MINION_ADMIN_USERNAME`, `MINION_ADMIN_PASSWORD_FILE` | The first administrator (used only while the user table is empty). `MINION_ADMIN_PASSWORD` also works, but a file keeps the password out of the process environment. |
 
 A first start, from a shell:
@@ -102,10 +103,10 @@ Then sign in at `https://<host>:8443` and add Workers: [pairing and sharing](../
 
 ```sh
 sudo minion update --channel 0.6      # the newest 0.6.x
-sudo minion update --version v0.6.3   # exactly this version
+sudo minion update --version v0.7.0   # exactly this version
 sudo systemctl restart minion-hub
 ```
 
-Release 0.6.3 uses wire protocol 2.0 only: a Hub and a Worker of an earlier build cannot connect, so there are no mixed versions. Update the Hub and every Worker together. Take an encrypted backup first; the database migration is forward-only.
+Release 0.7.0 uses wire protocol 3.0 only: a Hub and a Worker of an earlier build cannot connect, so there are no mixed versions. Take an encrypted backup first (the database migration is forward-only), update the Hub, set the Hub passphrase (`minion hub identity set-passphrase` or the banner in the web UI; the Hub serves no Workers until then), then update every Worker. See [Hub identity](../guides/hub-identity.md).
 
 `minion update` verifies the release signature and the archive checksum before it replaces the binary, and refuses an older version unless you pass `--allow-downgrade`. An update contacts the release host and the Sigstore TUF repository; `--offline` installs the newest verified release from the local cache instead. The Hub upgrades its database at start. There is no database downgrade, so take a [backup](../guides/backup-restore.md) first.

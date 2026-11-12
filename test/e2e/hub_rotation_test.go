@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	wagent "github.com/patrick-1984/ai-minion/internal/worker/agent"
@@ -98,7 +99,9 @@ func TestWorkerOfflineThroughTwoHubRotationsReconnectsWithoutHumanAction(t *test
 	eventually(t, "the Worker to be offline", func() bool { return !h.service().Registry().IsOnline(row.ID) })
 
 	ctx := context.Background()
-	first, err := h.service().Rotator().Rotate(ctx, workers.RotateActor{ID: "admin-1"})
+	const pass2, pass3 = "second passphrase for the Hub", "third passphrase for the Hub"
+	actor := hubid.Actor{ID: "admin-1", Channel: hubid.ChannelUI}
+	first, err := h.id.RotateMaster(ctx, actor, hubidtest.Passphrase, pass2, pass2, hubid.IssueOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,11 +111,11 @@ func TestWorkerOfflineThroughTwoHubRotationsReconnectsWithoutHumanAction(t *test
 	h.mu.Unlock()
 	h.stop()
 	h.start(addr)
-	second, err := h.service().Rotator().Rotate(ctx, workers.RotateActor{ID: "admin-1"})
+	second, err := h.id.RotateMaster(ctx, actor, pass2, pass3, pass3, hubid.IssueOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Seq != 1 || second.Seq != 2 || first.NewFingerprint == second.NewFingerprint {
+	if first.Serial == 0 || second.Serial <= first.Serial {
 		t.Fatalf("rotations = %+v, %+v", first, second)
 	}
 	current := h.service().Identity().Public()

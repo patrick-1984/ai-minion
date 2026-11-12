@@ -145,6 +145,13 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		return
 	}
 
+	if op.SessionOnly && (id.Via != ViaSession || id.Principal.Kind != authz.KindBrowserSession) {
+		// Only a browser session acting as itself may run these (the Hub
+		// identity operations); an API key and an act-as session may not.
+		WriteError(w, NewError(proto.CodeForbidden, "this operation is available only to a signed-in browser session"))
+		return
+	}
+
 	args, requestWorker, err := d.decode(w, r, op, rt, id.Principal)
 	if err != nil {
 		WriteError(w, err)
@@ -160,7 +167,7 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		WriteError(w, err)
 		return
 	}
-	call = &Call{Op: op, Args: args, Principal: id.Principal, Identity: id, Resource: res, IP: id.IP}
+	call = &Call{Op: op, Args: args, Principal: id.Principal, Identity: id, Resource: res, IP: id.IP, Request: r}
 
 	if err := d.Authz.Decide(r.Context(), id.Principal, op.Actions, res); err != nil {
 		e := ErrorOf(err)

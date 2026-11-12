@@ -3,7 +3,7 @@
 <div class="inspect-main" data-modal-inert>
 {{template "inspector_kept"}}
 <div class="page-head">
-  <div><h1>Workers</h1><p>Machines that host terminal sessions. Search and filter the list; it updates live.</p></div>
+  <div><h1>Workers</h1><p>Machines that host terminal sessions. Search and filter the list; it updates live.</p>{{if .Data.IdentityNote}}<p><a class="badge" data-tone="{{.Data.IdentityTone}}" id="identity-countdown" href="/admin/identity">{{.Data.IdentityNote}}</a></p>{{end}}</div>
   <div class="page-actions"><a class="btn" href="/workers/add">{{template "icon" "i-plus"}}<span>Add worker</span></a></div>
 </div>
 {{if .Data.CanFilter}}<nav aria-label="Whose workers" class="scope" id="scope-switch">

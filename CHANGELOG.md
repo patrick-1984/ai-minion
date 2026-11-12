@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.7.0
+
+Released YYYY-MM-DD.
+
+This release replaces the single plain Hub identity key with a two-tier identity: a master (root) key sealed with a passphrase that only the owner knows, and a short-lived operational key certified by it. It changes the network protocol to 3.0 and needs an owner action after the upgrade: see Upgrade notes.
+
+### Security
+
+- The Hub's root key is stored only sealed (`root.key.age`, age with scrypt) under an owner passphrase of at least 14 characters. The passphrase is never stored or logged. The plain 0.6 `identity.key` is sealed and removed when the owner sets the passphrase.
+- The Hub signs its connections with an operational key that carries a 153-byte certificate from the root key (default validity 180 days, warnings from 30 days before expiry). Every certificate has a new operational key. Workers enforce the certificate's expiry themselves and refuse a certificate whose serial is lower than one they have seen.
+- New admin page "Settings > Hub identity" and commands `minion hub identity status|set-passphrase|reissue|rotate-master|change-passphrase` (over a local admin socket that only the Hub's owner account can use). Every passphrase operation needs a freshly re-authenticated administrator, HTTPS, and is audited. Wrong passphrases are limited per hour and lock after five failures, separately for the web and the terminal.
+- A Worker revoke is signed by the operational key of the session; a Worker that retires itself keeps the certificate ratchet, so an old certificate cannot make it forget its enrollment.
+- Pairing can be resumed after a lost answer with the same code, and the owner can re-issue pairing for a Worker that never connected (10-minute window).
+- Backups hold the sealed root (never the plain one, from the moment the passphrase is set) and the operational key; restore is two-phase and validates the identity per state.
+
+### Upgrade notes
+
+- Protocol 3.0 only (release manifest range `3.0..3.0`). Hub and Workers must all be upgraded; a 0.6 Worker is refused with `proto_incompatible` and retries.
+- Order: take an encrypted backup of the 0.6 Hub, upgrade the Hub, set the passphrase (web banner or `minion hub identity set-passphrase`) — the Hub serves no Workers until then — then upgrade the Workers. Existing pairings and `mnk_` invitations keep working.
+- Recommended: rotate the master key once after all Workers have connected, because 0.6 backups hold the old root in plain form. A rotation revokes all unused invitations.
+- There is no recovery for a forgotten passphrase; keep it outside the Hub.
+
+### Added
+
+- `MINION_MANAGEMENT_LISTEN` (setting `management_listen`): an optional loopback plain-HTTP listener, the only place where the Hub accepts a passphrase without HTTPS.
+- `minion hub worker repair-pairing <worker>` and the REST operation `worker_pairing_reissue` re-issue pairing for a Worker that has never connected, with a button on its Worker page.
+- New error codes `hub_cert_expired` (503), `reauth_required`, `reauth_unavailable`, `tls_required` and `passphrase_invalid`.
+
 ## v0.6.3
 
 Released 2026-11-12.

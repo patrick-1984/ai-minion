@@ -60,6 +60,9 @@ type EnrollConfig struct {
 	// HubFingerprint is the Hub identity fingerprint named by every
 	// invitation key.
 	HubFingerprint identity.Fingerprint
+	// FingerprintFunc, when set, supplies the ROOT fingerprint at the time of
+	// each call and replaces HubFingerprint.
+	FingerprintFunc func() identity.Fingerprint
 	// Limiter applies the enroll policy (AD-19) by client IP and Hub
 	// fingerprint before the secret is read; nil disables it. The Hub's
 	// Service passes its limiter.
@@ -98,11 +101,13 @@ func NewEnroller(cfg EnrollConfig) (*Enroller, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("workers: the enroller needs a store")
 	}
-	fpr, err := identity.ParseFingerprint(string(cfg.HubFingerprint))
-	if err != nil {
-		return nil, errors.New("workers: the enroller needs the Hub fingerprint")
+	if cfg.FingerprintFunc == nil {
+		fpr, err := identity.ParseFingerprint(string(cfg.HubFingerprint))
+		if err != nil {
+			return nil, errors.New("workers: the enroller needs the Hub fingerprint")
+		}
+		cfg.FingerprintFunc = func() identity.Fingerprint { return fpr }
 	}
-	cfg.HubFingerprint = fpr
 	e := &Enroller{cfg: cfg, now: cfg.Now, log: cfg.Logger}
 	if e.now == nil {
 		e.now = time.Now
@@ -173,7 +178,7 @@ func (e *Enroller) loadInfra() error {
 // consuming nothing.
 func (e *Enroller) Handle(ctx context.Context, c *Conn) error {
 	if e.cfg.Limiter != nil {
-		if ok, _ := e.cfg.Limiter.Allow(ratelimit.PolicyEnroll, c.ClientIP(), string(e.cfg.HubFingerprint)); !ok {
+		if ok, _ := e.cfg.Limiter.Allow(ratelimit.PolicyEnroll, c.ClientIP(), string(e.cfg.FingerprintFunc())); !ok {
 			e.refuse(ctx, c, "", proto.NewError(proto.CodeRateLimited, "too many enrollment attempts; retry later"))
 			return nil
 		}
@@ -240,7 +245,7 @@ func (e *Enroller) secretHash(body json.RawMessage) ([sha256.Size]byte, *proto.E
 	if err := json.Unmarshal(body, &f); err != nil || f.Type != proto.TypeInviteSecret {
 		return [sha256.Size]byte{}, proto.NewError(proto.CodeInvalidArgument, "expected an invite.secret frame")
 	}
-	k, err := parseSecret(e.cfg.HubFingerprint, f.Secret)
+	k, err := parseSecret(e.cfg.FingerprintFunc(), f.Secret)
 	if err != nil {
 		return [sha256.Size]byte{}, proto.NewError(proto.CodeInviteInvalid, "the invitation key is not valid")
 	}

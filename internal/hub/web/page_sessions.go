@@ -101,6 +101,11 @@ type WorkerRow struct {
 	EnrollAddr  string
 	ApproveURL  string
 	RemoveURL   string
+	// NeverConnected is true while the Worker has never connected to the Hub;
+	// RepairURL is then the post of the "Re-issue pairing" button (design
+	// 12.3), filled by [newWorkerView] for the owner or an administrator only.
+	NeverConnected bool
+	RepairURL      string
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
@@ -369,6 +374,9 @@ type ListPage struct {
 	Owners   []Choice
 	// WorkerName names the Worker the list is limited to, when it is.
 	WorkerName string
+	// IdentityNote is the certificate countdown in the header of the Workers
+	// page, for an administrator; IdentityTone is "ok", "warning" or "danger".
+	IdentityNote, IdentityTone string
 }
 
 // LiveSource is the port of the home page to the Hub's live state.
@@ -751,6 +759,9 @@ func listData(get func() LiveSource, kind listKind) func(*http.Request) (any, er
 		}
 		page := newListPage(d, all, canFilter, parseListFilter(r), kind)
 		page.Context = principalContext(r)
+		if kind == listWorkers {
+			page.IdentityNote, page.IdentityTone = workersCountdown(r)
+		}
 		return page, nil
 	}
 }
@@ -1100,7 +1111,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	for _, w := range wl.Workers {
 		d.Workers = append(d.Workers, WorkerRow{
 			ID: w.ID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
-			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr,
+			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
 		})
 	}
 	for _, x := range sb.Sessions {

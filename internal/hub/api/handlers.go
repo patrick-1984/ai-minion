@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -33,6 +34,10 @@ type Call struct {
 	Resource authz.Resource
 	// IP is the client address as the Hub sees it.
 	IP netip.Addr
+	// Request is the HTTP request being served. Handlers read the transport
+	// facts of the request from it (TLS state, forwarded headers, Origin);
+	// they must not read the body, which the dispatcher has consumed.
+	Request *http.Request
 }
 
 // Handler executes one catalog operation and returns its result: a value of

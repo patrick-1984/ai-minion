@@ -123,13 +123,15 @@ type hubServer struct {
 
 func newHubServer(t *testing.T, cert *tls.Certificate) *hubServer {
 	t.Helper()
-	hk := mustKey(t)
+	hub := newHub(t)
+	hk := hub.root
 	h := &hubServer{
 		sessions: make(chan *Session, 4),
 		errs:     make(chan error, 4),
 		hubKey:   hk,
-		hubCfg:   HubConfig{Key: hk, Timeout: testWait},
+		hubCfg:   hub.cfg(),
 	}
+	h.hubCfg.Timeout = testWait
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+ConnectPath, func(w http.ResponseWriter, r *http.Request) {
 		s, _, err := AcceptWorker(w, r, h.hubCfg, SessionOptions{})

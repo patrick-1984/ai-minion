@@ -72,6 +72,14 @@ type RetiredIdentity struct {
 	Pin identity.Pin
 	// WorkerID is the Worker id the Hub gave the old identity (informational).
 	WorkerID string
+	// MaxSerial and CertSHA256 are the certificate ratchet the enrollment had,
+	// scoped to Pin.Pub (design section 12.5): carried here so that wiping the
+	// enrollment does not reset it. RatchetSeeded is false for an entry written
+	// by an earlier release (metadata version 1): it knows no serial until the
+	// first validated retirement connection seeds it.
+	MaxSerial     uint64
+	CertSHA256    []byte
+	RatchetSeeded bool
 	// RetiredAt is when the identity was replaced.
 	RetiredAt time.Time
 }
@@ -86,16 +94,24 @@ type retiredMeta struct {
 	PinSeq    uint64       `json:"pin_seq"`
 	WorkerID  string       `json:"worker_id,omitempty"`
 	RetiredAt time.Time    `json:"retired_at"`
+	// Version 2 carries the certificate ratchet of the wiped enrollment.
+	MaxSerial  uint64       `json:"max_serial,omitempty"`
+	CertSHA256 identity.B64 `json:"cert_sha256,omitempty"`
 }
 
 // RetiredStore holds the pending revocations: for each old identity a private
 // key file and a private metadata file in the "retired" directory of the state
 // directory.
-type RetiredStore struct{ dir string }
+type RetiredStore struct {
+	dir string
+	// write stores a private file durably (temporary file, sync, rename,
+	// directory sync); tests replace it to inject a failure.
+	write func(path string, data []byte) error
+}
 
 // NewRetiredStore returns the store of the state directory stateDir.
 func NewRetiredStore(stateDir string) *RetiredStore {
-	return &RetiredStore{dir: filepath.Join(stateDir, retiredDirName)}
+	return &RetiredStore{dir: filepath.Join(stateDir, retiredDirName), write: identity.WritePrivate}
 }
 
 // RetiredStore returns the pending revocations of this Worker's state
@@ -122,17 +138,34 @@ func (s *RetiredStore) Add(r RetiredIdentity) error {
 	if r.RetiredAt.IsZero() {
 		r.RetiredAt = time.Now()
 	}
+	return s.writeMeta(metaPath, r)
+}
+
+// writeMeta stores r as version-2 metadata, durably (temporary file, sync,
+// rename, directory sync).
+func (s *RetiredStore) writeMeta(metaPath string, r RetiredIdentity) error {
 	raw, err := json.Marshal(retiredMeta{
-		Version: 1, HubURL: r.HubURL, HubPub: identity.B64(r.Pin.Pub), PinSeq: r.Pin.Seq,
+		Version: 2, HubURL: r.HubURL, HubPub: identity.B64(r.Pin.Pub), PinSeq: r.Pin.Seq,
 		WorkerID: r.WorkerID, RetiredAt: r.RetiredAt.UTC(),
+		MaxSerial: r.MaxSerial, CertSHA256: identity.B64(r.CertSHA256),
 	})
 	if err != nil {
 		return err
 	}
-	if err := identity.WritePrivate(metaPath, raw); err != nil {
+	if err := s.write(metaPath, raw); err != nil {
 		return fmt.Errorf("agent: save the pending revocation: %w", err)
 	}
 	return nil
+}
+
+// Advance durably stores the ratchet (and the pin, when a chain transition moved
+// it) that a validated retirement connection saw. It rewrites the metadata as
+// version 2 (the migration of a version-1 file happens here, at the seed). A
+// failure leaves the previous file in place.
+func (s *RetiredStore) Advance(r RetiredIdentity, pin identity.Pin, rt transport.Ratchet) error {
+	_, metaPath := s.paths(r.Fingerprint())
+	r.Pin, r.MaxSerial, r.CertSHA256, r.RatchetSeeded = pin, rt.MaxSerial, rt.CertSHA256, true
+	return s.writeMeta(metaPath, r)
 }
 
 // List returns the pending revocations, oldest first. A record that cannot be
@@ -174,7 +207,10 @@ func (s *RetiredStore) load(fp string) (RetiredIdentity, error) {
 		return RetiredIdentity{}, err
 	}
 	var m retiredMeta
-	if err := json.Unmarshal(raw, &m); err != nil || m.Version != 1 {
+	if err := json.Unmarshal(raw, &m); err != nil || (m.Version != 1 && m.Version != 2) {
+		return RetiredIdentity{}, errors.New("unreadable metadata")
+	}
+	if len(m.CertSHA256) != 0 && len(m.CertSHA256) != 32 {
 		return RetiredIdentity{}, errors.New("unreadable metadata")
 	}
 	k, err := identity.LoadKey(keyPath)
@@ -183,6 +219,7 @@ func (s *RetiredStore) load(fp string) (RetiredIdentity, error) {
 	}
 	return RetiredIdentity{
 		Key: k, HubURL: m.HubURL, Pin: identity.Pin{Pub: ed25519.PublicKey(m.HubPub), Seq: m.PinSeq}, WorkerID: m.WorkerID, RetiredAt: m.RetiredAt,
+		MaxSerial: m.MaxSerial, CertSHA256: []byte(m.CertSHA256), RatchetSeeded: m.Version >= 2,
 	}, nil
 }
 
@@ -209,6 +246,9 @@ type RetirerConfig struct {
 	Protocols proto.Range
 	// Session tunes the yamux session.
 	Session transport.SessionOptions
+	// WallMono supplies the wall and monotonic clock of the certificate window;
+	// nil means the system clocks.
+	WallMono transport.WallMono
 	// Clock and Backoff pace the retries; nil means the system clock and the
 	// default sequence.
 	Clock   transport.Clock
@@ -374,6 +414,11 @@ func (r *Retirer) clearFail(fp string) {
 	r.mu.Unlock()
 }
 
+// errRetireExpired is the failure of a retirement session whose Hub certificate
+// reached its not_after before the disposition was final. The entry stays
+// pending.
+var errRetireExpired = errors.New("the Hub certificate expired before the answer was accepted; the pending revocation is kept")
+
 // retireOne connects with the old key and revokes its enrollment. It returns a
 // short result word for the log, or an error when the revocation is still
 // pending.
@@ -384,18 +429,67 @@ func (r *Retirer) retireOne(ctx context.Context, id RetiredIdentity) (string, er
 		Name:      r.cfg.Name,
 		Protocols: r.cfg.Protocols,
 		Pin:       id.Pin,
+		Ratchet:   transport.Ratchet{Root: id.Pin.Pub, MaxSerial: id.MaxSerial, CertSHA256: id.CertSHA256},
+		Clock:     r.cfg.WallMono,
 		Session:   r.cfg.Session,
 	})
 	if err != nil {
 		return "", fmt.Errorf("connect with the old key: %w", err)
 	}
+	// Nothing is accepted after the certificate's not_after (section 11.3): the
+	// session is guarded until the disposition is final, and both clocks are read
+	// again before each one is accepted.
+	var guard *expiryGuard
+	if att.Expiry != nil {
+		wm := r.cfg.WallMono
+		if wm == nil {
+			wm = transport.SystemWallMono
+		}
+		guard = &expiryGuard{exp: *att.Expiry, clk: wm, log: r.log, onExpire: func() {
+			if att.Session != nil {
+				_ = att.Session.Close()
+			}
+		}}
+		wctx, stopWatch := context.WithCancel(context.WithoutCancel(ctx))
+		defer stopWatch()
+		go guard.watch(wctx, r.clk)
+		if guard.check() {
+			return "", errRetireExpired
+		}
+	}
+	// The handshake passed every check (chain, root, certificate, window, serial
+	// scope, sig_hub). A higher serial (or the first hash at an equal serial),
+	// and the first validated connection of a version-1 entry, are stored
+	// durably BEFORE the Worker acts on revoke, not_enrolled or welcome. A failed
+	// write ends the connection and keeps the entry.
+	first := !id.RatchetSeeded
+	if first || att.PinChanged || att.RatchetChanged {
+		if err := r.cfg.Store.Advance(id, att.Pin, att.Ratchet); err != nil {
+			if att.Session != nil {
+				_ = att.Session.Close()
+			}
+			return "", fmt.Errorf("cannot store the certificate ratchet; the pending revocation is kept: %w", err)
+		}
+	}
 	switch att.Reply.Type {
 	case proto.TypeRevoke:
-		if err := identity.Verify(att.Pin.Pub, identity.PurposeRevoke, att.TranscriptHash, att.Reply.RevokeSig); err != nil {
-			return "", errors.New("the hub answered with a revoke that the pinned hub key did not sign for this connection")
+		if err := identity.Verify(att.OpPub, identity.PurposeRevoke, att.TranscriptHash, att.Reply.RevokeSig); err != nil {
+			return "", errors.New("the hub answered with a revoke that the operational key of this connection did not sign for it")
+		}
+		if guard.check() {
+			return "", errRetireExpired
 		}
 		return "already_revoked", nil
 	case proto.TypeNotEnrolled:
+		if first {
+			// Seeded just now: a not_enrolled cannot retire an entry that had no
+			// memory of the root's earlier serials. A later validated
+			// connection with serial >= the seed may retire it.
+			return "", errors.New("not_enrolled on the first validated connection after the upgrade; the entry stays pending until a later validated connection")
+		}
+		if guard.check() {
+			return "", errRetireExpired
+		}
 		return "not_enrolled", nil
 	case proto.TypeWelcome:
 		if att.Session == nil {
@@ -414,6 +508,9 @@ func (r *Retirer) retireOne(ctx context.Context, id RetiredIdentity) (string, er
 				return "", ctx.Err()
 			}
 			return "", &admittedError{err}
+		}
+		if guard.check() {
+			return "", &admittedError{errRetireExpired}
 		}
 		return "retired", nil
 	}

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/sqlmigrate"
 )
 
@@ -39,10 +40,20 @@ func newHubDir(t *testing.T) string {
 	if err := s.PutSetting(context.Background(), "oidc_client_secret", "s3cret-value", true, "test"); err != nil {
 		t.Fatal(err)
 	}
+	// A migrated 0.6 identity (state B1): the plain identity.key and its row.
+	key, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.SaveKey(filepath.Join(dir, IdentityKeyFile), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutHubIdentity(context.Background(), HubIdentityRow{Pub: key.Public(), Fingerprint: key.Fingerprint().String(), CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(dir, IdentityKeyFile), "identity-key-bytes")
 	if err := os.MkdirAll(filepath.Join(dir, "tls"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +223,7 @@ func TestBackupArchiveContentsAndManifest(t *testing.T) {
 		body[e.hdr.Name] = e.body
 	}
 	if string(body["data.key"]) != readFile(t, filepath.Join(dir, "data.key")) ||
-		string(body["identity.key"]) != "identity-key-bytes" ||
+		string(body["identity.key"]) != readFile(t, filepath.Join(dir, "identity.key")) ||
 		string(body["tls/cert.pem"]) != "CERT" || string(body["tls/key.pem"]) != "TLSKEY" {
 		t.Fatal("archived key or TLS files differ from the data directory")
 	}
@@ -676,30 +687,6 @@ func TestRestoreRefusesCorruptDatabase(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(target); len(entries) != 0 {
 		t.Fatalf("files left behind: %v", entries)
-	}
-}
-
-func TestBackupRestoreKeepsEveryByteOfTheIdentityFile(t *testing.T) {
-	ctx := context.Background()
-	dir := newHubDir(t)
-	raw := make([]byte, 64)
-	for i := range raw {
-		raw[i] = byte(i * 7)
-	}
-	if err := os.WriteFile(filepath.Join(dir, IdentityKeyFile), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(t.TempDir(), "b.tar.gz")
-	if _, err := Backup(ctx, dir, out, "dev"); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(t.TempDir(), "n")
-	if _, err := Restore(ctx, out, target, false); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(filepath.Join(target, IdentityKeyFile))
-	if err != nil || !bytes.Equal(got, raw) {
-		t.Fatalf("identity file differs after backup and restore: %v", err)
 	}
 }
 

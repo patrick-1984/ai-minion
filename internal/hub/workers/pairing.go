@@ -54,6 +54,10 @@ type PairingStore interface {
 	AddPairingFailure(ctx context.Context, id string, max int) (store.PairingRow, error)
 	CompletePairing(ctx context.Context, id, codeDigest string, w store.WorkerRow) error
 	PairingCodeUsed(ctx context.Context, codeDigest string) (bool, error)
+	PairingCommitFor(ctx context.Context, pairingID string, workerPub []byte, now int64) (store.PairingCommit, error)
+	AddResumeFailure(ctx context.Context, codeDigest string) (int, error)
+	RepairPairing(ctx context.Context, id, codeDigest string, w store.WorkerRow, now int64) error
+	WorkerByID(ctx context.Context, id string) (store.WorkerRow, error)
 	PurgePairings(ctx context.Context, before int64) (int64, error)
 }
 
@@ -102,6 +106,10 @@ type ClaimRequest struct {
 	// Actor defaults to UserID.
 	Actor    string
 	ActingAs string
+	// Admin says that the claimant is an administrator. It lets the claim
+	// complete an owner re-issue of someone else's Worker (12.3); a resume
+	// still needs the commit's own owner.
+	Admin bool
 }
 
 // ClaimResult describes the Worker a claim created.
@@ -181,6 +189,14 @@ type pending struct {
 	expires time.Time
 	claims  chan *claim // capacity 1; filled by Claim, drained by Await
 	gone    chan struct{}
+	// ready is closed when Await has read the pairing row, so that a claim
+	// never meets an entry whose resume ticket is not known yet.
+	ready chan struct{}
+
+	// resume is set when this entry belongs to a Worker whose pairing was
+	// committed by the Hub but not recorded by the Worker (12.2): the used
+	// code is accepted only with this ticket.
+	resume *store.PairingCommit
 
 	// Guarded by Pairings.mu.
 	goneErr error
@@ -195,6 +211,8 @@ type claim struct {
 	actingAs string // the user an admin acts as, or empty
 	name     string
 	password []byte
+	admin    bool              // the claimant is an administrator
+	reused   bool              // set by create: the Worker already existed (resume or repair)
 	digest   string            // one-way digest of the code, recorded when it is used
 	done     chan claimOutcome // capacity 1
 	once     sync.Once
@@ -274,6 +292,19 @@ func sameIP(p *pending, ipKey string) int {
 	return 0
 }
 
+type workerPubKey struct{}
+
+// withWorkerPub carries the Worker key of the hello to [Pairings.Await], which
+// needs it to find a resumable commit. [PairingGate] keeps its signature.
+func withWorkerPub(ctx context.Context, pub []byte) context.Context {
+	return context.WithValue(ctx, workerPubKey{}, pub)
+}
+
+func workerPubOf(ctx context.Context) []byte {
+	pub, _ := ctx.Value(workerPubKey{}).([]byte)
+	return pub
+}
+
 func pairingErr(code proto.Code, message string) *proto.Error { return proto.NewError(code, message) }
 
 func errExpired() *proto.Error {
@@ -344,13 +375,13 @@ func (ps *Pairings) Await(ctx context.Context, id string, ip netip.Addr) (*Pairi
 	if old != nil { // expired with no claim in flight, and the sweep has not run yet
 		ps.endLocked(old, errExpired())
 	}
-	p := &pending{id: id, ipKey: ipKey, expires: now.Add(ps.ttl), claims: make(chan *claim, 1), gone: make(chan struct{})}
+	p := &pending{id: id, ipKey: ipKey, expires: now.Add(ps.ttl), claims: make(chan *claim, 1), gone: make(chan struct{}), ready: make(chan struct{})}
 	ps.live[id] = p
 	ps.perIP[ipKey]++
 	ps.mu.Unlock()
 
 	// The id is reserved; the row decides whether the code may be used.
-	row, err := ps.loadRow(ctx, id, now)
+	row, resume, err := ps.loadRow(ctx, id, now, workerPubOf(ctx))
 	if err != nil {
 		if ctx.Err() != nil {
 			err = errWorkerGone() // the connection ended while the row was read
@@ -363,7 +394,9 @@ func (ps *Pairings) Await(ctx context.Context, id string, ip netip.Addr) (*Pairi
 	ps.mu.Lock()
 	if !p.ended {
 		p.expires = store.FromUnixMS(row.ExpiresAt)
+		p.resume = resume
 	}
+	close(p.ready)
 	ps.mu.Unlock()
 
 	select {
@@ -383,30 +416,43 @@ func (ps *Pairings) Await(ctx context.Context, id string, ip netip.Addr) (*Pairi
 }
 
 // loadRow returns the pending row of id, creating or restarting it where
-// needed, and refuses an id whose code was used or dropped.
-func (ps *Pairings) loadRow(ctx context.Context, id string, now time.Time) (store.PairingRow, error) {
+// needed, and refuses an id whose code was used or dropped. A used id is
+// refused as ever UNLESS a commit row exists for exactly this Worker key whose
+// code has not expired and whose resume attempts are not used up: the Worker
+// then waits as for a pending code, with a resume ticket (12.2 step 1).
+func (ps *Pairings) loadRow(ctx context.Context, id string, now time.Time, workerPub []byte) (store.PairingRow, *store.PairingCommit, error) {
 	nowMS := store.UnixMS(now)
 	row, err := ps.store.Pairing(ctx, id)
 	switch {
 	case errors.Is(err, store.ErrPairingNotFound):
 	case err != nil:
 		ps.log.Error("pairing: read the pairing row", "error", err.Error())
-		return store.PairingRow{}, pairingErr(proto.CodeInternal, "")
+		return store.PairingRow{}, nil, pairingErr(proto.CodeInternal, "")
 	case row.ExpiresAt <= nowMS:
 		// An expired row protects nothing: a new code may reuse its id.
 	case row.Status == store.PairingUsed:
-		return store.PairingRow{}, pairingErr(proto.CodePairingIDCollision, "this pairing id was already used; the Worker must show a new code")
+		if len(workerPub) > 0 {
+			c, cerr := ps.store.PairingCommitFor(ctx, id, workerPub, nowMS)
+			switch {
+			case cerr == nil:
+				return row, &c, nil
+			case !errors.Is(cerr, store.ErrNoPairingCommit):
+				ps.log.Error("pairing: read the pairing commit", "error", cerr.Error())
+				return store.PairingRow{}, nil, pairingErr(proto.CodeInternal, "")
+			}
+		}
+		return store.PairingRow{}, nil, pairingErr(proto.CodePairingIDCollision, "this pairing id was already used; the Worker must show a new code")
 	case row.Status == store.PairingDropped:
-		return store.PairingRow{}, errAttemptsExceeded()
+		return store.PairingRow{}, nil, errAttemptsExceeded()
 	default:
-		return row, nil // a Worker that reconnects keeps its expiry and its failed attempts
+		return row, nil, nil // a Worker that reconnects keeps its expiry and its failed attempts
 	}
 	row = store.PairingRow{ID: id, Status: store.PairingPending, CreatedAt: nowMS, ExpiresAt: store.UnixMS(now.Add(ps.ttl))}
 	if err := ps.store.PutPairing(ctx, row); err != nil {
 		ps.log.Error("pairing: write the pairing row", "error", err.Error())
-		return store.PairingRow{}, pairingErr(proto.CodeInternal, "")
+		return store.PairingRow{}, nil, pairingErr(proto.CodeInternal, "")
 	}
-	return row, nil
+	return row, nil, nil
 }
 
 // HandshakeFailed is called by the handler when the handshake that used the
@@ -428,6 +474,10 @@ func (t *PairingTicket) HandshakeFailed(hsErr error) {
 		return
 	}
 	ctx := context.Background()
+	if p.resume != nil {
+		ps.resumeFailed(ctx, p, c)
+		return
+	}
 	row, err := ps.store.AddPairingFailure(ctx, p.id, ps.maxAttempts)
 	switch {
 	case errors.Is(err, store.ErrPairingNotPending):
@@ -443,6 +493,23 @@ func (t *PairingTicket) HandshakeFailed(hsErr error) {
 	if row.Status == store.PairingDropped {
 		outcome = "attempts_exceeded"
 		result = errAttemptsExceeded()
+	}
+	ps.record(ctx, audit.Event{Actor: c.actor, ActingAs: c.actingAs, Action: "pairing.attempt", Target: p.id, Outcome: outcome})
+	ps.end(p, result)
+}
+
+// resumeFailed counts a failed confirmation of a resume against the commit
+// row instead of the (used) pending row; the fifth closes the resume.
+func (ps *Pairings) resumeFailed(ctx context.Context, p *pending, c *claim) {
+	n, err := ps.store.AddResumeFailure(ctx, p.resume.CodeDigest)
+	if err != nil {
+		ps.log.Error("pairing: count a failed resume attempt", "error", err.Error())
+		ps.end(p, pairingErr(proto.CodeInternal, ""))
+		return
+	}
+	outcome, result := "wrong_code", error(errWrongCode(max(store.MaxResumeAttempts-n, 0)))
+	if n >= store.MaxResumeAttempts {
+		outcome, result = "attempts_exceeded", errAttemptsExceeded()
 	}
 	ps.record(ctx, audit.Event{Actor: c.actor, ActingAs: c.actingAs, Action: "pairing.attempt", Target: p.id, Outcome: outcome})
 	ps.end(p, result)
@@ -473,17 +540,70 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 		actor = req.UserID
 	}
 	digest := codeDigest(code)
-	if used, err := ps.store.PairingCodeUsed(ctx, digest); err != nil {
-		ps.log.Error("pairing: read used codes", "error", err.Error())
-		return ClaimResult{}, pairingErr(proto.CodeInternal, "")
-	} else if used {
-		return ClaimResult{}, pairingErr(proto.CodePairingCodeInvalid, "this code was already used; the Worker must show a new code")
-	}
-	c := &claim{userID: req.UserID, actor: actor, actingAs: req.ActingAs, name: req.Name, password: code.Password(), digest: digest, done: make(chan claimOutcome, 1)}
+	c := &claim{userID: req.UserID, actor: actor, actingAs: req.ActingAs, admin: req.Admin, name: req.Name, password: code.Password(), digest: digest, done: make(chan claimOutcome, 1)}
 
-	now := ps.now()
-	ps.mu.Lock()
-	p := ps.live[code.PairingID()]
+	// The decision runs under ps.mu. The one database read of the plain path
+	// (is the code used?) releases the lock, so whenever the entry that the
+	// pairing id names changed meanwhile, every check starts over on the new
+	// entry: readiness, resume ticket, owner, digest and expiry.
+	var (
+		p   *pending
+		now time.Time
+	)
+	for attempt := 0; ; attempt++ {
+		// An entry that Await has just reserved is looked at only once its row
+		// was read: a resume ticket is not known before.
+		ps.mu.Lock()
+		waiting := ps.live[code.PairingID()]
+		ps.mu.Unlock()
+		if waiting != nil {
+			select {
+			case <-waiting.ready:
+			case <-waiting.gone:
+			case <-ctx.Done():
+				return ClaimResult{}, ctx.Err()
+			}
+		}
+
+		now = ps.now()
+		ps.mu.Lock()
+		p = ps.live[code.PairingID()]
+		if p != nil && p.resume != nil && now.Before(p.expires) && p.cur == nil {
+			// A resume (12.2 step 2): a used code is accepted only when the live
+			// entry carries a ticket for this very code and the claimant is the
+			// owner of the commit. The owner is checked first and a different
+			// claimant is a plain refusal that charges nothing: only the owner's
+			// own wrong code is a counted attempt against the commit row.
+			switch {
+			case p.resume.OwnerID != req.UserID:
+				ps.mu.Unlock()
+				return ClaimResult{}, pairingErr(proto.CodePairingCodeInvalid, "this code was already used; the Worker must show a new code")
+			case p.resume.CodeDigest != digest:
+				ticket := *p.resume
+				ps.mu.Unlock()
+				return ClaimResult{}, ps.resumeWrongCode(ctx, p, &ticket, c)
+			}
+			break
+		}
+		selected := p
+		ps.mu.Unlock()
+		if used, err := ps.store.PairingCodeUsed(ctx, digest); err != nil {
+			ps.log.Error("pairing: read used codes", "error", err.Error())
+			return ClaimResult{}, pairingErr(proto.CodeInternal, "")
+		} else if used {
+			return ClaimResult{}, pairingErr(proto.CodePairingCodeInvalid, "this code was already used; the Worker must show a new code")
+		}
+		ps.mu.Lock()
+		p = ps.live[code.PairingID()]
+		if p == selected && (p == nil || isReady(p)) {
+			now = ps.now()
+			break
+		}
+		ps.mu.Unlock()
+		if attempt >= 2 {
+			return ClaimResult{}, pairingErr(proto.CodeConflict, "the pairing changed while the claim was checked; retry in a moment")
+		}
+	}
 	switch {
 	case p == nil || !now.Before(p.expires):
 		ps.mu.Unlock()
@@ -502,6 +622,34 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 	case <-ctx.Done():
 		return ClaimResult{}, ctx.Err()
 	}
+}
+
+// isReady reports whether Await has read the pairing row of the entry.
+func isReady(p *pending) bool {
+	select {
+	case <-p.ready:
+		return true
+	default:
+		return false
+	}
+}
+
+// resumeWrongCode counts a wrong code typed for a resuming Worker against the
+// commit row (five at most); the fifth ends the resume, and the Worker is told
+// that its code is no longer valid.
+func (ps *Pairings) resumeWrongCode(ctx context.Context, p *pending, t *store.PairingCommit, c *claim) error {
+	n, err := ps.store.AddResumeFailure(ctx, t.CodeDigest)
+	if err != nil {
+		ps.log.Error("pairing: count a failed resume attempt", "error", err.Error())
+		return pairingErr(proto.CodeInternal, "")
+	}
+	outcome, result := "wrong_code", error(errWrongCode(max(store.MaxResumeAttempts-n, 0)))
+	if n >= store.MaxResumeAttempts {
+		outcome, result = "attempts_exceeded", errAttemptsExceeded()
+		ps.end(p, result)
+	}
+	ps.record(ctx, audit.Event{Actor: c.actor, ActingAs: c.actingAs, Action: "pairing.attempt", Target: p.id, Outcome: outcome})
+	return result
 }
 
 // Handle implements [ModeHandler] for pair_code. It runs after the handshake
@@ -526,7 +674,7 @@ func (ps *Pairings) Handle(ctx context.Context, c *Conn) error {
 		return c.Reject(pe)
 	}
 
-	row, renamed, err := ps.create(ctx, c, p.id, cl)
+	row, renamed, err := ps.create(ctx, c, p.id, cl, p.resume)
 	cl.wipe() // the handshake is over; the password is not needed any more
 	if err != nil {
 		ps.end(p, err)
@@ -540,7 +688,9 @@ func (ps *Pairings) Handle(ctx context.Context, c *Conn) error {
 	ps.mu.Lock()
 	ps.removeLocked(p)
 	ps.mu.Unlock()
-	ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: "worker.pair", Target: row.ID, Outcome: auditPending})
+	if !cl.reused { // a resume and a repair have their own audit events
+		ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: "worker.pair", Target: row.ID, Outcome: auditPending})
+	}
 	c.h.log.Info("worker paired", "worker_id", row.ID, "name", row.Name, "fingerprint", c.fingerprint())
 	cl.finish(claimOutcome{res: ClaimResult{WorkerID: row.ID, Name: row.Name, Renamed: renamed}})
 	return c.Welcome(ctx, row)
@@ -548,7 +698,7 @@ func (ps *Pairings) Handle(ctx context.Context, c *Conn) error {
 
 // create inserts the private Worker owned by the claiming user and marks the
 // code used, in one transaction.
-func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *claim) (store.WorkerRow, bool, error) {
+func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *claim, resume *store.PairingCommit) (store.WorkerRow, bool, error) {
 	ctx = context.WithoutCancel(ctx) // the Worker row and the used flag go together or not at all
 	pub := []byte(c.WorkerPub())
 	if _, err := ps.store.TombstoneByPub(ctx, pub); err == nil {
@@ -557,11 +707,17 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 		ps.log.Error("pairing: read tombstone", "error", err.Error())
 		return store.WorkerRow{}, false, pairingErr(proto.CodeInternal, "")
 	}
-	if _, err := ps.store.WorkerByPub(ctx, pub); err == nil {
-		return store.WorkerRow{}, false, pairingErr(proto.CodeAlreadyPaired, "this Worker is already paired with this Hub")
-	} else if !errors.Is(err, store.ErrWorkerNotFound) {
+	known, err := ps.store.WorkerByPub(ctx, pub)
+	switch {
+	case err == nil:
+		return ps.existing(ctx, c, pairingID, cl, resume, known)
+	case !errors.Is(err, store.ErrWorkerNotFound):
 		ps.log.Error("pairing: read worker", "error", err.Error())
 		return store.WorkerRow{}, false, pairingErr(proto.CodeInternal, "")
+	case resume != nil:
+		// The Hub committed this Worker and it is gone without a tombstone:
+		// nothing to resume.
+		return store.WorkerRow{}, false, pairingErr(proto.CodeConflict, "the Worker of this pairing no longer exists; the Worker shows a new code")
 	}
 
 	base := cl.name
@@ -593,6 +749,56 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 	}
 	return store.WorkerRow{}, false, pairingErr(proto.CodeConflict, "the owner has too many Workers with this name; pick another name")
 }
+
+// existing handles a pairing of a Worker key that the Hub already knows: a
+// resume (the commit's ticket: the existing enrollment is returned, nothing is
+// inserted, audit worker.pair_resume), an owner re-issue (12.3: the repair
+// window is open, the Worker never connected, the claimant is its owner or an
+// administrator) or, as ever, already_paired.
+func (ps *Pairings) existing(ctx context.Context, c *Conn, pairingID string, cl *claim, resume *store.PairingCommit, known store.WorkerRow) (store.WorkerRow, bool, error) {
+	alreadyPaired := pairingErr(proto.CodeAlreadyPaired, "this Worker is already paired with this Hub")
+	if resume != nil {
+		if known.ID != resume.WorkerID || known.OwnerID != resume.OwnerID {
+			return store.WorkerRow{}, false, alreadyPaired
+		}
+		ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: AuditPairResume, Target: known.ID, Outcome: "resumed"})
+		cl.reused = true
+		return known, false, nil
+	}
+	now := store.UnixMS(ps.now())
+	if known.RepairUntil > now && known.FirstConnectedAt == 0 && (known.OwnerID == cl.userID || cl.admin) {
+		if err := ps.store.RepairPairing(ctx, pairingID, cl.digest, known, now); err != nil {
+			switch {
+			case errors.Is(err, store.ErrRepairNotAllowed):
+				return store.WorkerRow{}, false, alreadyPaired
+			case errors.Is(err, store.ErrPairingNotPending):
+				return store.WorkerRow{}, false, errExpired()
+			case errors.Is(err, store.ErrPairingCodeUsed):
+				return store.WorkerRow{}, false, pairingErr(proto.CodePairingCodeInvalid, "this code was already used; the Worker must show a new code")
+			}
+			ps.log.Error("pairing: repair the pairing", "error", err.Error())
+			return store.WorkerRow{}, false, pairingErr(proto.CodeInternal, "")
+		}
+		ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: AuditPairRepair, Target: known.ID, Outcome: "repaired"})
+		cur, err := ps.store.WorkerByID(ctx, known.ID)
+		if err != nil {
+			return store.WorkerRow{}, false, pairingErr(proto.CodeInternal, "")
+		}
+		cl.reused = true
+		return cur, false, nil
+	}
+	return store.WorkerRow{}, false, alreadyPaired
+}
+
+// Audit actions of the pairing recovery.
+const (
+	// AuditPairResume: a Worker resumed a pairing the Hub had committed.
+	AuditPairResume = "worker.pair_resume"
+	// AuditPairRepair: a pairing completed inside the owner's re-issue window.
+	AuditPairRepair = "worker.pair_repair"
+	// AuditPairingReissue: the owner opened the re-issue window.
+	AuditPairingReissue = "worker.pairing_reissue"
+)
 
 // codeDigest is the one-way digest under which a used code is remembered after
 // its pending row expired: domain separated SHA-256 of the canonical code.

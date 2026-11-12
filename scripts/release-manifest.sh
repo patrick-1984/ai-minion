@@ -18,7 +18,7 @@
 #   {
 #     "schema": 1,
 #     "version": "v0.1.0",
-#     "protocol_range": {"min": "2.0", "max": "2.0"},
+#     "protocol_range": {"min": "3.0", "max": "3.0"},
 #     "artifacts": [{"name": "minion_0.1.0_linux_amd64.tar.gz", "sha256": "..."}]
 #   }
 #

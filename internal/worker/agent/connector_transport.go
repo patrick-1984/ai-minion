@@ -69,6 +69,8 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 		Protocols: p.Protocols,
 		Mode:      transport.ModeConnect,
 		Pin:       p.Pin,
+		Ratchet:   p.Ratchet,
+		Clock:     p.Clock,
 	})
 	if err != nil {
 		stop()
@@ -91,6 +93,10 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 	att := &Attempt{
 		Pin:            res.Pin,
 		PinChanged:     res.PinChanged,
+		OpPub:          res.OpPub,
+		Ratchet:        res.Ratchet,
+		RatchetChanged: res.RatchetChanged,
+		Expiry:         &res.Expiry,
 		TranscriptHash: res.TranscriptHash[:],
 		Version:        res.Version,
 		Reply:          reply,

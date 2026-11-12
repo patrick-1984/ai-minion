@@ -133,6 +133,14 @@ func TestEveryCatalogOpHasACommandInMinionAndMn(t *testing.T) {
 		root := NewRoot()
 		root.Use = name
 		for _, op := range list {
+			if op.SessionOnly {
+				// The passphrase operations have no generic command; they
+				// are `minion hub identity ...` (hub_identity_cmd_test.go).
+				if cmd, _, err := root.Find([]string{op.CLICommand()}); err == nil && cmd != root && cmd.Name() == op.CLICommand() {
+					t.Errorf("%s: session-only op %s has a generic command", name, op.Name)
+				}
+				continue
+			}
 			cmd, _, err := root.Find([]string{op.CLICommand()})
 			if err != nil || cmd == root || cmd.Name() != op.CLICommand() {
 				t.Errorf("%s: no command for op %s (%v)", name, op.Name, err)

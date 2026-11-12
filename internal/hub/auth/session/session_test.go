@@ -288,3 +288,80 @@ func TestCookieSecureFollowsThePublicURL(t *testing.T) {
 		}
 	}
 }
+
+func (m *memStore) SetSessionAuth(_ context.Context, id string, at int64, method string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for h, r := range m.sessions {
+		if r.ID == id {
+			r.AuthAt, r.AuthMethod = at, method
+			m.sessions[h] = r
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func TestAPlainSessionIsNeverFreshAndFreshnessExpiresAfterFiveMinutes(t *testing.T) {
+	m, _, clk := newTestManager(t)
+	ctx := context.Background()
+	plain, err := m.Create(ctx, alice, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Fresh(clk.Now()) || !plain.AuthAt.IsZero() || plain.AuthMethod != "" {
+		t.Errorf("Create made a fresh session: %+v", plain.Session)
+	}
+	// A method without a proved time records how the session started and is not fresh.
+	sso, err := m.CreateAuth(ctx, alice, time.Hour, Auth{Method: "oidc:corp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := m.Resolve(ctx, sso.Token); got.Fresh(clk.Now()) || got.AuthMethod != "oidc:corp" {
+		t.Errorf("method without time: %+v", got)
+	}
+	checked, err := m.CreateAuth(ctx, alice, time.Hour, Auth{At: clk.Now(), Method: AuthMethodLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := m.Resolve(ctx, checked.Token)
+	for _, c := range []struct {
+		after time.Duration
+		fresh bool
+	}{{0, true}, {4*time.Minute + 59*time.Second, true}, {5 * time.Minute, true}, {5*time.Minute + time.Millisecond, false}, {time.Hour - time.Second, false}} {
+		if got.Fresh(clk.Now().Add(c.after)) != c.fresh {
+			t.Errorf("after %v: fresh = %v, want %v", c.after, !c.fresh, c.fresh)
+		}
+	}
+	// A time in the future (a clock that went back) is not fresh.
+	if got.Fresh(clk.Now().Add(-time.Minute)) {
+		t.Error("a session authenticated in the future is fresh")
+	}
+	var nilSession *Session
+	if nilSession.Fresh(clk.Now()) {
+		t.Error("a nil session is fresh")
+	}
+}
+
+func TestMarkAuthenticatedRaisesOnlyTheNamedSession(t *testing.T) {
+	m, _, clk := newTestManager(t)
+	ctx := context.Background()
+	a, _ := m.Create(ctx, alice, time.Hour)
+	b, _ := m.Create(ctx, alice, time.Hour)
+	clk.Add(time.Minute)
+	at, err := m.MarkAuthenticated(ctx, a.ID, "oidc:corp")
+	if err != nil || !at.Equal(clk.Now()) {
+		t.Fatalf("MarkAuthenticated = %v, %v", at, err)
+	}
+	ga, _ := m.Resolve(ctx, a.Token)
+	gb, _ := m.Resolve(ctx, b.Token)
+	if !ga.Fresh(clk.Now()) || ga.AuthMethod != "oidc:corp" || gb.Fresh(clk.Now()) {
+		t.Errorf("a = %+v b = %+v", ga, gb)
+	}
+	if _, err := m.MarkAuthenticated(ctx, "missing", "local"); !errors.Is(err, ErrNoSession) {
+		t.Errorf("missing session: %v", err)
+	}
+	if _, err := m.MarkAuthenticated(ctx, a.ID, ""); err == nil {
+		t.Error("an empty method was accepted")
+	}
+}

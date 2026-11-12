@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"io"
 	"log/slog"
 	"net/http"
@@ -96,7 +97,9 @@ func startShareHub(t *testing.T) *shareHub {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &server.Config{DataDir: t.TempDir(), Listen: "127.0.0.1:0", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	dataDir := t.TempDir()
+	hubidtest.Provision(t, dataDir) // protocol 3.0: an established, certified Hub identity
+	cfg := &server.Config{DataDir: dataDir, Listen: "127.0.0.1:0", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	srv := server.New(cfg, reg)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -233,7 +236,7 @@ func startShareE2E(t *testing.T, mut func(p *agent.Policy)) *shareE2E {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := enr.Commit(context.Background(), agent.Enrollment{Pin: identity.Pin{Pub: e.ph.wsv.Identity().Key().Public()}}); err != nil {
+	if err := enr.Commit(context.Background(), agent.Enrollment{Pin: identity.Pin{Pub: e.ph.wsv.Identity().Public()}}); err != nil {
 		t.Fatal(err)
 	}
 	e.wid = store.NewID()

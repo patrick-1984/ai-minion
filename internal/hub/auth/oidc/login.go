@@ -24,6 +24,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
 )
 
@@ -66,14 +67,20 @@ type Store interface {
 	CreateOIDCLoginTx(ctx context.Context, t store.OIDCLoginTx, nowMS int64) error
 	ConsumeOIDCLoginTx(ctx context.Context, stateHash string, nowMS int64) (store.OIDCLoginTx, error)
 	SyncOIDCLogin(ctx context.Context, p store.OIDCSyncParams) (store.OIDCSyncResult, error)
+	// ExternalIdentityOf returns the issuer and subject of a user at a
+	// provider (the re-authentication requires the same subject).
+	ExternalIdentityOf(ctx context.Context, userID, providerID string) (issuer, subject string, err error)
 }
 
 var _ Store = (*store.Store)(nil)
 
 // Sessions issues browser sessions; *session.Manager implements it.
 type Sessions interface {
-	Create(ctx context.Context, user store.UserRow, ttl time.Duration) (session.Issued, error)
+	CreateAuth(ctx context.Context, user store.UserRow, ttl time.Duration, auth session.Auth) (session.Issued, error)
 	Revoke(ctx context.Context, token string) error
+	// MarkAuthenticatedAt raises a session after a verified re-authentication
+	// that happened at the given time (the verified auth_time).
+	MarkAuthenticatedAt(ctx context.Context, sessionID, method string, at time.Time) (time.Time, error)
 }
 
 var _ Sessions = (*session.Manager)(nil)
@@ -135,6 +142,10 @@ type Service struct {
 
 	mu    sync.Mutex
 	cache map[string]cachedProvider
+
+	// reauth holds the started re-authentications (reauth.go). It is memory
+	// only: a restart forgets them, which fails closed.
+	reauth reauthTable
 }
 
 type cachedProvider struct {
@@ -164,6 +175,26 @@ func (s *Service) now() time.Time {
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/oidc/{provider}/login", s.Start)
 	mux.HandleFunc("GET "+CallbackPath, s.Callback)
+}
+
+// RegisterReauth adds POST /auth/reauth/oidc, the start of a re-authentication
+// of the signed-in session (contract section 8.1 item 2, OIDC method). It
+// sits behind the session middleware (cookie and CSRF token) and behind a
+// same-origin check; trustedOrigins are extra origins that count as the Hub's
+// own (a proxy that rewrites the Host header). The IdP returns to the same
+// callback path as a sign-in.
+func (s *Service) RegisterReauth(mux *http.ServeMux, mw *session.Middleware, trustedOrigins ...string) error {
+	cop := http.NewCrossOriginProtection()
+	for _, o := range trustedOrigins {
+		if err := cop.AddTrustedOrigin(o); err != nil {
+			return fmt.Errorf("oidc: trusted origin %q: %w", o, err)
+		}
+	}
+	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		session.WriteError(w, proto.CodeForbidden, "cross-origin request refused", nil)
+	}))
+	mux.Handle("POST "+ReauthStartPath, cop.Handler(mw.Protect(http.HandlerFunc(s.ReauthStart))))
+	return nil
 }
 
 // provider returns the discovered provider for cfg, discovering it again when
@@ -312,9 +343,16 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 		s.errorPage(w, r, http.StatusBadRequest, "Sign-in failed", "The sign-in response has no state. Start the sign-in again.")
 		return
 	}
+	if rt, ok := s.reauth.take(store.HashValue(state), s.now()); ok {
+		s.reauthCallback(w, r, rt)
+		return
+	}
 	tx, err := s.Store.ConsumeOIDCLoginTx(ctx, store.HashValue(state), store.UnixMS(s.now()))
 	switch {
 	case errors.Is(err, store.ErrNotFound):
+		if s.unknownReauth(w, r, store.HashValue(state)) {
+			return
+		}
 		s.record(ctx, anonymousActor, "oidc:callback", OutcomeFailed)
 		s.errorPage(w, r, http.StatusBadRequest, "Sign-in failed", "The sign-in is unknown, was already used or has expired. Start the sign-in again.")
 		return
@@ -431,7 +469,7 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "session lifetime", cfg.ID, err)
 		return
 	}
-	issued, err := s.Sessions.Create(ctx, res.User, ttl)
+	issued, err := s.Sessions.CreateAuth(ctx, res.User, ttl, s.loginAuth(cfg.ID, ident.Claims))
 	if err != nil {
 		s.fail(w, r, "create session", cfg.ID, err)
 		return

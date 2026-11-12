@@ -85,3 +85,62 @@ func TestSessionForUnknownUserIsRefused(t *testing.T) {
 		t.Fatal("a session for a missing user was accepted (foreign keys must be enforced)")
 	}
 }
+
+func TestSessionAuthIsStoredAndOnlyTheServerSetsIt(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	p := seedParams("admin")
+	if _, err := s.SeedAdmin(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	plain := SessionRow{ID: NewID(), TokenHash: "plain", UserID: p.User.ID, CredentialVersion: 1, CreatedAt: 10, ExpiresAt: 100}
+	if err := s.CreateSession(ctx, plain, 10); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.SessionByTokenHash(ctx, "plain")
+	if err != nil || got.AuthAt != 0 || got.AuthMethod != "" {
+		t.Fatalf("a session without a credential check = %+v, %v (migration default must be 0)", got, err)
+	}
+	checked := SessionRow{ID: NewID(), TokenHash: "checked", UserID: p.User.ID, CredentialVersion: 1, CreatedAt: 10, ExpiresAt: 100, AuthAt: 55, AuthMethod: "local"}
+	if err := s.CreateSession(ctx, checked, 10); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.SessionByTokenHash(ctx, "checked"); got.AuthAt != 55 || got.AuthMethod != "local" {
+		t.Errorf("stored auth = %d %q", got.AuthAt, got.AuthMethod)
+	}
+	if ok, err := s.SetSessionAuth(ctx, plain.ID, 77, "oidc:corp"); err != nil || !ok {
+		t.Fatalf("SetSessionAuth = %v, %v", ok, err)
+	}
+	if got, _, _ := s.SessionByTokenHash(ctx, "plain"); got.AuthAt != 77 || got.AuthMethod != "oidc:corp" {
+		t.Errorf("raised auth = %d %q", got.AuthAt, got.AuthMethod)
+	}
+	// The other session is untouched; a missing session is reported.
+	if got, _, _ := s.SessionByTokenHash(ctx, "checked"); got.AuthAt != 55 {
+		t.Errorf("another session changed: %d", got.AuthAt)
+	}
+	if ok, err := s.SetSessionAuth(ctx, "no-such-session", 1, "local"); err != nil || ok {
+		t.Errorf("SetSessionAuth on a missing session = %v, %v", ok, err)
+	}
+}
+
+func TestExternalIdentityOfNamesTheSubjectAtAProvider(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if _, _, err := s.ExternalIdentityOf(ctx, "nobody", "corp"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+	p := seedParams("admin")
+	if _, err := s.SeedAdmin(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`INSERT INTO external_identities (id, user_id, issuer, subject, provider_id, created_at, last_login_at) VALUES (?, ?, 'https://idp', 'sub-1', 'corp', 1, 1)`, NewID(), p.User.ID); err != nil {
+		t.Fatal(err)
+	}
+	iss, sub, err := s.ExternalIdentityOf(ctx, p.User.ID, "corp")
+	if err != nil || iss != "https://idp" || sub != "sub-1" {
+		t.Errorf("identity = %q %q %v", iss, sub, err)
+	}
+	if _, _, err := s.ExternalIdentityOf(ctx, p.User.ID, "other"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("other provider: %v", err)
+	}
+}

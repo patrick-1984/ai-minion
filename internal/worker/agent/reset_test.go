@@ -49,7 +49,7 @@ func newLiveHub(t *testing.T) *liveHub {
 func (l *liveHub) connect(f *connFixture) {
 	f.dial.script(func(p ConnectParams) (*Attempt, error) {
 		return &Attempt{
-			Pin: p.Pin, TranscriptHash: l.hash, Version: proto.Current,
+			Pin: p.Pin, OpPub: p.Pin.Pub, TranscriptHash: l.hash, Version: proto.Current,
 			Reply: Reply{Type: proto.TypeWelcome, Welcome: okWelcome()}, Session: l.workerSess,
 		}, nil
 	})
@@ -420,7 +420,7 @@ func TestResetOfARunningConnectorMakesItIdleUnpaired(t *testing.T) {
 	}
 	live2 := newLiveHub(t)
 	f.dial.script(func(p ConnectParams) (*Attempt, error) {
-		return &Attempt{Pin: p.Pin, TranscriptHash: live2.hash, Version: proto.Current,
+		return &Attempt{Pin: p.Pin, OpPub: p.Pin.Pub, TranscriptHash: live2.hash, Version: proto.Current,
 			Reply: Reply{Type: proto.TypeWelcome, Welcome: okWelcome()}, Session: live2.workerSess}, nil
 	})
 	if err := f.enr.Commit(context.Background(), Enrollment{Pin: identity.Pin{Pub: f.hub.Public()}}); err != nil {

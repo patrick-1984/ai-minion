@@ -322,6 +322,15 @@ func (p *Provider) AuthCodeURL(redirectURL, state, nonce, codeVerifier string) s
 		oauth2.S256ChallengeOption(codeVerifier), gooidc.Nonce(nonce))
 }
 
+// AuthCodeURLReauth is [Provider.AuthCodeURL] for a re-authentication: it asks
+// the IdP to authenticate the user again (max_age=0, prompt=login). Whether
+// the IdP did is judged by the auth_time claim, never by this request.
+func (p *Provider) AuthCodeURLReauth(redirectURL, state, nonce, codeVerifier string) string {
+	return p.oauth(redirectURL).AuthCodeURL(state,
+		oauth2.S256ChallengeOption(codeVerifier), gooidc.Nonce(nonce),
+		oauth2.SetAuthURLParam("max_age", "0"), oauth2.SetAuthURLParam("prompt", "login"))
+}
+
 // Exchange trades an authorization code for tokens under the provider's
 // deadline. A response without an ID token is an error: the ID token is
 // required (AD-10).

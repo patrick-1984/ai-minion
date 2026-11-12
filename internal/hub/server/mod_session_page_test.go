@@ -177,6 +177,7 @@ func startSessionPageHubWith(t *testing.T, features []string) *sessionPageHub {
 	registerAuditModule(r)
 	registerAuthz(r)
 	registerAuth(r)
+	registerHubIDModule(r)
 	registerWorkersModule(r)
 	registerAPI(r, ops.Default)
 	registerRouteModule(r)

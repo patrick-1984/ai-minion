@@ -4,11 +4,14 @@
 //
 // Story 4.3 provides:
 //
-//   - identity.go: [Identity], the Hub's Ed25519 key in <data>/identity.key,
-//     created on the first start and checked against the hub_identity row on
-//     every later start, so it never changes on restart, certificate rotation
-//     or restore. [ReadIdentity] reads it without creating anything (used by
-//     "minion hub identity").
+//   - identity.go: [Identity], the Hub's two-tier identity as this package sees
+//     it (design hub-identity-v2, protocol 3.0): the ROOT key that Workers pin
+//     and an OPERATIONAL key with its certificate, which signs sig_hub, the
+//     pairing confirmation and every revoke. The keys live in the Hub identity
+//     service (internal/hub/hubid); a connection takes the snapshot (root,
+//     operational key, certificate, activation generation) once, and the
+//     registry admits it only while its generation is current. [ReadIdentity]
+//     reads a plain 0.6 root file without creating anything.
 //   - registry.go: [Registry], the online Workers with their negotiated
 //     version and announced ops, and [Registry.OpenOp], the only way the Hub
 //     opens an op stream. It refuses an op the Worker did not announce with
@@ -26,7 +29,7 @@
 // Channel:
 //
 //	{"type":"welcome","worker_id":"...","name":"...","owner":"...","kind":"private|infrastructure",
-//	 "policy":{"preview_only":false},"proto_min":"2.0","proto_max":"2.0"}
+//	 "policy":{"preview_only":false},"proto_min":"3.0","proto_max":"3.0"}
 //	{"type":"revoke","sig":"<base64url>"}   // sig: purpose "revoke" over transcript_hash, by the Hub key
 //	{"type":"not_enrolled"}                 // non-destructive: the Worker keeps its state
 //
@@ -40,16 +43,20 @@
 // Only the connect handshake mode is served here. Stories 4.5 (enroll_invite)
 // and 4.8 (pair_code) register their [ModeHandler] on the [Handler].
 //
-// # Identity rotation (Story 4.9)
+// # Transition chain
 //
-// rotate.go holds [Rotator], the planned rotation of the Hub identity (AD-5):
-// a new key, a transition record signed by the old key, the audit row and the
-// replaced hub_identity row in one transaction, then the switch of the running
-// Hub and the revocation of every outstanding invitation key. [ChainSource]
-// feeds the stored chain to the connect endpoint, which sends it in connect
-// mode; a Worker pinned to any older key follows it (the transport handshake
-// skips the links before the pinned key and verifies the rest). An interrupted rotation is completed at the next start
-// ([LoadOrCreateIdentity]).
+// rotate.go holds [ChainSource], which feeds the stored transition chain to the
+// connect endpoint. It is sent in connect mode and cut at the root of the
+// connection's snapshot; a Worker pinned to any older root follows it (the
+// transport handshake skips the links before the pinned root and verifies the
+// rest). The master-key rotation itself is hubid.Service.RotateMaster.
+//
+// # Pairing recovery
+//
+// pairing.go resumes a pairing the Hub committed but the Worker never recorded
+// (same code, same Worker key, same owner, until the code's expiry), and
+// pairing_reissue.go lets the owner re-issue the pairing of a Worker that never
+// connected (design 12.2 and 12.3).
 //
 // Owner: Story 4.3 and later stories of epic 4.
 package workers

@@ -148,6 +148,16 @@ func runHubBackup(ctx context.Context, w io.Writer, d hubBackupDeps, dataDirFlag
 			return err
 		}
 	}
+	switch m.IdentityState {
+	case store.IdentityStatePlain:
+		if _, err = fmt.Fprintf(w, "WARNING: the Hub root is still the plain identity.key (identity state: plain), so it is plain inside %s too; set the Hub passphrase to seal it.\n", out); err != nil {
+			return err
+		}
+	case store.IdentityStateSealedNoCert, store.IdentityStateEstablished:
+		if _, err = fmt.Fprintf(w, "Identity state: %s. The archive holds the sealed root (root.key.age) of this moment; it opens with the Hub passphrase of this moment. After a master-key rotation, make a new backup at once.\n", m.IdentityState); err != nil {
+			return err
+		}
+	}
 	state := "encrypted with age"
 	if bo.unencrypted {
 		state = "unencrypted"

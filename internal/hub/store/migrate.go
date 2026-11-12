@@ -40,8 +40,17 @@ func migrate(ctx context.Context, db *sql.DB, dataDir string, set migrationSet, 
 	return sqlmigrate.Apply(ctx, db, sqlmigrate.Options{
 		FS:           set.fsys,
 		Dir:          set.dir,
-		BackupDir:    filepath.Join(dataDir, backupDirName),
+		BackupDir:    backupDirOf(dataDir),
 		BackupPrefix: backupPrefix,
 		Now:          clock,
 	})
+}
+
+// backupDirOf is the pre-migration backup directory of a data directory; an
+// empty data directory (a restore staging copy) takes no backup.
+func backupDirOf(dataDir string) string {
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, backupDirName)
 }

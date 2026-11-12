@@ -7,17 +7,18 @@ import (
 )
 
 // Version is a protocol version "major.minor", independent of the product
-// semver (AD-4). Its JSON and text form is the string "2.0".
+// semver (AD-4). Its JSON and text form is the string "3.0".
 type Version struct {
 	Major uint16
 	Minor uint16
 }
 
-// Current is the protocol version this build speaks. The wire protocol is 2.0:
-// the mandatory request origin changed the meaning of op.request, so the major
-// version was bumped and 1.x peers are refused (AD-4; v0.5 was never released,
-// so there is no fallback).
-var Current = Version{Major: 2, Minor: 0}
+// Current is the protocol version this build speaks. The wire protocol is 3.0:
+// the Hub is authenticated through a certified operational key and no longer
+// through the pinned key itself, so the major version was bumped (AD-4). A 0.7
+// Hub and its Workers upgrade together: negotiation accepts only 3.x, a 2.x
+// peer gets proto_incompatible, and there is no fallback and no downgrade.
+var Current = Version{Major: 3, Minor: 0}
 
 // ParseVersion parses "major.minor" with two plain decimal numbers.
 func ParseVersion(s string) (Version, error) {

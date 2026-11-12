@@ -269,6 +269,7 @@ func (h *Handler) Register(mux *http.ServeMux, mw *session.Middleware, trustedOr
 	}))
 	mux.Handle("POST /auth/login", cop.Handler(http.HandlerFunc(h.Login)))
 	mux.Handle("POST /auth/logout", cop.Handler(mw.Wrap(http.HandlerFunc(h.Logout))))
+	mux.Handle("POST /auth/reauth", cop.Handler(mw.Protect(http.HandlerFunc(h.Reauth))))
 	return nil
 }
 
@@ -371,7 +372,8 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issued, err := h.Sessions.Create(r.Context(), user, ttl)
+	// The password was just verified by this server: the session starts fresh.
+	issued, err := h.Sessions.CreateAuth(r.Context(), user, ttl, session.Auth{At: h.Sessions.Now(), Method: session.AuthMethodLocal})
 	if err != nil {
 		h.fail(w, "create session", err)
 		return

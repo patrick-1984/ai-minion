@@ -1,0 +1,115 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Hub identity</h1><p>The key that Workers pin and the certificate that proves this Hub to them. Every change asks for the Hub passphrase and a sign-in from the last five minutes. The passphrase is never shown again and never stored.</p></div></div>
+<div class="stack" id="identity-page" data-state="{{.Data.Status.State}}">
+<section class="panel" aria-labelledby="id-state">
+  <h2 id="id-state">State</h2>
+  <dl class="facts">
+    <dt>Bootstrap state</dt><dd>{{.Data.Status.StateLabel}}</dd>
+    <dt>Passphrase</dt><dd>{{if .Data.Status.PassphraseSet}}set{{else}}not set yet{{end}}</dd>
+    <dt>Workers can connect</dt><dd>{{if .Data.Status.Serving}}yes{{else}}no{{end}}</dd>
+    {{if .Data.Status.RootFingerprint}}<dt>Root fingerprint</dt><dd><code>{{.Data.Status.RootFingerprint}}</code></dd>{{end}}
+    {{if .Data.Status.OpFingerprint}}<dt>Operational key</dt><dd><code>{{.Data.Status.OpFingerprint}}</code></dd>{{end}}
+    {{if .Data.Status.Serial}}<dt>Certificate serial</dt><dd>{{.Data.Status.Serial}}</dd>
+    <dt>Valid from</dt><dd>{{.Data.ValidFrom}}</dd>
+    <dt>Valid until</dt><dd>{{.Data.ValidUntil}} <span class="badge"{{if eq .Data.Status.Warning "error"}} data-tone="danger"{{else if eq .Data.Status.Warning "expired"}} data-tone="danger"{{else if .Data.Status.Warning}} data-tone="warning"{{end}} id="id-countdown" data-days="{{.Data.Status.DaysLeft}}">{{if .Data.Status.Expired}}expired{{else}}{{.Data.Status.DaysLeft}} days left{{end}}</span></dd>{{end}}
+    {{if .Data.LastOpAt}}<dt>Last change</dt><dd>{{.Data.Status.LastOp}}, {{.Data.LastOpAt}}</dd>{{end}}
+  </dl>
+  {{if .Data.Status.MigratedFrom06}}<p class="muted">This Hub was migrated from version 0.6: rotate the master key once, so that the root is a new one under your passphrase.</p>{{end}}
+  {{if .Data.WebLocked}}<p class="form-error" role="status" id="id-lock" data-until="{{.Data.WebLockedUntil}}">Passphrase entry from the web is locked after repeated failures. Try again in <span id="id-lock-left">{{.Data.WebRetry}}</span> seconds. The command line at the Hub host has its own counter and is not locked by this.</p>{{end}}
+</section>
+
+<section class="panel" aria-labelledby="id-auth">
+  <h2 id="id-auth">Confirm it is you</h2>
+  {{if eq .Data.Reauth "ok"}}<p role="status">Signed in again.</p>{{end}}
+  {{if eq .Data.Reauth "unavailable"}}<p class="form-error" role="alert">Your identity provider did not prove a fresh sign-in (code reauth_unavailable). Nothing was changed. Try again, or ask your provider administrator to return the auth_time claim.</p>{{end}}
+  <p id="id-fresh" data-fresh="{{if .Data.Fresh}}1{{else}}0{{end}}" data-until="{{if .Data.Fresh}}{{.Data.FreshUntil.Unix}}{{end}}">{{if .Data.Fresh}}Your sign-in is fresh until {{.Data.FreshUntil.Format "15:04:05 UTC"}}.{{else}}Changes need a sign-in from the last five minutes.{{end}}</p>
+  {{if eq .Data.Method "oidc"}}
+  <form id="id-reauth-oidc" data-reauth="oidc" method="post">
+    <button type="submit">Sign in again with the identity provider</button>
+    <p class="form-error" data-form-error role="alert" hidden></p>
+  </form>
+  {{else}}
+  <form id="id-reauth-local" data-reauth="local" method="post" autocomplete="off">
+    <div class="field"><label for="id-reauth-pw">Your account password</label>
+    <input type="password" id="id-reauth-pw" name="password" autocomplete="current-password" required></div>
+    <button type="submit">Confirm</button>
+    <p class="form-error" data-form-error role="alert" hidden></p>
+  </form>
+  {{end}}
+</section>
+
+<p class="muted" id="id-result" role="status" aria-live="polite" hidden></p>
+
+{{if .Data.CanSetPassphrase}}
+<section class="panel" aria-labelledby="id-set">
+  <h2 id="id-set">Set passphrase</h2>
+  <p>Seals the Hub root under a passphrase and issues the first certificate. Workers cannot connect before this. Choose a long passphrase and keep it safe: it cannot be recovered.</p>
+  {{template "passphrase-policy"}}
+  <form data-identity-op="hub_identity_set_passphrase" method="post" autocomplete="off">
+    <div class="field"><label for="set-pass">New passphrase</label><input type="password" id="set-pass" data-count-passphrase name="passphrase" autocomplete="new-password" required></div>
+    <div class="field"><label for="set-conf">Repeat the passphrase</label><input type="password" id="set-conf" name="confirm" autocomplete="new-password" required></div>
+    <button type="submit">Set passphrase</button>
+    <p class="form-error" data-form-error role="alert" hidden></p>
+  </form>
+</section>
+{{end}}
+
+{{if .Data.CanReissue}}
+<section class="panel" aria-labelledby="id-reissue">
+  <h2 id="id-reissue">Re-issue certificate</h2>
+  <p>A new operational key and certificate under the same root. All Worker sessions close and reconnect.</p>
+  <form data-identity-op="hub_identity_reissue" method="post" autocomplete="off">
+    <div class="field"><label for="re-pass">Passphrase</label><input type="password" id="re-pass" name="passphrase" autocomplete="current-password" required></div>
+    <div class="field"><label for="re-days">Validity in days (1 to 400)</label><input type="number" id="re-days" name="validity_days" min="1" max="400" value="180" inputmode="numeric"></div>
+    <details><summary>Advanced</summary>
+      <div class="field"><label for="re-floor">Serial floor (the new serial is greater)</label><input type="number" id="re-floor" name="serial_floor" min="0" inputmode="numeric"></div>
+    </details>
+    <button type="submit">Re-issue certificate</button>
+    <p class="form-error" data-form-error role="alert" hidden></p>
+  </form>
+</section>
+{{end}}
+
+{{if .Data.CanRotate}}
+<section class="panel" aria-labelledby="id-rotate">
+  <h2 id="id-rotate">Rotate master key</h2>
+  <p>A new root under a new passphrase. Workers follow the chain at their next connect and are not re-paired. All invitations are revoked. The old passphrase no longer opens the current root.</p>
+  {{template "passphrase-policy"}}
+  <form data-identity-op="hub_identity_rotate" method="post" autocomplete="off">
+    <div class="field"><label for="ro-pass">Current passphrase</label><input type="password" id="ro-pass" name="passphrase" autocomplete="current-password" required></div>
+    <div class="field"><label for="ro-new">New passphrase</label><input type="password" id="ro-new" data-count-passphrase name="new_passphrase" autocomplete="new-password" required></div>
+    <div class="field"><label for="ro-conf">Repeat the new passphrase</label><input type="password" id="ro-conf" name="confirm" autocomplete="new-password" required></div>
+    <div class="field"><label for="ro-word">Type ROTATE to confirm</label><input type="text" id="ro-word" name="word" autocomplete="off" autocapitalize="characters" spellcheck="false" required></div>
+    <button type="submit">Rotate master key</button>
+    <p class="form-error" data-form-error role="alert" hidden></p>
+  </form>
+</section>
+{{end}}
+
+{{if .Data.CanChange}}
+<section class="panel" aria-labelledby="id-change">
+  <h2 id="id-change">Change passphrase</h2>
+  <p>The same root, sealed again under a new passphrase. No certificate, key or Worker session changes. Backups made earlier still open with the old passphrase.</p>
+  {{template "passphrase-policy"}}
+  <form data-identity-op="hub_identity_change_passphrase" method="post" autocomplete="off">
+    <div class="field"><label for="ch-pass">Current passphrase</label><input type="password" id="ch-pass" name="passphrase" autocomplete="current-password" required></div>
+    <div class="field"><label for="ch-new">New passphrase</label><input type="password" id="ch-new" data-count-passphrase name="new_passphrase" autocomplete="new-password" required></div>
+    <div class="field"><label for="ch-conf">Repeat the new passphrase</label><input type="password" id="ch-conf" name="confirm" autocomplete="new-password" required></div>
+    <button type="submit">Change passphrase</button>
+    <p class="form-error" data-form-error role="alert" hidden></p>
+  </form>
+</section>
+{{end}}
+<noscript><p class="muted">The Hub identity page needs JavaScript in this browser.</p></noscript>
+</div>
+<script src="/static/identity.js" defer></script>
+{{end}}
+
+{{define "passphrase-policy"}}<div class="passphrase-policy" data-passphrase-policy>
+    <p><strong>Passphrase rules.</strong> At least 14 characters (Unicode code points, not bytes) and at most 1024 bytes in UTF-8. <span data-passphrase-count aria-live="polite"></span></p>
+    <ul>
+      <li>Stronger is better: a sentence of four or more unrelated words, or a long random string from a password manager, is recommended. It cannot be recovered if you lose it.</li>
+      <li>Use one that you use nowhere else, and not your login password (the Hub refuses that).</li>
+      <li>You may type any Unicode characters, including spaces and letters with accents. Characters are counted as code points, so one emoji counts as one, but every character takes 1 to 4 bytes of the 1024. Type it the same way every time: the Hub does not normalize it, so a different keyboard layout or input method can produce a different passphrase.</li>
+    </ul>
+  </div>{{end}}

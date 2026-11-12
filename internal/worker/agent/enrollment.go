@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -50,6 +51,10 @@ type Enrollment struct {
 	// empty for an enrollment that did not record it (an invitation, or one
 	// stored by an older version); the configured address is the fallback.
 	HubURL string
+	// Ratchet is the Hub certificate memory scoped to Pin.Pub: the highest
+	// serial seen and the hash of that certificate (design section 6). Its
+	// Root is Pin.Pub for a stored enrollment.
+	Ratchet transport.Ratchet
 	// EnrolledAt is when the enrollment was first stored (set by the store).
 	EnrolledAt time.Time
 }
@@ -67,6 +72,10 @@ type EnrollmentRepo interface {
 	SaveEnrollment(ctx context.Context, e store.Enrollment) error
 	LoadEnrollment(ctx context.Context) (store.Enrollment, error)
 	UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64) error
+	UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, certSHA256 []byte) error
+	SavePairResume(ctx context.Context, r store.PairResume) error
+	LoadPairResume(ctx context.Context) (store.PairResume, error)
+	DeletePairResume(ctx context.Context) (bool, error)
 	UpdateWelcome(ctx context.Context, w store.WelcomeInfo) error
 	WipeEnrollment(ctx context.Context) (bool, error)
 }
@@ -188,6 +197,7 @@ func (e *Enrollments) Load(ctx context.Context) (enr Enrollment, ok bool, err er
 	return Enrollment{
 		HubURL:     e.loadHubURL(),
 		Pin:        identity.Pin{Pub: row.HubPub, Seq: row.PinSeq},
+		Ratchet:    transport.Ratchet{Root: row.HubPub, MaxSerial: row.MaxSerial, CertSHA256: row.CertSHA256},
 		WorkerID:   row.WorkerID,
 		Name:       row.Name,
 		Owner:      row.Owner,
@@ -233,6 +243,8 @@ func (e *Enrollments) commit(ctx context.Context, enr Enrollment) error {
 		Owner:       enr.Owner,
 		Kind:        enr.Kind,
 		PreviewOnly: enr.Policy.PreviewOnly,
+		MaxSerial:   enr.Ratchet.MaxSerial,
+		CertSHA256:  enr.Ratchet.CertSHA256,
 	})
 }
 
@@ -246,6 +258,40 @@ func (e *Enrollments) RewritePin(ctx context.Context, pin identity.Pin) error {
 // gen; it returns [ErrEnrollmentChanged] when the generation has moved.
 func (e *Enrollments) RewritePinIf(ctx context.Context, gen uint64, pin identity.Pin) error {
 	return e.lockedIf(ctx, gen, func() error { return e.repo.UpdatePin(ctx, pin.Pub, pin.Seq) })
+}
+
+// CommitRatchetIf is the commit of step 8 of the connect handshake: for the
+// enrollment of generation gen it rewrites the pin (if it moved along the
+// chain) and the certificate ratchet in ONE transaction. It returns
+// [ErrEnrollmentChanged] when the generation has moved. It is needed also when
+// only the serial rose.
+func (e *Enrollments) CommitRatchetIf(ctx context.Context, gen uint64, pin identity.Pin, r transport.Ratchet) error {
+	return e.lockedIf(ctx, gen, func() error {
+		return e.repo.UpdatePinRatchet(ctx, pin.Pub, pin.Seq, r.MaxSerial, r.CertSHA256)
+	})
+}
+
+// SavePairResumeIf stores the pairing resume record durably for the pairing of
+// generation gen (design section 12.2); the pairer sends sig_worker only after
+// it returned.
+func (e *Enrollments) SavePairResumeIf(ctx context.Context, gen uint64, r store.PairResume) error {
+	return e.lockedIf(ctx, gen, func() error { return e.repo.SavePairResume(ctx, r) })
+}
+
+// LoadPairResume returns the pairing resume record; ok is false when none exists.
+func (e *Enrollments) LoadPairResume(ctx context.Context) (r store.PairResume, ok bool, err error) {
+	r, err = e.repo.LoadPairResume(ctx)
+	if errors.Is(err, store.ErrNoPairResume) {
+		return store.PairResume{}, false, nil
+	}
+	return r, err == nil, err
+}
+
+// DeletePairResume removes the pairing resume record (expiry, or an abandoned
+// identity).
+func (e *Enrollments) DeletePairResume(ctx context.Context) error {
+	_, err := e.repo.DeletePairResume(ctx)
+	return err
 }
 
 // ApplyWelcome stores what the latest welcome said.
@@ -275,12 +321,60 @@ func (e *Enrollments) Wipe(ctx context.Context) (wiped bool, err error) {
 	return wiped, err
 }
 
+// WipeForNewIdentity is [Enrollments.Wipe] for the replacement of the Worker
+// identity: the pairing resume record belongs to the old key (its code, its
+// authenticated Hub), so it is deleted durably in the same guard, before the
+// enrollment is wiped. When the record cannot be deleted nothing is wiped.
+func (e *Enrollments) WipeForNewIdentity(ctx context.Context) (wiped bool, err error) {
+	err = e.locked(ctx, func() error {
+		if _, err := e.repo.DeletePairResume(ctx); err != nil {
+			return fmt.Errorf("delete the pairing resume record: %w", err)
+		}
+		var werr error
+		wiped, werr = e.wipe(ctx)
+		return werr
+	})
+	return wiped, err
+}
+
 // WipeIf is [Enrollments.Wipe] for the enrollment of generation gen; it
 // returns [ErrEnrollmentChanged] when the generation has moved, so that a
 // revoke of an old Hub cannot delete a replacement enrollment.
 func (e *Enrollments) WipeIf(ctx context.Context, gen uint64) (wiped bool, err error) {
 	err = e.lockedIf(ctx, gen, func() (err error) { wiped, err = e.wipe(ctx); return })
 	return wiped, err
+}
+
+// errGuardExpired is returned by [Enrollments.WipeIfLive] and
+// [Enrollments.CommitIfLive] when the Hub certificate of the connection ended
+// before the change was applied.
+var errGuardExpired = errors.New("agent: the Hub certificate expired before the revoke was applied")
+
+// WipeIfLive is [Enrollments.WipeIf] with an expiry check inside the guard:
+// live is called with the enrollment lock held, immediately before the wipe,
+// and the wipe does not happen (errGuardExpired) when it reports false. The
+// time spent waiting for the lock is thereby covered. A nil live always passes.
+func (e *Enrollments) WipeIfLive(ctx context.Context, gen uint64, live func() bool) (wiped bool, err error) {
+	err = e.lockedIf(ctx, gen, func() (err error) {
+		if live != nil && !live() {
+			return errGuardExpired
+		}
+		wiped, err = e.wipe(ctx)
+		return
+	})
+	return wiped, err
+}
+
+// CommitIfLive is [Enrollments.CommitIf] with an expiry check inside the guard:
+// live is called with the locks held, immediately before the commit, and
+// nothing is stored (errGuardExpired) when it reports false.
+func (e *Enrollments) CommitIfLive(ctx context.Context, gen uint64, enr Enrollment, live func() bool) error {
+	return e.lockedIf(ctx, gen, func() error {
+		if live != nil && !live() {
+			return errGuardExpired
+		}
+		return e.commit(ctx, enr)
+	})
 }
 
 // wipe moves the generation and deletes the enrollment. The caller holds the

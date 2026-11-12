@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-var allPurposes = []Purpose{PurposeHandshakeHub, PurposeHandshakeWorker, PurposeTransition, PurposeRevoke, PurposePAKEConfirm}
+var allPurposes = []Purpose{PurposeHandshakeHub, PurposeHandshakeWorker, PurposeTransition, PurposeRevoke, PurposePAKEConfirm, PurposeHubCert}
 
 func TestSignedMessageLayout(t *testing.T) {
 	got, err := SignedMessage(PurposeRevoke, []byte("abc"))
@@ -21,7 +21,7 @@ func TestSignedMessageLayout(t *testing.T) {
 }
 
 func TestPurposeNames(t *testing.T) {
-	want := []string{"hs-hub", "hs-worker", "transition", "revoke", "pake-confirm"}
+	want := []string{"hs-hub", "hs-worker", "transition", "revoke", "pake-confirm", "hub-cert"}
 	for i, p := range allPurposes {
 		if string(p) != want[i] || !p.Valid() {
 			t.Fatalf("purpose %d = %q", i, p)

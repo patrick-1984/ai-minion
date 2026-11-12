@@ -23,6 +23,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubcert"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -358,8 +359,11 @@ func (incompleteDialer) Enroll(context.Context, InviteParams) (*InviteOutcome, e
 // ends. It serves TLS with a self-signed certificate for another host name.
 // The real Hub handler runs against the same Worker code in test/e2e.
 type inviteHub struct {
-	t    *testing.T
+	t *testing.T
+	// key is the root (what the invitation fingerprint names); hub holds the
+	// operational key and certificate the stub presents.
 	key  *identity.Key
+	hub  *hubcert.Hub
 	srv  *httptest.Server
 	cert tls.Certificate
 
@@ -376,19 +380,20 @@ type inviteHub struct {
 	// oneTime makes the invitation single-use: once a Worker key is enrolled,
 	// every other key that presents the secret is refused.
 	oneTime bool
+	// holdAnswer makes the Hub take the secret and then hold the connection
+	// without answering until the Worker closes it.
+	holdAnswer bool
 }
 
 func newInviteHub(t *testing.T) (*inviteHub, identity.InviteKey) {
 	t.Helper()
-	key, err := identity.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
+	hub := hubcert.New(t)
+	key := hub.Root
 	invite, err := identity.NewInviteKey(key.Fingerprint())
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &inviteHub{t: t, key: key, cert: wrongNameCert(t), known: map[string]string{}, secret: inviteSecretPart(invite)}
+	h := &inviteHub{t: t, key: key, hub: hub, cert: wrongNameCert(t), known: map[string]string{}, secret: inviteSecretPart(invite)}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -417,7 +422,9 @@ func (h *inviteHub) serve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	res, err := transport.HubHandshake(conn, transport.HubConfig{Key: h.key, Timeout: 10 * time.Second})
+	hc := h.hub.Config()
+	hc.Timeout = 10 * time.Second
+	res, err := transport.HubHandshake(conn, hc)
 	if err != nil {
 		return
 	}
@@ -439,7 +446,7 @@ func (h *inviteHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Lock()
 	h.received = append(h.received, f.Secret)
-	refuse, lose := h.refuse, h.loseAnswer
+	refuse, lose, hold := h.refuse, h.loseAnswer, h.holdAnswer
 	id, known := h.known[string(res.WorkerPub)]
 	switch {
 	case refuse != nil:
@@ -459,6 +466,8 @@ func (h *inviteHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Unlock()
 	switch {
+	case hold:
+		_, _ = res.Channel.Read(make([]byte, 1))
 	case refuse != nil:
 		_ = proto.WriteFrame(res.Channel, proto.StreamFrameLimit, refuse.Frame())
 	case lose:

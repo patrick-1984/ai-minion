@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 )
 
 // ---- helpers ---------------------------------------------------------------
@@ -734,6 +736,18 @@ type running struct {
 }
 
 func startHub(t *testing.T, cfg *Config, reg *Registry, opts ...Option) *running {
+	t.Helper()
+	// A Hub that has a Hub identity module starts from an established identity
+	// (state B3), as one whose owner set the passphrase long ago; the tests of
+	// the unset states use startHubPristine.
+	if slices.Contains(reg.Names(), "hubid") {
+		hubidtest.Provision(t, cfg.DataDir)
+	}
+	return startHubPristine(t, cfg, reg, opts...)
+}
+
+// startHubPristine starts a Hub on the data directory exactly as it is.
+func startHubPristine(t *testing.T, cfg *Config, reg *Registry, opts ...Option) *running {
 	t.Helper()
 	logs := &syncBuf{}
 	cfg.Logger = testLogger(logs)

@@ -239,14 +239,13 @@ func (r *Remover) event(a RemoveActor, workerID, outcome string) audit.Event {
 // The revoke travels as the only frame of an op stream that the Hub opens
 // (AD-3): {"type":"revoke","sig":...}, signed with purpose "revoke" over the
 // transcript hash of this connection (AD-9). The Worker verifies it against
-// its pinned Hub key, wipes its pairing and answers with an op.result frame
+// the operational key of the certificate it validated in that handshake, wipes its pairing and answers with an op.result frame
 // ({"type":"op.result","op":"revoke"}); anything else it sends is not a
 // confirmation. The Hub ends the connection after the answer or after Grace,
 // whichever comes first. A Worker that did not take the frame therefore
 // reconnects and is answered with the revoke of its tombstone.
 type RegistryRevoker struct {
 	Registry *Registry
-	Identity *Identity
 	// Grace bounds the wait for the Worker's answer; zero means
 	// [DefaultRevokeGrace].
 	Grace time.Duration
@@ -254,14 +253,14 @@ type RegistryRevoker struct {
 
 // RevokeOnline implements [LiveRevoker].
 func (v *RegistryRevoker) RevokeOnline(ctx context.Context, workerID string) (online, confirmed bool, err error) {
-	on, ok := v.Registry.Get(workerID)
+	// The revoke is signed with the operational key of the live connection's
+	// own snapshot (design 12.4), taken together with its transcript hash.
+	frame, ok, err := v.Registry.SignRevoke(workerID)
 	if !ok {
 		return false, false, nil
 	}
 	// Whatever happens next, the connection of a removed Worker ends.
 	defer v.Registry.Disconnect(workerID)
-
-	frame, err := SignRevoke(v.Identity.Key(), on.TranscriptHash)
 	if err != nil {
 		return true, false, fmt.Errorf("sign the revoke: %w", err)
 	}

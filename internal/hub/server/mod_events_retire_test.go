@@ -38,6 +38,7 @@ func TestRetireAndLiveEventsWorkTogetherInTheComposedHub(t *testing.T) {
 	registerAuditModule(r)
 	registerAuthz(r)
 	registerAuth(r)
+	registerHubIDModule(r)
 	registerWorkersModule(r)
 	registerAPI(r, ops.Default)
 	registerAPIKeyModule(r)
@@ -85,7 +86,7 @@ func TestRetireAndLiveEventsWorkTogetherInTheComposedHub(t *testing.T) {
 		}
 		res, err := transport.WorkerHandshake(conn, transport.WorkerConfig{
 			Key: key, Name: "lab", Ops: []string{"send_text"}, Mode: transport.ModeConnect,
-			Pin: identity.Pin{Pub: wsv.Identity().Key().Public()}, Timeout: 10 * time.Second,
+			Pin: identity.Pin{Pub: wsv.Identity().Public()}, Timeout: 10 * time.Second,
 		})
 		if err != nil {
 			t.Fatalf("round %d: %v", round, err)

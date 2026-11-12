@@ -57,6 +57,7 @@ func startDashHubAt(t *testing.T, dataDir string) *dashHub {
 	registerAuditModule(r)
 	registerAuthz(r)
 	registerAuth(r)
+	registerHubIDModule(r)
 	registerWorkersModule(r)
 	registerAPI(r, ops.Default)
 	registerActAs(r)

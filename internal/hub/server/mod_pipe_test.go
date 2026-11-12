@@ -171,7 +171,7 @@ func (ph *pipeHub) connect(t *testing.T, name string) *pipeWorker {
 	}
 	res, err := transport.WorkerHandshake(conn, transport.WorkerConfig{
 		Key: key, Name: name, Ops: []string{ops.OpPipeSend, ops.OpPipeRead, ops.OpPipeWait, ops.OpSessionSnapshot, ops.OpSessionsList}, Features: []string{proto.FeaturePipeCausal, proto.FeatureTextVerbatim}, Mode: transport.ModeConnect,
-		Pin: identity.Pin{Pub: ph.wsv.Identity().Key().Public()}, Timeout: 10 * time.Second,
+		Pin: identity.Pin{Pub: ph.wsv.Identity().Public()}, Timeout: 10 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

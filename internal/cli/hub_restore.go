@@ -34,8 +34,11 @@ archive from an earlier version or from --unencrypted is restored as it is. The
 whole archive is decrypted and checked in a temporary area before anything in
 the data directory is touched, so a wrong passphrase or a damaged file leaves
 the data directory as it was. The data directory is created only after the
-whole archive passed. A database that records a Hub identity needs the matching
-identity.key in the archive. --max-size limits the decrypted size and the total
+whole archive passed. The archive must hold exactly the identity files of its
+state (none, plain identity.key, or the sealed root root.key.age with, once a
+certificate exists, op.key) and they must match the database. A restore issues
+no certificate and asks for no passphrase: the Hub comes back in the state of
+the backup, and its sealed root opens with the passphrase of the backup's time. --max-size limits the decrypted size and the total
 size of the files (default 64 GiB).
 
 The data directory is MINION_DATA_DIR unless --data-dir is given. A data
@@ -82,6 +85,9 @@ func runHubRestore(ctx context.Context, w io.Writer, d hubBackupDeps, dataDirFla
 	}
 	if _, err := fmt.Fprintf(w, "Restored %d files into %s (schema version %d, written by minion %s).\nStart the Hub with \"minion hub serve\".\n",
 		len(res.Files), res.Dir, res.Manifest.SchemaVersion, res.Manifest.Version); err != nil {
+		return err
+	}
+	if err := printIdentityNotes(w, res); err != nil {
 		return err
 	}
 	kind := d.containerDir
@@ -138,4 +144,33 @@ func looksLikeContainerDir(dir string, euid int, exists func(string) bool) conta
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// printIdentityNotes tells the operator the identity state of the restored Hub
+// and prints the root rollback warning when it applies (contract section 13).
+func printIdentityNotes(w io.Writer, res store.RestoreResult) error {
+	switch res.IdentityState {
+	case store.IdentityStatePlain:
+		if _, err := fmt.Fprintln(w, "Identity state: plain. The Hub root is the plain identity.key; set the Hub passphrase on the identity page to seal it."); err != nil {
+			return err
+		}
+	case store.IdentityStateSealedNoCert:
+		if _, err := fmt.Fprintf(w, "Identity state: sealed, no certificate (root %s). Re-issue the certificate on the identity page. The sealed root opens with the passphrase of the backup's time.\n", res.RootFingerprint); err != nil {
+			return err
+		}
+	case store.IdentityStateEstablished:
+		if _, err := fmt.Fprintf(w, "Identity state: established (root %s). The backed-up certificate is kept; no certificate was issued. The sealed root opens with the passphrase of the backup's time.\n", res.RootFingerprint); err != nil {
+			return err
+		}
+	}
+	switch {
+	case res.RootRolledBack:
+		_, err := fmt.Fprintf(w, "WARNING: %s.\nThe data directory that was replaced had rotated away root %s. Restore a backup made after the rotation, or reset the affected Workers and enroll them again.\n", store.RootRollbackWarning, res.RootFingerprint)
+		return err
+	case res.IdentityState != "" && res.IdentityState != store.IdentityStateNone:
+		_, err := fmt.Fprintf(w, "Check the date: this backup was made with root %s after %d master-key rotation(s). If you rotated the master key after %s, %s. Restore a backup made after the rotation, or reset the affected Workers and enroll them again.\n",
+			res.RootFingerprint, res.Transitions, res.Manifest.CreatedAt, store.RootRollbackWarning)
+		return err
+	}
+	return nil
 }

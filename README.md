@@ -7,7 +7,7 @@ Run and steer terminal AI agents (Claude Code, Codex and others) in tmux session
 
 One binary, `minion` (also installed as `mn` by the Linux packages), is the Hub, the Worker, the command line and the MCP server.
 
-Version 0.6.3. License: Apache-2.0.
+Version 0.7.0. License: Apache-2.0.
 
 ## Start here
 
@@ -39,6 +39,7 @@ In a second terminal on the same machine, `minion sessions_list` lists the sessi
 | [Sign in with OIDC](docs/guides/oidc.md) | An identity provider with role claims |
 | [API keys and MCP](docs/guides/api-keys-and-mcp.md) | Scoped API keys, the CLI against a Hub, the read-only MCP server |
 | [The pipe](docs/guides/pipe.md) | Sending a message to an agent and reading its replies |
+| [Hub identity](docs/guides/hub-identity.md) | The sealed root key and its passphrase, certificate re-issue, master-key rotation, `minion hub identity` |
 | [Backup and restore](docs/guides/backup-restore.md) | The Hub's data, keys and identity |
 | [Security and trust model](docs/security.md) | What the Hub sees, what to trust, what is not reviewed yet |
 

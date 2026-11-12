@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -135,8 +136,9 @@ func TestProductionStartupServesWorkerKindsTrustAndRestriction(t *testing.T) {
 	t.Setenv("MINION_INFRA_INVITE_KEY_FILE", keyFile)
 
 	data := t.TempDir()
+	rootPub := hubidtest.Provision(t, data)
 	h := startHub(t, &Config{DataDir: data}, DefaultRegistry)
-	hubKey, err := identity.LoadKey(filepath.Join(data, workers.IdentityFile))
+	hubFpr, err := identity.FingerprintOf(rootPub)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +175,7 @@ func TestProductionStartupServesWorkerKindsTrustAndRestriction(t *testing.T) {
 		t.Fatalf("user_create = %d %s", code, body)
 	}
 
-	wk, first := enrollInfraWorker(t, h.srv.Addr(), hubKey.Fingerprint(), "edge-1", infraSecret)
+	wk, first := enrollInfraWorker(t, h.srv.Addr(), hubFpr, "edge-1", infraSecret)
 	if first.Kind != "infrastructure" || first.Policy.PreviewOnly {
 		t.Fatalf("enrolled welcome = %+v", first)
 	}
@@ -183,13 +185,13 @@ func TestProductionStartupServesWorkerKindsTrustAndRestriction(t *testing.T) {
 	if code, body := call(ops.OpWorkerRestrict, map[string]any{"worker_id": id, "preview_only": true}); code != 200 {
 		t.Fatalf("worker_restrict = %d %s", code, body)
 	}
-	if w := connectWorker(t, h.srv.Addr(), wk, hubKey.Public(), "edge-1"); !w.Policy.PreviewOnly {
+	if w := connectWorker(t, h.srv.Addr(), wk, rootPub, "edge-1"); !w.Policy.PreviewOnly {
 		t.Errorf("welcome = %+v, want preview_only after the restriction", w)
 	}
 	if code, body := call(ops.OpWorkerRestrict, map[string]any{"worker_id": id, "preview_only": false}); code != 200 {
 		t.Fatalf("worker_restrict off = %d %s", code, body)
 	}
-	if w := connectWorker(t, h.srv.Addr(), wk, hubKey.Public(), "edge-1"); w.Policy.PreviewOnly {
+	if w := connectWorker(t, h.srv.Addr(), wk, rootPub, "edge-1"); w.Policy.PreviewOnly {
 		t.Errorf("welcome = %+v, want the restriction lifted", w)
 	}
 

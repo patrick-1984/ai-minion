@@ -50,6 +50,11 @@ const (
 	CodeViewIncomplete          Code = "view_incomplete"
 	CodePipeOriginRefused       Code = "pipe_origin_refused"
 	CodeWorkerPending           Code = "worker_pending"
+	CodeHubCertExpired          Code = "hub_cert_expired"
+	CodeReauthRequired          Code = "reauth_required"
+	CodeReauthUnavailable       Code = "reauth_unavailable"
+	CodeTLSRequired             Code = "tls_required"
+	CodePassphraseInvalid       Code = "passphrase_invalid"
 )
 
 type codeInfo struct {
@@ -100,6 +105,11 @@ var codeTable = []codeInfo{
 	{CodeViewIncomplete, 409, "The visible screen could not be read completely; nothing was sent."},
 	{CodePipeOriginRefused, 403, "The receiving Worker does not accept messages from this origin (missing or malformed origin, or pipe_accept_from)."},
 	{CodeWorkerPending, 403, "The Worker is waiting for approval by its owner or an admin."},
+	{CodeHubCertExpired, 503, "The Hub certificate has expired; the Hub owner must re-issue it."},
+	{CodeReauthRequired, 403, "The operation needs a sign-in checked in the last five minutes; sign in again."},
+	{CodeReauthUnavailable, 403, "The sign-in method cannot prove a fresh authentication; the operation is refused."},
+	{CodeTLSRequired, 403, "The request did not arrive over HTTPS, so a passphrase is not accepted."},
+	{CodePassphraseInvalid, 403, "The passphrase was not accepted."},
 }
 
 var codeIndex = func() map[Code]codeInfo {

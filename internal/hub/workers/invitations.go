@@ -88,6 +88,10 @@ type InvitationsConfig struct {
 	// (AD-5, AD-7), so that a Worker verifies the Hub before sending the
 	// secret.
 	HubFingerprint identity.Fingerprint
+	// FingerprintFunc, when set, supplies the ROOT fingerprint at the time of
+	// each call and replaces HubFingerprint: the root can appear after start
+	// (the passphrase is set) and change (master-key rotation).
+	FingerprintFunc func() identity.Fingerprint
 	// Auditor records creation and revocation; nil disables it.
 	Auditor Auditor
 	// Now is the clock; nil means time.Now.
@@ -100,7 +104,7 @@ type InvitationsConfig struct {
 // SHA-256 is kept.
 type Invitations struct {
 	st    InvitationStore
-	fpr   identity.Fingerprint
+	fpr   func() identity.Fingerprint
 	audit Auditor
 	now   func() time.Time
 	log   *slog.Logger
@@ -111,9 +115,13 @@ func NewInvitations(cfg InvitationsConfig) (*Invitations, error) {
 	if cfg.Store == nil {
 		return nil, errors.New("workers: the invitation service needs a store")
 	}
-	fpr, err := identity.ParseFingerprint(string(cfg.HubFingerprint))
-	if err != nil {
-		return nil, errors.New("workers: the invitation service needs the Hub fingerprint")
+	fpr := cfg.FingerprintFunc
+	if fpr == nil {
+		f, err := identity.ParseFingerprint(string(cfg.HubFingerprint))
+		if err != nil {
+			return nil, errors.New("workers: the invitation service needs the Hub fingerprint")
+		}
+		fpr = func() identity.Fingerprint { return f }
 	}
 	s := &Invitations{st: cfg.Store, fpr: fpr, audit: cfg.Auditor, now: cfg.Now, log: cfg.Logger}
 	if s.now == nil {
@@ -143,22 +151,43 @@ func (s *Invitations) Create(ctx context.Context, caller InvitationCaller, a ops
 	if err != nil {
 		return ops.InvitationCreateResult{}, err
 	}
-	key, err := identity.NewInviteKey(s.fpr)
-	if err != nil {
-		return ops.InvitationCreateResult{}, fmt.Errorf("workers: create invitation key: %w", err)
-	}
-	hash := key.SecretHash()
-	now := s.now()
-	row := store.InvitationRow{
-		ID: store.NewID(), SecretHash: hash[:], Name: a.Name, Mode: a.Mode, Kind: kind, TTL: a.TTL,
-		CreatorID: caller.UserID, CreatedAt: store.UnixMS(now),
-	}
-	if d, _ := ops.InvitationTTLDuration(a.TTL); d > 0 {
-		row.ExpiresAt = store.UnixMS(now.Add(d))
-	}
-	row.MaxUses = maxUses
-	if err := s.st.InsertInvitation(ctx, row); err != nil {
-		return ops.InvitationCreateResult{}, err
+	// The key is bound to the root fingerprint read here, and the insert is
+	// conditional on that fingerprint still being the stored root (one
+	// transaction). A rotation in between makes the insert refuse; the key is
+	// then made again for the new root, once, and a second change is a conflict.
+	var (
+		key identity.InviteKey
+		row store.InvitationRow
+	)
+	for attempt := 0; ; attempt++ {
+		fpr, err := identity.ParseFingerprint(string(s.fpr()))
+		if err != nil {
+			return ops.InvitationCreateResult{}, proto.NewError(proto.CodeConflict, "the Hub has no identity yet: set the Hub passphrase first")
+		}
+		key, err = identity.NewInviteKey(fpr)
+		if err != nil {
+			return ops.InvitationCreateResult{}, fmt.Errorf("workers: create invitation key: %w", err)
+		}
+		hash := key.SecretHash()
+		now := s.now()
+		row = store.InvitationRow{
+			ID: store.NewID(), SecretHash: hash[:], Name: a.Name, Mode: a.Mode, Kind: kind, TTL: a.TTL,
+			CreatorID: caller.UserID, CreatedAt: store.UnixMS(now),
+		}
+		if d, _ := ops.InvitationTTLDuration(a.TTL); d > 0 {
+			row.ExpiresAt = store.UnixMS(now.Add(d))
+		}
+		row.MaxUses = maxUses
+		err = s.insert(ctx, row, fpr.String())
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, store.ErrRootChanged) {
+			return ops.InvitationCreateResult{}, err
+		}
+		if attempt >= 1 {
+			return ops.InvitationCreateResult{}, proto.NewError(proto.CodeConflict, "the Hub identity changed while the key was created; try again")
+		}
 	}
 	s.record(ctx, caller, AuditInvitationCreate, row.ID, auditSuccess)
 	res := ops.InvitationCreateResult{
@@ -167,6 +196,17 @@ func (s *Invitations) Create(ctx context.Context, caller InvitationCaller, a ops
 	}
 	res.ExpiresAt = optTimestamp(row.ExpiresAt)
 	return res, nil
+}
+
+// insert stores row, conditional on rootFingerprint being the current root when
+// the store can check it in the same transaction.
+func (s *Invitations) insert(ctx context.Context, row store.InvitationRow, rootFingerprint string) error {
+	if c, ok := s.st.(interface {
+		InsertInvitationForRoot(ctx context.Context, r store.InvitationRow, rootFingerprint string) error
+	}); ok {
+		return c.InsertInvitationForRoot(ctx, row, rootFingerprint)
+	}
+	return s.st.InsertInvitation(ctx, row)
 }
 
 // List returns the caller's invitation keys, newest first. all=true lists the

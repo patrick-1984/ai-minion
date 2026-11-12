@@ -12,6 +12,9 @@ const (
 	KeyTLS            = "tls"
 	KeyPublicURL      = "public_url"
 	KeyTrustedProxies = "trusted_proxies"
+	// KeyManagementListen is the optional loopback-only management listener
+	// (docs/architecture/proposals/hub-identity-v2.md, section 8.1 item 5).
+	KeyManagementListen = "management_listen"
 
 	// KeyTLSCertFile and KeyTLSKeyFile name the certificate and key file
 	// settings. Their environment names are MINION_TLS_CERT_FILE and
@@ -68,6 +71,11 @@ func declareHubServer(r *Registry) {
 		Scope: ScopeHub,
 		Help:  "Comma-separated CIDRs (or addresses) of reverse proxies whose X-Forwarded-For and X-Forwarded-Proto headers are honoured",
 	})
+	r.Declare(Setting{
+		Key:   KeyManagementListen,
+		Scope: ScopeHub,
+		Help:  "Optional management listener, a loopback host:port such as 127.0.0.1:8444, served as plain HTTP. It is the only place where a passphrase is accepted without HTTPS; never point a reverse proxy at it",
+	})
 }
 
 // HubServer holds the raw Hub server settings. [ResolveHubServer] fills it;
@@ -80,6 +88,9 @@ type HubServer struct {
 	KeyFile        string
 	PublicURL      string
 	TrustedProxies string // comma-separated CIDRs
+	// ManagementListen is the loopback address of the management listener,
+	// empty when there is none.
+	ManagementListen string
 }
 
 // ResolveHubServer resolves the settings of the Hub's HTTP server through r
@@ -102,6 +113,7 @@ func ResolveHubServer(r *Resolver) (HubServer, error) {
 		{KeyTLS, &hs.TLS},
 		{KeyPublicURL, &hs.PublicURL},
 		{KeyTrustedProxies, &hs.TrustedProxies},
+		{KeyManagementListen, &hs.ManagementListen},
 	} {
 		res, err := r.Resolve(f.key)
 		if err != nil {

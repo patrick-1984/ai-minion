@@ -7,6 +7,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -28,7 +29,7 @@ func registerWorkersModule(r *Registry) {
 	}
 }
 
-// initWorkers loads or creates the Hub identity (logging its fingerprint),
+// initWorkers builds the Worker service on the Hub identity service,
 // wires the Worker owner lookup into the authorizer, mounts GET
 // /api/v1/worker/connect and closes every Worker connection at stop.
 func initWorkers(ctx context.Context, env *Env) error {
@@ -57,8 +58,12 @@ func initWorkers(ctx context.Context, env *Env) error {
 		return err
 	}
 
+	id, err := Require[*hubid.Service](env)
+	if err != nil {
+		return err
+	}
 	svc, err := workers.NewService(ctx, workers.ServiceOptions{
-		DataDir:  cfg.DataDir,
+		Identity: id,
 		Store:    st,
 		ClientIP: nw.ClientIP,
 		Auditor:  auditLog,

@@ -60,6 +60,7 @@ func TestHubComposedFromTheRegistryRoutesWorkerOps(t *testing.T) {
 	registerAuditModule(r)
 	registerAuthz(r)
 	registerAuth(r)
+	registerHubIDModule(r)
 	registerWorkersModule(r)
 	registerAPI(r, ops.Default)
 	registerRouteModule(r)

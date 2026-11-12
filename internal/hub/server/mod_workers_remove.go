@@ -82,7 +82,7 @@ func initWorkersRemove(_ context.Context, env *Env) error {
 			Logger: cfg.logger(),
 		}
 	}
-	rm, err := workers.NewRemover(cleanup(&workers.RegistryRevoker{Registry: svc.Registry(), Identity: svc.Identity()}))
+	rm, err := workers.NewRemover(cleanup(&workers.RegistryRevoker{Registry: svc.Registry()}))
 	if err != nil {
 		return fmt.Errorf("build the Worker remover: %w", err)
 	}

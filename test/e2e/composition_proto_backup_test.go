@@ -4,10 +4,12 @@ package e2e
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	wagent "github.com/patrick-1984/ai-minion/internal/worker/agent"
@@ -43,14 +45,14 @@ func enrolledCompWorker(t *testing.T, h *connHub) (*compWorkerState, store.Worke
 }
 
 func TestHubAcceptsTheWorkersPreviousMinorAndNegotiatesIt(t *testing.T) {
-	h := newConnHubWith(t, proto.Version{Major: 2, Minor: 1}, nil)
+	h := newConnHubWith(t, proto.Version{Major: 3, Minor: 1}, nil)
 	w, row := enrolledCompWorker(t, h)
-	only20 := proto.Range{Min: proto.Version{Major: 2, Minor: 0}, Max: proto.Version{Major: 2, Minor: 0}}
+	only20 := proto.Range{Min: proto.Version{Major: 3, Minor: 0}, Max: proto.Version{Major: 3, Minor: 0}}
 	conn, _, _ := w.connect(h, only20)
-	eventually(t, "the 2.0 Worker to be online at the 2.1 Hub", func() bool { return h.service().Registry().IsOnline(row.ID) })
+	eventually(t, "the 3.0 Worker to be online at the 3.1 Hub", func() bool { return h.service().Registry().IsOnline(row.ID) })
 	on, _ := h.service().Registry().Get(row.ID)
-	if on.Version != (proto.Version{Major: 2, Minor: 0}) {
-		t.Fatalf("negotiated %s, want 2.0 (the previous minor)", on.Version)
+	if on.Version != (proto.Version{Major: 3, Minor: 0}) {
+		t.Fatalf("negotiated %s, want 3.0 (the previous minor)", on.Version)
 	}
 	eventually(t, "the connector to be connected", func() bool { return conn.Status().State == wagent.ConnConnected })
 }
@@ -58,8 +60,8 @@ func TestHubAcceptsTheWorkersPreviousMinorAndNegotiatesIt(t *testing.T) {
 func TestHubAtTheBuildsVersionNegotiatesTheNewestSharedVersionWithANewerMinorWorker(t *testing.T) {
 	h := newConnHub(t)
 	w, row := enrolledCompWorker(t, h)
-	w.connect(h, proto.Range{Min: proto.Version{Major: 2, Minor: 0}, Max: proto.Version{Major: 2, Minor: 1}})
-	eventually(t, "the 2.0..2.1 Worker to be online", func() bool { return h.service().Registry().IsOnline(row.ID) })
+	w.connect(h, proto.Range{Min: proto.Version{Major: 3, Minor: 0}, Max: proto.Version{Major: 3, Minor: 1}})
+	eventually(t, "the 3.0..3.1 Worker to be online", func() bool { return h.service().Registry().IsOnline(row.ID) })
 	if on, _ := h.service().Registry().Get(row.ID); on.Version != proto.Current {
 		t.Fatalf("negotiated %s, want %s", on.Version, proto.Current)
 	}
@@ -86,8 +88,8 @@ func TestAOneDotXWorkerIsRefusedByTheTwoDotZeroHub(t *testing.T) {
 func TestAMajorMismatchIsRetriedKeepsTheEnrollmentAndConnectsWhenTheHubCatchesUp(t *testing.T) {
 	h := newConnHub(t)
 	w, row := enrolledCompWorker(t, h)
-	only3 := proto.Range{Min: proto.Version{Major: 3}, Max: proto.Version{Major: 3}}
-	conn, logs, _ := w.connect(h, only3)
+	only4 := proto.Range{Min: proto.Version{Major: 4}, Max: proto.Version{Major: 4}}
+	conn, logs, _ := w.connect(h, only4)
 
 	eventually(t, "the mismatch to be reported", func() bool {
 		return strings.Contains(conn.Status().LastError, string(proto.CodeProtoIncompatible))
@@ -109,10 +111,10 @@ func TestAMajorMismatchIsRetriedKeepsTheEnrollmentAndConnectsWhenTheHubCatchesUp
 	h.mu.Lock()
 	addr := h.addr
 	h.mu.Unlock()
-	h.current = proto.Version{Major: 3}
+	h.current = proto.Version{Major: 4}
 	h.start(addr)
-	eventually(t, "the retrying Worker to connect at protocol 3.0", func() bool { return h.service().Registry().IsOnline(row.ID) })
-	if on, _ := h.service().Registry().Get(row.ID); on.Version != (proto.Version{Major: 3}) {
+	eventually(t, "the retrying Worker to connect at protocol 4.0", func() bool { return h.service().Registry().IsOnline(row.ID) })
+	if on, _ := h.service().Registry().Get(row.ID); on.Version != (proto.Version{Major: 4}) {
 		t.Fatalf("negotiated %s", on.Version)
 	}
 }
@@ -124,9 +126,21 @@ func TestAMajorMismatchIsRetriedKeepsTheEnrollmentAndConnectsWhenTheHubCatchesUp
 func TestARestoredOlderHubBackupAnswersNotEnrolledAndTheWorkerKeepsItsState(t *testing.T) {
 	h := newConnHub(t)
 	ctx := context.Background()
-	out := filepath.Join(t.TempDir(), "old.tgz")
-	if _, err := store.Backup(ctx, h.dir, out, "0.5.0-e2e"); err != nil {
+	// The archive format does not know the two-tier identity files yet (design
+	// section 13): the "older backup" is a consistent snapshot of the database
+	// (VACUUM INTO) and the sealed root and operational key files.
+	snapshot := t.TempDir()
+	if _, err := h.st.DB().ExecContext(ctx, "VACUUM INTO ?", filepath.Join(snapshot, store.DBFile)); err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range []string{hubid.RootFile, hubid.OpFile, "data.key"} {
+		raw, err := os.ReadFile(filepath.Join(h.dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(snapshot, name), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	w, row := enrolledCompWorker(t, h) // enrolls after the backup
 	conn, logs, _ := w.connect(h, proto.Range{})
@@ -142,10 +156,7 @@ func TestARestoredOlderHubBackupAnswersNotEnrolledAndTheWorkerKeepsItsState(t *t
 	if err := h.st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	restored := t.TempDir()
-	if _, err := store.Restore(ctx, out, restored, false); err != nil {
-		t.Fatal(err)
-	}
+	restored := snapshot
 	st, err := store.Open(restored)
 	if err != nil {
 		t.Fatal(err)

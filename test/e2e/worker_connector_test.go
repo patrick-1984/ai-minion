@@ -10,6 +10,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"log/slog"
 	"math/big"
 	"net"
@@ -72,6 +74,10 @@ type connHub struct {
 	mu  sync.Mutex
 	svc *workers.Service
 	srv *httptest.Server
+	// id is the Hub identity service of the current start (protocol 3.0: a root,
+	// an operational key and a certificate, brought to the established state B3
+	// with the fast test sealer).
+	id *hubid.Service
 }
 
 func wrongNameCert(t *testing.T) tls.Certificate {
@@ -116,8 +122,9 @@ func newConnHubWith(t *testing.T, current proto.Version, onStart func(*workers.S
 
 func (h *connHub) start(addr string) {
 	h.t.Helper()
+	id := hubidtest.Open(h.t, h.st, h.dir)
 	svc, err := workers.NewService(context.Background(), workers.ServiceOptions{
-		DataDir: h.dir, Store: h.st, Limiter: openLimiter{},
+		Identity: id, Store: h.st, Limiter: openLimiter{},
 		Logger: slog.New(slog.NewTextHandler(&syncLog{}, nil)), Current: h.current,
 	})
 	if err != nil {
@@ -138,7 +145,7 @@ func (h *connHub) start(addr string) {
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{h.cert}, MinVersion: tls.VersionTLS13}
 	srv.StartTLS()
 	h.mu.Lock()
-	h.svc, h.srv, h.addr = svc, srv, l.Addr().String()
+	h.svc, h.srv, h.addr, h.id = svc, srv, l.Addr().String(), id
 	h.mu.Unlock()
 }
 

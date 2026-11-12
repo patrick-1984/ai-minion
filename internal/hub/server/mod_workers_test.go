@@ -15,6 +15,8 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -36,6 +38,7 @@ func workersRegistry(t *testing.T) *Registry {
 	}
 	registerAuthz(r)
 	registerAuditModule(r)
+	registerHubIDModule(r)
 	registerWorkersModule(r)
 	return r
 }
@@ -90,14 +93,13 @@ func TestHubServesTheWorkerConnectEndpoint(t *testing.T) {
 	}
 	h := startHub(t, &Config{DataDir: data}, reg)
 
-	// The identity key exists with the recorded fingerprint, and the
-	// fingerprint was logged.
-	key, err := identity.LoadKey(filepath.Join(data, workers.IdentityFile))
-	if err != nil {
-		t.Fatal(err)
+	// The Hub is established (sealed root, certified operational key); no
+	// plain identity key exists, and the invitation fingerprint is the root's.
+	if _, err := os.Stat(filepath.Join(data, workers.IdentityFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a plain identity key exists: %v", err)
 	}
-	if key.Fingerprint() != svc.Identity().Fingerprint() || !strings.Contains(h.logs.String(), key.Fingerprint().String()) {
-		t.Errorf("fingerprint %s not logged:\n%s", key.Fingerprint(), h.logs)
+	if svc.Identity().Fingerprint() == "" || len(svc.Identity().Public()) != 32 {
+		t.Errorf("no root fingerprint: %q", svc.Identity().Fingerprint())
 	}
 
 	// The authz Worker lookup is wired to the workers table.
@@ -129,7 +131,7 @@ func TestHubServesTheWorkerConnectEndpoint(t *testing.T) {
 	}
 	res, err := transport.WorkerHandshake(conn, transport.WorkerConfig{
 		Key: wk, Name: "pi", Ops: []string{"send_text"}, Mode: transport.ModeConnect,
-		Pin: identity.Pin{Pub: key.Public()}, Timeout: 10 * time.Second,
+		Pin: identity.Pin{Pub: svc.Identity().Public()}, Timeout: 10 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -256,7 +258,7 @@ func TestHubIdentitySurvivesARestoreIntoAFreshDataDir(t *testing.T) {
 	data := t.TempDir()
 	first := startAndObserve(t, data) // the Hub is stopped: the database is checkpointed
 	restored := t.TempDir()
-	for _, name := range []string{workers.IdentityFile, store.DBFile, store.DBFile + "-wal", store.DBFile + "-shm", "data.key"} {
+	for _, name := range []string{"root.key.age", "op.key", store.DBFile, store.DBFile + "-wal", store.DBFile + "-shm", "data.key"} {
 		raw, err := os.ReadFile(filepath.Join(data, name))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
@@ -277,23 +279,25 @@ func TestHubIdentitySurvivesARestoreIntoAFreshDataDir(t *testing.T) {
 	}
 }
 
-func TestHubRefusesToStartWithoutItsIdentityKey(t *testing.T) {
+func TestHubRefusesToStartWithoutItsSealedRoot(t *testing.T) {
 	data := t.TempDir()
 	reg := workersRegistry(t)
 	h := startHub(t, &Config{DataDir: data}, reg)
 	h.stop(t)
-	if err := os.Remove(filepath.Join(data, workers.IdentityFile)); err != nil {
+	if err := os.Remove(filepath.Join(data, "root.key.age")); err != nil {
 		t.Fatal(err)
 	}
 	srv := New(&Config{DataDir: data, Listen: "127.0.0.1:0", Logger: testLogger(&syncBuf{})}, workersRegistry(t))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	err := srv.Run(ctx)
-	if err == nil || !strings.Contains(err.Error(), "workers") || !strings.Contains(err.Error(), "restore") {
+	if err == nil || !strings.Contains(err.Error(), "root.key.age") || !strings.Contains(err.Error(), "restore") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(data, workers.IdentityFile)); !errors.Is(statErr, fs.ErrNotExist) {
-		t.Error("a new identity key was generated")
+	for _, name := range []string{"root.key.age", workers.IdentityFile} {
+		if _, statErr := os.Stat(filepath.Join(data, name)); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("a new %s was generated", name)
+		}
 	}
 }
 
@@ -330,5 +334,111 @@ func TestConnectEndpointRequiresTheWorkerSubprotocol(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Error("the Hub kept a connection without subprotocol minion.v1")
+	}
+}
+
+// A pristine data directory (B0) starts the Hub without a Worker service and
+// without creating any key; the Worker endpoint answers 503 (design 9.7).
+func TestAPristineHubStartsWithoutKeysAndRefusesWorkers(t *testing.T) {
+	data := t.TempDir()
+	reg := workersRegistry(t)
+	var id *hubid.Service
+	if err := reg.Register("grab", 60, func(_ context.Context, env *Env) error {
+		var err error
+		id, err = Require[*hubid.Service](env)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := startHubPristine(t, &Config{DataDir: data}, reg)
+	if id.State() != hubid.StatePristine {
+		t.Fatalf("state = %v", id.State())
+	}
+	for _, name := range []string{"identity.key", "identity.key.next", "root.key.age", "root.key.age.next", "op.key", "op.key.next"} {
+		if _, err := os.Stat(filepath.Join(data, name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("B0 created %s: %v", name, err)
+		}
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // test
+	resp, err := client.Get("https://" + h.srv.Addr() + transport.ConnectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("the Worker endpoint answered %d, want 503", resp.StatusCode)
+	}
+}
+
+// A migrated 0.6 Hub (B1: plain identity.key, no passphrase) and a Hub with a
+// sealed root but no certificate yet (B2) refuse Worker connections with 503
+// and create no certificate (design 9.7).
+func TestB1AndB2HubsRefuseWorkerConnections(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		want  hubid.State
+	}{
+		{"B1", func(t *testing.T, dir string) {
+			st, err := store.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = st.Close() }()
+			k, err := identity.GenerateKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := identity.SaveKey(filepath.Join(dir, hubid.PlainFile), k); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.PutHubIdentity(context.Background(), store.HubIdentityRow{Pub: k.Public(), Fingerprint: k.Fingerprint().String(), CreatedAt: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.DB().Exec(`UPDATE hub_identity SET migrated_from_06 = 1`); err != nil {
+				t.Fatal(err)
+			}
+		}, hubid.StatePlain},
+		{"B2", func(t *testing.T, dir string) {
+			hubidtest.Provision(t, dir)
+			st, err := store.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = st.Close() }()
+			if _, err := st.DB().Exec(`UPDATE hub_identity SET current_cert = NULL`); err != nil {
+				t.Fatal(err)
+			}
+		}, hubid.StateSealedNoCert},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := t.TempDir()
+			tc.setup(t, data)
+			reg := workersRegistry(t)
+			var id *hubid.Service
+			if err := reg.Register("grab", 60, func(_ context.Context, env *Env) error {
+				var err error
+				id, err = HubIdentity(env)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			h := startHubPristine(t, &Config{DataDir: data}, reg)
+			if id.State() != tc.want {
+				t.Fatalf("state = %v, want %v", id.State(), tc.want)
+			}
+			client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // test
+			resp, err := client.Get("https://" + h.srv.Addr() + transport.ConnectPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Errorf("the Worker endpoint answered %d, want 503", resp.StatusCode)
+			}
+			if _, err := id.Current(); err == nil {
+				t.Error("the Hub serves a certificate")
+			}
+		})
 	}
 }

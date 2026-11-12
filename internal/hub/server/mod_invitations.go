@@ -81,18 +81,21 @@ func initInvitations(_ context.Context, env *Env) error {
 	if err != nil {
 		return fmt.Errorf("invitations settings: %w", err)
 	}
-	fpr := svc.Identity().Fingerprint()
+	fpr := svc.Identity().Fingerprint // the ROOT fingerprint, read at each use
 	var infraKey *workers.InfraKey
 	if infra.InviteKeyFile != "" {
 		// An unreadable or malformed key file stops the start: a Hub that
 		// silently ignored it would reject every infrastructure Worker.
-		if infraKey, err = workers.LoadInfraKey(infra.InviteKeyFile, fpr); err != nil {
+		if fpr() == "" {
+			return fmt.Errorf("invitations: MINION_INFRA_INVITE_KEY_FILE names a key bound to the Hub identity, but the Hub has no root key yet: remove (unset) MINION_INFRA_INVITE_KEY_FILE, start the Hub, set the Hub passphrase, then set MINION_INFRA_INVITE_KEY_FILE again and restart")
+		}
+		if infraKey, err = workers.LoadInfraKey(infra.InviteKeyFile, fpr()); err != nil {
 			return fmt.Errorf("invitations: %w", err)
 		}
 	}
 
 	inv, err := workers.NewInvitations(workers.InvitationsConfig{
-		Store: st, HubFingerprint: fpr, Auditor: alog, Logger: cfg.logger(),
+		Store: st, FingerprintFunc: fpr, Auditor: alog, Logger: cfg.logger(),
 	})
 	if err != nil {
 		return fmt.Errorf("invitations: %w", err)
@@ -101,7 +104,7 @@ func initInvitations(_ context.Context, env *Env) error {
 		return fmt.Errorf("invitations: register the API handlers: %w", err)
 	}
 	enr, err := workers.NewEnroller(workers.EnrollConfig{
-		Store: st, HubFingerprint: fpr, Limiter: limiter, Auditor: alog,
+		Store: st, FingerprintFunc: fpr, Limiter: limiter, Auditor: alog,
 		Infra: infraKey, InfraOwner: infra.DefaultOwner, InfraExpiry: infraExpiry(infra), Logger: cfg.logger(),
 	})
 	if err != nil {

@@ -61,6 +61,10 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
   {{if .Worker.Pending}}<p class="notice notice-warning" role="status" data-pending-banner>This worker is waiting for approval. The Hub sends it no operations and refuses its calls until its owner or an admin approves it. Compare these facts with the machine you started.</p>
   {{template "worker_pending_facts" .Worker}}
   {{template "worker_approval_buttons" .Worker}}{{end}}
+  {{if .Worker.RepairURL}}<form method="post" action="{{.Worker.RepairURL}}" hx-post="{{.Worker.RepairURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Re-issue pairing for worker {{.Worker.Name}}? For 10 minutes the next new pairing code of this worker completes its pairing. Use it only when the worker never finished pairing." class="row-actions" data-key="worker-repair-{{.Worker.ID}}">
+    <p class="muted">This worker has never connected. If its pairing code expired before it recorded the pairing, re-issue the pairing and enter its new code.</p>
+    <button type="submit" class="btn" data-control="repair-pairing" aria-label="Re-issue pairing for worker {{.Worker.Name}}">Re-issue pairing</button>
+  </form>{{end}}
   {{if .Operate}}<form method="post" action="{{.Worker.NewURL}}" hx-post="{{.Worker.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions" data-key="worker-actions-{{.Worker.ID}}">
     <button type="submit" class="btn" data-control="new-session" aria-label="New session on {{.Worker.Name}}">New session</button>
   </form>{{end}}

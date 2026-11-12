@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -57,9 +59,10 @@ type Welcome struct {
 	proto.Range
 }
 
-// RevokeFrame is the signed revocation (AD-9). Sig is an Ed25519 signature by
-// the Hub key with purpose "revoke" over the transcript_hash of the handshake
-// it answers, so it cannot be replayed on another connection.
+// RevokeFrame is the signed revocation (AD-9, design 12.4). Sig is an Ed25519
+// signature by the OPERATIONAL key whose certificate the connection presented,
+// with purpose "revoke", over the transcript_hash of the handshake it answers,
+// so it cannot be replayed on another connection.
 type RevokeFrame struct {
 	Type string       `json:"type"`
 	Sig  identity.B64 `json:"sig"`
@@ -67,16 +70,16 @@ type RevokeFrame struct {
 
 // SignRevoke signs a revocation for the handshake with the given
 // transcript hash.
-func SignRevoke(hub *identity.Key, transcriptHash []byte) (RevokeFrame, error) {
-	sig, err := hub.Sign(identity.PurposeRevoke, transcriptHash)
+func SignRevoke(op *identity.Key, transcriptHash []byte) (RevokeFrame, error) {
+	sig, err := op.Sign(identity.PurposeRevoke, transcriptHash)
 	if err != nil {
 		return RevokeFrame{}, err
 	}
 	return RevokeFrame{Type: proto.TypeRevoke, Sig: sig}, nil
 }
 
-// VerifyRevoke checks a revocation against the pinned Hub key and the current
-// transcript hash.
+// VerifyRevoke checks a revocation against the operational key of the
+// connection's certificate and the current transcript hash.
 func VerifyRevoke(hubPub ed25519.PublicKey, transcriptHash []byte, f RevokeFrame) error {
 	return identity.Verify(hubPub, identity.PurposeRevoke, transcriptHash, f.Sig)
 }
@@ -127,6 +130,7 @@ type PairingGate interface {
 // Config configures a [Handler]. Identity, Repository and Registry are
 // required.
 type Config struct {
+	// Identity is the Hub identity (root, operational key, certificate).
 	Identity   *Identity
 	Repository Repository
 	Registry   *Registry
@@ -163,6 +167,9 @@ type Config struct {
 	// HandshakeTimeout bounds the AD-6 handshake; zero means the transport
 	// default.
 	HandshakeTimeout time.Duration
+	// Now is the wall clock of the certificate expiry check inside the
+	// handshake; nil means time.Now.
+	Now func() time.Time
 	// Streams bounds the inbound streams of the Workers' sessions, per Worker
 	// and for the whole Hub; a zero member selects its default (admission.go).
 	Streams StreamLimits
@@ -184,6 +191,11 @@ type Handler struct {
 	// finished (whatever its outcome), so that a test can order its own
 	// changes after it deterministically.
 	afterRecheck func()
+
+	// beforeRegister, when set by a test before the first connect, is called
+	// after the welcome was sent and before the connection is admitted to the
+	// registry: the point where a handshake that stalled can meet an activation.
+	beforeRegister func()
 
 	// removeMu guards remove and removeAudited, which [Handler.SetRemoveWorker]
 	// may replace while connections are served.
@@ -299,14 +311,14 @@ func (h *Handler) handshakeBudget() time.Duration {
 // notice a Worker that is gone. conn therefore watches the connection for the
 // duration of the wait: a Worker that closes, or that sends anything before
 // the Hub hello (a protocol violation), ends the wait.
-func (h *Handler) pairingPassword(ctx context.Context, conn *watchConn, ip netip.Addr, gate PairingGate, ticket **PairingTicket) func(string) ([]byte, error) {
+func (h *Handler) pairingPassword(ctx context.Context, conn *watchConn, ip netip.Addr, gate PairingGate, ticket **PairingTicket, workerPub func() []byte) func(string) ([]byte, error) {
 	return func(id string) ([]byte, error) {
 		budget := h.handshakeBudget()
 		_ = conn.SetDeadline(time.Now().Add(gate.MaxWait() + budget))
 		awaitCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		conn.watch(cancel)
-		t, err := gate.Await(awaitCtx, id, ip)
+		t, err := gate.Await(withWorkerPub(awaitCtx, workerPub()), id, ip)
 		if err != nil {
 			return nil, err
 		}
@@ -474,21 +486,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The snapshot (operational key, certificate, root, generation) is taken
+	// ONCE, together, before the upgrade (design 9.6). A Hub without a serving
+	// certificate refuses the connection here: no certificate yet (B0 to B2) or
+	// an expired one.
+	snap, err := h.cfg.Identity.Snapshot()
+	if err != nil {
+		h.refuseNotServing(w, err)
+		return
+	}
 	// The chain is read before the upgrade, so that a failure is an ordinary
 	// HTTP error and no WebSocket has to be closed (Story 4.9: the chain is
 	// read from the database, per connection, so a rotation is visible at
-	// once). The key is read first and the chain is cut at it: a rotation
-	// that is recorded but not yet confirmed durable (Rotator) has its link in
-	// the database while the Hub still signs with the previous key, and a
-	// Worker must never be shown a link that leads past the key it meets.
-	hubKey := h.cfg.Identity.Key()
+	// once). The chain is cut at the root of the snapshot: a Worker applies
+	// the whole chain it receives and requires the result to be the root it
+	// meets.
 	chain, err := h.chain(r.Context())
 	if err != nil {
 		h.log.Error("worker connect: cannot read the transition chain", "error", err)
 		writeHTTPError(w, proto.NewError(proto.CodeInternal, ""), 0)
 		return
 	}
-	chain = chainUpTo(chain, hubKey.Public())
+	chain = chainUpTo(chain, snap.RootPub)
 	conn, err := transport.Accept(w, r)
 	if err != nil {
 		return // Accept has answered the request
@@ -500,11 +519,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.untrack(conn)
+	var helloPub []byte
 	hc := transport.HubConfig{
-		Key:             hubKey,
-		Current:         h.cfg.Current,
-		Chain:           chain,
-		Admit:           h.admit,
+		Key:     snap.OpKey,
+		Cert:    snap.Cert,
+		Now:     h.cfg.Now,
+		Current: h.cfg.Current,
+		Chain:   chain,
+		Admit: func(wh transport.WorkerHello) error {
+			helloPub = bytes.Clone(wh.WorkerPub)
+			return h.admit(wh)
+		},
 		PairingPassword: h.cfg.PairingPassword,
 		Timeout:         h.cfg.HandshakeTimeout,
 	}
@@ -513,7 +538,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if gate := h.pairingGate(); gate != nil {
 		wc := newWatchConn(conn)
 		hsConn = wc
-		hc.PairingPassword = h.pairingPassword(ctx, wc, ip, gate, &pairingTicket)
+		hc.PairingPassword = h.pairingPassword(ctx, wc, ip, gate, &pairingTicket, func() []byte { return helloPub })
 	}
 	res, err := transport.HubHandshake(hsConn, hc)
 	if err != nil {
@@ -524,7 +549,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("worker connect: handshake failed", "client_ip", ip.String(), "code", string(transport.ErrorCode(err)))
 		return
 	}
-	c := &Conn{h: h, res: res, ip: ip, pairing: pairingTicket}
+	c := &Conn{h: h, res: res, ip: ip, pairing: pairingTicket, snap: snap}
 	defer c.finish()
 
 	if res.Worker.Mode == transport.ModeConnect {
@@ -544,6 +569,42 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) admit(wh transport.WorkerHello) error {
 	if wh.Mode != transport.ModeConnect && h.modeHandler(wh.Mode) == nil {
 		return proto.NewError(proto.CodeInvalidArgument, "this Hub does not accept the "+string(wh.Mode)+" mode")
+	}
+	return nil
+}
+
+// refuseNotServing answers a connect before the upgrade when the Hub has no
+// serving certificate: 503 hub_cert_expired with Retry-After once the
+// certificate expired, otherwise 503 worker_offline (no certificate yet).
+func (h *Handler) refuseNotServing(w http.ResponseWriter, err error) {
+	if errors.Is(err, identity.ErrCertExpired) {
+		writeHTTPError(w, proto.NewError(proto.CodeHubCertExpired,
+			"the Hub certificate has expired; the Hub owner must re-issue it"), notServingRetry)
+		return
+	}
+	writeHTTPError(w, proto.NewError(proto.CodeWorkerOffline,
+		"the Hub is not set up to serve Workers yet (no certificate)"), notServingRetry)
+}
+
+// notServingRetry is the Retry-After of a refusal because the Hub does not
+// serve; a re-issue ends it, and a Worker retries with its backoff anyway.
+const notServingRetry = 30 * time.Second
+
+// markFirstConnected records the first connect handshake that is about to
+// register the Worker (design 12.3: it ends the Worker's eligibility for a
+// pairing re-issue). It is part of the admission: it runs before the Worker is
+// published to the registry, so no connection is ever online without the
+// record, and an owner's re-issue (a conditional update on the same column)
+// and a connect cannot both succeed. A failure refuses the admission.
+func (h *Handler) markFirstConnected(ctx context.Context, w store.WorkerRow) error {
+	m, ok := h.cfg.Repository.(interface {
+		MarkFirstConnected(ctx context.Context, workerID string, at int64) (bool, error)
+	})
+	if !ok || w.FirstConnectedAt != 0 {
+		return nil
+	}
+	if _, err := m.MarkFirstConnected(context.WithoutCancel(ctx), w.ID, time.Now().UnixMilli()); err != nil {
+		return fmt.Errorf("record the first connect of worker %s: %w", w.ID, err)
 	}
 	return nil
 }
@@ -584,6 +645,7 @@ func (h *Handler) serveConnect(ctx context.Context, c *Conn) error {
 // [Handler]. It is not safe for concurrent use.
 type Conn struct {
 	h    *Handler
+	snap hubid.Snapshot // the identity this connection's handshake used
 	res  *transport.HubResult
 	ip   netip.Addr
 	sent bool
@@ -637,7 +699,7 @@ func (c *Conn) Reject(e *proto.Error) error { return c.write(e.Frame()) }
 
 // revoke sends the signed revoke to a tombstoned key and records it.
 func (c *Conn) revoke(ctx context.Context, t store.TombstoneRow) error {
-	f, err := SignRevoke(c.h.cfg.Identity.Key(), c.res.TranscriptHash[:])
+	f, err := SignRevoke(c.snap.OpKey, c.res.TranscriptHash[:])
 	if err != nil {
 		_ = c.Reject(proto.NewError(proto.CodeInternal, ""))
 		return err
@@ -707,7 +769,18 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	// from their Registry.OnAdd hook.
 	host := newHostedSession(sess, adm, h.log)
 	host.Handle(transport.KindCall, newCallStreams(h, w, sess))
-	h.cfg.Registry.Add(Online{
+	if h.beforeRegister != nil {
+		h.beforeRegister()
+	}
+	if c.res.Worker.Mode == transport.ModeConnect {
+		if err := h.markFirstConnected(ctx, w); err != nil {
+			h.log.Error("worker connect: cannot record the first connect; the connection is closed", "worker_id", w.ID, "error", err.Error())
+			_ = sess.Close()
+			adm.detach()
+			return err
+		}
+	}
+	admitted := h.cfg.Registry.AddAdmitted(Online{
 		WorkerID: w.ID,
 		Name:     w.Name,
 		OwnerID:  w.OwnerID,
@@ -720,7 +793,16 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		Pending:  w.Pending,
 
 		TranscriptHash: append([]byte(nil), c.res.TranscriptHash[:]...),
-	}, host)
+	}, host, c.snap.OpKey, func() bool { return h.cfg.Identity.Admit(c.snap.Generation) })
+	if !admitted {
+		// The activation fence (design 9.6): the Hub identity changed while this
+		// handshake was in progress, so this connection would sign with a
+		// superseded key. It is closed and the Worker reconnects with backoff.
+		h.log.Info("worker connect: the Hub identity changed during the handshake; the connection is closed", "worker_id", w.ID)
+		_ = sess.Close()
+		adm.detach()
+		return errors.New("workers: the Hub identity changed during the handshake")
+	}
 	h.log.Info("worker online", "worker_id", w.ID, "name", w.Name, "protocol", c.res.Version.String())
 	h.recheckAdmitted(ctx, c, w, pol)
 	if h.afterRecheck != nil {
@@ -839,16 +921,16 @@ func writeHTTPError(w http.ResponseWriter, e *proto.Error, retryAfter time.Durat
 // Store is everything the [Service] needs from the database; *store.Store
 // implements it.
 type Store interface {
-	IdentityRepository
 	Repository
 	WorkerOwner(ctx context.Context, workerID string) (string, error)
 }
 
 // ServiceOptions configures [NewService].
 type ServiceOptions struct {
-	// DataDir holds identity.key.
-	DataDir string
-	Store   Store
+	// Identity is the Hub identity service (required): the Worker side never
+	// creates or reads a key file itself.
+	Identity IdentitySource
+	Store    Store
 	// Limiter limits connects by IP; the default is a new limiter with the
 	// built-in "connect" policy.
 	Limiter Limiter
@@ -862,7 +944,9 @@ type ServiceOptions struct {
 	Current          proto.Version
 	Session          transport.SessionOptions
 	HandshakeTimeout time.Duration
-	Logger           *slog.Logger
+	// Now is the clock of the certificate expiry check; nil means time.Now.
+	Now    func() time.Time
+	Logger *slog.Logger
 	// RemoveWorker replaces the default removal (tombstone of the Worker
 	// row, [store.Store.TombstoneWorker]). The Hub module installs the full
 	// removal of Story 4.10 (bound keys, trust rows, audit record in one
@@ -878,24 +962,24 @@ type Service struct {
 	handler  *Handler
 	store    Store
 	limiter  Limiter
-	rotator  *Rotator // nil when the store cannot hold a transition chain
-	dataDir  string
 
 	mu         sync.RWMutex
 	ownerNames func(ctx context.Context, ownerID string) string
 	pairings   *Pairings
 }
 
-// NewService loads or creates the Hub identity and builds the registry and
-// the connect handler.
-func NewService(ctx context.Context, o ServiceOptions) (*Service, error) {
+// NewService builds the registry and the connect handler on a Hub identity
+// service. It registers the closing of all sessions with the identity service,
+// so that every activation (first certificate, re-issue, rotation) and the
+// expiry of the certificate end all Worker sessions (design 9.1 D7, 9.6).
+func NewService(_ context.Context, o ServiceOptions) (*Service, error) {
 	if o.Store == nil {
 		return nil, errors.New("workers: the service needs a store")
 	}
-	id, err := LoadOrCreateIdentity(ctx, o.DataDir, o.Store, o.Logger)
-	if err != nil {
-		return nil, err
+	if o.Identity == nil {
+		return nil, errors.New("workers: the service needs the Hub identity service")
 	}
+	id := NewIdentity(o.Identity)
 	limiter := o.Limiter
 	if limiter == nil {
 		l, err := ratelimit.New(ratelimit.Config{})
@@ -904,23 +988,19 @@ func NewService(ctx context.Context, o ServiceOptions) (*Service, error) {
 		}
 		limiter = l
 	}
-	s := &Service{identity: id, registry: NewRegistry(), store: o.Store, limiter: limiter, dataDir: o.DataDir}
+	s := &Service{identity: id, registry: NewRegistry(), store: o.Store, limiter: limiter}
 	if ts, ok := o.Store.(interface {
 		TombstoneWorker(ctx context.Context, id, removedBy string, removedAt int64) error
 	}); ok && o.RemoveWorker == nil {
 		o.RemoveWorker = ts.TombstoneWorker
 	}
 	chain := o.Chain
-	if rs, ok := o.Store.(RotationStore); ok {
-		// The Hub rotates its identity (Story 4.9): the stored chain is sent
-		// in connect mode unless the caller supplies its own source.
-		if chain == nil {
-			chain = ChainSource(rs)
-		}
-		s.rotator, err = NewRotator(RotatorOptions{Identity: id, DataDir: o.DataDir, Store: rs, Logger: o.Logger})
-		if err != nil {
-			return nil, err
-		}
+	if rs, ok := o.Store.(interface {
+		Transitions(ctx context.Context) ([]store.TransitionRow, error)
+	}); ok && chain == nil {
+		// The Hub rotates its root (design 9.4): the stored chain is sent in
+		// connect mode unless the caller supplies its own source.
+		chain = ChainSource(rs)
 	}
 	h, err := NewHandler(Config{
 		Identity:         id,
@@ -937,23 +1017,19 @@ func NewService(ctx context.Context, o ServiceOptions) (*Service, error) {
 		Current:          o.Current,
 		Session:          o.Session,
 		HandshakeTimeout: o.HandshakeTimeout,
+		Now:              o.Now,
 		Logger:           o.Logger,
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.handler = h
+	o.Identity.SetSessionCloser(s.registry.CloseAll)
 	return s, nil
 }
 
 // Identity returns the Hub identity.
 func (s *Service) Identity() *Identity { return s.identity }
-
-// Rotator returns the rotator of the Hub identity (Story 4.9), or nil when the
-// store cannot hold a transition chain (a test double). The ops adapter of
-// hub_identity_rotate calls [Rotator.Rotate]; Story 4.5 registers its
-// invitation revoker with [Rotator.SetInvitations].
-func (s *Service) Rotator() *Rotator { return s.rotator }
 
 // Registry returns the registry of online Workers.
 func (s *Service) Registry() *Registry { return s.registry }

@@ -4,3 +4,4 @@
 # Example entries (none needed yet):
 #   internal/worker/term/sanitise_test.go                 # whole file: terminal test data
 #   internal/worker/term/screen_test.go:wide characters   # only lines with this text
+internal/identity/sealedroot_test.go:"é"   # I1 test data: passphrase length counts runes, not bytes

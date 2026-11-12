@@ -124,7 +124,7 @@ The edges in this diagram are the only dependency directions allowed. The rules:
 - **Binds:** `internal/proto`, `internal/ops`, `/api/v1` (v3 §6)
 - **Prevents:** the wire silently breaking between releases.
 - **Rule:**
-  - **Version format.** The protocol version is `major.minor`, independent of the product semver. The wire protocol is **2.0**: the mandatory request origin (AD-12) changed the meaning of `op.request`, so the major version was bumped. v0.5 was never released, so there is no 1.x fallback and no downgrade: negotiation accepts only 2.x, and the signed release manifest carries `protocol_range` `2.0..2.0`.
+  - **Version format.** The protocol version is `major.minor`, independent of the product semver. The wire protocol is **3.0**. Protocol 2.0 (0.6) added the mandatory request origin (AD-12); 3.0 (0.7.0) changes the meaning of the handshake: the Hub is authenticated through a certified operational key, not through the pinned key itself (AD-5, AD-6). There is no 2.x fallback and no downgrade: negotiation accepts only 3.x, a 2.0 Worker gets `proto_incompatible` and retries with backoff until it is upgraded, and the signed release manifest carries `protocol_range` `3.0..3.0`. Every field that 3.0 adds to the handshake is mandatory; a missing or malformed value is rejected, nothing is defaulted. The Hub and its Workers upgrade together.
   - **Negotiation.** The Worker's hello carries its supported version range, the list of ops it supports and, since AM-13, the list of features it implements. The Hub picks the version, and never dispatches an op the Worker did not announce, nor a request that relies on a feature the Worker did not announce.
   - **Compatibility rules.**
     - A minor change is additive only. Receivers ignore unknown fields, and an unknown op returns `unsupported_op`.
@@ -137,14 +137,19 @@ The edges in this diagram are the only dependency directions allowed. The rules:
 - **Binds:** `internal/identity`, Hub TLS setup, Worker state, invitation and pairing UI (R5, R95, B4)
 - **Prevents:** pinning the TLS certificate in one place and the identity key in another, mismatched encodings, and takeover through a compromised old key.
 - **Rule:**
-  - **Identity keys.** The Hub and each Worker hold one long-lived **Ed25519 identity key**, separate from any TLS key. Identity keys and pins never expire.
+  - **Identity keys.** Each Worker holds one long-lived **Ed25519 identity key**, separate from any TLS key. The Hub holds a two-tier identity (0.7.0):
+    - The **root key** is the identity that Workers pin. It lives only in `root.key.age`, the 32-byte seed encrypted with age and one scrypt recipient (work factor 18, the only factor the Hub reads), under an owner **passphrase** of at least 14 characters that is never stored and never logged. The Hub opens it only to sign a certificate or a rotation, in a destroyable signer that is wiped after use. A forgotten passphrase has no recovery.
+    - The **operational key** (`op.key`, plain on disk, so the Hub restarts unattended) signs the handshake. The root certifies it with a **Hub certificate** of 153 bytes (`version`, `root_pub`, `op_pub`, `serial`, `not_before`, `not_after`, root signature; signature purpose `hub-cert`). Validity is 180 days by default, at most 400. Every certificate carries a **new** operational key, and nothing renews a certificate by itself, because a renewal needs the passphrase.
+    - A Worker's pin is the root and never expires. A certificate expires, and the Hub certificate's expiry never unpairs a Worker.
+    - Serials rise with every certificate. A Worker keeps `max_serial` and the certificate hash per root, accepts any certificate under its pin with a serial at least that high (and, at an equal serial, the same hash), and so a stolen older certificate does not come back.
+    - The owner operates it with `minion hub identity status|set-passphrase|reissue|rotate-master|change-passphrase` and the Hub identity page: session-only operations that need a fresh re-authentication and the passphrase, and run over HTTPS or the local admin socket.
   - **Fingerprints.** A fingerprint is the RFC 4648 base32 (lowercase, no padding) of the SHA-256 of the raw 32-byte public key, 52 characters in all. Input is accepted case-insensitively and stored lowercase. Binary fields in JSON (keys, nonces, signatures) are base64url without padding. Every encoding goes through `internal/identity`.
-  - **Signatures.** Every signature is Ed25519 over `"minion/v1/<purpose>" || 0x00 || data`. The purposes are `hs-hub`, `hs-worker`, `transition`, `revoke` and `pake-confirm`.
-  - **Planned rotation.**
-    - It appends a transition record `{seq, old_pub, new_pub, created_at, sig_by_old}`.
+  - **Signatures.** Every signature is Ed25519 over `"minion/v1/<purpose>" || 0x00 || data`. The purposes are `hs-hub`, `hs-worker`, `transition`, `revoke`, `pake-confirm` and `hub-cert`.
+  - **Planned rotation (master-key rotation).**
+    - It appends a transition record `{seq, old_pub, new_pub, created_at, sig_by_old}`, signed by the old root with the passphrase; the new root is sealed under the (new) passphrase and certified at once.
     - A connecting Worker receives the chain from its pin forward. It accepts only increasing `seq` values, verifies every link and atomically rewrites its pin.
     - Rotation revokes all outstanding invitation keys.
-  - **Compromise.** A compromised key is not rotated through the chain. It is replaced by a new Hub identity, and the Workers are re-enrolled.
+  - **Compromise.** A compromised root (key and passphrase, or a disclosed plain key that was not rotated away) is not rotated through the chain: a thief with the old root can sign a competing transition. It is replaced by a new Hub identity, and the Workers are re-enrolled. A disclosed operational key is ended early by re-issuing the certificate.
 
 ### AD-6: Handshake and secure channel
 
@@ -161,10 +166,11 @@ The edges in this diagram are the only dependency directions allowed. The rules:
      - a 32-byte nonce;
      - `mode`: `connect`, `enroll_invite` or `pair_code`;
      - its name, and in `pair_code` mode the public pairing id.
-  2. The Hub replies `hello` with: the chosen version, `hub_pub`, `eph_h`, its nonce, and, in `connect` mode only, the transition chain.
+  2. The Hub replies `hello` with: the chosen version (`3.0`), `hub_pub` (the **root** public key), `hub_cert` (the 153-byte certificate, mandatory in every mode), `eph_h`, its nonce, and, in `connect` mode only, the transition chain. The certificate is part of the Hub hello and so of the transcript. The Hub sends it only with a `not_after` in the future (otherwise `hub_cert_expired`, HTTP 503, before the upgrade).
   3. `transcript_hash` is SHA-256 of `"minion-hs-v1"`, then the length-prefixed raw bytes of the Worker hello as sent, then the same for the Hub hello as sent. The Hub's `sig` travels in a separate frame and is not part of the transcript.
-  4. The Hub sends `sig_hub` (purpose `hs-hub`) over `transcript_hash`.
-  5. The Worker verifies the Hub against one of three things: its pin (`connect`), the fingerprint in the invitation (`enroll_invite`), or CPace confirmation (`pair_code`, AD-8). Only after that does it send `sig_worker` (purpose `hs-worker`).
+  4. The Hub sends `sig_hub` (purpose `hs-hub`) over `transcript_hash`, signed by the **operational key** named in the certificate.
+  5. The Worker verifies the Hub's root against one of three things: its pin (`connect`, following the transition chain), the fingerprint in the invitation (`enroll_invite`), or CPace confirmation (`pair_code`, AD-8). It then checks the certificate (root signature, validity window with a tolerance of one hour before `not_before`, serial ratchet) and `sig_hub` under `cert.op_pub`. Only after that does it send `sig_worker` (purpose `hs-worker`).
+     - **Worker-enforced expiry.** The Worker ends the session at `not_after` on its wall clock or its monotonic deadline, whichever comes first, and re-checks at every keepalive, stream accept and operation admission. The Hub closes every session at `not_after` too.
   6. Both sides derive keys: HKDF-SHA256 over X25519(eph_w, eph_h), with `transcript_hash` as salt, plus the CPace output in `pair_code` mode. The result is two directional ChaCha20-Poly1305 keys, with a 64-bit counter as nonce in each direction.
   7. Every later message travels inside this channel, including the invitation secret, `welcome` and revocation. The invitation secret is sent only inside the channel.
 
@@ -175,7 +181,7 @@ The edges in this diagram are the only dependency directions allowed. The rules:
 - **Binds:** `internal/identity`, the Hub enrollment service, the Worker CLI and environment (R91, A6, B2, R97)
 - **Prevents:** incompatible parsing, the secret leaking before the Hub is authenticated, double enrollment, and two owners for one Worker key.
 - **Rule:**
-  - **Key format.** An invitation key is `mnk_<fingerprint>.<secret>`. The fingerprint follows AD-5. The secret is 32 random bytes in base32 (lowercase, no padding).
+  - **Key format.** An invitation key is `mnk_<fingerprint>.<secret>`. The fingerprint follows AD-5 and names the **root**. Keys created by a 0.6 Hub stay valid because the root is the old identity key. A re-issue of the certificate never revokes invitations; a master-key rotation revokes them all. The secret is 32 random bytes in base32 (lowercase, no padding).
   - **Hub storage.** The Hub stores the SHA-256 of the secret and these attributes:
     - `one_time` or `reusable`;
     - a TTL of 1h, 4h, 8h, 24h, 1w, 1m or unlimited;
@@ -187,7 +193,7 @@ The edges in this diagram are the only dependency directions allowed. The rules:
   - **Every enrollment starts pending (F-02, AD-9).** A Worker created from an invitation key, a pairing code or the key file has `approval = 'pending'`; see AD-9.
   - **Worker steps.**
     - Persist its key pair before connecting.
-    - Use `enroll_invite`, which accepts no transition chain.
+    - Use `enroll_invite`, which accepts no transition chain, and send the invitation secret only after the certificate, its window and `sig_hub` are verified.
     - Commit the pin and the enrollment to disk before it reports success.
   - **Enrollment transaction.** In one SQLite transaction the Hub validates the key, consumes a use and creates the Worker.
   - **Identity and idempotency.**
@@ -211,6 +217,8 @@ The edges in this diagram are the only dependency directions allowed. The rules:
   - **Limits.**
     - A code lives 10 minutes and is single-use.
     - Only the Hub counts attempts: 5 per code, plus a per-user limit (AD-19).
+  - **Resume (0.7.0).** Pairing is idempotent per (pairing code, Worker key). The Hub records the commit (`used_pairing_codes` gains the pairing id, Worker key, Worker id, owner, expiry and a resume-attempt counter). The Worker persists a `pair_resume` record, with the authenticated candidate root and certificate ratchet, durably before it sends `sig_worker`. A connection that ends after the Hub was authenticated and before `welcome` keeps the code. The owner types the same code again within its 10 minutes; the Hub accepts a used code only for the committing owner, the same Worker key and fewer than five wrong attempts, runs a fresh CPace, and returns the existing Worker row (audit `worker.pair_resume`). A Worker that sees a different Hub identity refuses and keeps the record.
+  - **Re-issue after expiry (0.7.0).** Op `worker_pairing_reissue` (owner or administrator; CLI `minion hub worker repair-pairing`) sets `workers.repair_until` to now plus 10 minutes, only for a live Worker that has never completed a `connect` handshake (`workers.first_connected_at` empty); otherwise `conflict`. The next new code entered by the owner or an administrator in that window completes the pairing for the same row. Eligibility check and write are one conditional update (audit `worker.pairing_reissue`).
   - **After pairing.**
     - `welcome` carries the owner's username, and the Worker shows "paired to <user>".
     - A paired Worker refuses new codes. `minion worker pair --new-code` on a paired Worker creates a new Worker key and revokes the old enrollment.
@@ -222,7 +230,8 @@ The edges in this diagram are the only dependency directions allowed. The rules:
 - **Rule:**
   - **How pairing ends.** Pairing ends only through `minion worker reset` or removal in the Hub.
   - **Tombstones.** Removing a Worker leaves a tombstone row behind.
-  - **Destructive answers.** A Worker wipes its pairing only on a signed `revoke`, sent either over a live channel or as the answer to a connect from a tombstoned key. The `revoke` is signed with purpose `revoke` over the current `transcript_hash`.
+  - **Destructive answers.** A Worker wipes its pairing only on a signed `revoke`, sent either over a live channel or as the answer to a connect from a tombstoned key. The `revoke` is signed with purpose `revoke` over the current `transcript_hash` by the **operational key whose certificate was presented in that handshake**; the Worker verifies it with the `cert.op_pub` it validated. A revoke signed by the root, an older operational key or another connection's key is ignored. A revoke needs no root and no passphrase.
+  - **Self-retirement carries the ratchet.** When a Worker replaces its identity, the retired entry stores `max_serial` and `cert_sha256` with the old pin, durably, before the enrollment is wiped. Each retirement connection validates the certificate against that ratchet and advances it durably before acting; only a validated connection can answer `not_enrolled`.
   - **Unknown keys.** Any other unknown key gets a non-destructive `not_enrolled`. The Worker keeps its state and retries.
   - **Expiry of other keys.** The expiry of an invitation key or an API key never affects an enrolled Worker.
   - **Pending Workers (F-02, enrollment is not authorization).**
@@ -368,6 +377,7 @@ The edges in this diagram are the only dependency directions allowed. The rules:
     - Each database has its own set of embedded `NNNN_name.sql` files. They are forward-only and applied by the in-house runner, in one transaction, at start.
     - Before applying a migration, the runner writes a `VACUUM INTO` backup.
     - A binary refuses a database whose schema is newer than it knows.
+    - 0.7.0 migrations (hub identity): `hub_identity` gains the sealed-root and certificate state (`root_sealed`, `root_file_sha256`, `migrated_from_06`, current certificate, serial allocation, per-scope passphrase failure counters); `used_pairing_codes` gains the resume fields; `workers` gains `first_connected_at` (backfilled with `created_at`, so no existing Worker is eligible for re-issue) and `repair_until`; `sessions` gains `auth_at` and `auth_method` (migration 0022, fresh re-authentication). The Worker database gains `max_serial`, `cert_sha256` and the `pair_resume` table. A Hub migrated from 0.6.x starts in state B1 (`root_sealed = 0`, `migrated_from_06 = 1`) with `identity.key` untouched, creates no `op.key` and no certificate, and serves no Worker until the owner sets the passphrase; a recorded identity whose key file is missing is never regenerated.
     - Migration 0020 (F-02) adds `workers.approval` (default `pending`; existing rows become `approved` with `approved_by = 'migration'`), `enroll_addr`, `approved_at`, `approved_by`, and `invitation_keys.source` and `notice`; it caps the invitation keys of non-admins that were created under the old rules (no expiry: expires 7 days after the migration; reusable without `max_uses`: `max_uses = uses + 10`; a `notice` on each limited key, shown on the invitations page). It is forward-only and runs in one transaction.
     - Migration 0019 (F-07) gives every local account without role rows an explicit local `user` grant and suspends source-idp admin grants without a stored refresh token (audit event each); it is idempotent in effect and never deletes local grants.
   - **SQL ownership.** Only the store packages contain SQL. Each table has one owning domain package:
@@ -686,7 +696,7 @@ graph LR
 | Unit | How it runs |
 | --- | --- |
 | Hub, Docker | Image `ghcr.io/patrick-1984/minion` runs as UID 65532; `/data` (DB, data key, identity key, TLS material) is a bind-mounted host directory prepared with `chown 65532:65532` (or an init container), and the Hub checks at startup that it is writable and prints the exact fix if not. Port `:8443` TLS 1.3. Behind a proxy: `MINION_TLS=off` + `MINION_PUBLIC_URL` + `MINION_TRUSTED_PROXIES`. The proxy must pass WebSocket upgrades and have an idle timeout above 30 s. Update: `docker compose pull && up -d`. The no-registry variant is any base image plus `bootstrap.sh`. |
-| Hub, binary | The same binary, run as `minion hub serve`. The data directory follows OS conventions, or `MINION_DATA_DIR`. `minion hub backup` writes one archive (`VACUUM INTO`, data key, Hub identity key including a pending `identity.key.next` chosen to match the snapshot, TLS certificate and key; the key-file list is one list in `hub/store`, so the two-tier identity files join it by one line). The archive is encrypted by default with `filippo.io/age` (scrypt passphrase recipient): `--passphrase-file FILE` (a private file, opened like `identity.OpenPrivate`) or an explicit `--unencrypted` (warns); neither flag is an error. Restore is stop, then `minion hub restore <archive> [--passphrase-file FILE]`: it detects age versus a legacy plain tar, decrypts and verifies the whole archive in a private temp area before touching the data directory, and a wrong passphrase changes nothing. There is no DB downgrade. Single instance. Health checks: `/healthz` and `/readyz`. |
+| Hub, binary | The same binary, run as `minion hub serve`. The data directory follows OS conventions, or `MINION_DATA_DIR`. `minion hub backup` writes one archive (`VACUUM INTO`, data key, Hub identity key TLS certificate and key, and the Hub identity files of the state the database copy is in: none (B0, no identity yet), the plain `identity.key` (B1, passphrase not set), the sealed root `root.key.age` (B2, sealed, no certificate) or the sealed root and `op.key` (B3, certificate issued), each file chosen to match the snapshot; the archive manifest records the state, the root fingerprint and the transition count). The archive is encrypted by default with `filippo.io/age` (scrypt passphrase recipient): `--passphrase-file FILE` (a private file, opened like `identity.OpenPrivate`) or an explicit `--unencrypted` (warns); neither flag is an error. Restore is stop, then `minion hub restore <archive> [--passphrase-file FILE]`: it detects age versus a legacy plain tar, decrypts and verifies the whole archive in a private temp area before touching the data directory, and a wrong passphrase changes nothing. There is no DB downgrade. Single instance. Health checks: `/healthz` and `/readyz`. |
 | Worker, native Linux/Pi | deb, rpm or a script. The systemd service `minion-worker` runs as the user who owns the sessions, with `Restart=always`. The variant without sudo is a systemd user service with `loginctl enable-linger`, which is checked after enabling. That variant is systemd-only. |
 | Worker, macOS | A launchd agent. tmux comes from the system or a package manager. |
 | Worker, container | `minion worker up` detects that no service manager exists and runs in the foreground. It is configured by env (`MINION_SERVER`, `MINION_INVITE_KEY_FILE`, `MINION_SHARE_EXISTING`), keeps its identity in `/data`, and restarts through `restart: unless-stopped`. tmux must be present in the user's image. |

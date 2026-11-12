@@ -1,7 +1,9 @@
 package workers
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -9,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
@@ -89,6 +92,10 @@ type entry struct {
 	info Online
 	sess OpSession
 	gen  uint64
+	// signer is the operational key of this connection's snapshot: the live
+	// revoke is signed with it (design 12.4), never with whatever key the Hub
+	// uses now. nil for a registration without a snapshot (tests).
+	signer *identity.Key
 }
 
 // NewRegistry returns an empty registry.
@@ -101,16 +108,34 @@ func NewRegistry() *Registry {
 // keepalive has not reaped yet) replaces it: the old session is closed. The
 // ops are normalised to a sorted list of unique, well-formed names.
 func (r *Registry) Add(info Online, sess OpSession) {
+	r.add(info, sess, nil, nil)
+}
+
+// AddAdmitted is [Registry.Add] for a connection that took a Hub identity
+// snapshot: admit is called under the registry lock, and when it reports false
+// nothing is registered and AddAdmitted reports false (the activation fence,
+// design 9.6: a handshake that stalled across an activation fails here, and
+// the activation's closing of all sessions cannot miss one that passed). The
+// operational key signs the live revoke of this connection.
+func (r *Registry) AddAdmitted(info Online, sess OpSession, signer *identity.Key, admit func() bool) bool {
+	return r.add(info, sess, signer, admit)
+}
+
+func (r *Registry) add(info Online, sess OpSession, signer *identity.Key, admit func() bool) bool {
 	r.addMu.Lock()
 	defer r.addMu.Unlock()
 	info.Ops = normaliseOps(info.Ops)
 	info.Features = proto.NormaliseFeatures(info.Features)
 	r.mu.Lock()
+	if admit != nil && !admit() {
+		r.mu.Unlock()
+		return false
+	}
 	if info.ConnectedAt.IsZero() {
 		info.ConnectedAt = r.now()
 	}
 	r.nextGen++
-	e := &entry{info: info, sess: sess, gen: r.nextGen}
+	e := &entry{info: info, sess: sess, gen: r.nextGen, signer: signer}
 	old := r.online[info.WorkerID]
 	r.online[info.WorkerID] = e
 	hooks := slices.Clone(r.hooks)
@@ -128,6 +153,30 @@ func (r *Registry) Add(info Online, sess OpSession) {
 		<-sess.Done()
 		r.remove(info.WorkerID, e.gen)
 	}()
+	return true
+}
+
+// SignRevoke signs the revoke of the online connection of a Worker with the
+// operational key of that connection's snapshot, over its transcript hash.
+func (r *Registry) SignRevoke(workerID string) (RevokeFrame, bool, error) {
+	r.mu.Lock()
+	e := r.online[workerID]
+	var (
+		key  *identity.Key
+		hash []byte
+	)
+	if e != nil {
+		key, hash = e.signer, bytes.Clone(e.info.TranscriptHash)
+	}
+	r.mu.Unlock()
+	if e == nil {
+		return RevokeFrame{}, false, nil
+	}
+	if key == nil {
+		return RevokeFrame{}, true, errors.New("workers: the connection has no operational key to sign a revoke")
+	}
+	f, err := SignRevoke(key, hash)
+	return f, true, err
 }
 
 // OnAdd registers fn to be called, synchronously, for every Worker that is

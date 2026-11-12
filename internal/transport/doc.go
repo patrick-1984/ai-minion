@@ -13,6 +13,16 @@
 //     the Hub is authenticated, in all three modes. In pair_code mode the
 //     Worker's pake.confirm goes first, because the Hub, which alone counts
 //     attempts, never reveals its tag to an unverified peer.
+//   - cert.go (protocol 3.0, hub-identity-v2): the Hub hello carries the root
+//     as hub_pub and the 153-byte certificate of its operational key as
+//     hub_cert, in every mode. The Worker validates in this order and stops
+//     at the first failure: shape, root (pin chain, invitation fingerprint or
+//     pair_resume root), certificate under that candidate root, wall-clock
+//     window, serial scope (verdict kept), then sig_hub with the operational
+//     key (and, in pair_code mode, the CPace confirmation signed by the
+//     operational key). sig_worker follows only when no verdict is pending.
+//     Ratchet is the Worker's certificate memory; Expiry fixes the end of the
+//     connection on both the wall and the monotonic clock.
 //   - transcript.go: transcript_hash over the raw hello bytes as sent.
 //   - kdf.go: HKDF-SHA256 key schedule, two directional keys.
 //   - channel.go: the ChaCha20-Poly1305 record layer with an implicit 64-bit

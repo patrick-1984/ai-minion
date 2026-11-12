@@ -23,6 +23,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubcert"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -36,8 +37,11 @@ import (
 // no TLS option at all (A-15). The same flow against the real Hub is tested
 // in test/e2e (build tag e2e).
 type stubHub struct {
-	t    *testing.T
+	t *testing.T
+	// key is the ROOT key (what a Worker pins); hub holds the operational key and
+	// the certificate the stub signs and presents with (protocol 3.0).
 	key  *identity.Key
+	hub  *hubcert.Hub
 	addr string
 	cert tls.Certificate
 
@@ -47,6 +51,8 @@ type stubHub struct {
 	tombstones map[string]bool
 	sessions   []*transport.Session
 	hellos     []transport.WorkerHello
+	// revokeKey, when set, signs revokes instead of the operational key.
+	revokeKey *identity.Key
 
 	connects atomic.Int32
 	// onSession runs for every enrolled Worker session, in the handler.
@@ -55,11 +61,8 @@ type stubHub struct {
 
 func newStubHub(t *testing.T) *stubHub {
 	t.Helper()
-	key, err := identity.GenerateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &stubHub{t: t, key: key, known: map[string]bool{}, tombstones: map[string]bool{}, cert: wrongNameCert(t)}
+	hub := hubcert.New(t)
+	h := &stubHub{t: t, key: hub.Root, hub: hub, known: map[string]bool{}, tombstones: map[string]bool{}, cert: wrongNameCert(t)}
 	h.start("127.0.0.1:0")
 	t.Cleanup(h.stop)
 	return h
@@ -128,6 +131,38 @@ func (h *stubHub) stop() {
 	}
 }
 
+// config is the Hub configuration of one connection: the operational key and
+// certificate in force now.
+func (h *stubHub) config() transport.HubConfig {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.hub.Config()
+}
+
+// reissue makes a new operational key and certificate with the given serial.
+func (h *stubHub) reissue(serial uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hub.Reissue(h.t, serial)
+}
+
+// dropSessions ends every Worker session (the Workers reconnect).
+func (h *stubHub) dropSessions() {
+	h.mu.Lock()
+	sessions := h.sessions
+	h.sessions = nil
+	h.mu.Unlock()
+	for _, s := range sessions {
+		_ = s.Close()
+	}
+}
+
+func (h *stubHub) helloCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.hellos)
+}
+
 func (h *stubHub) enrol(pub []byte)     { h.set(h.known, pub, true) }
 func (h *stubHub) tombstone(pub []byte) { h.set(h.tombstones, pub, true) }
 
@@ -158,7 +193,9 @@ func (h *stubHub) serve(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	res, err := transport.HubHandshake(conn, transport.HubConfig{Key: h.key, Timeout: 10 * time.Second})
+	hc := h.config()
+	hc.Timeout = 10 * time.Second
+	res, err := transport.HubHandshake(conn, hc)
 	if err != nil {
 		return // the Worker did not accept this Hub (or the reverse)
 	}
@@ -169,7 +206,13 @@ func (h *stubHub) serve(w http.ResponseWriter, r *http.Request) {
 	known, tomb := h.lookup(res.WorkerPub)
 	switch {
 	case tomb:
-		sig, _ := h.key.Sign(identity.PurposeRevoke, res.TranscriptHash[:])
+		signer := hc.Key
+		h.mu.Lock()
+		if h.revokeKey != nil {
+			signer = h.revokeKey
+		}
+		h.mu.Unlock()
+		sig, _ := signer.Sign(identity.PurposeRevoke, res.TranscriptHash[:])
 		_ = write(map[string]any{"type": proto.TypeRevoke, "sig": identity.B64(sig)})
 		_ = res.Channel.Close()
 	case !known:

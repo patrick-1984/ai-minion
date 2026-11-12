@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // Pairing code lifecycle (AD-8, Story 4.7).
@@ -90,6 +91,18 @@ type PairParams struct {
 	// sent: from then on the Hub holds the connection as pending and a user
 	// can claim the code. Nil is allowed.
 	OnWaiting func()
+	// Ratchet is the certificate memory of the pair_resume record (candidate
+	// root, serial and hash); its non-empty Root also binds the Hub's root
+	// (resume_root_mismatch). Empty for a first pairing.
+	Ratchet transport.Ratchet
+	// Clock supplies the wall and monotonic clock of the certificate window; nil
+	// means the system clocks.
+	Clock transport.WallMono
+	// OnAuthenticated is called once the Hub is authenticated (certificate,
+	// CPace confirmation and sig_hub verified) and before sig_worker is sent.
+	// An error aborts the handshake without sig_worker. The pairer writes the
+	// pair_resume record here, durably. Nil is allowed.
+	OnAuthenticated func(transport.HubAuth) error
 	// OnExposed is called right before the Worker sends its CPace
 	// confirmation. From then on whoever is at the other end of this
 	// connection can learn whether a guess of the code was right, even if it
@@ -108,6 +121,13 @@ type PairResult struct {
 	Welcome HubWelcome
 	// Version is the protocol version the Hub chose.
 	Version proto.Version
+	// Ratchet is the certificate memory to commit with the enrollment, scoped
+	// to Pin.Pub: the higher of the record's and this session's serial.
+	Ratchet transport.Ratchet
+	// Expiry is the end of the connection the welcome arrived on; the pairer
+	// reads both clocks again right before it commits. Nil means no
+	// enforcement (test doubles only).
+	Expiry *transport.Expiry
 }
 
 // PairDialer is the transport port of pairing: it dials the Hub, runs the
@@ -130,6 +150,8 @@ func NewPairDialer() PairDialer {
 
 type wssPairDialer struct {
 	dialTimeout time.Duration
+	// afterReply is a test seam that runs right after the Hub's answer was read.
+	afterReply func()
 }
 
 func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, error) {
@@ -153,7 +175,18 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 		Protocols:   p.Protocols,
 		Mode:        transport.ModePairCode,
 		PairingCode: p.Code,
+		Ratchet:     p.Ratchet,
+		Clock:       p.Clock,
 		Timeout:     p.Timeout,
+		BeforeSigWorker: func(a transport.HubAuth) error {
+			if a.Expiry.Expired(p.Clock) {
+				return errEnrollExpired
+			}
+			if p.OnAuthenticated == nil {
+				return nil
+			}
+			return p.OnAuthenticated(a)
+		},
 	})
 	if err != nil {
 		stop()
@@ -163,9 +196,20 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 		return PairResult{}, err
 	}
 	defer func() { _ = res.Channel.Close() }()
+	// The channel is closed at the end of the certificate, and both clocks are
+	// read again before the welcome is accepted.
+	exp := res.Expiry
+	guard, stopGuard := enrollGuard(&exp, p.Clock, func() { _ = res.Channel.Close() })
+	defer stopGuard()
 	reply, err := readReply(res.Channel)
 	if !stop() {
 		return PairResult{}, context.Cause(ctx)
+	}
+	if d.afterReply != nil {
+		d.afterReply()
+	}
+	if guard.check() {
+		return PairResult{}, errEnrollExpired
 	}
 	if err != nil {
 		return PairResult{}, err
@@ -173,7 +217,7 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 	if reply.Type != proto.TypeWelcome {
 		return PairResult{}, fmt.Errorf("the hub answered %q instead of welcome", reply.Type)
 	}
-	return PairResult{Pin: res.Pin, Welcome: reply.Welcome, Version: res.Version}, nil
+	return PairResult{Pin: res.Pin, Welcome: reply.Welcome, Version: res.Version, Ratchet: res.Ratchet, Expiry: &exp}, nil
 }
 
 // notifyConn calls onFirstWrite after the first successful write and onConfirm
@@ -241,6 +285,9 @@ type PairerConfig struct {
 	// EpochPoll is how often a waiting pairing checks whether another process
 	// changed the enrollment; zero means [DefaultEpochPoll].
 	EpochPoll time.Duration
+	// WallMono supplies the wall and monotonic clock of the certificate window;
+	// nil means the system clocks.
+	WallMono transport.WallMono
 	// Out is the console: the code and the result are printed here. Nil
 	// discards them.
 	Out io.Writer
@@ -314,7 +361,80 @@ type codeLife struct {
 	code    identity.PairingCode
 	shown   bool
 	shownAt time.Time
-	exposed bool
+	// exposed and attemptAuth are per attempt (beginAttempt resets them):
+	// exposed is set when this attempt sent the CPace confirmation, attemptAuth
+	// when the Hub proved its identity in this same attempt (certificate, CPace
+	// confirmation and sig_hub). Only an attempt that authenticated the Hub
+	// keeps the code after its connection ended before welcome (design section
+	// 12.2 item 10); an exposed attempt that did not retires it, however the
+	// code was authenticated by an earlier attempt or restored from a record.
+	exposed     bool
+	attemptAuth bool
+	// authenticated says that a pair_resume record exists for this code (it was
+	// written for it or restored with it); renew deletes the record.
+	authenticated bool
+	// restored is set for a code that was read from the record after a restart.
+	restored bool
+	// resume is the pair_resume record this code was restored from or that was
+	// written for it; its expiry is the code's end.
+	resume *store.PairResume
+}
+
+// expiry is until under the lock.
+func (l *codeLife) expiry(ttl time.Duration) time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.until(ttl)
+}
+
+// authenticate records that the Hub proved its identity for this code.
+func (l *codeLife) authenticate(r store.PairResume) {
+	l.mu.Lock()
+	l.authenticated, l.attemptAuth = true, true
+	l.resume = &r
+	l.mu.Unlock()
+}
+
+// hasRecord reports whether a pair_resume record exists for this code.
+func (l *codeLife) hasRecord() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.authenticated
+}
+
+// wasAuthenticated reports whether the Hub was authenticated in the latest
+// attempt.
+func (l *codeLife) wasAuthenticated() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.attemptAuth
+}
+
+// beginAttempt starts a new attempt: exposure and authentication are
+// per-attempt facts.
+func (l *codeLife) beginAttempt() {
+	l.mu.Lock()
+	l.exposed, l.attemptAuth = false, false
+	l.mu.Unlock()
+}
+
+// ratchet returns the certificate memory of the resume record, empty without one.
+func (l *codeLife) ratchet() transport.Ratchet {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.resume == nil {
+		return transport.Ratchet{}
+	}
+	return transport.Ratchet{Root: l.resume.RootPub, MaxSerial: l.resume.Serial, CertSHA256: l.resume.CertSHA256}
+}
+
+// until returns the end of the code's life: shownAt+ttl, or the expiry of the
+// record a restored code carries.
+func (l *codeLife) until(ttl time.Duration) time.Time {
+	if l.resume != nil && l.restored {
+		return l.resume.ExpiresAt
+	}
+	return l.shownAt.Add(ttl)
 }
 
 // expose records that the Worker sent its CPace confirmation for this code.
@@ -339,9 +459,9 @@ func (l *codeLife) show(now time.Time, ttl time.Duration) (first bool, remaining
 	defer l.mu.Unlock()
 	if !l.shown {
 		l.shown, l.shownAt = true, now
-		return true, ttl
+		return true, l.until(ttl).Sub(now)
 	}
-	return false, ttl - now.Sub(l.shownAt)
+	return false, l.until(ttl).Sub(now)
 }
 
 // remaining returns the lifetime left; ok is false for a code that was not
@@ -352,7 +472,7 @@ func (l *codeLife) remaining(now time.Time, ttl time.Duration) (left time.Durati
 	if !l.shown {
 		return ttl, false
 	}
-	return ttl - now.Sub(l.shownAt), true
+	return l.until(ttl).Sub(now), true
 }
 
 // errPairingStateChanged is returned when the enrollment state changed during
@@ -379,8 +499,7 @@ func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
 	if err != nil {
 		return Enrollment{}, err
 	}
-	life := &codeLife{code: p.newCode(identity.PairingCode{})}
-	notice := ""
+	life, notice := p.initialLife(ctx)
 	for {
 		if err := ctx.Err(); err != nil {
 			return Enrollment{}, err
@@ -435,6 +554,29 @@ func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
 			return Enrollment{}, err
 		}
 	}
+}
+
+// initialLife returns the first code of a run. An unexpired pair_resume record
+// from an earlier run (the Hub was authenticated, welcome never arrived) brings
+// its code back: the owner types the same code again. An expired or unreadable
+// record is deleted and a new code follows (design section 12.2).
+func (p *Pairer) initialLife(ctx context.Context) (*codeLife, string) {
+	rec, ok, err := p.cfg.Enrollment.LoadPairResume(ctx)
+	if err != nil {
+		p.log.Warn("cannot read the pairing resume record; a new code is used", "error", err.Error())
+		return &codeLife{code: p.newCode(identity.PairingCode{})}, ""
+	}
+	if !ok {
+		return &codeLife{code: p.newCode(identity.PairingCode{})}, ""
+	}
+	code, perr := identity.ParsePairingCode(rec.Code)
+	if perr != nil || !rec.ExpiresAt.After(p.clk.Now()) || code.PairingID() != rec.PairingID {
+		_ = p.cfg.Enrollment.DeletePairResume(ctx)
+		return &codeLife{code: p.newCode(identity.PairingCode{})}, "The pairing code expired."
+	}
+	p.log.Info("resuming a pairing after an interrupted connection", "hub", hubLabel(p.cfg.HubURL))
+	return &codeLife{code: code, restored: true, authenticated: true, resume: &rec},
+		"Resuming pairing: enter the same code again in the Hub (Add worker)."
 }
 
 // begin checks, under the enrollment lock, that the Worker is not paired,
@@ -524,6 +666,9 @@ func (p *Pairer) classify(life *codeLife, err error) (next bool, reason string, 
 		// certificate, A-15). Retrying with the same code would hand an
 		// interceptor an online guess per attempt, so the run ends.
 		p.log.Warn("the hub's pairing confirmation failed; pairing stopped, nothing was stored", "hub", hubLabel(p.cfg.HubURL))
+		// The confirmation was exposed and the Hub was not authenticated: the
+		// code (and a record that would bring it back) is retired.
+		p.dropResume(life)
 		return false, "", false, fmt.Errorf("the server could not prove that it knows the pairing code, so the connection may be intercepted; "+
 			"nothing was stored and the code is not reused. Check the Hub address and the network, then run the command again for a new code: %w", err)
 	}
@@ -531,6 +676,30 @@ func (p *Pairer) classify(life *codeLife, err error) (next bool, reason string, 
 	isErr := errors.As(err, &pe)
 	if isErr && pe.Code == proto.CodeRevoked {
 		return false, "", false, fmt.Errorf("the Hub removed this Worker key: reset the Worker (`minion worker pair --new-code`) and pair again: %w", err)
+	}
+	if errors.Is(err, transport.ErrResumeRootMismatch) {
+		// A Hub with another root answered a resume (even one that knows the
+		// code and passes CPace): refused before sig_worker. The record and the
+		// code are kept, nothing is pinned (section 11.2 step 4b).
+		p.log.Warn("a Hub with a different identity answered the pairing resume; refused before anything was sent, the code and the record are kept",
+			"hub", hubLabel(p.cfg.HubURL))
+		return false, "", false, nil
+	}
+	if isErr && pe.Code == proto.CodeAlreadyPaired {
+		return false, "", false, &knownKeyError{cause: err}
+	}
+	var refusal *transport.RefusalError
+	serialRefused := errors.As(err, &refusal) &&
+		(refusal.Reason == transport.ReasonCertSerialTooLow || refusal.Reason == transport.ReasonCertSerialConflict)
+	if life.wasAuthenticated() || serialRefused {
+		// A serial verdict is applied after sig_hub verified, so the Hub was
+		// authenticated in this attempt although no sig_worker was sent.
+		// The Hub proved its identity in THIS attempt (certificate, CPace
+		// confirmation, sig_hub) and the connection ended before welcome: the
+		// code stays until it expires. Only a peer that knows the code can
+		// produce the confirmation, so no unauthenticated peer gets a guess. An
+		// earlier attempt's authentication, or a restored record, does not count.
+		return false, "", false, nil
 	}
 	if life.wasExposed() {
 		reason = "The connection ended while the code was being checked, so a new code replaces it."
@@ -562,6 +731,17 @@ func (p *Pairer) classify(life *codeLife, err error) (next bool, reason string, 
 	return false, "", false, nil
 }
 
+// knownKeyError is the Hub's already_paired answer after the pairing window
+// ended: the Hub has a Worker row for this key. The text is a sentence for the
+// operator, hence the capital letter.
+type knownKeyError struct{ cause error }
+
+func (e *knownKeyError) Error() string {
+	return "The Hub already knows this Worker key. Ask the owner to use Re-issue pairing for this Worker. (" + e.cause.Error() + ")"
+}
+
+func (e *knownKeyError) Unwrap() error { return e.cause }
+
 // progressed reports whether a failed attempt counts as progress for the
 // backoff (AD-3): a wrong code typed in the Hub (a human is waiting, so a quick
 // reconnect is wanted), or a connection that was held for pairHeldReset, such as
@@ -585,7 +765,23 @@ func (p *Pairer) newCode(prev identity.PairingCode) identity.PairingCode {
 	return c
 }
 
+// dropResume deletes the pair_resume record of a code that is retired.
+func (p *Pairer) dropResume(l *codeLife) {
+	if !l.hasRecord() {
+		return
+	}
+	if err := p.cfg.Enrollment.DeletePairResume(context.Background()); err != nil {
+		p.log.Warn("cannot delete the pairing resume record of a retired code", "error", err.Error())
+	}
+}
+
 func (p *Pairer) renew(old *codeLife) *codeLife {
+	if old.hasRecord() {
+		// The old code is abandoned (it expired, or an attempt exposed it
+		// without authenticating the Hub): its record goes, so that the next
+		// code starts clean and a restart cannot bring the code back.
+		p.dropResume(old)
+	}
 	return &codeLife{code: p.newCode(old.code)}
 }
 
@@ -594,6 +790,7 @@ func (p *Pairer) renew(old *codeLife) *codeLife {
 // appears after the first successful connection), and an attempt ends with
 // errCodeExpired when the code reaches the end of its life.
 func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife, notice string, gen uint64, moved <-chan struct{}) (PairResult, time.Duration, error) {
+	life.beginAttempt()
 	var heldMu sync.Mutex
 	var waitingAt time.Time
 	actx, cancel := context.WithCancelCause(ctx)
@@ -635,8 +832,23 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 		Features:  features,
 		Protocols: p.cfg.Protocols,
 		Code:      life.code,
+		Ratchet:   life.ratchet(),
+		Clock:     p.cfg.WallMono,
 		Timeout:   p.ttl + pairHandshakeMargin,
 		OnExposed: life.expose,
+		OnAuthenticated: func(a transport.HubAuth) error {
+			// Durable before sig_worker: the Hub cannot create the Worker
+			// before it has sig_worker, so the record precedes any Hub commit.
+			rec := store.PairResume{
+				Code: life.code.String(), PairingID: life.code.PairingID(), ExpiresAt: life.expiry(p.ttl),
+				RootPub: a.Root, Serial: a.Ratchet.MaxSerial, CertSHA256: a.Ratchet.CertSHA256,
+			}
+			if err := p.cfg.Enrollment.SavePairResumeIf(actx, gen, rec); err != nil {
+				return fmt.Errorf("store the pairing resume record: %w", err)
+			}
+			life.authenticate(rec)
+			return nil
+		},
 		OnWaiting: func() {
 			first, left := life.show(p.clk.Now(), p.ttl)
 			if first {
@@ -712,6 +924,7 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 		Kind:     w.Kind,
 		Policy:   w.Policy,
 		HubURL:   p.cfg.HubURL,
+		Ratchet:  res.Ratchet,
 	}
 	// A commit must not fail because the caller's context just ended: the Hub
 	// already created the Worker, and the pin is what lets this Worker
@@ -725,7 +938,21 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 		return Enrollment{}, fmt.Errorf("store the enrollment: %w", err)
 	}
 	defer release()
-	if err := p.cfg.Enrollment.CommitIf(cctx, gen, enr); err != nil {
+	// The certificate of the connection that carried the welcome must still be
+	// valid when the commit happens, also after the wait for the locks.
+	var live func() bool
+	if res.Expiry != nil {
+		exp, clk := *res.Expiry, p.cfg.WallMono
+		if clk == nil {
+			clk = transport.SystemWallMono
+		}
+		live = func() bool { return !exp.Expired(clk) }
+	}
+	if err := p.cfg.Enrollment.CommitIfLive(cctx, gen, enr, live); err != nil {
+		if errors.Is(err, errGuardExpired) {
+			p.log.Warn("the Hub certificate expired before the pairing was committed; nothing was stored", "hub", hubLabel(p.cfg.HubURL))
+			return Enrollment{}, errEnrollExpired
+		}
 		if errors.Is(err, ErrEnrollmentChanged) {
 			p.log.Warn("the Hub accepted the code, but the Worker was paired meanwhile; the existing enrollment was kept",
 				"hub", hubLabel(p.cfg.HubURL), "worker_id", w.WorkerID)
@@ -814,11 +1041,12 @@ func RenewWorkerIdentity(ctx context.Context, e *Enrollments) (*identity.Key, er
 	if old != nil {
 		if err := e.RetiredStore().Add(RetiredIdentity{
 			Key: old, HubURL: hubURL, Pin: enr.Pin, WorkerID: enr.WorkerID, RetiredAt: time.Now(),
+			MaxSerial: enr.Ratchet.MaxSerial, CertSHA256: enr.Ratchet.CertSHA256, RatchetSeeded: true,
 		}); err != nil {
 			return nil, fmt.Errorf("keep the old identity for its revocation: %w", err)
 		}
 	}
-	if _, err := e.Wipe(ctx); err != nil {
+	if _, err := e.WipeForNewIdentity(ctx); err != nil {
 		return nil, fmt.Errorf("wipe the old enrollment: %w", err)
 	}
 	keyInitMu.Lock()

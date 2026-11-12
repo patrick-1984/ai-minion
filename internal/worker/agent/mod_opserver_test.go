@@ -61,7 +61,7 @@ func (d *pairDialer) Connect(_ context.Context, p ConnectParams) (*Attempt, erro
 	}
 	d.hubs <- hub
 	return &Attempt{
-		Pin: p.Pin, TranscriptHash: randomHash(), Version: proto.Current,
+		Pin: p.Pin, OpPub: p.Pin.Pub, TranscriptHash: randomHash(), Version: proto.Current,
 		Reply:   Reply{Type: proto.TypeWelcome, Welcome: okWelcome()},
 		Session: worker,
 	}, nil
