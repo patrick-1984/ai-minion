@@ -2,10 +2,11 @@
 
 ## v0.6.3
 
-Released 2026-11-12. No change to the product behaviour of 0.6.2.
+Released 2026-11-12.
 
 ### Fixed
 
+- `minion worker status` opens the Worker database read-only and never runs migrations, so running it while a Worker starts can no longer make the Worker fail with `database is locked`; the Worker also retries a contended database setup within its normal busy timeout.
 - Timing-sensitive tests (pairing, turn channel, keepalive, session retirement, enrollment) now synchronise on the event they wait for instead of a fixed timeout, so they no longer fail on slow CI machines.
 
 ### Added

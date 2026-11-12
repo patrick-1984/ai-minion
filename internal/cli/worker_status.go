@@ -189,7 +189,7 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 	enr := agent.NewEnrollments(nil, core.StateDir)
 	in.Keys = enr
 	if _, err := os.Stat(filepath.Join(core.StateDir, store.DBFile)); err == nil {
-		st, err := store.OpenContext(cmd.Context(), core.StateDir)
+		st, err := store.OpenReadOnlyContext(cmd.Context(), core.StateDir)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("cannot open the Worker state in %s: %v", core.StateDir, err))
 		} else {

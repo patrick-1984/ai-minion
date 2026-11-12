@@ -331,8 +331,12 @@ func TestSessionTargetIsExact(t *testing.T) {
 // command separator.
 func TestSendKeysLiteralText(t *testing.T) {
 	srv := New(t)
-	target := srv.NewSession("lit", "cat")
-	for _, text := range []string{"-n", "-hello", "--", "semi;", ";", "a\\;", "mid;dle"} {
+	for i, text := range []string{"-n", "-hello", "--", "semi;", ";", "a\\;", "mid;dle"} {
+		// A fresh pane prevents a suffix of an earlier line ("semi;") plus
+		// the next typed echo (";") from satisfying ";\n;" before cat has
+		// echoed that next line. Otherwise subsequent echoes can interleave.
+		target := srv.NewSession("lit"+strconv.Itoa(i), "sh", "-c", "printf 'ready\\n'; exec cat")
+		srv.WaitFor(target, "ready\n", 5*time.Second)
 		srv.SendKeys(target, text, "Enter")
 		srv.WaitFor(target, text+"\n"+text, 5*time.Second) // typed echo, then cat's output
 	}

@@ -115,7 +115,7 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
-	if err := db.PingContext(ctx); err != nil {
+	if err := pingWithBusyRetry(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: open database %q: %w", dbPath, err)
 	}
@@ -124,6 +124,32 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 		return nil, fmt.Errorf("store: migrate database: %w", err)
 	}
 	return &Store{db: db, dir: abs, clock: cfg.clock}, nil
+}
+
+// Connection setup includes journal_mode(WAL). Against a rollback-journal
+// writer SQLite can reject that lock upgrade immediately, bypassing its busy
+// handler. Retry only BUSY, on a fresh connection (database/sql discards failed
+// opens), and bound the whole retry window by the usual busy timeout and ctx.
+func pingWithBusyRetry(ctx context.Context, db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(busyTimeoutMS)*time.Millisecond)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := db.PingContext(ctx)
+		var coded interface{ Code() int }
+		if !errors.As(err, &coded) || coded.Code()&0xff != 5 { // SQLITE_BUSY, including extended codes
+			return err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // DB returns the database handle. There is exactly one per Worker.
@@ -141,16 +167,13 @@ func (s *Store) Close() error { return s.db.Close() }
 // so an acknowledged counter increment or share change survives a power
 // failure (AD-13: a session number is never reused).
 func dsn(path string) string {
-	p := filepath.ToSlash(path)
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p // Windows drive path: file:///C:/...
-	}
 	q := url.Values{}
 	q.Set("_txlock", "immediate")
 	q.Add("_pragma", "journal_mode(WAL)")
 	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMS))
 	q.Add("_pragma", "synchronous(FULL)")
-	u := url.URL{Scheme: "file", Path: p, RawQuery: q.Encode()}
+	u := databaseURL(path)
+	u.RawQuery = q.Encode()
 	return u.String()
 }
 
@@ -176,4 +199,12 @@ func ensureOwnerOnly(path string) error {
 		}
 	}
 	return nil
+}
+
+func databaseURL(path string) url.URL {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p // Windows drive path: file:///C:/...
+	}
+	return url.URL{Scheme: "file", Path: p}
 }

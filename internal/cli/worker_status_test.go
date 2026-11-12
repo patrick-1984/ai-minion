@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -300,5 +301,37 @@ func TestLocalLiveMapsTheAnswersOfTheLocalSocket(t *testing.T) {
 	other := t.TempDir()
 	if _, err := ask(b, other); !errors.Is(err, agent.ErrNoLiveWorker) {
 		t.Fatalf("another state directory = %v", err)
+	}
+}
+
+// Status may observe a database before the Worker's migrations have begun.
+// It must leave its schema and journal mode alone, even when no Worker answers.
+func TestWorkerStatusDoesNotInitializeDatabase(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, store.DBFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE sentinel (id INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := runWorkerCmds(t, testStatusDeps(nil), workerConfigDeps{}, "worker", "status", "--state-dir", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE name != 'sentinel'").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("status initialized the database (%d new schema objects): %s", n, out)
+	}
+	var mode string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "delete" {
+		t.Errorf("status changed journal mode to %q", mode)
 	}
 }

@@ -384,3 +384,96 @@ func TestOpenReportsUnwritableStateDir(t *testing.T) {
 		t.Fatalf("err = %v, want a state directory error", err)
 	}
 }
+
+// Switching to WAL must survive a transient rollback-journal lock. In the
+// writer case SQLite bypasses the busy handler and returns BUSY immediately.
+func TestOpenWaitsForJournalModeLock(t *testing.T) {
+	for _, writer := range []bool{false, true} {
+		name := "reader"
+		if writer {
+			name = "writer"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			seed := openStore(t, dir, testMigrations(v1))
+			if err := seed.Close(); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, DBFile)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			if _, err := raw.Exec("PRAGMA journal_mode=DELETE"); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := raw.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			var n int
+			if err := tx.QueryRow("SELECT count(*) FROM things").Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if writer {
+				if _, err := tx.Exec("INSERT INTO things (id) VALUES ('writer')"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			done := make(chan error, 1)
+			go func() {
+				st, openErr := Open(dir, testMigrations(v1))
+				if st != nil {
+					_ = st.Close()
+				}
+				done <- openErr
+			}()
+			// Model a short-lived competing status/migration transaction.
+			time.Sleep(200 * time.Millisecond)
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("Open failed during transient %s: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestOpenBusyRetryHonorsContext(t *testing.T) {
+	dir := t.TempDir()
+	seed := openStore(t, dir, testMigrations(v1))
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, DBFile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec("PRAGMA journal_mode=DELETE"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := raw.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("INSERT INTO things (id) VALUES ('writer')"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	st, err := OpenContext(ctx, dir, testMigrations(v1))
+	if st != nil {
+		_ = st.Close()
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("OpenContext = %v; want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("OpenContext exceeded its deadline by too much: %s", elapsed)
+	}
+}
