@@ -113,6 +113,6 @@ sudo minion update --version v0.7.1   # exactly this version
 sudo systemctl restart minion-hub
 ```
 
-Release 0.7.1 uses wire protocol 3.0 only: a Hub and a Worker of an earlier build cannot connect, so there are no mixed versions. Take an encrypted backup first (the database migration is forward-only), update the Hub, set the Hub passphrase (`minion hub identity set-passphrase` or the banner in the web UI; the Hub serves no Workers until then), then update every Worker. See [Hub identity](../guides/hub-identity.md).
+Release 0.7 (0.7.0 and later) uses wire protocol 3.0 only: a 0.7 Hub and a Worker of 0.6 or earlier (protocol 2.x) cannot connect, so there are no mixed 0.6 and 0.7 installations. Take an encrypted backup first (the database migration is forward-only), update the Hub, set the Hub passphrase (`minion hub identity set-passphrase` or the banner in the web UI; the Hub serves no Workers until then), then update every Worker. See [Hub identity](../guides/hub-identity.md).
 
 `minion update` verifies the release signature and the archive checksum before it replaces the binary, and refuses an older version unless you pass `--allow-downgrade`. An update contacts the release host and the Sigstore TUF repository; `--offline` installs the newest verified release from the local cache instead. The Hub upgrades its database at start. There is no database downgrade, so take a [backup](../guides/backup-restore.md) first.
