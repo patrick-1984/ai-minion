@@ -7,7 +7,7 @@ Run and steer terminal AI agents (Claude Code, Codex and others) in tmux session
 
 One binary, `minion` (also installed as `mn` by the Linux packages), is the Hub, the Worker, the command line and the MCP server.
 
-Version 0.7.0. License: Apache-2.0.
+Version 0.7.1. License: Apache-2.0.
 
 ## Start here
 

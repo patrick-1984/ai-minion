@@ -84,7 +84,7 @@ func ReadIdentity(dir string) (*Identity, error) {
 	key, err := identity.LoadKey(filepath.Join(dir, IdentityFile))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("workers: no Hub identity in %s yet; it is created when the Hub first starts (minion hub serve): %w", dir, err)
+			return nil, fmt.Errorf("workers: no Hub identity in %s yet; it is created when the owner sets the Hub passphrase (minion hub identity set-passphrase, or the banner in the web UI): %w", dir, err)
 		}
 		return nil, err
 	}

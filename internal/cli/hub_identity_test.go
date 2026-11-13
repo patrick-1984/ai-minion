@@ -53,11 +53,11 @@ func TestHubIdentityPrintsTheFingerprintOfTheKeyInTheDataDir(t *testing.T) {
 	}
 }
 
-func TestHubIdentityBeforeTheFirstStartSaysSoAndCreatesNothing(t *testing.T) {
+func TestHubIdentityBeforeThePassphraseSaysSoAndCreatesNothing(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
 	err := runHubIdentity(&out, envOf(map[string]string{"MINION_DATA_DIR": dir}))
-	if err == nil || !strings.Contains(err.Error(), "minion hub serve") {
+	if err == nil || !strings.Contains(err.Error(), "minion hub identity set-passphrase") || strings.Contains(err.Error(), "first starts") {
 		t.Fatalf("err = %v", err)
 	}
 	if out.Len() != 0 {

@@ -11,7 +11,7 @@ Releases are published on `https://github.com/patrick-1984/ai-minion/releases`. 
 Verify what you downloaded before you run it. The checksum list is signed by the release workflow of this project (keyless signature, recorded in the Sigstore transparency log):
 
 ```sh
-VERSION=0.7.0
+VERSION=0.7.1
 ARCHIVE=minion_${VERSION}_linux_amd64.tar.gz
 BASE=https://github.com/patrick-1984/ai-minion/releases/download/v${VERSION}
 curl -fsSLO "$BASE/$ARCHIVE"
@@ -109,10 +109,10 @@ Set the passphrase as above before the first Worker connects (a Hub started as a
 
 ```sh
 sudo minion update --channel 0.6      # the newest 0.6.x
-sudo minion update --version v0.7.0   # exactly this version
+sudo minion update --version v0.7.1   # exactly this version
 sudo systemctl restart minion-hub
 ```
 
-Release 0.7.0 uses wire protocol 3.0 only: a Hub and a Worker of an earlier build cannot connect, so there are no mixed versions. Take an encrypted backup first (the database migration is forward-only), update the Hub, set the Hub passphrase (`minion hub identity set-passphrase` or the banner in the web UI; the Hub serves no Workers until then), then update every Worker. See [Hub identity](../guides/hub-identity.md).
+Release 0.7.1 uses wire protocol 3.0 only: a Hub and a Worker of an earlier build cannot connect, so there are no mixed versions. Take an encrypted backup first (the database migration is forward-only), update the Hub, set the Hub passphrase (`minion hub identity set-passphrase` or the banner in the web UI; the Hub serves no Workers until then), then update every Worker. See [Hub identity](../guides/hub-identity.md).
 
 `minion update` verifies the release signature and the archive checksum before it replaces the binary, and refuses an older version unless you pass `--allow-downgrade`. An update contacts the release host and the Sigstore TUF repository; `--offline` installs the newest verified release from the local cache instead. The Hub upgrades its database at start. There is no database downgrade, so take a [backup](../guides/backup-restore.md) first.

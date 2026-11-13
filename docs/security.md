@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md).
 
-Minion lets people, scripts and models read and type into terminal sessions on other machines. That is the product, and it defines what you are trusting. This page states the boundaries as they are in release 0.7.0, including what has not been reviewed yet.
+Minion lets people, scripts and models read and type into terminal sessions on other machines. That is the product, and it defines what you are trusting. This page states the boundaries as they are in release 0.7.1, including what has not been reviewed yet.
 
 ## Who sees what
 
@@ -94,7 +94,7 @@ Protocol 3.0 needs the Hub and all Workers upgraded together. A 0.6 Hub already 
 - **Signed release (the default):** it verifies the same signature of the checksum list as `minion update` does (with a pinned `cosign`), then the archive against those checksums.
 - **Checksum-pinned (an exact version plus `MINION_SHA256`):** it checks only that the archive has the SHA-256 you supplied. It does not fetch or verify the checksums file, the signature or the transparency-log entry, so the signature guarantees above do **not** apply to this mode. Take the checksum from a source you trust independently of the download (for example the signed `checksums.txt` that you verified yourself), because the installer trusts it completely.
 
- There is no database downgrade: an older Hub refuses a database a newer one changed. `minion update` has a check that refuses a release whose protocol range does not overlap the Hub's, but in this release the source of the connected Hub's range is not wired in production: **without the explicit flag `--hub-proto-range MIN..MAX` (for example `--hub-proto-range 3.0..3.0`) the updater performs no protocol check and installs the release**. An older Worker therefore does not protect itself; follow the upgrade order yourself (Hub first, see [Upgrading from 0.6](#upgrading-from-06)). Release 0.7.0 speaks wire protocol **3.0** only (the signed release manifest carries the range `3.0..3.0`): there is no fallback to 2.x, a Hub and a Worker of an earlier build cannot connect (a 2.0 Worker is answered `proto_incompatible` and retries until it is upgraded), and mixed versions are not supported, so upgrade the Hub and all Workers together.
+ There is no database downgrade: an older Hub refuses a database a newer one changed. `minion update` has a check that refuses a release whose protocol range does not overlap the Hub's, but in this release the source of the connected Hub's range is not wired in production: **without the explicit flag `--hub-proto-range MIN..MAX` (for example `--hub-proto-range 3.0..3.0`) the updater performs no protocol check and installs the release**. An older Worker therefore does not protect itself; follow the upgrade order yourself (Hub first, see [Upgrading from 0.6](#upgrading-from-06)). Release 0.7.1 speaks wire protocol **3.0** only (the signed release manifest carries the range `3.0..3.0`): there is no fallback to 2.x, a Hub and a Worker of an earlier build cannot connect (a 2.0 Worker is answered `proto_incompatible` and retries until it is upgraded), and mixed versions are not supported, so upgrade the Hub and all Workers together.
 
 ## When something is not known
 

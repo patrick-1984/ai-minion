@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.1
+
+Released 2026-11-13.
+
+### Fixed
+
+- `minion hub identity` on a data directory without a Hub identity now says that the identity is created when the owner sets the Hub passphrase (`minion hub identity set-passphrase` or the banner in the web UI), instead of the 0.6 wording "when the Hub first starts".
+
 ## v0.7.0
 
 Released 2026-11-12.
