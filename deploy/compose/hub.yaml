@@ -14,7 +14,7 @@
 # before "docker compose up"; do that instead if you prefer to run no root container).
 #
 # MINION_VERSION selects the image tag: an exact version (v0.7.1), which is the
-# default here, or a channel tag such as 0.6 or latest.
+# default here, or a channel tag such as 0.7 or latest.
 #
 # The Hub speaks HTTPS on 8443 with a certificate it generates on first start
 # (its fingerprint is in the log). The port is published on the loopback
