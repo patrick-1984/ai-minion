@@ -120,7 +120,7 @@ func TestNavigationGroupsFollowTheRoleAndKeepEveryDestination(t *testing.T) {
 	if got := navPaths(user); strings.Join(got, ",") != strings.Join(wantUser, ",") {
 		t.Errorf("user navigation = %v, want %v", got, wantUser)
 	}
-	wantAdmin := append(append([]string{}, wantUser...), "/admin/users", "/admin/settings", "/admin/identity", "/admin/oidc", "/admin/audit")
+	wantAdmin := append(append([]string{}, wantUser...), "/admin/users", "/admin/settings", "/admin/identity", "/admin/oidc", "/admin/session-control", "/admin/audit")
 	if got := navPaths(admin); strings.Join(got, ",") != strings.Join(wantAdmin, ",") {
 		t.Errorf("admin navigation = %v, want %v", got, wantAdmin)
 	}
