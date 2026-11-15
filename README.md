@@ -31,7 +31,7 @@ In a second terminal on the same machine, `minion sessions_list` lists the sessi
 
 ## Quick start: the Hub in Docker
 
-The Hub image is `ghcr.io/patrick-1984/minion` (linux/amd64, linux/arm64, linux/arm/v7). It runs as the unprivileged user UID 65532 and serves HTTPS on port 8443 with a self-signed certificate that it creates at the first start. Both ways below keep the Hub's data in `./hub-data` and read the first administrator's password from `./admin_password.txt`, which must exist before the first start. The details, updates and backups are in [Hub with Docker](docs/install/hub-docker.md).
+The Hub image is `ghcr.io/patrick-1984/minion` (linux/amd64, linux/arm64, linux/arm/v7). It runs as the unprivileged user UID 65532 and serves HTTPS on port 8443 with a self-signed certificate that it creates at the first start. Both ways below keep the Hub's data in `./hub-data`. The first administrator's password comes from `./admin_password.txt` with `docker run` (the file must exist before the first start) and from `MINION_ADMIN_PASSWORD` in `.env` with Compose. The details, updates and backups are in [Hub with Docker](docs/install/hub-docker.md).
 
 ### From the command line (`docker run`)
 
@@ -62,25 +62,23 @@ docker exec -it minion-hub minion hub identity set-passphrase
 
 ### With Docker Compose
 
-Make a directory with the password file, `compose.yaml` and `.env`:
+Make a directory with `compose.yaml` and `.env`:
 
 ```sh
 mkdir minion-hub && cd minion-hub
-printf '%s' 'choose-a-strong-password' > admin_password.txt
 ```
 
 `compose.yaml`, the same Hub as [`deploy/compose/hub.yaml`](deploy/compose/hub.yaml) with its settings taken from `.env`:
 
 ```yaml
 services:
-  # Runs once as root: gives UID 65532 the data directory and the password file, then ends.
+  # Runs once as root: gives UID 65532 the data directory, then ends.
   init:
     image: busybox:1.37
     user: "0:0"
-    command: ["sh", "-c", "chown -R 65532:65532 /data && chown 65532:65532 /secret && chmod 0400 /secret"]
+    command: ["sh", "-c", "chown -R 65532:65532 /data"]
     volumes:
       - ./hub-data:/data
-      - ./admin_password.txt:/secret
 
   hub:
     image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.8.0}
@@ -91,9 +89,9 @@ services:
         condition: service_completed_successfully
     environment:
       MINION_DATA_DIR: /data
-      MINION_ADMIN_PASSWORD_FILE: /run/secrets/minion_admin_password
       # Empty means unset: the Hub then uses its default.
       MINION_ADMIN_USERNAME: ${MINION_ADMIN_USERNAME:-}
+      MINION_ADMIN_PASSWORD: ${MINION_ADMIN_PASSWORD:-}
       MINION_TLS: ${MINION_TLS:-}
       MINION_PUBLIC_URL: ${MINION_PUBLIC_URL:-}
       MINION_TRUSTED_PROXIES: ${MINION_TRUSTED_PROXIES:-}
@@ -101,12 +99,6 @@ services:
       - "${MINION_BIND:-127.0.0.1}:${MINION_PORT:-8443}:8443"
     volumes:
       - ./hub-data:/data
-    secrets:
-      - minion_admin_password
-
-secrets:
-  minion_admin_password:
-    file: ./admin_password.txt
 ```
 
 `.env`, which Compose reads from the same directory. Every line is optional; a missing or empty value keeps the default:
@@ -120,8 +112,11 @@ MINION_VERSION=v0.8.0
 MINION_BIND=127.0.0.1
 MINION_PORT=8443
 
-# The first administrator's user name (default admin); the password is in admin_password.txt.
+# The first administrator (default user name admin). The Hub uses the password only on the
+# first start, while it has no users; you may remove it from .env afterwards. Without it the
+# Hub generates a random password and logs it once.
 MINION_ADMIN_USERNAME=admin
+MINION_ADMIN_PASSWORD=choose-a-strong-password
 
 # Behind a reverse proxy that ends TLS (docs/guides/reverse-proxy.md), set all three and
 # keep MINION_BIND=127.0.0.1: never publish a plain-HTTP Hub on a network interface.
@@ -146,7 +141,7 @@ docker compose exec hub minion hub identity set-passphrase
 
 ### Then
 
-- Open `https://127.0.0.1:8443` on the Docker host (the browser warns about the self-signed certificate) and sign in as `admin` with the password from `admin_password.txt`. The Hub reads that file only at the first start, while it has no users.
+- Open `https://127.0.0.1:8443` on the Docker host (the browser warns about the self-signed certificate) and sign in as `admin` with the password from `admin_password.txt` (`docker run`) or `MINION_ADMIN_PASSWORD` in `.env` (Compose). The Hub reads it only at the first start, while it has no users.
 - **The passphrase is required.** A new Hub serves no Workers until it is set, either with the command above or with the banner "Set the Hub passphrase" in the web UI. It has at least 14 characters and cannot be recovered: read [Hub identity](docs/guides/hub-identity.md).
 - The port is published on the loopback interface only. To reach the Hub from other machines, put a reverse proxy in front ([reverse proxy](docs/guides/reverse-proxy.md); the three proxy settings are in `.env`, or `-e` options for `docker run`) or publish the port on every interface (`-p 8443:8443`, or `MINION_BIND=0.0.0.0` in `.env`).
 - Add Workers: [pairing and sharing](docs/guides/pairing.md).

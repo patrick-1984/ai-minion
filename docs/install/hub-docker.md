@@ -4,7 +4,7 @@ Back to the [README](../../README.md).
 
 The Hub image is `ghcr.io/patrick-1984/minion`. It holds the one `minion` binary; `hub serve` runs the Hub. It is built for linux/amd64, linux/arm64 and linux/arm/v7 on a minimal base image, and it runs as the unprivileged user **UID 65532**. A Raspberry Pi can run the Hub from this image too.
 
-The example [`deploy/compose/hub.yaml`](../../deploy/compose/hub.yaml) runs the Hub with a bind-mounted data directory, a file for the admin password and port 8443. If you cannot pull from a registry, use [`deploy/compose/hub-bootstrap.yaml`](../../deploy/compose/hub-bootstrap.yaml) instead: an ordinary base image plus `bootstrap.sh`, which downloads and verifies the release (see its header for the hosts it contacts).
+The example [`deploy/compose/hub.yaml`](../../deploy/compose/hub.yaml) runs the Hub with a bind-mounted data directory, the admin password from `.env` and port 8443. If you cannot pull from a registry, use [`deploy/compose/hub-bootstrap.yaml`](../../deploy/compose/hub-bootstrap.yaml) instead: an ordinary base image plus `bootstrap.sh`, which downloads and verifies the release (see its header for the hosts it contacts).
 
 ## Image tags
 
@@ -18,13 +18,13 @@ Use an exact tag for a Hub you do not want to change under you. The compose file
 ## Prepare and start
 
 1. Copy `deploy/compose/hub.yaml` to an empty directory on the host.
-2. Create the admin password file. It must exist before the first start, because Docker creates a directory under that name when a bind-mounted file is missing:
+2. Put the admin password in `.env` next to `hub.yaml` (Compose reads that file):
 
    ```sh
-   printf '%s' 'choose-a-strong-password' > admin_password.txt
+   printf 'MINION_ADMIN_PASSWORD=%s\n' 'choose-a-strong-password' >> .env
    ```
 
-   The Hub creates the first administrator from it. The user name is `admin` unless you set `MINION_ADMIN_USERNAME`. The password is only used while the user table is empty (the first start). Without `MINION_ADMIN_PASSWORD_FILE` the Hub generates a random password, logs it once (a working credential in the Hub's log until you change it) and requires a change at the first login; prefer the private password file above ([security](../security.md#credentials)).
+   The Hub creates the first administrator from it. The user name is `admin` unless you set `MINION_ADMIN_USERNAME`. The password is only used while the user table is empty (the first start); you may remove it from `.env` afterwards. Without `MINION_ADMIN_PASSWORD` the Hub generates a random password, logs it once (a working credential in the Hub's log until you change it) and requires a change at the first login ([security](../security.md#credentials)). To keep the password out of the container's environment, mount a file instead and set `MINION_ADMIN_PASSWORD_FILE` to its path, as the `docker run` example in the [README](../../README.md#from-the-command-line-docker-run) does.
 
 3. Start it:
 
@@ -47,14 +47,11 @@ Then add a Worker: [pairing and sharing](../guides/pairing.md). An infrastructur
 
 ## Why the data directory needs preparation
 
-`/data` holds the database, the data key, the Hub identity key and the TLS material. The image runs as UID 65532, so the host directory mounted at `/data` must be writable by that user. A directory that Docker creates itself is owned by root, and a root-owned named volume has the same problem. `hub.yaml` has an `init` service that runs once as root, gives UID 65532 the data directory and the password file, and ends; the Hub service waits for it. To do the same by hand, without an init container:
+`/data` holds the database, the data key, the Hub identity key and the TLS material. The image runs as UID 65532, so the host directory mounted at `/data` must be writable by that user. A directory that Docker creates itself is owned by root, and a root-owned named volume has the same problem. `hub.yaml` has an `init` service that runs once as root, gives UID 65532 the data directory, and ends; the Hub service waits for it. To do the same by hand, without an init container:
 
 ```sh
 sudo mkdir -p ./hub-data && sudo chown 65532:65532 ./hub-data
-sudo chown 65532:65532 ./admin_password.txt && sudo chmod 0400 ./admin_password.txt
 ```
-
-Compose passes a file-based secret as a bind mount of the host file, so the host file's owner and mode are what the container sees: the Hub (UID 65532) must be able to read it, and nobody else needs to.
 
 When the Hub cannot write its data directory it stops before it touches the disk and prints how to fix it. For a container user the message is:
 

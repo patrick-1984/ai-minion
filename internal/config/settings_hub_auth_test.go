@@ -52,6 +52,18 @@ func TestResolveHubAuthValues(t *testing.T) {
 	}
 }
 
+// Compose passes MINION_ADMIN_PASSWORD as "" when .env does not set it; that
+// must count as unset, so the seed generates a password.
+func TestResolveHubAuthEmptyPasswordCountsAsUnset(t *testing.T) {
+	ha, err := ResolveHubAuth(hubEnv(map[string]string{"MINION_ADMIN_PASSWORD": ""}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ha.AdminPassword != "" {
+		t.Fatalf("password = %q, want empty", ha.AdminPassword)
+	}
+}
+
 func TestResolveHubAuthPasswordFile(t *testing.T) {
 	r := hubEnv(map[string]string{"MINION_ADMIN_PASSWORD_FILE": "/run/secrets/pw"})
 	r.ReadFile = func(path string) ([]byte, error) {
