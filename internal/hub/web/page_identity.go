@@ -10,7 +10,9 @@ package web
 // catalog, so the server checks the administrator role, the fresh sign-in, the
 // CSRF token, the same-origin headers, the effective HTTPS and the lockout.
 // The page never echoes a passphrase: the fields are cleared after every
-// submission, the script keeps nothing, and the Hub puts none in any response,
+// submission (except a tls_required refusal, which the Hub answers before it
+// reads the body, so that the button "I am behind a trusted HTTPS reverse
+// proxy" can resend it with confirm_trusted_proxy), the script keeps nothing, and the Hub puts none in any response,
 // log line or audit event.
 
 import (

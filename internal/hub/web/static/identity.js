@@ -1,6 +1,8 @@
 // identity.js drives the Hub identity page: it re-authenticates the session,
 // sends each identity operation as a JSON POST of the browser to the REST
-// operation, and clears every passphrase field after every submission. It
+// operation, and clears every passphrase field after every submission (except
+// a tls_required refusal, which the Hub answers before it reads the body, so
+// that "I am behind a trusted HTTPS reverse proxy" can resend it). It
 // keeps no passphrase anywhere: values are read from the fields at submit time,
 // put in the request body and dropped. Nothing is written to the console, the
 // URL, the history or any storage.
@@ -115,7 +117,14 @@
     }
   }
 
-  async function operate(form) {
+  // showProxyConfirm shows or hides the button that resends the operation
+  // with confirm_trusted_proxy (the Hub refused it as tls_required).
+  function showProxyConfirm(form, visible) {
+    var b = form.querySelector('[data-confirm-proxy]');
+    if (b) { b.hidden = !visible; }
+  }
+
+  async function operate(form, confirmProxy) {
     var op = form.dataset.identityOp;
     var body = {};
     new FormData(form).forEach(function (v, k) {
@@ -125,18 +134,25 @@
         body[k] = v;
       }
     });
+    if (confirmProxy) { body.confirm_trusted_proxy = true; }
     show(form, '');
+    showProxyConfirm(form, false);
     result('');
     setBusy(form, true);
     try {
       var resp = await post('/api/v1/ops/' + op, body);
       body = null;
-      clearSecrets(form);
       var data = null;
       try { data = await resp.json(); } catch (e) { data = null; }
+      var code = !resp.ok && data && data.error ? data.error.code : '';
+      // tls_required is answered before the Hub reads any passphrase: the
+      // fields keep their values so that the confirmation can resend them.
+      if (code !== 'tls_required') { clearSecrets(form); }
       if (!resp.ok) {
-        var code = data && data.error ? data.error.code : '';
-        if (code === 'reauth_required') {
+        if (code === 'tls_required') {
+          show(form, errorText(resp, data) + ' If the browser reaches the Hub through a trusted HTTPS reverse proxy, confirm it to continue.');
+          showProxyConfirm(form, true);
+        } else if (code === 'reauth_required') {
           show(form, 'Confirm it is you first (above), then repeat. ' + errorText(resp, data));
         } else {
           show(form, errorText(resp, data));
@@ -158,7 +174,16 @@
     var form = ev.target;
     if (!(form instanceof HTMLFormElement)) { return; }
     if (form.dataset.reauth) { ev.preventDefault(); reauth(form); return; }
-    if (form.dataset.identityOp) { ev.preventDefault(); operate(form); }
+    if (form.dataset.identityOp) { ev.preventDefault(); operate(form, false); }
+  });
+
+  document.addEventListener('click', function (ev) {
+    var b = ev.target instanceof Element ? ev.target.closest('[data-confirm-proxy]') : null;
+    var form = b ? b.closest('form[data-identity-op]') : null;
+    if (!form) { return; }
+    ev.preventDefault();
+    if (!form.reportValidity()) { return; }
+    operate(form, true);
   });
 
   bindCounters();

@@ -279,3 +279,29 @@ func TestIdentityPageShowsThePassphrasePolicyBeforeSetChangeAndRotate(t *testing
 		t.Errorf("B0 shows the policy %d times, want 1", n)
 	}
 }
+
+// Behind a proxy the Hub does not trust, an operation refused as tls_required
+// can be resent with confirm_trusted_proxy from a button of the same form.
+func TestIdentityPageOffersTheTrustedProxyConfirmation(t *testing.T) {
+	_, body := serveIdentityPage(t, identityStatus(nil), adminHeader)
+	main := mainOf(t, body)
+	forms := strings.Count(main, `data-identity-op="`)
+	if n := strings.Count(main, `data-confirm-proxy hidden>I am behind a trusted HTTPS reverse proxy — continue</button>`); n != forms || n == 0 {
+		t.Errorf("%d confirmation buttons for %d identity forms", n, forms)
+	}
+	js, err := staticFiles.ReadFile("static/identity.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustHave(t, string(js), `code === 'tls_required'`, `body.confirm_trusted_proxy = true`, `[data-confirm-proxy]`, `operate(form, true)`)
+}
+
+// The State card is a label and value grid: a plain definition list, not the
+// inline .facts row that ran every label and value together.
+func TestIdentityStateIsALabelValueGrid(t *testing.T) {
+	_, body := serveIdentityPage(t, identityStatus(nil), adminHeader)
+	main := mainOf(t, body)
+	mustHave(t, main, `<h2 id="id-state">State</h2>
+  <dl>`, `<dt>Valid until</dt><dd>`)
+	mustNotHave(t, main, `class="facts"`)
+}
