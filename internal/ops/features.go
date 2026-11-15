@@ -67,7 +67,11 @@ func RequiredFeatures(op string, args json.RawMessage) []string {
 // LocalRequiredFeatures is RequiredFeatures for a request that goes to the local
 // Worker daemon over its control socket. The causal id of a pipe delivery is a
 // property of the Hub-to-Worker request (the Hub sets message_id), not of the
-// local entry, so pipe_send needs only the verbatim paste there.
+// local entry, so pipe_send needs only the verbatim paste there. A
+// session-control request that names a Worker (in its target, or in the
+// worker_id of sessions_list) also needs proto.FeatureSessionForward: an older
+// daemon ignores the Worker part and would act on a same-named local session,
+// so it must refuse the request instead (SC-5).
 func LocalRequiredFeatures(op string, args json.RawMessage) []string {
 	var out []string
 	for _, f := range RequiredFeatures(op, args) {
@@ -75,5 +79,28 @@ func LocalRequiredFeatures(op string, args json.RawMessage) []string {
 			out = append(out, f)
 		}
 	}
+	if NamesWorker(op, args) {
+		out = append(out, proto.FeatureSessionForward)
+	}
 	return out
+}
+
+// NamesWorker reports whether a request of one of the session-control ops
+// (sessions_list, session_snapshot, session_capture, send_text, send_keys,
+// set_task, answer) names a Worker: sessions_list in its worker_id, the others
+// in the Worker part of their target.
+func NamesWorker(op string, args json.RawMessage) bool {
+	switch op {
+	case OpSessionsList:
+		var a struct {
+			WorkerID string `json:"worker_id"`
+		}
+		return json.Unmarshal(args, &a) == nil && a.WorkerID != ""
+	case OpSessionSnapshot, OpSessionCapture, OpSendText, OpSendKeys, OpSetTask, OpAnswer:
+		var a struct {
+			Target *Target `json:"target"`
+		}
+		return json.Unmarshal(args, &a) == nil && a.Target != nil && a.Target.WorkerID != ""
+	}
+	return false
 }

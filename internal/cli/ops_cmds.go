@@ -162,9 +162,12 @@ func longHelp(op ops.Op) string {
 	var b strings.Builder
 	b.WriteString(op.Summary)
 	b.WriteString("\n\n")
-	if op.Scope == ops.ScopeHub {
+	switch {
+	case op.Name == ops.OpWorkersList:
+		b.WriteString("This is a Hub operation. Without a Hub configured (MINION_HUB_URL and MINION_API_KEY_FILE) the local Worker forwards it to its Hub, which answers a session with a session-control grant.\n")
+	case op.Scope == ops.ScopeHub:
 		b.WriteString("This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket.\n")
-	} else {
+	default:
 		b.WriteString("This is a Worker operation. It runs on the local Worker through its control socket, or through the Hub when one is configured (MINION_HUB_URL and MINION_API_KEY_FILE, --hub-url); a configured Hub is never replaced by the local Worker.\n")
 	}
 	fmt.Fprintf(&b, "Accepted actions: %s.\n", op.Actions)
@@ -348,7 +351,10 @@ func confirmLocal(ctx context.Context, deps opsDeps, session string, fallback cl
 // --hub-* flags) always wins, also when a local control socket exists, and its
 // failure is returned: the request never falls back to the local Worker or to
 // another Hub. Without a Hub the local control socket is used (local is true).
-// A Hub operation cannot run without a Hub.
+// A Hub operation cannot run without a Hub, except workers_list, which the
+// local Worker forwards to its Hub (session control, SC-5); for the same reason
+// sessions_list with --hub-worker (MINION_HUB_WORKER) goes to the local Worker
+// with that Worker as its worker_id.
 func pickBackend(cmd *cobra.Command, deps opsDeps, op ops.Op) (b client.Backend, local bool, err error) {
 	if deps.hub != nil {
 		b, err := deps.hub()
@@ -359,6 +365,7 @@ func pickBackend(cmd *cobra.Command, deps opsDeps, op ops.Op) (b client.Backend,
 			return b, false, nil
 		}
 	}
+	hubWorker := ""
 	if deps.hubSettings != nil {
 		cfg, err := deps.hubSettings(cmd)
 		if err != nil {
@@ -371,8 +378,9 @@ func pickBackend(cmd *cobra.Command, deps opsDeps, op ops.Op) (b client.Backend,
 			}
 			return hb, false, nil
 		}
+		hubWorker = cfg.Worker
 	}
-	if op.Scope == ops.ScopeHub {
+	if op.Scope == ops.ScopeHub && op.Name != ops.OpWorkersList {
 		return nil, false, fmt.Errorf("%s is a Hub operation and no Hub is configured: set MINION_HUB_URL and MINION_API_KEY_FILE", op.Name)
 	}
 	lb := deps.local()
@@ -381,7 +389,65 @@ func pickBackend(cmd *cobra.Command, deps opsDeps, op ops.Op) (b client.Backend,
 		// Worker also says how to configure one.
 		lb = client.NoHubHint(lb)
 	}
-	return lb, true, nil
+	return localHubWorker(lb, hubWorker), true, nil
+}
+
+// localHubWorker returns the local backend b that sends sessions_list with
+// worker as its worker_id, so that the local Worker forwards the listing of
+// another Worker to its Hub (session control). Every other op, and an empty
+// worker, is b unchanged. The worker must be an id (UUIDv7): the Hub's call
+// path resolves no Worker name.
+func localHubWorker(b client.Backend, worker string) client.Backend {
+	if worker == "" {
+		return b
+	}
+	return hubWorkerBackend{Backend: b, worker: worker}
+}
+
+type hubWorkerBackend struct {
+	client.Backend
+	worker string
+}
+
+func (h hubWorkerBackend) Call(ctx context.Context, op string, args any) (json.RawMessage, error) {
+	args, err := h.args(op, args)
+	if err != nil {
+		return nil, err
+	}
+	return h.Backend.Call(ctx, op, args)
+}
+
+func (h hubWorkerBackend) Stream(ctx context.Context, op string, args any, onProgress func(json.RawMessage) error) (json.RawMessage, error) {
+	args, err := h.args(op, args)
+	if err != nil {
+		return nil, err
+	}
+	return h.Backend.Stream(ctx, op, args, onProgress)
+}
+
+// args adds worker_id to the arguments of sessions_list, unless they name one.
+func (h hubWorkerBackend) args(op string, args any) (any, error) {
+	if op != ops.OpSessionsList {
+		return args, nil
+	}
+	if !ops.ValidUUIDv7(h.worker) {
+		return nil, usagef("--hub-worker (MINION_HUB_WORKER) must be a Worker id (a UUIDv7) without a Hub URL; a Worker name is not resolved: find the id with workers_list")
+	}
+	members := map[string]json.RawMessage{}
+	if args != nil {
+		b, err := json.Marshal(args)
+		if err != nil || (string(b) != "null" && json.Unmarshal(b, &members) != nil) {
+			return nil, proto.NewError(proto.CodeInvalidArgument, "the arguments of an op must be one JSON object")
+		}
+		if members == nil {
+			members = map[string]json.RawMessage{}
+		}
+	}
+	if _, ok := members["worker_id"]; !ok {
+		members["worker_id"], _ = json.Marshal(h.worker)
+	}
+	b, err := json.Marshal(members)
+	return json.RawMessage(b), err
 }
 
 // guardedOp reports whether a request of op can rely on a safeguard of the
@@ -401,11 +467,16 @@ func guardedOp(op ops.Op) bool {
 // command on a shell cannot tell (and must not guess from the environment). In
 // Hub mode it forwards the structured target, worker_id included, to the Hub
 // with the identity of the Worker; without a Hub (Solo) it refuses a target that
-// names a Worker, so nothing foreign is ever done to a local terminal. Every
-// other op runs on the local terminals themselves and is refused here.
+// names a Worker, so nothing foreign is ever done to a local terminal. It is
+// also true for the ops of session control (SC-5): the local Worker forwards a
+// target on another Worker to its Hub with the calling session, and keeps a
+// target on itself local. Every other op runs on the local terminals themselves
+// and is refused here.
 func delegatesTarget(op ops.Op) bool {
 	switch op.Name {
-	case ops.OpPipeSend, ops.OpPipeRead, ops.OpPipeWait:
+	case ops.OpPipeSend, ops.OpPipeRead, ops.OpPipeWait,
+		ops.OpSessionsList, ops.OpSessionSnapshot, ops.OpSessionCapture,
+		ops.OpSendText, ops.OpSendKeys, ops.OpSetTask, ops.OpAnswer:
 		return true
 	}
 	return false

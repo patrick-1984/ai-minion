@@ -132,9 +132,9 @@ func TestInternalMessageIDIsNotAProducerArgument(t *testing.T) {
 // to the local control socket, and the Worker behind it knows whether it is
 // enrolled with a Hub (it forwards the structured target to the Hub) or runs
 // alone (it refuses a target that names a Worker). The command cannot tell and
-// does not guess, so it sends target.worker_id as given. Every other op still
-// refuses a foreign Worker here, before the socket is touched: it would act on a
-// same-named local session.
+// does not guess, so it sends target.worker_id as given. The ops of session
+// control do the same (SC-5): the Worker forwards a target on another Worker to
+// its Hub.
 func TestPipeOpsLeaveTheWorkerPartOfTheTargetToTheLocalPipeService(t *testing.T) {
 	foreign := "01890a5d-ac96-774b-bcce-b302099a8057"
 	for _, tc := range []struct {
@@ -144,6 +144,11 @@ func TestPipeOpsLeaveTheWorkerPartOfTheTargetToTheLocalPipeService(t *testing.T)
 		{"pipe_send", []string{"--text", "hello"}},
 		{"pipe_read", nil},
 		{"pipe_wait", []string{"--timeout-ms", "10"}},
+		{"send_text", []string{"--text", "x"}},
+		{"send_keys", []string{"--keys", "Enter"}},
+		{"session_snapshot", nil},
+		{"session_capture", nil},
+		{"set_task", []string{"--task", "t"}},
 	} {
 		b := &fakeOpsBackend{
 			call: answerWith(writeResult(ops.OutcomeDelivered, "", false), nil),
@@ -164,17 +169,6 @@ func TestPipeOpsLeaveTheWorkerPartOfTheTargetToTheLocalPipeService(t *testing.T)
 		}
 		if err := json.Unmarshal(b.last(t).Args, &a); err != nil || a.Target.WorkerID != foreign || a.Target.SessionName != "minion-1" {
 			t.Fatalf("%s: the backend got %s, want the structured target with worker_id", tc.op, b.last(t).Args)
-		}
-	}
-	for _, op := range [][]string{
-		{"send_text", "--text", "x"},
-		{"send_keys", "--keys", "Enter"},
-		{"session_snapshot"},
-	} {
-		b := &fakeOpsBackend{call: answerWith(writeResult(ops.OutcomeDelivered, "", false), nil)}
-		code, _, errs := runWith(t, testDeps(b), "", append([]string{op[0], "--target", foreign + ":work"}, op[1:]...)...)
-		if code != ExitUsage || b.count() != 0 {
-			t.Errorf("%s with a foreign Worker: exit %d (%s), %d calls: the command must refuse it", op[0], code, errs, b.count())
 		}
 	}
 }

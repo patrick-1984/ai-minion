@@ -114,13 +114,14 @@ func TestMnSendTextThroughTheLocalSocket(t *testing.T) {
 	srv.WaitFor(target, "hello-from-mn", 10*time.Second)
 
 	// A target that names another Worker never acts on the local one, even
-	// when a local session has the same name.
+	// when a local session has the same name: the Worker forwards it to its
+	// Hub (SC-5), and without a Hub connection it says so.
 	out.Reset()
 	errb.Reset()
 	foreign := "01890a5d-ac96-774b-bcce-b302099a8057"
 	code = Run(ctx, []string{"mn", "send_text", "--target", foreign + ":catwork", "--text", "leaked-to-local"}, &out, &errb)
-	if code != ExitUsage {
-		t.Fatalf("foreign Worker target = %d, stdout %q stderr %q; want a usage error", code, out.String(), errb.String())
+	if code != ExitError || !strings.Contains(errb.String(), "not connected to a Hub") {
+		t.Fatalf("foreign Worker target = %d, stdout %q stderr %q; want the error of no Hub connection", code, out.String(), errb.String())
 	}
 	time.Sleep(300 * time.Millisecond)
 	if scr := srv.Capture(target); strings.Contains(scr, "leaked-to-local") {
