@@ -21,8 +21,10 @@ Use an exact tag for a Hub you do not want to change under you. The compose file
 2. Put the admin password in `.env` next to `hub.yaml` (Compose reads that file):
 
    ```sh
-   printf 'MINION_ADMIN_PASSWORD=%s\n' 'choose-a-strong-password' >> .env
+   (umask 077 && printf "MINION_ADMIN_PASSWORD='%s'\n" 'choose-a-strong-password' >> .env)
    ```
+
+   `umask 077` makes a new `.env` readable by you only. The single quotes make Compose take the value literally (a `$` is not expanded), so the password must not contain a single quote.
 
    The Hub creates the first administrator from it. The user name is `admin` unless you set `MINION_ADMIN_USERNAME`. The password is only used while the user table is empty (the first start); you may remove it from `.env` afterwards. Without `MINION_ADMIN_PASSWORD` the Hub generates a random password, logs it once (a working credential in the Hub's log until you change it) and requires a change at the first login ([security](../security.md#credentials)). To keep the password out of the container's environment, mount a file instead and set `MINION_ADMIN_PASSWORD_FILE` to its path, as the `docker run` example in the [README](../../README.md#from-the-command-line-docker-run) does.
 

@@ -66,6 +66,7 @@ Make a directory with `compose.yaml` and `.env`:
 
 ```sh
 mkdir minion-hub && cd minion-hub
+(umask 077 && touch .env)   # .env holds the admin password: readable by you only
 ```
 
 `compose.yaml`, the same Hub as [`deploy/compose/hub.yaml`](deploy/compose/hub.yaml) with its settings taken from `.env`:
@@ -114,9 +115,10 @@ MINION_PORT=8443
 
 # The first administrator (default user name admin). The Hub uses the password only on the
 # first start, while it has no users; you may remove it from .env afterwards. Without it the
-# Hub generates a random password and logs it once.
+# Hub generates a random password and logs it once. Keep the single quotes (a $ stays
+# literal); the password must not contain a single quote.
 MINION_ADMIN_USERNAME=admin
-MINION_ADMIN_PASSWORD=choose-a-strong-password
+MINION_ADMIN_PASSWORD='choose-a-strong-password'
 
 # Behind a reverse proxy that ends TLS (docs/guides/reverse-proxy.md), set all three and
 # keep MINION_BIND=127.0.0.1: never publish a plain-HTTP Hub on a network interface.
