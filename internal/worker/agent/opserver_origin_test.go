@@ -9,6 +9,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // The receiver side of F-01: a real executor behind a real op server, with the
@@ -315,5 +316,62 @@ func TestWorkerAuditRecordsTheOriginOfHubWrites(t *testing.T) {
 	var got proto.Origin
 	if err := json.Unmarshal([]byte(rows[0].Origin), &got); err != nil || got != *origin {
 		t.Fatalf("audit origin = %q (%v), want %+v", rows[0].Origin, err, origin)
+	}
+}
+
+// SC-4: an origin the Hub marks with a session-control grant is accepted like a
+// user, whatever pipe_accept_from says; without the mark it is not.
+func TestGrantOriginBypassesPipeAcceptFromOnly(t *testing.T) {
+	o := newOriginEnv(t, "none")
+	granted := workerOrigin(otherWorker, "fp-other", ownerB)
+	granted.Grant = true
+	plain := workerOrigin(otherWorker, "fp-other", ownerB)
+	for _, op := range messageOps {
+		if _, code := o.serve(op, messageArgs(op), granted); code == proto.CodePipeOriginRefused {
+			t.Fatalf("%s with a grant origin was refused for its origin", op)
+		}
+		if typ, code := o.serve(op, messageArgs(op), plain); typ != proto.TypeError || code != proto.CodePipeOriginRefused {
+			t.Fatalf("%s from the same Worker without a grant: %s %s, want pipe_origin_refused", op, typ, code)
+		}
+		// A grant on an origin that names no source Worker is malformed.
+		for name, bad := range map[string]*proto.Origin{
+			"user":      {Kind: proto.OriginUser, UserID: ownerA, Grant: true},
+			"free key":  {Kind: proto.OriginAPIKey, UserID: ownerA, KeyID: "k", Grant: true},
+			"no source": {Kind: proto.OriginWorker, Grant: true},
+		} {
+			if typ, code := o.serve(op, messageArgs(op), bad); typ != proto.TypeError || code != proto.CodePipeOriginRefused {
+				t.Fatalf("%s with a grant on a %s origin: %s %s, want pipe_origin_refused", op, name, typ, code)
+			}
+		}
+	}
+	if typ, code := o.serve(ops.OpSendText, messageArgs(ops.OpSendText), granted); typ != proto.TypeOpResult {
+		t.Fatalf("send_text with a grant origin: %s %s", typ, code)
+	}
+}
+
+// SC-4: the local policy still wins over a grant. A preview-only Worker and an
+// unshared session refuse a grant-origin send_text, and nothing reaches a pane.
+func TestGrantOriginDoesNotLiftPreviewOnlyOrTheShareSelection(t *testing.T) {
+	granted := workerOrigin(otherWorker, "fp-other", ownerB)
+	granted.Grant = true
+
+	o := newOriginEnv(t, "none")
+	o.policy.SetPreviewOnly(true)
+	if typ, code := o.serve(ops.OpSendText, messageArgs(ops.OpSendText), granted); typ != proto.TypeError || code != proto.CodeForbidden {
+		t.Fatalf("preview-only, grant origin: %s %s, want forbidden", typ, code)
+	}
+	if n := len(o.host.pastes()); n != 0 {
+		t.Fatalf("preview-only Worker pasted %d times for a grant origin", n)
+	}
+
+	o = newOriginEnv(t, "none")
+	if err := o.st.SaveShare(store.ShareSelection{Mode: store.ShareSelect, Sessions: []string{"other"}, Configured: true}); err != nil {
+		t.Fatal(err)
+	}
+	if typ, code := o.serve(ops.OpSendText, messageArgs(ops.OpSendText), granted); typ != proto.TypeError || code != proto.CodeForbidden {
+		t.Fatalf("unshared session, grant origin: %s %s, want forbidden", typ, code)
+	}
+	if n := len(o.host.pastes()); n != 0 {
+		t.Fatalf("an unshared session got %d pastes for a grant origin", n)
 	}
 }

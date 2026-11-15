@@ -148,12 +148,13 @@ func (p *Policy) PipeAcceptFrom() config.PipeAcceptFrom {
 
 // CheckOrigin applies pipe_accept_from to a validated origin of a message-class
 // op (F-01). An origin that names no source Worker (a user or an unbound API
-// key) is the Hub's own decision and passes. The Worker itself always passes.
+// key) is the Hub's own decision and passes, and so does an origin the Hub
+// marks with a session-control grant. The Worker itself always passes.
 // Any other source Worker passes only when the policy accepts it: owner-workers
 // compares the owner id of the origin with the owner id of this Worker from its
 // welcome; a list names Worker ids or fingerprints. A nil Policy is none.
 func (p *Policy) CheckOrigin(o proto.Origin) error {
-	if !o.FromWorker() {
+	if !o.FromWorker() || o.Grant {
 		return nil
 	}
 	if p != nil {
