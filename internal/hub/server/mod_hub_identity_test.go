@@ -619,7 +619,9 @@ func TestIdentityTrustedProxyConfirmation(t *testing.T) {
 	confirmed := map[string]any{"passphrase": idWrong, "confirm_trusted_proxy": true}
 
 	tok, csrf := ih.sessionAt(t, "root", time.Second)
-	if r := ih.op(t, ops.OpHubIdentityReissue, plain, proxied(tok, csrf)); r.code != 403 || r.err.Code != proto.CodeForbidden {
+	// The browser behind the proxy sends Origin https://<Host>: the answer is
+	// tls_required, which makes the page offer the confirmation.
+	if r := ih.op(t, ops.OpHubIdentityReissue, plain, proxied(tok, csrf)); r.code != 403 || r.err.Code != proto.CodeTLSRequired {
 		t.Errorf("https origin without confirmation = %d %s", r.code, r.body)
 	}
 	if r := ih.op(t, ops.OpHubIdentityReissue, plain, ih.browser(tok, csrf)); r.code != 403 || r.err.Code != proto.CodeTLSRequired {
@@ -638,8 +640,10 @@ func TestIdentityTrustedProxyConfirmation(t *testing.T) {
 	forged := proxied(tok, csrf)
 	forged[session.CSRFHeader] = "forged"
 	for name, h := range map[string]map[string]string{"foreign origin": foreign, "forged CSRF token": forged} {
-		if r := ih.op(t, ops.OpHubIdentityReissue, confirmed, h); r.code != 403 || r.err.Code != proto.CodeForbidden {
-			t.Errorf("confirmed with %s = %d %s", name, r.code, r.body)
+		for _, body := range []map[string]any{plain, confirmed} {
+			if r := ih.op(t, ops.OpHubIdentityReissue, body, h); r.code != 403 || r.err.Code != proto.CodeForbidden {
+				t.Errorf("%s (%v) = %d %s", name, body["confirm_trusted_proxy"], r.code, r.body)
+			}
 		}
 	}
 	staleTok, staleCSRF := ih.sessionAt(t, "root", 6*time.Minute)

@@ -259,11 +259,18 @@ func (g IdentityGate) Check(c *Call, confirmedProxy bool) error {
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
 		return NewError(proto.CodeForbidden, "send the request as application/json")
 	}
+	tlsRequired := NewError(proto.CodeTLSRequired, "A passphrase is accepted only over HTTPS. Open the Hub through its HTTPS address.")
 	if !g.sameOrigin(r, confirmedProxy) {
+		// An Origin https://<Host> on a cleartext request is a browser behind
+		// an HTTPS proxy the Hub does not trust: answer tls_required, so that
+		// the page offers the confirmation.
+		if !confirmedProxy && g.sameOrigin(r, true) {
+			return tlsRequired
+		}
 		return NewError(proto.CodeForbidden, "the request does not come from this site")
 	}
 	if !confirmedProxy && (g.EffectiveHTTPS == nil || !g.EffectiveHTTPS(r)) {
-		return NewError(proto.CodeTLSRequired, "A passphrase is accepted only over HTTPS. Open the Hub through its HTTPS address.")
+		return tlsRequired
 	}
 	return nil
 }

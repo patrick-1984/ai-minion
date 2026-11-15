@@ -39,7 +39,8 @@ func TestIdentityGateTrustedProxyConfirmation(t *testing.T) {
 		confirm bool
 		want    proto.Code // "" means accepted
 	}{
-		{"without the confirmation the https origin is not this site", gateCall(own, "application/json", time.Second), false, proto.CodeForbidden},
+		{"without the confirmation the https origin is tls_required", gateCall(own, "application/json", time.Second), false, proto.CodeTLSRequired},
+		{"without the confirmation a foreign origin is refused", gateCall("https://evil.example", "application/json", time.Second), false, proto.CodeForbidden},
 		{"without the confirmation cleartext is tls_required", gateCall("http://hub.example.com", "application/json", time.Second), false, proto.CodeTLSRequired},
 		{"confirmed: accepted", gateCall(own, "application/json", time.Second), true, ""},
 		{"confirmed: the http origin is still accepted", gateCall("http://hub.example.com", "application/json", time.Second), true, ""},
@@ -56,7 +57,9 @@ func TestIdentityGateTrustedProxyConfirmation(t *testing.T) {
 	// A cross-site fetch stays refused.
 	c := gateCall(own, "application/json", time.Second)
 	c.Request.Header.Set("Sec-Fetch-Site", "cross-site")
-	if got := gateCode(g.Check(c, true)); got != proto.CodeForbidden {
-		t.Errorf("cross-site with confirmation: code %q", got)
+	for _, confirm := range []bool{false, true} {
+		if got := gateCode(g.Check(c, confirm)); got != proto.CodeForbidden {
+			t.Errorf("cross-site (confirm %v): code %q", confirm, got)
+		}
 	}
 }
