@@ -494,39 +494,7 @@ func (s *PipeService) forward(ctx context.Context, rq Request) (json.RawMessage,
 	if cc == nil {
 		return nil, apiErr(proto.CodeWorkerOffline, "", "this Worker is not connected to a Hub")
 	}
-	var args any
-	if len(rq.Args) > 0 {
-		args = rq.Args
-	}
-	if rq.Op == ops.OpPipeWait {
-		err := cc.Stream(ctx, rq.Op, args, func(el json.RawMessage) error { return EmitProgress(ctx, el) })
-		if err != nil {
-			return nil, forwardError(err)
-		}
-		return json.RawMessage(`{}`), nil
-	}
-	var raw json.RawMessage
-	if err := cc.Do(ctx, rq.Op, args, &raw); err != nil {
-		var lost *CallLostError
-		if rq.Op == ops.OpPipeSend && errors.As(err, &lost) {
-			// The Hub may have stored and routed the message: say so, and do
-			// not repeat it (AD-15). A repeat with the same request_id is the
-			// Hub's to answer.
-			b, merr := json.Marshal(ops.WriteResult{
-				Outcome: ops.OutcomeUnknown, Reason: proto.CodeWorkerOffline.String(),
-				Warnings: []ops.Warning{{Code: "hub_call_lost", Message: "the connection to the Hub ended before it answered; the message may have been sent and is not sent again"}},
-			})
-			if merr != nil {
-				return nil, internalErr("encode result", merr)
-			}
-			return b, nil
-		}
-		return nil, forwardError(err)
-	}
-	if len(raw) == 0 {
-		raw = json.RawMessage(`null`)
-	}
-	return raw, nil
+	return forwardCall(ctx, cc, op, rq.Args)
 }
 
 // forwardError passes the error of the Hub on to the local caller: a

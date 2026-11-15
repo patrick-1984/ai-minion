@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -170,9 +172,23 @@ func (b *LocalBackend) dial(ctx context.Context, path string) (net.Conn, error) 
 	return dialLocal(ctx, path, b.dialTimeout)
 }
 
+// tmuxPaneID is the form of a tmux pane id such as %3.
+var tmuxPaneID = regexp.MustCompile(`^%[0-9]+$`)
+
+// sourcePane returns $TMUX_PANE when it is a well-formed pane id, else "". It
+// travels as the pane member of every local request, so that the Worker can
+// tell which of its sessions made a call it forwards to the Hub (session
+// control). This is the one place for the CLI, `mn` and MCP.
+func sourcePane() string {
+	if p := os.Getenv("TMUX_PANE"); tmuxPaneID.MatchString(p) {
+		return p
+	}
+	return ""
+}
+
 // exchange runs one request on conn.
 func exchange(conn net.Conn, op string, args json.RawMessage, onProgress func(json.RawMessage) error) (json.RawMessage, error) {
-	req := localapi.RequestFrame{Type: proto.TypeOpRequest, Op: op, Args: args}
+	req := localapi.RequestFrame{Type: proto.TypeOpRequest, Op: op, Args: args, Pane: sourcePane()}
 	if err := proto.WriteFrame(conn, proto.StreamFrameLimit, req); err != nil {
 		var pe *proto.Error
 		if errors.As(err, &pe) {

@@ -142,13 +142,34 @@ func (e *CallLostError) As(target any) bool {
 	return false
 }
 
-// callFrame is the op.request frame of a call stream.
+// callFrame is the op.request frame of a call stream. SourceSession is the
+// session on this Worker that made the call, when it is known
+// ([WithSourceSession]); the Hub looks up its session-control grant.
 type callFrame struct {
-	Type      string          `json:"type"`
-	Op        string          `json:"op"`
-	RequestID string          `json:"request_id"`
-	Args      json.RawMessage `json:"args"`
-	APIKey    string          `json:"api_key,omitempty"`
+	Type          string          `json:"type"`
+	Op            string          `json:"op"`
+	RequestID     string          `json:"request_id"`
+	Args          json.RawMessage `json:"args"`
+	APIKey        string          `json:"api_key,omitempty"`
+	SourceSession string          `json:"source_session,omitempty"`
+}
+
+type sourceSessionKey struct{}
+
+// WithSourceSession returns a context whose calls ([CallClient.Do],
+// [CallClient.Stream]) name session as their source_session. An empty session
+// names none.
+func WithSourceSession(ctx context.Context, session string) context.Context {
+	if session == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sourceSessionKey{}, session)
+}
+
+// sourceSession returns the session of [WithSourceSession], or "".
+func sourceSession(ctx context.Context) string {
+	s, _ := ctx.Value(sourceSessionKey{}).(string)
+	return s
 }
 
 // Do runs op on the Hub and decodes the result into out (a pointer; nil
@@ -184,7 +205,7 @@ func (c *CallClient) run(ctx context.Context, op string, args any, onElement fun
 	if err != nil {
 		return err
 	}
-	req, err := c.request(op, args)
+	req, err := c.request(ctx, op, args)
 	if err != nil {
 		return err
 	}
@@ -294,8 +315,9 @@ func isWriteOp(op string) bool {
 	return ok && o.ChangesState()
 }
 
-// request builds the op.request frame, including the API key if one is set.
-func (c *CallClient) request(op string, args any) (callFrame, error) {
+// request builds the op.request frame, including the API key if one is set and
+// the source session of ctx if there is one.
+func (c *CallClient) request(ctx context.Context, op string, args any) (callFrame, error) {
 	if op == "" {
 		return callFrame{}, proto.NewError(proto.CodeInvalidArgument, "an operation name is required")
 	}
@@ -307,7 +329,7 @@ func (c *CallClient) request(op string, args any) (callFrame, error) {
 		}
 		body = b
 	}
-	f := callFrame{Type: proto.TypeOpRequest, Op: op, RequestID: ops.NewUUIDv7(), Args: body}
+	f := callFrame{Type: proto.TypeOpRequest, Op: op, RequestID: ops.NewUUIDv7(), Args: body, SourceSession: sourceSession(ctx)}
 	if c.cfg.Key != nil {
 		k, err := c.cfg.Key()
 		if err != nil {

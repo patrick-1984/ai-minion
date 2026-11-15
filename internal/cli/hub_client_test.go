@@ -175,7 +175,7 @@ func TestCommandWithoutAHubUsesTheLocalWorkerAndSaysWhatIsMissingWhenThereIsNone
 		t.Errorf("no Hub, no Worker: exit %d, stderr %q", code, errs)
 	}
 	// A Hub operation says how to configure the Hub.
-	code, _, errs = runWith(t, depsWithSettings(local, map[string]string{}), "", "workers_list")
+	code, _, errs = runWith(t, depsWithSettings(local, map[string]string{}), "", "audit_list")
 	if code != ExitError || !strings.Contains(errs, "no Hub is configured") || !strings.Contains(errs, "MINION_HUB_URL") {
 		t.Errorf("Hub op without a Hub: exit %d, stderr %q", code, errs)
 	}

@@ -87,6 +87,28 @@ func TestCallRoundTripsArgsAndResult(t *testing.T) {
 	}
 }
 
+// TestTheRequestCarriesAWellFormedTmuxPane: $TMUX_PANE reaches the Worker as
+// the pane member of the request (session control, SC-5); anything that is not
+// a pane id such as %3 is left out.
+func TestTheRequestCarriesAWellFormedTmuxPane(t *testing.T) {
+	var got string
+	path := startWorker(t, localapi.ExecutorFunc(func(_ context.Context, rq localapi.Request, _ func(json.RawMessage)) (json.RawMessage, error) {
+		got = rq.Pane
+		return json.RawMessage(`{}`), nil
+	}))
+	b := Local(WithSocketPath(path))
+	for env, want := range map[string]string{"%3": "%3", "": "", "3": "", "%3;x": "", "%": ""} {
+		t.Setenv("TMUX_PANE", env)
+		got = "unset"
+		if _, err := b.Call(context.Background(), ops.OpWorkersList, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("TMUX_PANE %q: the Worker got pane %q, want %q", env, got, want)
+		}
+	}
+}
+
 func TestCallAcceptsStructRawNilAndBytesArgs(t *testing.T) {
 	var mu sync.Mutex
 	var seen []string

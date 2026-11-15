@@ -102,10 +102,15 @@ func SocketCandidates(env config.PathEnv) ([]string, error) {
 // local socket ignores everything but the op and its arguments, because the
 // local owner holds every action and a write carries its request id inside
 // the arguments (AD-15).
+//
+// Pane is the optional $TMUX_PANE of the caller (a tmux pane id such as "%3"):
+// the Worker maps it to the calling session for session control, when it
+// forwards a request to the Hub (SC-5). It is trusted, not verified.
 type RequestFrame struct {
 	Type string          `json:"type"`
 	Op   string          `json:"op"`
 	Args json.RawMessage `json:"args,omitempty"`
+	Pane string          `json:"pane,omitempty"`
 }
 
 // ProgressFrame is the `op.progress` frame: one element of a streaming op.
@@ -132,6 +137,8 @@ type Request struct {
 	// Actions is always [FullActions] on the local socket.
 	Actions []ops.Action
 	Args    json.RawMessage
+	// Pane is the pane id the caller sent ([RequestFrame].Pane), or "".
+	Pane string
 }
 
 // Executor runs one op. progress sends one `op.progress` element to the
@@ -407,7 +414,7 @@ func parseRequest(body []byte) (Request, *proto.Error) {
 	if f.Op == "" {
 		return Request{}, proto.NewError(proto.CodeInvalidArgument, "op.request needs an op name")
 	}
-	return Request{Op: f.Op, Actions: FullActions(), Args: f.Args}, nil
+	return Request{Op: f.Op, Actions: FullActions(), Args: f.Args, Pane: f.Pane}, nil
 }
 
 // protoErrorer is implemented by errors that know their wire form.

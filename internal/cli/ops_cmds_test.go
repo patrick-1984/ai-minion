@@ -1214,19 +1214,27 @@ func TestWaitingForStdinEndsWithTheContext(t *testing.T) {
 	}
 }
 
-func TestForeignWorkerTargetIsRefusedOnTheLocalSocket(t *testing.T) {
+func TestForeignWorkerTargetIsDelegatedToTheLocalWorker(t *testing.T) {
+	// Without a Hub the target on another Worker goes to the local Worker with
+	// its Worker part, which forwards it to its Hub (session control, SC-5).
 	local := &fakeOpsBackend{call: answerWith(writeResult(ops.OutcomeDelivered, "", false), nil)}
 	foreign := "01890a5d-ac96-774b-bcce-b302099a8057"
 	code, _, errs := runWith(t, testDeps(local), "", "send_text", "--target", foreign+":work", "--text", "x")
-	if code != ExitUsage || !strings.Contains(errs, "no Hub") || local.count() != 0 {
-		t.Errorf("exit %d, stderr %q, local calls %d", code, errs, local.count())
+	if code != 0 || local.count() != 1 {
+		t.Fatalf("exit %d, stderr %q, local calls %d", code, errs, local.count())
+	}
+	var a struct {
+		Target ops.Target `json:"target"`
+	}
+	if err := json.Unmarshal(local.last(t).Args, &a); err != nil || a.Target.WorkerID != foreign || a.Target.SessionName != "work" {
+		t.Fatalf("the local Worker got %s, want the structured target with worker_id", local.last(t).Args)
 	}
 	// With a Hub the Worker part is routed by the Hub.
 	hub := &fakeOpsBackend{call: answerWith(writeResult(ops.OutcomeDelivered, "", false), nil)}
 	deps := testDeps(local)
 	deps.hub = func() (client.Backend, error) { return hub, nil }
-	if code, _, errs := runWith(t, deps, "", "send_text", "--target", foreign+":work", "--text", "x"); code != 0 || hub.count() != 1 {
-		t.Errorf("hub: exit %d (%s), hub calls %d", code, errs, hub.count())
+	if code, _, errs := runWith(t, deps, "", "send_text", "--target", foreign+":work", "--text", "x"); code != 0 || hub.count() != 1 || local.count() != 1 {
+		t.Errorf("hub: exit %d (%s), hub calls %d, local calls %d", code, errs, hub.count(), local.count())
 	}
 }
 

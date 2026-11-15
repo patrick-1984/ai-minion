@@ -81,8 +81,16 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	// refused here and never reach the executor, whose pipe_send is the
 	// Hub-origin write (exec_pipe.go).
 	pipeSvc, _ := lookupService[*PipeService](env.rt)
+	// The call client of the Hub links starts after this module: it is looked
+	// up for every forwarded request.
+	calls := func() PipeCaller {
+		if cc, ok := lookupService[*CallClient](env.rt); ok && cc != nil {
+			return cc
+		}
+		return nil
+	}
 	srv, err := localapi.New(localapi.Config{
-		Executor: localExecutor{ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc},
+		Executor: localExecutor{ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls},
 		Logger:   log,
 	})
 	if err != nil {
@@ -108,6 +116,9 @@ type localExecutor struct {
 	stateDir string
 	// pipe serves the pipe ops of a local call (Story 7.3); nil refuses them.
 	pipe *PipeService
+	// calls returns the call client that forwards a session-control request
+	// to the Hub (SC-5, local_forward.go), or nil when there is none.
+	calls func() PipeCaller
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {
@@ -133,6 +144,14 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		return raw, nil
 	}
 	ctx = WithProgress(ctx, progress)
+	if forwardsToHub(rq.Op, rq.Args, l.ex.policy.WorkerID()) {
+		// The target is on another Worker: only the Hub reaches it.
+		raw, err := l.forwardSessionControl(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, rq.Pane)
+		if err != nil {
+			return nil, l.protoError(rq.Op, err)
+		}
+		return raw, nil
+	}
 	if IsPipeOp(rq.Op) {
 		// A call from this host: the origin is this entry point, so the pipe
 		// ops of the local socket never run as a Hub request, and the
