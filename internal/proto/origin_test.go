@@ -11,6 +11,7 @@ func TestOriginValidate(t *testing.T) {
 		{Kind: OriginAPIKey, UserID: "u", KeyID: "k"},
 		with(src, func(o *Origin) { o.Kind, o.UserID, o.KeyID, o.KeyBoundWorkerID = OriginAPIKey, "u2", "k", "w1" }),
 		with(src, func(o *Origin) { o.Kind = OriginWorker }),
+		with(src, func(o *Origin) { o.Kind, o.Grant = OriginWorker, true }),
 	}
 	for i, o := range good {
 		if err := o.Validate(); err != nil {
@@ -34,8 +35,14 @@ func TestOriginValidate(t *testing.T) {
 		"worker with user":         with(src, func(o *Origin) { o.Kind, o.UserID = OriginWorker, "u" }),
 		"partial source":           {Kind: OriginWorker, SourceWorkerID: "w1", SourceWorkerFP: "fp"},
 		"missing owner":            {Kind: OriginWorker, SourceWorkerID: "w1", SourceWorkerFP: "fp"},
-		"control character":        {Kind: OriginUser, UserID: "u\n"},
-		"too long":                 {Kind: OriginUser, UserID: string(make([]byte, MaxOriginFieldLen+1))},
+		"grant on a user":          {Kind: OriginUser, UserID: "u", Grant: true},
+		"grant on a free key":      {Kind: OriginAPIKey, UserID: "u", KeyID: "k", Grant: true},
+		"grant on a bound key": with(src, func(o *Origin) {
+			o.Kind, o.UserID, o.KeyID, o.KeyBoundWorkerID, o.Grant = OriginAPIKey, "u", "k", "w1", true
+		}),
+		"grant without source": {Kind: OriginWorker, Grant: true},
+		"control character":    {Kind: OriginUser, UserID: "u\n"},
+		"too long":             {Kind: OriginUser, UserID: string(make([]byte, MaxOriginFieldLen+1))},
 	}
 	for name, o := range bad {
 		err := o.Validate()

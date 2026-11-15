@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- SC-4: a Worker accepts a message-class op whose origin carries the Hub's session-control grant mark (`grant`) without applying `pipe_accept_from`; preview-only and the share selection still apply.
+
 ## v0.7.1
 
 Released 2026-11-13.

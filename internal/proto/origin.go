@@ -48,6 +48,11 @@ type Origin struct {
 	SourceWorkerID      string `json:"source_worker_id,omitempty"`
 	SourceWorkerFP      string `json:"source_worker_fp,omitempty"`
 	SourceWorkerOwnerID string `json:"source_worker_owner_id,omitempty"`
+	// Grant is set by the Hub only when a Hub session-control grant authorized
+	// this op on this target. A receiving Worker then accepts the source Worker
+	// without its pipe_accept_from policy, as it accepts a user. It needs a
+	// worker origin with a source Worker.
+	Grant bool `json:"grant,omitempty"`
 }
 
 // FromWorker reports whether the origin names a source Worker.
@@ -66,6 +71,9 @@ func (o Origin) Validate() error {
 	src := o.SourceWorkerID != ""
 	if src != (o.SourceWorkerFP != "") || src != (o.SourceWorkerOwnerID != "") {
 		return bad("the source Worker members must be set together")
+	}
+	if o.Grant && (o.Kind != OriginWorker || !src) {
+		return bad("a grant needs a worker origin with the source Worker")
 	}
 	switch o.Kind {
 	case OriginUser:
