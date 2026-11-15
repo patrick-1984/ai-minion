@@ -103,3 +103,21 @@ func TestMCPWithoutAHubNamesTheHubWorkerInSessionsList(t *testing.T) {
 		t.Fatalf("args %s, want worker_id %s", local.last(t).Args, hubWorkerID)
 	}
 }
+
+// TestMCPWorkersListIsAToolOnTheLocalWorker: without a Hub, minion mcp lists
+// workers_list and calls it on the local Worker, which forwards it (SC-5).
+func TestMCPWorkersListIsAToolOnTheLocalWorker(t *testing.T) {
+	local := &stubBackend{out: map[string]string{"workers_list": `{"workers":[{"id":"w2","name":"two"}]}`}}
+	deps, _ := hubMCPDeps(map[string]string{}, local)
+	got, _ := rpc(t, deps, nil, listRequest,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workers_list","arguments":{}}}`)
+	if !toolNamesOf(t, got[2])["workers_list"] {
+		t.Fatalf("tools/list = %s", got[2])
+	}
+	if !strings.Contains(string(got[3]), "two") || strings.Contains(string(got[3]), `"isError":true`) {
+		t.Fatalf("tools/call = %s", got[3])
+	}
+	if ops := local.ops(); len(ops) != 1 || ops[0] != "workers_list" {
+		t.Fatalf("local ops = %v", ops)
+	}
+}

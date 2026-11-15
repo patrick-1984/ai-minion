@@ -32,6 +32,11 @@ const (
 	// FeaturePipeCausal: pipe_send honours the argument message_id and the
 	// Worker names it on the turn that answers the delivery.
 	FeaturePipeCausal = "pipe.causal"
+	// FeatureSessionForward: the local Worker daemon forwards a session-control
+	// request whose target names another Worker to its Hub (SC-5) instead of
+	// running it on its own terminals. It is a property of the local control
+	// socket only; the Worker does not announce it to the Hub.
+	FeatureSessionForward = "session.forward"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

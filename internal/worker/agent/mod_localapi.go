@@ -128,7 +128,8 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 	// implements; the suffix is then dropped. An older Worker never gets here: it
 	// does not know the qualified name and refuses it as an unsupported operation.
 	if base, need := localapi.SplitOp(rq.Op); len(need) > 0 {
-		have := l.ex.Features()
+		// The local socket also forwards session control (local_forward.go).
+		have := proto.NormaliseFeatures(append(l.ex.Features(), proto.FeatureSessionForward))
 		for _, f := range need {
 			if !proto.HasFeature(have, f) {
 				return nil, l.protoError(base, apiErr(proto.CodeUnsupportedOp, "", fmt.Sprintf("this Worker does not announce the feature %q that %s needs; nothing was sent", f, base)))

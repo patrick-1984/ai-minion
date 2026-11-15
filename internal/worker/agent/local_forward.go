@@ -31,22 +31,22 @@ import (
 // their target names another Worker. self is this Worker's id ("" when it has
 // none, then every named Worker is another one).
 func forwardsToHub(op string, args json.RawMessage, self string) bool {
-	foreign := func(id string) bool { return id != "" && id != self }
-	switch op {
-	case ops.OpWorkersList:
+	if op == ops.OpWorkersList {
 		return true
-	case ops.OpSessionsList:
-		var a struct {
-			WorkerID string `json:"worker_id"`
-		}
-		return json.Unmarshal(args, &a) == nil && foreign(a.WorkerID)
-	case ops.OpSessionSnapshot, ops.OpSessionCapture, ops.OpSendText, ops.OpSendKeys, ops.OpSetTask, ops.OpAnswer:
-		var a struct {
-			Target *ops.Target `json:"target"`
-		}
-		return json.Unmarshal(args, &a) == nil && a.Target != nil && foreign(a.Target.WorkerID)
 	}
-	return false
+	if !ops.NamesWorker(op, args) {
+		return false
+	}
+	var a struct {
+		WorkerID string      `json:"worker_id"`
+		Target   *ops.Target `json:"target"`
+	}
+	_ = json.Unmarshal(args, &a)
+	id := a.WorkerID
+	if op != ops.OpSessionsList && a.Target != nil {
+		id = a.Target.WorkerID
+	}
+	return self == "" || id != self
 }
 
 // forwardSessionControl sends the local request rq to the Hub with the calling

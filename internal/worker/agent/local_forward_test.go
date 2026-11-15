@@ -142,3 +142,21 @@ func TestForeignTargetWithoutAHubConnectionIsAClearError(t *testing.T) {
 		}
 	}
 }
+
+// TestTheLocalSocketHasTheForwardFeature: the client qualifies a request that
+// names a Worker with session.forward (ops.LocalRequiredFeatures); this Worker
+// accepts it and forwards it, while an older daemon refuses the qualified name.
+func TestTheLocalSocketHasTheForwardFeature(t *testing.T) {
+	_, l, h := fwdEnv(t, struct{}{})
+	args := mustJSON(t, ops.SessionSnapshotArgs{Target: ops.Target{WorkerID: ops.NewUUIDv7(), SessionName: "x"}})
+	wire := localapi.QualifiedOp(ops.OpSessionSnapshot, ops.LocalRequiredFeatures(ops.OpSessionSnapshot, args))
+	if wire != "session_snapshot+session.forward" {
+		t.Fatalf("wire name = %q", wire)
+	}
+	if _, err := l.Execute(context.Background(), localapiRequest(wire, args), func(json.RawMessage) {}); err != nil {
+		t.Fatal(err)
+	}
+	if string(h.requestAt(0)["op"]) != `"session_snapshot"` {
+		t.Fatalf("the Hub got %v", h.requestAt(0))
+	}
+}

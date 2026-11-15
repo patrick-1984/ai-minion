@@ -38,12 +38,15 @@ type Config struct {
 	Logger *slog.Logger
 }
 
-// DefaultOps returns the ops of the Default catalog that run on a Worker. The
-// Hub ops cannot run on the Solo backend, so they are not tools there.
+// DefaultOps returns the ops of the Default catalog that run on a Worker, plus
+// workers_list. The other Hub ops cannot run on the Solo backend, so they are
+// not tools there; workers_list can, because the local Worker forwards it to its
+// Hub, which answers a session with a session-control grant (SC-5). The tools
+// are the same with a Hub backend.
 func DefaultOps() []ops.Op {
 	var out []ops.Op
 	for _, op := range ops.All() {
-		if op.Scope == ops.ScopeWorker {
+		if op.Scope == ops.ScopeWorker || op.Name == ops.OpWorkersList {
 			out = append(out, op)
 		}
 	}
