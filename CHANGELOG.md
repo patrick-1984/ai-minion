@@ -1,32 +1,33 @@
 # Changelog
 
-## Unreleased
+## v0.8.2
+
+Released 2026-11-15.
+
+### Added
+
+- **One-line install** for every platform: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh` (Linux, macOS; `| sudo sh` installs into `/usr/local/bin`) and `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 | iex` (Windows preview). The scripts check the archive against `checksums.txt` and are signed release assets like `bootstrap.sh`.
+- **Troubleshooting**: every command takes `-v`/`--verbose` (or `MINION_VERBOSE=1`) for debug logs (an explicit `--log-level`/`MINION_LOG_LEVEL` wins), with debug lines for the Worker's Hub connection, the Hub's request scheme decision, refused API requests, op routing and call streams; `minion worker status --json` adds `worker_id` and `approval`; new admin operation `hub_diagnostics` and page **Administration > Diagnostics** (version, uptime, public URL, trusted proxies, connected Workers, and how the Hub sees the current request). See [troubleshooting](docs/guides/troubleshooting.md).
 
 ### Changed
 
-- Hub identity: a Hub certificate is now valid for 10 years (3650 days) by default and at most 3650 days (was 180, at most 400), so a normal deployment never has to re-issue it; an existing Hub gets the long certificate at its next re-issue (update the Workers first: older Workers refuse more than 400 days). The Workers page shows the certificate badge only from 30 days before expiry, and then says to re-issue it in Administration > Hub identity ([Hub identity](docs/guides/hub-identity.md)).
-### Added
-
-- Troubleshooting: every command takes `-v`/`--verbose` (or `MINION_VERBOSE=1`) for debug logs (an explicit `--log-level`/`MINION_LOG_LEVEL` wins), with debug lines for the Worker's Hub connection, the Hub's request scheme decision, refused API requests, op routing and call streams; `minion worker status --json` adds `worker_id` and `approval`; new admin operation `hub_diagnostics` and page **Administration > Diagnostics** (version, uptime, public URL, trusted proxies, connected Workers, and how the Hub sees the current request). See [troubleshooting](docs/guides/troubleshooting.md).
+- A Worker that runs with a Hub address but no pairing and no invitation key (for example `minion worker up --foreground --share-existing all --server <url>`, also on Windows) now shows a pairing code by itself and connects once the code is entered in the Hub; before it only idled as "not enrolled".
+- Hub identity: a Hub certificate is valid for 10 years (3650 days) by default and at most 3650 days (was 180, at most 400), so a normal deployment never has to re-issue it. The Workers page shows the certificate badge only from 30 days before expiry, and then says what to do.
+- Hub identity page: behind an HTTPS reverse proxy that the Hub does not trust, a passphrase operation answered `tls_required` offers the button "I am behind a trusted HTTPS reverse proxy — continue" (fresh sign-in, CSRF, same-origin, JSON and lockout rules stay). The correct fix remains `MINION_TRUSTED_PROXIES` plus `X-Forwarded-Proto`.
 
 ### Fixed
 
-- Administration > Session control: the sessions of the Workers are listed concurrently under the shared 2 s deadline, and the page stops waiting at the deadline even when a call does not return, so a stalled Worker no longer hides the sessions of the other Workers ([#13](https://github.com/patrick-1984/ai-minion/issues/13)).
-### Added
+- Hub identity page: the State card is a readable label/value grid again.
+- Administration > Session control: sessions of all Workers are listed concurrently within the 2 s limit, so a stalled Worker no longer hides the sessions of the others ([#13](https://github.com/patrick-1984/ai-minion/issues/13)).
 
-- One-line install for every platform: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh` (Linux, macOS) and `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 | iex` (Windows preview). The scripts check the archive against `checksums.txt` and are release assets, signed like `bootstrap.sh`; the Windows guide now says that a Worker must be paired (`minion worker pair`, or the wizard) before `worker up --share-existing all` connects.
-- Troubleshooting: every command takes `-v`/`--verbose` (or `MINION_VERBOSE=1`) for debug logs (an explicit `--log-level`/`MINION_LOG_LEVEL` wins), with debug lines for the Worker's Hub connection, the Hub's request scheme decision, refused API requests, op routing and call streams; `minion worker status --json` adds `worker_id` and `approval`; new admin operation `hub_diagnostics` and page **Administration > Diagnostics** (version, uptime, public URL, trusted proxies, connected Workers, and how the Hub sees the current request). See [troubleshooting](docs/guides/troubleshooting.md).
+### Upgrade notes
 
-### Changed
+- **Upgrade the Workers before the Hub's next certificate re-issue**: Workers older than 0.8.2 refuse a certificate longer than 400 days. A new 0.8.2 Hub issues a 3650-day certificate when its passphrase is first set, so pair only 0.8.2 Workers with it. After all Workers run 0.8.2, re-issue once (Administration > Hub identity) to get the 10-year certificate; nothing else needs attention after that.
+- Protocol stays 3.0.
 
-- A Worker that runs with a Hub address but no pairing and no invitation key (for example `minion worker up --foreground --share-existing all --server <url>`) now shows a pairing code by itself and connects once it is entered; before it only idled as "not enrolled".
-### Changed
+### Known limitations
 
-- Hub identity page: behind an HTTPS reverse proxy that the Hub does not trust, a passphrase operation answered `tls_required` now offers the button "I am behind a trusted HTTPS reverse proxy — continue", which resends it with `confirm_trusted_proxy: true` (the Origin `https://<Host>` then counts as the Hub's own; fresh sign-in, CSRF, same-origin, JSON and lockout rules stay). The correct fix remains `MINION_TRUSTED_PROXIES` plus `X-Forwarded-Proto`.
-
-### Fixed
-
-- Hub identity page: the State card is a label/value grid again instead of one long wrapped line.
+- Follow-ups: [#22](https://github.com/patrick-1984/ai-minion/issues/22) (install.ps1 edge cases), [#23](https://github.com/patrick-1984/ai-minion/issues/23) (auto pairing with a concurrent `worker pair`), [#26](https://github.com/patrick-1984/ai-minion/issues/26) (debug log details).
 
 ## v0.8.1
 
