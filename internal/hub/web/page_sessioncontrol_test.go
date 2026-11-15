@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -250,10 +251,13 @@ func TestSessionControlLabelsNameTheOwner(t *testing.T) {
 }
 
 // stallingOps answers sessions_list of one Worker only when the request is
-// cancelled, like a Worker that never answers.
+// cancelled, like a Worker that never answers. With release set, the call
+// ignores the cancellation and returns only when release is closed, like a
+// blocked transport write.
 type stallingOps struct {
 	*fakeOps
 	stalled string
+	release chan struct{}
 }
 
 func (s stallingOps) CallOp(r *http.Request, op string, args, result any) error {
@@ -261,6 +265,10 @@ func (s stallingOps) CallOp(r *http.Request, op string, args, result any) error 
 		if a, ok := args.(struct {
 			WorkerID string `json:"worker_id"`
 		}); ok && a.WorkerID == s.stalled {
+			if s.release != nil {
+				<-s.release
+				return errors.New("released")
+			}
 			<-r.Context().Done()
 			return r.Context().Err()
 		}
@@ -269,7 +277,8 @@ func (s stallingOps) CallOp(r *http.Request, op string, args, result any) error 
 }
 
 // An unresponsive Worker does not hold the page: the session discovery has a
-// short deadline, and the grants and Workers still render.
+// short deadline, and the grants and Workers still render, with the sessions
+// of a healthy Worker listed after the stalled one.
 func TestSessionControlRendersDespiteAStalledWorker(t *testing.T) {
 	_, f := sessionControlServer(t)
 	connect(t, stallingOps{fakeOps: f, stalled: scW1})
@@ -281,5 +290,24 @@ func TestSessionControlRendersDespiteAStalledWorker(t *testing.T) {
 	if rec.Code != 200 || time.Since(start) > 5*time.Second {
 		t.Fatalf("GET = %d after %v", rec.Code, time.Since(start))
 	}
-	mustHave(t, rec.Body.String(), "Remove W1 (alice):boss", `value="worker:`+scW2+`"`)
+	mustHave(t, rec.Body.String(), "Remove W1 (alice):boss", `value="worker:`+scW2+`"`, `value="session:`+scW2+`:x"`)
+}
+
+// A sessions_list call that ignores the deadline (a blocked transport write)
+// does not hold the page either: it stops waiting at the deadline.
+func TestSessionControlDoesNotWaitForACallThatIgnoresTheDeadline(t *testing.T) {
+	_, f := sessionControlServer(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	connect(t, stallingOps{fakeOps: f, stalled: scW1, release: release})
+	old := sessionDiscoveryTimeout
+	sessionDiscoveryTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { sessionDiscoveryTimeout = old })
+	start := time.Now()
+	rec := get(t, adminServer(t), pathAdminSessionControl, "X-Test-Session", adminHeader)
+	if rec.Code != 200 || time.Since(start) > 2*time.Second {
+		t.Fatalf("GET = %d after %v", rec.Code, time.Since(start))
+	}
+	mustHave(t, rec.Body.String(), "Remove W1 (alice):boss", `value="session:`+scW2+`:x"`)
+	mustNotHave(t, rec.Body.String(), `value="session:`+scW1+`:`)
 }

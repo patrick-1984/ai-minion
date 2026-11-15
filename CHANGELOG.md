@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Administration > Session control: the sessions of the Workers are listed concurrently under the shared 2 s deadline, and the page stops waiting at the deadline even when a call does not return, so a stalled Worker no longer hides the sessions of the other Workers ([#13](https://github.com/patrick-1984/ai-minion/issues/13)).
+
 ## v0.8.1
 
 Released 2026-11-15.
