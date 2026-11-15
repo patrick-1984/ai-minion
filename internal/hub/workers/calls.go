@@ -50,12 +50,16 @@ type RemoveWorkerFunc func(ctx context.Context, workerID, removedBy string, remo
 // request_id and api_key are the members of the pipe ops of Story 7.4
 // ([CallServer]): the key, when present, is the credential of the caller (a
 // Worker-bound API key); it is never logged, audited or echoed.
+// source_session is the tmux session on the Worker that made the call, as the
+// Worker reports it (trusted, not verified); a session-control grant of that
+// session decides the caller ([CallServer]).
 type callRequest struct {
-	Type      string          `json:"type"`
-	Op        string          `json:"op"`
-	RequestID string          `json:"request_id,omitempty"`
-	Args      json.RawMessage `json:"args"`
-	APIKey    string          `json:"api_key,omitempty"`
+	Type          string          `json:"type"`
+	Op            string          `json:"op"`
+	RequestID     string          `json:"request_id,omitempty"`
+	Args          json.RawMessage `json:"args"`
+	APIKey        string          `json:"api_key,omitempty"`
+	SourceSession string          `json:"source_session,omitempty"`
 }
 
 // callStreams is the [StreamHandler] of the call streams (KindCall) of one
@@ -134,7 +138,7 @@ func (h *Handler) serveCall(ctx context.Context, w store.WorkerRow, sess callSes
 		// its own write deadlines, its timeout and ctx, which ends with the
 		// session and, with the AfterFunc above, resets the stream.
 		_ = st.SetDeadline(time.Time{})
-		fn(ctx, Call{Worker: w, Stream: st, Args: rq.Args, RequestID: rq.RequestID, APIKey: rq.APIKey})
+		fn(ctx, Call{Worker: w, Stream: st, Args: rq.Args, RequestID: rq.RequestID, APIKey: rq.APIKey, SourceSession: rq.SourceSession})
 		return
 	}
 	h.refuseCall(st, proto.NewError(proto.CodeUnsupportedOp, "the Hub does not serve this operation on a call stream"))
@@ -173,6 +177,9 @@ type Call struct {
 	// op.request. The key is a credential: never log or echo it.
 	RequestID string
 	APIKey    string
+	// SourceSession is the optional source_session of the op.request: the
+	// calling session on the Worker, not validated yet.
+	SourceSession string
 }
 
 // CallOp serves one op of the call streams. It runs on the goroutine of the

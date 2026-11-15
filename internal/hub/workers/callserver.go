@@ -25,7 +25,8 @@ package workers
 // one op.result or error, then the stream closes.
 //
 //	{"type":"op.request","op":"pipe_send","request_id":"<uuidv7>",
-//	 "args":{...},"api_key":"mn_..."}            // api_key is optional
+//	 "args":{...},"api_key":"mn_...",            // api_key is optional
+//	 "source_session":"boss"}                    // source_session is optional
 //	{"type":"op.progress","data":{...}}          // the elements of a streaming op
 //	{"type":"op.result","result":{...}}
 //	{"type":"error","code":"forbidden","message":"..."}
@@ -43,6 +44,16 @@ package workers
 // [DefaultReauthInterval] while a stream runs (AD-11), and the key is never
 // logged, audited or echoed.
 //
+// With source_session, when an admin gave that session of the Worker a
+// session-control grant (store table session_control), the caller is the
+// Worker identity carrying the grant (authz.NewWorkerGrantPrincipal), even
+// when the frame also carries api_key: the grant wins over a call key. The
+// grant is read on every call and re-read every [DefaultReauthInterval] while
+// a call runs; a removed or changed grant ends it. Without a grant row
+// nothing changes. The ops registered with [CallServer.HandleGrantOnly]
+// (session control, session_control_calls.go) are served only to a caller
+// with a grant; anyone else gets forbidden.
+//
 // The target of a call may be written in the human form
 // "worker-name:session-name" (a JSON string); the Hub resolves it in the
 // caller's space exactly as REST does.
@@ -58,6 +69,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/apikey"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -103,6 +115,15 @@ type PrincipalChecker interface {
 
 var _ PrincipalChecker = (*authz.Authorizer)(nil)
 
+// GrantStore reads the session-control grant of a controller session; it
+// returns store.ErrNotFound when the session has none. *store.Store
+// implements it.
+type GrantStore interface {
+	SessionControl(ctx context.Context, workerID, sessionName string) (store.SessionControlRow, error)
+}
+
+var _ GrantStore = (*store.Store)(nil)
+
 // TargetResolver resolves the human form of a target; *Router implements it.
 type TargetResolver interface {
 	Resolve(ctx context.Context, p authz.Principal, target string, all bool) (ops.Target, error)
@@ -124,6 +145,12 @@ type CallContext struct {
 	Op ops.Op
 	// Args is a pointer to the operation's argument struct.
 	Args any
+	// SourceSession is the validated source_session of the request, or "".
+	SourceSession string
+	// RequestWorkerID is the worker_id member of the arguments object, read
+	// before decoding (a UUIDv7, or ""): it names the Worker of an op whose
+	// arguments name none (sessions_list), as the worker_id of a REST request.
+	RequestWorkerID string
 }
 
 // CallFunc executes one operation of a call stream. A streaming operation
@@ -151,6 +178,8 @@ type CallServerConfig struct {
 	Authz PrincipalChecker
 	// Auditor records write ops and refused credentials. Nil disables it.
 	Auditor Auditor
+	// Grants reads session-control grants. Nil means no session has one.
+	Grants GrantStore
 	// RequestTimeout, ReauthInterval and MaxCalls default to the constants
 	// of this file.
 	RequestTimeout time.Duration
@@ -167,8 +196,10 @@ type CallServer struct {
 	log      *slog.Logger
 	mu       sync.Mutex
 	handlers map[string]CallFunc
-	active   map[string]int
-	reg      CallOpRegistrar // set by Bind
+	// grantOnly are the ops served only to a caller with a grant.
+	grantOnly map[string]bool
+	active    map[string]int
+	reg       CallOpRegistrar // set by Bind
 }
 
 // NewCallServer returns a call server with no ops; register them with
@@ -190,17 +221,29 @@ func NewCallServer(cfg CallServerConfig) *CallServer {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &CallServer{cfg: cfg, log: log, handlers: map[string]CallFunc{}, active: map[string]int{}}
+	return &CallServer{cfg: cfg, log: log, handlers: map[string]CallFunc{}, grantOnly: map[string]bool{}, active: map[string]int{}}
 }
 
 // Handle makes op available on call streams. The op must be a Worker-scope
 // operation of the catalog, and registered once.
 func (s *CallServer) Handle(op string, fn CallFunc) error {
+	return s.handle(op, fn, false)
+}
+
+// HandleGrantOnly is [CallServer.Handle] for an op that is served only to a
+// caller with a session-control grant; any other caller gets forbidden before
+// its arguments are read. Besides the Worker-scope ops it accepts workers_list,
+// the one Hub op a grant reaches.
+func (s *CallServer) HandleGrantOnly(op string, fn CallFunc) error {
+	return s.handle(op, fn, true)
+}
+
+func (s *CallServer) handle(op string, fn CallFunc, grantOnly bool) error {
 	o, ok := s.cfg.Catalog.Lookup(op)
 	if !ok || fn == nil {
 		return errors.New("workers: " + op + " is not an operation of the catalog")
 	}
-	if o.Scope != ops.ScopeWorker {
+	if o.Scope != ops.ScopeWorker && (!grantOnly || op != ops.OpWorkersList) {
 		return errors.New("workers: " + op + " is not a Worker operation")
 	}
 	s.mu.Lock()
@@ -209,6 +252,7 @@ func (s *CallServer) Handle(op string, fn CallFunc) error {
 		return errors.New("workers: " + op + " already has a call handler")
 	}
 	s.handlers[op] = fn
+	s.grantOnly[op] = grantOnly
 	if s.reg != nil {
 		return s.bind(op)
 	}
@@ -332,7 +376,7 @@ func (s *CallServer) serveCall(ctx context.Context, op string, c Call) {
 		return
 	}
 	defer s.release(c.Worker.ID)
-	s.serveRequest(ctx, c.Worker.ID, st, callRequest{Type: proto.TypeOpRequest, Op: op, RequestID: c.RequestID, Args: c.Args, APIKey: c.APIKey})
+	s.serveRequest(ctx, c.Worker.ID, st, callRequest{Type: proto.TypeOpRequest, Op: op, RequestID: c.RequestID, Args: c.Args, APIKey: c.APIKey, SourceSession: c.SourceSession})
 }
 
 // serveRequest serves a call stream whose op.request was read.
@@ -340,27 +384,36 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	reply := func(v any) error { return s.reply(st, v) }
 	fail := func(err error) { s.fail(st, err) }
 	s.mu.Lock()
-	fn := s.handlers[req.Op]
+	fn, grantOnly := s.handlers[req.Op], s.grantOnly[req.Op]
 	s.mu.Unlock()
 	op, known := s.cfg.Catalog.Lookup(req.Op)
 	if fn == nil || !known {
 		fail(proto.NewError(proto.CodeUnsupportedOp, "the Hub does not serve this operation on call streams"))
 		return
 	}
+	if req.SourceSession != "" && (ops.Target{SessionName: req.SourceSession}).Validate() != nil {
+		fail(proto.NewError(proto.CodeInvalidArgument, "source_session is not a valid session name"))
+		return
+	}
 
 	key := req.APIKey
-	pr, actor, err := s.authenticate(ctx, workerID, key)
+	pr, actor, grant, err := s.authenticate(ctx, workerID, key, req.SourceSession)
 	if err != nil {
 		s.auditCall(ctx, actor, "call.auth", workerID, denialOutcome(err))
 		fail(err)
 		return
 	}
-	args, err := s.decodeArgs(ctx, pr, workerID, op, req.Args)
+	if grantOnly && grant == "" {
+		fail(proto.NewError(proto.CodeForbidden, "not allowed"))
+		return
+	}
+	args, reqWorker, err := s.decodeArgs(ctx, pr, workerID, op, req.Args)
 	if err != nil {
 		fail(err)
 		return
 	}
-	c := &CallContext{WorkerID: workerID, Principal: pr, Actor: actor, Op: op, Args: args}
+	c := &CallContext{WorkerID: workerID, Principal: pr, Actor: actor, Op: op, Args: args,
+		SourceSession: req.SourceSession, RequestWorkerID: reqWorker}
 
 	cctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -379,10 +432,13 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 		_ = st.SetReadDeadline(time.Now())
 		<-gone
 	}()
-	if key != "" {
+	switch {
+	case grant != "":
+		go s.reauthorizeWorker(cctx, cancel, pr, req.SourceSession, grant)
+	case key != "":
 		go s.reauthenticate(cctx, cancel, workerID, key)
-	} else if s.cfg.Authz != nil {
-		go s.reauthorizeWorker(cctx, cancel, pr)
+	case s.cfg.Authz != nil:
+		go s.reauthorizeWorker(cctx, cancel, pr, "", "")
 	}
 
 	var res any
@@ -456,31 +512,61 @@ func errorFrameOf(err error, log *slog.Logger) proto.ErrorFrame {
 	return proto.NewError(proto.CodeInternal, "").Frame()
 }
 
-// authenticate decides who a call stream speaks for. The returned actor is
-// set even on failure, for the audit row.
-func (s *CallServer) authenticate(ctx context.Context, workerID, key string) (authz.Principal, string, error) {
-	if key == "" {
-		return authz.NewWorkerPrincipal(workerID), "worker:" + workerID, nil
+// authenticate decides who a call stream speaks for. A session-control grant
+// of the source session wins over the key; grant is then the stored targets of
+// the grant (for the re-check), else "". The returned actor is set even on
+// failure, for the audit row.
+func (s *CallServer) authenticate(ctx context.Context, workerID, key, source string) (pr authz.Principal, actor, grant string, err error) {
+	actor = "worker:" + workerID
+	if grant, err = s.lookupGrant(ctx, workerID, source); err != nil {
+		s.log.Error("workers: cannot read a session-control grant", "worker_id", workerID, "error", err.Error())
+		return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
 	}
-	actor := "worker:" + workerID
+	if grant != "" {
+		var targets []ops.KeyResource
+		if err := json.Unmarshal([]byte(grant), &targets); err != nil {
+			s.log.Error("workers: a session-control grant cannot be read", "worker_id", workerID, "error", err.Error())
+			return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
+		}
+		return authz.NewWorkerGrantPrincipal(workerID, apikey.NewScope(targets, authz.GrantActions())), actor, grant, nil
+	}
+	if key == "" {
+		return authz.NewWorkerPrincipal(workerID), actor, "", nil
+	}
 	if s.cfg.Keys == nil {
-		return authz.Principal{}, actor, proto.NewError(proto.CodeUnauthenticated, "API keys are not accepted on call streams")
+		return authz.Principal{}, actor, "", proto.NewError(proto.CodeUnauthenticated, "API keys are not accepted on call streams")
 	}
 	id, err := s.cfg.Keys.AuthenticateCall(ctx, key, workerID)
 	switch {
 	case errors.Is(err, apikey.ErrInvalidKey):
-		return authz.Principal{}, actor, proto.NewError(proto.CodeUnauthenticated, "the API key is not valid")
+		return authz.Principal{}, actor, "", proto.NewError(proto.CodeUnauthenticated, "the API key is not valid")
 	case errors.Is(err, apikey.ErrWrongWorker):
-		return authz.Principal{}, actor, proto.NewError(proto.CodeForbidden, "the API key is not bound to this Worker")
+		return authz.Principal{}, actor, "", proto.NewError(proto.CodeForbidden, "the API key is not bound to this Worker")
 	case err != nil:
 		s.log.Error("workers: cannot authenticate a call key", "worker_id", workerID, "error", err.Error())
-		return authz.Principal{}, actor, proto.NewError(proto.CodeInternal, "")
+		return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
 	}
-	pr := id.Principal
+	pr = id.Principal
 	if pr.KeyID == "" {
 		pr = pr.WithKeyID(id.KeyID)
 	}
-	return pr, "key:" + id.KeyID, nil
+	return pr, "key:" + id.KeyID, "", nil
+}
+
+// lookupGrant returns the stored targets of the session-control grant of the
+// session source on the Worker, or "" when it has none.
+func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (string, error) {
+	if source == "" || s.cfg.Grants == nil {
+		return "", nil
+	}
+	row, err := s.cfg.Grants.SessionControl(ctx, workerID, source)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	return row.TargetsJSON, nil
 }
 
 // reauthenticate withdraws a running call when its key stops authenticating
@@ -509,9 +595,11 @@ func (s *CallServer) reauthenticate(ctx context.Context, cancel context.CancelCa
 
 // reauthorizeWorker withdraws a running keyless call when its Worker identity
 // stops being valid: the Worker was removed, or its owner was deactivated or
-// holds no grant any more (F-07). A failing store is not a reason to end the
+// holds no grant any more (F-07). A call authorized by the session-control
+// grant of the session source (stored targets grant) also ends when that
+// grant was removed or changed. A failing store is not a reason to end the
 // call.
-func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.CancelCauseFunc, pr authz.Principal) {
+func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.CancelCauseFunc, pr authz.Principal, source, grant string) {
 	t := time.NewTicker(s.cfg.ReauthInterval)
 	defer t.Stop()
 	for {
@@ -520,40 +608,58 @@ func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.Cance
 			return
 		case <-t.C:
 		}
-		ok, err := s.cfg.Authz.Valid(ctx, pr)
-		if err == nil && !ok {
-			cancel(proto.NewError(proto.CodeForbidden, "not allowed"))
-			return
+		if s.cfg.Authz != nil {
+			if ok, err := s.cfg.Authz.Valid(ctx, pr); err == nil && !ok {
+				cancel(proto.NewError(proto.CodeForbidden, "not allowed"))
+				return
+			}
+		}
+		if grant != "" {
+			if cur, err := s.lookupGrant(ctx, pr.WorkerID, source); err == nil && cur != grant {
+				cancel(proto.NewError(proto.CodeForbidden, "the session-control grant was removed or changed"))
+				return
+			}
 		}
 	}
 }
 
 // decodeArgs resolves a human target, decodes the arguments into the op's
-// argument type and validates them.
-func (s *CallServer) decodeArgs(ctx context.Context, pr authz.Principal, workerID string, op ops.Op, raw json.RawMessage) (any, error) {
+// argument type and validates them. For sessions_list, whose arguments name no
+// Worker, it also returns the worker_id member of the arguments object
+// (validated as a UUIDv7 when present), as REST reads it from the request.
+func (s *CallServer) decodeArgs(ctx context.Context, pr authz.Principal, workerID string, op ops.Op, raw json.RawMessage) (any, string, error) {
 	obj := map[string]json.RawMessage{}
 	if len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &obj); err != nil {
-			return nil, proto.NewError(proto.CodeInvalidArgument, "args must be a JSON object")
+			return nil, "", proto.NewError(proto.CodeInvalidArgument, "args must be a JSON object")
+		}
+	}
+	var reqWorker string
+	if w, ok := obj["worker_id"]; ok && op.Name == ops.OpSessionsList {
+		if json.Unmarshal(w, &reqWorker) != nil || !ops.ValidUUIDv7(reqWorker) {
+			return nil, "", proto.NewError(proto.CodeInvalidArgument, "worker_id must be a UUIDv7")
 		}
 	}
 	if t, ok := obj["target"]; ok {
 		var human string
 		if json.Unmarshal(t, &human) == nil {
 			if s.cfg.Resolver == nil {
-				return nil, proto.NewError(proto.CodeInvalidArgument, "target must be {worker_id, session_name}")
+				return nil, "", proto.NewError(proto.CodeInvalidArgument, "target must be {worker_id, session_name}")
 			}
 			rp := pr
 			if rp.Kind == authz.KindWorker && s.cfg.Owners != nil {
 				owner, err := s.cfg.Owners.WorkerOwner(ctx, workerID)
 				if err != nil {
-					return nil, proto.NewError(proto.CodeForbidden, "not allowed")
+					return nil, "", proto.NewError(proto.CodeForbidden, "not allowed")
 				}
 				rp.UserID = owner // resolve in the space of the Worker's owner
 			}
-			tgt, err := s.cfg.Resolver.Resolve(ctx, rp, human, false)
+			// A grant reaches beyond the owner's own Workers (an admin-owned
+			// controller with targets of other owners): resolve among every
+			// Worker the grant may read.
+			tgt, err := s.cfg.Resolver.Resolve(ctx, rp, human, pr.Scope != nil && pr.Kind == authz.KindWorker)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			b, _ := json.Marshal(tgt)
 			obj["target"] = b
@@ -562,21 +668,45 @@ func (s *CallServer) decodeArgs(ctx context.Context, pr authz.Principal, workerI
 	b, _ := json.Marshal(obj)
 	args := op.NewArgs()
 	if err := json.Unmarshal(b, args); err != nil {
-		return nil, proto.NewError(proto.CodeInvalidArgument, "the arguments do not fit the operation")
+		return nil, "", proto.NewError(proto.CodeInvalidArgument, "the arguments do not fit the operation")
 	}
 	if v, ok := args.(ops.Validator); ok {
 		if err := v.Validate(); err != nil {
-			return nil, proto.NewError(proto.CodeInvalidArgument, err.Error())
+			return nil, "", proto.NewError(proto.CodeInvalidArgument, err.Error())
 		}
 	}
-	return args, nil
+	return args, reqWorker, nil
 }
 
+// callTarget is the audit target of a call: "worker_id:session" of the op's
+// target, or "".
 func callTarget(args any) string {
-	if a, ok := args.(*ops.PipeSendArgs); ok {
-		return a.Target.WorkerID + ":" + a.Target.SessionName
+	if t, ok := targetOfArgs(args); ok {
+		return t.WorkerID + ":" + t.SessionName
 	}
 	return ""
+}
+
+// targetOfArgs returns the target of the arguments of a call op that names
+// one session.
+func targetOfArgs(args any) (ops.Target, bool) {
+	switch a := args.(type) {
+	case *ops.PipeSendArgs:
+		return a.Target, true
+	case *ops.SessionSnapshotArgs:
+		return a.Target, true
+	case *ops.SessionCaptureArgs:
+		return a.Target, true
+	case *ops.SendTextArgs:
+		return a.Target, true
+	case *ops.SendKeysArgs:
+		return a.Target, true
+	case *ops.SetTaskArgs:
+		return a.Target, true
+	case *ops.AnswerArgs:
+		return a.Target, true
+	}
+	return ops.Target{}, false
 }
 
 func writeAuditOutcome(res any, err error) string {

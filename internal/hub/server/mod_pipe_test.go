@@ -437,8 +437,12 @@ func TestDefaultHubServesRESTCallStreamsAndTurnsThroughOneBroker(t *testing.T) {
 		t.Fatalf("pipe_read on a call stream = %s", b)
 	}
 	// What the Hub does not serve on a call stream is answered, not reset.
-	if typ, b = pi2.call(t, ops.OpSendText, map[string]any{}); typ != proto.TypeError || !strings.Contains(string(b), string(proto.CodeUnsupportedOp)) {
-		t.Fatalf("send_text on a call stream = %s", b)
+	if typ, b = pi2.call(t, ops.OpSessionCreate, map[string]any{}); typ != proto.TypeError || !strings.Contains(string(b), string(proto.CodeUnsupportedOp)) {
+		t.Fatalf("session_create on a call stream = %s", b)
+	}
+	// A session-control op without a grant is forbidden (SC-3).
+	if typ, b = pi2.call(t, ops.OpSendText, map[string]any{}); typ != proto.TypeError || !strings.Contains(string(b), string(proto.CodeForbidden)) {
+		t.Fatalf("send_text without a grant on a call stream = %s", b)
 	}
 
 	// 5. worker_retire on the same session, with the events and the pipe live.

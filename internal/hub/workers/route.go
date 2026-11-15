@@ -602,7 +602,7 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.Args == nil || (reflect.ValueOf(req.Args).Kind() == reflect.Pointer && reflect.ValueOf(req.Args).IsNil()) {
 		args = []byte("{}")
 	}
-	origin, err := rt.originOf(ctx, req.Principal)
+	origin, err := rt.originOf(ctx, req.Principal, op.Actions, res)
 	if err != nil {
 		return nil, err
 	}
@@ -631,9 +631,12 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 // principal (AD-12, F-01). Nothing of it comes from the caller's JSON. A Worker
 // identity, and an API key bound to a Worker, name that Worker as the source
 // Worker, with its fingerprint and the id of its owner (for a bound key the
-// owner of the bound Worker, whoever owns the key). The origin is validated
-// before it is sent: a request whose origin cannot be derived is not sent.
-func (rt *Router) originOf(ctx context.Context, p authz.Principal) (proto.Origin, error) {
+// owner of the bound Worker, whoever owns the key). A Worker identity whose
+// session-control grant by itself authorizes the op (accepted actions on res)
+// is marked Grant (authz.Authorizer.GrantedByScope); the own-Worker rule, a
+// key and a user never are. The origin is validated before it is sent: a
+// request whose origin cannot be derived is not sent.
+func (rt *Router) originOf(ctx context.Context, p authz.Principal, accepted ops.ActionSet, res authz.Resource) (proto.Origin, error) {
 	var o proto.Origin
 	sourceID := ""
 	switch p.Kind {
@@ -645,7 +648,11 @@ func (rt *Router) originOf(ctx context.Context, p authz.Principal) (proto.Origin
 		o = proto.Origin{Kind: proto.OriginAPIKey, UserID: p.UserID, KeyID: p.KeyID, KeyBoundWorkerID: p.WorkerID}
 		sourceID = p.WorkerID
 	case authz.KindWorker:
-		o = proto.Origin{Kind: proto.OriginWorker}
+		granted, err := rt.az.GrantedByScope(ctx, p, accepted, res)
+		if err != nil {
+			return proto.Origin{}, err
+		}
+		o = proto.Origin{Kind: proto.OriginWorker, Grant: granted}
 		sourceID = p.WorkerID
 	}
 	if sourceID != "" {
