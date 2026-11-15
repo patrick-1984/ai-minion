@@ -165,7 +165,7 @@ func sampleUsers() ops.UsersListResult {
 
 // -- access ------------------------------------------------------------------
 
-var adminPaths = []string{pathAdminUsers, pathAdminUsers + "/" + otherUserID, pathAdminSettings, pathAdminOIDC, pathAdminSessionControl, pathAdminAudit}
+var adminPaths = []string{pathAdminUsers, pathAdminUsers + "/" + otherUserID, pathAdminSettings, pathAdminOIDC, pathAdminSessionControl, pathAdminDiagnostics, pathAdminAudit}
 
 // Admin-only access: a user gets 404 (not 403) on every page and the pages do
 // not even ask the Hub for data.
