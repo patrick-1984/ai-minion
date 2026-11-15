@@ -5,6 +5,7 @@
 - SC-4: a Worker accepts a message-class op whose origin carries the Hub's session-control grant mark (`grant`) without applying `pipe_accept_from`; preview-only and the share selection still apply.
 - Session control (SC-2): a Worker principal can carry a session-control grant as its scope; it then also holds its owner's current permission ∩ the grant (read, operate, message), and `GrantedByScope` tells whether the grant itself authorized an operation.
 - Session control store and operations (SC-1): Hub table `session_control` (migration 0024) and the admin-only operations `session_control_list` and `session_control_set` (an upsert; empty targets remove the grant). No grant exists until an admin creates one; removing or reassigning a Worker deletes the grants of its sessions.
+- Session control on call streams (SC-3): a call frame may carry `source_session`; when that session of the Worker has a session-control grant, the Hub serves the call as the grant (even if a call key is sent), serves `workers_list`, `sessions_list`, `session_snapshot`, `session_capture`, `send_text`, `send_keys`, `set_task` and `answer` on call streams to granted sessions only, resolves targets across owners, marks requests the grant authorized with `origin.grant` and audits their targets.
 
 ## v0.7.1
 

@@ -154,9 +154,14 @@ func initPipe(ctx context.Context, env *Env) error {
 		Owners:   svc.OwnerLookup(),
 		Authz:    az,
 		Auditor:  alog,
+		Grants:   st,
 		Logger:   log,
 	})
 	if err := p.RegisterCalls(cs); err != nil {
+		return fmt.Errorf("pipe: %w", err)
+	}
+	// Session control (SC-3): the ops a session-control grant reaches.
+	if err := workers.RegisterSessionControlCalls(cs, rt); err != nil {
 		return fmt.Errorf("pipe: %w", err)
 	}
 	if err := cs.Bind(svc); err != nil {
