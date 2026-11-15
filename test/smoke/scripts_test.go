@@ -154,6 +154,8 @@ func releaseFiles() map[string]string {
 		"minion_0.1.0_linux_amd64.tar.gz": "archive-bytes",
 		"minion_0.1.0_amd64.deb":          "deb-bytes",
 		"bootstrap.sh":                    "#!/bin/sh\necho bootstrap\n",
+		"install.sh":                      "#!/bin/sh\necho install\n",
+		"install.ps1":                     "Write-Host install\n",
 	}
 }
 
@@ -175,6 +177,8 @@ func TestVerifyReleaseAssets(t *testing.T) {
 		"--certificate-github-workflow-repository patrick-1984/ai-minion",
 		"--certificate-github-workflow-ref refs/tags/v0.1.0",
 		"--bundle " + dir + "/bootstrap.sh.sigstore.json", // signed on its own
+		"--bundle " + dir + "/install.sh.sigstore.json",
+		"--bundle " + dir + "/install.ps1.sigstore.json",
 	} {
 		if !strings.Contains(calls, want) {
 			t.Errorf("cosign was not called with %q; calls:\n%s", want, calls)
@@ -392,6 +396,8 @@ func TestPinChecksTheCompleteAssetSetAndTheImage(t *testing.T) {
 		"a replaced bootstrap.sh":         func(d string) { writeFile(t, filepath.Join(d, "bootstrap.sh"), "#!/bin/sh\necho evil\n", 0o644) },
 		"a replaced release-manifest":     func(d string) { writeFile(t, filepath.Join(d, "release-manifest.json"), `{"version":"v9"}`, 0o644) },
 		"a replaced bundle":               func(d string) { writeFile(t, filepath.Join(d, "bootstrap.sh.sigstore.json"), `{"x":1}`, 0o644) },
+		"a replaced install.ps1":          func(d string) { writeFile(t, filepath.Join(d, "install.ps1"), "Write-Host evil\n", 0o644) },
+		"a missing install.sh":            func(d string) { rmFile(t, filepath.Join(d, "install.sh")) },
 		"an added asset":                  func(d string) { writeFile(t, filepath.Join(d, "extra.txt"), "x", 0o644) },
 		"a missing sbom":                  func(d string) { rmFile(t, filepath.Join(d, "minion_0.1.0_linux_amd64.tar.gz.sbom.json")) },
 		"a missing release-manifest.json": func(d string) { rmFile(t, filepath.Join(d, "release-manifest.json")) },
@@ -452,6 +458,9 @@ func TestRequireSignedAssets(t *testing.T) {
 		"the release-manifest bundle":     "release-manifest.json.sigstore.json",
 		"the bootstrap bundle":            "bootstrap.sh.sigstore.json",
 		"bootstrap.sh (its bundle stays)": "bootstrap.sh",
+		"the install.sh bundle":           "install.sh.sigstore.json",
+		"the install.ps1 bundle":          "install.ps1.sigstore.json",
+		"install.ps1 (its bundle stays)":  "install.ps1",
 	} {
 		dir := fixtureAssets(t, fullReleaseFiles())
 		rmFile(t, filepath.Join(dir, drop))

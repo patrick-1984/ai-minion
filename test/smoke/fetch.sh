@@ -6,7 +6,8 @@
 #
 # Downloads every asset of release TAG into DIR (GH_TOKEN must be able to read
 # the draft), verifies the cosign bundle of checksums.txt against the release
-# workflow identity, and the bundles of bootstrap.sh and release-manifest.json.
+# workflow identity, and the bundles of bootstrap.sh, install.sh, install.ps1
+# and release-manifest.json.
 # With patterns (shell globs on file names, for example '*_linux_amd64.tar.gz')
 # only the matching assets are downloaded in addition to the signature files;
 # every downloaded archive and package is then checked against checksums.txt.
@@ -53,7 +54,7 @@ for f in "$dir"/*; do
 	[ -f "$f" ] || continue
 	b=$(basename "$f")
 	case "$b" in
-	checksums.txt | *.sigstore.json | bootstrap.sh | release-manifest.json) continue ;;
+	checksums.txt | *.sigstore.json | bootstrap.sh | install.sh | install.ps1 | release-manifest.json) continue ;;
 	esac
 	files+=("$b")
 done

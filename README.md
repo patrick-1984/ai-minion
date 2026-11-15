@@ -21,6 +21,16 @@ You need a Hub only if you want the web UI, several users or Workers on several 
    [Windows (preview)](docs/install/worker-windows-preview.md).
 3. **Join the Worker to the Hub** with a pairing code or an invitation key, and choose what the Hub may see: [pairing and sharing](docs/guides/pairing.md).
 
+### One-line install
+
+| Platform | Command |
+| --- | --- |
+| Linux, macOS | `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh \| sh` |
+| Windows (preview, PowerShell) | `irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 \| iex` |
+| Docker (Hub) | `docker run ... ghcr.io/patrick-1984/minion:v0.8.1 hub serve`, see [Quick start: the Hub in Docker](#quick-start-the-hub-in-docker) |
+
+The scripts install the latest `minion` (`MINION_VERSION=v0.8.1` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. They install nothing else: tmux comes from your package manager. The install guides below also show the manual install that verifies the signature.
+
 A minimal local try-out, no Hub and no install beyond the binary and tmux:
 
 ```sh

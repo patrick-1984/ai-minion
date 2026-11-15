@@ -8,7 +8,7 @@
 # publish.yml records the complete asset set of the draft when it resolves it
 # (test/smoke/common.sh smoke_asset_manifest: "<sha256>  <name>" for every asset,
 # the archives and packages as well as checksums.txt, release-manifest.json,
-# bootstrap.sh and every cosign bundle), and image.sh reports the digest it
+# bootstrap.sh, install.sh, install.ps1 and every cosign bundle), and image.sh reports the digest it
 # tested. This script runs under the release locks right before the draft is
 # published and fails unless
 #   - the release has exactly the recorded assets (none missing, none added,

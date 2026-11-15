@@ -17,7 +17,13 @@ Windows has no tmux. The Worker creates sessions as ConPTY (pseudo console) prog
 
 ## Install
 
-Download `minion_<version>_windows_amd64_preview.zip` (or the `arm64` zip on a Windows-on-Arm machine) from `https://github.com/patrick-1984/ai-minion/releases`. Check its SHA-256 against `checksums.txt` of the same release, for example in PowerShell:
+One line in PowerShell (Windows PowerShell 5.1 or PowerShell 7) installs `minion.exe` into `%LOCALAPPDATA%\Programs\minion` and adds that directory to your user `PATH`; it checks the zip against `checksums.txt` of the release:
+
+```powershell
+irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 | iex
+```
+
+Or install it by hand and verify the signature too: download `minion_<version>_windows_amd64_preview.zip` (or the `arm64` zip on a Windows-on-Arm machine) from `https://github.com/patrick-1984/ai-minion/releases`. Check its SHA-256 against `checksums.txt` of the same release, for example in PowerShell:
 
 ```powershell
 Get-FileHash .\minion_<version>_windows_amd64_preview.zip -Algorithm SHA256
@@ -25,19 +31,30 @@ Get-FileHash .\minion_<version>_windows_amd64_preview.zip -Algorithm SHA256
 
 Compare the result with the line for that file in `checksums.txt`. (The signature of `checksums.txt` is verified as in [the Hub guide](hub-binary.md#get-the-binary) with `cosign`, if you have it.) Unpack the zip and put `minion.exe` in a directory on your `PATH`.
 
-## Run it
+## Pair and run it
 
-In a terminal (PowerShell or the Windows Terminal), as the user whose sessions you want to serve:
+In a terminal (PowerShell or the Windows Terminal), as the user whose sessions you want to serve, pair the Worker once:
+
+```powershell
+minion worker pair --server https://hub.example.com
+```
+
+It shows a code like `MN-K7Q4-XY12` and waits. In the Hub open **Workers**, choose **Add worker** and type the code. The command ends when the Worker is paired. Then start the Worker:
 
 ```powershell
 minion worker up --foreground --share-existing all --server https://hub.example.com
 ```
 
-`--share-existing` has no tmux sessions to count on Windows; it decides what the Hub may see of the sessions you create. The Worker runs until you press Ctrl-C.
+It connects and is **pending**: its log says `this Worker is waiting for approval`. Approve it in the Hub (**Workers**, compare the fingerprint, **Approve**) or with `minion hub worker approve <fingerprint|id>`. The Worker runs until you press Ctrl-C. Details: [pairing and sharing](../guides/pairing.md).
 
-To install it as a Windows service instead, run the same command from an elevated terminal without `--foreground`. The command prints a note about the LocalSystem account when it installs the service. The service starts at boot and is restarted five seconds after a failure; the command line reaches it over a named pipe that only the installing user and the system may open.
+The `worker up` command alone does **not** pair: a Worker that was never paired and has no invitation key runs on its own and logs `hub connector idle` with `reason="not enrolled"` (`minion worker status` shows `idle (not enrolled)`). Two other ways:
 
-Pair the Worker with the Hub as on any other system: [pairing and sharing](../guides/pairing.md).
+- Leave out `--share-existing`: `minion worker up --foreground --server https://hub.example.com` in a terminal runs the setup wizard. It asks what to share, then shows the pairing code and waits for it (Enter stops the wait), and then runs the Worker.
+- An invitation key from the Hub (**Invitations**) enrolls the Worker without a code: add `--invite-key -` and paste the key on standard input (other forms: [the invitation key](../guides/pairing.md#enroll-with-an-invitation-key)). The Worker is pending until you approve it, as above.
+
+`--share-existing` has no tmux sessions to count on Windows; it decides what the Hub may see of the sessions you create.
+
+To install it as a Windows service instead, pair first as above, then run the same `worker up` command from an elevated terminal without `--foreground`. The service uses the state directory of the user who installs it, so it keeps that pairing. The command prints a note about the LocalSystem account when it installs the service. The service starts at boot and is restarted five seconds after a failure; the command line reaches it over a named pipe that only the installing user and the system may open.
 
 ## Check and reset
 

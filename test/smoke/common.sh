@@ -94,8 +94,8 @@ smoke_verify_blob() {
 # smoke_verify_release_assets DIR TAG FILE...: DIR holds the downloaded assets
 # of release TAG. Verifies the cosign bundle of checksums.txt, then that every
 # FILE (names relative to DIR) hashes to a line of that checksums.txt. The
-# files signed on their own (bootstrap.sh, release-manifest.json) are verified
-# against their own bundles when present.
+# files signed on their own (bootstrap.sh, install.sh, install.ps1,
+# release-manifest.json) are verified against their own bundles when present.
 smoke_verify_release_assets() {
 	local dir=$1 tag=$2 f
 	shift 2
@@ -106,7 +106,7 @@ smoke_verify_release_assets() {
 		smoke_listed_in_checksums "$dir/checksums.txt" "$dir/$f" ||
 			smoke_die "$f does not match the signed checksums.txt of $tag"
 	done
-	for f in bootstrap.sh release-manifest.json; do
+	for f in bootstrap.sh install.sh install.ps1 release-manifest.json; do
 		[ -f "$dir/$f" ] || continue
 		smoke_verify_blob "$dir/$f" "$tag"
 	done
@@ -129,8 +129,8 @@ smoke_check_pinned_checksums() {
 
 # smoke_asset_manifest DIR: one "<sha256>  <name>" line for every file in DIR,
 # sorted by name. This is the record of the complete asset set of a release
-# (archives, packages, SBOMs, checksums.txt, release-manifest.json, bootstrap.sh
-# and every cosign bundle): checksums.txt lists only part of it.
+# (archives, packages, SBOMs, checksums.txt, release-manifest.json, bootstrap.sh,
+# install.sh, install.ps1 and every cosign bundle): checksums.txt lists only part of it.
 smoke_asset_manifest() {
 	local dir=$1 f
 	for f in "$dir"/*; do
@@ -141,18 +141,21 @@ smoke_asset_manifest() {
 
 # smoke_require_signed_assets DIR: the files that carry the trust of a release
 # are all there: checksums.txt and release-manifest.json with their cosign
-# bundles, and a bundle for bootstrap.sh when there is a bootstrap.sh (and the
-# other way round). A release without them is not a release.
+# bundles, and a bundle for bootstrap.sh, install.sh and install.ps1 when the
+# script is there (and the other way round). A release without them is not a
+# release.
 smoke_require_signed_assets() {
 	local dir=$1 f
 	for f in checksums.txt release-manifest.json; do
 		[ -f "$dir/$f" ] || smoke_die "the release has no $f"
 		[ -f "$dir/$f.sigstore.json" ] || smoke_die "the release has no cosign bundle $f.sigstore.json"
 	done
-	if [ -f "$dir/bootstrap.sh" ] || [ -f "$dir/bootstrap.sh.sigstore.json" ]; then
-		[ -f "$dir/bootstrap.sh" ] || smoke_die "the release has a bootstrap.sh.sigstore.json but no bootstrap.sh"
-		[ -f "$dir/bootstrap.sh.sigstore.json" ] || smoke_die "the release has no cosign bundle bootstrap.sh.sigstore.json"
-	fi
+	for f in bootstrap.sh install.sh install.ps1; do
+		if [ -f "$dir/$f" ] || [ -f "$dir/$f.sigstore.json" ]; then
+			[ -f "$dir/$f" ] || smoke_die "the release has a $f.sigstore.json but no $f"
+			[ -f "$dir/$f.sigstore.json" ] || smoke_die "the release has no cosign bundle $f.sigstore.json"
+		fi
+	done
 }
 
 # smoke_check_asset_manifest DIR MANIFEST_FILE: the files in DIR are exactly the
@@ -183,7 +186,7 @@ smoke_verify_all_assets() {
 		[ -f "$f" ] || continue
 		b=$(basename "$f")
 		case "$b" in
-		checksums.txt | *.sigstore.json | bootstrap.sh | release-manifest.json) continue ;;
+		checksums.txt | *.sigstore.json | bootstrap.sh | install.sh | install.ps1 | release-manifest.json) continue ;;
 		esac
 		files+=("$b")
 	done

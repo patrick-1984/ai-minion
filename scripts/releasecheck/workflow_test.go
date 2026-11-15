@@ -204,11 +204,14 @@ func TestReleaseWorkflowIsPinnedAndNeverPublishes(t *testing.T) {
 }
 
 // AC "bootstrap.sh (from Story 9.3 once merged) and release-manifest.json are
-// attached" and the verification of the signatures.
+// attached" and the verification of the signatures. install.sh and install.ps1
+// are attached and signed the same way.
 func TestReleaseWorkflowAttachesManifestAndBootstrap(t *testing.T) {
 	release := jobBlock(t, readRepoFile(t, ".github/workflows/release.yml"), "release")
 	mustContain(t, "release job", release,
-		"if [ -f deploy/bootstrap.sh ]",
+		"for s in bootstrap.sh install.sh install.ps1; do",
+		"if [ -f \"deploy/$s\" ]",
+		"for f in dist/release-manifest.json \"${scripts[@]}\"; do",
 		"scripts/release-manifest.sh --version \"$TAG\"",
 		"--protocol-min \"$MINION_PROTOCOL_MIN\"",
 		"--checksums dist/checksums.txt",
