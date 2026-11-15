@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Compose: `deploy/compose/hub.yaml` takes the first administrator's password from `MINION_ADMIN_PASSWORD` in `.env` instead of the file `admin_password.txt` (used only on the first start; `MINION_ADMIN_PASSWORD_FILE` still works).
+
 ## v0.8.0
 
 Released 2026-11-15.

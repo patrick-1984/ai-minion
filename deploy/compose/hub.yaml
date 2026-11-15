@@ -2,15 +2,18 @@
 #
 # Preparation, once, in the directory that holds this file:
 #
-#   1. The admin password goes in a file that must exist before the first start
-#      (Docker would create a directory under that name otherwise):
-#        printf '%s' 'choose-a-strong-password' > admin_password.txt
+#   1. The first administrator's password goes in the file .env next to this file:
+#        (umask 077 && printf "MINION_ADMIN_PASSWORD='%s'\n" 'choose-a-strong-password' >> .env)
+#      The single quotes keep characters such as $ literal; the password must
+#      not contain a single quote. umask 077 keeps a new .env private.
+#      The Hub uses it only on the first start (while it has no users); you may
+#      remove it from .env afterwards. Without it the Hub generates a random
+#      password and logs it once.
 #   2. docker compose -f hub.yaml up -d
 #
 # The image runs as UID 65532. The "init" service gives that user the data
-# directory and the password file (it is the same as running, on the host,
+# directory (it is the same as running, on the host,
 #   sudo mkdir -p ./hub-data && sudo chown 65532:65532 ./hub-data
-#   sudo chown 65532:65532 ./admin_password.txt && sudo chmod 0400 ./admin_password.txt
 # before "docker compose up"; do that instead if you prefer to run no root container).
 #
 # MINION_VERSION selects the image tag: an exact version (v0.8.0), which is the
@@ -27,10 +30,9 @@ services:
     command:
       - sh
       - -c
-      - chown -R 65532:65532 /data && chown 65532:65532 /secret && chmod 0400 /secret
+      - chown -R 65532:65532 /data
     volumes:
       - ./hub-data:/data
-      - ./admin_password.txt:/secret
 
   hub:
     image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.8.0}
@@ -41,7 +43,7 @@ services:
         condition: service_completed_successfully
     environment:
       MINION_DATA_DIR: /data
-      MINION_ADMIN_PASSWORD_FILE: /run/secrets/minion_admin_password
+      MINION_ADMIN_PASSWORD: ${MINION_ADMIN_PASSWORD:-}
       # Behind a reverse proxy that ends TLS, uncomment these three (see
       # docs/guides/reverse-proxy.md). The trusted proxy is the exact address or
       # network of the proxy, never 0.0.0.0/0.
@@ -52,9 +54,3 @@ services:
       - "127.0.0.1:8443:8443"
     volumes:
       - ./hub-data:/data
-    secrets:
-      - minion_admin_password
-
-secrets:
-  minion_admin_password:
-    file: ./admin_password.txt
