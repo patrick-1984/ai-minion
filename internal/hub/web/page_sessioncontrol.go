@@ -71,26 +71,12 @@ func sessionControlData(r *http.Request, c OpCaller) (any, error) {
 	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &workers); err != nil {
 		page.Note = "The Workers could not be loaded, so no controller or target can be chosen."
 	}
-	// The sessions are only a convenience of the form: an unresponsive Worker
-	// must not hold the page, so their discovery has one short deadline.
-	ctx, cancel := context.WithTimeout(r.Context(), sessionDiscoveryTimeout)
-	defer cancel()
-	rs := r.WithContext(ctx)
 	for _, w := range workers.Workers {
 		sw := SessionControlWorker{ID: w.ID, Label: w.Name + " (" + w.Owner + ")"}
 		names[w.ID] = sw.Label
-		if w.Online && ctx.Err() == nil {
-			var sl ops.SessionsListResult
-			if err := c.CallOp(rs, ops.OpSessionsList, struct {
-				WorkerID string `json:"worker_id"`
-			}{w.ID}, &sl); err == nil {
-				for _, s := range sl.Sessions {
-					sw.Sessions = append(sw.Sessions, s.Name)
-				}
-			}
-		}
 		page.Workers = append(page.Workers, sw)
 	}
+	discoverSessions(r, c, workers.Workers, page.Workers)
 	for _, g := range list.Grants {
 		created := g.CreatedAt
 		page.Grants = append(page.Grants, SessionControlRow{
@@ -101,6 +87,63 @@ func sessionControlData(r *http.Request, c OpCaller) (any, error) {
 		})
 	}
 	return page, nil
+}
+
+// sessionDiscoveryParallel is how many sessions_list calls of the page run at
+// once.
+const sessionDiscoveryParallel = 8
+
+// discoverSessions fills in the sessions of the online Workers (out[i] belongs
+// to workers[i]). The sessions are only a convenience of the form: an
+// unresponsive Worker must not hold the page or hide the other Workers, so the
+// Workers are asked concurrently under one short deadline, and the page stops
+// waiting at the deadline even when a call does not return (a blocked
+// transport write ignores the context). Late answers are dropped; the result
+// channel is buffered, so a late call still finishes.
+func discoverSessions(r *http.Request, c OpCaller, workers []ops.WorkerInfo, out []SessionControlWorker) {
+	ctx, cancel := context.WithTimeout(r.Context(), sessionDiscoveryTimeout)
+	defer cancel()
+	rs := r.WithContext(ctx)
+	type found struct {
+		i        int
+		sessions []string
+	}
+	results := make(chan found, len(workers))
+	slots := make(chan struct{}, sessionDiscoveryParallel)
+	pending := 0
+	for i, w := range workers {
+		if !w.Online {
+			continue
+		}
+		pending++
+		go func() {
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			case <-ctx.Done():
+				results <- found{i: i}
+				return
+			}
+			var sl ops.SessionsListResult
+			var names []string
+			if err := c.CallOp(rs, ops.OpSessionsList, struct {
+				WorkerID string `json:"worker_id"`
+			}{w.ID}, &sl); err == nil {
+				for _, s := range sl.Sessions {
+					names = append(names, s.Name)
+				}
+			}
+			results <- found{i: i, sessions: names}
+		}()
+	}
+	for ; pending > 0; pending-- {
+		select {
+		case f := <-results:
+			out[f.i].Sessions = f.sessions
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // sessionControlTargets describes the targets of a grant in one line.
