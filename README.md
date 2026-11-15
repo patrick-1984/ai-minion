@@ -161,6 +161,7 @@ docker compose exec hub minion hub identity set-passphrase
 | [Sign in with OIDC](docs/guides/oidc.md) | An identity provider with role claims |
 | [API keys and MCP](docs/guides/api-keys-and-mcp.md) | Scoped API keys, the CLI against a Hub, the read-only MCP server |
 | [The pipe](docs/guides/pipe.md) | Sending a message to an agent and reading its replies |
+| [Session control](docs/guides/session-control.md) | Letting one session list, read and type into sessions on other Workers (administrator grants, 0.8.0 or later) |
 | [Hub identity](docs/guides/hub-identity.md) | The sealed root key and its passphrase, certificate re-issue, master-key rotation, `minion hub identity` |
 | [Backup and restore](docs/guides/backup-restore.md) | The Hub's data, keys and identity |
 | [Security and trust model](docs/security.md) | What the Hub sees, what to trust, what is not reviewed yet |

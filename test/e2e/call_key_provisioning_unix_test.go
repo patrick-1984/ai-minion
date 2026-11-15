@@ -40,9 +40,9 @@ type callPeer struct {
 }
 
 // startCallPeer starts a real Worker (connector, op server, executor over a
-// private tmux with the session "work") owned by ownerID. keyFile is its
-// call_api_key_file ("" for none).
-func startCallPeer(t *testing.T, ph *shareHub, ownerID, name, keyFile string) *callPeer {
+// private tmux with the given sessions, "work" when none is given) owned by
+// ownerID. keyFile is its call_api_key_file ("" for none).
+func startCallPeer(t *testing.T, ph *shareHub, ownerID, name, keyFile string, sessions ...string) *callPeer {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := wstore.Open(dir)
@@ -72,7 +72,12 @@ func startCallPeer(t *testing.T, ph *shareHub, ownerID, name, keyFile string) *c
 	if err := os.WriteFile(claude, []byte("#!/bin/sh\ncat\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	p.tmux.NewSession("work", claude)
+	if len(sessions) == 0 {
+		sessions = []string{"work"}
+	}
+	for _, s := range sessions {
+		p.tmux.NewSession(s, claude)
+	}
 	host, err := tmux.New(p.tmux.Socket())
 	if err != nil {
 		t.Fatal(err)
@@ -126,9 +131,9 @@ func startCallPeer(t *testing.T, ph *shareHub, ownerID, name, keyFile string) *c
 	})
 	waitFor(t, name+" online", func() bool { return ph.wsv.Registry().IsOnline(p.wid) })
 	waitFor(t, name+" call stream", p.cc.Connected)
-	waitFor(t, name+" session in the Hub", func() bool {
+	waitFor(t, name+" sessions in the Hub", func() bool {
 		ws, ok := ph.events.Sessions(p.wid)
-		return ok && len(ws.Sessions) == 1
+		return ok && len(ws.Sessions) == len(sessions)
 	})
 	return p
 }
