@@ -1,4 +1,4 @@
-//go:build e2e && unix
+//go:build e2e && linux
 
 package e2e
 
@@ -262,6 +262,9 @@ func TestSessionControlE2EGrantFromAControllerSessionAcrossWorkers(t *testing.T)
 	if res := w1.mcpCall(t, "boss", ops.OpSessionSnapshot, map[string]any{
 		"target": map[string]any{"worker_id": w2.wid, "session_name": "x"}}); !strings.Contains(res, "SCREEN-OF-W2-X") {
 		t.Fatalf("session_snapshot through MCP from W1:boss = %s", res)
+	}
+	if res := w1.mcpCall(t, "boss", ops.OpWorkersList, map[string]any{}); !strings.Contains(res, w2.wid) {
+		t.Fatalf("workers_list through MCP from W1:boss = %s", res)
 	}
 
 	// Acceptance 3: another session of the same Worker is refused.

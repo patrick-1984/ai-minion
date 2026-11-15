@@ -35,7 +35,7 @@ minion session_snapshot --target <worker-id>:x        # read a screen
 minion send_text --target <worker-id>:build --text 'make test' --submit
 ```
 
-- Name other Workers by their **id** (a UUIDv7) in `--target` and `--hub-worker`; without a Hub URL a Worker name is refused. `workers_list` prints the ids. It lists the controller's own Worker and the Workers the grant reaches as a whole; a Worker of which only some sessions are granted is not listed, so take its id from the Session control page.
+- Name other Workers by their **id** (a UUIDv7) in `--target` and `--hub-worker`; without a Hub URL a Worker name is refused. `workers_list` prints the ids. It lists the controller's own Worker and the Workers the grant reaches as a whole; a Worker of which only some sessions are granted is not listed. Its id is in the address of its page in the web UI (click its name in **Workers**: `/workers/<worker-id>`), or an administrator lists every Worker with `minion workers_list --all` and a Hub key ([API keys and MCP](api-keys-and-mcp.md#use-a-key)).
 - The forwarded operations are `workers_list`, `sessions_list`, `session_snapshot`, `session_capture`, `send_text`, `send_keys`, `set_task` and `answer`. Creating sessions and changing sharing on other Workers are not part of a grant.
 - A target outside the grant answers `not_found` (the Hub does not say whether it exists); a session without a grant gets `forbidden`.
 - A write whose connection to the Hub ends before the answer is reported with the outcome `unknown` and the warning `hub_call_lost`: it may have been applied. Repeat it on purpose with the same `--request-id`; the target never applies the same request id twice within 10 minutes.
@@ -47,11 +47,11 @@ For an agent, register `minion mcp` in the controller session. It offers the Wor
 claude mcp add minion-control -- minion mcp --allow-writes
 ```
 
-`workers_list` is a command-line operation and not an MCP tool: give the agent the ids from `minion workers_list`, or let it run that command. Pass the Worker id in the tool's `target` (`worker_id` and `session_name`); for `sessions_list` start the server with `--hub-worker <worker-id>` (or `MINION_HUB_WORKER`).
+The `workers_list` tool gives the agent the Worker ids. Pass the Worker id in the tool's `target` (`worker_id` and `session_name`); for `sessions_list` start the server with `--hub-worker <worker-id>` (or `MINION_HUB_WORKER`).
 
 ## Minimum version
 
-The Hub, the controller Worker and every target Worker must run **0.8.0 or later**. A target Worker older than 0.8.0 does not know the grant: it still answers reads, but refuses every write from a controller with `pipe_origin_refused`, so nothing is typed that its owner did not allow. On an older controller Worker, the commands refuse a target on another Worker as before.
+The Hub, the controller Worker and every target Worker must run **0.8.0 or later**. A target Worker older than 0.8.0 does not know the grant: it still answers reads, and it treats a write from a controller like a message from another Worker, under its own `pipe_accept_from`. With the default `none` it refuses the write with `pipe_origin_refused`; with `owner-workers` or a list that names the controller Worker it accepts it. A controller Worker older than 0.8.0 refuses a request that names another Worker before anything is sent, and the client says that the Worker must be updated.
 
 ## What a grant does not check
 
