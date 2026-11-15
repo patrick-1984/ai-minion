@@ -659,3 +659,6 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
 .pipe-status { min-height: 1.2em; }
 body.embed .pipe-log { height: 10rem; max-height: 30vh; }
 .pipe-readonly { padding: 12px; }
+/* Session control: the target list shows only for "Selected"; sessions sit under their Worker. */
+#sc-form:not(:has(#sc-mode-selected:checked)) #sc-targets { display: none; }
+.sc-sessions { margin-left: 24px; }

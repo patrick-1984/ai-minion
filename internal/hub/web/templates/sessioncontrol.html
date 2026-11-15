@@ -1,0 +1,67 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Session control</h1><p>A grant lets one controller session list, read and type into the sessions of other Workers through the local <code>minion</code> CLI or <code>minion mcp</code>. No session has a grant until you create one.</p></div></div>
+<div class="stack">
+<section class="panel" aria-labelledby="create-grant">
+  <h2 id="create-grant">Grant session control</h2>
+  <form id="sc-form" method="post" hx-post="/admin/session-control" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="field">
+      <label for="sc-worker">Controller Worker</label>
+      <select id="sc-worker" name="worker" required>
+        <option value="">Choose a Worker</option>
+        {{range .Data.Workers}}<option value="{{.ID}}">{{.Label}}</option>
+        {{end}}
+      </select>
+    </div>
+    <div class="field">
+      <label for="sc-session">Controller session</label>
+      <input type="text" id="sc-session" name="session" list="sc-sessions" autocomplete="off" spellcheck="false" required maxlength="128" aria-describedby="sc-session-help">
+      <datalist id="sc-sessions">
+        {{range .Data.Workers}}{{$w := .Label}}{{range .Sessions}}<option value="{{.}}" label="{{.}} on {{$w}}"></option>
+        {{end}}{{end}}
+      </datalist>
+      <span id="sc-session-help" class="muted">The name of the session on that Worker. Saving replaces the targets of an existing grant of this session.</span>
+    </div>
+    <fieldset class="field">
+      <legend>Targets</legend>
+      <label class="check" for="sc-mode-all"><input type="radio" id="sc-mode-all" name="targets" value="all"> All <span class="muted">(every Worker and session the owner of the controller Worker may reach)</span></label>
+      <label class="check" for="sc-mode-selected"><input type="radio" id="sc-mode-selected" name="targets" value="selected"> Selected <span class="muted">(only the Workers and sessions ticked below)</span></label>
+    </fieldset>
+    <fieldset class="field" id="sc-targets">
+      <legend>Selected Workers and sessions</legend>
+      <span class="muted">Tick a Worker for all of its sessions, or only some of its sessions.</span>
+      {{range $i, $w := .Data.Workers}}<label class="check" for="sc-t-{{$i}}"><input type="checkbox" id="sc-t-{{$i}}" name="target" value="worker:{{$w.ID}}"> Worker {{$w.Label}}</label>
+      {{if $w.Sessions}}<div class="sc-sessions">
+        {{range $j, $s := $w.Sessions}}<label class="check" for="sc-t-{{$i}}-{{$j}}"><input type="checkbox" id="sc-t-{{$i}}-{{$j}}" name="target" value="session:{{$w.ID}}:{{$s}}"> {{$s}}</label>
+        {{end}}
+      </div>{{end}}
+      {{end}}
+    </fieldset>
+    {{if .Data.Note}}<p class="muted">{{.Data.Note}}</p>{{end}}
+    <button type="submit">Save the grant</button>
+    <div id="create-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Granting session control needs JavaScript in this browser.</p></noscript>
+</section>
+<section aria-labelledby="grants">
+  <div class="section-head"><h2 id="grants">Grants</h2></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Controller session</th><th scope="col">Targets</th><th scope="col">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+    <tbody>
+    {{range $i, $g := .Data.Grants}}<tr>
+      <th scope="row">{{$g.Controller}}</th>
+      <td>{{$g.Targets}}</td>
+      <td><time datetime="{{$g.CreatedAt}}">{{$g.Created}}</time></td>
+      <td><form method="post" hx-post="/admin/session-control/remove" hx-target="#remove-{{$i}}" hx-swap="innerHTML" hx-confirm="Remove this grant? The controller session loses access on its next call." hx-disabled-elt="find button">
+          <input type="hidden" name="worker" value="{{$g.WorkerID}}">
+          <input type="hidden" name="session" value="{{$g.SessionName}}">
+          <button type="submit" class="btn-danger">Remove {{$g.Controller}}</button>
+          <span id="remove-{{$i}}" aria-live="polite"></span>
+        </form></td>
+    </tr>
+    {{else}}<tr><td colspan="4" class="muted">There are no grants. No session can control other Workers.</td></tr>
+    {{end}}
+    </tbody>
+  </table></div>
+</section>
+</div>
+{{end}}
