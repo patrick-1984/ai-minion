@@ -1,14 +1,29 @@
 # Changelog
 
-## Unreleased
+## v0.8.0
 
-- SC-4: a Worker accepts a message-class op whose origin carries the Hub's session-control grant mark (`grant`) without applying `pipe_accept_from`; preview-only and the share selection still apply.
-- Session control (SC-2): a Worker principal can carry a session-control grant as its scope; it then also holds its owner's current permission ∩ the grant (read, operate, message), and `GrantedByScope` tells whether the grant itself authorized an operation.
-- Session control store and operations (SC-1): Hub table `session_control` (migration 0024) and the admin-only operations `session_control_list` and `session_control_set` (an upsert; empty targets remove the grant). No grant exists until an admin creates one; removing or reassigning a Worker deletes the grants of its sessions.
-- Session control on call streams (SC-3): a call frame may carry `source_session`; when that session of the Worker has a session-control grant, the Hub serves the call as the grant (even if a call key is sent), serves `workers_list`, `sessions_list`, `session_snapshot`, `session_capture`, `send_text`, `send_keys`, `set_task` and `answer` on call streams to granted sessions only, resolves targets across owners, marks requests the grant authorized with `origin.grant` and audits their targets.
-- Session control web page (SC-6): Administration -> Session control lists the grants (controller session -> All or the chosen Workers and sessions) with Remove, and creates or replaces a grant; the form opens with nothing selected, and saving without targets creates nothing.
-- Session control client (SC-5): the local client sends `$TMUX_PANE` with every request; the Worker forwards `workers_list`, `sessions_list` of another Worker and `session_snapshot`, `session_capture`, `send_text`, `send_keys`, `set_task` and `answer` on another Worker to its Hub with the calling session as `source_session` (same-Worker targets stay local; no Hub connection is a clear `worker_offline` error). Without `MINION_HUB_URL`, `minion`, `mn` and `minion mcp` send these to the local Worker, including `workers_list` and `sessions_list --hub-worker <id>`. A request that names a Worker requires the local-socket feature `session.forward`, so an older Worker daemon refuses it instead of acting on a same-named local session; `minion mcp` exposes `workers_list` as a tool.
-- Session control end to end and documentation (SC-7): an e2e test runs a Hub and three Workers through the real `minion` CLI and `minion mcp --allow-writes` from a controller session (granted, ungranted session, out-of-scope target, removed grant, fresh Hub without grants); new guide `docs/guides/session-control.md` (Administration -> Session control, All / Selected, default none, use from the controller session, minimum version 0.8.0 for the Hub, controller and target Workers, accepted edge cases), a paragraph on the grant's reach in `docs/security.md` and amendment AM-14 of the architecture spine.
+Released 2026-11-15.
+
+This release adds **session control**: an administrator can let chosen controller sessions (for example an AI agent running in a tmux session on a Worker) list, read and type into sessions on other Workers, from the Hub's web UI. See [session control](docs/guides/session-control.md).
+
+### Added
+
+- New admin page **Administration > Session control** and operations `session_control_list` / `session_control_set`. A grant names a controller session (Worker + session name) and its targets: **All**, or chosen Workers and/or sessions. No session has a grant until an administrator creates one; removing or reassigning a Worker deletes the grants of its sessions (Hub migration 0024).
+- From a controller session, `minion`, `mn` and `minion mcp` (no `MINION_HUB_URL` needed) reach the granted targets through the local Worker and the Hub: `workers_list`, `sessions_list --hub-worker <id>`, `session_snapshot`, `session_capture`, `send_text`, `send_keys`, `set_task` and `answer`. Writes through MCP still need `--allow-writes`. `minion mcp` now also exposes `workers_list`.
+- The effective permission is the grant (read, operate, message) ∩ the controller Worker owner's current permissions, checked on every call. A granted session's requests are accepted by target Workers without `pipe_accept_from` configuration; preview-only and the share selection still apply. Sessions without a grant behave as before, including call keys.
+
+### Security
+
+- A grant is keyed by the session name, which the controller's host reports and the Hub does not verify: any process of the Worker's user can use it, so a grant effectively applies to the controller host, and "All" reaches every Worker its owner may reach. See [security](docs/security.md).
+
+### Upgrade notes
+
+- Protocol stays 3.0; 0.7 and 0.8 connect to each other. Session control needs the Hub, the controller Worker and the target Workers on 0.8.0. A 0.7 target keeps its `pipe_accept_from` rule (the default `none` refuses a controller's writes; reads still work), and a 0.7 Worker daemon refuses the new forwarded requests of a 0.8 client, so nothing is sent to a same-named local session.
+
+### Known limitations
+
+- `workers_list` lists only Workers the grant reaches as a whole; take the id of a Worker reached through single sessions from its page in the web UI.
+- The Session control page skips sessions of Workers that do not answer within 2 seconds ([#13](https://github.com/patrick-1984/ai-minion/issues/13)).
 
 ## v0.7.1
 
