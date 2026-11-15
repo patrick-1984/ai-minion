@@ -176,7 +176,8 @@ type ReassignResult struct {
 
 // ReassignWorker moves an infrastructure Worker to another user in one
 // transaction (AD-16, AD-17): the owner changes, every trust row of the Worker
-// and its sessions is deleted (the admin's included), the API keys bound to
+// and its sessions is deleted (the admin's included), the session-control
+// grants of its sessions are deleted, the API keys bound to
 // the Worker are revoked (AD-11) and the audit row is written. It returns
 //
 //   - [ErrWorkerNotFound] for an unknown Worker;
@@ -219,6 +220,9 @@ func (s *Store) ReassignWorker(ctx context.Context, p ReassignParams) (ReassignR
 		res = ReassignResult{Worker: w, PreviousOwnerID: w.OwnerID}
 		res.Worker.OwnerID = p.NewOwnerID
 		if res.TrustDeleted, err = s.DeleteTrustOfWorker(ctx, tx, p.WorkerID); err != nil {
+			return err
+		}
+		if _, err = s.DeleteSessionControlOfWorker(ctx, tx, p.WorkerID); err != nil {
 			return err
 		}
 		if res.KeysRevoked, err = s.RevokeAPIKeysBoundToWorker(ctx, tx, p.WorkerID, p.AtMS); err != nil {
