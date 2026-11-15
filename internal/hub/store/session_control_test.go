@@ -112,3 +112,33 @@ func TestDeleteSessionControlOfWorker(t *testing.T) {
 		t.Errorf("rows = %+v", rows)
 	}
 }
+
+func TestPutSessionControlIfOwnerStoresOnlyUnderTheOwnerItWasDecidedFor(t *testing.T) {
+	f := newKindFixture(t)
+	ctx := context.Background()
+	w := f.worker(t, 1, f.u1, "pi", WorkerKindInfrastructure)
+	row := SessionControlRow{WorkerID: w.ID, SessionName: "boss", TargetsJSON: `[{"kind":"everything"}]`, CreatedBy: f.admin, CreatedAt: 5}
+	if err := f.s.PutSessionControlIfOwner(ctx, row, f.u1); err != nil {
+		t.Fatalf("under the current owner: %v", err)
+	}
+	// The reassignment deletes the grant; a stale decision cannot bring it back.
+	if _, err := f.s.ReassignWorker(ctx, ReassignParams{WorkerID: w.ID, NewOwnerID: f.u2, AtMS: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.PutSessionControlIfOwner(ctx, row, f.u1); !errors.Is(err, ErrWorkerOwnerChanged) {
+		t.Errorf("a stale owner: %v, want ErrWorkerOwnerChanged", err)
+	}
+	// A removed Worker cannot get a grant back either.
+	if err := f.s.TombstoneWorker(ctx, w.ID, f.admin, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.PutSessionControlIfOwner(ctx, row, f.u2); !errors.Is(err, ErrWorkerNotFound) {
+		t.Errorf("a removed Worker: %v, want ErrWorkerNotFound", err)
+	}
+	if rows, _ := f.s.ListSessionControl(ctx); len(rows) != 0 {
+		t.Errorf("a grant came back: %+v", rows)
+	}
+	if err := f.s.PutSessionControlIfOwner(ctx, row, ""); err == nil {
+		t.Error("accepted an empty owner")
+	}
+}

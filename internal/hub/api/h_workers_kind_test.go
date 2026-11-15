@@ -12,7 +12,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"weak"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -595,7 +594,7 @@ func newJSONRequest(op, body string) *http.Request {
 // A trust_set that the dispatcher refuses after the owner was captured leaves
 // no pin behind, and a handler reached without a pin fails closed.
 func TestTrustOwnerPinsAreTakenOnceAndDroppedWithTheRequest(t *testing.T) {
-	p := &ownerPins{m: map[weak.Pointer[ops.TrustSetArgs]]string{}}
+	p := newOwnerPins[ops.TrustSetArgs]()
 	a := &ops.TrustSetArgs{}
 	p.put(a, "alice")
 	if o, ok := p.take(a); !ok || o != "alice" {

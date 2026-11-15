@@ -65,12 +65,40 @@ func (s *Store) SessionControl(ctx context.Context, workerID, sessionName string
 }
 
 // PutSessionControl stores the grant of a controller session, replacing the
-// targets, creator and creation time of an existing one.
+// targets, creator and creation time of an existing one. It does not check the
+// Worker; session_control_set uses [Store.PutSessionControlIfOwner].
 func (s *Store) PutSessionControl(ctx context.Context, r SessionControlRow) error {
 	if r.WorkerID == "" || r.SessionName == "" || r.TargetsJSON == "" {
 		return errors.New("store: a session-control row needs a Worker, a session and targets")
 	}
-	_, err := s.db.ExecContext(ctx,
+	return putSessionControl(ctx, s.db, r)
+}
+
+// PutSessionControlIfOwner is [Store.PutSessionControl] made conditional on
+// the owner of the controller Worker: in one transaction it reads the
+// Worker's owner and stores the row only when it is expectedOwnerID. A
+// removal or reassignment deletes the Worker's grants in its own
+// transaction, so a grant decided before it can never be stored after it:
+// the call returns [ErrWorkerOwnerChanged] (or [ErrWorkerNotFound] for an
+// unknown or removed Worker) and stores nothing.
+func (s *Store) PutSessionControlIfOwner(ctx context.Context, r SessionControlRow, expectedOwnerID string) error {
+	if r.WorkerID == "" || r.SessionName == "" || r.TargetsJSON == "" || expectedOwnerID == "" {
+		return errors.New("store: a session-control row needs a Worker, a session, targets and an owner")
+	}
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		var owner string
+		if err := rowErr("read worker owner", tx.QueryRowContext(ctx, `SELECT owner_id FROM workers WHERE id = ?`, r.WorkerID).Scan(&owner)); err != nil {
+			return err
+		}
+		if owner != expectedOwnerID {
+			return ErrWorkerOwnerChanged
+		}
+		return putSessionControl(ctx, tx, r)
+	})
+}
+
+func putSessionControl(ctx context.Context, ex Execer, r SessionControlRow) error {
+	_, err := ex.ExecContext(ctx,
 		`INSERT INTO session_control (`+sessionControlColumns+`) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT (worker_id, session_name) DO UPDATE SET
 		   targets_json = excluded.targets_json, created_by = excluded.created_by, created_at = excluded.created_at`,

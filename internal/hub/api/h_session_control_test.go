@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/netip"
@@ -157,5 +158,48 @@ func TestSessionControlRefusesInvalidRequests(t *testing.T) {
 	}
 	if rows, _ := k.st.ListSessionControl(context.Background()); len(rows) != 0 {
 		t.Errorf("a refused set stored %+v", rows)
+	}
+}
+
+// A session_control_set that was authorized before a reassignment or removal
+// of the controller Worker must not bring a grant back after that transaction
+// deleted the Worker's grants.
+func TestSessionControlSetCannotOutliveAReassignmentOrRemovalMidRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		land func(k *kindStack, w store.WorkerRow)
+		code int
+	}{
+		{"reassignment", func(k *kindStack, w store.WorkerRow) { k.reassignDirect(w, k.u2) }, http.StatusConflict},
+		{"removal", func(k *kindStack, w store.WorkerRow) {
+			ctx := context.Background()
+			err := k.st.Tx(ctx, func(tx *sql.Tx) error {
+				if _, err := k.st.DeleteSessionControlOfWorker(ctx, tx, w.ID); err != nil {
+					return err
+				}
+				return k.st.TombstoneWorkerTx(ctx, tx, w.ID, k.admin, 1)
+			})
+			if err != nil {
+				k.t.Fatalf("remove: %v", err)
+			}
+		}, http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			k := newSessionControlStack(t)
+			w := k.worker(k.u1, "pi", store.WorkerKindInfrastructure)
+			k.as(k.admin)
+			k.az.after = func(n int) {
+				if n == 1 { // after the dispatcher's decision, before the handler stores
+					tc.land(k, w)
+				}
+			}
+			set := map[string]any{"worker_id": w.ID, "session_name": "boss", "targets": []ops.KeyResource{{Kind: ops.KeyResourceEverything}}}
+			if code, body := k.call(ops.OpSessionControlSet, set); code != tc.code {
+				t.Errorf("set = %d %s, want %d", code, body, tc.code)
+			}
+			if rows, _ := k.st.ListSessionControl(context.Background()); len(rows) != 0 {
+				t.Errorf("a grant survived the %s: %+v", tc.name, rows)
+			}
+		})
 	}
 }
