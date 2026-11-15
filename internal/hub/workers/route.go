@@ -480,6 +480,32 @@ type CallRequest struct {
 // the Worker may or may not have applied it (AD-15). A read in the same
 // situation returns worker_offline.
 func (rt *Router) Call(ctx context.Context, req CallRequest) (any, error) {
+	start := time.Now()
+	res, err := rt.call(ctx, req)
+	rt.debugRouted(req, start, res, err)
+	return res, err
+}
+
+// debugRouted writes, at debug level, one line about an op routed to a
+// Worker: the op, the Worker, the outcome (ok, the write outcome or the error
+// code) and the duration. Arguments and results are never logged.
+func (rt *Router) debugRouted(req CallRequest, start time.Time, res any, err error) {
+	outcome := "ok"
+	if wr, ok := res.(ops.WriteResult); ok {
+		outcome = string(wr.Outcome)
+	}
+	if err != nil {
+		outcome = string(proto.CodeInternal)
+		var pe *proto.Error
+		if errors.As(err, &pe) {
+			outcome = string(pe.Code)
+		}
+	}
+	rt.log.Debug("workers: op routed", "op", req.Op, "worker_id", req.WorkerID,
+		"principal_kind", string(req.Principal.Kind), "outcome", outcome, "duration", time.Since(start).String())
+}
+
+func (rt *Router) call(ctx context.Context, req CallRequest) (any, error) {
 	c, err := rt.prepare(ctx, req, false)
 	if err != nil {
 		return nil, err
@@ -547,6 +573,13 @@ func (e *OutcomeUnknownError) Unwrap() error { return e.Err }
 // returned. The wait for the next element has no time limit of its own: it
 // ends with ctx, with the Worker's own timeout or with the connection.
 func (rt *Router) Stream(ctx context.Context, req CallRequest, emit func(any) error) error {
+	start := time.Now()
+	err := rt.stream(ctx, req, emit)
+	rt.debugRouted(req, start, nil, err)
+	return err
+}
+
+func (rt *Router) stream(ctx context.Context, req CallRequest, emit func(any) error) error {
 	c, err := rt.prepare(ctx, req, true)
 	if err != nil {
 		return err

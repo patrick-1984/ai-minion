@@ -20,7 +20,8 @@ func init() {
 			Short: "Run the Minion Hub (HTTPS on :8443 by default)",
 			Long: `Run the Minion Hub: the HTTP API, the web UI and the Worker channel.
 
-The Hub reads its settings from the environment (it has no flags):
+The Hub reads its settings from the environment (its only flag is -v,
+--verbose, which logs at debug level unless MINION_LOG_LEVEL is set):
 
   MINION_DATA_DIR         data directory (database, keys, certificate); must be writable
   MINION_LISTEN           listen address, default :8443
@@ -29,13 +30,14 @@ The Hub reads its settings from the environment (it has no flags):
   MINION_TLS_KEY_FILE     private key for MINION_TLS_CERT_FILE (both or neither)
   MINION_PUBLIC_URL       external URL; required when MINION_TLS=off
   MINION_TRUSTED_PROXIES  CIDRs of reverse proxies whose X-Forwarded-* headers are trusted
+  MINION_VERBOSE          1 logs at debug level, like -v
 
 Without a certificate the Hub generates a self-signed ECDSA P-256 certificate
 in <data dir>/tls on first start and logs its SHA-256 fingerprint. Send SIGHUP
 to reload a configured certificate.`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				return runHubServe(cmd.Context(), hubServeDeps{stderr: cmd.ErrOrStderr()})
+				return runHubServe(cmd.Context(), hubServeDeps{stderr: cmd.ErrOrStderr(), verbose: verboseFlag(cmd)})
 			},
 		})
 	})
@@ -59,7 +61,10 @@ func hubCommand(root *cobra.Command) *cobra.Command {
 
 // hubServeDeps are the inputs of runHubServe that tests replace.
 type hubServeDeps struct {
-	stderr    io.Writer
+	stderr io.Writer
+	// verbose is -v/--verbose when given (nil otherwise): debug level unless
+	// MINION_LOG_LEVEL is set.
+	verbose   *bool
 	lookupEnv func(string) (string, bool)
 	registry  *server.Registry
 	options   []server.Option
@@ -77,7 +82,7 @@ func runHubServe(ctx context.Context, d hubServeDeps) error {
 		return err
 	}
 
-	level, err := res.Resolve(config.KeyLogLevel)
+	level, err := config.ResolveLogLevel(res, d.verbose)
 	if err != nil {
 		return err
 	}
@@ -85,7 +90,7 @@ func runHubServe(ctx context.Context, d hubServeDeps) error {
 	if err != nil {
 		return err
 	}
-	logger, err := logx.New(logx.Options{Level: level.Value, Format: logx.Format(format.Value), Output: d.stderr})
+	logger, err := logx.New(logx.Options{Level: level, Format: logx.Format(format.Value), Output: d.stderr})
 	if err != nil {
 		return err
 	}

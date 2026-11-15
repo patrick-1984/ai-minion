@@ -11,6 +11,8 @@
   "hub_fingerprint": "gr2q7gf5lh6pzfdnurnkvputhpqvjjfvbfhbysv7ikdgkbptzf7a",
   "worker_fingerprint": "ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq",
   "paired": true,
+  "worker_id": "w1",
+  "approval": "approved",
   "owner": "alice",
   "pending_pairing_code": "",
   "pairing_state": "none",

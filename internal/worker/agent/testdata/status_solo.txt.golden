@@ -7,6 +7,8 @@ Last error:          none
 Hub fingerprint:     none (not paired)
 Worker fingerprint:  none yet (created at the first pairing)
 Owner:               not paired
+Worker id:           none yet (given at the first welcome)
+Approval:            unknown (only a connected Worker knows it)
 Pairing code:        unknown (only a running Worker knows it)
 Share mode:          later (not decided yet)
 Preview only:        no

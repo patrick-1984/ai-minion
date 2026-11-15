@@ -27,6 +27,11 @@ type LiveStatusReply struct {
 	LastErrorAt    string `json:"last_error_at,omitempty"`
 	ConnectedSince string `json:"connected_since,omitempty"`
 	Owner          string `json:"owner,omitempty"`
+	// WorkerID and Pending are from the welcome of the current connection:
+	// the id the Hub gave this Worker and whether it waits for approval.
+	// Pending is nil in the reply of an older Worker, which does not send it.
+	WorkerID       string `json:"worker_id,omitempty"`
+	Pending        *bool  `json:"pending,omitempty"`
 	HubPreviewOnly bool   `json:"hub_preview_only"`
 	// PairingKnown is false when the Worker has no source for a pairing code,
 	// so that "no code" is not mistaken for "no code pending".
@@ -43,6 +48,8 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		Reason:             c.Reason,
 		LastError:          c.LastError,
 		Owner:              c.Welcome.Owner,
+		WorkerID:           c.Welcome.WorkerID,
+		Pending:            &c.Welcome.Pending,
 		HubPreviewOnly:     live.HubPreviewOnly,
 		PairingKnown:       live.PairingKnown || live.PendingPairingCode != "",
 		PendingPairingCode: live.PendingPairingCode,
@@ -59,7 +66,10 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 // LiveStatus converts the reply back to a [LiveStatus].
 func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 	c := Status{State: ConnState(r.State), Reason: r.Reason, LastError: r.LastError}
-	c.Welcome.Owner = r.Owner
+	c.Welcome.Owner, c.Welcome.WorkerID = r.Owner, r.WorkerID
+	if r.Pending != nil {
+		c.Welcome.Pending = *r.Pending
+	}
 	for _, f := range []struct {
 		name string
 		in   string
@@ -80,6 +90,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 	return LiveStatus{
 		Connector:          c,
 		HubPreviewOnly:     r.HubPreviewOnly,
+		ApprovalKnown:      r.Pending != nil,
 		PairingKnown:       r.PairingKnown,
 		PendingPairingCode: r.PendingPairingCode,
 	}, nil

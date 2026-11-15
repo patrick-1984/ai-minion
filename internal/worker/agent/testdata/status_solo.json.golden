@@ -11,6 +11,8 @@
   "hub_fingerprint": "",
   "worker_fingerprint": "",
   "paired": false,
+  "worker_id": "",
+  "approval": "unknown",
   "owner": "",
   "pending_pairing_code": "",
   "pairing_state": "unknown",
