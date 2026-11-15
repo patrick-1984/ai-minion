@@ -170,6 +170,7 @@ docker compose exec hub minion hub identity set-passphrase
 | [The pipe](docs/guides/pipe.md) | Sending a message to an agent and reading its replies |
 | [Session control](docs/guides/session-control.md) | Letting one session list, read and type into sessions on other Workers (administrator grants, 0.8.0 or later) |
 | [Hub identity](docs/guides/hub-identity.md) | The sealed root key and its passphrase, certificate re-issue, master-key rotation, `minion hub identity` |
+| [Troubleshooting](docs/guides/troubleshooting.md) | Verbose logs (`-v`, `MINION_VERBOSE`), `minion worker status --json`, Administration > Diagnostics and `hub_diagnostics` |
 | [Backup and restore](docs/guides/backup-restore.md) | The Hub's data, keys and identity |
 | [Security and trust model](docs/security.md) | What the Hub sees, what to trust, what is not reviewed yet |
 

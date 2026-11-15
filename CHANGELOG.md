@@ -5,6 +5,9 @@
 ### Changed
 
 - Hub identity: a Hub certificate is now valid for 10 years (3650 days) by default and at most 3650 days (was 180, at most 400), so a normal deployment never has to re-issue it; an existing Hub gets the long certificate at its next re-issue (update the Workers first: older Workers refuse more than 400 days). The Workers page shows the certificate badge only from 30 days before expiry, and then says to re-issue it in Administration > Hub identity ([Hub identity](docs/guides/hub-identity.md)).
+### Added
+
+- Troubleshooting: every command takes `-v`/`--verbose` (or `MINION_VERBOSE=1`) for debug logs (an explicit `--log-level`/`MINION_LOG_LEVEL` wins), with debug lines for the Worker's Hub connection, the Hub's request scheme decision, refused API requests, op routing and call streams; `minion worker status --json` adds `worker_id` and `approval`; new admin operation `hub_diagnostics` and page **Administration > Diagnostics** (version, uptime, public URL, trusted proxies, connected Workers, and how the Hub sees the current request). See [troubleshooting](docs/guides/troubleshooting.md).
 
 ### Fixed
 
