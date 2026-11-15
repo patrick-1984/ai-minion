@@ -55,8 +55,9 @@ func (e *Executor) Features() []string {
 
 // connectorDeps are the seams of the connector module that tests replace.
 type connectorDeps struct {
-	dialer Dialer
-	clock  transport.Clock
+	dialer     Dialer
+	pairDialer PairDialer
+	clock      transport.Clock
 }
 
 // startConnector is the module start function. It provides *Enrollments and
@@ -150,9 +151,14 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		defer close(retDone)
 		ret.Run(loopCtx)
 	}()
+	pairDone := make(chan struct{})
+	go func() {
+		defer close(pairDone)
+		d.autoPair(loopCtx, s, hub.Server, enr, ex)
+	}()
 	return func(stopCtx context.Context) error {
 		cancel()
-		for _, ch := range []chan struct{}{done, retDone} {
+		for _, ch := range []chan struct{}{done, retDone, pairDone} {
 			select {
 			case <-ch:
 			case <-stopCtx.Done():
@@ -161,4 +167,48 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		}
 		return nil
 	}, nil
+}
+
+// autoPair pairs a Worker that has a Hub address but no enrollment and no
+// invitation key: it shows a pairing code (console and log), exactly like
+// "minion worker pair", and the connector connects as soon as the pairing is
+// stored. Without it such a Worker only idled as "not enrolled" and showed
+// nothing to type into the Hub.
+func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, enr *Enrollments, ex *Executor) {
+	if !needsAutoPair(ctx, s, hubURL, enr) {
+		return
+	}
+	log := s.logger()
+	dialer := d.pairDialer
+	if dialer == nil {
+		dialer = NewPairDialer()
+	}
+	p, err := NewPairer(PairerConfig{
+		HubURL: hubURL, Name: s.Name, Ops: ex.Ops, Features: ex.Features,
+		Enrollment: enr, Dialer: dialer, Clock: d.clock, Out: s.Out, Logger: log,
+	})
+	if err != nil {
+		log.Warn("cannot start pairing", "error", err.Error())
+		return
+	}
+	log.Info("this Worker is not paired: showing a pairing code; enter it in the Hub (Workers > Add worker)")
+	if _, err := p.Run(ctx); err != nil && ctx.Err() == nil {
+		log.Warn("pairing stopped", "error", err.Error())
+	}
+}
+
+// needsAutoPair reports whether the Worker should pair by itself: a Hub
+// address, no enrollment and no invitation key (that one enrolls in the
+// pre-start hook instead).
+func needsAutoPair(ctx context.Context, s Settings, hubURL string, enr *Enrollments) bool {
+	if hubURL == "" || enr == nil {
+		return false
+	}
+	if s.Resolver != nil {
+		if given, _, err := config.InviteKeyGiven(s.Resolver); err != nil || given {
+			return false
+		}
+	}
+	_, enrolled, err := enr.Load(ctx)
+	return err == nil && !enrolled
 }
