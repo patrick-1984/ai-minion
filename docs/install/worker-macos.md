@@ -6,6 +6,8 @@ A Worker serves the tmux sessions of the macOS user who runs it. It needs `tmux`
 
 ## 1. Install tmux and the binary
 
+One line installs the latest `minion` into `/usr/local/bin` (when writable) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh`. Then install tmux (`brew install tmux`). The verified manual install below is the alternative.
+
 ```sh
 brew install tmux
 ```

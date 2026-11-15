@@ -29,3 +29,19 @@ func TestBootstrapShellHarness(t *testing.T) {
 		t.Fatalf("bootstrap_test.sh failed: %v\n%s", err, out)
 	}
 }
+
+// TestInstallShellHarness runs the tests of install.sh, the one-line installer.
+func TestInstallShellHarness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode")
+	}
+	for _, tool := range []string{"sh", "curl", "tar", "awk", "sed"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+	out, err := exec.Command("sh", "install_test.sh").CombinedOutput()
+	if err != nil {
+		t.Fatalf("install_test.sh failed: %v\n%s", err, out)
+	}
+}

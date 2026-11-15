@@ -21,7 +21,7 @@
 # replaces the assets and pushes the image tag again). So "resolve" downloads
 # every asset of the draft and records the complete asset set ("<sha256>  <name>"
 # for each file: archives, packages, SBOMs, checksums.txt, release-manifest.json,
-# bootstrap.sh and every cosign bundle; checksums.txt alone lists only part of
+# bootstrap.sh, install.sh, install.ps1 and every cosign bundle; checksums.txt alone lists only part of
 # them), the smoke jobs refuse any other checksums.txt and the image job outputs
 # the digest it tested. Right before the draft is published, test/smoke/pin.sh
 # checks that the draft has exactly the recorded assets, that their signatures

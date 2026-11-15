@@ -385,27 +385,31 @@ jobs:
           docker buildx imagetools inspect "ghcr.io/patrick-1984/minion:${TAG}" --raw |
             jq -e '[.manifests[].platform | select(.os == "linux") | .architecture + (if .architecture == "arm" then "/" + .variant else "" end)]
                    | contains(["amd64", "arm64", "arm/v7"])'
-      - name: release-manifest.json and bootstrap.sh, signed and attached to the draft
+      - name: release-manifest.json, bootstrap.sh and the install scripts, signed and attached to the draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # The scripts of deploy/ that are release assets of their own: not in
+          # checksums.txt, listed in release-manifest.json and signed one by one.
           extras=()
-          # bootstrap.sh is added by Story 9.3; attach it once it exists.
-          if [ -f deploy/bootstrap.sh ]; then
-            cp deploy/bootstrap.sh dist/bootstrap.sh
-            extras+=(--extra dist/bootstrap.sh)
-          fi
+          scripts=()
+          for s in bootstrap.sh install.sh install.ps1; do
+            if [ -f "deploy/$s" ]; then
+              cp "deploy/$s" "dist/$s"
+              extras+=(--extra "dist/$s")
+              scripts+=("dist/$s")
+            fi
+          done
           scripts/release-manifest.sh --version "$TAG" \
             --protocol-min "$MINION_PROTOCOL_MIN" --protocol-max "$MINION_PROTOCOL_MAX" \
             --checksums dist/checksums.txt "${extras[@]}" --output dist/release-manifest.json
           assets=(dist/release-manifest.json)
-          for f in dist/release-manifest.json dist/bootstrap.sh; do
-            [ -f "$f" ] || continue
+          for f in dist/release-manifest.json "${scripts[@]}"; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
             assets+=("$f.sigstore.json")
           done
-          [ ! -f dist/bootstrap.sh ] || assets+=(dist/bootstrap.sh)
+          assets+=("${scripts[@]}")
           gh release upload "$TAG" "${assets[@]}" --clobber
       - name: The release must still be a draft
         env:
