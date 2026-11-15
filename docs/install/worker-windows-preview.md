@@ -33,28 +33,19 @@ Compare the result with the line for that file in `checksums.txt`. (The signatur
 
 ## Pair and run it
 
-In a terminal (PowerShell or the Windows Terminal), as the user whose sessions you want to serve, pair the Worker once:
-
-```powershell
-minion worker pair --server https://hub.example.com
-```
-
-It shows a code like `MN-K7Q4-XY12` and waits. In the Hub open **Workers**, choose **Add worker** and type the code. The command ends when the Worker is paired. Then start the Worker:
+In a terminal (PowerShell or the Windows Terminal), as the user whose sessions you want to serve:
 
 ```powershell
 minion worker up --foreground --share-existing all --server https://hub.example.com
 ```
 
-It connects and is **pending**: its log says `this Worker is waiting for approval`. Approve it in the Hub (**Workers**, compare the fingerprint, **Approve**) or with `minion hub worker approve <fingerprint|id>`. The Worker runs until you press Ctrl-C. Details: [pairing and sharing](../guides/pairing.md).
+A Worker that is not paired yet shows a code like `MN-K7Q4-XY12` (on the console and in the log) and waits. In the Hub open **Workers**, choose **Add worker** and type the code. The Worker then connects by itself and is **pending**: its log says `this Worker is waiting for approval`. Approve it in the Hub (**Workers**, compare the fingerprint, **Approve**) or with `minion hub worker approve <fingerprint|id>`. The Worker runs until you press Ctrl-C. Details: [pairing and sharing](../guides/pairing.md).
 
-The `worker up` command alone does **not** pair: a Worker that was never paired and has no invitation key runs on its own and logs `hub connector idle` with `reason="not enrolled"` (`minion worker status` shows `idle (not enrolled)`). Two other ways:
-
-- Leave out `--share-existing`: `minion worker up --foreground --server https://hub.example.com` in a terminal runs the setup wizard. It asks what to share, then shows the pairing code and waits for it (Enter stops the wait), and then runs the Worker.
-- An invitation key from the Hub (**Invitations**) enrolls the Worker without a code: add `--invite-key -` and paste the key on standard input (other forms: [the invitation key](../guides/pairing.md#enroll-with-an-invitation-key)). The Worker is pending until you approve it, as above.
+Instead of the code, an invitation key from the Hub (**Invitations**) enrolls the Worker: add `--invite-key -` and paste the key on standard input (other forms: [the invitation key](../guides/pairing.md#enroll-with-an-invitation-key)). The Worker is pending until you approve it, as above. `minion worker pair --server <url>` still pairs without starting the Worker.
 
 `--share-existing` has no tmux sessions to count on Windows; it decides what the Hub may see of the sessions you create.
 
-To install it as a Windows service instead, pair first as above, then run the same `worker up` command from an elevated terminal without `--foreground`. The service uses the state directory of the user who installs it, so it keeps that pairing. The command prints a note about the LocalSystem account when it installs the service. The service starts at boot and is restarted five seconds after a failure; the command line reaches it over a named pipe that only the installing user and the system may open.
+To install it as a Windows service instead, pair first (run the command above until the Worker is paired, or `minion worker pair`), then run the same `worker up` command from an elevated terminal without `--foreground`. The service uses the state directory of the user who installs it, so it keeps that pairing. The command prints a note about the LocalSystem account when it installs the service. The service starts at boot and is restarted five seconds after a failure; the command line reaches it over a named pipe that only the installing user and the system may open.
 
 ## Check and reset
 
