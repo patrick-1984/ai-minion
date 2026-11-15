@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Hub identity: a Hub certificate is now valid for 10 years (3650 days) by default and at most 3650 days (was 180, at most 400), so a normal deployment never has to re-issue it; an existing Hub gets the long certificate at its next re-issue (update the Workers first: older Workers refuse more than 400 days). The Workers page shows the certificate badge only from 30 days before expiry, and then says to re-issue it in Administration > Hub identity ([Hub identity](docs/guides/hub-identity.md)).
+
 ### Fixed
 
 - Administration > Session control: the sessions of the Workers are listed concurrently under the shared 2 s deadline, and the page stops waiting at the deadline even when a call does not return, so a stalled Worker no longer hides the sessions of the other Workers ([#13](https://github.com/patrick-1984/ai-minion/issues/13)).

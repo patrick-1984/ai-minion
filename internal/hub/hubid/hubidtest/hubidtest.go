@@ -111,7 +111,7 @@ func Open(t testing.TB, st *store.Store, dir string, opts ...Option) *hubid.Serv
 }
 
 // Provision brings the data directory dataDir to the established state B3
-// (sealed root, operational key, valid certificate, 180 days) and closes
+// (sealed root, operational key, valid certificate, default validity) and closes
 // everything again, so that a Hub started on the directory finds a serving
 // identity and needs no passphrase. It returns the root public key (the pin of
 // a Worker). The sealed file is a fake: it can be opened

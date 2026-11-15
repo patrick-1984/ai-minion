@@ -18,8 +18,8 @@ const (
 	HubCertPayloadSize = 89
 	// HubCertSize is the wire certificate: payload plus signature.
 	HubCertSize = HubCertPayloadSize + ed25519.SignatureSize // 153
-	// MaxHubCertValidityMs is 400 days in milliseconds.
-	MaxHubCertValidityMs int64 = 400 * 24 * 3600 * 1000
+	// MaxHubCertValidityMs is 3650 days (10 years) in milliseconds.
+	MaxHubCertValidityMs int64 = 3650 * 24 * 3600 * 1000
 	// HubCertToleranceMs is the clock tolerance before not_before (1 hour).
 	HubCertToleranceMs int64 = 3600 * 1000
 	// MaxHubCertSerial is 2^63-1.

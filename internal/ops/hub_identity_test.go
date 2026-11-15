@@ -40,7 +40,7 @@ func TestHubIdentityArgsValidate(t *testing.T) {
 		err  error
 	}{
 		{"set ok", HubIdentitySetPassphraseArgs{Passphrase: "x", Confirm: "x"}.Validate()},
-		{"reissue ok", HubIdentityReissueArgs{Passphrase: "x", IssueMembers: IssueMembers{ValidityDays: 400}}.Validate()},
+		{"reissue ok", HubIdentityReissueArgs{Passphrase: "x", IssueMembers: IssueMembers{ValidityDays: 3650}}.Validate()},
 		{"rotate ok", HubIdentityRotateArgs{Passphrase: "a", NewPassphrase: "b", Confirm: "b", Word: "ROTATE"}.Validate()},
 		{"change ok", HubIdentityChangePassphraseArgs{Passphrase: "a", NewPassphrase: "b", Confirm: "b"}.Validate()},
 	}
@@ -53,7 +53,7 @@ func TestHubIdentityArgsValidate(t *testing.T) {
 		"set: empty":         HubIdentitySetPassphraseArgs{}.Validate(),
 		"set: long":          HubIdentitySetPassphraseArgs{Passphrase: long, Confirm: long}.Validate(),
 		"reissue: empty":     HubIdentityReissueArgs{}.Validate(),
-		"reissue: days":      HubIdentityReissueArgs{Passphrase: "x", IssueMembers: IssueMembers{ValidityDays: 401}}.Validate(),
+		"reissue: days":      HubIdentityReissueArgs{Passphrase: "x", IssueMembers: IssueMembers{ValidityDays: 3651}}.Validate(),
 		"reissue: negative":  HubIdentityReissueArgs{Passphrase: "x", IssueMembers: IssueMembers{SerialFloor: -1}}.Validate(),
 		"rotate: no word":    HubIdentityRotateArgs{Passphrase: "a", NewPassphrase: "b", Confirm: "b"}.Validate(),
 		"rotate: lower word": HubIdentityRotateArgs{Passphrase: "a", NewPassphrase: "b", Confirm: "b", Word: "rotate"}.Validate(),

@@ -54,7 +54,7 @@ func checkPassphraseField(field, v string, required bool) error {
 // IssueMembers are the per-issuance options shared by the operations that
 // issue a certificate.
 type IssueMembers struct {
-	// ValidityDays is 1 to 400; 0 means 180.
+	// ValidityDays is 1 to 3650; 0 means 3650.
 	ValidityDays int `json:"validity_days,omitempty"`
 	// SerialFloor: the new serial must be greater than it (0 = none).
 	SerialFloor int64 `json:"serial_floor,omitempty"`
@@ -63,8 +63,8 @@ type IssueMembers struct {
 }
 
 func (m IssueMembers) validate() error {
-	if m.ValidityDays < 0 || m.ValidityDays > 400 {
-		return invalid("validity_days", "must be 1 to 400")
+	if m.ValidityDays < 0 || m.ValidityDays > 3650 {
+		return invalid("validity_days", "must be 1 to 3650")
 	}
 	if m.SerialFloor < 0 {
 		return invalid("serial_floor", "must not be negative")

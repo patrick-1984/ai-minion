@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 )
@@ -49,7 +50,7 @@ func TestAFailedExpiryCheckIsRetriedUntilTheSessionsClose(t *testing.T) {
 	var off time.Duration
 	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return time.Now().Add(off) }
 	mu.Lock()
-	off = -180*24*time.Hour + 1500*time.Millisecond // the certificate expires 1.5 s from now
+	off = -hubid.DefaultValidityDays*24*time.Hour + 1500*time.Millisecond // the certificate expires 1.5 s from now
 	mu.Unlock()
 	svc := hubidtest.Open(t, st, t.TempDir(), hubidtest.WithNow(now))
 	mu.Lock()

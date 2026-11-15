@@ -29,9 +29,9 @@ const (
 // Limits and defaults.
 const (
 	// DefaultValidityDays is the validity of an issuance without --validity.
-	DefaultValidityDays = 180
+	DefaultValidityDays = 3650
 	// MaxValidityDays is the longest validity the certificate format allows.
-	MaxValidityDays = 400
+	MaxValidityDays = 3650
 	// MaxPassphraseBytes is the longest accepted passphrase.
 	MaxPassphraseBytes = 1024
 	// MaxOpsPerHour is the hourly allowance of each scope.

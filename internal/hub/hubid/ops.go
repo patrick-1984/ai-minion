@@ -38,7 +38,7 @@ const (
 // IssueOptions are the per-issuance options (section 6): they apply to that
 // issuance only and nothing is stored.
 type IssueOptions struct {
-	// ValidityDays is 1..400; 0 means DefaultValidityDays.
+	// ValidityDays is 1..3650; 0 means DefaultValidityDays.
 	ValidityDays int
 	// SerialFloor: the new serial must be greater than it (0 = none).
 	SerialFloor int64
@@ -81,7 +81,7 @@ func (s *Service) validateOptions(o IssueOptions) (int, error) {
 		days = DefaultValidityDays
 	}
 	if days < 1 || days > MaxValidityDays {
-		return 0, newErr(CodeInvalidArgument, "the validity must be 1 to 400 days")
+		return 0, newErr(CodeInvalidArgument, "the validity must be 1 to 3650 days")
 	}
 	if o.SerialFloor < 0 {
 		return 0, newErr(CodeInvalidArgument, "the serial floor must not be negative")
