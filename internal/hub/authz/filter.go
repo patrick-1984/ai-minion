@@ -9,7 +9,8 @@ import (
 )
 
 // Filter returns the items of a list result that p may read; the others are
-// removed (AD-11: the Hub filters list results by scope). resource maps an
+// removed (AD-11: the Hub filters list results by scope, the scope of an API
+// key and the session-control grant of a Worker identity alike). resource maps an
 // item to the resource it stands for. An item whose resource no longer exists
 // is dropped. The input slice is not modified. The principal and the owners are
 // read from the store for this call only; a failing lookup returns an

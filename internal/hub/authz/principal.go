@@ -20,9 +20,10 @@ const (
 	KindAPIKey Kind = "api_key"
 	// KindActAs is an admin acting as another user for a limited time.
 	KindActAs Kind = "act_as"
-	// KindWorker is a Worker identity on its call streams. It acts with the
-	// permission of a plain owner on the Workers and sessions of the owner of
-	// its Worker (read and message only), resolved fresh on every call.
+	// KindWorker is a Worker identity on its call streams. It holds read and
+	// message on its own Worker and that Worker's sessions, resolved fresh on
+	// every call. A session-control grant (Scope, see
+	// [NewWorkerGrantPrincipal]) adds the owner's base permission ∩ Scope.
 	KindWorker Kind = "worker"
 )
 
@@ -56,7 +57,10 @@ type Principal struct {
 	// Worker's call streams (AD-11, Story 6.1), and Decide treats the key like
 	// any other key (scope ∩ the owner's current permissions).
 	WorkerID string
-	// Scope limits an API key. Required for KindAPIKey, ignored otherwise.
+	// Scope limits an API key (required for KindAPIKey). For KindWorker it is
+	// the optional session-control grant of the calling session: nil means no
+	// grant, and a grant adds the owner's base permission ∩ Scope to the
+	// own-Worker rule. It is ignored for the other kinds.
 	Scope Scope
 	// KeyID is the stored id of the API key (KindAPIKey), for the origin of the
 	// requests it makes. It is set by the key service; it grants nothing.
@@ -86,6 +90,21 @@ func NewActAsPrincipal(actorID, targetID string, expires time.Time) Principal {
 // NewWorkerPrincipal returns the principal of a Worker identity.
 func NewWorkerPrincipal(workerID string) Principal {
 	return Principal{Kind: KindWorker, WorkerID: workerID}
+}
+
+// NewWorkerGrantPrincipal returns the principal of a Worker identity whose
+// calling session holds a session-control grant. scope lists the grant's
+// targets with the actions of [GrantActions]; the caller builds it from the
+// stored targets and passes nil when the session has no grant, which is the
+// same as [NewWorkerPrincipal].
+func NewWorkerGrantPrincipal(workerID string, scope Scope) Principal {
+	return Principal{Kind: KindWorker, WorkerID: workerID, Scope: scope}
+}
+
+// GrantActions returns the fixed actions of a session-control grant: read,
+// operate and message, never manage. A new slice on every call.
+func GrantActions() []ops.Action {
+	return []ops.Action{ops.ActionMessage, ops.ActionOperate, ops.ActionRead}
 }
 
 // errInvalidPrincipal marks a principal that is malformed for its kind.

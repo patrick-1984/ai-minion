@@ -24,9 +24,15 @@
 //     bound to a Worker identity is accepted only on that Worker's call
 //     streams (checked by authentication); it is not limited in resources.
 //   - A Worker identity resolves its Worker's owner on every call and holds
-//     read and message on the Workers and sessions of that owner, nothing on
-//     user resources and never operate or manage. It denies when the Worker
+//     read and message on its own Worker and that Worker's sessions, nothing
+//     on user resources and never operate or manage. It denies when the Worker
 //     is removed or the owner is missing or deactivated.
+//   - A Worker identity whose calling session holds a session-control grant
+//     carries it as its Scope ([NewWorkerGrantPrincipal], actions
+//     [GrantActions]). It then also holds the owner's base permission ∩
+//     Scope, the API-key rule, so "everything" reaches all an admin owner may
+//     reach. [Authorizer.GrantedByScope] tells whether the grant itself
+//     authorized an operation (origin.grant); [Filter] honors the grant too.
 //   - [Authorizer.EffectiveActions] returns the set that goes into
 //     op.request.actions (AD-12); the Worker makes the final message versus
 //     operate check.
