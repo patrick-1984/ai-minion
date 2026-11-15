@@ -37,7 +37,7 @@ Use an exact tag for a Hub you do not want to change under you. The compose file
 
 4. The log shows the Hub's certificate fingerprint (SHA-256). The Hub is on `https://127.0.0.1:8443` of the host; the browser warns about the self-signed certificate until you put a certificate you control in front ([reverse proxy](../guides/reverse-proxy.md)) or configure one (`MINION_TLS_CERT_FILE` and `MINION_TLS_KEY_FILE`).
 
-5. Set the Hub passphrase. **A new Hub serves no Workers until you do**: it has no identity key yet, and the passphrase seals the one it creates and issues the first certificate (the state B0 in [Hub identity](../guides/hub-identity.md)). Either sign in as the administrator and use the banner "Set the Hub passphrase" (Administration, Hub identity; the page needs HTTPS and a sign-in from the last five minutes), or run the command in the container, which asks for the passphrase twice on the terminal:
+5. Set the Hub passphrase. **A new Hub serves no Workers until you do**: it has no identity key yet, and the passphrase seals the one it creates and issues the first certificate (the state B0 in [Hub identity](../guides/hub-identity.md)). Either sign in as the administrator and use the banner "Set the Hub passphrase" (Administration, Hub identity; the page needs HTTPS and a sign-in from the last five minutes; behind a reverse proxy that the Hub does not trust yet, the page offers the button "I am behind a trusted HTTPS reverse proxy — continue", but the correct fix is `MINION_TRUSTED_PROXIES` plus `X-Forwarded-Proto`, see [Reverse proxy](../guides/reverse-proxy.md)), or run the command in the container, which asks for the passphrase twice on the terminal:
 
    ```sh
    docker compose -f hub.yaml exec hub minion hub identity set-passphrase

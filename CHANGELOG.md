@@ -12,6 +12,13 @@
 ### Changed
 
 - A Worker that runs with a Hub address but no pairing and no invitation key (for example `minion worker up --foreground --share-existing all --server <url>`) now shows a pairing code by itself and connects once it is entered; before it only idled as "not enrolled".
+### Changed
+
+- Hub identity page: behind an HTTPS reverse proxy that the Hub does not trust, a passphrase operation answered `tls_required` now offers the button "I am behind a trusted HTTPS reverse proxy — continue", which resends it with `confirm_trusted_proxy: true` (the Origin `https://<Host>` then counts as the Hub's own; fresh sign-in, CSRF, same-origin, JSON and lockout rules stay). The correct fix remains `MINION_TRUSTED_PROXIES` plus `X-Forwarded-Proto`.
+
+### Fixed
+
+- Hub identity page: the State card is a label/value grid again instead of one long wrapped line.
 
 ## v0.8.1
 

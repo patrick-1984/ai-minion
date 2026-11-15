@@ -36,7 +36,7 @@ func TestIdentityGateComparesFullCanonicalOrigins(t *testing.T) {
 		r := httptest.NewRequest("POST", "http://"+c.host+"/api/v1/ops/x", nil)
 		r.Host = c.host
 		r.Header.Set("Origin", c.origin)
-		if got := g.sameOrigin(r); got != c.want {
+		if got := g.sameOrigin(r, false); got != c.want {
 			t.Errorf("%s: sameOrigin = %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -48,11 +48,11 @@ func TestIdentityGateSchemeOverrideForTheManagementListener(t *testing.T) {
 	g := IdentityGate{EffectiveHTTPS: func(*http.Request) bool { return true }, Scheme: func(*http.Request) string { return "http" }}
 	r := httptest.NewRequest("POST", "http://127.0.0.1:8444/x", nil)
 	r.Header.Set("Origin", "http://127.0.0.1:8444")
-	if !g.sameOrigin(r) {
+	if !g.sameOrigin(r, false) {
 		t.Error("management origin refused")
 	}
 	r.Header.Set("Origin", "https://127.0.0.1:8444")
-	if g.sameOrigin(r) {
+	if g.sameOrigin(r, false) {
 		t.Error("an https origin on the cleartext listener was accepted")
 	}
 }

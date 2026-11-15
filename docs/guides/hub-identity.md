@@ -34,7 +34,7 @@ The page has a "Confirm it is you" panel. A session that signed in with a local 
 
 ### The HTTPS rule
 
-A passphrase is accepted only when the request's effective scheme is HTTPS: the Hub's own TLS, or `X-Forwarded-Proto: https` from a peer inside `MINION_TRUSTED_PROXIES`. A loopback address is not by itself a reason to accept cleartext, and forwarded headers from any other peer are ignored. Otherwise the answer is `tls_required`. The only exception is the **management listener**: set `MINION_MANAGEMENT_LISTEN=127.0.0.1:8444` and the Hub also serves plain HTTP on that loopback address, for an operator who works on the Hub host (for example through an SSH tunnel). Do not point a reverse proxy at it.
+A passphrase is accepted only when the request's effective scheme is HTTPS: the Hub's own TLS, or `X-Forwarded-Proto: https` from a peer inside `MINION_TRUSTED_PROXIES`. A loopback address is not by itself a reason to accept cleartext, and forwarded headers from any other peer are ignored. Otherwise the answer is `tls_required`. If the Hub sits behind a trusted HTTPS reverse proxy that it does not recognize, the page answers `tls_required` with the button "I am behind a trusted HTTPS reverse proxy — continue", which resends the same operation with `confirm_trusted_proxy: true` (the Origin `https://<Host>` then counts as this site's; every other rule stays); the correct fix is still `MINION_TRUSTED_PROXIES` naming the proxy and the proxy sending `X-Forwarded-Proto: https`. The only exception is the **management listener**: set `MINION_MANAGEMENT_LISTEN=127.0.0.1:8444` and the Hub also serves plain HTTP on that loopback address, for an operator who works on the Hub host (for example through an SSH tunnel). Do not point a reverse proxy at it.
 
 ## REST
 

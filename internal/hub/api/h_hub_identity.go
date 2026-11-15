@@ -237,7 +237,12 @@ func (g IdentityGate) now() time.Time {
 // and the same-origin headers (item 4; the synchronizer token was checked
 // when the session was authenticated), and effective HTTPS (item 5). It
 // returns an API error, and reads no passphrase.
-func (g IdentityGate) Check(c *Call) error {
+//
+// confirmedProxy is the browser's confirm_trusted_proxy: the administrator
+// states that the Hub sits behind a trusted HTTPS reverse proxy that it does
+// not recognize. The request is then accepted without effective HTTPS, and
+// the Origin https://<Host> counts as this site's; every other rule stays.
+func (g IdentityGate) Check(c *Call, confirmedProxy bool) error {
 	sess := c.Identity.Session
 	if c.Identity.Via != ViaSession || sess == nil || sess.ActAs != nil {
 		return NewError(proto.CodeForbidden, "this operation is available only to a signed-in browser session")
@@ -254,10 +259,10 @@ func (g IdentityGate) Check(c *Call) error {
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
 		return NewError(proto.CodeForbidden, "send the request as application/json")
 	}
-	if !g.sameOrigin(r) {
+	if !g.sameOrigin(r, confirmedProxy) {
 		return NewError(proto.CodeForbidden, "the request does not come from this site")
 	}
-	if g.EffectiveHTTPS == nil || !g.EffectiveHTTPS(r) {
+	if !confirmedProxy && (g.EffectiveHTTPS == nil || !g.EffectiveHTTPS(r)) {
 		return NewError(proto.CodeTLSRequired, "A passphrase is accepted only over HTTPS. Open the Hub through its HTTPS address.")
 	}
 	return nil
@@ -276,8 +281,9 @@ func reauthMethodKind(method string) string {
 // sameOrigin requires an Origin header that names this Hub (the request Host
 // or a trusted origin), and, when the browser sends Sec-Fetch-Site, the value
 // same-origin. A request without an Origin header is not a browser form post
-// of this site and is refused.
-func (g IdentityGate) sameOrigin(r *http.Request) bool {
+// of this site and is refused. With confirmedProxy the Origin https://<Host>
+// is accepted too: the browser spoke HTTPS to the proxy.
+func (g IdentityGate) sameOrigin(r *http.Request, confirmedProxy bool) bool {
 	if v := r.Header.Get("Sec-Fetch-Site"); v != "" && v != "same-origin" {
 		return false
 	}
@@ -300,6 +306,9 @@ func (g IdentityGate) sameOrigin(r *http.Request) bool {
 		scheme = "https"
 	}
 	if own, ok := canonicalOrigin(scheme + "://" + r.Host); ok && own == got {
+		return true
+	}
+	if own, ok := canonicalOrigin("https://" + r.Host); confirmedProxy && ok && own == got {
 		return true
 	}
 	for _, t := range g.TrustedOrigins {
@@ -354,7 +363,6 @@ func RegisterHubIdentityHandlers(r *Registry, svc IdentityService, gate Identity
 	}
 	io := IdentityOps{Svc: svc, Log: log}
 	actor := func(c *Call) hubid.Actor { return hubid.Actor{ID: c.Identity.Actor, Channel: hubid.ChannelUI} }
-	gated := func(c *Call) error { return gate.Check(c) }
 
 	if err := HandleTyped(r, ops.OpHubIdentityStatus, func(ctx context.Context, c *Call, _ ops.HubIdentityStatusArgs) (ops.HubIdentityStatusResult, error) {
 		if err := requireHubWide(c); err != nil {
@@ -365,7 +373,7 @@ func RegisterHubIdentityHandlers(r *Registry, svc IdentityService, gate Identity
 		return err
 	}
 	if err := HandleTyped(r, ops.OpHubIdentitySetPassphrase, func(ctx context.Context, c *Call, a ops.HubIdentitySetPassphraseArgs) (ops.HubIdentityResult, error) {
-		if err := gated(c); err != nil {
+		if err := gate.Check(c, a.ConfirmTrustedProxy); err != nil {
 			return ops.HubIdentityResult{}, err
 		}
 		return io.SetPassphrase(ctx, actor(c), a)
@@ -373,7 +381,7 @@ func RegisterHubIdentityHandlers(r *Registry, svc IdentityService, gate Identity
 		return err
 	}
 	if err := HandleTyped(r, ops.OpHubIdentityReissue, func(ctx context.Context, c *Call, a ops.HubIdentityReissueArgs) (ops.HubIdentityResult, error) {
-		if err := gated(c); err != nil {
+		if err := gate.Check(c, a.ConfirmTrustedProxy); err != nil {
 			return ops.HubIdentityResult{}, err
 		}
 		return io.Reissue(ctx, actor(c), a)
@@ -381,7 +389,7 @@ func RegisterHubIdentityHandlers(r *Registry, svc IdentityService, gate Identity
 		return err
 	}
 	if err := HandleTyped(r, ops.OpHubIdentityRotate, func(ctx context.Context, c *Call, a ops.HubIdentityRotateArgs) (ops.HubIdentityResult, error) {
-		if err := gated(c); err != nil {
+		if err := gate.Check(c, a.ConfirmTrustedProxy); err != nil {
 			return ops.HubIdentityResult{}, err
 		}
 		return io.RotateMaster(ctx, actor(c), a)
@@ -389,7 +397,7 @@ func RegisterHubIdentityHandlers(r *Registry, svc IdentityService, gate Identity
 		return err
 	}
 	return HandleTyped(r, ops.OpHubIdentityChangePassphrase, func(ctx context.Context, c *Call, a ops.HubIdentityChangePassphraseArgs) (ops.HubIdentityResult, error) {
-		if err := gated(c); err != nil {
+		if err := gate.Check(c, a.ConfirmTrustedProxy); err != nil {
 			return ops.HubIdentityResult{}, err
 		}
 		return io.ChangePassphrase(ctx, actor(c), a)
