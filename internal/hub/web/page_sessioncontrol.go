@@ -9,15 +9,21 @@ package web
 // change goes through session_control_list and session_control_set.
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
 const pathAdminSessionControl = "/admin/session-control"
+
+// sessionDiscoveryTimeout bounds the sessions_list calls of the page in
+// total; a test shortens it.
+var sessionDiscoveryTimeout = 2 * time.Second
 
 // Values of the targets radio and prefixes of the target checkboxes.
 const (
@@ -59,17 +65,23 @@ func sessionControlData(r *http.Request, c OpCaller) (any, error) {
 		return nil, err
 	}
 	page := SessionControlPage{}
+	// Worker names are unique per owner only, so every label names the owner.
 	names := map[string]string{}
 	var workers ops.WorkersListResult
 	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &workers); err != nil {
 		page.Note = "The Workers could not be loaded, so no controller or target can be chosen."
 	}
+	// The sessions are only a convenience of the form: an unresponsive Worker
+	// must not hold the page, so their discovery has one short deadline.
+	ctx, cancel := context.WithTimeout(r.Context(), sessionDiscoveryTimeout)
+	defer cancel()
+	rs := r.WithContext(ctx)
 	for _, w := range workers.Workers {
-		names[w.ID] = w.Name
 		sw := SessionControlWorker{ID: w.ID, Label: w.Name + " (" + w.Owner + ")"}
-		if w.Online {
+		names[w.ID] = sw.Label
+		if w.Online && ctx.Err() == nil {
 			var sl ops.SessionsListResult
-			if err := c.CallOp(r, ops.OpSessionsList, struct {
+			if err := c.CallOp(rs, ops.OpSessionsList, struct {
 				WorkerID string `json:"worker_id"`
 			}{w.ID}, &sl); err == nil {
 				for _, s := range sl.Sessions {

@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/net/html"
 
@@ -75,8 +76,8 @@ func TestSessionControlListsGrantsWithRemove(t *testing.T) {
 		t.Fatalf("GET = %d\n%s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	mustHave(t, body, "<th scope=\"row\">W1:boss</th>", "<td>Worker W2, W3:build</td>",
-		"<th scope=\"row\">W3:ops</th>", "<td>All</td>", "Remove W1:boss", "Remove W3:ops")
+	mustHave(t, body, "<th scope=\"row\">W1 (alice):boss</th>", "<td>Worker W2 (bob), W3 (alice):build</td>",
+		"<th scope=\"row\">W3 (alice):ops</th>", "<td>All</td>", "Remove W1 (alice):boss", "Remove W3 (alice):ops")
 	doc := parse(t, body)
 	removes := find(doc, func(n *html.Node) bool {
 		return n.Data == "form" && attr(n, "hx-post") == pathAdminSessionControl+"/remove"
@@ -231,4 +232,54 @@ func TestSessionControlShowsTheRefusal(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `class="form-error"`) {
 		t.Errorf("answer %q", rec.Body)
 	}
+}
+
+// Worker names are unique per owner only: two owners' "pi:boss" grants show
+// different controllers and Remove buttons.
+func TestSessionControlLabelsNameTheOwner(t *testing.T) {
+	s, f := sessionControlServer(t)
+	f.reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{
+		{ID: scW1, Name: "pi", Owner: "alice"}, {ID: scW2, Name: "pi", Owner: "bob"},
+	}})
+	f.reply(ops.OpSessionControlList, ops.SessionControlListResult{Grants: []ops.SessionControlInfo{
+		{WorkerID: scW1, SessionName: "boss", CreatedAt: adminTime, Targets: []ops.KeyResource{{Kind: ops.KeyResourceWorker, WorkerID: scW2}}},
+		{WorkerID: scW2, SessionName: "boss", CreatedAt: adminTime, Targets: []ops.KeyResource{{Kind: ops.KeyResourceSession, WorkerID: scW1, SessionName: "x"}}},
+	}})
+	body := get(t, s, pathAdminSessionControl, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, "Remove pi (alice):boss", "Remove pi (bob):boss", "<td>Worker pi (bob)</td>", "<td>pi (alice):x</td>")
+}
+
+// stallingOps answers sessions_list of one Worker only when the request is
+// cancelled, like a Worker that never answers.
+type stallingOps struct {
+	*fakeOps
+	stalled string
+}
+
+func (s stallingOps) CallOp(r *http.Request, op string, args, result any) error {
+	if op == ops.OpSessionsList {
+		if a, ok := args.(struct {
+			WorkerID string `json:"worker_id"`
+		}); ok && a.WorkerID == s.stalled {
+			<-r.Context().Done()
+			return r.Context().Err()
+		}
+	}
+	return s.fakeOps.CallOp(r, op, args, result)
+}
+
+// An unresponsive Worker does not hold the page: the session discovery has a
+// short deadline, and the grants and Workers still render.
+func TestSessionControlRendersDespiteAStalledWorker(t *testing.T) {
+	_, f := sessionControlServer(t)
+	connect(t, stallingOps{fakeOps: f, stalled: scW1})
+	old := sessionDiscoveryTimeout
+	sessionDiscoveryTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { sessionDiscoveryTimeout = old })
+	start := time.Now()
+	rec := get(t, adminServer(t), pathAdminSessionControl, "X-Test-Session", adminHeader)
+	if rec.Code != 200 || time.Since(start) > 5*time.Second {
+		t.Fatalf("GET = %d after %v", rec.Code, time.Since(start))
+	}
+	mustHave(t, rec.Body.String(), "Remove W1 (alice):boss", `value="worker:`+scW2+`"`)
 }
