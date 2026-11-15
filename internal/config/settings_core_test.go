@@ -91,3 +91,42 @@ func TestRedactedValueNotLeakedByDisplay(t *testing.T) {
 		t.Fatal("unset secret should display empty")
 	}
 }
+
+func TestResolveLogLevelVerbose(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		file map[string]string
+		flag bool
+		want string
+	}{
+		{name: "default", want: "info"},
+		{name: "flag", flag: true, want: "debug"},
+		{name: "env 1", env: map[string]string{"MINION_VERBOSE": "1"}, want: "debug"},
+		{name: "env true", env: map[string]string{"MINION_VERBOSE": "true"}, want: "debug"},
+		{name: "env 0", env: map[string]string{"MINION_VERBOSE": "0"}, want: "info"},
+		{name: "file", file: map[string]string{KeyVerbose: "true"}, want: "debug"},
+		{name: "explicit env level wins over the flag", env: map[string]string{"MINION_LOG_LEVEL": "warn"}, flag: true, want: "warn"},
+		{name: "explicit env level wins over env verbose", env: map[string]string{"MINION_LOG_LEVEL": "error", "MINION_VERBOSE": "1"}, want: "error"},
+		{name: "explicit file level wins", file: map[string]string{KeyLogLevel: "info"}, env: map[string]string{"MINION_VERBOSE": "1"}, want: "info"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Resolver{Role: ScopeWorker, LookupEnv: envMap(tc.env)}
+			if tc.file != nil {
+				r.File = MapSource(tc.file)
+			}
+			got, err := ResolveLogLevel(r, tc.flag)
+			if err != nil || got != tc.want {
+				t.Errorf("level = %q (err %v), want %q", got, err, tc.want)
+			}
+		})
+	}
+	r := &Resolver{Role: ScopeHub, LookupEnv: envMap(map[string]string{"MINION_VERBOSE": "yes please"})}
+	if _, err := ResolveLogLevel(r, false); err == nil || !strings.Contains(err.Error(), "verbose") {
+		t.Errorf("invalid MINION_VERBOSE: %v", err)
+	}
+	r = &Resolver{Role: ScopeHub, LookupEnv: envMap(map[string]string{"MINION_VERBOSE": "1"})}
+	if got, err := ResolveLogLevel(r, false); err != nil || got != "debug" {
+		t.Errorf("Hub with MINION_VERBOSE=1 = %q, %v", got, err)
+	}
+}

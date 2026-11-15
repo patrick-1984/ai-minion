@@ -189,7 +189,8 @@ func TestWorkerUpIsRegisteredWithEveryWorkerSetting(t *testing.T) {
 			continue
 		}
 		n++
-		if cmd.Flags().Lookup(s.FlagName()) == nil {
+		// -v/--verbose is a persistent flag of the root.
+		if cmd.Flags().Lookup(s.FlagName()) == nil && cmd.InheritedFlags().Lookup(s.FlagName()) == nil {
 			t.Errorf("worker up has no flag --%s for %s", s.FlagName(), s.Key)
 		}
 	}
