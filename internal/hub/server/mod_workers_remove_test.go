@@ -70,6 +70,7 @@ func startRemoveHubWithService(t *testing.T) (*apiHub, *workers.Service) {
 	registerAPIKeyModule(r)
 	registerWorkersRemoveModule(r)
 	registerSessionControlModule(r, ops.Default)
+	registerDiagnosticsModule(r, ops.Default)
 	if err := r.Register("grab", workersRemoveModuleOrder+1, func(_ context.Context, env *Env) error {
 		var err error
 		if ah.st, err = Require[*store.Store](env); err != nil {
