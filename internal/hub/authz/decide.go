@@ -168,6 +168,34 @@ func (a *Authorizer) EffectiveActions(ctx context.Context, p Principal, res Reso
 	return sub.actions(resolved), nil
 }
 
+// GrantedByScope reports whether the session-control grant of p (a Worker
+// identity with a Scope) by itself authorizes an operation that accepts the
+// given actions on res: the owner's base permission ∩ Scope permits one of
+// them. The own-Worker rule does not count. It is false for every other
+// principal, for a Worker identity without a grant, for a principal without
+// access and for a resource that does not exist; only a failure of a lookup is
+// an error. The Hub calls it after [Authorizer.Decide] allowed the operation,
+// to mark the request's origin as granted (origin.grant). It reads the current
+// state again, like Decide.
+func (a *Authorizer) GrantedByScope(ctx context.Context, p Principal, accepted ops.ActionSet, res Resource) (bool, error) {
+	if p.Kind != KindWorker || p.Scope == nil {
+		return false, nil
+	}
+	pt := a.ports()
+	sub, ok, err := a.subject(ctx, p, pt)
+	if err != nil || !ok {
+		return false, err
+	}
+	resolved, err := res.resolve(ctx, pt)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("authz: resolve resource: %w", err)
+	}
+	return accepted.Permits(sub.grantActions(resolved)...), nil
+}
+
 func mapLookupErr(err error) error {
 	if errors.Is(err, ErrNotFound) {
 		return proto.NewError(proto.CodeNotFound, "not found")
@@ -177,7 +205,9 @@ func mapLookupErr(err error) error {
 
 // subject is a principal whose user state was read for one call.
 type subject struct {
-	p    Principal
+	p Principal
+	// role is the current role of p's user; for a Worker identity, the role
+	// of the Worker's owner.
 	role Role
 	// ownerID is the owner of a Worker identity (KindWorker only).
 	ownerID string
@@ -212,8 +242,10 @@ func (a *Authorizer) subject(ctx context.Context, p Principal, pt ports) (sub su
 }
 
 // workerSubject resolves a Worker identity: the Worker must exist and its
-// owner must be an active user. The identity then acts with the permission of a
-// plain owner, whatever the owner's role.
+// owner must be an active user. The subject keeps the owner's role: the
+// own-Worker rule ignores it, and a session-control grant (Principal.Scope)
+// is intersected with the owner's base permission, exactly as for an API key
+// of that owner.
 func (a *Authorizer) workerSubject(ctx context.Context, p Principal, pt ports) (subject, bool, error) {
 	owner, err := pt.workers.WorkerOwner(ctx, p.WorkerID)
 	if errors.Is(err, ErrNotFound) {
@@ -226,7 +258,7 @@ func (a *Authorizer) workerSubject(ctx context.Context, p Principal, pt ports) (
 	if err != nil || !found || !u.Active || (u.Role != RoleUser && u.Role != RoleAdmin) {
 		return subject{}, false, err
 	}
-	return subject{p: p, ownerID: owner}, true, nil
+	return subject{p: p, role: u.Role, ownerID: owner}, true, nil
 }
 
 func user(ctx context.Context, pt ports, id string) (UserState, bool, error) {
@@ -243,25 +275,20 @@ func user(ctx context.Context, pt ports, id string) (UserState, bool, error) {
 // actions computes the permission of the subject on a resolved resource.
 func (s subject) actions(res ResolvedResource) ops.ActionSet {
 	if s.p.Kind == KindWorker {
-		// read and message on the Worker itself and on that Worker's sessions,
-		// nothing else (F-01). A Worker identity has no reach to other Workers
-		// of the same owner, user resources, or the operate and manage
-		// actions. Cross-Worker use takes a Worker-bound API key with a scope
-		// (AD-12, call_api_key_file) and the receiver's pipe_accept_from.
+		// read and message on the Worker itself and on that Worker's sessions
+		// (F-01). Without a grant a Worker identity has no reach to other
+		// Workers of the same owner, user resources, or the operate and manage
+		// actions. Cross-Worker use takes a session-control grant (below) or a
+		// Worker-bound API key with a scope (AD-12, call_api_key_file) and the
+		// receiver's pipe_accept_from.
+		var held []ops.Action
 		if res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
-			return canonical(workerActions)
+			held = slices.Clone(workerActions)
 		}
-		return ops.ActionSet{}
+		// A session-control grant adds what it authorizes on its own.
+		return canonical(append(held, s.grantActions(res)...))
 	}
-	var base []ops.Action
-	switch {
-	case s.role == RoleAdmin:
-		base = allActions
-	case s.role == RoleUser && res.OwnerID == s.p.UserID:
-		base = ownerActions
-	default:
-		return ops.ActionSet{}
-	}
+	base := s.base(res, s.p.UserID)
 	if s.p.Kind != KindAPIKey {
 		return canonical(base)
 	}
@@ -270,14 +297,42 @@ func (s subject) actions(res ResolvedResource) ops.ActionSet {
 	// restricts the key to that Worker's call streams, which the
 	// authentication layer enforces (AD-11, Story 6.1), so a bound key may
 	// reach a session on another Worker when scope and owner allow it.
-	granted := s.p.Scope.Actions(res)
-	var eff []ops.Action
+	return canonical(intersect(base, s.p.Scope.Actions(res)))
+}
+
+// grantActions is what the session-control grant of a Worker identity
+// authorizes on res by itself: the owner's base permission ∩ Scope, the AD-11
+// API-key rule. It is empty for every other principal and for a Worker
+// identity without a grant.
+func (s subject) grantActions(res ResolvedResource) []ops.Action {
+	if s.p.Kind != KindWorker || s.p.Scope == nil {
+		return nil
+	}
+	return intersect(s.base(res, s.ownerID), s.p.Scope.Actions(res))
+}
+
+// base is the permission of a user with the subject's role on res, where
+// userID is that user: an admin holds everything, the owner read, operate and
+// message, anyone else nothing.
+func (s subject) base(res ResolvedResource, userID string) []ops.Action {
+	switch {
+	case s.role == RoleAdmin:
+		return allActions
+	case s.role == RoleUser && res.OwnerID == userID:
+		return ownerActions
+	}
+	return nil
+}
+
+// intersect returns the actions of base that granted also lists.
+func intersect(base, granted []ops.Action) []ops.Action {
+	var out []ops.Action
 	for _, act := range base {
 		if slices.Contains(granted, act) {
-			eff = append(eff, act)
+			out = append(out, act)
 		}
 	}
-	return canonical(eff)
+	return out
 }
 
 // canonical returns a sorted, duplicate free copy as an ActionSet (possibly

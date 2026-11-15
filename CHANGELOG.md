@@ -3,6 +3,7 @@
 ## Unreleased
 
 - SC-4: a Worker accepts a message-class op whose origin carries the Hub's session-control grant mark (`grant`) without applying `pipe_accept_from`; preview-only and the share selection still apply.
+- Session control (SC-2): a Worker principal can carry a session-control grant as its scope; it then also holds its owner's current permission ∩ the grant (read, operate, message), and `GrantedByScope` tells whether the grant itself authorized an operation.
 
 ## v0.7.1
 
