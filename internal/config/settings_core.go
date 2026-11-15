@@ -58,9 +58,11 @@ func declareCore(r *Registry) {
 
 // ResolveLogLevel returns the effective log level. A log_level that is set
 // anywhere (flag, environment, config file, panel) wins; otherwise the
-// verbose switch on the command line (verboseFlag) or the verbose setting
-// turns the level to debug; otherwise the level is the default.
-func ResolveLogLevel(r *Resolver, verboseFlag bool) (string, error) {
+// verbose switch given on the command line (verboseFlag, nil when not given)
+// decides, and an explicit false there wins over MINION_VERBOSE; otherwise
+// the verbose setting turns the level to debug; otherwise the level is the
+// default.
+func ResolveLogLevel(r *Resolver, verboseFlag *bool) (string, error) {
 	level, err := r.Resolve(KeyLogLevel)
 	if err != nil {
 		return "", err
@@ -68,8 +70,11 @@ func ResolveLogLevel(r *Resolver, verboseFlag bool) (string, error) {
 	if level.Source != SourceDefault {
 		return level.Value, nil
 	}
-	if verboseFlag {
-		return "debug", nil
+	if verboseFlag != nil {
+		if *verboseFlag {
+			return "debug", nil
+		}
+		return level.Value, nil
 	}
 	if _, ok := r.registry().Lookup(KeyVerbose); !ok {
 		return level.Value, nil // a registry without the switch (tests)

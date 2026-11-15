@@ -62,8 +62,9 @@ func hubCommand(root *cobra.Command) *cobra.Command {
 // hubServeDeps are the inputs of runHubServe that tests replace.
 type hubServeDeps struct {
 	stderr io.Writer
-	// verbose is -v/--verbose: debug level unless MINION_LOG_LEVEL is set.
-	verbose   bool
+	// verbose is -v/--verbose when given (nil otherwise): debug level unless
+	// MINION_LOG_LEVEL is set.
+	verbose   *bool
 	lookupEnv func(string) (string, bool)
 	registry  *server.Registry
 	options   []server.Option

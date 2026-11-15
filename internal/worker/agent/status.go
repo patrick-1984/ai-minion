@@ -68,6 +68,10 @@ type LiveStatus struct {
 	// PendingPairingCode is the pairing code the Worker shows and waits for,
 	// empty when there is none. It is printed for the human (AD-20).
 	PendingPairingCode string
+	// ApprovalKnown is true when Connector.Welcome.Pending is reported: a
+	// Worker of an older version does not send it, and its false then means
+	// "not known", not "approved".
+	ApprovalKnown bool
 	// PairingKnown is true when the Worker can tell whether a pairing code is
 	// pending. When it is false an empty PendingPairingCode means "not known",
 	// not "none pending".
@@ -96,6 +100,7 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 	var out LiveStatus
 	if s.Connector != nil {
 		out.Connector = s.Connector.Status()
+		out.ApprovalKnown = true
 	}
 	if s.Policy != nil {
 		out.HubPreviewOnly = s.Policy.HubPreviewOnly()
@@ -327,7 +332,7 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		if r.WorkerID == "" {
 			r.WorkerID = live.Connector.Welcome.WorkerID
 		}
-		if live.Connector.State == ConnConnected {
+		if live.Connector.State == ConnConnected && live.ApprovalKnown {
 			r.Approval = ApprovalApproved
 			if live.Connector.Welcome.Pending {
 				r.Approval = ApprovalPending

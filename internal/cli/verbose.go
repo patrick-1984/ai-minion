@@ -26,10 +26,16 @@ func addVerboseFlag(root *cobra.Command) {
 		"verbose: log at debug level for troubleshooting; an explicit --log-level or MINION_LOG_LEVEL wins (env MINION_VERBOSE)")
 }
 
-// verboseFlag reports whether -v/--verbose was given to cmd.
-func verboseFlag(cmd *cobra.Command) bool {
+// verboseFlag returns the value of -v/--verbose when it was given to cmd, and
+// nil when it was not: an explicit --verbose=false must win over
+// MINION_VERBOSE, so "false" and "not given" are kept apart.
+func verboseFlag(cmd *cobra.Command) *bool {
 	f := cmd.Flags().Lookup(flagVerbose)
-	return f != nil && f.Changed && f.Value.String() == "true"
+	if f == nil || !f.Changed {
+		return nil
+	}
+	on := f.Value.String() == "true"
+	return &on
 }
 
 // commandLogger builds the logger of a command from log_level, log_format

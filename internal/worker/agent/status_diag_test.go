@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ import (
 func TestStatusJSONCarriesTheTroubleshootingFields(t *testing.T) {
 	in := pairedInputs(t)
 	in.Enrollment = fakeEnrollment{}
-	in.Live = fakeLive{ls: LiveStatus{Connector: Status{
+	in.Live = fakeLive{ls: LiveStatus{ApprovalKnown: true, Connector: Status{
 		State: ConnConnected, ConnectedSince: statusTime,
 		Welcome: HubWelcome{WorkerID: "w-live", Pending: true},
 	}}}
@@ -64,7 +65,46 @@ func TestLiveStatusReplyCarriesWorkerIDAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	ls, err := back.LiveStatus()
-	if err != nil || ls.Connector.Welcome.WorkerID != "w9" || !ls.Connector.Welcome.Pending {
+	if err != nil || ls.Connector.Welcome.WorkerID != "w9" || !ls.Connector.Welcome.Pending || !ls.ApprovalKnown {
 		t.Errorf("live = %+v, %v (wire %s)", ls, err, raw)
+	}
+
+	// An approved Worker sends "pending": false, which is known.
+	raw, _ = json.Marshal(NewLiveStatusReply("/s", LiveStatus{Connector: Status{State: ConnConnected}}))
+	if !strings.Contains(string(raw), `"pending":false`) {
+		t.Errorf("an approved Worker's reply = %s, want pending false", raw)
+	}
+}
+
+// A running Worker of an older version answers without worker_id and pending:
+// the approval is then unknown, not approved.
+func TestStatusApprovalIsUnknownForAnOlderWorkerReply(t *testing.T) {
+	old := []byte(`{"state_dir":"/s","state":"connected","connected_since":"2026-11-10T12:30:00Z","owner":"alice","hub_preview_only":false,"pairing_known":true}`)
+	var reply LiveStatusReply
+	if err := json.Unmarshal(old, &reply); err != nil {
+		t.Fatal(err)
+	}
+	ls, err := reply.LiveStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := pairedInputs(t)
+	in.Live = fakeLive{ls: ls}
+	r := BuildStatus(context.Background(), in)
+	if r.Approval != ApprovalUnknown || r.Connection.State != "connected" {
+		t.Errorf("approval = %q, state = %q; want unknown, connected", r.Approval, r.Connection.State)
+	}
+
+	// The same reply from a current Worker says approved.
+	cur := []byte(`{"state_dir":"/s","state":"connected","worker_id":"w1","pending":false,"hub_preview_only":false,"pairing_known":true}`)
+	if err := json.Unmarshal(cur, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if ls, err = reply.LiveStatus(); err != nil {
+		t.Fatal(err)
+	}
+	in.Live = fakeLive{ls: ls}
+	if r := BuildStatus(context.Background(), in); r.Approval != ApprovalApproved {
+		t.Errorf("approval = %q, want approved", r.Approval)
 	}
 }

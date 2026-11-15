@@ -54,6 +54,7 @@ func TestVerboseFlagResolvesTheLogLevel(t *testing.T) {
 		{name: "explicit flag level wins", args: []string{"-v", "--log-level", "warn"}, want: slog.LevelWarn},
 		{name: "explicit env level wins", args: []string{"-v"}, env: map[string]string{"MINION_LOG_LEVEL": "error"}, want: slog.LevelError},
 		{name: "--verbose=false", args: []string{"--verbose=false"}, want: slog.LevelInfo},
+		{name: "--verbose=false wins over MINION_VERBOSE", args: []string{"--verbose=false"}, env: map[string]string{"MINION_VERBOSE": "1"}, want: slog.LevelInfo},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got *slog.Logger
@@ -106,5 +107,13 @@ func TestVerboseOpCommandLogsTheCall(t *testing.T) {
 	}
 	if strings.Contains(got, "secret words") {
 		t.Errorf("the debug line carries the arguments: %q", got)
+	}
+	// An explicit --verbose=false wins over MINION_VERBOSE.
+	t.Setenv("MINION_VERBOSE", "1")
+	if got := run("send_text", "--target", "minion-3", "--text", "x"); !strings.Contains(got, "op call") {
+		t.Errorf("MINION_VERBOSE=1 stderr = %q", got)
+	}
+	if got := run("--verbose=false", "send_text", "--target", "minion-3", "--text", "x"); got != "" {
+		t.Errorf("--verbose=false with MINION_VERBOSE=1 stderr = %q", got)
 	}
 }

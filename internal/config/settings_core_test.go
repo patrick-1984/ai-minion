@@ -93,20 +93,22 @@ func TestRedactedValueNotLeakedByDisplay(t *testing.T) {
 }
 
 func TestResolveLogLevelVerbose(t *testing.T) {
+	yes, no := true, false
 	for _, tc := range []struct {
 		name string
 		env  map[string]string
 		file map[string]string
-		flag bool
+		flag *bool
 		want string
 	}{
 		{name: "default", want: "info"},
-		{name: "flag", flag: true, want: "debug"},
+		{name: "flag", flag: &yes, want: "debug"},
+		{name: "explicit false flag wins over env", flag: &no, env: map[string]string{"MINION_VERBOSE": "1"}, want: "info"},
 		{name: "env 1", env: map[string]string{"MINION_VERBOSE": "1"}, want: "debug"},
 		{name: "env true", env: map[string]string{"MINION_VERBOSE": "true"}, want: "debug"},
 		{name: "env 0", env: map[string]string{"MINION_VERBOSE": "0"}, want: "info"},
 		{name: "file", file: map[string]string{KeyVerbose: "true"}, want: "debug"},
-		{name: "explicit env level wins over the flag", env: map[string]string{"MINION_LOG_LEVEL": "warn"}, flag: true, want: "warn"},
+		{name: "explicit env level wins over the flag", env: map[string]string{"MINION_LOG_LEVEL": "warn"}, flag: &yes, want: "warn"},
 		{name: "explicit env level wins over env verbose", env: map[string]string{"MINION_LOG_LEVEL": "error", "MINION_VERBOSE": "1"}, want: "error"},
 		{name: "explicit file level wins", file: map[string]string{KeyLogLevel: "info"}, env: map[string]string{"MINION_VERBOSE": "1"}, want: "info"},
 	} {
@@ -122,11 +124,11 @@ func TestResolveLogLevelVerbose(t *testing.T) {
 		})
 	}
 	r := &Resolver{Role: ScopeHub, LookupEnv: envMap(map[string]string{"MINION_VERBOSE": "yes please"})}
-	if _, err := ResolveLogLevel(r, false); err == nil || !strings.Contains(err.Error(), "verbose") {
+	if _, err := ResolveLogLevel(r, nil); err == nil || !strings.Contains(err.Error(), "verbose") {
 		t.Errorf("invalid MINION_VERBOSE: %v", err)
 	}
 	r = &Resolver{Role: ScopeHub, LookupEnv: envMap(map[string]string{"MINION_VERBOSE": "1"})}
-	if got, err := ResolveLogLevel(r, false); err != nil || got != "debug" {
+	if got, err := ResolveLogLevel(r, nil); err != nil || got != "debug" {
 		t.Errorf("Hub with MINION_VERBOSE=1 = %q, %v", got, err)
 	}
 }
