@@ -44,7 +44,7 @@ func RegisterTrustHandlers(r *Registry, svc TrustService, az Decider) error {
 	if !ok {
 		return errors.New("api: trust_set is not an operation of the catalog")
 	}
-	h := trustHandlers{svc: svc, az: az, op: op, pins: &ownerPins{m: map[weak.Pointer[ops.TrustSetArgs]]string{}}}
+	h := trustHandlers{svc: svc, az: az, op: op, pins: newOwnerPins[ops.TrustSetArgs]()}
 	if err := HandleTyped(r, ops.OpTrustSet, h.set, WithResource(h.resource)); err != nil {
 		return err
 	}
@@ -57,32 +57,37 @@ type trustHandlers struct {
 	op  ops.Op
 	// pins carries the owner captured by resource to the handler of the same
 	// request.
-	pins *ownerPins
+	pins *ownerPins[ops.TrustSetArgs]
 }
 
 // ownerPins hands a value from the resource derivation of a request to its
 // handler, keyed by the request's argument struct: the dispatcher passes the
 // same pointer to both. Keys are weak and an entry is dropped when its
 // argument struct is collected, so a request that is refused between the two
-// (the handler never runs) leaves nothing behind.
-type ownerPins struct {
+// (the handler never runs) leaves nothing behind. trust_set and
+// session_control_set use it.
+type ownerPins[T any] struct {
 	mu sync.Mutex
-	m  map[weak.Pointer[ops.TrustSetArgs]]string
+	m  map[weak.Pointer[T]]string
 }
 
-func (p *ownerPins) put(a *ops.TrustSetArgs, owner string) {
+func newOwnerPins[T any]() *ownerPins[T] {
+	return &ownerPins[T]{m: map[weak.Pointer[T]]string{}}
+}
+
+func (p *ownerPins[T]) put(a *T, owner string) {
 	key := weak.Make(a)
 	p.mu.Lock()
 	p.m[key] = owner
 	p.mu.Unlock()
-	runtime.AddCleanup(a, func(k weak.Pointer[ops.TrustSetArgs]) {
+	runtime.AddCleanup(a, func(k weak.Pointer[T]) {
 		p.mu.Lock()
 		delete(p.m, k)
 		p.mu.Unlock()
 	}, key)
 }
 
-func (p *ownerPins) take(a *ops.TrustSetArgs) (string, bool) {
+func (p *ownerPins[T]) take(a *T) (string, bool) {
 	key := weak.Make(a)
 	p.mu.Lock()
 	defer p.mu.Unlock()

@@ -69,6 +69,7 @@ func startRemoveHubWithService(t *testing.T) (*apiHub, *workers.Service) {
 	registerAPI(r, ops.Default)
 	registerAPIKeyModule(r)
 	registerWorkersRemoveModule(r)
+	registerSessionControlModule(r, ops.Default)
 	if err := r.Register("grab", workersRemoveModuleOrder+1, func(_ context.Context, env *Env) error {
 		var err error
 		if ah.st, err = Require[*store.Store](env); err != nil {
@@ -118,6 +119,13 @@ func TestWorkerRemoveByTheOwnerTombstonesTheWorkerAndRevokesItsBoundKey(t *testi
 		return id
 	}
 	boundKey, otherKey := mkKey(w.ID), mkKey(store.NewID())
+	otherWorker := store.NewID()
+	for _, wid := range []string{w.ID, otherWorker} {
+		if err := ah.st.PutSessionControl(ctx, store.SessionControlRow{WorkerID: wid, SessionName: "boss",
+			TargetsJSON: `[{"kind":"everything"}]`, CreatedBy: alice, CreatedAt: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	remove := func(user string) apiResp {
 		tok, csrf := ah.login(t, user)
@@ -161,6 +169,9 @@ func TestWorkerRemoveByTheOwnerTombstonesTheWorkerAndRevokesItsBoundKey(t *testi
 	}
 	if k, err := ah.st.APIKeyByID(ctx, otherKey); err != nil || k.RevokedAt != 0 {
 		t.Errorf("the key of another Worker was touched: %+v, %v", k, err)
+	}
+	if rows, err := ah.st.ListSessionControl(ctx); err != nil || len(rows) != 1 || rows[0].WorkerID != otherWorker {
+		t.Errorf("session-control rows after the removal = %+v, %v; want only the other Worker's", rows, err)
 	}
 	page, err := ah.audit.List(ctx, audit.Filter{Action: workers.AuditActionWorkerRemove})
 	if err != nil || len(page.Events) != 1 || page.Events[0].Outcome != workers.AuditOutcomeOK || page.Events[0].Target != w.ID {
@@ -216,6 +227,10 @@ func TestWorkerRetireOnTheRealHubRevokesBoundKeysAndDeletesTrust(t *testing.T) {
 	boundKey, otherKey := mkKey(w.ID), mkKey(other.ID)
 	for _, id := range []string{w.ID, other.ID} {
 		if err := ah.st.PutTrust(ctx, store.TrustRow{ReceiverID: alice, WorkerID: id, CreatedAt: time.Now().UnixMilli()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := ah.st.PutSessionControl(ctx, store.SessionControlRow{WorkerID: id, SessionName: "boss",
+			TargetsJSON: `[{"kind":"everything"}]`, CreatedBy: alice, CreatedAt: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -274,6 +289,9 @@ func TestWorkerRetireOnTheRealHubRevokesBoundKeysAndDeletesTrust(t *testing.T) {
 	rows, err := ah.st.ListTrust(ctx, alice)
 	if err != nil || len(rows) != 1 || rows[0].WorkerID != other.ID {
 		t.Errorf("trust rows after the retirement = %+v, %v; want only the other Worker's", rows, err)
+	}
+	if rows, err := ah.st.ListSessionControl(ctx); err != nil || len(rows) != 1 || rows[0].WorkerID != other.ID {
+		t.Errorf("session-control rows after the retirement = %+v, %v; want only the other Worker's", rows, err)
 	}
 	// One ok record, written by the removal itself, and none by the call.
 	page, err := ah.audit.List(ctx, audit.Filter{})

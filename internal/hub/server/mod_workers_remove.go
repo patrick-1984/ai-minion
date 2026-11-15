@@ -28,7 +28,8 @@ func init() { registerWorkersRemoveModule(DefaultRegistry) }
 //
 //   - the API keys bound to the Worker are revoked (store.RevokeAPIKeysBoundToWorker);
 //   - every trust row of the Worker and its sessions is deleted, for every
-//     receiver (store.DeleteTrustOfWorker, Story 6.6);
+//     receiver (store.DeleteTrustOfWorker, Story 6.6), and every
+//     session-control grant of its sessions (store.DeleteSessionControlOfWorker);
 //   - the ok audit record is written.
 //
 // The signed revoke goes to an online Worker through the registry of the
@@ -76,7 +77,10 @@ func initWorkersRemove(_ context.Context, env *Env) error {
 				return err
 			}),
 			Trust: workers.CleanupFunc(func(ctx context.Context, tx *sql.Tx, workerID string) error {
-				_, err := st.DeleteTrustOfWorker(ctx, tx, workerID)
+				if _, err := st.DeleteTrustOfWorker(ctx, tx, workerID); err != nil {
+					return err
+				}
+				_, err := st.DeleteSessionControlOfWorker(ctx, tx, workerID)
 				return err
 			}),
 			Logger: cfg.logger(),
