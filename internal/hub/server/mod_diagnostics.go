@@ -14,9 +14,10 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
-// requestLogModuleOrder runs right after the core module, so that its
-// wrapper is the outermost one and sees every request.
-const requestLogModuleOrder = OrderCore + 1
+// requestLogModuleOrder runs right after the store, before any module that
+// wraps the root handler (the REST framework, 40), so that its wrapper is the
+// outermost one and sees every request.
+const requestLogModuleOrder = OrderStore + 1
 
 // diagnosticsModuleOrder places the module after the workers module (30) and
 // the REST framework (40), whose handler registry it fills.
