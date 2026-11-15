@@ -7,6 +7,8 @@ Last error:          dial: connection refused
 Hub fingerprint:     none (not paired)
 Worker fingerprint:  ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq
 Owner:               not paired
+Worker id:           none yet (given at the first welcome)
+Approval:            unknown (only a connected Worker knows it)
 Pairing code:        MN-ABCD-EFGH
 Share mode:          all
 Preview only:        yes

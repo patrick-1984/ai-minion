@@ -12,6 +12,8 @@
   "hub_fingerprint": "",
   "worker_fingerprint": "ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq",
   "paired": false,
+  "worker_id": "",
+  "approval": "unknown",
   "owner": "",
   "pending_pairing_code": "MN-ABCD-EFGH",
   "pairing_state": "pending",

@@ -41,6 +41,17 @@ const (
 	PairingUnknown = "unknown"
 )
 
+// The values of [StatusReport.Approval].
+const (
+	// ApprovalApproved: the Worker is connected and the Hub serves it.
+	ApprovalApproved = "approved"
+	// ApprovalPending: the Worker is connected and waits for its owner or an
+	// admin to approve it.
+	ApprovalPending = "pending"
+	// ApprovalUnknown: only the welcome of a live connection tells.
+	ApprovalUnknown = "unknown"
+)
+
 // ErrNoLiveWorker is returned by a [LiveSource] (and by the local client of
 // the CLI) when no running Worker answers. It is not a failure: status then
 // reports what the state directory and the settings say, and a settings
@@ -187,7 +198,13 @@ type StatusReport struct {
 	HubFingerprint string `json:"hub_fingerprint"`
 	// WorkerFingerprint is the Worker's own key, empty before the key exists.
 	WorkerFingerprint string `json:"worker_fingerprint"`
-	Paired            bool   `json:"paired"`
+	// Paired says the Worker is enrolled with a Hub (a pin is stored).
+	Paired bool `json:"paired"`
+	// WorkerID is the id the Hub gave this Worker, empty until the first
+	// welcome.
+	WorkerID string `json:"worker_id"`
+	// Approval is [ApprovalApproved], [ApprovalPending] or [ApprovalUnknown].
+	Approval string `json:"approval"`
 	// Owner is the Hub user the Worker belongs to, empty until the first
 	// welcome.
 	Owner string `json:"owner"`
@@ -223,6 +240,7 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 		Share:      StatusShare{Mode: string(store.ShareLater), Sessions: []string{}},
 
 		PairingState: PairingUnknown,
+		Approval:     ApprovalUnknown,
 	}
 	if in.HubURL != "" {
 		r.Mode = ModeHub
@@ -240,6 +258,7 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 		case ok:
 			r.Paired = true
 			r.Owner = enr.Owner
+			r.WorkerID = enr.WorkerID
 			r.PreviewOnlyHub = enr.Policy.PreviewOnly
 			if fp, err := identity.FingerprintOf(enr.Pin.Pub); err == nil {
 				r.HubFingerprint = fp.String()
@@ -305,6 +324,15 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		if r.Owner == "" && live.Connector.Welcome.Owner != "" {
 			r.Owner = live.Connector.Welcome.Owner
 		}
+		if r.WorkerID == "" {
+			r.WorkerID = live.Connector.Welcome.WorkerID
+		}
+		if live.Connector.State == ConnConnected {
+			r.Approval = ApprovalApproved
+			if live.Connector.Welcome.Pending {
+				r.Approval = ApprovalPending
+			}
+		}
 		c := StatusConnection{
 			State:     string(live.Connector.State),
 			Live:      true,
@@ -359,6 +387,8 @@ func (r StatusReport) WriteText(w io.Writer) error {
 		{"Hub fingerprint", orDash(r.HubFingerprint, "none (not paired)")},
 		{"Worker fingerprint", orDash(r.WorkerFingerprint, "none yet (created at the first pairing)")},
 		{"Owner", r.ownerText()},
+		{"Worker id", orDash(r.WorkerID, "none yet (given at the first welcome)")},
+		{"Approval", r.approvalText()},
 		{"Pairing code", r.pairingText()},
 		{"Share mode", r.shareText()},
 		{"Preview only", r.previewText()},
@@ -438,6 +468,16 @@ func (r StatusReport) pairingText() string {
 		return "unknown (the running Worker does not report a pairing code)"
 	}
 	return "unknown (only a running Worker knows it)"
+}
+
+func (r StatusReport) approvalText() string {
+	switch r.Approval {
+	case ApprovalPending:
+		return "pending (ask the owner or an admin to approve this Worker in the Hub)"
+	case ApprovalApproved:
+		return "approved"
+	}
+	return "unknown (only a connected Worker knows it)"
 }
 
 func (r StatusReport) ownerText() string {
