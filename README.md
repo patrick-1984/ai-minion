@@ -7,7 +7,7 @@ Run and steer terminal AI agents (Claude Code, Codex and others) in tmux session
 
 One binary, `minion` (also installed as `mn` by the Linux packages), is the Hub, the Worker, the command line and the MCP server.
 
-Version 0.8.0. License: Apache-2.0.
+Version 0.8.1. License: Apache-2.0.
 
 ## Start here
 
@@ -49,7 +49,7 @@ docker run -d --name minion-hub --restart unless-stopped \
   -v "$PWD/admin_password.txt:/run/secrets/minion_admin_password:ro" \
   -e MINION_DATA_DIR=/data \
   -e MINION_ADMIN_PASSWORD_FILE=/run/secrets/minion_admin_password \
-  ghcr.io/patrick-1984/minion:v0.8.0 hub serve
+  ghcr.io/patrick-1984/minion:v0.8.1 hub serve
 
 docker logs minion-hub
 ```
@@ -82,7 +82,7 @@ services:
       - ./hub-data:/data
 
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.8.0}
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.8.1}
     command: ["hub", "serve"]
     restart: unless-stopped
     depends_on:
@@ -106,7 +106,7 @@ services:
 
 ```dotenv
 # Image tag: an exact release, or a channel that follows new releases (0.8, 0, latest).
-MINION_VERSION=v0.8.0
+MINION_VERSION=v0.8.1
 
 # Where the Hub's port is published on the host. 127.0.0.1 keeps it on this machine
 # (for a reverse proxy on the same host); 0.0.0.0 publishes it on every interface.

@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.8.1
+
+Released 2026-11-15.
 
 ### Changed
 
-- Compose: `deploy/compose/hub.yaml` takes the first administrator's password from `MINION_ADMIN_PASSWORD` in `.env` instead of the file `admin_password.txt` (used only on the first start; `MINION_ADMIN_PASSWORD_FILE` still works).
+- Compose: `deploy/compose/hub.yaml` takes the first administrator's password from `MINION_ADMIN_PASSWORD` in `.env` instead of the file `admin_password.txt` (used only on the first start; `MINION_ADMIN_PASSWORD_FILE` still works). Write it single-quoted into a `.env` readable only by you; see [Hub in Docker](docs/install/hub-docker.md).
 
 ## v0.8.0
 
