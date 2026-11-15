@@ -152,6 +152,8 @@ fi
 # An update replaces the binary in place.
 run_install "$WORK/i1" Linux x86_64 MINION_VERSION=v1.2.0
 assert_contains "reinstall replaces the binary" "$OUT" "fake-minion v1.2.0 linux_amd64 version"
+left=$(find "$WORK/i1" -name '.minion.*')
+if [ -z "$left" ]; then ok "no staging file is left behind"; else bad "no staging file is left behind" "$left"; fi
 
 if command -v shellcheck >/dev/null 2>&1; then
 	if SC=$(shellcheck -s sh "$SCRIPT" "$0" 2>&1); then ok "shellcheck"; else bad "shellcheck" "$SC"; fi

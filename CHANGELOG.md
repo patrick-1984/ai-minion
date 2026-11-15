@@ -7,7 +7,7 @@
 - Administration > Session control: the sessions of the Workers are listed concurrently under the shared 2 s deadline, and the page stops waiting at the deadline even when a call does not return, so a stalled Worker no longer hides the sessions of the other Workers ([#13](https://github.com/patrick-1984/ai-minion/issues/13)).
 ### Added
 
-- One-line install for every platform: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh` (Linux, macOS) and `irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 | iex` (Windows preview). The scripts check the archive against `checksums.txt` and are release assets, signed like `bootstrap.sh`; the Windows guide now says that a Worker must be paired (`minion worker pair`, or the wizard) before `worker up --share-existing all` connects.
+- One-line install for every platform: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh` (Linux, macOS) and `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 | iex` (Windows preview). The scripts check the archive against `checksums.txt` and are release assets, signed like `bootstrap.sh`; the Windows guide now says that a Worker must be paired (`minion worker pair`, or the wizard) before `worker up --share-existing all` connects.
 
 ## v0.8.1
 

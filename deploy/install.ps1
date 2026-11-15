@@ -1,6 +1,8 @@
 # install.ps1: the one-line installer of minion.exe for Windows (preview).
 #
-#     irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 | iex
+#     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 | iex
+#
+# (The TLS 1.2 line is for Windows PowerShell 5.1 with old TLS defaults.)
 #
 # It finds the latest release (or $env:MINION_VERSION), downloads the Windows
 # preview zip for this machine (amd64 or arm64) and the release's
@@ -59,30 +61,31 @@
         Invoke-WebRequest -UseBasicParsing -Uri "$base/checksums.txt" -OutFile (Join-Path $tmp 'checksums.txt')
 
         $want = $null
-        foreach ($line in Get-Content (Join-Path $tmp 'checksums.txt')) {
+        foreach ($line in Get-Content -LiteralPath (Join-Path $tmp 'checksums.txt')) {
             $f = $line -split '\s+'
             if ($f.Count -ge 2 -and ($f[1] -eq $zip -or $f[1] -eq "*$zip")) { $want = $f[0].ToLower(); break }
         }
         if (-not $want) { throw "install.ps1: $zip is not listed in checksums.txt of $ver" }
-        $got = (Get-FileHash -Algorithm SHA256 -Path (Join-Path $tmp $zip)).Hash.ToLower()
+        $got = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $tmp $zip)).Hash.ToLower()
         if ($got -ne $want) { throw "install.ps1: checksum mismatch for ${zip}: got $got, checksums.txt says $want; nothing was installed" }
 
         $unpacked = Join-Path $tmp 'unpacked'
-        Expand-Archive -Path (Join-Path $tmp $zip) -DestinationPath $unpacked -Force
+        Expand-Archive -LiteralPath (Join-Path $tmp $zip) -DestinationPath $unpacked -Force
         $exe = Join-Path $unpacked 'minion.exe'
-        if (-not (Test-Path $exe)) { throw "install.ps1: $zip holds no minion.exe" }
+        if (-not (Test-Path -LiteralPath $exe)) { throw "install.ps1: $zip holds no minion.exe" }
 
         $dir = if ($env:MINION_INSTALL_DIR) { $env:MINION_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\minion' }
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         try {
-            Copy-Item -Force -Path $exe -Destination (Join-Path $dir 'minion.exe')
+            Copy-Item -Force -LiteralPath $exe -Destination (Join-Path $dir 'minion.exe')
         } catch {
             throw "install.ps1: cannot write $dir\minion.exe (is a Worker running? stop it first): $_"
         }
         Write-Host "Installed $dir\minion.exe"
 
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-        $parts = @(); if ($userPath) { $parts = $userPath -split ';' | Where-Object { $_ } }
+        # @() keeps a PATH with one entry a list, so that + appends an element.
+        $parts = @($userPath -split ';' | Where-Object { $_ })
         if ($parts -notcontains $dir) {
             [Environment]::SetEnvironmentVariable('Path', (($parts + $dir) -join ';'), 'User')
             Write-Host "Added $dir to your user PATH (new terminals see it)."
@@ -91,6 +94,6 @@
 
         & (Join-Path $dir 'minion.exe') version
     } finally {
-        Remove-Item -Recurse -Force -Path $tmp -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
     }
 }

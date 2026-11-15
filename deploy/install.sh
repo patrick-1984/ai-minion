@@ -105,10 +105,13 @@ if [ -z "$dir" ]; then
 	fi
 fi
 mkdir -p "$dir" || die "cannot create $dir"
-# Copy next to the target, then rename: a running minion keeps its old file.
-cp "$tmp/minion" "$dir/.minion.new" || die "cannot write to $dir (run as root, or set MINION_INSTALL_DIR)"
-chmod 0755 "$dir/.minion.new"
-mv -f "$dir/.minion.new" "$dir/minion" || die "cannot replace $dir/minion"
+# Copy to a unique file next to the target, then rename: a running minion
+# keeps its old file, and two installs at once do not share a staging file.
+new=$(mktemp "$dir/.minion.XXXXXX") || die "cannot write to $dir (run as root, or set MINION_INSTALL_DIR)"
+trap 'rm -rf "$tmp"; rm -f "$new"' EXIT
+cp "$tmp/minion" "$new" || die "cannot write to $dir (run as root, or set MINION_INSTALL_DIR)"
+chmod 0755 "$new" || die "cannot make $new executable"
+mv -f "$new" "$dir/minion" || die "cannot replace $dir/minion"
 
 printf 'Installed %s/minion\n' "$dir"
 case ":${PATH}:" in
