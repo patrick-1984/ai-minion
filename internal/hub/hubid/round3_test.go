@@ -177,8 +177,9 @@ func TestExpiryWhileAnIssuanceIsUnconfirmedClosesSessionsAndRefusesAdmission(t *
 	}
 	fail := true
 	e.confirmFailsAfterCommit(&fail)
-	// A new certificate with a much later end is committed but not confirmed.
-	_, err = s.Reissue(bg, ui, pw1, IssueOptions{ValidityDays: 400})
+	// A new certificate with a later end is committed but not confirmed.
+	e.clock = e.clock.Add(time.Hour)
+	_, err = s.Reissue(bg, ui, pw1, IssueOptions{ValidityDays: MaxValidityDays})
 	wantCode(t, err, ErrNotDurable)
 	if e.cert().NotAfterMs <= snap.Cert.NotAfterMs {
 		t.Fatal("the unconfirmed certificate must outlive the serving one")

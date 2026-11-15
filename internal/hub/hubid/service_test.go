@@ -49,7 +49,7 @@ func TestSetPassphraseFromB0(t *testing.T) {
 		t.Fatalf("row = %+v", row)
 	}
 	c := e.cert()
-	if c.Verify(row.Pub) != nil || c.NotAfterMs-c.NotBeforeMs != 180*dayMs || int64(c.Serial) != row.LastIssued {
+	if c.Verify(row.Pub) != nil || c.NotAfterMs-c.NotBeforeMs != DefaultValidityDays*dayMs || int64(c.Serial) != row.LastIssued {
 		t.Fatalf("cert %+v row serial %d", c, row.LastIssued)
 	}
 	if got, ok := e.rootOpens(pw1); !ok || string(got) != string(row.Pub) {
@@ -185,9 +185,26 @@ func TestReissueIsRotationOfTheOperationalKey(t *testing.T) {
 	if _, err := s.Reissue(bg, ui, pw1, IssueOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if c := e.cert(); c.NotAfterMs-c.NotBeforeMs != 180*dayMs {
+	if c := e.cert(); c.NotAfterMs-c.NotBeforeMs != DefaultValidityDays*dayMs {
 		t.Fatal("validity was remembered")
 	}
+	e.allSignersDestroyed()
+}
+
+// The default issuance lasts 10 years, so a normal deployment never has to
+// re-issue; the longest validity is the default, one day more is refused.
+func TestDefaultValidityIsTenYears(t *testing.T) {
+	if DefaultValidityDays != 3650 || MaxValidityDays != 3650 || identity.MaxHubCertValidityMs != 3650*dayMs {
+		t.Fatalf("default %d max %d format max %d ms", DefaultValidityDays, MaxValidityDays, identity.MaxHubCertValidityMs)
+	}
+	e := newEnv(t)
+	s := e.established()
+	if c := e.cert(); c.NotAfterMs-c.NotBeforeMs != 3650*dayMs {
+		t.Fatalf("validity %d ms", c.NotAfterMs-c.NotBeforeMs)
+	}
+	e.clock = e.clock.Add(time.Hour)
+	_, err := s.Reissue(bg, ui, pw1, IssueOptions{ValidityDays: MaxValidityDays + 1})
+	wantCode(t, err, ErrInvalidArgument)
 	e.allSignersDestroyed()
 }
 

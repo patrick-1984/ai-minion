@@ -61,7 +61,7 @@
   <p>A new operational key and certificate under the same root. All Worker sessions close and reconnect.</p>
   <form data-identity-op="hub_identity_reissue" method="post" autocomplete="off">
     <div class="field"><label for="re-pass">Passphrase</label><input type="password" id="re-pass" name="passphrase" autocomplete="current-password" required></div>
-    <div class="field"><label for="re-days">Validity in days (1 to 400)</label><input type="number" id="re-days" name="validity_days" min="1" max="400" value="180" inputmode="numeric"></div>
+    <div class="field"><label for="re-days">Validity in days (1 to 3650)</label><input type="number" id="re-days" name="validity_days" min="1" max="3650" value="3650" inputmode="numeric"></div>
     <details><summary>Advanced</summary>
       <div class="field"><label for="re-floor">Serial floor (the new serial is greater)</label><input type="number" id="re-floor" name="serial_floor" min="0" inputmode="numeric"></div>
     </details>

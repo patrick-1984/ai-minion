@@ -205,10 +205,11 @@ func TestWorkersCountdown(t *testing.T) {
 		wantText string
 		wantTone string
 	}{
-		{"long", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 120}, "Hub certificate valid until 2026-12-20 (120 days left).", "ok"},
-		{"warning", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 12, Warning: "warning"}, "Hub certificate: 12 days left (expires 2026-12-20).", "warning"},
-		{"urgent", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 1, Warning: "error"}, "Hub certificate: 1 day left (expires 2026-12-20).", "danger"},
-		{"expired", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: -2, Warning: "expired"}, "Hub certificate expired on 2026-12-20: Workers are refused.", "danger"},
+		{"long", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 3600}, "", ""},
+		{"31 days", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 31}, "", ""},
+		{"warning", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 12, Warning: "warning"}, "Hub certificate expires in 12 days — re-issue it in Administration > Hub identity (needs the passphrase).", "warning"},
+		{"urgent", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 1, Warning: "error"}, "Hub certificate expires in 1 day — re-issue it in Administration > Hub identity (needs the passphrase).", "danger"},
+		{"expired", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: -2, Warning: "expired"}, "Hub certificate expired on 2026-12-20, Workers are refused: re-issue it in Administration > Hub identity (needs the passphrase).", "danger"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			release := SetIdentityStatus(func(context.Context) (IdentityStatus, bool) { return c.st, true })
@@ -258,8 +259,21 @@ func TestTheWorkersPageHeaderShowsTheCountdownToAdministrators(t *testing.T) {
 	defer release()
 	s := adminServer(t)
 	body := get(t, s, "/workers", "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, body, `id="identity-countdown"`, `data-tone="warning"`, "Hub certificate: 12 days left (expires 2026-12-20).", `href="/admin/identity"`)
+	mustHave(t, body, `id="identity-countdown"`, `data-tone="warning"`, "Hub certificate expires in 12 days", "Administration &gt; Hub identity (needs the passphrase)", `href="/admin/identity"`)
 	mustNotHave(t, get(t, s, "/workers", "X-Test-Session", userHeader).Body.String(), "identity-countdown", "Hub certificate")
+}
+
+// A certificate outside the 30-day window needs no action: no badge at all.
+func TestTheWorkersPageShowsNoBadgeForAValidCertificate(t *testing.T) {
+	SetAdminOps(nil)
+	SetLiveSource(newFakeSource(Dashboard{}, Dashboard{}))
+	t.Cleanup(func() { SetLiveSource(nil) })
+	release := SetIdentityStatus(func(context.Context) (IdentityStatus, bool) {
+		return IdentityStatus{Established: true, NotAfter: time.Date(2036, 11, 12, 0, 0, 0, 0, time.UTC), DaysLeft: 3649}, true
+	})
+	defer release()
+	body := get(t, adminServer(t), "/workers", "X-Test-Session", adminHeader).Body.String()
+	mustNotHave(t, body, "identity-countdown", "Hub certificate")
 }
 
 // F9: before set, change and rotate the page states the passphrase policy.
