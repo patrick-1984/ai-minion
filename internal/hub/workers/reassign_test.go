@@ -115,7 +115,7 @@ func TestReassignChangesOwnerDropsTrustRevokesBoundKeysInOneStep(t *testing.T) {
 		t.Errorf("result = %+v", res)
 	}
 	got, _ := r.st.WorkerByID(ctx, w.ID)
-	if got.OwnerID != r.u2 || got.Kind != store.WorkerKindInfrastructure || got.Name != "pi" {
+	if got.OwnerID != r.u2 || got.Kind != store.WorkerKindInfrastructure || got.Name != "bob-pi" {
 		t.Errorf("worker = %+v", got)
 	}
 	for _, rcv := range []string{r.u1, r.u2, r.admin} {
@@ -187,7 +187,7 @@ func TestReassignNameCollisionIsAConflictAndChangesNothing(t *testing.T) {
 	r := newKindRig(t)
 	ctx := context.Background()
 	w := r.worker(r.u1, "pi", store.WorkerKindInfrastructure)
-	r.worker(r.u2, "pi", store.WorkerKindPrivate) // V already has a Worker called pi
+	r.worker(r.u2, "bob-pi", store.WorkerKindPrivate) // V already has a Worker called pi (names start with the owner, A20)
 	if err := r.st.PutTrust(ctx, store.TrustRow{ReceiverID: r.admin, WorkerID: w.ID, CreatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -258,8 +258,8 @@ func TestRenameUniqueWithinTheOwnersSpace(t *testing.T) {
 	r := newKindRig(t)
 	ctx := context.Background()
 	a := r.worker(r.u1, "pi", store.WorkerKindPrivate)
-	r.worker(r.u1, "nuc", store.WorkerKindPrivate)
-	r.worker(r.u2, "lab", store.WorkerKindPrivate)
+	r.worker(r.u1, "alice-nuc", store.WorkerKindPrivate)
+	r.worker(r.u2, "bob-lab", store.WorkerKindPrivate)
 	sess := r.online(a)
 
 	wantCode(t, r.re.Rename(ctx, Actor{ID: r.u1}, a.ID, "nuc"), proto.CodeConflict)
@@ -269,7 +269,7 @@ func TestRenameUniqueWithinTheOwnersSpace(t *testing.T) {
 	if err := r.re.Rename(ctx, Actor{ID: r.u1}, a.ID, "lab"); err != nil { // free in this owner's space
 		t.Fatal(err)
 	}
-	if got, _ := r.st.WorkerByID(ctx, a.ID); got.Name != "lab" {
+	if got, _ := r.st.WorkerByID(ctx, a.ID); got.Name != "alice-lab" {
 		t.Errorf("name = %q", got.Name)
 	}
 	if !sess.isClosed() {

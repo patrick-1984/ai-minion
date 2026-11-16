@@ -352,7 +352,11 @@ func (s *Store) existingWorker(ctx context.Context, tx *sql.Tx, pub []byte, res 
 // w.Name-3 and so on until the owner has no Worker with that name. A failed
 // INSERT does not abort a SQLite transaction, so the search stays in one.
 func (s *Store) insertWorkerNamed(ctx context.Context, tx *sql.Tx, w WorkerRow) (WorkerRow, error) {
-	base := w.Name
+	slug, err := ownerSlugOf(ctx, tx, w.OwnerID)
+	if err != nil {
+		return WorkerRow{}, err
+	}
+	base := StandardWorkerName(slug, w.Name)
 	for n := 1; n <= maxNameAttempts; n++ {
 		w.Name = base
 		if n > 1 {

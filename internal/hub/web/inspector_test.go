@@ -211,7 +211,7 @@ func TestSessionLinksOpenTheInspectorButKeepTheirHrefAndOtherControlsAreLeftAlon
 	for _, path := range []string{"/", "/sessions"} {
 		_, body := page(t, s, path, "alice:user")
 		mustHave(t, body,
-			`<a href="/s/laptop/fix-tests" data-control="name" data-inspect data-inspect-label="fix-tests on laptop">fix-tests</a>`,
+			`<a href="/s/laptop/fix-tests" data-control="name" data-inspect data-inspect-label="fix-tests on laptop"><span class="session-worker">laptop/</span>fix-tests</a>`,
 			`<tr data-worker="w1" data-session="fix-tests" data-key="s-w1-fix-tests" data-row-link="session">`,
 			`<a href="/workers/w1" data-control="worker" data-worker-link>laptop</a>`)
 		// The Open button and the Actions column are gone: the name, or anywhere in the row, opens the pane.

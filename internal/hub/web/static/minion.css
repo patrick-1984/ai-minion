@@ -693,3 +693,6 @@ body.embed .pipe-log { height: 10rem; max-height: 30vh; }
 .control-matrix thead th { position: sticky; top: 0; background: var(--surface); }
 .control-matrix tbody th { position: sticky; left: 0; background: var(--surface); text-align: left; }
 .check-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+
+/* Session names carry their Worker (A20): "worker/session". */
+.session-worker { color: var(--muted); font-weight: 400; }

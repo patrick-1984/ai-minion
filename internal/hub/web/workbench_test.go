@@ -264,7 +264,7 @@ func TestControlCenterShowsRealCountsAndOnlyRealAttention(t *testing.T) {
 func TestSessionsListLinksToTheSessionAndFiltersByStateKindAndWorker(t *testing.T) {
 	s, _ := listServer(t, Dashboard{Workers: []WorkerRow{wPrivate, wInfra}, Sessions: []SessionRow{sAgent, sWaiting, sIdle, sShell}}, Dashboard{})
 	_, all := page(t, s, "/sessions", "alice:user")
-	mustHave(t, all, "<h1>Sessions</h1>", "4 sessions.", `<a href="/s/laptop/deploy" data-control="name" data-inspect data-inspect-label="deploy on laptop">deploy</a>`, `<a href="/s/buildbox/ci" data-control="name" data-inspect data-inspect-label="ci on buildbox">ci</a>`,
+	mustHave(t, all, "<h1>Sessions</h1>", "4 sessions.", `<a href="/s/laptop/deploy" data-control="name" data-inspect data-inspect-label="deploy on laptop"><span class="session-worker">laptop/</span>deploy</a>`, `<a href="/s/buildbox/ci" data-control="name" data-inspect data-inspect-label="ci on buildbox"><span class="session-worker">buildbox/</span>ci</a>`,
 		`<span class="badge" data-state="dialog">Waiting for an answer</span>`, `<span class="badge" data-state="stable">Idle</span>`,
 		`<a href="/workers/w1" data-control="worker" data-worker-link>laptop</a>`, `<option value="agent:claude">agent:claude</option>`, `<option value="worker-offline">Worker offline</option>`)
 	_, waiting := page(t, s, "/sessions?status=dialog", "alice:user")

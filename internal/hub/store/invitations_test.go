@@ -154,13 +154,13 @@ func TestEnrollConsumesOneUseAndIsIdempotentPerKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, err := s.EnrollWithInvitation(ctx, enrollParams(r, 1, "pi", 10))
-	if err != nil || first.Existing || first.Worker.Name != "pi" || first.Worker.Kind != WorkerKindPrivate || first.Worker.CreatedAt != 10 {
+	if err != nil || first.Existing || first.Worker.Name != "owner-pi" || first.Worker.Kind != WorkerKindPrivate || first.Worker.CreatedAt != 10 {
 		t.Fatalf("first = %+v %v", first, err)
 	}
 	// The same key again: the existing row, no extra use, even though the
 	// one-time key is spent.
 	again, err := s.EnrollWithInvitation(ctx, enrollParams(r, 1, "renamed", 20))
-	if err != nil || !again.Existing || again.Worker.ID != first.Worker.ID || again.Worker.Name != "pi" {
+	if err != nil || !again.Existing || again.Worker.ID != first.Worker.ID || again.Worker.Name != "owner-pi" {
 		t.Fatalf("again = %+v %v", again, err)
 	}
 	if got, _ := s.InvitationByID(ctx, r.ID); got.Uses != 1 {
@@ -226,7 +226,7 @@ func TestEnrollNamesGetSuffixesPerOwner(t *testing.T) {
 		}
 	}
 	// A name that already looks like a suffixed one is skipped too.
-	if err := s.InsertWorker(ctx, nil, worker(NewID(), 100, "owner-a", "pi-3")); err != nil {
+	if err := s.InsertWorker(ctx, nil, worker(NewID(), 100, "owner-a", "owner-a-pi-3")); err != nil {
 		t.Fatal(err)
 	}
 	var names []string
@@ -237,19 +237,20 @@ func TestEnrollNamesGetSuffixesPerOwner(t *testing.T) {
 		}
 		names = append(names, res.Worker.Name)
 	}
-	want := []string{"pi", "pi-2", "pi-4", "pi-5"}
+	// Names start with the owner (A20).
+	want := []string{"owner-a-pi", "owner-a-pi-2", "owner-a-pi-4", "owner-a-pi-5"}
 	for i := range want {
 		if names[i] != want[i] {
 			t.Fatalf("names = %v, want %v", names, want)
 		}
 	}
 	res, err := s.EnrollWithInvitation(ctx, enrollParams(b, 50, "pi", 1))
-	if err != nil || res.Worker.Name != "pi" {
+	if err != nil || res.Worker.Name != "owner-b-pi" {
 		t.Errorf("other owner: %+v %v", res, err)
 	}
 	// The stored names are what was returned.
 	got, _ := s.WorkerByID(ctx, res.Worker.ID)
-	if got.Name != "pi" || got.OwnerID != "owner-b" {
+	if got.Name != "owner-b-pi" || got.OwnerID != "owner-b" {
 		t.Errorf("stored = %+v", got)
 	}
 }
@@ -356,11 +357,11 @@ func TestEnrollWithTheInfrastructureKeyCreatesPendingInfrastructureWorkers(t *te
 		t.Errorf("the new Worker must be pending with its address: %+v", res.Worker)
 	}
 	p.Pub, p.WorkerID = pub(2), NewID()
-	if res, err := s.EnrollWithInvitation(ctx, p); err != nil || res.Worker.Name != "edge-2" {
+	if res, err := s.EnrollWithInvitation(ctx, p); err != nil || res.Worker.Name != "owner-edge-2" {
 		t.Errorf("second = %+v err=%v", res, err)
 	}
 	p.Pub, p.WorkerID = pub(1), NewID()
-	if res, err := s.EnrollWithInvitation(ctx, p); err != nil || !res.Existing || res.Worker.Name != "edge" {
+	if res, err := s.EnrollWithInvitation(ctx, p); err != nil || !res.Existing || res.Worker.Name != "owner-edge" {
 		t.Errorf("repeat = %+v err=%v", res, err)
 	}
 	if got, _ := s.InvitationByID(ctx, row.ID); got.Uses != 2 {

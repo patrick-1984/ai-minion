@@ -9,6 +9,12 @@
 ### Changed
 
 - **Minion control is easier to use**: "Add a master session" lists only the Worker's shared sessions, with a filter, and says so when there is none (no free-text name); the matrix is compact and labelled; "Who can control this session?" is one list of Worker / session and answers as soon as one is chosen.
+- **Worker names start with their owner**: a new Worker is named `<owner>-<name>`, where `<owner>` is the owner's username without an e-mail domain, in lower case, with dots and underscores as dashes (`patrick.romatowski@example.com` → `patrick-romatowski-asus-w11`); the rest is the name the Worker asks for, its short host name by default. Existing Workers are renamed once by the upgrade (a rename that would collide is skipped), a rename keeps the prefix, and a reassigned Worker takes its new owner's prefix.
+- **Session lists show `worker/session`**, so sessions with the same name on several Workers are told apart.
+
+### Security
+
+- **A session that ends or stops being shared loses its control settings**: its master nomination is deleted and it is taken out of session-limited acceptances (also for sessions a Worker no longer lists when it reconnects). A new terminal under an old name starts as a slave session and never inherits control.
 
 ## v0.9.0
 

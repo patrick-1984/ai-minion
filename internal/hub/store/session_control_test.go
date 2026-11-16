@@ -318,3 +318,42 @@ func TestStaleRemovalsKeepTheNewOwnersRows(t *testing.T) {
 		t.Errorf("current owners: %v %v", ok, err)
 	}
 }
+
+// A20: a session that ends loses its nomination and its place in limited
+// acceptances; when the name comes back it is a slave session again.
+func TestGoneSessionsLoseTheirControlSettings(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	for _, m := range []MasterRow{{WorkerID: "wA", SessionName: "boss", CreatedBy: "u"}, {WorkerID: "wA", SessionName: "keep", CreatedBy: "u"}} {
+		if err := s.PutMasterSession(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, a := range []AcceptRow{
+		{TargetWorkerID: "wA", SourceWorkerID: "wB", Sessions: []string{"boss", "ci"}, CreatedBy: "u"},
+		{TargetWorkerID: "wA", SourceWorkerID: "wC", Sessions: []string{"boss"}, CreatedBy: "u"},
+		{TargetWorkerID: "wA", SourceWorkerID: "wD", CreatedBy: "u"},
+	} {
+		if err := s.PutAccept(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := s.PurgeGoneSessions(ctx, "wA", []string{"boss"}); err != nil || n != 3 {
+		t.Fatalf("purge = %d, %v", n, err)
+	}
+	ms, _ := s.ListMasterSessions(ctx)
+	if len(ms) != 1 || ms[0].SessionName != "keep" {
+		t.Errorf("masters = %+v", ms)
+	}
+	as, _ := s.ListAccepts(ctx)
+	if len(as) != 2 || as[0].SourceWorkerID != "wB" || len(as[0].Sessions) != 1 || as[0].Sessions[0] != "ci" || as[1].SourceWorkerID != "wD" || as[1].Sessions != nil {
+		t.Errorf("acceptances = %+v", as)
+	}
+	// After a resync only "ci" is there: "keep" goes too.
+	if _, err := s.PurgeSessionsNotIn(ctx, "wA", []string{"ci"}); err != nil {
+		t.Fatal(err)
+	}
+	if ms, _ := s.ListMasterSessions(ctx); len(ms) != 0 {
+		t.Errorf("masters after resync = %+v", ms)
+	}
+}

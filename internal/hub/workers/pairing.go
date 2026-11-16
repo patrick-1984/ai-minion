@@ -53,6 +53,7 @@ type PairingStore interface {
 	PutPairing(ctx context.Context, p store.PairingRow) error
 	AddPairingFailure(ctx context.Context, id string, max int) (store.PairingRow, error)
 	CompletePairing(ctx context.Context, id, codeDigest string, w store.WorkerRow) error
+	WorkerNameFor(ctx context.Context, ownerID, name string) (string, error)
 	PairingCodeUsed(ctx context.Context, codeDigest string) (bool, error)
 	PairingCommitFor(ctx context.Context, pairingID string, workerPub []byte, now int64) (store.PairingCommit, error)
 	AddResumeFailure(ctx context.Context, codeDigest string) (int, error)
@@ -763,6 +764,10 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 	base := cl.name
 	if base == "" || !ops.ValidWorkerName(base) {
 		base = CleanWorkerName(c.Worker().Name)
+	}
+	// Worker names start with their owner (A20).
+	if std, err := ps.store.WorkerNameFor(ctx, cl.userID, base); err == nil {
+		base = std
 	}
 	row := store.WorkerRow{
 		Pub: pub, OwnerID: cl.userID, Kind: store.WorkerKindPrivate, CreatedAt: store.UnixMS(ps.now()),

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -175,7 +176,7 @@ func TestReassignWorkerRefusalsChangeNothing(t *testing.T) {
 	f := newKindFixture(t)
 	ctx := context.Background()
 	w := f.worker(t, 1, f.u1, "pi", WorkerKindInfrastructure)
-	f.worker(t, 2, f.u2, "pi", WorkerKindPrivate) // the name is taken in u2's space
+	f.worker(t, 2, f.u2, "bob-pi", WorkerKindPrivate) // the name is taken in u2's space (names start with the owner, A20)
 	private := f.worker(t, 3, f.u1, "mine", WorkerKindPrivate)
 	if err := f.s.PutTrust(ctx, TrustRow{f.u1, w.ID, "", 1}); err != nil {
 		t.Fatal(err)
@@ -282,15 +283,16 @@ func TestRenameWorker(t *testing.T) {
 	f := newKindFixture(t)
 	ctx := context.Background()
 	a := f.worker(t, 1, f.u1, "pi", WorkerKindPrivate)
-	f.worker(t, 2, f.u1, "nuc", WorkerKindPrivate)
-	f.worker(t, 3, f.u2, "lab", WorkerKindPrivate)
-	if w, err := f.s.RenameWorker(ctx, a.ID, "lab"); err != nil || w.Name != "lab" {
+	f.worker(t, 2, f.u1, "alice-nuc", WorkerKindPrivate)
+	f.worker(t, 3, f.u2, "bob-lab", WorkerKindPrivate)
+	// Names start with the owner (A20): "lab" is stored as "alice-lab".
+	if w, err := f.s.RenameWorker(ctx, a.ID, "lab"); err != nil || w.Name != "alice-lab" {
 		t.Fatalf("rename = %+v, %v (another owner's name is free)", w, err)
 	}
 	if _, err := f.s.RenameWorker(ctx, a.ID, "nuc"); !errors.Is(err, ErrWorkerNameTaken) {
 		t.Errorf("collision: %v", err)
 	}
-	if got, _ := f.s.WorkerByID(ctx, a.ID); got.Name != "lab" {
+	if got, _ := f.s.WorkerByID(ctx, a.ID); got.Name != "alice-lab" {
 		t.Errorf("name after a refused rename = %q", got.Name)
 	}
 	if _, err := f.s.RenameWorker(ctx, a.ID, "lab"); err != nil {
@@ -338,5 +340,36 @@ func TestPutTrustIfOwnerStoresOnlyUnderTheOwnerItWasDecidedFor(t *testing.T) {
 	}
 	if err := f.s.PutTrustIfOwner(ctx, TrustRow{ReceiverID: f.u2, WorkerID: w.ID}, ""); err == nil {
 		t.Error("accepted an empty owner")
+	}
+}
+
+func TestWorkerNamesStartWithTheOwner(t *testing.T) {
+	for _, tc := range []struct{ user, name, want string }{
+		{"patrick", "asus-w11", "patrick-asus-w11"},
+		{"Patrick.Romatowski@example.com", "nuc", "patrick-romatowski-nuc"},
+		{"patrick", "patrick-nuc", "patrick-nuc"},
+		{"patrick", "Patrick", "Patrick"},
+		{"", "nuc", "nuc"},
+	} {
+		if got := StandardWorkerName(OwnerSlug(tc.user), tc.name); got != tc.want {
+			t.Errorf("%q + %q = %q, want %q", tc.user, tc.name, got, tc.want)
+		}
+	}
+	long := StandardWorkerName("alice", strings.Repeat("x", 80))
+	if len(long) != 64 {
+		t.Errorf("long name has %d characters", len(long))
+	}
+}
+
+// A reassigned Worker swaps its owner prefix.
+func TestReassignSwapsTheNamePrefix(t *testing.T) {
+	f := newKindFixture(t)
+	w := f.worker(t, 1, f.u1, "alice-edge", WorkerKindInfrastructure)
+	res, err := f.s.ReassignWorker(context.Background(), ReassignParams{WorkerID: w.ID, NewOwnerID: f.u2, AtMS: 1})
+	if err != nil || res.Worker.Name != "bob-edge" {
+		t.Fatalf("reassign = %+v, %v", res.Worker, err)
+	}
+	if got, _ := f.s.WorkerByID(context.Background(), w.ID); got.Name != "bob-edge" {
+		t.Fatalf("stored name = %q", got.Name)
 	}
 }

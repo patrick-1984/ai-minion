@@ -109,7 +109,7 @@ func TestDashboardUserListsWorkersAndSessions(t *testing.T) {
 		`<span class="badge" data-online="true">online</span>`,
 		`<span class="badge plain" data-kind="private">private</span>`,
 		`<td data-label="Version"><span class="muted" title="An older Worker reports only its protocol">protocol 1.0</span></td>`,
-		`<th scope="row"><a href="/s/laptop/fix-tests" data-control="name" data-inspect data-inspect-label="fix-tests on laptop">fix-tests</a></th>`,
+		`<th scope="row"><a href="/s/laptop/fix-tests" data-control="name" data-inspect data-inspect-label="fix-tests on laptop"><span class="session-worker">laptop/</span>fix-tests</a></th>`,
 		`<td data-label="Kind">agent:claude</td>`,
 		`<span class="badge" data-state="busy">Working</span>`,
 		`<td data-label="Task">fix the flaky test</td>`,

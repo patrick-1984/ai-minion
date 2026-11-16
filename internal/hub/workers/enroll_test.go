@@ -165,11 +165,11 @@ func TestEnrollCreatesTheWorkerForTheCreator(t *testing.T) {
 
 	a := h.enroll(key, "pi", secretFrame(secretOf(t, inv.Key)))
 	w := a.welcome(t)
-	if w.Name != "pi" || w.Owner != "name-of-owner-1" || w.Kind != "private" || w.WorkerID == "" {
+	if w.Name != "owner-1-pi" || w.Owner != "name-of-owner-1" || w.Kind != "private" || w.WorkerID == "" {
 		t.Fatalf("welcome = %+v", w)
 	}
 	row, err := h.st.WorkerByPub(context.Background(), key.Public())
-	if err != nil || row.ID != w.WorkerID || row.OwnerID != "owner-1" || row.Kind != store.WorkerKindPrivate || row.Name != "pi" {
+	if err != nil || row.ID != w.WorkerID || row.OwnerID != "owner-1" || row.Kind != store.WorkerKindPrivate || row.Name != "owner-1-pi" {
 		t.Fatalf("stored worker = %+v err=%v", row, err)
 	}
 	if !row.Pending || w.Pending != true || row.EnrollAddr == "" {
@@ -263,7 +263,7 @@ func TestEnrollingTheSameKeyAgainReturnsTheExistingWorker(t *testing.T) {
 	first := h.enroll(key, "pi", secretFrame(secret)).welcome(t)
 	// The retry after a lost reply: same key, one-time key already used up.
 	again := h.enroll(key, "other-name", secretFrame(secret)).welcome(t)
-	if again.WorkerID != first.WorkerID || again.Name != "pi" {
+	if again.WorkerID != first.WorkerID || again.Name != "owner-1-pi" {
 		t.Fatalf("second welcome = %+v, first = %+v", again, first)
 	}
 	if got := h.uses(inv.ID); got != 1 {
@@ -301,12 +301,12 @@ func TestNameCollisionsGetASuffixWithinTheOwnersSpace(t *testing.T) {
 	for range 3 {
 		names = append(names, h.enroll(newKey(t), "pi", secretFrame(secretOf(t, mine.Key))).welcome(t).Name)
 	}
-	if want := []string{"pi", "pi-2", "pi-3"}; strings.Join(names, ",") != strings.Join(want, ",") {
+	if want := []string{"owner-1-pi", "owner-1-pi-2", "owner-1-pi-3"}; strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Errorf("names = %v, want %v", names, want)
 	}
-	// Names are unique per owner: another owner gets the plain name.
-	if n := h.enroll(newKey(t), "pi", secretFrame(secretOf(t, other.Key))).welcome(t).Name; n != "pi" {
-		t.Errorf("other owner's name = %q, want pi", n)
+	// Names are unique per owner: another owner gets the same name under its own prefix.
+	if n := h.enroll(newKey(t), "pi", secretFrame(secretOf(t, other.Key))).welcome(t).Name; n != "owner-2-pi" {
+		t.Errorf("other owner's name = %q, want owner-2-pi", n)
 	}
 }
 
@@ -364,7 +364,7 @@ func TestInvalidKeysAreRefusedWithTheirCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer res.Channel.Close()
-	if w := decodeWelcome(t, res); w.Name != "stays" {
+	if w := decodeWelcome(t, res); w.Name != "owner-1-stays" {
 		t.Errorf("welcome = %+v", w)
 	}
 	// Refusals are audited by code, never with the secret.
@@ -467,7 +467,7 @@ func TestInfrastructureKeyFileEnrollsForTheDefaultOwner(t *testing.T) {
 	}
 	// The key is reusable and lasts 30 days from its first load; the name gets its suffix.
 	h.clock.Advance(20 * 24 * time.Hour)
-	if n := h.enroll(newKey(t), "edge", secretFrame(secret)).welcome(t).Name; n != "edge-2" {
+	if n := h.enroll(newKey(t), "edge", secretFrame(secret)).welcome(t).Name; n != "root-edge-2" {
 		t.Errorf("second name = %q", n)
 	}
 	// Enrolling the same Worker key again returns the existing record.
@@ -480,8 +480,8 @@ func TestInfrastructureKeyFileEnrollsForTheDefaultOwner(t *testing.T) {
 	// infra_default_owner names another user.
 	h.enr.cfg.InfraOwner = "ines"
 	w3 := h.enroll(newKey(t), "edge", secretFrame(secret)).welcome(t)
-	if row, _ := h.st.WorkerByID(context.Background(), w3.WorkerID); row.OwnerID != user || w3.Name != "edge" {
-		t.Errorf("owner = %q name = %q, want %q and edge", row.OwnerID, w3.Name, user)
+	if row, _ := h.st.WorkerByID(context.Background(), w3.WorkerID); row.OwnerID != user || w3.Name != "ines-edge" {
+		t.Errorf("owner = %q name = %q, want %q and ines-edge", row.OwnerID, w3.Name, user)
 	}
 
 	// An unknown owner fails the enrollment closed with an internal error.
@@ -761,7 +761,7 @@ func TestSameWorkerPubWithAnotherKeyReturnsTheExistingWorker(t *testing.T) {
 
 	first := h.enroll(key, "pi", secretFrame(secretOf(t, k1.Key))).welcome(t)
 	again := h.enroll(key, "other", secretFrame(secretOf(t, k2.Key))).welcome(t)
-	if again.WorkerID != first.WorkerID || again.Owner != first.Owner || again.Owner != "owner-1" || again.Name != "pi" {
+	if again.WorkerID != first.WorkerID || again.Owner != first.Owner || again.Owner != "owner-1" || again.Name != "owner-1-pi" {
 		t.Fatalf("second welcome = %+v, first = %+v", again, first)
 	}
 	if got := h.uses(k1.ID); got != 1 {
