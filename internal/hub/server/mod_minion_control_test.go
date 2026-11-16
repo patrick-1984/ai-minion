@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 )
 
 // On the real Hub: an admin nominates a master session and lets another Worker
@@ -76,5 +78,14 @@ func TestMinionControlOnTheRealHub(t *testing.T) {
 	_ = json.Unmarshal([]byte(r.body), &env)
 	if env.Error.Code != proto.CodeWorkerOffline {
 		t.Fatalf("sessions_list on a user-managed Worker = %d %s", r.code, r.body)
+	}
+}
+
+func TestOnlyFullWorkersCanBeMasters(t *testing.T) {
+	full := workers.Online{Facts: transport.WorkerFacts{Build: "v0.9.0"}}
+	old := workers.Online{Features: []string{proto.FeaturePipeCausal, proto.FeatureTextVerbatim}}
+	thin := workers.Online{Features: []string{proto.FeatureTextVerbatim}}
+	if !canBeMaster(full, true) || !canBeMaster(old, true) || canBeMaster(thin, true) || !canBeMaster(thin, false) {
+		t.Fatal("full and 0.8 online = master, thin online = not, offline = may be")
 	}
 }

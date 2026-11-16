@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
@@ -54,8 +55,8 @@ func initMinionControl(_ context.Context, env *Env) error {
 				}
 				owners[w.OwnerID] = name
 			}
-			_, on := online[w.ID]
-			out = append(out, api.ControlWorkerBase{ID: w.ID, Name: w.Name, Owner: name, OwnerID: w.OwnerID, Online: on, CanBeMaster: true})
+			o, on := online[w.ID]
+			out = append(out, api.ControlWorkerBase{ID: w.ID, Name: w.Name, Owner: name, OwnerID: w.OwnerID, Online: on, CanBeMaster: canBeMaster(o, on)})
 		}
 		return out, nil
 	}
@@ -63,4 +64,13 @@ func initMinionControl(_ context.Context, env *Env) error {
 		return fmt.Errorf("minion_control: %w", err)
 	}
 	return nil
+}
+
+// canBeMaster tells whether a Worker can run master sessions: a full Worker
+// names its build in the hello (0.9.0 or later) or announces pipe.causal
+// (0.5.0 or later); a thin Worker does neither. An offline Worker is not
+// known yet and may be nominated. It only refuses a nomination in the
+// editor; it never grants anything.
+func canBeMaster(o workers.Online, online bool) bool {
+	return !online || o.Facts.Build != "" || o.HasFeature(proto.FeaturePipeCausal)
 }
