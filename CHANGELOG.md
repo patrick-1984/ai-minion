@@ -5,6 +5,7 @@
 ### Added
 
 - **Thin Workers (preview)** in C for OpenWrt routers and ESP32 chips (`clients/`): they speak the Worker protocol 3.0, so this Hub serves them unchanged; enroll once with an invitation key, nothing on the device expires. OpenWrt packages of about 50 KB (shell sessions), ESP32 firmware with a command console (GPIO, ADC, PWM, I2C, Wi-Fi), a serial-console bridge and the device log. Released separately as prereleases `thin-v*` (`thin-v0.1.0-preview.1`); design in `docs/architecture/proposals/thin-workers.md`.
+- **psmux session host on Windows** (spike): the Worker setting `windows_session_host` (`auto`, `psmux`, `conpty`; default `auto`) drives psmux, the tmux-compatible server for Windows, with the same tmux adapter as Linux and macOS when `psmux.exe` is on PATH: sessions survive a Worker restart or update and the user can attach to them with `psmux attach`. Without psmux, or when it does not start, the Worker uses ConPTY as before. A Windows CI job tests the adapter against psmux v3.4.0.
 
 ### Fixed
 

@@ -256,3 +256,40 @@ jobs:
         run: |
           sc.exe stop MinionWorker || true
           sc.exe delete MinionWorker || true
+
+  psmux:
+    # v0.9.0 spike: the tmux adapter drives psmux (tmux-compatible server for
+    # Windows), and a session survives a new Host (a restarted Worker).
+    name: psmux session host (tmux adapter)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PSMUX_VERSION: v3.4.0
+      PSMUX_SHA256: a66b6be7c13c6fa0dc3660a267b9e34eaa91a4eb7f07fbd55a0468018bd0f721
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install psmux (pinned release, checksum verified)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'psmux.zip'
+          Invoke-WebRequest -Uri "https://github.com/psmux/psmux/releases/download/$env:PSMUX_VERSION/psmux-$env:PSMUX_VERSION-windows-x64.zip" -OutFile $zip
+          $sum = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+          if ($sum -ne $env:PSMUX_SHA256) { throw "psmux checksum mismatch: $sum" }
+          $dir = Join-Path $env:RUNNER_TEMP 'psmux'
+          Expand-Archive -LiteralPath $zip -DestinationPath $dir
+          $exe = Get-ChildItem -Path $dir -Recurse -Filter psmux.exe | Select-Object -First 1
+          if (-not $exe) { throw 'psmux.exe not found in the archive' }
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+          & $exe.FullName -V
+      - name: tmux adapter against psmux
+        shell: bash
+        env:
+          MINION_REQUIRE_PSMUX: "1"
+        run: CGO_ENABLED=0 go test -count=1 -v -tags psmux -run Psmux ./internal/worker/term/tmux/
+      - name: Worker selects psmux in auto mode
+        shell: bash
+        run: CGO_ENABLED=0 go test -count=1 -v -run WindowsSessionHost ./internal/config/

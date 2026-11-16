@@ -67,6 +67,12 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	}()
 
 	host, err := d.newHost(s.TmuxSocket)
+	if err != nil && s.WindowsSessionHost == config.WindowsHostAuto && s.TmuxSocket != "" {
+		// auto picked psmux, but it does not start (too old, broken
+		// install): fall back to ConPTY instead of not starting at all.
+		log.Warn("psmux was found but cannot host the sessions; using ConPTY", "error", err)
+		host, err = d.newHost("")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("start the terminal host: %w", err)
 	}

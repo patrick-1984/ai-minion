@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -14,11 +15,13 @@ import (
 // Names of the core Worker settings (Story 2.7), for callers that look them
 // up by key.
 const (
-	KeyTmuxSocket    = "tmux_socket"
-	KeyName          = "name"
-	KeyShareExisting = "share_existing"
-	KeyPreviewOnly   = "preview_only"
-	KeyShareLock     = "share_lock"
+	KeyTmuxSocket = "tmux_socket"
+	// KeyWindowsSessionHost picks the session host of a Windows Worker.
+	KeyWindowsSessionHost = "windows_session_host"
+	KeyName               = "name"
+	KeyShareExisting      = "share_existing"
+	KeyPreviewOnly        = "preview_only"
+	KeyShareLock          = "share_lock"
 	// KeyCallAPIKeyFile names the file of the Worker call key (F-01).
 	KeyCallAPIKeyFile = "call_api_key_file"
 	// KeyPipeAcceptFrom is the receiver policy for messages from other Workers.
@@ -48,6 +51,14 @@ func declareWorkerCore(r *Registry) {
 		Help: "Path of the tmux server socket the Worker drives; the default is the user's default socket " +
 			"(<TMUX_TMPDIR or /tmp>/tmux-<uid>/default)",
 		DefaultFunc: func() (string, error) { return SystemPathEnv().TmuxSocket() },
+	})
+	r.Declare(Setting{
+		Key:   KeyWindowsSessionHost,
+		Scope: ScopeWorker,
+		Help: "Windows only: session host of the Worker: auto (psmux when psmux.exe is on PATH, else ConPTY), " +
+			"psmux (tmux-compatible server; sessions survive a Worker restart) or conpty (sessions live inside the Worker)",
+		Default: WindowsHostAuto,
+		Choices: []string{WindowsHostAuto, WindowsHostPsmux, WindowsHostConPTY},
 	})
 	r.Declare(Setting{
 		Key:         KeyName,
@@ -230,10 +241,45 @@ func shortWorkerName(host string) string {
 	return h
 }
 
+// Values of windows_session_host.
+const (
+	WindowsHostAuto   = "auto"
+	WindowsHostPsmux  = "psmux"
+	WindowsHostConPTY = "conpty"
+)
+
+// windowsSocket returns the psmux socket a Windows Worker uses, or "" for
+// ConPTY. conpty always means ConPTY; psmux always means psmux; auto means
+// psmux when psmux.exe is on PATH. The socket is the configured tmux_socket,
+// else the default server of psmux (<PSMUX_DATA_DIR or ~\.psmux>\default),
+// which is the one "psmux attach" and "tmux ls" of the same user reach.
+func windowsSocket(mode, configured string, p PathEnv, lookPath func(string) (string, error)) string {
+	switch mode {
+	case WindowsHostConPTY:
+		return ""
+	case WindowsHostAuto:
+		if _, err := lookPath("psmux"); err != nil {
+			return ""
+		}
+	}
+	if configured != "" {
+		return configured
+	}
+	dir := p.Getenv("PSMUX_DATA_DIR")
+	if dir == "" {
+		home, err := p.HomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		dir = filepath.Join(home, ".psmux")
+	}
+	return filepath.Join(dir, "default")
+}
+
 // TmuxSocket returns the socket a tmux client without -S and -L uses when it
 // is not asked otherwise: <TMUX_TMPDIR or /tmp>/tmux-<uid>/default, as an
-// absolute path. tmux does not exist on Windows (ConPTY hosts the sessions
-// there), so the result is empty.
+// absolute path. On Windows the result is empty: the session host is chosen by
+// windows_session_host (see windowsSocket).
 func (p PathEnv) TmuxSocket() (string, error) {
 	if p.GOOS == "windows" {
 		return "", nil
@@ -257,6 +303,9 @@ type WorkerCore struct {
 	// TmuxSocket is the absolute tmux socket path. It is empty on Windows,
 	// where sessions are hosted by ConPTY.
 	TmuxSocket string
+	// WindowsSessionHost is the windows_session_host setting (auto, psmux or
+	// conpty). On Windows a non-empty TmuxSocket means psmux was selected.
+	WindowsSessionHost string
 	// Name is the Worker's display name.
 	Name string
 	// ShareExisting is "all", "none", "later", or "" when no source set it:
@@ -303,6 +352,14 @@ func ResolveWorkerCore(res *Resolver) (WorkerCore, error) {
 		if wc.TmuxSocket, err = filepath.Abs(sock.Value); err != nil {
 			return wc, fmt.Errorf("setting %q: %w", KeyTmuxSocket, err)
 		}
+	}
+	if SystemPathEnv().GOOS == "windows" {
+		hostSel, err := get(KeyWindowsSessionHost)
+		if err != nil {
+			return wc, err
+		}
+		wc.WindowsSessionHost = hostSel.Value
+		wc.TmuxSocket = windowsSocket(hostSel.Value, wc.TmuxSocket, SystemPathEnv(), exec.LookPath)
 	}
 
 	name, err := get(KeyName)
