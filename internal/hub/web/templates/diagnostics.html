@@ -1,0 +1,19 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Diagnostics</h1><p>How this Hub runs and how it sees your own request. Use it to check a reverse proxy, the public URL and the trusted proxies. The same facts are available from <code>minion hub_diagnostics</code> and the operation <code>hub_diagnostics</code>.</p></div></div>
+<div class="stack">
+  <section class="panel" aria-labelledby="diag-hub">
+    <h2 id="diag-hub">Hub</h2>
+    <dl>
+      {{range .Data.Hub}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>
+      {{end}}
+    </dl>
+  </section>
+  <section class="panel" aria-labelledby="diag-request">
+    <h2 id="diag-request">This request</h2>
+    <dl>
+      {{range .Data.Request}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>
+      {{end}}
+    </dl>
+  </section>
+</div>
+{{end}}

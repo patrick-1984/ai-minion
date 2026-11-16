@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
-	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
@@ -279,15 +278,7 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		Registry: reg, Role: config.ScopeWorker, Flags: flags, File: file,
 		LookupEnv: withTargetDefaults(lookupEnv, reg, plain, withFile, pe, stateDir),
 	}
-	level, err := res.Resolve(config.KeyLogLevel)
-	if err != nil {
-		return err
-	}
-	format, err := res.Resolve(config.KeyLogFormat)
-	if err != nil {
-		return err
-	}
-	logger, err := logx.New(logx.Options{Level: level.Value, Format: logx.Format(format.Value), Output: stderr})
+	logger, err := commandLogger(cmd, res, stderr)
 	if err != nil {
 		return err
 	}

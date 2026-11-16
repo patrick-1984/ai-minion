@@ -54,7 +54,7 @@ func checkPassphraseField(field, v string, required bool) error {
 // IssueMembers are the per-issuance options shared by the operations that
 // issue a certificate.
 type IssueMembers struct {
-	// ValidityDays is 1 to 400; 0 means 180.
+	// ValidityDays is 1 to 3650; 0 means 3650.
 	ValidityDays int `json:"validity_days,omitempty"`
 	// SerialFloor: the new serial must be greater than it (0 = none).
 	SerialFloor int64 `json:"serial_floor,omitempty"`
@@ -63,13 +63,22 @@ type IssueMembers struct {
 }
 
 func (m IssueMembers) validate() error {
-	if m.ValidityDays < 0 || m.ValidityDays > 400 {
-		return invalid("validity_days", "must be 1 to 400")
+	if m.ValidityDays < 0 || m.ValidityDays > 3650 {
+		return invalid("validity_days", "must be 1 to 3650")
 	}
 	if m.SerialFloor < 0 {
 		return invalid("serial_floor", "must not be negative")
 	}
 	return nil
+}
+
+// ProxyConfirm is the browser's statement that it reaches the Hub through a
+// trusted HTTPS reverse proxy that the Hub does not recognize as one (no
+// MINION_TRUSTED_PROXIES entry or no X-Forwarded-Proto). With it the web
+// gate accepts the passphrase operation although the request is not
+// effective HTTPS. The admin socket ignores it.
+type ProxyConfirm struct {
+	ConfirmTrustedProxy bool `json:"confirm_trusted_proxy,omitempty"`
 }
 
 const redactedIdentityArgs = "[hub identity arguments: passphrases redacted]"
@@ -81,6 +90,7 @@ type HubIdentitySetPassphraseArgs struct {
 	Passphrase string `json:"passphrase"`
 	Confirm    string `json:"confirm"`
 	IssueMembers
+	ProxyConfirm
 }
 
 // Validate checks sizes and encodings; the passphrase rules are the service's.
@@ -104,6 +114,7 @@ func (HubIdentitySetPassphraseArgs) GoString() string { return redactedIdentityA
 type HubIdentityReissueArgs struct {
 	Passphrase string `json:"passphrase"`
 	IssueMembers
+	ProxyConfirm
 }
 
 // Validate checks sizes and encodings.
@@ -132,6 +143,7 @@ type HubIdentityRotateArgs struct {
 	// Word must be ROTATE.
 	Word string `json:"word"`
 	IssueMembers
+	ProxyConfirm
 }
 
 // Validate checks sizes, encodings and the confirmation word.
@@ -162,6 +174,7 @@ type HubIdentityChangePassphraseArgs struct {
 	Passphrase    string `json:"passphrase"`
 	NewPassphrase string `json:"new_passphrase"`
 	Confirm       string `json:"confirm"`
+	ProxyConfirm
 }
 
 // Validate checks sizes and encodings.

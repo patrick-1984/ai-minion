@@ -102,7 +102,7 @@ func TestAHubWithoutACertificateRefusesWorkersBeforeTheUpgrade(t *testing.T) {
 
 func TestAnExpiredCertificateAnswers503HubCertExpiredBeforeTheUpgrade(t *testing.T) {
 	h, svc, clk := hubidHub(t, true)
-	clk.Add(181 * 24 * time.Hour)
+	clk.Add((hubid.DefaultValidityDays + 1) * 24 * time.Hour)
 	if _, err := svc.Current(); err == nil {
 		t.Fatal("the expired certificate is still served")
 	}

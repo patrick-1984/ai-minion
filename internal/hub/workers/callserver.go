@@ -382,7 +382,21 @@ func (s *CallServer) serveCall(ctx context.Context, op string, c Call) {
 // serveRequest serves a call stream whose op.request was read.
 func (s *CallServer) serveRequest(ctx context.Context, workerID string, st FrameStream, req callRequest) {
 	reply := func(v any) error { return s.reply(st, v) }
-	fail := func(err error) { s.fail(st, err) }
+	// The decision of the call, written at debug level when it ends: which
+	// credential spoke for it and how it ended.
+	start, credential, outcome := time.Now(), "", "ok"
+	defer func() {
+		s.log.Debug("workers: call stream", "op", req.Op, "worker_id", workerID, "source_session", req.SourceSession,
+			"credential", credential, "outcome", outcome, "duration", time.Since(start).String())
+	}()
+	fail := func(err error) {
+		outcome = string(proto.CodeInternal)
+		var pe *proto.Error
+		if errors.As(err, &pe) {
+			outcome = string(pe.Code)
+		}
+		s.fail(st, err)
+	}
 	s.mu.Lock()
 	fn, grantOnly := s.handlers[req.Op], s.grantOnly[req.Op]
 	s.mu.Unlock()
@@ -398,6 +412,14 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 
 	key := req.APIKey
 	pr, actor, grant, err := s.authenticate(ctx, workerID, key, req.SourceSession)
+	switch {
+	case grant != "":
+		credential = "session_control_grant"
+	case key != "":
+		credential = "api_key"
+	default:
+		credential = "worker"
+	}
 	if err != nil {
 		s.auditCall(ctx, actor, "call.auth", workerID, denialOutcome(err))
 		fail(err)
@@ -464,6 +486,7 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 		s.auditCall(ctx, actor, op.Name, callTarget(args), writeAuditOutcome(res, err))
 	}
 	if errors.Is(cause, errCallerGone) {
+		outcome = "caller_gone"
 		st.Reset()
 		return
 	}

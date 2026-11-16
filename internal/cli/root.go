@@ -23,6 +23,7 @@ func newRoot(reg *Registry) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	addVerboseFlag(root)
 	reg.Apply(root)
 	return root
 }

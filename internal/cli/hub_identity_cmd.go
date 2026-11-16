@@ -196,7 +196,7 @@ func addIdentityCommands(identity *cobra.Command, deps identityDeps) {
 		identity.AddCommand(cmd)
 	}
 	issueFlags := func(cmd *cobra.Command) func() ops.IssueMembers {
-		days := cmd.Flags().Int("validity", 0, "certificate validity in days, 1 to 400 (default 180)")
+		days := cmd.Flags().Int("validity", 0, "certificate validity in days, 1 to 3650 (default 3650)")
 		floor := cmd.Flags().Int64("serial-floor", 0, "the new serial must be greater than this value")
 		far := cmd.Flags().Bool("allow-far-floor", false, "allow a serial floor more than 366 days ahead")
 		return func() ops.IssueMembers {

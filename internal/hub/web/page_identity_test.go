@@ -205,10 +205,11 @@ func TestWorkersCountdown(t *testing.T) {
 		wantText string
 		wantTone string
 	}{
-		{"long", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 120}, "Hub certificate valid until 2026-12-20 (120 days left).", "ok"},
-		{"warning", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 12, Warning: "warning"}, "Hub certificate: 12 days left (expires 2026-12-20).", "warning"},
-		{"urgent", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 1, Warning: "error"}, "Hub certificate: 1 day left (expires 2026-12-20).", "danger"},
-		{"expired", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: -2, Warning: "expired"}, "Hub certificate expired on 2026-12-20: Workers are refused.", "danger"},
+		{"long", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 3600}, "", ""},
+		{"31 days", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 31}, "", ""},
+		{"warning", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 12, Warning: "warning"}, "Hub certificate expires in 12 days — re-issue it in Administration > Hub identity (needs the passphrase).", "warning"},
+		{"urgent", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: 1, Warning: "error"}, "Hub certificate expires in 1 day — re-issue it in Administration > Hub identity (needs the passphrase).", "danger"},
+		{"expired", IdentityStatus{Established: true, NotAfter: notAfter, DaysLeft: -2, Warning: "expired"}, "Hub certificate expired on 2026-12-20, Workers are refused: re-issue it in Administration > Hub identity (needs the passphrase).", "danger"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			release := SetIdentityStatus(func(context.Context) (IdentityStatus, bool) { return c.st, true })
@@ -258,8 +259,21 @@ func TestTheWorkersPageHeaderShowsTheCountdownToAdministrators(t *testing.T) {
 	defer release()
 	s := adminServer(t)
 	body := get(t, s, "/workers", "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, body, `id="identity-countdown"`, `data-tone="warning"`, "Hub certificate: 12 days left (expires 2026-12-20).", `href="/admin/identity"`)
+	mustHave(t, body, `id="identity-countdown"`, `data-tone="warning"`, "Hub certificate expires in 12 days", "Administration &gt; Hub identity (needs the passphrase)", `href="/admin/identity"`)
 	mustNotHave(t, get(t, s, "/workers", "X-Test-Session", userHeader).Body.String(), "identity-countdown", "Hub certificate")
+}
+
+// A certificate outside the 30-day window needs no action: no badge at all.
+func TestTheWorkersPageShowsNoBadgeForAValidCertificate(t *testing.T) {
+	SetAdminOps(nil)
+	SetLiveSource(newFakeSource(Dashboard{}, Dashboard{}))
+	t.Cleanup(func() { SetLiveSource(nil) })
+	release := SetIdentityStatus(func(context.Context) (IdentityStatus, bool) {
+		return IdentityStatus{Established: true, NotAfter: time.Date(2036, 11, 12, 0, 0, 0, 0, time.UTC), DaysLeft: 3649}, true
+	})
+	defer release()
+	body := get(t, adminServer(t), "/workers", "X-Test-Session", adminHeader).Body.String()
+	mustNotHave(t, body, "identity-countdown", "Hub certificate")
 }
 
 // F9: before set, change and rotate the page states the passphrase policy.
@@ -278,4 +292,30 @@ func TestIdentityPageShowsThePassphrasePolicyBeforeSetChangeAndRotate(t *testing
 	if n := strings.Count(mainOf(t, b0), `data-passphrase-policy`); n != 1 {
 		t.Errorf("B0 shows the policy %d times, want 1", n)
 	}
+}
+
+// Behind a proxy the Hub does not trust, an operation refused as tls_required
+// can be resent with confirm_trusted_proxy from a button of the same form.
+func TestIdentityPageOffersTheTrustedProxyConfirmation(t *testing.T) {
+	_, body := serveIdentityPage(t, identityStatus(nil), adminHeader)
+	main := mainOf(t, body)
+	forms := strings.Count(main, `data-identity-op="`)
+	if n := strings.Count(main, `data-confirm-proxy hidden>I am behind a trusted HTTPS reverse proxy — continue</button>`); n != forms || n == 0 {
+		t.Errorf("%d confirmation buttons for %d identity forms", n, forms)
+	}
+	js, err := staticFiles.ReadFile("static/identity.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustHave(t, string(js), `code === 'tls_required'`, `body.confirm_trusted_proxy = true`, `[data-confirm-proxy]`, `operate(form, true)`)
+}
+
+// The State card is a label and value grid: a plain definition list, not the
+// inline .facts row that ran every label and value together.
+func TestIdentityStateIsALabelValueGrid(t *testing.T) {
+	_, body := serveIdentityPage(t, identityStatus(nil), adminHeader)
+	main := mainOf(t, body)
+	mustHave(t, main, `<h2 id="id-state">State</h2>
+  <dl>`, `<dt>Valid until</dt><dd>`)
+	mustNotHave(t, main, `class="facts"`)
 }

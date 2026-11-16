@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -271,6 +272,7 @@ func runOp(cmd *cobra.Command, deps opsDeps, op ops.Op, fields []argField, hasTa
 		}
 	}
 	var raw json.RawMessage
+	start := time.Now()
 	if op.Stream {
 		raw, err = backend.Stream(ctx, op.WireName(), args, func(el json.RawMessage) error {
 			return out.element(op, el)
@@ -278,6 +280,7 @@ func runOp(cmd *cobra.Command, deps opsDeps, op ops.Op, fields []argField, hasTa
 	} else {
 		raw, err = backend.Call(ctx, op.WireName(), args)
 	}
+	debugOpCall(cmd, op, local, start, err)
 	if err != nil {
 		return failure(cmd, out, op, requestID, err)
 	}

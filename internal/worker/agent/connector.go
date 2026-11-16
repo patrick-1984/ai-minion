@@ -434,7 +434,11 @@ func (c *Connector) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		if wait := c.cycle(ctx); wait {
 			c.setState(ConnBackoff)
-			if _, err := c.bo.Wait(ctx, c.clk); err != nil {
+			d := c.bo.Next()
+			c.log.Debug("hub connector backoff", "delay", d.String())
+			select {
+			case <-c.clk.After(d):
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -496,6 +500,7 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 	}()
 	backoff = c.attempt(actx, gen, enr, key)
 	if ctx.Err() == nil && errors.Is(context.Cause(actx), errEnrollmentChanged) {
+		c.log.Debug("hub connector: the enrollment changed; starting over", "enrollment_generation", gen)
 		// Start over with the new enrollment at once, without a backoff.
 		return false
 	}
@@ -581,7 +586,10 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 	c.mu.Lock()
 	c.status.State, c.status.Reason = ConnConnecting, ""
 	c.status.Attempts++
+	n := c.status.Attempts
 	c.mu.Unlock()
+	c.log.Debug("hub connector dialing", "hub", hubLabel(c.cfg.HubURL), "attempt", n,
+		"enrolled", true, "worker_id", enr.WorkerID, "enrollment_generation", gen, "pin_chain_position", enr.Pin.Seq)
 
 	att, err := c.cfg.Dialer.Connect(ctx, ConnectParams{
 		HubURL:    c.cfg.HubURL,
@@ -606,6 +614,8 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 		}
 		return true
 	}
+	c.log.Debug("hub handshake done", "reply", att.Reply.Type, "protocol", att.Version.String(),
+		"pin_changed", att.PinChanged, "ratchet_changed", att.RatchetChanged)
 	if att.Reply.Type == proto.TypeRevoke {
 		return c.onRevoke(ctx, gen, att)
 	}
@@ -861,10 +871,16 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		"worker_id", w.WorkerID, "name", w.Name, "owner", w.Owner, "kind", w.Kind,
 		"preview_only", w.Policy.PreviewOnly, "protocol", att.Version.String())
 
+	c.log.Debug("hub welcome", "worker_id", w.WorkerID, "pending_approval", w.Pending,
+		"protocol", att.Version.String(), "hub_proto_min", w.Min.String(), "hub_proto_max", w.Max.String())
+	connectedAt := c.clk.Now()
+
 	select {
 	case <-att.Session.Done():
 	case <-ctx.Done():
 	}
+	c.log.Debug("hub connection ended", "reason", causeText(att.Session.Err()),
+		"stopping", ctx.Err() != nil, "connected_for", c.clk.Now().Sub(connectedAt).String())
 	c.mu.Lock()
 	c.cur = nil
 	c.mu.Unlock()

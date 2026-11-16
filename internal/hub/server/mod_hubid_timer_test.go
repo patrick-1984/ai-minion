@@ -25,8 +25,8 @@ func TestExpiryTimerClosesSessionsAtNotAfterAndRearmsAfterReissue(t *testing.T) 
 	var off time.Duration
 	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return time.Now().Add(off) }
 	setOff := func(d time.Duration) { mu.Lock(); off = d; mu.Unlock() }
-	// The first certificate (180 days) expires 1.5 s from now.
-	setOff(-180*24*time.Hour + 1500*time.Millisecond)
+	// The first certificate (default validity) expires 1.5 s from now.
+	setOff(-hubid.DefaultValidityDays*24*time.Hour + 1500*time.Millisecond)
 	svc := hubidtest.Open(t, st, t.TempDir(), hubidtest.WithNow(now))
 	setOff(0) // the certificate was dated by the skewed clock; from here on time is real
 	var closes atomic.Int32

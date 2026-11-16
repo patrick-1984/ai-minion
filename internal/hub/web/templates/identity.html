@@ -3,7 +3,7 @@
 <div class="stack" id="identity-page" data-state="{{.Data.Status.State}}">
 <section class="panel" aria-labelledby="id-state">
   <h2 id="id-state">State</h2>
-  <dl class="facts">
+  <dl>
     <dt>Bootstrap state</dt><dd>{{.Data.Status.StateLabel}}</dd>
     <dt>Passphrase</dt><dd>{{if .Data.Status.PassphraseSet}}set{{else}}not set yet{{end}}</dd>
     <dt>Workers can connect</dt><dd>{{if .Data.Status.Serving}}yes{{else}}no{{end}}</dd>
@@ -50,6 +50,7 @@
     <div class="field"><label for="set-conf">Repeat the passphrase</label><input type="password" id="set-conf" name="confirm" autocomplete="new-password" required></div>
     <button type="submit">Set passphrase</button>
     <p class="form-error" data-form-error role="alert" hidden></p>
+    {{template "proxy-confirm"}}
   </form>
 </section>
 {{end}}
@@ -60,12 +61,13 @@
   <p>A new operational key and certificate under the same root. All Worker sessions close and reconnect.</p>
   <form data-identity-op="hub_identity_reissue" method="post" autocomplete="off">
     <div class="field"><label for="re-pass">Passphrase</label><input type="password" id="re-pass" name="passphrase" autocomplete="current-password" required></div>
-    <div class="field"><label for="re-days">Validity in days (1 to 400)</label><input type="number" id="re-days" name="validity_days" min="1" max="400" value="180" inputmode="numeric"></div>
+    <div class="field"><label for="re-days">Validity in days (1 to 3650)</label><input type="number" id="re-days" name="validity_days" min="1" max="3650" value="3650" inputmode="numeric"></div>
     <details><summary>Advanced</summary>
       <div class="field"><label for="re-floor">Serial floor (the new serial is greater)</label><input type="number" id="re-floor" name="serial_floor" min="0" inputmode="numeric"></div>
     </details>
     <button type="submit">Re-issue certificate</button>
     <p class="form-error" data-form-error role="alert" hidden></p>
+    {{template "proxy-confirm"}}
   </form>
 </section>
 {{end}}
@@ -82,6 +84,7 @@
     <div class="field"><label for="ro-word">Type ROTATE to confirm</label><input type="text" id="ro-word" name="word" autocomplete="off" autocapitalize="characters" spellcheck="false" required></div>
     <button type="submit">Rotate master key</button>
     <p class="form-error" data-form-error role="alert" hidden></p>
+    {{template "proxy-confirm"}}
   </form>
 </section>
 {{end}}
@@ -97,6 +100,7 @@
     <div class="field"><label for="ch-conf">Repeat the new passphrase</label><input type="password" id="ch-conf" name="confirm" autocomplete="new-password" required></div>
     <button type="submit">Change passphrase</button>
     <p class="form-error" data-form-error role="alert" hidden></p>
+    {{template "proxy-confirm"}}
   </form>
 </section>
 {{end}}
@@ -113,3 +117,5 @@
       <li>You may type any Unicode characters, including spaces and letters with accents. Characters are counted as code points, so one emoji counts as one, but every character takes 1 to 4 bytes of the 1024. Type it the same way every time: the Hub does not normalize it, so a different keyboard layout or input method can produce a different passphrase.</li>
     </ul>
   </div>{{end}}
+
+{{define "proxy-confirm"}}<button type="button" class="btn-secondary" data-confirm-proxy hidden>I am behind a trusted HTTPS reverse proxy — continue</button>{{end}}

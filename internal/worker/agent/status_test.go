@@ -86,7 +86,7 @@ func pairedInputs(t *testing.T) StatusInputs {
 		Keys:     fakeKeys{key: seedKey(t, 2)},
 		Share:    fakeShare{sel: store.ShareSelection{Mode: store.ShareSelect, Sessions: []string{"build", "docs"}, Configured: true}},
 		Sessions: fakeSessions{n: 3},
-		Live: fakeLive{ls: LiveStatus{PairingKnown: true, Connector: Status{
+		Live: fakeLive{ls: LiveStatus{PairingKnown: true, ApprovalKnown: true, Connector: Status{
 			State: ConnConnected, ConnectedSince: statusTime,
 		}}},
 	}

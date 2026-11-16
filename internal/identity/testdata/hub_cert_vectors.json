@@ -176,15 +176,15 @@
     "note": "negative validity, re-signed"
   },
   {
-    "name": "validity_400d_plus_1ms",
+    "name": "validity_3650d_plus_1ms",
     "root_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     "op_seed_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
-    "payload_hex": "0103a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8cd14b37f956e953194ff7fb73b3d81dcc561d61a7538094b7c3e1a643ee5f3aa00000193188528000000000000000000000000080befc001",
-    "signature_hex": "155861af5d0e9a65e191ca248f87aeb72972cded61bb1699258af816c727f7a5b4fc6faff80e01eb2e22a5ab7c6c6aaf77cbcf3755a983b54aa8a68feea0aa06",
-    "cert_b64url": "AQOhB7_zzhC-HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4zRSzf5VulTGU_3-3Oz2B3MVh1hp1OAlLfD4aZD7l86oAAAGTGIUoAAAAAAAAAAAAAAAACAvvwAEVWGGvXQ6aZeGRyiSPh663KXLN7WG7FpklivgWxyf3pbT8b6_4DgHrLiKlq3xsaq93y883VamDtUqopo_uoKoG",
-    "cert_sha256_hex": "46561fa413e344ac3d8c8946a4208bbd028794c1d02f5c54958adf9b8c13166f",
+    "payload_hex": "0103a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8cd14b37f956e953194ff7fb73b3d81dcc561d61a7538094b7c3e1a643ee5f3aa00000193188528000000000000000000000000496cebb801",
+    "signature_hex": "1e4e0b813f949a87222c9991b1631a7da5145069c12743182541eff47989d0e31a683f2ab2e44b28f9520ef21378b521db2e1b1379ddc77fe69eddd15afe480f",
+    "cert_b64url": "AQOhB7_zzhC-HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4zRSzf5VulTGU_3-3Oz2B3MVh1hp1OAlLfD4aZD7l86oAAAGTGIUoAAAAAAAAAAAAAAAASWzruAEeTguBP5SahyIsmZGxYxp9pRRQacEnQxglQe_0eYnQ4xpoPyqy5Eso-VIO8hN4tSHbLhsTed3Hf-ae3dFa_kgP",
+    "cert_sha256_hex": "aacef7623bbe0f5137993c98a9bca7586978aec537366ba44168b51fce8f7a0c",
     "expect": "cert_malformed",
-    "note": "400 days + 1 ms, re-signed"
+    "note": "3650 days + 1 ms, re-signed"
   },
   {
     "name": "overflow_span",

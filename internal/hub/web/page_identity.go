@@ -10,7 +10,9 @@ package web
 // catalog, so the server checks the administrator role, the fresh sign-in, the
 // CSRF token, the same-origin headers, the effective HTTPS and the lockout.
 // The page never echoes a passphrase: the fields are cleared after every
-// submission, the script keeps nothing, and the Hub puts none in any response,
+// submission (except a tls_required refusal, which the Hub answers before it
+// reads the body, so that the button "I am behind a trusted HTTPS reverse
+// proxy" can resend it with confirm_trusted_proxy), the script keeps nothing, and the Hub puts none in any response,
 // log line or audit event.
 
 import (
@@ -114,8 +116,10 @@ func identityBanner(r *http.Request) []Banner {
 	return nil
 }
 
-// workersCountdown is the line in the header of the Workers page for an
-// administrator.
+// workersCountdown is the badge in the header of the Workers page for an
+// administrator. It shows only when action is needed: from 30 days before
+// not_after (the banner's warning window) and once expired. It is empty
+// otherwise, because a valid certificate needs no attention.
 func workersCountdown(r *http.Request) (text, tone string) {
 	if _, ok := adminSession(r); !ok {
 		return "", ""
@@ -124,15 +128,16 @@ func workersCountdown(r *http.Request) (text, tone string) {
 	if !ok || !st.Established {
 		return "", ""
 	}
+	const action = "re-issue it in Administration > Hub identity (needs the passphrase)"
 	switch st.Warning {
 	case "expired":
-		return "Hub certificate expired on " + dateText(st.NotAfter) + ": Workers are refused.", "danger"
+		return "Hub certificate expired on " + dateText(st.NotAfter) + ", Workers are refused: " + action + ".", "danger"
 	case "error":
-		return "Hub certificate: " + daysText(st.DaysLeft) + " left (expires " + dateText(st.NotAfter) + ").", "danger"
+		return "Hub certificate expires in " + daysText(st.DaysLeft) + " — " + action + ".", "danger"
 	case "warning":
-		return "Hub certificate: " + daysText(st.DaysLeft) + " left (expires " + dateText(st.NotAfter) + ").", "warning"
+		return "Hub certificate expires in " + daysText(st.DaysLeft) + " — " + action + ".", "warning"
 	}
-	return "Hub certificate valid until " + dateText(st.NotAfter) + " (" + daysText(st.DaysLeft) + " left).", "ok"
+	return "", ""
 }
 
 // IdentityPage is what identity.html sees as .Data.

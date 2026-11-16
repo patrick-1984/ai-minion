@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
-	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 )
 
@@ -98,19 +97,11 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		res.File = file
 	}
 
-	level, err := res.Resolve(config.KeyLogLevel)
-	if err != nil {
-		return err
-	}
-	format, err := res.Resolve(config.KeyLogFormat)
-	if err != nil {
-		return err
-	}
 	stderr := deps.stderr
 	if stderr == nil {
 		stderr = cmd.ErrOrStderr()
 	}
-	logger, err := logx.New(logx.Options{Level: level.Value, Format: logx.Format(format.Value), Output: stderr})
+	logger, err := commandLogger(cmd, res, stderr)
 	if err != nil {
 		return err
 	}
@@ -170,7 +161,7 @@ func onlyCanceled(err error) bool {
 // means true.
 func addSettingFlags(cmd *cobra.Command, reg *config.Registry, role config.Scope) {
 	for _, s := range reg.ForScope(role) {
-		if !s.HasFlag() || cmd.Flags().Lookup(s.FlagName()) != nil {
+		if !s.HasFlag() || s.Key == config.KeyVerbose || cmd.Flags().Lookup(s.FlagName()) != nil {
 			continue
 		}
 		help := s.Help

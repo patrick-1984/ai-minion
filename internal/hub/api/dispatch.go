@@ -102,6 +102,16 @@ type route struct {
 	methods []string
 }
 
+// refused writes err as the answer and, at debug level, one line with the
+// operation, the stage that refused it, the kind of the caller (empty before
+// authentication) and the error code. The message is not logged: it can name
+// what the caller asked for.
+func (d *Dispatcher) refused(w http.ResponseWriter, op, stage string, kind authz.Kind, err error) {
+	e := ErrorOf(err)
+	d.logger().Debug("api request refused", "op", op, "stage", stage, "principal_kind", string(kind), "code", string(e.Code))
+	WriteError(w, e)
+}
+
 // serve runs the operation of rt for r: authenticate, find the handler,
 // decode and validate the arguments, derive the resource, authz.Decide, run
 // the handler. Every failure is written as an AD-18 envelope.
@@ -128,9 +138,10 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	// covered too: net/http reads the unread rest of a body before it
 	// answers, and that read must not wait for a stalled client.
 	d.armBody(w, r)
+	start := time.Now()
 	id, err := d.Auth.Authenticate(r)
 	if err != nil {
-		WriteError(w, err)
+		d.refused(w, rt.op, "authenticate", "", err)
 		return
 	}
 	op, ent, ok := d.find(rt.op)
@@ -148,13 +159,13 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	if op.SessionOnly && (id.Via != ViaSession || id.Principal.Kind != authz.KindBrowserSession) {
 		// Only a browser session acting as itself may run these (the Hub
 		// identity operations); an API key and an act-as session may not.
-		WriteError(w, NewError(proto.CodeForbidden, "this operation is available only to a signed-in browser session"))
+		d.refused(w, op.Name, "session_only", id.Principal.Kind, NewError(proto.CodeForbidden, "this operation is available only to a signed-in browser session"))
 		return
 	}
 
 	args, requestWorker, err := d.decode(w, r, op, rt, id.Principal)
 	if err != nil {
-		WriteError(w, err)
+		d.refused(w, op.Name, "arguments", id.Principal.Kind, err)
 		return
 	}
 	var res authz.Resource
@@ -164,7 +175,7 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		res, err = defaultResource(id.Principal, op, args, requestWorker)
 	}
 	if err != nil {
-		WriteError(w, err)
+		d.refused(w, op.Name, "resource", id.Principal.Kind, err)
 		return
 	}
 	call = &Call{Op: op, Args: args, Principal: id.Principal, Identity: id, Resource: res, IP: id.IP, Request: r}
@@ -175,7 +186,7 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 			d.logger().Error("authorisation failed", "op", op.Name, "error", err)
 		}
 		d.audit(r.Context(), call, AuditOutcomeDenied)
-		WriteError(w, e)
+		d.refused(w, op.Name, "authorize", id.Principal.Kind, e)
 		return
 	}
 
@@ -193,10 +204,14 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 			d.logger().Error("operation failed", "op", op.Name, "error", err)
 		}
 		d.audit(r.Context(), call, auditOutcomeError)
+		d.logger().Debug("api request done", "op", op.Name, "principal_kind", string(id.Principal.Kind),
+			"outcome", string(e.Code), "duration", time.Since(start).String())
 		WriteError(w, e)
 		return
 	}
 	d.audit(r.Context(), call, outcomeOf(result))
+	d.logger().Debug("api request done", "op", op.Name, "principal_kind", string(id.Principal.Kind),
+		"outcome", "ok", "duration", time.Since(start).String())
 	if result == nil {
 		result = struct{}{}
 	}

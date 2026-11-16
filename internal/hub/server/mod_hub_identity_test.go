@@ -600,6 +600,58 @@ func TestIdentityOperationsNeedEffectiveHTTPS(t *testing.T) {
 	})
 }
 
+// Behind a proxy the Hub does not trust, the browser's https Origin and the
+// cleartext request are accepted only with confirm_trusted_proxy, and the
+// confirmation bypasses no other rule.
+func TestIdentityTrustedProxyConfirmation(t *testing.T) {
+	ih := startIdentityHub(t, idHubOpts{cfg: func(c *Config) {
+		c.TLSOff = true
+		c.ManagementListen = "127.0.0.1:0"
+	}})
+	ih.bootstrapMgmt(t)
+	host := strings.TrimPrefix(ih.hc.base, "http://")
+	proxied := func(tok, csrf string) map[string]string {
+		h := ih.browser(tok, csrf)
+		h["Origin"] = "https://" + host
+		return h
+	}
+	plain := map[string]any{"passphrase": idWrong}
+	confirmed := map[string]any{"passphrase": idWrong, "confirm_trusted_proxy": true}
+
+	tok, csrf := ih.sessionAt(t, "root", time.Second)
+	// The browser behind the proxy sends Origin https://<Host>: the answer is
+	// tls_required, which makes the page offer the confirmation.
+	if r := ih.op(t, ops.OpHubIdentityReissue, plain, proxied(tok, csrf)); r.code != 403 || r.err.Code != proto.CodeTLSRequired {
+		t.Errorf("https origin without confirmation = %d %s", r.code, r.body)
+	}
+	if r := ih.op(t, ops.OpHubIdentityReissue, plain, ih.browser(tok, csrf)); r.code != 403 || r.err.Code != proto.CodeTLSRequired {
+		t.Errorf("cleartext without confirmation = %d %s", r.code, r.body)
+	}
+	// The confirmed request reaches the service, which refuses the wrong passphrase.
+	if r := ih.op(t, ops.OpHubIdentityReissue, confirmed, proxied(tok, csrf)); r.code != 403 || r.err.Code != proto.CodePassphraseInvalid {
+		t.Errorf("confirmed = %d %s", r.code, r.body)
+	}
+	if r := ih.op(t, ops.OpHubIdentityChangePassphrase, map[string]any{"passphrase": idPass1, "new_passphrase": idPass2, "confirm": idPass2, "confirm_trusted_proxy": true}, proxied(tok, csrf)); r.code != 200 {
+		t.Errorf("confirmed change = %d %s", r.code, r.body)
+	}
+
+	foreign := proxied(tok, csrf)
+	foreign["Origin"] = "https://evil.example"
+	forged := proxied(tok, csrf)
+	forged[session.CSRFHeader] = "forged"
+	for name, h := range map[string]map[string]string{"foreign origin": foreign, "forged CSRF token": forged} {
+		for _, body := range []map[string]any{plain, confirmed} {
+			if r := ih.op(t, ops.OpHubIdentityReissue, body, h); r.code != 403 || r.err.Code != proto.CodeForbidden {
+				t.Errorf("%s (%v) = %d %s", name, body["confirm_trusted_proxy"], r.code, r.body)
+			}
+		}
+	}
+	staleTok, staleCSRF := ih.sessionAt(t, "root", 6*time.Minute)
+	if r := ih.op(t, ops.OpHubIdentityReissue, confirmed, proxied(staleTok, staleCSRF)); r.code != 403 || r.err.Code != proto.CodeReauthRequired {
+		t.Errorf("confirmed with a stale sign-in = %d %s", r.code, r.body)
+	}
+}
+
 func mergeHeaders(a, b map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range a {

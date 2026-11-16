@@ -215,7 +215,7 @@ func TestStalledHandshakeFailsAtRegistration(t *testing.T) {
 
 func TestExpiryWarningsAndEvents(t *testing.T) {
 	e := newEnv(t)
-	s := e.established() // 180 days
+	s := e.established() // default validity
 	na := e.cert().NotAfterMs
 	at := func(d time.Duration) { e.clock = time.UnixMilli(na).Add(d) }
 	level := func() WarnLevel {
