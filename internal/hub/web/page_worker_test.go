@@ -470,12 +470,12 @@ func TestWorkerDetailControlsHaveAStableFocusIdentityAcrossLiveUpdates(t *testin
 	s2, _ := workerPageServer(t, more, more, wAliceInfo)
 	_, b2 := page(t, s2, "/workers/w1", "alice:user")
 	id1, id2 := identities(t, b1), identities(t, b2)
-	for _, want := range []ident{{"worker-actions-w1", "new-session"}, {"worker-sessions-w1", "session-list"}} {
+	for _, want := range []ident{{"worker-actions-w1", "new-session"}, {"worker-sessions-w1", "session-list"}, {"worker-forget-w1", "forget"}} {
 		if id1[want.control] != want || id2[want.control] != want {
 			t.Errorf("control %q: identity %+v before and %+v after an update, want %+v both times", want.control, id1[want.control], id2[want.control], want)
 		}
 	}
-	if len(id1) != 2 || len(id2) != 2 {
+	if len(id1) != 3 || len(id2) != 3 {
 		t.Errorf("unexpected controls on the Worker page: %v / %v", id1, id2)
 	}
 	// The identity is the canonical Worker id: another Worker has other keys, and a display name never makes one.
@@ -487,7 +487,7 @@ func TestWorkerDetailControlsHaveAStableFocusIdentityAcrossLiveUpdates(t *testin
 	s3, _ := workerPageServer(t, empty, empty, wAliceInfo)
 	_, b3 := page(t, s3, "/workers/w1", "alice:user")
 	id3 := identities(t, b3)
-	if id3["new-session"] != (ident{"worker-actions-w1", "new-session"}) || len(id3) != 1 {
+	if id3["new-session"] != (ident{"worker-actions-w1", "new-session"}) || len(id3) != 2 {
 		t.Errorf("without sessions: %v", id3)
 	}
 	// Offline: no action at all; the key of the group is gone with it, so the focus goes to the heading, never to another action.
@@ -498,5 +498,9 @@ func TestWorkerDetailControlsHaveAStableFocusIdentityAcrossLiveUpdates(t *testin
 	_, b4 := page(t, s4, "/workers/w1", "alice:user")
 	if strings.Contains(b4, `data-control="new-session"`) || strings.Contains(b4, "worker-actions-w1") {
 		t.Error("an offline Worker still has the New session group")
+	}
+	// A22: an offline Worker can still be forgotten by its owner.
+	if !strings.Contains(b4, `data-control="forget"`) || !strings.Contains(b4, `hx-post="/workers/w1/remove"`) {
+		t.Error("no Forget on the Worker page of its owner")
 	}
 }
