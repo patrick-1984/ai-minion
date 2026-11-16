@@ -140,19 +140,19 @@ func (d *dialog) shareStep(ctx context.Context) error {
 		return nil
 	}
 
-	def := "1"
+	def := "4"
 	switch v.Default.Mode {
+	case store.ShareAll:
+		def = "1"
 	case store.ShareSelect:
 		def = "2"
 	case store.ShareLater:
 		def = "3"
-	case store.ShareNone:
-		def = "4"
 	}
-	d.say("  1) all     Share all of them, also sessions you create later (default)")
+	d.say("  1) all     Share all of them, also sessions you create later")
 	d.say("  2) choose  Choose now which sessions to share")
 	d.say("  3) later   Configure later from the Hub; nothing is shared until you do")
-	d.say("  4) none    Share no session")
+	d.say("  4) none    Share no session (default; share sessions later from the Hub)")
 	d.say("Sessions are never renamed, closed or changed by this choice.")
 	for {
 		ans, err := d.ask(ctx, fmt.Sprintf("Your choice [%s]: ", def))
@@ -223,7 +223,8 @@ func (d *dialog) tick(ctx context.Context, v ShareView) (sel store.ShareSelectio
 	}
 	for {
 		d.say("")
-		d.say("Type a number to tick or untick a session (several numbers are fine).")
+		d.say("Type a number to tick or untick a session (several numbers are fine),")
+		d.say("all to tick every session, none to untick every session.")
 		d.say("Press Enter when you are done, or type back to return to the options.")
 		for i, n := range v.Sessions {
 			mark := " "
@@ -239,6 +240,16 @@ func (d *dialog) tick(ctx context.Context, v ShareView) (sel store.ShareSelectio
 		switch strings.ToLower(ans) {
 		case "back", "b":
 			return sel, false, nil
+		case "all", "a":
+			for i := range ticked {
+				ticked[i] = true
+			}
+			continue
+		case "none", "n":
+			for i := range ticked {
+				ticked[i] = false
+			}
+			continue
 		case "":
 			var names []string
 			for i, n := range v.Sessions {

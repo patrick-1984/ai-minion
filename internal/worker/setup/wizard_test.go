@@ -201,7 +201,7 @@ func TestStepsAreEnforcedInOrder(t *testing.T) {
 	}
 }
 
-func TestShareStepListsSessionsAndDefaultsToAll(t *testing.T) {
+func TestShareStepListsSessionsAndDefaultsToNone(t *testing.T) {
 	r := newRig([]string{"build", "docs"}, Provided{})
 	v, err := r.w.ShareStep(context.Background())
 	if err != nil {
@@ -210,8 +210,8 @@ func TestShareStepListsSessionsAndDefaultsToAll(t *testing.T) {
 	if !v.Listed || strings.Join(v.Sessions, ",") != "build,docs" {
 		t.Errorf("view: %+v", v)
 	}
-	if v.Default.Mode != store.ShareAll {
-		t.Errorf("a first run offers all by default, got %q", v.Default.Mode)
+	if v.Default.Mode != store.ShareNone {
+		t.Errorf("a first run offers none by default, got %q", v.Default.Mode)
 	}
 }
 

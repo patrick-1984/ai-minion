@@ -178,7 +178,7 @@ func (c *countingReader) Read([]byte) (int, error) {
 func TestTerminalHappyPathNarrative(t *testing.T) {
 	r := newRig([]string{"build", "docs", "notes"}, Provided{})
 	u := newTypist(t)
-	u.typeLines("", "hub.example:8443") // default (all), then the address
+	u.typeLines("", "hub.example:8443") // default (none), then the address
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_, done := startDialog(t, ctx, r.w, u.r)
@@ -190,7 +190,7 @@ func TestTerminalHappyPathNarrative(t *testing.T) {
 		"Step 1 of 3: What may the Hub see?",
 		"I see 3 tmux sessions:",
 		"Configure later from the Hub",
-		"Sharing: share all tmux sessions, also the ones created later.",
+		"Sharing: share no tmux session.",
 		"Step 2 of 3: Hub address",
 		"(I added https:// in front: https://hub.example:8443)",
 		"DNS", "TCP", "TLS", "Protocol",
@@ -202,7 +202,7 @@ func TestTerminalHappyPathNarrative(t *testing.T) {
 	if n := strings.Count(o.out, "paired to alice"); n != 2 { // the pairing line and the summary
 		t.Errorf("\"paired to alice\" appears %d times, want 2 (pairing line, summary):\n%s", n, o.out)
 	}
-	if got := r.per.saved(); len(got) != 1 || got[0].Share.Mode != store.ShareAll || got[0].Server != "https://hub.example:8443" {
+	if got := r.per.saved(); len(got) != 1 || got[0].Share.Mode != store.ShareNone || got[0].Server != "https://hub.example:8443" {
 		t.Errorf("saved = %+v", got)
 	}
 	if got := r.chk.called(); len(got) != 1 || got[0] != "https://hub.example:8443" {
@@ -710,5 +710,21 @@ func TestTerminalSkipPairingExplainsInsteadOfOfferingACode(t *testing.T) {
 	lacks(t, out.String(), "Pairing code:")
 	if res.Pairing.Skipped != "invitation" || len(r.pair.calls()) != 0 {
 		t.Errorf("pairing = %+v calls %v", res.Pairing, r.pair.calls())
+	}
+}
+
+// With many sessions, "all" ticks every one and "none" unticks every one.
+func TestTerminalChooseNowAllAndNone(t *testing.T) {
+	r := newRig([]string{"build", "docs", "notes"}, Provided{})
+	u := newTypist(t)
+	u.typeLines("2", "all", "none", "all", "2", "", "") // tick all, untick all, tick all, untick docs; Enter; Solo
+	o := runDialog(t, r.w, u.r, true)
+	if o.err != nil {
+		t.Fatalf("err = %v\n%s", o.err, o.out)
+	}
+	contains(t, o.out, "all to tick every session, none to untick every session.", "[x] 3  notes", "Sharing: share only 2 sessions: build, notes.")
+	got := r.per.saved()
+	if len(got) != 1 || got[0].Share.Mode != store.ShareSelect || strings.Join(got[0].Share.Sessions, ",") != "build,notes" {
+		t.Fatalf("saved = %+v, want select [build notes]", got)
 	}
 }

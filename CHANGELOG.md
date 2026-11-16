@@ -10,6 +10,9 @@
 ### Fixed
 
 - **Pairing is easy to follow on the Worker console**: the pairing code, where to enter it and the Worker fingerprint stand in a box of `=====` lines instead of between log lines; after pairing, and while the Worker waits for approval, a second box repeats the fingerprint, and the Hub's approve dialog asks to compare it with that box.
+### Changed
+
+- **Sharing is easier with many sessions, and nothing is shared by default**: the Worker page's Sharing panel lists the sessions in a table with a **Shared** checkbox each, **All** and **None** buttons, and, for administrators, **Controllable from**: the controller sessions whose session-control grant reaches that session. The setup wizard's default is now "none" and its session list takes `all` and `none`; the install guides use `--share-existing none` and explain choosing in the Hub.
 
 ### Changed
 

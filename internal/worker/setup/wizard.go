@@ -233,7 +233,8 @@ func (w *Wizard) ShareStep(ctx context.Context) (ShareView, error) {
 	if w.listErr != nil {
 		v.ListError = w.listErr.Error()
 	}
-	v.Default = store.ShareSelection{Mode: store.ShareAll, Sessions: []string{}}
+	// Nothing is shared unless the person chooses it (owner decision, v0.9.0).
+	v.Default = store.ShareSelection{Mode: store.ShareNone, Sessions: []string{}}
 	if w.saved.Share.Configured {
 		v.Default = store.ShareSelection{Mode: w.saved.Share.Mode, Sessions: append([]string{}, w.saved.Share.Sessions...)}
 		if v.Default.Mode == store.ShareSelect {

@@ -669,3 +669,6 @@ body.embed .pipe-log { height: 10rem; max-height: 30vh; }
 .settings-filter input { width: 16rem; max-width: 100%; }
 .settings-section { font-size: 15px; font-weight: 650; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2, var(--surface)); }
 .settings-list { scroll-margin-top: 12px; }
+/* Share panel: bulk buttons and the session table (A14). */
+.share-bulk { display: flex; gap: 8px; margin: 4px 0 8px; }
+.share-table td, .share-table th { vertical-align: middle; }

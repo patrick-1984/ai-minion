@@ -20,6 +20,8 @@ package web
 
 import (
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -39,6 +41,9 @@ func SharePath(worker string) string { return "/w/" + url.PathEscape(worker) + "
 type ShareEntry struct {
 	Name   string
 	Shared bool
+	// ControlledBy are the controller sessions ("worker: session") whose
+	// session-control grant reaches this session. Only an admin sees them.
+	ControlledBy []string
 }
 
 // ShareView is what the "share_panel" fragment sees.
@@ -56,6 +61,8 @@ type ShareView struct {
 	Locked  bool
 	Entries []ShareEntry
 	Results []ActionResult
+	// ShowControl adds the "Controllable from" column (admins only).
+	ShowControl bool
 }
 
 var shareTemplates = sync.OnceValue(func() *template.Template {
@@ -112,10 +119,70 @@ func shareView(r *http.Request, t target) ShareView {
 		v.Selected = ops.ShareModeNone
 	}
 	v.Entries = shareNames(rule.Rule.Mode, shared, rule.Unshared)
+	if isPlainAdmin(r) {
+		v.ShowControl = true
+		addControllers(r, t, v.Entries)
+	}
 	if v.Locked {
 		v.Note = "The share selection of this worker is locked on the worker (share_lock). Change it there."
 	}
 	return v
+}
+
+// isPlainAdmin reports whether the request comes from an admin acting as
+// themselves: session-control grants are an admin feature.
+func isPlainAdmin(r *http.Request) bool {
+	sess, ok := session.FromContext(r.Context())
+	return ok && sess.Role == authz.RoleAdmin && sess.ActAs == nil
+}
+
+// addControllers fills ControlledBy: the controller sessions whose grant
+// reaches the session on the Worker of t (everything, the whole Worker, or
+// exactly that session). A failed read leaves the column empty.
+func addControllers(r *http.Request, t target, entries []ShareEntry) {
+	var grants ops.SessionControlListResult
+	if err := t.c.CallOp(r, ops.OpSessionControlList, struct{}{}, &grants); err != nil || len(grants.Grants) == 0 {
+		return
+	}
+	var workers ops.WorkersListResult
+	_ = t.c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &workers)
+	name := map[string]string{}
+	for _, w := range workers.Workers {
+		name[w.ID] = w.Name
+	}
+	label := func(id string) string {
+		if n := name[id]; n != "" {
+			return n
+		}
+		return id
+	}
+	for i := range entries {
+		for _, g := range grants.Grants {
+			if grantReaches(g.Targets, t.worker.ID, entries[i].Name) {
+				entries[i].ControlledBy = append(entries[i].ControlledBy, label(g.WorkerID)+": "+g.SessionName)
+			}
+		}
+		slices.Sort(entries[i].ControlledBy)
+	}
+}
+
+// grantReaches reports whether one of targets covers session on worker.
+func grantReaches(targets []ops.KeyResource, worker, session string) bool {
+	for _, k := range targets {
+		switch k.Kind {
+		case ops.KeyResourceEverything:
+			return true
+		case ops.KeyResourceWorker:
+			if k.WorkerID == worker {
+				return true
+			}
+		case ops.KeyResourceSession:
+			if k.WorkerID == worker && k.SessionName == session {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // shareFailure is the sentence for a refused or failed share call.
