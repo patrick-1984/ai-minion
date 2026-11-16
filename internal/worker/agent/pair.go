@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -324,6 +323,10 @@ type Pairer struct {
 	penalty *transport.Backoff
 
 	lastFail string
+
+	// fpr is the fingerprint of the Worker key being paired, shown next to
+	// the code so that the person approving the Worker can compare it.
+	fpr string
 }
 
 // NewPairer validates cfg and returns a pairer.
@@ -507,6 +510,7 @@ func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
 	if err != nil {
 		return Enrollment{}, err
 	}
+	p.fpr = key.Fingerprint().String()
 	life, notice := p.initialLife(ctx)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -937,16 +941,29 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 // showCode prints the code on the console and in the log: the one place a
 // secret is printed (AD-20, NFR1).
 func (p *Pairer) showCode(c identity.PairingCode, notice string) {
-	var b strings.Builder
+	lines := []string{}
 	if notice != "" {
-		b.WriteString(notice + " ")
+		lines = append(lines, notice, "")
 	}
-	fmt.Fprintf(&b, "Pairing code: %s\n", c.String())
-	fmt.Fprintf(&b, "Enter this code in the Hub (Add worker) within %s. Hub: %s\n", ttlText(p.ttl), hubLabel(p.cfg.HubURL))
-	_, _ = io.WriteString(p.out, b.String())
+	lines = append(lines,
+		"Pairing code: "+c.String(),
+		"",
+		"1. Open the Hub: "+hubLabel(p.cfg.HubURL),
+		"2. Go to Workers > Add worker and enter the code within "+ttlText(p.ttl)+".",
+	)
+	if p.fpr != "" {
+		lines = append(lines,
+			"3. If the Hub asks to approve this Worker, check that it shows",
+			"   exactly this fingerprint:",
+			"",
+			"Worker fingerprint: "+p.fpr,
+		)
+	}
+	writeConsoleBox(p.out, "MINION WORKER PAIRING", lines...)
 	// The code is a secret that is printed for the human on purpose (AD-20):
 	// the console above and the log (docker logs) are the only places.
-	p.log.Info("pairing code", "pairing_code", c.String(), "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL))
+	p.log.Info("pairing code", "pairing_code", c.String(), "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
+		"worker_fingerprint", p.fpr)
 }
 
 func ttlText(d time.Duration) string {
@@ -1014,7 +1031,18 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 		}
 		return Enrollment{}, fmt.Errorf("store the enrollment: %w", err)
 	}
-	_, _ = fmt.Fprintf(p.out, "paired to %s\n", w.Owner)
+	lines := []string{"paired to " + w.Owner, "Hub: " + hubLabel(p.cfg.HubURL)}
+	if w.Pending {
+		lines = append(lines, "",
+			"Waiting for approval: the owner or an admin approves it in the Hub",
+			"(Workers page). Approve only if the Hub shows this fingerprint:")
+	} else {
+		lines = append(lines, "")
+	}
+	if p.fpr != "" {
+		lines = append(lines, "Worker fingerprint: "+p.fpr)
+	}
+	writeConsoleBox(p.out, "MINION WORKER PAIRED", lines...)
 	p.log.Info("paired with the hub", "hub", hubLabel(p.cfg.HubURL), "hub_fingerprint", hubFingerprint(res.Pin),
 		"worker_id", w.WorkerID, "name", w.Name, "owner", w.Owner, "kind", w.Kind)
 	return enr, nil

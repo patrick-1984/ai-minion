@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -246,6 +247,9 @@ type ConnectorConfig struct {
 	// An error is retried with the backoff (the connector never creates a key
 	// and never deletes anything).
 	Key func() (*identity.Key, error)
+	// Out is the console for the messages a person must act on (the
+	// approval box); nil prints nothing there.
+	Out io.Writer
 	// Enrollment is the pin and enrollment state.
 	Enrollment *Enrollments
 	// Policy receives the Hub policy; nil ignores it.
@@ -285,9 +289,12 @@ type ConnectorConfig struct {
 // so that it is unit-tested without a network and without waiting.
 type Connector struct {
 	cfg ConnectorConfig
-	log *slog.Logger
-	clk transport.Clock
-	bo  *transport.Backoff
+	// pendingShown makes the approval box appear once per process, not on
+	// every reconnect.
+	pendingShown atomic.Bool
+	log          *slog.Logger
+	clk          transport.Clock
+	bo           *transport.Backoff
 
 	mu       sync.Mutex
 	status   Status
@@ -309,6 +316,9 @@ type running struct {
 	cancel context.CancelCauseFunc
 	wg     sync.WaitGroup
 }
+
+// notePending reports whether the approval box is still to be shown.
+func (c *Connector) notePending() bool { return c.pendingShown.CompareAndSwap(false, true) }
 
 // NewConnector validates cfg and returns a connector. [Connector.Run] starts it.
 func NewConnector(cfg ConnectorConfig) (*Connector, error) {
@@ -862,6 +872,18 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		c.startHandler(r, nh)
 	}
 	c.mu.Unlock()
+	if w.Pending && c.notePending() {
+		lines := []string{
+			"This Worker is waiting for approval in the Hub: " + hubLabel(c.cfg.HubURL),
+			"The owner or an admin approves it on the Workers page",
+			"(or: minion hub worker approve). Approve only if the Hub shows:",
+			"",
+		}
+		if k, err := c.cfg.Key(); err == nil {
+			lines = append(lines, "Worker fingerprint: "+k.Fingerprint().String())
+		}
+		writeConsoleBox(c.cfg.Out, "MINION WORKER WAITING FOR APPROVAL", lines...)
+	}
 	if w.Pending {
 		c.log.Warn("this Worker is waiting for approval: ask its owner or an admin to approve it in the Hub (Workers page, or `minion hub worker approve`); until then the Hub sends it no operations",
 			"worker_id", w.WorkerID, "name", w.Name)

@@ -6,6 +6,10 @@
 
 - **Thin Workers (preview)** in C for OpenWrt routers and ESP32 chips (`clients/`): they speak the Worker protocol 3.0, so this Hub serves them unchanged; enroll once with an invitation key, nothing on the device expires. OpenWrt packages of about 50 KB (shell sessions), ESP32 firmware with a command console (GPIO, ADC, PWM, I2C, Wi-Fi), a serial-console bridge and the device log. Released separately as prereleases `thin-v*` (`thin-v0.1.0-preview.1`); design in `docs/architecture/proposals/thin-workers.md`.
 
+### Fixed
+
+- **Pairing is easy to follow on the Worker console**: the pairing code, where to enter it and the Worker fingerprint stand in a box of `=====` lines instead of between log lines; after pairing, and while the Worker waits for approval, a second box repeats the fingerprint, and the Hub's approve dialog asks to compare it with that box.
+
 ## v0.8.2
 
 Released 2026-11-15.
