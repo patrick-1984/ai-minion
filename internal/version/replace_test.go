@@ -172,3 +172,24 @@ func TestReplaceBinaryRefusesUnverifiedBytes(t *testing.T) {
 		}
 	}
 }
+
+// Copies of earlier binaries renamed out of the way are removed by the next
+// update (Windows keeps a running .old, v0.9.3).
+func TestRemoveStaleOldCopies(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "minion.exe")
+	for _, n := range []string{".old-1", ".old-2", ".old"} {
+		if err := os.WriteFile(real+n, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removeStaleOld(real)
+	for _, n := range []string{".old-1", ".old-2"} {
+		if _, err := os.Stat(real + n); err == nil {
+			t.Errorf("%s is still there", n)
+		}
+	}
+	if _, err := os.Stat(real + ".old"); err != nil {
+		t.Error("the current .old was removed")
+	}
+}

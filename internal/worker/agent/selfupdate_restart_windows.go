@@ -37,6 +37,16 @@ func restartProcess(log *slog.Logger, exe string) {
 	if requestRestart(exe) {
 		return
 	}
+	restartNow(log, exe)
+}
+
+// restartNow starts the binary with the same arguments and console and exits:
+// the start-up rollback, where nothing runs yet that could stop cleanly. The
+// new process waits for this one to exit (waitForParent).
+func restartNow(log *slog.Logger, exe string) {
+	if underServiceManager() {
+		os.Exit(exitRestart)
+	}
 	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// The new process waits for this one to exit before it starts its

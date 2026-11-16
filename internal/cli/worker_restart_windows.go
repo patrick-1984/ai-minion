@@ -14,7 +14,15 @@ import (
 // reaches both processes; this one ignores it and leaves the stop to the new
 // Worker, so the console stays with the running Worker.
 func restartInConsole(exe string) error {
-	signal.Ignore(os.Interrupt)
+	// Consume Ctrl+C (signal.Ignore does not stop Windows' default handler from
+	// ending this process): the new Worker handles it, and this process waits
+	// for it to exit.
+	sig := make(chan os.Signal, 4)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		for range sig {
+		}
+	}()
 	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	err := cmd.Run()

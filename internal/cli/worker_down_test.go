@@ -27,6 +27,7 @@ func downCmd(t *testing.T, d workerDownDeps) (string, error) {
 func baseDown() workerDownDeps {
 	return workerDownDeps{goos: "linux",
 		run:            func(context.Context, string, ...string) error { return errors.New("inactive") },
+		output:         func(context.Context, string, ...string) (string, error) { return "inactive\n", nil },
 		windowsService: func() (bool, error) { return false, nil },
 		euid:           func() int { return 1000 },
 		user:           func() string { return "patryk" },
@@ -64,11 +65,12 @@ func TestWorkerDownWithNothingRunning(t *testing.T) {
 
 func TestWorkerDownPrintsTheSudoCommandForASystemService(t *testing.T) {
 	d := baseDown()
-	d.run = func(_ context.Context, name string, args ...string) error {
-		if name == "systemctl" && len(args) > 0 && args[0] == "is-active" && args[len(args)-1] == "minion-worker@patryk.service" {
-			return nil
+	// "activating": the wait before an automatic restart counts as running.
+	d.output = func(_ context.Context, name string, args ...string) (string, error) {
+		if args[len(args)-1] == "minion-worker@patryk.service" && args[0] == "show" {
+			return "activating\n", nil
 		}
-		return errors.New("inactive")
+		return "inactive\n", nil
 	}
 	d.call = func(context.Context, string) error { t.Fatal("the socket was used for a service"); return nil }
 	_, err := downCmd(t, d)
@@ -80,12 +82,15 @@ func TestWorkerDownPrintsTheSudoCommandForASystemService(t *testing.T) {
 func TestWorkerDownStopsTheUserServiceAndTheWindowsService(t *testing.T) {
 	d := baseDown()
 	var ran []string
+	d.output = func(_ context.Context, name string, args ...string) (string, error) {
+		if args[0] == "--user" {
+			return "active\n", nil
+		}
+		return "inactive\n", nil
+	}
 	d.run = func(_ context.Context, name string, args ...string) error {
 		ran = append(ran, name+" "+strings.Join(args, " "))
-		if strings.Contains(strings.Join(args, " "), "--user") {
-			return nil
-		}
-		return errors.New("inactive")
+		return nil
 	}
 	out, err := downCmd(t, d)
 	if err != nil || !strings.Contains(strings.Join(ran, ";"), "systemctl --user stop minion-worker.service") || !strings.Contains(out, "systemctl --user start") {

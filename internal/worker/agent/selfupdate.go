@@ -443,7 +443,9 @@ func RecoverUpdate(log *slog.Logger, stateDir string) *pendingRecord {
 	}
 	rolled, restart := guardOnStart(log, stateDir, exe, version.Version, time.Now())
 	if restart {
-		restartProcess(log, exe)
+		// A rollback happens before any module runs: hand over to the
+		// restored binary at once, never continue in the rejected one.
+		restartNow(log, exe)
 	}
 	return rolled
 }

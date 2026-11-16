@@ -17,6 +17,7 @@ import (
 	"os/user"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -37,6 +38,8 @@ type workerDownDeps struct {
 	goos string
 	// run runs a service manager command and reports whether it succeeded.
 	run func(ctx context.Context, name string, args ...string) error
+	// output runs a command and returns its standard output.
+	output func(ctx context.Context, name string, args ...string) (string, error)
 	// windowsService stops the Windows service when it runs: stopped reports
 	// whether it ran and was stopped.
 	windowsService func() (stopped bool, err error)
@@ -52,6 +55,10 @@ func defaultWorkerDownDeps() workerDownDeps {
 		goos: runtime.GOOS,
 		run: func(ctx context.Context, name string, args ...string) error {
 			return exec.CommandContext(ctx, name, args...).Run()
+		},
+		output: func(ctx context.Context, name string, args ...string) (string, error) {
+			b, err := exec.CommandContext(ctx, name, args...).Output()
+			return string(b), err
 		},
 		windowsService: stopWindowsService,
 		call: func(ctx context.Context, op string) error {
@@ -156,7 +163,7 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 		}
 		return stopped, nil
 	case "linux":
-		if d.run(ctx, "systemctl", "--user", "is-active", "--quiet", service.UserUnitName) == nil {
+		if unitRunning(ctx, d, "--user", service.UserUnitName) {
 			if err := d.run(ctx, "systemctl", "--user", "stop", service.UserUnitName); err != nil {
 				return false, fmt.Errorf("cannot stop the user service %s (%v); run: systemctl --user stop %s", service.UserUnitName, err, service.UserUnitName)
 			}
@@ -164,7 +171,7 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 			return true, nil
 		}
 		unit := service.SystemUnitFor(d.user())
-		if d.run(ctx, "systemctl", "is-active", "--quiet", unit) == nil {
+		if unitRunning(ctx, d, "", unit) {
 			if d.euid() != 0 {
 				return false, fmt.Errorf("the Worker runs as the system service %s; stop it with:\n  sudo systemctl stop %s\n"+
 					"(and keep it from starting at boot with: sudo systemctl disable %s)", unit, unit, unit)
@@ -186,4 +193,22 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 		}
 	}
 	return false, nil
+}
+
+// unitRunning reports whether a systemd unit runs or is about to (active,
+// activating — also the wait before an automatic restart — or reloading).
+func unitRunning(ctx context.Context, d workerDownDeps, scope, unit string) bool {
+	args := []string{"show", "-p", "ActiveState", "--value", unit}
+	if scope != "" {
+		args = append([]string{scope}, args...)
+	}
+	out, err := d.output(ctx, "systemctl", args...)
+	if err != nil {
+		return false
+	}
+	switch strings.TrimSpace(out) {
+	case "active", "activating", "reloading":
+		return true
+	}
+	return false
 }

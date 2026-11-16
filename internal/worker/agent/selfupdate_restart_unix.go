@@ -31,6 +31,9 @@ func restartProcess(log *slog.Logger, exe string) {
 	os.Exit(1)
 }
 
+// restartNow is restartProcess: Unix replaces the process in place either way.
+func restartNow(log *slog.Logger, exe string) { restartProcess(log, exe) }
+
 // waitForParent is only needed on Windows: elsewhere the process replaces
 // itself in place (syscall.Exec).
 func waitForParent() {}
