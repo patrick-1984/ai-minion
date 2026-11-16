@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -406,5 +407,26 @@ func TestExistingWorkerNamesGetTheOwnerPrefixOnce(t *testing.T) {
 	}
 	if got, _ := f.s.WorkerByID(ctx, c.ID); got.Name != "legacy" {
 		t.Errorf("ran twice: %q", got.Name)
+	}
+}
+
+// Names stay valid Worker names in every case (round 2 of A20).
+func TestWorkerNameEdgeCases(t *testing.T) {
+	for _, tc := range []struct{ user, name string }{
+		{"k", "K-pi"}, {strings.Repeat("Ⱥ", 20), "x"}, {"!!!", "pi"}, {"user", "--"},
+		{strings.Repeat("é", 33), "pi"}, {"josé", strings.Repeat("a", 64)},
+	} {
+		n := StandardWorkerName(OwnerSlug(tc.user), tc.name)
+		if !ops.ValidWorkerName(n) || len(n) > 64 {
+			t.Errorf("%q + %q = %q (valid=%v, %d bytes)", tc.user, tc.name, n, ops.ValidWorkerName(n), len(n))
+		}
+	}
+	if got := RenameWorkerOwner("K-pi", "k", "bob"); got != "bob-pi" {
+		t.Errorf("K-pi from k to bob = %q", got)
+	}
+	long := strings.Repeat("Ⱥ", 20)
+	slug := OwnerSlug(long)
+	if got := RenameWorkerOwner(slug+"-x", slug, "bob"); got != "bob-x" || !utf8.ValidString(got) {
+		t.Errorf("unicode prefix swap = %q", got)
 	}
 }

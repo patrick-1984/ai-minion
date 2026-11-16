@@ -124,6 +124,20 @@ type Event struct {
 	Task       *string       `json:"task,omitempty"`
 	ScreenHash string        `json:"screen_hash,omitempty"`
 	Time       ops.Timestamp `json:"time"`
+
+	// snapshot are the session names a worker_resynced event's snapshot
+	// listed (never published): consumers that act on the snapshot use them,
+	// not a later state of the Worker.
+	snapshot []string
+}
+
+// SnapshotNames are the sessions of the snapshot behind a worker_resynced
+// event, and false for any other event.
+func (e Event) SnapshotNames() ([]string, bool) {
+	if e.Type != EventWorkerResynced || e.snapshot == nil {
+		return nil, false
+	}
+	return append([]string(nil), e.snapshot...), true
 }
 
 // ErrSlowSubscriber is the reason of a subscription that was closed because
@@ -563,7 +577,12 @@ func (f *Feed) SnapshotShare(seq uint64, sessions []SessionState, share *ops.Sha
 	w.sessions = next // atomic: readers hold the same lock
 	w.updated, w.synced = h.now(), true
 	f.started, f.seq = true, 0
-	h.publishLocked(h.eventLocked(w, EventWorkerResynced, ""))
+	ev := h.eventLocked(w, EventWorkerResynced, "")
+	ev.snapshot = make([]string, 0, len(next))
+	for n := range next {
+		ev.snapshot = append(ev.snapshot, n)
+	}
+	h.publishLocked(ev)
 	return nil
 }
 

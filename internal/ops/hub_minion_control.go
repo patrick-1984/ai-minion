@@ -28,8 +28,9 @@ type ControlMaster struct {
 type ControlAccept struct {
 	SourceWorkerID string `json:"source_worker_id"`
 	// Sessions limits the acceptance to some sessions; absent means all
-	// shared sessions.
-	Sessions []string `json:"sessions,omitempty"`
+	// shared sessions, an empty list means none (the last allowed session
+	// ended). A pointer, so that the two never look the same in JSON.
+	Sessions *[]string `json:"sessions,omitempty"`
 }
 
 // ControlWorker is the Minion control state of one Worker.

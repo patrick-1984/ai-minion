@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -866,5 +867,42 @@ func TestOverlappingAddsAttachInRegistryOrder(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if s, _ := hub.Sessions("w1"); !s.Online {
 		t.Fatal("the older connection took the state over and marked the Worker offline")
+	}
+}
+
+// A20: worker_resynced carries the snapshot's own names (never published), and
+// WorkerSessions.Synced tells a snapshot of this connection from a kept state.
+func TestResyncCarriesTheSnapshotNames(t *testing.T) {
+	h := NewEventHub(EventHubOptions{})
+	sub := h.Subscribe(16)
+	defer sub.Close()
+	_, f := newFeed(t, h, "w1")
+	_ = recvEv(t, sub) // online
+	if ws, _ := h.Sessions("w1"); ws.Synced {
+		t.Fatal("synced before the snapshot")
+	}
+	if err := f.Snapshot(0, []SessionState{sess("b", "shell", "stable", ""), sess("a", "shell", "stable", "")}); err != nil {
+		t.Fatal(err)
+	}
+	ev := recvEv(t, sub)
+	names, ok := ev.SnapshotNames()
+	sort.Strings(names)
+	if !ok || strings.Join(names, ",") != "a,b" {
+		t.Fatalf("snapshot names = %v %v", names, ok)
+	}
+	if ws, _ := h.Sessions("w1"); !ws.Synced {
+		t.Fatal("not synced after the snapshot")
+	}
+	if b, _ := json.Marshal(ev); strings.Contains(string(b), `"a"`) {
+		t.Errorf("the names are published: %s", b)
+	}
+	// An empty snapshot is evidence too.
+	_, f2 := newFeed(t, h, "w1")
+	_ = recvEv(t, sub)
+	if err := f2.Snapshot(0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if names, ok := recvEv(t, sub).SnapshotNames(); !ok || len(names) != 0 {
+		t.Fatalf("empty snapshot names = %v %v", names, ok)
 	}
 }

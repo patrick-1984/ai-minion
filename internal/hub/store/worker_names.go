@@ -33,7 +33,12 @@ func cutBytes(s string, n int) string {
 	return s[:n]
 }
 
-// OwnerSlug turns a username into the prefix of its Workers' names.
+// maxSlugLen leaves room for the Worker's own part of the name.
+const maxSlugLen = 32
+
+// OwnerSlug turns a username into the prefix of its Workers' names: letters
+// and digits in lower case, runs of anything else as one dash, at most
+// maxSlugLen bytes. It is "" when nothing is left.
 func OwnerSlug(username string) string {
 	u := strings.TrimSpace(username)
 	if i := strings.IndexByte(u, '@'); i > 0 {
@@ -51,24 +56,62 @@ func OwnerSlug(username string) string {
 			dash = true
 		}
 	}
-	return strings.Trim(b.String(), "-")
+	return strings.Trim(cutBytes(strings.Trim(b.String(), "-"), maxSlugLen), "-")
+}
+
+// cutPrefixFold returns name without "slug-" when name starts with it in any
+// letter case, comparing rune by rune in the original string.
+func cutPrefixFold(name, slug string) (string, bool) {
+	rest := name
+	for _, sr := range slug {
+		r, size := utf8.DecodeRuneInString(rest)
+		if size == 0 || unicode.ToLower(r) != sr {
+			return name, false
+		}
+		rest = rest[size:]
+	}
+	if rest == "" {
+		return "", true
+	}
+	if rest[0] != '-' {
+		return name, false
+	}
+	return rest[1:], true
 }
 
 // StandardWorkerName prefixes name with slug unless it already starts with
-// it ("slug" or "slug-..."), and keeps the result within the length limit.
+// it ("slug" or "slug-..."). The result is always a valid Worker name of at
+// most maxWorkerNameLen bytes ("worker" stands in for an empty name).
 func StandardWorkerName(slug, name string) string {
-	name = strings.Trim(name, "-")
-	if slug == "" {
-		return name
-	}
-	lower := strings.ToLower(name)
-	if lower == slug || strings.HasPrefix(lower, slug+"-") {
-		return name
-	}
+	name = strings.Trim(strings.TrimSpace(name), "-")
 	if name == "" {
-		return slug
+		name = "worker"
 	}
-	return strings.TrimRight(cutBytes(slug+"-"+name, maxWorkerNameLen), "-")
+	out := name
+	if slug != "" {
+		if _, ok := cutPrefixFold(name, slug); !ok {
+			out = slug + "-" + name
+		}
+	}
+	out = strings.Trim(cutBytes(out, maxWorkerNameLen), "-")
+	if !ops.ValidWorkerName(out) {
+		out = strings.Trim(cutBytes(slug+"-worker", maxWorkerNameLen), "-")
+		if !ops.ValidWorkerName(out) {
+			out = "worker"
+		}
+	}
+	return out
+}
+
+// RenameWorkerOwner swaps the owner prefix of name from oldSlug to newSlug.
+func RenameWorkerOwner(name, oldSlug, newSlug string) string {
+	rest := name
+	if oldSlug != "" {
+		if r, ok := cutPrefixFold(name, oldSlug); ok {
+			rest = r
+		}
+	}
+	return StandardWorkerName(newSlug, rest)
 }
 
 // workerNamesMarker is the auth_meta key that records the one-time rename of

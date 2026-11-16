@@ -112,6 +112,12 @@ func (p *sessionPurger) handle(ctx context.Context, ev workers.Event) {
 			p.log.Info("a gone session lost its control settings", "worker_id", ev.WorkerID, "session", ev.Session)
 		}
 	case workers.EventWorkerResynced:
+		// The snapshot's own list: a session added after it (a new terminal
+		// under an old name) must not keep the old settings.
+		if names, ok := ev.SnapshotNames(); ok {
+			p.purgeNotIn(ctx, ev.WorkerID, names)
+			return
+		}
 		p.resynced(ctx, ev.WorkerID)
 	}
 }
@@ -138,6 +144,10 @@ func (p *sessionPurger) resynced(ctx context.Context, workerID string) {
 	for _, s := range ws.Sessions {
 		live = append(live, s.Name)
 	}
+	p.purgeNotIn(ctx, workerID, live)
+}
+
+func (p *sessionPurger) purgeNotIn(ctx context.Context, workerID string, live []string) {
 	if n, err := p.st.PurgeSessionsNotIn(ctx, workerID, live); err != nil {
 		p.log.Error("purge the control settings of gone sessions", "worker_id", workerID, "error", err)
 	} else if n > 0 {

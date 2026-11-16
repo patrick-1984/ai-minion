@@ -220,11 +220,7 @@ func (s *Store) ReassignWorker(ctx context.Context, p ReassignParams) (ReassignR
 		if err != nil {
 			return err
 		}
-		rest := w.Name
-		if oldSlug != "" && strings.HasPrefix(strings.ToLower(rest), oldSlug+"-") {
-			rest = rest[len(oldSlug)+1:]
-		}
-		newName := StandardWorkerName(newSlug, rest)
+		newName := RenameWorkerOwner(w.Name, oldSlug, newSlug)
 		if _, err := tx.ExecContext(ctx, `UPDATE workers SET owner_id = ?, name = ? WHERE id = ?`, p.NewOwnerID, newName, p.WorkerID); err != nil {
 			if nameCollision(err) {
 				return ErrWorkerNameTaken
