@@ -51,7 +51,7 @@ Everything the wizard asks can be given as a flag instead, for example `--share-
 ```sh
 sudo minion worker up --share-existing none --server https://hub.example.com
 ```
-Nothing is shared at first (`--share-existing none`): choose the sessions to share on the Worker's page in the Hub (**Sharing**: tick **Shared**, or **All** / **None**). The flag is applied at every start, so leave it out once you share from the Hub, or that choice is reset.
+Nothing is shared at first (`--share-existing none`): choose the sessions to share on the Worker's page in the Hub (**Sharing**: tick **Shared**, or **All** / **None**). The flag is saved and applied at every start, so once you share from the Hub remove it with `minion worker config unset share_existing`, or that choice is reset.
 
 Run by a user through `sudo`, this installs `minion-worker@<user>.service` for that user, enables it at boot and starts it. The unit runs `minion worker run` as that user (`Restart=always`, `KillMode=process`, so stopping or restarting the Worker does not end your tmux sessions). Use `--as-user <name>` to install it for another user; a first-run question is then not asked for you: give `--share-existing all|none|later` or run `minion worker setup` as that user.
 

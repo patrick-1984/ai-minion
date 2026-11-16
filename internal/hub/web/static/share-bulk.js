@@ -3,10 +3,18 @@
 // sessions I choose". Without JavaScript the form works as before.
 (function () {
   "use strict";
-  function selectMode(form) {
-    var r = form.querySelector('input[name="mode"][value="select"]');
+  // With at least one session ticked the mode is "select"; with none it is
+  // "none" (select with no names is refused).
+  function syncMode(form) {
+    var any = form.querySelector('input[type="checkbox"][name="name"]:checked');
+    var r = form.querySelector('input[name="mode"][value="' + (any ? "select" : "none") + '"]');
     if (r) { r.checked = true; }
   }
+  function reveal(root) {
+    (root || document).querySelectorAll("[data-share-bulk-wrap]").forEach(function (w) { w.hidden = false; });
+  }
+  reveal();
+  document.addEventListener("htmx:afterSwap", function (e) { reveal(e.target); });
   document.addEventListener("click", function (e) {
     var b = e.target.closest ? e.target.closest("[data-share-bulk]") : null;
     if (!b) { return; }
@@ -14,11 +22,10 @@
     if (!form) { return; }
     var on = b.getAttribute("data-share-bulk") === "all";
     form.querySelectorAll('input[type="checkbox"][name="name"]').forEach(function (c) { c.checked = on; });
-    var mode = form.querySelector('input[name="mode"][value="' + (on ? "select" : "none") + '"]');
-    if (mode) { mode.checked = true; }
+    syncMode(form);
   });
   document.addEventListener("change", function (e) {
     var c = e.target;
-    if (c && c.type === "checkbox" && c.name === "name" && c.form) { selectMode(c.form); }
+    if (c && c.type === "checkbox" && c.name === "name" && c.form) { syncMode(c.form); }
   });
 })();

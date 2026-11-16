@@ -12,18 +12,17 @@ data-key of the group are the Worker's canonical id), so the keyboard focus can 
   </fieldset>
   <fieldset{{if .Locked}} disabled{{end}} data-share-sessions>
     <legend>Sessions</legend>
-    {{if .Entries}}<div class="share-bulk"><button type="button" class="btn btn-secondary" data-share-bulk="all" data-control="share-tick-all">All</button> <button type="button" class="btn btn-secondary" data-share-bulk="none" data-control="share-tick-none">None</button></div>
+    {{if .Entries}}<div class="share-bulk" data-share-bulk-wrap hidden><button type="button" class="btn btn-secondary" data-share-bulk="all" data-control="share-tick-all">All</button> <button type="button" class="btn btn-secondary" data-share-bulk="none" data-control="share-tick-none">None</button></div>
     <div class="table-wrap"><table class="rtable share-table">
-      <thead><tr><th scope="col">Session</th><th scope="col">Shared</th>{{if .ShowControl}}<th scope="col">Controllable from</th>{{end}}</tr></thead>
+      <thead><tr><th scope="col">Session</th><th scope="col">Shared</th></tr></thead>
       <tbody>
       {{range .Entries}}<tr data-session="{{.Name}}">
         <th scope="row">{{.Name}}{{if not .Shared}} <span class="muted">(not shared)</span>{{end}}</th>
         <td data-label="Shared"><label class="share-name"><input type="checkbox" name="name" value="{{.Name}}"{{if .Shared}} checked{{end}}> Shared<span class="sr-only"> {{.Name}}</span></label></td>
-        {{if $.ShowControl}}<td data-label="Controllable from">{{if .ControlledBy}}{{range $i, $c := .ControlledBy}}{{if $i}}, {{end}}{{$c}}{{end}}{{else}}<span class="muted">no session</span>{{end}}</td>{{end}}
       </tr>
       {{end}}</tbody>
     </table></div>
-    <p class="help">Ticking or unticking a session switches to "Only the sessions I choose". All and None tick or untick every session.{{if .ShowControl}} "Controllable from" lists the controller sessions whose session-control grant reaches the session (Administration, Session control).{{end}}</p>{{else}}<p class="help">The worker has no session.</p>{{end}}
+    <p class="help">The ticked sessions apply to "Only the sessions I choose": choose that option and Apply. With JavaScript, ticking switches the option for you, and All and None tick or untick every session.</p>{{else}}<p class="help">The worker has no session.</p>{{end}}
   </fieldset>
   <div class="form-actions"><button type="submit" data-control="share-apply"{{if .Locked}} disabled{{end}}>Apply sharing</button></div>
 </form>{{end}}{{end}}
