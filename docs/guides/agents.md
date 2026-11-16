@@ -53,7 +53,7 @@ accepts.
   its owner chooses. An agent cannot make itself a master.
 - **How to use it:** inside the master session, `minion workers_list`, then `--target <worker-id>:<session>` on the
   session commands, or the same through `minion mcp --allow-writes`. **Check access** on the Minion control page
-  explains why a session can or cannot be reached. Details: [Session control](session-control.md).
+  explains why a session can or cannot be reached. Details: [Minion control](minion-control.md).
 
 ```text
                  Hub (grants, sharing, approval: decided by people)

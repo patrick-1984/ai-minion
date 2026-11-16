@@ -54,6 +54,11 @@ func TestSessionControlOnTheRealHub(t *testing.T) {
 	if err := ah.st.InsertWorker(ctx, nil, w); err != nil {
 		t.Fatal(err)
 	}
+	// A second Worker for "everything" to reach (a Worker is never its own target).
+	if err := ah.st.InsertWorker(ctx, nil, store.WorkerRow{ID: store.NewID(), Pub: mustKey(t).Public(), Name: "pi2", OwnerID: alice,
+		Kind: store.WorkerKindPrivate, CreatedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 	op := func(user, name string, args map[string]any) apiResp {
 		tok, csrf := ah.login(t, user)
 		return ah.call(t, "POST", "/api/v1/ops/"+name, args, asSession(tok, csrf))
@@ -66,8 +71,12 @@ func TestSessionControlOnTheRealHub(t *testing.T) {
 	if r := op("alice", ops.OpSessionControlSet, set); r.code != 403 {
 		t.Fatalf("set by the Worker's owner = %d %s, want 403", r.code, r.body)
 	}
-	if r := op("root", ops.OpSessionControlSet, set); r.code != 200 {
-		t.Fatalf("set by the admin = %d %s", r.code, r.body)
+	// v0.9.0: the admin makes the grant in Minion control.
+	if r := op("root", ops.OpSessionControlSet, set); r.code != 409 {
+		t.Fatalf("set with targets by the admin = %d %s, want 409 (replaced by Minion control)", r.code, r.body)
+	}
+	if err := ah.st.PutSessionControl(ctx, store.SessionControlRow{WorkerID: w.ID, SessionName: "boss", TargetsJSON: `[{"kind":"everything"}]`, CreatedBy: alice, CreatedAt: 1}); err != nil {
+		t.Fatal(err)
 	}
 	r := op("root", ops.OpSessionControlList, map[string]any{})
 	var res ops.SessionControlListResult

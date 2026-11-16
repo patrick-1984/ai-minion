@@ -101,6 +101,9 @@ func (h HumanTarget) Resolve(workerID string) Target {
 
 // validSessionName accepts adopted tmux names: non-empty valid UTF-8, no
 // control characters, no ":" or ".", no leading or trailing space.
+// ValidSessionName reports whether s is a valid tmux session name for a target.
+func ValidSessionName(s string) bool { return validSessionName(s) }
+
 func validSessionName(s string) bool {
 	return validName(s, maxSessionNameLen, ":.", true)
 }

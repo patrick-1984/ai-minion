@@ -130,7 +130,7 @@ func legacySchema20Archive(t *testing.T) string {
 }
 
 // RC2 release gate (H6 test gap): an archive of an older schema shows its own
-// schema (20) and the installed one (24) separately.
+// schema (20) and the installed one (24 or later) separately.
 func TestRunHubRestoreOfAnOlderSchemaArchiveShowsBothSchemas(t *testing.T) {
 	archive := legacySchema20Archive(t)
 	dst := filepath.Join(t.TempDir(), "restored")
@@ -140,7 +140,10 @@ func TestRunHubRestoreOfAnOlderSchemaArchiveShowsBothSchemas(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := regexp.MustCompile(`archive schema (\d+), written by minion [^;]+; installed schema (\d+)`).FindStringSubmatch(out.String())
-	if m == nil || m[1] != "20" || m[2] != "24" {
-		t.Fatalf("want archive schema 20 and installed schema 24 in %q", out.String())
+	if m == nil || m[1] != "20" {
+		t.Fatalf("want archive schema 20 and the installed schema in %q", out.String())
+	}
+	if n, err := strconv.Atoi(m[2]); err != nil || n < 24 {
+		t.Fatalf("installed schema %q, want 24 or later", m[2])
 	}
 }

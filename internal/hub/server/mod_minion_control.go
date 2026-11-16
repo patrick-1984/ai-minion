@@ -1,0 +1,76 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/proto"
+
+	"github.com/patrick-1984/ai-minion/internal/hub/api"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/ops"
+)
+
+func init() { registerMinionControlModule(DefaultRegistry) }
+
+func registerMinionControlModule(r *Registry) {
+	if err := r.Register("minion_control", sessionControlModuleOrder+1, initMinionControl); err != nil {
+		panic(err)
+	}
+}
+
+// initMinionControl binds the control_* operations (v0.9.0, A17).
+func initMinionControl(_ context.Context, env *Env) error {
+	if !catalogHas(ops.Default, ops.OpControlList) {
+		return nil
+	}
+	handlers, err := Require[*api.Registry](env)
+	if err != nil {
+		return err
+	}
+	st, err := Require[*store.Store](env)
+	if err != nil {
+		return err
+	}
+	svc, err := Require[*workers.Service](env)
+	if err != nil {
+		return err
+	}
+	list := func(ctx context.Context) ([]api.ControlWorkerBase, error) {
+		rows, err := st.ListWorkers(ctx)
+		if err != nil {
+			return nil, err
+		}
+		online := map[string]workers.Online{}
+		for _, o := range svc.Registry().List() {
+			online[o.WorkerID] = o
+		}
+		owners := map[string]string{}
+		out := make([]api.ControlWorkerBase, 0, len(rows))
+		for _, w := range rows {
+			name, ok := owners[w.OwnerID]
+			if !ok {
+				if u, err := st.UserByID(ctx, w.OwnerID); err == nil {
+					name = u.Username
+				}
+				owners[w.OwnerID] = name
+			}
+			o, on := online[w.ID]
+			out = append(out, api.ControlWorkerBase{ID: w.ID, Name: w.Name, Owner: name, OwnerID: w.OwnerID, Online: on, CanBeMaster: canBeMaster(o, on)})
+		}
+		return out, nil
+	}
+	if err := api.RegisterMinionControl(handlers, st, list); err != nil {
+		return fmt.Errorf("minion_control: %w", err)
+	}
+	return nil
+}
+
+// canBeMaster tells whether a Worker can run master sessions: a full Worker
+// names its build in the hello (0.9.0 or later) or announces pipe.causal
+// (0.5.0 or later); a thin Worker does neither. An offline Worker is not
+// known yet and may be nominated. It only refuses a nomination in the
+// editor; it never grants anything.
+func canBeMaster(o workers.Online, online bool) bool {
+	return !online || o.Facts.Build != "" || o.HasFeature(proto.FeaturePipeCausal)
+}

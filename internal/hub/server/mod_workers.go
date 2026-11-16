@@ -72,6 +72,7 @@ func initWorkers(ctx context.Context, env *Env) error {
 	if err != nil {
 		return fmt.Errorf("start the workers service: %w", err)
 	}
+	az.SetUserManagedLookup(userManaged(st))
 	if err := az.SetWorkerLookup(svc.OwnerLookup()); err != nil {
 		return err
 	}

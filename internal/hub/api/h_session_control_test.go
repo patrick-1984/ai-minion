@@ -20,7 +20,7 @@ func newSessionControlStack(t *testing.T) *kindStack {
 	t.Helper()
 	k := newKindStack(t)
 	cat := ops.NewRegistry()
-	for _, n := range []string{ops.OpSessionControlList, ops.OpSessionControlSet} {
+	for _, n := range []string{ops.OpSessionControlList, ops.OpSessionControlSet, ops.OpControlList, ops.OpControlSetWorker, ops.OpControlSetMaster, ops.OpControlSetAccept, ops.OpControlCheck} {
 		op, ok := ops.Lookup(n)
 		if !ok {
 			t.Fatalf("ops.Default lacks %s", n)
@@ -29,6 +29,20 @@ func newSessionControlStack(t *testing.T) *kindStack {
 	}
 	handlers := NewRegistry(cat)
 	if err := RegisterSessionControl(handlers, k.st); err != nil {
+		t.Fatal(err)
+	}
+	list := func(ctx context.Context) ([]ControlWorkerBase, error) {
+		rows, err := k.st.ListWorkers(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]ControlWorkerBase, 0, len(rows))
+		for _, w := range rows {
+			out = append(out, ControlWorkerBase{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, CanBeMaster: true})
+		}
+		return out, nil
+	}
+	if err := RegisterMinionControl(handlers, k.st, list); err != nil {
 		t.Fatal(err)
 	}
 	k.mux = http.NewServeMux()
@@ -59,44 +73,64 @@ func TestSessionControlAdminSetsListsAndRemovesAGrant(t *testing.T) {
 	if code, body := k.call(ops.OpSessionControlList, map[string]any{}); code != http.StatusOK || !strings.Contains(body, `"grants":[]`) {
 		t.Fatalf("a fresh Hub lists %d %s; want no grants (default deny)", code, body)
 	}
-	targets := []ops.KeyResource{
-		{Kind: ops.KeyResourceWorker, WorkerID: w2.ID},
-		{Kind: ops.KeyResourceSession, WorkerID: w1.ID, SessionName: "build"},
+	// v0.9.0: a grant with targets is made in Minion control.
+	targets := []ops.KeyResource{{Kind: ops.KeyResourceWorker, WorkerID: w2.ID}}
+	if code, body := k.call(ops.OpSessionControlSet, map[string]any{"worker_id": w1.ID, "session_name": "boss", "targets": targets}); code != http.StatusConflict || !strings.Contains(body, "Minion control") {
+		t.Fatalf("set with targets = %d %s, want 409 pointing to Minion control", code, body)
 	}
-	if code, body := k.call(ops.OpSessionControlSet, map[string]any{"worker_id": w1.ID, "session_name": "boss", "targets": targets}); code != http.StatusOK {
-		t.Fatalf("set = %d %s", code, body)
+	if code, body := k.call(ops.OpControlSetMaster, map[string]any{"worker_id": w1.ID, "session_name": "boss", "master": true}); code != http.StatusOK {
+		t.Fatalf("set master = %d %s", code, body)
+	}
+	if code, body := k.call(ops.OpControlSetAccept, map[string]any{"worker_id": w2.ID, "source_worker_id": w1.ID, "accept": true}); code != http.StatusOK {
+		t.Fatalf("set accept = %d %s", code, body)
 	}
 	g := k.grants()
-	if len(g) != 1 || g[0].WorkerID != w1.ID || g[0].SessionName != "boss" || g[0].CreatedBy != k.admin ||
-		len(g[0].Targets) != 2 || g[0].Targets[0] != targets[0] || g[0].Targets[1] != targets[1] {
+	if len(g) != 1 || g[0].WorkerID != w1.ID || g[0].SessionName != "boss" || len(g[0].Targets) != 1 || g[0].Targets[0] != targets[0] {
 		t.Fatalf("grants = %+v", g)
 	}
-	// An upsert replaces the targets.
-	if code, body := k.call(ops.OpSessionControlSet, map[string]any{"worker_id": w1.ID, "session_name": "boss", "targets": []ops.KeyResource{{Kind: ops.KeyResourceEverything}}}); code != http.StatusOK {
-		t.Fatalf("set = %d %s", code, body)
-	}
-	if g := k.grants(); len(g) != 1 || len(g[0].Targets) != 1 || g[0].Targets[0].Kind != ops.KeyResourceEverything {
-		t.Fatalf("grants after upsert = %+v", g)
-	}
-	// Empty targets delete the row.
+	// Empty targets still remove the master session.
 	if code, body := k.call(ops.OpSessionControlSet, map[string]any{"worker_id": w1.ID, "session_name": "boss"}); code != http.StatusOK {
 		t.Fatalf("remove = %d %s", code, body)
 	}
 	if g := k.grants(); len(g) != 0 {
 		t.Fatalf("grants after remove = %+v", g)
 	}
-	// Every set is audited with the controller session as its target.
+	// Every change is audited with the changed Worker (or session) as target.
 	var n int
 	for _, ev := range k.audit.all() {
-		if ev.Action == ops.OpSessionControlSet {
+		switch ev.Action {
+		case ops.OpControlSetMaster:
 			n++
-			if ev.Target != w1.ID+":boss" || ev.Actor != k.admin || ev.Outcome != AuditOutcomeSuccess {
-				t.Errorf("audit event = %+v", ev)
+			if ev.Target != "worker:"+w1.ID && !strings.Contains(ev.Target, w1.ID) {
+				t.Errorf("audit target %q", ev.Target)
+			}
+		case ops.OpControlSetAccept:
+			n++
+			if !strings.Contains(ev.Target, w2.ID) {
+				t.Errorf("audit target %q", ev.Target)
 			}
 		}
 	}
-	if n != 3 {
-		t.Errorf("%d audit events for session_control_set, want 3", n)
+	if n != 2 {
+		t.Errorf("%d audit events for the control setters, want 2", n)
+	}
+}
+
+// A session limit on an acceptance is kept, and an empty one is refused.
+func TestControlAcceptKeepsItsSessionLimit(t *testing.T) {
+	k := newSessionControlStack(t)
+	a, b := k.worker(k.u1, "a", store.WorkerKindPrivate), k.worker(k.u1, "b", store.WorkerKindPrivate)
+	k.as(k.admin)
+	k.call(ops.OpControlSetMaster, map[string]any{"worker_id": a.ID, "session_name": "boss", "master": true})
+	if code, body := k.call(ops.OpControlSetAccept, map[string]any{"worker_id": b.ID, "source_worker_id": a.ID, "accept": true, "sessions": []string{}}); code != http.StatusBadRequest {
+		t.Fatalf("empty sessions = %d %s", code, body)
+	}
+	if code, body := k.call(ops.OpControlSetAccept, map[string]any{"worker_id": b.ID, "source_worker_id": a.ID, "accept": true, "sessions": []string{"ci"}}); code != http.StatusOK {
+		t.Fatalf("limited accept = %d %s", code, body)
+	}
+	g := k.grants()
+	if len(g) != 1 || len(g[0].Targets) != 1 || g[0].Targets[0].Kind != ops.KeyResourceSession || g[0].Targets[0].SessionName != "ci" {
+		t.Fatalf("the session limit was lost: %+v", g)
 	}
 }
 
@@ -161,9 +195,9 @@ func TestSessionControlRefusesInvalidRequests(t *testing.T) {
 	}
 }
 
-// A session_control_set that was authorized before a reassignment or removal
-// of the controller Worker must not bring a grant back after that transaction
-// deleted the Worker's grants.
+// A Minion control change that was authorized before a reassignment or
+// removal of a Worker must not bring control back after that transaction
+// deleted the Worker's rows.
 func TestSessionControlSetCannotOutliveAReassignmentOrRemovalMidRequest(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -187,19 +221,44 @@ func TestSessionControlSetCannotOutliveAReassignmentOrRemovalMidRequest(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			k := newSessionControlStack(t)
 			w := k.worker(k.u1, "pi", store.WorkerKindInfrastructure)
+			src := k.worker(k.u1, "boss", store.WorkerKindInfrastructure)
 			k.as(k.admin)
+			k.call(ops.OpControlSetMaster, map[string]any{"worker_id": src.ID, "session_name": "boss", "master": true})
+			k.az.mu.Lock()
+			k.az.n = 0 // count the decisions of the next request only
+			k.az.mu.Unlock()
 			k.az.after = func(n int) {
 				if n == 1 { // after the dispatcher's decision, before the handler stores
 					tc.land(k, w)
 				}
 			}
-			set := map[string]any{"worker_id": w.ID, "session_name": "boss", "targets": []ops.KeyResource{{Kind: ops.KeyResourceEverything}}}
-			if code, body := k.call(ops.OpSessionControlSet, set); code != tc.code {
+			set := map[string]any{"worker_id": w.ID, "source_worker_id": src.ID, "accept": true}
+			if code, body := k.call(ops.OpControlSetAccept, set); code != tc.code {
 				t.Errorf("set = %d %s, want %d", code, body, tc.code)
 			}
 			if rows, _ := k.st.ListSessionControl(context.Background()); len(rows) != 0 {
-				t.Errorf("a grant survived the %s: %+v", tc.name, rows)
+				t.Errorf("control survived the %s: %+v", tc.name, rows)
 			}
 		})
+	}
+}
+
+// "Who can control this session?" answers from the computed grant: a migrated
+// v0.8 grant on the session's own Worker is named; a new nomination there is not.
+func TestControlCheckNamesMigratedSelfGrants(t *testing.T) {
+	k := newSessionControlStack(t)
+	w1 := k.worker(k.u1, "w1", store.WorkerKindPrivate)
+	ctx := context.Background()
+	if err := k.st.PutSessionControl(ctx, store.SessionControlRow{WorkerID: w1.ID, SessionName: "boss",
+		TargetsJSON: `[{"kind":"session","worker_id":"` + w1.ID + `","session_name":"ci"}]`, CreatedBy: k.admin, CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.st.PutMasterSession(ctx, store.MasterRow{WorkerID: w1.ID, SessionName: "fresh", CreatedBy: k.admin}); err != nil {
+		t.Fatal(err)
+	}
+	k.as(k.admin)
+	code, body := k.call(ops.OpControlCheck, map[string]any{"worker_id": w1.ID, "session_name": "ci"})
+	if code != http.StatusOK || !strings.Contains(body, `"session_name":"boss"`) || strings.Contains(body, `"fresh"`) {
+		t.Fatalf("check = %d %s", code, body)
 	}
 }

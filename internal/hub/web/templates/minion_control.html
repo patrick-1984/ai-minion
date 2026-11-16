@@ -1,0 +1,64 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Minion control</h1>
+<p>Which sessions may control sessions on other Workers. A <strong>master session</strong> controls a session on another Worker only when that Worker <strong>accepts control from</strong> the master's Worker (or from all Workers) and shares the session. Every other session is a <strong>slave session</strong>: by default all of them. <strong>User-managed</strong> Workers are also controlled by people and API keys, as before. Every click is saved at once.</p></div></div>
+<details class="panel control-how"><summary>How it works</summary>
+<pre class="control-chain">master session (Worker A)  ──►  Worker B accepts control from A (or from all)  ──►  B shares the session  ──►  A's owner may reach B  ──►  control
+slave session (default)     ─✕  nothing beyond its own Worker</pre>
+<p class="help">A session's name is taken from the terminal it runs in: anyone who can run programs as the Worker's user on that host can claim it. Treat a master session as trust in its whole host and account.</p>
+</details>
+<div class="settings-tools">
+  <label class="settings-filter"><span class="sr-only">Filter Workers</span><input type="search" id="control-filter" placeholder="Filter Workers" autocomplete="off" spellcheck="false"></label>
+  <label><input type="checkbox" id="control-only-masters"> Only Workers with master sessions</label>
+</div>
+<p id="control-status" class="muted" role="status" aria-live="polite"></p>
+<section class="panel" aria-labelledby="ctl-workers-h">
+  <h2 id="ctl-workers-h">Workers</h2>
+  {{if .Data.Rows}}<div class="table-wrap"><table class="rtable control-table">
+    <thead><tr><th scope="col">Worker</th><th scope="col">User-managed</th><th scope="col">Accepts control from</th><th scope="col">Master sessions</th></tr></thead>
+    <tbody>{{range .Data.Rows}}{{template "control_row" .}}{{end}}</tbody>
+  </table></div>{{else}}<p class="muted">There is no Worker yet.</p>{{end}}
+</section>
+<section class="panel" aria-labelledby="ctl-matrix-h" id="ctl-matrix" hx-get="/access/control" hx-select="#ctl-matrix" hx-swap="outerHTML" hx-trigger="control-changed from:body">
+  <h2 id="ctl-matrix-h">Matrix</h2>
+  {{if .Data.Sources}}<p class="help">Rows: Workers with master sessions. Columns: the Workers they may control. A tick means the column's Worker accepts control from the row's Worker.</p>
+  <div class="matrix-wrap"><table class="control-matrix">
+    <thead><tr><th scope="col">Master Worker \ accepts</th>{{range .Data.Targets}}<th scope="col" data-filter="{{.Name}} {{.Owner}}">{{.Name}}</th>{{end}}</tr></thead>
+    <tbody>{{range $src := .Data.Sources}}<tr data-filter="{{$src.Name}} {{$src.Owner}}"><th scope="row">{{$src.Name}}</th>
+      {{range $t := $.Data.Targets}}<td>{{if eq $t.WorkerID $src.WorkerID}}<span class="muted" aria-label="itself">-</span>{{else if $t.AcceptAll}}<span class="badge plain" title="{{$t.Name}} accepts all Workers">all</span>{{else}}<form hx-post="/access/control/accept" hx-trigger="change" hx-target="#ctl-{{$t.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$t.WorkerID}}"><input type="hidden" name="source_worker_id" value="{{$src.WorkerID}}"><input type="checkbox" name="value" value="on"{{if index $t.Accepted $src.WorkerID}} checked{{end}} aria-label="{{$t.Name}} accepts control from {{$src.Name}}"></form>{{end}}</td>{{end}}
+    </tr>{{end}}</tbody>
+  </table></div>{{else}}<p class="muted">No master session yet: nominate one in the Workers list above.</p>{{end}}
+</section>
+<section class="panel" aria-labelledby="ctl-check-h">
+  <h2 id="ctl-check-h">Who can control this session?</h2>
+  <form method="get" action="/access/control" class="check-form">
+    <label>Worker <select name="check_worker">{{range .Data.Rows}}<option value="{{.WorkerID}}">{{.Name}}</option>{{end}}</select></label>
+    <label>Session <input type="text" name="check_session" required spellcheck="false" autocomplete="off"></label>
+    <button type="submit" class="btn btn-secondary">Check</button>
+  </form>
+  {{with .Data.Check}}<div class="check-result" role="status"><p><strong>{{.Session}}</strong> on <strong>{{.Worker}}</strong>:</p>
+  {{if .Result.Controllers}}<ul>{{range .Result.Controllers}}<li>{{.Worker}}: {{.SessionName}}</li>{{end}}</ul>{{end}}
+  <p class="help">{{.Result.Note}}</p></div>{{end}}
+</section>
+<script src="/static/minion-control.js" defer></script>
+{{end}}
+
+{{define "control_row"}}<tr id="ctl-{{.WorkerID}}" data-filter="{{.Name}} {{.Owner}}" data-masters="{{len .Masters}}">
+  <th scope="row">{{.Name}} <span class="muted">{{.Owner}}</span>{{if .Online}} <span class="badge" data-online="true">online</span>{{else}} <span class="badge muted">offline</span>{{end}}</th>
+  <td data-label="User-managed"><form hx-post="/access/control/user-managed" hx-trigger="change" hx-target="closest tr" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if .UserManaged}} checked{{end}}> People and API keys</label></form></td>
+  <td data-label="Accepts control from">
+    <form hx-post="/access/control/accept-all" hx-trigger="change" hx-target="closest tr" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if .AcceptAll}} checked{{end}}> All Workers</label></form>
+    {{if not .AcceptAll}}{{$row := .}}<details class="control-pick"><summary>{{len .Accepts}} chosen</summary>
+      <input type="search" class="pick-filter" placeholder="Filter" aria-label="Filter the Workers">
+      <ul>{{range .Others}}<li data-filter="{{.Name}} {{.Owner}}"><form hx-post="/access/control/accept" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="source_worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if index $row.Accepted .WorkerID}} checked{{end}}> {{.Name}} <span class="muted">{{.Owner}}</span></label></form></li>{{end}}</ul>
+    </details>{{end}}
+  </td>
+  <td data-label="Master sessions">{{$row := .}}
+    {{if .Masters}}<ul class="control-masters">{{range .Masters}}<li><form hx-post="/access/control/master" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="session_name" value="{{.SessionName}}">{{if .Legacy}}<input type="hidden" name="legacy" value="1">{{end}}<label><input type="checkbox" name="value" value="on" checked> {{.SessionName}}</label>{{if .Legacy}} <span class="badge plain" title="Migrated from session control: its old targets still limit it">limited</span>{{end}}</form></li>{{end}}</ul>{{else}}<span class="muted">none (all slave sessions)</span>{{end}}
+    {{if .CanBeMaster}}<details class="control-pick"><summary>Add a master session</summary>
+      {{if .Known}}<ul>{{range .Known}}<li><form hx-post="/access/control/master" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="session_name" value="{{.}}"><label><input type="checkbox" name="value" value="on"> {{.}}</label></form></li>{{end}}</ul>{{end}}
+      <form hx-post="/access/control/master" hx-target="#ctl-{{.WorkerID}}" hx-swap="outerHTML" class="add-master"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><input type="hidden" name="value" value="on"><input type="text" name="session_name" placeholder="session name" required spellcheck="false" autocomplete="off" aria-label="Session name"> <button type="submit" class="btn btn-secondary">Add</button></form>
+    </details>{{else}}<span class="muted">cannot be a master (thin Worker or older than 0.8.0)</span>{{end}}
+    {{if .Error}}<p class="form-error" role="alert">{{.Error}}</p>{{end}}
+    {{if .Saved}}<p class="control-saved" role="status">Saved: {{.Saved}}{{with .Undo}} <form hx-post="/access/control/{{.Action}}" hx-target="#ctl-{{index .Fields "worker_id"}}" hx-swap="outerHTML" class="undo">{{range $k, $v := .Fields}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}<button type="submit" class="btn-link">Undo</button></form>{{end}}</p>{{end}}
+  </td>
+</tr>{{end}}

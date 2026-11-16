@@ -169,6 +169,7 @@ docker compose exec hub minion hub identity set-passphrase
 | [API keys and MCP](docs/guides/api-keys-and-mcp.md) | Scoped API keys, the CLI against a Hub, the read-only MCP server |
 | [The pipe](docs/guides/pipe.md) | Sending a message to an agent and reading its replies |
 | [AI agents](docs/guides/agents.md) | `minion llm-help`, the Claude Code and Codex plugin (`/plugin marketplace add patrick-1984/ai-minion`), the Minion master |
+| [Minion control](docs/guides/minion-control.md) | Master and slave sessions, which Workers accept control from which, user-managed Workers (Access > Minion control, 0.9.0) |
 | [Session control](docs/guides/session-control.md) | Letting one session list, read and type into sessions on other Workers (administrator grants, 0.8.0 or later) |
 | [Hub identity](docs/guides/hub-identity.md) | The sealed root key and its passphrase, certificate re-issue, master-key rotation, `minion hub identity` |
 | [Troubleshooting](docs/guides/troubleshooting.md) | Verbose logs (`-v`, `MINION_VERBOSE`), `minion worker status --json`, Administration > Diagnostics and `hub_diagnostics` |
