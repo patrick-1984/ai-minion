@@ -19,7 +19,13 @@ const updatesModuleOrder = 37
 // setting, so the check can only ever reach GitHub.
 const releasesAPI = "https://api.github.com"
 
-func init() { registerUpdates(DefaultRegistry) }
+func init() {
+	// Live from the start: the settings service takes its snapshot before
+	// this module runs, and a live key must never show "pending restart".
+	DeclareLiveSetting(config.KeyUpdateCheck)
+	DeclareLiveSetting(config.KeyUpdateChannel)
+	registerUpdates(DefaultRegistry)
+}
 
 func registerUpdates(r *Registry) {
 	if err := r.Register("updates", updatesModuleOrder, initUpdates); err != nil {
@@ -36,22 +42,18 @@ func initUpdates(_ context.Context, env *Env) error {
 	if err != nil {
 		return err
 	}
-	DeclareLiveSetting(config.KeyUpdateCheck)
-	DeclareLiveSetting(config.KeyUpdateChannel)
 	src, err := version.NewGitHubSource(releasesAPI, "minion-hub/"+version.Version)
 	if err != nil {
 		return err
 	}
+	src.RestrictToHost("api.github.com")
 	resolver := settings.Resolver()
 	chk := &updates.Checker{
 		Source: src, Current: version.Version, Log: cfg.logger(),
 		Interval: 24 * time.Hour, FirstDelay: 2 * time.Minute,
-		Setting: func(key string) string {
+		Setting: func(key string) (string, error) {
 			res, err := resolver.Resolve(key)
-			if err != nil {
-				return ""
-			}
-			return res.Value
+			return res.Value, err
 		},
 	}
 	web.SetUpdateSource(func() (string, string, bool) {

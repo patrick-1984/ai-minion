@@ -36,7 +36,18 @@ func rels(tags ...string) []version.Release {
 
 func newChecker(src version.Source, current string, settings map[string]string) *Checker {
 	return &Checker{Source: src, Current: current, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Setting: func(k string) string { return settings[k] }}
+		Setting: func(k string) (string, error) {
+			if v, ok := settings[k]; ok {
+				return v, nil
+			}
+			switch k {
+			case config.KeyUpdateCheck:
+				return "on", nil
+			case config.KeyUpdateChannel:
+				return config.UpdateChannelMinor, nil
+			}
+			return "", nil
+		}}
 }
 
 func TestChannelsPickTheNewestReleaseInsideTheChannel(t *testing.T) {
@@ -86,5 +97,33 @@ func TestFailureKeepsTheLastAnswerAndOffMakesNoCall(t *testing.T) {
 	off.CheckOnce(context.Background())
 	if src.calls.Load() != before {
 		t.Fatal("update_check=off called GitHub")
+	}
+}
+
+// A failed settings lookup skips the check (never turns it on), and a cached
+// notice of another channel is dropped when the new channel's check fails.
+func TestSettingErrorsSkipAndChannelChangeDropsTheNotice(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.9.0", "v1.0.0")}
+	c := newChecker(src, "v0.9.0", map[string]string{config.KeyUpdateChannel: config.UpdateChannelLatest})
+	c.CheckOnce(context.Background())
+	if r := c.Latest(); r.Latest != "v1.0.0" || !r.Newer {
+		t.Fatalf("%+v", r)
+	}
+	c.Setting = func(string) (string, error) { return "", errors.New("db locked") }
+	before := src.calls.Load()
+	c.CheckOnce(context.Background())
+	if src.calls.Load() != before {
+		t.Fatal("a failed settings lookup called GitHub")
+	}
+	c.Setting = func(k string) (string, error) {
+		if k == config.KeyUpdateChannel {
+			return config.UpdateChannelMinor, nil
+		}
+		return "on", nil
+	}
+	src.err = errors.New("offline")
+	c.CheckOnce(context.Background())
+	if r := c.Latest(); r.Newer || r.Latest != "" {
+		t.Fatalf("the latest-channel notice survived the switch to minor: %+v", r)
 	}
 }

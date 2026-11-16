@@ -632,6 +632,20 @@ func NewGitHubSource(apiURL, userAgent string) (*GitHubSource, error) {
 	}, nil
 }
 
+// RestrictToHost limits the source to https URLs on host, redirects included:
+// the Hub's background release check may only ever reach the GitHub API.
+func (g *GitHubSource) RestrictToHost(host string) {
+	g.client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		if req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Hostname(), host) {
+			return fmt.Errorf("redirect to %q refused: only https://%s is allowed", req.URL.Redacted(), host)
+		}
+		return nil
+	}
+}
+
 func newHTTPClient() *http.Client {
 	tr := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,

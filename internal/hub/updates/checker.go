@@ -7,6 +7,7 @@ package updates
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -42,8 +43,9 @@ type Checker struct {
 	// Current is the running version (version.Version).
 	Current string
 	// Setting resolves a Hub setting on every check (live: a change in the
-	// panel applies at the next check).
-	Setting func(key string) string
+	// panel applies at the next check). An error skips the check: a failed
+	// lookup must never turn the check on or widen the channel.
+	Setting func(key string) (string, error)
 	Log     *slog.Logger
 	// Interval is 24 h; FirstDelay the wait after start (a few minutes).
 	Interval, FirstDelay time.Duration
@@ -77,16 +79,28 @@ func (c *Checker) Run(ctx context.Context) {
 
 // CheckOnce runs one check now, unless update_check is off.
 func (c *Checker) CheckOnce(ctx context.Context) {
-	if c.Setting(config.KeyUpdateCheck) == "off" {
+	check, err1 := c.Setting(config.KeyUpdateCheck)
+	channel, err2 := c.Setting(config.KeyUpdateChannel)
+	if err1 != nil || err2 != nil {
+		c.Log.Debug("release check skipped: the settings could not be read", "error", errors.Join(err1, err2))
+		return
+	}
+	if check != "on" {
+		c.mu.Lock()
+		c.last = Result{}
+		c.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	channel := c.Setting(config.KeyUpdateChannel)
 	res, err := c.check(ctx, channel)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {
+		if c.last.Channel != channel {
+			// A notice found on another channel no longer applies.
+			c.last = Result{Channel: channel}
+		}
 		c.last.Err, c.last.CheckedAt = err.Error(), time.Now()
 		c.Log.Debug("release check failed; keeping the last answer", "error", err)
 		return
@@ -124,7 +138,7 @@ func SelectorFor(channel string, cur version.SemVer, released bool) (version.Sel
 		return version.ParseSelector(fmt.Sprintf("%d.%d", cur.Major, cur.Minor))
 	case config.UpdateChannelMajor:
 		return version.ParseSelector(strconv.Itoa(int(cur.Major)))
-	case config.UpdateChannelLatest, "":
+	case config.UpdateChannelLatest:
 		return version.ParseSelector("latest")
 	}
 	return version.Selector{}, fmt.Errorf("unknown update channel %q", channel)
