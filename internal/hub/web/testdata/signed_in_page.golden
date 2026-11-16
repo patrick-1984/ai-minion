@@ -61,6 +61,9 @@
       
     </nav>
     <div class="rail-foot">
+      <div class="rail-version" data-build>
+        <span class="muted">Minion dev (dev)</span>
+      </div>
       <a class="identity" href="/account">
         <span class="avatar" aria-hidden="true">RO</span>
         <span class="identity-text"><span class="identity-name">root</span><span class="identity-role">Administrator</span></span>

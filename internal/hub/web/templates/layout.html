@@ -42,6 +42,10 @@
       {{end}}
     </nav>
     <div class="rail-foot">
+      <div class="rail-version" data-build>
+        <span class="muted">Minion {{.Build.Version}}</span>{{with .Build.Update}}
+        <a class="rail-update" href="{{.URL}}" target="_blank" rel="noopener" title="A newer release is available">{{.From}} → {{.To}}</a>{{end}}
+      </div>
       <a class="identity" href="/account"{{if eq .Path "/account"}} aria-current="page"{{end}}>
         <span class="avatar" aria-hidden="true">{{.Initials}}</span>
         <span class="identity-text"><span class="identity-name">{{.Username}}</span><span class="identity-role">{{.RoleLabel}}</span></span>
