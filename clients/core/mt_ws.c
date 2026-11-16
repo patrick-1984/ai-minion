@@ -318,15 +318,16 @@ int mt_ws_send(mt_ws *ws, const uint8_t *data, size_t n)
 
 int mt_ws_recv(mt_ws *ws, int timeout_ms)
 {
-	int controls = 0;
+	int controls = 0, started = 0;
 	ws->len = 0;
+	/* one absolute deadline for the whole call: a message (all its frames, empty ones included) must be
+	 * complete within FRAME_TIMEOUT_MS after the wait for its first byte */
+	ws->deadline = ws->p->mono_ms(ws->p->ctx) + FRAME_TIMEOUT_MS + (timeout_ms > 0 ? timeout_ms : 0);
 	for (;;) {
 		uint8_t h[2], ext[8], ctl[125];
 		uint64_t plen = 0;
 		int r, fin, op, i;
-		if (ws->len == 0) /* a new message: its frames must all arrive within FRAME_TIMEOUT_MS of its first byte */
-			ws->deadline = ws->p->mono_ms(ws->p->ctx) + FRAME_TIMEOUT_MS + (timeout_ms > 0 ? timeout_ms : 0);
-		r = read_exact(ws, h, 2, ws->len ? -1 : timeout_ms);
+		r = read_exact(ws, h, 2, started ? -1 : timeout_ms);
 		if (r == 0)
 			return 0;
 		if (r < 0)
@@ -352,15 +353,13 @@ int mt_ws_recv(mt_ws *ws, int timeout_ms)
 				return -1;
 			if (plen && read_exact(ws, ctl, (size_t)plen, -1) != (int)plen)
 				return -1;
-			if (++controls > 16 && ws->len == 0)
-				return 0; /* let the loop run (timers, sessions); the next call continues */
-			if (op == 9) {
-				if (send_frame(ws, 10, ctl, (size_t)plen) != 0)
-					return -1;
+			if (op == 9 && send_frame(ws, 10, ctl, (size_t)plen) != 0)
+				return -1;
+			if (op == 9 || op == 10) {
+				if (++controls >= 16 && !started)
+					return 0; /* handled; let the loop run (timers, sessions) before reading on */
 				continue;
 			}
-			if (op == 10)
-				continue;
 			if (op == 8) {
 				send_frame(ws, 8, ctl, plen >= 2 ? 2 : 0);
 				return -2;
@@ -369,8 +368,9 @@ int mt_ws_recv(mt_ws *ws, int timeout_ms)
 		}
 		if (op == 1)
 			return -1; /* text messages are not part of the protocol */
-		if ((op == 0) != (ws->len > 0) && !(op == 2 && ws->len == 0))
+		if ((op == 0 && !started) || (op == 2 && started))
 			return -1; /* continuation without a start, or a new message inside one */
+		started = 1;
 		if (plen > ws->cap - ws->len)
 			return -3; /* message larger than our buffer */
 		if (plen && read_exact(ws, ws->buf + ws->len, (size_t)plen, -1) != (int)plen)

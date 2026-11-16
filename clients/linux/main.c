@@ -34,6 +34,10 @@
 #include "mt_worker.h"
 
 #ifdef MT_WITH_MBEDTLS
+#include <mbedtls/build_info.h>
+#if defined(MBEDTLS_PSA_CRYPTO_C)
+#include <psa/crypto.h>
+#endif
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/net_sockets.h>
@@ -130,6 +134,16 @@ static int store_path(char *out, size_t cap, const char *key)
 	return n > 0 && (size_t)n < cap ? 0 : -1;
 }
 
+static int sync_dir(void)
+{
+	int fd = open(G.state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC), r;
+	if (fd < 0)
+		return -1;
+	r = fsync(fd);
+	close(fd);
+	return r == 0 ? 0 : -1;
+}
+
 static int store_get(void *c, const char *key, uint8_t *buf, size_t cap)
 {
 	char p[512];
@@ -155,12 +169,7 @@ static int store_set(void *c, const char *key, const uint8_t *buf, size_t n)
 	if (n == 0) { /* a deletion (invitation key after enrollment, state after a revoke) must be durable too */
 		if (unlink(p) != 0 && errno != ENOENT)
 			return -1;
-		fd = open(G.state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-		if (fd >= 0) {
-			fsync(fd);
-			close(fd);
-		}
-		return 0;
+		return sync_dir();
 	}
 	snprintf(tmp, sizeof tmp, "%s.tmp", p);
 	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
@@ -174,12 +183,7 @@ static int store_set(void *c, const char *key, const uint8_t *buf, size_t n)
 	close(fd);
 	if (rename(tmp, p) != 0)
 		return -1;
-	fd = open(G.state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC); /* make the rename durable */
-	if (fd >= 0) {
-		fsync(fd);
-		close(fd);
-	}
-	return 0;
+	return sync_dir(); /* the rename is durable only once the directory is */
 }
 
 /* ---------------------------------------------------------------- network */
@@ -215,9 +219,7 @@ static int tcp_connect(const char *host, uint16_t port, int timeout_ms)
 		fd = -1;
 	}
 	freeaddrinfo(res);
-	if (fd >= 0)
-		fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
-	return fd;
+	return fd; /* stays non-blocking: every read and write below has its own deadline */
 }
 
 #ifdef MT_WITH_MBEDTLS
@@ -225,7 +227,8 @@ static int bio_send(void *ctx, const unsigned char *b, size_t n)
 {
 	ssize_t r = send(*(int *)ctx, b, n, MSG_NOSIGNAL);
 	if (r < 0)
-		return errno == EINTR ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
+		return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK ? MBEDTLS_ERR_SSL_WANT_WRITE
+		                                                                  : MBEDTLS_ERR_NET_SEND_FAILED;
 	return (int)r;
 }
 
@@ -233,8 +236,19 @@ static int bio_recv(void *ctx, unsigned char *b, size_t n)
 {
 	ssize_t r = recv(*(int *)ctx, b, n, 0);
 	if (r < 0)
-		return errno == EINTR ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED; /* EAGAIN: timed out */
-	return (int)r;
+		return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK ? MBEDTLS_ERR_SSL_WANT_READ
+		                                                                  : MBEDTLS_ERR_NET_RECV_FAILED;
+	return r == 0 ? MBEDTLS_ERR_NET_CONN_RESET : (int)r;
+}
+
+/* Wait until the socket is readable (want_read) or writable, at most until the deadline. */
+static int wait_io(int want_read, int64_t deadline)
+{
+	struct pollfd pf = {G.fd, (short)(want_read ? POLLIN : POLLOUT), 0};
+	int64_t left = deadline - mono_ms(NULL);
+	if (left <= 0)
+		return -1;
+	return poll(&pf, 1, (int)(left > 1000 ? 1000 : left)) < 0 && errno != EINTR ? -1 : 0;
 }
 #endif
 
@@ -268,6 +282,10 @@ static int net_connect(void *c, const char *host, uint16_t port, int tls, int ti
 #ifdef MT_WITH_MBEDTLS
 	{
 		int r;
+#if defined(MBEDTLS_PSA_CRYPTO_C)
+		if (psa_crypto_init() != PSA_SUCCESS) /* TLS 1.3 in mbedTLS 3.x runs on PSA (the Hub speaks TLS 1.3) */
+			goto fail;
+#endif
 		mbedtls_ssl_init(&G.ssl);
 		mbedtls_ssl_config_init(&G.conf);
 		mbedtls_ctr_drbg_init(&G.drbg);
@@ -284,15 +302,14 @@ static int net_connect(void *c, const char *host, uint16_t port, int tls, int ti
 		if (mbedtls_ssl_setup(&G.ssl, &G.conf) || mbedtls_ssl_set_hostname(&G.ssl, host))
 			goto fail;
 		mbedtls_ssl_set_bio(&G.ssl, &G.fd, bio_send, bio_recv, NULL);
-		{ /* the TLS handshake shares the connect deadline: a peer that stalls it must not freeze the Worker */
-			struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000}, zero = {0, 0};
-			setsockopt(G.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-			setsockopt(G.fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-			while ((r = mbedtls_ssl_handshake(&G.ssl)) != 0)
+		{ /* the whole TLS handshake shares the connect deadline: a stalling peer cannot freeze the Worker */
+			int64_t deadline = mono_ms(NULL) + timeout_ms;
+			while ((r = mbedtls_ssl_handshake(&G.ssl)) != 0) {
 				if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE)
 					goto fail;
-			setsockopt(G.fd, SOL_SOCKET, SO_RCVTIMEO, &zero, sizeof zero);
-			setsockopt(G.fd, SOL_SOCKET, SO_SNDTIMEO, &zero, sizeof zero);
+				if (wait_io(r == MBEDTLS_ERR_SSL_WANT_READ, deadline) != 0)
+					goto fail;
+			}
 		}
 		return 0;
 	}
@@ -330,34 +347,51 @@ static int net_read(void *c, uint8_t *b, size_t cap, int timeout_ms)
 	if (G.tls) {
 		int r = mbedtls_ssl_read(&G.ssl, b, cap);
 		if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE)
-			return 0;
+			return 0; /* a partial record: the rest comes with a later call, nothing blocks */
+#ifdef MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET
+		if (r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+			return 0; /* TLS 1.3 session ticket: not data */
+#endif
 		return r > 0 ? r : -1;
 	}
 #endif
 	{
 		ssize_t r = recv(G.fd, b, cap, 0);
+		if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
+			return 0;
 		return r > 0 ? (int)r : -1;
 	}
 }
 
 static int net_write(void *c, const uint8_t *b, size_t n)
 {
+	int64_t deadline = mono_ms(NULL) + 30000; /* a peer that stops reading drops the connection after 30 s */
 	(void)c;
 	while (n) {
 		int r;
+		struct pollfd pf = {G.fd, POLLOUT, 0};
 #ifdef MT_WITH_MBEDTLS
 		if (G.tls) {
 			r = mbedtls_ssl_write(&G.ssl, b, n);
-			if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE)
+			if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
+				if (wait_io(r == MBEDTLS_ERR_SSL_WANT_READ, deadline) != 0)
+					return -1;
 				continue;
+			}
 		} else
 #endif
+		{
 			r = (int)send(G.fd, b, n, MSG_NOSIGNAL);
-		if (r <= 0) {
-			if (r < 0 && errno == EINTR)
+			if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+				int64_t left = deadline - mono_ms(NULL);
+				if (left <= 0)
+					return -1;
+				poll(&pf, 1, (int)(left > 1000 ? 1000 : left));
 				continue;
-			return -1;
+			}
 		}
+		if (r <= 0)
+			return -1;
 		b += r;
 		n -= (size_t)r;
 	}
@@ -602,6 +636,11 @@ int main(int argc, char **argv)
 	cfg.out_cap = 128 * 1024;
 	cfg.max_streams = 16;
 	cfg.results_ring = 256;
+	{ /* test hook: the ESP32 build seals 4 KB records; MINION_THIN_TX_REC_CAP lets the e2e test cover that path */
+		const char *tx = getenv("MINION_THIN_TX_REC_CAP");
+		if (tx)
+			cfg.tx_rec_cap = strtoul(tx, NULL, 10);
+	}
 	w = mt_worker_new(&pf, &cfg);
 	if (!w) {
 		fprintf(stderr, "cannot start (bad --hub URL or out of memory)\n");

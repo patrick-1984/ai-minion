@@ -20,9 +20,6 @@
 #define EV_REOPEN_MS 2000
 #define RESULT_TTL_MS 600000
 #define YAMUX_WINDOW (256u * 1024u)
-#ifndef MT_HS_MAX_TOKENS
-#define MT_HS_MAX_TOKENS 1600 /* a Hub hello with the longest transition chain the Hub keeps (128 links) */
-#endif
 #define MAX_TOKENS 256        /* stream frames (op requests) */
 #define ID_FUTURE_SKEW_MS 120000
 
@@ -76,6 +73,8 @@ struct mt_worker {
 	int nresults;
 	/* identity and state */
 	uint8_t seed[32], pub[32];
+	int seed_ok; /* the identity seed is on durable storage (enrollment needs it) */
+	size_t tx_cap; /* plaintext bytes per outgoing record */
 	persisted st;
 	int revoked, stop;
 	char last_error[96];
@@ -202,14 +201,22 @@ static int save_share(mt_worker *w)
 	return w->p->store_set(w->p->ctx, MT_KEY_SHARE, b, sizeof b) == 0 ? 0 : -1;
 }
 
+/* A fresh identity key, stored before it is ever used (after a revoke the old key is tombstoned at the Hub). */
+static void new_identity(mt_worker *w)
+{
+	w->p->random(w->p->ctx, w->seed, 32);
+	w->seed_ok = w->p->store_set(w->p->ctx, MT_KEY_SEED, w->seed, 32) == 0;
+	mt_ed25519_pub_from_seed(w->pub, w->seed);
+}
+
 static void load(mt_worker *w)
 {
 	uint8_t b[1 + 8 + 1 + 8 * 33];
 	int n = w->p->store_get(w->p->ctx, MT_KEY_SEED, w->seed, sizeof w->seed);
-	if (n != 32) {
-		w->p->random(w->p->ctx, w->seed, 32);
-		w->p->store_set(w->p->ctx, MT_KEY_SEED, w->seed, 32);
-	}
+	if (n != 32)
+		new_identity(w);
+	else
+		w->seed_ok = 1;
 	mt_ed25519_pub_from_seed(w->pub, w->seed);
 	memset(&w->st, 0, sizeof w->st);
 	n = w->p->store_get(w->p->ctx, MT_KEY_STATE, (uint8_t *)&w->st, sizeof w->st);
@@ -253,8 +260,9 @@ mt_worker *mt_worker_new(const mt_platform *p, const mt_config *cfg)
 	}
 	w->rx = malloc(w->cfg.rx_cap);
 	w->out = malloc(w->cfg.out_cap);
-	w->rec = malloc(MT_REC_MAX_PLAIN);
-	w->wire = malloc(MT_REC_MAX_PLAIN + 20);
+	w->tx_cap = cfg->tx_rec_cap >= 512 && cfg->tx_rec_cap <= MT_REC_MAX_PLAIN ? cfg->tx_rec_cap : MT_REC_MAX_PLAIN;
+	w->rec = malloc(w->tx_cap);
+	w->wire = malloc(w->tx_cap + 20 > 1100 ? w->tx_cap + 20 : 1100); /* also carries the plaintext hello */
 	w->ctl_buf = malloc(4096);
 	w->streams = calloc((size_t)w->cfg.max_streams, sizeof(stream));
 	w->frame_pool = malloc(w->cfg.frame_cap * (size_t)w->cfg.max_streams);
@@ -293,7 +301,7 @@ void mt_worker_status(const mt_worker *w, mt_status *st)
 static int hs_send(mt_worker *w, const char *json, size_t n)
 {
 	uint8_t *b = w->wire;
-	if (n + 4 > MT_REC_MAX_PLAIN + 20)
+	if (n + 4 > (w->tx_cap + 20 > 1100 ? w->tx_cap + 20 : 1100))
 		return -1;
 	put_be32(b, (uint32_t)n);
 	memcpy(b + 4, json, n);
@@ -301,7 +309,7 @@ static int hs_send(mt_worker *w, const char *json, size_t n)
 }
 
 /* Receive one handshake frame; returns the JSON length (JSON at w->rx + 4) and its type in `type`. */
-static int hs_recv(mt_worker *w, char *type, size_t tcap, mt_jtok *t, int *ntok)
+static int hs_recv(mt_worker *w, char *type, size_t tcap, mt_jtok *t, int maxtok, int *ntok)
 {
 	int n = mt_ws_recv(&w->ws, HS_TIMEOUT_MS), it;
 	uint32_t len;
@@ -310,7 +318,7 @@ static int hs_recv(mt_worker *w, char *type, size_t tcap, mt_jtok *t, int *ntok)
 	len = be32(w->rx);
 	if (len != (uint32_t)n - 4 || len > 65536)
 		return -1;
-	*ntok = mt_json_parse((const char *)w->rx + 4, len, t, MAX_TOKENS);
+	*ntok = mt_json_parse((const char *)w->rx + 4, len, t, maxtok);
 	if (*ntok <= 0 || t[0].type != MT_JT_OBJ)
 		return -1;
 	it = mt_json_get((const char *)w->rx + 4, t, *ntok, 0, "type");
@@ -333,7 +341,10 @@ static int handshake(mt_worker *w, int enroll, const uint8_t inv_fp_hash[32])
 {
 	uint8_t eph[32], ephp[32], nonce[32], ephh[32], hub_pub[32], certb[200], sig[64], dh[32];
 	char hello[1024], type[24], *hh;
-	static mt_jtok t[MT_HS_MAX_TOKENS];
+	/* the stream frame pool is idle during the handshake: its tokens hold the Hub hello (a 128-link chain
+	 * needs about 1500) without a large static array */
+	mt_jtok *t = (mt_jtok *)(void *)w->frame_pool;
+	int maxtok = (int)(w->cfg.frame_cap * (size_t)w->cfg.max_streams / sizeof(mt_jtok));
 	int nt, n, i, r, len, chain_arr = -1;
 	size_t k;
 	mt_jw jw;
@@ -367,7 +378,7 @@ static int handshake(mt_worker *w, int enroll, const uint8_t inv_fp_hash[32])
 		logf_(w, MT_LOG_WARN, "handshake: cannot send hello%s", NULL, 0);
 		goto fail;
 	}
-	len = hs_recv(w, type, sizeof type, t, &nt);
+	len = hs_recv(w, type, sizeof type, t, maxtok, &nt);
 	if (len < 0) {
 		logf_(w, MT_LOG_WARN, "handshake: no Hub hello%s", NULL, 0);
 		goto fail;
@@ -495,7 +506,7 @@ static int handshake(mt_worker *w, int enroll, const uint8_t inv_fp_hash[32])
 		}
 		r = mt_ratchet_check(&scope, &w->cert);
 		/* (f) sig_hub by the operational key */
-		len = hs_recv(w, type, sizeof type, t, &nt);
+		len = hs_recv(w, type, sizeof type, t, maxtok, &nt);
 		hh = (char *)w->rx + 4;
 		if (len < 0 || strcmp(type, "sig") || get_b64(hh, t, nt, 0, "sig", sig, 64) ||
 		    mt_verify(sig, w->cert.op_pub, "hs-hub", w->transcript, 32) != MT_OK) {
@@ -553,7 +564,7 @@ static int out_flush(mt_worker *w)
 	int n;
 	if (!w->rec_len)
 		return 0;
-	n = mt_rec_seal(&w->w2h, w->wire, MT_REC_MAX_PLAIN + 20, w->rec, w->rec_len);
+	n = mt_rec_seal(&w->w2h, w->wire, w->tx_cap + 20, w->rec, w->rec_len);
 	w->rec_len = 0;
 	if (n < 0)
 		return -1;
@@ -563,14 +574,14 @@ static int out_flush(mt_worker *w)
 static int out_write(mt_worker *w, const uint8_t *d, size_t n)
 {
 	while (n) {
-		size_t take = MT_REC_MAX_PLAIN - w->rec_len;
+		size_t take = w->tx_cap - w->rec_len;
 		if (take > n)
 			take = n;
 		memcpy(w->rec + w->rec_len, d, take);
 		w->rec_len += take;
 		d += take;
 		n -= take;
-		if (w->rec_len == MT_REC_MAX_PLAIN && out_flush(w) != 0)
+		if (w->rec_len == w->tx_cap && out_flush(w) != 0)
 			return -1;
 	}
 	return 0;
@@ -918,9 +929,9 @@ static void remember(mt_worker *w, const char *id, const char *res)
 {
 	cached *c = &w->results[w->nresults++ % w->cfg.results_ring];
 	if (c->id[0]) { /* evicting: an id at or before the evicted one can no longer be recognised */
-		int64_t ev = uuid7_ms(c->id), cap = w->p->now_ms(w->p->ctx) + ID_FUTURE_SKEW_MS;
-		if (ev > cap)
-			ev = cap; /* ids are admitted only up to now + skew, so the floor never runs further ahead */
+		/* admitted ids are dated at most now + 2 min, so the floor runs at most that far ahead; it is never
+		 * lowered (lowering it would forget an id that may still be retried after a clock step) */
+		int64_t ev = uuid7_ms(c->id);
 		if (ev > w->replay_floor_ms)
 			w->replay_floor_ms = ev;
 	}
@@ -1259,7 +1270,7 @@ static int live_revoke(mt_worker *w, stream *s, const char *js, mt_jtok *t, int 
 	logf_(w, MT_LOG_WARN, "the Hub revoked this Worker; enrollment and key erased%s", NULL, 0);
 	memset(&w->st, 0, sizeof w->st);
 	w->p->store_set(w->p->ctx, MT_KEY_STATE, NULL, 0);
-	w->p->store_set(w->p->ctx, MT_KEY_SEED, NULL, 0);
+	new_identity(w); /* the old key is tombstoned at the Hub: a later enrollment needs a new one */
 	w->revoked = 1;
 	s_frame(w, s, ack, sizeof ack - 1, 1);
 	out_flush(w);
@@ -1395,8 +1406,10 @@ static int on_control(mt_worker *w, int enroll)
 		if (pend)
 			logf_(w, MT_LOG_WARN,
 			      "this Worker is waiting for approval: approve %s in the Hub (Workers page)", w->st.worker_id, 0);
-		else
+		else {
 			logf_(w, MT_LOG_INFO, "connected as %s", w->st.worker_id, 0);
+			w->last_error[0] = 0;
+		}
 		return 0;
 	}
 	if (!strcmp(type, "revoke")) {
@@ -1406,7 +1419,7 @@ static int on_control(mt_worker *w, int enroll)
 			logf_(w, MT_LOG_WARN, "the Hub revoked this Worker; enrollment and key erased%s", NULL, 0);
 			memset(&w->st, 0, sizeof w->st);
 			w->p->store_set(w->p->ctx, MT_KEY_STATE, NULL, 0);
-			w->p->store_set(w->p->ctx, MT_KEY_SEED, NULL, 0);
+			new_identity(w);
 			w->revoked = 1;
 			return -2;
 		}
@@ -1610,6 +1623,13 @@ static int run_once(mt_worker *w)
 			return -3;
 		}
 		snprintf(secret, sizeof secret, "%s", dot + 1);
+		if (!w->seed_ok) { /* never enroll a key that a restart would lose */
+			w->seed_ok = w->p->store_set(w->p->ctx, MT_KEY_SEED, w->seed, 32) == 0;
+			if (!w->seed_ok) {
+				logf_(w, MT_LOG_ERROR, "store: cannot save the identity key; not enrolling%s", NULL, 0);
+				return -1;
+			}
+		}
 		enroll = 1;
 	}
 	if (w->p->now_ms(w->p->ctx) < 1735689600000LL) { /* 2025-01-01: the clock is not set yet */

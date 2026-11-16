@@ -59,6 +59,10 @@ jobs:
         run: python3 -I clients/tests/e2e.py --hub-bin out/minion --thin-bin out/plain/minion-thin --work "$RUNNER_TEMP/e2e-plain"
       - name: End-to-end (TLS)
         run: python3 -I clients/tests/e2e.py --tls --hub-bin out/minion --thin-bin out/tls/minion-thin --work "$RUNNER_TEMP/e2e-tls" --port 18556
+      - name: End-to-end with 4 KB records (as the ESP32 build sends)
+        env:
+          MINION_THIN_TX_REC_CAP: "4096"
+        run: python3 -I clients/tests/e2e.py --hub-bin out/minion --thin-bin out/plain/minion-thin --work "$RUNNER_TEMP/e2e-4k" --port 18557
 
   openwrt:
     name: OpenWrt ${{ matrix.release }} ${{ matrix.arch }}

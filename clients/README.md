@@ -5,7 +5,7 @@ Small Minion Workers in C for devices where the 32 MB Go binary does not fit:
 | | OpenWrt router | ESP32 family |
 |---|---|---|
 | What it serves | shell sessions (PTY, `/bin/ash`) | a built-in command console (GPIO, ADC, PWM, I2C, Wi-Fi, status), a serial-console bridge (`uart`), the device log |
-| Size | about 50 KB package (143 KB binary on MIPS); TLS from the system `libmbedtls` | about 1 MB application on 4 MB flash |
+| Size | about 50 KB package (143 KB binary on MIPS); TLS from the system `libmbedtls` | 0.98-1.05 MB application in a 2 MB slot of 4 MB flash |
 | Packages / images | ipk for OpenWrt 24.10, apk for 25.12: `mips_24kc`, `mipsel_24kc`, `arm_cortex-a7_neon-vfpv4`, `aarch64_cortex-a53`, `x86_64` | `esp32`, `esp32s3`, `esp32c3`, `esp32c6`: a factory image (first flash) and an app image (updates) |
 
 They speak the existing Worker protocol 3.0, so any Minion Hub (0.8 and later) serves them without changes.
@@ -53,12 +53,13 @@ commands and the pin safety rules.
 make -C clients/linux test             # unit tests: RFC vectors and the Go repository's golden vectors
 make -C clients/linux MBEDTLS=1        # Linux binary with TLS
 go build -o minion ./cmd/minion        # the Hub of this repository, then:
-python3 clients/tests/e2e.py --tls --hub-bin ./minion --thin-bin clients/linux/build/minion-thin
+python3 clients/tests/e2e.py --tls --hub-bin ./minion --thin-bin clients/linux/build-tls/minion-thin
 ```
 
 The end-to-end test enrolls, approves, drives sessions, re-issues the Hub certificate, rotates the master key,
-restarts the Hub and revokes the Worker. CI (`.github/workflows/thin-workers.yml`) also runs the unit tests on
-big-endian MIPS and builds every package and image; a `thin-v*` tag publishes a prerelease.
+restarts the Hub and the device, and revokes the Worker. CI (`.github/workflows/thin-workers.yml`) also runs the
+unit tests on a big-endian CPU (s390x under qemu; MIPS big-endian was checked with the OpenWrt toolchain) and builds
+every package and image; a `thin-v*` tag publishes a prerelease.
 
 ## Not in the preview
 

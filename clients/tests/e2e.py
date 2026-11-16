@@ -14,7 +14,7 @@ Flow (each step must pass):
   7. the Hub re-issues its certificate: the Worker reconnects by itself and keeps working
   8. the Hub rotates its master (root) key: the Worker follows the signed chain and keeps working
   9. the Hub restarts: the Worker reconnects by itself
- 10. the Hub removes the Worker: a signed live revoke wipes the device state and the Worker exits (3)
+ 10. the Hub removes the Worker: a signed live revoke wipes the enrollment, replaces the key, the Worker exits (3)
 """
 
 import argparse
@@ -111,11 +111,28 @@ class Hub:
             hh._save(self.dir, st)
 
     def stop(self):
+        """SIGTERM the Hub's process group, wait up to 10 s, then SIGKILL: a test must not leave a Hub behind."""
         try:
-            os.killpg(hh._state(self.dir)["pid"], signal.SIGTERM)
-        except OSError:
-            pass
-        time.sleep(1.0)
+            pid = hh._state(self.dir)["pid"]
+        except (OSError, ValueError, KeyError):
+            return
+        for sig, wait in ((signal.SIGTERM, 10.0), (signal.SIGKILL, 5.0)):
+            try:
+                os.killpg(pid, sig)
+            except OSError:
+                return
+            end = time.time() + wait
+            while time.time() < end:
+                try:
+                    if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                        return
+                except ChildProcessError:
+                    pass
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    return
+                time.sleep(0.2)
 
     @property
     def url(self):
@@ -245,6 +262,8 @@ def main():
                                                   if x["id"] == wid).get("online"), timeout=120)
 
         log("10. remove: signed live revoke wipes the device")
+        with open(os.path.join(state, "seed"), "rb") as f:
+            old_seed = f.read()
         code, res = hub.op("worker_remove", {"worker_id": wid}, write=True)
         if code != 200:
             fail(f"worker_remove {code} {res}")
@@ -254,8 +273,10 @@ def main():
             fail("the thin Worker did not exit after the revoke")
         if rc != 3:
             fail(f"thin Worker exit code {rc}, want 3")
-        if os.path.exists(os.path.join(state, "state")) or os.path.exists(os.path.join(state, "seed")):
-            fail("device state not wiped after the revoke")
+        if os.path.exists(os.path.join(state, "state")):
+            fail("enrollment state not wiped after the revoke")
+        if os.path.exists(os.path.join(state, "seed")) and open(os.path.join(state, "seed"), "rb").read() == old_seed:
+            fail("the revoked identity key is still in use (the Hub tombstoned it)")
         thin = None
         log("PASS")
     finally:

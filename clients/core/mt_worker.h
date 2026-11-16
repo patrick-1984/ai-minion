@@ -40,6 +40,7 @@ typedef struct {
 	size_t out_cap;            /* largest result frame produced */
 	int max_streams;           /* concurrent yamux streams (op streams + ev) */
 	int results_ring;          /* remembered write results (request ids) */
+	size_t tx_rec_cap;         /* plaintext bytes per outgoing record (512..16384; 0 = 16384); small saves RAM */
 } mt_config;
 
 typedef struct mt_worker mt_worker;
