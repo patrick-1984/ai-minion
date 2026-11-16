@@ -59,6 +59,8 @@ jobs:
         run: python3 -I clients/tests/e2e.py --hub-bin out/minion --thin-bin out/plain/minion-thin --work "$RUNNER_TEMP/e2e-plain"
       - name: End-to-end (TLS)
         run: python3 -I clients/tests/e2e.py --tls --hub-bin out/minion --thin-bin out/tls/minion-thin --work "$RUNNER_TEMP/e2e-tls" --port 18556
+      - name: End-to-end (TLS) through a proxy that splits every record into tiny pieces
+        run: python3 -I clients/tests/e2e.py --tls --chop --hub-bin out/minion --thin-bin out/tls/minion-thin --work "$RUNNER_TEMP/e2e-chop" --port 18558
       - name: End-to-end with 4 KB records (as the ESP32 build sends)
         env:
           MINION_THIN_TX_REC_CAP: "4096"

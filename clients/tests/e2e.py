@@ -37,6 +37,48 @@ import hub_harness as hh  # noqa: E402
 PASS2 = "harness-passphrase-rotated-0123"
 
 
+def chop_proxy(listen_port, target_port):
+    """A TCP proxy that hands the Hub's bytes to the Worker in tiny, delayed pieces, so every TLS record and
+    WebSocket frame arrives split across many reads (the Worker must never take a partial read for a timeout)."""
+    import random
+    import socket
+    import threading
+
+    def pump(src, dst, chop):
+        try:
+            while True:
+                data = src.recv(4096)
+                if not data:
+                    break
+                while data:
+                    n = random.randint(1, 23) if chop else len(data)
+                    dst.sendall(data[:n])
+                    data = data[n:]
+                    if chop:
+                        time.sleep(0.002)
+        except OSError:
+            pass
+        for s in (src, dst):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", listen_port))
+    srv.listen(8)
+
+    def accept():
+        while True:
+            c, _ = srv.accept()
+            h = socket.create_connection(("127.0.0.1", target_port))
+            threading.Thread(target=pump, args=(c, h, False), daemon=True).start()
+            threading.Thread(target=pump, args=(h, c, True), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+
+
 def log(msg):
     print(f"[e2e {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -163,6 +205,7 @@ def main():
     ap.add_argument("--tls", action="store_true")
     ap.add_argument("--work", default="/tmp/minion-thin-e2e")
     ap.add_argument("--port", type=int, default=18555)
+    ap.add_argument("--chop", action="store_true", help="put a proxy in front that splits the Hub's bytes into tiny pieces")
     a = ap.parse_args()
     shutil.rmtree(a.work, ignore_errors=True)
     os.makedirs(a.work)
@@ -173,6 +216,11 @@ def main():
     try:
         log("1. Hub up")
         hub.start()
+        thin_url = hub.url
+        if a.chop:
+            chop_proxy(a.port + 100, a.port)
+            thin_url = hub.url.replace(f":{a.port}", f":{a.port + 100}")
+            log(f"   the Worker connects through the chopping proxy {thin_url}")
 
         log("2. enroll with an invitation key")
         code, res = hub.op("invitation_create", {"mode": "one_time", "ttl": "1h", "kind": "private", "name": "e2e"})
@@ -181,7 +229,7 @@ def main():
         inv = os.path.join(a.work, "invite.txt")
         with open(inv, "w") as f:
             f.write(res["key"])
-        thin = subprocess.Popen([os.path.abspath(a.thin_bin), "--hub", hub.url, "--state-dir", state, "--name", "e2e-thin",
+        thin = subprocess.Popen([os.path.abspath(a.thin_bin), "--hub", thin_url, "--state-dir", state, "--name", "e2e-thin",
                                  "--invite-file", inv, "--session", "shell=exec /bin/sh", "-v"],
                                 stdout=thin_log, stderr=subprocess.STDOUT, start_new_session=True)
         w = until("pending Worker", lambda: next((x for x in hub.op("workers_list", {"all": True})[1]["workers"]
@@ -234,7 +282,7 @@ def main():
         log("6b. device restart: the Worker reconnects from its stored state (no invitation key any more)")
         os.killpg(thin.pid, signal.SIGTERM)
         thin.wait(timeout=20)
-        thin = subprocess.Popen([os.path.abspath(a.thin_bin), "--hub", hub.url, "--state-dir", state, "--name", "e2e-thin",
+        thin = subprocess.Popen([os.path.abspath(a.thin_bin), "--hub", thin_url, "--state-dir", state, "--name", "e2e-thin",
                                  "--session", "shell=exec /bin/sh", "-v"],
                                 stdout=thin_log, stderr=subprocess.STDOUT, start_new_session=True)
         until("online after the device restart", lambda: next(x for x in hub.op("workers_list", {"all": True})[1]["workers"]

@@ -139,6 +139,9 @@ void mt_ws_init(mt_ws *ws, const mt_platform *p, uint8_t *buf, size_t cap)
 static int read_exact(mt_ws *ws, uint8_t *dst, size_t n, int first_timeout)
 {
 	size_t got = 0;
+	/* the wait for the first byte is a deadline too: a platform read may return "nothing yet" early (a TLS
+	 * record split across TCP segments), which must not count as the end of the wait */
+	int64_t first_deadline = ws->p->mono_ms(ws->p->ctx) + (first_timeout > 0 ? first_timeout : 0);
 	while (got < n) {
 		if (ws->raw_off < ws->raw_len) {
 			size_t take = ws->raw_len - ws->raw_off;
@@ -150,18 +153,24 @@ static int read_exact(mt_ws *ws, uint8_t *dst, size_t n, int first_timeout)
 			continue;
 		}
 		{
-			int wait = first_timeout, r;
-			if (first_timeout < 0 || got) {
-				int64_t left = ws->deadline - ws->p->mono_ms(ws->p->ctx);
+			int wait, r;
+			int64_t now = ws->p->mono_ms(ws->p->ctx), left;
+			if (first_timeout >= 0 && got == 0) {
+				left = first_deadline - now;
+				if (left <= 0 && first_timeout > 0)
+					return 0; /* nothing arrived within the wait */
+				wait = (int)(left > 1000 ? 1000 : left < 0 ? 0 : left);
+			} else {
+				left = ws->deadline - now;
 				if (left <= 0)
 					return -1;
 				wait = (int)(left > 1000 ? 1000 : left);
 			}
 			r = ws->p->net_read(ws->p->ctx, ws->raw, sizeof ws->raw, wait);
-			if (r == 0 && got == 0 && first_timeout >= 0)
-				return 0;
+			if (r == 0 && got == 0 && first_timeout == 0)
+				return 0; /* a pure poll */
 			if (r == 0)
-				continue; /* re-check the absolute deadline */
+				continue; /* re-check the deadlines */
 			if (r < 0)
 				return -1;
 			ws->raw_len = (size_t)r;
