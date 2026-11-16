@@ -75,7 +75,7 @@ jobs:
           CGO_ENABLED=0 go test -count=1 -v -run "$service" ./internal/worker/service/
           CGO_ENABLED=0 go test -count=1 -v ./internal/worker/localapi/ ./internal/client/
           agent='^(TestHubPipeModuleCallsWithTheWorkerCallKeyFile|TestCallKeySourceRereadsAndChecksTheKeyFile)$'
-          version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary)$'
+          version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary|TestCheckTrustedExecutable)$'
           CGO_ENABLED=0 go test -count=1 -v -run "$agent" ./internal/worker/agent/
           CGO_ENABLED=0 go test -count=1 -v -run "$version" ./internal/version/
       - name: Windows-tagged tests with the race detector
@@ -94,7 +94,7 @@ jobs:
           CGO_ENABLED=1 go test -race -count=1 -run "$service" ./internal/worker/service/
           CGO_ENABLED=1 go test -race -count=1 ./internal/worker/localapi/ ./internal/client/
           agent='^(TestHubPipeModuleCallsWithTheWorkerCallKeyFile|TestCallKeySourceRereadsAndChecksTheKeyFile)$'
-          version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary)$'
+          version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary|TestCheckTrustedExecutable)$'
           CGO_ENABLED=1 go test -race -count=1 -run "$agent" ./internal/worker/agent/
           CGO_ENABLED=1 go test -race -count=1 -run "$version" ./internal/version/
 

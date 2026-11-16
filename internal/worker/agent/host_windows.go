@@ -3,7 +3,11 @@
 package agent
 
 import (
+	"fmt"
 	"os/exec"
+	"path/filepath"
+
+	"github.com/patrick-1984/ai-minion/internal/version"
 
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/conpty"
@@ -22,6 +26,15 @@ func newSessionHost(socket string) (term.SessionHost, error) {
 	bin, err := exec.LookPath("psmux")
 	if err != nil {
 		return nil, err
+	}
+	if bin, err = filepath.Abs(bin); err != nil {
+		return nil, err
+	}
+	// Check before the first run (tmux.New runs "psmux -V"): a Worker that
+	// runs as a service (LocalSystem) must never start a psmux that another
+	// account can replace, for example one in a user-writable PATH directory.
+	if err := version.CheckTrustedExecutable(bin); err != nil {
+		return nil, fmt.Errorf("psmux at %s is not trusted for this account: %w", bin, err)
 	}
 	return tmux.New(socket, tmux.WithBinary(bin))
 }
