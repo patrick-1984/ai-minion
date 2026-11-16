@@ -68,7 +68,8 @@ func initRoute(ctx context.Context, env *Env) error {
 			}
 			return u.Username
 		},
-		Logger: cfg.logger(),
+		Logger:      cfg.logger(),
+		UserManaged: userManaged(st),
 	})
 	if err != nil {
 		return fmt.Errorf("route: %w", err)
@@ -98,4 +99,12 @@ func initRoute(ctx context.Context, env *Env) error {
 		return fmt.Errorf("route: %w", err)
 	}
 	return Provide(env, rt)
+}
+
+// userManaged reads the user-managed switch of a Worker (Minion control).
+func userManaged(st *store.Store) func(ctx context.Context, workerID string) (bool, error) {
+	return func(ctx context.Context, workerID string) (bool, error) {
+		c, err := st.WorkerControl(ctx, workerID)
+		return c.UserManaged, err
+	}
 }

@@ -2,6 +2,8 @@
 
 Back to the [README](../../README.md).
 
+From 0.9.0 grants are made in [Minion control](minion-control.md) (master sessions and the Workers that accept control); this page describes the calls, which are unchanged.
+
 A **session-control grant** lets one tmux session on one Worker, the **controller session**, list, read and type into sessions on other Workers with the local `minion` command line and `minion mcp`. It is meant for an agent that coordinates other agents: the agent in `build-box:boss` can read the screen of `ci-runner:x` and type into `laptop:build` without an API key, a call key or any setting on the target Workers. Every other session behaves as before: it reaches its own Worker through the local control socket and nothing on other Workers.
 
 ## Default: nobody has a grant

@@ -67,7 +67,9 @@ func TestSessionControlIsForAdminsOnly(t *testing.T) {
 	user := get(t, s, "/", "X-Test-Session", userHeader).Body.String()
 	mustNotHave(t, user, pathAdminSessionControl)
 	admin := get(t, s, "/", "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, admin, `href="/admin/session-control">`, `<span>Session control</span>`)
+	// v0.9.0: the navigation leads to Access > Minion control instead.
+	mustHave(t, admin, `href="/access/control">`, `<span>Minion control</span>`)
+	mustNotHave(t, user, `href="/access/control">`)
 }
 
 func TestSessionControlListsGrantsWithRemove(t *testing.T) {

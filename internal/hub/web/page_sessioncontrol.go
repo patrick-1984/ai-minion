@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -226,7 +225,8 @@ func handleSessionControlRemove(w http.ResponseWriter, r *http.Request, c OpCall
 
 func init() {
 	RegisterPage(Page{Pattern: pathAdminSessionControl, Title: "Session control", Template: "sessioncontrol.html", Data: adminPageData(sessionControlData)})
-	RegisterNav(NavItem{Label: "Session control", Path: pathAdminSessionControl, Order: adminNavOrder + 25, Roles: []authz.Role{authz.RoleAdmin}, Group: NavGroupAdmin, Icon: "i-sessions"})
+	// v0.9.0: Access > Minion control replaces this page in the navigation;
+	// the page stays reachable for the grants it shows.
 	RegisterRoute(Route{Pattern: "POST " + pathAdminSessionControl, Handler: adminRoute(handleSessionControlSet)})
 	RegisterRoute(Route{Pattern: "POST " + pathAdminSessionControl + "/remove", Handler: adminRoute(handleSessionControlRemove)})
 }

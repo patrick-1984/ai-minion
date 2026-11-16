@@ -73,9 +73,10 @@ func initEvents(ctx context.Context, env *Env) error {
 	svc.Registry().OnAdd(ing.Attach)
 
 	lister := &api.SessionLister{
-		Directory: workers.StoreDirectory{Store: st},
-		State:     hub,
-		Authz:     az,
+		UserManaged: userManaged(st),
+		Directory:   workers.StoreDirectory{Store: st},
+		State:       hub,
+		Authz:       az,
 		OwnerName: func(ctx context.Context, ownerID string) string {
 			u, err := st.UserByID(ctx, ownerID)
 			if err != nil {

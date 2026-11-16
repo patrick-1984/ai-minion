@@ -66,17 +66,19 @@ func TestSessionControlAdminSetsListsAndRemovesAGrant(t *testing.T) {
 	if code, body := k.call(ops.OpSessionControlSet, map[string]any{"worker_id": w1.ID, "session_name": "boss", "targets": targets}); code != http.StatusOK {
 		t.Fatalf("set = %d %s", code, body)
 	}
+	// v0.9.0: the list shows the effective targets, computed from what the
+	// target Workers accept; a Worker is never its own target.
 	g := k.grants()
 	if len(g) != 1 || g[0].WorkerID != w1.ID || g[0].SessionName != "boss" || g[0].CreatedBy != k.admin ||
-		len(g[0].Targets) != 2 || g[0].Targets[0] != targets[0] || g[0].Targets[1] != targets[1] {
+		len(g[0].Targets) != 1 || g[0].Targets[0] != targets[0] {
 		t.Fatalf("grants = %+v", g)
 	}
 	// An upsert replaces the targets.
 	if code, body := k.call(ops.OpSessionControlSet, map[string]any{"worker_id": w1.ID, "session_name": "boss", "targets": []ops.KeyResource{{Kind: ops.KeyResourceEverything}}}); code != http.StatusOK {
 		t.Fatalf("set = %d %s", code, body)
 	}
-	if g := k.grants(); len(g) != 1 || len(g[0].Targets) != 1 || g[0].Targets[0].Kind != ops.KeyResourceEverything {
-		t.Fatalf("grants after upsert = %+v", g)
+	if g := k.grants(); len(g) != 1 || len(g[0].Targets) != 1 || g[0].Targets[0] != targets[0] {
+		t.Fatalf("grants after upsert (everything reaches the other Worker) = %+v", g)
 	}
 	// Empty targets delete the row.
 	if code, body := k.call(ops.OpSessionControlSet, map[string]any{"worker_id": w1.ID, "session_name": "boss"}); code != http.StatusOK {

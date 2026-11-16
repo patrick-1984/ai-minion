@@ -676,3 +676,15 @@ body.embed .pipe-log { height: 10rem; max-height: 30vh; }
 /* Version block at the bottom of the left rail (A10). */
 .rail-version { display: flex; flex-direction: column; gap: 2px; font-size: 12px; padding: 0 4px 8px; }
 .rail-update { font-weight: 650; }
+/* Access > Minion control (A17). */
+.control-chain { white-space: pre-wrap; font-size: 12px; overflow-x: auto; }
+.control-pick ul, .control-masters { list-style: none; margin: 4px 0; padding: 0; max-height: 14rem; overflow-y: auto; }
+.control-pick summary { cursor: pointer; }
+.control-saved { font-size: 12px; margin: 4px 0 0; }
+.control-saved form.undo { display: inline; }
+.matrix-wrap { overflow: auto; max-height: 70vh; }
+.control-matrix { border-collapse: collapse; font-size: 13px; }
+.control-matrix th, .control-matrix td { border: 1px solid var(--border); padding: 4px 6px; text-align: center; }
+.control-matrix thead th { position: sticky; top: 0; background: var(--surface); }
+.control-matrix tbody th { position: sticky; left: 0; background: var(--surface); text-align: left; }
+.check-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }

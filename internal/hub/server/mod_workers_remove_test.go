@@ -70,6 +70,8 @@ func startRemoveHubWithService(t *testing.T) (*apiHub, *workers.Service) {
 	registerAPIKeyModule(r)
 	registerWorkersRemoveModule(r)
 	registerSessionControlModule(r, ops.Default)
+	registerMinionControlModule(r)
+	registerRouteModule(r)
 	registerDiagnosticsModule(r, ops.Default)
 	if err := r.Register("grab", workersRemoveModuleOrder+1, func(_ context.Context, env *Env) error {
 		var err error
@@ -121,9 +123,12 @@ func TestWorkerRemoveByTheOwnerTombstonesTheWorkerAndRevokesItsBoundKey(t *testi
 	}
 	boundKey, otherKey := mkKey(w.ID), mkKey(store.NewID())
 	otherWorker := store.NewID()
+	// Each controller reaches a third Worker that is not removed (v0.9.0: a
+	// grant is computed from what the target Workers accept).
+	third := store.NewID()
 	for _, wid := range []string{w.ID, otherWorker} {
 		if err := ah.st.PutSessionControl(ctx, store.SessionControlRow{WorkerID: wid, SessionName: "boss",
-			TargetsJSON: `[{"kind":"everything"}]`, CreatedBy: alice, CreatedAt: 1}); err != nil {
+			TargetsJSON: `[{"kind":"worker","worker_id":"` + third + `"}]`, CreatedBy: alice, CreatedAt: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -226,12 +231,13 @@ func TestWorkerRetireOnTheRealHubRevokesBoundKeysAndDeletesTrust(t *testing.T) {
 		return id
 	}
 	boundKey, otherKey := mkKey(w.ID), mkKey(other.ID)
+	third := store.NewID()
 	for _, id := range []string{w.ID, other.ID} {
 		if err := ah.st.PutTrust(ctx, store.TrustRow{ReceiverID: alice, WorkerID: id, CreatedAt: time.Now().UnixMilli()}); err != nil {
 			t.Fatal(err)
 		}
 		if err := ah.st.PutSessionControl(ctx, store.SessionControlRow{WorkerID: id, SessionName: "boss",
-			TargetsJSON: `[{"kind":"everything"}]`, CreatedBy: alice, CreatedAt: 1}); err != nil {
+			TargetsJSON: `[{"kind":"worker","worker_id":"` + third + `"}]`, CreatedBy: alice, CreatedAt: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}

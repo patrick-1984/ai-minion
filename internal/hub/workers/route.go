@@ -219,6 +219,9 @@ type RouterConfig struct {
 	// Logger receives routing problems. It never gets arguments, results or
 	// terminal content. The default is slog.Default().
 	Logger *slog.Logger
+	// UserManaged reports whether people and API keys may control a Worker's
+	// sessions (Minion control, v0.9.0). Nil means always.
+	UserManaged func(ctx context.Context, workerID string) (bool, error)
 }
 
 // Router routes catalog Worker ops to the Workers that run them.
@@ -230,6 +233,7 @@ type Router struct {
 	ownerName func(ctx context.Context, ownerID string) string
 	timeout   time.Duration
 	log       *slog.Logger
+	userMgd   func(ctx context.Context, workerID string) (bool, error)
 }
 
 // NewRouter returns a Router. It fails when a required dependency is missing.
@@ -238,6 +242,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 		return nil, errors.New("workers: a Router needs a Backend, a Directory and an Authorizer")
 	}
 	rt := &Router{
+		userMgd: c.UserManaged,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
 	}
@@ -625,6 +630,9 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if err := rt.az.Decide(ctx, req.Principal, op.Actions, res); err != nil {
 		return nil, err
 	}
+	if err := rt.checkUserManaged(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
+		return nil, err
+	}
 	actions, err := rt.az.EffectiveActions(ctx, req.Principal, res)
 	if err != nil {
 		return nil, err
@@ -659,6 +667,32 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 			Args: args, Actions: actions, Origin: origin,
 		},
 	}, nil
+}
+
+// userControlOps are the session operations that a Worker which is not
+// user-managed refuses from people and API keys (Minion control, v0.9.0).
+// Managing the Worker itself (sharing, update) stays with its owner and admins.
+var userControlOps = map[string]bool{
+	ops.OpSessionsList: true, ops.OpSessionSnapshot: true, ops.OpSessionCapture: true,
+	ops.OpSendText: true, ops.OpSendKeys: true, ops.OpSetTask: true, ops.OpAnswer: true,
+	ops.OpSessionCreate: true, ops.OpPipeSend: true,
+}
+
+// checkUserManaged refuses a person or an API key on the sessions of a Worker
+// that is not user-managed. A Worker principal (a master session's grant) is
+// not affected. A failed lookup refuses (fail closed).
+func (rt *Router) checkUserManaged(ctx context.Context, p authz.Principal, op, workerID string) error {
+	if rt.userMgd == nil || p.Kind == authz.KindWorker || !userControlOps[op] {
+		return nil
+	}
+	ok, err := rt.userMgd(ctx, workerID)
+	if err != nil {
+		return fmt.Errorf("workers: read the Minion control of the Worker: %w", err)
+	}
+	if !ok {
+		return proto.NewError(proto.CodeForbidden, "this Worker is not user-managed: only master sessions of the Workers it accepts control it (Access > Minion control)")
+	}
+	return nil
 }
 
 // originOf derives the structured origin of a request from the authenticated

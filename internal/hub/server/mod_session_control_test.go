@@ -54,6 +54,11 @@ func TestSessionControlOnTheRealHub(t *testing.T) {
 	if err := ah.st.InsertWorker(ctx, nil, w); err != nil {
 		t.Fatal(err)
 	}
+	// A second Worker for "everything" to reach (a Worker is never its own target).
+	if err := ah.st.InsertWorker(ctx, nil, store.WorkerRow{ID: store.NewID(), Pub: mustKey(t).Public(), Name: "pi2", OwnerID: alice,
+		Kind: store.WorkerKindPrivate, CreatedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
 	op := func(user, name string, args map[string]any) apiResp {
 		tok, csrf := ah.login(t, user)
 		return ah.call(t, "POST", "/api/v1/ops/"+name, args, asSession(tok, csrf))

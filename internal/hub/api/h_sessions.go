@@ -95,6 +95,10 @@ type SessionLister struct {
 	Authz *authz.Authorizer
 	// OwnerName renders an owner id as the user name; nil uses the id.
 	OwnerName func(ctx context.Context, ownerID string) string
+	// UserManaged reports whether people may see a Worker's sessions (Minion
+	// control, v0.9.0); a Worker that is not user-managed is left out. Nil
+	// means always.
+	UserManaged func(ctx context.Context, workerID string) (bool, error)
 }
 
 type sessionItem struct {
@@ -117,6 +121,11 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 		}
 		if q.Worker != "" && q.Worker != w.Name && q.Worker != w.ID {
 			continue
+		}
+		if l.UserManaged != nil && p.Kind != authz.KindWorker {
+			if ok, err := l.UserManaged(ctx, w.ID); err != nil || !ok {
+				continue // fail closed
+			}
 		}
 		ws, ok := l.State.Sessions(w.ID)
 		if !ok {
