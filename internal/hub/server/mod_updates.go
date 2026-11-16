@@ -28,7 +28,7 @@ func init() {
 }
 
 func registerUpdates(r *Registry) {
-	if err := r.Register("updates", updatesModuleOrder, initUpdates); err != nil {
+	if err := r.Register("updates", updatesModuleOrder, initUpdates, DeclaresService[*updates.Checker]()); err != nil {
 		panic(err)
 	}
 }
@@ -55,6 +55,9 @@ func initUpdates(_ context.Context, env *Env) error {
 			res, err := resolver.Resolve(key)
 			return res.Value, err
 		},
+	}
+	if err := Provide(env, chk); err != nil {
+		return err
 	}
 	web.SetUpdateSource(func() (string, string, bool) {
 		r := chk.Latest()

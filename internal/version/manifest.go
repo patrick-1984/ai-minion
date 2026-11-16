@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -21,7 +22,26 @@ type Manifest struct {
 	Version       string             `json:"version"`
 	ProtocolRange manifestRange      `json:"protocol_range"`
 	Artifacts     []ManifestArtifact `json:"artifacts"`
+	// Image is the container image of the release, pinned by digest (v0.9.0;
+	// absent in older manifests). Because the manifest is signed by the
+	// release workflow, a Hub can pull exactly this image without verifying
+	// an image signature itself.
+	Image *ManifestImage `json:"image,omitempty"`
 }
+
+// ManifestImage is the image of a release: repository and index digest.
+type ManifestImage struct {
+	Repository string `json:"repository"`
+	Digest     string `json:"digest"`
+}
+
+// Ref is "repository@digest".
+func (i ManifestImage) Ref() string { return i.Repository + "@" + i.Digest }
+
+var (
+	imageDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	imageRepoRE   = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\.[a-z0-9-]+)*(?::[0-9]+)?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$`)
+)
 
 type manifestRange struct {
 	Min string `json:"min"`
@@ -58,6 +78,9 @@ func ParseManifest(data []byte, wantTag string) (Manifest, error) {
 		if err := validArtifact(a.Name, a.SHA256); err != nil {
 			return Manifest{}, fmt.Errorf("release manifest: %w", err)
 		}
+	}
+	if m.Image != nil && (!imageDigestRE.MatchString(m.Image.Digest) || !imageRepoRE.MatchString(m.Image.Repository)) {
+		return Manifest{}, fmt.Errorf("release manifest: invalid image %q@%q", m.Image.Repository, m.Image.Digest)
 	}
 	return m, nil
 }

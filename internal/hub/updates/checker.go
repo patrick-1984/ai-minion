@@ -127,6 +127,18 @@ func (c *Checker) check(ctx context.Context, channel string) (Result, error) {
 		Newer: curErr == nil && v.Compare(cur) > 0}, nil
 }
 
+// ImageTag is the Hub image tag that follows a channel, relative to the
+// running version cur: X.Y (minor), X (major) or latest.
+func ImageTag(channel string, cur version.SemVer) string {
+	switch channel {
+	case config.UpdateChannelMinor:
+		return fmt.Sprintf("%d.%d", cur.Major, cur.Minor)
+	case config.UpdateChannelMajor:
+		return strconv.Itoa(int(cur.Major))
+	}
+	return "latest"
+}
+
 // SelectorFor is the version selector of a channel, relative to the running
 // version cur (minor: X.Y, major: X). A development build follows latest.
 func SelectorFor(channel string, cur version.SemVer, released bool) (version.Selector, error) {

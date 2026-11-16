@@ -100,6 +100,8 @@ Protocol 3.0 needs the Hub and all Workers upgraded together. A 0.6 Hub already 
 
 **Minion control (0.9.0).** A session reaches sessions on other Workers only as a nominated master session, and only on Workers that accept control from its Worker (both default to none); the Hub checks the chain on every call. A master session is trusted per host and account (its name is claimed by the terminal it runs in). A Worker that is not user-managed refuses people and API keys its sessions (REST, the live lists, MCP); master sessions are not affected.
 
+**Updates from the Hub (0.9.0).** An administrator can update Workers to the Hub's release (`worker_update`) and, with the opt-in Docker overlay, the Hub itself (`hub_update`). In both cases the binary or image comes only from a release signed by this project's release workflow (the Hub pulls the image by the digest in the signed release manifest); a downgrade is refused, the Worker checks the protocol range of the Hub that asked, and a Worker refuses with `remote_update off`. A compromised Hub can therefore move Workers only to another signed release, not run code of its own on them. The Docker socket that the Hub's self-update needs is root-equivalent on that host: mount it only where you trust the Hub as much as root. The daily release check contacts only `api.github.com` (`update_check off` contacts nothing).
+
 ## When something is not known
 
 - Reads that fail are retried or reported as errors. A write that may have been delivered, but whose answer was lost, is reported as **unknown** and is never replayed for you; you repeat it with the same request id on purpose.

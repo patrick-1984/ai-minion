@@ -8,6 +8,9 @@ const (
 	// KeyUpdateChannel is the release channel the Hub follows: minor (patches
 	// of the running X.Y), major (releases of the running X) or latest.
 	KeyUpdateChannel = "update_channel"
+	// KeySelfUpdate allows the Hub to replace its own Docker container
+	// (auto: when the Docker socket is mounted) or forbids it (off).
+	KeySelfUpdate = "self_update"
 )
 
 // Values of update_channel.
@@ -25,4 +28,6 @@ func declareHubUpdates(r *Registry) {
 	r.Declare(Setting{Key: KeyUpdateChannel, Scope: ScopeHub, Default: UpdateChannelMinor,
 		Choices: []string{UpdateChannelMinor, UpdateChannelMajor, UpdateChannelLatest},
 		Help:    "Release channel the Hub follows: minor (patches of the running X.Y), major (releases of the running X) or latest"})
+	r.Declare(Setting{Key: KeySelfUpdate, Scope: ScopeHub, Default: "auto", Choices: []string{"auto", "off"},
+		Help: "Let an administrator update the Hub from the web UI when it runs in Docker with the socket mounted (auto) or never (off)"})
 }

@@ -401,9 +401,14 @@ jobs:
               scripts+=("dist/$s")
             fi
           done
+          # The image of this release, pinned by its index digest, goes into the
+          # signed manifest: a Hub's Docker self-update pulls exactly this.
+          digest=$(docker buildx imagetools inspect "ghcr.io/patrick-1984/minion:${TAG}" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no image digest for ${TAG}: $digest" >&2; exit 1; }
           scripts/release-manifest.sh --version "$TAG" \
             --protocol-min "$MINION_PROTOCOL_MIN" --protocol-max "$MINION_PROTOCOL_MAX" \
-            --checksums dist/checksums.txt "${extras[@]}" --output dist/release-manifest.json
+            --checksums dist/checksums.txt "${extras[@]}" --image "ghcr.io/patrick-1984/minion@${digest}" \
+            --output dist/release-manifest.json
           assets=(dist/release-manifest.json)
           for f in dist/release-manifest.json "${scripts[@]}"; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"

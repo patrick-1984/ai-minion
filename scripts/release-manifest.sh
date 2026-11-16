@@ -12,6 +12,8 @@
 #   --extra FILE      a file that is not in checksums.txt (for example
 #                     bootstrap.sh); its sha256 is computed here. Repeatable.
 #   --output FILE     default: release-manifest.json (use - for stdout)
+#   --image REPO@sha256:DIGEST  the release's container image, pinned by digest
+#                     (v0.9.0; the Hub's Docker self-update pulls exactly this)
 #
 # Output (keys in this order, artifacts sorted by name, so the output is
 # deterministic):
@@ -41,12 +43,12 @@ set -euo pipefail
 die() { echo "release-manifest: $*" >&2; exit 2; }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' >&2; }
 
-version="" pmin="" pmax="" checksums="" output="release-manifest.json"
+version="" pmin="" pmax="" checksums="" output="release-manifest.json" image=""
 extras=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 	-h | --help) usage; exit 0 ;;
-	--version | --protocol-min | --protocol-max | --checksums | --extra | --output)
+	--version | --protocol-min | --protocol-max | --checksums | --extra | --output | --image)
 		[ $# -ge 2 ] || die "$1 needs a value"
 		;;
 	*) usage; die "unknown argument: $1" ;;
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
 	--checksums) checksums="$2" ;;
 	--extra) extras+=("$2") ;;
 	--output) output="$2" ;;
+	--image) image="$2" ;;
 	esac
 	shift 2
 done
@@ -77,7 +80,7 @@ for f in "${extras[@]+"${extras[@]}"}"; do
 	extra_lines+="$sum  $(basename "$f")"$'\n'
 done
 
-EXTRA_LINES="$extra_lines" python3 -I - "$version" "$pmin" "$pmax" "$checksums" "$output" <<'PY'
+IMAGE="$image" EXTRA_LINES="$extra_lines" python3 -I - "$version" "$pmin" "$pmax" "$checksums" "$output" <<'PY'
 import json
 import os
 import re
@@ -142,6 +145,12 @@ doc = {
     "protocol_range": {"min": pmin, "max": pmax},
     "artifacts": [{"name": n, "sha256": artifacts[n]} for n in sorted(artifacts)],
 }
+image = os.environ.get("IMAGE", "")
+if image:
+    m = re.fullmatch(r"([a-z0-9][a-z0-9._/:-]*[a-z0-9])@(sha256:[0-9a-f]{64})", image)
+    if not m:
+        die("--image must be REPOSITORY@sha256:<64 hex>, got " + repr(image))
+    doc["image"] = {"repository": m.group(1), "digest": m.group(2)}
 text = json.dumps(doc, indent=2) + "\n"
 if output == "-":
     sys.stdout.write(text)

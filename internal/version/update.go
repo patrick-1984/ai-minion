@@ -407,6 +407,36 @@ func (m verifiedMeta) writeTo(dir string) error {
 	return nil
 }
 
+// VerifiedRelease resolves sel against the release host and returns the
+// release and its signed manifest, both signatures verified exactly as for an
+// install (the release workflow's identity for that tag, Rekor). It installs
+// nothing. The Hub uses it to learn the image digest of a release.
+func (u *Updater) VerifiedRelease(ctx context.Context, sel Selector) (Release, Manifest, error) {
+	if u.Verifier == nil || u.Source == nil {
+		return Release{}, Manifest{}, errors.New("update: no source or verifier configured")
+	}
+	releases, err := u.Source.Releases(ctx)
+	if err != nil {
+		return Release{}, Manifest{}, withOfflineHint(err)
+	}
+	rel, _, err := sel.Resolve(releases)
+	if err != nil {
+		return Release{}, Manifest{}, err
+	}
+	if err := u.Cache.Prepare(); err != nil {
+		return rel, Manifest{}, err
+	}
+	verifier, err := u.Verifier(ctx, false)
+	if err != nil {
+		return rel, Manifest{}, withOfflineHint(err)
+	}
+	meta, err := u.fetchMetadata(ctx, verifier, rel)
+	if err != nil {
+		return rel, Manifest{}, err
+	}
+	return rel, meta.manifest, nil
+}
+
 // fetchMetadata downloads checksums.txt and release-manifest.json with their
 // bundles and verifies them.
 func (u *Updater) fetchMetadata(ctx context.Context, verifier BlobVerifier, rel Release) (verifiedMeta, error) {
