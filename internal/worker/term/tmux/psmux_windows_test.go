@@ -40,7 +40,13 @@ func psmuxHost(t *testing.T) (*Host, string, string) {
 		t.Fatalf("New on psmux: %v", err)
 	}
 	t.Logf("psmux %s at %s, socket %s", h.Version(), bin, sock)
-	t.Cleanup(func() { _ = exec.Command(bin, "-S", sock, "kill-server").Run() })
+	// Each test ends the sessions it created, by name, on its private server;
+	// psmux runs one server per session, so the server ends with its session.
+	t.Cleanup(func() {
+		for _, name := range []string{"spike", "keep", "probe"} {
+			_ = exec.Command(bin, "-S", sock, "kill-session", "-t", name).Run()
+		}
+	})
 	return h, bin, sock
 }
 
@@ -125,8 +131,10 @@ func TestPsmuxSessionLifecycle(t *testing.T) {
 	if !strings.Contains(strings.Join(sc.Lines, "\n"), "minion-psmux-ok") {
 		t.Errorf("capture lacks the output:\n%s", strings.Join(sc.Lines, "\n"))
 	}
-	if sc.Width <= 0 || sc.Height <= 0 {
-		t.Errorf("capture size %dx%d", sc.Width, sc.Height)
+	// A capture is scrollback, not a screen: it has a width and no height
+	// (Capture builds it with WithSize(width, 0)).
+	if sc.Width <= 0 {
+		t.Errorf("capture width %d", sc.Width)
 	}
 }
 
