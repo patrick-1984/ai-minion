@@ -33,6 +33,7 @@
     <dialog class="force-dialog" aria-labelledby="force-h">
       <h2 id="force-h">Send anyway to {{.Target}}?</h2>
       <p>The session may have changed since the screen was captured. This can run a command. Nothing is sent until you confirm.</p>
+      <p class="help">To stop asking for this session, tick <strong>Send without asking</strong> at the top of the page (or for all sessions on the Worker page).</p>
       <div class="form-actions">
         <button type="button" class="btn-secondary" data-dialog-cancel autofocus>Cancel</button>
         <button type="submit" class="btn-danger-solid">Send anyway</button>
@@ -62,6 +63,7 @@
       <li>Worker <strong>{{.Data.Worker}}</strong> <span class="badge" data-online="{{if .Data.Online}}true{{else}}false{{end}}">{{if .Data.Online}}online{{else}}offline{{end}}</span></li>
       {{if .Data.Owner}}<li>Owner <strong>{{.Data.Owner}}</strong></li>{{end}}
       <li>Access <strong>{{if .Data.Operate}}You can send input{{else}}View only{{end}}</strong></li>
+      {{if .Data.Operate}}<li data-unasked hidden><label title="Send text, keys and the task at once, also to a shell, an open dialog or a busy agent (kept in this browser)"><input type="checkbox" id="unasked-session"> Send without asking</label> <span class="muted" id="unasked-note"></span></li>{{end}}
     </ul>
   </header>
   {{if .Data.Notice}}<p class="notice notice-warning" role="status">{{.Data.Notice}}</p>{{end}}
@@ -159,6 +161,7 @@
 </div>
 <script src="/static/terminal-input.js" defer></script>
 <script src="/static/session-ui.js" defer></script>
+<script src="/static/send-unasked.js" defer></script>
 {{if .Data.HasConversation}}<script src="/static/pipe-chat.js" defer></script>{{end}}
 {{if .Embed}}<script src="/static/frame-child.js" defer></script>
 {{end}}{{end}}

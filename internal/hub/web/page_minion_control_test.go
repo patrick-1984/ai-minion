@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -93,4 +94,33 @@ func TestRemovingALimitedAcceptanceHasNoUndo(t *testing.T) {
 	connect(t, f)
 	rec = post(t, adminServer(t), pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}})
 	mustHave(t, rec.Body.String(), ">Undo</button>")
+}
+
+// A19: no free-text session name; a Worker without shared sessions says so,
+// and the check takes one "worker|session" choice.
+func TestMinionControlOffersOnlyKnownSessionsAndOneCheckChoice(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, controlFixture()).reply(ops.OpControlCheck, ops.ControlCheckResult{
+		Controllers: []ops.ControlChain{{WorkerID: "wA", Worker: "boss-box", SessionName: "boss"}}})
+	connect(t, f)
+	body := get(t, adminServer(t), pathMinionControl+"?check=wB%7Cci-1", "X-Test-Session", adminHeader).Body.String()
+	mustNotHave(t, body, `placeholder="session name"`, `name="check_session"`)
+	mustHave(t, body, "No shared session on this Worker", "can be controlled by 1 master session:", "<li>boss-box / boss</li>", `class="corner"`)
+	calls := f.called(ops.OpControlCheck)
+	if len(calls) != 1 || calls[0].Args["worker_id"] != "wB" || calls[0].Args["session_name"] != "ci-1" {
+		t.Fatalf("check calls = %+v", calls)
+	}
+}
+
+// When every shared session is already a master, the picker says so instead
+// of asking to share sessions.
+func TestMinionControlAllSharedSessionsAreMasters(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, controlFixture())
+	connect(t, f)
+	body := get(t, adminServer(t), pathMinionControl, "X-Test-Session", adminHeader).Body.String()
+	// boss-box (online, one master, no other known session).
+	start := strings.Index(body, `id="ctl-wA"`)
+	end := strings.Index(body[start:], "</tr>")
+	row := body[start : start+end]
+	mustHave(t, row, "No other shared session to nominate.")
+	mustNotHave(t, row, "No shared session on this Worker")
 }

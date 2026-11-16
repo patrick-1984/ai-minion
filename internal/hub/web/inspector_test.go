@@ -62,7 +62,11 @@ func TestEmbeddedSessionViewIsCompactAndOnlyFrameableBySameOrigin(t *testing.T) 
 		`hx-post="/s/pi-1/minion-1/text"`, `hx-post="/s/pi-1/minion-1/keys"`, `hx-post="/s/pi-1/minion-1/task"`,
 		`id="send-primary" name="enter" value="1">Send</button>`, `id="pause-toggle"`, `id="copy-screen"`, `id="text-view"`,
 		`<script src="/static/terminal-input.js" defer></script>`, `<script src="/static/session-ui.js" defer></script>`, `<script src="/static/frame-child.js" defer></script>`)
-	mustNotHave(t, body, ` checked`, `type="checkbox"`) // nothing is pre-checked, and there is no Enter box: Send is the Enter action
+	mustNotHave(t, body, ` checked`) // nothing is pre-checked
+	// The only box is "Send without asking" (A19); there is no Enter box: Send is the Enter action.
+	if n := strings.Count(body, `type="checkbox"`); n != 1 || !strings.Contains(body, `type="checkbox" id="unasked-session"`) {
+		t.Errorf("checkboxes = %d, want only Send without asking", n)
+	}
 	// No global chrome, nothing that could move the frame to another resource.
 	mustNotHave(t, body, `id="site-rail"`, `id="menu-button"`, `class="topbar"`, `class="crumbs"`, `id="banner-slot"`, `id="flash-area"`, `class="skip-link" href="#content">Skip to content</a>`+"\n"+`<div class="shell">`,
 		`hx-post="/w/pi-1/sessions"`, `id="pane-toggle"`, `id="session-pane"`)

@@ -17,10 +17,17 @@
   <h2 id="share-h">Sharing</h2>
   <div id="share-panel" hx-get="{{.Data.ShareURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the sharing choice...</p></div>
 </section>
+{{end}}{{if .Data.ShareURL}}<section class="panel" aria-labelledby="unasked-h" data-unasked-worker="{{.Data.Worker.ID}}" hidden>
+  <h2 id="unasked-h">Sending</h2>
+  <label><input type="checkbox" id="unasked-worker"> Send without asking, in all sessions of this Worker</label>
+  <p class="help" id="unasked-worker-status" role="status" aria-live="polite"></p>
+  <p class="help">Text, keys and the task go out at once, without the "Send anyway" confirmation for a shell, an open dialog or a busy agent. A dialog answer is still checked. Kept in this browser. Each session page has the same switch for that session.</p>
+</section>
 {{end}}</div>
 {{template "inspector" .Data.Context}}
 </div>
 <script src="/static/live-list.js" defer></script>
 <script src="/static/inspector.js" defer></script>
 <script src="/static/share-bulk.js" defer></script>
+<script src="/static/send-unasked.js" defer></script>
 {{end}}

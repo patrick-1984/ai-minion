@@ -186,7 +186,9 @@ func TestWorkerPageOffersTheSharePanelOutsideTheLiveFragment(t *testing.T) {
 	d := Dashboard{Workers: []WorkerRow{wPrivate}, Sessions: []SessionRow{sAgent}}
 	s, _ := workerPageServer(t, d, d, wAliceInfo)
 	_, own := page(t, s, "/workers/w1", "alice:user")
-	mustHave(t, own, `id="share-panel"`, `hx-get="/w/w1/share"`, `hx-trigger="load"`)
+	mustHave(t, own, `id="share-panel"`, `hx-get="/w/w1/share"`, `hx-trigger="load"`,
+		// A19: "Send without asking" for all sessions of the Worker (this browser).
+		`data-unasked-worker="w1"`, `id="unasked-worker"`, `<script src="/static/send-unasked.js" defer></script>`)
 	start := strings.Index(own, `id="results"`)
 	end := strings.Index(own, `id="share-panel"`)
 	if start < 0 || end < start || !strings.Contains(own[start:end], "</div>") {
@@ -204,7 +206,7 @@ func TestWorkerPageOffersTheSharePanelOutsideTheLiveFragment(t *testing.T) {
 	shared := Dashboard{Workers: []WorkerRow{wPrivate}}
 	s2, _ := workerPageServer(t, shared, shared, func() ops.WorkerInfo { w := wAliceInfo; w.OwnerID = "u-other"; return w }())
 	_, other := page(t, s2, "/workers/w1", "alice:user")
-	mustNotHave(t, other, `id="share-panel"`, `/w/w1/share`)
+	mustNotHave(t, other, `id="share-panel"`, `/w/w1/share`, `data-unasked-worker`)
 	// An administrator operates every Worker.
 	_, adm := page(t, s2, "/workers/w1?scope=all", "root:admin")
 	mustHave(t, adm, `hx-get="/w/w1/share"`)
