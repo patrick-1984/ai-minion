@@ -1,0 +1,15 @@
+{
+  "name": "minion",
+  "owner": { "name": "Minion maintainers" },
+  "metadata": {
+    "description": "Minion for Claude Code: operate terminal sessions on many machines through Minion (Hub and Workers), install or connect a Worker, become a Minion master."
+  },
+  "plugins": [
+    {
+      "name": "minion",
+      "source": "./plugins/minion",
+      "description": "Operate Minion from Claude Code: detect or install minion, start and pair a Worker, read and type into tmux sessions, and control other Workers as a Minion master when an administrator grants it.",
+      "category": "development"
+    }
+  ]
+}
