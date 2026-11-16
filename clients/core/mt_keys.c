@@ -125,16 +125,18 @@ int mt_key_bytes(const char *name, size_t len, uint8_t *out, size_t cap)
 		cl = dec(s, len, &cp);
 		if (cl == 0 || is_ctl(cp)) return -1;
 		if ((size_t)cl == len) { /* one character with modifiers */
-			if (mods & MOD_S) {
-				if (cp >= 'a' && cp <= 'z') cp -= 32;
-				else if (!(cp >= 'A' && cp <= 'Z')) return -1;
-			}
+			/* As tmux: S- upper-cases a letter, other characters stay; C- maps letters, @[\]^_?, and the
+			 * digits 2..8 to control bytes; any other character is sent unchanged (the Hub accepts every
+			 * modifier on every printable character, so refusing would fail the whole request). */
+			if ((mods & MOD_S) && cp >= 'a' && cp <= 'z')
+				cp -= 32;
 			if (mods & MOD_C) {
+				static const uint8_t digit_ctl[] = {0, 27, 28, 29, 30, 31, 127}; /* C-2 .. C-8 */
 				if (cp >= 'a' && cp <= 'z') cp -= 96;
 				else if (cp >= 'A' && cp <= 'Z') cp -= 64;
 				else if (cp >= '@' && cp <= '_') cp -= 64; /* @ [ \ ] ^ _ */
 				else if (cp == '?') cp = 127;
-				else return -1;
+				else if (cp >= '2' && cp <= '8') cp = digit_ctl[cp - '2'];
 			}
 			if (mods & MOD_A) t[n++] = 27;
 			if (cp < 0x80) t[n++] = (uint8_t)cp;

@@ -50,6 +50,37 @@ void mt_jw_key(mt_jw *w, const char *k)
 	put(w, "\":", 2);
 }
 
+/* Length of a valid UTF-8 sequence at s (n bytes available), or 0 when it is not valid UTF-8
+ * (overlong forms, surrogates and code points above U+10FFFF are invalid). */
+static size_t utf8_len(const unsigned char *s, size_t n)
+{
+	unsigned c = s[0];
+	size_t need, k;
+	uint32_t cp;
+	if (c < 0x80)
+		return 1;
+	if (c >= 0xC2 && c <= 0xDF) {
+		need = 2; cp = c & 0x1F;
+	} else if (c >= 0xE0 && c <= 0xEF) {
+		need = 3; cp = c & 0x0F;
+	} else if (c >= 0xF0 && c <= 0xF4) {
+		need = 4; cp = c & 0x07;
+	} else {
+		return 0;
+	}
+	if (n < need)
+		return 0;
+	for (k = 1; k < need; k++) {
+		if ((s[k] & 0xC0) != 0x80)
+			return 0;
+		cp = cp << 6 | (s[k] & 0x3F);
+	}
+	if ((need == 3 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) || (need == 4 && (cp < 0x10000 || cp > 0x10FFFF)))
+		return 0;
+	return need;
+}
+
+/* Strings are always emitted as valid UTF-8 JSON: invalid bytes become U+FFFD (the Hub rejects invalid UTF-8). */
 void mt_jw_strn(mt_jw *w, const char *s, size_t n)
 {
 	static const char hex[] = "0123456789abcdef";
@@ -59,7 +90,19 @@ void mt_jw_strn(mt_jw *w, const char *s, size_t n)
 	for (i = 0; i < n; i++) {
 		unsigned char c = (unsigned char)s[i];
 		const char *esc = NULL;
-		char u[6];
+		char u[6] = {0};
+		if (c >= 0x80) {
+			size_t l = utf8_len((const unsigned char *)s + i, n - i);
+			if (l == 0) {
+				put(w, s + i - run, run);
+				run = 0;
+				put(w, "\xEF\xBF\xBD", 3);
+			} else {
+				run += l;
+				i += l - 1;
+			}
+			continue;
+		}
 		if (c == '"')
 			esc = "\\\"";
 		else if (c == '\\')

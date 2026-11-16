@@ -227,13 +227,13 @@ static void test_sgr(void)
 
 static void test_utf8(void)
 {
-	check_snap(10, 3, "\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80", H10x3 "[\"\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80\",\"\",\"\"" NOSPAN CUR(0, 4));
-	check_snap(10, 3, "\xe6\x97\xa5\xe6\x9c\xac", H10x3 "[\"\xe6\x97\xa5\xe6\x9c\xac\",\"\",\"\"" NOSPAN CUR(0, 4));
+	check_snap(10, 3, "\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80", H10x3 "[\"\xc3\xa9\xe2\x82\xac\xf0\x9f\x98\x80\",\"\",\"\"" NOSPAN CUR(0, 3));
+	check_snap(10, 3, "\xe6\x97\xa5\xe6\x9c\xac", H10x3 "[\"\xe6\x97\xa5\xe6\x9c\xac\",\"\",\"\"" NOSPAN CUR(0, 2));
 	/* span offsets are runes, not cells */
 	check_snap(10, 3, "\xe6\x97\xa5\033[31mx",
-		   H10x3 "[\"\xe6\x97\xa5x\",\"\",\"\"],\"spans\":[{\"line\":0,\"start\":1,\"end\":2,\"fg\":\"p1\"}]" CUR(0, 3));
+		   H10x3 "[\"\xe6\x97\xa5x\",\"\",\"\"],\"spans\":[{\"line\":0,\"start\":1,\"end\":2,\"fg\":\"p1\"}]" CUR(0, 2));
 	/* wide char that does not fit wraps; overwriting half of one blanks the other half */
-	check_snap(4, 2, "abc\xe6\x97\xa5", "{\"width\":4,\"height\":2,\"lines\":[\"abc\",\"\xe6\x97\xa5\"" NOSPAN CUR(1, 2));
+	check_snap(4, 2, "abc\xe6\x97\xa5", "{\"width\":4,\"height\":2,\"lines\":[\"abc\",\"\xe6\x97\xa5\"" NOSPAN CUR(1, 1));
 	check_snap(10, 3, "\xe6\x97\xa5\033[1;2Hx", H10x3 "[\" x\",\"\",\"\"" NOSPAN CUR(0, 2));
 	/* invalid UTF-8 */
 	check_snap(10, 3, "a\xff" "b\xc3(", H10x3 "[\"a\xef\xbf\xbd" "b\xef\xbf\xbd(\",\"\",\"\"" NOSPAN CUR(0, 5));

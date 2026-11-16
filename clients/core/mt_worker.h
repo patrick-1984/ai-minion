@@ -20,6 +20,8 @@ typedef struct mt_session {
 	mt_vt *vt;
 	int64_t created_ms;  /* Unix ms, 0 = unknown (uses the Worker start) */
 	int readonly;        /* input refused (e.g. a log) */
+	/* Input. Returns 0 when all n bytes were delivered, -1 when nothing was delivered, -2 when some bytes may have
+	 * reached the session (the operation then reports "partial"). Must not block for long (a few seconds). */
 	int (*write)(struct mt_session *s, const uint8_t *data, size_t n);
 	void *ctx;
 	/* Worker-private */

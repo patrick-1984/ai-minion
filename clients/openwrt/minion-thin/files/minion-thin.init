@@ -30,8 +30,12 @@ start_service() {
 	if [ -n "$invite" ]; then
 		# hand the one-time key to the Worker through its private state directory, never on the command line
 		umask 077
-		printf '%s' "$invite" > "$state_dir/invite"
-		uci -q delete minion-thin.main.invite && uci -q commit minion-thin
+		if printf '%s' "$invite" > "$state_dir/invite.tmp" && mv "$state_dir/invite.tmp" "$state_dir/invite"; then
+			uci -q delete minion-thin.main.invite && uci -q commit minion-thin
+		else
+			rm -f "$state_dir/invite.tmp"
+			echo "minion-thin: cannot write $state_dir/invite; the key stays in UCI" >&2
+		fi
 	fi
 
 	procd_open_instance

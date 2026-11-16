@@ -138,6 +138,18 @@ static size_t row_text(const mt_vt *v, unsigned y, char *out) /* trimmed UTF-8 t
 	return n;
 }
 
+/* The cursor column as a rune offset in its line (internal/ops/screen.go): wide characters take two cells but one
+ * rune; cells past the end of the text count one rune each. */
+static unsigned cursor_rune_col(const mt_vt *v)
+{
+	const uint32_t *r = v->cells + (size_t)v->cy * v->cols;
+	unsigned x, n = 0;
+	for (x = 0; x < v->cx && x < v->cols; x++)
+		if (!(r[x] & F_CONT))
+			n++;
+	return n;
+}
+
 static void sb_push(mt_vt *v, unsigned y)
 {
 	char buf[ROWBUF];
@@ -409,7 +421,9 @@ static void csi_dispatch(mt_vt *v, uint8_t f)
 			for (k = 0; k < v->np; k++) set_mode(v, v->p[k], f == 'h');
 		return;
 	}
-	if (f != 'm')
+	/* only sequences that move the cursor or edit the screen end a pending wrap; SGR, queries (n, c) and
+	 * unknown finals leave it alone */
+	if (strchr("ABCDEFGHJKLMPSTX@dfr", f) != NULL)
 		v->wrap = 0;
 	switch (f) {
 	case 'A': v->cy = (uint16_t)(y >= v->top ? (y - v->top < n ? v->top : y - n) : (y < n ? 0 : y - n)); break;
@@ -704,7 +718,7 @@ int mt_vt_screen_json(const mt_vt *v, mt_jw *w)
 	if (v->vis) {
 		mt_jw_obj(w);
 		mt_jw_kint(w, "row", v->cy);
-		mt_jw_kint(w, "col", v->cx);
+		mt_jw_kint(w, "col", cursor_rune_col(v));
 		mt_jw_obj_end(w);
 	} else {
 		mt_jw_null(w);

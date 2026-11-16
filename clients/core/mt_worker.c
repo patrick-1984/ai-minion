@@ -20,8 +20,11 @@
 #define EV_REOPEN_MS 2000
 #define RESULT_TTL_MS 600000
 #define YAMUX_WINDOW (256u * 1024u)
-#define MAX_TOKENS 256
-#define MAX_CHAIN 8
+#ifndef MT_HS_MAX_TOKENS
+#define MT_HS_MAX_TOKENS 1600 /* a Hub hello with the longest transition chain the Hub keeps (128 links) */
+#endif
+#define MAX_TOKENS 256        /* stream frames (op requests) */
+#define ID_FUTURE_SKEW_MS 120000
 
 enum { ST_FREE = 0, ST_OPEN = 1 };
 enum { K_NONE = 0, K_OP = 1, K_EV = 2 };
@@ -111,6 +114,8 @@ static const char *OPS[] = {"sessions_list", "session_snapshot", "session_captur
                             "share_get", "share_set"};
 static const char *MODES[] = {"all", "none", "select", "later"};
 
+static int cert_expired(mt_worker *w);
+
 /* ---------------------------------------------------------------- helpers */
 
 static void logf_(mt_worker *w, int lvl, const char *fmt, const char *a, long b)
@@ -174,14 +179,17 @@ static void ts_fmt(char out[25], int64_t ms)
 
 /* ---------------------------------------------------------------- persistence */
 
-static void save_state(mt_worker *w)
+static int save_state(mt_worker *w)
 {
 	memcpy(w->st.magic, "MTE1", 4);
-	if (w->p->store_set(w->p->ctx, MT_KEY_STATE, (const uint8_t *)&w->st, sizeof w->st) != 0)
+	if (w->p->store_set(w->p->ctx, MT_KEY_STATE, (const uint8_t *)&w->st, sizeof w->st) != 0) {
 		logf_(w, MT_LOG_ERROR, "store: cannot write the enrollment state%s", NULL, 0);
+		return -1;
+	}
+	return 0;
 }
 
-static void save_share(mt_worker *w)
+static int save_share(mt_worker *w)
 {
 	uint8_t b[1 + 8 + 1 + 8 * 33];
 	int i;
@@ -191,7 +199,7 @@ static void save_share(mt_worker *w)
 	b[9] = (uint8_t)w->share_n;
 	for (i = 0; i < w->share_n; i++)
 		memcpy(b + 10 + 33 * i, w->share_names[i], 33);
-	w->p->store_set(w->p->ctx, MT_KEY_SHARE, b, sizeof b);
+	return w->p->store_set(w->p->ctx, MT_KEY_SHARE, b, sizeof b) == 0 ? 0 : -1;
 }
 
 static void load(mt_worker *w)
@@ -325,13 +333,11 @@ static int handshake(mt_worker *w, int enroll, const uint8_t inv_fp_hash[32])
 {
 	uint8_t eph[32], ephp[32], nonce[32], ephh[32], hub_pub[32], certb[200], sig[64], dh[32];
 	char hello[1024], type[24], *hh;
-	static mt_jtok t[MAX_TOKENS];
-	int nt, n, i, r, len;
+	static mt_jtok t[MT_HS_MAX_TOKENS];
+	int nt, n, i, r, len, chain_arr = -1;
 	size_t k;
 	mt_jw jw;
 	mt_pin pin_now;
-	mt_transition chain[MAX_CHAIN];
-	size_t nchain = 0;
 
 	w->p->random(w->p->ctx, eph, 32);
 	mt_x25519_public(ephp, eph);
@@ -387,29 +393,12 @@ static int handshake(mt_worker *w, int enroll, const uint8_t inv_fp_hash[32])
 		goto fail;
 	}
 	i = mt_json_get(hh, t, nt, 0, "chain");
-	if (i >= 0 && t[i].type == MT_JT_ARR) {
-		int e = i + 1, c;
-		if (enroll && t[i].size > 0) {
+	if (i >= 0 && t[i].type == MT_JT_ARR && t[i].size > 0) {
+		if (enroll) {
 			logf_(w, MT_LOG_WARN, "handshake: unexpected chain%s", NULL, 0);
 			goto fail;
 		}
-		if (t[i].size > MAX_CHAIN)
-			goto fail;
-		for (c = 0; c < t[i].size; c++, e = mt_json_skip(t, nt, e)) {
-			mt_transition *tr = &chain[nchain++];
-			char ts[32];
-			int64_t seq;
-			if (mt_json_int(hh, t, mt_json_get(hh, t, nt, e, "seq"), &seq) || seq < 0 ||
-			    get_b64(hh, t, nt, e, "old_pub", tr->old_pub, 32) ||
-			    get_b64(hh, t, nt, e, "new_pub", tr->new_pub, 32) ||
-			    get_b64(hh, t, nt, e, "sig_by_old", tr->sig, 64) ||
-			    mt_json_str(hh, t, mt_json_get(hh, t, nt, e, "created_at"), ts, sizeof ts) < 0 ||
-			    mt_parse_ts_ms(ts, &tr->created_ms)) {
-				logf_(w, MT_LOG_WARN, "handshake: malformed chain%s", NULL, 0);
-				goto fail;
-			}
-			tr->seq = (uint64_t)seq;
-		}
+		chain_arr = i;
 	}
 	r = mt_cert_parse(&w->cert, certb, (size_t)n);
 	if (r) {
@@ -428,10 +417,48 @@ static int handshake(mt_worker *w, int enroll, const uint8_t inv_fp_hash[32])
 		memcpy(pin_now.pub, hub_pub, 32);
 		pin_now.seq = 0;
 	} else {
+		/* Apply the part of the chain that starts at the pinned key, one link at a time (the Hub keeps up to
+		 * 128 links; older links are skipped), as resolvePin in internal/transport/handshake.go. */
 		mt_pin pin;
+		int e, c, started = 0;
 		memcpy(pin.pub, w->st.root, 32);
 		pin.seq = w->st.pin_seq;
-		r = mt_resolve_pin(&pin, hub_pub, chain, nchain, &pin_now);
+		r = MT_OK;
+		pin_now = pin;
+		if (chain_arr >= 0) {
+			for (c = 0, e = chain_arr + 1; c < t[chain_arr].size && r == MT_OK; c++, e = mt_json_skip(t, nt, e)) {
+				mt_transition tr;
+				char ts[32];
+				int64_t seq;
+				if (mt_json_int(hh, t, mt_json_get(hh, t, nt, e, "seq"), &seq) || seq < 0 ||
+				    get_b64(hh, t, nt, e, "old_pub", tr.old_pub, 32) ||
+				    get_b64(hh, t, nt, e, "new_pub", tr.new_pub, 32) ||
+				    get_b64(hh, t, nt, e, "sig_by_old", tr.sig, 64) ||
+				    mt_json_str(hh, t, mt_json_get(hh, t, nt, e, "created_at"), ts, sizeof ts) < 0 ||
+				    mt_parse_ts_ms(ts, &tr.created_ms)) {
+					logf_(w, MT_LOG_WARN, "handshake: malformed chain%s", NULL, 0);
+					goto fail;
+				}
+				tr.seq = (uint64_t)seq;
+				if (!started && memcmp(tr.old_pub, pin.pub, 32))
+					continue; /* a link before the pinned key */
+				if (!started) {
+					started = 1;
+					if (pin.seq == 0 ? tr.seq < 1 : tr.seq != pin.seq + 1)
+						r = MT_E_CHAIN;
+				} else if (tr.seq != pin_now.seq + 1) {
+					r = MT_E_CHAIN;
+				}
+				if (r == MT_OK && (memcmp(tr.old_pub, pin_now.pub, 32) || mt_transition_verify(&tr) != MT_OK))
+					r = MT_E_CHAIN;
+				if (r == MT_OK) {
+					memcpy(pin_now.pub, tr.new_pub, 32);
+					pin_now.seq = tr.seq;
+				}
+			}
+		}
+		if (r == MT_OK && !mt_ct_equal(pin_now.pub, hub_pub, 32))
+			r = MT_E_PIN_MISMATCH;
 		if (r) {
 			logf_(w, MT_LOG_WARN, "handshake: %s (the Hub root does not match the pinned one)", mt_err_reason(r), 0);
 			goto fail;
@@ -891,7 +918,9 @@ static void remember(mt_worker *w, const char *id, const char *res)
 {
 	cached *c = &w->results[w->nresults++ % w->cfg.results_ring];
 	if (c->id[0]) { /* evicting: an id at or before the evicted one can no longer be recognised */
-		int64_t ev = uuid7_ms(c->id);
+		int64_t ev = uuid7_ms(c->id), cap = w->p->now_ms(w->p->ctx) + ID_FUTURE_SKEW_MS;
+		if (ev > cap)
+			ev = cap; /* ids are admitted only up to now + skew, so the floor never runs further ahead */
 		if (ev > w->replay_floor_ms)
 			w->replay_floor_ms = ev;
 	}
@@ -991,20 +1020,46 @@ static void op_request(mt_worker *w, stream *s, const char *js, mt_jtok *t, int 
 				op_error(w, s, "invalid_argument", "mode must be all, none or select");
 				return;
 			}
-			w->share_mode = m;
-			w->share_n = 0;
-			if (m == 2) {
-				int a = mt_json_get(js, t, nt, args, "names"), e, k;
-				if (a < 0 || t[a].type != MT_JT_ARR || t[a].size > 8) {
-					op_error(w, s, "invalid_argument", "names: up to 8 session names");
+			{
+				int64_t seq = 0;
+				int sq = mt_json_get(js, t, nt, args, "op_seq");
+				int old_mode = w->share_mode, old_n = w->share_n;
+				char old_names[8][33];
+				memcpy(old_names, w->share_names, sizeof old_names);
+				if (sq >= 0 && (mt_json_int(js, t, sq, &seq) || seq < 0)) {
+					op_error(w, s, "invalid_argument", "op_seq");
 					return;
 				}
-				for (k = 0, e = a + 1; k < t[a].size; k++, e = mt_json_skip(t, nt, e))
-					if (mt_json_str(js, t, e, w->share_names[w->share_n], 33) > 0)
-						w->share_n++;
+				if (seq != 0 && (uint64_t)seq <= w->op_barrier) { /* as internal/worker/agent/exec_share.go */
+					op_error(w, s, "conflict", "this share change was superseded before it was applied; nothing changed");
+					return;
+				}
+				w->share_mode = m;
+				w->share_n = 0;
+				if (m == 2) {
+					int a = mt_json_get(js, t, nt, args, "names"), e, k;
+					if (a < 0 || t[a].type != MT_JT_ARR || t[a].size > 8) {
+						w->share_mode = old_mode;
+						w->share_n = old_n;
+						op_error(w, s, "invalid_argument", "names: up to 8 session names");
+						return;
+					}
+					for (k = 0, e = a + 1; k < t[a].size; k++, e = mt_json_skip(t, nt, e))
+						if (mt_json_str(js, t, e, w->share_names[w->share_n], 33) > 0)
+							w->share_n++;
+				}
+				w->share_rev++;
+				if (save_share(w) != 0) { /* never acknowledge a sharing change that a reboot would undo */
+					w->share_rev--;
+					w->share_mode = old_mode;
+					w->share_n = old_n;
+					memcpy(w->share_names, old_names, sizeof old_names);
+					op_error(w, s, "internal", "cannot save the share selection; nothing changed");
+					return;
+				}
+				if (seq != 0)
+					w->op_barrier = (uint64_t)seq;
 			}
-			w->share_rev++;
-			save_share(w);
 			wr = 1;
 		}
 		mt_jw_obj(&j);
@@ -1079,7 +1134,12 @@ static void op_request(mt_worker *w, stream *s, const char *js, mt_jtok *t, int 
 			op_error(w, s, "invalid_argument", "request_id is required");
 			return;
 		}
-		if ((prev = cached_result(w, rid)) == NULL && uuid7_ms(rid) <= w->replay_floor_ms) {
+		if ((prev = cached_result(w, rid)) == NULL &&
+		    uuid7_ms(rid) > w->p->now_ms(w->p->ctx) + ID_FUTURE_SKEW_MS) {
+			op_error(w, s, "invalid_argument", "request_id is dated in the future (check the caller's clock)");
+			return;
+		}
+		if (prev == NULL && uuid7_ms(rid) <= w->replay_floor_ms) {
 			op_error(w, s, "conflict",
 			         "request_id is older than this Worker's replay window; look at the session and send a new request");
 			return;
@@ -1110,19 +1170,24 @@ static void op_request(mt_worker *w, stream *s, const char *js, mt_jtok *t, int 
 		}
 		if (!strcmp(op, "send_text")) {
 			static char text[4096];
+			int r;
 			int submit = 0, tl = mt_json_str(js, t, mt_json_get(js, t, nt, args, "text"), text, sizeof text);
 			mt_json_bool(js, t, mt_json_get(js, t, nt, args, "submit"), &submit);
 			if (tl < 0) {
 				op_error(w, s, "message_too_large", "text too long for this device");
 				return;
 			}
-			if (se->write(se, (const uint8_t *)text, (size_t)tl) != 0 ||
-			    (submit && se->write(se, (const uint8_t *)"\r", 1) != 0)) {
-				write_result(w, s, rid, "failed_not_sent", "session_write_failed", se);
+			r = tl ? se->write(se, (const uint8_t *)text, (size_t)tl) : 0;
+			if (r != 0) { /* -1: nothing was written; anything else: some input may have reached the session */
+				write_result(w, s, rid, r == -1 ? "failed_not_sent" : "partial", "session_write_failed", se);
+				return;
+			}
+			if (submit && se->write(se, (const uint8_t *)"\r", 1) != 0) {
+				write_result(w, s, rid, "partial", "submit_failed", se);
 				return;
 			}
 		} else {
-			int a = mt_json_get(js, t, nt, args, "keys"), e, k;
+			int a = mt_json_get(js, t, nt, args, "keys"), e, k, r;
 			uint8_t bytes[64];
 			char name[40];
 			if (a < 0 || t[a].type != MT_JT_ARR || t[a].size < 1 || t[a].size > 256) {
@@ -1138,8 +1203,10 @@ static void op_request(mt_worker *w, stream *s, const char *js, mt_jtok *t, int 
 				int bl;
 				mt_json_str(js, t, e, name, sizeof name);
 				bl = mt_key_bytes(name, strlen(name), bytes, sizeof bytes);
-				if (se->write(se, bytes, (size_t)bl) != 0) {
-					write_result(w, s, rid, "partial", "session_write_failed", se);
+				r = se->write(se, bytes, (size_t)bl);
+				if (r != 0) {
+					write_result(w, s, rid, k == 0 && r == -1 ? "failed_not_sent" : "partial",
+					             "session_write_failed", se);
 					return;
 				}
 			}
@@ -1298,6 +1365,10 @@ static int on_control(mt_worker *w, int enroll)
 	int nt = mt_json_parse(js, w->ctl_len, t, 64);
 	if (nt <= 0 || mt_json_str(js, t, mt_json_get(js, t, nt, 0, "type"), type, sizeof type) <= 0)
 		return -1;
+	if (cert_expired(w)) { /* no effect of a control frame after the certificate's end (wall or monotonic) */
+		logf_(w, MT_LOG_WARN, "the Hub certificate expired; control frame ignored%s", NULL, 0);
+		return -1;
+	}
 	if (!strcmp(type, "welcome")) {
 		int pend = 0, pi;
 		char wid[40] = "";
@@ -1313,7 +1384,10 @@ static int on_control(mt_worker *w, int enroll)
 		if (wid[0])
 			snprintf(w->st.worker_id, sizeof w->st.worker_id, "%s", wid);
 		w->st.enrolled = 1;
-		save_state(w); /* ratchet and pin committed before any op is admitted */
+		if (save_state(w) != 0) { /* ratchet and pin committed before any op is admitted, or nothing happens */
+			w->st.enrolled = enroll ? 0 : w->st.enrolled;
+			return -1;
+		}
 		if (enroll) {
 			w->p->store_set(w->p->ctx, MT_KEY_INVITE, NULL, 0);
 			logf_(w, MT_LOG_INFO, "enrolled as %s; the invitation key was erased", w->st.worker_id, 0);
@@ -1328,8 +1402,7 @@ static int on_control(mt_worker *w, int enroll)
 	if (!strcmp(type, "revoke")) {
 		uint8_t sig[64];
 		if (get_b64(js, t, nt, 0, "sig", sig, 64) == 0 &&
-		    mt_verify(sig, w->op_pub, "revoke", w->transcript, 32) == MT_OK &&
-		    mono(w) < w->deadline_mono) {
+		    mt_verify(sig, w->op_pub, "revoke", w->transcript, 32) == MT_OK) {
 			logf_(w, MT_LOG_WARN, "the Hub revoked this Worker; enrollment and key erased%s", NULL, 0);
 			memset(&w->st, 0, sizeof w->st);
 			w->p->store_set(w->p->ctx, MT_KEY_STATE, NULL, 0);

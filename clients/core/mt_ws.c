@@ -133,8 +133,9 @@ void mt_ws_init(mt_ws *ws, const mt_platform *p, uint8_t *buf, size_t cap)
 	ws->cap = cap;
 }
 
-/* Read exactly n bytes; the first byte may wait first_timeout, the rest FRAME_TIMEOUT_MS. 0 = timeout before the
- * first byte, n = ok, <0 = error. */
+/* Read exactly n bytes. Before anything of a frame arrived, the wait is first_timeout (>= 0) and a timeout returns 0;
+ * once a frame (or the HTTP upgrade) started, everything must arrive before ws->deadline, an absolute monotonic
+ * time, so a peer that trickles bytes cannot hold the Worker. n = ok, <0 = error. */
 static int read_exact(mt_ws *ws, uint8_t *dst, size_t n, int first_timeout)
 {
 	size_t got = 0;
@@ -149,10 +150,19 @@ static int read_exact(mt_ws *ws, uint8_t *dst, size_t n, int first_timeout)
 			continue;
 		}
 		{
-			int r = ws->p->net_read(ws->p->ctx, ws->raw, sizeof ws->raw, got ? FRAME_TIMEOUT_MS : first_timeout);
+			int wait = first_timeout, r;
+			if (first_timeout < 0 || got) {
+				int64_t left = ws->deadline - ws->p->mono_ms(ws->p->ctx);
+				if (left <= 0)
+					return -1;
+				wait = (int)(left > 1000 ? 1000 : left);
+			}
+			r = ws->p->net_read(ws->p->ctx, ws->raw, sizeof ws->raw, wait);
 			if (r == 0 && got == 0 && first_timeout >= 0)
 				return 0;
-			if (r <= 0)
+			if (r == 0)
+				continue; /* re-check the absolute deadline */
+			if (r < 0)
 				return -1;
 			ws->raw_len = (size_t)r;
 			ws->raw_off = 0;
@@ -166,7 +176,7 @@ static int read_line(mt_ws *ws, char *line, size_t cap)
 	size_t n = 0;
 	for (;;) {
 		uint8_t c;
-		if (read_exact(ws, &c, 1, FRAME_TIMEOUT_MS) != 1)
+		if (read_exact(ws, &c, 1, -1) != 1)
 			return -1;
 		if (c == '\n')
 			break;
@@ -213,6 +223,7 @@ int mt_ws_connect(mt_ws *ws, const mt_url *u, int timeout_ms)
 	if (n <= 0 || (size_t)n >= sizeof req || ws->p->net_write(ws->p->ctx, (const uint8_t *)req, (size_t)n) != 0)
 		goto fail;
 	snprintf(keyguid, sizeof keyguid, "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
+	ws->deadline = ws->p->mono_ms(ws->p->ctx) + FRAME_TIMEOUT_MS; /* the whole upgrade answer */
 	sha1((const uint8_t *)keyguid, strlen(keyguid), digest);
 	b64std(accept, digest, sizeof digest);
 	if (read_line(ws, line, sizeof line) < 0)
@@ -220,9 +231,9 @@ int mt_ws_connect(mt_ws *ws, const mt_url *u, int timeout_ms)
 	if (strncmp(line, "HTTP/1.1 ", 9) && strncmp(line, "HTTP/1.0 ", 9))
 		goto fail;
 	status = (line[9] - '0') * 100 + (line[10] - '0') * 10 + (line[11] - '0');
-	for (;;) {
+	for (n = 0;; n++) {
 		int l = read_line(ws, line, sizeof line);
-		if (l < 0)
+		if (l < 0 || n > 64)
 			goto fail;
 		if (l == 0)
 			break;
@@ -249,7 +260,9 @@ int mt_ws_connect(mt_ws *ws, const mt_url *u, int timeout_ms)
 		/* keep the first bytes of the body (the Hub answers JSON errors such as hub_cert_expired) */
 		while (k + 1 < sizeof ws->http_reason) {
 			uint8_t c;
-			int r = read_exact(ws, &c, 1, 2000);
+			int r;
+			ws->deadline = ws->p->mono_ms(ws->p->ctx) + 2000;
+			r = read_exact(ws, &c, 1, -1);
 			if (r != 1)
 				break;
 			ws->http_reason[k++] = (char)((c >= 0x20 && c < 0x7f) ? c : ' ');
@@ -305,12 +318,15 @@ int mt_ws_send(mt_ws *ws, const uint8_t *data, size_t n)
 
 int mt_ws_recv(mt_ws *ws, int timeout_ms)
 {
+	int controls = 0;
 	ws->len = 0;
 	for (;;) {
 		uint8_t h[2], ext[8], ctl[125];
 		uint64_t plen = 0;
 		int r, fin, op, i;
-		r = read_exact(ws, h, 2, ws->len ? FRAME_TIMEOUT_MS : timeout_ms);
+		if (ws->len == 0) /* a new message: its frames must all arrive within FRAME_TIMEOUT_MS of its first byte */
+			ws->deadline = ws->p->mono_ms(ws->p->ctx) + FRAME_TIMEOUT_MS + (timeout_ms > 0 ? timeout_ms : 0);
+		r = read_exact(ws, h, 2, ws->len ? -1 : timeout_ms);
 		if (r == 0)
 			return 0;
 		if (r < 0)
@@ -321,11 +337,11 @@ int mt_ws_recv(mt_ws *ws, int timeout_ms)
 			return -1; /* no extensions; a server never masks */
 		plen = h[1] & 0x7F;
 		if (plen == 126) {
-			if (read_exact(ws, ext, 2, FRAME_TIMEOUT_MS) != 2)
+			if (read_exact(ws, ext, 2, -1) != 2)
 				return -1;
 			plen = (uint64_t)ext[0] << 8 | ext[1];
 		} else if (plen == 127) {
-			if (read_exact(ws, ext, 8, FRAME_TIMEOUT_MS) != 8)
+			if (read_exact(ws, ext, 8, -1) != 8)
 				return -1;
 			plen = 0;
 			for (i = 0; i < 8; i++)
@@ -334,8 +350,10 @@ int mt_ws_recv(mt_ws *ws, int timeout_ms)
 		if (op >= 8) { /* control frame */
 			if (!fin || plen > 125)
 				return -1;
-			if (plen && read_exact(ws, ctl, (size_t)plen, FRAME_TIMEOUT_MS) != (int)plen)
+			if (plen && read_exact(ws, ctl, (size_t)plen, -1) != (int)plen)
 				return -1;
+			if (++controls > 16 && ws->len == 0)
+				return 0; /* let the loop run (timers, sessions); the next call continues */
 			if (op == 9) {
 				if (send_frame(ws, 10, ctl, (size_t)plen) != 0)
 					return -1;
@@ -355,7 +373,7 @@ int mt_ws_recv(mt_ws *ws, int timeout_ms)
 			return -1; /* continuation without a start, or a new message inside one */
 		if (plen > ws->cap - ws->len)
 			return -3; /* message larger than our buffer */
-		if (plen && read_exact(ws, ws->buf + ws->len, (size_t)plen, FRAME_TIMEOUT_MS) != (int)plen)
+		if (plen && read_exact(ws, ws->buf + ws->len, (size_t)plen, -1) != (int)plen)
 			return -1;
 		ws->len += (size_t)plen;
 		if (fin)

@@ -24,6 +24,7 @@ typedef struct {
 	uint8_t raw[512]; /* small read-ahead buffer */
 	size_t raw_len, raw_off;
 	int http_status;  /* set when the upgrade is refused */
+	int64_t deadline; /* monotonic ms: the current frame or the HTTP upgrade must be complete by then */
 	char http_reason[64];
 } mt_ws;
 

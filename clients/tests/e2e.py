@@ -10,6 +10,7 @@ Flow (each step must pass):
   4. send_text (submit) runs a command in the device shell; session_snapshot shows the output
   5. send_keys and session_capture; a repeated request id is answered from the cache, not re-run
   6. share_set none hides the sessions, share_set all shows them again
+ 6b. the device restarts: it reconnects from its stored enrollment
   7. the Hub re-issues its certificate: the Worker reconnects by itself and keeps working
   8. the Hub rotates its master (root) key: the Worker follows the signed chain and keeps working
   9. the Hub restarts: the Worker reconnects by itself
@@ -212,6 +213,18 @@ def main():
         until("session hidden", lambda: not any(s["worker_id"] == wid for s in hub.get("/api/v1/sessions")[1]["sessions"]))
         code, res = hub.op("share_set", {"worker_id": wid, "mode": "all"})
         until("session shown", lambda: any(s["worker_id"] == wid for s in hub.get("/api/v1/sessions")[1]["sessions"]))
+
+        log("6b. device restart: the Worker reconnects from its stored state (no invitation key any more)")
+        os.killpg(thin.pid, signal.SIGTERM)
+        thin.wait(timeout=20)
+        thin = subprocess.Popen([os.path.abspath(a.thin_bin), "--hub", hub.url, "--state-dir", state, "--name", "e2e-thin",
+                                 "--session", "shell=exec /bin/sh", "-v"],
+                                stdout=thin_log, stderr=subprocess.STDOUT, start_new_session=True)
+        until("online after the device restart", lambda: next(x for x in hub.op("workers_list", {"all": True})[1]["workers"]
+                                                              if x["id"] == wid).get("online") and
+              any(s["worker_id"] == wid for s in hub.get("/api/v1/sessions")[1]["sessions"]), timeout=60)
+        code, res = hub.op("send_text", {"target": target, "text": "echo e2e-$((6*7))", "submit": True}, write=True)
+        until("works after the device restart", lambda: "e2e-42" in screen_text())
 
         log("7. certificate re-issue: the Worker reconnects by itself")
         drive(hub.bin, ["hub", "identity", "reissue"], hub.env(), [("Passphrase: ", hh.PASSPHRASE)])

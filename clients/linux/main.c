@@ -152,8 +152,16 @@ static int store_set(void *c, const char *key, const uint8_t *buf, size_t n)
 	(void)c;
 	if (store_path(p, sizeof p, key))
 		return -1;
-	if (n == 0)
-		return unlink(p) == 0 || errno == ENOENT ? 0 : -1;
+	if (n == 0) { /* a deletion (invitation key after enrollment, state after a revoke) must be durable too */
+		if (unlink(p) != 0 && errno != ENOENT)
+			return -1;
+		fd = open(G.state_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		if (fd >= 0) {
+			fsync(fd);
+			close(fd);
+		}
+		return 0;
+	}
 	snprintf(tmp, sizeof tmp, "%s.tmp", p);
 	fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 	if (fd < 0)
@@ -217,7 +225,7 @@ static int bio_send(void *ctx, const unsigned char *b, size_t n)
 {
 	ssize_t r = send(*(int *)ctx, b, n, MSG_NOSIGNAL);
 	if (r < 0)
-		return errno == EINTR || errno == EAGAIN ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
+		return errno == EINTR ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED;
 	return (int)r;
 }
 
@@ -225,7 +233,7 @@ static int bio_recv(void *ctx, unsigned char *b, size_t n)
 {
 	ssize_t r = recv(*(int *)ctx, b, n, 0);
 	if (r < 0)
-		return errno == EINTR || errno == EAGAIN ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED;
+		return errno == EINTR ? MBEDTLS_ERR_SSL_WANT_READ : MBEDTLS_ERR_NET_RECV_FAILED; /* EAGAIN: timed out */
 	return (int)r;
 }
 #endif
@@ -276,9 +284,16 @@ static int net_connect(void *c, const char *host, uint16_t port, int tls, int ti
 		if (mbedtls_ssl_setup(&G.ssl, &G.conf) || mbedtls_ssl_set_hostname(&G.ssl, host))
 			goto fail;
 		mbedtls_ssl_set_bio(&G.ssl, &G.fd, bio_send, bio_recv, NULL);
-		while ((r = mbedtls_ssl_handshake(&G.ssl)) != 0)
-			if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE)
-				goto fail;
+		{ /* the TLS handshake shares the connect deadline: a peer that stalls it must not freeze the Worker */
+			struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000}, zero = {0, 0};
+			setsockopt(G.fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+			setsockopt(G.fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+			while ((r = mbedtls_ssl_handshake(&G.ssl)) != 0)
+				if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE)
+					goto fail;
+			setsockopt(G.fd, SOL_SOCKET, SO_RCVTIMEO, &zero, sizeof zero);
+			setsockopt(G.fd, SOL_SOCKET, SO_SNDTIMEO, &zero, sizeof zero);
+		}
 		return 0;
 	}
 fail:
@@ -298,7 +313,7 @@ static int net_read(void *c, uint8_t *b, size_t cap, int timeout_ms)
 	if (G.fd < 0)
 		return -1;
 #ifdef MT_WITH_MBEDTLS
-	if (G.tls && mbedtls_ssl_get_bytes_avail(&G.ssl) == 0) {
+	if (!G.tls || mbedtls_ssl_get_bytes_avail(&G.ssl) == 0) {
 #else
 	if (1) {
 #endif
@@ -351,26 +366,34 @@ static int net_write(void *c, const uint8_t *b, size_t n)
 
 /* ---------------------------------------------------------------- PTY sessions */
 
+/* Input for a session. A program that stops reading must not stall the Worker: after 2 s without progress the
+ * write fails (the operation reports it) and the loop goes on serving keepalives, other sessions and revokes. */
 static int pty_write(mt_session *s, const uint8_t *d, size_t n)
 {
 	pty_session *p = s->ctx;
+	int64_t give_up = mono_ms(NULL) + 2000;
+	size_t written = 0;
 	while (n) {
 		ssize_t r;
 		if (p->fd < 0)
-			return -1;
+			return written ? -2 : -1;
 		r = write(p->fd, d, n);
 		if (r < 0) {
 			if (errno == EINTR)
 				continue;
 			if (errno == EAGAIN) {
 				struct pollfd pf = {p->fd, POLLOUT, 0};
-				poll(&pf, 1, 200);
+				int64_t left = give_up - mono_ms(NULL);
+				if (left <= 0)
+					return written ? -2 : -1;
+				poll(&pf, 1, (int)(left > 200 ? 200 : left));
 				continue;
 			}
-			return -1;
+			return written ? -2 : -1;
 		}
 		d += r;
 		n -= (size_t)r;
+		written += (size_t)r;
 	}
 	return 0;
 }
@@ -394,7 +417,8 @@ static void pty_spawn(pty_session *p)
 		_exit(127);
 	}
 	p->pid = pid;
-	fcntl(p->fd, F_SETFL, fcntl(p->fd, F_GETFL) | O_NONBLOCK | FD_CLOEXEC);
+	fcntl(p->fd, F_SETFL, fcntl(p->fd, F_GETFL) | O_NONBLOCK);
+	fcntl(p->fd, F_SETFD, fcntl(p->fd, F_GETFD) | FD_CLOEXEC); /* other sessions must not inherit it */
 	p->s.created_ms = now_ms(NULL);
 }
 
@@ -442,8 +466,12 @@ static int add_session(const char *spec, uint16_t cols, uint16_t rows, size_t sb
 	p = &G.ps[G.nps];
 	memset(p, 0, sizeof *p);
 	memcpy(p->s.name, spec, nl);
-	if (strpbrk(p->s.name, ":. "))
-		return -1;
+	for (size_t k = 0; k < nl; k++) { /* names travel in JSON and in targets: plain ASCII only */
+		char ch = p->s.name[k];
+		if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' ||
+		      ch == '_'))
+			return -1;
+	}
 	snprintf(p->cmd, sizeof p->cmd, "%s", eq + 1);
 	p->cols = cols;
 	p->rows = rows;
@@ -533,7 +561,7 @@ int main(int argc, char **argv)
 		specs[nspecs++] = "shell=exec /bin/sh -l";
 	for (i = 0; i < nspecs; i++)
 		if (add_session(specs[i], (uint16_t)cols, (uint16_t)rows, sb) != 0) {
-			fprintf(stderr, "bad --session %s (NAME=COMMAND, name <= 32 chars without ':' '.' ' ')\n", specs[i]);
+			fprintf(stderr, "bad --session %s (NAME=COMMAND, NAME: 1..32 of A-Z a-z 0-9 - _)\n", specs[i]);
 			return 2;
 		}
 	if (invite_file) { /* copy into the store, then remove the original: the key is a credential */
@@ -569,7 +597,7 @@ int main(int argc, char **argv)
 	cfg.name = name;
 	cfg.sessions = ss;
 	cfg.nsessions = (size_t)G.nps;
-	cfg.rx_cap = 20 * 1024;
+	cfg.rx_cap = 72 * 1024; /* a Hub hello with a 128-link transition chain is about 32 KB */
 	cfg.frame_cap = 64 * 1024;
 	cfg.out_cap = 128 * 1024;
 	cfg.max_streams = 16;

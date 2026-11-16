@@ -46,7 +46,11 @@ int main(void)
 	OK("\xe2\x82\xac", "\xe2\x82\xac"); OK("\xf0\x9f\x98\x80", "\xf0\x9f\x98\x80"); OK("M-\xc3\xa9", "\x1b\xc3\xa9");
 	OK("hello", "hello"); OK("ls -l", "ls -l"); OK("a-b", "a-b"); OK("KP5", "5"); OK("KPEnter", "\r");
 	OK("PgUp", "\x1b[5~"); OK("PgDn", "\x1b[6~");
-	BAD(""); BAD("C-"); BAD("M-"); BAD("S-"); BAD("C-1"); BAD("C-\xc3\xa9"); BAD("S-1"); BAD("C-ab");
+	BAD(""); BAD("C-"); BAD("M-"); BAD("S-"); BAD("C-ab");
+	/* as tmux: C-2..C-8 are control bytes, other modified characters are sent unchanged */
+	expect("C-2", "\x00", 1); expect("C-3", "\x1b", 1); expect("C-4", "\x1c", 1); expect("C-5", "\x1d", 1);
+	expect("C-6", "\x1e", 1); expect("C-7", "\x1f", 1); expect("C-8", "\x7f", 1);
+	expect("C-1", "1", 1); expect("C-\xc3\xa9", "\xc3\xa9", 2); expect("S-1", "1", 1); expect("S-a", "A", 1);
 	BAD("M-foo"); BAD("C-BTab"); BAD("\xff"); BAD("\xc3"); BAD("\xc0\x80"); BAD("a\nb"); BAD("a\x1b" "b");
 	BAD("\x01"); BAD("\x7f"); BAD("\xc2\x85"); BAD("\xed\xa0\x80");
 	BAD("0123456789012345678901234567890123"); /* 34 bytes */
