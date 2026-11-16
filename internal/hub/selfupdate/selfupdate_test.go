@@ -23,6 +23,7 @@ type fakeEngine struct {
 	running  map[string]bool
 	names    map[string]string // id -> name
 	failNew  bool              // the new container never becomes ready
+	declared bool              // the old container declares an anonymous volume mount
 	tagged   string
 	removed  []string
 	dataDir  string
@@ -32,7 +33,10 @@ type fakeEngine struct {
 func (f *fakeEngine) handler(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	p := strings.TrimPrefix(r.URL.Path, "/"+apiVersion)
+	p := r.URL.Path
+	if apiVersion != "" {
+		p = strings.TrimPrefix(p, "/"+apiVersion)
+	}
 	f.calls = append(f.calls, r.Method+" "+p)
 	switch {
 	case r.Method == http.MethodGet && p == "/containers/json":
@@ -53,7 +57,7 @@ func (f *fakeEngine) handler(w http.ResponseWriter, r *http.Request) {
 			"Id": id, "Name": "/" + f.names[id],
 			"Config": map[string]any{"Image": img, "Env": []string{"MINION_DATA_DIR=" + f.dataDir, "MINION_TLS=off"},
 				"Labels": map[string]string{composeImageLabel: "sha256:old", "com.docker.compose.service": "hub"}},
-			"HostConfig":      map[string]any{"NetworkMode": "minion_default", "Binds": []string{"./hub-data:/data"}},
+			"HostConfig":      hostConfig(f.declared),
 			"Mounts":          []map[string]any{{"Type": "volume", "Name": "anon123", "Destination": "/extra", "RW": true}},
 			"NetworkSettings": map[string]any{"Networks": map[string]any{"minion_default": map[string]any{"Aliases": []string{"hub"}, "IPAddress": "10.0.0.2"}}},
 			"State":           map[string]any{"Running": f.running[id]},
@@ -88,6 +92,14 @@ func (f *fakeEngine) handler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 	}
 	_, _ = io.Copy(io.Discard, r.Body)
+}
+
+func hostConfig(declared bool) map[string]any {
+	h := map[string]any{"NetworkMode": "minion_default", "Binds": []string{"./hub-data:/data"}}
+	if declared {
+		h["Mounts"] = []map[string]any{{"Type": "volume", "Target": "/extra"}}
+	}
+	return h
 }
 
 func startEngine(t *testing.T, f *fakeEngine) *Docker {
@@ -180,18 +192,65 @@ func TestReplaceRollsBack(t *testing.T) {
 	}
 }
 
-func TestOnlyChannelTagsSelfUpdate(t *testing.T) {
+// A declared anonymous volume mount (Source "") is pinned to the volume it
+// resolved to, or the new Hub would get an empty one.
+func TestReplacePinsDeclaredAnonymousMounts(t *testing.T) {
+	f := newEngine(t)
+	f.declared = true
+	d := startEngine(t, f)
+	if err := Replace(context.Background(), d, params(f, true)); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	mounts, _ := json.Marshal(f.created["HostConfig"].(map[string]any)["Mounts"])
+	if !strings.Contains(string(mounts), `"Source":"anon123"`) || strings.Count(string(mounts), `"/extra"`) != 1 {
+		t.Errorf("mounts %s", mounts)
+	}
+}
+
+// A failed copy of the data directory restores nothing: the data stays as
+// it is and the previous Hub starts again; no new container is created.
+func TestReplaceBackupFailureRestartsTheOldHubWithoutRestoring(t *testing.T) {
+	f := newEngine(t)
+	d := startEngine(t, f)
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	// An unreadable file makes the copy fail.
+	if err := os.WriteFile(filepath.Join(f.dataDir, "secret"), []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := Replace(context.Background(), d, params(f, true)); err == nil {
+		t.Fatal("no error")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.running["old"] || f.names["old"] != "minion-hub-1" || f.created != nil {
+		t.Fatalf("old running=%v name=%q created=%v", f.running["old"], f.names["old"], f.created != nil)
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.dataDir, "minion.db")); string(b) != "v1 data" {
+		t.Errorf("data = %q", b)
+	}
+}
+
+// The container must run the tag of the configured channel (as Compose made
+// it) or a digest of the repository (after an earlier self-update).
+func TestOnlyTheConfiguredChannelTagSelfUpdates(t *testing.T) {
 	for _, tc := range []struct {
-		image string
-		ok    bool
+		image, channel string
+		ok             bool
 	}{
-		{"ghcr.io/patrick-1984/minion:0.9", true},
-		{"ghcr.io/patrick-1984/minion:0", true},
-		{"ghcr.io/patrick-1984/minion:latest", true},
-		{"ghcr.io/patrick-1984/minion", true},
-		{"ghcr.io/patrick-1984/minion:v0.9.0", false},
-		{"ghcr.io/patrick-1984/minion@sha256:abc", false},
-		{"example.com/other:0.9", false},
+		{"ghcr.io/patrick-1984/minion:0.9", "0.9", true},
+		{"ghcr.io/patrick-1984/minion:0", "0", true},
+		{"ghcr.io/patrick-1984/minion:latest", "latest", true},
+		{"ghcr.io/patrick-1984/minion", "latest", true},
+		{"ghcr.io/patrick-1984/minion@sha256:abc", "0.9", true},
+		{"ghcr.io/patrick-1984/minion:0.9", "latest", false},
+		{"ghcr.io/patrick-1984/minion:latest", "0.9", false},
+		{"ghcr.io/patrick-1984/minion:v0.9.0", "0.9", false},
+		{"example.com/other:0.9", "0.9", false},
+		{"example.com/other@sha256:abc", "0.9", false},
 	} {
 		f := newEngine(t)
 		f.oldImage = tc.image
@@ -203,9 +262,9 @@ func TestOnlyChannelTagsSelfUpdate(t *testing.T) {
 		f.names[host] = "minion-hub-1"
 		delete(f.names, "old")
 		f.running[host] = true
-		_, why := Detect(context.Background(), d, sock)
+		_, why := Detect(context.Background(), d, sock, tc.channel)
 		if (why == "") != tc.ok {
-			t.Errorf("%s: reason %q", tc.image, why)
+			t.Errorf("%s on %s: reason %q", tc.image, tc.channel, why)
 		}
 	}
 }
@@ -213,11 +272,29 @@ func TestOnlyChannelTagsSelfUpdate(t *testing.T) {
 func TestLockExcludesASecondUpdateAndStaleLocksAreTaken(t *testing.T) {
 	f := newEngine(t)
 	d := startEngine(t, f)
-	if err := acquireLock(context.Background(), d, f.dataDir); err != nil {
+	ctx := context.Background()
+	if err := acquireLock(ctx, d, f.dataDir); err != nil {
 		t.Fatal(err)
 	}
-	// No helper container exists: the lock is stale and taken again.
-	if err := acquireLock(context.Background(), d, f.dataDir); err != nil {
-		t.Fatalf("stale lock: %v", err)
+	// A preparation in progress (pulling, no helper yet) is not stale.
+	if err := acquireLock(ctx, d, f.dataDir); err != ErrBusy {
+		t.Fatalf("second lock during preparation: %v", err)
+	}
+	lock := filepath.Join(f.dataDir, LockFile)
+	// A lock naming a helper that still exists is not stale.
+	_ = os.WriteFile(lock, []byte("old"), 0o600)
+	if err := acquireLock(ctx, d, f.dataDir); err != ErrBusy {
+		t.Fatalf("lock of a live helper: %v", err)
+	}
+	// A lock naming a helper that is gone is stale and taken.
+	_ = os.WriteFile(lock, []byte("gone"), 0o600)
+	if err := acquireLock(ctx, d, f.dataDir); err != nil {
+		t.Fatalf("lock of a gone helper: %v", err)
+	}
+	// A preparation lock older than any preparation is stale too.
+	old := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(lock, old, old)
+	if err := acquireLock(ctx, d, f.dataDir); err != nil {
+		t.Fatalf("old preparation lock: %v", err)
 	}
 }

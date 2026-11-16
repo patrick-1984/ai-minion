@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Repository is the release image repository.
@@ -29,8 +31,11 @@ type Self struct {
 }
 
 // Detect finds the Hub's own container and checks that it can replace itself.
-// It returns a reason in plain words when it cannot.
-func Detect(ctx context.Context, d *Docker, socket string) (Self, string) {
+// channelTag is the image tag of the configured update channel ("0.9", "0",
+// "latest"): the container must run that tag (as Compose created it) or a
+// digest of the release repository (after an earlier self-update). It
+// returns a reason in plain words when it cannot.
+func Detect(ctx context.Context, d *Docker, socket, channelTag string) (Self, string) {
 	if _, err := os.Stat(socket); err != nil {
 		return Self{}, "the Docker socket is not mounted into the Hub container (use deploy/compose/hub.self-update.yaml)"
 	}
@@ -41,13 +46,21 @@ func Detect(ctx context.Context, d *Docker, socket string) (Self, string) {
 	if err != nil {
 		return Self{}, "the Hub's own container was not found: " + err.Error()
 	}
-	repo, tag := splitImage(c.ConfigString("Image"))
+	ref := c.ConfigString("Image")
+	repo, tag := splitImage(ref)
 	if repo != Repository {
-		return Self{}, fmt.Sprintf("the Hub runs the image %q, not %s", c.ConfigString("Image"), Repository)
+		return Self{}, fmt.Sprintf("the Hub runs the image %q, not %s", ref, Repository)
 	}
-	if !channelTagRE.MatchString(tag) {
-		return Self{}, fmt.Sprintf("the Hub's image tag %q pins one version; use a channel tag (for example %s:0.9, set MINION_TAG in .env) so that docker compose keeps the update", tag, Repository)
+	digest := strings.Contains(ref, "@")
+	switch {
+	case digest:
+		// Created by an earlier self-update: the channel tag was moved then.
+	case !channelTagRE.MatchString(tag):
+		return Self{}, fmt.Sprintf("the Hub's image tag %q pins one version; use the channel tag %s:%s (set MINION_TAG=%s in .env) so that docker compose keeps the update", tag, Repository, channelTag, channelTag)
+	case tag != channelTag:
+		return Self{}, fmt.Sprintf("the Hub runs the tag %q but update_channel follows %q; set MINION_TAG=%s in .env (or change update_channel) so that docker compose and the update agree", tag, channelTag, channelTag)
 	}
+	tag = channelTag
 	data := envValue(c.Env(), "MINION_DATA_DIR")
 	if data == "" {
 		return Self{}, "the Hub container sets no MINION_DATA_DIR"
@@ -105,6 +118,8 @@ var ErrBusy = errors.New("a Hub update is already running")
 // replaces this Hub. It returns at once; this process is stopped by the
 // helper moments later.
 func StartHelper(ctx context.Context, d *Docker, self Self, imageRef, from string) (string, error) {
+	prepMu.Lock() // one preparation per Hub process at a time
+	defer prepMu.Unlock()
 	if err := acquireLock(ctx, d, self.DataDir); err != nil {
 		return "", err
 	}
@@ -149,24 +164,54 @@ func StartHelper(ctx context.Context, d *Docker, self Self, imageRef, from strin
 	return id, nil
 }
 
-// acquireLock creates the lock file, or reports ErrBusy when a helper still
-// exists. A lock left by a helper that no longer exists is stale and taken.
+// prepMu serialises the preparation (lock, pull, helper start) inside one Hub.
+var prepMu sync.Mutex
+
+// prepMark is the lock content while the Hub prepares (before the helper id
+// replaces it).
+const prepMark = "preparing"
+
+// acquireLock creates the lock file, or reports ErrBusy. A lock is stale only
+// when it names a helper container that no longer exists, or a preparation
+// older than the longest one (an earlier Hub process that died while pulling).
 func acquireLock(ctx context.Context, d *Docker, dataDir string) error {
 	p := filepath.Join(dataDir, LockFile)
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	create := func() error {
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		_, werr := f.WriteString(prepMark)
+		return errors.Join(werr, f.Close())
+	}
+	err := create()
 	if err == nil {
-		return f.Close()
+		return nil
 	}
 	if !os.IsExist(err) {
 		return err
 	}
-	if ids, lerr := d.ListByLabel(ctx, HelperLabel, helperValue); lerr == nil && len(ids) == 0 {
-		_ = os.Remove(p)
-		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			return ErrBusy
-		}
-		return f.Close()
+	b, rerr := os.ReadFile(p)
+	fi, serr := os.Stat(p)
+	if rerr != nil || serr != nil {
+		return ErrBusy
 	}
-	return ErrBusy
+	content := strings.TrimSpace(string(b))
+	stale := false
+	switch {
+	case content == prepMark || content == "":
+		stale = time.Since(fi.ModTime()) > 30*time.Minute
+	default:
+		if _, ierr := d.Inspect(ctx, content); IsNotFound(ierr) {
+			stale = true
+		}
+	}
+	if !stale {
+		return ErrBusy
+	}
+	_ = os.Remove(p)
+	if err := create(); err != nil {
+		return ErrBusy
+	}
+	return nil
 }

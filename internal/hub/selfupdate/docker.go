@@ -24,8 +24,10 @@ import (
 // DefaultSocket is the Docker Engine socket mounted into the Hub container.
 const DefaultSocket = "/var/run/docker.sock"
 
-// apiVersion is the Engine API version the client speaks (Docker 20.10+).
-const apiVersion = "v1.41"
+// apiVersion is empty: unversioned requests use the Engine's own default
+// API version, so the client works with every supported Docker release
+// (newer Engines refuse old pinned versions).
+const apiVersion = ""
 
 // Docker is a minimal Docker Engine API client over a Unix socket: only the
 // calls the self-update needs.
@@ -65,7 +67,10 @@ func (d *Docker) do(ctx context.Context, method, path string, q url.Values, in, 
 		}
 		body = bytes.NewReader(b)
 	}
-	u := "http://docker/" + apiVersion + path
+	u := "http://docker" + path
+	if apiVersion != "" {
+		u = "http://docker/" + apiVersion + path
+	}
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}

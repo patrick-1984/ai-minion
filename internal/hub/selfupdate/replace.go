@@ -75,20 +75,30 @@ func Replace(ctx context.Context, d *Docker, p ReplaceParams) (err error) {
 		return fmt.Errorf("stop the Hub: %w", err)
 	}
 	backup := filepath.Join(dataDir, backupPrefix+safeName(p.From))
+	// Recovery runs on its own context: the operation's deadline may be over.
+	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer rcancel()
+	backupDone := false
 	restart := func(reason error) error {
 		p.Log.Error("update failed; restoring the previous Hub", "error", reason)
-		_ = d.Rename(ctx, old.ID, name)
-		if rerr := restoreDir(dataDir, backup); rerr != nil {
-			p.Log.Error("cannot restore the data directory", "error", rerr, "backup", backup)
+		_ = d.Rename(rctx, old.ID, name)
+		// Only a complete copy is restored; the data is untouched otherwise.
+		if backupDone {
+			if rerr := restoreDir(dataDir, backup); rerr != nil {
+				p.Log.Error("cannot restore the data directory; the copy stays", "error", rerr, "backup", backup)
+				return fmt.Errorf("%w; and the data directory could not be restored from %s: %v", reason, backup, rerr)
+			}
 		}
-		if serr := d.Start(ctx, old.ID); serr != nil {
+		if serr := d.Start(rctx, old.ID); serr != nil {
 			return fmt.Errorf("%w; and the previous Hub did not start again: %v", reason, serr)
 		}
 		return reason
 	}
 	if err := copyDir(dataDir, backup); err != nil {
+		_ = os.RemoveAll(backup)
 		return restart(fmt.Errorf("copy the data directory: %w", err))
 	}
+	backupDone = true
 	if err := d.Rename(ctx, old.ID, name+"-old"); err != nil {
 		return restart(fmt.Errorf("rename the old container: %w", err))
 	}
@@ -101,7 +111,12 @@ func Replace(ctx context.Context, d *Docker, p ReplaceParams) (err error) {
 		return restart(fmt.Errorf("create the new container: %w", err))
 	}
 	fail := func(reason error) error {
-		_ = d.Remove(context.WithoutCancel(ctx), newID)
+		// The new Hub must be gone before its data is restored under it.
+		_ = d.Stop(rctx, newID, p.StopTimeout)
+		if err := d.Remove(rctx, newID); err != nil && !IsNotFound(err) {
+			p.Log.Error("the new Hub container could not be removed; the data and its copy stay as they are", "error", err)
+			return fmt.Errorf("%w; and the new container could not be removed (%v): restore %s by hand", reason, err, backup)
+		}
 		return restart(reason)
 	}
 	for net := range old.NetworkSettings.Networks {
@@ -175,8 +190,22 @@ func recreateBody(old Container, imageRef, imageID string) (map[string]any, erro
 			covered[parts[1]] = true
 		}
 	}
+	resolved := map[string]string{} // target -> resolved volume name
+	for _, m := range old.Mounts {
+		if m.Type == "volume" && m.Name != "" {
+			resolved[m.Destination] = m.Name
+		}
+	}
 	for _, m := range mounts {
-		if t, ok := m["Target"].(string); ok {
+		t, _ := m["Target"].(string)
+		// A declared volume mount without a source is anonymous: pin it to
+		// the volume it resolved to, or the new container gets an empty one.
+		if src, _ := m["Source"].(string); src == "" && m["Type"] == "volume" {
+			if name := resolved[t]; name != "" {
+				m["Source"] = name
+			}
+		}
+		if t != "" {
 			covered[t] = true
 		}
 	}

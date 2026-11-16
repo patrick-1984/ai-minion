@@ -9,6 +9,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
+	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/selfupdate"
 	"github.com/patrick-1984/ai-minion/internal/hub/updates"
@@ -39,6 +40,7 @@ type selfUpdater struct {
 	socket   string
 	verified func(ctx context.Context, sel version.Selector) (version.Release, version.Manifest, error)
 	online   func() []workers.Online
+	audit    func(ctx context.Context, ev audit.Event)
 }
 
 func initSelfUpdate(_ context.Context, env *Env) error {
@@ -63,6 +65,10 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 		return err
 	}
 	resolver := settings.Resolver()
+	alog, err := Require[*audit.Log](env)
+	if err != nil {
+		return err
+	}
 	cache := filepath.Join(cfg.DataDir, "update-cache")
 	u := &selfUpdater{
 		dataDir: cfg.DataDir, checker: chk, socket: selfupdate.DefaultSocket,
@@ -72,6 +78,11 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 			return r.Value, err
 		},
 		online: svc.Registry().List,
+		audit: func(ctx context.Context, ev audit.Event) {
+			if err := alog.Record(context.WithoutCancel(ctx), ev); err != nil {
+				cfg.logger().Error("audit write failed", "action", ev.Action, "error", err)
+			}
+		},
 		verified: func(ctx context.Context, sel version.Selector) (version.Release, version.Manifest, error) {
 			src, err := version.NewGitHubSource(releasesAPI, "minion-hub/"+version.Version)
 			if err != nil {
@@ -89,11 +100,38 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 		return fmt.Errorf("self-update: %w", err)
 	}
 	return api.HandleTyped(handlers, ops.OpHubUpdate, func(ctx context.Context, c *api.Call, a ops.HubUpdateArgs) (ops.HubUpdateResult, error) {
-		if c.Principal.Kind == authz.KindAPIKey {
-			return ops.HubUpdateResult{}, api.NewError(proto.CodeForbidden, "replacing the Hub is done by an administrator in the web UI, not with an API key")
+		// Only an administrator signed in to the web UI as themselves: no API
+		// key, no act-as, no Worker grant.
+		if !mayReplaceHub(c) {
+			u.audit(ctx, audit.Event{Actor: c.Identity.Actor, ActingAs: c.Identity.ActingAs, Action: ops.OpHubUpdate, Outcome: "denied"})
+			return ops.HubUpdateResult{}, api.NewError(proto.CodeForbidden, "replacing the Hub is done by an administrator signed in to the web UI as themselves")
 		}
-		return u.update(ctx, a.Force)
+		res, err := u.update(ctx, a.Force)
+		outcome := "failed"
+		switch {
+		case err == nil && res.Started:
+			outcome = "success"
+		case err == nil:
+			outcome = "refused"
+		}
+		u.audit(ctx, audit.Event{Actor: c.Identity.Actor, Action: ops.OpHubUpdate, Target: res.From + " -> " + res.To, Outcome: outcome})
+		return res, err
 	})
+}
+
+// mayReplaceHub: only an administrator signed in to the web UI as
+// themselves replaces the Hub (no API key, act-as or Worker grant).
+func mayReplaceHub(c *api.Call) bool {
+	return c.Principal.Kind == authz.KindBrowserSession && c.Identity.ActingAs == "" && c.Principal.ActorID == ""
+}
+
+// channelTag is the image tag of the configured channel for this release.
+func (u *selfUpdater) channelTag(channel string) string {
+	cur, err := version.ParseVersion(version.Version)
+	if err != nil {
+		return "latest"
+	}
+	return updates.ImageTag(channel, cur)
 }
 
 // manualCommand is what to run when the Hub cannot replace itself.
@@ -110,7 +148,7 @@ func (u *selfUpdater) check(ctx context.Context) ops.HubUpdateCheckResult {
 	}
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, why := selfupdate.Detect(dctx, u.docker, u.socket); why != "" {
+	if _, why := selfupdate.Detect(dctx, u.docker, u.socket, u.channelTag(res.Channel)); why != "" {
 		res.Reason, res.Command = why, manualCommand
 		return res
 	}
@@ -168,7 +206,7 @@ func (u *selfUpdater) update(ctx context.Context, force bool) (ops.HubUpdateResu
 	}
 	dctx, dcancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer dcancel()
-	self, why := selfupdate.Detect(dctx, u.docker, u.socket)
+	self, why := selfupdate.Detect(dctx, u.docker, u.socket, u.channelTag(chk.Channel))
 	if why != "" {
 		res.Reason = why
 		return res, nil
