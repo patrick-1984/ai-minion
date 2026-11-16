@@ -1,6 +1,6 @@
 ---
 name: minion
-description: Operate Minion (Hub and Workers that serve tmux, ConPTY or psmux terminal sessions on many machines). Use when the user asks to check, install, start or pair a Minion Worker, to list, read, type into or create terminal sessions through minion, to answer a dialog in a session, to use minion's MCP tools, or to become a Minion master that controls sessions on other Workers through the Hub. Same guide as "minion llm-help". Trigger words: minion, minion master, worker, hub, pairing code, session_snapshot, send_text, sessions_list, workers_list, session control, tmux session on another machine.
+description: "Operate Minion (Hub and Workers that serve tmux, ConPTY or psmux terminal sessions on many machines). Use when the user asks to check, install, start or pair a Minion Worker, to list, read, type into or create terminal sessions through minion, to answer a dialog in a session, to use the minion MCP tools, or to become a Minion master that controls sessions on other Workers through the Hub. Same guide as \"minion llm-help\". Trigger words - minion, minion master, master session, worker, hub, pairing code, session_snapshot, send_text, sessions_list, workers_list, minion control, tmux session on another machine."
 ---
 # Operating Minion: guide for AI agents (Claude Code, Codex and others)
 
@@ -18,6 +18,9 @@ chooses.
 1. Ask the human before you install Minion, start or pair a Worker, share sessions, or type into a session you
    did not create yourself in this task.
 2. Read before you write: `session_snapshot` first, then `send_text`/`send_keys`.
+   Some refusals are **forceable** (the result says so, for example `shell_pane`: the pane runs a plain shell, so
+   typed text would run as a command): repeat with `--force` only after you reviewed the screen and the human
+   asked for that command. Never use `--force` to get past `not_shared`, `forbidden` or a changed pane.
 3. Never type secrets (passwords, keys, tokens) into a session.
 4. A write prints an outcome. Exit status: 0 delivered, 3 failed_not_sent, 4 partial or unknown, 1 error,
    2 usage. On 4, check the screen before you repeat; repeat on purpose with the same `--request-id`.
@@ -58,10 +61,15 @@ minion worker up --share-existing none --server https://<hub>       # service (s
 minion worker up --foreground --share-existing none --server https://<hub>   # in this terminal
 ```
 
-The Worker prints a box `MINION WORKER PAIRING` with a code like `MN-K7Q4-XY12` and its fingerprint. Give the
-code to the human: in the Hub they open **Workers > Add worker** and enter it. If the Hub asks to approve the
+In the foreground the Worker prints a box `MINION WORKER PAIRING` with a code like `MN-K7Q4-XY12` and its
+fingerprint. As a service it pairs in the background: run `minion worker status` (repeat for a few seconds until
+it shows the pairing code) to read the code and the Worker fingerprint. Give the code to the human: in the Hub they
+open **Workers > Add worker** and enter it. If the Hub asks to approve the
 Worker, the human compares the fingerprint with the box. Then the human chooses which sessions are shared, on
 the Worker's page in the Hub (**Sharing**). Without `--server` the Worker runs Solo.
+
+`--share-existing` is saved and applied at every start. Once the human shares sessions in the Hub, remove it
+(with their consent) so that their choice survives restarts: `minion worker config unset share_existing`.
 
 ## 4. Work with sessions
 
@@ -79,12 +87,18 @@ minion set_task --target build --task 'run the tests' # a short label the Hub sh
 
 `--target` is `[worker-id:]session[:window.pane]`; without it, the current tmux session.
 
+Sharing decides what you can reach, locally too: a session that is not shared answers `not_shared`. A new session
+is shared only when the Worker shares all sessions; otherwise ask the human to share it (Hub: the Worker's page,
+Sharing) before you read or type. Typing into a pane that runs a plain shell is refused as `shell_pane` (forceable,
+see the rules): `minion send_text --target build --text 'make test' --submit --force` once reviewed and asked for.
+
 To answer a dialog a pane shows (a permission prompt, a menu), read it first and pass the reviewed pane back, so
 the answer reaches only that dialog:
 
 ```sh
 minion session_snapshot --target build --json > snap.json            # read the dialog; its pane object is .pane
-jq -c .pane snap.json | minion answer --target build --choice 1 --expect -
+jq -c '.pane | {pane_id: .id, pid, command, session_created, dialog_digest}' snap.json \
+  | minion answer --target build --choice 1 --expect -
 ```
 
 Messages to other agents go through the pipe, which the receiver must accept: `pipe_send`, `pipe_read`,
@@ -92,9 +106,14 @@ Messages to other agents go through the pipe, which the receiver must accept: `p
 
 ## 5. Become a Minion master (control other Workers)
 
+Every session is a **slave session** by default: it controls nothing beyond its own Worker. A **master session**
+is one that its Worker's owner (or an administrator) nominated, and it reaches only the Workers that accept control
+from its Worker.
+
 1. Run in a tmux session on a paired Worker, for example `boss`.
-2. Ask the human (an administrator) to open **Administration > Session control** and create a grant for this
-   Worker and this session name, with **All** or selected Workers and sessions as targets.
+2. Ask the human to open **Access > Minion control** in the Hub: nominate this session as a **master session** on
+   this Worker, and on each Worker you should control, make it minion-managed and let it **accept control from**
+   this Worker (or from All Workers). You cannot do this yourself.
 3. Then, inside that session, without `MINION_HUB_URL`:
 
 ```sh
@@ -104,7 +123,8 @@ minion session_snapshot --target <worker-id>:<session>
 minion send_text --target <worker-id>:<session> --text 'git pull' --submit
 ```
 
-Name other Workers by id. A target outside the grant answers `not_found`; without a grant, `forbidden`.
+Name other Workers by id. A target that does not accept control from your Worker answers `not_found`; a session
+that is not a master session gets `forbidden`. **Check access** on that page explains any refusal.
 
 ## 6. MCP tools
 

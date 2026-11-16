@@ -2,6 +2,7 @@ package llmguide
 
 import (
 	"encoding/json"
+	"strconv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,5 +57,36 @@ func TestManifestsAreValid(t *testing.T) {
 		if m["name"] != "minion" {
 			t.Errorf("%s: name = %v", p, m["name"])
 		}
+	}
+}
+
+// The front matter is "name: minion" and a double-quoted description, so it is
+// valid YAML whatever the description says (a bare "word: word" would not be).
+func TestSkillFrontMatterIsValid(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(root, "plugins/minion/skills/minion/SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.SplitN(string(raw), "---\n", 3)
+	if len(parts) != 3 || parts[0] != "" {
+		t.Fatal("no front matter")
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(parts[1]), "\n") {
+		k, v, ok := strings.Cut(line, ": ")
+		if !ok {
+			t.Fatalf("front matter line %q is not key: value", line)
+		}
+		fields[k] = v
+	}
+	if fields["name"] != "minion" {
+		t.Errorf("name = %q", fields["name"])
+	}
+	d, err := strconv.Unquote(fields["description"])
+	if err != nil || len(d) < 50 || len(d) > 1024 {
+		t.Errorf("description must be one double-quoted string of 50 to 1024 characters: %v (%d)", err, len(d))
+	}
+	if len(fields) != 2 {
+		t.Errorf("front matter keys = %v", fields)
 	}
 }

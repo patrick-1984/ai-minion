@@ -42,18 +42,18 @@ If minion is already installed and the Worker is paired, the plugin changes noth
 
 ## The Minion master
 
-A **Minion master** is one agent session that controls sessions on other Workers through the Hub: it lists the
-Workers it may reach, reads their screens and types into their sessions. It is an ordinary tmux session on a
-paired Worker that an administrator gave a **session-control grant** (Administration > Session control).
+A **Minion master** is an agent in a **master session**: a session that its Worker's owner (or an administrator)
+nominated in **Access > Minion control**. Every other session is a **slave session**, the default: it controls
+nothing beyond its own Worker. A master session reaches a session on another Worker only when that Worker is
+**minion-managed** and **accepts control from** the master's Worker (or from All Workers), the session is shared,
+and the master's owner may reach that Worker. Both sides consent: the master's Worker nominates, the target Worker
+accepts.
 
-- **Nothing is a master by default.** A newly connected Worker and its sessions control nothing beyond their own
-  machine, and a Worker shares no session until its owner chooses. An agent cannot make itself a master: the
-  grant, the approval of the Worker and the sharing are made by people in the Hub.
-- **What a master can reach** is the grant's targets (All, or chosen Workers and sessions), never more than the
-  owner of the master's Worker may reach, and only sessions their Workers share.
+- **Nothing is a master by default**, no Worker accepts control by default, and a Worker shares no session until
+  its owner chooses. An agent cannot make itself a master.
 - **How to use it:** inside the master session, `minion workers_list`, then `--target <worker-id>:<session>` on the
-  session commands, or the same through `minion mcp --allow-writes`. Details and limits:
-  [Session control](session-control.md).
+  session commands, or the same through `minion mcp --allow-writes`. **Check access** on the Minion control page
+  explains why a session can or cannot be reached. Details: [Session control](session-control.md).
 
 ```text
                  Hub (grants, sharing, approval: decided by people)

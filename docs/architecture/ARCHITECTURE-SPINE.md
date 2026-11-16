@@ -874,7 +874,7 @@ graph LR
 - **AM-15 (AD-11, AD-22, AD-24): the Minion master, `minion llm-help` and the agent plugin (v0.9.0).**
   - **Binds:** `internal/llmguide` (embedded `guide.md`, `HelpLine`), `internal/cli` (`llm-help`, the first line of the root help), `plugins/minion` (Claude Code `.claude-plugin/plugin.json`, Codex `.codex-plugin/plugin.json`, skill `skills/minion/SKILL.md`, command `commands/setup.md`), the marketplaces `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json`, `docs/guides/agents.md`.
   - **Rule:**
-    - **Minion master** is the name of a controller session (AM-14) used by an agent: a session on a paired Worker that holds a session-control grant. It is a role made by an administrator, not a mode of the binary and not a setting; nothing is a master by default, and a connected Worker controls nothing beyond its own host.
+    - **Minion master** is an agent in a **master session**: a session nominated on its Worker (the controller session of AM-14). All other sessions are **slave sessions**, the default. It is a role given in the Hub by people, not a mode of the binary; nothing is a master by default, and a connected Worker controls nothing beyond its own host.
     - **One guide.** The text that `minion llm-help` prints is the body of the plugin skill; a test fails when they differ. The first line of `minion --help` points agents to it.
     - **The plugin installs nothing by itself.** Detection (`minion version`, `minion worker status`) comes first; installing, starting a Worker, pairing, sharing and grants each need the person's yes or action.
   - **Tests:** `internal/llmguide` (skill equals guide, manifests valid), `internal/cli` (help line, `llm-help`).
