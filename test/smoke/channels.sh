@@ -33,6 +33,9 @@ smoke_require_tag "$tag"
 
 case "$tag" in
 *-rc.*)
+	# Read the list anyway: a writer whose pipe closes early dies of SIGPIPE,
+	# which pipefail in promote.sh turns into a failed publish.
+	cat >/dev/null
 	printf 'kind=rc\nprerelease=true\ngithub_latest=false\nimage_tags=\n'
 	exit 0
 	;;
