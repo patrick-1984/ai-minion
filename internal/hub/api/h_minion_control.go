@@ -34,10 +34,10 @@ type ControlWorkerBase struct {
 type MinionControlStore interface {
 	ListMasterSessions(ctx context.Context) ([]store.MasterRow, error)
 	PutMasterSessionIfOwner(ctx context.Context, m store.MasterRow, owner string) error
-	DeleteMasterSession(ctx context.Context, workerID, session string) (bool, error)
+	DeleteMasterSessionIfOwner(ctx context.Context, workerID, session, owner string) (bool, error)
 	ListAccepts(ctx context.Context) ([]store.AcceptRow, error)
 	PutAcceptIfOwners(ctx context.Context, a store.AcceptRow, targetOwner, sourceOwner string) error
-	DeleteAccept(ctx context.Context, target, source string) (bool, error)
+	DeleteAcceptIfOwners(ctx context.Context, target, source, targetOwner, sourceOwner string) (bool, error)
 	ListWorkerControl(ctx context.Context) (map[string]store.WorkerControlRow, error)
 	SetWorkerControlIfOwner(ctx context.Context, workerID, owner string, userManaged, acceptAll *bool) error
 	SessionControl(ctx context.Context, workerID, sessionName string) (store.SessionControlRow, error)
@@ -199,7 +199,7 @@ func (h controlHandlers) setMaster(ctx context.Context, c *Call, a ops.ControlSe
 		err = h.st.PutMasterSessionIfOwner(ctx, store.MasterRow{WorkerID: a.WorkerID, SessionName: a.SessionName,
 			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()}, owners[0])
 	} else {
-		_, err = h.st.DeleteMasterSession(ctx, a.WorkerID, a.SessionName)
+		_, err = h.st.DeleteMasterSessionIfOwner(ctx, a.WorkerID, a.SessionName, owners[0])
 	}
 	if err != nil {
 		return ops.WriteResult{}, ownerErr(err)
@@ -242,7 +242,7 @@ func (h controlHandlers) setAccept(ctx context.Context, c *Call, a ops.ControlSe
 			Sessions: sessions, CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()},
 			owners[0], owners[1])
 	} else {
-		_, err = h.st.DeleteAccept(ctx, a.WorkerID, a.SourceWorkerID)
+		_, err = h.st.DeleteAcceptIfOwners(ctx, a.WorkerID, a.SourceWorkerID, owners[0], owners[1])
 	}
 	if err != nil {
 		return ops.WriteResult{}, ownerErr(err)

@@ -181,6 +181,11 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		op, args = ops.OpControlSetAccept, ops.ControlSetAcceptArgs{WriteArgs: wa, WorkerID: row, SourceWorkerID: src, Accept: on}
 		saved = map[bool]string{true: "Accepts control from that Worker.", false: "No longer accepts control from that Worker."}[on]
 		undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "value": flip}}
+		if !on && acceptLimited(r, c, row, src) {
+			// Undo would accept all shared sessions, not the old few.
+			undo = nil
+			saved += " It was limited to some sessions; adding it again accepts all shared sessions."
+		}
 	default:
 		http.NotFound(w, r)
 		return
@@ -210,6 +215,26 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		return
 	}
 	writeResultError(w, "The Worker is gone.")
+}
+
+// acceptLimited reports whether target accepts control from source only for
+// some sessions (or the Hub could not say: then no Undo is offered either).
+func acceptLimited(r *http.Request, c OpCaller, target, source string) bool {
+	var list ops.ControlListResult
+	if err := c.CallOp(r, ops.OpControlList, ops.ControlListArgs{}, &list); err != nil {
+		return true
+	}
+	for _, w := range list.Workers {
+		if w.WorkerID != target {
+			continue
+		}
+		for _, a := range w.Accepts {
+			if a.SourceWorkerID == source {
+				return a.Sessions != nil
+			}
+		}
+	}
+	return false
 }
 
 func init() {

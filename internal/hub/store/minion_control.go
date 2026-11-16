@@ -274,6 +274,43 @@ func (s *Store) PutMasterSessionIfOwner(ctx context.Context, m MasterRow, owner 
 	})
 }
 
+// DeleteMasterSessionIfOwner is [Store.DeleteMasterSession] while the
+// Worker still has owner: a removal decided for an earlier owner never
+// deletes what was set up for the new one.
+func (s *Store) DeleteMasterSessionIfOwner(ctx context.Context, workerID, session, owner string) (bool, error) {
+	var n int64
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := checkOwners(ctx, tx, map[string]string{workerID: owner}); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
+		if err != nil {
+			return fmt.Errorf("store: delete master session: %w", err)
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n > 0, err
+}
+
+// DeleteAcceptIfOwners is [Store.DeleteAccept] while both Workers still have
+// the owners the change was decided for.
+func (s *Store) DeleteAcceptIfOwners(ctx context.Context, target, source, targetOwner, sourceOwner string) (bool, error) {
+	var n int64
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := checkOwners(ctx, tx, map[string]string{target: targetOwner, source: sourceOwner}); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM control_accept WHERE target_worker_id = ? AND source_worker_id = ?`, target, source)
+		if err != nil {
+			return fmt.Errorf("store: delete acceptance: %w", err)
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n > 0, err
+}
+
 // PutAcceptIfOwners is [Store.PutAccept] while both Workers still have the
 // owners the change was decided for.
 func (s *Store) PutAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwner, sourceOwner string) error {
@@ -360,6 +397,9 @@ func (s *Store) controlTargets(ctx context.Context, source, legacy string) ([]co
 		}
 	}
 	if legacy != "" {
+		// A migrated v0.8 grant could reach its own Worker: keep that, within
+		// its limit. New nominations never reach their own Worker.
+		out = append(out, controlResource{Kind: "worker", WorkerID: source})
 		out = intersectLegacy(out, legacy)
 	}
 	sort.Slice(out, func(i, j int) bool {

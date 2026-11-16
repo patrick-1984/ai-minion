@@ -77,3 +77,20 @@ func TestRemovingALimitedMasterHasNoUndo(t *testing.T) {
 	mustHave(t, rec.Body.String(), "without its old limit")
 	mustNotHave(t, rec.Body.String(), ">Undo</button>")
 }
+
+// Removing an acceptance limited to some sessions offers no Undo: re-adding
+// would accept every shared session. An unlimited one keeps its Undo.
+func TestRemovingALimitedAcceptanceHasNoUndo(t *testing.T) {
+	fx := controlFixture()
+	fx.Workers[1].Accepts = []ops.ControlAccept{{SourceWorkerID: "wA", Sessions: []string{"ci"}}}
+	f := newFakeOps().reply(ops.OpControlList, fx).reply(ops.OpControlSetAccept, ops.WriteResult{Outcome: ops.OutcomeDelivered})
+	connect(t, f)
+	rec := post(t, adminServer(t), pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}})
+	mustHave(t, rec.Body.String(), "limited to some sessions")
+	mustNotHave(t, rec.Body.String(), ">Undo</button>")
+
+	f = newFakeOps().reply(ops.OpControlList, controlFixture()).reply(ops.OpControlSetAccept, ops.WriteResult{Outcome: ops.OutcomeDelivered})
+	connect(t, f)
+	rec = post(t, adminServer(t), pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}})
+	mustHave(t, rec.Body.String(), ">Undo</button>")
+}

@@ -258,3 +258,63 @@ func TestSetWorkerControlChangesOnlyTheGivenSwitch(t *testing.T) {
 		t.Fatalf("= %+v, want user-managed off and accept-all on", c)
 	}
 }
+
+// A migrated v0.8 grant that reached its own Worker keeps reaching it (within
+// its limit); a nomination made in the screen never reaches its own Worker.
+func TestMigratedGrantsKeepTheirOwnWorker(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	for _, r := range []SessionControlRow{
+		{WorkerID: "w1", SessionName: "all", TargetsJSON: `[{"kind":"everything"}]`, CreatedBy: "u", CreatedAt: 1},
+		{WorkerID: "w1", SessionName: "self", TargetsJSON: `[{"kind":"session","worker_id":"w1","session_name":"ci"}]`, CreatedBy: "u", CreatedAt: 1},
+	} {
+		if err := s.PutSessionControl(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g, err := s.SessionControl(ctx, "w1", "all"); err != nil || g.TargetsJSON != `[{"kind":"worker","worker_id":"w1"}]` {
+		t.Fatalf("everything on a one-Worker Hub: %+v %v", g, err)
+	}
+	if g, err := s.SessionControl(ctx, "w1", "self"); err != nil || g.TargetsJSON != `[{"kind":"session","worker_id":"w1","session_name":"ci"}]` {
+		t.Fatalf("own session: %+v %v", g, err)
+	}
+	if err := s.PutMasterSession(ctx, MasterRow{WorkerID: "w1", SessionName: "all", CreatedBy: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionControl(ctx, "w1", "all"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a new nomination reached its own Worker: %v", err)
+	}
+}
+
+// A removal decided for an earlier owner does not delete what was set up
+// for the new owner.
+func TestStaleRemovalsKeepTheNewOwnersRows(t *testing.T) {
+	f := newKindFixture(t)
+	ctx := context.Background()
+	a := f.worker(t, 1, f.u1, "a", WorkerKindInfrastructure)
+	b := f.worker(t, 2, f.u1, "b", WorkerKindInfrastructure)
+	if _, err := f.s.ReassignWorker(ctx, ReassignParams{WorkerID: a.ID, NewOwnerID: f.u2, AtMS: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.PutMasterSessionIfOwner(ctx, MasterRow{WorkerID: a.ID, SessionName: "boss", CreatedBy: f.admin}, f.u2); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.PutAcceptIfOwners(ctx, AcceptRow{TargetWorkerID: b.ID, SourceWorkerID: a.ID, CreatedBy: f.admin}, f.u1, f.u2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.DeleteMasterSessionIfOwner(ctx, a.ID, "boss", f.u1); !errors.Is(err, ErrWorkerOwnerChanged) {
+		t.Errorf("stale master removal: %v", err)
+	}
+	if _, err := f.s.DeleteAcceptIfOwners(ctx, b.ID, a.ID, f.u1, f.u1); !errors.Is(err, ErrWorkerOwnerChanged) {
+		t.Errorf("stale acceptance removal: %v", err)
+	}
+	if ms, _ := f.s.ListMasterSessions(ctx); len(ms) != 1 {
+		t.Errorf("masters = %+v", ms)
+	}
+	if as, _ := f.s.ListAccepts(ctx); len(as) != 1 {
+		t.Errorf("acceptances = %+v", as)
+	}
+	if ok, err := f.s.DeleteAcceptIfOwners(ctx, b.ID, a.ID, f.u1, f.u2); err != nil || !ok {
+		t.Errorf("current owners: %v %v", ok, err)
+	}
+}
