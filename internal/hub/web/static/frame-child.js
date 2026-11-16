@@ -93,7 +93,9 @@
     if (d.doc !== undefined && d.doc !== docId) { return; } // meant for another document of this frame
     if (d.type === 'suspend') {
       // The view is hidden: a permission given on it ends here (send-unasked.js).
-      document.dispatchEvent(new CustomEvent('minion:view-suspended'));
+      if (typeof document.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        document.dispatchEvent(new CustomEvent('minion:view-suspended'));
+      }
     }
     var s = stateOf(control(d.type === 'query' ? 'state' : d.type));
     last = JSON.stringify(s);
