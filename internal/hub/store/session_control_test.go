@@ -434,3 +434,18 @@ func TestPurgeKeepsSettingsSavedAfterTheEvidence(t *testing.T) {
 		t.Errorf("acceptances = %+v", as)
 	}
 }
+
+// A save in the same millisecond as the evidence counts as later.
+func TestPurgeKeepsASaveInTheSameMillisecond(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if err := s.PutMasterSession(ctx, MasterRow{WorkerID: "wA", SessionName: "ci", CreatedBy: "u", CreatedAt: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.PurgeGoneSessions(ctx, "wA", []string{"ci"}, 100); n != 0 {
+		t.Fatalf("a same-millisecond save was purged")
+	}
+	if n, _ := s.PurgeGoneSessions(ctx, "wA", []string{"ci"}, 101); n != 1 {
+		t.Fatalf("an older save was kept")
+	}
+}

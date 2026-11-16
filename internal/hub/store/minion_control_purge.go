@@ -18,7 +18,8 @@ import (
 
 // Every purge takes the time of the evidence (asOf, unix milliseconds: when
 // the Hub saw the session end or applied the snapshot) and changes only rows
-// saved at or before it: a nomination or an acceptance saved later was made
+// saved strictly before it: a nomination or an acceptance saved later (or in
+// the same millisecond) was made
 // for the session as it is now and stays.
 
 // PurgeGoneSessions removes the control settings of the named sessions of
@@ -50,7 +51,7 @@ func (s *Store) PurgeSessionsNotIn(ctx context.Context, workerID string, live []
 func (s *Store) purgeSessions(ctx context.Context, workerID string, gone func(string) bool, asOf int64) (int64, error) {
 	var total int64
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT session_name FROM master_session WHERE worker_id = ? AND created_at <= ?`, workerID, asOf)
+		rows, err := tx.QueryContext(ctx, `SELECT session_name FROM master_session WHERE worker_id = ? AND created_at < ?`, workerID, asOf)
 		if err != nil {
 			return fmt.Errorf("store: purge sessions: %w", err)
 		}
@@ -70,7 +71,7 @@ func (s *Store) purgeSessions(ctx context.Context, workerID string, gone func(st
 			return err
 		}
 		for _, n := range drop {
-			res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ? AND created_at <= ?`, workerID, n, asOf)
+			res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ? AND created_at < ?`, workerID, n, asOf)
 			if err != nil {
 				return fmt.Errorf("store: purge master session: %w", err)
 			}
@@ -83,7 +84,7 @@ func (s *Store) purgeSessions(ctx context.Context, workerID string, gone func(st
 		}
 		var limited []acc
 		arows, err := tx.QueryContext(ctx,
-			`SELECT source_worker_id, sessions_json FROM control_accept WHERE target_worker_id = ? AND sessions_json IS NOT NULL AND created_at <= ?`, workerID, asOf)
+			`SELECT source_worker_id, sessions_json FROM control_accept WHERE target_worker_id = ? AND sessions_json IS NOT NULL AND created_at < ?`, workerID, asOf)
 		if err != nil {
 			return fmt.Errorf("store: purge acceptances: %w", err)
 		}
@@ -115,7 +116,7 @@ func (s *Store) purgeSessions(ctx context.Context, workerID string, gone func(st
 				keep = []string{} // allows nothing; never NULL (= the whole Worker)
 			}
 			b, _ := json.Marshal(keep)
-			res, err := tx.ExecContext(ctx, `UPDATE control_accept SET sessions_json = ? WHERE target_worker_id = ? AND source_worker_id = ? AND created_at <= ?`, string(b), workerID, a.source, asOf)
+			res, err := tx.ExecContext(ctx, `UPDATE control_accept SET sessions_json = ? WHERE target_worker_id = ? AND source_worker_id = ? AND created_at < ?`, string(b), workerID, a.source, asOf)
 			if err != nil {
 				return fmt.Errorf("store: purge acceptance: %w", err)
 			}
@@ -133,7 +134,7 @@ func (s *Store) purgeSessions(ctx context.Context, workerID string, gone func(st
 // migrated target limit. A limit that loses its last target becomes "[]",
 // which allows nothing.
 func purgeLegacyTargets(ctx context.Context, tx *sql.Tx, workerID string, gone func(string) bool, asOf int64) (int64, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT worker_id, session_name, legacy_targets_json FROM master_session WHERE legacy_targets_json IS NOT NULL AND created_at <= ?`, asOf)
+	rows, err := tx.QueryContext(ctx, `SELECT worker_id, session_name, legacy_targets_json FROM master_session WHERE legacy_targets_json IS NOT NULL AND created_at < ?`, asOf)
 	if err != nil {
 		return 0, fmt.Errorf("store: purge legacy targets: %w", err)
 	}
@@ -167,7 +168,7 @@ func purgeLegacyTargets(ctx context.Context, tx *sql.Tx, workerID string, gone f
 	}
 	var total int64
 	for _, u := range todo {
-		res, err := tx.ExecContext(ctx, `UPDATE master_session SET legacy_targets_json = ? WHERE worker_id = ? AND session_name = ? AND created_at <= ?`, u.js, u.w, u.s, asOf)
+		res, err := tx.ExecContext(ctx, `UPDATE master_session SET legacy_targets_json = ? WHERE worker_id = ? AND session_name = ? AND created_at < ?`, u.js, u.w, u.s, asOf)
 		if err != nil {
 			return total, fmt.Errorf("store: purge legacy target: %w", err)
 		}
