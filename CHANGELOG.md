@@ -9,6 +9,7 @@
 ### Fixed
 
 - **Pairing is easy to follow on the Worker console**: the pairing code, where to enter it and the Worker fingerprint stand in a box of `=====` lines instead of between log lines; after pairing, and while the Worker waits for approval, a second box repeats the fingerprint, and the Hub's approve dialog asks to compare it with that box.
+
 ### Changed
 
 - **Hub settings in sections**: Administration → Hub settings groups the settings into sorted sections (Server and network, Sign-in and accounts, Single sign-on, Workers and invitations, Messages between sessions, Updates, Logging and troubleshooting, Storage) with jump links and a filter box; `settings_list` reports each setting's `section`.
