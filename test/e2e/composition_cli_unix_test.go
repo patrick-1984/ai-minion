@@ -162,9 +162,10 @@ func TestRealCLIEnrollsWithAnInvitationKeyFileThenRestartsFromItsStateWithoutAKe
 	if rows[0].Name != "pi" || rows[0].OwnerID != "alice" || rows[0].Kind != "private" {
 		t.Fatalf("worker row = %+v", rows[0])
 	}
-	if !strings.Contains(w.out.String(), "enrolled as pi, owner alice") {
-		t.Fatalf("the CLI did not report the enrollment:\n%s", w.out.String())
-	}
+	// The Hub may see the Worker online a moment before the CLI prints.
+	eventually(t, "the CLI to report the enrollment", func() bool {
+		return strings.Contains(w.out.String(), "enrolled as pi, owner alice")
+	})
 	if strings.Contains(w.out.String(), key.String()) {
 		t.Fatal("the CLI printed the invitation key")
 	}
