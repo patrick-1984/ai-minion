@@ -309,8 +309,10 @@ type DashboardView struct {
 	// UpdatableWorkers counts the Workers an admin can update to the Hub's
 	// release (the "Update all outdated" button).
 	UpdatableWorkers int
-	TotalSessions    int
-	WaitingSessions  int
+	// ScopeAll is true on the "All users" view; the bulk update keeps it.
+	ScopeAll        bool
+	TotalSessions   int
+	WaitingSessions int
 	// Attention is built from real states only.
 	Attention []AttentionItem
 	// ResultsText is the one-sentence summary of the shown rows, for the
@@ -492,7 +494,7 @@ func newDashboardView(d Dashboard, all bool) DashboardView {
 // newFilteredView builds the view of a snapshot and narrows the rows by f. The
 // counts and the attention list describe the whole scope.
 func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
-	v := DashboardView{ShowOwner: all, Notice: d.Notice, Filter: f}
+	v := DashboardView{ShowOwner: all, ScopeAll: all, Notice: d.Notice, Filter: f}
 	refs := workerRefs(d.Workers)
 	perWorker := map[string]int{}
 	for _, x := range d.Sessions {

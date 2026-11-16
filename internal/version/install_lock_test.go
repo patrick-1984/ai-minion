@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-	"time"
 )
 
 func TestInstallLockExcludesASecondUpdate(t *testing.T) {
@@ -23,19 +22,10 @@ func TestInstallLockExcludesASecondUpdate(t *testing.T) {
 	if err := installLocked(o, target, inner); !errors.Is(err, ErrInstallBusy) {
 		t.Fatalf("nested install: %v, want busy", err)
 	}
-	// A stale lock (a crashed update) is taken over.
-	lock := exe + ".update-lock"
-	if err := os.WriteFile(lock, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-2 * lockStale)
-	_ = os.Chtimes(lock, old, old)
+	// Released after the install: a second one runs.
 	ran := false
 	if err := installLocked(o, target, func() error { ran = true; return nil }); err != nil || !ran {
-		t.Fatalf("stale lock: %v ran=%v", err, ran)
-	}
-	if _, err := os.Stat(lock); err == nil {
-		t.Fatal("lock left behind")
+		t.Fatalf("after release: %v ran=%v", err, ran)
 	}
 }
 

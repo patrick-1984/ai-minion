@@ -81,7 +81,9 @@ func handleWorkersUpdateAll(w http.ResponseWriter, r *http.Request, c OpCaller, 
 		return
 	}
 	var list ops.WorkersListResult
-	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &list); err != nil {
+	// The same scope as the page the button was on (Mine or All users).
+	all := r.PostFormValue("scope") == scopeAll
+	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: all}, &list); err != nil {
 		writeResultError(w, failureText(err))
 		return
 	}

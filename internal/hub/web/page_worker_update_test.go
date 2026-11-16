@@ -67,3 +67,20 @@ func TestWorkerUpdateRefusalIsShown(t *testing.T) {
 	rec := post(t, adminServer(t), "/workers/w1/update", adminHeader, url.Values{})
 	mustHave(t, rec.Body.String(), "refusing a downgrade from v0.9.1")
 }
+
+// "Update all outdated" keeps the scope of the page it was on.
+func TestUpdateAllKeepsThePageScope(t *testing.T) {
+	withHubVersion(t, "v0.9.0")
+	for _, tc := range []struct {
+		form url.Values
+		all  any
+	}{{url.Values{}, nil}, {url.Values{"scope": {"all"}}, true}} {
+		f := newFakeOps().reply(ops.OpWorkersList, ops.WorkersListResult{})
+		connect(t, f)
+		_ = post(t, adminServer(t), "/workers/update-all", adminHeader, tc.form)
+		calls := f.called(ops.OpWorkersList)
+		if len(calls) != 1 || calls[0].Args["all"] != tc.all {
+			t.Errorf("form %v: workers_list args %+v", tc.form, calls)
+		}
+	}
+}

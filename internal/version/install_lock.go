@@ -12,9 +12,6 @@ import (
 	"time"
 )
 
-// lockStale is when an install lock left by a crashed update is taken over.
-const lockStale = 30 * time.Minute
-
 // ErrInstallBusy reports another update of the same binary in progress.
 var ErrInstallBusy = errors.New("another minion update of this binary is in progress")
 
@@ -28,11 +25,16 @@ func installLocked(o Options, target SemVer, install func() error) error {
 	if err != nil {
 		real = o.ExecPath
 	}
-	lock := real + ".update-lock"
-	if err := takeLock(lock); err != nil {
+	release, err := takeLock(real + ".update-lock")
+	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(lock) }()
+	defer release()
+	// The installed binary is run only after the same trust checks the
+	// replacement applies: nobody else may have planted it.
+	if err := CheckTrustedExecutable(real); err != nil {
+		return fmt.Errorf("refusing to update %s: %w", real, err)
+	}
 	if inst, ok := installedVersion(real); ok && inst.Compare(target) >= 0 && !o.AllowDowngrade {
 		if cur, err := ParseVersion(o.Current); err != nil || inst.Compare(cur) != 0 {
 			return fmt.Errorf("%s is already installed at %s (another update ran meanwhile); nothing was replaced", inst, real)
@@ -41,24 +43,27 @@ func installLocked(o Options, target SemVer, install func() error) error {
 	return install()
 }
 
-func takeLock(p string) error {
-	for i := 0; i < 2; i++ {
-		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
-			return f.Close()
-		}
-		if !os.IsExist(err) {
-			return fmt.Errorf("cannot lock %s: %w", p, err)
-		}
-		if fi, serr := os.Stat(p); serr == nil && time.Since(fi.ModTime()) > lockStale {
-			_ = os.Remove(p)
-			continue
-		}
-		return ErrInstallBusy
+// takeLock takes an exclusive operating-system lock (flock, LockFileEx) on p
+// without waiting. The kernel drops it when the process ends, so a crashed
+// update leaves no stale lock; the file itself stays.
+func takeLock(p string) (func(), error) {
+	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("cannot lock %s: %w", p, err)
 	}
-	return ErrInstallBusy
+	if err := installLockNB(f); err != nil {
+		_ = f.Close()
+		if errors.Is(err, errInstallLockHeld) {
+			return nil, ErrInstallBusy
+		}
+		return nil, fmt.Errorf("cannot lock %s: %w", p, err)
+	}
+	return func() { _ = installUnlock(f); _ = f.Close() }, nil
 }
+
+// errInstallLockHeld is what the platform lock code returns when another
+// process holds the lock.
+var errInstallLockHeld = errors.New("install lock held")
 
 var versionLineRE = regexp.MustCompile(`(?m)^version: (v\S+)$`)
 

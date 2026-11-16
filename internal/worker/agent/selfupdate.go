@@ -329,15 +329,18 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 		_ = os.Remove(filepath.Join(dir, pendingFile))
 		return nil, false
 	}
-	if err := restoreOld(exe, old); err != nil {
-		log.Error("cannot restore the previous Worker binary", "error", err.Error())
+	// The database first: a migration of the new release may have changed it,
+	// and the old binary refuses a newer schema. Without a restored database
+	// the rollback stops here and the guard stays, so the next start retries.
+	if err := restoreStateDB(dir, r.At); err != nil {
+		log.Error("cannot restore the Worker database from its pre-migration backup; the rollback waits for the next start", "error", err.Error())
+		_ = writePending(dir, r)
 		return nil, false
 	}
-	// A migration of the new release may have changed the Worker database;
-	// the old binary refuses a newer schema. Put back the pre-migration copy
-	// the store made after the update began, if there is one.
-	if err := restoreStateDB(dir, r.At); err != nil {
-		log.Error("cannot restore the Worker database from its pre-migration backup", "error", err.Error())
+	if err := restoreOld(exe, old); err != nil {
+		log.Error("cannot restore the previous Worker binary", "error", err.Error())
+		_ = writePending(dir, r)
+		return nil, false
 	}
 	_ = writePending(dir, r) // the restored binary finds From == running and reports the rollback
 	log.Warn("the updated Worker failed to start; restored the previous binary", "from", r.To, "to", r.From)

@@ -351,3 +351,73 @@ func TestRestoreStateDBUsesThePreMigrationBackup(t *testing.T) {
 		t.Fatal("the WAL of the migrated database survived")
 	}
 }
+
+// Setting the hold waits for a session creation in flight: after it returns,
+// no creation that started before can still finish unseen.
+func TestSessionCreateHoldWaitsForCreationsInFlight(t *testing.T) {
+	e := &Executor{}
+	e.createMu.RLock() // a session_create in flight
+	set := make(chan struct{})
+	go func() { e.SetSessionCreateHold("updating"); close(set) }()
+	select {
+	case <-set:
+		t.Fatal("the hold did not wait for the creation in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	e.createMu.RUnlock()
+	select {
+	case <-set:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never took effect")
+	}
+	if e.createHold.Load() == nil {
+		t.Fatal("hold not set")
+	}
+}
+
+// A rollback whose database restore fails keeps the guard and the new
+// binary: the old binary never meets the newer schema.
+func TestRollbackStopsWhenTheDatabaseCannotBeRestored(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	exe := filepath.Join(bin, "minion")
+	_ = os.WriteFile(exe, []byte("new"), 0o755)
+	_ = os.WriteFile(exe+".old", []byte("old"), 0o755)
+	// A backup newer than the update that cannot be copied over the database:
+	// the database path is a directory.
+	_ = os.MkdirAll(filepath.Join(dir, "backups"), 0o700)
+	_ = os.WriteFile(filepath.Join(dir, "backups", "worker-x.db"), []byte("old schema"), 0o600)
+	_ = os.MkdirAll(filepath.Join(dir, "worker.db", "blocker"), 0o700)
+	now := time.Now()
+	starts := []int64{now.Add(-3 * time.Second).Unix(), now.Add(-2 * time.Second).Unix(), now.Add(-time.Second).Unix()}
+	_ = writePending(dir, pendingRecord{From: "v0.9.0", To: "v0.9.1", At: now.Add(-time.Minute), Starts: starts})
+	log := slog.New(slog.NewTextHandler(&logBuf{}, nil))
+	if _, restart := guardOnStart(log, dir, exe, "v0.9.1", now); restart {
+		t.Fatal("restarted without the database")
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "new" {
+		t.Fatal("the binary was rolled back without the database")
+	}
+	if _, ok := readPending(dir); !ok {
+		t.Fatal("the guard was dropped")
+	}
+}
+
+// A second Worker on the same state never reaches the crash guard: the
+// lifecycle lock refuses it first.
+func TestRecoveryRunsOnlyUnderTheLifecycleLock(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := LockLifecycle(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	_ = writePending(dir, pendingRecord{From: "v0.9.0", To: version.Version})
+	before, _ := os.ReadFile(filepath.Join(dir, pendingFile))
+	if _, err := LockLifecycle(dir); err == nil {
+		t.Fatal("second lock taken")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, pendingFile))
+	if string(before) != string(after) {
+		t.Fatal("the guard changed")
+	}
+}

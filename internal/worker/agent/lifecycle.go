@@ -103,5 +103,11 @@ func startLifecycle(_ context.Context, env *Env) (StopFunc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("take the state lock in %s: %w", dir, err)
 	}
+	// The update crash guard runs here: only the process that owns the state
+	// may count starts or roll back, and it runs before the core module opens
+	// and migrates the database.
+	if rolled := RecoverUpdate(env.Settings().logger(), dir); rolled != nil {
+		lastRollback.Store(rolled)
+	}
 	return func(context.Context) error { return lock.Close() }, nil
 }

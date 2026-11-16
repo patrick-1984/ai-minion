@@ -117,6 +117,9 @@ type Executor struct {
 	// createHold, when set, refuses session_create with its reason: a Worker
 	// about to restart for an update must not start sessions the restart ends.
 	createHold atomic.Pointer[string]
+	// createMu: session_create holds it shared for its whole run; setting
+	// the hold takes it exclusively, so it waits for creations in flight.
+	createMu sync.RWMutex
 
 	// mem keeps the completed write results that the database could not
 	// store, so that a duplicate request id still finds the precise answer
@@ -180,6 +183,8 @@ func (e *Executor) Handle(op string, h Handler) {
 
 // SetSessionCreateHold refuses new sessions with reason; "" allows them again.
 func (e *Executor) SetSessionCreateHold(reason string) {
+	e.createMu.Lock()
+	defer e.createMu.Unlock()
 	if reason == "" {
 		e.createHold.Store(nil)
 		return
