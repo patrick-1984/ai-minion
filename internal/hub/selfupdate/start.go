@@ -168,7 +168,7 @@ func StartHelper(ctx context.Context, d *Docker, self Self, imageRef, from strin
 		release()
 		return "", fmt.Errorf("pull %s: %w", imageRef, err)
 	}
-	var groups json.RawMessage = self.Container.HostConfig["GroupAdd"]
+	groups := self.Container.HostConfig["GroupAdd"]
 	if len(groups) == 0 {
 		groups = json.RawMessage("null")
 	}
@@ -238,8 +238,8 @@ func acquireLock(ctx context.Context, d *Docker, dataDir string) error {
 	}
 	content := strings.TrimSpace(string(b))
 	stale := false
-	switch {
-	case content == prepMark || content == "":
+	switch content {
+	case prepMark, "":
 		stale = time.Since(fi.ModTime()) > 30*time.Minute
 	default:
 		if _, ierr := d.Inspect(ctx, content); IsNotFound(ierr) {

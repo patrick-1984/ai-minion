@@ -22,7 +22,6 @@ type fakeEngine struct {
 	created  map[string]any
 	running  map[string]bool
 	names    map[string]string // id -> name
-	failNew  bool              // the new container never becomes ready
 	declared bool              // the old container declares an anonymous volume mount
 	label    string            // the channel label of the old container
 	noMount  bool              // the data directory is in the container's own layer
