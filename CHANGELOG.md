@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.9.1
+
+Released 2026-11-16.
+
 ### Added
 
 - **Send without asking** (session page header and Worker page → Sending): text, keys and the task go out at once, also to a shell, an open dialog or a busy agent, without the "Send anyway" button and its second confirmation. Per session or for all sessions of a Worker (the Worker switch shows when only some sessions have it). Kept in this browser; a dialog answer is still checked.
