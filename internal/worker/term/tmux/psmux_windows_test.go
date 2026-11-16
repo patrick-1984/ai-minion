@@ -178,7 +178,13 @@ func TestPsmuxReportsItsSocketPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("display-message: %v: %s", err, out)
 	}
-	t.Logf("socket_path for -S %s: %s", sock, strings.TrimSpace(string(out)))
+	got := strings.TrimSpace(string(out))
+	t.Logf("socket_path for -S %s: %s", sock, got)
+	// A psmux that ignores -S (before 3.4.0) would report its default server:
+	// the private namespace is what makes the other tests safe.
+	if !strings.EqualFold(filepath.Clean(got), filepath.Clean(sock)) {
+		t.Fatalf("psmux did not use the private namespace: socket_path %q, want %q", got, sock)
+	}
 	out, _ = exec.Command(bin, "display-message", "-p", "#{socket_path}").CombinedOutput()
 	t.Logf("default socket_path (no -S, may fail without a default server): %s", strings.TrimSpace(string(out)))
 }
