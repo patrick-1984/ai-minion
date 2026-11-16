@@ -106,6 +106,12 @@ func sameDir(a, b string) bool {
 // inside the Worker) or a missing tmux means "cannot count".
 func tmuxSessions(socket string) agent.StatusSessions {
 	if socket == "" {
+		// Windows: the user's psmux sessions when psmux is installed (v0.9.2).
+		if bin := tmux.FindPsmux(); bin != "" && runtime.GOOS == "windows" {
+			if h, err := tmux.NewPsmux(bin); err == nil {
+				return h
+			}
+		}
 		return nil
 	}
 	h, err := tmux.New(socket)

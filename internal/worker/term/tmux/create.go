@@ -64,11 +64,15 @@ func (h *Host) CreateSession(ctx context.Context, name, cwd string, argv []strin
 		// print its environment instead of running anything.
 		return term.Session{}, fmt.Errorf("argv: a single program name must not contain '=': %w", ops.ErrInvalidArgument)
 	}
-	if len(argv) == 0 {
+	if len(argv) == 0 && !h.psmux {
+		// psmux starts its own default shell (PowerShell 7 or cmd).
 		argv = []string{h.userShell(ctx)}
 	}
 	transient := transientCommands(argv)
-	out, err := h.run(ctx, newSessionArgs(name, cwd, argv)...)
+	if h.psmux {
+		transient["psmux"] = true
+	}
+	out, err := h.run(ctx, newSessionArgs(name, cwd, argv, !h.psmux)...)
 	if err != nil {
 		var te *tmuxError
 		if errors.As(err, &te) && strings.Contains(te.stderr, "duplicate session") {
@@ -124,7 +128,11 @@ func (h *Host) settledSession(ctx context.Context, name, paneID string, transien
 		if err != nil {
 			return term.Session{}, err
 		}
-		s, p, ok := findPane(sessions, paneID)
+		session := ""
+		if h.psmux {
+			session = name // psmux numbers panes per session
+		}
+		s, p, ok := findPane(sessions, session, paneID)
 		if !ok {
 			return term.Session{}, fmt.Errorf("session %q: created, but its pane %s is already gone: %w", name, paneID, term.ErrNotFound)
 		}
@@ -142,8 +150,12 @@ func (h *Host) settledSession(ctx context.Context, name, paneID string, transien
 	}
 }
 
-func findPane(sessions []term.Session, paneID string) (term.Session, term.Pane, bool) {
+// findPane finds a pane by id, in the named session when session is not "".
+func findPane(sessions []term.Session, session, paneID string) (term.Session, term.Pane, bool) {
 	for _, s := range sessions {
+		if session != "" && s.Name != session {
+			continue
+		}
 		for _, p := range s.Panes {
 			if p.Ref.ID == paneID {
 				return s, p, true
@@ -186,7 +198,7 @@ func usableShell(sh string) bool {
 // "env -- argv0", which makes two arguments and still runs the program
 // without a shell. env takes an argv0 with '=' for an assignment even after
 // "--", so CreateSession refuses that case before it gets here.
-func newSessionArgs(name, cwd string, argv []string) []string {
+func newSessionArgs(name, cwd string, argv []string, envWrap bool) []string {
 	args := []string{"new-session", "-d", "-P", "-F", "#{pane_id}", "-s", escapeArg(escapeFormat(name))}
 	if cwd != "" {
 		args = append(args, "-c", escapeArg(escapeFormat(cwd)))
@@ -194,7 +206,9 @@ func newSessionArgs(name, cwd string, argv []string) []string {
 	if len(argv) == 0 {
 		return args
 	}
-	if len(argv) == 1 {
+	if len(argv) == 1 && envWrap {
+		// tmux runs a one-word command through a shell; env runs it as a
+		// program. psmux (Windows) runs the argv as it is and has no env.
 		argv = []string{"env", "--", argv[0]}
 	}
 	args = append(args, "--")

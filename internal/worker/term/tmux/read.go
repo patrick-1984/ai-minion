@@ -41,11 +41,15 @@ func (h *Host) Snapshot(ctx context.Context, pane term.PaneRef) (ops.Screen, err
 	if err := checkPaneID(pane.ID); err != nil {
 		return ops.Screen{}, err
 	}
-	raw, err := h.run(ctx, "capture-pane", "-p", "-e", "-t", pane.ID)
+	tgt, err := h.paneTarget(pane)
 	if err != nil {
 		return ops.Screen{}, err
 	}
-	g, err := h.geometry(ctx, pane.ID)
+	raw, err := h.run(ctx, "capture-pane", "-p", "-e", "-t", tgt)
+	if err != nil {
+		return ops.Screen{}, err
+	}
+	g, err := h.geometry(ctx, tgt)
 	if err != nil {
 		return ops.Screen{}, err
 	}
@@ -83,11 +87,15 @@ func (h *Host) Capture(ctx context.Context, pane term.PaneRef, lines int) (ops.S
 	if lines < 1 || lines > MaxCaptureLines {
 		return ops.Screen{}, fmt.Errorf("lines %d: must be between 1 and %d: %w", lines, MaxCaptureLines, ops.ErrInvalidArgument)
 	}
-	raw, err := h.run(ctx, "capture-pane", "-p", "-e", "-t", pane.ID, "-S", "-"+strconv.Itoa(lines))
+	tgt, err := h.paneTarget(pane)
 	if err != nil {
 		return ops.Screen{}, err
 	}
-	g, err := h.geometry(ctx, pane.ID)
+	raw, err := h.run(ctx, "capture-pane", "-p", "-e", "-t", tgt, "-S", "-"+strconv.Itoa(lines))
+	if err != nil {
+		return ops.Screen{}, err
+	}
+	g, err := h.geometry(ctx, tgt)
 	if err != nil {
 		return ops.Screen{}, err
 	}
@@ -172,8 +180,8 @@ type geometry struct {
 	cursorVisible bool
 }
 
-func (h *Host) geometry(ctx context.Context, id string) (geometry, error) {
-	out, err := h.run(ctx, "display-message", "-p", "-t", id, geometryFormat)
+func (h *Host) geometry(ctx context.Context, target string) (geometry, error) {
+	out, err := h.run(ctx, "display-message", "-p", "-t", target, geometryFormat)
 	if err != nil {
 		return geometry{}, err
 	}

@@ -48,8 +48,12 @@ type paneState struct {
 
 // currentState reads the live state of a pane. It returns term.ErrNotFound
 // when the pane no longer exists.
-func (h *Host) currentState(ctx context.Context, id string) (paneState, error) {
-	out, err := h.run(ctx, "display-message", "-p", "-t", id, paneStateFormat)
+func (h *Host) currentState(ctx context.Context, pane term.PaneRef) (paneState, error) {
+	tgt, err := h.paneTarget(pane)
+	if err != nil {
+		return paneState{}, err
+	}
+	out, err := h.run(ctx, "display-message", "-p", "-t", tgt, paneStateFormat)
 	if err != nil {
 		return paneState{}, err
 	}
@@ -110,10 +114,10 @@ func parsePaneState(out string) (paneState, error) {
 // keys are refused. Pasting into a pane in a mode reaches the program, and
 // paste-buffer is not broadcast, so PasteText refuses neither case.
 func (h *Host) keepCheck(ctx context.Context, pane, expect term.PaneRef, keys bool) error {
-	if expect.ID != pane.ID {
+	if expect.ID != pane.ID || expect.Target != pane.Target {
 		return fmt.Errorf("expected pane %q, writing to %q: %w", expect.ID, pane.ID, term.ErrPaneChanged)
 	}
-	st, err := h.currentState(ctx, pane.ID)
+	st, err := h.currentState(ctx, pane)
 	if errors.Is(err, term.ErrNotFound) {
 		return fmt.Errorf("pane %s is gone: %w", pane.ID, term.ErrPaneChanged)
 	}
@@ -189,10 +193,10 @@ func (h *Host) VerbatimPaste() bool { return true }
 // best effort and runs on its own short context, because the caller's context
 // may be the reason the paste stopped. After a successful paste-buffer -d the
 // buffer is gone and the command fails harmlessly.
-func (h *Host) deleteBuffer(name string) {
+func (h *Host) deleteBuffer(target, name string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), cleanupTimeout)
 	defer cancel()
-	_, _ = h.run(ctx, "delete-buffer", "-b", name)
+	_, _ = h.run(ctx, append(append([]string{"delete-buffer"}, h.bufferTarget(target)...), "-b", name)...)
 }
 
 // SendKeys sends named keys (tmux key names such as Enter or C-c, or one
@@ -227,7 +231,11 @@ func (h *Host) SendKeys(ctx context.Context, pane term.PaneRef, keys []string, e
 		if err := h.keepCheck(ctx, pane, expect, true); err != nil {
 			return sent, err
 		}
-		if _, err := h.run(ctx, "send-keys", "-t", pane.ID, "--", escapeArg(k)); err != nil {
+		tgt, err := h.paneTarget(pane)
+		if err != nil {
+			return sent, err
+		}
+		if _, err := h.run(ctx, "send-keys", "-t", tgt, "--", escapeArg(k)); err != nil {
 			return sent, err
 		}
 		sent++
@@ -255,4 +263,29 @@ func escapeArg(a string) string {
 		return strings.TrimSuffix(a, ";") + `\;`
 	}
 	return a
+}
+
+// bufferTarget is the -t of a buffer command. psmux keeps the buffers of each
+// session in that session's server, so a buffer is loaded into (and deleted
+// from) the session of the pane it is pasted to; tmux has one buffer list per
+// server and takes no target.
+func (h *Host) bufferTarget(paneTarget string) []string {
+	if !h.psmux {
+		return nil
+	}
+	session, _, _ := strings.Cut(paneTarget, ":")
+	return []string{"-t", session + ":"}
+}
+
+// quoteCommandArg quotes a value for a tmux command string (the commands of
+// if-shell): single quotes keep it literal. A value with a single quote or a
+// control character is refused.
+func quoteCommandArg(v string) (string, error) {
+	if paneIDRE.MatchString(v) {
+		return v, nil // a tmux pane id needs no quotes
+	}
+	if strings.ContainsAny(v, "'\x00\n\r") || hasControl(v) {
+		return "", fmt.Errorf("target %q cannot be quoted for a command: %w", truncate(v, 40), ops.ErrInvalidArgument)
+	}
+	return "'" + v + "'", nil
 }

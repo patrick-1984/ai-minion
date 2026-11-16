@@ -29,6 +29,10 @@ type PaneRef struct {
 	ID      string
 	PID     int
 	Command string
+	// Target is how the host addresses the pane when it differs from ID: psmux
+	// numbers panes per session, so it addresses "=session:window.pane"
+	// (v0.9.2). Empty means ID. Same does not compare it.
+	Target string
 }
 
 // Same reports whether two refs denote the same pane running the same process

@@ -75,7 +75,23 @@ func (h *Host) listPanes(ctx context.Context) ([]term.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return codec.parse(string(out))
+	sessions, err := codec.parse(string(out))
+	if err != nil || !h.psmux {
+		return sessions, err
+	}
+	// psmux numbers panes per session: address each one through its session.
+	for i := range sessions {
+		for j := range sessions[i].Panes {
+			p := &sessions[i].Panes[j]
+			p.Ref.Target = psmuxPaneTarget(sessions[i].Name, p.Window, p.Index)
+		}
+	}
+	return sessions, nil
+}
+
+// psmuxPaneTarget addresses a pane of psmux by session, window and pane index.
+func psmuxPaneTarget(session string, window, index int) string {
+	return exactSession(session) + strconv.Itoa(window) + "." + strconv.Itoa(index)
 }
 
 // parse parses the output of list-panes -a -F c.format(). Every row ends with

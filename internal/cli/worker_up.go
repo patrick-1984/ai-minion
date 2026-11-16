@@ -186,6 +186,7 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 		}
 		res.File = file
 	}
+	offerPsmux(cmd, res, defaultPsmuxOfferDeps())
 	return sd.firstRun(cmd, res, "", "")
 }
 

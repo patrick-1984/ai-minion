@@ -29,8 +29,11 @@ func init() {
 
 // coreDeps are the seams of the core module that tests replace.
 type coreDeps struct {
-	openStore  func(ctx context.Context, stateDir string) (*store.Store, error)
-	newHost    func(socket string) (term.SessionHost, error)
+	openStore func(ctx context.Context, stateDir string) (*store.Store, error)
+	newHost   func(socket string) (term.SessionHost, error)
+	// hostSpec turns the settings into the argument of newHost (the tmux
+	// socket; on Windows psmux or ConPTY). Nil means the tmux socket.
+	hostSpec   func(Settings) (string, error)
 	classifier Classifier
 }
 
@@ -38,6 +41,7 @@ func defaultCoreDeps() coreDeps {
 	return coreDeps{
 		openStore:  func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) },
 		newHost:    newSessionHost,
+		hostSpec:   sessionHostSpec,
 		classifier: agentdetect.New(),
 	}
 }
@@ -66,7 +70,13 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 		}
 	}()
 
-	host, err := d.newHost(s.TmuxSocket)
+	spec := s.TmuxSocket
+	if d.hostSpec != nil {
+		if spec, err = d.hostSpec(s); err != nil {
+			return nil, fmt.Errorf("choose the terminal host: %w", err)
+		}
+	}
+	host, err := d.newHost(spec)
 	if err != nil {
 		return nil, fmt.Errorf("start the terminal host: %w", err)
 	}
