@@ -39,6 +39,9 @@ merged image.
 
 ## Flashing
 
+Release assets (GitHub prerelease `thin-v*`): `minion-thin_<version>_<chip>_factory-0x0.bin` is the merged image
+for the first install, `minion-thin_<version>_<chip>_app-0x10000.bin` the app image for updates.
+
 **First install:** write the merged image at `0x0`, with `esptool.py` or a web flasher:
 
 ```sh
