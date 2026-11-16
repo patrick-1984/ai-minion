@@ -71,8 +71,12 @@ func TestSessionControlOnTheRealHub(t *testing.T) {
 	if r := op("alice", ops.OpSessionControlSet, set); r.code != 403 {
 		t.Fatalf("set by the Worker's owner = %d %s, want 403", r.code, r.body)
 	}
-	if r := op("root", ops.OpSessionControlSet, set); r.code != 200 {
-		t.Fatalf("set by the admin = %d %s", r.code, r.body)
+	// v0.9.0: the admin makes the grant in Minion control.
+	if r := op("root", ops.OpSessionControlSet, set); r.code != 409 {
+		t.Fatalf("set with targets by the admin = %d %s, want 409 (replaced by Minion control)", r.code, r.body)
+	}
+	if err := ah.st.PutSessionControl(ctx, store.SessionControlRow{WorkerID: w.ID, SessionName: "boss", TargetsJSON: `[{"kind":"everything"}]`, CreatedBy: alice, CreatedAt: 1}); err != nil {
+		t.Fatal(err)
 	}
 	r := op("root", ops.OpSessionControlList, map[string]any{})
 	var res ops.SessionControlListResult

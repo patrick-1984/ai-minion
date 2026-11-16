@@ -55,6 +55,7 @@ type ControlListResult struct {
 
 // ControlSetWorkerArgs change the switches of one Worker; absent members stay.
 type ControlSetWorkerArgs struct {
+	WriteArgs
 	WorkerID    string `json:"worker_id"`
 	UserManaged *bool  `json:"user_managed,omitempty"`
 	AcceptAll   *bool  `json:"accept_all,omitempty"`
@@ -62,6 +63,7 @@ type ControlSetWorkerArgs struct {
 
 // ControlSetMasterArgs nominate (master true) or end a master session.
 type ControlSetMasterArgs struct {
+	WriteArgs
 	WorkerID    string `json:"worker_id"`
 	SessionName string `json:"session_name"`
 	Master      bool   `json:"master"`
@@ -70,14 +72,13 @@ type ControlSetMasterArgs struct {
 // ControlSetAcceptArgs let the target Worker accept (or stop accepting)
 // control from the source Worker.
 type ControlSetAcceptArgs struct {
+	WriteArgs
 	WorkerID       string `json:"worker_id"` // the target Worker
 	SourceWorkerID string `json:"source_worker_id"`
 	Accept         bool   `json:"accept"`
-}
-
-// ControlSetResult is the Worker's state after a change.
-type ControlSetResult struct {
-	Worker ControlWorker `json:"worker"`
+	// Sessions limits the acceptance to these sessions of the target; absent
+	// (null) means all its shared sessions. An empty list is refused.
+	Sessions *[]string `json:"sessions,omitempty"`
 }
 
 // ControlCheckArgs ask who may control one session.
@@ -101,20 +102,28 @@ type ControlCheckResult struct {
 	Note string `json:"note,omitempty"`
 }
 
+// guardControlOwner is KEEP: a change is stored only while the Workers it
+// names still have the owners it was decided for (a removal or reassignment
+// in between is never undone).
+var guardControlOwner = Guard{Name: "control_owner_unchanged", Class: GuardKeep, Reads: "worker.owner"}
+
 func init() {
 	manage := MustActionSet(ActionManage)
 	Register(Op{Name: OpControlList, Summary: "List every Worker's Minion control: user-managed, which Workers it accepts control from, its master sessions (admin only).",
 		Scope: ScopeHub, Actions: manage,
 		Args: reflect.TypeFor[ControlListArgs](), Result: reflect.TypeFor[ControlListResult]()})
+	// The setters are writes: the dispatcher audits each one (also when it is
+	// refused) with the changed Worker as target, and a request id makes a
+	// repeat safe.
 	Register(Op{Name: OpControlSetWorker, Summary: "Set whether people and API keys control a Worker (user-managed) and whether it accepts control from all Workers (admin only).",
-		Scope: ScopeHub, Actions: manage, Mutates: true,
-		Args: reflect.TypeFor[ControlSetWorkerArgs](), Result: reflect.TypeFor[ControlSetResult]()})
+		Scope: ScopeHub, Actions: manage, Write: true, Guards: []Guard{guardWorkerKnown, guardControlOwner},
+		Args: reflect.TypeFor[ControlSetWorkerArgs](), Result: reflect.TypeFor[WriteResult]()})
 	Register(Op{Name: OpControlSetMaster, Summary: "Nominate a session as a master session on its Worker, or make it a slave session again (admin only).",
-		Scope: ScopeHub, Actions: manage, Mutates: true,
-		Args: reflect.TypeFor[ControlSetMasterArgs](), Result: reflect.TypeFor[ControlSetResult]()})
-	Register(Op{Name: OpControlSetAccept, Summary: "Let a Worker accept control from another Worker's master sessions, or stop it (admin only).",
-		Scope: ScopeHub, Actions: manage, Mutates: true,
-		Args: reflect.TypeFor[ControlSetAcceptArgs](), Result: reflect.TypeFor[ControlSetResult]()})
+		Scope: ScopeHub, Actions: manage, Write: true, Guards: []Guard{guardWorkerKnown, guardControlOwner},
+		Args: reflect.TypeFor[ControlSetMasterArgs](), Result: reflect.TypeFor[WriteResult]()})
+	Register(Op{Name: OpControlSetAccept, Summary: "Let a Worker accept control from another Worker's master sessions (optionally only some sessions), or stop it (admin only).",
+		Scope: ScopeHub, Actions: manage, Write: true, Guards: []Guard{guardWorkerKnown, guardControlOwner},
+		Args: reflect.TypeFor[ControlSetAcceptArgs](), Result: reflect.TypeFor[WriteResult]()})
 	Register(Op{Name: OpControlCheck, Summary: "Explain which master sessions may control a session, or why none can (admin only).",
 		Scope: ScopeHub, Actions: manage,
 		Args: reflect.TypeFor[ControlCheckArgs](), Result: reflect.TypeFor[ControlCheckResult]()})

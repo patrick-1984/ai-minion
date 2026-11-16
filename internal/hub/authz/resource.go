@@ -72,6 +72,9 @@ func (notWired) WorkerOwner(context.Context, string) (string, error) {
 type ports struct {
 	users   UserLookup
 	workers WorkerLookup
+	// userManaged reports whether people and API keys may act on a Worker's
+	// sessions (Minion control); nil means always.
+	userManaged func(ctx context.Context, workerID string) (bool, error)
 }
 
 // ResourceKind is the type of a resource.

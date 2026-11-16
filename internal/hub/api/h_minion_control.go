@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -20,7 +22,10 @@ import (
 // ControlWorkerBase is what the Minion control handlers know of a Worker.
 type ControlWorkerBase struct {
 	ID, Name, Owner string
-	Online          bool
+	// OwnerID is the owning user's id: a change is stored only while the
+	// Worker still has this owner.
+	OwnerID string
+	Online  bool
 	// CanBeMaster is false for a Worker that cannot originate control calls.
 	CanBeMaster bool
 }
@@ -28,13 +33,13 @@ type ControlWorkerBase struct {
 // MinionControlStore is what the handlers need; *store.Store implements it.
 type MinionControlStore interface {
 	ListMasterSessions(ctx context.Context) ([]store.MasterRow, error)
-	PutMasterSession(ctx context.Context, m store.MasterRow) error
+	PutMasterSessionIfOwner(ctx context.Context, m store.MasterRow, owner string) error
 	DeleteMasterSession(ctx context.Context, workerID, session string) (bool, error)
 	ListAccepts(ctx context.Context) ([]store.AcceptRow, error)
-	PutAccept(ctx context.Context, a store.AcceptRow) error
+	PutAcceptIfOwners(ctx context.Context, a store.AcceptRow, targetOwner, sourceOwner string) error
 	DeleteAccept(ctx context.Context, target, source string) (bool, error)
 	ListWorkerControl(ctx context.Context) (map[string]store.WorkerControlRow, error)
-	SetWorkerControl(ctx context.Context, workerID string, userManaged, acceptAll *bool) error
+	SetWorkerControlIfOwner(ctx context.Context, workerID, owner string, userManaged, acceptAll *bool) error
 	SessionControl(ctx context.Context, workerID, sessionName string) (store.SessionControlRow, error)
 }
 
@@ -45,12 +50,14 @@ func RegisterMinionControl(r *Registry, st MinionControlStore, workers func(cont
 	if st == nil || workers == nil {
 		return errors.New("api: the Minion control handlers need a store and the Workers")
 	}
-	h := controlHandlers{st: st, workers: workers}
+	h := controlHandlers{st: st, workers: workers,
+		pinW: newOwnerPins[ops.ControlSetWorkerArgs](), pinM: newOwnerPins[ops.ControlSetMasterArgs](), pinA: newOwnerPins[ops.ControlSetAcceptArgs]()}
+	// The setters are decided (and audited) on the Worker they change.
 	for _, reg := range []error{
 		HandleTyped(r, ops.OpControlList, h.list),
-		HandleTyped(r, ops.OpControlSetWorker, h.setWorker),
-		HandleTyped(r, ops.OpControlSetMaster, h.setMaster),
-		HandleTyped(r, ops.OpControlSetAccept, h.setAccept),
+		HandleTyped(r, ops.OpControlSetWorker, h.setWorker, WithResource(h.resource)),
+		HandleTyped(r, ops.OpControlSetMaster, h.setMaster, WithResource(h.resource)),
+		HandleTyped(r, ops.OpControlSetAccept, h.setAccept, WithResource(h.resource)),
 		HandleTyped(r, ops.OpControlCheck, h.check),
 	} {
 		if reg != nil {
@@ -63,6 +70,11 @@ func RegisterMinionControl(r *Registry, st MinionControlStore, workers func(cont
 type controlHandlers struct {
 	st      MinionControlStore
 	workers func(context.Context) ([]ControlWorkerBase, error)
+	// The owners each setter was decided for, captured with the decision
+	// (resource) and checked again in the store's write transaction.
+	pinW *ownerPins[ops.ControlSetWorkerArgs]
+	pinM *ownerPins[ops.ControlSetMasterArgs]
+	pinA *ownerPins[ops.ControlSetAcceptArgs]
 }
 
 func (h controlHandlers) state(ctx context.Context) ([]ops.ControlWorker, map[string]ControlWorkerBase, error) {
@@ -109,23 +121,24 @@ func (h controlHandlers) state(ctx context.Context) ([]ops.ControlWorker, map[st
 	return out, byID, nil
 }
 
-func (h controlHandlers) list(ctx context.Context, _ *Call, _ ops.ControlListArgs) (ops.ControlListResult, error) {
+func (h controlHandlers) list(ctx context.Context, c *Call, _ ops.ControlListArgs) (ops.ControlListResult, error) {
+	// The list covers every Worker: an API key limited to some resources
+	// may not read it.
+	if err := requireHubWideScope(c.Principal); err != nil {
+		return ops.ControlListResult{}, err
+	}
 	ws, _, err := h.state(ctx)
 	return ops.ControlListResult{Workers: ws}, err
 }
 
-// one returns the state of one known Worker, or not_found.
-func (h controlHandlers) one(ctx context.Context, id string) (ops.ControlSetResult, error) {
-	ws, _, err := h.state(ctx)
-	if err != nil {
-		return ops.ControlSetResult{}, err
+func ownerErr(err error) error {
+	switch {
+	case errors.Is(err, store.ErrWorkerOwnerChanged):
+		return NewError(proto.CodeConflict, "the Worker changed owner meanwhile; reload and decide again")
+	case errors.Is(err, store.ErrWorkerNotFound):
+		return NewError(proto.CodeNotFound, "no such Worker")
 	}
-	for _, w := range ws {
-		if w.WorkerID == id {
-			return ops.ControlSetResult{Worker: w}, nil
-		}
-	}
-	return ops.ControlSetResult{}, NewError(proto.CodeNotFound, "no such Worker")
+	return err
 }
 
 func (h controlHandlers) known(ctx context.Context, ids ...string) (map[string]ControlWorkerBase, error) {
@@ -145,63 +158,158 @@ func (h controlHandlers) known(ctx context.Context, ids ...string) (map[string]C
 	return m, nil
 }
 
-func (h controlHandlers) setWorker(ctx context.Context, _ *Call, a ops.ControlSetWorkerArgs) (ops.ControlSetResult, error) {
-	if _, err := h.known(ctx, a.WorkerID); err != nil {
-		return ops.ControlSetResult{}, err
+func (h controlHandlers) setWorker(ctx context.Context, c *Call, a ops.ControlSetWorkerArgs) (ops.WriteResult, error) {
+	var owners []string
+	var err error
+	if p, ok := c.Args.(*ops.ControlSetWorkerArgs); ok {
+		owners, err = pinned(h.pinW.take(p))
+	} else {
+		owners, err = pinned("", false)
 	}
-	if err := h.st.SetWorkerControl(ctx, a.WorkerID, a.UserManaged, a.AcceptAll); err != nil {
-		return ops.ControlSetResult{}, err
+	if err != nil {
+		return ops.WriteResult{}, err
 	}
-	return h.one(ctx, a.WorkerID)
+	if err := h.st.SetWorkerControlIfOwner(ctx, a.WorkerID, owners[0], a.UserManaged, a.AcceptAll); err != nil {
+		return ops.WriteResult{}, ownerErr(err)
+	}
+	return delivered(), nil
 }
 
-func (h controlHandlers) setMaster(ctx context.Context, c *Call, a ops.ControlSetMasterArgs) (ops.ControlSetResult, error) {
+func (h controlHandlers) setMaster(ctx context.Context, c *Call, a ops.ControlSetMasterArgs) (ops.WriteResult, error) {
 	m, err := h.known(ctx, a.WorkerID)
 	if err != nil {
-		return ops.ControlSetResult{}, err
+		return ops.WriteResult{}, err
 	}
 	if a.SessionName == "" || !ops.ValidSessionName(a.SessionName) {
-		return ops.ControlSetResult{}, NewError(proto.CodeInvalidArgument, "session_name is not a valid session name")
+		return ops.WriteResult{}, NewError(proto.CodeInvalidArgument, "session_name is not a valid session name")
+	}
+	var owners []string
+	if p, ok := c.Args.(*ops.ControlSetMasterArgs); ok {
+		owners, err = pinned(h.pinM.take(p))
+	} else {
+		owners, err = pinned("", false)
+	}
+	if err != nil {
+		return ops.WriteResult{}, err
 	}
 	if a.Master {
 		if !m[a.WorkerID].CanBeMaster {
-			return ops.ControlSetResult{}, NewError(proto.CodeConflict, "this Worker cannot control others (a thin Worker or one older than 0.8.0)")
+			return ops.WriteResult{}, NewError(proto.CodeConflict, "this Worker cannot control others (a thin Worker or one older than 0.8.0)")
 		}
-		err = h.st.PutMasterSession(ctx, store.MasterRow{WorkerID: a.WorkerID, SessionName: a.SessionName,
-			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()})
+		err = h.st.PutMasterSessionIfOwner(ctx, store.MasterRow{WorkerID: a.WorkerID, SessionName: a.SessionName,
+			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()}, owners[0])
 	} else {
 		_, err = h.st.DeleteMasterSession(ctx, a.WorkerID, a.SessionName)
 	}
 	if err != nil {
-		return ops.ControlSetResult{}, err
+		return ops.WriteResult{}, ownerErr(err)
 	}
-	return h.one(ctx, a.WorkerID)
+	return delivered(), nil
 }
 
-func (h controlHandlers) setAccept(ctx context.Context, c *Call, a ops.ControlSetAcceptArgs) (ops.ControlSetResult, error) {
-	if _, err := h.known(ctx, a.WorkerID, a.SourceWorkerID); err != nil {
-		return ops.ControlSetResult{}, err
+func (h controlHandlers) setAccept(ctx context.Context, c *Call, a ops.ControlSetAcceptArgs) (ops.WriteResult, error) {
+	m, err := h.known(ctx, a.WorkerID, a.SourceWorkerID)
+	if err != nil {
+		return ops.WriteResult{}, err
 	}
 	if a.WorkerID == a.SourceWorkerID {
-		return ops.ControlSetResult{}, NewError(proto.CodeInvalidArgument, "a Worker does not accept control from itself")
+		return ops.WriteResult{}, NewError(proto.CodeInvalidArgument, "a Worker does not accept control from itself")
 	}
-	var err error
+	var sessions []string
+	if a.Sessions != nil {
+		if len(*a.Sessions) == 0 {
+			return ops.WriteResult{}, NewError(proto.CodeInvalidArgument, "sessions is empty: leave it out for all shared sessions")
+		}
+		for _, n := range *a.Sessions {
+			if !ops.ValidSessionName(n) {
+				return ops.WriteResult{}, NewError(proto.CodeInvalidArgument, "sessions names an invalid session")
+			}
+		}
+		sessions = append([]string{}, *a.Sessions...)
+	}
+	var owners []string
+	if p, ok := c.Args.(*ops.ControlSetAcceptArgs); ok {
+		owners, err = pinned(h.pinA.take(p))
+	} else {
+		owners, err = pinned("", false)
+	}
+	if err != nil {
+		return ops.WriteResult{}, err
+	}
+	_ = m
 	if a.Accept {
-		err = h.st.PutAccept(ctx, store.AcceptRow{TargetWorkerID: a.WorkerID, SourceWorkerID: a.SourceWorkerID,
-			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()})
+		err = h.st.PutAcceptIfOwners(ctx, store.AcceptRow{TargetWorkerID: a.WorkerID, SourceWorkerID: a.SourceWorkerID,
+			Sessions: sessions, CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()},
+			owners[0], owners[1])
 	} else {
 		_, err = h.st.DeleteAccept(ctx, a.WorkerID, a.SourceWorkerID)
 	}
 	if err != nil {
-		return ops.ControlSetResult{}, err
+		return ops.WriteResult{}, ownerErr(err)
 	}
-	return h.one(ctx, a.WorkerID)
+	return delivered(), nil
+}
+
+// workerArgResource decides a setter on the Worker it changes (the dispatcher
+// audits it with that Worker as target).
+// resource decides a setter on the Worker it changes (the dispatcher audits
+// it with that Worker as target) and pins the owners of the Workers it names
+// at decision time.
+func (h controlHandlers) resource(_ authz.Principal, args any) (authz.Resource, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), trustCaptureTimeout)
+	defer cancel()
+	owner := func(id string) string {
+		base, err := h.workers(ctx)
+		if err != nil {
+			return ""
+		}
+		for _, b := range base {
+			if b.ID == id {
+				return b.OwnerID
+			}
+		}
+		return ""
+	}
+	var id string
+	switch a := args.(type) {
+	case *ops.ControlSetWorkerArgs:
+		id = a.WorkerID
+		h.pinW.put(a, owner(id))
+	case *ops.ControlSetMasterArgs:
+		id = a.WorkerID
+		h.pinM.put(a, owner(id))
+	case *ops.ControlSetAcceptArgs:
+		id = a.WorkerID
+		h.pinA.put(a, owner(id)+"\x00"+owner(a.SourceWorkerID))
+	}
+	if id == "" {
+		return nil, NewError(proto.CodeInvalidArgument, "worker_id is required")
+	}
+	return authz.WorkerResource{ID: id}, nil
+}
+
+// pinned returns the owners captured with the decision; a Worker unknown then
+// fails closed.
+func pinned(owners string, ok bool) ([]string, error) {
+	parts := strings.Split(owners, "\x00")
+	if !ok {
+		return nil, NewError(proto.CodeNotFound, "not found")
+	}
+	for _, p := range parts {
+		if p == "" {
+			return nil, NewError(proto.CodeNotFound, "not found")
+		}
+	}
+	return parts, nil
 }
 
 // check lists the master sessions whose computed grant reaches the session.
 // The owner limit and the target's sharing still apply at call time; they
 // are named in the note.
-func (h controlHandlers) check(ctx context.Context, _ *Call, a ops.ControlCheckArgs) (ops.ControlCheckResult, error) {
+func (h controlHandlers) check(ctx context.Context, c *Call, a ops.ControlCheckArgs) (ops.ControlCheckResult, error) {
+	if err := requireHubWideScope(c.Principal); err != nil {
+		return ops.ControlCheckResult{}, err
+	}
 	m, err := h.known(ctx, a.WorkerID)
 	if err != nil {
 		return ops.ControlCheckResult{}, err

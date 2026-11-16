@@ -32,7 +32,11 @@ func Filter[T any](ctx context.Context, a *Authorizer, p Principal, items []T, r
 			}
 			return nil, fmt.Errorf("authz: resolve resource: %w", err)
 		}
-		if read.Permits(sub.actions(resolved)...) {
+		h, err := held(ctx, sub, resolved, pt)
+		if err != nil {
+			return nil, err
+		}
+		if read.Permits(h...) {
 			out = append(out, it)
 		}
 	}

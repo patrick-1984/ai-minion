@@ -20,11 +20,12 @@ import (
 // both exist: [NewUnwired] starts with fail-closed placeholders and the two
 // Set methods wire the real ports, once each.
 type Authorizer struct {
-	mu         sync.RWMutex
-	users      UserLookup
-	workers    WorkerLookup
-	usersSet   bool
-	workersSet bool
+	mu          sync.RWMutex
+	users       UserLookup
+	workers     WorkerLookup
+	userManaged func(ctx context.Context, workerID string) (bool, error)
+	usersSet    bool
+	workersSet  bool
 
 	now func() time.Time
 }
@@ -92,11 +93,39 @@ func (a *Authorizer) SetWorkerLookup(l WorkerLookup) error {
 	return nil
 }
 
+// SetUserManagedLookup wires the user-managed switch of Minion control
+// (v0.9.0): on a Worker that is not user-managed, people and API keys hold no
+// action on its sessions (every path: decisions, effective actions, lists,
+// live delivery and rechecks). A Worker principal is not affected.
+func (a *Authorizer) SetUserManagedLookup(f func(ctx context.Context, workerID string) (bool, error)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.userManaged = f
+}
+
 // ports returns the lookups to use for one call.
 func (a *Authorizer) ports() ports {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return ports{users: a.users, workers: a.workers}
+	return ports{users: a.users, workers: a.workers, userManaged: a.userManaged}
+}
+
+// held is sub.actions(res) with the user-managed switch applied: a person or
+// an API key holds nothing on a session of a Worker that is not user-managed.
+// A failed lookup is an error (fail closed).
+func held(ctx context.Context, sub subject, res ResolvedResource, pt ports) (ops.ActionSet, error) {
+	acts := sub.actions(res)
+	if len(acts) == 0 || sub.p.Kind == KindWorker || res.Kind != ResourceSession || pt.userManaged == nil {
+		return acts, nil
+	}
+	ok, err := pt.userManaged(ctx, res.WorkerID)
+	if err != nil {
+		return nil, fmt.Errorf("authz: read the user-managed switch: %w", err)
+	}
+	if !ok {
+		return ops.ActionSet{}, nil
+	}
+	return acts, nil
 }
 
 // allActions is what an admin holds on every resource.
@@ -129,11 +158,14 @@ func (a *Authorizer) Decide(ctx context.Context, p Principal, accepted ops.Actio
 	if err != nil {
 		return mapLookupErr(err)
 	}
-	held := sub.actions(resolved)
-	if accepted.Permits(held...) {
+	h, err := held(ctx, sub, resolved, pt)
+	if err != nil {
+		return err
+	}
+	if accepted.Permits(h...) {
 		return nil
 	}
-	if len(held) == 0 {
+	if len(h) == 0 {
 		return proto.NewError(proto.CodeNotFound, "not found")
 	}
 	return proto.NewError(proto.CodeForbidden, "not allowed")
@@ -165,7 +197,7 @@ func (a *Authorizer) EffectiveActions(ctx context.Context, p Principal, res Reso
 		}
 		return nil, fmt.Errorf("authz: resolve resource: %w", err)
 	}
-	return sub.actions(resolved), nil
+	return held(ctx, sub, resolved, pt)
 }
 
 // GrantedByScope reports whether the session-control grant of p (a Worker

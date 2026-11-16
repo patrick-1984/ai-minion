@@ -28,6 +28,7 @@ Control is one-directional: B's master sessions do not reach A unless A accepts 
 - **Workers**: one row per Worker. **User-managed** is a checkbox. **Accepts control from** has **All Workers** and a filterable list of the other Workers. **Master sessions** lists the nominations; **Add a master session** offers the session names the Hub sees on that Worker and a field for any name. Thin Workers and Workers older than 0.8.0 cannot be masters.
 - **Matrix**: rows are the Workers that have master sessions, columns all Workers; a tick means "the column accepts control from the row". Use it for an overview of many Workers; the filter at the top narrows rows.
 - **Who can control this session?**: pick a Worker and a session name to see the master sessions that reach it, or why none does.
+- Every change is recorded in the audit log with the changed Worker; a change that was decided before the Worker was removed or given to another owner is refused.
 
 Every click is saved at once and answered with the row as the Hub now has it, with **Undo**. If the answer is lost, the page reloads what was saved instead of guessing.
 
@@ -43,4 +44,4 @@ The session name is taken from the terminal the request comes from: anyone who c
 
 ## Upgrade from session control
 
-The Hub migrates every 0.8 grant: its controller session becomes a master session that keeps its exact old targets as a limit (shown as **limited**), and every target Worker accepts control from the controller's Worker. Nothing reaches more or less than before. Ticking the master session again in the new screen removes the old limit. `session_control_set` keeps working and writes the same way; `session_control_list` shows what master sessions reach now.
+The Hub migrates every 0.8 grant: its controller session becomes a master session that keeps its exact old targets as a limit (shown as **limited**), and every target Worker accepts control from the controller's Worker. Nothing reaches more or less than before. Ticking the master session again in the new screen removes the old limit. `session_control_set` with targets is refused with a pointer to this page (it could widen other master sessions of the same Worker); without targets it still ends a master session. `session_control_list` shows what master sessions reach now.

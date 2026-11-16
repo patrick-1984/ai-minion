@@ -200,16 +200,26 @@ func TestSessionControlE2EGrantFromAControllerSessionAcrossWorkers(t *testing.T)
 		}
 		return res.Grants
 	}
+	// v0.9.0: the grant is made in Minion control: W1:boss becomes a master
+	// session, W2 accepts W1 (all its shared sessions) and W3 accepts W1 for
+	// build only. set(nil) ends the master session.
+	control := func(op string, b map[string]any) {
+		t.Helper()
+		b["request_id"] = ops.NewUUIDv7()
+		code, body := ph.do("POST", "/api/v1/ops/"+op, b, ph.admin)
+		if code != 200 || !strings.Contains(body, string(ops.OutcomeDelivered)) {
+			t.Fatalf("%s = %d %s", op, code, body)
+		}
+	}
 	set := func(targets []map[string]any) {
 		t.Helper()
-		b := map[string]any{"request_id": ops.NewUUIDv7(), "worker_id": w1.wid, "session_name": "boss"}
-		if targets != nil {
-			b["targets"] = targets
+		if targets == nil {
+			control(ops.OpControlSetMaster, map[string]any{"worker_id": w1.wid, "session_name": "boss", "master": false})
+			return
 		}
-		code, body := ph.do("POST", "/api/v1/ops/"+ops.OpSessionControlSet, b, ph.admin)
-		if code != 200 || !strings.Contains(body, string(ops.OutcomeDelivered)) {
-			t.Fatalf("session_control_set = %d %s", code, body)
-		}
+		control(ops.OpControlSetMaster, map[string]any{"worker_id": w1.wid, "session_name": "boss", "master": true})
+		control(ops.OpControlSetAccept, map[string]any{"worker_id": w2.wid, "source_worker_id": w1.wid, "accept": true})
+		control(ops.OpControlSetAccept, map[string]any{"worker_id": w3.wid, "source_worker_id": w1.wid, "accept": true, "sessions": []string{"build"}})
 	}
 	// refused runs the CLI from session and wants it refused with the error code want.
 	refused := func(session, want string, args ...string) {

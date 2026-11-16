@@ -199,27 +199,108 @@ func (s *Store) ListWorkerControl(ctx context.Context) (map[string]WorkerControl
 	return out, rows.Err()
 }
 
-// SetWorkerControl changes the user-managed and accept-all switches of a Worker
-// (nil leaves one as it is).
+// SetWorkerControl changes the user-managed and accept-all switches of a
+// Worker; nil leaves one as it is. One statement updates only the given
+// columns, so two concurrent changes of different switches both hold.
 func (s *Store) SetWorkerControl(ctx context.Context, workerID string, userManaged, acceptAll *bool) error {
-	cur, err := s.WorkerControl(ctx, workerID)
-	if err != nil {
-		return err
+	return setWorkerControl(ctx, s.db, workerID, userManaged, acceptAll)
+}
+
+func optInt(b *bool) any {
+	if b == nil {
+		return nil
 	}
-	if userManaged != nil {
-		cur.UserManaged = *userManaged
-	}
-	if acceptAll != nil {
-		cur.AcceptAll = *acceptAll
-	}
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO worker_control (worker_id, user_managed, accept_all) VALUES (?, ?, ?)
-		 ON CONFLICT (worker_id) DO UPDATE SET user_managed = excluded.user_managed, accept_all = excluded.accept_all`,
-		workerID, boolInt(cur.UserManaged), boolInt(cur.AcceptAll))
+	return boolInt(*b)
+}
+
+func setWorkerControl(ctx context.Context, ex Execer, workerID string, userManaged, acceptAll *bool) error {
+	um, all := optInt(userManaged), optInt(acceptAll)
+	_, err := ex.ExecContext(ctx,
+		`INSERT INTO worker_control (worker_id, user_managed, accept_all) VALUES (?1, COALESCE(?2, 1), COALESCE(?3, 0))
+		 ON CONFLICT (worker_id) DO UPDATE SET user_managed = COALESCE(?2, user_managed), accept_all = COALESCE(?3, accept_all)`,
+		workerID, um, all)
 	if err != nil {
 		return fmt.Errorf("store: set worker control: %w", err)
 	}
 	return nil
+}
+
+// checkOwners verifies, inside tx, that each Worker still has the owner the
+// change was decided for: a removal or reassignment in between (which deletes
+// the Worker's rows) must not be undone by a change in flight.
+func checkOwners(ctx context.Context, tx *sql.Tx, owners map[string]string) error {
+	for id, want := range owners {
+		var owner string
+		if err := rowErr("read worker owner", tx.QueryRowContext(ctx, `SELECT owner_id FROM workers WHERE id = ?`, id).Scan(&owner)); err != nil {
+			return err
+		}
+		if owner != want {
+			return ErrWorkerOwnerChanged
+		}
+	}
+	return nil
+}
+
+// SetWorkerControlIfOwner is [Store.SetWorkerControl] while the Worker still
+// has owner.
+func (s *Store) SetWorkerControlIfOwner(ctx context.Context, workerID, owner string, userManaged, acceptAll *bool) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := checkOwners(ctx, tx, map[string]string{workerID: owner}); err != nil {
+			return err
+		}
+		return setWorkerControl(ctx, tx, workerID, userManaged, acceptAll)
+	})
+}
+
+// PutMasterSessionIfOwner is [Store.PutMasterSession] while the Worker still
+// has owner. It keeps a migrated legacy limit unless clearLegacy.
+func (s *Store) PutMasterSessionIfOwner(ctx context.Context, m MasterRow, owner string) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := checkOwners(ctx, tx, map[string]string{m.WorkerID: owner}); err != nil {
+			return err
+		}
+		var legacy any
+		if m.LegacyTargetsJSON != "" {
+			legacy = m.LegacyTargetsJSON
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO master_session (worker_id, session_name, legacy_targets_json, created_by, created_at) VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT (worker_id, session_name) DO UPDATE SET legacy_targets_json = excluded.legacy_targets_json, created_by = excluded.created_by, created_at = excluded.created_at`,
+			m.WorkerID, m.SessionName, legacy, m.CreatedBy, m.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("store: put master session: %w", err)
+		}
+		return nil
+	})
+}
+
+// PutAcceptIfOwners is [Store.PutAccept] while both Workers still have the
+// owners the change was decided for.
+func (s *Store) PutAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwner, sourceOwner string) error {
+	if a.TargetWorkerID == "" || a.SourceWorkerID == "" || a.TargetWorkerID == a.SourceWorkerID {
+		return errors.New("store: an acceptance needs two different Workers")
+	}
+	var sess any
+	if a.Sessions != nil {
+		b, err := json.Marshal(a.Sessions)
+		if err != nil {
+			return err
+		}
+		sess = string(b)
+	}
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := checkOwners(ctx, tx, map[string]string{a.TargetWorkerID: targetOwner, a.SourceWorkerID: sourceOwner}); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at) VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by, created_at = excluded.created_at`,
+			a.TargetWorkerID, a.SourceWorkerID, sess, a.CreatedBy, a.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("store: put acceptance: %w", err)
+		}
+		return nil
+	})
 }
 
 // controlResource is one target of a computed grant, in the JSON shape of an

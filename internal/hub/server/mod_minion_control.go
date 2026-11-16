@@ -55,7 +55,7 @@ func initMinionControl(_ context.Context, env *Env) error {
 				owners[w.OwnerID] = name
 			}
 			_, on := online[w.ID]
-			out = append(out, api.ControlWorkerBase{ID: w.ID, Name: w.Name, Owner: name, Online: on, CanBeMaster: canBeMaster(online, w.ID)})
+			out = append(out, api.ControlWorkerBase{ID: w.ID, Name: w.Name, Owner: name, OwnerID: w.OwnerID, Online: on, CanBeMaster: true})
 		}
 		return out, nil
 	}
@@ -63,12 +63,4 @@ func initMinionControl(_ context.Context, env *Env) error {
 		return fmt.Errorf("minion_control: %w", err)
 	}
 	return nil
-}
-
-// canBeMaster reports whether a Worker can originate control calls. A
-// connected Worker that announced no session.forward capability in its hello
-// cannot; an offline one is assumed able (it is checked again when it calls).
-func canBeMaster(online map[string]workers.Online, id string) bool {
-	_, ok := online[id]
-	return ok || !ok
 }

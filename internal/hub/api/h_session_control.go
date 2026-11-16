@@ -112,6 +112,12 @@ func (h sessionControlHandlers) set(ctx context.Context, c *Call, a ops.SessionC
 	if err := requireHubWideScope(c.Principal); err != nil {
 		return ops.WriteResult{}, err
 	}
+	if len(a.Targets) > 0 {
+		// v0.9.0: a grant with targets would also need acceptances, which can
+		// widen other master sessions of the Worker; it is made in Minion
+		// control. Removing a grant (no targets) still works.
+		return ops.WriteResult{}, NewError(proto.CodeConflict, "session_control_set is replaced by Minion control: use control_set_master and control_set_accept (Access > Minion control)")
+	}
 	if len(a.Targets) == 0 {
 		if _, err := h.st.DeleteSessionControl(ctx, a.WorkerID, a.SessionName); err != nil {
 			return ops.WriteResult{}, err

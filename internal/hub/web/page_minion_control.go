@@ -149,11 +149,12 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		saved string
 	)
 	on := f.Get("value") == "on"
+	wa := newWriteArgs()
 	flip := map[bool]string{true: "off", false: "on"}[on]
 	switch action {
 	case "user-managed", "accept-all":
 		row = f.Get("worker_id")
-		a := ops.ControlSetWorkerArgs{WorkerID: row}
+		a := ops.ControlSetWorkerArgs{WriteArgs: wa, WorkerID: row}
 		if action == "user-managed" {
 			a.UserManaged = &on
 			saved = map[bool]string{true: "People and API keys control this Worker.", false: "Only master sessions control this Worker now."}[on]
@@ -166,21 +167,29 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	case "master":
 		row = f.Get("worker_id")
 		name := f.Get("session_name")
-		op, args = ops.OpControlSetMaster, ops.ControlSetMasterArgs{WorkerID: row, SessionName: name, Master: on}
+		op, args = ops.OpControlSetMaster, ops.ControlSetMasterArgs{WriteArgs: wa, WorkerID: row, SessionName: name, Master: on}
 		saved = map[bool]string{true: name + " is a master session.", false: name + " is a slave session again."}[on]
 		undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "session_name": name, "value": flip}}
+		if !on && f.Get("legacy") == "1" {
+			// Re-adding would drop the migrated limit: no one-click undo.
+			undo = nil
+			saved += " Adding it again makes it a master without its old limit."
+		}
 	case "accept":
 		row = f.Get("worker_id")
 		src := f.Get("source_worker_id")
-		op, args = ops.OpControlSetAccept, ops.ControlSetAcceptArgs{WorkerID: row, SourceWorkerID: src, Accept: on}
+		op, args = ops.OpControlSetAccept, ops.ControlSetAcceptArgs{WriteArgs: wa, WorkerID: row, SourceWorkerID: src, Accept: on}
 		saved = map[bool]string{true: "Accepts control from that Worker.", false: "No longer accepts control from that Worker."}[on]
 		undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "value": flip}}
 	default:
 		http.NotFound(w, r)
 		return
 	}
-	var res ops.ControlSetResult
+	var res ops.WriteResult
 	callErr := c.CallOp(r, op, args, &res)
+	// The matrix and other rows read the same rows: ask the page to refresh
+	// them from the Hub (minion-control.js).
+	w.Header().Set("HX-Trigger", "control-changed")
 	// Answer with the row as the Hub has it now, whatever happened.
 	var list ops.ControlListResult
 	if err := c.CallOp(r, ops.OpControlList, ops.ControlListArgs{}, &list); err != nil {

@@ -29,6 +29,9 @@ func TestMinionControlOnTheRealHub(t *testing.T) {
 	}
 	boss, target := mk("boss-box"), mk("ci")
 	op := func(user, name string, args map[string]any) apiResp {
+		if name != ops.OpControlList && name != ops.OpControlCheck {
+			args["request_id"] = ops.NewUUIDv7()
+		}
 		tok, csrf := ah.login(t, user)
 		return ah.call(t, "POST", "/api/v1/ops/"+name, args, asSession(tok, csrf))
 	}

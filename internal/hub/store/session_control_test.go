@@ -242,3 +242,19 @@ func TestPutSessionControlIfOwnerStoresOnlyUnderTheOwnerItWasDecidedFor(t *testi
 		t.Error("accepted an empty owner")
 	}
 }
+
+// Changing one switch never rewrites the other (two autosaves in a row).
+func TestSetWorkerControlChangesOnlyTheGivenSwitch(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	off, on := false, true
+	if err := s.SetWorkerControl(ctx, "w1", &off, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetWorkerControl(ctx, "w1", nil, &on); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := s.WorkerControl(ctx, "w1"); c.UserManaged || !c.AcceptAll {
+		t.Fatalf("= %+v, want user-managed off and accept-all on", c)
+	}
+}

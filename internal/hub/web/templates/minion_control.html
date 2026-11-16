@@ -18,7 +18,7 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
     <tbody>{{range .Data.Rows}}{{template "control_row" .}}{{end}}</tbody>
   </table></div>{{else}}<p class="muted">There is no Worker yet.</p>{{end}}
 </section>
-<section class="panel" aria-labelledby="ctl-matrix-h">
+<section class="panel" aria-labelledby="ctl-matrix-h" id="ctl-matrix" hx-get="/access/control" hx-select="#ctl-matrix" hx-swap="outerHTML" hx-trigger="control-changed from:body">
   <h2 id="ctl-matrix-h">Matrix</h2>
   {{if .Data.Sources}}<p class="help">Rows: Workers with master sessions. Columns: the Workers they may control. A tick means the column's Worker accepts control from the row's Worker.</p>
   <div class="matrix-wrap"><table class="control-matrix">
@@ -53,7 +53,7 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
     </details>{{end}}
   </td>
   <td data-label="Master sessions">{{$row := .}}
-    {{if .Masters}}<ul class="control-masters">{{range .Masters}}<li><form hx-post="/access/control/master" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="session_name" value="{{.SessionName}}"><label><input type="checkbox" name="value" value="on" checked> {{.SessionName}}</label>{{if .Legacy}} <span class="badge plain" title="Migrated from session control: its old targets still limit it">limited</span>{{end}}</form></li>{{end}}</ul>{{else}}<span class="muted">none (all slave sessions)</span>{{end}}
+    {{if .Masters}}<ul class="control-masters">{{range .Masters}}<li><form hx-post="/access/control/master" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="session_name" value="{{.SessionName}}">{{if .Legacy}}<input type="hidden" name="legacy" value="1">{{end}}<label><input type="checkbox" name="value" value="on" checked> {{.SessionName}}</label>{{if .Legacy}} <span class="badge plain" title="Migrated from session control: its old targets still limit it">limited</span>{{end}}</form></li>{{end}}</ul>{{else}}<span class="muted">none (all slave sessions)</span>{{end}}
     {{if .CanBeMaster}}<details class="control-pick"><summary>Add a master session</summary>
       {{if .Known}}<ul>{{range .Known}}<li><form hx-post="/access/control/master" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="session_name" value="{{.}}"><label><input type="checkbox" name="value" value="on"> {{.}}</label></form></li>{{end}}</ul>{{end}}
       <form hx-post="/access/control/master" hx-target="#ctl-{{.WorkerID}}" hx-swap="outerHTML" class="add-master"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><input type="hidden" name="value" value="on"><input type="text" name="session_name" placeholder="session name" required spellcheck="false" autocomplete="off" aria-label="Session name"> <button type="submit" class="btn btn-secondary">Add</button></form>
