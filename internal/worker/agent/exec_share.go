@@ -130,6 +130,9 @@ func (e *Executor) shareSet(ctx context.Context, rq Request) (any, error) {
 	if e.policy.ShareLocked() {
 		return nil, apiErr(proto.CodeForbidden, "", "the share selection of this Worker is locked locally (share_lock)")
 	}
+	if args.Mode == ops.ShareModeSelect && e.policy.AllOrNone() {
+		return nil, apiErr(proto.CodeInvalidArgument, "", "this Worker hosts its sessions with psmux (experimental): share all sessions or none")
+	}
 	committer, ok := e.policy.share.(ShareCommitter)
 	if !ok {
 		return nil, apiErr(proto.CodeForbidden, "", "this Worker cannot save a share selection")

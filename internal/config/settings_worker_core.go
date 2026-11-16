@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -55,10 +54,11 @@ func declareWorkerCore(r *Registry) {
 	r.Declare(Setting{
 		Key:   KeyWindowsSessionHost,
 		Scope: ScopeWorker,
-		Help: "Windows only: session host of the Worker: auto (psmux when psmux.exe is on PATH, else ConPTY), " +
-			"psmux (tmux-compatible server; sessions survive a Worker restart) or conpty (sessions live inside the Worker)",
-		Default: WindowsHostAuto,
-		Choices: []string{WindowsHostAuto, WindowsHostPsmux, WindowsHostConPTY},
+		Help: "Windows only: session host of the Worker: conpty (default; sessions live inside the Worker) or " +
+			"psmux (experimental: the tmux-compatible psmux 3.4.0 or later from PATH; sessions survive a Worker " +
+			"restart; sharing is all sessions or none)",
+		Default: WindowsHostConPTY,
+		Choices: []string{WindowsHostConPTY, WindowsHostPsmux},
 	})
 	r.Declare(Setting{
 		Key:         KeyName,
@@ -243,37 +243,36 @@ func shortWorkerName(host string) string {
 
 // Values of windows_session_host.
 const (
-	WindowsHostAuto   = "auto"
 	WindowsHostPsmux  = "psmux"
 	WindowsHostConPTY = "conpty"
 )
 
 // windowsSocket returns the psmux socket a Windows Worker uses, or "" for
-// ConPTY. conpty always means ConPTY; psmux always means psmux; auto means
-// psmux when psmux.exe is on PATH. The socket is the configured tmux_socket,
-// else the default server of psmux (<PSMUX_DATA_DIR or ~\.psmux>\default),
-// which is the one "psmux attach" and "tmux ls" of the same user reach.
-func windowsSocket(mode, configured string, p PathEnv, lookPath func(string) (string, error)) string {
-	switch mode {
-	case WindowsHostConPTY:
-		return ""
-	case WindowsHostAuto:
-		if _, err := lookPath("psmux"); err != nil {
-			return ""
-		}
+// ConPTY. The socket is the configured tmux_socket, else the default server
+// of psmux (<PSMUX_DATA_DIR or the user profile\.psmux>\default), the one
+// "psmux attach" of the same user reaches. psmux without a resolvable profile
+// is an error, never a silent switch to ConPTY.
+func windowsSocket(mode, configured string, p PathEnv) (string, error) {
+	if mode != WindowsHostPsmux {
+		return "", nil
 	}
 	if configured != "" {
-		return configured
+		return configured, nil
 	}
 	dir := p.Getenv("PSMUX_DATA_DIR")
 	if dir == "" {
-		home, err := p.HomeDir()
-		if err != nil || home == "" {
-			return ""
+		home := p.Getenv("USERPROFILE")
+		if home == "" {
+			if h, err := p.HomeDir(); err == nil {
+				home = h
+			}
+		}
+		if home == "" {
+			return "", fmt.Errorf("setting %q is psmux, but the user profile directory is unknown: set PSMUX_DATA_DIR or %q", KeyWindowsSessionHost, KeyTmuxSocket)
 		}
 		dir = filepath.Join(home, ".psmux")
 	}
-	return filepath.Join(dir, "default")
+	return filepath.Join(dir, "default"), nil
 }
 
 // TmuxSocket returns the socket a tmux client without -S and -L uses when it
@@ -359,7 +358,9 @@ func ResolveWorkerCore(res *Resolver) (WorkerCore, error) {
 			return wc, err
 		}
 		wc.WindowsSessionHost = hostSel.Value
-		wc.TmuxSocket = windowsSocket(hostSel.Value, wc.TmuxSocket, SystemPathEnv(), exec.LookPath)
+		if wc.TmuxSocket, err = windowsSocket(hostSel.Value, wc.TmuxSocket, SystemPathEnv()); err != nil {
+			return wc, err
+		}
 	}
 
 	name, err := get(KeyName)

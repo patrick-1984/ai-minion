@@ -190,3 +190,27 @@ func names(list []term.Session) string {
 	}
 	return strings.Join(out, ", ")
 }
+
+// Evidence for the all-or-none sharing rule: psmux numbers panes per session,
+// so a pane id resolved in one session may address a pane of another. The
+// Worker therefore shares all sessions or none on psmux. This test reports
+// what this psmux does; it fails only when the adapter itself breaks.
+func TestPsmuxPaneIDsAcrossSessions(t *testing.T) {
+	h, _, _ := psmuxHost(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	for _, n := range []string{"spike", "keep"} {
+		if _, err := h.CreateSession(ctx, n, "", nil); err != nil {
+			t.Fatalf("CreateSession %s: %v", n, err)
+		}
+	}
+	a, err := h.ResolvePane(ctx, ops.Target{SessionName: "spike"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := h.ResolvePane(ctx, ops.Target{SessionName: "keep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("pane of spike: %+v; pane of keep: %+v; same id: %v", a, b, a.ID == b.ID)
+}

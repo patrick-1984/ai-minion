@@ -41,7 +41,18 @@ type Policy struct {
 	workerID       atomic.Pointer[string]
 	ownerID        atomic.Pointer[string]
 	pipeAccept     atomic.Pointer[config.PipeAcceptFrom]
+	// allOrNone is set for a session host whose pane ids are not unique
+	// across sessions (psmux): a selection of single sessions is then
+	// treated as none, so that an unshared session can never be reached
+	// through a shared one.
+	allOrNone atomic.Bool
 }
+
+// SetAllOrNone limits sharing to all sessions or none (see allOrNone).
+func (p *Policy) SetAllOrNone(on bool) { p.allOrNone.Store(on) }
+
+// AllOrNone reports whether sharing is limited to all sessions or none.
+func (p *Policy) AllOrNone() bool { return p.allOrNone.Load() }
 
 // NewPolicy returns a Policy that reads the share selection from share. A nil
 // share shares nothing.
@@ -93,7 +104,11 @@ func (p *Policy) Selection(ctx context.Context) (store.ShareSelection, error) {
 	if p.share == nil {
 		return store.ShareSelection{Mode: store.ShareNone}, nil
 	}
-	return p.share.LoadShareContext(ctx)
+	sel, err := p.share.LoadShareContext(ctx)
+	if err == nil && p.allOrNone.Load() && sel.Mode == store.ShareSelect {
+		return store.ShareSelection{Mode: store.ShareNone, Sessions: []string{}, Configured: sel.Configured}, nil
+	}
+	return sel, err
 }
 
 // State returns the current share selection together with its revision. A

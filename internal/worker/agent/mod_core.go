@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
+	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
 )
 
 // Module names and start orders. A later module (the local socket, the Hub
@@ -67,12 +69,6 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	}()
 
 	host, err := d.newHost(s.TmuxSocket)
-	if err != nil && s.WindowsSessionHost == config.WindowsHostAuto && s.TmuxSocket != "" {
-		// auto picked psmux, but it does not start (too old, broken
-		// install): fall back to ConPTY instead of not starting at all.
-		log.Warn("psmux was found but cannot host the sessions; using ConPTY", "error", err)
-		host, err = d.newHost("")
-	}
 	if err != nil {
 		return nil, fmt.Errorf("start the terminal host: %w", err)
 	}
@@ -87,6 +83,8 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 		return nil, err
 	}
 	policy := NewPolicy(st)
+	// psmux (Windows, experimental) numbers panes per session: share all or none.
+	policy.SetAllOrNone(runtime.GOOS == "windows" && hostIsTmux(host))
 	policy.SetPreviewOnly(s.PreviewOnly)
 	policy.SetShareLock(s.ShareLock)
 	policy.SetPipeAcceptFrom(s.PipeAcceptFrom)
@@ -182,4 +180,10 @@ func shareModeOf(value string) (store.ShareMode, error) {
 		return store.ShareLater, nil
 	}
 	return "", errors.New("share_existing must be all, none or later, got " + value)
+}
+
+// hostIsTmux reports whether host is the tmux adapter (on Windows: psmux).
+func hostIsTmux(host term.SessionHost) bool {
+	_, ok := host.(*tmux.Host)
+	return ok
 }

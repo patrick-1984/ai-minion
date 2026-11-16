@@ -36,5 +36,14 @@ func newSessionHost(socket string) (term.SessionHost, error) {
 	if err := version.CheckTrustedExecutable(bin); err != nil {
 		return nil, fmt.Errorf("psmux at %s is not trusted for this account: %w", bin, err)
 	}
-	return tmux.New(socket, tmux.WithBinary(bin))
+	h, err := tmux.New(socket, tmux.WithBinary(bin))
+	if err != nil {
+		return nil, err
+	}
+	// Older psmux releases ignore -S and would drive the user's default
+	// server instead of the private one (3.4.0 keys the namespace by path).
+	if !h.Version().AtLeast(3, 4) {
+		return nil, fmt.Errorf("psmux %s is too old; psmux 3.4.0 or later is required", h.Version())
+	}
+	return h, nil
 }

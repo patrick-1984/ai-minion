@@ -47,6 +47,28 @@ Instead of the code, an invitation key from the Hub (**Invitations**) enrolls th
 
 To install it as a Windows service instead, pair first (run the command above until the Worker is paired, or `minion worker pair`), then run the same `worker up` command from an elevated terminal without `--foreground`. The service uses the state directory of the user who installs it, so it keeps that pairing. The command prints a note about the LocalSystem account when it installs the service. The service starts at boot and is restarted five seconds after a failure; the command line reaches it over a named pipe that only the installing user and the system may open.
 
+
+## Experimental: psmux sessions that survive a restart
+
+By default the Windows Worker hosts sessions with ConPTY inside its own process, so they end when the Worker
+stops, restarts or updates. With [psmux](https://github.com/psmux/psmux) 3.4.0 or later (a tmux-compatible server
+for Windows, `choco install psmux` or `scoop install psmux`) on PATH you can switch to it:
+
+```powershell
+minion worker config set windows_session_host psmux
+```
+
+The sessions then belong to the psmux server, survive a Worker restart, and you can attach to them yourself with
+`psmux attach`. This is a preview with known limits:
+
+- **Sharing is all sessions or none.** psmux numbers panes per session, so the Worker cannot keep one session
+  hidden while another is shared; a selection of single sessions shares nothing on psmux.
+- psmux must come from a folder that only you (and administrators) can change; a Worker service (LocalSystem)
+  refuses a psmux that another account could replace and does not start.
+- Keep `PSMUX_DATA_DIR` (default `%USERPROFILE%\.psmux`) private: its key files give access to the sessions.
+- Creating a session with a program instead of the shell, and turn extraction for the pipe, are not supported yet.
+- The Windows CI runs the Minion tmux adapter against psmux 3.4.0 on every change.
+
 ## Check and reset
 
 ```powershell
