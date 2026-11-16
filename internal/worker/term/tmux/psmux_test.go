@@ -155,7 +155,7 @@ func TestPsmuxRefusesSeparatorsAndSessionIDs(t *testing.T) {
 	if PsmuxNameOK("$0") || PsmuxNameOK("a;b") {
 		t.Error("$0 or a;b accepted")
 	}
-	if _, err := h.CreateSession(ctx, "work", "", []string{"python.exe", "-c", "x", ";", "kill-server"}); !errors.Is(err, ops.ErrInvalidArgument) {
+	if _, err := h.CreateSession(ctx, "work", "", []string{"python.exe", "-c", "x", ";", "list-sessions"}); !errors.Is(err, ops.ErrInvalidArgument) {
 		t.Errorf("a ';' argument was accepted: %v", err)
 	}
 	if err := h.SetOption(ctx, "work", "@minion_task", "fix;"); !errors.Is(err, ops.ErrInvalidArgument) {
@@ -166,7 +166,7 @@ func TestPsmuxRefusesSeparatorsAndSessionIDs(t *testing.T) {
 		t.Errorf("a ';' key was accepted: %v", err)
 	}
 	for _, c := range f.calls {
-		if contains(c, "kill-server") || contains(c, "new-session") {
+		if contains(c, "list-sessions") || contains(c, "new-session") {
 			t.Fatalf("ran %v", c)
 		}
 	}
