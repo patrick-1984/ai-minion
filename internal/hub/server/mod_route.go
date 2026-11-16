@@ -85,6 +85,13 @@ func initRoute(ctx context.Context, env *Env) error {
 			return fmt.Errorf("route: %w", err)
 		}
 	}
+	// Central Worker update (v0.9.0): admin-only ops routed like the others
+	// (the dispatcher decides the action manage on the named Worker).
+	for _, name := range []string{ops.OpWorkerUpdate, ops.OpWorkerUpdateStatus} {
+		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
+			return fmt.Errorf("route: %w", err)
+		}
+	}
 	// The same router resolves the human form of a target (pi-1:minion-3)
 	// for the authenticated caller, on every Worker op.
 	if err := api.RegisterTargetResolution(handlers, rt); err != nil {

@@ -252,7 +252,9 @@ func (u *Updater) Run(ctx context.Context, o Options) (Result, error) {
 	u.logf("installing %s", rel.Tag)
 	// binSum is the digest of the bytes extracted from the verified archive.
 	// The copy that is installed is hashed again and must equal it.
-	if err := ReplaceBinary(o.ExecPath, filepath.Join(u.Cache.EntryDir(rel.Tag), BinaryName(o.GOOS)), o.GOOS, binSum); err != nil {
+	if err := installLocked(o, v, func() error {
+		return ReplaceBinary(o.ExecPath, filepath.Join(u.Cache.EntryDir(rel.Tag), BinaryName(o.GOOS)), o.GOOS, binSum)
+	}); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -324,7 +326,7 @@ func (u *Updater) runOffline(ctx context.Context, o Options) (Result, error) {
 			return res, err
 		}
 		u.logf("installing cached %s", tag)
-		if err := ReplaceBinary(o.ExecPath, bin, o.GOOS, binSum); err != nil {
+		if err := installLocked(o, v, func() error { return ReplaceBinary(o.ExecPath, bin, o.GOOS, binSum) }); err != nil {
 			return res, err
 		}
 		return res, nil

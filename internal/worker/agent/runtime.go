@@ -345,6 +345,11 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 		// The cleanup must run although ctx may be cancelled already.
 		return errors.Join(err, rt.stopAll(context.WithoutCancel(ctx)))
 	}
+	// The update crash guard runs first, before any hook or module: a new
+	// release that fails anywhere in its start is rolled back from here.
+	if rolled := RecoverUpdate(s.logger(), s.StateDir); rolled != nil {
+		lastRollback.Store(rolled)
+	}
 	if err := rt.reg.RunPreStart(ctx, s); err != nil {
 		return fail(err)
 	}

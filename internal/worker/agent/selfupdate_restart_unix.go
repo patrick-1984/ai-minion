@@ -30,3 +30,7 @@ func restartProcess(log *slog.Logger, exe string) {
 	log.Error("cannot restart the Worker with the new binary; start it again by hand", "error", err.Error())
 	os.Exit(1)
 }
+
+// waitForParent is only needed on Windows: elsewhere the process replaces
+// itself in place (syscall.Exec).
+func waitForParent() {}

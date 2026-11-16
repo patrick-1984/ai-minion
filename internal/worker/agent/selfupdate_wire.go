@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -42,17 +43,14 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 	block := updateBlock(exe, resolve(config.KeyRemoteUpdate, "on"), os.Getenv, fileExists)
 
 	u := &selfUpdate{log: log, stateDir: s.StateDir, exe: exe, block: block, now: time.Now,
-		restart: func() { restartProcess(log, exe) }}
-	if exe != "" && s.StateDir != "" {
-		rolled, restart := guardOnStart(log, s.StateDir, exe, version.Version, time.Now())
-		if restart {
-			restartProcess(log, exe)
-		}
-		if rolled != nil {
-			u.setState(ops.UpdateStateRolledBack, rolled.To, rolled.From,
-				"the new release did not start; the previous binary was restored")
-			log.Warn("an update was rolled back to this release", "failed", rolled.To, "running", version.Version)
-		}
+		restart:      func() { restartProcess(log, exe) },
+		workerID:     ex.Policy().WorkerID,
+		holdSessions: ex.SetSessionCreateHold,
+	}
+	if rolled := lastRollback.Swap(nil); rolled != nil {
+		u.setState(ops.UpdateStateRolledBack, rolled.To, rolled.From,
+			"the new release did not start; the previous binary was restored")
+		log.Warn("an update was rolled back to this release", "failed", rolled.To, "running", version.Version)
 	}
 	apiURL := resolve(config.KeyUpdateAPIURL, version.DefaultAPIURL)
 	cacheDir := resolve(config.KeyUpdateCacheDir, filepath.Join(os.TempDir(), "minion-update"))
@@ -92,6 +90,10 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 	}
 	return u, facts, features
 }
+
+// lastRollback is the rollback RecoverUpdate found at this start, reported by
+// worker_update_status.
+var lastRollback atomic.Pointer[pendingRecord]
 
 // connectorHubRange is the protocol range of the connected Hub, for the
 // updater's compatibility check; nil while not connected.

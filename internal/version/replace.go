@@ -151,7 +151,13 @@ func ReplaceBinary(target, newBinary, goos, wantSHA256 string) error {
 	// still installs, only that rollback is not possible.
 	old := real + ".old"
 	_ = os.Remove(old)
-	_ = os.Link(real, old)
+	if err := os.Link(real, old); err != nil {
+		// No hard links here (some file systems): a copy keeps the rollback.
+		if err := copyFile(real, old, info.Mode().Perm()); err != nil {
+			_ = os.Remove(old)
+			return fmt.Errorf("cannot keep the previous executable for a rollback, nothing was installed: %w", err)
+		}
+	}
 	if err := os.Rename(tmpName, real); err != nil {
 		_ = os.Remove(old)
 		return replaceError(real, err)
@@ -165,4 +171,22 @@ func replaceError(target string, err error) error {
 		return fmt.Errorf("cannot replace %s: permission denied (run minion update with the rights that installed it, for example sudo): %w", target, err)
 	}
 	return fmt.Errorf("cannot replace %s: %w", target, err)
+}
+
+// copyFile copies src to a new file dst with mode perm.
+func copyFile(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }

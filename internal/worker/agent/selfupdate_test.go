@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
@@ -40,19 +41,32 @@ func withVersion(t *testing.T, v string) {
 func newTestUpdate(t *testing.T, inst *fakeInstaller) (*selfUpdate, chan struct{}) {
 	t.Helper()
 	restarted := make(chan struct{}, 1)
+	rng := &version.ProtoRange{Min: version.ProtoVersion{Major: 3}, Max: version.ProtoVersion{Major: 3}}
 	u := &selfUpdate{
 		log: slog.New(slog.NewTextHandler(&logBuf{}, nil)), stateDir: t.TempDir(), exe: "/x/minion", now: time.Now,
-		installer: func() (releaseInstaller, error) { return inst, nil },
-		hubRange:  func() *version.ProtoRange { return nil },
-		restart:   func() { restarted <- struct{}{} },
+		installer:    func() (releaseInstaller, error) { return inst, nil },
+		hubRange:     func() *version.ProtoRange { return rng },
+		restart:      func() { restarted <- struct{}{} },
+		workerID:     func() string { return "w-self" },
+		holdSessions: func(string) {},
 	}
 	return u, restarted
 }
 
+// updateRequest is how the op server hands over a Hub request: the origin is
+// set and the Hub computed the caller's actions.
+func updateRequest(op string, args any) Request {
+	raw, _ := json.Marshal(args)
+	return Request{Op: op, Args: raw, Actions: []ops.Action{ops.ActionManage},
+		Origin: &proto.Origin{Kind: proto.OriginUser, UserID: "admin"}}
+}
+
 func callUpdate(t *testing.T, u *selfUpdate, args ops.WorkerUpdateArgs) (ops.WorkerUpdateResult, error) {
 	t.Helper()
-	raw, _ := json.Marshal(args)
-	res, err := u.handleUpdate(context.Background(), Request{Op: ops.OpWorkerUpdate, Args: raw})
+	if args.WorkerID == "" {
+		args.WorkerID = "w-self"
+	}
+	res, err := u.handleUpdate(context.Background(), updateRequest(ops.OpWorkerUpdate, args))
 	if err != nil {
 		return ops.WorkerUpdateResult{}, err
 	}
@@ -124,7 +138,7 @@ func TestWorkerUpdateInstallsVerifiesAndRestarts(t *testing.T) {
 		t.Fatal("no restart")
 	}
 	o := inst.opts[0]
-	if o.AllowDowngrade || o.Selector.IsChannel() || o.Current != "v0.9.0" || o.ExecPath != "/x/minion" {
+	if o.AllowDowngrade || o.Selector.IsChannel() || o.Current != "v0.9.0" || o.ExecPath != "/x/minion" || o.HubRange == nil {
 		t.Errorf("updater options %+v", o)
 	}
 	if st := u.status(); st.State != ops.UpdateStateRestarting || st.To != "v0.9.1" {
@@ -172,13 +186,13 @@ func TestCrashGuardRestoresThePreviousBinary(t *testing.T) {
 	if err := writePending(dir, pendingRecord{From: "v0.9.0", To: "v0.9.1", At: now}); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < guardMaxStarts-1; i++ {
+	for i := 0; i < guardMaxStarts; i++ {
 		if _, restart := guardOnStart(log, dir, exe, "v0.9.1", now.Add(time.Duration(i)*time.Second)); restart {
-			t.Fatalf("restart after start %d", i+1)
+			t.Fatalf("rolled back on start %d, before %d failed starts", i+1, guardMaxStarts)
 		}
 	}
 	if _, restart := guardOnStart(log, dir, exe, "v0.9.1", now.Add(5*time.Second)); !restart {
-		t.Fatal("no rollback on the third start")
+		t.Fatalf("no rollback after %d failed starts", guardMaxStarts)
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "old" {
 		t.Fatalf("exe = %q, want the previous binary", b)
@@ -239,5 +253,101 @@ func TestUpdateBlockReasons(t *testing.T) {
 	}
 	if got := updateBlock(exe, "on", env(nil), noFile); got != "" {
 		t.Errorf("own writable dir: %q", got)
+	}
+}
+
+// Only the Hub reaches the update: the local socket (no origin), a request
+// for another Worker, a caller without manage, and a Worker without a Hub
+// connection are refused before anything runs.
+func TestWorkerUpdateIsHubOnlyAndForThisWorker(t *testing.T) {
+	withVersion(t, "v0.9.0")
+	inst := &fakeInstaller{}
+	u, _ := newTestUpdate(t, inst)
+	args := ops.WorkerUpdateArgs{WorkerID: "w-self", Version: "v0.9.1"}
+	local := updateRequest(ops.OpWorkerUpdate, args)
+	local.Origin = nil
+	if _, err := u.handleUpdate(context.Background(), local); err == nil {
+		t.Error("a local request reached the update")
+	}
+	other := updateRequest(ops.OpWorkerUpdate, ops.WorkerUpdateArgs{WorkerID: "w-other", Version: "v0.9.1"})
+	if _, err := u.handleUpdate(context.Background(), other); err == nil {
+		t.Error("a request for another Worker was accepted")
+	}
+	weak := updateRequest(ops.OpWorkerUpdate, args)
+	weak.Actions = []ops.Action{ops.ActionOperate}
+	if _, err := u.handleUpdate(context.Background(), weak); err == nil {
+		t.Error("operate was enough")
+	}
+	u.hubRange = func() *version.ProtoRange { return nil }
+	if res, _ := callUpdate(t, u, args); res.Accepted || res.Reason != "not connected to a Hub" {
+		t.Errorf("no Hub range: %+v", res)
+	}
+	if len(inst.opts) != 0 {
+		t.Fatal("the installer ran")
+	}
+}
+
+// New sessions are held from the acceptance; a refusal or failure lets them
+// be created again.
+func TestWorkerUpdateHoldsSessionCreation(t *testing.T) {
+	withVersion(t, "v0.9.0")
+	var mu sync.Mutex
+	var holds []string
+	inst := &fakeInstaller{err: errors.New("network down")}
+	u, _ := newTestUpdate(t, inst)
+	u.holdSessions = func(r string) { mu.Lock(); holds = append(holds, r); mu.Unlock() }
+	u.sessionsLost = func(context.Context) int { return 1 }
+	if res, _ := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"}); res.Accepted {
+		t.Fatal("accepted with a session to lose")
+	}
+	mu.Lock()
+	if len(holds) != 2 || holds[0] == "" || holds[1] != "" {
+		t.Fatalf("holds = %q, want hold then release", holds)
+	}
+	holds = nil
+	mu.Unlock()
+	u.sessionsLost = nil
+	if res, _ := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"}); !res.Accepted {
+		t.Fatal("not accepted")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for u.status().State != ops.UpdateStateFailed && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(holds) != 2 || holds[1] != "" {
+		t.Fatalf("holds = %q, want released after the failure", holds)
+	}
+	if _, ok := readPending(u.stateDir); ok {
+		t.Fatal("the guard of a failed install was left behind")
+	}
+}
+
+// The rollback restores the Worker database from the pre-migration backup
+// written after the update began.
+func TestRestoreStateDBUsesThePreMigrationBackup(t *testing.T) {
+	dir := t.TempDir()
+	since := time.Now().Add(-time.Minute)
+	if err := os.MkdirAll(filepath.Join(dir, "backups"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "worker.db"), []byte("migrated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "worker.db-wal"), []byte("wal"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "backups", "worker-20991231T000000.000Z.db"), []byte("old schema"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreStateDB(dir, since); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "worker.db")); string(b) != "old schema" {
+		t.Fatalf("db = %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "worker.db-wal")); err == nil {
+		t.Fatal("the WAL of the migrated database survived")
 	}
 }

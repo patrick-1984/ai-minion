@@ -23,6 +23,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // Timings of the self-update.
@@ -40,6 +41,9 @@ const (
 	guardWindow    = 10 * time.Minute
 	guardMaxStarts = 3
 )
+
+// waitPIDEnv names the process a restarted Worker waits for (Windows foreground).
+const waitPIDEnv = "MINION_UPDATE_WAIT_PID"
 
 // pendingFile is the crash-guard record in the state directory.
 const pendingFile = "update-pending.json"
@@ -70,7 +74,13 @@ type selfUpdate struct {
 	sessionsLost func(ctx context.Context) int
 	// restart ends the process so that it starts again with the new binary.
 	restart func()
-	now     func() time.Time
+	// workerID is this Worker's Hub id (Policy.WorkerID); a request must name it.
+	workerID func() string
+	// holdSessions stops (true) or allows again (false) the creation of new
+	// sessions, so that none appears between the session check and the
+	// restart (Executor.SetSessionCreateHold).
+	holdSessions func(reason string)
+	now          func() time.Time
 
 	busy atomic.Bool
 	mu   sync.Mutex
@@ -103,17 +113,36 @@ func (u *selfUpdate) status() ops.WorkerUpdateStatus {
 }
 
 func (u *selfUpdate) handleStatus(_ context.Context, rq Request) (any, error) {
-	if _, err := decode[ops.WorkerUpdateStatusArgs](rq.Args); err != nil {
+	_, args, err := prepare[ops.WorkerUpdateStatusArgs](rq)
+	if err != nil {
+		return nil, err
+	}
+	if err := u.fromHub(rq, args.WorkerID); err != nil {
 		return nil, err
 	}
 	return u.status(), nil
 }
 
+// fromHub admits only a request the Hub routed to this Worker: the local
+// socket and local MCP pass every action, so they must not reach the update.
+func (u *selfUpdate) fromHub(rq Request, workerID string) error {
+	if rq.Origin == nil {
+		return apiErr(proto.CodeForbidden, "", "the Worker update is run by an administrator through the Hub; use minion update locally")
+	}
+	if u.workerID == nil || workerID == "" || workerID != u.workerID() {
+		return apiErr(proto.CodeForbidden, "", "worker_id names another Worker")
+	}
+	return nil
+}
+
 // handleUpdate checks the request and starts the update in the background.
 // Every "no" is an answer with a reason, not an error: the Hub shows it.
 func (u *selfUpdate) handleUpdate(ctx context.Context, rq Request) (any, error) {
-	args, err := decode[ops.WorkerUpdateArgs](rq.Args)
+	_, args, err := prepare[ops.WorkerUpdateArgs](rq)
 	if err != nil {
+		return nil, err
+	}
+	if err := u.fromHub(rq, args.WorkerID); err != nil {
 		return nil, err
 	}
 	res := ops.WorkerUpdateResult{From: version.Version, To: args.Version}
@@ -138,30 +167,55 @@ func (u *selfUpdate) handleUpdate(ctx context.Context, rq Request) (any, error) 
 		}
 		return res, nil
 	}
-	if !args.Force && u.sessionsLost != nil {
-		if n := u.sessionsLost(ctx); n > 0 {
-			res.Reason = fmt.Sprintf("%d sessions would end on the restart (ConPTY); update with force to accept that", n)
-			return res, nil
-		}
+	// The protocol range of the Hub that asks, taken now: the job must never
+	// install a release this Hub cannot talk to, even if it disconnects.
+	var hub *version.ProtoRange
+	if u.hubRange != nil {
+		hub = u.hubRange()
+	}
+	if hub == nil {
+		res.Reason = "not connected to a Hub"
+		return res, nil
 	}
 	if !u.busy.CompareAndSwap(false, true) {
 		res.Reason = "an update is already running"
 		return res, nil
 	}
+	// No new session from here on; then count the ones a restart would end.
+	if u.holdSessions != nil {
+		u.holdSessions("the Worker is updating")
+	}
+	if !args.Force && u.sessionsLost != nil {
+		if n := u.sessionsLost(ctx); n > 0 {
+			u.release()
+			res.Reason = fmt.Sprintf("%d sessions would end on the restart (ConPTY); update with force to accept that", n)
+			return res, nil
+		}
+	}
 	u.setState(ops.UpdateStateDownloading, version.Version, args.Version, "")
-	go u.run(context.WithoutCancel(ctx), args.Version, args.Force)
+	go u.run(context.WithoutCancel(ctx), args.Version, hub)
 	res.Accepted = true
 	return res, nil
 }
 
-// run installs the release and restarts.
-func (u *selfUpdate) run(ctx context.Context, tag string, force bool) {
-	defer u.busy.Store(false)
+// release ends an update that did not restart: sessions may be created again.
+func (u *selfUpdate) release() {
+	if u.holdSessions != nil {
+		u.holdSessions("")
+	}
+	u.busy.Store(false)
+}
+
+// run installs the release and restarts. The crash guard is written before
+// anything is replaced; without it nothing is installed.
+func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRange) {
 	ctx, cancel := context.WithTimeout(ctx, selfUpdateTimeout)
 	defer cancel()
 	fail := func(err error) {
+		_ = os.Remove(filepath.Join(u.stateDir, pendingFile))
 		u.log.Warn("worker update failed", "to", tag, "error", err.Error())
 		u.setState(ops.UpdateStateFailed, version.Version, tag, err.Error())
+		u.release()
 	}
 	inst, err := u.installer()
 	if err != nil {
@@ -173,9 +227,9 @@ func (u *selfUpdate) run(ctx context.Context, tag string, force bool) {
 		fail(err)
 		return
 	}
-	var hub *version.ProtoRange
-	if u.hubRange != nil {
-		hub = u.hubRange()
+	if err := writePending(u.stateDir, pendingRecord{From: version.Version, To: tag, At: u.now()}); err != nil {
+		fail(fmt.Errorf("cannot write the update guard, so no rollback would be possible: %w", err))
+		return
 	}
 	r, err := inst.Run(ctx, version.Options{Selector: sel, Current: version.Version, HubRange: hub, ExecPath: u.exe})
 	if err != nil {
@@ -185,16 +239,6 @@ func (u *selfUpdate) run(ctx context.Context, tag string, force bool) {
 	if r.UpToDate {
 		fail(errors.New("already on " + r.Tag))
 		return
-	}
-	// Sessions may have appeared during the download (ConPTY): check again.
-	if !force && u.sessionsLost != nil {
-		if n := u.sessionsLost(ctx); n > 0 {
-			fail(fmt.Errorf("%d sessions appeared during the download; %s is installed and starts with the next restart", n, r.Tag))
-			return
-		}
-	}
-	if err := writePending(u.stateDir, pendingRecord{From: version.Version, To: r.Tag, At: u.now()}); err != nil {
-		u.log.Warn("cannot write the update guard; continuing without rollback", "error", err.Error())
 	}
 	u.setState(ops.UpdateStateRestarting, version.Version, r.Tag, "")
 	u.log.Info("worker updated; restarting", "from", version.Version, "to", r.Tag)
@@ -265,15 +309,17 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 		_ = os.Remove(filepath.Join(dir, pendingFile))
 		return nil, false
 	}
-	var recent []int64
+	// Each recorded start that did not commit is a failed start. Roll back
+	// when guardMaxStarts of them happened within the window; otherwise record
+	// this start and let it try.
+	var failed []int64
 	for _, s := range r.Starts {
 		if now.Sub(time.Unix(s, 0)) < guardWindow {
-			recent = append(recent, s)
+			failed = append(failed, s)
 		}
 	}
-	recent = append(recent, now.Unix())
-	r.Starts = recent
-	if len(recent) < guardMaxStarts {
+	if len(failed) < guardMaxStarts {
+		r.Starts = append(failed, now.Unix())
 		_ = writePending(dir, r)
 		return nil, false
 	}
@@ -286,6 +332,12 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 	if err := restoreOld(exe, old); err != nil {
 		log.Error("cannot restore the previous Worker binary", "error", err.Error())
 		return nil, false
+	}
+	// A migration of the new release may have changed the Worker database;
+	// the old binary refuses a newer schema. Put back the pre-migration copy
+	// the store made after the update began, if there is one.
+	if err := restoreStateDB(dir, r.At); err != nil {
+		log.Error("cannot restore the Worker database from its pre-migration backup", "error", err.Error())
 	}
 	_ = writePending(dir, r) // the restored binary finds From == running and reports the rollback
 	log.Warn("the updated Worker failed to start; restored the previous binary", "from", r.To, "to", r.From)
@@ -330,4 +382,66 @@ func commitAfter(ctx context.Context, dir, running string, connected func() bool
 			}
 		}
 	}
+}
+
+// restoreStateDB replaces the Worker database with the oldest pre-migration
+// backup written after since (<state>/backups, see internal/worker/store), and
+// removes the WAL and shared-memory files of the replaced database. Without
+// such a backup the database was not migrated and stays.
+func restoreStateDB(stateDir string, since time.Time) error {
+	dir := filepath.Join(stateDir, "backups")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var best string
+	var bestAt time.Time
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil || !info.Mode().IsRegular() || filepath.Ext(e.Name()) != ".db" || info.ModTime().Before(since) {
+			continue
+		}
+		if best == "" || info.ModTime().Before(bestAt) {
+			best, bestAt = filepath.Join(dir, e.Name()), info.ModTime()
+		}
+	}
+	if best == "" {
+		return nil
+	}
+	db := filepath.Join(stateDir, store.DBFile)
+	for _, sfx := range []string{"-wal", "-shm"} {
+		_ = os.Remove(db + sfx)
+	}
+	b, err := os.ReadFile(best)
+	if err != nil {
+		return err
+	}
+	tmp := db + ".restore"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, db)
+}
+
+// RecoverUpdate runs the crash guard at the very start of the Worker, before
+// any module, migration or setting can fail: a new release that cannot start
+// is rolled back here. It restarts the process when it restored the previous
+// binary, and returns the rolled-back record to report otherwise.
+func RecoverUpdate(log *slog.Logger, stateDir string) *pendingRecord {
+	waitForParent()
+	if stateDir == "" {
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	if real, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = real
+	}
+	rolled, restart := guardOnStart(log, stateDir, exe, version.Version, time.Now())
+	if restart {
+		restartProcess(log, exe)
+	}
+	return rolled
 }

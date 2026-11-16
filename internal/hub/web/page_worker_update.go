@@ -24,6 +24,9 @@ func WorkerUpdatePath(id string) string { return "/workers/" + url.PathEscape(id
 
 const WorkersUpdateAllPath = "/workers/update-all"
 
+// maxUpdatesPerClick bounds the Workers one "Update all outdated" starts.
+const maxUpdatesPerClick = 8
+
 // updateTarget is the release Workers are updated to: the Hub's own. A
 // development build of the Hub has none.
 func updateTarget() (string, bool) {
@@ -83,8 +86,15 @@ func handleWorkersUpdateAll(w http.ResponseWriter, r *http.Request, c OpCaller, 
 		return
 	}
 	var started, skipped []string
+	queued := 0
 	for _, wk := range list.Workers {
 		if !updatable(wk, target) {
+			continue
+		}
+		// At most maxUpdatesPerClick Workers download and restart at once;
+		// the next click updates the next ones.
+		if len(started) >= maxUpdatesPerClick {
+			queued++
 			continue
 		}
 		res, err := updateOne(r, c, wk.ID, false)
@@ -107,6 +117,9 @@ func handleWorkersUpdateAll(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	}
 	if len(skipped) > 0 {
 		msg += " Not updated: " + strings.Join(skipped, "; ") + "."
+	}
+	if queued > 0 {
+		msg += fmt.Sprintf(" %d more wait: click Update all outdated again when these show the new version.", queued)
 	}
 	done(w, r, msg, ops.WriteResult{})
 }
