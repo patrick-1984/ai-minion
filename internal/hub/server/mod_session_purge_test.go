@@ -1,7 +1,10 @@
 package server
 
 import (
+	"time"
+
 	"context"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"io"
 	"log/slog"
 	"testing"
@@ -32,16 +35,16 @@ func TestGoneSessionsLoseTheirMasterNomination(t *testing.T) {
 	}
 	p := &sessionPurger{st: st, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		sessions: fakeSessions{ws: workers.WorkerSessions{WorkerID: "wA", Online: true, Synced: false, Sessions: []workers.SessionState{{Name: "live"}}}}}
-	p.handle(ctx, workers.Event{Type: workers.EventSessionRemoved, WorkerID: "wA", Session: "boss"})
+	p.handle(ctx, workers.Event{Type: workers.EventSessionRemoved, WorkerID: "wA", Session: "boss", Time: ops.Timestamp(time.Now())})
 	if _, err := st.MasterSession(ctx, "wA", "boss"); err == nil {
 		t.Fatal("boss is still a master after it was removed")
 	}
 	// Before the snapshot of this connection nothing is purged.
-	p.handle(ctx, workers.Event{Type: workers.EventWorkerResynced, WorkerID: "wA"})
+	p.handle(ctx, workers.Event{Type: workers.EventWorkerResynced, WorkerID: "wA", Time: ops.Timestamp(time.Now())})
 	if ms, _ := st.ListMasterSessions(ctx); len(ms) != 2 {
 		t.Fatalf("purged before the snapshot: %+v", ms)
 	}
-	p.sessions = fakeSessions{ws: workers.WorkerSessions{WorkerID: "wA", Online: true, Synced: true, Sessions: []workers.SessionState{{Name: "live"}}}}
+	p.sessions = fakeSessions{ws: workers.WorkerSessions{WorkerID: "wA", Online: true, Synced: true, UpdatedAt: time.Now(), Sessions: []workers.SessionState{{Name: "live"}}}}
 	p.reconcile(ctx) // as after a missed event
 	ms, _ := st.ListMasterSessions(ctx)
 	if len(ms) != 1 || ms[0].SessionName != "live" {

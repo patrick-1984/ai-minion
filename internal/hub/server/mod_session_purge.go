@@ -106,7 +106,7 @@ func (p *sessionPurger) follow(ctx context.Context, sub *workers.Subscription) {
 func (p *sessionPurger) handle(ctx context.Context, ev workers.Event) {
 	switch ev.Type {
 	case workers.EventSessionRemoved:
-		if n, err := p.st.PurgeGoneSessions(ctx, ev.WorkerID, []string{ev.Session}); err != nil {
+		if n, err := p.st.PurgeGoneSessions(ctx, ev.WorkerID, []string{ev.Session}, asOf(ev)); err != nil {
 			p.log.Error("purge the control settings of a gone session", "worker_id", ev.WorkerID, "error", err)
 		} else if n > 0 {
 			p.log.Info("a gone session lost its control settings", "worker_id", ev.WorkerID, "session", ev.Session)
@@ -115,7 +115,7 @@ func (p *sessionPurger) handle(ctx context.Context, ev workers.Event) {
 		// The snapshot's own list: a session added after it (a new terminal
 		// under an old name) must not keep the old settings.
 		if names, ok := ev.SnapshotNames(); ok {
-			p.purgeNotIn(ctx, ev.WorkerID, names)
+			p.purgeNotIn(ctx, ev.WorkerID, names, asOf(ev))
 			return
 		}
 		p.resynced(ctx, ev.WorkerID)
@@ -144,11 +144,14 @@ func (p *sessionPurger) resynced(ctx context.Context, workerID string) {
 	for _, s := range ws.Sessions {
 		live = append(live, s.Name)
 	}
-	p.purgeNotIn(ctx, workerID, live)
+	p.purgeNotIn(ctx, workerID, live, ws.UpdatedAt.UnixMilli())
 }
 
-func (p *sessionPurger) purgeNotIn(ctx context.Context, workerID string, live []string) {
-	if n, err := p.st.PurgeSessionsNotIn(ctx, workerID, live); err != nil {
+// asOf is the time of an event's evidence in unix milliseconds.
+func asOf(ev workers.Event) int64 { return ev.Time.Time().UnixMilli() }
+
+func (p *sessionPurger) purgeNotIn(ctx context.Context, workerID string, live []string, at int64) {
+	if n, err := p.st.PurgeSessionsNotIn(ctx, workerID, live, at); err != nil {
 		p.log.Error("purge the control settings of gone sessions", "worker_id", workerID, "error", err)
 	} else if n > 0 {
 		p.log.Info("gone sessions lost their control settings", "worker_id", workerID, "rows", n)

@@ -7,6 +7,7 @@ package store
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 )
 
@@ -338,7 +339,7 @@ func TestGoneSessionsLoseTheirControlSettings(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n, err := s.PurgeGoneSessions(ctx, "wA", []string{"boss"}); err != nil || n != 3 {
+	if n, err := s.PurgeGoneSessions(ctx, "wA", []string{"boss"}, math.MaxInt64); err != nil || n != 3 {
 		t.Fatalf("purge = %d, %v", n, err)
 	}
 	ms, _ := s.ListMasterSessions(ctx)
@@ -353,7 +354,7 @@ func TestGoneSessionsLoseTheirControlSettings(t *testing.T) {
 		t.Errorf("acceptances = %+v", as)
 	}
 	// After a resync only "ci" is there: "keep" goes too.
-	if _, err := s.PurgeSessionsNotIn(ctx, "wA", []string{"ci"}); err != nil {
+	if _, err := s.PurgeSessionsNotIn(ctx, "wA", []string{"ci"}, math.MaxInt64); err != nil {
 		t.Fatal(err)
 	}
 	if ms, _ := s.ListMasterSessions(ctx); len(ms) != 0 {
@@ -376,7 +377,7 @@ func TestPurgeNeverFallsBackToAcceptAll(t *testing.T) {
 	if err := s.PutMasterSession(ctx, MasterRow{WorkerID: "wA", SessionName: "boss", CreatedBy: "u"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PurgeGoneSessions(ctx, "wB", []string{"ci"}); err != nil {
+	if _, err := s.PurgeGoneSessions(ctx, "wB", []string{"ci"}, math.MaxInt64); err != nil {
 		t.Fatal(err)
 	}
 	if g, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
@@ -396,7 +397,7 @@ func TestPurgeCleansLegacyTargets(t *testing.T) {
 	if _, err := s.SessionControl(ctx, "wA", "boss"); err != nil {
 		t.Fatalf("before: %v", err)
 	}
-	if n, err := s.PurgeGoneSessions(ctx, "wB", []string{"ci"}); err != nil || n == 0 {
+	if n, err := s.PurgeGoneSessions(ctx, "wB", []string{"ci"}, math.MaxInt64); err != nil || n == 0 {
 		t.Fatalf("purge = %d, %v", n, err)
 	}
 	if _, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
@@ -405,5 +406,31 @@ func TestPurgeCleansLegacyTargets(t *testing.T) {
 	m, _ := s.MasterSession(ctx, "wA", "boss")
 	if m.LegacyTargetsJSON != "[]" {
 		t.Errorf("legacy limit = %q", m.LegacyTargetsJSON)
+	}
+}
+
+// A purge acts on what was saved before its evidence: a nomination made after
+// the session came back (a later click) stays.
+func TestPurgeKeepsSettingsSavedAfterTheEvidence(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if err := s.PutMasterSession(ctx, MasterRow{WorkerID: "wA", SessionName: "ci", CreatedBy: "u", CreatedAt: 200}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAccept(ctx, AcceptRow{TargetWorkerID: "wA", SourceWorkerID: "wB", Sessions: []string{"ci"}, CreatedBy: "u", CreatedAt: 200}); err != nil {
+		t.Fatal(err)
+	}
+	// The snapshot without ci was applied at 100, before both were saved.
+	if n, err := s.PurgeSessionsNotIn(ctx, "wA", nil, 100); err != nil || n != 0 {
+		t.Fatalf("purge = %d, %v", n, err)
+	}
+	if n, err := s.PurgeGoneSessions(ctx, "wA", []string{"ci"}, 150); err != nil || n != 0 {
+		t.Fatalf("purge = %d, %v", n, err)
+	}
+	if ms, _ := s.ListMasterSessions(ctx); len(ms) != 1 {
+		t.Errorf("masters = %+v", ms)
+	}
+	if as, _ := s.ListAccepts(ctx); len(as) != 1 || len(as[0].Sessions) != 1 {
+		t.Errorf("acceptances = %+v", as)
 	}
 }
