@@ -103,7 +103,7 @@ func TestWorkerEnrollsWithAnInvitationKeyAtTheRealHubAndThenConnectsWithNoTLSFla
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.AlreadyEnrolled || res.Enrollment.Name != "pi" || res.Enrollment.Owner != "alice" || res.Enrollment.Kind != "private" {
+	if res.AlreadyEnrolled || res.Enrollment.Name != "alice-pi" || res.Enrollment.Owner != "alice" || res.Enrollment.Kind != "private" {
 		t.Fatalf("result = %+v", res)
 	}
 	stored, ok, err := w.enr.Load(context.Background())

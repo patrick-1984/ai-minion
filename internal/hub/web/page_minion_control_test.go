@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -83,7 +84,8 @@ func TestRemovingALimitedMasterHasNoUndo(t *testing.T) {
 // would accept every shared session. An unlimited one keeps its Undo.
 func TestRemovingALimitedAcceptanceHasNoUndo(t *testing.T) {
 	fx := controlFixture()
-	fx.Workers[1].Accepts = []ops.ControlAccept{{SourceWorkerID: "wA", Sessions: []string{"ci"}}}
+	ci := []string{"ci"}
+	fx.Workers[1].Accepts = []ops.ControlAccept{{SourceWorkerID: "wA", Sessions: &ci}}
 	f := newFakeOps().reply(ops.OpControlList, fx).reply(ops.OpControlSetAccept, ops.WriteResult{Outcome: ops.OutcomeDelivered})
 	connect(t, f)
 	rec := post(t, adminServer(t), pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}})
@@ -123,4 +125,20 @@ func TestMinionControlAllSharedSessionsAreMasters(t *testing.T) {
 	row := body[start : start+end]
 	mustHave(t, row, "No other shared session to nominate.")
 	mustNotHave(t, row, "No shared session on this Worker")
+}
+
+// An acceptance left with no session (they all ended) allows nothing; its
+// removal offers no Undo, which would re-add it for every shared session.
+func TestRemovingAnEmptyAcceptanceHasNoUndo(t *testing.T) {
+	fx := controlFixture()
+	none := []string{}
+	fx.Workers[1].Accepts = []ops.ControlAccept{{SourceWorkerID: "wA", Sessions: &none}}
+	b, _ := json.Marshal(fx.Workers[1].Accepts[0])
+	if string(b) != `{"source_worker_id":"wA","sessions":[]}` {
+		t.Fatalf("JSON = %s", b)
+	}
+	f := newFakeOps().reply(ops.OpControlList, fx).reply(ops.OpControlSetAccept, ops.WriteResult{Outcome: ops.OutcomeDelivered})
+	connect(t, f)
+	rec := post(t, adminServer(t), pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}})
+	mustNotHave(t, rec.Body.String(), ">Undo</button>")
 }

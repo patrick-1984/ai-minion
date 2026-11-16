@@ -104,6 +104,9 @@ type WorkerSessions struct {
 	Sessions []SessionState
 	// UpdatedAt is the time of the last snapshot or event.
 	UpdatedAt time.Time
+	// Synced is true once the current connection sent its snapshot: Sessions
+	// is then the Worker's own list, not one kept from an earlier connection.
+	Synced bool
 }
 
 // Event is one change published to the subscribers. Session is empty for the
@@ -121,6 +124,20 @@ type Event struct {
 	Task       *string       `json:"task,omitempty"`
 	ScreenHash string        `json:"screen_hash,omitempty"`
 	Time       ops.Timestamp `json:"time"`
+
+	// snapshot are the session names a worker_resynced event's snapshot
+	// listed (never published): consumers that act on the snapshot use them,
+	// not a later state of the Worker.
+	snapshot []string
+}
+
+// SnapshotNames are the sessions of the snapshot behind a worker_resynced
+// event, and false for any other event.
+func (e Event) SnapshotNames() ([]string, bool) {
+	if e.Type != EventWorkerResynced || e.snapshot == nil {
+		return nil, false
+	}
+	return append([]string(nil), e.snapshot...), true
 }
 
 // ErrSlowSubscriber is the reason of a subscription that was closed because
@@ -178,6 +195,7 @@ type workerState struct {
 	stream   uint64 // the event stream that owns it
 	sessions map[string]SessionState
 	updated  time.Time
+	synced   bool // the current connection sent its snapshot
 	// probe asks this connection for the share rule it has now (see
 	// [Link.SetShareProbe]); nil when the connection has no such port.
 	probe shareProber
@@ -290,7 +308,7 @@ func (h *EventHub) All() []WorkerSessions {
 }
 
 func (w *workerState) copyLocked() WorkerSessions {
-	ws := WorkerSessions{WorkerID: w.id, Name: w.name, Online: w.online, UpdatedAt: w.updated,
+	ws := WorkerSessions{WorkerID: w.id, Name: w.name, Online: w.online, UpdatedAt: w.updated, Synced: w.online && w.synced,
 		Sessions: make([]SessionState, 0, len(w.sessions))}
 	for _, s := range w.sessions {
 		ws.Sessions = append(ws.Sessions, s)
@@ -449,7 +467,7 @@ func (h *EventHub) Connect(workerID, name string) *Link {
 		w = &workerState{id: workerID, sessions: map[string]SessionState{}}
 		h.workers[workerID] = w
 	}
-	w.name, w.online, w.gen, w.stream = name, true, h.nextGen, 0
+	w.name, w.online, w.gen, w.stream, w.synced = name, true, h.nextGen, 0, false
 	w.probe = nil // the probe of the connection before belongs to a session that is gone
 	w.updated = h.now()
 	h.publishLocked(h.eventLocked(w, EventWorkerOnline, ""))
@@ -557,9 +575,14 @@ func (f *Feed) SnapshotShare(seq uint64, sessions []SessionState, share *ops.Sha
 		}
 	}
 	w.sessions = next // atomic: readers hold the same lock
-	w.updated = h.now()
+	w.updated, w.synced = h.now(), true
 	f.started, f.seq = true, 0
-	h.publishLocked(h.eventLocked(w, EventWorkerResynced, ""))
+	ev := h.eventLocked(w, EventWorkerResynced, "")
+	ev.snapshot = make([]string, 0, len(next))
+	for n := range next {
+		ev.snapshot = append(ev.snapshot, n)
+	}
+	h.publishLocked(ev)
 	return nil
 }
 

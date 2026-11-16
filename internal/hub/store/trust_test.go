@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/ops"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // kindFixture is a store with an admin and two plain users.
@@ -175,7 +178,7 @@ func TestReassignWorkerRefusalsChangeNothing(t *testing.T) {
 	f := newKindFixture(t)
 	ctx := context.Background()
 	w := f.worker(t, 1, f.u1, "pi", WorkerKindInfrastructure)
-	f.worker(t, 2, f.u2, "pi", WorkerKindPrivate) // the name is taken in u2's space
+	f.worker(t, 2, f.u2, "bob-pi", WorkerKindPrivate) // the name is taken in u2's space (names start with the owner, A20)
 	private := f.worker(t, 3, f.u1, "mine", WorkerKindPrivate)
 	if err := f.s.PutTrust(ctx, TrustRow{f.u1, w.ID, "", 1}); err != nil {
 		t.Fatal(err)
@@ -282,15 +285,16 @@ func TestRenameWorker(t *testing.T) {
 	f := newKindFixture(t)
 	ctx := context.Background()
 	a := f.worker(t, 1, f.u1, "pi", WorkerKindPrivate)
-	f.worker(t, 2, f.u1, "nuc", WorkerKindPrivate)
-	f.worker(t, 3, f.u2, "lab", WorkerKindPrivate)
-	if w, err := f.s.RenameWorker(ctx, a.ID, "lab"); err != nil || w.Name != "lab" {
+	f.worker(t, 2, f.u1, "alice-nuc", WorkerKindPrivate)
+	f.worker(t, 3, f.u2, "bob-lab", WorkerKindPrivate)
+	// Names start with the owner (A20): "lab" is stored as "alice-lab".
+	if w, err := f.s.RenameWorker(ctx, a.ID, "lab"); err != nil || w.Name != "alice-lab" {
 		t.Fatalf("rename = %+v, %v (another owner's name is free)", w, err)
 	}
 	if _, err := f.s.RenameWorker(ctx, a.ID, "nuc"); !errors.Is(err, ErrWorkerNameTaken) {
 		t.Errorf("collision: %v", err)
 	}
-	if got, _ := f.s.WorkerByID(ctx, a.ID); got.Name != "lab" {
+	if got, _ := f.s.WorkerByID(ctx, a.ID); got.Name != "alice-lab" {
 		t.Errorf("name after a refused rename = %q", got.Name)
 	}
 	if _, err := f.s.RenameWorker(ctx, a.ID, "lab"); err != nil {
@@ -338,5 +342,91 @@ func TestPutTrustIfOwnerStoresOnlyUnderTheOwnerItWasDecidedFor(t *testing.T) {
 	}
 	if err := f.s.PutTrustIfOwner(ctx, TrustRow{ReceiverID: f.u2, WorkerID: w.ID}, ""); err == nil {
 		t.Error("accepted an empty owner")
+	}
+}
+
+func TestWorkerNamesStartWithTheOwner(t *testing.T) {
+	for _, tc := range []struct{ user, name, want string }{
+		{"patrick", "asus-w11", "patrick-asus-w11"},
+		{"Patrick.Romatowski@example.com", "nuc", "patrick-romatowski-nuc"},
+		{"patrick", "patrick-nuc", "patrick-nuc"},
+		{"patrick", "Patrick", "Patrick"},
+		{"", "nuc", "nuc"},
+	} {
+		if got := StandardWorkerName(OwnerSlug(tc.user), tc.name); got != tc.want {
+			t.Errorf("%q + %q = %q, want %q", tc.user, tc.name, got, tc.want)
+		}
+	}
+	long := StandardWorkerName("alice", strings.Repeat("x", 80))
+	if len(long) != 64 {
+		t.Errorf("long name has %d bytes", len(long))
+	}
+	// The limit is in bytes, cut at a character boundary.
+	if n := StandardWorkerName(OwnerSlug("jos\u00e9"), strings.Repeat("a", 60)); len(n) > 64 || !utf8.ValidString(n) {
+		t.Errorf("jos\u00e9: %d bytes, valid=%v", len(n), utf8.ValidString(n))
+	}
+}
+
+// A reassigned Worker swaps its owner prefix.
+func TestReassignSwapsTheNamePrefix(t *testing.T) {
+	f := newKindFixture(t)
+	w := f.worker(t, 1, f.u1, "alice-edge", WorkerKindInfrastructure)
+	res, err := f.s.ReassignWorker(context.Background(), ReassignParams{WorkerID: w.ID, NewOwnerID: f.u2, AtMS: 1})
+	if err != nil || res.Worker.Name != "bob-edge" {
+		t.Fatalf("reassign = %+v, %v", res.Worker, err)
+	}
+	if got, _ := f.s.WorkerByID(context.Background(), w.ID); got.Name != "bob-edge" {
+		t.Fatalf("stored name = %q", got.Name)
+	}
+}
+
+// The upgrade renames the existing Workers once, with the same rule as new
+// names, and skips a rename that would collide.
+func TestExistingWorkerNamesGetTheOwnerPrefixOnce(t *testing.T) {
+	f := newKindFixture(t)
+	ctx := context.Background()
+	a := f.worker(t, 1, f.u1, "pi", WorkerKindPrivate)
+	b := f.worker(t, 2, f.u1, "nuc", WorkerKindPrivate)
+	f.worker(t, 3, f.u1, "alice-nuc", WorkerKindPrivate) // the prefixed name is taken
+	if _, err := f.s.DB().ExecContext(ctx, `DELETE FROM auth_meta WHERE key = ?`, workerNamesMarker); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.normalizeWorkerNames(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.s.WorkerByID(ctx, a.ID); got.Name != "alice-pi" {
+		t.Errorf("pi -> %q", got.Name)
+	}
+	if got, _ := f.s.WorkerByID(ctx, b.ID); got.Name != "nuc" {
+		t.Errorf("a colliding rename was not skipped: %q", got.Name)
+	}
+	// Once only: a later Worker named by hand keeps its name.
+	c := f.worker(t, 4, f.u1, "legacy", WorkerKindPrivate)
+	if err := f.s.normalizeWorkerNames(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.s.WorkerByID(ctx, c.ID); got.Name != "legacy" {
+		t.Errorf("ran twice: %q", got.Name)
+	}
+}
+
+// Names stay valid Worker names in every case (round 2 of A20).
+func TestWorkerNameEdgeCases(t *testing.T) {
+	for _, tc := range []struct{ user, name string }{
+		{"k", "K-pi"}, {strings.Repeat("\u023a", 20), "x"}, {"!!!", "pi"}, {"user", "--"},
+		{strings.Repeat("\u00e9", 33), "pi"}, {"jos\u00e9", strings.Repeat("a", 64)},
+	} {
+		n := StandardWorkerName(OwnerSlug(tc.user), tc.name)
+		if !ops.ValidWorkerName(n) || len(n) > 64 {
+			t.Errorf("%q + %q = %q (valid=%v, %d bytes)", tc.user, tc.name, n, ops.ValidWorkerName(n), len(n))
+		}
+	}
+	if got := RenameWorkerOwner("K-pi", "k", "bob"); got != "bob-pi" {
+		t.Errorf("K-pi from k to bob = %q", got)
+	}
+	long := strings.Repeat("\u023a", 20)
+	slug := OwnerSlug(long)
+	if got := RenameWorkerOwner(slug+"-x", slug, "bob"); got != "bob-x" || !utf8.ValidString(got) {
+		t.Errorf("unicode prefix swap = %q", got)
 	}
 }

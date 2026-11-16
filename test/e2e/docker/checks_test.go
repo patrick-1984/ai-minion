@@ -383,7 +383,7 @@ func TestHubImageAndNativeWorker(t *testing.T) {
 			return ops.WorkerInfo{}, false
 		}
 		for _, wi := range list.Workers {
-			if wi.Name == "docker-e2e" {
+			if strings.HasSuffix(wi.Name, "docker-e2e") { // names start with the owner (A20)
 				return wi, true
 			}
 		}
@@ -411,7 +411,7 @@ func TestHubImageAndNativeWorker(t *testing.T) {
 		if !pending.Pending || len(pending.Fingerprint) != 52 || pending.EnrollAddr == "" {
 			t.Fatalf("a newly enrolled Worker must be pending with its fingerprint and address: %+v", pending)
 		}
-		if !strings.Contains(w.logText(), "enrolled as docker-e2e") {
+		if !strings.Contains(w.logText(), "docker-e2e, owner") {
 			t.Fatalf("the Worker did not report its enrollment:\n%s", tail(w.logText()))
 		}
 		// F-02: until it is approved the Hub routes nothing to it.
@@ -438,7 +438,7 @@ func TestHubImageAndNativeWorker(t *testing.T) {
 			}
 			return online()
 		})
-		if n := strings.Count(w.logText(), "enrolled as docker-e2e"); n != 1 {
+		if n := strings.Count(w.logText(), "docker-e2e, owner"); n != 1 {
 			t.Fatalf("the Worker enrolled %d times; an approval must not enroll again", n)
 		}
 	})
@@ -500,7 +500,7 @@ func TestHubImageAndNativeWorker(t *testing.T) {
 			s := snapshot(session)
 			return strings.Contains(s, "docker-e2e-before-restart") && strings.Contains(s, "docker-e2e-after-restart")
 		})
-		if n := strings.Count(w.logText(), "enrolled as docker-e2e"); n != 1 {
+		if n := strings.Count(w.logText(), "docker-e2e, owner"); n != 1 {
 			t.Fatalf("the Worker enrolled %d times; a restart of the Hub must not enroll again", n)
 		}
 	})

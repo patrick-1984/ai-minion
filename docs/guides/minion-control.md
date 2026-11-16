@@ -23,6 +23,10 @@ A master session **M** on Worker **A** controls session **T** on Worker **B** on
 
 Control is one-directional: B's master sessions do not reach A unless A accepts B.
 
+## Sessions that end lose their settings (0.9.1)
+
+A session is known to the Hub by its name, and a name can come back as another terminal (a renamed tmux session, a new one under an old name). So when a session ends or stops being shared, the Hub deletes its master nomination and takes it out of every acceptance of its Worker that is limited to some sessions (an acceptance that named only gone sessions is deleted). The same happens for every session a Worker no longer lists when it connects again, also after a Hub restart. A name that comes back starts from the Worker's defaults: a slave session, accepted only where its Worker is accepted as a whole.
+
 ## The screen: Access > Minion control (administrators)
 
 - **Workers**: one row per Worker. **User-managed** is a checkbox. **Accepts control from** has **All Workers** and a filterable list of the other Workers. **Master sessions** lists the nominations; **Add a master session** offers the session names the Hub sees on that Worker and a field for any name. Thin Workers and Workers older than 0.8.0 cannot be masters.

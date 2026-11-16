@@ -233,7 +233,7 @@ def main():
                                  "--invite-file", inv, "--session", "shell=exec /bin/sh", "-v"],
                                 stdout=thin_log, stderr=subprocess.STDOUT, start_new_session=True)
         w = until("pending Worker", lambda: next((x for x in hub.op("workers_list", {"all": True})[1]["workers"]
-                                                    if x["name"] == "e2e-thin" and x.get("pending")), None))
+                                                    if x["name"].endswith("e2e-thin") and x.get("pending")), None))
         wid = w["id"]
         if os.path.exists(inv):
             fail("the invitation key file was not consumed")

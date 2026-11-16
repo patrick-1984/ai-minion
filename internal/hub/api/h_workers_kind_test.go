@@ -232,7 +232,7 @@ func TestWorkerReassignNeedsAnAdminAndAnInfrastructureWorker(t *testing.T) {
 func TestWorkerReassignNameCollisionIsConflict(t *testing.T) {
 	k := newKindStack(t)
 	infra := k.worker(k.u1, "pi", store.WorkerKindInfrastructure)
-	k.worker(k.u2, "pi", store.WorkerKindPrivate)
+	k.worker(k.u2, "bob-pi", store.WorkerKindPrivate) // names start with the owner (A20)
 	k.as(k.admin)
 	code, body := k.call(ops.OpWorkerReassign, map[string]any{"worker_id": infra.ID, "user_id": k.u2})
 	if code != 409 || kindErrCode(t, body) != proto.CodeConflict {
@@ -272,7 +272,7 @@ func TestWorkerRestrictByOwnerAndAdminButNotByAStranger(t *testing.T) {
 func TestWorkerRenameConflictAndOwnership(t *testing.T) {
 	k := newKindStack(t)
 	a := k.worker(k.u1, "pi", store.WorkerKindPrivate)
-	k.worker(k.u1, "nuc", store.WorkerKindPrivate)
+	k.worker(k.u1, "alice-nuc", store.WorkerKindPrivate) // names start with the owner (A20)
 	k.as(k.u2)
 	if code, _ := k.call(ops.OpWorkerRename, map[string]any{"worker_id": a.ID, "name": "x"}); code != 404 {
 		t.Errorf("stranger: %d", code)
@@ -287,7 +287,7 @@ func TestWorkerRenameConflictAndOwnership(t *testing.T) {
 	if code, body := k.call(ops.OpWorkerRename, map[string]any{"worker_id": a.ID, "name": "lab"}); code != 200 {
 		t.Fatalf("rename: %d %s", code, body)
 	}
-	if got, _ := k.st.WorkerByID(context.Background(), a.ID); got.Name != "lab" {
+	if got, _ := k.st.WorkerByID(context.Background(), a.ID); got.Name != "alice-lab" {
 		t.Errorf("name = %q", got.Name)
 	}
 }

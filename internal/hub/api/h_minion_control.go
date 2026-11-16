@@ -112,7 +112,12 @@ func (h controlHandlers) state(ctx context.Context) ([]ops.ControlWorker, map[st
 		}
 		for _, a := range accepts {
 			if a.TargetWorkerID == b.ID {
-				w.Accepts = append(w.Accepts, ops.ControlAccept{SourceWorkerID: a.SourceWorkerID, Sessions: a.Sessions})
+				ca := ops.ControlAccept{SourceWorkerID: a.SourceWorkerID}
+				if a.Sessions != nil {
+					names := append([]string{}, a.Sessions...)
+					ca.Sessions = &names
+				}
+				w.Accepts = append(w.Accepts, ca)
 			}
 		}
 		out = append(out, w)

@@ -211,14 +211,24 @@ func (s *Store) ReassignWorker(ctx context.Context, p ReassignParams) (ReassignR
 		if w.OwnerID == p.NewOwnerID {
 			return ErrWorkerSameOwner
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE workers SET owner_id = ? WHERE id = ?`, p.NewOwnerID, p.WorkerID); err != nil {
+		// The name follows the new owner (A20): its prefix is swapped.
+		oldSlug, err := ownerSlugOf(ctx, tx, w.OwnerID)
+		if err != nil {
+			return err
+		}
+		newSlug, err := ownerSlugOf(ctx, tx, p.NewOwnerID)
+		if err != nil {
+			return err
+		}
+		newName := RenameWorkerOwner(w.Name, oldSlug, newSlug)
+		if _, err := tx.ExecContext(ctx, `UPDATE workers SET owner_id = ?, name = ? WHERE id = ?`, p.NewOwnerID, newName, p.WorkerID); err != nil {
 			if nameCollision(err) {
 				return ErrWorkerNameTaken
 			}
 			return fmt.Errorf("store: reassign worker: %w", err)
 		}
 		res = ReassignResult{Worker: w, PreviousOwnerID: w.OwnerID}
-		res.Worker.OwnerID = p.NewOwnerID
+		res.Worker.OwnerID, res.Worker.Name = p.NewOwnerID, newName
 		if res.TrustDeleted, err = s.DeleteTrustOfWorker(ctx, tx, p.WorkerID); err != nil {
 			return err
 		}
@@ -253,6 +263,11 @@ func (s *Store) RenameWorker(ctx context.Context, workerID, name string) (Worker
 		if err := rowErr("read worker", err); err != nil {
 			return err
 		}
+		slug, err := ownerSlugOf(ctx, tx, w.OwnerID)
+		if err != nil {
+			return err
+		}
+		name = StandardWorkerName(slug, name)
 		if w.Name != name {
 			if _, err := tx.ExecContext(ctx, `UPDATE workers SET name = ? WHERE id = ?`, name, workerID); err != nil {
 				if nameCollision(err) {

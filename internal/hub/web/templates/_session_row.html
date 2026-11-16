@@ -22,7 +22,7 @@
 </tr>{{end}}
 
 {{define "session_row"}}<tr data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="s-{{.WorkerID}}-{{.Name}}" data-row-link="session">
-  <th scope="row"><a href="{{.Path}}" data-control="name" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}">{{.Name}}</a></th>
+  <th scope="row"><a href="{{.Path}}" data-control="name" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}"><span class="session-worker">{{.Worker}}/</span>{{.Name}}</a></th>
   <td data-label="Task">{{if .Task}}{{.Task}}{{else}}<span class="muted">No task</span>{{end}}</td>
   {{if not .HideWorker}}<td data-label="Worker"><a href="{{.WorkerURL}}" data-control="worker" data-worker-link>{{.Worker}}</a>{{if not .Online}} <span class="badge muted" data-online="false">offline</span>{{end}}</td>
   {{end}}{{if .ShowOwner}}<td data-label="Owner">{{.Owner}}</td>

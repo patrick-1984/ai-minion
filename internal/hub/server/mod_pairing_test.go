@@ -172,7 +172,7 @@ func TestProductionHubPairsAWorkerThroughAnAuthenticatedRESTClaim(t *testing.T) 
 		t.Fatalf("welcome = %s (%v)", frame, err)
 	}
 	// The owner name is the username, not the user id: the lookup is wired.
-	if welcome.Owner != "root" || welcome.Name != "raspberry" || welcome.Kind != store.WorkerKindPrivate {
+	if welcome.Owner != "root" || welcome.Name != "root-raspberry" || welcome.Kind != store.WorkerKindPrivate {
 		t.Errorf("welcome = %+v", welcome)
 	}
 	admin, err := st.UserByIdentifier(context.Background(), "root")
