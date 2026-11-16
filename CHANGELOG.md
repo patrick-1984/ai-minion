@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.9.3
+
+Released 2026-11-16.
+
 ### Added
 
 - **`minion worker down`** stops the running Worker of this user, the opposite of `worker up`: a foreground Worker over its control socket, a service through its manager (systemd user or system unit, launchd, Windows service). When it needs rights it does not have, it prints the exact command (for example `sudo systemctl stop minion-worker@<user>.service`).
