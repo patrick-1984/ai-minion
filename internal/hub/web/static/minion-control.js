@@ -26,6 +26,12 @@
     });
   });
   document.addEventListener("htmx:afterSwap", apply);
+  // "Who can control this session?": choosing a session shows the answer.
+  document.querySelectorAll("form[data-autosubmit] select").forEach(function (sel) {
+    sel.addEventListener("change", function () { if (sel.value) { sel.form.submit(); } });
+  });
+  var answer = document.querySelector(".check-result");
+  if (answer) { answer.scrollIntoView({ block: "nearest" }); }
   function lost() {
     if (status) { status.textContent = "The answer was lost: reloading what the Hub has saved."; }
     setTimeout(function () { window.location.reload(); }, 1200);

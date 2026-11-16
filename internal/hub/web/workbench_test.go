@@ -395,7 +395,11 @@ func TestSessionInputDockIsSafeByDefault(t *testing.T) {
 	mustHave(t, body, `<textarea id="send-text" name="text"`, `<button type="submit" id="send-primary" name="enter" value="1">Send</button>`,
 		`<button type="submit" id="send-paste" name="enter" value="0" class="btn-secondary" aria-describedby="paste-help">Paste without Enter</button>`,
 		"Enter sends the text and presses Enter in the session. Shift+Enter adds a line break.", `to <strong>minion-1</strong> on <strong>pi-1</strong>`)
-	mustNotHave(t, body, `type="checkbox"`, `<input type="text" id="send-text"`, `Press Enter after the text`, `Send text</button>`)
+	mustNotHave(t, body, `<input type="text" id="send-text"`, `Press Enter after the text`, `Send text</button>`)
+	// The only box is "Send without asking" in the header (A19), not an Enter box in the dock.
+	if n := strings.Count(body, `type="checkbox"`); n != 1 || !strings.Contains(body, `type="checkbox" id="unasked-session"`) {
+		t.Errorf("checkboxes = %d, want only Send without asking", n)
+	}
 	if n := strings.Count(body, `name="enter"`); n != 2 {
 		t.Errorf("the text form has %d controls named enter, want exactly the two buttons", n)
 	}

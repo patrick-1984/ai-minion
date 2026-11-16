@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -53,6 +54,7 @@ type UndoView struct {
 
 // ControlCheckView is the answer of "Who can control this session?".
 type ControlCheckView struct {
+	WorkerID        string
 	Worker, Session string
 	Result          ops.ControlCheckResult
 }
@@ -121,7 +123,14 @@ func controlData(r *http.Request, c OpCaller) (any, error) {
 			p.Sources = append(p.Sources, row)
 		}
 	}
-	if w, s := r.URL.Query().Get("check_worker"), r.URL.Query().Get("check_session"); w != "" && s != "" {
+	w, s := r.URL.Query().Get("check_worker"), r.URL.Query().Get("check_session")
+	if c := r.URL.Query().Get("check"); c != "" {
+		// One select: "<worker id>|<session>" (ids never hold "|").
+		if i := strings.IndexByte(c, '|'); i > 0 {
+			w, s = c[:i], c[i+1:]
+		}
+	}
+	if w != "" && s != "" {
 		var chk ops.ControlCheckResult
 		if err := c.CallOp(r, ops.OpControlCheck, ops.ControlCheckArgs{WorkerID: w, SessionName: s}, &chk); err == nil {
 			name := w
@@ -130,7 +139,7 @@ func controlData(r *http.Request, c OpCaller) (any, error) {
 					name = row.Name
 				}
 			}
-			p.Check = &ControlCheckView{Worker: name, Session: s, Result: chk}
+			p.Check = &ControlCheckView{WorkerID: w, Worker: name, Session: s, Result: chk}
 		}
 	}
 	return p, nil

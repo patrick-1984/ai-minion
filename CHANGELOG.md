@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **Send without asking** (session page header and Worker page → Sending): text, keys and the task go out at once, also to a shell, an open dialog or a busy agent, without the "Send anyway" button and its second confirmation. Per session or for all sessions of a Worker (the Worker switch shows when only some sessions have it). Kept in this browser; a dialog answer is still checked.
+
+### Changed
+
+- **Minion control is easier to use**: "Add a master session" lists only the Worker's shared sessions, with a filter, and says so when there is none (no free-text name); the matrix is compact and labelled; "Who can control this session?" is one list of Worker / session and answers as soon as one is chosen.
+
 ## v0.9.0
 
 Released 2026-11-16.
