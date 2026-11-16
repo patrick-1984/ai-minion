@@ -42,9 +42,6 @@ const (
 	guardMaxStarts = 3
 )
 
-// waitPIDEnv names the process a restarted Worker waits for (Windows foreground).
-const waitPIDEnv = "MINION_UPDATE_WAIT_PID"
-
 // pendingFile is the crash-guard record in the state directory.
 const pendingFile = "update-pending.json"
 

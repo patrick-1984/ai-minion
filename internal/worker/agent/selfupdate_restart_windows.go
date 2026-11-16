@@ -12,6 +12,9 @@ import (
 	"golang.org/x/sys/windows/svc"
 )
 
+// waitPIDEnv names the process a restarted Worker waits for (foreground).
+const waitPIDEnv = "MINION_UPDATE_WAIT_PID"
+
 // underServiceManager reports whether the Windows service control manager runs
 // this process.
 func underServiceManager() bool {
