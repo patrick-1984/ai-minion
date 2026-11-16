@@ -143,3 +143,31 @@ func TestPsmuxNamesThatCannotBeAddressedAreNotServed(t *testing.T) {
 		t.Errorf("args = %s", got)
 	}
 }
+
+// psmux reads ';' tokens as command separators and $N as a session id.
+func TestPsmuxRefusesSeparatorsAndSessionIDs(t *testing.T) {
+	f := &fakePsmux{}
+	h, err := New("", WithPsmux(), WithExec(f.exec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if PsmuxNameOK("$0") || PsmuxNameOK("a;b") {
+		t.Error("$0 or a;b accepted")
+	}
+	if _, err := h.CreateSession(ctx, "work", "", []string{"python.exe", "-c", "x", ";", "kill-server"}); !errors.Is(err, ops.ErrInvalidArgument) {
+		t.Errorf("a ';' argument was accepted: %v", err)
+	}
+	if err := h.SetOption(ctx, "work", "@minion_task", "fix;"); !errors.Is(err, ops.ErrInvalidArgument) {
+		t.Errorf("a value ending in ';' was accepted: %v", err)
+	}
+	ref, _ := h.ResolvePane(ctx, ops.Target{SessionName: "beta"})
+	if _, err := h.SendKeys(ctx, ref, []string{";"}, ref); !errors.Is(err, ops.ErrInvalidArgument) {
+		t.Errorf("a ';' key was accepted: %v", err)
+	}
+	for _, c := range f.calls {
+		if contains(c, "kill-server") || contains(c, "new-session") {
+			t.Fatalf("ran %v", c)
+		}
+	}
+}

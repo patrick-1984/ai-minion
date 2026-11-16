@@ -5,6 +5,12 @@
 ### Added
 
 - **Forget a Worker** (Worker page → Forget this Worker, owner or administrator): removes any Worker, approved or not, online or offline. The Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again to come back.
+- **psmux on Windows**: a Windows Worker that runs as you (`minion worker up --foreground`) serves your psmux sessions (psmux 3.4.0 or later, tmux for Windows): they show up in the Hub, survive Worker restarts and updates, and stay attachable with `psmux attach`. Every pane is addressed through its session (psmux numbers panes per session), paste buffers go to that session's server, and a write is checked against the pane of the same session. `session_host` chooses `auto` (default: psmux when installed and the Worker is not a service), `psmux` or `conpty`. Plain PowerShell or cmd windows outside psmux stay invisible.
+- **First run offers psmux**: a foreground Windows Worker in a console without psmux asks once whether to install it with `winget install psmux` (`psmux_offer`).
+
+### Known limits
+
+- **psmux**: session names that psmux cannot address literally (starting with `%`, `@`, `$` or `=`, or containing `:`, `.`, quotes, `#` or `;`) are not served, and a program argument that is a psmux command separator (`;`) is refused. On psmux the check that the pane still runs the reviewed program and the paste are two requests (psmux 3.4 runs `if-shell` that way), not one as with tmux: a program that exits in that moment can receive the text in the shell that follows it.
 
 ## v0.9.1
 

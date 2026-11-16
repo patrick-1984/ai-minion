@@ -225,6 +225,9 @@ func (h *Host) SendKeys(ctx context.Context, pane term.PaneRef, keys []string, e
 		if err := checkKey(k); err != nil {
 			return 0, err
 		}
+		if h.psmux && strings.HasSuffix(k, ";") {
+			return 0, fmt.Errorf("key %q: psmux would read it as a command separator: %w", k, ops.ErrInvalidArgument)
+		}
 	}
 	sent := 0
 	for _, k := range keys {

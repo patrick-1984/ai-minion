@@ -290,18 +290,20 @@ func TestPsmuxTwoSessionsAreIsolated(t *testing.T) {
 // through whichever session psmux used last).
 func TestPsmuxUnaddressableNamesAreNotListed(t *testing.T) {
 	h, bin, sock := psmuxHost(t)
-	const odd = "odd#1"
-	if out, err := exec.Command(bin, "-S", sock, "new-session", "-d", "-s", odd).CombinedOutput(); err != nil {
-		t.Skipf("psmux refused the name itself: %v %s", err, out)
+	for _, odd := range []string{"odd#1", "$9"} {
+		if out, err := exec.Command(bin, "-S", sock, "new-session", "-d", "-s", odd).CombinedOutput(); err != nil {
+			t.Logf("psmux refused the name %q itself: %v %s", odd, err, out)
+			continue
+		}
+		t.Cleanup(func() { _ = exec.Command(bin, "-S", sock, "kill-session", "-t", odd).Run() })
 	}
-	t.Cleanup(func() { _ = exec.Command(bin, "-S", sock, "kill-session", "-t", odd).Run() })
 	list, err := h.ListSessions(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range list {
-		if s.Name == odd {
-			t.Fatalf("%q is listed", odd)
+		if !PsmuxNameOK(s.Name) {
+			t.Fatalf("%q is listed", s.Name)
 		}
 	}
 }

@@ -59,6 +59,14 @@ func (h *Host) CreateSession(ctx context.Context, name, cwd string, argv []strin
 			return term.Session{}, fmt.Errorf("argv: an argument contains a NUL byte: %w", ops.ErrInvalidArgument)
 		}
 	}
+	if h.psmux {
+		// psmux reads a ';' token as a command separator, even after "--".
+		for _, a := range argv {
+			if strings.HasSuffix(a, ";") {
+				return term.Session{}, fmt.Errorf("argv: psmux would read %q as a command separator: %w", truncate(a, 40), ops.ErrInvalidArgument)
+			}
+		}
+	}
 	if len(argv) > 0 && argv[0] == "" {
 		return term.Session{}, fmt.Errorf("argv: the program name is empty: %w", ops.ErrInvalidArgument)
 	}
@@ -222,7 +230,10 @@ func newSessionArgs(name, cwd string, argv []string, tmuxSyntax bool) []string {
 	}
 	args = append(args, "--")
 	for _, a := range argv {
-		args = append(args, escapeArg(a))
+		if tmuxSyntax {
+			a = escapeArg(a)
+		}
+		args = append(args, a)
 	}
 	return args
 }

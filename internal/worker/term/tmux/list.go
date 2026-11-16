@@ -97,10 +97,11 @@ func (h *Host) listPanes(ctx context.Context) ([]term.Session, error) {
 }
 
 // PsmuxNameOK reports whether psmux 3.4 reads "=name:" as exactly that
-// session: not a leading '%', '@' or '=' (pane, window or exact prefixes) and
-// none of the separators and quotes ':', '.', '\”, '"' and '#'.
+// session: not a leading '%', '@', '$' or '=' (pane, window, session-id and
+// exact prefixes) and none of the separators and quotes ':', '.', '\'', '"',
+// '#' and ';'.
 func PsmuxNameOK(name string) bool {
-	if name == "" || strings.ContainsAny(name[:1], "%@=") || strings.ContainsAny(name, ":.'\"#") || hasControl(name) {
+	if name == "" || strings.ContainsAny(name[:1], "%@$=") || strings.ContainsAny(name, ":.'\"#;") || hasControl(name) {
 		return false
 	}
 	return true
