@@ -1,0 +1,2 @@
+# Emulator test build only (QEMU, ESP32): Ethernet instead of Wi-Fi. Never flash this to a device.
+CONFIG_MINION_QEMU_OPENETH=y

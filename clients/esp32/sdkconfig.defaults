@@ -1,0 +1,40 @@
+# Minion thin Worker: defaults for every chip (ESP-IDF v5.4).
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# The worker task holds TLS + the protocol; app_main only does housekeeping.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=3584
+
+# mbedTLS: no CA bundle (trust comes from the pinned Hub root inside the protocol, TLS is not verified),
+# 16 KB IN record (the Hub side cannot negotiate a smaller one), 2 KB OUT record (writes are fragmented).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+# TLS 1.3 is required: the Hub's own listener accepts TLS 1.3 only (TLS 1.2 stays on for proxies).
+# (mbedTLS dynamic buffers cannot be combined with TLS 1.3 in ESP-IDF.)
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
+CONFIG_MBEDTLS_SERVER_SSL_SESSION_TICKETS=n
+
+# SNTP: pool.ntp.org plus the NTP server offered by DHCP (option 42).
+CONFIG_LWIP_DHCP_GET_NTP_SRV=y
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
+
+# Wi-Fi: smaller buffer pools than the defaults (one TLS connection at a time).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=5
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+
+# RAM: on C3/C6/S3 code in IRAM takes heap away. A Worker needs little throughput, so the Wi-Fi, FreeRTOS
+# and heap fast paths run from flash.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+
+# No colour codes in the log (the log session renders them, but plain text reads better in the Hub).
+CONFIG_LOG_COLORS=n

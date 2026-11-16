@@ -1,0 +1,9 @@
+# Minion thin Worker, 4 MB flash, no OTA yet.
+# The Minion identity (seed, Hub pin, ratchet) and the device config live in the "minion" NVS partition in
+# the LAST 64 KB of the flash: a fixed place outside the range of the merged image (0x0 .. end of the app),
+# so a later OTA layout can reuse this partition unchanged. 0xd000-0xefff stays free for a future otadata.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x4000
+phy_init, data, phy,     0xf000,   0x1000
+factory,  app,  factory, 0x10000,  0x200000
+minion,   data, nvs,     0x3f0000, 0x10000
