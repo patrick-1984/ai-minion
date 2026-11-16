@@ -242,3 +242,23 @@ func TestSessionControlSetCannotOutliveAReassignmentOrRemovalMidRequest(t *testi
 		})
 	}
 }
+
+// "Who can control this session?" answers from the computed grant: a migrated
+// v0.8 grant on the session's own Worker is named; a new nomination there is not.
+func TestControlCheckNamesMigratedSelfGrants(t *testing.T) {
+	k := newSessionControlStack(t)
+	w1 := k.worker(k.u1, "w1", store.WorkerKindPrivate)
+	ctx := context.Background()
+	if err := k.st.PutSessionControl(ctx, store.SessionControlRow{WorkerID: w1.ID, SessionName: "boss",
+		TargetsJSON: `[{"kind":"session","worker_id":"` + w1.ID + `","session_name":"ci"}]`, CreatedBy: k.admin, CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.st.PutMasterSession(ctx, store.MasterRow{WorkerID: w1.ID, SessionName: "fresh", CreatedBy: k.admin}); err != nil {
+		t.Fatal(err)
+	}
+	k.as(k.admin)
+	code, body := k.call(ops.OpControlCheck, map[string]any{"worker_id": w1.ID, "session_name": "ci"})
+	if code != http.StatusOK || !strings.Contains(body, `"session_name":"boss"`) || strings.Contains(body, `"fresh"`) {
+		t.Fatalf("check = %d %s", code, body)
+	}
+}

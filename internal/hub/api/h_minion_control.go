@@ -320,9 +320,8 @@ func (h controlHandlers) check(ctx context.Context, c *Call, a ops.ControlCheckA
 	}
 	res := ops.ControlCheckResult{Controllers: []ops.ControlChain{}}
 	for _, ms := range masters {
-		if ms.WorkerID == a.WorkerID {
-			continue
-		}
+		// The computed grant decides, as at call time: it leaves out the
+		// master's own Worker except for a migrated v0.8 grant that had it.
 		g, err := h.st.SessionControl(ctx, ms.WorkerID, ms.SessionName)
 		if err != nil {
 			continue
