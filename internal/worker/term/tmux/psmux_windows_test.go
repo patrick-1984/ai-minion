@@ -40,6 +40,11 @@ func psmuxHost(t *testing.T) (*Host, string, string) {
 		t.Fatalf("New on psmux: %v", err)
 	}
 	t.Logf("psmux %s at %s, socket %s", h.Version(), bin, sock)
+	// Before 3.4.0 psmux ignores -S: the cleanup below would then end sessions
+	// of the user's default server. Refuse before registering it.
+	if !h.Version().AtLeast(3, 4) {
+		t.Fatalf("psmux %s is too old: 3.4.0 or later keys the server by the -S path", h.Version())
+	}
 	// Each test ends the sessions it created, by name, on its private server;
 	// psmux runs one server per session, so the server ends with its session.
 	t.Cleanup(func() {
