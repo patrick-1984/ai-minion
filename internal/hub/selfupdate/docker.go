@@ -141,6 +141,15 @@ func (c Container) ConfigString(key string) string {
 }
 
 // Env returns the environment of the container's Config.
+// Label returns one label of the container's configuration ("" when unset).
+func (c Container) Label(key string) string {
+	var labels map[string]string
+	if raw, ok := c.Config["Labels"]; ok {
+		_ = json.Unmarshal(raw, &labels)
+	}
+	return labels[key]
+}
+
 func (c Container) Env() []string {
 	var env []string
 	_ = json.Unmarshal(c.Config["Env"], &env)

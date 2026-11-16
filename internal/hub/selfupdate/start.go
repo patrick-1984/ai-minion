@@ -54,7 +54,14 @@ func Detect(ctx context.Context, d *Docker, socket, channelTag string) (Self, st
 	digest := strings.Contains(ref, "@")
 	switch {
 	case digest:
-		// Created by an earlier self-update: the channel tag was moved then.
+		// Made by an earlier self-update: it names the Compose tag it serves.
+		was := c.Label(ChannelLabel)
+		if was == "" {
+			return Self{}, fmt.Sprintf("the Hub runs the digest %q without a channel label; set MINION_TAG=%s in .env and run docker compose up -d once", ref, channelTag)
+		}
+		if was != channelTag {
+			return Self{}, fmt.Sprintf("the Hub was deployed with the tag %q but update_channel follows %q; set MINION_TAG=%s in .env and run docker compose up -d (or change update_channel back)", was, channelTag, channelTag)
+		}
 	case !channelTagRE.MatchString(tag):
 		return Self{}, fmt.Sprintf("the Hub's image tag %q pins one version; use the channel tag %s:%s (set MINION_TAG=%s in .env) so that docker compose keeps the update", tag, Repository, channelTag, channelTag)
 	case tag != channelTag:
@@ -65,7 +72,24 @@ func Detect(ctx context.Context, d *Docker, socket, channelTag string) (Self, st
 	if data == "" {
 		return Self{}, "the Hub container sets no MINION_DATA_DIR"
 	}
+	// The helper sees the Hub's mounts only: data in the container's own
+	// layer would be lost with the container.
+	if !onMount(c, data) {
+		return Self{}, fmt.Sprintf("the data directory %s is not on a volume or bind mount; it would be lost with the container", data)
+	}
 	return Self{Container: c, Repo: repo, Tag: tag, DataDir: data, SocketPath: socket}, ""
+}
+
+// onMount reports whether dir is a mount destination of c or lies below one.
+func onMount(c Container, dir string) bool {
+	dir = filepath.Clean(dir)
+	for _, m := range c.Mounts {
+		dest := filepath.Clean(m.Destination)
+		if m.Destination != "" && (dir == dest || strings.HasPrefix(dir, dest+"/")) {
+			return true
+		}
+	}
+	return false
 }
 
 // findSelf inspects the container whose id or hostname this process has.

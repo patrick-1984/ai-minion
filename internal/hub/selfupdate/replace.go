@@ -75,12 +75,16 @@ func Replace(ctx context.Context, d *Docker, p ReplaceParams) (err error) {
 		return fmt.Errorf("stop the Hub: %w", err)
 	}
 	backup := filepath.Join(dataDir, backupPrefix+safeName(p.From))
-	// Recovery runs on its own context: the operation's deadline may be over.
-	rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-	defer rcancel()
+	// Recovery runs on its own context, made when it begins: the operation's
+	// deadline may be over by then.
+	recovery := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	}
 	backupDone := false
 	restart := func(reason error) error {
 		p.Log.Error("update failed; restoring the previous Hub", "error", reason)
+		rctx, rcancel := recovery()
+		defer rcancel()
 		_ = d.Rename(rctx, old.ID, name)
 		// Only a complete copy is restored; the data is untouched otherwise.
 		if backupDone {
@@ -102,7 +106,7 @@ func Replace(ctx context.Context, d *Docker, p ReplaceParams) (err error) {
 	if err := d.Rename(ctx, old.ID, name+"-old"); err != nil {
 		return restart(fmt.Errorf("rename the old container: %w", err))
 	}
-	body, err := recreateBody(old, p.ImageRef, newImageID)
+	body, err := recreateBody(old, p.ImageRef, newImageID, p.ChannelTag)
 	if err != nil {
 		return restart(err)
 	}
@@ -112,6 +116,8 @@ func Replace(ctx context.Context, d *Docker, p ReplaceParams) (err error) {
 	}
 	fail := func(reason error) error {
 		// The new Hub must be gone before its data is restored under it.
+		rctx, rcancel := recovery()
+		defer rcancel()
 		_ = d.Stop(rctx, newID, p.StopTimeout)
 		if err := d.Remove(rctx, newID); err != nil && !IsNotFound(err) {
 			p.Log.Error("the new Hub container could not be removed; the data and its copy stay as they are", "error", err)
@@ -154,7 +160,12 @@ func Replace(ctx context.Context, d *Docker, p ReplaceParams) (err error) {
 // HostConfig unchanged except the image and the Compose image label, every
 // resolved named volume pinned (an anonymous volume would otherwise be
 // replaced by an empty one), and the endpoint of the primary network.
-func recreateBody(old Container, imageRef, imageID string) (map[string]any, error) {
+// ChannelLabel on a container made by a self-update names the channel tag
+// its Compose file uses: the image is then a digest, and the next update
+// still checks that the channel and Compose agree.
+const ChannelLabel = "io.minion.update.channel-tag"
+
+func recreateBody(old Container, imageRef, imageID, channelTag string) (map[string]any, error) {
 	body := map[string]any{}
 	for k, v := range old.Config {
 		body[k] = v
@@ -169,6 +180,9 @@ func recreateBody(old Container, imageRef, imageID string) (map[string]any, erro
 	}
 	if _, ok := labels[composeImageLabel]; ok {
 		labels[composeImageLabel] = imageID
+	}
+	if channelTag != "" {
+		labels[ChannelLabel] = channelTag
 	}
 	body["Labels"] = labels
 
@@ -343,6 +357,16 @@ func skipEntry(name string) bool {
 // copyDir copies the regular files and directories of src into dst (created
 // fresh), skipping backups and the lock. Links are not followed.
 func copyDir(src, dst string) error {
+	// The source must exist as it is: an absent one would be "copied" as an
+	// empty backup (the backup lives inside it).
+	if fi, err := os.Stat(src); err != nil {
+		return err
+	} else if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", src)
+	}
+	if _, err := os.Stat(filepath.Join(src, "minion.db")); err != nil {
+		return fmt.Errorf("the data directory %s holds no minion.db: %w", src, err)
+	}
 	_ = os.RemoveAll(dst)
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return err
@@ -398,7 +422,9 @@ func copyTree(src, dst string) error {
 		}
 		return out.Close()
 	}
-	return nil // links, sockets and devices are not part of the Hub data
+	// A link may point at the database itself: a backup without it would not
+	// be complete, so the update stops instead.
+	return fmt.Errorf("%s is not a regular file or directory (%s); the self-update copies only those, update by hand", src, fi.Mode().Type())
 }
 
 // restoreDir replaces the content of dataDir (except backups and the lock)

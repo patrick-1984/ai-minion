@@ -13,6 +13,8 @@
 #   v0.9.0 pins one version: the Hub then shows the command instead.
 # - DOCKER_GID is the group of /var/run/docker.sock on the host:
 #   stat -c %g /var/run/docker.sock
+# - The data directory must be on a volume or bind mount (hub.yaml does that)
+#   and hold only files and directories (no symbolic links).
 # - Before the switch the Hub's data directory is copied to
 #   /data/.pre-upgrade-<version>; a new release that is not ready within two
 #   minutes is removed, the copy restored and the previous Hub started again.

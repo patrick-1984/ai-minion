@@ -24,6 +24,8 @@ type fakeEngine struct {
 	names    map[string]string // id -> name
 	failNew  bool              // the new container never becomes ready
 	declared bool              // the old container declares an anonymous volume mount
+	label    string            // the channel label of the old container
+	noMount  bool              // the data directory is in the container's own layer
 	tagged   string
 	removed  []string
 	dataDir  string
@@ -53,12 +55,20 @@ func (f *fakeEngine) handler(w http.ResponseWriter, r *http.Request) {
 		if id == "new" {
 			img = "ghcr.io/patrick-1984/minion@sha256:new"
 		}
+		mounts := []map[string]any{{"Type": "volume", "Name": "anon123", "Destination": "/extra", "RW": true}}
+		if !f.noMount {
+			mounts = append(mounts, map[string]any{"Type": "bind", "Source": "/srv/hub-data", "Destination": f.dataDir, "RW": true})
+		}
+		labels := map[string]string{composeImageLabel: "sha256:old", "com.docker.compose.service": "hub"}
+		if f.label != "" {
+			labels[ChannelLabel] = f.label
+		}
 		c := map[string]any{
 			"Id": id, "Name": "/" + f.names[id],
 			"Config": map[string]any{"Image": img, "Env": []string{"MINION_DATA_DIR=" + f.dataDir, "MINION_TLS=off"},
-				"Labels": map[string]string{composeImageLabel: "sha256:old", "com.docker.compose.service": "hub"}},
+				"Labels": labels},
 			"HostConfig":      hostConfig(f.declared),
-			"Mounts":          []map[string]any{{"Type": "volume", "Name": "anon123", "Destination": "/extra", "RW": true}},
+			"Mounts":          mounts,
 			"NetworkSettings": map[string]any{"Networks": map[string]any{"minion_default": map[string]any{"Aliases": []string{"hub"}, "IPAddress": "10.0.0.2"}}},
 			"State":           map[string]any{"Running": f.running[id]},
 		}
@@ -154,6 +164,9 @@ func TestReplaceSwapsTheContainerAndKeepsItsConfiguration(t *testing.T) {
 	if f.tagged != "ghcr.io/patrick-1984/minion:0.9" {
 		t.Errorf("tag moved to %q", f.tagged)
 	}
+	if labels[ChannelLabel] != "0.9" {
+		t.Errorf("the new container does not name its channel tag: %v", labels)
+	}
 	if len(f.removed) != 1 || f.removed[0] != "old" {
 		t.Errorf("removed %v", f.removed)
 	}
@@ -238,22 +251,25 @@ func TestReplaceBackupFailureRestartsTheOldHubWithoutRestoring(t *testing.T) {
 // it) or a digest of the repository (after an earlier self-update).
 func TestOnlyTheConfiguredChannelTagSelfUpdates(t *testing.T) {
 	for _, tc := range []struct {
-		image, channel string
-		ok             bool
+		image, channel, label string
+		ok                    bool
 	}{
-		{"ghcr.io/patrick-1984/minion:0.9", "0.9", true},
-		{"ghcr.io/patrick-1984/minion:0", "0", true},
-		{"ghcr.io/patrick-1984/minion:latest", "latest", true},
-		{"ghcr.io/patrick-1984/minion", "latest", true},
-		{"ghcr.io/patrick-1984/minion@sha256:abc", "0.9", true},
-		{"ghcr.io/patrick-1984/minion:0.9", "latest", false},
-		{"ghcr.io/patrick-1984/minion:latest", "0.9", false},
-		{"ghcr.io/patrick-1984/minion:v0.9.0", "0.9", false},
-		{"example.com/other:0.9", "0.9", false},
-		{"example.com/other@sha256:abc", "0.9", false},
+		{"ghcr.io/patrick-1984/minion:0.9", "0.9", "", true},
+		{"ghcr.io/patrick-1984/minion:0", "0", "", true},
+		{"ghcr.io/patrick-1984/minion:latest", "latest", "", true},
+		{"ghcr.io/patrick-1984/minion", "latest", "", true},
+		{"ghcr.io/patrick-1984/minion@sha256:abc", "0.9", "0.9", true},
+		// after a self-update on 0.9 the channel changed: Compose still says 0.9
+		{"ghcr.io/patrick-1984/minion@sha256:abc", "latest", "0.9", false},
+		{"ghcr.io/patrick-1984/minion@sha256:abc", "0.9", "", false},
+		{"ghcr.io/patrick-1984/minion:0.9", "latest", "", false},
+		{"ghcr.io/patrick-1984/minion:latest", "0.9", "", false},
+		{"ghcr.io/patrick-1984/minion:v0.9.0", "0.9", "", false},
+		{"example.com/other:0.9", "0.9", "", false},
+		{"example.com/other@sha256:abc", "0.9", "0.9", false},
 	} {
 		f := newEngine(t)
-		f.oldImage = tc.image
+		f.oldImage, f.label = tc.image, tc.label
 		d := startEngine(t, f)
 		sock := filepath.Join(t.TempDir(), "present")
 		_ = os.WriteFile(sock, nil, 0o600)
@@ -296,5 +312,54 @@ func TestLockExcludesASecondUpdateAndStaleLocksAreTaken(t *testing.T) {
 	_ = os.Chtimes(lock, old, old)
 	if err := acquireLock(ctx, d, f.dataDir); err != nil {
 		t.Fatalf("old preparation lock: %v", err)
+	}
+}
+
+// Data in the container's own layer would go with the container: refused.
+func TestDataOutsideAMountIsRefused(t *testing.T) {
+	f := newEngine(t)
+	f.noMount = true
+	d := startEngine(t, f)
+	sock := filepath.Join(t.TempDir(), "present")
+	_ = os.WriteFile(sock, nil, 0o600)
+	host, _ := os.Hostname()
+	f.names[host] = "minion-hub-1"
+	f.running[host] = true
+	if _, why := Detect(context.Background(), d, sock, "0.9"); !strings.Contains(why, "not on a volume or bind mount") {
+		t.Fatalf("reason %q", why)
+	}
+}
+
+// A link in the data directory (it may be the database) is not copied
+// silently: the backup fails, nothing is restored, the old Hub runs again.
+func TestReplaceRefusesLinksInTheDataDirectory(t *testing.T) {
+	f := newEngine(t)
+	d := startEngine(t, f)
+	elsewhere := filepath.Join(t.TempDir(), "real.db")
+	_ = os.WriteFile(elsewhere, []byte("real"), 0o600)
+	if err := os.Symlink(elsewhere, filepath.Join(f.dataDir, "other.db")); err != nil {
+		t.Skip(err)
+	}
+	if err := Replace(context.Background(), d, params(f, true)); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("err = %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.running["old"] || f.created != nil {
+		t.Fatalf("old running=%v created=%v", f.running["old"], f.created != nil)
+	}
+	if _, err := os.Lstat(filepath.Join(f.dataDir, "other.db")); err != nil {
+		t.Errorf("the link was touched: %v", err)
+	}
+}
+
+// A data directory without the database is not backed up as if empty.
+func TestCopyDirNeedsTheDatabase(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "missing")
+	if err := copyDir(src, filepath.Join(src, ".pre")); err == nil {
+		t.Fatal("an absent directory was copied")
+	}
+	if _, err := os.Stat(src); err == nil {
+		t.Fatal("the copy created the absent source")
 	}
 }
