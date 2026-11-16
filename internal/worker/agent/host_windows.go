@@ -34,7 +34,11 @@ func newSessionHost(spec string) (term.SessionHost, error) {
 func sessionHostSpec(s Settings) (string, error) {
 	mode := config.SessionHostAuto
 	if s.Resolver != nil {
-		if r, err := s.Resolver.Resolve(config.KeySessionHost); err == nil && r.Value != "" {
+		r, err := s.Resolver.Resolve(config.KeySessionHost)
+		if err != nil {
+			return "", err // an invalid value never falls back to auto
+		}
+		if r.Value != "" {
 			mode = r.Value
 		}
 	}

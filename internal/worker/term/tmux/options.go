@@ -38,6 +38,9 @@ func (h *Host) SetOption(ctx context.Context, session, key, value string) error 
 	if err := (ops.Target{SessionName: session}).Validate(); err != nil {
 		return err
 	}
+	if h.psmux && !PsmuxNameOK(session) {
+		return fmt.Errorf("session %q: psmux cannot address this name: %w", session, ops.ErrInvalidArgument)
+	}
 	if !userOptionRE.MatchString(key) {
 		return fmt.Errorf("option %q: only user options of the form @name can be set: %w", truncate(key, 40), ops.ErrInvalidArgument)
 	}

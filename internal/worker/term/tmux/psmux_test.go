@@ -114,3 +114,32 @@ func TestPsmuxAddressesPanesThroughTheirSession(t *testing.T) {
 		t.Errorf("buffer target = %v", got)
 	}
 }
+
+func TestPsmuxNamesThatCannotBeAddressedAreNotServed(t *testing.T) {
+	for _, n := range []string{"%work", "@w", "=x", "a:b", "a.b", "Bob's", `q"`, "c#"} {
+		if PsmuxNameOK(n) {
+			t.Errorf("%q accepted", n)
+		}
+	}
+	for _, n := range []string{"work", "wb-12", "my work", "x_1"} {
+		if !PsmuxNameOK(n) {
+			t.Errorf("%q refused", n)
+		}
+	}
+	f := &fakePsmux{}
+	h, err := New("", WithPsmux(), WithExec(f.exec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CreateSession(context.Background(), "%work", "", nil); !errors.Is(err, ops.ErrInvalidArgument) {
+		t.Errorf("created %%work: %v", err)
+	}
+	if err := h.SetOption(context.Background(), "a.b", "@minion_task", "x"); !errors.Is(err, ops.ErrInvalidArgument) {
+		t.Errorf("set an option on a.b: %v", err)
+	}
+	// psmux takes -s and -c literally: no format escaping.
+	got := strings.Join(newSessionArgs("work", `C:\Projects\C#`, nil, false), " ")
+	if !strings.Contains(got, `-c C:\Projects\C#`) || strings.Contains(got, "C##") {
+		t.Errorf("args = %s", got)
+	}
+}

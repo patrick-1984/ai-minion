@@ -74,7 +74,7 @@ jobs:
           CGO_ENABLED=0 go test -count=1 -v -run "$store" ./internal/worker/store/
           CGO_ENABLED=0 go test -count=1 -v -run "$service" ./internal/worker/service/
           CGO_ENABLED=0 go test -count=1 -v ./internal/worker/localapi/ ./internal/client/
-          agent='^(TestHubPipeModuleCallsWithTheWorkerCallKeyFile|TestCallKeySourceRereadsAndChecksTheKeyFile)$'
+          agent='^(TestHubPipeModuleCallsWithTheWorkerCallKeyFile|TestCallKeySourceRereadsAndChecksTheKeyFile|TestSessionHostSpec.*)$'
           version='^(TestCheckTrustedDirInheritableACEs|TestCheckTrustedDirAncestorInheritOnly|TestCacheStagingBoundary|TestNewFileInheritedACL|TestReplaceBinaryInstallDirBoundary|TestDefaultUserInstallPath|TestReplaceBinary|TestCheckTrustedExecutable.*)$'
           CGO_ENABLED=0 go test -count=1 -v -run "$agent" ./internal/worker/agent/
           CGO_ENABLED=0 go test -count=1 -v -run "$version" ./internal/version/

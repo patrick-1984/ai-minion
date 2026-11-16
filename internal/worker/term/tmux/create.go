@@ -48,6 +48,9 @@ func (h *Host) CreateSession(ctx context.Context, name, cwd string, argv []strin
 	if err := (ops.Target{SessionName: name}).Validate(); err != nil {
 		return term.Session{}, err
 	}
+	if h.psmux && !PsmuxNameOK(name) {
+		return term.Session{}, fmt.Errorf("session %q: psmux cannot address this name: %w", name, ops.ErrInvalidArgument)
+	}
 	if err := checkCwd(cwd); err != nil {
 		return term.Session{}, err
 	}
@@ -198,11 +201,17 @@ func usableShell(sh string) bool {
 // "env -- argv0", which makes two arguments and still runs the program
 // without a shell. env takes an argv0 with '=' for an assignment even after
 // "--", so CreateSession refuses that case before it gets here.
-func newSessionArgs(name, cwd string, argv []string, envWrap bool) []string {
-	args := []string{"new-session", "-d", "-P", "-F", "#{pane_id}", "-s", escapeArg(escapeFormat(name))}
-	if cwd != "" {
-		args = append(args, "-c", escapeArg(escapeFormat(cwd)))
+func newSessionArgs(name, cwd string, argv []string, tmuxSyntax bool) []string {
+	// tmux expands formats in -s and -c; psmux takes them literally.
+	format := escapeFormat
+	if !tmuxSyntax {
+		format = func(s string) string { return s }
 	}
+	args := []string{"new-session", "-d", "-P", "-F", "#{pane_id}", "-s", escapeArg(format(name))}
+	if cwd != "" {
+		args = append(args, "-c", escapeArg(format(cwd)))
+	}
+	envWrap := tmuxSyntax
 	if len(argv) == 0 {
 		return args
 	}
