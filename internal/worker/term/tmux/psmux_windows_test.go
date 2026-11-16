@@ -35,7 +35,7 @@ func psmuxHost(t *testing.T) (*Host, string, string) {
 		t.Skipf("psmux is not installed: %v", err)
 	}
 	sock := filepath.Join(t.TempDir(), "psmux.sock")
-	h, err := New(sock, WithBinary(bin))
+	h, err := New(sock, WithPsmux(), WithBinary(bin))
 	if err != nil {
 		t.Fatalf("New on psmux: %v", err)
 	}
@@ -48,7 +48,7 @@ func psmuxHost(t *testing.T) (*Host, string, string) {
 	// Each test ends the sessions it created, by name, on its private server;
 	// psmux runs one server per session, so the server ends with its session.
 	t.Cleanup(func() {
-		for _, name := range []string{"spike", "keep", "probe"} {
+		for _, name := range []string{"spike", "keep", "probe", "iso-a", "iso-b"} {
 			_ = exec.Command(bin, "-S", sock, "kill-session", "-t", name).Run()
 		}
 	})
@@ -153,7 +153,7 @@ func TestPsmuxSessionSurvivesANewHost(t *testing.T) {
 	if _, err := h.CreateSession(ctx, "keep", "", nil); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	h2, err := New(sock, WithBinary(bin))
+	h2, err := New(sock, WithPsmux(), WithBinary(bin))
 	if err != nil {
 		t.Fatalf("second Host: %v", err)
 	}
@@ -224,4 +224,86 @@ func TestPsmuxPaneIDsAcrossSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("pane of spike: %+v; pane of keep: %+v; same id: %v", a, b, a.ID == b.ID)
+}
+
+// Two psmux sessions both have pane %1 (psmux numbers panes per session). Text
+// and keys for one never reach the other, and each snapshot shows its own
+// session (v0.9.2: every pane is addressed through its session).
+func TestPsmuxTwoSessionsAreIsolated(t *testing.T) {
+	h, _, _ := psmuxHost(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	for _, n := range []string{"iso-a", "iso-b"} {
+		if _, err := h.CreateSession(ctx, n, "", nil); err != nil {
+			t.Fatalf("CreateSession %s: %v", n, err)
+		}
+	}
+	a, err := h.ResolvePane(ctx, ops.Target{SessionName: "iso-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := h.ResolvePane(ctx, ops.Target{SessionName: "iso-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("a = %+v, b = %+v", a, b)
+	if a.Target == b.Target {
+		t.Fatalf("both sessions have the target %q", a.Target)
+	}
+	for _, p := range []term.PaneRef{a, b} {
+		waitFor(t, "shell prompt", 30*time.Second, func() (bool, string) {
+			sc, err := h.Snapshot(ctx, p)
+			if err != nil {
+				return false, err.Error()
+			}
+			return strings.TrimSpace(strings.Join(sc.Lines, "")) != "", strings.Join(sc.Lines, "\n")
+		})
+	}
+	// b was created last: a bare %1 would reach b. Write to a only.
+	if err := h.PasteText(ctx, a, "echo only-in-a", a); err != nil {
+		t.Fatalf("PasteText a: %v", err)
+	}
+	if _, err := h.SendKeys(ctx, a, []string{"Enter"}, a); err != nil {
+		t.Fatalf("SendKeys a: %v", err)
+	}
+	waitFor(t, "output in a", 30*time.Second, func() (bool, string) {
+		sc, err := h.Snapshot(ctx, a)
+		if err != nil {
+			return false, err.Error()
+		}
+		return strings.Count(strings.Join(sc.Lines, "\n"), "only-in-a") >= 2, strings.Join(sc.Lines, "\n")
+	})
+	scB, err := h.Snapshot(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(scB.Lines, "\n"), "only-in-a") {
+		t.Fatalf("a's text reached b:\n%s", strings.Join(scB.Lines, "\n"))
+	}
+	// A key for b checked against a's pane is refused.
+	if _, err := h.SendKeys(ctx, b, []string{"Enter"}, a); err == nil {
+		t.Fatal("a write to b passed the check of a's pane")
+	}
+}
+
+// A session psmux cannot address literally is not listed (it would be read
+// through whichever session psmux used last).
+func TestPsmuxUnaddressableNamesAreNotListed(t *testing.T) {
+	h, bin, sock := psmuxHost(t)
+	for _, odd := range []string{"odd#1", "$9"} {
+		if out, err := exec.Command(bin, "-S", sock, "new-session", "-d", "-s", odd).CombinedOutput(); err != nil {
+			t.Logf("psmux refused the name %q itself: %v %s", odd, err, out)
+			continue
+		}
+		t.Cleanup(func() { _ = exec.Command(bin, "-S", sock, "kill-session", "-t", odd).Run() })
+	}
+	list, err := h.ListSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range list {
+		if !PsmuxNameOK(s.Name) {
+			t.Fatalf("%q is listed", s.Name)
+		}
+	}
 }

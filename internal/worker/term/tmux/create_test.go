@@ -36,7 +36,7 @@ func TestNewSessionArgs(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := newSessionArgs("minion-1", tc.cwd, tc.argv)
+			got := newSessionArgs("minion-1", tc.cwd, tc.argv, true)
 			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 				t.Errorf("args = %q\nwant   %q", got, tc.want)
 			}
@@ -78,7 +78,7 @@ func TestCreateSessionRunsDetachedOnTheSocket(t *testing.T) {
 }
 
 func TestNewSessionArgsEscapesFormatsInName(t *testing.T) {
-	got := newSessionArgs("a#{pid};", "", nil)
+	got := newSessionArgs("a#{pid};", "", nil, true)
 	if want := `a##{pid}\;`; got[len(got)-1] != want {
 		t.Errorf("name arg = %q, want %q", got[len(got)-1], want)
 	}
@@ -547,5 +547,13 @@ func TestCreateSessionWaitStopsWhenTheContextEnds(t *testing.T) {
 	defer cancel()
 	if _, err := s.host(t).CreateSession(ctx, "minion-1", "", []string{"sleep", "1"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want deadline exceeded", err)
+	}
+}
+
+// psmux (Windows) runs a one-word argv as it is: no env wrapper.
+func TestNewSessionArgsWithoutEnvForPsmux(t *testing.T) {
+	got := strings.Join(newSessionArgs("s", "", []string{"pwsh.exe"}, false), " ")
+	if strings.Contains(got, "env") || !strings.HasSuffix(got, "-- pwsh.exe") {
+		t.Fatalf("args = %s", got)
 	}
 }

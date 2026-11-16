@@ -39,7 +39,7 @@ Consequences you should draw:
 - Give a person, key or model the right to send (`operate`, `message`) only on the Workers and sessions where you accept that.
 - The MCP server is **read-only by default**; the tools that type, create sessions, send messages or change sharing appear only with `--allow-writes` ([API keys and MCP](guides/api-keys-and-mcp.md)).
 - Replies recorded from an agent are the agent's output, not a person's words. A model receives received turns only from sources its user has marked as **trusted** ([the pipe](guides/pipe.md)).
-- Writes that are guarded (for example, a pane that changed since you looked, a shell prompt where an agent was expected) are refused with a reason and are repeated only when you pass `--force` yourself; nothing forces a write on your behalf.
+- Writes that are guarded (for example, a pane that changed since you looked, a shell prompt where an agent was expected) are refused with a reason and are repeated only when you pass `--force` yourself; nothing forces a write on your behalf. With tmux the check and the paste are one step; with psmux on Windows they are two requests, so a program that exits exactly between them can leave the text to the shell that follows it ([Windows Worker](install/worker-windows-preview.md)).
 
 ## Credentials
 

@@ -75,7 +75,41 @@ func (h *Host) listPanes(ctx context.Context) ([]term.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return codec.parse(string(out))
+	sessions, err := codec.parse(string(out))
+	if err != nil || !h.psmux {
+		return sessions, err
+	}
+	// psmux numbers panes per session: address each one through its session.
+	// A session whose name psmux cannot target literally is left out: a target
+	// it misreads falls back to the last-used session (fail closed).
+	kept := sessions[:0]
+	for i := range sessions {
+		if !PsmuxNameOK(sessions[i].Name) {
+			continue
+		}
+		for j := range sessions[i].Panes {
+			p := &sessions[i].Panes[j]
+			p.Ref.Target = psmuxPaneTarget(sessions[i].Name, p.Window, p.Index)
+		}
+		kept = append(kept, sessions[i])
+	}
+	return kept, nil
+}
+
+// PsmuxNameOK reports whether psmux 3.4 reads "=name:" as exactly that
+// session: not a leading '%', '@', '$' or '=' (pane, window, session-id and
+// exact prefixes) and none of the separators and quotes ':', '.', '\”, '"',
+// '#' and ';'.
+func PsmuxNameOK(name string) bool {
+	if name == "" || strings.ContainsAny(name[:1], "%@$=") || strings.ContainsAny(name, ":.'\"#;") || hasControl(name) {
+		return false
+	}
+	return true
+}
+
+// psmuxPaneTarget addresses a pane of psmux by session, window and pane index.
+func psmuxPaneTarget(session string, window, index int) string {
+	return exactSession(session) + strconv.Itoa(window) + "." + strconv.Itoa(index)
 }
 
 // parse parses the output of list-panes -a -F c.format(). Every row ends with

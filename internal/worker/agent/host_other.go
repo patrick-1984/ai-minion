@@ -12,3 +12,6 @@ import (
 func newSessionHost(socket string) (term.SessionHost, error) {
 	return tmux.New(socket)
 }
+
+// sessionHostSpec is the tmux socket: other platforms always use tmux.
+func sessionHostSpec(s Settings) (string, error) { return s.TmuxSocket, nil }

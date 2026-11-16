@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
 
@@ -54,6 +55,37 @@ type Host struct {
 	timeout time.Duration
 	exec    ExecFunc
 	version Version
+	// psmux drives psmux (Windows) instead of tmux: one server per session,
+	// panes numbered per session, so every pane is addressed through its
+	// session (paneTarget); an empty socket means the user's default
+	// namespace (~\.psmux), where the user's own sessions are.
+	psmux bool
+}
+
+// MinPsmuxMajor and MinPsmuxMinor are the oldest supported psmux (3.4): older
+// releases ignore -S and would drive the user's default server.
+const (
+	MinPsmuxMajor = 3
+	MinPsmuxMinor = 4
+)
+
+// WithPsmux drives psmux instead of tmux (see Host.psmux).
+func WithPsmux() Option { return func(h *Host) { h.psmux = true } }
+
+// Psmux reports whether the host drives psmux.
+func (h *Host) Psmux() bool { return h.psmux }
+
+// paneTarget is the -t value of a pane: its Target when the host set one,
+// else its id. A psmux pane without a session-qualified target is refused: a
+// bare id names a pane of whichever session psmux used last.
+func (h *Host) paneTarget(p term.PaneRef) (string, error) {
+	if p.Target != "" {
+		return p.Target, nil
+	}
+	if h.psmux {
+		return "", fmt.Errorf("pane %s: psmux needs the session of a pane: %w", truncate(p.ID, 40), ops.ErrInvalidArgument)
+	}
+	return p.ID, nil
 }
 
 // New returns a Host for the tmux server on socketPath. The path must be
@@ -61,15 +93,19 @@ type Host struct {
 // socket (AD-13). New runs "tmux -S <socket> -V" and refuses a tmux older than
 // 3.2. It does not start a tmux server.
 func New(socketPath string, opts ...Option) (*Host, error) {
-	if socketPath == "" {
-		return nil, errors.New("tmux: socket path is empty; an absolute path is required")
-	}
-	if !filepath.IsAbs(socketPath) {
-		return nil, fmt.Errorf("tmux: socket path %q is not absolute; an absolute path is required", socketPath)
-	}
-	h := &Host{socket: filepath.Clean(socketPath), bin: "tmux", timeout: defaultTimeout}
+	h := &Host{bin: "tmux", timeout: defaultTimeout}
 	for _, o := range opts {
 		o(h)
+	}
+	switch {
+	case socketPath == "" && h.psmux:
+		// psmux: the user's default namespace.
+	case socketPath == "":
+		return nil, errors.New("tmux: socket path is empty; an absolute path is required")
+	case !filepath.IsAbs(socketPath):
+		return nil, fmt.Errorf("tmux: socket path %q is not absolute; an absolute path is required", socketPath)
+	default:
+		h.socket = filepath.Clean(socketPath)
 	}
 	if h.exec == nil {
 		h.exec = h.execProcess
@@ -81,6 +117,15 @@ func New(socketPath string, opts ...Option) (*Host, error) {
 	v, err := ParseVersion(string(out))
 	if err != nil {
 		return nil, err
+	}
+	if h.psmux {
+		pv, ok := psmuxVersion(string(out))
+		if !ok {
+			return nil, fmt.Errorf("tmux: %s is not psmux (no psmux version in %q)", h.bin, truncate(string(out), 80))
+		}
+		if !pv.AtLeast(MinPsmuxMajor, MinPsmuxMinor) {
+			return nil, fmt.Errorf("tmux: psmux %s is too old; psmux %d.%d or newer is required", pv, MinPsmuxMajor, MinPsmuxMinor)
+		}
 	}
 	if !v.AtLeast(MinMajor, MinMinor) {
 		return nil, fmt.Errorf("tmux: version %s is too old; tmux %d.%d or newer is required", v, MinMajor, MinMinor)
@@ -164,7 +209,10 @@ func (h *Host) runStdin(ctx context.Context, stdin []byte, args ...string) ([]by
 // their output is returned with the error.
 func (h *Host) runKeepOutput(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	full := make([]string, 0, len(args)+3)
-	full = append(full, "-S", h.socket, "-u")
+	if h.socket != "" {
+		full = append(full, "-S", h.socket)
+	}
+	full = append(full, "-u")
 	full = append(full, args...)
 	stdout, stderr, err := h.exec(ctx, full, stdin)
 	if err != nil {
@@ -293,4 +341,20 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// psmuxVersion reads the "psmux X.Y.Z" line of psmux -V (which prints the
+// tmux version it is compatible with first).
+func psmuxVersion(out string) (Version, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "psmux "); ok {
+			f := strings.Fields(rest)
+			if len(f) == 0 {
+				return Version{}, false
+			}
+			v, err := ParseVersion("tmux " + f[0])
+			return v, err == nil
+		}
+	}
+	return Version{}, false
 }

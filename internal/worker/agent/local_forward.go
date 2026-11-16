@@ -71,8 +71,9 @@ func (l localExecutor) forwardSessionControl(ctx context.Context, rq Request, pa
 }
 
 // sessionOfPane returns the name of the session of this Worker's terminal host
-// that holds the pane id pane, or "" when there is none or the host cannot be
-// listed.
+// that holds the pane id pane, or "" when there is none, the host cannot be
+// listed, or more than one session has that pane id (psmux numbers panes per
+// session, v0.9.2): the caller's session is never guessed.
 func (e *Executor) sessionOfPane(ctx context.Context, pane string) string {
 	if pane == "" {
 		return ""
@@ -81,14 +82,18 @@ func (e *Executor) sessionOfPane(ctx context.Context, pane string) string {
 	if err != nil {
 		return ""
 	}
+	found := ""
 	for _, s := range all {
 		for _, p := range s.Panes {
 			if p.Ref.ID == pane {
-				return s.Name
+				if found != "" && found != s.Name {
+					return ""
+				}
+				found = s.Name
 			}
 		}
 	}
-	return ""
+	return found
 }
 
 // forwardCall sends a local request of op to the Hub as it is, with cc, and

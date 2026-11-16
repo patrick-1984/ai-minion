@@ -230,8 +230,16 @@ func (h *Host) pasteGuarded(ctx context.Context, pane term.PaneRef, text string,
 	if err := checkPasteText(text); err != nil {
 		return term.DeliveryMark{}, err
 	}
-	if expect.ID != pane.ID {
+	if expect.ID != pane.ID || expect.Target != pane.Target {
 		return term.DeliveryMark{}, fmt.Errorf("expected pane %q, writing to %q: %w", expect.ID, pane.ID, term.ErrPaneChanged)
+	}
+	tgt, err := h.paneTarget(pane)
+	if err != nil {
+		return term.DeliveryMark{}, err
+	}
+	quoted, err := quoteCommandArg(tgt)
+	if err != nil {
+		return term.DeliveryMark{}, err
 	}
 	if hasControl(expect.Command) || expect.PID <= 0 {
 		return term.DeliveryMark{}, fmt.Errorf("pane %s: the expected process cannot be checked: %w", pane.ID, term.ErrPaneChanged)
@@ -248,16 +256,17 @@ func (h *Host) pasteGuarded(ctx context.Context, pane term.PaneRef, text string,
 	if err != nil {
 		return term.DeliveryMark{}, err
 	}
-	if _, err := h.runStdin(ctx, []byte(text), "load-buffer", "-b", buf, "-"); err != nil {
-		h.deleteBuffer(buf)
+	load := append([]string{"load-buffer"}, h.bufferTarget(tgt)...)
+	if _, err := h.runStdin(ctx, []byte(text), append(load, "-b", buf, "-")...); err != nil {
+		h.deleteBuffer(tgt, buf)
 		return term.DeliveryMark{}, err
 	}
-	args := []string{"display-message", "-p", "-t", pane.ID, evidenceFormat}
+	args := []string{"display-message", "-p", "-t", tgt, evidenceFormat}
 	if counters {
-		args = append(args, ";", "capture-pane", "-p", "-t", pane.ID, "-S", "-"+strconv.Itoa(markHistoryRows))
+		args = append(args, ";", "capture-pane", "-p", "-t", tgt, "-S", "-"+strconv.Itoa(markHistoryRows))
 	}
-	args = append(args, ";", "if-shell", "-F", "-t", pane.ID, keepPredicate(expect),
-		"paste-buffer -d -p -r -b "+buf+" -t "+pane.ID+" ; display-message -p "+okTok,
+	args = append(args, ";", "if-shell", "-F", "-t", tgt, keepPredicate(expect),
+		"paste-buffer -d -p -r -b "+buf+" -t "+quoted+" ; display-message -p "+okTok,
 		"delete-buffer -b "+buf+" ; display-message -p "+refTok)
 	// The output is kept when the invocation fails: a user hook on
 	// after-paste-buffer that fails makes tmux exit nonzero after the paste
@@ -270,7 +279,7 @@ func (h *Host) pasteGuarded(ctx context.Context, pane term.PaneRef, text string,
 		last = lines[len(lines)-1]
 	}
 	if runErr != nil && last != okTok && last != refTok {
-		h.deleteBuffer(buf)
+		h.deleteBuffer(tgt, buf)
 		if errors.Is(runErr, term.ErrNotFound) && len(lines) == 0 {
 			// The first command found no pane and printed nothing: nothing was
 			// sent. With any output the first command ran, and a later failure
@@ -299,7 +308,7 @@ func (h *Host) pasteGuarded(ctx context.Context, pane term.PaneRef, text string,
 	}
 	// Neither token: the invocation ended before the if-shell command
 	// reported. It may or may not have pasted.
-	h.deleteBuffer(buf)
+	h.deleteBuffer(tgt, buf)
 	return term.DeliveryMark{}, fmt.Errorf("tmux: the paste reported no result (outcome unknown)")
 }
 
@@ -376,10 +385,14 @@ func (h *Host) ReadFrame(ctx context.Context, pane term.PaneRef, from int64) (te
 		return term.Frame{}, fmt.Errorf("from %d: must not be negative: %w", from, ops.ErrInvalidArgument)
 	}
 	counters := h.TurnsSupported()
-	args := []string{"display-message", "-p", "-t", pane.ID, evidenceFormat}
+	tgt, err := h.paneTarget(pane)
+	if err != nil {
+		return term.Frame{}, err
+	}
+	args := []string{"display-message", "-p", "-t", tgt, evidenceFormat}
 	if counters {
 		x := fmt.Sprintf("#{e|-:%d,#{e|+:#{history_collected},#{history_size}}}", from)
-		args = append(args, ";", "capture-pane", "-p", "-t", pane.ID, "-S", "#{?#{e|>:"+x+",0},0,"+x+"}")
+		args = append(args, ";", "capture-pane", "-p", "-t", tgt, "-S", "#{?#{e|>:"+x+",0},0,"+x+"}")
 	}
 	out, err := h.run(ctx, args...)
 	if err != nil {

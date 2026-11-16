@@ -895,7 +895,7 @@ func waitPaneDead(t *testing.T, h *Host, pane string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if st, err := h.currentState(context.Background(), pane); err == nil && st.dead {
+		if st, err := h.currentState(context.Background(), term.PaneRef{ID: pane}); err == nil && st.dead {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
