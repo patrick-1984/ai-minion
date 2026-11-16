@@ -239,7 +239,9 @@ func TestKnownWorkerGetsWelcomeAndGoesOnline(t *testing.T) {
 	if _, err := h.svc.Registry().OpenOp(context.Background(), w.ID, "send_text"); proto.CodeOf(err) != proto.CodeWorkerOffline {
 		t.Errorf("offline OpenOp: %v", err)
 	}
-	if !strings.Contains(h.logs.String(), "worker online") || strings.Contains(h.logs.String(), "worker_pub") {
+	// The line is written just after the registration that IsOnline sees.
+	eventually(t, "the online log line", func() bool { return strings.Contains(h.logs.String(), "worker online") })
+	if strings.Contains(h.logs.String(), "worker_pub") {
 		t.Errorf("logs:\n%s", h.logs.String())
 	}
 }
