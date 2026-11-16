@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
@@ -11,12 +12,15 @@ import (
 // updateBlock says why this Worker cannot update itself from the Hub, or ""
 // when it can (Tailscale's "supported" check: the install method decides).
 // The reason is shown on the Hub's Workers page.
-func updateBlock(exe, remoteUpdate string, getenv func(string) string, exists func(string) bool) string {
+func updateBlock(exe, remoteUpdate string, getenv func(string) string, _ func(string) bool) string {
 	switch {
 	case remoteUpdate == "off":
 		return "remote updates are turned off on this Worker (remote_update=off)"
-	case getenv("MINION_IN_CONTAINER") == "1" || exists("/.dockerenv"):
-		return "runs in a container: pull the new image"
+	case getenv("MINION_IN_CONTAINER") == "1" || strings.HasPrefix(exe, "/ko-app/"):
+		// The Minion image (ko puts the binary in /ko-app): a new image, not a
+		// new binary. A binary installed by hand inside any other container
+		// updates like on a host (v0.9.3).
+		return "runs from the Minion image: pull the new image"
 	case exe == "/usr/bin/minion":
 		return "installed by a package: upgrade it with apt or dnf"
 	case exe == "":

@@ -109,7 +109,8 @@ sudo systemctl restart minion-worker@<user>
 
 ```sh
 sudo systemctl disable --now minion-worker@<user>
+minion worker down           # as that user: stops the running Worker (or prints the systemctl command a system service needs)
 minion worker reset          # as that user: forgets the Hub, the key, the enrollment and the share choice
 ```
 
-`minion worker reset` refuses while a Worker runs and does not touch your tmux sessions. It does not tell the Hub: remove the Worker in the Hub's Workers page as well, because pairing again creates a new Worker with a new key. Then remove the package (`apt remove minion`, `dnf remove minion`) if you want the binary gone.
+`minion worker reset` refuses while a Worker runs (stop it with `minion worker down`) and does not touch your tmux sessions. It does not tell the Hub: remove the Worker in the Hub's Workers page as well, because pairing again creates a new Worker with a new key. Then remove the package (`apt remove minion`, `dnf remove minion`) if you want the binary gone.

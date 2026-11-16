@@ -36,7 +36,7 @@ const OrderLifecycle = 50
 // ErrStateInUse is returned by [LockLifecycle] when another process holds the
 // lifecycle lock of the state directory: a running Worker, a second Worker on
 // the same state, or a reset in progress.
-var ErrStateInUse = errors.New("agent: the Worker state is in use by another process (a running Worker or a reset in progress)")
+var ErrStateInUse = errors.New("agent: the Worker state is in use by another process (a running Worker or a reset in progress); stop the running Worker with: minion worker down")
 
 // LockLifecycle takes the exclusive lifecycle lock of the state directory
 // without waiting and returns the handle that releases it. It creates the

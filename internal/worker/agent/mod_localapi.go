@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -90,7 +91,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		return nil
 	}
 	srv, err := localapi.New(localapi.Config{
-		Executor: localExecutor{ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls},
+		Executor: localExecutor{ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop},
 		Logger:   log,
 	})
 	if err != nil {
@@ -119,6 +120,8 @@ type localExecutor struct {
 	// calls returns the call client that forwards a session-control request
 	// to the Hub (SC-5, local_forward.go), or nil when there is none.
 	calls func() PipeCaller
+	// stop asks the runtime to stop the Worker (OpLocalStop); nil refuses it.
+	stop func()
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {
@@ -136,6 +139,14 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 			}
 		}
 		rq.Op = base
+	}
+	if rq.Op == OpLocalStop {
+		if l.stop == nil {
+			return nil, l.protoError(rq.Op, apiErr(proto.CodeUnsupportedOp, "", "this Worker cannot be stopped over its control socket"))
+		}
+		// Reply first: the stop closes this socket.
+		go func() { time.Sleep(200 * time.Millisecond); l.stop() }()
+		return json.RawMessage(`{"stopping":true}`), nil
 	}
 	if rq.Op == OpLocalStatus && l.live != nil {
 		raw, err := statusOp(ctx, l.stateDir, l.live)

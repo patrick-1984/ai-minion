@@ -24,9 +24,26 @@ func underServiceManager() bool {
 
 // restartProcess starts the new binary. A service exits with a non-zero code:
 // the service's recovery action (restart after 5 s) starts it again. In the
-// foreground the new binary is started with the same arguments and console,
-// then this process exits.
+// foreground the Worker stops and the command starts the new binary in the same
+// console and waits for it (v0.9.3); without a running runtime the new binary is
+// started with the same arguments and console, then this process exits.
 func restartProcess(log *slog.Logger, exe string) {
+	if underServiceManager() {
+		os.Exit(exitRestart)
+	}
+	// Foreground: stop cleanly and let the command restart the new binary in
+	// this console and wait for it (worker run, RestartPending), so the console
+	// keeps owning the Worker and Ctrl+C stops it.
+	if requestRestart(exe) {
+		return
+	}
+	restartNow(log, exe)
+}
+
+// restartNow starts the binary with the same arguments and console and exits:
+// the start-up rollback, where nothing runs yet that could stop cleanly. The
+// new process waits for this one to exit (waitForParent).
+func restartNow(log *slog.Logger, exe string) {
 	if underServiceManager() {
 		os.Exit(exitRestart)
 	}

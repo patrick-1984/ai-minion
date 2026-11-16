@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // writeFileAtomic writes data to path through a temporary file in the same
@@ -133,7 +134,13 @@ func ReplaceBinary(target, newBinary, goos, wantSHA256 string) error {
 
 	if goos == "windows" {
 		old := real + ".old"
-		_ = os.Remove(old)
+		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+			// The previous binary still runs (a foreground Worker that waits for
+			// the one it restarted, v0.9.3): a running executable cannot be
+			// deleted on Windows, but it can be renamed out of the way.
+			_ = os.Rename(old, fmt.Sprintf("%s-%d", old, time.Now().UnixNano()))
+		}
+		removeStaleOld(real)
 		if err := os.Rename(real, old); err != nil {
 			return replaceError(real, err)
 		}
@@ -189,4 +196,13 @@ func copyFile(src, dst string, perm os.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+// removeStaleOld deletes the "<target>.old-<n>" copies that earlier updates
+// renamed out of the way because they were running; one still running stays.
+func removeStaleOld(real string) {
+	matches, _ := filepath.Glob(real + ".old-*")
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
 }

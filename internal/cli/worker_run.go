@@ -124,7 +124,19 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		InviteArgvWarned: deps.inviteArgvWarned,
 	})
 	if err != nil && !onlyCanceled(err) {
+		if exe := agent.RestartPending(); exe != "" {
+			// The stop before the restart did not finish cleanly: let this
+			// process's exit release everything, and start the new binary so
+			// that it waits for that exit.
+			logger.Error("the Worker did not stop cleanly before its restart; restarting anyway", "error", err.Error())
+			agent.RestartDetached(logger, exe)
+		}
 		return err
+	}
+	if exe := agent.RestartPending(); exe != "" {
+		// A foreground self-update on Windows: the new binary runs in this
+		// console, and this process waits for it.
+		return restartInConsole(exe)
 	}
 	return nil
 }

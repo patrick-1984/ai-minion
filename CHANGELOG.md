@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **`minion worker down`** stops the running Worker of this user, the opposite of `worker up`: a foreground Worker over its control socket, a service through its manager (systemd user or system unit, launchd, Windows service). When it needs rights it does not have, it prints the exact command (for example `sudo systemctl stop minion-worker@<user>.service`).
+
+### Changed
+
+- **One confirmation, on the screen**: a refused send (a shell, an open dialog, a busy agent) shows one "Send anyway" button in the result, no pop-up; after it, sending on that page goes without asking until you leave or reload it ("Allowed until you leave this page"). The "Send without asking" checkbox says when it is always allowed by this browser's setting.
+- Messages that tell you to stop or reset a Worker print the full command (`minion worker down`, `minion worker reset`).
+
+### Fixed
+
+- **Self-update inside a container**: only a Worker that runs from the Minion image (`/ko-app/minion`, or `MINION_IN_CONTAINER=1`) is told to pull a new image; a binary installed by hand in any container updates itself like on a host.
+- **Windows foreground self-update keeps the console**: the old process stops cleanly, then runs the new binary in the same console and waits for it, so Ctrl+C stops the Worker and `minion worker up --foreground` can start again (before, the new Worker ran on in the background and held the state lock).
+
 ## v0.9.2
 
 Released 2026-11-16.

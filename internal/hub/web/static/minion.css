@@ -696,3 +696,7 @@ body.embed .pipe-log { height: 10rem; max-height: 30vh; }
 
 /* Session names carry their Worker (A20): "worker/session". */
 .session-worker { color: var(--muted); font-weight: 400; }
+
+/* "Send anyway" on the screen, one click (A26). */
+.force-inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+.force-note { margin: 0; font-size: 13px; flex: 1 1 20rem; }

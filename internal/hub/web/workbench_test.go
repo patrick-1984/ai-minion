@@ -546,12 +546,10 @@ func TestForceIsOnlyOfferedByTheBackendAndAsksWithTheNamedTarget(t *testing.T) {
 	f.reply(ops.OpSendText, ops.WriteResult{Outcome: ops.OutcomeFailedNotSent, Reason: "pane_busy", Forceable: true})
 	body := post(t, s, "/s/pi-1/minion-1/text", sessUser, url.Values{"text": {"ls"}}).Body.String()
 	mustHave(t, body, `<form method="post" action="/s/pi-1/minion-1/text"`, `data-force data-target="minion-1 on pi-1"`, `<input type="hidden" name="force" value="1">`,
-		`<dialog class="force-dialog" aria-labelledby="force-h">`, `<h2 id="force-h">Send anyway to minion-1 on pi-1?</h2>`,
-		"The session may have changed since the screen was captured. This can run a command.", `<button type="button" class="btn-secondary" data-dialog-cancel autofocus>Cancel</button>`)
-	// Cancel comes before the final action, so it is the first thing in the dialog.
-	if strings.Index(body, "data-dialog-cancel") > strings.Index(body, `class="btn-danger-solid"`) {
-		t.Error("the confirming button comes before Cancel")
-	}
+		// A26: one confirmation, on the screen: the button sends, no pop-up dialog.
+		`<button type="submit" class="btn-danger-solid">Send anyway to minion-1 on pi-1</button>`,
+		"The session may have changed since the screen was captured; sending can run a command. Send anyway allows sending on this page until you leave it.")
+	mustNotHave(t, body, "<dialog", "data-dialog-cancel")
 	// A refusal the backend does not make forceable has no such form.
 	f.reply(ops.OpSendText, ops.WriteResult{Outcome: ops.OutcomeFailedNotSent, Reason: "not_shared"})
 	mustNotHave(t, post(t, s, "/s/pi-1/minion-1/text", sessUser, url.Values{"text": {"ls"}}).Body.String(), "Send anyway", "<dialog", `name="force"`)

@@ -134,7 +134,7 @@ func runWorkerReset(cmd *cobra.Command, deps workerResetDeps, yes bool) error {
 
 	if deps.workerRunning != nil {
 		if sock, running := deps.workerRunning(); running {
-			return fmt.Errorf("a Worker is running (it answers on %s) and would keep its connection to the Hub: stop it first, then run reset again; nothing was changed", sock)
+			return fmt.Errorf("a Worker is running (it answers on %s) and would keep its connection to the Hub: stop it first with `minion worker down`, then run `minion worker reset` again; nothing was changed", sock)
 		}
 	}
 	// Early check, before the question: a running Worker is no reason to ask.
@@ -196,7 +196,7 @@ func lockState(deps workerResetDeps, stateDir string) (io.Closer, error) {
 	}
 	lock, err := deps.lockState(stateDir)
 	if errors.Is(err, agent.ErrStateInUse) {
-		return nil, fmt.Errorf("a Worker is running on %s (or another reset is in progress) and would keep its connection to the Hub: stop it first, then run reset again; nothing was changed", stateDir)
+		return nil, fmt.Errorf("a Worker is running on %s (or another reset is in progress) and would keep its connection to the Hub: stop it first with `minion worker down`, then run `minion worker reset` again; nothing was changed", stateDir)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("lock the Worker state in %s: %w", stateDir, err)
