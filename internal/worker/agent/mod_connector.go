@@ -98,6 +98,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		Ops:        ex.Ops,
 		Features:   ex.Features,
 		Key:        enr.LoadKey,
+		Out:        s.Out,
 		Enrollment: enr,
 		Policy:     policy,
 		Dialer:     d.dialer,

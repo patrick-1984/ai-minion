@@ -34,7 +34,7 @@
   <div><dt>Source address</dt><dd>{{if .EnrollAddr}}{{.EnrollAddr}}{{else}}<span class="muted">unknown</span>{{end}}</dd></div>
 </dl>{{end}}
 
-{{define "worker_approval_buttons"}}{{if .ApproveURL}}<form method="post" action="{{.ApproveURL}}" hx-post="{{.ApproveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Approve worker {{.Name}} with fingerprint {{.Fingerprint}} from {{.EnrollAddr}}? It receives operations as soon as it is approved. Approve only a machine you started." class="row-actions" data-key="worker-approve-{{.ID}}">
+{{define "worker_approval_buttons"}}{{if .ApproveURL}}<form method="post" action="{{.ApproveURL}}" hx-post="{{.ApproveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Approve worker {{.Name}} with fingerprint {{.Fingerprint}} from {{.EnrollAddr}}? The Worker console shows its fingerprint in a box: compare them. It receives operations as soon as it is approved. Approve only a machine you started." class="row-actions" data-key="worker-approve-{{.ID}}">
     <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
     <button type="submit" class="btn" data-control="approve" aria-label="Approve worker {{.Name}}">Approve</button>
   </form>
