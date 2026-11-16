@@ -1,0 +1,24 @@
+# Opt-in: let the Hub update itself (Administration > Updates > Update the Hub).
+#
+#   docker compose -f hub.yaml -f hub.self-update.yaml up -d
+#
+# This gives the Hub control of this Docker host through the Docker socket,
+# which is root-equivalent on the host. Use it only on a host you trust.
+#
+# - MINION_TAG must be a channel tag: 0.9 (patches of 0.9), 0 (releases of 0)
+#   or latest. The Hub replaces its container with the release image pinned by
+#   the digest in the signed release manifest and moves this tag locally to
+#   it, so a later "docker compose up" keeps the update. An exact tag such as
+#   v0.9.0 pins one version: the Hub then shows the command instead.
+# - DOCKER_GID is the group of /var/run/docker.sock on the host:
+#   stat -c %g /var/run/docker.sock
+# - Before the switch the Hub's data directory is copied to
+#   /data/.pre-upgrade-<version>; a new release that is not ready within two
+#   minutes is removed, the copy restored and the previous Hub started again.
+services:
+  hub:
+    image: ghcr.io/patrick-1984/minion:${MINION_TAG:-0.9}
+    group_add:
+      - "${DOCKER_GID:-999}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
