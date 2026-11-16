@@ -6,8 +6,10 @@
 // in localStorage; nothing is stored on the Hub.
 (function () {
   'use strict';
+  // Two namespaces: "w." for a whole Worker, "s." for one session, so no
+  // session name (not even "*") can stand for the Worker.
   var PREFIX = 'minion.unasked.';
-  function key(worker, session) { return PREFIX + worker + '|' + (session || '*'); }
+  function key(worker, session) { return session === null ? PREFIX + 'w.' + worker : PREFIX + 's.' + worker + '|' + session; }
   function get(k) { try { return window.localStorage.getItem(k) === '1'; } catch (e) { return false; } }
   function put(k, on) {
     try { if (on) { window.localStorage.setItem(k, '1'); } else { window.localStorage.removeItem(k); } } catch (e) { /* not kept */ }
@@ -17,12 +19,12 @@
     try {
       for (var i = 0; i < window.localStorage.length; i++) {
         var k = window.localStorage.key(i);
-        if (k && k.indexOf(PREFIX + worker + '|') === 0 && k !== key(worker, '*')) { out.push(k); }
+        if (k && k.indexOf(PREFIX + 's.' + worker + '|') === 0) { out.push(k); }
       }
     } catch (e) { /* none */ }
     return out;
   }
-  function active(worker, session) { return get(key(worker, '*')) || get(key(worker, session)); }
+  function active(worker, session) { return get(key(worker, null)) || get(key(worker, session)); }
 
   // ---- the session page (also inside the Worker page's inspector frame) ----
   var view = document.getElementById('session-view');
@@ -32,7 +34,7 @@
     var session = view.getAttribute('data-session');
     var note = document.getElementById('unasked-note');
     var showSession = function () {
-      var all = get(key(worker, '*'));
+      var all = get(key(worker, null));
       box.checked = active(worker, session);
       box.disabled = all;
       if (note) { note.textContent = all ? 'on for all sessions of this Worker (change it on the Worker page)' : ''; }
@@ -59,7 +61,7 @@
     var all = document.getElementById('unasked-worker');
     var status = document.getElementById('unasked-worker-status');
     var showWorker = function () {
-      var on = get(key(wid, '*'));
+      var on = get(key(wid, null));
       var some = sessionKeys(wid).length;
       all.checked = on;
       all.indeterminate = !on && some > 0;
@@ -71,7 +73,7 @@
     all.addEventListener('change', function () {
       // All or nothing: on covers every session; off clears every session too.
       sessionKeys(wid).forEach(function (k) { put(k, false); });
-      put(key(wid, '*'), all.checked);
+      put(key(wid, null), all.checked);
       showWorker();
     });
     window.addEventListener('storage', showWorker);

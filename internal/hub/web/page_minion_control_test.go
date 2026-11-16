@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -108,4 +109,18 @@ func TestMinionControlOffersOnlyKnownSessionsAndOneCheckChoice(t *testing.T) {
 	if len(calls) != 1 || calls[0].Args["worker_id"] != "wB" || calls[0].Args["session_name"] != "ci-1" {
 		t.Fatalf("check calls = %+v", calls)
 	}
+}
+
+// When every shared session is already a master, the picker says so instead
+// of asking to share sessions.
+func TestMinionControlAllSharedSessionsAreMasters(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, controlFixture())
+	connect(t, f)
+	body := get(t, adminServer(t), pathMinionControl, "X-Test-Session", adminHeader).Body.String()
+	// boss-box (online, one master, no other known session).
+	start := strings.Index(body, `id="ctl-wA"`)
+	end := strings.Index(body[start:], "</tr>")
+	row := body[start : start+end]
+	mustHave(t, row, "No other shared session to nominate.")
+	mustNotHave(t, row, "No shared session on this Worker")
 }
