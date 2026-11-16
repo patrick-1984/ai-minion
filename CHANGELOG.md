@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.9.2
+
+Released 2026-11-16.
+
 ### Added
 
 - **Forget a Worker** (Worker page → Forget this Worker, owner or administrator): removes any Worker, approved or not, online or offline. The Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again to come back.
