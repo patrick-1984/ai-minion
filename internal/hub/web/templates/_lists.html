@@ -1,5 +1,5 @@
 {{define "worker_table"}}<div class="table-wrap"><table class="rtable worker-table">
-    <thead><tr><th scope="col">Worker</th>{{if .ShowOwner}}<th scope="col">Owner</th>{{end}}<th scope="col">Status</th><th scope="col">Kind</th><th scope="col">Sessions</th><th scope="col">Protocol</th><th scope="col">Actions</th></tr></thead>
+    <thead><tr><th scope="col">Worker</th>{{if .ShowOwner}}<th scope="col">Owner</th>{{end}}<th scope="col">Status</th><th scope="col">Kind</th><th scope="col">Sessions</th><th scope="col">Version</th><th scope="col">Actions</th></tr></thead>
     <tbody>
     {{range .Workers}}{{template "worker_row" .}}
     {{end}}
@@ -35,6 +35,10 @@
 {{define "workers_results"}}<p class="result-count" data-summary="{{.WorkersText}}">{{.WorkersText}}{{if .Filter.Active}} shown{{end}}.</p>
 {{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
 {{end}}{{if .PendingWorkers}}<p class="notice notice-warning" role="status" data-pending-banner>{{.PendingWorkers}} {{if eq .PendingWorkers 1}}worker is{{else}}workers are{{end}} waiting for approval. A new worker gets no operations until its owner or an admin approves it: compare the fingerprint, name and source address with the machine you started, then approve it, or remove it if you do not know it.</p>
+{{end}}{{if .UpdatableWorkers}}<form method="post" action="/workers/update-all" hx-post="/workers/update-all" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update {{.UpdatableWorkers}} Workers to this Hub's release? Each installs the signed release and restarts; tmux sessions keep running." class="row-actions" data-update-all>
+  {{if .ScopeAll}}<input type="hidden" name="scope" value="all">{{end}}
+  <button type="submit" class="btn btn-secondary" data-control="update-all">Update all outdated ({{.UpdatableWorkers}})</button>
+</form>
 {{end}}{{if .Workers}}{{template "worker_table" .}}{{else if not .TotalWorkers}}{{template "no_workers"}}{{else}}{{template "no_match" (.NoMatch "workers")}}{{end}}{{end}}
 
 {{define "sessions_results"}}<p class="result-count" data-summary="{{.SessionsText}}">{{.SessionsText}}{{if .Filter.Active}} shown{{end}}.</p>
@@ -55,7 +59,7 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
     <div><dt>Status</dt><dd>{{if .Worker.Pending}}<span class="badge" data-tone="warning" data-pending="true">pending approval</span>{{if .Worker.Online}} <span class="badge" data-online="true">connected</span>{{end}}{{else if .Worker.Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</dd></div>
     <div><dt>Kind</dt><dd><span class="badge plain" data-kind="{{.Worker.Kind}}">{{.Worker.Kind}}</span></dd></div>
     {{if .Worker.Owner}}<div><dt>Owner</dt><dd>{{.Worker.Owner}}</dd></div>
-    {{end}}<div><dt>Protocol</dt><dd>{{if .Worker.Version}}{{.Worker.Version}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
+    {{end}}<div><dt>Version</dt><dd>{{if .Worker.Build}}{{.Worker.Build}}{{else}}<span class="muted">-</span>{{end}}{{if .Worker.UpdateTo}} → {{.Worker.UpdateTo}}{{if .Worker.UpdateBlock}} <span class="muted">({{.Worker.UpdateBlock}})</span>{{end}}{{end}}</dd></div><div><dt>Protocol</dt><dd>{{if .Worker.Version}}{{.Worker.Version}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
     <div><dt>Worker id</dt><dd><code>{{.Worker.ID}}</code></dd></div>
   </dl>
   {{if .Worker.Pending}}<p class="notice notice-warning" role="status" data-pending-banner>This worker is waiting for approval. The Hub sends it no operations and refuses its calls until its owner or an admin approves it. Compare these facts with the machine you started.</p>

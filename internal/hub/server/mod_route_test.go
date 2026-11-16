@@ -125,6 +125,22 @@ func TestHubComposedFromTheRegistryRoutesWorkerOps(t *testing.T) {
 		t.Errorf("sessions_list = %d %s", code, body)
 	}
 
+	// The central Worker update is routed in production (v0.9.0): an admin's
+	// worker_update reaches the router (the Worker is offline), not
+	// unsupported_op.
+	for _, op := range []string{ops.OpWorkerUpdate, ops.OpWorkerUpdateStatus} {
+		code, body, _ := hc.do("POST", "/api/v1/ops/"+op, json.RawMessage(`{"worker_id":"`+wid+`","version":"v9.9.9"}`), asAdmin)
+		var e struct {
+			Error struct {
+				Code proto.Code `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(body), &e)
+		if e.Error.Code != proto.CodeWorkerOffline {
+			t.Errorf("%s = %d %s, want worker_offline (routed)", op, code, body)
+		}
+	}
+
 	// A human-addressed request resolves through the running Hub: the target
 	// "lab:minion-1" names the admin's own Worker, which is offline, so
 	// the call reaches the router with the resolved id (worker_offline, not

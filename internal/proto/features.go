@@ -37,6 +37,11 @@ const (
 	// running it on its own terminals. It is a property of the local control
 	// socket only; the Worker does not announce it to the Hub.
 	FeatureSessionForward = "session.forward"
+	// FeatureSelfUpdate: the Worker serves worker_update and can replace its
+	// own binary with a signed release and restart (v0.9.0). It is announced
+	// only when the install method allows it (not a package, not a container,
+	// not disabled with remote_update=off).
+	FeatureSelfUpdate = "self.update"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

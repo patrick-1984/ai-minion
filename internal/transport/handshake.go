@@ -113,13 +113,30 @@ type WorkerHello struct {
 	// Features are the behaviours the Worker implements that its op names do
 	// not show (proto.Feature*). They are part of the hello, so the transcript
 	// hash and both handshake signatures cover them. An older Worker omits them.
-	Features  []string     `json:"features,omitempty"`
+	Features []string `json:"features,omitempty"`
+	// WorkerFacts are display and update-eligibility facts (v0.9.0): the
+	// build, the platform and why the Worker cannot update itself. They are
+	// never used for an access decision. An older Worker omits them and an
+	// older Hub ignores them; thin Workers omit them.
+	WorkerFacts
 	WorkerPub identity.B64 `json:"worker_pub"`
 	EphW      identity.B64 `json:"eph_w"`
 	Nonce     identity.B64 `json:"nonce"`
 	Mode      Mode         `json:"mode"`
 	Name      string       `json:"name"`
 	PairingID string       `json:"pairing_id,omitempty"`
+}
+
+// WorkerFacts are the optional, display-only members of the Worker hello.
+type WorkerFacts struct {
+	// Build is the release version of the Worker binary ("v0.9.0" or "dev").
+	Build string `json:"build,omitempty"`
+	// OS and Arch are runtime.GOOS and runtime.GOARCH of the Worker.
+	OS   string `json:"os,omitempty"`
+	Arch string `json:"arch,omitempty"`
+	// UpdateBlock is why the Worker cannot update itself from the Hub
+	// ("installed by a package", "runs in a container", ...); empty when it can.
+	UpdateBlock string `json:"update_block,omitempty"`
 }
 
 // HubHello is the Hub's reply. Chain is present in connect mode only.
@@ -169,6 +186,8 @@ type WorkerConfig struct {
 	// Features are the proto.Feature* names this Worker implements. It sends
 	// the normalised list in its hello; nil announces none.
 	Features []string
+	// Facts are the optional display facts of the hello.
+	Facts WorkerFacts
 	// Protocols is the supported protocol range. The zero value means only
 	// proto.Current.
 	Protocols proto.Range
@@ -292,15 +311,16 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 		return nil, err
 	}
 	hello := WorkerHello{
-		Type:      proto.TypeHello,
-		Range:     cfg.Protocols,
-		Ops:       cfg.Ops,
-		Features:  proto.NormaliseFeatures(cfg.Features),
-		WorkerPub: identity.B64(cfg.Key.Public()),
-		EphW:      eph.PublicKey().Bytes(),
-		Nonce:     make([]byte, NonceSize),
-		Mode:      cfg.Mode,
-		Name:      cfg.Name,
+		Type:        proto.TypeHello,
+		Range:       cfg.Protocols,
+		Ops:         cfg.Ops,
+		Features:    proto.NormaliseFeatures(cfg.Features),
+		WorkerFacts: cfg.Facts,
+		WorkerPub:   identity.B64(cfg.Key.Public()),
+		EphW:        eph.PublicKey().Bytes(),
+		Nonce:       make([]byte, NonceSize),
+		Mode:        cfg.Mode,
+		Name:        cfg.Name,
 	}
 	if hello.Ops == nil {
 		hello.Ops = []string{}

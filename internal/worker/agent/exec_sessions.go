@@ -298,6 +298,11 @@ func trimBottomBlank(lines []string) []string {
 // number of the persisted counter (minion-N, never reused, R74); a name that
 // is taken is a conflict and the existing session is never touched (R86).
 func (e *Executor) sessionCreate(ctx context.Context, rq Request) (any, error) {
+	e.createMu.RLock()
+	defer e.createMu.RUnlock()
+	if reason := e.createHold.Load(); reason != nil {
+		return nil, apiErr(proto.CodeConflict, "", *reason+"; create the session after the restart")
+	}
 	op, args, err := prepareWrite(e, ctx, rq, func(a ops.SessionCreateArgs) (ops.WriteArgs, ops.Target) {
 		return a.WriteArgs, ops.Target{SessionName: a.Name}
 	})

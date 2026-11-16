@@ -73,7 +73,10 @@ func productionStatus(t *testing.T, env map[string]string, stateDir string, wait
 		if err := json.Unmarshal([]byte(out), &r); err != nil {
 			t.Fatalf("not JSON: %v\n%s", err, out)
 		}
-		if r.Connection.Live || !waitLive || time.Now().After(deadline) {
+		// A Worker that has just started may answer before its connector has
+		// decided (idle without a reason yet): wait for the decision too.
+		settled := r.Connection.Live && (r.Connection.State != string(agent.ConnIdle) || r.Connection.Reason != "")
+		if settled || !waitLive || time.Now().After(deadline) {
 			return r
 		}
 		time.Sleep(50 * time.Millisecond)

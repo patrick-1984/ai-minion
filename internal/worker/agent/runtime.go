@@ -160,6 +160,14 @@ func (r *Registry) RegisterPreStart(name string, fn PreStartFunc) error {
 	return nil
 }
 
+// has reports whether a module named name is registered.
+func (r *Registry) has(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.modules[name]
+	return ok
+}
+
 func (r *Registry) sorted() []*module {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -314,6 +322,10 @@ type Runtime struct {
 	settings Settings
 	services map[reflect.Type]service
 	running  []started
+	// held is the lifecycle lock taken at the very start of Start, before
+	// any hook, so that the update crash guard runs only in the process that
+	// owns the state; the lifecycle module takes it over.
+	held io.Closer
 }
 
 // NewRuntime returns a runtime for the modules registered in reg.
@@ -344,6 +356,22 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 	fail := func(err error) error {
 		// The cleanup must run although ctx may be cancelled already.
 		return errors.Join(err, rt.stopAll(context.WithoutCancel(ctx)))
+	}
+	// The update crash guard runs first, before any hook can open or migrate
+	// the database, and only under the state's lifecycle lock (a duplicate
+	// Worker never touches the guard).
+	if s.StateDir != "" && rt.reg.has(ModuleLifecycle) {
+		waitForParent()
+		lock, err := LockLifecycle(s.StateDir)
+		if err != nil {
+			return fail(fmt.Errorf("take the state lock in %s: %w", s.StateDir, err))
+		}
+		rt.mu.Lock()
+		rt.held = lock
+		rt.mu.Unlock()
+		if rolled := RecoverUpdate(s.logger(), s.StateDir); rolled != nil {
+			lastRollback.Store(rolled)
+		}
 	}
 	if err := rt.reg.RunPreStart(ctx, s); err != nil {
 		return fail(err)
@@ -385,6 +413,10 @@ func (rt *Runtime) stopAll(ctx context.Context) error {
 		return nil
 	}
 	rt.state = stateStopped
+	if rt.held != nil {
+		_ = rt.held.Close()
+		rt.held = nil
+	}
 	running := rt.running
 	rt.running = nil
 	log := rt.settings.logger()

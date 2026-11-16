@@ -99,9 +99,17 @@ func RegisterLifecycle(r *Registry) error {
 
 func startLifecycle(_ context.Context, env *Env) (StopFunc, error) {
 	dir := env.Settings().StateDir
-	lock, err := LockLifecycle(dir)
-	if err != nil {
-		return nil, fmt.Errorf("take the state lock in %s: %w", dir, err)
+	// Runtime.Start took the lock before the hooks (for the update crash
+	// guard); this module holds it from here on.
+	env.rt.mu.Lock()
+	lock := env.rt.held
+	env.rt.held = nil
+	env.rt.mu.Unlock()
+	if lock == nil {
+		var err error
+		if lock, err = LockLifecycle(dir); err != nil {
+			return nil, fmt.Errorf("take the state lock in %s: %w", dir, err)
+		}
 	}
 	return func(context.Context) error { return lock.Close() }, nil
 }

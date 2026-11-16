@@ -91,6 +91,8 @@ type Session interface {
 
 // ConnectParams is everything one connection attempt needs.
 type ConnectParams struct {
+	// Facts are the display facts of the hello (build, platform, update block).
+	Facts transport.WorkerFacts
 	// HubURL is the configured Hub URL (any of https, http, wss, ws).
 	HubURL string
 	// Key is the Worker's identity key.
@@ -241,6 +243,8 @@ type ConnectorConfig struct {
 	// attempt like Ops. Nil announces none, which is what a Worker without the
 	// safeguards says (the Hub then refuses the requests that rely on them).
 	Features func() []string
+	// Facts returns the display facts of the hello; nil sends none.
+	Facts func() transport.WorkerFacts
 	// Protocols is the supported protocol range; zero means proto.Current.
 	Protocols proto.Range
 	// Key returns the Worker's identity key; it is called for every attempt.
@@ -315,6 +319,14 @@ type running struct {
 	link   *Link
 	cancel context.CancelCauseFunc
 	wg     sync.WaitGroup
+}
+
+// facts returns the display facts of the hello, or none.
+func (c *Connector) facts() transport.WorkerFacts {
+	if c.cfg.Facts == nil {
+		return transport.WorkerFacts{}
+	}
+	return c.cfg.Facts()
 }
 
 // notePending reports whether the approval box is still to be shown.
@@ -607,6 +619,7 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 		Name:      c.cfg.Name,
 		Ops:       c.ops(),
 		Features:  c.features(),
+		Facts:     c.facts(),
 		Protocols: c.cfg.Protocols,
 		Pin:       enr.Pin,
 		Ratchet:   enr.Ratchet,

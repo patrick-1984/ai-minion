@@ -69,6 +69,7 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 		Name:      p.Name,
 		Ops:       p.Ops,
 		Features:  p.Features,
+		Facts:     p.Facts,
 		Protocols: p.Protocols,
 		Mode:      transport.ModeConnect,
 		Pin:       p.Pin,
