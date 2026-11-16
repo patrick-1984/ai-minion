@@ -362,8 +362,8 @@ func TestWorkerNamesStartWithTheOwner(t *testing.T) {
 		t.Errorf("long name has %d bytes", len(long))
 	}
 	// The limit is in bytes, cut at a character boundary.
-	if n := StandardWorkerName(OwnerSlug("josé"), strings.Repeat("a", 60)); len(n) > 64 || !utf8.ValidString(n) {
-		t.Errorf("josé: %d bytes, valid=%v", len(n), utf8.ValidString(n))
+	if n := StandardWorkerName(OwnerSlug("jos\u00e9"), strings.Repeat("a", 60)); len(n) > 64 || !utf8.ValidString(n) {
+		t.Errorf("jos\u00e9: %d bytes, valid=%v", len(n), utf8.ValidString(n))
 	}
 }
 
@@ -413,8 +413,8 @@ func TestExistingWorkerNamesGetTheOwnerPrefixOnce(t *testing.T) {
 // Names stay valid Worker names in every case (round 2 of A20).
 func TestWorkerNameEdgeCases(t *testing.T) {
 	for _, tc := range []struct{ user, name string }{
-		{"k", "K-pi"}, {strings.Repeat("Ⱥ", 20), "x"}, {"!!!", "pi"}, {"user", "--"},
-		{strings.Repeat("é", 33), "pi"}, {"josé", strings.Repeat("a", 64)},
+		{"k", "K-pi"}, {strings.Repeat("\u023a", 20), "x"}, {"!!!", "pi"}, {"user", "--"},
+		{strings.Repeat("\u00e9", 33), "pi"}, {"jos\u00e9", strings.Repeat("a", 64)},
 	} {
 		n := StandardWorkerName(OwnerSlug(tc.user), tc.name)
 		if !ops.ValidWorkerName(n) || len(n) > 64 {
@@ -424,7 +424,7 @@ func TestWorkerNameEdgeCases(t *testing.T) {
 	if got := RenameWorkerOwner("K-pi", "k", "bob"); got != "bob-pi" {
 		t.Errorf("K-pi from k to bob = %q", got)
 	}
-	long := strings.Repeat("Ⱥ", 20)
+	long := strings.Repeat("\u023a", 20)
 	slug := OwnerSlug(long)
 	if got := RenameWorkerOwner(slug+"-x", slug, "bob"); got != "bob-x" || !utf8.ValidString(got) {
 		t.Errorf("unicode prefix swap = %q", got)
