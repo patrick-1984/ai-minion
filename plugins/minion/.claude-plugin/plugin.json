@@ -1,0 +1,20 @@
+{
+  "name": "minion",
+  "version": "0.9.0",
+  "description": "Operate Minion (github.com/patrick-1984/ai-minion) from Claude Code: detect an installed minion or install it, start and pair a Worker with a Hub, list, read and type into terminal sessions, and act as a Minion master that controls sessions on other Workers once an administrator grants it. The skill is the same guide as \"minion llm-help\"; /minion:setup walks through install and pairing.",
+  "author": {
+    "name": "Minion maintainers"
+  },
+  "homepage": "https://github.com/patrick-1984/ai-minion",
+  "repository": "https://github.com/patrick-1984/ai-minion",
+  "license": "Apache-2.0",
+  "keywords": [
+    "minion",
+    "tmux",
+    "terminal",
+    "sessions",
+    "agents",
+    "remote",
+    "mcp"
+  ]
+}

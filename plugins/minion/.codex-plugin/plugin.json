@@ -1,0 +1,23 @@
+{
+  "name": "minion",
+  "version": "0.9.0",
+  "description": "Operate Minion (github.com/patrick-1984/ai-minion) from Codex: detect an installed minion or install it, start and pair a Worker with a Hub, list, read and type into terminal sessions, and act as a Minion master once an administrator grants it. The skill is the same guide as \"minion llm-help\".",
+  "author": { "name": "Minion maintainers" },
+  "homepage": "https://github.com/patrick-1984/ai-minion",
+  "repository": "https://github.com/patrick-1984/ai-minion",
+  "license": "Apache-2.0",
+  "keywords": ["minion", "tmux", "terminal", "sessions", "agents", "remote", "mcp"],
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Minion",
+    "shortDescription": "Operate terminal sessions on many machines",
+    "developerName": "Minion maintainers",
+    "category": "Developer Tools",
+    "websiteURL": "https://github.com/patrick-1984/ai-minion",
+    "defaultPrompt": [
+      "is minion installed here, and is this machine paired with a Hub?",
+      "list my minion sessions and show the screen of build",
+      "set this machine up as a minion Worker"
+    ]
+  }
+}

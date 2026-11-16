@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/patrick-1984/ai-minion/internal/llmguide"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
@@ -20,6 +21,7 @@ func newRoot(reg *Registry) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "minion",
 		Short:         "Minion Hub and Minion Worker for terminal and agent sessions",
+		Long:          llmguide.HelpLine + "\n\nMinion Hub and Minion Worker for terminal and agent sessions.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

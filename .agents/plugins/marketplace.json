@@ -1,0 +1,12 @@
+{
+  "name": "minion",
+  "interface": { "displayName": "Minion" },
+  "plugins": [
+    {
+      "name": "minion",
+      "source": { "source": "local", "path": "./plugins/minion" },
+      "policy": { "installation": "AVAILABLE" },
+      "category": "Developer Tools"
+    }
+  ]
+}
