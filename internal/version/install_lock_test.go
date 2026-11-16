@@ -47,3 +47,24 @@ func TestInstallRefusesWhenANewerBinaryIsInstalled(t *testing.T) {
 		t.Fatalf("installed over a newer binary: %v ran=%v", err, ran)
 	}
 }
+
+// A lock file this account cannot open (left by an update as another user)
+// does not block the update.
+func TestInstallLockFileOfAnotherAccountDoesNotBlock(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a Unix account that is not root")
+	}
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "minion")
+	if err := os.WriteFile(exe, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe+".update-lock", nil, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := ParseVersion("v0.9.1")
+	ran := false
+	if err := installLocked(Options{ExecPath: exe, Current: "v0.9.0"}, target, func() error { ran = true; return nil }); err != nil || !ran {
+		t.Fatalf("blocked: %v ran=%v", err, ran)
+	}
+}

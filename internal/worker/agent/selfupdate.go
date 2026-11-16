@@ -394,8 +394,11 @@ func commitAfter(ctx context.Context, dir, running string, connected func() bool
 func restoreStateDB(stateDir string, since time.Time) error {
 	dir := filepath.Join(stateDir, "backups")
 	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // no migration ran: the database is the old one
+	}
 	if err != nil {
-		return nil
+		return err // unknown: never pair the old binary with a newer schema
 	}
 	var best string
 	var bestAt time.Time
@@ -431,7 +434,6 @@ func restoreStateDB(stateDir string, since time.Time) error {
 // is rolled back here. It restarts the process when it restored the previous
 // binary, and returns the rolled-back record to report otherwise.
 func RecoverUpdate(log *slog.Logger, stateDir string) *pendingRecord {
-	waitForParent()
 	if stateDir == "" {
 		return nil
 	}

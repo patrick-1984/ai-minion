@@ -48,6 +48,12 @@ func installLocked(o Options, target SemVer, install func() error) error {
 // update leaves no stale lock; the file itself stays.
 func takeLock(p string) (func(), error) {
 	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE, 0o600)
+	if errors.Is(err, os.ErrPermission) {
+		// A lock file another account created (an earlier sudo update) must
+		// not block this one: the installed-version check still guards
+		// against a stale downgrade.
+		return func() {}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot lock %s: %w", p, err)
 	}

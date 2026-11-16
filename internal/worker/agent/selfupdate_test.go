@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -419,5 +420,45 @@ func TestRecoveryRunsOnlyUnderTheLifecycleLock(t *testing.T) {
 	after, _ := os.ReadFile(filepath.Join(dir, pendingFile))
 	if string(before) != string(after) {
 		t.Fatal("the guard changed")
+	}
+}
+
+// A backup directory that cannot be read stops the rollback: the old binary
+// must never be paired with a database it may not read.
+func TestRestoreStateDBRefusesAnUnreadableBackupDir(t *testing.T) {
+	dir := t.TempDir()
+	// "backups" is a file: reading it as a directory fails, not with NotExist.
+	if err := os.WriteFile(filepath.Join(dir, "backups"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreStateDB(dir, time.Now()); err == nil {
+		t.Fatal("an unreadable backup directory was treated as no backup")
+	}
+}
+
+// The lifecycle lock is taken before the pre-start hooks run, so the update
+// guard and the hooks (which may migrate the database) run only in the owner.
+func TestRuntimeHoldsTheStateLockBeforeThePreStartHooks(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRegistry()
+	if err := RegisterLifecycle(r); err != nil {
+		t.Fatal(err)
+	}
+	held := false
+	if err := r.RegisterPreStart("probe", func(_ context.Context, s Settings) error {
+		_, err := LockLifecycle(s.StateDir)
+		held = errors.Is(err, ErrStateInUse)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(r, Options{})
+	if err := rt.Start(context.Background(), Settings{WorkerCore: config.WorkerCore{StateDir: dir},
+		Logger: slog.New(slog.NewTextHandler(&logBuf{}, nil))}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+	if !held {
+		t.Fatal("the pre-start hook ran without the state lock held")
 	}
 }
