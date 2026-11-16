@@ -118,7 +118,11 @@ func newWorkerView(d Dashboard, all bool, id string, operate bool) WorkerView {
 	if !operate {
 		// The approval buttons are offered to whoever may operate the Worker.
 		out.Worker.ApproveURL, out.Worker.RemoveURL = "", ""
-	} else if out.Worker.NeverConnected && !out.Worker.Online {
+	} else {
+		// "Forget this Worker" (A22): any Worker, approved or not.
+		out.Worker.RemoveURL = WorkerRemovePath(id)
+	}
+	if operate && out.Worker.NeverConnected && !out.Worker.Online {
 		// Re-issue pairing (design 12.3): the owner or an administrator, and
 		// only for a Worker that has never connected.
 		out.Worker.RepairURL = WorkerRepairPairingPath(id)
