@@ -4,10 +4,10 @@ package store
 // known to the Hub by its name only, and a name can come back as another
 // terminal (a renamed tmux session, a new one under an old name). So when a
 // session ends or stops being shared, its master nomination is deleted and it
-// is taken out of every session-limited acceptance of its Worker; an
-// acceptance that named only gone sessions is deleted. A name that comes back
-// starts from the Worker's defaults: a slave session, accepted only where the
-// Worker accepts its source as a whole.
+// is taken out of every session-limited acceptance of its Worker and of every
+// migrated (legacy) target limit. A list that loses its last session stays as
+// an empty list, which allows nothing: it is never widened to the Worker or to
+// "accepts all Workers". A name that comes back is a slave session.
 
 import (
 	"context"
@@ -106,20 +106,68 @@ func (s *Store) purgeSessions(ctx context.Context, workerID string, gone func(st
 			if len(keep) == len(a.names) {
 				continue
 			}
-			var res sql.Result
-			if len(keep) == 0 {
-				res, err = tx.ExecContext(ctx, `DELETE FROM control_accept WHERE target_worker_id = ? AND source_worker_id = ?`, workerID, a.source)
-			} else {
-				b, _ := json.Marshal(keep)
-				res, err = tx.ExecContext(ctx, `UPDATE control_accept SET sessions_json = ? WHERE target_worker_id = ? AND source_worker_id = ?`, string(b), workerID, a.source)
+			if keep == nil {
+				keep = []string{} // allows nothing; never NULL (= the whole Worker)
 			}
+			b, _ := json.Marshal(keep)
+			res, err := tx.ExecContext(ctx, `UPDATE control_accept SET sessions_json = ? WHERE target_worker_id = ? AND source_worker_id = ?`, string(b), workerID, a.source)
 			if err != nil {
 				return fmt.Errorf("store: purge acceptance: %w", err)
 			}
 			k, _ := res.RowsAffected()
 			total += k
 		}
-		return nil
+		n, err := purgeLegacyTargets(ctx, tx, workerID, gone)
+		total += n
+		return err
 	})
 	return total, err
+}
+
+// purgeLegacyTargets takes the gone sessions of workerID out of every
+// migrated target limit. A limit that loses its last target becomes "[]",
+// which allows nothing.
+func purgeLegacyTargets(ctx context.Context, tx *sql.Tx, workerID string, gone func(string) bool) (int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT worker_id, session_name, legacy_targets_json FROM master_session WHERE legacy_targets_json IS NOT NULL`)
+	if err != nil {
+		return 0, fmt.Errorf("store: purge legacy targets: %w", err)
+	}
+	type upd struct{ w, s, js string }
+	var todo []upd
+	for rows.Next() {
+		var w, sn, js string
+		if err := rows.Scan(&w, &sn, &js); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		var lim []controlResource
+		if json.Unmarshal([]byte(js), &lim) != nil {
+			continue // unreadable: it already allows nothing
+		}
+		keep := make([]controlResource, 0, len(lim))
+		for _, r := range lim {
+			if r.Kind == "session" && r.WorkerID == workerID && gone(r.SessionName) {
+				continue
+			}
+			keep = append(keep, r)
+		}
+		if len(keep) != len(lim) {
+			b, _ := json.Marshal(keep)
+			todo = append(todo, upd{w, sn, string(b)})
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, u := range todo {
+		res, err := tx.ExecContext(ctx, `UPDATE master_session SET legacy_targets_json = ? WHERE worker_id = ? AND session_name = ?`, u.js, u.w, u.s)
+		if err != nil {
+			return total, fmt.Errorf("store: purge legacy target: %w", err)
+		}
+		k, _ := res.RowsAffected()
+		total += k
+	}
+	return total, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // kindFixture is a store with an admin and two plain users.
@@ -357,7 +358,11 @@ func TestWorkerNamesStartWithTheOwner(t *testing.T) {
 	}
 	long := StandardWorkerName("alice", strings.Repeat("x", 80))
 	if len(long) != 64 {
-		t.Errorf("long name has %d characters", len(long))
+		t.Errorf("long name has %d bytes", len(long))
+	}
+	// The limit is in bytes, cut at a character boundary.
+	if n := StandardWorkerName(OwnerSlug("josé"), strings.Repeat("a", 60)); len(n) > 64 || !utf8.ValidString(n) {
+		t.Errorf("josé: %d bytes, valid=%v", len(n), utf8.ValidString(n))
 	}
 }
 
@@ -371,5 +376,35 @@ func TestReassignSwapsTheNamePrefix(t *testing.T) {
 	}
 	if got, _ := f.s.WorkerByID(context.Background(), w.ID); got.Name != "bob-edge" {
 		t.Fatalf("stored name = %q", got.Name)
+	}
+}
+
+// The upgrade renames the existing Workers once, with the same rule as new
+// names, and skips a rename that would collide.
+func TestExistingWorkerNamesGetTheOwnerPrefixOnce(t *testing.T) {
+	f := newKindFixture(t)
+	ctx := context.Background()
+	a := f.worker(t, 1, f.u1, "pi", WorkerKindPrivate)
+	b := f.worker(t, 2, f.u1, "nuc", WorkerKindPrivate)
+	f.worker(t, 3, f.u1, "alice-nuc", WorkerKindPrivate) // the prefixed name is taken
+	if _, err := f.s.DB().ExecContext(ctx, `DELETE FROM auth_meta WHERE key = ?`, workerNamesMarker); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.normalizeWorkerNames(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.s.WorkerByID(ctx, a.ID); got.Name != "alice-pi" {
+		t.Errorf("pi -> %q", got.Name)
+	}
+	if got, _ := f.s.WorkerByID(ctx, b.ID); got.Name != "nuc" {
+		t.Errorf("a colliding rename was not skipped: %q", got.Name)
+	}
+	// Once only: a later Worker named by hand keeps its name.
+	c := f.worker(t, 4, f.u1, "legacy", WorkerKindPrivate)
+	if err := f.s.normalizeWorkerNames(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.s.WorkerByID(ctx, c.ID); got.Name != "legacy" {
+		t.Errorf("ran twice: %q", got.Name)
 	}
 }

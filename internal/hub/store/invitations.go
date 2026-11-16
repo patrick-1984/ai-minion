@@ -360,7 +360,8 @@ func (s *Store) insertWorkerNamed(ctx context.Context, tx *sql.Tx, w WorkerRow) 
 	for n := 1; n <= maxNameAttempts; n++ {
 		w.Name = base
 		if n > 1 {
-			w.Name = base + "-" + strconv.Itoa(n)
+			suffix := "-" + strconv.Itoa(n)
+			w.Name = cutBytes(base, maxWorkerNameLen-len(suffix)) + suffix
 		}
 		err := s.InsertWorker(ctx, tx, w)
 		switch {

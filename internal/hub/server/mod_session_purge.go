@@ -64,7 +64,7 @@ type sessionPurger struct {
 	// sessions is the hub's view of a Worker's sessions (a fake in tests).
 	sessions interface {
 		Sessions(workerID string) (workers.WorkerSessions, bool)
-		Fenced(workerID, session string) bool
+		All() []workers.WorkerSessions
 	}
 	log interface {
 		Info(msg string, args ...any)
@@ -72,12 +72,13 @@ type sessionPurger struct {
 	}
 }
 
-// run follows the feed until ctx ends; a subscription closed for being slow
-// is opened again. Only a resync event triggers the "not listed" purge: it
-// comes after the Worker's snapshot, never before it.
+// run follows the feed until ctx ends. A subscription closed for being slow
+// is opened again and every Worker that sent its snapshot is checked, so a
+// removal missed in the gap is still applied.
 func (p *sessionPurger) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		sub := p.hub.Subscribe(1024)
+		p.reconcile(ctx)
 		p.follow(ctx, sub)
 		sub.Close()
 		select {
@@ -115,17 +116,27 @@ func (p *sessionPurger) handle(ctx context.Context, ev workers.Event) {
 	}
 }
 
-// resynced purges the sessions the Worker no longer lists (its shared ones).
+// reconcile checks every Worker that sent its snapshot on this connection.
+func (p *sessionPurger) reconcile(ctx context.Context) {
+	for _, ws := range p.sessions.All() {
+		if ws.Synced {
+			p.resynced(ctx, ws.WorkerID)
+		}
+	}
+}
+
+// resynced purges the sessions the Worker no longer lists. The list is the
+// Worker's snapshot of this connection, which holds only the sessions it
+// shares (the Hub drops hidden ones when it applies the snapshot); before
+// that snapshot nothing is purged.
 func (p *sessionPurger) resynced(ctx context.Context, workerID string) {
 	ws, ok := p.sessions.Sessions(workerID)
-	if !ok || !ws.Online {
+	if !ok || !ws.Synced {
 		return
 	}
 	live := make([]string, 0, len(ws.Sessions))
 	for _, s := range ws.Sessions {
-		if !p.sessions.Fenced(workerID, s.Name) {
-			live = append(live, s.Name)
-		}
+		live = append(live, s.Name)
 	}
 	if n, err := p.st.PurgeSessionsNotIn(ctx, workerID, live); err != nil {
 		p.log.Error("purge the control settings of gone sessions", "worker_id", workerID, "error", err)

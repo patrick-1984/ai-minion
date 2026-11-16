@@ -136,6 +136,10 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 		return nil, fmt.Errorf("store: migrate database: %w", err)
 	}
 	st := &Store{db: db, box: box, dir: abs}
+	if err := st.normalizeWorkerNames(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: worker names: %w", err)
+	}
 	if _, err := st.suspendUnusableIdPAdmins(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: reconcile IdP admin grants: %w", err)

@@ -14,7 +14,7 @@
 
 ### Security
 
-- **A session that ends or stops being shared loses its control settings**: its master nomination is deleted and it is taken out of session-limited acceptances (also for sessions a Worker no longer lists when it reconnects). A new terminal under an old name starts as a slave session and never inherits control.
+- **A session that ends or stops being shared loses its control settings**: when the Hub sees it end (or the Worker no longer lists it after a reconnect), its master nomination is deleted and it is taken out of session-limited acceptances and migrated limits; a limit that loses its last session allows nothing (it never falls back to the whole Worker or to "accepts all Workers"). A new terminal under an old name then starts as a slave session. Limit: a session that ends and comes back under the same name while the Hub is down is not detected (the Hub knows sessions by name only).
 
 ## v0.9.0
 

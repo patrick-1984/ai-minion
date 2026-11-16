@@ -345,8 +345,11 @@ func TestGoneSessionsLoseTheirControlSettings(t *testing.T) {
 	if len(ms) != 1 || ms[0].SessionName != "keep" {
 		t.Errorf("masters = %+v", ms)
 	}
+	// wC named only boss: its acceptance stays as an empty list (nothing),
+	// never NULL (the whole Worker).
 	as, _ := s.ListAccepts(ctx)
-	if len(as) != 2 || as[0].SourceWorkerID != "wB" || len(as[0].Sessions) != 1 || as[0].Sessions[0] != "ci" || as[1].SourceWorkerID != "wD" || as[1].Sessions != nil {
+	if len(as) != 3 || as[0].SourceWorkerID != "wB" || len(as[0].Sessions) != 1 || as[0].Sessions[0] != "ci" ||
+		as[1].SourceWorkerID != "wC" || as[1].Sessions == nil || len(as[1].Sessions) != 0 || as[2].SourceWorkerID != "wD" || as[2].Sessions != nil {
 		t.Errorf("acceptances = %+v", as)
 	}
 	// After a resync only "ci" is there: "keep" goes too.
@@ -355,5 +358,52 @@ func TestGoneSessionsLoseTheirControlSettings(t *testing.T) {
 	}
 	if ms, _ := s.ListMasterSessions(ctx); len(ms) != 0 {
 		t.Errorf("masters after resync = %+v", ms)
+	}
+}
+
+// A purge never widens: with "accepts all Workers" on, an acceptance limited
+// to a session that ends allows nothing, not the whole Worker.
+func TestPurgeNeverFallsBackToAcceptAll(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	all := true
+	if err := s.SetWorkerControl(ctx, "wB", nil, &all); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAccept(ctx, AcceptRow{TargetWorkerID: "wB", SourceWorkerID: "wA", Sessions: []string{"ci"}, CreatedBy: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutMasterSession(ctx, MasterRow{WorkerID: "wA", SessionName: "boss", CreatedBy: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PurgeGoneSessions(ctx, "wB", []string{"ci"}); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("grant after the purge = %+v, %v; want nothing", g, err)
+	}
+}
+
+// Migrated (legacy) limits lose gone sessions too; a limit left empty allows
+// nothing.
+func TestPurgeCleansLegacyTargets(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if err := s.PutSessionControl(ctx, SessionControlRow{WorkerID: "wA", SessionName: "boss",
+		TargetsJSON: `[{"kind":"session","worker_id":"wB","session_name":"ci"}]`, CreatedBy: "u", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionControl(ctx, "wA", "boss"); err != nil {
+		t.Fatalf("before: %v", err)
+	}
+	if n, err := s.PurgeGoneSessions(ctx, "wB", []string{"ci"}); err != nil || n == 0 {
+		t.Fatalf("purge = %d, %v", n, err)
+	}
+	if _, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a new ci on wB is still a target: %v", err)
+	}
+	m, _ := s.MasterSession(ctx, "wA", "boss")
+	if m.LegacyTargetsJSON != "[]" {
+		t.Errorf("legacy limit = %q", m.LegacyTargetsJSON)
 	}
 }

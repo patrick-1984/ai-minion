@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -550,5 +551,12 @@ func TestEnrollRefusesAKeyWhoseCreatorIsNotActive(t *testing.T) {
 	// The record of a Worker that already enrolled is still returned.
 	if res, err := s.EnrollWithInvitation(ctx, enrollParams(r, 1, "pi", 11)); err != nil || !res.Existing || res.Worker.ID != first.Worker.ID {
 		t.Errorf("re-enroll after deactivation: %+v %v", res, err)
+	}
+}
+
+// Suffixes stay within the byte limit of a Worker name.
+func TestEnrollSuffixesStayWithinTheNameLimit(t *testing.T) {
+	if n := cutBytes(StandardWorkerName("owner", strings.Repeat("h", 60)), maxWorkerNameLen-2) + "-2"; len(n) > maxWorkerNameLen {
+		t.Fatalf("%d bytes", len(n))
 	}
 }

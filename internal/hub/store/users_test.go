@@ -113,7 +113,7 @@ func TestSeedAdminRollsBackEverythingOnFailure(t *testing.T) {
 		t.Error("the user row survived a failed seed")
 	}
 	var n int
-	_ = s.db.QueryRow(`SELECT count(*) FROM auth_meta`).Scan(&n)
+	_ = s.db.QueryRow(`SELECT count(*) FROM auth_meta WHERE key = ?`, AdminSeedMarker).Scan(&n)
 	if n != 0 {
 		t.Error("the marker survived a failed seed")
 	}
