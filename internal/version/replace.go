@@ -61,8 +61,9 @@ func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
 // the verification therefore never gets installed. An empty wantSHA256 is
 // refused: there is no unverified install.
 //
-// On Windows a running executable cannot be overwritten but can be renamed:
-// the old file is moved to "<target>.old" and removed on the next update.
+// The previous executable is kept as "<target>.old" until the next update, so
+// that a Worker can roll back (on Windows the running executable is renamed,
+// elsewhere hard-linked).
 func ReplaceBinary(target, newBinary, goos, wantSHA256 string) error {
 	if len(wantSHA256) != sha256.Size*2 {
 		return errors.New("refusing to install an executable without its verified SHA-256")
@@ -144,7 +145,15 @@ func ReplaceBinary(target, newBinary, goos, wantSHA256 string) error {
 		done = true
 		return nil
 	}
+	// Keep the previous executable as "<target>.old" (a hard link, so the
+	// running process is not disturbed): a Worker whose new binary cannot
+	// start restores it (crash guard). Best effort: without it the update
+	// still installs, only that rollback is not possible.
+	old := real + ".old"
+	_ = os.Remove(old)
+	_ = os.Link(real, old)
 	if err := os.Rename(tmpName, real); err != nil {
+		_ = os.Remove(old)
 		return replaceError(real, err)
 	}
 	done = true

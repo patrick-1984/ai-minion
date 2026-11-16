@@ -108,7 +108,7 @@ func TestDashboardUserListsWorkersAndSessions(t *testing.T) {
 		`<th scope="row"><a href="/workers/w1" data-control="name" data-worker-link>laptop</a></th>`,
 		`<span class="badge" data-online="true">online</span>`,
 		`<span class="badge plain" data-kind="private">private</span>`,
-		`<td data-label="Protocol">1.0</td>`,
+		`<td data-label="Version"><span class="muted" title="An older Worker reports only its protocol">protocol 1.0</span></td>`,
 		`<th scope="row"><a href="/s/laptop/fix-tests" data-control="name" data-inspect data-inspect-label="fix-tests on laptop">fix-tests</a></th>`,
 		`<td data-label="Kind">agent:claude</td>`,
 		`<span class="badge" data-state="busy">Working</span>`,
@@ -141,7 +141,7 @@ func TestDashboardShowsOfflineWorkerAndSession(t *testing.T) {
 	mustHave(t, body,
 		`<span class="badge muted" data-online="false">offline</span>`,
 		`<span class="badge plain" data-kind="infrastructure">infrastructure</span>`,
-		`<td data-label="Protocol"><span class="muted">-</span></td>`)
+		`<td data-label="Version"><span class="muted">-</span></td>`)
 	// The session of an offline Worker is marked, and shows no task.
 	mustHave(t, body, `<td data-label="Worker"><a href="/workers/w2" data-control="worker" data-worker-link>buildbox</a> <span class="badge muted" data-online="false">offline</span></td>`)
 }

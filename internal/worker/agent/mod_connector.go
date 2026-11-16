@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/version"
 	"sort"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -92,11 +94,14 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		}
 	}
 	enr := NewEnrollments(st, s.StateDir)
+	host, _ := Require[term.SessionHost](env)
+	su, facts, features := setupSelfUpdate(log, s, ex, host)
 	c, err := NewConnector(ConnectorConfig{
 		HubURL:     hub.Server,
 		Name:       s.Name,
 		Ops:        ex.Ops,
-		Features:   ex.Features,
+		Features:   features,
+		Facts:      facts,
 		Key:        enr.LoadKey,
 		Out:        s.Out,
 		Enrollment: enr,
@@ -115,6 +120,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	if err := Provide(env, c); err != nil {
 		return nil, err
 	}
+	su.hubRange = func() *version.ProtoRange { return connectorHubRange(c) }
 	if err := c.applyStoredPolicy(ctx); err != nil {
 		return nil, fmt.Errorf("apply the stored Hub policy: %w", err)
 	}
@@ -152,6 +158,13 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		defer close(retDone)
 		ret.Run(loopCtx)
 	}()
+	commitDone := make(chan struct{})
+	go func() {
+		defer close(commitDone)
+		tick := time.NewTicker(30 * time.Second)
+		defer tick.Stop()
+		commitAfter(loopCtx, s.StateDir, version.Version, func() bool { return c.Status().State == ConnConnected }, tick.C)
+	}()
 	pairDone := make(chan struct{})
 	go func() {
 		defer close(pairDone)
@@ -159,7 +172,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	}()
 	return func(stopCtx context.Context) error {
 		cancel()
-		for _, ch := range []chan struct{}{done, retDone, pairDone} {
+		for _, ch := range []chan struct{}{done, retDone, pairDone, commitDone} {
 			select {
 			case <-ch:
 			case <-stopCtx.Done():

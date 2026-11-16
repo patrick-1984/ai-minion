@@ -49,9 +49,13 @@ func TestReplaceBinary(t *testing.T) {
 	}
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
-		if e.Name() != "minion" && e.Name() != "new" {
+		if e.Name() != "minion" && e.Name() != "new" && e.Name() != "minion.old" {
 			t.Errorf("stray file %s after update", e.Name())
 		}
+	}
+	// The previous executable is kept for a rollback.
+	if got := readFile(t, target+".old"); got != "old" {
+		t.Errorf("minion.old = %q, want the previous executable", got)
 	}
 }
 

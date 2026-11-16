@@ -790,6 +790,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		// The hello is covered by the transcript hash that both peers signed
 		// (AD-6): these are what the authenticated Worker announced.
 		Features: c.res.Worker.Features,
+		Facts:    CleanFacts(c.res.Worker.WorkerFacts),
 		Pending:  w.Pending,
 
 		TranscriptHash: append([]byte(nil), c.res.TranscriptHash[:]...),

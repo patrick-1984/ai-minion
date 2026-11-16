@@ -47,6 +47,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // Paths of the home page.
@@ -106,6 +107,14 @@ type WorkerRow struct {
 	// 12.3), filled by [newWorkerView] for the owner or an administrator only.
 	NeverConnected bool
 	RepairURL      string
+	// Build is the release the Worker reported (v0.9.0 and later); UpdateTo
+	// is the Hub's release when the Worker is older and can update itself
+	// (then UpdateURL is set for admins); UpdateBlock says why it cannot.
+	Build       string
+	SelfUpdate  bool
+	UpdateTo    string
+	UpdateURL   string
+	UpdateBlock string
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
@@ -165,6 +174,9 @@ type Dashboard struct {
 	// Notice is a sentence shown above the tables, for example when this Hub
 	// does not serve the Worker list or the session list.
 	Notice string
+	// Admin is true for an administrator acting as themselves: the page then
+	// offers the Worker update buttons.
+	Admin bool
 }
 
 // ListFilter is the search of the Workers and sessions pages. Every field is
@@ -291,11 +303,14 @@ type DashboardView struct {
 	Filter   ListFilter
 	// TotalWorkers, OnlineWorkers, TotalSessions and WaitingSessions count the
 	// whole scope, not the filtered rows.
-	TotalWorkers    int
-	OnlineWorkers   int
-	PendingWorkers  int
-	TotalSessions   int
-	WaitingSessions int
+	TotalWorkers   int
+	OnlineWorkers  int
+	PendingWorkers int
+	// UpdatableWorkers counts the Workers an admin can update to the Hub's
+	// release (the "Update all outdated" button).
+	UpdatableWorkers int
+	TotalSessions    int
+	WaitingSessions  int
 	// Attention is built from real states only.
 	Attention []AttentionItem
 	// ResultsText is the one-sentence summary of the shown rows, for the
@@ -495,6 +510,13 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 			v.OnlineWorkers++
 		} else if len(v.Attention) < maxAttention {
 			v.Attention = append(v.Attention, AttentionItem{Text: "Worker " + w.Name + " is offline.", Link: scopedLink("/workers", all, "worker", w.ID), LinkText: "View worker"})
+		}
+		if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {
+			w.UpdateTo = target
+			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
+				w.UpdateURL = WorkerUpdatePath(w.ID)
+				v.UpdatableWorkers++
+			}
 		}
 		w.ShowOwner = all
 		w.SessionCount = perWorker[w.ID]
@@ -1108,10 +1130,13 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	default:
 		return Dashboard{}, decodeOpError(rec.status, rec.body.Bytes())
 	}
+	d.Admin = isAdminRequest(r)
 	for _, w := range wl.Workers {
 		d.Workers = append(d.Workers, WorkerRow{
 			ID: w.ID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
 			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
+			Build: w.Build, UpdateBlock: w.UpdateBlock,
+			SelfUpdate: proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
 		})
 	}
 	for _, x := range sb.Sessions {

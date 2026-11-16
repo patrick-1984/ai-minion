@@ -12,7 +12,10 @@
       </ul>{{if gt .SessionCount (len .Sessions)}}
       <a class="worker-session-more" href="{{.SessionsURL}}" data-control="sessions-all">All {{.SessionCount}} sessions</a>{{end}}
     </details>{{end}}</td>
-  <td data-label="Protocol">{{if .Version}}{{.Version}}{{else}}<span class="muted">-</span>{{end}}</td>
+  <td data-label="Version">{{if .Build}}<span data-build="{{.Build}}">{{.Build}}</span>{{else if .Version}}<span class="muted" title="An older Worker reports only its protocol">protocol {{.Version}}</span>{{else}}<span class="muted">-</span>{{end}}{{if .UpdateTo}} <span class="update-to">→ {{.UpdateTo}}</span>{{if .UpdateURL}}
+    <form method="post" action="{{.UpdateURL}}" hx-post="{{.UpdateURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update {{.Name}} from {{.Build}} to {{.UpdateTo}}? The Worker installs the signed release and restarts; tmux sessions keep running." class="row-actions">
+      <button type="submit" class="btn btn-secondary" data-control="update" aria-label="Update {{.Name}} to {{.UpdateTo}}">Update</button>
+    </form>{{else if .UpdateBlock}} <span class="muted" data-update-block>({{.UpdateBlock}})</span>{{end}}{{end}}</td>
   <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else if .Online}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn btn-secondary" data-control="new-session" aria-label="New session on {{.Name}}">New session</button>
   </form>{{else}}<span class="muted">Offline</span>{{end}}</td>

@@ -11,6 +11,9 @@ const (
 	KeyChannel        = "channel"
 	KeyUpdateAPIURL   = "update_api_url"
 	KeyUpdateCacheDir = "update_cache_dir"
+	// KeyRemoteUpdate lets the Hub's administrators update this Worker
+	// (worker_update). off is the local veto (v0.9.0).
+	KeyRemoteUpdate = "remote_update"
 )
 
 func init() { declareUpdate(Default) }
@@ -30,6 +33,13 @@ func declareUpdate(r *Registry) {
 		Scope:   ScopeWorker,
 		Help:    "GitHub API root that minion update lists releases from (https; http only on loopback)",
 		Default: "https://api.github.com",
+	})
+	r.Declare(Setting{
+		Key:     KeyRemoteUpdate,
+		Scope:   ScopeWorker,
+		Help:    "Let the Hub's administrators update this Worker to the Hub's release and restart it: on or off (the local veto)",
+		Default: "on",
+		Choices: []string{"on", "off"},
 	})
 	r.Declare(Setting{
 		Key:         KeyUpdateCacheDir,

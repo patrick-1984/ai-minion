@@ -49,7 +49,10 @@ type Online struct {
 	// hello of this connection, sorted. They are connection state: never stored,
 	// read again on every connect, so that a Worker replaced by an older build
 	// cannot inherit the features of the build before it.
-	Features    []string
+	Features []string
+	// Facts are the display-only facts of the hello (build, platform, update
+	// block), checked by CleanFacts. Never used for an access decision.
+	Facts       transport.WorkerFacts
 	ConnectedAt time.Time
 	// Pending is true while the Worker waits for approval (F-02). A pending
 	// Worker is registered so that it shows as connected, but no op stream
@@ -399,4 +402,30 @@ func normaliseOps(ops []string) []string {
 func needsUpdate(op, feature string) error {
 	return proto.NewError(proto.CodeUnsupportedOp,
 		fmt.Sprintf("the Worker must be updated to run %q safely: it does not announce the feature %q; nothing was sent", op, feature))
+}
+
+var (
+	buildRE    = regexp.MustCompile(`^(v\d{1,4}\.\d{1,4}\.\d{1,4}(-rc\.\d{1,4})?|dev)$`)
+	platformRE = regexp.MustCompile(`^[a-z0-9]{1,16}$`)
+)
+
+// maxUpdateBlock bounds the update-block text of a hello, in bytes.
+const maxUpdateBlock = 160
+
+// CleanFacts keeps only well-formed facts: a build that is a release version
+// or "dev", a short lower-case platform, and a bounded printable reason.
+// Anything else is dropped, never rejected: the facts are for display.
+func CleanFacts(f transport.WorkerFacts) transport.WorkerFacts {
+	var out transport.WorkerFacts
+	if buildRE.MatchString(f.Build) {
+		out.Build = f.Build
+	}
+	if platformRE.MatchString(f.OS) {
+		out.OS = f.OS
+	}
+	if platformRE.MatchString(f.Arch) {
+		out.Arch = f.Arch
+	}
+	out.UpdateBlock = proto.SafeText(f.UpdateBlock, maxUpdateBlock)
+	return out
 }

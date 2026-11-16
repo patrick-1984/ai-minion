@@ -57,6 +57,14 @@ type WorkerInfo struct {
 	// that lacks one is refused the requests that rely on it; the list shows
 	// why, and that the Worker needs an update. Empty when offline.
 	Features []string `json:"features,omitempty"`
+	// Build, OS and Arch are what the connected Worker reported (v0.9.0 and
+	// later): its release ("v0.9.0" or "dev") and platform. Display only.
+	Build string `json:"build,omitempty"`
+	OS    string `json:"os,omitempty"`
+	Arch  string `json:"arch,omitempty"`
+	// UpdateBlock is why the connected Worker cannot update itself from the
+	// Hub; empty when it can or when it did not say (older Workers).
+	UpdateBlock string `json:"update_block,omitempty"`
 	// Pending is true while the Worker waits for approval by its owner or an
 	// admin (F-02): it may be connected, but the Hub routes no operation to it.
 	Pending bool `json:"pending,omitempty"`
