@@ -97,7 +97,9 @@ func (d *Docker) do(ctx context.Context, method, path string, q url.Values, in, 
 }
 
 // Ping checks that the Engine answers.
-func (d *Docker) Ping(ctx context.Context) error { return d.do(ctx, http.MethodGet, "/_ping", nil, nil, nil) }
+func (d *Docker) Ping(ctx context.Context) error {
+	return d.do(ctx, http.MethodGet, "/_ping", nil, nil, nil)
+}
 
 // Container is the part of a container inspect the self-update uses. Config,
 // HostConfig and the network endpoints are kept as raw JSON so that every

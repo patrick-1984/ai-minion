@@ -72,6 +72,25 @@ docker compose -f hub.yaml up -d
 
 With an exact tag, change `MINION_VERSION` (an environment variable or a `.env` file next to `hub.yaml`) first. A newer Hub upgrades its database when it starts. There is no database downgrade: an older Hub refuses a database that a newer one has changed, so take a [backup](../guides/backup-restore.md) before an update you may want to undo. The Hub identity (its fingerprint) does not change, but an update from 0.6 to 0.7 is not a plain pull: see the next section.
 
+### Let the Hub update itself (opt-in)
+
+From 0.9.0 an administrator can update the Hub from **Administration > Updates** (the left rail shows `vX → vY` when a newer release exists in the channel `update_channel`). It needs the Docker socket and a channel tag, both given by the overlay [`deploy/compose/hub.self-update.yaml`](../../deploy/compose/hub.self-update.yaml):
+
+```sh
+echo "MINION_TAG=0.9" >> .env                         # 0.9, 0 or latest; not an exact vX.Y.Z
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+docker compose -f hub.yaml -f hub.self-update.yaml up -d
+```
+
+**The socket gives the Hub control of this Docker host (root-equivalent).** Use it only on a host you trust; `self_update off` in the Hub settings turns the button off. When you press it, the Hub:
+
+1. verifies the release with the same signature checks as `minion update` and takes the image digest from the signed release manifest (images of 0.9.0 and later), then pulls exactly `ghcr.io/patrick-1984/minion@sha256:…`;
+2. refuses when connected Workers speak a protocol the new release does not (update them first, or force);
+3. starts a short-lived helper container from the new image; the helper stops the Hub, copies the data directory to `/data/.pre-upgrade-<version>`, creates the container again with the same settings and the new image, and waits up to two minutes for `/readyz`;
+4. on success moves your channel tag to the new image locally (so `docker compose up` keeps it) and removes the old container; otherwise removes the new one, restores the copy and starts the previous Hub again. Changes made in the new Hub during those two minutes are lost on such a rollback.
+
+Without the socket or with an exact tag the page shows the commands of the previous section instead.
+
 ### Upgrading from 0.6 to 0.7
 
 Protocol 3.0 needs the Hub and all Workers upgraded together, and the upgraded Hub **does not serve any Worker until you have set the passphrase**. Do these steps in this order:

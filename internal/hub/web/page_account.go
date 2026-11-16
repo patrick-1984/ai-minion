@@ -77,6 +77,7 @@ var adminAreas = []AdminArea{
 	{"Identity & sign-in", pathAdminOIDC, "i-shield", "OpenID Connect providers and the rules that turn provider claims into roles."},
 	{"Hub identity", pathAdminIdentity, "i-key", "The Hub key and certificate: state, expiry, and the passphrase operations (set the passphrase, re-issue the certificate, rotate the master key)."},
 	{"Minion control", pathMinionControl, "i-sessions", "Master sessions, which Workers accept control from which (a matrix), user-managed Workers, and who can control a session."},
+	{"Updates", pathAdminUpdates, "i-settings", "The Hub's release and the newest one in its update channel; update the Hub (Docker, opt-in) and the Workers."},
 	{"Diagnostics", pathAdminDiagnostics, "i-panel", "Version, uptime, public URL, trusted proxies, connected Workers, and how the Hub sees your own request (peer, client IP, forwarding headers, effective HTTPS)."},
 	{"Audit", pathAdminAudit, "i-audit", "Who did what and when. Events never contain secrets or terminal content."},
 }

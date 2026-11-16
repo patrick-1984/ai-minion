@@ -1,0 +1,24 @@
+{{define "content"}}
+<div class="page-head"><div><h1>Updates</h1><p>The Hub checks GitHub once a day for a newer release in its update channel (setting <code>update_check</code>, channel <code>update_channel</code>). Workers are updated to this Hub's release from the Workers page.</p></div></div>
+{{with .Data.Check}}
+<section class="panel" aria-labelledby="hub-h">
+  <h2 id="hub-h">Hub</h2>
+  <dl class="facts">
+    <div><dt>Running</dt><dd data-current>{{.Current}}</dd></div>
+    <div><dt>Channel</dt><dd>{{if .Channel}}{{.Channel}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
+    <div><dt>Newest in the channel</dt><dd>{{if .Latest}}{{if .ReleaseURL}}<a href="{{.ReleaseURL}}" target="_blank" rel="noopener">{{.Latest}}</a>{{else}}{{.Latest}}{{end}}{{if .Newer}} <span class="badge" data-tone="warning">newer</span>{{else}} <span class="muted">(up to date)</span>{{end}}{{else}}<span class="muted">not checked yet</span>{{end}}</dd></div>
+  </dl>
+  <div id="list-result" aria-live="polite"></div>
+  {{if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready." class="row-actions">
+    <button type="submit" class="btn" data-control="hub-update">Update the Hub to {{.Latest}}</button>
+  </form>
+  {{else if .Newer}}<p class="notice notice-info" role="status" data-hub-manual>The Hub cannot update itself here: {{.Reason}}.</p>
+  <p class="help">{{.Command}}</p>
+  {{end}}
+</section>
+{{end}}
+<section class="panel" aria-labelledby="workers-h">
+  <h2 id="workers-h">Workers</h2>
+  <p>Workers older than this Hub show <strong>vX → vY</strong> in the Version column of the <a href="/workers?scope=all">Workers</a> page, with <strong>Update</strong> and <strong>Update all outdated</strong>.</p>
+</section>
+{{end}}
