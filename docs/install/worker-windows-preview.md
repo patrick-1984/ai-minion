@@ -58,7 +58,8 @@ To install it as a Windows service instead, pair first (run the command above un
 ```powershell
 minion worker status
 minion worker config share all
-minion worker reset
+minion worker down     # stop the running Worker (foreground or the Windows service)
+minion worker reset    # after down: forget the Hub, the key and the share choice
 ```
 
-`minion worker reset` forgets the Hub, the key and the share choice and refuses while the Worker runs. It does not tell the Hub: remove the Worker on the Hub's Workers page too.
+`minion worker reset` forgets the Hub, the key and the share choice and refuses while the Worker runs: stop it first with `minion worker down`. It does not tell the Hub: remove the Worker on the Hub's Workers page too.

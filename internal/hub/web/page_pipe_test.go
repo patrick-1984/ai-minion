@@ -233,7 +233,7 @@ func TestPipeSendForceIsExplicitAndRepeatsTheOriginalMessageOnly(t *testing.T) {
 	rec := post(t, s, "/s/pi-1/minion-1/pipe", sessUser, url.Values{"text": {"original <message>"}})
 	body := rec.Body.String()
 	// A forceable refusal offers "Send anyway" as a form of the same route, with the original text only and an explicit force=1.
-	mustHave(t, body, `action="/s/pi-1/minion-1/pipe"`, `name="text" value="original &lt;message&gt;"`, `name="force" value="1"`, "Send anyway to minion-1 on pi-1?", "Nothing reached the pane")
+	mustHave(t, body, `action="/s/pi-1/minion-1/pipe"`, `name="text" value="original &lt;message&gt;"`, `name="force" value="1"`, "Send anyway to minion-1 on pi-1</button>", "Nothing reached the pane")
 	if n := count(body, `type="hidden"`); n != 2 {
 		t.Errorf("the force form carries %d hidden fields, want text and force only", n)
 	}

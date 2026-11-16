@@ -771,7 +771,7 @@ func TestForceFlowRepeatsTheSameCallWithForce(t *testing.T) {
 	rec := post(t, s, "/s/pi-1/minion-1/text", sessUser, url.Values{"text": {text}})
 	body := rec.Body.String()
 	mustHave(t, body, `class="result result-danger"`, "Not sent", "<code>pane_busy</code>",
-		`<button type="submit" class="btn-danger">Send anyway</button>`, `action="/s/pi-1/minion-1/text"`,
+		`<button type="submit" class="btn-danger-solid">Send anyway to minion-1 on pi-1</button>`, `action="/s/pi-1/minion-1/text"`,
 		`name="force" value="1"`, "Warning: &lt;b&gt;careful&lt;/b&gt;")
 	mustNotHave(t, body, "<b>careful</b>")
 

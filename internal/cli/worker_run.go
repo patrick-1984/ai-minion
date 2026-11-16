@@ -126,6 +126,11 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	if err != nil && !onlyCanceled(err) {
 		return err
 	}
+	if exe := agent.RestartPending(); exe != "" {
+		// A foreground self-update on Windows: the new binary runs in this
+		// console, and this process waits for it.
+		return restartInConsole(exe)
+	}
 	return nil
 }
 

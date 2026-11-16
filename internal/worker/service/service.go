@@ -95,6 +95,9 @@ func NewKardianosController(binary string) (Controller, error) {
 func (c kardianosController) Install() error   { return c.svc.Install() }
 func (c kardianosController) Start() error     { return c.svc.Start() }
 func (c kardianosController) Uninstall() error { return c.svc.Uninstall() }
+
+// Stop stops the running service ("minion worker down", v0.9.3).
+func (c kardianosController) Stop() error { return c.svc.Stop() }
 func (c kardianosController) Status() (Status, error) {
 	s, err := c.svc.Status()
 	if err != nil {

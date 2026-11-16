@@ -326,7 +326,17 @@ type Runtime struct {
 	// any hook, so that the update crash guard runs only in the process that
 	// owns the state; the lifecycle module takes it over.
 	held io.Closer
+	// stopReq is closed by RequestStop ("minion worker down", v0.9.3): Run
+	// then stops like on a signal.
+	stopReq  chan struct{}
+	stopOnce sync.Once
 }
+
+// RequestStop asks Run to stop the Worker, as a signal would.
+func (rt *Runtime) RequestStop() { rt.stopOnce.Do(func() { close(rt.stopReq) }) }
+
+// RequestStop asks the runtime to stop the Worker ("minion worker down").
+func (e *Env) RequestStop() { e.rt.RequestStop() }
 
 // NewRuntime returns a runtime for the modules registered in reg.
 func NewRuntime(reg *Registry, opts Options) *Runtime {
@@ -336,7 +346,7 @@ func NewRuntime(reg *Registry, opts Options) *Runtime {
 	if len(opts.Signals) == 0 {
 		opts.Signals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 	}
-	return &Runtime{reg: reg, opts: opts, services: map[reflect.Type]service{}}
+	return &Runtime{reg: reg, opts: opts, services: map[reflect.Type]service{}, stopReq: make(chan struct{})}
 }
 
 // Start runs the pre-start hooks, then starts every module in order. When a
@@ -466,10 +476,17 @@ func (rt *Runtime) Modules() []string {
 func (rt *Runtime) Run(ctx context.Context, s Settings) error {
 	sigCtx, stop := signal.NotifyContext(ctx, rt.opts.Signals...)
 	defer stop()
+	stopFn := rt.RequestStop
+	currentStop.Store(&stopFn)
+	defer currentStop.CompareAndSwap(&stopFn, nil)
 	if err := rt.Start(sigCtx, s); err != nil {
 		return err
 	}
-	<-sigCtx.Done()
+	select {
+	case <-sigCtx.Done():
+	case <-rt.stopReq:
+		s.logger().Info("stop requested over the local control socket (minion worker down)")
+	}
 	s.logger().Info("worker shutting down", "timeout", rt.opts.StopTimeout.String())
 	return rt.Stop(context.WithoutCancel(ctx))
 }

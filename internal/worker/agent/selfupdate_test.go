@@ -240,7 +240,8 @@ func TestUpdateBlockReasons(t *testing.T) {
 		want        string
 	}{
 		{exe, "off", nil, "remote_update=off"},
-		{exe, "on", map[string]string{"MINION_IN_CONTAINER": "1"}, "container"},
+		{exe, "on", map[string]string{"MINION_IN_CONTAINER": "1"}, "Minion image"},
+		{"/ko-app/minion", "on", nil, "Minion image"},
 		{"/usr/bin/minion", "on", nil, "package"},
 		{"", "on", nil, "unknown"},
 		{filepath.Join(dir, "missing-dir", "minion"), "on", nil, "not writable"},
@@ -249,8 +250,9 @@ func TestUpdateBlockReasons(t *testing.T) {
 			t.Errorf("%s/%s: %q, want %q", tc.exe, tc.remote, got, tc.want)
 		}
 	}
-	if got := updateBlock(exe, "on", env(nil), func(p string) bool { return p == "/.dockerenv" }); !strings.Contains(got, "container") {
-		t.Errorf("/.dockerenv: %q", got)
+	// A binary installed by hand inside any container updates (A24).
+	if got := updateBlock(exe, "on", env(nil), func(p string) bool { return p == "/.dockerenv" }); got != "" {
+		t.Errorf("/.dockerenv with a hand-installed binary: %q", got)
 	}
 	if got := updateBlock(exe, "on", env(nil), noFile); got != "" {
 		t.Errorf("own writable dir: %q", got)

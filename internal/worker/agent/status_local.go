@@ -13,6 +13,11 @@ import (
 // to the Hub and never reaches the Executor, so a Hub cannot call it.
 const OpLocalStatus = "worker_status"
 
+// OpLocalStop is the op of the local control socket that stops the running
+// Worker ("minion worker down", v0.9.3). Only the user who may open the
+// socket can ask; the reply comes before the Worker stops.
+const OpLocalStop = "worker_stop"
+
 // LiveStatusReply is the JSON result of [OpLocalStatus]. It carries no secret:
 // the pairing code is the one the Worker shows to its human anyway (AD-20), and
 // it is only ever sent to the OS user that owns the socket.
