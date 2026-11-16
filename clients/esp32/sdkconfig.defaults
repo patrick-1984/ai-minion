@@ -38,3 +38,5 @@ CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 
 # No colour codes in the log (the log session renders them, but plain text reads better in the Hub).
 CONFIG_LOG_COLORS=n
+# RF must stay on while the identity key can be generated (true RNG): no sleep while disconnected
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n

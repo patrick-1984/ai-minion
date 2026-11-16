@@ -116,14 +116,9 @@ static int tcp_connect(const char *host, uint16_t port, int timeout_ms)
 		fd = -1;
 		continue;
 	ok:
-		fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+		/* the socket stays non-blocking: every read and write below has its own deadline, so a peer that
+		 * trickles bytes cannot hold the worker task (UART, GPIO watch and keepalives keep running) */
 		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-		{
-			/* a stalled peer must not block the worker for ever: reads time out (= no data), writes fail */
-			struct timeval to = {30, 0};
-			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &to, sizeof to);
-			setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &to, sizeof to);
-		}
 		break;
 	}
 	freeaddrinfo(res);
@@ -134,8 +129,26 @@ static int bio_send(void *ctx, const unsigned char *b, size_t n)
 {
 	int r = send(*(int *)ctx, b, n, 0);
 	if (r < 0)
-		return errno == EINTR ? MBEDTLS_ERR_SSL_WANT_WRITE : MBEDTLS_ERR_NET_SEND_FAILED; /* EAGAIN = 30 s stall */
+		return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK ? MBEDTLS_ERR_SSL_WANT_WRITE
+		                                                                  : MBEDTLS_ERR_NET_SEND_FAILED;
 	return r;
+}
+
+/* Wait until the socket is readable or writable, at most until the deadline (and at most 1 s per call). */
+static int wait_io(int want_read, int64_t deadline)
+{
+	fd_set fs;
+	int64_t left = deadline - mono_ms(NULL);
+	struct timeval tv;
+	if (left <= 0 || N.fd < 0)
+		return -1;
+	if (left > 1000)
+		left = 1000;
+	tv.tv_sec = 0;
+	tv.tv_usec = (long)left * 1000;
+	FD_ZERO(&fs);
+	FD_SET(N.fd, &fs);
+	return select(N.fd + 1, want_read ? &fs : NULL, want_read ? NULL : &fs, NULL, &tv) < 0 && errno != EINTR ? -1 : 0;
 }
 
 static int bio_recv(void *ctx, unsigned char *b, size_t n)
@@ -197,7 +210,8 @@ static int net_connect(void *c, const char *host, uint16_t port, int tls, int ti
 	{
 		int64_t end = mono_ms(NULL) + timeout_ms;
 		while ((r = mbedtls_ssl_handshake(&N.ssl)) != 0) {
-			if ((r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) || mono_ms(NULL) > end) {
+			if ((r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) ||
+			    wait_io(r == MBEDTLS_ERR_SSL_WANT_READ, end) != 0) {
 				ESP_LOGW(TAG, "TLS handshake with %s failed (-0x%04x)", host, (unsigned)-r);
 				goto fail;
 			}
@@ -240,6 +254,7 @@ static int net_read(void *c, uint8_t *b, size_t cap, int timeout_ms)
 
 static int net_write(void *c, const uint8_t *b, size_t n)
 {
+	int64_t deadline = mono_ms(NULL) + 30000; /* a peer that stops reading drops the connection after 30 s */
 	while (n) {
 		int r;
 		if (N.fd < 0)
@@ -247,12 +262,18 @@ static int net_write(void *c, const uint8_t *b, size_t n)
 		if (N.tls) {
 			r = mbedtls_ssl_write(&N.ssl, b, n);
 			if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE ||
-			    r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET)
+			    r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+				if (wait_io(r == MBEDTLS_ERR_SSL_WANT_READ, deadline) != 0)
+					return -1;
 				continue;
+			}
 		} else {
 			r = send(N.fd, b, n, 0);
-			if (r < 0 && errno == EINTR)
+			if (r < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+				if (wait_io(0, deadline) != 0)
+					return -1;
 				continue;
+			}
 		}
 		if (r <= 0)
 			return -1;

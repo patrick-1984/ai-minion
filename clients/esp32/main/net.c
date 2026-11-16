@@ -190,7 +190,10 @@ void net_start(void)
 	ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
 	memset(&wc, 0, sizeof wc);
 	ESP_ERROR_CHECK(esp_wifi_start());
-	g_rf_on = 1; /* RF on: esp_fill_random() is a true RNG from here on */
+	/* RF stays on (no modem sleep; disconnected sleep is off in sdkconfig.defaults): esp_fill_random() is a true RNG
+	 * only while RF runs, and the identity key may be generated at any time after this point */
+	esp_wifi_set_ps(WIFI_PS_NONE);
+	g_rf_on = 1;
 	esp_netif_sntp_start();
 	if (!g_have_creds)
 		ESP_LOGW(TAG, "no Wi-Fi credentials: use 'wifi set <ssid>' on the serial console");

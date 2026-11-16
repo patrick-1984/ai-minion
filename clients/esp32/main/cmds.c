@@ -559,12 +559,16 @@ static int cmd_pwm(int local, int argc, char **argv)
 		                            .speed_mode = LEDC_LOW_SPEED_MODE,
 		                            .channel = (ledc_channel_t)ch,
 		                            .timer_sel = (ledc_timer_t)t,
-		                            .duty = (uint32_t)(((1ULL << T[t].bits) * (uint64_t)duty) / 100),
+		                            /* 2^bits overflows the duty counter: 100 % is a constant high below */
+		                            .duty = duty >= 100 ? (uint32_t)((1ULL << T[t].bits) - 1)
+		                                                : (uint32_t)(((1ULL << T[t].bits) * (uint64_t)duty) / 100),
 		                            .hpoint = 0};
 		if (ledc_channel_config(&cc) != ESP_OK) {
 			pin_input(pin);
 			return ERR("cannot start PWM on GPIO%d\n", pin);
 		}
+		if (duty == 0 || duty >= 100) /* exact 0 % / 100 %: the channel holds the idle level */
+			ledc_stop(LEDC_LOW_SPEED_MODE, (ledc_channel_t)ch, duty >= 100 ? 1 : 0);
 	}
 	T[t].refs++;
 	ch_pin[ch] = (int8_t)pin;
@@ -847,8 +851,13 @@ static int cmd_uart(int local, int argc, char **argv)
 	} else {
 		tx = cfg_get_int("uart_tx", -1);
 		rx = cfg_get_int("uart_rx", -1);
-		if (tx < 0 || rx < 0)
+		if (tx < 0 || rx < 0 || tx >= NPINS || rx >= NPINS || tx == rx)
 			return ERR("give the pins: uart set <baud> <tx> <rx>\n");
+		/* saved pins go through the same rules as typed ones (the allowlist or the chip may have changed) */
+		if (pin_check((int)tx, 1, err, sizeof err) || pin_check((int)rx, 0, err, sizeof err))
+			return ERR("%s\n", err);
+		if (P[tx].mode == M_PWM || P[rx].mode == M_PWM || P[tx].pulsing || P[rx].pulsing)
+			return ERR("pin busy\n");
 	}
 	{
 		char b[16];
@@ -989,7 +998,7 @@ int cmd_run(int local, int argc, char **argv)
 		schedule_restart(1000);
 		r = 0;
 	} else
-		r = ERR("unknown command '%s' (help)\n", c);
+		r = ERR("unknown command (type help)\n"); /* never echo the input: it may be a pasted secret */
 	cmd_unlock();
 	return r;
 }
@@ -997,9 +1006,19 @@ int cmd_run(int local, int argc, char **argv)
 /* While a line is typed into the Hub console: is the next character part of a secret? (enroll <key>,
  * wifi set <ssid> <password>, any token that starts with mnk_). Those are refused from the Hub anyway; the echo
  * must still not put them on a screen other people can see. */
+/* A token as the command parser will see it: quotes and backslashes do not change which command it is. */
+static void unquote(char *s)
+{
+	char *o = s;
+	for (; *s; s++)
+		if (*s != '"' && *s != '\'' && *s != '\\')
+			*o++ = *s;
+	*o = 0;
+}
+
 int cmd_secret_pos(const char *line, size_t len)
 {
-	char t0[8] = "", t1[8] = "";
+	char t0[16] = "", t1[16] = "";
 	size_t i = 0, tok = 0, start = 0;
 	int in = 0;
 	for (i = 0; i < len; i++) {
@@ -1018,10 +1037,19 @@ int cmd_secret_pos(const char *line, size_t len)
 			start = i;
 		}
 	}
-	if (in && len - start >= 4 && !strncmp(line + start, "mnk_", 4))
-		return 1;
+	if (in) { /* the token being typed: an invitation key, even quoted */
+		char cur[16];
+		size_t n = len - start < sizeof cur - 1 ? len - start : sizeof cur - 1;
+		memcpy(cur, line + start, n);
+		cur[n] = 0;
+		unquote(cur);
+		if (!strncmp(cur, "mnk_", 4))
+			return 1;
+	}
 	if (!in && tok == 0)
 		return 0;
+	unquote(t0);
+	unquote(t1);
 	{
 		size_t cur = tok; /* index of the token the next char belongs to (or starts) */
 		if (!strcmp(t0, "enroll") && cur >= 1)
