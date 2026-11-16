@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -32,26 +33,33 @@ func baseDown() workerDownDeps {
 		euid:           func() int { return 1000 },
 		user:           func() string { return "patryk" },
 		sleep:          func(time.Duration) {},
-		stateFree:      func() bool { return true },
+		stateFree:      func(string) bool { return true },
 	}
 }
 
 func TestWorkerDownStopsAForegroundWorker(t *testing.T) {
 	d := baseDown()
 	stopped := false
-	d.call = func(_ context.Context, op string) error {
+	d.call = func(_ context.Context, op string) (json.RawMessage, error) {
 		if op == agent.OpLocalStop {
 			stopped = true
-			return nil
+			return nil, nil
 		}
 		if stopped {
-			return client.ErrWorkerNotRunning
+			return nil, client.ErrWorkerNotRunning
 		}
-		return nil
+		return json.RawMessage(`{"state_dir":"/custom"}`), nil
 	}
-	// The lock is still held for a moment after the socket closed.
+	// The lock is still held for a moment after the socket closed; the one
+	// checked is the running Worker's own state directory.
 	free := 0
-	d.stateFree = func() bool { free++; return free > 3 }
+	d.stateFree = func(dir string) bool {
+		if dir != "/custom" {
+			t.Errorf("checked %q", dir)
+		}
+		free++
+		return free > 3
+	}
 	out, err := downCmd(t, d)
 	if err != nil || !stopped || free < 4 || !strings.Contains(out, "minion worker up --foreground") {
 		t.Fatalf("out=%q err=%v stopped=%v free=%d", out, err, stopped, free)
@@ -60,7 +68,7 @@ func TestWorkerDownStopsAForegroundWorker(t *testing.T) {
 
 func TestWorkerDownWithNothingRunning(t *testing.T) {
 	d := baseDown()
-	d.call = func(context.Context, string) error { return client.ErrWorkerNotRunning }
+	d.call = func(context.Context, string) (json.RawMessage, error) { return nil, client.ErrWorkerNotRunning }
 	out, err := downCmd(t, d)
 	if err != nil || !strings.Contains(out, "No Worker is running") {
 		t.Fatalf("out=%q err=%v", out, err)
@@ -76,7 +84,10 @@ func TestWorkerDownPrintsTheSudoCommandForASystemService(t *testing.T) {
 		}
 		return "inactive\n", nil
 	}
-	d.call = func(context.Context, string) error { t.Fatal("the socket was used for a service"); return nil }
+	d.call = func(context.Context, string) (json.RawMessage, error) {
+		t.Fatal("the socket was used for a service")
+		return nil, nil
+	}
 	_, err := downCmd(t, d)
 	if err == nil || !strings.Contains(err.Error(), "sudo systemctl stop minion-worker@patryk.service") {
 		t.Fatalf("err = %v", err)

@@ -9,6 +9,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,13 +46,14 @@ type workerDownDeps struct {
 	// whether it ran and was stopped.
 	windowsService func() (stopped bool, err error)
 	// call is the local control socket of this user.
-	call  func(ctx context.Context, op string) error
+	call  func(ctx context.Context, op string) (json.RawMessage, error)
 	euid  func() int
 	user  func() string
 	sleep func(time.Duration)
-	// stateFree reports whether the Worker state lock can be taken, that is
-	// whether the stopped Worker has released everything.
-	stateFree func() bool
+	// stateFree reports whether the state lock in dir can be taken, that is
+	// whether the stopped Worker has released everything ("" = this user's
+	// default state directory).
+	stateFree func(dir string) bool
 }
 
 func defaultWorkerDownDeps() workerDownDeps {
@@ -65,9 +67,8 @@ func defaultWorkerDownDeps() workerDownDeps {
 			return string(b), err
 		},
 		windowsService: stopWindowsService,
-		call: func(ctx context.Context, op string) error {
-			_, err := client.Local().Call(ctx, op, nil)
-			return err
+		call: func(ctx context.Context, op string) (json.RawMessage, error) {
+			return client.Local().Call(ctx, op, nil)
 		},
 		euid: os.Geteuid,
 		user: func() string {
@@ -81,14 +82,18 @@ func defaultWorkerDownDeps() workerDownDeps {
 	}
 }
 
-// workerStateFree takes and releases the state lock of this user's Worker.
-func workerStateFree() bool {
-	res := &config.Resolver{Registry: config.Default, Role: config.ScopeWorker, LookupEnv: os.LookupEnv}
-	dir, err := res.Resolve(config.KeyStateDir)
-	if err != nil || dir.Value == "" {
-		return true
+// workerStateFree takes and releases the state lock in dir (the running
+// Worker's own state directory, else this user's default one).
+func workerStateFree(dir string) bool {
+	if dir == "" {
+		res := &config.Resolver{Registry: config.Default, Role: config.ScopeWorker, LookupEnv: os.LookupEnv}
+		r, err := res.Resolve(config.KeyStateDir)
+		if err != nil || r.Value == "" {
+			return true
+		}
+		dir = r.Value
 	}
-	l, err := agent.LockLifecycle(dir.Value)
+	l, err := agent.LockLifecycle(dir)
 	if err != nil {
 		return false
 	}
@@ -142,8 +147,17 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 		return nil
 	}
 	// A foreground Worker (or one no service manager runs).
+	// The running Worker names its own state directory (it may be another one
+	// than this user's default, --state-dir): that is the lock to wait for.
+	stateDir := ""
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	err = d.call(cctx, agent.OpLocalStop)
+	if raw, serr := d.call(cctx, agent.OpLocalStatus); serr == nil {
+		var reply agent.LiveStatusReply
+		if json.Unmarshal(raw, &reply) == nil {
+			stateDir = reply.StateDir
+		}
+	}
+	_, err = d.call(cctx, agent.OpLocalStop)
 	cancel()
 	switch {
 	case errors.Is(err, client.ErrWorkerNotRunning):
@@ -158,9 +172,9 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 	for i := 0; i < 120; i++ {
 		d.sleep(250 * time.Millisecond)
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		err := d.call(cctx, agent.OpLocalStatus)
+		_, err := d.call(cctx, agent.OpLocalStatus)
 		cancel()
-		if errors.Is(err, client.ErrWorkerNotRunning) && d.stateFree() {
+		if errors.Is(err, client.ErrWorkerNotRunning) && d.stateFree(stateDir) {
 			_, _ = fmt.Fprintln(out, "The Worker stopped. Start it again with: minion worker up --foreground")
 			return nil
 		}
