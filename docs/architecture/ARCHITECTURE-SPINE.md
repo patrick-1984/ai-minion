@@ -450,8 +450,8 @@ The edges in this diagram are the only dependency directions allowed. The rules:
   - **Rate limits.** One limiter covers login, enroll, Worker connect, pairing and failed API-key attempts. It keys on the IP address (IPv6 by /64) and on the target, and adds a back-off per account for logins.
   - **Outbound connections.**
     - The binary dials only the configured Hub and IdP.
-    - It contacts the release host only during an explicit `minion update` or a bootstrap run.
-    - There is no telemetry and no background update check.
+    - It contacts the release host only during an explicit `minion update` or a bootstrap run, and (amended in v0.9.0, AM-16) the Hub's daily release check (`update_check`, on by default, one unauthenticated call to the fixed GitHub API; `off` contacts nothing) and an administrator's Worker update.
+    - There is no telemetry.
 
 ### AD-20: Logging, audit and secrets in output
 
@@ -878,4 +878,5 @@ graph LR
     - **One guide.** The text that `minion llm-help` prints is the body of the plugin skill; a test fails when they differ. The first line of `minion --help` points agents to it.
     - **The plugin installs nothing by itself.** Detection (`minion version`, `minion worker status`) comes first; installing, starting a Worker, pairing, sharing and grants each need the person's yes or action.
   - **Tests:** `internal/llmguide` (skill equals guide, manifests valid), `internal/cli` (help line, `llm-help`).
+- **AM-16 (AD-19, AD-24): the Hub's release check and central Worker update (v0.9.0).** The Hub checks GitHub once a day (`update_check` on|off, `update_channel` minor|major|latest; fixed API URL, answer in memory, a failure keeps the last answer, no page request calls GitHub) and shows "vX → vY" to administrators. Workers report their release in the hello (display facts, never used for access) and an administrator updates them to the Hub's exact release with `worker_update`; the Worker verifies the signed release itself (AD-24) and may refuse (`remote_update off`, package, container).
 

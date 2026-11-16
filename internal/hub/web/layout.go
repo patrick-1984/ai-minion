@@ -39,8 +39,10 @@ type View struct {
 	// Initials the avatar text of the signed-in user.
 	RoleLabel string
 	Initials  string
-	Banners   []BannerView
-	Flashes   []Flash
+	// Build is the version block at the bottom of the left rail.
+	Build   BuildView
+	Banners []BannerView
+	Flashes []Flash
 	// Status and Message describe an error page (404, 403, 500); both are
 	// zero for a normal page.
 	Status  int
@@ -499,6 +501,11 @@ func (s *Server) newView(w http.ResponseWriter, r *http.Request, title string, d
 	if sess != nil {
 		v.SignedIn, v.Username, v.Role, v.CSRF = true, sess.Username, string(sess.Role), sess.CSRFToken
 		v.RoleLabel, v.Initials = roleLabel(sess.Role), initialsOf(sess.Username)
+		role := sess.Role
+		if sess.ActAs != nil {
+			role = authz.RoleUser
+		}
+		v.Build = buildView(role)
 	}
 	v.Nav = s.navFor(sess, r.URL.Path)
 	v.NavGroups = s.navGroupsFor(sess, r.URL.Path)

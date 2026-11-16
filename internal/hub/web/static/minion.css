@@ -672,3 +672,7 @@ body.embed .pipe-log { height: 10rem; max-height: 30vh; }
 /* Share panel: bulk buttons and the session table (A14). */
 .share-bulk { display: flex; gap: 8px; margin: 4px 0 8px; }
 .share-table td, .share-table th { vertical-align: middle; }
+
+/* Version block at the bottom of the left rail (A10). */
+.rail-version { display: flex; flex-direction: column; gap: 2px; font-size: 12px; padding: 0 4px 8px; }
+.rail-update { font-weight: 650; }

@@ -147,8 +147,10 @@ and the binary is replaced atomically.
 
 An online update contacts two hosts: the release host (GitHub) and the public
 Sigstore TUF repository (tuf-repo-cdn.sigstore.dev), from which the Sigstore
-trusted root is fetched. With --offline nothing is contacted. Nothing else in
-minion contacts either host.
+trusted root is fetched. With --offline nothing is contacted. Besides this, the
+Hub's daily release check (setting update_check) asks the GitHub API for the
+newest release, and a Worker contacts both hosts when an administrator updates
+it from the Hub (remote_update off refuses that).
 
 An older version is refused unless --allow-downgrade is given. When this
 machine's Worker is connected to a Hub, an update whose protocol range does not
