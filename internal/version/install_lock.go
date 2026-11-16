@@ -2,6 +2,8 @@ package version
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -50,9 +52,12 @@ func takeLock(p string) (func(), error) {
 	f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE, 0o600)
 	if errors.Is(err, os.ErrPermission) {
 		// A lock file another account created (an earlier sudo update) must
-		// not block this one: the installed-version check still guards
-		// against a stale downgrade.
-		return func() {}, nil
+		// not block this one: lock a per-account file for the same binary in
+		// the temporary directory instead, so updates by this account still
+		// exclude each other.
+		sum := sha256.Sum256([]byte(p))
+		alt := filepath.Join(os.TempDir(), "minion-update-"+hex.EncodeToString(sum[:8])+".lock")
+		f, err = os.OpenFile(alt, os.O_RDWR|os.O_CREATE, 0o600)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot lock %s: %w", p, err)

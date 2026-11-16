@@ -63,8 +63,17 @@ func TestInstallLockFileOfAnotherAccountDoesNotBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, _ := ParseVersion("v0.9.1")
+	o := Options{ExecPath: exe, Current: "v0.9.0"}
 	ran := false
-	if err := installLocked(Options{ExecPath: exe, Current: "v0.9.0"}, target, func() error { ran = true; return nil }); err != nil || !ran {
+	// Two updates of this account still exclude each other (fallback lock).
+	nested := func() error {
+		if err := installLocked(o, target, func() error { return nil }); !errors.Is(err, ErrInstallBusy) {
+			t.Errorf("nested update: %v, want busy", err)
+		}
+		ran = true
+		return nil
+	}
+	if err := installLocked(o, target, nested); err != nil || !ran {
 		t.Fatalf("blocked: %v ran=%v", err, ran)
 	}
 }
