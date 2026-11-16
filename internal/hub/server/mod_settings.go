@@ -192,6 +192,7 @@ func (s *SettingsService) List(ctx context.Context, _ ops.SettingsListArgs) (ops
 			Key: st.Key, Help: st.Help, Env: st.EnvName(), Secret: st.Secret,
 			Live: s.live(st.Key), Choices: slices.Clone(st.Choices),
 		}
+		info.Section, _ = config.SectionOf(st.Key)
 		if st.Secret {
 			info.EnvFile = st.FileEnvName()
 		}

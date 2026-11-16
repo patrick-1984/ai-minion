@@ -662,3 +662,10 @@ body.embed .pipe-log { height: 10rem; max-height: 30vh; }
 /* Session control: the target list shows only for "Selected"; sessions sit under their Worker. */
 #sc-form:not(:has(#sc-mode-selected:checked)) #sc-targets { display: none; }
 .sc-sessions { margin-left: 24px; }
+
+/* Hub settings: sections, jump links and the filter (A10). */
+.settings-tools { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.settings-jump ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
+.settings-filter input { width: 16rem; max-width: 100%; }
+.settings-section { font-size: 15px; font-weight: 650; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2, var(--surface)); }
+.settings-list { scroll-margin-top: 12px; }

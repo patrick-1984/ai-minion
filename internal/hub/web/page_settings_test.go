@@ -32,10 +32,15 @@ func TestSettingsEachRowIsOneFormOwningOnlyItsControls(t *testing.T) {
 	for _, n := range find(doc, func(n *html.Node) bool { return hasAttr(n, "id") }) {
 		ids[attr(n, "id")]++
 	}
-	for i, st := range list {
-		f := forms[i]
-		if got := attr(f, "hx-post"); got != "/admin/settings/"+st.Key {
-			t.Errorf("form %d posts to %q, want the key %q", i, got, st.Key)
+	// The page orders the rows by section, so each setting is looked up by the key its form posts to.
+	byKey := map[string]*html.Node{}
+	for _, f := range forms {
+		byKey[strings.TrimPrefix(attr(f, "hx-post"), "/admin/settings/")] = f
+	}
+	for _, st := range list {
+		f := byKey[st.Key]
+		if f == nil {
+			t.Fatalf("no form posts to the key %q", st.Key)
 		}
 		if attr(f, "method") != "post" || attr(f, "hx-target") != "#result-"+st.Key {
 			t.Errorf("%s: form attributes %v", st.Key, f.Attr)
