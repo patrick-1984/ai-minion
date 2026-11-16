@@ -6,7 +6,7 @@
   <nav class="settings-jump" aria-label="Sections"><ul><li><a href="#s-server-and-network">Server and network</a></li><li><a href="#s-single-sign-on-oidc">Single sign-on (OIDC)</a></li><li><a href="#s-storage">Storage</a></li><li><a href="#s-other">Other</a></li></ul></nav>
   <label class="settings-filter"><span class="sr-only">Filter settings</span><input type="search" id="settings-filter" placeholder="Filter settings" autocomplete="off" spellcheck="false" aria-controls="settings-sections"></label>
 </div>
-<p id="settings-filter-empty" class="muted" hidden>No setting matches the filter.</p>
+<p id="settings-filter-status" class="muted" role="status" aria-live="polite"></p>
 <div id="settings-sections">
 
 <section class="settings-list" id="s-server-and-network" aria-labelledby="s-server-and-network-h">
@@ -14,7 +14,7 @@
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
   <ul>
 
-  <li data-filter="listen MINION_LISTEN Address the Hub listens on">
+  <li data-filter="listen MINION_LISTEN  Address the Hub listens on">
   <form class="srow" method="post" hx-post="/admin/settings/listen" hx-target="#result-listen" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-listen" id="h-listen">listen</label>
@@ -37,7 +37,7 @@
   </form>
   </li>
 
-  <li data-filter="public_url MINION_PUBLIC_URL External URL of the Hub">
+  <li data-filter="public_url MINION_PUBLIC_URL  External URL of the Hub">
   <form class="srow" method="post" hx-post="/admin/settings/public_url" hx-target="#result-public_url" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-public_url" id="h-public_url">public_url</label>
@@ -59,7 +59,7 @@
   </form>
   </li>
 
-  <li data-filter="tls MINION_TLS TLS mode">
+  <li data-filter="tls MINION_TLS  TLS mode">
   <form class="srow" method="post" hx-post="/admin/settings/tls" hx-target="#result-tls" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-tls" id="h-tls">tls</label>
@@ -94,7 +94,7 @@
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
   <ul>
 
-  <li data-filter="oidc_client_secret MINION_OIDC_CLIENT_SECRET Client secret">
+  <li data-filter="oidc_client_secret MINION_OIDC_CLIENT_SECRET MINION_OIDC_CLIENT_SECRET_FILE Client secret">
   <form class="srow" method="post" hx-post="/admin/settings/oidc_client_secret" hx-target="#result-oidc_client_secret" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-oidc_client_secret" id="h-oidc_client_secret">oidc_client_secret</label>
@@ -125,7 +125,7 @@
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
   <ul>
 
-  <li data-filter="data_dir MINION_DATA_DIR Data directory">
+  <li data-filter="data_dir MINION_DATA_DIR  Data directory">
   <form class="srow" method="post" hx-post="/admin/settings/data_dir" hx-target="#result-data_dir" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-data_dir" id="h-data_dir">data_dir</label>
@@ -156,7 +156,7 @@
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
   <ul>
 
-  <li data-filter="backup_key MINION_BACKUP_KEY Backup key">
+  <li data-filter="backup_key MINION_BACKUP_KEY MINION_BACKUP_KEY_FILE Backup key">
   <form class="srow" method="post" hx-post="/admin/settings/backup_key" hx-target="#result-backup_key" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-backup_key" id="h-backup_key">backup_key</label>
@@ -180,7 +180,7 @@
   </form>
   </li>
 
-  <li data-filter="smtp_password MINION_SMTP_PASSWORD SMTP password">
+  <li data-filter="smtp_password MINION_SMTP_PASSWORD MINION_SMTP_PASSWORD_FILE SMTP password">
   <form class="srow" method="post" hx-post="/admin/settings/smtp_password" hx-target="#result-smtp_password" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-smtp_password" id="h-smtp_password">smtp_password</label>

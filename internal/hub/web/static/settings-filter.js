@@ -3,7 +3,7 @@
 (function () {
   "use strict";
   var input = document.getElementById("settings-filter");
-  var empty = document.getElementById("settings-filter-empty");
+  var status = document.getElementById("settings-filter-status");
   if (!input) { return; }
   input.addEventListener("input", function () {
     var q = input.value.trim().toLowerCase();
@@ -18,6 +18,6 @@
       sec.hidden = visible === 0;
       shown += visible;
     });
-    if (empty) { empty.hidden = shown !== 0; }
+    if (status) { status.textContent = shown === 0 ? "No setting matches the filter." : (q === "" ? "" : shown + (shown === 1 ? " setting matches." : " settings match.")); }
   });
 })();
