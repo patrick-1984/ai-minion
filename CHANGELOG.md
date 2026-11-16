@@ -13,6 +13,10 @@
 
 ### Changed
 
+- **Sharing is easier with many sessions, and nothing is shared by default**: the Worker page's Sharing panel lists the sessions in a table with a **Shared** checkbox each, **All** and **None** buttons, (without JavaScript the panel works as before). The setup wizard's default is now "none" and its session list takes `all` and `none`; the install guides use `--share-existing none` and explain choosing in the Hub and `minion worker config unset share_existing`.
+
+### Changed
+
 - **Hub settings in sections**: Administration → Hub settings groups the settings into sorted sections (Server and network, Sign-in and accounts, Single sign-on, Workers and invitations, Messages between sessions, Updates, Logging and troubleshooting, Storage) with jump links and a filter box; `settings_list` reports each setting's `section`.
 
 ## v0.8.2

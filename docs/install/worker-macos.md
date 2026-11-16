@@ -33,8 +33,9 @@ minion worker setup
 The wizard asks which sessions the Hub may see, the Hub address and a pairing code (see [pairing and sharing](../guides/pairing.md)). To skip the questions, give them as flags:
 
 ```sh
-minion worker up --share-existing all --server https://hub.example.com
+minion worker up --share-existing none --server https://hub.example.com
 ```
+Nothing is shared at first (`--share-existing none`): choose the sessions to share on the Worker's page in the Hub (**Sharing**: tick **Shared**, or **All** / **None**). The flag is saved and applied at every start, so once you share from the Hub remove it with `minion worker config unset share_existing`, or that choice is reset.
 
 On macOS `minion worker up` installs a launchd agent for the current user and loads it, so the Worker starts when you log in and runs `minion worker run`. The Worker's state (database, config file, logs) is in `~/Library/Application Support/minion`. A launchd user agent runs while you are logged in; it does not run at the login window.
 

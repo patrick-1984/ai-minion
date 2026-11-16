@@ -42,15 +42,16 @@ minion worker setup
 
 The wizard asks three things in turn: which sessions the Hub may see (all of them, some, decide later, or none), the Hub address (it checks the name, the connection, the certificate and the protocol and explains each result) and a pairing code to type into the Hub. Nothing is saved before the Hub address step is finished, and Ctrl-C before that changes nothing. Pressing Enter at the address step runs the Worker alone (Solo).
 
-Everything the wizard asks can be given as a flag instead, for example `--share-existing all --server https://hub.example.com`. A question answered that way is not asked. Without a terminal the wizard asks nothing: it needs `--share-existing`, and it does not pair.
+Everything the wizard asks can be given as a flag instead, for example `--share-existing none --server https://hub.example.com`. A question answered that way is not asked. Without a terminal the wizard asks nothing: it needs `--share-existing`, and it does not pair.
 
 ## 3. Run it as a service
 
 **System service (sudo):**
 
 ```sh
-sudo minion worker up --share-existing all --server https://hub.example.com
+sudo minion worker up --share-existing none --server https://hub.example.com
 ```
+Nothing is shared at first (`--share-existing none`): choose the sessions to share on the Worker's page in the Hub (**Sharing**: tick **Shared**, or **All** / **None**). The flag is saved and applied at every start, so once you share from the Hub remove it with `minion worker config unset share_existing`, or that choice is reset.
 
 Run by a user through `sudo`, this installs `minion-worker@<user>.service` for that user, enables it at boot and starts it. The unit runs `minion worker run` as that user (`Restart=always`, `KillMode=process`, so stopping or restarting the Worker does not end your tmux sessions). Use `--as-user <name>` to install it for another user; a first-run question is then not asked for you: give `--share-existing all|none|later` or run `minion worker setup` as that user.
 
