@@ -1,6 +1,9 @@
 package agent
 
-import "sync/atomic"
+import (
+	"log/slog"
+	"sync/atomic"
+)
 
 // A restart that must keep the console (Windows foreground, v0.9.3): instead
 // of starting the new binary and exiting while it runs on in the background,
@@ -32,3 +35,9 @@ func requestRestart(exe string) bool {
 	(*f)()
 	return true
 }
+
+// RestartDetached starts exe and exits, the way a restart worked before
+// v0.9.3: the new process waits for this one to exit before it takes the
+// state. The command uses it when the stop before a pending restart failed,
+// so the exclusive resources are released only by this process's exit.
+func RestartDetached(log *slog.Logger, exe string) { restartNow(log, exe) }

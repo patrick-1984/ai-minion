@@ -32,6 +32,7 @@ func baseDown() workerDownDeps {
 		euid:           func() int { return 1000 },
 		user:           func() string { return "patryk" },
 		sleep:          func(time.Duration) {},
+		stateFree:      func() bool { return true },
 	}
 }
 
@@ -48,9 +49,12 @@ func TestWorkerDownStopsAForegroundWorker(t *testing.T) {
 		}
 		return nil
 	}
+	// The lock is still held for a moment after the socket closed.
+	free := 0
+	d.stateFree = func() bool { free++; return free > 3 }
 	out, err := downCmd(t, d)
-	if err != nil || !stopped || !strings.Contains(out, "minion worker up --foreground") {
-		t.Fatalf("out=%q err=%v stopped=%v", out, err, stopped)
+	if err != nil || !stopped || free < 4 || !strings.Contains(out, "minion worker up --foreground") {
+		t.Fatalf("out=%q err=%v stopped=%v free=%d", out, err, stopped, free)
 	}
 }
 

@@ -57,6 +57,9 @@
     box.closest('[data-unasked]').hidden = false;
     box.addEventListener('change', function () { put(key(worker, session), box.checked); showSession(); });
     window.addEventListener('storage', showSession);
+    // Hidden in the inspector (closed or another session chosen) counts as
+    // leaving the page: the next send asks again.
+    document.addEventListener('minion:view-suspended', function () { visit = false; showSession(); });
     showSession();
     document.body.addEventListener('htmx:configRequest', function (ev) {
       var d = ev.detail || {};

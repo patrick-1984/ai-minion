@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/client"
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
@@ -48,6 +49,9 @@ type workerDownDeps struct {
 	euid  func() int
 	user  func() string
 	sleep func(time.Duration)
+	// stateFree reports whether the Worker state lock can be taken, that is
+	// whether the stopped Worker has released everything.
+	stateFree func() bool
 }
 
 func defaultWorkerDownDeps() workerDownDeps {
@@ -72,8 +76,24 @@ func defaultWorkerDownDeps() workerDownDeps {
 			}
 			return os.Getenv("USER")
 		},
-		sleep: time.Sleep,
+		sleep:     time.Sleep,
+		stateFree: workerStateFree,
 	}
+}
+
+// workerStateFree takes and releases the state lock of this user's Worker.
+func workerStateFree() bool {
+	res := &config.Resolver{Registry: config.Default, Role: config.ScopeWorker, LookupEnv: os.LookupEnv}
+	dir, err := res.Resolve(config.KeyStateDir)
+	if err != nil || dir.Value == "" {
+		return true
+	}
+	l, err := agent.LockLifecycle(dir.Value)
+	if err != nil {
+		return false
+	}
+	_ = l.Close()
+	return true
 }
 
 func stopWindowsService() (bool, error) {
@@ -132,17 +152,20 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 	case err != nil:
 		return fmt.Errorf("cannot ask the running Worker to stop: %w", err)
 	}
-	for i := 0; i < 40; i++ {
+	// Stopped means: no answer on the socket any more AND the state lock is
+	// free (the connector, the pipe and the store have finished), so that
+	// "worker reset" or "worker up" works right after (up to 30 seconds).
+	for i := 0; i < 120; i++ {
 		d.sleep(250 * time.Millisecond)
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		err := d.call(cctx, agent.OpLocalStatus)
 		cancel()
-		if errors.Is(err, client.ErrWorkerNotRunning) {
+		if errors.Is(err, client.ErrWorkerNotRunning) && d.stateFree() {
 			_, _ = fmt.Fprintln(out, "The Worker stopped. Start it again with: minion worker up --foreground")
 			return nil
 		}
 	}
-	return errors.New("the Worker was asked to stop but still answers after 10 seconds; check it with: minion worker status")
+	return errors.New("the Worker was asked to stop but has not finished after 30 seconds; check it with: minion worker status")
 }
 
 // stopServiceWorker stops the Worker service of this user when one runs. It

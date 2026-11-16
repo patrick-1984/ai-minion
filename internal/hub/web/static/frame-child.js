@@ -91,6 +91,10 @@
     if (typeof d.type !== 'string' || !Object.prototype.hasOwnProperty.call(FROM_HOST, d.type)) { return; }
     if (!d.target || d.target.worker !== worker || d.target.session !== session) { return; }
     if (d.doc !== undefined && d.doc !== docId) { return; } // meant for another document of this frame
+    if (d.type === 'suspend') {
+      // The view is hidden: a permission given on it ends here (send-unasked.js).
+      document.dispatchEvent(new CustomEvent('minion:view-suspended'));
+    }
     var s = stateOf(control(d.type === 'query' ? 'state' : d.type));
     last = JSON.stringify(s);
     post('state', Object.assign({ nonce: typeof d.nonce === 'string' ? d.nonce.slice(0, 64) : '' }, s));
