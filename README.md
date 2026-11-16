@@ -7,7 +7,7 @@ Run and steer terminal AI agents (Claude Code, Codex and others) in tmux session
 
 One binary, `minion` (also installed as `mn` by the Linux packages), is the Hub, the Worker, the command line and the MCP server.
 
-Version 0.9.2. License: Apache-2.0.
+Version 0.9.3. License: Apache-2.0.
 
 ## Start here
 
@@ -27,9 +27,9 @@ You need a Hub only if you want the web UI, several users or Workers on several 
 | --- | --- |
 | Linux, macOS | `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh \| sh` |
 | Windows (preview, PowerShell) | `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 \| iex` |
-| Docker (Hub) | `docker run ... ghcr.io/patrick-1984/minion:v0.9.2 hub serve`, see [Quick start: the Hub in Docker](#quick-start-the-hub-in-docker) |
+| Docker (Hub) | `docker run ... ghcr.io/patrick-1984/minion:v0.9.3 hub serve`, see [Quick start: the Hub in Docker](#quick-start-the-hub-in-docker) |
 
-The scripts install the latest `minion` (`MINION_VERSION=v0.9.2` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. They install nothing else: tmux comes from your package manager. The install guides below also show the manual install that verifies the signature.
+The scripts install the latest `minion` (`MINION_VERSION=v0.9.3` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. They install nothing else: tmux comes from your package manager. The install guides below also show the manual install that verifies the signature.
 
 A minimal local try-out, no Hub and no install beyond the binary and tmux:
 
@@ -59,7 +59,7 @@ docker run -d --name minion-hub --restart unless-stopped \
   -v "$PWD/admin_password.txt:/run/secrets/minion_admin_password:ro" \
   -e MINION_DATA_DIR=/data \
   -e MINION_ADMIN_PASSWORD_FILE=/run/secrets/minion_admin_password \
-  ghcr.io/patrick-1984/minion:v0.9.2 hub serve
+  ghcr.io/patrick-1984/minion:v0.9.3 hub serve
 
 docker logs minion-hub
 ```
@@ -92,7 +92,7 @@ services:
       - ./hub-data:/data
 
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.9.2}
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.9.3}
     command: ["hub", "serve"]
     restart: unless-stopped
     depends_on:
@@ -116,7 +116,7 @@ services:
 
 ```dotenv
 # Image tag: an exact release, or a channel that follows new releases (0.8, 0, latest).
-MINION_VERSION=v0.9.2
+MINION_VERSION=v0.9.3
 
 # Where the Hub's port is published on the host. 127.0.0.1 keeps it on this machine
 # (for a reverse proxy on the same host); 0.0.0.0 publishes it on every interface.
