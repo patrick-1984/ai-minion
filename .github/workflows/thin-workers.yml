@@ -1,0 +1,164 @@
+# Thin Workers (preview): the C Worker for OpenWrt and ESP32 (clients/).
+#
+# Pull requests that touch clients/ run the core tests, the end-to-end test against the Hub of this repository,
+# the big-endian (s390x) tests and every package and firmware build. A tag thin-v* builds the same and publishes a GitHub
+# PRERELEASE with the OpenWrt packages (ipk for 24.10, apk for 25.12), the ESP32 images and SHA256SUMS.
+# This workflow never touches the v* release flow, the container images or "latest".
+name: thin-workers
+
+on:
+  pull_request:
+    paths:
+      - clients/**
+      - .github/workflows/thin-workers.yml
+      - docs/architecture/proposals/thin-workers.md
+  push:
+    tags:
+      - "thin-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thin-workers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: core tests and end-to-end against the Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libmbedtls-dev gcc-s390x-linux-gnu libc6-dev-s390x-cross qemu-user
+      - name: Unit tests (RFC vectors and the repository's golden vectors)
+        run: make -C clients/linux test BUILD="$PWD/out/test"
+      - name: Unit tests with AddressSanitizer and UBSan
+        run: make -C clients/linux test BUILD="$PWD/out/asan" CFLAGS="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all"
+      - name: Unit tests on a big-endian CPU (s390x under qemu)
+        run: |
+          make -C clients/linux tests BUILD="$PWD/out/be" CC=s390x-linux-gnu-gcc CFLAGS="-O2 -static"
+          for t in test_proto test_vt test_keys; do qemu-s390x "$PWD/out/be/$t"; done
+      - name: Build (plain and TLS)
+        run: |
+          make -C clients/linux BUILD="$PWD/out/plain"
+          make -C clients/linux BUILD="$PWD/out/tls" MBEDTLS=1
+          ls -l out/plain/minion-thin out/tls/minion-thin
+      - name: Build the Hub of this repository
+        run: CGO_ENABLED=0 go build -trimpath -o out/minion ./cmd/minion
+      - name: End-to-end (plain)
+        run: python3 -I clients/tests/e2e.py --hub-bin out/minion --thin-bin out/plain/minion-thin --work "$RUNNER_TEMP/e2e-plain"
+      - name: End-to-end (TLS)
+        run: python3 -I clients/tests/e2e.py --tls --hub-bin out/minion --thin-bin out/tls/minion-thin --work "$RUNNER_TEMP/e2e-tls" --port 18556
+
+  openwrt:
+    name: OpenWrt ${{ matrix.release }} ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["24.10.8", "25.12.6"]
+        arch: [mips_24kc, mipsel_24kc, arm_cortex-a7_neon-vfpv4, aarch64_cortex-a53, x86_64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Sources into the package directory
+        run: clients/openwrt/prepare.sh
+      - name: Build with the OpenWrt SDK
+        uses: openwrt/gh-action-sdk@b8cc97d1072dedff455e2945a73fc43f5c7e1749 # v9
+        env:
+          ARCH: ${{ matrix.arch }}-${{ matrix.release }}
+          FEED_DIR: ${{ github.workspace }}/clients/openwrt
+          FEEDNAME: minion
+          PACKAGES: minion-thin
+          NO_SHFMT_CHECK: 1
+          NO_REFRESH_CHECK: 1
+      - name: Collect
+        run: |
+          mkdir -p dist
+          f=$(find bin/packages -type f \( -name 'minion-thin*.ipk' -o -name 'minion-thin*.apk' \) | head -1)
+          test -n "$f"
+          ext=${f##*.}
+          cp "$f" "dist/minion-thin_0.1.0-preview.1_openwrt-${{ matrix.release }}_${{ matrix.arch }}.$ext"
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openwrt-${{ matrix.release }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  esp32:
+    name: ESP32 ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [esp32, esp32s3, esp32c3, esp32c6]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@e6f5c74232b1ccd4c97ed641f1e48553853f1fd5 # v1.2.0
+        with:
+          esp_idf_version: v5.4.2
+          target: ${{ matrix.target }}
+          path: clients/esp32
+          command: >-
+            idf.py set-target ${{ matrix.target }} && idf.py build &&
+            cd build && python -m esptool --chip ${{ matrix.target }} merge_bin -o factory.bin @flash_args
+      - name: Collect
+        run: |
+          mkdir -p dist
+          b=clients/esp32/build
+          app=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["app"]["file"])' "$b/flasher_args.json")
+          off=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["app"]["offset"])' "$b/flasher_args.json")
+          cp "$b/factory.bin" "dist/minion-thin_0.1.0-preview.1_${{ matrix.target }}_factory-0x0.bin"
+          cp "$b/$app" "dist/minion-thin_0.1.0-preview.1_${{ matrix.target }}_app-$off.bin"
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: esp32-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Prerelease
+    if: startsWith(github.ref, 'refs/tags/thin-v')
+    needs: [core, openwrt, esp32]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd assets
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+            --verify-tag --title "Minion thin Workers $TAG (preview)" --notes-file clients/RELEASE_NOTES.md
