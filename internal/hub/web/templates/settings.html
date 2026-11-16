@@ -1,11 +1,19 @@
 {{define "content"}}
 <div class="page-head"><div><h1>Hub settings</h1><p>Every setting of the Hub with the environment variable that sets it. A field that an environment variable sets is read-only here. A secret is never shown again: it is only "set" or "not set".</p></div></div>
-{{if .Data.Settings}}
-<div class="settings-list">
+{{if .Data.Sections}}
+<div class="settings-tools">
+  <nav class="settings-jump" aria-label="Sections"><ul>{{range .Data.Sections}}<li><a href="#{{.ID}}">{{.Name}}</a></li>{{end}}</ul></nav>
+  <label class="settings-filter"><span class="sr-only">Filter settings</span><input type="search" id="settings-filter" placeholder="Filter settings" autocomplete="off" spellcheck="false" aria-controls="settings-sections"></label>
+</div>
+<p id="settings-filter-status" class="muted" role="status" aria-live="polite"></p>
+<div id="settings-sections">
+{{range .Data.Sections}}
+<section class="settings-list" id="{{.ID}}" aria-labelledby="{{.ID}}-h">
+  <h2 class="settings-section" id="{{.ID}}-h">{{.Name}}</h2>
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
   <ul>
-{{range .Data.Settings}}
-  <li>
+{{range .Rows}}
+  <li data-filter="{{.Key}} {{.Env}} {{.EnvFile}} {{.Help}}">
   <form class="srow" method="post" hx-post="/admin/settings/{{.Key}}" hx-target="#result-{{.Key}}" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-{{.Key}}" id="h-{{.Key}}">{{.Key}}</label>
@@ -36,7 +44,10 @@
   </li>
 {{end}}
   </ul>
+</section>
+{{end}}
 </div>
+<script src="/static/settings-filter.js" defer></script>
 {{else}}<p class="muted">There are no settings.</p>
 {{end}}
 <noscript><p class="muted">Changing settings needs JavaScript in this browser.</p></noscript>

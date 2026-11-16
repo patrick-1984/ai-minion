@@ -61,6 +61,9 @@ type SettingInfo struct {
 	// Error is set when the setting cannot be resolved, for example because
 	// the environment holds an invalid value. It never contains a secret.
 	Error string `json:"error,omitempty"`
+	// Section is the group of the setting on the settings page, for example
+	// "Server and network".
+	Section string `json:"section"`
 }
 
 // SettingsListResult is the result of settings_list, ordered by key.

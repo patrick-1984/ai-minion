@@ -7,7 +7,10 @@ package web
 
 import (
 	"net/http"
+	"slices"
 	"strings"
+
+	"github.com/patrick-1984/ai-minion/internal/config"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -21,15 +24,27 @@ const (
 	panelLockedText = "cannot be changed in the panel"
 )
 
-// SettingsPage is what settings.html sees as .Data.
+// SettingsPage is what settings.html sees as .Data: the settings grouped in
+// sections, in config.SectionOrder, with no empty section.
 type SettingsPage struct {
-	Settings []SettingRow
+	Sections []SettingSection
+}
+
+// SettingSection is one card of the settings page.
+type SettingSection struct {
+	// Name is the heading; ID the fragment of the jump link.
+	Name string
+	ID   string
+	Rows []SettingRow
 }
 
 // SettingRow is one setting as the page shows it.
 type SettingRow struct {
-	Key  string
-	Help string
+	Key string
+	// Section is the card the row belongs to; rank orders the rows inside it.
+	Section string
+	rank    int
+	Help    string
 	// Env is the environment variable; EnvFile the "_FILE" variable of a secret.
 	Env     string
 	EnvFile string
@@ -61,6 +76,13 @@ func settingRows(list []ops.SettingInfo) []SettingRow {
 			Choices: s.Choices, Source: s.Source, Locked: s.ReadOnly, Live: s.Live,
 			PendingRestart: s.PendingRestart, Error: s.Error,
 		}
+		// The operation names the section; an older result without one
+		// falls back to the local table.
+		sec, rank := config.SectionOf(s.Key)
+		row.Section, row.rank = s.Section, rank
+		if row.Section == "" {
+			row.Section = sec
+		}
 		if s.Secret {
 			row.SecretState = "not set"
 			if s.Source == ops.SettingSourceEnv || s.Source == ops.SettingSourcePanel {
@@ -85,7 +107,57 @@ func settingsData(r *http.Request, c OpCaller) (any, error) {
 	if err := c.CallOp(r, ops.OpSettingsList, ops.SettingsListArgs{}, &res); err != nil {
 		return nil, err
 	}
-	return SettingsPage{Settings: settingRows(res.Settings)}, nil
+	return SettingsPage{Sections: settingSections(settingRows(res.Settings))}, nil
+}
+
+// settingSections groups rows by section in config.SectionOrder. Inside a
+// section the essential settings (rank 0) come first, then the rest from A to
+// Z. A section that the order does not know goes last, under its own name.
+func settingSections(rows []SettingRow) []SettingSection {
+	order := slices.Clone(config.SectionOrder)
+	for _, r := range rows {
+		if !slices.Contains(order, r.Section) {
+			order = append(order, r.Section)
+		}
+	}
+	var out []SettingSection
+	for _, name := range order {
+		var in []SettingRow
+		for _, r := range rows {
+			if r.Section == name {
+				in = append(in, r)
+			}
+		}
+		if len(in) == 0 {
+			continue
+		}
+		slices.SortStableFunc(in, func(a, b SettingRow) int {
+			if a.rank != b.rank {
+				return a.rank - b.rank
+			}
+			return strings.Compare(a.Key, b.Key)
+		})
+		out = append(out, SettingSection{Name: name, ID: sectionID(name), Rows: in})
+	}
+	return out
+}
+
+// sectionID turns a section name into a fragment: "Single sign-on (OIDC)"
+// becomes "s-single-sign-on-oidc".
+func sectionID(name string) string {
+	var b strings.Builder
+	b.WriteString("s-")
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			dash = false
+		} else if !dash && b.Len() > 2 {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "-")
 }
 
 // handleSettingSet changes one setting. The form carries "value" and "action":

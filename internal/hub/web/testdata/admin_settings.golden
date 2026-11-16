@@ -2,11 +2,19 @@
 
 <div class="page-head"><div><h1>Hub settings</h1><p>Every setting of the Hub with the environment variable that sets it. A field that an environment variable sets is read-only here. A secret is never shown again: it is only "set" or "not set".</p></div></div>
 
-<div class="settings-list">
+<div class="settings-tools">
+  <nav class="settings-jump" aria-label="Sections"><ul><li><a href="#s-server-and-network">Server and network</a></li><li><a href="#s-single-sign-on-oidc">Single sign-on (OIDC)</a></li><li><a href="#s-storage">Storage</a></li><li><a href="#s-other">Other</a></li></ul></nav>
+  <label class="settings-filter"><span class="sr-only">Filter settings</span><input type="search" id="settings-filter" placeholder="Filter settings" autocomplete="off" spellcheck="false" aria-controls="settings-sections"></label>
+</div>
+<p id="settings-filter-status" class="muted" role="status" aria-live="polite"></p>
+<div id="settings-sections">
+
+<section class="settings-list" id="s-server-and-network" aria-labelledby="s-server-and-network-h">
+  <h2 class="settings-section" id="s-server-and-network-h">Server and network</h2>
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
   <ul>
 
-  <li>
+  <li data-filter="listen MINION_LISTEN  Address the Hub listens on">
   <form class="srow" method="post" hx-post="/admin/settings/listen" hx-target="#result-listen" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-listen" id="h-listen">listen</label>
@@ -29,7 +37,29 @@
   </form>
   </li>
 
-  <li>
+  <li data-filter="public_url MINION_PUBLIC_URL  External URL of the Hub">
+  <form class="srow" method="post" hx-post="/admin/settings/public_url" hx-target="#result-public_url" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-public_url" id="h-public_url">public_url</label>
+      <span class="s-env"><code>MINION_PUBLIC_URL</code></span>
+    </div>
+    <div class="s-value">
+      <input type="text" id="v-public_url" name="value" value="https://hub.example.com" autocomplete="off" spellcheck="false" aria-describedby="m-public_url d-public_url">
+    </div>
+    <div class="s-actions">
+      <button type="submit" name="action" value="set">Save</button>
+      <button type="submit" name="action" value="unset" class="btn-secondary">Use the default</button>
+    </div>
+    <div class="s-desc">
+      <p id="d-public_url" class="s-help">External URL of the Hub</p>
+      <p id="m-public_url" class="s-meta">Source: panel. Applies after the Hub restarts. <strong>A changed value waits for the next restart.</strong></p>
+      
+    </div>
+    <div id="result-public_url" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  <li data-filter="tls MINION_TLS  TLS mode">
   <form class="srow" method="post" hx-post="/admin/settings/tls" hx-target="#result-tls" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-tls" id="h-tls">tls</label>
@@ -56,29 +86,15 @@
   </form>
   </li>
 
-  <li>
-  <form class="srow" method="post" hx-post="/admin/settings/public_url" hx-target="#result-public_url" hx-swap="innerHTML" hx-disabled-elt="find button">
-    <div class="s-key">
-      <label for="v-public_url" id="h-public_url">public_url</label>
-      <span class="s-env"><code>MINION_PUBLIC_URL</code></span>
-    </div>
-    <div class="s-value">
-      <input type="text" id="v-public_url" name="value" value="https://hub.example.com" autocomplete="off" spellcheck="false" aria-describedby="m-public_url d-public_url">
-    </div>
-    <div class="s-actions">
-      <button type="submit" name="action" value="set">Save</button>
-      <button type="submit" name="action" value="unset" class="btn-secondary">Use the default</button>
-    </div>
-    <div class="s-desc">
-      <p id="d-public_url" class="s-help">External URL of the Hub</p>
-      <p id="m-public_url" class="s-meta">Source: panel. Applies after the Hub restarts. <strong>A changed value waits for the next restart.</strong></p>
-      
-    </div>
-    <div id="result-public_url" class="s-result" aria-live="polite"></div>
-  </form>
-  </li>
+  </ul>
+</section>
 
-  <li>
+<section class="settings-list" id="s-single-sign-on-oidc" aria-labelledby="s-single-sign-on-oidc-h">
+  <h2 class="settings-section" id="s-single-sign-on-oidc-h">Single sign-on (OIDC)</h2>
+  <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+  <ul>
+
+  <li data-filter="oidc_client_secret MINION_OIDC_CLIENT_SECRET MINION_OIDC_CLIENT_SECRET_FILE Client secret">
   <form class="srow" method="post" hx-post="/admin/settings/oidc_client_secret" hx-target="#result-oidc_client_secret" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-oidc_client_secret" id="h-oidc_client_secret">oidc_client_secret</label>
@@ -101,55 +117,15 @@
   </form>
   </li>
 
-  <li>
-  <form class="srow" method="post" hx-post="/admin/settings/smtp_password" hx-target="#result-smtp_password" hx-swap="innerHTML" hx-disabled-elt="find button">
-    <div class="s-key">
-      <label for="v-smtp_password" id="h-smtp_password">smtp_password</label>
-      <span class="s-env"><code>MINION_SMTP_PASSWORD</code> or <code>MINION_SMTP_PASSWORD_FILE</code> (a file that holds the value)</span>
-    </div>
-    <div class="s-value">
-      <input type="password" id="v-smtp_password" name="value" autocomplete="new-password" placeholder="set" aria-describedby="m-smtp_password d-smtp_password">
-      <input type="hidden" name="secret" value="1">
-      
-    </div>
-    <div class="s-actions">
-      <button type="submit" name="action" value="set">Save</button>
-      <button type="submit" name="action" value="unset" class="btn-secondary">Remove</button>
-    </div>
-    <div class="s-desc">
-      <p id="d-smtp_password" class="s-help">SMTP password</p>
-      <p id="m-smtp_password" class="s-meta">Secret: set. Source: panel. Applies after the Hub restarts.</p>
-      
-    </div>
-    <div id="result-smtp_password" class="s-result" aria-live="polite"></div>
-  </form>
-  </li>
+  </ul>
+</section>
 
-  <li>
-  <form class="srow" method="post" hx-post="/admin/settings/backup_key" hx-target="#result-backup_key" hx-swap="innerHTML" hx-disabled-elt="find button">
-    <div class="s-key">
-      <label for="v-backup_key" id="h-backup_key">backup_key</label>
-      <span class="s-env"><code>MINION_BACKUP_KEY</code> or <code>MINION_BACKUP_KEY_FILE</code> (a file that holds the value)</span>
-    </div>
-    <div class="s-value">
-      <input type="password" id="v-backup_key" name="value" autocomplete="new-password" placeholder="not set" aria-describedby="m-backup_key d-backup_key">
-      <input type="hidden" name="secret" value="1">
-      
-    </div>
-    <div class="s-actions">
-      <button type="submit" name="action" value="set">Save</button>
-      <button type="submit" name="action" value="unset" class="btn-secondary">Remove</button>
-    </div>
-    <div class="s-desc">
-      <p id="d-backup_key" class="s-help">Backup key</p>
-      <p id="m-backup_key" class="s-meta">Secret: not set. Source: default. Applies after the Hub restarts.</p>
-      
-    </div>
-    <div id="result-backup_key" class="s-result" aria-live="polite"></div>
-  </form>
-  </li>
+<section class="settings-list" id="s-storage" aria-labelledby="s-storage-h">
+  <h2 class="settings-section" id="s-storage-h">Storage</h2>
+  <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+  <ul>
 
-  <li>
+  <li data-filter="data_dir MINION_DATA_DIR  Data directory">
   <form class="srow" method="post" hx-post="/admin/settings/data_dir" hx-target="#result-data_dir" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="s-key">
       <label for="v-data_dir" id="h-data_dir">data_dir</label>
@@ -173,7 +149,66 @@
   </li>
 
   </ul>
+</section>
+
+<section class="settings-list" id="s-other" aria-labelledby="s-other-h">
+  <h2 class="settings-section" id="s-other-h">Other</h2>
+  <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+  <ul>
+
+  <li data-filter="backup_key MINION_BACKUP_KEY MINION_BACKUP_KEY_FILE Backup key">
+  <form class="srow" method="post" hx-post="/admin/settings/backup_key" hx-target="#result-backup_key" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-backup_key" id="h-backup_key">backup_key</label>
+      <span class="s-env"><code>MINION_BACKUP_KEY</code> or <code>MINION_BACKUP_KEY_FILE</code> (a file that holds the value)</span>
+    </div>
+    <div class="s-value">
+      <input type="password" id="v-backup_key" name="value" autocomplete="new-password" placeholder="not set" aria-describedby="m-backup_key d-backup_key">
+      <input type="hidden" name="secret" value="1">
+      
+    </div>
+    <div class="s-actions">
+      <button type="submit" name="action" value="set">Save</button>
+      <button type="submit" name="action" value="unset" class="btn-secondary">Remove</button>
+    </div>
+    <div class="s-desc">
+      <p id="d-backup_key" class="s-help">Backup key</p>
+      <p id="m-backup_key" class="s-meta">Secret: not set. Source: default. Applies after the Hub restarts.</p>
+      
+    </div>
+    <div id="result-backup_key" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  <li data-filter="smtp_password MINION_SMTP_PASSWORD MINION_SMTP_PASSWORD_FILE SMTP password">
+  <form class="srow" method="post" hx-post="/admin/settings/smtp_password" hx-target="#result-smtp_password" hx-swap="innerHTML" hx-disabled-elt="find button">
+    <div class="s-key">
+      <label for="v-smtp_password" id="h-smtp_password">smtp_password</label>
+      <span class="s-env"><code>MINION_SMTP_PASSWORD</code> or <code>MINION_SMTP_PASSWORD_FILE</code> (a file that holds the value)</span>
+    </div>
+    <div class="s-value">
+      <input type="password" id="v-smtp_password" name="value" autocomplete="new-password" placeholder="set" aria-describedby="m-smtp_password d-smtp_password">
+      <input type="hidden" name="secret" value="1">
+      
+    </div>
+    <div class="s-actions">
+      <button type="submit" name="action" value="set">Save</button>
+      <button type="submit" name="action" value="unset" class="btn-secondary">Remove</button>
+    </div>
+    <div class="s-desc">
+      <p id="d-smtp_password" class="s-help">SMTP password</p>
+      <p id="m-smtp_password" class="s-meta">Secret: set. Source: panel. Applies after the Hub restarts.</p>
+      
+    </div>
+    <div id="result-smtp_password" class="s-result" aria-live="polite"></div>
+  </form>
+  </li>
+
+  </ul>
+</section>
+
 </div>
+<script src="/static/settings-filter.js" defer></script>
 
 <noscript><p class="muted">Changing settings needs JavaScript in this browser.</p></noscript>
 
