@@ -74,9 +74,14 @@ invitation key**. The Worker is pending until the owner approves it (Hub UI or `
 | Worker removed or revoked in the Hub | only a **signed** `revoke` wipes the enrollment; then the device idles |
 | Certificate expired and not re-issued | refuses (protocol rule), keeps its enrollment, retries; Hub-side problem |
 
+The only time-based element left is the Hub's own operational certificate. Its renewal is a Hub-owner action
+(passphrase), happens on the Hub only, and needs nothing on any device; with Hub PR #24 its validity is up to 3650
+days. Within one connection the device enforces the certificate's end with the wall clock **and** a monotonic
+deadline fixed at the handshake, and checks it again before every operation.
+
 **Clock.** The certificate window check needs wall time. OpenWrt has `sysntpd`. The ESP32 runs SNTP (pool or the
-DHCP-provided server) and does not connect before time is set (year >= 2025). This is the only external
-dependency, and it is not something the owner redoes.
+DHCP-provided server) and keeps a time floor in NVS (written at most hourly); if SNTP stays silent, it starts from
+the floor so it can still connect. Neither side connects while the clock is unset (before 2025).
 
 **Not used on devices:** pairing codes. The invitation key is the "connect once" method: it does not require a
 person at the device within a 10-minute window, and it is easy to deliver over a serial console or UCI.
@@ -176,3 +181,23 @@ refused under `preview_only`.
 - ESP32 heap: TLS (~40 KB) plus a 16 KB record buffer; keep one connection, reuse buffers, no PSRAM required.
 - yamux window rules: the device processes stream data as it arrives and returns window credit at once; frames
   larger than the device limit (16 KB on ESP32) reset that stream instead of buffering.
+
+## 8. Review decisions (2026-11-15)
+
+Round 1 on this design: Codex (Sol, max) and an independent Opus judge. Applied:
+
+| Finding | Decision |
+|---|---|
+| The Hub UI's Send uses `send_text` with `submit`; multi-line text needs `text.verbatim` | the hello announces `send_text.submit` and `text.verbatim`; text is delivered as typed bytes |
+| Request-id results kept in RAM can be outrun (eviction, reboot) | ids whose UUIDv7 time is not after the newest evicted entry or the boot time are refused (`conflict`) instead of executed twice |
+| Atomic enrollment state | one blob (`state`) holds pin, chain position, ratchet and Worker id; the identity seed is stored before the first enrollment; the invitation key is erased only after the state is committed |
+| Expiry inside a connection | wall clock or monotonic deadline, checked every 30 s and before each admitted operation |
+| Live revoke | handled as the first frame of an op stream (signed over the transcript, verified with the operational key), acknowledged with `op.result`/`revoke`; only then the device wipes its key and state |
+| Refused yamux streams | answered with ACK and RST together (an unacknowledged stream makes the Hub drop the session after 30 s) |
+| Oversized frames | read and discarded, answered `message_too_large` |
+| Share rule and revision | persisted; the default for a device is `all` (its sessions exist to be used), revision starts at 1 |
+| ESP32 remote console could administer the device | `enroll`, `config set`, `wifi set`, `uart set` and `factory-reset` work only on the local serial console; secrets are never echoed; GPIO/ADC/PWM/I2C/UART pins only from an allowlist, flash/PSRAM pins always refused, pins start as inputs |
+| ESP32 identity lost on update | the release ships a factory image (first flash only) and an app image for updates; NVS stays in place |
+| OpenWrt identity lost on sysupgrade | `/etc/minion-thin/` is listed in `/lib/upgrade/keep.d` |
+| ESP32 partitions | custom table with a 2 MB factory app |
+
