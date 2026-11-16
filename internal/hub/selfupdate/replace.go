@@ -70,6 +70,11 @@ func Replace(ctx context.Context, d *Docker, p ReplaceParams) (err error) {
 		return fmt.Errorf("the verified image is not available locally: %w", err)
 	}
 
+	// The helper must see the Hub's database before the Hub stops: data it
+	// cannot see (another layer, a tmpfs) would be lost with the old Hub.
+	if fi, err := os.Stat(filepath.Join(dataDir, "minion.db")); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("the helper does not see the Hub's database in %s (is the data directory on a volume?); nothing was changed", dataDir)
+	}
 	p.Log.Info("stopping the Hub", "container", name)
 	if err := d.Stop(ctx, old.ID, p.StopTimeout); err != nil {
 		return fmt.Errorf("stop the Hub: %w", err)

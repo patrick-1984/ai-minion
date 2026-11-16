@@ -80,16 +80,32 @@ func Detect(ctx context.Context, d *Docker, socket, channelTag string) (Self, st
 	return Self{Container: c, Repo: repo, Tag: tag, DataDir: data, SocketPath: socket}, ""
 }
 
-// onMount reports whether dir is a mount destination of c or lies below one.
+// onMount reports whether dir lies on a volume or bind mount of c that the
+// helper shares (VolumesFrom): the deepest mount covering dir decides, and a
+// tmpfs (in Mounts or HostConfig.Tmpfs) is not shared.
 func onMount(c Container, dir string) bool {
 	dir = filepath.Clean(dir)
+	covers := func(dest string) bool {
+		dest = filepath.Clean(dest)
+		return dir == dest || strings.HasPrefix(dir, dest+"/")
+	}
+	best, shared := "", false
 	for _, m := range c.Mounts {
-		dest := filepath.Clean(m.Destination)
-		if m.Destination != "" && (dir == dest || strings.HasPrefix(dir, dest+"/")) {
-			return true
+		if m.Destination == "" || !covers(m.Destination) || len(m.Destination) <= len(best) {
+			continue
+		}
+		best, shared = m.Destination, m.Type == "volume" || m.Type == "bind"
+	}
+	var tmpfs map[string]string
+	if raw, ok := c.HostConfig["Tmpfs"]; ok {
+		_ = json.Unmarshal(raw, &tmpfs)
+	}
+	for dest := range tmpfs {
+		if covers(dest) && len(dest) >= len(best) {
+			return false
 		}
 	}
-	return false
+	return shared
 }
 
 // findSelf inspects the container whose id or hostname this process has.

@@ -26,6 +26,7 @@ type fakeEngine struct {
 	declared bool              // the old container declares an anonymous volume mount
 	label    string            // the channel label of the old container
 	noMount  bool              // the data directory is in the container's own layer
+	tmpfs    bool              // a tmpfs covers the data directory below its bind mount
 	tagged   string
 	removed  []string
 	dataDir  string
@@ -67,7 +68,7 @@ func (f *fakeEngine) handler(w http.ResponseWriter, r *http.Request) {
 			"Id": id, "Name": "/" + f.names[id],
 			"Config": map[string]any{"Image": img, "Env": []string{"MINION_DATA_DIR=" + f.dataDir, "MINION_TLS=off"},
 				"Labels": labels},
-			"HostConfig":      hostConfig(f.declared),
+			"HostConfig":      hostConfig(f.declared, f.tmpfs, f.dataDir),
 			"Mounts":          mounts,
 			"NetworkSettings": map[string]any{"Networks": map[string]any{"minion_default": map[string]any{"Aliases": []string{"hub"}, "IPAddress": "10.0.0.2"}}},
 			"State":           map[string]any{"Running": f.running[id]},
@@ -104,8 +105,11 @@ func (f *fakeEngine) handler(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(io.Discard, r.Body)
 }
 
-func hostConfig(declared bool) map[string]any {
+func hostConfig(declared, tmpfs bool, dataDir string) map[string]any {
 	h := map[string]any{"NetworkMode": "minion_default", "Binds": []string{"./hub-data:/data"}}
+	if tmpfs {
+		h["Tmpfs"] = map[string]string{dataDir + "/hub": ""}
+	}
 	if declared {
 		h["Mounts"] = []map[string]any{{"Type": "volume", "Target": "/extra"}}
 	}
@@ -327,6 +331,50 @@ func TestDataOutsideAMountIsRefused(t *testing.T) {
 	f.running[host] = true
 	if _, why := Detect(context.Background(), d, sock, "0.9"); !strings.Contains(why, "not on a volume or bind mount") {
 		t.Fatalf("reason %q", why)
+	}
+}
+
+// A tmpfs below the bind mount holds the data in memory only: refused.
+func TestDataOnANestedTmpfsIsRefused(t *testing.T) {
+	f := newEngine(t)
+	f.tmpfs = true
+	d := startEngine(t, f)
+	sock := filepath.Join(t.TempDir(), "present")
+	_ = os.WriteFile(sock, nil, 0o600)
+	host, _ := os.Hostname()
+	f.names[host] = "minion-hub-1"
+	f.running[host] = true
+	f.oldImage = "ghcr.io/patrick-1984/minion:0.9"
+	// Point MINION_DATA_DIR below the bind, into the tmpfs.
+	c, err := d.Inspect(context.Background(), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onMount(c, f.dataDir+"/hub") {
+		t.Fatal("a data directory on a tmpfs counts as shared")
+	}
+	if !onMount(c, f.dataDir) {
+		t.Fatal("the bind mount itself is not shared")
+	}
+}
+
+// The helper refuses before stopping the Hub when it cannot see the database.
+func TestReplaceRefusesBeforeStoppingWithoutTheDatabase(t *testing.T) {
+	f := newEngine(t)
+	d := startEngine(t, f)
+	_ = os.Remove(filepath.Join(f.dataDir, "minion.db"))
+	if err := Replace(context.Background(), d, params(f, true)); err == nil {
+		t.Fatal("no error")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.running["old"] || f.created != nil {
+		t.Fatalf("old running=%v created=%v", f.running["old"], f.created != nil)
+	}
+	for _, c := range f.calls {
+		if strings.HasSuffix(c, "/stop") {
+			t.Fatalf("the Hub was stopped: %v", f.calls)
+		}
 	}
 }
 
