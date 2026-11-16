@@ -1,0 +1,9 @@
+menu "Minion thin Worker"
+    config MINION_QEMU_OPENETH
+        bool "Network over QEMU's OpenCores Ethernet instead of Wi-Fi (emulator tests only)"
+        default n
+        select ETH_USE_OPENETH
+        help
+            Only for running the firmware in Espressif's QEMU (see sdkconfig.qemu and README). The network
+            then comes from QEMU's user-mode Ethernet with DHCP. Never enable this for a real chip.
+endmenu

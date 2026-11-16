@@ -1,0 +1,6 @@
+# ESP-IDF build output (one directory per chip) and generated config
+build*/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
