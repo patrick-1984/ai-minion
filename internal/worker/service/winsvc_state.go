@@ -20,8 +20,11 @@ type WindowsServiceState struct {
 // Worker's Windows service is also installed and running or set to start at
 // boot: that service serves only hidden ConPTY sessions and keeps a Worker
 // connected after the console closes. It is empty when there is nothing to
-// say. The commands are the real ones: `minion worker down` stops the service
-// (elevated), `sc.exe delete` removes it.
+// say. The commands name the service in the SCM, so they cannot reach the
+// foreground Worker (`minion worker down` could: with the service stopped it
+// stops the Worker of this console): a running service is stopped and then
+// deleted, a stopped one that starts at boot is deleted, or set to start only
+// on demand.
 func ForegroundServiceWarning(st WindowsServiceState) string {
 	if !st.Installed || (!st.Running && !st.AutoStart) {
 		return ""
@@ -30,7 +33,7 @@ func ForegroundServiceWarning(st WindowsServiceState) string {
 	if account == "" || strings.EqualFold(account, "LocalSystem") || strings.EqualFold(account, `.\LocalSystem`) {
 		account = "LocalSystem"
 	}
-	var state string
+	var state, fix string
 	switch {
 	case st.Running && st.AutoStart:
 		state = "installed, running and set to start at boot"
@@ -39,7 +42,12 @@ func ForegroundServiceWarning(st WindowsServiceState) string {
 	default:
 		state = "installed and set to start at boot"
 	}
+	if st.Running {
+		fix = "Stop and remove it, in an elevated PowerShell: sc.exe stop " + WindowsServiceName + ", then sc.exe delete " + WindowsServiceName
+	} else {
+		fix = "Remove it, in an elevated PowerShell: sc.exe delete " + WindowsServiceName +
+			" (or keep it from starting at boot: sc.exe config " + WindowsServiceName + " start= demand)"
+	}
 	return "Warning: a Minion Worker Windows service (" + WindowsServiceName + ", runs as " + account + ") is also " + state +
-		": it serves only hidden ConPTY sessions and keeps a Worker connected after you close this console. " +
-		"Stop and remove it, in an elevated PowerShell: minion worker down, then sc.exe delete " + WindowsServiceName
+		": it serves only hidden ConPTY sessions and keeps a Worker connected after you close this console. " + fix
 }

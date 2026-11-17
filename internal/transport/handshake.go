@@ -157,13 +157,18 @@ type WorkerFacts struct {
 	// inside the Worker, or a tmux/psmux server that is not their default
 	// one). Meaningful only when SessionHost is set.
 	SessionsHidden bool `json:"sessions_hidden,omitempty"`
-	// SessionHostReason is a short human sentence on why the host was chosen
-	// and why its sessions are visible or hidden.
-	SessionHostReason string `json:"session_host_reason,omitempty"`
-	// SessionsListError is the short reason why the Worker's latest look at
-	// its sessions failed, at the time of the hello (no paths); empty when it
-	// succeeded. The Hub shows it when the Worker lists no session.
-	SessionsListError string `json:"sessions_list_error,omitempty"`
+	// SessionHostReasonCode is why the host was chosen and why its sessions
+	// are visible or hidden (HostReason*); SessionHostReason is the fixed
+	// text of that code (HostReasonText), never a path or a user name.
+	SessionHostReasonCode string `json:"session_host_reason_code,omitempty"`
+	SessionHostReason     string `json:"session_host_reason,omitempty"`
+	// SessionsListErrorCode is why the Worker's latest look at its sessions
+	// failed, at the time of the hello (ListFailed*); empty when it
+	// succeeded. SessionsListError is its fixed text (ListErrorText), never
+	// the output of a program. The Hub shows it when the Worker lists no
+	// session.
+	SessionsListErrorCode string `json:"sessions_list_error_code,omitempty"`
+	SessionsListError     string `json:"sessions_list_error,omitempty"`
 }
 
 // HubHello is the Hub's reply. Chain is present in connect mode only.

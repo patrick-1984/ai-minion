@@ -109,7 +109,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	facts = func() transport.WorkerFacts {
 		f := base()
 		hostInfo.applyTo(&f)
-		f.SessionsListError = health.Text()
+		applyListHealth(&f, health)
 		return f
 	}
 	c, err := NewConnector(ConnectorConfig{

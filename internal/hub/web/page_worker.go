@@ -90,7 +90,8 @@ type WorkerPage struct {
 }
 
 // EmptyReason tells why the Worker lists no session: "failed" (its listing
-// failed when it connected and no list arrived since), "waiting" (connected,
+// failed when it connected and no list arrived since; the Hub learns of a
+// later failure only at the next connection), "waiting" (connected,
 // its first list has not arrived), "none" (its list is empty) or "" (offline,
 // or an older Hub that does not say).
 func (v WorkerView) EmptyReason() string {
@@ -110,7 +111,7 @@ func (v WorkerView) EmptyReason() string {
 func (v WorkerView) EmptyTitle() string {
 	switch v.EmptyReason() {
 	case "failed":
-		return "Listing the sessions failed"
+		return "Listing the sessions failed (as of the last connection)"
 	case "waiting":
 		return "Waiting for the first session list"
 	case "none":

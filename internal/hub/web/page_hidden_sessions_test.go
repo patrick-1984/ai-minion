@@ -85,7 +85,15 @@ func TestAccountSessionsCardReadsAndSavesThePreference(t *testing.T) {
 		"New sessions that would be hidden are refused")
 	mustNotHave(t, body, `id="allow-hidden-sessions" checked`)
 
-	rec := post(t, s, "/account/sessions", userHeader, url.Values{"allow_hidden_sessions": {"on"}})
+	mustHave(t, body, `name="for_user" value="u-bob"`)
+
+	// A form rendered for another effective user (an act-as that started or
+	// ended since) is refused, nothing is saved.
+	rec := post(t, s, "/account/sessions", userHeader, url.Values{"allow_hidden_sessions": {"on"}, "for_user": {"u-alice"}})
+	if !strings.Contains(rec.Body.String(), "opened for another account") || len(fake.called(ops.OpAccountPrefsSet)) != 0 {
+		t.Fatalf("a post for another account = %d %s", rec.Code, rec.Body.String())
+	}
+	rec = post(t, s, "/account/sessions", userHeader, url.Values{"allow_hidden_sessions": {"on"}, "for_user": {"u-bob"}})
 	if rec.Code != 200 {
 		t.Fatalf("POST /account/sessions = %d %s", rec.Code, rec.Body.String())
 	}
@@ -93,7 +101,7 @@ func TestAccountSessionsCardReadsAndSavesThePreference(t *testing.T) {
 	if len(calls) != 1 || calls[0].Args["allow_hidden_sessions"] != true {
 		t.Fatalf("account_prefs_set calls = %+v", calls)
 	}
-	post(t, s, "/account/sessions", userHeader, url.Values{})
+	post(t, s, "/account/sessions", userHeader, url.Values{"for_user": {"u-bob"}})
 	if calls := fake.called(ops.OpAccountPrefsSet); len(calls) != 2 || calls[1].Args["allow_hidden_sessions"] != false {
 		t.Fatalf("an unchecked box must store false: %+v", calls)
 	}
@@ -107,6 +115,24 @@ func TestAccountSessionsCardReadsAndSavesThePreference(t *testing.T) {
 	}
 }
 
+// While an admin acts as someone, the card shows that person's choice
+// without a form, and a post (from a tab opened before) is refused.
+func TestAccountSessionsCardIsReadOnlyWhileActingAs(t *testing.T) {
+	fake := newFakeOps().
+		reply(ops.OpAccountPrefs, ops.AccountPrefsResult{HiddenSessions: config.HiddenSessionsUserControlled}).
+		reply(ops.OpAccountPrefsSet, ops.WriteResult{Outcome: ops.OutcomeDelivered})
+	connect(t, fake)
+	s := adminServer(t)
+	const actAs = "root:admin:actas-bob"
+	body := get(t, s, "/account", "X-Test-Session", actAs).Body.String()
+	mustHave(t, body, "data-prefs-readonly", "this choice cannot be changed")
+	mustNotHave(t, body, `name="allow_hidden_sessions"`, `name="for_user"`)
+	rec := post(t, s, "/account/sessions", actAs, url.Values{"allow_hidden_sessions": {"on"}, "for_user": {"u-bob"}})
+	if !strings.Contains(rec.Body.String(), "act as another user") || len(fake.called(ops.OpAccountPrefsSet)) != 0 {
+		t.Fatalf("a post while acting as = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 // An online Worker without sessions says why: no list yet, a failed listing,
 // or an empty list.
 func TestWorkerPageExplainsAnEmptySessionList(t *testing.T) {
@@ -117,7 +143,7 @@ func TestWorkerPageExplainsAnEmptySessionList(t *testing.T) {
 		want   string
 	}{
 		{"waiting", WorkerRow{ID: "w1", Name: "a", Online: true}, "waiting", "Waiting for the first session list"},
-		{"failed", WorkerRow{ID: "w1", Name: "a", Online: true, SessionsListError: "psmux: server not running"}, "failed", "The worker could not list its sessions: psmux: server not running"},
+		{"failed", WorkerRow{ID: "w1", Name: "a", Online: true, SessionsListError: "psmux: server not running"}, "failed", "As of its last connection to the Hub, the worker could not list its sessions: psmux: server not running"},
 		{"none", WorkerRow{ID: "w1", Name: "a", Online: true, SessionsSynced: true, SessionsListError: "stale"}, "none", "No visible sessions on this worker"},
 		{"offline", WorkerRow{ID: "w1", Name: "a"}, "", "The worker is offline"},
 	} {

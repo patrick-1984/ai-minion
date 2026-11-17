@@ -15,9 +15,13 @@ import (
 )
 
 var (
-	factsHidden  = transport.WorkerFacts{SessionHost: "conpty", SessionsHidden: true, SessionHostReason: "ConPTY inside the Worker: psmux is not installed (winget install psmux)"}
-	factsVisible = transport.WorkerFacts{SessionHost: "psmux", SessionHostReason: "the default psmux namespace of pat (psmux ls shows them)"}
-	factsUnknown = transport.WorkerFacts{Build: "v0.9.3"}
+	factsHidden = CleanFacts(transport.WorkerFacts{SessionHost: "conpty", SessionsHidden: true, SessionHostReasonCode: transport.HostReasonConPTYNoPsmux})
+	// factsVisible says psmux; a ConPTY report with a false flag is still hidden.
+	factsVisible = CleanFacts(transport.WorkerFacts{SessionHost: "psmux", SessionHostReasonCode: transport.HostReasonPsmuxDefault})
+	factsUnknown = transport.WorkerFacts{Build: "v0.9.3", OS: "linux"}
+	// factsLegacyWindows is a Windows Worker older than v0.10.0: it may host
+	// ConPTY, so it counts as hidden.
+	factsLegacyWindows = transport.WorkerFacts{Build: "v0.9.3", OS: "windows"}
 )
 
 // The policy table: 3 Hub values x the user's choice x hidden true, false or
@@ -25,7 +29,7 @@ var (
 func TestHiddenSessionPolicyTable(t *testing.T) {
 	for _, hub := range []string{config.HiddenSessionsUserControlled, config.HiddenSessionsAllowed, config.HiddenSessionsDisabled} {
 		for _, user := range []bool{false, true} {
-			for name, f := range map[string]transport.WorkerFacts{"hidden": factsHidden, "visible": factsVisible, "unknown": factsUnknown} {
+			for name, f := range map[string]transport.WorkerFacts{"hidden": factsHidden, "visible": factsVisible, "unknown": factsUnknown, "legacy windows": factsLegacyWindows} {
 				t.Run(fmt.Sprintf("%s/user=%v/%s", hub, user, name), func(t *testing.T) {
 					pol := HiddenSessionsPolicy{Hub: hub, UserAllows: user}
 					wantAllowed := hub == config.HiddenSessionsAllowed || (hub == config.HiddenSessionsUserControlled && user)
@@ -33,14 +37,18 @@ func TestHiddenSessionPolicyTable(t *testing.T) {
 						t.Fatalf("Allows = %v, want %v", pol.Allows(), wantAllowed)
 					}
 					msg := HiddenSessionRefusal("patryk-asus", f, pol)
-					wantRefused := name == "hidden" && !wantAllowed
+					wantRefused := (name == "hidden" || name == "legacy windows") && !wantAllowed
 					if (msg != "") != wantRefused {
 						t.Fatalf("refusal = %q, want refused=%v", msg, wantRefused)
 					}
 					if !wantRefused {
 						return
 					}
-					for _, part := range []string{"New sessions on patryk-asus would be hidden (ConPTY inside the Worker: psmux is not installed", "winget install psmux", "minion worker up --foreground"} {
+					parts := []string{"New sessions on patryk-asus would be hidden (ConPTY inside the Worker: psmux is not installed", "winget install psmux", "minion worker up --foreground"}
+					if name == "legacy windows" {
+						parts = []string{"New sessions on patryk-asus may be hidden", "older than v0.10.0", "Update the Worker to v0.10.0 or later"}
+					}
+					for _, part := range parts {
 						if !strings.Contains(msg, part) {
 							t.Errorf("refusal %q lacks %q", msg, part)
 						}
@@ -60,13 +68,44 @@ func TestHiddenSessionPolicyTable(t *testing.T) {
 
 func TestHiddenSessionRefusalFixByHost(t *testing.T) {
 	pol := HiddenSessionsPolicy{Hub: config.HiddenSessionsUserControlled}
-	svc := transport.WorkerFacts{SessionHost: "conpty", SessionsHidden: true, SessionHostReason: "ConPTY inside the Worker: the Worker runs as a Windows service (LocalSystem)"}
+	svc := CleanFacts(transport.WorkerFacts{SessionHost: "conpty", SessionsHidden: true, SessionHostReasonCode: transport.HostReasonConPTYService})
 	if msg := HiddenSessionRefusal("w", svc, pol); !strings.Contains(msg, "instead of as a Windows service") {
 		t.Errorf("service fix = %q", msg)
 	}
-	tm := transport.WorkerFacts{SessionHost: "tmux", SessionsHidden: true, SessionHostReason: "private tmux socket /x/y"}
+	tm := CleanFacts(transport.WorkerFacts{SessionHost: "tmux", SessionsHidden: true, SessionHostReasonCode: transport.HostReasonPrivateSocket})
 	if msg := HiddenSessionRefusal("", tm, pol); !strings.Contains(msg, "this Worker") || !strings.Contains(msg, "default tmux server") {
 		t.Errorf("tmux fix = %q", msg)
+	}
+	ct := CleanFacts(transport.WorkerFacts{SessionHost: "tmux", SessionsHidden: true, SessionHostReasonCode: transport.HostReasonContainerTmux})
+	if msg := HiddenSessionRefusal("w", ct, pol); !strings.Contains(msg, "sessions_visible") {
+		t.Errorf("container fix = %q", msg)
+	}
+	// ConPTY is hidden even when a Worker says otherwise.
+	lie := transport.WorkerFacts{SessionHost: "conpty", SessionsHidden: false}
+	if msg := HiddenSessionRefusal("w", lie, pol); msg == "" {
+		t.Error("a ConPTY report with a false hidden flag was not refused")
+	}
+	if got := CleanFacts(lie); !got.SessionsHidden {
+		t.Error("CleanFacts kept a visible ConPTY host")
+	}
+}
+
+// CleanFacts keeps only reason codes with the Hub's own fixed text: a path,
+// a user name or program output in the Worker's text never reaches people.
+func TestCleanFactsReplacesReasonTextsByTheFixedTexts(t *testing.T) {
+	got := CleanFacts(transport.WorkerFacts{SessionHost: "tmux", SessionsHidden: true,
+		SessionHostReasonCode: transport.HostReasonPrivateSocket, SessionHostReason: "private tmux socket /home/pat/s",
+		SessionsListErrorCode: transport.ListFailedExec, SessionsListError: "exit status 1: /home/pat secret"})
+	if got.SessionHostReason != transport.HostReasonText(transport.HostReasonPrivateSocket) || strings.Contains(got.SessionHostReason, "/home") {
+		t.Errorf("reason = %q", got.SessionHostReason)
+	}
+	if got.SessionsListError != transport.ListErrorText(transport.ListFailedExec) || got.SessionsListErrorCode != transport.ListFailedExec {
+		t.Errorf("list error = %q (%q)", got.SessionsListError, got.SessionsListErrorCode)
+	}
+	// No code: no text.
+	got = CleanFacts(transport.WorkerFacts{SessionHost: "tmux", SessionHostReason: "pat", SessionsListError: "x"})
+	if got.SessionHostReason != "" || got.SessionsListError != "" {
+		t.Errorf("text without a code kept: %+v", got)
 	}
 }
 
@@ -112,10 +151,11 @@ func TestSessionCreateIsSentWhenAllowedVisibleOrUnknown(t *testing.T) {
 		pol   HiddenSessionsPolicy
 		facts transport.WorkerFacts
 	}{
-		"user allows":  {HiddenSessionsPolicy{Hub: config.HiddenSessionsUserControlled, UserAllows: true}, factsHidden},
-		"hub allows":   {HiddenSessionsPolicy{Hub: config.HiddenSessionsAllowed}, factsHidden},
-		"visible":      {HiddenSessionsPolicy{Hub: config.HiddenSessionsDisabled}, factsVisible},
-		"older Worker": {HiddenSessionsPolicy{Hub: config.HiddenSessionsDisabled}, factsUnknown},
+		"user allows":                   {HiddenSessionsPolicy{Hub: config.HiddenSessionsUserControlled, UserAllows: true}, factsHidden},
+		"hub allows":                    {HiddenSessionsPolicy{Hub: config.HiddenSessionsAllowed}, factsHidden},
+		"visible":                       {HiddenSessionsPolicy{Hub: config.HiddenSessionsDisabled}, factsVisible},
+		"older Worker":                  {HiddenSessionsPolicy{Hub: config.HiddenSessionsDisabled}, factsUnknown},
+		"older Windows Worker, allowed": {HiddenSessionsPolicy{Hub: config.HiddenSessionsAllowed}, factsLegacyWindows},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, _ := hiddenRig(t, tc.pol, nil, tc.facts)
@@ -127,6 +167,57 @@ func TestSessionCreateIsSentWhenAllowedVisibleOrUnknown(t *testing.T) {
 				t.Errorf("opens = %v", r.be.opens)
 			}
 		})
+	}
+}
+
+// The race of the review: the Router looked at a visible (or offline)
+// Worker, and the Worker reconnects with hidden facts before the op is
+// opened. The check runs on the connection that gets the op, so nothing is
+// sent.
+func TestSessionCreateIsJudgedOnTheConnectionThatGetsIt(t *testing.T) {
+	for name, before := range map[string]*Online{"visible before": {Facts: factsVisible}, "offline before": nil} {
+		t.Run(name, func(t *testing.T) {
+			r, _ := hiddenRig(t, HiddenSessionsPolicy{Hub: config.HiddenSessionsDisabled}, nil, factsVisible)
+			if before == nil {
+				delete(r.be.online, wAlicePi1.ID)
+			}
+			r.be.beforeOpen = func(b *fakeBackend) { b.online[wAlicePi1.ID] = Online{Facts: factsHidden} }
+			r.script(newFakeStream(resultFrame(t, ops.WriteResult{Outcome: ops.OutcomeDelivered})))
+			_, err := r.rt.Call(context.Background(), createReq())
+			if code(err) != proto.CodeForbidden || !strings.Contains(err.Error(), "would be hidden") {
+				t.Fatalf("err = %v, want the hidden-session refusal", err)
+			}
+			if r.be.openCount() != 0 {
+				t.Errorf("the reconnected hidden Worker got the op: %v", r.be.opens)
+			}
+		})
+	}
+}
+
+// The registry runs the check on the entry it opens the stream on: the
+// replacement connection of a reconnect, not the one before.
+func TestOpenOpCheckedJudgesTheSelectedConnection(t *testing.T) {
+	reg := NewRegistry()
+	old := newFakeSession()
+	visible := info("w1", ops.OpSessionCreate)
+	visible.Facts = factsVisible
+	reg.Add(visible, old)
+	hidden := info("w1", ops.OpSessionCreate)
+	hidden.Facts = factsHidden
+	repl := newFakeSession()
+	reg.Add(hidden, repl)
+	pol := HiddenSessionsPolicy{Hub: config.HiddenSessionsDisabled}
+	check := func(on Online) error {
+		if msg := HiddenSessionRefusal("w1", on.Facts, pol); msg != "" {
+			return proto.NewError(proto.CodeForbidden, msg)
+		}
+		return nil
+	}
+	if _, err := reg.OpenOpChecked(context.Background(), "w1", ops.OpSessionCreate, check); proto.CodeOf(err) != proto.CodeForbidden {
+		t.Fatalf("err = %v, want forbidden", err)
+	}
+	if old.openCount()+repl.openCount() != 0 {
+		t.Error("a stream was opened for a refused op")
 	}
 }
 

@@ -10,8 +10,9 @@
 # client and a server of different versions refuse each other). Check
 #   tmux -V
 # on the host and pick the base image below accordingly, or remove the socket
-# mount and MINION_TMUX_SOCKET: the Worker then runs its own tmux inside the
-# container and serves sessions that live in the container.
+# mount and MINION_TMUX_SOCKET and set MINION_SESSIONS_VISIBLE to "no": the
+# Worker then runs its own tmux inside the container and serves sessions that
+# live in the container (hidden from the host user's tmux ls).
 #
 # Preparation, in the directory that holds this file and bootstrap.sh (download
 # bootstrap.sh from the release, next to this file):
@@ -82,10 +83,15 @@ services:
       # including the Hub's, then stays.
       MINION_SHARE_EXISTING: ${MINION_SHARE_EXISTING:-}
       MINION_NAME: ${MINION_NAME:-docker-worker}
-      # The host user's tmux server (remove these two lines for sessions that
-      # live in the container). The default socket of UID 1000 is
-      # /tmp/tmux-1000/default; adjust the host path to your UID.
+      # The host user's tmux server (remove MINION_TMUX_SOCKET and the /tmux
+      # volume for sessions that live in the container). The default socket
+      # of UID 1000 is /tmp/tmux-1000/default; adjust the host path to your UID.
       MINION_TMUX_SOCKET: /tmux/default
+      # Whether new sessions are visible to the host user: "yes" while the
+      # host socket above is mounted (they show in that user's tmux ls),
+      # "no" for a self-contained Worker with its own tmux. The Hub setting
+      # hidden_sessions may refuse new sessions on a Worker that says "no".
+      MINION_SESSIONS_VISIBLE: "yes"
     volumes:
       - ./worker-data:/data
       - minion-worker-cache:/cache

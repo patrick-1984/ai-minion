@@ -40,8 +40,12 @@ type AccountPage struct {
 	// Prefs are the account's own preferences (account_prefs); nil when the
 	// Hub could not read them, so the Sessions card says so.
 	Prefs *ops.AccountPrefsResult
-	// PrefsURL is the post of the Sessions card.
+	// PrefsURL is the post of the Sessions card; PrefsFor the effective user
+	// the form was rendered for, which the post must still be (an act-as
+	// session that starts or ends in between does not save the choice for
+	// another account). The form is not offered while acting as someone else.
 	PrefsURL string
+	PrefsFor string
 }
 
 // HiddenSessionsHub is the sentence of the Sessions card on what the Hub
@@ -74,7 +78,10 @@ func accountData(r *http.Request) (any, error) {
 	if c, err := adminCaller(); err == nil {
 		var prefs ops.AccountPrefsResult
 		if err := c.CallOp(r, ops.OpAccountPrefs, ops.AccountPrefsArgs{}, &prefs); err == nil {
-			p.Prefs, p.PrefsURL = &prefs, pathAccountSessions
+			p.Prefs = &prefs
+			if u, ok := userOf(r); ok && sess.ActAs == nil {
+				p.PrefsURL, p.PrefsFor = pathAccountSessions, u.ID
+			}
 		}
 	}
 	return p, nil
@@ -85,7 +92,19 @@ const pathAccountSessions = "/account/sessions"
 
 // handleAccountSessions saves the hidden-sessions preference of the signed-in
 // person: the checkbox "allow_hidden_sessions" is on or absent.
-func handleAccountSessions(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
+//
+// The form names the user it was rendered for (for_user); a post for another
+// account than the current effective one is refused, so a tab opened while
+// acting as someone, or before, cannot save the choice for the wrong person.
+func handleAccountSessions(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
+	if sess, ok := session.FromContext(r.Context()); ok && sess.ActAs != nil {
+		writeResultError(w, "While you act as another user, their hidden-sessions choice cannot be changed; they change it in their own Account page.")
+		return
+	}
+	if r.PostFormValue("for_user") != u.ID {
+		writeResultError(w, "This form was opened for another account (an act-as session started or ended since). Reload the page and choose again.")
+		return
+	}
 	allow := r.PostFormValue("allow_hidden_sessions") == "on"
 	text := "New sessions that would be hidden from your terminal are refused."
 	if allow {

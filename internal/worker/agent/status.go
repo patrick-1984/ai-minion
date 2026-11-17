@@ -118,10 +118,13 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 		out.HubPreviewOnly = s.Policy.HubPreviewOnly()
 	}
 	out.RunMode = s.RunMode
+	// The local status shows the details the hello leaves out (a socket
+	// path, a user name, the error itself): only this machine reads it.
 	if s.Host != nil {
 		out.Host = *s.Host
+		out.Host.Reason = s.Host.localReason()
 	}
-	out.ListError = s.Health.Text()
+	out.ListError = s.Health.LocalText()
 	if s.Pairing != nil {
 		out.PairingKnown = true
 		if code, ok := s.Pairing(); ok {
@@ -557,7 +560,7 @@ func (r StatusReport) sessionsText() string {
 		out = fmt.Sprint(*r.Sessions)
 	}
 	if r.SessionsListError != "" {
-		out += " (the running Worker cannot list them: " + r.SessionsListError + ")"
+		out += " (the running Worker could not list them at its latest look: " + r.SessionsListError + ")"
 	}
 	return out
 }

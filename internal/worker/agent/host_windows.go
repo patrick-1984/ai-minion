@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/conpty"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
@@ -50,20 +51,23 @@ func sessionHostSpec(s Settings) (string, SessionHostInfo, error) {
 		facts.User = u.Username
 	}
 	if mode == config.SessionHostConPTY {
-		facts.ConPTYReason = "session_host is set to conpty"
+		facts.ConPTYCode = transport.HostReasonConPTYSetting
 		info := decideWindowsHost(facts)
-		log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", facts.ConPTYReason)
+		log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", info.localReason())
 		return "conpty", info, nil
 	}
 	reason := ""
 	bin := tmux.FindPsmux()
 	switch {
 	case underServiceManager():
-		reason = "the Worker runs as a Windows service (LocalSystem); psmux sessions are served by a Worker that runs as you (minion worker up --foreground)"
+		facts.ConPTYCode = transport.HostReasonConPTYService
+		reason = transport.HostReasonText(facts.ConPTYCode)
 	case bin == "":
+		facts.ConPTYCode = transport.HostReasonConPTYNoPsmux
 		reason = "psmux is not installed (winget install psmux)"
 	default:
 		if _, err := tmux.NewPsmux(bin); err != nil {
+			facts.ConPTYCode, facts.ConPTYDetail = transport.HostReasonConPTYPsmuxFailed, err.Error()
 			reason = err.Error()
 		}
 	}
@@ -75,7 +79,7 @@ func sessionHostSpec(s Settings) (string, SessionHostInfo, error) {
 	if mode == config.SessionHostPsmux {
 		return "", SessionHostInfo{}, fmt.Errorf("session_host is psmux, but %s", reason)
 	}
-	facts.ConPTYReason = reason
-	log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", reason)
-	return "conpty", decideWindowsHost(facts), nil
+	info := decideWindowsHost(facts)
+	log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", info.localReason())
+	return "conpty", info, nil
 }

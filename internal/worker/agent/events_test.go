@@ -512,8 +512,8 @@ func TestNoSnapshotWhileTheFirstLookFails(t *testing.T) {
 		t.Fatal("a stream was opened before the first successful look")
 	case <-time.After(20 * time.Millisecond):
 	}
-	if health.Text() != "tmux: no server" {
-		t.Errorf("listing error after a failed look = %q", health.Text())
+	if health.LocalText() != "tmux: no server" || health.Code() != transport.ListFailedExec {
+		t.Errorf("listing error after a failed look = %q (%q)", health.LocalText(), health.Code())
 	}
 	obs.fail(nil)
 	obs.set(agentState("a", "stable", "h1"))
@@ -524,8 +524,8 @@ func TestNoSnapshotWhileTheFirstLookFails(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no stream after the look succeeded")
 	}
-	if health.Text() != "" {
-		t.Errorf("listing error after a good look = %q", health.Text())
+	if health.LocalText() != "" || health.Code() != "" {
+		t.Errorf("listing error after a good look = %q", health.LocalText())
 	}
 	cancel()
 	<-done

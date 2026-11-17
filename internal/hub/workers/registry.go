@@ -271,6 +271,16 @@ func (r *Registry) Len() int {
 // reconnects as an older build between a check and the open cannot receive the
 // request. A Worker without one gets none: unsupported_op, with nothing sent.
 func (r *Registry) OpenOp(ctx context.Context, workerID, op string, need ...string) (*transport.Stream, error) {
+	return r.OpenOpChecked(ctx, workerID, op, nil, need...)
+}
+
+// OpenOpChecked is [Registry.OpenOp] with a check of the connection that
+// gets the op: check runs on the record of the selected connection in the
+// same critical section that picks it, so a Worker that reconnects with other
+// facts between a caller's look and the open cannot receive an op the check
+// would refuse. An error of check is returned as is, with nothing opened.
+// check must not block; nil checks nothing.
+func (r *Registry) OpenOpChecked(ctx context.Context, workerID, op string, check func(Online) error, need ...string) (*transport.Stream, error) {
 	r.mu.Lock()
 	e := r.online[workerID]
 	var (
@@ -278,6 +288,7 @@ func (r *Registry) OpenOp(ctx context.Context, workerID, op string, need ...stri
 		announced bool
 		missing   string
 		pending   bool
+		refused   error
 	)
 	if e != nil {
 		sess, announced, pending = e.sess, e.info.Announces(op), e.info.Pending
@@ -287,6 +298,9 @@ func (r *Registry) OpenOp(ctx context.Context, workerID, op string, need ...stri
 				break
 			}
 		}
+		if check != nil && !pending {
+			refused = check(e.info)
+		}
 	}
 	r.mu.Unlock()
 
@@ -295,6 +309,8 @@ func (r *Registry) OpenOp(ctx context.Context, workerID, op string, need ...stri
 		return nil, proto.NewError(proto.CodeWorkerOffline, "the Worker is not connected to the Hub")
 	case pending:
 		return nil, proto.NewError(proto.CodeWorkerPending, "the Worker is waiting for approval; approve it first")
+	case refused != nil:
+		return nil, refused
 	case !announced:
 		return nil, proto.NewError(proto.CodeUnsupportedOp, fmt.Sprintf("the Worker does not support the operation %q", op))
 	case missing != "":
@@ -433,9 +449,26 @@ func CleanFacts(f transport.WorkerFacts) transport.WorkerFacts {
 	switch f.SessionHost {
 	case transport.SessionHostTmux, transport.SessionHostPsmux, transport.SessionHostConPTY:
 		out.SessionHost = f.SessionHost
-		out.SessionsHidden = f.SessionsHidden
-		out.SessionHostReason = proto.SafeText(f.SessionHostReason, maxSessionHostReason)
+		// ConPTY sessions live inside the Worker process: always hidden.
+		out.SessionsHidden = f.SessionsHidden || f.SessionHost == transport.SessionHostConPTY
+		out.SessionHostReasonCode, out.SessionHostReason = cleanReason(f.SessionHostReasonCode, f.SessionHostReason, transport.HostReasonText, maxSessionHostReason)
 	}
-	out.SessionsListError = proto.SafeText(f.SessionsListError, maxUpdateBlock)
+	out.SessionsListErrorCode, out.SessionsListError = cleanReason(f.SessionsListErrorCode, f.SessionsListError, transport.ListErrorText, maxUpdateBlock)
 	return out
+}
+
+// reasonCodeRE is a well-formed reason code.
+var reasonCodeRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+
+// cleanReason keeps a reason code and its text: the Hub's own fixed text for
+// a code it knows, the bounded printable text of a newer Worker for a
+// well-formed code it does not know, and nothing without a code.
+func cleanReason(code, text string, known func(string) string, max int) (string, string) {
+	if !reasonCodeRE.MatchString(code) {
+		return "", ""
+	}
+	if t := known(code); t != "" {
+		return code, t
+	}
+	return code, proto.SafeText(text, max)
 }

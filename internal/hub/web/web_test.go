@@ -44,7 +44,7 @@ func (fakeSessions) Wrap(next http.Handler) http.Handler {
 				MustChangePassword: len(parts) > 2 && parts[2] == "must", CSRFToken: "csrf-" + parts[0],
 			}
 			// Further parts: "fresh" (a local sign-in just now), "oidc" (the
-			// session started through the provider "corp").
+			// session started through the provider "corp"), "actas-<name>".
 			for _, extra := range parts[min(2, len(parts)):] {
 				switch extra {
 				case "fresh":
@@ -53,6 +53,11 @@ func (fakeSessions) Wrap(next http.Handler) http.Handler {
 					s.AuthMethod = "oidc:corp"
 				case "oidcfresh":
 					s.AuthAt, s.AuthMethod = time.Now(), "oidc:corp"
+				default:
+					// "actas-<name>": the admin acts as that user.
+					if name, ok := strings.CutPrefix(extra, "actas-"); ok {
+						s.ActAs = &session.ActAs{TargetID: "u-" + name, TargetUsername: name}
+					}
 				}
 			}
 			r = r.WithContext(session.WithSession(r.Context(), s))

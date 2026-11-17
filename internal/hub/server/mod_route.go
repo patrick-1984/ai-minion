@@ -118,7 +118,7 @@ func initRoute(ctx context.Context, env *Env) error {
 	allows := func(hub string, user bool) bool {
 		return workers.HiddenSessionsPolicy{Hub: hub, UserAllows: user}.Allows()
 	}
-	if err := api.RegisterAccountPrefs(handlers, st, hubPolicy, allows); err != nil {
+	if err := api.RegisterAccountPrefs(handlers, st, az, hubPolicy, allows); err != nil {
 		return fmt.Errorf("route: %w", err)
 	}
 	// The same router resolves the human form of a target (pi-1:minion-3)

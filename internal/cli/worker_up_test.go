@@ -1041,7 +1041,7 @@ func TestWarnWindowsService(t *testing.T) {
 		if tc.want != (out != "") {
 			t.Errorf("%+v %v: output %q", tc.st, tc.err, out)
 		}
-		if tc.want && (!strings.Contains(out, "MinionWorker") || !strings.Contains(out, "minion worker down") || !strings.Contains(out, "sc.exe delete MinionWorker")) {
+		if tc.want && (!strings.Contains(out, "MinionWorker") || strings.Contains(out, "minion worker down") || !strings.Contains(out, "sc.exe delete MinionWorker")) {
 			t.Errorf("warning lacks the commands: %q", out)
 		}
 	}

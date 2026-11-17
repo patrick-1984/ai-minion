@@ -141,7 +141,7 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 
 	log.Info("worker core started",
 		"name", s.Name, "state_dir", st.Dir(), "tmux_socket", s.TmuxSocket,
-		"session_host", hostInfo.Kind, "sessions_hidden", hostInfo.Hidden, "session_host_reason", hostInfo.Reason,
+		"session_host", hostInfo.Kind, "sessions_hidden", hostInfo.Hidden, "session_host_reason", hostInfo.localReason(),
 		"share", string(sel.Mode), "preview_only", s.PreviewOnly, "share_lock", s.ShareLock,
 		"pipe_accept_from", s.PipeAcceptFrom.String(), "call_api_key_file", s.CallAPIKeyFile != "")
 	if !sel.Configured || sel.Mode == store.ShareLater {

@@ -174,6 +174,9 @@ type fakeBackend struct {
 	streams []*fakeStream
 	opens   []string
 	openErr error
+	// beforeOpen runs under the lock when OpenOp starts (a reconnect between
+	// the Router's look and the open).
+	beforeOpen func(b *fakeBackend)
 }
 
 func (b *fakeBackend) Get(id string) (Online, bool) {
@@ -183,9 +186,17 @@ func (b *fakeBackend) Get(id string) (Online, bool) {
 	return o, ok
 }
 
-func (b *fakeBackend) OpenOp(_ context.Context, workerID, op string, _ ...string) (OpStream, error) {
+func (b *fakeBackend) OpenOp(_ context.Context, workerID, op string, check func(Online) error, _ ...string) (OpStream, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.beforeOpen != nil {
+		b.beforeOpen(b)
+	}
+	if on, ok := b.online[workerID]; ok && check != nil {
+		if err := check(on); err != nil {
+			return nil, err
+		}
+	}
 	b.opens = append(b.opens, workerID+" "+op)
 	if b.openErr != nil {
 		return nil, b.openErr

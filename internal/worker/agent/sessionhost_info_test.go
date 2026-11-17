@@ -13,38 +13,53 @@ func TestDecideTmuxHost(t *testing.T) {
 		name   string
 		f      tmuxHostFacts
 		hidden bool
-		reason string
+		code   string
 	}{
-		{"default socket", tmuxHostFacts{Socket: def, DefaultSocket: def, User: "pat"}, false, "default tmux server of pat"},
-		{"default socket, unclean path", tmuxHostFacts{Socket: "/tmp/tmux-1000//default", DefaultSocket: def}, false, "tmux ls"},
-		{"user service on the default socket", tmuxHostFacts{Socket: def, DefaultSocket: def, ServiceManager: true}, false, "service manager"},
-		{"private socket", tmuxHostFacts{Socket: "/x/y", DefaultSocket: def, User: "pat"}, true, "private tmux socket /x/y"},
-		{"no default socket known", tmuxHostFacts{Socket: def}, true, "private tmux socket"},
-		{"no socket", tmuxHostFacts{DefaultSocket: def}, true, "not known"},
-		{"root under a service manager", tmuxHostFacts{Socket: def, DefaultSocket: def, Root: true, ServiceManager: true}, true, "root"},
-		{"root in the foreground", tmuxHostFacts{Socket: def, DefaultSocket: def, Root: true, User: "root"}, false, "default tmux server of root"},
+		{"default socket", tmuxHostFacts{Socket: def, DefaultSocket: def, User: "pat"}, false, transport.HostReasonTmuxDefault},
+		{"default socket, unclean path", tmuxHostFacts{Socket: "/tmp/tmux-1000//default", DefaultSocket: def}, false, transport.HostReasonTmuxDefault},
+		{"user service on the default socket", tmuxHostFacts{Socket: def, DefaultSocket: def, ServiceManager: true}, false, transport.HostReasonTmuxDefaultService},
+		{"private socket", tmuxHostFacts{Socket: "/x/y", DefaultSocket: def, User: "pat"}, true, transport.HostReasonPrivateSocket},
+		{"no default socket known", tmuxHostFacts{Socket: def}, true, transport.HostReasonPrivateSocket},
+		{"no socket", tmuxHostFacts{DefaultSocket: def}, true, transport.HostReasonSocketUnknown},
+		{"root under a service manager", tmuxHostFacts{Socket: def, DefaultSocket: def, Root: true, ServiceManager: true}, true, transport.HostReasonRootService},
+		{"root in the foreground", tmuxHostFacts{Socket: def, DefaultSocket: def, Root: true, User: "root"}, false, transport.HostReasonTmuxDefault},
+		// Docker, self-contained: the container's own default tmux server.
+		{"container, own tmux", tmuxHostFacts{Socket: def, DefaultSocket: def, Container: true}, true, transport.HostReasonContainerTmux},
+		// Docker, the host user's socket mounted at /tmux/default (compose sets yes).
+		{"container, host socket, auto", tmuxHostFacts{Socket: "/tmux/default", DefaultSocket: def, Container: true, Visible: "auto"}, true, transport.HostReasonPrivateSocket},
+		{"container, host socket, yes", tmuxHostFacts{Socket: "/tmux/default", DefaultSocket: def, Container: true, Visible: "yes"}, false, transport.HostReasonVisibleSetting},
+		{"container, own tmux, no", tmuxHostFacts{Socket: def, DefaultSocket: def, Container: true, Visible: "no"}, true, transport.HostReasonHiddenSetting},
+		{"no on the default server", tmuxHostFacts{Socket: def, DefaultSocket: def, Visible: "no"}, true, transport.HostReasonHiddenSetting},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := decideTmuxHost(c.f)
-			if got.Kind != transport.SessionHostTmux || got.Hidden != c.hidden || !strings.Contains(got.Reason, c.reason) {
-				t.Errorf("decideTmuxHost(%+v) = %+v, want hidden=%v with %q in the reason", c.f, got, c.hidden, c.reason)
+			if got.Kind != transport.SessionHostTmux || got.Hidden != c.hidden || got.Code != c.code || got.Reason != transport.HostReasonText(c.code) {
+				t.Errorf("decideTmuxHost(%+v) = %+v, want hidden=%v code %q", c.f, got, c.hidden, c.code)
 			}
 		})
+	}
+	// The path and the user name stay in the local detail, out of the hello.
+	got := decideTmuxHost(tmuxHostFacts{Socket: "/home/pat/s", DefaultSocket: def, User: "pat"})
+	var f transport.WorkerFacts
+	got.applyTo(&f)
+	if strings.Contains(f.SessionHostReason, "/home") || strings.Contains(f.SessionHostReason, "pat") || !strings.Contains(got.localReason(), "/home/pat/s") {
+		t.Errorf("hello reason %q, local reason %q", f.SessionHostReason, got.localReason())
 	}
 }
 
 func TestDecideWindowsHost(t *testing.T) {
 	got := decideWindowsHost(windowsHostFacts{Psmux: true, User: `ASUS\pat`})
-	if got.Kind != transport.SessionHostPsmux || got.Hidden || !strings.Contains(got.Reason, `ASUS\pat`) {
-		t.Errorf("psmux = %+v, want visible psmux", got)
+	if got.Kind != transport.SessionHostPsmux || got.Hidden || got.Code != transport.HostReasonPsmuxDefault || strings.Contains(got.Reason, "pat") || !strings.Contains(got.localReason(), `ASUS\pat`) {
+		t.Errorf("psmux = %+v, want visible psmux with the user only in the detail", got)
 	}
-	got = decideWindowsHost(windowsHostFacts{ConPTYReason: "psmux is not installed (winget install psmux)"})
+	got = decideWindowsHost(windowsHostFacts{ConPTYCode: transport.HostReasonConPTYNoPsmux})
 	if got.Kind != transport.SessionHostConPTY || !got.Hidden || got.Reason != "ConPTY inside the Worker: psmux is not installed (winget install psmux)" {
 		t.Errorf("conpty = %+v, want hidden ConPTY with the reason", got)
 	}
-	if got := decideWindowsHost(windowsHostFacts{}); !got.Hidden || got.Reason != "ConPTY inside the Worker" {
-		t.Errorf("conpty without a reason = %+v", got)
+	got = decideWindowsHost(windowsHostFacts{ConPTYCode: transport.HostReasonConPTYPsmuxFailed, ConPTYDetail: `C:\Users\pat\psmux.exe: denied`})
+	if strings.Contains(got.Reason, "Users") || !strings.Contains(got.localReason(), "denied") {
+		t.Errorf("psmux failure = %+v", got)
 	}
 }
 
@@ -56,8 +71,8 @@ func TestSessionHostInfoApplyTo(t *testing.T) {
 	if f.SessionHost != "" || f.SessionsHidden || f.SessionHostReason != "" {
 		t.Fatalf("an unknown info changed the facts: %+v", f)
 	}
-	(&SessionHostInfo{Kind: "conpty", Hidden: true, Reason: "r"}).applyTo(&f)
-	if f.SessionHost != "conpty" || !f.SessionsHidden || f.SessionHostReason != "r" || f.Build != "v0.10.0" {
+	(&SessionHostInfo{Kind: "conpty", Hidden: true, Code: "c", Reason: "r", Detail: "secret"}).applyTo(&f)
+	if f.SessionHost != "conpty" || !f.SessionsHidden || f.SessionHostReason != "r" || f.SessionHostReasonCode != "c" || f.Build != "v0.10.0" {
 		t.Fatalf("facts = %+v", f)
 	}
 }

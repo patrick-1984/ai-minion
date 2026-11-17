@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -28,11 +29,18 @@ var _ AccountPrefsStore = (*store.Store)(nil)
 // dispatcher decides read (account_prefs) and operate (account_prefs_set) on
 // that user resource, which the account's owner holds; a Worker identity has
 // no account and is refused. The write is audited by the dispatcher.
-func RegisterAccountPrefs(r *Registry, st AccountPrefsStore, hubPolicy func() string, allows func(hub string, user bool) bool) error {
-	if st == nil || hubPolicy == nil || allows == nil {
-		return errors.New("api: the account preferences need a store and the hidden_sessions policy")
+//
+// The opt-in to hidden sessions is account-wide: it lets every browser
+// session and key of the account create them. So account_prefs_set takes
+// more than operate (setPrefsAllowed): a signed-in browser session of the
+// person themself, or an API key that holds manage on the account (dec
+// decides it: an administrator's key whose scope grants manage). An
+// administrator acting as someone else cannot persist that person's choice.
+func RegisterAccountPrefs(r *Registry, st AccountPrefsStore, dec Decider, hubPolicy func() string, allows func(hub string, user bool) bool) error {
+	if st == nil || dec == nil || hubPolicy == nil || allows == nil {
+		return errors.New("api: the account preferences need a store, a decider and the hidden_sessions policy")
 	}
-	h := &accountPrefsHandlers{st: st, hub: hubPolicy, allows: allows}
+	h := &accountPrefsHandlers{st: st, dec: dec, hub: hubPolicy, allows: allows}
 	if err := HandleTyped(r, ops.OpAccountPrefs, h.get); err != nil {
 		return fmt.Errorf("api: register account preferences: %w", err)
 	}
@@ -44,6 +52,7 @@ func RegisterAccountPrefs(r *Registry, st AccountPrefsStore, hubPolicy func() st
 
 type accountPrefsHandlers struct {
 	st     AccountPrefsStore
+	dec    Decider
 	hub    func() string
 	allows func(hub string, user bool) bool
 }
@@ -65,9 +74,36 @@ func (h *accountPrefsHandlers) get(ctx context.Context, c *Call, _ ops.AccountPr
 	}, nil
 }
 
+// setPrefsAllowed refuses a caller that may not change the account-wide
+// opt-in (see RegisterAccountPrefs).
+func (h *accountPrefsHandlers) setPrefsAllowed(ctx context.Context, c *Call) error {
+	p := c.Principal
+	switch p.Kind {
+	case authz.KindBrowserSession:
+		if c.Identity.Session != nil {
+			return nil
+		}
+	case authz.KindActAs:
+		return NewError(proto.CodeForbidden, "an administrator acting as another user cannot change that user's preferences; the user changes them in their own Account page")
+	case authz.KindAPIKey:
+		err := h.dec.Decide(ctx, p, ops.MustActionSet(ops.ActionManage), authz.UserResource{ID: p.UserID})
+		if err == nil {
+			return nil
+		}
+		if e := ErrorOf(err); e.Code != proto.CodeForbidden && e.Code != proto.CodeNotFound {
+			return err
+		}
+		return NewError(proto.CodeForbidden, "this API key cannot change your preferences: that takes a signed-in browser session (Account > Sessions) or a key that holds manage")
+	}
+	return errNoAccount
+}
+
 func (h *accountPrefsHandlers) set(ctx context.Context, c *Call, args ops.AccountPrefsSetArgs) (ops.WriteResult, error) {
 	if c.Principal.UserID == "" {
 		return ops.WriteResult{}, errNoAccount
+	}
+	if err := h.setPrefsAllowed(ctx, c); err != nil {
+		return ops.WriteResult{}, err
 	}
 	if err := h.st.SetAllowHiddenSessions(ctx, c.Principal.UserID, *args.AllowHiddenSessions); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

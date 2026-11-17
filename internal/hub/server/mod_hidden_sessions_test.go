@@ -44,7 +44,7 @@ func TestHiddenSessionsOnTheRealHub(t *testing.T) {
 		Key: wk, Name: w.Name, Ops: []string{"sessions_list"}, Mode: transport.ModeConnect,
 		Pin: identity.Pin{Pub: svc.Identity().Public()}, Timeout: 10 * time.Second,
 		Facts: transport.WorkerFacts{Build: "v0.10.0", OS: "windows", Arch: "amd64", SessionHost: "conpty", SessionsHidden: true,
-			SessionHostReason: "ConPTY inside the Worker: psmux is not installed (winget install psmux)"},
+			SessionHostReasonCode: transport.HostReasonConPTYNoPsmux, SessionHostReason: "ConPTY inside the Worker: psmux is not installed (winget install psmux)"},
 	})
 	if err != nil {
 		t.Fatal(err)

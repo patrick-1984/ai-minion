@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
 
@@ -33,18 +34,41 @@ type SessionHostInfo struct {
 	Kind string
 	// Hidden is true when a new session would be hidden from the person.
 	Hidden bool
-	// Reason is a short sentence on why: the host, and why it is visible or
-	// hidden.
+	// Code is why (transport.HostReason*) and Reason its fixed text: the only
+	// reason the hello carries.
+	Code   string
 	Reason string
+	// Detail is what only the Worker's own log and local status show: a
+	// socket path, a user name, the error of psmux. Never sent to the Hub.
+	Detail string
 }
 
-// applyTo copies the info into the facts of the hello. A zero info (unknown)
-// leaves them alone.
+// newHostInfo is the info of a host with a reason code and a local detail.
+func newHostInfo(kind string, hidden bool, code, detail string) SessionHostInfo {
+	return SessionHostInfo{Kind: kind, Hidden: hidden, Code: code, Reason: transport.HostReasonText(code), Detail: detail}
+}
+
+// applyTo copies the info into the facts of the hello: the host, whether
+// its sessions are hidden and the reason code with its fixed text, never the
+// detail. A zero info (unknown) leaves them alone.
 func (i *SessionHostInfo) applyTo(f *transport.WorkerFacts) {
 	if i == nil || i.Kind == "" {
 		return
 	}
-	f.SessionHost, f.SessionsHidden, f.SessionHostReason = i.Kind, i.Hidden, i.Reason
+	f.SessionHost, f.SessionsHidden = i.Kind, i.Hidden
+	f.SessionHostReasonCode, f.SessionHostReason = i.Code, i.Reason
+}
+
+// localReason is the reason with its detail, for the Worker's own log and
+// local status.
+func (i SessionHostInfo) localReason() string {
+	if i.Detail == "" {
+		return i.Reason
+	}
+	if i.Reason == "" {
+		return i.Detail
+	}
+	return i.Reason + " (" + i.Detail + ")"
 }
 
 // tmuxHostFacts are the facts of the hidden decision on Linux and macOS.
@@ -59,36 +83,48 @@ type tmuxHostFacts struct {
 	Root bool
 	// ServiceManager is true when systemd or launchd runs the Worker.
 	ServiceManager bool
+	// Container is true when the Worker runs in a container: its default
+	// tmux server is the container's own, not one of the host.
+	Container bool
+	// Visible is the setting sessions_visible: auto (decide from the facts
+	// above), yes or no (the operator says).
+	Visible string
 }
 
 // decideTmuxHost decides whether the sessions of a tmux Worker are hidden.
-// Another socket than the default one is hidden: a plain `tmux ls` of the
-// person does not show it. The default server of root under a service manager
-// is hidden too: that Worker is a system service and the person who uses it
-// is not signed in as root.
+// The setting sessions_visible yes or no decides by itself (a container that
+// mounts the host user's tmux socket is visible although the socket path is
+// not the container's default). auto: another socket than the default one is
+// hidden, since a plain `tmux ls` of the person does not show it; the default
+// server inside a container is the container's own, hidden from the host; the
+// default server of root under a service manager is hidden too: that Worker
+// is a system service and the person who uses it is not signed in as root.
 func decideTmuxHost(f tmuxHostFacts) SessionHostInfo {
-	info := SessionHostInfo{Kind: transport.SessionHostTmux}
-	who := "the user the Worker runs as"
-	if f.User != "" {
-		who = f.User
+	tm := transport.SessionHostTmux
+	socket := "socket " + f.Socket
+	switch f.Visible {
+	case config.SessionsVisibleYes:
+		return newHostInfo(tm, false, transport.HostReasonVisibleSetting, socket)
+	case config.SessionsVisibleNo:
+		return newHostInfo(tm, true, transport.HostReasonHiddenSetting, socket)
+	}
+	who := "user " + f.User
+	if f.User == "" {
+		who = "user unknown"
 	}
 	switch {
 	case f.Socket == "":
-		info.Hidden = true
-		info.Reason = "the tmux socket of the Worker is not known"
+		return newHostInfo(tm, true, transport.HostReasonSocketUnknown, "")
 	case f.DefaultSocket == "" || filepath.Clean(f.Socket) != filepath.Clean(f.DefaultSocket):
-		info.Hidden = true
-		info.Reason = "private tmux socket " + f.Socket + ", not the default tmux server of " + who + " (tmux -S " + f.Socket + " ls shows them)"
+		return newHostInfo(tm, true, transport.HostReasonPrivateSocket, socket+", "+who)
+	case f.Container:
+		return newHostInfo(tm, true, transport.HostReasonContainerTmux, socket)
 	case f.Root && f.ServiceManager:
-		info.Hidden = true
-		info.Reason = "the Worker runs as root under a service manager (systemd or launchd); its sessions are in the tmux server of root"
-	default:
-		info.Reason = "the default tmux server of " + who + " (tmux ls shows them)"
-		if f.ServiceManager {
-			info.Reason += "; the Worker runs under a service manager"
-		}
+		return newHostInfo(tm, true, transport.HostReasonRootService, socket)
+	case f.ServiceManager:
+		return newHostInfo(tm, false, transport.HostReasonTmuxDefaultService, socket+", "+who)
 	}
-	return info
+	return newHostInfo(tm, false, transport.HostReasonTmuxDefault, socket+", "+who)
 }
 
 // windowsHostFacts are the facts of the hidden decision on Windows.
@@ -97,9 +133,10 @@ type windowsHostFacts struct {
 	Psmux bool
 	// User is the name of the user the Worker runs as (may be empty).
 	User string
-	// ConPTYReason is why ConPTY hosts the sessions ("psmux is not installed
-	// (winget install psmux)", "the Worker runs as a Windows service ...").
-	ConPTYReason string
+	// ConPTYCode is why ConPTY hosts the sessions (transport.HostReasonConPTY*);
+	// ConPTYDetail the local detail (the error of psmux).
+	ConPTYCode   string
+	ConPTYDetail string
 }
 
 // decideWindowsHost decides whether the sessions of a Windows Worker are
@@ -108,30 +145,32 @@ type windowsHostFacts struct {
 // sessions live inside the Worker process and are always hidden.
 func decideWindowsHost(f windowsHostFacts) SessionHostInfo {
 	if f.Psmux {
-		who := "the user the Worker runs as"
+		detail := ""
 		if f.User != "" {
-			who = f.User
+			detail = "user " + f.User
 		}
-		return SessionHostInfo{Kind: transport.SessionHostPsmux,
-			Reason: "the default psmux namespace of " + who + " (psmux ls shows them)"}
+		return newHostInfo(transport.SessionHostPsmux, false, transport.HostReasonPsmuxDefault, detail)
 	}
-	reason := "ConPTY inside the Worker"
-	if f.ConPTYReason != "" {
-		reason += ": " + f.ConPTYReason
+	code := f.ConPTYCode
+	if code == "" {
+		code = transport.HostReasonConPTYSetting
 	}
-	return SessionHostInfo{Kind: transport.SessionHostConPTY, Hidden: true, Reason: reason}
+	return newHostInfo(transport.SessionHostConPTY, true, code, f.ConPTYDetail)
 }
 
-// maxListErrorText bounds the listing error the Worker reports, in bytes.
-const maxListErrorText = 120
+// maxListErrorText bounds the local listing error, in bytes.
+const maxListErrorText = 200
 
 // SessionListHealth is the outcome of the Worker's latest look at its
 // sessions (the startup probe and every poll of the event publisher). The
-// Hub shows it when a Worker lists no session, so "0 sessions" can be told
-// apart from "the listing failed". The core module provides it.
+// hello carries its code and fixed text, so the Hub can tell "0 sessions"
+// apart from "the listing failed"; the local status shows the error itself.
+// The core module provides it.
 type SessionListHealth struct {
-	text atomic.Pointer[string]
+	last atomic.Pointer[listHealth]
 }
+
+type listHealth struct{ code, detail string }
 
 // Set records the outcome of one look: nil clears the error.
 func (h *SessionListHealth) Set(err error) {
@@ -139,53 +178,76 @@ func (h *SessionListHealth) Set(err error) {
 		return
 	}
 	if err == nil {
-		h.text.Store(nil)
+		h.last.Store(nil)
 		return
 	}
-	t := listErrorText(err)
-	h.text.Store(&t)
+	h.last.Store(&listHealth{code: listErrorCode(err), detail: listErrorDetail(err)})
 }
 
-// Text is the short, path-free reason of the latest failed look; empty when
-// the latest look succeeded or none was made.
-func (h *SessionListHealth) Text() string {
+func (h *SessionListHealth) load() listHealth {
 	if h == nil {
-		return ""
+		return listHealth{}
 	}
-	if p := h.text.Load(); p != nil {
+	if p := h.last.Load(); p != nil {
 		return *p
 	}
-	return ""
+	return listHealth{}
 }
 
-// listErrorText turns a listing error into a short sentence for the Hub: the
-// first line, with every word that looks like a file path replaced by
-// "<path>" (a path names the user and the machine), bounded.
-func listErrorText(err error) string {
+// Code is the reason code of the latest failed look (transport.ListFailed*);
+// empty when the latest look succeeded or none was made.
+func (h *SessionListHealth) Code() string { return h.load().code }
+
+// LocalText is the error of the latest failed look (its first line), for the
+// Worker's own status; empty when it succeeded.
+func (h *SessionListHealth) LocalText() string {
+	l := h.load()
+	if l.code == "" || l.detail != "" {
+		return l.detail
+	}
+	return transport.ListErrorText(l.code)
+}
+
+// applyListHealth puts the latest listing error into the facts of the hello:
+// its code and fixed text only. The hello is sent before the Hub's identity
+// is checked, so no program output goes in it.
+func applyListHealth(f *transport.WorkerFacts, h *SessionListHealth) {
+	if code := h.Code(); code != "" {
+		f.SessionsListErrorCode, f.SessionsListError = code, transport.ListErrorText(code)
+	}
+}
+
+// listErrorCode classifies a listing error into a fixed reason code.
+func listErrorCode(err error) string {
+	var exit *exec.ExitError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return "listing the sessions timed out"
+		return transport.ListFailedTimeout
 	case errors.Is(err, exec.ErrNotFound):
-		return "the session host program was not found"
+		return transport.ListFailedNotFound
+	case errors.As(err, &exit):
+		return transport.ListFailedExec
 	}
-	line, _, _ := strings.Cut(err.Error(), "\n")
-	words := strings.Fields(line)
-	for i, w := range words {
-		trimmed := strings.Trim(w, `"'():,;`)
-		if strings.ContainsAny(trimmed, `/\`) {
-			words[i] = strings.Replace(w, trimmed, "<path>", 1)
+	msg := err.Error()
+	for _, w := range []string{"fields", "parse", "unexpected", "not a number"} {
+		if strings.Contains(msg, w) {
+			return transport.ListFailedFormat
 		}
 	}
-	out := strings.Join(words, " ")
-	if len(out) > maxListErrorText {
+	return transport.ListFailedExec
+}
+
+// listErrorDetail is the first line of a listing error, bounded, for the
+// local status only.
+func listErrorDetail(err error) string {
+	line, _, _ := strings.Cut(err.Error(), "\n")
+	line = strings.TrimSpace(line)
+	if len(line) > maxListErrorText {
 		cut := maxListErrorText
-		for cut > 0 && !utf8.RuneStart(out[cut]) {
+		for cut > 0 && !utf8.RuneStart(line[cut]) {
 			cut--
 		}
-		out = out[:cut] + "..."
+		line = line[:cut] + "..."
 	}
-	if out == "" {
-		out = "listing the sessions failed"
-	}
-	return out
+	return line
 }

@@ -53,7 +53,9 @@ var guardUserExists = Guard{Name: "user_exists", Class: GuardKeep, Reads: "users
 func init() {
 	read := MustActionSet(ActionRead)
 	// The owner of an account holds operate on it, so every user may change
-	// their own preferences.
+	// their own preferences. The handler asks more of account_prefs_set: the
+	// person's own browser session, or an API key that holds manage; never
+	// an administrator acting as the user.
 	own := MustActionSet(ActionOperate)
 	Register(Op{
 		Name: OpAccountPrefs, Summary: "Show your own preferences, such as whether you allow new hidden sessions, and the Hub policy they depend on.",
@@ -61,7 +63,7 @@ func init() {
 		Args: reflect.TypeFor[AccountPrefsArgs](), Result: reflect.TypeFor[AccountPrefsResult](),
 	})
 	Register(Op{
-		Name: OpAccountPrefsSet, Summary: "Change your own preferences, such as allowing new sessions that would be hidden from your terminal.",
+		Name: OpAccountPrefsSet, Summary: "Change your own preferences, such as allowing new sessions that would be hidden from your terminal (from your own browser session, or with an API key that holds manage).",
 		Scope: ScopeHub, Actions: own, Write: true,
 		Guards: []Guard{guardUserExists},
 		Args:   reflect.TypeFor[AccountPrefsSetArgs](), Result: reflect.TypeFor[WriteResult](),

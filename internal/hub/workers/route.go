@@ -108,8 +108,10 @@ type Backend interface {
 	Get(workerID string) (Online, bool)
 	// OpenOp opens an op stream for op. It returns worker_offline for a
 	// Worker that is not connected and unsupported_op, without opening a
-	// stream, for an op the Worker did not announce.
-	OpenOp(ctx context.Context, workerID, op string, need ...string) (OpStream, error)
+	// stream, for an op the Worker did not announce. check, when not nil,
+	// decides on the record of the very connection that gets the stream (see
+	// [Registry.OpenOpChecked]); its error is returned with nothing opened.
+	OpenOp(ctx context.Context, workerID, op string, check func(Online) error, need ...string) (OpStream, error)
 }
 
 // RegistryBackend adapts a [Registry] to a [Backend].
@@ -117,8 +119,8 @@ func RegistryBackend(r *Registry) Backend { return registryBackend{r} }
 
 type registryBackend struct{ *Registry }
 
-func (b registryBackend) OpenOp(ctx context.Context, workerID, op string, need ...string) (OpStream, error) {
-	st, err := b.Registry.OpenOp(ctx, workerID, op, need...)
+func (b registryBackend) OpenOp(ctx context.Context, workerID, op string, check func(Online) error, need ...string) (OpStream, error) {
+	st, err := b.OpenOpChecked(ctx, workerID, op, check, need...)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +363,7 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			if fn := rt.synced.Load(); fn != nil {
 				info.SessionsSynced = (*fn)(w.ID)
 			}
-			if on.Facts.SessionsHidden && on.Facts.SessionHost != "" {
+			if hidden, _ := newSessionsHidden(on.Facts); hidden {
 				if pol := policyFor(); pol != nil {
 					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, *pol)
 				}
@@ -651,6 +653,9 @@ type call struct {
 	// need are the features of the Worker that the request relies on
 	// (requiredFeatures); the Backend checks them with the session it opens.
 	need []string
+	// check, when set, decides on the connection that gets the op (the
+	// hidden-session refusal of session_create).
+	check func(Online) error
 }
 
 // prepare validates the request, decides it and computes the request frame.
@@ -676,7 +681,8 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if err := rt.checkUserManaged(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
 		return nil, err
 	}
-	if err := rt.checkHiddenSession(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
+	check, err := rt.hiddenSessionCheck(ctx, req.Principal, op.Name, req.WorkerID)
+	if err != nil {
 		return nil, err
 	}
 	actions, err := rt.az.EffectiveActions(ctx, req.Principal, res)
@@ -708,6 +714,7 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		op:       op,
 		workerID: req.WorkerID,
 		need:     requiredFeatures(op.Name, args),
+		check:    check,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
 			Args: args, Actions: actions, Origin: origin,
@@ -805,7 +812,7 @@ func (e *lostError) Unwrap() error { return e.cause }
 // *lostError, except an error frame of the Worker (a *proto.Error) and an
 // error of onElement.
 func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.RawMessage) error) (json.RawMessage, error) {
-	st, err := rt.backend.OpenOp(ctx, c.workerID, c.frame.Op, c.need...)
+	st, err := rt.backend.OpenOp(ctx, c.workerID, c.frame.Op, c.check, c.need...)
 	if err != nil {
 		var pe *proto.Error
 		if errors.As(err, &pe) {
