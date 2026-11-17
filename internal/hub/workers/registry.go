@@ -454,6 +454,7 @@ func CleanFacts(f transport.WorkerFacts) transport.WorkerFacts {
 		out.SessionHostReasonCode, out.SessionHostReason = cleanReason(f.SessionHostReasonCode, f.SessionHostReason, transport.HostReasonText, maxSessionHostReason)
 	}
 	out.SessionsListErrorCode, out.SessionsListError = cleanReason(f.SessionsListErrorCode, f.SessionsListError, transport.ListErrorText, maxUpdateBlock)
+	out.DebugRemote = f.DebugRemote
 	return out
 }
 

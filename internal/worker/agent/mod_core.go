@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -85,6 +86,9 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	host, err := d.newHost(spec)
 	if err != nil {
 		return nil, fmt.Errorf("start the terminal host: %w", err)
+	}
+	if l, ok := host.(interface{ SetLogger(*slog.Logger) }); ok {
+		l.SetLogger(log) // debug lines of every listing (deduplicated)
 	}
 	defer func() {
 		if err != nil {

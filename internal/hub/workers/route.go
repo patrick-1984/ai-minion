@@ -368,6 +368,7 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, *pol)
 				}
 			}
+			info.DebugRemote = on.Facts.DebugRemote
 			if w.Pending {
 				// Nothing is routed to a pending Worker; do not offer what it announced.
 				info.Ops, info.Features = nil, nil

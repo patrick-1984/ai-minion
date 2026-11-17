@@ -169,6 +169,10 @@ type WorkerFacts struct {
 	// session.
 	SessionsListErrorCode string `json:"sessions_list_error_code,omitempty"`
 	SessionsListError     string `json:"sessions_list_error,omitempty"`
+	// DebugRemote is true when the Worker allows its owner and the Hub's
+	// administrators to switch debug logging on and read its recent log
+	// (allow_debug_remote, v0.10.0).
+	DebugRemote bool `json:"debug_remote,omitempty"`
 }
 
 // HubHello is the Hub's reply. Chain is present in connect mode only.

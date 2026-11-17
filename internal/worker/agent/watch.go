@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -156,11 +158,15 @@ func ScreenHash(s ops.Screen) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// HostObserverConfig configures a [HostObserver]. All fields are required.
+// HostObserverConfig configures a [HostObserver]. All fields but Logger are
+// required.
 type HostObserverConfig struct {
 	Host       term.SessionHost
 	Classifier Classifier
 	Policy     *Policy
+	// Logger receives a debug line when the share filter's result changes
+	// (counts only); nil writes nothing.
+	Logger *slog.Logger
 }
 
 // HostObserver is the production [Observer]: it lists the sessions of the
@@ -168,7 +174,8 @@ type HostObserverConfig struct {
 // pane of each. Its pane reads are the same snapshot and classification that
 // sessions_list uses, so the Hub's two views agree.
 type HostObserver struct {
-	cfg HostObserverConfig
+	cfg   HostObserverConfig
+	dedup logx.Dedup
 }
 
 // NewHostObserver validates cfg and returns the observer.
@@ -242,6 +249,9 @@ func (o *HostObserver) observeOnce(ctx context.Context) (View, store.ShareState,
 			shared = append(shared, s)
 		}
 	}
+	o.dedup.Debug(o.cfg.Logger, fmt.Sprintf("%d|%d|%s|%d", len(all), len(shared), sel.Mode, sel.Revision),
+		"share filter", "listed", len(all), "shared", len(shared), "not_shared", len(all)-len(shared),
+		"share_mode", string(sel.Mode), "share_revision", sel.Revision)
 	states := make([]SessionState, len(shared))
 	sem := make(chan struct{}, listParallel)
 	var wg sync.WaitGroup

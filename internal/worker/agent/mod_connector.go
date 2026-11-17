@@ -112,6 +112,8 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		applyListHealth(&f, health)
 		return f
 	}
+	dbg := setupDebugRemote(log, s, ex)
+	facts = withDebugFact(facts, dbg)
 	c, err := NewConnector(ConnectorConfig{
 		HubURL:     hub.Server,
 		Name:       s.Name,

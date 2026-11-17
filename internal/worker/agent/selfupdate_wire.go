@@ -41,6 +41,8 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 		exe = ""
 	}
 	block := updateBlock(exe, resolve(config.KeyRemoteUpdate, "on"), os.Getenv, fileExists)
+	log.Debug("self-update", "exe", exe, "block", block, "under_service_manager", underServiceManager(),
+		"os", runtime.GOOS, "running", version.Version)
 
 	u := &selfUpdate{log: log, stateDir: s.StateDir, exe: exe, block: block, now: time.Now,
 		restart:      func() { restartProcess(log, exe) },

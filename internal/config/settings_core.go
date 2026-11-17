@@ -56,7 +56,8 @@ func declareCore(r *Registry) {
 	})
 }
 
-// ResolveLogLevel returns the effective log level. A log_level that is set
+// ResolveLogLevel returns the effective log level. The Worker debug switch
+// (debug, --debug, MINION_DEBUG) on means debug. Otherwise a log_level that is set
 // anywhere (flag, environment, config file, panel) wins; otherwise the
 // verbose switch given on the command line (verboseFlag, nil when not given)
 // decides, and an explicit false there wins over MINION_VERBOSE; otherwise
@@ -66,6 +67,13 @@ func ResolveLogLevel(r *Resolver, verboseFlag *bool) (string, error) {
 	level, err := r.Resolve(KeyLogLevel)
 	if err != nil {
 		return "", err
+	}
+	// The Worker's debug switch (--debug, MINION_DEBUG) is an explicit ask
+	// for debug lines: it wins over every other level.
+	if on, err := debugOn(r); err != nil {
+		return "", err
+	} else if on {
+		return "debug", nil
 	}
 	if level.Source != SourceDefault {
 		return level.Value, nil

@@ -91,6 +91,8 @@ sudo systemctl restart minion-worker@<user>   # after a setting other than the s
 
 The share choice is read from the Worker's database and takes effect at once; the Hub follows it within the Worker's poll interval (one second by default, setting `session_poll_interval`). Any other saved setting is used the next time the Worker starts. A flag or an environment variable still wins over the config file.
 
+To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).
+
 ## Several Workers on one machine
 
 Run one Worker per Unix user. For test setups with more than one Worker of the same user, give each its own `MINION_STATE_DIR`, `MINION_TMUX_SOCKET` and `XDG_RUNTIME_DIR`: the command line finds the Worker through the control socket `worker.sock` in the runtime directory, and two Workers that share one runtime directory share one socket path. A Worker started by a system service has no `XDG_RUNTIME_DIR`; the commands look for its socket in the per-user directory under the temporary directory as well.

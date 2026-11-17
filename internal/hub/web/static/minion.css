@@ -700,3 +700,6 @@ body.embed .pipe-log { height: 10rem; max-height: 30vh; }
 /* "Send anyway" on the screen, one click (A26). */
 .force-inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
 .force-note { margin: 0; font-size: 13px; flex: 1 1 20rem; }
+
+/* ---- worker debug panel (v0.10.0) ---- */
+.debug-log { max-height: 60vh; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

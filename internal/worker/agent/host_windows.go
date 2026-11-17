@@ -51,22 +51,25 @@ func sessionHostSpec(s Settings) (string, SessionHostInfo, error) {
 		facts.User = u.Username
 	}
 	if mode == config.SessionHostConPTY {
+		log.Debug("choosing the session host", "session_host", mode, "host", "conpty", "why", "set explicitly")
 		facts.ConPTYCode = transport.HostReasonConPTYSetting
 		info := decideWindowsHost(facts)
 		log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", info.localReason())
 		return "conpty", info, nil
 	}
 	reason := ""
-	bin := tmux.FindPsmux()
+	bin, where := tmux.FindPsmuxWhere()
+	service := underServiceManager()
+	log.Debug("choosing the session host", "session_host", mode, "under_service_manager", service, "psmux", bin, "psmux_found", where)
 	switch {
-	case underServiceManager():
+	case service:
 		facts.ConPTYCode = transport.HostReasonConPTYService
 		reason = transport.HostReasonText(facts.ConPTYCode)
 	case bin == "":
 		facts.ConPTYCode = transport.HostReasonConPTYNoPsmux
 		reason = "psmux is not installed (winget install psmux)"
 	default:
-		if _, err := tmux.NewPsmux(bin); err != nil {
+		if _, err := tmux.NewPsmux(bin, tmux.WithLogger(log)); err != nil {
 			facts.ConPTYCode, facts.ConPTYDetail = transport.HostReasonConPTYPsmuxFailed, err.Error()
 			reason = err.Error()
 		}

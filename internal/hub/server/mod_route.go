@@ -107,8 +107,10 @@ func initRoute(ctx context.Context, env *Env) error {
 		}
 	}
 	// Central Worker update (v0.9.0): admin-only ops routed like the others
-	// (the dispatcher decides the action manage on the named Worker).
-	for _, name := range []string{ops.OpWorkerUpdate, ops.OpWorkerUpdateStatus} {
+	// (the dispatcher decides the action manage on the named Worker). Remote
+	// debug (v0.10.0): the owner or an admin (operate or manage), audited; the
+	// Worker itself refuses unless it allows it.
+	for _, name := range []string{ops.OpWorkerUpdate, ops.OpWorkerUpdateStatus, ops.OpWorkerDebug, ops.OpWorkerLogs} {
 		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
 			return fmt.Errorf("route: %w", err)
 		}

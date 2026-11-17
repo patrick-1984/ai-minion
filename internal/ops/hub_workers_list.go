@@ -85,6 +85,9 @@ type WorkerInfo struct {
 	// SessionsListError is why the Worker could not list its sessions when it
 	// connected (short, no paths); empty when it could or did not say.
 	SessionsListError string `json:"sessions_list_error,omitempty"`
+	// DebugRemote is true when the connected Worker allows remote debug
+	// (worker_debug, worker_logs; allow_debug_remote on the Worker).
+	DebugRemote bool `json:"debug_remote,omitempty"`
 	// Pending is true while the Worker waits for approval by its owner or an
 	// admin (F-02): it may be connected, but the Hub routes no operation to it.
 	Pending bool `json:"pending,omitempty"`

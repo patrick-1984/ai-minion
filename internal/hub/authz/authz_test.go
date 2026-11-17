@@ -812,3 +812,36 @@ func TestNewPanicsWithoutLookup(t *testing.T) {
 		}()
 	}
 }
+
+// worker_debug and worker_logs (v0.10.0) are for the Worker's owner and the
+// admins: their accepted set holds the owner's operate and the admin's manage;
+// another user, the Worker itself and a read-only key do not pass.
+func TestRemoteDebugOpsOwnerOrAdmin(t *testing.T) {
+	a := mk(newStore())
+	ctx := context.Background()
+	w := authz.WorkerResource{ID: "w-alice"}
+	for _, name := range []string{ops.OpWorkerDebug, ops.OpWorkerLogs} {
+		op, ok := ops.Lookup(name)
+		if !ok {
+			t.Fatalf("%s not registered", name)
+		}
+		if err := a.Decide(ctx, authz.NewSessionPrincipal("alice"), op.Actions, w); err != nil {
+			t.Errorf("%s owner: %v", name, err)
+		}
+		if err := a.Decide(ctx, authz.NewSessionPrincipal("admin"), op.Actions, w); err != nil {
+			t.Errorf("%s admin: %v", name, err)
+		}
+		if c := code(t, a.Decide(ctx, authz.NewSessionPrincipal("bob"), op.Actions, w)); c != proto.CodeNotFound {
+			t.Errorf("%s other user: %q", name, c)
+		}
+		if err := a.Decide(ctx, authz.NewWorkerPrincipal("w-alice"), op.Actions, w); err == nil {
+			t.Errorf("%s: the Worker identity passed", name)
+		}
+		if err := a.Decide(ctx, authz.NewAPIKeyPrincipal("alice", onWorker("w-alice", ops.ActionRead), ""), op.Actions, w); err == nil {
+			t.Errorf("%s: a read-only key passed", name)
+		}
+		if !op.Mutates || op.Scope != ops.ScopeWorker {
+			t.Errorf("%s: not an audited Worker op (%+v)", name, op)
+		}
+	}
+}

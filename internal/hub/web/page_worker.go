@@ -84,6 +84,9 @@ type WorkerPage struct {
 	// ShareURL is the share panel of the Worker (Story 4.15); empty when this person
 	// may not operate the Worker, so the page offers nothing the API would refuse.
 	ShareURL string
+	// DebugURL is the Debug panel of the Worker (v0.10.0); empty when this
+	// person may not operate the Worker.
+	DebugURL string
 	// Name is the heading (the Worker's name; the id when it has none).
 	Name    string
 	Context string
@@ -213,6 +216,7 @@ func workerData(get func() LiveSource) func(*http.Request) (any, error) {
 		}
 		if operate {
 			p.ShareURL = SharePath(id)
+			p.DebugURL = DebugPath(id)
 		}
 		if all {
 			p.Scope = scopeAll

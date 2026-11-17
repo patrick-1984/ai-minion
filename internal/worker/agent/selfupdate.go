@@ -143,6 +143,12 @@ func (u *selfUpdate) handleUpdate(ctx context.Context, rq Request) (any, error) 
 		return nil, err
 	}
 	res := ops.WorkerUpdateResult{From: version.Version, To: args.Version}
+	u.log.Debug("worker update requested", "from", version.Version, "to", args.Version, "force", args.Force, "block", u.block)
+	defer func() {
+		if res.Reason != "" {
+			u.log.Debug("worker update refused", "from", version.Version, "to", args.Version, "reason", res.Reason)
+		}
+	}()
 	target, err := version.ParseVersion(args.Version)
 	if err != nil || args.Version != target.String() {
 		return nil, apiErr(proto.CodeInvalidArgument, "version", "version must be one exact release such as v0.9.0 (no channel)")
@@ -210,10 +216,14 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 	defer cancel()
 	fail := func(err error) {
 		_ = os.Remove(filepath.Join(u.stateDir, pendingFile))
-		u.log.Warn("worker update failed", "to", tag, "error", err.Error())
-		u.setState(ops.UpdateStateFailed, version.Version, tag, err.Error())
+		// The error can quote a release mirror URL (update_api_url) with a
+		// credential; neither the log nor the reported state repeats it.
+		msg := errString(err)
+		u.log.Warn("worker update failed", "to", tag, "error", msg)
+		u.setState(ops.UpdateStateFailed, version.Version, tag, msg)
 		u.release()
 	}
+	u.log.Debug("worker update: preparing the installer", "to", tag, "exe", u.exe)
 	inst, err := u.installer()
 	if err != nil {
 		fail(err)
@@ -228,7 +238,10 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 		fail(fmt.Errorf("cannot write the update guard, so no rollback would be possible: %w", err))
 		return
 	}
+	u.log.Debug("worker update: crash guard written; downloading, verifying and installing", "to", tag,
+		"hub_proto_min", hub.Min.String(), "hub_proto_max", hub.Max.String())
 	r, err := inst.Run(ctx, version.Options{Selector: sel, Current: version.Version, HubRange: hub, ExecPath: u.exe})
+	u.log.Debug("worker update: installer finished", "to", tag, "installed", r.Tag, "up_to_date", r.UpToDate, "error", errString(err))
 	if err != nil {
 		fail(err)
 		return
