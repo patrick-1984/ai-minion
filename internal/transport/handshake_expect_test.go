@@ -58,7 +58,7 @@ func TestPairCodeExpectHubMatchPasses(t *testing.T) {
 }
 
 func TestEnrollInviteExpectHub(t *testing.T) {
-	wc, hc, hk := enrollConfigs(t)
+	wc, hc, _ := enrollConfigs(t)
 	wc.ExpectHub = matcherFor(t, mustKey(t).Fingerprint(), false)
 	o := runPair(t, wc, hc, nil)
 	if !errors.Is(o.workerErr, ErrExpectedHubMismatch) {
@@ -67,7 +67,7 @@ func TestEnrollInviteExpectHub(t *testing.T) {
 	if got := strings.Join(frameTypes(t, o.wWire), ","); got != "hello" {
 		t.Errorf("worker sent %s", got)
 	}
-	wc, hc, hk = enrollConfigs(t)
+	wc, hc, hk := enrollConfigs(t)
 	wc.ExpectHub = matcherFor(t, hk.Fingerprint(), true)
 	o = runPair(t, wc, hc, nil)
 	o.mustSucceed(t)

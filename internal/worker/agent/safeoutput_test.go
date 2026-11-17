@@ -9,11 +9,11 @@ import (
 
 // hostileText carries a line break, a carriage return, a cursor movement, a
 // right-to-left override and a zero-width space.
-const hostileText = "eve\nINJECTED\r\x1b[2A‮​"
+const hostileText = "eve\nINJECTED\r\x1b[2A\u202e\u200b"
 
 func assertOneSafeLine(t *testing.T, what, s string) {
 	t.Helper()
-	if strings.ContainsAny(s, "\n\r\x1b‮​") {
+	if strings.ContainsAny(s, "\n\r\x1b\u202e\u200b") {
 		t.Errorf("%s keeps a control or format character: %q", what, s)
 	}
 }
