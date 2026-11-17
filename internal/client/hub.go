@@ -27,6 +27,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 )
 
 // The Hub REST backend (AD-22, AD-18). Every op is one request,
@@ -97,9 +98,13 @@ var (
 	// ErrHubCA means the private CA file cannot be used. Nothing was sent.
 	ErrHubCA = errors.New("the Hub CA file cannot be used")
 
-	// ErrHubTLSConflict means both a private CA and the insecure switch were
-	// given, which say opposite things about trust.
-	ErrHubTLSConflict = errors.New("a Hub CA file and the insecure switch cannot be combined")
+	// ErrHubTLSConflict means two of the private CA, the TLS key pin and the
+	// insecure switch were given, which say different things about trust.
+	ErrHubTLSConflict = errors.New("--hub-ca-file, --hub-tls-pin and --hub-insecure cannot be combined: give only one")
+
+	// ErrHubTLSPin means the TLS key pin setting is malformed. Nothing was
+	// sent.
+	ErrHubTLSPin = errors.New("the Hub TLS key pin cannot be used")
 
 	// ErrHubUnreachable means the request never left: the connection could not
 	// be made or the certificate was refused. Nothing was sent.
@@ -148,6 +153,12 @@ type HubConfig struct {
 	CAFile string
 	// Insecure skips the verification of the Hub's certificate for this client.
 	Insecure bool
+	// TLSPin is one or more TLS key pins (sha256//<base64 of the SHA-256 of
+	// the SubjectPublicKeyInfo>, the curl --pinnedpubkey form) separated by
+	// ";". When set, the Hub's certificate is accepted when the key of its
+	// leaf has one of these pins, and the chain and the host name are not
+	// verified.
+	TLSPin string
 	// Worker is the id (UUIDv7) of the Worker that runs an op whose arguments
 	// name none (sessions_list, session_create), and the Worker of a
 	// structured target that has none. It is never a name: the Hub accepts
@@ -217,11 +228,21 @@ func NewHub(cfg HubConfig, opts ...HubOption) (*HubBackend, error) {
 	if b.worker != "" && !ops.ValidUUIDv7(b.worker) {
 		return nil, fmt.Errorf("%w: %s", ErrHubWorker, "the default Worker must be a Worker id (a UUIDv7 as listed by workers_list); a Worker name is not accepted")
 	}
-	if cfg.CAFile != "" && cfg.Insecure {
+	pinned := strings.TrimSpace(cfg.TLSPin) != ""
+	if (cfg.CAFile != "" && cfg.Insecure) || (pinned && (cfg.CAFile != "" || cfg.Insecure)) {
 		return nil, ErrHubTLSConflict
 	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	switch {
+	case pinned:
+		pins, err := identity.ParseSPKIPins(cfg.TLSPin)
+		if err != nil {
+			return nil, fmt.Errorf("%w (--hub-tls-pin, MINION_HUB_TLS_PIN, hub_tls_pin): %v", ErrHubTLSPin, err)
+		}
+		// The pin replaces the verification of the chain: the standard check
+		// is switched off and VerifyConnection accepts exactly the pinned key.
+		tlsCfg.InsecureSkipVerify = true //nolint:gosec // replaced by the key pin check below
+		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error { return checkPin(cs, pins) }
 	case cfg.Insecure:
 		tlsCfg.InsecureSkipVerify = true //nolint:gosec // explicit, scoped to this client, warned about
 		if b.warn != nil {
@@ -476,8 +497,12 @@ func (b *HubBackend) transportError(ctx, callCtx context.Context, err error, key
 			invalid     x509.CertificateInvalidError
 			verify      *tls.CertificateVerificationError
 		)
+		var certErr *HubCertError
+		if errors.As(err, &certErr) {
+			return certErr // a pin mismatch
+		}
 		if errors.As(err, &unknownAuth) || errors.As(err, &hostErr) || errors.As(err, &invalid) || errors.As(err, &verify) {
-			return fmt.Errorf("%w by this client (%s): give the Hub's CA with --hub-ca-file, or skip the check for this client with --hub-insecure", ErrHubCertificate, reason)
+			return &HubCertError{Reason: transport.CertReason(err), Pin: presentedPin(err)}
 		}
 		return fmt.Errorf("%w at %s: %s", ErrHubUnreachable, b.label, reason)
 	}

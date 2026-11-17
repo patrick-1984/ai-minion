@@ -177,8 +177,7 @@ func selectMCPBackend(cmd *cobra.Command, deps mcpDeps, logger *slog.Logger) (cl
 		// worker_id, so that the local Worker forwards it (session control).
 		localBackend = localHubWorker(local(), cfg.Worker)
 	}
-	hc := client.HubConfig{URL: cfg.URL, APIKeyFile: cfg.APIKeyFile, CAFile: cfg.CAFile, Insecure: cfg.Insecure, Worker: cfg.Worker}
-	b, kind, err := client.Select(hc, localBackend,
+	b, kind, err := client.Select(hubConfig(cfg), localBackend,
 		client.WithHubUserAgent("minion/"+version.Get().Version),
 		client.WithHubWarn(func(msg string) { logger.Warn(msg) }))
 	if err != nil {

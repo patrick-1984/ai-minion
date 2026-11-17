@@ -22,6 +22,7 @@ const (
 	flagHubCAFile   = "hub-ca-file"
 	flagHubInsecure = "hub-insecure"
 	flagHubWorker   = "hub-worker"
+	flagHubTLSPin   = "hub-tls-pin"
 )
 
 // hubFlagNames maps a client setting to its flag.
@@ -30,6 +31,7 @@ var hubFlagNames = map[string]string{
 	config.KeyHubCAFile:   flagHubCAFile,
 	config.KeyHubInsecure: flagHubInsecure,
 	config.KeyHubWorker:   flagHubWorker,
+	config.KeyHubTLSPin:   flagHubTLSPin,
 }
 
 // hubFlagHelp is the one-line help of each flag; the settings carry the
@@ -39,12 +41,13 @@ var hubFlagHelp = map[string]string{
 	config.KeyHubCAFile:   "PEM file with the private CA of the Hub's certificate",
 	config.KeyHubInsecure: "skip the verification of the Hub's certificate for this client only (warns)",
 	config.KeyHubWorker:   "id (UUIDv7) of the Worker that runs operations whose arguments name none (sessions_list, session_create)",
+	config.KeyHubTLSPin:   "TLS key pin of the Hub (sha256//..., several separated by \";\"), from \"minion hub identity --words\" on the Hub host; replaces the certificate check",
 }
 
 // addHubFlags adds the Hub client flags to fs. A flag that already exists (an
 // argument of an op with the same name) is left alone.
 func addHubFlags(fs *pflag.FlagSet) {
-	for _, key := range []string{config.KeyHubURL, config.KeyHubCAFile, config.KeyHubInsecure, config.KeyHubWorker} {
+	for _, key := range []string{config.KeyHubURL, config.KeyHubCAFile, config.KeyHubInsecure, config.KeyHubTLSPin, config.KeyHubWorker} {
 		name := hubFlagNames[key]
 		if fs.Lookup(name) != nil {
 			continue
@@ -102,9 +105,13 @@ func resolveHubSettings(fs *pflag.FlagSet, lookupEnv func(string) (string, bool)
 // hubBackend builds the Hub backend of cfg and sends the permanent warning of
 // an insecure client to warn.
 func hubBackend(cfg config.ClientHub, warn io.Writer) (client.Backend, error) {
-	hc := client.HubConfig{URL: cfg.URL, APIKeyFile: cfg.APIKeyFile, CAFile: cfg.CAFile, Insecure: cfg.Insecure, Worker: cfg.Worker}
-	b, _, err := client.Select(hc, nil,
+	b, _, err := client.Select(hubConfig(cfg), nil,
 		client.WithHubUserAgent("minion/"+version.Get().Version),
 		client.WithHubWarn(func(msg string) { _, _ = fmt.Fprintln(warn, msg) }))
 	return b, err
+}
+
+// hubConfig is the client configuration of the resolved settings cfg.
+func hubConfig(cfg config.ClientHub) client.HubConfig {
+	return client.HubConfig{URL: cfg.URL, APIKeyFile: cfg.APIKeyFile, CAFile: cfg.CAFile, Insecure: cfg.Insecure, TLSPin: cfg.TLSPin, Worker: cfg.Worker}
 }
