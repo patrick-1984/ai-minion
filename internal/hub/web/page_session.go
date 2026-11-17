@@ -361,6 +361,10 @@ type SessionPage struct {
 	KeysURL   string
 	TaskURL   string
 	NewURL    string
+	// NewRefused is why New session would be refused (the new session would
+	// be hidden and the hidden_sessions policy does not allow it); the button
+	// is then disabled and shows it.
+	NewRefused string
 	// Context is the public identity context of the request (see page_inspector_context.go).
 	Context string
 	// Panes are the views of the right pane, in order. The built-in one is
@@ -622,7 +626,7 @@ func sessionData(r *http.Request) (any, error) {
 		Keys: sessionKeys, ScreenURL: t.path() + "/screen",
 		EventsURL: eventsPath + "?all=true&worker=" + url.QueryEscape(t.worker.ID),
 		TextURL:   t.path() + "/text", KeysURL: t.path() + "/keys", TaskURL: t.path() + "/task",
-		NewURL: NewSessionPath(t.ref), Context: principalContext(r),
+		NewURL: NewSessionPath(t.ref), Context: principalContext(r), NewRefused: t.worker.NewSessionRefused,
 	}
 	if !t.worker.Online {
 		page.Notice = "This Worker is offline. The screen and the controls come back when it reconnects."

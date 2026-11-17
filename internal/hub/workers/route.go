@@ -49,6 +49,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -222,6 +223,10 @@ type RouterConfig struct {
 	// UserManaged reports whether people and API keys may control a Worker's
 	// sessions (Minion control, v0.9.0). Nil means always.
 	UserManaged func(ctx context.Context, workerID string) (bool, error)
+	// HiddenSessions returns the hidden-sessions policy of a caller (Hub
+	// setting hidden_sessions and the caller's own preference, v0.10.0).
+	// Nil means hidden sessions are never refused.
+	HiddenSessions HiddenSessionsPolicyFunc
 }
 
 // Router routes catalog Worker ops to the Workers that run them.
@@ -234,6 +239,7 @@ type Router struct {
 	timeout   time.Duration
 	log       *slog.Logger
 	userMgd   func(ctx context.Context, workerID string) (bool, error)
+	hidden    HiddenSessionsPolicyFunc
 }
 
 // NewRouter returns a Router. It fails when a required dependency is missing.
@@ -242,7 +248,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 		return nil, errors.New("workers: a Router needs a Backend, a Directory and an Authorizer")
 	}
 	rt := &Router{
-		userMgd: c.UserManaged,
+		userMgd: c.UserManaged, hidden: c.HiddenSessions,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
 	}
@@ -305,6 +311,19 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 		return nil, err
 	}
 	owners := map[string]string{}
+	// The hidden-sessions policy of the caller, read once and only when a
+	// Worker reports hidden sessions.
+	var policy *HiddenSessionsPolicy
+	policyFor := func() *HiddenSessionsPolicy {
+		if policy == nil && rt.hidden != nil {
+			pol, err := rt.hidden(ctx, p)
+			if err != nil {
+				pol = HiddenSessionsPolicy{Hub: config.HiddenSessionsDisabled}
+			}
+			policy = &pol
+		}
+		return policy
+	}
 	out := make([]ops.WorkerInfo, 0, len(recs))
 	for _, w := range recs {
 		owner, ok := owners[w.OwnerID]
@@ -323,6 +342,12 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			info.Online, info.ProtoVersion, info.ConnectedAt, info.Ops = true, on.Version.String(), &at, on.Ops
 			info.Features = on.Features
 			info.Build, info.OS, info.Arch, info.UpdateBlock = on.Facts.Build, on.Facts.OS, on.Facts.Arch, on.Facts.UpdateBlock
+			info.SessionHost, info.SessionsHidden, info.SessionHostReason = on.Facts.SessionHost, on.Facts.SessionsHidden, on.Facts.SessionHostReason
+			if on.Facts.SessionsHidden && on.Facts.SessionHost != "" {
+				if pol := policyFor(); pol != nil {
+					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, *pol)
+				}
+			}
 			if w.Pending {
 				// Nothing is routed to a pending Worker; do not offer what it announced.
 				info.Ops, info.Features = nil, nil
@@ -631,6 +656,9 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		return nil, err
 	}
 	if err := rt.checkUserManaged(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
+		return nil, err
+	}
+	if err := rt.checkHiddenSession(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
 		return nil, err
 	}
 	actions, err := rt.az.EffectiveActions(ctx, req.Principal, res)

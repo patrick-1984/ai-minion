@@ -50,6 +50,7 @@ var sectionOf = map[string]struct {
 	"oidc_tls_insecure_skip_verify": {SectionOIDC, 1},
 	"oidc_user_values":              {SectionOIDC, 1},
 
+	"hidden_sessions":       {SectionWorkers, 1},
 	"infra_default_owner":   {SectionWorkers, 1},
 	"infra_invite_key_days": {SectionWorkers, 1},
 

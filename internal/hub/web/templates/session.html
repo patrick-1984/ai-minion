@@ -46,7 +46,10 @@
       <h1>{{.Data.Session}} <span class="muted">on {{.Data.Worker}}</span></h1>
       <div class="row">
         {{if $panes}}<button type="button" class="btn btn-secondary" id="pane-toggle" aria-expanded="false" aria-controls="session-pane" hidden>{{template "icon" "i-panel"}}<span>{{if gt (len .Data.Panes) 1}}Conversation and details{{else}}Details{{end}}</span></button>{{end}}
-        {{if and .Data.Operate (not .Embed)}}<form method="post" action="{{.Data.NewURL}}" hx-post="{{.Data.NewURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="New session">
+        {{if and .Data.Operate (not .Embed) .Data.NewRefused}}<div data-hidden-refused>
+          <button type="button" class="btn btn-secondary" disabled aria-describedby="new-refused">New session on {{.Data.Worker}}</button>
+          <p class="help" id="new-refused">{{.Data.NewRefused}}</p>
+        </div>{{else if and .Data.Operate (not .Embed)}}<form method="post" action="{{.Data.NewURL}}" hx-post="{{.Data.NewURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="New session">
           <button type="submit" class="btn btn-secondary">New session on {{.Data.Worker}}</button>
         </form>{{end}}
       </div>

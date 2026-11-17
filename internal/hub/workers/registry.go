@@ -412,6 +412,9 @@ var (
 // maxUpdateBlock bounds the update-block text of a hello, in bytes.
 const maxUpdateBlock = 160
 
+// maxSessionHostReason bounds the session host reason of a hello, in bytes.
+const maxSessionHostReason = 240
+
 // CleanFacts keeps only well-formed facts: a build that is a release version
 // or "dev", a short lower-case platform, and a bounded printable reason.
 // Anything else is dropped, never rejected: the facts are for display.
@@ -427,5 +430,11 @@ func CleanFacts(f transport.WorkerFacts) transport.WorkerFacts {
 		out.Arch = f.Arch
 	}
 	out.UpdateBlock = proto.SafeText(f.UpdateBlock, maxUpdateBlock)
+	switch f.SessionHost {
+	case transport.SessionHostTmux, transport.SessionHostPsmux, transport.SessionHostConPTY:
+		out.SessionHost = f.SessionHost
+		out.SessionsHidden = f.SessionsHidden
+		out.SessionHostReason = proto.SafeText(f.SessionHostReason, maxSessionHostReason)
+	}
 	return out
 }

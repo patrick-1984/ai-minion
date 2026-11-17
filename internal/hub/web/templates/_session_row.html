@@ -16,9 +16,13 @@
     <form method="post" action="{{.UpdateURL}}" hx-post="{{.UpdateURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update {{.Name}} from {{.Build}} to {{.UpdateTo}}? The Worker installs the signed release and restarts; tmux sessions keep running." class="row-actions">
       <button type="submit" class="btn btn-secondary" data-control="update" aria-label="Update {{.Name}} to {{.UpdateTo}}">Update</button>
     </form>{{else if .UpdateBlock}} <span class="muted" data-update-block>({{.UpdateBlock}})</span>{{end}}{{end}}</td>
-  <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else if .Online}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
+  <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else if .Online}}{{if .NewSessionRefused}}<div class="row-actions" data-hidden-refused>
+    <button type="button" class="btn btn-secondary" data-control="new-session" disabled aria-describedby="nsr-{{.ID}}">New session<span class="sr-only"> on {{.Name}} (not available)</span></button>
+    <p class="help" id="nsr-{{.ID}}">{{.NewSessionRefused}}</p>
+  </div>{{else}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn btn-secondary" data-control="new-session" aria-label="New session on {{.Name}}">New session</button>
-  </form>{{else}}<span class="muted">Offline</span>{{end}}</td>
+  </form>{{end}}{{else}}<span class="muted">Offline</span>{{end}}{{if .SessionHostText}}
+    <p class="muted" data-session-host="{{.SessionHost}}" data-sessions-hidden="{{.SessionsHidden}}">Sessions: {{.SessionHostText}}</p>{{end}}</td>
 </tr>{{end}}
 
 {{define "session_row"}}<tr data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="s-{{.WorkerID}}-{{.Name}}" data-row-link="session">

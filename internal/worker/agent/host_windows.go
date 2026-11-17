@@ -4,6 +4,7 @@ package agent
 
 import (
 	"fmt"
+	"os/user"
 	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -29,22 +30,30 @@ func newSessionHost(spec string) (term.SessionHost, error) {
 // serves the psmux sessions of the user who runs the Worker, so it is used
 // only when the Worker runs as that user: a service runs as LocalSystem, which
 // has no psmux sessions of its own, and must not run a program from a
-// user-writable directory. auto falls back to ConPTY with the reason in the log;
+// user-writable directory. auto falls back to ConPTY with the reason in the log
+// and in the info the Worker reports to the Hub (ConPTY sessions are hidden);
 // an explicit psmux that cannot be used is an error.
-func sessionHostSpec(s Settings) (string, error) {
+func sessionHostSpec(s Settings) (string, SessionHostInfo, error) {
 	mode := config.SessionHostAuto
 	if s.Resolver != nil {
 		r, err := s.Resolver.Resolve(config.KeySessionHost)
 		if err != nil {
-			return "", err // an invalid value never falls back to auto
+			return "", SessionHostInfo{}, err // an invalid value never falls back to auto
 		}
 		if r.Value != "" {
 			mode = r.Value
 		}
 	}
 	log := s.logger()
+	facts := windowsHostFacts{}
+	if u, err := user.Current(); err == nil {
+		facts.User = u.Username
+	}
 	if mode == config.SessionHostConPTY {
-		return "conpty", nil
+		facts.ConPTYReason = "session_host is set to conpty"
+		info := decideWindowsHost(facts)
+		log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", facts.ConPTYReason)
+		return "conpty", info, nil
 	}
 	reason := ""
 	bin := tmux.FindPsmux()
@@ -59,12 +68,14 @@ func sessionHostSpec(s Settings) (string, error) {
 		}
 	}
 	if reason == "" {
-		log.Info("sessions are hosted by psmux", "psmux", bin)
-		return psmuxSpecPrefix + bin, nil
+		facts.Psmux = true
+		log.Info("sessions are hosted by psmux (visible)", "psmux", bin)
+		return psmuxSpecPrefix + bin, decideWindowsHost(facts), nil
 	}
 	if mode == config.SessionHostPsmux {
-		return "", fmt.Errorf("session_host is psmux, but %s", reason)
+		return "", SessionHostInfo{}, fmt.Errorf("session_host is psmux, but %s", reason)
 	}
-	log.Info("sessions are hosted by ConPTY inside the Worker", "reason", reason)
-	return "conpty", nil
+	facts.ConPTYReason = reason
+	log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", reason)
+	return "conpty", decideWindowsHost(facts), nil
 }

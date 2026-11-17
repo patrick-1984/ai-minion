@@ -115,9 +115,12 @@ type WorkerHello struct {
 	// hash and both handshake signatures cover them. An older Worker omits them.
 	Features []string `json:"features,omitempty"`
 	// WorkerFacts are display and update-eligibility facts (v0.9.0): the
-	// build, the platform and why the Worker cannot update itself. They are
-	// never used for an access decision. An older Worker omits them and an
-	// older Hub ignores them; thin Workers omit them.
+	// build, the platform and why the Worker cannot update itself; since
+	// v0.10.0 also the session host and whether its sessions are hidden. They
+	// never grant anything: the only decision they feed is the refusal of a
+	// hidden new session (hidden_sessions), a convenience for the person,
+	// not a security boundary. An older Worker omits them and an older Hub
+	// ignores them; thin Workers omit them.
 	WorkerFacts
 	WorkerPub identity.B64 `json:"worker_pub"`
 	EphW      identity.B64 `json:"eph_w"`
@@ -127,7 +130,16 @@ type WorkerHello struct {
 	PairingID string       `json:"pairing_id,omitempty"`
 }
 
-// WorkerFacts are the optional, display-only members of the Worker hello.
+// Session hosts a Worker reports in [WorkerFacts.SessionHost].
+const (
+	SessionHostTmux   = "tmux"
+	SessionHostPsmux  = "psmux"
+	SessionHostConPTY = "conpty"
+)
+
+// WorkerFacts are the optional members of the Worker hello. They are display
+// facts, except SessionsHidden, which the Hub's hidden_sessions policy reads
+// to refuse a session_create that would make a hidden session.
 type WorkerFacts struct {
 	// Build is the release version of the Worker binary ("v0.9.0" or "dev").
 	Build string `json:"build,omitempty"`
@@ -137,6 +149,17 @@ type WorkerFacts struct {
 	// UpdateBlock is why the Worker cannot update itself from the Hub
 	// ("installed by a package", "runs in a container", ...); empty when it can.
 	UpdateBlock string `json:"update_block,omitempty"`
+	// SessionHost is what hosts the Worker's sessions: "tmux", "psmux" or
+	// "conpty" (v0.10.0). Empty means unknown (an older Worker).
+	SessionHost string `json:"session_host,omitempty"`
+	// SessionsHidden is true when a new session would be hidden from the
+	// person: they could not see or join it from their own terminal (ConPTY
+	// inside the Worker, or a tmux/psmux server that is not their default
+	// one). Meaningful only when SessionHost is set.
+	SessionsHidden bool `json:"sessions_hidden,omitempty"`
+	// SessionHostReason is a short human sentence on why the host was chosen
+	// and why its sessions are visible or hidden.
+	SessionHostReason string `json:"session_host_reason,omitempty"`
 }
 
 // HubHello is the Hub's reply. Chain is present in connect mode only.
