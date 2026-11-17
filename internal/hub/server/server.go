@@ -372,6 +372,9 @@ func (s *Server) Run(ctx context.Context) error {
 	serveLn := ln
 	if certs != nil {
 		srv.TLSConfig = certs.TLSConfig()
+		// The welcome of a Worker connection states the key of the
+		// certificate served on that connection (hub_tls).
+		newServedCerts().install(srv, srv.TLSConfig)
 		serveLn = tlsListener(ln, srv.TLSConfig)
 	}
 	serveErr := make(chan error, 1)

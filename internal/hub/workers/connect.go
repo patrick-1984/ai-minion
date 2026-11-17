@@ -56,7 +56,52 @@ type Welcome struct {
 	// the connection, and the reconnect is welcomed without it.
 	Pending bool   `json:"pending,omitempty"`
 	Policy  Policy `json:"policy"`
+	// HubTLS states how the request of this connection reached the Hub
+	// (v0.11.0, design 4.6): on the Hub's own TLS listener, with the key of
+	// the certificate served on that connection, or not. The Worker compares
+	// the key with the one it saw; it is information, never a verdict.
+	HubTLS *HubTLS `json:"hub_tls,omitempty"`
 	proto.Range
+}
+
+// The modes of [HubTLS].
+const (
+	// HubTLSOwn: the request arrived on the Hub's own TLS listener.
+	HubTLSOwn = "own"
+	// HubTLSOff: the request arrived as plain HTTP (TLS, if any, ended
+	// before the Hub).
+	HubTLSOff = "off"
+)
+
+// HubTLS is the hub_tls member of the welcome.
+type HubTLS struct {
+	Mode string `json:"mode"`
+	// KeyHash is the SHA-256 of the SubjectPublicKeyInfo of the certificate
+	// the Hub served on this connection (mode own).
+	KeyHash identity.B64 `json:"key_sha256,omitempty"`
+}
+
+type servedTLSKeyCtx struct{}
+
+// WithServedTLSKey returns ctx carrying key, which returns the SPKI hash of
+// the certificate the Hub's TLS listener served on this connection, or nil
+// when it is not known. The Hub's HTTP server sets it per connection.
+func WithServedTLSKey(ctx context.Context, key func() []byte) context.Context {
+	return context.WithValue(ctx, servedTLSKeyCtx{}, key)
+}
+
+// HubTLSOf decides once per request what the welcome states: own, with the
+// key of the certificate served on this connection, when the request came
+// over TLS to the Hub itself, else off.
+func HubTLSOf(r *http.Request) *HubTLS {
+	if r.TLS == nil {
+		return &HubTLS{Mode: HubTLSOff}
+	}
+	out := &HubTLS{Mode: HubTLSOwn}
+	if key, ok := r.Context().Value(servedTLSKeyCtx{}).(func() []byte); ok && key != nil {
+		out.KeyHash = key()
+	}
+	return out
 }
 
 // RevokeFrame is the signed revocation (AD-9, design 12.4). Sig is an Ed25519
@@ -508,6 +553,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chain = chainUpTo(chain, snap.RootPub)
+	hubTLS := HubTLSOf(r)
 	conn, err := transport.Accept(w, r)
 	if err != nil {
 		return // Accept has answered the request
@@ -549,7 +595,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("worker connect: handshake failed", "client_ip", ip.String(), "code", string(transport.ErrorCode(err)))
 		return
 	}
-	c := &Conn{h: h, res: res, ip: ip, pairing: pairingTicket, snap: snap}
+	c := &Conn{h: h, res: res, ip: ip, pairing: pairingTicket, snap: snap, hubTLS: hubTLS}
 	defer c.finish()
 
 	if res.Worker.Mode == transport.ModeConnect {
@@ -653,6 +699,8 @@ type Conn struct {
 	// pairing is the ticket of a pair_code connection (nil otherwise): the
 	// pending entry and claim this connection was bound to during the wait.
 	pairing *PairingTicket
+	// hubTLS is what the welcome states about the path of this request.
+	hubTLS *HubTLS
 }
 
 // Worker returns the validated Worker hello.
@@ -746,6 +794,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		Kind:     w.Kind,
 		Pending:  w.Pending,
 		Policy:   pol,
+		HubTLS:   c.hubTLS,
 		Range:    proto.SupportedRange(h.cfg.Current),
 	}); err != nil {
 		return fmt.Errorf("send welcome: %w", err)
