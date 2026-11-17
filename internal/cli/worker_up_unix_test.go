@@ -64,6 +64,11 @@ func TestWorkerUpForegroundRealProcess(t *testing.T) {
 	}
 
 	state := t.TempDir()
+	// The control socket lives under XDG_RUNTIME_DIR (or TMPDIR): a private
+	// one, so a real Worker of this user on the machine does not collide.
+	runtimeDir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	t.Setenv("TMPDIR", runtimeDir)
 	cmd := exec.Command(bin, "worker", "up", "--foreground")
 	cmd.Env = withoutTmuxEnv(os.Environ(),
 		"MINION_STATE_DIR="+state,

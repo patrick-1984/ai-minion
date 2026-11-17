@@ -60,6 +60,7 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
     <div><dt>Kind</dt><dd><span class="badge plain" data-kind="{{.Worker.Kind}}">{{.Worker.Kind}}</span></dd></div>
     {{if .Worker.Owner}}<div><dt>Owner</dt><dd>{{.Worker.Owner}}</dd></div>
     {{end}}<div><dt>Version</dt><dd>{{if .Worker.Build}}{{.Worker.Build}}{{else}}<span class="muted">-</span>{{end}}{{if .Worker.UpdateTo}} → {{.Worker.UpdateTo}}{{if .Worker.UpdateBlock}} <span class="muted">({{.Worker.UpdateBlock}})</span>{{end}}{{end}}</dd></div><div><dt>Protocol</dt><dd>{{if .Worker.Version}}{{.Worker.Version}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
+    <div><dt>Sessions</dt><dd data-session-host="{{.Worker.SessionHost}}" data-sessions-hidden="{{.Worker.SessionsHidden}}">{{if .Worker.SessionHostText}}{{.Worker.SessionHostText}}{{else}}<span class="muted">{{if .Worker.Online}}session host unknown (update the Worker){{else}}-{{end}}</span>{{end}}</dd></div>
     <div><dt>Worker id</dt><dd><code>{{.Worker.ID}}</code></dd></div>
   </dl>
   {{if .Worker.Pending}}<p class="notice notice-warning" role="status" data-pending-banner>This worker is waiting for approval. The Hub sends it no operations and refuses its calls until its owner or an admin approves it. Compare these facts with the machine you started.</p>
@@ -69,7 +70,10 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
     <p class="muted">This worker has never connected. If its pairing code expired before it recorded the pairing, re-issue the pairing and enter its new code.</p>
     <button type="submit" class="btn" data-control="repair-pairing" aria-label="Re-issue pairing for worker {{.Worker.Name}}">Re-issue pairing</button>
   </form>{{end}}
-  {{if .Operate}}<form method="post" action="{{.Worker.NewURL}}" hx-post="{{.Worker.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions" data-key="worker-actions-{{.Worker.ID}}">
+  {{if and .Operate .Worker.NewSessionRefused}}<div class="row-actions" data-key="worker-actions-{{.Worker.ID}}" data-hidden-refused>
+    <button type="button" class="btn" data-control="new-session" disabled aria-describedby="nsr-{{.Worker.ID}}">New session<span class="sr-only"> on {{.Worker.Name}} (not available)</span></button>
+    <p class="help" id="nsr-{{.Worker.ID}}">{{.Worker.NewSessionRefused}}</p>
+  </div>{{else if .Operate}}<form method="post" action="{{.Worker.NewURL}}" hx-post="{{.Worker.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions" data-key="worker-actions-{{.Worker.ID}}">
     <button type="submit" class="btn" data-control="new-session" aria-label="New session on {{.Worker.Name}}">New session</button>
   </form>{{end}}
   {{if and .Worker.RemoveURL (not .Worker.Pending)}}<details class="forget-worker" data-key="worker-forget-{{.Worker.ID}}" data-keep-open="worker-forget-{{.Worker.ID}}"><summary>Forget this Worker</summary>
@@ -81,5 +85,5 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
 </section>
 <section aria-labelledby="worker-sessions-h">
   <div class="section-head" data-key="worker-sessions-{{.Worker.ID}}"><h2 id="worker-sessions-h">Sessions</h2>{{if .Sessions}}<a href="{{.SessionsURL}}" data-control="session-list">In the session list</a>{{end}}</div>
-  {{if .Sessions}}{{template "session_table" .}}{{else}}<div class="empty-state"><h2>No sessions on this worker</h2><p>{{if .Worker.Online}}{{if .Operate}}Choose New session to start one.{{else}}A session appears here when the worker hosts one that you may see.{{end}}{{else}}The worker is offline, so no session is listed.{{end}}</p></div>{{end}}
+  {{if .Sessions}}{{template "session_table" .}}{{else}}<div class="empty-state" data-sessions-empty="{{.EmptyReason}}"><h2>{{.EmptyTitle}}</h2><p>{{if .Worker.Online}}{{if eq .EmptyReason "failed"}}As of its last connection to the Hub, the worker could not list its sessions: {{.Worker.SessionsListError}}. Check <code>minion worker status</code> on that machine for the current state. {{else if eq .EmptyReason "waiting"}}The worker is connected, but its first session list has not arrived yet. If this stays, its listing may be failing since it connected: check <code>minion worker status</code> on that machine. {{else if eq .EmptyReason "none"}}The worker lists no session that you may see (a session it does not share is not listed). {{end}}{{if .Operate}}Choose New session to start one.{{else}}A session appears here when the worker hosts one that you may see.{{end}}{{else}}The worker is offline, so no session is listed.{{end}}</p></div>{{end}}
 </section>{{end}}{{end}}

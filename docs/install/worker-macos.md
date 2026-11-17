@@ -53,6 +53,8 @@ minion worker config share select work build  # only these sessions
 
 The share choice takes effect at once; the Hub follows within the poll interval (one second by default). Any other saved setting is used at the next start of the Worker, so restart it after you change one (log out and in again, or stop and start its launchd agent).
 
+To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).
+
 ## Update
 
 ```sh

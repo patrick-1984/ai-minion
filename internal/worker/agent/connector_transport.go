@@ -49,8 +49,13 @@ type hubDialer struct {
 
 func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, error) {
 	dialCtx, cancelDial := context.WithTimeout(ctx, d.dialTimeout)
-	conn, err := transport.Dial(dialCtx, p.HubURL)
+	conn, df, err := transport.DialInfo(dialCtx, p.HubURL)
 	cancelDial()
+	if p.Logger != nil {
+		p.Logger.Debug("hub dial", "url", df.URL, "proxy", df.Proxy, "http_status", df.HTTPStatus, "tls", df.TLSVersion,
+			"peer_subject", df.PeerSubject, "peer_issuer", df.PeerIssuer, "peer_sha256", df.PeerSHA256,
+			"subprotocol", df.Subprotocol, "error", errString(err))
+	}
 	if err != nil {
 		if ctx.Err() == nil && dialCtx.Err() != nil {
 			return nil, fmt.Errorf("dial the hub: no answer within %s", d.dialTimeout)
@@ -76,6 +81,9 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 		Ratchet:   p.Ratchet,
 		Clock:     p.Clock,
 	})
+	if p.Logger != nil {
+		p.Logger.Debug("hub handshake", "ok", err == nil, "error", errString(err))
+	}
 	if err != nil {
 		stop()
 		if ctx.Err() != nil {
@@ -107,6 +115,10 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 	if err != nil {
 		_ = res.Channel.Close()
 		return nil, err
+	}
+	if p.Logger != nil {
+		p.Logger.Debug("hub answered", "reply", reply.Type, "protocol", res.Version.String(), "pin_changed", res.PinChanged,
+			"ratchet_changed", res.RatchetChanged, "cert_not_after", time.UnixMilli(res.Expiry.WallMs).UTC().Format(time.RFC3339))
 	}
 	att := &Attempt{
 		Pin:            res.Pin,

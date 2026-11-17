@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 )
 
 // DefaultStopTimeout is the hard bound of the whole shutdown after a signal
@@ -39,6 +40,9 @@ type Settings struct {
 	// Logger receives operational messages; never terminal content, message
 	// bodies or secrets (AD-20). Nil discards them.
 	Logger *slog.Logger
+	// LogLive switches the level of Logger at runtime and holds its recent
+	// lines (worker_debug, worker_logs). Nil: no remote debug.
+	LogLive *logx.Live
 	// Out is for human-readable reports, such as the result of enrollment.
 	// Nil discards them.
 	Out io.Writer

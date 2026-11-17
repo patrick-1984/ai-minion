@@ -65,6 +65,29 @@ type WorkerInfo struct {
 	// UpdateBlock is why the connected Worker cannot update itself from the
 	// Hub; empty when it can or when it did not say (older Workers).
 	UpdateBlock string `json:"update_block,omitempty"`
+	// SessionHost is what hosts the connected Worker's sessions: "tmux",
+	// "psmux" or "conpty" (v0.10.0); empty when the Worker did not say
+	// (older Workers) or is offline.
+	SessionHost string `json:"session_host,omitempty"`
+	// SessionsHidden is true when a new session on the Worker would be hidden
+	// from the person (they could not see or join it from their own
+	// terminal); SessionHostReason says why the host is visible or hidden.
+	SessionsHidden    bool   `json:"sessions_hidden,omitempty"`
+	SessionHostReason string `json:"session_host_reason,omitempty"`
+	// NewSessionRefused is set when session_create on this Worker would be
+	// refused for the caller because the new session would be hidden and the
+	// hidden_sessions policy does not allow it: the message, with the fix.
+	NewSessionRefused string `json:"new_session_refused,omitempty"`
+	// SessionsSynced is true once the connected Worker sent its first session
+	// list on this connection: before that an empty list means "not known
+	// yet", not "no sessions".
+	SessionsSynced bool `json:"sessions_synced,omitempty"`
+	// SessionsListError is why the Worker could not list its sessions when it
+	// connected (short, no paths); empty when it could or did not say.
+	SessionsListError string `json:"sessions_list_error,omitempty"`
+	// DebugRemote is true when the connected Worker allows remote debug
+	// (worker_debug, worker_logs; allow_debug_remote on the Worker).
+	DebugRemote bool `json:"debug_remote,omitempty"`
 	// Pending is true while the Worker waits for approval by its owner or an
 	// admin (F-02): it may be connected, but the Hub routes no operation to it.
 	Pending bool `json:"pending,omitempty"`

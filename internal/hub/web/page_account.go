@@ -16,8 +16,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
 const pathAccount = "/account"
@@ -35,6 +37,30 @@ type AccountPage struct {
 	Admin     bool
 	// MustChangePassword is true when the account has to choose a new password.
 	MustChangePassword bool
+	// Prefs are the account's own preferences (account_prefs); nil when the
+	// Hub could not read them, so the Sessions card says so.
+	Prefs *ops.AccountPrefsResult
+	// PrefsURL is the post of the Sessions card; PrefsFor the effective user
+	// the form was rendered for, which the post must still be (an act-as
+	// session that starts or ends in between does not save the choice for
+	// another account). The form is not offered while acting as someone else.
+	PrefsURL string
+	PrefsFor string
+}
+
+// HiddenSessionsHub is the sentence of the Sessions card on what the Hub
+// setting hidden_sessions does to the person's choice.
+func (p AccountPage) HiddenSessionsHub() string {
+	if p.Prefs == nil {
+		return ""
+	}
+	switch p.Prefs.HiddenSessions {
+	case config.HiddenSessionsAllowed:
+		return "An administrator allows hidden sessions for everybody on this Hub (Hub setting hidden_sessions), so this choice has no effect now."
+	case config.HiddenSessionsDisabled:
+		return "An administrator has disabled hidden sessions for everybody on this Hub (Hub setting hidden_sessions), so this choice has no effect now."
+	}
+	return ""
 }
 
 func accountData(r *http.Request) (any, error) {
@@ -49,7 +75,42 @@ func accountData(r *http.Request) (any, error) {
 	if sess.ActAs != nil {
 		p.ActingAs = sess.ActAs.TargetUsername
 	}
+	if c, err := adminCaller(); err == nil {
+		var prefs ops.AccountPrefsResult
+		if err := c.CallOp(r, ops.OpAccountPrefs, ops.AccountPrefsArgs{}, &prefs); err == nil {
+			p.Prefs = &prefs
+			if u, ok := userOf(r); ok && sess.ActAs == nil {
+				p.PrefsURL, p.PrefsFor = pathAccountSessions, u.ID
+			}
+		}
+	}
 	return p, nil
+}
+
+// pathAccountSessions is the post of the Sessions card of the account page.
+const pathAccountSessions = "/account/sessions"
+
+// handleAccountSessions saves the hidden-sessions preference of the signed-in
+// person: the checkbox "allow_hidden_sessions" is on or absent.
+//
+// The form names the user it was rendered for (for_user); a post for another
+// account than the current effective one is refused, so a tab opened while
+// acting as someone, or before, cannot save the choice for the wrong person.
+func handleAccountSessions(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
+	if sess, ok := session.FromContext(r.Context()); ok && sess.ActAs != nil {
+		writeResultError(w, "While you act as another user, their hidden-sessions choice cannot be changed; they change it in their own Account page.")
+		return
+	}
+	if r.PostFormValue("for_user") != u.ID {
+		writeResultError(w, "This form was opened for another account (an act-as session started or ended since). Reload the page and choose again.")
+		return
+	}
+	allow := r.PostFormValue("allow_hidden_sessions") == "on"
+	text := "New sessions that would be hidden from your terminal are refused."
+	if allow {
+		text = "New sessions that would be hidden from your terminal are allowed."
+	}
+	writeOp(w, r, c, ops.OpAccountPrefsSet, ops.AccountPrefsSetArgs{WriteArgs: newWriteArgs(), AllowHiddenSessions: &allow}, text)
 }
 
 // AdminArea is one card of the administration overview.
@@ -86,6 +147,7 @@ func adminOverviewData(*http.Request) (any, error) { return AdminOverviewPage{Ar
 
 func init() {
 	RegisterPage(Page{Pattern: pathAccount, Title: "Account", Template: "account.html", Data: accountData})
+	RegisterRoute(Route{Pattern: "POST " + pathAccountSessions, Handler: userRoute(handleAccountSessions)})
 	RegisterPage(Page{Pattern: pathAdminOverview, Title: "Administration", Template: "admin.html",
 		Roles: []authz.Role{authz.RoleAdmin}, Data: adminOverviewData})
 }

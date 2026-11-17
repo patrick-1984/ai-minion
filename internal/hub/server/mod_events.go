@@ -71,6 +71,13 @@ func initEvents(ctx context.Context, env *Env) error {
 		return fmt.Errorf("events: %w", err)
 	}
 	svc.Registry().OnAdd(ing.Attach)
+	// workers_list tells "no sessions" from "no session list yet".
+	if rt, err := Require[*workers.Router](env); err == nil {
+		rt.SetSessionsSynced(func(workerID string) bool {
+			ws, ok := hub.Sessions(workerID)
+			return ok && ws.Synced
+		})
+	}
 
 	lister := &api.SessionLister{
 		UserManaged: userManaged(st),

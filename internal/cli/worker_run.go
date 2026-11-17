@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -101,7 +102,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	if stderr == nil {
 		stderr = cmd.ErrOrStderr()
 	}
-	logger, err := commandLogger(cmd, res, stderr)
+	logger, live, err := workerLogger(cmd, res, stderr)
 	if err != nil {
 		return err
 	}
@@ -119,6 +120,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		WorkerCore: core,
 		Resolver:   res,
 		Logger:     logger,
+		LogLive:    live,
 		Out:        cmd.OutOrStdout(),
 
 		InviteArgvWarned: deps.inviteArgvWarned,
@@ -136,6 +138,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	if exe := agent.RestartPending(); exe != "" {
 		// A foreground self-update on Windows: the new binary runs in this
 		// console, and this process waits for it.
+		logger.Debug("the Worker stopped for its restart; running the new binary in this console", "exe", exe)
 		return restartInConsole(exe)
 	}
 	return nil
@@ -190,11 +193,7 @@ func addSettingFlags(cmd *cobra.Command, reg *config.Registry, role config.Scope
 
 func isSwitch(s config.Setting) bool {
 	c := append([]string(nil), s.Choices...)
-	if len(c) != 2 {
-		return false
-	}
-	if c[0] > c[1] {
-		c[0], c[1] = c[1], c[0]
-	}
-	return reflect.DeepEqual(c, []string{"false", "true"}) && strings.EqualFold(s.Default, "false")
+	slices.Sort(c)
+	return (reflect.DeepEqual(c, []string{"false", "true"}) || reflect.DeepEqual(c, []string{"0", "1", "false", "true"})) &&
+		strings.EqualFold(s.Default, "false")
 }

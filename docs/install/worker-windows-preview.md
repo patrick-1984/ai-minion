@@ -12,6 +12,14 @@ Windows terminals that are not psmux sessions (a plain PowerShell or cmd window)
 
 **Without psmux.** The Worker creates sessions as ConPTY (pseudo console) programs that live **inside the Worker process**. The same operations work on them: list, snapshot, capture, send text and keys, set a task, create a session, the Hub pages and the MCP tools.
 
+## Visible and hidden sessions
+
+A session is **visible** when you can see and join it from your own terminal: psmux sessions in your default namespace show in `psmux ls` and you can `psmux attach` to them. A session is **hidden** when you cannot: a ConPTY session lives inside the Worker process (psmux is not installed, `session_host` is `conpty`, or the Worker runs as a Windows service as LocalSystem). The same holds on Linux and macOS: sessions on your default tmux server are visible, sessions on a private socket (`tmux_socket`), in the tmux server of root under a service manager, or on the tmux server inside a container are hidden. The Worker setting `sessions_visible` (`auto`, `yes`, `no`; Linux and macOS) overrides that guess, for example `yes` for a container that mounts your own tmux socket ([Docker](worker-docker.md)).
+
+The Worker reports its session host and the reason to the Hub. The Worker page and the Workers list show it ("Sessions: psmux (visible)" or "ConPTY inside the Worker (hidden): psmux is not installed (winget install psmux)"). By default **the Hub refuses to create hidden sessions**: the New session button is disabled and says why and how to fix it (install psmux with `winget install psmux` and run `minion worker up --foreground` as yourself). You can allow hidden sessions for yourself in **Account > Sessions** (from your own signed-in browser session; an API key needs manage, and an administrator acting as you cannot change it); an administrator decides for everybody with the Hub setting `hidden_sessions` (`user-controlled`, the default, `allowed` or `disabled`). Sessions that already exist are not affected. A Windows Worker older than v0.10.0 does not report its session host; it counts as hidden (it may use ConPTY) until you update it.
+
+`minion worker status` shows the run mode (foreground console or Windows service) and the session host with its reason. If the `MinionWorker` service is installed and running (or set to start at boot) while you start `minion worker up --foreground`, the Worker warns you: that service keeps serving hidden ConPTY sessions after you close the console. In an elevated PowerShell, stop and remove it with `sc.exe stop MinionWorker`, then `sc.exe delete MinionWorker` (a stopped service that starts at boot: `sc.exe delete MinionWorker`, or `sc.exe config MinionWorker start= demand` to keep it). Do not use `minion worker down` for this: once the service is stopped it stops the foreground Worker of your console instead. With psmux, a self-update is not refused for the sessions: psmux sessions survive the restart.
+
 ## Limits of the preview
 
 - **Without psmux, sessions end with the Worker.** There is no server that outlives the Worker. Restarting or stopping the Worker ends every session, and the session list is empty afterwards. Sessions are not saved and not adopted again.
@@ -63,3 +71,5 @@ minion worker reset    # after down: forget the Hub, the key and the share choic
 ```
 
 `minion worker reset` forgets the Hub, the key and the share choice and refuses while the Worker runs: stop it first with `minion worker down`. It does not tell the Hub: remove the Worker on the Hub's Workers page too.
+
+To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).

@@ -130,9 +130,9 @@ type cutBackend struct {
 	cut   atomic.Bool
 }
 
-func (b *cutBackend) OpenOp(ctx context.Context, workerID, op string, need ...string) (workers.OpStream, error) {
+func (b *cutBackend) OpenOp(ctx context.Context, workerID, op string, check func(workers.Online) error, need ...string) (workers.OpStream, error) {
 	b.opens.Add(1)
-	st, err := b.Backend.OpenOp(ctx, workerID, op, need...)
+	st, err := b.Backend.OpenOp(ctx, workerID, op, check, need...)
 	if err != nil {
 		return nil, err
 	}

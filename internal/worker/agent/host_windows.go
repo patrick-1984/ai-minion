@@ -4,9 +4,11 @@ package agent
 
 import (
 	"fmt"
+	"os/user"
 	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/conpty"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
@@ -29,42 +31,58 @@ func newSessionHost(spec string) (term.SessionHost, error) {
 // serves the psmux sessions of the user who runs the Worker, so it is used
 // only when the Worker runs as that user: a service runs as LocalSystem, which
 // has no psmux sessions of its own, and must not run a program from a
-// user-writable directory. auto falls back to ConPTY with the reason in the log;
+// user-writable directory. auto falls back to ConPTY with the reason in the log
+// and in the info the Worker reports to the Hub (ConPTY sessions are hidden);
 // an explicit psmux that cannot be used is an error.
-func sessionHostSpec(s Settings) (string, error) {
+func sessionHostSpec(s Settings) (string, SessionHostInfo, error) {
 	mode := config.SessionHostAuto
 	if s.Resolver != nil {
 		r, err := s.Resolver.Resolve(config.KeySessionHost)
 		if err != nil {
-			return "", err // an invalid value never falls back to auto
+			return "", SessionHostInfo{}, err // an invalid value never falls back to auto
 		}
 		if r.Value != "" {
 			mode = r.Value
 		}
 	}
 	log := s.logger()
+	facts := windowsHostFacts{}
+	if u, err := user.Current(); err == nil {
+		facts.User = u.Username
+	}
 	if mode == config.SessionHostConPTY {
-		return "conpty", nil
+		log.Debug("choosing the session host", "session_host", mode, "host", "conpty", "why", "set explicitly")
+		facts.ConPTYCode = transport.HostReasonConPTYSetting
+		info := decideWindowsHost(facts)
+		log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", info.localReason())
+		return "conpty", info, nil
 	}
 	reason := ""
-	bin := tmux.FindPsmux()
+	bin, where := tmux.FindPsmuxWhere()
+	service := underServiceManager()
+	log.Debug("choosing the session host", "session_host", mode, "under_service_manager", service, "psmux", bin, "psmux_found", where)
 	switch {
-	case underServiceManager():
-		reason = "the Worker runs as a Windows service (LocalSystem); psmux sessions are served by a Worker that runs as you (minion worker up --foreground)"
+	case service:
+		facts.ConPTYCode = transport.HostReasonConPTYService
+		reason = transport.HostReasonText(facts.ConPTYCode)
 	case bin == "":
+		facts.ConPTYCode = transport.HostReasonConPTYNoPsmux
 		reason = "psmux is not installed (winget install psmux)"
 	default:
-		if _, err := tmux.NewPsmux(bin); err != nil {
+		if _, err := tmux.NewPsmux(bin, tmux.WithLogger(log)); err != nil {
+			facts.ConPTYCode, facts.ConPTYDetail = transport.HostReasonConPTYPsmuxFailed, err.Error()
 			reason = err.Error()
 		}
 	}
 	if reason == "" {
-		log.Info("sessions are hosted by psmux", "psmux", bin)
-		return psmuxSpecPrefix + bin, nil
+		facts.Psmux = true
+		log.Info("sessions are hosted by psmux (visible)", "psmux", bin)
+		return psmuxSpecPrefix + bin, decideWindowsHost(facts), nil
 	}
 	if mode == config.SessionHostPsmux {
-		return "", fmt.Errorf("session_host is psmux, but %s", reason)
+		return "", SessionHostInfo{}, fmt.Errorf("session_host is psmux, but %s", reason)
 	}
-	log.Info("sessions are hosted by ConPTY inside the Worker", "reason", reason)
-	return "conpty", nil
+	info := decideWindowsHost(facts)
+	log.Info("sessions are hosted by ConPTY inside the Worker (hidden)", "reason", info.localReason())
+	return "conpty", info, nil
 }

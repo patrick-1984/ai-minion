@@ -7,13 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
@@ -116,6 +115,9 @@ type ConnectParams struct {
 	Clock transport.WallMono
 	// Session tunes the yamux session (tests inject a clock).
 	Session transport.SessionOptions
+	// Logger receives the debug lines of the attempt (URL, TLS peer,
+	// protocol); nil writes nothing.
+	Logger *slog.Logger
 }
 
 // Attempt is the result of a connection whose Hub was authenticated.
@@ -586,7 +588,8 @@ func (c *Connector) setState(s ConnState) {
 // fail records a failed attempt. The first failure of a streak is logged at
 // Warn, repeats of the same failure at Debug, so that a Hub that is down for a
 // week does not fill the log.
-func (c *Connector) fail(what string, err error) { c.failMsg(what + ": " + err.Error()) }
+// The error text never carries a URL's credential, path or query (errString).
+func (c *Connector) fail(what string, err error) { c.failMsg(what + ": " + errString(err)) }
 
 func (c *Connector) failMsg(msg string) {
 	c.mu.Lock()
@@ -625,6 +628,7 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 		Ratchet:   enr.Ratchet,
 		Clock:     c.cfg.WallMono,
 		Session:   c.cfg.Session,
+		Logger:    c.log,
 	})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -978,16 +982,15 @@ func causeText(err error) string {
 	if err == nil {
 		return "closed"
 	}
-	return err.Error()
+	return errString(err)
 }
 
 // hubLabel is the Hub URL without credentials, path or query, for logs.
 func hubLabel(raw string) string {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" {
-		return "hub"
+	if s := logx.SafeURL(raw); s != "" && s != "[url]" {
+		return s
 	}
-	return u.Scheme + "://" + u.Host
+	return "hub"
 }
 
 // hubFingerprint is the fingerprint of the pinned Hub key.

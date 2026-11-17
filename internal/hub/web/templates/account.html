@@ -20,6 +20,19 @@
     <p class="muted">Keys let tools and scripts act for you, limited to what you choose.</p>
     <a class="btn btn-secondary" href="/api-keys">Manage API keys</a>
   </section>
+  <section class="panel" aria-labelledby="sessions-h" id="sessions">
+    <h2 id="sessions-h">Sessions</h2>
+    <p class="muted">A new session is hidden when you could not see or join it from your own terminal: on Windows a ConPTY session inside the Worker (psmux is not installed, or the Worker runs as a service), on Linux and macOS a tmux server that is not your default one. Visible sessions show in <code>tmux ls</code> or <code>psmux ls</code> and you can attach to them.</p>
+    {{if and .Data.Prefs (not .Data.PrefsURL)}}<p class="help" id="hidden-effective" data-prefs-readonly>{{if .Data.Prefs.HiddenSessionsAllowed}}New sessions are created for {{.Data.ActingAs}} even where they would be hidden.{{else}}New sessions that would be hidden are refused for {{.Data.ActingAs}}.{{end}} While you act as another user, this choice cannot be changed; they change it in their own Account page.</p>
+    {{else if .Data.Prefs}}<form method="post" action="{{.Data.PrefsURL}}" hx-post="{{.Data.PrefsURL}}" hx-target="#sessions-result" hx-swap="innerHTML" hx-disabled-elt="find button">
+      <input type="hidden" name="for_user" value="{{.Data.PrefsFor}}">
+      <div class="field"><label><input type="checkbox" name="allow_hidden_sessions" id="allow-hidden-sessions"{{if .Data.Prefs.AllowHiddenSessions}} checked{{end}} aria-describedby="hidden-effective"> Allow creating hidden sessions</label></div>
+      <p class="help" id="hidden-effective">{{if .Data.HiddenSessionsHub}}{{.Data.HiddenSessionsHub}}{{else if .Data.Prefs.HiddenSessionsAllowed}}New sessions are created even where they would be hidden.{{else}}New sessions that would be hidden are refused, with the reason and the fix (off by default).{{end}}</p>
+      <button type="submit" class="btn btn-secondary">Save</button>
+      <div id="sessions-result" aria-live="polite"></div>
+    </form>
+    {{else}}<p class="muted">The Hub could not read your session preferences right now.</p>{{end}}
+  </section>
   <section class="panel" aria-labelledby="theme-h">
     <h2 id="theme-h">Appearance</h2>
     <p class="muted">The theme is saved in this browser only. System follows your operating system.</p>

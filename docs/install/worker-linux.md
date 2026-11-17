@@ -73,6 +73,8 @@ Without `sudo` this installs a systemd user service. A user service stops when y
 
 **`--share-existing` is applied at every start.** `minion worker up` saves the flag in the config file, and the Worker applies a `share_existing` value to its saved choice each time it starts. A choice you make later in the Hub is therefore replaced at the next restart. To let the Hub's choice stand, give the flag for the first run and then run `minion worker config unset share_existing`: the saved choice is then used. `minion worker config share ...` keeps the config file in step, so it never gets undone. See [pairing and sharing](../guides/pairing.md#who-decides-at-start).
 
+**Visible sessions under systemd.** A service does not inherit your shell's environment. With `sessions_visible` at `auto` (the default) the Worker judges the tmux socket as seen by the service: its default socket is `/tmp/tmux-<uid>/default` unless the unit sets `TMUX_TMPDIR`. If your shell sets another `TMUX_TMPDIR` (or you use `tmux -S`/`-L`), the service's tmux server is not the one your `tmux ls` shows, although the Worker reports it as visible. Then point the Worker at your socket (`minion worker config set tmux_socket <path>`) and say what is true with `minion worker config set sessions_visible yes` (your own socket) or `no` (a separate server), and restart the service.
+
 **In the foreground** (to try it, or under another supervisor): `minion worker up --foreground`, or `minion worker run`, until Ctrl-C.
 
 ## 4. Join the Hub
@@ -90,6 +92,8 @@ sudo systemctl restart minion-worker@<user>   # after a setting other than the s
 ```
 
 The share choice is read from the Worker's database and takes effect at once; the Hub follows it within the Worker's poll interval (one second by default, setting `session_poll_interval`). Any other saved setting is used the next time the Worker starts. A flag or an environment variable still wins over the config file.
+
+To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).
 
 ## Several Workers on one machine
 

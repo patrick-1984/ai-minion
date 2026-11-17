@@ -157,10 +157,12 @@ func TestWorkerDetailOffersNewSessionOnlyWhereItIsAllowedAndMeaningful(t *testin
 	mustHave(t, body, `<dt>Protocol</dt><dd><span class="muted">-</span></dd>`)
 	mustNotHave(t, body, "uptime", "Uptime", "Hostname", "Host name")
 	// A worker with no session says so, for an owner who can start one.
-	empty := Dashboard{Workers: []WorkerRow{wPrivate}}
+	synced := wPrivate
+	synced.SessionsSynced = true
+	empty := Dashboard{Workers: []WorkerRow{synced}}
 	s3, _ := workerPageServer(t, empty, empty, wAliceInfo)
 	_, nb := page(t, s3, "/workers/w1", "alice:user")
-	mustHave(t, nb, "No sessions on this worker", "Choose New session to start one.")
+	mustHave(t, nb, "No visible sessions on this worker", "Choose New session to start one.")
 }
 
 // The page shows what the lists show for the same person and scope, and a worker outside that is the same plain 404 as an id that does

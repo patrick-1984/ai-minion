@@ -47,8 +47,10 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -106,8 +108,10 @@ type Backend interface {
 	Get(workerID string) (Online, bool)
 	// OpenOp opens an op stream for op. It returns worker_offline for a
 	// Worker that is not connected and unsupported_op, without opening a
-	// stream, for an op the Worker did not announce.
-	OpenOp(ctx context.Context, workerID, op string, need ...string) (OpStream, error)
+	// stream, for an op the Worker did not announce. check, when not nil,
+	// decides on the record of the very connection that gets the stream (see
+	// [Registry.OpenOpChecked]); its error is returned with nothing opened.
+	OpenOp(ctx context.Context, workerID, op string, check func(Online) error, need ...string) (OpStream, error)
 }
 
 // RegistryBackend adapts a [Registry] to a [Backend].
@@ -115,8 +119,8 @@ func RegistryBackend(r *Registry) Backend { return registryBackend{r} }
 
 type registryBackend struct{ *Registry }
 
-func (b registryBackend) OpenOp(ctx context.Context, workerID, op string, need ...string) (OpStream, error) {
-	st, err := b.Registry.OpenOp(ctx, workerID, op, need...)
+func (b registryBackend) OpenOp(ctx context.Context, workerID, op string, check func(Online) error, need ...string) (OpStream, error) {
+	st, err := b.OpenOpChecked(ctx, workerID, op, check, need...)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +226,10 @@ type RouterConfig struct {
 	// UserManaged reports whether people and API keys may control a Worker's
 	// sessions (Minion control, v0.9.0). Nil means always.
 	UserManaged func(ctx context.Context, workerID string) (bool, error)
+	// HiddenSessions returns the hidden-sessions policy of a caller (Hub
+	// setting hidden_sessions and the caller's own preference, v0.10.0).
+	// Nil means hidden sessions are never refused.
+	HiddenSessions HiddenSessionsPolicyFunc
 }
 
 // Router routes catalog Worker ops to the Workers that run them.
@@ -234,6 +242,20 @@ type Router struct {
 	timeout   time.Duration
 	log       *slog.Logger
 	userMgd   func(ctx context.Context, workerID string) (bool, error)
+	hidden    HiddenSessionsPolicyFunc
+	// synced reports whether a Worker's current connection sent its session
+	// list (the event hub, set after the Router is built).
+	synced atomic.Pointer[func(workerID string) bool]
+}
+
+// SetSessionsSynced sets the source of [ops.WorkerInfo.SessionsSynced]: the
+// event hub, which a module builds after the Router.
+func (rt *Router) SetSessionsSynced(fn func(workerID string) bool) {
+	if fn == nil {
+		rt.synced.Store(nil)
+		return
+	}
+	rt.synced.Store(&fn)
 }
 
 // NewRouter returns a Router. It fails when a required dependency is missing.
@@ -242,7 +264,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 		return nil, errors.New("workers: a Router needs a Backend, a Directory and an Authorizer")
 	}
 	rt := &Router{
-		userMgd: c.UserManaged,
+		userMgd: c.UserManaged, hidden: c.HiddenSessions,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
 	}
@@ -305,6 +327,19 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 		return nil, err
 	}
 	owners := map[string]string{}
+	// The hidden-sessions policy of the caller, read once and only when a
+	// Worker reports hidden sessions.
+	var policy *HiddenSessionsPolicy
+	policyFor := func() *HiddenSessionsPolicy {
+		if policy == nil && rt.hidden != nil {
+			pol, err := rt.hidden(ctx, p)
+			if err != nil {
+				pol = HiddenSessionsPolicy{Hub: config.HiddenSessionsDisabled}
+			}
+			policy = &pol
+		}
+		return policy
+	}
 	out := make([]ops.WorkerInfo, 0, len(recs))
 	for _, w := range recs {
 		owner, ok := owners[w.OwnerID]
@@ -323,6 +358,17 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			info.Online, info.ProtoVersion, info.ConnectedAt, info.Ops = true, on.Version.String(), &at, on.Ops
 			info.Features = on.Features
 			info.Build, info.OS, info.Arch, info.UpdateBlock = on.Facts.Build, on.Facts.OS, on.Facts.Arch, on.Facts.UpdateBlock
+			info.SessionHost, info.SessionsHidden, info.SessionHostReason = on.Facts.SessionHost, on.Facts.SessionsHidden, on.Facts.SessionHostReason
+			info.SessionsListError = on.Facts.SessionsListError
+			if fn := rt.synced.Load(); fn != nil {
+				info.SessionsSynced = (*fn)(w.ID)
+			}
+			if newSessionsHost(on.Facts) != hostVisible {
+				if pol := policyFor(); pol != nil {
+					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, *pol)
+				}
+			}
+			info.DebugRemote = on.Facts.DebugRemote
 			if w.Pending {
 				// Nothing is routed to a pending Worker; do not offer what it announced.
 				info.Ops, info.Features = nil, nil
@@ -600,6 +646,41 @@ func (rt *Router) stream(ctx context.Context, req CallRequest, emit func(any) er
 	return rt.readError(err)
 }
 
+// errStaleOwner refuses remote debug on a connection admitted under another
+// owner than the current one.
+var errStaleOwner = proto.NewError(proto.CodeConflict, "the Worker is reconnecting after an owner change; try again")
+
+// debugOwnerCheck returns the check of worker_debug and worker_logs, nil for
+// any other op. The caller was authorised on the Worker's current owner, but
+// the connection that gets the op carries the owner recorded at its welcome:
+// a reconnect that read the previous owner before a reassignment committed can
+// register after it, and that Worker still keeps the previous owner's log
+// lines and debug switch. The op goes only to a connection whose welcome owner
+// is the current owner (read here, right before dispatch); otherwise it is
+// refused and the caller retries once the Worker has reconnected.
+func (rt *Router) debugOwnerCheck(ctx context.Context, op, workerID string) (func(Online) error, error) {
+	if op != ops.OpWorkerDebug && op != ops.OpWorkerLogs {
+		return nil, nil
+	}
+	recs, err := rt.dir.Workers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owner := ""
+	for _, w := range recs {
+		if w.ID == workerID {
+			owner = w.OwnerID
+			break
+		}
+	}
+	return func(on Online) error {
+		if owner == "" || on.OwnerID != owner {
+			return errStaleOwner
+		}
+		return nil
+	}, nil
+}
+
 // call is a prepared op call: the op, the request frame and the worker.
 type call struct {
 	op       ops.Op
@@ -608,6 +689,9 @@ type call struct {
 	// need are the features of the Worker that the request relies on
 	// (requiredFeatures); the Backend checks them with the session it opens.
 	need []string
+	// check, when set, decides on the connection that gets the op (the
+	// hidden-session refusal of session_create).
+	check func(Online) error
 }
 
 // prepare validates the request, decides it and computes the request frame.
@@ -632,6 +716,15 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	}
 	if err := rt.checkUserManaged(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
 		return nil, err
+	}
+	check, err := rt.hiddenSessionCheck(ctx, req.Principal, op.Name, req.WorkerID)
+	if err != nil {
+		return nil, err
+	}
+	if check == nil {
+		if check, err = rt.debugOwnerCheck(ctx, op.Name, req.WorkerID); err != nil {
+			return nil, err
+		}
 	}
 	actions, err := rt.az.EffectiveActions(ctx, req.Principal, res)
 	if err != nil {
@@ -662,6 +755,7 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		op:       op,
 		workerID: req.WorkerID,
 		need:     requiredFeatures(op.Name, args),
+		check:    check,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
 			Args: args, Actions: actions, Origin: origin,
@@ -759,8 +853,16 @@ func (e *lostError) Unwrap() error { return e.cause }
 // *lostError, except an error frame of the Worker (a *proto.Error) and an
 // error of onElement.
 func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.RawMessage) error) (json.RawMessage, error) {
-	st, err := rt.backend.OpenOp(ctx, c.workerID, c.frame.Op, c.need...)
+	st, err := rt.backend.OpenOp(ctx, c.workerID, c.frame.Op, c.check, c.need...)
 	if err != nil {
+		if pe, ok := err.(*proto.Error); ok && pe == errStaleOwner {
+			// A connection admitted under the previous owner: close it, so
+			// that the Worker reconnects, learns its owner from the new
+			// welcome and clears what the previous owner may read.
+			if d, ok := rt.backend.(interface{ Disconnect(string) bool }); ok {
+				d.Disconnect(c.workerID)
+			}
+		}
 		var pe *proto.Error
 		if errors.As(err, &pe) {
 			return nil, err

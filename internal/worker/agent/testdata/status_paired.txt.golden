@@ -12,5 +12,7 @@ Approval:            approved
 Pairing code:        none pending
 Share mode:          select (build, docs)
 Preview only:        no
+Run mode:            unknown (only a running Worker knows it)
+Session host:        unknown (only a running Worker knows it)
 tmux socket:         /run/user/1000/tmux-1000/default
 Sessions:            3

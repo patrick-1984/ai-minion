@@ -118,6 +118,20 @@ type WorkerRow struct {
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
+	// SessionHost, SessionsHidden and SessionHostReason are what the connected
+	// Worker reported about the host of its sessions (v0.10.0); empty for an
+	// older or offline Worker. NewSessionRefused is set when session_create
+	// would be refused for this person because the new session would be
+	// hidden: the New session button is then disabled and shows it.
+	SessionHost       string
+	SessionsHidden    bool
+	SessionHostReason string
+	NewSessionRefused string
+	// SessionsSynced is true once the connected Worker sent its session list;
+	// SessionsListError is why it could not list its sessions when it
+	// connected. The Worker page uses both to explain an empty list.
+	SessionsSynced    bool
+	SessionsListError string
 	// ShowOwner is set when the owner column is shown ("all users").
 	ShowOwner bool
 	// SessionCount, SessionsURL and NewURL are filled by [newDashboardView]:
@@ -137,6 +151,28 @@ type WorkerRow struct {
 	// the session list does not show.
 	Sessions []SessionRow
 	Disclose bool
+}
+
+// SessionHostText is the session host as people read it: "psmux (visible):
+// the default psmux namespace of pat ..." or "ConPTY inside the Worker
+// (hidden): psmux is not installed ..."; empty when the Worker did not say.
+func (w WorkerRow) SessionHostText() string {
+	label := w.SessionHost
+	switch w.SessionHost {
+	case "":
+		return ""
+	case "conpty":
+		label = "ConPTY inside the Worker"
+	}
+	vis := "visible"
+	if w.SessionsHidden {
+		vis = "hidden"
+	}
+	out := label + " (" + vis + ")"
+	if reason := strings.TrimPrefix(strings.TrimPrefix(w.SessionHostReason, "ConPTY inside the Worker"), ": "); reason != "" {
+		out += ": " + reason
+	}
+	return out
 }
 
 // maxWorkerSessions bounds the sessions a Workers row lists; the count link
@@ -1138,6 +1174,9 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 			ID: w.ID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
 			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
 			Build: w.Build, UpdateBlock: w.UpdateBlock,
+			SessionHost: w.SessionHost, SessionsHidden: w.SessionsHidden, SessionHostReason: w.SessionHostReason,
+			NewSessionRefused: w.NewSessionRefused,
+			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,
 			SelfUpdate: proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
 		})
 	}

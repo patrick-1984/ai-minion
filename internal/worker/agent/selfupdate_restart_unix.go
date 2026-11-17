@@ -24,8 +24,10 @@ func underServiceManager() bool {
 // rather than running on without its modules.
 func restartProcess(log *slog.Logger, exe string) {
 	if underServiceManager() {
+		log.Info("restarting the Worker", "path", "service", "how", "exit with the restart code; the service manager starts the new binary", "exe", exe)
 		os.Exit(exitRestart)
 	}
+	log.Info("restarting the Worker", "path", "exec", "how", "replace this process in place", "exe", exe)
 	err := syscall.Exec(exe, os.Args, os.Environ())
 	log.Error("cannot restart the Worker with the new binary; start it again by hand", "error", err.Error())
 	os.Exit(1)

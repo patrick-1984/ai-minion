@@ -98,6 +98,9 @@ func detectLinux(env Env) Detection {
 	return Detection{Manager: ManagerNone, Reason: "systemd is not running"}
 }
 
+// InContainer reports whether the process runs in a container.
+func InContainer(env Env) bool { return containerMarker(env) != "" }
+
 // containerMarker returns what tells that the process runs in a container, or
 // "" when nothing does. It is only used to explain the result.
 func containerMarker(env Env) string {

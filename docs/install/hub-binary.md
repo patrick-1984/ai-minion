@@ -45,7 +45,7 @@ The Linux `.deb` and `.rpm` packages hold the same binary (and the Worker servic
 
 ## Run it
 
-The Hub has no command-line flags. It reads its settings from the environment:
+The Hub has no command-line flags. It reads its settings from the environment (every setting is also listed, with its help text, in **Administration > Hub settings**):
 
 | Variable | Meaning |
 | --- | --- |
@@ -57,6 +57,7 @@ The Hub has no command-line flags. It reads its settings from the environment:
 | `MINION_TRUSTED_PROXIES` | Comma-separated addresses or CIDRs of the reverse proxies whose `X-Forwarded-*` headers are trusted. |
 | `MINION_MANAGEMENT_LISTEN` | Optional loopback `host:port` (for example `127.0.0.1:8444`) that serves plain HTTP for the [Hub identity](../guides/hub-identity.md#the-https-rule) operations. Never point a reverse proxy at it. |
 | `MINION_ADMIN_USERNAME`, `MINION_ADMIN_PASSWORD_FILE` | The first administrator (used only while the user table is empty). `MINION_ADMIN_PASSWORD` also works, but a file keeps the password out of the process environment. |
+| `MINION_HIDDEN_SESSIONS` | Whether new sessions may be **hidden** from the person who creates them (they could not see or join them from their own terminal: Windows ConPTY sessions inside the Worker, or a tmux server that is not their default one). `user-controlled` (default: each user allows them in **Account > Sessions**, off until they do), `allowed` (for everybody) or `disabled` (refused for everybody). Applies without a restart; also in **Administration > Hub settings**. |
 
 A first start, from a shell:
 

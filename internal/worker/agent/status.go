@@ -76,6 +76,13 @@ type LiveStatus struct {
 	// pending. When it is false an empty PendingPairingCode means "not known",
 	// not "none pending".
 	PairingKnown bool
+	// RunMode is how the running Worker runs (RunMode*); empty when an older
+	// Worker answered.
+	RunMode string
+	// Host is the session host of the running Worker and whether its sessions
+	// are hidden; zero when not known. ListError is the latest listing error.
+	Host      SessionHostInfo
+	ListError string
 }
 
 // LiveSource answers for a running Worker. It returns [ErrNoLiveWorker] when
@@ -93,6 +100,11 @@ type LiveStatusSource struct {
 	Policy *Policy
 	// Pairing returns the pending pairing code, if any; nil means none.
 	Pairing func() (code string, ok bool)
+	// RunMode is how this Worker runs; Host its session host; Health the
+	// outcome of its latest look at the sessions. Each may be empty or nil.
+	RunMode string
+	Host    *SessionHostInfo
+	Health  *SessionListHealth
 }
 
 // LiveStatus implements [LiveSource].
@@ -105,6 +117,14 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 	if s.Policy != nil {
 		out.HubPreviewOnly = s.Policy.HubPreviewOnly()
 	}
+	out.RunMode = s.RunMode
+	// The local status shows the details the hello leaves out (a socket
+	// path, a user name, the error itself): only this machine reads it.
+	if s.Host != nil {
+		out.Host = *s.Host
+		out.Host.Reason = s.Host.localReason()
+	}
+	out.ListError = s.Health.LocalText()
 	if s.Pairing != nil {
 		out.PairingKnown = true
 		if code, ok := s.Pairing(); ok {
@@ -229,6 +249,19 @@ type StatusReport struct {
 	// Sessions is the number of tmux sessions on the socket; nil when it
 	// could not be counted.
 	Sessions *int `json:"sessions"`
+	// RunMode is how the running Worker runs: "foreground console",
+	// "Windows service", "systemd service" or "launchd service"; empty when
+	// no running Worker answered.
+	RunMode string `json:"run_mode,omitempty"`
+	// SessionHost is tmux, psmux or conpty; SessionsHidden and
+	// SessionHostReason say whether new sessions are hidden from the person
+	// and why. Only a running Worker reports them.
+	SessionHost       string `json:"session_host,omitempty"`
+	SessionsHidden    bool   `json:"sessions_hidden,omitempty"`
+	SessionHostReason string `json:"session_host_reason,omitempty"`
+	// SessionsListError is why the running Worker's latest look at its
+	// sessions failed; empty when it worked.
+	SessionsListError string `json:"sessions_list_error,omitempty"`
 	// Problems lists what could not be read, in plain English.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -326,6 +359,9 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 			r.PairingState = PairingNone
 		}
 		r.PreviewOnlyHub = live.HubPreviewOnly
+		r.RunMode = live.RunMode
+		r.SessionHost, r.SessionsHidden, r.SessionHostReason = live.Host.Kind, live.Host.Hidden, live.Host.Reason
+		r.SessionsListError = live.ListError
 		if r.Owner == "" && live.Connector.Welcome.Owner != "" {
 			r.Owner = live.Connector.Welcome.Owner
 		}
@@ -397,6 +433,8 @@ func (r StatusReport) WriteText(w io.Writer) error {
 		{"Pairing code", r.pairingText()},
 		{"Share mode", r.shareText()},
 		{"Preview only", r.previewText()},
+		{"Run mode", r.runModeText()},
+		{"Session host", r.sessionHostText()},
 		{"tmux socket", orDash(r.TmuxSocket, "none")},
 		{"Sessions", r.sessionsText()},
 	}
@@ -517,10 +555,42 @@ func (r StatusReport) previewText() string {
 }
 
 func (r StatusReport) sessionsText() string {
-	if r.Sessions == nil {
-		return "unknown"
+	out := "unknown"
+	if r.Sessions != nil {
+		out = fmt.Sprint(*r.Sessions)
 	}
-	return fmt.Sprint(*r.Sessions)
+	if r.SessionsListError != "" {
+		out += " (the running Worker could not list them at its latest look: " + r.SessionsListError + ")"
+	}
+	return out
+}
+
+func (r StatusReport) runModeText() string {
+	if r.RunMode != "" {
+		return r.RunMode
+	}
+	return "unknown (only a running Worker knows it)"
+}
+
+// sessionHostText is "psmux (visible): ..." or "ConPTY inside the Worker
+// (hidden): ...", as the Hub's Worker page shows it.
+func (r StatusReport) sessionHostText() string {
+	if r.SessionHost == "" {
+		return "unknown (only a running Worker knows it)"
+	}
+	label := r.SessionHost
+	if label == "conpty" {
+		label = "ConPTY inside the Worker"
+	}
+	vis := "visible"
+	if r.SessionsHidden {
+		vis = "hidden"
+	}
+	out := label + " (" + vis + ")"
+	if reason := strings.TrimPrefix(strings.TrimPrefix(r.SessionHostReason, "ConPTY inside the Worker"), ": "); reason != "" {
+		out += ": " + reason
+	}
+	return out
 }
 
 func orDash(v, empty string) string {

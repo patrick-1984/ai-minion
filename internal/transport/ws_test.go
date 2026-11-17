@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -494,4 +496,28 @@ func TestWebsocketReadLimitIsEnforced(t *testing.T) {
 			})
 		}
 	})
+}
+
+// DialInfo reports the TLS peer the dial met, for the Worker's debug log.
+func TestDialInfoReportsTheTLSPeer(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{Subprotocol}})
+		if err == nil {
+			defer c.CloseNow()
+			time.Sleep(testWait / 5)
+		}
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), testWait)
+	defer cancel()
+	conn, facts, err := DialInfo(ctx, srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sum := sha256.Sum256(srv.Certificate().Raw)
+	if facts.PeerSHA256 != hex.EncodeToString(sum[:]) || facts.TLSVersion == "" || facts.HTTPStatus != http.StatusSwitchingProtocols ||
+		facts.Subprotocol != Subprotocol || !strings.HasPrefix(facts.URL, "wss://") || facts.PeerIssuer == "" {
+		t.Fatalf("facts = %+v", facts)
+	}
 }

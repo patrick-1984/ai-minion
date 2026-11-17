@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
@@ -27,13 +29,17 @@ func init() {
 	}
 }
 
+// sessionProbeTimeout bounds the look at the sessions when the Worker starts.
+const sessionProbeTimeout = 5 * time.Second
+
 // coreDeps are the seams of the core module that tests replace.
 type coreDeps struct {
 	openStore func(ctx context.Context, stateDir string) (*store.Store, error)
 	newHost   func(socket string) (term.SessionHost, error)
 	// hostSpec turns the settings into the argument of newHost (the tmux
-	// socket; on Windows psmux or ConPTY). Nil means the tmux socket.
-	hostSpec   func(Settings) (string, error)
+	// socket; on Windows psmux or ConPTY) and says whether its sessions are
+	// hidden. Nil means the tmux socket, with an unknown host info.
+	hostSpec   func(Settings) (string, SessionHostInfo, error)
 	classifier Classifier
 }
 
@@ -48,8 +54,8 @@ func defaultCoreDeps() coreDeps {
 
 // RegisterCore registers the core module on r: the Worker state, the terminal
 // host on the resolved socket, the classifier, the local policy and the
-// executor. It provides *store.Store, term.SessionHost, *Policy and *Executor
-// to later modules.
+// executor. It provides *store.Store, term.SessionHost, *Policy, *Executor and
+// *SessionHostInfo to later modules.
 func RegisterCore(r *Registry) error {
 	return r.Register(ModuleCore, OrderCore, defaultCoreDeps().start)
 }
@@ -71,8 +77,9 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	}()
 
 	spec := s.TmuxSocket
+	var hostInfo SessionHostInfo
 	if d.hostSpec != nil {
-		if spec, err = d.hostSpec(s); err != nil {
+		if spec, hostInfo, err = d.hostSpec(s); err != nil {
 			return nil, fmt.Errorf("choose the terminal host: %w", err)
 		}
 	}
@@ -80,11 +87,26 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("start the terminal host: %w", err)
 	}
+	if l, ok := host.(interface{ SetLogger(*slog.Logger) }); ok {
+		l.SetLogger(log) // debug lines of every listing (deduplicated)
+	}
 	defer func() {
 		if err != nil {
 			_ = closeHost(host)
 		}
 	}()
+
+	// One look at the sessions now, so that a host that cannot list them is
+	// reported to the Hub in the first hello (the event publisher keeps the
+	// result fresh afterwards).
+	health := &SessionListHealth{}
+	probeCtx, cancelProbe := context.WithTimeout(ctx, sessionProbeTimeout)
+	_, probeErr := host.ListSessions(probeCtx)
+	cancelProbe()
+	health.Set(probeErr)
+	if probeErr != nil {
+		log.Warn("cannot list the sessions of the terminal host", "error", probeErr.Error())
+	}
 
 	sel, err := applyShareExisting(ctx, st, s.ShareExisting)
 	if err != nil {
@@ -113,6 +135,8 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 		func() error { return Provide(env, host) },
 		func() error { return Provide(env, policy) },
 		func() error { return Provide(env, ex) },
+		func() error { return Provide(env, &hostInfo) },
+		func() error { return Provide(env, health) },
 	} {
 		if err := p(); err != nil {
 			return nil, err
@@ -121,6 +145,7 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 
 	log.Info("worker core started",
 		"name", s.Name, "state_dir", st.Dir(), "tmux_socket", s.TmuxSocket,
+		"session_host", hostInfo.Kind, "sessions_hidden", hostInfo.Hidden, "session_host_reason", hostInfo.localReason(),
 		"share", string(sel.Mode), "preview_only", s.PreviewOnly, "share_lock", s.ShareLock,
 		"pipe_accept_from", s.PipeAcceptFrom.String(), "call_api_key_file", s.CallAPIKeyFile != "")
 	if !sel.Configured || sel.Mode == store.ShareLater {

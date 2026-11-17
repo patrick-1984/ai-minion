@@ -84,9 +84,43 @@ type WorkerPage struct {
 	// ShareURL is the share panel of the Worker (Story 4.15); empty when this person
 	// may not operate the Worker, so the page offers nothing the API would refuse.
 	ShareURL string
+	// DebugURL is the Debug panel of the Worker (v0.10.0); empty when this
+	// person may not operate the Worker.
+	DebugURL string
 	// Name is the heading (the Worker's name; the id when it has none).
 	Name    string
 	Context string
+}
+
+// EmptyReason tells why the Worker lists no session: "failed" (its listing
+// failed when it connected and no list arrived since; the Hub learns of a
+// later failure only at the next connection), "waiting" (connected,
+// its first list has not arrived), "none" (its list is empty) or "" (offline,
+// or an older Hub that does not say).
+func (v WorkerView) EmptyReason() string {
+	w := v.Worker
+	switch {
+	case !w.Online || len(v.Sessions) > 0:
+		return ""
+	case w.SessionsSynced:
+		return "none"
+	case w.SessionsListError != "":
+		return "failed"
+	}
+	return "waiting"
+}
+
+// EmptyTitle is the heading of the empty session list.
+func (v WorkerView) EmptyTitle() string {
+	switch v.EmptyReason() {
+	case "failed":
+		return "Listing the sessions failed (as of the last connection)"
+	case "waiting":
+		return "Waiting for the first session list"
+	case "none":
+		return "No visible sessions on this worker"
+	}
+	return "No sessions on this worker"
 }
 
 // Crumbs implements [Crumbed]: a Worker lives below the Workers list.
@@ -182,6 +216,7 @@ func workerData(get func() LiveSource) func(*http.Request) (any, error) {
 		}
 		if operate {
 			p.ShareURL = SharePath(id)
+			p.DebugURL = DebugPath(id)
 		}
 		if all {
 			p.Scope = scopeAll

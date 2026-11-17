@@ -21,7 +21,7 @@ import (
 // setupSelfUpdate runs the crash guard and registers worker_update on the
 // executor. It returns the display facts of the hello, the feature list with
 // self.update when the Worker can update itself, and the update module.
-func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.SessionHost) (*selfUpdate, func() transport.WorkerFacts, func() []string) {
+func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.SessionHost, hostKind string) (*selfUpdate, func() transport.WorkerFacts, func() []string) {
 	resolve := func(key, def string) string {
 		if s.Resolver == nil {
 			return def
@@ -41,6 +41,8 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 		exe = ""
 	}
 	block := updateBlock(exe, resolve(config.KeyRemoteUpdate, "on"), os.Getenv, fileExists)
+	log.Debug("self-update", "exe", exe, "block", block, "under_service_manager", underServiceManager(),
+		"os", runtime.GOOS, "running", version.Version)
 
 	u := &selfUpdate{log: log, stateDir: s.StateDir, exe: exe, block: block, now: time.Now,
 		restart:      func() { restartProcess(log, exe) },
@@ -66,8 +68,9 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 			Out:      io.Discard,
 		}, nil
 	}
-	if runtime.GOOS == "windows" && host != nil {
+	if restartEndsSessions(runtime.GOOS, hostKind) && host != nil {
 		// ConPTY sessions live inside the Worker process: a restart ends them.
+		// psmux and tmux sessions outlive the Worker and never veto an update.
 		u.sessionsLost = func(ctx context.Context) int {
 			list, err := host.ListSessions(ctx)
 			if err != nil {
@@ -89,6 +92,17 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 		return f
 	}
 	return u, facts, features
+}
+
+// restartEndsSessions reports whether a restart of the Worker ends its
+// sessions: only ConPTY sessions live inside the Worker process. A Windows
+// Worker whose host is not known (a test core without a host spec) counts as
+// ConPTY, as before v0.10.0.
+func restartEndsSessions(goos, hostKind string) bool {
+	if goos != "windows" {
+		return false
+	}
+	return hostKind == "" || hostKind == transport.SessionHostConPTY
 }
 
 // lastRollback is the rollback RecoverUpdate found at this start, reported by

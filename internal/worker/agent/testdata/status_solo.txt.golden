@@ -12,5 +12,7 @@ Approval:            unknown (only a connected Worker knows it)
 Pairing code:        unknown (only a running Worker knows it)
 Share mode:          later (not decided yet)
 Preview only:        no
+Run mode:            unknown (only a running Worker knows it)
+Session host:        unknown (only a running Worker knows it)
 tmux socket:         /tmp/tmux-1000/default
 Sessions:            unknown
