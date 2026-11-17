@@ -1,6 +1,7 @@
 {{define "invitation_key"}}<div class="secret" role="status">
   <p><strong>Invitation key{{if .Name}} "{{.Name}}"{{end}} created.</strong> It is {{.Mode}}, kind {{.Kind}}, {{if .Limit}}allows {{.Limit}}, {{end}}and expires: {{.Expires}}.</p>
-  <p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>
+  <p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>{{if .HubWords}}
+  <p data-hub-words>This key is bound to Hub fingerprint <span class="fp-words">{{.HubWords}}</span>. A Worker that enrolls with it accepts only that Hub and prints these words. On the Hub host, <code>minion hub identity --words</code> shows the same words.</p>{{end}}
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="invite-key">Invitation key</label>

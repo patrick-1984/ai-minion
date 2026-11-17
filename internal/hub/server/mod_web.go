@@ -8,6 +8,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/web"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 )
 
 // webModuleOrder places the web module after the modules whose services it
@@ -87,9 +88,28 @@ func initWeb(_ context.Context, env *Env, wr *web.Registry) error {
 	// can reach, not the Host header of the browser, which behind a proxy or
 	// on a private name is not.
 	releaseURL := web.SetPublicURL(func(*http.Request) string { return nw.PublicURL() })
+	// The onboarding pages show the Hub fingerprint (the root key) as words
+	// and as the 52 characters of the join command. It comes from the atomic
+	// snapshot of the identity service: empty while the Hub has no serving
+	// root (and in a Hub assembled without the identity module).
+	releaseFP := func() {}
+	if svc, err := HubIdentity(env); err == nil {
+		releaseFP = web.SetHubFingerprint(func() string {
+			sn, err := svc.Current()
+			if err != nil {
+				return ""
+			}
+			fp, err := identity.FingerprintOf(sn.RootPub)
+			if err != nil {
+				return ""
+			}
+			return fp.String()
+		})
+	}
 	env.OnStop(func(context.Context) error {
 		web.DisconnectAdminOps(caller)
 		releaseURL()
+		releaseFP()
 		return nil
 	})
 	return nil

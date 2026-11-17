@@ -348,7 +348,8 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			owners[w.OwnerID] = owner
 		}
 		info := ops.WorkerInfo{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Owner: owner, Kind: w.Kind,
-			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected}
+			Pending: w.Pending, Fingerprint: w.Fingerprint, FingerprintWords: identity.Fingerprint(w.Fingerprint).Words(),
+			EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected}
 		if !w.CreatedAt.IsZero() {
 			at := ops.Timestamp(w.CreatedAt)
 			info.EnrolledAt = &at

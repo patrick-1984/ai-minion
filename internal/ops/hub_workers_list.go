@@ -94,6 +94,9 @@ type WorkerInfo struct {
 	// Fingerprint is the fingerprint of the Worker's public key (52 base32
 	// characters), the value to compare before approving.
 	Fingerprint string `json:"fingerprint,omitempty"`
+	// FingerprintWords is the same fingerprint as six words of the BIP39
+	// English word list joined with "-", the form people compare.
+	FingerprintWords string `json:"fingerprint_words,omitempty"`
 	// EnrollAddr is the client address the Worker enrolled from.
 	EnrollAddr string `json:"enroll_addr,omitempty"`
 	// EnrolledAt is when the Worker enrolled.

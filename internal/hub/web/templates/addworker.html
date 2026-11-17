@@ -8,7 +8,15 @@
 </div>{{end}}
 {{define "content"}}
 <div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
-<div class="method-grid">
+{{if .Data.HubFull}}<section class="panel" aria-labelledby="hub-fp" data-hub-fingerprint>
+  <h2 id="hub-fp">Give the Worker this Hub's fingerprint</h2>
+  <p>Hub fingerprint: <span class="fp-words">{{.Data.HubWords}}</span><br><code>{{.Data.HubFull}}</code></p>
+  <pre id="hub-join">{{.Data.JoinCommand}}</pre>
+  <button type="button" data-copy="#hub-join">Copy the command</button>
+  <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. Needs Worker 0.10 or newer. This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead: <code>minion hub identity --words</code></p>
+  <script src="/onboarding.js" defer></script>
+</section>
+{{end}}<div class="method-grid">
 <section class="panel" aria-labelledby="pair-form">
   <h2 id="pair-form">Pair with a code</h2>
   <p class="muted">Start pairing on the machine that should become a Worker (for example with <code>minion worker pair</code>). It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>

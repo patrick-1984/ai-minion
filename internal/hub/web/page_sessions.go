@@ -99,9 +99,11 @@ type WorkerRow struct {
 	// for a pending Worker only).
 	Pending     bool
 	Fingerprint string
-	EnrollAddr  string
-	ApproveURL  string
-	RemoveURL   string
+	// FingerprintWords is the fingerprint as six words, the form compared.
+	FingerprintWords string
+	EnrollAddr       string
+	ApproveURL       string
+	RemoveURL        string
 	// NeverConnected is true while the Worker has never connected to the Hub;
 	// RepairURL is then the post of the "Re-issue pairing" button (design
 	// 12.3), filled by [newWorkerView] for the owner or an administrator only.
@@ -1172,7 +1174,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	for _, w := range wl.Workers {
 		d.Workers = append(d.Workers, WorkerRow{
 			ID: w.ID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
-			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
+			Pending: w.Pending, Fingerprint: w.Fingerprint, FingerprintWords: w.FingerprintWords, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
 			Build: w.Build, UpdateBlock: w.UpdateBlock,
 			SessionHost: w.SessionHost, SessionsHidden: w.SessionsHidden, SessionHostReason: w.SessionHostReason,
 			NewSessionRefused: w.NewSessionRefused,

@@ -21,10 +21,19 @@ import (
 // AddWorkerPage is what addworker.html sees as .Data.
 type AddWorkerPage struct {
 	MaxName int
+	// HubWords and HubFull are the Hub fingerprint as six words and as 52
+	// characters, and JoinCommand the command that pairs a Worker with this
+	// Hub only (block M12a). All three are empty while the Hub has no root.
+	HubWords, HubFull, JoinCommand string
 }
 
-func addWorkerData(_ *http.Request, _ OpCaller, _ pageUser) (any, error) {
-	return AddWorkerPage{MaxName: ops.MaxWorkerNameLen}, nil
+func addWorkerData(r *http.Request, _ OpCaller, _ pageUser) (any, error) {
+	p := AddWorkerPage{MaxName: ops.MaxWorkerNameLen}
+	if fp := currentHubFingerprint(); fp != "" {
+		p.HubWords, p.HubFull = identity.Fingerprint(fp).Words(), fp
+		p.JoinCommand = "minion worker join " + shellArg(hubURL(r)) + " --hub-fingerprint " + fp
+	}
+	return p, nil
 }
 
 // pairingErrorText turns a failed pairing_claim into a plain-English sentence.

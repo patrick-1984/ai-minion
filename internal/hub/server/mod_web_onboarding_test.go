@@ -1,13 +1,16 @@
 package server
 
 import (
-	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"html"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
+	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 )
 
 // The onboarding pages (Story 6.7) on a real Hub: the Hub's own initialisation
@@ -102,5 +105,30 @@ func TestAPIKeyPageShowsTheRealLastUse(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("the list does not show a last use between %s and %s:\n%s", before, after, page)
+	}
+}
+
+// W3: the Hub's web module gives the Add worker page the root fingerprint of
+// the identity service: the words and the join command with the 52
+// characters (M12a).
+func TestAddWorkerPageShowsTheHubFingerprintOfTheIdentity(t *testing.T) {
+	t.Setenv("MINION_ADMIN_USERNAME", "root")
+	t.Setenv("MINION_ADMIN_PASSWORD", "onboarding-integration-1")
+	dir := hubstore.Dir(t)
+	fp, err := identity.FingerprintOf(hubidtest.Provision(t, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := startHub(t, &Config{DataDir: dir, PublicURL: "https://hub.public.example"}, DefaultRegistry)
+	hc := newHubClient(t, h, "https")
+	code, _, csrf := hc.login("root", "onboarding-integration-1")
+	if code != 200 {
+		t.Fatalf("login = %d", code)
+	}
+	code, body, _ := formDo(hc, "GET", "/workers/add", csrf, nil)
+	body = html.UnescapeString(body)
+	if code != 200 || !strings.Contains(body, fp.Words()) ||
+		!strings.Contains(body, "minion worker join https://hub.public.example --hub-fingerprint "+fp.String()) {
+		t.Errorf("GET /workers/add = %d\n%s", code, body)
 	}
 }
