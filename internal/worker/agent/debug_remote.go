@@ -51,6 +51,7 @@ func setupDebugRemote(log *slog.Logger, s Settings, ex *Executor) *debugRemote {
 	d := &debugRemote{log: log, live: s.LogLive, now: time.Now, afterFunc: realAfterFunc}
 	if p := ex.Policy(); p != nil {
 		d.workerID = p.WorkerID
+		p.OnIdentityChange(d.identityChanged)
 	}
 	if s.Resolver != nil {
 		on, err := config.ResolveBool(s.Resolver, config.KeyAllowDebugRemote)
@@ -111,9 +112,9 @@ func (d *debugRemote) handleDebug(_ context.Context, rq Request) (any, error) {
 		return nil, err
 	}
 	if !args.Enabled {
-		d.set(false, 0)
+		st := d.set(false, 0)
 		d.log.Info("debug logging switched off through the Hub")
-		return d.state(), nil
+		return st, nil
 	}
 	minutes := args.Minutes
 	switch {
@@ -122,28 +123,52 @@ func (d *debugRemote) handleDebug(_ context.Context, rq Request) (any, error) {
 	case minutes < 0 || minutes > ops.MaxDebugMinutes:
 		return nil, apiErr(proto.CodeInvalidArgument, "minutes", "minutes must be 1 to 1440")
 	}
-	d.set(true, time.Duration(minutes)*time.Minute)
-	st := d.state()
+	st := d.set(true, time.Duration(minutes)*time.Minute)
 	d.log.Info("debug logging switched on through the Hub", "minutes", minutes)
 	return st, nil
 }
 
-// set switches debug logging; on keeps it for dur, then it switches itself off.
-func (d *debugRemote) set(on bool, dur time.Duration) {
+// set switches debug logging; on keeps it for dur, then it switches itself
+// off. It returns the state it left, sampled under the same lock, so that a
+// concurrent request cannot change the answer of this one.
+func (d *debugRemote) set(on bool, dur time.Duration) ops.WorkerDebugState {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.stopLocked()
+	d.live.SetDebug(on)
+	if on {
+		d.until = d.now().Add(dur)
+		until := d.until
+		d.cancel = d.afterFunc(dur, func() { d.expire(until) })
+	}
+	return d.stateLocked()
+}
+
+// stopLocked cancels the auto-off timer of a remote debug period; d.mu is held.
+func (d *debugRemote) stopLocked() {
 	if d.cancel != nil {
 		d.cancel()
 		d.cancel = nil
 	}
 	d.until = time.Time{}
-	d.live.SetDebug(on)
-	if !on {
+}
+
+// identityChanged runs when the Worker's id or owner changes (re-pairing,
+// reassignment, removal): the recent log of the former ownership must not
+// reach the new owner, and a debug period the former owner started ends.
+func (d *debugRemote) identityChanged() {
+	if d.live == nil {
 		return
 	}
-	d.until = d.now().Add(dur)
-	until := d.until
-	d.cancel = d.afterFunc(dur, func() { d.expire(until) })
+	d.mu.Lock()
+	wasRemote := !d.until.IsZero()
+	d.stopLocked()
+	if wasRemote {
+		d.live.SetDebug(false)
+	}
+	d.live.Ring.Reset()
+	d.mu.Unlock()
+	d.log.Info("the Worker's enrollment or owner changed: its in-memory log was cleared and remote debug logging is off")
 }
 
 // expire ends the remote debug that was switched on until until, unless a
@@ -163,6 +188,11 @@ func (d *debugRemote) expire(until time.Time) {
 func (d *debugRemote) state() ops.WorkerDebugState {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.stateLocked()
+}
+
+// stateLocked is state with d.mu held.
+func (d *debugRemote) stateLocked() ops.WorkerDebugState {
 	st := ops.WorkerDebugState{Debug: d.live.Debug(), Level: strings.ToLower(d.live.Level.Level().String())}
 	if !d.until.IsZero() {
 		at := ops.Timestamp(d.until)
@@ -204,10 +234,12 @@ func (d *debugRemote) handleLogs(_ context.Context, rq Request) (any, error) {
 	return ops.WorkerLogsResult{WorkerDebugState: d.state(), Lines: append([]string{}, lines[from:]...), Kept: kept, Dropped: dropped}, nil
 }
 
-// errString is err's text, or "" for nil (for a log attribute).
+// errString is err's text for a log attribute, or "" for nil. The user
+// information and query of every URL in it are masked ([logx.RedactText]): a
+// dial or download error can quote a proxy or mirror URL with a credential.
 func errString(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	return logx.RedactText(err.Error())
 }

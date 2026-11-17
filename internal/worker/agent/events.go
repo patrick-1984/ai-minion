@@ -363,22 +363,23 @@ func (p *EventPublisher) run(ctx context.Context, st EventStream, view View, dec
 			}
 			declared, newRule = newRule, nil
 		}
-		if len(changes) > 0 {
-			p.log.Debug("session events sent", "changes", len(changes), "sessions", len(cur))
-		}
-		for _, c := range changes {
+		for i, c := range changes {
 			seq++
 			f := eventFrameOf(seq, p.clk.Now(), c)
 			if newRule != nil {
 				f.Share = newRule
 			}
 			if err := p.write(st, f); err != nil {
+				p.log.Debug("cannot send the session events", "changes", len(changes), "sent", i, "error", errString(err))
 				st.Reset()
 				return ctx.Err() != nil
 			}
 			if newRule != nil {
 				declared, newRule = newRule, nil
 			}
+		}
+		if len(changes) > 0 {
+			p.log.Debug("session events sent", "changes", len(changes), "sessions", len(cur))
 		}
 		if ok {
 			view = cur

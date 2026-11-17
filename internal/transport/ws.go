@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
@@ -89,8 +90,9 @@ func Dial(ctx context.Context, hubURL string) (net.Conn, error) {
 // subject, issuer and fingerprint help to see a TLS-intercepting proxy or a
 // wrong host.
 type DialFacts struct {
-	// URL is the WebSocket URL dialled; Proxy the proxy from the environment
-	// ("" for none).
+	// URL is the WebSocket URL dialled and Proxy the proxy from the
+	// environment ("" for none), both as scheme and host only
+	// ([logx.SafeURL]): no credential, path or query.
 	URL   string
 	Proxy string
 	// HTTPStatus is the status of the upgrade answer (101 when it worked).
@@ -112,13 +114,12 @@ func DialInfo(ctx context.Context, hubURL string) (net.Conn, DialFacts, error) {
 	if err != nil {
 		return nil, facts, err
 	}
-	facts.URL = wsURL
-	if u, perr := url.Parse(wsURL); perr == nil {
-		facts.URL = u.Redacted()
-	}
+	// Only scheme and host reach a log line: a proxy may carry a credential
+	// as its user name, which URL.Redacted would keep.
+	facts.URL = logx.SafeURL(wsURL)
 	if req, rerr := http.NewRequest(http.MethodGet, strings.Replace(strings.Replace(wsURL, "wss://", "https://", 1), "ws://", "http://", 1), nil); rerr == nil {
 		if pu, perr := http.ProxyFromEnvironment(req); perr == nil && pu != nil {
-			facts.Proxy = pu.Redacted()
+			facts.Proxy = logx.SafeURL(pu.String())
 		}
 	}
 	c, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{

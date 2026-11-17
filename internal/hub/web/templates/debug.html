@@ -4,27 +4,31 @@ with allow_debug_remote; otherwise the panel explains how to allow it and offers
 {{end}}{{if .Note}}<p class="notice notice-info" role="status" data-debug-note>{{.Note}}</p>
 {{if .Command}}<pre data-debug-command><code>{{.Command}}</code></pre>{{end}}
 {{end}}{{if and .Available .Closed}}<p class="help">This worker allows remote debug. Open the panel to see whether debug logging is on and to read its recent log (the read is recorded in the audit log).</p>
-<form method="get" action="{{.URL}}" hx-get="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
-  <input type="hidden" name="open" value="1"><button type="submit" class="btn btn-secondary" data-control="debug-open">Show debug state and recent log</button>
+<form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
+  <input type="hidden" name="action" value="logs"><input type="hidden" name="lines" value="{{.Lines}}"><button type="submit" class="btn btn-secondary" data-control="debug-open">Show debug state and recent log</button>
 </form>
-{{else if .Available}}<p class="help" data-debug-state="{{if .State.Debug}}on{{else}}off{{end}}">Debug logging is <strong>{{if .State.Remote}}on{{else if .State.Debug}}on (started with --debug){{else}}off{{end}}</strong>{{if .Remaining}}, for {{.Remaining}} more{{end}}. Level now: {{.State.Level}}.</p>
+{{else if .Available}}{{if .StateUnknown}}<p class="help" data-debug-state="unknown">The debug state of this worker is not known right now. You can still switch debug logging on or off.</p>
+{{else}}<p class="help" data-debug-state="{{if .State.Debug}}on{{else}}off{{end}}">Debug logging is <strong>{{if .State.Remote}}on{{else if .State.Debug}}on (started with --debug){{else}}off{{end}}</strong>{{if .Remaining}}, for {{.Remaining}} more{{end}}. Level now: {{.State.Level}}.</p>
+{{end}}
 <div class="row-actions" data-key="debug-actions-{{.WorkerID}}">
   <form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="Switch debug logging of {{.Worker}} on">
     <input type="hidden" name="enabled" value="1"><input type="hidden" name="lines" value="{{.Lines}}">
     <label>Minutes <input type="number" name="minutes" min="1" max="1440" value="60" inputmode="numeric" size="5"></label>
     <button type="submit" class="btn" data-control="debug-on">{{if .State.Remote}}Extend debug{{else}}Turn debug on{{end}}</button>
   </form>
-  {{if .State.Remote}}<form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="Switch debug logging of {{.Worker}} off">
+  {{if or .State.Remote .StateUnknown}}<form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="Switch debug logging of {{.Worker}} off">
     <input type="hidden" name="enabled" value="0"><input type="hidden" name="lines" value="{{.Lines}}">
     <button type="submit" class="btn btn-secondary" data-control="debug-off">Turn debug off</button>
   </form>{{end}}
 </div>
 <div class="section-head"><h3 id="debug-log-h">Recent log</h3>
-  <form method="get" action="{{.URL}}" hx-get="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
-    <input type="hidden" name="open" value="1"><label>Lines <select name="lines">{{$n := .Lines}}{{range .Choices}}<option value="{{.}}"{{if eq . $n}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+  <form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
+    <input type="hidden" name="action" value="logs"><label>Lines <select name="lines">{{$n := .Lines}}{{range .Choices}}<option value="{{.}}"{{if eq . $n}} selected{{end}}>{{.}}</option>{{end}}</select></label>
     <button type="submit" class="btn btn-secondary" data-control="debug-refresh">Refresh</button>
   </form>
 </div>
-<p class="help">The last {{.Shown}} lines of the worker's log, oldest first, from its memory. The log holds no screen content, messages or secrets. Every read is recorded in the audit log.</p>
+{{if .LogError}}<p class="notice notice-danger" role="status" data-debug-log-error>{{.LogError}}</p>
+{{else}}<p class="help">The last {{.Shown}} lines of the worker's log, oldest first, from its memory. The log holds no screen content, messages or secrets. Every read is recorded in the audit log.</p>
 <pre class="debug-log" tabindex="0" aria-labelledby="debug-log-h" data-debug-log>{{if .Log}}{{.Log}}{{else}}(empty){{end}}</pre>
+{{end}}
 {{end}}{{end}}

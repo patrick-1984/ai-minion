@@ -7,13 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
@@ -987,11 +986,10 @@ func causeText(err error) string {
 
 // hubLabel is the Hub URL without credentials, path or query, for logs.
 func hubLabel(raw string) string {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" {
-		return "hub"
+	if s := logx.SafeURL(raw); s != "" && s != "[url]" {
+		return s
 	}
-	return u.Scheme + "://" + u.Host
+	return "hub"
 }
 
 // hubFingerprint is the fingerprint of the pinned Hub key.

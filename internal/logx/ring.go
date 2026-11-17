@@ -54,10 +54,21 @@ func (r *Ring) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Add stores one line, cut to a bounded length.
+// ringCut marks a line that was cut to fit.
+const ringCut = "...(cut)"
+
+// Add stores one line, cut to a bounded length that also fits the byte budget
+// of the ring (the marker included). The line is copied, so that a retained
+// line never keeps the larger buffer it was cut from alive.
 func (r *Ring) Add(line string) {
-	if len(line) > maxRingLine {
-		line = line[:maxRingLine] + "...(cut)"
+	limit := min(maxRingLine, r.maxBytes)
+	switch {
+	case len(line) <= limit:
+		line = strings.Clone(line)
+	case limit > len(ringCut):
+		line = line[:limit-len(ringCut)] + ringCut
+	default:
+		line = strings.Clone(line[:limit])
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -71,6 +82,17 @@ func (r *Ring) Add(line string) {
 	r.lines[(r.start+r.n)%r.maxLines] = line
 	r.n++
 	r.bytes += len(line)
+}
+
+// Reset drops every stored line (the count of dropped lines grows by them).
+func (r *Ring) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.lines {
+		r.lines[i] = ""
+	}
+	r.dropped += uint64(r.n)
+	r.start, r.n, r.bytes = 0, 0, 0
 }
 
 // Tail returns the last n lines, oldest first; n <= 0 or more than stored
@@ -98,9 +120,12 @@ func (r *Ring) Stats() (lines, bytes int, dropped uint64) {
 
 // NewRingHandler returns a handler that renders records as key=value text
 // lines into r at the level of leveler. Values of type [Secret] render as
-// "[redacted]" like in every other handler of this package.
+// "[redacted]" like in every other handler of this package; on top of that,
+// because the Hub can read the ring, secret attributes (pairing_code, token,
+// password, authorization, cookie, ...), pairing codes in text and the user
+// information and query of URLs are masked before a line is stored.
 func NewRingHandler(r *Ring, leveler slog.Leveler) slog.Handler {
-	return slog.NewTextHandler(r, &slog.HandlerOptions{Level: leveler})
+	return redactHandler{slog.NewTextHandler(r, &slog.HandlerOptions{Level: leveler})}
 }
 
 // Tee returns a handler that hands every record to each handler that is

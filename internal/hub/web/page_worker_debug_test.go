@@ -47,9 +47,9 @@ func TestDebugPanelExplainsWhyItCannotBeUsed(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, f := debugServer(t, tc.w, nil)
-			rec := get(t, s, "/w/w1/debug?open=1", "X-Test-Session", "alice:user")
+			rec := post(t, s, "/w/w1/debug", "alice:user", url.Values{"action": {"logs"}})
 			if rec.Code != 200 {
-				t.Fatalf("GET = %d", rec.Code)
+				t.Fatalf("POST = %d", rec.Code)
 			}
 			mustHave(t, rec.Body.String(), append([]string{"data-debug-note"}, tc.want...)...)
 			mustNotHave(t, rec.Body.String(), `data-control="debug-on"`, "data-debug-log")
@@ -65,7 +65,7 @@ func TestDebugPanelExplainsWhyItCannotBeUsed(t *testing.T) {
 		f := newFakeOps().reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{bob}})
 		connect(t, f)
 		s, _ := listServer(t, d, d)
-		rec := get(t, s, "/w/w2/debug?open=1", "X-Test-Session", "alice:user")
+		rec := post(t, s, "/w/w2/debug", "alice:user", url.Values{"action": {"logs"}})
 		mustHave(t, rec.Body.String(), "Only the owner of this worker, or an administrator")
 		if len(f.called(ops.OpWorkerLogs)) != 0 {
 			t.Fatal("worker_logs was called for a person who may not operate the Worker")
@@ -73,16 +73,21 @@ func TestDebugPanelExplainsWhyItCannotBeUsed(t *testing.T) {
 	})
 }
 
-// The page load reads nothing (each read is audited); opening the panel shows
-// the state and the escaped log.
+// The page load reads nothing (each read is audited), and no GET does, also
+// with the old open=1 query (a cross-site navigation must not read the log in
+// the person's name); opening the panel is a CSRF-checked POST that shows the
+// state and the escaped log.
 func TestDebugPanelOpensWithStateAndLog(t *testing.T) {
 	s, f := debugServer(t, debugInfo(true), nil)
-	rec := get(t, s, "/w/w1/debug", "X-Test-Session", "alice:user")
-	mustHave(t, rec.Body.String(), `data-control="debug-open"`)
-	if len(f.called(ops.OpWorkerLogs)) != 0 {
-		t.Fatal("the closed panel read the log")
+	for _, path := range []string{"/w/w1/debug", "/w/w1/debug?open=1&lines=500"} {
+		rec := get(t, s, path, "X-Test-Session", "alice:user")
+		mustHave(t, rec.Body.String(), `data-control="debug-open"`, `hx-post="/w/w1/debug"`, `name="action" value="logs"`)
+		mustNotHave(t, rec.Body.String(), "hx-get=")
 	}
-	rec = get(t, s, "/w/w1/debug?open=1&lines=500", "X-Test-Session", "alice:user")
+	if len(f.called(ops.OpWorkerLogs)) != 0 {
+		t.Fatal("a GET read the log")
+	}
+	rec := post(t, s, "/w/w1/debug", "alice:user", url.Values{"action": {"logs"}, "lines": {"500"}})
 	body := rec.Body.String()
 	mustHave(t, body, `data-debug-state="on"`, "about 30 minutes", `data-control="debug-off"`, `data-control="debug-refresh"`,
 		"terminal host listing", "msg=&lt;b&gt;x&lt;/b&gt;", `<option value="500" selected>`)
@@ -117,6 +122,31 @@ func TestDebugPostSwitchesAndShowsRefusals(t *testing.T) {
 	rec = post(t, refused, "/w/w1/debug", "alice:user", url.Values{"enabled": {"0"}})
 	mustHave(t, rec.Body.String(), "result-danger", "allow_debug_remote is off")
 	mustNotHave(t, rec.Body.String(), "Debug logging is on")
+}
+
+// A switch that worked keeps its state and the off switch when the log read
+// after it fails; only the log area reports the failure. With neither answer
+// the panel offers both on and off.
+func TestDebugSwitchKeepsControlsWhenTheLogReadFails(t *testing.T) {
+	gone := func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 503, Code: "worker_offline", Message: "the Worker is offline"}
+	}
+	s, _ := debugServer(t, debugInfo(true), func(f *fakeOps) {
+		f.reply(ops.OpWorkerDebug, ops.WorkerDebugState{Debug: true, Remote: true, Level: "debug", RemainingSeconds: 900})
+		f.on(ops.OpWorkerLogs, gone)
+	})
+	rec := post(t, s, "/w/w1/debug", "alice:user", url.Values{"enabled": {"1"}, "minutes": {"15"}})
+	body := rec.Body.String()
+	mustHave(t, body, "Debug logging is on", `data-debug-state="on"`, `data-control="debug-off"`, `data-control="debug-refresh"`,
+		"data-debug-log-error", "The log could not be read")
+	mustNotHave(t, body, "data-debug-log>")
+
+	both, _ := debugServer(t, debugInfo(true), func(f *fakeOps) {
+		f.on(ops.OpWorkerDebug, gone)
+		f.on(ops.OpWorkerLogs, gone)
+	})
+	rec = post(t, both, "/w/w1/debug", "alice:user", url.Values{"enabled": {"0"}})
+	mustHave(t, rec.Body.String(), "result-danger", `data-debug-state="unknown"`, `data-control="debug-on"`, `data-control="debug-off"`)
 }
 
 func TestWorkerPageOffersTheDebugPanelToTheOwner(t *testing.T) {

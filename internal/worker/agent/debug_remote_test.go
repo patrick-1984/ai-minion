@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -212,5 +213,54 @@ func TestSetupDebugRemoteSettingAndFact(t *testing.T) {
 		if !strings.Contains(strings.Join(names, ","), ops.OpWorkerDebug) || !strings.Contains(strings.Join(names, ","), ops.OpWorkerLogs) {
 			t.Errorf("ops = %v", names)
 		}
+	}
+}
+
+// Preview-only takes input to sessions away, not the owner's diagnostics:
+// worker_debug and worker_logs keep operate, a session write does not.
+func TestPreviewOnlyKeepsDebugOpsForTheOwner(t *testing.T) {
+	p := NewPolicy(nil)
+	p.SetHubPreviewOnly(true)
+	s := newOpServer(t, &fakeExec{}, func(c *OpServerConfig) { c.Policy = p })
+	for op, want := range map[string]bool{ops.OpWorkerDebug: true, ops.OpWorkerLogs: true, ops.OpSendKeys: false} {
+		raw, _ := json.Marshal(opRequest(op, []ops.Action{ops.ActionOperate}, map[string]any{}))
+		rq, _, perr := s.parse(raw)
+		if perr != nil {
+			t.Fatalf("%s: %v", op, perr)
+		}
+		if got := slices.Contains(rq.Actions, ops.ActionOperate); got != want {
+			t.Errorf("%s on a preview-only Worker: operate kept = %v, want %v", op, got, want)
+		}
+	}
+}
+
+// A new owner or enrollment never reads the former one's log, and a debug
+// period the former owner started ends.
+func TestDebugRemoteResetsOnIdentityChange(t *testing.T) {
+	d, ft, log, _ := newTestDebug(t, true)
+	p := NewPolicy(nil)
+	p.OnIdentityChange(d.identityChanged)
+	p.SetWorkerID("w-self")
+	p.SetOwnerID("alice")
+	if _, err := d.handleDebug(context.Background(), debugRequest(ops.OpWorkerDebug, ops.WorkerDebugArgs{WorkerID: "w-self", Enabled: true})); err != nil {
+		t.Fatal(err)
+	}
+	log.Info("alice's line")
+	p.SetWorkerID("w-self") // the same id again: no change
+	if !d.live.Debug() || !strings.Contains(strings.Join(d.live.Ring.Tail(0), "\n"), "alice's line") {
+		t.Fatal("a repeated id reset the log")
+	}
+	p.SetOwnerID("bob")
+	got := strings.Join(d.live.Ring.Tail(0), "\n")
+	if d.live.Debug() || strings.Contains(got, "alice's line") || d.state().Remote {
+		t.Fatalf("after the owner change: debug=%v ring=%q", d.live.Debug(), got)
+	}
+	if !ft.off[0] {
+		t.Fatal("the auto-off timer was not cancelled")
+	}
+	log.Info("bob's line")
+	p.SetWorkerID("")
+	if strings.Contains(strings.Join(d.live.Ring.Tail(0), "\n"), "bob's line") {
+		t.Fatal("the removal kept the log")
 	}
 }

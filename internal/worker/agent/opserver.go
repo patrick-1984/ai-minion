@@ -465,6 +465,12 @@ func (s *OpServer) parse(body json.RawMessage) (rq Request, held []ops.Action, _
 	}
 	held = IntersectActions(f.Actions, nil)
 	eff := IntersectActions(f.Actions, s.cfg.Policy)
+	if previewExempt(f.Op) {
+		// Preview-only restricts input to sessions; the diagnostics ops
+		// touch no session, so the owner keeps them (the Hub still admits
+		// only the owner or an administrator, and the Worker its opt-in).
+		eff = held
+	}
 	return Request{Op: f.Op, Actions: eff, Args: args, Origin: origin}, held, nil
 }
 
@@ -517,6 +523,11 @@ func (s *OpServer) checkOrigin(f OpRequestFrame) (*proto.Origin, *proto.Error) {
 	}
 	return origin, nil
 }
+
+// previewExempt reports whether an op stays open on a preview-only Worker
+// although it needs operate: worker_debug and worker_logs switch the Worker's
+// own log and read it, and reach no session (allow_debug_remote guards them).
+func previewExempt(op string) bool { return op == ops.OpWorkerDebug || op == ops.OpWorkerLogs }
 
 // IntersectActions intersects the actions a caller holds with the local
 // policy (AD-12: the local policy wins whatever the Hub sends). Unknown

@@ -216,8 +216,11 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 	defer cancel()
 	fail := func(err error) {
 		_ = os.Remove(filepath.Join(u.stateDir, pendingFile))
-		u.log.Warn("worker update failed", "to", tag, "error", err.Error())
-		u.setState(ops.UpdateStateFailed, version.Version, tag, err.Error())
+		// The error can quote a release mirror URL (update_api_url) with a
+		// credential; neither the log nor the reported state repeats it.
+		msg := errString(err)
+		u.log.Warn("worker update failed", "to", tag, "error", msg)
+		u.setState(ops.UpdateStateFailed, version.Version, tag, msg)
 		u.release()
 	}
 	u.log.Debug("worker update: preparing the installer", "to", tag, "exe", u.exe)

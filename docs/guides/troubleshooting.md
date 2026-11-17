@@ -32,7 +32,7 @@ Debug lines never contain keys, passphrases, pairing codes, API keys, terminal c
 - **Share filter**: how many sessions were listed, how many are shared and the share mode (`later` shares nothing until you decide).
 - **Event stream**: the snapshot sent to the Hub and each batch of session changes.
 - **Self-update**: from and to, why an update was refused, the installer steps, and which restart path the Worker takes (service, console, exec or detached).
-- **Hub connection**: the WebSocket URL, the proxy, the HTTP status, the TLS version and the Hub certificate's subject, issuer and SHA-256 fingerprint, the handshake result, the negotiated protocol and the certificate's end.
+- **Hub connection**: the scheme and host of the WebSocket URL and of the proxy, the HTTP status, the TLS version and the Hub certificate's subject, issuer and SHA-256 fingerprint, the handshake result, the negotiated protocol and the certificate's end.
 
 `minion worker up --debug` saves the switch to the config file, so the service logs at debug level too; `minion worker up --debug=false` turns it off.
 
@@ -54,7 +54,7 @@ minion worker_logs --worker-id <id> --lines 500
 minion worker_debug --worker-id <id> --enabled=false
 ```
 
-A Worker that does not allow it refuses both with the command to allow it. Every call, the panel's reads included, is recorded in the Hub's audit log. The log never holds terminal content, messages, keys or pairing codes.
+A Worker that does not allow it refuses both with the command to allow it. Both work on a preview-only Worker too: they touch no session. Every call, the panel's reads included, is recorded in the Hub's audit log. The log never holds terminal content, messages, keys or pairing codes: secret values, pairing codes and the credentials and query of URLs are masked before a line is kept, and the Hub connection lines show only the scheme and host of the Hub and the proxy. When the Worker is paired again, moves to another owner or is removed, it clears the kept lines and switches remote debug off.
 
 ## Worker status as JSON
 

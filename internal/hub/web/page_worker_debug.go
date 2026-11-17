@@ -29,7 +29,10 @@ const (
 	panelLogLines = 200
 )
 
-// DebugPath is the Debug panel of a Worker (GET: the panel, POST: on or off).
+// DebugPath is the Debug panel of a Worker. GET renders the closed panel and
+// calls nothing; every call of the Worker is a POST through the CSRF check of
+// the session (action=logs reads the state and the log, enabled=1 or 0
+// switches debug logging), because each one is audited in the person's name.
 func DebugPath(worker string) string { return "/w/" + url.PathEscape(worker) + "/debug" }
 
 // debugLineChoices are the numbers of lines the panel offers.
@@ -52,11 +55,17 @@ type DebugView struct {
 	State     ops.WorkerDebugState
 	Remaining string
 	// Log is the tail of the Worker's log; Lines the number asked for.
-	Log     string
-	Shown   int
-	Lines   int
-	Choices []int
-	Results []ActionResult
+	// LogError says why the log could not be read; the state and the on/off
+	// controls stay.
+	Log      string
+	LogError string
+	// StateUnknown is set when neither the switch nor the log read told the
+	// state: the panel then offers both on and off.
+	StateUnknown bool
+	Shown        int
+	Lines        int
+	Choices      []int
+	Results      []ActionResult
 }
 
 var debugTemplates = sync.OnceValue(func() *template.Template {
@@ -75,7 +84,7 @@ func debugView(t target) (DebugView, bool) {
 	case !t.worker.Online:
 		v.Note = "This worker is offline. Its debug logging can be switched when it reconnects."
 	case !slices.Contains(t.worker.Ops, ops.OpWorkerDebug) || !slices.Contains(t.worker.Ops, ops.OpWorkerLogs):
-		v.Note = "This worker is too old for remote debug. Update it to v0.10.0 or later; until then start it with --debug and read its log on the machine."
+		v.Note = "This worker is too old for remote debug. Update it to v0.10.0 or later; until then start it with --log-level debug and read its log on the machine."
 	case !t.worker.DebugRemote:
 		v.Note = "This worker does not allow remote debug (allow_debug_remote is off, the default). To allow it, run this on the worker machine:"
 		v.Command = debugAllowCommand
@@ -139,18 +148,37 @@ func parseLines(s string) int {
 	return n
 }
 
+// handleDebugGet renders the panel without calling the Worker: reading its
+// log is audited, so it takes an intended, CSRF-checked POST.
 func handleDebugGet(w http.ResponseWriter, r *http.Request, t target) {
 	v, ok := debugView(t)
 	v.Lines = parseLines(r.URL.Query().Get("lines"))
-	if ok && r.URL.Query().Get("open") != "1" {
-		v.Closed = true
-	} else if ok {
-		if err := fillLogs(r, t, &v); err != nil {
-			v.Available = false
-			v.Results = []ActionResult{{Label: "Debug", Kind: "danger", Summary: debugFailure(err)}}
-		}
+	v.Closed = ok
+	writeFragmentTemplate(w, debugTemplates(), "debug_panel", v)
+}
+
+// handleDebugLogs opens or refreshes the panel: the state and the log tail.
+// A Worker that refuses or is gone shows the reason instead of the controls.
+func handleDebugLogs(w http.ResponseWriter, r *http.Request, t target, v DebugView) {
+	if err := fillLogs(r, t, &v); err != nil {
+		v.Available = false
+		v.Results = []ActionResult{{Label: "Debug", Kind: "danger", Summary: debugFailure(err)}}
 	}
 	writeFragmentTemplate(w, debugTemplates(), "debug_panel", v)
+}
+
+// fillLogsAfter reads the log after a switch whose answer gave the state
+// already: a failed read keeps that state and the controls, and only the log
+// area says what went wrong.
+func fillLogsAfter(r *http.Request, t target, v *DebugView, st *ops.WorkerDebugState) {
+	if err := fillLogs(r, t, v); err != nil {
+		v.LogError = "The log could not be read: " + debugFailure(err)
+		if st != nil {
+			v.State, v.Remaining = *st, remainingText(st.RemainingSeconds)
+		} else {
+			v.StateUnknown = true
+		}
+	}
 }
 
 func handleDebugSet(w http.ResponseWriter, r *http.Request, t target) {
@@ -160,12 +188,16 @@ func handleDebugSet(w http.ResponseWriter, r *http.Request, t target) {
 		writeFragmentTemplate(w, debugTemplates(), "debug_panel", v)
 		return
 	}
+	if r.PostForm.Get("action") == "logs" {
+		handleDebugLogs(w, r, t, v)
+		return
+	}
 	args := ops.WorkerDebugArgs{WorkerID: t.worker.ID, Enabled: r.PostForm.Get("enabled") == "1"}
 	if m := strings.TrimSpace(r.PostForm.Get("minutes")); m != "" && args.Enabled {
 		n, err := strconv.Atoi(m)
 		if err != nil || n < 1 || n > ops.MaxDebugMinutes {
 			v.Results = []ActionResult{{Label: "Debug", Kind: "danger", Summary: fmt.Sprintf("Minutes must be 1 to %d.", ops.MaxDebugMinutes)}}
-			_ = fillLogs(r, t, &v)
+			fillLogsAfter(r, t, &v, nil)
 			writeFragmentTemplate(w, debugTemplates(), "debug_panel", v)
 			return
 		}
@@ -173,16 +205,21 @@ func handleDebugSet(w http.ResponseWriter, r *http.Request, t target) {
 	}
 	var st ops.WorkerDebugState
 	ar := ActionResult{Label: "Debug"}
+	known := &st
 	if err := t.c.CallOp(r, ops.OpWorkerDebug, args, &st); err != nil {
 		ar.Kind, ar.Summary = "danger", debugFailure(err)
+		known = nil
 	} else if args.Enabled {
 		ar.Kind, ar.Summary = "info", "Debug logging is on; it switches itself off in "+remainingText(st.RemainingSeconds)+"."
 	} else {
 		ar.Kind, ar.Summary = "info", "Remote debug logging is off. The worker logs at its configured level ("+st.Level+")."
 	}
-	if err := fillLogs(r, t, &v); err != nil {
-		v.Available = false
+	if known != nil {
+		// The switch answered with the state: render it from that answer, so
+		// the off switch stays even when the log read below fails.
+		v.State, v.Remaining = st, remainingText(st.RemainingSeconds)
 	}
+	fillLogsAfter(r, t, &v, known)
 	v.Results = []ActionResult{ar}
 	writeFragmentTemplate(w, debugTemplates(), "debug_panel", v)
 }

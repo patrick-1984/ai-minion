@@ -40,6 +40,7 @@ type Policy struct {
 	shareLock      atomic.Bool
 	workerID       atomic.Pointer[string]
 	ownerID        atomic.Pointer[string]
+	onIdentity     atomic.Pointer[func()]
 	pipeAccept     atomic.Pointer[config.PipeAcceptFrom]
 }
 
@@ -68,7 +69,7 @@ func (p *Policy) PreviewOnly() bool { return p.previewOnly.Load() || p.hubPrevie
 // after the enrollment was removed). The connector sets it from the stored
 // enrollment and from every welcome. It is what an operation that names a Worker
 // (share_get, share_set) is held to: see [Executor] requireSelf.
-func (p *Policy) SetWorkerID(id string) { p.workerID.Store(&id) }
+func (p *Policy) SetWorkerID(id string) { p.identitySet(p.workerID.Swap(&id), id) }
 
 // WorkerID returns the id the Hub gave this Worker, or "".
 func (p *Policy) WorkerID() string {
@@ -122,7 +123,24 @@ func (p *Policy) Shared(ctx context.Context, session string) (bool, error) {
 
 // SetOwnerID sets the stable id of this Worker's owner, from the last welcome
 // ("" when the Worker is not enrolled). It is connection state, never stored.
-func (p *Policy) SetOwnerID(id string) { p.ownerID.Store(&id) }
+func (p *Policy) SetOwnerID(id string) { p.identitySet(p.ownerID.Swap(&id), id) }
+
+// OnIdentityChange registers f to run whenever the Worker id or the owner id
+// changes from a known value to another one, "" included: a re-pairing, a
+// reassignment to another owner or a removal by the Hub. The first value
+// (from the stored enrollment or the first welcome) is no change. f runs on
+// the caller's goroutine, before the new link serves anything.
+func (p *Policy) OnIdentityChange(f func()) { p.onIdentity.Store(&f) }
+
+// identitySet runs the identity hook when old held a value other than id.
+func (p *Policy) identitySet(old *string, id string) {
+	if old == nil || *old == "" || *old == id {
+		return
+	}
+	if f := p.onIdentity.Load(); f != nil && *f != nil {
+		(*f)()
+	}
+}
 
 // OwnerID returns the id of this Worker's owner from the last welcome, or "".
 func (p *Policy) OwnerID() string {
