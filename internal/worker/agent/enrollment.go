@@ -55,8 +55,24 @@ type Enrollment struct {
 	// serial seen and the hash of that certificate (design section 6). Its
 	// Root is Pin.Pub for a stored enrollment.
 	Ratchet transport.Ratchet
+	// HubCheck is how the pinned Hub was checked (store.HubCheck*; "" means
+	// none), HubCheckAt when, and HubCheckAnchor the full fingerprint the
+	// operator checked ("" when none was). They belong to the pin: a pin that
+	// moves along a signed transition chain keeps them, a new enrollment sets
+	// them again.
+	HubCheck       string
+	HubCheckAt     time.Time
+	HubCheckAnchor string
 	// EnrolledAt is when the enrollment was first stored (set by the store).
 	EnrolledAt time.Time
+}
+
+// Check returns HubCheck, with "" read as none.
+func (e Enrollment) Check() string {
+	if e.HubCheck == "" {
+		return store.HubCheckNone
+	}
+	return e.HubCheck
 }
 
 // Welcome returns the welcome data stored in e.
@@ -78,6 +94,7 @@ type EnrollmentRepo interface {
 	DeletePairResume(ctx context.Context) (bool, error)
 	DeletePairResumeIf(ctx context.Context, pairingID, code string) (bool, error)
 	UpdateWelcome(ctx context.Context, w store.WelcomeInfo) error
+	SetHubCheck(ctx context.Context, pub ed25519.PublicKey, check, anchor string) error
 	WipeEnrollment(ctx context.Context) (bool, error)
 }
 
@@ -204,9 +221,65 @@ func (e *Enrollments) Load(ctx context.Context) (enr Enrollment, ok bool, err er
 		Owner:      row.Owner,
 		Kind:       row.Kind,
 		Policy:     HubPolicy{PreviewOnly: row.PreviewOnly},
+		HubCheck:   row.HubCheck,
+		HubCheckAt: row.HubCheckAt,
 		EnrolledAt: row.EnrolledAt,
+
+		HubCheckAnchor: row.HubCheckAnchor,
 	}, true, nil
 }
+
+// SetHubCheck records how the pinned Hub was checked (store.HubCheck*) and
+// the fingerprint that was checked (anchor, "" for none), but only while pin
+// is still the stored pin: a check of one pin never marks another
+// (store.ErrNotEnrolled otherwise). Entering or leaving the mismatch state
+// moves the generation, so a running connector starts over and applies it.
+func (e *Enrollments) SetHubCheck(ctx context.Context, pin identity.Pin, check, anchor string) error {
+	return e.locked(ctx, func() error {
+		cur, ok, err := e.Load(ctx)
+		if err != nil {
+			return err
+		}
+		if !ok || !pin.Pub.Equal(cur.Pin.Pub) {
+			return store.ErrNotEnrolled
+		}
+		if (cur.Check() == store.HubCheckMismatch) != (check == store.HubCheckMismatch) {
+			if err := e.bumpLocked(); err != nil {
+				return err
+			}
+		}
+		return e.repo.SetHubCheck(ctx, pin.Pub, check, anchor)
+	})
+}
+
+// ForgetPin removes the enrollment when its pinned Hub key is exactly pinned
+// (`minion worker verify-hub --forget --pinned`): the Worker must pair or
+// enroll again and never re-trusts the disputed pin. It returns
+// store.ErrNotEnrolled when the Worker is not paired and errPinnedDiffers
+// when the stored pin is another key.
+func (e *Enrollments) ForgetPin(ctx context.Context, pinned identity.Fingerprint) error {
+	return e.locked(ctx, func() error {
+		cur, ok, err := e.Load(ctx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return store.ErrNotEnrolled
+		}
+		if !pinned.Matches(cur.Pin.Pub) {
+			return ErrPinnedDiffers
+		}
+		if _, err := e.repo.DeletePairResume(ctx); err != nil {
+			return fmt.Errorf("delete the pairing resume record: %w", err)
+		}
+		_, err = e.wipe(ctx)
+		return err
+	})
+}
+
+// ErrPinnedDiffers is returned by [Enrollments.ForgetPin] when the given
+// fingerprint is not the stored pin.
+var ErrPinnedDiffers = errors.New("agent: the fingerprint is not the pinned Hub key")
 
 // Commit stores the pin and the welcome data together, replacing an earlier
 // enrollment, and wakes a connector that waits for one. Enrollment calls it
@@ -246,6 +319,10 @@ func (e *Enrollments) commit(ctx context.Context, enr Enrollment) error {
 		PreviewOnly: enr.Policy.PreviewOnly,
 		MaxSerial:   enr.Ratchet.MaxSerial,
 		CertSHA256:  enr.Ratchet.CertSHA256,
+
+		HubCheck:       enr.Check(),
+		HubCheckAt:     enr.HubCheckAt,
+		HubCheckAnchor: enr.HubCheckAnchor,
 	})
 }
 
