@@ -49,6 +49,11 @@ type LiveStatusReply struct {
 	SessionsHidden    bool   `json:"sessions_hidden,omitempty"`
 	SessionHostReason string `json:"session_host_reason,omitempty"`
 	SessionsListError string `json:"sessions_list_error,omitempty"`
+	// Alarm and the TLS path of the latest connection (v0.11.0); an older
+	// Worker omits them.
+	Alarm   string `json:"alarm,omitempty"`
+	TLSPath string `json:"tls_path,omitempty"`
+	TLSLine string `json:"tls_line,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -70,6 +75,9 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		SessionsHidden:     live.Host.Hidden,
 		SessionHostReason:  live.Host.Reason,
 		SessionsListError:  live.ListError,
+		Alarm:              c.Alarm,
+		TLSPath:            c.TLSPath,
+		TLSLine:            c.TLSLine,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -82,7 +90,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 
 // LiveStatus converts the reply back to a [LiveStatus].
 func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
-	c := Status{State: ConnState(r.State), Reason: r.Reason, LastError: r.LastError}
+	c := Status{State: ConnState(r.State), Reason: r.Reason, LastError: r.LastError, Alarm: r.Alarm, TLSPath: r.TLSPath, TLSLine: r.TLSLine}
 	c.Welcome.Owner, c.Welcome.WorkerID = r.Owner, r.WorkerID
 	if r.Pending != nil {
 		c.Welcome.Pending = *r.Pending

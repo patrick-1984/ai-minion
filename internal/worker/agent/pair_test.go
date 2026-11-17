@@ -328,7 +328,7 @@ func TestPairingCommitsPinAndEnrollmentAndReportsTheOwner(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if !strings.Contains(f.out.String(), "paired to alice\n") {
+	if !strings.Contains(f.out.String(), "Owner:            alice\n") {
 		t.Fatalf("console:\n%s", f.out.String())
 	}
 	enr, ok, err := f.enr.Load(context.Background())
@@ -346,7 +346,7 @@ func TestPairingCommitsPinAndEnrollmentAndReportsTheOwner(t *testing.T) {
 func TestEnrollmentIsCommittedBeforeSuccessIsPrinted(t *testing.T) {
 	f := newPairFixture(t, pairOkStep(make([]byte, 32), "alice"))
 	r, _ := f.run(f.pairer())
-	eventually(t, func() bool { return strings.Contains(f.out.String(), "paired to") })
+	eventually(t, func() bool { return strings.Contains(f.out.String(), "MINION WORKER PAIRED") })
 	if _, ok, _ := f.enr.Load(context.Background()); !ok {
 		t.Fatal("paired to ... was printed before the enrollment was stored")
 	}
@@ -367,7 +367,7 @@ func TestWelcomeWithoutWorkerIDIsNotAPairing(t *testing.T) {
 	if _, ok, _ := f.enr.Load(context.Background()); ok {
 		t.Fatal("nothing may be stored")
 	}
-	if strings.Contains(f.out.String(), "paired to") {
+	if strings.Contains(f.out.String(), "MINION WORKER PAIRED") {
 		t.Fatal("success must not be printed")
 	}
 }
@@ -908,7 +908,7 @@ func TestPairsWithAWrongNameSelfSignedHubAndNoTLSFlag(t *testing.T) {
 	if r.err != nil {
 		t.Fatalf("pairing failed: %v\nlogs:\n%s", r.err, hp.logs.String())
 	}
-	if !strings.Contains(hp.out.String(), "paired to alice") {
+	if !strings.Contains(hp.out.String(), "Owner:            alice") {
 		t.Fatalf("console:\n%s", hp.out.String())
 	}
 	enr, ok, err := hp.enr.Load(context.Background())
@@ -1053,7 +1053,7 @@ func TestBadHubConfirmationEndsPairingAndIsNeverRetriedWithTheSameCode(t *testin
 	if _, ok, _ := f.enr.Load(context.Background()); ok {
 		t.Fatal("nothing may be committed")
 	}
-	if strings.Contains(f.out.String(), "paired to") {
+	if strings.Contains(f.out.String(), "MINION WORKER PAIRED") {
 		t.Fatalf("success must not be printed:\n%s", f.out.String())
 	}
 	if strings.Contains(r.err.Error(), "XY12") {

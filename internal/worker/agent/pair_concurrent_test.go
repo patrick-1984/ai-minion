@@ -71,7 +71,7 @@ func TestPairingStopsWithAlreadyPairedWhenAnotherWriterEnrollsDuringTheWait(t *t
 	if f.dial.nCalls() != 1 {
 		t.Errorf("%d attempts, want 1: a paired Worker is offered no further code", f.dial.nCalls())
 	}
-	if strings.Contains(f.out.String(), "paired to") {
+	if strings.Contains(f.out.String(), "MINION WORKER PAIRED") {
 		t.Errorf("console printed a pairing that did not happen:\n%s", f.out.String())
 	}
 	f.requireEnrollmentOf("bob")
@@ -92,7 +92,7 @@ func TestPairingNeverOverwritesAnEnrollmentWrittenBeforeItsCommit(t *testing.T) 
 	r, _ := f.run(f.pairer(func(c *PairerConfig) { c.EpochPoll = time.Hour }))
 	r.wait(t)
 	r.requireAlreadyPaired(t)
-	if strings.Contains(f.out.String(), "paired to") {
+	if strings.Contains(f.out.String(), "MINION WORKER PAIRED") {
 		t.Errorf("console printed a pairing that did not happen:\n%s", f.out.String())
 	}
 	f.requireEnrollmentOf("bob")

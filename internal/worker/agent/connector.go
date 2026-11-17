@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // Timing of the connector.
@@ -60,6 +61,9 @@ type HubWelcome struct {
 	// retiring itself) until its owner or an admin approves it.
 	Pending bool      `json:"pending,omitempty"`
 	Policy  HubPolicy `json:"policy"`
+	// HubTLS is what the Hub states about the TLS of this connection
+	// (v0.11.0); nil from an older Hub.
+	HubTLS *HubTLSInfo `json:"hub_tls,omitempty"`
 	proto.Range
 }
 
@@ -151,6 +155,8 @@ type Attempt struct {
 	// Session is the open session; set for a welcome only. For every other
 	// reply the Dialer has closed the connection.
 	Session Session
+	// TLS is what the dial saw of TLS (display only, A-15).
+	TLS transport.TLSSeen
 }
 
 // Dialer is the transport port of the connector: it dials the Hub, runs the
@@ -228,7 +234,18 @@ type Status struct {
 	Attempts uint64
 	// Welcome is the welcome of the current connection (zero unless connected).
 	Welcome HubWelcome
+	// Alarm is "hub_identity_changed" while the Hub answers with a root the
+	// pin does not accept; cleared by a connection.
+	Alarm string
+	// TLSPath and TLSLine are the TLS path state and text of the latest
+	// connection (TLSPath*); empty before the first one.
+	TLSPath string
+	TLSLine string
 }
+
+// AlarmHubIdentityChanged is the value of Status.Alarm while the Hub answers
+// with a root key that the pin does not accept.
+const AlarmHubIdentityChanged = "hub_identity_changed"
 
 // ConnectorConfig configures a [Connector]. Dialer, Enrollment and Key are
 // required.
@@ -309,6 +326,11 @@ type Connector struct {
 	lastLog  string // last failure that was logged at Warn, to keep a long outage quiet
 	idleLog  string // last idle reason that was logged
 	seenGen  uint64 // enrollment generation whose policy was last applied
+	// alarmShown makes box M5 appear once per streak of identity refusals.
+	alarmShown bool
+	// lastTLSPath is the TLS path state of the previous connection of this
+	// process ("" before the first).
+	lastTLSPath string
 }
 
 type namedHandler struct {
@@ -492,6 +514,12 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 	case !enrolled:
 		c.idle(ctx, "not enrolled", moved)
 		return false
+	case enr.Check() == store.HubCheckMismatch:
+		// The stored quarantine: the operator said this is not the Hub to
+		// trust. Leaving it needs a person (verify-hub, pairing again, a
+		// reset, or a setting that matches).
+		c.idle(ctx, "the Hub does not match the fingerprint you gave; see minion worker verify-hub", moved)
+		return false
 	}
 	c.clearIdleLog()
 	key, err := c.cfg.Key()
@@ -636,6 +664,10 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 				c.refuseSerial(re)
 				return true
 			}
+			var hk *transport.HubKeyError
+			if errors.As(err, &hk) && (errors.Is(err, transport.ErrPinMismatch) || errors.Is(err, transport.ErrChainInvalid)) {
+				c.identityChanged(enr, hk, err)
+			}
 			c.fail("connect", err)
 		}
 		return true
@@ -698,6 +730,50 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 		c.fail("connect", fmt.Errorf("unexpected control frame %q", att.Reply.Type))
 		return true
 	}
+}
+
+// identityChanged reports a Hub that answers with a root key the pin does not
+// accept: alarm state, one Error log line and box M5 once per streak. The pin
+// is kept and the connector keeps retrying; nothing is changed.
+func (c *Connector) identityChanged(enr Enrollment, hk *transport.HubKeyError, err error) {
+	c.mu.Lock()
+	c.status.Alarm = AlarmHubIdentityChanged
+	first := !c.alarmShown
+	c.alarmShown = true
+	c.mu.Unlock()
+	if !first {
+		return
+	}
+	reason := "It is another key, and the Hub showed no valid record of a master key rotation from the paired key to it."
+	if errors.Is(err, transport.ErrChainInvalid) {
+		reason = "The Hub sent a record of a master key rotation that does not verify."
+	}
+	paired, answered := fingerprintOfPub(enr.Pin.Pub), fingerprintOfPub(hk.Presented)
+	c.log.Error("hub identity changed; not connecting", "hub", hubLabel(c.cfg.HubURL),
+		"paired_with", string(paired), "paired_with_words", paired.Words(),
+		"answered", string(answered), "answered_words", answered.Words(), "reason", reason)
+	lines := []string{
+		hubLabel(c.cfg.HubURL) + " answered with a Hub key that this",
+		"Worker does not accept.",
+	}
+	lines = append(lines, boxField("   paired with:", paired.Words())...)
+	lines = append(lines, fullIndent+string(paired))
+	lines = append(lines, boxField("   answered now:", answered.Words())...)
+	lines = append(lines, fullIndent+string(answered))
+	lines = append(lines, boxWrap(reason, boxWidth)...)
+	lines = append(lines,
+		"Nothing was changed. The Worker keeps its pairing, keeps",
+		"retrying and connects only to the Hub it is paired with.",
+		"Read the fingerprint on the Hub host:",
+		"    minion hub identity --words",
+		"- It shows the \"paired with\" words: something between this",
+		"  computer and the Hub answers in its place. Check the proxy",
+		"  and the network. Do nothing on the Worker.",
+		"- It shows other words because the Hub was reinstalled or",
+		"  restored with another identity: pair again with",
+		"  minion worker pair --new-code --hub-fingerprint <value>",
+	)
+	writeConsoleBox(c.cfg.Out, "HUB IDENTITY CHANGED - NOT CONNECTING", lines...)
 }
 
 // features returns the features to announce.
@@ -878,10 +954,15 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 			c.log.Info("the Hub certificate expires now; no operation is admitted")
 		}
 	}
+	tlsState, tlsLine := TLSPath(att.TLS, w.HubTLS)
 	c.mu.Lock()
 	c.status.State, c.status.Reason = ConnConnected, ""
 	c.status.ConnectedSince, c.status.Welcome = c.clk.Now(), w
 	c.status.LastError, c.status.LastErrorAt = "", time.Time{}
+	c.status.Alarm, c.alarmShown = "", false
+	c.status.TLSPath, c.status.TLSLine = tlsState, tlsLine
+	prevTLS := c.lastTLSPath
+	c.lastTLSPath = tlsState
 	c.lastLog = ""
 	c.cur = r
 	for _, nh := range c.handlers {
@@ -908,6 +989,13 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		"hub", hubLabel(c.cfg.HubURL), "hub_fingerprint", hubFingerprint(att.Pin),
 		"worker_id", w.WorkerID, "name", w.Name, "owner", w.Owner, "kind", w.Kind,
 		"preview_only", w.Policy.PreviewOnly, "protocol", att.Version.String())
+	if att.TLS.Seen() && (prevTLS == "" || prevTLS != tlsState) {
+		c.log.Info("hub connection", "tls_path", tlsState, "tls_name", att.TLS.Name, "tls_issuer", att.TLS.Issuer,
+			"tls_trusted", att.TLS.Trusted, "tls", tlsLine)
+		if prevTLS != "" {
+			c.log.Warn("the TLS path to the Hub changed", "was", prevTLS, "now", tlsState)
+		}
+	}
 
 	c.log.Debug("hub welcome", "worker_id", w.WorkerID, "pending_approval", w.Pending,
 		"protocol", att.Version.String(), "hub_proto_min", w.Min.String(), "hub_proto_max", w.Max.String())

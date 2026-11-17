@@ -218,7 +218,7 @@ func TestWorkerSetupInteractiveSavesChoicesAndPairs(t *testing.T) {
 		t.Fatalf("worker setup: %v\n%s", err, r.stdout)
 	}
 	out := r.stdout.String()
-	for _, want := range []string{"I see 2 tmux sessions:", "[x] 2  docs", "Pairing code: MN-K7Q4-XY12", "paired to alice", "Pairing: paired to alice"} {
+	for _, want := range []string{"I see 2 tmux sessions:", "[x] 2  docs", "MN-K7Q4-XY12 (valid for", "paired to alice", "Pairing: paired to alice"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -370,7 +370,7 @@ func TestWorkerSetupEnterSkipsThePairingWait(t *testing.T) {
 	k.typeLines("1", "https://hub.example:8443")
 	done := make(chan error, 1)
 	go func() { done <- r.run(context.Background(), k.r) }()
-	waitForOutput(t, r.stdout, "Pairing code: MN-K7Q4-XY12")
+	waitForOutput(t, r.stdout, "MN-K7Q4-XY12 (valid for")
 	k.enter(t)
 	select {
 	case err := <-done:
@@ -401,7 +401,7 @@ func TestWorkerSetupInterruptWhilePairingKeepsTheSettings(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- r.run(ctx, k.r) }()
-	waitForOutput(t, r.stdout, "Pairing code: MN-K7Q4-XY12")
+	waitForOutput(t, r.stdout, "MN-K7Q4-XY12 (valid for")
 	cancel()
 	select {
 	case err := <-done:
@@ -797,7 +797,7 @@ func TestWorkerUpServiceOnATerminalRunsTheWizardBeforeInstalling(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runUpOut(f.deps, context.Background(), k.r, &out) }()
 	// The wizard waits for the pairing; nothing may be installed before it ends.
-	waitForOutput(t, &out, "Pairing code: MN-K7Q4-XY12")
+	waitForOutput(t, &out, "MN-K7Q4-XY12 (valid for")
 	if calls := f.runCalls(); len(calls) != 0 {
 		t.Errorf("service commands ran while the wizard was still open: %v", calls)
 	}

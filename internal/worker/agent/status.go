@@ -11,6 +11,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
@@ -206,6 +207,13 @@ type StatusShare struct {
 	Sessions []string `json:"sessions"`
 }
 
+// StatusTLS is the TLS path of a connection: the state (TLSPath*) and the
+// text.
+type StatusTLS struct {
+	State string `json:"state"`
+	Line  string `json:"line"`
+}
+
 // StatusReport is the content of `minion worker status`; `--json` prints it
 // as is. Field names are part of the CLI contract.
 type StatusReport struct {
@@ -223,6 +231,22 @@ type StatusReport struct {
 	HubFingerprint string `json:"hub_fingerprint"`
 	// WorkerFingerprint is the Worker's own key, empty before the key exists.
 	WorkerFingerprint string `json:"worker_fingerprint"`
+	// HubFingerprintWords and WorkerFingerprintWords are the same keys as
+	// six words (v0.11.0).
+	HubFingerprintWords    string `json:"hub_fingerprint_words,omitempty"`
+	WorkerFingerprintWords string `json:"worker_fingerprint_words,omitempty"`
+	// HubCheck is how the pinned Hub was checked (none, fingerprint, invite,
+	// mismatch), HubCheckAt when, HubCheckAnchor the full fingerprint that
+	// was checked; HubCheckText says it in words. Empty when not paired.
+	HubCheck       string         `json:"hub_check,omitempty"`
+	HubCheckAt     *ops.Timestamp `json:"hub_check_at,omitempty"`
+	HubCheckAnchor string         `json:"hub_check_anchor,omitempty"`
+	HubCheckText   string         `json:"hub_check_text,omitempty"`
+	// Alarm is "hub_identity_changed" while the running Worker refuses the
+	// root key the Hub answers with.
+	Alarm string `json:"alarm,omitempty"`
+	// TLS is the TLS path of the running Worker's latest connection.
+	TLS *StatusTLS `json:"tls,omitempty"`
 	// Paired says the Worker is enrolled with a Hub (a pin is stored).
 	Paired bool `json:"paired"`
 	// WorkerID is the id the Hub gave this Worker, empty until the first
@@ -298,8 +322,16 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 			r.Owner = enr.Owner
 			r.WorkerID = enr.WorkerID
 			r.PreviewOnlyHub = enr.Policy.PreviewOnly
+			r.HubCheck = enr.Check()
+			r.HubCheckText = hubCheckLine(enr)
+			r.HubCheckAnchor = enr.HubCheckAnchor
+			if !enr.HubCheckAt.IsZero() {
+				t := ops.Timestamp(enr.HubCheckAt.UTC())
+				r.HubCheckAt = &t
+			}
 			if fp, err := identity.FingerprintOf(enr.Pin.Pub); err == nil {
 				r.HubFingerprint = fp.String()
+				r.HubFingerprintWords = fp.Words()
 			} else {
 				problem("the pinned Hub key is invalid: %v", err)
 			}
@@ -312,6 +344,7 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 			problem("cannot read the Worker key: %v", err)
 		default:
 			r.WorkerFingerprint = k.Fingerprint().String()
+			r.WorkerFingerprintWords = k.Fingerprint().Words()
 		}
 	}
 	if in.Share != nil {
@@ -362,6 +395,10 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		r.RunMode = live.RunMode
 		r.SessionHost, r.SessionsHidden, r.SessionHostReason = live.Host.Kind, live.Host.Hidden, live.Host.Reason
 		r.SessionsListError = live.ListError
+		r.Alarm = live.Connector.Alarm
+		if live.Connector.TLSPath != "" {
+			r.TLS = &StatusTLS{State: live.Connector.TLSPath, Line: live.Connector.TLSLine}
+		}
 		if r.Owner == "" && live.Connector.Welcome.Owner != "" {
 			r.Owner = live.Connector.Welcome.Owner
 		}
@@ -425,8 +462,12 @@ func (r StatusReport) WriteText(w io.Writer) error {
 		{"Hub URL", orDash(r.HubURL, "none (Solo)")},
 		{"Connection", r.connectionText()},
 		{"Last error", r.lastErrorText()},
-		{"Hub fingerprint", orDash(r.HubFingerprint, "none (not paired)")},
-		{"Worker fingerprint", orDash(r.WorkerFingerprint, "none yet (created at the first pairing)")},
+		{"Hub fingerprint", orDash(r.HubFingerprintWords, "none (not paired)")},
+		{"Hub fingerprint (full)", orDash(r.HubFingerprint, "none (not paired)")},
+		{"Hub check", orDash(r.HubCheckText, "none (not paired)")},
+		{"TLS", r.tlsText()},
+		{"Worker fingerprint", orDash(r.WorkerFingerprintWords, "none yet (created at the first pairing)")},
+		{"Worker fingerprint (full)", orDash(r.WorkerFingerprint, "none yet (created at the first pairing)")},
 		{"Owner", r.ownerText()},
 		{"Worker id", orDash(r.WorkerID, "none yet (given at the first welcome)")},
 		{"Approval", r.approvalText()},
@@ -437,6 +478,14 @@ func (r StatusReport) WriteText(w io.Writer) error {
 		{"Session host", r.sessionHostText()},
 		{"tmux socket", orDash(r.TmuxSocket, "none")},
 		{"Sessions", r.sessionsText()},
+	}
+	if r.Alarm == AlarmHubIdentityChanged {
+		for i, row := range rows {
+			if row[0] == "Hub check" {
+				rows = append(rows[:i+1], append([][2]string{{"Hub identity", "CHANGED - not connecting; see the Worker log"}}, rows[i+1:]...)...)
+				break
+			}
+		}
 	}
 	if r.Preview {
 		rows = append(rows[:1], append([][2]string{{"Platform", r.platformText()}}, rows[1:]...)...)
@@ -449,10 +498,12 @@ func (r StatusReport) WriteText(w io.Writer) error {
 	}
 	var b strings.Builder
 	for _, row := range rows {
-		fmt.Fprintf(&b, "%-*s  %s\n", width+1, row[0]+":", row[1])
+		// Values may come from the Hub (owner, worker id) or from rows an
+		// older version stored: one line, no control characters.
+		fmt.Fprintf(&b, "%-*s  %s\n", width+1, row[0]+":", proto.SafeText(row[1], 600))
 	}
 	for _, p := range r.Problems {
-		fmt.Fprintf(&b, "%-*s  %s\n", width+1, "Problem:", p)
+		fmt.Fprintf(&b, "%-*s  %s\n", width+1, "Problem:", proto.SafeText(p, 600))
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -531,6 +582,17 @@ func (r StatusReport) ownerText() string {
 		return "paired (the Hub has not named the owner yet)"
 	}
 	return "paired to " + r.Owner
+}
+
+// tlsText is the TLS path row: the running Worker's latest connection.
+func (r StatusReport) tlsText() string {
+	switch {
+	case r.TLS != nil:
+		return r.TLS.Line
+	case r.Mode != ModeHub:
+		return "none (Solo)"
+	}
+	return "known only to the running Worker"
 }
 
 func (r StatusReport) shareText() string {

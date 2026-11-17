@@ -197,7 +197,7 @@ func TestWorkerPairShowsTheCodeAndStoresTheEnrollment(t *testing.T) {
 	c := newPairCLI(t, nil)
 	c.pair()
 	out := c.stdout.String()
-	if !strings.Contains(out, "MN-K7Q4-XY12") || !strings.Contains(out, "paired to alice") {
+	if !strings.Contains(out, "MN-K7Q4-XY12") || !strings.Contains(out, "Owner:            alice") {
 		t.Fatalf("stdout:\n%s", out)
 	}
 	if !strings.Contains(c.stderr.String(), "MN-K7Q4-XY12") {
@@ -269,7 +269,7 @@ func TestWorkerPairNewCodeAfterConfirmationCreatesANewIdentityAndPairsAgain(t *t
 	if !ok || enr.Owner != "bob" {
 		t.Fatalf("enrollment = %+v %v", enr, ok)
 	}
-	if !strings.Contains(c.stdout.String(), "paired to bob") {
+	if !strings.Contains(c.stdout.String(), "Owner:            bob") {
 		t.Fatalf("stdout:\n%s", c.stdout.String())
 	}
 }
@@ -388,7 +388,7 @@ func TestWorkerJoinRemembersTheHubAndPairs(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "https://hub.example:8443") {
 		t.Fatalf("config = %s %v", data, err)
 	}
-	if !strings.Contains(c.stdout.String(), "paired to alice") {
+	if !strings.Contains(c.stdout.String(), "Owner:            alice") {
 		t.Fatalf("stdout:\n%s", c.stdout.String())
 	}
 	// A Worker service that is already running read its Hub address when it
@@ -494,7 +494,7 @@ func TestWorkerPairNewCodeKeepsTheRevocationPendingWhileTheOldHubIsUnreachable(t
 	if err := c.exec("pair", "--new-code", "--yes"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.stdout.String(), "could not revoke the old identity yet") || !strings.Contains(c.stdout.String(), "paired to alice") {
+	if !strings.Contains(c.stdout.String(), "could not revoke the old identity yet") || !strings.Contains(c.stdout.String(), "Owner:            alice") {
 		t.Fatalf("stdout:\n%s", c.stdout.String())
 	}
 	pending, err := agent.NewRetiredStore(c.state).List()

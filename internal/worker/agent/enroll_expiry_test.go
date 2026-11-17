@@ -138,7 +138,7 @@ func TestPairingWelcomeIsNotCommittedAfterTheDeadline(t *testing.T) {
 	if _, ok, _ := f.enr.Load(context.Background()); ok {
 		t.Fatal("an enrollment was committed after not_after")
 	}
-	if got := f.out.String(); strings.Contains(got, "paired to") {
+	if got := f.out.String(); strings.Contains(got, "MINION WORKER PAIRED") {
 		t.Fatalf("success was reported:\n%s", got)
 	}
 }

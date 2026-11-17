@@ -248,13 +248,13 @@ func TestStatusTextClaimsNothingAboutAWorkerThatWasNotAsked(t *testing.T) {
 	text, _ := render(t, r)
 	for _, want := range []string{
 		"Connection:", "unknown (the connection state is known only to the running Worker and is not available here)",
-		"Last error:          unknown",
+		"Last error:                 unknown",
 	} {
 		if !strings.Contains(string(text), want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}
 	}
-	for _, bad := range []string{"start it", "minion worker run", "Last error:          none"} {
+	for _, bad := range []string{"start it", "minion worker run", "Last error:                 none"} {
 		if strings.Contains(string(text), bad) {
 			t.Errorf("text claims %q:\n%s", bad, text)
 		}
@@ -263,11 +263,11 @@ func TestStatusTextClaimsNothingAboutAWorkerThatWasNotAsked(t *testing.T) {
 	// A live Worker without an error says none; Solo has no connection to fail.
 	in.Live = fakeLive{ls: LiveStatus{Connector: Status{State: ConnConnected}}}
 	live, _ := render(t, BuildStatus(context.Background(), in))
-	if !strings.Contains(string(live), "Last error:          none") {
+	if !strings.Contains(string(live), "Last error:                 none") {
 		t.Errorf("live text:\n%s", live)
 	}
 	solo, _ := render(t, BuildStatus(context.Background(), StatusInputs{}))
-	if !strings.Contains(string(solo), "Last error:          none") {
+	if !strings.Contains(string(solo), "Last error:                 none") {
 		t.Errorf("solo text:\n%s", solo)
 	}
 }

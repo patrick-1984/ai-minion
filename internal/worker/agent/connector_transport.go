@@ -130,6 +130,7 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 		TranscriptHash: res.TranscriptHash[:],
 		Version:        res.Version,
 		Reply:          reply,
+		TLS:            df.TLS,
 	}
 	if reply.Type != proto.TypeWelcome {
 		// A revoke and a not_enrolled end the connection.
@@ -170,6 +171,13 @@ func decodeReply(body json.RawMessage) (Reply, error) {
 		if err := json.Unmarshal(body, &w); err != nil {
 			return Reply{}, errors.New("the hub's welcome is malformed")
 		}
+		// The display texts come from the peer: one line, no control or
+		// format characters, bounded (they reach the console, the log and
+		// `minion worker status`). OwnerID is compared, not shown.
+		w.Owner, w.Name, w.Kind = proto.SafeText(w.Owner, 128), proto.SafeText(w.Name, 255), proto.SafeText(w.Kind, 32)
+		if !validWorkerID(w.WorkerID) {
+			return Reply{}, errors.New("the hub's welcome has a malformed worker id")
+		}
 		return Reply{Type: proto.TypeWelcome, Welcome: w}, nil
 	case proto.TypeRevoke:
 		var r struct {
@@ -189,4 +197,22 @@ func decodeReply(body json.RawMessage) (Reply, error) {
 		return Reply{}, f.Err()
 	}
 	return Reply{}, fmt.Errorf("the hub sent an unexpected frame of type %q", head.Type)
+}
+
+// validWorkerID reports whether id has the shape of a Worker id: 1 to 64
+// characters of letters, digits, '.', '_' and '-' (the Hub issues UUIDs). An id
+// from the peer that fails this is refused, so it can never carry control
+// characters into a box, a log line or `minion worker status`.
+func validWorkerID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }

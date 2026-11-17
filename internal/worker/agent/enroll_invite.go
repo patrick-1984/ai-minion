@@ -155,6 +155,10 @@ type InviteEnrollerConfig struct {
 	HubURL string
 	// Name is the Worker's display name.
 	Name string
+	// HubCheck is the hub_check value the enrollment is stored with:
+	// store.HubCheckInvite (the default) or store.HubCheckFingerprint when the
+	// setting hub_fingerprint names the same Hub as the invitation key.
+	HubCheck string
 	// Protocols is the supported protocol range; zero means proto.Current.
 	Protocols proto.Range
 	// WallMono supplies the wall and monotonic clock of the certificate window;
@@ -261,6 +265,13 @@ func (e *InviteEnroller) Enroll(ctx context.Context, invite identity.InviteKey) 
 		// The Hub this key was enrolled at: a later identity replacement
 		// revokes it there, whatever the configuration says by then.
 		HubURL: e.cfg.HubURL,
+		// The handshake refused any root but the one the invitation key
+		// names, so that fingerprint is what was checked.
+		HubCheck:       e.cfg.HubCheck,
+		HubCheckAnchor: string(invite.Fingerprint),
+	}
+	if enr.HubCheck == "" {
+		enr.HubCheck = store.HubCheckInvite
 	}
 	// The commit is the last step the certificate must cover: both clocks are
 	// read before the commit and again inside its guard, immediately before
@@ -653,13 +664,27 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 	if err != nil {
 		return err
 	}
+	// The setting and the invitation key must name the same Hub; a conflict
+	// stops before anything is sent.
+	expect, err := ParseHubExpectation(hub.Fingerprint)
+	if err != nil {
+		return err
+	}
+	check := store.HubCheckInvite
+	if !expect.IsZero() {
+		if !expect.MatchesFingerprint(invite.Fingerprint) {
+			return fmt.Errorf("the invitation key names the Hub %s but hub_fingerprint names %s; nothing was sent (check the key and the setting)",
+				invite.Fingerprint.Words(), expect.Words())
+		}
+		check = store.HubCheckFingerprint
+	}
 
 	dialer := d.dialer
 	if dialer == nil {
 		dialer = NewInviteDialer()
 	}
 	enroller, err := NewInviteEnroller(InviteEnrollerConfig{
-		State: state, Dialer: dialer, HubURL: hub.Server, Name: s.Name,
+		State: state, Dialer: dialer, HubURL: hub.Server, Name: s.Name, HubCheck: check,
 		Attempts: d.attempts, RetryWait: d.wait, Sleep: d.sleep, Logger: s.logger(),
 	})
 	if err != nil {
@@ -674,7 +699,8 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 		return nil
 	}
 	if s.Out != nil {
-		_, _ = fmt.Fprintf(s.Out, "enrolled as %s, owner %s\n", res.Enrollment.Name, res.Enrollment.Owner)
+		_, _ = fmt.Fprintf(s.Out, "enrolled as %s, owner %s\n", proto.SafeText(res.Enrollment.Name, 255), proto.SafeText(res.Enrollment.Owner, 128))
+		_, _ = fmt.Fprintf(s.Out, "Hub fingerprint: %s (%s)\n", fingerprintOfPub(res.Enrollment.Pin.Pub).Words(), HubCheckText(res.Enrollment.HubCheck))
 	}
 	return nil
 }

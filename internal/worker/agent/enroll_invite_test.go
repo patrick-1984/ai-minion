@@ -542,7 +542,7 @@ func TestHookEnrollsWithTheLiteralKeyAgainstASelfSignedWrongNameHubWithNoTLSFlag
 	if got := stderr.String(); got != config.InviteKeyArgvWarning+"\n" {
 		t.Fatalf("stderr = %q", got)
 	}
-	if got := out.String(); got != "enrolled as pi, owner alice\n" {
+	if got := out.String(); !strings.HasPrefix(got, "enrolled as pi, owner alice\nHub fingerprint: ") || !strings.HasSuffix(got, " (from the invitation key)\n") {
 		t.Fatalf("out = %q", got)
 	}
 	// The secret arrived inside the channel, and the pin and enrollment are in worker.db.
@@ -597,7 +597,7 @@ func TestHookEnrollsWithAFileAndWithStdinWithoutAWarning(t *testing.T) {
 			if stderr.Len() != 0 {
 				t.Fatalf("warning for the %s form: %q", form, stderr.String())
 			}
-			if out.String() != "enrolled as pi, owner alice\n" {
+			if !strings.HasPrefix(out.String(), "enrolled as pi, owner alice\nHub fingerprint: ") {
 				t.Fatalf("out = %q", out.String())
 			}
 			assertNoKey(t, invite, logs.String(), out.String(), stderr.String())
@@ -678,7 +678,7 @@ func TestHookRetryWithTheSameKeyAndKeyPairIsIdempotent(t *testing.T) {
 	if len(hub.known) != 1 {
 		t.Fatalf("the Hub enrolled %d Workers", len(hub.known))
 	}
-	if out.String() != "enrolled as pi, owner alice\n" {
+	if !strings.HasPrefix(out.String(), "enrolled as pi, owner alice\nHub fingerprint: ") {
 		t.Fatalf("out = %q", out.String())
 	}
 }

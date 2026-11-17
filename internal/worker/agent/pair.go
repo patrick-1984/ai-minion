@@ -44,6 +44,10 @@ const (
 	commitLockWait = 2 * time.Minute
 )
 
+// ErrHubFingerprintMismatch ends a pairing whose Hub root is not the expected
+// one (box M4 was printed). Nothing was stored.
+var ErrHubFingerprintMismatch = errors.New("the Hub fingerprint does not match the expected one: not paired, nothing was stored")
+
 // errCodeExpired is the cause of the context of an attempt whose code reached
 // the end of its lifetime.
 var errCodeExpired = errors.New("agent: the pairing code expired")
@@ -83,6 +87,13 @@ type PairParams struct {
 	Protocols proto.Range
 	// Code is the code this connection is about. It is the CPace password.
 	Code identity.PairingCode
+	// ExpectHub is the Hub fingerprint the operator expects; the zero value
+	// means none. The handshake refuses another root before the first CPace
+	// message (transport.ErrExpectedHubMismatch in a *transport.HubKeyError).
+	ExpectHub identity.FingerprintMatcher
+	// OnDial is called with the TLS facts of the dial once it succeeded, for
+	// display only. Nil is allowed.
+	OnDial func(transport.TLSSeen)
 	// Timeout bounds the handshake, which includes the wait for the user to
 	// type the code in the Hub.
 	Timeout time.Duration
@@ -127,6 +138,8 @@ type PairResult struct {
 	// reads both clocks again right before it commits. Nil means no
 	// enforcement (test doubles only).
 	Expiry *transport.Expiry
+	// TLS is what the dial saw of TLS (display only).
+	TLS transport.TLSSeen
 }
 
 // PairDialer is the transport port of pairing: it dials the Hub, runs the
@@ -155,13 +168,16 @@ type wssPairDialer struct {
 
 func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, error) {
 	dialCtx, cancelDial := context.WithTimeout(ctx, d.dialTimeout)
-	conn, err := transport.Dial(dialCtx, p.HubURL)
+	conn, df, err := transport.DialInfo(dialCtx, p.HubURL)
 	cancelDial()
 	if err != nil {
 		if ctx.Err() == nil && dialCtx.Err() != nil {
 			return PairResult{}, fmt.Errorf("dial the hub: no answer within %s", d.dialTimeout)
 		}
 		return PairResult{}, err
+	}
+	if p.OnDial != nil {
+		p.OnDial(df.TLS)
 	}
 	// The hello is one write; when it went out, the Hub has the pairing id.
 	nc := &notifyConn{Conn: conn, onFirstWrite: p.OnWaiting, onConfirm: p.OnExposed}
@@ -174,6 +190,7 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 		Protocols:   p.Protocols,
 		Mode:        transport.ModePairCode,
 		PairingCode: p.Code,
+		ExpectHub:   p.ExpectHub,
 		Ratchet:     p.Ratchet,
 		Clock:       p.Clock,
 		Timeout:     p.Timeout,
@@ -224,7 +241,7 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 	if reply.Type != proto.TypeWelcome {
 		return PairResult{}, fmt.Errorf("the hub answered %q instead of welcome", reply.Type)
 	}
-	return PairResult{Pin: res.Pin, Welcome: reply.Welcome, Version: res.Version, Ratchet: res.Ratchet, Expiry: &exp}, nil
+	return PairResult{Pin: res.Pin, Welcome: reply.Welcome, Version: res.Version, Ratchet: res.Ratchet, Expiry: &exp, TLS: df.TLS}, nil
 }
 
 // notifyConn calls onFirstWrite after the first successful write and onConfirm
@@ -277,6 +294,11 @@ type PairerConfig struct {
 	Protocols proto.Range
 	// Enrollment holds the Worker key and receives the enrollment.
 	Enrollment *Enrollments
+	// ExpectHub is the Hub fingerprint the operator gave (setting or prompt);
+	// the zero value means none. With it, any other Hub root is refused
+	// before the code is used, and the enrollment is stored with hub_check
+	// fingerprint; without it, with none ("not verified").
+	ExpectHub identity.FingerprintMatcher
 	// Dialer is the transport.
 	Dialer PairDialer
 	// Clock is the time source of the code lifetime and the retry waits; nil
@@ -327,6 +349,10 @@ type Pairer struct {
 	// fpr is the fingerprint of the Worker key being paired, shown next to
 	// the code so that the person approving the Worker can compare it.
 	fpr string
+
+	// tlsMu guards tls, the TLS facts of the latest dial (display only).
+	tlsMu sync.Mutex
+	tls   transport.TLSSeen
 }
 
 // NewPairer validates cfg and returns a pairer.
@@ -676,6 +702,19 @@ func (p *Pairer) classify(gen uint64, life *codeLife, err error) (next bool, rea
 	if errors.Is(err, errCodeExpired) {
 		return true, "The pairing code expired.", false, nil
 	}
+	if errors.Is(err, transport.ErrExpectedHubMismatch) {
+		// The root is compared before the first CPace message: the code was
+		// not used. The run ends anyway: the address answers with another
+		// Hub, and only a person can tell why.
+		var hk *transport.HubKeyError
+		var presented []byte
+		if errors.As(err, &hk) {
+			presented = hk.Presented
+		}
+		p.showRefused(presented)
+		p.dropResume(gen, life)
+		return false, "", false, ErrHubFingerprintMismatch
+	}
 	if errors.Is(err, transport.ErrPairingConfirm) {
 		// An honest Hub confirms only after it verified this Worker's tag,
 		// so a bad confirmation means the peer does not know the code: the
@@ -883,7 +922,13 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 		Features:  features,
 		Protocols: p.cfg.Protocols,
 		Code:      life.code,
-		Ratchet:   life.ratchet(),
+		ExpectHub: p.cfg.ExpectHub,
+		OnDial: func(seen transport.TLSSeen) {
+			p.tlsMu.Lock()
+			p.tls = seen
+			p.tlsMu.Unlock()
+		},
+		Ratchet: life.ratchet(),
 		Clock:     p.cfg.WallMono,
 		Timeout:   p.ttl + pairHandshakeMargin,
 		OnExposed: life.expose,
@@ -939,31 +984,72 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 }
 
 // showCode prints the code on the console and in the log: the one place a
-// secret is printed (AD-20, NFR1).
+// secret is printed (AD-20, NFR1). The box (M2) also says which Hub is
+// expected and what the dial saw of TLS, as facts and before the Hub is
+// authenticated, so without any verdict.
 func (p *Pairer) showCode(c identity.PairingCode, notice string) {
 	lines := []string{}
 	if notice != "" {
 		lines = append(lines, notice, "")
 	}
-	lines = append(lines,
-		"Pairing code: "+c.String(),
-		"",
-		"1. Open the Hub: "+hubLabel(p.cfg.HubURL),
-		"2. Go to Workers > Add worker and enter the code within "+ttlText(p.ttl)+".",
-	)
+	lines = append(lines, boxField("Hub:", hubLabel(p.cfg.HubURL))...)
+	if p.cfg.ExpectHub.IsZero() {
+		lines = append(lines, boxField("Hub fingerprint:", "NOT CHECKED. This Worker pairs with whichever Hub answers here "+
+			"and accepts the code. To check first: stop, and start again with --hub-fingerprint <value from the Hub host>")...)
+	} else {
+		lines = append(lines, boxField("Hub fingerprint:", p.cfg.ExpectHub.Words())...)
+		if p.cfg.ExpectHub.Full() {
+			lines = append(lines, fullIndent+p.cfg.ExpectHub.String())
+		}
+		lines = append(lines, boxField("", "(expected; any other Hub is refused)")...)
+	}
+	p.tlsMu.Lock()
+	seen := p.tls
+	p.tlsMu.Unlock()
+	if seen.Seen() {
+		facts := TLSFacts(seen)
+		if !seen.None && !seen.Trusted {
+			facts += ". Workers do not rely on it."
+		}
+		lines = append(lines, boxField("TLS certificate:", facts)...)
+	}
+	lines = append(lines, boxField("Pairing code:", c.String()+"      (valid for "+ttlText(p.ttl)+")")...)
+	lines = append(lines, "",
+		"1. Open the Hub > Workers > Add worker and enter the code.")
 	if p.fpr != "" {
-		lines = append(lines,
-			"3. If the Hub asks to approve this Worker, check that it shows",
-			"   exactly this fingerprint:",
-			"",
-			"Worker fingerprint: "+p.fpr,
-		)
+		lines = append(lines, "2. Approve the Worker there only if the Hub shows:")
+		lines = append(lines, fingerprintLines("Worker fingerprint:", identity.Fingerprint(p.fpr))...)
 	}
 	writeConsoleBox(p.out, "MINION WORKER PAIRING", lines...)
 	// The code is a secret that is printed for the human on purpose (AD-20):
 	// the console above and the log (docker logs) are the only places.
 	p.log.Info("pairing code", "pairing_code", c.String(), "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
-		"worker_fingerprint", p.fpr)
+		"worker_fingerprint", p.fpr, "worker_fingerprint_words", identity.Fingerprint(p.fpr).Words(),
+		"hub_fingerprint_expected", p.cfg.ExpectHub.String(), "tls_certificate", TLSFacts(seen))
+}
+
+// showRefused prints box M4 and logs the refusal of a Hub whose root is not
+// the expected one. Nothing was stored and no CPace message was sent.
+func (p *Pairer) showRefused(answered []byte) {
+	got := fingerprintOfPub(answered)
+	lines := []string{hubLabel(p.cfg.HubURL) + " answered with another Hub key."}
+	lines = append(lines, boxField("   expected:", p.cfg.ExpectHub.Words())...)
+	lines = append(lines, boxField("   answered:", got.Words())...)
+	lines = append(lines, fullIndent+string(got))
+	lines = append(lines,
+		"Nothing was stored. The pairing code is no longer valid.",
+		"Either the fingerprint or the address is wrong, or something",
+		"between this computer and the Hub answers in its place.",
+		"If you already entered the code in the Hub: open Workers",
+		"there and remove a pending Worker that does not show")
+	if p.fpr != "" {
+		lines = append(lines, fingerprintLines("Worker fingerprint:", identity.Fingerprint(p.fpr))...)
+	}
+	lines = append(lines, "Then read the fingerprint on the Hub host and try again.")
+	writeConsoleBox(p.out, "HUB FINGERPRINT DOES NOT MATCH - NOT PAIRED", lines...)
+	p.log.Error("the hub fingerprint does not match the expected one; not paired, nothing was stored",
+		"hub", hubLabel(p.cfg.HubURL), "expected", p.cfg.ExpectHub.String(), "expected_words", p.cfg.ExpectHub.Words(),
+		"answered", string(got), "answered_words", got.Words())
 }
 
 func ttlText(d time.Duration) string {
@@ -987,6 +1073,9 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 	if w.WorkerID == "" {
 		return Enrollment{}, errors.New("the Hub's welcome has no worker id")
 	}
+	if !validWorkerID(w.WorkerID) {
+		return Enrollment{}, errors.New("the Hub's welcome has a malformed worker id")
+	}
 	enr := Enrollment{
 		Pin:      res.Pin,
 		WorkerID: w.WorkerID,
@@ -996,6 +1085,13 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 		Policy:   w.Policy,
 		HubURL:   p.cfg.HubURL,
 		Ratchet:  res.Ratchet,
+		HubCheck: store.HubCheckNone,
+	}
+	if !p.cfg.ExpectHub.IsZero() {
+		// The handshake refused any other root, so the pin is the expected
+		// key; the anchor is its full fingerprint.
+		enr.HubCheck = store.HubCheckFingerprint
+		enr.HubCheckAnchor = string(fingerprintOfPub(res.Pin.Pub))
 	}
 	// A commit must not fail because the caller's context just ended: the Hub
 	// already created the Worker, and the pin is what lets this Worker
@@ -1031,21 +1127,45 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 		}
 		return Enrollment{}, fmt.Errorf("store the enrollment: %w", err)
 	}
-	lines := []string{"paired to " + w.Owner, "Hub: " + hubLabel(p.cfg.HubURL)}
-	if w.Pending {
-		lines = append(lines, "",
-			"Waiting for approval: the owner or an admin approves it in the Hub",
-			"(Workers page). Approve only if the Hub shows this fingerprint:")
+	p.showPaired(enr, res, w.Pending)
+	tlsState, _ := TLSPath(res.TLS, w.HubTLS)
+	p.log.Info("paired with the hub", "hub", hubLabel(p.cfg.HubURL), "hub_fingerprint", hubFingerprint(res.Pin),
+		"hub_fingerprint_words", identity.WordsOfKey(res.Pin.Pub), "hub_check", enr.HubCheck,
+		"worker_id", w.WorkerID, "name", w.Name, "owner", w.Owner, "kind", w.Kind, "tls_path", tlsState)
+	if p.cfg.ExpectHub.IsZero() {
+		p.log.Warn("the Hub was not verified: no expected fingerprint was given; compare it with the Hub host and run minion worker verify-hub",
+			"hub", hubLabel(p.cfg.HubURL), "hub_fingerprint_words", identity.WordsOfKey(res.Pin.Pub))
+	}
+	return enr, nil
+}
+
+// showPaired prints box M3: the owner first (with a way out), the Hub, how it
+// was checked, the TLS path and the Worker fingerprint to approve.
+func (p *Pairer) showPaired(enr Enrollment, res PairResult, pending bool) {
+	lines := boxField("Owner:", enr.Owner)
+	lines = append(lines, boxField("", "Not your account? Run: minion worker reset")...)
+	lines = append(lines, boxField("Hub:", hubLabel(p.cfg.HubURL))...)
+	lines = append(lines, fingerprintLines("Hub fingerprint:", fingerprintOfPub(enr.Pin.Pub))...)
+	if enr.HubCheck == store.HubCheckFingerprint {
+		lines = append(lines, boxField("", "It matched the fingerprint you gave.")...)
 	} else {
-		lines = append(lines, "")
+		lines = append(lines, boxField("", "NOT VERIFIED. Compare all six words with the Hub host (minion hub identity --words), "+
+			"then run here: minion worker verify-hub <the 52 characters>")...)
+	}
+	if res.TLS.Seen() {
+		_, line := TLSPath(res.TLS, res.Welcome.HubTLS)
+		lines = append(lines, boxField("TLS:", line)...)
+	}
+	lines = append(lines, "")
+	if pending {
+		lines = append(lines,
+			"Waiting for approval: the owner or an admin approves it",
+			"in the Hub (Workers page). Approve only if the Hub shows:")
 	}
 	if p.fpr != "" {
-		lines = append(lines, "Worker fingerprint: "+p.fpr)
+		lines = append(lines, fingerprintLines("Worker fingerprint:", identity.Fingerprint(p.fpr))...)
 	}
 	writeConsoleBox(p.out, "MINION WORKER PAIRED", lines...)
-	p.log.Info("paired with the hub", "hub", hubLabel(p.cfg.HubURL), "hub_fingerprint", hubFingerprint(res.Pin),
-		"worker_id", w.WorkerID, "name", w.Name, "owner", w.Owner, "kind", w.Kind)
-	return enr, nil
 }
 
 // logFail logs the first failure of a streak at Warn and repeats at Debug.

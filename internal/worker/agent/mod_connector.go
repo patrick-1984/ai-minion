@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -93,6 +94,12 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 			return nil, err
 		}
 	}
+	// A configured hub_fingerprint that is malformed refuses the start: it is
+	// never read as "absent" (the operator asked for a check).
+	expect, err := ParseHubExpectation(hub.Fingerprint)
+	if err != nil {
+		return nil, err
+	}
 	enr := NewEnrollments(st, s.StateDir)
 	host, _ := Require[term.SessionHost](env)
 	hostInfo, hostErr := Require[*SessionHostInfo](env)
@@ -142,6 +149,11 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	if err := c.applyStoredPolicy(ctx); err != nil {
 		return nil, fmt.Errorf("apply the stored Hub policy: %w", err)
 	}
+	// The setting on a paired Worker is compared with the pin before the
+	// connector starts (the three cases of CheckEnrolledHub).
+	if err := CheckEnrolledHub(ctx, enr, expect, s.Out, log); err != nil {
+		return nil, fmt.Errorf("check the paired Hub against hub_fingerprint: %w", err)
+	}
 	if hub.Server == "" {
 		log.Info("no hub configured; the Worker runs alone (Solo). Set --server to connect to a Hub")
 	} else {
@@ -186,7 +198,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	pairDone := make(chan struct{})
 	go func() {
 		defer close(pairDone)
-		d.autoPair(loopCtx, s, hub.Server, enr, ex)
+		d.autoPair(loopCtx, s, hub.Server, expect, enr, ex)
 	}()
 	return func(stopCtx context.Context) error {
 		cancel()
@@ -206,7 +218,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 // "minion worker pair", and the connector connects as soon as the pairing is
 // stored. Without it such a Worker only idled as "not enrolled" and showed
 // nothing to type into the Hub.
-func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, enr *Enrollments, ex *Executor) {
+func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, expect identity.FingerprintMatcher, enr *Enrollments, ex *Executor) {
 	if !needsAutoPair(ctx, s, hubURL, enr) {
 		return
 	}
@@ -216,7 +228,7 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, 
 		dialer = NewPairDialer()
 	}
 	p, err := NewPairer(PairerConfig{
-		HubURL: hubURL, Name: s.Name, Ops: ex.Ops, Features: ex.Features,
+		HubURL: hubURL, Name: s.Name, Ops: ex.Ops, Features: ex.Features, ExpectHub: expect,
 		Enrollment: enr, Dialer: dialer, Clock: d.clock, Out: s.Out, Logger: log,
 	})
 	if err != nil {
@@ -224,6 +236,13 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, 
 		return
 	}
 	log.Info("this Worker is not paired: showing a pairing code; enter it in the Hub (Workers > Add worker)")
+	if expect.IsZero() {
+		// First use without an expectation stays allowed (as before), but
+		// it is said once: the Hub is then only "not verified".
+		log.Warn("no hub_fingerprint is set: this Worker pairs with whichever Hub answers at the address and accepts the code; "+
+			"set hub_fingerprint (MINION_HUB_FINGERPRINT) to the value of minion hub identity --words on the Hub host",
+			"hub", hubLabel(hubURL))
+	}
 	if _, err := p.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Warn("pairing stopped", "error", err.Error())
 	}
