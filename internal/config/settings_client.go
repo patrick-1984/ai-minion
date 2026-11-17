@@ -21,6 +21,10 @@ const (
 	// KeyHubWorker is the Worker a Hub call is routed to when the arguments
 	// name none (MINION_HUB_WORKER, --hub-worker).
 	KeyHubWorker = "hub_worker"
+	// KeyHubTLSPin is the TLS key pin (or pins) of the Hub
+	// (MINION_HUB_TLS_PIN, --hub-tls-pin). When set it replaces the
+	// verification of the certificate chain for this client.
+	KeyHubTLSPin = "hub_tls_pin"
 )
 
 // APIKeyFileEnv is the environment variable that names the file of the API key.
@@ -71,6 +75,13 @@ func declareClient(r *Registry) {
 		Choices: []string{"true", "false"},
 	})
 	r.Declare(Setting{
+		Key:   KeyHubTLSPin,
+		Scope: ScopeWorker,
+		Help: "TLS key pin of the Hub, sha256//<base64> as curl --pinnedpubkey takes it; several are separated by \";\". " +
+			"When set, this client accepts exactly a Hub certificate with that key, whoever signed it, instead of verifying " +
+			"the certificate chain. Take the value from the \"TLS key pin\" line of \"minion hub identity --words\" on the Hub host",
+	})
+	r.Declare(Setting{
 		Key:   KeyHubWorker,
 		Scope: ScopeWorker,
 		Help: "Id (UUIDv7) of the Worker that runs the operations whose arguments name none, such as sessions_list and " +
@@ -91,6 +102,9 @@ type ClientHub struct {
 	CAFile string
 	// Insecure turns the certificate verification off for this client.
 	Insecure bool
+	// TLSPin is the TLS key pin setting as given (one or more sha256//...
+	// separated by ";"); empty when unset. The client parses it.
+	TLSPin string
 	// Worker is the id (UUIDv7) of the default Worker of target-less Worker
 	// operations; empty when none is set. It is never a name.
 	Worker string
@@ -200,6 +214,13 @@ func ResolveClientHub(res *Resolver) (ClientHub, error) {
 	if c.Insecure, err = strconv.ParseBool(ins.Value); err != nil {
 		return c, fmt.Errorf("setting %q (%s): invalid value %q, expected true or false", KeyHubInsecure, ins.Source, ins.Value)
 	}
+	pin, err := res.Resolve(KeyHubTLSPin)
+	if err != nil {
+		return c, err
+	}
+	// Only trimmed here: the kernel package config does not import identity;
+	// client.NewHub refuses a malformed pin before anything is sent.
+	c.TLSPin = strings.TrimSpace(pin.Value)
 	w, err := res.Resolve(KeyHubWorker)
 	if err != nil {
 		return c, err

@@ -85,6 +85,9 @@ type opsDeps struct {
 	confirm ServerConfirmer
 	// newID returns a fresh request id (UUIDv7).
 	newID func() string
+	// pinOffer offers, on a terminal, to trust the key pin of a Hub whose
+	// certificate is not trusted. Nil never offers.
+	pinOffer *hubPinOffer
 }
 
 func defaultOpsDeps() opsDeps {
@@ -98,9 +101,10 @@ func defaultOpsDeps() opsDeps {
 		hubSettings: func(cmd *cobra.Command) (config.ClientHub, error) {
 			return resolveHubSettings(cmd.Flags(), os.LookupEnv, loadWorkerConfig)
 		},
-		session: resolveTmuxSession(os.Getenv, newSessionLister),
-		confirm: confirmTmuxServer(os.Getenv, newSessionLister, newProbeNonce, defaultProbeLocker),
-		newID:   ops.NewUUIDv7,
+		session:  resolveTmuxSession(os.Getenv, newSessionLister),
+		confirm:  confirmTmuxServer(os.Getenv, newSessionLister, newProbeNonce, defaultProbeLocker),
+		newID:    ops.NewUUIDv7,
+		pinOffer: defaultHubPinOffer(),
 	}
 }
 
@@ -379,7 +383,7 @@ func pickBackend(cmd *cobra.Command, deps opsDeps, op ops.Op) (b client.Backend,
 			if err != nil {
 				return nil, false, fmt.Errorf("configure the Hub backend: %w", err)
 			}
-			return hb, false, nil
+			return deps.pinOffer.wrap(cmd, cfg, hb), false, nil
 		}
 		hubWorker = cfg.Worker
 	}

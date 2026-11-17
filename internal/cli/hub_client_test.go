@@ -257,7 +257,7 @@ func TestEveryOpCommandHasTheHubFlagsAndNoFlagForTheKey(t *testing.T) {
 	root := &cobra.Command{Use: "minion"}
 	addOpCommands(root, testDeps(localAnswers(`{}`)), ops.All())
 	for _, c := range root.Commands() {
-		for _, name := range []string{"hub-url", "hub-ca-file", "hub-insecure", "hub-worker"} {
+		for _, name := range []string{"hub-url", "hub-ca-file", "hub-insecure", "hub-tls-pin", "hub-worker"} {
 			if c.Flags().Lookup(name) == nil {
 				t.Errorf("%s has no --%s", c.Name(), name)
 			}
