@@ -78,7 +78,7 @@ func (h *accountPrefsHandlers) set(ctx context.Context, c *Call, args ops.Accoun
 	res := delivered()
 	if hub := h.hub(); h.allows(hub, true) == h.allows(hub, false) {
 		res.Warnings = []ops.Warning{{Code: WarnHubPolicy,
-			Message: "saved, but the Hub setting hidden_sessions is " + hub + ", so your choice applies only while it is user_controlled"}}
+			Message: "saved, but the Hub setting hidden_sessions is " + hub + ", so your choice applies only while it is user-controlled"}}
 	}
 	return res, nil
 }

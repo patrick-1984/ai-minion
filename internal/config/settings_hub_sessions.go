@@ -12,7 +12,7 @@ const KeyHiddenSessions = "hidden_sessions"
 const (
 	// HiddenSessionsUserControlled lets every user decide in their own
 	// account settings; a user who never chose is refused (the default).
-	HiddenSessionsUserControlled = "user_controlled"
+	HiddenSessionsUserControlled = "user-controlled"
 	// HiddenSessionsAllowed allows hidden sessions for everybody.
 	HiddenSessionsAllowed = "allowed"
 	// HiddenSessionsDisabled refuses hidden sessions for everybody.
@@ -25,6 +25,6 @@ func declareHubSessions(r *Registry) {
 	r.Declare(Setting{Key: KeyHiddenSessions, Scope: ScopeHub, Default: HiddenSessionsUserControlled,
 		Choices: []string{HiddenSessionsUserControlled, HiddenSessionsAllowed, HiddenSessionsDisabled},
 		Help: "New sessions that you could not see or join from your own terminal (Windows ConPTY inside the Worker, " +
-			"or a tmux server that is not your default one): user_controlled (each user allows them in Account > Sessions; " +
+			"or a tmux server that is not your default one): user-controlled (each user allows them in Account > Sessions; " +
 			"off until they do), allowed (for everybody) or disabled (refused for everybody)"})
 }

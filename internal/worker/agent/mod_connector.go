@@ -95,16 +95,22 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	enr := NewEnrollments(st, s.StateDir)
 	host, _ := Require[term.SessionHost](env)
-	su, facts, features := setupSelfUpdate(log, s, ex, host)
-	if hostInfo, err := Require[*SessionHostInfo](env); err == nil {
-		// The session host and whether its sessions are hidden (v0.10.0):
-		// the Hub's hidden_sessions policy reads them.
-		base := facts
-		facts = func() transport.WorkerFacts {
-			f := base()
-			hostInfo.applyTo(&f)
-			return f
-		}
+	hostInfo, hostErr := Require[*SessionHostInfo](env)
+	hostKind := ""
+	if hostErr == nil {
+		hostKind = hostInfo.Kind
+	}
+	su, facts, features := setupSelfUpdate(log, s, ex, host, hostKind)
+	health, _ := Require[*SessionListHealth](env)
+	// The session host, whether its sessions are hidden (the Hub's
+	// hidden_sessions policy reads it) and the latest listing error (v0.10.0).
+	// A missing service (a test core) leaves them unknown.
+	base := facts
+	facts = func() transport.WorkerFacts {
+		f := base()
+		hostInfo.applyTo(&f)
+		f.SessionsListError = health.Text()
+		return f
 	}
 	c, err := NewConnector(ConnectorConfig{
 		HubURL:     hub.Server,

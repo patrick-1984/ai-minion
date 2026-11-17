@@ -42,6 +42,13 @@ type LiveStatusReply struct {
 	// so that "no code" is not mistaken for "no code pending".
 	PairingKnown       bool   `json:"pairing_known"`
 	PendingPairingCode string `json:"pending_pairing_code,omitempty"`
+	// RunMode, the session host and the latest listing error (v0.10.0); an
+	// older Worker omits them.
+	RunMode           string `json:"run_mode,omitempty"`
+	SessionHost       string `json:"session_host,omitempty"`
+	SessionsHidden    bool   `json:"sessions_hidden,omitempty"`
+	SessionHostReason string `json:"session_host_reason,omitempty"`
+	SessionsListError string `json:"sessions_list_error,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -58,6 +65,11 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		HubPreviewOnly:     live.HubPreviewOnly,
 		PairingKnown:       live.PairingKnown || live.PendingPairingCode != "",
 		PendingPairingCode: live.PendingPairingCode,
+		RunMode:            live.RunMode,
+		SessionHost:        live.Host.Kind,
+		SessionsHidden:     live.Host.Hidden,
+		SessionHostReason:  live.Host.Reason,
+		SessionsListError:  live.ListError,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -98,6 +110,9 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		ApprovalKnown:      r.Pending != nil,
 		PairingKnown:       r.PairingKnown,
 		PendingPairingCode: r.PendingPairingCode,
+		RunMode:            r.RunMode,
+		Host:               SessionHostInfo{Kind: r.SessionHost, Hidden: r.SessionsHidden, Reason: r.SessionHostReason},
+		ListError:          r.SessionsListError,
 	}, nil
 }
 

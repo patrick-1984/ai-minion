@@ -168,3 +168,26 @@ func TestCleanFactsKeepsAKnownSessionHostOnly(t *testing.T) {
 		t.Errorf("an unknown host was kept: %+v", got)
 	}
 }
+
+func TestWorkersListSaysWhetherTheSessionListArrived(t *testing.T) {
+	r := newRig(t, nil)
+	r.be.online[wAlicePi1.ID] = Online{Facts: transport.WorkerFacts{SessionsListError: "psmux: server not running"}}
+	r.be.online[wAlicePi2.ID] = Online{}
+	r.rt.SetSessionsSynced(func(id string) bool { return id == wAlicePi2.ID })
+	list, err := r.rt.ListWorkers(context.Background(), routeAlice(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range list {
+		switch w.ID {
+		case wAlicePi1.ID:
+			if w.SessionsSynced || w.SessionsListError != "psmux: server not running" {
+				t.Errorf("pi-1 = %+v", w)
+			}
+		case wAlicePi2.ID:
+			if !w.SessionsSynced || w.SessionsListError != "" {
+				t.Errorf("pi-2 = %+v", w)
+			}
+		}
+	}
+}

@@ -44,6 +44,9 @@ type workerUpDeps struct {
 	// for a Worker that was never set up. Fields left empty fall back to the
 	// run dependencies, and then to the real thing.
 	setup workerSetupDeps
+	// windowsService looks at the Worker's Windows service, query only; nil
+	// means service.QueryWindowsService (nothing off Windows).
+	windowsService func() (service.WindowsServiceState, error)
 }
 
 // setupDeps returns the wizard dependencies with the environment and config
@@ -162,6 +165,7 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 		for _, w := range warnings {
 			_, _ = fmt.Fprintln(stderr, w)
 		}
+		warnWindowsService(stderr, deps.windowsService)
 		if err := firstRunForeground(cmd, deps, reg, lookupEnv); err != nil {
 			return err
 		}
@@ -172,6 +176,24 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 		return runWorkerRun(cmd, run)
 	}
 	return installWorkerService(cmd, deps, det, asUser)
+}
+
+// warnWindowsService warns a foreground Worker that the Worker's Windows
+// service is also installed and running or set to start at boot (it serves
+// only hidden ConPTY sessions and keeps a Worker connected after the console
+// closes), with the commands that stop and remove it. It only queries the
+// service control manager; a failed query prints nothing.
+func warnWindowsService(w io.Writer, query func() (service.WindowsServiceState, error)) {
+	if query == nil {
+		query = service.QueryWindowsService
+	}
+	st, err := query()
+	if err != nil {
+		return
+	}
+	if msg := service.ForegroundServiceWarning(st); msg != "" {
+		_, _ = fmt.Fprintln(w, msg)
+	}
 }
 
 // firstRunForeground is the first-run gate of the foreground mode: it resolves

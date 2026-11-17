@@ -78,6 +78,13 @@ type WorkerInfo struct {
 	// refused for the caller because the new session would be hidden and the
 	// hidden_sessions policy does not allow it: the message, with the fix.
 	NewSessionRefused string `json:"new_session_refused,omitempty"`
+	// SessionsSynced is true once the connected Worker sent its first session
+	// list on this connection: before that an empty list means "not known
+	// yet", not "no sessions".
+	SessionsSynced bool `json:"sessions_synced,omitempty"`
+	// SessionsListError is why the Worker could not list its sessions when it
+	// connected (short, no paths); empty when it could or did not say.
+	SessionsListError string `json:"sessions_list_error,omitempty"`
 	// Pending is true while the Worker waits for approval by its owner or an
 	// admin (F-02): it may be connected, but the Hub routes no operation to it.
 	Pending bool `json:"pending,omitempty"`

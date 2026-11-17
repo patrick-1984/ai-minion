@@ -491,7 +491,10 @@ func TestNoSnapshotWhileTheFirstLookFails(t *testing.T) {
 	obs := &scriptObserver{}
 	obs.fail(errors.New("tmux: no server"))
 	clk := newManualClock()
-	pub, _ := NewEventPublisher(EventConfig{Observer: obs, Interval: time.Second, Clock: clk})
+	// The outcome of every look reaches OnObserve (the listing error the
+	// Worker reports to the Hub).
+	health := &SessionListHealth{}
+	pub, _ := NewEventPublisher(EventConfig{Observer: obs, Interval: time.Second, Clock: clk, OnObserve: health.Set})
 	opened := make(chan *fakeEvStream, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -509,6 +512,9 @@ func TestNoSnapshotWhileTheFirstLookFails(t *testing.T) {
 		t.Fatal("a stream was opened before the first successful look")
 	case <-time.After(20 * time.Millisecond):
 	}
+	if health.Text() != "tmux: no server" {
+		t.Errorf("listing error after a failed look = %q", health.Text())
+	}
 	obs.fail(nil)
 	obs.set(agentState("a", "stable", "h1"))
 	clk.tick(t, time.Second)
@@ -517,6 +523,9 @@ func TestNoSnapshotWhileTheFirstLookFails(t *testing.T) {
 		st.snapshot(t)
 	case <-time.After(5 * time.Second):
 		t.Fatal("no stream after the look succeeded")
+	}
+	if health.Text() != "" {
+		t.Errorf("listing error after a good look = %q", health.Text())
 	}
 	cancel()
 	<-done

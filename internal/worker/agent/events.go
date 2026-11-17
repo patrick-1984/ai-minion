@@ -132,6 +132,9 @@ type EventConfig struct {
 	// Logger receives operational messages: never terminal content or
 	// secrets (AD-20). Nil discards them.
 	Logger *slog.Logger
+	// OnObserve receives the outcome of every look at the sessions (nil on
+	// success). Nil ignores it.
+	OnObserve func(err error)
 }
 
 // EventPublisher publishes the Worker's session events to the Hub (AD-3). For
@@ -278,6 +281,9 @@ func (p *EventPublisher) observe(ctx context.Context) (View, *ops.ShareDecl, boo
 		d = &decl
 	} else {
 		v, err = p.cfg.Observer.Observe(ctx)
+	}
+	if p.cfg.OnObserve != nil && ctx.Err() == nil {
+		p.cfg.OnObserve(err)
 	}
 	if err != nil {
 		if ctx.Err() == nil {

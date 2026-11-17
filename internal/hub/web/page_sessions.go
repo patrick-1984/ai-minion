@@ -127,6 +127,11 @@ type WorkerRow struct {
 	SessionsHidden    bool
 	SessionHostReason string
 	NewSessionRefused string
+	// SessionsSynced is true once the connected Worker sent its session list;
+	// SessionsListError is why it could not list its sessions when it
+	// connected. The Worker page uses both to explain an empty list.
+	SessionsSynced    bool
+	SessionsListError string
 	// ShowOwner is set when the owner column is shown ("all users").
 	ShowOwner bool
 	// SessionCount, SessionsURL and NewURL are filled by [newDashboardView]:
@@ -1171,7 +1176,8 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 			Build: w.Build, UpdateBlock: w.UpdateBlock,
 			SessionHost: w.SessionHost, SessionsHidden: w.SessionsHidden, SessionHostReason: w.SessionHostReason,
 			NewSessionRefused: w.NewSessionRefused,
-			SelfUpdate:        proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
+			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,
+			SelfUpdate: proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
 		})
 	}
 	for _, x := range sb.Sessions {

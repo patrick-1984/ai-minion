@@ -89,6 +89,36 @@ type WorkerPage struct {
 	Context string
 }
 
+// EmptyReason tells why the Worker lists no session: "failed" (its listing
+// failed when it connected and no list arrived since), "waiting" (connected,
+// its first list has not arrived), "none" (its list is empty) or "" (offline,
+// or an older Hub that does not say).
+func (v WorkerView) EmptyReason() string {
+	w := v.Worker
+	switch {
+	case !w.Online || len(v.Sessions) > 0:
+		return ""
+	case w.SessionsSynced:
+		return "none"
+	case w.SessionsListError != "":
+		return "failed"
+	}
+	return "waiting"
+}
+
+// EmptyTitle is the heading of the empty session list.
+func (v WorkerView) EmptyTitle() string {
+	switch v.EmptyReason() {
+	case "failed":
+		return "Listing the sessions failed"
+	case "waiting":
+		return "Waiting for the first session list"
+	case "none":
+		return "No visible sessions on this worker"
+	}
+	return "No sessions on this worker"
+}
+
 // Crumbs implements [Crumbed]: a Worker lives below the Workers list.
 func (p WorkerPage) Crumbs() []Crumb {
 	return []Crumb{{Label: "Control center", Path: "/"}, {Label: "Workers", Path: p.ListURL}, {Label: p.Name}}

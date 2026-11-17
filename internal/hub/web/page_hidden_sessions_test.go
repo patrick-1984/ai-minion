@@ -106,3 +106,31 @@ func TestAccountSessionsCardReadsAndSavesThePreference(t *testing.T) {
 		t.Error("the card does not name the Hub setting")
 	}
 }
+
+// An online Worker without sessions says why: no list yet, a failed listing,
+// or an empty list.
+func TestWorkerPageExplainsAnEmptySessionList(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		w      WorkerRow
+		reason string
+		want   string
+	}{
+		{"waiting", WorkerRow{ID: "w1", Name: "a", Online: true}, "waiting", "Waiting for the first session list"},
+		{"failed", WorkerRow{ID: "w1", Name: "a", Online: true, SessionsListError: "psmux: server not running"}, "failed", "The worker could not list its sessions: psmux: server not running"},
+		{"none", WorkerRow{ID: "w1", Name: "a", Online: true, SessionsSynced: true, SessionsListError: "stale"}, "none", "No visible sessions on this worker"},
+		{"offline", WorkerRow{ID: "w1", Name: "a"}, "", "The worker is offline"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newWorkerView(Dashboard{Workers: []WorkerRow{tc.w}}, false, "w1", true)
+			if v.EmptyReason() != tc.reason {
+				t.Fatalf("EmptyReason = %q, want %q", v.EmptyReason(), tc.reason)
+			}
+			out, err := renderWorkerFragment(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mustHave(t, out, tc.want)
+		})
+	}
+}

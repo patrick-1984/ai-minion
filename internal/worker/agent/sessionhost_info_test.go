@@ -61,3 +61,23 @@ func TestSessionHostInfoApplyTo(t *testing.T) {
 		t.Fatalf("facts = %+v", f)
 	}
 }
+
+// Only ConPTY sessions end with the Worker: psmux sessions on Windows and tmux
+// sessions elsewhere must not veto a self-update.
+func TestRestartEndsSessionsOnlyForConPTY(t *testing.T) {
+	for _, tc := range []struct {
+		goos, kind string
+		want       bool
+	}{
+		{"windows", "conpty", true},
+		{"windows", "", true},
+		{"windows", "psmux", false},
+		{"linux", "tmux", false},
+		{"linux", "", false},
+		{"darwin", "conpty", false},
+	} {
+		if got := restartEndsSessions(tc.goos, tc.kind); got != tc.want {
+			t.Errorf("restartEndsSessions(%q, %q) = %v, want %v", tc.goos, tc.kind, got, tc.want)
+		}
+	}
+}

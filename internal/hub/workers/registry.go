@@ -436,5 +436,6 @@ func CleanFacts(f transport.WorkerFacts) transport.WorkerFacts {
 		out.SessionsHidden = f.SessionsHidden
 		out.SessionHostReason = proto.SafeText(f.SessionHostReason, maxSessionHostReason)
 	}
+	out.SessionsListError = proto.SafeText(f.SessionsListError, maxUpdateBlock)
 	return out
 }

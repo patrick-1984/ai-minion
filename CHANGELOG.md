@@ -5,7 +5,14 @@
 ### Added
 
 - **No more hidden sessions by surprise.** A Worker reports what hosts its sessions (tmux, psmux or ConPTY) and whether a new session would be hidden from you, that is, not visible in your own `tmux ls` / `psmux ls` (Windows ConPTY inside the Worker, a private tmux socket, root's tmux server under a service manager), with the reason. The Workers list and the Worker page show it ("Sessions: psmux (visible)", "ConPTY inside the Worker (hidden): psmux is not installed (winget install psmux)").
-- **Hub setting `hidden_sessions`** (`MINION_HIDDEN_SESSIONS`, live): `user_controlled` (default), `allowed` or `disabled`. With `user_controlled` each user allows hidden sessions in **Account > Sessions** (off by default; also `minion account_prefs_set --allow-hidden-sessions` (`=false` to refuse again) or the ops `account_prefs` / `account_prefs_set`). A refused `session_create` names the Worker, the reason and the exact fix; the New session buttons are shown disabled with the same text. Workers older than v0.10.0 do not report their host and are never refused.
+- **Hub setting `hidden_sessions`** (`MINION_HIDDEN_SESSIONS`, live): `user-controlled` (default), `allowed` or `disabled`. With `user-controlled` each user allows hidden sessions in **Account > Sessions** (off by default; also `minion account_prefs_set --allow-hidden-sessions` (`=false` to refuse again) or the ops `account_prefs` / `account_prefs_set`). A refused `session_create` names the Worker, the reason and the exact fix; the New session buttons are shown disabled with the same text. Workers older than v0.10.0 do not report their host and are never refused.
+- **`minion worker status`** shows how the running Worker runs (foreground console, Windows service, systemd or launchd service), its session host with the visible/hidden reason, and why it cannot list its sessions when that fails.
+- **Windows: a foreground Worker warns about the Windows service.** When `MinionWorker` is also installed and running, or set to start at boot, `minion worker up --foreground` says that it serves only hidden ConPTY sessions and keeps a Worker connected after the console closes, with the commands to stop and remove it (`minion worker down` in an elevated PowerShell, then `sc.exe delete MinionWorker`). The check only queries the service control manager.
+- **The Worker page explains an empty session list**: "Waiting for the first session list", "Listing the sessions failed: <reason>" (the Worker reports a short, path-free listing error) or "No visible sessions on this worker".
+
+### Fixed
+
+- **Windows self-update with psmux**: the "sessions would end on the restart" refusal now applies only to ConPTY sessions; psmux sessions survive a Worker restart and no longer block an update.
 
 ## v0.9.3
 

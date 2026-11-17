@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
@@ -26,6 +27,9 @@ func init() {
 		panic(err)
 	}
 }
+
+// sessionProbeTimeout bounds the look at the sessions when the Worker starts.
+const sessionProbeTimeout = 5 * time.Second
 
 // coreDeps are the seams of the core module that tests replace.
 type coreDeps struct {
@@ -88,6 +92,18 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 		}
 	}()
 
+	// One look at the sessions now, so that a host that cannot list them is
+	// reported to the Hub in the first hello (the event publisher keeps the
+	// result fresh afterwards).
+	health := &SessionListHealth{}
+	probeCtx, cancelProbe := context.WithTimeout(ctx, sessionProbeTimeout)
+	_, probeErr := host.ListSessions(probeCtx)
+	cancelProbe()
+	health.Set(probeErr)
+	if probeErr != nil {
+		log.Warn("cannot list the sessions of the terminal host", "error", probeErr.Error())
+	}
+
 	sel, err := applyShareExisting(ctx, st, s.ShareExisting)
 	if err != nil {
 		return nil, err
@@ -116,6 +132,7 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 		func() error { return Provide(env, policy) },
 		func() error { return Provide(env, ex) },
 		func() error { return Provide(env, &hostInfo) },
+		func() error { return Provide(env, health) },
 	} {
 		if err := p(); err != nil {
 			return nil, err

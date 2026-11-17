@@ -93,7 +93,7 @@ func TestHiddenSessionsOnTheRealHub(t *testing.T) {
 		t.Fatalf("workers_list entry = %+v", info)
 	}
 
-	// Default: user_controlled, the user never allowed hidden sessions.
+	// Default: user-controlled, the user never allowed hidden sessions.
 	c, msg := create()
 	if c != proto.CodeForbidden || !strings.Contains(msg, "New sessions on patryk-asus would be hidden (ConPTY inside the Worker: psmux is not installed") ||
 		!strings.Contains(msg, "Account > Sessions") {

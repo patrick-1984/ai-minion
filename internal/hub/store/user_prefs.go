@@ -15,7 +15,7 @@ import (
 type UserPrefs struct {
 	// AllowHiddenSessions lets the user create sessions that they could not
 	// see or join from their own terminal, when the Hub setting
-	// hidden_sessions is user_controlled. Off by default.
+	// hidden_sessions is user-controlled. Off by default.
 	AllowHiddenSessions bool
 	// UpdatedAt is when the user last changed a preference (unix
 	// milliseconds); zero for the defaults.

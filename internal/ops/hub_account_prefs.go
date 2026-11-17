@@ -19,7 +19,7 @@ type AccountPrefsResult struct {
 	// could not see or join from their own terminal (Windows ConPTY inside the
 	// Worker, a tmux server that is not their default one). Off by default.
 	AllowHiddenSessions bool `json:"allow_hidden_sessions"`
-	// HiddenSessions is the Hub setting hidden_sessions: user_controlled (the
+	// HiddenSessions is the Hub setting hidden_sessions: user-controlled (the
 	// choice above decides), allowed or disabled (the choice is ignored).
 	HiddenSessions string `json:"hidden_sessions"`
 	// HiddenSessionsAllowed is the effective answer for the caller.
@@ -31,7 +31,7 @@ type AccountPrefsResult struct {
 type AccountPrefsSetArgs struct {
 	WriteArgs
 	// AllowHiddenSessions allows (true) or refuses (false) new hidden sessions
-	// for the caller while the Hub setting hidden_sessions is user_controlled.
+	// for the caller while the Hub setting hidden_sessions is user-controlled.
 	AllowHiddenSessions *bool `json:"allow_hidden_sessions,omitempty"`
 }
 

@@ -15,7 +15,13 @@ package agent
 // refuses a session_create that would make a hidden session.
 
 import (
+	"context"
+	"errors"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"unicode/utf8"
 
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
@@ -114,4 +120,72 @@ func decideWindowsHost(f windowsHostFacts) SessionHostInfo {
 		reason += ": " + f.ConPTYReason
 	}
 	return SessionHostInfo{Kind: transport.SessionHostConPTY, Hidden: true, Reason: reason}
+}
+
+// maxListErrorText bounds the listing error the Worker reports, in bytes.
+const maxListErrorText = 120
+
+// SessionListHealth is the outcome of the Worker's latest look at its
+// sessions (the startup probe and every poll of the event publisher). The
+// Hub shows it when a Worker lists no session, so "0 sessions" can be told
+// apart from "the listing failed". The core module provides it.
+type SessionListHealth struct {
+	text atomic.Pointer[string]
+}
+
+// Set records the outcome of one look: nil clears the error.
+func (h *SessionListHealth) Set(err error) {
+	if h == nil {
+		return
+	}
+	if err == nil {
+		h.text.Store(nil)
+		return
+	}
+	t := listErrorText(err)
+	h.text.Store(&t)
+}
+
+// Text is the short, path-free reason of the latest failed look; empty when
+// the latest look succeeded or none was made.
+func (h *SessionListHealth) Text() string {
+	if h == nil {
+		return ""
+	}
+	if p := h.text.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// listErrorText turns a listing error into a short sentence for the Hub: the
+// first line, with every word that looks like a file path replaced by
+// "<path>" (a path names the user and the machine), bounded.
+func listErrorText(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "listing the sessions timed out"
+	case errors.Is(err, exec.ErrNotFound):
+		return "the session host program was not found"
+	}
+	line, _, _ := strings.Cut(err.Error(), "\n")
+	words := strings.Fields(line)
+	for i, w := range words {
+		trimmed := strings.Trim(w, `"'():,;`)
+		if strings.ContainsAny(trimmed, `/\`) {
+			words[i] = strings.Replace(w, trimmed, "<path>", 1)
+		}
+	}
+	out := strings.Join(words, " ")
+	if len(out) > maxListErrorText {
+		cut := maxListErrorText
+		for cut > 0 && !utf8.RuneStart(out[cut]) {
+			cut--
+		}
+		out = out[:cut] + "..."
+	}
+	if out == "" {
+		out = "listing the sessions failed"
+	}
+	return out
 }

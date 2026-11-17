@@ -47,6 +47,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -240,6 +241,19 @@ type Router struct {
 	log       *slog.Logger
 	userMgd   func(ctx context.Context, workerID string) (bool, error)
 	hidden    HiddenSessionsPolicyFunc
+	// synced reports whether a Worker's current connection sent its session
+	// list (the event hub, set after the Router is built).
+	synced atomic.Pointer[func(workerID string) bool]
+}
+
+// SetSessionsSynced sets the source of [ops.WorkerInfo.SessionsSynced]: the
+// event hub, which a module builds after the Router.
+func (rt *Router) SetSessionsSynced(fn func(workerID string) bool) {
+	if fn == nil {
+		rt.synced.Store(nil)
+		return
+	}
+	rt.synced.Store(&fn)
 }
 
 // NewRouter returns a Router. It fails when a required dependency is missing.
@@ -343,6 +357,10 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			info.Features = on.Features
 			info.Build, info.OS, info.Arch, info.UpdateBlock = on.Facts.Build, on.Facts.OS, on.Facts.Arch, on.Facts.UpdateBlock
 			info.SessionHost, info.SessionsHidden, info.SessionHostReason = on.Facts.SessionHost, on.Facts.SessionsHidden, on.Facts.SessionHostReason
+			info.SessionsListError = on.Facts.SessionsListError
+			if fn := rt.synced.Load(); fn != nil {
+				info.SessionsSynced = (*fn)(w.ID)
+			}
 			if on.Facts.SessionsHidden && on.Facts.SessionHost != "" {
 				if pol := policyFor(); pol != nil {
 					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, *pol)

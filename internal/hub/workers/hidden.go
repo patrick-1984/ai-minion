@@ -29,7 +29,7 @@ type HiddenSessionsPolicy struct {
 }
 
 // Allows reports whether the caller may create a hidden session: allowed
-// always, disabled never, user_controlled (and any other value, which the
+// always, disabled never, user-controlled (and any other value, which the
 // policy function never passes) by the user's own choice.
 func (p HiddenSessionsPolicy) Allows() bool {
 	switch p.Hub {

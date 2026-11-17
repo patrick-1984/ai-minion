@@ -1019,3 +1019,30 @@ func TestWorkerUpForegroundWarnsExactlyOnceAboutALiteralInvitationKey(t *testing
 		}
 	}
 }
+
+// A foreground Worker warns when the Windows service is also installed and
+// running (it serves only hidden ConPTY sessions), with the real commands; a
+// stopped manual service, no service and a failed query print nothing.
+func TestWarnWindowsService(t *testing.T) {
+	for _, tc := range []struct {
+		st   service.WindowsServiceState
+		err  error
+		want bool
+	}{
+		{service.WindowsServiceState{Installed: true, Running: true, Account: "LocalSystem"}, nil, true},
+		{service.WindowsServiceState{Installed: true, AutoStart: true}, nil, true},
+		{service.WindowsServiceState{Installed: true}, nil, false},
+		{service.WindowsServiceState{}, nil, false},
+		{service.WindowsServiceState{Installed: true, Running: true}, errors.New("access denied"), false},
+	} {
+		var buf bytes.Buffer
+		warnWindowsService(&buf, func() (service.WindowsServiceState, error) { return tc.st, tc.err })
+		out := buf.String()
+		if tc.want != (out != "") {
+			t.Errorf("%+v %v: output %q", tc.st, tc.err, out)
+		}
+		if tc.want && (!strings.Contains(out, "MinionWorker") || !strings.Contains(out, "minion worker down") || !strings.Contains(out, "sc.exe delete MinionWorker")) {
+			t.Errorf("warning lacks the commands: %q", out)
+		}
+	}
+}

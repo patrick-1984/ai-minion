@@ -65,7 +65,11 @@ func (d opServerDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	if err != nil {
 		return nil, err
 	}
-	pub, err := NewEventPublisher(EventConfig{Observer: obs, Interval: interval, Clock: d.clock, Logger: log})
+	cfg := EventConfig{Observer: obs, Interval: interval, Clock: d.clock, Logger: log}
+	if health, err := Require[*SessionListHealth](env); err == nil {
+		cfg.OnObserve = health.Set
+	}
+	pub, err := NewEventPublisher(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("event stream: %w", err)
 	}
