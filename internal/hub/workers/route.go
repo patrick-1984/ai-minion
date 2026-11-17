@@ -363,7 +363,7 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			if fn := rt.synced.Load(); fn != nil {
 				info.SessionsSynced = (*fn)(w.ID)
 			}
-			if hidden, _ := newSessionsHidden(on.Facts); hidden {
+			if newSessionsHost(on.Facts) != hostVisible {
 				if pol := policyFor(); pol != nil {
 					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, *pol)
 				}
@@ -646,6 +646,41 @@ func (rt *Router) stream(ctx context.Context, req CallRequest, emit func(any) er
 	return rt.readError(err)
 }
 
+// errStaleOwner refuses remote debug on a connection admitted under another
+// owner than the current one.
+var errStaleOwner = proto.NewError(proto.CodeConflict, "the Worker is reconnecting after an owner change; try again")
+
+// debugOwnerCheck returns the check of worker_debug and worker_logs, nil for
+// any other op. The caller was authorised on the Worker's current owner, but
+// the connection that gets the op carries the owner recorded at its welcome:
+// a reconnect that read the previous owner before a reassignment committed can
+// register after it, and that Worker still keeps the previous owner's log
+// lines and debug switch. The op goes only to a connection whose welcome owner
+// is the current owner (read here, right before dispatch); otherwise it is
+// refused and the caller retries once the Worker has reconnected.
+func (rt *Router) debugOwnerCheck(ctx context.Context, op, workerID string) (func(Online) error, error) {
+	if op != ops.OpWorkerDebug && op != ops.OpWorkerLogs {
+		return nil, nil
+	}
+	recs, err := rt.dir.Workers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	owner := ""
+	for _, w := range recs {
+		if w.ID == workerID {
+			owner = w.OwnerID
+			break
+		}
+	}
+	return func(on Online) error {
+		if owner == "" || on.OwnerID != owner {
+			return errStaleOwner
+		}
+		return nil
+	}, nil
+}
+
 // call is a prepared op call: the op, the request frame and the worker.
 type call struct {
 	op       ops.Op
@@ -685,6 +720,11 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	check, err := rt.hiddenSessionCheck(ctx, req.Principal, op.Name, req.WorkerID)
 	if err != nil {
 		return nil, err
+	}
+	if check == nil {
+		if check, err = rt.debugOwnerCheck(ctx, op.Name, req.WorkerID); err != nil {
+			return nil, err
+		}
 	}
 	actions, err := rt.az.EffectiveActions(ctx, req.Principal, res)
 	if err != nil {
@@ -815,6 +855,14 @@ func (e *lostError) Unwrap() error { return e.cause }
 func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.RawMessage) error) (json.RawMessage, error) {
 	st, err := rt.backend.OpenOp(ctx, c.workerID, c.frame.Op, c.check, c.need...)
 	if err != nil {
+		if pe, ok := err.(*proto.Error); ok && pe == errStaleOwner {
+			// A connection admitted under the previous owner: close it, so
+			// that the Worker reconnects, learns its owner from the new
+			// welcome and clears what the previous owner may read.
+			if d, ok := rt.backend.(interface{ Disconnect(string) bool }); ok {
+				d.Disconnect(c.workerID)
+			}
+		}
 		var pe *proto.Error
 		if errors.As(err, &pe) {
 			return nil, err

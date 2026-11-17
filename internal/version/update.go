@@ -672,7 +672,7 @@ func (g *GitHubSource) RestrictToHost(host string) {
 			return errors.New("too many redirects")
 		}
 		if req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Hostname(), host) {
-			return fmt.Errorf("redirect to %q refused: only https://%s is allowed", req.URL.Redacted(), host)
+			return fmt.Errorf("redirect to %s refused: only https://%s is allowed", safeURL(req.URL.String()), host)
 		}
 		return nil
 	}
@@ -698,11 +698,25 @@ func newHTTPClient() *http.Client {
 	}
 }
 
+// safeURL is a URL as an error may show it: scheme and host only, "[url]"
+// for text that is no absolute URL. A mirror URL can carry a credential in
+// its user information, path or query (the rule of logx.SafeURL, which this
+// kernel package does not import).
+func safeURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "[url]"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 // checkURL accepts https URLs and http URLs on a loopback host only.
 func checkURL(raw string) error {
 	u, err := url.Parse(raw)
+	// Never quote the URL itself: a mirror URL can carry a credential in
+	// its user information, path or query.
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("%q is not a valid URL", raw)
+		return fmt.Errorf("not a valid URL (%s)", safeURL(raw))
 	}
 	switch u.Scheme {
 	case "https":
@@ -712,7 +726,7 @@ func checkURL(raw string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("%q must use https", u.Redacted())
+	return fmt.Errorf("%s must use https", safeURL(raw))
 }
 
 type ghRelease struct {

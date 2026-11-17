@@ -91,10 +91,16 @@ type tmuxHostFacts struct {
 	Visible string
 }
 
+// containerHostTmuxSocket is where the documented Docker setup
+// (deploy/compose/worker.yaml, docs/install/worker-docker.md) mounts the host
+// user's tmux socket inside the Worker's container.
+const containerHostTmuxSocket = "/tmux/default"
+
 // decideTmuxHost decides whether the sessions of a tmux Worker are hidden.
 // The setting sessions_visible yes or no decides by itself (a container that
 // mounts the host user's tmux socket is visible although the socket path is
-// not the container's default). auto: another socket than the default one is
+// not the container's default). auto: in a container, the documented host
+// socket mount (/tmux/default) is visible; another socket than the default one is
 // hidden, since a plain `tmux ls` of the person does not show it; the default
 // server inside a container is the container's own, hidden from the host; the
 // default server of root under a service manager is hidden too: that Worker
@@ -115,6 +121,12 @@ func decideTmuxHost(f tmuxHostFacts) SessionHostInfo {
 	switch {
 	case f.Socket == "":
 		return newHostInfo(tm, true, transport.HostReasonSocketUnknown, "")
+	case f.Container && filepath.Clean(f.Socket) == containerHostTmuxSocket:
+		// The documented Docker setup (deploy/compose/worker.yaml) mounts the
+		// host user's tmux socket directory at /tmux: the v0.9.3 Compose file
+		// did so without sessions_visible, and its sessions are the host
+		// user's own.
+		return newHostInfo(tm, false, transport.HostReasonContainerHostSocket, socket)
 	case f.DefaultSocket == "" || filepath.Clean(f.Socket) != filepath.Clean(f.DefaultSocket):
 		return newHostInfo(tm, true, transport.HostReasonPrivateSocket, socket+", "+who)
 	case f.Container:

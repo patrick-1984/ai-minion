@@ -588,7 +588,8 @@ func (c *Connector) setState(s ConnState) {
 // fail records a failed attempt. The first failure of a streak is logged at
 // Warn, repeats of the same failure at Debug, so that a Hub that is down for a
 // week does not fill the log.
-func (c *Connector) fail(what string, err error) { c.failMsg(what + ": " + err.Error()) }
+// The error text never carries a URL's credential, path or query (errString).
+func (c *Connector) fail(what string, err error) { c.failMsg(what + ": " + errString(err)) }
 
 func (c *Connector) failMsg(msg string) {
 	c.mu.Lock()
@@ -981,7 +982,7 @@ func causeText(err error) string {
 	if err == nil {
 		return "closed"
 	}
-	return err.Error()
+	return errString(err)
 }
 
 // hubLabel is the Hub URL without credentials, path or query, for logs.

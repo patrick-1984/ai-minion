@@ -234,12 +234,9 @@ func (d *debugRemote) handleLogs(_ context.Context, rq Request) (any, error) {
 	return ops.WorkerLogsResult{WorkerDebugState: d.state(), Lines: append([]string{}, lines[from:]...), Kept: kept, Dropped: dropped}, nil
 }
 
-// errString is err's text for a log attribute, or "" for nil. The user
-// information and query of every URL in it are masked ([logx.RedactText]): a
-// dial or download error can quote a proxy or mirror URL with a credential.
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return logx.RedactText(err.Error())
-}
+// errString is err's text for a log attribute, the remote log or the update
+// status, or "" for nil. Every URL in it is cut to scheme and host
+// ([logx.ErrorText], which rebuilds a *url.Error with [logx.SafeURL]): a dial
+// or download error can quote a proxy, mirror or reverse-proxy URL with a
+// credential in its user information, path or query.
+func errString(err error) string { return logx.ErrorText(err) }

@@ -3,7 +3,10 @@ package logx
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -74,5 +77,76 @@ func TestRingCapsLinesToItsBudgetAndResets(t *testing.T) {
 	r.Reset()
 	if n, b, dropped := r.Stats(); n != 0 || b != 0 || dropped < 1 || len(r.Tail(0)) != 0 {
 		t.Fatalf("after Reset: %d lines %d bytes %d dropped", n, b, dropped)
+	}
+}
+
+// An unescaped '@' in the user name or password: the user information runs
+// to the LAST '@' of the authority, so nothing of the password stays.
+func TestRedactTextMasksUserinfoUpToTheLastAt(t *testing.T) {
+	got := RedactText(`proxyconnect https://us@er:p@ss@host/x failed`)
+	for _, leak := range []string{"us@", "er:", "p@ss", "ss@"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("RedactText leaks %q: %s", leak, got)
+		}
+	}
+	if !strings.Contains(got, "https://[redacted]@host/x") {
+		t.Errorf("RedactText = %s", got)
+	}
+	if got := SafeURL("https://us@er:p@ss@host/x"); got != "https://host" && got != "[url]" {
+		t.Errorf("SafeURL = %q", got)
+	}
+}
+
+// Errors keep scheme and host of every URL: no user information, path,
+// query or fragment.
+func TestRedactErrorTextCutsURLsToSchemeAndHost(t *testing.T) {
+	in := `dial: GET "https://us@er:p@ss@host:8443/tok3n/prefix?sig=s1#frag": refused; proxy http://u:pw@proxy:3128/x`
+	got := RedactErrorText(in)
+	for _, leak := range []string{"us@", "p@ss", "tok3n", "prefix", "s1", "frag", "u:pw", "/x"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("RedactErrorText leaks %q: %s", leak, got)
+		}
+	}
+	for _, keep := range []string{`"https://host:8443"`, "http://proxy:3128"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("RedactErrorText lacks %q: %s", keep, got)
+		}
+	}
+}
+
+// A *url.Error (what net/http returns) is rebuilt with SafeURL, also when it
+// is wrapped.
+func TestErrorTextRebuildsURLErrors(t *testing.T) {
+	for _, raw := range []string{"https://us@er:p@ss@host/x", "https://hub.example/s3cr3t-prefix/api?k=v", "https://tok@hub.example/p"} {
+		ue := &url.Error{Op: "Get", URL: raw, Err: errors.New("connection refused")}
+		got := ErrorText(fmt.Errorf("dial the hub: %w", ue))
+		for _, leak := range []string{"us@", "p@ss", "s3cr3t", "k=v", "tok@", "/p", "/x"} {
+			if strings.Contains(got, leak) {
+				t.Errorf("ErrorText(%q) leaks %q: %s", raw, leak, got)
+			}
+		}
+		if !strings.Contains(got, "dial the hub: Get ") || !strings.Contains(got, "connection refused") {
+			t.Errorf("ErrorText(%q) = %s", raw, got)
+		}
+	}
+	if ErrorText(nil) != "" {
+		t.Error("ErrorText(nil) is not empty")
+	}
+}
+
+// The ring cuts URLs in error attributes, given as an error or as text.
+func TestRingCutsURLsInErrors(t *testing.T) {
+	ring := NewRing(100, 1<<20)
+	log, _, err := NewLive(Options{Level: "debug", Format: FormatText, Output: io.Discard}, ring)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Warn("update failed", "error", "GET https://us@er:p@ss@mirror/tok3n/r: 404",
+		"err", &url.Error{Op: "Get", URL: "https://hub/s3cr3t", Err: errors.New("EOF")})
+	got := strings.Join(ring.Tail(0), "\n")
+	for _, leak := range []string{"p@ss", "tok3n", "s3cr3t"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("the ring holds %q: %s", leak, got)
+		}
 	}
 }
