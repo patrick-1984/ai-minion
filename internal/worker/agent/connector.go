@@ -977,7 +977,7 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 			"",
 		}
 		if k, err := c.cfg.Key(); err == nil {
-			lines = append(lines, "Worker fingerprint: "+k.Fingerprint().String())
+			lines = append(lines, fingerprintLines("Worker fingerprint:", k.Fingerprint())...)
 		}
 		writeConsoleBox(c.cfg.Out, "MINION WORKER WAITING FOR APPROVAL", lines...)
 	}
