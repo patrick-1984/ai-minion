@@ -123,7 +123,7 @@ func newPairCLI(t *testing.T, env map[string]string) *pairCLI {
 			pc, _ := identity.ParsePairingCode("K7Q4XY12")
 			return pc
 		},
-		saveServer: saveWorkerServer,
+		saveServer: saveWorkerHub,
 	}
 	return c
 }
@@ -586,10 +586,10 @@ func TestSaveWorkerServerKeepsAConcurrentConfigChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- saveWorkerServer(state, "https://hub.example:8443") }()
+	go func() { done <- saveWorkerHub(state, "https://hub.example:8443", "") }()
 	select {
 	case err := <-done:
-		t.Fatalf("saveWorkerServer ran without the config lock (err=%v)", err)
+		t.Fatalf("saveWorkerHub ran without the config lock (err=%v)", err)
 	case <-time.After(150 * time.Millisecond):
 	}
 	// Another command changes the file while it holds the lock.
@@ -613,7 +613,7 @@ func TestSaveWorkerServerKeepsAConcurrentConfigChange(t *testing.T) {
 
 func TestSaveWorkerServerCreatesTheStateDirectory(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "a", "state")
-	if err := saveWorkerServer(state, "https://hub.example:8443"); err != nil {
+	if err := saveWorkerHub(state, "https://hub.example:8443", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(state, workerConfigName)); err != nil {

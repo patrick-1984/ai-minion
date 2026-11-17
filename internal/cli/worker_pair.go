@@ -18,6 +18,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -54,9 +55,13 @@ type workerPairDeps struct {
 	backoff *transport.Backoff
 	// newCode creates codes; nil means identity.NewPairingCode.
 	newCode func() identity.PairingCode
-	// saveServer remembers the Hub URL of "join" in the Worker config file;
-	// nil means the file in the state directory.
-	saveServer func(stateDir, url string) error
+	// saveServer remembers the Hub URL of "join" and the expected Hub
+	// fingerprint ("" for none) in the Worker config file, in one write; nil
+	// means the file in the state directory.
+	saveServer func(stateDir, url, fingerprint string) error
+	// interactive reports whether the command may ask (a terminal on both
+	// ends); nil means the real check.
+	interactive func(in io.Reader, out io.Writer) bool
 }
 
 func defaultWorkerPairDeps() workerPairDeps {
@@ -67,7 +72,7 @@ func defaultWorkerPairDeps() workerPairDeps {
 		lookupEnv:  os.LookupEnv,
 		loadConfig: loadWorkerConfig,
 		openStore:  func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) },
-		saveServer: saveWorkerServer,
+		saveServer: saveWorkerHub,
 	}
 }
 
@@ -216,6 +221,22 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 	if hub.Server == "" {
 		return agent.ErrNoHubURL
 	}
+	// The expected Hub fingerprint: the setting, else the prompt in a
+	// terminal. Both come before any network probe and before anything is
+	// changed on disk (C2); a malformed setting is an error, never "absent".
+	expect, err := agent.ParseHubExpectation(hub.Fingerprint)
+	if err != nil {
+		return err
+	}
+	interactive := deps.interactive
+	if interactive == nil {
+		interactive = func(in io.Reader, out io.Writer) bool { return isTerminalStream(in) && isTerminalWriter(out) }
+	}
+	if expect.IsZero() && interactive(deps.stdin, stdout) {
+		if expect, err = agent.AskHubFingerprint(deps.stdin, stdout, hub.Server); err != nil {
+			return err
+		}
+	}
 	dialer := deps.dialer
 	if dialer == nil {
 		dialer = agent.NewPairDialer()
@@ -228,6 +249,7 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 		Clock:      deps.clock,
 		Backoff:    deps.backoff,
 		NewCode:    deps.newCode,
+		ExpectHub:  expect,
 		Out:        stdout,
 		Logger:     logger,
 	})
@@ -260,9 +282,9 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 	if opt.join != "" {
 		save := deps.saveServer
 		if save == nil {
-			save = saveWorkerServer
+			save = saveWorkerHub
 		}
-		if err := save(core.StateDir, hub.Server); err != nil {
+		if err := save(core.StateDir, hub.Server, expect.String()); err != nil {
 			return fmt.Errorf("remember the Hub address: %w", err)
 		}
 	}
@@ -330,6 +352,7 @@ func confirmNewCode(in io.Reader, out io.Writer, enr agent.Enrollment) error {
 	if enr.Owner != "" {
 		owner = " (paired to " + enr.Owner + ")"
 	}
+	name, owner = proto.SafeText(name, 255), proto.SafeText(owner, 160)
 	_, _ = fmt.Fprintf(out, "%s%s is already paired. A new code creates a new Worker key and forgets the old pairing;\n"+
 		"the old identity is revoked at the Hub. Continue? [y/N] ", name, owner)
 	if in == nil {
@@ -343,12 +366,14 @@ func confirmNewCode(in io.Reader, out io.Writer, enr agent.Enrollment) error {
 	return errors.New("aborted: nothing was changed")
 }
 
-// saveWorkerServer stores the Hub URL as the server setting in the Worker
-// config file of the state directory. The read-modify-write runs under the same
+// saveWorkerHub stores the Hub URL as the server setting in the Worker config
+// file of the state directory, and with it, in the same write, the expected
+// Hub fingerprint (hub_fingerprint) when one was given, so that the Worker
+// service applies the same rule when it pairs or resumes by itself. The read-modify-write runs under the same
 // config lock as `minion worker config set|unset|share` and the cleanup of the
 // invitation key, so that a change made meanwhile is not lost; the state
 // directory is created first, like those commands do.
-func saveWorkerServer(stateDir, url string) error {
+func saveWorkerHub(stateDir, url, fingerprint string) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return fmt.Errorf("cannot create the state directory %q: %w", stateDir, err)
 	}
@@ -362,5 +387,8 @@ func saveWorkerServer(stateDir, url string) error {
 		return err
 	}
 	f.Set(config.KeyServer, url)
+	if fingerprint != "" {
+		f.Set(config.KeyHubFingerprint, fingerprint)
+	}
 	return f.Save()
 }
