@@ -7,8 +7,8 @@
     <dt>Bootstrap state</dt><dd>{{.Data.Status.StateLabel}}</dd>
     <dt>Passphrase</dt><dd>{{if .Data.Status.PassphraseSet}}set{{else}}not set yet{{end}}</dd>
     <dt>Workers can connect</dt><dd>{{if .Data.Status.Serving}}yes{{else}}no{{end}}</dd>
-    {{if .Data.Status.RootFingerprint}}<dt>Root fingerprint</dt><dd><code>{{.Data.Status.RootFingerprint}}</code></dd>{{end}}
-    {{if .Data.Status.OpFingerprint}}<dt>Operational key</dt><dd><code>{{.Data.Status.OpFingerprint}}</code></dd>{{end}}
+    {{if .Data.Status.RootFingerprint}}<dt>Hub fingerprint (root key)</dt><dd data-hub-fingerprint><span class="fp-words">{{.Data.Status.RootFingerprintWords}}</span><br><code>{{.Data.Status.RootFingerprint}}</code><br><span class="muted">Workers compare these words. If a reverse proxy is in front of the Hub and you do not want to rely on it, read them on the Hub host instead: <code>minion hub identity --words</code></span></dd>{{end}}
+    {{if .Data.Status.OpFingerprint}}<dt>Operational key</dt><dd><code>{{.Data.Status.OpFingerprint}}</code> <span class="muted">(changes at every re-issue; do not compare it)</span></dd>{{end}}
     {{if .Data.Status.Serial}}<dt>Certificate serial</dt><dd>{{.Data.Status.Serial}}</dd>
     <dt>Valid from</dt><dd>{{.Data.ValidFrom}}</dd>
     <dt>Valid until</dt><dd>{{.Data.ValidUntil}} <span class="badge"{{if eq .Data.Status.Warning "error"}} data-tone="danger"{{else if eq .Data.Status.Warning "expired"}} data-tone="danger"{{else if .Data.Status.Warning}} data-tone="warning"{{end}} id="id-countdown" data-days="{{.Data.Status.DaysLeft}}">{{if .Data.Status.Expired}}expired{{else}}{{.Data.Status.DaysLeft}} days left{{end}}</span></dd>{{end}}

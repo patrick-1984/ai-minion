@@ -31,6 +31,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -162,6 +163,39 @@ func SetPublicURL(f func(r *http.Request) string) (release func()) {
 	p := &f
 	publicURL.Store(p)
 	return func() { publicURL.CompareAndSwap(p, nil) }
+}
+
+// hubFingerprint is the optional source of the Hub fingerprint (the 52
+// characters of the root key), "" while the Hub has none.
+var hubFingerprint atomic.Pointer[func() string]
+
+// SetHubFingerprint tells the onboarding pages how to find the Hub
+// fingerprint (the Hub's web module passes the root of the identity
+// snapshot). An empty answer, or no source, hides the fingerprint blocks; nil
+// removes the source. The returned function removes this source again, but
+// only while it is still the current one (as for [SetPublicURL]).
+func SetHubFingerprint(f func() string) (release func()) {
+	if f == nil {
+		hubFingerprint.Store(nil)
+		return func() {}
+	}
+	p := &f
+	hubFingerprint.Store(p)
+	return func() { hubFingerprint.CompareAndSwap(p, nil) }
+}
+
+// currentHubFingerprint returns the Hub fingerprint, or "" when it is not
+// known or not a valid fingerprint.
+func currentHubFingerprint() string {
+	f := hubFingerprint.Load()
+	if f == nil {
+		return ""
+	}
+	fp, err := identity.ParseFingerprint((*f)())
+	if err != nil {
+		return ""
+	}
+	return fp.String()
 }
 
 // placeholderHub is shown when no usable address is known.
@@ -514,6 +548,8 @@ type inviteResult struct {
 	// Limit is "N enrollments" for a key with a use limit.
 	Limit string
 	Key   string
+	// HubWords are the six words of the Hub fingerprint inside the key (M12b).
+	HubWords string
 	InviteCommands
 }
 
@@ -542,6 +578,9 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	out := inviteResult{
 		Name: res.Name, Mode: "one-time", Kind: res.Kind, Expires: formatTime(res.ExpiresAt, "never"),
 		Key: res.Key, InviteCommands: inviteCommands(hubURL(r), res.Key),
+	}
+	if k, err := identity.ParseInviteKey(res.Key); err == nil {
+		out.HubWords = k.Fingerprint.Words()
 	}
 	if res.Mode == ops.InvitationReusable {
 		out.Mode = "reusable"
