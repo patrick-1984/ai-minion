@@ -23,6 +23,10 @@
   <p class="help" id="unasked-worker-status" role="status" aria-live="polite"></p>
   <p class="help">Text, keys and the task go out at once, without the "Send anyway" confirmation for a shell, an open dialog or a busy agent. A dialog answer is still checked. Kept in this browser. Each session page has the same switch for that session.</p>
 </section>
+{{end}}{{if .Data.DebugURL}}<section class="panel" aria-labelledby="debug-h" id="debug-section">
+  <h2 id="debug-h">Debug</h2>
+  <div id="debug-panel" hx-get="{{.Data.DebugURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the debug state...</p></div>
+</section>
 {{end}}</div>
 {{template "inspector" .Data.Context}}
 </div>

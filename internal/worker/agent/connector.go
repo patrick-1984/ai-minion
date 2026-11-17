@@ -116,6 +116,9 @@ type ConnectParams struct {
 	Clock transport.WallMono
 	// Session tunes the yamux session (tests inject a clock).
 	Session transport.SessionOptions
+	// Logger receives the debug lines of the attempt (URL, TLS peer,
+	// protocol); nil writes nothing.
+	Logger *slog.Logger
 }
 
 // Attempt is the result of a connection whose Hub was authenticated.
@@ -625,6 +628,7 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 		Ratchet:   enr.Ratchet,
 		Clock:     c.cfg.WallMono,
 		Session:   c.cfg.Session,
+		Logger:    c.log,
 	})
 	if err != nil {
 		if ctx.Err() == nil {

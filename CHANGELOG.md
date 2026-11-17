@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- **Worker debug logging**: `minion worker up --debug` (also `worker run`, or `MINION_DEBUG=1`) logs at debug level, with new debug lines for the session host choice (psmux path and where it was found, version, why ConPTY), every session listing whose result changed (count, sessions psmux cannot address), the share filter, the event stream, self-update steps and the restart path, the service detection, and the Hub connection (URL, proxy, TLS peer certificate subject, issuer and SHA-256 fingerprint, protocol).
+- **Remote debug** (`--allow-debug-remote`, `allow_debug_remote`, `MINION_ALLOW_DEBUG_REMOTE`; off by default): the Worker keeps its recent log lines in memory, and its owner or an administrator can switch debug logging on for 1 to 1440 minutes (it switches itself off) and read the last lines through the Hub: the **Debug** panel on the Worker page, or the operations `worker_debug` and `worker_logs`. Every call is audited. A Worker that does not allow it refuses with the command to allow it.
+
 ## v0.9.3
 
 Released 2026-11-16.

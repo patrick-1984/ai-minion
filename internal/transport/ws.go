@@ -2,7 +2,9 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -78,23 +80,73 @@ func dialClient() *http.Client {
 // messages) and returns it as a net.Conn on which the AD-6 handshake runs. ctx
 // bounds only the dial; closing the returned conn ends the connection.
 func Dial(ctx context.Context, hubURL string) (net.Conn, error) {
+	conn, _, err := DialInfo(ctx, hubURL)
+	return conn, err
+}
+
+// DialFacts describe a dial for the debug log: where it went and what the TLS
+// peer presented. The certificate is not trusted for anything (A-15); its
+// subject, issuer and fingerprint help to see a TLS-intercepting proxy or a
+// wrong host.
+type DialFacts struct {
+	// URL is the WebSocket URL dialled; Proxy the proxy from the environment
+	// ("" for none).
+	URL   string
+	Proxy string
+	// HTTPStatus is the status of the upgrade answer (101 when it worked).
+	HTTPStatus int
+	// TLS facts; empty for ws://.
+	TLSVersion  string
+	PeerSubject string
+	PeerIssuer  string
+	// PeerSHA256 is the SHA-256 of the leaf certificate (hex).
+	PeerSHA256  string
+	Subprotocol string
+}
+
+// DialInfo is Dial that also returns the facts of the dial, also when it
+// failed after the HTTP answer.
+func DialInfo(ctx context.Context, hubURL string) (net.Conn, DialFacts, error) {
+	var facts DialFacts
 	wsURL, err := ConnectURL(hubURL)
 	if err != nil {
-		return nil, err
+		return nil, facts, err
 	}
-	c, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+	facts.URL = wsURL
+	if u, perr := url.Parse(wsURL); perr == nil {
+		facts.URL = u.Redacted()
+	}
+	if req, rerr := http.NewRequest(http.MethodGet, strings.Replace(strings.Replace(wsURL, "wss://", "https://", 1), "ws://", "http://", 1), nil); rerr == nil {
+		if pu, perr := http.ProxyFromEnvironment(req); perr == nil && pu != nil {
+			facts.Proxy = pu.Redacted()
+		}
+	}
+	c, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPClient:      dialClient(),
 		Subprotocols:    []string{Subprotocol},
 		CompressionMode: websocket.CompressionDisabled,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("transport: dial hub: %w", err)
+	if resp != nil {
+		facts.HTTPStatus = resp.StatusCode
+		if resp.TLS != nil {
+			facts.TLSVersion = tls.VersionName(resp.TLS.Version)
+			if len(resp.TLS.PeerCertificates) > 0 {
+				leaf := resp.TLS.PeerCertificates[0]
+				sum := sha256.Sum256(leaf.Raw)
+				facts.PeerSubject, facts.PeerIssuer = leaf.Subject.String(), leaf.Issuer.String()
+				facts.PeerSHA256 = hex.EncodeToString(sum[:])
+			}
+		}
 	}
+	if err != nil {
+		return nil, facts, fmt.Errorf("transport: dial hub: %w", err)
+	}
+	facts.Subprotocol = c.Subprotocol()
 	if c.Subprotocol() != Subprotocol {
 		_ = c.Close(websocket.StatusProtocolError, "subprotocol "+Subprotocol+" required")
-		return nil, fmt.Errorf("transport: hub did not select subprotocol %s", Subprotocol)
+		return nil, facts, fmt.Errorf("transport: hub did not select subprotocol %s", Subprotocol)
 	}
-	return wrap(c), nil
+	return wrap(c), facts, nil
 }
 
 // ErrNotWorkerConnect is returned by Accept for a request that is not a

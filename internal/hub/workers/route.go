@@ -323,6 +323,7 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			info.Online, info.ProtoVersion, info.ConnectedAt, info.Ops = true, on.Version.String(), &at, on.Ops
 			info.Features = on.Features
 			info.Build, info.OS, info.Arch, info.UpdateBlock = on.Facts.Build, on.Facts.OS, on.Facts.Arch, on.Facts.UpdateBlock
+			info.DebugRemote = on.Facts.DebugRemote
 			if w.Pending {
 				// Nothing is routed to a pending Worker; do not offer what it announced.
 				info.Ops, info.Features = nil, nil

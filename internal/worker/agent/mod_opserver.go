@@ -61,7 +61,7 @@ func (d opServerDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	if err != nil {
 		return nil, err
 	}
-	obs, err := NewHostObserver(HostObserverConfig{Host: host, Classifier: ex.classify, Policy: policy})
+	obs, err := NewHostObserver(HostObserverConfig{Host: host, Classifier: ex.classify, Policy: policy, Logger: log})
 	if err != nil {
 		return nil, err
 	}

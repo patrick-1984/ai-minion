@@ -308,9 +308,15 @@ func (p *EventPublisher) run(ctx context.Context, st EventStream, view View, dec
 	var seq uint64
 	snap := SnapshotFrame{Type: proto.TypeEventsSnap, Time: ops.Timestamp(p.clk.Now()), Sessions: view.Sorted(), Share: declared}
 	if err := p.write(st, snap); err != nil {
+		p.log.Debug("cannot send the event snapshot", "error", err.Error())
 		st.Reset()
 		return ctx.Err() != nil
 	}
+	mode := ""
+	if declared != nil {
+		mode = declared.Rule.Mode
+	}
+	p.log.Debug("event stream open; snapshot sent", "sessions", len(snap.Sessions), "share_mode", mode)
 
 	gone := make(chan struct{})
 	go p.drain(st, gone)
@@ -356,6 +362,9 @@ func (p *EventPublisher) run(ctx context.Context, st EventStream, view View, dec
 				return ctx.Err() != nil
 			}
 			declared, newRule = newRule, nil
+		}
+		if len(changes) > 0 {
+			p.log.Debug("session events sent", "changes", len(changes), "sessions", len(cur))
 		}
 		for _, c := range changes {
 			seq++

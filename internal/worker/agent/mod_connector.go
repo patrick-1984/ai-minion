@@ -96,6 +96,8 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	enr := NewEnrollments(st, s.StateDir)
 	host, _ := Require[term.SessionHost](env)
 	su, facts, features := setupSelfUpdate(log, s, ex, host)
+	dbg := setupDebugRemote(log, s, ex)
+	facts = withDebugFact(facts, dbg)
 	c, err := NewConnector(ConnectorConfig{
 		HubURL:     hub.Server,
 		Name:       s.Name,

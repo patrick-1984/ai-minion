@@ -52,6 +52,21 @@ func commandLogger(cmd *cobra.Command, res *config.Resolver, out io.Writer) (*sl
 	return logx.New(logx.Options{Level: level, Format: logx.Format(format.Value), Output: out})
 }
 
+// workerLogger is commandLogger for a running Worker: its level can be
+// switched at runtime (remote debug, worker_debug) and its recent lines are
+// kept in memory (worker_logs).
+func workerLogger(cmd *cobra.Command, res *config.Resolver, out io.Writer) (*slog.Logger, *logx.Live, error) {
+	level, err := config.ResolveLogLevel(res, verboseFlag(cmd))
+	if err != nil {
+		return nil, nil, err
+	}
+	format, err := res.Resolve(config.KeyLogFormat)
+	if err != nil {
+		return nil, nil, err
+	}
+	return logx.NewLive(logx.Options{Level: level, Format: logx.Format(format.Value), Output: out}, logx.NewRing(0, 0))
+}
+
 // debugOpCall writes one debug line about an op command's call: the op, the
 // backend (hub or local), the outcome (ok or the error code) and the
 // duration. It writes nothing unless the level is debug (-v, MINION_VERBOSE

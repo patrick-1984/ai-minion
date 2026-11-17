@@ -137,6 +137,10 @@ type WorkerFacts struct {
 	// UpdateBlock is why the Worker cannot update itself from the Hub
 	// ("installed by a package", "runs in a container", ...); empty when it can.
 	UpdateBlock string `json:"update_block,omitempty"`
+	// DebugRemote is true when the Worker allows its owner and the Hub's
+	// administrators to switch debug logging on and read its recent log
+	// (allow_debug_remote, v0.10.0).
+	DebugRemote bool `json:"debug_remote,omitempty"`
 }
 
 // HubHello is the Hub's reply. Chain is present in connect mode only.

@@ -117,3 +117,51 @@ func TestVerboseOpCommandLogsTheCall(t *testing.T) {
 		t.Errorf("--verbose=false with MINION_VERBOSE=1 stderr = %q", got)
 	}
 }
+
+// --debug (alone a switch) and MINION_DEBUG=1 make the Worker log at debug
+// level; the Worker logger keeps its lines in memory and can be switched.
+func TestWorkerDebugFlagAndLiveLogger(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		env   map[string]string
+		debug bool
+	}{
+		{name: "nothing"},
+		{name: "--debug", args: []string{"--debug"}, debug: true},
+		{name: "--debug wins over --log-level", args: []string{"--debug", "--log-level", "warn"}, debug: true},
+		{name: "MINION_DEBUG=1", env: map[string]string{"MINION_DEBUG": "1"}, debug: true},
+		{name: "--debug=false", args: []string{"--debug=false"}, env: map[string]string{"MINION_DEBUG": "1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *slog.Logger
+			var debugOn bool
+			var ringLines int
+			root := &cobra.Command{Use: "minion", SilenceUsage: true, SilenceErrors: true}
+			addVerboseFlag(root)
+			sub := &cobra.Command{Use: "x", RunE: func(cmd *cobra.Command, _ []string) error {
+				res := &config.Resolver{Role: config.ScopeWorker, Flags: changedFlags{cmd: cmd, reg: config.Default},
+					LookupEnv: func(k string) (string, bool) { v, ok := tc.env[k]; return v, ok }}
+				log, live, err := workerLogger(cmd, res, &bytes.Buffer{})
+				if err != nil {
+					return err
+				}
+				got, debugOn = log, live.Debug()
+				log.Info("hello")
+				ringLines, _, _ = live.Ring.Stats()
+				return nil
+			}}
+			addSettingFlags(sub, config.Default, config.ScopeWorker)
+			root.AddCommand(sub)
+			if code := execute(context.Background(), root, append([]string{"x"}, tc.args...), &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+				t.Fatalf("exit %d", code)
+			}
+			if got.Enabled(context.Background(), slog.LevelDebug) != tc.debug || debugOn != tc.debug {
+				t.Errorf("debug = %v, want %v", debugOn, tc.debug)
+			}
+			if ringLines != 1 {
+				t.Errorf("ring holds %d lines", ringLines)
+			}
+		})
+	}
+}

@@ -427,5 +427,6 @@ func CleanFacts(f transport.WorkerFacts) transport.WorkerFacts {
 		out.Arch = f.Arch
 	}
 	out.UpdateBlock = proto.SafeText(f.UpdateBlock, maxUpdateBlock)
+	out.DebugRemote = f.DebugRemote
 	return out
 }

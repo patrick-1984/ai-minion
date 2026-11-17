@@ -127,8 +127,8 @@ func TestHubComposedFromTheRegistryRoutesWorkerOps(t *testing.T) {
 
 	// The central Worker update is routed in production (v0.9.0): an admin's
 	// worker_update reaches the router (the Worker is offline), not
-	// unsupported_op.
-	for _, op := range []string{ops.OpWorkerUpdate, ops.OpWorkerUpdateStatus} {
+	// unsupported_op. Remote debug (v0.10.0) is routed the same way.
+	for _, op := range []string{ops.OpWorkerUpdate, ops.OpWorkerUpdateStatus, ops.OpWorkerDebug, ops.OpWorkerLogs} {
 		code, body, _ := hc.do("POST", "/api/v1/ops/"+op, json.RawMessage(`{"worker_id":"`+wid+`","version":"v9.9.9"}`), asAdmin)
 		var e struct {
 			Error struct {

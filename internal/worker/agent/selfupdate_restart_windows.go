@@ -29,14 +29,17 @@ func underServiceManager() bool {
 // started with the same arguments and console, then this process exits.
 func restartProcess(log *slog.Logger, exe string) {
 	if underServiceManager() {
+		log.Info("restarting the Worker", "path", "service", "how", "exit with the restart code; the service recovery starts the new binary", "exe", exe)
 		os.Exit(exitRestart)
 	}
 	// Foreground: stop cleanly and let the command restart the new binary in
 	// this console and wait for it (worker run, RestartPending), so the console
 	// keeps owning the Worker and Ctrl+C stops it.
 	if requestRestart(exe) {
+		log.Info("restarting the Worker", "path", "console", "how", "stop, then the command runs the new binary in this console", "exe", exe)
 		return
 	}
+	log.Info("restarting the Worker", "path", "detached", "how", "no running runtime; start the new binary and exit", "exe", exe)
 	restartNow(log, exe)
 }
 
@@ -52,6 +55,7 @@ func restartNow(log *slog.Logger, exe string) {
 	// The new process waits for this one to exit before it starts its
 	// modules: the local control pipe is exclusive (waitForParent).
 	cmd.Env = append(os.Environ(), waitPIDEnv+"="+strconv.Itoa(os.Getpid()))
+	log.Debug("starting the new Worker binary detached, with the same console", "exe", exe, "args", len(os.Args)-1)
 	if err := cmd.Start(); err != nil {
 		log.Error("cannot restart the Worker with the new binary; start it again by hand", "error", err.Error())
 		os.Exit(1)

@@ -23,6 +23,39 @@ Debug lines never contain keys, passphrases, pairing codes, API keys, terminal c
 
 `minion worker up -v` saves the verbose setting to the Worker's config file like any other setting, so the installed service logs at debug level too. Run `minion worker up --verbose=false` to turn it off again.
 
+## Worker debug: `--debug` and `MINION_DEBUG`
+
+`minion worker up --debug` (or `minion worker run --debug`, or `MINION_DEBUG=1`) runs the Worker at debug level. It is the Worker's own switch for `log_level=debug` and wins over every other level. Besides the lines above, a debug Worker logs:
+
+- **Session host** (Windows): the `session_host` mode, whether the Worker runs under a service manager, where psmux was found (`PATH`, the WinGet links directory, or where it looked), the version psmux printed and why the Worker fell back to ConPTY.
+- **Session listings**: the command, whether it worked, the number of sessions and, for psmux, the sessions left out because psmux cannot address their names. A listing that repeats the previous result is not written again.
+- **Share filter**: how many sessions were listed, how many are shared and the share mode (`later` shares nothing until you decide).
+- **Event stream**: the snapshot sent to the Hub and each batch of session changes.
+- **Self-update**: from and to, why an update was refused, the installer steps, and which restart path the Worker takes (service, console, exec or detached).
+- **Hub connection**: the WebSocket URL, the proxy, the HTTP status, the TLS version and the Hub certificate's subject, issuer and SHA-256 fingerprint, the handshake result, the negotiated protocol and the certificate's end.
+
+`minion worker up --debug` saves the switch to the config file, so the service logs at debug level too; `minion worker up --debug=false` turns it off.
+
+## Remote debug from the Hub: `--allow-debug-remote`
+
+A Worker keeps its most recent log lines in memory (2000 lines or 512 KB). When it allows it, the Worker's owner or an administrator can switch its debug logging on for a while and read those lines through the Hub, without access to the machine. It is off by default; allow it on the Worker machine with one of:
+
+```sh
+minion worker up --foreground --allow-debug-remote     # with your usual flags
+minion worker config set allow_debug_remote true       # for the service; then restart the Worker
+MINION_ALLOW_DEBUG_REMOTE=1 minion worker up --foreground
+```
+
+Then use the **Debug** panel on the Worker's page in the web UI (turn debug on for 1 to 1440 minutes, default 60; it switches itself off after that; read the recent log), or the operations through the Hub:
+
+```sh
+minion worker_debug --worker-id <id> --enabled --minutes 30
+minion worker_logs --worker-id <id> --lines 500
+minion worker_debug --worker-id <id> --enabled=false
+```
+
+A Worker that does not allow it refuses both with the command to allow it. Every call, the panel's reads included, is recorded in the Hub's audit log. The log never holds terminal content, messages, keys or pairing codes.
+
 ## Worker status as JSON
 
 ```sh

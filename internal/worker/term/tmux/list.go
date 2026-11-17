@@ -73,18 +73,22 @@ func (h *Host) listPanes(ctx context.Context) ([]term.Session, error) {
 	}
 	out, err := h.run(ctx, "list-panes", "-a", "-F", codec.format())
 	if err != nil {
+		h.debugList(0, nil, err)
 		return nil, err
 	}
 	sessions, err := codec.parse(string(out))
 	if err != nil || !h.psmux {
+		h.debugList(len(sessions), nil, err)
 		return sessions, err
 	}
 	// psmux numbers panes per session: address each one through its session.
 	// A session whose name psmux cannot target literally is left out: a target
 	// it misreads falls back to the last-used session (fail closed).
 	kept := sessions[:0]
+	var dropped []string
 	for i := range sessions {
 		if !PsmuxNameOK(sessions[i].Name) {
+			dropped = append(dropped, sessions[i].Name)
 			continue
 		}
 		for j := range sessions[i].Panes {
@@ -93,7 +97,29 @@ func (h *Host) listPanes(ctx context.Context) ([]term.Session, error) {
 		}
 		kept = append(kept, sessions[i])
 	}
+	h.debugList(len(kept), dropped, nil)
 	return kept, nil
+}
+
+// debugList writes one debug line about a session listing: the command, the
+// outcome, the number of sessions, and for psmux the sessions left out because
+// psmux cannot address their names (at most 5 names, cut). A listing that has
+// the same result as the previous one is not written again (the event stream
+// lists every second).
+func (h *Host) debugList(n int, dropped []string, err error) {
+	names := make([]string, 0, min(len(dropped), 5))
+	for _, d := range dropped[:min(len(dropped), 5)] {
+		names = append(names, strconv.Quote(truncate(d, 40)))
+	}
+	e := errText(err)
+	var te *tmuxError
+	if errors.As(err, &te) {
+		e = truncate(e, 300)
+	}
+	key := fmt.Sprintf("%d|%d|%s|%s", n, len(dropped), strings.Join(names, ","), e)
+	h.listDedup.Debug(h.logger(), key, "terminal host listing", "command", "list-panes -a", "binary", h.bin, "psmux", h.psmux,
+		"ok", err == nil, "sessions", n, "dropped_unaddressable", len(dropped), "dropped_names", strings.Join(names, ","),
+		"error", e)
 }
 
 // PsmuxNameOK reports whether psmux 3.4 reads "=name:" as exactly that

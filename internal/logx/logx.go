@@ -34,6 +34,9 @@ type Options struct {
 	// IsTerminal decides whether Output is a terminal when Format is auto;
 	// nil uses [IsTerminal]. It exists so that tests can force either mode.
 	IsTerminal func(io.Writer) bool
+
+	// leveler replaces Level with a runtime level ([NewLive]).
+	leveler slog.Leveler
 }
 
 // ParseLevel converts a level name to a [slog.Level].
@@ -88,6 +91,9 @@ func New(opts Options) (*slog.Logger, error) {
 		}
 	}
 	ho := &slog.HandlerOptions{Level: level}
+	if opts.leveler != nil {
+		ho.Level = opts.leveler
+	}
 	var h slog.Handler
 	if format == FormatText {
 		h = slog.NewTextHandler(out, ho)

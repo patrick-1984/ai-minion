@@ -65,6 +65,9 @@ type WorkerInfo struct {
 	// UpdateBlock is why the connected Worker cannot update itself from the
 	// Hub; empty when it can or when it did not say (older Workers).
 	UpdateBlock string `json:"update_block,omitempty"`
+	// DebugRemote is true when the connected Worker allows remote debug
+	// (worker_debug, worker_logs; allow_debug_remote on the Worker).
+	DebugRemote bool `json:"debug_remote,omitempty"`
 	// Pending is true while the Worker waits for approval by its owner or an
 	// admin (F-02): it may be connected, but the Hub routes no operation to it.
 	Pending bool `json:"pending,omitempty"`

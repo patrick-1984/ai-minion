@@ -5,14 +5,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
@@ -47,8 +50,24 @@ func WithBinary(path string) Option { return func(h *Host) { h.bin = path } }
 // WithTimeout bounds every single tmux invocation. The default is 10 seconds.
 func WithTimeout(d time.Duration) Option { return func(h *Host) { h.timeout = d } }
 
+// WithLogger sets the logger of the debug lines (version check, session
+// listings). The default writes nothing.
+func WithLogger(l *slog.Logger) Option { return func(h *Host) { h.SetLogger(l) } }
+
+// SetLogger sets the logger of the debug lines; nil writes nothing. It never
+// logs terminal content: commands, exit status, counts and errors only.
+func (h *Host) SetLogger(l *slog.Logger) { h.log.Store(l) }
+
+func (h *Host) logger() *slog.Logger {
+	if l := h.log.Load(); l != nil {
+		return l
+	}
+	return slog.New(slog.DiscardHandler)
+}
+
 // Host is the tmux implementation of term.SessionHost for one tmux server.
-// It is safe for concurrent use: it holds no mutable state.
+// It is safe for concurrent use: its only mutable state is the logger and the
+// summary of the last listing, both safe for concurrent use.
 type Host struct {
 	socket  string
 	bin     string
@@ -60,6 +79,10 @@ type Host struct {
 	// session (paneTarget); an empty socket means the user's default
 	// namespace (~\.psmux), where the user's own sessions are.
 	psmux bool
+	// log receives the debug lines; listDedup keeps a listing that repeats
+	// the previous result out of the log.
+	log       atomic.Pointer[slog.Logger]
+	listDedup logx.Dedup
 }
 
 // MinPsmuxMajor and MinPsmuxMinor are the oldest supported psmux (3.4): older
@@ -111,6 +134,8 @@ func New(socketPath string, opts ...Option) (*Host, error) {
 		h.exec = h.execProcess
 	}
 	out, err := h.run(context.Background(), "-V")
+	h.logger().Debug("terminal host version check", "binary", h.bin, "psmux", h.psmux, "socket", h.socket,
+		"output", truncate(strings.TrimSpace(string(out)), 120), "error", errText(err))
 	if err != nil {
 		return nil, fmt.Errorf("tmux: cannot determine the tmux version: %w", err)
 	}
@@ -131,7 +156,16 @@ func New(socketPath string, opts ...Option) (*Host, error) {
 		return nil, fmt.Errorf("tmux: version %s is too old; tmux %d.%d or newer is required", v, MinMajor, MinMinor)
 	}
 	h.version = v
+	h.logger().Debug("terminal host ready", "binary", h.bin, "psmux", h.psmux, "version", v.String())
 	return h, nil
+}
+
+// errText is err's text, or "" for nil (for a log attribute).
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Socket returns the socket path every invocation uses.

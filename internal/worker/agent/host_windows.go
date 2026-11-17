@@ -44,17 +44,20 @@ func sessionHostSpec(s Settings) (string, error) {
 	}
 	log := s.logger()
 	if mode == config.SessionHostConPTY {
+		log.Debug("choosing the session host", "session_host", mode, "host", "conpty", "why", "set explicitly")
 		return "conpty", nil
 	}
 	reason := ""
-	bin := tmux.FindPsmux()
+	bin, where := tmux.FindPsmuxWhere()
+	service := underServiceManager()
+	log.Debug("choosing the session host", "session_host", mode, "under_service_manager", service, "psmux", bin, "psmux_found", where)
 	switch {
-	case underServiceManager():
+	case service:
 		reason = "the Worker runs as a Windows service (LocalSystem); psmux sessions are served by a Worker that runs as you (minion worker up --foreground)"
 	case bin == "":
 		reason = "psmux is not installed (winget install psmux)"
 	default:
-		if _, err := tmux.NewPsmux(bin); err != nil {
+		if _, err := tmux.NewPsmux(bin, tmux.WithLogger(log)); err != nil {
 			reason = err.Error()
 		}
 	}
