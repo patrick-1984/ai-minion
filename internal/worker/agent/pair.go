@@ -928,7 +928,7 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 			p.tls = seen
 			p.tlsMu.Unlock()
 		},
-		Ratchet: life.ratchet(),
+		Ratchet:   life.ratchet(),
 		Clock:     p.cfg.WallMono,
 		Timeout:   p.ttl + pairHandshakeMargin,
 		OnExposed: life.expose,

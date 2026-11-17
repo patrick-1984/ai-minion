@@ -36,9 +36,9 @@ func TestAskHubFingerprint(t *testing.T) {
 		prefixes[i] = w[:min(4, len(w))]
 	}
 	for name, in := range map[string]string{
-		"words":    fp.Words() + "\n",
-		"prefixes": strings.Join(prefixes, " ") + "\n",
-		"full":     string(fp) + "\n",
+		"words":                             fp.Words() + "\n",
+		"prefixes":                          strings.Join(prefixes, " ") + "\n",
+		"full":                              string(fp) + "\n",
 		"invalid then valid, empty repeats": "nope\n\n" + fp.Words() + "\n",
 	} {
 		var out bytes.Buffer
