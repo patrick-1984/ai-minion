@@ -22,6 +22,9 @@ var (
 	// factsLegacyWindows is a Windows Worker older than v0.10.0: it may host
 	// ConPTY, so it counts as hidden.
 	factsLegacyWindows = transport.WorkerFacts{Build: "v0.9.3", OS: "windows"}
+	// factsPreV09 is a Worker older than v0.9.0 (v0.8.2): no OS, no build, no
+	// session host. Its host is unknown: hidden under disabled only.
+	factsPreV09 = transport.WorkerFacts{}
 )
 
 // The policy table: 3 Hub values x the user's choice x hidden true, false or
@@ -29,7 +32,7 @@ var (
 func TestHiddenSessionPolicyTable(t *testing.T) {
 	for _, hub := range []string{config.HiddenSessionsUserControlled, config.HiddenSessionsAllowed, config.HiddenSessionsDisabled} {
 		for _, user := range []bool{false, true} {
-			for name, f := range map[string]transport.WorkerFacts{"hidden": factsHidden, "visible": factsVisible, "unknown": factsUnknown, "legacy windows": factsLegacyWindows} {
+			for name, f := range map[string]transport.WorkerFacts{"hidden": factsHidden, "visible": factsVisible, "unknown": factsUnknown, "legacy windows": factsLegacyWindows, "pre-v0.9": factsPreV09} {
 				t.Run(fmt.Sprintf("%s/user=%v/%s", hub, user, name), func(t *testing.T) {
 					pol := HiddenSessionsPolicy{Hub: hub, UserAllows: user}
 					wantAllowed := hub == config.HiddenSessionsAllowed || (hub == config.HiddenSessionsUserControlled && user)
@@ -37,7 +40,7 @@ func TestHiddenSessionPolicyTable(t *testing.T) {
 						t.Fatalf("Allows = %v, want %v", pol.Allows(), wantAllowed)
 					}
 					msg := HiddenSessionRefusal("patryk-asus", f, pol)
-					wantRefused := (name == "hidden" || name == "legacy windows") && !wantAllowed
+					wantRefused := (name == "hidden" || name == "legacy windows" || (name == "pre-v0.9" && hub == config.HiddenSessionsDisabled)) && !wantAllowed
 					if (msg != "") != wantRefused {
 						t.Fatalf("refusal = %q, want refused=%v", msg, wantRefused)
 					}
@@ -45,8 +48,11 @@ func TestHiddenSessionPolicyTable(t *testing.T) {
 						return
 					}
 					parts := []string{"New sessions on patryk-asus would be hidden (ConPTY inside the Worker: psmux is not installed", "winget install psmux", "minion worker up --foreground"}
-					if name == "legacy windows" {
+					switch name {
+					case "legacy windows":
 						parts = []string{"New sessions on patryk-asus may be hidden", "older than v0.10.0", "Update the Worker to v0.10.0 or later"}
+					case "pre-v0.9":
+						parts = []string{"New sessions on patryk-asus may be hidden", "session host unknown", "Update the Worker to v0.10.0 or later"}
 					}
 					for _, part := range parts {
 						if !strings.Contains(msg, part) {

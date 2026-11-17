@@ -174,6 +174,8 @@ type fakeBackend struct {
 	streams []*fakeStream
 	opens   []string
 	openErr error
+	// disconnected are the Workers whose connection the Router closed.
+	disconnected []string
 	// beforeOpen runs under the lock when OpenOp starts (a reconnect between
 	// the Router's look and the open).
 	beforeOpen func(b *fakeBackend)

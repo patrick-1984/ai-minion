@@ -904,3 +904,39 @@ func TestUpdateOfflineChannelsHonourTheHostPrereleaseFlag(t *testing.T) {
 		t.Fatalf("offline exact: %+v, %v", res, err)
 	}
 }
+
+// A release mirror URL can carry a credential (user information, a path
+// prefix, a query): its validation errors show scheme and host only.
+func TestCheckURLErrorsDoNotQuoteTheURL(t *testing.T) {
+	for _, raw := range []string{
+		"http://us@er:p@ss@mirror.example/tok3n/r?sig=s1",
+		"ftp://user:pw@mirror.example/tok3n",
+		"https://us@er:p@ss@/tok3n",
+		"http://tok3n@[::1",
+	} {
+		err := checkURL(raw)
+		if err == nil {
+			t.Fatalf("checkURL(%q) succeeded", raw)
+		}
+		for _, leak := range []string{"us@", "p@ss", "pw", "tok3n", "s1"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("checkURL(%q) = %q leaks %q", raw, err, leak)
+			}
+		}
+	}
+	if err := checkURL("http://us@er:p@ss@mirror.example/tok3n"); !strings.Contains(err.Error(), "http://mirror.example must use https") {
+		t.Errorf("checkURL error = %q", err)
+	}
+}
+
+func TestSafeURLKeepsSchemeAndHostOnly(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://us@er:p@ss@mirror.example/tok3n?k=v": "https://mirror.example",
+		"https://mirror.example:8443/r":               "https://mirror.example:8443",
+		"not a url":                                   "[url]",
+	} {
+		if got := safeURL(in); got != want {
+			t.Errorf("safeURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

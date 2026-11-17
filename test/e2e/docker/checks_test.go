@@ -452,6 +452,25 @@ func TestHubImageAndNativeWorker(t *testing.T) {
 		}
 		return strings.Join(res.Screen.Lines, "\n")
 	}
+	t.Run("a hidden session is refused until the admin allows hidden sessions", func(t *testing.T) {
+		// The Worker serves a private tmux socket that is not this user's
+		// default one, so its new sessions are hidden (v0.10.0): the default
+		// Hub policy (user-controlled) refuses them until the person opts in.
+		err := c.call(ops.OpSessionCreate, createBody{
+			SessionCreateArgs: ops.SessionCreateArgs{WriteArgs: ops.WriteArgs{RequestID: uuid7()}, Name: "refused-hidden", Argv: []string{"cat"}},
+			WorkerID:          workerID,
+		}, nil)
+		if err == nil || !strings.Contains(err.Error(), `"forbidden"`) {
+			t.Fatalf("session_create of a hidden session without opt-in = %v, want forbidden", err)
+		}
+		allow := true
+		var res ops.WriteResult
+		if err := c.call(ops.OpAccountPrefsSet, ops.AccountPrefsSetArgs{
+			WriteArgs: ops.WriteArgs{RequestID: uuid7()}, AllowHiddenSessions: &allow,
+		}, &res); err != nil || res.Outcome != ops.OutcomeDelivered {
+			t.Fatalf("account_prefs_set = %+v, %v", res, err)
+		}
+	})
 	var session string
 	t.Run("a session is created, text is sent and the screen is read over REST", func(t *testing.T) {
 		var created ops.WriteResult

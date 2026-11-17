@@ -8,19 +8,20 @@ package transport
 
 // Codes of [WorkerFacts.SessionHostReasonCode].
 const (
-	HostReasonTmuxDefault        = "tmux_default"
-	HostReasonTmuxDefaultService = "tmux_default_service"
-	HostReasonSocketUnknown      = "socket_unknown"
-	HostReasonPrivateSocket      = "private_socket"
-	HostReasonRootService        = "root_service"
-	HostReasonContainerTmux      = "container_tmux"
-	HostReasonVisibleSetting     = "visible_setting"
-	HostReasonHiddenSetting      = "hidden_setting"
-	HostReasonPsmuxDefault       = "psmux_default"
-	HostReasonConPTYNoPsmux      = "conpty_no_psmux"
-	HostReasonConPTYService      = "conpty_service"
-	HostReasonConPTYSetting      = "conpty_setting"
-	HostReasonConPTYPsmuxFailed  = "conpty_psmux_failed"
+	HostReasonTmuxDefault         = "tmux_default"
+	HostReasonTmuxDefaultService  = "tmux_default_service"
+	HostReasonSocketUnknown       = "socket_unknown"
+	HostReasonPrivateSocket       = "private_socket"
+	HostReasonRootService         = "root_service"
+	HostReasonContainerTmux       = "container_tmux"
+	HostReasonVisibleSetting      = "visible_setting"
+	HostReasonContainerHostSocket = "container_host_socket"
+	HostReasonHiddenSetting       = "hidden_setting"
+	HostReasonPsmuxDefault        = "psmux_default"
+	HostReasonConPTYNoPsmux       = "conpty_no_psmux"
+	HostReasonConPTYService       = "conpty_service"
+	HostReasonConPTYSetting       = "conpty_setting"
+	HostReasonConPTYPsmuxFailed   = "conpty_psmux_failed"
 )
 
 // Codes of [WorkerFacts.SessionsListErrorCode].
@@ -32,19 +33,20 @@ const (
 )
 
 var hostReasonTexts = map[string]string{
-	HostReasonTmuxDefault:        "the default tmux server of the user the Worker runs as (tmux ls shows them)",
-	HostReasonTmuxDefaultService: "the default tmux server of the user the Worker runs as (tmux ls shows them); the Worker runs under a service manager",
-	HostReasonSocketUnknown:      "the tmux socket of the Worker is not known",
-	HostReasonPrivateSocket:      "a private tmux socket, not the default tmux server of the user the Worker runs as (tmux -S <socket> ls shows them)",
-	HostReasonRootService:        "the Worker runs as root under a service manager (systemd or launchd); its sessions are in the tmux server of root",
-	HostReasonContainerTmux:      "the tmux server inside the Worker's container, not one on the host",
-	HostReasonVisibleSetting:     "sessions_visible is yes: the Worker serves the person's own tmux server (for example the host user's tmux socket mounted into its container)",
-	HostReasonHiddenSetting:      "sessions_visible is no: the Worker's tmux server is not the person's own (for example a tmux inside its container)",
-	HostReasonPsmuxDefault:       "the default psmux namespace of the user the Worker runs as (psmux ls shows them)",
-	HostReasonConPTYNoPsmux:      "ConPTY inside the Worker: psmux is not installed (winget install psmux)",
-	HostReasonConPTYService:      "ConPTY inside the Worker: the Worker runs as a Windows service (LocalSystem); psmux sessions are served by a Worker that runs as you (minion worker up --foreground)",
-	HostReasonConPTYSetting:      "ConPTY inside the Worker: session_host is set to conpty",
-	HostReasonConPTYPsmuxFailed:  "ConPTY inside the Worker: psmux is installed but cannot be used (the Worker log says why)",
+	HostReasonTmuxDefault:         "the default tmux server of the user the Worker runs as (tmux ls shows them)",
+	HostReasonTmuxDefaultService:  "the default tmux server of the user the Worker runs as, as seen by the service (tmux ls shows them unless your shell sets another TMUX_TMPDIR or socket; then set sessions_visible); the Worker runs under a service manager",
+	HostReasonSocketUnknown:       "the tmux socket of the Worker is not known",
+	HostReasonPrivateSocket:       "a private tmux socket, not the default tmux server of the user the Worker runs as (tmux -S <socket> ls shows them)",
+	HostReasonRootService:         "the Worker runs as root under a service manager (systemd or launchd); its sessions are in the tmux server of root",
+	HostReasonContainerTmux:       "the tmux server inside the Worker's container, not one on the host",
+	HostReasonVisibleSetting:      "sessions_visible is yes: the Worker serves the person's own tmux server (for example the host user's tmux socket mounted into its container)",
+	HostReasonContainerHostSocket: "the host user's tmux socket mounted into the Worker's container at /tmux/default (the documented Docker setup; tmux ls on the host shows them)",
+	HostReasonHiddenSetting:       "sessions_visible is no: the Worker's tmux server is not the person's own (for example a tmux inside its container)",
+	HostReasonPsmuxDefault:        "the default psmux namespace of the user the Worker runs as (psmux ls shows them)",
+	HostReasonConPTYNoPsmux:       "ConPTY inside the Worker: psmux is not installed (winget install psmux)",
+	HostReasonConPTYService:       "ConPTY inside the Worker: the Worker runs as a Windows service (LocalSystem); psmux sessions are served by a Worker that runs as you (minion worker up --foreground)",
+	HostReasonConPTYSetting:       "ConPTY inside the Worker: session_host is set to conpty",
+	HostReasonConPTYPsmuxFailed:   "ConPTY inside the Worker: psmux is installed but cannot be used (the Worker log says why)",
 }
 
 var listErrorTexts = map[string]string{

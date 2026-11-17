@@ -390,3 +390,35 @@ func TestConcurrentKeyCreationYieldsOneIdentity(t *testing.T) {
 		}
 	}
 }
+
+// A reassignment: the next welcome names another owner. The identity hook
+// (remote debug clears its log and switches debug off) runs before the new
+// link serves anything; the same owner again is no change.
+func TestWelcomeWithAnotherOwnerFiresTheIdentityHook(t *testing.T) {
+	f := newConnFixture(t)
+	ctx := context.Background()
+	fired := 0
+	f.policy.OnIdentityChange(func() { fired++ })
+	live := func() bool { return true }
+	welcome := func(owner string) {
+		t.Helper()
+		gen, _ := f.enr.Watch()
+		w := okWelcome()
+		w.OwnerID = owner
+		if err := f.conn.storeWelcome(ctx, gen, w, live); err != nil {
+			t.Fatal(err)
+		}
+	}
+	welcome("u-bob")
+	if fired != 0 {
+		t.Fatalf("the first welcome fired the hook %d times", fired)
+	}
+	welcome("u-bob")
+	if fired != 0 {
+		t.Fatalf("the same owner again fired the hook %d times", fired)
+	}
+	welcome("u-alice")
+	if fired != 1 || f.policy.OwnerID() != "u-alice" {
+		t.Fatalf("after the reassignment: fired=%d owner=%q", fired, f.policy.OwnerID())
+	}
+}

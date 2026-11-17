@@ -7,7 +7,12 @@ package workers
 // preference decide whether session_create may make one; the Router refuses
 // it before anything is sent, on the facts of the connection that would get
 // it. A Worker that does not report its session host (older than v0.10.0)
-// counts as hidden on Windows (it may host ConPTY) and as visible elsewhere.
+// counts as hidden on Windows (it may host ConPTY) and as visible on Linux and
+// macOS. A Worker older than v0.9.0 does not report its OS either, and nothing
+// in its hello tells Windows from Linux (same ops, features and build-less
+// hello): its host is unknown, which counts as hidden under disabled and as
+// visible otherwise, so that a Hub-only upgrade does not lock out every old
+// Linux Worker.
 
 import (
 	"context"
@@ -44,21 +49,54 @@ func (p HiddenSessionsPolicy) Allows() bool {
 // HiddenSessionsPolicyFunc returns the policy for a principal.
 type HiddenSessionsPolicyFunc func(ctx context.Context, p authz.Principal) (HiddenSessionsPolicy, error)
 
-// newSessionsHidden reports whether a new session on a Worker with these
-// facts would be hidden. ConPTY is always hidden, whatever the flag says. A
-// Worker older than v0.10.0 does not report its session host (legacy): on
-// Windows it may host its sessions in ConPTY, so it counts as hidden; on
-// Linux and macOS it uses tmux and is not refused.
-func newSessionsHidden(f transport.WorkerFacts) (hidden, legacy bool) {
+// hostVisibility is what the Hub knows about where a Worker's new sessions
+// would live.
+type hostVisibility int
+
+const (
+	hostVisible hostVisibility = iota
+	hostHidden
+	// hostLegacyWindows: a Windows Worker older than v0.10.0, which may host
+	// its sessions in ConPTY.
+	hostLegacyWindows
+	// hostUnknown: a Worker older than v0.9.0 that reports neither its
+	// session host nor its OS.
+	hostUnknown
+)
+
+// newSessionsHost reports whether a new session on a Worker with these facts
+// would be hidden. ConPTY is always hidden, whatever the flag says. A Worker
+// older than v0.10.0 does not report its session host: on Windows it may host
+// its sessions in ConPTY (hostLegacyWindows); on Linux and macOS it uses tmux
+// (visible); without an OS (older than v0.9.0) it is unknown.
+func newSessionsHost(f transport.WorkerFacts) hostVisibility {
 	switch {
 	case f.SessionHost == transport.SessionHostConPTY:
-		return true, false
+		return hostHidden
 	case f.SessionHost != "":
-		return f.SessionsHidden, false
+		if f.SessionsHidden {
+			return hostHidden
+		}
+		return hostVisible
 	case f.OS == "windows":
-		return true, true
+		return hostLegacyWindows
+	case f.OS == "":
+		return hostUnknown
 	}
-	return false, false
+	return hostVisible
+}
+
+// mayRefuse reports whether a policy that does not allow hidden sessions
+// refuses a new session on a host of this visibility: hidden and legacy
+// Windows always, unknown only when hidden sessions are disabled on the Hub.
+func (v hostVisibility) mayRefuse(hub string) bool {
+	switch v {
+	case hostHidden, hostLegacyWindows:
+		return true
+	case hostUnknown:
+		return hub == config.HiddenSessionsDisabled
+	}
+	return false
 }
 
 // HiddenSessionRefusal is the message of a refused session_create on a Worker
@@ -66,18 +104,21 @@ func newSessionsHidden(f transport.WorkerFacts) (hidden, legacy bool) {
 // Worker's sessions are visible. It names the Worker, why its sessions are
 // hidden and the exact fix.
 func HiddenSessionRefusal(workerName string, f transport.WorkerFacts, pol HiddenSessionsPolicy) string {
-	hidden, legacy := newSessionsHidden(f)
-	if !hidden || pol.Allows() {
+	vis := newSessionsHost(f)
+	if pol.Allows() || !vis.mayRefuse(pol.Hub) {
 		return ""
 	}
 	if workerName == "" {
 		workerName = "this Worker"
 	}
+	const update = "Update the Worker to v0.10.0 or later (from its Worker page in the Hub, or `minion update` on that machine)"
 	var msg string
-	if legacy {
-		msg = "New sessions on " + workerName + " may be hidden: it is a Windows Worker older than v0.10.0, which does not report whether its sessions are hidden (it may host them in ConPTY inside the Worker). " +
-			"Update the Worker to v0.10.0 or later (from its Worker page in the Hub, or `minion update` on that machine)"
-	} else {
+	switch vis {
+	case hostLegacyWindows:
+		msg = "New sessions on " + workerName + " may be hidden: it is a Windows Worker older than v0.10.0, which does not report whether its sessions are hidden (it may host them in ConPTY inside the Worker). " + update
+	case hostUnknown:
+		msg = "New sessions on " + workerName + " may be hidden: it is a Worker older than v0.9.0, which reports neither its session host nor its operating system (session host unknown). " + update
+	default:
 		reason := f.SessionHostReason
 		if reason == "" {
 			reason = f.SessionHost

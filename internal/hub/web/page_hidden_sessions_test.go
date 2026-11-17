@@ -71,7 +71,7 @@ func TestWorkerPageShowsTheSessionHostAndTheRefusal(t *testing.T) {
 	// An older Worker does not report its host.
 	old := Dashboard{Workers: []WorkerRow{wPrivate}}
 	out, _ = renderWorkerFragment(newWorkerView(old, false, "w1", true))
-	mustHave(t, out, "not reported (Worker older than v0.10.0)")
+	mustHave(t, out, "session host unknown (update the Worker)")
 }
 
 func TestAccountSessionsCardReadsAndSavesThePreference(t *testing.T) {

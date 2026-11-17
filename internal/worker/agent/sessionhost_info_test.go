@@ -26,7 +26,12 @@ func TestDecideTmuxHost(t *testing.T) {
 		// Docker, self-contained: the container's own default tmux server.
 		{"container, own tmux", tmuxHostFacts{Socket: def, DefaultSocket: def, Container: true}, true, transport.HostReasonContainerTmux},
 		// Docker, the host user's socket mounted at /tmux/default (compose sets yes).
-		{"container, host socket, auto", tmuxHostFacts{Socket: "/tmux/default", DefaultSocket: def, Container: true, Visible: "auto"}, true, transport.HostReasonPrivateSocket},
+		// v0.9.3 Compose: the documented mount without sessions_visible.
+		{"container, host socket, auto", tmuxHostFacts{Socket: "/tmux/default", DefaultSocket: def, Container: true, Visible: "auto"}, false, transport.HostReasonContainerHostSocket},
+		{"container, host socket, unset", tmuxHostFacts{Socket: "/tmux//default", DefaultSocket: def, Container: true}, false, transport.HostReasonContainerHostSocket},
+		{"container, other socket, auto", tmuxHostFacts{Socket: "/sock/default", DefaultSocket: def, Container: true, Visible: "auto"}, true, transport.HostReasonPrivateSocket},
+		{"host, /tmux/default outside a container", tmuxHostFacts{Socket: "/tmux/default", DefaultSocket: def}, true, transport.HostReasonPrivateSocket},
+		{"container, host socket, no", tmuxHostFacts{Socket: "/tmux/default", DefaultSocket: def, Container: true, Visible: "no"}, true, transport.HostReasonHiddenSetting},
 		{"container, host socket, yes", tmuxHostFacts{Socket: "/tmux/default", DefaultSocket: def, Container: true, Visible: "yes"}, false, transport.HostReasonVisibleSetting},
 		{"container, own tmux, no", tmuxHostFacts{Socket: def, DefaultSocket: def, Container: true, Visible: "no"}, true, transport.HostReasonHiddenSetting},
 		{"no on the default server", tmuxHostFacts{Socket: def, DefaultSocket: def, Visible: "no"}, true, transport.HostReasonHiddenSetting},

@@ -2,9 +2,11 @@ package logx
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -25,8 +27,13 @@ func SafeURL(raw string) string {
 }
 
 var (
-	// urlUserinfo is the user information of a URL inside free text.
-	urlUserinfo = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#@"'<>]+@`)
+	// urlUserinfo is the user information of a URL inside free text: the
+	// authority up to its LAST '@', so that an unescaped '@' in a user name or
+	// password (https://us@er:p@ss@host) is masked whole.
+	urlUserinfo = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#"'<>]*@`)
+	// urlWhole is a URL inside free text: scheme, authority and the rest up to
+	// whitespace or a quote.
+	urlWhole = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^\s/?#"'<>]*)[^\s"'<>]*`)
 	// urlQuery is the query of a URL inside free text (it can carry a token).
 	urlQuery = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"'<>]*)\?[^\s#"'<>]*`)
 	// pairingCode is a pairing code MN-XXXX-XXXX, also typed without dashes.
@@ -40,6 +47,40 @@ func RedactText(s string) string {
 	s = urlUserinfo.ReplaceAllString(s, "${1}"+Redacted+"@")
 	s = urlQuery.ReplaceAllString(s, "${1}?"+Redacted)
 	return pairingCode.ReplaceAllString(s, "MN-"+Redacted)
+}
+
+// RedactErrorText masks free text of an error: every URL in it is cut to its
+// scheme and host (no user information, path, query or fragment, which a
+// reverse-proxy prefix or a mirror can use for a credential), then
+// [RedactText] applies.
+func RedactErrorText(s string) string {
+	s = urlWhole.ReplaceAllStringFunc(s, func(m string) string {
+		sub := urlWhole.FindStringSubmatch(m)
+		host := sub[2]
+		if i := strings.LastIndexByte(host, '@'); i >= 0 {
+			host = host[i+1:]
+		}
+		return sub[1] + host
+	})
+	return RedactText(s)
+}
+
+// ErrorText is err's text for a log line, a remote log or a reported state:
+// a *url.Error in its chain is rebuilt with [SafeURL] (an HTTP error quotes
+// the whole request URL), and every other URL is cut by [RedactErrorText].
+// nil is "".
+func ErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.URL != "" {
+		safe := SafeURL(ue.URL)
+		s = strings.ReplaceAll(s, strconv.Quote(ue.URL), strconv.Quote(safe))
+		s = strings.ReplaceAll(s, ue.URL, safe)
+	}
+	return RedactErrorText(s)
 }
 
 // secretKeys are attribute keys whose values never reach the in-memory log:
@@ -60,6 +101,16 @@ func secretKey(k string) bool {
 	return false
 }
 
+// errorKey reports whether an attribute key holds an error text, whose URLs
+// are cut to scheme and host ([RedactErrorText]).
+func errorKey(k string) bool {
+	switch strings.ToLower(k) {
+	case "error", "err", "reason", "cause":
+		return true
+	}
+	return false
+}
+
 // redactAttr masks one attribute for the in-memory log (see [RedactText] and
 // [secretKey]); groups are masked member by member.
 func redactAttr(a slog.Attr) slog.Attr {
@@ -69,6 +120,9 @@ func redactAttr(a slog.Attr) slog.Attr {
 	v := a.Value.Resolve()
 	switch v.Kind() {
 	case slog.KindString:
+		if errorKey(a.Key) {
+			return slog.String(a.Key, RedactErrorText(v.String()))
+		}
 		return slog.String(a.Key, RedactText(v.String()))
 	case slog.KindGroup:
 		gs := v.Group()
@@ -79,7 +133,7 @@ func redactAttr(a slog.Attr) slog.Attr {
 		return slog.Group(a.Key, out...)
 	case slog.KindAny:
 		if err, ok := v.Any().(error); ok {
-			return slog.String(a.Key, RedactText(err.Error()))
+			return slog.String(a.Key, ErrorText(err))
 		}
 		if s, ok := v.Any().(interface{ String() string }); ok {
 			return slog.String(a.Key, RedactText(s.String()))
