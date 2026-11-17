@@ -1,9 +1,11 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -104,6 +107,132 @@ type DialFacts struct {
 	// PeerSHA256 is the SHA-256 of the leaf certificate (hex).
 	PeerSHA256  string
 	Subprotocol string
+	// TLS is what this dial saw of TLS, for display only.
+	TLS TLSSeen
+}
+
+// TLSSeen is what the Worker saw of TLS on its own dial. It is information
+// for the operator and is never trusted for anything (A-15): the Hub is
+// authenticated by the handshake inside the channel. Name, Issuer and Reason
+// are terminal-safe single lines.
+type TLSSeen struct {
+	// None is true for a plain ws:// or http:// dial.
+	None bool
+	// KeyHash is the SHA-256 of the leaf certificate's SubjectPublicKeyInfo
+	// (the value of an RFC 7469 / curl --pinnedpubkey pin).
+	KeyHash [32]byte
+	// Name is the first DNS name of the leaf (else its first IP address, else
+	// its common name), Issuer
+	// the issuer's common name (else the issuer's distinguished name).
+	Name, Issuer string
+	// SelfSigned is true when the leaf is signed by its own key.
+	SelfSigned bool
+	// Trusted is the result of an ordinary verification against the system
+	// roots for the host name of the address; Reason says why it failed.
+	Trusted bool
+	Reason  string
+	// NotAfter is the end of the leaf's validity.
+	NotAfter time.Time
+}
+
+// Seen reports whether the dial saw anything (TLS or a plain connection).
+func (s TLSSeen) Seen() bool { return s.None || s.KeyHash != [32]byte{} }
+
+// trustTimeout bounds the display-only system verification: on a machine
+// that cannot reach a revocation server the platform verifier may block, and
+// a timeout must end as "not trusted", never as a failed dial.
+const trustTimeout = 3 * time.Second
+
+// trustRoots is the pool of the display-only verification; nil means the
+// system roots. Tests set it.
+var trustRoots *x509.CertPool
+
+// seeTLS fills a TLSSeen from the state of a finished dial.
+func seeTLS(state *tls.ConnectionState, host string) TLSSeen {
+	if state == nil {
+		return TLSSeen{None: true}
+	}
+	if len(state.PeerCertificates) == 0 {
+		return TLSSeen{Reason: "no certificate"}
+	}
+	leaf := state.PeerCertificates[0]
+	seen := TLSSeen{
+		KeyHash:  sha256.Sum256(leaf.RawSubjectPublicKeyInfo),
+		NotAfter: leaf.NotAfter,
+	}
+	name := leaf.Subject.CommonName
+	switch {
+	case len(leaf.DNSNames) > 0:
+		name = leaf.DNSNames[0]
+	case len(leaf.IPAddresses) > 0:
+		name = leaf.IPAddresses[0].String()
+	}
+	issuer := leaf.Issuer.CommonName
+	if issuer == "" {
+		issuer = leaf.Issuer.String()
+	}
+	seen.Name, seen.Issuer = proto.SafeText(name, 80), proto.SafeText(issuer, 80)
+	seen.SelfSigned = bytes.Equal(leaf.RawIssuer, leaf.RawSubject) && leaf.CheckSignature(leaf.SignatureAlgorithm, leaf.RawTBSCertificate, leaf.Signature) == nil
+	inter := x509.NewCertPool()
+	for _, c := range state.PeerCertificates[1:] {
+		inter.AddCert(c)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := leaf.Verify(x509.VerifyOptions{DNSName: host, Intermediates: inter, Roots: trustRoots})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		seen.Trusted = err == nil
+		if err != nil {
+			seen.Reason = CertReason(err)
+		}
+	case <-time.After(trustTimeout):
+		seen.Reason = "the verification did not finish in time"
+	}
+	return seen
+}
+
+// CertReason names why a certificate verification failed, in a few plain
+// words: an unknown authority, an expired or not yet valid certificate, a
+// certificate for other names, or the verifier's own (terminal-safe) text.
+func CertReason(err error) string {
+	var ua x509.UnknownAuthorityError
+	var he x509.HostnameError
+	var ci x509.CertificateInvalidError
+	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &ua):
+		return "signed by an unknown authority"
+	case errors.As(err, &he):
+		return "issued for other names (" + proto.SafeText(certNames(he.Certificate), 120) + ")"
+	case errors.As(err, &ci):
+		switch ci.Reason {
+		case x509.Expired:
+			return "expired or not yet valid"
+		case x509.NotAuthorizedToSign:
+			return "signed by a certificate that may not sign"
+		case x509.IncompatibleUsage:
+			return "not valid for a TLS server"
+		}
+	}
+	return proto.SafeText(err.Error(), 160)
+}
+
+func certNames(c *x509.Certificate) string {
+	if c == nil {
+		return ""
+	}
+	names := append([]string{}, c.DNSNames...)
+	for _, ip := range c.IPAddresses {
+		names = append(names, ip.String())
+	}
+	if len(names) == 0 {
+		names = append(names, c.Subject.CommonName)
+	}
+	return strings.Join(names, ", ")
 }
 
 // DialInfo is Dial that also returns the facts of the dial, also when it
@@ -129,6 +258,11 @@ func DialInfo(ctx context.Context, hubURL string) (net.Conn, DialFacts, error) {
 	})
 	if resp != nil {
 		facts.HTTPStatus = resp.StatusCode
+		host := ""
+		if u, perr := url.Parse(wsURL); perr == nil {
+			host = u.Hostname()
+		}
+		facts.TLS = seeTLS(resp.TLS, host)
 		if resp.TLS != nil {
 			facts.TLSVersion = tls.VersionName(resp.TLS.Version)
 			if len(resp.TLS.PeerCertificates) > 0 {
