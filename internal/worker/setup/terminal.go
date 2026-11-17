@@ -10,6 +10,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -300,6 +301,11 @@ func (d *dialog) hubStep(ctx context.Context) error {
 			d.say("Hub: none, the Worker runs alone (Solo). The address was %s, so nothing is asked.", given)
 			return nil
 		}
+		if d.t.Interactive && d.t.SkipPairing == "" && d.w.NeedsHubFingerprint(ctx) {
+			if err := d.fingerprintStep(ctx, v.Server); err != nil {
+				return err
+			}
+		}
 		rep, err := d.w.CheckHub(ctx, v.Server)
 		if err != nil {
 			return fmt.Errorf("the Hub address you gave cannot be used: %w", err)
@@ -333,6 +339,13 @@ func (d *dialog) hubStep(ctx context.Context) error {
 			ans = "https://" + ans
 			d.say("(I added https:// in front: %s)", redact(ans))
 		}
+		// The expected fingerprint is asked after the address was parsed and
+		// before any network probe of it.
+		if addr, verr := ValidateHubAddress(ans); verr == nil && addr != "" && d.t.SkipPairing == "" && d.w.NeedsHubFingerprint(ctx) {
+			if err := d.fingerprintStep(ctx, addr); err != nil {
+				return err
+			}
+		}
 		rep, err := d.w.CheckHub(ctx, ans)
 		if errors.Is(err, ErrInvalidChoice) {
 			d.say("%s", strings.TrimPrefix(err.Error(), ErrInvalidChoice.Error()+": "))
@@ -360,6 +373,26 @@ func (d *dialog) hubStep(ctx context.Context) error {
 				continue
 			}
 			break
+		}
+	}
+}
+
+// fingerprintStep asks for the expected Hub fingerprint (prompt M1): six
+// words or the 52 characters, or "skip" to pair without the check.
+func (d *dialog) fingerprintStep(ctx context.Context, hubURL string) error {
+	agent.WriteHubFingerprintPrompt(d.t.Out, hubURL)
+	for {
+		ans, err := d.ask(ctx, agent.HubFingerprintPrompt)
+		if err != nil {
+			return err
+		}
+		m, done, reply := agent.HubFingerprintAnswer(ans)
+		if reply != "" {
+			d.say("%s", reply)
+		}
+		if done {
+			d.w.SetHubFingerprint(m.String())
+			return nil
 		}
 	}
 }

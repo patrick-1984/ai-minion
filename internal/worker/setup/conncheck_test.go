@@ -164,7 +164,7 @@ func TestCheckSelfSignedIsAWarningWithFingerprintNeverTrusted(t *testing.T) {
 		t.Errorf("fingerprint = %q, want %q", rep.CertFingerprint, fpOf(hub.Server))
 	}
 	msg := stage(t, rep, StageTLS).Message
-	for _, want := range []string{"not trusted", "self-signed", fpOf(hub.Server)} {
+	for _, want := range []string{"not trusted", "self-signed", "minion hub identity --words"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("TLS message lacks %q: %s", want, msg)
 		}

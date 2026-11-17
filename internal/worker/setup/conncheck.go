@@ -356,9 +356,9 @@ func (c *Checker) checkTLS(ctx context.Context, conn net.Conn, host, port string
 		fp := fingerprint(cert)
 		return Stage{StageTLS, StatusWarning, fmt.Sprintf(
 			"The Hub's certificate is not trusted by this computer: %s. "+
-				"That is normal for a Hub with its own (self-signed) certificate. The Worker does not rely on it: "+
-				"it authenticates the Hub inside its own channel. Certificate fingerprint %s; "+
-				"compare it with the one the Hub shows if you want to be sure.", reason, fp)}, fp, false
+				"That is normal for a Hub with its own (self-signed) certificate and for TLS inspection. "+
+				"The Worker does not rely on the certificate: it checks the Hub fingerprint "+
+				"(minion hub identity --words on the Hub host).", reason)}, fp, false
 	}
 
 	cert, err := handshake(sctx, conn, c.tlsConfig(host, true))

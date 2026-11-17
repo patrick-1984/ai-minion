@@ -83,6 +83,9 @@ type Settings struct {
 	Share store.ShareSelection
 	// Server is the Hub address; empty means Solo and removes a saved address.
 	Server string
+	// HubFingerprint is the expected Hub fingerprint (52 characters or six
+	// words), saved with the address; empty for none.
+	HubFingerprint string
 }
 
 // Persister saves the wizard's choices. The implementation decides how and
@@ -117,7 +120,9 @@ type Pairing interface {
 	// Pair shows a pairing code on out (or the reason none is available yet)
 	// and waits for the Hub to confirm it. It returns when the pairing
 	// completes or ctx ends. out receives the code and the "paired to" line.
-	Pair(ctx context.Context, hubURL string, out io.Writer) (Paired, error)
+	// fingerprint is the expected Hub fingerprint ("" for none): any other
+	// Hub is refused before the code is used.
+	Pair(ctx context.Context, hubURL, fingerprint string, out io.Writer) (Paired, error)
 }
 
 // Provided holds the values that flags or environment variables already
@@ -131,6 +136,9 @@ type Provided struct {
 	// HasServer with an empty Server is an explicit Solo.
 	Server    string
 	HasServer bool
+	// HubFingerprint is the expected Hub fingerprint that a setting already
+	// gives; empty means it is asked in a terminal.
+	HubFingerprint string
 }
 
 // Config is the wiring of a [Wizard].
@@ -146,6 +154,9 @@ type Config struct {
 	Pairing Pairing
 	// Provided are the values that flags or environment already decide.
 	Provided Provided
+	// AskHubFingerprint makes the terminal dialog ask for the expected Hub
+	// fingerprint (prompt M1) when no setting gives it.
+	AskHubFingerprint bool
 }
 
 // Wizard is the first-run step engine (AD-21). It holds the answers and
@@ -166,6 +177,8 @@ type Wizard struct {
 	candidate string // the address of the last check
 	report    *Report
 	persisted bool
+	// fingerprint is the expected Hub fingerprint given in the dialog.
+	fingerprint string
 }
 
 type hubState int
@@ -369,6 +382,31 @@ type Summary struct {
 	Share store.ShareSelection
 	// Server is the Hub address, empty for Solo.
 	Server string
+	// HubFingerprint is the expected Hub fingerprint, empty for none.
+	HubFingerprint string
+}
+
+// NeedsHubFingerprint reports whether the dialog should ask for the expected
+// Hub fingerprint: no setting gives it, none was given yet, and the Worker is
+// not paired (a paired Worker keeps its pin). It is asked after the address
+// was parsed and before the address is checked over the network.
+func (w *Wizard) NeedsHubFingerprint(ctx context.Context) bool {
+	if !w.cfg.AskHubFingerprint || w.cfg.Provided.HubFingerprint != "" || w.fingerprint != "" || w.cfg.Pairing == nil {
+		return false
+	}
+	_, paired, err := w.cfg.Pairing.Paired(ctx)
+	return err == nil && !paired
+}
+
+// SetHubFingerprint records the expected Hub fingerprint the user gave
+// (text is what [identity.FingerprintMatcher.String] returns; "" for none).
+func (w *Wizard) SetHubFingerprint(text string) { w.fingerprint = text }
+
+func (w *Wizard) hubFingerprint() string {
+	if w.fingerprint != "" {
+		return w.fingerprint
+	}
+	return w.cfg.Provided.HubFingerprint
 }
 
 // Summary returns the choices made so far.
@@ -376,7 +414,11 @@ func (w *Wizard) Summary() (Summary, error) {
 	if w.share == nil || w.hubState == hubUnset {
 		return Summary{}, ErrOutOfOrder
 	}
-	return Summary{Share: *w.share, Server: w.hubURL}, nil
+	fp := ""
+	if w.hubURL != "" {
+		fp = w.hubFingerprint()
+	}
+	return Summary{Share: *w.share, Server: w.hubURL, HubFingerprint: fp}, nil
 }
 
 // checkHubChange refuses addr when the Worker is paired with another Hub. The
@@ -471,7 +513,7 @@ func (w *Wizard) Save(ctx context.Context) error {
 	}
 	sel := sum.Share
 	sel.Configured = true
-	if err := w.cfg.Persist.Save(ctx, Settings{Share: sel, Server: sum.Server}); err != nil {
+	if err := w.cfg.Persist.Save(ctx, Settings{Share: sel, Server: sum.Server, HubFingerprint: sum.HubFingerprint}); err != nil {
 		return err
 	}
 	w.persisted = true
@@ -511,7 +553,7 @@ func (w *Wizard) Pair(ctx context.Context, out io.Writer) (PairOutcome, error) {
 	} else if ok {
 		return PairOutcome{Paired: true, Owner: p.Owner, Already: true}, nil
 	}
-	p, err := w.cfg.Pairing.Pair(ctx, w.hubURL, out)
+	p, err := w.cfg.Pairing.Pair(ctx, w.hubURL, w.hubFingerprint(), out)
 	if err != nil {
 		if ctx.Err() != nil {
 			return PairOutcome{}, nil

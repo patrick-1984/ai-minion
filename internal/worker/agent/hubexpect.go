@@ -42,13 +42,10 @@ func ParseHubExpectation(text string) (identity.FingerprintMatcher, error) {
 	return m, nil
 }
 
-// AskHubFingerprint shows prompt M1 and reads the expected Hub fingerprint.
-// It is asked after the address was parsed and before any network probe. A
-// valid answer returns its matcher; "skip" returns the zero matcher (pairing
-// without the check); an empty line or an invalid answer repeats the
-// question; the end of input is [ErrPromptAborted]. in is read without
-// buffering, so input after the answer stays for the next reader.
-func AskHubFingerprint(in io.Reader, out io.Writer, hubURL string) (identity.FingerprintMatcher, error) {
+// WriteHubFingerprintPrompt writes box M1, the question for the expected Hub
+// fingerprint. The answer is read by the caller and judged by
+// [HubFingerprintAnswer].
+func WriteHubFingerprintPrompt(out io.Writer, hubURL string) {
 	writeConsoleBox(out, "NEW HUB - ENTER ITS FINGERPRINT",
 		"Hub address:  "+hubLabel(hubURL),
 		"",
@@ -65,32 +62,56 @@ func AskHubFingerprint(in io.Reader, out io.Writer, hubURL string) (identity.Fin
 		"enough) or paste the 52 characters.",
 		"Type skip to pair WITHOUT this check.",
 	)
+}
+
+// HubFingerprintPrompt is the text before each answer to prompt M1.
+const HubFingerprintPrompt = "Hub fingerprint: "
+
+// HubFingerprintAnswer judges one answer to prompt M1. done is true for a
+// final answer: a valid fingerprint (m is its matcher) or "skip" (m is the
+// zero matcher). reply is the line to print ("" for an empty answer, which
+// repeats the question).
+func HubFingerprintAnswer(answer string) (m identity.FingerprintMatcher, done bool, reply string) {
+	answer = strings.TrimSpace(answer)
+	switch {
+	case answer == "":
+		return identity.FingerprintMatcher{}, false, ""
+	case strings.EqualFold(answer, "skip"):
+		return identity.FingerprintMatcher{}, true, `No fingerprint given: pairing without the check. The Hub will be shown as "not verified".`
+	}
+	m, err := identity.ParseFingerprintInput(answer)
+	if err != nil {
+		return identity.FingerprintMatcher{}, false, "That is not a fingerprint: " + strings.TrimPrefix(err.Error(), "identity: ") +
+			". Type six words or 52 characters, or type skip."
+	}
+	return m, true, "Expected Hub fingerprint: " + m.Words()
+}
+
+// AskHubFingerprint shows prompt M1 and reads the expected Hub fingerprint.
+// It is asked after the address was parsed and before any network probe. A
+// valid answer returns its matcher; "skip" returns the zero matcher (pairing
+// without the check); an empty line or an invalid answer repeats the
+// question; the end of input is [ErrPromptAborted]. in is read without
+// buffering, so input after the answer stays for the next reader.
+func AskHubFingerprint(in io.Reader, out io.Writer, hubURL string) (identity.FingerprintMatcher, error) {
+	WriteHubFingerprintPrompt(out, hubURL)
 	for {
-		_, _ = io.WriteString(out, "Hub fingerprint: ")
+		_, _ = io.WriteString(out, HubFingerprintPrompt)
 		line, err := readLine(in)
 		if err != nil && line == "" {
 			_, _ = io.WriteString(out, "\n")
 			return identity.FingerprintMatcher{}, ErrPromptAborted
 		}
-		answer := strings.TrimSpace(line)
-		switch {
-		case answer == "":
-			continue
-		case strings.EqualFold(answer, "skip"):
-			_, _ = fmt.Fprintln(out, `No fingerprint given: pairing without the check. The Hub will be shown as "not verified".`)
-			return identity.FingerprintMatcher{}, nil
+		m, done, reply := HubFingerprintAnswer(line)
+		if reply != "" {
+			_, _ = fmt.Fprintln(out, reply)
 		}
-		m, perr := identity.ParseFingerprintInput(answer)
-		if perr != nil {
-			_, _ = fmt.Fprintf(out, "That is not a fingerprint: %s. Type six words or 52 characters, or type skip.\n",
-				strings.TrimPrefix(perr.Error(), "identity: "))
-			if err != nil {
-				return identity.FingerprintMatcher{}, ErrPromptAborted
-			}
-			continue
+		if done {
+			return m, nil
 		}
-		_, _ = fmt.Fprintln(out, "Expected Hub fingerprint: "+m.Words())
-		return m, nil
+		if err != nil {
+			return identity.FingerprintMatcher{}, ErrPromptAborted
+		}
 	}
 }
 

@@ -289,7 +289,8 @@ func (d workerSetupDeps) runWizard(cmd *cobra.Command, res *config.Resolver, cor
 			enr: agent.NewEnrollments(st, core.StateDir), name: core.Name, dialer: dialer,
 			clock: d.clock, backoff: d.backoff, newCode: d.newCode,
 		},
-		Provided: provided,
+		Provided:          provided,
+		AskHubFingerprint: true,
 	})
 	t := &setup.Terminal{In: in, Out: out, Interactive: interactive}
 	skip, err := inviteSkipMessage(res, explicit)
@@ -380,6 +381,17 @@ func providedFrom(res *config.Resolver, withFile bool) (setup.Provided, error) {
 			}
 			p.Server, p.HasServer = url, true
 		}
+	}
+	fp, err := res.Resolve(config.KeyHubFingerprint)
+	if err != nil {
+		return p, err
+	}
+	if v := fp.Value; v != "" {
+		m, err := agent.ParseHubExpectation(v)
+		if err != nil {
+			return p, err
+		}
+		p.HubFingerprint = m.String()
 	}
 	return p, nil
 }
@@ -472,6 +484,7 @@ func (p *setupPersister) Save(ctx context.Context, s setup.Settings) error {
 	}
 	prevShare, hadShare, _ := file.Lookup(config.KeyShareExisting)
 	prevServer, hadServer, _ := file.Lookup(config.KeyServer)
+	prevFP, hadFP, _ := file.Lookup(config.KeyHubFingerprint)
 
 	if hadShare {
 		// share_existing has no "select": that mode removes it and the saved
@@ -486,6 +499,11 @@ func (p *setupPersister) Save(ctx context.Context, s setup.Settings) error {
 		file.Delete(config.KeyServer)
 	} else {
 		file.Set(config.KeyServer, s.Server)
+	}
+	// The expected Hub fingerprint is saved in the same write as the
+	// address, so the Worker service applies it when it pairs by itself.
+	if s.HubFingerprint != "" {
+		file.Set(config.KeyHubFingerprint, s.HubFingerprint)
 	}
 	if hadShare || hadServer || s.Server != "" {
 		if err := file.Save(); err != nil {
@@ -504,6 +522,11 @@ func (p *setupPersister) Save(ctx context.Context, s setup.Settings) error {
 			file.Set(config.KeyServer, prevServer)
 		} else {
 			file.Delete(config.KeyServer)
+		}
+		if hadFP {
+			file.Set(config.KeyHubFingerprint, prevFP)
+		} else {
+			file.Delete(config.KeyHubFingerprint)
 		}
 		if hadShare || hadServer || s.Server != "" {
 			if rerr := file.Save(); rerr != nil {
@@ -536,8 +559,13 @@ func (p *setupPairing) Paired(ctx context.Context) (setup.Paired, bool, error) {
 // Pair uses the Worker's pairer as "minion worker pair" does: it shows the
 // code on out and waits for the Hub. The pairer's log is discarded here
 // because the human sees the code on out; the code is printed once.
-func (p *setupPairing) Pair(ctx context.Context, hubURL string, out io.Writer) (setup.Paired, error) {
+func (p *setupPairing) Pair(ctx context.Context, hubURL, fingerprint string, out io.Writer) (setup.Paired, error) {
+	expect, err := agent.ParseHubExpectation(fingerprint)
+	if err != nil {
+		return setup.Paired{}, err
+	}
 	pr, err := agent.NewPairer(agent.PairerConfig{
+		ExpectHub:  expect,
 		HubURL:     hubURL,
 		Name:       p.name,
 		Enrollment: p.enr,
