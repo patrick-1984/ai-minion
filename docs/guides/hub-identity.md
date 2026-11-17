@@ -52,6 +52,18 @@ minion hub identity change-passphrase
 
 They run as the Hub's user (or root) and talk to the running Hub over the **local admin socket** `admin.sock` in the data directory (mode 0600). They ask for the passphrase on the terminal with echo off and **refuse to run when standard input is not a terminal**; there is no flag, variable or file for the passphrase. The Hub takes the actor from the kernel credentials of the socket peer (`local:<uid>`), not from the client. The fresh sign-in, CSRF and HTTPS rules of the web do not apply, because a browser cannot reach the socket. The commands have their **own** failure counter, lockout and hourly allowance, so a lockout caused through the web never locks the owner out at the Hub host. `minion hub identity` without a subcommand still prints the root fingerprint; it needs no running Hub, no private key and no socket (once the key file is gone it reads the public fingerprint from the database, read-only). root may run the commands for the Hub account: the client checks that the socket is owned by the owner of the data directory and is not group- or other-writable. Ctrl+C or SIGTERM at a prompt restores the terminal (echo on) and ends the command with exit status 130.
 
+### The fingerprint for Workers: `--words`
+
+```sh
+minion hub identity --words
+```
+
+prints the Hub fingerprint as six words, the 52 characters, ready lines for a Worker (`minion worker join <url> --hub-fingerprint <52 characters>`, `MINION_HUB_FINGERPRINT=<52 characters>`, `minion worker verify-hub <52 characters>`) and a `TLS key pin: sha256//<base64>` line for the CLI and MCP clients ([API keys and MCP](api-keys-and-mcp.md#use-a-key)). Bare `minion hub identity` is unchanged. Read it here, on the Hub host, when you do not want to rely on a proxy ([pairing](pairing.md#when-you-do-not-want-to-rely-on-the-proxy)). The web UI shows the same words and 52 characters on this page, on **Add worker** and when an invitation key is created.
+
+The Hub also logs a line with the message `hub identity` and the fields `fingerprint_words` and `fingerprint` at start, after every activation (first certificate, re-issue, rotation) and once a day. To find it: `docker logs <hub container> 2>&1 | grep '"msg":"hub identity"'` (or grep for `msg="hub identity"` in text logs).
+
+After `rotate-master` the fingerprint changes. Paired Workers follow the signed chain by themselves. Where a Worker has the setting `hub_fingerprint`, it still connects and logs a warning until you update the setting to the new 52 characters.
+
 Exit statuses: 0 done; 1 other error; 2 usage (including no terminal); 3 the state does not allow it, or the change must be repeated; 5 passphrase not accepted; 6 locked or allowance used up; 7 no running Hub answers on the socket.
 
 ## Lockout

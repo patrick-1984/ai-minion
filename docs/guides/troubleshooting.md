@@ -62,7 +62,25 @@ A Worker that does not allow it refuses both with the command to allow it. Both 
 minion worker status --json
 ```
 
-prints the Worker's state for scripts and bug reports: `hub_url`, `paired` (enrolled with a Hub), `worker_id`, `approval` (`approved`, `pending` or `unknown`) and `connection` with `state`, `reason`, `last_error` and `last_error_at`. The connection, the approval and the pairing code are live data: they are known only while the Worker runs, otherwise they say `unknown`.
+prints the Worker's state for scripts and bug reports: `hub_url`, `paired` (enrolled with a Hub), `worker_id`, `approval` (`approved`, `pending` or `unknown`) and `connection` with `state`, `reason`, `last_error` and `last_error_at`. The connection, the approval and the pairing code are live data: they are known only while the Worker runs, otherwise they say `unknown`. Since 0.11.0 it also has `hub_fingerprint_words`, `worker_fingerprint_words`, `hub_check`, `hub_check_at`, `hub_check_anchor`, `hub_check_text`, `alarm` and `tls` (`state`, `line`).
+
+Without `--json` the rows about the Hub are:
+
+| Row | Shows |
+| --- | --- |
+| Hub fingerprint, Hub fingerprint (full) | the pinned Hub key as six words and as 52 characters |
+| Hub check | `not verified`, `matched the fingerprint you gave`, `from the invitation key` or `DOES NOT MATCH the fingerprint you gave - not connecting`; after a master-key rotation it adds `; the Hub key was reached by verified rotation from <words>` |
+| Hub identity | `CHANGED - not connecting`, only while that alarm is on |
+| TLS | the [TLS path](reverse-proxy.md#what-a-worker-reports-behind-a-proxy) and the certificate the running Worker saw |
+| Worker fingerprint, Worker fingerprint (full) | this Worker's key, to compare when you approve it |
+
+## Hub fingerprint messages
+
+- **`not verified`**: the Worker paired on first use without an expected fingerprint. Compare all six words with `minion hub identity --words` on the Hub host, then run `minion worker verify-hub <the 52 characters>` on the Worker ([pairing](pairing.md#check-a-paired-worker-verify-hub)).
+- **HUB FINGERPRINT DOES NOT MATCH - NOT PAIRED**: at pairing another Hub answered than the one you named. Nothing was stored. Check the value (read it on the Hub host) and the address, and remove a pending Worker in the Hub that does not show this Worker's fingerprint.
+- **HUB FINGERPRINT DOES NOT MATCH - WORKER DISCONNECTED**: `verify-hub` or the setting `hub_fingerprint` names another Hub than the paired one. The Worker stays disconnected, also after restarts. If the value is right, pair again with `minion worker pair --new-code --hub-fingerprint <value>` and remove the old Worker in the Hub. If the value was wrong, run `verify-hub` with the right one, or remove the pairing with `minion worker verify-hub --forget --pinned <52 characters>`.
+- **HUB IDENTITY CHANGED - NOT CONNECTING**: a paired Worker got a Hub key it does not accept (another key, or a master-key rotation record that does not verify). It keeps its pairing, keeps retrying and does not connect; the box is printed once, and the log has the error `hub identity changed; not connecting`. Read `minion hub identity --words` on the Hub host. If it shows the "paired with" words, something between the Worker and the Hub answers in its place: check the proxy and the network, and do nothing on the Worker. If the Hub was reinstalled or restored with another identity, pair again with `minion worker pair --new-code --hub-fingerprint <value>`.
+- **A malformed `hub_fingerprint`** stops the Worker at start. Give six words or the 52 characters, or unset it.
 
 ## Hub diagnostics
 

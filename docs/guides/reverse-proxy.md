@@ -83,7 +83,23 @@ Point Workers at the public name:
 minion worker pair --server https://hub.example.com
 ```
 
-A Worker does not use the proxy's certificate to trust the Hub: pairing and enrollment pin the Hub's identity key, so a change of the proxy certificate, or of the proxy, does not break paired Workers. Give the Hub a host name of its own. A Worker keeps a path in its Hub URL when it connects, but serving the Hub under a path prefix is not a setup this guide documents.
+A Worker does not use the proxy's certificate to trust the Hub: pairing and enrollment pin the Hub's identity key, so a change of the proxy certificate, or of the proxy, does not break paired Workers. To keep a proxy that turns malicious from pairing your Workers with a Hub of its own, give each Worker the fingerprint read on the Hub host (`--hub-fingerprint`, see [pairing](pairing.md#give-the-worker-the-hub-fingerprint)). Give the Hub a host name of its own. A Worker keeps a path in its Hub URL when it connects, but serving the Hub under a path prefix is not a setup this guide documents.
+
+### What a Worker reports behind a proxy
+
+A Worker shows the **TLS path** in its paired box, in `minion worker status` (row `TLS`) and in its log line `hub connection` (field `tls_path`). It is information, never a verdict, and never an error: the Worker channel does not depend on TLS.
+
+| `tls_path` | Meaning |
+| --- | --- |
+| `keys_match` | The certificate the Worker saw has the key the Hub states it serves. A proxy that holds the Hub's own TLS key shows the same. |
+| `keys_differ` | A TLS endpoint with another key is in between, such as a proxy. |
+| `plain_to_hub` | The Hub received plain HTTP: TLS ends before the Hub, at a proxy. The usual result with this guide. |
+| `unknown` | The Hub is older than 0.11 and does not report its side. |
+| `none` | The Worker dialled `ws://` or `http://`. |
+
+With it the Worker names the certificate: `certificate for <name>, issued by <issuer>` (or `self-signed`), and `trusted by this computer` or `not trusted by this computer (<reason>)`. When the path changes between connections the Worker logs the warning `the TLS path to the Hub changed`.
+
+With a Hub that has its own self-signed certificate: a Worker has nothing to decide; the CLI needs `--hub-ca-file <data dir>/tls/cert.pem` (renewed with the certificate) or `--hub-tls-pin` ([API keys and MCP](api-keys-and-mcp.md#use-a-key)); a browser needs an exception or a publicly signed certificate.
 
 ## Passing TLS through instead
 

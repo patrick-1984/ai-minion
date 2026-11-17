@@ -30,7 +30,7 @@ Run this as yourself, in a terminal:
 minion worker setup
 ```
 
-The wizard asks which sessions the Hub may see, the Hub address and a pairing code (see [pairing and sharing](../guides/pairing.md)). To skip the questions, give them as flags:
+The wizard asks which sessions the Hub may see, the Hub address, the Hub fingerprint (read it on the Hub host with `minion hub identity --words`) and a pairing code (see [pairing and sharing](../guides/pairing.md)). To skip the questions, give them as flags:
 
 ```sh
 minion worker up --share-existing none --server https://hub.example.com
