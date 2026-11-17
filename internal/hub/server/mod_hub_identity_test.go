@@ -318,6 +318,10 @@ func TestAnAdminSetsThePassphraseAndTheStatusFollows(t *testing.T) {
 	if st.State != "B3" || !st.PassphraseSet || !st.Serving || st.RootFingerprint != res.RootFingerprint || st.DaysLeft < 89 || st.Warning != "" {
 		t.Errorf("status after = %+v", st)
 	}
+	// W2: the status carries the root fingerprint as words too.
+	if want := identity.Fingerprint(res.RootFingerprint).Words(); want == "" || st.RootFingerprintWords != want {
+		t.Errorf("root_fingerprint_words = %q, want %q", st.RootFingerprintWords, want)
+	}
 	admin, _ := ih.st.UserByIdentifier(context.Background(), "root")
 	rows := ih.auditRows(t, "hub_identity.passphrase_set")
 	if len(rows) != 1 || rows[0].Actor != admin.ID || rows[0].Outcome != "success" || !strings.Contains(rows[0].Target, "channel=ui") {

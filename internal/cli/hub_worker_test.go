@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -162,4 +165,80 @@ func TestHubWorkerApproveRefusals(t *testing.T) {
 	if _, err := runApprove(t, deny, fp); err == nil || !strings.Contains(err.Error(), "forbidden") {
 		t.Errorf("denied: %v", err)
 	}
+}
+
+// fpOfDigest returns the fingerprint that encodes the 32 bytes d.
+func fpOfDigest(d [32]byte) string {
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(d[:]))
+}
+
+// W2: a pending Worker is approved by its six words (also as 4-letter
+// prefixes and as several arguments); the op gets the full fingerprint.
+// Words never select an approved Worker, and two pending Workers with the
+// same words need the 52 characters.
+func TestHubWorkerApproveByWords(t *testing.T) {
+	d1 := sha256.Sum256([]byte("pending worker"))
+	d2 := sha256.Sum256([]byte("approved worker"))
+	fp1, fp2 := fpOfDigest(d1), fpOfDigest(d2)
+	pending := ops.WorkerInfo{ID: "0190a1b2-c3d4-7e5f-8a6b-000000000001", Name: "edge", Pending: true, Fingerprint: fp1, EnrollAddr: "203.0.113.5"}
+	approved := ops.WorkerInfo{ID: "0190a1b2-c3d4-7e5f-8a6b-000000000002", Name: "old", Fingerprint: fp2}
+	words := identity.Fingerprint(fp1).Words()
+	var prefixes []string
+	for _, w := range strings.Split(words, "-") {
+		prefixes = append(prefixes, w[:min(4, len(w))])
+	}
+	for _, args := range [][]string{{words}, strings.Split(words, "-"), {strings.ToUpper(strings.Join(prefixes, " "))}} {
+		b := approveBackend(approved, pending)
+		out, err := runApproveArgs(t, b, args...)
+		if err != nil || !strings.Contains(out, "Approved Worker edge") || !strings.Contains(out, words) || !strings.Contains(out, fp1) {
+			t.Fatalf("approve %q: %v %q", args, err, out)
+		}
+		var a ops.WorkerApproveArgs
+		if last := b.last(t); last.Op != ops.OpWorkerApprove || json.Unmarshal(last.Args, &a) != nil || a.WorkerID != pending.ID || a.Fingerprint != fp1 {
+			t.Errorf("approve call = %s %s", last.Op, last.Args)
+		}
+	}
+
+	// The words of an approved Worker select nothing.
+	b := approveBackend(approved, pending)
+	if _, err := runApproveArgs(t, b, identity.Fingerprint(fp2).Words()); err == nil || err.Error() != "no pending Worker with that fingerprint is visible to this key" {
+		t.Errorf("approved Worker by words: %v", err)
+	}
+	for _, c := range b.calls {
+		if c.Op == ops.OpWorkerApprove {
+			t.Error("worker_approve was called")
+		}
+	}
+	// Two pending Workers whose fingerprints share the first 66 bits.
+	d3 := d1
+	d3[31] ^= 0xff
+	twin := ops.WorkerInfo{ID: "0190a1b2-c3d4-7e5f-8a6b-000000000003", Name: "twin", Pending: true, Fingerprint: fpOfDigest(d3)}
+	if _, err := runApproveArgs(t, approveBackend(pending, twin), words); err == nil || err.Error() != "more than one pending Worker matches: give the 52 characters" {
+		t.Errorf("two matches: %v", err)
+	}
+	// The 52 characters still pick the exact one.
+	if out, err := runApproveArgs(t, approveBackend(pending, twin), fp1); err != nil || !strings.Contains(out, "Approved Worker edge") {
+		t.Errorf("full value with a twin: %v %q", err, out)
+	}
+	// Five words are not a fingerprint.
+	if _, err := runApproveArgs(t, approveBackend(pending), strings.Join(strings.Split(words, "-")[:5], " ")); err == nil || !strings.Contains(err.Error(), "neither a Worker id") {
+		t.Errorf("five words: %v", err)
+	}
+}
+
+func runApproveArgs(t *testing.T, b *fakeOpsBackend, args ...string) (string, error) {
+	t.Helper()
+	deps := opsDeps{
+		hub:   func() (client.Backend, error) { return b, nil },
+		newID: func() string { return "0190a1b2-c3d4-7e5f-8a6b-0000000000aa" },
+	}
+	cmd := newHubWorkerApprove(deps)
+	var out bytes.Buffer
+	root := &cobra.Command{Use: "minion", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(cmd)
+	root.SetArgs(append([]string{"approve"}, args...))
+	root.SetOut(&out)
+	root.SetErr(&out)
+	err := root.ExecuteContext(context.Background())
+	return out.String(), err
 }

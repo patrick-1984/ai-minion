@@ -298,7 +298,8 @@ func (d allDir) AllWorkers(ctx context.Context) ([]WorkerRecord, error) {
 }
 
 func TestWorkersListShowsPendingButTargetsDoNotResolve(t *testing.T) {
-	pending := WorkerRecord{ID: ops.NewUUIDv7(), Name: "fresh", OwnerID: idAlice, Kind: "private", Fingerprint: "fp-fresh", Pending: true, EnrollAddr: "198.51.100.4"}
+	fpFresh := newKey(t).Fingerprint()
+	pending := WorkerRecord{ID: ops.NewUUIDv7(), Name: "fresh", OwnerID: idAlice, Kind: "private", Fingerprint: fpFresh.String(), Pending: true, EnrollAddr: "198.51.100.4"}
 	fd := &fakeDir{recs: []WorkerRecord{wAlicePi1, pending}}
 	az := authz.New(fakeUsers{idAlice: {Role: authz.RoleUser, Active: true}}, fd)
 	rt, err := NewRouter(RouterConfig{Backend: &fakeBackend{online: map[string]Online{}}, Directory: allDir{fd}, Authz: az})
@@ -316,7 +317,9 @@ func TestWorkersListShowsPendingButTargetsDoNotResolve(t *testing.T) {
 			found = &list[i]
 		}
 	}
-	if found == nil || !found.Pending || found.Fingerprint != "fp-fresh" || found.EnrollAddr != "198.51.100.4" {
+	// W2: the list carries the six words next to the 52 characters.
+	if found == nil || !found.Pending || found.Fingerprint != fpFresh.String() || found.FingerprintWords != fpFresh.Words() ||
+		found.FingerprintWords == "" || found.EnrollAddr != "198.51.100.4" {
 		t.Fatalf("pending Worker in the list = %+v", found)
 	}
 	if _, err := rt.Resolve(context.Background(), alice, "fresh:main", false); proto.CodeOf(err) != proto.CodeTargetNotFound {

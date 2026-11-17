@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -520,6 +521,46 @@ func (c *CertSource) Certificate() *tls.Certificate { return c.cur.Load() }
 // GetCertificate implements tls.Config.GetCertificate.
 func (c *CertSource) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return c.cur.Load(), nil
+}
+
+// KeyHash returns the SHA-256 of the SubjectPublicKeyInfo of the
+// certificate in service.
+func (c *CertSource) KeyHash() [32]byte { return SPKIHash(c.cur.Load().Leaf) }
+
+// SPKIHash returns the SHA-256 of the SubjectPublicKeyInfo of leaf, the value
+// that an SPKI pin (curl --pinnedpubkey sha256//...) names.
+func SPKIHash(leaf *x509.Certificate) [32]byte {
+	return sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+}
+
+// TLSKeyPin returns the SPKI pin of a key hash in the curl --pinnedpubkey
+// form: "sha256//" and the standard base64 of the hash.
+func TLSKeyPin(hash [32]byte) string {
+	return "sha256//" + base64.StdEncoding.EncodeToString(hash[:])
+}
+
+// CertFileKeyHash returns the SPKI hash of the first certificate (the leaf)
+// in the PEM file path.
+func CertFileKeyHash(path string) ([32]byte, error) {
+	data, err := readLimitedFile(path, maxCertFileSize)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	for {
+		var b *pem.Block
+		b, data = pem.Decode(data)
+		if b == nil {
+			return [32]byte{}, fmt.Errorf("tls: %s holds no certificate", path)
+		}
+		if b.Type != "CERTIFICATE" {
+			continue
+		}
+		leaf, err := x509.ParseCertificate(b.Bytes)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("tls: parse certificate %s: %w", path, err)
+		}
+		return SPKIHash(leaf), nil
+	}
 }
 
 // Fingerprint returns the SHA-256 fingerprint of the certificate in service

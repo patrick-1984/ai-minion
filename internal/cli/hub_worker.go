@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -28,7 +29,7 @@ func init() {
 // the Worker); a fingerprint needs a workers_list lookup first (also read).
 func newHubWorkerApprove(deps opsDeps) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "approve <fingerprint|id>",
+		Use:   "approve <fingerprint|words|id>",
 		Short: "Approve a pending Worker",
 		Long: `Approve a Worker that enrolled and waits for approval.
 
@@ -36,7 +37,10 @@ A Worker that enrolls (invitation key, pairing code or infrastructure key) is
 pending: it may connect, but the Hub sends it no operations and refuses its
 calls until its owner or an admin approves it. Name the Worker by the
 fingerprint of its key (52 lowercase base32 characters, shown in the Hub and
-in the Worker's log) or by its id (a UUID). Compare the fingerprint, name and
+in the Worker's log), by the six words of that fingerprint (separated by
+spaces or "-"; four letters of each word are enough), or by its id (a UUID).
+Six words are matched against pending Workers only; when more than one
+matches, give the 52 characters. Compare the fingerprint, name and
 source address printed by "minion workers_list" or the Hub's Workers page with
 what you expect before you approve.
 
@@ -46,11 +50,11 @@ manage alone is enough. Approving by fingerprint first looks the Worker up with
 "workers_list", so that form also needs the read action; the key must be able
 to read the Worker. Automation that knows the id of the Worker it started
 should use the id.`,
-		Args:          cobra.ExactArgs(1),
+		Args:          cobra.MinimumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runHubWorkerApprove(cmd, deps, args[0])
+			return runHubWorkerApprove(cmd, deps, strings.Join(args, " "))
 		},
 	}
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return &usageError{err} })
@@ -65,8 +69,18 @@ func runHubWorkerApprove(cmd *cobra.Command, deps opsDeps, ref string) error {
 	}
 	ref = strings.TrimSpace(ref)
 	byID := ops.ValidUUIDv7(ref)
+	// words is set when the Worker is named by the six words of its
+	// fingerprint; they select among pending Workers only.
+	var words identity.FingerprintMatcher
 	if !byID && !validFingerprintArg(ref) {
-		return usagef("%q is neither a Worker id (a UUID) nor a fingerprint (52 lowercase base32 characters)", ref)
+		m, err := identity.ParseFingerprintInput(ref)
+		if err != nil {
+			return usagef("%q is neither a Worker id (a UUID) nor a fingerprint (52 lowercase base32 characters or six words): %v", ref, err)
+		}
+		if m.Full() {
+			return usagef("%q is neither a Worker id (a UUID) nor a fingerprint (52 lowercase base32 characters or six words)", ref)
+		}
+		words = m
 	}
 	approve, ok := ops.Lookup(ops.OpWorkerApprove)
 	if !ok {
@@ -102,15 +116,19 @@ func runHubWorkerApprove(cmd *cobra.Command, deps opsDeps, ref string) error {
 		return fmt.Errorf("read the Workers list: %w", err)
 	}
 	var found *ops.WorkerInfo
-	for i := range list.Workers {
-		w := &list.Workers[i]
-		if w.Fingerprint == ref {
-			found = w
-			break
+	if words.IsZero() {
+		for i := range list.Workers {
+			w := &list.Workers[i]
+			if w.Fingerprint == ref {
+				found = w
+				break
+			}
 		}
-	}
-	if found == nil {
-		return fmt.Errorf("no Worker with that fingerprint is visible to this key")
+		if found == nil {
+			return fmt.Errorf("no Worker with that fingerprint is visible to this key")
+		}
+	} else if found, err = pendingByWords(list.Workers, words); err != nil {
+		return err
 	}
 	if !found.Pending {
 		_, err := fmt.Fprintf(out, "Worker %s (%s) is already approved.\n", found.Name, found.ID)
@@ -128,9 +146,30 @@ func runHubWorkerApprove(cmd *cobra.Command, deps opsDeps, ref string) error {
 	if err := json.Unmarshal(raw, &res); err != nil || res.Outcome != ops.OutcomeDelivered {
 		return fmt.Errorf("the Hub did not confirm the approval (outcome %q); list the Workers to see the current state", res.Outcome)
 	}
-	_, err = fmt.Fprintf(out, "Approved Worker %s (%s), fingerprint %s, enrolled from %s.\n",
-		found.Name, found.ID, found.Fingerprint, orDash(found.EnrollAddr))
+	_, err = fmt.Fprintf(out, "Approved Worker %s (%s), fingerprint %s (%s), enrolled from %s.\n",
+		found.Name, found.ID, identity.Fingerprint(found.Fingerprint).Words(), found.Fingerprint, orDash(found.EnrollAddr))
 	return err
+}
+
+// pendingByWords returns the one pending Worker whose fingerprint has the
+// words of m. Words never select an approved Worker, and two pending Workers
+// with the same words need the 52 characters.
+func pendingByWords(list []ops.WorkerInfo, m identity.FingerprintMatcher) (*ops.WorkerInfo, error) {
+	var found *ops.WorkerInfo
+	for i := range list {
+		w := &list[i]
+		if !w.Pending || !m.MatchesFingerprint(identity.Fingerprint(w.Fingerprint)) {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("more than one pending Worker matches: give the 52 characters")
+		}
+		found = w
+	}
+	if found == nil {
+		return nil, fmt.Errorf("no pending Worker with that fingerprint is visible to this key")
+	}
+	return found, nil
 }
 
 func validFingerprintArg(s string) bool {
