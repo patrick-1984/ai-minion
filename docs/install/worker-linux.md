@@ -77,7 +77,7 @@ Without `sudo` this installs a systemd user service. A user service stops when y
 
 ## 4. Join the Hub
 
-If the wizard did not already pair the Worker, pair it now: [pairing and sharing](../guides/pairing.md).
+If the wizard did not already pair the Worker, pair it now: [pairing and sharing](../guides/pairing.md). The wizard and `minion worker pair` ask for the Hub fingerprint first: read it on the Hub host with `minion hub identity --words`, or give it as `--hub-fingerprint` ([pairing](../guides/pairing.md#give-the-worker-the-hub-fingerprint)).
 
 ## Check and change
 

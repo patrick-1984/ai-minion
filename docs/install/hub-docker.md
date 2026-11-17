@@ -45,6 +45,12 @@ Use an exact tag for a Hub you do not want to change under you. The compose file
 
    The command needs a terminal (`docker exec -it`; `docker compose exec` allocates one unless you pass `-T`) and refuses to read the passphrase from a pipe. It talks to the running Hub over the socket `admin.sock` in the data directory (`/data`, set by `MINION_DATA_DIR` in `hub.yaml` and inherited by `exec`). The Hub serves that socket only to the user that runs it (UID 65532 in this image) and to root, so run it as the image's default user or as root, not as another user. The passphrase has at least 14 characters and cannot be recovered; read [Hub identity](../guides/hub-identity.md) first.
 
+Then read the Hub fingerprint that Workers check (six words and 52 characters, with ready lines for a Worker):
+
+```sh
+docker compose -f hub.yaml exec hub minion hub identity --words
+```
+
 Then add a Worker: [pairing and sharing](../guides/pairing.md). An infrastructure invitation key file (`MINION_INFRA_INVITE_KEY_FILE`) names a key bound to the Hub identity, which does not exist before this step: leave it unset for the first start and add it after the passphrase is set ([pairing](../guides/pairing.md)).
 
 ## Why the data directory needs preparation
