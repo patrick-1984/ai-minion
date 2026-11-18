@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -18,8 +20,11 @@ type fakeSource struct {
 	calls atomic.Int32
 }
 
-func (f *fakeSource) Releases(context.Context) ([]version.Release, error) {
+func (f *fakeSource) Releases(ctx context.Context) ([]version.Release, error) {
 	f.calls.Add(1)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return f.rels, f.err
 }
 func (f *fakeSource) Open(context.Context, version.Asset) (io.ReadCloser, error) {
@@ -126,4 +131,155 @@ func TestSettingErrorsSkipAndChannelChangeDropsTheNotice(t *testing.T) {
 	if r := c.Latest(); r.Newer || r.Latest != "" {
 		t.Fatalf("the latest-channel notice survived the switch to minor: %+v", r)
 	}
+}
+
+// "Check now" asks GitHub, but never twice within MinRefresh, also not after
+// a channel change (the poll picks that up once the cooldown ends) and not
+// from concurrent presses.
+func TestRefreshIsRateLimited(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
+	settings := map[string]string{config.KeyUpdateChannel: config.UpdateChannelMinor}
+	c := newChecker(src, "v0.11.0", settings)
+	c.MinRefresh = time.Hour
+	var wg sync.WaitGroup
+	var asked atomic.Int32
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if c.Refresh(context.Background()) {
+				asked.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if asked.Load() != 1 || src.calls.Load() != 1 {
+		t.Fatalf("concurrent refreshes: asked = %d, calls = %d", asked.Load(), src.calls.Load())
+	}
+	settings[config.KeyUpdateChannel] = config.UpdateChannelLatest
+	if c.Refresh(context.Background()) || src.calls.Load() != 1 {
+		t.Fatalf("refresh within MinRefresh after a channel change called GitHub: calls = %d", src.calls.Load())
+	}
+	settings[config.KeyUpdateCheck] = "off"
+	c.MinRefresh = time.Nanosecond
+	if c.Refresh(context.Background()) {
+		t.Fatal("refresh with update_check off reported a call to GitHub")
+	}
+}
+
+// A refresh whose caller went away still stores a real answer, not
+// "context canceled".
+func TestRefreshOutlivesItsCaller(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
+	c := newChecker(src, "v0.11.0", map[string]string{config.KeyUpdateChannel: config.UpdateChannelLatest})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Refresh(ctx)
+	if r := c.Latest(); r.Err != "" || r.Latest != "v0.13.0" {
+		t.Fatalf("latest = %+v", r)
+	}
+}
+
+// Run checks at once when update_channel changes, not only at the next
+// daily check.
+func TestRunChecksAgainWhenTheChannelChanges(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
+	var mu sync.Mutex
+	channel := config.UpdateChannelMinor
+	c := newChecker(src, "v0.11.0", nil)
+	c.Setting = func(k string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if k == config.KeyUpdateChannel {
+			return channel, nil
+		}
+		return "on", nil
+	}
+	c.Interval, c.FirstDelay, c.Poll, c.MinRefresh = time.Hour, time.Millisecond, 5*time.Millisecond, time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	waitFor(t, func() bool { return c.Latest().Channel == config.UpdateChannelMinor })
+	if c.Latest().Newer {
+		t.Fatal("minor channel offered v0.13.0")
+	}
+	mu.Lock()
+	channel = config.UpdateChannelLatest
+	mu.Unlock()
+	waitFor(t, func() bool { r := c.Latest(); return r.Channel == config.UpdateChannelLatest && r.Latest == "v0.13.0" })
+	if n := src.calls.Load(); n != 2 {
+		t.Fatalf("calls = %d, want 2 (start, channel change)", n)
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// A Hub that starts with update_check off checks as soon as it is turned on,
+// not only at the next daily check.
+func TestRunChecksWhenTheCheckIsTurnedOn(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
+	var mu sync.Mutex
+	check := "off"
+	c := newChecker(src, "v0.11.0", nil)
+	c.Setting = func(k string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if k == config.KeyUpdateCheck {
+			return check, nil
+		}
+		return config.UpdateChannelLatest, nil
+	}
+	c.Interval, c.FirstDelay, c.Poll, c.MinRefresh = time.Hour, time.Millisecond, 5*time.Millisecond, time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	time.Sleep(30 * time.Millisecond)
+	if src.calls.Load() != 0 {
+		t.Fatal("checked while off")
+	}
+	mu.Lock()
+	check = "on"
+	mu.Unlock()
+	waitFor(t, func() bool { return c.Latest().Latest == "v0.13.0" })
+}
+
+// A background check stops with the Hub instead of waiting for GitHub, and
+// keeps the last answer.
+func TestBackgroundCheckStopsOnShutdown(t *testing.T) {
+	blocked := make(chan struct{})
+	src := &blockingSource{started: blocked}
+	c := newChecker(src, "v0.11.0", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	doneCh := make(chan struct{})
+	go func() { c.CheckOnce(ctx); close(doneCh) }()
+	<-blocked
+	cancel()
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CheckOnce kept running after cancel")
+	}
+	if r := c.Latest(); r.Err != "" {
+		t.Fatalf("a shutdown was stored as an error: %+v", r)
+	}
+}
+
+type blockingSource struct{ started chan struct{} }
+
+func (b *blockingSource) Releases(ctx context.Context) ([]version.Release, error) {
+	close(b.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (b *blockingSource) Open(context.Context, version.Asset) (io.ReadCloser, error) {
+	return nil, errors.New("not used")
 }

@@ -10,10 +10,17 @@ const (
 	// OpHubUpdate replaces the Hub container with the newest release in the
 	// update channel. The Hub restarts moments after the answer.
 	OpHubUpdate = "hub_update"
+	// OpHubUpdateRefresh asks GitHub now for the newest release in the
+	// update channel (at most once a minute) and reports like
+	// hub_update_check.
+	OpHubUpdateRefresh = "hub_update_refresh"
 )
 
 // HubUpdateCheckArgs are the arguments of hub_update_check (none).
 type HubUpdateCheckArgs struct{}
+
+// HubUpdateRefreshArgs are the arguments of hub_update_refresh (none).
+type HubUpdateRefreshArgs struct{}
 
 // HubUpdateCheckResult describes the Hub's own update.
 type HubUpdateCheckResult struct {
@@ -24,6 +31,16 @@ type HubUpdateCheckResult struct {
 	Latest     string `json:"latest,omitempty"`
 	Newer      bool   `json:"newer"`
 	ReleaseURL string `json:"release_url,omitempty"`
+	// CheckedAt is when the release check last ran (RFC 3339, UTC), empty
+	// before the first one; CheckedChannel is the channel it ran on, which
+	// differs from Channel for a moment after the setting changed.
+	CheckedAt      string `json:"checked_at,omitempty"`
+	CheckedChannel string `json:"checked_channel,omitempty"`
+	// CheckError is the error of the last check; the last good answer stays.
+	CheckError string `json:"check_error,omitempty"`
+	// Refreshed is true when this call asked GitHub (hub_update_refresh, and
+	// the last call to GitHub was not less than a minute ago).
+	Refreshed bool `json:"refreshed,omitempty"`
 	// SelfUpdate is true when the Hub can replace itself (Docker, opt-in);
 	// Reason says why not otherwise, and Command is what to run instead.
 	SelfUpdate bool   `json:"self_update"`
@@ -56,6 +73,14 @@ func init() {
 		Summary: "Show the Hub's release, the newest one in its update channel, and whether the Hub can update itself (admin only).",
 		Scope:   ScopeHub, Actions: manage,
 		Args: reflect.TypeFor[HubUpdateCheckArgs](), Result: reflect.TypeFor[HubUpdateCheckResult](),
+	})
+	// hub_update_refresh is Mutates (POST only, CSRF-checked in the browser):
+	// it spends the shared GitHub quota and replaces the cached answer.
+	Register(Op{
+		Name:    OpHubUpdateRefresh,
+		Summary: "Ask GitHub now for the newest release in the Hub's update channel (at most once a minute) and report like hub_update_check (admin only).",
+		Scope:   ScopeHub, Actions: manage, Mutates: true,
+		Args: reflect.TypeFor[HubUpdateRefreshArgs](), Result: reflect.TypeFor[HubUpdateCheckResult](),
 	})
 	// hub_update is Mutates: its result is not a WriteResult, and a repeat is
 	// refused while an update runs.

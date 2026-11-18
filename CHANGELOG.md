@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.13.1
+
+Released 2026-11-18.
+
+### Added
+
+- **Check now on Administration > Updates.** The button asks GitHub at once (at most once a minute; a sooner press shows the last answer). The page also shows when the check last ran and why it failed, if it did. New admin operation `hub_update_refresh` (POST only); `hub_update_check` also reports `checked_at`, `checked_channel` and `check_error`.
+
+### Fixed
+
+- **A changed `update_channel` is checked at once.** Before, the Hub kept the answer of the old channel until the next daily check, and the Updates page showed the new channel next to it, for example "latest … v0.11.0 (up to date)" while v0.13.0 was out. The Hub now notices a change of `update_channel` or `update_check` within 15 seconds and checks again (at most one GitHub call a minute, so within about a minute); until then the page says it is checking the new channel and offers neither the old answer nor an update to it.
+
 ## v0.13.0
 
 Released 2026-11-18.

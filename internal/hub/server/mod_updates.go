@@ -61,6 +61,11 @@ func initUpdates(_ context.Context, env *Env) error {
 	}
 	web.SetUpdateSource(func() (string, string, bool) {
 		r := chk.Latest()
+		// An answer for another channel (just after update_channel changed)
+		// is not offered: the next poll checks the new channel.
+		if ch, err := resolver.Resolve(config.KeyUpdateChannel); err != nil || ch.Value != r.Channel {
+			return "", "", false
+		}
 		return r.Latest, r.URL, r.Newer
 	})
 	runCtx, cancel := context.WithCancel(context.Background())

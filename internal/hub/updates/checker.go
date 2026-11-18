@@ -49,9 +49,20 @@ type Checker struct {
 	Log     *slog.Logger
 	// Interval is 24 h; FirstDelay the wait after start (a few minutes).
 	Interval, FirstDelay time.Duration
+	// Poll is how often Run looks (locally) whether update_check or
+	// update_channel changed since the last answer; a change is checked
+	// then (after MinRefresh since the last call to GitHub) instead of at
+	// the next daily check. Zero means 15 seconds.
+	Poll time.Duration
+	// MinRefresh is the shortest time between two checks asked for with
+	// Refresh (the "Check now" button); zero means one minute. GitHub allows
+	// 60 unauthenticated calls an hour per address.
+	MinRefresh time.Duration
 
-	mu   sync.RWMutex
-	last Result
+	mu     sync.RWMutex
+	last   Result
+	runMu  sync.Mutex // one check at a time
+	lastAt time.Time  // when the last check (any trigger) ran
 }
 
 // Latest returns the last answer; it never blocks on the network.
@@ -62,38 +73,112 @@ func (c *Checker) Latest() Result {
 }
 
 // Run checks after FirstDelay and then every Interval (plus up to an hour of
-// jitter) until ctx ends.
+// jitter) until ctx ends. In between it checks when update_check or
+// update_channel no longer match the last answer (a change in the panel),
+// at most once per MinRefresh like Refresh.
 func (c *Checker) Run(ctx context.Context) {
 	t := time.NewTimer(c.FirstDelay)
 	defer t.Stop()
+	poll := c.Poll
+	if poll <= 0 {
+		poll = 15 * time.Second
+	}
+	p := time.NewTicker(poll)
+	defer p.Stop()
+	started := false // the first scheduled attempt ran (also with the check off)
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-p.C:
+			if (started || c.checked()) && c.settingsChanged() {
+				c.fetch(ctx, true, false)
+			}
+			continue
 		case <-t.C:
 		}
+		started = true
 		c.CheckOnce(ctx)
 		t.Reset(c.Interval + time.Duration(rand.Int64N(int64(time.Hour))))
 	}
 }
 
-// CheckOnce runs one check now, unless update_check is off.
+// checked reports whether a check ran (any trigger): the baseline that a
+// settings change is compared with.
+func (c *Checker) checked() bool {
+	c.runMu.Lock()
+	defer c.runMu.Unlock()
+	return !c.lastAt.IsZero()
+}
+
+// settingsChanged reports whether the last answer was found with other
+// settings than the current ones: another channel, or the check turned on
+// since. A failed lookup is no change.
+func (c *Checker) settingsChanged() bool {
+	check, err1 := c.Setting(config.KeyUpdateCheck)
+	channel, err2 := c.Setting(config.KeyUpdateChannel)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	last := c.Latest()
+	if check != "on" {
+		return last != (Result{})
+	}
+	return last.Channel != channel
+}
+
+// Refresh checks now, for an administrator's "Check now". It reports whether
+// GitHub was asked: not when the last call to GitHub (any trigger) was less
+// than MinRefresh ago, the check is off or the settings cannot be read; the
+// caller then shows the answer it has.
+func (c *Checker) Refresh(ctx context.Context) bool {
+	return c.fetch(ctx, true, true)
+}
+
+// CheckOnce runs one check now, unless update_check is off (the daily check).
 func (c *Checker) CheckOnce(ctx context.Context) {
+	c.fetch(ctx, false, false)
+}
+
+// fetch runs one check and reports whether it asked GitHub. With cooldown it
+// skips the call when the previous one was less than MinRefresh ago; the
+// decision and the call happen under runMu, so concurrent triggers cannot
+// both pass. With detach the call ignores ctx's cancellation (a browser that
+// goes away does not leave a "canceled" answer behind); background checks
+// keep it, so a Hub shutdown does not wait for GitHub. Bounded to 30 s.
+func (c *Checker) fetch(ctx context.Context, cooldown, detach bool) bool {
+	c.runMu.Lock()
+	defer c.runMu.Unlock()
 	check, err1 := c.Setting(config.KeyUpdateCheck)
 	channel, err2 := c.Setting(config.KeyUpdateChannel)
 	if err1 != nil || err2 != nil {
 		c.Log.Debug("release check skipped: the settings could not be read", "error", errors.Join(err1, err2))
-		return
+		return false
 	}
 	if check != "on" {
 		c.mu.Lock()
 		c.last = Result{}
 		c.mu.Unlock()
-		return
+		return false
+	}
+	gap := c.MinRefresh
+	if gap <= 0 {
+		gap = time.Minute
+	}
+	if cooldown && !c.lastAt.IsZero() && time.Since(c.lastAt) < gap {
+		return false
+	}
+	if detach {
+		ctx = context.WithoutCancel(ctx)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	c.lastAt = time.Now()
 	res, err := c.check(ctx, channel)
+	if err != nil && !detach && ctx.Err() != nil && errors.Is(context.Cause(ctx), context.Canceled) {
+		// Shutdown: keep the last answer as it was.
+		return true
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {
@@ -103,10 +188,11 @@ func (c *Checker) CheckOnce(ctx context.Context) {
 		}
 		c.last.Err, c.last.CheckedAt = err.Error(), time.Now()
 		c.Log.Debug("release check failed; keeping the last answer", "error", err)
-		return
+		return true
 	}
 	c.last = res
 	c.Log.Debug("release check", "channel", channel, "latest", res.Latest, "newer", res.Newer)
+	return true
 }
 
 func (c *Checker) check(ctx context.Context, channel string) (Result, error) {
