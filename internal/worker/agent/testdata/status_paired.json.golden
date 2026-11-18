@@ -34,5 +34,10 @@
   "sessions": 3,
   "paused": false,
   "paused_until": "",
-  "pause_in_force": true
+  "pause_in_force": true,
+  "new_sessions": {
+    "blocked": false,
+    "sources": [],
+    "in_force": true
+  }
 }

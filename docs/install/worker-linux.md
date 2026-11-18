@@ -99,6 +99,15 @@ The share choice is read from the Worker's database and takes effect at once; th
 
 To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).
 
+### Block new sessions created through Minion
+
+```sh
+minion worker config set allow_new_sessions off   # block
+minion worker config set allow_new_sessions on    # allow again (default)
+```
+
+With `allow_new_sessions` off the Worker refuses every new session created through Minion, whoever asks: the Hub, an API key, local commands, `mn` and MCP get `forbidden` with the reason `new_sessions_blocked`. Existing sessions keep working, and so do the other writes. The block is local and tighten-only: `off` from any source (the config file, `MINION_ALLOW_NEW_SESSIONS` or `--allow-new-sessions`), or a value that is not `on` or `off`, blocks, so an `on` in a service environment cannot lift a block saved in the config file, and `minion worker up` keeps a saved `off`. The Hub cannot lift it. `minion worker status` shows it as `new_sessions` (`blocked`, the `sources` that block, and `in_force`). Limit: a writable shared terminal can still start programs or sessions by typing in it; for a stronger switch use `preview_only` or share fewer sessions. Restart the Worker after a change.
+
 ### Pause the Hub connection
 
 ```sh

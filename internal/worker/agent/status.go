@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -87,6 +88,9 @@ type LiveStatus struct {
 	// Paused is whether the running Worker enforces a pause of its Hub
 	// traffic; nil when it does not report it (a Worker without pause.v1).
 	Paused *bool
+	// NewSessionsBlocked is whether the running Worker refuses new sessions
+	// (allow_new_sessions); nil when it does not report it (an older Worker).
+	NewSessionsBlocked *bool
 }
 
 // LiveSource answers for a running Worker. It returns [ErrNoLiveWorker] when
@@ -127,6 +131,10 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 	if s.Pause != nil {
 		paused := s.Pause.Paused()
 		out.Paused = &paused
+	}
+	if s.Policy != nil {
+		blocked, _ := s.Policy.NewSessionsBlocked()
+		out.NewSessionsBlocked = &blocked
 	}
 	// The local status shows the details the hello leaves out (a socket
 	// path, a user name, the error itself): only this machine reads it.
@@ -190,6 +198,10 @@ type StatusInputs struct {
 	Live LiveSource
 	// Pause reads the saved pause (pause.json); nil means not available.
 	Pause func() (PauseState, error)
+	// NewSessions is the tighten-merged allow_new_sessions of the local
+	// sources (flag, env, file) as this command resolves them; nil means not
+	// available.
+	NewSessions *config.Tightened
 	// Now is the clock of a timed pause; nil means time.Now.
 	Now func() time.Time
 }
@@ -218,6 +230,17 @@ type StatusShare struct {
 	Configured bool `json:"configured"`
 	// Sessions are the selected session names (used by mode select).
 	Sessions []string `json:"sessions"`
+}
+
+// StatusNewSessions is the local block of new sessions created through
+// Minion: Blocked is the tighten-only merge of the flag, the environment and
+// the config file (Sources are the ones that block); InForce says whether the
+// running Worker enforces exactly that (true when no Worker runs: it applies
+// it at its start; null when a running Worker does not report it).
+type StatusNewSessions struct {
+	Blocked bool     `json:"blocked"`
+	Sources []string `json:"sources"`
+	InForce *bool    `json:"in_force"`
 }
 
 // StatusTLS is the TLS path of a connection: the state (TLSPath*) and the
@@ -309,6 +332,9 @@ type StatusReport struct {
 	Paused       bool   `json:"paused"`
 	PausedUntil  string `json:"paused_until"`
 	PauseInForce *bool  `json:"pause_in_force"`
+	// NewSessions is the local block of new sessions (allow_new_sessions,
+	// tray W4a).
+	NewSessions StatusNewSessions `json:"new_sessions"`
 	// Problems lists what could not be read, in plain English.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -392,7 +418,28 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 	r.Connection, live = connectionOf(ctx, in, &r, problem)
 	r.PreviewOnly = in.PreviewOnly || r.PreviewOnlyHub
 	pauseOf(in, &r, live, problem)
+	newSessionsOf(in, &r, live)
 	return r
+}
+
+// newSessionsOf fills the new-session block from the resolved setting and
+// the live answer.
+func newSessionsOf(in StatusInputs, r *StatusReport, live *LiveStatus) {
+	r.NewSessions.Sources = []string{}
+	if in.NewSessions != nil {
+		r.NewSessions.Blocked = in.NewSessions.Blocked
+		r.NewSessions.Sources = sourceNames(in.NewSessions.Sources)
+	}
+	inForce := true
+	switch {
+	case live == nil:
+	case live.NewSessionsBlocked == nil:
+		// An older Worker cannot block: in force exactly when nothing is.
+		inForce = !r.NewSessions.Blocked
+	default:
+		inForce = *live.NewSessionsBlocked == r.NewSessions.Blocked
+	}
+	r.NewSessions.InForce = &inForce
 }
 
 // pauseOf fills the pause fields from the saved state and the live answer.
@@ -547,6 +594,14 @@ func (r StatusReport) WriteText(w io.Writer) error {
 			}
 		}
 	}
+	if r.NewSessions.Blocked {
+		for i, row := range rows {
+			if row[0] == "Preview only" {
+				rows = append(rows[:i+1], append([][2]string{{"New sessions", r.newSessionsText()}}, rows[i+1:]...)...)
+				break
+			}
+		}
+	}
 	if r.Paused {
 		for i, row := range rows {
 			if row[0] == "Connection" {
@@ -580,6 +635,14 @@ func (r StatusReport) WriteText(w io.Writer) error {
 // previewPlatforms maps the platforms that are a preview in release 1 to the
 // name the report shows.
 var previewPlatforms = map[string]string{"windows": "Windows"}
+
+func (r StatusReport) newSessionsText() string {
+	t := "blocked (allow_new_sessions off, set by " + strings.Join(r.NewSessions.Sources, ", ") + ")"
+	if r.NewSessions.InForce != nil && !*r.NewSessions.InForce {
+		t += "; the running Worker does not enforce it yet"
+	}
+	return t
+}
 
 func (r StatusReport) pauseText() string {
 	t := "yes, no Hub traffic"

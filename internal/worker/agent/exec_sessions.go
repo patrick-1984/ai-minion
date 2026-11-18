@@ -300,6 +300,9 @@ func trimBottomBlank(lines []string) []string {
 func (e *Executor) sessionCreate(ctx context.Context, rq Request) (any, error) {
 	e.createMu.RLock()
 	defer e.createMu.RUnlock()
+	if e.policy.newSessionsBlocked.Load() {
+		return nil, apiErr(proto.CodeForbidden, proto.CodeNewSessionsBlocked, "new sessions are blocked on this Worker (allow_new_sessions off)")
+	}
 	if len(e.createHolds) > 0 {
 		return nil, apiErr(proto.CodeConflict, "", e.createHoldReason()+"; create the session after the restart")
 	}

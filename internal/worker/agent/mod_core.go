@@ -130,6 +130,9 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	if err != nil {
 		return nil, err
 	}
+	// The local block of new sessions (allow_new_sessions, tighten-only):
+	// in force before any entry point can call session_create.
+	ex.SetNewSessionsBlocked(s.NewSessions.Blocked, sourceNames(s.NewSessions.Sources))
 	for _, p := range []func() error{
 		func() error { return Provide(env, st) },
 		func() error { return Provide(env, host) },
@@ -147,7 +150,8 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 		"name", s.Name, "state_dir", st.Dir(), "tmux_socket", s.TmuxSocket,
 		"session_host", hostInfo.Kind, "sessions_hidden", hostInfo.Hidden, "session_host_reason", hostInfo.localReason(),
 		"share", string(sel.Mode), "preview_only", s.PreviewOnly, "share_lock", s.ShareLock,
-		"pipe_accept_from", s.PipeAcceptFrom.String(), "call_api_key_file", s.CallAPIKeyFile != "")
+		"pipe_accept_from", s.PipeAcceptFrom.String(), "call_api_key_file", s.CallAPIKeyFile != "",
+		"new_sessions_blocked", s.NewSessions.Blocked)
 	if !sel.Configured || sel.Mode == store.ShareLater {
 		log.Warn("no tmux session is shared yet; sessions stay hidden until you choose, for example with --share-existing all")
 	}
@@ -211,4 +215,13 @@ func shareModeOf(value string) (store.ShareMode, error) {
 		return store.ShareLater, nil
 	}
 	return "", errors.New("share_existing must be all, none or later, got " + value)
+}
+
+// sourceNames returns the names of config sources.
+func sourceNames(src []config.Source) []string {
+	out := make([]string, 0, len(src))
+	for _, s := range src {
+		out = append(out, string(s))
+	}
+	return out
 }

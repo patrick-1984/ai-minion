@@ -42,6 +42,22 @@ type Policy struct {
 	ownerID        atomic.Pointer[string]
 	onIdentity     atomic.Pointer[func()]
 	pipeAccept     atomic.Pointer[config.PipeAcceptFrom]
+	// newSessionsBlocked is the local allow_new_sessions=off (tray W4a). It
+	// is separate from the create holds of an update or a stop, so that no
+	// release of a hold can lift it; set it through
+	// Executor.SetNewSessionsBlocked, which waits for creations in flight.
+	newSessionsBlocked atomic.Bool
+	newSessionsSources atomic.Pointer[[]string]
+}
+
+// NewSessionsBlocked reports whether new sessions are blocked locally, and
+// the local sources that block them (flag, env, file).
+func (p *Policy) NewSessionsBlocked() (bool, []string) {
+	var src []string
+	if s := p.newSessionsSources.Load(); s != nil {
+		src = slices.Clone(*s)
+	}
+	return p.newSessionsBlocked.Load(), src
 }
 
 // NewPolicy returns a Policy that reads the share selection from share. A nil

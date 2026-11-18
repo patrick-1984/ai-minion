@@ -583,6 +583,17 @@ func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.R
 		if !byFlag && (!byEnv || v == "") {
 			continue
 		}
+		if config.IsTightenOnly(s.Key) {
+			// Tighten-only (allow_new_sessions): the saved value is the
+			// merge of the file, the environment and the flags, so an "on"
+			// given here never overwrites a saved "off" (tray W4a).
+			t, err := config.ResolveTightenOnly(&config.Resolver{Registry: reg, Role: config.ScopeWorker, Flags: flags, File: file, LookupEnv: lookupEnv}, s.Key)
+			if err != nil {
+				return err
+			}
+			file.Set(s.Key, t.Value(s.Key))
+			continue
+		}
 		r, err := plain.Resolve(s.Key)
 		if err != nil {
 			return err

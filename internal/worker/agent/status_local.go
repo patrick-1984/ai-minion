@@ -63,6 +63,9 @@ type LiveStatusReply struct {
 	// Paused is whether the Worker enforces a pause of its Hub traffic
 	// (pause.v1); an older Worker omits it.
 	Paused *bool `json:"paused,omitempty"`
+	// NewSessionsBlocked is whether the Worker refuses new sessions
+	// (allow_new_sessions); an older Worker omits it.
+	NewSessionsBlocked *bool `json:"new_sessions_blocked,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -89,6 +92,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		TLSLine:            c.TLSLine,
 		HubCheckAware:      true,
 		Paused:             live.Paused,
+		NewSessionsBlocked: live.NewSessionsBlocked,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -133,6 +137,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		Host:               SessionHostInfo{Kind: r.SessionHost, Hidden: r.SessionsHidden, Reason: r.SessionHostReason},
 		ListError:          r.SessionsListError,
 		Paused:             r.Paused,
+		NewSessionsBlocked: r.NewSessionsBlocked,
 	}, nil
 }
 

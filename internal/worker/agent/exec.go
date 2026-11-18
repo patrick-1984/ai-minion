@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -245,6 +246,19 @@ func (e *Executor) CreateHeld() (string, bool) {
 	defer e.createMu.RUnlock()
 	r := e.createHoldReason()
 	return r, len(e.createHolds) > 0
+}
+
+// SetNewSessionsBlocked applies allow_new_sessions (tray W4a): blocked
+// refuses session_create from every origin with forbidden /
+// new_sessions_blocked. It takes createMu exclusively, so it returns only
+// after the creations in flight ended: none can finish unseen after it.
+// sources are the local sources that block (for the status).
+func (e *Executor) SetNewSessionsBlocked(blocked bool, sources []string) {
+	e.createMu.Lock()
+	defer e.createMu.Unlock()
+	src := slices.Clone(sources)
+	e.policy.newSessionsSources.Store(&src)
+	e.policy.newSessionsBlocked.Store(blocked)
 }
 
 // SetSessionCreateHold is the hold of the owner "update": reason refuses new

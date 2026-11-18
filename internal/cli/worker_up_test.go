@@ -1126,3 +1126,54 @@ func TestWorkerUpWithoutRootIgnoresThePackagedTemplate(t *testing.T) {
 		t.Fatalf("user unit: %v", err)
 	}
 }
+
+// writeUpConfig saves settings into the state directory of the fixture.
+func (f *upFixture) writeUpConfig(kv map[string]string) {
+	f.t.Helper()
+	if err := os.MkdirAll(f.stateDir(), 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	cfg, err := config.LoadFile(filepath.Join(f.stateDir(), "config.json"))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	for k, v := range kv {
+		cfg.Set(k, v)
+	}
+	if err := cfg.Save(); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// allow_new_sessions is tighten-only: "worker up" with on in the environment
+// keeps a saved off (tray W4a).
+func TestUpPreservesBlockFromFile(t *testing.T) {
+	f := newUpFixture(t, false)
+	f.writeUpConfig(map[string]string{config.KeyAllowNewSessions: "off"})
+	f.env["MINION_ALLOW_NEW_SESSIONS"] = "on"
+	if _, err := f.run("--name", "laptop"); err != nil {
+		t.Fatalf("%v\n%s", err, f.stderr)
+	}
+	if got := readWorkerUpConfig(t, filepath.Join(f.stateDir(), "config.json")); got[config.KeyAllowNewSessions] != "off" {
+		t.Fatalf("config = %v, want allow_new_sessions off kept", got)
+	}
+}
+
+func TestUpFlagOnDoesNotUnblock(t *testing.T) {
+	f := newUpFixture(t, false)
+	f.writeUpConfig(map[string]string{config.KeyAllowNewSessions: "off"})
+	if _, err := f.run("--name", "laptop", "--allow-new-sessions", "on"); err != nil {
+		t.Fatalf("%v\n%s", err, f.stderr)
+	}
+	if got := readWorkerUpConfig(t, filepath.Join(f.stateDir(), "config.json")); got[config.KeyAllowNewSessions] != "off" {
+		t.Fatalf("config = %v, want allow_new_sessions off kept", got)
+	}
+	// And off from a flag is saved.
+	g := newUpFixture(t, false)
+	if _, err := g.run("--name", "laptop", "--allow-new-sessions", "off"); err != nil {
+		t.Fatalf("%v\n%s", err, g.stderr)
+	}
+	if got := readWorkerUpConfig(t, filepath.Join(g.stateDir(), "config.json")); got[config.KeyAllowNewSessions] != "off" {
+		t.Fatalf("config = %v, want allow_new_sessions off saved", got)
+	}
+}

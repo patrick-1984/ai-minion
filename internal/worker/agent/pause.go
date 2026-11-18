@@ -19,7 +19,7 @@ const ReasonPaused = "paused (minion worker resume)"
 
 // CodePaused is the error code of a local request that needs the Hub while
 // the Worker is paused.
-const CodePaused proto.Code = "paused"
+const CodePaused = proto.CodePaused
 
 // PauseDrainTimeout bounds the wait of a pause for the writes in flight.
 // After it the pause is acknowledged with writes_pending, admission stays

@@ -23,6 +23,10 @@ const (
 	KeyCallAPIKeyFile = "call_api_key_file"
 	// KeyPipeAcceptFrom is the receiver policy for messages from other Workers.
 	KeyPipeAcceptFrom = "pipe_accept_from"
+	// KeyAllowNewSessions is the local block of new sessions created through
+	// Minion (tray work): on (default) or off. It is tighten-only across the
+	// local sources (ResolveTightenOnly).
+	KeyAllowNewSessions = "allow_new_sessions"
 )
 
 // Values of share_existing. They match the share modes of the Worker state
@@ -95,6 +99,16 @@ func declareWorkerCore(r *Registry) {
 			"Worker ids or fingerprints. Messages from the Worker itself are always accepted. Local setting only; " +
 			"the Hub cannot change it",
 		Default: PipeAcceptNone,
+	})
+	r.Declare(Setting{
+		Key:   KeyAllowNewSessions,
+		Scope: ScopeWorker,
+		Help: "Allow new sessions created through Minion (on or off). off refuses session_create from every origin (Hub, " +
+			"local commands, mn, MCP); existing sessions keep working. Tighten-only: off from any source (flag, " +
+			"environment or config file), or a value that is not on or off, blocks, and the Hub cannot lift it. " +
+			"Limit: a writable shared terminal can still start programs or sessions by typing",
+		Default: AllowNewSessionsOn,
+		Choices: []string{AllowNewSessionsOn, AllowNewSessionsOff},
 	})
 }
 
@@ -271,6 +285,8 @@ type WorkerCore struct {
 	CallAPIKeyFile string
 	// PipeAcceptFrom is the receiver policy for messages from other Workers.
 	PipeAcceptFrom PipeAcceptFrom
+	// NewSessions is the tighten-merged allow_new_sessions.
+	NewSessions Tightened
 }
 
 // ResolveWorkerCore resolves the core Worker settings with res (a Worker
@@ -348,6 +364,9 @@ func ResolveWorkerCore(res *Resolver) (WorkerCore, error) {
 	}
 	if wc.PipeAcceptFrom, err = ParsePipeAcceptFrom(acc.Value); err != nil {
 		return wc, fmt.Errorf("setting %q (%s): %w", KeyPipeAcceptFrom, acc.Source, err)
+	}
+	if wc.NewSessions, err = ResolveTightenOnly(res, KeyAllowNewSessions); err != nil {
+		return wc, err
 	}
 	return wc, nil
 }
