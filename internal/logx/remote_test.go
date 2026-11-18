@@ -119,7 +119,7 @@ func TestHumanNoticeLocalOutputUnchanged(t *testing.T) {
 
 func TestRemoteSafeCapsSizes(t *testing.T) {
 	l, buf := remoteCapture(t)
-	big := strings.Repeat("é", 10000) // 20000 bytes
+	big := strings.Repeat("\u00e9", 10000) // 20000 bytes
 	l.Info(big, "a", big)
 	out := buf.String()
 	if !utf8.ValidString(out) {

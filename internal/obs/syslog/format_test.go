@@ -41,7 +41,7 @@ func TestGoldenLines(t *testing.T) {
 		{"warn", slog.LevelWarn, "bad msgid", "unicode ✓ <tag> & \"quotes\"", fields("g", slog.GroupValue(slog.String("a", "b"))), 0},
 		{"error", slog.LevelError, "x", "failed", fields("error", "boom"), 0},
 		{"truncated", slog.LevelInfo, "big", "keeps the message", fields("small", "s", "large", strings.Repeat("L", 600), "mid", strings.Repeat("M", 100)), 480},
-		{"cut-message", slog.LevelInfo, "-", strings.Repeat("é", 400), nil, 480},
+		{"cut-message", slog.LevelInfo, "-", strings.Repeat("\u00e9", 400), nil, 480},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -98,7 +98,7 @@ func TestHeaderFields(t *testing.T) {
 	if !strings.HasPrefix(m, "<131>1 2026-11-18T20:48:01.123456+01:00 - - 1 - - \xEF\xBB\xBF{") {
 		t.Fatalf("header = %q", m)
 	}
-	for in, want := range map[string]string{"": "-", "ok": "ok", "é": "-", "a b": "-", strings.Repeat("x", 33): "-", strings.Repeat("x", 32): strings.Repeat("x", 32)} {
+	for in, want := range map[string]string{"": "-", "ok": "ok", "\u00e9": "-", "a b": "-", strings.Repeat("x", 33): "-", strings.Repeat("x", 32): strings.Repeat("x", 32)} {
 		if got := HeaderField(in, maxMsgID); got != want {
 			t.Errorf("HeaderField(%q) = %q", in, got)
 		}
@@ -111,7 +111,7 @@ func TestHeaderFields(t *testing.T) {
 }
 
 func TestOctetFrame(t *testing.T) {
-	if got := string(OctetFrame([]byte("<134>1 é"))); got != "9 <134>1 é" {
+	if got := string(OctetFrame([]byte("<134>1 \u00e9"))); got != "9 <134>1 \u00e9" {
 		t.Fatalf("frame = %q", got)
 	}
 }
@@ -119,7 +119,7 @@ func TestOctetFrame(t *testing.T) {
 // Random records of every size always yield a valid message within budget.
 func TestReductionRandomRecords(t *testing.T) {
 	r := rand.New(rand.NewPCG(1, 2))
-	alphabet := []rune("aZ09 \"\\\n\t<>&é€😀\x00\x7f")
+	alphabet := []rune("aZ09 \"\\\n\t<>&\u00e9\u20ac\U0001F600\x00\x7f")
 	str := func(n int) string {
 		var b strings.Builder
 		for range n {
@@ -144,7 +144,7 @@ func TestReductionRandomRecords(t *testing.T) {
 
 func FuzzFormat(f *testing.F) {
 	f.Add("msg", "k", "v", 480)
-	f.Add(strings.Repeat("é", 300), "kk", strings.Repeat("\x00", 900), 2048)
+	f.Add(strings.Repeat("\u00e9", 300), "kk", strings.Repeat("\x00", 900), 2048)
 	f.Fuzz(func(t *testing.T, msg, k, v string, max int) {
 		if max < 480 || max > 65000 {
 			max = 480 + (max%1000+1000)%1000

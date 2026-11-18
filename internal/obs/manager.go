@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +44,7 @@ type Manager struct {
 	gens   map[string]uint64
 	carry  map[string]map[string]uint64 // dropped counts of discarded pipelines
 	errs   map[string]string            // last build error per sink
+	warned string                       // the warnings last written
 	closed bool
 }
 
@@ -80,8 +82,13 @@ func (m *Manager) Apply(ctx context.Context, s config.Sinks) error {
 	if m.closed {
 		return errors.New("obs: the log sinks are shut down")
 	}
-	for _, w := range s.Warnings {
-		m.local.Log(logx.LocalOnly(ctx), slog.LevelWarn, "log export: "+w)
+	// The same configuration applied again (the environment first, then
+	// the panel) does not repeat its warnings.
+	if joined := strings.Join(s.Warnings, "\n"); joined != m.warned {
+		m.warned = joined
+		for _, w := range s.Warnings {
+			m.local.Log(logx.LocalOnly(ctx), slog.LevelWarn, "log export: "+w)
+		}
 	}
 	return errors.Join(m.applySyslog(s.Syslog), m.applyOTel(ctx, s.OTLP))
 }
