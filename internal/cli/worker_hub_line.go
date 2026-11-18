@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -30,7 +32,7 @@ func hubIdentityLine(ctx context.Context, res *config.Resolver) string {
 	if err != nil {
 		return ""
 	}
-	server := hub.Server
+	server := logx.SafeURL(hub.Server)
 	if server == "" {
 		server = "no Hub set"
 	}
@@ -67,9 +69,13 @@ func hubIdentityLine(ctx context.Context, res *config.Resolver) string {
 		return fmt.Sprintf("Hub: %s · the pinned key cannot be read", server)
 	}
 	line := fmt.Sprintf("Hub: %s · key %s", server, fp.Words())
-	if enr.Check() == store.HubCheckMismatch {
+	switch {
+	case enr.Check() == store.HubCheckMismatch:
 		line += " · MISMATCH: this Hub's key is not the one it was checked against; the Worker refuses it (minion worker status)"
-	} else if !want.IsZero() && !want.Matches(enr.Pin.Pub) {
+	case !want.IsZero() && !want.Matches(enr.Pin.Pub) &&
+		(enr.HubCheckAnchor == "" || !want.MatchesFingerprint(identity.Fingerprint(enr.HubCheckAnchor))):
+		// A hub_fingerprint that names the verified predecessor of a rotated
+		// Hub key is accepted by the Worker, so it is no mismatch.
 		line += " · MISMATCH: hub_fingerprint is " + expected + ", not the paired Hub's key (minion worker status)"
 	}
 	return line
@@ -85,6 +91,13 @@ func withHubLine(run func(*cobra.Command, []string) error, lookupEnv func(string
 }
 
 func printHubLine(cmd *cobra.Command, w io.Writer, lookupEnv func(string) (string, bool)) {
+	// As root (sudo worker up --as-user …) the state directory is not yet
+	// validated; the line is left out rather than read from an unchecked path.
+	if runningAsRoot() {
+		return
+	}
+	// A command that names a Hub of its own (join <url>, up --join) would be
+	// described by the old settings: say whose key the line shows.
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
@@ -94,7 +107,12 @@ func printHubLine(cmd *cobra.Command, w io.Writer, lookupEnv func(string) (strin
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return
 	}
-	if line := hubIdentityLine(cmd.Context(), res); line != "" {
-		_, _ = fmt.Fprintln(w, line)
+	line := hubIdentityLine(cmd.Context(), res)
+	if line == "" {
+		return
 	}
+	if cmd.Name() == "join" || cmd.Flags().Changed("join") {
+		line = "Before this command, " + strings.ToLower(line[:1]) + line[1:]
+	}
+	_, _ = fmt.Fprintln(w, line)
 }

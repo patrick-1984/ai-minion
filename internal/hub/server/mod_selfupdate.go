@@ -100,7 +100,17 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 		return fmt.Errorf("self-update: %w", err)
 	}
 	if err := api.HandleTyped(handlers, ops.OpHubUpdateRefresh, func(ctx context.Context, _ *api.Call, _ ops.HubUpdateRefreshArgs) (ops.HubUpdateCheckResult, error) {
-		refreshed := u.checker.Refresh(ctx)
+		// The check runs on its own (bounded by the Hub's life); the request
+		// waits at most refreshWait for it, so an HTTP drain at shutdown never
+		// waits for GitHub.
+		done := make(chan bool, 1)
+		go func() { done <- u.checker.Refresh(context.WithoutCancel(ctx)) }()
+		refreshed := false
+		select {
+		case refreshed = <-done:
+		case <-time.After(refreshWait):
+		case <-ctx.Done():
+		}
 		res := u.check(ctx)
 		res.Refreshed = refreshed
 		return res, nil
@@ -141,6 +151,10 @@ func (u *selfUpdater) channelTag(channel string) string {
 	}
 	return updates.ImageTag(channel, cur)
 }
+
+// refreshWait is how long hub_update_refresh waits for GitHub before it
+// answers with the last result (the check goes on in the background).
+const refreshWait = 5 * time.Second
 
 // manualCommand is what to run when the Hub cannot replace itself.
 const manualCommand = "Docker Compose: set MINION_VERSION (or MINION_TAG) in .env, then docker compose pull && docker compose up -d. Binary: minion update, then restart the Hub service."

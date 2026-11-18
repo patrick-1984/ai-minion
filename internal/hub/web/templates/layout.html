@@ -73,7 +73,7 @@
         {{end}}
       </ol></nav>
       <div class="top-tools">
-        {{if .HubWords}}<span class="hub-id" data-hub-identity title="This Hub's fingerprint: {{.HubFull}}. A Worker shows the words of the Hub it pinned (minion worker status); they must match." aria-label="Hub fingerprint {{.HubWords}}">{{template "icon" "i-fingerprint"}}<span class="fp-words">{{.HubWords}}</span></span>{{end}}
+        {{if .HubWords}}<span class="hub-id" data-hub-identity tabindex="0" title="This Hub's fingerprint: {{.HubFull}}. A Worker shows the words of the Hub it pinned (minion worker status); they must match." aria-label="Hub fingerprint {{.HubWords}}">{{template "icon" "i-fingerprint"}}<span class="fp-words">{{.HubWords}}</span></span>{{end}}
         <div class="theme-toggle" role="group" aria-label="Theme">
           <button type="button" class="theme-opt" data-theme-choice="system" aria-pressed="false" title="System theme">{{template "icon" "i-monitor"}}<span class="sr-only">System theme</span></button>
           <button type="button" class="theme-opt" data-theme-choice="light" aria-pressed="false" title="Light theme">{{template "icon" "i-sun"}}<span class="sr-only">Light theme</span></button>
