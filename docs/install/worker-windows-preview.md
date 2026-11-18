@@ -25,7 +25,7 @@ The Worker reports its session host and the reason to the Hub. The Worker page a
 - **Without psmux, sessions end with the Worker.** There is no server that outlives the Worker. Restarting or stopping the Worker ends every session, and the session list is empty afterwards. Sessions are not saved and not adopted again.
 - **No replies through the pipe.** A message sent with `pipe_send` is delivered, but the Windows Worker extracts no agent reply from the screen (the reason reported is `no_evidence`). See [the pipe](../guides/pipe.md).
 - **psmux checks and pastes in two steps.** With tmux the Worker checks that a pane still runs the program you reviewed and pastes in one step; psmux 3.4 runs that check and the paste as two requests, so a program that exits exactly then can leave the text to the shell that follows it. Session names that psmux cannot address literally (starting with `%`, `@`, `$` or `=`, or containing `:`, `.`, quotes, `#` or `;`) are not served.
-- **The service runs as LocalSystem.** When you install the Worker as a Windows service, the sessions it creates run as that account, not as you, and it uses ConPTY (it does not see your psmux sessions). To run sessions as yourself, stop the service and run `minion worker up --foreground` in your own terminal.
+- **The service runs as LocalSystem.** When you install the Worker as a Windows service, the sessions it creates run as that account, not as you, and it uses ConPTY (it does not see your psmux sessions). To run sessions as yourself, stop the service and run `minion worker up --foreground` in your own terminal. Read [the trust model of the service](#trust-model-of-the-windows-service) before you install it.
 - The Windows build has had less testing than the Linux build. The pairing handshake has not had an independent cryptographic review yet (see [security](../security.md)); that applies to every platform.
 
 ## Install
@@ -61,6 +61,8 @@ Quickest: the join command of the Hub (**Workers**, **Add worker**, **Add a Work
 
 To install it as a Windows service instead, pair first (run the command above until the Worker is paired, or `minion worker pair`), then run the same `worker up` command from an elevated terminal without `--foreground`. The service uses the state directory of the user who installs it, so it keeps that pairing. The command prints a note about the LocalSystem account when it installs the service. The service starts at boot and is restarted five seconds after a failure; the command line reaches it over a named pipe that only the installing user and the system may open.
 
+The service does not run the `minion.exe` you started `worker up` with. It copies that file to `%ProgramFiles%\Minion\minion.exe` and registers the copy: only administrators and SYSTEM can change that folder and file (users may read and run them). If the service runs, `worker up` stops it before it replaces the copy. Running `worker up` elevated again copies the binary you run there again; an older service that still points at another path (for example `%LOCALAPPDATA%\Programs\minion`) is moved to the copy the same way.
+
 ## Check and reset
 
 ```powershell
@@ -71,5 +73,35 @@ minion worker reset    # after down: forget the Hub, the key and the share choic
 ```
 
 `minion worker reset` forgets the Hub, the key and the share choice and refuses while the Worker runs: stop it first with `minion worker down`. It does not tell the Hub: remove the Worker on the Hub's Workers page too.
+
+Stopping the Windows service needs an administrator. Without one, `minion worker down` prints the command for an elevated terminal: `Stop-Service MinionWorker`, or the service's own binary (`"C:\Program Files\Minion\minion.exe" worker down`), not the `minion` on your `PATH`.
+
+To remove the service completely, in an elevated PowerShell:
+
+```powershell
+Stop-Service MinionWorker
+sc.exe delete MinionWorker
+Remove-Item -Recurse "$env:ProgramFiles\Minion"
+```
+
+Your own `minion.exe` (in `%LOCALAPPDATA%\Programs\minion`) and the state directory stay; `minion worker reset` clears the state.
+
+## Update
+
+- **From the Hub** (the Worker's page): the Worker replaces the binary it runs. For the service that is the copy in `%ProgramFiles%\Minion`; the service runs as SYSTEM, so it may, and it restarts on the new version by itself. Only a signed release is installed.
+- **`minion update` in your terminal** updates the `minion.exe` you run (normally `%LOCALAPPDATA%\Programs\minion\minion.exe`). When the service is installed it says that the service runs its own copy, which this did not change.
+- **The service's copy by hand:** in an elevated terminal run `& "$env:ProgramFiles\Minion\minion.exe" update`, then `Restart-Service MinionWorker`; or run `minion worker up` elevated again, which copies the binary you run. Run without elevation, `"...\Minion\minion.exe" update` refuses with exit status 21 and prints that command.
+
+## Trust model of the Windows service
+
+The service runs as LocalSystem, the most powerful account of the machine. Everything it starts, reads or obeys decides who can act as SYSTEM.
+
+- **Its binary** is `%ProgramFiles%\Minion\minion.exe`. The folder has a protected access list: SYSTEM and Administrators full control, Users read and execute, nothing inherited from elsewhere, and every file created in it (by an update) inherits exactly that. Up to release 0.13.1 the service ran the binary that the installer puts in `%LOCALAPPDATA%\Programs\minion`, which you (and any program running as you) can replace: such a program could run code as SYSTEM at the next start of the service. `minion worker status` warns about an installation like that ("the service binary ... is writable by non-administrators"); run `minion worker up` in an elevated terminal once to move it.
+- **`worker up` copies the binary you run.** Run it elevated only from a `minion.exe` you trust: the copy in your profile can be changed by any program that runs as you, so check it (`minion version`) or install it again with `install.ps1` right before.
+- **Its settings and state are yours.** The service reads the state directory of the user who installed it (written into the service as `MINION_STATE_DIR`): `config.json`, the database with the pairing (Hub address and pinned Hub key) and the Worker key. That user owns these files and can change them, by design: `worker status`, `worker reset`, `worker config` and `worker up --foreground` work without elevation. So that user decides which Hub the service trusts and which settings it uses, and the Hub decides which sessions it creates and which programs they run, as SYSTEM.
+- **The control pipe** admits that user and SYSTEM. A program that runs as that user can create sessions through it, which run as SYSTEM too (preview limit, unchanged).
+- **Programs it starts:** the shell of a new session (`pwsh.exe` from the machine `PATH`, else `cmd.exe`) or the command the Hub or the pipe asks for. It never starts psmux (it would come from a folder a user can change). The files named by `call_api_key_file` and `hub_ca_file` are read as SYSTEM.
+
+Together this means: **the user who installs the service can act as SYSTEM on this machine**, through the Hub they pair it with or through the pipe. Install the service only for a user who is an administrator of the machine anyway. For anyone else, run the Worker in the foreground (`minion worker up --foreground`), where it has only that user's rights.
 
 To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).

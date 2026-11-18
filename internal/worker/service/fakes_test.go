@@ -79,5 +79,7 @@ func testDeps(t *testing.T, r Runner) Deps {
 		Getenv:           func(k string) string { return map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}[k] },
 		Sleep:            func(context.Context, time.Duration) {},
 		ActivePolls:      3,
+		// A test never copies into the real %ProgramFiles%.
+		ServiceBinary: func(src string) (string, error) { return src, nil },
 	}
 }

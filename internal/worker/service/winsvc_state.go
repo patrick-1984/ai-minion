@@ -14,6 +14,9 @@ type WindowsServiceState struct {
 	AutoStart bool
 	// Account is the account it runs as ("LocalSystem"); empty when unknown.
 	Account string
+	// BinaryPath is the executable the service starts (from its ImagePath);
+	// empty when unknown.
+	BinaryPath string
 }
 
 // ForegroundServiceWarning is the warning a foreground Worker prints when the

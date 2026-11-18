@@ -120,6 +120,10 @@ type harness struct {
 	file   config.MapSource // the Worker config file
 	gotAPI string
 	gotDir string
+	// guard is the Windows service check of the update; nil means none.
+	guard func(exe string) (refuse, note string)
+	// updaterBuilt is set when the command got as far as the updater.
+	updaterBuilt bool
 }
 
 func newHarness(t *testing.T) *harness {
@@ -138,6 +142,7 @@ func (h *harness) run(current string, args ...string) (stdout string, err error)
 	deps := updateDeps{
 		newUpdater: func(apiURL, cacheDir string, out io.Writer) (*version.Updater, error) {
 			h.gotAPI, h.gotDir = apiURL, cacheDir
+			h.updaterBuilt = true
 			return &version.Updater{
 				Source:   h.src,
 				Verifier: func(context.Context, bool) (version.BlobVerifier, error) { return acceptAll{}, nil },
@@ -145,10 +150,11 @@ func (h *harness) run(current string, args ...string) (stdout string, err error)
 				Out:      out,
 			}, nil
 		},
-		lookupEnv:  func(k string) (string, bool) { v, ok := h.env[k]; return v, ok },
-		current:    func() string { return current },
-		execPath:   h.exec,
-		loadConfig: func(string) (config.FileSource, error) { return h.file, nil },
+		lookupEnv:    func(k string) (string, bool) { v, ok := h.env[k]; return v, ok },
+		current:      func() string { return current },
+		execPath:     h.exec,
+		loadConfig:   func(string) (config.FileSource, error) { return h.file, nil },
+		serviceGuard: h.guard,
 	}
 	cmd := newUpdateCmd(deps)
 	var out bytes.Buffer

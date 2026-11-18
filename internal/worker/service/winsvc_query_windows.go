@@ -60,6 +60,7 @@ func QueryWindowsService() (WindowsServiceState, error) {
 		if err == nil {
 			st.AutoStart = cfg.StartType == mgr.StartAutomatic
 			st.Account = cfg.ServiceStartName
+			st.BinaryPath = ParseServiceImagePath(cfg.BinaryPathName)
 		}
 		return err
 	}) {

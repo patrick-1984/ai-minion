@@ -16,6 +16,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
@@ -39,6 +40,10 @@ type workerStatusDeps struct {
 	// sessions returns the session lister for the tmux socket; nil or a nil
 	// result means "cannot count".
 	sessions func(socket string) agent.StatusSessions
+	// serviceBinary returns the problem line about the binary of the
+	// Worker's Windows service (writable by non-administrators); nil or ""
+	// means none.
+	serviceBinary func() string
 }
 
 func defaultWorkerStatusDeps() workerStatusDeps {
@@ -49,7 +54,8 @@ func defaultWorkerStatusDeps() workerStatusDeps {
 		live: func(stateDir string) agent.LiveSource {
 			return localLive{stateDir: stateDir, backend: client.Local()}
 		},
-		sessions: tmuxSessions,
+		sessions:      tmuxSessions,
+		serviceBinary: service.ServiceBinaryProblem,
 	}
 }
 
@@ -199,6 +205,15 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		problems = append(problems, fmt.Sprintf("cannot look at the Worker state in %s: %v", core.StateDir, err))
+	}
+
+	// A Windows service that starts a binary non-administrators can change
+	// (installed by release 0.13.1 or older) is a way to SYSTEM until "worker up"
+	// runs again elevated.
+	if deps.serviceBinary != nil {
+		if p := deps.serviceBinary(); p != "" {
+			problems = append(problems, p)
+		}
 	}
 
 	report := agent.BuildStatus(cmd.Context(), in)

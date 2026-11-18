@@ -62,6 +62,9 @@ type updateDeps struct {
 	// loadConfig reads the Worker config file under the resolved state
 	// directory. Nil means no config file is consulted.
 	loadConfig func(stateDir string) (config.FileSource, error)
+	// serviceGuard checks the binary to replace against the Worker's Windows
+	// service (see [serviceUpdateGuard]); nil means no check.
+	serviceGuard func(exe string) (refuse, note string)
 }
 
 func defaultUpdateDeps() updateDeps {
@@ -78,9 +81,10 @@ func defaultUpdateDeps() updateDeps {
 				Out:      out,
 			}, nil
 		},
-		lookupEnv:  os.LookupEnv,
-		current:    func() string { return version.Version },
-		loadConfig: loadWorkerConfig,
+		lookupEnv:    os.LookupEnv,
+		current:      func() string { return version.Version },
+		loadConfig:   loadWorkerConfig,
+		serviceGuard: defaultServiceUpdateGuard,
 	}
 }
 
@@ -213,6 +217,26 @@ local cache that matches the selector is installed.`,
 			return err
 		}
 
+		// The binary of the Worker's Windows service is only for
+		// administrators; refuse before anything is contacted.
+		serviceNote := ""
+		if deps.serviceGuard != nil {
+			exe := deps.execPath
+			if exe == "" {
+				if exe, err = os.Executable(); err != nil {
+					return fmt.Errorf("cannot locate the running binary: %w", err)
+				}
+				if real, err := filepath.EvalSymlinks(exe); err == nil {
+					exe = real
+				}
+			}
+			var refuse string
+			if refuse, serviceNote = deps.serviceGuard(exe); refuse != "" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Error: "+refuse)
+				return &exitCodeError{ExitNeedsAdmin}
+			}
+		}
+
 		ctx, cancel := context.WithTimeout(cmd.Context(), updateTimeout)
 		defer cancel()
 		hub, err := hubRange(ctx, hubProto)
@@ -243,7 +267,12 @@ local cache that matches the selector is installed.`,
 		if _, err = fmt.Fprintf(out, "updated minion from %s to %s (%s)\n", result.Previous, result.Tag, result.Path); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintln(out, "restart running services to use the new version")
+		if _, err = fmt.Fprintln(out, "restart running services to use the new version"); err != nil {
+			return err
+		}
+		if serviceNote != "" {
+			_, err = fmt.Fprintln(out, serviceNote)
+		}
 		return err
 	}
 	return cmd

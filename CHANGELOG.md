@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **The Windows service no longer runs a binary that a user can replace.** `minion worker up` (elevated) used to register the `minion.exe` it ran as the LocalSystem service `MinionWorker`; with the PowerShell installer that file is in `%LOCALAPPDATA%\Programs\minion`, which the user, and every program running as that user, can change, so the next service start could run their code as SYSTEM. `worker up` now copies the binary to `%ProgramFiles%\Minion\minion.exe` (a protected access list: SYSTEM and Administrators full control, Users read and execute, inherited by everything created there), checks the result, stops a running service before it replaces the copy, and registers the copy. Running `worker up` elevated again moves an existing service. `minion worker status` warns while the registered service binary is writable by non-administrators. The Hub's remote update replaces the protected copy and restarts the service on it (before, the update refused to replace a binary in a user folder). `minion update` of the service copy from a prompt that is not elevated exits with status 21 and prints the elevated command; updating your own copy says that the service runs its own. `minion worker down` without rights now suggests `Stop-Service MinionWorker` or the service binary, not the `minion` on the user's `PATH`. The trust model of the service is documented in [the Windows guide](docs/install/worker-windows-preview.md#trust-model-of-the-windows-service).
+
 ## v0.13.1
 
 Released 2026-11-18.

@@ -65,7 +65,7 @@ jobs:
           set -eu
           identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
-          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied)'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
           cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
           CGO_ENABLED=0 go test -count=1 -v -run "$identity" ./internal/identity/
@@ -84,7 +84,7 @@ jobs:
           set -eu
           identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
-          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied)'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
           cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
           CGO_ENABLED=1 go test -race -count=1 -run "$identity" ./internal/identity/
@@ -170,12 +170,37 @@ jobs:
       - name: Build minion.exe (CGO_ENABLED=0, as released)
         shell: bash
         run: CGO_ENABLED=0 go build -o minion.exe ./cmd/minion
+      # Security fix S1: install.ps1 puts minion.exe in the user-writable
+      # %LOCALAPPDATA%\Programs\minion. Before the fix the service ran that
+      # file as LocalSystem. Register a service the old way, check that its
+      # binary is writable by this user and that "worker status" warns.
+      - name: Install minion.exe where install.ps1 puts it
+        shell: bash
+        run: |
+          set -eu
+          dir="$(cygpath -u "$LOCALAPPDATA")/Programs/minion"
+          mkdir -p "$dir"
+          cp minion.exe "$dir/minion.exe"
+          echo "USER_MINION=$dir/minion.exe" >> "$GITHUB_ENV"
+          echo "USER_MINION_WIN=$(cygpath -w "$dir/minion.exe")" >> "$GITHUB_ENV"
+      - name: A service registered the old way runs a user-writable binary and status warns
+        shell: bash
+        run: |
+          set -eu
+          sc.exe create MinionWorker binPath= "\"$USER_MINION_WIN\" worker service-run" start= demand
+          pwsh -NoProfile -File scripts/windows-service-binary-acl.ps1 -Expect writable
+          "$USER_MINION" worker status --json > old-status.json || true
+          cat old-status.json
+          grep -q 'writable by non-administrators' old-status.json
       - name: Install and start the service (minion worker up, no --foreground)
         shell: bash
         run: |
           set -eu
-          ./minion.exe worker up --share-existing none 2>&1 | tee up.log
+          # Run from the user-writable copy, as a user of install.ps1 would:
+          # the service must not run this file but a protected copy.
+          "$USER_MINION" worker up --share-existing none 2>&1 | tee up.log
           grep -q 'MinionWorker' up.log
+          grep -q 'Program Files' up.log
           # Automatic start at boot and restart on failure (AC2).
           sc.exe qc MinionWorker | tee qc.txt
           grep -q 'AUTO_START' qc.txt
@@ -183,6 +208,9 @@ jobs:
           grep -q 'RESTART' qfailure.txt
           # The reset period is 86400 seconds (one day), not 10.
           grep -q '86400' qfailure.txt
+      - name: The service binary is in Program Files and only administrators can change it
+        shell: pwsh
+        run: ./scripts/windows-service-binary-acl.ps1 -Expect safe
       - name: The CLI reaches the service over the pipe of this user
         shell: bash
         run: |
@@ -256,6 +284,7 @@ jobs:
         run: |
           sc.exe stop MinionWorker || true
           sc.exe delete MinionWorker || true
+          rm -rf "$(cygpath -u "$PROGRAMFILES")/Minion" || true
 
   psmux:
     # v0.9.0 spike: the tmux adapter drives psmux (tmux-compatible server for

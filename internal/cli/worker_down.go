@@ -45,6 +45,9 @@ type workerDownDeps struct {
 	// windowsService stops the Windows service when it runs: stopped reports
 	// whether it ran and was stopped.
 	windowsService func() (stopped bool, err error)
+	// serviceBinary returns the binary the Windows service runs; nil or ""
+	// when unknown.
+	serviceBinary func() string
 	// call is the local control socket of this user.
 	call  func(ctx context.Context, op string) (json.RawMessage, error)
 	euid  func() int
@@ -67,6 +70,13 @@ func defaultWorkerDownDeps() workerDownDeps {
 			return string(b), err
 		},
 		windowsService: stopWindowsService,
+		serviceBinary: func() string {
+			st, err := service.QueryWindowsService()
+			if err != nil {
+				return ""
+			}
+			return st.BinaryPath
+		},
 		call: func(ctx context.Context, op string) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, nil)
 		},
@@ -101,6 +111,8 @@ func workerStateFree(dir string) bool {
 	return true
 }
 
+// stopWindowsService stops the service by its name; the binary it runs (the
+// copy in %ProgramFiles%\Minion) is neither needed nor touched.
 func stopWindowsService() (bool, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -190,9 +202,18 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 	case "windows":
 		stopped, err := d.windowsService()
 		if err != nil {
+			// The elevated command names the service, or the service's own
+			// binary in %ProgramFiles%\Minion: "minion" on the user's PATH is
+			// the user-writable copy, which an elevated prompt should not run.
+			alt := "minion worker down"
+			if d.serviceBinary != nil {
+				if p := d.serviceBinary(); p != "" {
+					alt = "\"" + p + "\" worker down"
+				}
+			}
 			return false, fmt.Errorf("the Worker runs as the Windows service %s and could not be stopped (%v); "+
-				"in a terminal opened with \"Run as administrator\" run: minion worker down   (or: Stop-Service %s)",
-				service.WindowsServiceName, err, service.WindowsServiceName)
+				"in a terminal opened with \"Run as administrator\" run: Stop-Service %s   (or: %s)",
+				service.WindowsServiceName, err, service.WindowsServiceName, alt)
 		}
 		if stopped {
 			_, _ = fmt.Fprintf(out, "Stopped the Windows service %s. It starts again at the next boot; start it now with: Start-Service %s\n",

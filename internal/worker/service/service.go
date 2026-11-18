@@ -140,6 +140,9 @@ type Result struct {
 	// Note is extra text for the operator, printed after the description;
 	// empty for most installs.
 	Note string
+	// Binary is the executable the service runs; set for the Windows service,
+	// which runs a copy in %ProgramFiles%\Minion.
+	Binary string
 }
 
 // Describe returns a one-line, human-readable report.
@@ -183,6 +186,14 @@ type Deps struct {
 	// UserSID returns the SID of the user that installs the Windows service;
 	// nil means [CurrentUserSID].
 	UserSID func() (string, error)
+	// ServiceBinary puts the binary the Windows service runs where only SYSTEM
+	// and the administrators can change it and returns that path; nil means
+	// the copy to %ProgramFiles%\Minion\minion.exe (security fix S1).
+	ServiceBinary func(src string) (string, error)
+	// StopPolls bounds the wait for a running Windows service to stop before
+	// its binary is replaced; zero means 60 polls (30 s at the default
+	// interval).
+	StopPolls int
 	// Getenv reads the environment (XDG_RUNTIME_DIR); nil means empty.
 	Getenv func(string) string
 	// Sleep waits; nil means time.Sleep honouring ctx.
@@ -307,6 +318,26 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	if err := validateBinaryAny(req.Binary); err != nil {
 		return Result{}, err
 	}
+	// A running service holds its binary open: stop it before the binary is
+	// replaced (service operations go by name, so the path of this controller
+	// does not matter).
+	old, err := d.windowsController(req)
+	if err != nil {
+		return Result{}, fmt.Errorf("service manager: %w", err)
+	}
+	if err := d.stopRunningService(ctx, old); err != nil {
+		return Result{}, err
+	}
+	// The service runs as LocalSystem: it must never start a binary that the
+	// user (or anyone but SYSTEM and the administrators) can change, such as
+	// the one the installer put in %LOCALAPPDATA%. It runs a protected copy.
+	// Registering that copy also moves an existing service that still points
+	// at a user-writable path.
+	binary, err := d.serviceBinary(req.Binary)
+	if err != nil {
+		return Result{}, windowsInstallError("prepare the binary of", err)
+	}
+	req.Binary = binary
 	c, err := d.windowsController(req)
 	if err != nil {
 		return Result{}, fmt.Errorf("service manager: %w", err)
@@ -323,7 +354,8 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	var state Status
 	for i := 0; i < d.activePolls(); i++ {
 		if state, err = c.Status(); err == nil && state == StatusRunning {
-			return Result{Manager: ManagerWindows, Scope: ScopeSystem, Unit: WindowsServiceName, Note: windowsServiceNote}, nil
+			return Result{Manager: ManagerWindows, Scope: ScopeSystem, Unit: WindowsServiceName,
+				Note: serviceBinaryNote(binary) + windowsServiceNote, Binary: binary}, nil
 		}
 		if cerr := ctx.Err(); cerr != nil {
 			return Result{}, cerr
@@ -331,6 +363,52 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 		d.sleep(ctx, d.pollInterval())
 	}
 	return Result{}, errors.New("the service " + WindowsServiceName + " is not running after the start")
+}
+
+// serviceBinaryNote tells the operator which binary the service runs.
+func serviceBinaryNote(binary string) string {
+	return "The service runs " + binary + ", a copy that only administrators and SYSTEM can change; " +
+		"the Hub's remote update replaces that copy, and \"minion worker up\" in an elevated prompt copies the binary you run there again.\n"
+}
+
+// serviceBinary is the ServiceBinary step with its default.
+func (d Deps) serviceBinary(src string) (string, error) {
+	if d.ServiceBinary != nil {
+		return d.ServiceBinary(src)
+	}
+	return installServiceBinary(src)
+}
+
+// stopRunningService stops the Worker's Windows service when it runs and waits
+// until it no longer does. A controller that cannot stop (a test fake) is left
+// alone.
+func (d Deps) stopRunningService(ctx context.Context, c Controller) error {
+	stopper, ok := c.(interface{ Stop() error })
+	if !ok {
+		return nil
+	}
+	if st, err := c.Status(); err != nil || st != StatusRunning {
+		return nil // not installed, or not running
+	}
+	if err := stopper.Stop(); err != nil {
+		return windowsInstallError("stop", err)
+	}
+	polls := d.StopPolls
+	if polls <= 0 {
+		polls = 60
+	}
+	for i := 0; i < polls; i++ {
+		// Only "stopped" will do: a service that is still stopping holds its
+		// binary open. An error means it is gone.
+		if st, err := c.Status(); err != nil || st == StatusStopped {
+			return nil
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		d.sleep(ctx, d.pollInterval())
+	}
+	return errors.New("the service " + WindowsServiceName + " did not stop; stop it (Stop-Service " + WindowsServiceName + ") and run the command again")
 }
 
 // windowsController returns the controller of the service to install.
