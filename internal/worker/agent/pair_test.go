@@ -154,8 +154,11 @@ func (f *pairFixture) pairer(opts ...func(*PairerConfig)) *Pairer {
 		Clock:      f.clk,
 		Backoff:    &transport.Backoff{Rand: func() float64 { return 0.5 }},
 		NewCode:    f.newCode,
-		Out:        f.out,
-		Logger:     slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		// The script steps never send a Hub hello: the box is printed a
+		// moment after OnWaiting, as for a Hub older than v0.12.0.
+		HubHelloWait: time.Millisecond,
+		Out:          f.out,
+		Logger:       slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 	for _, o := range opts {
 		o(&cfg)

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -163,7 +164,7 @@ type ModeHandler interface {
 // handler lets the gate hold the connection as pending while it waits.
 type PairingGate interface {
 	// Await registers the pending pairing id of a connection and blocks until
-	// a user claims it. It returns the connection's ticket: the CPace
+	// a user claims it or an administrator admits its pairing request. It returns the connection's ticket: the CPace
 	// password, and the entry and claim that belong to this connection and no
 	// other. The handler keeps the ticket on the [Conn] and reports a failed
 	// handshake through it. Await fails with pairing_id_collision,
@@ -356,22 +357,32 @@ func (h *Handler) handshakeBudget() time.Duration {
 // While the gate waits, nothing else reads the connection and the hijacked
 // request context does not end when the peer closes, so the wait would never
 // notice a Worker that is gone. conn therefore watches the connection for the
-// duration of the wait: a Worker that closes, or that sends anything before
-// the Hub hello (a protocol violation), ends the wait.
-func (h *Handler) pairingPassword(ctx context.Context, conn *watchConn, ip netip.Addr, gate PairingGate, ticket **PairingTicket, workerPub func() []byte) func(string) ([]byte, error) {
-	return func(id string) ([]byte, error) {
+// duration of the wait: a Worker that closes, or that sends anything after its
+// first pake.msg and before the Hub's answer (a protocol violation), ends the
+// wait.
+//
+// Since v0.12.0 the wait starts after the Hub hello and the Worker's pake.msg,
+// and it ends with either a claim (the password) or an admission of the
+// pairing request; hello carries the facts the request list shows.
+func (h *Handler) pairingPassword(ctx context.Context, conn *watchConn, ip netip.Addr, gate PairingGate, ticket **PairingTicket, hello func() transport.WorkerHello) func(string) (transport.PairingAnswer, error) {
+	return func(id string) (transport.PairingAnswer, error) {
 		budget := h.handshakeBudget()
 		_ = conn.SetDeadline(time.Now().Add(gate.MaxWait() + budget))
 		awaitCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		conn.watch(cancel)
-		t, err := gate.Await(withWorkerPub(awaitCtx, workerPub()), id, ip)
+		wh := hello()
+		awaitCtx = withWorkerPub(awaitCtx, bytes.Clone(wh.WorkerPub))
+		awaitCtx = withRequestInfo(awaitCtx, RequestInfo{
+			Name: wh.Name, Pub: bytes.Clone(wh.WorkerPub), Admittable: slices.Contains(wh.Features, proto.FeaturePairAdmit),
+		})
+		t, err := gate.Await(awaitCtx, id, ip)
 		if err != nil {
-			return nil, err
+			return transport.PairingAnswer{}, err
 		}
 		*ticket = t
 		_ = conn.SetDeadline(time.Now().Add(budget))
-		return t.Password(), nil
+		return t.Answer(), nil
 	}
 }
 
@@ -567,7 +578,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.untrack(conn)
-	var helloPub []byte
+	var hello transport.WorkerHello
 	hc := transport.HubConfig{
 		Key:     snap.OpKey,
 		Cert:    snap.Cert,
@@ -575,7 +586,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Current: h.cfg.Current,
 		Chain:   chain,
 		Admit: func(wh transport.WorkerHello) error {
-			helloPub = bytes.Clone(wh.WorkerPub)
+			hello = wh
 			return h.admit(wh)
 		},
 		PairingPassword: h.cfg.PairingPassword,
@@ -586,7 +597,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if gate := h.pairingGate(); gate != nil {
 		wc := newWatchConn(conn)
 		hsConn = wc
-		hc.PairingPassword = h.pairingPassword(ctx, wc, ip, gate, &pairingTicket, func() []byte { return helloPub })
+		hc.PairingPassword = nil
+		hc.PairingWait = h.pairingPassword(ctx, wc, ip, gate, &pairingTicket, func() transport.WorkerHello { return hello })
 	}
 	res, err := transport.HubHandshake(hsConn, hc)
 	if err != nil {

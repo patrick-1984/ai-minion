@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Pairing requests** (like NetBird's peer approval). A Worker that waits with a pairing code appears under **Pairing requests** on the Workers page and on Add worker: announced name, source address, waiting since, the Worker fingerprint (words and 52 characters) and the public pairing id. An administrator admits it with one click after checking that the Worker's console shows the same Worker fingerprint and this Hub's words (the dialog shows both); the Hub enrolls exactly the key the request presents and the Worker joins the administrator's space approved. **Reject** removes the request; the Worker shows that it was rejected and a new code, and the same key is not listed again for 10 minutes. New admin-only operations `pairing_requests_list`, `pairing_request_admit`, `pairing_request_reject` (API, MCP, audit `worker.pair_admit`, `pairing.reject`). A Worker offers a request only with `hub_fingerprint` set or a Hub TLS certificate its computer trusts; otherwise only its code pairs. Guide: [pairing](docs/guides/pairing.md#admit-a-waiting-worker-pairing-requests), guarantees: [security](docs/security.md#pairing-requests).
+
+### Changed
+
+- **The code box shows the Hub that answered.** Without `hub_fingerprint`, the box shows "Hub fingerprint: <six words>" of the Hub that answered, "confirmed by the pairing code: the Hub shows the same words on Workers > Add worker", and the Worker fingerprint; the old "NOT CHECKED ... stop, and start again with --hub-fingerprint" text and the matching log warning are gone. The code confirms the Hub: the CPace session id is the hash of both hellos, which carry the Hub's key. The paired box says "Confirmed by the pairing code" (or "Admitted on the Hub without the code"). The Hub check stays `not verified` in the status and on the Hub, as before. With `hub_fingerprint` set the box is unchanged.
+- **The Hub sends its hello at once in pair_code mode** (before the code is claimed), so that a waiting Worker can show its words; the Worker's first CPace message follows and the Hub waits for the claim or the admission. Wire protocol 3.0 is otherwise unchanged: one new frame `pair.admit` and one new hello feature `pair.admit`, used only between a 0.12 Hub and a 0.12 Worker. A 0.11 Worker pairs with a 0.12 Hub by code as before (it is not listed as a request); a 0.12 Worker pairs with a 0.11 Hub by code, and its box then has no Hub line.
+
+### Fixed
+
+- **A new code after an expired or cancelled one** (A40). When the Hub ended the wait because the code expired, the Worker kept the old code until its own timer ran out and only logged "the pairing code expired; the Worker shows a new one"; it now shows the new code at once, in one box with the reason. The reason of a new code is no longer lost when the next attempt cannot reach the Hub, and a start after an interrupted pairing whose code expired says "The code of the interrupted pairing expired. Use this new code." in the box of the new code.
+
 ## v0.11.0
 
 Released 2026-11-18.

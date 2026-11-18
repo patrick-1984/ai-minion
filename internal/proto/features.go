@@ -42,6 +42,11 @@ const (
 	// only when the install method allows it (not a package, not a container,
 	// not disabled with remote_update=off).
 	FeatureSelfUpdate = "self.update"
+	// FeaturePairAdmit: in pair_code mode the Worker accepts a pair.admit frame
+	// in place of the Hub's pake.msg (a pairing request that an administrator
+	// admitted after comparing the fingerprint words, v0.12.0). The Hub lists
+	// only such Workers under Pairing requests.
+	FeaturePairAdmit = "pair.admit"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

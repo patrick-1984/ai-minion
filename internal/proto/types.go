@@ -18,6 +18,12 @@ const (
 	TypeWelcome      = "welcome"
 	TypeRevoke       = "revoke"
 	TypeNotEnrolled  = "not_enrolled"
+	// TypePairAdmit replaces the Hub's pake.msg in pair_code mode when an
+	// administrator admitted the waiting Worker's pairing request (v0.12.0):
+	// no CPace follows, the Hub's sig over the transcript authenticates it
+	// against the root the Worker showed. Sent only to a Worker that
+	// announced [FeaturePairAdmit].
+	TypePairAdmit = "pair.admit"
 )
 
 // Frame types carried on yamux streams after the handshake (AD-3).

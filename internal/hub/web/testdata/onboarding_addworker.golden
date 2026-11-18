@@ -27,5 +27,6 @@
   <a class="btn btn-secondary" href="/invitations">Create an invitation key</a>
 </section>
 </div>
+<div id="pairing-requests" data-pairing-requests hx-get="/workers/pairing-requests" hx-trigger="load, every 5s" hx-swap="innerHTML"></div>
 
     </main>

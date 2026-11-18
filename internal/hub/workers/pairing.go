@@ -186,6 +186,11 @@ type Pairings struct {
 	live   map[string]*pending
 	perIP  map[string]int
 	closed bool
+	// rejected hides the requests of a Worker key from the list for one code
+	// lifetime after an administrator rejected one (hex key -> until), so a
+	// Worker that comes back with a new code does not reappear at once. The
+	// key can still pair with its code. Bounded by maxPending.
+	rejected map[string]time.Time
 
 	stop    chan struct{}
 	stopped sync.WaitGroup
@@ -212,10 +217,47 @@ type pending struct {
 	// code is accepted only with this ticket.
 	resume *store.PairingCommit
 
+	// The facts of the pairing request (v0.12.0), from the Worker's hello:
+	// what the Pairing requests list shows and what an admission must name.
+	req RequestInfo
+	// since is when the connection started to wait; addr is its client
+	// address.
+	since time.Time
+	addr  string
+
 	// Guarded by Pairings.mu.
 	goneErr error
 	ended   bool
-	cur     *claim // the claim that supplied the password
+	cur     *claim // the claim that supplied the password, or the admission
+}
+
+// RequestInfo are the facts of a waiting pair_code connection that the Hub
+// shows under Pairing requests. They come from the Worker's hello: the Worker
+// proves the key only at the end of the handshake (sig_worker), which is why
+// an admission names the key it admits and enrolls exactly that key.
+type RequestInfo struct {
+	// Name is the name the Worker announced.
+	Name string
+	// Pub is the Worker key of the hello.
+	Pub []byte
+	// Admittable is true when the Worker announced proto.FeaturePairAdmit: it
+	// accepts an admission instead of its code.
+	Admittable bool
+}
+
+type requestInfoKey struct{}
+
+// withRequestInfo carries the request facts of the hello to [Pairings.Await].
+func withRequestInfo(ctx context.Context, ri RequestInfo) context.Context {
+	return context.WithValue(ctx, requestInfoKey{}, ri)
+}
+
+func requestInfoOf(ctx context.Context) RequestInfo {
+	ri, _ := ctx.Value(requestInfoKey{}).(RequestInfo)
+	if len(ri.Pub) == 0 {
+		ri.Pub = workerPubOf(ctx)
+	}
+	return ri
 }
 
 // claim is one claim in flight: the password and where the outcome goes.
@@ -227,10 +269,15 @@ type claim struct {
 	password []byte
 	// mayRepair is ClaimRequest.MayRepair.
 	mayRepair func(ctx context.Context, workerID string) (bool, error)
-	reused    bool              // set by create: the Worker already existed (resume or repair)
-	digest    string            // one-way digest of the code, recorded when it is used
-	done      chan claimOutcome // capacity 1
-	once      sync.Once
+	// admit is set for an administrator's admission of the pairing request
+	// (no password: the Hub answers pair.admit), approve when the new Worker
+	// is approved at once.
+	admit   bool
+	approve bool
+	reused  bool              // set by create: the Worker already existed (resume or repair)
+	digest  string            // one-way digest of the code, recorded when it is used
+	done    chan claimOutcome // capacity 1
+	once    sync.Once
 }
 
 type claimOutcome struct {
@@ -256,7 +303,7 @@ func NewPairings(o PairingOptions) (*Pairings, error) {
 		store: o.Store, online: o.Online, limiter: o.Limiter, auditor: o.Auditor, now: o.Clock, log: o.Logger,
 		ttl: o.TTL, maxAttempts: o.MaxAttempts, maxPending: o.MaxPending, maxPerIP: o.MaxPendingPerIP,
 		sweepEvery: o.SweepInterval,
-		live:       map[string]*pending{}, perIP: map[string]int{}, stop: make(chan struct{}),
+		live:       map[string]*pending{}, perIP: map[string]int{}, rejected: map[string]time.Time{}, stop: make(chan struct{}),
 	}
 	if ps.now == nil {
 		ps.now = time.Now
@@ -323,6 +370,14 @@ func workerPubOf(ctx context.Context) []byte {
 	return pub
 }
 
+// addrText is the client address as shown, "" when unknown.
+func addrText(ip netip.Addr) string {
+	if !ip.IsValid() {
+		return ""
+	}
+	return ip.String()
+}
+
 func pairingErr(code proto.Code, message string) *proto.Error { return proto.NewError(code, message) }
 
 func errExpired() *proto.Error {
@@ -364,8 +419,17 @@ type PairingTicket struct {
 }
 
 // Password returns the CPace password of the claim. It is valid until the
-// handshake ends.
+// handshake ends. It is nil for an admission.
 func (t *PairingTicket) Password() []byte { return t.c.password }
+
+// Answer returns the decision the handshake continues with: the password of a
+// claim, or an admission.
+func (t *PairingTicket) Answer() transport.PairingAnswer {
+	if t.c.admit {
+		return transport.PairingAnswer{Admit: true}
+	}
+	return transport.PairingAnswer{Password: t.c.password}
+}
 
 // Await implements [PairingGate]. See the type documentation for the flow. It
 // returns the ticket of the connection once a user claimed its code.
@@ -393,7 +457,8 @@ func (ps *Pairings) Await(ctx context.Context, id string, ip netip.Addr) (*Pairi
 	if old != nil { // expired with no claim in flight, and the sweep has not run yet
 		ps.endLocked(old, errExpired())
 	}
-	p := &pending{id: id, ipKey: ipKey, expires: now.Add(ps.ttl), claims: make(chan *claim, 1), gone: make(chan struct{}), ready: make(chan struct{})}
+	p := &pending{id: id, ipKey: ipKey, expires: now.Add(ps.ttl), claims: make(chan *claim, 1), gone: make(chan struct{}), ready: make(chan struct{}),
+		req: requestInfoOf(ctx), since: now, addr: addrText(ip)}
 	ps.live[id] = p
 	ps.perIP[ipKey]++
 	ps.mu.Unlock()
@@ -608,7 +673,9 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 			case p.resume.OwnerID != req.UserID:
 				ps.mu.Unlock()
 				return ClaimResult{}, pairingErr(proto.CodePairingCodeInvalid, "this code was already used; the Worker must show a new code")
-			case p.resume.CodeDigest != digest:
+			case p.resume.CodeDigest != digest && !isAdmitDigest(p.resume.CodeDigest):
+				// A commit made by an admission recorded no code digest: the
+				// owner's code is checked by CPace on the connection itself.
 				ticket := *p.resume
 				ps.mu.Unlock()
 				return ClaimResult{}, ps.resumeWrongCode(ctx, p, &ticket, c)
@@ -729,7 +796,15 @@ func (ps *Pairings) Handle(ctx context.Context, c *Conn) error {
 	ps.mu.Lock()
 	ps.removeLocked(p)
 	ps.mu.Unlock()
-	if !cl.reused { // a resume and a repair have their own audit events
+	switch {
+	case cl.reused: // a resume and a repair have their own audit events
+	case cl.admit:
+		outcome := auditPending
+		if !row.Pending {
+			outcome = "approved"
+		}
+		ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: AuditPairAdmit, Target: row.ID, Outcome: outcome})
+	default:
 		ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: "worker.pair", Target: row.ID, Outcome: auditPending})
 	}
 	c.h.log.Info("worker paired", "worker_id", row.ID, "name", row.Name, "fingerprint", c.fingerprint())
@@ -773,6 +848,12 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 		Pub: pub, OwnerID: cl.userID, Kind: store.WorkerKindPrivate, CreatedAt: store.UnixMS(ps.now()),
 		// F-02: a paired Worker waits for approval like any other new Worker.
 		Pending: true, EnrollAddr: c.ClientIP().String(),
+	}
+	if cl.admit && cl.approve {
+		// An administrator admitted this very key after comparing its words:
+		// the admission is the approval (one click, as in NetBird's peer
+		// approval).
+		row.Pending, row.ApprovedAt, row.ApprovedBy = false, row.CreatedAt, cl.actor
 	}
 	for i := 1; i <= maxSuffixTries; i++ {
 		row.ID, row.Name = store.NewID(), suffixed(base, i)
@@ -870,6 +951,11 @@ const (
 	AuditPairRepair = "worker.pair_repair"
 	// AuditPairingReissue: the owner opened the re-issue window.
 	AuditPairingReissue = "worker.pairing_reissue"
+	// AuditPairAdmit: an administrator admitted a pairing request; the
+	// outcome is "approved" (or "pending").
+	AuditPairAdmit = "worker.pair_admit"
+	// AuditPairingReject: an administrator rejected a pairing request.
+	AuditPairingReject = "pairing.reject"
 )
 
 // codeDigest is the one-way digest under which a used code is remembered after
@@ -958,6 +1044,11 @@ func (ps *Pairings) Sweep(ctx context.Context) int {
 	n := 0
 	cutoff := store.UnixMS(now)
 	ps.mu.Lock()
+	for k, until := range ps.rejected {
+		if !now.Before(until) {
+			delete(ps.rejected, k)
+		}
+	}
 	for _, p := range ps.live {
 		if p.cur == nil && !now.Before(p.expires) {
 			ps.endLocked(p, errExpired())

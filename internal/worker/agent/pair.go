@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +44,12 @@ const (
 	// commitLockWait bounds the wait for the enrollment lock before the commit
 	// of a pairing the Hub already accepted.
 	commitLockWait = 2 * time.Minute
+	// DefaultHubHelloWait is how long the code box waits for the Hub hello
+	// after the Worker's hello went out, so that it can show the Hub's
+	// fingerprint. A Hub since v0.12.0 answers at once; an older Hub sends its
+	// hello only after the code was claimed, and the box then appears without
+	// the Hub's words.
+	DefaultHubHelloWait = 2 * time.Second
 )
 
 // ErrHubFingerprintMismatch ends a pairing whose Hub root is not the expected
@@ -113,6 +121,18 @@ type PairParams struct {
 	// An error aborts the handshake without sig_worker. The pairer writes the
 	// pair_resume record here, durably. Nil is allowed.
 	OnAuthenticated func(transport.HubAuth) error
+	// AllowAdmit lets the Hub complete this pairing by admitting the request
+	// (pair.admit, no code). The dialer announces it, and accepts an
+	// admission, only when the Hub root is checked by more than the word
+	// comparison of a person: an expected fingerprint (ExpectHub) is set, or
+	// the TLS certificate of the dial is trusted by this computer for the Hub
+	// address (the WebPKI trust NetBird's peers have in their management
+	// server). Otherwise only the code pairs.
+	AllowAdmit bool
+	// OnHubHello is called with the root key of the Hub hello (not
+	// authenticated yet, display only) and whether an admission is allowed on
+	// this connection. Nil is allowed.
+	OnHubHello func(root []byte, admit bool)
 	// OnExposed is called right before the Worker sends its CPace
 	// confirmation. From then on whoever is at the other end of this
 	// connection can learn whether a guess of the code was right, even if it
@@ -140,6 +160,9 @@ type PairResult struct {
 	Expiry *transport.Expiry
 	// TLS is what the dial saw of TLS (display only).
 	TLS transport.TLSSeen
+	// Admitted is true when the Hub admitted the pairing request instead of a
+	// claim of the code.
+	Admitted bool
 }
 
 // PairDialer is the transport port of pairing: it dials the Hub, runs the
@@ -179,6 +202,11 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 	if p.OnDial != nil {
 		p.OnDial(df.TLS)
 	}
+	admit := p.AllowAdmit && admitTrust(p.ExpectHub, df.TLS)
+	features := p.Features
+	if admit {
+		features = append(append([]string(nil), p.Features...), proto.FeaturePairAdmit)
+	}
 	// The hello is one write; when it went out, the Hub has the pairing id.
 	nc := &notifyConn{Conn: conn, onFirstWrite: p.OnWaiting, onConfirm: p.OnExposed}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
@@ -186,7 +214,7 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 		Key:         p.Key,
 		Name:        p.Name,
 		Ops:         p.Ops,
-		Features:    p.Features,
+		Features:    features,
 		Protocols:   p.Protocols,
 		Mode:        transport.ModePairCode,
 		PairingCode: p.Code,
@@ -194,6 +222,12 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 		Ratchet:     p.Ratchet,
 		Clock:       p.Clock,
 		Timeout:     p.Timeout,
+		AllowAdmit:  admit,
+		OnHubHello: func(root ed25519.PublicKey) {
+			if p.OnHubHello != nil {
+				p.OnHubHello(root, admit)
+			}
+		},
 		BeforeSigWorker: func(a transport.HubAuth) error {
 			if a.Expiry.Expired(p.Clock) {
 				return errEnrollExpired
@@ -241,7 +275,17 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 	if reply.Type != proto.TypeWelcome {
 		return PairResult{}, fmt.Errorf("the hub answered %q instead of welcome", reply.Type)
 	}
-	return PairResult{Pin: res.Pin, Welcome: reply.Welcome, Version: res.Version, Ratchet: res.Ratchet, Expiry: &exp, TLS: df.TLS}, nil
+	return PairResult{Pin: res.Pin, Welcome: reply.Welcome, Version: res.Version, Ratchet: res.Ratchet, Expiry: &exp, TLS: df.TLS, Admitted: res.Admitted}, nil
+}
+
+// admitTrust reports whether a pairing may be completed by an admission: the
+// Hub root is checked against an expected fingerprint before anything, or the
+// TLS certificate of the dial is valid for the Hub address in this computer's
+// trust store. Without either, an admission would trust whatever answers at
+// the address (TOFU with nobody looking), so only the code pairs: CPace
+// authenticates the Hub the code was entered in.
+func admitTrust(expect identity.FingerprintMatcher, seen transport.TLSSeen) bool {
+	return !expect.IsZero() || (!seen.None && seen.Trusted)
 }
 
 // notifyConn calls onFirstWrite after the first successful write and onConfirm
@@ -317,6 +361,11 @@ type PairerConfig struct {
 	// WallMono supplies the wall and monotonic clock of the certificate window;
 	// nil means the system clocks.
 	WallMono transport.WallMono
+	// HubHelloWait is how long the code box waits for the Hub hello; zero
+	// means [DefaultHubHelloWait].
+	HubHelloWait time.Duration
+	// NoAdmit turns pairing requests off: the Worker pairs only with its code.
+	NoAdmit bool
 	// Out is the console: the code and the result are printed here. Nil
 	// discards them.
 	Out io.Writer
@@ -382,6 +431,9 @@ func NewPairer(cfg PairerConfig) (*Pairer, error) {
 	if p.cfg.EpochPoll <= 0 {
 		p.cfg.EpochPoll = DefaultEpochPoll
 	}
+	if p.cfg.HubHelloWait <= 0 {
+		p.cfg.HubHelloWait = DefaultHubHelloWait
+	}
 	if p.out == nil {
 		p.out = io.Discard
 	}
@@ -415,6 +467,29 @@ type codeLife struct {
 	// resume is the pair_resume record this code was restored from or that was
 	// written for it; its expiry is the code's end.
 	resume *store.PairResume
+	// printed is set once the box of this code was printed: a code is always
+	// printed once, on the first attempt where the Hub held the connection,
+	// together with the notice that came with it (A40).
+	printed bool
+}
+
+// markPrinted reports whether the box of this code still has to be printed,
+// and marks it printed.
+func (l *codeLife) markPrinted() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.printed {
+		return false
+	}
+	l.printed = true
+	return true
+}
+
+// wasPrinted reports whether the box of this code was printed.
+func (l *codeLife) wasPrinted() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.printed
 }
 
 // expiry is until under the lock.
@@ -550,7 +625,11 @@ func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
 			continue
 		}
 		res, held, err := p.attempt(ctx, key, life, notice, gen, moved)
-		notice = ""
+		if life.wasPrinted() {
+			// The notice travels with the box of the code it explains, so an
+			// attempt that never reached the Hub does not lose it (A40).
+			notice = ""
+		}
 		if err == nil {
 			return p.finish(ctx, gen, res)
 		}
@@ -615,11 +694,13 @@ func (p *Pairer) initialLife(ctx context.Context) (*codeLife, string) {
 	code, perr := identity.ParsePairingCode(rec.Code)
 	if perr != nil || !rec.ExpiresAt.After(p.clk.Now()) || code.PairingID() != rec.PairingID {
 		_ = p.cfg.Enrollment.DeletePairResume(ctx)
-		return &codeLife{code: p.newCode(identity.PairingCode{})}, "The pairing code expired."
+		// The code of an earlier, interrupted run is gone; this run's code is
+		// in the same box (A40: never a lone "expired").
+		return &codeLife{code: p.newCode(identity.PairingCode{})}, "The code of the interrupted pairing expired. Use this new code."
 	}
 	p.log.Info("resuming a pairing after an interrupted connection", "hub", hubLabel(p.cfg.HubURL))
 	return &codeLife{code: code, restored: true, authenticated: true, resume: &rec},
-		"Resuming pairing: enter the same code again in the Hub (Add worker)."
+		"Resuming an interrupted pairing with the same code."
 }
 
 // begin checks, under the enrollment lock, that the Worker is not paired,
@@ -730,6 +811,19 @@ func (p *Pairer) classify(gen uint64, life *codeLife, err error) (next bool, rea
 	}
 	var pe *proto.Error
 	isErr := errors.As(err, &pe)
+	if isErr && pe.Code == proto.CodePairingCodeInvalid && !life.wasExposed() && !life.wasAuthenticated() {
+		// The Hub ended the wait before the code was used. Its reason token
+		// (the only part of an unauthenticated answer that is acted on) says
+		// that a new code is due: show it at once, so the Hub's "the Worker
+		// shows a new one" holds (A40).
+		switch transport.PeerReason(err) {
+		case "expired":
+			return true, "The pairing code expired.", false, nil
+		case "rejected":
+			p.log.Warn("the pairing request was rejected on the Hub; a new code follows", "hub", hubLabel(p.cfg.HubURL))
+			return true, "The pairing request was rejected on the Hub (Workers > Pairing requests).", false, nil
+		}
+	}
 	if isErr && pe.Code == proto.CodeRevoked {
 		return false, "", false, fmt.Errorf("the Hub removed this Worker key: reset the Worker (`minion worker pair --new-code`) and pair again: %w", err)
 	}
@@ -885,6 +979,12 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 	var waitingAt time.Time
 	actx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	// The box is printed when the Hub hello arrives (with the Hub's words), or
+	// HubHelloWait after the Worker's hello went out (an older Hub answers
+	// only after the claim), or at the end of an attempt that was held but
+	// ended sooner; whichever comes first, and once per code.
+	box := &codeBox{p: p, life: life, notice: notice}
+	defer box.flush()
 	go func() {
 		// The attempt ends as soon as the enrollment moves, in this process
 		// (moved) or in another one (a real ticker: no fake clock can advance
@@ -928,10 +1028,12 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 			p.tls = seen
 			p.tlsMu.Unlock()
 		},
-		Ratchet:   life.ratchet(),
-		Clock:     p.cfg.WallMono,
-		Timeout:   p.ttl + pairHandshakeMargin,
-		OnExposed: life.expose,
+		Ratchet:    life.ratchet(),
+		Clock:      p.cfg.WallMono,
+		Timeout:    p.ttl + pairHandshakeMargin,
+		OnExposed:  life.expose,
+		AllowAdmit: !p.cfg.NoAdmit,
+		OnHubHello: box.hubHello,
 		OnAuthenticated: func(a transport.HubAuth) error {
 			// Durable before sig_worker: the Hub cannot create the Worker
 			// before it has sig_worker, so the record precedes any Hub commit.
@@ -953,10 +1055,8 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 			return nil
 		},
 		OnWaiting: func() {
-			first, left := life.show(p.clk.Now(), p.ttl)
-			if first {
-				p.showCode(life.code, notice)
-			}
+			_, left := life.show(p.clk.Now(), p.ttl)
+			box.waiting(actx)
 			heldMu.Lock()
 			if waitingAt.IsZero() {
 				waitingAt = p.clk.Now()
@@ -983,19 +1083,105 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 	return res, held, err
 }
 
+// codeBox prints the box of one attempt's code once, at the first of: the Hub
+// hello arrived, HubHelloWait passed after the Worker's hello, or the attempt
+// ended after the Hub held the connection.
+type codeBox struct {
+	p      *Pairer
+	life   *codeLife
+	notice string
+
+	mu      sync.Mutex
+	held    bool   // the Worker's hello went out (OnWaiting)
+	root    []byte // the root of the Hub hello, nil before it
+	admit   bool   // an admission is allowed on this connection
+	helloCh chan struct{}
+}
+
+// waiting is OnWaiting: the Hub holds the connection. A timer prints the box
+// without the Hub's words when no Hub hello arrives in time.
+func (b *codeBox) waiting(ctx context.Context) {
+	b.mu.Lock()
+	b.held = true
+	if b.helloCh == nil {
+		b.helloCh = make(chan struct{})
+	}
+	ch := b.helloCh
+	b.mu.Unlock()
+	if b.life.wasPrinted() {
+		return
+	}
+	go func() {
+		t := time.NewTimer(b.p.cfg.HubHelloWait)
+		defer t.Stop()
+		select {
+		case <-ch:
+		case <-t.C:
+			b.print()
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// hubHello is OnHubHello: the Hub's root is known (not authenticated yet).
+func (b *codeBox) hubHello(root []byte, admit bool) {
+	b.mu.Lock()
+	b.root, b.admit = bytes.Clone(root), admit
+	if b.helloCh == nil {
+		b.helloCh = make(chan struct{})
+	}
+	select {
+	case <-b.helloCh:
+	default:
+		close(b.helloCh)
+	}
+	b.mu.Unlock()
+	b.print()
+}
+
+// flush prints the box at the end of an attempt that was held and has not
+// printed it yet.
+func (b *codeBox) flush() {
+	b.mu.Lock()
+	held := b.held
+	b.mu.Unlock()
+	if held {
+		b.print()
+	}
+}
+
+func (b *codeBox) print() {
+	if !b.life.markPrinted() {
+		return
+	}
+	b.mu.Lock()
+	root, admit := b.root, b.admit
+	b.mu.Unlock()
+	b.p.showCode(b.life.code, b.notice, root, admit)
+}
+
 // showCode prints the code on the console and in the log: the one place a
 // secret is printed (AD-20, NFR1). The box (M2) also says which Hub is
 // expected and what the dial saw of TLS, as facts and before the Hub is
 // authenticated, so without any verdict.
-func (p *Pairer) showCode(c identity.PairingCode, notice string) {
+//
+// Without an expected fingerprint it shows the words of the Hub that answered
+// (root, when its hello arrived): the CPace session id is the transcript hash,
+// which covers that hello, so the code entered in the real Hub confirms
+// exactly this key, and the Hub shows the same words on Workers > Add worker.
+// An older Hub answers only after the claim; the line is then left out.
+// admit says that the Hub may admit this connection's pairing request.
+func (p *Pairer) showCode(c identity.PairingCode, notice string, root []byte, admit bool) {
 	lines := []string{}
 	if notice != "" {
 		lines = append(lines, notice, "")
 	}
 	lines = append(lines, boxField("Hub:", hubLabel(p.cfg.HubURL))...)
 	if p.cfg.ExpectHub.IsZero() {
-		lines = append(lines, boxField("Hub fingerprint:", "NOT CHECKED. This Worker pairs with whichever Hub answers here "+
-			"and accepts the code. To check first: stop, and start again with --hub-fingerprint <value from the Hub host>")...)
+		if len(root) > 0 {
+			lines = append(lines, fingerprintLines("Hub fingerprint:", fingerprintOfPub(root))...)
+			lines = append(lines, boxField("", "confirmed by the pairing code: the Hub shows the same words on Workers > Add worker")...)
+		}
 	} else {
 		lines = append(lines, boxField("Hub fingerprint:", p.cfg.ExpectHub.Words())...)
 		if p.cfg.ExpectHub.Full() {
@@ -1014,17 +1200,27 @@ func (p *Pairer) showCode(c identity.PairingCode, notice string) {
 		lines = append(lines, boxField("TLS certificate:", facts)...)
 	}
 	lines = append(lines, boxField("Pairing code:", c.String()+"      (valid for "+ttlText(p.ttl)+")")...)
-	lines = append(lines, "",
-		"1. Open the Hub > Workers > Add worker and enter the code.")
 	if p.fpr != "" {
-		lines = append(lines, "2. Approve the Worker there only if the Hub shows:")
 		lines = append(lines, fingerprintLines("Worker fingerprint:", identity.Fingerprint(p.fpr))...)
+	}
+	lines = append(lines, "")
+	if admit && len(root) > 0 {
+		lines = append(lines,
+			"Enter the code on the Hub (Workers > Add worker), or admit the",
+			"request in Workers > Pairing requests after checking these words:",
+			"the Hub must show this Worker fingerprint, and this box the Hub's.")
+	} else {
+		lines = append(lines,
+			"Enter the code on the Hub (Workers > Add worker). Approve the",
+			"Worker there only if the Hub shows this Worker fingerprint.")
 	}
 	writeConsoleBox(p.out, "MINION WORKER PAIRING", lines...)
 	// The code is a secret that is printed for the human on purpose (AD-20):
 	// the console above and the log (docker logs) are the only places.
+	hubSeen := fingerprintOfPub(root)
 	p.log.Info("pairing code", "pairing_code", c.String(), "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
 		"worker_fingerprint", p.fpr, "worker_fingerprint_words", identity.Fingerprint(p.fpr).Words(),
+		"hub_fingerprint", string(hubSeen), "hub_fingerprint_words", hubSeen.Words(), "pairing_request", admit && len(root) > 0,
 		"hub_fingerprint_expected", p.cfg.ExpectHub.String(), "tls_certificate", TLSFacts(seen))
 }
 
@@ -1129,12 +1325,17 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 	}
 	p.showPaired(enr, res, w.Pending)
 	tlsState, _ := TLSPath(res.TLS, w.HubTLS)
+	via := "code"
+	if res.Admitted {
+		via = "admitted"
+	}
 	p.log.Info("paired with the hub", "hub", hubLabel(p.cfg.HubURL), "hub_fingerprint", hubFingerprint(res.Pin),
-		"hub_fingerprint_words", identity.WordsOfKey(res.Pin.Pub), "hub_check", enr.HubCheck,
+		"hub_fingerprint_words", identity.WordsOfKey(res.Pin.Pub), "hub_check", enr.HubCheck, "paired_by", via,
 		"worker_id", w.WorkerID, "name", w.Name, "owner", w.Owner, "kind", w.Kind, "tls_path", tlsState)
-	if p.cfg.ExpectHub.IsZero() {
-		p.log.Warn("the Hub was not verified: no expected fingerprint was given; compare it with the Hub host and run minion worker verify-hub",
-			"hub", hubLabel(p.cfg.HubURL), "hub_fingerprint_words", identity.WordsOfKey(res.Pin.Pub))
+	if p.cfg.ExpectHub.IsZero() && res.Admitted {
+		p.log.Warn("the Hub admitted this Worker without its code: this Worker trusted the Hub key it was shown (and the Hub's TLS certificate); "+
+			"compare the words with the Hub's Workers > Add worker page", "hub", hubLabel(p.cfg.HubURL),
+			"hub_fingerprint_words", identity.WordsOfKey(res.Pin.Pub))
 	}
 	return enr, nil
 }
@@ -1146,11 +1347,15 @@ func (p *Pairer) showPaired(enr Enrollment, res PairResult, pending bool) {
 	lines = append(lines, boxField("", "Not your account? Run: minion worker reset")...)
 	lines = append(lines, boxField("Hub:", hubLabel(p.cfg.HubURL))...)
 	lines = append(lines, fingerprintLines("Hub fingerprint:", fingerprintOfPub(enr.Pin.Pub))...)
-	if enr.HubCheck == store.HubCheckFingerprint {
+	switch {
+	case enr.HubCheck == store.HubCheckFingerprint:
 		lines = append(lines, boxField("", "It matched the fingerprint you gave.")...)
-	} else {
-		lines = append(lines, boxField("", "NOT VERIFIED. Compare all six words with the Hub host (minion hub identity --words), "+
-			"then run here: minion worker verify-hub <the 52 characters>")...)
+	case res.Admitted:
+		lines = append(lines, boxField("", "Admitted on the Hub without the code: this Worker trusted the Hub key it was shown "+
+			"(its TLS certificate is trusted here). It is your Hub if these words are the ones on its Workers > Add worker page.")...)
+	default:
+		lines = append(lines, boxField("", "Confirmed by the pairing code: the Hub where the code was entered has this key "+
+			"(the same words are on its Workers > Add worker page).")...)
 	}
 	if res.TLS.Seen() {
 		_, line := TLSPath(res.TLS, res.Welcome.HubTLS)

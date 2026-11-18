@@ -237,11 +237,12 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, 
 	}
 	log.Info("this Worker is not paired: showing a pairing code; enter it in the Hub (Workers > Add worker)")
 	if expect.IsZero() {
-		// First use without an expectation stays allowed (as before), but
-		// it is said once: the Hub is then only "not verified".
-		log.Warn("no hub_fingerprint is set: this Worker pairs with whichever Hub answers at the address and accepts the code; "+
-			"set hub_fingerprint (MINION_HUB_FINGERPRINT) to the value of minion hub identity --words on the Hub host",
-			"hub", hubLabel(hubURL))
+		// First use without an expectation stays allowed (as before) and is
+		// still reported as hub_check=none ("not verified") in the status and
+		// on the Hub. The code itself authenticates the Hub it is entered in
+		// (the CPace transcript binds the Hub's key), which the box shows.
+		log.Info("no hub_fingerprint is set: the pairing code confirms the Hub's key; the box shows the Hub's words, "+
+			"which the Hub shows on Workers > Add worker", "hub", hubLabel(hubURL), "hub_check", "none")
 	}
 	if _, err := p.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Warn("pairing stopped", "error", err.Error())

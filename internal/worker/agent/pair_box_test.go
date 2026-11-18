@@ -39,8 +39,7 @@ func TestPairingShowsCodeAndFingerprintInABox(t *testing.T) {
 		consoleRule + "\n  MINION WORKER PAIRED\n" + consoleRule + "\n",
 		"  Owner:            alice\n",
 		"Not your account? Run: minion worker reset",
-		"NOT CHECKED",
-		"NOT VERIFIED",
+		"Confirmed by the pairing code",
 		"Waiting for approval",
 	} {
 		if !strings.Contains(out, want) {

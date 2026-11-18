@@ -73,7 +73,17 @@ func pairAt(t *testing.T, h *connHub, ps func() *workers.Pairings, expect identi
 	out := &syncLog{}
 	run, cancel := runPairer(expectPairer(t, h, w, out, code, expect))
 	t.Cleanup(cancel)
-	eventually(t, "the Hub to hold the Worker as pending", func() bool { return ps().IsPending(code.PairingID()) })
+	// Since v0.12.0 the Hub registers a pending pairing only after the
+	// Worker's first CPace message: a Worker that refuses the Hub's root
+	// leaves before that and simply ends.
+	eventually(t, "the Hub to hold the Worker as pending, or the Worker to refuse", func() bool {
+		select {
+		case <-run.done:
+			return true
+		default:
+		}
+		return ps().IsPending(code.PairingID())
+	})
 	if _, err := ps().Claim(context.Background(), workers.ClaimRequest{UserID: "alice", Code: code.String(), IP: claimIP()}); err != nil &&
 		expect.IsZero() {
 		t.Fatal(err)

@@ -197,6 +197,9 @@ type HubAuth struct {
 	RatchetChanged bool
 	// Expiry is the end of this connection.
 	Expiry Expiry
+	// Admitted is true in pair_code mode when the Hub answered with pair.admit
+	// (an admitted pairing request) instead of CPace.
+	Admitted bool
 }
 
 func certHash(c *identity.HubCert) [32]byte { return sha256.Sum256(c.Bytes()) }

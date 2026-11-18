@@ -11,6 +11,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -62,6 +63,9 @@ func initPairingAPI(_ context.Context, env *Env) error {
 	}
 	if err := api.RegisterPairing(handlers, pairingClaimer{ps: ps, st: st, az: az}); err != nil {
 		return fmt.Errorf("pairing: register pairing_claim: %w", err)
+	}
+	if err := api.RegisterPairingRequests(handlers, pairingRequests{Pairings: ps, id: svc.Identity()}); err != nil {
+		return fmt.Errorf("pairing: register the pairing requests: %w", err)
 	}
 	auditLog, err := Require[*audit.Log](env)
 	if err != nil {
@@ -140,4 +144,18 @@ func (p pairingClaimer) mayRepair(ctx context.Context, principal authz.Principal
 		return false, nil // forbidden or not_found: no operate on this Worker
 	}
 	return false, err
+}
+
+// pairingRequests adapts the pairing service and the Hub identity to the port
+// of the pairing requests (v0.12.0).
+type pairingRequests struct {
+	*workers.Pairings
+	id *workers.Identity
+}
+
+func (p pairingRequests) HubFingerprint() identity.Fingerprint {
+	if p.id == nil {
+		return ""
+	}
+	return p.id.Fingerprint()
 }
