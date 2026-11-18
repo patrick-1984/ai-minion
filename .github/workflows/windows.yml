@@ -278,6 +278,18 @@ jobs:
           # The state of the service is also deletable by this user.
           test -f "$MINION_STATE_DIR/worker.db"
           cp "$MINION_STATE_DIR/worker.db" "$RUNNER_TEMP/worker.db.copy"
+      - name: Diagnostics of a failed service run
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ItemProperty -LiteralPath HKLM:\SYSTEM\CurrentControlSet\Services\MinionWorker | Format-List | Out-String | Write-Host
+          Get-WinEvent -LogName Application -MaxEvents 40 -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -match 'Minion|Service Control' } |
+            Format-List TimeCreated, ProviderName, Message | Out-String -Width 400 | Write-Host
+          Get-WinEvent -LogName System -MaxEvents 40 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'Minion' } |
+            Format-List TimeCreated, ProviderName, Message | Out-String -Width 400 | Write-Host
+          Get-ChildItem -Force "$env:ProgramFiles\Minion", $env:MINION_STATE_DIR -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String | Write-Host
       - name: Remove the service
         if: always()
         shell: bash
