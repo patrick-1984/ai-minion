@@ -804,7 +804,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { border-color
 .rail > * { flex-shrink: 0; }
 .rail-head { padding: 0 10px; }
 .brand { font-size: 18px; letter-spacing: -0.035em; gap: 10px; }
-.brand-mark { display: block; width: 30px; height: 30px; overflow: visible; }
+.brand-mark { display: block; width: 22px; height: 22px; overflow: visible; }
 .nav-label { display: flex; align-items: center; gap: 8px; min-height: 28px; font-size: 11px; font-weight: 750;
   letter-spacing: 0.12em; text-transform: uppercase; color: var(--group-tone, var(--nav-muted)); margin: 0 0 10px 8px; }
 .nav-label .icon { flex: none; width: 14px; height: 14px; color: inherit; }
@@ -1180,7 +1180,5 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--input-bor
   .btn-secondary, button.btn-secondary, button.link, .scope { border-color: ButtonText; }
   .theme-toggle .theme-opt[aria-pressed="true"], .search-dialog [aria-selected="true"], .top-search-item[aria-selected="true"] {
     outline: 2px solid Highlight; outline-offset: -2px; }
-  .brand-mark > rect:first-child { fill: ButtonText; }
-  .brand-mark > path { stroke: Canvas; }
-  .brand-mark > rect:last-child { fill: Canvas; }
+  .brand-mark > rect { fill: ButtonText; }
 }
