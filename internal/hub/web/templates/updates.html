@@ -1,13 +1,17 @@
 {{define "content"}}
-<div class="page-head"><div><h1>Updates</h1><p>The Hub checks GitHub once a day for a newer release in its update channel (setting <code>update_check</code>, channel <code>update_channel</code>). Workers are updated to this Hub's release from the Workers page.</p></div></div>
+<div class="page-head"><div><h1>Updates</h1><p>The Hub checks GitHub once a day for a newer release in its update channel (setting <code>update_check</code>, channel <code>update_channel</code>), at once when the channel changes, and when you press <strong>Check now</strong>. Workers are updated to this Hub's release from the Workers page.</p></div></div>
 {{with .Data.Check}}
 <section class="panel" aria-labelledby="hub-h">
   <h2 id="hub-h">Hub</h2>
   <dl class="facts">
     <div><dt>Running</dt><dd data-current>{{.Current}}</dd></div>
     <div><dt>Channel</dt><dd>{{if .Channel}}{{.Channel}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
-    <div><dt>Newest in the channel</dt><dd>{{if .Latest}}{{if .ReleaseURL}}<a href="{{.ReleaseURL}}" target="_blank" rel="noopener">{{.Latest}}</a>{{else}}{{.Latest}}{{end}}{{if .Newer}} <span class="badge" data-tone="warning">newer</span>{{else}} <span class="muted">(up to date)</span>{{end}}{{else}}<span class="muted">not checked yet</span>{{end}}</dd></div>
+    <div><dt>Newest in the channel</dt><dd>{{if and .CheckedChannel (ne .CheckedChannel .Channel)}}<span class="muted" data-check-pending>checking the channel {{.Channel}} (the last answer was for {{.CheckedChannel}})</span>{{else if .Latest}}{{if .ReleaseURL}}<a href="{{.ReleaseURL}}" target="_blank" rel="noopener">{{.Latest}}</a>{{else}}{{.Latest}}{{end}}{{if .Newer}} <span class="badge" data-tone="warning">newer</span>{{else}} <span class="muted">(up to date)</span>{{end}}{{else}}<span class="muted">not checked yet</span>{{end}}</dd></div>
+    <div><dt>Checked</dt><dd data-checked-at>{{if .CheckedAt}}<time datetime="{{.CheckedAt}}">{{$.Data.CheckedAt}}</time>{{else}}<span class="muted">not yet</span>{{end}}{{if .CheckError}} <span class="badge" data-tone="danger">failed</span> <span class="muted">{{.CheckError}}</span>{{end}}</dd></div>
   </dl>
+  <form method="post" action="/admin/updates/check" hx-post="/admin/updates/check" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
+    <button type="submit" class="btn-secondary" data-control="update-check-now">{{template "icon" "i-refresh"}}<span>Check now</span></button>
+  </form>
   {{if .ReleaseURL}}<div><div class="copy-field"><code class="copy-value" id="cp-update-url">{{.ReleaseURL}}</code><button type="button" class="copy-btn" data-copy-target="#cp-update-url" aria-label="Copy the release URL" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
   <div id="list-result" aria-live="polite"></div>
   {{if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready." class="row-actions">

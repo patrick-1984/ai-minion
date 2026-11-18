@@ -49,9 +49,19 @@ type Checker struct {
 	Log     *slog.Logger
 	// Interval is 24 h; FirstDelay the wait after start (a few minutes).
 	Interval, FirstDelay time.Duration
+	// Poll is how often Run looks (locally) whether update_check or
+	// update_channel changed since the last answer; a change checks at once
+	// instead of at the next daily check. Zero means one minute.
+	Poll time.Duration
+	// MinRefresh is the shortest time between two checks asked for with
+	// Refresh (the "Check now" button); zero means one minute. GitHub allows
+	// 60 unauthenticated calls an hour per address.
+	MinRefresh time.Duration
 
-	mu   sync.RWMutex
-	last Result
+	mu     sync.RWMutex
+	last   Result
+	runMu  sync.Mutex // one check at a time
+	lastAt time.Time  // when the last check (any trigger) ran
 }
 
 // Latest returns the last answer; it never blocks on the network.
@@ -62,23 +72,74 @@ func (c *Checker) Latest() Result {
 }
 
 // Run checks after FirstDelay and then every Interval (plus up to an hour of
-// jitter) until ctx ends.
+// jitter) until ctx ends. In between it checks at once when update_check or
+// update_channel no longer match the last answer (a change in the panel).
 func (c *Checker) Run(ctx context.Context) {
 	t := time.NewTimer(c.FirstDelay)
 	defer t.Stop()
+	poll := c.Poll
+	if poll <= 0 {
+		poll = time.Minute
+	}
+	p := time.NewTicker(poll)
+	defer p.Stop()
+	started := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-p.C:
+			if !started || !c.settingsChanged() {
+				continue
+			}
+			c.CheckOnce(ctx)
+			continue
 		case <-t.C:
 		}
+		started = true
 		c.CheckOnce(ctx)
 		t.Reset(c.Interval + time.Duration(rand.Int64N(int64(time.Hour))))
 	}
 }
 
+// settingsChanged reports whether the last answer was found with other
+// settings than the current ones: another channel, or the check turned on
+// since. A failed lookup is no change.
+func (c *Checker) settingsChanged() bool {
+	check, err1 := c.Setting(config.KeyUpdateCheck)
+	channel, err2 := c.Setting(config.KeyUpdateChannel)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	last := c.Latest()
+	if check != "on" {
+		return last != (Result{})
+	}
+	return last.Channel != channel
+}
+
+// Refresh checks now, for an administrator's "Check now". It returns false
+// without calling GitHub when the last check ran less than MinRefresh ago;
+// the caller then shows the answer it has.
+func (c *Checker) Refresh(ctx context.Context) bool {
+	min := c.MinRefresh
+	if min <= 0 {
+		min = time.Minute
+	}
+	c.runMu.Lock()
+	recent := !c.lastAt.IsZero() && time.Since(c.lastAt) < min
+	c.runMu.Unlock()
+	if recent && !c.settingsChanged() {
+		return false
+	}
+	c.CheckOnce(ctx)
+	return true
+}
+
 // CheckOnce runs one check now, unless update_check is off.
 func (c *Checker) CheckOnce(ctx context.Context) {
+	c.runMu.Lock()
+	defer c.runMu.Unlock()
 	check, err1 := c.Setting(config.KeyUpdateCheck)
 	channel, err2 := c.Setting(config.KeyUpdateChannel)
 	if err1 != nil || err2 != nil {
@@ -93,6 +154,7 @@ func (c *Checker) CheckOnce(ctx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	c.lastAt = time.Now()
 	res, err := c.check(ctx, channel)
 	c.mu.Lock()
 	defer c.mu.Unlock()

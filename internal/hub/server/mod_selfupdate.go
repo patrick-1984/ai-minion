@@ -94,8 +94,11 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 			return up.VerifiedRelease(ctx, sel)
 		},
 	}
-	if err := api.HandleTyped(handlers, ops.OpHubUpdateCheck, func(ctx context.Context, _ *api.Call, _ ops.HubUpdateCheckArgs) (ops.HubUpdateCheckResult, error) {
-		return u.check(ctx), nil
+	if err := api.HandleTyped(handlers, ops.OpHubUpdateCheck, func(ctx context.Context, _ *api.Call, a ops.HubUpdateCheckArgs) (ops.HubUpdateCheckResult, error) {
+		refreshed := a.Refresh && u.checker.Refresh(ctx)
+		res := u.check(ctx)
+		res.Refreshed = refreshed
+		return res, nil
 	}); err != nil {
 		return fmt.Errorf("self-update: %w", err)
 	}
@@ -142,6 +145,10 @@ func (u *selfUpdater) check(ctx context.Context) ops.HubUpdateCheckResult {
 	res.Channel, _ = u.setting(config.KeyUpdateChannel)
 	l := u.checker.Latest()
 	res.Latest, res.Newer, res.ReleaseURL = l.Latest, l.Newer, l.URL
+	res.CheckedChannel, res.CheckError = l.Channel, l.Err
+	if !l.CheckedAt.IsZero() {
+		res.CheckedAt = l.CheckedAt.UTC().Format(time.RFC3339)
+	}
 	if mode, err := u.setting(config.KeySelfUpdate); err != nil || mode != "auto" {
 		res.Reason, res.Command = "self_update is off", manualCommand
 		return res

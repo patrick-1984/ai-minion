@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -125,5 +127,70 @@ func TestSettingErrorsSkipAndChannelChangeDropsTheNotice(t *testing.T) {
 	c.CheckOnce(context.Background())
 	if r := c.Latest(); r.Newer || r.Latest != "" {
 		t.Fatalf("the latest-channel notice survived the switch to minor: %+v", r)
+	}
+}
+
+// "Check now" asks GitHub, but not twice within MinRefresh; a changed
+// channel is checked anyway.
+func TestRefreshIsRateLimitedExceptAfterAChannelChange(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
+	settings := map[string]string{config.KeyUpdateChannel: config.UpdateChannelMinor}
+	c := newChecker(src, "v0.11.0", settings)
+	c.MinRefresh = time.Hour
+	if !c.Refresh(context.Background()) || src.calls.Load() != 1 {
+		t.Fatalf("first refresh: calls = %d", src.calls.Load())
+	}
+	if c.Refresh(context.Background()) || src.calls.Load() != 1 {
+		t.Fatalf("second refresh within MinRefresh called GitHub: calls = %d", src.calls.Load())
+	}
+	settings[config.KeyUpdateChannel] = config.UpdateChannelLatest
+	if !c.Refresh(context.Background()) || src.calls.Load() != 2 {
+		t.Fatalf("refresh after a channel change: calls = %d", src.calls.Load())
+	}
+	if r := c.Latest(); r.Latest != "v0.13.0" || !r.Newer || r.Channel != config.UpdateChannelLatest {
+		t.Fatalf("latest = %+v", r)
+	}
+}
+
+// Run checks at once when update_channel changes, not only at the next
+// daily check.
+func TestRunChecksAgainWhenTheChannelChanges(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
+	var mu sync.Mutex
+	channel := config.UpdateChannelMinor
+	c := newChecker(src, "v0.11.0", nil)
+	c.Setting = func(k string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if k == config.KeyUpdateChannel {
+			return channel, nil
+		}
+		return "on", nil
+	}
+	c.Interval, c.FirstDelay, c.Poll = time.Hour, time.Millisecond, 5*time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	waitFor(t, func() bool { return c.Latest().Channel == config.UpdateChannelMinor })
+	if c.Latest().Newer {
+		t.Fatal("minor channel offered v0.13.0")
+	}
+	mu.Lock()
+	channel = config.UpdateChannelLatest
+	mu.Unlock()
+	waitFor(t, func() bool { r := c.Latest(); return r.Channel == config.UpdateChannelLatest && r.Latest == "v0.13.0" })
+	if n := src.calls.Load(); n != 2 {
+		t.Fatalf("calls = %d, want 2 (start, channel change)", n)
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
