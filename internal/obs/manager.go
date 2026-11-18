@@ -68,6 +68,14 @@ func New(f *logx.Fanout, proc Process) *Manager {
 	}
 }
 
+// SetProcess changes the identity used for pipelines built from now on (a
+// Worker learns its id from the enrollment after the logger exists).
+func (m *Manager) SetProcess(p Process) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.proc = p
+}
+
 // Apply makes s the effective configuration. A sink whose configuration did
 // not change keeps running. A changed sink is built new, swapped into its
 // slot, and the old pipeline is discarded with its queue (counted as

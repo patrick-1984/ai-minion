@@ -49,6 +49,10 @@ type Settings struct {
 	// LogSinks is the state of the remote log sinks (syslog, otel) for
 	// minion worker status; nil when there are none.
 	LogSinks func() []ops.LogSinkStatus
+	// StartLogSinks builds the remote log sinks; the log sinks module calls
+	// it after the lifecycle lock, the update guard and the pre-start hooks
+	// (enrollment). It never fails the start. Nil: none.
+	StartLogSinks func(ctx context.Context)
 	// StopLogSinks flushes and stops the remote log sinks within ctx; the
 	// log module calls it last in the stop sequence. Nil: nothing to stop.
 	StopLogSinks func(ctx context.Context) error

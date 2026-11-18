@@ -135,10 +135,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	if err != nil {
 		return err
 	}
-	sinks, err := startWorkerSinks(cmd.Context(), res, live, workerOTelID(cmd.Context(), core.StateDir))
-	if err != nil {
-		return err
-	}
+	sinks, startSinks := newWorkerSinks(res, live, logger, core.StateDir)
 	// Stopped by the log sinks module, last in the stop sequence; this is
 	// the fallback when the Worker never got that far.
 	defer func() {
@@ -157,8 +154,9 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		Logger:     logger,
 		LogLive:    live,
 
-		LogSinks:     sinks.Status,
-		StopLogSinks: sinks.Shutdown,
+		LogSinks:      sinks.Status,
+		StartLogSinks: startSinks,
+		StopLogSinks:  sinks.Shutdown,
 		Out:          cmd.OutOrStdout(),
 
 		InviteArgvWarned: deps.inviteArgvWarned,

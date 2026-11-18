@@ -350,7 +350,7 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// log sinks as the service will resolve them, before any hook, save or
 	// restart, so that a typo cannot put a working Worker into a restart
 	// loop.
-	if err := checkServiceSinks(res); err != nil {
+	if err := checkServiceSinks(res, serviceSinkReader(owned, target.UID)); err != nil {
 		return fmt.Errorf("%w; nothing was saved and the service was not changed", err)
 	}
 	core, err := config.ResolveWorkerCore(res)
@@ -559,13 +559,14 @@ var servicePathKeys = map[string]bool{
 	config.KeyOTelClientKeyFile: true,
 }
 
-// checkServiceSinks resolves the log sinks as the installed service will:
-// the settings of this run that worker up saves (flags and MINION_*
-// variables) and the config file, without other variables of this shell
-// (an OTEL_EXPORTER_OTLP_ENDPOINT here does not reach the service). Relative
-// file paths resolve against this directory, as they will be saved
-// absolute.
-func checkServiceSinks(res *config.Resolver) error {
+// checkServiceSinks resolves the log sinks exactly as the installed service
+// will: the settings of this run that worker up saves (flags and MINION_*
+// variables, file paths trimmed and made absolute as they are saved) and the
+// config file, without other variables of this shell (an
+// OTEL_EXPORTER_OTLP_ENDPOINT here does not reach the service). A relative
+// path already in the config file is refused: the service opens it from its
+// own directory. Private files are read with the daemon's rules (read).
+func checkServiceSinks(res *config.Resolver, read func(string) ([]byte, error)) error {
 	svc := *res
 	lookup := res.LookupEnv
 	svc.LookupEnv = func(name string) (string, bool) {
@@ -574,10 +575,61 @@ func checkServiceSinks(res *config.Resolver) error {
 		}
 		return lookup(name)
 	}
-	if _, err := config.ResolveSinks(&svc, config.SinkFiles{}); err != nil {
+	over := map[string]string{}
+	for key := range servicePathKeys {
+		r, err := svc.Resolve(key)
+		if err != nil {
+			return fmt.Errorf("log export: %w", err)
+		}
+		v := strings.TrimSpace(r.Value)
+		if v == "" {
+			continue
+		}
+		switch r.Source {
+		case config.SourceFlag, config.SourceEnv:
+			abs, err := filepath.Abs(v)
+			if err != nil {
+				return fmt.Errorf("log export: setting %q: %w", key, err)
+			}
+			over[key] = abs
+		case config.SourceFile:
+			if !filepath.IsAbs(v) {
+				return fmt.Errorf("log export: setting %q in the config file is a relative path, which the service resolves from its own directory; set an absolute path", key)
+			}
+		}
+	}
+	svc.Flags = overlayFlags{base: res.Flags, over: over}
+	if _, err := config.ResolveSinks(&svc, config.SinkFiles{ReadPrivate: read}); err != nil {
 		return fmt.Errorf("log export: %w (the service does not see OTEL_EXPORTER_OTLP_* variables of this shell; use --otel-endpoint)", err)
 	}
 	return nil
+}
+
+// overlayFlags is a flag source with some values replaced.
+type overlayFlags struct {
+	base config.FlagSource
+	over map[string]string
+}
+
+func (o overlayFlags) Lookup(key string) (string, bool, error) {
+	if v, ok := o.over[key]; ok {
+		return v, true, nil
+	}
+	if o.base == nil {
+		return "", false, nil
+	}
+	return o.base.Lookup(key)
+}
+
+// serviceSinkReader reads a private sink file with the rules of the Worker
+// daemon (identity.OpenPrivate: no link, a regular file of the user, no
+// access for others). When root installs the service of another account,
+// the file must belong to that account instead (serviceOwnedPrivate).
+func serviceSinkReader(owned bool, uid int) func(string) ([]byte, error) {
+	if !owned {
+		return readPrivateSinkFile
+	}
+	return func(path string) ([]byte, error) { return serviceOwnedPrivate(path, uid) }
 }
 
 // fillUpConfig puts the non-secret settings that this run gave by flag or
@@ -601,6 +653,9 @@ func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.R
 			continue // A blank override can resolve as unset.
 		}
 		val := r.Value
+		if servicePathKeys[s.Key] {
+			val = strings.TrimSpace(val)
+		}
 		if servicePathKeys[s.Key] && val != "" {
 			// The service starts in another directory (the home of its
 			// user): save the path this run resolved.

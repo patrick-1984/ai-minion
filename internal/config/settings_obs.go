@@ -79,7 +79,7 @@ func declareObs(r *Registry) {
 			"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT (used as is), then OTEL_EXPORTER_OTLP_ENDPOINT"})
 	r.Declare(Setting{Key: KeyOTelLevel, Scope: ScopeAny, Default: "info", Choices: sinkLevels,
 		Help: "Lowest level sent to OpenTelemetry: debug, info, warn or error (independent of log_level)"})
-	r.Declare(Setting{Key: KeyOTelHeaders, Scope: ScopeHub, Secret: true,
+	r.Declare(Setting{Key: KeyOTelHeaders, Scope: ScopeHub, Secret: true, RegularFileOnly: true,
 		Help: "HTTP headers of every OTLP request, one \"Name: value\" per line (for example an Authorization header); " +
 			"encrypted at rest. OTEL_EXPORTER_OTLP_HEADERS is ignored"})
 	r.Declare(Setting{Key: KeyOTelHeadersPath, Scope: ScopeWorker,

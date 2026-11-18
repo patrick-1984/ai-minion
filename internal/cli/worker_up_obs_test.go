@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 )
 
 // worker up persists every log export setting it was given, the header file
@@ -65,14 +68,26 @@ func TestWorkerUpPersistsTheLogSinkSettings(t *testing.T) {
 	}
 }
 
-// A sink setting that does not validate fails the Worker start, naming the
-// key, never the value.
-func TestStartWorkerSinksRefusesAnInvalidSetting(t *testing.T) {
+// A sink setting that does not validate never stops the Worker (an update
+// must not look failed for it): both sinks stay off, and the status and
+// the local log name the key, never the value.
+func TestInvalidSinkSettingLeavesTheWorkerRunning(t *testing.T) {
 	res := &config.Resolver{Role: config.ScopeWorker, File: config.MapSource{"syslog": "on", "syslog_endpoint": "http://u:s3cr3t@h:1"},
 		LookupEnv: func(string) (string, bool) { return "", false }}
-	_, err := startWorkerSinks(t.Context(), res, nil, "")
-	if err == nil || !strings.Contains(err.Error(), "syslog_endpoint") || strings.Contains(err.Error(), "s3cr3t") {
-		t.Fatalf("err = %v", err)
+	var local bytes.Buffer
+	logger, live, err := logx.NewLiveLocal(logx.Options{Output: &local, Format: logx.FormatText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, start := newWorkerSinks(res, live, logger, t.TempDir())
+	defer func() { _ = m.Shutdown(context.Background()) }()
+	start(context.Background())
+	st := m.Status()
+	if st[0].Enabled || !strings.Contains(st[0].LastError, "syslog_endpoint") || strings.Contains(st[0].LastError, "s3cr3t") {
+		t.Fatalf("status = %+v", st)
+	}
+	if !strings.Contains(local.String(), "log export is off") || strings.Contains(local.String(), "s3cr3t") {
+		t.Fatalf("local = %s", local.String())
 	}
 }
 

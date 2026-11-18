@@ -661,11 +661,10 @@ func TestCoreModuleFailureClosesTheStoreAndNamesTheStep(t *testing.T) {
 
 func TestDefaultRegistryHasTheCoreModuleFirst(t *testing.T) {
 	// Only the lifecycle lock (Story 4.10) starts before the core module: the
-	// state is never opened without it. The log sinks module, which opens no
-	// state, comes before both so that it stops last.
+	// state is never opened without it.
 	names := DefaultRegistry.Names()
-	if len(names) < 3 || names[0] != ModuleLogSinks || names[1] != ModuleLifecycle || names[2] != ModuleCore {
-		t.Fatalf("default modules = %v, want log_sinks, lifecycle, then core", names)
+	if len(names) < 2 || names[0] != ModuleLifecycle || names[1] != ModuleCore {
+		t.Fatalf("default modules = %v, want lifecycle, then core", names)
 	}
 }
 

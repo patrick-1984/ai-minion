@@ -72,28 +72,32 @@ func workerLogger(cmd *cobra.Command, res *config.Resolver, out io.Writer) (*slo
 	return logx.NewLive(logx.Options{Level: level, Format: logx.Format(format.Value), Output: out}, logx.NewRing(0, 0))
 }
 
-// startWorkerSinks builds the remote log sinks (syslog, OpenTelemetry) of a
-// running Worker from its settings (flag, environment, config file) into the
-// remote slots of live's fan-out. Standalone commands (CLI one-shots, minion
-// mcp, worker pair) never call it: they log to stderr only. A sink setting
-// that does not validate fails the start, as any other Worker setting does.
-func startWorkerSinks(ctx context.Context, res *config.Resolver, live *logx.Live, workerID string) (*obs.Manager, error) {
-	sinks, err := config.ResolveSinks(res, config.SinkFiles{ReadPrivate: readPrivateSinkFile})
-	if err != nil {
-		return nil, err
+// newWorkerSinks prepares the remote log sinks (syslog, OpenTelemetry) of a
+// running Worker: the manager owns the remote slots of live's fan-out, and
+// start builds the sinks once the Worker's lifecycle lock, update guard and
+// enrollment are in place (the log sinks module calls it). A sink setting
+// that does not validate never stops the Worker (a stricter check in a new
+// release must not make an update look failed, nor keep a service down):
+// both sinks stay off and the status and the local log say why; worker up
+// refuses such a setting before it saves it. Standalone commands (CLI
+// one-shots, minion mcp, worker pair) never call it: they log to stderr only.
+func newWorkerSinks(res *config.Resolver, live *logx.Live, logger *slog.Logger, stateDir string) (m *obs.Manager, start func(context.Context)) {
+	m = obs.New(live.Fanout, obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: ops.NewUUIDv7()})
+	start = func(ctx context.Context) {
+		if id := workerOTelID(ctx, stateDir); id != "" {
+			m.SetProcess(obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: id, WorkerID: id})
+		}
+		sinks, err := config.ResolveSinks(res, config.SinkFiles{ReadPrivate: readPrivateSinkFile})
+		if err != nil {
+			m.Disable(logx.ErrorText(err))
+			logger.Error("log export is off: its settings are not valid", "error", logx.ErrorText(err))
+			return
+		}
+		if err := m.Apply(ctx, sinks); err != nil {
+			logger.Error("log export could not be started", "error", logx.ErrorText(err))
+		}
 	}
-	proc := obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: workerID, WorkerID: workerID}
-	if workerID == "" {
-		proc.InstanceID = ops.NewUUIDv7() // not enrolled yet: an id per start
-	}
-	m := obs.New(live.Fanout, proc)
-	if err := m.Apply(ctx, sinks); err != nil {
-		sctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = m.Shutdown(sctx)
-		return nil, err
-	}
-	return m, nil
+	return m, start
 }
 
 // workerOTelID is the Worker id of the persisted enrollment, for the
