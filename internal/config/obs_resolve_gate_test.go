@@ -65,3 +65,31 @@ func TestPanelEndpointCannotTakeEnvironmentCredentials(t *testing.T) {
 		t.Fatalf("env endpoint: %v %v", s.OTLP.LogsURL, err)
 	}
 }
+
+// A scoped IPv6 endpoint keeps its zone escape, so the exporter can parse it.
+func TestIPv6ZoneIsKept(t *testing.T) {
+	s, err := ResolveSinks(hubRes(nil, map[string]string{"otel": "on", "otel_endpoint": "http://[fe80::1%25eth0]:4318"}), SinkFiles{})
+	if err != nil || s.OTLP.LogsURL != "http://[fe80::1%25eth0]:4318/v1/logs" {
+		t.Fatalf("url %q, %v", s.OTLP.LogsURL, err)
+	}
+}
+
+// Secret and key file errors never quote the path (it can hold the secret
+// by mistake).
+func TestSecretFileErrorsDoNotQuoteThePath(t *testing.T) {
+	inline := "Authorization: Bearer s3cr3t"
+	res := hubRes(map[string]string{"MINION_OTEL_HEADERS_FILE": inline}, map[string]string{"otel": "on", "otel_endpoint": "http://127.0.0.1:1"})
+	if _, err := ResolveSinks(res, SinkFiles{}); err == nil || strings.Contains(err.Error(), "s3cr3t") {
+		t.Fatalf("headers: %v", err)
+	}
+	if _, err := res.Resolve(KeyOTelHeaders); err == nil || strings.Contains(err.Error(), "s3cr3t") {
+		t.Fatalf("resolve: %v", err)
+	}
+	dir := t.TempDir()
+	cert, _ := writePEMPair(t, dir, 0o600)
+	p := map[string]string{"syslog": "on", "syslog_endpoint": "tls://h:6514", "syslog_client_cert_file": cert,
+		"syslog_client_key_file": "-----BEGIN PRIVATE KEY----- s3cr3t"}
+	if _, err := ResolveSinks(hubRes(nil, p), SinkFiles{}); err == nil || strings.Contains(err.Error(), "s3cr3t") {
+		t.Fatalf("key: %v", err)
+	}
+}

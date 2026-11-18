@@ -260,3 +260,15 @@ func (c slogCheck) WithGroup(n string) slog.Handler {
 	}
 	return c
 }
+
+// A known token right after a newline inside a nested value is masked (in
+// JSON text it would follow the "n" of the escape).
+func TestRemoteSafeNestedTokenAfterNewline(t *testing.T) {
+	l, buf := remoteCapture(t)
+	l.Info("x", "req", map[string]any{"note": "first line\n" + fakeAPIKey, "list": []string{"a\t" + fakeJoin}})
+	for _, leak := range []string{fakeAPIKey[3:], fakeJoinBody} {
+		if strings.Contains(buf.String(), leak) {
+			t.Fatalf("leaks %q: %s", leak, buf.String())
+		}
+	}
+}

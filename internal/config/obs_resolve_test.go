@@ -204,7 +204,7 @@ func TestClientKeyModeAndPair(t *testing.T) {
 	if err := os.Chmod(key, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResolveSinks(hubRes(nil, p), SinkFiles{}); err == nil || !strings.Contains(err.Error(), "chmod 600") ||
+	if _, err := ResolveSinks(hubRes(nil, p), SinkFiles{}); err == nil || !strings.Contains(err.Error(), "mode 0600") ||
 		!strings.Contains(err.Error(), "syslog_client_key_file") || strings.Contains(err.Error(), "PRIVATE KEY") {
 		t.Fatalf("a 0644 key file was accepted: %v", err)
 	}

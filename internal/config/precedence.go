@@ -268,7 +268,9 @@ func (r *Resolver) fromEnv(s Setting) (string, bool, error) {
 	if path, ok := r.lookupEnv(s.FileEnvName()); ok && path != "" {
 		data, err := r.readFile(path)
 		if err != nil {
-			return "", false, fmt.Errorf("setting %q: %s: cannot read secret file: %w", s.Key, s.FileEnvName(), err)
+			// The path is not quoted: a mistake can put the secret itself
+			// into the variable.
+			return "", false, fmt.Errorf("setting %q: %s: cannot read secret file: %s", s.Key, s.FileEnvName(), secretFileProblem(err))
 		}
 		v, err := readSecretFile(func(string) ([]byte, error) { return data, nil }, path)
 		if err != nil {

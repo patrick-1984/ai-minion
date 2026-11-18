@@ -1,9 +1,13 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
+
+// errNotRegular is a path that is not a regular file.
+var errNotRegular = errors.New("not a regular file")
 
 // openRegular opens path for reading without blocking on a FIFO or a device
 // (non-blocking open where the system has it) and refuses anything that is
@@ -16,7 +20,7 @@ func openRegular(path string) (*os.File, error) {
 	fi, err := f.Stat()
 	if err != nil || !fi.Mode().IsRegular() {
 		_ = f.Close()
-		return nil, fmt.Errorf("%s is not a regular file", path)
+		return nil, fmt.Errorf("%s: %w", path, errNotRegular)
 	}
 	return f, nil
 }

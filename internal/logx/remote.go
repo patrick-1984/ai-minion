@@ -180,6 +180,10 @@ func maskTree(v any) any {
 		for i, x := range t {
 			t[i] = maskTree(x)
 		}
+	case string:
+		// Scanned decoded: in JSON text a token after a newline follows
+		// the "n" of its escape and would not start at a word boundary.
+		return RedactText(validUTF8(t))
 	}
 	return v
 }

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 )
 
@@ -45,7 +44,9 @@ func readSecretFile(read func(string) ([]byte, error), path string) (string, err
 // size cap, so that pointing a *_FILE variable at a huge file cannot exhaust
 // memory.
 func readLimited(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	// Non-blocking open and a regular-file check on the handle: a FIFO or
+	// a device never blocks a reader (a Hub settings request included).
+	f, err := openRegular(path)
 	if err != nil {
 		return nil, err
 	}

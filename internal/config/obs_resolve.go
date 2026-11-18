@@ -351,7 +351,10 @@ func parseHTTPURL(raw string) (string, error) {
 			return "", errors.New("the port is invalid")
 		}
 	}
-	return u.Scheme + "://" + u.Host + u.Path, nil
+	// Serialised by net/url, so that an IPv6 zone keeps its escape
+	// (http://[fe80::1%25eth0]:4318): a raw "%" would make the URL
+	// unparsable for the exporter.
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String(), nil
 }
 
 func checkHostPort(u *url.URL) error {
@@ -401,16 +404,6 @@ func resolveHeaders(res *Resolver, files SinkFiles, d *digest) (map[string]strin
 		text = string(data)
 	} else {
 		key = KeyOTelHeaders
-		// The secret's file is read by the resolver; refuse a FIFO or a
-		// device first, whose read would block (also under the settings
-		// lock of a live change).
-		if st, ok := res.registry().Lookup(KeyOTelHeaders); ok {
-			if p, set := res.lookupEnv(st.FileEnvName()); set && p != "" {
-				if fi, err := os.Stat(p); err == nil && !fi.Mode().IsRegular() {
-					return nil, fmt.Errorf("setting %q: %s is not a regular file", KeyOTelHeaders, st.FileEnvName())
-				}
-			}
-		}
 		r, err := res.Resolve(KeyOTelHeaders)
 		if err != nil {
 			return nil, err
@@ -534,7 +527,8 @@ func resolveTLSFiles(res *Resolver, files SinkFiles, d *digest, isTLS bool, what
 	}
 	keyPEM, err := files.ReadPrivate(keyPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("setting %q: %v", keyKey, err)
+		// The path is not quoted: a mistake can put the key itself there.
+		return nil, nil, fmt.Errorf("setting %q: %s", keyKey, fileProblem(err))
 	}
 	pair, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
@@ -554,6 +548,19 @@ func fileProblem(err error) string {
 		return "the file cannot be read (permission denied)"
 	}
 	return "the file is not a regular file of this user that only its owner can read (mode 0600), or it cannot be read"
+}
+
+// secretFileProblem describes the error of a secret file without its path.
+func secretFileProblem(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "the file does not exist"
+	case errors.Is(err, fs.ErrPermission):
+		return "permission denied"
+	case errors.Is(err, errNotRegular):
+		return "not a regular file"
+	}
+	return "the file cannot be read"
 }
 
 // readBounded reads a regular file of at most max bytes. The error names the
