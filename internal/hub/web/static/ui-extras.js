@@ -189,6 +189,110 @@
   var search = document.querySelector('[data-search]');
   if (nav && search) { initSearch(nav, search); }
 
+  function copyFeedback(button, copied) {
+    window.clearTimeout(button.copyFeedbackTimer);
+    button.classList.toggle('is-copied', copied);
+    var copyIcon = button.querySelector('.copy-icon');
+    var checkIcon = button.querySelector('.copy-check');
+    if (copyIcon) { copyIcon.hidden = copied; }
+    if (checkIcon) { checkIcon.hidden = !copied; }
+    button.title = copied ? 'Copied' : 'Copy';
+    if (copied) {
+      var label = button.getAttribute('aria-label');
+      button.setAttribute('aria-label', 'Copied');
+      button.copyFeedbackTimer = window.setTimeout(function () {
+        button.setAttribute('aria-label', label);
+        copyFeedback(button, false);
+      }, 1500);
+    }
+  }
+
+  function fallbackCopy(text) {
+    var active = document.activeElement;
+    var selection = window.getSelection();
+    var ranges = [];
+    if (selection) {
+      for (var index = 0; index < selection.rangeCount; index++) { ranges.push(selection.getRangeAt(index).cloneRange()); }
+    }
+    // A selectable temporary field also works for disabled configuration inputs.
+    var field = document.createElement('textarea');
+    field.className = 'sr-only';
+    field.value = text;
+    field.readOnly = true;
+    field.setAttribute('aria-label', 'Value to copy');
+    document.body.appendChild(field);
+    var copied = false;
+    try {
+      field.focus({ preventScroll: true });
+      field.select();
+      copied = document.execCommand('copy');
+    } catch (error) { copied = false; }
+    finally {
+      field.remove();
+      if (active && active.isConnected) { active.focus({ preventScroll: true }); }
+      if (selection) {
+        selection.removeAllRanges();
+        ranges.forEach(function (range) { selection.addRange(range); });
+      }
+    }
+    return copied;
+  }
+
+  document.addEventListener('click', function (event) {
+    var button = event.target.closest && event.target.closest('button[data-copy-target]');
+    if (!button || button.disabled) { return; }
+    // Legacy data-copy attributes remain for existing page contracts. Handle
+    // these buttons in capture so onboarding.js cannot copy or replace icons.
+    if (button.hasAttribute('data-copy')) { event.stopPropagation(); }
+    if (!button.copyLabel) { button.copyLabel = button.getAttribute('aria-label'); }
+    var selector = button.getAttribute('data-copy-target');
+    var target = !selector ? null : selector.charAt(0) === '#' && selector.indexOf(' ') === -1
+      ? document.getElementById(selector.slice(1)) : document.querySelector(selector);
+    if (!target) { return; }
+    var text = typeof target.value === 'string' ? target.value : target.textContent;
+    function fallback() {
+      if (fallbackCopy(text)) { copied(); }
+      else {
+        button.title = 'Select the value and press Ctrl+C to copy';
+        button.setAttribute('aria-label', button.title);
+      }
+    }
+    function copied() {
+      // Restore the original accessible label before restarting feedback.
+      button.setAttribute('aria-label', button.copyLabel);
+      copyFeedback(button, true);
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(copied, fallback);
+      } else { fallback(); }
+    } catch (error) { fallback(); }
+  }, true);
+
+  document.addEventListener('click', function (event) {
+    var button = event.target.closest && event.target.closest('[data-audit-time]');
+    if (!button) { return; }
+    var input = document.querySelector(button.getAttribute('data-audit-time'));
+    if (!input) { return; }
+    if (input.type === 'date') {
+      input.type = 'text';
+      button.textContent = 'Use calendar';
+    } else if (!input.value || /^\d{4}-\d{2}-\d{2}$/.test(input.value)) {
+      var value = input.value;
+      input.type = 'date';
+      if (input.value !== value) {
+        input.type = 'text';
+        input.value = value;
+      } else {
+        button.textContent = 'Enter a date or RFC 3339 time';
+        button.removeAttribute('title');
+      }
+    } else {
+      button.title = 'Enter a YYYY-MM-DD date or clear the field to use the calendar';
+    }
+    input.focus();
+  });
+
   var workerRowTimer = null;
 
   function cancelWorkerRow() {

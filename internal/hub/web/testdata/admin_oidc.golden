@@ -19,11 +19,15 @@
     </div>
     <div class="field">
       <label for="p-default-issuer">Issuer URL</label>
+      
       <input type="text" id="p-default-issuer" name="issuer" value="https://sso.example.com" autocomplete="off" spellcheck="false" required maxlength="512" disabled>
+      
     </div>
     <div class="field">
       <label for="p-default-client-id">Client ID</label>
+      
       <input type="text" id="p-default-client-id" name="client_id" value="minion" autocomplete="off" spellcheck="false" required maxlength="512" disabled>
+      
     </div>
     <div class="field">
       <label for="p-default-secret">Client secret (set)</label>
@@ -81,11 +85,15 @@
     </div>
     <div class="field">
       <label for="p-lab-issuer">Issuer URL</label>
-      <input type="text" id="p-lab-issuer" name="issuer" value="https://kc.lab.example.com/realms/lab" autocomplete="off" spellcheck="false" required maxlength="512" placeholder="e.g. https://login.example.com">
+      <div><div class="copy-field">
+      <input type="text" id="p-lab-issuer" name="issuer" value="https://kc.lab.example.com/realms/lab" autocomplete="off" spellcheck="false" required maxlength="512" class="copy-value" placeholder="e.g. https://login.example.com">
+      <button type="button" class="copy-btn" data-copy-target="#p-lab-issuer" aria-label="Copy the issuer URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
     </div>
     <div class="field">
       <label for="p-lab-client-id">Client ID</label>
-      <input type="text" id="p-lab-client-id" name="client_id" value="minion-lab" autocomplete="off" spellcheck="false" required maxlength="512" placeholder="e.g. example-hub-client">
+      <div><div class="copy-field">
+      <input type="text" id="p-lab-client-id" name="client_id" value="minion-lab" autocomplete="off" spellcheck="false" required maxlength="512" class="copy-value" placeholder="e.g. example-hub-client">
+      <button type="button" class="copy-btn" data-copy-target="#p-lab-client-id" aria-label="Copy the client ID" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
     </div>
     <div class="field">
       <label for="p-lab-secret">Client secret (not set)</label>
@@ -150,11 +158,15 @@ ops</textarea>
     </div>
     <div class="field">
       <label for="new-issuer">Issuer URL</label>
-      <input type="text" id="new-issuer" name="issuer" value="" autocomplete="off" spellcheck="false" required maxlength="512" placeholder="e.g. https://login.example.com">
+      <div><div class="copy-field">
+      <input type="text" id="new-issuer" name="issuer" value="" autocomplete="off" spellcheck="false" required maxlength="512" class="copy-value" placeholder="e.g. https://login.example.com">
+      <button type="button" class="copy-btn" data-copy-target="#new-issuer" aria-label="Copy the issuer URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
     </div>
     <div class="field">
       <label for="new-client-id">Client ID</label>
-      <input type="text" id="new-client-id" name="client_id" value="" autocomplete="off" spellcheck="false" required maxlength="512" placeholder="e.g. example-hub-client">
+      <div><div class="copy-field">
+      <input type="text" id="new-client-id" name="client_id" value="" autocomplete="off" spellcheck="false" required maxlength="512" class="copy-value" placeholder="e.g. example-hub-client">
+      <button type="button" class="copy-btn" data-copy-target="#new-client-id" aria-label="Copy the client ID" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
     </div>
     <div class="field">
       <label for="new-secret">Client secret (not set)</label>

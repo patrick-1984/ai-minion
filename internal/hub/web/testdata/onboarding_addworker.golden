@@ -5,7 +5,9 @@
 <section class="panel" aria-labelledby="pair-form">
   <h2 id="pair-form">Pair with a code <button type="button" class="info-btn" popovertarget="help-pairing-code" aria-label="About pairing codes"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></h2>
   <div class="info-pop" id="help-pairing-code" popover><p>The Worker shows a code that you enter here to confirm pairing. The code is valid for 10 minutes.</p></div>
-  <p class="muted">Start pairing on the machine that should become a Worker (for example with <code>minion worker pair</code>). It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
+  <p class="muted">Start pairing on the machine that should become a Worker, for example with:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-worker-pair">minion worker pair</code><button type="button" class="copy-btn" data-copy-target="#cp-worker-pair" aria-label="Copy the command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  <p class="muted">It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
   <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="pair-code">Pairing code</label>

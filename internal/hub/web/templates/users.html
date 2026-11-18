@@ -1,7 +1,7 @@
 {{define "user_secret"}}<div class="secret" role="status">
   <p><strong>{{if .Created}}Account {{.Username}} created.{{else}}New temporary password for {{.Username}}.{{end}}</strong></p>
   <p>Temporary password (shown once, copy it now):</p>
-  <p><code id="temporary-password">{{.Password}}</code></p>
+  <div><div class="copy-field"><span class="copy-value" id="cp-temporary-password"><code id="temporary-password">{{.Password}}</code></span><button type="button" class="copy-btn" data-copy-target="#cp-temporary-password" aria-label="Copy the temporary password" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   <p class="muted">Give it to the user in person. The user must choose a new password at the first sign-in. It cannot be shown again; reset the password to get a new one.</p>
   <p><a href="/admin/users">Back to the accounts</a></p>
 </div>{{end}}
@@ -118,7 +118,7 @@
     <tbody>
     {{range .Identities}}<tr>
       <th scope="row">{{.Label}}</th>
-      <td>{{.Issuer}}</td>
+      <td><div><div class="copy-field"><code class="copy-value" id="cp-user-issuer-{{.ID}}">{{.Issuer}}</code><button type="button" class="copy-btn" data-copy-target="#cp-user-issuer-{{.ID}}" aria-label="Copy the issuer URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div></td>
       <td>{{.Subject}}</td>
       <td>{{.Email}}</td>
       <td>

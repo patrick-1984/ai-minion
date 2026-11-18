@@ -5,11 +5,15 @@
     </div>
     <div class="field">
       <label for="{{.Prefix}}-issuer">Issuer URL</label>
-      <input type="text" id="{{.Prefix}}-issuer" name="issuer" value="{{.Issuer}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if .Editable}} placeholder="e.g. https://login.example.com"{{else}} disabled{{end}}>
+      {{if .Editable}}<div><div class="copy-field">{{end}}
+      <input type="text" id="{{.Prefix}}-issuer" name="issuer" value="{{.Issuer}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if .Editable}} class="copy-value" placeholder="e.g. https://login.example.com"{{else}} disabled{{end}}>
+      {{if .Editable}}<button type="button" class="copy-btn" data-copy-target="#{{.Prefix}}-issuer" aria-label="Copy the issuer URL" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
     </div>
     <div class="field">
       <label for="{{.Prefix}}-client-id">Client ID</label>
-      <input type="text" id="{{.Prefix}}-client-id" name="client_id" value="{{.ClientID}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if .Editable}} placeholder="e.g. example-hub-client"{{else}} disabled{{end}}>
+      {{if .Editable}}<div><div class="copy-field">{{end}}
+      <input type="text" id="{{.Prefix}}-client-id" name="client_id" value="{{.ClientID}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if .Editable}} class="copy-value" placeholder="e.g. example-hub-client"{{else}} disabled{{end}}>
+      {{if .Editable}}<button type="button" class="copy-btn" data-copy-target="#{{.Prefix}}-client-id" aria-label="Copy the client ID" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
     </div>
     <div class="field">
       <label for="{{.Prefix}}-secret">Client secret ({{if .ClientSecretSet}}set{{else}}not set{{end}})</label>

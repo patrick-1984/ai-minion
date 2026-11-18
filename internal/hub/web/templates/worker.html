@@ -3,7 +3,11 @@
 <div class="inspect-main" data-modal-inert>
 {{template "inspector_kept"}}
 <div class="page-head">
-  <div><h1>{{.Data.Name}}</h1><p>A worker and its sessions. The table updates live.</p></div>
+  <div><h1>{{.Data.Name}}</h1><p>A worker and its sessions. The table updates live.</p>
+    <div><div class="copy-field"><dl class="copy-value" id="cp-worker-id-{{.Data.Worker.ID}}"><dt>Worker id</dt><dd><code>{{.Data.Worker.ID}}</code></dd></dl><button type="button" class="copy-btn" data-copy-target="#cp-worker-id-{{.Data.Worker.ID}} dd" aria-label="Copy the Worker id" title="Copy">{{template "copy-icons"}}</button></div></div>
+    <p class="muted">Check status on the Worker host:</p>
+    <div><div class="copy-field"><code class="copy-value" id="cp-worker-status">minion worker status</code><button type="button" class="copy-btn" data-copy-target="#cp-worker-status" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
+  </div>
   <div class="page-actions"><a class="btn btn-secondary" href="{{.Data.ListURL}}">All workers</a></div>
 </div>
 {{if .Data.CanFilter}}<nav aria-label="Whose workers" class="scope" id="scope-switch">

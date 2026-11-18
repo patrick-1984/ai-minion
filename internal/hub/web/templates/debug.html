@@ -2,7 +2,7 @@
 with allow_debug_remote; otherwise the panel explains how to allow it and offers nothing that would be refused. */}}
 {{define "debug_panel"}}{{range .Results}}<div class="result result-{{.Kind}}" role="status"><p class="result-title"><strong>{{.Label}}:</strong> {{.Summary}}</p></div>
 {{end}}{{if .Note}}<p class="notice notice-info" role="status" data-debug-note>{{.Note}}</p>
-{{if .Command}}<pre data-debug-command><code>{{.Command}}</code></pre>{{end}}
+{{if .Command}}<div><div class="copy-field"><pre class="copy-value" id="cp-debug-command" data-debug-command>{{.Command}}</pre><button type="button" class="copy-btn" data-copy-target="#cp-debug-command" aria-label="Copy the debug command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>{{end}}
 {{end}}{{if and .Available .Closed}}<p class="help">This worker allows remote debug. Open the panel to see whether debug logging is on and to read its recent log (the read is recorded in the audit log).</p>
 <form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
   <input type="hidden" name="action" value="logs"><input type="hidden" name="lines" value="{{.Lines}}"><button type="submit" class="btn btn-secondary" data-control="debug-open">Show debug state and recent log</button>

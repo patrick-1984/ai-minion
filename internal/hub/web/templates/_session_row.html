@@ -41,9 +41,9 @@
 
 {{/* What the person who approves a new Worker compares: its key fingerprint, the host name it announced and the address it enrolled from. */}}
 {{define "worker_pending_facts"}}<dl class="pending-facts">
-  <div><dt>Fingerprint</dt><dd>{{if .FingerprintWords}}<span class="fp-words">{{.FingerprintWords}}</span><br>{{end}}<code>{{.Fingerprint}}</code></dd></div>
+  <div><dt>Fingerprint</dt><dd>{{if .FingerprintWords}}<div><div class="copy-field" data-key="worker-copy-words-{{.ID}}"><code class="copy-value" id="cp-pending-words-{{.ID}}"><span class="fp-words">{{.FingerprintWords}}</span></code><button type="button" class="copy-btn" data-copy-target="#cp-pending-words-{{.ID}}" data-control="copy-words" aria-label="Copy the Worker fingerprint words" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}<div><div class="copy-field" data-key="worker-copy-full-{{.ID}}"><span class="copy-value" id="cp-pending-full-{{.ID}}"><code>{{.Fingerprint}}</code></span><button type="button" class="copy-btn" data-copy-target="#cp-pending-full-{{.ID}}" data-control="copy-fingerprint" aria-label="Copy the Worker fingerprint" title="Copy">{{template "copy-icons"}}</button></div></div></dd></div>
   <div><dt>Host name</dt><dd>{{.Name}}</dd></div>
-  <div><dt>Source address</dt><dd>{{if .EnrollAddr}}{{.EnrollAddr}}{{else}}<span class="muted">unknown</span>{{end}}</dd></div>
+  <div><dt>Source address</dt><dd>{{if .EnrollAddr}}<div><div class="copy-field" data-key="worker-copy-address-{{.ID}}"><code class="copy-value" id="cp-pending-address-{{.ID}}">{{.EnrollAddr}}</code><button type="button" class="copy-btn" data-copy-target="#cp-pending-address-{{.ID}}" data-control="copy-address" aria-label="Copy the source address" title="Copy">{{template "copy-icons"}}</button></div></div>{{else}}<span class="muted">unknown</span>{{end}}</dd></div>
   {{with .HubCheckText}}<div><dt>Hub check</dt><dd data-hub-check="{{$.HubCheck}}">{{if eq $.HubCheck "none"}}<span class="badge" data-tone="warning">not verified</span> {{else if eq $.HubCheck ""}}<span class="badge" data-tone="warning">unknown</span> {{end}}{{.}}</dd></div>{{end}}
 </dl>{{end}}
 

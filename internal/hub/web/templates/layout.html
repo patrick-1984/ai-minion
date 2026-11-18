@@ -60,10 +60,6 @@
   <div class="main-col">
     <header class="topbar" data-modal-inert>
       <button type="button" class="btn btn-secondary menu-btn" id="menu-button" aria-expanded="false" aria-controls="site-rail">{{template "icon" "i-menu"}}<span>Menu</span></button>
-      <nav class="crumbs" aria-label="Breadcrumb"><ol>
-        {{range .Crumbs}}<li>{{if .Path}}<a href="{{.Path}}">{{.Label}}</a>{{else}}<span aria-current="page">{{.Label}}</span>{{end}}</li>
-        {{end}}
-      </ol></nav>
       <div class="top-search" data-search>
         {{template "icon" "i-search"}}
         <input type="search" id="top-search-input" class="top-search-input" aria-autocomplete="list"
@@ -72,6 +68,10 @@
         <kbd class="top-search-kbd" aria-hidden="true">Ctrl K</kbd>
         <ul id="top-search-results" class="top-search-results" role="listbox" aria-label="Search results" hidden></ul>
       </div>
+      <nav class="crumbs" aria-label="Breadcrumb"><ol>
+        {{range .Crumbs}}<li>{{if .Path}}<a href="{{.Path}}">{{.Label}}</a>{{else}}<span aria-current="page">{{.Label}}</span>{{end}}</li>
+        {{end}}
+      </ol></nav>
       <div class="top-tools">
         <div class="theme-toggle" role="group" aria-label="Theme">
           <button type="button" class="theme-opt" data-theme-choice="system" aria-pressed="false" title="System theme">{{template "icon" "i-monitor"}}<span class="sr-only">System theme</span></button>

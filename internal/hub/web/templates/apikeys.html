@@ -3,10 +3,15 @@
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="api-key">API key</label>
-    <input type="text" id="api-key" value="{{.Key}}" readonly autocomplete="off" spellcheck="false">
-    <button type="button" data-copy="#api-key">Copy the key</button>
+    <div><div class="copy-field"><input type="text" class="copy-value" id="api-key" value="{{.Key}}" readonly autocomplete="off" spellcheck="false"><button type="button" class="copy-btn" data-copy="#api-key" data-copy-target="#api-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
-  <p class="muted">Send it to {{.Server}} as <code>Authorization: Bearer &lt;key&gt;</code>, or save it as the only line of a file and point <code>MINION_API_KEY_FILE</code> at that file (for example for <code>minion mcp</code>). It is listed afterwards as <code>{{.Hint}}</code>.</p>
+  <p class="muted">Send it to this server:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-api-server">{{.Server}}</code><button type="button" class="copy-btn" data-copy-target="#cp-api-server" aria-label="Copy the server URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  <p class="muted">Use this header, replacing &lt;key&gt; with the key:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-api-header">Authorization: Bearer &lt;key&gt;</code><button type="button" class="copy-btn" data-copy-target="#cp-api-header" aria-label="Copy the authorization header" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  <p class="muted">Or save it as the only line of a file and point <code>MINION_API_KEY_FILE</code> at that file, for example for:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-api-mcp">minion mcp</code><button type="button" class="copy-btn" data-copy-target="#cp-api-mcp" aria-label="Copy the command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  <p class="muted">It is listed afterwards as <code>{{.Hint}}</code>.</p>
   <p><a href="/api-keys">Back to the API keys</a></p>
 </div>{{end}}
 {{define "content"}}

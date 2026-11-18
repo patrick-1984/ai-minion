@@ -12,11 +12,15 @@
   </div>
   <div class="field">
     <label for="f-from">From (date or time, UTC)</label>
-    <input type="text" id="f-from" name="from" value="" autocomplete="off" placeholder="e.g. 2026-11-01">
+    
+    <input type="date" id="f-from" name="from" value="" autocomplete="off" placeholder="e.g. 2026-11-01">
+    <button type="button" class="btn btn-secondary btn-sm" data-audit-time="#f-from">Enter a date or RFC 3339 time</button>
   </div>
   <div class="field">
     <label for="f-to">To (date or time, UTC)</label>
-    <input type="text" id="f-to" name="to" value="" autocomplete="off" placeholder="e.g. 2026-11-09">
+    
+    <input type="date" id="f-to" name="to" value="" autocomplete="off" placeholder="e.g. 2026-11-09">
+    <button type="button" class="btn btn-secondary btn-sm" data-audit-time="#f-to">Enter a date or RFC 3339 time</button>
   </div>
   <div class="field">
     <label for="f-limit">Events per page</label>
@@ -32,9 +36,10 @@
   <a class="btn btn-secondary" href="/admin/audit">Clear</a></div>
 </form>
 
-<div class="table-wrap"><table>
-  <caption class="muted">Newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
-  <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Acting as</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th></tr></thead>
+<p class="muted">Sorting applies to the rows on this page.</p>
+<div class="table-wrap"><table data-sortable>
+  <caption class="muted">Initially newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
+  <thead><tr><th scope="col" data-sort="text">Time</th><th scope="col" data-sort="text">Actor</th><th scope="col" data-sort="text">Acting as</th><th scope="col" data-sort="text">Action</th><th scope="col" data-sort="text">Target</th><th scope="col" data-sort="text">Outcome</th></tr></thead>
   <tbody>
   <tr>
     <td><time datetime="2026-11-09T12:00:05.000Z">2026-11-09 12:00:05</time></td>

@@ -11,11 +11,15 @@
   </div>
   <div class="field">
     <label for="f-from">From (date or time, UTC)</label>
-    <input type="text" id="f-from" name="from" value="{{.Data.Filter.From}}" autocomplete="off" placeholder="e.g. 2026-11-01">
+    {{$dateFrom := and (not .Data.Error) (or (eq .Data.Filter.From "") (eq (len .Data.Filter.From) 10))}}
+    <input type="{{if $dateFrom}}date{{else}}text{{end}}" id="f-from" name="from" value="{{.Data.Filter.From}}" autocomplete="off" placeholder="e.g. 2026-11-01">
+    <button type="button" class="btn btn-secondary btn-sm" data-audit-time="#f-from">Enter a date or RFC 3339 time</button>
   </div>
   <div class="field">
     <label for="f-to">To (date or time, UTC)</label>
-    <input type="text" id="f-to" name="to" value="{{.Data.Filter.To}}" autocomplete="off" placeholder="e.g. 2026-11-09">
+    {{$dateTo := and (not .Data.Error) (or (eq .Data.Filter.To "") (eq (len .Data.Filter.To) 10))}}
+    <input type="{{if $dateTo}}date{{else}}text{{end}}" id="f-to" name="to" value="{{.Data.Filter.To}}" autocomplete="off" placeholder="e.g. 2026-11-09">
+    <button type="button" class="btn btn-secondary btn-sm" data-audit-time="#f-to">Enter a date or RFC 3339 time</button>
   </div>
   <div class="field">
     <label for="f-limit">Events per page</label>
@@ -28,9 +32,10 @@
   <a class="btn btn-secondary" href="/admin/audit">Clear</a></div>
 </form>
 {{if .Data.Error}}<p class="form-error" role="alert">{{.Data.Error}}</p>{{end}}
-<div class="table-wrap"><table>
-  <caption class="muted">Newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
-  <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Acting as</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th></tr></thead>
+<p class="muted">Sorting applies to the rows on this page.</p>
+<div class="table-wrap"><table data-sortable>
+  <caption class="muted">Initially newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
+  <thead><tr><th scope="col" data-sort="text">Time</th><th scope="col" data-sort="text">Actor</th><th scope="col" data-sort="text">Acting as</th><th scope="col" data-sort="text">Action</th><th scope="col" data-sort="text">Target</th><th scope="col" data-sort="text">Outcome</th></tr></thead>
   <tbody>
   {{range .Data.Events}}<tr>
     <td><time datetime="{{.TS.Time.Format "2006-01-02T15:04:05.000Z07:00"}}">{{.TS.Time.Format "2006-01-02 15:04:05"}}</time></td>

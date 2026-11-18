@@ -24,8 +24,11 @@
   </div>
   <span class="s-env"><code>MINION_LISTEN</code></span>
 </div>
+    
     <div class="s-value">
+      
       <input type="text" id="v-listen" value=":8443" disabled aria-describedby="why-listen m-listen d-listen">
+      
       
     </div>
     <div class="s-actions">
@@ -53,8 +56,11 @@
   </div>
   <span class="s-env"><code>MINION_PUBLIC_URL</code></span>
 </div>
+    
     <div class="s-value">
-      <input type="text" id="v-public_url" name="value" value="https://hub.example.com" autocomplete="off" spellcheck="false" aria-describedby="m-public_url d-public_url" placeholder="e.g. https://hub.example.com">
+      <div class="copy-field">
+      <input type="text" id="v-public_url" name="value" value="https://hub.example.com" autocomplete="off" spellcheck="false" aria-describedby="m-public_url d-public_url" placeholder="e.g. https://hub.example.com" class="copy-value">
+      <button type="button" class="copy-btn" data-copy-target="#v-public_url" aria-label="Copy public_url" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div>
     </div>
     <div class="s-actions">
       <button type="submit" name="action" value="set"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-save"/></svg><span>Save</span></button>
@@ -81,12 +87,15 @@
   </div>
   <span class="s-env"><code>MINION_TLS</code></span>
 </div>
+    
     <div class="s-value">
+      
       <select id="v-tls" name="value" aria-describedby="m-tls d-tls">
         <option value="auto" selected>auto</option>
         <option value="off">off</option>
         
       </select>
+      
       
     </div>
     <div class="s-actions">
@@ -122,8 +131,11 @@
   </div>
   <span class="s-env"><code>MINION_OIDC_CLIENT_SECRET</code> or <code>MINION_OIDC_CLIENT_SECRET_FILE</code> (a file that holds the value)</span>
 </div>
+    
     <div class="s-value">
+      
       <input type="password" id="v-oidc_client_secret" value="" disabled aria-describedby="why-oidc_client_secret m-oidc_client_secret d-oidc_client_secret">
+      
       
     </div>
     <div class="s-actions">
@@ -159,8 +171,11 @@
   </div>
   <span class="s-env"><code>MINION_DATA_DIR</code></span>
 </div>
+    
     <div class="s-value">
+      
       <input type="text" id="v-data_dir" value="/data" disabled aria-describedby="why-data_dir m-data_dir d-data_dir">
+      
       
     </div>
     <div class="s-actions">
@@ -196,9 +211,12 @@
   </div>
   <span class="s-env"><code>MINION_BACKUP_KEY</code> or <code>MINION_BACKUP_KEY_FILE</code> (a file that holds the value)</span>
 </div>
+    
     <div class="s-value">
+      
       <input type="password" id="v-backup_key" name="value" autocomplete="new-password" placeholder="not set" aria-describedby="m-backup_key d-backup_key">
       <input type="hidden" name="secret" value="1">
+      
       
     </div>
     <div class="s-actions">
@@ -226,9 +244,12 @@
   </div>
   <span class="s-env"><code>MINION_SMTP_PASSWORD</code> or <code>MINION_SMTP_PASSWORD_FILE</code> (a file that holds the value)</span>
 </div>
+    
     <div class="s-value">
+      
       <input type="password" id="v-smtp_password" name="value" autocomplete="new-password" placeholder="set" aria-describedby="m-smtp_password d-smtp_password">
       <input type="hidden" name="secret" value="1">
+      
       
     </div>
     <div class="s-actions">

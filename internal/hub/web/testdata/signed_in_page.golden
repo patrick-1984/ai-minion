@@ -102,11 +102,6 @@
   <div class="main-col">
     <header class="topbar" data-modal-inert>
       <button type="button" class="btn btn-secondary menu-btn" id="menu-button" aria-expanded="false" aria-controls="site-rail"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-menu"/></svg><span>Menu</span></button>
-      <nav class="crumbs" aria-label="Breadcrumb"><ol>
-        <li><a href="/">Control center</a></li>
-        <li><span aria-current="page">Sessions</span></li>
-        
-      </ol></nav>
       <div class="top-search" data-search>
         <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-search"/></svg>
         <input type="search" id="top-search-input" class="top-search-input" aria-autocomplete="list"
@@ -115,6 +110,11 @@
         <kbd class="top-search-kbd" aria-hidden="true">Ctrl K</kbd>
         <ul id="top-search-results" class="top-search-results" role="listbox" aria-label="Search results" hidden></ul>
       </div>
+      <nav class="crumbs" aria-label="Breadcrumb"><ol>
+        <li><a href="/">Control center</a></li>
+        <li><span aria-current="page">Sessions</span></li>
+        
+      </ol></nav>
       <div class="top-tools">
         <div class="theme-toggle" role="group" aria-label="Theme">
           <button type="button" class="theme-opt" data-theme-choice="system" aria-pressed="false" title="System theme"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-monitor"/></svg><span class="sr-only">System theme</span></button>

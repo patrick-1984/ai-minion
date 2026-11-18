@@ -10,18 +10,22 @@
 <div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
 {{if .Data.HubFull}}<section class="panel" aria-labelledby="hub-fp" data-hub-fingerprint>
   <h2 id="hub-fp">Give the Worker this Hub's fingerprint <button type="button" class="info-btn" popovertarget="help-hub-fingerprint" aria-label="About the Hub fingerprint">{{template "icon" "i-info"}}</button></h2>
-  <p>Hub fingerprint: <span class="fp-words">{{.Data.HubWords}}</span><br><code>{{.Data.HubFull}}</code></p>
+  <p>Hub fingerprint:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-add-hub-words"><span class="fp-words">{{.Data.HubWords}}</span></code><button type="button" class="copy-btn" data-copy-target="#cp-add-hub-words" aria-label="Copy the Hub fingerprint words" title="Copy">{{template "copy-icons"}}</button></div></div>
+  <div><div class="copy-field"><code class="copy-value" id="cp-add-hub-full">{{.Data.HubFull}}</code><button type="button" class="copy-btn" data-copy-target="#cp-add-hub-full" aria-label="Copy the Hub fingerprint" title="Copy">{{template "copy-icons"}}</button></div></div>
   <div class="info-pop" id="help-hub-fingerprint" popover><p>The fingerprint identifies the Hub's root key. Give it to the Worker before pairing so it accepts only this Hub.</p></div>
-  <pre id="hub-join">{{.Data.JoinCommand}}</pre>
-  <button type="button" data-copy="#hub-join">Copy the command</button>
-  <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. The command needs Worker v0.11.0 or later (an older Worker does not know --hub-fingerprint: update it first). This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead: <code>minion hub identity --words</code></p>
+  <div><div class="copy-field"><pre class="copy-value" id="hub-join">{{.Data.JoinCommand}}</pre><button type="button" class="copy-btn" data-copy="#hub-join" data-copy-target="#hub-join" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
+  <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. The command needs Worker v0.11.0 or later (an older Worker does not know --hub-fingerprint: update it first). This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-add-identity">minion hub identity --words</code><button type="button" class="copy-btn" data-copy-target="#cp-add-identity" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
   <script src="/onboarding.js" defer></script>
 </section>
 {{end}}<div class="method-grid">
 <section class="panel" aria-labelledby="pair-form">
   <h2 id="pair-form">Pair with a code <button type="button" class="info-btn" popovertarget="help-pairing-code" aria-label="About pairing codes">{{template "icon" "i-info"}}</button></h2>
   <div class="info-pop" id="help-pairing-code" popover><p>The Worker shows a code that you enter here to confirm pairing. The code is valid for 10 minutes.</p></div>
-  <p class="muted">Start pairing on the machine that should become a Worker (for example with <code>minion worker pair</code>). It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
+  <p class="muted">Start pairing on the machine that should become a Worker, for example with:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-worker-pair">minion worker pair</code><button type="button" class="copy-btn" data-copy-target="#cp-worker-pair" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
+  <p class="muted">It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
   <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="pair-code">Pairing code</label>

@@ -66,7 +66,7 @@
     <tbody>
     <tr>
       <th scope="row">Okta</th>
-      <td>https://idp.example.com</td>
+      <td><div><div class="copy-field"><code class="copy-value" id="cp-user-issuer-id-1">https://idp.example.com</code><button type="button" class="copy-btn" data-copy-target="#cp-user-issuer-id-1" aria-label="Copy the issuer URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div></td>
       <td>sub-123</td>
       <td>bob@example.com</td>
       <td>

@@ -1,6 +1,7 @@
 {{define "content"}}
 <p class="notice notice-info" role="status">Session control is now <a href="/access/control">Access &gt; Minion control</a>: master sessions and the Workers that accept control. The grants below are what the master sessions reach.</p>
-<div class="page-head"><div><h1>Session control</h1><p>A grant lets one controller session list, read and type into the sessions of other Workers through the local <code>minion</code> CLI or <code>minion mcp</code>. No session has a grant until you create one.</p></div></div>
+<div class="page-head"><div><h1>Session control</h1><p>A grant lets one controller session list, read and type into the sessions of other Workers through the local <code>minion</code> CLI or this command. No session has a grant until you create one.</p>
+<div><div class="copy-field"><code class="copy-value" id="cp-control-mcp">minion mcp</code><button type="button" class="copy-btn" data-copy-target="#cp-control-mcp" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div></div></div>
 <div class="stack">
 <section class="panel" aria-labelledby="create-grant">
   <h2 id="create-grant">Grant session control <button type="button" class="info-btn" popovertarget="help-session-control" aria-label="About session control">{{template "icon" "i-info"}}</button></h2>
