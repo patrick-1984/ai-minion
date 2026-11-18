@@ -47,7 +47,8 @@ func TestPauseResumeTwoCyclesRemoteOps(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("cycle %d: the pause did not end the Hub link", cycle)
 		}
-		if st := statusReply(t, w.client); st.Paused == nil || !*st.Paused || st.Reason != ReasonPaused {
+		// The ack comes after the connector settled as paused.
+		if st := statusReply(t, w.client); st.Paused == nil || !*st.Paused || st.State != string(ConnIdle) || st.Reason != ReasonPaused {
 			t.Fatalf("cycle %d: live status = %+v", cycle, st)
 		}
 		select {

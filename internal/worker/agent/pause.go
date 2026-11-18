@@ -82,7 +82,8 @@ type PauseService struct {
 	// set persists a state (SetPause); tests inject failures.
 	set   func(dir string, paused bool, until, now time.Time) (PauseState, error)
 	drain time.Duration
-	// connected reports whether the connector still holds a link.
+	// connected reports whether the connector has not yet settled in its
+	// paused idle state (it may still hold or build a link).
 	connected func() bool
 
 	mu        sync.Mutex

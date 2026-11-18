@@ -153,7 +153,12 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	if err := Provide(env, c); err != nil {
 		return nil, err
 	}
-	pause.connected = func() bool { return c.Status().State == ConnConnected }
+	pause.connected = func() bool {
+		// Not settled until the connector idles as paused: an attempt that
+		// was still in its handshake must not connect after the ack.
+		st := c.Status()
+		return st.State != ConnIdle || st.Reason != ReasonPaused
+	}
 	if err := Provide(env, pause); err != nil {
 		return nil, err
 	}
