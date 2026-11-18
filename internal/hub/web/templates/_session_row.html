@@ -6,11 +6,13 @@
   <td data-label="Sessions" class="num"{{if .SessionCount}} data-sort-value="{{.SessionCount}}"{{end}}>{{if .SessionCount}}<a href="{{.SessionsURL}}" data-control="sessions">{{.SessionCount}}<span class="sr-only"> sessions on {{.Name}}</span></a>{{else}}0{{end}}{{if and .Disclose .Sessions}}
     <details class="worker-sessions" data-keep-open="ws-{{.ID}}">
       <summary data-control="sessions-toggle">Show sessions<span class="sr-only"> on {{.Name}}</span></summary>
-      <ul class="worker-session-list" aria-label="Sessions on {{.Name}}">
-        {{range .Sessions}}<li data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="ws-{{.WorkerID}}-{{.Name}}"><a href="{{.Path}}" data-control="session:{{.Name}}" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}" aria-label="Open session {{.Name}} on {{.Worker}}">{{.Name}}</a> <span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></li>
-        {{end}}
-      </ul>{{if gt .SessionCount (len .Sessions)}}
-      <a class="worker-session-more" href="{{.SessionsURL}}" data-control="sessions-all">All {{.SessionCount}} sessions</a>{{end}}
+      <div class="details-body">
+        <ul class="worker-session-list" aria-label="Sessions on {{.Name}}">
+          {{range .Sessions}}<li data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="ws-{{.WorkerID}}-{{.Name}}"><a href="{{.Path}}" data-control="session:{{.Name}}" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}" aria-label="Open session {{.Name}} on {{.Worker}}">{{.Name}}</a> <span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></li>
+          {{end}}
+        </ul>{{if gt .SessionCount (len .Sessions)}}
+        <a class="worker-session-more" href="{{.SessionsURL}}" data-control="sessions-all">All {{.SessionCount}} sessions</a>{{end}}
+      </div>
     </details>{{end}}</td>
   <td data-label="Version">{{if .Build}}<span data-build="{{.Build}}">{{.Build}}</span>{{else if .Version}}<span class="muted" title="An older Worker reports only its protocol">protocol {{.Version}}</span>{{else}}<span class="muted">-</span>{{end}}{{if .UpdateTo}} <span class="update-to">→ {{.UpdateTo}}</span>{{if .UpdateURL}}
     <form method="post" action="{{.UpdateURL}}" hx-post="{{.UpdateURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update {{.Name}} from {{.Build}} to {{.UpdateTo}}? The Worker installs the signed release and restarts; tmux sessions keep running." class="row-actions">
@@ -19,8 +21,8 @@
   <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else if .Online}}{{if .NewSessionRefused}}<div class="row-actions" data-hidden-refused>
     <button type="button" class="btn btn-secondary" data-control="new-session" disabled aria-describedby="nsr-{{.ID}}">New session<span class="sr-only"> on {{.Name}} (not available)</span></button>
     <details class="note-more" data-keep-open="nsr-{{.ID}}">
-      <summary data-control="new-session-note">Why can't I start a session?</summary>
-      <p class="help" id="nsr-{{.ID}}">{{.NewSessionRefused}}</p>
+      <summary data-control="new-session-note"><span class="summary-title">Why can't I start a session?</span></summary>
+      <div class="details-body"><p class="help" id="nsr-{{.ID}}">{{.NewSessionRefused}}</p></div>
     </details>
   </div>{{else}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn btn-secondary" data-control="new-session" aria-label="New session on {{.Name}}">New session</button>
@@ -47,8 +49,8 @@
 
 {{define "worker_approval_buttons"}}{{if .ApproveURL}}<form method="post" action="{{.ApproveURL}}" hx-post="{{.ApproveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Approve worker {{.Name}} with fingerprint {{if .FingerprintWords}}{{.FingerprintWords}}{{else}}{{.Fingerprint}}{{end}} from {{.EnrollAddr}}? The Worker console shows its fingerprint in a box: compare all six words. It receives operations as soon as it is approved. Approve only a machine you started." class="row-actions" data-key="worker-approve-{{.ID}}">
     <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
-    <button type="submit" class="btn" data-control="approve" aria-label="Approve worker {{.Name}}">Approve</button>
+    <button type="submit" class="btn" data-control="approve" aria-label="Approve worker {{.Name}}">{{template "icon" "i-check"}}<span>Approve</span></button>
   </form>
   <form method="post" action="{{.RemoveURL}}" hx-post="{{.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Remove worker {{.Name}} ({{if .FingerprintWords}}{{.FingerprintWords}}{{else}}{{.Fingerprint}}{{end}})? It is told to forget this Hub and cannot connect again with its key." class="row-actions" data-key="worker-remove-{{.ID}}">
-    <button type="submit" class="btn btn-danger" data-control="remove" aria-label="Remove worker {{.Name}}">Remove</button>
+    <button type="submit" class="btn btn-danger" data-control="remove" aria-label="Remove worker {{.Name}}">{{template "icon" "i-trash"}}<span>Remove</span></button>
   </form>{{else}}<span class="muted">Waiting for approval</span>{{end}}{{end}}

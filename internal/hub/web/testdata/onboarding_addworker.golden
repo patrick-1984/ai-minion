@@ -9,7 +9,7 @@
   <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="pair-code">Pairing code</label>
-      <input type="text" id="pair-code" name="code" placeholder="MN-ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32" aria-describedby="pair-code-help">
+      <input type="text" id="pair-code" name="code" placeholder="e.g. MN-ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32" aria-describedby="pair-code-help">
       <span id="pair-code-help" class="muted">Capital or small letters, with or without hyphens.</span>
     </div>
     <div class="field">
@@ -17,7 +17,7 @@
       <input type="text" id="pair-name" name="name" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="pair-name-help" placeholder="e.g. jordan-laptop">
       <span id="pair-name-help" class="muted">Without a name, the Worker keeps the name it announces.</span>
     </div>
-    <button type="submit">Add the Worker</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Add the Worker</span></button>
     <div id="pair-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Adding a Worker needs JavaScript in this browser.</p></noscript>
@@ -25,7 +25,7 @@
 <section class="panel" aria-labelledby="invite-method">
   <h2 id="invite-method">Use an invitation</h2>
   <p class="muted">An invitation key lets a machine enroll itself, for example from a script or a Compose file. The key is shown once when you create it, together with commands to start the Worker.</p>
-  <a class="btn btn-secondary" href="/invitations">Create an invitation key</a>
+  <a class="btn btn-secondary" href="/invitations"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create an invitation key</span></a>
 </section>
 </div>
 

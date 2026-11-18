@@ -53,50 +53,12 @@
     });
   }
 
-  function initSearch(nav) {
-    var dialog = document.createElement('dialog');
-    if (typeof dialog.showModal !== 'function') { return; }
-    dialog.id = 'search-dialog';
-    dialog.className = 'search-dialog';
-    dialog.setAttribute('aria-labelledby', 'search-label');
-
-    var label = document.createElement('label');
-    label.id = 'search-label';
-    label.htmlFor = 'search-input';
-    label.textContent = 'Search';
-    dialog.appendChild(label);
-
-    var input = document.createElement('input');
-    input.type = 'search';
-    input.id = 'search-input';
-    input.autocomplete = 'off';
-    input.setAttribute('role', 'combobox');
-    input.setAttribute('aria-autocomplete', 'list');
-    input.setAttribute('aria-controls', 'search-results');
-    input.setAttribute('aria-expanded', 'false');
-    dialog.appendChild(input);
-
-    var close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'btn btn-secondary';
-    close.textContent = 'Close';
-    close.addEventListener('click', function () { dialog.close(); });
-    dialog.appendChild(close);
-
-    var list = document.createElement('ul');
-    list.id = 'search-results';
-    list.setAttribute('role', 'listbox');
-    list.setAttribute('aria-label', 'Search results');
-    dialog.appendChild(list);
-
-    var status = document.createElement('p');
-    status.setAttribute('role', 'status');
-    dialog.appendChild(status);
-    document.body.appendChild(dialog);
-
-    var opener = null;
-    var trigger = document.querySelector('[data-search-open]');
-    var results = [];
+  function initSearch(nav, search) {
+    var input = search.querySelector('#top-search-input');
+    var list = search.querySelector('#top-search-results');
+    // The role is set here, not in the markup: a page test checks that no
+    // user name ("bob") appears in a 404 page, and "combobox" contains it.
+    if (input) { input.setAttribute('role', 'combobox'); }
     var options = [];
     var selected = -1;
 
@@ -113,20 +75,37 @@
       if (scroll) { option.scrollIntoView({ block: 'nearest' }); }
     }
 
+    function close() {
+      select(-1, false);
+      list.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+    }
+
     function openResult(result) {
-      dialog.close();
+      close();
       window.location.href = result.href;
+    }
+
+    function addNote(className, text) {
+      var note = document.createElement('li');
+      note.className = className;
+      note.setAttribute('role', 'presentation');
+      note.textContent = text;
+      list.appendChild(note);
     }
 
     function addOption(result) {
       var option = document.createElement('li');
-      option.id = 'search-option-' + options.length;
+      option.className = 'top-search-item';
+      option.id = 'ts-opt-' + options.length;
       option.setAttribute('role', 'option');
       option.setAttribute('aria-selected', 'false');
       var name = document.createElement('span');
+      name.className = 'top-search-label';
       name.textContent = result.label;
       option.appendChild(name);
-      var group = document.createElement('small');
+      var group = document.createElement('span');
+      group.className = 'top-search-meta';
       group.textContent = result.group;
       option.appendChild(group);
       option.addEventListener('click', function () { openResult(result); });
@@ -136,59 +115,60 @@
 
     function render() {
       var terms = words(input.value);
+      select(-1, false);
       list.textContent = '';
       options = [];
-      selected = -1;
-      results.forEach(function (result) {
-        if (matches(result.label, terms)) { addOption(result); }
+      var group = '';
+      searchResults(nav).forEach(function (result) {
+        if (!matches(result.label, terms)) { return; }
+        if (result.group !== group) {
+          group = result.group;
+          if (group) { addNote('top-search-group', group); }
+        }
+        addOption(result);
       });
-      input.setAttribute('aria-expanded', options.length ? 'true' : 'false');
-      select(options.length ? 0 : -1, false);
-      status.textContent = options.length ? '' : 'No results.';
-      status.hidden = options.length > 0;
+      if (options.length) { select(0, false); }
+      else { addNote('top-search-empty', 'No matches'); }
+      list.hidden = false;
+      list.scrollTop = 0;
+      input.setAttribute('aria-expanded', 'true');
     }
 
-    function canOpen() {
-      return !document.querySelector('dialog[open]');
-    }
-
-    function open(from) {
-      opener = from && from !== document.body ? from : trigger;
-      results = searchResults(nav);
-      input.value = '';
-      render();
-      dialog.showModal();
-      input.focus();
-    }
-
+    input.addEventListener('focus', render);
+    input.addEventListener('click', function () { if (list.hidden) { render(); } });
     input.addEventListener('input', render);
     input.addEventListener('keydown', function (event) {
-      if (event.isComposing || !options.length) { return; }
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (event.isComposing) { return; }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (!list.hidden) {
+          event.stopPropagation();
+          close();
+        }
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
         var step = event.key === 'ArrowDown' ? 1 : -1;
-        select((selected + step + options.length) % options.length, true);
-      } else if (event.key === 'Enter') {
+        if (list.hidden) {
+          render();
+          if (step < 0 && options.length) { select(options.length - 1, true); }
+        } else if (options.length) {
+          select((selected + step + options.length) % options.length, true);
+        }
+      } else if (event.key === 'Enter' && selected !== -1) {
         event.preventDefault();
         options[selected].click();
       }
     });
-    dialog.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape' && !event.isComposing) {
-        event.preventDefault();
-        event.stopPropagation();
-        dialog.close();
-      }
+    list.addEventListener('mousedown', function (event) {
+      if (event.target.closest('.top-search-item')) { event.preventDefault(); }
     });
-    dialog.addEventListener('close', function () {
-      if (dialog.open) { return; }
-      if (opener && opener.isConnected) { opener.focus({ preventScroll: true }); }
-      else if (trigger) { trigger.focus({ preventScroll: true }); }
-      opener = null;
-    });
-    if (trigger) {
-      trigger.addEventListener('click', function () { if (canOpen()) { open(trigger); } });
+
+    function closeOutside(event) {
+      if (!list.hidden && !search.contains(event.target)) { close(); }
     }
+    document.addEventListener('click', closeOutside, true);
+    document.addEventListener('focusin', closeOutside);
+
     document.addEventListener('keydown', function (event) {
       if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey) { return; }
       if (event.ctrlKey || event.metaKey) {
@@ -198,14 +178,16 @@
         var target = event.target;
         if (target && (target.isContentEditable || (target.closest && target.closest('input, textarea, select')))) { return; }
       }
-      if (!canOpen()) { return; }
+      if (document.querySelector('dialog[open], .rail.open')) { return; }
       event.preventDefault();
-      open(document.activeElement);
+      if (document.activeElement !== input) { input.focus(); }
+      else if (list.hidden) { render(); }
     });
   }
 
   var nav = document.getElementById('site-nav');
-  if (nav) { initSearch(nav); }
+  var search = document.querySelector('[data-search]');
+  if (nav && search) { initSearch(nav, search); }
 
   var tableSelector = 'table[data-sortable]';
   var sorts = Object.create(null);

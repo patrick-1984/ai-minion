@@ -39,7 +39,7 @@
       {{end}}
     </fieldset>
     {{if .Data.Note}}<p class="muted">{{.Data.Note}}</p>{{end}}
-    <button type="submit">Save the grant</button>
+    <button type="submit">{{template "icon" "i-save"}}<span>Save the grant</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Granting session control needs JavaScript in this browser.</p></noscript>
@@ -56,7 +56,7 @@
       <td><form method="post" hx-post="/admin/session-control/remove" hx-target="#remove-{{$i}}" hx-swap="innerHTML" hx-confirm="Remove this grant? The controller session loses access on its next call." hx-disabled-elt="find button">
           <input type="hidden" name="worker" value="{{$g.WorkerID}}">
           <input type="hidden" name="session" value="{{$g.SessionName}}">
-          <button type="submit" class="btn-danger">Remove {{$g.Controller}}</button>
+          <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Remove {{$g.Controller}}</span></button>
           <span id="remove-{{$i}}" aria-live="polite"></span>
         </form></td>
     </tr>

@@ -13,8 +13,7 @@
 <div class="page-head"><div><h1>API keys</h1><p>An API key lets a tool or script use the Hub on your behalf, limited to what you choose here. A key can never do more than you can.</p></div></div>
 <div class="stack">
 <section class="panel" aria-labelledby="create-apikey">
-  <h2 id="create-apikey">Create an API key</h2>
-  <p class="muted">Key scopes <button type="button" class="info-btn" popovertarget="help-api-key-scopes" aria-label="About API key scopes">{{template "icon" "i-info"}}</button></p>
+  <h2 id="create-apikey">Create an API key <button type="button" class="info-btn" popovertarget="help-api-key-scopes" aria-label="About API key scopes">{{template "icon" "i-info"}}</button></h2>
   <div class="info-pop" id="help-api-key-scopes" popover><p>A scope says what the key can reach and which actions it can take there. Choose only what the tool needs.</p></div>
   <form method="post" hx-post="/api-keys" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
@@ -53,7 +52,7 @@
         {{end}}
       </select>
     </div>
-    <button type="submit">Create the key</button>
+    <button type="submit">{{template "icon" "i-plus"}}<span>Create the key</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
@@ -71,7 +70,7 @@
       <td>{{.LastUsed}}</td>
       <td>{{.State}}</td>
       <td>{{if .CanRevoke}}<form method="post" hx-post="/api-keys/{{.ID}}/revoke" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger">Revoke {{.Name}}</button>
+          <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Revoke {{.Name}}</span></button>
           <span id="revoke-{{.ID}}" aria-live="polite"></span>
         </form>{{else}}<span class="muted">none</span>{{end}}</td>
     </tr>

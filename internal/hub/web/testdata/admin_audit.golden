@@ -12,11 +12,11 @@
   </div>
   <div class="field">
     <label for="f-from">From (date or time, UTC)</label>
-    <input type="text" id="f-from" name="from" value="" autocomplete="off" placeholder="2026-11-01">
+    <input type="text" id="f-from" name="from" value="" autocomplete="off" placeholder="e.g. 2026-11-01">
   </div>
   <div class="field">
     <label for="f-to">To (date or time, UTC)</label>
-    <input type="text" id="f-to" name="to" value="" autocomplete="off" placeholder="2026-11-09">
+    <input type="text" id="f-to" name="to" value="" autocomplete="off" placeholder="e.g. 2026-11-09">
   </div>
   <div class="field">
     <label for="f-limit">Events per page</label>

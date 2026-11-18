@@ -1,6 +1,6 @@
 <main id="content" tabindex="-1">
 
-<div class="page-head"><div><h1>Identity &amp; sign-in</h1><p>OpenID Connect (OIDC) <button type="button" class="info-btn" popovertarget="help-oidc" aria-label="About OpenID Connect"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button> lets people sign in with your identity provider. A provider that the environment or the settings describe is read-only here.</p>
+<div class="page-head"><div><h1>Identity &amp; sign-in <button type="button" class="info-btn" popovertarget="help-oidc" aria-label="About OpenID Connect"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></h1><p>OpenID Connect (OIDC) lets people sign in with your identity provider. A provider that the environment or the settings describe is read-only here.</p>
   <div class="info-pop" id="help-oidc" popover><p>Register the Hub with your identity provider as a client. The provider signs an ID token, and the Hub reads a claim in that token to decide which role to grant.</p></div>
 </div></div>
 
@@ -81,7 +81,7 @@
     </div>
     <div class="field">
       <label for="p-lab-issuer">Issuer URL</label>
-      <input type="text" id="p-lab-issuer" name="issuer" value="https://kc.lab.example.com/realms/lab" autocomplete="off" spellcheck="false" required maxlength="512" placeholder="https://login.example.com">
+      <input type="text" id="p-lab-issuer" name="issuer" value="https://kc.lab.example.com/realms/lab" autocomplete="off" spellcheck="false" required maxlength="512" placeholder="e.g. https://login.example.com">
     </div>
     <div class="field">
       <label for="p-lab-client-id">Client ID</label>
@@ -110,7 +110,7 @@
       <label><input type="checkbox" name="enabled" value="1" checked> Enabled</label>
     </div>
 
-    <button type="submit">Save the provider</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-save"/></svg><span>Save the provider</span></button>
     <div id="save-lab" aria-live="polite"></div>
   </form>
   <h3>Role rules</h3>
@@ -125,12 +125,12 @@ ops</textarea>
       <label for="lab-user-values">Values that give the user role</label>
       <textarea id="lab-user-values" name="user_values" rows="3" spellcheck="false">dev</textarea>
     </div>
-    <button type="submit">Save the role rules</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-save"/></svg><span>Save the role rules</span></button>
     <div id="roles-lab" aria-live="polite"></div>
   </form>
   
   <form method="post" hx-post="/admin/oidc/providers/lab/delete" hx-target="#delete-lab" hx-swap="innerHTML" hx-confirm="Delete this provider? People can no longer sign in with it." hx-disabled-elt="find button">
-    <button type="submit" class="btn-danger">Delete the provider</button>
+    <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Delete the provider</span></button>
     <div id="delete-lab" aria-live="polite"></div>
   </form>
   
@@ -150,7 +150,7 @@ ops</textarea>
     </div>
     <div class="field">
       <label for="new-issuer">Issuer URL</label>
-      <input type="text" id="new-issuer" name="issuer" value="" autocomplete="off" spellcheck="false" required maxlength="512" placeholder="https://login.example.com">
+      <input type="text" id="new-issuer" name="issuer" value="" autocomplete="off" spellcheck="false" required maxlength="512" placeholder="e.g. https://login.example.com">
     </div>
     <div class="field">
       <label for="new-client-id">Client ID</label>
@@ -179,7 +179,7 @@ ops</textarea>
       <label><input type="checkbox" name="enabled" value="1" checked> Enabled</label>
     </div>
 
-    <button type="submit">Add the provider</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Add the provider</span></button>
     <div id="save-new" aria-live="polite"></div>
   </form>
 </section>

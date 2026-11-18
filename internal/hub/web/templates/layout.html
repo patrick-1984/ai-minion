@@ -8,8 +8,8 @@
 {{end}}<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/minion.css">
 <script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/minion.css">
 <script src="/static/htmx.min.js" defer></script>
 <script src="/static/sse.js" defer></script>
 <script src="/static/forms.js" defer></script>
@@ -64,8 +64,15 @@
         {{range .Crumbs}}<li>{{if .Path}}<a href="{{.Path}}">{{.Label}}</a>{{else}}<span aria-current="page">{{.Label}}</span>{{end}}</li>
         {{end}}
       </ol></nav>
+      <div class="top-search" data-search>
+        {{template "icon" "i-search"}}
+        <input type="search" id="top-search-input" class="top-search-input" aria-autocomplete="list"
+               aria-expanded="false" aria-controls="top-search-results" aria-label="Search pages and sections"
+               aria-keyshortcuts="Control+K Meta+K /" placeholder="Search pages and sections" autocomplete="off">
+        <kbd class="top-search-kbd" aria-hidden="true">Ctrl K</kbd>
+        <ul id="top-search-results" class="top-search-results" role="listbox" aria-label="Search results" hidden></ul>
+      </div>
       <div class="top-tools">
-        <button type="button" class="search-btn" data-search-open aria-haspopup="dialog">{{template "icon" "i-search"}}<span>Search</span><kbd>Ctrl K</kbd></button>
         <div class="theme-toggle" role="group" aria-label="Theme">
           <button type="button" class="theme-opt" data-theme-choice="system" aria-pressed="false" title="System theme">{{template "icon" "i-monitor"}}<span class="sr-only">System theme</span></button>
           <button type="button" class="theme-opt" data-theme-choice="light" aria-pressed="false" title="Light theme">{{template "icon" "i-sun"}}<span class="sr-only">Light theme</span></button>

@@ -73,17 +73,20 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
   {{if and .Operate .Worker.NewSessionRefused}}<div class="row-actions" data-key="worker-actions-{{.Worker.ID}}" data-hidden-refused>
     <button type="button" class="btn" data-control="new-session" disabled aria-describedby="nsr-{{.Worker.ID}}">New session<span class="sr-only"> on {{.Worker.Name}} (not available)</span></button>
     <details class="note-more" data-keep-open="nsr-{{.Worker.ID}}">
-      <summary data-control="new-session-note">Why can't I start a session?</summary>
-      <p class="help" id="nsr-{{.Worker.ID}}">{{.Worker.NewSessionRefused}}</p>
+      <summary data-control="new-session-note"><span class="summary-title">Why can't I start a session?</span></summary>
+      <div class="details-body"><p class="help" id="nsr-{{.Worker.ID}}">{{.Worker.NewSessionRefused}}</p></div>
     </details>
   </div>{{else if .Operate}}<form method="post" action="{{.Worker.NewURL}}" hx-post="{{.Worker.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions" data-key="worker-actions-{{.Worker.ID}}">
     <button type="submit" class="btn" data-control="new-session" aria-label="New session on {{.Worker.Name}}">New session</button>
   </form>{{end}}
-  {{if and .Worker.RemoveURL (not .Worker.Pending)}}<details class="forget-worker" data-key="worker-forget-{{.Worker.ID}}" data-keep-open="worker-forget-{{.Worker.ID}}"><summary>Forget this Worker</summary>
-    <p class="help">The Hub removes it: the Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again to come back, under a new code. Keys bound to it and its control settings go with it.</p>
-    <form method="post" action="{{.Worker.RemoveURL}}" hx-post="{{.Worker.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Worker.Name}}? It must be paired again to connect to this Hub." class="row-actions">
-      <button type="submit" class="btn btn-danger" data-control="forget" aria-label="Forget worker {{.Worker.Name}}">Forget (remove) this Worker</button>
-    </form>
+  {{if and .Worker.RemoveURL (not .Worker.Pending)}}<details class="forget-worker" data-key="worker-forget-{{.Worker.ID}}" data-keep-open="worker-forget-{{.Worker.ID}}">
+    <summary><span class="summary-title">Forget this Worker</span> <span class="summary-meta">Re-pair to reconnect</span></summary>
+    <div class="details-body">
+      <p class="help">The Hub removes it: the Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again to come back, under a new code. Keys bound to it and its control settings go with it.</p>
+      <form method="post" action="{{.Worker.RemoveURL}}" hx-post="{{.Worker.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Worker.Name}}? It must be paired again to connect to this Hub." class="row-actions">
+        <button type="submit" class="btn btn-danger" data-control="forget" aria-label="Forget worker {{.Worker.Name}}">{{template "icon" "i-trash"}}<span>Forget (remove) this Worker</span></button>
+      </form>
+    </div>
   </details>{{end}}
 </section>
 <section aria-labelledby="worker-sessions-h">

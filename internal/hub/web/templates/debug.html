@@ -24,7 +24,7 @@ with allow_debug_remote; otherwise the panel explains how to allow it and offers
 <div class="section-head"><h3 id="debug-log-h">Recent log</h3>
   <form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#debug-panel" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <input type="hidden" name="action" value="logs"><label>Lines <select name="lines">{{$n := .Lines}}{{range .Choices}}<option value="{{.}}"{{if eq . $n}} selected{{end}}>{{.}}</option>{{end}}</select></label>
-    <button type="submit" class="btn btn-secondary" data-control="debug-refresh">Refresh</button>
+    <button type="submit" class="btn btn-secondary" data-control="debug-refresh"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-refresh"/></svg><span>Refresh</span></button>
   </form>
 </div>
 {{if .LogError}}<p class="notice notice-danger" role="status" data-debug-log-error>{{.LogError}}</p>

@@ -3,8 +3,7 @@
 <div class="page-head"><div><h1>API keys</h1><p>An API key lets a tool or script use the Hub on your behalf, limited to what you choose here. A key can never do more than you can.</p></div></div>
 <div class="stack">
 <section class="panel" aria-labelledby="create-apikey">
-  <h2 id="create-apikey">Create an API key</h2>
-  <p class="muted">Key scopes <button type="button" class="info-btn" popovertarget="help-api-key-scopes" aria-label="About API key scopes"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></p>
+  <h2 id="create-apikey">Create an API key <button type="button" class="info-btn" popovertarget="help-api-key-scopes" aria-label="About API key scopes"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></h2>
   <div class="info-pop" id="help-api-key-scopes" popover><p>A scope says what the key can reach and which actions it can take there. Choose only what the tool needs.</p></div>
   <form method="post" hx-post="/api-keys" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
@@ -50,7 +49,7 @@
         
       </select>
     </div>
-    <button type="submit">Create the key</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create the key</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
@@ -68,7 +67,7 @@
       <td>2026-11-09 07:30 UTC</td>
       <td>active</td>
       <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger">Revoke ci</button>
+          <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke ci</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" aria-live="polite"></span>
         </form></td>
     </tr>
@@ -80,7 +79,7 @@
       <td>never used</td>
       <td>active</td>
       <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger">Revoke mcp</button>
+          <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke mcp</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" aria-live="polite"></span>
         </form></td>
     </tr>

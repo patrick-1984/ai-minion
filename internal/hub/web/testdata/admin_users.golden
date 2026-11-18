@@ -12,7 +12,7 @@
     </div>
     <div class="field">
       <label for="new-email">E-mail (optional)</label>
-      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254" placeholder="name@example.com">
+      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254" placeholder="e.g. name@example.com">
     </div>
     <div class="field">
       <label for="new-role">Role</label>
@@ -21,7 +21,7 @@
         <option value="admin">admin</option>
       </select>
     </div>
-    <button type="submit">Create user</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create user</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating users needs JavaScript in this browser.</p></noscript>

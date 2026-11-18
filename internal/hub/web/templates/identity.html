@@ -1,5 +1,5 @@
 {{define "content"}}
-<div class="page-head"><div><h1>Hub identity</h1><p>The key that Workers pin and the certificate that proves this Hub to them. <button type="button" class="info-btn" popovertarget="help-hub-identity" aria-label="About Hub identity">{{template "icon" "i-info"}}</button> Every change asks for the Hub passphrase and a sign-in from the last five minutes. The passphrase is never shown again and never stored.</p>
+<div class="page-head"><div><div class="row"><h1>Hub identity</h1> <button type="button" class="info-btn" popovertarget="help-hub-identity" aria-label="About Hub identity">{{template "icon" "i-info"}}</button></div><p>The key that Workers pin and the certificate that proves this Hub to them. Every change asks for the Hub passphrase and a sign-in from the last five minutes. The passphrase is never shown again and never stored.</p>
   <div class="info-pop" id="help-hub-identity" popover><p>Workers remember the Hub's root key when they join. The Hub uses a certificate signed by that key to prove its identity on later connections.</p></div>
 </div></div>
 <div class="stack" id="identity-page" data-state="{{.Data.Status.State}}">
@@ -27,14 +27,14 @@
   <p id="id-fresh" data-fresh="{{if .Data.Fresh}}1{{else}}0{{end}}" data-until="{{if .Data.Fresh}}{{.Data.FreshUntil.Unix}}{{end}}">{{if .Data.Fresh}}Your sign-in is fresh until {{.Data.FreshUntil.Format "15:04:05 UTC"}}.{{else}}Changes need a sign-in from the last five minutes.{{end}}</p>
   {{if eq .Data.Method "oidc"}}
   <form id="id-reauth-oidc" data-reauth="oidc" method="post">
-    <button type="submit">Sign in again with the identity provider</button>
+    <button type="submit">{{template "icon" "i-login"}}<span>Sign in again with the identity provider</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
   </form>
   {{else}}
   <form id="id-reauth-local" data-reauth="local" method="post" autocomplete="off">
     <div class="field"><label for="id-reauth-pw">Your account password</label>
     <input type="password" id="id-reauth-pw" name="password" autocomplete="current-password" required></div>
-    <button type="submit">Confirm</button>
+    <button type="submit">{{template "icon" "i-check"}}<span>Confirm</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
   </form>
   {{end}}
@@ -50,7 +50,7 @@
   <form data-identity-op="hub_identity_set_passphrase" method="post" autocomplete="off">
     <div class="field"><label for="set-pass">New passphrase</label><input type="password" id="set-pass" data-count-passphrase name="passphrase" autocomplete="new-password" required></div>
     <div class="field"><label for="set-conf">Repeat the passphrase</label><input type="password" id="set-conf" name="confirm" autocomplete="new-password" required></div>
-    <button type="submit">Set passphrase</button>
+    <button type="submit">{{template "icon" "i-lock"}}<span>Set passphrase</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
     {{template "proxy-confirm"}}
   </form>
@@ -64,10 +64,13 @@
   <form data-identity-op="hub_identity_reissue" method="post" autocomplete="off">
     <div class="field"><label for="re-pass">Passphrase</label><input type="password" id="re-pass" name="passphrase" autocomplete="current-password" required></div>
     <div class="field"><label for="re-days">Validity in days (1 to 3650)</label><input type="number" id="re-days" name="validity_days" min="1" max="3650" value="3650" inputmode="numeric"></div>
-    <details><summary>Advanced: certificate serial floor</summary>
-      <div class="field"><label for="re-floor">Serial floor (the new serial is greater)</label><input type="number" id="re-floor" name="serial_floor" min="0" inputmode="numeric"></div>
+    <details>
+      <summary><span class="summary-title">Certificate serial floor</span> <span class="summary-meta">Advanced</span></summary>
+      <div class="details-body">
+        <div class="field"><label for="re-floor">Serial floor (the new serial is greater)</label><input type="number" id="re-floor" name="serial_floor" min="0" inputmode="numeric"></div>
+      </div>
     </details>
-    <button type="submit">Re-issue certificate</button>
+    <button type="submit">{{template "icon" "i-refresh"}}<span>Re-issue certificate</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
     {{template "proxy-confirm"}}
   </form>
@@ -84,7 +87,7 @@
     <div class="field"><label for="ro-new">New passphrase</label><input type="password" id="ro-new" data-count-passphrase name="new_passphrase" autocomplete="new-password" required></div>
     <div class="field"><label for="ro-conf">Repeat the new passphrase</label><input type="password" id="ro-conf" name="confirm" autocomplete="new-password" required></div>
     <div class="field"><label for="ro-word">Type ROTATE to confirm</label><input type="text" id="ro-word" name="word" autocomplete="off" autocapitalize="characters" spellcheck="false" required></div>
-    <button type="submit">Rotate master key</button>
+    <button type="submit">{{template "icon" "i-rotate"}}<span>Rotate master key</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
     {{template "proxy-confirm"}}
   </form>
@@ -100,7 +103,7 @@
     <div class="field"><label for="ch-pass">Current passphrase</label><input type="password" id="ch-pass" name="passphrase" autocomplete="current-password" required></div>
     <div class="field"><label for="ch-new">New passphrase</label><input type="password" id="ch-new" data-count-passphrase name="new_passphrase" autocomplete="new-password" required></div>
     <div class="field"><label for="ch-conf">Repeat the new passphrase</label><input type="password" id="ch-conf" name="confirm" autocomplete="new-password" required></div>
-    <button type="submit">Change passphrase</button>
+    <button type="submit">{{template "icon" "i-lock"}}<span>Change passphrase</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
     {{template "proxy-confirm"}}
   </form>

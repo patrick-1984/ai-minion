@@ -7,8 +7,8 @@
 <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/minion.css">
 <script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/minion.css">
 <script src="/static/htmx.min.js" defer></script>
 <script src="/static/sse.js" defer></script>
 <script src="/static/forms.js" defer></script>
@@ -38,7 +38,7 @@
       <label for="password">Password</label>
       <input type="password" id="password" name="password" autocomplete="current-password" required>
     </div>
-    <button type="submit">Sign in</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-login"/></svg><span>Sign in</span></button>
   </form>
   
   <noscript><p class="muted">Signing in needs JavaScript in this browser.</p></noscript>
