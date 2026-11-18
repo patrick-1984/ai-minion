@@ -10,10 +10,10 @@ The example [`deploy/compose/hub.yaml`](../../deploy/compose/hub.yaml) runs the 
 
 | Tag | Meaning |
 | --- | --- |
-| `v0.12.0` | exactly that release |
+| `v0.13.0` | exactly that release |
 | `0.8`, `0`, `latest` | channels that follow the newest matching release; they move when a new release is published |
 
-Use an exact tag for a Hub you do not want to change under you. The compose file reads `MINION_VERSION` (default `v0.12.0`).
+Use an exact tag for a Hub you do not want to change under you. The compose file reads `MINION_VERSION` (default `v0.13.0`).
 
 ## Prepare and start
 
@@ -83,7 +83,7 @@ With an exact tag, change `MINION_VERSION` (an environment variable or a `.env` 
 From 0.9.0 an administrator can update the Hub from **Administration > Updates** (the left rail shows `vX → vY` when a newer release exists in the channel `update_channel`). It needs the Docker socket and a channel tag, both given by the overlay [`deploy/compose/hub.self-update.yaml`](../../deploy/compose/hub.self-update.yaml):
 
 ```sh
-echo "MINION_TAG=0.12" >> .env                      # 0.12, 0 or latest; not an exact vX.Y.Z
+echo "MINION_TAG=0.13" >> .env                     # 0.13, 0 or latest; not an exact vX.Y.Z
 echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
 docker compose -f hub.yaml -f hub.self-update.yaml up -d
 ```
@@ -102,7 +102,7 @@ Without the socket or with an exact tag the page shows the commands of the previ
 Protocol 3.0 needs the Hub and all Workers upgraded together, and the upgraded Hub **does not serve any Worker until you have set the passphrase**. Do these steps in this order:
 
 1. **Take an encrypted backup** of the 0.6 Hub ([backup and restore](../guides/backup-restore.md)). There is no database downgrade; the backup is the way back.
-2. **Upgrade the Hub**: set `MINION_VERSION` to `v0.12.0` (or pull a channel tag) and run `docker compose -f hub.yaml up -d`. The Hub migrates its database and keeps the 0.6 identity key as the root, in the state B1: the fingerprint, the pairings and the `mnk_` invitation keys stay valid, but no Worker can connect yet. The web UI works and shows the banner "Set the Hub passphrase".
+2. **Upgrade the Hub**: set `MINION_VERSION` to `v0.13.0` (or pull a channel tag) and run `docker compose -f hub.yaml up -d`. The Hub migrates its database and keeps the 0.6 identity key as the root, in the state B1: the fingerprint, the pairings and the `mnk_` invitation keys stay valid, but no Worker can connect yet. The web UI works and shows the banner "Set the Hub passphrase".
 3. **Set the passphrase**: use the banner, or `docker compose -f hub.yaml exec hub minion hub identity set-passphrase` as in step 5 above. The Hub seals the key into `root.key.age`, removes the plain `identity.key` and issues the first certificate (3650 days from 0.8.2 on, 180 days before). From now on Workers of the same release can connect; Workers older than 0.8.2 refuse a certificate longer than 400 days, so upgrade them (step 4) before they connect to a 0.8.2 Hub.
 4. **Upgrade the Workers** ([Linux](worker-linux.md), [Docker](worker-docker.md)). A Worker that was updated earlier reports `proto_incompatible` and retries until the Hub is upgraded; it connects by itself once the passphrase is set. `minion update` does not check protocol compatibility on a 0.6 Worker unless you give `--hub-proto-range` ([security](../security.md#updates)), so follow this order yourself.
 5. **Optional, recommended: rotate the master key** once the Workers have connected (`docker compose -f hub.yaml exec hub minion hub identity rotate-master`, or the page). Your pre-0.7 backups still hold the old key in plain form. A rotation revokes all unused invitation keys and cannot undo a theft that happened earlier.

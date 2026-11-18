@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.13.0
+
+Released 2026-11-18.
+
+### Changed
+
+- **New look of the Hub web UI ("Console").** Light and dark themes with an emerald accent for primary actions and live states, status colours by meaning (green online/live, amber working or waiting, red errors, grey idle or offline), a distinct icon per navigation item, sidebar groups, a sticky top bar, a mobile layout, and a new logo and favicon. The theme switch is three icon buttons (System, Light, Dark) instead of a list. Every menu item, page, form and action of v0.12.0 is kept; the checklist used to verify this is [the Hub UI map](docs/architecture/hub-ui-map.md).
+- **Easier to use, all in the browser:** a page and section search in the top bar; sortable table headers that keep their order across live updates (also remembered per tab); a click anywhere on a Worker row opens the Worker (Ctrl/Cmd or middle click: new tab); help popovers next to headings and fields; copy buttons beside commands, fingerprints, keys and URLs; local filters with removable chips on Users, API keys and Invitations; relative times with the exact time on hover; Hub settings mark unsaved rows, offer Reset and warn before leaving with unsaved changes; password show/hide and a match hint; busy labels on buttons while a request runs; empty states that name the next step. Audit sorts the rows of the current page and its date fields use date pickers (same field names and formats).
+- **Removing a stored secret in Hub settings asks first** (for example the OIDC client secret); Save and Remove of the same secret cannot run at once.
+
 ## v0.12.0
 
 Released 2026-11-18.
