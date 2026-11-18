@@ -20,7 +20,7 @@
 
 
 <header class="topbar anon">
-  <a class="brand" href="/"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="8" fill="#285bc5"/><path d="M8 23V10l8 8 8-8v13" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><rect x="20" y="22" width="5" height="2.5" rx="1" fill="#98b9ff"/></svg><span>Minion</span></a>
+  <a class="brand" href="/"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><mask id="mn-cut"><rect width="32" height="32" fill="#fff"/><path d="M10 3L16 11.2L22 3Z" fill="#000"/><circle cx="16" cy="17" r="3.3" fill="#000"/><path d="M13.8 21.4L9 16.9M18.2 21.4L23 16.9" stroke="#000" stroke-width="2" stroke-linecap="round" fill="none"/><path d="M13.3 21H18.7Q19.6 22.6 19.6 24.6V31H12.4V24.6Q12.4 22.6 13.3 21Z" fill="#000"/></mask><rect x="2" y="4.5" width="28" height="24.9" rx="2" fill="#10b981" mask="url(#mn-cut)"/></svg><span>Minion</span></a>
 </header>
 <div id="banner-slot"></div>
 <div id="flash-area" aria-live="polite"></div>
