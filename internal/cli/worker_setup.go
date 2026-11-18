@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -183,8 +184,17 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, stat
 	// Root never opens the state of another user: that directory is theirs
 	// and may hold links. For them only the settings count.
 	needed, err := d.setupNeeded(ctx, res, core.StateDir, owner == "")
-	if err != nil || !needed {
+	if err != nil {
 		return err
+	}
+	if !needed {
+		// The sharing choice is given (--share-existing, for example), so
+		// the wizard does not run; a first pairing on a terminal still asks
+		// for the Hub fingerprint before anything dials.
+		if owner != "" {
+			return nil
+		}
+		return d.fingerprintGate(cmd, res, core.StateDir)
 	}
 	switch {
 	case owner != "":
@@ -196,6 +206,70 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, stat
 	}
 	_, err = d.runWizard(cmd, res, core, false)
 	return err
+}
+
+// fingerprintGate asks for the expected Hub fingerprint (M1) when "worker up"
+// on a terminal is about to pair for the first time without the wizard: a Hub
+// address is set, no hub_fingerprint and no invitation key are given, and the
+// Worker is not enrolled. It runs before any network probe. A fingerprint
+// typed here is saved as hub_fingerprint in the config file, so the Worker
+// that starts next pairs only with that Hub; "skip" pairs as before (the
+// Worker warns that the Hub is not verified). Without a terminal nothing is
+// asked and the Worker warns.
+func (d workerSetupDeps) fingerprintGate(cmd *cobra.Command, res *config.Resolver, stateDir string) error {
+	hub, err := config.ResolveWorkerHub(res)
+	if err != nil {
+		return err
+	}
+	if hub.Server == "" || strings.TrimSpace(hub.Fingerprint) != "" {
+		return nil
+	}
+	if given, _, err := config.InviteKeyGiven(res); err != nil || given {
+		return err
+	}
+	in, out := cmd.InOrStdin(), cmd.OutOrStdout()
+	if !d.isInteractive(in, out) {
+		return nil
+	}
+	ctx := cmdContext(cmd)
+	if enrolled, err := enrolledReadOnly(ctx, stateDir); err != nil || enrolled {
+		return err
+	}
+	m, err := agent.AskHubFingerprint(in, out, hub.Server)
+	if err != nil {
+		return fmt.Errorf("nothing was started: %w", err)
+	}
+	if m.IsZero() {
+		return nil
+	}
+	path, err := writeWorkerSettings(stateDir, map[string]string{config.KeyHubFingerprint: m.String()})
+	if err != nil {
+		return fmt.Errorf("cannot save %s, nothing was started: %w", config.KeyHubFingerprint, err)
+	}
+	_, _ = fmt.Fprintf(out, "Saved %s in %s; the Worker pairs only with that Hub.\n", config.KeyHubFingerprint, path)
+	return nil
+}
+
+// enrolledReadOnly reports whether the Worker state in stateDir holds an
+// enrollment. It never creates or migrates the database: a missing one is
+// "not enrolled".
+func enrolledReadOnly(ctx context.Context, stateDir string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(stateDir, store.DBFile)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("look at the Worker state in %s: %w", stateDir, err)
+	}
+	st, err := store.OpenReadOnlyContext(ctx, stateDir)
+	if err != nil {
+		return false, fmt.Errorf("open the Worker state in %s: %w", stateDir, err)
+	}
+	defer func() { _ = st.Close() }()
+	ok, err := st.HasEnrollment(ctx)
+	if err != nil && strings.Contains(err.Error(), "no such table") {
+		return false, nil // a state of a release before pairing
+	}
+	return ok, err
 }
 
 // setupNeeded reports whether the Worker has no sharing choice yet.
@@ -214,6 +288,17 @@ func (d workerSetupDeps) setupNeeded(ctx context.Context, res *config.Resolver, 
 			return true, nil
 		}
 		return false, fmt.Errorf("look at the Worker state in %s: %w", stateDir, err)
+	}
+	// Read-only first: a wizard that follows and is cancelled must leave the
+	// state unmigrated. A state that cannot be read so is opened as before.
+	if d.openStore == nil {
+		if ro, err := store.OpenReadOnlyContext(ctx, stateDir); err == nil {
+			sel, err := ro.LoadShareContext(ctx)
+			_ = ro.Close()
+			if err == nil {
+				return !sel.Configured, nil
+			}
+		}
 	}
 	st, err := d.open(ctx, stateDir)
 	if err != nil {
@@ -258,13 +343,9 @@ func (d workerSetupDeps) runWizard(cmd *cobra.Command, res *config.Resolver, cor
 	ctx, stop := signal.NotifyContext(cmdContext(cmd), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := os.MkdirAll(core.StateDir, 0o700); err != nil {
-		return setup.Result{}, fmt.Errorf("cannot create the state directory %q: %w", core.StateDir, err)
-	}
-	st, err := d.open(ctx, core.StateDir)
-	if err != nil {
-		return setup.Result{}, fmt.Errorf("open the Worker state in %s: %w", core.StateDir, err)
-	}
+	// The state is opened for writing (and migrated) only when the wizard
+	// saves or pairs: a wizard cancelled before changes nothing on disk.
+	st := &lazySetupStore{dir: core.StateDir, open: d.open}
 	defer func() { _ = st.Close() }()
 
 	checker, err := d.hubChecker(hub)

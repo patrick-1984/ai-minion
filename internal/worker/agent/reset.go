@@ -238,9 +238,6 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 		return rep, err
 	}
 
-	if err := ClearForgottenHubs(o.StateDir); err != nil {
-		return rep, err
-	}
 	keyPath := filepath.Join(o.StateDir, WorkerKeyFile)
 	switch err := os.Remove(keyPath); {
 	case err == nil:
@@ -248,6 +245,11 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 	case errors.Is(err, fs.ErrNotExist):
 	default:
 		return rep, fmt.Errorf("delete the Worker key %s: %w", keyPath, err)
+	}
+	// The record of a removed pairing goes last: while the old Worker key
+	// exists, an invitation of the removed Hub could restore its Worker row.
+	if err := ClearForgottenHubs(o.StateDir); err != nil {
+		return rep, err
 	}
 	return rep, nil
 }

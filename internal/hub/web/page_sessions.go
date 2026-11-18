@@ -159,9 +159,14 @@ type WorkerRow struct {
 }
 
 // HubCheckText is what the approval page says about how the Worker checked
-// this Hub; "" when the Worker did not say (offline, or older than 0.11).
+// this Hub. The Hub keeps the last report of each Worker; without one (a
+// Worker that has not connected yet, or one older than 0.11) it says that
+// the check is unknown.
 func (w WorkerRow) HubCheckText() string {
 	switch w.HubCheck {
+	case "":
+		return "unknown: the Worker has not reported how it checked this Hub (it does when it connects); " +
+			"ask its operator to run minion worker verify-hub on the Worker"
 	case "none":
 		return "not verified: the Worker did not check the fingerprint of this Hub (minion worker verify-hub on the Worker checks it)"
 	case "fingerprint":

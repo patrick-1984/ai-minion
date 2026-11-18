@@ -132,3 +132,25 @@ func TestMigrationFourCreatesTheWorkersTables(t *testing.T) {
 		}
 	}
 }
+
+// Round 2: the Hub keeps the hub_check of a Worker's last hello, so the
+// approval page shows it while the Worker is offline.
+func TestWorkerHubCheckIsKept(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	w := worker("w1", 1, "u1", "pi")
+	w.Pending = true
+	if err := s.InsertWorker(ctx, nil, w); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.WorkerByID(ctx, "w1"); err != nil || got.HubCheck != "" {
+		t.Fatalf("new worker: %+v %v", got, err)
+	}
+	if err := s.SetWorkerHubCheck(ctx, "w1", "none"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListWorkers(ctx)
+	if err != nil || len(rows) != 1 || rows[0].HubCheck != "none" || !rows[0].Pending {
+		t.Fatalf("list: %+v %v", rows, err)
+	}
+}

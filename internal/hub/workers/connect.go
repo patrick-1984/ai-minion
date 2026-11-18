@@ -657,6 +657,21 @@ func (h *Handler) markFirstConnected(ctx context.Context, w store.WorkerRow) err
 	return nil
 }
 
+// recordHubCheck keeps the hub_check of the Worker's signed hello with the
+// Worker, so that the approval page shows it also while the Worker is
+// offline. A failure is logged; it does not refuse the connection.
+func (h *Handler) recordHubCheck(ctx context.Context, w store.WorkerRow, check string) {
+	m, ok := h.cfg.Repository.(interface {
+		SetWorkerHubCheck(ctx context.Context, workerID, check string) error
+	})
+	if !ok || w.HubCheck == check {
+		return
+	}
+	if err := m.SetWorkerHubCheck(context.WithoutCancel(ctx), w.ID, check); err != nil {
+		h.log.Warn("worker connect: cannot record how the Worker checked this Hub", "worker_id", w.ID, "error", err.Error())
+	}
+}
+
 func (h *Handler) chain(ctx context.Context) ([]identity.Transition, error) {
 	if h.cfg.Chain == nil {
 		return nil, nil
@@ -831,6 +846,8 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 			return err
 		}
 	}
+	facts := CleanFacts(c.res.Worker.WorkerFacts)
+	h.recordHubCheck(ctx, w, facts.HubCheck)
 	admitted := h.cfg.Registry.AddAdmitted(Online{
 		WorkerID: w.ID,
 		Name:     w.Name,
@@ -841,7 +858,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		// The hello is covered by the transcript hash that both peers signed
 		// (AD-6): these are what the authenticated Worker announced.
 		Features: c.res.Worker.Features,
-		Facts:    CleanFacts(c.res.Worker.WorkerFacts),
+		Facts:    facts,
 		Pending:  w.Pending,
 
 		TranscriptHash: append([]byte(nil), c.res.TranscriptHash[:]...),

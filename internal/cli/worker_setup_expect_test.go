@@ -54,3 +54,89 @@ func TestWorkerSetupAsksForTheHubFingerprintBeforeTheCheck(t *testing.T) {
 		})
 	}
 }
+
+// Round 2: the owner's command `worker up --foreground --share-existing all
+// --server <url>` skips the wizard; on a terminal a first pairing still asks
+// for the Hub fingerprint before the Worker starts (and dials), and saves it.
+// Without a terminal nothing is asked; with --hub-fingerprint nothing is asked.
+func TestWorkerUpWithShareAndServerAsksForTheHubFingerprint(t *testing.T) {
+	fp := fakeHubFingerprint(t)
+	for name, tc := range map[string]struct {
+		tty    bool
+		typed  string
+		args   []string
+		asked  bool
+		saved  string
+		starts bool
+	}{
+		"words":           {tty: true, typed: "nonsense\n" + fp.Words() + "\n", asked: true, saved: fp.Words(), starts: true},
+		"skip":            {tty: true, typed: "skip\n", asked: true, starts: true},
+		"aborted":         {tty: true, typed: "", asked: true},
+		"no terminal":     {starts: true},
+		"fingerprint set": {tty: true, args: []string{"--hub-fingerprint", fp.Words()}, starts: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := map[string]string{"MINION_STATE_DIR": t.TempDir(), "MINION_HUB_FINGERPRINT": ""}
+			deps, p, rig := foregroundGate(t, tc.tty, env)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			out := &syncBuf{}
+			done := make(chan error, 1)
+			args := append([]string{"--foreground", "--share-existing", "all", "--server", "https://hub.example:8443"}, tc.args...)
+			go func() { done <- runUpOut(deps, ctx, strings.NewReader(tc.typed), out, args...) }()
+			select {
+			case <-p.ready:
+				if !tc.starts {
+					t.Fatal("the Worker started after the prompt was aborted")
+				}
+				cancel()
+				if err := <-done; err != nil {
+					t.Errorf("worker up: %v", err)
+				}
+			case err := <-done:
+				if tc.starts {
+					t.Fatalf("worker up ended before the Worker started: %v\n%s", err, out)
+				}
+				if err == nil {
+					t.Fatal("an aborted prompt must be an error")
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("worker up did not start")
+			}
+			got := out.String()
+			if asked := strings.Contains(got, "NEW HUB - ENTER ITS FINGERPRINT"); asked != tc.asked {
+				t.Fatalf("asked = %v, want %v:\n%s", asked, tc.asked, got)
+			}
+			if saved := rig.file()[config.KeyHubFingerprint]; saved != tc.saved {
+				t.Fatalf("saved hub_fingerprint %q, want %q", saved, tc.saved)
+			}
+		})
+	}
+}
+
+// Round 2: the wizard opens the Worker state for writing (which migrates it)
+// only when it saves; cancelled at the fingerprint question it never did.
+func TestWorkerSetupCancelAtTheFingerprintOpensNoWritableStore(t *testing.T) {
+	r := newSetupRig(t, true, "build")
+	delete(r.env, "MINION_HUB_FINGERPRINT")
+	st, err := store.OpenContext(context.Background(), r.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	opened := false
+	r.deps.openStore = func(ctx context.Context, dir string) (setupStore, error) {
+		opened = true
+		return store.OpenContext(ctx, dir)
+	}
+	err = r.run(context.Background(), strings.NewReader("1\nhttps://hub.example:8443\n"))
+	if err == nil {
+		t.Fatalf("a cancelled wizard succeeded:\n%s", r.stdout)
+	}
+	if !strings.Contains(r.stdout.String(), "NEW HUB - ENTER ITS FINGERPRINT") {
+		t.Fatalf("the fingerprint was not asked:\n%s", r.stdout)
+	}
+	if opened {
+		t.Fatal("the wizard opened the state for writing before it saved anything")
+	}
+}

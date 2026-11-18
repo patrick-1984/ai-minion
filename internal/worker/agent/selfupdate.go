@@ -333,6 +333,15 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 		_ = writePending(dir, r)
 		return nil, false
 	}
+	// A removed pairing (verify-hub --forget) is a trust decision that the
+	// previous binary cannot enforce: it does not read the record and would
+	// enroll again or connect from the restored database. Never roll back
+	// over it; the update counts as committed.
+	if forgotten, _ := ForgottenHubs(dir); len(forgotten) > 0 {
+		log.Warn("the updated Worker keeps failing to start, but its pairing was removed with verify-hub --forget; not rolling back, because the previous release cannot enforce that", "to", r.To)
+		_ = os.Remove(filepath.Join(dir, pendingFile))
+		return nil, false
+	}
 	old := exe + ".old"
 	if _, err := os.Stat(old); err != nil {
 		log.Error("the updated Worker keeps failing to start and there is no previous binary to restore", "to", r.To, "error", err.Error())
@@ -371,16 +380,44 @@ func restoreOld(exe, old string) error {
 	return nil
 }
 
+// updateHealth is what the crash guard learns from the connector on a tick.
+type updateHealth int
+
+const (
+	// healthNone: neither connected nor deliberately stopped.
+	healthNone updateHealth = iota
+	// healthConnected: a live Hub connection.
+	healthConnected
+	// healthTrustHold: the Worker deliberately does not connect because the
+	// operator quarantined its Hub (verify-hub) or removed the pairing
+	// (--forget). That is a decision of this release, not a crash: the update
+	// is committed at once, because a rollback would restore the
+	// pre-migration database and the previous binary, which know neither the
+	// quarantine nor the removal and would connect to the disputed Hub again.
+	healthTrustHold
+)
+
 // commitAfter clears the guard once the new binary ran with a live Hub
-// connection for updateCommitAfter.
-func commitAfter(ctx context.Context, dir, running string, connected func() bool, tick <-chan time.Time) {
+// connection for updateCommitAfter, or at once when the Worker holds a trust
+// decision (healthTrustHold).
+func commitAfter(ctx context.Context, dir, running string, health func() updateHealth, tick <-chan time.Time) {
+	commit := func() {
+		if r, ok := readPending(dir); ok && r.To == running {
+			_ = os.Remove(filepath.Join(dir, pendingFile))
+		}
+	}
 	var since time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-tick:
-			if !connected() {
+			switch health() {
+			case healthTrustHold:
+				commit()
+				return
+			case healthConnected:
+			default:
 				since = time.Time{}
 				continue
 			}
@@ -388,9 +425,7 @@ func commitAfter(ctx context.Context, dir, running string, connected func() bool
 				since = now
 			}
 			if now.Sub(since) >= updateCommitAfter {
-				if r, ok := readPending(dir); ok && r.To == running {
-					_ = os.Remove(filepath.Join(dir, pendingFile))
-				}
+				commit()
 				return
 			}
 		}

@@ -4,8 +4,8 @@ package cli
 // terminal whose Hub presented a certificate this computer does not trust
 // shows the key pin of that certificate and asks the user to type it after
 // comparing it with `minion hub identity --words` on the Hub host. Only the
-// exact pin is an answer (copy and enter, never y/N): it is saved as
-// hub_tls_pin in the config file and the call is made once more with it. The
+// exact pin is an answer (copy and enter, never y/N): it is saved for the
+// Hub's origin in hub_tls_pins in the config file and the call is made once more with it. The
 // certificate error came before anything was sent, so the second attempt
 // cannot run an operation twice.
 
@@ -32,8 +32,8 @@ type hubPinOffer struct {
 	// interactive reports whether the user can be asked: standard input and
 	// standard output are terminals.
 	interactive func(in io.Reader, out io.Writer) bool
-	// save stores pin as hub_tls_pin, bound to the Hub URL hubURL
-	// (hub_tls_pin_url), and returns the file it went to.
+	// save stores pin in hub_tls_pins for the origin of the Hub URL hubURL,
+	// keeping the pins of other Hubs, and returns the file it went to.
 	save func(pin, hubURL string) (string, error)
 }
 
@@ -41,9 +41,32 @@ func defaultHubPinOffer() *hubPinOffer {
 	return &hubPinOffer{
 		interactive: func(in io.Reader, out io.Writer) bool { return isTerminalStream(in) && isTerminalWriter(out) },
 		save: func(pin, hubURL string) (string, error) {
-			return saveClientSettings(os.LookupEnv, map[string]string{config.KeyHubTLSPin: pin, config.KeyHubTLSPinURL: config.PinURLKey(hubURL)})
+			return saveHubPin(os.LookupEnv, pin, hubURL)
 		},
 	}
+}
+
+// saveHubPin adds pin for the origin of hubURL to hub_tls_pins in the client
+// config file, under the config lock, and keeps the entries of other Hubs.
+func saveHubPin(lookupEnv func(string) (string, bool), pin, hubURL string) (string, error) {
+	origin, err := config.PinOrigin(hubURL)
+	if err != nil {
+		return "", err
+	}
+	dir, err := clientStateDir(lookupEnv)
+	if err != nil {
+		return "", err
+	}
+	return updateWorkerSettings(dir, func(file *config.ConfigFile) error {
+		cur, _, _ := file.Lookup(config.KeyHubTLSPins)
+		pins, err := config.ParseHubTLSPins(cur)
+		if err != nil {
+			return fmt.Errorf("%s in the config file: %w; fix or remove it first", config.KeyHubTLSPins, err)
+		}
+		pins[origin] = pin
+		file.Set(config.KeyHubTLSPins, config.FormatHubTLSPins(pins))
+		return nil
+	})
 }
 
 // offerPin wraps the Hub backend b of the settings cfg so that a certificate
@@ -138,14 +161,14 @@ func (o *hubPinOffer) ask(cmd *cobra.Command, e *client.HubCertError, hubURL str
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "cannot save %s: %v\n", config.KeyHubTLSPin, err)
 		return "", false
 	}
-	_, _ = fmt.Fprintf(out, "Saved %s for %s in %s (it is used for this Hub URL only); trying again.\n", config.KeyHubTLSPin, config.PinURLKey(hubURL), path)
+	origin, _ := config.PinOrigin(hubURL)
+	_, _ = fmt.Fprintf(out, "Saved the pin for %s in %s (%s; it is used for this Hub only); trying again.\n", origin, path, config.KeyHubTLSPins)
 	return e.Pin, true
 }
 
-// saveClientSettings writes settings to the config file of the Worker's
-// state directory, the file the client settings are read from, in one write
-// under the config lock. It returns the path of the file.
-func saveClientSettings(lookupEnv func(string) (string, bool), kv map[string]string) (string, error) {
+// clientStateDir is the state directory whose config file holds the client
+// settings.
+func clientStateDir(lookupEnv func(string) (string, bool)) (string, error) {
 	res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: lookupEnv}
 	dir, err := res.Resolve(config.KeyStateDir)
 	if err != nil {
@@ -154,13 +177,25 @@ func saveClientSettings(lookupEnv func(string) (string, bool), kv map[string]str
 	if dir.Value == "" {
 		return "", errors.New("the state directory is not known; set MINION_STATE_DIR")
 	}
-	return writeWorkerSettings(dir.Value, kv)
+	return dir.Value, nil
 }
 
 // writeWorkerSettings writes settings to the Worker's config file in
 // stateDir, in one write under the config lock, and returns the path of the
 // file.
 func writeWorkerSettings(stateDir string, kv map[string]string) (string, error) {
+	return updateWorkerSettings(stateDir, func(file *config.ConfigFile) error {
+		for k, v := range kv {
+			file.Set(k, v)
+		}
+		return nil
+	})
+}
+
+// updateWorkerSettings changes the Worker's config file in stateDir with
+// change, in one read and write under the config lock, and returns the path
+// of the file. Nothing is written when change fails.
+func updateWorkerSettings(stateDir string, change func(*config.ConfigFile) error) (string, error) {
 	abs, err := filepath.Abs(stateDir)
 	if err != nil {
 		return "", err
@@ -177,8 +212,8 @@ func writeWorkerSettings(stateDir string, kv map[string]string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	for k, v := range kv {
-		file.Set(k, v)
+	if err := change(file); err != nil {
+		return "", err
 	}
 	return file.Path(), file.Save()
 }

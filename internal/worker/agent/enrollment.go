@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -298,7 +299,7 @@ func (e *Enrollments) ForgetPin(ctx context.Context, pinned identity.Fingerprint
 		// itself from an invitation key that is still configured (a mounted
 		// file, an environment variable, a service's command line), which
 		// would restore this pairing with the same Worker key.
-		if err := e.markForgotten(pinned); err != nil {
+		if err := e.markForgotten(forgottenKeys(pinned, cur)...); err != nil {
 			return err
 		}
 		_, err = e.wipe(ctx)
@@ -313,12 +314,28 @@ func (e *Enrollments) ForgetPin(ctx context.Context, pinned identity.Fingerprint
 // pair, the setup wizard) and `minion worker reset` remove it.
 const ForgottenHubFile = "hub-forgotten"
 
-func (e *Enrollments) markForgotten(f identity.Fingerprint) error {
+// forgottenKeys are the keys of the removed pairing: the pin and the keys it
+// was reached from (the checked anchor and the signed lineage), so the record
+// names the Hub's root as well as its current key.
+func forgottenKeys(pinned identity.Fingerprint, cur Enrollment) []string {
+	keys := []string{string(pinned)}
+	if cur.HubCheckAnchor != "" {
+		keys = append(keys, cur.HubCheckAnchor)
+	}
+	return append(keys, strings.Fields(cur.HubCheckLineage)...)
+}
+
+func (e *Enrollments) markForgotten(keys ...string) error {
 	if e.stateDir == "" {
 		return nil
 	}
 	prev, _ := ForgottenHubs(e.stateDir)
-	lines := append(prev, string(f))
+	lines := prev
+	for _, k := range keys {
+		if !slices.Contains(lines, k) {
+			lines = append(lines, k)
+		}
+	}
 	if err := identity.WritePrivate(filepath.Join(e.stateDir, ForgottenHubFile), []byte(strings.Join(lines, "\n")+"\n")); err != nil {
 		return fmt.Errorf("agent: record the removed Hub key: %w", err)
 	}
@@ -382,11 +399,7 @@ func (e *Enrollments) commit(ctx context.Context, enr Enrollment) error {
 	if err := e.saveHubURL(enr.HubURL); err != nil {
 		return err
 	}
-	// An explicit new enrollment ends the record of a removed pairing.
-	if err := ClearForgottenHubs(e.stateDir); err != nil {
-		return err
-	}
-	return e.repo.SaveEnrollment(ctx, store.Enrollment{
+	if err := e.repo.SaveEnrollment(ctx, store.Enrollment{
 		HubPub:      enr.Pin.Pub,
 		PinSeq:      enr.Pin.Seq,
 		WorkerID:    enr.WorkerID,
@@ -401,7 +414,14 @@ func (e *Enrollments) commit(ctx context.Context, enr Enrollment) error {
 		HubCheckAt:      enr.HubCheckAt,
 		HubCheckAnchor:  enr.HubCheckAnchor,
 		HubCheckLineage: enr.HubCheckLineage,
-	})
+	}); err != nil {
+		return err
+	}
+	// An explicit new enrollment ends the record of a removed pairing, but
+	// only once it is durably stored (the store commits with
+	// synchronous=FULL): a failed or interrupted save keeps the record, so a
+	// start can never enroll again from an invitation key of the removed Hub.
+	return ClearForgottenHubs(e.stateDir)
 }
 
 // RewritePin atomically replaces the pin after a transition chain was applied

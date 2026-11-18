@@ -193,7 +193,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		defer close(commitDone)
 		tick := time.NewTicker(30 * time.Second)
 		defer tick.Stop()
-		commitAfter(loopCtx, s.StateDir, version.Version, func() bool { return c.Status().State == ConnConnected }, tick.C)
+		commitAfter(loopCtx, s.StateDir, version.Version, func() updateHealth { return connectorHealth(c.Status(), s.StateDir) }, tick.C)
 	}()
 	pairDone := make(chan struct{})
 	go func() {
@@ -262,4 +262,20 @@ func needsAutoPair(ctx context.Context, s Settings, hubURL string, enr *Enrollme
 	}
 	_, enrolled, err := enr.Load(ctx)
 	return err == nil && !enrolled
+}
+
+// connectorHealth is the crash guard's view of the connector: connected, or
+// idle because the operator quarantined the Hub or removed the pairing.
+func connectorHealth(st Status, stateDir string) updateHealth {
+	switch {
+	case st.State == ConnConnected:
+		return healthConnected
+	case st.State == ConnIdle && st.Reason == ReasonQuarantined:
+		return healthTrustHold
+	case st.State == ConnIdle && st.Reason == ReasonNotEnrolled:
+		if f, _ := ForgottenHubs(stateDir); len(f) > 0 {
+			return healthTrustHold
+		}
+	}
+	return healthNone
 }

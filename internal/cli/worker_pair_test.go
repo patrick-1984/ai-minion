@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -618,5 +619,30 @@ func TestSaveWorkerServerCreatesTheStateDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, workerConfigName)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Round 2: the questions come before the state is opened for writing (which
+// migrates it): cancelling the fingerprint prompt of `pair --new-code` never
+// opens the store, so an older installed Worker can still open its state.
+func TestWorkerPairPromptCancelOpensNoStore(t *testing.T) {
+	c := newPairCLI(t, nil)
+	c.pair()
+	opened := false
+	c.deps.openStore = func(ctx context.Context, dir string) (*store.Store, error) {
+		opened = true
+		return store.OpenContext(ctx, dir)
+	}
+	c.deps.interactive = func(io.Reader, io.Writer) bool { return true }
+	c.deps.stdin = strings.NewReader("") // Ctrl-D at the fingerprint prompt
+	err := c.exec("pair", "--new-code", "--yes")
+	if !errors.Is(err, agent.ErrPromptAborted) {
+		t.Fatalf("err = %v", err)
+	}
+	if opened {
+		t.Fatal("the store was opened (and migrated) before the prompt was answered")
+	}
+	if _, ok := c.enrollment(); !ok {
+		t.Fatal("a cancelled prompt removed the pairing")
 	}
 }

@@ -197,20 +197,13 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	open := deps.openStore
-	if open == nil {
-		open = func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) }
-	}
-	st, err := open(ctx, core.StateDir)
+	// The questions (the fingerprint, the confirmation of --new-code) come
+	// before the state is opened for writing: opening it migrates the
+	// database, and a cancelled command must leave a state that an older
+	// installed Worker can still open. The preflight reads it read-only.
+	paired, isPaired, err := readPairing(ctx, core.StateDir)
 	if err != nil {
-		return fmt.Errorf("open the Worker state in %s: %w", core.StateDir, err)
-	}
-	defer func() { _ = st.Close() }()
-	enr := agent.NewEnrollments(st, core.StateDir)
-
-	paired, isPaired, err := enr.Load(ctx)
-	if err != nil {
-		return fmt.Errorf("read the enrollment: %w", err)
+		return err
 	}
 	if isPaired && !opt.newCode {
 		return agent.AlreadyPaired(paired)
@@ -237,6 +230,35 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 			return err
 		}
 	}
+	// A paired Worker is asked first. An unpaired one is not: nothing is
+	// lost, and its key may be one the Hub removed (revoked), which only a
+	// new key can leave.
+	if opt.newCode && isPaired && !opt.yes {
+		if err := confirmNewCode(deps.stdin, stdout, paired); err != nil {
+			return err
+		}
+	}
+
+	open := deps.openStore
+	if open == nil {
+		open = func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) }
+	}
+	st, err := open(ctx, core.StateDir)
+	if err != nil {
+		return fmt.Errorf("open the Worker state in %s: %w", core.StateDir, err)
+	}
+	defer func() { _ = st.Close() }()
+	enr := agent.NewEnrollments(st, core.StateDir)
+
+	// The answers above were given for the pairing read in the preflight;
+	// another one stored meanwhile is not replaced on them.
+	now, nowPaired, err := enr.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("read the enrollment: %w", err)
+	}
+	if nowPaired != isPaired || (isPaired && !now.Pin.Pub.Equal(paired.Pin.Pub)) {
+		return errors.New("the pairing of this Worker changed while the command ran; nothing was changed, run it again")
+	}
 	dialer := deps.dialer
 	if dialer == nil {
 		dialer = agent.NewPairDialer()
@@ -257,14 +279,6 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 		return err
 	}
 	if opt.newCode {
-		// A paired Worker is asked first. An unpaired one is not: nothing
-		// is lost, and its key may be one the Hub removed (revoked), which
-		// only a new key can leave.
-		if isPaired && !opt.yes {
-			if err := confirmNewCode(deps.stdin, stdout, paired); err != nil {
-				return err
-			}
-		}
 		// The old key is revoked at the Hub recorded with the enrollment, not
 		// at the address in the configuration or in a flag that only names
 		// the Hub of the new pairing.
@@ -343,6 +357,30 @@ func revokeOldIdentity(ctx context.Context, deps workerPairDeps, enr *agent.Enro
 }
 
 // confirmNewCode asks before a paired Worker gets a new identity.
+// readPairing reads the enrollment of the state in stateDir without creating
+// or migrating the database (none means not paired).
+func readPairing(ctx context.Context, stateDir string) (agent.Enrollment, bool, error) {
+	if _, err := os.Stat(filepath.Join(stateDir, store.DBFile)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return agent.Enrollment{}, false, nil
+		}
+		return agent.Enrollment{}, false, fmt.Errorf("look at the Worker state in %s: %w", stateDir, err)
+	}
+	st, err := store.OpenReadOnlyContext(ctx, stateDir)
+	if err != nil {
+		return agent.Enrollment{}, false, fmt.Errorf("open the Worker state in %s: %w", stateDir, err)
+	}
+	defer func() { _ = st.Close() }()
+	enr, ok, err := agent.NewEnrollments(st, stateDir).Load(ctx)
+	switch {
+	case err != nil && strings.Contains(err.Error(), "no such table"):
+		return agent.Enrollment{}, false, nil // a state of a release before pairing
+	case err != nil:
+		return agent.Enrollment{}, false, fmt.Errorf("read the enrollment: %w", err)
+	}
+	return enr, ok, nil
+}
+
 func confirmNewCode(in io.Reader, out io.Writer, enr agent.Enrollment) error {
 	name := enr.Name
 	if name == "" {

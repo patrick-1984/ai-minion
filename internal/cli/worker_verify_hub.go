@@ -133,11 +133,15 @@ func runWorkerVerifyHub(cmd *cobra.Command, deps workerVerifyHubDeps, args []str
 		ctx = context.Background()
 	}
 	// Before the state is opened (opening migrates it): a running Worker must
-	// be one that applies the stored check, else nothing is changed.
-	running, err := runningWorkerOf(ctx, deps, dir.Value)
+	// be one that applies the stored check, else nothing is changed. When no
+	// Worker runs, the lifecycle lock is held until the command ends, so that
+	// no Worker (a supervised older one in particular) starts on the state
+	// between the check, the migration and the write.
+	running, unlock, err := runningWorkerOf(ctx, deps, dir.Value)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	st, err := deps.openStore(ctx, dir.Value)
 	if err != nil {
 		return fmt.Errorf("open the Worker state in %s: %w", dir.Value, err)
@@ -207,29 +211,33 @@ func runWorkerVerifyHub(cmd *cobra.Command, deps workerVerifyHubDeps, args []str
 // or later). A running Worker that cannot be asked, or an older one, is an
 // error that says how to stop it: the command then changes nothing (an older
 // Worker would reconnect and could not open the migrated state again).
-func runningWorkerOf(ctx context.Context, deps workerVerifyHubDeps, dir string) (bool, error) {
+//
+// When no Worker runs, the lifecycle lock stays held until unlock is called:
+// the whole check, migration and write happen under it.
+func runningWorkerOf(ctx context.Context, deps workerVerifyHubDeps, dir string) (running bool, unlock func(), err error) {
+	unlock = func() {}
 	if deps.lockState == nil {
-		return false, nil
+		return false, unlock, nil
 	}
 	l, err := deps.lockState(dir)
 	if err == nil {
-		_ = l.Close()
-		return false, nil
+		return false, func() { _ = l.Close() }, nil
 	}
 	if !errors.Is(err, agent.ErrStateInUse) {
-		return false, err
+		return false, unlock, fmt.Errorf("cannot take the lifecycle lock of the state directory %s (%w); nothing was changed. "+
+			"Stop the Worker first (minion worker down), then run this command again", dir, err)
 	}
 	reply, ok := liveStatusOf(ctx, deps, dir)
 	switch {
 	case !ok:
-		return false, fmt.Errorf("a Worker is running on the state directory %s and does not answer on this user's control socket; "+
+		return false, unlock, fmt.Errorf("a Worker is running on the state directory %s and does not answer on this user's control socket; "+
 			"nothing was changed. Stop it first (minion worker down, as the user that runs it), then run this command again", dir)
 	case !reply.HubCheckAware:
-		return false, errors.New("the running Worker is older than v0.11.0: it cannot apply this check and would keep or resume its " +
+		return false, unlock, errors.New("the running Worker is older than v0.11.0: it cannot apply this check and would keep or resume its " +
 			"connection to the Hub; nothing was changed. Stop it first with: minion worker down - then run this command again " +
 			"(and upgrade the Worker before you start it again)")
 	}
-	return true, nil
+	return true, unlock, nil
 }
 
 // liveStatusOf asks the running Worker of this user for its live status; ok

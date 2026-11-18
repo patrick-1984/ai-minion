@@ -119,7 +119,9 @@ func TestApprovalFactsShowTheWorkersHubCheck(t *testing.T) {
 		"none":        "not verified",
 		"fingerprint": "matched the fingerprint of this Hub that its operator gave",
 		"invite":      "from the invitation key",
-		"":            "",
+		// Round 2: no report (an offline Worker that never connected) is
+		// shown as unknown, never as nothing.
+		"": "unknown: the Worker has not reported",
 	} {
 		w := wPending
 		w.HubCheck = check
@@ -127,10 +129,6 @@ func TestApprovalFactsShowTheWorkersHubCheck(t *testing.T) {
 		out, err := renderWorkerFragment(v)
 		if err != nil {
 			t.Fatal(err)
-		}
-		if want == "" {
-			mustNotHave(t, out, "Hub check")
-			continue
 		}
 		mustHave(t, out, "Hub check", `data-hub-check="`+check+`"`, want)
 	}

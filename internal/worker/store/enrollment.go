@@ -167,8 +167,31 @@ func nullBytes(b []byte) any {
 	return b
 }
 
-// LoadEnrollment returns the stored enrollment, or [ErrNotEnrolled].
+// HasEnrollment reports whether an enrollment is stored. It reads only the
+// row's existence, so it works on the schema of every release (also on a
+// read-only store before the migrations of this release ran).
+func (s *Store) HasEnrollment(ctx context.Context) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM hub_enrollment WHERE id = 1`).Scan(&n); err != nil {
+		return false, fmt.Errorf("store: look for an enrollment: %w", err)
+	}
+	return n > 0, nil
+}
+
+// LoadEnrollment returns the stored enrollment, or [ErrNotEnrolled]. On a
+// read-only store of an older release, whose schema has no hub_check columns
+// yet (the migrations of this release did not run), it returns the
+// enrollment without them: a status or a preflight check never needs to
+// migrate.
 func (s *Store) LoadEnrollment(ctx context.Context) (Enrollment, error) {
+	e, err := s.loadEnrollment(ctx, true)
+	if err != nil && !errors.Is(err, ErrNotEnrolled) && strings.Contains(err.Error(), "no such column") {
+		return s.loadEnrollment(ctx, false)
+	}
+	return e, err
+}
+
+func (s *Store) loadEnrollment(ctx context.Context, withCheck bool) (Enrollment, error) {
 	var (
 		e         Enrollment
 		pub       []byte
@@ -179,12 +202,13 @@ func (s *Store) LoadEnrollment(ctx context.Context) (Enrollment, error) {
 		certHash  []byte
 		checkAt   sql.NullInt64
 	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, max_serial, cert_sha256,
-		        hub_check, hub_check_at, hub_check_anchor, hub_check_lineage
-		 FROM hub_enrollment WHERE id = 1`).
-		Scan(&pub, &seq, &e.WorkerID, &e.Name, &e.Owner, &e.Kind, &preview, &enrolled, &maxSerial, &certHash,
-			&e.HubCheck, &checkAt, &e.HubCheckAnchor, &e.HubCheckLineage)
+	cols := `hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, max_serial, cert_sha256`
+	dest := []any{&pub, &seq, &e.WorkerID, &e.Name, &e.Owner, &e.Kind, &preview, &enrolled, &maxSerial, &certHash}
+	if withCheck {
+		cols += `, hub_check, hub_check_at, hub_check_anchor, hub_check_lineage`
+		dest = append(dest, &e.HubCheck, &checkAt, &e.HubCheckAnchor, &e.HubCheckLineage)
+	}
+	err := s.db.QueryRowContext(ctx, `SELECT `+cols+` FROM hub_enrollment WHERE id = 1`).Scan(dest...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Enrollment{}, ErrNotEnrolled
 	}
@@ -205,10 +229,17 @@ func (s *Store) LoadEnrollment(ctx context.Context) (Enrollment, error) {
 
 // SetHubCheck records the result of a fingerprint check of the pinned Hub:
 // check (a HubCheck* value) and anchor (the full fingerprint that was
-// checked, "" for none). A new anchor empties the lineage (the keys the pin
-// moved through since the old anchor). The update applies only while pub is still the
+// checked, "" for none). The update applies only while pub is still the
 // pinned key, so a check of one pin never marks another; no matching row is
 // [ErrNotEnrolled].
+//
+// A new anchor keeps the history: every stored anchor was the pinned key (or
+// the key the pairing named) when it was checked, and the pin moves only
+// along verified signed transitions, so the old anchor and its lineage are
+// authenticated predecessors of the pin; the old anchor is added to the
+// lineage. A check of the current pin therefore never erases a verified
+// rotation (a setting that still names the old root stays a known
+// predecessor). Only an empty anchor (no check) clears the lineage.
 func (s *Store) SetHubCheck(ctx context.Context, pub ed25519.PublicKey, check, anchor string) error {
 	if !ValidHubCheck(check) {
 		return fmt.Errorf("%w: unknown hub check %q", ErrInvalidEnrollment, check)
@@ -216,10 +247,15 @@ func (s *Store) SetHubCheck(ctx context.Context, pub ed25519.PublicKey, check, a
 	now := s.clock.now().UnixMilli()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE hub_enrollment SET hub_check = ?, hub_check_at = ?, updated_at = ?,
-		   hub_check_lineage = CASE WHEN hub_check_anchor = ? THEN hub_check_lineage ELSE '' END,
+		   hub_check_lineage = CASE
+		     WHEN hub_check_anchor = ? THEN hub_check_lineage
+		     WHEN ? = '' THEN ''
+		     WHEN hub_check_anchor = '' THEN hub_check_lineage
+		     WHEN instr(' ' || hub_check_lineage || ' ', ' ' || hub_check_anchor || ' ') > 0 THEN hub_check_lineage
+		     ELSE trim(hub_check_anchor || ' ' || hub_check_lineage) END,
 		   hub_check_anchor = ?
 		 WHERE id = 1 AND hub_pub = ?`,
-		check, now, now, anchor, anchor, []byte(pub))
+		check, now, now, anchor, anchor, anchor, []byte(pub))
 	if err != nil {
 		return fmt.Errorf("store: set hub check: %w", err)
 	}

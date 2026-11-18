@@ -139,7 +139,8 @@ func TestHubCheckLineageFollowsVerifiedPinMoves(t *testing.T) {
 		t.Fatalf("lineage = %q, want %q", got.HubCheckLineage, want)
 	}
 	// The same anchor (a mismatch keeps it) keeps the lineage; a new one
-	// empties it.
+	// (the check of the current pin) keeps it too: the old anchor and the
+	// keys passed since are authenticated predecessors of the pin.
 	if err := s.SetHubCheck(ctx, pubKey(4), HubCheckMismatch, fp(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -149,8 +150,25 @@ func TestHubCheckLineageFollowsVerifiedPinMoves(t *testing.T) {
 	if err := s.SetHubCheck(ctx, pubKey(4), HubCheckFingerprint, fp(4)); err != nil {
 		t.Fatal(err)
 	}
+	if got, _ = s.LoadEnrollment(ctx); got.HubCheckLineage != fp(1)+" "+fp(2)+" "+fp(3) || got.HubCheckAnchor != fp(4) {
+		t.Fatalf("a check of the current pin must keep the lineage: %q", got.HubCheckLineage)
+	}
+	// An anchor that is not in the lineage yet is added to it.
+	if err := s.SaveEnrollment(ctx, Enrollment{HubPub: pubKey(8), HubCheck: HubCheckInvite, HubCheckAnchor: fp(7)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetHubCheck(ctx, pubKey(8), HubCheckFingerprint, fp(8)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.LoadEnrollment(ctx); got.HubCheckLineage != fp(7) {
+		t.Fatalf("the old anchor must join the lineage: %q", got.HubCheckLineage)
+	}
+	// No check (an empty anchor) clears it.
+	if err := s.SetHubCheck(ctx, pubKey(8), HubCheckNone, ""); err != nil {
+		t.Fatal(err)
+	}
 	if got, _ = s.LoadEnrollment(ctx); got.HubCheckLineage != "" {
-		t.Fatalf("a new anchor must empty the lineage: %q", got.HubCheckLineage)
+		t.Fatalf("an empty anchor must clear the lineage: %q", got.HubCheckLineage)
 	}
 	// No anchor, no lineage.
 	if err := s.SaveEnrollment(ctx, Enrollment{HubPub: pubKey(5)}); err != nil {
@@ -161,5 +179,50 @@ func TestHubCheckLineageFollowsVerifiedPinMoves(t *testing.T) {
 	}
 	if got, _ = s.LoadEnrollment(ctx); got.HubCheckLineage != "" {
 		t.Fatalf("unchecked: %q", got.HubCheckLineage)
+	}
+}
+
+// Round 2: a read-only store of an older release (schema 9, no hub_check
+// columns) still reads its enrollment, without migrating.
+func TestLoadEnrollmentReadsASchema9StoreReadOnly(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	all := map[string]string{}
+	entries, err := workerMigrations.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() >= "0010" {
+			continue
+		}
+		body, err := workerMigrations.ReadFile("migrations/" + e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		all[e.Name()] = string(body)
+	}
+	old := openStore(t, dir, testMigrations(all))
+	if _, err := old.db.ExecContext(ctx,
+		`INSERT INTO hub_enrollment (id, hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, updated_at)
+		 VALUES (1, ?, 0, 'w', 'n', 'o', 'private', 0, 1, 1)`, []byte(pubKey(1))); err != nil {
+		t.Fatal(err)
+	}
+	_ = old.Close()
+	ro, err := OpenReadOnlyContext(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ro.Close() }()
+	got, err := ro.LoadEnrollment(ctx)
+	if err != nil || !got.HubPub.Equal(pubKey(1)) || got.WorkerID != "w" {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if ok, err := ro.HasEnrollment(ctx); err != nil || !ok {
+		t.Fatalf("HasEnrollment = %v, %v", ok, err)
+	}
+	var cols int
+	if err := ro.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('hub_enrollment') WHERE name = 'hub_check'`).Scan(&cols); err != nil || cols != 0 {
+		t.Fatalf("the read migrated the schema: %d, %v", cols, err)
 	}
 }

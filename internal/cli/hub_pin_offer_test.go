@@ -26,7 +26,7 @@ func pinOfferRun(t *testing.T, interactive bool, typed string) (hub *hubStub, co
 	deps.pinOffer = &hubPinOffer{
 		interactive: func(io.Reader, io.Writer) bool { return interactive },
 		save: func(pin, hubURL string) (string, error) {
-			return saveClientSettings(envFrom(env), map[string]string{config.KeyHubTLSPin: pin, config.KeyHubTLSPinURL: config.PinURLKey(hubURL)})
+			return saveHubPin(envFrom(env), pin, hubURL)
 		},
 	}
 	code, out, errs = runWith(t, deps, typed, "sessions_list", "--hub-worker", hubWorkerID)
@@ -47,10 +47,11 @@ func TestHubPinOfferSavesOnlyTheExactPinAndTriesOnceMore(t *testing.T) {
 		t.Fatalf("exact pin: exit %d, hits %d, stdout %q, stderr %q", code, hub.hits.Load(), out, errs)
 	}
 	if !strings.Contains(out, "not trusted by this computer (signed by an unknown authority)") || !strings.Contains(out, "Its key pin is "+pin) ||
-		!strings.Contains(out, "minion hub identity --words") || !strings.Contains(out, "Saved hub_tls_pin") {
+		!strings.Contains(out, "minion hub identity --words") || !strings.Contains(out, "Saved the pin for") {
 		t.Errorf("prompt = %q", out)
 	}
-	if !strings.Contains(saved, `"hub_tls_pin": "`+pin+`"`) || !strings.Contains(saved, `"hub_tls_pin_url": "`+config.PinURLKey(hub.srv.URL)+`"`) {
+	origin, _ := config.PinOrigin(hub.srv.URL)
+	if !strings.Contains(saved, `"hub_tls_pins": "`+origin+`=`+pin+`"`) || strings.Contains(saved, `"hub_tls_pin":`) {
 		t.Errorf("config file = %q", saved)
 	}
 
@@ -128,7 +129,7 @@ func TestHubPinSavedByTheOfferIsBoundToItsHubURL(t *testing.T) {
 	hubB := newHubStub(t, func(w http.ResponseWriter, r *http.Request, s *hubStub) { stubJSON(w, 200, `{"sessions":[]}`) })
 	pin := identity.SPKIPin(hubA.srv.Certificate().RawSubjectPublicKeyInfo)
 	stateDir := t.TempDir()
-	if _, err := writeWorkerSettings(stateDir, map[string]string{config.KeyHubTLSPin: pin, config.KeyHubTLSPinURL: config.PinURLKey(hubA.srv.URL + "/")}); err != nil {
+	if _, err := saveHubPin(envFrom(map[string]string{"MINION_STATE_DIR": stateDir}), pin, hubA.srv.URL+"/some/prefix/"); err != nil {
 		t.Fatal(err)
 	}
 	env := map[string]string{"MINION_HUB_URL": hubA.srv.URL, "MINION_API_KEY_FILE": hubA.keyFile, "MINION_STATE_DIR": stateDir}
@@ -145,5 +146,49 @@ func TestHubPinSavedByTheOfferIsBoundToItsHubURL(t *testing.T) {
 	code, _, errs := runWith(t, withFile(), "", "sessions_list", "--hub-worker", hubWorkerID, "--hub-url", hubB.srv.URL)
 	if code != ExitError || hubB.hits.Load() != 0 || !strings.Contains(errs, "unknown authority") {
 		t.Errorf("other URL: exit %d, hits %d, stderr %q", code, hubB.hits.Load(), errs)
+	}
+}
+
+// Round 2: trusting the key of Hub B keeps the pin of Hub A; each origin has
+// its own entry, and a malformed stored value is refused, never skipped.
+func TestHubPinsArePerOrigin(t *testing.T) {
+	stateDir := t.TempDir()
+	env := envFrom(map[string]string{"MINION_STATE_DIR": stateDir})
+	pinA, pinB := "sha256//"+strings.Repeat("A", 43)+"=", "sha256//"+strings.Repeat("B", 43)+"="
+	if _, err := saveHubPin(env, pinA, "https://Hub-A.example/minion"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := saveHubPin(env, pinB, "https://hub-b.example:8443"); err != nil {
+		t.Fatal(err)
+	}
+	file, err := config.LoadFile(filepath.Join(stateDir, workerConfigName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, _ := file.Lookup(config.KeyHubTLSPins)
+	pins, err := config.ParseHubTLSPins(raw)
+	if err != nil || pins["https://hub-a.example:443"] != pinA || pins["https://hub-b.example:8443"] != pinB || len(pins) != 2 {
+		t.Fatalf("pins = %v, %v (raw %q)", pins, err, raw)
+	}
+	resolve := func(hubURL string) (config.ClientHub, error) {
+		res := &config.Resolver{Registry: config.Client, Role: config.ScopeWorker,
+			LookupEnv: envFrom(map[string]string{"MINION_HUB_URL": hubURL}), File: file}
+		return config.ResolveClientHub(res)
+	}
+	for url, want := range map[string]string{
+		"https://hub-a.example":              pinA,
+		"https://HUB-A.example:443/x/%2e/y/": pinA,
+		"https://hub-b.example:8443/":        pinB,
+		"https://hub-b.example":              "",
+		"https://hub-c.example":              "",
+	} {
+		c, err := resolve(url)
+		if err != nil || c.TLSPin != want {
+			t.Errorf("%s: pin %q, %v; want %q", url, c.TLSPin, err, want)
+		}
+	}
+	file.Set(config.KeyHubTLSPins, "https://hub-a.example/path="+pinA)
+	if _, err := resolve("https://hub-a.example"); err == nil {
+		t.Error("a malformed hub_tls_pins entry was skipped")
 	}
 }

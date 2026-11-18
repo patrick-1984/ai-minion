@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -240,7 +241,7 @@ func TestConnectorStaysIdleOnAStoredMismatch(t *testing.T) {
 }
 
 func TestConnectorIdentityChangedAlarmOncePerStreak(t *testing.T) {
-	var out bytes.Buffer
+	var out logBuf
 	f := newConnFixture(t, func(c *ConnectorConfig) { c.Out = &out })
 	other, _ := identity.GenerateKey()
 	refuse := func(cause error) dialStep {
@@ -275,7 +276,7 @@ func TestConnectorIdentityChangedAlarmOncePerStreak(t *testing.T) {
 }
 
 func TestConnectorInvalidChainReason(t *testing.T) {
-	var out bytes.Buffer
+	var out logBuf
 	f := newConnFixture(t, func(c *ConnectorConfig) { c.Out = &out })
 	other, _ := identity.GenerateKey()
 	f.dial.script(func(ConnectParams) (*Attempt, error) {
@@ -400,5 +401,75 @@ func TestConnectorSendsItsHubCheckInTheHelloFacts(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no dial")
+	}
+}
+
+// failingSaveRepo is an enrollment repo whose SaveEnrollment fails.
+type failingSaveRepo struct{ EnrollmentRepo }
+
+func (failingSaveRepo) SaveEnrollment(context.Context, store.Enrollment) error {
+	return errors.New("disk full")
+}
+
+// Round 2: a re-pairing whose save fails keeps the record of the removed
+// pairing, so a start cannot restore the forgotten Hub from a configured
+// invitation key; the record also names the Hub's checked root.
+func TestForgetRecordSurvivesAFailedRepair(t *testing.T) {
+	ctx := context.Background()
+	e, st, dir := newEnrollments(t)
+	root, _ := identity.GenerateKey()
+	hub, _ := identity.GenerateKey()
+	if err := e.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: hub.Public()}, HubCheck: store.HubCheckFingerprint,
+		HubCheckAnchor: string(root.Fingerprint()), HubCheckLineage: string(root.Fingerprint())}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgetHub(ctx, e, hub.Fingerprint()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := ForgottenHubs(dir)
+	if !slices.Contains(got, string(hub.Fingerprint())) || !slices.Contains(got, string(root.Fingerprint())) || len(got) != 2 {
+		t.Fatalf("record = %v, want the pin and its root", got)
+	}
+	other, _ := identity.GenerateKey()
+	failing := NewEnrollments(failingSaveRepo{st}, dir)
+	if err := failing.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: other.Public()}}); err == nil {
+		t.Fatal("the injected save failure was not reported")
+	}
+	if got, _ := ForgottenHubs(dir); len(got) != 2 {
+		t.Fatalf("a failed re-pairing removed the record: %v", got)
+	}
+	if err := e.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: other.Public()}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ForgottenHubs(dir); len(got) != 0 {
+		t.Fatalf("a stored re-pairing must end the record: %v", got)
+	}
+}
+
+// Round 2: pair with root A, follow a signed rotation to B, verify B with the
+// current fingerprint: a restart whose setting still names A connects (A is a
+// known predecessor) instead of quarantining B.
+func TestVerifyingTheCurrentHubKeepsTheRotationHistory(t *testing.T) {
+	ctx := context.Background()
+	e, _, _ := newEnrollments(t)
+	a, _ := identity.GenerateKey()
+	b, _ := identity.GenerateKey()
+	if err := e.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: a.Public()}, HubCheck: store.HubCheckFingerprint, HubCheckAnchor: string(a.Fingerprint())}); err != nil {
+		t.Fatal(err)
+	}
+	gen, _ := e.Watch()
+	if err := e.CommitRatchetIfLive(ctx, gen, identity.Pin{Pub: b.Public(), Seq: 1}, transport.Ratchet{Root: b.Public()}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := VerifyHub(ctx, e, mustMatcher(t, string(b.Fingerprint()))); err != nil || res.Outcome != VerifyMatch {
+		t.Fatal(res, err)
+	}
+	logs := &logBuf{}
+	if err := CheckEnrolledHub(ctx, e, mustMatcher(t, string(a.Fingerprint())), io.Discard, slog.New(slog.NewTextHandler(logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	enr, _, _ := e.Load(ctx)
+	if enr.Check() != store.HubCheckFingerprint || enr.HubCheckAnchor != string(b.Fingerprint()) {
+		t.Fatalf("the old root quarantined the rotated Hub: %+v\n%s", enr, logs.String())
 	}
 }

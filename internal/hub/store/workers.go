@@ -58,6 +58,9 @@ type WorkerRow struct {
 	// owner's pairing re-issue window (hub-identity-v2 12.3).
 	FirstConnectedAt int64
 	RepairUntil      int64
+	// HubCheck is the hub_check of the Worker's last hello ("" when it never
+	// reported one), see [Store.SetWorkerHubCheck].
+	HubCheck string
 }
 
 // TombstoneRow is the record a removed Worker leaves behind (AD-9).
@@ -133,12 +136,22 @@ func (s *Store) InsertWorker(ctx context.Context, ex Execer, w WorkerRow) error 
 	return nil
 }
 
-const workerColumns = `id, worker_pub, name, owner_id, kind, created_at, approval = 'pending', enroll_addr, COALESCE(approved_at, 0), approved_by, COALESCE(first_connected_at, 0), repair_until`
+const workerColumns = `id, worker_pub, name, owner_id, kind, created_at, approval = 'pending', enroll_addr, COALESCE(approved_at, 0), approved_by, COALESCE(first_connected_at, 0), repair_until, hub_check`
 
 func scanWorker(row interface{ Scan(...any) error }) (WorkerRow, error) {
 	var w WorkerRow
-	err := row.Scan(&w.ID, &w.Pub, &w.Name, &w.OwnerID, &w.Kind, &w.CreatedAt, &w.Pending, &w.EnrollAddr, &w.ApprovedAt, &w.ApprovedBy, &w.FirstConnectedAt, &w.RepairUntil)
+	err := row.Scan(&w.ID, &w.Pub, &w.Name, &w.OwnerID, &w.Kind, &w.CreatedAt, &w.Pending, &w.EnrollAddr, &w.ApprovedAt, &w.ApprovedBy, &w.FirstConnectedAt, &w.RepairUntil, &w.HubCheck)
 	return w, err
+}
+
+// SetWorkerHubCheck records the hub_check that the Worker reported in its
+// signed hello (how it checked this Hub). Only a change is written.
+func (s *Store) SetWorkerHubCheck(ctx context.Context, workerID, check string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE workers SET hub_check = ? WHERE id = ? AND hub_check <> ?`, check, workerID, check); err != nil {
+		return fmt.Errorf("store: set worker hub check: %w", err)
+	}
+	return nil
 }
 
 // ErrWorkerAlreadyApproved: the Worker is not pending.

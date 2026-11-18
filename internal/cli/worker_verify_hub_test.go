@@ -197,3 +197,35 @@ func TestWorkerVerifyHubForgetRemovesTheStoredInvitationKey(t *testing.T) {
 		t.Fatalf("record = %v", got)
 	}
 }
+
+// Round 2: with no Worker running, verify-hub holds the lifecycle lock through
+// the check, the migration and the write: a Worker that starts meanwhile (a
+// supervised older one) cannot take it, and the lock is released at the end.
+func TestWorkerVerifyHubHoldsTheLifecycleLock(t *testing.T) {
+	c := newPairCLI(t, nil)
+	c.pair()
+	other, _ := identity.GenerateKey()
+	var during error
+	out, err := runVerifyHubWith(t, c.state, func(d *workerVerifyHubDeps) {
+		open := d.openStore
+		d.openStore = func(ctx context.Context, dir string) (*store.Store, error) {
+			l, err := agent.LockLifecycle(dir)
+			if err == nil {
+				_ = l.Close()
+			}
+			during = err
+			return open(ctx, dir)
+		}
+	}, string(other.Fingerprint()))
+	if ee, ok := err.(*exitCodeError); !ok || ee.code != ExitError || !strings.Contains(out, agent.MismatchTitle) {
+		t.Fatalf("mismatch: %v %q", err, out)
+	}
+	if !errors.Is(during, agent.ErrStateInUse) {
+		t.Fatalf("a Worker could take the lifecycle lock while verify-hub wrote: %v", during)
+	}
+	l, err := agent.LockLifecycle(c.state)
+	if err != nil {
+		t.Fatalf("the lock was not released: %v", err)
+	}
+	_ = l.Close()
+}

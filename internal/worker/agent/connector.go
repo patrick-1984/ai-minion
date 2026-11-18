@@ -246,6 +246,10 @@ type Status struct {
 	TLSLine string
 }
 
+// ReasonNotEnrolled is the Status.Reason of an idle connector without an
+// enrollment.
+const ReasonNotEnrolled = "not enrolled"
+
 // ReasonQuarantined is the Status.Reason of an idle connector whose stored
 // hub_check is mismatch: it does not connect.
 const ReasonQuarantined = "the Hub does not match the fingerprint you gave; see minion worker verify-hub"
@@ -527,7 +531,7 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 		c.idle(ctx, "no Hub configured", moved)
 		return false
 	case !enrolled:
-		c.idle(ctx, "not enrolled", moved)
+		c.idle(ctx, ReasonNotEnrolled, moved)
 		return false
 	case enr.Check() == store.HubCheckMismatch:
 		// The stored quarantine: the operator said this is not the Hub to
