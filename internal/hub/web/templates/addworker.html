@@ -56,35 +56,40 @@
         {{end}}
       </select>
     </div>
-    <button type="submit">Create the join command</button>
+    <button type="submit">{{template "icon" "i-plus"}}<span>Create the join command</span></button>
     <div id="join-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating a join command needs JavaScript in this browser.</p></noscript>
   {{if .Data.HubFull}}<details data-hub-fingerprint>
     <summary>Pairing with a code instead? Give the Worker this Hub's fingerprint</summary>
-    <p>Hub fingerprint: <span class="fp-words">{{.Data.HubWords}}</span><br><code>{{.Data.HubFull}}</code></p>
-    <pre id="hub-join">{{.Data.JoinCommand}}</pre>
-    <button type="button" data-copy="#hub-join">Copy the command</button>
-    <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. The command needs Worker v0.11.0 or later (an older Worker does not know --hub-fingerprint: update it first). This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead: <code>minion hub identity --words</code></p>
+    <p>Hub fingerprint:</p>
+    <div><div class="copy-field"><code class="copy-value" id="cp-add-hub-words"><span class="fp-words">{{.Data.HubWords}}</span></code><button type="button" class="copy-btn" data-copy-target="#cp-add-hub-words" aria-label="Copy the Hub fingerprint words" title="Copy">{{template "copy-icons"}}</button></div></div>
+    <div><div class="copy-field"><code class="copy-value" id="cp-add-hub-full">{{.Data.HubFull}}</code><button type="button" class="copy-btn" data-copy-target="#cp-add-hub-full" aria-label="Copy the Hub fingerprint" title="Copy">{{template "copy-icons"}}</button></div></div>
+    <div><div class="copy-field"><pre class="copy-value" id="hub-join">{{.Data.JoinCommand}}</pre><button type="button" class="copy-btn" data-copy="#hub-join" data-copy-target="#hub-join" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
+    <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. The command needs Worker v0.11.0 or later (an older Worker does not know --hub-fingerprint: update it first). This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead:</p>
+    <div><div class="copy-field"><code class="copy-value" id="cp-add-identity">minion hub identity --words</code><button type="button" class="copy-btn" data-copy-target="#cp-add-identity" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
   </details>{{end}}
   <script src="/onboarding.js" defer></script>
 </section>
 <div class="method-grid">
 <section class="panel" aria-labelledby="pair-form">
-  <h2 id="pair-form">Pair with a code</h2>
-  <p class="muted">Start pairing on the machine that should become a Worker (for example with <code>minion worker pair</code>). It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
+  <h2 id="pair-form">Pair with a code <button type="button" class="info-btn" popovertarget="help-pairing-code" aria-label="About pairing codes">{{template "icon" "i-info"}}</button></h2>
+  <div class="info-pop" id="help-pairing-code" popover><p>The Worker shows a code that you enter here to confirm pairing. The code is valid for 10 minutes.</p></div>
+  <p class="muted">Start pairing on the machine that should become a Worker, for example with:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-worker-pair">minion worker pair</code><button type="button" class="copy-btn" data-copy-target="#cp-worker-pair" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
+  <p class="muted">It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
   <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="pair-code">Pairing code</label>
-      <input type="text" id="pair-code" name="code" placeholder="MN-ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32" aria-describedby="pair-code-help">
+      <input type="text" id="pair-code" name="code" placeholder="e.g. MN-ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32" aria-describedby="pair-code-help">
       <span id="pair-code-help" class="muted">Capital or small letters, with or without hyphens.</span>
     </div>
     <div class="field">
       <label for="pair-name">Name (optional)</label>
-      <input type="text" id="pair-name" name="name" autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxName}}" aria-describedby="pair-name-help">
+      <input type="text" id="pair-name" name="name" autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxName}}" aria-describedby="pair-name-help" placeholder="e.g. jordan-laptop">
       <span id="pair-name-help" class="muted">Without a name, the Worker keeps the name it announces.</span>
     </div>
-    <button type="submit">Add the Worker</button>
+    <button type="submit">{{template "icon" "i-plus"}}<span>Add the Worker</span></button>
     <div id="pair-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Adding a Worker needs JavaScript in this browser.</p></noscript>
@@ -92,7 +97,7 @@
 <section class="panel" aria-labelledby="invite-method">
   <h2 id="invite-method">Use an invitation</h2>
   <p class="muted">For a reusable key (many machines, for example from a script or an image) or an admin's infrastructure key. The key is shown once when you create it, together with commands that start the Worker and pin this Hub's fingerprint.</p>
-  <a class="btn btn-secondary" href="/invitations">Create an invitation key</a>
+  <a class="btn btn-secondary" href="/invitations">{{template "icon" "i-plus"}}<span>Create an invitation key</span></a>
 </section>
 </div>
 {{template "pairing_requests" .}}

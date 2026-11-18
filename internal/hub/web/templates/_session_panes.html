@@ -8,8 +8,10 @@
 </dl>
 <details>
   <summary>Technical details</summary>
-  <dl>
-    <dt>Worker id</dt><dd><code>{{.WorkerID}}</code></dd>
-    {{if .Version}}<dt>Protocol</dt><dd>{{.Version}}</dd>{{end}}
-  </dl>
+  <div class="details-body">
+    <dl>
+      <dt>Worker id</dt><dd><div><div class="copy-field"><span class="copy-value" id="cp-session-worker-id-{{.WorkerID}}"><code>{{.WorkerID}}</code></span><button type="button" class="copy-btn" data-copy-target="#cp-session-worker-id-{{.WorkerID}}" aria-label="Copy the Worker id" title="Copy">{{template "copy-icons"}}</button></div></div></dd>
+      {{if .Version}}<dt>Protocol</dt><dd>{{.Version}}</dd>{{end}}
+    </dl>
+  </div>
 </details>{{end}}

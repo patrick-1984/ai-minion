@@ -48,7 +48,10 @@
         {{if $panes}}<button type="button" class="btn btn-secondary" id="pane-toggle" aria-expanded="false" aria-controls="session-pane" hidden>{{template "icon" "i-panel"}}<span>{{if gt (len .Data.Panes) 1}}Conversation and details{{else}}Details{{end}}</span></button>{{end}}
         {{if and .Data.Operate (not .Embed) .Data.NewRefused}}<div data-hidden-refused>
           <button type="button" class="btn btn-secondary" disabled aria-describedby="new-refused">New session on {{.Data.Worker}}</button>
-          <p class="help" id="new-refused">{{.Data.NewRefused}}</p>
+          <details class="note-more">
+            <summary><span class="summary-title">Why can't I start a session?</span></summary>
+            <div class="details-body"><p class="help" id="new-refused">{{.Data.NewRefused}}</p></div>
+          </details>
         </div>{{else if and .Data.Operate (not .Embed)}}<form method="post" action="{{.Data.NewURL}}" hx-post="{{.Data.NewURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="New session">
           <button type="submit" class="btn btn-secondary">New session on {{.Data.Worker}}</button>
         </form>{{end}}
@@ -58,7 +61,8 @@
       <li>Worker <strong>{{.Data.Worker}}</strong> <span class="badge" data-online="{{if .Data.Online}}true{{else}}false{{end}}">{{if .Data.Online}}online{{else}}offline{{end}}</span></li>
       {{if .Data.Owner}}<li>Owner <strong>{{.Data.Owner}}</strong></li>{{end}}
       <li>Access <strong>{{if .Data.Operate}}You can send input{{else}}View only{{end}}</strong></li>
-      {{if .Data.Operate}}<li data-unasked hidden><label title="Send text, keys and the task at once, also to a shell, an open dialog or a busy agent (kept in this browser)"><input type="checkbox" id="unasked-session"> Send without asking</label> <span class="muted" id="unasked-note"></span></li>{{end}}
+      {{if .Data.Operate}}<li data-unasked hidden><label title="Send text, keys and the task at once, also to a shell, an open dialog or a busy agent (kept in this browser)"><input type="checkbox" id="unasked-session"> Send without asking</label> <button type="button" class="info-btn" popovertarget="help-send-unasked" aria-label="About sending without asking">{{template "icon" "i-info"}}</button> <span class="muted" id="unasked-note"></span>
+        <div class="info-pop" id="help-send-unasked" popover><p>Text, keys and task messages skip the confirmation for a shell, an open dialog or a busy agent. The Hub still checks dialog answers.</p></div></li>{{end}}
     </ul>
   </header>
   {{if .Data.Notice}}<p class="notice notice-warning" role="status">{{.Data.Notice}}</p>{{end}}
@@ -128,7 +132,7 @@
           <form method="post" action="{{.Data.TaskURL}}" hx-post="{{.Data.TaskURL}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="Set the task">
             <div class="field">
               <label for="task-text">Task</label>
-              <input type="text" id="task-text" name="task" value="{{.Data.Task}}" data-saved="{{.Data.Task}}" autocomplete="off" spellcheck="false" maxlength="1024" aria-describedby="task-help">
+              <input type="text" id="task-text" name="task" value="{{.Data.Task}}" data-saved="{{.Data.Task}}" autocomplete="off" spellcheck="false" maxlength="1024" aria-describedby="task-help" placeholder="e.g. Review the build logs">
               <span id="task-help" class="help">Task is a label for this session. Saving it does not send terminal input.</span>
             </div>
             <div class="form-actions"><button type="submit">Save task</button><span class="draft-state" id="task-state" hidden>Unsaved changes</span></div>

@@ -4,7 +4,8 @@
 <div class="stack">
 <p class="notice notice-info" role="note">A Worker that enrolls with a key starts as <strong>pending</strong> and receives no operations until you approve it on the Workers page. A stolen key therefore cannot operate anything by itself.</p>
 <section class="panel" aria-labelledby="create-invitation">
-  <h2 id="create-invitation">Create an invitation key</h2>
+  <h2 id="create-invitation">Create an invitation key <button type="button" class="info-btn" popovertarget="help-invitation-key" aria-label="About invitation keys"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></h2>
+  <div class="info-pop" id="help-invitation-key" popover><p>A Worker uses the key to enroll itself without a pairing code. It starts pending and cannot receive operations until approved.</p></div>
   <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="inv-mode">Use</label>
@@ -16,7 +17,8 @@
     </div>
     <div class="field">
       <label for="inv-maxuses">Enrollments (reusable keys only; blank is no limit)</label>
-      <input type="number" id="inv-maxuses" name="max_uses" min="1" inputmode="numeric">
+      <input type="number" id="inv-maxuses" name="max_uses" aria-describedby="inv-maxuses-help" min="1" inputmode="numeric">
+      <span id="inv-maxuses-help" class="field-hint">Applies only when Use is Reusable. One-time keys enroll one Worker.</span>
     </div>
     <div class="field">
       <label for="inv-ttl">Valid for</label>
@@ -33,7 +35,7 @@
     </div>
     <div class="field">
       <label for="inv-name">Name (optional, to recognise the key in the list)</label>
-      <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64">
+      <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64" placeholder="e.g. lab worker setup">
     </div>
     <div class="field">
       <label for="inv-kind">Kind</label>
@@ -42,7 +44,7 @@
         <option value="infrastructure">Infrastructure (shared, only an admin can reassign it)</option>
       </select>
     </div>
-    <button type="submit">Create the key</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create the key</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
@@ -50,8 +52,8 @@
 <section aria-labelledby="invitation-list">
   <h2 id="invitation-list">All invitation keys</h2>
   <p class="muted"><a href="/invitations">Show only my keys</a></p>
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Name</th><th scope="col">Use</th><th scope="col">Kind</th><th scope="col">Uses</th><th scope="col">Expires</th><th scope="col">State</th><th scope="col">Created by</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Use</th><th scope="col" data-sort="text">Kind</th><th scope="col">Uses</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">State</th><th scope="col" data-sort="text">Created by</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     <tr>
       <th scope="row">build-farm</th>
@@ -60,9 +62,9 @@
       <td>3</td>
       <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
       <td>active</td>
-      <td>0190a1b2-c3d4-7e5f-8a6b-0000000000b0</td>
+      <td class="cell-clamp" title="0190a1b2-c3d4-7e5f-8a6b-0000000000b0" tabindex="0">0190a1b2-c3d4-7e5f-8a6b-0000000000b0</td>
       <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger">Revoke build-farm</button>
+          <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke build-farm</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" aria-live="polite"></span>
         </form></td>
     </tr>
@@ -73,9 +75,9 @@
       <td>0 of 1</td>
       <td>never</td>
       <td>active</td>
-      <td>0190a1b2-c3d4-7e5f-8a6b-0000000000b0</td>
+      <td class="cell-clamp" title="0190a1b2-c3d4-7e5f-8a6b-0000000000b0" tabindex="0">0190a1b2-c3d4-7e5f-8a6b-0000000000b0</td>
       <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger">Revoke laptop</button>
+          <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke laptop</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" aria-live="polite"></span>
         </form></td>
     </tr>
@@ -86,7 +88,7 @@
       <td>1 of 1</td>
       <td><time datetime="2026-11-09T08:30:00Z">2026-11-09 08:30 UTC</time></td>
       <td>exhausted</td>
-      <td>0190a1b2-c3d4-7e5f-8a6b-0000000000b0</td>
+      <td class="cell-clamp" title="0190a1b2-c3d4-7e5f-8a6b-0000000000b0" tabindex="0">0190a1b2-c3d4-7e5f-8a6b-0000000000b0</td>
       <td><span class="muted">none</span></td>
     </tr>
     

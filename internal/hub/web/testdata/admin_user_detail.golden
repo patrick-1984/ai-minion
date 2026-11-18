@@ -66,9 +66,9 @@
     <tbody>
     <tr>
       <th scope="row">Okta</th>
-      <td>https://idp.example.com</td>
-      <td>sub-123</td>
-      <td>bob@example.com</td>
+      <td><div><div class="copy-field"><code class="copy-value cell-clamp" id="cp-user-issuer-id-1" title="https://idp.example.com" tabindex="0">https://idp.example.com</code><button type="button" class="copy-btn" data-copy-target="#cp-user-issuer-id-1" aria-label="Copy the issuer URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div></td>
+      <td class="cell-clamp" title="sub-123" tabindex="0">sub-123</td>
+      <td class="cell-clamp" title="bob@example.com" tabindex="0">bob@example.com</td>
       <td>
         <form method="post" hx-post="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002/identities/id-1/detach" hx-target="#detach-id-1" hx-swap="innerHTML" hx-confirm="Detach this identity? The user can no longer sign in with it." hx-disabled-elt="find button">
           <button type="submit" class="btn-secondary">Detach</button>

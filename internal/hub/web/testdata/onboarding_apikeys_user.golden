@@ -3,11 +3,12 @@
 <div class="page-head"><div><h1>API keys</h1><p>An API key lets a tool or script use the Hub on your behalf, limited to what you choose here. A key can never do more than you can.</p></div></div>
 <div class="stack">
 <section class="panel" aria-labelledby="create-apikey">
-  <h2 id="create-apikey">Create an API key</h2>
+  <h2 id="create-apikey">Create an API key <button type="button" class="info-btn" popovertarget="help-api-key-scopes" aria-label="About API key scopes"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></h2>
+  <div class="info-pop" id="help-api-key-scopes" popover><p>A scope says what the key can reach and which actions it can take there. Choose only what the tool needs.</p></div>
   <form method="post" hx-post="/api-keys" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="key-name">Name</label>
-      <input type="text" id="key-name" name="name" autocomplete="off" required maxlength="64">
+      <input type="text" id="key-name" name="name" autocomplete="off" required maxlength="64" placeholder="e.g. build monitor">
     </div>
     <fieldset class="field">
       <legend>What the key may reach</legend>
@@ -19,8 +20,8 @@
     </fieldset>
     <div class="field">
       <label for="key-session">Only one session (optional)</label>
-      <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help">
-      <span id="key-session-help" class="muted">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
+      <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help" placeholder="e.g. nightly-build">
+      <span id="key-session-help" class="muted field-hint">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
     </div>
     <fieldset class="field">
       <legend>What the key may do</legend>
@@ -48,44 +49,44 @@
         
       </select>
     </div>
-    <button type="submit">Create the key</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create the key</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
 </section>
 <section aria-labelledby="apikey-list">
   <h2 id="apikey-list">Your API keys</h2>
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Name</th><th scope="col">Key</th><th scope="col">Reaches and may do</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Key</th><th scope="col" data-sort="text">Reaches and may do</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">Last used</th><th scope="col" data-sort="text">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     <tr>
       <th scope="row">ci</th>
-      <td><code>mn_mfrggzdf...</code></td>
-      <td>Worker pi: read, operate</td>
+      <td class="cell-clamp" title="mn_mfrggzdf..." tabindex="0"><code>mn_mfrggzdf...</code></td>
+      <td class="cell-clamp" title="Worker pi: read, operate" tabindex="0">Worker pi: read, operate</td>
       <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
       <td>2026-11-09 07:30 UTC</td>
       <td>active</td>
       <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger">Revoke ci</button>
+          <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke ci</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" aria-live="polite"></span>
         </form></td>
     </tr>
     <tr>
       <th scope="row">mcp</th>
-      <td><code>mn_mztwq2lk...</code></td>
-      <td>my account: read</td>
+      <td class="cell-clamp" title="mn_mztwq2lk..." tabindex="0"><code>mn_mztwq2lk...</code></td>
+      <td class="cell-clamp" title="my account: read" tabindex="0">my account: read</td>
       <td>never</td>
       <td>never used</td>
       <td>active</td>
       <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger">Revoke mcp</button>
+          <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke mcp</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" aria-live="polite"></span>
         </form></td>
     </tr>
     <tr>
       <th scope="row">gone</th>
-      <td><code>mn_nnwg23tp...</code></td>
-      <td>session build on nuc: message</td>
+      <td class="cell-clamp" title="mn_nnwg23tp..." tabindex="0"><code>mn_nnwg23tp...</code></td>
+      <td class="cell-clamp" title="session build on nuc: message" tabindex="0">session build on nuc: message</td>
       <td>never</td>
       <td>never used</td>
       <td>revoked</td>

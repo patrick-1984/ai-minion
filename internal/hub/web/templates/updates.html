@@ -8,12 +8,13 @@
     <div><dt>Channel</dt><dd>{{if .Channel}}{{.Channel}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
     <div><dt>Newest in the channel</dt><dd>{{if .Latest}}{{if .ReleaseURL}}<a href="{{.ReleaseURL}}" target="_blank" rel="noopener">{{.Latest}}</a>{{else}}{{.Latest}}{{end}}{{if .Newer}} <span class="badge" data-tone="warning">newer</span>{{else}} <span class="muted">(up to date)</span>{{end}}{{else}}<span class="muted">not checked yet</span>{{end}}</dd></div>
   </dl>
+  {{if .ReleaseURL}}<div><div class="copy-field"><code class="copy-value" id="cp-update-url">{{.ReleaseURL}}</code><button type="button" class="copy-btn" data-copy-target="#cp-update-url" aria-label="Copy the release URL" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
   <div id="list-result" aria-live="polite"></div>
   {{if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready." class="row-actions">
     <button type="submit" class="btn" data-control="hub-update">Update the Hub to {{.Latest}}</button>
   </form>
   {{else if .Newer}}<p class="notice notice-info" role="status" data-hub-manual>The Hub cannot update itself here: {{.Reason}}.</p>
-  <p class="help">{{.Command}}</p>
+  <div><div class="copy-field"><pre class="copy-value" id="cp-update-instructions">{{.Command}}</pre><button type="button" class="copy-btn" data-copy-target="#cp-update-instructions" aria-label="Copy the update instructions" title="Copy">{{template "copy-icons"}}</button></div></div>
   {{end}}
 </section>
 {{end}}
