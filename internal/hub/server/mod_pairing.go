@@ -63,6 +63,9 @@ func initPairingAPI(_ context.Context, env *Env) error {
 	if err := api.RegisterPairing(handlers, pairingClaimer{ps: ps, st: st, az: az}); err != nil {
 		return fmt.Errorf("pairing: register pairing_claim: %w", err)
 	}
+	if err := api.RegisterPairingRequests(handlers, ps); err != nil {
+		return fmt.Errorf("pairing: register the pairing requests: %w", err)
+	}
 	auditLog, err := Require[*audit.Log](env)
 	if err != nil {
 		return err

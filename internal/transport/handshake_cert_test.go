@@ -814,8 +814,11 @@ func TestHubRechecksTheDeadlineAfterABlockingPairingPassword(t *testing.T) {
 	if proto.CodeOf(o.hubErr) != proto.CodeHubCertExpired {
 		t.Fatalf("hub error %v", o.hubErr)
 	}
-	if got := strings.Join(frameTypes(t, o.hWire), ","); got != "error" {
-		t.Errorf("hub sent %s, want only the error frame (no hello after the deadline)", got)
+	// Since v0.12.0 the hello goes out before the wait (the Worker shows the
+	// Hub's fingerprint while it waits); after the deadline nothing but the
+	// error frame follows: no pake.msg, no signature.
+	if got := strings.Join(frameTypes(t, o.hWire), ","); got != "hello,error" {
+		t.Errorf("hub sent %s, want the hello and then only the error frame (nothing signed after the deadline)", got)
 	}
 }
 

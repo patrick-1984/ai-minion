@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -280,6 +281,23 @@ type WorkerConfig struct {
 	// Worker writes its pair_resume record here, durably; an error aborts the
 	// handshake and sig_worker is never sent (section 12.2).
 	BeforeSigWorker func(HubAuth) error
+	// OnHubHello, when set, is called in pair_code mode with the root key of
+	// the Hub hello once its certificate verified under that root, before the
+	// first CPace message. It is display information only: the key is not
+	// authenticated yet (the CPace confirmation, or an admitted request and
+	// sig_hub, authenticate it later, and the transcript binds it).
+	// An error aborts the handshake before any CPace message is sent.
+	OnHubHello func(root ed25519.PublicKey) error
+	// AllowAdmit lets a pair_code handshake accept the Hub's pair.admit in
+	// place of its pake.msg (an administrator admitted this Worker's pairing
+	// request). The caller sets it only when it announces
+	// proto.FeaturePairAdmit, which it does only when the Hub root is checked
+	// some other way than by the code (see agent.PairParams.AllowAdmit).
+	AllowAdmit bool
+	// AdmitAllowed, when set, is asked after OnHubHello: false refuses an
+	// admission on this connection although AllowAdmit is set (the code
+	// still pairs).
+	AdmitAllowed func() bool
 	// Timeout bounds the whole handshake; zero means
 	// DefaultHandshakeTimeout.
 	Timeout time.Duration
@@ -318,6 +336,10 @@ type WorkerResult struct {
 	RatchetChanged bool
 	// Expiry is the end of this connection (section 11.3).
 	Expiry Expiry
+	// Admitted is true for a pair_code handshake that the Hub completed with
+	// pair.admit instead of CPace: the Hub was authenticated by sig_hub
+	// against the root of its hello, not by the pairing code.
+	Admitted bool
 }
 
 func (cfg *WorkerConfig) validate() error {
@@ -481,8 +503,14 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 	verdict := scope.verdict(candidate, cert.Serial, certHashV)
 
 	var session *pake.Session
+	admitted := false
 	if cfg.Mode == ModePairCode {
-		if session, err = workerPake(conn, cfg, hash[:], cert.OpPub); err != nil {
+		if cfg.OnHubHello != nil {
+			if err := cfg.OnHubHello(bytes.Clone(hubPub)); err != nil {
+				return nil, err
+			}
+		}
+		if session, admitted, err = workerPake(conn, cfg, hash[:], cert.OpPub); err != nil {
 			return nil, err
 		}
 	}
@@ -505,6 +533,7 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 		Mode: cfg.Mode, Root: candidate, Pin: identity.Pin{Pub: bytes.Clone(pin.Pub), Seq: pin.Seq},
 		Cert: cert, CertSHA256: certHashV, Ratchet: newRatchet,
 		RatchetChanged: cfg.Mode != ModeConnect || !newRatchet.Equal(configured), Expiry: expiry,
+		Admitted: admitted,
 	}
 	if cfg.BeforeSigWorker != nil {
 		if err := cfg.BeforeSigWorker(auth); err != nil {
@@ -543,6 +572,7 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 		Ratchet:        newRatchet,
 		RatchetChanged: auth.RatchetChanged,
 		Expiry:         expiry,
+		Admitted:       admitted,
 	}, nil
 }
 
@@ -613,34 +643,57 @@ func resolvePin(pin identity.Pin, hubPub ed25519.PublicKey, chain []identity.Tra
 // workerPake runs the Worker side of the AD-8 exchange: pake.msg, pake.msg,
 // pake.confirm in both directions. It returns the CPace session once the
 // Hub's confirmation tag and pake-confirm signature verified.
-func workerPake(conn net.Conn, cfg WorkerConfig, hash []byte, opPub ed25519.PublicKey) (*pake.Session, error) {
+//
+// With cfg.AllowAdmit the Hub may answer the Worker's pake.msg with pair.admit
+// instead (an administrator admitted the pairing request): then no CPace
+// follows, nothing about the code was exposed (the Worker's confirmation is
+// never sent), and admitted is true. The caller still requires sig_hub over the
+// transcript, made by the operational key certified by the root of the hello.
+func workerPake(conn net.Conn, cfg WorkerConfig, hash []byte, opPub ed25519.PublicKey) (session *pake.Session, admitted bool, err error) {
 	params := pake.Params{Password: cfg.PairingCode.Password(), SessionID: hash}
 	init, msgA, err := pake.Start(params)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if _, err := sendFrame(conn, pakeMsgFrame{Type: proto.TypePakeMsg, Msg: msgA}); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	body, err := expectFrame(conn, proto.TypePakeMsg)
+	wants := []string{proto.TypePakeMsg}
+	if cfg.AllowAdmit && (cfg.AdmitAllowed == nil || cfg.AdmitAllowed()) {
+		wants = append(wants, proto.TypePairAdmit)
+	}
+	body, got, err := expectFrameOf(conn, wants...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if got == proto.TypePairAdmit {
+		var f pairAdmitFrame
+		if err := decode(body, &f); err != nil {
+			return nil, false, err
+		}
+		return nil, true, nil
 	}
 	var msgB pakeMsgFrame
 	if err := decode(body, &msgB); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	session, err := init.Finish(msgB.Msg)
+	session, err = init.Finish(msgB.Msg)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrProtocol, err)
+		return nil, false, fmt.Errorf("%w: %w", ErrProtocol, err)
 	}
 	if err := sendConfirm(conn, session, cfg.Key, hash); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := expectConfirm(conn, session, opPub, hash); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return session, nil
+	return session, false, nil
+}
+
+// pairAdmitFrame is the Hub's pair.admit: it carries nothing but its type. What
+// authenticates the Hub afterwards is sig_hub over the transcript hash.
+type pairAdmitFrame struct {
+	Type string `json:"type"`
 }
 
 // ------------------------------------------------------------------- Hub
@@ -669,12 +722,27 @@ type HubConfig struct {
 	// rate limiting and pairing id collisions).
 	Admit func(WorkerHello) error
 	// PairingPassword returns the CPace password of the live pairing code
-	// with the given public pairing id. It is required for pair_code mode;
-	// an error aborts the handshake and is sent like an Admit error.
+	// with the given public pairing id. An error aborts the handshake and is
+	// sent like an Admit error. PairingWait, when set, is used instead.
 	PairingPassword func(pairingID string) ([]byte, error)
+	// PairingWait waits for the decision on a pair_code connection: the
+	// password of a claimed code, or an administrator's admission of the
+	// pairing request. The Hub calls it after it sent its hello and read the
+	// Worker's first pake.msg, so that the waiting Worker can show the Hub's
+	// fingerprint. An error aborts the handshake and is sent like an Admit
+	// error. One of PairingWait and PairingPassword is required for pair_code.
+	PairingWait func(pairingID string) (PairingAnswer, error)
 	// Timeout bounds the whole handshake; zero means
 	// DefaultHandshakeTimeout.
 	Timeout time.Duration
+}
+
+// PairingAnswer is the decision on a waiting pair_code connection: exactly
+// one of Password (a user claimed the code) and Admit (an administrator
+// admitted the pairing request) is set.
+type PairingAnswer struct {
+	Password []byte
+	Admit    bool
 }
 
 // HubResult is the outcome of a successful Hub handshake.
@@ -691,6 +759,9 @@ type HubResult struct {
 	Version proto.Version
 	// TranscriptHash identifies this handshake; signed revocations use it.
 	TranscriptHash [TranscriptHashSize]byte
+	// Admitted is true for a pair_code handshake completed by pair.admit (no
+	// CPace): the Worker proved its key with sig_worker only.
+	Admitted bool
 }
 
 // HubHandshake runs the Hub side of the AD-6 handshake (protocol 3.0) over conn. On any
@@ -741,14 +812,8 @@ func HubHandshake(conn net.Conn, cfg HubConfig) (res *HubResult, err error) {
 	if now().UnixMilli() >= cfg.Cert.NotAfterMs {
 		return nil, abortWith(conn, proto.NewError(proto.CodeHubCertExpired, "the Hub certificate has expired"))
 	}
-	var password []byte
-	if wh.Mode == ModePairCode {
-		if cfg.PairingPassword == nil {
-			return nil, abortWith(conn, proto.NewError(proto.CodePairingCodeInvalid, "pairing is not available"))
-		}
-		if password, err = cfg.PairingPassword(wh.PairingID); err != nil {
-			return nil, abortWith(conn, err)
-		}
+	if wh.Mode == ModePairCode && cfg.PairingWait == nil && cfg.PairingPassword == nil {
+		return nil, abortWith(conn, proto.NewError(proto.CodePairingCodeInvalid, "pairing is not available"))
 	}
 
 	eph, err := ecdh.X25519().GenerateKey(rand.Reader)
@@ -769,11 +834,6 @@ func HubHandshake(conn net.Conn, cfg HubConfig) (res *HubResult, err error) {
 	if wh.Mode == ModeConnect {
 		hh.Chain = cfg.Chain
 	}
-	// PairingPassword may block (the Hub waits for the user to claim the code),
-	// so the deadline is read again right before the hello goes out.
-	if now().UnixMilli() >= cfg.Cert.NotAfterMs {
-		return nil, abortWith(conn, proto.NewError(proto.CodeHubCertExpired, "the Hub certificate has expired"))
-	}
 	hubBytes, err := sendFrame(conn, hh)
 	if err != nil {
 		return nil, err
@@ -782,8 +842,34 @@ func HubHandshake(conn net.Conn, cfg HubConfig) (res *HubResult, err error) {
 	workerPub := ed25519.PublicKey(wh.WorkerPub)
 
 	var session *pake.Session
+	admitted := false
 	if wh.Mode == ModePairCode {
-		if session, err = hubPake(conn, cfg.Key, password, hash[:], workerPub); err != nil {
+		// The hello goes out at once (v0.12.0), so that the waiting Worker can
+		// show the Hub's fingerprint; the transcript binds it into CPace. The
+		// Worker answers with its pake.msg, which reveals nothing about the
+		// code, and the Hub then waits for the claim or the admission.
+		msgA, err := readPakeMsg(conn)
+		if err != nil {
+			return nil, err
+		}
+		ans, err := cfg.pairingAnswer(wh.PairingID)
+		if err != nil {
+			return nil, abortWith(conn, err)
+		}
+		// The wait can be long: no signature leaves after the certificate's
+		// end.
+		if now().UnixMilli() >= cfg.Cert.NotAfterMs {
+			return nil, abortWith(conn, proto.NewError(proto.CodeHubCertExpired, "the Hub certificate has expired"))
+		}
+		if ans.Admit {
+			if !hasFeature(wh.Features, proto.FeaturePairAdmit) {
+				return nil, abortWith(conn, proto.NewError(proto.CodeInvalidArgument, "this Worker cannot be admitted without its code"))
+			}
+			if _, err := sendFrame(conn, pairAdmitFrame{Type: proto.TypePairAdmit}); err != nil {
+				return nil, err
+			}
+			admitted = true
+		} else if session, err = hubPake(conn, cfg.Key, ans.Password, hash[:], workerPub, msgA); err != nil {
 			return nil, err
 		}
 	}
@@ -803,7 +889,40 @@ func HubHandshake(conn net.Conn, cfg HubConfig) (res *HubResult, err error) {
 	if err != nil {
 		return nil, err
 	}
-	return &HubResult{Channel: ch, Worker: wh, WorkerPub: workerPub, Version: version, TranscriptHash: hash}, nil
+	return &HubResult{Channel: ch, Worker: wh, WorkerPub: workerPub, Version: version, TranscriptHash: hash, Admitted: admitted}, nil
+}
+
+// pairingAnswer waits for the decision on a pair_code connection through
+// PairingWait, or PairingPassword when only that one is set.
+func (cfg *HubConfig) pairingAnswer(id string) (PairingAnswer, error) {
+	if cfg.PairingWait != nil {
+		return cfg.PairingWait(id)
+	}
+	pw, err := cfg.PairingPassword(id)
+	return PairingAnswer{Password: pw}, err
+}
+
+// hasFeature reports whether the hello's feature list names f.
+func hasFeature(features []string, f string) bool {
+	for _, x := range features {
+		if x == f {
+			return true
+		}
+	}
+	return false
+}
+
+// readPakeMsg reads the Worker's pake.msg.
+func readPakeMsg(conn net.Conn) ([]byte, error) {
+	body, err := expectFrame(conn, proto.TypePakeMsg)
+	if err != nil {
+		return nil, err
+	}
+	var msgA pakeMsgFrame
+	if err := decode(body, &msgA); err != nil {
+		return nil, err
+	}
+	return msgA.Msg, nil
 }
 
 func checkWorkerHello(h *WorkerHello) error {
@@ -829,16 +948,8 @@ func checkWorkerHello(h *WorkerHello) error {
 // hubPake runs the Hub side of the AD-8 exchange. It sends its confirmation
 // only after the Worker's confirmation verified, so a wrong code learns
 // nothing from the Hub beyond the error frame.
-func hubPake(conn net.Conn, key *identity.Key, password, hash []byte, workerPub ed25519.PublicKey) (*pake.Session, error) {
-	body, err := expectFrame(conn, proto.TypePakeMsg)
-	if err != nil {
-		return nil, err
-	}
-	var msgA pakeMsgFrame
-	if err := decode(body, &msgA); err != nil {
-		return nil, err
-	}
-	session, msgB, err := pake.Respond(pake.Params{Password: password, SessionID: hash}, msgA.Msg)
+func hubPake(conn net.Conn, key *identity.Key, password, hash []byte, workerPub ed25519.PublicKey, msgA []byte) (*pake.Session, error) {
+	session, msgB, err := pake.Respond(pake.Params{Password: password, SessionID: hash}, msgA)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrProtocol, err)
 	}
@@ -977,27 +1088,37 @@ func sendFrame(w io.Writer, v any) ([]byte, error) {
 // and their wording is never shown: the error has the peer's code when this
 // build knows it and a fixed local text, see [unauthenticatedPeerError].
 func expectFrame(r io.Reader, want string) ([]byte, error) {
+	body, _, err := expectFrameOf(r, want)
+	return body, err
+}
+
+// expectFrameOf is expectFrame for a frame of one of several wanted types; it
+// returns the body and the type that arrived.
+func expectFrameOf(r io.Reader, wants ...string) ([]byte, string, error) {
 	body, err := proto.ReadFrame(r, proto.HandshakeFrameLimit)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	got, err := proto.FrameType(body)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	for _, w := range wants {
+		if got == w {
+			return body, got, nil
+		}
 	}
 	switch got {
-	case want:
-		return body, nil
 	case proto.TypeError:
 		var f proto.ErrorFrame
 		if err := proto.DecodeFrame(body, &f); err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return nil, unauthenticatedPeerError(f.Code, f.Details)
+		return nil, "", unauthenticatedPeerError(f.Code, f.Details)
 	case proto.TypeNotEnrolled:
-		return nil, proto.NewError(proto.CodeNotEnrolled, "the Hub does not know this Worker")
+		return nil, "", proto.NewError(proto.CodeNotEnrolled, "the Hub does not know this Worker")
 	}
-	return nil, fmt.Errorf("%w: got %q frame, want %q", ErrProtocol, got, want)
+	return nil, "", fmt.Errorf("%w: got %q frame, want %q", ErrProtocol, got, strings.Join(wants, `" or "`))
 }
 
 // peerReasons are the reasons a pre-authentication error frame may name in
@@ -1006,7 +1127,8 @@ func expectFrame(r io.Reader, want string) ([]byte, error) {
 // travels. Tokens are lower-case ASCII; anything else is ignored.
 var peerReasons = map[proto.Code]map[string]string{
 	proto.CodePairingCodeInvalid: {
-		"expired": "the pairing code expired; the Worker shows a new one",
+		"expired":  "the pairing code expired; the Worker shows a new one",
+		"rejected": "the pairing request was rejected on the Hub; the Worker shows a new code",
 	},
 }
 
@@ -1028,6 +1150,7 @@ func unauthenticatedPeerError(code proto.Code, details json.RawMessage) *proto.E
 			"the peer answered with an error code this client does not know; the peer is not authenticated, its wording is not shown")
 	}
 	text := code.Description()
+	reason := ""
 	var d struct {
 		Reason       string `json:"reason"`
 		AttemptsLeft *int   `json:"attempts_left"`
@@ -1035,12 +1158,38 @@ func unauthenticatedPeerError(code proto.Code, details json.RawMessage) *proto.E
 	if len(details) > 0 && len(details) <= 256 && json.Unmarshal(details, &d) == nil {
 		if r, ok := peerReasons[code][d.Reason]; ok {
 			text = r
+			reason = d.Reason
 		}
 		if d.AttemptsLeft != nil && *d.AttemptsLeft >= 0 && *d.AttemptsLeft <= maxPeerAttempts {
 			text += fmt.Sprintf(" (%d attempts left)", *d.AttemptsLeft)
 		}
 	}
-	return proto.NewError(code, "reported by a peer that is not authenticated (its wording is not shown): "+text)
+	e := proto.NewError(code, "reported by a peer that is not authenticated (its wording is not shown): "+text)
+	if reason != "" {
+		// Only a token of the closed set travels on, so that the Worker can act
+		// on it (a new code); it is never shown as the peer's text.
+		e.Details = json.RawMessage(`{"reason":"` + reason + `"}`)
+	}
+	return e
+}
+
+// PeerReason returns the reason token of the closed set [peerReasons] that an
+// unauthenticated error frame named, or "".
+func PeerReason(err error) string {
+	var pe *proto.Error
+	if !errors.As(err, &pe) || len(pe.Details) == 0 {
+		return ""
+	}
+	var d struct {
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(pe.Details, &d) != nil {
+		return ""
+	}
+	if _, ok := peerReasons[pe.Code][d.Reason]; !ok {
+		return ""
+	}
+	return d.Reason
 }
 
 func decode(body []byte, v any) error {

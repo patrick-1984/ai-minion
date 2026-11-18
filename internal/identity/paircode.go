@@ -110,3 +110,36 @@ func (c PairingCode) PairingID() string {
 	}
 	return c.chars[:pairingIDChars]
 }
+
+// ValidPairingID reports whether s is a pairing id in its canonical form: four
+// uppercase Crockford base32 characters, as [PairingCode.PairingID] returns.
+func ValidPairingID(s string) bool {
+	if len(s) != pairingIDChars {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if strings.IndexByte(crockford, s[i]) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// CanonicalPairingID turns a pairing id as typed (any letter case, the
+// Crockford aliases O, I and L) into its canonical form; ok is false for
+// anything else.
+func CanonicalPairingID(s string) (id string, ok bool) {
+	b := []byte(strings.ToUpper(strings.TrimSpace(s)))
+	for i, c := range b {
+		switch c {
+		case 'O':
+			b[i] = '0'
+		case 'I', 'L':
+			b[i] = '1'
+		}
+	}
+	if !ValidPairingID(string(b)) {
+		return "", false
+	}
+	return string(b), true
+}

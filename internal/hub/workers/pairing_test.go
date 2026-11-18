@@ -348,17 +348,17 @@ func TestAUsedCodeIsNeverAcceptedAgain(t *testing.T) {
 	ctx := context.Background()
 	now := newFakeClock().Now()
 	if err := st.PutPairing(ctx, store.PairingRow{
-		ID: "USED", Status: store.PairingUsed, CreatedAt: store.UnixMS(now), ExpiresAt: store.UnixMS(now.Add(PairingTTL)),
+		ID: "5ED0", Status: store.PairingUsed, CreatedAt: store.UnixMS(now), ExpiresAt: store.UnixMS(now.Add(PairingTTL)),
 		OwnerID: "u1", WorkerID: "w1",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := ps.Await(ctx, "USED", testIP)
+	_, err := ps.Await(ctx, "5ED0", testIP)
 	_ = wantPairingCode(t, err, proto.CodePairingIDCollision)
 	if ps.Pending() != 0 {
 		t.Error("a used id was held as pending")
 	}
-	_, err = ps.Claim(ctx, ClaimRequest{UserID: "u1", Code: "USED1234", IP: testIP})
+	_, err = ps.Claim(ctx, ClaimRequest{UserID: "u1", Code: "5ED01234", IP: testIP})
 	_ = wantPairingCode(t, err, proto.CodePairingCodeInvalid)
 }
 
