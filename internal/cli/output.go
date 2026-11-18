@@ -21,6 +21,27 @@ const (
 	ExitUsage         = 2
 	ExitFailedNotSent = 3
 	ExitPartial       = 4 // partial or unknown
+	// ExitNeedsAdmin means the command needs rights this process does not
+	// have (an elevated prompt on Windows); the message names the command to
+	// run instead.
+	ExitNeedsAdmin = 21
+)
+
+// Process exit statuses of the Worker lifecycle and tray commands (tray
+// architecture v2 section 3, tickets v3 C8). They start at 20, clear of the op
+// outcomes 0-4 and the Hub identity statuses 3-7; 21 is [ExitNeedsAdmin]. A
+// command with --json prints the matching code word in its one JSON object
+// (worker_result.go).
+const (
+	ExitWorkerTooOld     = 20 // the running Worker refused an op it does not know
+	ExitNotInForce       = 22 // saved, but not confirmed in force
+	ExitSessionsWouldEnd = 23 // sessions would end; repeat with --accept-loss N
+	ExitNotRunning       = 24 // needs a running Worker
+	ExitPaused           = 25 // refused while the Worker is paused
+	ExitNotInstalled     = 26 // no service, unit or agent to start
+	ExitStateChanged     = 27 // a precondition no longer holds; nothing changed
+	ExitSchemaMismatch   = 28 // the stopped Worker's database has another schema
+	ExitCountUnavailable = 29 // the sessions that would end cannot be counted
 )
 
 // exitCodeError ends the process with a status without an error message: the

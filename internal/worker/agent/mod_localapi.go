@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -143,7 +142,9 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 	// does not know the qualified name and refuses it as an unsupported operation.
 	if base, need := localapi.SplitOp(rq.Op); len(need) > 0 {
 		// The local socket also forwards session control (local_forward.go).
-		have := proto.NormaliseFeatures(append(l.ex.Features(), proto.FeatureSessionForward))
+		// The local-only ops add their own capabilities here, and only here
+		// (localops.go): they are never announced to the Hub.
+		have := proto.NormaliseFeatures(append(append(l.ex.Features(), proto.FeatureSessionForward), localFeatures...))
 		for _, f := range need {
 			if !proto.HasFeature(have, f) {
 				return nil, l.protoError(base, apiErr(proto.CodeUnsupportedOp, "", fmt.Sprintf("this Worker does not announce the feature %q that %s needs; nothing was sent", f, base)))
@@ -151,24 +152,14 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		}
 		rq.Op = base
 	}
-	if rq.Op == OpLocalStop {
-		if l.stop == nil {
-			return nil, l.protoError(rq.Op, apiErr(proto.CodeUnsupportedOp, "", "this Worker cannot be stopped over its control socket"))
-		}
-		// Reply first: the stop closes this socket.
-		go func() { time.Sleep(200 * time.Millisecond); l.stop() }()
-		return json.RawMessage(`{"stopping":true}`), nil
-	}
-	if rq.Op == OpLocalStatus && l.live != nil {
-		raw, err := statusOp(ctx, l.stateDir, l.instance, l.live)
+	// Local-only management ops are served here, before a request can be
+	// forwarded to the Hub or reach the Executor (localops.go).
+	if h, ok := localOpFor(rq.Op); ok {
+		raw, err := h(l, ctx, rq)
 		if err != nil {
 			return nil, l.protoError(rq.Op, err)
 		}
 		return raw, nil
-	}
-	if rq.Op == OpLocalVerifyHub {
-		raw, err := l.verifyHub(ctx, rq.Args)
-		return raw, l.protoError(rq.Op, err)
 	}
 	ctx = WithProgress(ctx, progress)
 	if forwardsToHub(rq.Op, rq.Args, l.ex.policy.WorkerID()) {
