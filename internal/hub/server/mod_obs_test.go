@@ -231,8 +231,14 @@ func TestShutdownWithDeadEndpointsWithinBudget(t *testing.T) {
 	if d := time.Since(start); d > obsStopLimit+500*time.Millisecond {
 		t.Fatalf("shutdown took %s", d)
 	}
-	if !strings.Contains(o.local.String(), "records were never sent") {
-		t.Fatalf("no loss summary on the local log: %s", o.local.String())
+	// The summary is written asynchronously (a stalled stderr must not hold
+	// the stop).
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(o.local.String(), "records were never sent") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no loss summary on the local log: %.2000s", o.local.String())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	// A nearly spent budget leaves half a second for what follows.
 	short, c2 := context.WithTimeout(context.Background(), 700*time.Millisecond)
