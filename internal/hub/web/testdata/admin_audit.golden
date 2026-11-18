@@ -4,7 +4,7 @@
 <form method="get" action="/admin/audit" class="toolbar" aria-label="Filter the audit log">
   <div class="field">
     <label for="f-actor">Actor (user id, or key:id)</label>
-    <input type="text" id="f-actor" name="actor" value="abc" autocomplete="off" spellcheck="false" maxlength="256">
+    <input type="text" id="f-actor" name="actor" value="abc" autocomplete="off" spellcheck="false" maxlength="256" placeholder="e.g. key:example">
   </div>
   <div class="field">
     <label for="f-action">Action (for example settings.set)</label>

@@ -1,11 +1,13 @@
 {{define "content"}}
-<div class="page-head"><div><h1>Hub identity</h1><p>The key that Workers pin and the certificate that proves this Hub to them. Every change asks for the Hub passphrase and a sign-in from the last five minutes. The passphrase is never shown again and never stored.</p></div></div>
+<div class="page-head"><div><h1>Hub identity</h1><p>The key that Workers pin and the certificate that proves this Hub to them. <button type="button" class="info-btn" popovertarget="help-hub-identity" aria-label="About Hub identity">{{template "icon" "i-info"}}</button> Every change asks for the Hub passphrase and a sign-in from the last five minutes. The passphrase is never shown again and never stored.</p>
+  <div class="info-pop" id="help-hub-identity" popover><p>Workers remember the Hub's root key when they join. The Hub uses a certificate signed by that key to prove its identity on later connections.</p></div>
+</div></div>
 <div class="stack" id="identity-page" data-state="{{.Data.Status.State}}">
 <section class="panel" aria-labelledby="id-state">
   <h2 id="id-state">State</h2>
   <dl>
     <dt>Bootstrap state</dt><dd>{{.Data.Status.StateLabel}}</dd>
-    <dt>Passphrase</dt><dd>{{if .Data.Status.PassphraseSet}}set{{else}}not set yet{{end}}</dd>
+    <dt>Passphrase <button type="button" class="info-btn" popovertarget="help-hub-passphrase" aria-label="About the Hub passphrase">{{template "icon" "i-info"}}</button></dt><dd>{{if .Data.Status.PassphraseSet}}set{{else}}not set yet{{end}}<div class="info-pop" id="help-hub-passphrase" popover><p>This is not your sign-in password. It unlocks the sealed root key for changes such as renewing the Hub certificate.</p></div></dd>
     <dt>Workers can connect</dt><dd>{{if .Data.Status.Serving}}yes{{else}}no{{end}}</dd>
     {{if .Data.Status.RootFingerprint}}<dt>Hub fingerprint (root key)</dt><dd data-hub-fingerprint><span class="fp-words">{{.Data.Status.RootFingerprintWords}}</span><br><code>{{.Data.Status.RootFingerprint}}</code><br><span class="muted">Workers compare these words. If a reverse proxy is in front of the Hub and you do not want to rely on it, read them on the Hub host instead: <code>minion hub identity --words</code></span></dd>{{end}}
     {{if .Data.Status.OpFingerprint}}<dt>Operational key</dt><dd><code>{{.Data.Status.OpFingerprint}}</code> <span class="muted">(changes at every re-issue; do not compare it)</span></dd>{{end}}
@@ -62,7 +64,7 @@
   <form data-identity-op="hub_identity_reissue" method="post" autocomplete="off">
     <div class="field"><label for="re-pass">Passphrase</label><input type="password" id="re-pass" name="passphrase" autocomplete="current-password" required></div>
     <div class="field"><label for="re-days">Validity in days (1 to 3650)</label><input type="number" id="re-days" name="validity_days" min="1" max="3650" value="3650" inputmode="numeric"></div>
-    <details><summary>Advanced</summary>
+    <details><summary>Advanced: certificate serial floor</summary>
       <div class="field"><label for="re-floor">Serial floor (the new serial is greater)</label><input type="number" id="re-floor" name="serial_floor" min="0" inputmode="numeric"></div>
     </details>
     <button type="submit">Re-issue certificate</button>

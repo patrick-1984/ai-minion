@@ -4,10 +4,12 @@
 <div class="stack">
 <section class="panel" aria-labelledby="create-apikey">
   <h2 id="create-apikey">Create an API key</h2>
+  <p class="muted">Key scopes <button type="button" class="info-btn" popovertarget="help-api-key-scopes" aria-label="About API key scopes"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></p>
+  <div class="info-pop" id="help-api-key-scopes" popover><p>A scope says what the key can reach and which actions it can take there. Choose only what the tool needs.</p></div>
   <form method="post" hx-post="/api-keys" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="key-name">Name</label>
-      <input type="text" id="key-name" name="name" autocomplete="off" required maxlength="64">
+      <input type="text" id="key-name" name="name" autocomplete="off" required maxlength="64" placeholder="e.g. build monitor">
     </div>
     <fieldset class="field">
       <legend>What the key may reach</legend>
@@ -19,7 +21,7 @@
     </fieldset>
     <div class="field">
       <label for="key-session">Only one session (optional)</label>
-      <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help">
+      <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help" placeholder="e.g. nightly-build">
       <span id="key-session-help" class="muted">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
     </div>
     <fieldset class="field">
@@ -55,8 +57,8 @@
 </section>
 <section aria-labelledby="apikey-list">
   <h2 id="apikey-list">Your API keys</h2>
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Name</th><th scope="col">Key</th><th scope="col">Reaches and may do</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Key</th><th scope="col" data-sort="text">Reaches and may do</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">Last used</th><th scope="col" data-sort="text">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     <tr>
       <th scope="row">ci</th>

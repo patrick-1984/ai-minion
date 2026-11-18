@@ -22,7 +22,8 @@
   </section>
   <section class="panel" aria-labelledby="sessions-h" id="sessions">
     <h2 id="sessions-h">Sessions</h2>
-    <p class="muted">A new session is hidden when you could not see or join it from your own terminal: on Windows a ConPTY session inside the Worker (psmux is not installed, or the Worker runs as a service), on Linux and macOS a tmux server that is not your default one. Visible sessions show in <code>tmux ls</code> or <code>psmux ls</code> and you can attach to them.</p>
+    <p class="muted">A new session is hidden <button type="button" class="info-btn" popovertarget="help-hidden-sessions" aria-label="About hidden sessions">{{template "icon" "i-info"}}</button> when you could not see or join it from your own terminal: on Windows a ConPTY session inside the Worker (psmux is not installed, or the Worker runs as a service), on Linux and macOS a tmux server that is not your default one. Visible sessions show in <code>tmux ls</code> or <code>psmux ls</code> and you can attach to them.</p>
+    <div class="info-pop" id="help-hidden-sessions" popover><p>Hidden describes what you can see from your own terminal. The Hub can allow or block creation of hidden sessions for everyone, or let each user decide.</p></div>
     {{if and .Data.Prefs (not .Data.PrefsURL)}}<p class="help" id="hidden-effective" data-prefs-readonly>{{if .Data.Prefs.HiddenSessionsAllowed}}New sessions are created for {{.Data.ActingAs}} even where they would be hidden.{{else}}New sessions that would be hidden are refused for {{.Data.ActingAs}}.{{end}} While you act as another user, this choice cannot be changed; they change it in their own Account page.</p>
     {{else if .Data.Prefs}}<form method="post" action="{{.Data.PrefsURL}}" hx-post="{{.Data.PrefsURL}}" hx-target="#sessions-result" hx-swap="innerHTML" hx-disabled-elt="find button">
       <input type="hidden" name="for_user" value="{{.Data.PrefsFor}}">

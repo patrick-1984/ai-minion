@@ -4,7 +4,8 @@
 <div class="stack">
 <p class="notice notice-info" role="note">A Worker that enrolls with a key starts as <strong>pending</strong> and receives no operations until you approve it on the Workers page. A stolen key therefore cannot operate anything by itself.</p>
 <section class="panel" aria-labelledby="create-invitation">
-  <h2 id="create-invitation">Create an invitation key</h2>
+  <h2 id="create-invitation">Create an invitation key <button type="button" class="info-btn" popovertarget="help-invitation-key" aria-label="About invitation keys"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></h2>
+  <div class="info-pop" id="help-invitation-key" popover><p>A Worker uses the key to enroll itself without a pairing code. It starts pending and cannot receive operations until approved.</p></div>
   <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="inv-mode">Use</label>
@@ -31,7 +32,7 @@
     </div>
     <div class="field">
       <label for="inv-name">Name (optional, to recognise the key in the list)</label>
-      <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64">
+      <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64" placeholder="e.g. lab worker setup">
     </div>
     
     <button type="submit">Create the key</button>
@@ -42,8 +43,8 @@
 <section aria-labelledby="invitation-list">
   <h2 id="invitation-list">Your invitation keys</h2>
   
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Name</th><th scope="col">Use</th><th scope="col">Kind</th><th scope="col">Uses</th><th scope="col">Expires</th><th scope="col">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Use</th><th scope="col" data-sort="text">Kind</th><th scope="col">Uses</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     <tr>
       <th scope="row">build-farm</th>

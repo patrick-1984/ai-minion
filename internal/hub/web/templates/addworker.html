@@ -10,7 +10,8 @@
 <div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
 {{if .Data.HubFull}}<section class="panel" aria-labelledby="hub-fp" data-hub-fingerprint>
   <h2 id="hub-fp">Give the Worker this Hub's fingerprint</h2>
-  <p>Hub fingerprint: <span class="fp-words">{{.Data.HubWords}}</span><br><code>{{.Data.HubFull}}</code></p>
+  <p>Hub fingerprint <button type="button" class="info-btn" popovertarget="help-hub-fingerprint" aria-label="About the Hub fingerprint">{{template "icon" "i-info"}}</button>: <span class="fp-words">{{.Data.HubWords}}</span><br><code>{{.Data.HubFull}}</code></p>
+  <div class="info-pop" id="help-hub-fingerprint" popover><p>The fingerprint identifies the Hub's root key. Give it to the Worker before pairing so it accepts only this Hub.</p></div>
   <pre id="hub-join">{{.Data.JoinCommand}}</pre>
   <button type="button" data-copy="#hub-join">Copy the command</button>
   <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. The command needs Worker v0.11.0 or later (an older Worker does not know --hub-fingerprint: update it first). This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead: <code>minion hub identity --words</code></p>
@@ -18,7 +19,8 @@
 </section>
 {{end}}<div class="method-grid">
 <section class="panel" aria-labelledby="pair-form">
-  <h2 id="pair-form">Pair with a code</h2>
+  <h2 id="pair-form">Pair with a code <button type="button" class="info-btn" popovertarget="help-pairing-code" aria-label="About pairing codes">{{template "icon" "i-info"}}</button></h2>
+  <div class="info-pop" id="help-pairing-code" popover><p>The Worker shows a code that you enter here to confirm pairing. The code is valid for 10 minutes.</p></div>
   <p class="muted">Start pairing on the machine that should become a Worker (for example with <code>minion worker pair</code>). It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
   <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
@@ -28,7 +30,7 @@
     </div>
     <div class="field">
       <label for="pair-name">Name (optional)</label>
-      <input type="text" id="pair-name" name="name" autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxName}}" aria-describedby="pair-name-help">
+      <input type="text" id="pair-name" name="name" autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxName}}" aria-describedby="pair-name-help" placeholder="e.g. jordan-laptop">
       <span id="pair-name-help" class="muted">Without a name, the Worker keeps the name it announces.</span>
     </div>
     <button type="submit">Add the Worker</button>

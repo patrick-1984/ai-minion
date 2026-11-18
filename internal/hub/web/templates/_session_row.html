@@ -3,7 +3,7 @@
   {{if .ShowOwner}}<td data-label="Owner">{{.Owner}}</td>
   {{end}}<td data-label="Status">{{if .Pending}}<span class="badge" data-tone="warning" data-pending="true">pending approval</span>{{if .Online}} <span class="badge" data-online="true">connected</span>{{end}}{{template "worker_pending_facts" .}}{{else if .Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</td>
   <td data-label="Kind"><span class="badge plain" data-kind="{{.Kind}}">{{.Kind}}</span></td>
-  <td data-label="Sessions" class="num">{{if .SessionCount}}<a href="{{.SessionsURL}}" data-control="sessions">{{.SessionCount}}<span class="sr-only"> sessions on {{.Name}}</span></a>{{else}}0{{end}}{{if and .Disclose .Sessions}}
+  <td data-label="Sessions" class="num"{{if .SessionCount}} data-sort-value="{{.SessionCount}}"{{end}}>{{if .SessionCount}}<a href="{{.SessionsURL}}" data-control="sessions">{{.SessionCount}}<span class="sr-only"> sessions on {{.Name}}</span></a>{{else}}0{{end}}{{if and .Disclose .Sessions}}
     <details class="worker-sessions" data-keep-open="ws-{{.ID}}">
       <summary data-control="sessions-toggle">Show sessions<span class="sr-only"> on {{.Name}}</span></summary>
       <ul class="worker-session-list" aria-label="Sessions on {{.Name}}">
@@ -18,7 +18,10 @@
     </form>{{else if .UpdateBlock}} <span class="muted" data-update-block>({{.UpdateBlock}})</span>{{end}}{{end}}</td>
   <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else if .Online}}{{if .NewSessionRefused}}<div class="row-actions" data-hidden-refused>
     <button type="button" class="btn btn-secondary" data-control="new-session" disabled aria-describedby="nsr-{{.ID}}">New session<span class="sr-only"> on {{.Name}} (not available)</span></button>
-    <p class="help" id="nsr-{{.ID}}">{{.NewSessionRefused}}</p>
+    <details class="note-more" data-keep-open="nsr-{{.ID}}">
+      <summary data-control="new-session-note">Why can't I start a session?</summary>
+      <p class="help" id="nsr-{{.ID}}">{{.NewSessionRefused}}</p>
+    </details>
   </div>{{else}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn btn-secondary" data-control="new-session" aria-label="New session on {{.Name}}">New session</button>
   </form>{{end}}{{else}}<span class="muted">Offline</span>{{end}}{{if .SessionHostText}}

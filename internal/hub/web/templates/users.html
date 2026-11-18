@@ -16,11 +16,11 @@
   <form method="post" hx-post="/admin/users" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="field">
       <label for="new-username">Username</label>
-      <input type="text" id="new-username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="64">
+      <input type="text" id="new-username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="64" placeholder="e.g. jordan">
     </div>
     <div class="field">
       <label for="new-email">E-mail (optional)</label>
-      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254">
+      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254" placeholder="name@example.com">
     </div>
     <div class="field">
       <label for="new-role">Role</label>
@@ -36,17 +36,17 @@
 </section>
 <section aria-labelledby="accounts">
   <div class="section-head"><h2 id="accounts">Accounts</h2></div>
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Username</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">State</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Username</th><th scope="col" data-sort="text">E-mail</th><th scope="col" data-sort="text">Role</th><th scope="col" data-sort="text">State</th><th scope="col" data-sort="text">Password</th><th scope="col" data-sort="text">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range .Users}}<tr>
       <th scope="row">{{.Username}}</th>
       <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">none</span>{{end}}</td>
-      <td>{{.Role}}{{if .AdminSources}} <span class="muted">({{range $i, $s := .AdminSources}}{{if $i}}, {{end}}{{$s}}{{end}})</span>{{end}}</td>
+      <td><span class="role-badge role-{{.Role}}">{{template "icon" (print "i-role-" .Role)}}<span>{{.Role}}</span></span>{{if .AdminSources}} <span class="muted">({{range $i, $s := .AdminSources}}{{if $i}}, {{end}}{{$s}}{{end}})</span>{{end}}</td>
       <td>{{if .Active}}active{{else}}deactivated{{end}}</td>
-      <td>{{if not .HasPassword}}none (single sign-on){{else if .MustChangePassword}}temporary{{else}}set{{end}}</td>
+      <td>{{if not .HasPassword}}none <span class="muted">(single sign-on)</span>{{else if .MustChangePassword}}temporary{{else}}set{{end}}</td>
       <td><time datetime="{{.CreatedAt.Time.Format "2006-01-02T15:04:05Z07:00"}}">{{.CreatedAt.Time.Format "2006-01-02"}}</time></td>
-      <td><a href="/admin/users/{{.ID}}">Manage {{.Username}}</a></td>
+      <td><a class="btn btn-sm btn-edit" href="/admin/users/{{.ID}}">{{template "icon" "i-edit"}}<span>Edit</span><span class="sr-only"> {{.Username}}</span></a></td>
     </tr>
     {{else}}<tr><td colspan="7" class="muted">There are no accounts.</td></tr>
     {{end}}

@@ -14,6 +14,7 @@
 <script src="/static/sse.js" defer></script>
 <script src="/static/forms.js" defer></script>
 <script src="/static/shell.js" defer></script>
+<script src="/static/ui-extras.js" defer></script>
 </head>
 <body{{if .Embed}} class="embed"{{end}}{{if .CSRF}} hx-headers='{"X-Minion-CSRF":"{{.CSRF}}"}'{{end}} hx-ext="sse">
 <a class="skip-link" href="#content" data-modal-inert>Skip to content</a>
@@ -64,6 +65,7 @@
         {{end}}
       </ol></nav>
       <div class="top-tools">
+        <button type="button" class="search-btn" data-search-open aria-haspopup="dialog">{{template "icon" "i-search"}}<span>Search</span><kbd>Ctrl K</kbd></button>
         <div class="theme-toggle" role="group" aria-label="Theme">
           <button type="button" class="theme-opt" data-theme-choice="system" aria-pressed="false" title="System theme">{{template "icon" "i-monitor"}}<span class="sr-only">System theme</span></button>
           <button type="button" class="theme-opt" data-theme-choice="light" aria-pressed="false" title="Light theme">{{template "icon" "i-sun"}}<span class="sr-only">Light theme</span></button>

@@ -30,6 +30,7 @@
     </div>
     <div class="s-desc">
       <p id="d-listen" class="s-help">Address the Hub listens on</p>
+      
       <p id="m-listen" class="s-meta">Source: env. Applies after the Hub restarts.</p>
       
     </div>
@@ -44,7 +45,7 @@
       <span class="s-env"><code>MINION_PUBLIC_URL</code></span>
     </div>
     <div class="s-value">
-      <input type="text" id="v-public_url" name="value" value="https://hub.example.com" autocomplete="off" spellcheck="false" aria-describedby="m-public_url d-public_url">
+      <input type="text" id="v-public_url" name="value" value="https://hub.example.com" autocomplete="off" spellcheck="false" aria-describedby="m-public_url d-public_url" placeholder="https://hub.example.com">
     </div>
     <div class="s-actions">
       <button type="submit" name="action" value="set">Save</button>
@@ -52,6 +53,7 @@
     </div>
     <div class="s-desc">
       <p id="d-public_url" class="s-help">External URL of the Hub</p>
+      
       <p id="m-public_url" class="s-meta">Source: panel. Applies after the Hub restarts. <strong>A changed value waits for the next restart.</strong></p>
       
     </div>
@@ -79,6 +81,7 @@
     </div>
     <div class="s-desc">
       <p id="d-tls" class="s-help">TLS mode</p>
+      
       <p id="m-tls" class="s-meta">Source: default. Applies after the Hub restarts.</p>
       
     </div>
@@ -110,6 +113,7 @@
     </div>
     <div class="s-desc">
       <p id="d-oidc_client_secret" class="s-help">Client secret</p>
+      
       <p id="m-oidc_client_secret" class="s-meta">Secret: set. Source: env. Applies after the Hub restarts.</p>
       
     </div>
@@ -141,6 +145,7 @@
     </div>
     <div class="s-desc">
       <p id="d-data_dir" class="s-help">Data directory</p>
+      
       <p id="m-data_dir" class="s-meta">Source: default. Applies after the Hub restarts.</p>
       
     </div>
@@ -173,6 +178,7 @@
     </div>
     <div class="s-desc">
       <p id="d-backup_key" class="s-help">Backup key</p>
+      
       <p id="m-backup_key" class="s-meta">Secret: not set. Source: default. Applies after the Hub restarts.</p>
       
     </div>
@@ -197,6 +203,7 @@
     </div>
     <div class="s-desc">
       <p id="d-smtp_password" class="s-help">SMTP password</p>
+      
       <p id="m-smtp_password" class="s-meta">Secret: set. Source: panel. Applies after the Hub restarts.</p>
       
     </div>

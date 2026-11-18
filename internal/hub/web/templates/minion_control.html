@@ -1,7 +1,8 @@
 {{define "content"}}
 <div class="page-head"><div><h1>Minion control</h1>
-<p>Which sessions may control sessions on other Workers. A <strong>master session</strong> controls a session on another Worker only when that Worker <strong>accepts control from</strong> the master's Worker (or from all Workers) and shares the session. Every other session is a <strong>slave session</strong>: by default all of them. <strong>User-managed</strong> Workers are also controlled by people and API keys, as before. Every click is saved at once.</p></div></div>
-<details class="panel control-how"><summary>How it works</summary>
+<p>Which sessions may control sessions on other Workers. A <strong>master session</strong> <button type="button" class="info-btn" popovertarget="help-master-session" aria-label="About master sessions">{{template "icon" "i-info"}}</button> controls a session on another Worker only when that Worker <strong>accepts control from</strong> the master's Worker (or from all Workers) and shares the session. Every other session is a <strong>slave session</strong>: by default all of them. <strong>User-managed</strong> Workers are also controlled by people and API keys, as before. Every click is saved at once.</p>
+<div class="info-pop" id="help-master-session" popover><p>A Worker has no master sessions until its owner or an administrator nominates one. The Hub also checks that the master Worker's owner may reach the target Worker.</p></div></div></div>
+<details class="panel control-how"><summary>How Workers grant control</summary>
 <pre class="control-chain">master session (Worker A)  ──►  Worker B accepts control from A (or from all)  ──►  B shares the session  ──►  A's owner may reach B  ──►  control
 slave session (default)     ─✕  nothing beyond its own Worker</pre>
 <p class="help">A session's name is taken from the terminal it runs in: anyone who can run programs as the Worker's user on that host can claim it. Treat a master session as trust in its whole host and account.</p>
@@ -50,7 +51,7 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
   <td data-label="User-managed"><form hx-post="/access/control/user-managed" hx-trigger="change" hx-target="closest tr" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if .UserManaged}} checked{{end}}> People and API keys</label></form></td>
   <td data-label="Accepts control from">
     <form hx-post="/access/control/accept-all" hx-trigger="change" hx-target="closest tr" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if .AcceptAll}} checked{{end}}> All Workers</label></form>
-    {{if not .AcceptAll}}{{$row := .}}<details class="control-pick"><summary>{{len .Accepts}} chosen</summary>
+    {{if not .AcceptAll}}{{$row := .}}<details class="control-pick"><summary>Choose Workers ({{len .Accepts}} selected)</summary>
       <input type="search" class="pick-filter" placeholder="Filter" aria-label="Filter the Workers">
       <ul>{{range .Others}}<li data-filter="{{.Name}} {{.Owner}}"><form hx-post="/access/control/accept" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="source_worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if index $row.Accepted .WorkerID}} checked{{end}}> {{.Name}} <span class="muted">{{.Owner}}</span></label></form></li>{{end}}</ul>
     </details>{{end}}

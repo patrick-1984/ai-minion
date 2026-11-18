@@ -27,7 +27,8 @@
 {{range .Data.Notices}}<p class="notice notice-warning" role="status" data-invitation-notice><strong>{{.Name}}:</strong> {{.Text}}</p>
 {{end}}<p class="notice notice-info" role="note">A Worker that enrolls with a key starts as <strong>pending</strong> and receives no operations until you approve it on the Workers page. A stolen key therefore cannot operate anything by itself.</p>
 <section class="panel" aria-labelledby="create-invitation">
-  <h2 id="create-invitation">Create an invitation key</h2>
+  <h2 id="create-invitation">Create an invitation key <button type="button" class="info-btn" popovertarget="help-invitation-key" aria-label="About invitation keys">{{template "icon" "i-info"}}</button></h2>
+  <div class="info-pop" id="help-invitation-key" popover><p>A Worker uses the key to enroll itself without a pairing code. It starts pending and cannot receive operations until approved.</p></div>
   <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="inv-mode">Use</label>
@@ -49,7 +50,7 @@
     </div>
     <div class="field">
       <label for="inv-name">Name (optional, to recognise the key in the list)</label>
-      <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64">
+      <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64" placeholder="e.g. lab worker setup">
     </div>
     {{if .Data.Admin}}<div class="field">
       <label for="inv-kind">Kind</label>
@@ -66,11 +67,11 @@
 <section aria-labelledby="invitation-list">
   <h2 id="invitation-list">{{if .Data.All}}All invitation keys{{else}}Your invitation keys{{end}}</h2>
   {{if .Data.Admin}}<p class="muted">{{if .Data.All}}<a href="/invitations">Show only my keys</a>{{else}}<a href="/invitations?all=1">Show the keys of every user</a>{{end}}</p>{{end}}
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Name</th><th scope="col">Use</th><th scope="col">Kind</th><th scope="col">Uses</th><th scope="col">Expires</th><th scope="col">State</th>{{if .Data.All}}<th scope="col">Created by</th>{{end}}<th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Use</th><th scope="col" data-sort="text">Kind</th><th scope="col">Uses</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">State</th>{{if .Data.All}}<th scope="col" data-sort="text">Created by</th>{{end}}<th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range .Data.Invitations}}<tr>
-      <th scope="row">{{.Name}}{{if .Notice}}<br><span class="muted" data-invitation-notice>{{.Notice}}</span>{{end}}</th>
+      <th scope="row">{{.Name}}{{if .Notice}}<details class="note-more"><summary>Why was this key limited?</summary><p class="muted" data-invitation-notice>{{.Notice}}</p></details>{{end}}</th>
       <td>{{.Mode}}</td>
       <td>{{.Kind}}</td>
       <td>{{.Uses}}</td>

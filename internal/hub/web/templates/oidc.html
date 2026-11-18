@@ -1,15 +1,15 @@
 {{define "oidc_fields"}}
     <div class="field">
       <label for="{{.Prefix}}-name">Name (shown on the login button)</label>
-      <input type="text" id="{{.Prefix}}-name" name="name" value="{{.Name}}" autocomplete="off" required maxlength="512"{{if not .Editable}} disabled{{end}}>
+      <input type="text" id="{{.Prefix}}-name" name="name" value="{{.Name}}" autocomplete="off" required maxlength="512"{{if .Editable}} placeholder="e.g. Example SSO"{{else}} disabled{{end}}>
     </div>
     <div class="field">
       <label for="{{.Prefix}}-issuer">Issuer URL</label>
-      <input type="text" id="{{.Prefix}}-issuer" name="issuer" value="{{.Issuer}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if not .Editable}} disabled{{end}}>
+      <input type="text" id="{{.Prefix}}-issuer" name="issuer" value="{{.Issuer}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if .Editable}} placeholder="https://login.example.com"{{else}} disabled{{end}}>
     </div>
     <div class="field">
       <label for="{{.Prefix}}-client-id">Client ID</label>
-      <input type="text" id="{{.Prefix}}-client-id" name="client_id" value="{{.ClientID}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if not .Editable}} disabled{{end}}>
+      <input type="text" id="{{.Prefix}}-client-id" name="client_id" value="{{.ClientID}}" autocomplete="off" spellcheck="false" required maxlength="512"{{if .Editable}} placeholder="e.g. example-hub-client"{{else}} disabled{{end}}>
     </div>
     <div class="field">
       <label for="{{.Prefix}}-secret">Client secret ({{if .ClientSecretSet}}set{{else}}not set{{end}})</label>
@@ -17,15 +17,15 @@
     </div>
     <div class="field">
       <label for="{{.Prefix}}-claim">Role claim</label>
-      <input type="text" id="{{.Prefix}}-claim" name="role_claim" value="{{.RoleClaim}}" autocomplete="off" spellcheck="false" maxlength="512"{{if not .Editable}} disabled{{end}}>
+      <input type="text" id="{{.Prefix}}-claim" name="role_claim" value="{{.RoleClaim}}" autocomplete="off" spellcheck="false" maxlength="512"{{if .Editable}} placeholder="e.g. team_roles"{{else}} disabled{{end}}>
     </div>
     <div class="field">
       <label for="{{.Prefix}}-scopes">Scopes (space separated)</label>
-      <input type="text" id="{{.Prefix}}-scopes" name="scopes" value="{{.Scopes}}" autocomplete="off" spellcheck="false" maxlength="512"{{if not .Editable}} disabled{{end}}>
+      <input type="text" id="{{.Prefix}}-scopes" name="scopes" value="{{.Scopes}}" autocomplete="off" spellcheck="false" maxlength="512"{{if .Editable}} placeholder="e.g. openid profile email offline_access"{{else}} disabled{{end}}>
     </div>
     <div class="field">
       <label for="{{.Prefix}}-ca">CA file (path on the Hub host)</label>
-      <input type="text" id="{{.Prefix}}-ca" name="ca_file" value="{{.CAFile}}" autocomplete="off" spellcheck="false" maxlength="512"{{if not .Editable}} disabled{{end}}>
+      <input type="text" id="{{.Prefix}}-ca" name="ca_file" value="{{.CAFile}}" autocomplete="off" spellcheck="false" maxlength="512"{{if .Editable}} placeholder="e.g. /etc/example/oidc-ca.pem"{{else}} disabled{{end}}>
     </div>
     <div class="field">
       <label><input type="checkbox" name="tls_insecure_skip_verify" value="1"{{if .TLSInsecureSkipVerify}} checked{{end}}{{if not .Editable}} disabled{{end}}> Do not verify the TLS certificate of this provider (insecure)</label>
@@ -35,7 +35,9 @@
     </div>
 {{end}}
 {{define "content"}}
-<div class="page-head"><div><h1>Identity &amp; sign-in</h1><p>Providers let people sign in with your identity provider. A provider that the environment or the settings describe is read-only here.</p></div></div>
+<div class="page-head"><div><h1>Identity &amp; sign-in</h1><p>OpenID Connect (OIDC) <button type="button" class="info-btn" popovertarget="help-oidc" aria-label="About OpenID Connect">{{template "icon" "i-info"}}</button> lets people sign in with your identity provider. A provider that the environment or the settings describe is read-only here.</p>
+  <div class="info-pop" id="help-oidc" popover><p>Register the Hub with your identity provider as a client. The provider signs an ID token, and the Hub reads a claim in that token to decide which role to grant.</p></div>
+</div></div>
 {{if .Data.InsecureTLS}}<div class="notice notice-danger" id="insecure-tls-warning" role="alert"><span><strong>Warning.</strong> {{.Data.InsecureTLSWarning}}</span></div>
 {{end}}
 <div class="stack">
@@ -78,7 +80,7 @@
   <form method="post" hx-post="/admin/oidc/providers" hx-target="#save-new" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="field">
       <label for="new-id">Id (lower-case letters, digits, - and _)</label>
-      <input type="text" id="new-id" name="id" autocomplete="off" spellcheck="false" required pattern="[a-z0-9][a-z0-9_\-]{0,31}" maxlength="32">
+      <input type="text" id="new-id" name="id" autocomplete="off" spellcheck="false" required pattern="[a-z0-9][a-z0-9_\-]{0,31}" maxlength="32" placeholder="e.g. example-sso">
     </div>
     {{template "oidc_fields" .Data.NewProvider}}
     <button type="submit">Add the provider</button>
