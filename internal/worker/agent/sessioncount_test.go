@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -43,22 +45,31 @@ func TestCountLostListingError(t *testing.T) {
 func TestUpdateRefusesOnUnknownCount(t *testing.T) {
 	withVersion(t, "v0.9.0")
 	inst := &fakeInstaller{}
-	u, _ := newTestUpdate(t, inst)
+	u, restarted := newTestUpdate(t, inst)
+	var mu sync.Mutex
 	var holds []string
-	u.holdSessions = func(r string) { holds = append(holds, r) }
+	u.holdSessions = func(r string) { mu.Lock(); holds = append(holds, r); mu.Unlock() }
 	u.sessionsLost = SessionCounter{Host: failingListHost{newFakeHost()}, EndsSessions: true}.CountLost
 	res, err := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"})
 	if err != nil || res.Accepted || !strings.Contains(res.Reason, "cannot be counted") {
 		t.Fatalf("update = %+v, %v; want a refusal for the unknown count", res, err)
 	}
+	mu.Lock()
 	if len(holds) != 2 || holds[1] != "" {
 		t.Fatalf("holds = %q, want hold then release", holds)
 	}
+	mu.Unlock()
 	if len(inst.opts) != 0 {
 		t.Fatal("the installer ran")
 	}
 	if res, err := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1", Force: true}); err != nil || !res.Accepted {
 		t.Fatalf("forced update = %+v, %v; want accepted", res, err)
+	}
+	// Let the forced run finish before the test (and its version) ends.
+	select {
+	case <-restarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the forced update did not finish")
 	}
 }
 

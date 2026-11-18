@@ -4,16 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
-func lifecycleSvc(t *testing.T, e *env, counter SessionCounter, runMode string) (*lifecycleService, *int, *int) {
+func lifecycleSvc(t *testing.T, e *env, counter SessionCounter, runMode string) (*lifecycleService, *atomic.Int32, *atomic.Int32) {
 	t.Helper()
-	stops, restarts := 0, 0
+	stops, restarts := &atomic.Int32{}, &atomic.Int32{}
 	return &lifecycleService{ex: e.ex, counter: counter, runMode: runMode, instance: "i1",
-		stop: func() { stops++ }, restart: func() { restarts++ }}, &stops, &restarts
+		stop: func() { stops.Add(1) }, restart: func() { restarts.Add(1) }}, stops, restarts
 }
 
 func lifecycleCall(s *lifecycleService, a LocalLifecycleArgs) (LifecycleResult, error) {
@@ -42,7 +43,7 @@ func TestLifecycleStopRefusesUnknownCount(t *testing.T) {
 	s, stops, _ := lifecycleSvc(t, e, SessionCounter{Host: failingListHost{e.host}, EndsSessions: true}, RunModeWindowsService)
 	_, err := lifecycleCall(s, LocalLifecycleArgs{Action: LifecycleStop, Instance: "i1"})
 	wantAPIError(t, err, "conflict", ReasonCountUnavailable)
-	if *stops != 0 {
+	if stops.Load() != 0 {
 		t.Fatal("stopped with an unknown count")
 	}
 	if _, held := e.ex.CreateHeld(); held {
@@ -69,7 +70,7 @@ func TestLifecycleAcceptLossBoundary(t *testing.T) {
 	if r, err := lifecycleCall(s, LocalLifecycleArgs{Action: LifecycleRestart, Instance: "i1", AcceptLoss: 2}); err != nil || r.SessionsLost != 2 {
 		t.Fatalf("accept 2 = %+v, %v", r, err)
 	}
-	eventuallyTrue(t, func() bool { return *restarts == 1 })
+	eventuallyTrue(t, func() bool { return restarts.Load() == 1 })
 	// A stale instance is refused before anything.
 	_, err = lifecycleCall(s, LocalLifecycleArgs{Action: LifecycleStop, Instance: "old"})
 	wantAPIError(t, err, "conflict", "state_changed")
@@ -81,8 +82,8 @@ func TestLifecycleOverlapsUpdateRefusal(t *testing.T) {
 	e := newEnv(t)
 	s, stops, _ := lifecycleSvc(t, e, SessionCounter{Host: e.host}, RunModeSystemd)
 	r, err := lifecycleCall(s, LocalLifecycleArgs{Action: LifecycleStop, Instance: "i1"})
-	if err != nil || r.Exiting || *stops != 0 {
-		t.Fatalf("systemd stop = %+v, %v, stops %d", r, err, *stops)
+	if err != nil || r.Exiting || stops.Load() != 0 {
+		t.Fatalf("systemd stop = %+v, %v, stops %d", r, err, stops.Load())
 	}
 	e.ex.SetSessionCreateHold("the Worker is updating")
 	e.ex.SetSessionCreateHold("") // the update was refused
