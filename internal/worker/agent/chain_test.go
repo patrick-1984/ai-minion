@@ -150,12 +150,12 @@ type failingPinRepo struct {
 
 var errPinWrite = errors.New("disk full")
 
-func (r *failingPinRepo) UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, h []byte) error {
+func (r *failingPinRepo) UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, h []byte, passed ...ed25519.PublicKey) error {
 	r.attempts.Add(1)
 	if r.fail.Load() {
 		return errPinWrite
 	}
-	return r.EnrollmentRepo.UpdatePinRatchet(ctx, pub, seq, maxSerial, h)
+	return r.EnrollmentRepo.UpdatePinRatchet(ctx, pub, seq, maxSerial, h, passed...)
 }
 
 // chainWorker is a real connector over a real store, pinned to a Hub key.

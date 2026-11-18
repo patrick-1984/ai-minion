@@ -54,6 +54,10 @@ type LiveStatusReply struct {
 	Alarm   string `json:"alarm,omitempty"`
 	TLSPath string `json:"tls_path,omitempty"`
 	TLSLine string `json:"tls_line,omitempty"`
+	// HubCheckAware is true for a Worker that applies a stored hub_check
+	// mismatch (v0.11.0 or later): it stops connecting when `verify-hub`
+	// stores one. An older Worker omits it and would reconnect.
+	HubCheckAware bool `json:"hub_check_aware,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -78,6 +82,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		Alarm:              c.Alarm,
 		TLSPath:            c.TLSPath,
 		TLSLine:            c.TLSLine,
+		HubCheckAware:      true,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)

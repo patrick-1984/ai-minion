@@ -356,6 +356,33 @@ func (w *Wizard) CheckHub(ctx context.Context, raw string) (Report, error) {
 	return rep, nil
 }
 
+// HasHubFingerprint reports whether an expected Hub fingerprint is known (a
+// setting, or the answer to the prompt).
+func (w *Wizard) HasHubFingerprint() bool { return w.hubFingerprint() != "" }
+
+// AcceptHubUnchecked validates raw as a Hub address and accepts it WITHOUT any
+// network probe. The dialog uses it when an invitation key and an expected
+// Hub fingerprint are both given: the enrollment hook compares the two before
+// anything is sent, and only then contacts the Hub, so the wizard must not
+// dial first. An invalid address is [ErrInvalidChoice].
+func (w *Wizard) AcceptHubUnchecked(ctx context.Context, raw string) error {
+	if w.share == nil {
+		return ErrOutOfOrder
+	}
+	addr, err := ValidateHubAddress(raw)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidChoice, err)
+	}
+	if addr == "" {
+		return fmt.Errorf("%w: type an address, or skip to run the Worker alone", ErrInvalidChoice)
+	}
+	if err := w.checkHubChange(ctx, addr); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidChoice, err)
+	}
+	w.candidate, w.report = addr, &Report{URL: addr}
+	return w.UseHub()
+}
+
 // UseHub accepts the address of the last [Wizard.CheckHub], whatever its
 // result. The caller decides: a clean report is accepted at once, a failed one
 // only when the user chose "save anyway".

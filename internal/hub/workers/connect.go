@@ -98,7 +98,9 @@ func HubTLSOf(r *http.Request) *HubTLS {
 		return &HubTLS{Mode: HubTLSOff}
 	}
 	out := &HubTLS{Mode: HubTLSOwn}
-	if key, ok := r.Context().Value(servedTLSKeyCtx{}).(func() []byte); ok && key != nil {
+	// A resumed session chose no certificate in this handshake: no key is
+	// stated (the Worker reports "unknown", never "keys differ").
+	if key, ok := r.Context().Value(servedTLSKeyCtx{}).(func() []byte); ok && key != nil && !r.TLS.DidResume {
 		out.KeyHash = key()
 	}
 	return out

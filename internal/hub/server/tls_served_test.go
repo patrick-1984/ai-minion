@@ -117,3 +117,45 @@ func TestTLSKeyPinFormat(t *testing.T) {
 		t.Errorf("pin = %q", got)
 	}
 }
+
+// Finding 8 of the round-1 review: a resumed TLS session skips
+// GetCertificate, so the listener that reports the served key offers no
+// resumption: a client with a session cache still gets a full handshake and
+// the welcome states the key on every connection.
+func TestServedCertificateKeyWithoutSessionResumption(t *testing.T) {
+	cs, err := LoadCertSource(CertOptions{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := cs.KeyHash()
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(workers.HubTLSOf(r))
+	})}
+	cfg := cs.TLSConfig()
+	newServedCerts().install(srv, cfg)
+	if !cfg.SessionTicketsDisabled {
+		t.Fatal("session tickets are still enabled on the reporting listener")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(tls.NewListener(ln, cfg)) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true, TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // test against a self-signed certificate
+		ClientSessionCache: tls.NewLRUClientSessionCache(4),
+	}}}
+	for i := 0; i < 3; i++ {
+		resp, err := c.Get("https://" + ln.Addr().String() + "/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got workers.HubTLS
+		_ = json.NewDecoder(resp.Body).Decode(&got)
+		_ = resp.Body.Close()
+		if resp.TLS.DidResume || !bytes.Equal(got.KeyHash, want[:]) {
+			t.Fatalf("connection %d: resumed %v, stated %x", i, resp.TLS.DidResume, got.KeyHash)
+		}
+	}
+}

@@ -232,6 +232,17 @@ func NewHub(cfg HubConfig, opts ...HubOption) (*HubBackend, error) {
 	if (cfg.CAFile != "" && cfg.Insecure) || (pinned && (cfg.CAFile != "" || cfg.Insecure)) {
 		return nil, ErrHubTLSConflict
 	}
+	// A TLS pin or a CA file is checked only in the TLS handshake: over plain
+	// http (also to a loopback address) the bearer key would go out without
+	// any check of the Hub. Such a combination is refused.
+	if (pinned || cfg.CAFile != "") && !strings.EqualFold(base.Scheme, "https") {
+		what := "hub_tls_pin (--hub-tls-pin, MINION_HUB_TLS_PIN)"
+		if !pinned {
+			what = "hub_ca_file (--hub-ca-file, MINION_HUB_CA_FILE)"
+		}
+		return nil, fmt.Errorf("%w: %s is set but the Hub URL %s is not https; the API key is never sent over plain http "+
+			"when the Hub's certificate must be checked: use the https:// address of the Hub, or remove the setting", ErrHubURL, what, b.label)
+	}
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	switch {
 	case pinned:

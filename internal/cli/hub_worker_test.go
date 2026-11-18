@@ -242,3 +242,23 @@ func runApproveArgs(t *testing.T, b *fakeOpsBackend, args ...string) (string, er
 	err := root.ExecuteContext(context.Background())
 	return out.String(), err
 }
+
+// Finding 9 of the round-1 review: the approval output shows peer-supplied
+// text (name, id, address, fingerprint) only terminal-safe, on one line.
+func TestHubWorkerApproveOutputIsTerminalSafe(t *testing.T) {
+	fp := strings.Repeat("c", 52)
+	w := ops.WorkerInfo{ID: "0190a1b2-c3d4-7e5f-8a6b-000000000001\x07", Name: "edge\x1b[2J\nFAKE LINE", Pending: true, Fingerprint: fp,
+		EnrollAddr: "203.0.113.5\r\nApproved Worker other"}
+	out, err := runApprove(t, approveBackend(w), fp)
+	if err != nil {
+		t.Fatalf("approve: %v\n%s", err, out)
+	}
+	if strings.ContainsAny(out, "\x1b\x07\r") || strings.Count(out, "\n") != 1 {
+		t.Fatalf("unsafe output: %q", out)
+	}
+	w.Pending = false
+	out, _ = runApprove(t, approveBackend(w), fp)
+	if strings.ContainsAny(out, "\x1b\x07\r") || strings.Count(out, "\n") != 1 {
+		t.Fatalf("unsafe output (approved): %q", out)
+	}
+}

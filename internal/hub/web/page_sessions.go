@@ -102,8 +102,11 @@ type WorkerRow struct {
 	// FingerprintWords is the fingerprint as six words, the form compared.
 	FingerprintWords string
 	EnrollAddr       string
-	ApproveURL       string
-	RemoveURL        string
+	// HubCheck is how the connected Worker checked this Hub (its signed
+	// hello, v0.11.0); empty when unknown. See HubCheckText.
+	HubCheck   string
+	ApproveURL string
+	RemoveURL  string
 	// NeverConnected is true while the Worker has never connected to the Hub;
 	// RepairURL is then the post of the "Re-issue pairing" button (design
 	// 12.3), filled by [newWorkerView] for the owner or an administrator only.
@@ -153,6 +156,22 @@ type WorkerRow struct {
 	// the session list does not show.
 	Sessions []SessionRow
 	Disclose bool
+}
+
+// HubCheckText is what the approval page says about how the Worker checked
+// this Hub; "" when the Worker did not say (offline, or older than 0.11).
+func (w WorkerRow) HubCheckText() string {
+	switch w.HubCheck {
+	case "none":
+		return "not verified: the Worker did not check the fingerprint of this Hub (minion worker verify-hub on the Worker checks it)"
+	case "fingerprint":
+		return "the Worker matched the fingerprint of this Hub that its operator gave"
+	case "invite":
+		return "the Worker matched the fingerprint of this Hub from the invitation key"
+	case "mismatch":
+		return "the Worker's operator gave a fingerprint that does not match"
+	}
+	return ""
 }
 
 // SessionHostText is the session host as people read it: "psmux (visible):
@@ -1175,7 +1194,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 		d.Workers = append(d.Workers, WorkerRow{
 			ID: w.ID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
 			Pending: w.Pending, Fingerprint: w.Fingerprint, FingerprintWords: w.FingerprintWords, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
-			Build: w.Build, UpdateBlock: w.UpdateBlock,
+			HubCheck: w.HubCheck, Build: w.Build, UpdateBlock: w.UpdateBlock,
 			SessionHost: w.SessionHost, SessionsHidden: w.SessionsHidden, SessionHostReason: w.SessionHostReason,
 			NewSessionRefused: w.NewSessionRefused,
 			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,

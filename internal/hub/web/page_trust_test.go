@@ -40,7 +40,8 @@ func TestAddWorkerPageShowsTheHubFingerprintBlock(t *testing.T) {
 	body := onbGet(t, onbUser(t), pathAddWorker).Body.String()
 	mustHave(t, body, "Give the Worker this Hub's fingerprint", `class="fp-words">`+fp.Words()+`<`,
 		"minion worker join https://hub.example.com --hub-fingerprint "+fp.String(), `data-copy="#hub-join"`,
-		"The Worker then pairs only with this Hub", "minion hub identity --words")
+		"The Worker then pairs only with this Hub", "minion hub identity --words", "Worker v0.11.0 or later")
+	mustNotHave(t, body, "0.10 or newer")
 
 	// No root: no block.
 	release()

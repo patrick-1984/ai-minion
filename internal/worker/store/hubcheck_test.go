@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/patrick-1984/ai-minion/internal/identity"
 )
 
 func TestHubCheckDefaultsToNone(t *testing.T) {
@@ -107,5 +109,57 @@ func TestHubCheckMigrationFromSchema9(t *testing.T) {
 	got, err := s.LoadEnrollment(ctx)
 	if err != nil || got.HubCheck != HubCheckNone || got.HubCheckAnchor != "" {
 		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+// The lineage records the keys a checked pin moved through (the old pin and
+// the keys passed in one chain); a new anchor empties it, an unchecked
+// enrollment has none.
+func TestHubCheckLineageFollowsVerifiedPinMoves(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, t.TempDir())
+	fp := func(n byte) string {
+		f, err := identity.FingerprintOf(pubKey(n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(f)
+	}
+	if err := s.SaveEnrollment(ctx, Enrollment{HubPub: pubKey(1), HubCheck: HubCheckFingerprint, HubCheckAnchor: fp(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdatePinRatchet(ctx, pubKey(2), 1, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdatePinRatchet(ctx, pubKey(4), 3, 1, nil, pubKey(3)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.LoadEnrollment(ctx)
+	if want := fp(1) + " " + fp(2) + " " + fp(3); got.HubCheckLineage != want {
+		t.Fatalf("lineage = %q, want %q", got.HubCheckLineage, want)
+	}
+	// The same anchor (a mismatch keeps it) keeps the lineage; a new one
+	// empties it.
+	if err := s.SetHubCheck(ctx, pubKey(4), HubCheckMismatch, fp(1)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.LoadEnrollment(ctx); got.HubCheckLineage == "" {
+		t.Fatal("the same anchor must keep the lineage")
+	}
+	if err := s.SetHubCheck(ctx, pubKey(4), HubCheckFingerprint, fp(4)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.LoadEnrollment(ctx); got.HubCheckLineage != "" {
+		t.Fatalf("a new anchor must empty the lineage: %q", got.HubCheckLineage)
+	}
+	// No anchor, no lineage.
+	if err := s.SaveEnrollment(ctx, Enrollment{HubPub: pubKey(5)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdatePin(ctx, pubKey(6), 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.LoadEnrollment(ctx); got.HubCheckLineage != "" {
+		t.Fatalf("unchecked: %q", got.HubCheckLineage)
 	}
 }

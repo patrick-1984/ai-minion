@@ -201,3 +201,32 @@ func expiredServer(t *testing.T) (*httptest.Server, []byte, *x509.Certificate) {
 	t.Cleanup(srv.Close)
 	return srv, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), leaf
 }
+
+// A TLS pin or a CA file is checked only in a TLS handshake: with a plain
+// http URL (also loopback) the client is refused before any request, so the
+// bearer key never reaches a listener that proved nothing.
+func TestHubTLSPinOrCARefusesPlainHTTPEvenOnLoopback(t *testing.T) {
+	f := newHubFixture(t, func(f *hubFixture, w http.ResponseWriter, r *http.Request) {})
+	var hits int
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	defer plain.Close()
+	for _, tc := range []struct{ name, pin, ca string }{
+		{"pin", otherPin, ""},
+		{"ca", "", f.cfg().CAFile},
+	} {
+		cfg := f.cfg()
+		cfg.URL, cfg.TLSPin, cfg.CAFile = plain.URL, tc.pin, tc.ca
+		b, err := NewHub(cfg)
+		if err == nil {
+			_, _ = b.Call(context.Background(), ops.OpSessionsList, nil)
+			b.Close()
+			t.Fatalf("%s: a plain http URL was accepted", tc.name)
+		}
+		if !errors.Is(err, ErrHubURL) || !strings.Contains(err.Error(), "not https") {
+			t.Errorf("%s: error = %v", tc.name, err)
+		}
+	}
+	if hits != 0 {
+		t.Errorf("the plain http listener received %d requests", hits)
+	}
+}

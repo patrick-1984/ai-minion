@@ -2,14 +2,17 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
@@ -29,6 +32,13 @@ type workerVerifyHubDeps struct {
 	lookupEnv  func(string) (string, bool)
 	loadConfig func(stateDir string) (config.FileSource, error)
 	openStore  func(ctx context.Context, stateDir string) (*store.Store, error)
+	// lockState takes the lifecycle lock of the state directory without
+	// waiting (held by every running Worker); an error means a Worker runs.
+	lockState func(stateDir string) (io.Closer, error)
+	// call is the local control socket of this user.
+	call func(ctx context.Context, op string) (json.RawMessage, error)
+	// sleep waits between the polls of the running Worker's status.
+	sleep func(time.Duration)
 }
 
 func defaultWorkerVerifyHubDeps() workerVerifyHubDeps {
@@ -37,6 +47,11 @@ func defaultWorkerVerifyHubDeps() workerVerifyHubDeps {
 		lookupEnv:  os.LookupEnv,
 		loadConfig: loadWorkerConfig,
 		openStore:  func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) },
+		lockState:  agent.LockLifecycle,
+		call: func(ctx context.Context, op string) (json.RawMessage, error) {
+			return client.Local().Call(ctx, op, nil)
+		},
+		sleep: time.Sleep,
 	}
 }
 
@@ -57,7 +72,10 @@ run this command with a fingerprint that matches, or remove the pairing.
 exactly that fingerprint (like ssh-keygen -R): the Worker must then pair or
 enroll again. It never trusts the disputed key again.
 
-The command needs no running Worker.`,
+The command needs no running Worker. A running Worker of v0.11.0 or later is
+told through the shared state and the command reports when it confirmed that it
+stopped connecting. A running older Worker cannot apply the check: the command
+then changes nothing and asks you to stop it first (minion worker down).`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if forget {
 				if len(args) != 0 {
@@ -111,6 +129,15 @@ func runWorkerVerifyHub(cmd *cobra.Command, deps workerVerifyHubDeps, args []str
 		return err
 	}
 	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Before the state is opened (opening migrates it): a running Worker must
+	// be one that applies the stored check, else nothing is changed.
+	running, err := runningWorkerOf(ctx, deps, dir.Value)
+	if err != nil {
+		return err
+	}
 	st, err := deps.openStore(ctx, dir.Value)
 	if err != nil {
 		return fmt.Errorf("open the Worker state in %s: %w", dir.Value, err)
@@ -128,7 +155,15 @@ func runWorkerVerifyHub(cmd *cobra.Command, deps workerVerifyHubDeps, args []str
 		case err != nil:
 			return err
 		}
-		_, _ = fmt.Fprintln(out, "Removed the pairing with Hub "+pinnedFP.Words()+". Pair this Worker again: minion worker pair --hub-fingerprint <value from the Hub host>.")
+		_, _ = fmt.Fprintln(out, "Removed the pairing with Hub "+pinnedFP.Words()+".")
+		if removed, err := deleteWorkerSetting(dir.Value, config.KeyInviteKey); err != nil {
+			_, _ = fmt.Fprintf(out, "Could not remove invite_key from the config file (%v); remove it by hand.\n", err)
+		} else if removed {
+			_, _ = fmt.Fprintln(out, "Removed the invitation key (invite_key) from the config file.")
+		}
+		_, _ = fmt.Fprintln(out, "This Worker does not enroll again by itself from an invitation key that is still configured "+
+			"(--invite-key, MINION_INVITE_KEY_FILE); remove it from the service configuration.")
+		_, _ = fmt.Fprintln(out, "Pair this Worker again: minion worker pair --hub-fingerprint <value from the Hub host>.")
 		return nil
 	}
 
@@ -147,12 +182,87 @@ func runWorkerVerifyHub(cmd *cobra.Command, deps workerVerifyHubDeps, args []str
 		_, _ = fmt.Fprintln(out, "                 "+string(r.Paired))
 		return nil
 	case agent.VerifyRotated:
-		_, _ = fmt.Fprintln(out, "The fingerprint you gave is the Hub key this Worker was checked with; the Hub has rotated its master key")
+		_, _ = fmt.Fprintln(out, "The fingerprint you gave is a Hub key this Worker was checked with; the Hub has rotated its master key")
 		_, _ = fmt.Fprintln(out, "since, and the Worker followed the signed rotation. The Hub key now is:")
 		_, _ = fmt.Fprintln(out, "Hub fingerprint: "+r.Paired.Words())
 		_, _ = fmt.Fprintln(out, "                 "+string(r.Paired))
+		if r.Quarantined {
+			agent.QuarantineNote(out, r.Paired)
+			return &exitCodeError{ExitError}
+		}
 		return nil
+	case agent.VerifyNeedFull:
+		_, _ = fmt.Fprintln(out, "The words match the paired Hub, but this Worker is quarantined: a fingerprint given earlier did not match.")
+		_, _ = fmt.Fprintln(out, "Only the full fingerprint (52 characters) read on the Hub host ends the quarantine:")
+		_, _ = fmt.Fprintln(out, "    minion worker verify-hub <52 characters>")
+		return &exitCodeError{ExitError}
 	}
 	agent.MismatchBox(out, r.Paired, expect, "You gave:")
+	reportQuarantineApplied(ctx, out, deps, dir.Value, running)
 	return &exitCodeError{ExitError}
+}
+
+// runningWorkerOf reports whether a Worker runs on the state directory dir
+// and, when one does, that it is one that applies a stored hub_check (v0.11.0
+// or later). A running Worker that cannot be asked, or an older one, is an
+// error that says how to stop it: the command then changes nothing (an older
+// Worker would reconnect and could not open the migrated state again).
+func runningWorkerOf(ctx context.Context, deps workerVerifyHubDeps, dir string) (bool, error) {
+	if deps.lockState == nil {
+		return false, nil
+	}
+	l, err := deps.lockState(dir)
+	if err == nil {
+		_ = l.Close()
+		return false, nil
+	}
+	if !errors.Is(err, agent.ErrStateInUse) {
+		return false, err
+	}
+	reply, ok := liveStatusOf(ctx, deps, dir)
+	switch {
+	case !ok:
+		return false, fmt.Errorf("a Worker is running on the state directory %s and does not answer on this user's control socket; "+
+			"nothing was changed. Stop it first (minion worker down, as the user that runs it), then run this command again", dir)
+	case !reply.HubCheckAware:
+		return false, errors.New("the running Worker is older than v0.11.0: it cannot apply this check and would keep or resume its " +
+			"connection to the Hub; nothing was changed. Stop it first with: minion worker down - then run this command again " +
+			"(and upgrade the Worker before you start it again)")
+	}
+	return true, nil
+}
+
+// liveStatusOf asks the running Worker of this user for its live status; ok
+// is false when none answers for the state directory dir.
+func liveStatusOf(ctx context.Context, deps workerVerifyHubDeps, dir string) (agent.LiveStatusReply, bool) {
+	var reply agent.LiveStatusReply
+	if deps.call == nil {
+		return reply, false
+	}
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	raw, err := deps.call(cctx, agent.OpLocalStatus)
+	if err != nil || json.Unmarshal(raw, &reply) != nil || reply.StateDir == "" || !sameDir(reply.StateDir, dir) {
+		return agent.LiveStatusReply{}, false
+	}
+	return reply, true
+}
+
+// reportQuarantineApplied says what happened to the running Worker after a
+// mismatch was stored: "stopped talking" only once its status confirms it.
+func reportQuarantineApplied(ctx context.Context, out io.Writer, deps workerVerifyHubDeps, dir string, running bool) {
+	if !running {
+		_, _ = fmt.Fprintln(out, "No Worker is running on this state directory; it will not connect to that Hub when it starts.")
+		return
+	}
+	for i := 0; i < 40; i++ {
+		if reply, ok := liveStatusOf(ctx, deps, dir); ok && reply.State == string(agent.ConnIdle) && reply.Reason == agent.ReasonQuarantined {
+			_, _ = fmt.Fprintln(out, "The running Worker confirmed: it stopped talking to that Hub and stays disconnected.")
+			return
+		}
+		if deps.sleep != nil {
+			deps.sleep(250 * time.Millisecond)
+		}
+	}
+	_, _ = fmt.Fprintln(out, "The running Worker has not confirmed yet that it stopped talking to that Hub; check it with: minion worker status")
 }

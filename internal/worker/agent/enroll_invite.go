@@ -649,6 +649,14 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 		return nil
 	}
 
+	// A pairing removed with `verify-hub --forget` is not restored from an
+	// invitation key that is still configured: the key's source is not read.
+	if forgotten, err := ForgottenHubs(s.StateDir); err != nil {
+		return fmt.Errorf("read %s: %w", ForgottenHubFile, err)
+	} else if len(forgotten) > 0 {
+		return errors.New(ForgottenInviteMessage)
+	}
+
 	in, err := config.ResolveWorkerInviteKeyContext(ctx, s.Resolver, d.stdin)
 	if err != nil {
 		return err
@@ -704,6 +712,13 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 	}
 	return nil
 }
+
+// ForgottenInviteMessage is the error of a start with an invitation key after
+// the pairing was removed with `minion worker verify-hub --forget`.
+const ForgottenInviteMessage = "the pairing of this Worker was removed with minion worker verify-hub --forget; " +
+	"the invitation key that is still configured (--invite-key, MINION_INVITE_KEY_FILE or invite_key) is not used to enroll again " +
+	"by itself. Remove it from the configuration. To pair again, run minion worker pair --hub-fingerprint <value from the Hub host>; " +
+	"to enroll with a new invitation key, run minion worker reset first"
 
 // forgetStoredInviteKey removes invite_key from the config file once the
 // Worker is enrolled: enrollment is permanent and the key must not stay on

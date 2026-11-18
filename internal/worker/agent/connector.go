@@ -132,6 +132,9 @@ type Attempt struct {
 	// PinChanged is true when Pin differs from the stored pin; the connector
 	// rewrites the stored pin before it relies on the connection.
 	PinChanged bool
+	// PinPassed are the keys the verified chain went through between the
+	// stored pin and Pin (neither end included).
+	PinPassed []ed25519.PublicKey
 	// OpPub is the operational key of the certificate validated in this
 	// handshake: the only key whose revoke counts on this connection.
 	OpPub ed25519.PublicKey
@@ -243,6 +246,10 @@ type Status struct {
 	TLSLine string
 }
 
+// ReasonQuarantined is the Status.Reason of an idle connector whose stored
+// hub_check is mismatch: it does not connect.
+const ReasonQuarantined = "the Hub does not match the fingerprint you gave; see minion worker verify-hub"
+
 // AlarmHubIdentityChanged is the value of Status.Alarm while the Hub answers
 // with a root key that the pin does not accept.
 const AlarmHubIdentityChanged = "hub_identity_changed"
@@ -351,6 +358,14 @@ func (c *Connector) facts() transport.WorkerFacts {
 		return transport.WorkerFacts{}
 	}
 	return c.cfg.Facts()
+}
+
+// factsFor returns the facts of a connection of the enrollment enr: the
+// configured facts and how this Worker checked the Hub (hub_check).
+func (c *Connector) factsFor(enr Enrollment) transport.WorkerFacts {
+	f := c.facts()
+	f.HubCheck = enr.Check()
+	return f
 }
 
 // notePending reports whether the approval box is still to be shown.
@@ -518,7 +533,7 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 		// The stored quarantine: the operator said this is not the Hub to
 		// trust. Leaving it needs a person (verify-hub, pairing again, a
 		// reset, or a setting that matches).
-		c.idle(ctx, "the Hub does not match the fingerprint you gave; see minion worker verify-hub", moved)
+		c.idle(ctx, ReasonQuarantined, moved)
 		return false
 	}
 	c.clearIdleLog()
@@ -650,7 +665,7 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 		Name:      c.cfg.Name,
 		Ops:       c.ops(),
 		Features:  c.features(),
-		Facts:     c.facts(),
+		Facts:     c.factsFor(enr),
 		Protocols: c.cfg.Protocols,
 		Pin:       enr.Pin,
 		Ratchet:   enr.Ratchet,
@@ -697,7 +712,7 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 	// one transaction before anything relies on this connection (step 8), also
 	// when only the serial rose.
 	if att.PinChanged || att.RatchetChanged {
-		if err := c.cfg.Enrollment.CommitRatchetIfLive(ctx, gen, att.Pin, att.Ratchet, live); err != nil {
+		if err := c.cfg.Enrollment.CommitRatchetIfLive(ctx, gen, att.Pin, att.Ratchet, live, att.PinPassed...); err != nil {
 			closeSession()
 			if errors.Is(err, ErrEnrollmentChanged) {
 				return false

@@ -91,7 +91,13 @@ func (s *servedCerts) connState(c net.Conn, st http.ConnState) {
 
 // install makes srv record the served certificate per connection; cfg is the
 // TLS configuration of its listener.
+//
+// Session resumption is switched off on that listener: a resumed TLS 1.3
+// session skips GetCertificate, so the key served on the connection would not
+// be known (and a reverse proxy that reuses its upstream session would be
+// reported without a key).
 func (s *servedCerts) install(srv *http.Server, cfg *tls.Config) {
+	cfg.SessionTicketsDisabled = true
 	cfg.GetCertificate = s.getCertificate(cfg.GetCertificate)
 	srv.ConnContext = s.connContext
 	srv.ConnState = s.connState

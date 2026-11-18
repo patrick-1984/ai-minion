@@ -253,9 +253,10 @@ const (
 	// matchPin: the expectation names the pinned key.
 	matchPin
 	// matchAnchor: the expectation names the key this Worker was checked
-	// with, and the pin was reached from it by a signed rotation chain (the
-	// pin only moves along a verified chain, so a checked anchor that differs
-	// from the pin is such a start; the TUF rule for root rotation).
+	// with, or a key the pin moved through since (the lineage), and the pin
+	// was reached from it by a signed rotation chain (the pin only moves
+	// along a verified chain, so each of these keys is an authenticated
+	// predecessor of the pin; the TUF rule for root rotation).
 	matchAnchor
 )
 
@@ -264,12 +265,21 @@ func matchEnrolled(enr Enrollment, m identity.FingerprintMatcher) hubMatch {
 		return matchPin
 	}
 	check := enr.Check()
-	if (check == store.HubCheckFingerprint || check == store.HubCheckInvite) && enr.HubCheckAnchor != "" &&
-		m.MatchesFingerprint(identity.Fingerprint(enr.HubCheckAnchor)) {
-		return matchAnchor
+	if check != store.HubCheckFingerprint && check != store.HubCheckInvite && check != store.HubCheckMismatch || enr.HubCheckAnchor == "" {
+		return matchNone
+	}
+	for _, f := range append([]string{enr.HubCheckAnchor}, strings.Fields(enr.HubCheckLineage)...) {
+		if m.MatchesFingerprint(identity.Fingerprint(f)) {
+			return matchAnchor
+		}
 	}
 	return matchNone
 }
+
+// MismatchTitle is the title of box M6. It claims no disconnection: whether
+// a running Worker dropped its connection is reported separately, and only
+// once it was confirmed.
+const MismatchTitle = "HUB FINGERPRINT DOES NOT MATCH - NOT CONNECTING"
 
 // MismatchBox prints box M6: the Hub this Worker is paired with does not match
 // the fingerprint the operator gave (source is "You gave:" or "The setting
@@ -281,8 +291,8 @@ func MismatchBox(out io.Writer, paired identity.Fingerprint, given identity.Fing
 	}
 	lines = append(lines,
 		"If the value you gave is from the Hub host, this Worker was",
-		"paired with something else. It stops talking to that Hub now",
-		"and stays disconnected.",
+		"paired with something else. It does not connect to that Hub,",
+		"also after restarts.",
 		"To pair it with your Hub:",
 		"    minion worker pair --new-code --hub-fingerprint <value>",
 		"and remove the old Worker entry in the Hub.",
@@ -292,16 +302,18 @@ func MismatchBox(out io.Writer, paired identity.Fingerprint, given identity.Fing
 		"pairing with:",
 		"    minion worker verify-hub --forget --pinned "+string(paired),
 	)
-	writeConsoleBox(out, "HUB FINGERPRINT DOES NOT MATCH - WORKER DISCONNECTED", lines...)
+	writeConsoleBox(out, MismatchTitle, lines...)
 }
 
 // CheckEnrolledHub applies the setting hub_fingerprint to a paired Worker at
 // start (SSH StrictHostKeyChecking): a match records the check; a value that
-// names the key this Worker was checked with, from which the pin was reached
-// by a signed rotation, connects with a Warn line to update the setting; any
-// other value stores the mismatch (the connector does not connect, also after
-// restarts) and prints box M6. A Worker that is not paired, or a zero m, is
-// left alone.
+// names the key this Worker was checked with (or a key the pin moved through
+// since), from which the pin was reached by a signed rotation, connects with a
+// Warn line to update the setting; any other value stores the mismatch (the
+// connector does not connect, also after restarts) and prints box M6. A
+// stored mismatch (quarantine) is never left here, whatever the setting says:
+// only `minion worker verify-hub <52 characters of the pinned key>` or
+// `--forget` end it. A Worker that is not paired, or a zero m, is left alone.
 func CheckEnrolledHub(ctx context.Context, e *Enrollments, m identity.FingerprintMatcher, out io.Writer, log *slog.Logger) error {
 	if m.IsZero() {
 		return nil
@@ -311,10 +323,24 @@ func CheckEnrolledHub(ctx context.Context, e *Enrollments, m identity.Fingerprin
 		return err
 	}
 	paired := fingerprintOfPub(enr.Pin.Pub)
+	if enr.Check() == store.HubCheckMismatch {
+		log.Error("this Worker is quarantined: a fingerprint you gave did not match its Hub; not connecting. "+
+			"The setting hub_fingerprint does not end this; run minion worker verify-hub <the 52 characters from the Hub host> "+
+			"or minion worker verify-hub --forget --pinned "+string(paired),
+			"paired_with", string(paired), "paired_with_words", paired.Words(), "setting", m.String())
+		QuarantineNote(out, paired)
+		return nil
+	}
 	switch matchEnrolled(enr, m) {
 	case matchPin:
 		if enr.Check() != store.HubCheckFingerprint || enr.HubCheckAnchor != string(paired) {
-			if err := e.SetHubCheck(ctx, enr.Pin, store.HubCheckFingerprint, string(paired)); err != nil {
+			err := e.SetHubCheck(ctx, enr.Pin, store.HubCheckFingerprint, string(paired))
+			if errors.Is(err, ErrQuarantined) {
+				// verify-hub stored a mismatch after the read above.
+				QuarantineNote(out, paired)
+				return nil
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -336,6 +362,21 @@ func CheckEnrolledHub(ctx context.Context, e *Enrollments, m identity.Fingerprin
 	return nil
 }
 
+// QuarantineNote prints the lines for a Worker whose stored mismatch stays:
+// what ends it.
+func QuarantineNote(out io.Writer, paired identity.Fingerprint) {
+	writeConsoleBox(out, "WORKER QUARANTINED - NOT CONNECTING",
+		"A fingerprint you gave did not match the Hub this Worker is",
+		"paired with. It stays disconnected, also after restarts and",
+		"whatever the setting hub_fingerprint says, until you either",
+		"give the full fingerprint (52 characters) of the paired Hub",
+		"read on the Hub host:",
+		"    minion worker verify-hub <52 characters>",
+		"or remove this pairing:",
+		"    minion worker verify-hub --forget --pinned "+string(paired),
+	)
+}
+
 // VerifyHubResult is the outcome of [VerifyHub].
 type VerifyHubResult struct {
 	// Outcome is "match", "rotated" (the value names the key this Worker was
@@ -344,13 +385,19 @@ type VerifyHubResult struct {
 	Outcome string
 	// Paired is the pinned Hub fingerprint.
 	Paired identity.Fingerprint
+	// Quarantined is true when the Worker stays quarantined (hub_check is
+	// mismatch) after the command.
+	Quarantined bool
 }
 
-// Outcomes of [VerifyHub].
+// Outcomes of [VerifyHub]. VerifyNeedFull: the Worker is quarantined and the
+// value matches the pin, but only as words; ending the quarantine needs the
+// full fingerprint (52 characters).
 const (
 	VerifyMatch    = "match"
 	VerifyRotated  = "rotated"
 	VerifyMismatch = "mismatch"
+	VerifyNeedFull = "need_full"
 )
 
 // VerifyHub is `minion worker verify-hub`: it compares the pinned Hub with m
@@ -366,15 +413,30 @@ func VerifyHub(ctx context.Context, e *Enrollments, m identity.FingerprintMatche
 		return VerifyHubResult{}, ErrNotPaired
 	}
 	res := VerifyHubResult{Paired: fingerprintOfPub(enr.Pin.Pub)}
+	quarantined := enr.Check() == store.HubCheckMismatch
 	switch matchEnrolled(enr, m) {
 	case matchPin:
+		if quarantined && !m.Full() {
+			// Leaving the quarantine needs the exact key, not words.
+			res.Outcome, res.Quarantined = VerifyNeedFull, true
+			return res, nil
+		}
 		res.Outcome = VerifyMatch
-		err = e.SetHubCheck(ctx, enr.Pin, store.HubCheckFingerprint, string(res.Paired))
+		err = e.setHubCheck(ctx, enr.Pin, store.HubCheckFingerprint, string(res.Paired), m.Full())
 	case matchAnchor:
-		res.Outcome = VerifyRotated
+		// A predecessor of the pin: the rotation is verified, but only the
+		// pinned key itself ends a quarantine.
+		res.Outcome, res.Quarantined = VerifyRotated, quarantined
 	default:
-		res.Outcome = VerifyMismatch
-		err = e.SetHubCheck(ctx, enr.Pin, store.HubCheckMismatch, enr.HubCheckAnchor)
+		res.Outcome, res.Quarantined = VerifyMismatch, true
+		if !quarantined {
+			err = e.SetHubCheck(ctx, enr.Pin, store.HubCheckMismatch, enr.HubCheckAnchor)
+		}
+	}
+	if errors.Is(err, ErrQuarantined) {
+		// A mismatch was stored meanwhile; words do not end it.
+		res.Outcome, res.Quarantined = VerifyNeedFull, true
+		return res, nil
 	}
 	if errors.Is(err, store.ErrNotEnrolled) {
 		return VerifyHubResult{}, errors.New("the pairing changed while it was checked; run the command again")

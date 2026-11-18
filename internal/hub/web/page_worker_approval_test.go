@@ -111,3 +111,27 @@ func TestInvitationCreateSendsMaxUsesOnlyForReusableKeys(t *testing.T) {
 	rec := onbPost(t, s, pathInvitations, url.Values{"mode": {"reusable"}, "ttl": {"1w"}, "max_uses": {"many"}})
 	mustHave(t, rec.Body.String(), "whole number")
 }
+
+// Finding 10 of the round-1 review (C2): the approval facts show how the
+// Worker checked this Hub, and "not verified" when it did not.
+func TestApprovalFactsShowTheWorkersHubCheck(t *testing.T) {
+	for check, want := range map[string]string{
+		"none":        "not verified",
+		"fingerprint": "matched the fingerprint of this Hub that its operator gave",
+		"invite":      "from the invitation key",
+		"":            "",
+	} {
+		w := wPending
+		w.HubCheck = check
+		v := newWorkerView(Dashboard{Workers: []WorkerRow{w}}, false, "w9", true)
+		out, err := renderWorkerFragment(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want == "" {
+			mustNotHave(t, out, "Hub check")
+			continue
+		}
+		mustHave(t, out, "Hub check", `data-hub-check="`+check+`"`, want)
+	}
+}

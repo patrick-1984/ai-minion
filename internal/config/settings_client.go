@@ -25,6 +25,11 @@ const (
 	// (MINION_HUB_TLS_PIN, --hub-tls-pin). When set it replaces the
 	// verification of the certificate chain for this client.
 	KeyHubTLSPin = "hub_tls_pin"
+	// KeyHubTLSPinURL is the Hub URL a hub_tls_pin of the config file belongs
+	// to. The interactive offer saves it with the pin; a pin from the config
+	// file is then used only for exactly that Hub URL, never for another Hub
+	// that a one-off --hub-url names.
+	KeyHubTLSPinURL = "hub_tls_pin_url"
 )
 
 // APIKeyFileEnv is the environment variable that names the file of the API key.
@@ -80,6 +85,12 @@ func declareClient(r *Registry) {
 		Help: "TLS key pin of the Hub, sha256//<base64> as curl --pinnedpubkey takes it; several are separated by \";\". " +
 			"When set, this client accepts exactly a Hub certificate with that key, whoever signed it, instead of verifying " +
 			"the certificate chain. Take the value from the \"TLS key pin\" line of \"minion hub identity --words\" on the Hub host",
+	})
+	r.Declare(Setting{
+		Key:   KeyHubTLSPinURL,
+		Scope: ScopeWorker,
+		Help: "The Hub URL that the hub_tls_pin of the config file belongs to (saved together with the pin when you trust " +
+			"a Hub's key at the prompt). A pin from the config file is used only when the Hub URL in use is exactly this one",
 	})
 	r.Declare(Setting{
 		Key:   KeyHubWorker,
@@ -221,6 +232,17 @@ func ResolveClientHub(res *Resolver) (ClientHub, error) {
 	// Only trimmed here: the kernel package config does not import identity;
 	// client.NewHub refuses a malformed pin before anything is sent.
 	c.TLSPin = strings.TrimSpace(pin.Value)
+	if c.TLSPin != "" && pin.Source == SourceFile {
+		bound, err := res.Resolve(KeyHubTLSPinURL)
+		if err != nil {
+			return c, err
+		}
+		// A pin saved for one Hub URL is not a pin for another one: the
+		// client then verifies the certificate as usual.
+		if b := strings.TrimSpace(bound.Value); b != "" && PinURLKey(b) != PinURLKey(c.URL) {
+			c.TLSPin = ""
+		}
+	}
 	w, err := res.Resolve(KeyHubWorker)
 	if err != nil {
 		return c, err
@@ -229,4 +251,17 @@ func ResolveClientHub(res *Resolver) (ClientHub, error) {
 	// a Worker id before anything is sent, and says so without repeating it.
 	c.Worker = strings.TrimSpace(w.Value)
 	return c, nil
+}
+
+// PinURLKey normalizes a Hub URL for the binding of a saved TLS pin: the
+// scheme and the host in lower case, the path prefix without a trailing
+// slash. Two URLs name the same Hub for the pin exactly when their keys are
+// equal.
+func PinURLKey(raw string) string {
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.EscapedPath(), "/")
 }

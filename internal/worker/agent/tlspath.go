@@ -2,6 +2,8 @@ package agent
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/json"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -16,6 +18,27 @@ import (
 type HubTLSInfo struct {
 	Mode    string       `json:"mode"`
 	KeyHash identity.B64 `json:"key_sha256,omitempty"`
+}
+
+// UnmarshalJSON decodes the member leniently: it is an optional diagnostic,
+// so a malformed member never fails the welcome (and with it an authenticated
+// pairing or connection). Whatever cannot be read is left empty, which
+// [TLSPath] reports as unknown.
+func (h *HubTLSInfo) UnmarshalJSON(data []byte) error {
+	*h = HubTLSInfo{}
+	var raw struct {
+		Mode    json.RawMessage `json:"mode"`
+		KeyHash json.RawMessage `json:"key_sha256"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	_ = json.Unmarshal(raw.Mode, &h.Mode)
+	var key identity.B64
+	if len(raw.KeyHash) > 0 && json.Unmarshal(raw.KeyHash, &key) == nil && len(key) == sha256.Size {
+		h.KeyHash = key
+	}
+	return nil
 }
 
 // TLS path states (informational only, never a verdict). The comparison is a
@@ -49,12 +72,19 @@ func TLSPath(seen transport.TLSSeen, stated *HubTLSInfo) (state, line string) {
 		return TLSPathUnknown, "not known"
 	case stated == nil:
 		return TLSPathUnknown, TLSFacts(seen) + "; this Hub does not report its own certificate"
+	case stated.Mode == "own" && (len(stated.KeyHash) != sha256.Size || seen.KeyHash == [32]byte{}):
+		// Both keys are needed for a comparison ("keys differ" only when
+		// both exist): the Hub did not state a usable key (for example a
+		// resumed TLS session), or the Worker has none.
+		return TLSPathUnknown, TLSFacts(seen) + "; the Hub did not state the key it served on this connection"
 	case stated.Mode == "own" && bytes.Equal(stated.KeyHash, seen.KeyHash[:]):
 		return TLSPathKeysMatch, "keys match (the certificate has the key the Hub states it serves); " + TLSFacts(seen)
 	case stated.Mode == "own":
 		return TLSPathKeysDiffer, "keys differ: a TLS endpoint with another key is in between, such as a proxy; " + TLSFacts(seen)
-	default:
+	case stated.Mode == "off":
 		return TLSPathPlainToHub, "plain to Hub: the Hub received plain HTTP, so TLS ends before the Hub, at a proxy; " + TLSFacts(seen)
+	default:
+		return TLSPathUnknown, TLSFacts(seen) + "; the Hub's statement about its TLS is not readable"
 	}
 }
 

@@ -461,3 +461,26 @@ func TestResetThenEnrollAgainUsesANewKeyAndANewPin(t *testing.T) {
 		t.Fatalf("the session counter must continue across a reset: %d, %v", n, err)
 	}
 }
+
+// A reset is an explicit fresh start: it ends the record of a pairing removed
+// with `verify-hub --forget`.
+func TestResetEndsTheRecordOfAForgottenHub(t *testing.T) {
+	r := newResetRig(t)
+	r.pair()
+	enr, ok, err := r.enr.Load(context.Background())
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := ForgetHub(context.Background(), r.enr, fingerprintOfPub(enr.Pin.Pub)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ForgottenHubs(r.dir); len(got) != 1 {
+		t.Fatalf("record = %v", got)
+	}
+	if _, err := r.reset(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ForgottenHubs(r.dir); len(got) != 0 {
+		t.Fatalf("the record survived the reset: %v", got)
+	}
+}

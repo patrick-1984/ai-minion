@@ -1143,3 +1143,43 @@ func TestHookStaysSilentWhenWorkerUpAlreadyWarnedAboutTheLiteralKey(t *testing.T
 		t.Fatalf("the hook warned again: %q", stderr.String())
 	}
 }
+
+// Finding 2 of the round-1 review: after `verify-hub --forget`, a restart with
+// the original invitation file still mounted does not enroll again (the Hub
+// would hand back the same Worker row and restore the disputed pairing).
+func TestHookDoesNotReEnrollAfterForgetWithTheInvitationStillMounted(t *testing.T) {
+	hub, invite := newInviteHub(t)
+	var out, stderr bytes.Buffer
+	logs := &logBuf{}
+	path := filepath.Join(t.TempDir(), "invite")
+	if err := os.WriteFile(path, []byte(invite.String()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := inviteSettings(t, inviteResolver(config.MapSource{config.KeyServer: hub.url()}, map[string]string{"MINION_INVITE_KEY_FILE": path}, nil), &out, logs)
+	if err := runHook(t, s, "", &stderr); err != nil {
+		t.Fatal(err)
+	}
+	st := openWorkerState(t, s.StateDir)
+	enr, ok, err := st.Load(context.Background())
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := ForgetHub(context.Background(), st, fingerprintOfPub(enr.Pin.Pub)); err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	hellosBefore := len(hub.hellos)
+	hub.mu.Unlock()
+	err = runHook(t, s, "", &stderr)
+	if err == nil || !strings.Contains(err.Error(), "verify-hub --forget") {
+		t.Fatalf("the hook enrolled again after --forget: %v", err)
+	}
+	if _, ok, _ := openWorkerState(t, s.StateDir).Load(context.Background()); ok {
+		t.Fatal("the forgotten pairing was restored")
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.hellos) != hellosBefore {
+		t.Fatalf("the Hub was contacted again (%d hellos, %d before)", len(hub.hellos), hellosBefore)
+	}
+}

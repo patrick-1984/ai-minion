@@ -157,7 +157,7 @@ func TestCheckEnrolledHubThreeCases(t *testing.T) {
 		if gen1, _ := f.enr.Watch(); gen1 == gen0 {
 			t.Fatal("entering mismatch must move the generation")
 		}
-		if !strings.Contains(out.String(), "HUB FINGERPRINT DOES NOT MATCH - WORKER DISCONNECTED") ||
+		if !strings.Contains(out.String(), MismatchTitle) || strings.Contains(out.String(), "DISCONNECTED") ||
 			!strings.Contains(out.String(), "The setting hub_fingerprint says:") ||
 			!strings.Contains(f.logs.String(), "the paired Hub does not match hub_fingerprint; not connecting") {
 			t.Fatalf("box/log:\n%s\n%s", out.String(), f.logs.String())
@@ -180,9 +180,18 @@ func TestVerifyHubAndForget(t *testing.T) {
 	if err != nil || res.Outcome != VerifyMismatch || res.Paired != f.hub.Fingerprint() || f.load(t).Check() != store.HubCheckMismatch {
 		t.Fatalf("mismatch: %+v %v", res, err)
 	}
+	// Words do not end a quarantine, only the full pinned key does.
 	res, err = VerifyHub(ctx, f.enr, mustMatcher(t, f.hub.Fingerprint().Words()))
-	if err != nil || res.Outcome != VerifyMatch || f.load(t).Check() != store.HubCheckFingerprint {
+	if err != nil || res.Outcome != VerifyNeedFull || !res.Quarantined || f.load(t).Check() != store.HubCheckMismatch {
+		t.Fatalf("words: %+v %v", res, err)
+	}
+	res, err = VerifyHub(ctx, f.enr, mustMatcher(t, string(f.hub.Fingerprint())))
+	if err != nil || res.Outcome != VerifyMatch || res.Quarantined || f.load(t).Check() != store.HubCheckFingerprint {
 		t.Fatalf("match: %+v %v", res, err)
+	}
+	// Outside a quarantine words are enough.
+	if res, err = VerifyHub(ctx, f.enr, mustMatcher(t, f.hub.Fingerprint().Words())); err != nil || res.Outcome != VerifyMatch {
+		t.Fatalf("words, not quarantined: %+v %v", res, err)
 	}
 
 	if err := ForgetHub(ctx, f.enr, other.Fingerprint()); !errors.Is(err, ErrPinnedDiffers) {
@@ -193,6 +202,9 @@ func TestVerifyHubAndForget(t *testing.T) {
 	}
 	if _, ok, _ := f.enr.Load(ctx); ok {
 		t.Fatal("forget must remove the pairing")
+	}
+	if got, err := ForgottenHubs(f.enr.stateDir); err != nil || len(got) != 1 || got[0] != string(f.hub.Fingerprint()) {
+		t.Fatalf("the removal must be recorded: %v %v", got, err)
 	}
 	if _, err := VerifyHub(ctx, f.enr, mustMatcher(t, string(other.Fingerprint()))); !errors.Is(err, ErrNotPaired) {
 		t.Fatalf("not paired: %v", err)
@@ -209,15 +221,20 @@ func TestConnectorStaysIdleOnAStoredMismatch(t *testing.T) {
 	}
 	f.drainChanged()
 	f.run()
-	f.waitIdle("the Hub does not match the fingerprint you gave; see minion worker verify-hub")
+	f.waitIdle(ReasonQuarantined)
 	if f.dial.count() != 0 {
 		t.Fatal("the connector dialled a quarantined Hub")
 	}
-	// A match leaves the quarantine and the connector dials.
+	// A plain SetHubCheck (a start that read the enrollment earlier) cannot
+	// leave the quarantine.
+	if err := f.enr.SetHubCheck(context.Background(), identity.Pin{Pub: f.hub.Public()}, store.HubCheckFingerprint, string(f.hub.Fingerprint())); !errors.Is(err, ErrQuarantined) {
+		t.Fatalf("SetHubCheck left the quarantine: %v", err)
+	}
+	// verify-hub with the full pinned key leaves it and the connector dials.
 	sess := newFakeSession()
 	f.dial.script(f.welcomeStep(sess, okWelcome()))
-	if err := f.enr.SetHubCheck(context.Background(), identity.Pin{Pub: f.hub.Public()}, store.HubCheckFingerprint, string(f.hub.Fingerprint())); err != nil {
-		t.Fatal(err)
+	if res, err := VerifyHub(context.Background(), f.enr, mustMatcher(t, string(f.hub.Fingerprint()))); err != nil || res.Outcome != VerifyMatch {
+		t.Fatal(res, err)
 	}
 	f.waitState(ConnConnected)
 }
@@ -266,4 +283,122 @@ func TestConnectorInvalidChainReason(t *testing.T) {
 	})
 	f.run()
 	eventually(t, func() bool { return strings.Contains(out.String(), "The Hub sent a record of a") })
+}
+
+// Finding 1 of the round-1 review: a quarantine stored by verify-hub is not
+// left by a restart whose unchanged setting still names the pinned key.
+func TestQuarantineSurvivesARestartWithTheMatchingSetting(t *testing.T) {
+	ctx := context.Background()
+	f := newCheckFixture(t, "", "")
+	setting := mustMatcher(t, string(f.hub.Fingerprint()))
+	if err := CheckEnrolledHub(ctx, f.enr, setting, io.Discard, f.log); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := identity.GenerateKey()
+	if res, err := VerifyHub(ctx, f.enr, mustMatcher(t, string(other.Fingerprint()))); err != nil || res.Outcome != VerifyMismatch {
+		t.Fatal(res, err)
+	}
+	var out bytes.Buffer
+	if err := CheckEnrolledHub(ctx, f.enr, setting, &out, f.log); err != nil {
+		t.Fatal(err)
+	}
+	if f.load(t).Check() != store.HubCheckMismatch {
+		t.Fatal("a restart with the matching setting left the quarantine")
+	}
+	if !strings.Contains(out.String(), "WORKER QUARANTINED") || !strings.Contains(out.String(), "--forget --pinned "+string(f.hub.Fingerprint())) ||
+		!strings.Contains(f.logs.String(), "quarantined") {
+		t.Fatalf("note/log:\n%s\n%s", out.String(), f.logs.String())
+	}
+}
+
+// Finding 7: a setting that names any key of the verified lineage (A -> B ->
+// C, setting B, pin C) is an authenticated predecessor: no quarantine.
+func TestCheckEnrolledHubAcceptsAKeyOfTheVerifiedLineage(t *testing.T) {
+	ctx := context.Background()
+	e, _, _ := newEnrollments(t)
+	a, _ := identity.GenerateKey()
+	b, _ := identity.GenerateKey()
+	c, _ := identity.GenerateKey()
+	if err := e.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: a.Public()}, HubCheck: store.HubCheckFingerprint, HubCheckAnchor: string(a.Fingerprint())}); err != nil {
+		t.Fatal(err)
+	}
+	gen, _ := e.Watch()
+	// A -> B, then B -> C, each by a verified chain (one link each), and
+	// also A -> B -> C in one commit on a second Worker.
+	if err := e.CommitRatchetIfLive(ctx, gen, identity.Pin{Pub: b.Public(), Seq: 1}, transport.Ratchet{Root: b.Public()}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.CommitRatchetIfLive(ctx, gen, identity.Pin{Pub: c.Public(), Seq: 2}, transport.Ratchet{Root: c.Public()}, nil); err != nil {
+		t.Fatal(err)
+	}
+	e2, _, _ := newEnrollments(t)
+	if err := e2.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: a.Public()}, HubCheck: store.HubCheckFingerprint, HubCheckAnchor: string(a.Fingerprint())}); err != nil {
+		t.Fatal(err)
+	}
+	gen2, _ := e2.Watch()
+	if err := e2.CommitRatchetIfLive(ctx, gen2, identity.Pin{Pub: c.Public(), Seq: 2}, transport.Ratchet{Root: c.Public()}, nil, b.Public()); err != nil {
+		t.Fatal(err)
+	}
+	logs := &logBuf{}
+	log := slog.New(slog.NewTextHandler(logs, nil))
+	for _, en := range []*Enrollments{e, e2} {
+		for _, k := range []*identity.Key{a, b} {
+			var out bytes.Buffer
+			if err := CheckEnrolledHub(ctx, en, mustMatcher(t, string(k.Fingerprint())), &out, log); err != nil {
+				t.Fatal(err)
+			}
+			enr, _, _ := en.Load(ctx)
+			if enr.Check() != store.HubCheckFingerprint || out.Len() != 0 {
+				t.Fatalf("setting %s: %+v\n%s", k.Fingerprint().Words(), enr, out.String())
+			}
+		}
+	}
+	// A key outside the lineage is still a mismatch.
+	other, _ := identity.GenerateKey()
+	if err := CheckEnrolledHub(ctx, e, mustMatcher(t, string(other.Fingerprint())), io.Discard, log); err != nil {
+		t.Fatal(err)
+	}
+	if enr, _, _ := e.Load(ctx); enr.Check() != store.HubCheckMismatch {
+		t.Fatalf("other key: %+v", enr)
+	}
+}
+
+// Finding 2: --forget is recorded; an explicit new enrollment ends the record.
+func TestForgetIsRecordedUntilAnExplicitEnrollment(t *testing.T) {
+	ctx := context.Background()
+	f := newCheckFixture(t, "", "")
+	if err := ForgetHub(ctx, f.enr, f.hub.Fingerprint()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ForgottenHubs(f.enr.stateDir); len(got) != 1 {
+		t.Fatalf("record = %v", got)
+	}
+	if err := f.enr.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: f.hub.Public()}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ForgottenHubs(f.enr.stateDir); len(got) != 0 {
+		t.Fatalf("a new enrollment must end the record: %v", got)
+	}
+}
+
+// Finding 10: the hello facts carry this Worker's hub_check, so the Hub can
+// show "not verified" on the approval page.
+func TestConnectorSendsItsHubCheckInTheHelloFacts(t *testing.T) {
+	f := newConnFixture(t)
+	got := make(chan string, 1)
+	sess := newFakeSession()
+	welcome := f.welcomeStep(sess, okWelcome())
+	f.dial.script(func(p ConnectParams) (*Attempt, error) {
+		got <- p.Facts.HubCheck
+		return welcome(p)
+	})
+	f.run()
+	select {
+	case c := <-got:
+		if c != store.HubCheckNone {
+			t.Fatalf("hub_check fact = %q", c)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no dial")
+	}
 }

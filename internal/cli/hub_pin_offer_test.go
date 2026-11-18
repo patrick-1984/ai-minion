@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 )
@@ -23,8 +25,8 @@ func pinOfferRun(t *testing.T, interactive bool, typed string) (hub *hubStub, co
 	deps := depsWithSettings(localAnswers(`{}`), env)
 	deps.pinOffer = &hubPinOffer{
 		interactive: func(io.Reader, io.Writer) bool { return interactive },
-		save: func(pin string) (string, error) {
-			return saveClientSetting(envFrom(env), config.KeyHubTLSPin, pin)
+		save: func(pin, hubURL string) (string, error) {
+			return saveClientSettings(envFrom(env), map[string]string{config.KeyHubTLSPin: pin, config.KeyHubTLSPinURL: config.PinURLKey(hubURL)})
 		},
 	}
 	code, out, errs = runWith(t, deps, typed, "sessions_list", "--hub-worker", hubWorkerID)
@@ -48,7 +50,7 @@ func TestHubPinOfferSavesOnlyTheExactPinAndTriesOnceMore(t *testing.T) {
 		!strings.Contains(out, "minion hub identity --words") || !strings.Contains(out, "Saved hub_tls_pin") {
 		t.Errorf("prompt = %q", out)
 	}
-	if !strings.Contains(saved, `"hub_tls_pin": "`+pin+`"`) {
+	if !strings.Contains(saved, `"hub_tls_pin": "`+pin+`"`) || !strings.Contains(saved, `"hub_tls_pin_url": "`+config.PinURLKey(hub.srv.URL)+`"`) {
 		t.Errorf("config file = %q", saved)
 	}
 
@@ -115,5 +117,33 @@ func TestMCPHubClientUsesTheTLSPin(t *testing.T) {
 	got, _ = rpc(t, deps, []string{"--hub-worker", hubWorkerID}, listRequest, call)
 	if s := string(got[3]); !strings.Contains(s, "unknown authority") || !strings.Contains(s, pin) {
 		t.Errorf("unpinned: tools/call = %s", s)
+	}
+}
+
+// A pin the offer saved belongs to the Hub URL it was accepted for: a one-off
+// --hub-url to another Hub verifies the certificate as usual (and fails here,
+// the test certificate is self-signed), the saved URL uses the pin.
+func TestHubPinSavedByTheOfferIsBoundToItsHubURL(t *testing.T) {
+	hubA := newHubStub(t, func(w http.ResponseWriter, r *http.Request, s *hubStub) { stubJSON(w, 200, `{"sessions":[]}`) })
+	hubB := newHubStub(t, func(w http.ResponseWriter, r *http.Request, s *hubStub) { stubJSON(w, 200, `{"sessions":[]}`) })
+	pin := identity.SPKIPin(hubA.srv.Certificate().RawSubjectPublicKeyInfo)
+	stateDir := t.TempDir()
+	if _, err := writeWorkerSettings(stateDir, map[string]string{config.KeyHubTLSPin: pin, config.KeyHubTLSPinURL: config.PinURLKey(hubA.srv.URL + "/")}); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"MINION_HUB_URL": hubA.srv.URL, "MINION_API_KEY_FILE": hubA.keyFile, "MINION_STATE_DIR": stateDir}
+	withFile := func() opsDeps {
+		deps := testDeps(localAnswers(`{}`))
+		deps.hubSettings = func(cmd *cobra.Command) (config.ClientHub, error) {
+			return resolveHubSettings(cmd.Flags(), envFrom(env), loadWorkerConfig)
+		}
+		return deps
+	}
+	if code, _, errs := runWith(t, withFile(), "", "sessions_list", "--hub-worker", hubWorkerID); code != 0 || hubA.hits.Load() != 1 {
+		t.Fatalf("bound URL: exit %d, hits %d, stderr %q", code, hubA.hits.Load(), errs)
+	}
+	code, _, errs := runWith(t, withFile(), "", "sessions_list", "--hub-worker", hubWorkerID, "--hub-url", hubB.srv.URL)
+	if code != ExitError || hubB.hits.Load() != 0 || !strings.Contains(errs, "unknown authority") {
+		t.Errorf("other URL: exit %d, hits %d, stderr %q", code, hubB.hits.Load(), errs)
 	}
 }

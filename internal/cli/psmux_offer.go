@@ -96,7 +96,7 @@ func offerPsmux(cmd *cobra.Command, res *config.Resolver, d psmuxOfferDeps) {
 // saveWorkerSetting writes one setting to the Worker's config file, under the
 // config lock, and reports a failure on errOut.
 func saveWorkerSetting(stateDir, key, value string, errOut io.Writer) {
-	if _, err := writeWorkerSetting(stateDir, key, value); err != nil {
+	if _, err := writeWorkerSettings(stateDir, map[string]string{key: value}); err != nil {
 		_, _ = fmt.Fprintf(errOut, "cannot save %s: %v\n", key, err)
 	}
 }

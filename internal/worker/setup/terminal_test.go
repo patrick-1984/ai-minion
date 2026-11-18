@@ -728,3 +728,52 @@ func TestTerminalChooseNowAllAndNone(t *testing.T) {
 		t.Fatalf("saved = %+v, want select [build notes]", got)
 	}
 }
+
+// Finding 6 of the round-1 review: with an invitation key and an expected Hub
+// fingerprint, the wizard does not probe the address; the enrollment hook
+// compares the two first and only then contacts the Hub.
+func TestTerminalDefersTheProbeWhenAnInvitationAndAFingerprintAreGiven(t *testing.T) {
+	const fp = "rqgmc6qesqwmj6ha7yftajqg2miiqygbezbixiwo5npz5va4fmcq"
+	r := newRig([]string{"a"}, Provided{Share: store.ShareAll, Server: "https://hub.example:8443", HasServer: true, HubFingerprint: fp})
+	out := &syncBuffer{}
+	term := &Terminal{In: &countingReader{t: t}, Out: out, Interactive: true, SkipPairing: "An invitation key was given; no pairing code is needed."}
+	if _, err := term.Run(context.Background(), r.w); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	r.chk.mu.Lock()
+	calls := len(r.chk.calls)
+	r.chk.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("the wizard probed the Hub %d times before the invitation was compared", calls)
+	}
+	contains(t, strings.Join(strings.Fields(out.String()), " "), "The address is not checked now")
+	if got := r.per.saved(); len(got) != 1 || got[0].Server != "https://hub.example:8443" {
+		t.Fatalf("saved = %+v", got)
+	}
+
+	// Without an expected fingerprint there is nothing to compare: probed.
+	r = newRig([]string{"a"}, Provided{Share: store.ShareAll, Server: "https://hub.example:8443", HasServer: true})
+	term = &Terminal{In: &countingReader{t: t}, Out: &syncBuffer{}, Interactive: true, SkipPairing: "x"}
+	if _, err := term.Run(context.Background(), r.w); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.chk.calls) != 1 {
+		t.Fatalf("calls = %v", r.chk.calls)
+	}
+}
+
+// Finding 9: an owner name read from a legacy enrollment row reaches the
+// terminal only terminal-safe.
+func TestTerminalShowsAStoredOwnerTerminalSafe(t *testing.T) {
+	r := newRig([]string{"a"}, Provided{Share: store.ShareAll, Server: "https://hub.example:8443", HasServer: true})
+	r.pair.already = &Paired{Owner: "mallory\x1b]0;owned\x07\nSetup is done."}
+	out := &syncBuffer{}
+	term := &Terminal{In: strings.NewReader(""), Out: out, Interactive: true}
+	if _, err := term.Run(context.Background(), r.w); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if strings.ContainsAny(out.String(), "\x1b\x07") || strings.Count(out.String(), "\nSetup is done.") != 1 {
+		t.Fatalf("unsafe output: %q", out.String())
+	}
+	contains(t, out.String(), "mallory")
+}

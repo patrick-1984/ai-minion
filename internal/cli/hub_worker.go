@@ -10,6 +10,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 func init() {
@@ -131,7 +132,7 @@ func runHubWorkerApprove(cmd *cobra.Command, deps opsDeps, ref string) error {
 		return err
 	}
 	if !found.Pending {
-		_, err := fmt.Fprintf(out, "Worker %s (%s) is already approved.\n", found.Name, found.ID)
+		_, err := fmt.Fprintf(out, "Worker %s (%s) is already approved.\n", proto.SafeText(found.Name, 255), proto.SafeText(found.ID, 64))
 		return err
 	}
 	args := ops.WorkerApproveArgs{
@@ -146,8 +147,11 @@ func runHubWorkerApprove(cmd *cobra.Command, deps opsDeps, ref string) error {
 	if err := json.Unmarshal(raw, &res); err != nil || res.Outcome != ops.OutcomeDelivered {
 		return fmt.Errorf("the Hub did not confirm the approval (outcome %q); list the Workers to see the current state", res.Outcome)
 	}
+	// Everything in this line comes from the Hub's list: one line, no
+	// control or format characters (C7).
 	_, err = fmt.Fprintf(out, "Approved Worker %s (%s), fingerprint %s (%s), enrolled from %s.\n",
-		found.Name, found.ID, identity.Fingerprint(found.Fingerprint).Words(), found.Fingerprint, orDash(found.EnrollAddr))
+		proto.SafeText(found.Name, 255), proto.SafeText(found.ID, 64), proto.SafeText(identity.Fingerprint(found.Fingerprint).Words(), 128),
+		proto.SafeText(found.Fingerprint, 64), orDash(proto.SafeText(found.EnrollAddr, 128)))
 	return err
 }
 

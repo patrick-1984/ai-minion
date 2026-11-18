@@ -171,6 +171,11 @@ type WorkerFacts struct {
 	// SessionHost is what hosts the Worker's sessions: "tmux", "psmux" or
 	// "conpty" (v0.10.0). Empty means unknown (an older Worker).
 	SessionHost string `json:"session_host,omitempty"`
+	// HubCheck is how this Worker checked the Hub it connects to (v0.11.0):
+	// "none" (not verified), "fingerprint" or "invite". It is part of the
+	// signed hello, so the Hub can show it on the approval page. Empty means
+	// unknown (an older Worker).
+	HubCheck string `json:"hub_check,omitempty"`
 	// SessionsHidden is true when a new session would be hidden from the
 	// person: they could not see or join it from their own terminal (ConPTY
 	// inside the Worker, or a tmux/psmux server that is not their default
@@ -297,6 +302,9 @@ type WorkerResult struct {
 	// or is new (other modes); the caller rewrites its stored pin atomically
 	// before relying on the connection.
 	PinChanged bool
+	// PinPassed are the keys the verified transition chain went through
+	// between the configured pin and Pin, neither end included (connect).
+	PinPassed []ed25519.PublicKey
 	// Cert is the Hub certificate validated in this handshake and OpPub its
 	// operational key: the key that signs a revoke on this connection and
 	// that was verified for sig_hub. CertSHA256 is the hash of its 153 bytes.
@@ -414,9 +422,10 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 
 	// Step b: the root. The candidate stays in memory until the commit.
 	pin := identity.Pin{Pub: bytes.Clone(hubPub)}
+	var passed []ed25519.PublicKey
 	switch cfg.Mode {
 	case ModeConnect:
-		if pin, err = resolvePin(cfg.Pin, hubPub, hub.Chain); err != nil {
+		if pin, passed, err = resolvePin(cfg.Pin, hubPub, hub.Chain); err != nil {
 			return nil, &HubKeyError{Presented: bytes.Clone(hubPub), Err: err}
 		}
 	case ModeEnrollInvite:
@@ -527,6 +536,7 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 		TranscriptHash: hash,
 		Pin:            pin,
 		PinChanged:     cfg.Mode != ModeConnect || !bytes.Equal(pin.Pub, cfg.Pin.Pub) || pin.Seq != cfg.Pin.Seq,
+		PinPassed:      passed,
 		Cert:           cert,
 		OpPub:          bytes.Clone(cert.OpPub),
 		CertSHA256:     certHashV,
@@ -576,7 +586,10 @@ func checkLens(m map[string]struct{ got, want int }) error {
 // resolvePin applies the part of the Hub's chain that starts at the pinned
 // key and checks that the result is the key the Hub presented. Links before
 // the pinned key (older rotations the Worker already knows) are skipped.
-func resolvePin(pin identity.Pin, hubPub ed25519.PublicKey, chain []identity.Transition) (identity.Pin, error) {
+//
+// passed are the keys between the pinned key and the result that the
+// verified chain went through (neither end included).
+func resolvePin(pin identity.Pin, hubPub ed25519.PublicKey, chain []identity.Transition) (next identity.Pin, passed []ed25519.PublicKey, err error) {
 	var links []identity.Transition
 	for i, t := range chain {
 		if bytes.Equal(t.OldPub, pin.Pub) {
@@ -584,14 +597,17 @@ func resolvePin(pin identity.Pin, hubPub ed25519.PublicKey, chain []identity.Tra
 			break
 		}
 	}
-	next, err := identity.VerifyChain(pin, links)
+	next, err = identity.VerifyChain(pin, links)
 	if err != nil {
-		return identity.Pin{}, fmt.Errorf("%w: %w", ErrChainInvalid, err)
+		return identity.Pin{}, nil, fmt.Errorf("%w: %w", ErrChainInvalid, err)
 	}
 	if !bytes.Equal(next.Pub, hubPub) {
-		return identity.Pin{}, ErrPinMismatch
+		return identity.Pin{}, nil, ErrPinMismatch
 	}
-	return next, nil
+	for i := 0; i+1 < len(links); i++ {
+		passed = append(passed, bytes.Clone(links[i].NewPub))
+	}
+	return next, passed, nil
 }
 
 // workerPake runs the Worker side of the AD-8 exchange: pake.msg, pake.msg,

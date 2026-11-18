@@ -7,7 +7,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/identity"
 )
 
 // Errors of the enrollment API. Test with [errors.Is].
@@ -52,6 +55,11 @@ type Enrollment struct {
 	HubCheck       string
 	HubCheckAt     time.Time
 	HubCheckAnchor string
+	// HubCheckLineage are the full fingerprints, separated by spaces, of the
+	// keys the pin moved through by signed transitions since the anchor was
+	// checked (the current pin not included). A pin update with an anchor
+	// adds to it; a new anchor empties it.
+	HubCheckLineage string
 	// EnrolledAt is when the enrollment was first stored. It is set by
 	// [Store.SaveEnrollment] and ignored on input.
 	EnrolledAt time.Time
@@ -126,17 +134,18 @@ func (s *Store) SaveEnrollment(ctx context.Context, e Enrollment) error {
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO hub_enrollment
 		   (id, hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, updated_at,
-		    max_serial, cert_sha256, hub_check, hub_check_at, hub_check_anchor)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		    max_serial, cert_sha256, hub_check, hub_check_at, hub_check_anchor, hub_check_lineage)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (id) DO UPDATE SET
 		   hub_pub = excluded.hub_pub, pin_seq = excluded.pin_seq, worker_id = excluded.worker_id,
 		   worker_name = excluded.worker_name, owner = excluded.owner, kind = excluded.kind,
 		   preview_only = excluded.preview_only, enrolled_at = excluded.enrolled_at,
 		   updated_at = excluded.updated_at, max_serial = excluded.max_serial,
 		   cert_sha256 = excluded.cert_sha256, hub_check = excluded.hub_check,
-		   hub_check_at = excluded.hub_check_at, hub_check_anchor = excluded.hub_check_anchor`,
+		   hub_check_at = excluded.hub_check_at, hub_check_anchor = excluded.hub_check_anchor,
+		   hub_check_lineage = excluded.hub_check_lineage`,
 		[]byte(e.HubPub), int64(e.PinSeq), e.WorkerID, e.Name, e.Owner, e.Kind, boolInt(e.PreviewOnly), now, now,
-		int64(e.MaxSerial), nullBytes(e.CertSHA256), check, checkAt, e.HubCheckAnchor)
+		int64(e.MaxSerial), nullBytes(e.CertSHA256), check, checkAt, e.HubCheckAnchor, e.HubCheckLineage)
 	if err != nil {
 		return fmt.Errorf("store: save enrollment: %w", err)
 	}
@@ -172,10 +181,10 @@ func (s *Store) LoadEnrollment(ctx context.Context) (Enrollment, error) {
 	)
 	err := s.db.QueryRowContext(ctx,
 		`SELECT hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, max_serial, cert_sha256,
-		        hub_check, hub_check_at, hub_check_anchor
+		        hub_check, hub_check_at, hub_check_anchor, hub_check_lineage
 		 FROM hub_enrollment WHERE id = 1`).
 		Scan(&pub, &seq, &e.WorkerID, &e.Name, &e.Owner, &e.Kind, &preview, &enrolled, &maxSerial, &certHash,
-			&e.HubCheck, &checkAt, &e.HubCheckAnchor)
+			&e.HubCheck, &checkAt, &e.HubCheckAnchor, &e.HubCheckLineage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Enrollment{}, ErrNotEnrolled
 	}
@@ -196,7 +205,8 @@ func (s *Store) LoadEnrollment(ctx context.Context) (Enrollment, error) {
 
 // SetHubCheck records the result of a fingerprint check of the pinned Hub:
 // check (a HubCheck* value) and anchor (the full fingerprint that was
-// checked, "" for none). The update applies only while pub is still the
+// checked, "" for none). A new anchor empties the lineage (the keys the pin
+// moved through since the old anchor). The update applies only while pub is still the
 // pinned key, so a check of one pin never marks another; no matching row is
 // [ErrNotEnrolled].
 func (s *Store) SetHubCheck(ctx context.Context, pub ed25519.PublicKey, check, anchor string) error {
@@ -205,9 +215,11 @@ func (s *Store) SetHubCheck(ctx context.Context, pub ed25519.PublicKey, check, a
 	}
 	now := s.clock.now().UnixMilli()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE hub_enrollment SET hub_check = ?, hub_check_at = ?, hub_check_anchor = ?, updated_at = ?
+		`UPDATE hub_enrollment SET hub_check = ?, hub_check_at = ?, updated_at = ?,
+		   hub_check_lineage = CASE WHEN hub_check_anchor = ? THEN hub_check_lineage ELSE '' END,
+		   hub_check_anchor = ?
 		 WHERE id = 1 AND hub_pub = ?`,
-		check, now, anchor, now, []byte(pub))
+		check, now, now, anchor, anchor, []byte(pub))
 	if err != nil {
 		return fmt.Errorf("store: set hub check: %w", err)
 	}
@@ -222,7 +234,11 @@ func (s *Store) SetHubCheck(ctx context.Context, pub ed25519.PublicKey, check, a
 // the stored pin (a no-op). A lower number, or the same number with another
 // key, is [ErrPinRegression] and nothing changes. [ErrNotEnrolled] when there
 // is no enrollment.
-func (s *Store) UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64) error {
+//
+// passed are the keys between the stored pin and pub that the verified chain
+// went through; with a checked anchor, the stored pin and passed are added to
+// the lineage.
+func (s *Store) UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64, passed ...ed25519.PublicKey) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return fmt.Errorf("%w: the Hub key must be %d bytes", ErrInvalidEnrollment, ed25519.PublicKeySize)
 	}
@@ -253,6 +269,11 @@ func (s *Store) UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64
 		[]byte(pub), int64(seq), s.clock.now().UnixMilli()); err != nil {
 		return fmt.Errorf("store: update pin: %w", err)
 	}
+	if !bytes.Equal(cur, pub) {
+		if err := addLineage(ctx, tx, cur, passed); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: update pin: %w", err)
 	}
@@ -267,7 +288,11 @@ func (s *Store) UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64
 // equal serial keeps the stored hash (or takes the given one when none is
 // stored), a lower serial changes nothing. A commit is needed also when only the
 // serial rose. [ErrNotEnrolled] when there is no enrollment.
-func (s *Store) UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, certSHA256 []byte) error {
+//
+// passed are the keys between the stored pin and pub that the verified chain
+// went through; with a checked anchor, the stored pin and passed are added to
+// the lineage in the same transaction.
+func (s *Store) UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, certSHA256 []byte, passed ...ed25519.PublicKey) error {
 	if len(pub) != ed25519.PublicKeySize {
 		return fmt.Errorf("%w: the Hub key must be %d bytes", ErrInvalidEnrollment, ed25519.PublicKeySize)
 	}
@@ -315,6 +340,11 @@ func (s *Store) UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq
 		[]byte(pub), int64(seq), newMax, nullBytes(newHash), s.clock.now().UnixMilli()); err != nil {
 		return fmt.Errorf("store: update pin: %w", err)
 	}
+	if !bytes.Equal(cur, pub) {
+		if err := addLineage(ctx, tx, cur, passed); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: update pin: %w", err)
 	}
@@ -351,4 +381,25 @@ func (s *Store) WipeEnrollment(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("store: wipe enrollment: %w", err)
 	}
 	return n > 0, nil
+}
+
+// addLineage appends the full fingerprints of old (the pin the chain started
+// from) and passed (the keys it went through) to the lineage of a checked
+// enrollment, inside the transaction of the pin update. An enrollment without
+// an anchor has no lineage.
+func addLineage(ctx context.Context, tx *sql.Tx, old []byte, passed []ed25519.PublicKey) error {
+	var fps []string
+	for _, k := range append([]ed25519.PublicKey{old}, passed...) {
+		f, err := identity.FingerprintOf(k)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidEnrollment, err)
+		}
+		fps = append(fps, string(f))
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE hub_enrollment SET hub_check_lineage = trim(hub_check_lineage || ' ' || ?)
+		 WHERE id = 1 AND hub_check_anchor != ''`, strings.Join(fps, " ")); err != nil {
+		return fmt.Errorf("store: update pin: %w", err)
+	}
+	return nil
 }

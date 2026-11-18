@@ -51,9 +51,11 @@ An older Worker treats `--hub-fingerprint` as an unknown flag and ignores `MINIO
 minion worker verify-hub <the 52 characters, or the six words>
 ```
 
-It needs no running Worker. If the value matches the paired Hub, the Hub is recorded as checked. If it does not match, the Worker stops talking to that Hub (a running Worker drops the connection within its next poll), prints "HUB FINGERPRINT DOES NOT MATCH - WORKER DISCONNECTED" and exits with status 1; it stays disconnected, also after restarts. A Worker that is not paired exits with status 1.
+It needs no running Worker. If the value matches the paired Hub, the Hub is recorded as checked. If it does not match, the mismatch is stored (a quarantine): the command prints "HUB FINGERPRINT DOES NOT MATCH - NOT CONNECTING" and exits with status 1, and the Worker does not connect to that Hub, also after restarts. A running Worker of v0.11.0 or later drops its connection within its next poll; the command says so only once that Worker confirmed it, and otherwise tells you to check `minion worker status`. A running older Worker cannot apply the check: the command then changes nothing and asks you to stop it first (`minion worker down`). A Worker that is not paired exits with status 1.
 
-On a paired Worker the setting `hub_fingerprint` is compared in the same way at every start. A value that names the key this Worker was checked with, from which the Hub moved by a signed master-key rotation, still connects and logs a warning to update the setting.
+The quarantine ends only with `verify-hub <the 52 characters>` of the paired key (six words are not enough here) or with `--forget` below. The setting `hub_fingerprint` never ends it, also when it names the paired key.
+
+On a paired Worker the setting `hub_fingerprint` is compared in the same way at every start. A value that names the key this Worker was checked with, or any key the Hub moved through since by verified signed master-key rotations, still connects and logs a warning to update the setting.
 
 To give up a disputed pairing, remove it (like `ssh-keygen -R`) and pair again:
 
@@ -61,7 +63,7 @@ To give up a disputed pairing, remove it (like `ssh-keygen -R`) and pair again:
 minion worker verify-hub --forget --pinned <the 52 characters of the pinned key>
 ```
 
-`--pinned` must name the pinned key exactly (`minion worker status` shows it). The Worker never trusts that key again by itself.
+`--pinned` must name the pinned key exactly (`minion worker status` shows it). The Worker never trusts that key again by itself: the removal is recorded in the state directory, `invite_key` is removed from the config file, and a start does not enroll again from an invitation key that is still configured (a mounted `MINION_INVITE_KEY_FILE`, `--invite-key`); it stops with a message instead. Pair again with `minion worker pair --hub-fingerprint <value>`, or run `minion worker reset` before you enroll with a new invitation key.
 
 ### If pairing is interrupted
 

@@ -39,6 +39,7 @@
   <div><dt>Fingerprint</dt><dd>{{if .FingerprintWords}}<span class="fp-words">{{.FingerprintWords}}</span><br>{{end}}<code>{{.Fingerprint}}</code></dd></div>
   <div><dt>Host name</dt><dd>{{.Name}}</dd></div>
   <div><dt>Source address</dt><dd>{{if .EnrollAddr}}{{.EnrollAddr}}{{else}}<span class="muted">unknown</span>{{end}}</dd></div>
+  {{with .HubCheckText}}<div><dt>Hub check</dt><dd data-hub-check="{{$.HubCheck}}">{{if eq $.HubCheck "none"}}<span class="badge" data-tone="warning">not verified</span> {{end}}{{.}}</dd></div>{{end}}
 </dl>{{end}}
 
 {{define "worker_approval_buttons"}}{{if .ApproveURL}}<form method="post" action="{{.ApproveURL}}" hx-post="{{.ApproveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Approve worker {{.Name}} with fingerprint {{if .FingerprintWords}}{{.FingerprintWords}}{{else}}{{.Fingerprint}}{{end}} from {{.EnrollAddr}}? The Worker console shows its fingerprint in a box: compare all six words. It receives operations as soon as it is approved. Approve only a machine you started." class="row-actions" data-key="worker-approve-{{.ID}}">

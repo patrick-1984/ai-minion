@@ -123,6 +123,7 @@ func (d hubDialer) Connect(ctx context.Context, p ConnectParams) (*Attempt, erro
 	att := &Attempt{
 		Pin:            res.Pin,
 		PinChanged:     res.PinChanged,
+		PinPassed:      res.PinPassed,
 		OpPub:          res.OpPub,
 		Ratchet:        res.Ratchet,
 		RatchetChanged: res.RatchetChanged,

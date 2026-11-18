@@ -238,6 +238,9 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 		return rep, err
 	}
 
+	if err := ClearForgottenHubs(o.StateDir); err != nil {
+		return rep, err
+	}
 	keyPath := filepath.Join(o.StateDir, WorkerKeyFile)
 	switch err := os.Remove(keyPath); {
 	case err == nil:

@@ -37,3 +37,12 @@ func TestCleanFactsKeepsOnlyWellFormedFacts(t *testing.T) {
 		t.Errorf("update block not bounded/safe: %q", got.UpdateBlock)
 	}
 }
+
+// The Worker's hub_check fact (v0.11.0) is kept only as one of the known values.
+func TestCleanFactsKeepsAKnownHubCheckOnly(t *testing.T) {
+	for in, want := range map[string]string{"none": "none", "fingerprint": "fingerprint", "invite": "invite", "mismatch": "mismatch", "bogus\x1b": "", "": ""} {
+		if got := CleanFacts(transport.WorkerFacts{HubCheck: in}).HubCheck; got != want {
+			t.Errorf("%q -> %q, want %q", in, got, want)
+		}
+	}
+}

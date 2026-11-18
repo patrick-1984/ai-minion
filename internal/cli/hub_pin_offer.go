@@ -32,14 +32,17 @@ type hubPinOffer struct {
 	// interactive reports whether the user can be asked: standard input and
 	// standard output are terminals.
 	interactive func(in io.Reader, out io.Writer) bool
-	// save stores pin as hub_tls_pin and returns the file it went to.
-	save func(pin string) (string, error)
+	// save stores pin as hub_tls_pin, bound to the Hub URL hubURL
+	// (hub_tls_pin_url), and returns the file it went to.
+	save func(pin, hubURL string) (string, error)
 }
 
 func defaultHubPinOffer() *hubPinOffer {
 	return &hubPinOffer{
 		interactive: func(in io.Reader, out io.Writer) bool { return isTerminalStream(in) && isTerminalWriter(out) },
-		save:        func(pin string) (string, error) { return saveClientSetting(os.LookupEnv, config.KeyHubTLSPin, pin) },
+		save: func(pin, hubURL string) (string, error) {
+			return saveClientSettings(os.LookupEnv, map[string]string{config.KeyHubTLSPin: pin, config.KeyHubTLSPinURL: config.PinURLKey(hubURL)})
+		},
 	}
 }
 
@@ -96,7 +99,7 @@ func (p *pinOfferBackend) retry(err error) client.Backend {
 	}
 	var nb client.Backend
 	p.once.Do(func() {
-		pin, ok := p.offer.ask(p.cmd, certErr)
+		pin, ok := p.offer.ask(p.cmd, certErr, p.cfg.URL)
 		if !ok {
 			return
 		}
@@ -117,7 +120,7 @@ func (p *pinOfferBackend) retry(err error) client.Backend {
 
 // ask shows the pin and saves it when the user typed exactly that pin. It
 // reports whether the pin was saved.
-func (o *hubPinOffer) ask(cmd *cobra.Command, e *client.HubCertError) (string, bool) {
+func (o *hubPinOffer) ask(cmd *cobra.Command, e *client.HubCertError, hubURL string) (string, bool) {
 	in, out := cmd.InOrStdin(), cmd.OutOrStdout()
 	if o.interactive == nil || !o.interactive(in, out) {
 		return "", false
@@ -130,19 +133,19 @@ func (o *hubPinOffer) ask(cmd *cobra.Command, e *client.HubCertError) (string, b
 		_, _ = fmt.Fprintln(out, "Not trusted; nothing was saved.")
 		return "", false
 	}
-	path, err := o.save(e.Pin)
+	path, err := o.save(e.Pin, hubURL)
 	if err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "cannot save %s: %v\n", config.KeyHubTLSPin, err)
 		return "", false
 	}
-	_, _ = fmt.Fprintf(out, "Saved %s in %s; trying again.\n", config.KeyHubTLSPin, path)
+	_, _ = fmt.Fprintf(out, "Saved %s for %s in %s (it is used for this Hub URL only); trying again.\n", config.KeyHubTLSPin, config.PinURLKey(hubURL), path)
 	return e.Pin, true
 }
 
-// saveClientSetting writes one setting to the config file of the Worker's
-// state directory, the file the client settings are read from, under the
-// config lock. It returns the path of the file.
-func saveClientSetting(lookupEnv func(string) (string, bool), key, value string) (string, error) {
+// saveClientSettings writes settings to the config file of the Worker's
+// state directory, the file the client settings are read from, in one write
+// under the config lock. It returns the path of the file.
+func saveClientSettings(lookupEnv func(string) (string, bool), kv map[string]string) (string, error) {
 	res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: lookupEnv}
 	dir, err := res.Resolve(config.KeyStateDir)
 	if err != nil {
@@ -151,12 +154,13 @@ func saveClientSetting(lookupEnv func(string) (string, bool), key, value string)
 	if dir.Value == "" {
 		return "", errors.New("the state directory is not known; set MINION_STATE_DIR")
 	}
-	return writeWorkerSetting(dir.Value, key, value)
+	return writeWorkerSettings(dir.Value, kv)
 }
 
-// writeWorkerSetting writes one setting to the Worker's config file in
-// stateDir, under the config lock, and returns the path of the file.
-func writeWorkerSetting(stateDir, key, value string) (string, error) {
+// writeWorkerSettings writes settings to the Worker's config file in
+// stateDir, in one write under the config lock, and returns the path of the
+// file.
+func writeWorkerSettings(stateDir string, kv map[string]string) (string, error) {
 	abs, err := filepath.Abs(stateDir)
 	if err != nil {
 		return "", err
@@ -173,6 +177,36 @@ func writeWorkerSetting(stateDir, key, value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	file.Set(key, value)
+	for k, v := range kv {
+		file.Set(k, v)
+	}
 	return file.Path(), file.Save()
+}
+
+// deleteWorkerSetting removes one setting from the Worker's config file in
+// stateDir, under the config lock, and reports whether it was there. A
+// missing config file is left alone.
+func deleteWorkerSetting(stateDir, key string) (bool, error) {
+	abs, err := filepath.Abs(stateDir)
+	if err != nil {
+		return false, err
+	}
+	path := filepath.Join(abs, workerConfigName)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	release, err := lockConfigFile(filepath.Join(abs, configLockName))
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	file, err := config.LoadFile(path)
+	if err != nil {
+		return false, err
+	}
+	if _, ok, _ := file.Lookup(key); !ok {
+		return false, nil
+	}
+	file.Delete(key)
+	return true, file.Save()
 }

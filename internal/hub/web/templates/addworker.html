@@ -13,7 +13,7 @@
   <p>Hub fingerprint: <span class="fp-words">{{.Data.HubWords}}</span><br><code>{{.Data.HubFull}}</code></p>
   <pre id="hub-join">{{.Data.JoinCommand}}</pre>
   <button type="button" data-copy="#hub-join">Copy the command</button>
-  <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. Needs Worker 0.10 or newer. This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead: <code>minion hub identity --words</code></p>
+  <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. The command needs Worker v0.11.0 or later (an older Worker does not know --hub-fingerprint: update it first). This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead: <code>minion hub identity --words</code></p>
   <script src="/onboarding.js" defer></script>
 </section>
 {{end}}<div class="method-grid">
