@@ -54,6 +54,10 @@ type Checker struct {
 	// then (after MinRefresh since the last call to GitHub) instead of at
 	// the next daily check. Zero means 15 seconds.
 	Poll time.Duration
+	// Life ends with the Hub: a check started by Refresh (detached from the
+	// request that asked for it) is canceled when it ends, so a Hub stop never
+	// waits for GitHub. Nil means no such bound.
+	Life context.Context
 	// MinRefresh is the shortest time between two checks asked for with
 	// Refresh (the "Check now" button); zero means one minute. GitHub allows
 	// 60 unauthenticated calls an hour per address.
@@ -170,12 +174,19 @@ func (c *Checker) fetch(ctx context.Context, cooldown, detach bool) bool {
 	}
 	if detach {
 		ctx = context.WithoutCancel(ctx)
+		if c.Life != nil {
+			var stop context.CancelFunc
+			ctx, stop = context.WithCancel(ctx)
+			defer stop()
+			unhook := context.AfterFunc(c.Life, stop)
+			defer unhook()
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	c.lastAt = time.Now()
 	res, err := c.check(ctx, channel)
-	if err != nil && !detach && ctx.Err() != nil && errors.Is(context.Cause(ctx), context.Canceled) {
+	if err != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), context.Canceled) {
 		// Shutdown: keep the last answer as it was.
 		return true
 	}

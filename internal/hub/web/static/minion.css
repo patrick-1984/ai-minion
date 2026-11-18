@@ -851,6 +851,9 @@ body > main { max-width: none; }
 .theme-picker { font-size: 12px; }
 .theme-picker select { font-size: 12px; background: var(--surface); min-height: 34px; }
 .top-tools { margin-left: auto; flex-shrink: 0; }
+.hub-id { display: inline-flex; align-items: center; gap: 6px; max-width: 34ch; color: var(--muted); font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: help; }
+.hub-id .icon { flex-shrink: 0; }
 .theme-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 4px;
   border-radius: var(--r-md); background: var(--surface-subtle); flex-shrink: 0; }
 .theme-toggle .theme-opt { width: 36px; height: 36px; min-height: 36px; padding: 0; flex: none;
@@ -1173,6 +1176,7 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--input-bor
   .control-matrix td input[type="checkbox"] { width: 44px; height: 44px; }
   .topbar { gap: 8px; }
   .top-tools { gap: 8px; }
+  .hub-id { max-width: 16ch; }
   .crumbs { font-size: 11px; overflow-wrap: anywhere; }
   .crumbs li { min-width: 0; }
   .page-head { margin-bottom: 24px; }

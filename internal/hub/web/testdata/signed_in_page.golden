@@ -116,6 +116,7 @@
         
       </ol></nav>
       <div class="top-tools">
+        
         <div class="theme-toggle" role="group" aria-label="Theme">
           <button type="button" class="theme-opt" data-theme-choice="system" aria-pressed="false" title="System theme"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-monitor"/></svg><span class="sr-only">System theme</span></button>
           <button type="button" class="theme-opt" data-theme-choice="light" aria-pressed="false" title="Light theme"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-sun"/></svg><span class="sr-only">Light theme</span></button>
