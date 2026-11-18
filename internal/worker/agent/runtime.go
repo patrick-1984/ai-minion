@@ -17,6 +17,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
 // DefaultStopTimeout is the hard bound of the whole shutdown after a signal
@@ -334,6 +335,9 @@ type Runtime struct {
 	// then stops like on a signal.
 	stopReq  chan struct{}
 	stopOnce sync.Once
+	// guardStart is the start the update crash guard recorded for this run
+	// of an uncommitted new binary (0: none); a clean stop takes it back.
+	guardStart int64
 }
 
 // RequestStop asks Run to stop the Worker, as a signal would.
@@ -383,9 +387,22 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 		rt.mu.Lock()
 		rt.held = lock
 		rt.mu.Unlock()
-		if rolled := RecoverUpdate(s.logger(), s.StateDir); rolled != nil {
+		// A rollback hands over to the restored binary; the lifecycle lock
+		// is released first, as the restored Worker takes it again.
+		rolled, started := RecoverUpdate(s.logger(), s.StateDir, func() {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			if rt.held != nil {
+				_ = rt.held.Close()
+				rt.held = nil
+			}
+		})
+		if rolled != nil {
 			lastRollback.Store(rolled)
 		}
+		rt.mu.Lock()
+		rt.guardStart = started
+		rt.mu.Unlock()
 	}
 	if err := rt.reg.RunPreStart(ctx, s); err != nil {
 		return fail(err)
@@ -492,6 +509,14 @@ func (rt *Runtime) Run(ctx context.Context, s Settings) error {
 		s.logger().Info("stop requested over the local control socket (minion worker down)")
 	}
 	s.logger().Info("worker shutting down", "timeout", rt.opts.StopTimeout.String())
+	// The Worker started and was asked to stop (Ctrl+C, worker down, a
+	// service stop): not a failed start of an uncommitted update. Recorded
+	// while this process still owns the state (the lifecycle module holds
+	// its lock until it stops).
+	rt.mu.Lock()
+	started := rt.guardStart
+	rt.mu.Unlock()
+	cleanStop(s.StateDir, version.Version, started)
 	return rt.Stop(context.WithoutCancel(ctx))
 }
 

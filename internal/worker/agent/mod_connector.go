@@ -265,17 +265,18 @@ func needsAutoPair(ctx context.Context, s Settings, hubURL string, enr *Enrollme
 }
 
 // connectorHealth is the crash guard's view of the connector: connected, or
-// idle because the operator quarantined the Hub or removed the pairing.
-func connectorHealth(st Status, stateDir string) updateHealth {
+// idle on purpose because the operator quarantined the Hub, or because the
+// Worker is not enrolled (the pairing was removed here with --forget or by the
+// Hub, or it waits to be paired). Not enrolled is a deliberate state of a
+// working binary that read its enrollment: the update is committed, since a
+// rollback would restore the pre-migration database and lose a pairing made
+// meanwhile. An unreachable Hub (backoff) stays healthNone.
+func connectorHealth(st Status, _ string) updateHealth {
 	switch {
 	case st.State == ConnConnected:
 		return healthConnected
-	case st.State == ConnIdle && st.Reason == ReasonQuarantined:
+	case st.State == ConnIdle && (st.Reason == ReasonQuarantined || st.Reason == ReasonNotEnrolled):
 		return healthTrustHold
-	case st.State == ConnIdle && st.Reason == ReasonNotEnrolled:
-		if f, _ := ForgottenHubs(stateDir); len(f) > 0 {
-			return healthTrustHold
-		}
 	}
 	return healthNone
 }

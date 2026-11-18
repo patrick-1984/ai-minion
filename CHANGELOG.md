@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A Hub-triggered update is no longer rolled back because you restarted the Worker by hand.** The update crash guard counted every start of the new binary that had not been committed yet (5 minutes with a live Hub connection) as a failed start; three of them within 10 minutes restored the previous binary. While the Hub was unreachable, or after the Hub removed the Worker, a few Ctrl+C restarts were enough to roll back a working release. The guard now counts starts like systemd-boot and Android A/B updates: a run that stops cleanly (Ctrl+C, `minion worker down`, a service stop) takes its start back, so only starts that crash or hang before the Worker is good count. A Worker that is not enrolled (removed by the Hub, or waiting for a pairing) commits the update at once, like a quarantined one: it works as intended, and a rollback would restore the pre-migration database and lose a pairing made meanwhile. An unreachable Hub still does not commit. The rollback log line now says why ("the updated Worker failed to start (3 starts within 10m0s that neither stopped cleanly nor stayed connected to the Hub for 5m0s); restored the previous binary").
+- **Windows: no Worker left running behind the prompt after a rollback.** A foreground Worker that rolled back at start-up started the restored binary detached and exited: the shell showed its prompt while that Worker kept running, Ctrl+C no longer stopped it, and the next `minion worker up` failed with "the Worker state is in use by another process ... worker.lock". The restored binary now runs in the same console and the first process waits for it (the state lock is released first) and exits with its exit code; Ctrl+C stops the running Worker. Linux and macOS already replace the process in place.
+
 ## v0.11.0
 
 Released 2026-11-18.

@@ -33,8 +33,14 @@ func restartProcess(log *slog.Logger, exe string) {
 	os.Exit(1)
 }
 
-// restartNow is restartProcess: Unix replaces the process in place either way.
+// restartNow is restartProcess: Unix replaces the process in place either way
+// (same PID, same terminal and signals), so no Worker is left running behind
+// the shell prompt; the lifecycle lock is released before (and its descriptor
+// is close-on-exec).
 func restartNow(log *slog.Logger, exe string) { restartProcess(log, exe) }
+
+// restartDetached is restartProcess as well.
+func restartDetached(log *slog.Logger, exe string) { restartProcess(log, exe) }
 
 // waitForParent is only needed on Windows: elsewhere the process replaces
 // itself in place (syscall.Exec).

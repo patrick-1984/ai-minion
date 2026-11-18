@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
 func lifecycleSettings(dir string) Settings {
@@ -97,5 +99,40 @@ func TestLifecycleModuleStartsBeforeTheCoreModule(t *testing.T) {
 	}
 	if li < 0 || ci < 0 || li > ci {
 		t.Fatalf("default registry order = %v", names)
+	}
+}
+
+// A Worker run of an uncommitted update that starts and is then stopped
+// cleanly takes its start back from the crash guard (boot counting).
+func TestRuntimeCleanStopTakesBackTheGuardStart(t *testing.T) {
+	dir := t.TempDir()
+	if err := writePending(dir, pendingRecord{From: "v0.0.1", To: version.Version, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry()
+	if err := RegisterLifecycle(r); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(r, Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx, lifecycleSettings(dir)) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if p, _ := readPending(dir); len(p.Starts) == 1 && len(rt.Modules()) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the run's start was not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	p, ok := readPending(dir)
+	if !ok || len(p.Starts) != 0 {
+		t.Fatalf("after a clean stop: pending %v (ok %v), want the guard without starts", p, ok)
 	}
 }

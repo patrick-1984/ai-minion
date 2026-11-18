@@ -189,17 +189,17 @@ func TestCrashGuardRestoresThePreviousBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < guardMaxStarts; i++ {
-		if _, restart := guardOnStart(log, dir, exe, "v0.9.1", now.Add(time.Duration(i)*time.Second)); restart {
+		if _, restart, _ := guardOnStart(log, dir, exe, "v0.9.1", now.Add(time.Duration(i)*time.Second)); restart {
 			t.Fatalf("rolled back on start %d, before %d failed starts", i+1, guardMaxStarts)
 		}
 	}
-	if _, restart := guardOnStart(log, dir, exe, "v0.9.1", now.Add(5*time.Second)); !restart {
+	if _, restart, _ := guardOnStart(log, dir, exe, "v0.9.1", now.Add(5*time.Second)); !restart {
 		t.Fatalf("no rollback after %d failed starts", guardMaxStarts)
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "old" {
 		t.Fatalf("exe = %q, want the previous binary", b)
 	}
-	rolled, restart := guardOnStart(log, dir, exe, "v0.9.0", now.Add(6*time.Second))
+	rolled, restart, _ := guardOnStart(log, dir, exe, "v0.9.0", now.Add(6*time.Second))
 	if restart || rolled == nil || rolled.To != "v0.9.1" {
 		t.Fatalf("old binary: %+v %v", rolled, restart)
 	}
@@ -395,7 +395,7 @@ func TestRollbackStopsWhenTheDatabaseCannotBeRestored(t *testing.T) {
 	starts := []int64{now.Add(-3 * time.Second).Unix(), now.Add(-2 * time.Second).Unix(), now.Add(-time.Second).Unix()}
 	_ = writePending(dir, pendingRecord{From: "v0.9.0", To: "v0.9.1", At: now.Add(-time.Minute), Starts: starts})
 	log := slog.New(slog.NewTextHandler(&logBuf{}, nil))
-	if _, restart := guardOnStart(log, dir, exe, "v0.9.1", now); restart {
+	if _, restart, _ := guardOnStart(log, dir, exe, "v0.9.1", now); restart {
 		t.Fatal("restarted without the database")
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "new" {
@@ -492,8 +492,11 @@ func TestCrashGuardCommitsWhileQuarantined(t *testing.T) {
 
 func TestConnectorHealth(t *testing.T) {
 	dir := t.TempDir()
-	if got := connectorHealth(Status{State: ConnIdle, Reason: ReasonNotEnrolled}, dir); got != healthNone {
-		t.Fatalf("unpaired without a removal record = %v, want none", got)
+	if got := connectorHealth(Status{State: ConnIdle, Reason: ReasonNotEnrolled}, dir); got != healthTrustHold {
+		t.Fatalf("not enrolled (removed by the Hub, waiting to pair) = %v, want trust hold", got)
+	}
+	if got := connectorHealth(Status{State: ConnIdle, Reason: ReasonNoHubConfigured}, dir); got != healthNone {
+		t.Fatalf("no Hub configured = %v, want none", got)
 	}
 	if got := connectorHealth(Status{State: ConnBackoff}, dir); got != healthNone {
 		t.Fatalf("backoff = %v, want none", got)
@@ -528,7 +531,7 @@ func TestCrashGuardKeepsAForgottenPairing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i <= guardMaxStarts; i++ {
-		if _, restart := guardOnStart(log, dir, exe, "v0.11.0", now.Add(time.Duration(i)*time.Second)); restart {
+		if _, restart, _ := guardOnStart(log, dir, exe, "v0.11.0", now.Add(time.Duration(i)*time.Second)); restart {
 			t.Fatalf("rolled back on start %d over a removed pairing", i+1)
 		}
 	}
@@ -577,7 +580,7 @@ func TestCrashGuardKeepsNewerTrustState(t *testing.T) {
 				}
 			}
 			for i := 0; i <= guardMaxStarts; i++ {
-				if _, restart := guardOnStart(f.log, dir, exe, r.To, now.Add(time.Duration(i)*time.Second)); restart {
+				if _, restart, _ := guardOnStart(f.log, dir, exe, r.To, now.Add(time.Duration(i)*time.Second)); restart {
 					t.Fatalf("rolled back on start %d after %s", i+1, change)
 				}
 			}
@@ -585,5 +588,193 @@ func TestCrashGuardKeepsNewerTrustState(t *testing.T) {
 				t.Fatalf("exe = %q, want the new binary kept", b)
 			}
 		})
+	}
+}
+
+// A Worker the Hub removed (or one that waits to be paired) idles as "not
+// enrolled": a deliberate state of a working binary, so the update commits.
+// A rollback would restore the pre-migration database and lose a new pairing.
+func TestCrashGuardCommitsWhileNotEnrolled(t *testing.T) {
+	dir := t.TempDir()
+	if err := writePending(dir, pendingRecord{From: "v0.9.3", To: "v0.11.0"}); err != nil {
+		t.Fatal(err)
+	}
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		commitAfter(context.Background(), dir, "v0.11.0", func() updateHealth {
+			return connectorHealth(Status{State: ConnIdle, Reason: ReasonNotEnrolled}, dir)
+		}, tick)
+		close(done)
+	}()
+	tick <- time.Now()
+	<-done
+	if _, ok := readPending(dir); ok {
+		t.Fatal("a Worker that is not enrolled did not commit the update")
+	}
+}
+
+// An unreachable Hub (backoff) never commits, however long it lasts.
+func TestCrashGuardDoesNotCommitWhileTheHubIsUnreachable(t *testing.T) {
+	dir := t.TempDir()
+	if err := writePending(dir, pendingRecord{From: "v0.9.3", To: "v0.11.0"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		commitAfter(ctx, dir, "v0.11.0", func() updateHealth {
+			return connectorHealth(Status{State: ConnBackoff}, dir)
+		}, tick)
+		close(done)
+	}()
+	now := time.Now()
+	for i := 0; i < 20; i++ {
+		tick <- now.Add(time.Duration(i) * time.Minute)
+	}
+	cancel()
+	<-done
+	if _, ok := readPending(dir); !ok {
+		t.Fatal("committed without a Hub connection")
+	}
+}
+
+// Boot counting: a run of the new binary that stops cleanly (Ctrl+C, worker
+// down, a service stop) is not a failed start. The owner's case: v0.11.0 was
+// started and stopped by hand again and again while the Hub was down; it must
+// never be rolled back for that, but crashes still are.
+func TestCrashGuardIgnoresCleanStops(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	exe := filepath.Join(bin, "minion")
+	if err := os.WriteFile(exe, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe+".old", []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(&logBuf{}, nil))
+	now := time.Now()
+	if err := writePending(dir, pendingRecord{From: "v0.9.3", To: "v0.11.0", At: now}); err != nil {
+		t.Fatal(err)
+	}
+	at := func(i int) time.Time { return now.Add(time.Duration(i) * time.Second) }
+	for i := 0; i < 3*guardMaxStarts; i++ {
+		_, restart, started := guardOnStart(log, dir, exe, "v0.11.0", at(i))
+		if restart {
+			t.Fatalf("rolled back on start %d although every earlier run stopped cleanly", i+1)
+		}
+		if started != at(i).Unix() {
+			t.Fatalf("started = %d, want %d", started, at(i).Unix())
+		}
+		cleanStop(dir, "v0.11.0", started)
+		if r, _ := readPending(dir); len(r.Starts) != 0 {
+			t.Fatalf("after a clean stop the guard still counts %v", r.Starts)
+		}
+	}
+	// Runs that do not stop cleanly (a crash) still count.
+	for i := 0; i < guardMaxStarts; i++ {
+		if _, restart, _ := guardOnStart(log, dir, exe, "v0.11.0", at(100+i)); restart {
+			t.Fatalf("rolled back on crashed start %d", i+1)
+		}
+	}
+	if _, restart, _ := guardOnStart(log, dir, exe, "v0.11.0", at(200)); !restart {
+		t.Fatal("no rollback after crashed starts")
+	}
+}
+
+// cleanStop takes back only its own start, and only for the update it ran.
+func TestCleanStopTouchesOnlyItsOwnStart(t *testing.T) {
+	dir := t.TempDir()
+	if err := writePending(dir, pendingRecord{From: "v0.9.3", To: "v0.11.0", Starts: []int64{10, 20, 30}}); err != nil {
+		t.Fatal(err)
+	}
+	cleanStop(dir, "v0.11.0", 20)
+	if r, _ := readPending(dir); len(r.Starts) != 2 || r.Starts[0] != 10 || r.Starts[1] != 30 {
+		t.Fatalf("starts = %v, want [10 30]", r.Starts)
+	}
+	cleanStop(dir, "v0.12.0", 10) // another update: untouched
+	cleanStop(dir, "v0.11.0", 0)  // no start recorded: untouched
+	cleanStop(dir, "v0.11.0", 99) // unknown start: untouched
+	if r, _ := readPending(dir); len(r.Starts) != 2 {
+		t.Fatalf("starts = %v, want two", r.Starts)
+	}
+	_ = os.Remove(filepath.Join(dir, pendingFile))
+	cleanStop(dir, "v0.11.0", 10) // committed meanwhile: no guard comes back
+	if _, ok := readPending(dir); ok {
+		t.Fatal("a clean stop brought a committed guard back")
+	}
+}
+
+// The rollback log line says why the update was rolled back.
+func TestCrashGuardRollbackSaysWhy(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	exe := filepath.Join(bin, "minion")
+	if err := os.WriteFile(exe, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe+".old", []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf logBuf
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	now := time.Now()
+	if err := writePending(dir, pendingRecord{From: "v0.9.3", To: "v0.11.0", At: now,
+		Starts: []int64{now.Unix() - 3, now.Unix() - 2, now.Unix() - 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, restart, _ := guardOnStart(log, dir, exe, "v0.11.0", now); !restart {
+		t.Fatal("no rollback")
+	}
+	if out := buf.String(); !strings.Contains(out, "3 starts within 10m0s") || !strings.Contains(out, "restored the previous binary") {
+		t.Fatalf("rollback log does not say why: %s", out)
+	}
+}
+
+// On a start-up rollback the caller's resources (the lifecycle lock) are
+// released before the restored binary takes over, so that a Worker started
+// in the same console and waited for can take the state.
+func TestRecoverUpdateReleasesBeforeTheRestart(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	exe := filepath.Join(bin, "minion")
+	if err := os.WriteFile(exe, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe+".old", []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(&logBuf{}, nil))
+	now := time.Now()
+	if err := writePending(dir, pendingRecord{From: "v0.0.1", To: version.Version, At: now,
+		Starts: []int64{now.Unix() - 3, now.Unix() - 2, now.Unix() - 1}}); err != nil {
+		t.Fatal(err)
+	}
+	var steps []string
+	recoverUpdate(log, dir, exe, now, func() { steps = append(steps, "release") }, func(_ *slog.Logger, got string) {
+		if got != exe {
+			t.Errorf("restart exe = %q, want %q", got, exe)
+		}
+		steps = append(steps, "restart")
+	})
+	if strings.Join(steps, ",") != "release,restart" {
+		t.Fatalf("steps = %v, want release then restart", steps)
+	}
+	// Without a rollback neither happens, and the start is returned.
+	if err := writePending(dir, pendingRecord{From: "v0.0.1", To: version.Version, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	steps = nil
+	_, started := recoverUpdate(log, dir, exe, now, func() { steps = append(steps, "release") }, func(*slog.Logger, string) { steps = append(steps, "restart") })
+	if len(steps) != 0 || started != now.Unix() {
+		t.Fatalf("steps = %v, started = %d", steps, started)
+	}
+}
+
+// The Worker run in the same console and waited for never inherits the
+// wait-for-parent variable: it would wait for the parent that waits for it.
+func TestConsoleChildEnvDropsTheWaitVariable(t *testing.T) {
+	env := consoleChildEnv([]string{"A=1", waitPIDEnv + "=42", "B=2", strings.ToLower(waitPIDEnv) + "=7"})
+	if strings.Join(env, " ") != "A=1 B=2" {
+		t.Fatalf("env = %v", env)
 	}
 }
