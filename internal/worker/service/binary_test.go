@@ -473,3 +473,35 @@ func TestInstallOnWindowsWaitsForTheRegistryKeyAndRewritesTheEnvironment(t *test
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// kardianos' Uninstall reports an error after it deleted a service that has no
+// event log source (one created by hand, or by an old version): the install
+// still waits until it is gone.
+func TestInstallOnWindowsWaitsAlsoWhenUninstallReportsAnError(t *testing.T) {
+	var log []string
+	fc := &uninstallErrController{stoppableController{log: &log, lingering: 1}}
+	d := testDeps(t, nil)
+	d.UserSID = func() (string, error) { return testSID, nil }
+	d.NewControllerFromConfig = func(*ksvc.Config) (Controller, error) { return fc, nil }
+	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum, Binary: userWinExe}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(log, ","); !strings.Contains(got, "uninstall,status,gone,install") {
+		t.Errorf("calls = %s", got)
+	}
+	// When it never goes, the error of the uninstall is the one reported.
+	log = nil
+	fc = &uninstallErrController{stoppableController{log: &log, lingering: 1000}}
+	d.StopPolls = 2
+	_, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum, Binary: userWinExe}, nil)
+	if err == nil || !strings.Contains(err.Error(), "event log source") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+type uninstallErrController struct{ stoppableController }
+
+func (u *uninstallErrController) Uninstall() error {
+	_ = u.stoppableController.Uninstall()
+	return errors.New("RemoveEventLogSource() failed: no event log source")
+}

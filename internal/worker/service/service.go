@@ -370,10 +370,15 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	}
 	// An existing installation is replaced so that the settings of this run
 	// apply; "not installed" is not an error.
-	if c.Uninstall() == nil {
-		if err := d.waitDeleted(ctx, c); err != nil {
-			return Result{}, err
+	// Uninstall can fail after it deleted the service (kardianos then removes
+	// an event log source, which a service created by hand does not have), so
+	// the wait for the deletion does not depend on its result.
+	uerr := c.Uninstall()
+	if err := d.waitDeleted(ctx, c); err != nil {
+		if uerr != nil {
+			return Result{}, windowsInstallError("remove the old version of", uerr)
 		}
+		return Result{}, err
 	}
 	if err := c.Install(); err != nil {
 		return Result{}, windowsInstallError("install", err)

@@ -12,17 +12,28 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
 
-// winController is a Windows service that installs and runs at once.
-type winController struct{ calls *[]string }
+// winController is a Windows service that is not installed yet and runs as
+// soon as it is.
+type winController struct {
+	calls     *[]string
+	installed *bool
+}
 
-func (c winController) Install() error { *c.calls = append(*c.calls, "install"); return nil }
-func (c winController) Start() error   { *c.calls = append(*c.calls, "start"); return nil }
+func (c winController) Install() error {
+	*c.calls = append(*c.calls, "install")
+	*c.installed = true
+	return nil
+}
+func (c winController) Start() error { *c.calls = append(*c.calls, "start"); return nil }
 func (c winController) Uninstall() error {
 	*c.calls = append(*c.calls, "uninstall")
 	return errors.New("not installed")
 }
 func (c winController) Status() (service.Status, error) {
 	*c.calls = append(*c.calls, "status")
+	if !*c.installed {
+		return service.StatusUnknown, service.ErrNotInstalled
+	}
 	return service.StatusRunning, nil
 }
 
@@ -35,7 +46,10 @@ func newWindowsUpFixture(t *testing.T) (f *upFixture, calls *[]string, copied *[
 	calls, copied = &[]string{}, &[2]string{}
 	f.deps.detectEnv = service.Env{GOOS: "windows"}
 	f.deps.executable = func() (string, error) { return `C:\Users\ann\AppData\Local\Programs\minion\minion.exe`, nil }
-	f.deps.service.NewController = func(string) (service.Controller, error) { return winController{calls: calls}, nil }
+	installed := new(bool)
+	f.deps.service.NewController = func(string) (service.Controller, error) {
+		return winController{calls: calls, installed: installed}, nil
+	}
 	f.deps.service.ServiceBinary = func(src, sum string) (string, error) {
 		*copied = [2]string{src, sum}
 		return `C:\Program Files\Minion\minion.exe`, nil
