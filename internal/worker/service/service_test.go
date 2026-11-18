@@ -13,12 +13,27 @@ type fakeController struct {
 	statuses  []Status
 	installEr error
 	startErr  error
+	// deleted is set between Uninstall and Install: Status then reports the
+	// service as gone (recorded as "gone").
+	deleted bool
 }
 
-func (f *fakeController) Install() error   { f.calls = append(f.calls, "install"); return f.installEr }
-func (f *fakeController) Start() error     { f.calls = append(f.calls, "start"); return f.startErr }
-func (f *fakeController) Uninstall() error { f.calls = append(f.calls, "uninstall"); return nil }
+func (f *fakeController) Install() error {
+	f.calls = append(f.calls, "install")
+	f.deleted = false
+	return f.installEr
+}
+func (f *fakeController) Start() error { f.calls = append(f.calls, "start"); return f.startErr }
+func (f *fakeController) Uninstall() error {
+	f.calls = append(f.calls, "uninstall")
+	f.deleted = true
+	return nil
+}
 func (f *fakeController) Status() (Status, error) {
+	if f.deleted {
+		f.calls = append(f.calls, "gone")
+		return StatusUnknown, ErrNotInstalled
+	}
 	f.calls = append(f.calls, "status")
 	if len(f.statuses) == 0 {
 		return StatusStopped, nil
@@ -54,7 +69,7 @@ func TestInstallControllerWindowsFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(fc.calls, ","); !strings.HasPrefix(got, "uninstall,install,start,status") {
+	if got := strings.Join(fc.calls, ","); !strings.HasPrefix(got, "uninstall,gone,install,start,status") {
 		t.Errorf("calls = %s", got)
 	}
 	if res.Unit != WindowsServiceName {

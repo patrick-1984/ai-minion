@@ -51,6 +51,10 @@ type Controller interface {
 	Uninstall() error
 }
 
+// ErrNotInstalled is what [Controller.Status] returns when the service does
+// not exist (any more).
+var ErrNotInstalled = errors.New("the service is not installed")
+
 // WindowsServiceName is the name of the Windows service.
 const WindowsServiceName = "MinionWorker"
 
@@ -100,6 +104,9 @@ func (c kardianosController) Uninstall() error { return c.svc.Uninstall() }
 func (c kardianosController) Stop() error { return c.svc.Stop() }
 func (c kardianosController) Status() (Status, error) {
 	s, err := c.svc.Status()
+	if errors.Is(err, ksvc.ErrNotInstalled) {
+		return StatusUnknown, ErrNotInstalled
+	}
 	if err != nil {
 		return StatusUnknown, err
 	}
@@ -344,7 +351,11 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	}
 	// An existing installation is replaced so that the settings of this run
 	// apply; "not installed" is not an error.
-	_ = c.Uninstall()
+	if c.Uninstall() == nil {
+		if err := d.waitDeleted(ctx, c); err != nil {
+			return Result{}, err
+		}
+	}
 	if err := c.Install(); err != nil {
 		return Result{}, windowsInstallError("install", err)
 	}
@@ -363,6 +374,29 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 		d.sleep(ctx, d.pollInterval())
 	}
 	return Result{}, errors.New("the service " + WindowsServiceName + " is not running after the start")
+}
+
+// waitDeleted waits until the service control manager has really removed a
+// deleted service. DeleteService only marks a service for deletion; it goes
+// once the last handle to it is closed. Creating the service again before
+// that fails, or worse, succeeds while its registry key (with the environment
+// that names the state directory and the pipe user) is still being removed,
+// which leaves a service that serves nobody's pipe.
+func (d Deps) waitDeleted(ctx context.Context, c Controller) error {
+	polls := d.StopPolls
+	if polls <= 0 {
+		polls = 60
+	}
+	for i := 0; i < polls; i++ {
+		if _, err := c.Status(); errors.Is(err, ErrNotInstalled) {
+			return nil
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		d.sleep(ctx, d.pollInterval())
+	}
+	return errors.New("the old service " + WindowsServiceName + " is still being deleted; close the Services console and Event Viewer, then run the command again")
 }
 
 // serviceBinaryNote tells the operator which binary the service runs.

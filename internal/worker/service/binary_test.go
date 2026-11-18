@@ -244,10 +244,22 @@ type stoppableController struct {
 	log     *[]string
 	running bool
 	stopErr error
+	// deleted is set between Uninstall and Install; lingering is how many
+	// Status calls still see the deleted service (marked for deletion).
+	deleted   bool
+	lingering int
 }
 
-func (s *stoppableController) Install() error   { *s.log = append(*s.log, "install"); return nil }
-func (s *stoppableController) Uninstall() error { *s.log = append(*s.log, "uninstall"); return nil }
+func (s *stoppableController) Install() error {
+	*s.log = append(*s.log, "install")
+	s.deleted = false
+	return nil
+}
+func (s *stoppableController) Uninstall() error {
+	*s.log = append(*s.log, "uninstall")
+	s.deleted = true
+	return nil
+}
 func (s *stoppableController) Start() error {
 	*s.log = append(*s.log, "start")
 	s.running = true
@@ -262,6 +274,13 @@ func (s *stoppableController) Stop() error {
 	return nil
 }
 func (s *stoppableController) Status() (Status, error) {
+	if s.deleted {
+		if s.lingering == 0 {
+			*s.log = append(*s.log, "gone")
+			return StatusUnknown, ErrNotInstalled
+		}
+		s.lingering--
+	}
 	*s.log = append(*s.log, "status")
 	if s.running {
 		return StatusRunning, nil
@@ -292,7 +311,7 @@ func TestInstallOnWindowsRegistersTheProtectedCopy(t *testing.T) {
 	}
 	// The running service (of an older install) is stopped before its binary
 	// is replaced, and the new service is registered with the copy.
-	if got := strings.Join(log, ","); !strings.HasPrefix(got, "status,stop,status,copy,uninstall,install,start,status") {
+	if got := strings.Join(log, ","); !strings.HasPrefix(got, "status,stop,status,copy,uninstall,gone,install,start,status") {
 		t.Errorf("calls = %s", got)
 	}
 	last := cfgs[len(cfgs)-1]
@@ -361,5 +380,35 @@ func TestInstallOnWindowsFailsWhenTheCopyFails(t *testing.T) {
 	}
 	if len(fx.fc.calls) != 0 {
 		t.Errorf("the service was touched: %v", fx.fc.calls)
+	}
+}
+
+// DeleteService only marks the service for deletion: the install waits until
+// it is gone before it creates it again (else the new service's registry key,
+// with its environment, can be removed with the old one).
+func TestInstallOnWindowsWaitsUntilTheOldServiceIsGone(t *testing.T) {
+	var log []string
+	fc := &stoppableController{log: &log, lingering: 2}
+	d := testDeps(t, nil)
+	d.UserSID = func() (string, error) { return testSID, nil }
+	d.NewControllerFromConfig = func(*ksvc.Config) (Controller, error) { return fc, nil }
+	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: userWinExe}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(log, ","); !strings.Contains(got, "uninstall,status,status,gone,install") {
+		t.Errorf("calls = %s", got)
+	}
+
+	log = nil
+	fc = &stoppableController{log: &log, lingering: 1000}
+	d.StopPolls = 3
+	_, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: userWinExe}, nil)
+	if err == nil || !strings.Contains(err.Error(), "still being deleted") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range log {
+		if c == "install" {
+			t.Errorf("the service was created while the old one was still being deleted: %v", log)
+		}
 	}
 }

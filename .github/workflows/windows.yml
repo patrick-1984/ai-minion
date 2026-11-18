@@ -211,6 +211,18 @@ jobs:
       - name: The service binary is in Program Files and only administrators can change it
         shell: pwsh
         run: ./scripts/windows-service-binary-acl.ps1 -Expect safe
+      # Again over the running service: it is stopped, deleted (and waited
+      # for until the SCM really removed it), its running binary replaced and
+      # the service created again with its environment.
+      - name: Running worker up again replaces the running service
+        shell: bash
+        run: |
+          set -eu
+          "$USER_MINION" worker up --share-existing none 2>&1 | tee up2.log
+          grep -q 'Installed windows system service MinionWorker' up2.log
+          reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Services\MinionWorker' /v Environment | tee env.txt
+          grep -q 'MINION_STATE_DIR' env.txt
+          grep -q 'MINION_PIPE_USER_SID' env.txt
       - name: The CLI reaches the service over the pipe of this user
         shell: bash
         run: |
@@ -282,7 +294,7 @@ jobs:
         if: failure()
         shell: pwsh
         run: |
-          Get-ItemProperty -LiteralPath HKLM:\SYSTEM\CurrentControlSet\Services\MinionWorker | Format-List | Out-String | Write-Host
+          Get-ItemProperty -LiteralPath HKLM:\SYSTEM\CurrentControlSet\Services\MinionWorker -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
           Get-WinEvent -LogName Application -MaxEvents 40 -ErrorAction SilentlyContinue |
             Where-Object { $_.ProviderName -match 'Minion|Service Control' } |
             Format-List TimeCreated, ProviderName, Message | Out-String -Width 400 | Write-Host
