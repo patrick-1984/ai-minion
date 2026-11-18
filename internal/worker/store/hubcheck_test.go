@@ -221,8 +221,21 @@ func TestLoadEnrollmentReadsASchema9StoreReadOnly(t *testing.T) {
 	if ok, err := ro.HasEnrollment(ctx); err != nil || !ok {
 		t.Fatalf("HasEnrollment = %v, %v", ok, err)
 	}
+	if quarantined, err := ro.HubQuarantined(ctx); err != nil || quarantined {
+		t.Fatalf("HubQuarantined on schema 9 = %v, %v", quarantined, err)
+	}
 	var cols int
 	if err := ro.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('hub_enrollment') WHERE name = 'hub_check'`).Scan(&cols); err != nil || cols != 0 {
 		t.Fatalf("the read migrated the schema: %d, %v", cols, err)
+	}
+}
+
+func TestHubQuarantinedRejectsAMissingColumnAfterMigration(t *testing.T) {
+	st := openStore(t, t.TempDir())
+	if _, err := st.db.Exec("ALTER TABLE hub_enrollment DROP COLUMN hub_check"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.HubQuarantined(context.Background()); err == nil {
+		t.Fatal("missing trust column was treated as a pre-v0.11 schema")
 	}
 }

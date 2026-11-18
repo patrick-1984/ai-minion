@@ -399,6 +399,9 @@ func (e *Enrollments) commit(ctx context.Context, enr Enrollment) error {
 	if err := e.saveHubURL(enr.HubURL); err != nil {
 		return err
 	}
+	if err := protectEnrollmentFromRollback(e.stateDir); err != nil {
+		return err
+	}
 	if err := e.repo.SaveEnrollment(ctx, store.Enrollment{
 		HubPub:      enr.Pin.Pub,
 		PinSeq:      enr.Pin.Seq,

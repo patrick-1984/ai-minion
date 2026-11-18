@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -455,4 +456,54 @@ func ForgetHub(ctx context.Context, e *Enrollments, pinned identity.Fingerprint)
 		return ErrNotPaired
 	}
 	return err
+}
+
+// OpLocalVerifyHub applies Hub trust changes while the daemon owns its state.
+// It is only served on the local control socket.
+const OpLocalVerifyHub = "worker_verify_hub"
+
+// LocalVerifyHubArgs targets the exact instance that answered worker_status.
+// Fingerprint is the expected value, or the pinned key when Forget is set.
+type LocalVerifyHubArgs struct {
+	Instance    string `json:"instance"`
+	Fingerprint string `json:"fingerprint"`
+	Forget      bool   `json:"forget,omitempty"`
+}
+
+func (l localExecutor) verifyHub(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
+	if l.enrollments == nil {
+		return nil, apiErr(proto.CodeUnsupportedOp, "", "the Worker has no Hub enrollment service")
+	}
+	var args LocalVerifyHubArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, apiErr(proto.CodeInvalidArgument, "", "invalid Hub check request")
+	}
+	if args.Instance == "" || args.Instance != l.instance {
+		return nil, apiErr(proto.CodeConflict, "", "the running Worker changed")
+	}
+	var result VerifyHubResult
+	var err error
+	if args.Forget {
+		pinned, parseErr := identity.ParseFingerprint(args.Fingerprint)
+		if parseErr != nil {
+			return nil, apiErr(proto.CodeInvalidArgument, "", "give the full fingerprint of the pinned Hub")
+		}
+		err = ForgetHub(ctx, l.enrollments, pinned)
+		result.Paired = pinned
+	} else {
+		expect, parseErr := identity.ParseFingerprintInput(args.Fingerprint)
+		if parseErr != nil {
+			return nil, apiErr(proto.CodeInvalidArgument, "", "give the Hub fingerprint")
+		}
+		result, err = VerifyHub(ctx, l.enrollments, expect)
+	}
+	switch {
+	case errors.Is(err, ErrNotPaired):
+		return nil, apiErr(proto.CodeNotEnrolled, "", err.Error())
+	case errors.Is(err, ErrPinnedDiffers):
+		return nil, apiErr(proto.CodeInvalidArgument, "", err.Error())
+	case err != nil:
+		return nil, internalErr("apply the Hub check", err)
+	}
+	return json.Marshal(result)
 }

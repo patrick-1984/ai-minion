@@ -250,6 +250,9 @@ type Status struct {
 // enrollment.
 const ReasonNotEnrolled = "not enrolled"
 
+// ReasonNoHubConfigured is the idle reason for a Worker running in Solo mode.
+const ReasonNoHubConfigured = "no Hub configured"
+
 // ReasonQuarantined is the Status.Reason of an idle connector whose stored
 // hub_check is mismatch: it does not connect.
 const ReasonQuarantined = "the Hub does not match the fingerprint you gave; see minion worker verify-hub"
@@ -528,7 +531,7 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 	c.syncPolicy(gen, enr, enrolled)
 	switch {
 	case c.cfg.HubURL == "":
-		c.idle(ctx, "no Hub configured", moved)
+		c.idle(ctx, ReasonNoHubConfigured, moved)
 		return false
 	case !enrolled:
 		c.idle(ctx, ReasonNotEnrolled, moved)

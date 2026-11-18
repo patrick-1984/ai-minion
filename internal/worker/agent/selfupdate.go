@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -44,6 +45,10 @@ const (
 
 // pendingFile is the crash-guard record in the state directory.
 const pendingFile = "update-pending.json"
+
+// updateEnrollmentFile names the trial during which a Hub enrollment changed.
+// A rollback of that trial could restore the earlier enrollment from backup.
+const updateEnrollmentFile = "update-enrollment"
 
 // exitRestart is the exit code that asks the service manager (systemd
 // Restart=always, launchd KeepAlive, the Windows service recovery) to start
@@ -289,15 +294,66 @@ func writePending(dir string, r pendingRecord) error {
 }
 
 func readPending(dir string) (pendingRecord, bool) {
+	r, err := loadPending(dir)
+	return r, err == nil
+}
+
+func loadPending(dir string) (pendingRecord, error) {
 	b, err := os.ReadFile(filepath.Join(dir, pendingFile))
 	if err != nil {
-		return pendingRecord{}, false
+		return pendingRecord{}, err
 	}
 	var r pendingRecord
-	if json.Unmarshal(b, &r) != nil {
-		return pendingRecord{}, false
+	err = json.Unmarshal(b, &r)
+	return r, err
+}
+
+// protectEnrollmentFromRollback records the pending trial before a new
+// enrollment can replace the old one or clear its forget record. The marker
+// belongs to this trial only, so later updates can still roll back.
+func protectEnrollmentFromRollback(dir string) error {
+	if dir == "" {
+		return nil
 	}
-	return r, true
+	r, err := loadPending(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the pending update before recording the Hub enrollment: %w", err)
+	}
+	if err := identity.WritePrivate(filepath.Join(dir, updateEnrollmentFile), []byte(r.At.UTC().Format(time.RFC3339Nano))); err != nil {
+		return fmt.Errorf("record the enrollment for the update guard: %w", err)
+	}
+	return nil
+}
+
+func rollbackTrustHold(ctx context.Context, dir string, r pendingRecord) (bool, error) {
+	if _, err := os.Lstat(filepath.Join(dir, ForgottenHubFile)); !errors.Is(err, os.ErrNotExist) {
+		return err == nil, err
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, updateEnrollmentFile))
+	if err == nil {
+		at, err := time.Parse(time.RFC3339Nano, string(raw))
+		if err != nil || at.Equal(r.At) {
+			return err == nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+
+	if _, err := os.Lstat(filepath.Join(dir, store.DBFile)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	st, err := store.OpenReadOnlyContext(ctx, dir)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = st.Close() }()
+	return st.HubQuarantined(ctx)
 }
 
 // guardOnStart runs once when the Worker starts, before the modules. For a
@@ -333,12 +389,22 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 		_ = writePending(dir, r)
 		return nil, false
 	}
-	// A removed pairing (verify-hub --forget) is a trust decision that the
-	// previous binary cannot enforce: it does not read the record and would
-	// enroll again or connect from the restored database. Never roll back
-	// over it; the update counts as committed.
-	if forgotten, _ := ForgottenHubs(dir); len(forgotten) > 0 {
-		log.Warn("the updated Worker keeps failing to start, but its pairing was removed with verify-hub --forget; not rolling back, because the previous release cannot enforce that", "to", r.To)
+	// Pairing can write from another process, so keep the enrollment locked
+	// from the trust check through any restore.
+	ctx := context.Background()
+	unlock, err := NewEnrollments(nil, dir).lockState(ctx)
+	if err != nil {
+		log.Error("cannot lock the Hub enrollment; rollback waits for the next start", "error", err)
+		return nil, false
+	}
+	defer unlock()
+	hold, err := rollbackTrustHold(ctx, dir, r)
+	if err != nil {
+		log.Error("cannot read the Hub trust state; rollback waits for the next start", "error", err)
+		return nil, false
+	}
+	if hold {
+		log.Warn("the updated Worker keeps failing to start; rollback would undo a Hub trust decision", "to", r.To)
 		_ = os.Remove(filepath.Join(dir, pendingFile))
 		return nil, false
 	}

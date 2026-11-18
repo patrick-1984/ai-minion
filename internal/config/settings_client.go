@@ -3,12 +3,16 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 // Names of the settings of the Hub client: the command line (minion, mn)
@@ -239,13 +243,9 @@ func ResolveClientHub(res *Resolver) (ClientHub, error) {
 	if c.TLSPin == "" || pin.Source == SourceFile {
 		// A pin saved for this Hub's origin applies; one given by flag or
 		// environment comes first.
-		saved, err := res.Resolve(KeyHubTLSPins)
+		pins, err := resolveHubTLSPins(res)
 		if err != nil {
 			return c, err
-		}
-		pins, err := ParseHubTLSPins(saved.Value)
-		if err != nil {
-			return c, fmt.Errorf("setting %q (%s): %w", KeyHubTLSPins, saved.Source, err)
 		}
 		if c.URL != "" && len(pins) > 0 {
 			origin, err := PinOrigin(c.URL)
@@ -267,30 +267,73 @@ func ResolveClientHub(res *Resolver) (ClientHub, error) {
 	return c, nil
 }
 
+func resolveHubTLSPins(res *Resolver) (map[string]string, error) {
+	saved, err := res.Resolve(KeyHubTLSPins)
+	if err != nil {
+		return nil, err
+	}
+	pins, err := ParseHubTLSPins(saved.Value)
+	if err != nil {
+		return nil, fmt.Errorf("setting %q (%s): %w", KeyHubTLSPins, saved.Source, err)
+	}
+	if saved.Source != SourceEnv || res.File == nil {
+		return pins, nil
+	}
+	raw, _, err := res.File.Lookup(KeyHubTLSPins)
+	if err != nil {
+		return nil, fmt.Errorf("setting %q (%s): %w", KeyHubTLSPins, SourceFile, err)
+	}
+	filePins, err := ParseHubTLSPins(raw)
+	if err != nil {
+		return nil, fmt.Errorf("setting %q (%s): %w", KeyHubTLSPins, SourceFile, err)
+	}
+	maps.Copy(filePins, pins)
+	return filePins, nil
+}
+
 // PinOrigin is the origin a saved TLS pin belongs to: scheme://host:port
-// with the scheme and the host in lower case and the port always given (443
-// for https, 80 for http). The path is not part of it: the TLS key belongs to
-// the endpoint, and every path of one origin reaches the same TLS endpoint.
+// with a lower-case ASCII host and numeric port (443 for https, 80 for http).
+// Every path of one origin reaches the same TLS endpoint.
 func PinOrigin(raw string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Hostname() == "" {
+	if err != nil {
 		return "", errors.New("not a Hub URL with a host")
 	}
+	return pinOrigin(u)
+}
+
+func pinOrigin(u *url.URL) (string, error) {
+	host := u.Hostname()
+	if host == "" || u.User != nil {
+		return "", errors.New("not a Hub URL with a host and no credentials")
+	}
 	scheme := strings.ToLower(u.Scheme)
-	port := u.Port()
-	switch {
-	case port != "":
-	case scheme == "https":
-		port = "443"
-	case scheme == "http":
-		port = "80"
+	var port uint64
+	switch scheme {
+	case "https":
+		port = 443
+	case "http":
+		port = 80
 	default:
 		return "", errors.New("the Hub URL must start with https:// or http://")
 	}
-	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-		return "", errors.New("the Hub URL has an invalid port")
+	if explicit := u.Port(); explicit != "" {
+		n, err := strconv.ParseUint(explicit, 10, 16)
+		if err != nil {
+			return "", errors.New("the Hub URL has an invalid port")
+		}
+		port = n
 	}
-	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port), nil
+	if _, err := netip.ParseAddr(host); err != nil {
+		host, err = idna.Lookup.ToASCII(host)
+		if err != nil || host == "" {
+			return "", errors.New("the Hub URL has an invalid host")
+		}
+	}
+	return (&url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(strings.ToLower(host), strconv.FormatUint(port, 10)),
+	}).String(), nil
 }
 
 // ParseHubTLSPins reads the value of hub_tls_pins: entries
@@ -304,14 +347,18 @@ func ParseHubTLSPins(v string) (map[string]string, error) {
 		if !ok || pins == "" {
 			return nil, errors.New("an entry is not <scheme>://<host>:<port>=<pin>")
 		}
-		norm, err := PinOrigin(origin)
-		if err != nil || norm != origin {
-			return nil, errors.New("an entry does not start with a normalized origin <scheme>://<host>:<port>")
+		u, err := url.Parse(origin)
+		if err != nil || u.Path != "" || u.ForceQuery || u.RawQuery != "" || strings.Contains(origin, "#") {
+			return nil, errors.New("an entry does not start with an origin <scheme>://<host>:<port>")
 		}
-		if _, dup := out[origin]; dup {
-			return nil, errors.New("two entries name the origin " + origin)
+		norm, err := pinOrigin(u)
+		if err != nil {
+			return nil, err
 		}
-		out[origin] = pins
+		if _, dup := out[norm]; dup {
+			return nil, errors.New("two entries name the origin " + norm)
+		}
+		out[norm] = pins
 	}
 	return out, nil
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -105,27 +106,65 @@ func TestWorkerVerifyHub(t *testing.T) {
 // heldLock is a lifecycle lock that a running Worker holds.
 func heldLock(string) (io.Closer, error) { return nil, agent.ErrStateInUse }
 
+// verifyHubDaemon models the local socket while allowing the tests to control
+// which daemon is running and when its connector acknowledges a change.
+func verifyHubDaemon(t *testing.T, reply *agent.LiveStatusReply) func(context.Context, string, any) (json.RawMessage, error) {
+	t.Helper()
+	return func(ctx context.Context, op string, input any) (json.RawMessage, error) {
+		switch op {
+		case agent.OpLocalStatus:
+			return json.Marshal(reply)
+		case agent.OpLocalVerifyHub:
+			args := input.(agent.LocalVerifyHubArgs)
+			if args.Instance != reply.Instance {
+				return nil, proto.NewError(proto.CodeConflict, "the running Worker changed")
+			}
+			st, err := store.OpenContext(ctx, reply.StateDir)
+			if err != nil {
+				return nil, err
+			}
+			defer func() { _ = st.Close() }()
+			e := agent.NewEnrollments(st, reply.StateDir)
+			if args.Forget {
+				pin, err := identity.ParseFingerprint(args.Fingerprint)
+				if err != nil {
+					return nil, err
+				}
+				if err := agent.ForgetHub(ctx, e, pin); err != nil {
+					return nil, err
+				}
+				return json.Marshal(agent.VerifyHubResult{Paired: pin})
+			}
+			m, err := identity.ParseFingerprintInput(args.Fingerprint)
+			if err != nil {
+				return nil, err
+			}
+			r, err := agent.VerifyHub(ctx, e, m)
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(r)
+		default:
+			return nil, errors.New("unexpected op " + op)
+		}
+	}
+}
+
 // Finding 4 of the round-1 review: verify-hub against a running Worker.
 func TestWorkerVerifyHubWithARunningWorker(t *testing.T) {
 	fp := fakeHubFingerprint(t)
 	c := newPairCLI(t, nil)
 	c.pair()
 	other, _ := identity.GenerateKey()
-	status := func(reply agent.LiveStatusReply) func(context.Context, string) (json.RawMessage, error) {
-		return func(_ context.Context, op string) (json.RawMessage, error) {
-			if op != agent.OpLocalStatus {
-				return nil, errors.New("unexpected op " + op)
-			}
-			return json.Marshal(reply)
-		}
-	}
+	reply := agent.LiveStatusReply{StateDir: c.state, State: "connected"}
+	daemon := verifyHubDaemon(t, &reply)
 
 	// An older Worker (no hub_check_aware): nothing changes, and the command
 	// says how to stop it. The state is not even opened.
 	opened := false
 	out, err := runVerifyHubWith(t, c.state, func(d *workerVerifyHubDeps) {
 		d.lockState = heldLock
-		d.call = status(agent.LiveStatusReply{StateDir: c.state, State: "connected"})
+		d.call = daemon
 		open := d.openStore
 		d.openStore = func(ctx context.Context, dir string) (*store.Store, error) { opened = true; return open(ctx, dir) }
 	}, string(other.Fingerprint()))
@@ -139,16 +178,17 @@ func TestWorkerVerifyHubWithARunningWorker(t *testing.T) {
 	// A running Worker that does not answer for this state directory.
 	_, err = runVerifyHubWith(t, c.state, func(d *workerVerifyHubDeps) {
 		d.lockState = heldLock
-		d.call = func(context.Context, string) (json.RawMessage, error) { return nil, client.ErrWorkerNotRunning }
+		d.call = func(context.Context, string, any) (json.RawMessage, error) { return nil, client.ErrWorkerNotRunning }
 	}, string(other.Fingerprint()))
 	if err == nil || !strings.Contains(err.Error(), "does not answer") {
 		t.Fatalf("silent Worker: %v", err)
 	}
 
 	// A v0.11 Worker that has not gone idle: no claim of a disconnection.
+	reply.HubCheckAware, reply.Instance = true, "first"
 	out, err = runVerifyHubWith(t, c.state, func(d *workerVerifyHubDeps) {
 		d.lockState = heldLock
-		d.call = status(agent.LiveStatusReply{StateDir: c.state, State: "connected", HubCheckAware: true})
+		d.call = daemon
 	}, string(other.Fingerprint()))
 	if ee, ok := err.(*exitCodeError); !ok || ee.code != ExitError || !strings.Contains(out, "has not confirmed yet") || strings.Contains(out, "confirmed: it stopped") {
 		t.Fatalf("unconfirmed: %v %q", err, out)
@@ -158,9 +198,10 @@ func TestWorkerVerifyHubWithARunningWorker(t *testing.T) {
 	}
 
 	// A v0.11 Worker that reports the quarantine: confirmed.
+	reply.State, reply.Reason = string(agent.ConnIdle), agent.ReasonQuarantined
 	out, _ = runVerifyHubWith(t, c.state, func(d *workerVerifyHubDeps) {
 		d.lockState = heldLock
-		d.call = status(agent.LiveStatusReply{StateDir: c.state, State: string(agent.ConnIdle), Reason: agent.ReasonQuarantined, HubCheckAware: true})
+		d.call = daemon
 	}, string(other.Fingerprint()))
 	if !strings.Contains(out, "The running Worker confirmed: it stopped talking to that Hub") {
 		t.Fatalf("confirmed: %q", out)
@@ -173,6 +214,65 @@ func TestWorkerVerifyHubWithARunningWorker(t *testing.T) {
 	}
 	if out, err = runVerifyHub(t, c.state, string(fp)); err != nil || !strings.Contains(out, "matches") {
 		t.Fatalf("full: %v %q", err, out)
+	}
+}
+
+func TestWorkerVerifyHubRefusesAChangedWorker(t *testing.T) {
+	c := newPairCLI(t, nil)
+	c.pair()
+	other, _ := identity.GenerateKey()
+	reply := agent.LiveStatusReply{StateDir: c.state, State: "connected", Instance: "first", HubCheckAware: true}
+	daemon := verifyHubDaemon(t, &reply)
+	out, err := runVerifyHubWith(t, c.state, func(d *workerVerifyHubDeps) {
+		d.lockState = heldLock
+		d.openStore = func(context.Context, string) (*store.Store, error) {
+			t.Fatal("the CLI opened the running Worker's store")
+			return nil, nil
+		}
+		d.call = func(ctx context.Context, op string, args any) (json.RawMessage, error) {
+			if op == agent.OpLocalVerifyHub {
+				reply.Instance = "replacement"
+			}
+			return daemon(ctx, op, args)
+		}
+	}, string(other.Fingerprint()))
+	if err == nil || !strings.Contains(err.Error(), "minion worker down") {
+		t.Errorf("changed Worker: %v %q", err, out)
+	}
+	if enr, _ := c.enrollment(); enr.Check() == store.HubCheckMismatch {
+		t.Error("the check was stored after the probed Worker exited")
+	}
+}
+
+func TestWorkerVerifyHubForgetNeedsAcknowledgment(t *testing.T) {
+	fp := fakeHubFingerprint(t)
+	for _, name := range []string{"connected", "replacement", "acknowledged"} {
+		t.Run(name, func(t *testing.T) {
+			c := newPairCLI(t, nil)
+			c.pair()
+			reply := agent.LiveStatusReply{StateDir: c.state, State: "connected", Instance: "first", HubCheckAware: true}
+			daemon := verifyHubDaemon(t, &reply)
+			out, err := runVerifyHubWith(t, c.state, func(d *workerVerifyHubDeps) {
+				d.lockState = heldLock
+				d.call = func(ctx context.Context, op string, args any) (json.RawMessage, error) {
+					raw, err := daemon(ctx, op, args)
+					if op == agent.OpLocalVerifyHub && name != "connected" {
+						reply.State, reply.Reason = string(agent.ConnIdle), agent.ReasonNotEnrolled
+						if name == "replacement" {
+							reply.Instance = "replacement"
+						}
+					}
+					return raw, err
+				}
+			}, "--forget", "--pinned", string(fp))
+			if name == "acknowledged" {
+				if err != nil || !strings.Contains(out, "Removed the pairing") {
+					t.Fatalf("acknowledged forget: %v %q", err, out)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "minion worker down") || strings.Contains(out, "Removed the pairing") {
+				t.Fatalf("unconfirmed forget: %v %q", err, out)
+			}
+		})
 	}
 }
 

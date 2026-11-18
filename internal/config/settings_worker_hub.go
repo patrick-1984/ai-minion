@@ -61,8 +61,9 @@ func declareWorkerHub(r *Registry) {
 		Choices: []string{"true", "false"},
 	})
 	r.Declare(Setting{
-		Key:   KeyHubFingerprint,
-		Scope: ScopeWorker,
+		Key:          KeyHubFingerprint,
+		Scope:        ScopeWorker,
+		BlankIsUnset: true,
 		Help: "Fingerprint of the Hub this Worker may pair or enroll with: six words or 52 characters, as " +
 			"\"minion hub identity --words\" prints on the Hub host. Any other Hub is refused. On a paired Worker " +
 			"it is compared with the paired Hub at every start",

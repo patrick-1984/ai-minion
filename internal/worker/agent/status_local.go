@@ -58,6 +58,8 @@ type LiveStatusReply struct {
 	// mismatch (v0.11.0 or later): it stops connecting when `verify-hub`
 	// stores one. An older Worker omits it and would reconnect.
 	HubCheckAware bool `json:"hub_check_aware,omitempty"`
+	// Instance identifies this control socket server across status and writes.
+	Instance string `json:"instance,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -130,12 +132,14 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 }
 
 // statusOp serves [OpLocalStatus] from src.
-func statusOp(ctx context.Context, stateDir string, src LiveSource) (json.RawMessage, error) {
+func statusOp(ctx context.Context, stateDir, instance string, src LiveSource) (json.RawMessage, error) {
 	live, err := src.LiveStatus(ctx)
 	if err != nil {
 		return nil, internalErr("read the live status", err)
 	}
-	b, err := json.Marshal(NewLiveStatusReply(stateDir, live))
+	reply := NewLiveStatusReply(stateDir, live)
+	reply.Instance = instance
+	b, err := json.Marshal(reply)
 	if err != nil {
 		return nil, internalErr("encode the live status", err)
 	}

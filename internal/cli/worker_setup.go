@@ -167,9 +167,8 @@ const (
 // wizard or by "worker config share").
 //
 // owner is the user whose Worker is set up when "worker up" runs as root for
-// somebody else ("" otherwise): root cannot ask about, or save into, another
-// user's tmux and state, so the user runs the wizard themselves.
-func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, stateDir, owner string) error {
+// somebody else ("" otherwise): the user runs the sharing wizard themselves.
+func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *upState, owner string) error {
 	if d.assumeSetUp {
 		return nil
 	}
@@ -177,9 +176,10 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, stat
 	if err != nil {
 		return err
 	}
-	if stateDir != "" {
-		core.StateDir = stateDir
+	if st == nil {
+		st = &upState{dir: core.StateDir}
 	}
+	core.StateDir = st.dir
 	ctx := cmdContext(cmd)
 	// Root never opens the state of another user: that directory is theirs
 	// and may hold links. For them only the settings count.
@@ -191,10 +191,7 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, stat
 		// The sharing choice is given (--share-existing, for example), so
 		// the wizard does not run; a first pairing on a terminal still asks
 		// for the Hub fingerprint before anything dials.
-		if owner != "" {
-			return nil
-		}
-		return d.fingerprintGate(cmd, res, core.StateDir)
+		return d.fingerprintGate(cmd, res, st)
 	}
 	switch {
 	case owner != "":
@@ -216,12 +213,12 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, stat
 // that starts next pairs only with that Hub; "skip" pairs as before (the
 // Worker warns that the Hub is not verified). Without a terminal nothing is
 // asked and the Worker warns.
-func (d workerSetupDeps) fingerprintGate(cmd *cobra.Command, res *config.Resolver, stateDir string) error {
+func (d workerSetupDeps) fingerprintGate(cmd *cobra.Command, res *config.Resolver, st *upState) error {
 	hub, err := config.ResolveWorkerHub(res)
 	if err != nil {
 		return err
 	}
-	if hub.Server == "" || strings.TrimSpace(hub.Fingerprint) != "" {
+	if hub.Server == "" || hub.Fingerprint != "" {
 		return nil
 	}
 	if given, _, err := config.InviteKeyGiven(res); err != nil || given {
@@ -232,7 +229,7 @@ func (d workerSetupDeps) fingerprintGate(cmd *cobra.Command, res *config.Resolve
 		return nil
 	}
 	ctx := cmdContext(cmd)
-	if enrolled, err := enrolledReadOnly(ctx, stateDir); err != nil || enrolled {
+	if enrolled, err := st.enrolled(ctx); err != nil || enrolled {
 		return err
 	}
 	m, err := agent.AskHubFingerprint(in, out, hub.Server)
@@ -242,7 +239,7 @@ func (d workerSetupDeps) fingerprintGate(cmd *cobra.Command, res *config.Resolve
 	if m.IsZero() {
 		return nil
 	}
-	path, err := writeWorkerSettings(stateDir, map[string]string{config.KeyHubFingerprint: m.String()})
+	path, err := st.saveHubFingerprint(m.String())
 	if err != nil {
 		return fmt.Errorf("cannot save %s, nothing was started: %w", config.KeyHubFingerprint, err)
 	}

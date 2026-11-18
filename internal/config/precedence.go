@@ -211,7 +211,7 @@ func (r *Resolver) fromChain(s Setting) (res Resolved, found bool, err error) {
 		if err != nil {
 			return res, false, fmt.Errorf("setting %q: flag: %w", s.Key, err)
 		}
-		if ok {
+		if ok && (!s.BlankIsUnset || strings.TrimSpace(v) != "") {
 			res.Value, res.Source = v, SourceFlag
 			if s.Secret {
 				res.Warning = fmt.Sprintf("warning: --%s was given on the command line; argv is visible in the process list", s.FlagName())
@@ -224,7 +224,7 @@ func (r *Resolver) fromChain(s Setting) (res Resolved, found bool, err error) {
 	if err != nil {
 		return res, false, err
 	}
-	if ok {
+	if ok && (!s.BlankIsUnset || strings.TrimSpace(v) != "") {
 		res.Value, res.Source = v, SourceEnv
 		return res, true, nil
 	}
@@ -243,7 +243,7 @@ func (r *Resolver) fromChain(s Setting) (res Resolved, found bool, err error) {
 		if err != nil {
 			return res, false, fmt.Errorf("setting %q: %s: %w", s.Key, secondSrc, err)
 		}
-		if ok {
+		if ok && (!s.BlankIsUnset || strings.TrimSpace(v) != "") {
 			res.Value, res.Source = v, secondSrc
 			return res, true, nil
 		}

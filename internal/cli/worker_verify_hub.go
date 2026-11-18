@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -36,7 +37,7 @@ type workerVerifyHubDeps struct {
 	// waiting (held by every running Worker); an error means a Worker runs.
 	lockState func(stateDir string) (io.Closer, error)
 	// call is the local control socket of this user.
-	call func(ctx context.Context, op string) (json.RawMessage, error)
+	call func(ctx context.Context, op string, args any) (json.RawMessage, error)
 	// sleep waits between the polls of the running Worker's status.
 	sleep func(time.Duration)
 }
@@ -48,8 +49,8 @@ func defaultWorkerVerifyHubDeps() workerVerifyHubDeps {
 		loadConfig: loadWorkerConfig,
 		openStore:  func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) },
 		lockState:  agent.LockLifecycle,
-		call: func(ctx context.Context, op string) (json.RawMessage, error) {
-			return client.Local().Call(ctx, op, nil)
+		call: func(ctx context.Context, op string, args any) (json.RawMessage, error) {
+			return client.Local().Call(ctx, op, args)
 		},
 		sleep: time.Sleep,
 	}
@@ -72,10 +73,9 @@ run this command with a fingerprint that matches, or remove the pairing.
 exactly that fingerprint (like ssh-keygen -R): the Worker must then pair or
 enroll again. It never trusts the disputed key again.
 
-The command needs no running Worker. A running Worker of v0.11.0 or later is
-told through the shared state and the command reports when it confirmed that it
-stopped connecting. A running older Worker cannot apply the check: the command
-then changes nothing and asks you to stop it first (minion worker down).`,
+The command works offline or through the running Worker's control socket.
+It reports when the Worker confirms that it stopped connecting. If the running
+Worker cannot apply the check, stop it first (minion worker down).`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if forget {
 				if len(args) != 0 {
@@ -132,32 +132,36 @@ func runWorkerVerifyHub(cmd *cobra.Command, deps workerVerifyHubDeps, args []str
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Before the state is opened (opening migrates it): a running Worker must
-	// be one that applies the stored check, else nothing is changed. When no
-	// Worker runs, the lifecycle lock is held until the command ends, so that
-	// no Worker (a supervised older one in particular) starts on the state
-	// between the check, the migration and the write.
-	running, unlock, err := runningWorkerOf(ctx, deps, dir.Value)
+	instance, unlock, err := runningWorkerOf(ctx, deps, dir.Value)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	st, err := deps.openStore(ctx, dir.Value)
-	if err != nil {
-		return fmt.Errorf("open the Worker state in %s: %w", dir.Value, err)
+	var r agent.VerifyHubResult
+	if instance == "" {
+		r, err = verifyOfflineHub(ctx, deps, dir.Value, expect, pinnedFP, forget)
+	} else {
+		r, err = verifyRunningHub(ctx, deps, instance, expect, pinnedFP, forget)
 	}
-	defer func() { _ = st.Close() }()
-	enr := agent.NewEnrollments(st, dir.Value)
+	switch {
+	case errors.Is(err, agent.ErrNotPaired):
+		_, _ = fmt.Fprintln(out, "This Worker is not paired with a Hub.")
+		return &exitCodeError{ExitError}
+	case errors.Is(err, agent.ErrPinnedDiffers):
+		return errors.New("the pinned Hub key is not the one --pinned names; nothing was removed (minion worker status shows the pinned key)")
+	case err != nil:
+		return err
+	}
 
 	if forget {
-		switch err := agent.ForgetHub(ctx, enr, pinnedFP); {
-		case errors.Is(err, agent.ErrNotPaired):
-			_, _ = fmt.Fprintln(out, "This Worker is not paired with a Hub.")
-			return &exitCodeError{ExitError}
-		case errors.Is(err, agent.ErrPinnedDiffers):
-			return errors.New("the pinned Hub key is not the one --pinned names; nothing was removed (minion worker status shows the pinned key)")
-		case err != nil:
-			return err
+		if instance != "" {
+			ok, err := waitForHubIdle(ctx, deps, dir.Value, instance, agent.ReasonNotEnrolled)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("the running Worker has not acknowledged the removal; stop it with minion worker down and check minion worker status")
+			}
 		}
 		_, _ = fmt.Fprintln(out, "Removed the pairing with Hub "+pinnedFP.Words()+".")
 		if removed, err := deleteWorkerSetting(dir.Value, config.KeyInviteKey); err != nil {
@@ -171,14 +175,6 @@ func runWorkerVerifyHub(cmd *cobra.Command, deps workerVerifyHubDeps, args []str
 		return nil
 	}
 
-	r, err := agent.VerifyHub(ctx, enr, expect)
-	if errors.Is(err, agent.ErrNotPaired) {
-		_, _ = fmt.Fprintln(out, "This Worker is not paired with a Hub.")
-		return &exitCodeError{ExitError}
-	}
-	if err != nil {
-		return err
-	}
 	switch r.Outcome {
 	case agent.VerifyMatch:
 		_, _ = fmt.Fprintln(out, "The Hub this Worker is paired with matches the fingerprint you gave.")
@@ -202,42 +198,90 @@ func runWorkerVerifyHub(cmd *cobra.Command, deps workerVerifyHubDeps, args []str
 		return &exitCodeError{ExitError}
 	}
 	agent.MismatchBox(out, r.Paired, expect, "You gave:")
-	reportQuarantineApplied(ctx, out, deps, dir.Value, running)
+	if instance == "" {
+		_, _ = fmt.Fprintln(out, "No Worker is running on this state directory; it will not connect to that Hub when it starts.")
+	} else if confirmed, err := waitForHubIdle(ctx, deps, dir.Value, instance, agent.ReasonQuarantined); err != nil {
+		return err
+	} else if confirmed {
+		_, _ = fmt.Fprintln(out, "The running Worker confirmed: it stopped talking to that Hub and stays disconnected.")
+	} else {
+		_, _ = fmt.Fprintln(out, "The running Worker has not confirmed yet that it stopped talking to that Hub; check it with: minion worker status")
+	}
 	return &exitCodeError{ExitError}
 }
 
-// runningWorkerOf reports whether a Worker runs on the state directory dir
-// and, when one does, that it is one that applies a stored hub_check (v0.11.0
-// or later). A running Worker that cannot be asked, or an older one, is an
-// error that says how to stop it: the command then changes nothing (an older
-// Worker would reconnect and could not open the migrated state again).
-//
-// When no Worker runs, the lifecycle lock stays held until unlock is called:
-// the whole check, migration and write happen under it.
-func runningWorkerOf(ctx context.Context, deps workerVerifyHubDeps, dir string) (running bool, unlock func(), err error) {
+// verifyOfflineHub opens the state while the CLI holds the lifecycle lock.
+func verifyOfflineHub(ctx context.Context, deps workerVerifyHubDeps, dir string, expect identity.FingerprintMatcher, pinned identity.Fingerprint, forget bool) (agent.VerifyHubResult, error) {
+	st, err := deps.openStore(ctx, dir)
+	if err != nil {
+		return agent.VerifyHubResult{}, fmt.Errorf("open the Worker state in %s: %w", dir, err)
+	}
+	defer func() { _ = st.Close() }()
+	enr := agent.NewEnrollments(st, dir)
+	if forget {
+		return agent.VerifyHubResult{}, agent.ForgetHub(ctx, enr, pinned)
+	}
+	return agent.VerifyHub(ctx, enr, expect)
+}
+
+// verifyRunningHub leaves the state to the daemon that holds the lifecycle
+// lock. A replacement daemon refuses the original daemon's instance ID.
+func verifyRunningHub(ctx context.Context, deps workerVerifyHubDeps, instance string, expect identity.FingerprintMatcher, pinned identity.Fingerprint, forget bool) (agent.VerifyHubResult, error) {
+	var r agent.VerifyHubResult
+	fingerprint := expect.String()
+	if forget {
+		fingerprint = string(pinned)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	raw, err := deps.call(cctx, agent.OpLocalVerifyHub, agent.LocalVerifyHubArgs{
+		Instance: instance, Fingerprint: fingerprint, Forget: forget,
+	})
+	if err != nil {
+		switch proto.CodeOf(err) {
+		case proto.CodeNotEnrolled:
+			return r, agent.ErrNotPaired
+		case proto.CodeInvalidArgument:
+			if forget {
+				return r, agent.ErrPinnedDiffers
+			}
+		}
+		return r, fmt.Errorf("could not confirm the running Worker applied the Hub check (%w); stop it with minion worker down", err)
+	}
+	if err := json.Unmarshal(raw, &r); err != nil || r.Paired == "" || (forget && r.Paired != pinned) {
+		return r, errors.New("the running Worker returned an invalid Hub check result; stop it with minion worker down")
+	}
+	return r, nil
+}
+
+// runningWorkerOf returns the instance to contact when a Worker holds the
+// lifecycle lock. Otherwise it returns that lock to the caller.
+func runningWorkerOf(ctx context.Context, deps workerVerifyHubDeps, dir string) (instance string, unlock func(), err error) {
 	unlock = func() {}
 	if deps.lockState == nil {
-		return false, unlock, nil
+		return "", unlock, nil
 	}
 	l, err := deps.lockState(dir)
 	if err == nil {
-		return false, func() { _ = l.Close() }, nil
+		return "", func() { _ = l.Close() }, nil
 	}
 	if !errors.Is(err, agent.ErrStateInUse) {
-		return false, unlock, fmt.Errorf("cannot take the lifecycle lock of the state directory %s (%w); nothing was changed. "+
+		return "", unlock, fmt.Errorf("cannot take the lifecycle lock of the state directory %s (%w); nothing was changed. "+
 			"Stop the Worker first (minion worker down), then run this command again", dir, err)
 	}
 	reply, ok := liveStatusOf(ctx, deps, dir)
 	switch {
 	case !ok:
-		return false, unlock, fmt.Errorf("a Worker is running on the state directory %s and does not answer on this user's control socket; "+
+		return "", unlock, fmt.Errorf("a Worker is running on the state directory %s and does not answer on this user's control socket; "+
 			"nothing was changed. Stop it first (minion worker down, as the user that runs it), then run this command again", dir)
 	case !reply.HubCheckAware:
-		return false, unlock, errors.New("the running Worker is older than v0.11.0: it cannot apply this check and would keep or resume its " +
+		return "", unlock, errors.New("the running Worker is older than v0.11.0: it cannot apply this check and would keep or resume its " +
 			"connection to the Hub; nothing was changed. Stop it first with: minion worker down - then run this command again " +
 			"(and upgrade the Worker before you start it again)")
+	case reply.Instance == "":
+		return "", unlock, errors.New("the running Worker does not support online Hub verification; stop it with minion worker down")
 	}
-	return true, unlock, nil
+	return reply.Instance, unlock, nil
 }
 
 // liveStatusOf asks the running Worker of this user for its live status; ok
@@ -249,28 +293,28 @@ func liveStatusOf(ctx context.Context, deps workerVerifyHubDeps, dir string) (ag
 	}
 	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	raw, err := deps.call(cctx, agent.OpLocalStatus)
+	raw, err := deps.call(cctx, agent.OpLocalStatus, nil)
 	if err != nil || json.Unmarshal(raw, &reply) != nil || reply.StateDir == "" || !sameDir(reply.StateDir, dir) {
 		return agent.LiveStatusReply{}, false
 	}
 	return reply, true
 }
 
-// reportQuarantineApplied says what happened to the running Worker after a
-// mismatch was stored: "stopped talking" only once its status confirms it.
-func reportQuarantineApplied(ctx context.Context, out io.Writer, deps workerVerifyHubDeps, dir string, running bool) {
-	if !running {
-		_, _ = fmt.Fprintln(out, "No Worker is running on this state directory; it will not connect to that Hub when it starts.")
-		return
-	}
-	for i := 0; i < 40; i++ {
-		if reply, ok := liveStatusOf(ctx, deps, dir); ok && reply.State == string(agent.ConnIdle) && reply.Reason == agent.ReasonQuarantined {
-			_, _ = fmt.Fprintln(out, "The running Worker confirmed: it stopped talking to that Hub and stays disconnected.")
-			return
+// waitForHubIdle requires confirmation from the daemon that applied the change.
+func waitForHubIdle(ctx context.Context, deps workerVerifyHubDeps, dir, instance, reason string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for i := 0; i < 40 && ctx.Err() == nil; i++ {
+		reply, ok := liveStatusOf(ctx, deps, dir)
+		if !ok || reply.Instance != instance {
+			return false, errors.New("could not confirm the same running Worker stopped connecting; stop it with minion worker down")
+		}
+		if reply.State == string(agent.ConnIdle) && (reply.Reason == reason || reply.Reason == agent.ReasonNoHubConfigured) {
+			return true, nil
 		}
 		if deps.sleep != nil {
 			deps.sleep(250 * time.Millisecond)
 		}
 	}
-	_, _ = fmt.Fprintln(out, "The running Worker has not confirmed yet that it stopped talking to that Hub; check it with: minion worker status")
+	return false, nil
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -536,5 +537,53 @@ func TestCrashGuardKeepsAForgottenPairing(t *testing.T) {
 	}
 	if _, ok := readPending(dir); ok {
 		t.Fatal("guard not cleared")
+	}
+}
+
+func TestCrashGuardKeepsNewerTrustState(t *testing.T) {
+	for _, change := range []string{"quarantine", "forget and re-pair"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			f := newCheckFixture(t, "", "")
+			dir := f.enr.stateDir
+			exe := filepath.Join(t.TempDir(), "minion")
+			for name, body := range map[string]string{exe: "new", exe + ".old": "old"} {
+				if err := os.WriteFile(name, []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now()
+			r := pendingRecord{From: "v0.10.0", To: "v0.11.0", At: now}
+			if err := writePending(dir, r); err != nil {
+				t.Fatal(err)
+			}
+			other, err := identity.GenerateKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if change == "quarantine" {
+				if _, err := VerifyHub(ctx, f.enr, mustMatcher(t, string(other.Fingerprint()))); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := ForgetHub(ctx, f.enr, f.hub.Fingerprint()); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.enr.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: other.Public()}}); err != nil {
+					t.Fatal(err)
+				}
+				if forgotten, err := ForgottenHubs(dir); err != nil || len(forgotten) != 0 {
+					t.Fatalf("forgotten Hub record after re-pair = %v, %v", forgotten, err)
+				}
+			}
+			for i := 0; i <= guardMaxStarts; i++ {
+				if _, restart := guardOnStart(f.log, dir, exe, r.To, now.Add(time.Duration(i)*time.Second)); restart {
+					t.Fatalf("rolled back on start %d after %s", i+1, change)
+				}
+			}
+			if b, _ := os.ReadFile(exe); string(b) != "new" {
+				t.Fatalf("exe = %q, want the new binary kept", b)
+			}
+		})
 	}
 }

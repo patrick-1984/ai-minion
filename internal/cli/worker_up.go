@@ -114,9 +114,9 @@ config file value, and no choice saved by "minion worker setup") gets the
 first-run wizard when this runs in a terminal: what to share, the Hub address
 and a pairing code. Without a terminal nothing is asked: the command stops
 before it changes anything and names the flags to give. Run as root for
-another user it does the same, because root does not ask about, or open, that
-user's tmux and state: run "minion worker setup" as that user, or give
---share-existing all|none|later.
+another user it needs the sharing choice up front: run "minion worker setup"
+as that user, or give --share-existing all|none|later. In a terminal, a
+Worker that is about to pair still asks for the Hub fingerprint.
 
 "worker up" first runs the pre-start hooks (for example invitation
 enrollment) and reports their result. A failing hook stops the command with an
@@ -209,7 +209,7 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 		res.File = file
 	}
 	offerPsmux(cmd, res, defaultPsmuxOfferDeps())
-	return sd.firstRun(cmd, res, "", "")
+	return sd.firstRun(cmd, res, nil, "")
 }
 
 // installWorkerService is the service path of "worker up": resolve the
@@ -285,7 +285,7 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	for _, w := range warnings {
 		_, _ = fmt.Fprintln(stderr, w)
 	}
-	if err := firstRunService(cmd, deps, reg, flags, lookupEnv, st, stateDir, target, owned); err != nil {
+	if err := firstRunService(cmd, deps, reg, flags, lookupEnv, st, target, owned); err != nil {
 		return err
 	}
 
@@ -359,7 +359,7 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 }
 
 // firstRunService is the first-run gate of the service path.
-func firstRunService(cmd *cobra.Command, deps workerUpDeps, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool), st *upState, stateDir string, target service.Target, owned bool) error {
+func firstRunService(cmd *cobra.Command, deps workerUpDeps, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool), st *upState, target service.Target, owned bool) error {
 	file, err := st.load()
 	if err != nil {
 		return err
@@ -369,7 +369,7 @@ func firstRunService(cmd *cobra.Command, deps workerUpDeps, reg *config.Registry
 	if owned {
 		owner = target.User
 	}
-	return deps.setupDeps().firstRun(cmd, res, stateDir, owner)
+	return deps.setupDeps().firstRun(cmd, res, st, owner)
 }
 
 func resolveBinary(executable func() (string, error)) (string, error) {
@@ -502,6 +502,9 @@ func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.R
 		r, err := plain.Resolve(s.Key)
 		if err != nil {
 			return err
+		}
+		if r.Source == config.SourceDefault {
+			continue // A blank override can resolve as unset.
 		}
 		val := r.Value
 		if s.Key == config.KeyTmuxSocket && val != "" {

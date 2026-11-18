@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -65,18 +68,22 @@ func TestWorkerUpWithShareAndServerAsksForTheHubFingerprint(t *testing.T) {
 		tty    bool
 		typed  string
 		args   []string
+		envFP  string
 		asked  bool
 		saved  string
+		expect string
 		starts bool
 	}{
-		"words":           {tty: true, typed: "nonsense\n" + fp.Words() + "\n", asked: true, saved: fp.Words(), starts: true},
+		"words":           {tty: true, typed: "nonsense\n" + fp.Words() + "\n", asked: true, saved: fp.Words(), expect: fp.Words(), starts: true},
+		"empty flag":      {tty: true, typed: fp.Words() + "\n", args: []string{"--hub-fingerprint="}, asked: true, saved: fp.Words(), expect: fp.Words(), starts: true},
+		"blank env":       {tty: true, typed: fp.Words() + "\n", envFP: " \t ", asked: true, saved: fp.Words(), expect: fp.Words(), starts: true},
 		"skip":            {tty: true, typed: "skip\n", asked: true, starts: true},
 		"aborted":         {tty: true, typed: "", asked: true},
 		"no terminal":     {starts: true},
-		"fingerprint set": {tty: true, args: []string{"--hub-fingerprint", fp.Words()}, starts: true},
+		"fingerprint set": {tty: true, args: []string{"--hub-fingerprint", fp.Words()}, envFP: "ignored", expect: fp.Words(), starts: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			env := map[string]string{"MINION_STATE_DIR": t.TempDir(), "MINION_HUB_FINGERPRINT": ""}
+			env := map[string]string{"MINION_STATE_DIR": t.TempDir(), "MINION_HUB_FINGERPRINT": tc.envFP}
 			deps, p, rig := foregroundGate(t, tc.tty, env)
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -92,6 +99,10 @@ func TestWorkerUpWithShareAndServerAsksForTheHubFingerprint(t *testing.T) {
 				cancel()
 				if err := <-done; err != nil {
 					t.Errorf("worker up: %v", err)
+				}
+				hub, err := config.ResolveWorkerHub(p.seen().Resolver)
+				if err != nil || hub.Fingerprint != tc.expect {
+					t.Errorf("startup fingerprint = %q, %v; want %q", hub.Fingerprint, err, tc.expect)
 				}
 			case err := <-done:
 				if tc.starts {
@@ -111,6 +122,53 @@ func TestWorkerUpWithShareAndServerAsksForTheHubFingerprint(t *testing.T) {
 				t.Fatalf("saved hub_fingerprint %q, want %q", saved, tc.saved)
 			}
 		})
+	}
+}
+
+func TestWorkerUpUnderSudoAsksForTheHubFingerprint(t *testing.T) {
+	fp := fakeHubFingerprint(t)
+	f := newUpFixture(t, true)
+	f.deps.setup = newSetupRig(t, true).deps
+	f.env["MINION_HUB_FINGERPRINT"] = " \t "
+	var effective string
+	f.hook("capture", func(s agent.Settings) error {
+		hub, err := config.ResolveWorkerHub(s.Resolver)
+		effective = hub.Fingerprint
+		return err
+	})
+	out, err := runUp(f.deps, context.Background(), strings.NewReader(fp.Words()+"\n"),
+		"--as-user", "ann", "--share-existing", "all", "--server", "https://hub.example:8443", "--hub-fingerprint=")
+	if err != nil || !strings.Contains(out, "NEW HUB - ENTER ITS FINGERPRINT") {
+		t.Fatalf("worker up: %v\n%s", err, out)
+	}
+	if effective != fp.Words() {
+		t.Errorf("pre-start fingerprint = %q, want %q", effective, fp.Words())
+	}
+	if got := readWorkerUpConfig(t, filepath.Join(f.stateDir(), workerConfigName))[config.KeyHubFingerprint]; got != fp.Words() {
+		t.Errorf("service fingerprint = %q, want %q", got, fp.Words())
+	}
+}
+
+func TestWorkerUpUnderSudoUsesTheExistingEnrollment(t *testing.T) {
+	f := newUpFixture(t, true)
+	f.deps.setup = newSetupRig(t, true).deps
+	ctx := context.Background()
+	st, err := store.OpenContext(ctx, f.stateDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	hub, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveEnrollment(ctx, store.Enrollment{HubPub: hub.Public()}); err != nil {
+		t.Fatal(err)
+	}
+	// Leave the database open so the latest enrollment can be in its WAL.
+	out, err := runUp(f.deps, ctx, readFailer{t}, "--as-user", "ann", "--share-existing", "all", "--server", "https://hub.example:8443")
+	if err != nil || len(f.runCalls()) == 0 || strings.Contains(out, "NEW HUB - ENTER ITS FINGERPRINT") {
+		t.Fatalf("worker up: %v\n%s", err, out)
 	}
 }
 

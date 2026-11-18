@@ -158,7 +158,7 @@ func TestHubPinsArePerOrigin(t *testing.T) {
 	if _, err := saveHubPin(env, pinA, "https://Hub-A.example/minion"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := saveHubPin(env, pinB, "https://hub-b.example:8443"); err != nil {
+	if _, err := saveHubPin(env, pinB, "https://B\u00fccher.example:08443"); err != nil {
 		t.Fatal(err)
 	}
 	file, err := config.LoadFile(filepath.Join(stateDir, workerConfigName))
@@ -167,20 +167,20 @@ func TestHubPinsArePerOrigin(t *testing.T) {
 	}
 	raw, _, _ := file.Lookup(config.KeyHubTLSPins)
 	pins, err := config.ParseHubTLSPins(raw)
-	if err != nil || pins["https://hub-a.example:443"] != pinA || pins["https://hub-b.example:8443"] != pinB || len(pins) != 2 {
+	if err != nil || pins["https://hub-a.example:443"] != pinA || pins["https://xn--bcher-kva.example:8443"] != pinB || len(pins) != 2 {
 		t.Fatalf("pins = %v, %v (raw %q)", pins, err, raw)
 	}
 	resolve := func(hubURL string) (config.ClientHub, error) {
 		res := &config.Resolver{Registry: config.Client, Role: config.ScopeWorker,
-			LookupEnv: envFrom(map[string]string{"MINION_HUB_URL": hubURL}), File: file}
+			LookupEnv: envFrom(map[string]string{"MINION_HUB_URL": hubURL, "MINION_HUB_TLS_PINS": "https://hub-a.example:443=" + pinB}), File: file}
 		return config.ResolveClientHub(res)
 	}
 	for url, want := range map[string]string{
-		"https://hub-a.example":              pinA,
-		"https://HUB-A.example:443/x/%2e/y/": pinA,
-		"https://hub-b.example:8443/":        pinB,
-		"https://hub-b.example":              "",
-		"https://hub-c.example":              "",
+		"https://hub-a.example":               pinB,
+		"https://HUB-A.example:0443/x/%2e/y/": pinB,
+		"https://xn--bcher-kva.example:8443/": pinB,
+		"https://xn--bcher-kva.example":       "",
+		"https://hub-c.example":               "",
 	} {
 		c, err := resolve(url)
 		if err != nil || c.TLSPin != want {
