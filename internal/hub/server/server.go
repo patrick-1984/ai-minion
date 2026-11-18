@@ -21,6 +21,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/httpbody"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 )
 
 // OrderCore is the init order of the core module. It provides the services
@@ -97,6 +98,13 @@ type Config struct {
 	ManagementListen string
 	// Logger receives the Hub's log records; nil means [slog.Default].
 	Logger *slog.Logger
+	// LogLive is the runtime control of Logger: its local level (the live
+	// log_level) and the fan-out whose remote slots the obs module fills.
+	// Nil (tests): no live level and no log export.
+	LogLive *logx.Live
+	// Verbose is -v/--verbose when it was given (nil otherwise), for the
+	// resolution of the live log level.
+	Verbose *bool
 }
 
 // NewConfig validates the raw settings and builds the Config. It fails, with

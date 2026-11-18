@@ -180,21 +180,32 @@ func (t teeHandler) WithGroup(name string) slog.Handler {
 	return out
 }
 
-// Live is the runtime log control of a long-running process (the Worker):
-// the level of its logger, which debug mode can lower at runtime, and the
-// in-memory log of its recent lines.
+// Live is the runtime log control of a long-running process: the level of
+// its local output, which debug mode (Worker) or the panel (Hub) changes at
+// runtime, the in-memory log of its recent lines (Worker), and the [Fanout]
+// whose remote slots (syslog, OpenTelemetry) have levels of their own.
 type Live struct {
-	// Level is the level of every handler of the logger.
+	// Level is the level of the local output and of the ring.
 	Level *slog.LevelVar
 	// Base is the configured level, restored when debug mode ends.
 	Base slog.Level
-	// Ring holds the recent lines (all levels the logger writes).
+	// Ring holds the recent lines (all levels the local output writes); nil
+	// for a process without one (the Hub).
 	Ring *Ring
+	// Fanout is the handler of the logger: local output, ring and the
+	// remote sinks, each with its own level.
+	Fanout *Fanout
+
+	mu sync.Mutex
 }
 
 // SetDebug switches debug mode: on lowers the level to debug, off restores
 // the configured level (which stays debug when the process was started so).
+// It changes the local output and the ring only: a remote sink keeps its own
+// level, so remote debug cannot raise what leaves the machine.
 func (l *Live) SetDebug(on bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if on {
 		l.Level.Set(min(l.Base, slog.LevelDebug))
 		return
@@ -202,19 +213,39 @@ func (l *Live) SetDebug(on bool) {
 	l.Level.Set(l.Base)
 }
 
+// SetBase changes the configured level and applies it (the Hub's live
+// log_level).
+func (l *Live) SetBase(level slog.Level) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.Base = level
+	l.Level.Set(level)
+}
+
 // Debug reports whether the logger writes debug lines now.
 func (l *Live) Debug() bool { return l.Level.Level() <= slog.LevelDebug }
 
 // NewLive is [New] with a runtime level and an in-memory ring of the recent
 // lines: the logger writes to opts.Output and to the ring, both at the level
-// that [Live.SetDebug] switches.
+// that [Live.SetDebug] switches. The remote slots of [Live.Fanout] start
+// empty.
 func NewLive(opts Options, ring *Ring) (*slog.Logger, *Live, error) {
+	if ring == nil {
+		ring = NewRing(0, 0)
+	}
+	return newLive(opts, ring)
+}
+
+// NewLiveLocal is [NewLive] without a ring (the Hub): the local output at a
+// runtime level plus empty remote slots.
+func NewLiveLocal(opts Options) (*slog.Logger, *Live, error) {
+	return newLive(opts, nil)
+}
+
+func newLive(opts Options, ring *Ring) (*slog.Logger, *Live, error) {
 	level, err := ParseLevel(opts.Level)
 	if err != nil {
 		return nil, nil, err
-	}
-	if ring == nil {
-		ring = NewRing(0, 0)
 	}
 	lv := new(slog.LevelVar)
 	lv.Set(level)
@@ -223,8 +254,13 @@ func NewLive(opts Options, ring *Ring) (*slog.Logger, *Live, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	l := &Live{Level: lv, Base: level, Ring: ring}
-	return slog.New(Tee(base.Handler(), NewRingHandler(ring, lv))), l, nil
+	f := NewFanout()
+	f.Set(SlotLocal, base.Handler(), lv)
+	if ring != nil {
+		f.Set(SlotRing, NewRingHandler(ring, lv), lv)
+	}
+	l := &Live{Level: lv, Base: level, Ring: ring, Fanout: f}
+	return slog.New(f), l, nil
 }
 
 // Dedup writes a recurring debug line only when its summary changes, so that
