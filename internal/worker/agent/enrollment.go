@@ -640,6 +640,12 @@ func (e *Enrollments) CommitIfLive(ctx context.Context, gen uint64, enr Enrollme
 // wipe moves the generation and deletes the enrollment. The caller holds the
 // locks.
 func (e *Enrollments) wipe(ctx context.Context) (bool, error) {
+	// A deliberate removal (a signed revoke of the Hub, a reset, a new
+	// identity) during an update trial: a rollback must not restore the
+	// pre-migration database with the removed pairing (rollbackTrustHold).
+	if err := protectEnrollmentFromRollback(e.stateDir); err != nil {
+		return false, err
+	}
 	if err := e.bumpLocked(); err != nil {
 		return false, err
 	}

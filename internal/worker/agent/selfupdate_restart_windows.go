@@ -68,6 +68,14 @@ func restartNow(log *slog.Logger, exe string) {
 func runInConsole(log *slog.Logger, exe string) int {
 	sig := make(chan os.Signal, 4)
 	signal.Notify(sig, os.Interrupt)
+	// A Ctrl+C that arrived before the child runs reached only this process
+	// (the caller checks its context just before): do not start the child.
+	select {
+	case <-sig:
+		log.Info("stop requested before the restored binary started; it runs on the next start", "exe", exe)
+		return 0
+	default:
+	}
 	go func() {
 		for range sig {
 		}
@@ -75,7 +83,10 @@ func runInConsole(log *slog.Logger, exe string) int {
 	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = consoleChildEnv(os.Environ())
-	err := cmd.Run()
+	err := cmd.Start()
+	if err == nil {
+		err = cmd.Wait()
+	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return ee.ExitCode()

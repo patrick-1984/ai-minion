@@ -193,7 +193,13 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		defer close(commitDone)
 		tick := time.NewTicker(30 * time.Second)
 		defer tick.Stop()
-		commitAfter(loopCtx, s.StateDir, version.Version, func() updateHealth { return connectorHealth(c.Status(), s.StateDir) }, tick.C)
+		// Only a Worker that started every module may commit an update.
+		commitAfter(loopCtx, s.StateDir, version.Version, func() updateHealth {
+			if !env.Started() {
+				return healthNone
+			}
+			return connectorHealth(c.Status(), s.StateDir)
+		}, tick.C)
 	}()
 	pairDone := make(chan struct{})
 	go func() {

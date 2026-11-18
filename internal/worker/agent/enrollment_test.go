@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -165,5 +166,28 @@ func TestEnrollmentSurvivesAReopenOfTheState(t *testing.T) {
 	got, ok, err := NewEnrollments(st, dir).Load(ctx)
 	if err != nil || !ok || got.Pin.Seq != 4 || got.WorkerID != "w" {
 		t.Fatalf("after reopen: %+v, %v, %v", got, ok, err)
+	}
+}
+
+// A wipe (a signed revoke of the Hub, a reset) during an update trial records
+// the enrollment change, so a later rollback does not restore the removed
+// pairing from the pre-migration database.
+func TestWipeDuringAnUpdateTrialHoldsTheRollback(t *testing.T) {
+	ctx := context.Background()
+	e, _, dir := newEnrollments(t)
+	hub, _ := identity.GenerateKey()
+	if err := e.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: hub.Public()}}); err != nil {
+		t.Fatal(err)
+	}
+	trial := pendingRecord{From: "v0.10.0", To: "v0.11.0", At: time.Now()}
+	if err := writePending(dir, trial); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Wipe(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hold, err := rollbackTrustHold(ctx, dir, trial)
+	if err != nil || !hold {
+		t.Fatalf("rollback hold after a wipe = %v, %v; want a hold", hold, err)
 	}
 }

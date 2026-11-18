@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -144,29 +143,9 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	return nil
 }
 
-// onlyCanceled reports whether err is nothing but a clean cancellation (a
-// signal that arrived while the Worker was starting). A joined error that also
-// carries an independent failure, such as a module that failed to stop during
-// the rollback, is not clean and must be reported.
-func onlyCanceled(err error) bool {
-	switch e := err.(type) {
-	case nil:
-		return true
-	case interface{ Unwrap() []error }:
-		for _, c := range e.Unwrap() {
-			if !onlyCanceled(c) {
-				return false
-			}
-		}
-		return true
-	case interface{ Unwrap() error }:
-		if next := e.Unwrap(); next != nil {
-			return onlyCanceled(next)
-		}
-		return false
-	}
-	return err == context.Canceled
-}
+// onlyCanceled reports whether err is nothing but a clean cancellation
+// (agent.OnlyCanceled).
+func onlyCanceled(err error) bool { return agent.OnlyCanceled(err) }
 
 // addSettingFlags adds one flag for every setting that role resolves and that
 // has a flag, so that a setting declared by any story appears on the command

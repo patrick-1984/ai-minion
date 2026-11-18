@@ -49,10 +49,11 @@ const (
 // pendingFile is the crash-guard record in the state directory.
 const pendingFile = "update-pending.json"
 
-// pendingMu serialises the read-modify-write of the crash-guard record inside
-// one process: the commit (connector module) and the clean-stop record
-// (Runtime.Run) can run at the same time. Other processes are kept out by the
-// state's lifecycle lock.
+// pendingMu serialises every write and removal of the crash-guard record
+// inside one process: the installer of a new update (selfUpdate.run), the
+// commit (connector module) and the clean-stop record (Runtime) can run at
+// the same time, and each changes only the trial it owns. Other processes are
+// kept out by the state's lifecycle lock.
 var pendingMu sync.Mutex
 
 // updateEnrollmentFile names the trial during which a Hub enrollment changed.
@@ -228,8 +229,22 @@ func (u *selfUpdate) release() {
 func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRange) {
 	ctx, cancel := context.WithTimeout(ctx, selfUpdateTimeout)
 	defer cancel()
+	// The guard of this run, and the one it replaces (the trial of the
+	// running, still uncommitted binary), which a failure puts back.
+	var mine, prev pendingRecord
+	var wrote, hadPrev bool
 	fail := func(err error) {
-		_ = os.Remove(filepath.Join(u.stateDir, pendingFile))
+		if wrote {
+			pendingMu.Lock()
+			if cur, ok := readPending(u.stateDir); ok && cur.sameTrial(mine) {
+				if hadPrev {
+					_ = writePending(u.stateDir, prev)
+				} else {
+					_ = os.Remove(filepath.Join(u.stateDir, pendingFile))
+				}
+			}
+			pendingMu.Unlock()
+		}
 		// The error can quote a release mirror URL (update_api_url) with a
 		// credential; neither the log nor the reported state repeats it.
 		msg := errString(err)
@@ -248,10 +263,16 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 		fail(err)
 		return
 	}
-	if err := writePending(u.stateDir, pendingRecord{From: version.Version, To: tag, At: u.now()}); err != nil {
+	mine = pendingRecord{From: version.Version, To: tag, At: u.now()}
+	pendingMu.Lock()
+	prev, hadPrev = readPending(u.stateDir)
+	err = writePending(u.stateDir, mine)
+	pendingMu.Unlock()
+	if err != nil {
 		fail(fmt.Errorf("cannot write the update guard, so no rollback would be possible: %w", err))
 		return
 	}
+	wrote = true
 	u.log.Debug("worker update: crash guard written; downloading, verifying and installing", "to", tag,
 		"hub_proto_min", hub.Min.String(), "hub_proto_max", hub.Max.String())
 	r, err := inst.Run(ctx, version.Options{Selector: sel, Current: version.Version, HubRange: hub, ExecPath: u.exe})
@@ -288,6 +309,11 @@ type pendingRecord struct {
 	To     string    `json:"to"`
 	At     time.Time `json:"at"`
 	Starts []int64   `json:"starts,omitempty"` // unix seconds of the starts of the new binary
+}
+
+// sameTrial reports whether r and o guard the same update attempt.
+func (r pendingRecord) sameTrial(o pendingRecord) bool {
+	return r.From == o.From && r.To == o.To && r.At.Equal(o.At)
 }
 
 func writePending(dir string, r pendingRecord) error {
@@ -587,10 +613,12 @@ func restoreStateDB(stateDir string, since time.Time) error {
 // is rolled back here. When it restored the previous binary it calls release
 // (which must free everything a new Worker process needs, such as the state's
 // lifecycle lock) and hands over to the restored binary (restartNow), never
-// returning. Otherwise it returns the rolled-back record to report, and the
+// returning; when ctx ended meanwhile (Ctrl+C or a service stop during the
+// restore), it exits instead of starting the restored binary, so the stop is
+// not lost. Otherwise it returns the rolled-back record to report, and the
 // start it recorded for an uncommitted update (0: none), which a clean stop
 // gives back (cleanStop).
-func RecoverUpdate(log *slog.Logger, stateDir string, release func()) (rolled *pendingRecord, started int64) {
+func RecoverUpdate(ctx context.Context, log *slog.Logger, stateDir string, release func()) (rolled *pendingRecord, started int64) {
 	if stateDir == "" {
 		return nil, 0
 	}
@@ -601,16 +629,22 @@ func RecoverUpdate(log *slog.Logger, stateDir string, release func()) (rolled *p
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
-	return recoverUpdate(log, stateDir, exe, time.Now(), release, restartNow)
+	return recoverUpdate(ctx, log, stateDir, exe, time.Now(), release, restartNow, os.Exit)
 }
 
-func recoverUpdate(log *slog.Logger, stateDir, exe string, now time.Time, release func(), restart func(*slog.Logger, string)) (*pendingRecord, int64) {
+func recoverUpdate(ctx context.Context, log *slog.Logger, stateDir, exe string, now time.Time, release func(),
+	restart func(*slog.Logger, string), exit func(int)) (*pendingRecord, int64) {
 	rolled, again, started := guardOnStart(log, stateDir, exe, version.Version, now)
 	if again {
 		// A rollback happens before any module runs: hand over to the
 		// restored binary at once, never continue in the rejected one.
 		if release != nil {
 			release()
+		}
+		if ctx.Err() != nil {
+			log.Info("stop requested during the rollback; the restored binary runs on the next start", "exe", exe)
+			exit(0)
+			return nil, 0
 		}
 		restart(log, exe)
 	}

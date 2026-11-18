@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -338,7 +339,14 @@ type Runtime struct {
 	// guardStart is the start the update crash guard recorded for this run
 	// of an uncommitted new binary (0: none); a clean stop takes it back.
 	guardStart int64
+	// ready is set once Start has started every module: only then may the
+	// crash guard commit an update.
+	ready atomic.Bool
 }
+
+// Started reports whether the runtime started every module (Start returned
+// without an error) and has not begun to stop.
+func (e *Env) Started() bool { return e.rt != nil && e.rt.ready.Load() }
 
 // RequestStop asks Run to stop the Worker, as a signal would.
 func (rt *Runtime) RequestStop() { rt.stopOnce.Do(func() { close(rt.stopReq) }) }
@@ -372,8 +380,11 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 	rt.mu.Unlock()
 
 	fail := func(err error) error {
-		// The cleanup must run although ctx may be cancelled already.
-		return errors.Join(err, rt.stopAll(context.WithoutCancel(ctx)))
+		// The cleanup must run although ctx may be cancelled already. A
+		// start that the operator interrupted (Ctrl+C, a service stop) and
+		// whose cleanup succeeds is a clean stop, not a failed start.
+		clean := ctx.Err() != nil && OnlyCanceled(err)
+		return errors.Join(err, rt.stopAll(context.WithoutCancel(ctx), clean))
 	}
 	// The update crash guard runs first, before any hook can open or migrate
 	// the database, and only under the state's lifecycle lock (a duplicate
@@ -389,7 +400,7 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 		rt.mu.Unlock()
 		// A rollback hands over to the restored binary; the lifecycle lock
 		// is released first, as the restored Worker takes it again.
-		rolled, started := RecoverUpdate(s.logger(), s.StateDir, func() {
+		rolled, started := RecoverUpdate(ctx, s.logger(), s.StateDir, func() {
 			rt.mu.Lock()
 			defer rt.mu.Unlock()
 			if rt.held != nil {
@@ -425,29 +436,70 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 		rt.mu.Unlock()
 		s.logger().Debug("worker module started", "module", m.name)
 	}
+	rt.ready.Store(true)
 	return nil
 }
 
 // Stop stops the started modules in reverse order within the stop timeout and
-// returns the failures joined. It is idempotent.
+// returns the failures joined. It is idempotent. It is a deliberate stop: when
+// every module stopped without an error, the run does not count as a failed
+// start of an uncommitted update.
 func (rt *Runtime) Stop(ctx context.Context) error {
-	return rt.stopAll(ctx)
+	return rt.stopAll(ctx, true)
+}
+
+// markCleanStop takes this run's start back from the update crash guard
+// (cleanStop). It is called at most once, while this process still owns the
+// state.
+func (rt *Runtime) markCleanStop() {
+	rt.mu.Lock()
+	started, dir := rt.guardStart, rt.settings.StateDir
+	rt.guardStart = 0
+	rt.mu.Unlock()
+	cleanStop(dir, version.Version, started)
+}
+
+// OnlyCanceled reports whether err is nothing but a clean cancellation (a
+// signal that arrived while the Worker was starting). A joined error that also
+// carries an independent failure, such as a module that failed to stop during
+// the rollback, is not clean.
+func OnlyCanceled(err error) bool {
+	switch e := err.(type) {
+	case nil:
+		return true
+	case interface{ Unwrap() []error }:
+		for _, c := range e.Unwrap() {
+			if !OnlyCanceled(c) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		if next := e.Unwrap(); next != nil {
+			return OnlyCanceled(next)
+		}
+		return false
+	}
+	return err == context.Canceled
 }
 
 // stopAll stops the started modules in reverse order. One hard deadline,
 // StopTimeout from now (or the earlier deadline of ctx), covers the whole
-// sequence; the modules get a context that ends [stopGrace] before it.
-func (rt *Runtime) stopAll(ctx context.Context) error {
+// sequence; the modules get a context that ends [stopGrace] before it. With
+// clean, a stop in which every module stopped without an error takes this
+// run's start back from the update crash guard, right before the state's
+// lifecycle lock is released (the lifecycle module, or the lock Start holds
+// before that module runs).
+func (rt *Runtime) stopAll(ctx context.Context, clean bool) error {
 	rt.mu.Lock()
 	if rt.state == stateStopped {
 		rt.mu.Unlock()
 		return nil
 	}
 	rt.state = stateStopped
-	if rt.held != nil {
-		_ = rt.held.Close()
-		rt.held = nil
-	}
+	rt.ready.Store(false)
+	held := rt.held
+	rt.held = nil
 	running := rt.running
 	rt.running = nil
 	log := rt.settings.logger()
@@ -467,8 +519,18 @@ func (rt *Runtime) stopAll(ctx context.Context) error {
 	defer cancelMod()
 
 	var errs []error
+	marked := false
+	mark := func() {
+		if clean && !marked && len(errs) == 0 {
+			rt.markCleanStop()
+		}
+		marked = true
+	}
 	for i := len(running) - 1; i >= 0; i-- {
 		r := running[i]
+		if r.module == ModuleLifecycle {
+			mark()
+		}
 		if r.stop == nil {
 			continue
 		}
@@ -476,6 +538,10 @@ func (rt *Runtime) stopAll(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("agent: module %q failed to stop: %w", r.module, err))
 		}
 		log.Debug("worker module stopped", "module", r.module)
+	}
+	if held != nil {
+		mark()
+		_ = held.Close()
 	}
 	return errors.Join(errs...)
 }
@@ -510,13 +576,8 @@ func (rt *Runtime) Run(ctx context.Context, s Settings) error {
 	}
 	s.logger().Info("worker shutting down", "timeout", rt.opts.StopTimeout.String())
 	// The Worker started and was asked to stop (Ctrl+C, worker down, a
-	// service stop): not a failed start of an uncommitted update. Recorded
-	// while this process still owns the state (the lifecycle module holds
-	// its lock until it stops).
-	rt.mu.Lock()
-	started := rt.guardStart
-	rt.mu.Unlock()
-	cleanStop(s.StateDir, version.Version, started)
+	// service stop): once its modules stopped cleanly, this run is not a
+	// failed start of an uncommitted update (Stop records that).
 	return rt.Stop(context.WithoutCancel(ctx))
 }
 

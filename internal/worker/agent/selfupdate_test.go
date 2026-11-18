@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -750,12 +751,13 @@ func TestRecoverUpdateReleasesBeforeTheRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	var steps []string
-	recoverUpdate(log, dir, exe, now, func() { steps = append(steps, "release") }, func(_ *slog.Logger, got string) {
+	noExit := func(int) { t.Fatal("exited") }
+	recoverUpdate(context.Background(), log, dir, exe, now, func() { steps = append(steps, "release") }, func(_ *slog.Logger, got string) {
 		if got != exe {
 			t.Errorf("restart exe = %q, want %q", got, exe)
 		}
 		steps = append(steps, "restart")
-	})
+	}, noExit)
 	if strings.Join(steps, ",") != "release,restart" {
 		t.Fatalf("steps = %v, want release then restart", steps)
 	}
@@ -764,7 +766,8 @@ func TestRecoverUpdateReleasesBeforeTheRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps = nil
-	_, started := recoverUpdate(log, dir, exe, now, func() { steps = append(steps, "release") }, func(*slog.Logger, string) { steps = append(steps, "restart") })
+	_, started := recoverUpdate(context.Background(), log, dir, exe, now, func() { steps = append(steps, "release") },
+		func(*slog.Logger, string) { steps = append(steps, "restart") }, noExit)
 	if len(steps) != 0 || started != now.Unix() {
 		t.Fatalf("steps = %v, started = %d", steps, started)
 	}
@@ -776,5 +779,71 @@ func TestConsoleChildEnvDropsTheWaitVariable(t *testing.T) {
 	env := consoleChildEnv([]string{"A=1", waitPIDEnv + "=42", "B=2", strings.ToLower(waitPIDEnv) + "=7"})
 	if strings.Join(env, " ") != "A=1 B=2" {
 		t.Fatalf("env = %v", env)
+	}
+}
+
+// A stop (Ctrl+C, a service stop) that arrives while the rollback restores the
+// previous binary is not lost: the restored binary is not started, the
+// process exits after releasing the state.
+func TestRecoverUpdateKeepsAStopDuringTheRollback(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	exe := filepath.Join(bin, "minion")
+	if err := os.WriteFile(exe, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe+".old", []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := writePending(dir, pendingRecord{From: "v0.0.1", To: version.Version, At: now,
+		Starts: []int64{now.Unix() - 3, now.Unix() - 2, now.Unix() - 1}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var steps []string
+	recoverUpdate(ctx, slog.New(slog.NewTextHandler(&logBuf{}, nil)), dir, exe, now,
+		func() { steps = append(steps, "release") },
+		func(*slog.Logger, string) { steps = append(steps, "restart") },
+		func(code int) { steps = append(steps, fmt.Sprintf("exit %d", code)) })
+	if strings.Join(steps, ",") != "release,exit 0" {
+		t.Fatalf("steps = %v, want release then exit 0 without a restart", steps)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "old" {
+		t.Fatalf("exe = %q, want the restored binary", b)
+	}
+}
+
+// A failed install of a newer update while the running binary is itself an
+// uncommitted trial puts that trial's guard back instead of deleting it, and
+// cleanStop never writes a stale copy over the guard of the new install.
+func TestWorkerUpdateFailureKeepsTheRunningTrial(t *testing.T) {
+	withVersion(t, "v0.9.1")
+	inst := &fakeInstaller{err: errors.New("network down")}
+	u, _ := newTestUpdate(t, inst)
+	trial := pendingRecord{From: "v0.9.0", To: "v0.9.1", At: time.Now().Add(-time.Minute), Starts: []int64{42}}
+	if err := writePending(u.stateDir, trial); err != nil {
+		t.Fatal(err)
+	}
+	if res, _ := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.2"}); !res.Accepted {
+		t.Fatal("not accepted")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for u.status().State != ops.UpdateStateFailed && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	r, ok := readPending(u.stateDir)
+	if !ok || !r.sameTrial(trial) || len(r.Starts) != 1 {
+		t.Fatalf("guard after a failed install = %+v (%v), want the running trial back", r, ok)
+	}
+	// The guard of a newer install (v0.9.1 -> v0.9.2) is not this run's to
+	// change: a clean stop of v0.9.1 leaves it alone.
+	next := pendingRecord{From: "v0.9.1", To: "v0.9.2", At: time.Now()}
+	if err := writePending(u.stateDir, next); err != nil {
+		t.Fatal(err)
+	}
+	cleanStop(u.stateDir, "v0.9.1", 42)
+	if r, _ := readPending(u.stateDir); !r.sameTrial(next) {
+		t.Fatalf("cleanStop changed the guard of the next update: %+v", r)
 	}
 }
