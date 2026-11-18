@@ -35,13 +35,16 @@ var localOps = map[string]localOp{
 	OpLocalResume: func(l localExecutor, ctx context.Context, rq localapi.Request) (json.RawMessage, error) {
 		return l.pauseOp(ctx, rq, false)
 	},
+	OpLocalConfigApply: func(l localExecutor, ctx context.Context, rq localapi.Request) (json.RawMessage, error) {
+		return l.configApplyOp(ctx, rq)
+	},
 }
 
 // localFeatures are the capabilities of the local-only ops (for example
 // lifecycle.v1) that a capability-qualified request may require. They are
 // added only to the qualified-op check of the local socket, never to
 // [Executor.Features], so they are not announced to the Hub.
-var localFeatures = []string{FeaturePause}
+var localFeatures = []string{FeaturePause, FeatureConfigApply}
 
 // localOpFor returns the local-only handler of op, if there is one.
 func localOpFor(op string) (localOp, bool) {

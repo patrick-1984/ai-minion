@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,5 +128,98 @@ func TestServiceStartWithoutInstallerEnvRefusesCreate(t *testing.T) {
 	wantAPIError(t, err, "forbidden", "new_sessions_blocked")
 	if len(host.sessions) != 0 {
 		t.Fatal("a session was created")
+	}
+}
+
+// startCoreWith starts the lifecycle and core modules with s.
+func startCoreWith(t *testing.T, s Settings) (*Runtime, *fakeHost) {
+	t.Helper()
+	host := newFakeHost()
+	cd := coreDeps{
+		openStore:  func(ctx context.Context, d string) (*store.Store, error) { return store.OpenContext(ctx, d) },
+		newHost:    func(string) (term.SessionHost, error) { return host, nil },
+		classifier: newFakeClassifier(),
+	}
+	r := NewRegistry()
+	if err := RegisterLifecycle(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(ModuleCore, OrderCore, cd.start); err != nil {
+		t.Fatal(err)
+	}
+	rt := NewRuntime(r, Options{})
+	if err := rt.Start(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+	return rt, host
+}
+
+func saveAllowNewSessions(t *testing.T, dir, v string) {
+	t.Helper()
+	cfg, err := config.LoadFile(filepath.Join(dir, WorkerConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Set(config.KeyAllowNewSessions, v)
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The Worker loaded its config before a command saved off, and took the
+// lifecycle lock after: it rereads the block under the lock and refuses
+// creates from its first module on.
+func TestStartupRereadsBlockUnderLock(t *testing.T) {
+	dir := t.TempDir()
+	res := &config.Resolver{Role: config.ScopeWorker, File: config.MapSource{}, LookupEnv: func(string) (string, bool) { return "", false }}
+	s := Settings{WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w"},
+		Resolver: res, Logger: slog.New(slog.DiscardHandler)}
+	if s.NewSessions.Blocked {
+		t.Fatal("the stale snapshot must allow")
+	}
+	// The barrier: between the config load and the lock, the CLI saves off.
+	saveAllowNewSessions(t, dir, "off")
+	rt, host := startCoreWith(t, s)
+	ex, _ := Lookup[*Executor](rt)
+	_, err := ex.Execute(context.Background(), Request{Op: ops.OpSessionCreate, Actions: allActions, Args: mustJSON(t, createArgs("fresh"))})
+	wantAPIError(t, err, "forbidden", "new_sessions_blocked")
+	if len(host.sessions) != 0 {
+		t.Fatal("a session was created")
+	}
+}
+
+// The live apply rereads the file from disk with the Worker's own flag and
+// environment snapshot; the resolver's cached File is never consulted.
+func TestLiveApplyIgnoresCachedResolver(t *testing.T) {
+	dir := t.TempDir()
+	cached := config.MapSource{config.KeyAllowNewSessions: "on"}
+	res := &config.Resolver{Role: config.ScopeWorker, File: cached, LookupEnv: func(string) (string, bool) { return "", false }}
+	s := Settings{WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w"},
+		Resolver: res, Logger: slog.New(slog.DiscardHandler)}
+	rt, _ := startCoreWith(t, s)
+	ex, _ := Lookup[*Executor](rt)
+	a := configApplier{settings: s, ex: ex}
+	saveAllowNewSessions(t, dir, "off")
+	got, err := a.apply(config.KeyAllowNewSessions)
+	if err != nil || got.Effective != "off" || len(got.Sources) != 1 || got.Sources[0] != "file" {
+		t.Fatalf("apply = %+v, %v", got, err)
+	}
+	if blocked, _ := ex.Policy().NewSessionsBlocked(); !blocked {
+		t.Fatal("not blocked after the apply")
+	}
+	saveAllowNewSessions(t, dir, "on")
+	if got, _ := a.apply(config.KeyAllowNewSessions); got.Effective != "on" {
+		t.Fatalf("after on: %+v", got)
+	}
+	// The Worker's environment snapshot still restricts.
+	s.Resolver = &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { return "off", k == "MINION_ALLOW_NEW_SESSIONS" }}
+	a.settings = s
+	if got, _ := a.apply(config.KeyAllowNewSessions); got.Effective != "off" || got.Sources[0] != "env" {
+		t.Fatalf("env off: %+v", got)
+	}
+	// Other keys are refused by the op.
+	if _, err := a.apply(config.KeyPreviewOnly); err == nil || !strings.Contains(err.Error(), "restart the Worker") {
+		t.Fatalf("preview_only = %v", err)
 	}
 }

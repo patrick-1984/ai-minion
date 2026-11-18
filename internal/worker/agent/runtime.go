@@ -418,6 +418,15 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 		rt.guardStart = started
 		rt.mu.Unlock()
 	}
+	// Tighten-only settings are read again now, under the lifecycle lock: a
+	// block a command saved after this process loaded its config (and before
+	// it took the lock) is in force from the first module on (tray W4b).
+	if s.StateDir != "" && s.Resolver != nil {
+		s.NewSessions = RereadTightenOnly(s, config.KeyAllowNewSessions)
+		rt.mu.Lock()
+		rt.settings = s
+		rt.mu.Unlock()
+	}
 	if err := rt.reg.RunPreStart(ctx, s); err != nil {
 		return fail(err)
 	}

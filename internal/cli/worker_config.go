@@ -62,6 +62,8 @@ type workerConfigDeps struct {
 	lookupEnv func(string) (string, bool)
 	openStore func(ctx context.Context, stateDir string) (shareStore, error)
 	applier   configApplier
+	// tighten applies a tighten-only setting (allow_new_sessions) live.
+	tighten tightenApplier
 	// registry is the settings registry; nil means config.Default.
 	registry *config.Registry
 }
@@ -78,6 +80,7 @@ func defaultWorkerConfigDeps() workerConfigDeps {
 		lookupEnv: os.LookupEnv,
 		openStore: func(ctx context.Context, dir string) (shareStore, error) { return store.OpenContext(ctx, dir) },
 		applier:   noLiveApplier{},
+		tighten:   defaultTightenApplier(),
 	}
 }
 
@@ -288,6 +291,9 @@ func runConfigSet(cmd *cobra.Command, deps workerConfigDeps, key, value string) 
 	if err := writef(ce.out, "Saved %s in %s.\n", s.Key, ce.file.Path()); err != nil {
 		return err
 	}
+	if config.IsTightenOnly(s.Key) {
+		return deps.applyTightenChange(cmd.Context(), ce, s.Key)
+	}
 	if err := deps.reportOverride(ce, s); err != nil {
 		return err
 	}
@@ -305,6 +311,14 @@ func runConfigUnset(cmd *cobra.Command, deps workerConfigDeps, key string) error
 	}
 	defer ce.release()
 	if _, set, _ := ce.file.Lookup(s.Key); !set {
+		if config.IsTightenOnly(s.Key) {
+			// Nothing to remove, but a running Worker may still enforce an
+			// older value: reconcile it all the same (tray W4b).
+			if err := writef(ce.out, "%s is not set in %s.\n", s.Key, ce.file.Path()); err != nil {
+				return err
+			}
+			return deps.applyTightenChange(cmd.Context(), ce, s.Key)
+		}
 		return writef(ce.out, "%s is not set in %s; nothing to remove.\n", s.Key, ce.file.Path())
 	}
 	ce.file.Delete(s.Key)
@@ -313,6 +327,9 @@ func runConfigUnset(cmd *cobra.Command, deps workerConfigDeps, key string) error
 	}
 	if err := writef(ce.out, "Removed %s from %s; the default applies.\n", s.Key, ce.file.Path()); err != nil {
 		return err
+	}
+	if config.IsTightenOnly(s.Key) {
+		return deps.applyTightenChange(cmd.Context(), ce, s.Key)
 	}
 	if err := deps.reportOverride(ce, s); err != nil {
 		return err
@@ -374,7 +391,11 @@ func (d workerConfigDeps) apply(ctx context.Context, ce *configEnv, c configChan
 		return writef(ce.out, "The saved value is used the next time the Worker starts. "+
 			"A Worker that is already running (for example the service) must be restarted to pick it up.\n")
 	default:
-		return writef(ce.out, "The change is saved, but the running Worker could not apply it (%v); restart the Worker to apply it.\n", err)
+		// Saved but not in force: never exit 0 for it (tray W4b).
+		if werr := writef(ce.out, "The change is saved, but the running Worker could not apply it (%v); restart the Worker to apply it.\n", err); werr != nil {
+			return werr
+		}
+		return &exitCodeError{ExitNotInForce}
 	}
 }
 

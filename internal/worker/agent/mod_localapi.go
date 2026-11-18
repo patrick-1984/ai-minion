@@ -100,6 +100,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
 			instance: uuid.NewString(), enrollments: enrollments,
 			pause: pause, hubConfigured: conn != nil && conn.cfg.HubURL != "",
+			configApply: configApplier{settings: env.Settings(), ex: ex}.apply,
 		},
 		Logger: log,
 	})
@@ -138,6 +139,8 @@ type localExecutor struct {
 	// hubConfigured is false for a Solo Worker, which has nothing to pause.
 	pause         *PauseService
 	hubConfigured bool
+	// configApply applies a saved setting (worker_config_apply); nil refuses.
+	configApply func(key string) (ConfigApplyResult, error)
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {

@@ -8,8 +8,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -29,6 +31,7 @@ func testConfigDeps(env map[string]string) workerConfigDeps {
 		lookupEnv: mapEnv(env),
 		openStore: func(ctx context.Context, dir string) (shareStore, error) { return store.OpenContext(ctx, dir) },
 		applier:   noLiveApplier{},
+		tighten:   tightenApplier{lockState: agent.LockLifecycle, deadline: time.Second, poll: 10 * time.Millisecond},
 	}
 }
 
@@ -228,8 +231,9 @@ func TestConfigSetHandsTheChangeToARunningWorker(t *testing.T) {
 
 	app.err = errors.New("socket closed")
 	out, _, err = configCmd(t, cd, dir, "set", "server", "https://hub2.example")
-	if err != nil {
-		t.Fatalf("a failed live apply must not fail a saved change: %v", err)
+	var ec *exitCodeError
+	if !errors.As(err, &ec) || ec.code != ExitNotInForce {
+		t.Fatalf("a failed live apply is saved but not in force (exit 22): %v", err)
 	}
 	if !strings.Contains(out, "saved, but the running Worker could not apply it") || readConfig(t, dir)["server"] != "https://hub2.example" {
 		t.Fatalf("output = %q", out)
