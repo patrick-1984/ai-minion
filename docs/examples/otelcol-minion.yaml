@@ -30,6 +30,8 @@ receivers:
       #   client_ca_file: /certs/clients-ca.pem
 
 processors:
+  # The body of a syslog record is Minion's JSON text, so whitespace inside
+  # a value can appear as an escape (\t, \n, \r): the patterns match it.
   # Masking of free text that Minion cannot recognise as a secret (Minion
   # already masks its own token formats, URL credentials and secret attribute
   # names before a record leaves the machine). Bodies: OTTL replace_pattern.
@@ -38,18 +40,18 @@ processors:
     log_statements:
       - context: log
         statements:
-          - replace_pattern(body, "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]")
-          - replace_pattern(body, "(?i)(password[=:]\\s*)\\S+", "$${1}[REDACTED]")
+          - replace_pattern(body, "(?i)(bearer(?:\\s|\\\\[tnr])+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]")
+          - replace_pattern(body, "(?i)(password[=:](?:\\s|\\\\[tnr])*)\\S+", "$${1}[REDACTED]")
           # The syslog receiver copies the message into attributes.message:
           # mask that copy as well.
-          - replace_pattern(attributes["message"], "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]") where attributes["message"] != nil
-          - replace_pattern(attributes["message"], "(?i)(password[=:]\\s*)\\S+", "$${1}[REDACTED]") where attributes["message"] != nil
+          - replace_pattern(attributes["message"], "(?i)(bearer(?:\\s|\\\\[tnr])+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]") where attributes["message"] != nil
+          - replace_pattern(attributes["message"], "(?i)(password[=:](?:\\s|\\\\[tnr])*)\\S+", "$${1}[REDACTED]") where attributes["message"] != nil
   # Attributes: the redaction processor masks values that match.
   redaction/mask:
     allow_all_keys: true
     blocked_values:
-      - "(?i)bearer\\s+[A-Za-z0-9._~+/=-]+"
-      - "(?i)password[=:]\\s*\\S+"
+      - "(?i)bearer(?:\\s|\\\\[tnr])+[A-Za-z0-9._~+/=-]+"
+      - "(?i)password[=:](?:\\s|\\\\[tnr])*[^\\s\\\\]+"
     summary: info
   batch: {}
 
