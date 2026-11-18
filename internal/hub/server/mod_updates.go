@@ -69,6 +69,7 @@ func initUpdates(_ context.Context, env *Env) error {
 		return r.Latest, r.URL, r.Newer
 	})
 	runCtx, cancel := context.WithCancel(context.Background())
+	chk.Life = runCtx
 	done := make(chan struct{})
 	var started atomic.Bool
 	env.OnStart(func(context.Context) error {

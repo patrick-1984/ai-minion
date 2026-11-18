@@ -100,9 +100,10 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 		return fmt.Errorf("self-update: %w", err)
 	}
 	if err := api.HandleTyped(handlers, ops.OpHubUpdateRefresh, func(ctx context.Context, _ *api.Call, _ ops.HubUpdateRefreshArgs) (ops.HubUpdateCheckResult, error) {
-		refreshed := u.checker.Refresh(ctx)
+		refreshed := u.checker.StartRefresh()
 		res := u.check(ctx)
 		res.Refreshed = refreshed
+		res.Checking = u.checker.Checking()
 		return res, nil
 	}); err != nil {
 		return fmt.Errorf("self-update: %w", err)
@@ -151,6 +152,7 @@ func (u *selfUpdater) check(ctx context.Context) ops.HubUpdateCheckResult {
 	l := u.checker.Latest()
 	res.Latest, res.Newer, res.ReleaseURL = l.Latest, l.Newer, l.URL
 	res.CheckedChannel, res.CheckError = l.Channel, l.Err
+	res.Checking = u.checker.Checking()
 	if !l.CheckedAt.IsZero() {
 		res.CheckedAt = l.CheckedAt.UTC().Format(time.RFC3339)
 	}

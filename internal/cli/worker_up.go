@@ -141,9 +141,9 @@ terminal to ask on). The Worker identity and its
 database live under MINION_STATE_DIR; use /data and mount a volume there so
 that the identity survives a restart of the container.`,
 		Args: noArgsRedacted,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error {
 			return runWorkerUp(cmd, deps, foreground, asUser)
-		},
+		}, deps.run.lookupEnv),
 	}
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run the Worker in the foreground instead of installing a service")
 	cmd.Flags().StringVar(&asUser, "as-user", "", "Install the service for this Unix user (needs root; default: the user that ran sudo)")

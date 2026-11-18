@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"net/http"
 	"net/url"
 	"slices"
@@ -40,9 +41,13 @@ type View struct {
 	RoleLabel string
 	Initials  string
 	// Build is the version block at the bottom of the left rail.
-	Build   BuildView
-	Banners []BannerView
-	Flashes []Flash
+	Build BuildView
+	// HubWords and HubFull are this Hub's fingerprint (six words, 52
+	// characters), shown in the top bar so that people can compare it with
+	// what their Worker pinned; empty while the Hub has no root.
+	HubWords, HubFull string
+	Banners           []BannerView
+	Flashes           []Flash
 	// Status and Message describe an error page (404, 403, 500); both are
 	// zero for a normal page.
 	Status  int
@@ -506,6 +511,9 @@ func (s *Server) newView(w http.ResponseWriter, r *http.Request, title string, d
 			role = authz.RoleUser
 		}
 		v.Build = buildView(role)
+		if fp := currentHubFingerprint(); fp != "" {
+			v.HubWords, v.HubFull = identity.Fingerprint(fp).Words(), fp
+		}
 	}
 	v.Nav = s.navFor(sess, r.URL.Path)
 	v.NavGroups = s.navGroupsFor(sess, r.URL.Path)

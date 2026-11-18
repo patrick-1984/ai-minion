@@ -6,10 +6,13 @@ Released 2026-11-18.
 
 ### Added
 
-- **Check now on Administration > Updates.** The button asks GitHub at once (at most once a minute; a sooner press shows the last answer). The page also shows when the check last ran and why it failed, if it did. New admin operation `hub_update_refresh` (POST only); `hub_update_check` also reports `checked_at`, `checked_channel` and `check_error`.
+- **Check now on Administration > Updates.** The button starts a check of GitHub at once and the page shows "checking GitHub now…" until the answer is in (at most one call a minute; a sooner press shows the last answer). The page also shows when the check last ran and why it failed, if it did. New admin operation `hub_update_refresh` (POST only); `hub_update_check` also reports `checked_at`, `checked_channel` and `check_error`.
+
+- **The Hub's identity in view everywhere.** Every signed-in page shows the Hub's fingerprint words in the top bar, left of the theme switch; a click or tap opens the words and the 52 characters (on narrow screens the button shows only the icon). `minion worker up`, `down`, `pair`, `join` and `reset` first print the words of the Hub key the Worker pinned, for example `Hub key: word-word-word-word-word-word (compare with the Hub's top bar)`, and MISMATCH when the Worker refuses the Hub's key.
 
 ### Fixed
 
+- **Check now never makes a request or a Hub stop wait for GitHub**: the check runs in the background and ends with the Hub.
 - **A changed `update_channel` is checked at once.** Before, the Hub kept the answer of the old channel until the next daily check, and the Updates page showed the new channel next to it, for example "latest … v0.11.0 (up to date)" while v0.13.0 was out. The Hub now notices a change of `update_channel` or `update_check` within 15 seconds and checks again (at most one GitHub call a minute, so within about a minute); until then the page says it is checking the new channel and offers neither the old answer nor an update to it.
 
 ## v0.13.0

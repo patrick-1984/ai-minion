@@ -91,9 +91,9 @@ are not stored and stay in effect.
 
 Without --yes the command lists what it deletes and asks for confirmation.`,
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error {
 			return runWorkerReset(cmd, deps, yes)
-		},
+		}, deps.lookupEnv),
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
 	if s, ok := config.Default.Lookup(config.KeyStateDir); ok && s.HasFlag() {

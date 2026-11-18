@@ -38,9 +38,13 @@ type HubUpdateCheckResult struct {
 	CheckedChannel string `json:"checked_channel,omitempty"`
 	// CheckError is the error of the last check; the last good answer stays.
 	CheckError string `json:"check_error,omitempty"`
-	// Refreshed is true when this call asked GitHub (hub_update_refresh, and
-	// the last call to GitHub was not less than a minute ago).
+	// Refreshed is true when hub_update_refresh started a check (or one was
+	// already running): not within a minute of the last call to GitHub, nor
+	// with update_check off.
 	Refreshed bool `json:"refreshed,omitempty"`
+	// Checking is true while a check started by hub_update_refresh still runs
+	// (it answers at once; the result shows up here when it is done).
+	Checking bool `json:"checking,omitempty"`
 	// SelfUpdate is true when the Hub can replace itself (Docker, opt-in);
 	// Reason says why not otherwise, and Command is what to run instead.
 	SelfUpdate bool   `json:"self_update"`

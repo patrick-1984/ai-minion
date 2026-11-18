@@ -104,9 +104,9 @@ unreachable Hub is retried by the Worker service) and pairs again, after a
 confirmation unless --yes is given. A running Worker service drops its
 connection to the old Hub at once.`,
 		Args: noArgsRedacted,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error {
 			return runWorkerPair(cmd, deps, opt)
-		},
+		}, deps.lookupEnv),
 	}
 	cmd.Flags().BoolVar(&opt.newCode, "new-code", false, "pair again with a new Worker key (asks first when the Worker is paired)")
 	cmd.Flags().BoolVar(&opt.yes, "yes", false, "do not ask for confirmation")
@@ -128,10 +128,10 @@ paired Worker refuses with already_paired and the address is not changed.
 A join token (mnj1-... from the Hub's Add worker page) is not taken here:
 run "minion worker up --join <token>", which enrolls without a code.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: withHubLine(func(cmd *cobra.Command, args []string) error {
 			opt.join = args[0]
 			return runWorkerPair(cmd, deps, opt)
-		},
+		}, deps.lookupEnv),
 	}
 	cmd.Flags().BoolVar(&opt.newCode, "new-code", false, "pair again with a new Worker key (asks first when the Worker is paired)")
 	cmd.Flags().BoolVar(&opt.yes, "yes", false, "do not ask for confirmation")

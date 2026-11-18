@@ -129,7 +129,7 @@ func newWorkerDownCmd(d workerDownDeps) *cobra.Command {
 			"manager (systemd, launchd, Windows services), a foreground Worker over its control socket.\n" +
 			"Its sessions keep running (tmux, psmux); a service starts again at the next boot or login.",
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error { return runWorkerDown(cmd, d) },
+		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error { return runWorkerDown(cmd, d) }, nil),
 	}
 }
 

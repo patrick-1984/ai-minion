@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -54,15 +55,20 @@ type Checker struct {
 	// then (after MinRefresh since the last call to GitHub) instead of at
 	// the next daily check. Zero means 15 seconds.
 	Poll time.Duration
+	// Life ends with the Hub: a check started by Refresh (detached from the
+	// request that asked for it) is canceled when it ends, so a Hub stop never
+	// waits for GitHub. Nil means no such bound.
+	Life context.Context
 	// MinRefresh is the shortest time between two checks asked for with
 	// Refresh (the "Check now" button); zero means one minute. GitHub allows
 	// 60 unauthenticated calls an hour per address.
 	MinRefresh time.Duration
 
-	mu     sync.RWMutex
-	last   Result
-	runMu  sync.Mutex // one check at a time
-	lastAt time.Time  // when the last check (any trigger) ran
+	mu       sync.RWMutex
+	last     Result
+	runMu    sync.Mutex // one check at a time
+	checking atomic.Bool
+	lastAt   time.Time // when the last check (any trigger) ran
 }
 
 // Latest returns the last answer; it never blocks on the network.
@@ -135,6 +141,50 @@ func (c *Checker) Refresh(ctx context.Context) bool {
 	return c.fetch(ctx, true, true)
 }
 
+// StartRefresh starts a check in the background for "Check now" and returns
+// at once: true when a check runs (started now or already running), false
+// when the cooldown, update_check off or unreadable settings keep GitHub out
+// of it. The check is bounded by Life (a Hub stop cancels it) and by 30 s;
+// no request ever waits for GitHub.
+func (c *Checker) StartRefresh() bool {
+	if !c.runMu.TryLock() {
+		return true // a check is running; its answer comes as usual
+	}
+	due := c.dueLocked()
+	c.runMu.Unlock()
+	if !due {
+		return false
+	}
+	life := c.Life
+	if life == nil {
+		life = context.Background()
+	}
+	c.checking.Store(true)
+	go func() {
+		defer c.checking.Store(false)
+		c.fetch(life, true, false)
+	}()
+	return true
+}
+
+// Checking reports whether a check started by StartRefresh still runs.
+func (c *Checker) Checking() bool { return c.checking.Load() }
+
+// dueLocked reports whether a cooldown-bound check would ask GitHub now; the
+// caller holds runMu.
+func (c *Checker) dueLocked() bool {
+	check, err1 := c.Setting(config.KeyUpdateCheck)
+	_, err2 := c.Setting(config.KeyUpdateChannel)
+	if err1 != nil || err2 != nil || check != "on" {
+		return false
+	}
+	gap := c.MinRefresh
+	if gap <= 0 {
+		gap = time.Minute
+	}
+	return c.lastAt.IsZero() || time.Since(c.lastAt) >= gap
+}
+
 // CheckOnce runs one check now, unless update_check is off (the daily check).
 func (c *Checker) CheckOnce(ctx context.Context) {
 	c.fetch(ctx, false, false)
@@ -170,12 +220,19 @@ func (c *Checker) fetch(ctx context.Context, cooldown, detach bool) bool {
 	}
 	if detach {
 		ctx = context.WithoutCancel(ctx)
+		if c.Life != nil {
+			var stop context.CancelFunc
+			ctx, stop = context.WithCancel(ctx)
+			defer stop()
+			unhook := context.AfterFunc(c.Life, stop)
+			defer unhook()
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	c.lastAt = time.Now()
 	res, err := c.check(ctx, channel)
-	if err != nil && !detach && ctx.Err() != nil && errors.Is(context.Cause(ctx), context.Canceled) {
+	if err != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), context.Canceled) {
 		// Shutdown: keep the last answer as it was.
 		return true
 	}

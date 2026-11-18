@@ -92,3 +92,17 @@ func TestPendingWorkerRowShowsTheWordsAndTheConfirmTexts(t *testing.T) {
 		t.Errorf("the words appear %d times", strings.Count(body, fp.Words()))
 	}
 }
+
+// Every signed-in page shows the Hub's words in the top bar, just before the
+// theme switch (A52), so a Worker pinned to another key stands out.
+func TestTopBarShowsTheHubWords(t *testing.T) {
+	fp := trustFingerprint(t)
+	connect(t, newFakeOps())
+	release := SetHubFingerprint(func() string { return fp.String() })
+	t.Cleanup(release)
+	body := onbGet(t, onbUser(t), pathAddWorker).Body.String()
+	mustHave(t, body, `data-hub-identity`, `<span class="fp-words">`+fp.Words()+`</span></button>`, `popovertarget="hub-id-pop"`, fp.String())
+	if i, j := strings.Index(body, "data-hub-identity"), strings.Index(body, `data-theme-choice="system"`); i < 0 || j < 0 || i > j {
+		t.Fatalf("the Hub words are not before the theme switch (%d, %d)", i, j)
+	}
+}
