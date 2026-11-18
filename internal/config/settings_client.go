@@ -324,7 +324,10 @@ func pinOrigin(u *url.URL) (string, error) {
 		}
 		port = n
 	}
-	if _, err := netip.ParseAddr(host); err != nil {
+	if _, err := netip.ParseAddr(host); err != nil && !isASCII(host) {
+		// Only a Unicode host is converted (as the HTTP client does when it
+		// dials); an ASCII host is kept as is, so private names such as
+		// hub_dev.example keep working.
 		host, err = idna.Lookup.ToASCII(host)
 		if err != nil || host == "" {
 			return "", errors.New("the Hub URL has an invalid host")
@@ -355,8 +358,8 @@ func ParseHubTLSPins(v string) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, dup := out[norm]; dup {
-			return nil, errors.New("two entries name the origin " + norm)
+		if prev, dup := out[norm]; dup && prev != pins {
+			return nil, errors.New("two entries name the origin " + norm + " with different pins")
 		}
 		out[norm] = pins
 	}
@@ -376,4 +379,13 @@ func FormatHubTLSPins(pins map[string]string) string {
 		parts = append(parts, k+"="+pins[k])
 	}
 	return strings.Join(parts, " ")
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

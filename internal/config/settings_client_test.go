@@ -192,3 +192,17 @@ func TestHubURLThatLooksLikeAKeyIsRefusedAndNeverRepeated(t *testing.T) {
 		}
 	}
 }
+
+func TestPinOriginKeepsASCIIPrivateHostsAndAgreeingDuplicates(t *testing.T) {
+	got, err := PinOrigin("https://Hub_Dev.example/x")
+	if err != nil || got != "https://hub_dev.example:443" {
+		t.Fatalf("PinOrigin(hub_dev) = %q, %v", got, err)
+	}
+	m, err := ParseHubTLSPins("https://hub.example=sha256//AAAA https://hub.example:0443=sha256//AAAA")
+	if err != nil || m["https://hub.example:443"] != "sha256//AAAA" {
+		t.Fatalf("agreeing duplicates: %v, %v", m, err)
+	}
+	if _, err := ParseHubTLSPins("https://hub.example=sha256//AAAA https://hub.example:443=sha256//BBBB"); err == nil {
+		t.Fatal("conflicting duplicates were accepted")
+	}
+}
