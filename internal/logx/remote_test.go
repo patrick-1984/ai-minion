@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -166,4 +167,96 @@ func TestRedactTextMinionTokens(t *testing.T) {
 			t.Errorf("lacks %q: %s", keep, got)
 		}
 	}
+}
+
+type innerCreds struct {
+	Authorization string `json:"authorization"`
+	Nested        struct {
+		APIKey string
+		Note   string
+	}
+}
+
+type secretBytes struct {
+	Fingerprint string
+	Secret      []byte
+}
+
+// Secret members of compound values are masked at any depth, also when the
+// outer key is harmless and the value has no known token format.
+func TestRemoteSafeMasksNestedSecrets(t *testing.T) {
+	l, buf := remoteCapture(t)
+	var c innerCreds
+	c.Authorization = "Bearer opaque-cred-1"
+	c.Nested.APIKey = "opaque-cred-2"
+	c.Nested.Note = "kept"
+	l.Info("x", "req", c, "key", "x", "invite", secretBytes{Fingerprint: "fpr", Secret: []byte("opaque-cred-3")},
+		"list", []map[string]string{{"password": "opaque-cred-4"}})
+	for _, leak := range []string{"opaque-cred-1", "opaque-cred-2", "b3BhcXVlLWNyZWQtMw", "opaque-cred-4"} {
+		if strings.Contains(buf.String(), leak) {
+			t.Fatalf("leaks %q: %s", leak, buf.String())
+		}
+	}
+	if !strings.Contains(buf.String(), "kept") || !strings.Contains(buf.String(), "fpr") {
+		t.Fatalf("lost ordinary members: %s", buf.String())
+	}
+}
+
+// An apostrophe is legal in a URL's user information and query.
+func TestRedactURLWithApostrophes(t *testing.T) {
+	got := RedactText("dial https://us'er:p'ass@h.example/x?a=1'2&token=t0k now")
+	for _, leak := range []string{"p'ass", "t0k"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("leaks %q: %s", leak, got)
+		}
+	}
+}
+
+// Invalid UTF-8 is replaced in messages, keys, values and group names.
+func TestRemoteSafeMakesUTF8Valid(t *testing.T) {
+	l, buf := remoteCapture(t)
+	l.WithGroup("g\xff").Info("m\xfe", "k\xff", "v\xfd", "e", errors.New("bad \xff"), "s", stringer{"s\xff"})
+	if !utf8.Valid(buf.Bytes()) || strings.Contains(buf.String(), `�`) && !strings.Contains(buf.String(), "�") {
+		t.Fatalf("invalid output: %q", buf.String())
+	}
+	h := RemoteSafe(slogCheck{t})
+	_ = h.WithGroup("g\xff").Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "m\xfe", 0))
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "m\xfe", 0)
+	r.AddAttrs(slog.String("k\xff", "v\xfd"), slog.Any("e", errors.New("bad \xff")), slog.Group("g\xfe", slog.String("a", "\xff")))
+	_ = h.Handle(context.Background(), r)
+}
+
+// slogCheck fails the test on any invalid UTF-8 it is handed.
+type slogCheck struct{ t *testing.T }
+
+func (c slogCheck) Enabled(context.Context, slog.Level) bool { return true }
+func (c slogCheck) Handle(_ context.Context, r slog.Record) error {
+	if !utf8.ValidString(r.Message) {
+		c.t.Errorf("message %q", r.Message)
+	}
+	var walk func(a slog.Attr)
+	walk = func(a slog.Attr) {
+		if !utf8.ValidString(a.Key) {
+			c.t.Errorf("key %q", a.Key)
+		}
+		switch a.Value.Kind() {
+		case slog.KindString:
+			if !utf8.ValidString(a.Value.String()) {
+				c.t.Errorf("value %q", a.Value.String())
+			}
+		case slog.KindGroup:
+			for _, g := range a.Value.Group() {
+				walk(g)
+			}
+		}
+	}
+	r.Attrs(func(a slog.Attr) bool { walk(a); return true })
+	return nil
+}
+func (c slogCheck) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c slogCheck) WithGroup(n string) slog.Handler {
+	if !utf8.ValidString(n) {
+		c.t.Errorf("group %q", n)
+	}
+	return c
 }

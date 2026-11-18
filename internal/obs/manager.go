@@ -93,6 +93,10 @@ func (m *Manager) Apply(ctx context.Context, s config.Sinks) error {
 	return errors.Join(m.applySyslog(s.Syslog), m.applyOTel(ctx, s.OTLP))
 }
 
+// applySyslog builds the new pipeline first and then publishes it with one
+// slot update, so that no record falls into an empty slot during a change;
+// only then is the old pipeline retired. A pipeline that cannot be built
+// leaves the sink off (fail closed): the old one is retired all the same.
 func (m *Manager) applySyslog(c config.SyslogConfig) error {
 	old := m.sys
 	if old != nil && c.Enabled && old.cfg.Digest == c.Digest {
@@ -102,36 +106,40 @@ func (m *Manager) applySyslog(c config.SyslogConfig) error {
 		delete(m.errs, SinkSyslog)
 		return nil
 	}
-	m.sys = nil
-	m.fanout.Set(logx.SlotSyslog, nil, nil)
+	delete(m.errs, SinkSyslog)
+	m.gens[SinkSyslog]++
+	var next *syslogPipe
+	var h slog.Handler
+	var level slog.Level
+	var err error
+	if c.Enabled {
+		level, err = logx.ParseLevel(c.Level)
+		if err == nil {
+			host, _ := os.Hostname()
+			f := &syslog.Formatter{Hostname: host, AppName: m.proc.Service, ProcID: strconv.Itoa(os.Getpid()), MaxBytes: c.MaxBytes}
+			opts := syslog.Options{Network: c.Network, Addr: c.Addr,
+				Diag: func(class string, err error) { m.diag.Report(SinkSyslog, class, err) }}
+			if c.Network == "tls" {
+				opts.TLS = c.TLSConfig()
+			}
+			w := syslog.NewWriter(opts)
+			next = &syslogPipe{cfg: c, w: w}
+			h = syslog.NewHandler(f, w)
+		}
+	}
+	m.sys = next
+	m.fanout.Set(logx.SlotSyslog, h, level)
 	if old != nil {
 		old.w.Discard()
 		m.carryOver(SinkSyslog, old.w.Stats().Dropped)
 	}
-	delete(m.errs, SinkSyslog)
-	if !c.Enabled {
-		m.gens[SinkSyslog]++
-		return nil
-	}
-	level, err := logx.ParseLevel(c.Level)
 	if err != nil {
 		m.errs[SinkSyslog] = err.Error()
-		return err
 	}
-	host, _ := os.Hostname()
-	f := &syslog.Formatter{Hostname: host, AppName: m.proc.Service, ProcID: strconv.Itoa(os.Getpid()), MaxBytes: c.MaxBytes}
-	opts := syslog.Options{Network: c.Network, Addr: c.Addr,
-		Diag: func(class string, err error) { m.diag.Report(SinkSyslog, class, err) }}
-	if c.Network == "tls" {
-		opts.TLS = c.TLSConfig()
-	}
-	w := syslog.NewWriter(opts)
-	m.sys = &syslogPipe{cfg: c, w: w}
-	m.gens[SinkSyslog]++
-	m.fanout.Set(logx.SlotSyslog, syslog.NewHandler(f, w), level)
-	return nil
+	return err
 }
 
+// applyOTel is applySyslog for the OpenTelemetry sink.
 func (m *Manager) applyOTel(ctx context.Context, c config.OTLPConfig) error {
 	old := m.otl
 	if old != nil && c.Enabled && old.cfg.Digest == c.Digest {
@@ -141,36 +149,58 @@ func (m *Manager) applyOTel(ctx context.Context, c config.OTLPConfig) error {
 		delete(m.errs, SinkOTel)
 		return nil
 	}
-	m.otl = nil
-	m.fanout.Set(logx.SlotOTel, nil, nil)
+	delete(m.errs, SinkOTel)
+	m.gens[SinkOTel]++
+	var next *otelPipe
+	var h slog.Handler
+	var level slog.Level
+	var err error
+	if c.Enabled {
+		level, err = logx.ParseLevel(c.Level)
+		if err == nil {
+			res, rerr := otel.NewResource(ctx, m.proc)
+			if rerr != nil {
+				m.diag.Report(SinkOTel, "resource", rerr)
+			}
+			var logs *otel.Logs
+			logs, err = otel.NewLogs(ctx, c, res)
+			if err != nil {
+				err = fmt.Errorf("otel log sink: %s", logx.ErrorText(err))
+			} else {
+				next = &otelPipe{cfg: c, logs: logs}
+				h = logs.Handler()
+			}
+		}
+	}
+	m.otl = next
+	m.fanout.Set(logx.SlotOTel, h, level)
 	if old != nil {
 		old.logs.Discard()
 		m.carryOver(SinkOTel, old.logs.Stats().Dropped)
 	}
-	delete(m.errs, SinkOTel)
-	if !c.Enabled {
-		m.gens[SinkOTel]++
-		return nil
-	}
-	level, err := logx.ParseLevel(c.Level)
 	if err != nil {
 		m.errs[SinkOTel] = err.Error()
-		return err
 	}
-	res, rerr := otel.NewResource(ctx, m.proc)
-	if rerr != nil {
-		m.diag.Report(SinkOTel, "resource", rerr)
-	}
-	logs, err := otel.NewLogs(ctx, c, res)
-	if err != nil {
-		m.errs[SinkOTel] = logx.ErrorText(err)
-		return fmt.Errorf("otel log sink: %s", logx.ErrorText(err))
-	}
-	m.otl = &otelPipe{cfg: c, logs: logs}
-	m.gens[SinkOTel]++
-	m.fanout.Set(logx.SlotOTel, logs.Handler(), level)
-	return nil
+	return err
 }
+
+// Disable turns both sinks off and retires their pipelines (fail closed):
+// for a configuration that could not be resolved or applied. reason is
+// shown as the last error of both sinks; it must hold no secret.
+func (m *Manager) Disable(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	_ = m.applySyslog(config.SyslogConfig{})
+	_ = m.applyOTel(context.Background(), config.OTLPConfig{})
+	m.errs[SinkSyslog] = logx.CapText(reason, maxStatusError)
+	m.errs[SinkOTel] = logx.CapText(reason, maxStatusError)
+}
+
+// maxStatusError bounds an error text in the status.
+const maxStatusError = 256
 
 func (m *Manager) carryOver(sink string, dropped map[string]uint64) {
 	if len(dropped) == 0 {
@@ -240,7 +270,7 @@ func (m *Manager) Status() []ops.LogSinkStatus {
 		sys.Queued, sys.Sent = uint64(st.Queued), st.Sent
 		sys.LastSuccess = stamp(st.LastSuccess)
 		if sys.LastError == "" {
-			sys.LastError = st.LastError
+			sys.LastError = logx.CapText(st.LastError, maxStatusError)
 		}
 		sys.Dropped = merge(m.carry[SinkSyslog], st.Dropped)
 	} else {
@@ -250,10 +280,10 @@ func (m *Manager) Status() []ops.LogSinkStatus {
 	if p := m.otl; p != nil {
 		st := p.logs.Stats()
 		otl.Enabled, otl.Destination, otl.Level = true, logx.SafeURL(p.cfg.LogsURL), p.cfg.Level
-		otl.Queued, otl.Sent = st.Pending(), st.Sent
+		otl.Queued, otl.Sent = st.Queued, st.Sent
 		otl.LastSuccess = stamp(st.LastSuccess)
 		if otl.LastError == "" {
-			otl.LastError = st.LastError
+			otl.LastError = logx.CapText(st.LastError, maxStatusError)
 		}
 		d := st.Dropped
 		if st.Failed > 0 {

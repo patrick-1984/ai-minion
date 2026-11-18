@@ -30,12 +30,13 @@ var (
 	// urlUserinfo is the user information of a URL inside free text: the
 	// authority up to its LAST '@', so that an unescaped '@' in a user name or
 	// password (https://us@er:p@ss@host) is masked whole.
-	urlUserinfo = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#"'<>]*@`)
+	urlUserinfo = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#"<>]*@`)
 	// urlWhole is a URL inside free text: scheme, authority and the rest up to
-	// whitespace or a quote.
-	urlWhole = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^\s/?#"'<>]*)[^\s"'<>]*`)
+	// whitespace, a double quote or an angle bracket. An apostrophe is
+	// legal inside a URL (user information, query), so it does not end one.
+	urlWhole = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^\s/?#"<>]*)[^\s"<>]*`)
 	// urlQuery is the query of a URL inside free text (it can carry a token).
-	urlQuery = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"'<>]*)\?[^\s#"'<>]*`)
+	urlQuery = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"<>]*)\?[^\s#"<>]*`)
 	// pairingCode is a pairing code MN-XXXX-XXXX, also typed without dashes.
 	pairingCode = regexp.MustCompile(`(?i)\bMN-?[0-9A-Z]{4}-?[0-9A-Z]{4}\b`)
 	// apiKeyText is a Minion API key: "mn_" plus 52 base32 characters

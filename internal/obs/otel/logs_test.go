@@ -266,8 +266,9 @@ func TestDeadEndpointNeverBlocks(t *testing.T) {
 	if time.Since(start) > 3*time.Second {
 		t.Fatal("shutdown overran its deadline")
 	}
-	// One line per (sink, class) within the minute: the export error and the
-	// batch queue's drop warning, each once.
+	eventually(t, func() bool { return strings.Contains(local.String(), "class=sdk") })
+	// One line per (sink, class) within the minute (the diagnostics write
+	// asynchronously).
 	lines := strings.Split(strings.TrimSpace(local.String()), "\n")
 	seen := map[string]bool{}
 	for _, l := range lines {
@@ -308,6 +309,7 @@ func TestDiagRateLimit(t *testing.T) {
 	d := NewDiag(slog.NewTextHandler(&buf, nil))
 	now := time.Unix(1000, 0)
 	d.now = func() time.Time { return now }
+	d.sync = true
 	err := io.ErrUnexpectedEOF
 	d.Report("syslog", "connect", err)
 	d.Report("syslog", "connect", err)

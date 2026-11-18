@@ -1,11 +1,13 @@
 package logx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -60,7 +62,7 @@ func (r remoteHandler) Handle(ctx context.Context, rec slog.Record) error {
 	if IsLocalOnly(ctx) {
 		return nil
 	}
-	msg := CapText(RedactText(rec.Message), RemoteMaxMessage)
+	msg := CapText(RedactText(validUTF8(rec.Message)), RemoteMaxMessage)
 	out := slog.NewRecord(rec.Time, rec.Level, msg, rec.PC)
 	budget := RemoteMaxRecord - len(msg) - r.bound
 	cut := 0
@@ -97,18 +99,23 @@ func (r remoteHandler) WithAttrs(as []slog.Attr) slog.Handler {
 }
 
 func (r remoteHandler) WithGroup(name string) slog.Handler {
-	return remoteHandler{h: r.h.WithGroup(name), bound: r.bound}
+	return remoteHandler{h: r.h.WithGroup(validUTF8(name)), bound: r.bound}
 }
+
+// validUTF8 replaces invalid UTF-8 with U+FFFD: an OTLP exporter rejects a
+// whole batch for one invalid string, and syslog MSG must be UTF-8.
+func validUTF8(s string) string { return strings.ToValidUTF8(s, "\uFFFD") }
 
 // remoteAttr masks and normalises one attribute for a remote sink.
 func remoteAttr(a slog.Attr) slog.Attr {
+	a.Key = validUTF8(a.Key)
 	if secretKey(a.Key) {
 		return slog.String(a.Key, Redacted)
 	}
 	v := a.Value.Resolve() // a LogValuer (Secret included) resolves here
 	switch v.Kind() {
 	case slog.KindString:
-		s := v.String()
+		s := validUTF8(v.String())
 		if errorKey(a.Key) {
 			s = RedactErrorText(s)
 		} else {
@@ -128,21 +135,53 @@ func remoteAttr(a slog.Attr) slog.Attr {
 	return slog.Attr{Key: a.Key, Value: v}
 }
 
-// anyText renders a value of kind Any as masked text.
+// anyText renders a value of kind Any as masked text. A compound value
+// (struct, map, slice) is rendered as JSON, then every member whose name is
+// a secret key is replaced (at any depth, so a nested authorization field or
+// the secret bytes of a nested key are masked), then the text is scanned.
 func anyText(x any) string {
 	switch t := x.(type) {
 	case nil:
 		return "<nil>"
 	case error:
-		return ErrorText(t)
+		return validUTF8(ErrorText(t))
 	case fmt.Stringer:
-		return RedactText(t.String())
+		return RedactText(validUTF8(t.String()))
 	}
 	b, err := json.Marshal(x)
 	if err != nil {
 		return "[unrenderable " + fmt.Sprintf("%T", x) + "]"
 	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var tree any
+	if err := dec.Decode(&tree); err != nil {
+		return "[unrenderable " + fmt.Sprintf("%T", x) + "]"
+	}
+	b, err = json.Marshal(maskTree(tree))
+	if err != nil {
+		return "[unrenderable " + fmt.Sprintf("%T", x) + "]"
+	}
 	return RedactText(string(b))
+}
+
+// maskTree replaces the values of secret keys in a decoded JSON tree.
+func maskTree(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, x := range t {
+			if secretKey(k) {
+				t[k] = Redacted
+				continue
+			}
+			t[k] = maskTree(x)
+		}
+	case []any:
+		for i, x := range t {
+			t[i] = maskTree(x)
+		}
+	}
+	return v
 }
 
 // attrSize estimates the text size of an attribute.

@@ -21,6 +21,9 @@ const (
 	DefaultBackoffMax   = 60 * time.Second
 )
 
+// stopWait bounds the wait for the writer after its deadline.
+const stopWait = 250 * time.Millisecond
+
 // Reasons a message is dropped, as the status reports them.
 const (
 	DropQueueFull   = "queue_full"
@@ -75,7 +78,8 @@ type Writer struct {
 	done    chan struct{}
 	runCtx  context.Context
 	abort   context.CancelFunc
-	conn    atomic.Pointer[net.Conn]
+	connMu  sync.Mutex
+	raw     net.Conn // the socket under the current connection
 	sent    atomic.Uint64
 	lastOK  atomic.Int64
 	lastErr atomic.Pointer[string]
@@ -121,7 +125,9 @@ func NewWriter(opts Options) *Writer {
 // needs octet counting.
 func (w *Writer) Stream() bool { return w.opts.Network != "udp" }
 
-// Enqueue queues one message (without framing). It never blocks.
+// Enqueue queues one message (without framing). It never blocks. The
+// closing check, the eviction of the oldest message and the append happen in
+// one critical section, so concurrent producers never overwrite a live entry.
 func (w *Writer) Enqueue(msg []byte) {
 	w.mu.Lock()
 	if w.closing {
@@ -129,17 +135,17 @@ func (w *Writer) Enqueue(msg []byte) {
 		w.drop(DropShutdown, 1)
 		return
 	}
+	evicted := 0
 	if w.n == len(w.queue) {
 		w.queue[w.head] = nil
 		w.head = (w.head + 1) % len(w.queue)
 		w.n--
-		w.mu.Unlock()
-		w.drop(DropQueueFull, 1)
-		w.mu.Lock()
+		evicted = 1
 	}
 	w.queue[(w.head+w.n)%len(w.queue)] = msg
 	w.n++
 	w.mu.Unlock()
+	w.drop(DropQueueFull, evicted)
 	select {
 	case w.wake <- struct{}{}:
 	default:
@@ -186,6 +192,12 @@ func (w *Writer) run() {
 	defer w.closeConn()
 	var conn net.Conn
 	backoff := w.opts.BackoffMin
+	// pause waits before the next connect; false means the writer stops.
+	pause := func() bool {
+		ok := w.sleep(jitter(backoff))
+		backoff = min(backoff*2, w.opts.BackoffMax)
+		return ok
+	}
 	for {
 		msg, ok := w.next()
 		if !ok {
@@ -201,19 +213,20 @@ func (w *Writer) run() {
 				return
 			}
 			if conn == nil {
-				c, err := w.connect()
+				c, raw, err := w.connect()
 				if err != nil {
 					w.fail("connect", err)
-					if !w.sleep(jitter(backoff)) {
+					if !pause() {
 						w.drop(w.stopReason(), 1)
 						return
 					}
-					backoff = min(backoff*2, w.opts.BackoffMax)
 					continue
 				}
+				if !w.publish(raw) {
+					w.drop(w.stopReason(), 1)
+					return
+				}
 				conn = c
-				w.conn.Store(&c)
-				backoff = w.opts.BackoffMin
 			}
 			_ = conn.SetWriteDeadline(time.Now().Add(w.opts.WriteTimeout))
 			if _, err := conn.Write(msg); err != nil {
@@ -225,13 +238,34 @@ func (w *Writer) run() {
 					break
 				}
 				retried = true
+				// A peer that accepts and then resets costs a backoff,
+				// not a busy reconnect loop.
+				if !pause() {
+					w.drop(w.stopReason(), 1)
+					return
+				}
 				continue
 			}
 			w.sent.Add(1)
 			w.lastOK.Store(time.Now().UnixNano())
+			backoff = w.opts.BackoffMin
 			break
 		}
 	}
+}
+
+// publish makes raw the connection that stop aborts. It refuses (and closes
+// raw) when the writer was stopped meanwhile, so that a dial that succeeds
+// during a stop never starts a write.
+func (w *Writer) publish(raw net.Conn) bool {
+	w.connMu.Lock()
+	defer w.connMu.Unlock()
+	if w.runCtx.Err() != nil {
+		_ = raw.Close()
+		return false
+	}
+	w.raw = raw
+	return true
 }
 
 func (w *Writer) stopReason() string {
@@ -250,9 +284,15 @@ func (w *Writer) fail(class string, err error) {
 	w.opts.Diag(class, err)
 }
 
+// closeConn closes the underlying socket (for TLS without close_notify,
+// whose write could block on a peer that stopped reading).
 func (w *Writer) closeConn() {
-	if p := w.conn.Swap(nil); p != nil && *p != nil {
-		_ = (*p).Close()
+	w.connMu.Lock()
+	raw := w.raw
+	w.raw = nil
+	w.connMu.Unlock()
+	if raw != nil {
+		_ = raw.Close()
 	}
 }
 
@@ -273,7 +313,7 @@ func jitter(d time.Duration) time.Duration {
 	return time.Duration(float64(d) * (0.8 + 0.4*rand.Float64()))
 }
 
-func (w *Writer) connect() (net.Conn, error) {
+func (w *Writer) connect() (net.Conn, net.Conn, error) {
 	ctx, cancel := context.WithTimeout(w.runCtx, w.opts.DialTimeout)
 	defer cancel()
 	network := w.opts.Network
@@ -289,10 +329,10 @@ func (w *Writer) connect() (net.Conn, error) {
 		c, err = d.DialContext(ctx, network, w.opts.Addr)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if w.opts.Network != "tls" {
-		return c, nil
+		return c, c, nil
 	}
 	cfg := w.opts.TLS
 	if cfg == nil {
@@ -310,9 +350,9 @@ func (w *Writer) connect() (net.Conn, error) {
 	defer hcancel()
 	if err := tc.HandshakeContext(hctx); err != nil {
 		_ = c.Close()
-		return nil, err
+		return nil, nil, err
 	}
-	return tc, nil
+	return tc, c, nil
 }
 
 // Close stops accepting messages and sends what is queued until ctx ends;
@@ -340,7 +380,10 @@ func (w *Writer) stop(ctx context.Context, reason string) error {
 	default:
 	}
 	if already {
-		<-w.done
+		select {
+		case <-w.done:
+		case <-ctx.Done():
+		}
 		return nil
 	}
 	var err error
@@ -360,7 +403,14 @@ func (w *Writer) stop(ctx context.Context, reason string) error {
 	w.reason.Store(&reason)
 	w.abort()
 	w.closeConn() // unblocks a write in progress
-	<-w.done
+	// The writer ends within moments once its socket is closed; the wait is
+	// bounded all the same, so that the caller's budget holds.
+	t := time.NewTimer(stopWait)
+	select {
+	case <-w.done:
+	case <-t.C:
+	}
+	t.Stop()
 	w.mu.Lock()
 	left := w.n
 	for i := range w.queue {

@@ -3,6 +3,7 @@ package logx
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync/atomic"
 )
 
@@ -136,7 +137,9 @@ func (f *Fanout) derived(slot int, e *sinkEntry) slog.Handler {
 		if op.group != "" {
 			h = h.WithGroup(op.group)
 		} else {
-			h = h.WithAttrs(op.attrs)
+			// Each sink gets its own copy: a handler may keep or change
+			// the slice it is given.
+			h = h.WithAttrs(slices.Clone(op.attrs))
 		}
 	}
 	f.cache[slot].Store(&derivedEntry{src: e, h: h})

@@ -9,6 +9,8 @@ package otel
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -27,13 +29,17 @@ const DiagInterval = time.Minute
 // SDK errors) to a local-only handler: one line per (sink, class) per
 // [DiagInterval], with the number of suppressed occurrences. Error texts go
 // through logx.ErrorText (URLs cut to scheme and host). It never writes to a
-// remote sink, so a failing sink cannot feed itself.
+// remote sink, so a failing sink cannot feed itself. Report never blocks: the
+// lines go through a small queue to a writer goroutine (a full queue drops
+// the line), so a stalled stderr cannot stall the goroutine that logged.
 type Diag struct {
 	log *slog.Logger
 	now func() time.Time
 
 	mu    sync.Mutex
 	state map[[2]string]*diagState
+	lines chan diagLine
+	sync  bool // tests: write inline
 }
 
 type diagState struct {
@@ -41,10 +47,25 @@ type diagState struct {
 	suppressed int
 }
 
+type diagLine struct{ args []any }
+
+// diagQueue bounds the lines waiting for the writer.
+const diagQueue = 64
+
 // NewDiag returns diagnostics that write to local, which must be a handler
 // without remote slots (logx.Fanout.Local).
 func NewDiag(local slog.Handler) *Diag {
-	return &Diag{log: slog.New(local), now: time.Now, state: map[[2]string]*diagState{}}
+	d := &Diag{log: slog.New(local), now: time.Now, state: map[[2]string]*diagState{}, lines: make(chan diagLine, diagQueue)}
+	go func() {
+		for l := range d.lines {
+			d.write(l)
+		}
+	}()
+	return d
+}
+
+func (d *Diag) write(l diagLine) {
+	d.log.Log(logx.LocalOnly(context.Background()), slog.LevelWarn, "log export problem", l.args...)
 }
 
 // Report writes one diagnostic line unless the pair (sink, class) was
@@ -70,11 +91,30 @@ func (d *Diag) Report(sink, class string, err error) {
 	suppressed := st.suppressed
 	st.last, st.suppressed = now, 0
 	d.mu.Unlock()
-	args := []any{"sink", sink, "class", class, "error", logx.ErrorText(err)}
+	args := []any{"sink", sink, "class", class, "error", logx.CapText(logx.ErrorText(err), maxErrorText)}
 	if suppressed > 0 {
 		args = append(args, "suppressed", suppressed)
 	}
-	d.log.Log(logx.LocalOnly(context.Background()), slog.LevelWarn, "log export problem", args...)
+	if d.sync {
+		d.write(diagLine{args})
+		return
+	}
+	select {
+	case d.lines <- diagLine{args}:
+	default:
+	}
+}
+
+// sdkErrorText is what the diagnostics show of an error the SDK reports:
+// an export error of this package as it is (it holds no collector text),
+// anything else (a resource or configuration parse error can quote the raw
+// environment value) by its kind only.
+func sdkErrorText(err error) error {
+	var ee *ExportError
+	if errors.As(err, &ee) {
+		return ee
+	}
+	return sdkError(fmt.Sprintf("an error inside the OpenTelemetry SDK (details withheld, %T)", err))
 }
 
 var installMu sync.Mutex
@@ -86,7 +126,7 @@ var installMu sync.Mutex
 func InstallGlobal(d *Diag) {
 	installMu.Lock()
 	defer installMu.Unlock()
-	gotel.SetErrorHandler(gotel.ErrorHandlerFunc(func(err error) { d.Report("otel", "sdk", err) }))
+	gotel.SetErrorHandler(gotel.ErrorHandlerFunc(func(err error) { d.Report("otel", "sdk", sdkErrorText(err)) }))
 	gotel.SetLogger(logr.FromSlogHandler(sdkLogHandler{d: d}))
 }
 
