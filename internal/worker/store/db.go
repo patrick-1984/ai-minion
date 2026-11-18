@@ -10,12 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // the SQLite driver; only the store packages import it (AD-1)
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/sqlmigrate"
 )
 
 // DBFile is the name of the Worker database inside the state directory.
@@ -49,6 +51,21 @@ type Option func(*openConfig)
 type openConfig struct {
 	migrations migrationSet
 	clock      Clock
+	noMigrate  bool
+}
+
+// ErrSchemaMismatch is the error of an open with [NoMigrate] whose database
+// has another schema than this binary: older or newer. Nothing was written.
+var ErrSchemaMismatch = errors.New("store: the Worker database has another schema than this minion")
+
+// NoMigrate opens an existing database only when its schema is exactly the
+// one this binary embeds, in both directions, and never migrates it (tray
+// tickets v3, C3): a command of a newer (or older) minion must not move the
+// database of a stopped Worker out of that Worker's schema. A mismatch is
+// [ErrSchemaMismatch] before anything is written. A state directory without
+// a database gets a new one at this binary's schema.
+func NoMigrate() Option {
+	return func(c *openConfig) { c.noMigrate = true }
 }
 
 // WithMigrations replaces the embedded Worker migrations with the
@@ -108,6 +125,12 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 	}
 
 	dbPath := filepath.Join(abs, DBFile)
+	if cfg.noMigrate {
+		// Checked read-only, before the file is touched for writing.
+		if err := checkSameSchema(ctx, abs, dbPath, cfg.migrations); err != nil {
+			return nil, err
+		}
+	}
 	if err := ensureOwnerOnly(dbPath); err != nil {
 		return nil, err
 	}
@@ -207,4 +230,45 @@ func databaseURL(path string) url.URL {
 		p = "/" + p // Windows drive path: file:///C:/...
 	}
 	return url.URL{Scheme: "file", Path: p}
+}
+
+// checkSameSchema refuses an existing database whose applied migrations are
+// not exactly the ones of set. A missing database passes (it is created at
+// this binary's schema).
+func checkSameSchema(ctx context.Context, dir, dbPath string, set migrationSet) error {
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	ro, err := OpenReadOnlyContext(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = ro.Close() }()
+	applied, exists, err := sqlmigrate.Applied(ctx, ro.db)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil // an empty database file: new
+	}
+	migs, err := sqlmigrate.Load(set.fsys, set.dir)
+	if err != nil {
+		return err
+	}
+	want := make([]int, 0, len(migs))
+	for _, m := range migs {
+		want = append(want, m.Version)
+	}
+	if !slices.Equal(applied, want) {
+		have, known := 0, 0
+		if len(applied) > 0 {
+			have = applied[len(applied)-1]
+		}
+		if len(want) > 0 {
+			known = want[len(want)-1]
+		}
+		return fmt.Errorf("%w (the database is at version %d, this minion at %d); nothing was changed. "+
+			"Start the Worker (or use the same minion version as the Worker), then retry", ErrSchemaMismatch, have, known)
+	}
+	return nil
 }

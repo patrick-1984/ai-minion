@@ -298,3 +298,25 @@ func backup(ctx context.Context, db *sql.DB, opts Options, t time.Time) (string,
 	}
 	return dest, nil
 }
+
+// Applied returns the versions recorded in the version table of db, and
+// whether the table exists at all (false for a new, empty database). It never
+// writes.
+func Applied(ctx context.Context, db *sql.DB) (versions []int, exists bool, err error) {
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&n); err != nil {
+		return nil, false, fmt.Errorf("sqlmigrate: read the schema: %w", err)
+	}
+	if n == 0 {
+		return nil, false, nil
+	}
+	m, err := appliedVersions(ctx, db)
+	if err != nil {
+		return nil, true, err
+	}
+	for v := range m {
+		versions = append(versions, v)
+	}
+	sort.Ints(versions)
+	return versions, true, nil
+}

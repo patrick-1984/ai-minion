@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -474,3 +475,21 @@ func TestConfigSetSavesTheTmuxSocketAsAnAbsolutePath(t *testing.T) {
 }
 
 var _ configApplier = (*recordingApplier)(nil)
+
+// config share never migrates: another schema is exit 28 and nothing is
+// written (tray W6a).
+func TestConfigShareSchemaMismatchIs28(t *testing.T) {
+	dir := t.TempDir()
+	cd := testConfigDeps(nil)
+	cd.openStore = func(context.Context, string) (shareStore, error) {
+		return nil, fmt.Errorf("%w (the database is at version 12, this minion at 11)", store.ErrSchemaMismatch)
+	}
+	_, errOut, err := configCmd(t, cd, dir, "share", "none")
+	var ec *exitCodeError
+	if !errors.As(err, &ec) || ec.code != ExitSchemaMismatch || !strings.Contains(errOut, "Start the Worker") && !strings.Contains(errOut, "another schema") {
+		t.Fatalf("err = %v, stderr %q", err, errOut)
+	}
+	if _, ok := readConfig(t, dir)["share_existing"]; ok {
+		t.Fatal("the config file was changed")
+	}
+}

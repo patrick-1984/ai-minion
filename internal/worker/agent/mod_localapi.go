@@ -13,6 +13,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // Module name and start order of the local control socket. It starts after the
@@ -82,6 +83,10 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	hostInfo, _ := lookupService[*SessionHostInfo](env.rt)
 	health, _ := lookupService[*SessionListHealth](env.rt)
 	pause, _ := lookupService[*PauseService](env.rt)
+	var shareSvc *shareLocal
+	if st, ok := lookupService[*store.Store](env.rt); ok {
+		shareSvc = &shareLocal{st: st, ex: ex, policy: ex.Policy(), overriddenBy: shareOverriddenBy(env.Settings())}
+	}
 	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health, Pause: pause}
 	// The pipe module starts before this one. Without it the pipe ops are
 	// refused here and never reach the executor, whose pipe_send is the
@@ -101,6 +106,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 			instance: uuid.NewString(), enrollments: enrollments,
 			pause: pause, hubConfigured: conn != nil && conn.cfg.HubURL != "",
 			configApply: configApplier{settings: env.Settings(), ex: ex}.apply,
+			share:       shareSvc,
 		},
 		Logger: log,
 	})
@@ -141,6 +147,8 @@ type localExecutor struct {
 	hubConfigured bool
 	// configApply applies a saved setting (worker_config_apply); nil refuses.
 	configApply func(key string) (ConfigApplyResult, error)
+	// share serves worker_share_list and worker_share_apply; nil refuses.
+	share *shareLocal
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {

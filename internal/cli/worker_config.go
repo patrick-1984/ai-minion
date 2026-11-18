@@ -78,9 +78,13 @@ func (d workerConfigDeps) reg() *config.Registry {
 func defaultWorkerConfigDeps() workerConfigDeps {
 	return workerConfigDeps{
 		lookupEnv: os.LookupEnv,
-		openStore: func(ctx context.Context, dir string) (shareStore, error) { return store.OpenContext(ctx, dir) },
-		applier:   noLiveApplier{},
-		tighten:   defaultTightenApplier(),
+		// Never migrates: a newer minion must not move the database of an
+		// installed older Worker out of its schema (tray W6a).
+		openStore: func(ctx context.Context, dir string) (shareStore, error) {
+			return store.OpenContext(ctx, dir, store.NoMigrate())
+		},
+		applier: noLiveApplier{},
+		tighten: defaultTightenApplier(),
 	}
 }
 
@@ -419,6 +423,10 @@ func runConfigShare(cmd *cobra.Command, deps workerConfigDeps, modeArg string, n
 	defer ce.release()
 	ctx := cmd.Context()
 	st, err := deps.openStore(ctx, ce.stateDir)
+	if errors.Is(err, store.ErrSchemaMismatch) {
+		_ = writef(ce.errOut, "Error: %v\n", err)
+		return &exitCodeError{ExitSchemaMismatch}
+	}
 	if err != nil {
 		return fmt.Errorf("open the Worker state in %s: %w", ce.stateDir, err)
 	}
