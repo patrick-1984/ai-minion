@@ -24,7 +24,7 @@
   <h2 id="id-auth">Confirm it is you</h2>
   {{if eq .Data.Reauth "ok"}}<p role="status">Signed in again.</p>{{end}}
   {{if eq .Data.Reauth "unavailable"}}<p class="form-error" role="alert">Your identity provider did not prove a fresh sign-in (code reauth_unavailable). Nothing was changed. Try again, or ask your provider administrator to return the auth_time claim.</p>{{end}}
-  <p id="id-fresh" data-fresh="{{if .Data.Fresh}}1{{else}}0{{end}}" data-until="{{if .Data.Fresh}}{{.Data.FreshUntil.Unix}}{{end}}">{{if .Data.Fresh}}Your sign-in is fresh until {{.Data.FreshUntil.Format "15:04:05 UTC"}}.{{else}}Changes need a sign-in from the last five minutes.{{end}}</p>
+  <p id="id-fresh" data-fresh="{{if .Data.Fresh}}1{{else}}0{{end}}" data-until="{{if .Data.Fresh}}{{.Data.FreshUntil.Unix}}{{end}}">{{if .Data.Fresh}}Your sign-in is fresh until <time datetime="{{.Data.FreshUntil.Format "2006-01-02T15:04:05Z07:00"}}">{{.Data.FreshUntil.Format "15:04:05 UTC"}}</time>.{{else}}Changes need a sign-in from the last five minutes.{{end}}</p>
   {{if eq .Data.Method "oidc"}}
   <form id="id-reauth-oidc" data-reauth="oidc" method="post">
     <button type="submit">{{template "icon" "i-login"}}<span>Sign in again with the identity provider</span></button>
@@ -82,7 +82,7 @@
   <h2 id="id-rotate">Rotate master key</h2>
   <p>A new root under a new passphrase. Workers follow the chain at their next connect and are not re-paired. All invitations are revoked. The old passphrase no longer opens the current root.</p>
   {{template "passphrase-policy"}}
-  <form data-identity-op="hub_identity_rotate" method="post" autocomplete="off">
+  <form data-identity-op="hub_identity_rotate" data-confirm-name="{{.Data.Status.RootFingerprint}}" data-confirm-what="Hub master key" method="post" autocomplete="off">
     <div class="field"><label for="ro-pass">Current passphrase</label><input type="password" id="ro-pass" name="passphrase" autocomplete="current-password" required></div>
     <div class="field"><label for="ro-new">New passphrase</label><input type="password" id="ro-new" data-count-passphrase name="new_passphrase" autocomplete="new-password" required></div>
     <div class="field"><label for="ro-conf">Repeat the new passphrase</label><input type="password" id="ro-conf" name="confirm" autocomplete="new-password" required></div>

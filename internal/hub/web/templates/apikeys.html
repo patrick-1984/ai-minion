@@ -34,7 +34,7 @@
     <div class="field">
       <label for="key-session">Only one session (optional)</label>
       <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help" placeholder="e.g. nightly-build">
-      <span id="key-session-help" class="muted">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
+      <span id="key-session-help" class="muted field-hint">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
     </div>
     <fieldset class="field">
       <legend>What the key may do</legend>
@@ -68,18 +68,18 @@
     <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Key</th><th scope="col" data-sort="text">Reaches and may do</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">Last used</th><th scope="col" data-sort="text">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range .Data.Keys}}<tr>
-      <th scope="row">{{.Name}}</th>
-      <td><code>{{.Hint}}</code></td>
-      <td>{{.Scope}}</td>
+      <th scope="row"{{if gt (len .Name) 32}} class="cell-clamp" title="{{.Name}}" tabindex="0"{{end}}>{{.Name}}</th>
+      <td class="cell-clamp" title="{{.Hint}}" tabindex="0"><code>{{.Hint}}</code></td>
+      <td class="cell-clamp" title="{{.Scope}}" tabindex="0">{{.Scope}}</td>
       <td>{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}}</td>
       <td>{{.LastUsed}}</td>
       <td>{{.State}}</td>
-      <td>{{if .CanRevoke}}<form method="post" hx-post="/api-keys/{{.ID}}/revoke" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+      <td>{{if .CanRevoke}}<form method="post" hx-post="/api-keys/{{.ID}}/revoke" data-confirm-name="{{.Name}}" data-confirm-what="API key" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Revoke {{.Name}}</span></button>
           <span id="revoke-{{.ID}}" aria-live="polite"></span>
         </form>{{else}}<span class="muted">none</span>{{end}}</td>
     </tr>
-    {{else}}<tr><td colspan="7" class="muted">You have no API keys yet.</td></tr>
+    {{else}}<tr><td colspan="7" class="muted">You have no API keys yet. <a href="#create-apikey">Create an API key</a>.</td></tr>
     {{end}}
     </tbody>
   </table></div>

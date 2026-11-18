@@ -51,10 +51,10 @@
     <thead><tr><th scope="col">Controller session</th><th scope="col">Targets</th><th scope="col">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range $i, $g := .Data.Grants}}<tr>
-      <th scope="row">{{$g.Controller}}</th>
-      <td>{{$g.Targets}}</td>
+      <th scope="row"{{if gt (len $g.Controller) 32}} class="cell-clamp" title="{{$g.Controller}}" tabindex="0"{{end}}>{{$g.Controller}}</th>
+      <td{{if gt (len $g.Targets) 48}} class="cell-clamp" title="{{$g.Targets}}" tabindex="0"{{end}}>{{$g.Targets}}</td>
       <td><time datetime="{{$g.CreatedAt}}">{{$g.Created}}</time></td>
-      <td><form method="post" hx-post="/admin/session-control/remove" hx-target="#remove-{{$i}}" hx-swap="innerHTML" hx-confirm="Remove this grant? The controller session loses access on its next call." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/admin/session-control/remove" data-confirm-name="{{$g.Controller}}" data-confirm-what="session control grant" hx-target="#remove-{{$i}}" hx-swap="innerHTML" hx-confirm="Remove this grant? The controller session loses access on its next call." hx-disabled-elt="find button">
           <input type="hidden" name="worker" value="{{$g.WorkerID}}">
           <input type="hidden" name="session" value="{{$g.SessionName}}">
           <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Remove {{$g.Controller}}</span></button>

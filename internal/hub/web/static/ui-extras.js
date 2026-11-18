@@ -1,3 +1,13 @@
+// Round 8 UI classes (styled by minion.css):
+// live-status + is-live/is-reconnecting/is-down: connection and update time;
+// row-unsaved, unsaved-badge, row-reset: edited settings and local reset;
+// filter-bar, filter-input, filter-count, filter-clear: local table search;
+// filter-chips, filter-chip: removable list filters;
+// confirm-box, confirm-input: additional type-to-confirm friction;
+// rel-time: relative timestamp; pw-toggle: password visibility;
+// field-hint, field-error, field-muted: conditional help and password mismatch;
+// sel-count: share selection summary; is-busy: request label;
+// cell-clamp + is-expanded: focusable/tappable long table values.
 (function () {
   'use strict';
 
@@ -340,6 +350,17 @@
 
   var tableSelector = 'table[data-sortable]';
   var sorts = Object.create(null);
+  var sortStorageKey = 'minion:table-sorts:' + window.location.pathname;
+  try {
+    var storedSorts = JSON.parse(window.sessionStorage.getItem(sortStorageKey));
+    if (storedSorts && typeof storedSorts === 'object' && !Array.isArray(storedSorts)) {
+      Object.keys(storedSorts).forEach(function (key) {
+        var saved = storedSorts[key];
+        if (saved && typeof saved.column === 'string' &&
+            (saved.direction === 'ascending' || saved.direction === 'descending')) { sorts[key] = saved; }
+      });
+    }
+  } catch (error) { /* Storage can be unavailable or contain obsolete data. */ }
 
   function cellValue(cell, numeric) {
     if (!cell) { return numeric ? NaN : ''; }
@@ -418,6 +439,7 @@
     button.sortRows = function () {
       var direction = header.getAttribute('aria-sort') === 'ascending' ? 'descending' : 'ascending';
       sorts[key] = { column: column, direction: direction };
+      try { window.sessionStorage.setItem(sortStorageKey, JSON.stringify(sorts)); } catch (error) { /* Optional preference. */ }
       applySort(table, sortableHeaders(table), header, direction);
     };
     button.addEventListener('click', button.sortRows);
@@ -440,4 +462,582 @@
   refreshTables();
   document.addEventListener('htmx:afterSwap', refreshTables);
   document.addEventListener('htmx:sseMessage', refreshTables);
+  function make(tag, className, text) {
+    var element = document.createElement(tag);
+    if (className) { element.className = className; }
+    if (text !== undefined) { element.textContent = text; }
+    return element;
+  }
+
+  function button(className, text) {
+    var element = make('button', className, text);
+    element.type = 'button';
+    return element;
+  }
+
+  var extraID = 0;
+  function describe(field, hint) {
+    if (!hint.id) { hint.id = 'ui-hint-' + (++extraID); }
+    var ids = (field.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+    if (ids.indexOf(hint.id) === -1) { ids.push(hint.id); }
+    field.setAttribute('aria-describedby', ids.join(' '));
+  }
+
+  function relativeTime(stamp) {
+    var seconds = (stamp - Date.now()) / 1000;
+    var units = [[31536000, 'year'], [2592000, 'month'], [86400, 'day'], [3600, 'hour'], [60, 'minute']];
+    for (var i = 0; i < units.length; i++) {
+      if (Math.abs(seconds) >= units[i][0]) {
+        var count = Math.round(Math.abs(seconds) / units[i][0]);
+        var text = count + ' ' + units[i][1] + (count === 1 ? '' : 's');
+        return seconds > 0 ? 'in ' + text : text + ' ago';
+      }
+    }
+    return seconds > 0 ? 'in less than a minute' : 'just now';
+  }
+
+  function refreshTimes() {
+    document.querySelectorAll('time[datetime]').forEach(function (time) {
+      var value = time.getAttribute('datetime');
+      // Never guess a timezone or parse human-formatted dates.
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) { return; }
+      var stamp = Date.parse(value);
+      if (!isFinite(stamp)) { return; }
+      // Preserve sub-millisecond precision from the source while converting
+      // offsets to UTC; Date alone only retains milliseconds.
+      var fraction = value.match(/\.\d+/);
+      time.title = new Date(stamp).toISOString().replace(/\.\d{3}Z$/, (fraction ? fraction[0] : '') + 'Z');
+      time.setAttribute('aria-label', time.title);
+      var relative = time.nextElementSibling;
+      if (!relative || !relative.hasAttribute('data-ui-relative')) {
+        relative = make('span', 'rel-time');
+        relative.setAttribute('data-ui-relative', '');
+        relative.setAttribute('aria-hidden', 'true');
+        time.after(relative);
+      }
+      relative.textContent = ' (' + relativeTime(stamp) + ')';
+    });
+  }
+
+  var liveSelector = '[data-live-list][sse-connect], [data-live-list][data-sse-connect]';
+  function liveBadge(list) {
+    if (list.uiLiveBadge && list.uiLiveBadge.isConnected) { return list.uiLiveBadge; }
+    var badge = make('p', 'live-status is-reconnecting', 'Reconnecting…');
+    badge.setAttribute('role', 'status');
+    list.before(badge);
+    list.uiLiveBadge = badge;
+    list.uiLiveState = 'reconnecting';
+    return badge;
+  }
+
+  function paintLive(list) {
+    var badge = liveBadge(list);
+    var state = list.uiLiveState;
+    badge.className = 'live-status is-' + state;
+    var text = state === 'live' ? 'Live' : state === 'down' ? 'Disconnected' : 'Reconnecting…';
+    if (list.uiLiveUpdated) { text += ' · Updated ' + relativeTime(list.uiLiveUpdated); }
+    if (badge.textContent !== text) { badge.textContent = text; }
+  }
+
+  ['htmx:sseOpen', 'htmx:sseError', 'htmx:sseClose', 'htmx:sseMessage'].forEach(function (name) {
+    document.addEventListener(name, function (event) {
+      var list = event.target.closest && event.target.closest(liveSelector);
+      if (!list) { return; }
+      liveBadge(list);
+      var source = event.detail && event.detail.source;
+      if (name === 'htmx:sseOpen' || name === 'htmx:sseMessage') { list.uiLiveState = 'live'; }
+      else { list.uiLiveState = name === 'htmx:sseClose' || (source && source.readyState === 2) ? 'down' : 'reconnecting'; }
+      if (name === 'htmx:sseMessage') { list.uiLiveUpdated = Date.now(); }
+      paintLive(list);
+    });
+  });
+
+  // Add friction before the normal submit/click path. Replaying the original
+  // submit button retains its value, validation, htmx confirmation and handlers.
+  function destructiveTarget(form, submitter) {
+    var source = submitter && submitter.hasAttribute('data-confirm-name') ? submitter : form;
+    var path = form.getAttribute('hx-post') || form.getAttribute('data-json-action') || form.getAttribute('action') || '';
+    var secretRemove = form.matches('#settings-sections form') && form.querySelector('[name="secret"]') &&
+      submitter && submitter.name === 'action' && submitter.value === 'unset';
+    if (!source.hasAttribute('data-confirm-name') && !secretRemove &&
+        !/\/(?:revoke|delete|deactivate|detach|remove|forget|reset-password)(?:[/?#]|$)/.test(path)) { return null; }
+    var name = source.getAttribute('data-confirm-name');
+    var what = source.getAttribute('data-confirm-what') || form.getAttribute('data-confirm-what') || '';
+    if (!name) {
+      var row = form.closest('tr');
+      var cell = row && row.querySelector('th[scope="row"]');
+      var worker = submitter && submitter.getAttribute('aria-label');
+      var username = form.querySelector('[name="username"]');
+      var section = form.closest('section');
+      var title = section && section.querySelector('h2');
+      var heading = document.querySelector('#content h1');
+      if (secretRemove) { name = form.querySelector('label[for]').textContent.trim(); what = 'setting'; }
+      else if (worker && /^(?:Forget|Remove) worker /i.test(worker)) { name = worker.replace(/^(?:Forget|Remove) worker /i, ''); what = 'Worker'; }
+      else if (cell) {
+        // Invitation names can have explanatory disclosures after the name.
+        var copy = cell.cloneNode(true);
+        copy.querySelectorAll('details, .sr-only').forEach(function (node) { node.remove(); });
+        name = copy.textContent.trim();
+      } else if (username) { name = username.value; }
+      else if (path.indexOf('/admin/users/') !== -1 && heading) { name = heading.textContent.trim(); what = 'user'; }
+      else if (title) { name = title.textContent.trim(); }
+      // Unnamed invitations still have an exact, stable target: their ID.
+      if (!name) {
+        var match = path.match(/\/([^/]+)\/(?:revoke|delete|deactivate|detach|remove|forget)(?:[?#]|$)/);
+        name = match && match[1];
+      }
+    }
+    if (!what) {
+      what = path.indexOf('/api-keys/') !== -1 ? 'API key' : path.indexOf('/invitations/') !== -1 ? 'invitation' :
+        path.indexOf('/identities/') !== -1 ? 'identity' : path.indexOf('/providers/') !== -1 ? 'provider' :
+        path.indexOf('/session-control/') !== -1 ? 'grant' : 'target';
+    }
+    return name ? { name: name, what: what } : null;
+  }
+
+  function askToConfirm(form, submitter, target) {
+    if (form.uiConfirm && form.uiConfirm.isConnected) { form.uiConfirm.querySelector('input').focus(); return; }
+    var box = make('div', 'confirm-box');
+    var label = make('label', '', 'Type “' + target.name + '” to confirm this action on ' + target.what + ' “' + target.name + '”.');
+    var input = make('input', 'confirm-input');
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.id = 'ui-confirm-' + (++extraID);
+    label.htmlFor = input.id;
+    var confirm = button('btn-danger', 'Confirm');
+    var cancel = button('btn-secondary', 'Cancel');
+    confirm.disabled = true;
+    input.addEventListener('input', function () { confirm.disabled = input.value !== target.name; });
+    function dismiss() { box.remove(); form.uiConfirm = null; }
+    cancel.addEventListener('click', function () { dismiss(); if (submitter) { submitter.focus(); } });
+    input.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') { event.preventDefault(); cancel.click(); }
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); if (!confirm.disabled) { confirm.click(); } }
+    });
+    confirm.addEventListener('click', function () {
+      if (input.value !== target.name || !form.isConnected || (submitter && submitter.disabled)) { return; }
+      dismiss();
+      form.uiConfirmed = true;
+      try {
+        if (submitter) { submitter.click(); }
+        else { form.requestSubmit(); }
+      } finally { form.uiConfirmed = false; }
+    });
+    box.append(label, input, confirm, cancel);
+    form.appendChild(box);
+    form.uiConfirm = box;
+    input.focus();
+  }
+
+  function guardDestructive(event, form, submitter) {
+    if (!form || form.uiConfirmed || event.defaultPrevented) { return; }
+    var target = destructiveTarget(form, submitter);
+    if (!target) { return; }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    askToConfirm(form, submitter, target);
+  }
+
+  document.addEventListener('click', function (event) {
+    var submitter = event.target.closest && event.target.closest('button, input[type="submit"], input[type="image"]');
+    if (!submitter || (!/^(submit|image)$/.test(submitter.type) && !submitter.hasAttribute('data-confirm-proxy')) || submitter.disabled) { return; }
+    guardDestructive(event, submitter.form, submitter);
+    if (!event.defaultPrevented && submitter.hasAttribute('data-confirm-proxy')) { hidePasswords(submitter.form); }
+  }, true);
+  document.addEventListener('submit', function (event) {
+    guardDestructive(event, event.target, event.submitter || event.target.querySelector('button[type="submit"], input[type="submit"]'));
+    if (!event.defaultPrevented) { hidePasswords(event.target); }
+  }, true);
+
+  function fieldDefault(field) {
+    if (field.tagName === 'SELECT') {
+      var option = Array.prototype.find.call(field.options, function (item) { return item.defaultSelected; });
+      return option ? option.value : field.options.length ? field.options[0].value : '';
+    }
+    return field.defaultValue;
+  }
+
+  function updateSetting(form) {
+    var field = form.querySelector('[name="value"]');
+    if (!field || !form.uiUnsaved) { return; }
+    var dirty = field.value !== fieldDefault(field);
+    form.classList.toggle('row-unsaved', dirty);
+    form.uiUnsaved.hidden = !dirty;
+    form.uiReset.hidden = !dirty;
+  }
+
+  function prepareSettings() {
+    document.querySelectorAll('#settings-sections form.srow').forEach(function (form) {
+      var field = form.querySelector('[name="value"]');
+      if (!field || field.disabled || form.uiUnsaved) { return; }
+      var badge = make('span', 'unsaved-badge', 'Unsaved');
+      badge.setAttribute('role', 'status');
+      var reset = button('row-reset', 'Reset');
+      reset.addEventListener('click', function () {
+        field.value = fieldDefault(field);
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+        field.focus();
+      });
+      form.uiUnsaved = badge;
+      form.uiReset = reset;
+      form.querySelector('.s-actions').append(badge, reset);
+      form.addEventListener('input', function () { updateSetting(form); });
+      form.addEventListener('change', function () { updateSetting(form); });
+      updateSetting(form);
+    });
+  }
+
+  window.addEventListener('beforeunload', function (event) {
+    if (!document.querySelector('#settings-sections .row-unsaved')) { return; }
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
+  function requestForm(event) {
+    var element = event.detail && event.detail.elt || event.target;
+    return element && element.closest ? element.closest('form') : null;
+  }
+
+  // Settings success uses HX-Refresh; a 200 alone can also contain an error.
+  // Observe the success header before htmx starts its reload.
+  document.addEventListener('htmx:beforeOnLoad', function (event) {
+    var form = requestForm(event);
+    var xhr = event.detail && event.detail.xhr;
+    if (!form || !form.uiUnsaved || !xhr || xhr.status < 200 || xhr.status >= 300 ||
+        xhr.getResponseHeader('HX-Refresh') !== 'true') { return; }
+    var field = form.querySelector('[name="value"]');
+    var sent = form.uiSettingSent;
+    if (!field || !sent) { return; }
+    var current = field.value;
+    if (field.tagName === 'SELECT') {
+      Array.prototype.forEach.call(field.options, function (option) { option.defaultSelected = option.value === sent.value; });
+    } else { field.defaultValue = sent.value; }
+    field.value = current;
+    updateSetting(form);
+  }, true);
+
+  function prepareFilters() {
+    ['accounts', 'apikey-list', 'invitation-list'].forEach(function (id) {
+      var heading = document.getElementById(id);
+      var section = heading && heading.closest('section');
+      var table = section && section.querySelector('table');
+      if (!table || table.uiFilter) { return; }
+      table.uiFilter = true;
+      var bar = make('div', 'filter-bar');
+      var input = make('input', 'filter-input');
+      input.type = 'search';
+      input.placeholder = 'Filter rows';
+      input.setAttribute('aria-label', 'Filter ' + heading.textContent.trim());
+      var count = make('span', 'filter-count');
+      count.setAttribute('role', 'status');
+      var clear = button('filter-clear', 'Clear');
+      function filter() {
+        var query = input.value.trim().toLowerCase();
+        var shown = 0;
+        var total = 0;
+        Array.prototype.forEach.call(table.tBodies, function (body) {
+          Array.prototype.forEach.call(body.rows, function (row) {
+            if (!row.querySelector('th[scope="row"]')) { return; }
+            total++;
+            row.hidden = row.textContent.toLowerCase().indexOf(query) === -1;
+            if (!row.hidden) { shown++; }
+          });
+        });
+        count.textContent = shown + ' of ' + total + ' rows';
+        clear.disabled = !input.value;
+      }
+      input.addEventListener('input', filter);
+      clear.addEventListener('click', function () { input.value = ''; filter(); input.focus(); });
+      bar.append(input, count, clear);
+      table.closest('.table-wrap').before(bar);
+      filter();
+    });
+  }
+
+  function prepareChips() {
+    document.querySelectorAll('form[method="get"][role="search"]').forEach(function (form) {
+      if (!/^\/(workers|sessions)$/.test(form.getAttribute('action')) || form.uiChips) { return; }
+      var chips = make('div', 'filter-chips');
+      form.after(chips);
+      form.uiChips = chips;
+      ['q', 'status', 'kind', 'owner', 'worker'].forEach(function (name) {
+        var field = form.elements.namedItem(name);
+        if (!field || !field.value) { return; }
+        var value = field.tagName === 'SELECT' ? field.options[field.selectedIndex].textContent.trim() : field.value;
+        var label = { q: 'Search', status: 'Status', kind: 'Kind', owner: 'Owner', worker: 'Worker' }[name];
+        var chip = button('filter-chip', label + ': ' + value + ' ×');
+        chip.setAttribute('aria-label', 'Remove ' + label.toLowerCase() + ' filter: ' + value);
+        chip.addEventListener('click', function () {
+          // Omitting an empty filter requires excluding this control from the
+          // native GET once. Its name and all other form contracts stay intact.
+          var disabled = field.disabled;
+          field.disabled = true;
+          try { form.requestSubmit(); }
+          finally { field.disabled = disabled; }
+        });
+        chips.appendChild(chip);
+      });
+    });
+  }
+
+  function busyLabel(text) {
+    if (/^(?:save|apply|use the default|change password)/i.test(text)) { return 'Saving…'; }
+    if (/^(?:create|new session)/i.test(text)) { return 'Creating…'; }
+    if (/^revoke/i.test(text)) { return 'Revoking…'; }
+    if (/^(?:delete|remove|forget|detach)/i.test(text)) { return 'Removing…'; }
+    if (/^deactivate/i.test(text)) { return 'Deactivating…'; }
+    return 'Working…';
+  }
+
+  function showBusy(form, busy) {
+    form.querySelectorAll('button[type="submit"], input[type="submit"]').forEach(function (submitter) {
+      if (busy === !!submitter.uiBusy) { return; }
+      if (busy) {
+        var state = { aria: submitter.getAttribute('aria-busy'), label: submitter.getAttribute('aria-label') };
+        var label = busyLabel(submitter.textContent.trim() || submitter.value);
+        if (submitter.tagName === 'INPUT') { state.value = submitter.value; /* Keep its submitted value unchanged. */ }
+        else {
+          state.nodes = document.createDocumentFragment();
+          while (submitter.firstChild) { state.nodes.appendChild(submitter.firstChild); }
+          submitter.appendChild(document.createTextNode(label));
+        }
+        submitter.uiBusy = state;
+        submitter.setAttribute('aria-label', label);
+        submitter.setAttribute('aria-busy', 'true');
+        submitter.classList.add('is-busy');
+      } else {
+        var saved = submitter.uiBusy;
+        if (saved.nodes) { submitter.replaceChildren(saved.nodes); }
+        if (saved.aria === null) { submitter.removeAttribute('aria-busy'); } else { submitter.setAttribute('aria-busy', saved.aria); }
+        if (saved.label === null) { submitter.removeAttribute('aria-label'); } else { submitter.setAttribute('aria-label', saved.label); }
+        submitter.classList.remove('is-busy');
+        submitter.uiBusy = null;
+      }
+    });
+  }
+
+  document.addEventListener('htmx:beforeRequest', function (event) {
+    var form = requestForm(event);
+    if (!form || event.defaultPrevented) { return; }
+    if (form.uiUnsaved) { form.uiSettingSent = { value: form.querySelector('[name="value"]').value }; }
+    showBusy(form, true);
+  });
+  ['htmx:afterRequest', 'htmx:sendError', 'htmx:timeout', 'htmx:sendAbort'].forEach(function (name) {
+    document.addEventListener(name, function (event) { var form = requestForm(event); if (form) { showBusy(form, false); } });
+  });
+
+  function prepareJSONBusy() {
+    if (!window.MutationObserver) { return; }
+    document.querySelectorAll('form[data-json-action], form[data-identity-op], form[data-reauth]').forEach(function (form) {
+      if (form.uiBusyObserver) { return; }
+      // forms.js and identity.js have no custom request events. They toggle
+      // disabled around fetch; observe that state without wrapping fetch.
+      var observer = new MutationObserver(function () {
+        if (!form.isConnected) { observer.disconnect(); return; }
+        var submits = form.querySelectorAll('button[type="submit"]');
+        var busy = submits.length > 0 && Array.prototype.every.call(submits, function (submitter) { return submitter.disabled; });
+        if (busy) { hidePasswords(form); }
+        form.querySelectorAll('input').forEach(function (field) {
+          if (field.uiPasswordToggle) {
+            var disabled = busy || field.matches(':disabled');
+            if (field.uiPasswordToggle.disabled !== disabled) { field.uiPasswordToggle.disabled = disabled; }
+          }
+        });
+        showBusy(form, busy);
+      });
+      observer.observe(form, { subtree: true, attributes: true, attributeFilter: ['disabled'] });
+      form.uiBusyObserver = observer;
+    });
+  }
+
+  function shareState(form) {
+    return Array.prototype.map.call(form.querySelectorAll('input[name="mode"], input[type="checkbox"][name="name"]'), function (field) {
+      return [field.name, field.value, field.checked];
+    });
+  }
+
+  function updateShare(form) {
+    var fields = form.querySelectorAll('input[type="checkbox"][name="name"]');
+    var selected = Array.prototype.filter.call(fields, function (field) { return field.checked; }).length;
+    var dirty = JSON.stringify(shareState(form)) !== form.uiShareSaved;
+    form.uiShareCount.textContent = selected + ' of ' + fields.length + ' sessions selected' + (dirty ? ' · Unsaved' : '');
+  }
+
+  function prepareShares() {
+    document.querySelectorAll('form[id^="share-form-"]').forEach(function (form) {
+      if (form.uiShareCount) { return; }
+      form.uiShareSaved = JSON.stringify(shareState(form));
+      form.uiShareCount = make('p', 'sel-count');
+      form.uiShareCount.setAttribute('role', 'status');
+      var actions = form.querySelector('.form-actions');
+      (actions || form).prepend(form.uiShareCount);
+      // share-bulk.js runs later in the bubbling event; read after it syncs mode.
+      form.addEventListener('change', function () { queueMicrotask(function () { updateShare(form); }); });
+      form.addEventListener('click', function (event) {
+        if (event.target.closest('[data-share-bulk]')) { queueMicrotask(function () { updateShare(form); }); }
+      });
+      updateShare(form);
+    });
+  }
+
+  function passwordIcon(visible) {
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'icon');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', visible ? 'M3 3l18 18M10.6 10.6a2 2 0 002.8 2.8M9.9 5.2A11 11 0 0112 5c7 0 10 7 10 7a17 17 0 01-3.1 4.2M6.1 6.1A17 17 0 002 12s3 7 10 7a11 11 0 005.9-1.8' :
+      'M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12zm12 0a2 2 0 11-4 0 2 2 0 014 0');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '1.5');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function setPasswordVisible(field, visible) {
+    field.type = visible ? 'text' : 'password';
+    var toggle = field.uiPasswordToggle;
+    toggle.replaceChildren(passwordIcon(visible), document.createTextNode(visible ? 'Hide' : 'Show'));
+    toggle.setAttribute('aria-label', visible ? 'Hide password' : 'Show password');
+    toggle.setAttribute('aria-pressed', String(visible));
+  }
+
+  function hidePasswords(form) {
+    if (!form) { return; }
+    // identity.js clears secrets by type=password after a request. Restore that
+    // type before its handlers read the form so its clearing behavior survives.
+    form.querySelectorAll('input').forEach(function (field) {
+      if (field.uiPasswordToggle && field.type !== 'password') { setPasswordVisible(field, false); }
+    });
+  }
+
+  function preparePasswords() {
+    document.querySelectorAll('input[type="password"]').forEach(function (field) {
+      if (field.uiPasswordToggle) { return; }
+      var toggle = button('pw-toggle');
+      toggle.append(passwordIcon(false), document.createTextNode('Show'));
+      toggle.setAttribute('aria-label', 'Show password');
+      toggle.setAttribute('aria-pressed', 'false');
+      toggle.disabled = field.disabled;
+      toggle.addEventListener('click', function () {
+        setPasswordVisible(field, field.type === 'password');
+      });
+      field.after(toggle);
+      field.uiPasswordToggle = toggle;
+    });
+    document.querySelectorAll('form[data-match]').forEach(function (form) {
+      if (form.uiPasswordHint) { return; }
+      var pair = form.getAttribute('data-match').split(',');
+      var first = form.elements.namedItem(pair[0]);
+      var second = form.elements.namedItem(pair[1]);
+      if (!first || !second) { return; }
+      var hint = make('span', 'field-error', "Passwords don't match");
+      hint.setAttribute('role', 'status');
+      second.closest('.field').appendChild(hint);
+      describe(second, hint);
+      function check(submitting) {
+        var mismatch = first.value !== second.value;
+        hint.hidden = !mismatch || (!submitting && !second.value);
+        if (mismatch && !hint.hidden) { second.setAttribute('aria-invalid', 'true'); }
+        else { second.removeAttribute('aria-invalid'); }
+        return mismatch;
+      }
+      form.addEventListener('input', function () { check(false); });
+      form.addEventListener('submit', function (event) {
+        if (check(true)) {
+          event.preventDefault();
+          second.focus();
+          // The existing forms.js mismatch check still runs and reports its error.
+        }
+      }, true);
+      form.uiPasswordHint = hint;
+      check(false);
+    });
+  }
+
+  function prepareConditionalFields() {
+    var mode = document.getElementById('inv-mode');
+    var uses = document.getElementById('inv-maxuses');
+    if (mode && uses && !uses.uiConditional) {
+      var hint = make('span', 'field-hint');
+      uses.after(hint);
+      describe(uses, hint);
+      function updateUses() {
+        var reusable = mode.value === 'reusable';
+        uses.closest('.field').classList.toggle('field-muted', !reusable);
+        hint.textContent = reusable ? 'Enrollments apply to reusable keys.' : 'Enrollments apply only when Reusable is chosen.';
+      }
+      mode.addEventListener('change', updateUses);
+      uses.uiConditional = true;
+      updateUses();
+    }
+    var session = document.getElementById('key-session');
+    if (session && !session.uiConditional) {
+      var sessionHint = make('span', 'field-hint');
+      session.after(sessionHint);
+      describe(session, sessionHint);
+      function updateSession() {
+        var resources = session.form.querySelectorAll('input[name="resource"]:checked');
+        var oneWorker = resources.length === 1 && resources[0].value.indexOf('worker:') === 0;
+        session.closest('.field').classList.toggle('field-muted', !oneWorker);
+        sessionHint.textContent = oneWorker ? 'Exactly one Worker selected. You can restrict the key to one session.' :
+          'Choose exactly one Worker to restrict the key to one session.';
+      }
+      session.form.addEventListener('change', updateSession);
+      session.uiConditional = true;
+      updateSession();
+    }
+  }
+
+  function prepareClamps() {
+    document.querySelectorAll('.cell-clamp').forEach(function (cell) {
+      if (cell.uiClamp) { return; }
+      cell.uiClamp = true;
+      if (!cell.title) { cell.title = cell.textContent.trim(); }
+      if (!cell.hasAttribute('tabindex')) { cell.tabIndex = 0; }
+      cell.addEventListener('pointerdown', function () { cell.uiClampWasExpanded = cell.classList.contains('is-expanded'); });
+      cell.addEventListener('focusin', function () { cell.classList.add('is-expanded'); });
+      cell.addEventListener('focusout', function (event) {
+        if (!cell.contains(event.relatedTarget)) { cell.classList.remove('is-expanded'); }
+      });
+      cell.addEventListener('click', function (event) {
+        if (event.target.closest('a, button, input, select, textarea, summary') || selectingText()) { return; }
+        event.preventDefault();
+        event.stopPropagation();
+        cell.classList.toggle('is-expanded', cell.uiClampWasExpanded === undefined ? !cell.classList.contains('is-expanded') : !cell.uiClampWasExpanded);
+        cell.uiClampWasExpanded = undefined;
+      });
+      cell.addEventListener('keydown', function (event) {
+        if (event.target !== cell) { return; }
+        if (event.key === 'Escape') { cell.classList.remove('is-expanded'); }
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); cell.classList.toggle('is-expanded'); }
+      });
+    });
+  }
+
+  function refreshExtras() {
+    prepareSettings();
+    prepareFilters();
+    prepareChips();
+    prepareJSONBusy();
+    prepareShares();
+    preparePasswords();
+    prepareConditionalFields();
+    prepareClamps();
+    refreshTimes();
+    document.querySelectorAll(liveSelector).forEach(function (list) { paintLive(list); });
+  }
+  refreshExtras();
+  document.addEventListener('htmx:afterSwap', refreshExtras);
+  document.addEventListener('htmx:sseMessage', function () { queueMicrotask(refreshExtras); });
+  window.setInterval(function () {
+    refreshTimes();
+    document.querySelectorAll(liveSelector).forEach(paintLive);
+  }, 30000);
 })();

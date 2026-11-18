@@ -33,7 +33,7 @@
     <tbody>
     <tr>
       <th scope="row">alice</th>
-      <td>alice@example.com</td>
+      <td class="cell-clamp" title="alice@example.com" tabindex="0">alice@example.com</td>
       <td><span class="role-badge role-admin"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-role-admin"/></svg><span>admin</span></span> <span class="muted">(local)</span></td>
       <td>active</td>
       <td>set</td>
@@ -42,7 +42,7 @@
     </tr>
     <tr>
       <th scope="row">bob</th>
-      <td><span class="muted">none</span></td>
+      <td class="cell-clamp" title="" tabindex="0"><span class="muted">none</span></td>
       <td><span class="role-badge role-user"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-role-user"/></svg><span>user</span></span></td>
       <td>active</td>
       <td>temporary</td>
@@ -51,7 +51,7 @@
     </tr>
     <tr>
       <th scope="row">carol</th>
-      <td><span class="muted">none</span></td>
+      <td class="cell-clamp" title="" tabindex="0"><span class="muted">none</span></td>
       <td><span class="role-badge role-admin"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-role-admin"/></svg><span>admin</span></span> <span class="muted">(idp)</span></td>
       <td>deactivated</td>
       <td>none <span class="muted">(single sign-on)</span></td>

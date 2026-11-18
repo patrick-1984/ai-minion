@@ -43,26 +43,26 @@
   <tbody>
   <tr>
     <td><time datetime="2026-11-09T12:00:05.000Z">2026-11-09 12:00:05</time></td>
-    <td>0190a1b2-c3d4-7e5f-8a6b-000000000001</td>
-    <td><span class="muted">-</span></td>
-    <td>settings.set</td>
-    <td>public_url</td>
+    <td class="cell-clamp" title="0190a1b2-c3d4-7e5f-8a6b-000000000001" tabindex="0">0190a1b2-c3d4-7e5f-8a6b-000000000001</td>
+    <td class="cell-clamp" title="" tabindex="0"><span class="muted">-</span></td>
+    <td class="cell-clamp" title="settings.set" tabindex="0">settings.set</td>
+    <td class="cell-clamp" title="public_url" tabindex="0">public_url</td>
     <td>ok</td>
   </tr>
   <tr>
     <td><time datetime="2026-11-09T11:00:00.000Z">2026-11-09 11:00:00</time></td>
-    <td>0190a1b2-c3d4-7e5f-8a6b-000000000001</td>
-    <td>0190a1b2-c3d4-7e5f-8a6b-000000000002</td>
-    <td>worker.delete</td>
-    <td>w1</td>
+    <td class="cell-clamp" title="0190a1b2-c3d4-7e5f-8a6b-000000000001" tabindex="0">0190a1b2-c3d4-7e5f-8a6b-000000000001</td>
+    <td class="cell-clamp" title="0190a1b2-c3d4-7e5f-8a6b-000000000002" tabindex="0">0190a1b2-c3d4-7e5f-8a6b-000000000002</td>
+    <td class="cell-clamp" title="worker.delete" tabindex="0">worker.delete</td>
+    <td class="cell-clamp" title="w1" tabindex="0">w1</td>
     <td>success</td>
   </tr>
   <tr>
     <td><time datetime="2026-11-08T09:00:00.000Z">2026-11-08 09:00:00</time></td>
-    <td>anonymous</td>
-    <td><span class="muted">-</span></td>
-    <td>auth.login</td>
-    <td><span class="muted">-</span></td>
+    <td class="cell-clamp" title="anonymous" tabindex="0">anonymous</td>
+    <td class="cell-clamp" title="" tabindex="0"><span class="muted">-</span></td>
+    <td class="cell-clamp" title="auth.login" tabindex="0">auth.login</td>
+    <td class="cell-clamp" title="" tabindex="0"><span class="muted">-</span></td>
     <td>failed</td>
   </tr>
   

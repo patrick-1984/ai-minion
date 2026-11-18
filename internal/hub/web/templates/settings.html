@@ -40,7 +40,7 @@
     <div class="s-actions">
       {{if .Locked}}<span id="why-{{.Key}}" class="s-locked">{{.LockedText}}</span>
       {{else}}<button type="submit" name="action" value="set">{{template "icon" "i-save"}}<span>Save</span></button>
-      <button type="submit" name="action" value="unset" class="btn-secondary">{{if .Secret}}{{template "icon" "i-trash"}}<span>Remove</span>{{else}}Use the default{{end}}</button>{{end}}
+      <button type="submit" name="action" value="unset"{{if .Secret}} data-confirm-name="{{.Key}}" data-confirm-what="secret setting"{{end}} class="btn-secondary">{{if .Secret}}{{template "icon" "i-trash"}}<span>Remove</span>{{else}}Use the default{{end}}</button>{{end}}
     </div>
     {{if $trustedHelp}}{{template "settings_key" .}}{{end}}
     <div class="s-desc">

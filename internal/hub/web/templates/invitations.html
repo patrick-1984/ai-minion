@@ -38,7 +38,8 @@
     </div>
     <div class="field">
       <label for="inv-maxuses">Enrollments (reusable keys only; {{if .Data.MaxUsesLimit}}blank is {{.Data.MaxUsesDefault}}, at most {{.Data.MaxUsesLimit}}{{else}}blank is no limit{{end}})</label>
-      <input type="number" id="inv-maxuses" name="max_uses" min="1"{{if .Data.MaxUsesLimit}} max="{{.Data.MaxUsesLimit}}" placeholder="{{.Data.MaxUsesDefault}}"{{end}} inputmode="numeric">
+      <input type="number" id="inv-maxuses" name="max_uses" aria-describedby="inv-maxuses-help" min="1"{{if .Data.MaxUsesLimit}} max="{{.Data.MaxUsesLimit}}" placeholder="{{.Data.MaxUsesDefault}}"{{end}} inputmode="numeric">
+      <span id="inv-maxuses-help" class="field-hint">Applies only when Use is Reusable. One-time keys enroll one Worker.</span>
     </div>
     <div class="field">
       <label for="inv-ttl">Valid for{{if not .Data.Admin}} (at most 1 week){{end}}</label>
@@ -70,7 +71,7 @@
     <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Use</th><th scope="col" data-sort="text">Kind</th><th scope="col">Uses</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">State</th>{{if .Data.All}}<th scope="col" data-sort="text">Created by</th>{{end}}<th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range .Data.Invitations}}<tr>
-      <th scope="row">{{.Name}}{{if .Notice}}
+      <th scope="row">{{if gt (len .Name) 32}}<span class="cell-clamp" title="{{.Name}}" tabindex="0">{{.Name}}</span>{{else}}{{.Name}}{{end}}{{if .Notice}}
         <details class="note-more">
           <summary><span class="summary-title">Why was this key limited?</span> <span class="summary-meta">Upgrade</span></summary>
           <div class="details-body"><p class="muted" data-invitation-notice>{{.Notice}}</p></div>
@@ -80,13 +81,13 @@
       <td>{{.Uses}}</td>
       <td>{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}}</td>
       <td>{{.Status}}</td>
-      {{if $.Data.All}}<td>{{.CreatorID}}</td>{{end}}
-      <td>{{if .CanRevoke}}<form method="post" hx-post="/invitations/{{.ID}}/revoke" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
+      {{if $.Data.All}}<td class="cell-clamp" title="{{.CreatorID}}" tabindex="0">{{.CreatorID}}</td>{{end}}
+      <td>{{if .CanRevoke}}<form method="post" hx-post="/invitations/{{.ID}}/revoke" data-confirm-name="{{.Name}}" data-confirm-what="invitation key" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Revoke{{if .Name}} {{.Name}}{{end}}</span></button>
           <span id="revoke-{{.ID}}" aria-live="polite"></span>
         </form>{{else}}<span class="muted">none</span>{{end}}</td>
     </tr>
-    {{else}}<tr><td colspan="{{if .Data.All}}8{{else}}7{{end}}" class="muted">There are no invitation keys yet.</td></tr>
+    {{else}}<tr><td colspan="{{if .Data.All}}8{{else}}7{{end}}" class="muted">There are no invitation keys yet. <a href="#create-invitation">Create an invitation key</a>.</td></tr>
     {{end}}
     </tbody>
   </table></div>

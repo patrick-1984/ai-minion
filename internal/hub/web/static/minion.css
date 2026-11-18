@@ -1217,3 +1217,116 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--input-bor
     outline: 2px solid Highlight; outline-offset: -2px; }
   .brand-mark > rect { fill: ButtonText; }
 }
+
+/* ---- Console quality-of-life states (shared with ui-extras.js) ---- */
+.live-status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; max-width: 100%;
+  color: var(--muted); font: 11px/1.6 var(--font-mono); margin-block: 4px 12px; }
+.live-status::before { content: ""; width: 6px; height: 6px; flex: none; border: 1px solid currentColor;
+  border-radius: 50%; background: currentColor; }
+.live-status.is-live { color: var(--positive); }
+.live-status.is-reconnecting { color: var(--warning); }
+.live-status.is-reconnecting::before { background: transparent; }
+.live-status.is-down { color: var(--danger); }
+.live-status.is-down::before { border-radius: 1px; }
+.live-status :is(time, .rel-time, .muted) { color: var(--muted); }
+
+.row-unsaved { background: var(--warning-subtle); box-shadow: inset 2px 0 0 var(--warning); }
+.unsaved-badge { display: inline-flex; align-items: center; width: fit-content; max-width: 100%; padding: 2px 6px;
+  border: 1px solid var(--warning); border-radius: var(--r-sm); background: var(--warning-subtle);
+  color: var(--warning); font: 11px/1.5 var(--font-mono); overflow-wrap: anywhere; }
+.srow .s-actions { flex-wrap: wrap; }
+.row-reset, .filter-clear, .pw-toggle { min-height: 32px; padding: 5px 10px; border: 1px solid var(--input-border);
+  background: var(--surface); color: var(--text); font-size: 12px; }
+.row-reset:hover:not(:disabled), .filter-clear:hover:not(:disabled), .pw-toggle:hover:not(:disabled) {
+  background: var(--hover); border-color: var(--muted); filter: none; }
+
+.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0;
+  margin-block: 12px; padding: 10px 12px; background: var(--surface-subtle);
+  border: 1px solid var(--border); border-radius: var(--r-md); }
+.filter-bar > label { font-size: 12px; font-weight: 600; }
+.filter-bar .filter-input { flex: 1 1 16rem; width: 100%; min-width: 0; max-width: 32rem; }
+.filter-count, .sel-count { color: var(--muted); font: 11px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.filter-count { flex: 0 1 auto; }
+.filter-clear { flex: none; }
+.filter-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin-block: 8px 12px; }
+.filter-chips:empty { display: none; }
+.filter-chip { display: inline-flex; align-items: center; justify-content: flex-start; gap: 6px;
+  min-height: 28px; min-width: 0; max-width: 100%; padding: 3px 8px; border: 1px solid var(--border);
+  border-radius: var(--r-sm); background: var(--surface-subtle); color: var(--text);
+  font: 11px/1.6 var(--font-mono); white-space: normal; overflow-wrap: anywhere; text-align: start; }
+.filter-chip > span { min-width: 0; }
+.filter-chip button { flex: none; min-height: 24px; min-width: 24px; padding: 2px 4px;
+  border-color: transparent; background: transparent; color: var(--muted); }
+.filter-chip:is(a, button):hover:not(:disabled), .filter-chip button:hover:not(:disabled) {
+  background: var(--hover); color: var(--text); border-color: var(--input-border); filter: none; }
+
+.confirm-box { width: min(100%, 32rem); min-width: 0; margin-block: 12px; padding: 16px;
+  border: 1px solid var(--danger); border-radius: var(--r-lg); background: var(--surface); color: var(--text);
+  overflow-wrap: anywhere; text-align: start; white-space: normal; }
+.confirm-box h2 { margin-bottom: 8px; font-size: 16px; }
+.confirm-box label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+.confirm-box .confirm-input { display: block; width: 100%; max-width: none; margin-block: 8px 12px; }
+dialog.confirm-box { max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); margin: auto;
+  overflow: auto; overscroll-behavior: contain; box-shadow: var(--shadow); }
+dialog.confirm-box::backdrop { background: var(--scrim); }
+.rel-time { display: inline-block; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+time + .rel-time { margin-inline-start: 6px; }
+.pw-toggle { align-self: flex-start; flex: none; gap: 6px; width: fit-content; }
+.pw-toggle[aria-pressed="true"] { background: var(--selected); border-color: var(--muted); }
+.field-hint, .field-error { display: block; max-width: 60ch; margin-block: 4px 0; font-size: 12px;
+  line-height: 1.6; overflow-wrap: anywhere; }
+.field-hint { color: var(--muted); }
+.field-error { color: var(--danger); font-weight: 600; }
+.field-muted { color: var(--muted); }
+.field-muted :is(input, select, textarea) { background: var(--surface-subtle); }
+:is(input, select, textarea).field-muted { background: var(--surface-subtle); }
+.sel-count { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-block: 4px; }
+.sel-count.row-unsaved { padding: 4px 8px; border-radius: var(--r-sm); color: var(--warning); }
+.is-busy, button.is-busy:disabled { cursor: progress; }
+button.is-busy { border-style: dashed; }
+
+/* Keep table semantics: a clamped cell stays a cell, while inline values get a clipping box. */
+.cell-clamp { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-clamp:where(:not(td, th)) { display: inline-block; max-width: min(32ch, 100%); vertical-align: bottom; }
+.copy-field > .copy-value.cell-clamp { max-width: min(32ch, 100%); overflow: hidden; text-overflow: ellipsis; }
+.cell-clamp[tabindex] { cursor: pointer; }
+.cell-clamp:is(.is-expanded, :focus, :focus-within),
+.copy-field > .copy-value.cell-clamp:is(.is-expanded, :focus, :focus-within) { overflow: visible; white-space: normal;
+  overflow-wrap: anywhere; word-break: normal; }
+.cell-clamp:is(.is-expanded, :focus, :focus-within) :is(.truncate, .fp-words, code) {
+  max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.cell-clamp:focus-visible { outline-offset: -2px; }
+
+/* overflow-x already makes wrappers scroll containers; bound their height so headers can stick. */
+@media (min-width: 640px) {
+  .table-wrap { max-height: min(70vh, 42rem); overflow: auto; overscroll-behavior: contain;
+    scroll-padding-block-start: 3.5rem; }
+  .table-wrap thead th { position: sticky; top: 0; z-index: 2; background: var(--surface-subtle);
+    box-shadow: inset 0 -1px 0 var(--border); }
+}
+@media (max-width: 959px) {
+  .row-reset, .filter-clear, .pw-toggle, .filter-chip, .filter-chip button { min-height: 44px; }
+  .pw-toggle, .filter-chip button { min-width: 44px; }
+}
+@media (max-width: 639px) {
+  .filter-bar { gap: 8px; padding: 10px; }
+  .filter-bar .filter-input { flex-basis: 100%; max-width: none; }
+  .filter-count { flex: 1 1 8rem; }
+  .filter-chip { font-size: 12px; }
+  .confirm-box { padding: 14px; }
+  .rtable .cell-clamp { min-width: 0; max-width: 100%; }
+  .cell-clamp:where(:not(td, th)) { max-width: min(32ch, 70vw); }
+}
+@media (forced-colors: active) {
+  .live-status::before { background: CanvasText; border-color: CanvasText; }
+  .live-status.is-reconnecting::before { background: transparent; }
+  .row-unsaved { outline: 1px solid CanvasText; outline-offset: -1px; }
+  .unsaved-badge, .confirm-box, .filter-chip { border-color: CanvasText; }
+}
+@media print {
+  .table-wrap { max-height: none; overflow: visible; }
+  .table-wrap thead th { position: static; }
+  .cell-clamp, .copy-field > .copy-value.cell-clamp, .cell-clamp :is(.truncate, .fp-words, code) {
+    max-width: none; overflow: visible; white-space: normal;
+    overflow-wrap: anywhere; }
+}

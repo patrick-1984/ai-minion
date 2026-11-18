@@ -21,7 +21,7 @@
     <div class="field">
       <label for="key-session">Only one session (optional)</label>
       <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help" placeholder="e.g. nightly-build">
-      <span id="key-session-help" class="muted">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
+      <span id="key-session-help" class="muted field-hint">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
     </div>
     <fieldset class="field">
       <legend>What the key may do</legend>
@@ -61,32 +61,32 @@
     <tbody>
     <tr>
       <th scope="row">ci</th>
-      <td><code>mn_mfrggzdf...</code></td>
-      <td>Worker pi: read, operate</td>
+      <td class="cell-clamp" title="mn_mfrggzdf..." tabindex="0"><code>mn_mfrggzdf...</code></td>
+      <td class="cell-clamp" title="Worker pi: read, operate" tabindex="0">Worker pi: read, operate</td>
       <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
       <td>2026-11-09 07:30 UTC</td>
       <td>active</td>
-      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e1/revoke" data-confirm-name="ci" data-confirm-what="API key" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke ci</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" aria-live="polite"></span>
         </form></td>
     </tr>
     <tr>
       <th scope="row">mcp</th>
-      <td><code>mn_mztwq2lk...</code></td>
-      <td>my account: read</td>
+      <td class="cell-clamp" title="mn_mztwq2lk..." tabindex="0"><code>mn_mztwq2lk...</code></td>
+      <td class="cell-clamp" title="my account: read" tabindex="0">my account: read</td>
       <td>never</td>
       <td>never used</td>
       <td>active</td>
-      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e2/revoke" data-confirm-name="mcp" data-confirm-what="API key" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke mcp</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" aria-live="polite"></span>
         </form></td>
     </tr>
     <tr>
       <th scope="row">gone</th>
-      <td><code>mn_nnwg23tp...</code></td>
-      <td>session build on nuc: message</td>
+      <td class="cell-clamp" title="mn_nnwg23tp..." tabindex="0"><code>mn_nnwg23tp...</code></td>
+      <td class="cell-clamp" title="session build on nuc: message" tabindex="0">session build on nuc: message</td>
       <td>never</td>
       <td>never used</td>
       <td>revoked</td>

@@ -51,7 +51,7 @@ across that replacement (static/live-list.js) because each has an identity: a da
 update (the canonical Worker id) and its own data-control. Neither is derived from a position or from the session list. */}}
 {{define "worker_results"}}{{if .Gone}}<div class="empty-state">
   <h2>This worker is no longer in your list</h2>
-  <p>It was removed, or it is not available to you in this scope. Go back to the Workers list.</p>
+  <p>It was removed, or it is not available to you in this scope. Go back to the <a href="/workers">Workers list</a>.</p>
 </div>{{else}}<p class="result-count" data-summary="{{.Worker.Name}}: {{if .Worker.Online}}online{{else}}offline{{end}}; {{.SessionsText}}">{{.SessionsText}}.</p>
 {{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
 {{end}}<section class="panel worker-facts" aria-label="Worker facts">
@@ -82,7 +82,7 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
     <summary><span class="summary-title">Forget this Worker</span> <span class="summary-meta">Re-pair to reconnect</span></summary>
     <div class="details-body">
       <p class="help">The Hub removes it: the Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again to come back, under a new code. Keys bound to it and its control settings go with it.</p>
-      <form method="post" action="{{.Worker.RemoveURL}}" hx-post="{{.Worker.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Worker.Name}}? It must be paired again to connect to this Hub." class="row-actions">
+      <form method="post" action="{{.Worker.RemoveURL}}" data-confirm-name="{{.Worker.Name}}" data-confirm-what="Worker" hx-post="{{.Worker.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Worker.Name}}? It must be paired again to connect to this Hub." class="row-actions">
         <button type="submit" class="btn btn-danger" data-control="forget" aria-label="Forget worker {{.Worker.Name}}">{{template "icon" "i-trash"}}<span>Forget (remove) this Worker</span></button>
       </form>
     </div>

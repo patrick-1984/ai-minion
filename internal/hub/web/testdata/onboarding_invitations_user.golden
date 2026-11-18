@@ -17,7 +17,8 @@
     </div>
     <div class="field">
       <label for="inv-maxuses">Enrollments (reusable keys only; blank is 10, at most 100)</label>
-      <input type="number" id="inv-maxuses" name="max_uses" min="1" max="100" placeholder="10" inputmode="numeric">
+      <input type="number" id="inv-maxuses" name="max_uses" aria-describedby="inv-maxuses-help" min="1" max="100" placeholder="10" inputmode="numeric">
+      <span id="inv-maxuses-help" class="field-hint">Applies only when Use is Reusable. One-time keys enroll one Worker.</span>
     </div>
     <div class="field">
       <label for="inv-ttl">Valid for (at most 1 week)</label>
@@ -54,7 +55,7 @@
       <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
       <td>active</td>
       
-      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d1/revoke" data-confirm-name="build-farm" data-confirm-what="invitation key" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke build-farm</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" aria-live="polite"></span>
         </form></td>
@@ -67,7 +68,7 @@
       <td>never</td>
       <td>active</td>
       
-      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d2/revoke" data-confirm-name="laptop" data-confirm-what="invitation key" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke laptop</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" aria-live="polite"></span>
         </form></td>

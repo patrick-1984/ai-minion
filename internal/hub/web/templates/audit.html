@@ -39,13 +39,13 @@
   <tbody>
   {{range .Data.Events}}<tr>
     <td><time datetime="{{.TS.Time.Format "2006-01-02T15:04:05.000Z07:00"}}">{{.TS.Time.Format "2006-01-02 15:04:05"}}</time></td>
-    <td>{{.Actor}}</td>
-    <td>{{if .ActingAs}}{{.ActingAs}}{{else}}<span class="muted">-</span>{{end}}</td>
-    <td>{{.Action}}</td>
-    <td>{{if .Target}}{{.Target}}{{else}}<span class="muted">-</span>{{end}}</td>
+    <td class="cell-clamp" title="{{.Actor}}" tabindex="0">{{.Actor}}</td>
+    <td class="cell-clamp" title="{{.ActingAs}}" tabindex="0">{{if .ActingAs}}{{.ActingAs}}{{else}}<span class="muted">-</span>{{end}}</td>
+    <td class="cell-clamp" title="{{.Action}}" tabindex="0">{{.Action}}</td>
+    <td class="cell-clamp" title="{{.Target}}" tabindex="0">{{if .Target}}{{.Target}}{{else}}<span class="muted">-</span>{{end}}</td>
     <td>{{.Outcome}}</td>
   </tr>
-  {{else}}<tr><td colspan="6" class="muted">{{if .Data.Error}}No events are listed.{{else}}No events match.{{end}}</td></tr>
+  {{else}}<tr><td colspan="6" class="muted">{{if .Data.Error}}No events are listed.{{else}}No events match.{{end}} <a href="/admin/audit">Clear filters</a>.</td></tr>
   {{end}}
   </tbody>
 </table></div>
