@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -68,16 +67,11 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 			Out:      io.Discard,
 		}, nil
 	}
-	if restartEndsSessions(runtime.GOOS, hostKind) && host != nil {
+	if restartEndsSessions(runtime.GOOS, hostKind) {
 		// ConPTY sessions live inside the Worker process: a restart ends them.
 		// psmux and tmux sessions outlive the Worker and never veto an update.
-		u.sessionsLost = func(ctx context.Context) int {
-			list, err := host.ListSessions(ctx)
-			if err != nil {
-				return 0
-			}
-			return len(list)
-		}
+		// A count that fails is unknown, never 0 (sessioncount.go).
+		u.sessionsLost = SessionCounter{Host: host, EndsSessions: true}.CountLost
 	}
 	u.register(ex)
 

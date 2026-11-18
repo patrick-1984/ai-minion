@@ -10,6 +10,10 @@
 
 - **`minion worker up` without `sudo` no longer installs a user service beside an installed system service** `minion-worker@<user>.service` (enabled, running, or with the drop-in an earlier `sudo minion worker up` wrote): it names the unit, changes nothing and exits with status 1. The packaged unit template alone does not count.
 
+### Fixed
+
+- **A Windows Worker no longer updates itself when it cannot count its ConPTY sessions.** A failed session listing used to count as "no session would end", so a Hub-started update could end running sessions without asking; it is now refused unless the update is forced. Holds on new sessions have owners: a failed or refused update lifts only its own hold.
+
 ## v0.13.1
 
 Released 2026-11-18.

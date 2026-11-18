@@ -108,7 +108,7 @@ func TestWorkerUpdateRefusals(t *testing.T) {
 		{"blocked", func() { u.block = "remote updates are turned off on this Worker (remote_update=off)" }, ops.WorkerUpdateArgs{Version: "v0.9.1"}, "remote_update=off"},
 		{"sessions", func() {
 			u.block = ""
-			u.sessionsLost = func(context.Context) int { return 2 }
+			u.sessionsLost = func(context.Context) (int, bool, error) { return 2, true, nil }
 		}, ops.WorkerUpdateArgs{Version: "v0.9.1"}, "2 sessions"},
 	}
 	for _, tc := range cases {
@@ -300,7 +300,7 @@ func TestWorkerUpdateHoldsSessionCreation(t *testing.T) {
 	inst := &fakeInstaller{err: errors.New("network down")}
 	u, _ := newTestUpdate(t, inst)
 	u.holdSessions = func(r string) { mu.Lock(); holds = append(holds, r); mu.Unlock() }
-	u.sessionsLost = func(context.Context) int { return 1 }
+	u.sessionsLost = func(context.Context) (int, bool, error) { return 1, true, nil }
 	if res, _ := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"}); res.Accepted {
 		t.Fatal("accepted with a session to lose")
 	}
@@ -374,7 +374,7 @@ func TestSessionCreateHoldWaitsForCreationsInFlight(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the hold never took effect")
 	}
-	if e.createHold.Load() == nil {
+	if _, held := e.CreateHeld(); !held {
 		t.Fatal("hold not set")
 	}
 }

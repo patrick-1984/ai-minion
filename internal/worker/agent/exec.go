@@ -114,11 +114,19 @@ type Executor struct {
 	// module attaches it.
 	pipe atomic.Pointer[PipeService]
 
-	// createHold, when set, refuses session_create with its reason: a Worker
-	// about to restart for an update must not start sessions the restart ends.
-	createHold atomic.Pointer[string]
-	// createMu: session_create holds it shared for its whole run; setting
-	// the hold takes it exclusively, so it waits for creations in flight.
+	// createHolds refuse session_create while any is held, each with the
+	// owner that took it and its reason (HoldCreate): a Worker about to
+	// restart for an update or a lifecycle stop must not start sessions the
+	// restart ends. Each owner releases only its own hold. Guarded by
+	// createMu.
+	createHolds map[uint64]createHoldEntry
+	createSeq   uint64
+	// updateRelease releases the hold of the owner "update"
+	// (SetSessionCreateHold); guarded by createMu.
+	updateRelease func()
+	// createMu: session_create holds it shared for its whole run; taking or
+	// releasing a hold takes it exclusively, so it waits for creations in
+	// flight.
 	createMu sync.RWMutex
 
 	// mem keeps the completed write results that the database could not
@@ -181,15 +189,82 @@ func (e *Executor) Handle(op string, h Handler) {
 	e.handlers[op] = h
 }
 
-// SetSessionCreateHold refuses new sessions with reason; "" allows them again.
-func (e *Executor) SetSessionCreateHold(reason string) {
+// createHoldEntry is one hold of session_create.
+type createHoldEntry struct {
+	owner, reason string
+}
+
+// Owners of a create hold.
+const (
+	// HoldOwnerUpdate is the self-update (SetSessionCreateHold).
+	HoldOwnerUpdate = "update"
+	// HoldOwnerLifecycle is a local stop, restart or leave.
+	HoldOwnerLifecycle = "lifecycle"
+)
+
+// HoldCreate refuses session_create with reason until the returned release
+// runs (tray tickets v3, C5). Holds of different owners are independent: a
+// release lifts only its own hold, never one another owner took. It waits for
+// the creations in flight, so that none can finish after it returned; release
+// is idempotent.
+func (e *Executor) HoldCreate(owner, reason string) (release func()) {
 	e.createMu.Lock()
 	defer e.createMu.Unlock()
+	if e.createHolds == nil {
+		e.createHolds = map[uint64]createHoldEntry{}
+	}
+	e.createSeq++
+	id := e.createSeq
+	e.createHolds[id] = createHoldEntry{owner: owner, reason: reason}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			e.createMu.Lock()
+			defer e.createMu.Unlock()
+			delete(e.createHolds, id)
+		})
+	}
+}
+
+// createHoldReason returns the reason of the oldest hold, or "" when
+// session_create is allowed. The caller holds createMu (shared or exclusive).
+func (e *Executor) createHoldReason() string {
+	var first uint64
+	reason := ""
+	for id, h := range e.createHolds {
+		if first == 0 || id < first {
+			first, reason = id, h.reason
+		}
+	}
+	return reason
+}
+
+// CreateHeld reports whether session_create is held, and why.
+func (e *Executor) CreateHeld() (string, bool) {
+	e.createMu.RLock()
+	defer e.createMu.RUnlock()
+	r := e.createHoldReason()
+	return r, len(e.createHolds) > 0
+}
+
+// SetSessionCreateHold is the hold of the owner "update": reason refuses new
+// sessions, "" lifts the update's own hold again (never the hold of another
+// owner, such as a lifecycle stop).
+func (e *Executor) SetSessionCreateHold(reason string) {
+	e.createMu.Lock()
+	prev := e.updateRelease
+	e.updateRelease = nil
+	e.createMu.Unlock()
+	if prev != nil {
+		prev()
+	}
 	if reason == "" {
-		e.createHold.Store(nil)
 		return
 	}
-	e.createHold.Store(&reason)
+	release := e.HoldCreate(HoldOwnerUpdate, reason)
+	e.createMu.Lock()
+	e.updateRelease = release
+	e.createMu.Unlock()
 }
 
 // Locks returns the writer locks, so that other entry points writing to panes

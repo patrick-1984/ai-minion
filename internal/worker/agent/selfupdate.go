@@ -81,9 +81,10 @@ type selfUpdate struct {
 	installer func() (releaseInstaller, error)
 	// hubRange is the protocol range of the connected Hub (nil: unknown).
 	hubRange func() *version.ProtoRange
-	// sessionsLost reports how many sessions a restart would end (ConPTY);
-	// nil means none (tmux sessions survive the Worker).
-	sessionsLost func(ctx context.Context) int
+	// sessionsLost reports how many sessions a restart would end (ConPTY),
+	// and whether that number is known (SessionCounter.CountLost); nil means
+	// none (tmux sessions survive the Worker).
+	sessionsLost func(ctx context.Context) (n int, known bool, err error)
 	// restart ends the process so that it starts again with the new binary.
 	restart func()
 	// workerID is this Worker's Hub id (Policy.WorkerID); a request must name it.
@@ -204,7 +205,17 @@ func (u *selfUpdate) handleUpdate(ctx context.Context, rq Request) (any, error) 
 		u.holdSessions("the Worker is updating")
 	}
 	if !args.Force && u.sessionsLost != nil {
-		if n := u.sessionsLost(ctx); n > 0 {
+		n, known, err := u.sessionsLost(ctx)
+		switch {
+		case !known:
+			u.release()
+			res.Reason = "the sessions the restart would end cannot be counted (ConPTY"
+			if err != nil {
+				res.Reason += ": " + err.Error()
+			}
+			res.Reason += "); update with force to accept that an unknown number of sessions will end"
+			return res, nil
+		case n > 0:
 			u.release()
 			res.Reason = fmt.Sprintf("%d sessions would end on the restart (ConPTY); update with force to accept that", n)
 			return res, nil

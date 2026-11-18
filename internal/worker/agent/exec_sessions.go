@@ -300,8 +300,8 @@ func trimBottomBlank(lines []string) []string {
 func (e *Executor) sessionCreate(ctx context.Context, rq Request) (any, error) {
 	e.createMu.RLock()
 	defer e.createMu.RUnlock()
-	if reason := e.createHold.Load(); reason != nil {
-		return nil, apiErr(proto.CodeConflict, "", *reason+"; create the session after the restart")
+	if len(e.createHolds) > 0 {
+		return nil, apiErr(proto.CodeConflict, "", e.createHoldReason()+"; create the session after the restart")
 	}
 	op, args, err := prepareWrite(e, ctx, rq, func(a ops.SessionCreateArgs) (ops.WriteArgs, ops.Target) {
 		return a.WriteArgs, ops.Target{SessionName: a.Name}
