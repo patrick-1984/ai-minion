@@ -59,6 +59,9 @@ func (l localExecutor) forwardSessionControl(ctx context.Context, rq Request, pa
 	if err := authorize(op.Actions, rq.Actions); err != nil {
 		return nil, err
 	}
+	if l.pause != nil && l.pause.Paused() {
+		return nil, apiErr(CodePaused, "", "the Worker is paused: it has no Hub connection (minion worker resume)")
+	}
 	var cc PipeCaller
 	if l.calls != nil {
 		cc = l.calls()

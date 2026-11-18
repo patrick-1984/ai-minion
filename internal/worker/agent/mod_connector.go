@@ -121,7 +121,13 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	dbg := setupDebugRemote(log, s, ex)
 	facts = withDebugFact(facts, dbg)
+	// The saved pause (pause.json, tray W3b) applies from the first cycle.
+	pause, err := NewPauseService(s.StateDir, log)
+	if err != nil {
+		return nil, err
+	}
 	c, err := NewConnector(ConnectorConfig{
+		Pause:      pause.Gate(),
 		HubURL:     hub.Server,
 		Name:       s.Name,
 		Ops:        ex.Ops,
@@ -143,6 +149,10 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		return nil, err
 	}
 	if err := Provide(env, c); err != nil {
+		return nil, err
+	}
+	pause.connected = func() bool { return c.Status().State == ConnConnected }
+	if err := Provide(env, pause); err != nil {
 		return nil, err
 	}
 	su.hubRange = func() *version.ProtoRange { return connectorHubRange(c) }

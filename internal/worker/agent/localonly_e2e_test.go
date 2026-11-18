@@ -35,6 +35,8 @@ var expectedManagementOps = []string{
 	"worker_status",
 	"worker_stop",
 	"worker_verify_hub",
+	"worker_pause",
+	"worker_resume",
 }
 
 // helloDialer is a pairDialer that records the ops and features of every
@@ -74,7 +76,18 @@ func TestLocalOpsMapMatchesExpected(t *testing.T) {
 // the owner's socket, is refused as unsupported_op through the authenticated
 // Hub op stream without any effect, and is never announced in the hello; a
 // normal remote op (sessions_list) succeeds through the same Hub link.
-func TestLocalOnlyOpsAgainstFullWorker(t *testing.T) {
+// fullWorker is a fully started Worker (core, pipe, connector, op server,
+// Hub pipe and local socket) whose Hub links come from a pairDialer.
+type fullWorker struct {
+	rt     *Runtime
+	dir    string
+	host   *anchorHost
+	dialer *helloDialer
+	client *client.LocalBackend
+}
+
+func startFullWorker(t *testing.T) *fullWorker {
+	t.Helper()
 	dir, _ := enrolledDir(t)
 	host, cls := newAnchorHost(t)
 	core := coreDeps{
@@ -82,7 +95,7 @@ func TestLocalOnlyOpsAgainstFullWorker(t *testing.T) {
 		newHost:    func(string) (term.SessionHost, error) { return host, nil },
 		classifier: cls,
 	}
-	dialer := &helloDialer{pairDialer: pairDialer{hubs: make(chan *transport.Session, 4)}}
+	dialer := &helloDialer{pairDialer: pairDialer{hubs: make(chan *transport.Session, 8)}}
 	sock := filepath.Join(shortRunDir(t), "minion", localapi.SocketName)
 	lad := defaultLocalAPIDeps()
 	lad.socketPath = func() (string, error) { return sock, nil }
@@ -107,35 +120,49 @@ func TestLocalOnlyOpsAgainstFullWorker(t *testing.T) {
 		Resolver:   &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }},
 		Logger:     slog.New(slog.NewTextHandler(&logBuf{}, nil)),
 	}))
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+	return &fullWorker{rt: rt, dir: dir, host: host, dialer: dialer, client: client.Local(client.WithSocketPath(sock))}
+}
+
+// nextHub waits for the next Hub link of the Worker.
+func (w *fullWorker) nextHub(t *testing.T) *transport.Session {
+	t.Helper()
+	select {
+	case hub := <-w.dialer.hubs:
+		return hub
+	case <-time.After(10 * time.Second):
+		t.Fatal("the Worker did not connect to the Hub")
+		return nil
+	}
+}
+
+// hubCall sends one op request through the Hub link and returns the answer.
+func hubCall(t *testing.T, ctx context.Context, hub *transport.Session, op string, args any) string {
+	t.Helper()
+	st, err := hub.OpenOp(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Reset()
+	if err := st.WriteFrame(opRequest(op, []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage}, args)); err != nil {
+		t.Fatal(err)
+	}
+	body, ok := readHubFrame(t, st, 5*time.Second)
+	if !ok {
+		t.Fatalf("%s: no answer from the Worker", op)
+	}
+	return string(body)
+}
+
+func TestLocalOnlyOpsAgainstFullWorker(t *testing.T) {
+	w := startFullWorker(t)
+	rt, dialer, c := w.rt, w.dialer, w.client
 	// worker_stop asks the runtime to stop (RequestStop closes stopReq).
 	stopped := rt.stopReq
-	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	c := client.Local(client.WithSocketPath(sock))
-
-	var hub *transport.Session
-	select {
-	case hub = <-dialer.hubs:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the Worker never connected to the Hub")
-	}
+	hub := w.nextHub(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	hubCall := func(op string) string {
-		t.Helper()
-		st, err := hub.OpenOp(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer st.Reset()
-		if err := st.WriteFrame(opRequest(op, []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage}, map[string]any{})); err != nil {
-			t.Fatal(err)
-		}
-		body, ok := readHubFrame(t, st, 5*time.Second)
-		if !ok {
-			t.Fatalf("%s: no answer from the Worker", op)
-		}
-		return string(body)
-	}
+	hubCall := func(op string) string { t.Helper(); return hubCall(t, ctx, hub, op, map[string]any{}) }
 
 	// A normal remote op works through the very same link.
 	if body := hubCall(ops.OpSessionsList); !strings.Contains(body, proto.TypeOpResult) || !strings.Contains(body, `"work"`) {

@@ -109,6 +109,8 @@ type LiveStatusSource struct {
 	RunMode string
 	Host    *SessionHostInfo
 	Health  *SessionListHealth
+	// Pause is the pause of this Worker; nil reports none (pause unknown).
+	Pause *PauseService
 }
 
 // LiveStatus implements [LiveSource].
@@ -122,6 +124,10 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 		out.HubPreviewOnly = s.Policy.HubPreviewOnly()
 	}
 	out.RunMode = s.RunMode
+	if s.Pause != nil {
+		paused := s.Pause.Paused()
+		out.Paused = &paused
+	}
 	// The local status shows the details the hello leaves out (a socket
 	// path, a user name, the error itself): only this machine reads it.
 	if s.Host != nil {

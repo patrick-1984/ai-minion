@@ -57,6 +57,16 @@ The share choice takes effect at once; the Hub follows within the poll interval 
 
 To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).
 
+### Pause the Hub connection
+
+```sh
+minion worker pause            # until minion worker resume
+minion worker pause --for 30m  # ends by itself after 30 minutes
+minion worker resume
+```
+
+A paused Worker drops its Hub connection and does not connect again until you resume it or the `--for` time is over; it stays paused across a restart (the pause is saved as `pause.json` in the state directory). Your sessions keep running and stay usable on this machine; nothing ends. Writes that the Hub started before the pause finish (at most 30 seconds are waited for them) and the Hub reads their results after the resume. While paused, `minion worker status` shows `Paused`, and commands that need the Hub (for example `minion workers_list`) answer `paused`. A Worker without a Hub (Solo) has nothing to pause. With `--json` both commands print one JSON object; a running Worker of an older version that cannot pause refuses with exit status 20 and nothing changes.
+
 ## Update
 
 ```sh

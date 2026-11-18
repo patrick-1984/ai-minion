@@ -155,6 +155,16 @@ type OpServer struct {
 	mu       sync.Mutex
 	stopped  bool
 	inflight sync.WaitGroup
+	// running counts the ops in flight (inflight cannot be read).
+	running atomic.Int64
+	// suspended closes admission while the Worker is paused (Suspend); it
+	// is reversible, unlike stopped. genCtx is the read context of the
+	// current admission generation: Suspend cancels it, Reopen starts a new
+	// one, so a read admitted before a pause never outlives it.
+	suspended bool
+	gen       uint64
+	genCtx    context.Context
+	genCancel context.CancelFunc
 }
 
 // NewOpServer validates cfg and returns an op server.
@@ -185,6 +195,7 @@ func NewOpServer(cfg OpServerConfig) (*OpServer, error) {
 		sem: make(chan struct{}, cfg.MaxOps), refuseSem: make(chan struct{}, cfg.MaxRefused),
 	}
 	s.stopCtx, s.stopCancel = context.WithCancel(context.Background())
+	s.genCtx, s.genCancel = context.WithCancel(s.stopCtx)
 	if s.log == nil {
 		s.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -244,9 +255,13 @@ func (s *OpServer) admit() *proto.Error {
 	if s.stopped {
 		return proto.NewError(proto.CodeRateLimited, "the Worker is shutting down")
 	}
+	if s.suspended {
+		return proto.NewError(proto.CodeRateLimited, "the Worker is paused")
+	}
 	select {
 	case s.sem <- struct{}{}:
 		s.inflight.Add(1)
+		s.running.Add(1)
 		return nil
 	default:
 		return proto.NewError(proto.CodeRateLimited, "the Worker serves too many operations at once")
@@ -255,7 +270,70 @@ func (s *OpServer) admit() *proto.Error {
 
 func (s *OpServer) release() {
 	<-s.sem
+	s.running.Add(-1)
 	s.inflight.Done()
+}
+
+// readContext returns the read context of the current admission generation.
+func (s *OpServer) readContext() context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.genCtx
+}
+
+// Suspend closes the admission of new op streams and cancels the reads in
+// flight, reversibly (pause, tray W3b), then waits until the writes in
+// flight end or ctx ends. It returns the number of ops still running when it
+// returned: those writes keep running and their results stay in the result
+// cache for the Hub after the reconnect (AD-15); admission stays closed until
+// [OpServer.Reopen]. Unlike [OpServer.Stop] it can be undone.
+func (s *OpServer) Suspend(ctx context.Context) (pending int, err error) {
+	s.CloseAdmission()
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		n := int(s.running.Load())
+		if n == 0 {
+			return 0, nil
+		}
+		select {
+		case <-ctx.Done():
+			return n, nil
+		case <-tick.C:
+		}
+	}
+}
+
+// CloseAdmission is the first, non-blocking part of [OpServer.Suspend]: new
+// op streams are refused and the reads in flight are cancelled.
+func (s *OpServer) CloseAdmission() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.suspended {
+		return
+	}
+	s.suspended = true
+	s.genCancel()
+}
+
+// Reopen admits op streams again after [OpServer.Suspend], with a new read
+// generation. It does not undo [OpServer.Stop].
+func (s *OpServer) Reopen() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.suspended {
+		return
+	}
+	s.suspended = false
+	s.gen++
+	s.genCtx, s.genCancel = context.WithCancel(s.stopCtx)
+}
+
+// Admitting reports whether new op streams are admitted.
+func (s *OpServer) Admitting() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.suspended && !s.stopped
 }
 
 // Stop ends the admission of new op streams, cancels the reads in flight and
@@ -349,8 +427,8 @@ func (s *OpServer) ServeStream(linkCtx context.Context, st OpStream) {
 	ctx, cancel := context.WithTimeout(base, s.cfg.ExecTimeout)
 	defer cancel()
 	if !write {
-		// A read also ends when the server stops.
-		defer context.AfterFunc(s.stopCtx, cancel)()
+		// A read also ends when the server stops or is suspended (pause).
+		defer context.AfterFunc(s.readContext(), cancel)()
 	}
 	ctx = WithProgress(ctx, out.progress)
 

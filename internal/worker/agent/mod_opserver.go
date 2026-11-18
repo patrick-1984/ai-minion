@@ -79,6 +79,9 @@ func (d opServerDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	if err := Provide(env, pub); err != nil {
 		return nil, err
 	}
+	if pause, ok := lookupService[*PauseService](env.rt); ok {
+		pause.attach(srv)
+	}
 	c.OnLink("op-server", srv.Serve)
 	c.OnLink("events", pub.Serve)
 	log.Info("hub op server and event stream registered", "poll_interval", interval.String())

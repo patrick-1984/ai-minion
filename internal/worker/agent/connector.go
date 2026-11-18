@@ -305,6 +305,10 @@ type ConnectorConfig struct {
 	Backoff *transport.Backoff
 	// Session tunes the yamux session.
 	Session transport.SessionOptions
+	// Pause is the pause switch (minion worker pause, tray W3b); nil never
+	// pauses. While it is set the connector does not dial: it idles with
+	// ReasonPaused, and a change wakes its backoff, idle and connection waits.
+	Pause *PauseGate
 	// IdlePoll, HandlerGrace and EpochPoll override the defaults.
 	IdlePoll     time.Duration
 	HandlerGrace time.Duration
@@ -504,14 +508,21 @@ func (c *Connector) Run(ctx context.Context) {
 			c.setState(ConnBackoff)
 			d := c.bo.Next()
 			c.log.Debug("hub connector backoff", "delay", d.String())
+			_, pauseCh := c.cfg.Pause.Paused()
 			select {
 			case <-c.clk.After(d):
+			case <-pauseCh:
+				// A pause (or resume) during the backoff takes effect at once.
 			case <-ctx.Done():
 				return
 			}
 		}
 	}
 }
+
+// errPaused is the cause of the context of an attempt or connection that a
+// pause ended.
+var errPaused = errors.New("agent: the Worker was paused")
 
 // cycle runs one pass of the state machine and reports whether the backoff
 // wait follows.
@@ -529,18 +540,23 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 		return true
 	}
 	c.syncPolicy(gen, enr, enrolled)
+	paused, pauseCh := c.cfg.Pause.Paused()
 	switch {
+	case paused:
+		// No Hub traffic at all while paused, whatever else holds.
+		c.idle(ctx, ReasonPaused, moved, pauseCh)
+		return false
 	case c.cfg.HubURL == "":
-		c.idle(ctx, ReasonNoHubConfigured, moved)
+		c.idle(ctx, ReasonNoHubConfigured, moved, pauseCh)
 		return false
 	case !enrolled:
-		c.idle(ctx, ReasonNotEnrolled, moved)
+		c.idle(ctx, ReasonNotEnrolled, moved, pauseCh)
 		return false
 	case enr.Check() == store.HubCheckMismatch:
 		// The stored quarantine: the operator said this is not the Hub to
 		// trust. Leaving it needs a person (verify-hub, pairing again, a
 		// reset, or a setting that matches).
-		c.idle(ctx, ReasonQuarantined, moved)
+		c.idle(ctx, ReasonQuarantined, moved, pauseCh)
 		return false
 	}
 	c.clearIdleLog()
@@ -562,6 +578,12 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 			case <-moved:
 				cancel(errEnrollmentChanged)
 				return
+			case <-pauseCh:
+				if p, _ := c.cfg.Pause.Paused(); p {
+					cancel(errPaused)
+					return
+				}
+				_, pauseCh = c.cfg.Pause.Paused()
 			case <-tick.C:
 				if c.cfg.Enrollment.Moved(gen) {
 					cancel(errEnrollmentChanged)
@@ -573,6 +595,10 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 		}
 	}()
 	backoff = c.attempt(actx, gen, enr, key)
+	if ctx.Err() == nil && errors.Is(context.Cause(actx), errPaused) {
+		c.log.Info("hub connection ended: the Worker is paused")
+		return false
+	}
 	if ctx.Err() == nil && errors.Is(context.Cause(actx), errEnrollmentChanged) {
 		c.log.Debug("hub connector: the enrollment changed; starting over", "enrollment_generation", gen)
 		// Start over with the new enrollment at once, without a backoff.
@@ -602,7 +628,7 @@ func (c *Connector) syncPolicy(gen uint64, enr Enrollment, enrolled bool) {
 
 // idle records the idle state and waits for a change of the enrollment, a
 // poll interval or the end of ctx.
-func (c *Connector) idle(ctx context.Context, reason string, moved <-chan struct{}) {
+func (c *Connector) idle(ctx context.Context, reason string, moved, pauseCh <-chan struct{}) {
 	c.mu.Lock()
 	c.status.State, c.status.Reason = ConnIdle, reason
 	first := c.idleLog != reason
@@ -613,6 +639,7 @@ func (c *Connector) idle(ctx context.Context, reason string, moved <-chan struct
 	}
 	select {
 	case <-moved:
+	case <-pauseCh:
 	case <-c.clk.After(c.cfg.IdlePoll):
 	case <-ctx.Done():
 	}

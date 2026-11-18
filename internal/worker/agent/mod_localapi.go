@@ -81,7 +81,8 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	enrollments, _ := lookupService[*Enrollments](env.rt)
 	hostInfo, _ := lookupService[*SessionHostInfo](env.rt)
 	health, _ := lookupService[*SessionListHealth](env.rt)
-	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health}
+	pause, _ := lookupService[*PauseService](env.rt)
+	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health, Pause: pause}
 	// The pipe module starts before this one. Without it the pipe ops are
 	// refused here and never reach the executor, whose pipe_send is the
 	// Hub-origin write (exec_pipe.go).
@@ -98,6 +99,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		Executor: localExecutor{
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
 			instance: uuid.NewString(), enrollments: enrollments,
+			pause: pause, hubConfigured: conn != nil && conn.cfg.HubURL != "",
 		},
 		Logger: log,
 	})
@@ -132,6 +134,10 @@ type localExecutor struct {
 	calls func() PipeCaller
 	// stop asks the runtime to stop the Worker (OpLocalStop); nil refuses it.
 	stop func()
+	// pause applies worker_pause and worker_resume; nil refuses them.
+	// hubConfigured is false for a Solo Worker, which has nothing to pause.
+	pause         *PauseService
+	hubConfigured bool
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {

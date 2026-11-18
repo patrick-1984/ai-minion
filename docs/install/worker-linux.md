@@ -99,6 +99,16 @@ The share choice is read from the Worker's database and takes effect at once; th
 
 To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).
 
+### Pause the Hub connection
+
+```sh
+minion worker pause            # until minion worker resume
+minion worker pause --for 30m  # ends by itself after 30 minutes
+minion worker resume
+```
+
+A paused Worker drops its Hub connection and does not connect again until you resume it or the `--for` time is over; it stays paused across a restart (the pause is saved as `pause.json` in the state directory). Your sessions keep running and stay usable on this machine; nothing ends. Writes that the Hub started before the pause finish (at most 30 seconds are waited for them) and the Hub reads their results after the resume. While paused, `minion worker status` shows `Paused`, and commands that need the Hub (for example `minion workers_list`) answer `paused`. A Worker without a Hub (Solo) has nothing to pause. With `--json` both commands print one JSON object; a running Worker of an older version that cannot pause refuses with exit status 20 and nothing changes.
+
 ## Several Workers on one machine
 
 Run one Worker per Unix user. For test setups with more than one Worker of the same user, give each its own `MINION_STATE_DIR`, `MINION_TMUX_SOCKET` and `XDG_RUNTIME_DIR`: the command line finds the Worker through the control socket `worker.sock` in the runtime directory, and two Workers that share one runtime directory share one socket path. A Worker started by a system service has no `XDG_RUNTIME_DIR`; the commands look for its socket in the per-user directory under the temporary directory as well.
