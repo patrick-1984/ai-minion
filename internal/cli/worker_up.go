@@ -173,6 +173,11 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 		_, _ = fmt.Fprintln(w, join.Warning)
 	}
 	det := service.Detect(deps.detectEnv)
+	if !foreground && det.Manager == service.ManagerSystemd && det.Scope == service.ScopeUser {
+		if err := refuseBesideSystemInstance(cmd, deps, asUser); err != nil {
+			return err
+		}
+	}
 	if foreground || det.Manager == service.ManagerNone {
 		if !foreground {
 			_, _ = fmt.Fprintf(out, "No service manager (%s): running the Worker in the foreground.\n", det.Reason)
@@ -204,6 +209,28 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 		return runWorkerRun(cmd, run)
 	}
 	return installWorkerService(cmd, deps, det, asUser)
+}
+
+// refuseBesideSystemInstance stops "worker up" without root when the system
+// service minion-worker@<user>.service of the target user is installed (tray
+// ticket W1a): a user unit beside it would run a second Worker on the same
+// state. The packaged template unit alone is no evidence
+// (service.Deps.ProbeSystemInstance). Nothing is written before this check.
+func refuseBesideSystemInstance(cmd *cobra.Command, deps workerUpDeps, asUser string) error {
+	target, err := service.ResolveTarget(deps.targetEnv, asUser)
+	if err != nil {
+		return nil // the install path reports it
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p := deps.service.ProbeSystemInstance(ctx, target.User, target.Home)
+	if p.Scope != service.ScopeSystem {
+		return nil
+	}
+	return fmt.Errorf("the system service %s is installed for %s (%s); without root this command would install a second Worker as a user unit beside it. "+
+		"Run \"sudo minion worker up\" to change the system service, or \"sudo systemctl start %s\" to start it; nothing was changed", p.Unit, target.User, p.Evidence, p.Unit)
 }
 
 // warnWindowsService warns a foreground Worker that the Worker's Windows

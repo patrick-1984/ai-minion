@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Headless gate for the `minion` binary** (`make check-headless`, part of `make lint` and of the CI and release workflows): the package graph of `./cmd/minion` for every release target and container platform must not contain a GUI module of the coming tray app (`fyne.io/systray`, `github.com/godbus/dbus`, `github.com/ncruces/zenity`); depguard allows them only in `cmd/minion-tray` and `internal/tray/adapter`.
+
+### Changed
+
+- **`minion worker up` without `sudo` no longer installs a user service beside an installed system service** `minion-worker@<user>.service` (enabled, running, or with the drop-in an earlier `sudo minion worker up` wrote): it names the unit, changes nothing and exits with status 1. The packaged unit template alone does not count.
+
 ## v0.13.1
 
 Released 2026-11-18.

@@ -69,6 +69,8 @@ minion worker up --share-existing all --server https://hub.example.com
 
 Without `sudo` this installs a systemd user service. A user service stops when you log out unless lingering is on. The command turns lingering on for you (`loginctl enable-linger`); when the system does not allow that, it prints the exact command to run as an administrator and exits with an error.
 
+When the system service `minion-worker@<user>.service` of your account is already installed (enabled, running, or configured by an earlier `sudo minion worker up`), `minion worker up` without `sudo` refuses to add a user service beside it: it names the unit, changes nothing and exits with status 1. Run `sudo minion worker up` to change the system service. The unit template that the deb and rpm packages ship (`minion-worker@.service`) does not count as an installed Worker.
+
 `minion worker up` writes the flags you give, and the settings of any `MINION_*` variables, to the Worker's config file in the state directory so that the service uses them. Secrets are never written there. The state directory is `~/.local/state/minion` unless `--state-dir`, `MINION_STATE_DIR` or `XDG_STATE_HOME` says otherwise.
 
 **`--share-existing` is applied at every start.** `minion worker up` saves the flag in the config file, and the Worker applies a `share_existing` value to its saved choice each time it starts. A choice you make later in the Hub is therefore replaced at the next restart. To let the Hub's choice stand, give the flag for the first run and then run `minion worker config unset share_existing`: the saved choice is then used. `minion worker config share ...` keeps the config file in step, so it never gets undone. See [pairing and sharing](../guides/pairing.md#who-decides-at-start).

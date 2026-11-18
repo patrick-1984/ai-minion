@@ -26,13 +26,28 @@ type upRunner struct {
 	mu     sync.Mutex
 	events *[]string
 	answer func(line string) (string, error)
+	// noSystemInstance answers "inactive" for the system instance of a
+	// login without root, so that the probe of "worker up" finds none, and
+	// records the state queries in queries instead of events.
+	noSystemInstance bool
+	queries          []string
 }
 
 func (r *upRunner) Run(_ context.Context, name string, args ...string) (string, error) {
 	line := strings.TrimSpace(name + " " + strings.Join(args, " "))
 	r.mu.Lock()
-	*r.events = append(*r.events, "run: "+line)
+	if r.noSystemInstance && (strings.Contains(line, " is-active ") || strings.Contains(line, " is-enabled ")) {
+		// A login without root: the state queries (the probe for a system
+		// instance, the wait for the user unit) change nothing and are kept
+		// apart from the commands the tests check.
+		r.queries = append(r.queries, line)
+	} else {
+		*r.events = append(*r.events, "run: "+line)
+	}
 	r.mu.Unlock()
+	if r.noSystemInstance && strings.HasPrefix(line, "systemctl is-active minion-worker@") {
+		return "inactive\n", errors.New("exit status 3")
+	}
 	if r.answer != nil {
 		return r.answer(line)
 	}
@@ -77,7 +92,7 @@ func newUpFixture(t *testing.T, root bool) *upFixture {
 	if root {
 		cur = rootU
 	}
-	f.runner = &upRunner{events: &f.events}
+	f.runner = &upRunner{events: &f.events, noSystemInstance: !root}
 	sdir := t.TempDir()
 	f.deps = workerUpDeps{
 		run: workerRunDeps{stderr: f.stderr, lookupEnv: func(k string) (string, bool) { v, ok := f.env[k]; return v, ok },
@@ -1044,5 +1059,70 @@ func TestWarnWindowsService(t *testing.T) {
 		if tc.want && (!strings.Contains(out, "MinionWorker") || strings.Contains(out, "minion worker down") || !strings.Contains(out, "sc.exe delete MinionWorker")) {
 			t.Errorf("warning lacks the commands: %q", out)
 		}
+	}
+}
+
+// Without root, "worker up" refuses when the system instance of the user is
+// installed (enabled but stopped here): exit 1 naming the unit, and no user
+// unit, config file or systemctl change is written (tray ticket W1a).
+func TestWorkerUpWithoutRootRefusesBesideASystemInstance(t *testing.T) {
+	f := newUpFixture(t, false)
+	f.runner.noSystemInstance = false
+	f.runner.answer = func(line string) (string, error) {
+		switch line {
+		case "systemctl is-enabled minion-worker@ann.service":
+			return "enabled\n", nil
+		case "systemctl is-active minion-worker@ann.service":
+			return "inactive\n", errors.New("exit status 3")
+		}
+		if strings.Contains(line, "is-enabled") {
+			return "disabled\n", errors.New("exit status 1")
+		}
+		if strings.Contains(line, "is-active") {
+			return "inactive\n", errors.New("exit status 3")
+		}
+		return "", nil
+	}
+	_, err := f.run("--name", "laptop")
+	if err == nil || !strings.Contains(err.Error(), "minion-worker@ann.service") || !strings.Contains(err.Error(), "nothing was changed") {
+		t.Fatalf("err = %v", err)
+	}
+	if code := execute(context.Background(), func() *cobra.Command {
+		root := &cobra.Command{Use: "minion", SilenceUsage: true, SilenceErrors: true}
+		workerCommand(root).AddCommand(newWorkerUpCmd(f.deps))
+		return root
+	}(), []string{"worker", "up"}, &bytes.Buffer{}, &bytes.Buffer{}); code != ExitError {
+		t.Fatalf("exit status = %d, want 1", code)
+	}
+	if _, err := os.Stat(filepath.Join(f.home, ".config", "systemd", "user", service.UserUnitName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a user unit was written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.stateDir(), "config.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the config was written: %v", err)
+	}
+	for _, c := range f.runCalls() {
+		if !strings.Contains(c, " is-active ") && !strings.Contains(c, " is-enabled ") {
+			t.Fatalf("the refused command ran %q", c)
+		}
+	}
+	if len(f.runCalls()) == 0 {
+		t.Fatal("the probe did not query systemd")
+	}
+}
+
+// The packaged template alone does not stop a user install.
+func TestWorkerUpWithoutRootIgnoresThePackagedTemplate(t *testing.T) {
+	f := newUpFixture(t, false)
+	if err := os.MkdirAll(f.deps.service.PackagedUnitDirs[0], 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.deps.service.PackagedUnitDirs[0], service.TemplateUnitName), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.run("--name", "laptop"); err != nil {
+		t.Fatalf("%v\n%s", err, f.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(f.home, ".config", "systemd", "user", service.UserUnitName)); err != nil {
+		t.Fatalf("user unit: %v", err)
 	}
 }
