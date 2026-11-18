@@ -123,8 +123,9 @@ func stopWindowsService() (bool, error) {
 
 func newWorkerDownCmd(d workerDownDeps) *cobra.Command {
 	return &cobra.Command{
-		Use:   "down",
-		Short: "Stop the running Worker of this user (the opposite of worker up)",
+		Use:     "down",
+		Aliases: []string{"stop"},
+		Short:   "Stop the running Worker of this user (the opposite of worker up)",
 		Long: "Stop the running Worker of this user. A Worker run as a service is stopped through its service\n" +
 			"manager (systemd, launchd, Windows services), a foreground Worker over its control socket.\n" +
 			"Its sessions keep running (tmux, psmux); a service starts again at the next boot or login.",

@@ -148,7 +148,8 @@ sudo systemctl restart minion-worker@<user>
 
 ```sh
 sudo systemctl disable --now minion-worker@<user>
-minion worker down           # as that user: stops the running Worker (or prints the systemctl command a system service needs)
+minion worker down           # as that user: stops the running Worker (or prints the systemctl command a system service needs); also: minion worker stop
+minion worker start          # starts the installed service again; never installs (exit 26 without one, 21 with the sudo command for a system service)
 minion worker reset          # as that user: forgets the Hub, the key, the enrollment and the share choice
 ```
 

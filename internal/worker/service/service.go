@@ -100,6 +100,9 @@ func (c kardianosController) Uninstall() error { return c.svc.Uninstall() }
 func (c kardianosController) Stop() error { return c.svc.Stop() }
 func (c kardianosController) Status() (Status, error) {
 	s, err := c.svc.Status()
+	if errors.Is(err, ksvc.ErrNotInstalled) {
+		return StatusUnknown, ErrNotInstalled
+	}
 	if err != nil {
 		return StatusUnknown, err
 	}

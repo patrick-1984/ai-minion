@@ -23,7 +23,10 @@ func systemctlAnswers(states map[string]string) func(string) (string, error) {
 		if strings.Contains(line, "is-enabled") {
 			return "disabled\n", errors.New("exit status 1")
 		}
-		return "inactive\n", errors.New("exit status 3")
+		if strings.Contains(line, "is-active") {
+			return "inactive\n", errors.New("exit status 3")
+		}
+		return "", nil
 	}
 }
 
