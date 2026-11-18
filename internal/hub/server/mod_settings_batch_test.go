@@ -11,6 +11,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // txService is a settings service over the real store and the real audit log,
@@ -208,5 +209,37 @@ func TestApplyFailureIsAWarning(t *testing.T) {
 	}
 	if r := resolve(t, svc, keyGreeting); r.Value != "x" {
 		t.Fatalf("the value was not stored: %+v", r)
+	}
+}
+
+// A change that names the revision it was based on is refused once the
+// stored value changed (a stale settings page); nothing is stored.
+func TestStaleRevisionIsRefused(t *testing.T) {
+	f := newFixture(t)
+	svc := f.txService()
+	if _, err := svc.Set(context.Background(), admin, batchArgs(ops.SettingChange{Key: keyGreeting, Value: "old"})); err != nil {
+		t.Fatal(err)
+	}
+	rev := listByKey(t, svc)[keyGreeting].Revision
+	if rev == "" || rev == "none" {
+		t.Fatalf("revision %q", rev)
+	}
+	if _, err := svc.Set(context.Background(), admin, batchArgs(ops.SettingChange{Key: keyGreeting, Value: "new"}, ops.SettingChange{Key: keyToken, Value: "t2"})); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.Set(context.Background(), admin, batchArgs(ops.SettingChange{Key: keyGreeting, Value: "old", Revision: rev}))
+	var pe *proto.Error
+	if !errors.As(err, &pe) || pe.Code != proto.CodeConflict || !strings.Contains(err.Error(), "reload") {
+		t.Fatalf("err = %v", err)
+	}
+	if r := resolve(t, svc, keyGreeting); r.Value != "new" {
+		t.Fatalf("a stale change was stored: %+v", r)
+	}
+	cur := listByKey(t, svc)[keyGreeting].Revision
+	if _, err := svc.Set(context.Background(), admin, batchArgs(ops.SettingChange{Key: keyGreeting, Value: "newer", Revision: cur})); err != nil {
+		t.Fatalf("current revision refused: %v", err)
+	}
+	if listByKey(t, svc)[keyMode].Revision != "none" {
+		t.Fatal("a key without a panel value has revision none")
 	}
 }

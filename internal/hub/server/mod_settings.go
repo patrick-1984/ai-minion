@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -253,6 +256,7 @@ func (s *SettingsService) List(ctx context.Context, _ ops.SettingsListArgs) (ops
 			Live: s.live(st.Key), Choices: slices.Clone(st.Choices),
 		}
 		info.Section, _ = config.SectionOf(st.Key)
+		info.Revision = s.revision(ctx, st.Key)
 		if st.Secret {
 			info.EnvFile = st.FileEnvName()
 		}
@@ -378,6 +382,13 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	for i, c := range args.List() {
+		if c.Revision != "" && c.Revision != s.revision(ctx, c.Key) {
+			return ops.WriteResult{}, proto.NewError(proto.CodeConflict,
+				fmt.Sprintf("the setting %s was changed since this page was loaded; reload the page and save again", changes[i].st.Key))
+		}
+	}
+
 	keys := make([]string, len(changes))
 	for i, c := range changes {
 		keys[i] = c.st.Key
@@ -456,6 +467,29 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 	}
 	return res, nil
 }
+
+// revision identifies the stored panel value of key: a hash of the key, the
+// value and its change time under a salt of this process (a revision does
+// not reveal a secret, and one from before a restart is stale). "none" when
+// the panel holds no value.
+func (s *SettingsService) revision(ctx context.Context, key string) string {
+	rec, ok, err := s.store.GetSetting(ctx, key)
+	if err != nil {
+		return "unknown"
+	}
+	if !ok {
+		return "none"
+	}
+	h := sha256.New()
+	h.Write(revisionSalt[:])
+	_, _ = fmt.Fprintf(h, "%d:%s|%d|%d:%s", len(key), key, rec.UpdatedAt.UnixNano(), len(rec.Value), rec.Value)
+	return hex.EncodeToString(h.Sum(nil))[:24]
+}
+
+var revisionSalt = func() (b [32]byte) {
+	_, _ = rand.Read(b[:])
+	return b
+}()
 
 // storeOne is the change of one setting without a transaction: the audit
 // record is written before the change, so that no change can exist without

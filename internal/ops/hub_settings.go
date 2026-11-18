@@ -69,6 +69,9 @@ type SettingInfo struct {
 	// Section is the group of the setting on the settings page, for example
 	// "Server and network".
 	Section string `json:"section"`
+	// Revision identifies the stored panel value; a change that names it
+	// (SettingChange.Revision) is refused when the value changed since.
+	Revision string `json:"revision,omitempty"`
 }
 
 // SettingsListResult is the result of settings_list, ordered by key.
@@ -87,6 +90,10 @@ type SettingChange struct {
 	Value string `json:"value,omitempty"`
 	// Unset removes the panel value. It excludes Value.
 	Unset bool `json:"unset,omitempty"`
+	// Revision, when set, is the revision settings_list reported: the
+	// change is refused with a conflict when the stored value changed since
+	// (a page loaded before someone else's change).
+	Revision string `json:"revision,omitempty"`
 }
 
 // SettingsSetArgs are the arguments of settings_set: one key (Key, Value,

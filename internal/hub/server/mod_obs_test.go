@@ -91,7 +91,9 @@ func newObsFixture(t *testing.T, env map[string]string, verbose *bool) *obsFixtu
 	m := obs.New(live.Fanout, obs.Process{Service: "minion-hub"})
 	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
 	svc := &ObsService{Manager: m, live: live, verbose: verbose}
-	wireLogging(context.Background(), svc, settings, config.SinkFiles{})
+	if err := wireLogging(context.Background(), svc, settings, config.SinkFiles{}); err != nil {
+		t.Fatal(err)
+	}
 	return &obsFixture{fixture: f, settings: settings, svc: svc, log: log, local: local}
 }
 

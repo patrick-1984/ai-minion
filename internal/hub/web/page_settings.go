@@ -28,6 +28,9 @@ const (
 // sections, in config.SectionOrder, with no empty section.
 type SettingsPage struct {
 	Sections []SettingSection
+	// Sinks is the effective state of the remote log sinks, shown in the
+	// Log export section; empty when hub_diagnostics did not answer.
+	Sinks []DiagnosticsFact
 }
 
 // SettingSection is one card of the settings page.
@@ -73,6 +76,11 @@ type SettingRow struct {
 	Live       bool
 	// PendingRestart says that the stored value takes effect at the next start.
 	PendingRestart bool
+	// Revision is the stored value's revision; a batch save sends it back so
+	// that a page loaded before someone else's change cannot undo it.
+	Revision string
+	// Multiline is a value of several lines (the OTLP header list).
+	Multiline bool
 	// Error is why the effective value does not resolve, when it does not.
 	Error string
 }
@@ -84,7 +92,8 @@ func settingRows(list []ops.SettingInfo) []SettingRow {
 		row := SettingRow{
 			Key: s.Key, Help: s.Help, Env: s.Env, EnvFile: s.EnvFile, Secret: s.Secret,
 			Choices: s.Choices, Source: s.Source, Locked: s.ReadOnly, Live: s.Live,
-			PendingRestart: s.PendingRestart, Error: s.Error,
+			PendingRestart: s.PendingRestart, Error: s.Error, Revision: s.Revision,
+			Multiline: s.Key == config.KeyOTelHeaders,
 		}
 		// The operation names the section; an older result without one
 		// falls back to the local table.
@@ -117,7 +126,12 @@ func settingsData(r *http.Request, c OpCaller) (any, error) {
 	if err := c.CallOp(r, ops.OpSettingsList, ops.SettingsListArgs{}, &res); err != nil {
 		return nil, err
 	}
-	return SettingsPage{Sections: settingSections(settingRows(res.Settings))}, nil
+	page := SettingsPage{Sections: settingSections(settingRows(res.Settings))}
+	var d ops.HubDiagnosticsResult
+	if err := c.CallOp(r, ops.OpHubDiagnostics, ops.HubDiagnosticsArgs{}, &d); err == nil {
+		page.Sinks = sinkFacts(d.Sinks)
+	}
+	return page, nil
 }
 
 // settingSections groups rows by section in config.SectionOrder. Inside a
@@ -214,18 +228,19 @@ func handleSettingsSection(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		if !ok {
 			continue
 		}
-		value := r.PostForm.Get(k)
+		value := strings.ReplaceAll(r.PostForm.Get(k), "\r\n", "\n")
 		secret := r.PostForm.Get("s."+key) == "1"
 		remove := r.PostForm.Get("r."+key) == "1"
+		rev := r.PostForm.Get("rev." + key)
 		switch {
 		case secret && remove:
-			changes = append(changes, ops.SettingChange{Key: key, Unset: true})
+			changes = append(changes, ops.SettingChange{Key: key, Unset: true, Revision: rev})
 		case secret && strings.TrimSpace(value) == "":
 			// keep the stored secret
 		case value == "":
-			changes = append(changes, ops.SettingChange{Key: key, Unset: true})
+			changes = append(changes, ops.SettingChange{Key: key, Unset: true, Revision: rev})
 		default:
-			changes = append(changes, ops.SettingChange{Key: key, Value: value})
+			changes = append(changes, ops.SettingChange{Key: key, Value: value, Revision: rev})
 		}
 	}
 	if len(changes) == 0 {

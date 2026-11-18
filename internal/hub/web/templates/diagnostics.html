@@ -16,5 +16,12 @@
       {{end}}
     </div>
   </section>
+  {{if .Data.Sinks}}<section class="panel" aria-labelledby="diag-sinks">
+    <h2 id="diag-sinks">Log export</h2>
+    <div class="diagnostic-facts">
+      {{range .Data.Sinks}}<dl><dt>{{.Label}}</dt><dd>{{.Value}}</dd></dl>
+      {{end}}
+    </div>
+  </section>{{end}}
 </div>
 {{end}}

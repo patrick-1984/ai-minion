@@ -22,6 +22,7 @@
   <form class="settings-batch" method="post" hx-post="/admin/settings-section" hx-target="#result-{{.ID}}" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
   <input type="hidden" name="section" value="{{.Name}}">
   <p class="muted">These settings are saved together: the Hub checks the whole section and applies it at once, without a restart.</p>
+  {{if $.Data.Sinks}}<div class="diagnostic-facts" aria-label="Effective state">{{range $.Data.Sinks}}<dl><dt>{{.Label}}</dt><dd>{{.Value}}</dd></dl>{{end}}</div>{{end}}
   <ul>
 {{range .Rows}}
   <li data-filter="{{.Key}} {{.Env}} {{.EnvFile}} {{.Help}}">
@@ -33,10 +34,13 @@
         {{$v := .Value}}{{range .Choices}}<option value="{{.}}"{{if eq . $v}} selected{{end}}>{{.}}</option>
         {{end}}
       </select>
+      {{else if and .Secret .Multiline}}<textarea id="v-{{.Key}}" name="v.{{.Key}}" rows="3" autocomplete="off" spellcheck="false" placeholder="{{.SecretState}} (one Name: value per line; empty keeps the stored value)" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}"></textarea>
+      <input type="hidden" name="s.{{.Key}}" value="1">
       {{else if .Secret}}<input type="password" id="v-{{.Key}}" name="v.{{.Key}}" autocomplete="new-password" placeholder="{{.SecretState}}" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
       <input type="hidden" name="s.{{.Key}}" value="1">
       {{else}}<input type="text" id="v-{{.Key}}" name="v.{{.Key}}" value="{{.Value}}" autocomplete="off" spellcheck="false" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">{{end}}
     </div>
+    {{if not .Locked}}<input type="hidden" name="rev.{{.Key}}" value="{{.Revision}}">{{end}}
     <div class="s-actions">
       {{if .Locked}}<span id="why-{{.Key}}" class="s-locked">{{.LockedText}}</span>
       {{else if .Secret}}<label class="s-remove"><input type="checkbox" name="r.{{.Key}}" value="1"> Remove</label>{{end}}
