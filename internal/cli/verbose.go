@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -10,9 +12,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/obs"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
 // flagVerbose is the flag of the verbose setting ([config.KeyVerbose]). It is
@@ -65,6 +70,48 @@ func workerLogger(cmd *cobra.Command, res *config.Resolver, out io.Writer) (*slo
 		return nil, nil, err
 	}
 	return logx.NewLive(logx.Options{Level: level, Format: logx.Format(format.Value), Output: out}, logx.NewRing(0, 0))
+}
+
+// startWorkerSinks builds the remote log sinks (syslog, OpenTelemetry) of a
+// running Worker from its settings (flag, environment, config file) into the
+// remote slots of live's fan-out. Standalone commands (CLI one-shots, minion
+// mcp, worker pair) never call it: they log to stderr only. A sink setting
+// that does not validate fails the start, as any other Worker setting does.
+func startWorkerSinks(ctx context.Context, res *config.Resolver, live *logx.Live) (*obs.Manager, error) {
+	sinks, err := config.ResolveSinks(res, config.SinkFiles{ReadPrivate: readPrivateSinkFile})
+	if err != nil {
+		return nil, err
+	}
+	m := obs.New(live.Fanout, obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: ops.NewUUIDv7()})
+	if err := m.Apply(ctx, sinks); err != nil {
+		sctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = m.Shutdown(sctx)
+		return nil, err
+	}
+	return m, nil
+}
+
+// maxSinkFile bounds a private file of a sink setting (header file, TLS key).
+const maxSinkFile = 1 << 20
+
+// readPrivateSinkFile reads a secret file of a sink setting through
+// identity.OpenPrivate: a regular file of this user that nobody else can
+// read (Unix mode, Windows ACL), checked on the open handle.
+func readPrivateSinkFile(path string) ([]byte, error) {
+	f, err := identity.OpenPrivate(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, maxSinkFile+1))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s", path)
+	}
+	if len(b) > maxSinkFile {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxSinkFile)
+	}
+	return b, nil
 }
 
 // debugOpCall writes one debug line about an op command's call: the op, the

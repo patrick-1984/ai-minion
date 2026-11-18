@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
 // OpLocalStatus is the op of the local control socket that returns the live
@@ -60,6 +62,9 @@ type LiveStatusReply struct {
 	HubCheckAware bool `json:"hub_check_aware,omitempty"`
 	// Instance identifies this control socket server across status and writes.
 	Instance string `json:"instance,omitempty"`
+	// LogSinks is the state of the remote log sinks (v0.14.0); an older
+	// Worker omits it.
+	LogSinks []ops.LogSinkStatus `json:"log_sinks,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -85,6 +90,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		TLSPath:            c.TLSPath,
 		TLSLine:            c.TLSLine,
 		HubCheckAware:      true,
+		LogSinks:           live.LogSinks,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -128,6 +134,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		RunMode:            r.RunMode,
 		Host:               SessionHostInfo{Kind: r.SessionHost, Hidden: r.SessionsHidden, Reason: r.SessionHostReason},
 		ListError:          r.SessionsListError,
+		LogSinks:           r.LogSinks,
 	}, nil
 }
 

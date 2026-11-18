@@ -18,6 +18,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
@@ -45,6 +46,12 @@ type Settings struct {
 	// LogLive switches the level of Logger at runtime and holds its recent
 	// lines (worker_debug, worker_logs). Nil: no remote debug.
 	LogLive *logx.Live
+	// LogSinks is the state of the remote log sinks (syslog, otel) for
+	// minion worker status; nil when there are none.
+	LogSinks func() []ops.LogSinkStatus
+	// StopLogSinks flushes and stops the remote log sinks within ctx; the
+	// log module calls it last in the stop sequence. Nil: nothing to stop.
+	StopLogSinks func(ctx context.Context) error
 	// Out is for human-readable reports, such as the result of enrollment.
 	// Nil discards them.
 	Out io.Writer
