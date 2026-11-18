@@ -1,3 +1,10 @@
+{{define "settings_key"}}<div class="s-key">
+  <div class="row">
+    <label for="v-{{.Key}}" id="h-{{.Key}}">{{.Key}}</label>
+    {{if and .Help (eq .Key "trusted_proxies")}}<button type="button" class="info-btn" popovertarget="help-trusted-proxies" aria-label="About trusted proxies">{{template "icon" "i-info"}}</button>{{end}}
+  </div>
+  <span class="s-env"><code>{{.Env}}</code>{{if .EnvFile}} or <code>{{.EnvFile}}</code> (a file that holds the value){{end}}</span>
+</div>{{end}}
 {{define "content"}}
 <div class="page-head"><div><h1>Hub settings</h1><p>Every setting of the Hub with the environment variable that sets it. A field that an environment variable sets is read-only here. A secret is never shown again: it is only "set" or "not set".</p></div></div>
 {{if .Data.Sections}}
@@ -15,27 +22,30 @@
 {{range .Rows}}
   <li data-filter="{{.Key}} {{.Env}} {{.EnvFile}} {{.Help}}">
   <form class="srow" method="post" hx-post="/admin/settings/{{.Key}}" hx-target="#result-{{.Key}}" hx-swap="innerHTML" hx-disabled-elt="find button">
-    <div class="s-key">
-      <label for="v-{{.Key}}" id="h-{{.Key}}">{{.Key}}</label>
-      <span class="s-env"><code>{{.Env}}</code>{{if .EnvFile}} or <code>{{.EnvFile}}</code> (a file that holds the value){{end}}</span>
-    </div>
+    {{$trustedHelp := and .Help (eq .Key "trusted_proxies")}}
+    {{if not $trustedHelp}}{{template "settings_key" .}}{{end}}
+    {{$copyable := and (not .Secret) (or (eq .Key "public_url") (eq .Key "oidc_issuer") (eq .Key "oidc_client_id"))}}
     <div class="s-value">
-      {{if .Locked}}<input type="{{if .Secret}}password{{else}}text{{end}}" id="v-{{.Key}}" value="{{.Value}}" disabled aria-describedby="why-{{.Key}} m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
+      {{if $copyable}}<div class="copy-field">{{end}}
+      {{if .Locked}}<input type="{{if .Secret}}password{{else}}text{{end}}" id="v-{{.Key}}" value="{{.Value}}" disabled aria-describedby="why-{{.Key}} m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}"{{if $copyable}} class="copy-value"{{end}}>
       {{else if .Choices}}<select id="v-{{.Key}}" name="value" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
         {{$v := .Value}}{{range .Choices}}<option value="{{.}}"{{if eq . $v}} selected{{end}}>{{.}}</option>
         {{end}}
       </select>
       {{else if .Secret}}<input type="password" id="v-{{.Key}}" name="value" autocomplete="new-password" placeholder="{{.SecretState}}" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
       <input type="hidden" name="secret" value="1">
-      {{else}}<input type="text" id="v-{{.Key}}" name="value" value="{{.Value}}" autocomplete="off" spellcheck="false" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">{{end}}
+      {{else}}<input type="text" id="v-{{.Key}}" name="value" value="{{.Value}}" autocomplete="off" spellcheck="false" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}"{{if eq .Key "listen"}} placeholder="e.g. 127.0.0.1:9443"{{else if eq .Key "public_url"}} placeholder="e.g. https://hub.example.com"{{else if eq .Key "trusted_proxies"}} placeholder="e.g. 192.0.2.5/32"{{else if eq .Key "oidc_issuer"}} placeholder="e.g. https://login.example.com"{{else if eq .Key "oidc_client_id"}} placeholder="e.g. example-hub-client"{{end}}{{if $copyable}} class="copy-value"{{end}}>{{end}}
+      {{if $copyable}}<button type="button" class="copy-btn" data-copy-target="#v-{{.Key}}" aria-label="Copy {{.Key}}" title="Copy">{{template "copy-icons"}}</button></div>{{end}}
     </div>
     <div class="s-actions">
       {{if .Locked}}<span id="why-{{.Key}}" class="s-locked">{{.LockedText}}</span>
-      {{else}}<button type="submit" name="action" value="set">Save</button>
-      <button type="submit" name="action" value="unset" class="btn-secondary">{{if .Secret}}Remove{{else}}Use the default{{end}}</button>{{end}}
+      {{else}}<button type="submit" name="action" value="set">{{template "icon" "i-save"}}<span>Save</span></button>
+      <button type="submit" name="action" value="unset"{{if .Secret}} data-confirm-name="{{.Key}}" data-confirm-what="secret setting"{{end}} class="btn-secondary">{{if .Secret}}{{template "icon" "i-trash"}}<span>Remove</span>{{else}}Use the default{{end}}</button>{{end}}
     </div>
+    {{if $trustedHelp}}{{template "settings_key" .}}{{end}}
     <div class="s-desc">
       {{if .Help}}<p id="d-{{.Key}}" class="s-help">{{.Help}}</p>{{end}}
+      {{if eq .Key "trusted_proxies"}}<div class="info-pop" id="help-trusted-proxies" popover><p>The Hub accepts forwarded client addresses and schemes only from these proxies. List each proxy's exact address or the smallest network it needs.</p></div>{{end}}
       <p id="m-{{.Key}}" class="s-meta">{{if .Secret}}Secret: {{.SecretState}}. {{end}}Source: {{.Source}}. {{if .Live}}Applies without a restart.{{else}}Applies after the Hub restarts.{{end}}{{if .PendingRestart}} <strong>A changed value waits for the next restart.</strong>{{end}}</p>
       {{if .Error}}<p class="form-error s-error" role="alert">The current value is not valid: {{.Error}}</p>{{end}}
     </div>

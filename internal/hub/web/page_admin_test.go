@@ -513,7 +513,7 @@ func TestUsersPageListsAccountsAndOffersCreation(t *testing.T) {
 	body := get(t, s, pathAdminUsers, "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, body, `hx-post="/admin/users"`, `name="username"`, `name="email"`, `name="role"`,
 		`<th scope="row">alice</th>`, `<th scope="row">bob</th>`, `<th scope="row">carol</th>`,
-		`href="/admin/users/`+otherUserID+`">Manage bob</a>`,
+		`href="/admin/users/`+otherUserID+`">`, `<span>Edit</span><span class="sr-only"> bob</span></a>`,
 		"temporary", "deactivated", "(idp)")
 }
 

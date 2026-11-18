@@ -3,7 +3,7 @@
 <form method="get" action="/admin/audit" class="toolbar" aria-label="Filter the audit log">
   <div class="field">
     <label for="f-actor">Actor (user id, or key:id)</label>
-    <input type="text" id="f-actor" name="actor" value="{{.Data.Filter.Actor}}" autocomplete="off" spellcheck="false" maxlength="256">
+    <input type="text" id="f-actor" name="actor" value="{{.Data.Filter.Actor}}" autocomplete="off" spellcheck="false" maxlength="256" placeholder="e.g. key:example">
   </div>
   <div class="field">
     <label for="f-action">Action (for example settings.set)</label>
@@ -11,11 +11,15 @@
   </div>
   <div class="field">
     <label for="f-from">From (date or time, UTC)</label>
-    <input type="text" id="f-from" name="from" value="{{.Data.Filter.From}}" autocomplete="off" placeholder="2026-11-01">
+    {{$dateFrom := and (not .Data.Error) (or (eq .Data.Filter.From "") (eq (len .Data.Filter.From) 10))}}
+    <input type="{{if $dateFrom}}date{{else}}text{{end}}" id="f-from" name="from" value="{{.Data.Filter.From}}" autocomplete="off" placeholder="e.g. 2026-11-01">
+    <button type="button" class="btn btn-secondary btn-sm" data-audit-time="#f-from">Enter a date or RFC 3339 time</button>
   </div>
   <div class="field">
     <label for="f-to">To (date or time, UTC)</label>
-    <input type="text" id="f-to" name="to" value="{{.Data.Filter.To}}" autocomplete="off" placeholder="2026-11-09">
+    {{$dateTo := and (not .Data.Error) (or (eq .Data.Filter.To "") (eq (len .Data.Filter.To) 10))}}
+    <input type="{{if $dateTo}}date{{else}}text{{end}}" id="f-to" name="to" value="{{.Data.Filter.To}}" autocomplete="off" placeholder="e.g. 2026-11-09">
+    <button type="button" class="btn btn-secondary btn-sm" data-audit-time="#f-to">Enter a date or RFC 3339 time</button>
   </div>
   <div class="field">
     <label for="f-limit">Events per page</label>
@@ -28,19 +32,20 @@
   <a class="btn btn-secondary" href="/admin/audit">Clear</a></div>
 </form>
 {{if .Data.Error}}<p class="form-error" role="alert">{{.Data.Error}}</p>{{end}}
-<div class="table-wrap"><table>
-  <caption class="muted">Newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
-  <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Acting as</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Outcome</th></tr></thead>
+<p class="muted">Sorting applies to the rows on this page.</p>
+<div class="table-wrap"><table data-sortable>
+  <caption class="muted">Initially newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
+  <thead><tr><th scope="col" data-sort="text">Time</th><th scope="col" data-sort="text">Actor</th><th scope="col" data-sort="text">Acting as</th><th scope="col" data-sort="text">Action</th><th scope="col" data-sort="text">Target</th><th scope="col" data-sort="text">Outcome</th></tr></thead>
   <tbody>
   {{range .Data.Events}}<tr>
     <td><time datetime="{{.TS.Time.Format "2006-01-02T15:04:05.000Z07:00"}}">{{.TS.Time.Format "2006-01-02 15:04:05"}}</time></td>
-    <td>{{.Actor}}</td>
-    <td>{{if .ActingAs}}{{.ActingAs}}{{else}}<span class="muted">-</span>{{end}}</td>
-    <td>{{.Action}}</td>
-    <td>{{if .Target}}{{.Target}}{{else}}<span class="muted">-</span>{{end}}</td>
+    <td class="cell-clamp" title="{{.Actor}}" tabindex="0">{{.Actor}}</td>
+    <td class="cell-clamp" title="{{.ActingAs}}" tabindex="0">{{if .ActingAs}}{{.ActingAs}}{{else}}<span class="muted">-</span>{{end}}</td>
+    <td class="cell-clamp" title="{{.Action}}" tabindex="0">{{.Action}}</td>
+    <td class="cell-clamp" title="{{.Target}}" tabindex="0">{{if .Target}}{{.Target}}{{else}}<span class="muted">-</span>{{end}}</td>
     <td>{{.Outcome}}</td>
   </tr>
-  {{else}}<tr><td colspan="6" class="muted">{{if .Data.Error}}No events are listed.{{else}}No events match.{{end}}</td></tr>
+  {{else}}<tr><td colspan="6" class="muted">{{if .Data.Error}}No events are listed.{{else}}No events match.{{end}} <a href="/admin/audit">Clear filters</a>.</td></tr>
   {{end}}
   </tbody>
 </table></div>

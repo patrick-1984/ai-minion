@@ -8,12 +8,13 @@
 {{end}}<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/minion.css">
 <script src="/static/theme.js"></script>
+<link rel="stylesheet" href="/static/minion.css">
 <script src="/static/htmx.min.js" defer></script>
 <script src="/static/sse.js" defer></script>
 <script src="/static/forms.js" defer></script>
 <script src="/static/shell.js" defer></script>
+<script src="/static/ui-extras.js" defer></script>
 </head>
 <body{{if .Embed}} class="embed"{{end}}{{if .CSRF}} hx-headers='{"X-Minion-CSRF":"{{.CSRF}}"}'{{end}} hx-ext="sse">
 <a class="skip-link" href="#content" data-modal-inert>Skip to content</a>
@@ -33,9 +34,9 @@
     </div>
     <nav aria-label="Main" id="site-nav">
       {{range .NavGroups}}<div class="nav-group">
-        <h2 class="nav-label" id="nav-{{.ID}}">{{if .Path}}<a href="{{.Path}}">{{.Label}}</a>{{else}}{{.Label}}{{end}}</h2>
+        <h2 class="nav-label" id="nav-{{.ID}}">{{$groupIcon := ""}}{{if eq .ID "workspace"}}{{$groupIcon = "i-grp-workspace"}}{{else if eq .ID "access"}}{{$groupIcon = "i-grp-access"}}{{else if eq .ID "admin"}}{{$groupIcon = "i-grp-admin"}}{{end}}{{if $groupIcon}}{{template "icon" $groupIcon}}{{end}}{{if .Path}}<a href="{{.Path}}"{{if eq $.Path .Path}} aria-current="page"{{end}}>{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}</h2>
         <ul class="nav-list" aria-labelledby="nav-{{.ID}}">
-          {{range .Links}}<li><a href="{{.Path}}"{{if .Active}} aria-current="page"{{end}}>{{if .Icon}}{{template "icon" .Icon}}{{end}}<span>{{.Label}}</span></a></li>
+          {{range .Links}}<li><a href="{{.Path}}"{{if .Active}} aria-current="page"{{end}}>{{if eq .Path "/admin/identity"}}{{template "icon" "i-fingerprint"}}{{else if eq .Path "/admin/updates"}}{{template "icon" "i-download"}}{{else if eq .Path "/access/control"}}{{template "icon" "i-control"}}{{else if eq .Path "/admin/diagnostics"}}{{template "icon" "i-diagnostics"}}{{else if .Icon}}{{template "icon" .Icon}}{{end}}<span>{{.Label}}</span></a></li>
           {{end}}
         </ul>
       </div>
@@ -59,18 +60,24 @@
   <div class="main-col">
     <header class="topbar" data-modal-inert>
       <button type="button" class="btn btn-secondary menu-btn" id="menu-button" aria-expanded="false" aria-controls="site-rail">{{template "icon" "i-menu"}}<span>Menu</span></button>
+      <div class="top-search" data-search>
+        {{template "icon" "i-search"}}
+        <input type="search" id="top-search-input" class="top-search-input" aria-autocomplete="list"
+               aria-expanded="false" aria-controls="top-search-results" aria-label="Search pages and sections"
+               aria-keyshortcuts="Control+K Meta+K /" placeholder="Search pages and sections" autocomplete="off">
+        <kbd class="top-search-kbd" aria-hidden="true">Ctrl K</kbd>
+        <ul id="top-search-results" class="top-search-results" role="listbox" aria-label="Search results" hidden></ul>
+      </div>
       <nav class="crumbs" aria-label="Breadcrumb"><ol>
         {{range .Crumbs}}<li>{{if .Path}}<a href="{{.Path}}">{{.Label}}</a>{{else}}<span aria-current="page">{{.Label}}</span>{{end}}</li>
         {{end}}
       </ol></nav>
       <div class="top-tools">
-        <label class="theme-picker"><span>Theme</span>
-          <select data-theme-select>
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </label>
+        <div class="theme-toggle" role="group" aria-label="Theme">
+          <button type="button" class="theme-opt" data-theme-choice="system" aria-pressed="false" title="System theme">{{template "icon" "i-monitor"}}<span class="sr-only">System theme</span></button>
+          <button type="button" class="theme-opt" data-theme-choice="light" aria-pressed="false" title="Light theme">{{template "icon" "i-sun"}}<span class="sr-only">Light theme</span></button>
+          <button type="button" class="theme-opt" data-theme-choice="dark" aria-pressed="false" title="Dark theme">{{template "icon" "i-moon"}}<span class="sr-only">Dark theme</span></button>
+        </div>
       </div>
     </header>
     <div id="banner-slot" data-modal-inert>{{range .Banners}}<div class="banner banner-{{.Kind}}" role="status"><span>{{.Text}}</span>{{with .Action}}

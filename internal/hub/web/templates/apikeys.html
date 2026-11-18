@@ -3,21 +3,27 @@
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="api-key">API key</label>
-    <input type="text" id="api-key" value="{{.Key}}" readonly autocomplete="off" spellcheck="false">
-    <button type="button" data-copy="#api-key">Copy the key</button>
+    <div><div class="copy-field"><input type="text" class="copy-value" id="api-key" value="{{.Key}}" readonly autocomplete="off" spellcheck="false"><button type="button" class="copy-btn" data-copy="#api-key" data-copy-target="#api-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
-  <p class="muted">Send it to {{.Server}} as <code>Authorization: Bearer &lt;key&gt;</code>, or save it as the only line of a file and point <code>MINION_API_KEY_FILE</code> at that file (for example for <code>minion mcp</code>). It is listed afterwards as <code>{{.Hint}}</code>.</p>
+  <p class="muted">Send it to this server:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-api-server">{{.Server}}</code><button type="button" class="copy-btn" data-copy-target="#cp-api-server" aria-label="Copy the server URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  <p class="muted">Use this header, replacing &lt;key&gt; with the key:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-api-header">Authorization: Bearer &lt;key&gt;</code><button type="button" class="copy-btn" data-copy-target="#cp-api-header" aria-label="Copy the authorization header" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  <p class="muted">Or save it as the only line of a file and point <code>MINION_API_KEY_FILE</code> at that file, for example for:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-api-mcp">minion mcp</code><button type="button" class="copy-btn" data-copy-target="#cp-api-mcp" aria-label="Copy the command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  <p class="muted">It is listed afterwards as <code>{{.Hint}}</code>.</p>
   <p><a href="/api-keys">Back to the API keys</a></p>
 </div>{{end}}
 {{define "content"}}
 <div class="page-head"><div><h1>API keys</h1><p>An API key lets a tool or script use the Hub on your behalf, limited to what you choose here. A key can never do more than you can.</p></div></div>
 <div class="stack">
 <section class="panel" aria-labelledby="create-apikey">
-  <h2 id="create-apikey">Create an API key</h2>
+  <h2 id="create-apikey">Create an API key <button type="button" class="info-btn" popovertarget="help-api-key-scopes" aria-label="About API key scopes">{{template "icon" "i-info"}}</button></h2>
+  <div class="info-pop" id="help-api-key-scopes" popover><p>A scope says what the key can reach and which actions it can take there. Choose only what the tool needs.</p></div>
   <form method="post" hx-post="/api-keys" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="key-name">Name</label>
-      <input type="text" id="key-name" name="name" autocomplete="off" required maxlength="64">
+      <input type="text" id="key-name" name="name" autocomplete="off" required maxlength="64" placeholder="e.g. build monitor">
     </div>
     <fieldset class="field">
       <legend>What the key may reach</legend>
@@ -27,8 +33,8 @@
     </fieldset>
     <div class="field">
       <label for="key-session">Only one session (optional)</label>
-      <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help">
-      <span id="key-session-help" class="muted">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
+      <input type="text" id="key-session" name="session" autocomplete="off" spellcheck="false" maxlength="128" aria-describedby="key-session-help" placeholder="e.g. nightly-build">
+      <span id="key-session-help" class="muted field-hint">The name of a session. Choose exactly one Worker above, and the key reaches only that session.</span>
     </div>
     <fieldset class="field">
       <legend>What the key may do</legend>
@@ -51,29 +57,29 @@
         {{end}}
       </select>
     </div>
-    <button type="submit">Create the key</button>
+    <button type="submit">{{template "icon" "i-plus"}}<span>Create the key</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
 </section>
 <section aria-labelledby="apikey-list">
   <h2 id="apikey-list">Your API keys</h2>
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Name</th><th scope="col">Key</th><th scope="col">Reaches and may do</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Key</th><th scope="col" data-sort="text">Reaches and may do</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">Last used</th><th scope="col" data-sort="text">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range .Data.Keys}}<tr>
-      <th scope="row">{{.Name}}</th>
-      <td><code>{{.Hint}}</code></td>
-      <td>{{.Scope}}</td>
+      <th scope="row"{{if gt (len .Name) 32}} class="cell-clamp" title="{{.Name}}" tabindex="0"{{end}}>{{.Name}}</th>
+      <td class="cell-clamp" title="{{.Hint}}" tabindex="0"><code>{{.Hint}}</code></td>
+      <td class="cell-clamp" title="{{.Scope}}" tabindex="0">{{.Scope}}</td>
       <td>{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}}</td>
       <td>{{.LastUsed}}</td>
       <td>{{.State}}</td>
-      <td>{{if .CanRevoke}}<form method="post" hx-post="/api-keys/{{.ID}}/revoke" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger">Revoke {{.Name}}</button>
+      <td>{{if .CanRevoke}}<form method="post" hx-post="/api-keys/{{.ID}}/revoke" data-confirm-name="{{.Name}}" data-confirm-what="API key" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+          <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Revoke {{.Name}}</span></button>
           <span id="revoke-{{.ID}}" aria-live="polite"></span>
         </form>{{else}}<span class="muted">none</span>{{end}}</td>
     </tr>
-    {{else}}<tr><td colspan="7" class="muted">You have no API keys yet.</td></tr>
+    {{else}}<tr><td colspan="7" class="muted">You have no API keys yet. <a href="#create-apikey">Create an API key</a>.</td></tr>
     {{end}}
     </tbody>
   </table></div>

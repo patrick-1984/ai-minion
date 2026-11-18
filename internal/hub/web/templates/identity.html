@@ -1,17 +1,19 @@
 {{define "content"}}
-<div class="page-head"><div><h1>Hub identity</h1><p>The key that Workers pin and the certificate that proves this Hub to them. Every change asks for the Hub passphrase and a sign-in from the last five minutes. The passphrase is never shown again and never stored.</p></div></div>
+<div class="page-head"><div><div class="row"><h1>Hub identity</h1> <button type="button" class="info-btn" popovertarget="help-hub-identity" aria-label="About Hub identity">{{template "icon" "i-info"}}</button></div><p>The key that Workers pin and the certificate that proves this Hub to them. Every change asks for the Hub passphrase and a sign-in from the last five minutes. The passphrase is never shown again and never stored.</p>
+  <div class="info-pop" id="help-hub-identity" popover><p>Workers remember the Hub's root key when they join. The Hub uses a certificate signed by that key to prove its identity on later connections.</p></div>
+</div></div>
 <div class="stack" id="identity-page" data-state="{{.Data.Status.State}}">
 <section class="panel" aria-labelledby="id-state">
   <h2 id="id-state">State</h2>
   <dl>
-    <dt>Bootstrap state</dt><dd>{{.Data.Status.StateLabel}}</dd>
-    <dt>Passphrase</dt><dd>{{if .Data.Status.PassphraseSet}}set{{else}}not set yet{{end}}</dd>
+    <dt>Bootstrap state</dt><dd class="identity-state identity-state-{{.Data.Status.State}} identity-status-{{if or .Data.Status.Expired (eq .Data.Status.Warning "error")}}expired{{else if .Data.Status.Warning}}warning{{else if .Data.Status.Serving}}valid{{else}}inactive{{end}}">{{.Data.Status.StateLabel}}</dd>
+    <dt>Passphrase <button type="button" class="info-btn" popovertarget="help-hub-passphrase" aria-label="About the Hub passphrase">{{template "icon" "i-info"}}</button></dt><dd>{{if .Data.Status.PassphraseSet}}set{{else}}not set yet{{end}}<div class="info-pop" id="help-hub-passphrase" popover><p>This is not your sign-in password. It unlocks the sealed root key for changes such as renewing the Hub certificate.</p></div></dd>
     <dt>Workers can connect</dt><dd>{{if .Data.Status.Serving}}yes{{else}}no{{end}}</dd>
-    {{if .Data.Status.RootFingerprint}}<dt>Hub fingerprint (root key)</dt><dd data-hub-fingerprint><span class="fp-words">{{.Data.Status.RootFingerprintWords}}</span><br><code>{{.Data.Status.RootFingerprint}}</code><br><span class="muted">Workers compare these words. If a reverse proxy is in front of the Hub and you do not want to rely on it, read them on the Hub host instead: <code>minion hub identity --words</code></span></dd>{{end}}
-    {{if .Data.Status.OpFingerprint}}<dt>Operational key</dt><dd><code>{{.Data.Status.OpFingerprint}}</code> <span class="muted">(changes at every re-issue; do not compare it)</span></dd>{{end}}
-    {{if .Data.Status.Serial}}<dt>Certificate serial</dt><dd>{{.Data.Status.Serial}}</dd>
+    {{if .Data.Status.RootFingerprint}}<dt>Hub fingerprint (root key)</dt><dd data-hub-fingerprint><div><div class="copy-field"><code class="copy-value" id="cp-id-root-words"><span class="fp-words">{{.Data.Status.RootFingerprintWords}}</span></code><button type="button" class="copy-btn" data-copy-target="#cp-id-root-words" aria-label="Copy the Hub fingerprint words" title="Copy">{{template "copy-icons"}}</button></div></div><div><div class="copy-field"><span class="copy-value" id="cp-id-root"><code>{{.Data.Status.RootFingerprint}}</code></span><button type="button" class="copy-btn" data-copy-target="#cp-id-root" aria-label="Copy the Hub fingerprint" title="Copy">{{template "copy-icons"}}</button></div></div><p class="muted">Workers compare these words. If a reverse proxy is in front of the Hub and you do not want to rely on it, read them on the Hub host instead:</p><div><div class="copy-field"><code class="copy-value" id="cp-id-command">minion hub identity --words</code><button type="button" class="copy-btn" data-copy-target="#cp-id-command" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div></dd>{{end}}
+    {{if .Data.Status.OpFingerprint}}<dt>Operational key</dt><dd><div><div class="copy-field"><code class="copy-value" id="cp-id-operational">{{.Data.Status.OpFingerprint}}</code><button type="button" class="copy-btn" data-copy-target="#cp-id-operational" aria-label="Copy the operational key fingerprint" title="Copy">{{template "copy-icons"}}</button></div></div> <span class="muted">(changes at every re-issue; do not compare it)</span></dd>{{end}}
+    {{if .Data.Status.Serial}}<dt class="identity-serial-label">Certificate serial</dt><dd class="identity-serial"><div><div class="copy-field"><code class="copy-value" id="cp-id-serial">{{.Data.Status.Serial}}</code><button type="button" class="copy-btn" data-copy-target="#cp-id-serial" aria-label="Copy the certificate serial" title="Copy">{{template "copy-icons"}}</button></div></div></dd>
     <dt>Valid from</dt><dd>{{.Data.ValidFrom}}</dd>
-    <dt>Valid until</dt><dd>{{.Data.ValidUntil}} <span class="badge"{{if eq .Data.Status.Warning "error"}} data-tone="danger"{{else if eq .Data.Status.Warning "expired"}} data-tone="danger"{{else if .Data.Status.Warning}} data-tone="warning"{{end}} id="id-countdown" data-days="{{.Data.Status.DaysLeft}}">{{if .Data.Status.Expired}}expired{{else}}{{.Data.Status.DaysLeft}} days left{{end}}</span></dd>{{end}}
+    <dt>Valid until</dt><dd>{{.Data.ValidUntil}} <span class="badge identity-days-left"{{if eq .Data.Status.Warning "error"}} data-tone="danger"{{else if eq .Data.Status.Warning "expired"}} data-tone="danger"{{else if .Data.Status.Warning}} data-tone="warning"{{end}} id="id-countdown" data-days="{{.Data.Status.DaysLeft}}">{{if .Data.Status.Expired}}expired{{else}}{{.Data.Status.DaysLeft}} days left{{end}}</span></dd>{{end}}
     {{if .Data.LastOpAt}}<dt>Last change</dt><dd>{{.Data.Status.LastOp}}, {{.Data.LastOpAt}}</dd>{{end}}
   </dl>
   {{if .Data.Status.MigratedFrom06}}<p class="muted">This Hub was migrated from version 0.6: rotate the master key once, so that the root is a new one under your passphrase.</p>{{end}}
@@ -22,17 +24,17 @@
   <h2 id="id-auth">Confirm it is you</h2>
   {{if eq .Data.Reauth "ok"}}<p role="status">Signed in again.</p>{{end}}
   {{if eq .Data.Reauth "unavailable"}}<p class="form-error" role="alert">Your identity provider did not prove a fresh sign-in (code reauth_unavailable). Nothing was changed. Try again, or ask your provider administrator to return the auth_time claim.</p>{{end}}
-  <p id="id-fresh" data-fresh="{{if .Data.Fresh}}1{{else}}0{{end}}" data-until="{{if .Data.Fresh}}{{.Data.FreshUntil.Unix}}{{end}}">{{if .Data.Fresh}}Your sign-in is fresh until {{.Data.FreshUntil.Format "15:04:05 UTC"}}.{{else}}Changes need a sign-in from the last five minutes.{{end}}</p>
+  <p id="id-fresh" data-fresh="{{if .Data.Fresh}}1{{else}}0{{end}}" data-until="{{if .Data.Fresh}}{{.Data.FreshUntil.Unix}}{{end}}">{{if .Data.Fresh}}Your sign-in is fresh until <time datetime="{{.Data.FreshUntil.Format "2006-01-02T15:04:05Z07:00"}}">{{.Data.FreshUntil.Format "15:04:05 UTC"}}</time>.{{else}}Changes need a sign-in from the last five minutes.{{end}}</p>
   {{if eq .Data.Method "oidc"}}
   <form id="id-reauth-oidc" data-reauth="oidc" method="post">
-    <button type="submit">Sign in again with the identity provider</button>
+    <button type="submit">{{template "icon" "i-login"}}<span>Sign in again with the identity provider</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
   </form>
   {{else}}
   <form id="id-reauth-local" data-reauth="local" method="post" autocomplete="off">
     <div class="field"><label for="id-reauth-pw">Your account password</label>
     <input type="password" id="id-reauth-pw" name="password" autocomplete="current-password" required></div>
-    <button type="submit">Confirm</button>
+    <button type="submit">{{template "icon" "i-check"}}<span>Confirm</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
   </form>
   {{end}}
@@ -48,7 +50,7 @@
   <form data-identity-op="hub_identity_set_passphrase" method="post" autocomplete="off">
     <div class="field"><label for="set-pass">New passphrase</label><input type="password" id="set-pass" data-count-passphrase name="passphrase" autocomplete="new-password" required></div>
     <div class="field"><label for="set-conf">Repeat the passphrase</label><input type="password" id="set-conf" name="confirm" autocomplete="new-password" required></div>
-    <button type="submit">Set passphrase</button>
+    <button type="submit">{{template "icon" "i-lock"}}<span>Set passphrase</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
     {{template "proxy-confirm"}}
   </form>
@@ -62,10 +64,13 @@
   <form data-identity-op="hub_identity_reissue" method="post" autocomplete="off">
     <div class="field"><label for="re-pass">Passphrase</label><input type="password" id="re-pass" name="passphrase" autocomplete="current-password" required></div>
     <div class="field"><label for="re-days">Validity in days (1 to 3650)</label><input type="number" id="re-days" name="validity_days" min="1" max="3650" value="3650" inputmode="numeric"></div>
-    <details><summary>Advanced</summary>
-      <div class="field"><label for="re-floor">Serial floor (the new serial is greater)</label><input type="number" id="re-floor" name="serial_floor" min="0" inputmode="numeric"></div>
+    <details class="identity-advanced">
+      <summary><span class="summary-title">Certificate serial floor</span> <span class="summary-meta">Advanced</span></summary>
+      <div class="details-body">
+        <div class="field"><label for="re-floor">Serial floor (the new serial is greater)</label><input type="number" id="re-floor" name="serial_floor" min="0" inputmode="numeric"></div>
+      </div>
     </details>
-    <button type="submit">Re-issue certificate</button>
+    <button type="submit">{{template "icon" "i-refresh"}}<span>Re-issue certificate</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
     {{template "proxy-confirm"}}
   </form>
@@ -77,12 +82,12 @@
   <h2 id="id-rotate">Rotate master key</h2>
   <p>A new root under a new passphrase. Workers follow the chain at their next connect and are not re-paired. All invitations are revoked. The old passphrase no longer opens the current root.</p>
   {{template "passphrase-policy"}}
-  <form data-identity-op="hub_identity_rotate" method="post" autocomplete="off">
+  <form data-identity-op="hub_identity_rotate" data-confirm-name="{{.Data.Status.RootFingerprint}}" data-confirm-what="Hub master key" method="post" autocomplete="off">
     <div class="field"><label for="ro-pass">Current passphrase</label><input type="password" id="ro-pass" name="passphrase" autocomplete="current-password" required></div>
     <div class="field"><label for="ro-new">New passphrase</label><input type="password" id="ro-new" data-count-passphrase name="new_passphrase" autocomplete="new-password" required></div>
     <div class="field"><label for="ro-conf">Repeat the new passphrase</label><input type="password" id="ro-conf" name="confirm" autocomplete="new-password" required></div>
     <div class="field"><label for="ro-word">Type ROTATE to confirm</label><input type="text" id="ro-word" name="word" autocomplete="off" autocapitalize="characters" spellcheck="false" required></div>
-    <button type="submit">Rotate master key</button>
+    <button type="submit">{{template "icon" "i-rotate"}}<span>Rotate master key</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
     {{template "proxy-confirm"}}
   </form>
@@ -98,7 +103,7 @@
     <div class="field"><label for="ch-pass">Current passphrase</label><input type="password" id="ch-pass" name="passphrase" autocomplete="current-password" required></div>
     <div class="field"><label for="ch-new">New passphrase</label><input type="password" id="ch-new" data-count-passphrase name="new_passphrase" autocomplete="new-password" required></div>
     <div class="field"><label for="ch-conf">Repeat the new passphrase</label><input type="password" id="ch-conf" name="confirm" autocomplete="new-password" required></div>
-    <button type="submit">Change passphrase</button>
+    <button type="submit">{{template "icon" "i-lock"}}<span>Change passphrase</span></button>
     <p class="form-error" data-form-error role="alert" hidden></p>
     {{template "proxy-confirm"}}
   </form>

@@ -1,9 +1,11 @@
 {{define "content"}}
 <p class="notice notice-info" role="status">Session control is now <a href="/access/control">Access &gt; Minion control</a>: master sessions and the Workers that accept control. The grants below are what the master sessions reach.</p>
-<div class="page-head"><div><h1>Session control</h1><p>A grant lets one controller session list, read and type into the sessions of other Workers through the local <code>minion</code> CLI or <code>minion mcp</code>. No session has a grant until you create one.</p></div></div>
+<div class="page-head"><div><h1>Session control</h1><p>A grant lets one controller session list, read and type into the sessions of other Workers through the local <code>minion</code> CLI or this command. No session has a grant until you create one.</p>
+<div><div class="copy-field"><code class="copy-value" id="cp-control-mcp">minion mcp</code><button type="button" class="copy-btn" data-copy-target="#cp-control-mcp" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div></div></div>
 <div class="stack">
 <section class="panel" aria-labelledby="create-grant">
-  <h2 id="create-grant">Grant session control</h2>
+  <h2 id="create-grant">Grant session control <button type="button" class="info-btn" popovertarget="help-session-control" aria-label="About session control">{{template "icon" "i-info"}}</button></h2>
+  <div class="info-pop" id="help-session-control" popover><p>A grant belongs to one controller session and lets it reach other Workers without an API key. Sessions without a grant reach only their own Worker.</p></div>
   <form id="sc-form" method="post" hx-post="/admin/session-control" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="field">
       <label for="sc-worker">Controller Worker</label>
@@ -15,7 +17,7 @@
     </div>
     <div class="field">
       <label for="sc-session">Controller session</label>
-      <input type="text" id="sc-session" name="session" list="sc-sessions" autocomplete="off" spellcheck="false" required maxlength="128" aria-describedby="sc-session-help">
+      <input type="text" id="sc-session" name="session" list="sc-sessions" autocomplete="off" spellcheck="false" required maxlength="128" aria-describedby="sc-session-help" placeholder="e.g. build-coordinator">
       <datalist id="sc-sessions">
         {{range .Data.Workers}}{{$w := .Label}}{{range .Sessions}}<option value="{{.}}" label="{{.}} on {{$w}}"></option>
         {{end}}{{end}}
@@ -38,7 +40,7 @@
       {{end}}
     </fieldset>
     {{if .Data.Note}}<p class="muted">{{.Data.Note}}</p>{{end}}
-    <button type="submit">Save the grant</button>
+    <button type="submit">{{template "icon" "i-save"}}<span>Save the grant</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Granting session control needs JavaScript in this browser.</p></noscript>
@@ -49,13 +51,13 @@
     <thead><tr><th scope="col">Controller session</th><th scope="col">Targets</th><th scope="col">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range $i, $g := .Data.Grants}}<tr>
-      <th scope="row">{{$g.Controller}}</th>
-      <td>{{$g.Targets}}</td>
+      <th scope="row"{{if gt (len $g.Controller) 32}} class="cell-clamp" title="{{$g.Controller}}" tabindex="0"{{end}}>{{$g.Controller}}</th>
+      <td{{if gt (len $g.Targets) 48}} class="cell-clamp" title="{{$g.Targets}}" tabindex="0"{{end}}>{{$g.Targets}}</td>
       <td><time datetime="{{$g.CreatedAt}}">{{$g.Created}}</time></td>
-      <td><form method="post" hx-post="/admin/session-control/remove" hx-target="#remove-{{$i}}" hx-swap="innerHTML" hx-confirm="Remove this grant? The controller session loses access on its next call." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/admin/session-control/remove" data-confirm-name="{{$g.Controller}}" data-confirm-what="session control grant" hx-target="#remove-{{$i}}" hx-swap="innerHTML" hx-confirm="Remove this grant? The controller session loses access on its next call." hx-disabled-elt="find button">
           <input type="hidden" name="worker" value="{{$g.WorkerID}}">
           <input type="hidden" name="session" value="{{$g.SessionName}}">
-          <button type="submit" class="btn-danger">Remove {{$g.Controller}}</button>
+          <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Remove {{$g.Controller}}</span></button>
           <span id="remove-{{$i}}" aria-live="polite"></span>
         </form></td>
     </tr>

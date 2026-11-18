@@ -1,7 +1,7 @@
 {{define "user_secret"}}<div class="secret" role="status">
   <p><strong>{{if .Created}}Account {{.Username}} created.{{else}}New temporary password for {{.Username}}.{{end}}</strong></p>
   <p>Temporary password (shown once, copy it now):</p>
-  <p><code id="temporary-password">{{.Password}}</code></p>
+  <div><div class="copy-field"><span class="copy-value" id="cp-temporary-password"><code id="temporary-password">{{.Password}}</code></span><button type="button" class="copy-btn" data-copy-target="#cp-temporary-password" aria-label="Copy the temporary password" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   <p class="muted">Give it to the user in person. The user must choose a new password at the first sign-in. It cannot be shown again; reset the password to get a new one.</p>
   <p><a href="/admin/users">Back to the accounts</a></p>
 </div>{{end}}
@@ -16,11 +16,11 @@
   <form method="post" hx-post="/admin/users" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="field">
       <label for="new-username">Username</label>
-      <input type="text" id="new-username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="64">
+      <input type="text" id="new-username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="64" placeholder="e.g. jordan">
     </div>
     <div class="field">
       <label for="new-email">E-mail (optional)</label>
-      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254">
+      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254" placeholder="e.g. name@example.com">
     </div>
     <div class="field">
       <label for="new-role">Role</label>
@@ -29,24 +29,24 @@
         <option value="admin">admin</option>
       </select>
     </div>
-    <button type="submit">Create user</button>
+    <button type="submit">{{template "icon" "i-plus"}}<span>Create user</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating users needs JavaScript in this browser.</p></noscript>
 </section>
 <section aria-labelledby="accounts">
   <div class="section-head"><h2 id="accounts">Accounts</h2></div>
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Username</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">State</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Username</th><th scope="col" data-sort="text">E-mail</th><th scope="col" data-sort="text">Role</th><th scope="col" data-sort="text">State</th><th scope="col" data-sort="text">Password</th><th scope="col" data-sort="text">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range .Users}}<tr>
-      <th scope="row">{{.Username}}</th>
-      <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">none</span>{{end}}</td>
-      <td>{{.Role}}{{if .AdminSources}} <span class="muted">({{range $i, $s := .AdminSources}}{{if $i}}, {{end}}{{$s}}{{end}})</span>{{end}}</td>
+      <th scope="row"{{if gt (len .Username) 32}} class="cell-clamp" title="{{.Username}}" tabindex="0"{{end}}>{{.Username}}</th>
+      <td class="cell-clamp" title="{{.Email}}" tabindex="0">{{if .Email}}{{.Email}}{{else}}<span class="muted">none</span>{{end}}</td>
+      <td><span class="role-badge role-{{.Role}}">{{template "icon" (print "i-role-" .Role)}}<span>{{.Role}}</span></span>{{if .AdminSources}} <span class="muted">({{range $i, $s := .AdminSources}}{{if $i}}, {{end}}{{$s}}{{end}})</span>{{end}}</td>
       <td>{{if .Active}}active{{else}}deactivated{{end}}</td>
-      <td>{{if not .HasPassword}}none (single sign-on){{else if .MustChangePassword}}temporary{{else}}set{{end}}</td>
+      <td>{{if not .HasPassword}}none <span class="muted">(single sign-on)</span>{{else if .MustChangePassword}}temporary{{else}}set{{end}}</td>
       <td><time datetime="{{.CreatedAt.Time.Format "2006-01-02T15:04:05Z07:00"}}">{{.CreatedAt.Time.Format "2006-01-02"}}</time></td>
-      <td><a href="/admin/users/{{.ID}}">Manage {{.Username}}</a></td>
+      <td><a class="btn btn-sm btn-edit" href="/admin/users/{{.ID}}">{{template "icon" "i-edit"}}<span>Edit</span><span class="sr-only"> {{.Username}}</span></a></td>
     </tr>
     {{else}}<tr><td colspan="7" class="muted">There are no accounts.</td></tr>
     {{end}}
@@ -74,7 +74,7 @@
   <p class="muted">Only the local admin role can be changed here. A role that the identity provider gives follows the provider's rules.</p>
   <form method="post" hx-post="/admin/users/{{$id}}/role" hx-target="#role-result" hx-swap="innerHTML" hx-disabled-elt="find button">
     {{if .LocalAdmin}}<input type="hidden" name="role" value="user">
-    <button type="submit">Remove the local admin role</button>
+    <button type="submit">{{template "icon" "i-trash"}}<span>Remove the local admin role</span></button>
     {{else}}<input type="hidden" name="role" value="admin">
     <button type="submit">Make a local admin</button>{{end}}
     <div id="role-result" aria-live="polite"></div>
@@ -85,7 +85,7 @@
 <section class="panel" aria-labelledby="reset-password">
   <h2 id="reset-password">Reset the password</h2>
   <p class="muted">A new temporary password is shown once, and the user is signed out everywhere. All the user's API keys are revoked at the same time unless you tick the box below.</p>
-  <form method="post" hx-post="/admin/users/{{$id}}/reset-password" hx-target="#reset-result" hx-swap="innerHTML" hx-confirm="Reset the password of this account? The user is signed out everywhere and, unless you keep them, all API keys of the user are revoked." hx-disabled-elt="find button">
+  <form method="post" hx-post="/admin/users/{{$id}}/reset-password" data-confirm-name="{{.User.Username}}" data-confirm-what="account password" hx-target="#reset-result" hx-swap="innerHTML" hx-confirm="Reset the password of this account? The user is signed out everywhere and, unless you keep them, all API keys of the user are revoked." hx-disabled-elt="find button">
     <input type="hidden" name="username" value="{{.User.Username}}">
     <label class="check" for="keep-api-keys"><input type="checkbox" id="keep-api-keys" name="keep_api_keys" value="true"> Keep this user's API keys (leave unticked when the password may have been stolen)</label>
     <button type="submit">Reset the password</button>
@@ -118,11 +118,11 @@
     <tbody>
     {{range .Identities}}<tr>
       <th scope="row">{{.Label}}</th>
-      <td>{{.Issuer}}</td>
-      <td>{{.Subject}}</td>
-      <td>{{.Email}}</td>
+      <td><div><div class="copy-field"><code class="copy-value cell-clamp" id="cp-user-issuer-{{.ID}}" title="{{.Issuer}}" tabindex="0">{{.Issuer}}</code><button type="button" class="copy-btn" data-copy-target="#cp-user-issuer-{{.ID}}" aria-label="Copy the issuer URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div></td>
+      <td class="cell-clamp" title="{{.Subject}}" tabindex="0">{{.Subject}}</td>
+      <td class="cell-clamp" title="{{.Email}}" tabindex="0">{{.Email}}</td>
       <td>
-        <form method="post" hx-post="/admin/users/{{$id}}/identities/{{.ID}}/detach" hx-target="#detach-{{.ID}}" hx-swap="innerHTML" hx-confirm="Detach this identity? The user can no longer sign in with it." hx-disabled-elt="find button">
+        <form method="post" hx-post="/admin/users/{{$id}}/identities/{{.ID}}/detach" data-confirm-name="{{.Subject}}" data-confirm-what="linked identity for {{$.User.Username}}" hx-target="#detach-{{.ID}}" hx-swap="innerHTML" hx-confirm="Detach this identity? The user can no longer sign in with it." hx-disabled-elt="find button">
           <button type="submit" class="btn-secondary">Detach</button>
           <span id="detach-{{.ID}}" aria-live="polite"></span>
         </form>
@@ -137,7 +137,7 @@
 <section class="panel" aria-labelledby="deactivate">
   <h2 id="deactivate">Deactivate the account</h2>
   <p class="muted">The user cannot sign in, the sessions and API keys end, and the Workers stay with the account.</p>
-  <form method="post" hx-post="/admin/users/{{$id}}/deactivate" hx-target="#deactivate-result" hx-swap="innerHTML" hx-confirm="Deactivate this account?" hx-disabled-elt="find button">
+  <form method="post" hx-post="/admin/users/{{$id}}/deactivate" data-confirm-name="{{.User.Username}}" data-confirm-what="account" hx-target="#deactivate-result" hx-swap="innerHTML" hx-confirm="Deactivate this account?" hx-disabled-elt="find button">
     <button type="submit" class="btn-danger">Deactivate {{.User.Username}}</button>
     <div id="deactivate-result" aria-live="polite"></div>
   </form>

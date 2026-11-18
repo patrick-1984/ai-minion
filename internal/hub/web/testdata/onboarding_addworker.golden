@@ -21,7 +21,7 @@
         
       </select>
     </div>
-    <button type="submit">Create the join command</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create the join command</span></button>
     <div id="join-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating a join command needs JavaScript in this browser.</p></noscript>
@@ -30,20 +30,23 @@
 </section>
 <div class="method-grid">
 <section class="panel" aria-labelledby="pair-form">
-  <h2 id="pair-form">Pair with a code</h2>
-  <p class="muted">Start pairing on the machine that should become a Worker (for example with <code>minion worker pair</code>). It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
+  <h2 id="pair-form">Pair with a code <button type="button" class="info-btn" popovertarget="help-pairing-code" aria-label="About pairing codes"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></h2>
+  <div class="info-pop" id="help-pairing-code" popover><p>The Worker shows a code that you enter here to confirm pairing. The code is valid for 10 minutes.</p></div>
+  <p class="muted">Start pairing on the machine that should become a Worker, for example with:</p>
+  <div><div class="copy-field"><code class="copy-value" id="cp-worker-pair">minion worker pair</code><button type="button" class="copy-btn" data-copy-target="#cp-worker-pair" aria-label="Copy the command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  <p class="muted">It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
   <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="pair-code">Pairing code</label>
-      <input type="text" id="pair-code" name="code" placeholder="MN-ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32" aria-describedby="pair-code-help">
+      <input type="text" id="pair-code" name="code" placeholder="e.g. MN-ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" required maxlength="32" aria-describedby="pair-code-help">
       <span id="pair-code-help" class="muted">Capital or small letters, with or without hyphens.</span>
     </div>
     <div class="field">
       <label for="pair-name">Name (optional)</label>
-      <input type="text" id="pair-name" name="name" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="pair-name-help">
+      <input type="text" id="pair-name" name="name" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="pair-name-help" placeholder="e.g. jordan-laptop">
       <span id="pair-name-help" class="muted">Without a name, the Worker keeps the name it announces.</span>
     </div>
-    <button type="submit">Add the Worker</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Add the Worker</span></button>
     <div id="pair-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Adding a Worker needs JavaScript in this browser.</p></noscript>
@@ -51,7 +54,7 @@
 <section class="panel" aria-labelledby="invite-method">
   <h2 id="invite-method">Use an invitation</h2>
   <p class="muted">For a reusable key (many machines, for example from a script or an image) or an admin's infrastructure key. The key is shown once when you create it, together with commands that start the Worker and pin this Hub's fingerprint.</p>
-  <a class="btn btn-secondary" href="/invitations">Create an invitation key</a>
+  <a class="btn btn-secondary" href="/invitations"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create an invitation key</span></a>
 </section>
 </div>
 <div data-pairing-requests-panel><div id="pairing-requests" data-pairing-requests hx-get="/workers/pairing-requests" hx-trigger="load, every 5s" hx-swap="innerHTML"></div>

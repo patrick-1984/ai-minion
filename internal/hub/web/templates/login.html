@@ -5,17 +5,17 @@
     <p class="form-error" role="alert" data-form-error hidden></p>
     <div class="field">
       <label for="username">Username or e-mail</label>
-      <input type="text" id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+      <input type="text" id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus placeholder="e.g. jordan">
     </div>
     <div class="field">
       <label for="password">Password</label>
       <input type="password" id="password" name="password" autocomplete="current-password" required>
     </div>
-    <button type="submit">Sign in</button>
+    <button type="submit">{{template "icon" "i-login"}}<span>Sign in</span></button>
   </form>
   {{if .Data.Providers}}
   <div class="providers" role="group" aria-label="Other sign-in methods">
-    {{range .Data.Providers}}<a class="btn btn-secondary" href="{{.Path}}">Sign in with {{.Label}}</a>
+    {{range .Data.Providers}}<a class="btn btn-secondary" href="{{.Path}}">{{template "icon" "i-login"}}<span>Sign in with {{.Label}}</span></a>
     {{end}}
   </div>
   {{end}}

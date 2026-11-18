@@ -1,19 +1,20 @@
 {{define "content"}}
-<div class="page-head"><div><h1>Diagnostics</h1><p>How this Hub runs and how it sees your own request. Use it to check a reverse proxy, the public URL and the trusted proxies. The same facts are available from <code>minion hub_diagnostics</code> and the operation <code>hub_diagnostics</code>.</p></div></div>
+<div class="page-head"><div><h1>Diagnostics</h1><p>How this Hub runs and how it sees your own request. Use it to check a reverse proxy, the public URL and the trusted proxies. The same facts are available from the operation <code>hub_diagnostics</code> and this command:</p>
+<div><div class="copy-field"><code class="copy-value" id="cp-diagnostics-command">minion hub_diagnostics</code><button type="button" class="copy-btn" data-copy-target="#cp-diagnostics-command" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div></div></div>
 <div class="stack">
   <section class="panel" aria-labelledby="diag-hub">
     <h2 id="diag-hub">Hub</h2>
-    <dl>
-      {{range .Data.Hub}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>
+    <div class="diagnostic-facts">
+      {{range $i, $fact := .Data.Hub}}{{if or (and (eq .Label "Public URL") (ne .Value "not set (MINION_PUBLIC_URL)")) (and (eq .Label "Trusted proxies") (ne .Value "none (MINION_TRUSTED_PROXIES)"))}}<div><div class="copy-field"><dl class="copy-value" id="cp-diag-hub-{{$i}}"><dt>{{.Label}}</dt><dd>{{.Value}}</dd></dl><button type="button" class="copy-btn" data-copy-target="#cp-diag-hub-{{$i}} dd" aria-label="Copy {{.Label}}" title="Copy">{{template "copy-icons"}}</button></div></div>{{else}}<dl><dt>{{.Label}}</dt><dd>{{.Value}}</dd></dl>{{end}}
       {{end}}
-    </dl>
+    </div>
   </section>
   <section class="panel" aria-labelledby="diag-request">
     <h2 id="diag-request">This request</h2>
-    <dl>
-      {{range .Data.Request}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>
+    <div class="diagnostic-facts">
+      {{range $i, $fact := .Data.Request}}{{if and (or (eq .Label "Peer address") (eq .Label "Client IP") (eq .Label "Forwarding headers received")) (ne .Value "unknown") (ne .Value "none")}}<div><div class="copy-field"><dl class="copy-value" id="cp-diag-request-{{$i}}"><dt>{{.Label}}</dt><dd>{{.Value}}</dd></dl><button type="button" class="copy-btn" data-copy-target="#cp-diag-request-{{$i}} dd" aria-label="Copy {{.Label}}" title="Copy">{{template "copy-icons"}}</button></div></div>{{else}}<dl><dt>{{.Label}}</dt><dd>{{.Value}}</dd></dl>{{end}}
       {{end}}
-    </dl>
+    </div>
   </section>
 </div>
 {{end}}

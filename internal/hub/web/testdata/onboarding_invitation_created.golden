@@ -4,15 +4,13 @@
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="invite-key">Invitation key</label>
-    <input type="text" id="invite-key" value="mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm" readonly autocomplete="off" spellcheck="false">
-    <button type="button" data-copy="#invite-key">Copy the key</button>
+    <div><div class="copy-field"><input type="text" class="copy-value" id="invite-key" value="mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm" readonly autocomplete="off" spellcheck="false"><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
   <h3>Start a Worker with one command</h3>
   <p class="muted">Run this on the machine that should become a Worker. The key is visible in the process list while the command runs; use the file variant below on shared machines.</p>
-  <pre id="invite-oneliner">minion worker up --server https://hub.example.com --invite-key mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm</pre>
-  <button type="button" data-copy="#invite-oneliner">Copy the command</button>
+  <div><div class="copy-field"><pre class="copy-value" id="invite-oneliner">minion worker up --server https://hub.example.com --invite-key mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm</pre><button type="button" class="copy-btn" data-copy="#invite-oneliner" data-copy-target="#invite-oneliner" aria-label="Copy the command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   <h3>Same, with the key in a file</h3>
-  <pre id="invite-file">(
+  <div><div class="copy-field"><pre class="copy-value" id="invite-file">(
   umask 077 &amp;&amp;
   dir=$(mktemp -d &#34;${TMPDIR:-/tmp}/minion-invite.XXXXXX&#34;) &amp;&amp;
   trap &#39;rm -rf &#34;$dir&#34;&#39; EXIT &amp;&amp;
@@ -21,11 +19,10 @@ mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm
 EOF
   minion worker up --server https://hub.example.com --invite-key &#34;$dir/invite.key&#34;
 )
-</pre>
-  <button type="button" data-copy="#invite-file">Copy the commands</button>
+</pre><button type="button" class="copy-btn" data-copy="#invite-file" data-copy-target="#invite-file" aria-label="Copy the commands" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   <h3>Docker Compose</h3>
   <p class="muted">A complete Compose project that needs only Docker, <code>bootstrap.sh</code> from the release and the key in a file. The key stays in a secret file; the container reads it through <code>MINION_INVITE_KEY_FILE</code>.</p>
-  <pre id="invite-compose"># A Minion Worker in Docker, started from the invitation key. Before you start:
+  <div><div class="copy-field"><pre class="copy-value" id="invite-compose"># A Minion Worker in Docker, started from the invitation key. Before you start:
 # 1. Put bootstrap.sh next to this file. It is a file of the Minion release:
 #    https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh
 # 2. Save the key as the only line of invite_key.txt next to this file.
@@ -85,7 +82,6 @@ secrets:
     file: ./invite_key.txt
 volumes:
   minion-cache:
-</pre>
-  <button type="button" data-copy="#invite-compose">Copy the Compose file</button>
+</pre><button type="button" class="copy-btn" data-copy="#invite-compose" data-copy-target="#invite-compose" aria-label="Copy the Compose file" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   <p><a href="/invitations">Back to the invitation keys</a></p>
 </div>

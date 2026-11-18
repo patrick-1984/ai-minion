@@ -8,11 +8,11 @@
   <form method="post" hx-post="/admin/users" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button">
     <div class="field">
       <label for="new-username">Username</label>
-      <input type="text" id="new-username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="64">
+      <input type="text" id="new-username" name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="64" placeholder="e.g. jordan">
     </div>
     <div class="field">
       <label for="new-email">E-mail (optional)</label>
-      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254">
+      <input type="email" id="new-email" name="email" autocomplete="off" maxlength="254" placeholder="e.g. name@example.com">
     </div>
     <div class="field">
       <label for="new-role">Role</label>
@@ -21,42 +21,42 @@
         <option value="admin">admin</option>
       </select>
     </div>
-    <button type="submit">Create user</button>
+    <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create user</span></button>
     <div id="create-result" aria-live="polite"></div>
   </form>
   <noscript><p class="muted">Creating users needs JavaScript in this browser.</p></noscript>
 </section>
 <section aria-labelledby="accounts">
   <div class="section-head"><h2 id="accounts">Accounts</h2></div>
-  <div class="table-wrap"><table>
-    <thead><tr><th scope="col">Username</th><th scope="col">E-mail</th><th scope="col">Role</th><th scope="col">State</th><th scope="col">Password</th><th scope="col">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
+  <div class="table-wrap"><table data-sortable>
+    <thead><tr><th scope="col" data-sort="text">Username</th><th scope="col" data-sort="text">E-mail</th><th scope="col" data-sort="text">Role</th><th scope="col" data-sort="text">State</th><th scope="col" data-sort="text">Password</th><th scope="col" data-sort="text">Created</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     <tr>
       <th scope="row">alice</th>
-      <td>alice@example.com</td>
-      <td>admin <span class="muted">(local)</span></td>
+      <td class="cell-clamp" title="alice@example.com" tabindex="0">alice@example.com</td>
+      <td><span class="role-badge role-admin"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-role-admin"/></svg><span>admin</span></span> <span class="muted">(local)</span></td>
       <td>active</td>
       <td>set</td>
       <td><time datetime="2026-11-09T08:30:00Z">2026-11-09</time></td>
-      <td><a href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000001">Manage alice</a></td>
+      <td><a class="btn btn-sm btn-edit" href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000001"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-edit"/></svg><span>Edit</span><span class="sr-only"> alice</span></a></td>
     </tr>
     <tr>
       <th scope="row">bob</th>
-      <td><span class="muted">none</span></td>
-      <td>user</td>
+      <td class="cell-clamp" title="" tabindex="0"><span class="muted">none</span></td>
+      <td><span class="role-badge role-user"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-role-user"/></svg><span>user</span></span></td>
       <td>active</td>
       <td>temporary</td>
       <td><time datetime="2026-11-09T08:30:00Z">2026-11-09</time></td>
-      <td><a href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002">Manage bob</a></td>
+      <td><a class="btn btn-sm btn-edit" href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000002"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-edit"/></svg><span>Edit</span><span class="sr-only"> bob</span></a></td>
     </tr>
     <tr>
       <th scope="row">carol</th>
-      <td><span class="muted">none</span></td>
-      <td>admin <span class="muted">(idp)</span></td>
+      <td class="cell-clamp" title="" tabindex="0"><span class="muted">none</span></td>
+      <td><span class="role-badge role-admin"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-role-admin"/></svg><span>admin</span></span> <span class="muted">(idp)</span></td>
       <td>deactivated</td>
-      <td>none (single sign-on)</td>
+      <td>none <span class="muted">(single sign-on)</span></td>
       <td><time datetime="2026-11-09T08:30:00Z">2026-11-09</time></td>
-      <td><a href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000003">Manage carol</a></td>
+      <td><a class="btn btn-sm btn-edit" href="/admin/users/0190a1b2-c3d4-7e5f-8a6b-000000000003"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-edit"/></svg><span>Edit</span><span class="sr-only"> carol</span></a></td>
     </tr>
     
     </tbody>
