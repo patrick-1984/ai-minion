@@ -200,6 +200,13 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 	if stdout == nil {
 		stdout = cmd.OutOrStdout()
 	}
+	// A paused Worker talks to no Hub, and pairing is Hub traffic (tray W3c).
+	if p, err := agent.ReadPause(core.StateDir); err != nil {
+		return err
+	} else if p.Active(time.Now()) {
+		_, _ = fmt.Fprintln(stderr, "Error: this Worker is paused, so it talks to no Hub; resume it first (minion worker resume), then run this again. Nothing was changed.")
+		return &exitCodeError{ExitPaused}
+	}
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

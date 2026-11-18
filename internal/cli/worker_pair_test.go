@@ -646,3 +646,25 @@ func TestWorkerPairPromptCancelOpensNoStore(t *testing.T) {
 		t.Fatal("a cancelled prompt removed the pairing")
 	}
 }
+
+// Pair and join are Hub traffic: a paused Worker refuses them with exit 25
+// before anything is dialed or saved (tray W3c).
+func TestWorkerPairAndJoinWhilePausedAre25(t *testing.T) {
+	for _, args := range [][]string{{"pair"}, {"join", "https://other.example:8443"}} {
+		c := newPairCLI(t, nil)
+		if _, err := agent.SetPause(c.state, true, time.Time{}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		err := c.exec(args...)
+		var ec *exitCodeError
+		if !errors.As(err, &ec) || ec.code != ExitPaused {
+			t.Fatalf("%v while paused: err = %v, want exit 25", args, err)
+		}
+		if c.dialer.n() != 0 || !strings.Contains(c.stderr.String(), "minion worker resume") {
+			t.Fatalf("%v: dials %d, stderr %q", args, c.dialer.n(), c.stderr.String())
+		}
+		if _, ok := c.enrollment(); ok {
+			t.Fatalf("%v: a paused Worker was paired", args)
+		}
+	}
+}

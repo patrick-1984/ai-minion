@@ -571,6 +571,46 @@ type inviteHookDeps struct {
 	sleep    func(ctx context.Context, d time.Duration) error
 	attempts int
 	wait     time.Duration
+	// ignorePause runs the enrollment although the pause file says paused:
+	// the deferred run after a resume, whose gate is authoritative.
+	ignorePause bool
+}
+
+// DeferredInviteFile records in the state directory that a paused start
+// deferred the invitation enrollment (tray W3c); the resume runs it.
+const DeferredInviteFile = "deferred_invite"
+
+func writeDeferredInvite(dir string) error {
+	f, err := os.OpenFile(filepath.Join(dir, DeferredInviteFile), os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("record the deferred enrollment: %w", err)
+	}
+	return f.Close()
+}
+
+func deferredInvite(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, DeferredInviteFile))
+	return err == nil
+}
+
+func clearDeferredInvite(dir string) {
+	_ = os.Remove(filepath.Join(dir, DeferredInviteFile))
+}
+
+// runDeferredInvite runs the invitation enrollment that a paused start
+// deferred, on the running Worker's own enrollment state, so that the
+// connector sees the commit at once.
+func runDeferredInvite(ctx context.Context, s Settings, enr *Enrollments, dialer InviteDialer) {
+	d := defaultInviteHookDeps()
+	d.stdin, d.ignorePause, d.dialer = nil, true, dialer
+	d.openState = func(context.Context, string) (InviteState, func() error, error) {
+		return enr, func() error { return nil }, nil
+	}
+	if err := d.run(ctx, s); err != nil {
+		s.logger().Error("the deferred invitation enrollment failed; it is tried again at the next start", "error", err.Error())
+		return
+	}
+	clearDeferredInvite(s.StateDir)
 }
 
 func defaultInviteHookDeps() inviteHookDeps {
@@ -657,6 +697,18 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 		return errors.New(ForgottenInviteMessage)
 	}
 
+	// A paused Worker sends nothing to a Hub: the enrollment is recorded as
+	// deferred and runs after the resume, without a restart (tray W3c). The
+	// key's source is not read now.
+	if p, err := ReadPause(s.StateDir); err != nil {
+		return err
+	} else if !d.ignorePause && p.Active(time.Now()) {
+		if err := writeDeferredInvite(s.StateDir); err != nil {
+			return err
+		}
+		s.logger().Info("the Worker is paused: the invitation enrollment runs after minion worker resume")
+		return nil
+	}
 	in, err := config.ResolveWorkerInviteKeyContext(ctx, s.Resolver, d.stdin)
 	if err != nil {
 		return err

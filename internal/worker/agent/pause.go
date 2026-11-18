@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -273,4 +274,62 @@ func (l localExecutor) pauseOp(ctx context.Context, rq localapi.Request, pause b
 		return nil, err
 	}
 	return json.Marshal(res)
+}
+
+// waitUnpaused returns at once when g is not paused, and otherwise waits for
+// the resume (or the end of ctx, whose error it returns).
+func waitUnpaused(ctx context.Context, g *PauseGate) error {
+	for {
+		paused, ch := g.Paused()
+		if !paused {
+			return nil
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// cancelOnPause returns a context that ends when ctx ends or g is paused.
+// stop releases it and reports whether a pause ended it.
+func cancelOnPause(ctx context.Context, g *PauseGate) (context.Context, func() (paused bool)) {
+	cctx, cancel := context.WithCancelCause(ctx)
+	done := make(chan struct{})
+	go func() {
+		for {
+			paused, ch := g.Paused()
+			if paused {
+				cancel(errPaused)
+				return
+			}
+			select {
+			case <-ch:
+			case <-done:
+				return
+			case <-cctx.Done():
+				return
+			}
+		}
+	}()
+	return cctx, func() bool {
+		close(done)
+		paused := errors.Is(context.Cause(cctx), errPaused)
+		cancel(nil)
+		return paused
+	}
+}
+
+// Defer runs fn once after the next resume, or at once (in its own
+// goroutine) when the Worker is not paused. It is for the Hub work that a
+// paused start deferred: an invitation enrollment (tray W3c).
+func (p *PauseService) Defer(ctx context.Context, name string, fn func(ctx context.Context)) {
+	go func() {
+		if err := waitUnpaused(ctx, p.gate); err != nil {
+			return
+		}
+		p.log.Info("running the Hub work deferred while paused", "work", name)
+		fn(ctx)
+	}()
 }

@@ -61,6 +61,8 @@ type connectorDeps struct {
 	dialer     Dialer
 	pairDialer PairDialer
 	clock      transport.Clock
+	// inviteDialer enrolls a deferred invitation; nil means the production one.
+	inviteDialer InviteDialer
 }
 
 // startConnector is the module start function. It provides *Enrollments and
@@ -184,7 +186,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	// Old identities that `minion worker pair --new-code` replaced are revoked
 	// at their Hub from here, with the same dialer (Story 4.7).
 	ret, err := NewRetirer(RetirerConfig{
-		Store: enr.RetiredStore(), Dialer: d.dialer, Name: s.Name, Clock: d.clock,
+		Store: enr.RetiredStore(), Dialer: d.dialer, Name: s.Name, Clock: d.clock, Pause: pause.Gate(),
 		Session: transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}},
 		Logger:  log,
 	})
@@ -211,10 +213,28 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 			return connectorHealth(c.Status(), s.StateDir)
 		}, tick.C)
 	}()
+	// An invitation enrollment that a paused start deferred runs after the
+	// resume, without a restart (tray W3c).
+	if deferredInvite(s.StateDir) {
+		pause.Defer(loopCtx, "invitation enrollment", func(ctx context.Context) {
+			runDeferredInvite(ctx, s, enr, d.inviteDialer)
+		})
+	}
 	pairDone := make(chan struct{})
 	go func() {
 		defer close(pairDone)
-		d.autoPair(loopCtx, s, hub.Server, expect, enr, ex)
+		// Pairing talks to the Hub: it waits for the resume, and a pause
+		// during it ends the attempt, which starts over after the resume.
+		for loopCtx.Err() == nil {
+			if waitUnpaused(loopCtx, pause.Gate()) != nil {
+				return
+			}
+			pctx, stop := cancelOnPause(loopCtx, pause.Gate())
+			d.autoPair(pctx, s, hub.Server, expect, enr, ex)
+			if !stop() {
+				return
+			}
+		}
 	}()
 	return func(stopCtx context.Context) error {
 		cancel()
