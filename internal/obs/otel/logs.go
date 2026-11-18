@@ -89,10 +89,10 @@ type counters struct {
 	// term serialises the terminal accounting of records (sent, failed,
 	// dropped): once final is set (the pipeline ended and what was left
 	// was counted), a late export counts nothing again.
-	term  sync.Mutex
-	final bool
-	lastOK      atomic.Int64
-	lastErr     atomic.Pointer[string]
+	term    sync.Mutex
+	final   bool
+	lastOK  atomic.Int64
+	lastErr atomic.Pointer[string]
 }
 
 // settle accounts n records that left the pipeline; fn counts them. It
