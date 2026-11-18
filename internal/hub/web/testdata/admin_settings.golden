@@ -221,7 +221,7 @@
     </div>
     <div class="s-actions">
       <button type="submit" name="action" value="set"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-save"/></svg><span>Save</span></button>
-      <button type="submit" name="action" value="unset" class="btn-secondary"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Remove</span></button>
+      <button type="submit" name="action" value="unset" class="btn-secondary" hx-post="/admin/settings/backup_key" hx-target="#result-backup_key" hx-swap="innerHTML" hx-disabled-elt="closest form button" hx-confirm="Remove the stored value of backup_key? Whatever uses it stops working until a new value is saved."><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Remove</span></button>
     </div>
     
     <div class="s-desc">
@@ -254,7 +254,7 @@
     </div>
     <div class="s-actions">
       <button type="submit" name="action" value="set"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-save"/></svg><span>Save</span></button>
-      <button type="submit" name="action" value="unset" class="btn-secondary"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Remove</span></button>
+      <button type="submit" name="action" value="unset" class="btn-secondary" hx-post="/admin/settings/smtp_password" hx-target="#result-smtp_password" hx-swap="innerHTML" hx-disabled-elt="closest form button" hx-confirm="Remove the stored value of smtp_password? Whatever uses it stops working until a new value is saved."><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Remove</span></button>
     </div>
     
     <div class="s-desc">

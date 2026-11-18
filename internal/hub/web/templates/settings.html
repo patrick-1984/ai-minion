@@ -40,7 +40,7 @@
     <div class="s-actions">
       {{if .Locked}}<span id="why-{{.Key}}" class="s-locked">{{.LockedText}}</span>
       {{else}}<button type="submit" name="action" value="set">{{template "icon" "i-save"}}<span>Save</span></button>
-      <button type="submit" name="action" value="unset" class="btn-secondary">{{if .Secret}}{{template "icon" "i-trash"}}<span>Remove</span>{{else}}Use the default{{end}}</button>{{end}}
+      <button type="submit" name="action" value="unset" class="btn-secondary"{{if .Secret}} hx-post="/admin/settings/{{.Key}}" hx-target="#result-{{.Key}}" hx-swap="innerHTML" hx-disabled-elt="closest form button" hx-confirm="Remove the stored value of {{.Key}}? Whatever uses it stops working until a new value is saved."{{end}}>{{if .Secret}}{{template "icon" "i-trash"}}<span>Remove</span>{{else}}Use the default{{end}}</button>{{end}}
     </div>
     {{if $trustedHelp}}{{template "settings_key" .}}{{end}}
     <div class="s-desc">
