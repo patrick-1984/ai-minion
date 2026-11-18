@@ -189,6 +189,51 @@
   var search = document.querySelector('[data-search]');
   if (nav && search) { initSearch(nav, search); }
 
+  var workerRowTimer = null;
+
+  function cancelWorkerRow() {
+    window.clearTimeout(workerRowTimer);
+    workerRowTimer = null;
+  }
+
+  function selectingText() {
+    var selection = window.getSelection();
+    return selection && !selection.isCollapsed;
+  }
+
+  function openWorkerRow(event) {
+    cancelWorkerRow();
+    if (event.defaultPrevented || event.altKey || event.shiftKey || event.detail > 1) { return; }
+    if (event.type === 'auxclick' ? event.button !== 1 : event.button !== 0) { return; }
+    var target = event.target;
+    if (!target || !target.closest) { return; }
+    var row = target.closest('.worker-table tbody tr[data-row-link="worker"]');
+    if (!row || selectingText()) { return; }
+    if (target.closest('a, button, input, textarea, select, option, summary, details, label, form, dialog, iframe, video, audio, [contenteditable], [data-no-row], [role], [tabindex]:not([tabindex="-1"])')) { return; }
+    var link = row.querySelector('th[scope="row"] a[data-worker-link][data-control="name"][href]');
+    if (!link) { return; }
+    // ui-extras loads before inspector.js; prevent its worker-row fallback
+    // from handling the same click while leaving links and controls alone.
+    event.preventDefault();
+    var href = link.href;
+    if (event.button === 1 || event.ctrlKey || event.metaKey) {
+      window.open(href, '_blank', 'noopener');
+      return;
+    }
+    function navigate() {
+      workerRowTimer = null;
+      if (row.isConnected && link.href === href && !selectingText()) { window.location.assign(href); }
+    }
+    // Let a second press or a drag select text before committing navigation.
+    if (event.pointerType === 'touch' || event.pointerType === 'pen') { navigate(); }
+    else { workerRowTimer = window.setTimeout(navigate, 520); }
+  }
+
+  document.addEventListener('mousedown', cancelWorkerRow);
+  document.addEventListener('dblclick', cancelWorkerRow);
+  document.addEventListener('click', openWorkerRow);
+  document.addEventListener('auxclick', openWorkerRow);
+
   var tableSelector = 'table[data-sortable]';
   var sorts = Object.create(null);
 
