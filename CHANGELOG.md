@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Add a Worker in one step.** The Add worker page replaces the panel "Give the Worker this Hub's fingerprint" with a form (optional name, validity, 1 hour by default) that creates a one-time invitation key and shows, once, a **join token** (`mnj1-...`) and the ready commands: `minion worker up --join <token>` (Linux, macOS), `minion.exe worker up --foreground --join <token>` (Windows), one `docker run` with `MINION_JOIN`, a Compose project, and the same with separate `--server`, `--hub-fingerprint` and `--invite-key` for older Workers. The token holds the Hub URL, the full Hub fingerprint and the one-time key (base64url of a canonical JSON payload); the Worker connects only to the Hub with that fingerprint and enrolls with the key, which works once and expires. Blueprints: the Docker Swarm join token and `kubeadm join --discovery-token-ca-cert-hash`; no new cryptography. The fingerprint panel for pairing with a code moved into the same section. See [add a Worker in one step](docs/guides/pairing.md#add-a-worker-in-one-step).
+- **Worker setting `join`** (`--join` on `worker up` and `worker run`, `MINION_JOIN`, `MINION_JOIN_FILE`; never the config file). It sets `server`, `hub_fingerprint` and `invite_key`; a different value of one of them given by flag or environment is an error that names both sources. The token is a secret: never saved, printed or logged; on the command line the Worker warns that it is visible in the process list. `minion worker join` and `pair` refuse a join token with a pointer to `worker up --join`.
+
+### Changed
+
+- **Every invitation command pins the Hub.** The commands shown for a new invitation key add `--hub-fingerprint <52 characters>` (the fingerprint in the key), and the Compose project sets `MINION_HUB_FINGERPRINT`. The Compose projects also pass `MINION_SHARE_EXISTING` (give it on the first start: `MINION_SHARE_EXISTING=later docker compose up -d`), which a container Worker needs to start.
+- **Compatibility:** `--join` and `MINION_JOIN` need Worker v0.12.0; an older Worker refuses `--join` as an unknown flag and ignores `MINION_JOIN`. The page shows the separate flags for older Workers (v0.11.0 or later for `--hub-fingerprint`).
+
 ## v0.11.0
 
 Released 2026-11-18.

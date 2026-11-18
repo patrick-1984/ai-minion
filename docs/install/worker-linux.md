@@ -79,6 +79,8 @@ Without `sudo` this installs a systemd user service. A user service stops when y
 
 ## 4. Join the Hub
 
+The quickest way: in the Hub open **Workers**, **Add worker**, **Add a Worker in one step**, and run the command it shows, for example `sudo minion worker up --join mnj1-... --share-existing none`. It installs the service and enrolls the Worker with a one-time key, connecting only to the Hub with the fingerprint in the token ([add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step)).
+
 If the wizard did not already pair the Worker, pair it now: [pairing and sharing](../guides/pairing.md). The wizard and `minion worker pair` ask for the Hub fingerprint first: read it on the Hub host with `minion hub identity --words`, or give it as `--hub-fingerprint` ([pairing](../guides/pairing.md#give-the-worker-the-hub-fingerprint)).
 
 ## Check and change

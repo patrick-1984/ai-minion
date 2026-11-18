@@ -2,7 +2,27 @@
 
 Back to the [README](../../README.md).
 
-A Worker runs alone (Solo) until you give it a Hub. Two things join it to a Hub: **pairing** (the Worker shows a code, you type it into the Hub) or an **invitation key** (the Hub gives you a key, the Worker enrolls itself with it). After that you choose which of the machine's sessions the Hub may see. Install the Worker first: [Linux](../install/worker-linux.md), [macOS](../install/worker-macos.md), [Docker](../install/worker-docker.md), [Windows preview](../install/worker-windows-preview.md).
+A Worker runs alone (Solo) until you give it a Hub. Two things join it to a Hub: **pairing** (the Worker shows a code, you type it into the Hub) or an **invitation key** (the Hub gives you a key, the Worker enrolls itself with it). The quickest way is the **join command** of the Hub's Add worker page: one string with the Hub address, its fingerprint and a one-time invitation key ([add a Worker in one step](#add-a-worker-in-one-step)). After that you choose which of the machine's sessions the Hub may see. Install the Worker first: [Linux](../install/worker-linux.md), [macOS](../install/worker-macos.md), [Docker](../install/worker-docker.md), [Windows preview](../install/worker-windows-preview.md).
+
+## Add a Worker in one step
+
+In the Hub open **Workers**, **Add worker**, and use **Add a Worker in one step**: choose how long the command stays valid (1 hour unless you choose otherwise; only an administrator can choose more than 1 week) and, if you like, a name. The Hub creates a **one-time invitation key** (it enrolls exactly one Worker and expires) and shows, **once**, a **join token** and the ready commands:
+
+```sh
+minion worker up --join mnj1-...                                  # Linux, macOS (sudo for a system service)
+minion.exe worker up --foreground --join mnj1-...                 # Windows (PowerShell)
+docker run -d --name minion-worker --restart unless-stopped \
+  -e MINION_JOIN=mnj1-... -e MINION_SHARE_EXISTING=later ...      # Docker (the page shows the full command)
+```
+
+and a Compose project with `MINION_JOIN`. The token holds the Hub address, the **full Hub fingerprint** (52 characters) and the one-time key. The Worker connects only to the Hub with that fingerprint, whatever answers at the address and whatever certificate it shows, and enrolls with the key; the key works once and expires. Like every new Worker it then waits for your approval ([approve a new Worker](#approve-a-new-worker)). The same pattern is used by the Docker Swarm join token and `kubeadm join --discovery-token-ca-cert-hash`: the pin of the server travels with the one-time secret, so nothing has to be copied separately. No new cryptography is involved: the token only carries the existing invitation key and fingerprint.
+
+- `--join` sets `--server`, `--hub-fingerprint` and `--invite-key`. Giving one of them as well, by flag or environment, with a different value is an error that names both; the same value (the fingerprint also as six words) is accepted. `worker up` saves the Hub address and fingerprint in the config file for the service; the token and the key are never saved, printed or logged.
+- The token is a secret until the Worker has enrolled. On the command line it is visible in the process list (the Worker prints a warning); `MINION_JOIN_FILE=<file>` reads it from a file instead. In a container `MINION_JOIN` stays in the container's settings: the Worker takes the Hub address and fingerprint from it at every start, and an enrolled Worker ignores the used key. The config file is never a source of the token, and `minion worker config set join` is refused.
+- The format is `mnj1-` followed by the base64url (no padding) of the compact JSON `{"hub":"<Hub URL>","key":"mnk_<fingerprint>.<secret>"}`; the Worker accepts only that canonical form.
+- The commands need Worker **v0.12.0** or later. For an older Worker the page also shows the same with separate flags: `minion worker up --server <url> --hub-fingerprint <52 characters> --invite-key <key>` (v0.11.0 or later).
+- The page shows the token over the same connection as everything else. If a reverse proxy is in front of the Hub and you do not want to rely on it, create the key on the Hub host instead ([below](#when-you-do-not-want-to-rely-on-the-proxy)).
+- `minion worker join` and `minion worker pair` take no join token: they pair with a code.
 
 ## Pair with a code
 
@@ -80,14 +100,14 @@ An invitation key lets a machine enroll itself, for example from a script or a C
 - **uses** (reusable keys): the number of Workers the key may enroll. A user's reusable key needs a limit: **10** when none is given, **100** at most. An administrator's reusable key without a limit stays unlimited (`--max-uses` on `invitation_create`);
 - **kind**: `private` (the Worker belongs to the user who creates the key) or `infrastructure` (a shared Worker; administrators only).
 
-The key, like `mnk_<fingerprint>.<secret>`, is shown **once**, with the commands to start the Worker. The same from the command line: `minion invitation_create --mode one_time --ttl 24h` against the Hub ([API keys and MCP](api-keys-and-mcp.md)). Revoke a key on the same page, or with `invitation_revoke`.
+The key, like `mnk_<fingerprint>.<secret>`, is shown **once**, with the commands to start the Worker. Since 0.12.0 every command pins the Hub: `--hub-fingerprint <52 characters>` on the command line and `MINION_HUB_FINGERPRINT` in the Compose project. The same from the command line: `minion invitation_create --mode one_time --ttl 24h` against the Hub ([API keys and MCP](api-keys-and-mcp.md)). Revoke a key on the same page, or with `invitation_revoke`.
 
 On the Worker:
 
 ```sh
 printf '%s' 'mnk_...' > invite_key
 chmod 0600 invite_key
-minion worker up --server https://hub.example.com --invite-key ./invite_key --share-existing later
+minion worker up --server https://hub.example.com --hub-fingerprint <52 characters> --invite-key ./invite_key --share-existing later
 ```
 
 Prefer the **file**. `--invite-key` takes the key itself, a file that holds it, or `-` to read it from standard input, and the environment form is `MINION_INVITE_KEY_FILE` (a file; `MINION_INVITE_KEY` holds the key itself). A key given literally on the command line is **visible in the process list** of the machine. The file must be owned by the user who runs the Worker and closed to everyone else. A key left on disk is a credential until it expires or you revoke it: delete the file once the Worker is enrolled (for a Worker in Docker, empty it in place instead, as [its guide](../install/worker-docker.md) shows), or revoke the key.

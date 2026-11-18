@@ -17,6 +17,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -99,7 +100,7 @@ type minionWorker struct {
 	done chan error
 }
 
-func startMinionWorker(t *testing.T, hubURL, stateDir, keyFile string) *minionWorker {
+func startMinionWorker(t *testing.T, hubURL, stateDir, keyFile string, extraEnv ...string) *minionWorker {
 	t.Helper()
 	bin := minionBinary(t)
 	rt, err := os.MkdirTemp("", "mw")
@@ -108,15 +109,18 @@ func startMinionWorker(t *testing.T, hubURL, stateDir, keyFile string) *minionWo
 	}
 	home := t.TempDir()
 	t.Cleanup(func() { _ = os.RemoveAll(rt) })
-	args := []string{"worker", "up", "--foreground", "--server", hubURL, "--share-existing", "none",
+	args := []string{"worker", "up", "--foreground", "--share-existing", "none",
 		"--state-dir", stateDir, "--tmux-socket", filepath.Join(rt, "tmux.sock"), "--name", "pi"}
+	if hubURL != "" {
+		args = append(args, "--server", hubURL)
+	}
 	if keyFile != "" {
 		args = append(args, "--invite-key", keyFile)
 	}
 	w := &minionWorker{done: make(chan error, 1)}
 	w.cmd = exec.Command(bin, args...)
-	w.cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_RUNTIME_DIR=" + rt,
-		"XDG_STATE_HOME=" + filepath.Join(home, "state"), "XDG_CONFIG_HOME=" + filepath.Join(home, "config")}
+	w.cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_RUNTIME_DIR=" + rt,
+		"XDG_STATE_HOME=" + filepath.Join(home, "state"), "XDG_CONFIG_HOME=" + filepath.Join(home, "config")}, extraEnv...)
 	w.cmd.Stdout, w.cmd.Stderr = &w.out, &w.out
 	if err := w.cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -213,5 +217,40 @@ func TestRealCLIEnrollsWithAnInvitationKeyFileThenRestartsFromItsStateWithoutAKe
 	}
 	if err := again.stop(t); err != nil {
 		t.Fatalf("the restarted CLI Worker did not exit cleanly: %v\n%s", err, again.out.String())
+	}
+}
+
+// v0.12.0: the join token of the Add worker page. The real binary gets only
+// MINION_JOIN (no --server, no --hub-fingerprint, no key file), enrolls with
+// the one-time key at the Hub the token names, checks the Hub with the full
+// fingerprint and never prints the token or the key.
+func TestRealCLIJoinsWithAJoinTokenInTheEnvironment(t *testing.T) {
+	h := newInviteHub(t)
+	key := h.newKey(t, ops.InvitationOneTime)
+	tok, err := identity.NewJoinToken(h.url(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	w := startMinionWorker(t, "", state, "", "MINION_JOIN="+tok.Encode())
+	eventually(t, "the CLI Worker to enroll with the join token and be online", func() bool {
+		rows, _ := h.st.ListWorkers(context.Background())
+		return len(rows) == 1 && h.service().Registry().IsOnline(rows[0].ID)
+	})
+	eventually(t, "the CLI to report the enrollment", func() bool {
+		return strings.Contains(w.out.String(), "enrolled as alice-pi, owner alice")
+	})
+	out := w.out.String()
+	if strings.Contains(out, tok.Encode()) || strings.Contains(out, key.String()) {
+		t.Fatalf("the CLI printed the token or the key:\n%s", out)
+	}
+	if strings.Contains(out, config.InviteKeyArgvWarning) || strings.Contains(out, "--invite-key was given") {
+		t.Fatalf("the CLI warned about a literal key the user never typed:\n%s", out)
+	}
+	if !strings.Contains(out, key.Fingerprint.Words()) {
+		t.Fatalf("the CLI did not name the Hub fingerprint:\n%s", out)
+	}
+	if err := w.stop(t); err != nil {
+		t.Fatalf("the CLI Worker did not exit cleanly: %v\n%s", err, out)
 	}
 }
