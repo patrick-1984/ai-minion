@@ -49,3 +49,34 @@ func setServiceEnvironment(env map[string]string) error {
 	}
 	return k.SetStringsValue("Environment", want)
 }
+
+// removeServiceKey removes the registry key of the service and its subkeys:
+// an orphan that a failed creation left behind.
+func removeServiceKey() error {
+	return deleteKeyTree(registry.LOCAL_MACHINE, serviceKeyPath)
+}
+
+func deleteKeyTree(root registry.Key, path string) error {
+	k, err := registry.OpenKey(root, path, registry.ENUMERATE_SUB_KEYS|registry.QUERY_VALUE)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, registry.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	subs, err := k.ReadSubKeyNames(-1)
+	_ = k.Close()
+	if err != nil {
+		return err
+	}
+	for _, sub := range subs {
+		if err := deleteKeyTree(root, path+`\`+sub); err != nil {
+			return err
+		}
+	}
+	err = registry.DeleteKey(root, path)
+	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, registry.ErrNotExist) {
+		return nil
+	}
+	return err
+}

@@ -14,23 +14,25 @@ const (
 )
 
 func TestServiceUpdateGuard(t *testing.T) {
-	installed := service.WindowsServiceState{Installed: true, BinaryPath: svcExe}
+	protected := service.WindowsServiceState{Installed: true, BinaryPath: svcExe}
+	legacy := service.WindowsServiceState{Installed: true, BinaryPath: userExe}
 	for name, c := range map[string]struct {
-		st        service.WindowsServiceState
-		exe       string
-		elevated  bool
-		refuse    []string
-		note      []string
-		quietNote bool
+		st       service.WindowsServiceState
+		exe      string
+		elevated bool
+		refuse   []string
+		note     []string
+		noNote   bool
 	}{
-		"no service":          {st: service.WindowsServiceState{}, exe: userExe, quietNote: true},
-		"unknown binary":      {st: service.WindowsServiceState{Installed: true}, exe: userExe, quietNote: true},
-		"service copy, user":  {st: installed, exe: `c:\program files\minion\MINION.exe`, refuse: []string{"only administrators", "elevated prompt", `"` + svcExe + `" update`, "Hub"}},
-		"service copy, admin": {st: installed, exe: svcExe, elevated: true, note: []string{"Restart-Service MinionWorker"}},
-		"user copy":           {st: installed, exe: userExe, note: []string{"did not change", svcExe, "elevated prompt", "Restart-Service MinionWorker"}},
-		"user copy, elevated": {st: installed, exe: userExe, elevated: true, note: []string{"did not change"}},
+		"no service, user copy":         {exe: userExe, noNote: true},
+		"service copy, user":            {st: protected, exe: `c:\program files\minion\MINION.exe`, refuse: []string{"only administrators", "elevated prompt", `"` + svcExe + `" update`, "Hub"}},
+		"service copy, SCM unreadable":  {exe: svcExe, refuse: []string{"elevated prompt"}},
+		"service copy, admin":           {st: protected, exe: svcExe, elevated: true, note: []string{"Restart-Service MinionWorker"}},
+		"user copy":                     {st: protected, exe: userExe, note: []string{"did not change", svcExe, "elevated prompt", "Restart-Service MinionWorker"}},
+		"legacy service runs this copy": {st: legacy, exe: userExe, note: []string{"still runs", "install.ps1", "Stop-Service MinionWorker", "minion worker up"}},
+		"legacy, elevated":              {st: legacy, exe: userExe, elevated: true, note: []string{"still runs"}},
 	} {
-		refuse, note := serviceUpdateGuard(c.st, c.exe, c.elevated)
+		refuse, note := serviceUpdateGuard(c.st, c.exe, svcExe, c.elevated)
 		if (refuse != "") != (len(c.refuse) > 0) {
 			t.Errorf("%s: refuse = %q", name, refuse)
 		}
@@ -39,13 +41,17 @@ func TestServiceUpdateGuard(t *testing.T) {
 				t.Errorf("%s: refusal lacks %q: %s", name, w, refuse)
 			}
 		}
-		if c.quietNote && note != "" {
+		if c.noNote && note != "" {
 			t.Errorf("%s: note = %q", name, note)
 		}
 		for _, w := range c.note {
 			if !strings.Contains(note, w) {
 				t.Errorf("%s: note lacks %q: %s", name, w, note)
 			}
+		}
+		// The user-writable file is never offered for elevation.
+		if strings.Contains(refuse+note, `"`+userExe+`"`) {
+			t.Errorf("%s: elevates the user's copy: %s %s", name, refuse, note)
 		}
 	}
 }

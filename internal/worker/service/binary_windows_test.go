@@ -56,7 +56,7 @@ func TestInstallServiceBinaryInProtectsTheDirectoryAndTheFile(t *testing.T) {
 	elevated(t)
 	src := writeFakeBinary(t, "first")
 	dir := filepath.Join(t.TempDir(), "Minion")
-	dst, err := installServiceBinaryIn(src, dir, sumOf("first"))
+	dst, err := installServiceBinaryIn(src, dir, sumOf("first"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,21 +104,21 @@ func TestInstallServiceBinaryInProtectsTheDirectoryAndTheFile(t *testing.T) {
 	}
 
 	// Running it again replaces the copy.
-	if _, err := installServiceBinaryIn(writeFakeBinary(t, "second"), dir, sumOf("second")); err != nil {
+	if _, err := installServiceBinaryIn(writeFakeBinary(t, "second"), dir, sumOf("second"), false); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "second" {
 		t.Fatalf("content after the second install = %q", b)
 	}
 	// A source that does not match the verified digest changes nothing.
-	if _, err := installServiceBinaryIn(writeFakeBinary(t, "planted"), dir, sumOf("third")); err == nil {
+	if _, err := installServiceBinaryIn(writeFakeBinary(t, "planted"), dir, sumOf("third"), false); err == nil {
 		t.Fatal("a binary that does not match the verified digest was installed")
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "second" {
 		t.Fatalf("content after a refused install = %q", b)
 	}
 	// Installing unverified from the copy itself keeps it.
-	if _, err := installServiceBinaryIn(dst, dir, ""); err != nil {
+	if _, err := installServiceBinaryIn(dst, dir, "", false); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "second" {
@@ -146,7 +146,7 @@ func TestInstallServiceBinaryInResetsALooseExistingDirectory(t *testing.T) {
 	if _, info := daclOf(t, filepath.Join(dir, "minion.exe")); len(UntrustedWriters(info, RoleFile)) == 0 {
 		t.Fatal("the fixture is not loose")
 	}
-	dst, err := installServiceBinaryIn(writeFakeBinary(t, "new"), dir, sumOf("new"))
+	dst, err := installServiceBinaryIn(writeFakeBinary(t, "new"), dir, sumOf("new"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +155,36 @@ func TestInstallServiceBinaryInResetsALooseExistingDirectory(t *testing.T) {
 		if w := UntrustedWriters(info, step.Role); len(w) != 0 {
 			t.Errorf("%s: writers %v", step.Path, w)
 		}
+	}
+	// The loose directory was not adopted: it was moved aside, with what it held.
+	aside, _ := filepath.Glob(dir + ".untrusted-*")
+	if len(aside) != 1 {
+		t.Fatalf("moved aside: %v", aside)
+	}
+	if b, _ := os.ReadFile(filepath.Join(aside[0], "minion.exe")); string(b) != "old" {
+		t.Errorf("the old content moved aside is %q", b)
+	}
+}
+
+func TestReadSecurityReportsAJunction(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "target")
+	link := filepath.Join(base, "link")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create a symbolic link here: %v", err)
+	}
+	info, err := readSecurity(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Reparse {
+		t.Fatal("the link is not reported as a reparse point")
+	}
+	if w := UntrustedWriters(info, RoleAncestor); len(w) == 0 {
+		t.Error("a link on the way to the binary is accepted")
 	}
 }
 

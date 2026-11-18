@@ -103,7 +103,9 @@ func windowsInstallError(op string, err error) error {
 func elevatedUpCommand() string {
 	if p, err := ServiceBinaryLocation(); err == nil {
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
-			return "\"" + p + "\" worker up"
+			if f, err := CheckServiceBinary(p); err == nil && len(f) == 0 {
+				return "\"" + p + "\" worker up"
+			}
 		}
 	}
 	return "\"minion worker up\""

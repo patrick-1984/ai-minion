@@ -93,3 +93,15 @@ func installedVersion(exe string) (SemVer, bool) {
 	v, err := ParseVersion(m[1])
 	return v, err == nil
 }
+
+// LockBinary takes the lock that "minion update" and the Worker's remote
+// update hold while they replace the binary at path, so that another
+// installer of the same file (the Windows service install) does not replace
+// it in the middle of an update. The caller calls the returned release.
+func LockBinary(path string) (release func(), err error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		real = path
+	}
+	return takeLock(real + ".update-lock")
+}

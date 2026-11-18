@@ -100,12 +100,7 @@ func TestExtractBinary(t *testing.T) {
 				t.Fatal(err)
 			}
 			dst := filepath.Join(dir, "out")
-			af, oerr := os.Open(ap)
-			if oerr != nil {
-				t.Fatal(oerr)
-			}
-			defer func() { _ = af.Close() }()
-			got, err := extractBinary(af, tc.archive, tc.goos, dst)
+			got, err := extractBinary(tc.data, tc.archive, tc.goos, dst)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want %q", err, tc.wantErr)

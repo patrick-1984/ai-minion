@@ -146,6 +146,7 @@ const (
 	sidNullDACLLabel   = "Everyone (no DACL)"
 	sidUnsupportedACE  = "an ACE this check cannot evaluate"
 	sidNoOwnerSentinel = "no owner"
+	sidReparseLabel    = "a symbolic link or junction"
 )
 
 // trustedWriter reports whether sid may write the service binary: SYSTEM, the
@@ -183,6 +184,9 @@ type SecurityInfo struct {
 	NullDACL bool
 	// DACL is the list of ACEs, in order.
 	DACL []ACE
+	// Reparse is true when the path is a symbolic link, junction or mount
+	// point: whoever controls its target controls what the path names.
+	Reparse bool
 }
 
 // UntrustedWriters returns the principals other than SYSTEM, the
@@ -202,6 +206,9 @@ type SecurityInfo struct {
 //     SYSTEM can be in a directory nobody else may write.
 func UntrustedWriters(sd SecurityInfo, role PathRole) []string {
 	set := map[string]bool{}
+	if sd.Reparse {
+		set[sidReparseLabel] = true
+	}
 	if sd.NullDACL {
 		set[sidNullDACLLabel] = true
 	}
@@ -382,6 +389,7 @@ func ServiceBinaryWarning(binary string, findings []BinaryFinding) string {
 	}
 	return fmt.Sprintf("the service binary %s of the Windows service %s is writable by non-administrators: %s%s; "+
 		"any process of those accounts could run code as LocalSystem at the next service start. "+
-		"Run 'minion worker up' in an elevated prompt: it moves the service binary to %%ProgramFiles%%\\%s",
-		binary, WindowsServiceName, strings.Join(who, ", "), more, ServiceBinaryDirName)
+		"Do not run that file elevated. Move the service: in an elevated PowerShell run Stop-Service %s, install minion again with install.ps1, "+
+		"then run 'minion worker up' there; it installs the verified release into %%ProgramFiles%%\\%s",
+		binary, WindowsServiceName, strings.Join(who, ", "), more, WindowsServiceName, ServiceBinaryDirName)
 }

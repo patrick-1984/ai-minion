@@ -282,17 +282,14 @@ func (u *Updater) fetchVerified(ctx context.Context, rel Release, o Options) (st
 	defer func() { _ = os.RemoveAll(staging) }() // a no-op once committed
 
 	u.logf("downloading %s", archive)
-	// The archive is verified against the signed digest while it is written,
-	// and the executable is extracted from that same open file, never from the
-	// path again.
-	af, err := u.download(ctx, asset, filepath.Join(staging, archive), want)
+	// The archive is verified against the signed digest in memory and the
+	// executable is extracted from those same bytes, never from the file,
+	// which others who may write the cache could change in between.
+	data, err := u.download(ctx, asset, filepath.Join(staging, archive), want)
 	if err != nil {
 		return "", "", err
 	}
-	binSum, err := extractBinary(af, archive, o.GOOS, filepath.Join(staging, BinaryName(o.GOOS)))
-	if cerr := af.Close(); err == nil {
-		err = cerr
-	}
+	binSum, err := extractBinary(data, archive, o.GOOS, filepath.Join(staging, BinaryName(o.GOOS)))
 	if err != nil {
 		return "", "", err
 	}
@@ -583,19 +580,16 @@ func (u *Updater) verifyCached(verifier BlobVerifier, tag string, meta CacheMeta
 	if !ok {
 		return Manifest{}, "", fmt.Errorf("the signed checksums list no %s", archive)
 	}
-	af, err := openTrusted(filepath.Join(dir, archive))
+	// Read once into memory, checked and extracted from the same bytes.
+	data, err := readTrustedFile(filepath.Join(dir, archive), maxArchiveSize)
 	if err != nil {
 		return Manifest{}, "", err
 	}
-	defer func() { _ = af.Close() }()
-	got, err := handleSHA256(af)
-	if err != nil {
-		return Manifest{}, "", err
-	}
-	if got != want {
+	got := sha256.Sum256(data)
+	if hex.EncodeToString(got[:]) != want {
 		return Manifest{}, "", fmt.Errorf("%w: the cached archive differs from the signed checksums", ErrChecksum)
 	}
-	sum, err := extractBinary(af, archive, o.GOOS, dst)
+	sum, err := extractBinary(data, archive, o.GOOS, dst)
 	if err != nil {
 		return Manifest{}, "", err
 	}
@@ -654,38 +648,45 @@ func (u *Updater) readAsset(ctx context.Context, a Asset, limit int64) ([]byte, 
 // digest. It returns the file, still open for reading, whose bytes matched: the
 // caller extracts from this handle and closes it, and never reopens dst by path
 // (see extractBinary). The file is removed on any failure.
-func (u *Updater) download(ctx context.Context, a Asset, dst, wantSHA256 string) (f *os.File, err error) {
+func (u *Updater) download(ctx context.Context, a Asset, dst, wantSHA256 string) (data []byte, err error) {
 	rc, err := u.Source.Open(ctx, a)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rc.Close() }()
-	f, err = os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	data, err = io.ReadAll(io.LimitReader(rc, maxArchiveSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: downloading %s: %w", ErrNetwork, a.Name, err)
+	}
+	if int64(len(data)) > maxArchiveSize {
+		return nil, fmt.Errorf("%s is larger than %d bytes", a.Name, int64(maxArchiveSize))
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != wantSHA256 {
+		return nil, fmt.Errorf("%w: %s has sha256 %s, the signed checksums say %s", ErrChecksum, a.Name, got, wantSHA256)
+	}
+	// The verified archive is kept in the cache for offline installs, which
+	// verify it again.
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
+		if cerr := f.Close(); err == nil && cerr != nil {
+			err = cerr
+		}
 		if err != nil {
-			_ = f.Close()
 			_ = os.Remove(dst)
-			f = nil
+			data = nil
 		}
 	}()
 	if err = checkNewFile(f); err != nil {
 		return nil, err
 	}
-	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(rc, maxArchiveSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("%w: downloading %s: %w", ErrNetwork, a.Name, err)
+	if _, err = f.Write(data); err != nil {
+		return nil, err
 	}
-	if n > maxArchiveSize {
-		return nil, fmt.Errorf("%s is larger than %d bytes", a.Name, int64(maxArchiveSize))
-	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != wantSHA256 {
-		return nil, fmt.Errorf("%w: %s has sha256 %s, the signed checksums say %s", ErrChecksum, a.Name, got, wantSHA256)
-	}
-	return f, nil
+	return data, nil
 }
 
 // ---- GitHub adapter -------------------------------------------------------

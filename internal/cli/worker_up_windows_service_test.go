@@ -3,12 +3,17 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
 
@@ -56,6 +61,8 @@ func newWindowsUpFixture(t *testing.T) (f *upFixture, calls *[]string, copied *[
 	}
 	f.deps.service.ServiceKeyGone = func() bool { return true }
 	f.deps.service.SetServiceEnv = func(map[string]string) error { return nil }
+	f.deps.service.RemoveServiceKey = func() error { return nil }
+	f.deps.service.StopService = func(context.Context) (bool, error) { return false, nil }
 	f.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer) (version.Fetched, error) {
 		return version.Fetched{Tag: "v1.2.3", Path: `C:\Users\ann\AppData\Local\minion\cache\v1.2.3\minion.exe`, SHA256: verifiedSum}, nil
 	}
@@ -80,17 +87,61 @@ func TestWorkerUpWindowsServiceInstallsTheVerifiedRelease(t *testing.T) {
 	}
 }
 
+// The release is settled before the hooks run (an invitation is used once)
+// and before any setting is saved: a release that cannot be verified changes
+// nothing.
 func TestWorkerUpWindowsServiceStopsWhenTheReleaseCannotBeVerified(t *testing.T) {
 	f, calls, copied := newWindowsUpFixture(t)
-	f.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer) (version.Fetched, error) {
+	hookRan := false
+	f.hook("enroll", func(agent.Settings) error { hookRan = true; return nil })
+	var deadline bool
+	f.deps.serviceRelease = func(ctx context.Context, _ *config.Resolver, _ io.Writer) (version.Fetched, error) {
+		_, deadline = ctx.Deadline()
 		return version.Fetched{}, version.ErrChecksum
 	}
-	_, err := f.run("--share-existing", "none")
+	_, err := f.run("--share-existing", "none", "--name", "lab")
 	if !errors.Is(err, version.ErrChecksum) || !strings.Contains(err.Error(), "verified release") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(*calls) != 0 || copied[0] != "" {
-		t.Errorf("the service was touched: calls %v, copied %v", *calls, *copied)
+	if !deadline {
+		t.Error("the release fetch has no deadline")
+	}
+	if len(*calls) != 0 || copied[0] != "" || hookRan {
+		t.Errorf("something ran: calls %v, copied %v, hook %v", *calls, *copied, hookRan)
+	}
+	if _, serr := os.Stat(filepath.Join(f.stateDir(), "config.json")); serr == nil {
+		t.Error("settings were saved")
+	}
+}
+
+// A release mirror URL with a credential in it is not printed.
+func TestWorkerUpWindowsServiceRedactsTheReleaseURL(t *testing.T) {
+	f, _, _ := newWindowsUpFixture(t)
+	secret := "https://ci:s3cr3t-token@mirror.example/api/s3cr3t-path-token/releases"
+	f.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer) (version.Fetched, error) {
+		return version.Fetched{}, fmt.Errorf("%w: %w", version.ErrNetwork, &url.Error{Op: "Get", URL: secret, Err: errors.New("connection reset")})
+	}
+	_, err := f.run("--share-existing", "none")
+	if err == nil || strings.Contains(err.Error(), "s3cr3t") || !errors.Is(err, version.ErrNetwork) {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "mirror.example") {
+		t.Errorf("the host is not named: %v", err)
+	}
+}
+
+// The bypass exists only in development builds.
+func TestWorkerUpWindowsServiceRefusesTheBypassInARelease(t *testing.T) {
+	f, calls, _ := newWindowsUpFixture(t)
+	old := version.Version
+	version.Version = "v1.2.3"
+	t.Cleanup(func() { version.Version = old })
+	_, err := f.run("--share-existing", "none", "--"+allowUnverifiedFlag)
+	if err == nil || !strings.Contains(err.Error(), "only for development builds") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("calls %v", *calls)
 	}
 }
 

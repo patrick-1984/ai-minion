@@ -82,7 +82,9 @@ func testDeps(t *testing.T, r Runner) Deps {
 		// A test never copies into the real %ProgramFiles%.
 		ServiceBinary: func(src, _ string) (string, error) { return src, nil },
 		// Nor touches the registry of the machine.
-		ServiceKeyGone: func() bool { return true },
-		SetServiceEnv:  func(map[string]string) error { return nil },
+		ServiceKeyGone:   func() bool { return true },
+		SetServiceEnv:    func(map[string]string) error { return nil },
+		RemoveServiceKey: func() error { return nil },
+		StopService:      func(context.Context) (bool, error) { return false, nil },
 	}
 }

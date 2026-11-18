@@ -122,11 +122,10 @@ func TestWorkerDownStopsTheUserServiceAndTheWindowsService(t *testing.T) {
 	if _, err := downCmd(t, w); err == nil || !strings.Contains(err.Error(), "Run as administrator") {
 		t.Fatalf("windows denied: %v", err)
 	}
-	// The elevated command is the service's own binary, never the
-	// user-writable "minion" on the PATH.
-	w.serviceBinary = func() string { return `C:\Program Files\Minion\minion.exe` }
+	// The elevated command names the service, never a binary (the one on the
+	// PATH, or the one an old service runs, may be user-writable).
 	if _, err := downCmd(t, w); err == nil || !strings.Contains(err.Error(), `Stop-Service MinionWorker`) ||
-		!strings.Contains(err.Error(), `"C:\Program Files\Minion\minion.exe" worker down`) {
-		t.Fatalf("windows denied, service binary: %v", err)
+		strings.Contains(err.Error(), "minion worker down") || strings.Contains(err.Error(), ".exe") {
+		t.Fatalf("windows denied: %v", err)
 	}
 }

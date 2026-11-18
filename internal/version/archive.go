@@ -3,6 +3,7 @@ package version
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,13 +34,15 @@ func BinaryName(goos string) string {
 // through that handle and never reopened by path, so the bytes extracted are
 // the bytes that were verified. Only the one regular file is read; entry names
 // are never used as paths.
-func extractBinary(archive *os.File, archiveName, goos, dst string) (sum string, err error) {
+//
+// The archive is passed as bytes in memory, the very bytes whose digest the
+// caller checked: a file could be changed on disk between that check and the
+// extraction by anyone who may write the cache (the user that runs an
+// elevated install, for one).
+func extractBinary(archive []byte, archiveName, goos, dst string) (sum string, err error) {
 	want := BinaryName(goos)
-	fi, err := archive.Stat()
-	if err != nil {
-		return "", err
-	}
-	size := fi.Size()
+	size := int64(len(archive))
+	ra := bytes.NewReader(archive)
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
 	if err != nil {
 		return "", err
@@ -60,9 +63,9 @@ func extractBinary(archive *os.File, archiveName, goos, dst string) (sum string,
 
 	switch {
 	case strings.HasSuffix(archiveName, ".tar.gz"):
-		err = extractTarGz(io.NewSectionReader(archive, 0, size), want, w)
+		err = extractTarGz(io.NewSectionReader(ra, 0, size), want, w)
 	case strings.HasSuffix(archiveName, ".zip"):
-		err = extractZip(archive, size, want, w)
+		err = extractZip(ra, size, want, w)
 	default:
 		err = fmt.Errorf("unsupported archive type %q", archiveName)
 	}

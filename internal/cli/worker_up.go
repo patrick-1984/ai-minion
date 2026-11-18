@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/version"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
@@ -356,6 +358,23 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		return err
 	}
 
+	// The binary of a Windows service is settled first, before the wizard,
+	// the hooks (an invitation is used once) or any saved setting: a build or
+	// a release that cannot be verified changes nothing.
+	var winBin *service.Request
+	if det.Manager == service.ManagerWindows {
+		saved, err := st.load()
+		if err != nil {
+			return err
+		}
+		pre := &config.Resolver{Registry: reg, Role: config.ScopeWorker, Flags: flags, File: saved, LookupEnv: lookupEnv}
+		r, err := windowsServiceBinary(ctx, cmd, deps, pre, service.Request{Binary: binary}, cmd.OutOrStdout(), stderr)
+		if err != nil {
+			return err
+		}
+		winBin = &r
+	}
+
 	// A Worker that was never set up gets the wizard (on a terminal) or a
 	// clear refusal, before anything is installed or changed. The wizard saves
 	// into the same state directory, so everything below sees its answers.
@@ -431,10 +450,8 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		StateDir:    stateDir,
 		PinStateDir: pinState,
 	}
-	if det.Manager == service.ManagerWindows {
-		if req, err = windowsServiceBinary(ctx, cmd, deps, res, req, out, stderr); err != nil {
-			return err
-		}
+	if winBin != nil {
+		req.Binary, req.BinarySHA256, req.AllowUnverified = winBin.Binary, winBin.BinarySHA256, winBin.AllowUnverified
 	}
 	_, err = service.Install(ctx, svc, req, out)
 	var linger *service.LingerError
@@ -446,10 +463,14 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 
 // windowsServiceBinary sets the binary of a Windows service install: the
 // verified signed release of this version, or, with --allow-unverified-
-// service-binary, the running binary as it is (with a warning).
+// service-binary on a development build, the running binary as it is (with
+// a warning). The fetch is bounded by serviceReleaseTimeout.
 func windowsServiceBinary(ctx context.Context, cmd *cobra.Command, deps workerUpDeps, res *config.Resolver,
 	req service.Request, out, stderr io.Writer) (service.Request, error) {
 	if unverified, _ := cmd.Flags().GetBool(allowUnverifiedFlag); unverified {
+		if isReleaseBuild() {
+			return req, fmt.Errorf("--%s is only for development builds; this is release %s, whose signed release is installed without it", allowUnverifiedFlag, version.Version)
+		}
 		_, _ = fmt.Fprintf(stderr, "Warning: --%s: the service will run %s as LocalSystem without checking that it is a signed release. Use this for development only.\n",
 			allowUnverifiedFlag, req.Binary)
 		req.AllowUnverified = true
@@ -460,13 +481,35 @@ func windowsServiceBinary(ctx context.Context, cmd *cobra.Command, deps workerUp
 		fetch = fetchServiceRelease
 	}
 	_, _ = fmt.Fprintf(out, "Fetching and verifying the signed release %s for the Windows service.\n", version.Version)
-	f, err := fetch(ctx, res, out)
+	fctx, cancel := context.WithTimeout(ctx, serviceReleaseTimeout)
+	defer cancel()
+	f, err := fetch(fctx, res, out)
 	if err != nil {
-		return req, fmt.Errorf("cannot get the verified release for the Windows service: %w", err)
+		return req, redactedError{msg: "cannot get the verified release for the Windows service: " + logx.ErrorText(err), err: err}
 	}
 	req.Binary, req.BinarySHA256 = f.Path, f.SHA256
 	return req, nil
 }
+
+// serviceReleaseTimeout bounds fetching the release for the Windows service.
+const serviceReleaseTimeout = 10 * time.Minute
+
+// isReleaseBuild reports whether this binary is a release (an exact version),
+// not a development build.
+func isReleaseBuild() bool {
+	sel, err := version.ParseSelector(version.Version)
+	return err == nil && !sel.IsChannel()
+}
+
+// redactedError prints msg (URLs reduced, see logx.ErrorText) and keeps err
+// for errors.Is and errors.As.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e redactedError) Error() string { return e.msg }
+func (e redactedError) Unwrap() error { return e.err }
 
 // firstRunService is the first-run gate of the service path.
 func firstRunService(cmd *cobra.Command, deps workerUpDeps, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool), st *upState, target service.Target, owned bool) error {
