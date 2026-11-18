@@ -503,3 +503,22 @@ func TestResetDuringAnUpdateTrialHoldsTheRollback(t *testing.T) {
 		t.Fatalf("rollback hold after a reset = %v, %v; want a hold", hold, err)
 	}
 }
+
+// Reset clears the pause (tray W3a): the next setup starts unpaused.
+func TestResetClearsThePause(t *testing.T) {
+	r := newResetRig(t)
+	r.pair()
+	if _, err := SetPause(r.dir, true, time.Time{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := r.reset()
+	if err != nil || !rep.PauseCleared {
+		t.Fatalf("reset = %+v, %v; want the pause cleared", rep, err)
+	}
+	if p, err := ReadPause(r.dir); err != nil || p.Paused {
+		t.Fatalf("pause after reset = %+v, %v", p, err)
+	}
+	if rep, err := r.reset(); err != nil || !rep.Nothing() {
+		t.Fatalf("second reset = %+v, %v", rep, err)
+	}
+}

@@ -84,6 +84,9 @@ type LiveStatus struct {
 	// are hidden; zero when not known. ListError is the latest listing error.
 	Host      SessionHostInfo
 	ListError string
+	// Paused is whether the running Worker enforces a pause of its Hub
+	// traffic; nil when it does not report it (a Worker without pause.v1).
+	Paused *bool
 }
 
 // LiveSource answers for a running Worker. It returns [ErrNoLiveWorker] when
@@ -179,6 +182,10 @@ type StatusInputs struct {
 	Sessions   StatusSessions
 	// Live answers for a running Worker; nil or [ErrNoLiveWorker] means none.
 	Live LiveSource
+	// Pause reads the saved pause (pause.json); nil means not available.
+	Pause func() (PauseState, error)
+	// Now is the clock of a timed pause; nil means time.Now.
+	Now func() time.Time
 }
 
 // StatusConnection is the connection part of the report.
@@ -286,6 +293,16 @@ type StatusReport struct {
 	// SessionsListError is why the running Worker's latest look at its
 	// sessions failed; empty when it worked.
 	SessionsListError string `json:"sessions_list_error,omitempty"`
+	// Paused is the saved pause of the Hub traffic (pause.json, tray W3a),
+	// PausedUntil the end of a timed pause (RFC 3339, empty: until resumed).
+	// PauseInForce says whether the running Worker enforces the saved state:
+	// true when no Worker runs (it applies the file at its start) or the
+	// running one reports the same state, false when it reports another, and
+	// null for a saved pause that the running Worker cannot report (a Worker
+	// without pause support).
+	Paused       bool   `json:"paused"`
+	PausedUntil  string `json:"paused_until"`
+	PauseInForce *bool  `json:"pause_in_force"`
 	// Problems lists what could not be read, in plain English.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -365,14 +382,51 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 		}
 	}
 
-	r.Connection = connectionOf(ctx, in, &r, problem)
+	var live *LiveStatus
+	r.Connection, live = connectionOf(ctx, in, &r, problem)
 	r.PreviewOnly = in.PreviewOnly || r.PreviewOnlyHub
+	pauseOf(in, &r, live, problem)
 	return r
+}
+
+// pauseOf fills the pause fields from the saved state and the live answer.
+func pauseOf(in StatusInputs, r *StatusReport, live *LiveStatus, problem func(string, ...any)) {
+	var saved PauseState
+	if in.Pause != nil {
+		p, err := in.Pause()
+		if err != nil {
+			problem("cannot read the pause: %v", err)
+			return
+		}
+		saved = p
+	}
+	now := time.Now
+	if in.Now != nil {
+		now = in.Now
+	}
+	r.Paused = saved.Active(now())
+	if r.Paused && !saved.Until.IsZero() {
+		r.PausedUntil = saved.Until.UTC().Format(time.RFC3339)
+	}
+	inForce := true
+	switch {
+	case live == nil:
+	case live.Paused == nil:
+		// A Worker without pause support never pauses: in force exactly
+		// when there is nothing to enforce.
+		if r.Paused {
+			r.PauseInForce = nil
+			return
+		}
+	default:
+		inForce = *live.Paused == r.Paused
+	}
+	r.PauseInForce = &inForce
 }
 
 // connectionOf fills the connection part and, from a live Worker, the fields
 // that are fresher than the stored ones.
-func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem func(string, ...any)) StatusConnection {
+func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem func(string, ...any)) (StatusConnection, *LiveStatus) {
 	var live *LiveStatus
 	if in.Live != nil {
 		switch ls, err := in.Live.LiveStatus(ctx); {
@@ -428,15 +482,15 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 			t := ops.Timestamp(live.Connector.ConnectedSince.UTC())
 			c.ConnectedSince = &t
 		}
-		return c
+		return c, live
 	}
 	if in.HubURL == "" {
-		return StatusConnection{State: ConnNone, Reason: "no Hub URL is configured"}
+		return StatusConnection{State: ConnNone, Reason: "no Hub URL is configured"}, nil
 	}
 	return StatusConnection{
 		State:  ConnUnknown,
 		Reason: "the connection state is known only to the running Worker and is not available here",
-	}
+	}, nil
 }
 
 func nonNil(s []string) []string {
@@ -487,6 +541,14 @@ func (r StatusReport) WriteText(w io.Writer) error {
 			}
 		}
 	}
+	if r.Paused {
+		for i, row := range rows {
+			if row[0] == "Connection" {
+				rows = append(rows[:i+1], append([][2]string{{"Paused", r.pauseText()}}, rows[i+1:]...)...)
+				break
+			}
+		}
+	}
 	if r.Preview {
 		rows = append(rows[:1], append([][2]string{{"Platform", r.platformText()}}, rows[1:]...)...)
 	}
@@ -512,6 +574,21 @@ func (r StatusReport) WriteText(w io.Writer) error {
 // previewPlatforms maps the platforms that are a preview in release 1 to the
 // name the report shows.
 var previewPlatforms = map[string]string{"windows": "Windows"}
+
+func (r StatusReport) pauseText() string {
+	t := "yes, no Hub traffic"
+	if r.PausedUntil != "" {
+		t += " until " + r.PausedUntil
+	} else {
+		t += " until resumed (minion worker resume)"
+	}
+	if r.PauseInForce != nil && !*r.PauseInForce {
+		t += "; the running Worker does not enforce it yet"
+	} else if r.PauseInForce == nil {
+		t += "; the running Worker does not support pause"
+	}
+	return t
+}
 
 func (r StatusReport) platformText() string {
 	name := previewPlatforms[r.Platform]

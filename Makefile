@@ -32,7 +32,7 @@ TESTTAGS := $(if $(TAGS),-tags $(TAGS))
 LINT_TARGETS := linux/amd64 linux/arm64 linux/arm windows/amd64 windows/arm64 darwin/amd64 darwin/arm64
 LINT_TAGS    := tmux,e2e
 
-.PHONY: build cross test test-race lint lint-negative check-english check-tmux check-docs check-headless check-compose check-skeleton vuln e2e snapshot clean help
+.PHONY: build cross test test-race lint lint-negative check-english check-tmux check-docs check-headless check-nomigration check-compose check-skeleton vuln e2e snapshot clean help
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/'
@@ -56,7 +56,7 @@ test: ## Run all tests (TAGS=tmux adds the tmux-tagged tests)
 test-race: ## Run all tests with the race detector, needs CGO (TAGS=tmux adds the tmux-tagged tests)
 	CGO_ENABLED=1 go test -race -timeout 20m $(TESTTAGS) ./...
 
-lint: check-tmux check-english check-docs check-skeleton check-headless ## Run go vet, golangci-lint (incl. import rules) for every release GOOS/GOARCH with the tmux and e2e tags, tmux, English, documentation-link, skeleton and headless checks
+lint: check-tmux check-english check-docs check-skeleton check-headless check-nomigration ## Run go vet, golangci-lint (incl. import rules) for every release GOOS/GOARCH with the tmux and e2e tags, tmux, English, documentation-link, skeleton, headless and no-migration checks
 	go vet -tags $(LINT_TAGS) ./...
 	@set -e; for t in $(LINT_TARGETS); do \
 		echo "golangci-lint GOOS=$${t%/*} GOARCH=$${t#*/} tags=$(LINT_TAGS)"; \
@@ -81,6 +81,9 @@ check-tmux: ## Fail if a test runs tmux directly or uses kill-server (AD-25)
 # CROSS_TARGETS entry and every image platform.
 check-headless: ## Fail if ./cmd/minion depends on a GUI module (fyne.io/systray, godbus, zenity) on any release or image target
 	go run ./scripts/headlesscheck -dir .
+
+check-nomigration: ## Fail if a Worker database migration was added after 0011 (the tray work keeps its state in files, tickets v3 C3)
+	scripts/nomigration.sh
 
 check-docs: ## Fail on a broken relative link, anchor or missing README backlink in the user documentation (no network)
 	go run ./scripts/checkdocs .

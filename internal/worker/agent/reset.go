@@ -192,11 +192,13 @@ type ResetReport struct {
 	KeyDeleted bool
 	// ConfigKeys are the keys removed from the config file, sorted.
 	ConfigKeys []string
+	// PauseCleared is true when a pause file existed (tray W3a).
+	PauseCleared bool
 }
 
 // Nothing reports whether the Worker was already in the unconfigured state.
 func (r ResetReport) Nothing() bool {
-	return !r.WasEnrolled && !r.ShareCleared && !r.KeyDeleted && len(r.ConfigKeys) == 0
+	return !r.WasEnrolled && !r.ShareCleared && !r.KeyDeleted && len(r.ConfigKeys) == 0 && !r.PauseCleared
 }
 
 // ResetWorker returns the Worker to the unconfigured state (R81, AD-9): it
@@ -240,6 +242,11 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 		}
 	}
 	if rep.ConfigKeys, err = clearConfigKeys(cfg, ResetConfigKeys); err != nil {
+		return rep, err
+	}
+	// A pause belongs to the Hub link that is gone: the next setup starts
+	// unpaused (tray W3a).
+	if rep.PauseCleared, err = ClearPause(o.StateDir); err != nil {
 		return rep, err
 	}
 

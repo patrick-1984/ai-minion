@@ -241,6 +241,9 @@ func printResetReport(w io.Writer, stateDir string, rep agent.ResetReport) {
 		return
 	}
 	_, _ = fmt.Fprintf(w, "Worker reset: the key pair, the pin and enrollment, the share selection and the local policy are deleted (state %s).\n", stateDir)
+	if rep.PauseCleared {
+		_, _ = fmt.Fprintln(w, "The pause of the Hub connection is cleared.")
+	}
 	_, _ = fmt.Fprintln(w, "Your tmux sessions and the session counter were not touched.")
 	_, _ = fmt.Fprintln(w, "The next \"minion worker up\" runs the first-run wizard.")
 	if rep.WasEnrolled {

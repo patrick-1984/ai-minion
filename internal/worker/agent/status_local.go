@@ -60,6 +60,9 @@ type LiveStatusReply struct {
 	HubCheckAware bool `json:"hub_check_aware,omitempty"`
 	// Instance identifies this control socket server across status and writes.
 	Instance string `json:"instance,omitempty"`
+	// Paused is whether the Worker enforces a pause of its Hub traffic
+	// (pause.v1); an older Worker omits it.
+	Paused *bool `json:"paused,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -85,6 +88,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		TLSPath:            c.TLSPath,
 		TLSLine:            c.TLSLine,
 		HubCheckAware:      true,
+		Paused:             live.Paused,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -128,6 +132,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		RunMode:            r.RunMode,
 		Host:               SessionHostInfo{Kind: r.SessionHost, Hidden: r.SessionsHidden, Reason: r.SessionHostReason},
 		ListError:          r.SessionsListError,
+		Paused:             r.Paused,
 	}, nil
 }
 

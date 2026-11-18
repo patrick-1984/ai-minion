@@ -176,6 +176,7 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		PreviewOnly: core.PreviewOnly,
 		Platform:    runtime.GOOS,
 		Live:        deps.live(core.StateDir),
+		Pause:       func() (agent.PauseState, error) { return agent.ReadPause(core.StateDir) },
 	}
 	if deps.sessions != nil {
 		if s := deps.sessions(core.TmuxSocket); s != nil {

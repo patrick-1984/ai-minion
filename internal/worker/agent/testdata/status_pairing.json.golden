@@ -26,5 +26,8 @@
   "preview_only": true,
   "preview_only_hub": false,
   "tmux_socket": "/run/user/1000/tmux-1000/default",
-  "sessions": 3
+  "sessions": 3,
+  "paused": false,
+  "paused_until": "",
+  "pause_in_force": true
 }
