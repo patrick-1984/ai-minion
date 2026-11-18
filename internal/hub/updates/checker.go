@@ -50,8 +50,9 @@ type Checker struct {
 	// Interval is 24 h; FirstDelay the wait after start (a few minutes).
 	Interval, FirstDelay time.Duration
 	// Poll is how often Run looks (locally) whether update_check or
-	// update_channel changed since the last answer; a change checks at once
-	// instead of at the next daily check. Zero means one minute.
+	// update_channel changed since the last answer; a change is checked
+	// then (after MinRefresh since the last call to GitHub) instead of at
+	// the next daily check. Zero means 15 seconds.
 	Poll time.Duration
 	// MinRefresh is the shortest time between two checks asked for with
 	// Refresh (the "Check now" button); zero means one minute. GitHub allows
@@ -80,21 +81,23 @@ func (c *Checker) Run(ctx context.Context) {
 	defer t.Stop()
 	poll := c.Poll
 	if poll <= 0 {
-		poll = time.Minute
+		poll = 15 * time.Second
 	}
 	p := time.NewTicker(poll)
 	defer p.Stop()
+	started := false // the first scheduled attempt ran (also with the check off)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-p.C:
-			if c.checked() && c.settingsChanged() {
-				c.fetch(ctx, true)
+			if (started || c.checked()) && c.settingsChanged() {
+				c.fetch(ctx, true, false)
 			}
 			continue
 		case <-t.C:
 		}
+		started = true
 		c.CheckOnce(ctx)
 		t.Reset(c.Interval + time.Duration(rand.Int64N(int64(time.Hour))))
 	}
@@ -129,20 +132,21 @@ func (c *Checker) settingsChanged() bool {
 // than MinRefresh ago, the check is off or the settings cannot be read; the
 // caller then shows the answer it has.
 func (c *Checker) Refresh(ctx context.Context) bool {
-	return c.fetch(ctx, true)
+	return c.fetch(ctx, true, true)
 }
 
 // CheckOnce runs one check now, unless update_check is off (the daily check).
 func (c *Checker) CheckOnce(ctx context.Context) {
-	c.fetch(ctx, false)
+	c.fetch(ctx, false, false)
 }
 
 // fetch runs one check and reports whether it asked GitHub. With cooldown it
 // skips the call when the previous one was less than MinRefresh ago; the
 // decision and the call happen under runMu, so concurrent triggers cannot
-// both pass. The call is detached from ctx's cancellation (a browser that
-// goes away does not leave a "canceled" answer behind) but bounded to 30 s.
-func (c *Checker) fetch(ctx context.Context, cooldown bool) bool {
+// both pass. With detach the call ignores ctx's cancellation (a browser that
+// goes away does not leave a "canceled" answer behind); background checks
+// keep it, so a Hub shutdown does not wait for GitHub. Bounded to 30 s.
+func (c *Checker) fetch(ctx context.Context, cooldown, detach bool) bool {
 	c.runMu.Lock()
 	defer c.runMu.Unlock()
 	check, err1 := c.Setting(config.KeyUpdateCheck)
@@ -164,10 +168,17 @@ func (c *Checker) fetch(ctx context.Context, cooldown bool) bool {
 	if cooldown && !c.lastAt.IsZero() && time.Since(c.lastAt) < gap {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	if detach {
+		ctx = context.WithoutCancel(ctx)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	c.lastAt = time.Now()
 	res, err := c.check(ctx, channel)
+	if err != nil && !detach && ctx.Err() != nil && errors.Is(context.Cause(ctx), context.Canceled) {
+		// Shutdown: keep the last answer as it was.
+		return true
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {

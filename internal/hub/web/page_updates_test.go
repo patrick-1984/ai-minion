@@ -38,4 +38,6 @@ func TestUpdatesPageDoesNotShowTheOldChannelsAnswer(t *testing.T) {
 	mustHave(t, body, `data-check-pending`, `checking the channel latest (the last answer was for major)`)
 	// Neither the old answer nor an update to it is offered meanwhile.
 	mustNotHave(t, body, `(up to date)`, `v0.12.0`, `data-control="hub-update"`, `cp-update-url`)
+	// Check now still works meanwhile: its result target is on the page.
+	mustHave(t, body, `hx-target="#list-result"`, `id="list-result"`)
 }

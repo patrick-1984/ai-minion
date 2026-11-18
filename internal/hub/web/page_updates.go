@@ -48,10 +48,12 @@ func handleUpdateCheckNow(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		text = "The check failed: " + res.CheckError + "."
 	case res.Latest == "":
 		text = "Checked: the release check is off (update_check) or found no release in the channel."
+	case res.CheckedChannel != res.Channel:
+		text = fmt.Sprintf("Checked the channel %s, but update_channel is now %s; it is checked again within about a minute.", res.CheckedChannel, res.Channel)
 	case res.Newer:
-		text = fmt.Sprintf("Checked: %s is newer than this Hub (%s) in the channel %s.", res.Latest, res.Current, res.Channel)
+		text = fmt.Sprintf("Checked: %s is newer than this Hub (%s) in the channel %s.", res.Latest, res.Current, res.CheckedChannel)
 	default:
-		text = fmt.Sprintf("Checked: %s is the newest release in the channel %s; this Hub is up to date.", res.Latest, res.Channel)
+		text = fmt.Sprintf("Checked: %s is the newest release in the channel %s; this Hub is up to date.", res.Latest, res.CheckedChannel)
 	}
 	done(w, r, text, ops.WriteResult{})
 }

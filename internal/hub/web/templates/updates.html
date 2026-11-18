@@ -9,11 +9,11 @@
     <div><dt>Newest in the channel</dt><dd>{{if $pending}}<span class="muted" data-check-pending>checking the channel {{.Channel}} (the last answer was for {{.CheckedChannel}})</span>{{else if .Latest}}{{if .ReleaseURL}}<a href="{{.ReleaseURL}}" target="_blank" rel="noopener">{{.Latest}}</a>{{else}}{{.Latest}}{{end}}{{if .Newer}} <span class="badge" data-tone="warning">newer</span>{{else}} <span class="muted">(up to date)</span>{{end}}{{else}}<span class="muted">not checked yet</span>{{end}}</dd></div>
     <div><dt>Checked</dt><dd data-checked-at>{{if .CheckedAt}}<time datetime="{{.CheckedAt}}">{{$.Data.CheckedAt}}</time>{{else}}<span class="muted">not yet</span>{{end}}{{if .CheckError}} <span class="badge" data-tone="danger">failed</span> <span class="muted">{{.CheckError}}</span>{{end}}</dd></div>
   </dl>
+  <div id="list-result" aria-live="polite"></div>
   <form method="post" action="/admin/updates/check" hx-post="/admin/updates/check" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn-secondary" data-control="update-check-now">{{template "icon" "i-refresh"}}<span>Check now</span></button>
   </form>
   {{if $pending}}{{else}}{{if .ReleaseURL}}<div><div class="copy-field"><code class="copy-value" id="cp-update-url">{{.ReleaseURL}}</code><button type="button" class="copy-btn" data-copy-target="#cp-update-url" aria-label="Copy the release URL" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
-  <div id="list-result" aria-live="polite"></div>
   {{if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready." class="row-actions">
     <button type="submit" class="btn" data-control="hub-update">Update the Hub to {{.Latest}}</button>
   </form>

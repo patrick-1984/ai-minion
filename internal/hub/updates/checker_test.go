@@ -222,3 +222,64 @@ func waitFor(t *testing.T, ok func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
+// A Hub that starts with update_check off checks as soon as it is turned on,
+// not only at the next daily check.
+func TestRunChecksWhenTheCheckIsTurnedOn(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
+	var mu sync.Mutex
+	check := "off"
+	c := newChecker(src, "v0.11.0", nil)
+	c.Setting = func(k string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if k == config.KeyUpdateCheck {
+			return check, nil
+		}
+		return config.UpdateChannelLatest, nil
+	}
+	c.Interval, c.FirstDelay, c.Poll, c.MinRefresh = time.Hour, time.Millisecond, 5*time.Millisecond, time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	time.Sleep(30 * time.Millisecond)
+	if src.calls.Load() != 0 {
+		t.Fatal("checked while off")
+	}
+	mu.Lock()
+	check = "on"
+	mu.Unlock()
+	waitFor(t, func() bool { return c.Latest().Latest == "v0.13.0" })
+}
+
+// A background check stops with the Hub instead of waiting for GitHub, and
+// keeps the last answer.
+func TestBackgroundCheckStopsOnShutdown(t *testing.T) {
+	blocked := make(chan struct{})
+	src := &blockingSource{started: blocked}
+	c := newChecker(src, "v0.11.0", nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	doneCh := make(chan struct{})
+	go func() { c.CheckOnce(ctx); close(doneCh) }()
+	<-blocked
+	cancel()
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CheckOnce kept running after cancel")
+	}
+	if r := c.Latest(); r.Err != "" {
+		t.Fatalf("a shutdown was stored as an error: %+v", r)
+	}
+}
+
+type blockingSource struct{ started chan struct{} }
+
+func (b *blockingSource) Releases(ctx context.Context) ([]version.Release, error) {
+	close(b.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (b *blockingSource) Open(context.Context, version.Asset) (io.ReadCloser, error) {
+	return nil, errors.New("not used")
+}

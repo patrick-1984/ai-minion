@@ -10,7 +10,7 @@ Released 2026-11-18.
 
 ### Fixed
 
-- **A changed `update_channel` is checked at once.** Before, the Hub kept the answer of the old channel until the next daily check, and the Updates page showed the new channel next to it, for example "latest … v0.11.0 (up to date)" while v0.13.0 was out. The Hub now notices a change of `update_channel` or `update_check` within a minute and checks again; until then the page says it is checking the new channel.
+- **A changed `update_channel` is checked at once.** Before, the Hub kept the answer of the old channel until the next daily check, and the Updates page showed the new channel next to it, for example "latest … v0.11.0 (up to date)" while v0.13.0 was out. The Hub now notices a change of `update_channel` or `update_check` within 15 seconds and checks again (at most one GitHub call a minute, so within about a minute); until then the page says it is checking the new channel and offers neither the old answer nor an update to it.
 
 ## v0.13.0
 
