@@ -56,7 +56,7 @@ func TestInstallServiceBinaryInProtectsTheDirectoryAndTheFile(t *testing.T) {
 	elevated(t)
 	src := writeFakeBinary(t, "first")
 	dir := filepath.Join(t.TempDir(), "Minion")
-	dst, err := installServiceBinaryIn(src, dir)
+	dst, err := installServiceBinaryIn(src, dir, sumOf("first"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,14 +104,21 @@ func TestInstallServiceBinaryInProtectsTheDirectoryAndTheFile(t *testing.T) {
 	}
 
 	// Running it again replaces the copy.
-	if _, err := installServiceBinaryIn(writeFakeBinary(t, "second"), dir); err != nil {
+	if _, err := installServiceBinaryIn(writeFakeBinary(t, "second"), dir, sumOf("second")); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "second" {
 		t.Fatalf("content after the second install = %q", b)
 	}
-	// Installing from the copy itself keeps it.
-	if _, err := installServiceBinaryIn(dst, dir); err != nil {
+	// A source that does not match the verified digest changes nothing.
+	if _, err := installServiceBinaryIn(writeFakeBinary(t, "planted"), dir, sumOf("third")); err == nil {
+		t.Fatal("a binary that does not match the verified digest was installed")
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "second" {
+		t.Fatalf("content after a refused install = %q", b)
+	}
+	// Installing unverified from the copy itself keeps it.
+	if _, err := installServiceBinaryIn(dst, dir, ""); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "second" {
@@ -139,7 +146,7 @@ func TestInstallServiceBinaryInResetsALooseExistingDirectory(t *testing.T) {
 	if _, info := daclOf(t, filepath.Join(dir, "minion.exe")); len(UntrustedWriters(info, RoleFile)) == 0 {
 		t.Fatal("the fixture is not loose")
 	}
-	dst, err := installServiceBinaryIn(writeFakeBinary(t, "new"), dir)
+	dst, err := installServiceBinaryIn(writeFakeBinary(t, "new"), dir, sumOf("new"))
 	if err != nil {
 		t.Fatal(err)
 	}

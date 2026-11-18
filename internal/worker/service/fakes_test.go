@@ -80,6 +80,9 @@ func testDeps(t *testing.T, r Runner) Deps {
 		Sleep:            func(context.Context, time.Duration) {},
 		ActivePolls:      3,
 		// A test never copies into the real %ProgramFiles%.
-		ServiceBinary: func(src string) (string, error) { return src, nil },
+		ServiceBinary: func(src, _ string) (string, error) { return src, nil },
+		// Nor touches the registry of the machine.
+		ServiceKeyGone: func() bool { return true },
+		SetServiceEnv:  func(map[string]string) error { return nil },
 	}
 }

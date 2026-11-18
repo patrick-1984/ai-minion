@@ -65,7 +65,7 @@ func TestInstallControllerWindowsFlow(t *testing.T) {
 	fc := &fakeController{statuses: []Status{StatusStopped, StatusRunning}}
 	d := testDeps(t, nil)
 	d.NewController = func(string) (Controller, error) { return fc, nil }
-	res, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Scope: ScopeSystem, Binary: `C:\minion.exe`}, nil)
+	res, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum, Scope: ScopeSystem, Binary: `C:\minion.exe`}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,15 +85,15 @@ func TestInstallControllerErrors(t *testing.T) {
 		"stopped": {statuses: []Status{StatusStopped}},
 	} {
 		d.NewController = func(string) (Controller, error) { return fc, nil }
-		if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: `C:\minion.exe`}, nil); err == nil {
+		if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum, Binary: `C:\minion.exe`}, nil); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 	}
 	d.NewController = func(string) (Controller, error) { return nil, errors.New("no scm") }
-	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: "x"}, nil); err == nil {
+	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum, Binary: "x"}, nil); err == nil {
 		t.Error("controller error ignored")
 	}
-	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows}, nil); err == nil {
+	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum}, nil); err == nil {
 		t.Error("empty binary accepted")
 	}
 }

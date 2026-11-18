@@ -65,7 +65,7 @@ jobs:
           set -eu
           identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
-          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor)'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor|TestCopyServiceBinary)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
           cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
           CGO_ENABLED=0 go test -count=1 -v -run "$identity" ./internal/identity/
@@ -84,7 +84,7 @@ jobs:
           set -eu
           identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
-          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor)'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor|TestCopyServiceBinary)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
           cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
           CGO_ENABLED=1 go test -race -count=1 -run "$identity" ./internal/identity/
@@ -192,13 +192,32 @@ jobs:
           "$USER_MINION" worker status --json > old-status.json || true
           cat old-status.json
           grep -q 'writable by non-administrators' old-status.json
+      # The service runs only the verified signed release of the running
+      # version; this job's minion.exe is a development build with no release.
+      - name: A development build is refused as the service binary
+        shell: bash
+        run: |
+          set -eu
+          if "$USER_MINION" worker up --share-existing none > refused.log 2>&1; then
+            cat refused.log
+            echo "worker up installed an unverified development build as the service"
+            exit 1
+          fi
+          cat refused.log
+          grep -q 'not a release' refused.log
+          grep -q 'allow-unverified-service-binary' refused.log
+          # Nothing changed: the old service still points at the user's copy.
+          sc.exe qc MinionWorker > qc-old.txt
+          grep -q 'AppData' qc-old.txt
       - name: Install and start the service (minion worker up, no --foreground)
         shell: bash
         run: |
           set -eu
           # Run from the user-writable copy, as a user of install.ps1 would:
-          # the service must not run this file but a protected copy.
-          "$USER_MINION" worker up --share-existing none 2>&1 | tee up.log
+          # the service must not run this file but a protected copy. A
+          # development build needs the explicit flag (a release would install
+          # its verified signed binary instead).
+          "$USER_MINION" worker up --share-existing none --allow-unverified-service-binary 2>&1 | tee up.log
           grep -q 'MinionWorker' up.log
           grep -q 'Program Files' up.log
           # Automatic start at boot and restart on failure (AC2).
@@ -218,7 +237,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          "$USER_MINION" worker up --share-existing none 2>&1 | tee up2.log
+          "$USER_MINION" worker up --share-existing none --allow-unverified-service-binary 2>&1 | tee up2.log
           grep -q 'Installed windows system service MinionWorker' up2.log
           reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Services\MinionWorker' /v Environment | tee env.txt
           grep -q 'MINION_STATE_DIR' env.txt

@@ -180,40 +180,104 @@ func (u *Updater) Run(ctx context.Context, o Options) (Result, error) {
 	}
 	u.logf("resolved %s to %s", o.Selector, rel.Tag)
 
+	bin, binSum, err := u.fetchVerified(ctx, rel, o)
+	if err != nil {
+		return res, err
+	}
+	u.logf("installing %s", rel.Tag)
+	// binSum is the digest of the bytes extracted from the verified archive.
+	// The copy that is installed is hashed again and must equal it.
+	if err := installLocked(o, v, func() error {
+		return ReplaceBinary(o.ExecPath, bin, o.GOOS, binSum)
+	}); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// Fetched is a verified release executable in the cache.
+type Fetched struct {
+	// Tag is the release.
+	Tag string
+	// Path is the executable in the cache entry. The cache may be writable
+	// by the user that runs this program: a reader must hash what it copies
+	// and compare with SHA256 (as [ReplaceBinary] does).
+	Path string
+	// SHA256 is the digest of the executable as extracted from the archive
+	// whose digest the signed checksums.txt vouches for.
+	SHA256 string
+}
+
+// FetchVerified downloads the release that sel resolves to, verifies it
+// exactly as [Updater.Run] does (signed checksums.txt and manifest, archive
+// digest) and keeps it in the cache, without installing anything. It is how
+// the Windows service install gets the binary it copies into Program Files:
+// the signed release of a version, never the file the user ran.
+func (u *Updater) FetchVerified(ctx context.Context, sel Selector, goos, goarch string) (Fetched, error) {
+	if u.Verifier == nil {
+		return Fetched{}, errors.New("update: no signature verifier configured")
+	}
+	if u.Source == nil {
+		return Fetched{}, errors.New("update: no release source configured")
+	}
+	o, err := Options{Selector: sel, GOOS: goos, GOARCH: goarch, ExecPath: "-"}.withDefaults()
+	if err != nil {
+		return Fetched{}, err
+	}
+	releases, err := u.Source.Releases(ctx)
+	if err != nil {
+		return Fetched{}, err
+	}
+	rel, _, err := sel.Resolve(releases)
+	if err != nil {
+		return Fetched{}, err
+	}
+	bin, sum, err := u.fetchVerified(ctx, rel, o)
+	if err != nil {
+		return Fetched{}, err
+	}
+	return Fetched{Tag: rel.Tag, Path: bin, SHA256: sum}, nil
+}
+
+// fetchVerified verifies the metadata of rel, checks the protocol range of
+// o.HubRange, downloads and verifies the archive of o's platform, extracts
+// the executable and commits the cache entry. It returns the path of the
+// executable in the cache entry and its verified digest.
+func (u *Updater) fetchVerified(ctx context.Context, rel Release, o Options) (string, string, error) {
 	// The cache holds the Sigstore trust root and the verified release. Before
 	// anything is written to it, or read from it, it must be a directory that
 	// only trusted users can change.
 	if err := u.Cache.Prepare(); err != nil {
-		return res, err
+		return "", "", err
 	}
 	verifier, err := u.Verifier(ctx, false)
 	if err != nil {
-		return res, withOfflineHint(err)
+		return "", "", withOfflineHint(err)
 	}
 	meta, err := u.fetchMetadata(ctx, verifier, rel)
 	if err != nil {
-		return res, err
+		return "", "", err
 	}
 	if err := checkProtocol(meta.manifest, o.HubRange); err != nil {
-		return res, err
+		return "", "", err
 	}
 
 	archive := ArchiveName(rel.Tag, o.GOOS, o.GOARCH, goarmFor(o.GOARCH))
 	want, ok := meta.checksums[archive]
 	if !ok {
-		return res, fmt.Errorf("release %s has no archive for %s/%s (%s)", rel.Tag, o.GOOS, o.GOARCH, archive)
+		return "", "", fmt.Errorf("release %s has no archive for %s/%s (%s)", rel.Tag, o.GOOS, o.GOARCH, archive)
 	}
 	if md, listed := meta.manifest.Digest(archive); listed && md != want {
-		return res, fmt.Errorf("%w: release manifest and checksums.txt disagree about %s", ErrChecksum, archive)
+		return "", "", fmt.Errorf("%w: release manifest and checksums.txt disagree about %s", ErrChecksum, archive)
 	}
 	asset, ok := rel.Asset(archive)
 	if !ok {
-		return res, fmt.Errorf("release %s has no asset %s", rel.Tag, archive)
+		return "", "", fmt.Errorf("release %s has no asset %s", rel.Tag, archive)
 	}
 
 	staging, err := u.Cache.NewStaging()
 	if err != nil {
-		return res, err
+		return "", "", err
 	}
 	defer func() { _ = os.RemoveAll(staging) }() // a no-op once committed
 
@@ -223,41 +287,32 @@ func (u *Updater) Run(ctx context.Context, o Options) (Result, error) {
 	// path again.
 	af, err := u.download(ctx, asset, filepath.Join(staging, archive), want)
 	if err != nil {
-		return res, err
+		return "", "", err
 	}
 	binSum, err := extractBinary(af, archive, o.GOOS, filepath.Join(staging, BinaryName(o.GOOS)))
 	if cerr := af.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		return res, err
+		return "", "", err
 	}
 	// The archive stays in the cache entry: it is the one file whose digest
 	// the signed checksums vouch for, so an offline install can authenticate
 	// the executable from it (see verifyCached).
 	if err := meta.writeTo(staging); err != nil {
-		return res, err
+		return "", "", err
 	}
 	if err := writeMeta(staging, CacheMeta{
 		Tag: rel.Tag, GOOS: o.GOOS, GOARCH: o.GOARCH,
 		ArchiveName: archive, ArchiveSHA256: want, BinarySHA256: binSum,
 		Prerelease: rel.Prerelease,
 	}); err != nil {
-		return res, err
+		return "", "", err
 	}
 	if err := u.Cache.Commit(staging, rel.Tag); err != nil {
-		return res, err
+		return "", "", err
 	}
-
-	u.logf("installing %s", rel.Tag)
-	// binSum is the digest of the bytes extracted from the verified archive.
-	// The copy that is installed is hashed again and must equal it.
-	if err := installLocked(o, v, func() error {
-		return ReplaceBinary(o.ExecPath, filepath.Join(u.Cache.EntryDir(rel.Tag), BinaryName(o.GOOS)), o.GOOS, binSum)
-	}); err != nil {
-		return res, err
-	}
-	return res, nil
+	return filepath.Join(u.Cache.EntryDir(rel.Tag), BinaryName(o.GOOS)), binSum, nil
 }
 
 // runOffline installs the newest verified cached version that matches the

@@ -107,7 +107,7 @@ func TestInstallOnWindowsBuildsTheConfigFromTheRequest(t *testing.T) {
 	d, fx := windowsDeps(t, &fakeController{statuses: []Status{StatusStopped, StatusRunning}})
 	var out bytes.Buffer
 	res, err := Install(context.Background(), d, Request{
-		Manager: ManagerWindows, Scope: ScopeSystem, Binary: testBin, StateDir: testState,
+		Manager: ManagerWindows, BinarySHA256: testSum, Scope: ScopeSystem, Binary: testBin, StateDir: testState,
 	}, &out)
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestInstallOnWindowsBuildsTheConfigFromTheRequest(t *testing.T) {
 func TestInstallOnWindowsFailsWhenTheUserSIDIsUnknown(t *testing.T) {
 	d, fx := windowsDeps(t, &fakeController{})
 	d.UserSID = func() (string, error) { return "", errors.New("no token") }
-	_, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: testBin, StateDir: testState}, nil)
+	_, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum, Binary: testBin, StateDir: testState}, nil)
 	if err == nil || !strings.Contains(err.Error(), "user SID") {
 		t.Fatalf("err = %v", err)
 	}
@@ -145,7 +145,7 @@ func TestInstallOnWindowsFailsWhenTheUserSIDIsUnknown(t *testing.T) {
 func TestInstallOnWindowsReportsAControllerThatCannotBeBuilt(t *testing.T) {
 	d, _ := windowsDeps(t, nil)
 	d.NewControllerFromConfig = func(*ksvc.Config) (Controller, error) { return nil, errors.New("no scm") }
-	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: testBin}, nil); err == nil || !strings.Contains(err.Error(), "no scm") {
+	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum, Binary: testBin}, nil); err == nil || !strings.Contains(err.Error(), "no scm") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -182,7 +182,7 @@ func TestWindowsInstallErrorExplainsAccessDenied(t *testing.T) {
 func TestInstallOnWindowsAccessDeniedHintsAtAdministrator(t *testing.T) {
 	denyAccess(t)
 	d, _ := windowsDeps(t, &fakeController{installEr: errDenied})
-	_, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: testBin}, nil)
+	_, err := Install(context.Background(), d, Request{Manager: ManagerWindows, BinarySHA256: testSum, Binary: testBin}, nil)
 	if err == nil || !strings.Contains(err.Error(), "administrator") {
 		t.Fatalf("err = %v", err)
 	}

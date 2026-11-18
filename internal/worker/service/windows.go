@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"os"
 
 	ksvc "github.com/kardianos/service"
 )
@@ -90,7 +91,20 @@ var accessDenied = isAccessDenied
 func windowsInstallError(op string, err error) error {
 	err = fmt.Errorf("%s the service: %w", op, err)
 	if accessDenied(err) {
-		err = fmt.Errorf("%w; installing a Windows service needs an administrator: run \"minion worker up\" in a terminal started as administrator, or use --foreground", err)
+		err = fmt.Errorf("%w; installing a Windows service needs an administrator: run %s in a terminal started as administrator, or use --foreground", err, elevatedUpCommand())
 	}
 	return err
+}
+
+// elevatedUpCommand is the command to run elevated: the protected service
+// binary when it exists (an elevated prompt should not run the copy in the
+// user's profile, which the user's programs can change), else "minion worker
+// up".
+func elevatedUpCommand() string {
+	if p, err := ServiceBinaryLocation(); err == nil {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return "\"" + p + "\" worker up"
+		}
+	}
+	return "\"minion worker up\""
 }

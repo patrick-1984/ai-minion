@@ -10,7 +10,7 @@ var errNoWindows = errors.New("the Windows service binary exists only on Windows
 
 // installServiceBinary leaves src where it is outside Windows: no other
 // platform installs a Windows service (the tests replace this step).
-func installServiceBinary(src string) (string, error) { return src, nil }
+func installServiceBinary(src, _ string) (string, error) { return src, nil }
 
 // ServiceBinaryLocation has no answer outside Windows.
 func ServiceBinaryLocation() (string, error) { return "", errNoWindows }

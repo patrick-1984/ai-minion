@@ -5,10 +5,7 @@ package service
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -43,26 +40,28 @@ func ServiceBinaryLocation() (string, error) {
 
 // installServiceBinary copies src to %ProgramFiles%\Minion\minion.exe (see
 // [installServiceBinaryIn]) and returns that path.
-func installServiceBinary(src string) (string, error) {
+func installServiceBinary(src, wantSHA256 string) (string, error) {
 	pf, err := programFiles()
 	if err != nil {
 		return "", fmt.Errorf("cannot find the Program Files directory: %w", err)
 	}
-	return installServiceBinaryIn(src, ServiceBinaryDir(pf))
+	return installServiceBinaryIn(src, ServiceBinaryDir(pf), wantSHA256)
 }
 
 // installServiceBinaryIn makes dir a directory only SYSTEM and the
 // administrators can change (created with that DACL, or given it when it
-// exists), copies src into it as minion.exe unless src is that file already,
-// protects the file the same way and checks the result: an install that
-// leaves the binary writable by anyone else fails.
-func installServiceBinaryIn(src, dir string) (string, error) {
+// exists), copies src into it as minion.exe, protects the file the same way
+// and checks the result: an install that leaves the binary writable by anyone
+// else fails. With wantSHA256 the copied bytes must hash to it (src is then a
+// verified release in a cache the user may be able to change); without it
+// (an unverified install) src that is the copy already is kept.
+func installServiceBinaryIn(src, dir, wantSHA256 string) (string, error) {
 	dst := dir + `\` + serviceBinaryName
 	if err := secureServiceDir(dir); err != nil {
 		return "", err
 	}
-	if !SameWindowsPath(src, dst) {
-		if err := copyServiceBinary(src, dst); err != nil {
+	if wantSHA256 != "" || !SameWindowsPath(src, dst) {
+		if err := copyServiceBinary(src, dst, wantSHA256); err != nil {
 			return "", err
 		}
 	}
@@ -139,62 +138,6 @@ func applySDDL(path, sddl string) error {
 	if err != nil {
 		return &os.PathError{Op: "set security", Path: path, Err: err}
 	}
-	return nil
-}
-
-// copyServiceBinary copies src next to dst (so the copy inherits the DACL of
-// the directory) and renames it over dst. A dst that still runs (a service
-// that did not stop, a console Worker started from it) cannot be deleted on
-// Windows but can be renamed: it is moved to dst.old first and removed when it
-// no longer runs.
-func copyServiceBinary(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	if fi, err := in.Stat(); err != nil {
-		return err
-	} else if !fi.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", src)
-	}
-	dir := filepath.Dir(dst)
-	tmp, err := os.CreateTemp(dir, ".minion-install-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	done := false
-	defer func() {
-		if !done {
-			_ = tmp.Close()
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err := io.Copy(tmp, in); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	old := dst + ".old"
-	if _, err := os.Lstat(dst); err == nil {
-		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
-			_ = os.Rename(old, fmt.Sprintf("%s-%d", old, time.Now().UnixNano()))
-		}
-		if err := os.Rename(dst, old); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(tmpName, dst); err != nil {
-		_ = os.Rename(old, dst)
-		return err
-	}
-	done = true
-	_ = os.Remove(old) // fails while it still runs; a later install removes it
 	return nil
 }
 

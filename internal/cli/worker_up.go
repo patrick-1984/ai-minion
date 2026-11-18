@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/version"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
@@ -47,6 +49,43 @@ type workerUpDeps struct {
 	// windowsService looks at the Worker's Windows service, query only; nil
 	// means service.QueryWindowsService (nothing off Windows).
 	windowsService func() (service.WindowsServiceState, error)
+	// serviceRelease fetches and verifies the signed release of this
+	// version for the Windows service; nil means [fetchServiceRelease].
+	serviceRelease func(ctx context.Context, res *config.Resolver, out io.Writer) (version.Fetched, error)
+}
+
+// allowUnverifiedFlag installs the Windows service from the running binary
+// without verifying it (development builds).
+const allowUnverifiedFlag = "allow-unverified-service-binary"
+
+// fetchServiceRelease gets the signed release of the running version into the
+// update cache and verifies it, the way "minion update" does (security fix
+// S1): the Windows service runs that executable, never the file the user ran,
+// which the user's own programs could have changed. A build that is not a
+// release has nothing to verify against and is refused.
+func fetchServiceRelease(ctx context.Context, res *config.Resolver, out io.Writer) (version.Fetched, error) {
+	sel, err := version.ParseSelector(version.Version)
+	if err != nil || sel.IsChannel() {
+		return version.Fetched{}, fmt.Errorf("this minion is not a release (version %q), so there is no signed release to install as the Windows service; "+
+			"install a release (install.ps1) and run it again, or, for development only, pass --%s", version.Version, allowUnverifiedFlag)
+	}
+	get := func(key string) (string, error) {
+		r, err := res.Resolve(key)
+		return r.Value, err
+	}
+	apiURL, err := get(config.KeyUpdateAPIURL)
+	if err != nil {
+		return version.Fetched{}, err
+	}
+	cacheDir, err := get(config.KeyUpdateCacheDir)
+	if err != nil {
+		return version.Fetched{}, err
+	}
+	u, err := defaultUpdateDeps().newUpdater(apiURL, cacheDir, out)
+	if err != nil {
+		return version.Fetched{}, err
+	}
+	return u.FetchVerified(ctx, sel, runtime.GOOS, runtime.GOARCH)
 }
 
 // setupDeps returns the wizard dependencies with the environment and config
@@ -147,6 +186,7 @@ that the identity survives a restart of the container.`,
 	}
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run the Worker in the foreground instead of installing a service")
 	cmd.Flags().StringVar(&asUser, "as-user", "", "Install the service for this Unix user (needs root; default: the user that ran sudo)")
+	cmd.Flags().Bool(allowUnverifiedFlag, false, "Windows, development only: install the service from this binary although it is not a verified release (the service runs it as LocalSystem)")
 	addSettingFlags(cmd, deps.registry(), config.ScopeWorker)
 	addJoinFlag(cmd, deps.registry())
 	return cmd
@@ -383,19 +423,49 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	if owned {
 		svc.Chown = deps.chown
 	}
-	_, err = service.Install(ctx, svc, service.Request{
+	req := service.Request{
 		Manager:     det.Manager,
 		Scope:       det.Scope,
 		Binary:      binary,
 		Target:      target,
 		StateDir:    stateDir,
 		PinStateDir: pinState,
-	}, out)
+	}
+	if det.Manager == service.ManagerWindows {
+		if req, err = windowsServiceBinary(ctx, cmd, deps, res, req, out, stderr); err != nil {
+			return err
+		}
+	}
+	_, err = service.Install(ctx, svc, req, out)
 	var linger *service.LingerError
 	if errors.As(err, &linger) {
 		_, _ = fmt.Fprintf(stderr, "Lingering is not enabled for %s. Run this command, then run minion worker up again:\n  %s\n", linger.User, linger.Command)
 	}
 	return err
+}
+
+// windowsServiceBinary sets the binary of a Windows service install: the
+// verified signed release of this version, or, with --allow-unverified-
+// service-binary, the running binary as it is (with a warning).
+func windowsServiceBinary(ctx context.Context, cmd *cobra.Command, deps workerUpDeps, res *config.Resolver,
+	req service.Request, out, stderr io.Writer) (service.Request, error) {
+	if unverified, _ := cmd.Flags().GetBool(allowUnverifiedFlag); unverified {
+		_, _ = fmt.Fprintf(stderr, "Warning: --%s: the service will run %s as LocalSystem without checking that it is a signed release. Use this for development only.\n",
+			allowUnverifiedFlag, req.Binary)
+		req.AllowUnverified = true
+		return req, nil
+	}
+	fetch := deps.serviceRelease
+	if fetch == nil {
+		fetch = fetchServiceRelease
+	}
+	_, _ = fmt.Fprintf(out, "Fetching and verifying the signed release %s for the Windows service.\n", version.Version)
+	f, err := fetch(ctx, res, out)
+	if err != nil {
+		return req, fmt.Errorf("cannot get the verified release for the Windows service: %w", err)
+	}
+	req.Binary, req.BinarySHA256 = f.Path, f.SHA256
+	return req, nil
 }
 
 // firstRunService is the first-run gate of the service path.

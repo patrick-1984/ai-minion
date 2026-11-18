@@ -129,6 +129,13 @@ type Request struct {
 	Target Target
 	// StateDir is the Worker state directory of the target.
 	StateDir string
+	// BinarySHA256 is the verified digest of Binary (the executable of the
+	// signed release of this version, see version.Updater.FetchVerified). The
+	// Windows service is installed only with it, or with AllowUnverified.
+	BinarySHA256 string
+	// AllowUnverified installs the Windows service from Binary as it is,
+	// without a verified digest (development builds only).
+	AllowUnverified bool
 	// PinStateDir writes StateDir into the service (MINION_STATE_DIR) because
 	// it is not the directory the service would resolve without help: the
 	// service manager does not carry the environment of the shell that ran
@@ -194,9 +201,16 @@ type Deps struct {
 	// nil means [CurrentUserSID].
 	UserSID func() (string, error)
 	// ServiceBinary puts the binary the Windows service runs where only SYSTEM
-	// and the administrators can change it and returns that path; nil means
-	// the copy to %ProgramFiles%\Minion\minion.exe (security fix S1).
-	ServiceBinary func(src string) (string, error)
+	// and the administrators can change it and returns that path; the copied
+	// bytes must hash to wantSHA256 when it is set. Nil means the copy to
+	// %ProgramFiles%\Minion\minion.exe (security fix S1).
+	ServiceBinary func(src, wantSHA256 string) (string, error)
+	// ServiceKeyGone reports whether the registry key of the Windows service
+	// is gone; nil means the registry of this machine.
+	ServiceKeyGone func() bool
+	// SetServiceEnv writes the environment of the Windows service into its
+	// registry key after the install; nil means the registry of this machine.
+	SetServiceEnv func(env map[string]string) error
 	// StopPolls bounds the wait for a running Windows service to stop before
 	// its binary is replaced; zero means 60 polls (30 s at the default
 	// interval).
@@ -325,6 +339,11 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	if err := validateBinaryAny(req.Binary); err != nil {
 		return Result{}, err
 	}
+	// The service runs as LocalSystem: it runs the signed release, never
+	// unverified bytes, unless the operator asked for that explicitly.
+	if req.BinarySHA256 == "" && !req.AllowUnverified {
+		return Result{}, ErrUnverifiedServiceBinary
+	}
 	// A running service holds its binary open: stop it before the binary is
 	// replaced (service operations go by name, so the path of this controller
 	// does not matter).
@@ -340,7 +359,7 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	// the one the installer put in %LOCALAPPDATA%. It runs a protected copy.
 	// Registering that copy also moves an existing service that still points
 	// at a user-writable path.
-	binary, err := d.serviceBinary(req.Binary)
+	binary, err := d.serviceBinary(req.Binary, req.BinarySHA256)
 	if err != nil {
 		return Result{}, windowsInstallError("prepare the binary of", err)
 	}
@@ -359,6 +378,18 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	if err := c.Install(); err != nil {
 		return Result{}, windowsInstallError("install", err)
 	}
+	// kardianos writes the environment before it creates the service; write
+	// it again into the key the new service owns, so that a key that was
+	// still being removed cannot have taken it along.
+	if env := d.serviceEnv(req); len(env) > 0 {
+		set := d.SetServiceEnv
+		if set == nil {
+			set = setServiceEnvironment
+		}
+		if err := set(env); err != nil {
+			return Result{}, windowsInstallError("set the environment of", err)
+		}
+	}
 	if err := c.Start(); err != nil {
 		return Result{}, windowsInstallError("start", err)
 	}
@@ -376,6 +407,23 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	return Result{}, errors.New("the service " + WindowsServiceName + " is not running after the start")
 }
 
+// serviceEnv is the environment [WindowsConfig] gives the service of req; nil
+// when the user SID cannot be read (the controller step reported that).
+func (d Deps) serviceEnv(req Request) map[string]string {
+	if d.NewController != nil {
+		return nil // the controller owns its settings
+	}
+	userSID := d.UserSID
+	if userSID == nil {
+		userSID = CurrentUserSID
+	}
+	sid, err := userSID()
+	if err != nil {
+		return nil
+	}
+	return WindowsConfig(req.Binary, req.StateDir, sid).EnvVars
+}
+
 // waitDeleted waits until the service control manager has really removed a
 // deleted service. DeleteService only marks a service for deletion; it goes
 // once the last handle to it is closed. Creating the service again before
@@ -383,12 +431,17 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 // that names the state directory and the pipe user) is still being removed,
 // which leaves a service that serves nobody's pipe.
 func (d Deps) waitDeleted(ctx context.Context, c Controller) error {
+	// Both the SCM entry and the registry key must be gone.
 	polls := d.StopPolls
 	if polls <= 0 {
 		polls = 60
 	}
+	keyGone := d.ServiceKeyGone
+	if keyGone == nil {
+		keyGone = serviceKeyGone
+	}
 	for i := 0; i < polls; i++ {
-		if _, err := c.Status(); errors.Is(err, ErrNotInstalled) {
+		if _, err := c.Status(); errors.Is(err, ErrNotInstalled) && keyGone() {
 			return nil
 		}
 		if cerr := ctx.Err(); cerr != nil {
@@ -401,17 +454,21 @@ func (d Deps) waitDeleted(ctx context.Context, c Controller) error {
 
 // serviceBinaryNote tells the operator which binary the service runs.
 func serviceBinaryNote(binary string) string {
-	return "The service runs " + binary + ", a copy that only administrators and SYSTEM can change; " +
-		"the Hub's remote update replaces that copy, and \"minion worker up\" in an elevated prompt copies the binary you run there again.\n"
+	return "The service runs " + binary + ", the verified signed release, which only administrators and SYSTEM can change; " +
+		"the Hub's remote update replaces it, and \"" + binary + "\" worker up in an elevated prompt installs it again.\n"
 }
 
 // serviceBinary is the ServiceBinary step with its default.
-func (d Deps) serviceBinary(src string) (string, error) {
+func (d Deps) serviceBinary(src, wantSHA256 string) (string, error) {
 	if d.ServiceBinary != nil {
-		return d.ServiceBinary(src)
+		return d.ServiceBinary(src, wantSHA256)
 	}
-	return installServiceBinary(src)
+	return installServiceBinary(src, wantSHA256)
 }
+
+// ErrUnverifiedServiceBinary refuses a Windows service install without the
+// verified digest of its binary.
+var ErrUnverifiedServiceBinary = errors.New("the Windows service runs only a verified release binary, and none was given")
 
 // stopRunningService stops the Worker's Windows service when it runs and waits
 // until it no longer does. A controller that cannot stop (a test fake) is left
