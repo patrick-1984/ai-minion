@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-head"><div><h1>Minion control <button type="button" class="info-btn" popovertarget="help-master-session" aria-label="About master sessions">{{template "icon" "i-info"}}</button></h1>
 <p>Which sessions may control sessions on other Workers. A <strong>master session</strong> controls a session on another Worker only when that Worker <strong>accepts control from</strong> the master's Worker (or from all Workers) and shares the session. Every other session is a <strong>slave session</strong>: by default all of them. <strong>User-managed</strong> Workers are also controlled by people and API keys, as before. Every click is saved at once.</p>
-<div class="info-pop" id="help-master-session" popover><p>A Worker has no master sessions until its owner or an administrator nominates one. The Hub also checks that the master Worker's owner may reach the target Worker.</p></div></div></div>
+<div class="info-pop" id="help-master-session" popover><p>A Worker has no master sessions until an administrator nominates one. The Hub also checks that the master Worker's owner may reach the target Worker.</p></div></div></div>
 <details class="panel control-how">
   <summary><span class="summary-title">How Workers grant control</span></summary>
   <div class="details-body">

@@ -63,7 +63,7 @@
       <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
       <td>active</td>
       <td class="cell-clamp" title="0190a1b2-c3d4-7e5f-8a6b-0000000000b0" tabindex="0">0190a1b2-c3d4-7e5f-8a6b-0000000000b0</td>
-      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d1/revoke" data-confirm-name="build-farm" data-confirm-what="invitation key" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke build-farm</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" aria-live="polite"></span>
         </form></td>
@@ -76,7 +76,7 @@
       <td>never</td>
       <td>active</td>
       <td class="cell-clamp" title="0190a1b2-c3d4-7e5f-8a6b-0000000000b0" tabindex="0">0190a1b2-c3d4-7e5f-8a6b-0000000000b0</td>
-      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d2/revoke" data-confirm-name="laptop" data-confirm-what="invitation key" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke laptop</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" aria-live="polite"></span>
         </form></td>

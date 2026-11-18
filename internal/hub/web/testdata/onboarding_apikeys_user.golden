@@ -66,7 +66,7 @@
       <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
       <td>2026-11-09 07:30 UTC</td>
       <td>active</td>
-      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e1/revoke" data-confirm-name="ci" data-confirm-what="API key" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke ci</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e1" aria-live="polite"></span>
         </form></td>
@@ -78,7 +78,7 @@
       <td>never</td>
       <td>never used</td>
       <td>active</td>
-      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e2/revoke" data-confirm-name="mcp" data-confirm-what="API key" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+      <td><form method="post" hx-post="/api-keys/0190a1b2-c3d4-7e5f-8a6b-0000000000e2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke mcp</span></button>
           <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000e2" aria-live="polite"></span>
         </form></td>

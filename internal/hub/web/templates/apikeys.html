@@ -74,7 +74,7 @@
       <td>{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}}</td>
       <td>{{.LastUsed}}</td>
       <td>{{.State}}</td>
-      <td>{{if .CanRevoke}}<form method="post" hx-post="/api-keys/{{.ID}}/revoke" data-confirm-name="{{.Name}}" data-confirm-what="API key" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
+      <td>{{if .CanRevoke}}<form method="post" hx-post="/api-keys/{{.ID}}/revoke" hx-target="#revoke-{{.ID}}" hx-swap="innerHTML" hx-confirm="Revoke this API key? Tools that use it stop working at once." hx-disabled-elt="find button">
           <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Revoke {{.Name}}</span></button>
           <span id="revoke-{{.ID}}" aria-live="polite"></span>
         </form>{{else}}<span class="muted">none</span>{{end}}</td>

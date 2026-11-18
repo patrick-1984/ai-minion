@@ -137,7 +137,7 @@ ops</textarea>
     <div id="roles-lab" aria-live="polite"></div>
   </form>
   
-  <form method="post" hx-post="/admin/oidc/providers/lab/delete" data-confirm-name="Lab Keycloak" data-confirm-what="identity provider" hx-target="#delete-lab" hx-swap="innerHTML" hx-confirm="Delete this provider? People can no longer sign in with it." hx-disabled-elt="find button">
+  <form method="post" hx-post="/admin/oidc/providers/lab/delete" hx-target="#delete-lab" hx-swap="innerHTML" hx-confirm="Delete this provider? People can no longer sign in with it." hx-disabled-elt="find button">
     <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Delete the provider</span></button>
     <div id="delete-lab" aria-live="polite"></div>
   </form>

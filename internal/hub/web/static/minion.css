@@ -1260,15 +1260,6 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--input-bor
 .filter-chip:is(a, button):hover:not(:disabled), .filter-chip button:hover:not(:disabled) {
   background: var(--hover); color: var(--text); border-color: var(--input-border); filter: none; }
 
-.confirm-box { width: min(100%, 32rem); min-width: 0; margin-block: 12px; padding: 16px;
-  border: 1px solid var(--danger); border-radius: var(--r-lg); background: var(--surface); color: var(--text);
-  overflow-wrap: anywhere; text-align: start; white-space: normal; }
-.confirm-box h2 { margin-bottom: 8px; font-size: 16px; }
-.confirm-box label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
-.confirm-box .confirm-input { display: block; width: 100%; max-width: none; margin-block: 8px 12px; }
-dialog.confirm-box { max-width: calc(100% - 32px); max-height: calc(100dvh - 32px); margin: auto;
-  overflow: auto; overscroll-behavior: contain; box-shadow: var(--shadow); }
-dialog.confirm-box::backdrop { background: var(--scrim); }
 .rel-time { display: inline-block; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 time + .rel-time { margin-inline-start: 6px; }
 .pw-toggle { align-self: flex-start; flex: none; gap: 6px; width: fit-content; }
@@ -1313,7 +1304,6 @@ button.is-busy { border-style: dashed; }
   .filter-bar .filter-input { flex-basis: 100%; max-width: none; }
   .filter-count { flex: 1 1 8rem; }
   .filter-chip { font-size: 12px; }
-  .confirm-box { padding: 14px; }
   .rtable .cell-clamp { min-width: 0; max-width: 100%; }
   .cell-clamp:where(:not(td, th)) { max-width: min(32ch, 70vw); }
 }
@@ -1321,7 +1311,7 @@ button.is-busy { border-style: dashed; }
   .live-status::before { background: CanvasText; border-color: CanvasText; }
   .live-status.is-reconnecting::before { background: transparent; }
   .row-unsaved { outline: 1px solid CanvasText; outline-offset: -1px; }
-  .unsaved-badge, .confirm-box, .filter-chip { border-color: CanvasText; }
+  .unsaved-badge, .filter-chip { border-color: CanvasText; }
 }
 @media print {
   .table-wrap { max-height: none; overflow: visible; }

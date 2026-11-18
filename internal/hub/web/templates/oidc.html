@@ -71,7 +71,7 @@
     <div id="roles-{{.ID}}" aria-live="polite"></div>
   </form>
   {{if .Editable}}
-  <form method="post" hx-post="/admin/oidc/providers/{{.ID}}/delete" data-confirm-name="{{.Name}}" data-confirm-what="identity provider" hx-target="#delete-{{.ID}}" hx-swap="innerHTML" hx-confirm="Delete this provider? People can no longer sign in with it." hx-disabled-elt="find button">
+  <form method="post" hx-post="/admin/oidc/providers/{{.ID}}/delete" hx-target="#delete-{{.ID}}" hx-swap="innerHTML" hx-confirm="Delete this provider? People can no longer sign in with it." hx-disabled-elt="find button">
     <button type="submit" class="btn-danger">{{template "icon" "i-trash"}}<span>Delete the provider</span></button>
     <div id="delete-{{.ID}}" aria-live="polite"></div>
   </form>

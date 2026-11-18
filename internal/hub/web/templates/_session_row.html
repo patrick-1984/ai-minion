@@ -51,6 +51,6 @@
     <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
     <button type="submit" class="btn" data-control="approve" aria-label="Approve worker {{.Name}}">{{template "icon" "i-check"}}<span>Approve</span></button>
   </form>
-  <form method="post" action="{{.RemoveURL}}" data-confirm-name="{{.Name}}" data-confirm-what="Worker" hx-post="{{.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Remove worker {{.Name}} ({{if .FingerprintWords}}{{.FingerprintWords}}{{else}}{{.Fingerprint}}{{end}})? It is told to forget this Hub and cannot connect again with its key." class="row-actions" data-key="worker-remove-{{.ID}}">
+  <form method="post" action="{{.RemoveURL}}" hx-post="{{.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Remove worker {{.Name}} ({{if .FingerprintWords}}{{.FingerprintWords}}{{else}}{{.Fingerprint}}{{end}})? It is told to forget this Hub and cannot connect again with its key." class="row-actions" data-key="worker-remove-{{.ID}}">
     <button type="submit" class="btn btn-danger" data-control="remove" aria-label="Remove worker {{.Name}}">{{template "icon" "i-trash"}}<span>Remove</span></button>
   </form>{{else}}<span class="muted">Waiting for approval</span>{{end}}{{end}}

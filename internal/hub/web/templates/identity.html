@@ -82,7 +82,7 @@
   <h2 id="id-rotate">Rotate master key</h2>
   <p>A new root under a new passphrase. Workers follow the chain at their next connect and are not re-paired. All invitations are revoked. The old passphrase no longer opens the current root.</p>
   {{template "passphrase-policy"}}
-  <form data-identity-op="hub_identity_rotate" data-confirm-name="{{.Data.Status.RootFingerprint}}" data-confirm-what="Hub master key" method="post" autocomplete="off">
+  <form data-identity-op="hub_identity_rotate" method="post" autocomplete="off">
     <div class="field"><label for="ro-pass">Current passphrase</label><input type="password" id="ro-pass" name="passphrase" autocomplete="current-password" required></div>
     <div class="field"><label for="ro-new">New passphrase</label><input type="password" id="ro-new" data-count-passphrase name="new_passphrase" autocomplete="new-password" required></div>
     <div class="field"><label for="ro-conf">Repeat the new passphrase</label><input type="password" id="ro-conf" name="confirm" autocomplete="new-password" required></div>

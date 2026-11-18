@@ -3,7 +3,6 @@
 // row-unsaved, unsaved-badge, row-reset: edited settings and local reset;
 // filter-bar, filter-input, filter-count, filter-clear: local table search;
 // filter-chips, filter-chip: removable list filters;
-// confirm-box, confirm-input: additional type-to-confirm friction;
 // rel-time: relative timestamp; pw-toggle: password visibility;
 // field-hint, field-error, field-muted: conditional help and password mismatch;
 // sel-count: share selection summary; is-busy: request label;
@@ -552,101 +551,13 @@
     });
   });
 
-  // Add friction before the normal submit/click path. Replaying the original
-  // submit button retains its value, validation, htmx confirmation and handlers.
-  function destructiveTarget(form, submitter) {
-    var source = submitter && submitter.hasAttribute('data-confirm-name') ? submitter : form;
-    var path = form.getAttribute('hx-post') || form.getAttribute('data-json-action') || form.getAttribute('action') || '';
-    var secretRemove = form.matches('#settings-sections form') && form.querySelector('[name="secret"]') &&
-      submitter && submitter.name === 'action' && submitter.value === 'unset';
-    if (!source.hasAttribute('data-confirm-name') && !secretRemove &&
-        !/\/(?:revoke|delete|deactivate|detach|remove|forget|reset-password)(?:[/?#]|$)/.test(path)) { return null; }
-    var name = source.getAttribute('data-confirm-name');
-    var what = source.getAttribute('data-confirm-what') || form.getAttribute('data-confirm-what') || '';
-    if (!name) {
-      var row = form.closest('tr');
-      var cell = row && row.querySelector('th[scope="row"]');
-      var worker = submitter && submitter.getAttribute('aria-label');
-      var username = form.querySelector('[name="username"]');
-      var section = form.closest('section');
-      var title = section && section.querySelector('h2');
-      var heading = document.querySelector('#content h1');
-      if (secretRemove) { name = form.querySelector('label[for]').textContent.trim(); what = 'setting'; }
-      else if (worker && /^(?:Forget|Remove) worker /i.test(worker)) { name = worker.replace(/^(?:Forget|Remove) worker /i, ''); what = 'Worker'; }
-      else if (cell) {
-        // Invitation names can have explanatory disclosures after the name.
-        var copy = cell.cloneNode(true);
-        copy.querySelectorAll('details, .sr-only').forEach(function (node) { node.remove(); });
-        name = copy.textContent.trim();
-      } else if (username) { name = username.value; }
-      else if (path.indexOf('/admin/users/') !== -1 && heading) { name = heading.textContent.trim(); what = 'user'; }
-      else if (title) { name = title.textContent.trim(); }
-      // Unnamed invitations still have an exact, stable target: their ID.
-      if (!name) {
-        var match = path.match(/\/([^/]+)\/(?:revoke|delete|deactivate|detach|remove|forget)(?:[?#]|$)/);
-        name = match && match[1];
-      }
-    }
-    if (!what) {
-      what = path.indexOf('/api-keys/') !== -1 ? 'API key' : path.indexOf('/invitations/') !== -1 ? 'invitation' :
-        path.indexOf('/identities/') !== -1 ? 'identity' : path.indexOf('/providers/') !== -1 ? 'provider' :
-        path.indexOf('/session-control/') !== -1 ? 'grant' : 'target';
-    }
-    return name ? { name: name, what: what } : null;
-  }
-
-  function askToConfirm(form, submitter, target) {
-    if (form.uiConfirm && form.uiConfirm.isConnected) { form.uiConfirm.querySelector('input').focus(); return; }
-    var box = make('div', 'confirm-box');
-    var label = make('label', '', 'Type “' + target.name + '” to confirm this action on ' + target.what + ' “' + target.name + '”.');
-    var input = make('input', 'confirm-input');
-    input.type = 'text';
-    input.autocomplete = 'off';
-    input.spellcheck = false;
-    input.id = 'ui-confirm-' + (++extraID);
-    label.htmlFor = input.id;
-    var confirm = button('btn-danger', 'Confirm');
-    var cancel = button('btn-secondary', 'Cancel');
-    confirm.disabled = true;
-    input.addEventListener('input', function () { confirm.disabled = input.value !== target.name; });
-    function dismiss() { box.remove(); form.uiConfirm = null; }
-    cancel.addEventListener('click', function () { dismiss(); if (submitter) { submitter.focus(); } });
-    input.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape') { event.preventDefault(); cancel.click(); }
-      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); if (!confirm.disabled) { confirm.click(); } }
-    });
-    confirm.addEventListener('click', function () {
-      if (input.value !== target.name || !form.isConnected || (submitter && submitter.disabled)) { return; }
-      dismiss();
-      form.uiConfirmed = true;
-      try {
-        if (submitter) { submitter.click(); }
-        else { form.requestSubmit(); }
-      } finally { form.uiConfirmed = false; }
-    });
-    box.append(label, input, confirm, cancel);
-    form.appendChild(box);
-    form.uiConfirm = box;
-    input.focus();
-  }
-
-  function guardDestructive(event, form, submitter) {
-    if (!form || form.uiConfirmed || event.defaultPrevented) { return; }
-    var target = destructiveTarget(form, submitter);
-    if (!target) { return; }
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    askToConfirm(form, submitter, target);
-  }
-
+  // Passwords are hidden again before a form is sent.
   document.addEventListener('click', function (event) {
     var submitter = event.target.closest && event.target.closest('button, input[type="submit"], input[type="image"]');
-    if (!submitter || (!/^(submit|image)$/.test(submitter.type) && !submitter.hasAttribute('data-confirm-proxy')) || submitter.disabled) { return; }
-    guardDestructive(event, submitter.form, submitter);
-    if (!event.defaultPrevented && submitter.hasAttribute('data-confirm-proxy')) { hidePasswords(submitter.form); }
+    if (!submitter || submitter.disabled || !submitter.hasAttribute('data-confirm-proxy')) { return; }
+    if (!event.defaultPrevented) { hidePasswords(submitter.form); }
   }, true);
   document.addEventListener('submit', function (event) {
-    guardDestructive(event, event.target, event.submitter || event.target.querySelector('button[type="submit"], input[type="submit"]'));
     if (!event.defaultPrevented) { hidePasswords(event.target); }
   }, true);
 
