@@ -64,13 +64,11 @@
         {{end}}
       </ol></nav>
       <div class="top-tools">
-        <label class="theme-picker"><span>Theme</span>
-          <select data-theme-select>
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </label>
+        <div class="theme-toggle" role="group" aria-label="Theme">
+          <button type="button" class="theme-opt" data-theme-choice="system" aria-pressed="false" title="System theme">{{template "icon" "i-monitor"}}<span class="sr-only">System theme</span></button>
+          <button type="button" class="theme-opt" data-theme-choice="light" aria-pressed="false" title="Light theme">{{template "icon" "i-sun"}}<span class="sr-only">Light theme</span></button>
+          <button type="button" class="theme-opt" data-theme-choice="dark" aria-pressed="false" title="Dark theme">{{template "icon" "i-moon"}}<span class="sr-only">Dark theme</span></button>
+        </div>
       </div>
     </header>
     <div id="banner-slot" data-modal-inert>{{range .Banners}}<div class="banner banner-{{.Kind}}" role="status"><span>{{.Text}}</span>{{with .Action}}

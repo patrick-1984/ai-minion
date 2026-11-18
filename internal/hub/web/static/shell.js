@@ -25,18 +25,40 @@
     if (v === 'light' || v === 'dark') { root.setAttribute('data-theme', v); } else { root.removeAttribute('data-theme'); }
   }
   var selects = document.querySelectorAll('[data-theme-select]');
+  var choices = document.querySelectorAll('[data-theme-choice]');
+  function updateThemeControls(v) {
+    if (v !== 'light' && v !== 'dark') { v = 'system'; }
+    for (var j = 0; j < selects.length; j++) { selects[j].value = v; }
+    for (var k = 0; k < choices.length; k++) {
+      choices[k].setAttribute('aria-pressed', choices[k].getAttribute('data-theme-choice') === v ? 'true' : 'false');
+    }
+  }
+  function chooseTheme(value) {
+    var v = value === 'light' || value === 'dark' ? value : 'system';
+    try {
+      if (v === 'system') { window.localStorage.removeItem(STORE); } else { window.localStorage.setItem(STORE, v); }
+    } catch (e) { /* the choice then lasts for this page only */ }
+    applyTheme(v);
+    updateThemeControls(v);
+  }
+  updateThemeControls(storedTheme());
+  // theme.js applies a choice made in another tab; keep the controls in step.
+  window.addEventListener('storage', function (ev) {
+    if (!ev || ev.key === STORE || ev.key === null) { updateThemeControls(storedTheme()); }
+  });
   for (var i = 0; i < selects.length; i++) {
     (function (sel) {
-      sel.value = storedTheme();
       sel.addEventListener('change', function () {
-        var v = sel.value === 'light' || sel.value === 'dark' ? sel.value : 'system';
-        try {
-          if (v === 'system') { window.localStorage.removeItem(STORE); } else { window.localStorage.setItem(STORE, v); }
-        } catch (e) { /* the choice then lasts for this page only */ }
-        applyTheme(v);
-        for (var j = 0; j < selects.length; j++) { selects[j].value = v; }
+        chooseTheme(sel.value);
       });
     })(selects[i]);
+  }
+  for (var c = 0; c < choices.length; c++) {
+    (function (choice) {
+      choice.addEventListener('click', function () {
+        chooseTheme(choice.getAttribute('data-theme-choice'));
+      });
+    })(choices[c]);
   }
 
   // ---- menu -----------------------------------------------------------------
