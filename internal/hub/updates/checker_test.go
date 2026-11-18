@@ -20,8 +20,11 @@ type fakeSource struct {
 	calls atomic.Int32
 }
 
-func (f *fakeSource) Releases(context.Context) ([]version.Release, error) {
+func (f *fakeSource) Releases(ctx context.Context) ([]version.Release, error) {
 	f.calls.Add(1)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return f.rels, f.err
 }
 func (f *fakeSource) Open(context.Context, version.Asset) (io.ReadCloser, error) {
@@ -130,24 +133,49 @@ func TestSettingErrorsSkipAndChannelChangeDropsTheNotice(t *testing.T) {
 	}
 }
 
-// "Check now" asks GitHub, but not twice within MinRefresh; a changed
-// channel is checked anyway.
-func TestRefreshIsRateLimitedExceptAfterAChannelChange(t *testing.T) {
+// "Check now" asks GitHub, but never twice within MinRefresh, also not after
+// a channel change (the poll picks that up once the cooldown ends) and not
+// from concurrent presses.
+func TestRefreshIsRateLimited(t *testing.T) {
 	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
 	settings := map[string]string{config.KeyUpdateChannel: config.UpdateChannelMinor}
 	c := newChecker(src, "v0.11.0", settings)
 	c.MinRefresh = time.Hour
-	if !c.Refresh(context.Background()) || src.calls.Load() != 1 {
-		t.Fatalf("first refresh: calls = %d", src.calls.Load())
+	var wg sync.WaitGroup
+	var asked atomic.Int32
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if c.Refresh(context.Background()) {
+				asked.Add(1)
+			}
+		}()
 	}
-	if c.Refresh(context.Background()) || src.calls.Load() != 1 {
-		t.Fatalf("second refresh within MinRefresh called GitHub: calls = %d", src.calls.Load())
+	wg.Wait()
+	if asked.Load() != 1 || src.calls.Load() != 1 {
+		t.Fatalf("concurrent refreshes: asked = %d, calls = %d", asked.Load(), src.calls.Load())
 	}
 	settings[config.KeyUpdateChannel] = config.UpdateChannelLatest
-	if !c.Refresh(context.Background()) || src.calls.Load() != 2 {
-		t.Fatalf("refresh after a channel change: calls = %d", src.calls.Load())
+	if c.Refresh(context.Background()) || src.calls.Load() != 1 {
+		t.Fatalf("refresh within MinRefresh after a channel change called GitHub: calls = %d", src.calls.Load())
 	}
-	if r := c.Latest(); r.Latest != "v0.13.0" || !r.Newer || r.Channel != config.UpdateChannelLatest {
+	settings[config.KeyUpdateCheck] = "off"
+	c.MinRefresh = time.Nanosecond
+	if c.Refresh(context.Background()) {
+		t.Fatal("refresh with update_check off reported a call to GitHub")
+	}
+}
+
+// A refresh whose caller went away still stores a real answer, not
+// "context canceled".
+func TestRefreshOutlivesItsCaller(t *testing.T) {
+	src := &fakeSource{rels: rels("v0.11.0", "v0.13.0")}
+	c := newChecker(src, "v0.11.0", map[string]string{config.KeyUpdateChannel: config.UpdateChannelLatest})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Refresh(ctx)
+	if r := c.Latest(); r.Err != "" || r.Latest != "v0.13.0" {
 		t.Fatalf("latest = %+v", r)
 	}
 }
@@ -167,7 +195,7 @@ func TestRunChecksAgainWhenTheChannelChanges(t *testing.T) {
 		}
 		return "on", nil
 	}
-	c.Interval, c.FirstDelay, c.Poll = time.Hour, time.Millisecond, 5*time.Millisecond
+	c.Interval, c.FirstDelay, c.Poll, c.MinRefresh = time.Hour, time.Millisecond, 5*time.Millisecond, time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go c.Run(ctx)

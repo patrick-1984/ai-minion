@@ -72,8 +72,9 @@ func (c *Checker) Latest() Result {
 }
 
 // Run checks after FirstDelay and then every Interval (plus up to an hour of
-// jitter) until ctx ends. In between it checks at once when update_check or
-// update_channel no longer match the last answer (a change in the panel).
+// jitter) until ctx ends. In between it checks when update_check or
+// update_channel no longer match the last answer (a change in the panel),
+// at most once per MinRefresh like Refresh.
 func (c *Checker) Run(ctx context.Context) {
 	t := time.NewTimer(c.FirstDelay)
 	defer t.Stop()
@@ -83,23 +84,28 @@ func (c *Checker) Run(ctx context.Context) {
 	}
 	p := time.NewTicker(poll)
 	defer p.Stop()
-	started := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-p.C:
-			if !started || !c.settingsChanged() {
-				continue
+			if c.checked() && c.settingsChanged() {
+				c.fetch(ctx, true)
 			}
-			c.CheckOnce(ctx)
 			continue
 		case <-t.C:
 		}
-		started = true
 		c.CheckOnce(ctx)
 		t.Reset(c.Interval + time.Duration(rand.Int64N(int64(time.Hour))))
 	}
+}
+
+// checked reports whether a check ran (any trigger): the baseline that a
+// settings change is compared with.
+func (c *Checker) checked() bool {
+	c.runMu.Lock()
+	defer c.runMu.Unlock()
+	return !c.lastAt.IsZero()
 }
 
 // settingsChanged reports whether the last answer was found with other
@@ -118,41 +124,47 @@ func (c *Checker) settingsChanged() bool {
 	return last.Channel != channel
 }
 
-// Refresh checks now, for an administrator's "Check now". It returns false
-// without calling GitHub when the last check ran less than MinRefresh ago;
-// the caller then shows the answer it has.
+// Refresh checks now, for an administrator's "Check now". It reports whether
+// GitHub was asked: not when the last call to GitHub (any trigger) was less
+// than MinRefresh ago, the check is off or the settings cannot be read; the
+// caller then shows the answer it has.
 func (c *Checker) Refresh(ctx context.Context) bool {
-	min := c.MinRefresh
-	if min <= 0 {
-		min = time.Minute
-	}
-	c.runMu.Lock()
-	recent := !c.lastAt.IsZero() && time.Since(c.lastAt) < min
-	c.runMu.Unlock()
-	if recent && !c.settingsChanged() {
-		return false
-	}
-	c.CheckOnce(ctx)
-	return true
+	return c.fetch(ctx, true)
 }
 
-// CheckOnce runs one check now, unless update_check is off.
+// CheckOnce runs one check now, unless update_check is off (the daily check).
 func (c *Checker) CheckOnce(ctx context.Context) {
+	c.fetch(ctx, false)
+}
+
+// fetch runs one check and reports whether it asked GitHub. With cooldown it
+// skips the call when the previous one was less than MinRefresh ago; the
+// decision and the call happen under runMu, so concurrent triggers cannot
+// both pass. The call is detached from ctx's cancellation (a browser that
+// goes away does not leave a "canceled" answer behind) but bounded to 30 s.
+func (c *Checker) fetch(ctx context.Context, cooldown bool) bool {
 	c.runMu.Lock()
 	defer c.runMu.Unlock()
 	check, err1 := c.Setting(config.KeyUpdateCheck)
 	channel, err2 := c.Setting(config.KeyUpdateChannel)
 	if err1 != nil || err2 != nil {
 		c.Log.Debug("release check skipped: the settings could not be read", "error", errors.Join(err1, err2))
-		return
+		return false
 	}
 	if check != "on" {
 		c.mu.Lock()
 		c.last = Result{}
 		c.mu.Unlock()
-		return
+		return false
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	gap := c.MinRefresh
+	if gap <= 0 {
+		gap = time.Minute
+	}
+	if cooldown && !c.lastAt.IsZero() && time.Since(c.lastAt) < gap {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	c.lastAt = time.Now()
 	res, err := c.check(ctx, channel)
@@ -165,10 +177,11 @@ func (c *Checker) CheckOnce(ctx context.Context) {
 		}
 		c.last.Err, c.last.CheckedAt = err.Error(), time.Now()
 		c.Log.Debug("release check failed; keeping the last answer", "error", err)
-		return
+		return true
 	}
 	c.last = res
 	c.Log.Debug("release check", "channel", channel, "latest", res.Latest, "newer", res.Newer)
+	return true
 }
 
 func (c *Checker) check(ctx context.Context, channel string) (Result, error) {

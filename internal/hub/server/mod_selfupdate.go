@@ -94,8 +94,13 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 			return up.VerifiedRelease(ctx, sel)
 		},
 	}
-	if err := api.HandleTyped(handlers, ops.OpHubUpdateCheck, func(ctx context.Context, _ *api.Call, a ops.HubUpdateCheckArgs) (ops.HubUpdateCheckResult, error) {
-		refreshed := a.Refresh && u.checker.Refresh(ctx)
+	if err := api.HandleTyped(handlers, ops.OpHubUpdateCheck, func(ctx context.Context, _ *api.Call, _ ops.HubUpdateCheckArgs) (ops.HubUpdateCheckResult, error) {
+		return u.check(ctx), nil
+	}); err != nil {
+		return fmt.Errorf("self-update: %w", err)
+	}
+	if err := api.HandleTyped(handlers, ops.OpHubUpdateRefresh, func(ctx context.Context, _ *api.Call, _ ops.HubUpdateRefreshArgs) (ops.HubUpdateCheckResult, error) {
+		refreshed := u.checker.Refresh(ctx)
 		res := u.check(ctx)
 		res.Refreshed = refreshed
 		return res, nil

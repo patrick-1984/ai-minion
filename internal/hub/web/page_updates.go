@@ -36,14 +36,14 @@ func updatesData(r *http.Request, c OpCaller) (any, error) {
 // handleUpdateCheckNow asks GitHub now ("Check now").
 func handleUpdateCheckNow(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	var res ops.HubUpdateCheckResult
-	if err := c.CallOp(r, ops.OpHubUpdateCheck, ops.HubUpdateCheckArgs{Refresh: true}, &res); err != nil {
+	if err := c.CallOp(r, ops.OpHubUpdateRefresh, ops.HubUpdateRefreshArgs{}, &res); err != nil {
 		writeResultError(w, failureText(err))
 		return
 	}
 	var text string
 	switch {
 	case !res.Refreshed:
-		text = "Checked less than a minute ago; this is that answer."
+		text = "Not checked again: the last check was less than a minute ago, or the release check is off (update_check). The page shows the last answer."
 	case res.CheckError != "":
 		text = "The check failed: " + res.CheckError + "."
 	case res.Latest == "":
