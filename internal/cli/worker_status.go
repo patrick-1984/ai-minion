@@ -78,6 +78,10 @@ func (l localLive) LiveStatus(ctx context.Context) (agent.LiveStatus, error) {
 		if errors.Is(err, client.ErrWorkerNotRunning) {
 			return agent.LiveStatus{}, agent.ErrNoLiveWorker
 		}
+		if errors.Is(err, client.ErrPermissionDenied) {
+			// A Worker may run, but this user cannot ask it: never "stopped".
+			return agent.LiveStatus{}, &agent.LiveDeniedError{Err: err}
+		}
 		return agent.LiveStatus{}, err
 	}
 	var reply agent.LiveStatusReply
@@ -85,7 +89,8 @@ func (l localLive) LiveStatus(ctx context.Context) (agent.LiveStatus, error) {
 		return agent.LiveStatus{}, fmt.Errorf("the Worker sent a status that cannot be read: %w", err)
 	}
 	if reply.StateDir != "" && !sameDir(reply.StateDir, l.stateDir) {
-		return agent.LiveStatus{}, agent.ErrNoLiveWorker
+		// Another profile's Worker: named, not mistaken for this one.
+		return agent.LiveStatus{}, &agent.LiveElsewhereError{StateDir: reply.StateDir, Instance: reply.Instance}
 	}
 	return reply.LiveStatus()
 }
@@ -178,6 +183,11 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		Live:        deps.live(core.StateDir),
 		Pause:       func() (agent.PauseState, error) { return agent.ReadPause(core.StateDir) },
 		NewSessions: &core.NewSessions,
+		StateDir:    core.StateDir,
+		CLIVersion:  deps.version(),
+	}
+	if sd, err := res.Resolve(config.KeyStateDir); err == nil {
+		in.DefaultStateDir = sd.Source == config.SourceDefault
 	}
 	if deps.sessions != nil {
 		if s := deps.sessions(core.TmuxSocket); s != nil {

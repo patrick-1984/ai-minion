@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
 // OpLocalStatus is the op of the local control socket that returns the live
@@ -66,6 +69,10 @@ type LiveStatusReply struct {
 	// NewSessionsBlocked is whether the Worker refuses new sessions
 	// (allow_new_sessions); an older Worker omits it.
 	NewSessionsBlocked *bool `json:"new_sessions_blocked,omitempty"`
+	// Version is the release of the running Worker and Capabilities its
+	// local features (tray W10a); an older Worker omits them.
+	Version      string   `json:"version,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -138,6 +145,10 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		ListError:          r.SessionsListError,
 		Paused:             r.Paused,
 		NewSessionsBlocked: r.NewSessionsBlocked,
+		Instance:           r.Instance,
+		StateDir:           r.StateDir,
+		Version:            r.Version,
+		Capabilities:       r.Capabilities,
 	}, nil
 }
 
@@ -149,6 +160,8 @@ func statusOp(ctx context.Context, stateDir, instance string, src LiveSource) (j
 	}
 	reply := NewLiveStatusReply(stateDir, live)
 	reply.Instance = instance
+	reply.Version = version.Version
+	reply.Capabilities = slices.Sorted(slices.Values(localFeatures))
 	b, err := json.Marshal(reply)
 	if err != nil {
 		return nil, internalErr("encode the live status", err)

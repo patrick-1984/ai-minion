@@ -39,5 +39,15 @@
     "blocked": false,
     "sources": [],
     "in_force": true
-  }
+  },
+  "profile": {
+    "state_dir": "",
+    "default": false
+  },
+  "live": {
+    "running": true
+  },
+  "live_elsewhere": null,
+  "cli_version": "",
+  "capabilities": []
 }

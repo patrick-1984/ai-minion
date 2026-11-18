@@ -91,7 +91,43 @@ type LiveStatus struct {
 	// NewSessionsBlocked is whether the running Worker refuses new sessions
 	// (allow_new_sessions); nil when it does not report it (an older Worker).
 	NewSessionsBlocked *bool
+	// Instance, StateDir, Version and Capabilities identify the answering
+	// Worker (tray W10a); an older Worker leaves Version and Capabilities
+	// empty.
+	Instance     string
+	StateDir     string
+	Version      string
+	Capabilities []string
 }
+
+// LiveElsewhereError is what a [LiveSource] returns when the running Worker
+// of this user uses another state directory: it is not this profile's Worker,
+// but the status names it (live_elsewhere) instead of reporting "stopped".
+type LiveElsewhereError struct {
+	StateDir string
+	Instance string
+}
+
+func (e *LiveElsewhereError) Error() string {
+	return "the running Worker of this user uses the state directory " + e.StateDir
+}
+
+// Is makes a LiveElsewhereError count as [ErrNoLiveWorker] for this profile.
+func (e *LiveElsewhereError) Is(target error) bool { return target == ErrNoLiveWorker }
+
+// LiveDeniedError is what a [LiveSource] returns when the control socket is
+// not trusted (it belongs to another user, or its directory is open): a
+// Worker may run, but this user cannot ask it.
+type LiveDeniedError struct{ Err error }
+
+func (e *LiveDeniedError) Error() string { return e.Err.Error() }
+func (e *LiveDeniedError) Unwrap() error { return e.Err }
+
+// Problem codes of [StatusReport.ProblemCodes].
+const (
+	// ProblemControlSocketDenied: the control socket is not trusted.
+	ProblemControlSocketDenied = "control_socket_denied"
+)
 
 // LiveSource answers for a running Worker. It returns [ErrNoLiveWorker] when
 // none is running.
@@ -202,6 +238,12 @@ type StatusInputs struct {
 	// sources (flag, env, file) as this command resolves them; nil means not
 	// available.
 	NewSessions *config.Tightened
+	// StateDir is the profile (state directory) this status is about, and
+	// DefaultStateDir whether it is the user's default one; CLIVersion is the
+	// version of the minion that builds the report (tray W10a).
+	StateDir        string
+	DefaultStateDir bool
+	CLIVersion      string
 	// Now is the clock of a timed pause; nil means time.Now.
 	Now func() time.Time
 }
@@ -241,6 +283,26 @@ type StatusNewSessions struct {
 	Blocked bool     `json:"blocked"`
 	Sources []string `json:"sources"`
 	InForce *bool    `json:"in_force"`
+}
+
+// StatusProfile is the state directory of a status report.
+type StatusProfile struct {
+	StateDir string `json:"state_dir"`
+	Default  bool   `json:"default"`
+}
+
+// StatusLive is the running Worker of the profile.
+type StatusLive struct {
+	Running  bool   `json:"running"`
+	Instance string `json:"instance,omitempty"`
+	Version  string `json:"version,omitempty"`
+	StateDir string `json:"state_dir,omitempty"`
+}
+
+// StatusLiveElsewhere is a running Worker of this user on another profile.
+type StatusLiveElsewhere struct {
+	StateDir string `json:"state_dir"`
+	Instance string `json:"instance,omitempty"`
 }
 
 // StatusTLS is the TLS path of a connection: the state (TLSPath*) and the
@@ -335,6 +397,20 @@ type StatusReport struct {
 	// NewSessions is the local block of new sessions (allow_new_sessions,
 	// tray W4a).
 	NewSessions StatusNewSessions `json:"new_sessions"`
+	// Profile is the state directory this status is about (tray W10a).
+	Profile StatusProfile `json:"profile"`
+	// Live says whether a Worker runs on this profile and which; LiveElsewhere
+	// names a running Worker of this user on another state directory.
+	Live          StatusLive           `json:"live"`
+	LiveElsewhere *StatusLiveElsewhere `json:"live_elsewhere"`
+	// CLIVersion is the version of this minion; Version above is the same,
+	// Live.Version the daemon's.
+	CLIVersion string `json:"cli_version"`
+	// Capabilities are the local features of the running Worker (for example
+	// pause.v1); empty when none runs or it is too old to say.
+	Capabilities []string `json:"capabilities"`
+	// ProblemCodes are machine-readable codes of some Problems.
+	ProblemCodes []string `json:"problem_codes,omitempty"`
 	// Problems lists what could not be read, in plain English.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -352,6 +428,10 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 
 		PairingState: PairingUnknown,
 		Approval:     ApprovalUnknown,
+
+		Profile:      StatusProfile{StateDir: in.StateDir, Default: in.DefaultStateDir},
+		CLIVersion:   in.CLIVersion,
+		Capabilities: []string{},
 	}
 	if in.HubURL != "" {
 		r.Mode = ModeHub
@@ -482,13 +562,28 @@ func pauseOf(in StatusInputs, r *StatusReport, live *LiveStatus, problem func(st
 func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem func(string, ...any)) (StatusConnection, *LiveStatus) {
 	var live *LiveStatus
 	if in.Live != nil {
-		switch ls, err := in.Live.LiveStatus(ctx); {
+		ls, err := in.Live.LiveStatus(ctx)
+		var elsewhere *LiveElsewhereError
+		var denied *LiveDeniedError
+		switch {
 		case err == nil:
 			live = &ls
+		case errors.As(err, &elsewhere):
+			r.LiveElsewhere = &StatusLiveElsewhere{StateDir: elsewhere.StateDir, Instance: elsewhere.Instance}
 		case errors.Is(err, ErrNoLiveWorker):
+		case errors.As(err, &denied):
+			problem("cannot ask the running Worker: %v", err)
+			r.ProblemCodes = append(r.ProblemCodes, ProblemControlSocketDenied)
 		default:
 			problem("cannot ask the running Worker: %v", err)
 		}
+	}
+	if live != nil {
+		r.Live = StatusLive{Running: true, Instance: live.Instance, Version: live.Version, StateDir: live.StateDir}
+		if live.StateDir == "" {
+			r.Live.StateDir = in.StateDir
+		}
+		r.Capabilities = append(r.Capabilities, live.Capabilities...)
 	}
 	if live != nil {
 		r.PendingPairingCode = live.PendingPairingCode

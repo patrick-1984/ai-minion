@@ -11,6 +11,8 @@
 
 - **`minion worker share list|add|remove|set`**: list every session with its share state (also unenrolled, under `share_lock` and in preview-only) and change the selection one session at a time, through the running Worker or offline; `--if-revision` detects a concurrent change (exit 27), `set select` with no names shares nothing, and `--json` prints one object. The commands never write `share_existing` into the config file (they remove it), and they exit 22 when a `share_existing` from the Worker's environment or flags would undo the change at the next start.
 
+- **`minion worker status --json` names the profile and the running Worker**: `profile` (`state_dir`, `default`), `live` (`running`, `instance`, the daemon's `version`, `state_dir`), `live_elsewhere` (a running Worker of this user on another state directory, which status used to report as stopped), `cli_version`, `capabilities` (the local features of the running Worker, for example `pause.v1`) and `problem_codes` (`control_socket_denied` when the control socket is not trusted, instead of reporting the Worker as stopped).
+
 ### Changed
 
 - **`minion worker up` without `sudo` no longer installs a user service beside an installed system service** `minion-worker@<user>.service` (enabled, running, or with the drop-in an earlier `sudo minion worker up` wrote): it names the unit, changes nothing and exits with status 1. The packaged unit template alone does not count.
