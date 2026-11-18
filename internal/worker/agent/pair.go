@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -132,7 +133,8 @@ type PairParams struct {
 	// OnHubHello is called with the root key of the Hub hello (not
 	// authenticated yet, display only) and whether an admission is allowed on
 	// this connection. Nil is allowed.
-	OnHubHello func(root []byte, admit bool)
+	// An error aborts the connection before any CPace message.
+	OnHubHello func(root []byte, admit bool) error
 	// OnExposed is called right before the Worker sends its CPace
 	// confirmation. From then on whoever is at the other end of this
 	// connection can learn whether a guess of the code was right, even if it
@@ -202,7 +204,9 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 	if p.OnDial != nil {
 		p.OnDial(df.TLS)
 	}
-	admit := p.AllowAdmit && admitTrust(p.ExpectHub, df.TLS)
+	admit := p.AllowAdmit && admitTrust(p.ExpectHub, df)
+	var admitNow atomic.Bool
+	admitNow.Store(admit)
 	features := p.Features
 	if admit {
 		features = append(append([]string(nil), p.Features...), proto.FeaturePairAdmit)
@@ -211,22 +215,32 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 	nc := &notifyConn{Conn: conn, onFirstWrite: p.OnWaiting, onConfirm: p.OnExposed}
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	res, err := transport.WorkerHandshake(nc, transport.WorkerConfig{
-		Key:         p.Key,
-		Name:        p.Name,
-		Ops:         p.Ops,
-		Features:    features,
-		Protocols:   p.Protocols,
-		Mode:        transport.ModePairCode,
-		PairingCode: p.Code,
-		ExpectHub:   p.ExpectHub,
-		Ratchet:     p.Ratchet,
-		Clock:       p.Clock,
-		Timeout:     p.Timeout,
-		AllowAdmit:  admit,
-		OnHubHello: func(root ed25519.PublicKey) {
-			if p.OnHubHello != nil {
-				p.OnHubHello(root, admit)
+		Key:          p.Key,
+		Name:         p.Name,
+		Ops:          p.Ops,
+		Features:     features,
+		Protocols:    p.Protocols,
+		Mode:         transport.ModePairCode,
+		PairingCode:  p.Code,
+		ExpectHub:    p.ExpectHub,
+		Ratchet:      p.Ratchet,
+		Clock:        p.Clock,
+		Timeout:      p.Timeout,
+		AllowAdmit:   admit,
+		AdmitAllowed: func() bool { return admitNow.Load() },
+		OnHubHello: func(root ed25519.PublicKey) error {
+			if p.OnHubHello == nil {
+				return nil
 			}
+			err := p.OnHubHello(root, admit)
+			if errors.Is(err, errHubRootNotShown) {
+				// The code's box showed no Hub words: the code may still
+				// pair (CPace authenticates the Hub it is entered in), but
+				// no admission is accepted on it.
+				admitNow.Store(false)
+				return nil
+			}
+			return err
 		},
 		BeforeSigWorker: func(a transport.HubAuth) error {
 			if a.Expiry.Expired(p.Clock) {
@@ -280,13 +294,25 @@ func (d wssPairDialer) Pair(ctx context.Context, p PairParams) (PairResult, erro
 
 // admitTrust reports whether a pairing may be completed by an admission: the
 // Hub root is checked against an expected fingerprint before anything, or the
-// TLS certificate of the dial is valid for the Hub address in this computer's
-// trust store. Without either, an admission would trust whatever answers at
-// the address (TOFU with nobody looking), so only the code pairs: CPace
-// authenticates the Hub the code was entered in.
-func admitTrust(expect identity.FingerprintMatcher, seen transport.TLSSeen) bool {
-	return !expect.IsZero() || (!seen.None && seen.Trusted)
+// WebSocket upgrade was answered on a TLS connection to the configured host
+// itself whose certificate verified for that host against this computer's
+// trust store, with no redirect and no proxy in the path
+// (transport.DialFacts.DirectVerified). Without either, an admission would
+// trust whatever answers at the address (TOFU with nobody looking), so only the
+// code pairs: CPace authenticates the Hub the code was entered in.
+func admitTrust(expect identity.FingerprintMatcher, df transport.DialFacts) bool {
+	return !expect.IsZero() || df.DirectVerified
 }
+
+// errHubRootChanged refuses a Hub hello whose root differs from the one the
+// box of this code showed, and errHubRootNotShown an admission offered on a
+// code whose box showed no Hub words. Both end the connection before any CPace
+// message; the code is replaced, so that a code is only ever used with the Hub
+// words its box showed.
+var (
+	errHubRootChanged  = errors.New("agent: another Hub key answered than the one the code box showed")
+	errHubRootNotShown = errors.New("agent: no admission for a code whose box showed no Hub key")
+)
 
 // notifyConn calls onFirstWrite after the first successful write and onConfirm
 // before the handshake frame that carries the Worker's CPace confirmation is
@@ -471,6 +497,31 @@ type codeLife struct {
 	// printed once, on the first attempt where the Hub held the connection,
 	// together with the notice that came with it (A40).
 	printed bool
+	// shownRoot is the Hub root the box showed (nil: the box showed no Hub
+	// words). Every later attempt with this code must present the same root.
+	shownRoot []byte
+}
+
+// acceptRoot decides on the root of a Hub hello for this code: the first one
+// is shown (print is true), a later one must be the root that was shown. A box
+// printed without Hub words (an older Hub) accepts a root for the code path
+// only, never for an admission.
+func (l *codeLife) acceptRoot(root []byte, admit bool) (print bool, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case !l.printed:
+		l.printed, l.shownRoot = true, bytes.Clone(root)
+		return true, nil
+	case l.shownRoot == nil:
+		if admit {
+			return false, errHubRootNotShown
+		}
+		return false, nil
+	case !bytes.Equal(l.shownRoot, root):
+		return false, errHubRootChanged
+	}
+	return false, nil
 }
 
 // markPrinted reports whether the box of this code still has to be printed,
@@ -811,6 +862,25 @@ func (p *Pairer) classify(gen uint64, life *codeLife, err error) (next bool, rea
 	}
 	var pe *proto.Error
 	isErr := errors.As(err, &pe)
+	if errors.Is(err, errHubRootChanged) {
+		// Refused before any CPace message, but the peer may be an
+		// interceptor that relayed the genuine hello for the box and answers
+		// a retry itself: the code is replaced (new box, new words) after the
+		// penalty delay.
+		p.log.Warn("the Hub key that answered differs from the one the code box showed; a new code follows",
+			"hub", hubLabel(p.cfg.HubURL), "error", err.Error())
+		return true, "Another Hub key answered than the one shown for the previous code. Check the Hub words again.", true, nil
+	}
+	if isErr && pe.Code == proto.CodePairingCodeInvalid && !life.wasExposed() && !life.wasAuthenticated() && life.hasRecord() {
+		// A resumed pairing whose code the Hub already committed: a rejection
+		// or the end of a waiting connection never discards the record (the
+		// enrollment could not be recovered any more). The code is kept until
+		// the record's own expiry.
+		if r := transport.PeerReason(err); r == "rejected" || r == "expired" {
+			p.log.Warn("the Hub ended the wait of a resumed pairing; the code is kept until it expires", "hub", hubLabel(p.cfg.HubURL), "reason", r)
+			return false, "", false, nil
+		}
+	}
 	if isErr && pe.Code == proto.CodePairingCodeInvalid && !life.wasExposed() && !life.wasAuthenticated() {
 		// The Hub ended the wait before the code was used. Its reason token
 		// (the only part of an unauthenticated answer that is acted on) says
@@ -1123,8 +1193,10 @@ func (b *codeBox) waiting(ctx context.Context) {
 	}()
 }
 
-// hubHello is OnHubHello: the Hub's root is known (not authenticated yet).
-func (b *codeBox) hubHello(root []byte, admit bool) {
+// hubHello is OnHubHello: the Hub's root is known (not authenticated yet). It
+// is shown with the code the first time; a later attempt with the same code
+// that presents another root is refused before any CPace message.
+func (b *codeBox) hubHello(root []byte, admit bool) error {
 	b.mu.Lock()
 	b.root, b.admit = bytes.Clone(root), admit
 	if b.helloCh == nil {
@@ -1136,7 +1208,14 @@ func (b *codeBox) hubHello(root []byte, admit bool) {
 		close(b.helloCh)
 	}
 	b.mu.Unlock()
-	b.print()
+	print, err := b.life.acceptRoot(root, admit)
+	if err != nil {
+		return err
+	}
+	if print {
+		b.p.showCode(b.life.code, b.notice, root, admit)
+	}
+	return nil
 }
 
 // flush prints the box at the end of an attempt that was held and has not
@@ -1150,14 +1229,13 @@ func (b *codeBox) flush() {
 	}
 }
 
+// print prints the box without Hub words (no Hub hello arrived in time, or
+// the attempt ended before it).
 func (b *codeBox) print() {
 	if !b.life.markPrinted() {
 		return
 	}
-	b.mu.Lock()
-	root, admit := b.root, b.admit
-	b.mu.Unlock()
-	b.p.showCode(b.life.code, b.notice, root, admit)
+	b.p.showCode(b.life.code, b.notice, nil, false)
 }
 
 // showCode prints the code on the console and in the log: the one place a

@@ -24,17 +24,18 @@ func TestPairingRequestOpsAreAdminOnlyHubOps(t *testing.T) {
 
 func TestPairingRequestArgsValidate(t *testing.T) {
 	fp := strings.Repeat("a", 52)
-	ok := PairingRequestAdmitArgs{WriteArgs: WriteArgs{RequestID: NewUUIDv7()}, PairingID: "K7q4", WorkerFingerprint: fp, Name: "pi"}
+	ok := PairingRequestAdmitArgs{WriteArgs: WriteArgs{RequestID: NewUUIDv7()}, PairingID: "K7q4", WorkerFingerprint: fp, HubFingerprint: fp, Name: "pi"}
 	if err := ok.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	for name, a := range map[string]PairingRequestAdmitArgs{
-		"no request id":   {PairingID: "K7Q4", WorkerFingerprint: fp},
-		"short id":        {WriteArgs: ok.WriteArgs, PairingID: "K7Q", WorkerFingerprint: fp},
-		"bad id":          {WriteArgs: ok.WriteArgs, PairingID: "K7-4", WorkerFingerprint: fp},
-		"no fingerprint":  {WriteArgs: ok.WriteArgs, PairingID: "K7Q4"},
-		"words not full":  {WriteArgs: ok.WriteArgs, PairingID: "K7Q4", WorkerFingerprint: "grid-duck-problem-valid-cloth-roof"},
-		"name with colon": {WriteArgs: ok.WriteArgs, PairingID: "K7Q4", WorkerFingerprint: fp, Name: "a:b"},
+		"no request id":      {PairingID: "K7Q4", WorkerFingerprint: fp},
+		"short id":           {WriteArgs: ok.WriteArgs, PairingID: "K7Q", WorkerFingerprint: fp},
+		"bad id":             {WriteArgs: ok.WriteArgs, PairingID: "K7-4", WorkerFingerprint: fp},
+		"no fingerprint":     {WriteArgs: ok.WriteArgs, PairingID: "K7Q4"},
+		"words not full":     {WriteArgs: ok.WriteArgs, PairingID: "K7Q4", WorkerFingerprint: "grid-duck-problem-valid-cloth-roof"},
+		"name with colon":    {WriteArgs: ok.WriteArgs, PairingID: "K7Q4", WorkerFingerprint: fp, HubFingerprint: fp, Name: "a:b"},
+		"no hub fingerprint": {WriteArgs: ok.WriteArgs, PairingID: "K7Q4", WorkerFingerprint: fp},
 	} {
 		if err := a.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)

@@ -19,10 +19,10 @@ const (
 
 func pairingRequestsOps() *fakeOps {
 	return newFakeOps().reply(ops.OpPairingRequestsList, ops.PairingRequestsListResult{
-		HubFingerprint: prHubFP, HubFingerprintWords: identity.Fingerprint(prHubFP).Words(),
 		Requests: []ops.PairingRequestInfo{{
 			PairingID: "K7Q4", Name: "pi-<b>", SourceAddr: "192.0.2.9", WaitingSince: "2026-11-18T09:00:00Z",
 			WorkerFingerprint: prWorkerFP, WorkerFingerprintWords: identity.Fingerprint(prWorkerFP).Words(),
+			HubFingerprint: prHubFP, HubFingerprintWords: identity.Fingerprint(prHubFP).Words(),
 		}},
 	}).reply(ops.OpPairingRequestAdmit, ops.WriteResult{Outcome: ops.OutcomeDelivered}).
 		reply(ops.OpPairingRequestReject, ops.WriteResult{Outcome: ops.OutcomeDelivered})
@@ -34,7 +34,12 @@ func TestBothPagesIncludeThePairingRequestsPanel(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("add worker = %d", rec.Code)
 	}
-	mustHave(t, rec.Body.String(), `hx-get="/workers/pairing-requests"`, "data-pairing-requests")
+	page := rec.Body.String()
+	mustHave(t, page, `hx-get="/workers/pairing-requests"`, "data-pairing-requests", `<div id="pairing-requests-result" aria-live="polite"></div>`)
+	// The result area is a sibling of the polled element, not inside it.
+	if poll := page[strings.Index(page, `id="pairing-requests" `):]; strings.Index(poll, "</div>") > strings.Index(poll, `id="pairing-requests-result"`) {
+		t.Error("the action result area is inside the polled element")
+	}
 	for _, f := range []string{"workers.html", "addworker.html"} {
 		b, err := fs.ReadFile(EmbeddedTemplates(), f)
 		if err != nil {
@@ -57,8 +62,11 @@ func TestThePairingRequestsListShowsTheWordsAndAsksToCompareThem(t *testing.T) {
 	mustHave(t, body, "Pairing requests", "K7Q4", "192.0.2.9", "2026-11-18 09:00:00 UTC", prWorkerFP,
 		identity.Fingerprint(prWorkerFP).Words(), identity.Fingerprint(prHubFP).Words(),
 		"Admit only if the Worker shows these words", `hx-post="/workers/pairing-requests/K7Q4/admit"`,
-		`hx-post="/workers/pairing-requests/K7Q4/reject"`, `name="worker_fingerprint" value="`+prWorkerFP+`"`)
+		`hx-post="/workers/pairing-requests/K7Q4/reject"`, `name="worker_fingerprint" value="`+prWorkerFP+`"`,
+		`name="hub_fingerprint" value="`+prHubFP+`"`, `hx-target="#pairing-requests-result"`)
 	mustNotHave(t, body, "pi-<b>")
+	// Review B6: the action result is not inside what the poll replaces.
+	mustNotHave(t, body, `id="pairing-requests-result"`)
 }
 
 func TestAPlainUserGetsNoListAndStopsPolling(t *testing.T) {
@@ -85,11 +93,11 @@ func TestAdmitAndRejectPostTheCatalogOperationsWithTheFingerprint(t *testing.T) 
 	f := pairingRequestsOps()
 	connect(t, f)
 	s := onbAdmin(t)
-	if rec := onbPost(t, s, "/workers/pairing-requests/K7Q4/admit", url.Values{"worker_fingerprint": {prWorkerFP}}); rec.Code != 200 {
+	if rec := onbPost(t, s, "/workers/pairing-requests/K7Q4/admit", url.Values{"worker_fingerprint": {prWorkerFP}, "hub_fingerprint": {prHubFP}}); rec.Code != 200 {
 		t.Fatalf("admit = %d %s", rec.Code, rec.Body.String())
 	}
 	c := f.called(ops.OpPairingRequestAdmit)
-	if len(c) != 1 || c[0].Args["pairing_id"] != "K7Q4" || c[0].Args["worker_fingerprint"] != prWorkerFP {
+	if len(c) != 1 || c[0].Args["pairing_id"] != "K7Q4" || c[0].Args["worker_fingerprint"] != prWorkerFP || c[0].Args["hub_fingerprint"] != prHubFP {
 		t.Fatalf("admit calls = %+v", c)
 	}
 	if rec := onbPost(t, s, "/workers/pairing-requests/K7Q4/reject", url.Values{"worker_fingerprint": {prWorkerFP}}); rec.Code != 200 {

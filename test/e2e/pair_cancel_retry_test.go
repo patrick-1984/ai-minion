@@ -59,7 +59,7 @@ func TestARealWorkerIsAdmittedFromPairingRequests(t *testing.T) {
 		t.Fatalf("the Hub lists %s, the Worker shows:\n%s", q.WorkerFingerprint, out.String())
 	}
 	if _, err := ps().Admit(context.Background(), workers.AdmitRequest{
-		UserID: "alice", PairingID: q.PairingID, Fingerprint: string(q.WorkerFingerprint), Approve: true, Actor: "alice",
+		UserID: "alice", PairingID: q.PairingID, Fingerprint: string(q.WorkerFingerprint), HubFingerprint: string(q.HubFingerprint), Approve: true, Actor: "alice",
 	}); err != nil {
 		t.Fatal(err)
 	}

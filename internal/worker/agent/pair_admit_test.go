@@ -29,7 +29,9 @@ var hubRoot = func() []byte {
 func pairHelloStep(admit bool, err error) pairStep {
 	return func(ctx context.Context, p PairParams) (PairResult, error) {
 		p.OnWaiting()
-		p.OnHubHello(hubRoot, admit)
+		if herr := p.OnHubHello(hubRoot, admit); herr != nil {
+			return PairResult{}, herr
+		}
 		if err != nil {
 			return PairResult{}, err
 		}
@@ -98,7 +100,9 @@ func TestAnExpectedFingerprintKeepsItsLines(t *testing.T) {
 func TestAnAdmittedPairingSaysSoInThePairedBox(t *testing.T) {
 	f := newPairFixture(t, func(_ context.Context, p PairParams) (PairResult, error) {
 		p.OnWaiting()
-		p.OnHubHello(hubRoot, true)
+		if err := p.OnHubHello(hubRoot, true); err != nil {
+			return PairResult{}, err
+		}
 		return PairResult{
 			Pin:      identity.Pin{Pub: hubRoot},
 			Welcome:  HubWelcome{Type: proto.TypeWelcome, WorkerID: "w-1", Name: p.Name, Owner: "admin", Kind: "private"},
@@ -142,23 +146,25 @@ func TestARejectedRequestShowsANewCodeWithTheReason(t *testing.T) {
 	mustContain(t, second, "The pairing request was rejected on the Hub")
 }
 
-func TestAdmitNeedsAnExpectationOrATrustedCertificate(t *testing.T) {
+func TestAdmitNeedsAnExpectationOrADirectlyVerifiedUpgrade(t *testing.T) {
 	m, err := ParseHubExpectation(string(fingerprintOfPub(hubRoot)))
 	if err != nil {
 		t.Fatal(err)
 	}
+	trusted := transport.TLSSeen{KeyHash: [32]byte{1}, Trusted: true}
 	for _, tc := range []struct {
 		name   string
 		expect identity.FingerprintMatcher
-		seen   transport.TLSSeen
+		df     transport.DialFacts
 		want   bool
 	}{
-		{"nothing", identity.FingerprintMatcher{}, transport.TLSSeen{KeyHash: [32]byte{1}}, false},
-		{"plain", identity.FingerprintMatcher{}, transport.TLSSeen{None: true, Trusted: true}, false},
-		{"trusted certificate", identity.FingerprintMatcher{}, transport.TLSSeen{KeyHash: [32]byte{1}, Trusted: true}, true},
-		{"expected fingerprint", m, transport.TLSSeen{None: true}, true},
+		{"nothing", identity.FingerprintMatcher{}, transport.DialFacts{TLS: transport.TLSSeen{KeyHash: [32]byte{1}}}, false},
+		// A trusted verdict alone is not enough: only the direct upgrade counts.
+		{"trusted but redirected or proxied", identity.FingerprintMatcher{}, transport.DialFacts{TLS: trusted, Redirected: true}, false},
+		{"direct and verified", identity.FingerprintMatcher{}, transport.DialFacts{TLS: trusted, DirectVerified: true}, true},
+		{"expected fingerprint", m, transport.DialFacts{TLS: transport.TLSSeen{None: true}}, true},
 	} {
-		if got := admitTrust(tc.expect, tc.seen); got != tc.want {
+		if got := admitTrust(tc.expect, tc.df); got != tc.want {
 			t.Errorf("%s: %v", tc.name, got)
 		}
 	}
@@ -271,5 +277,110 @@ func mustLack(t *testing.T, s string, unwanted ...string) {
 		if strings.Contains(s, w) {
 			t.Errorf("unexpected %q in:\n%s", w, s)
 		}
+	}
+}
+
+// pairRootStep is a Hub hello with the given root that ends without exposing
+// the code (a dropped connection), or waits when err is nil.
+func pairRootStep(root []byte, admit bool, err error) pairStep {
+	return func(ctx context.Context, p PairParams) (PairResult, error) {
+		p.OnWaiting()
+		if herr := p.OnHubHello(root, admit); herr != nil {
+			return PairResult{}, herr
+		}
+		if err != nil {
+			return PairResult{}, err
+		}
+		<-ctx.Done()
+		return PairResult{}, context.Cause(ctx)
+	}
+}
+
+func otherRoot(t *testing.T) []byte {
+	t.Helper()
+	k, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k.Public()
+}
+
+// Review A2: a retry with the same code that presents another Hub root than
+// the box showed is refused before CPace; the code is replaced and the new box
+// shows the new words.
+func TestARetryWithAnotherHubRootReplacesTheCode(t *testing.T) {
+	other := otherRoot(t)
+	f := newPairFixture(t,
+		pairRootStep(hubRoot, true, errors.New("connection reset")),
+		pairRootStep(other, true, nil),
+		pairRootStep(other, true, nil))
+	f.run(f.pairer())
+	for i := 0; i < 100 && len(codeRE.FindAllString(f.out.String(), -1)) < 2; i++ {
+		f.clk.Advance(time.Minute) // backoff and penalty delay
+		time.Sleep(5 * time.Millisecond)
+	}
+	out := f.out.String()
+	codes := codeRE.FindAllString(out, -1)
+	if len(codes) != 2 || codes[0] == codes[1] {
+		t.Fatalf("codes = %v:\n%s", codes, out)
+	}
+	if f.dial.call(0).Code.String() != f.dial.call(1).Code.String() {
+		t.Fatal("the second attempt did not reuse the code")
+	}
+	box := out[strings.LastIndex(out, "MINION WORKER PAIRING"):]
+	mustContain(t, box, fingerprintOfPub(other).Words(), "Another Hub key answered")
+	mustContain(t, f.logs.String(), "differs from the one the code box showed")
+}
+
+// A box printed without Hub words (no hello in time, as with an older Hub)
+// never lets the same code be admitted; the code itself still pairs.
+func TestNoAdmissionForACodeWhoseBoxShowedNoHubWords(t *testing.T) {
+	l := &codeLife{}
+	if !l.markPrinted() {
+		t.Fatal("first print")
+	}
+	if _, err := l.acceptRoot(hubRoot, true); !errors.Is(err, errHubRootNotShown) {
+		t.Fatalf("admission allowed: %v", err)
+	}
+	if print, err := l.acceptRoot(hubRoot, false); err != nil || print {
+		t.Fatalf("code path: %v %v", print, err)
+	}
+	shown := &codeLife{}
+	if print, err := shown.acceptRoot(hubRoot, true); err != nil || !print {
+		t.Fatalf("first root: %v %v", print, err)
+	}
+	if _, err := shown.acceptRoot(otherRoot(t), false); !errors.Is(err, errHubRootChanged) {
+		t.Fatalf("another root: %v", err)
+	}
+}
+
+// Review A3: a resumed pairing (its record is live: the Hub committed it) keeps
+// its code and record when the Hub rejects the request or ends the wait.
+func TestARejectionKeepsTheCodeAndRecordOfAResumedPairing(t *testing.T) {
+	for _, reason := range []string{"rejected", "expired"} {
+		t.Run(reason, func(t *testing.T) {
+			code := identity.NewPairingCode()
+			f := newPairFixture(t, pairRootStep(hubRoot, true, peerReasonErr(reason)), pairRootStep(hubRoot, true, nil))
+			if _, err := f.enr.LoadOrCreateKey(); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.st.SavePairResume(context.Background(), store.PairResume{
+				Code: code.String(), PairingID: code.PairingID(), ExpiresAt: f.clk.Now().Add(5 * time.Minute), RootPub: hubRoot,
+				Serial: 1, CertSHA256: make([]byte, 32),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			f.run(f.pairer())
+			for i := 0; i < 100 && f.dial.nCalls() < 2; i++ {
+				f.clk.Advance(time.Second) // the backoff
+				time.Sleep(5 * time.Millisecond)
+			}
+			if f.dial.nCalls() < 2 || f.dial.call(1).Code.String() != code.String() {
+				t.Fatalf("calls %d: the resumed code was not kept", f.dial.nCalls())
+			}
+			if rec, ok, err := f.enr.LoadPairResume(context.Background()); err != nil || !ok || rec.Code != code.String() {
+				t.Fatalf("record = %+v %v %v", rec, ok, err)
+			}
+		})
 	}
 }

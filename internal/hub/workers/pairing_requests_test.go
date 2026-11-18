@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -25,7 +26,7 @@ func (h *pairHub) startRequester(t *testing.T, key *identity.Key, code identity.
 	cfg := transport.WorkerConfig{
 		Key: key, Name: name, Ops: []string{"send_text"}, Mode: transport.ModePairCode,
 		PairingCode: code, Timeout: 30 * time.Second, AllowAdmit: admit,
-		OnHubHello: func(root ed25519.PublicKey) { shown = root; close(shownCh) },
+		OnHubHello: func(root ed25519.PublicKey) error { shown = root; close(shownCh); return nil },
 	}
 	if admit {
 		cfg.Features = []string{proto.FeaturePairAdmit}
@@ -70,7 +71,7 @@ func TestAWaitingWorkerIsListedWithItsFactsAndTheHubHelloArrivesBeforeAnyClaim(t
 	}
 	q := reqs[0]
 	if q.PairingID != code.PairingID() || q.Name != "pi-4" || q.Addr == "" || q.WorkerFingerprint != key.Fingerprint() ||
-		!q.Since.Equal(h.clk.Now()) || !q.Expires.Equal(h.clk.Now().Add(PairingTTL)) || q.Resume {
+		!q.Since.Equal(h.clk.Now()) || !q.Expires.Equal(h.clk.Now().Add(PairingTTL)) || q.HubFingerprint != h.svc.Identity().Fingerprint() {
 		t.Errorf("request = %+v", q)
 	}
 	if strings.Contains(h.logs.String(), code.Canonical()[4:]) {
@@ -86,7 +87,7 @@ func TestAWorkerWithoutTheFeatureIsNotListedAndCannotBeAdmitted(t *testing.T) {
 	if n := len(h.ps.Requests()); n != 0 {
 		t.Fatalf("an old Worker is listed (%d)", n)
 	}
-	_, err := h.ps.Admit(context.Background(), AdmitRequest{UserID: "u-admin", PairingID: code.PairingID(), Fingerprint: fingerprintText(t, key), Approve: true})
+	_, err := h.ps.Admit(context.Background(), AdmitRequest{HubFingerprint: string(h.svc.Identity().Fingerprint()), UserID: "u-admin", PairingID: code.PairingID(), Fingerprint: fingerprintText(t, key), Approve: true})
 	_ = wantPairingCode(t, err, proto.CodeNotFound)
 	// Its code still pairs.
 	if _, err := h.claim("u-alice", code.String(), ""); err != nil {
@@ -104,7 +105,7 @@ func TestAdmittingARequestEnrollsExactlyThePresentedKeyApproved(t *testing.T) {
 	code := identity.NewPairingCode()
 	w, _ := h.startRequester(t, key, code, "pi", true)
 
-	res, err := h.ps.Admit(context.Background(), AdmitRequest{
+	res, err := h.ps.Admit(context.Background(), AdmitRequest{HubFingerprint: string(h.svc.Identity().Fingerprint()),
 		UserID: "u-admin", PairingID: strings.ToLower(code.PairingID()), Fingerprint: strings.ToUpper(fingerprintText(t, key)),
 		Name: "kitchen", Approve: true, Actor: "u-admin",
 	})
@@ -148,7 +149,7 @@ func TestAnAdmissionThatNamesAnotherKeyAdmitsNothing(t *testing.T) {
 	code := identity.NewPairingCode()
 	w, _ := h.startRequester(t, key, code, "pi", true)
 	other := newKey(t)
-	_, err := h.ps.Admit(context.Background(), AdmitRequest{UserID: "u-admin", PairingID: code.PairingID(), Fingerprint: fingerprintText(t, other), Approve: true})
+	_, err := h.ps.Admit(context.Background(), AdmitRequest{HubFingerprint: string(h.svc.Identity().Fingerprint()), UserID: "u-admin", PairingID: code.PairingID(), Fingerprint: fingerprintText(t, other), Approve: true})
 	_ = wantPairingCode(t, err, proto.CodeConflict)
 	if _, err := h.st.WorkerByPub(context.Background(), key.Public()); err == nil {
 		t.Fatal("a Worker was created")
@@ -157,7 +158,7 @@ func TestAnAdmissionThatNamesAnotherKeyAdmitsNothing(t *testing.T) {
 		t.Fatal("the request is gone after a refused admission")
 	}
 	// Unknown id.
-	_, err = h.ps.Admit(context.Background(), AdmitRequest{UserID: "u-admin", PairingID: "ZZZZ", Fingerprint: fingerprintText(t, key), Approve: true})
+	_, err = h.ps.Admit(context.Background(), AdmitRequest{HubFingerprint: string(h.svc.Identity().Fingerprint()), UserID: "u-admin", PairingID: "ZZZZ", Fingerprint: fingerprintText(t, key), Approve: true})
 	_ = wantPairingCode(t, err, proto.CodeNotFound)
 	_ = w
 }
@@ -222,7 +223,7 @@ func TestARequestBeingClaimedIsNotListedAndCannotBeAdmitted(t *testing.T) {
 	if len(h.ps.Requests()) != 0 {
 		t.Fatal("a request in a claim is listed")
 	}
-	_, err := h.ps.Admit(context.Background(), AdmitRequest{UserID: "u-admin", PairingID: code.PairingID(), Fingerprint: fingerprintText(t, key)})
+	_, err := h.ps.Admit(context.Background(), AdmitRequest{HubFingerprint: string(h.svc.Identity().Fingerprint()), UserID: "u-admin", PairingID: code.PairingID(), Fingerprint: fingerprintText(t, key)})
 	_ = wantPairingCode(t, err, proto.CodeConflict)
 	h.ps.mu.Lock()
 	p.cur = nil
@@ -233,5 +234,74 @@ func TestAdmitDigestsAreUniqueAndMarked(t *testing.T) {
 	a, b := admitDigest("ABCD", []byte("k")), admitDigest("ABCD", []byte("k"))
 	if a == b || !isAdmitDigest(a) || isAdmitDigest(strings.Repeat("a", 64)) {
 		t.Fatalf("%s %s", a, b)
+	}
+}
+
+// Review B2: an id that no code can have is refused before it takes a slot.
+func TestAMalformedPairingIDTakesNoSlot(t *testing.T) {
+	ps, _, _ := unitPairings(t, nil)
+	for _, id := range []string{"abcd", "K7Q", "K7Q4X", "K7U4", "K7-4"} {
+		_, err := ps.Await(context.Background(), id, testIP)
+		_ = wantPairingCode(t, err, proto.CodeInvalidArgument)
+	}
+	if ps.Pending() != 0 || ps.ipSlots() != 0 {
+		t.Fatalf("pending %d, slots %d", ps.Pending(), ps.ipSlots())
+	}
+}
+
+// Review B3: an admission names the Hub root the request's handshake used; a
+// request whose identity generation is no longer admitted is not listed.
+func TestAnAdmissionMustNameTheRootTheRequestWasAnsweredWith(t *testing.T) {
+	h := newPairHub(t, nil, nil)
+	key := newKey(t)
+	code := identity.NewPairingCode()
+	_, _ = h.startRequester(t, key, code, "pi", true)
+	other := newKey(t)
+	_, err := h.ps.Admit(context.Background(), AdmitRequest{UserID: "u-admin", PairingID: code.PairingID(),
+		Fingerprint: fingerprintText(t, key), HubFingerprint: fingerprintText(t, other), Approve: true})
+	_ = wantPairingCode(t, err, proto.CodeConflict)
+
+	h.ps.mu.Lock()
+	h.ps.live[code.PairingID()].req.Current = func() bool { return false } // the Hub rotated since
+	h.ps.mu.Unlock()
+	if len(h.ps.Requests()) != 0 {
+		t.Fatal("a request of an obsolete identity generation is listed")
+	}
+	_, err = h.ps.Admit(context.Background(), AdmitRequest{UserID: "u-admin", PairingID: code.PairingID(),
+		Fingerprint: fingerprintText(t, key), HubFingerprint: string(h.svc.Identity().Fingerprint()), Approve: true})
+	_ = wantPairingCode(t, err, proto.CodeNotFound)
+}
+
+// Review B1: a Worker that comes back to a committed pairing is never a
+// request: it recovers with its owner's code.
+func TestAResumingWorkerIsNeitherListedNorAdmittable(t *testing.T) {
+	h := newPairHub(t, nil, nil)
+	key := newKey(t)
+	code := identity.NewPairingCode()
+	_, _ = h.startRequester(t, key, code, "pi", true)
+	h.ps.mu.Lock()
+	h.ps.live[code.PairingID()].resume = &store.PairingCommit{CodeDigest: "x", OwnerID: "u-alice"}
+	h.ps.mu.Unlock()
+	if len(h.ps.Requests()) != 0 {
+		t.Fatal("a resuming Worker is listed")
+	}
+	_, err := h.ps.Admit(context.Background(), AdmitRequest{UserID: "u-admin", PairingID: code.PairingID(),
+		Fingerprint: fingerprintText(t, key), HubFingerprint: string(h.svc.Identity().Fingerprint()), Approve: true})
+	_ = wantPairingCode(t, err, proto.CodeNotFound)
+}
+
+// An admission never takes over a key the Hub already knows.
+func TestAnAdmissionOfAKnownKeyIsRefused(t *testing.T) {
+	h := newPairHub(t, nil, nil)
+	key := newKey(t)
+	h.enrol(key, "u-bob", "pi")
+	code := identity.NewPairingCode()
+	w, _ := h.startRequester(t, key, code, "pi", true)
+	_, err := h.ps.Admit(context.Background(), AdmitRequest{UserID: "u-admin", PairingID: code.PairingID(),
+		Fingerprint: fingerprintText(t, key), HubFingerprint: string(h.svc.Identity().Fingerprint()), Approve: true})
+	_ = wantPairingCode(t, err, proto.CodeAlreadyPaired)
+	w.wait(t)
+	if row, err := h.st.WorkerByPub(context.Background(), key.Public()); err != nil || row.OwnerID != "u-bob" {
+		t.Fatalf("row = %+v, %v", row, err)
 	}
 }

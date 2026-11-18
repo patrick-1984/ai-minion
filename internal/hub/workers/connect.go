@@ -364,7 +364,7 @@ func (h *Handler) handshakeBudget() time.Duration {
 // Since v0.12.0 the wait starts after the Hub hello and the Worker's pake.msg,
 // and it ends with either a claim (the password) or an admission of the
 // pairing request; hello carries the facts the request list shows.
-func (h *Handler) pairingPassword(ctx context.Context, conn *watchConn, ip netip.Addr, gate PairingGate, ticket **PairingTicket, hello func() transport.WorkerHello) func(string) (transport.PairingAnswer, error) {
+func (h *Handler) pairingPassword(ctx context.Context, conn *watchConn, ip netip.Addr, gate PairingGate, ticket **PairingTicket, snap hubid.Snapshot, hello func() transport.WorkerHello) func(string) (transport.PairingAnswer, error) {
 	return func(id string) (transport.PairingAnswer, error) {
 		budget := h.handshakeBudget()
 		_ = conn.SetDeadline(time.Now().Add(gate.MaxWait() + budget))
@@ -375,6 +375,11 @@ func (h *Handler) pairingPassword(ctx context.Context, conn *watchConn, ip netip
 		awaitCtx = withWorkerPub(awaitCtx, bytes.Clone(wh.WorkerPub))
 		awaitCtx = withRequestInfo(awaitCtx, RequestInfo{
 			Name: wh.Name, Pub: bytes.Clone(wh.WorkerPub), Admittable: slices.Contains(wh.Features, proto.FeaturePairAdmit),
+			// The root this connection's hello carried: an admission must
+			// name it, and is refused once the identity generation of the
+			// handshake is no longer admitted (a rotation).
+			HubRoot: bytes.Clone(snap.RootPub),
+			Current: func() bool { return h.cfg.Identity.Admit(snap.Generation) },
 		})
 		t, err := gate.Await(awaitCtx, id, ip)
 		if err != nil {
@@ -598,7 +603,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		wc := newWatchConn(conn)
 		hsConn = wc
 		hc.PairingPassword = nil
-		hc.PairingWait = h.pairingPassword(ctx, wc, ip, gate, &pairingTicket, func() transport.WorkerHello { return hello })
+		hc.PairingWait = h.pairingPassword(ctx, wc, ip, gate, &pairingTicket, snap, func() transport.WorkerHello { return hello })
 	}
 	res, err := transport.HubHandshake(hsConn, hc)
 	if err != nil {

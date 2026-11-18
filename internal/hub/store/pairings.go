@@ -128,6 +128,31 @@ func (s *Store) CompletePairing(ctx context.Context, id, codeDigest string, w Wo
 	})
 }
 
+// CompletePairingAudited is CompletePairing with an audit row written in the
+// same transaction (target: the new Worker), as an approval does: an admitted
+// pairing request is the approval, so the approved Worker, the used pairing
+// and its audit event go together or not at all.
+func (s *Store) CompletePairingAudited(ctx context.Context, id, codeDigest string, w WorkerRow, a *AuditRow) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE pending_pairings SET status = 'used', owner_id = ?, worker_id = ? WHERE pairing_id = ? AND status = 'pending'`,
+			w.OwnerID, w.ID, id)
+		if err != nil {
+			return fmt.Errorf("store: mark pairing used: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrPairingNotPending
+		}
+		if err := s.recordUsedCode(ctx, tx, id, codeDigest, w); err != nil {
+			return err
+		}
+		if err := s.InsertWorker(ctx, tx, w); err != nil {
+			return err
+		}
+		return s.auditEnroll(ctx, tx, a, w.ID)
+	})
+}
+
 // recordUsedCode writes the digest of a used code together with the commit
 // (pairing id, Worker key, Worker, owner and the code's expiry, copied from the
 // pairing row) that lets the same Worker resume (hub-identity-v2 12.2).

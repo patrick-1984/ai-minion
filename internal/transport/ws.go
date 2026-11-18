@@ -109,6 +109,15 @@ type DialFacts struct {
 	Subprotocol string
 	// TLS is what this dial saw of TLS, for display only.
 	TLS TLSSeen
+	// Redirected is true when the upgrade request was redirected (the
+	// answer came from another URL than the one dialled).
+	Redirected bool
+	// DirectVerified is true only when the WebSocket upgrade was answered
+	// over wss on the TLS connection to the dialled host itself, with no
+	// proxy and no redirect, and that certificate verified for the dialled
+	// host name against the system roots. It is the only TLS fact a pairing
+	// may rely on (an admitted pairing request); everything else is display.
+	DirectVerified bool
 }
 
 // TLSSeen is what the Worker saw of TLS on its own dial. It is information
@@ -251,8 +260,16 @@ func DialInfo(ctx context.Context, hubURL string) (net.Conn, DialFacts, error) {
 			facts.Proxy = logx.SafeURL(pu.String())
 		}
 	}
+	client := dialClient()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		facts.Redirected = true
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
 	c, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPClient:      dialClient(),
+		HTTPClient:      client,
 		Subprotocols:    []string{Subprotocol},
 		CompressionMode: websocket.CompressionDisabled,
 	})
@@ -275,6 +292,9 @@ func DialInfo(ctx context.Context, hubURL string) (net.Conn, DialFacts, error) {
 	}
 	if err != nil {
 		return nil, facts, fmt.Errorf("transport: dial hub: %w", err)
+	}
+	if resp != nil && resp.Request != nil {
+		facts.DirectVerified = directVerified(facts, wsURL, resp.Request.URL, resp.TLS != nil)
 	}
 	facts.Subprotocol = c.Subprotocol()
 	if c.Subprotocol() != Subprotocol {
@@ -315,4 +335,17 @@ func wrap(c *websocket.Conn) net.Conn {
 	nc := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
 	c.SetReadLimit(wsReadLimit)
 	return nc
+}
+
+// directVerified reports whether the upgrade answer came over TLS from the
+// dialled host itself (the library dials the https form of the wss URL), with
+// no redirect and no proxy, and its certificate verified for that host.
+func directVerified(facts DialFacts, wsURL string, answered *url.URL, tlsAnswer bool) bool {
+	u, err := url.Parse(wsURL)
+	if err != nil || answered == nil {
+		return false
+	}
+	return !facts.Redirected && facts.Proxy == "" && u.Scheme == "wss" &&
+		answered.Scheme == "https" && answered.Host == u.Host && tlsAnswer &&
+		!facts.TLS.None && facts.TLS.Trusted
 }

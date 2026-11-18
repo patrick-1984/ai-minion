@@ -53,6 +53,7 @@ type PairingStore interface {
 	PutPairing(ctx context.Context, p store.PairingRow) error
 	AddPairingFailure(ctx context.Context, id string, max int) (store.PairingRow, error)
 	CompletePairing(ctx context.Context, id, codeDigest string, w store.WorkerRow) error
+	CompletePairingAudited(ctx context.Context, id, codeDigest string, w store.WorkerRow, a *store.AuditRow) error
 	WorkerNameFor(ctx context.Context, ownerID, name string) (string, error)
 	PairingCodeUsed(ctx context.Context, codeDigest string) (bool, error)
 	PairingCommitFor(ctx context.Context, pairingID string, workerPub []byte, now int64) (store.PairingCommit, error)
@@ -124,6 +125,8 @@ type ClaimRequest struct {
 // ClaimResult describes the Worker a claim created.
 type ClaimResult struct {
 	WorkerID string
+	// Pending is true when the Worker waits for approval.
+	Pending bool
 	// Name is the name the Worker got; it differs from the requested one when
 	// the owner already had a Worker of that name.
 	Name    string
@@ -243,6 +246,12 @@ type RequestInfo struct {
 	// Admittable is true when the Worker announced proto.FeaturePairAdmit: it
 	// accepts an admission instead of its code.
 	Admittable bool
+	// HubRoot is the root key the Hub's hello on this connection carried (the
+	// words the Worker shows); Current reports whether the identity
+	// generation of that handshake is still admitted. Nil Current means
+	// always (tests).
+	HubRoot []byte
+	Current func() bool
 }
 
 type requestInfoKey struct{}
@@ -434,6 +443,11 @@ func (t *PairingTicket) Answer() transport.PairingAnswer {
 // Await implements [PairingGate]. See the type documentation for the flow. It
 // returns the ticket of the connection once a user claimed its code.
 func (ps *Pairings) Await(ctx context.Context, id string, ip netip.Addr) (*PairingTicket, error) {
+	// One canonical form everywhere: an id that no code can have is refused
+	// before it takes a slot of its client address.
+	if !identity.ValidPairingID(id) {
+		return nil, pairingErr(proto.CodeInvalidArgument, "malformed pairing id")
+	}
 	now := ps.now()
 	ipKey := ratelimit.IPKey(ip)
 
@@ -754,7 +768,13 @@ func (ps *Pairings) resumeWrongCode(ctx context.Context, p *pending, t *store.Pa
 	outcome, result := "wrong_code", error(errWrongCode(max(store.MaxResumeAttempts-n, 0)))
 	if n >= store.MaxResumeAttempts {
 		outcome, result = "attempts_exceeded", errAttemptsExceeded()
-		ps.end(p, result)
+		// The check ran without the lock: a claim that reserved the entry
+		// meanwhile decides it, and is never ended by this one.
+		ps.mu.Lock()
+		if p.cur == nil {
+			ps.endLocked(p, result)
+		}
+		ps.mu.Unlock()
 	}
 	ps.record(ctx, audit.Event{Actor: c.actor, ActingAs: c.actingAs, Action: "pairing.attempt", Target: p.id, Outcome: outcome})
 	return result
@@ -798,17 +818,12 @@ func (ps *Pairings) Handle(ctx context.Context, c *Conn) error {
 	ps.mu.Unlock()
 	switch {
 	case cl.reused: // a resume and a repair have their own audit events
-	case cl.admit:
-		outcome := auditPending
-		if !row.Pending {
-			outcome = "approved"
-		}
-		ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: AuditPairAdmit, Target: row.ID, Outcome: outcome})
+	case cl.admit: // audited with the Worker row, in its transaction
 	default:
 		ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: "worker.pair", Target: row.ID, Outcome: auditPending})
 	}
 	c.h.log.Info("worker paired", "worker_id", row.ID, "name", row.Name, "fingerprint", c.fingerprint())
-	cl.finish(claimOutcome{res: ClaimResult{WorkerID: row.ID, Name: row.Name, Renamed: renamed}})
+	cl.finish(claimOutcome{res: ClaimResult{WorkerID: row.ID, Name: row.Name, Renamed: renamed, Pending: row.Pending}})
 	return c.Welcome(ctx, row)
 }
 
@@ -825,6 +840,10 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 	}
 	known, err := ps.store.WorkerByPub(ctx, pub)
 	switch {
+	case err == nil && cl.admit:
+		// An admission creates a new Worker or nothing: a known key goes
+		// through its owner's code (resume, re-issue).
+		return store.WorkerRow{}, false, pairingErr(proto.CodeAlreadyPaired, "this Worker is already paired with this Hub")
 	case err == nil:
 		return ps.existing(ctx, c, pairingID, cl, resume, known)
 	case !errors.Is(err, store.ErrWorkerNotFound):
@@ -857,7 +876,18 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 	}
 	for i := 1; i <= maxSuffixTries; i++ {
 		row.ID, row.Name = store.NewID(), suffixed(base, i)
-		err := ps.store.CompletePairing(ctx, pairingID, cl.digest, row)
+		var err error
+		if cl.admit {
+			outcome := auditPending
+			if !row.Pending {
+				outcome = "approved"
+			}
+			err = ps.store.CompletePairingAudited(ctx, pairingID, cl.digest, row, &store.AuditRow{
+				ID: store.NewID(), TS: row.CreatedAt, Actor: cl.actor, ActingAs: cl.actingAs, Action: AuditPairAdmit, Outcome: outcome,
+			})
+		} else {
+			err = ps.store.CompletePairing(ctx, pairingID, cl.digest, row)
+		}
 		switch {
 		case err == nil:
 			return row, i > 1, nil

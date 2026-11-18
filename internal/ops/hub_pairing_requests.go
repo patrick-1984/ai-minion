@@ -37,19 +37,17 @@ type PairingRequestInfo struct {
 	// Worker key the request presents: the Worker's console shows the same.
 	WorkerFingerprint      string `json:"worker_fingerprint"`
 	WorkerFingerprintWords string `json:"worker_fingerprint_words"`
-	// Resume is true for a Worker that comes back to a pairing the Hub
-	// already committed (its welcome was lost).
-	Resume bool `json:"resume,omitempty"`
+	// HubFingerprint and HubFingerprintWords are the Hub root the Worker's
+	// handshake was answered with: the words its console box shows. After a
+	// master-key rotation they differ from the Hub's current ones, and the
+	// request is no longer listed.
+	HubFingerprint      string `json:"hub_fingerprint"`
+	HubFingerprintWords string `json:"hub_fingerprint_words"`
 }
 
 // PairingRequestsListResult is the result of pairing_requests_list.
 type PairingRequestsListResult struct {
 	Requests []PairingRequestInfo `json:"requests"`
-	// HubFingerprint and HubFingerprintWords are this Hub's fingerprint: the
-	// Worker's console shows the words of the Hub that answered it, and they
-	// must be these.
-	HubFingerprint      string `json:"hub_fingerprint"`
-	HubFingerprintWords string `json:"hub_fingerprint_words"`
 }
 
 // PairingRequestAdmitArgs are the arguments of pairing_request_admit.
@@ -61,6 +59,11 @@ type PairingRequestAdmitArgs struct {
 	// caller compared with the Worker's console. The Hub admits only the
 	// request that presents exactly this key, and enrolls exactly this key.
 	WorkerFingerprint string `json:"worker_fingerprint"`
+	// HubFingerprint is the 52-character fingerprint of the Hub root that the
+	// request was answered with (the list shows it): the words the caller
+	// compared with the Worker's console. A request answered with another
+	// root is not admitted.
+	HubFingerprint string `json:"hub_fingerprint"`
 	// Name optionally names the new Worker; the default is the announced name.
 	Name string `json:"name,omitempty"`
 }
@@ -103,6 +106,9 @@ func (a PairingRequestAdmitArgs) Validate() error {
 	}
 	if err := validateRequestRef(a.PairingID, a.WorkerFingerprint); err != nil {
 		return err
+	}
+	if !validFingerprint(a.HubFingerprint) {
+		return invalid("hub_fingerprint", "must be 52 lowercase base32 characters")
 	}
 	if a.Name != "" && !validWorkerName(a.Name) {
 		return invalid("name", "must be at most %d bytes without spaces, colons or control characters", MaxWorkerNameLen)

@@ -34,9 +34,8 @@ func PairingRequestRejectPath(id string) string {
 
 // pairingRequestsView is what the fragment "pairing_requests_list" renders.
 type pairingRequestsView struct {
-	HubWords, HubFull string
-	Requests          []pairingRequestView
-	MaxName           int
+	Requests []pairingRequestView
+	MaxName  int
 }
 
 type pairingRequestView struct {
@@ -61,7 +60,7 @@ func handlePairingRequests(w http.ResponseWriter, r *http.Request, c OpCaller, u
 		w.WriteHeader(stopPolling)
 		return
 	}
-	v := pairingRequestsView{HubWords: res.HubFingerprintWords, HubFull: res.HubFingerprint, MaxName: ops.MaxWorkerNameLen}
+	v := pairingRequestsView{MaxName: ops.MaxWorkerNameLen}
 	for _, q := range res.Requests {
 		since := q.WaitingSince
 		if t, err := time.Parse(time.RFC3339, q.WaitingSince); err == nil {
@@ -78,10 +77,11 @@ func handlePairingRequests(w http.ResponseWriter, r *http.Request, c OpCaller, u
 func handlePairingRequestAdmit(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
 	args := ops.PairingRequestAdmitArgs{
 		WriteArgs: newWriteArgs(), PairingID: r.PathValue("pairing"),
-		WorkerFingerprint: r.PostFormValue("worker_fingerprint"), Name: strings.TrimSpace(r.PostFormValue("name")),
+		WorkerFingerprint: r.PostFormValue("worker_fingerprint"), HubFingerprint: r.PostFormValue("hub_fingerprint"),
+		Name: strings.TrimSpace(r.PostFormValue("name")),
 	}
 	writeOp(w, r, c, ops.OpPairingRequestAdmit, args,
-		"The Worker is admitted and approved. It is in your space and connects within moments.")
+		"The Worker is admitted. It is in your space and connects within moments.")
 }
 
 func handlePairingRequestReject(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {

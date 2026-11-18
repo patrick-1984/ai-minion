@@ -27,7 +27,7 @@ func admitConfigs(t *testing.T) (WorkerConfig, HubConfig) {
 func TestAdmittedPairingRequestCompletesWithoutCPace(t *testing.T) {
 	wc, hc := admitConfigs(t)
 	var shown ed25519.PublicKey
-	wc.OnHubHello = func(root ed25519.PublicKey) { shown = root }
+	wc.OnHubHello = func(root ed25519.PublicKey) error { shown = root; return nil }
 	o := runPair(t, wc, hc, nil)
 	o.mustSucceed(t)
 	if !o.worker.Admitted || !o.hub.Admitted {
@@ -84,7 +84,7 @@ func TestTheCodeAuthenticatesTheRootTheWorkerShowed(t *testing.T) {
 	wc, hc, _ := pairConfigs(t)
 	other := newHub(t)
 	var shown ed25519.PublicKey
-	wc.OnHubHello = func(root ed25519.PublicKey) { shown = root }
+	wc.OnHubHello = func(root ed25519.PublicKey) error { shown = root; return nil }
 	o := runPair(t, wc, hc, func(fromWorker bool, idx int, body []byte) []byte {
 		if fromWorker || idx != 0 {
 			return body
@@ -115,7 +115,7 @@ func TestOnHubHelloIsNotCalledForARefusedExpectation(t *testing.T) {
 	}
 	wc.ExpectHub = matcherFor(t, fp, false)
 	called := false
-	wc.OnHubHello = func(ed25519.PublicKey) { called = true }
+	wc.OnHubHello = func(ed25519.PublicKey) error { called = true; return nil }
 	o := runPair(t, wc, hc, nil)
 	if !errors.Is(o.workerErr, ErrExpectedHubMismatch) || called {
 		t.Fatalf("worker error %v, called %v", o.workerErr, called)
@@ -139,4 +139,15 @@ func TestARejectedRequestKeepsOnlyTheReasonToken(t *testing.T) {
 	if PeerReason(proto.NewError(proto.CodePairingCodeInvalid, "x")) != "" {
 		t.Error("a reason without details")
 	}
+}
+
+func TestAnOnHubHelloErrorEndsTheHandshakeBeforeAnyCPaceMessage(t *testing.T) {
+	wc, hc, _ := pairConfigs(t)
+	refused := errors.New("not the root the box showed")
+	wc.OnHubHello = func(ed25519.PublicKey) error { return refused }
+	o := runPair(t, wc, hc, nil)
+	if !errors.Is(o.workerErr, refused) {
+		t.Fatalf("worker error %v", o.workerErr)
+	}
+	onlyHello(t, o)
 }

@@ -286,13 +286,18 @@ type WorkerConfig struct {
 	// first CPace message. It is display information only: the key is not
 	// authenticated yet (the CPace confirmation, or an admitted request and
 	// sig_hub, authenticate it later, and the transcript binds it).
-	OnHubHello func(root ed25519.PublicKey)
+	// An error aborts the handshake before any CPace message is sent.
+	OnHubHello func(root ed25519.PublicKey) error
 	// AllowAdmit lets a pair_code handshake accept the Hub's pair.admit in
 	// place of its pake.msg (an administrator admitted this Worker's pairing
 	// request). The caller sets it only when it announces
 	// proto.FeaturePairAdmit, which it does only when the Hub root is checked
 	// some other way than by the code (see agent.PairParams.AllowAdmit).
 	AllowAdmit bool
+	// AdmitAllowed, when set, is asked after OnHubHello: false refuses an
+	// admission on this connection although AllowAdmit is set (the code
+	// still pairs).
+	AdmitAllowed func() bool
 	// Timeout bounds the whole handshake; zero means
 	// DefaultHandshakeTimeout.
 	Timeout time.Duration
@@ -501,7 +506,9 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 	admitted := false
 	if cfg.Mode == ModePairCode {
 		if cfg.OnHubHello != nil {
-			cfg.OnHubHello(bytes.Clone(hubPub))
+			if err := cfg.OnHubHello(bytes.Clone(hubPub)); err != nil {
+				return nil, err
+			}
 		}
 		if session, admitted, err = workerPake(conn, cfg, hash[:], cert.OpPub); err != nil {
 			return nil, err
@@ -652,7 +659,7 @@ func workerPake(conn net.Conn, cfg WorkerConfig, hash []byte, opPub ed25519.Publ
 		return nil, false, err
 	}
 	wants := []string{proto.TypePakeMsg}
-	if cfg.AllowAdmit {
+	if cfg.AllowAdmit && (cfg.AdmitAllowed == nil || cfg.AdmitAllowed()) {
 		wants = append(wants, proto.TypePairAdmit)
 	}
 	body, got, err := expectFrameOf(conn, wants...)

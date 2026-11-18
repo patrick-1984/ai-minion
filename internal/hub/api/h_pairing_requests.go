@@ -8,7 +8,6 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
-	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -20,9 +19,6 @@ type PairingRequestsService interface {
 	Requests() []workers.PairingRequest
 	Admit(ctx context.Context, req workers.AdmitRequest) (workers.ClaimResult, error)
 	Reject(ctx context.Context, req workers.RejectRequest) error
-	// HubFingerprint is the fingerprint of this Hub's root key, "" before it
-	// has one.
-	HubFingerprint() identity.Fingerprint
 }
 
 // RegisterPairingRequests registers pairing_requests_list,
@@ -37,7 +33,10 @@ func RegisterPairingRequests(r *Registry, svc PairingRequestsService) error {
 	if svc == nil {
 		return errors.New("api: the pairing requests need a service")
 	}
-	if err := HandleTyped(r, ops.OpPairingRequestsList, func(_ context.Context, _ *Call, _ ops.PairingRequestsListArgs) (ops.PairingRequestsListResult, error) {
+	if err := HandleTyped(r, ops.OpPairingRequestsList, func(_ context.Context, c *Call, _ ops.PairingRequestsListArgs) (ops.PairingRequestsListResult, error) {
+		if err := requireHubWideScope(c.Principal); err != nil {
+			return ops.PairingRequestsListResult{}, err
+		}
 		return PairingRequestsResult(svc), nil
 	}); err != nil {
 		return err
@@ -47,18 +46,21 @@ func RegisterPairingRequests(r *Registry, svc PairingRequestsService) error {
 			return ops.WriteResult{}, err
 		}
 		got, err := svc.Admit(ctx, workers.AdmitRequest{
-			UserID: c.Principal.UserID, PairingID: a.PairingID, Fingerprint: a.WorkerFingerprint, Name: a.Name,
+			UserID: c.Principal.UserID, PairingID: a.PairingID, Fingerprint: a.WorkerFingerprint, HubFingerprint: a.HubFingerprint, Name: a.Name,
 			Approve: true, Actor: c.Identity.Actor, ActingAs: c.Identity.ActingAs,
 		})
 		if err != nil {
 			return ops.WriteResult{}, err
 		}
 		res := ops.WriteResult{Outcome: ops.OutcomeDelivered}
+		if got.Pending {
+			res.Warnings = append(res.Warnings, ops.Warning{Code: "worker_pending", Message: "the Worker waits for approval"})
+		}
 		if got.Renamed {
-			res.Warnings = []ops.Warning{{
+			res.Warnings = append(res.Warnings, ops.Warning{
 				Code:    ops.WarnWorkerRenamed,
 				Message: fmt.Sprintf("the name was already in use in your space; the Worker is called %s", got.Name),
-			}}
+			})
 		}
 		return res, nil
 	}); err != nil {
@@ -79,27 +81,28 @@ func RegisterPairingRequests(r *Registry, svc PairingRequestsService) error {
 
 // requestCaller refuses a Worker identity, a key bound to a Worker and a call
 // without a user.
+//
+// The dispatcher decided manage on the caller's own user resource; a key whose
+// scope reaches only some resources is refused here, as for the other
+// Hub-wide administrator operations.
 func requestCaller(c *Call) error {
 	p := c.Principal
 	if p.UserID == "" || c.Identity.Actor == "" || p.Kind == authz.KindWorker || (p.Kind == authz.KindAPIKey && p.WorkerID != "") {
 		return NewError(proto.CodeForbidden, "not allowed")
 	}
-	return nil
+	return requireHubWideScope(p)
 }
 
 // PairingRequestsResult renders the open requests as the operation returns
 // them.
 func PairingRequestsResult(svc PairingRequestsService) ops.PairingRequestsListResult {
 	out := ops.PairingRequestsListResult{Requests: []ops.PairingRequestInfo{}}
-	if fp := svc.HubFingerprint(); fp != "" {
-		out.HubFingerprint, out.HubFingerprintWords = string(fp), fp.Words()
-	}
 	for _, q := range svc.Requests() {
 		out.Requests = append(out.Requests, ops.PairingRequestInfo{
 			PairingID: q.PairingID, Name: q.Name, SourceAddr: q.Addr,
 			WaitingSince: q.Since.UTC().Format(time.RFC3339), ExpiresAt: q.Expires.UTC().Format(time.RFC3339),
 			WorkerFingerprint: string(q.WorkerFingerprint), WorkerFingerprintWords: q.WorkerFingerprint.Words(),
-			Resume: q.Resume,
+			HubFingerprint: string(q.HubFingerprint), HubFingerprintWords: q.HubFingerprint.Words(),
 		})
 	}
 	return out

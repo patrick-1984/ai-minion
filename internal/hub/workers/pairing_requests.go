@@ -49,9 +49,9 @@ type PairingRequest struct {
 	Expires time.Time
 	// WorkerFingerprint is the fingerprint of the Worker key of the hello.
 	WorkerFingerprint identity.Fingerprint
-	// Resume is true for a Worker that comes back to a pairing the Hub
-	// already committed (the welcome was lost).
-	Resume bool
+	// HubFingerprint is the fingerprint of the Hub root this connection's
+	// hello carried: the words the Worker's box shows.
+	HubFingerprint identity.Fingerprint
 }
 
 // AdmitRequest is one admission of a pairing request.
@@ -63,6 +63,9 @@ type AdmitRequest struct {
 	// a request that was replaced meanwhile is never admitted.
 	PairingID   string
 	Fingerprint string
+	// HubFingerprint must be the fingerprint of the Hub root the request's
+	// handshake presented (the words the administrator compared).
+	HubFingerprint string
 	// Name optionally overrides the announced name.
 	Name string
 	// Approve approves the new Worker at once (the caller may approve it).
@@ -134,8 +137,16 @@ func sameFingerprint(given string, pub []byte) bool {
 }
 
 // listable reports whether p is an open request under ps.mu.
+//
+// A Worker that comes back to a pairing the Hub already committed (p.resume) is
+// never a request: it recovers with its owner's code, never by an admission.
+// Nor is a connection whose handshake used an identity generation that is no
+// longer admitted (the Hub rotated since).
 func (ps *Pairings) listable(p *pending, now time.Time) bool {
-	if p.ended || p.cur != nil || !isReady(p) || !now.Before(p.expires) || !p.req.Admittable {
+	if p.ended || p.cur != nil || !isReady(p) || !now.Before(p.expires) || !p.req.Admittable || p.resume != nil {
+		return false
+	}
+	if p.req.Current != nil && !p.req.Current() {
 		return false
 	}
 	until, hidden := ps.rejected[hex.EncodeToString(p.req.Pub)]
@@ -155,7 +166,7 @@ func (ps *Pairings) Requests() []PairingRequest {
 		}
 		out = append(out, PairingRequest{
 			PairingID: p.id, Name: CleanWorkerName(p.req.Name), Addr: p.addr, Since: p.since, Expires: p.expires,
-			WorkerFingerprint: fingerprintOfPub(p.req.Pub), Resume: p.resume != nil,
+			WorkerFingerprint: fingerprintOfPub(p.req.Pub), HubFingerprint: fingerprintOfPub(p.req.HubRoot),
 		})
 	}
 	ps.mu.Unlock()
@@ -171,7 +182,11 @@ func (ps *Pairings) Requests() []PairingRequest {
 // openRequest returns the live request of id whose key has the fingerprint,
 // under ps.mu.
 func (ps *Pairings) openRequestLocked(id, fingerprint string, now time.Time) (*pending, error) {
-	p := ps.live[strings.ToUpper(strings.TrimSpace(id))]
+	canon, ok := identity.CanonicalPairingID(id)
+	if !ok {
+		return nil, errNoRequest()
+	}
+	p := ps.live[canon]
 	if p == nil || !ps.listable(p, now) {
 		if p != nil && p.cur != nil {
 			return nil, pairingErr(proto.CodeConflict, "the code of this Worker is being checked right now; try again in a moment")
@@ -207,6 +222,10 @@ func (ps *Pairings) Admit(ctx context.Context, req AdmitRequest) (ClaimResult, e
 	if err != nil {
 		ps.mu.Unlock()
 		return ClaimResult{}, err
+	}
+	if !sameFingerprint(req.HubFingerprint, p.req.HubRoot) {
+		ps.mu.Unlock()
+		return ClaimResult{}, pairingErr(proto.CodeConflict, "this Worker was answered with another Hub key than the one you compared; nothing was admitted, refresh the list and compare again")
 	}
 	c := &claim{
 		userID: req.UserID, actor: actor, actingAs: req.ActingAs, name: req.Name,

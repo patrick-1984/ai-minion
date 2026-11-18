@@ -124,9 +124,12 @@ Since 0.12.0 an administrator can admit a waiting Worker from **Pairing requests
 | --- | --- |
 | The administrator compared the Worker fingerprint **and** the Worker's console showed this Hub's words | **safe**: the Hub enrolls exactly the Worker key it showed (another key fails the Worker's signature), and the Worker pins exactly the Hub key it showed. |
 | The Worker has `hub_fingerprint` | **safe** on the Worker side as with a code: another Hub is refused before anything. |
-| Nobody compared the words on the Worker side, no `hub_fingerprint`, a trusted TLS certificate | **as safe as that certificate** (the WebPKI trust NetBird's peers place in their management server): whoever holds a valid certificate for the address, including a TLS-terminating proxy, can admit the Worker to itself. The Worker's status shows the Hub check `not verified`; `minion worker verify-hub` detects it later. |
-| No `hub_fingerprint` and no trusted certificate | not offered: the Worker pairs only with its code. |
-| The administrator did not compare the Worker words | **not protected**: another machine waiting at the same moment could be admitted. A request always names the key it presents, and the admission is refused when the key changed after the list was read. |
+| Nobody compared the words on the Worker side, no `hub_fingerprint`, a trusted TLS certificate | **as safe as that certificate** (the WebPKI trust NetBird's peers place in their management server): whoever holds a valid certificate for the Hub's host name, including a TLS-terminating proxy or another server that shares a wildcard certificate's key, can admit the Worker to itself. The Worker's status shows the Hub check `not verified`; `minion worker verify-hub` detects it later. `hub_fingerprint` is the strong gate. |
+| No `hub_fingerprint`, and the upgrade was redirected, went through an HTTP proxy, used plain `ws://`/`http://`, or the certificate is not trusted for the host name | not offered: the Worker pairs only with its code. Only the TLS connection to the configured host itself that carried the upgrade counts. |
+| A later connection with the same code presents another Hub key than the box showed | refused before the code is used; the Worker shows a new code with the new words (and logs a warning). |
+| The administrator did not compare the Worker words | **not protected**: another machine waiting at the same moment could be admitted. A request always names the Worker key and the Hub key of its handshake, and the admission is refused when either changed after the list was read, or when the Hub's master key was rotated since. |
+
+A Worker that comes back to a pairing the Hub already committed (its answer was lost) is never listed: it completes with its owner's code. An admission never enrolls a key the Hub already knows. Only an administrator, or an administrator's key whose scope reaches the whole Hub, sees and admits requests.
 
 More limits, stated plainly:
 
