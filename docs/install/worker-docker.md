@@ -17,7 +17,7 @@ The example [`deploy/compose/worker.yaml`](../../deploy/compose/worker.yaml) run
 - Stopping the container does not end the sessions: the tmux server runs on the host.
 - `MINION_SESSIONS_VISIBLE=yes` (set in the example): the sessions are the host user's own, visible in their `tmux ls`. With `auto` (or unset, as in the v0.10.0 example) a Worker in a container treats the documented mount path `/tmux/default` as the host user's socket, so it reports those sessions as visible too; any other socket path in a container counts as hidden under `auto`, which the Hub setting `hidden_sessions` may refuse. Set `yes` when you mount the socket elsewhere.
 
-**B. A self-contained Worker.** Remove the socket mount and `MINION_TMUX_SOCKET` from the example, and set `MINION_SESSIONS_VISIBLE` to `no` (or `auto`, which treats the default tmux server inside a container as the container's own: hidden). The Worker then starts its own tmux server inside the container and serves sessions that live in the container. Stopping or recreating the container ends them.
+**B. A self-contained Worker.** Remove the socket mount and `MINION_TMUX_SOCKET` from the example, and set `MINION_SESSIONS_VISIBLE` to `no` (`auto` cannot tell that nobody works inside this container). The Worker then starts its own tmux server inside the container and serves sessions that live in the container. Stopping or recreating the container ends them.
 
 ## The trust boundary
 
