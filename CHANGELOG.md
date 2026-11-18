@@ -6,7 +6,7 @@ Released 2026-11-18.
 
 ### Added
 
-- **Check now on Administration > Updates.** The button asks GitHub at once (at most once a minute; a sooner press shows the last answer). The page also shows when the check last ran and why it failed, if it did. `hub_update_check` takes `refresh` and reports `checked_at`, `checked_channel` and `check_error`.
+- **Check now on Administration > Updates.** The button asks GitHub at once (at most once a minute; a sooner press shows the last answer). The page also shows when the check last ran and why it failed, if it did. New admin operation `hub_update_refresh` (POST only); `hub_update_check` also reports `checked_at`, `checked_channel` and `check_error`.
 
 ### Fixed
 
