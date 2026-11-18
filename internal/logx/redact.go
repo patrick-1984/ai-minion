@@ -38,12 +38,25 @@ var (
 	urlQuery = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"'<>]*)\?[^\s#"'<>]*`)
 	// pairingCode is a pairing code MN-XXXX-XXXX, also typed without dashes.
 	pairingCode = regexp.MustCompile(`(?i)\bMN-?[0-9A-Z]{4}-?[0-9A-Z]{4}\b`)
+	// apiKeyText is a Minion API key: "mn_" plus 52 base32 characters
+	// (internal/identity/apikey.go).
+	apiKeyText = regexp.MustCompile(`(?i)\bmn_[a-z2-7]{52}`)
+	// inviteKeyText is an invitation key mnk_<fingerprint>.<secret>
+	// (internal/identity/invite.go); the fingerprint is public and kept.
+	inviteKeyText = regexp.MustCompile(`(?i)\b(mnk_[a-z2-7]+)\.[a-z2-7]+`)
+	// joinTokenText is a join token mnj1-<base64url payload>
+	// (internal/identity/jointoken.go).
+	joinTokenText = regexp.MustCompile(`(?i)\bmnj1-[A-Za-z0-9._~-]+`)
 )
 
 // RedactText masks what free text (an error message, a log message) must not
 // carry into a log that leaves the machine: the user information and the query
-// of every URL in it, and pairing codes.
+// of every URL in it, Minion's own secret formats (API keys mn_..., invitation
+// keys mnk_<fingerprint>.<secret>, join tokens mnj1-...) and pairing codes.
 func RedactText(s string) string {
+	s = joinTokenText.ReplaceAllString(s, "mnj1-"+Redacted)
+	s = inviteKeyText.ReplaceAllString(s, "${1}."+Redacted)
+	s = apiKeyText.ReplaceAllString(s, "mn_"+Redacted)
 	s = urlUserinfo.ReplaceAllString(s, "${1}"+Redacted+"@")
 	s = urlQuery.ReplaceAllString(s, "${1}?"+Redacted)
 	return pairingCode.ReplaceAllString(s, "MN-"+Redacted)
