@@ -24,7 +24,8 @@ English.
 | `make cross` | Builds linux amd64/arm64/armv7 (`GOARM=7`), darwin amd64/arm64 and windows amd64/arm64 into `bin/cross/`, all with `CGO_ENABLED=0`. |
 | `make test` | `go test ./...` (`TAGS=tmux` adds the tmux-tagged tests). |
 | `make test-race` | `go test -race ./...` (needs CGO; `TAGS=tmux` adds the tmux-tagged tests, which CI always runs). |
-| `make lint` | `go vet`, golangci-lint with the import rules (run for every release `GOOS`/`GOARCH` and with the `tmux` and `e2e` build tags, so platform-, architecture- and tag-specific files are covered), the tmux check, the English check, the documentation-link check and the skeleton check. |
+| `make lint` | `go vet`, golangci-lint with the import rules (run for every release `GOOS`/`GOARCH` and with the `tmux` and `e2e` build tags, so platform-, architecture- and tag-specific files are covered), the tmux check, the English check, the documentation-link check, the skeleton check and the headless check. |
+| `make check-headless` | Fails when `./cmd/minion` depends on a GUI module (`fyne.io/systray`, `github.com/godbus/dbus`, `github.com/ncruces/zenity`) on any release target (`CROSS_TARGETS`) or container image platform (`go list -deps`, `CGO_ENABLED=0`). |
 | `make check-tmux` | Parses the test files and fails on `kill-server` or on tmux started directly in a test (nested and multi-line calls included); tests use `internal/testutil/tmuxtest`. |
 | `make check-docs` | Fails on a relative Markdown link or `#anchor` in `README.md`, `CONTRIBUTING.md`, `docs/install`, `docs/guides` and `docs/security.md` that does not resolve, on a page without a link back to the README, and on a page the README does not link to. Needs no network. |
 | `make check-compose` | Runs `docker compose config` on `deploy/compose/*.yaml` with dummy variables and dummy secret files in a scratch directory (it only reads the files: no daemon, no pull, no build, nothing started). Needs the docker CLI with the compose plugin; first runs a self test with a stand-in `docker`. |
@@ -47,6 +48,11 @@ A story is done when `make lint test-race vuln cross` is green.
   `hub/auth/oidc`; argon2: `hub/auth/local`; MCP SDK: `mcp`; cobra: `cli`;
   kardianos/service: `worker/service`; go-pty: `worker/term/conpty`;
   sigstore-go: `version`);
+- a package outside `cmd/minion-tray` and `internal/tray/adapter` imports a GUI
+  module of the tray (`fyne.io/systray`, `github.com/ncruces/zenity`,
+  `github.com/godbus/dbus`; godbus is also allowed in `test/traye2e`), so the
+  `minion` binary stays headless (`make check-headless` checks the built
+  package graph as well);
 - `internal/hub/...` imports `internal/worker/...`, or the reverse;
 - a kernel package (`proto`, `ops`, `identity`, `pake`, `config`, `logx`,
   `version`, `ratelimit`, `pipe`, `sqlmigrate`) imports a non-kernel internal

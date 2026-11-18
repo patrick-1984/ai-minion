@@ -35,6 +35,8 @@ jobs:
         run: make lint
       - name: Negative check of the import rules (forbidden imports must fail)
         run: make lint-negative
+      - name: Headless gate (no GUI module in minion on any release or image target)
+        run: make check-headless
       - name: Validate the deploy Compose files (docker compose config, dummy environment, no daemon)
         run: make check-compose
 

@@ -234,6 +234,28 @@ linters:
           deny:
             - pkg: github.com/Microsoft/go-winio
               desc: only worker/localapi (listen and dial) may import go-winio (AD-1, AD-22); the client dials through localapi.DialContext
+        # The tray GUI modules stay out of minion and every headless package
+        # (tray ticket R1, owner rule R7); make check-headless checks the
+        # package graph of ./cmd/minion as well.
+        lib-tray-gui:
+          files:
+            - $all
+            - "!**/cmd/minion-tray/**"
+            - "!**/internal/tray/adapter/**"
+          deny:
+            - pkg: fyne.io/systray
+              desc: only cmd/minion-tray and internal/tray/adapter may import systray (tray R1)
+            - pkg: github.com/ncruces/zenity
+              desc: only cmd/minion-tray and internal/tray/adapter may import zenity (tray R1)
+        lib-tray-dbus:
+          files:
+            - $all
+            - "!**/cmd/minion-tray/**"
+            - "!**/internal/tray/adapter/**"
+            - "!**/test/traye2e/**"
+          deny:
+            - pkg: github.com/godbus/dbus
+              desc: only cmd/minion-tray, internal/tray/adapter and test/traye2e may import godbus (tray R1)
         lib-sigstore:
           files:
             - $all

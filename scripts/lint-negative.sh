@@ -82,6 +82,9 @@ stub github.com/kardianos/service "$v0"
 stub github.com/aymanbagabas/go-pty "$v0"
 stub github.com/sigstore/sigstore-go "$v0"
 stub github.com/Microsoft/go-winio "$v0"
+stub fyne.io/systray "$v0"
+stub github.com/ncruces/zenity "$v0"
+stub github.com/godbus/dbus/v5 v5.0.0-00010101000000-000000000000
 
 # Build contexts that are linted: files with a GOOS or GOARCH suffix or a build
 # constraint are invisible to the other contexts, and so are the files behind
@@ -211,6 +214,11 @@ case_ "sigstore-go in cli" cli github.com/sigstore/sigstore-go/pkg/root lib-sigs
 # localapi.DialContext. The library only builds on Windows.
 case_ "go-winio in cli" cli github.com/Microsoft/go-winio lib-winio windows
 case_ "go-winio in client" client github.com/Microsoft/go-winio lib-winio windows
+# The tray GUI modules stay out of every headless package (tray R1).
+case_ "systray in cli" cli fyne.io/systray lib-tray-gui
+case_ "zenity in worker/agent" worker/agent github.com/ncruces/zenity lib-tray-gui
+case_ "godbus in worker/service" worker/service github.com/godbus/dbus/v5 lib-tray-dbus
+case_ "systray in a linux/arm-only file of a tray model" tray fyne.io/systray lib-tray-gui linux arm
 
 # Platform-specific files are checked in the build context of their platform.
 case_ "cobra in a windows-only file of conpty" worker/term/conpty github.com/spf13/cobra lib-cobra windows
@@ -244,5 +252,8 @@ allowed_ "kardianos/service in worker/service" worker/service github.com/kardian
 allowed_ "go-pty in worker/term/conpty" worker/term/conpty github.com/aymanbagabas/go-pty
 allowed_ "sigstore-go in version" version github.com/sigstore/sigstore-go/pkg/root
 allowed_ "go-winio in worker/localapi" worker/localapi github.com/Microsoft/go-winio "" windows
+allowed_ "systray in tray/adapter" tray/adapter fyne.io/systray
+allowed_ "zenity in tray/adapter" tray/adapter github.com/ncruces/zenity
+allowed_ "godbus in tray/adapter" tray/adapter github.com/godbus/dbus/v5
 
 exit "$fail"

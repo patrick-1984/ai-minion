@@ -55,6 +55,7 @@ ci=.github/workflows/ci.yml
 need() { grep -Fq -- "$1" "$ci" || bad "$ci lacks: $1"; }
 need 'run: make lint'
 need 'run: make lint-negative'
+need 'run: make check-headless'
 need 'run: make check-compose'
 need 'run: make test-race TAGS=tmux'
 need 'run: make vuln'
