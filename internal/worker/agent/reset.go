@@ -224,6 +224,11 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 	if err != nil {
 		return rep, fmt.Errorf("read the config file: %w", err)
 	}
+	// A reset during an update trial: a rollback must not restore the
+	// deleted pairing from the pre-migration database (rollbackTrustHold).
+	if err := protectEnrollmentFromRollback(o.StateDir); err != nil {
+		return rep, err
+	}
 	pr, err := o.Store.ResetPairing(ctx)
 	if err != nil {
 		return rep, fmt.Errorf("reset the Worker state: %w", err)

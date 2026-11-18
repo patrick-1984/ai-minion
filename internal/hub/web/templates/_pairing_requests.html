@@ -1,0 +1,26 @@
+{{define "pairing_requests"}}<div data-pairing-requests-panel><div id="pairing-requests" data-pairing-requests hx-get="/workers/pairing-requests" hx-trigger="load, every 5s" hx-swap="innerHTML"></div>
+<div id="pairing-requests-result" aria-live="polite"></div></div>{{end}}
+{{define "pairing_requests_list"}}{{if .Requests}}<section class="panel" aria-labelledby="pairing-requests-h">
+  <h2 id="pairing-requests-h">Pairing requests</h2>
+  <p class="muted">These Workers wait with a pairing code and can be admitted without it. Admit one only if its console shows the same Worker fingerprint and the same Hub fingerprint as the row. An admitted Worker joins your space approved; you can move it to its owner afterwards.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Name</th><th scope="col">Source address</th><th scope="col">Waiting since</th><th scope="col">Worker fingerprint</th><th scope="col">Hub fingerprint it was shown</th><th scope="col">Pairing id</th><th scope="col">Actions</th></tr></thead>
+    <tbody>{{range .Requests}}<tr data-pairing-request="{{.PairingID}}">
+      <td data-label="Name">{{.Name}}</td>
+      <td data-label="Source address">{{if .SourceAddr}}<code>{{.SourceAddr}}</code>{{else}}<span class="muted">-</span>{{end}}</td>
+      <td data-label="Waiting since">{{.Since}}</td>
+      <td data-label="Worker fingerprint"><span class="fp-words">{{.WorkerFingerprintWords}}</span><br><code>{{.WorkerFingerprint}}</code></td>
+      <td data-label="Hub fingerprint it was shown"><span class="fp-words">{{.HubFingerprintWords}}</span><br><code>{{.HubFingerprint}}</code></td>
+      <td data-label="Pairing id"><code>{{.PairingID}}</code></td>
+      <td data-label="Actions"><form method="post" action="{{.AdmitURL}}" hx-post="{{.AdmitURL}}" hx-target="#pairing-requests-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Admit worker {{.Name}} from {{.SourceAddr}}? Admit only if the Worker shows these words. Worker fingerprint: {{.WorkerFingerprintWords}}. Hub fingerprint: {{.HubFingerprintWords}}. Its console box shows both: compare all six words of each. The Worker joins your space approved and receives operations." class="row-actions">
+        <input type="hidden" name="worker_fingerprint" value="{{.WorkerFingerprint}}">
+        <input type="hidden" name="hub_fingerprint" value="{{.HubFingerprint}}">
+        <button type="submit" class="btn" data-control="admit" aria-label="Admit worker {{.Name}}">Admit</button>
+      </form>
+      <form method="post" action="{{.RejectURL}}" hx-post="{{.RejectURL}}" hx-target="#pairing-requests-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Reject the pairing request of {{.Name}} from {{.SourceAddr}}? The Worker shows that it was rejected and a new code." class="row-actions">
+        <input type="hidden" name="worker_fingerprint" value="{{.WorkerFingerprint}}">
+        <button type="submit" class="btn btn-danger" data-control="reject" aria-label="Reject the pairing request of {{.Name}}">Reject</button>
+      </form></td>
+    </tr>{{end}}</tbody>
+  </table></div>
+</section>{{end}}{{end}}

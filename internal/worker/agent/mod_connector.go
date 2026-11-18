@@ -193,7 +193,13 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		defer close(commitDone)
 		tick := time.NewTicker(30 * time.Second)
 		defer tick.Stop()
-		commitAfter(loopCtx, s.StateDir, version.Version, func() updateHealth { return connectorHealth(c.Status(), s.StateDir) }, tick.C)
+		// Only a Worker that started every module may commit an update.
+		commitAfter(loopCtx, s.StateDir, version.Version, func() updateHealth {
+			if !env.Started() {
+				return healthNone
+			}
+			return connectorHealth(c.Status(), s.StateDir)
+		}, tick.C)
 	}()
 	pairDone := make(chan struct{})
 	go func() {
@@ -237,11 +243,12 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, 
 	}
 	log.Info("this Worker is not paired: showing a pairing code; enter it in the Hub (Workers > Add worker)")
 	if expect.IsZero() {
-		// First use without an expectation stays allowed (as before), but
-		// it is said once: the Hub is then only "not verified".
-		log.Warn("no hub_fingerprint is set: this Worker pairs with whichever Hub answers at the address and accepts the code; "+
-			"set hub_fingerprint (MINION_HUB_FINGERPRINT) to the value of minion hub identity --words on the Hub host",
-			"hub", hubLabel(hubURL))
+		// First use without an expectation stays allowed (as before) and is
+		// still reported as hub_check=none ("not verified") in the status and
+		// on the Hub. The code itself authenticates the Hub it is entered in
+		// (the CPace transcript binds the Hub's key), which the box shows.
+		log.Info("no hub_fingerprint is set: the pairing code confirms the Hub's key; the box shows the Hub's words, "+
+			"which the Hub shows on Workers > Add worker", "hub", hubLabel(hubURL), "hub_check", "none")
 	}
 	if _, err := p.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Warn("pairing stopped", "error", err.Error())
@@ -265,17 +272,18 @@ func needsAutoPair(ctx context.Context, s Settings, hubURL string, enr *Enrollme
 }
 
 // connectorHealth is the crash guard's view of the connector: connected, or
-// idle because the operator quarantined the Hub or removed the pairing.
-func connectorHealth(st Status, stateDir string) updateHealth {
+// idle on purpose because the operator quarantined the Hub, or because the
+// Worker is not enrolled (the pairing was removed here with --forget or by the
+// Hub, or it waits to be paired). Not enrolled is a deliberate state of a
+// working binary that read its enrollment: the update is committed, since a
+// rollback would restore the pre-migration database and lose a pairing made
+// meanwhile. An unreachable Hub (backoff) stays healthNone.
+func connectorHealth(st Status, _ string) updateHealth {
 	switch {
 	case st.State == ConnConnected:
 		return healthConnected
-	case st.State == ConnIdle && st.Reason == ReasonQuarantined:
+	case st.State == ConnIdle && (st.Reason == ReasonQuarantined || st.Reason == ReasonNotEnrolled):
 		return healthTrustHold
-	case st.State == ConnIdle && st.Reason == ReasonNotEnrolled:
-		if f, _ := ForgottenHubs(stateDir); len(f) > 0 {
-			return healthTrustHold
-		}
 	}
 	return healthNone
 }

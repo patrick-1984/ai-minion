@@ -227,6 +227,10 @@ func workerSetting(reg *config.Registry, key string) (config.Setting, error) {
 	if !ok {
 		return config.Setting{}, fmt.Errorf("unknown setting %q; the Worker settings are: %s", key, strings.Join(workerSettingKeys(reg), ", "))
 	}
+	if s.Key == config.KeyJoin {
+		return config.Setting{}, fmt.Errorf("%s is never stored in the config file: give it to `minion worker up --join <token>` "+
+			"or set %s (or %s); the Worker keeps the Hub address and fingerprint from it", s.Key, s.EnvName(), s.FileEnvName())
+	}
 	if s.Key == config.KeyStateDir {
 		return config.Setting{}, fmt.Errorf("%s names the directory that holds the config file, so it cannot be stored in it; give --%s or set %s",
 			s.Key, s.FlagName(), s.EnvName())
@@ -237,7 +241,7 @@ func workerSetting(reg *config.Registry, key string) (config.Setting, error) {
 func workerSettingKeys(reg *config.Registry) []string {
 	var keys []string
 	for _, s := range reg.ForScope(config.ScopeWorker) {
-		if s.Key != config.KeyStateDir && (!s.Secret || s.ArgvAllowedWithWarning) {
+		if s.Key != config.KeyStateDir && s.Key != config.KeyJoin && (!s.Secret || s.ArgvAllowedWithWarning) {
 			keys = append(keys, s.Key)
 		}
 	}

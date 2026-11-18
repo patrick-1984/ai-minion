@@ -53,6 +53,7 @@ type PairingStore interface {
 	PutPairing(ctx context.Context, p store.PairingRow) error
 	AddPairingFailure(ctx context.Context, id string, max int) (store.PairingRow, error)
 	CompletePairing(ctx context.Context, id, codeDigest string, w store.WorkerRow) error
+	CompletePairingAudited(ctx context.Context, id, codeDigest string, w store.WorkerRow, a *store.AuditRow) error
 	WorkerNameFor(ctx context.Context, ownerID, name string) (string, error)
 	PairingCodeUsed(ctx context.Context, codeDigest string) (bool, error)
 	PairingCommitFor(ctx context.Context, pairingID string, workerPub []byte, now int64) (store.PairingCommit, error)
@@ -124,6 +125,8 @@ type ClaimRequest struct {
 // ClaimResult describes the Worker a claim created.
 type ClaimResult struct {
 	WorkerID string
+	// Pending is true when the Worker waits for approval.
+	Pending bool
 	// Name is the name the Worker got; it differs from the requested one when
 	// the owner already had a Worker of that name.
 	Name    string
@@ -186,6 +189,11 @@ type Pairings struct {
 	live   map[string]*pending
 	perIP  map[string]int
 	closed bool
+	// rejected hides the requests of a Worker key from the list for one code
+	// lifetime after an administrator rejected one (hex key -> until), so a
+	// Worker that comes back with a new code does not reappear at once. The
+	// key can still pair with its code. Bounded by maxPending.
+	rejected map[string]time.Time
 
 	stop    chan struct{}
 	stopped sync.WaitGroup
@@ -212,10 +220,53 @@ type pending struct {
 	// code is accepted only with this ticket.
 	resume *store.PairingCommit
 
+	// The facts of the pairing request (v0.12.0), from the Worker's hello:
+	// what the Pairing requests list shows and what an admission must name.
+	req RequestInfo
+	// since is when the connection started to wait; addr is its client
+	// address.
+	since time.Time
+	addr  string
+
 	// Guarded by Pairings.mu.
 	goneErr error
 	ended   bool
-	cur     *claim // the claim that supplied the password
+	cur     *claim // the claim that supplied the password, or the admission
+}
+
+// RequestInfo are the facts of a waiting pair_code connection that the Hub
+// shows under Pairing requests. They come from the Worker's hello: the Worker
+// proves the key only at the end of the handshake (sig_worker), which is why
+// an admission names the key it admits and enrolls exactly that key.
+type RequestInfo struct {
+	// Name is the name the Worker announced.
+	Name string
+	// Pub is the Worker key of the hello.
+	Pub []byte
+	// Admittable is true when the Worker announced proto.FeaturePairAdmit: it
+	// accepts an admission instead of its code.
+	Admittable bool
+	// HubRoot is the root key the Hub's hello on this connection carried (the
+	// words the Worker shows); Current reports whether the identity
+	// generation of that handshake is still admitted. Nil Current means
+	// always (tests).
+	HubRoot []byte
+	Current func() bool
+}
+
+type requestInfoKey struct{}
+
+// withRequestInfo carries the request facts of the hello to [Pairings.Await].
+func withRequestInfo(ctx context.Context, ri RequestInfo) context.Context {
+	return context.WithValue(ctx, requestInfoKey{}, ri)
+}
+
+func requestInfoOf(ctx context.Context) RequestInfo {
+	ri, _ := ctx.Value(requestInfoKey{}).(RequestInfo)
+	if len(ri.Pub) == 0 {
+		ri.Pub = workerPubOf(ctx)
+	}
+	return ri
 }
 
 // claim is one claim in flight: the password and where the outcome goes.
@@ -227,10 +278,15 @@ type claim struct {
 	password []byte
 	// mayRepair is ClaimRequest.MayRepair.
 	mayRepair func(ctx context.Context, workerID string) (bool, error)
-	reused    bool              // set by create: the Worker already existed (resume or repair)
-	digest    string            // one-way digest of the code, recorded when it is used
-	done      chan claimOutcome // capacity 1
-	once      sync.Once
+	// admit is set for an administrator's admission of the pairing request
+	// (no password: the Hub answers pair.admit), approve when the new Worker
+	// is approved at once.
+	admit   bool
+	approve bool
+	reused  bool              // set by create: the Worker already existed (resume or repair)
+	digest  string            // one-way digest of the code, recorded when it is used
+	done    chan claimOutcome // capacity 1
+	once    sync.Once
 }
 
 type claimOutcome struct {
@@ -256,7 +312,7 @@ func NewPairings(o PairingOptions) (*Pairings, error) {
 		store: o.Store, online: o.Online, limiter: o.Limiter, auditor: o.Auditor, now: o.Clock, log: o.Logger,
 		ttl: o.TTL, maxAttempts: o.MaxAttempts, maxPending: o.MaxPending, maxPerIP: o.MaxPendingPerIP,
 		sweepEvery: o.SweepInterval,
-		live:       map[string]*pending{}, perIP: map[string]int{}, stop: make(chan struct{}),
+		live:       map[string]*pending{}, perIP: map[string]int{}, rejected: map[string]time.Time{}, stop: make(chan struct{}),
 	}
 	if ps.now == nil {
 		ps.now = time.Now
@@ -323,6 +379,14 @@ func workerPubOf(ctx context.Context) []byte {
 	return pub
 }
 
+// addrText is the client address as shown, "" when unknown.
+func addrText(ip netip.Addr) string {
+	if !ip.IsValid() {
+		return ""
+	}
+	return ip.String()
+}
+
 func pairingErr(code proto.Code, message string) *proto.Error { return proto.NewError(code, message) }
 
 func errExpired() *proto.Error {
@@ -364,12 +428,26 @@ type PairingTicket struct {
 }
 
 // Password returns the CPace password of the claim. It is valid until the
-// handshake ends.
+// handshake ends. It is nil for an admission.
 func (t *PairingTicket) Password() []byte { return t.c.password }
+
+// Answer returns the decision the handshake continues with: the password of a
+// claim, or an admission.
+func (t *PairingTicket) Answer() transport.PairingAnswer {
+	if t.c.admit {
+		return transport.PairingAnswer{Admit: true}
+	}
+	return transport.PairingAnswer{Password: t.c.password}
+}
 
 // Await implements [PairingGate]. See the type documentation for the flow. It
 // returns the ticket of the connection once a user claimed its code.
 func (ps *Pairings) Await(ctx context.Context, id string, ip netip.Addr) (*PairingTicket, error) {
+	// One canonical form everywhere: an id that no code can have is refused
+	// before it takes a slot of its client address.
+	if !identity.ValidPairingID(id) {
+		return nil, pairingErr(proto.CodeInvalidArgument, "malformed pairing id")
+	}
 	now := ps.now()
 	ipKey := ratelimit.IPKey(ip)
 
@@ -393,7 +471,8 @@ func (ps *Pairings) Await(ctx context.Context, id string, ip netip.Addr) (*Pairi
 	if old != nil { // expired with no claim in flight, and the sweep has not run yet
 		ps.endLocked(old, errExpired())
 	}
-	p := &pending{id: id, ipKey: ipKey, expires: now.Add(ps.ttl), claims: make(chan *claim, 1), gone: make(chan struct{}), ready: make(chan struct{})}
+	p := &pending{id: id, ipKey: ipKey, expires: now.Add(ps.ttl), claims: make(chan *claim, 1), gone: make(chan struct{}), ready: make(chan struct{}),
+		req: requestInfoOf(ctx), since: now, addr: addrText(ip)}
 	ps.live[id] = p
 	ps.perIP[ipKey]++
 	ps.mu.Unlock()
@@ -608,7 +687,9 @@ func (ps *Pairings) Claim(ctx context.Context, req ClaimRequest) (ClaimResult, e
 			case p.resume.OwnerID != req.UserID:
 				ps.mu.Unlock()
 				return ClaimResult{}, pairingErr(proto.CodePairingCodeInvalid, "this code was already used; the Worker must show a new code")
-			case p.resume.CodeDigest != digest:
+			case p.resume.CodeDigest != digest && !isAdmitDigest(p.resume.CodeDigest):
+				// A commit made by an admission recorded no code digest: the
+				// owner's code is checked by CPace on the connection itself.
 				ticket := *p.resume
 				ps.mu.Unlock()
 				return ClaimResult{}, ps.resumeWrongCode(ctx, p, &ticket, c)
@@ -687,7 +768,13 @@ func (ps *Pairings) resumeWrongCode(ctx context.Context, p *pending, t *store.Pa
 	outcome, result := "wrong_code", error(errWrongCode(max(store.MaxResumeAttempts-n, 0)))
 	if n >= store.MaxResumeAttempts {
 		outcome, result = "attempts_exceeded", errAttemptsExceeded()
-		ps.end(p, result)
+		// The check ran without the lock: a claim that reserved the entry
+		// meanwhile decides it, and is never ended by this one.
+		ps.mu.Lock()
+		if p.cur == nil {
+			ps.endLocked(p, result)
+		}
+		ps.mu.Unlock()
 	}
 	ps.record(ctx, audit.Event{Actor: c.actor, ActingAs: c.actingAs, Action: "pairing.attempt", Target: p.id, Outcome: outcome})
 	return result
@@ -729,11 +816,14 @@ func (ps *Pairings) Handle(ctx context.Context, c *Conn) error {
 	ps.mu.Lock()
 	ps.removeLocked(p)
 	ps.mu.Unlock()
-	if !cl.reused { // a resume and a repair have their own audit events
+	switch {
+	case cl.reused: // a resume and a repair have their own audit events
+	case cl.admit: // audited with the Worker row, in its transaction
+	default:
 		ps.record(ctx, audit.Event{Actor: cl.actor, ActingAs: cl.actingAs, Action: "worker.pair", Target: row.ID, Outcome: auditPending})
 	}
 	c.h.log.Info("worker paired", "worker_id", row.ID, "name", row.Name, "fingerprint", c.fingerprint())
-	cl.finish(claimOutcome{res: ClaimResult{WorkerID: row.ID, Name: row.Name, Renamed: renamed}})
+	cl.finish(claimOutcome{res: ClaimResult{WorkerID: row.ID, Name: row.Name, Renamed: renamed, Pending: row.Pending}})
 	return c.Welcome(ctx, row)
 }
 
@@ -750,6 +840,10 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 	}
 	known, err := ps.store.WorkerByPub(ctx, pub)
 	switch {
+	case err == nil && cl.admit:
+		// An admission creates a new Worker or nothing: a known key goes
+		// through its owner's code (resume, re-issue).
+		return store.WorkerRow{}, false, pairingErr(proto.CodeAlreadyPaired, "this Worker is already paired with this Hub")
 	case err == nil:
 		return ps.existing(ctx, c, pairingID, cl, resume, known)
 	case !errors.Is(err, store.ErrWorkerNotFound):
@@ -774,9 +868,26 @@ func (ps *Pairings) create(ctx context.Context, c *Conn, pairingID string, cl *c
 		// F-02: a paired Worker waits for approval like any other new Worker.
 		Pending: true, EnrollAddr: c.ClientIP().String(),
 	}
+	if cl.admit && cl.approve {
+		// An administrator admitted this very key after comparing its words:
+		// the admission is the approval (one click, as in NetBird's peer
+		// approval).
+		row.Pending, row.ApprovedAt, row.ApprovedBy = false, row.CreatedAt, cl.actor
+	}
 	for i := 1; i <= maxSuffixTries; i++ {
 		row.ID, row.Name = store.NewID(), suffixed(base, i)
-		err := ps.store.CompletePairing(ctx, pairingID, cl.digest, row)
+		var err error
+		if cl.admit {
+			outcome := auditPending
+			if !row.Pending {
+				outcome = "approved"
+			}
+			err = ps.store.CompletePairingAudited(ctx, pairingID, cl.digest, row, &store.AuditRow{
+				ID: store.NewID(), TS: row.CreatedAt, Actor: cl.actor, ActingAs: cl.actingAs, Action: AuditPairAdmit, Outcome: outcome,
+			})
+		} else {
+			err = ps.store.CompletePairing(ctx, pairingID, cl.digest, row)
+		}
 		switch {
 		case err == nil:
 			return row, i > 1, nil
@@ -870,6 +981,11 @@ const (
 	AuditPairRepair = "worker.pair_repair"
 	// AuditPairingReissue: the owner opened the re-issue window.
 	AuditPairingReissue = "worker.pairing_reissue"
+	// AuditPairAdmit: an administrator admitted a pairing request; the
+	// outcome is "approved" (or "pending").
+	AuditPairAdmit = "worker.pair_admit"
+	// AuditPairingReject: an administrator rejected a pairing request.
+	AuditPairingReject = "pairing.reject"
 )
 
 // codeDigest is the one-way digest under which a used code is remembered after
@@ -958,6 +1074,11 @@ func (ps *Pairings) Sweep(ctx context.Context) int {
 	n := 0
 	cutoff := store.UnixMS(now)
 	ps.mu.Lock()
+	for k, until := range ps.rejected {
+		if !now.Before(until) {
+			delete(ps.rejected, k)
+		}
+	}
 	for _, p := range ps.live {
 		if p.cur == nil && !now.Before(p.expires) {
 			ps.endLocked(p, errExpired())

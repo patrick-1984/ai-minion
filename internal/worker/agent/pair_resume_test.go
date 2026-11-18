@@ -189,7 +189,7 @@ func TestRestartResumesTheSameCodeAndPairingID(t *testing.T) {
 	if got != code {
 		t.Fatalf("resumed code %s, want %s", got, code)
 	}
-	if !strings.Contains(hp2.out.String(), "Resuming pairing: enter the same code again in the Hub (Add worker)") {
+	if !strings.Contains(hp2.out.String(), "Resuming an interrupted pairing with the same code.") {
 		t.Fatalf("console:\n%s", hp2.out.String())
 	}
 	eventually(t, func() bool { return h.idCount() >= 2 && h.lastID() == code[3:7] })
@@ -218,10 +218,13 @@ func TestResumeAnsweredByAHubWithAnotherRootIsRefusedBeforeSigWorkerAndTheRecord
 	imposter := hubcert.New(t)
 	h.mu.Lock()
 	h.hub = imposter
+	srv := h.srv
 	h.mu.Unlock()
+	// The Hub hello goes out when the connection starts (v0.12.0): a
+	// connection that is already waiting answered with the real root, so it is
+	// dropped and the Worker's next one meets the impostor.
+	srv.CloseClientConnections()
 	welcomed := h.welcomed.Load()
-	eventually(t, func() bool { return h.idCount() >= 2 })
-	h.claim(code)
 	eventually(t, func() bool { return strings.Contains(hp.logs.String(), "different identity") })
 	time.Sleep(50 * time.Millisecond)
 	if h.welcomed.Load() != welcomed {

@@ -1,6 +1,33 @@
 <main id="content" tabindex="-1">
 
 <div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
+<section class="panel" aria-labelledby="join-one-step" data-join-panel>
+  <h2 id="join-one-step">Add a Worker in one step</h2>
+  <p class="muted">Creates a one-time invitation key and shows one command with everything the new machine needs: this Hub's address, its full fingerprint and the key. Run it on the machine that should become a Worker.</p>
+  <form method="post" hx-post="/workers/add/join" hx-target="#join-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    <div class="field">
+      <label for="join-name">Name (optional)</label>
+      <input type="text" id="join-name" name="name" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="join-name-help">
+      <span id="join-name-help" class="muted">The Worker's name and the name of the key in the list. Without a name, the Worker announces its host name.</span>
+    </div>
+    <div class="field">
+      <label for="join-ttl">Valid for (at most 1 week)</label>
+      <select id="join-ttl" name="ttl">
+        <option value="1h" selected>1 hour</option>
+        <option value="4h">4 hours</option>
+        <option value="8h">8 hours</option>
+        <option value="24h">24 hours</option>
+        <option value="1w">1 week</option>
+        
+      </select>
+    </div>
+    <button type="submit">Create the join command</button>
+    <div id="join-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Creating a join command needs JavaScript in this browser.</p></noscript>
+  
+  <script src="/onboarding.js" defer></script>
+</section>
 <div class="method-grid">
 <section class="panel" aria-labelledby="pair-form">
   <h2 id="pair-form">Pair with a code</h2>
@@ -23,9 +50,11 @@
 </section>
 <section class="panel" aria-labelledby="invite-method">
   <h2 id="invite-method">Use an invitation</h2>
-  <p class="muted">An invitation key lets a machine enroll itself, for example from a script or a Compose file. The key is shown once when you create it, together with commands to start the Worker.</p>
+  <p class="muted">For a reusable key (many machines, for example from a script or an image) or an admin's infrastructure key. The key is shown once when you create it, together with commands that start the Worker and pin this Hub's fingerprint.</p>
   <a class="btn btn-secondary" href="/invitations">Create an invitation key</a>
 </section>
 </div>
+<div data-pairing-requests-panel><div id="pairing-requests" data-pairing-requests hx-get="/workers/pairing-requests" hx-trigger="load, every 5s" hx-swap="innerHTML"></div>
+<div id="pairing-requests-result" aria-live="polite"></div></div>
 
     </main>

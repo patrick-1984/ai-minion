@@ -443,7 +443,11 @@ const workerContainerUID = 10001
 // without its key file; the EXIT trap removes the directory on every way out
 // and the exit status is the one of the Worker command. It all runs in a
 // subshell, so it leaves the umask and the traps of the user's shell alone.
-func fileVariant(srv, key string) string {
+func fileVariant(srv, key string) string { return fileVariantPinned(srv, "", key) }
+
+// fileVariantPinned is [fileVariant] with --hub-fingerprint fp when fp is not
+// empty.
+func fileVariantPinned(srv, fp, key string) string {
 	var f strings.Builder
 	f.WriteString("(\n")
 	f.WriteString("  umask 077 &&\n")
@@ -451,23 +455,80 @@ func fileVariant(srv, key string) string {
 	f.WriteString("  trap 'rm -rf \"$dir\"' EXIT &&\n")
 	f.WriteString("  cat > \"$dir/invite.key\" <<'EOF' &&\n")
 	f.WriteString(key + "\nEOF\n")
-	f.WriteString("  minion worker up --server " + srv + " --invite-key \"$dir/invite.key\"\n")
+	f.WriteString("  minion worker up --server " + srv + pinArg(fp) + " --invite-key \"$dir/invite.key\"\n")
 	f.WriteString(")\n")
 	return f.String()
 }
 
 // inviteCommands renders the three command texts for key and the Hub address.
+// Every command pins the Hub with --hub-fingerprint (MINION_HUB_FINGERPRINT in
+// the Compose project): the full fingerprint inside the key, so the Worker
+// connects to no other Hub, also after the key is used.
 func inviteCommands(server, key string) InviteCommands {
 	srv := shellArg(server)
+	fp := ""
+	if k, err := identity.ParseInviteKey(key); err == nil {
+		fp = k.Fingerprint.String()
+	}
 	return InviteCommands{
-		OneLiner:    "minion worker up --server " + srv + " --invite-key " + key,
-		FileVariant: fileVariant(srv, key),
-		Compose:     composeFile(server),
+		OneLiner:    "minion worker up --server " + srv + pinArg(fp) + " --invite-key " + key,
+		FileVariant: fileVariantPinned(srv, fp, key),
+		Compose:     composeFile(server, fp),
 	}
 }
 
-// composeFile renders the Compose project of a Worker. It holds no secret: the
-// key is the content of invite_key.txt, which the user creates.
+// pinArg is " --hub-fingerprint <fp>", or "" without a fingerprint.
+func pinArg(fp string) string {
+	if fp == "" {
+		return ""
+	}
+	return " --hub-fingerprint " + fp
+}
+
+// composeFile renders the Compose project of a Worker started from an
+// invitation key. It holds no secret: the key is the content of
+// invite_key.txt, which the user creates. fingerprint is the full Hub
+// fingerprint ("" when it is not known): MINION_HUB_FINGERPRINT pins the Hub,
+// so the Worker connects to no other Hub, whatever answers at the address.
+func composeFile(server, fingerprint string) string {
+	uid := fmt.Sprintf("%d:%d", workerContainerUID, workerContainerUID)
+	head := []string{
+		"A Minion Worker in Docker, started from the invitation key. Before you start:",
+		"1. Put bootstrap.sh next to this file. It is a file of the Minion release:",
+		"   " + bootstrapURL,
+		"2. Save the key as the only line of invite_key.txt next to this file.",
+		"3. Run: MINION_SHARE_EXISTING=later docker compose up -d",
+		"   (the first start needs the sharing choice: all, none or later; later shares nothing",
+		"   until you choose in the Hub. Leave it out on later starts: it replaces the saved choice.)",
+		"4. Approve the new Worker in the Hub (Workers page): it starts pending and gets no operations until you do.",
+		"The image is built from Alpine with tmux (the Worker drives its sessions through tmux);",
+		"bootstrap.sh downloads and verifies the minion binary on the first start and keeps it in",
+		"the cache volume. The Worker runs as user " + uid + " and enrolls once: after that the key",
+		"is not needed, but KEEP the file invite_key.txt: Docker needs the mounted file to exist",
+		"whenever the container is restarted or recreated, and the Worker reads it on every start.",
+		"An empty file is safe (an enrolled Worker ignores the key), a missing one stops the start.",
+		"After enrollment erase the secret in place. The init service made the file belong to user",
+		uid + " (mode 600), so your own shell may not write to it; let the root init service do it:",
+		"   docker compose run --rm --no-deps init sh -c ': > /invite_key.txt'",
+		"That truncates the same file (do not delete, move or replace it with an editor). To remove",
+		"the file itself instead, first remove invite_key.txt from init's volumes, the secret and",
+		"MINION_INVITE_KEY_FILE, then run: docker compose up -d --remove-orphans",
+	}
+	env := [][2]string{{"MINION_SERVER", yamlString(strings.ReplaceAll(server, "$", "$$"))}}
+	if fingerprint != "" {
+		env = append(env, [2]string{"MINION_HUB_FINGERPRINT", fingerprint})
+	}
+	env = append(env, [2]string{"MINION_INVITE_KEY_FILE", "/run/secrets/minion_invite_key"})
+	return composeProject(head, env, true, "latest")
+}
+
+// bootstrapURL is where the Compose projects and the docker run command get
+// bootstrap.sh.
+const bootstrapURL = "https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh"
+
+// composeProject renders the Compose project of a Worker: the comment lines
+// head, the environment env (values already quoted for YAML) after the fixed
+// ones, and with inviteFile the secret file invite_key.txt.
 //
 // The Worker needs the minion binary and tmux. The project uses an ordinary
 // Alpine image with tmux added, and deploy/bootstrap.sh (a release asset, see
@@ -476,36 +537,29 @@ func inviteCommands(server, key string) InviteCommands {
 // arguments of minion only, "worker up", never "minion worker up" (the binary
 // name twice). Nothing runs as root but the one-shot init service, which gives
 // the Worker's user the state directory, the download cache and the key file.
-func composeFile(server string) string {
+//
+// minionVersion is the default of MINION_VERSION: a release or a channel.
+func composeProject(head []string, env [][2]string, inviteFile bool, minionVersion string) string {
 	uid := fmt.Sprintf("%d:%d", workerContainerUID, workerContainerUID)
 	var c strings.Builder
-	c.WriteString("# A Minion Worker in Docker, started from the invitation key. Before you start:\n")
-	c.WriteString("# 1. Put bootstrap.sh next to this file. It is a file of the Minion release:\n")
-	c.WriteString("#    https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh\n")
-	c.WriteString("# 2. Save the key as the only line of invite_key.txt next to this file.\n")
-	c.WriteString("# 3. Run: docker compose up -d\n")
-	c.WriteString("# 4. Approve the new Worker in the Hub (Workers page): it starts pending and gets no operations until you do.\n")
-	c.WriteString("# The image is built from Alpine with tmux (the Worker drives its sessions through tmux);\n")
-	c.WriteString("# bootstrap.sh downloads and verifies the minion binary on the first start and keeps it in\n")
-	c.WriteString("# the cache volume. The Worker runs as user " + uid + " and enrolls once: after that the key\n")
-	c.WriteString("# is not needed, but KEEP the file invite_key.txt: Docker needs the mounted file to exist\n")
-	c.WriteString("# whenever the container is restarted or recreated, and the Worker reads it on every start.\n")
-	c.WriteString("# An empty file is safe (an enrolled Worker ignores the key), a missing one stops the start.\n")
-	c.WriteString("# After enrollment erase the secret in place. The init service made the file belong to user\n")
-	c.WriteString("# " + uid + " (mode 600), so your own shell may not write to it; let the root init service do it:\n")
-	c.WriteString("#    docker compose run --rm --no-deps init sh -c ': > /invite_key.txt'\n")
-	c.WriteString("# That truncates the same file (do not delete, move or replace it with an editor). To remove\n")
-	c.WriteString("# the file itself instead, first remove invite_key.txt from init's volumes, the secret and\n")
-	c.WriteString("# MINION_INVITE_KEY_FILE, then run: docker compose up -d --remove-orphans\n")
+	for _, l := range head {
+		c.WriteString("# " + l + "\n")
+	}
+	initCmd := "chown -R " + uid + " /data /cache"
+	if inviteFile {
+		initCmd += " && chown " + uid + " /invite_key.txt && chmod 600 /invite_key.txt"
+	}
 	c.WriteString("services:\n")
 	c.WriteString("  init:\n")
 	c.WriteString("    image: alpine:3.22\n")
 	c.WriteString("    user: \"0:0\"\n")
-	c.WriteString("    command: [\"sh\", \"-c\", \"chown -R " + uid + " /data /cache && chown " + uid + " /invite_key.txt && chmod 600 /invite_key.txt\"]\n")
+	c.WriteString("    command: [\"sh\", \"-c\", \"" + initCmd + "\"]\n")
 	c.WriteString("    volumes:\n")
 	c.WriteString("      - ./worker-data:/data\n")
 	c.WriteString("      - minion-cache:/cache\n")
-	c.WriteString("      - ./invite_key.txt:/invite_key.txt\n")
+	if inviteFile {
+		c.WriteString("      - ./invite_key.txt:/invite_key.txt\n")
+	}
 	c.WriteString("  minion-worker:\n")
 	c.WriteString("    build:\n")
 	c.WriteString("      context: .\n")
@@ -520,20 +574,24 @@ func composeFile(server string) string {
 	c.WriteString("    entrypoint: [\"/bin/sh\", \"/bootstrap.sh\"]\n")
 	c.WriteString("    command: [\"worker\", \"up\"]\n")
 	c.WriteString("    environment:\n")
-	c.WriteString("      MINION_SERVER: " + yamlString(strings.ReplaceAll(server, "$", "$$")) + "\n")
-	c.WriteString("      MINION_VERSION: ${MINION_VERSION:-latest}\n")
+	c.WriteString("      MINION_VERSION: ${MINION_VERSION:-" + minionVersion + "}\n")
 	c.WriteString("      MINION_CACHE_DIR: /cache\n")
 	c.WriteString("      MINION_STATE_DIR: /data\n")
-	c.WriteString("      MINION_INVITE_KEY_FILE: /run/secrets/minion_invite_key\n")
+	c.WriteString("      MINION_SHARE_EXISTING: ${MINION_SHARE_EXISTING:-}\n")
+	for _, kv := range env {
+		c.WriteString("      " + kv[0] + ": " + kv[1] + "\n")
+	}
 	c.WriteString("    volumes:\n")
 	c.WriteString("      - ./bootstrap.sh:/bootstrap.sh:ro\n")
 	c.WriteString("      - ./worker-data:/data\n")
 	c.WriteString("      - minion-cache:/cache\n")
-	c.WriteString("    secrets:\n")
-	c.WriteString("      - minion_invite_key\n")
-	c.WriteString("secrets:\n")
-	c.WriteString("  minion_invite_key:\n")
-	c.WriteString("    file: ./invite_key.txt\n")
+	if inviteFile {
+		c.WriteString("    secrets:\n")
+		c.WriteString("      - minion_invite_key\n")
+		c.WriteString("secrets:\n")
+		c.WriteString("  minion_invite_key:\n")
+		c.WriteString("    file: ./invite_key.txt\n")
+	}
 	c.WriteString("volumes:\n")
 	c.WriteString("  minion-cache:\n")
 	return c.String()

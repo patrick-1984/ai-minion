@@ -103,7 +103,7 @@ old key is kept in the state directory until the Hub confirmed, so an
 unreachable Hub is retried by the Worker service) and pairs again, after a
 confirmation unless --yes is given. A running Worker service drops its
 connection to the old Hub at once.`,
-		Args: cobra.NoArgs,
+		Args: noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runWorkerPair(cmd, deps, opt)
 		},
@@ -123,7 +123,10 @@ func newWorkerJoinCmd(deps workerPairDeps) *cobra.Command {
 the same as "minion worker pair --server <url>", but the address is kept, so
 that the Worker service connects to this Hub afterwards. A Worker service
 that is already running keeps the address it started with: restart it. A
-paired Worker refuses with already_paired and the address is not changed.`,
+paired Worker refuses with already_paired and the address is not changed.
+
+A join token (mnj1-... from the Hub's Add worker page) is not taken here:
+run "minion worker up --join <token>", which enrolls without a code.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opt.join = args[0]
@@ -156,6 +159,10 @@ func (o overrideFlags) Lookup(key string) (string, bool, error) {
 func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) error {
 	var flags config.FlagSource = changedFlags{cmd: cmd, reg: config.Default}
 	if opt.join != "" {
+		if identity.LooksLikeJoinToken(opt.join) {
+			// Never echo it: the token holds an invitation key.
+			return errors.New("this is a join token, not a Hub address: " + joinHint)
+		}
 		url, err := config.ValidateServerURL(opt.join)
 		if err != nil {
 			return err

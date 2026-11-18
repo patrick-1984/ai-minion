@@ -1,3 +1,35 @@
+{{define "join_created"}}<div class="secret" role="status" data-join-created>
+  <p><strong>Join command{{if .Name}} for "{{.Name}}"{{end}} created.</strong> It works once and expires: {{.Expires}}.</p>
+  <p data-join-checks>What the Worker checks: it connects only to the Hub with fingerprint <span class="fp-words">{{.HubWords}}</span> (<code>{{.HubFull}}</code>) at {{.Server}}, and enrolls with the one-time key in the token; the key works once and expires. On the Hub host, <code>minion hub identity --words</code> shows the same words.</p>
+  <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke the key on the <a href="/invitations">Invitations</a> page and create a new command. The new Worker starts as <strong>pending</strong>: approve it on the Workers page.</p>
+  <div class="field">
+    <label for="join-token">Join token</label>
+    <input type="text" id="join-token" value="{{.Token}}" readonly autocomplete="off" spellcheck="false">
+    <button type="button" data-copy="#join-token">Copy the token</button>
+  </div>
+  <h3>Linux or macOS</h3>
+  <p class="muted">Run it as the user whose sessions the Worker serves, without sudo: it installs a user service (systemd with lingering, or a launchd agent on macOS) and, in a terminal, asks what the Hub may see. The token is visible in the process list while the command runs; it is useless once the Worker has enrolled.</p>
+  <pre id="join-unix">{{.Unix}}</pre>
+  <button type="button" data-copy="#join-unix">Copy the command</button>
+  <h3>Linux system service (sudo)</h3>
+  <p class="muted">Installs the system service for the user who runs sudo. The token goes through a private file that is removed afterwards, so it is neither on the command line nor in sudo's log. Root cannot ask what to share, so the command shares nothing until you choose in the Hub (<code>--share-existing later</code>, applied at every start: remove it later with <code>minion worker config unset share_existing</code> to keep a choice made in the Hub).</p>
+  <pre id="join-system">{{.System}}</pre>
+  <button type="button" data-copy="#join-system">Copy the commands</button>
+  <h3>Windows (PowerShell)</h3>
+  <pre id="join-windows">{{.Windows}}</pre>
+  <button type="button" data-copy="#join-windows">Copy the command</button>
+  <h3>Docker</h3>
+  <p class="muted">Downloads <code>bootstrap.sh</code> from the release, then (only if that worked) runs the Worker of this Hub's release in an Alpine container with tmux (as root inside the container; the Compose project below runs it as an unprivileged user). The token stays in the container's environment: the Worker reads the Hub address and fingerprint from it at every start. <code>MINION_SHARE_EXISTING=later</code> shares nothing until you choose in the Hub, and applies at every start of this container.</p>
+  <pre id="join-docker">{{.Docker}}</pre>
+  <button type="button" data-copy="#join-docker">Copy the commands</button>
+  <h3>Docker Compose</h3>
+  <pre id="join-compose">{{.Compose}}</pre>
+  <button type="button" data-copy="#join-compose">Copy the Compose file</button>
+  <h3>The same with separate settings</h3>
+  <p class="muted">For a Worker before v0.12.0 (it needs v0.11.0 for <code>--hub-fingerprint</code>) or a script: the parts of the token as separate flags. In a container the same are <code>MINION_SERVER</code>, <code>MINION_HUB_FINGERPRINT</code> and <code>MINION_INVITE_KEY_FILE</code> (a file with the key).</p>
+  <pre id="join-expanded">{{.Expanded}}</pre>
+  <button type="button" data-copy="#join-expanded">Copy the command</button>
+</div>{{end}}
 {{define "worker_added"}}<div class="notice notice-positive" role="status">
   <div>
   <p><strong>{{.Name}} is now in your space.</strong></p>
@@ -8,15 +40,36 @@
 </div>{{end}}
 {{define "content"}}
 <div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
-{{if .Data.HubFull}}<section class="panel" aria-labelledby="hub-fp" data-hub-fingerprint>
-  <h2 id="hub-fp">Give the Worker this Hub's fingerprint</h2>
-  <p>Hub fingerprint: <span class="fp-words">{{.Data.HubWords}}</span><br><code>{{.Data.HubFull}}</code></p>
-  <pre id="hub-join">{{.Data.JoinCommand}}</pre>
-  <button type="button" data-copy="#hub-join">Copy the command</button>
-  <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. The command needs Worker v0.11.0 or later (an older Worker does not know --hub-fingerprint: update it first). This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead: <code>minion hub identity --words</code></p>
+<section class="panel" aria-labelledby="join-one-step" data-join-panel>
+  <h2 id="join-one-step">Add a Worker in one step</h2>
+  <p class="muted">Creates a one-time invitation key and shows one command with everything the new machine needs: this Hub's address, its full fingerprint and the key. Run it on the machine that should become a Worker.</p>
+  <form method="post" hx-post="/workers/add/join" hx-target="#join-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    <div class="field">
+      <label for="join-name">Name (optional)</label>
+      <input type="text" id="join-name" name="name" autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxName}}" aria-describedby="join-name-help">
+      <span id="join-name-help" class="muted">The Worker's name and the name of the key in the list. Without a name, the Worker announces its host name.</span>
+    </div>
+    <div class="field">
+      <label for="join-ttl">Valid for{{if not .Data.AdminTTL}} (at most 1 week){{end}}</label>
+      <select id="join-ttl" name="ttl">
+        {{range .Data.TTLs}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>
+        {{end}}
+      </select>
+    </div>
+    <button type="submit">Create the join command</button>
+    <div id="join-result" aria-live="polite"></div>
+  </form>
+  <noscript><p class="muted">Creating a join command needs JavaScript in this browser.</p></noscript>
+  {{if .Data.HubFull}}<details data-hub-fingerprint>
+    <summary>Pairing with a code instead? Give the Worker this Hub's fingerprint</summary>
+    <p>Hub fingerprint: <span class="fp-words">{{.Data.HubWords}}</span><br><code>{{.Data.HubFull}}</code></p>
+    <pre id="hub-join">{{.Data.JoinCommand}}</pre>
+    <button type="button" data-copy="#hub-join">Copy the command</button>
+    <p class="muted">The Worker then pairs only with this Hub, whatever answers at the address. The command needs Worker v0.11.0 or later (an older Worker does not know --hub-fingerprint: update it first). This page reached you over the same connection as everything else: if a reverse proxy is in front of the Hub and you do not want to rely on it, read the fingerprint on the Hub host instead: <code>minion hub identity --words</code></p>
+  </details>{{end}}
   <script src="/onboarding.js" defer></script>
 </section>
-{{end}}<div class="method-grid">
+<div class="method-grid">
 <section class="panel" aria-labelledby="pair-form">
   <h2 id="pair-form">Pair with a code</h2>
   <p class="muted">Start pairing on the machine that should become a Worker (for example with <code>minion worker pair</code>). It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
@@ -38,8 +91,9 @@
 </section>
 <section class="panel" aria-labelledby="invite-method">
   <h2 id="invite-method">Use an invitation</h2>
-  <p class="muted">An invitation key lets a machine enroll itself, for example from a script or a Compose file. The key is shown once when you create it, together with commands to start the Worker.</p>
+  <p class="muted">For a reusable key (many machines, for example from a script or an image) or an admin's infrastructure key. The key is shown once when you create it, together with commands that start the Worker and pin this Hub's fingerprint.</p>
   <a class="btn btn-secondary" href="/invitations">Create an invitation key</a>
 </section>
 </div>
+{{template "pairing_requests" .}}
 {{end}}

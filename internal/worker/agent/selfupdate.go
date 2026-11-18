@@ -38,13 +38,23 @@ const (
 	// connection before the update counts as good and the guard is cleared.
 	updateCommitAfter = 5 * time.Minute
 	// guardWindow and guardMaxStarts: a new binary started this many times
-	// within the window without committing is rolled back.
+	// within the window without committing and without a clean stop is
+	// rolled back (boot counting as in systemd-boot and Android A/B updates:
+	// only a start that neither reached the "good" mark nor ended cleanly is
+	// a failed start).
 	guardWindow    = 10 * time.Minute
 	guardMaxStarts = 3
 )
 
 // pendingFile is the crash-guard record in the state directory.
 const pendingFile = "update-pending.json"
+
+// pendingMu serialises every write and removal of the crash-guard record
+// inside one process: the installer of a new update (selfUpdate.run), the
+// commit (connector module) and the clean-stop record (Runtime) can run at
+// the same time, and each changes only the trial it owns. Other processes are
+// kept out by the state's lifecycle lock.
+var pendingMu sync.Mutex
 
 // updateEnrollmentFile names the trial during which a Hub enrollment changed.
 // A rollback of that trial could restore the earlier enrollment from backup.
@@ -219,8 +229,22 @@ func (u *selfUpdate) release() {
 func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRange) {
 	ctx, cancel := context.WithTimeout(ctx, selfUpdateTimeout)
 	defer cancel()
+	// The guard of this run, and the one it replaces (the trial of the
+	// running, still uncommitted binary), which a failure puts back.
+	var mine, prev pendingRecord
+	var wrote, hadPrev bool
 	fail := func(err error) {
-		_ = os.Remove(filepath.Join(u.stateDir, pendingFile))
+		if wrote {
+			pendingMu.Lock()
+			if cur, ok := readPending(u.stateDir); ok && cur.sameTrial(mine) {
+				if hadPrev {
+					_ = writePending(u.stateDir, prev)
+				} else {
+					_ = os.Remove(filepath.Join(u.stateDir, pendingFile))
+				}
+			}
+			pendingMu.Unlock()
+		}
 		// The error can quote a release mirror URL (update_api_url) with a
 		// credential; neither the log nor the reported state repeats it.
 		msg := errString(err)
@@ -239,10 +263,16 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 		fail(err)
 		return
 	}
-	if err := writePending(u.stateDir, pendingRecord{From: version.Version, To: tag, At: u.now()}); err != nil {
+	mine = pendingRecord{From: version.Version, To: tag, At: u.now()}
+	pendingMu.Lock()
+	prev, hadPrev = readPending(u.stateDir)
+	err = writePending(u.stateDir, mine)
+	pendingMu.Unlock()
+	if err != nil {
 		fail(fmt.Errorf("cannot write the update guard, so no rollback would be possible: %w", err))
 		return
 	}
+	wrote = true
 	u.log.Debug("worker update: crash guard written; downloading, verifying and installing", "to", tag,
 		"hub_proto_min", hub.Min.String(), "hub_proto_max", hub.Max.String())
 	r, err := inst.Run(ctx, version.Options{Selector: sel, Current: version.Version, HubRange: hub, ExecPath: u.exe})
@@ -279,6 +309,11 @@ type pendingRecord struct {
 	To     string    `json:"to"`
 	At     time.Time `json:"at"`
 	Starts []int64   `json:"starts,omitempty"` // unix seconds of the starts of the new binary
+}
+
+// sameTrial reports whether r and o guard the same update attempt.
+func (r pendingRecord) sameTrial(o pendingRecord) bool {
+	return r.From == o.From && r.To == o.To && r.At.Equal(o.At)
 }
 
 func writePending(dir string, r pendingRecord) error {
@@ -357,25 +392,28 @@ func rollbackTrustHold(ctx context.Context, dir string, r pendingRecord) (bool, 
 }
 
 // guardOnStart runs once when the Worker starts, before the modules. For a
-// new binary whose update is not committed yet it records the start; on the
-// guardMaxStarts-th start within guardWindow it restores "<exe>.old" and asks
-// for a restart. When the previous binary runs with a guard that names the
-// newer target, the update was rolled back: it returns that record once.
-func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (rolledBack *pendingRecord, restart bool) {
+// new binary whose update is not committed yet it records the start and
+// returns it (started), so that a clean stop of this run can take it back
+// (cleanStop); on the guardMaxStarts-th failed start within guardWindow it
+// restores "<exe>.old" and asks for a restart. When the previous binary runs
+// with a guard that names the newer target, the update was rolled back: it
+// returns that record once.
+func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (rolledBack *pendingRecord, restart bool, started int64) {
 	r, ok := readPending(dir)
 	if !ok {
-		return nil, false
+		return nil, false, 0
 	}
 	switch running {
 	case r.From:
 		_ = os.Remove(filepath.Join(dir, pendingFile))
-		return &r, false
+		return &r, false, 0
 	case r.To:
 	default:
 		_ = os.Remove(filepath.Join(dir, pendingFile))
-		return nil, false
+		return nil, false, 0
 	}
-	// Each recorded start that did not commit is a failed start. Roll back
+	// Each recorded start is one that neither committed nor stopped cleanly
+	// (a clean stop removes its start, cleanStop): a failed start. Roll back
 	// when guardMaxStarts of them happened within the window; otherwise record
 	// this start and let it try.
 	var failed []int64
@@ -387,32 +425,34 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 	if len(failed) < guardMaxStarts {
 		r.Starts = append(failed, now.Unix())
 		_ = writePending(dir, r)
-		return nil, false
+		return nil, false, now.Unix()
 	}
+	why := fmt.Sprintf("%d starts within %s that neither stopped cleanly nor stayed connected to the Hub for %s",
+		len(failed), guardWindow, updateCommitAfter)
 	// Pairing can write from another process, so keep the enrollment locked
 	// from the trust check through any restore.
 	ctx := context.Background()
 	unlock, err := NewEnrollments(nil, dir).lockState(ctx)
 	if err != nil {
 		log.Error("cannot lock the Hub enrollment; rollback waits for the next start", "error", err)
-		return nil, false
+		return nil, false, 0
 	}
 	defer unlock()
 	hold, err := rollbackTrustHold(ctx, dir, r)
 	if err != nil {
 		log.Error("cannot read the Hub trust state; rollback waits for the next start", "error", err)
-		return nil, false
+		return nil, false, 0
 	}
 	if hold {
-		log.Warn("the updated Worker keeps failing to start; rollback would undo a Hub trust decision", "to", r.To)
+		log.Warn("the updated Worker keeps failing to start; rollback would undo a Hub trust decision", "to", r.To, "reason", why)
 		_ = os.Remove(filepath.Join(dir, pendingFile))
-		return nil, false
+		return nil, false, 0
 	}
 	old := exe + ".old"
 	if _, err := os.Stat(old); err != nil {
-		log.Error("the updated Worker keeps failing to start and there is no previous binary to restore", "to", r.To, "error", err.Error())
+		log.Error("the updated Worker keeps failing to start and there is no previous binary to restore", "to", r.To, "reason", why, "error", err.Error())
 		_ = os.Remove(filepath.Join(dir, pendingFile))
-		return nil, false
+		return nil, false, 0
 	}
 	// The database first: a migration of the new release may have changed it,
 	// and the old binary refuses a newer schema. Without a restored database
@@ -420,16 +460,40 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 	if err := restoreStateDB(dir, r.At); err != nil {
 		log.Error("cannot restore the Worker database from its pre-migration backup; the rollback waits for the next start", "error", err.Error())
 		_ = writePending(dir, r)
-		return nil, false
+		return nil, false, 0
 	}
 	if err := restoreOld(exe, old); err != nil {
 		log.Error("cannot restore the previous Worker binary", "error", err.Error())
 		_ = writePending(dir, r)
-		return nil, false
+		return nil, false, 0
 	}
 	_ = writePending(dir, r) // the restored binary finds From == running and reports the rollback
-	log.Warn("the updated Worker failed to start; restored the previous binary", "from", r.To, "to", r.From)
-	return nil, true
+	log.Warn("the updated Worker failed to start ("+why+"); restored the previous binary", "from", r.To, "to", r.From)
+	return nil, true, 0
+}
+
+// cleanStop takes the start recorded at started (guardOnStart) back from the
+// crash guard: the run of the new binary ended cleanly (Ctrl+C, "minion worker
+// down", a service stop), so it was not a failed start. Manual restarts of an
+// update that waits for its Hub (Hub down, removed by the Hub) then never roll
+// it back. It does nothing once the update is committed or for another update.
+func cleanStop(dir, running string, started int64) {
+	if dir == "" || started == 0 {
+		return
+	}
+	pendingMu.Lock()
+	defer pendingMu.Unlock()
+	r, ok := readPending(dir)
+	if !ok || r.To != running {
+		return
+	}
+	for i := len(r.Starts) - 1; i >= 0; i-- {
+		if r.Starts[i] == started {
+			r.Starts = append(r.Starts[:i:i], r.Starts[i+1:]...)
+			_ = writePending(dir, r)
+			return
+		}
+	}
 }
 
 // restoreOld puts "<exe>.old" back in place of exe.
@@ -456,10 +520,12 @@ const (
 	healthConnected
 	// healthTrustHold: the Worker deliberately does not connect because the
 	// operator quarantined its Hub (verify-hub) or removed the pairing
-	// (--forget). That is a decision of this release, not a crash: the update
-	// is committed at once, because a rollback would restore the
+	// (--forget), or because it is not enrolled (the Hub removed it, or it
+	// waits to be paired). That is a state of a working release, not a crash:
+	// the update is committed at once, because a rollback would restore the
 	// pre-migration database and the previous binary, which know neither the
-	// quarantine nor the removal and would connect to the disputed Hub again.
+	// quarantine nor the removal and would connect to the disputed Hub again,
+	// or would lose a pairing made meanwhile.
 	healthTrustHold
 )
 
@@ -468,6 +534,8 @@ const (
 // decision (healthTrustHold).
 func commitAfter(ctx context.Context, dir, running string, health func() updateHealth, tick <-chan time.Time) {
 	commit := func() {
+		pendingMu.Lock()
+		defer pendingMu.Unlock()
 		if r, ok := readPending(dir); ok && r.To == running {
 			_ = os.Remove(filepath.Join(dir, pendingFile))
 		}
@@ -542,24 +610,47 @@ func restoreStateDB(stateDir string, since time.Time) error {
 
 // RecoverUpdate runs the crash guard at the very start of the Worker, before
 // any module, migration or setting can fail: a new release that cannot start
-// is rolled back here. It restarts the process when it restored the previous
-// binary, and returns the rolled-back record to report otherwise.
-func RecoverUpdate(log *slog.Logger, stateDir string) *pendingRecord {
+// is rolled back here. When it restored the previous binary it calls release
+// (which must free everything a new Worker process needs, such as the state's
+// lifecycle lock) and hands over to the restored binary (restartNow), never
+// returning. When ctx ended meanwhile (Ctrl+C or a service stop during the
+// restore), it does not start the restored binary and returns an error that
+// wraps ctx.Err() instead: the caller stops through its normal path (a
+// Windows service then reports SERVICE_STOPPED), and the restored binary,
+// already in place, runs on the next start. Otherwise it returns the
+// rolled-back record to report, and the start it recorded for an uncommitted
+// update (0: none), which a clean stop gives back (cleanStop).
+func RecoverUpdate(ctx context.Context, log *slog.Logger, stateDir string, release func()) (rolled *pendingRecord, started int64, err error) {
 	if stateDir == "" {
-		return nil
+		return nil, 0, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return nil
+		return nil, 0, nil
 	}
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
-	rolled, restart := guardOnStart(log, stateDir, exe, version.Version, time.Now())
-	if restart {
+	return recoverUpdate(ctx, log, stateDir, exe, time.Now(), release, restartNow)
+}
+
+func recoverUpdate(ctx context.Context, log *slog.Logger, stateDir, exe string, now time.Time, release func(),
+	restart func(*slog.Logger, string)) (*pendingRecord, int64, error) {
+	rolled, again, started := guardOnStart(log, stateDir, exe, version.Version, now)
+	if again {
 		// A rollback happens before any module runs: hand over to the
 		// restored binary at once, never continue in the rejected one.
-		restartNow(log, exe)
+		if release != nil {
+			release()
+		}
+		if err := ctx.Err(); err != nil {
+			log.Info("stop requested during the rollback; the restored binary runs on the next start", "exe", exe)
+			return nil, 0, fmt.Errorf("agent: stopped during the update rollback: %w", err)
+		}
+		restart(log, exe)
+		// restart does not return in production; never run on in the
+		// rejected binary if it does.
+		return nil, 0, errors.New("agent: the restart with the restored binary returned")
 	}
-	return rolled
+	return rolled, started, nil
 }

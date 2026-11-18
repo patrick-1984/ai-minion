@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -73,18 +72,39 @@ Every setting has a flag, an environment variable (MINION_ plus the upper-case
 name, for example MINION_TMUX_SOCKET) and a key in the config file in the
 state directory; a flag wins over the environment, which wins over the file.
 Sessions are shared only when you say so: --share-existing all|none|later.`,
-		Args: cobra.NoArgs,
+		Args: noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runWorkerRun(cmd, deps)
 		},
 	}
 	addSettingFlags(cmd, config.Default, config.ScopeWorker)
+	addJoinFlag(cmd, config.Default)
 	return cmd
 }
 
 // runWorkerRun resolves the settings, starts the Worker runtime and runs it
 // until the context ends or a signal arrives.
 func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
+	lookupEnv := deps.lookupEnv
+	if lookupEnv == nil {
+		lookupEnv = os.LookupEnv
+	}
+	join, err := expandJoinToken(cmd, config.Default, lookupEnv)
+	if err != nil {
+		return err
+	}
+	if join.Applied {
+		if join.Warning != "" {
+			w := deps.stderr
+			if w == nil {
+				w = cmd.ErrOrStderr()
+			}
+			_, _ = fmt.Fprintln(w, join.Warning)
+		}
+		// The invitation key came from the token: the enrollment hook must
+		// not warn about a literal --invite-key that the user never typed.
+		deps.inviteArgvWarned = true
+	}
 	res := &config.Resolver{
 		Role:      config.ScopeWorker,
 		Flags:     changedFlags{cmd: cmd, reg: config.Default},
@@ -96,6 +116,9 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 			return err
 		}
 		res.File = file
+		if err := joinFileConflict(cmd, config.Default, file); err != nil {
+			return err
+		}
 	}
 
 	stderr := deps.stderr
@@ -144,29 +167,9 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	return nil
 }
 
-// onlyCanceled reports whether err is nothing but a clean cancellation (a
-// signal that arrived while the Worker was starting). A joined error that also
-// carries an independent failure, such as a module that failed to stop during
-// the rollback, is not clean and must be reported.
-func onlyCanceled(err error) bool {
-	switch e := err.(type) {
-	case nil:
-		return true
-	case interface{ Unwrap() []error }:
-		for _, c := range e.Unwrap() {
-			if !onlyCanceled(c) {
-				return false
-			}
-		}
-		return true
-	case interface{ Unwrap() error }:
-		if next := e.Unwrap(); next != nil {
-			return onlyCanceled(next)
-		}
-		return false
-	}
-	return err == context.Canceled
-}
+// onlyCanceled reports whether err is nothing but a clean cancellation
+// (agent.OnlyCanceled).
+func onlyCanceled(err error) bool { return agent.OnlyCanceled(err) }
 
 // addSettingFlags adds one flag for every setting that role resolves and that
 // has a flag, so that a setting declared by any story appears on the command
@@ -176,7 +179,8 @@ func onlyCanceled(err error) bool {
 // means true.
 func addSettingFlags(cmd *cobra.Command, reg *config.Registry, role config.Scope) {
 	for _, s := range reg.ForScope(role) {
-		if !s.HasFlag() || s.Key == config.KeyVerbose || cmd.Flags().Lookup(s.FlagName()) != nil {
+		// --join is added only to the commands that expand it (addJoinFlag).
+		if !s.HasFlag() || s.Key == config.KeyVerbose || s.Key == config.KeyJoin || cmd.Flags().Lookup(s.FlagName()) != nil {
 			continue
 		}
 		help := s.Help

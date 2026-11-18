@@ -3,17 +3,16 @@
 package agent
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
 )
-
-// waitPIDEnv names the process a restarted Worker waits for (foreground).
-const waitPIDEnv = "MINION_UPDATE_WAIT_PID"
 
 // underServiceManager reports whether the Windows service control manager runs
 // this process.
@@ -40,21 +39,77 @@ func restartProcess(log *slog.Logger, exe string) {
 		return
 	}
 	log.Info("restarting the Worker", "path", "detached", "how", "no running runtime; start the new binary and exit", "exe", exe)
-	restartNow(log, exe)
+	restartDetached(log, exe)
 }
 
-// restartNow starts the binary with the same arguments and console and exits:
-// the start-up rollback, where nothing runs yet that could stop cleanly. The
-// new process waits for this one to exit (waitForParent).
+// restartNow hands over to the binary at exe: the start-up rollback
+// (RecoverUpdate), where nothing runs yet that could stop cleanly. A service
+// exits with the restart code. In a console the binary runs with the same
+// arguments in this console and this process waits for it, then exits with
+// its exit code: the shell gets its prompt back only when the Worker really
+// ended, and Ctrl+C reaches the Worker that runs (v0.12.0). Starting it
+// detached instead left a Worker running behind the prompt that held the
+// state lock. The caller has released the lifecycle lock and the enrollment
+// lock; no module runs yet, so nothing else this process holds blocks the new
+// Worker, and the new one must not wait for this one (waitForParent).
 func restartNow(log *slog.Logger, exe string) {
+	if underServiceManager() {
+		os.Exit(exitRestart)
+	}
+	log.Info("restarting the Worker", "path", "console", "how", "run the restored binary in this console and wait for it", "exe", exe)
+	os.Exit(runInConsole(log, exe))
+}
+
+// runInConsole runs exe with this process's arguments, console and
+// environment (without waitPIDEnv) and returns its exit code. This process
+// consumes Ctrl+C while it waits: the console delivers it to the child as
+// well, which stops; signal.Ignore would not stop Windows' default handler
+// from ending this process.
+func runInConsole(log *slog.Logger, exe string) int {
+	sig := make(chan os.Signal, 4)
+	signal.Notify(sig, os.Interrupt)
+	// A Ctrl+C that arrived before the child runs reached only this process
+	// (the caller checks its context just before): do not start the child.
+	select {
+	case <-sig:
+		log.Info("stop requested before the restored binary started; it runs on the next start", "exe", exe)
+		return 0
+	default:
+	}
+	go func() {
+		for range sig {
+		}
+	}()
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = consoleChildEnv(os.Environ())
+	err := cmd.Start()
+	if err == nil {
+		err = cmd.Wait()
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	if err != nil {
+		log.Error("cannot restart the Worker with the restored binary; start it again by hand", "error", err.Error())
+		return 1
+	}
+	return 0
+}
+
+// restartDetached starts the binary with the same arguments and console and
+// exits, the way a restart worked before v0.9.3. It is left for the cases in
+// which this process may still hold exclusive resources that only its exit
+// releases (a stop that did not finish): the new process waits for this one
+// to exit before it starts its modules (waitForParent).
+func restartDetached(log *slog.Logger, exe string) {
 	if underServiceManager() {
 		os.Exit(exitRestart)
 	}
 	cmd := exec.Command(exe, os.Args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	// The new process waits for this one to exit before it starts its
-	// modules: the local control pipe is exclusive (waitForParent).
-	cmd.Env = append(os.Environ(), waitPIDEnv+"="+strconv.Itoa(os.Getpid()))
+	cmd.Env = append(consoleChildEnv(os.Environ()), waitPIDEnv+"="+strconv.Itoa(os.Getpid()))
 	log.Debug("starting the new Worker binary detached, with the same console", "exe", exe, "args", len(os.Args)-1)
 	if err := cmd.Start(); err != nil {
 		log.Error("cannot restart the Worker with the new binary; start it again by hand", "error", err.Error())

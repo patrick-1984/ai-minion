@@ -116,6 +116,21 @@ The case that matters is a proxy that ends TLS with a valid certificate (yours, 
 | The CLI and MCP with an API key | **not protected** without a TLS key pin. With `hub_tls_pin` read on the Hub host, a TLS endpoint with another key is refused ([API keys and MCP](guides/api-keys-and-mcp.md#use-a-key)). |
 | The Hub side: which Workers exist and are approved | **not protected**: a proxy that holds an administrator's web session can enroll and approve Workers of its own, or misuse the genuine Hub. |
 
+### Pairing requests
+
+Since 0.12.0 an administrator can admit a waiting Worker from **Pairing requests** instead of typing its code ([pairing](guides/pairing.md#admit-a-waiting-worker-pairing-requests)). The pattern is NetBird's peer approval combined with the fingerprint comparison of SSH host keys and Signal safety numbers; no new cryptography: the Hub answers with `pair.admit` instead of CPace and signs the handshake transcript with its certified operational key as in every mode, and the Worker signs it with the key the request showed.
+
+| Admitted Worker | What is protected |
+| --- | --- |
+| The administrator compared the Worker fingerprint **and** the Worker's console showed this Hub's words | **safe**: the Hub enrolls exactly the Worker key it showed (another key fails the Worker's signature), and the Worker pins exactly the Hub key it showed. |
+| The Worker has `hub_fingerprint` | **safe** on the Worker side as with a code: another Hub is refused before anything. |
+| Nobody compared the words on the Worker side, no `hub_fingerprint`, a trusted TLS certificate | **as safe as that certificate** (the WebPKI trust NetBird's peers place in their management server): whoever holds a valid certificate for the Hub's host name, including a TLS-terminating proxy or another server that shares a wildcard certificate's key, can admit the Worker to itself. The Worker's status shows the Hub check `not verified`; `minion worker verify-hub` detects it later. `hub_fingerprint` is the strong gate. |
+| No `hub_fingerprint`, and the upgrade was redirected, went through an HTTP proxy, used plain `ws://`/`http://`, or the certificate is not trusted for the host name | not offered: the Worker pairs only with its code. Only the TLS connection to the configured host itself that carried the upgrade counts. |
+| A later connection with the same code presents another Hub key than the box showed | refused before the code is used; the Worker shows a new code with the new words (and logs a warning). |
+| The administrator did not compare the Worker words | **not protected**: another machine waiting at the same moment could be admitted. A request always names the Worker key and the Hub key of its handshake, and the admission is refused when either changed after the list was read, or when the Hub's master key was rotated since. |
+
+A Worker that comes back to a pairing the Hub already committed (its answer was lost) is never listed: it completes with its owner's code. An admission never enrolls a key the Hub already knows. Only an administrator, or an administrator's key whose scope reaches the whole Hub, sees and admits requests.
+
 More limits, stated plainly:
 
 - **A correct Hub fingerprint does not prove which account claimed the Worker.** The paired box shows the **Owner** first; that line is the check ("Not your account? Run: minion worker reset").

@@ -118,6 +118,15 @@ another user it needs the sharing choice up front: run "minion worker setup"
 as that user, or give --share-existing all|none|later. In a terminal, a
 Worker that is about to pair still asks for the Hub fingerprint.
 
+The quickest way to join a Hub is the join token from the Hub's "Add worker"
+page: --join mnj1-... (or MINION_JOIN, or MINION_JOIN_FILE with the path of a
+file that holds it). It holds the Hub URL, the full Hub fingerprint and a
+one-time invitation key, and sets --server, --hub-fingerprint and
+--invite-key: the Worker connects only to the Hub with that fingerprint and
+enrolls with the key, which works once and expires. Giving one of these three
+with a different value is an error. The Hub address and fingerprint are saved
+for the service; the token itself is never saved or printed.
+
 "worker up" first runs the pre-start hooks (for example invitation
 enrollment) and reports their result. A failing hook stops the command with an
 error before any service is installed or changed.
@@ -131,7 +140,7 @@ MINION_SHARE_EXISTING (all, none or later; required, since a container has no
 terminal to ask on). The Worker identity and its
 database live under MINION_STATE_DIR; use /data and mount a volume there so
 that the identity survives a restart of the container.`,
-		Args: cobra.NoArgs,
+		Args: noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runWorkerUp(cmd, deps, foreground, asUser)
 		},
@@ -139,11 +148,30 @@ that the identity survives a restart of the container.`,
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run the Worker in the foreground instead of installing a service")
 	cmd.Flags().StringVar(&asUser, "as-user", "", "Install the service for this Unix user (needs root; default: the user that ran sudo)")
 	addSettingFlags(cmd, deps.registry(), config.ScopeWorker)
+	addJoinFlag(cmd, deps.registry())
 	return cmd
 }
 
 func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser string) error {
 	out := cmd.OutOrStdout()
+	// A join token becomes --server, --hub-fingerprint and --invite-key before
+	// anything else looks at the settings (worker_join_token.go). Its
+	// process-list warning comes with the other secret warnings below.
+	upEnv := deps.run.lookupEnv
+	if upEnv == nil {
+		upEnv = os.LookupEnv
+	}
+	join, err := expandJoinToken(cmd, deps.registry(), upEnv)
+	if err != nil {
+		return err
+	}
+	if join.Warning != "" {
+		w := deps.run.stderr
+		if w == nil {
+			w = cmd.ErrOrStderr()
+		}
+		_, _ = fmt.Fprintln(w, join.Warning)
+	}
 	det := service.Detect(deps.detectEnv)
 	if foreground || det.Manager == service.ManagerNone {
 		if !foreground {
@@ -207,6 +235,11 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 			return err
 		}
 		res.File = file
+		// A Hub pin saved in the config file beforehand is never replaced
+		// by a join token: checked before the wizard or anything else.
+		if err := joinFileConflict(cmd, reg, file); err != nil {
+			return err
+		}
 	}
 	offerPsmux(cmd, res, defaultPsmuxOfferDeps())
 	return sd.firstRun(cmd, res, nil, "")
@@ -275,6 +308,13 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		return err
 	}
 	defer st.close()
+	// The target's saved Hub pin wins over a join token: a different one
+	// stops here, before the wizard, the hooks or any write.
+	if saved, err := st.load(); err != nil {
+		return err
+	} else if err := joinFileConflict(cmd, reg, saved); err != nil {
+		return err
+	}
 
 	// A Worker that was never set up gets the wizard (on a terminal) or a
 	// clear refusal, before anything is installed or changed. The wizard saves
@@ -444,7 +484,17 @@ func withTargetDefaults(lookupEnv func(string) (string, bool), reg *config.Regis
 // this Worker is already enrolled and the key will be used.
 func secretWarnings(reg *config.Registry, res *config.Resolver) (warnings []string, inviteWarned bool) {
 	for _, s := range reg.ForScope(config.ScopeWorker) {
-		if !s.Secret || !s.HasFlag() {
+		if !s.Secret || !s.HasFlag() || s.Key == config.KeyJoin {
+			// The join token was read once, by expandJoinToken, which
+			// returned its warning: reading MINION_JOIN_FILE again could
+			// block on a pipe.
+			continue
+		}
+		if s.Key == config.KeyInviteKey && joinApplied(res) {
+			// The key came from a join token (--join warns for itself, and
+			// MINION_JOIN puts nothing into argv): no warning, and none from
+			// the enrollment hook either.
+			inviteWarned = true
 			continue
 		}
 		if s.Key == config.KeyInviteKey {
@@ -464,6 +514,13 @@ func secretWarnings(reg *config.Registry, res *config.Resolver) (warnings []stri
 		warnings = append(warnings, r.Warning)
 	}
 	return warnings, inviteWarned
+}
+
+// joinApplied reports whether the flags of res are those of a command whose
+// join token was expanded.
+func joinApplied(res *config.Resolver) bool {
+	cf, ok := res.Flags.(changedFlags)
+	return ok && cf.cmd != nil && cf.cmd.Annotations[joinAppliedAnnotation] != ""
 }
 
 // runUpHooks runs the registered pre-start hooks once and reports the result
@@ -528,7 +585,7 @@ func newWorkerServiceRunCmd(deps workerRunDeps, scm service.SCM) *cobra.Command 
 		Use:    service.WindowsServiceCommand,
 		Short:  "Run the Worker under the Windows service control manager",
 		Hidden: true,
-		Args:   cobra.NoArgs,
+		Args:   noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			if ctx == nil {

@@ -29,7 +29,9 @@ EOF
 # 1. Put bootstrap.sh next to this file. It is a file of the Minion release:
 #    https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh
 # 2. Save the key as the only line of invite_key.txt next to this file.
-# 3. Run: docker compose up -d
+# 3. Run: MINION_SHARE_EXISTING=later docker compose up -d
+#    (the first start needs the sharing choice: all, none or later; later shares nothing
+#    until you choose in the Hub. Leave it out on later starts: it replaces the saved choice.)
 # 4. Approve the new Worker in the Hub (Workers page): it starts pending and gets no operations until you do.
 # The image is built from Alpine with tmux (the Worker drives its sessions through tmux);
 # bootstrap.sh downloads and verifies the minion binary on the first start and keeps it in
@@ -66,10 +68,11 @@ services:
     entrypoint: [&#34;/bin/sh&#34;, &#34;/bootstrap.sh&#34;]
     command: [&#34;worker&#34;, &#34;up&#34;]
     environment:
-      MINION_SERVER: &#34;https://hub.example.com&#34;
       MINION_VERSION: ${MINION_VERSION:-latest}
       MINION_CACHE_DIR: /cache
       MINION_STATE_DIR: /data
+      MINION_SHARE_EXISTING: ${MINION_SHARE_EXISTING:-}
+      MINION_SERVER: &#34;https://hub.example.com&#34;
       MINION_INVITE_KEY_FILE: /run/secrets/minion_invite_key
     volumes:
       - ./bootstrap.sh:/bootstrap.sh:ro

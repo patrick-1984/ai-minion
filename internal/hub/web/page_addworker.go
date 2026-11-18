@@ -21,14 +21,19 @@ import (
 // AddWorkerPage is what addworker.html sees as .Data.
 type AddWorkerPage struct {
 	MaxName int
+	// TTLs are the validity choices of "Add a Worker in one step".
+	TTLs []Choice
+	// AdminTTL is true when the choices go beyond one week (an admin).
+	AdminTTL bool
 	// HubWords and HubFull are the Hub fingerprint as six words and as 52
-	// characters, and JoinCommand the command that pairs a Worker with this
-	// Hub only (block M12a). All three are empty while the Hub has no root.
+	// characters, and JoinCommand the command that pairs a Worker with a code
+	// and with this Hub only (block M12a). All three are empty while the Hub
+	// has no root.
 	HubWords, HubFull, JoinCommand string
 }
 
-func addWorkerData(r *http.Request, _ OpCaller, _ pageUser) (any, error) {
-	p := AddWorkerPage{MaxName: ops.MaxWorkerNameLen}
+func addWorkerData(r *http.Request, _ OpCaller, u pageUser) (any, error) {
+	p := AddWorkerPage{MaxName: ops.MaxWorkerNameLen, TTLs: joinTTLChoices(u.Admin), AdminTTL: u.Admin}
 	if fp := currentHubFingerprint(); fp != "" {
 		p.HubWords, p.HubFull = identity.Fingerprint(fp).Words(), fp
 		p.JoinCommand = "minion worker join " + shellArg(hubURL(r)) + " --hub-fingerprint " + fp

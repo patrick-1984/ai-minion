@@ -43,6 +43,8 @@ On macOS `minion worker up` installs a launchd agent for the current user and lo
 
 Run it in the foreground instead (to try it) with `minion worker up --foreground`.
 
+Instead of the pairing code, the join command of the Hub (**Workers**, **Add worker**, **Add a Worker in one step**) sets up the Hub address, the Hub fingerprint and a one-time invitation key in one go: `minion worker up --join mnj1-... --share-existing none` ([add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step)).
+
 ## Check and change
 
 ```sh

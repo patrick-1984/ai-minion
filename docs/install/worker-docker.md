@@ -6,6 +6,10 @@ Most Workers should run natively ([Linux](worker-linux.md), [macOS](worker-macos
 
 The example [`deploy/compose/worker.yaml`](../../deploy/compose/worker.yaml) runs a Worker in a Debian container. The Hub image `ghcr.io/patrick-1984/minion` is **not** used for this: it has no tmux and no shell. The example installs `tmux` into a small Debian image and fetches the verified `minion` release with `bootstrap.sh` (see its header for the hosts it contacts).
 
+## Quick start: one docker run
+
+For a self-contained Worker (way B below), the Hub writes the command for you: **Workers**, **Add worker**, **Add a Worker in one step**. It shows a `docker run` (after downloading `bootstrap.sh`) and a Compose project, both with `MINION_JOIN=mnj1-...`: one token with the Hub address, the full Hub fingerprint and a one-time invitation key. The Worker connects only to the Hub with that fingerprint and enrolls with the key, which works once and expires. The token stays in the container's settings (`docker inspect` shows it); it is useless once the Worker has enrolled, and the Worker keeps taking the Hub address and fingerprint from it. `MINION_JOIN_FILE` reads it from a file instead. Then approve the Worker as in step 4 below. Details: [add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step).
+
 ## Two ways to use it
 
 **A. Serve the sessions of a host user (the default in the example).** The container mounts that user's tmux socket directory and runs as that user's UID and GID. It then lists and controls the tmux sessions on the host. Requirements:
