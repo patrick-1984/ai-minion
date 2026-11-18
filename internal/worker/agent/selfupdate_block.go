@@ -16,7 +16,7 @@ func updateBlock(exe, remoteUpdate string, getenv func(string) string, _ func(st
 	switch {
 	case remoteUpdate == "off":
 		return "remote updates are turned off on this Worker (remote_update=off)"
-	case getenv("MINION_IN_CONTAINER") == "1" || strings.HasPrefix(exe, "/ko-app/"):
+	case runsFromMinionImage(getenv, exe):
 		// The Minion image (ko puts the binary in /ko-app): a new image, not a
 		// new binary. A binary installed by hand inside any other container
 		// updates like on a host (v0.9.3).
@@ -45,6 +45,12 @@ func updateBlock(exe, remoteUpdate string, getenv func(string) string, _ func(st
 		}
 	}
 	return ""
+}
+
+// runsFromMinionImage reports whether the Worker runs from the Minion image:
+// ko puts the binary in /ko-app, and the image sets MINION_IN_CONTAINER=1.
+func runsFromMinionImage(getenv func(string) string, exe string) bool {
+	return getenv("MINION_IN_CONTAINER") == "1" || strings.HasPrefix(exe, "/ko-app/")
 }
 
 func fileExists(p string) bool {

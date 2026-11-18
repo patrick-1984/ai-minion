@@ -86,6 +86,12 @@ type tmuxHostFacts struct {
 	// Container is true when the Worker runs in a container: its default
 	// tmux server is the container's own, not one of the host.
 	Container bool
+	// MinionImage is true when the Worker runs from the Minion image
+	// (runsFromMinionImage). Only then is the default tmux server the
+	// image's own: a binary installed by hand in any other container (a Coder
+	// workspace, a dev container) runs where the person works, so its default
+	// tmux server is theirs, as on a host (v0.10.0).
+	MinionImage bool
 	// Visible is the setting sessions_visible: auto (decide from the facts
 	// above), yes or no (the operator says).
 	Visible string
@@ -102,7 +108,8 @@ const containerHostTmuxSocket = "/tmux/default"
 // not the container's default). auto: in a container, the documented host
 // socket mount (/tmux/default) is visible; another socket than the default one is
 // hidden, since a plain `tmux ls` of the person does not show it; the default
-// server inside a container is the container's own, hidden from the host; the
+// server of the Minion image is the image's own, hidden from the host (a
+// binary installed by hand in another container serves the person's tmux); the
 // default server of root under a service manager is hidden too: that Worker
 // is a system service and the person who uses it is not signed in as root.
 func decideTmuxHost(f tmuxHostFacts) SessionHostInfo {
@@ -129,7 +136,7 @@ func decideTmuxHost(f tmuxHostFacts) SessionHostInfo {
 		return newHostInfo(tm, false, transport.HostReasonContainerHostSocket, socket)
 	case f.DefaultSocket == "" || filepath.Clean(f.Socket) != filepath.Clean(f.DefaultSocket):
 		return newHostInfo(tm, true, transport.HostReasonPrivateSocket, socket+", "+who)
-	case f.Container:
+	case f.MinionImage:
 		return newHostInfo(tm, true, transport.HostReasonContainerTmux, socket)
 	case f.Root && f.ServiceManager:
 		return newHostInfo(tm, true, transport.HostReasonRootService, socket)

@@ -34,9 +34,19 @@ func sessionHostSpec(s Settings) (string, SessionHostInfo, error) {
 	}
 	def, _ := config.SystemPathEnv().TmuxSocket()
 	f := tmuxHostFacts{Socket: s.TmuxSocket, DefaultSocket: def, Root: os.Getuid() == 0, ServiceManager: underServiceManager(),
-		Container: wsvc.InContainer(wsvc.SystemEnv()), Visible: visible}
+		Container:   wsvc.InContainer(wsvc.SystemEnv()),
+		MinionImage: runsFromMinionImage(os.Getenv, executablePath()), Visible: visible}
 	if u, err := user.Current(); err == nil {
 		f.User = u.Username
 	}
 	return s.TmuxSocket, decideTmuxHost(f), nil
+}
+
+// executablePath is the path of the running binary, "" when unknown.
+func executablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return exe
 }
