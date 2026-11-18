@@ -36,7 +36,7 @@
       {{range .NavGroups}}<div class="nav-group">
         <h2 class="nav-label" id="nav-{{.ID}}">{{$groupIcon := ""}}{{if eq .ID "workspace"}}{{$groupIcon = "i-grp-workspace"}}{{else if eq .ID "access"}}{{$groupIcon = "i-grp-access"}}{{else if eq .ID "admin"}}{{$groupIcon = "i-grp-admin"}}{{end}}{{if $groupIcon}}{{template "icon" $groupIcon}}{{end}}{{if .Path}}<a href="{{.Path}}"{{if eq $.Path .Path}} aria-current="page"{{end}}>{{.Label}}</a>{{else}}<span>{{.Label}}</span>{{end}}</h2>
         <ul class="nav-list" aria-labelledby="nav-{{.ID}}">
-          {{range .Links}}<li><a href="{{.Path}}"{{if .Active}} aria-current="page"{{end}}>{{if .Icon}}{{template "icon" .Icon}}{{end}}<span>{{.Label}}</span></a></li>
+          {{range .Links}}<li><a href="{{.Path}}"{{if .Active}} aria-current="page"{{end}}>{{if eq .Path "/admin/identity"}}{{template "icon" "i-fingerprint"}}{{else if eq .Path "/admin/updates"}}{{template "icon" "i-download"}}{{else if eq .Path "/access/control"}}{{template "icon" "i-control"}}{{else if eq .Path "/admin/diagnostics"}}{{template "icon" "i-diagnostics"}}{{else if .Icon}}{{template "icon" .Icon}}{{end}}<span>{{.Label}}</span></a></li>
           {{end}}
         </ul>
       </div>
