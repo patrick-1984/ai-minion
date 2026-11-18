@@ -66,14 +66,25 @@ func expandJoinToken(cmd *cobra.Command, reg *config.Registry, lookupEnv func(st
 	// Flags and environment only: the token is never read from the config
 	// file, and the values it is compared with are this run's explicit ones.
 	res := &config.Resolver{Registry: reg, Role: config.ScopeWorker, Flags: changedFlags{cmd: cmd, reg: reg}, LookupEnv: lookupEnv}
+	// A token pasted where the path of a file belongs: the read error would
+	// name the "path", which is the secret.
+	if v, ok := lookupEnv(js.FileEnvName()); ok && identity.LooksLikeJoinToken(v) {
+		return joinExpansion{}, fmt.Errorf("%s holds a join token, but it takes the path of a file that holds one; "+
+			"put the token in %s, or in a private file and set %s to that file", js.FileEnvName(), js.EnvName(), js.FileEnvName())
+	}
 	r, err := res.Resolve(config.KeyJoin)
 	if err != nil {
 		return joinExpansion{}, err
 	}
-	if strings.TrimSpace(r.Value) == "" {
+	if r.Source == config.SourceDefault {
 		return joinExpansion{}, nil
 	}
 	from := sourceName(js, r)
+	if strings.TrimSpace(r.Value) == "" {
+		// Given, but blank: a quoted empty --join or a file of white space
+		// is a mistake, never "no token".
+		return joinExpansion{}, fmt.Errorf("%s: malformed join token: it is empty; copy the whole token from the Hub's Add worker page", from)
+	}
 	tok, err := identity.ParseJoinToken(r.Value)
 	if err != nil {
 		return joinExpansion{}, fmt.Errorf("%s: %w; copy the whole token from the Hub's Add worker page", from, err)
@@ -137,8 +148,13 @@ func joinServerConflict(res *config.Resolver, from string, tok identity.JoinToke
 	if err != nil {
 		return err
 	}
-	if r.Source == config.SourceDefault || strings.TrimSpace(r.Value) == "" {
+	if r.Source == config.SourceDefault {
 		return nil
+	}
+	if strings.TrimSpace(r.Value) == "" {
+		// An explicitly empty --server selects Solo: not a Hub at all.
+		return fmt.Errorf("%s names the Hub %s, but %s is empty (no Hub, Solo); give only one of them",
+			from, safeURL(tok.HubURL), sourceName(r.Setting, r))
 	}
 	given, err := config.ValidateServerURL(r.Value)
 	if err != nil {
@@ -148,7 +164,71 @@ func joinServerConflict(res *config.Resolver, from string, tok identity.JoinToke
 		return nil
 	}
 	return fmt.Errorf("%s names the Hub %s, but %s names %s; give only one of them",
-		from, tok.HubURL, sourceName(r.Setting, r), given)
+		from, safeURL(tok.HubURL), sourceName(r.Setting, r), safeURL(given))
+}
+
+// safeURL is a Hub URL for a message: scheme, host and path, without a user
+// name, password, query or fragment, which may carry a credential.
+func safeURL(v string) string {
+	u, err := url.Parse(strings.TrimSpace(v))
+	if err != nil || u.Host == "" {
+		return "(an address that is not a valid URL)"
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+}
+
+// joinFileConflict compares the Hub of an expanded join token (now the flags
+// of cmd) with the Hub address and fingerprint saved in the Worker's config
+// file. A fingerprint provisioned there beforehand is a pin the token must
+// not replace: a different one is an error, before anything dials or writes.
+// A different saved address is an error too. file may be nil.
+func joinFileConflict(cmd *cobra.Command, reg *config.Registry, file config.FileSource) error {
+	if cmd.Annotations[joinAppliedAnnotation] == "" || file == nil {
+		return nil
+	}
+	flag := func(key string) string {
+		s, _ := reg.Lookup(key)
+		if f := cmd.Flags().Lookup(s.FlagName()); f != nil {
+			return f.Value.String()
+		}
+		return ""
+	}
+	const from = "the join token (--join, MINION_JOIN or MINION_JOIN_FILE)"
+	fix := "; to move this Worker to the Hub of the token, run `minion worker config unset server hub_fingerprint` first"
+	if v, ok, err := file.Lookup(config.KeyHubFingerprint); err != nil {
+		return fmt.Errorf("setting %q (%s): %w", config.KeyHubFingerprint, config.SourceFile, err)
+	} else if ok && strings.TrimSpace(v) != "" {
+		m, err := agent.ParseHubExpectation(v)
+		if err != nil {
+			return fmt.Errorf("the config file: %w", err)
+		}
+		tokFp, err := identity.ParseFingerprint(flag(config.KeyHubFingerprint))
+		if err != nil || !m.MatchesFingerprint(tokFp) {
+			return fmt.Errorf("%s names the Hub fingerprint %s, but hub_fingerprint in the config file names %s; nothing was sent%s",
+				from, tokFp.Words(), m.Words(), fix)
+		}
+	}
+	if v, ok, err := file.Lookup(config.KeyServer); err != nil {
+		return fmt.Errorf("setting %q (%s): %w", config.KeyServer, config.SourceFile, err)
+	} else if ok && strings.TrimSpace(v) != "" && !sameHubURL(v, flag(config.KeyServer)) {
+		return fmt.Errorf("%s names the Hub %s, but server in the config file names %s; nothing was sent%s",
+			from, safeURL(flag(config.KeyServer)), safeURL(v), fix)
+	}
+	return nil
+}
+
+// noArgsRedacted is cobra.NoArgs that never repeats an argument that looks
+// like a secret (a join token or an invitation key pasted without its flag).
+func noArgsRedacted(cmd *cobra.Command, args []string) error {
+	for _, a := range args {
+		if identity.LooksLikeJoinToken(a) {
+			return fmt.Errorf("%q takes no arguments; a join token is given as --join <token> (or MINION_JOIN)", cmd.CommandPath())
+		}
+		if strings.HasPrefix(strings.TrimSpace(a), config.InviteKeyPrefix) {
+			return fmt.Errorf("%q takes no arguments; an invitation key is given as --invite-key <file>", cmd.CommandPath())
+		}
+	}
+	return cobra.NoArgs(cmd, args)
 }
 
 // sameHubURL compares two Hub URLs: scheme and host without regard to letter

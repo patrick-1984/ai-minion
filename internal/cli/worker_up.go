@@ -140,7 +140,7 @@ MINION_SHARE_EXISTING (all, none or later; required, since a container has no
 terminal to ask on). The Worker identity and its
 database live under MINION_STATE_DIR; use /data and mount a volume there so
 that the identity survives a restart of the container.`,
-		Args: cobra.NoArgs,
+		Args: noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runWorkerUp(cmd, deps, foreground, asUser)
 		},
@@ -161,8 +161,16 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 	if upEnv == nil {
 		upEnv = os.LookupEnv
 	}
-	if _, err := expandJoinToken(cmd, deps.registry(), upEnv); err != nil {
+	join, err := expandJoinToken(cmd, deps.registry(), upEnv)
+	if err != nil {
 		return err
+	}
+	if join.Warning != "" {
+		w := deps.run.stderr
+		if w == nil {
+			w = cmd.ErrOrStderr()
+		}
+		_, _ = fmt.Fprintln(w, join.Warning)
 	}
 	det := service.Detect(deps.detectEnv)
 	if foreground || det.Manager == service.ManagerNone {
@@ -227,6 +235,11 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 			return err
 		}
 		res.File = file
+		// A Hub pin saved in the config file beforehand is never replaced
+		// by a join token: checked before the wizard or anything else.
+		if err := joinFileConflict(cmd, reg, file); err != nil {
+			return err
+		}
 	}
 	offerPsmux(cmd, res, defaultPsmuxOfferDeps())
 	return sd.firstRun(cmd, res, nil, "")
@@ -295,6 +308,13 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		return err
 	}
 	defer st.close()
+	// The target's saved Hub pin wins over a join token: a different one
+	// stops here, before the wizard, the hooks or any write.
+	if saved, err := st.load(); err != nil {
+		return err
+	} else if err := joinFileConflict(cmd, reg, saved); err != nil {
+		return err
+	}
 
 	// A Worker that was never set up gets the wizard (on a terminal) or a
 	// clear refusal, before anything is installed or changed. The wizard saves
@@ -464,7 +484,10 @@ func withTargetDefaults(lookupEnv func(string) (string, bool), reg *config.Regis
 // this Worker is already enrolled and the key will be used.
 func secretWarnings(reg *config.Registry, res *config.Resolver) (warnings []string, inviteWarned bool) {
 	for _, s := range reg.ForScope(config.ScopeWorker) {
-		if !s.Secret || !s.HasFlag() {
+		if !s.Secret || !s.HasFlag() || s.Key == config.KeyJoin {
+			// The join token was read once, by expandJoinToken, which
+			// returned its warning: reading MINION_JOIN_FILE again could
+			// block on a pipe.
 			continue
 		}
 		if s.Key == config.KeyInviteKey && joinApplied(res) {
@@ -562,7 +585,7 @@ func newWorkerServiceRunCmd(deps workerRunDeps, scm service.SCM) *cobra.Command 
 		Use:    service.WindowsServiceCommand,
 		Short:  "Run the Worker under the Windows service control manager",
 		Hidden: true,
-		Args:   cobra.NoArgs,
+		Args:   noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			if ctx == nil {

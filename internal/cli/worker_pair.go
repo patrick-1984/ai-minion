@@ -103,7 +103,7 @@ old key is kept in the state directory until the Hub confirmed, so an
 unreachable Hub is retried by the Worker service) and pairs again, after a
 confirmation unless --yes is given. A running Worker service drops its
 connection to the old Hub at once.`,
-		Args: cobra.NoArgs,
+		Args: noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runWorkerPair(cmd, deps, opt)
 		},

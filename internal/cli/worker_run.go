@@ -73,7 +73,7 @@ Every setting has a flag, an environment variable (MINION_ plus the upper-case
 name, for example MINION_TMUX_SOCKET) and a key in the config file in the
 state directory; a flag wins over the environment, which wins over the file.
 Sessions are shared only when you say so: --share-existing all|none|later.`,
-		Args: cobra.NoArgs,
+		Args: noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runWorkerRun(cmd, deps)
 		},
@@ -117,6 +117,9 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 			return err
 		}
 		res.File = file
+		if err := joinFileConflict(cmd, config.Default, file); err != nil {
+			return err
+		}
 	}
 
 	stderr := deps.stderr

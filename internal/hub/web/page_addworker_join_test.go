@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"html"
 	"net/http"
 	"net/http/httptest"
@@ -92,7 +93,7 @@ func TestAddWorkerJoinCreatesAOneTimeKeyAndShowsEverythingOnce(t *testing.T) {
 		}
 	}
 	for _, w := range []string{"-e MINION_JOIN=" + text, "-e MINION_NAME=build-1", "-e MINION_SHARE_EXISTING=later",
-		"curl -fsSLO " + bootstrapURL, "exec sh /bootstrap.sh worker up --foreground", "apk add --no-cache tmux"} {
+		"curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&", "--mount type=bind,source=", "exec sh /bootstrap.sh worker up --foreground", "apk add --no-cache tmux"} {
 		if !strings.Contains(p["join-docker"], w) {
 			t.Errorf("docker lacks %q:\n%s", w, p["join-docker"])
 		}
@@ -187,18 +188,41 @@ func TestJoinShellCommandsPassTheTokenIntact(t *testing.T) {
 	}
 	jc := joinCommands(tok, "it's-a-name")
 	bin, out := t.TempDir(), t.TempDir()
-	for _, name := range []string{"minion", "curl", "docker"} {
-		script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$OUT/" + name + "\"\n"
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+	fakes := map[string]string{
+		"minion": "printf '%s\\n' \"$@\" >> \"$OUT/minion\"\n" +
+			"[ -n \"$MINION_JOIN_FILE\" ] && cat \"$MINION_JOIN_FILE\" > \"$OUT/joinfile\" && ls -ld \"$MINION_JOIN_FILE\" | cut -c1-10 > \"$OUT/joinmode\"\nexit 0\n",
+		// curl writes the file named by -o, or fails like a failed download.
+		"curl": "printf '%s\\n' \"$@\" >> \"$OUT/curl\"\n[ -n \"$CURL_FAIL\" ] && exit 22\n" +
+			"while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then echo '#!/bin/sh' > \"$2\"; fi; shift; done\n",
+		"docker": "printf '%s\\n' \"$@\" >> \"$OUT/docker\"\n",
+		// sudo records its argv and runs the command.
+		"sudo": "printf '%s\\n' \"$@\" >> \"$OUT/sudo\"\nexec \"$@\"\n",
+	}
+	for name, body := range fakes {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, cmdText := range []string{jc.Unix, jc.Expanded, jc.Docker} {
+	run := func(cmdText string, env ...string) error {
 		cmd := exec.Command("/bin/sh", "-c", cmdText)
 		cmd.Dir = out
-		cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "OUT=" + out}
-		if b, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%s: %v\n%s", cmdText, err, b)
+		cmd.Env = append([]string{"PATH=" + bin + ":/usr/bin:/bin", "OUT=" + out, "TMPDIR=" + t.TempDir()}, env...)
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, b)
+		}
+		return nil
+	}
+	// A failed download starts no container.
+	if err := run(jc.Docker, "CURL_FAIL=1"); err == nil {
+		t.Error("the docker block succeeded although curl failed")
+	}
+	if _, err := os.Stat(filepath.Join(out, "docker")); err == nil {
+		t.Error("docker ran after a failed download")
+	}
+	for _, cmdText := range []string{jc.Unix, jc.Expanded, jc.Docker, jc.System} {
+		if err := run(cmdText); err != nil {
+			t.Fatalf("%s: %v", cmdText, err)
 		}
 	}
 	read := func(name string) []string {
@@ -212,17 +236,63 @@ func TestJoinShellCommandsPassTheTokenIntact(t *testing.T) {
 	wantUnix := []string{"worker", "up", "--name", "it's-a-name", "--join", tok.Encode()}
 	wantExp := []string{"worker", "up", "--server", "https://hub.example.com", "--hub-fingerprint", key.Fingerprint.String(),
 		"--name", "it's-a-name", "--invite-key", key.String()}
-	if strings.Join(minion, "|") != strings.Join(append(wantUnix, wantExp...), "|") {
+	wantSys := []string{"worker", "up", "--share-existing", "later", "--name", "it's-a-name"}
+	if strings.Join(minion, "|") != strings.Join(append(append(wantUnix, wantExp...), wantSys...), "|") {
 		t.Errorf("minion got %q", minion)
 	}
 	docker := strings.Join(read("docker"), "|")
-	for _, w := range []string{"MINION_JOIN=" + tok.Encode(), "MINION_NAME=it's-a-name", out + "/bootstrap.sh:/bootstrap.sh:ro", "alpine:3.22"} {
+	for _, w := range []string{"MINION_JOIN=" + tok.Encode(), "MINION_NAME=it's-a-name", "type=bind,source=" + out + "/bootstrap.sh,target=/bootstrap.sh,readonly", "alpine:3.22"} {
 		if !strings.Contains(docker, w) {
 			t.Errorf("docker lacks %q: %s", w, docker)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(out, "bootstrap.sh")); err != nil {
+		t.Errorf("bootstrap.sh was not put in place: %v", err)
+	}
+	// The sudo variant: the token reaches the Worker through a private file,
+	// never through sudo's argv.
+	if got := strings.TrimSpace(strings.Join(read("joinfile"), "\n")); got != tok.Encode() {
+		t.Errorf("the join file holds %q", got)
+	}
+	if mode := strings.Join(read("joinmode"), ""); mode != "-rw-------" {
+		t.Errorf("the join file mode is %s", mode)
+	}
+	if sudo := strings.Join(read("sudo"), "|"); strings.Contains(sudo, tok.Encode()) || !strings.HasPrefix(sudo, "env|MINION_JOIN_FILE=") {
+		t.Errorf("sudo argv = %s", sudo)
+	}
 	if jc.Windows != "minion.exe worker up --foreground --name 'it''s-a-name' --join "+tok.Encode() {
 		t.Errorf("windows = %q", jc.Windows)
+	}
+}
+
+func TestPSArgDoublesEverySingleQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":           "plain",
+		"it's":            "'it''s'",
+		"a\u2018b\u2019c": "'a\u2018\u2018b\u2019\u2019c'",
+		"x\u201ay\u201bz": "'x\u201a\u201ay\u201b\u201bz'",
+		"a b":             "'a b'",
+		"@x":              "'@x'",
+	} {
+		if got := psArg(in); got != want {
+			t.Errorf("psArg(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestContainerWorkerRunsTheHubsRelease(t *testing.T) {
+	old := hubVersion
+	t.Cleanup(func() { hubVersion = old })
+	hubVersion = func() string { return "v0.12.0-rc.1" }
+	if d := dockerRunJoin("mnj1-x", ""); !strings.Contains(d, "-e MINION_VERSION=v0.12.0-rc.1 ") {
+		t.Errorf("docker run:\n%s", d)
+	}
+	if c := joinComposeFile("mnj1-x", ""); !strings.Contains(c, "MINION_VERSION: ${MINION_VERSION:-v0.12.0-rc.1}") {
+		t.Errorf("compose:\n%s", c)
+	}
+	hubVersion = func() string { return "dev" }
+	if d := dockerRunJoin("mnj1-x", ""); !strings.Contains(d, "MINION_VERSION=latest") {
+		t.Errorf("a development Hub:\n%s", d)
 	}
 }
 

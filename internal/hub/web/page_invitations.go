@@ -519,7 +519,7 @@ func composeFile(server, fingerprint string) string {
 		env = append(env, [2]string{"MINION_HUB_FINGERPRINT", fingerprint})
 	}
 	env = append(env, [2]string{"MINION_INVITE_KEY_FILE", "/run/secrets/minion_invite_key"})
-	return composeProject(head, env, true)
+	return composeProject(head, env, true, "latest")
 }
 
 // bootstrapURL is where the Compose projects and the docker run command get
@@ -537,7 +537,9 @@ const bootstrapURL = "https://github.com/patrick-1984/ai-minion/releases/latest/
 // arguments of minion only, "worker up", never "minion worker up" (the binary
 // name twice). Nothing runs as root but the one-shot init service, which gives
 // the Worker's user the state directory, the download cache and the key file.
-func composeProject(head []string, env [][2]string, inviteFile bool) string {
+//
+// minionVersion is the default of MINION_VERSION: a release or a channel.
+func composeProject(head []string, env [][2]string, inviteFile bool, minionVersion string) string {
 	uid := fmt.Sprintf("%d:%d", workerContainerUID, workerContainerUID)
 	var c strings.Builder
 	for _, l := range head {
@@ -572,7 +574,7 @@ func composeProject(head []string, env [][2]string, inviteFile bool) string {
 	c.WriteString("    entrypoint: [\"/bin/sh\", \"/bootstrap.sh\"]\n")
 	c.WriteString("    command: [\"worker\", \"up\"]\n")
 	c.WriteString("    environment:\n")
-	c.WriteString("      MINION_VERSION: ${MINION_VERSION:-latest}\n")
+	c.WriteString("      MINION_VERSION: ${MINION_VERSION:-" + minionVersion + "}\n")
 	c.WriteString("      MINION_CACHE_DIR: /cache\n")
 	c.WriteString("      MINION_STATE_DIR: /data\n")
 	c.WriteString("      MINION_SHARE_EXISTING: ${MINION_SHARE_EXISTING:-}\n")

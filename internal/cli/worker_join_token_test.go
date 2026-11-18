@@ -301,3 +301,117 @@ func TestSameHubURL(t *testing.T) {
 		}
 	}
 }
+
+// Review finding 1: a Hub pin provisioned in the config file beforehand is
+// never replaced by a join token; a different saved address stops it too.
+func TestWorkerUpJoinRespectsTheSavedHubPin(t *testing.T) {
+	text, tok := testJoinToken(t, "https://hub.example")
+	other, _ := identity.FingerprintOf(bytes.Repeat([]byte{7}, 32))
+	cases := []struct {
+		name  string
+		saved map[string]string
+		want  string
+	}{
+		{"other fingerprint", map[string]string{config.KeyHubFingerprint: other.String()}, "hub_fingerprint in the config file names " + other.Words()},
+		{"other fingerprint as words", map[string]string{config.KeyHubFingerprint: other.Words()}, "hub_fingerprint in the config file"},
+		{"other server", map[string]string{config.KeyServer: "https://evil.example/?token=s3cret"}, "server in the config file names https://evil.example/"},
+	}
+	for _, c := range cases {
+		for _, foreground := range []bool{false, true} {
+			f := newUpFixture(t, false)
+			writeConfigFile(t, f.stateDir(), c.saved)
+			before, _ := os.ReadFile(filepath.Join(f.stateDir(), "config.json"))
+			f.hook("enroll", func(agent.Settings) error { t.Errorf("%s: the hook ran", c.name); return nil })
+			args := []string{"--share-existing", "later", "--join", text}
+			if foreground {
+				// The foreground Worker reads the state directory of this process.
+				f.env["MINION_STATE_DIR"] = f.stateDir()
+				args = append(args, "--foreground")
+			}
+			_, err := f.run(args...)
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "nothing was sent") {
+				t.Errorf("%s (foreground %v): err = %v", c.name, foreground, err)
+				continue
+			}
+			if strings.Contains(err.Error(), text) || strings.Contains(err.Error(), "s3cret") {
+				t.Errorf("%s: the error leaks: %v", c.name, err)
+			}
+			if calls := f.runCalls(); len(calls) != 0 {
+				t.Errorf("%s: service commands ran: %v", c.name, calls)
+			}
+			after, _ := os.ReadFile(filepath.Join(f.stateDir(), "config.json"))
+			if !bytes.Equal(before, after) {
+				t.Errorf("%s: the config file changed:\n%s", c.name, after)
+			}
+		}
+	}
+	// The same Hub saved before (words, trailing slash) is fine.
+	f := newUpFixture(t, false)
+	writeConfigFile(t, f.stateDir(), map[string]string{config.KeyHubFingerprint: tok.Fingerprint().Words(), config.KeyServer: "https://HUB.example/"})
+	var seen joinSeen
+	joinHook(t, f, &seen)
+	if _, err := f.run("--share-existing", "later", "--join", text); err != nil || !seen.invite.Set {
+		t.Fatalf("worker up with the same saved Hub: %v", err)
+	}
+}
+
+// Review findings 2 and 3: an explicitly empty --server (Solo) conflicts
+// with a token, and a blank token that was given is an error, not "none".
+func TestWorkerUpJoinBlankValuesAreNotAbsent(t *testing.T) {
+	text, _ := testJoinToken(t, "https://hub.example")
+	blankFile := filepath.Join(t.TempDir(), "join")
+	if err := os.WriteFile(blankFile, []byte("   \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		env  map[string]string
+		args []string
+		want string
+	}{
+		{"empty server", map[string]string{"MINION_JOIN": text}, []string{"--server", ""}, "--server is empty (no Hub, Solo)"},
+		{"empty --join", nil, []string{"--join", ""}, "--join: malformed join token: it is empty"},
+		{"blank --join", nil, []string{"--join", "  "}, "malformed join token: it is empty"},
+		{"blank file", map[string]string{"MINION_JOIN_FILE": blankFile}, nil, "MINION_JOIN (or MINION_JOIN_FILE): malformed join token: it is empty"},
+	}
+	for _, c := range cases {
+		f := newUpFixture(t, false)
+		for k, v := range c.env {
+			f.env[k] = v
+		}
+		f.hook("enroll", func(agent.Settings) error { t.Errorf("%s: the hook ran", c.name); return nil })
+		_, err := f.run(append([]string{"--share-existing", "later"}, c.args...)...)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v", c.name, err)
+		}
+	}
+}
+
+// Review finding 4: no error repeats a token pasted in the wrong place, and
+// URLs in conflict messages lose their query.
+func TestJoinErrorsNeverEchoAPastedToken(t *testing.T) {
+	text, _ := testJoinToken(t, "https://hub.example")
+	f := newUpFixture(t, false)
+	f.env["MINION_JOIN_FILE"] = text
+	_, err := f.run("--share-existing", "later")
+	if err == nil || strings.Contains(err.Error(), text) || !strings.Contains(err.Error(), "takes the path of a file") {
+		t.Errorf("MINION_JOIN_FILE=<token>: %v", err)
+	}
+	_, err = newUpFixture(t, false).run(text)
+	if err == nil || strings.Contains(err.Error(), text) || !strings.Contains(err.Error(), "--join <token>") {
+		t.Errorf("worker up <token>: %v", err)
+	}
+	for _, path := range [][]string{{"worker", "run", text}, {"worker", "pair", text}, {"worker", "up", "mnk_abc.def"}} {
+		var out, errOut bytes.Buffer
+		Execute(context.Background(), path, &out, &errOut)
+		if strings.Contains(out.String()+errOut.String(), path[2]) {
+			t.Errorf("%v echoed the secret: %s", path[:2], errOut.String())
+		}
+	}
+	f = newUpFixture(t, false)
+	f.env["MINION_SERVER"] = "https://other.example/x?token=s3cret#frag"
+	_, err = f.run("--share-existing", "later", "--join", text)
+	if err == nil || strings.Contains(err.Error(), "s3cret") || !strings.Contains(err.Error(), "https://other.example/x") {
+		t.Errorf("server conflict: %v", err)
+	}
+}
