@@ -18,6 +18,42 @@
 <section class="settings-list" id="{{.ID}}" aria-labelledby="{{.ID}}-h">
   <h2 class="settings-section" id="{{.ID}}-h">{{.Name}}</h2>
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+{{if .Batch}}
+  <form class="settings-batch" method="post" hx-post="/admin/settings-section" hx-target="#result-{{.ID}}" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+  <input type="hidden" name="section" value="{{.Name}}">
+  <p class="muted">These settings are saved together: the Hub checks the whole section and applies it at once, without a restart.</p>
+  <ul>
+{{range .Rows}}
+  <li data-filter="{{.Key}} {{.Env}} {{.EnvFile}} {{.Help}}">
+  <div class="srow">
+    {{template "settings_key" .}}
+    <div class="s-value">
+      {{if .Locked}}<input type="{{if .Secret}}password{{else}}text{{end}}" id="v-{{.Key}}" value="{{.Value}}" disabled aria-describedby="why-{{.Key}} m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
+      {{else if .Choices}}<select id="v-{{.Key}}" name="v.{{.Key}}" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
+        {{$v := .Value}}{{range .Choices}}<option value="{{.}}"{{if eq . $v}} selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+      {{else if .Secret}}<input type="password" id="v-{{.Key}}" name="v.{{.Key}}" autocomplete="new-password" placeholder="{{.SecretState}}" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">
+      <input type="hidden" name="s.{{.Key}}" value="1">
+      {{else}}<input type="text" id="v-{{.Key}}" name="v.{{.Key}}" value="{{.Value}}" autocomplete="off" spellcheck="false" aria-describedby="m-{{.Key}}{{if .Help}} d-{{.Key}}{{end}}">{{end}}
+    </div>
+    <div class="s-actions">
+      {{if .Locked}}<span id="why-{{.Key}}" class="s-locked">{{.LockedText}}</span>
+      {{else if .Secret}}<label class="s-remove"><input type="checkbox" name="r.{{.Key}}" value="1"> Remove</label>{{end}}
+    </div>
+    <div class="s-desc">
+      {{if .Help}}<p id="d-{{.Key}}" class="s-help">{{.Help}}</p>{{end}}
+      <p id="m-{{.Key}}" class="s-meta">{{if .Secret}}Secret: {{.SecretState}}. {{end}}Source: {{.Source}}. {{if .Live}}Applies without a restart.{{else}}Applies after the Hub restarts.{{end}}{{if .PendingRestart}} <strong>A changed value waits for the next restart.</strong>{{end}}</p>
+      {{if .Error}}<p class="form-error s-error" role="alert">The current value is not valid: {{.Error}}</p>{{end}}
+    </div>
+  </div>
+  </li>
+{{end}}
+  </ul>
+  <div class="s-batch-actions"><button type="submit">{{template "icon" "i-save"}}<span>Save section</span></button></div>
+  <div id="result-{{.ID}}" class="s-result" aria-live="polite"></div>
+  </form>
+{{else}}
   <ul>
 {{range .Rows}}
   <li data-filter="{{.Key}} {{.Env}} {{.EnvFile}} {{.Help}}">
@@ -54,6 +90,7 @@
   </li>
 {{end}}
   </ul>
+{{end}}
 </section>
 {{end}}
 </div>

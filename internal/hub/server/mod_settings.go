@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,6 +75,48 @@ type SettingsAuditor interface {
 	RecordSettingsEvent(ctx context.Context, e SettingsAuditEvent) error
 }
 
+// SettingsTxAuditor is the transactional form of [SettingsAuditor]: the row
+// is written in the caller's open transaction, so that a batch of changes and
+// its audit rows commit together. An auditor without it records each row
+// before its change, outside the transaction.
+type SettingsTxAuditor interface {
+	RecordSettingsEventTx(ctx context.Context, ex store.Execer, e SettingsAuditEvent) error
+}
+
+// settingsTxStore is the transactional form of [SettingsStore];
+// *store.Store implements it.
+type settingsTxStore interface {
+	Tx(ctx context.Context, fn func(tx *sql.Tx) error) error
+	PutSettingTx(ctx context.Context, ex store.Execer, key, value string, secret bool, updatedBy string) error
+	DeleteSettingTx(ctx context.Context, ex store.Execer, key string) (bool, error)
+}
+
+// SettingsValidateFunc checks a proposed configuration before a change is
+// stored: proposed resolves every Hub setting as it would be after the
+// change (environment, then the panel with the change, then the default). An
+// error refuses the whole change; its text must name keys, never values.
+type SettingsValidateFunc func(proposed *config.Resolver) error
+
+// SettingsApplyFunc applies the effective configuration after a change was
+// stored. It runs on the goroutine of the change, never on a logging path.
+// An error becomes the warning apply_failed of the change.
+type SettingsApplyFunc func(ctx context.Context, effective *config.Resolver) error
+
+type settingsHook struct {
+	prefixes []string
+	validate SettingsValidateFunc
+	apply    SettingsApplyFunc
+}
+
+func (h settingsHook) matches(key string) bool {
+	for _, p := range h.prefixes {
+		if key == p || strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // SettingsActor identifies who changes a setting, for the audit record.
 type SettingsActor struct {
 	// ID is the acting account (or API key owner). Required.
@@ -133,6 +177,22 @@ type SettingsService struct {
 	panel    *panelSource
 	resolver config.Resolver // with the panel
 	lookup   func(name string) (string, bool)
+
+	// mu serialises changes: validation, commit and apply of one change
+	// complete before the next change starts.
+	mu    sync.Mutex
+	hooks []settingsHook
+}
+
+// OnChange registers a hook for the settings whose key starts with one of
+// prefixes (an exact key is a prefix of itself). validate (may be nil) runs
+// before a change of such a key is stored, against the proposed view of all
+// settings; apply (may be nil) runs after it was stored. Hooks run in
+// registration order. Register hooks during module init.
+func (s *SettingsService) OnChange(prefixes []string, validate SettingsValidateFunc, apply SettingsApplyFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hooks = append(s.hooks, settingsHook{prefixes: slices.Clone(prefixes), validate: validate, apply: apply})
 }
 
 // NewSettingsService loads the panel values (the snapshot that non-live
@@ -247,12 +307,16 @@ func (s *SettingsService) panelHolds(key string) bool {
 	return err == nil && ok
 }
 
-// Set stores or removes the panel value of a setting. An empty value counts
-// as unset, as an empty environment variable does. A setting that the
-// environment sets is refused with a conflict whose message is
-// "set by environment variable". A secret is encrypted at rest. The change is
-// audited with the key only, before it is made; when the audit record cannot
-// be written, nothing is changed.
+// Set stores or removes panel values: one setting (Key) or a batch
+// (Changes), all or nothing. An empty value counts as unset, as an empty
+// environment variable does. A setting that the environment sets is refused
+// with a conflict whose message is "set by environment variable". A secret is
+// encrypted at rest. Before anything is stored, the validators of the hooks
+// ([SettingsService.OnChange]) see the proposed view and can refuse the
+// change. Every change is audited with the key only: in the transaction of
+// the change when the auditor supports it ([SettingsTxAuditor]), otherwise
+// before it; when an audit record cannot be written, nothing is changed.
+// After the commit the apply hooks run.
 func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops.SettingsSetArgs) (ops.WriteResult, error) {
 	if actor.ID == "" {
 		return ops.WriteResult{}, errors.New("server: settings change without an actor")
@@ -260,48 +324,153 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 	if err := args.Validate(); err != nil {
 		return ops.WriteResult{}, err
 	}
-	st, ok := s.registry.Lookup(args.Key)
-	if !ok || (st.Scope != config.ScopeHub && st.Scope != config.ScopeAny) {
-		return ops.WriteResult{}, &ops.ArgumentError{Field: "key", Reason: "unknown Hub setting"}
+	batch := len(args.Changes) > 0
+	field := func(i int, name string) string {
+		if batch {
+			return fmt.Sprintf("changes[%d].%s", i, name)
+		}
+		return name
 	}
-	if st.Key == config.KeyDataDir {
-		return ops.WriteResult{}, &ops.ArgumentError{Field: "key", Reason: "cannot be set in the panel; use MINION_DATA_DIR"}
+	type change struct {
+		st    config.Setting
+		value string
+		unset bool
 	}
-	unset := args.Unset || args.Value == ""
-	if !unset && len(st.Choices) > 0 && !slices.Contains(st.Choices, args.Value) {
-		return ops.WriteResult{}, &ops.ArgumentError{Field: "value", Reason: fmt.Sprintf("must be one of %v", st.Choices)}
+	var changes []change
+	for i, c := range args.List() {
+		st, ok := s.registry.Lookup(c.Key)
+		if !ok || (st.Scope != config.ScopeHub && st.Scope != config.ScopeAny) {
+			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "key"), Reason: "unknown Hub setting"}
+		}
+		if st.Key == config.KeyDataDir {
+			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "key"), Reason: "cannot be set in the panel; use MINION_DATA_DIR"}
+		}
+		unset := c.Unset || c.Value == ""
+		if !unset && len(st.Choices) > 0 && !slices.Contains(st.Choices, c.Value) {
+			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "value"), Reason: fmt.Sprintf("must be one of %v", st.Choices)}
+		}
+		changes = append(changes, change{st: st, value: c.Value, unset: unset})
+	}
+	eventOf := func(c change, outcome string) SettingsAuditEvent {
+		action := AuditActionSettingSet
+		if c.unset {
+			action = AuditActionSettingUnset
+		}
+		return SettingsAuditEvent{Actor: actor.ID, ActingAs: actor.ActingAs, Action: action, Target: c.st.Key, Outcome: outcome}
 	}
 
-	action := AuditActionSettingSet
-	if unset {
-		action = AuditActionSettingUnset
-	}
-	event := SettingsAuditEvent{Actor: actor.ID, ActingAs: actor.ActingAs, Action: action, Target: st.Key}
-
-	// Whether the environment sets the setting is decided from the variables,
+	// Whether the environment sets a setting is decided from the variables,
 	// not from a resolution, so that neither an invalid environment value nor
 	// an invalid stored value changes the answer.
-	if s.envSet(st) {
-		event.Outcome = AuditOutcomeRefused
-		if err := s.auditor.RecordSettingsEvent(ctx, event); err != nil {
-			return ops.WriteResult{}, fmt.Errorf("server: audit refused settings change: %w", err)
+	refused := false
+	for _, c := range changes {
+		if s.envSet(c.st) {
+			refused = true
+			if err := s.auditor.RecordSettingsEvent(ctx, eventOf(c, AuditOutcomeRefused)); err != nil {
+				return ops.WriteResult{}, fmt.Errorf("server: audit refused settings change: %w", err)
+			}
 		}
+	}
+	if refused {
 		return ops.WriteResult{}, proto.NewError(proto.CodeConflict, ReadOnlyMessage)
 	}
 
-	// The audit record is written before the change, so that no change can
-	// exist without its record, and a live setting never takes an unaudited
-	// value, not even for a moment. When the change then fails, a second
-	// record with the outcome "failed" says so.
-	event.Outcome = AuditOutcomeOK
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	keys := make([]string, len(changes))
+	for i, c := range changes {
+		keys[i] = c.st.Key
+	}
+	hooks := s.hooksFor(keys)
+	if len(hooks) > 0 {
+		overlay := map[string]*string{}
+		for _, c := range changes {
+			v := c.value
+			if c.unset {
+				v = ""
+			}
+			overlay[c.st.Key] = &v
+		}
+		proposed := s.Resolver()
+		proposed.Panel = overlayPanel{base: s.panel, over: overlay}
+		for _, h := range hooks {
+			if h.validate == nil {
+				continue
+			}
+			if err := h.validate(proposed); err != nil {
+				f := "value"
+				if batch {
+					f = "changes"
+				}
+				return ops.WriteResult{}, &ops.ArgumentError{Field: f, Reason: err.Error()}
+			}
+		}
+	}
+
+	txAud, audOK := s.auditor.(SettingsTxAuditor)
+	txStore, stOK := s.store.(settingsTxStore)
+	if audOK && stOK {
+		err := txStore.Tx(ctx, func(tx *sql.Tx) error {
+			for _, c := range changes {
+				if err := txAud.RecordSettingsEventTx(ctx, tx, eventOf(c, AuditOutcomeOK)); err != nil {
+					return fmt.Errorf("server: setting %q was not changed, its audit record failed: %w", c.st.Key, err)
+				}
+				var err error
+				if c.unset {
+					_, err = txStore.DeleteSettingTx(ctx, tx, c.st.Key)
+				} else {
+					err = txStore.PutSettingTx(ctx, tx, c.st.Key, c.value, c.st.Secret, actor.ID)
+				}
+				if err != nil {
+					return fmt.Errorf("server: store setting %q: %w", c.st.Key, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return ops.WriteResult{}, err
+		}
+	} else {
+		for _, c := range changes {
+			if err := s.storeOne(ctx, actor, c.st, c.value, c.unset, eventOf(c, AuditOutcomeOK)); err != nil {
+				return ops.WriteResult{}, err
+			}
+		}
+	}
+
+	res := ops.WriteResult{Outcome: ops.OutcomeDelivered}
+	for _, c := range changes {
+		if !s.live(c.st.Key) {
+			res.Warnings = []ops.Warning{{Code: ops.WarnRestartRequired, Message: "takes effect after the Hub restarts"}}
+			break
+		}
+	}
+	for _, h := range hooks {
+		if h.apply == nil {
+			continue
+		}
+		if err := h.apply(ctx, s.Resolver()); err != nil {
+			res.Warnings = append(res.Warnings, ops.Warning{Code: ops.WarnApplyFailed, Message: err.Error()})
+		}
+	}
+	return res, nil
+}
+
+// storeOne is the change of one setting without a transaction: the audit
+// record is written before the change, so that no change can exist without
+// its record, and a live setting never takes an unaudited value, not even for
+// a moment. When the change then fails, a second record with the outcome
+// "failed" says so.
+func (s *SettingsService) storeOne(ctx context.Context, actor SettingsActor, st config.Setting, value string, unset bool, event SettingsAuditEvent) error {
 	if err := s.auditor.RecordSettingsEvent(ctx, event); err != nil {
-		return ops.WriteResult{}, fmt.Errorf("server: setting %q was not changed, its audit record failed: %w", st.Key, err)
+		return fmt.Errorf("server: setting %q was not changed, its audit record failed: %w", st.Key, err)
 	}
 	var err error
 	if unset {
 		_, err = s.store.DeleteSetting(ctx, st.Key)
 	} else {
-		err = s.store.PutSetting(ctx, st.Key, args.Value, st.Secret, actor.ID)
+		err = s.store.PutSetting(ctx, st.Key, value, st.Secret, actor.ID)
 	}
 	if err != nil {
 		event.Outcome = AuditOutcomeFailed
@@ -309,14 +478,40 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settingsLookupTimeout)
 		defer cancel()
 		_ = s.auditor.RecordSettingsEvent(actx, event)
-		return ops.WriteResult{}, fmt.Errorf("server: store setting %q: %w", st.Key, err)
+		return fmt.Errorf("server: store setting %q: %w", st.Key, err)
 	}
+	return nil
+}
 
-	res := ops.WriteResult{Outcome: ops.OutcomeDelivered}
-	if !s.live(st.Key) {
-		res.Warnings = []ops.Warning{{Code: ops.WarnRestartRequired, Message: "takes effect after the Hub restarts"}}
+// hooksFor returns the hooks that match one of keys, in registration order.
+func (s *SettingsService) hooksFor(keys []string) []settingsHook {
+	var out []settingsHook
+	for _, h := range s.hooks {
+		for _, k := range keys {
+			if h.matches(k) {
+				out = append(out, h)
+				break
+			}
+		}
 	}
-	return res, nil
+	return out
+}
+
+// overlayPanel is the panel as it would be after a change: the changed keys
+// from over (an empty value is unset), every other key from base.
+type overlayPanel struct {
+	base config.PanelSource
+	over map[string]*string
+}
+
+func (o overlayPanel) Lookup(key string) (string, bool, error) {
+	if v, ok := o.over[key]; ok {
+		if *v == "" || key == config.KeyDataDir {
+			return "", false, nil
+		}
+		return *v, true, nil
+	}
+	return o.base.Lookup(key)
 }
 
 // panelSource implements config.PanelSource on the settings store. Live

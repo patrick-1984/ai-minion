@@ -1,4 +1,4 @@
-Set or unset a Hub setting in the panel unless the environment sets it.
+Set or unset a Hub setting in the panel unless the environment sets it; changes sets several at once, all or nothing.
 
 This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket.
 Accepted actions: manage.
@@ -11,6 +11,7 @@ Usage:
   minion settings_set [flags]
 
 Flags:
+      --changes JSON                   changes as a JSON document; "-" reads it from standard input
       --force                          override FORCE guards in this call (only when you pass it)
   -h, --help                           help for settings_set
       --hub-ca-file string             PEM file with the private CA of the Hub's certificate (env MINION_HUB_CA)

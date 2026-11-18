@@ -36,7 +36,17 @@ type SettingSection struct {
 	Name string
 	ID   string
 	Rows []SettingRow
+	// Batch says that the section is saved as one change (settings_set with
+	// changes): its settings only make sense together, such as a log sink's
+	// switch, endpoint, credentials and trust.
+	Batch bool
 }
+
+// pathAdminSettingsSection saves a batch section.
+const pathAdminSettingsSection = "/admin/settings-section"
+
+// batchSections are the sections saved as one change.
+var batchSections = []string{config.SectionLogExport}
 
 // SettingRow is one setting as the page shows it.
 type SettingRow struct {
@@ -137,7 +147,7 @@ func settingSections(rows []SettingRow) []SettingSection {
 			}
 			return strings.Compare(a.Key, b.Key)
 		})
-		out = append(out, SettingSection{Name: name, ID: sectionID(name), Rows: in})
+		out = append(out, SettingSection{Name: name, ID: sectionID(name), Rows: in, Batch: slices.Contains(batchSections, name)})
 	}
 	return out
 }
@@ -184,7 +194,50 @@ func handleSettingSet(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	writeOp(w, r, c, ops.OpSettingsSet, args, text)
 }
 
+// handleSettingsSection saves a batch section as one change, all or nothing.
+// Every editable row posts "v.<key>"; a secret row also posts "s.<key>", and
+// its empty field keeps the stored secret unless "r.<key>" (remove) is
+// checked. An empty field of any other row returns it to its default.
+func handleSettingsSection(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	if err := r.ParseForm(); err != nil {
+		writeResultError(w, "The form could not be read.")
+		return
+	}
+	var changes []ops.SettingChange
+	keys := make([]string, 0, len(r.PostForm))
+	for k := range r.PostForm {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		key, ok := strings.CutPrefix(k, "v.")
+		if !ok {
+			continue
+		}
+		value := r.PostForm.Get(k)
+		secret := r.PostForm.Get("s."+key) == "1"
+		remove := r.PostForm.Get("r."+key) == "1"
+		switch {
+		case secret && remove:
+			changes = append(changes, ops.SettingChange{Key: key, Unset: true})
+		case secret && strings.TrimSpace(value) == "":
+			// keep the stored secret
+		case value == "":
+			changes = append(changes, ops.SettingChange{Key: key, Unset: true})
+		default:
+			changes = append(changes, ops.SettingChange{Key: key, Value: value})
+		}
+	}
+	if len(changes) == 0 {
+		writeResultError(w, "Nothing to save.")
+		return
+	}
+	args := ops.SettingsSetArgs{WriteArgs: newWriteArgs(), Changes: changes}
+	writeOp(w, r, c, ops.OpSettingsSet, args, "The section "+r.PostForm.Get("section")+" is saved.")
+}
+
 func init() {
+	RegisterRoute(Route{Pattern: "POST " + pathAdminSettingsSection, Handler: adminRoute(handleSettingsSection)})
 	RegisterPage(Page{Pattern: pathAdminSettings, Title: "Hub settings", Template: "settings.html", Data: adminPageData(settingsData)})
 	RegisterNav(NavItem{Label: "Hub settings", Path: pathAdminSettings, Order: adminNavOrder + 10, Roles: []authz.Role{authz.RoleAdmin}, Group: NavGroupAdmin, Icon: "i-settings"})
 	RegisterRoute(Route{Pattern: "POST " + pathAdminSettings + "/{key}", Handler: adminRoute(handleSettingSet)})
