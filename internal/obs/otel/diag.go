@@ -47,7 +47,11 @@ type diagState struct {
 	suppressed int
 }
 
-type diagLine struct{ args []any }
+type diagLine struct {
+	level slog.Level
+	msg   string
+	args  []any
+}
 
 // diagQueue bounds the lines waiting for the writer.
 const diagQueue = 64
@@ -65,7 +69,24 @@ func NewDiag(local slog.Handler) *Diag {
 }
 
 func (d *Diag) write(l diagLine) {
-	d.log.Log(logx.LocalOnly(context.Background()), slog.LevelWarn, "log export problem", l.args...)
+	d.log.Log(logx.LocalOnly(context.Background()), l.level, l.msg, l.args...)
+}
+
+// Notice queues one local line (a configuration warning, a loss summary)
+// without rate limit. It never blocks: a full queue drops the line.
+func (d *Diag) Notice(level slog.Level, msg string, args ...any) {
+	if d == nil {
+		return
+	}
+	l := diagLine{level: level, msg: msg, args: args}
+	if d.sync {
+		d.write(l)
+		return
+	}
+	select {
+	case d.lines <- l:
+	default:
+	}
 }
 
 // Report writes one diagnostic line unless the pair (sink, class) was
@@ -95,12 +116,13 @@ func (d *Diag) Report(sink, class string, err error) {
 	if suppressed > 0 {
 		args = append(args, "suppressed", suppressed)
 	}
+	l := diagLine{level: slog.LevelWarn, msg: "log export problem", args: args}
 	if d.sync {
-		d.write(diagLine{args})
+		d.write(l)
 		return
 	}
 	select {
-	case d.lines <- diagLine{args}:
+	case d.lines <- l:
 	default:
 	}
 }

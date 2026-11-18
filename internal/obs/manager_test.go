@@ -3,10 +3,12 @@ package obs
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/logx"
@@ -84,5 +86,41 @@ func TestDisableFailsClosed(t *testing.T) {
 	st := m.Status()
 	if live.Fanout.Handler(logx.SlotSyslog) != nil || st[0].Enabled || st[0].LastError == "" || st[1].LastError == "" {
 		t.Fatalf("status = %+v", st)
+	}
+}
+
+// blockingWriter blocks every write until released.
+type blockingWriter struct{ release chan struct{} }
+
+func (b blockingWriter) Write(p []byte) (int, error) { <-b.release; return len(p), nil }
+
+// A blocked local writer (a stalled stderr) never holds a change or the
+// shutdown: warnings and the loss summary are queued.
+func TestBlockedLocalWriterNeverHoldsApplyOrShutdown(t *testing.T) {
+	w := blockingWriter{release: make(chan struct{})}
+	defer close(w.release)
+	_, live, _ := logx.NewLiveLocal(logx.Options{Output: w, Format: logx.FormatText})
+	m := New(live.Fanout, Process{Service: "minion-hub"})
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	dead := ln.Addr().String()
+	_ = ln.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 5 {
+			_ = m.Apply(context.Background(), config.Sinks{
+				Syslog:   config.SyslogConfig{Enabled: true, Network: "tcp", Addr: dead, Level: "info", MaxBytes: 2048, Digest: string(rune('a' + i))},
+				Warnings: []string{"warning " + string(rune('a'+i))},
+			})
+		}
+		slog.New(live.Fanout.Handler(logx.SlotSyslog)).Info("never sent")
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		_ = m.Shutdown(ctx)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("apply or shutdown blocked on the local writer")
 	}
 }

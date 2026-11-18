@@ -3,7 +3,10 @@ package otel
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os"
+	"strings"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -34,6 +37,9 @@ var ErrResourceEnv = errors.New("OTEL_RESOURCE_ATTRIBUTES could not be parsed an
 // specification says). A parse error of the environment yields the resource
 // without it and [ErrResourceEnv].
 func NewResource(ctx context.Context, p Process) (*resource.Resource, error) {
+	sanitizeResourceEnv()
+	valid := func(s string) string { return strings.ToValidUTF8(s, "\uFFFD") }
+	p.Service, p.Version, p.InstanceID, p.WorkerID = valid(p.Service), valid(p.Version), valid(p.InstanceID), valid(p.WorkerID)
 	attrs := []attribute.KeyValue{attribute.String("service.name", p.Service)}
 	if p.Version != "" {
 		attrs = append(attrs, attribute.String("service.version", p.Version))
@@ -42,7 +48,7 @@ func NewResource(ctx context.Context, p Process) (*resource.Resource, error) {
 		attrs = append(attrs, attribute.String("service.instance.id", p.InstanceID))
 	}
 	if h, err := os.Hostname(); err == nil && h != "" {
-		attrs = append(attrs, attribute.String("host.name", h))
+		attrs = append(attrs, attribute.String("host.name", valid(h)))
 	}
 	if p.WorkerID != "" {
 		attrs = append(attrs, attribute.String("minion.worker.id", p.WorkerID))
@@ -57,4 +63,47 @@ func NewResource(ctx context.Context, p Process) (*resource.Resource, error) {
 		return base, nil
 	}
 	return merged, nil
+}
+
+// Resource environment variables of the specification.
+const (
+	envResourceAttributes = "OTEL_RESOURCE_ATTRIBUTES"
+	envServiceName        = "OTEL_SERVICE_NAME"
+)
+
+// sanitizeResourceEnv makes the resource variables decode to valid UTF-8.
+// The SDK reads them again for every provider (sdk/log merges
+// resource.Environment() into any resource it is given) and percent-decodes
+// values without checking them; one invalid string in the resource makes
+// every OTLP batch fail to serialise. Invalid sequences are replaced, in the
+// variables of this process only.
+func sanitizeResourceEnv() {
+	valid := func(s string) string { return strings.ToValidUTF8(s, "\uFFFD") }
+	if v, ok := os.LookupEnv(envServiceName); ok && !utf8.ValidString(v) {
+		_ = os.Setenv(envServiceName, valid(v))
+	}
+	raw, ok := os.LookupEnv(envResourceAttributes)
+	if !ok || raw == "" {
+		return
+	}
+	changed := false
+	pairs := strings.Split(raw, ",")
+	for i, pair := range pairs {
+		k, v, found := strings.Cut(pair, "=")
+		if !found {
+			continue
+		}
+		dv, err := url.PathUnescape(strings.TrimSpace(v))
+		if err != nil {
+			dv = v
+		}
+		if utf8.ValidString(k) && utf8.ValidString(dv) {
+			continue
+		}
+		changed = true
+		pairs[i] = valid(strings.TrimSpace(k)) + "=" + url.PathEscape(valid(dv))
+	}
+	if changed {
+		_ = os.Setenv(envResourceAttributes, strings.Join(pairs, ","))
+	}
 }

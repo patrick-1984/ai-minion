@@ -34,7 +34,6 @@ type Process = otel.Process
 // concurrent use; Apply calls are serialised.
 type Manager struct {
 	fanout *logx.Fanout
-	local  *slog.Logger
 	diag   *otel.Diag
 	proc   Process
 
@@ -64,7 +63,7 @@ func New(f *logx.Fanout, proc Process) *Manager {
 	diag := otel.NewDiag(f.Local())
 	otel.InstallGlobal(diag)
 	return &Manager{
-		fanout: f, local: slog.New(f.Local()), diag: diag, proc: proc,
+		fanout: f, diag: diag, proc: proc,
 		gens: map[string]uint64{}, carry: map[string]map[string]uint64{}, errs: map[string]string{},
 	}
 }
@@ -83,11 +82,12 @@ func (m *Manager) Apply(ctx context.Context, s config.Sinks) error {
 		return errors.New("obs: the log sinks are shut down")
 	}
 	// The same configuration applied again (the environment first, then
-	// the panel) does not repeat its warnings.
+	// the panel) does not repeat its warnings. The lines are queued: a
+	// blocked stderr never holds a change (or the lock).
 	if joined := strings.Join(s.Warnings, "\n"); joined != m.warned {
 		m.warned = joined
 		for _, w := range s.Warnings {
-			m.local.Log(logx.LocalOnly(ctx), slog.LevelWarn, "log export: "+w)
+			m.diag.Notice(slog.LevelWarn, "log export: "+w)
 		}
 	}
 	return errors.Join(m.applySyslog(s.Syslog), m.applyOTel(ctx, s.OTLP))
@@ -249,8 +249,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 			lost += n
 		}
 		if lost > 0 {
-			m.local.Log(logx.LocalOnly(context.Background()), slog.LevelWarn, "log export: records were never sent",
-				"sink", st.Name, "dropped", st.Dropped)
+			m.diag.Notice(slog.LevelWarn, "log export: records were never sent", "sink", st.Name, "dropped", st.Dropped)
 		}
 	}
 	if sysErr != nil || otlErr != nil {
