@@ -24,4 +24,3 @@ func TestFIFOIsRefusedWithoutBlocking(t *testing.T) {
 		t.Fatalf("headers fifo: err = %v", err)
 	}
 }
-
