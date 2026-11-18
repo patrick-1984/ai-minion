@@ -54,12 +54,32 @@ var (
 // of every URL in it, Minion's own secret formats (API keys mn_..., invitation
 // keys mnk_<fingerprint>.<secret>, join tokens mnj1-...) and pairing codes.
 func RedactText(s string) string {
-	s = joinTokenText.ReplaceAllString(s, "mnj1-"+Redacted)
-	s = inviteKeyText.ReplaceAllString(s, "${1}."+Redacted)
-	s = apiKeyText.ReplaceAllString(s, "mn_"+Redacted)
-	s = urlUserinfo.ReplaceAllString(s, "${1}"+Redacted+"@")
-	s = urlQuery.ReplaceAllString(s, "${1}?"+Redacted)
-	return pairingCode.ReplaceAllString(s, "MN-"+Redacted)
+	// Cheap checks first: every pattern below needs "mn" (any case) or
+	// "://", and most log text has neither.
+	mn := hasMN(s)
+	if mn {
+		s = joinTokenText.ReplaceAllString(s, "mnj1-"+Redacted)
+		s = inviteKeyText.ReplaceAllString(s, "${1}."+Redacted)
+		s = apiKeyText.ReplaceAllString(s, "mn_"+Redacted)
+	}
+	if strings.Contains(s, "://") {
+		s = urlUserinfo.ReplaceAllString(s, "${1}"+Redacted+"@")
+		s = urlQuery.ReplaceAllString(s, "${1}?"+Redacted)
+	}
+	if mn {
+		s = pairingCode.ReplaceAllString(s, "MN-"+Redacted)
+	}
+	return s
+}
+
+// hasMN reports whether s contains "mn" in any letter case.
+func hasMN(s string) bool {
+	for i := 0; i+1 < len(s); i++ {
+		if s[i]|0x20 == 'm' && s[i+1]|0x20 == 'n' {
+			return true
+		}
+	}
+	return false
 }
 
 // RedactErrorText masks free text of an error: every URL in it is cut to its
@@ -67,6 +87,9 @@ func RedactText(s string) string {
 // reverse-proxy prefix or a mirror can use for a credential), then
 // [RedactText] applies.
 func RedactErrorText(s string) string {
+	if !strings.Contains(s, "://") {
+		return RedactText(s)
+	}
 	s = urlWhole.ReplaceAllStringFunc(s, func(m string) string {
 		sub := urlWhole.FindStringSubmatch(m)
 		host := sub[2]

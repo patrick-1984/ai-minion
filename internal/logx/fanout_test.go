@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -180,10 +181,11 @@ func TestFanoutSwapUnderConcurrentLogging(t *testing.T) {
 		}()
 	}
 	hs := []countHandler{}
-	for i := range 200 {
+	for i := 0; i < 200 || logged.Load() < 2000; i++ {
 		h := newCount()
 		hs = append(hs, h)
 		f.Set(SlotSyslog+i%2, h, slog.LevelInfo)
+		runtime.Gosched()
 	}
 	close(stop)
 	wg.Wait()
