@@ -180,8 +180,7 @@ func initLogging(ctx context.Context, env *Env) error {
 
 // wireLogging applies the panel's log level and sink settings now and on
 // every later change. A sink configuration that does not resolve leaves both
-// sinks off (fail closed) with the reason in the status; it stops the Hub
-// only when the environment alone is already invalid, as for every setting.
+// sinks off (fail closed) with the reason in the status.
 func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService, files config.SinkFiles) error {
 	log := slog.New(svc.live.Fanout.Local())
 	applyLevel := func(_ context.Context, eff *config.Resolver) error {
@@ -209,15 +208,13 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 	if m == nil {
 		return nil
 	}
+	// A sink configuration that does not resolve (from the panel or the
+	// environment) never stops the Hub: both sinks stay off with the reason
+	// in the status, and the settings page stays reachable to repair it.
 	sinks, err := config.ResolveSinks(settings.Resolver(), files)
 	if err != nil {
-		envOnly := settings.Resolver()
-		envOnly.Panel = nil
-		if _, eerr := config.ResolveSinks(envOnly, files); eerr != nil {
-			return eerr
-		}
 		m.Disable(logx.ErrorText(err))
-		log.Error("log export could not be configured from the panel; both sinks are off", "error", logx.ErrorText(err))
+		log.Error("log export could not be configured; both sinks are off", "error", logx.ErrorText(err))
 	} else if err := m.Apply(ctx, sinks); err != nil {
 		log.Error("log export could not be started", "error", logx.ErrorText(err))
 	}

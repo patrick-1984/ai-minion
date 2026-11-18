@@ -388,6 +388,15 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 				fmt.Sprintf("the setting %s was changed since this page was loaded; reload the page and save again", changes[i].st.Key))
 		}
 	}
+	for _, e := range args.Expect {
+		if _, ok := s.registry.Lookup(e.Key); !ok {
+			return ops.WriteResult{}, &ops.ArgumentError{Field: "expect", Reason: "unknown Hub setting"}
+		}
+		if e.Revision != s.revision(ctx, e.Key) {
+			return ops.WriteResult{}, proto.NewError(proto.CodeConflict,
+				fmt.Sprintf("the setting %s was changed since this page was loaded; reload the page and save again", e.Key))
+		}
+	}
 
 	keys := make([]string, len(changes))
 	for i, c := range changes {

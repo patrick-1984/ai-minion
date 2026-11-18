@@ -92,6 +92,20 @@ func TestLogExportSectionRevisionsTextareaAndStatus(t *testing.T) {
 	if got["otel_endpoint"]["revision"] != "rev-endpoint" || got["otel_headers"]["value"] != "A: 1\nB: 2" || got["otel_headers"]["revision"] != "rev-headers" {
 		t.Fatalf("changes = %v", got)
 	}
+
+	// A kept (blank) secret is sent as an expectation with its revision.
+	rec = post(t, s, pathAdminSettingsSection, adminHeader, url.Values{
+		"v.otel_endpoint": {"https://other.example"}, "rev.otel_endpoint": {"rev-endpoint"},
+		"v.otel_headers": {""}, "s.otel_headers": {"1"}, "rev.otel_headers": {"rev-headers"},
+	})
+	if rec.Code != 200 {
+		t.Fatalf("POST = %d", rec.Code)
+	}
+	calls := f.called(ops.OpSettingsSet)
+	exp, _ := calls[len(calls)-1].Args["expect"].([]any)
+	if len(exp) != 1 || exp[0].(map[string]any)["key"] != "otel_headers" || exp[0].(map[string]any)["revision"] != "rev-headers" {
+		t.Fatalf("expect = %v", calls[len(calls)-1].Args)
+	}
 }
 
 func TestDiagnosticsShowsTheSinks(t *testing.T) {

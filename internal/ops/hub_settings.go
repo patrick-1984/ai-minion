@@ -113,6 +113,16 @@ type SettingsSetArgs struct {
 	// settings page), applied all or nothing. It excludes Key, Value and
 	// Unset.
 	Changes []SettingChange `json:"changes,omitempty"`
+	// Expect lists settings the change does not touch but relies on: each
+	// must still have the given revision (for example a stored secret a
+	// form keeps while it changes the endpoint next to it).
+	Expect []SettingRevision `json:"expect,omitempty"`
+}
+
+// SettingRevision is a setting and the revision settings_list reported.
+type SettingRevision struct {
+	Key      string `json:"key"`
+	Revision string `json:"revision"`
 }
 
 // List returns the changes of the request: Changes, or the single change of
@@ -148,9 +158,18 @@ func (a SettingsSetArgs) Validate() error {
 			}
 			seen[c.Key] = true
 		}
-		return nil
+	} else if err := (SettingChange{Key: a.Key, Value: a.Value, Unset: a.Unset}).validate(""); err != nil {
+		return err
 	}
-	return SettingChange{Key: a.Key, Value: a.Value, Unset: a.Unset}.validate("")
+	if len(a.Expect) > MaxSettingChanges {
+		return invalid("expect", "must hold at most %d entries", MaxSettingChanges)
+	}
+	for i, e := range a.Expect {
+		if !isSnakeCase(e.Key) || e.Revision == "" {
+			return invalid(fmt.Sprintf("expect[%d]", i), "needs a snake_case key and a revision")
+		}
+	}
+	return nil
 }
 
 func (c SettingChange) validate(prefix string) error {

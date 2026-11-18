@@ -243,3 +243,28 @@ func TestStaleRevisionIsRefused(t *testing.T) {
 		t.Fatal("a key without a panel value has revision none")
 	}
 }
+
+// A form that keeps a stored secret relies on it: after a rotation of only
+// that secret, a stale endpoint save from the form is refused.
+func TestExpectedSecretRevisionGuardsAStaleSave(t *testing.T) {
+	f := newFixture(t)
+	svc := f.txService()
+	if _, err := svc.Set(context.Background(), admin, batchArgs(ops.SettingChange{Key: keyToken, Value: "old-cred"}, ops.SettingChange{Key: keyGreeting, Value: "a"})); err != nil {
+		t.Fatal(err)
+	}
+	page := listByKey(t, svc)
+	// Another administrator rotates only the credential.
+	if _, err := svc.Set(context.Background(), admin, batchArgs(ops.SettingChange{Key: keyToken, Value: "new-cred"})); err != nil {
+		t.Fatal(err)
+	}
+	stale := batchArgs(ops.SettingChange{Key: keyGreeting, Value: "elsewhere", Revision: page[keyGreeting].Revision})
+	stale.Expect = []ops.SettingRevision{{Key: keyToken, Revision: page[keyToken].Revision}}
+	_, err := svc.Set(context.Background(), admin, stale)
+	var pe *proto.Error
+	if !errors.As(err, &pe) || pe.Code != proto.CodeConflict || !strings.Contains(err.Error(), keyToken) {
+		t.Fatalf("err = %v", err)
+	}
+	if r := resolve(t, svc, keyGreeting); r.Value != "a" {
+		t.Fatalf("stale save stored: %+v", r)
+	}
+}

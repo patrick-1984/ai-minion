@@ -40,9 +40,8 @@ func startLogging(t *testing.T, f *fixture) (*ObsService, error) {
 	return svc, wireLogging(context.Background(), svc, settings, config.SinkFiles{})
 }
 
-// A panel configuration that no longer resolves at start leaves both sinks
-// off (no environment-only fallback keeps sending); an invalid environment
-// still stops the start.
+// A configuration that no longer resolves at start leaves both sinks off
+// (no environment-only fallback keeps sending) and never stops the Hub.
 func TestStartupFailsClosedOnAnInvalidPanelConfiguration(t *testing.T) {
 	f := newFixture(t)
 	f.env["MINION_OTEL"] = "on"
@@ -63,10 +62,19 @@ func TestStartupFailsClosedOnAnInvalidPanelConfiguration(t *testing.T) {
 		t.Fatalf("status = %+v", st)
 	}
 
+	// Enabled by the environment, endpoint and CA in the panel, CA file
+	// gone: the Hub still starts (its settings page repairs the panel).
 	g := newFixture(t)
-	g.env["MINION_OTEL"] = "on" // no endpoint anywhere
-	if _, err := startLogging(t, g); err == nil {
-		t.Fatal("an invalid environment did not stop the start")
+	g.env["MINION_OTEL"] = "on"
+	if err := g.st.PutSetting(ctx, "otel_endpoint", "https://panel.example", false, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.st.PutSetting(ctx, "otel_ca_file", "/nonexistent/ca.pem", false, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	gs, err := startLogging(t, g)
+	if err != nil || gs.Manager.Status()[1].Enabled || gs.Manager.Status()[1].LastError == "" {
+		t.Fatalf("start = %v, status %+v", err, gs.Manager.Status())
 	}
 }
 

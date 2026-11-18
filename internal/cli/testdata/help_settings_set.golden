@@ -12,6 +12,7 @@ Usage:
 
 Flags:
       --changes JSON                   changes as a JSON document; "-" reads it from standard input
+      --expect JSON                    the reviewed dialog as a JSON document {"pane_id","pid","command","session_created","dialog_digest"} copied from the pane object of session_snapshot or session_capture (--json); "-" reads it from standard input. The answer reaches only that dialog: if it changed, nothing is sent (pane_changed or dialog_changed) and --force does not override that
       --force                          override FORCE guards in this call (only when you pass it)
   -h, --help                           help for settings_set
       --hub-ca-file string             PEM file with the private CA of the Hub's certificate (env MINION_HUB_CA)

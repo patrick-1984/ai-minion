@@ -218,6 +218,7 @@ func handleSettingsSection(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		return
 	}
 	var changes []ops.SettingChange
+	var expect []ops.SettingRevision
 	keys := make([]string, 0, len(r.PostForm))
 	for k := range r.PostForm {
 		keys = append(keys, k)
@@ -236,7 +237,12 @@ func handleSettingsSection(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		case secret && remove:
 			changes = append(changes, ops.SettingChange{Key: key, Unset: true, Revision: rev})
 		case secret && strings.TrimSpace(value) == "":
-			// keep the stored secret
+			// Keep the stored secret, but only if it is still the one this
+			// page saw: a credential rotated meanwhile must not go to the
+			// endpoint saved from this page.
+			if rev != "" {
+				expect = append(expect, ops.SettingRevision{Key: key, Revision: rev})
+			}
 		case value == "":
 			changes = append(changes, ops.SettingChange{Key: key, Unset: true, Revision: rev})
 		default:
@@ -247,7 +253,7 @@ func handleSettingsSection(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		writeResultError(w, "Nothing to save.")
 		return
 	}
-	args := ops.SettingsSetArgs{WriteArgs: newWriteArgs(), Changes: changes}
+	args := ops.SettingsSetArgs{WriteArgs: newWriteArgs(), Changes: changes, Expect: expect}
 	writeOp(w, r, c, ops.OpSettingsSet, args, "The section "+r.PostForm.Get("section")+" is saved.")
 }
 
