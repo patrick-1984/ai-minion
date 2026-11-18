@@ -118,6 +118,8 @@ type fakePairing struct {
 	err      error
 	started  chan struct{}
 	pairCall []string
+	// fingerprints are the expected Hub fingerprints of the Pair calls.
+	fingerprints []string
 }
 
 func newFakePairing() *fakePairing {
@@ -131,9 +133,10 @@ func (p *fakePairing) Paired(context.Context) (Paired, bool, error) {
 	return Paired{}, false, nil
 }
 
-func (p *fakePairing) Pair(ctx context.Context, hubURL string, out io.Writer) (Paired, error) {
+func (p *fakePairing) Pair(ctx context.Context, hubURL, fingerprint string, out io.Writer) (Paired, error) {
 	p.mu.Lock()
 	p.pairCall = append(p.pairCall, hubURL)
+	p.fingerprints = append(p.fingerprints, fingerprint)
 	p.mu.Unlock()
 	_, _ = fmt.Fprintf(out, "Pairing code: MN-K7Q4-XY12\nEnter this code in the Hub (Add worker) within 10 minutes. Hub: %s\n", hubURL)
 	p.started <- struct{}{}

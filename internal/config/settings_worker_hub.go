@@ -14,6 +14,10 @@ const (
 	KeyServer      = "server"
 	KeyHubCAFile   = "hub_ca_file"
 	KeyHubInsecure = "hub_insecure"
+	// KeyHubFingerprint is the fingerprint of the Hub this Worker may pair or
+	// enroll with (v0.11.0). It is parsed by its callers: the kernel package
+	// config does not import identity.
+	KeyHubFingerprint = "hub_fingerprint"
 )
 
 func init() { declareWorkerHub(Default) }
@@ -56,6 +60,14 @@ func declareWorkerHub(r *Registry) {
 		Default: "false",
 		Choices: []string{"true", "false"},
 	})
+	r.Declare(Setting{
+		Key:          KeyHubFingerprint,
+		Scope:        ScopeWorker,
+		BlankIsUnset: true,
+		Help: "Fingerprint of the Hub this Worker may pair or enroll with: six words or 52 characters, as " +
+			"\"minion hub identity --words\" prints on the Hub host. Any other Hub is refused. On a paired Worker " +
+			"it is compared with the paired Hub at every start",
+	})
 }
 
 // WorkerHub is the resolved Hub configuration of a Worker run.
@@ -67,6 +79,9 @@ type WorkerHub struct {
 	CAFile string
 	// Insecure turns off certificate verification for plain HTTPS calls.
 	Insecure bool
+	// Fingerprint is the expected Hub fingerprint as configured (trimmed,
+	// not parsed here); empty when unset.
+	Fingerprint string
 }
 
 // ErrInvalidServer is wrapped by the error [ValidateServerURL] returns.
@@ -95,6 +110,11 @@ func ResolveWorkerHub(res *Resolver) (WorkerHub, error) {
 	if wh.Insecure, err = strconv.ParseBool(ins.Value); err != nil {
 		return wh, fmt.Errorf("setting %q (%s): invalid value %q, expected true or false", KeyHubInsecure, ins.Source, ins.Value)
 	}
+	fp, err := res.Resolve(KeyHubFingerprint)
+	if err != nil {
+		return wh, err
+	}
+	wh.Fingerprint = strings.TrimSpace(fp.Value)
 	return wh, nil
 }
 

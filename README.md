@@ -156,13 +156,13 @@ docker compose exec hub minion hub identity set-passphrase
 - Open `https://127.0.0.1:8443` on the Docker host (the browser warns about the self-signed certificate) and sign in as `admin` with the password from `admin_password.txt` (`docker run`) or `MINION_ADMIN_PASSWORD` in `.env` (Compose). The Hub reads it only at the first start, while it has no users.
 - **The passphrase is required.** A new Hub serves no Workers until it is set, either with the command above or with the banner "Set the Hub passphrase" in the web UI. It has at least 14 characters and cannot be recovered: read [Hub identity](docs/guides/hub-identity.md).
 - The port is published on the loopback interface only. To reach the Hub from other machines, put a reverse proxy in front ([reverse proxy](docs/guides/reverse-proxy.md); the three proxy settings are in `.env`, or `-e` options for `docker run`) or publish the port on every interface (`-p 8443:8443`, or `MINION_BIND=0.0.0.0` in `.env`).
-- Add Workers: [pairing and sharing](docs/guides/pairing.md).
+- Add Workers: [pairing and sharing](docs/guides/pairing.md). Give each Worker the Hub fingerprint that `minion hub identity --words` prints on the Hub host (`docker exec minion-hub minion hub identity --words`), so that it pairs only with this Hub.
 
 ## Guides
 
 | Guide | What it covers |
 | --- | --- |
-| [Pairing and sharing](docs/guides/pairing.md) | Pairing codes, invitation keys, choosing which sessions the Hub may see, the local share lock |
+| [Pairing and sharing](docs/guides/pairing.md) | Pairing codes, invitation keys, the Hub fingerprint (`--hub-fingerprint`, `minion worker verify-hub`), choosing which sessions the Hub may see, the local share lock |
 | [Reverse proxy](docs/guides/reverse-proxy.md) | TLS in front of the Hub, WebSocket and event-stream settings, trusted proxies |
 | [No direct route](docs/guides/no-direct-route.md) | A Worker that cannot reach the Hub directly: SSH tunnels |
 | [Sign in with OIDC](docs/guides/oidc.md) | An identity provider with role claims |
@@ -182,6 +182,7 @@ Deploy examples: [`deploy/compose/hub.yaml`](deploy/compose/hub.yaml) (Hub from 
 
 - The Windows Worker is a **preview**. See [its guide](docs/install/worker-windows-preview.md) for what works.
 - The pairing handshake has not had an independent cryptographic review yet. See [security](docs/security.md).
+- A Worker is protected against a proxy that turns malicious only when its Hub fingerprint (or invitation key) came from the Hub host; the web UI, and the CLI and MCP without a TLS key pin, are not. See [what is protected](docs/security.md#what-is-protected-against-a-proxy-that-turns-malicious). When upgrading, upgrade the Hub first.
 - The Hub sees the content of the sessions a Worker shares. A reverse proxy that ends TLS for the web UI is trusted with that content.
 - A message sent to an agent can make that agent run commands. Read [security](docs/security.md) before you give anyone, or any API key, the right to send.
 - Replies from agents (the pipe) need tmux 3.8 or newer on the Worker. See [the pipe](docs/guides/pipe.md).

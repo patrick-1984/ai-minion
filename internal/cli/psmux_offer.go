@@ -13,7 +13,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -95,27 +94,9 @@ func offerPsmux(cmd *cobra.Command, res *config.Resolver, d psmuxOfferDeps) {
 }
 
 // saveWorkerSetting writes one setting to the Worker's config file, under the
-// config lock.
+// config lock, and reports a failure on errOut.
 func saveWorkerSetting(stateDir, key, value string, errOut io.Writer) {
-	abs, err := filepath.Abs(stateDir)
-	if err == nil {
-		err = os.MkdirAll(abs, 0o700)
-	}
-	var release func()
-	if err == nil {
-		release, err = lockConfigFile(filepath.Join(abs, configLockName))
-	}
-	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "cannot save %s: %v\n", key, err)
-		return
-	}
-	defer release()
-	file, err := config.LoadFile(filepath.Join(abs, workerConfigName))
-	if err == nil {
-		file.Set(key, value)
-		err = file.Save()
-	}
-	if err != nil {
+	if _, err := writeWorkerSettings(stateDir, map[string]string{key: value}); err != nil {
 		_, _ = fmt.Fprintf(errOut, "cannot save %s: %v\n", key, err)
 	}
 }

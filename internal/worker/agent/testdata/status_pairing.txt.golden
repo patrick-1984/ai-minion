@@ -1,18 +1,22 @@
-Version:             v0.1.0
-Name:                lab-pi
-Mode:                Hub
-Hub URL:             https://hub.example:8443
-Connection:          backoff
-Last error:          dial: connection refused
-Hub fingerprint:     none (not paired)
-Worker fingerprint:  ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq
-Owner:               not paired
-Worker id:           none yet (given at the first welcome)
-Approval:            unknown (only a connected Worker knows it)
-Pairing code:        MN-ABCD-EFGH
-Share mode:          all
-Preview only:        yes
-Run mode:            unknown (only a running Worker knows it)
-Session host:        unknown (only a running Worker knows it)
-tmux socket:         /run/user/1000/tmux-1000/default
-Sessions:            3
+Version:                    v0.1.0
+Name:                       lab-pi
+Mode:                       Hub
+Hub URL:                    https://hub.example:8443
+Connection:                 backoff
+Last error:                 dial: connection refused
+Hub fingerprint:            none (not paired)
+Hub fingerprint (full):     none (not paired)
+Hub check:                  none (not paired)
+TLS:                        known only to the running Worker
+Worker fingerprint:         health-scale-voice-thing-october-bench
+Worker fingerprint (full):  ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq
+Owner:                      not paired
+Worker id:                  none yet (given at the first welcome)
+Approval:                   unknown (only a connected Worker knows it)
+Pairing code:               MN-ABCD-EFGH
+Share mode:                 all
+Preview only:               yes
+Run mode:                   unknown (only a running Worker knows it)
+Session host:               unknown (only a running Worker knows it)
+tmux socket:                /run/user/1000/tmux-1000/default
+Sessions:                   3

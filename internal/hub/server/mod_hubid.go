@@ -10,6 +10,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/local"
 	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 )
 
 // hubidModuleOrder places the Hub identity module after the store (10), authz
@@ -65,15 +66,50 @@ func initHubID(ctx context.Context, env *Env) error {
 	if err := Provide(env, svc); err != nil {
 		return fmt.Errorf("provide the Hub identity: %w", err)
 	}
-	timers := newExpiryTimers(svc, cfg.logger(), time.Now)
+	log := cfg.logger()
+	if st, err := svc.Status(ctx); err == nil {
+		logHubIdentity(log, st.RootFingerprint, st.State)
+	}
+	timers := newExpiryTimers(svc, log, time.Now)
 	timers.start(ctx)
-	svc.SetActivationHook(timers.rearm)
+	svc.SetActivationHook(activationHook(svc, log, timers.rearm))
 	env.OnStop(func(context.Context) error {
 		svc.SetActivationHook(nil)
 		timers.stop()
 		return nil
 	})
 	return nil
+}
+
+// activationHook re-arms the expiry timer and logs the Hub identity (M11)
+// after an activation (first certificate, re-issue, rotation). It reads the
+// atomic snapshot only: the hook must not call an identity operation.
+func activationHook(svc interface {
+	Current() (hubid.Snapshot, error)
+}, log *slog.Logger, rearm func()) func() {
+	return func() {
+		rearm()
+		if sn, err := svc.Current(); err == nil {
+			if fp, err := identity.FingerprintOf(sn.RootPub); err == nil {
+				logHubIdentity(log, fp.String(), hubid.StateEstablished)
+			}
+		}
+	}
+}
+
+// logHubIdentity writes the "hub identity" line (M11): the root fingerprint
+// as words and as 52 characters, so that the operator can read it on the Hub
+// host. Without a root it says that there is none yet.
+func logHubIdentity(log *slog.Logger, fp string, state hubid.State) {
+	if fp == "" {
+		log.Info("hub identity: none yet; set the Hub passphrase to create it (minion hub identity set-passphrase)")
+		return
+	}
+	log.Info("hub identity",
+		"fingerprint_words", identity.Fingerprint(fp).Words(),
+		"fingerprint", fp,
+		"state", state.String(),
+		"show", "minion hub identity --words")
 }
 
 // identityOptions lets a test change the options of the identity service (a
@@ -156,6 +192,11 @@ const (
 // loop retries with backoff.
 func (t *expiryTimers) tick(ctx context.Context) tickOutcome {
 	_, err := t.svc.Tick(ctx)
+	return t.outcome(ctx, err)
+}
+
+// outcome classifies the error of one run of the expiry policy.
+func (t *expiryTimers) outcome(ctx context.Context, err error) tickOutcome {
 	switch {
 	case err == nil:
 		return tickDone
@@ -167,6 +208,16 @@ func (t *expiryTimers) tick(ctx context.Context) tickOutcome {
 	}
 	t.log.Warn("hub identity: the expiry check failed; it is retried", "error", err.Error())
 	return tickFailed
+}
+
+// tickDaily is the daily run of the expiry policy; it also logs the Hub
+// identity (M11) when the policy ran.
+func (t *expiryTimers) tickDaily(ctx context.Context) tickOutcome {
+	st, err := t.svc.Tick(ctx)
+	if err == nil {
+		logHubIdentity(t.log, st.RootFingerprint, st.State)
+	}
+	return t.outcome(ctx, err)
 }
 
 // retryAfter is the wait before the next run after outcome o, given the
@@ -260,7 +311,7 @@ func (t *expiryTimers) loop(ctx context.Context, first tickOutcome) {
 				arm()
 			}
 		case <-daily.C:
-			d, retry := next(t.tick(ctx))
+			d, retry := next(t.tickDaily(ctx))
 			if !retry {
 				d = identityTickEvery
 			}

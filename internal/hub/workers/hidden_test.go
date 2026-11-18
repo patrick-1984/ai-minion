@@ -288,3 +288,34 @@ func TestWorkersListSaysWhetherTheSessionListArrived(t *testing.T) {
 		}
 	}
 }
+
+// Round 2: the hub_check the Hub kept for a Worker is listed while it is
+// offline; a connected Worker's own hello wins.
+func TestWorkersListKeepsTheHubCheckOfAnOfflineWorker(t *testing.T) {
+	r := newRig(t, nil)
+	for i := range r.dir.recs {
+		switch r.dir.recs[i].ID {
+		case wAlicePi1.ID:
+			r.dir.recs[i].HubCheck = "none"
+		case wAlicePi2.ID:
+			r.dir.recs[i].HubCheck = "none"
+		}
+	}
+	r.be.online[wAlicePi2.ID] = Online{Facts: transport.WorkerFacts{HubCheck: "fingerprint"}}
+	list, err := r.rt.ListWorkers(context.Background(), routeAlice(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range list {
+		switch w.ID {
+		case wAlicePi1.ID:
+			if w.Online || w.HubCheck != "none" {
+				t.Errorf("offline pi-1 = %+v", w)
+			}
+		case wAlicePi2.ID:
+			if w.HubCheck != "fingerprint" {
+				t.Errorf("online pi-2 = %+v", w)
+			}
+		}
+	}
+}

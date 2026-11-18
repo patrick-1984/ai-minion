@@ -10,6 +10,7 @@ Flags:
   -h, --help                                       help for session_capture
       --hub-ca-file string                         PEM file with the private CA of the Hub's certificate (env MINION_HUB_CA)
       --hub-insecure string[="true"]               skip the verification of the Hub's certificate for this client only (warns) (env MINION_HUB_INSECURE)
+      --hub-tls-pin string                         TLS key pin of the Hub (sha256//..., several separated by ";"), from "minion hub identity --words" on the Hub host; replaces the certificate check (env MINION_HUB_TLS_PIN)
       --hub-url string                             call this Hub over its REST API instead of the local Worker; the API key is read from the file named by MINION_API_KEY_FILE (env MINION_HUB_URL)
       --hub-worker string                          id (UUIDv7) of the Worker that runs operations whose arguments name none (sessions_list, session_create) (env MINION_HUB_WORKER)
       --json                                       print the result as JSON (one line; one line per element for a stream)

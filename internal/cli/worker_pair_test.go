@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,7 +124,7 @@ func newPairCLI(t *testing.T, env map[string]string) *pairCLI {
 			pc, _ := identity.ParsePairingCode("K7Q4XY12")
 			return pc
 		},
-		saveServer: saveWorkerServer,
+		saveServer: saveWorkerHub,
 	}
 	return c
 }
@@ -197,7 +198,7 @@ func TestWorkerPairShowsTheCodeAndStoresTheEnrollment(t *testing.T) {
 	c := newPairCLI(t, nil)
 	c.pair()
 	out := c.stdout.String()
-	if !strings.Contains(out, "MN-K7Q4-XY12") || !strings.Contains(out, "paired to alice") {
+	if !strings.Contains(out, "MN-K7Q4-XY12") || !strings.Contains(out, "Owner:            alice") {
 		t.Fatalf("stdout:\n%s", out)
 	}
 	if !strings.Contains(c.stderr.String(), "MN-K7Q4-XY12") {
@@ -269,7 +270,7 @@ func TestWorkerPairNewCodeAfterConfirmationCreatesANewIdentityAndPairsAgain(t *t
 	if !ok || enr.Owner != "bob" {
 		t.Fatalf("enrollment = %+v %v", enr, ok)
 	}
-	if !strings.Contains(c.stdout.String(), "paired to bob") {
+	if !strings.Contains(c.stdout.String(), "Owner:            bob") {
 		t.Fatalf("stdout:\n%s", c.stdout.String())
 	}
 }
@@ -388,7 +389,7 @@ func TestWorkerJoinRemembersTheHubAndPairs(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "https://hub.example:8443") {
 		t.Fatalf("config = %s %v", data, err)
 	}
-	if !strings.Contains(c.stdout.String(), "paired to alice") {
+	if !strings.Contains(c.stdout.String(), "Owner:            alice") {
 		t.Fatalf("stdout:\n%s", c.stdout.String())
 	}
 	// A Worker service that is already running read its Hub address when it
@@ -494,7 +495,7 @@ func TestWorkerPairNewCodeKeepsTheRevocationPendingWhileTheOldHubIsUnreachable(t
 	if err := c.exec("pair", "--new-code", "--yes"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.stdout.String(), "could not revoke the old identity yet") || !strings.Contains(c.stdout.String(), "paired to alice") {
+	if !strings.Contains(c.stdout.String(), "could not revoke the old identity yet") || !strings.Contains(c.stdout.String(), "Owner:            alice") {
 		t.Fatalf("stdout:\n%s", c.stdout.String())
 	}
 	pending, err := agent.NewRetiredStore(c.state).List()
@@ -586,10 +587,10 @@ func TestSaveWorkerServerKeepsAConcurrentConfigChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- saveWorkerServer(state, "https://hub.example:8443") }()
+	go func() { done <- saveWorkerHub(state, "https://hub.example:8443", "") }()
 	select {
 	case err := <-done:
-		t.Fatalf("saveWorkerServer ran without the config lock (err=%v)", err)
+		t.Fatalf("saveWorkerHub ran without the config lock (err=%v)", err)
 	case <-time.After(150 * time.Millisecond):
 	}
 	// Another command changes the file while it holds the lock.
@@ -613,10 +614,35 @@ func TestSaveWorkerServerKeepsAConcurrentConfigChange(t *testing.T) {
 
 func TestSaveWorkerServerCreatesTheStateDirectory(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "a", "state")
-	if err := saveWorkerServer(state, "https://hub.example:8443"); err != nil {
+	if err := saveWorkerHub(state, "https://hub.example:8443", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(state, workerConfigName)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Round 2: the questions come before the state is opened for writing (which
+// migrates it): cancelling the fingerprint prompt of `pair --new-code` never
+// opens the store, so an older installed Worker can still open its state.
+func TestWorkerPairPromptCancelOpensNoStore(t *testing.T) {
+	c := newPairCLI(t, nil)
+	c.pair()
+	opened := false
+	c.deps.openStore = func(ctx context.Context, dir string) (*store.Store, error) {
+		opened = true
+		return store.OpenContext(ctx, dir)
+	}
+	c.deps.interactive = func(io.Reader, io.Writer) bool { return true }
+	c.deps.stdin = strings.NewReader("") // Ctrl-D at the fingerprint prompt
+	err := c.exec("pair", "--new-code", "--yes")
+	if !errors.Is(err, agent.ErrPromptAborted) {
+		t.Fatalf("err = %v", err)
+	}
+	if opened {
+		t.Fatal("the store was opened (and migrated) before the prompt was answered")
+	}
+	if _, ok := c.enrollment(); !ok {
+		t.Fatal("a cancelled prompt removed the pairing")
 	}
 }

@@ -65,6 +65,8 @@ type Setting struct {
 	DefaultFunc func() (string, error)
 	// Choices, when not empty, lists the only accepted values.
 	Choices []string
+	// BlankIsUnset lets a blank value fall through to the next source.
+	BlankIsUnset bool
 
 	// Secret marks a value that must never be logged, printed or passed in
 	// argv. A secret is readable only from "<ENV>_FILE", the panel or the

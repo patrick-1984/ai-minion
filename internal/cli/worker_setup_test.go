@@ -138,7 +138,10 @@ type setupRig struct {
 func newSetupRig(t *testing.T, tty bool, sessions ...string) *setupRig {
 	t.Helper()
 	r := &setupRig{t: t, state: t.TempDir(), pair: &fakePairDialer{result: okPairResult("alice")}, check: &okChecker{}, stdout: &syncBuf{}}
-	r.env = map[string]string{"MINION_STATE_DIR": r.state, "MINION_TMUX_SOCKET": filepath.Join(r.state, "no-tmux.sock")}
+	// The expected Hub fingerprint is given as a setting, so the wizard does
+	// not ask for it (worker_setup_expect_test.go covers the question).
+	r.env = map[string]string{"MINION_STATE_DIR": r.state, "MINION_TMUX_SOCKET": filepath.Join(r.state, "no-tmux.sock"),
+		"MINION_HUB_FINGERPRINT": testHubFingerprint()}
 	r.deps = workerSetupDeps{
 		lookupEnv:   func(k string) (string, bool) { v, ok := r.env[k]; return v, ok },
 		loadConfig:  loadWorkerConfig,
@@ -218,7 +221,7 @@ func TestWorkerSetupInteractiveSavesChoicesAndPairs(t *testing.T) {
 		t.Fatalf("worker setup: %v\n%s", err, r.stdout)
 	}
 	out := r.stdout.String()
-	for _, want := range []string{"I see 2 tmux sessions:", "[x] 2  docs", "Pairing code: MN-K7Q4-XY12", "paired to alice", "Pairing: paired to alice"} {
+	for _, want := range []string{"I see 2 tmux sessions:", "[x] 2  docs", "MN-K7Q4-XY12 (valid for", "paired to alice", "Pairing: paired to alice"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -370,7 +373,7 @@ func TestWorkerSetupEnterSkipsThePairingWait(t *testing.T) {
 	k.typeLines("1", "https://hub.example:8443")
 	done := make(chan error, 1)
 	go func() { done <- r.run(context.Background(), k.r) }()
-	waitForOutput(t, r.stdout, "Pairing code: MN-K7Q4-XY12")
+	waitForOutput(t, r.stdout, "MN-K7Q4-XY12 (valid for")
 	k.enter(t)
 	select {
 	case err := <-done:
@@ -401,7 +404,7 @@ func TestWorkerSetupInterruptWhilePairingKeepsTheSettings(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- r.run(ctx, k.r) }()
-	waitForOutput(t, r.stdout, "Pairing code: MN-K7Q4-XY12")
+	waitForOutput(t, r.stdout, "MN-K7Q4-XY12 (valid for")
 	cancel()
 	select {
 	case err := <-done:
@@ -557,6 +560,9 @@ func foregroundGate(t *testing.T, tty bool, env map[string]string, sessions ...s
 // foregroundGateEvents also returns the log of the registered pre-start hook.
 func foregroundGateEvents(t *testing.T, tty bool, env map[string]string, sessions ...string) (workerUpDeps, *probe, *[]string, *setupRig) {
 	t.Helper()
+	if _, ok := env["MINION_HUB_FINGERPRINT"]; !ok {
+		env["MINION_HUB_FINGERPRINT"] = testHubFingerprint()
+	}
 	deps, p, events := foregroundFixture(t, env)
 	rig := newSetupRig(t, tty, sessions...)
 	rig.state = env["MINION_STATE_DIR"]
@@ -734,6 +740,7 @@ func TestWorkerUpWizardCancelledStartsNothing(t *testing.T) {
 func serviceGate(t *testing.T, root, tty bool, sessions ...string) (*upFixture, *setupRig) {
 	t.Helper()
 	f := newUpFixture(t, root)
+	f.env["MINION_HUB_FINGERPRINT"] = testHubFingerprint()
 	rig := newSetupRig(t, tty, sessions...)
 	rig.state = f.stateDir()
 	f.deps.setup = rig.deps
@@ -797,7 +804,7 @@ func TestWorkerUpServiceOnATerminalRunsTheWizardBeforeInstalling(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runUpOut(f.deps, context.Background(), k.r, &out) }()
 	// The wizard waits for the pairing; nothing may be installed before it ends.
-	waitForOutput(t, &out, "Pairing code: MN-K7Q4-XY12")
+	waitForOutput(t, &out, "MN-K7Q4-XY12 (valid for")
 	if calls := f.runCalls(); len(calls) != 0 {
 		t.Errorf("service commands ran while the wizard was still open: %v", calls)
 	}
@@ -858,4 +865,11 @@ func TestWorkerUpWithAnInvitationKeyOffersNoPairingCode(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testHubFingerprint is the fingerprint of the fake Hub of the pairing tests
+// (the key of 32 bytes 0x09).
+func testHubFingerprint() string {
+	f, _ := identity.FingerprintOf(bytes.Repeat([]byte{9}, 32))
+	return string(f)
 }

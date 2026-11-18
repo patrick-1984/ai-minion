@@ -10,6 +10,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -300,6 +302,18 @@ func (d *dialog) hubStep(ctx context.Context) error {
 			d.say("Hub: none, the Worker runs alone (Solo). The address was %s, so nothing is asked.", given)
 			return nil
 		}
+		if d.t.Interactive && d.t.SkipPairing == "" && d.w.NeedsHubFingerprint(ctx) {
+			if err := d.fingerprintStep(ctx, v.Server); err != nil {
+				return err
+			}
+		}
+		if d.deferProbe() {
+			if err := d.w.AcceptHubUnchecked(ctx, v.Server); err != nil {
+				return fmt.Errorf("the Hub address you gave cannot be used: %w", err)
+			}
+			d.say("%s", wrapAfter("", deferredProbeNote))
+			return nil
+		}
 		rep, err := d.w.CheckHub(ctx, v.Server)
 		if err != nil {
 			return fmt.Errorf("the Hub address you gave cannot be used: %w", err)
@@ -333,6 +347,24 @@ func (d *dialog) hubStep(ctx context.Context) error {
 			ans = "https://" + ans
 			d.say("(I added https:// in front: %s)", redact(ans))
 		}
+		// The expected fingerprint is asked after the address was parsed and
+		// before any network probe of it.
+		if addr, verr := ValidateHubAddress(ans); verr == nil && addr != "" && d.t.SkipPairing == "" && d.w.NeedsHubFingerprint(ctx) {
+			if err := d.fingerprintStep(ctx, addr); err != nil {
+				return err
+			}
+		}
+		if d.deferProbe() {
+			err := d.w.AcceptHubUnchecked(ctx, ans)
+			if errors.Is(err, ErrInvalidChoice) {
+				d.say("%s", strings.TrimPrefix(err.Error(), ErrInvalidChoice.Error()+": "))
+				continue
+			}
+			if err == nil {
+				d.say("%s", wrapAfter("", deferredProbeNote))
+			}
+			return err
+		}
 		rep, err := d.w.CheckHub(ctx, ans)
 		if errors.Is(err, ErrInvalidChoice) {
 			d.say("%s", strings.TrimPrefix(err.Error(), ErrInvalidChoice.Error()+": "))
@@ -360,6 +392,36 @@ func (d *dialog) hubStep(ctx context.Context) error {
 				continue
 			}
 			break
+		}
+	}
+}
+
+// deferredProbeNote replaces the connection report when the probe waits for
+// the enrollment hook.
+const deferredProbeNote = "The address is not checked now: the invitation key and the expected Hub fingerprint are compared " +
+	"first, when the Worker enrolls, and the Hub is contacted only when they agree."
+
+// deferProbe reports whether the network probe of the address must wait: an
+// invitation key enrolls this Worker (SkipPairing) and an expected Hub
+// fingerprint is given, so the two must be compared before anything dials.
+func (d *dialog) deferProbe() bool { return d.t.SkipPairing != "" && d.w.HasHubFingerprint() }
+
+// fingerprintStep asks for the expected Hub fingerprint (prompt M1): six
+// words or the 52 characters, or "skip" to pair without the check.
+func (d *dialog) fingerprintStep(ctx context.Context, hubURL string) error {
+	agent.WriteHubFingerprintPrompt(d.t.Out, hubURL)
+	for {
+		ans, err := d.ask(ctx, agent.HubFingerprintPrompt)
+		if err != nil {
+			return err
+		}
+		m, done, reply := agent.HubFingerprintAnswer(ans)
+		if reply != "" {
+			d.say("%s", reply)
+		}
+		if done {
+			d.w.SetHubFingerprint(m.String())
+			return nil
 		}
 	}
 }
@@ -420,10 +482,10 @@ func (d *dialog) pairStep(ctx context.Context) (PairOutcome, error) {
 	}
 	switch {
 	case out.Paired && out.Already:
-		d.say("This Worker is already paired to %s.", out.Owner)
+		d.say("This Worker is already paired to %s.", proto.SafeText(out.Owner, 128))
 	case out.Paired:
 		if !tw.sawPaired() {
-			d.say("paired to %s", out.Owner)
+			d.say("paired to %s", proto.SafeText(out.Owner, 128))
 		}
 	case out.Skipped == "unavailable":
 		d.say("Pairing is not available here. Run `minion worker pair` to get a pairing code.")
@@ -444,7 +506,7 @@ func (d *dialog) finish(res Result) {
 	}
 	switch {
 	case res.Pairing.Paired:
-		d.say("  Pairing: paired to %s", res.Pairing.Owner)
+		d.say("  Pairing: paired to %s", proto.SafeText(res.Pairing.Owner, 128))
 	case res.Summary.Server != "":
 		d.say("  Pairing: not paired yet (run `minion worker pair`)")
 	}

@@ -43,6 +43,9 @@ func startStatusWorker(t *testing.T, hubURL string, hub *identity.Key) (*client.
 	lp.socketPath = func() (string, error) { return sock, nil }
 	dialer := &scriptDialer{}
 	r := NewRegistry()
+	if err := RegisterLifecycle(r); err != nil {
+		t.Fatal(err)
+	}
 	for _, m := range []struct {
 		name  string
 		order int
@@ -125,6 +128,36 @@ func TestLocalSocketServesTheLiveConnectorStatus(t *testing.T) {
 	got = statusReply(t, c)
 	if got.State == string(ConnConnected) || got.LastError == "" || got.LastErrorAt == "" {
 		t.Fatalf("retrying reply = %+v", got)
+	}
+}
+
+func TestLocalVerifyHubAppliesChangesOnlyToTheProbedWorker(t *testing.T) {
+	hub, _ := identity.GenerateKey()
+	other, _ := identity.GenerateKey()
+	c, run := startStatusWorker(t, "https://hub.example:8443", hub)
+	ctx := context.Background()
+	instance := statusReply(t, c).Instance
+	args := LocalVerifyHubArgs{Instance: "previous", Fingerprint: other.Fingerprint().Words()}
+	if _, err := c.Call(ctx, OpLocalVerifyHub, args); proto.CodeOf(err) != proto.CodeConflict {
+		t.Fatalf("stale instance: %v", err)
+	}
+	enrollments, _ := Lookup[*Enrollments](run.rt)
+	if e, ok, err := enrollments.Load(ctx); err != nil || !ok || e.Check() == store.HubCheckMismatch {
+		t.Fatalf("stale instance changed the enrollment: %+v, %v, %v", e, ok, err)
+	}
+	args.Instance = instance
+	if _, err := c.Call(ctx, OpLocalVerifyHub, args); err != nil {
+		t.Fatal(err)
+	}
+	connector, _ := Lookup[*Connector](run.rt)
+	eventually(t, func() bool { return connector.Status().Reason == ReasonQuarantined })
+	args.Forget, args.Fingerprint = true, string(hub.Fingerprint())
+	if _, err := c.Call(ctx, OpLocalVerifyHub, args); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool { return connector.Status().Reason == ReasonNotEnrolled })
+	if f, err := ForgottenHubs(run.dir); err != nil || len(f) != 1 || f[0] != args.Fingerprint {
+		t.Fatalf("forget record = %v, %v", f, err)
 	}
 }
 

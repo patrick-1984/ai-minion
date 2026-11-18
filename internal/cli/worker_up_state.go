@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // maxConfigBytes is the size limit of the Worker config file (config.LoadFile
@@ -68,6 +71,62 @@ func (s *upState) close() {
 }
 
 func (s *upState) configPath() string { return filepath.Join(s.dir, workerConfigName) }
+
+func (s *upState) saveHubFingerprint(fingerprint string) (string, error) {
+	if s.root == nil {
+		return writeWorkerSettings(s.dir, map[string]string{config.KeyHubFingerprint: fingerprint})
+	}
+	file, err := s.load()
+	if err != nil {
+		return "", err
+	}
+	file.Set(config.KeyHubFingerprint, fingerprint)
+	return s.save(file)
+}
+
+// enrolled checks the target state without letting SQLite open files in a
+// user-controlled directory as root. Copy the WAL too, since it can contain
+// the latest enrollment.
+func (s *upState) enrolled(ctx context.Context) (bool, error) {
+	if s.root == nil {
+		return enrolledReadOnly(ctx, s.dir)
+	}
+	dir, err := s.scratch()
+	if err != nil {
+		return false, err
+	}
+	if err := s.copyDBFile(dir, store.DBFile); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := s.copyDBFile(dir, store.DBFile+"-wal"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	return enrolledReadOnly(ctx, dir)
+}
+
+func (s *upState) copyDBFile(dir, name string) error {
+	src, err := s.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	info, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("the Worker state file %s is not a regular file", filepath.Join(s.dir, name))
+	}
+	dst, err := os.OpenFile(filepath.Join(dir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(dst, src)
+	return errors.Join(err, dst.Close())
+}
 
 // load reads the config file of the state.
 func (s *upState) load() (*config.ConfigFile, error) {

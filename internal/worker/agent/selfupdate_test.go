@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -215,7 +216,7 @@ func TestCrashGuardCommitsAfterAStableConnection(t *testing.T) {
 	tick := make(chan time.Time)
 	done := make(chan struct{})
 	go func() {
-		commitAfter(context.Background(), dir, "v0.9.1", func() bool { return true }, tick)
+		commitAfter(context.Background(), dir, "v0.9.1", func() updateHealth { return healthConnected }, tick)
 		close(done)
 	}()
 	start := time.Now()
@@ -462,5 +463,127 @@ func TestRuntimeHoldsTheStateLockBeforeThePreStartHooks(t *testing.T) {
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 	if !held {
 		t.Fatal("the pre-start hook ran without the state lock held")
+	}
+}
+
+// A quarantined Worker (or one whose pairing was removed) does not connect on
+// purpose: the update is committed at once, so that no rollback restores the
+// pre-migration database and the previous binary, which would connect to the
+// disputed Hub again.
+func TestCrashGuardCommitsWhileQuarantined(t *testing.T) {
+	dir := t.TempDir()
+	if err := writePending(dir, pendingRecord{From: "v0.10.0", To: "v0.11.0"}); err != nil {
+		t.Fatal(err)
+	}
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		commitAfter(context.Background(), dir, "v0.11.0", func() updateHealth {
+			return connectorHealth(Status{State: ConnIdle, Reason: ReasonQuarantined}, dir)
+		}, tick)
+		close(done)
+	}()
+	tick <- time.Now()
+	<-done
+	if _, ok := readPending(dir); ok {
+		t.Fatal("a quarantined Worker did not commit the update")
+	}
+}
+
+func TestConnectorHealth(t *testing.T) {
+	dir := t.TempDir()
+	if got := connectorHealth(Status{State: ConnIdle, Reason: ReasonNotEnrolled}, dir); got != healthNone {
+		t.Fatalf("unpaired without a removal record = %v, want none", got)
+	}
+	if got := connectorHealth(Status{State: ConnBackoff}, dir); got != healthNone {
+		t.Fatalf("backoff = %v, want none", got)
+	}
+	if got := connectorHealth(Status{State: ConnConnected}, dir); got != healthConnected {
+		t.Fatalf("connected = %v", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ForgottenHubFile), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := connectorHealth(Status{State: ConnIdle, Reason: ReasonNotEnrolled}, dir); got != healthTrustHold {
+		t.Fatalf("pairing removed with --forget = %v, want trust hold", got)
+	}
+}
+
+// The guard never rolls back over a pairing removed with --forget: the
+// previous release would enroll again from a configured invitation key.
+func TestCrashGuardKeepsAForgottenPairing(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	exe := filepath.Join(bin, "minion")
+	for name, body := range map[string]string{exe: "new", exe + ".old": "old"} {
+		if err := os.WriteFile(name, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ForgottenHubFile), []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log := slog.New(slog.NewTextHandler(&logBuf{}, nil))
+	now := time.Now()
+	if err := writePending(dir, pendingRecord{From: "v0.10.0", To: "v0.11.0", At: now}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i <= guardMaxStarts; i++ {
+		if _, restart := guardOnStart(log, dir, exe, "v0.11.0", now.Add(time.Duration(i)*time.Second)); restart {
+			t.Fatalf("rolled back on start %d over a removed pairing", i+1)
+		}
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "new" {
+		t.Fatalf("exe = %q, want the new binary kept", b)
+	}
+	if _, ok := readPending(dir); ok {
+		t.Fatal("guard not cleared")
+	}
+}
+
+func TestCrashGuardKeepsNewerTrustState(t *testing.T) {
+	for _, change := range []string{"quarantine", "forget and re-pair"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			f := newCheckFixture(t, "", "")
+			dir := f.enr.stateDir
+			exe := filepath.Join(t.TempDir(), "minion")
+			for name, body := range map[string]string{exe: "new", exe + ".old": "old"} {
+				if err := os.WriteFile(name, []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now()
+			r := pendingRecord{From: "v0.10.0", To: "v0.11.0", At: now}
+			if err := writePending(dir, r); err != nil {
+				t.Fatal(err)
+			}
+			other, err := identity.GenerateKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if change == "quarantine" {
+				if _, err := VerifyHub(ctx, f.enr, mustMatcher(t, string(other.Fingerprint()))); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := ForgetHub(ctx, f.enr, f.hub.Fingerprint()); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.enr.Commit(ctx, Enrollment{Pin: identity.Pin{Pub: other.Public()}}); err != nil {
+					t.Fatal(err)
+				}
+				if forgotten, err := ForgottenHubs(dir); err != nil || len(forgotten) != 0 {
+					t.Fatalf("forgotten Hub record after re-pair = %v, %v", forgotten, err)
+				}
+			}
+			for i := 0; i <= guardMaxStarts; i++ {
+				if _, restart := guardOnStart(f.log, dir, exe, r.To, now.Add(time.Duration(i)*time.Second)); restart {
+					t.Fatalf("rolled back on start %d after %s", i+1, change)
+				}
+			}
+			if b, _ := os.ReadFile(exe); string(b) != "new" {
+				t.Fatalf("exe = %q, want the new binary kept", b)
+			}
+		})
 	}
 }

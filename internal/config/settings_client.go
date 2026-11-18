@@ -3,10 +3,16 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 // Names of the settings of the Hub client: the command line (minion, mn)
@@ -21,6 +27,16 @@ const (
 	// KeyHubWorker is the Worker a Hub call is routed to when the arguments
 	// name none (MINION_HUB_WORKER, --hub-worker).
 	KeyHubWorker = "hub_worker"
+	// KeyHubTLSPin is the TLS key pin (or pins) of the Hub
+	// (MINION_HUB_TLS_PIN, --hub-tls-pin). When set it replaces the
+	// verification of the certificate chain for this client.
+	KeyHubTLSPin = "hub_tls_pin"
+	// KeyHubTLSPins are the TLS key pins that the interactive offer saved in
+	// the config file, one entry per Hub origin (scheme://host:port, see
+	// [PinOrigin]): "<origin>=<pin>[;<pin>]", entries separated by spaces.
+	// The entry of the origin in use applies; a pin trusted for one Hub never
+	// replaces or serves another one.
+	KeyHubTLSPins = "hub_tls_pins"
 )
 
 // APIKeyFileEnv is the environment variable that names the file of the API key.
@@ -71,6 +87,20 @@ func declareClient(r *Registry) {
 		Choices: []string{"true", "false"},
 	})
 	r.Declare(Setting{
+		Key:   KeyHubTLSPin,
+		Scope: ScopeWorker,
+		Help: "TLS key pin of the Hub, sha256//<base64> as curl --pinnedpubkey takes it; several are separated by \";\". " +
+			"When set, this client accepts exactly a Hub certificate with that key, whoever signed it, instead of verifying " +
+			"the certificate chain. Take the value from the \"TLS key pin\" line of \"minion hub identity --words\" on the Hub host",
+	})
+	r.Declare(Setting{
+		Key:   KeyHubTLSPins,
+		Scope: ScopeWorker,
+		Help: "TLS key pins saved when you trust a Hub's key at the prompt, one entry per Hub origin: " +
+			"<scheme>://<host>:<port>=<pin>[;<pin>], entries separated by spaces. The entry of the Hub in use applies " +
+			"(hub_tls_pin given by flag or environment comes first); a pin saved for one Hub is never used for another",
+	})
+	r.Declare(Setting{
 		Key:   KeyHubWorker,
 		Scope: ScopeWorker,
 		Help: "Id (UUIDv7) of the Worker that runs the operations whose arguments name none, such as sessions_list and " +
@@ -91,6 +121,9 @@ type ClientHub struct {
 	CAFile string
 	// Insecure turns the certificate verification off for this client.
 	Insecure bool
+	// TLSPin is the TLS key pin setting as given (one or more sha256//...
+	// separated by ";"); empty when unset. The client parses it.
+	TLSPin string
 	// Worker is the id (UUIDv7) of the default Worker of target-less Worker
 	// operations; empty when none is set. It is never a name.
 	Worker string
@@ -200,6 +233,30 @@ func ResolveClientHub(res *Resolver) (ClientHub, error) {
 	if c.Insecure, err = strconv.ParseBool(ins.Value); err != nil {
 		return c, fmt.Errorf("setting %q (%s): invalid value %q, expected true or false", KeyHubInsecure, ins.Source, ins.Value)
 	}
+	pin, err := res.Resolve(KeyHubTLSPin)
+	if err != nil {
+		return c, err
+	}
+	// Only trimmed here: the kernel package config does not import identity;
+	// client.NewHub refuses a malformed pin before anything is sent.
+	c.TLSPin = strings.TrimSpace(pin.Value)
+	if c.TLSPin == "" || pin.Source == SourceFile {
+		// A pin saved for this Hub's origin applies; one given by flag or
+		// environment comes first.
+		pins, err := resolveHubTLSPins(res)
+		if err != nil {
+			return c, err
+		}
+		if c.URL != "" && len(pins) > 0 {
+			origin, err := PinOrigin(c.URL)
+			if err != nil {
+				return c, fmt.Errorf("setting %q (%s): %w", KeyHubURL, hubURL.Source, err)
+			}
+			if p, ok := pins[origin]; ok {
+				c.TLSPin = p
+			}
+		}
+	}
 	w, err := res.Resolve(KeyHubWorker)
 	if err != nil {
 		return c, err
@@ -208,4 +265,127 @@ func ResolveClientHub(res *Resolver) (ClientHub, error) {
 	// a Worker id before anything is sent, and says so without repeating it.
 	c.Worker = strings.TrimSpace(w.Value)
 	return c, nil
+}
+
+func resolveHubTLSPins(res *Resolver) (map[string]string, error) {
+	saved, err := res.Resolve(KeyHubTLSPins)
+	if err != nil {
+		return nil, err
+	}
+	pins, err := ParseHubTLSPins(saved.Value)
+	if err != nil {
+		return nil, fmt.Errorf("setting %q (%s): %w", KeyHubTLSPins, saved.Source, err)
+	}
+	if saved.Source != SourceEnv || res.File == nil {
+		return pins, nil
+	}
+	raw, _, err := res.File.Lookup(KeyHubTLSPins)
+	if err != nil {
+		return nil, fmt.Errorf("setting %q (%s): %w", KeyHubTLSPins, SourceFile, err)
+	}
+	filePins, err := ParseHubTLSPins(raw)
+	if err != nil {
+		return nil, fmt.Errorf("setting %q (%s): %w", KeyHubTLSPins, SourceFile, err)
+	}
+	maps.Copy(filePins, pins)
+	return filePins, nil
+}
+
+// PinOrigin is the origin a saved TLS pin belongs to: scheme://host:port
+// with a lower-case ASCII host and numeric port (443 for https, 80 for http).
+// Every path of one origin reaches the same TLS endpoint.
+func PinOrigin(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", errors.New("not a Hub URL with a host")
+	}
+	return pinOrigin(u)
+}
+
+func pinOrigin(u *url.URL) (string, error) {
+	host := u.Hostname()
+	if host == "" || u.User != nil {
+		return "", errors.New("not a Hub URL with a host and no credentials")
+	}
+	scheme := strings.ToLower(u.Scheme)
+	var port uint64
+	switch scheme {
+	case "https":
+		port = 443
+	case "http":
+		port = 80
+	default:
+		return "", errors.New("the Hub URL must start with https:// or http://")
+	}
+	if explicit := u.Port(); explicit != "" {
+		n, err := strconv.ParseUint(explicit, 10, 16)
+		if err != nil {
+			return "", errors.New("the Hub URL has an invalid port")
+		}
+		port = n
+	}
+	if _, err := netip.ParseAddr(host); err != nil && !isASCII(host) {
+		// Only a Unicode host is converted (as the HTTP client does when it
+		// dials); an ASCII host is kept as is, so private names such as
+		// hub_dev.example keep working.
+		host, err = idna.Lookup.ToASCII(host)
+		if err != nil || host == "" {
+			return "", errors.New("the Hub URL has an invalid host")
+		}
+	}
+	return (&url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(strings.ToLower(host), strconv.FormatUint(port, 10)),
+	}).String(), nil
+}
+
+// ParseHubTLSPins reads the value of hub_tls_pins: entries
+// "<origin>=<pins>" separated by white space. A malformed entry is an error,
+// never skipped: a pin that silently disappears would fall back to the
+// certificate check.
+func ParseHubTLSPins(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, e := range strings.Fields(v) {
+		origin, pins, ok := strings.Cut(e, "=")
+		if !ok || pins == "" {
+			return nil, errors.New("an entry is not <scheme>://<host>:<port>=<pin>")
+		}
+		u, err := url.Parse(origin)
+		if err != nil || u.Path != "" || u.ForceQuery || u.RawQuery != "" || strings.Contains(origin, "#") {
+			return nil, errors.New("an entry does not start with an origin <scheme>://<host>:<port>")
+		}
+		norm, err := pinOrigin(u)
+		if err != nil {
+			return nil, err
+		}
+		if prev, dup := out[norm]; dup && prev != pins {
+			return nil, errors.New("two entries name the origin " + norm + " with different pins")
+		}
+		out[norm] = pins
+	}
+	return out, nil
+}
+
+// FormatHubTLSPins is the value of hub_tls_pins for pins (origin to pins),
+// sorted by origin.
+func FormatHubTLSPins(pins map[string]string) string {
+	keys := make([]string, 0, len(pins))
+	for k := range pins {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+pins[k])
+	}
+	return strings.Join(parts, " ")
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

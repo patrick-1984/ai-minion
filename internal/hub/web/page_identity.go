@@ -165,7 +165,6 @@ type IdentityPage struct {
 	WebLockedUntil int64
 	WebRetry       int64
 	WebAttempts    int64
-	RootShort      string
 }
 
 // Crumbs implements [Crumbed].
@@ -214,9 +213,6 @@ func identityData(r *http.Request, c OpCaller) (any, error) {
 		p.WebRetry = st.Web.RetryAfterSecs
 	}
 	p.WebAttempts = st.Web.AttemptsThisHour
-	if len(st.RootFingerprint) > 12 {
-		p.RootShort = st.RootFingerprint[:12]
-	}
 	return p, nil
 }
 

@@ -34,7 +34,7 @@
 
 {{define "workers_results"}}<p class="result-count" data-summary="{{.WorkersText}}">{{.WorkersText}}{{if .Filter.Active}} shown{{end}}.</p>
 {{if .Notice}}<p class="notice notice-info" role="status">{{.Notice}}</p>
-{{end}}{{if .PendingWorkers}}<p class="notice notice-warning" role="status" data-pending-banner>{{.PendingWorkers}} {{if eq .PendingWorkers 1}}worker is{{else}}workers are{{end}} waiting for approval. A new worker gets no operations until its owner or an admin approves it: compare the fingerprint, name and source address with the machine you started, then approve it, or remove it if you do not know it.</p>
+{{end}}{{if .PendingWorkers}}<p class="notice notice-warning" role="status" data-pending-banner>{{.PendingWorkers}} {{if eq .PendingWorkers 1}}worker is{{else}}workers are{{end}} waiting for approval. A new worker gets no operations until its owner or an admin approves it: compare all six words of the fingerprint, the name and the source address with the machine you started, then approve it, or remove it if you do not know it.</p>
 {{end}}{{if .UpdatableWorkers}}<form method="post" action="/workers/update-all" hx-post="/workers/update-all" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update {{.UpdatableWorkers}} Workers to this Hub's release? Each installs the signed release and restarts; tmux sessions keep running." class="row-actions" data-update-all>
   {{if .ScopeAll}}<input type="hidden" name="scope" value="all">{{end}}
   <button type="submit" class="btn btn-secondary" data-control="update-all">Update all outdated ({{.UpdatableWorkers}})</button>

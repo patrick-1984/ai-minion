@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -44,6 +45,10 @@ const (
 
 // pendingFile is the crash-guard record in the state directory.
 const pendingFile = "update-pending.json"
+
+// updateEnrollmentFile names the trial during which a Hub enrollment changed.
+// A rollback of that trial could restore the earlier enrollment from backup.
+const updateEnrollmentFile = "update-enrollment"
 
 // exitRestart is the exit code that asks the service manager (systemd
 // Restart=always, launchd KeepAlive, the Windows service recovery) to start
@@ -289,15 +294,66 @@ func writePending(dir string, r pendingRecord) error {
 }
 
 func readPending(dir string) (pendingRecord, bool) {
+	r, err := loadPending(dir)
+	return r, err == nil
+}
+
+func loadPending(dir string) (pendingRecord, error) {
 	b, err := os.ReadFile(filepath.Join(dir, pendingFile))
 	if err != nil {
-		return pendingRecord{}, false
+		return pendingRecord{}, err
 	}
 	var r pendingRecord
-	if json.Unmarshal(b, &r) != nil {
-		return pendingRecord{}, false
+	err = json.Unmarshal(b, &r)
+	return r, err
+}
+
+// protectEnrollmentFromRollback records the pending trial before a new
+// enrollment can replace the old one or clear its forget record. The marker
+// belongs to this trial only, so later updates can still roll back.
+func protectEnrollmentFromRollback(dir string) error {
+	if dir == "" {
+		return nil
 	}
-	return r, true
+	r, err := loadPending(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the pending update before recording the Hub enrollment: %w", err)
+	}
+	if err := identity.WritePrivate(filepath.Join(dir, updateEnrollmentFile), []byte(r.At.UTC().Format(time.RFC3339Nano))); err != nil {
+		return fmt.Errorf("record the enrollment for the update guard: %w", err)
+	}
+	return nil
+}
+
+func rollbackTrustHold(ctx context.Context, dir string, r pendingRecord) (bool, error) {
+	if _, err := os.Lstat(filepath.Join(dir, ForgottenHubFile)); !errors.Is(err, os.ErrNotExist) {
+		return err == nil, err
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, updateEnrollmentFile))
+	if err == nil {
+		at, err := time.Parse(time.RFC3339Nano, string(raw))
+		if err != nil || at.Equal(r.At) {
+			return err == nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+
+	if _, err := os.Lstat(filepath.Join(dir, store.DBFile)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	st, err := store.OpenReadOnlyContext(ctx, dir)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = st.Close() }()
+	return st.HubQuarantined(ctx)
 }
 
 // guardOnStart runs once when the Worker starts, before the modules. For a
@@ -331,6 +387,25 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 	if len(failed) < guardMaxStarts {
 		r.Starts = append(failed, now.Unix())
 		_ = writePending(dir, r)
+		return nil, false
+	}
+	// Pairing can write from another process, so keep the enrollment locked
+	// from the trust check through any restore.
+	ctx := context.Background()
+	unlock, err := NewEnrollments(nil, dir).lockState(ctx)
+	if err != nil {
+		log.Error("cannot lock the Hub enrollment; rollback waits for the next start", "error", err)
+		return nil, false
+	}
+	defer unlock()
+	hold, err := rollbackTrustHold(ctx, dir, r)
+	if err != nil {
+		log.Error("cannot read the Hub trust state; rollback waits for the next start", "error", err)
+		return nil, false
+	}
+	if hold {
+		log.Warn("the updated Worker keeps failing to start; rollback would undo a Hub trust decision", "to", r.To)
+		_ = os.Remove(filepath.Join(dir, pendingFile))
 		return nil, false
 	}
 	old := exe + ".old"
@@ -371,16 +446,44 @@ func restoreOld(exe, old string) error {
 	return nil
 }
 
+// updateHealth is what the crash guard learns from the connector on a tick.
+type updateHealth int
+
+const (
+	// healthNone: neither connected nor deliberately stopped.
+	healthNone updateHealth = iota
+	// healthConnected: a live Hub connection.
+	healthConnected
+	// healthTrustHold: the Worker deliberately does not connect because the
+	// operator quarantined its Hub (verify-hub) or removed the pairing
+	// (--forget). That is a decision of this release, not a crash: the update
+	// is committed at once, because a rollback would restore the
+	// pre-migration database and the previous binary, which know neither the
+	// quarantine nor the removal and would connect to the disputed Hub again.
+	healthTrustHold
+)
+
 // commitAfter clears the guard once the new binary ran with a live Hub
-// connection for updateCommitAfter.
-func commitAfter(ctx context.Context, dir, running string, connected func() bool, tick <-chan time.Time) {
+// connection for updateCommitAfter, or at once when the Worker holds a trust
+// decision (healthTrustHold).
+func commitAfter(ctx context.Context, dir, running string, health func() updateHealth, tick <-chan time.Time) {
+	commit := func() {
+		if r, ok := readPending(dir); ok && r.To == running {
+			_ = os.Remove(filepath.Join(dir, pendingFile))
+		}
+	}
 	var since time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-tick:
-			if !connected() {
+			switch health() {
+			case healthTrustHold:
+				commit()
+				return
+			case healthConnected:
+			default:
 				since = time.Time{}
 				continue
 			}
@@ -388,9 +491,7 @@ func commitAfter(ctx context.Context, dir, running string, connected func() bool
 				since = now
 			}
 			if now.Sub(since) >= updateCommitAfter {
-				if r, ok := readPending(dir); ok && r.To == running {
-					_ = os.Remove(filepath.Join(dir, pendingFile))
-				}
+				commit()
 				return
 			}
 		}

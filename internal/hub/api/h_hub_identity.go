@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -115,7 +116,8 @@ func statusResult(st hubid.Status) ops.HubIdentityStatusResult {
 	}
 	out := ops.HubIdentityStatusResult{
 		State: state, StateLabel: label, PassphraseSet: st.PassphraseSet, Serving: st.Serving,
-		RootFingerprint: st.RootFingerprint, OpFingerprint: st.OpFingerprint, Serial: st.Serial,
+		RootFingerprint: st.RootFingerprint, RootFingerprintWords: identity.Fingerprint(st.RootFingerprint).Words(),
+		OpFingerprint: st.OpFingerprint, Serial: st.Serial,
 		NotBefore: ts(st.NotBefore), NotAfter: ts(st.NotAfter), DaysLeft: st.DaysLeft,
 		Warning: string(st.Warning), Expired: st.Expired, MigratedFrom06: st.MigratedFrom06,
 		LastOp: st.LastOp, LastOpAt: ts(st.LastOpAt),

@@ -75,6 +75,8 @@ services:
       MINION_STATE_DIR: /data
       MINION_SERVER: ${MINION_SERVER:-https://hub.example.com}
       MINION_INVITE_KEY_FILE: /run/secrets/minion_invite_key
+      # Accept only this Hub (52 characters from minion hub identity --words on the Hub host).
+      # MINION_HUB_FINGERPRINT: ${MINION_HUB_FINGERPRINT:-}
       # What the Hub may see: all, none or later. A container has no terminal
       # to ask on, so a Worker that has no saved choice needs it: give it on the
       # FIRST start (MINION_SHARE_EXISTING=later docker compose ... up -d). The

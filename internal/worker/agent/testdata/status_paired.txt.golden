@@ -1,18 +1,22 @@
-Version:             v0.1.0
-Name:                lab-pi
-Mode:                Hub
-Hub URL:             https://hub.example:8443
-Connection:          connected (since 2026-11-10T12:30:00Z)
-Last error:          none
-Hub fingerprint:     gr2q7gf5lh6pzfdnurnkvputhpqvjjfvbfhbysv7ikdgkbptzf7a
-Worker fingerprint:  ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq
-Owner:               paired to alice
-Worker id:           w1
-Approval:            approved
-Pairing code:        none pending
-Share mode:          select (build, docs)
-Preview only:        no
-Run mode:            unknown (only a running Worker knows it)
-Session host:        unknown (only a running Worker knows it)
-tmux socket:         /run/user/1000/tmux-1000/default
-Sessions:            3
+Version:                    v0.1.0
+Name:                       lab-pi
+Mode:                       Hub
+Hub URL:                    https://hub.example:8443
+Connection:                 connected (since 2026-11-10T12:30:00Z)
+Last error:                 none
+Hub fingerprint:            crucial-position-tower-kingdom-panther-layer
+Hub fingerprint (full):     gr2q7gf5lh6pzfdnurnkvputhpqvjjfvbfhbysv7ikdgkbptzf7a
+Hub check:                  not verified: compare with the Hub host (minion hub identity --words), then run minion worker verify-hub <the 52 characters>
+TLS:                        known only to the running Worker
+Worker fingerprint:         health-scale-voice-thing-october-bench
+Worker fingerprint (full):  ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq
+Owner:                      paired to alice
+Worker id:                  w1
+Approval:                   approved
+Pairing code:               none pending
+Share mode:                 select (build, docs)
+Preview only:               no
+Run mode:                   unknown (only a running Worker knows it)
+Session host:               unknown (only a running Worker knows it)
+tmux socket:                /run/user/1000/tmux-1000/default
+Sessions:                   3

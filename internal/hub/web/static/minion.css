@@ -99,6 +99,8 @@ h2 { font-size: 17px; font-weight: 650; }
 h3 { font-size: 14px; font-weight: 650; }
 p { margin: 0 0 12px; }
 code, pre, kbd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.93em; }
+/* Fingerprint words (six BIP39 words joined with "-"): one line, monospace, never broken inside a word. */
+.fp-words { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.93em; font-weight: 600; white-space: nowrap; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-subtle); border: 1px solid var(--border);
   border-radius: var(--r-md); padding: 12px; margin: 0 0 12px; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }

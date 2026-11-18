@@ -99,9 +99,14 @@ type WorkerRow struct {
 	// for a pending Worker only).
 	Pending     bool
 	Fingerprint string
-	EnrollAddr  string
-	ApproveURL  string
-	RemoveURL   string
+	// FingerprintWords is the fingerprint as six words, the form compared.
+	FingerprintWords string
+	EnrollAddr       string
+	// HubCheck is how the connected Worker checked this Hub (its signed
+	// hello, v0.11.0); empty when unknown. See HubCheckText.
+	HubCheck   string
+	ApproveURL string
+	RemoveURL  string
 	// NeverConnected is true while the Worker has never connected to the Hub;
 	// RepairURL is then the post of the "Re-issue pairing" button (design
 	// 12.3), filled by [newWorkerView] for the owner or an administrator only.
@@ -151,6 +156,27 @@ type WorkerRow struct {
 	// the session list does not show.
 	Sessions []SessionRow
 	Disclose bool
+}
+
+// HubCheckText is what the approval page says about how the Worker checked
+// this Hub. The Hub keeps the last report of each Worker; without one (a
+// Worker that has not connected yet, or one older than 0.11) it says that
+// the check is unknown.
+func (w WorkerRow) HubCheckText() string {
+	switch w.HubCheck {
+	case "":
+		return "unknown: the Worker has not reported how it checked this Hub (it does when it connects); " +
+			"ask its operator to run minion worker verify-hub on the Worker"
+	case "none":
+		return "not verified: the Worker did not check the fingerprint of this Hub (minion worker verify-hub on the Worker checks it)"
+	case "fingerprint":
+		return "the Worker matched the fingerprint of this Hub that its operator gave"
+	case "invite":
+		return "the Worker matched the fingerprint of this Hub from the invitation key"
+	case "mismatch":
+		return "the Worker's operator gave a fingerprint that does not match"
+	}
+	return ""
 }
 
 // SessionHostText is the session host as people read it: "psmux (visible):
@@ -1172,8 +1198,8 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	for _, w := range wl.Workers {
 		d.Workers = append(d.Workers, WorkerRow{
 			ID: w.ID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
-			Pending: w.Pending, Fingerprint: w.Fingerprint, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
-			Build: w.Build, UpdateBlock: w.UpdateBlock,
+			Pending: w.Pending, Fingerprint: w.Fingerprint, FingerprintWords: w.FingerprintWords, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
+			HubCheck: w.HubCheck, Build: w.Build, UpdateBlock: w.UpdateBlock,
 			SessionHost: w.SessionHost, SessionsHidden: w.SessionsHidden, SessionHostReason: w.SessionHostReason,
 			NewSessionRefused: w.NewSessionRefused,
 			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,

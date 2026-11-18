@@ -454,7 +454,7 @@ func TestWorkerSetupRealCheckKeepsTheBasePathAndTheSelfSignedTruth(t *testing.T)
 		t.Fatalf("setup: %v\n%s", err, r.stdout)
 	}
 	out := r.stdout.String()
-	for _, want := range []string{"Checking " + addr, "SHA-256", "WARNING", "self-signed"} {
+	for _, want := range []string{"Checking " + addr, "Hub fingerprint", "WARNING", "self-signed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}

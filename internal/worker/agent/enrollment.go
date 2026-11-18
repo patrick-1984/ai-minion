@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -55,8 +56,29 @@ type Enrollment struct {
 	// serial seen and the hash of that certificate (design section 6). Its
 	// Root is Pin.Pub for a stored enrollment.
 	Ratchet transport.Ratchet
+	// HubCheck is how the pinned Hub was checked (store.HubCheck*; "" means
+	// none), HubCheckAt when, and HubCheckAnchor the full fingerprint the
+	// operator checked ("" when none was). They belong to the pin: a pin that
+	// moves along a signed transition chain keeps them, a new enrollment sets
+	// them again.
+	HubCheck       string
+	HubCheckAt     time.Time
+	HubCheckAnchor string
+	// HubCheckLineage are the full fingerprints (separated by spaces) of the
+	// keys the pin moved through by verified signed transitions since the
+	// anchor was checked, the current pin not included (TUF: each one is an
+	// authenticated predecessor of the pin).
+	HubCheckLineage string
 	// EnrolledAt is when the enrollment was first stored (set by the store).
 	EnrolledAt time.Time
+}
+
+// Check returns HubCheck, with "" read as none.
+func (e Enrollment) Check() string {
+	if e.HubCheck == "" {
+		return store.HubCheckNone
+	}
+	return e.HubCheck
 }
 
 // Welcome returns the welcome data stored in e.
@@ -71,13 +93,14 @@ func (e Enrollment) Welcome() store.WelcomeInfo {
 type EnrollmentRepo interface {
 	SaveEnrollment(ctx context.Context, e store.Enrollment) error
 	LoadEnrollment(ctx context.Context) (store.Enrollment, error)
-	UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64) error
-	UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, certSHA256 []byte) error
+	UpdatePin(ctx context.Context, pub ed25519.PublicKey, seq uint64, passed ...ed25519.PublicKey) error
+	UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq, maxSerial uint64, certSHA256 []byte, passed ...ed25519.PublicKey) error
 	SavePairResume(ctx context.Context, r store.PairResume) error
 	LoadPairResume(ctx context.Context) (store.PairResume, error)
 	DeletePairResume(ctx context.Context) (bool, error)
 	DeletePairResumeIf(ctx context.Context, pairingID, code string) (bool, error)
 	UpdateWelcome(ctx context.Context, w store.WelcomeInfo) error
+	SetHubCheck(ctx context.Context, pub ed25519.PublicKey, check, anchor string) error
 	WipeEnrollment(ctx context.Context) (bool, error)
 }
 
@@ -204,9 +227,149 @@ func (e *Enrollments) Load(ctx context.Context) (enr Enrollment, ok bool, err er
 		Owner:      row.Owner,
 		Kind:       row.Kind,
 		Policy:     HubPolicy{PreviewOnly: row.PreviewOnly},
+		HubCheck:   row.HubCheck,
+		HubCheckAt: row.HubCheckAt,
 		EnrolledAt: row.EnrolledAt,
+
+		HubCheckAnchor:  row.HubCheckAnchor,
+		HubCheckLineage: row.HubCheckLineage,
 	}, true, nil
 }
+
+// SetHubCheck records how the pinned Hub was checked (store.HubCheck*) and
+// the fingerprint that was checked (anchor, "" for none), but only while pin
+// is still the stored pin: a check of one pin never marks another
+// (store.ErrNotEnrolled otherwise). Entering or leaving the mismatch state
+// moves the generation, so a running connector starts over and applies it.
+//
+// A stored mismatch (the quarantine) is never left this way: the change is
+// refused with [ErrQuarantined], under the lock, so that a start that read
+// the enrollment before `verify-hub` stored the mismatch cannot undo it. Only
+// [VerifyHub] with the full pinned key leaves it (and --forget removes it).
+func (e *Enrollments) SetHubCheck(ctx context.Context, pin identity.Pin, check, anchor string) error {
+	return e.setHubCheck(ctx, pin, check, anchor, false)
+}
+
+// ErrQuarantined is returned by [Enrollments.SetHubCheck] for a change that
+// would leave the stored mismatch.
+var ErrQuarantined = errors.New("agent: this Worker is quarantined (hub_check mismatch)")
+
+func (e *Enrollments) setHubCheck(ctx context.Context, pin identity.Pin, check, anchor string, leaveQuarantine bool) error {
+	return e.locked(ctx, func() error {
+		cur, ok, err := e.Load(ctx)
+		if err != nil {
+			return err
+		}
+		if !ok || !pin.Pub.Equal(cur.Pin.Pub) {
+			return store.ErrNotEnrolled
+		}
+		if cur.Check() == store.HubCheckMismatch && check != store.HubCheckMismatch && !leaveQuarantine {
+			return ErrQuarantined
+		}
+		if (cur.Check() == store.HubCheckMismatch) != (check == store.HubCheckMismatch) {
+			if err := e.bumpLocked(); err != nil {
+				return err
+			}
+		}
+		return e.repo.SetHubCheck(ctx, pin.Pub, check, anchor)
+	})
+}
+
+// ForgetPin removes the enrollment when its pinned Hub key is exactly pinned
+// (`minion worker verify-hub --forget --pinned`): the Worker must pair or
+// enroll again and never re-trusts the disputed pin. It returns
+// store.ErrNotEnrolled when the Worker is not paired and errPinnedDiffers
+// when the stored pin is another key.
+func (e *Enrollments) ForgetPin(ctx context.Context, pinned identity.Fingerprint) error {
+	return e.locked(ctx, func() error {
+		cur, ok, err := e.Load(ctx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return store.ErrNotEnrolled
+		}
+		if !pinned.Matches(cur.Pin.Pub) {
+			return ErrPinnedDiffers
+		}
+		if _, err := e.repo.DeletePairResume(ctx); err != nil {
+			return fmt.Errorf("delete the pairing resume record: %w", err)
+		}
+		// The removal is recorded first: a start must not enroll again by
+		// itself from an invitation key that is still configured (a mounted
+		// file, an environment variable, a service's command line), which
+		// would restore this pairing with the same Worker key.
+		if err := e.markForgotten(forgottenKeys(pinned, cur)...); err != nil {
+			return err
+		}
+		_, err = e.wipe(ctx)
+		return err
+	})
+}
+
+// ForgottenHubFile is the file in the state directory that records the Hub
+// keys removed with `minion worker verify-hub --forget` (one full fingerprint
+// per line). While it exists, a start does not enroll from a configured
+// invitation key; a new pairing or enrollment by an explicit command (worker
+// pair, the setup wizard) and `minion worker reset` remove it.
+const ForgottenHubFile = "hub-forgotten"
+
+// forgottenKeys are the keys of the removed pairing: the pin and the keys it
+// was reached from (the checked anchor and the signed lineage), so the record
+// names the Hub's root as well as its current key.
+func forgottenKeys(pinned identity.Fingerprint, cur Enrollment) []string {
+	keys := []string{string(pinned)}
+	if cur.HubCheckAnchor != "" {
+		keys = append(keys, cur.HubCheckAnchor)
+	}
+	return append(keys, strings.Fields(cur.HubCheckLineage)...)
+}
+
+func (e *Enrollments) markForgotten(keys ...string) error {
+	if e.stateDir == "" {
+		return nil
+	}
+	prev, _ := ForgottenHubs(e.stateDir)
+	lines := prev
+	for _, k := range keys {
+		if !slices.Contains(lines, k) {
+			lines = append(lines, k)
+		}
+	}
+	if err := identity.WritePrivate(filepath.Join(e.stateDir, ForgottenHubFile), []byte(strings.Join(lines, "\n")+"\n")); err != nil {
+		return fmt.Errorf("agent: record the removed Hub key: %w", err)
+	}
+	return nil
+}
+
+// ForgottenHubs returns the Hub keys removed with --forget on the state
+// directory (none when the file does not exist).
+func ForgottenHubs(stateDir string) ([]string, error) {
+	raw, err := os.ReadFile(filepath.Join(stateDir, ForgottenHubFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(raw)), nil
+}
+
+// ClearForgottenHubs removes the record of removed Hub keys (an explicit new
+// enrollment, or a reset).
+func ClearForgottenHubs(stateDir string) error {
+	if stateDir == "" {
+		return nil
+	}
+	if err := os.Remove(filepath.Join(stateDir, ForgottenHubFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("agent: remove %s: %w", ForgottenHubFile, err)
+	}
+	return nil
+}
+
+// ErrPinnedDiffers is returned by [Enrollments.ForgetPin] when the given
+// fingerprint is not the stored pin.
+var ErrPinnedDiffers = errors.New("agent: the fingerprint is not the pinned Hub key")
 
 // Commit stores the pin and the welcome data together, replacing an earlier
 // enrollment, and wakes a connector that waits for one. Enrollment calls it
@@ -236,7 +399,10 @@ func (e *Enrollments) commit(ctx context.Context, enr Enrollment) error {
 	if err := e.saveHubURL(enr.HubURL); err != nil {
 		return err
 	}
-	return e.repo.SaveEnrollment(ctx, store.Enrollment{
+	if err := protectEnrollmentFromRollback(e.stateDir); err != nil {
+		return err
+	}
+	if err := e.repo.SaveEnrollment(ctx, store.Enrollment{
 		HubPub:      enr.Pin.Pub,
 		PinSeq:      enr.Pin.Seq,
 		WorkerID:    enr.WorkerID,
@@ -246,7 +412,19 @@ func (e *Enrollments) commit(ctx context.Context, enr Enrollment) error {
 		PreviewOnly: enr.Policy.PreviewOnly,
 		MaxSerial:   enr.Ratchet.MaxSerial,
 		CertSHA256:  enr.Ratchet.CertSHA256,
-	})
+
+		HubCheck:        enr.Check(),
+		HubCheckAt:      enr.HubCheckAt,
+		HubCheckAnchor:  enr.HubCheckAnchor,
+		HubCheckLineage: enr.HubCheckLineage,
+	}); err != nil {
+		return err
+	}
+	// An explicit new enrollment ends the record of a removed pairing, but
+	// only once it is durably stored (the store commits with
+	// synchronous=FULL): a failed or interrupted save keeps the record, so a
+	// start can never enroll again from an invitation key of the removed Hub.
+	return ClearForgottenHubs(e.stateDir)
 }
 
 // RewritePin atomically replaces the pin after a transition chain was applied
@@ -286,12 +464,15 @@ func (e *Enrollments) SavePairResumeIfLive(ctx context.Context, gen uint64, r st
 
 // CommitRatchetIfLive is [Enrollments.CommitRatchetIf] with an expiry check
 // inside the guard, immediately before the write.
-func (e *Enrollments) CommitRatchetIfLive(ctx context.Context, gen uint64, pin identity.Pin, r transport.Ratchet, live func() bool) error {
+// passed are the keys the verified chain went through between the stored pin
+// and pin (they join the lineage of a checked enrollment).
+func (e *Enrollments) CommitRatchetIfLive(ctx context.Context, gen uint64, pin identity.Pin, r transport.Ratchet, live func() bool,
+	passed ...ed25519.PublicKey) error {
 	return e.lockedIf(ctx, gen, func() error {
 		if live != nil && !live() {
 			return errGuardExpired
 		}
-		return e.repo.UpdatePinRatchet(ctx, pin.Pub, pin.Seq, r.MaxSerial, r.CertSHA256)
+		return e.repo.UpdatePinRatchet(ctx, pin.Pub, pin.Seq, r.MaxSerial, r.CertSHA256, passed...)
 	})
 }
 

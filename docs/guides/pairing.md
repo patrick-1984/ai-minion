@@ -9,18 +9,61 @@ A Worker runs alone (Solo) until you give it a Hub. Two things join it to a Hub:
 On the machine that should become a Worker, as the Unix user whose sessions you serve:
 
 ```sh
-minion worker pair --server https://hub.example.com
+minion worker pair --server https://hub.example.com --hub-fingerprint <the 52 characters from the Hub host>
 ```
 
-The Worker shows a code like `MN-K7Q4-XY12` and waits. A Worker that runs (`minion worker run`, `minion worker up`, the service) with a Hub address, no pairing and no invitation key does the same by itself: it prints the code on the console and in the log, and connects as soon as the code is entered, without a restart. In the Hub, open **Workers**, choose **Add worker**, type the code (capital or small letters, with or without hyphens) and, if you like, a name. The Hub and the Worker confirm each other with the code, and the Worker appears in your space as a **private Worker**: it belongs to you. It starts **pending**: see [Approve a new Worker](#approve-a-new-worker).
+In a terminal without `--hub-fingerprint`, the Worker first asks for the Hub's fingerprint ([give the Worker the Hub fingerprint](#give-the-worker-the-hub-fingerprint)). Then it shows a code like `MN-K7Q4-XY12` and waits. A Worker that runs (`minion worker run`, `minion worker up`, the service) with a Hub address, no pairing and no invitation key does the same by itself: it prints the code on the console and in the log, and connects as soon as the code is entered, without a restart. In the Hub, open **Workers**, choose **Add worker**, type the code (capital or small letters, with or without hyphens) and, if you like, a name. The Hub and the Worker confirm each other with the code, and the Worker appears in your space as a **private Worker**: it belongs to you. It starts **pending**: see [Approve a new Worker](#approve-a-new-worker).
 
 - The code is valid for 10 minutes; a fresh one is shown when it expires or the Hub rejects it. It is printed on the console and in the log, so keep those logs private. (The other deliberately printed secret is the Hub's generated first administrator password, see [security](../security.md#credentials).)
-- The Worker does not look at the Hub's TLS certificate when it pairs: trust comes from the pairing handshake, and the Worker pins the Hub's identity key (its fingerprint is what `minion hub identity` prints; since 0.7.0 the pin is the Hub's root key, and the Hub proves it with a certificate, see [security](../security.md#two-keys-a-sealed-root-and-a-short-lived-operational-key)). A Worker can therefore pair through a proxy or a tunnel whose certificate it does not trust.
-- `minion worker join https://hub.example.com` is the same, and also keeps the address in the Worker's config file so that the Worker service connects to that Hub afterwards. A service that is already running keeps the address it started with: restart it.
+- The Worker does not rely on the Hub's TLS certificate when it pairs: it checks the Hub's fingerprint, and it pins the Hub's identity key (since 0.7.0 the pin is the Hub's root key, and the Hub proves it with a certificate, see [security](../security.md#two-keys-a-sealed-root-and-a-short-lived-operational-key)). A Worker can therefore pair through a proxy or a tunnel whose certificate it does not trust.
+- `minion worker join https://hub.example.com --hub-fingerprint <52 characters>` is the same, and also keeps the address and the fingerprint in the Worker's config file so that the Worker service connects to that Hub afterwards. A service that is already running keeps the address it started with: restart it.
 - A paired Worker refuses with `already_paired`. `--new-code` creates a new Worker key, wipes the old enrollment, revokes the old identity at its Hub and pairs again, after a confirmation unless you give `--yes`.
 - `minion worker setup` does the same inside its wizard.
 
 The pairing handshake has not had an independent cryptographic review yet; see [security](../security.md).
+
+### Give the Worker the Hub fingerprint
+
+Since 0.11.0 a Worker can be told which Hub it may pair with. It then refuses any other Hub before the code is used, whatever answers at the address and whatever certificate it shows. Read the fingerprint **on the Hub host**, not on a web page:
+
+```sh
+minion hub identity --words
+docker exec <hub container> minion hub identity --words
+```
+
+It prints six words (the **Hub fingerprint**), the 52 characters (the full fingerprint) and ready lines for a Worker. The six words are words from the BIP39 English word list (not a BIP39 mnemonic) for the first 66 bits of the fingerprint. A Hub before 0.11 has no `--words`: use the 52 characters that `minion hub identity` prints.
+
+Where a fingerprint is asked, give six words, separated by `-`, spaces or commas, in any letter case, or the 52 characters. The first four letters of each word are enough; a shorter token must be a whole word. The Worker always compares all six words. For copying and automation use the 52 characters.
+
+- **The setting** `hub_fingerprint`: `--hub-fingerprint`, `MINION_HUB_FINGERPRINT` or the config file. A malformed value stops the Worker from starting. `minion worker join` and the setup wizard save it together with the Hub address.
+- **The prompt.** `minion worker pair`, `join`, `setup` and the `up` wizard in a terminal without the setting show "NEW HUB - ENTER ITS FINGERPRINT", before any network check and before anything is changed. Enter alone asks again; `skip` pairs without the check; the end of input aborts.
+- **Unattended** (a service or a container without the setting): the Worker still pairs on first use, as before, logs a warning and shows the Hub as `not verified`.
+
+If another Hub answers, the Worker prints "HUB FINGERPRINT DOES NOT MATCH - NOT PAIRED" with the expected and the answering words, stores nothing and ends (exit status 1). Either the value or the address is wrong, or something in between answers in the Hub's place. If you already typed the code in the Hub, remove the pending Worker there that does not show this Worker's fingerprint.
+
+When pairing succeeds, the box "MINION WORKER PAIRED" shows, in this order: the **Owner** ("Not your account? Run: minion worker reset"), the Hub fingerprint as words and 52 characters with "It matched the fingerprint you gave." or "NOT VERIFIED ...", the [TLS path](reverse-proxy.md#what-a-worker-reports-behind-a-proxy), and the Worker fingerprint as words and 52 characters. Check the owner line: a correct Hub fingerprint does not prove which account claimed the Worker.
+
+An older Worker treats `--hub-fingerprint` as an unknown flag and ignores `MINION_HUB_FINGERPRINT` without a word.
+
+### Check a paired Worker: `verify-hub`
+
+```sh
+minion worker verify-hub <the 52 characters, or the six words>
+```
+
+It needs no running Worker. If the value matches the paired Hub, the Hub is recorded as checked. If it does not match, the mismatch is stored (a quarantine): the command prints "HUB FINGERPRINT DOES NOT MATCH - NOT CONNECTING" and exits with status 1, and the Worker does not connect to that Hub, also after restarts. A running Worker of v0.11.0 or later drops its connection within its next poll; the command says so only once that Worker confirmed it, and otherwise tells you to check `minion worker status`. A running older Worker cannot apply the check: the command then changes nothing and asks you to stop it first (`minion worker down`). A Worker that is not paired exits with status 1.
+
+The quarantine ends only with `verify-hub <the 52 characters>` of the paired key (six words are not enough here) or with `--forget` below. The setting `hub_fingerprint` never ends it, also when it names the paired key.
+
+On a paired Worker the setting `hub_fingerprint` is compared in the same way at every start. A value that names the key this Worker was checked with, or any key the Hub moved through since by verified signed master-key rotations, still connects and logs a warning to update the setting.
+
+To give up a disputed pairing, remove it (like `ssh-keygen -R`) and pair again:
+
+```sh
+minion worker verify-hub --forget --pinned <the 52 characters of the pinned key>
+```
+
+`--pinned` must name the pinned key exactly (`minion worker status` shows it). The Worker never trusts that key again by itself: the removal is recorded in the state directory, `invite_key` is removed from the config file, and a start does not enroll again from an invitation key that is still configured (a mounted `MINION_INVITE_KEY_FILE`, `--invite-key`); it stops with a message instead. Pair again with `minion worker pair --hub-fingerprint <value>`, or run `minion worker reset` before you enroll with a new invitation key.
 
 ### If pairing is interrupted
 
@@ -49,7 +92,7 @@ minion worker up --server https://hub.example.com --invite-key ./invite_key --sh
 
 Prefer the **file**. `--invite-key` takes the key itself, a file that holds it, or `-` to read it from standard input, and the environment form is `MINION_INVITE_KEY_FILE` (a file; `MINION_INVITE_KEY` holds the key itself). A key given literally on the command line is **visible in the process list** of the machine. The file must be owned by the user who runs the Worker and closed to everyone else. A key left on disk is a credential until it expires or you revoke it: delete the file once the Worker is enrolled (for a Worker in Docker, empty it in place instead, as [its guide](../install/worker-docker.md) shows), or revoke the key.
 
-The key carries the Hub's identity fingerprint, so a Worker that enrolls with it pins the right Hub without trusting any TLS certificate.
+The key carries the Hub's identity fingerprint, so a Worker that enrolls with it pins the Hub the key names without trusting any TLS certificate. That protects only when the key reaches the Worker without passing through a page a proxy can rewrite: create it on the Hub host ([below](#when-you-do-not-want-to-rely-on-the-proxy)). If the Worker also has `hub_fingerprint`, both must name the same Hub, or it stops before anything is sent.
 
 A key does not make a Worker usable by itself: a Worker that enrolls with it is **pending** until you approve it, so a stolen or leaked key cannot operate anything.
 
@@ -59,8 +102,8 @@ Every new Worker starts **pending**, whichever way it joined: pairing code, invi
 
 The owner of the Worker, or an administrator, approves it:
 
-- **In the Hub:** the **Workers** page shows a *pending approval* badge and a banner. Each pending Worker shows its **fingerprint** (the fingerprint of its key), the **host name** it announced and the **source address** it enrolled from; compare them with the machine you just started, then choose **Approve**, or **Remove** if you do not recognise it. The Worker reconnects within moments and then receives operations.
-- **From the command line:** `minion hub worker approve <fingerprint|id>` with `MINION_HUB_URL` and `MINION_API_KEY_FILE` set. The argument is a Worker **id** or a **fingerprint**, and the two need different permissions. An id is approved directly and needs only *manage* (or *operate*) on that Worker, so an administrator's API key with *manage* alone can approve exactly the Worker that automation started, if it knows its id. A fingerprint is first looked up in the Workers list, so that form also needs *read* on the Worker. `minion workers_list --all` shows ids and fingerprints.
+- **In the Hub:** the **Workers** page shows a *pending approval* badge and a banner. Each pending Worker shows its **fingerprint** (six words and the 52 characters of its key; the Worker console shows the same in its box: compare all six words), the **host name** it announced and the **source address** it enrolled from; compare them with the machine you just started, then choose **Approve**, or **Remove** if you do not recognise it. The Worker reconnects within moments and then receives operations.
+- **From the command line:** `minion hub worker approve <fingerprint|id>` (the fingerprint as 52 characters or six words; words match pending Workers only) with `MINION_HUB_URL` and `MINION_API_KEY_FILE` set. The argument is a Worker **id** or a **fingerprint**, and the two need different permissions. An id is approved directly and needs only *manage* (or *operate*) on that Worker, so an administrator's API key with *manage* alone can approve exactly the Worker that automation started, if it knows its id. A fingerprint is first looked up in the Workers list, so that form also needs *read* on the Worker. `minion workers_list --all` shows ids and fingerprints.
 - **Through the API:** the operation `worker_approve` (`worker_id`, and optionally the `fingerprint` you looked at; the Hub approves only if it matches). It needs *operate* or *manage* on the Worker; a Worker identity, and an API key bound to that very Worker, can never approve it.
 
 The Worker's log says `this Worker is waiting for approval` while it waits. Both the enrollment and the approval are in the audit log (`worker.enroll` with outcome `pending`, then `worker.approve`).
@@ -70,6 +113,22 @@ Workers that existed when you upgraded to 0.6 were approved by the upgrade. Invi
 ### The infrastructure key file
 
 `MINION_INFRA_INVITE_KEY_FILE` names a file with one Hub-wide key that enrolls infrastructure Workers (owned by `infra_default_owner`, or the first administrator). The Hub keeps it as a row of the invitation list, keyed by the hash of its secret, with an **expiry** (`infra_invite_key_days`, default 30 days from the first load; `0` means none and the Hub warns at every start). The setting applies when the Hub first records a key: changing it later does **not** change the expiry of an existing key. To change the lifetime, set `infra_invite_key_days` **and** rotate the secret in the key file (or revoke the existing key), a **use counter** and a **revocation** that sticks. Restarting the Hub with the same file never resets the expiry or the counter and never undoes a revocation. Administrators see the row in **Invitations** and revoke it there (or with `invitation_revoke`) like any key; to rotate, put a new key in the file. Workers it enrolls are pending like all others. The key is bound to the Hub identity, so a Hub that has no root key yet (a new Hub in the state B0, before the passphrase is set) **refuses to start** while `MINION_INFRA_INVITE_KEY_FILE` is set, and its message tells you to unset it, start the Hub, set the Hub passphrase and set the variable again ([Hub identity](hub-identity.md)). A Hub migrated from 0.6 already has its root and starts with the file.
+
+## When you do not want to rely on the proxy
+
+Everything a browser shows passes through the proxy in front of the Hub. These steps, run on the Hub host, keep it out of pairing.
+
+- **Read the fingerprint:** `minion hub identity --words` (Docker: `docker exec <hub container> minion hub identity --words`).
+- **Enter a pairing code on the Hub host**, so that no proxy sees it. The key file is an API key of the user who will own the Worker:
+
+  ```sh
+  MINION_API_KEY_FILE=<key file> minion pairing_claim --code MN-XXXX-XXXX \
+    --hub-url https://127.0.0.1:8443 --hub-ca-file <data dir>/tls/cert.pem
+  ```
+
+  With `MINION_TLS=off` use `--hub-url http://127.0.0.1:8443` and no CA file.
+- **Create an invitation key there** (`minion invitation_create --mode one_time --ttl 1h`, with the same Hub flags) and copy it to the Worker yourself. The fingerprint inside the key is then authentic, which makes a Docker Worker safe without a prompt.
+- **Approve there:** `minion hub worker approve <the six words from the Worker console>`, with the same Hub flags.
 
 ## Choosing what the Hub sees
 
@@ -108,6 +167,6 @@ Ways to choose (any of them; the last change wins):
 
 ## After pairing
 
-- **Workers** in the Hub lists the Worker with its owner, kind and whether it is online, or pending approval. `minion worker status` shows the same from the Worker's side: the connection state, the pinned Hub fingerprint and the share choice.
+- **Workers** in the Hub lists the Worker with its owner, kind and whether it is online, or pending approval. `minion worker status` shows the same from the Worker's side: the connection state, the Hub fingerprint (words and full), the Hub check, the TLS path, the Worker fingerprint and the share choice ([troubleshooting](troubleshooting.md#worker-status-as-json)).
 - To end a pairing, remove the Worker in the Hub: it becomes a tombstone, its trust and bound API keys are deleted, and the Worker is told to wipe its pairing. From the machine's side, `minion worker reset` (the Hub is not told: remove the Worker in the Hub as well).
 - Hub administrators can rename, reassign and restrict Workers (to preview only, which refuses every write to a session while it is on).

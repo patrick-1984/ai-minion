@@ -34,18 +34,26 @@ func TestPairingShowsCodeAndFingerprintInABox(t *testing.T) {
 	out := f.out.String()
 	for _, want := range []string{
 		consoleRule + "\n  MINION WORKER PAIRING\n" + consoleRule + "\n",
-		"  Pairing code: " + codeRE.FindString(out) + "\n",
-		"  Worker fingerprint: " + fpr + "\n",
+		"  Pairing code:     " + codeRE.FindString(out) + " (valid for 10 minutes)\n",
+		"  Worker fingerprint: " + key.Fingerprint().Words() + "\n      " + fpr + "\n",
 		consoleRule + "\n  MINION WORKER PAIRED\n" + consoleRule + "\n",
-		"  paired to alice\n",
+		"  Owner:            alice\n",
+		"Not your account? Run: minion worker reset",
+		"NOT CHECKED",
+		"NOT VERIFIED",
 		"Waiting for approval",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("console lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Count(out, "Worker fingerprint: "+fpr) != 2 {
+	if strings.Count(out, "Worker fingerprint: "+key.Fingerprint().Words()) != 2 {
 		t.Errorf("the fingerprint must be in both boxes:\n%s", out)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if len(l) > 80 {
+			t.Errorf("box line longer than 80 columns: %q", l)
+		}
 	}
 }
 

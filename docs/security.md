@@ -55,7 +55,7 @@ Consequences you should draw:
 
 ## Pairing and the Hub identity
 
-A Worker pins the Hub's **root key** (its fingerprint) when it pairs or enrolls; later it trusts that key, not any TLS certificate. A proxy, a tunnel or a certificate change therefore does not weaken or break it, and a Hub that cannot prove it holds the pinned root is not trusted. A master-key rotation is a signed chain that Workers follow without pairing again. The operations that touch the root (set the passphrase, re-issue the certificate, rotate the master key, change the passphrase) need the administrator role, a sign-in from the last five minutes, the CSRF token, a same-origin request and an effective HTTPS connection (or the administrator's explicit confirmation on the page that a trusted HTTPS reverse proxy is in front; the correct fix is `MINION_TRUSTED_PROXIES` with `X-Forwarded-Proto`); API keys cannot perform them, and a passphrase is never stored or logged. See [Hub identity](guides/hub-identity.md).
+A Worker pins the Hub's **root key** (its fingerprint) when it pairs or enrolls; later it trusts that key, not any TLS certificate. Since 0.11.0 you can give the Worker the fingerprint you expect before the first contact, so that it pairs only with that Hub ([trust without certificates](#trust-without-certificates)). A proxy, a tunnel or a certificate change therefore does not weaken or break it, and a Hub that cannot prove it holds the pinned root is not trusted. A master-key rotation is a signed chain that Workers follow without pairing again. The operations that touch the root (set the passphrase, re-issue the certificate, rotate the master key, change the passphrase) need the administrator role, a sign-in from the last five minutes, the CSRF token, a same-origin request and an effective HTTPS connection (or the administrator's explicit confirmation on the page that a trusted HTTPS reverse proxy is in front; the correct fix is `MINION_TRUSTED_PROXIES` with `X-Forwarded-Proto`); API keys cannot perform them, and a passphrase is never stored or logged. See [Hub identity](guides/hub-identity.md).
 
 **The pairing handshake (a password-authenticated key exchange over the pairing code) has not had an independent cryptographic review yet.** Until it has, pair on networks and with codes you would also trust for a password prompt, keep the code short-lived (it expires after 10 minutes), and prefer invitation keys created in the Hub for unattended enrollment.
 
@@ -88,6 +88,43 @@ The Worker checks the certificate itself. It refuses a Hub whose certificate sta
 ### Upgrading from 0.6
 
 Protocol 3.0 needs the Hub and all Workers upgraded together. A 0.6 Hub already has its identity key in plain form; the upgraded Hub keeps that key as the root, so no Worker is paired again and every invitation key still works, but **the Hub does not serve Workers until the owner has set the passphrase** (web banner "Set the Hub passphrase", or `minion hub identity set-passphrase`). That seals the key and issues the first certificate. Copies of the old plain key remain in your pre-0.7 backups, so a **master-key rotation after the upgrade is recommended**: upgrade the Hub, set the passphrase, upgrade the Workers and let them connect, then rotate (`minion hub identity rotate-master`); Workers follow the chain at their next connect. A rotation revokes unused invitation keys, and it cannot undo a theft that happened before it. Details: [Hub identity](guides/hub-identity.md).
+
+## Trust without certificates
+
+A Worker does not trust a Hub because of its TLS certificate. The chain is: the **Hub fingerprint** names the root key; the root signs the certificate of the operational key; the operational key signs every handshake; the channel keys come from that handshake. A proxy, or anyone in between, can hold a valid certificate for the address, but not the root. Release 0.11.0 adds no cryptography to this chain: one comparison before the pairing code is used, and one optional, informational member in the welcome.
+
+What the Worker compares the Hub with, shown as **Hub check** in `minion worker status`:
+
+| Hub check | Where the expected fingerprint came from |
+| --- | --- |
+| `matched the fingerprint you gave` | the setting `hub_fingerprint`, the answer to the prompt, or `minion worker verify-hub` |
+| `from the invitation key` | the fingerprint inside the invitation key |
+| `not verified` | nowhere: the Worker paired on first use, with whichever Hub answered |
+| `DOES NOT MATCH the fingerprint you gave - not connecting` | the Worker is paired with another Hub than the one you named; it stays disconnected |
+
+### What is protected against a proxy that turns malicious
+
+The case that matters is a proxy that ends TLS with a valid certificate (yours, or a company's TLS inspection) and then works against you.
+
+| Situation | A malicious TLS-terminating proxy |
+| --- | --- |
+| The Worker's expected fingerprint was read on the **Hub host** (or on a Worker that was checked that way), or the invitation key was created there and reached the Worker **without passing through a page the proxy can rewrite** | **safe**: it cannot read, change, replay or impersonate the Worker channel. It can relay, delay or drop the connection, and that raises no alarm. |
+| The fingerprint or the invitation key was copied from the **web UI** | **not protected**: a proxy that rewrites that page can plant its own Hub, and the Worker cannot tell. |
+| First use without an expected fingerprint (`not verified`) | **not protected** when the proxy also sees the typed code. `minion worker verify-hub` with the value from the Hub host detects it later and stops the Worker. |
+| A paired Worker, and the proxy appears later | **safe**, with an alarm: the Worker does not connect ("HUB IDENTITY CHANGED"). |
+| The web UI in a browser | **not protected**. |
+| The CLI and MCP with an API key | **not protected** without a TLS key pin. With `hub_tls_pin` read on the Hub host, a TLS endpoint with another key is refused ([API keys and MCP](guides/api-keys-and-mcp.md#use-a-key)). |
+| The Hub side: which Workers exist and are approved | **not protected**: a proxy that holds an administrator's web session can enroll and approve Workers of its own, or misuse the genuine Hub. |
+
+More limits, stated plainly:
+
+- **A correct Hub fingerprint does not prove which account claimed the Worker.** The paired box shows the **Owner** first; that line is the check ("Not your account? Run: minion worker reset").
+- The pairing code has 20 secret bits: one online guess per code, then the code is retired. With an expected fingerprint a proxy that guesses or sees the code still cannot pair the Worker with another Hub.
+- **The TLS path is information, never a verdict** ([reverse proxy](guides/reverse-proxy.md#what-a-worker-reports-behind-a-proxy)). "keys match" is a statement about a key: a proxy that holds the Hub's own TLS key shows the same. The Worker channel never depends on TLS.
+- The words are the first 66 bits of the fingerprint: six words from the BIP39 English word list (not a BIP39 mnemonic). Finding a key with the same six words takes about 2^66 work against a fixed key, roughly 230 GPU-years with incremental key generation. Fewer words are much weaker, so the Worker always compares all six; copied and automated values use the full 52 characters.
+- The handshake still awaits an independent cryptographic review ([above](#pairing-and-the-hub-identity)).
+
+The recipes that keep the proxy out of these steps are in [pairing](guides/pairing.md#when-you-do-not-want-to-rely-on-the-proxy).
 
 ## Updates
 

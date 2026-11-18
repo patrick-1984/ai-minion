@@ -9,6 +9,8 @@ import (
 	"net"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
@@ -77,6 +79,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	// connector. The pairing code has no source in the Worker yet, so the
 	// status says "unknown" for it instead of "none".
 	conn, _ := lookupService[*Connector](env.rt)
+	enrollments, _ := lookupService[*Enrollments](env.rt)
 	hostInfo, _ := lookupService[*SessionHostInfo](env.rt)
 	health, _ := lookupService[*SessionListHealth](env.rt)
 	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health}
@@ -93,8 +96,11 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		return nil
 	}
 	srv, err := localapi.New(localapi.Config{
-		Executor: localExecutor{ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop},
-		Logger:   log,
+		Executor: localExecutor{
+			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
+			instance: uuid.NewString(), enrollments: enrollments,
+		},
+		Logger: log,
 	})
 	if err != nil {
 		_ = l.Close()
@@ -117,6 +123,9 @@ type localExecutor struct {
 	// reaches the Executor (it is not a catalog op).
 	live     LiveSource
 	stateDir string
+	// Online Hub checks use the running Worker's enrollment and lifecycle lock.
+	instance    string
+	enrollments *Enrollments
 	// pipe serves the pipe ops of a local call (Story 7.3); nil refuses them.
 	pipe *PipeService
 	// calls returns the call client that forwards a session-control request
@@ -151,11 +160,15 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		return json.RawMessage(`{"stopping":true}`), nil
 	}
 	if rq.Op == OpLocalStatus && l.live != nil {
-		raw, err := statusOp(ctx, l.stateDir, l.live)
+		raw, err := statusOp(ctx, l.stateDir, l.instance, l.live)
 		if err != nil {
 			return nil, l.protoError(rq.Op, err)
 		}
 		return raw, nil
+	}
+	if rq.Op == OpLocalVerifyHub {
+		raw, err := l.verifyHub(ctx, rq.Args)
+		return raw, l.protoError(rq.Op, err)
 	}
 	ctx = WithProgress(ctx, progress)
 	if forwardsToHub(rq.Op, rq.Args, l.ex.policy.WorkerID()) {

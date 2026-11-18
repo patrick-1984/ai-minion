@@ -49,6 +49,17 @@ type LiveStatusReply struct {
 	SessionsHidden    bool   `json:"sessions_hidden,omitempty"`
 	SessionHostReason string `json:"session_host_reason,omitempty"`
 	SessionsListError string `json:"sessions_list_error,omitempty"`
+	// Alarm and the TLS path of the latest connection (v0.11.0); an older
+	// Worker omits them.
+	Alarm   string `json:"alarm,omitempty"`
+	TLSPath string `json:"tls_path,omitempty"`
+	TLSLine string `json:"tls_line,omitempty"`
+	// HubCheckAware is true for a Worker that applies a stored hub_check
+	// mismatch (v0.11.0 or later): it stops connecting when `verify-hub`
+	// stores one. An older Worker omits it and would reconnect.
+	HubCheckAware bool `json:"hub_check_aware,omitempty"`
+	// Instance identifies this control socket server across status and writes.
+	Instance string `json:"instance,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -70,6 +81,10 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		SessionsHidden:     live.Host.Hidden,
 		SessionHostReason:  live.Host.Reason,
 		SessionsListError:  live.ListError,
+		Alarm:              c.Alarm,
+		TLSPath:            c.TLSPath,
+		TLSLine:            c.TLSLine,
+		HubCheckAware:      true,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -82,7 +97,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 
 // LiveStatus converts the reply back to a [LiveStatus].
 func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
-	c := Status{State: ConnState(r.State), Reason: r.Reason, LastError: r.LastError}
+	c := Status{State: ConnState(r.State), Reason: r.Reason, LastError: r.LastError, Alarm: r.Alarm, TLSPath: r.TLSPath, TLSLine: r.TLSLine}
 	c.Welcome.Owner, c.Welcome.WorkerID = r.Owner, r.WorkerID
 	if r.Pending != nil {
 		c.Welcome.Pending = *r.Pending
@@ -117,12 +132,14 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 }
 
 // statusOp serves [OpLocalStatus] from src.
-func statusOp(ctx context.Context, stateDir string, src LiveSource) (json.RawMessage, error) {
+func statusOp(ctx context.Context, stateDir, instance string, src LiveSource) (json.RawMessage, error) {
 	live, err := src.LiveStatus(ctx)
 	if err != nil {
 		return nil, internalErr("read the live status", err)
 	}
-	b, err := json.Marshal(NewLiveStatusReply(stateDir, live))
+	reply := NewLiveStatusReply(stateDir, live)
+	reply.Instance = instance
+	b, err := json.Marshal(reply)
 	if err != nil {
 		return nil, internalErr("encode the live status", err)
 	}

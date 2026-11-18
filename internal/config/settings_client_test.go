@@ -105,6 +105,40 @@ func TestResolveClientHubTakesTheKeyOnlyFromTheFileVariable(t *testing.T) {
 	}
 }
 
+func TestPinOriginCanonicalizesTheEndpoint(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://Hub.Example/path":          "https://hub.example:443",
+		"https://hub.example:0443/other":    "https://hub.example:443",
+		"https://B\u00fccher.example:00443": "https://xn--bcher-kva.example:443",
+		"https://XN--BCHER-KVA.example":     "https://xn--bcher-kva.example:443",
+		"http://[2001:DB8::1]:080":          "http://[2001:db8::1]:80",
+	} {
+		if got, err := PinOrigin(raw); err != nil || got != want {
+			t.Errorf("PinOrigin(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	if _, err := PinOrigin("ftp://hub.example:443"); err == nil {
+		t.Error("a URL with an unsupported scheme and explicit port was accepted")
+	}
+}
+
+func TestResolveClientHubMergesPinsByOrigin(t *testing.T) {
+	file := MapSource{KeyHubTLSPins: "https://hub-a.example:443=file-a https://hub-b.example:443=file-b https://b\u00fccher.example:0443=file-idna"}
+	env := map[string]string{"MINION_HUB_TLS_PINS": "https://hub-a.example:443=env-a"}
+	for raw, want := range map[string]string{
+		"https://hub-a.example":         "env-a",
+		"https://hub-b.example":         "file-b",
+		"https://hub-c.example":         "",
+		"https://xn--bcher-kva.example": "file-idna",
+	} {
+		env["MINION_HUB_URL"] = raw
+		got, err := ResolveClientHub(clientResolver(env, nil, file))
+		if err != nil || got.TLSPin != want {
+			t.Errorf("%s: pin %q, %v; want %q", raw, got.TLSPin, err, want)
+		}
+	}
+}
+
 func TestValidateHubURL(t *testing.T) {
 	for _, tc := range []struct {
 		in, out string
@@ -156,5 +190,19 @@ func TestHubURLThatLooksLikeAKeyIsRefusedAndNeverRepeated(t *testing.T) {
 		if _, err := ValidateHubURL(ok); err != nil {
 			t.Errorf("%s: %v", ok, err)
 		}
+	}
+}
+
+func TestPinOriginKeepsASCIIPrivateHostsAndAgreeingDuplicates(t *testing.T) {
+	got, err := PinOrigin("https://Hub_Dev.example/x")
+	if err != nil || got != "https://hub_dev.example:443" {
+		t.Fatalf("PinOrigin(hub_dev) = %q, %v", got, err)
+	}
+	m, err := ParseHubTLSPins("https://hub.example=sha256//AAAA https://hub.example:0443=sha256//AAAA")
+	if err != nil || m["https://hub.example:443"] != "sha256//AAAA" {
+		t.Fatalf("agreeing duplicates: %v, %v", m, err)
+	}
+	if _, err := ParseHubTLSPins("https://hub.example=sha256//AAAA https://hub.example:443=sha256//BBBB"); err == nil {
+		t.Fatal("conflicting duplicates were accepted")
 	}
 }

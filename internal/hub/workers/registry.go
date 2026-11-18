@@ -455,6 +455,10 @@ func CleanFacts(f transport.WorkerFacts) transport.WorkerFacts {
 	}
 	out.SessionsListErrorCode, out.SessionsListError = cleanReason(f.SessionsListErrorCode, f.SessionsListError, transport.ListErrorText, maxUpdateBlock)
 	out.DebugRemote = f.DebugRemote
+	switch f.HubCheck {
+	case "none", "fingerprint", "invite", "mismatch":
+		out.HubCheck = f.HubCheck
+	}
 	return out
 }
 

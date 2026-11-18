@@ -63,6 +63,9 @@ var (
 	ErrUnexpectedChain = errors.New("transport: transition chain is only allowed in connect mode")
 	// ErrFingerprintMismatch: the Hub key is not the one the invitation names.
 	ErrFingerprintMismatch = errors.New("transport: hub key does not match the invitation fingerprint")
+	// ErrExpectedHubMismatch: in pair_code or enroll_invite mode the Hub root
+	// is not the one the operator said to expect (WorkerConfig.ExpectHub).
+	ErrExpectedHubMismatch = errors.New("transport: hub key does not match the expected fingerprint")
 	// ErrBadSignature: a handshake or pake-confirm signature did not verify.
 	ErrBadSignature = errors.New("transport: handshake signature does not verify")
 	// ErrPairingConfirm: the CPace confirmation failed, usually a wrong code.
@@ -94,7 +97,7 @@ func ErrorCode(err error) proto.Code {
 		errors.Is(err, identity.ErrCertRootMismatch), errors.Is(err, identity.ErrCertBadSignature),
 		errors.Is(err, identity.ErrCertNotYetValid), errors.Is(err, identity.ErrCertExpired):
 		return proto.CodeUnauthenticated
-	case errors.Is(err, ErrPinMismatch), errors.Is(err, ErrFingerprintMismatch),
+	case errors.Is(err, ErrPinMismatch), errors.Is(err, ErrFingerprintMismatch), errors.Is(err, ErrExpectedHubMismatch),
 		errors.Is(err, ErrChainInvalid), errors.Is(err, ErrBadSignature):
 		return proto.CodeUnauthenticated
 	case errors.Is(err, ErrPairingConfirm):
@@ -104,6 +107,22 @@ func ErrorCode(err error) proto.Code {
 	}
 	return proto.CodeInternal
 }
+
+// HubKeyError is a refusal of the Hub's root key at step b of the Worker
+// handshake. It carries the key the peer presented, so that the Worker can
+// show which Hub answered. Unwrap gives the cause (ErrExpectedHubMismatch,
+// ErrPinMismatch or ErrChainInvalid), so errors.Is keeps working.
+type HubKeyError struct {
+	// Presented is the root key the peer sent in its hello.
+	Presented ed25519.PublicKey
+	// Err is the cause.
+	Err error
+}
+
+func (e *HubKeyError) Error() string { return e.Err.Error() }
+
+// Unwrap returns the cause.
+func (e *HubKeyError) Unwrap() error { return e.Err }
 
 // WorkerHello is the first handshake frame, sent by the Worker.
 type WorkerHello struct {
@@ -152,6 +171,11 @@ type WorkerFacts struct {
 	// SessionHost is what hosts the Worker's sessions: "tmux", "psmux" or
 	// "conpty" (v0.10.0). Empty means unknown (an older Worker).
 	SessionHost string `json:"session_host,omitempty"`
+	// HubCheck is how this Worker checked the Hub it connects to (v0.11.0):
+	// "none" (not verified), "fingerprint" or "invite". It is part of the
+	// signed hello, so the Hub can show it on the approval page. Empty means
+	// unknown (an older Worker).
+	HubCheck string `json:"hub_check,omitempty"`
 	// SessionsHidden is true when a new session would be hidden from the
 	// person: they could not see or join it from their own terminal (ConPTY
 	// inside the Worker, or a tmux/psmux server that is not their default
@@ -235,6 +259,11 @@ type WorkerConfig struct {
 	// HubFingerprint is the fingerprint from the invitation key
 	// (enroll_invite).
 	HubFingerprint identity.Fingerprint
+	// ExpectHub is the Hub fingerprint the operator expects (pair_code and
+	// enroll_invite): when set, the Hub root must match it before the first
+	// CPace message and before anything is accepted. It is ignored in connect
+	// mode, where the pin decides.
+	ExpectHub identity.FingerprintMatcher
 	// PairingCode is the code shown by this Worker (pair_code).
 	PairingCode identity.PairingCode
 	// Ratchet is the stored certificate memory: in connect mode the
@@ -273,6 +302,9 @@ type WorkerResult struct {
 	// or is new (other modes); the caller rewrites its stored pin atomically
 	// before relying on the connection.
 	PinChanged bool
+	// PinPassed are the keys the verified transition chain went through
+	// between the configured pin and Pin, neither end included (connect).
+	PinPassed []ed25519.PublicKey
 	// Cert is the Hub certificate validated in this handshake and OpPub its
 	// operational key: the key that signs a revoke on this connection and
 	// that was verified for sig_hub. CertSHA256 is the hash of its 153 bytes.
@@ -390,18 +422,25 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 
 	// Step b: the root. The candidate stays in memory until the commit.
 	pin := identity.Pin{Pub: bytes.Clone(hubPub)}
+	var passed []ed25519.PublicKey
 	switch cfg.Mode {
 	case ModeConnect:
-		if pin, err = resolvePin(cfg.Pin, hubPub, hub.Chain); err != nil {
-			return nil, err
+		if pin, passed, err = resolvePin(cfg.Pin, hubPub, hub.Chain); err != nil {
+			return nil, &HubKeyError{Presented: bytes.Clone(hubPub), Err: err}
 		}
 	case ModeEnrollInvite:
 		if !cfg.HubFingerprint.Matches(hubPub) {
 			return nil, ErrFingerprintMismatch
 		}
+		if !cfg.ExpectHub.IsZero() && !cfg.ExpectHub.Matches(hubPub) {
+			return nil, &HubKeyError{Presented: bytes.Clone(hubPub), Err: ErrExpectedHubMismatch}
+		}
 	case ModePairCode:
 		if len(cfg.Ratchet.Root) > 0 && !bytes.Equal(cfg.Ratchet.Root, hubPub) {
 			return nil, ErrResumeRootMismatch
+		}
+		if !cfg.ExpectHub.IsZero() && !cfg.ExpectHub.Matches(hubPub) {
+			return nil, &HubKeyError{Presented: bytes.Clone(hubPub), Err: ErrExpectedHubMismatch}
 		}
 	}
 	candidate := ed25519.PublicKey(pin.Pub)
@@ -497,6 +536,7 @@ func WorkerHandshake(conn net.Conn, cfg WorkerConfig) (res *WorkerResult, err er
 		TranscriptHash: hash,
 		Pin:            pin,
 		PinChanged:     cfg.Mode != ModeConnect || !bytes.Equal(pin.Pub, cfg.Pin.Pub) || pin.Seq != cfg.Pin.Seq,
+		PinPassed:      passed,
 		Cert:           cert,
 		OpPub:          bytes.Clone(cert.OpPub),
 		CertSHA256:     certHashV,
@@ -546,7 +586,10 @@ func checkLens(m map[string]struct{ got, want int }) error {
 // resolvePin applies the part of the Hub's chain that starts at the pinned
 // key and checks that the result is the key the Hub presented. Links before
 // the pinned key (older rotations the Worker already knows) are skipped.
-func resolvePin(pin identity.Pin, hubPub ed25519.PublicKey, chain []identity.Transition) (identity.Pin, error) {
+//
+// passed are the keys between the pinned key and the result that the
+// verified chain went through (neither end included).
+func resolvePin(pin identity.Pin, hubPub ed25519.PublicKey, chain []identity.Transition) (next identity.Pin, passed []ed25519.PublicKey, err error) {
 	var links []identity.Transition
 	for i, t := range chain {
 		if bytes.Equal(t.OldPub, pin.Pub) {
@@ -554,14 +597,17 @@ func resolvePin(pin identity.Pin, hubPub ed25519.PublicKey, chain []identity.Tra
 			break
 		}
 	}
-	next, err := identity.VerifyChain(pin, links)
+	next, err = identity.VerifyChain(pin, links)
 	if err != nil {
-		return identity.Pin{}, fmt.Errorf("%w: %w", ErrChainInvalid, err)
+		return identity.Pin{}, nil, fmt.Errorf("%w: %w", ErrChainInvalid, err)
 	}
 	if !bytes.Equal(next.Pub, hubPub) {
-		return identity.Pin{}, ErrPinMismatch
+		return identity.Pin{}, nil, ErrPinMismatch
 	}
-	return next, nil
+	for i := 0; i+1 < len(links); i++ {
+		passed = append(passed, bytes.Clone(links[i].NewPub))
+	}
+	return next, passed, nil
 }
 
 // workerPake runs the Worker side of the AD-8 exchange: pake.msg, pake.msg,

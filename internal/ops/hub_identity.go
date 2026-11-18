@@ -225,15 +225,18 @@ type IdentityScopeStatus struct {
 // database and needs no key file and no passphrase.
 type HubIdentityStatusResult struct {
 	// State is B0, B1, B2 or B3; StateLabel names it.
-	State           string     `json:"state"`
-	StateLabel      string     `json:"state_label"`
-	PassphraseSet   bool       `json:"passphrase_set"`
-	Serving         bool       `json:"serving"`
-	RootFingerprint string     `json:"root_fingerprint,omitempty"`
-	OpFingerprint   string     `json:"op_fingerprint,omitempty"`
-	Serial          uint64     `json:"serial,omitempty"`
-	NotBefore       *Timestamp `json:"not_before,omitempty"`
-	NotAfter        *Timestamp `json:"not_after,omitempty"`
+	State           string `json:"state"`
+	StateLabel      string `json:"state_label"`
+	PassphraseSet   bool   `json:"passphrase_set"`
+	Serving         bool   `json:"serving"`
+	RootFingerprint string `json:"root_fingerprint,omitempty"`
+	// RootFingerprintWords is the root fingerprint as six words (the
+	// operational key has no words: it changes at every re-issue).
+	RootFingerprintWords string     `json:"root_fingerprint_words,omitempty"`
+	OpFingerprint        string     `json:"op_fingerprint,omitempty"`
+	Serial               uint64     `json:"serial,omitempty"`
+	NotBefore            *Timestamp `json:"not_before,omitempty"`
+	NotAfter             *Timestamp `json:"not_after,omitempty"`
 	// DaysLeft is the whole days until not_after (negative once expired).
 	DaysLeft int `json:"days_left"`
 	// Warning is "", "warning" (30 days), "error" (7 days) or "expired".
