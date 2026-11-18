@@ -113,7 +113,7 @@ func TestHeaderEnvIsIgnoredWithAWarning(t *testing.T) {
 
 func TestParseHeaderLines(t *testing.T) {
 	h, err := ParseHeaderLines("# comment\n\nAuthorization: Bearer abc:def\r\nX-Scope-OrgID:  tenant \n")
-	if err != nil || h["Authorization"] != "Bearer abc:def" || h["X-Scope-OrgID"] != "tenant" || len(h) != 2 {
+	if err != nil || h["Authorization"] != "Bearer abc:def" || h["X-Scope-Orgid"] != "tenant" || len(h) != 2 {
 		t.Fatalf("h = %v, %v", h, err)
 	}
 	for in, line := range map[string]string{

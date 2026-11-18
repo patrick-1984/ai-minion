@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
+	"net/textproto"
 	"net/url"
 	"os"
 	"runtime"
@@ -195,6 +197,9 @@ func resolveSyslog(res *Resolver, files SinkFiles) (SyslogConfig, error) {
 	if err != nil {
 		return c, err
 	}
+	if err := credentialsFollowEndpoint(res, ep, KeySyslogEndpoint, KeySyslogClientKeyFile); err != nil {
+		return c, err
+	}
 	c.Digest = d.sum()
 	return c, nil
 }
@@ -249,8 +254,35 @@ func resolveOTLP(res *Resolver, files SinkFiles) (OTLPConfig, []string, error) {
 	if err != nil {
 		return c, nil, err
 	}
+	if err := credentialsFollowEndpoint(res, base, KeyOTelEndpoint, KeyOTelHeaders, KeyOTelClientKeyFile); err != nil {
+		return c, nil, err
+	}
 	c.Digest = d.sum()
 	return c, warn, nil
+}
+
+// credentialsFollowEndpoint refuses an endpoint from the Hub panel while a
+// credential of the same sink (headers, client key) comes from the
+// environment: the deployer set the credential for a destination, and a
+// panel edit of the endpoint alone must not send it to another one.
+func credentialsFollowEndpoint(res *Resolver, endpoint Resolved, endpointKey string, credKeys ...string) error {
+	if res.Role != ScopeHub || endpoint.Source != SourcePanel || strings.TrimSpace(endpoint.Value) == "" {
+		return nil
+	}
+	for _, k := range credKeys {
+		if _, ok := res.registry().Lookup(k); !ok {
+			continue
+		}
+		r, err := res.Resolve(k)
+		if err != nil {
+			return err
+		}
+		if r.Source == SourceEnv && r.Value != "" {
+			return fmt.Errorf("setting %q comes from the environment, so %q must come from the environment too (set %s); the panel cannot send that credential to another destination",
+				k, endpointKey, "MINION_"+strings.ToUpper(endpointKey))
+		}
+	}
+	return nil
 }
 
 func headerSettingOf(role Scope) string {
@@ -264,53 +296,62 @@ func headerSettingOf(role Scope) string {
 // signal path, else the per-signal variable as is, else the general variable
 // plus the signal path; "" when none is set.
 func otlpSignalURL(res *Resolver, base, signalEnv, path string) (string, error) {
-	join := func(b string) string { return strings.TrimRight(b, "/") + path }
+	join := func(u string) string { return strings.TrimRight(u, "/") + path }
 	if base != "" {
-		if err := checkHTTPURL(base); err != nil {
+		u, err := parseHTTPURL(base)
+		if err != nil {
 			return "", fmt.Errorf("setting %q: %v", KeyOTelEndpoint, err)
 		}
-		return join(base), nil
+		return join(u), nil
 	}
 	if v, ok := res.lookupEnv(signalEnv); ok && strings.TrimSpace(v) != "" {
-		if err := checkHTTPURL(strings.TrimSpace(v)); err != nil {
+		u, err := parseHTTPURL(strings.TrimSpace(v))
+		if err != nil {
 			return "", fmt.Errorf("%s: %v", signalEnv, err)
 		}
-		return strings.TrimSpace(v), nil
+		return u, nil
 	}
 	if v, ok := res.lookupEnv(EnvOTLPEndpoint); ok && strings.TrimSpace(v) != "" {
-		if err := checkHTTPURL(strings.TrimSpace(v)); err != nil {
+		u, err := parseHTTPURL(strings.TrimSpace(v))
+		if err != nil {
 			return "", fmt.Errorf("%s: %v", EnvOTLPEndpoint, err)
 		}
-		return join(strings.TrimSpace(v)), nil
+		return join(u), nil
 	}
 	return "", nil
 }
 
-// checkHTTPURL accepts an http or https URL with a host, without user
-// information, query or fragment. The messages never quote the value.
-func checkHTTPURL(raw string) error {
+// parseHTTPURL accepts an http or https URL with a host, without user
+// information, query, fragment (not even an empty "?" or "#") or
+// percent-encoded path characters (the exporter sends the decoded path), and
+// returns it rebuilt from its parsed parts (lower-case scheme). The messages
+// never quote the value.
+func parseHTTPURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return errors.New("not a valid URL")
+		return "", errors.New("not a valid URL")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return errors.New("the scheme must be http or https")
+		return "", errors.New("the scheme must be http or https")
 	}
 	if u.Host == "" || u.Hostname() == "" {
-		return errors.New("the URL has no host")
+		return "", errors.New("the URL has no host")
 	}
 	if u.User != nil {
-		return errors.New("the URL must not contain a user name or password; use headers")
+		return "", errors.New("the URL must not contain a user name or password; use headers")
 	}
-	if u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
-		return errors.New("the URL must not have a query or fragment")
+	if strings.ContainsAny(raw, "?#") || u.Opaque != "" {
+		return "", errors.New("the URL must not have a query or fragment")
+	}
+	if strings.Contains(u.EscapedPath(), "%") || u.RawPath != "" {
+		return "", errors.New("the URL path must not contain percent-encoded characters")
 	}
 	if p := u.Port(); p != "" {
 		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
-			return errors.New("the port is invalid")
+			return "", errors.New("the port is invalid")
 		}
 	}
-	return nil
+	return u.Scheme + "://" + u.Host + u.Path, nil
 }
 
 func checkHostPort(u *url.URL) error {
@@ -350,7 +391,9 @@ func resolveHeaders(res *Resolver, files SinkFiles, d *digest) (map[string]strin
 		}
 		data, err := files.ReadPrivate(strings.TrimSpace(p.Value))
 		if err != nil {
-			return nil, fmt.Errorf("setting %q: %v", KeyOTelHeadersPath, err)
+			// The path is not quoted: a mistake can put the header text
+			// itself into the setting.
+			return nil, fmt.Errorf("setting %q: %s", KeyOTelHeadersPath, fileProblem(err))
 		}
 		if len(data) > maxHeaderFileSize {
 			return nil, fmt.Errorf("setting %q: the file is larger than %d bytes", KeyOTelHeadersPath, maxHeaderFileSize)
@@ -358,6 +401,16 @@ func resolveHeaders(res *Resolver, files SinkFiles, d *digest) (map[string]strin
 		text = string(data)
 	} else {
 		key = KeyOTelHeaders
+		// The secret's file is read by the resolver; refuse a FIFO or a
+		// device first, whose read would block (also under the settings
+		// lock of a live change).
+		if st, ok := res.registry().Lookup(KeyOTelHeaders); ok {
+			if p, set := res.lookupEnv(st.FileEnvName()); set && p != "" {
+				if fi, err := os.Stat(p); err == nil && !fi.Mode().IsRegular() {
+					return nil, fmt.Errorf("setting %q: %s is not a regular file", KeyOTelHeaders, st.FileEnvName())
+				}
+			}
+		}
 		r, err := res.Resolve(KeyOTelHeaders)
 		if err != nil {
 			return nil, err
@@ -408,6 +461,10 @@ func ParseHeaderLines(text string) (map[string]string, error) {
 			if r < 0x20 && r != '\t' || r == 0x7f {
 				return nil, fmt.Errorf("line %d: the header value contains a control character", i+1)
 			}
+		}
+		name = textproto.CanonicalMIMEHeaderKey(name)
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("line %d: the header is already set on an earlier line (names are case-insensitive)", i+1)
 		}
 		out[name] = value
 	}
@@ -488,16 +545,27 @@ func resolveTLSFiles(res *Resolver, files SinkFiles, d *digest, isTLS bool, what
 	return roots, &pair, nil
 }
 
+// fileProblem describes a file error without its path.
+func fileProblem(err error) string {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "the file does not exist"
+	case errors.Is(err, fs.ErrPermission):
+		return "the file cannot be read (permission denied)"
+	}
+	return "the file is not a regular file of this user that only its owner can read (mode 0600), or it cannot be read"
+}
+
 // readBounded reads a regular file of at most max bytes. The error names the
 // path, never the content.
 func readBounded(path string, max int64) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := openRegular(path)
 	if err != nil {
 		var pe *os.PathError
 		if errors.As(err, &pe) {
 			return nil, fmt.Errorf("cannot read %s: %v", path, pe.Err)
 		}
-		return nil, fmt.Errorf("cannot read %s", path)
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 	fi, err := f.Stat()
