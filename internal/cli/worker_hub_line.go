@@ -7,13 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
-	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -28,55 +26,30 @@ func hubIdentityLine(ctx context.Context, res *config.Resolver) string {
 	if err != nil {
 		return ""
 	}
-	hub, err := config.ResolveWorkerHub(res)
-	if err != nil {
-		return ""
-	}
-	server := logx.SafeURL(hub.Server)
-	if server == "" {
-		server = "no Hub set"
-	}
-	expected := ""
-	var want identity.FingerprintMatcher
-	if hub.Fingerprint != "" {
-		if m, err := identity.ParseFingerprintInput(hub.Fingerprint); err == nil {
-			want, expected = m, m.Words()
-		}
-	}
 	if _, err := os.Stat(filepath.Join(core.StateDir, store.DBFile)); err != nil {
-		if expected != "" {
-			return fmt.Sprintf("Hub: %s · not paired yet · expected key: %s", server, expected)
-		}
-		return fmt.Sprintf("Hub: %s · not paired yet", server)
+		return "Hub key: none (this Worker is not paired)"
 	}
 	st, err := store.OpenReadOnlyContext(ctx, core.StateDir)
 	if err != nil {
-		return fmt.Sprintf("Hub: %s · the Worker state cannot be read: %v", server, err)
+		return "Hub key: unknown (the Worker state cannot be read)"
 	}
 	defer func() { _ = st.Close() }()
 	enr, ok, err := agent.NewEnrollments(st, core.StateDir).Load(ctx)
 	switch {
 	case err != nil:
-		return fmt.Sprintf("Hub: %s · the pairing cannot be read: %v", server, err)
+		return "Hub key: unknown (the pairing cannot be read)"
 	case !ok:
-		if expected != "" {
-			return fmt.Sprintf("Hub: %s · not paired yet · expected key: %s", server, expected)
-		}
-		return fmt.Sprintf("Hub: %s · not paired yet", server)
+		return "Hub key: none (this Worker is not paired)"
 	}
 	fp, err := identity.FingerprintOf(enr.Pin.Pub)
 	if err != nil {
-		return fmt.Sprintf("Hub: %s · the pinned key cannot be read", server)
+		return "Hub key: unknown (the pinned key cannot be read)"
 	}
-	line := fmt.Sprintf("Hub: %s · key %s", server, fp.Words())
-	switch {
-	case enr.Check() == store.HubCheckMismatch:
-		line += " · MISMATCH: this Hub's key is not the one it was checked against; the Worker refuses it (minion worker status)"
-	case !want.IsZero() && !want.Matches(enr.Pin.Pub) &&
-		(enr.HubCheckAnchor == "" || !want.MatchesFingerprint(identity.Fingerprint(enr.HubCheckAnchor))):
-		// A hub_fingerprint that names the verified predecessor of a rotated
-		// Hub key is accepted by the Worker, so it is no mismatch.
-		line += " · MISMATCH: hub_fingerprint is " + expected + ", not the paired Hub's key (minion worker status)"
+	// The Worker's own verdict decides a mismatch (quarantine); the line does
+	// not compare keys itself.
+	line := "Hub key: " + fp.Words() + " (compare with the Hub's top bar)"
+	if enr.Check() == store.HubCheckMismatch {
+		line = "Hub key: " + fp.Words() + " · MISMATCH: the Hub presented another key; the Worker refuses it (minion worker status)"
 	}
 	return line
 }
@@ -96,8 +69,6 @@ func printHubLine(cmd *cobra.Command, w io.Writer, lookupEnv func(string) (strin
 	if runningAsRoot() {
 		return
 	}
-	// A command that names a Hub of its own (join <url>, up --join) would be
-	// described by the old settings: say whose key the line shows.
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
@@ -111,8 +82,8 @@ func printHubLine(cmd *cobra.Command, w io.Writer, lookupEnv func(string) (strin
 	if line == "" {
 		return
 	}
-	if cmd.Name() == "join" || cmd.Flags().Changed("join") {
-		line = "Before this command, " + strings.ToLower(line[:1]) + line[1:]
+	if cmd.Name() == "join" || cmd.Name() == "pair" || cmd.Flags().Changed("join") {
+		line = "Before this command: " + line
 	}
 	_, _ = fmt.Fprintln(w, line)
 }

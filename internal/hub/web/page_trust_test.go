@@ -101,7 +101,7 @@ func TestTopBarShowsTheHubWords(t *testing.T) {
 	release := SetHubFingerprint(func() string { return fp.String() })
 	t.Cleanup(release)
 	body := onbGet(t, onbUser(t), pathAddWorker).Body.String()
-	mustHave(t, body, `data-hub-identity`, `<span class="fp-words">`+fp.Words()+`</span></span>`, fp.String())
+	mustHave(t, body, `data-hub-identity`, `<span class="fp-words">`+fp.Words()+`</span></button>`, `popovertarget="hub-id-pop"`, fp.String())
 	if i, j := strings.Index(body, "data-hub-identity"), strings.Index(body, `data-theme-choice="system"`); i < 0 || j < 0 || i > j {
 		t.Fatalf("the Hub words are not before the theme switch (%d, %d)", i, j)
 	}

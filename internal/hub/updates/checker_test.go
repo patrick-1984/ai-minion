@@ -301,3 +301,28 @@ func TestRefreshEndsWithTheHub(t *testing.T) {
 		t.Fatal("Refresh kept running after the Hub stopped")
 	}
 }
+
+// Check now never makes a request wait for GitHub: StartRefresh returns at
+// once, Checking is true while the check runs, and a Hub stop ends it.
+func TestStartRefreshReturnsAtOnce(t *testing.T) {
+	blocked := make(chan struct{})
+	c := newChecker(&blockingSource{started: blocked}, "v0.11.0", nil)
+	life, stop := context.WithCancel(context.Background())
+	c.Life = life
+	start := time.Now()
+	if !c.StartRefresh() {
+		t.Fatal("StartRefresh did not start a check")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("StartRefresh waited for GitHub")
+	}
+	<-blocked
+	if !c.Checking() || !c.StartRefresh() {
+		t.Fatal("a running check is not reported")
+	}
+	stop()
+	waitFor(t, func() bool { return !c.Checking() })
+	if r := c.Latest(); r.Err != "" {
+		t.Fatalf("a Hub stop was stored as an error: %+v", r)
+	}
+}

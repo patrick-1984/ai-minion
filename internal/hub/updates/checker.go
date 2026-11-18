@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -63,10 +64,11 @@ type Checker struct {
 	// 60 unauthenticated calls an hour per address.
 	MinRefresh time.Duration
 
-	mu     sync.RWMutex
-	last   Result
-	runMu  sync.Mutex // one check at a time
-	lastAt time.Time  // when the last check (any trigger) ran
+	mu       sync.RWMutex
+	last     Result
+	runMu    sync.Mutex // one check at a time
+	checking atomic.Bool
+	lastAt   time.Time // when the last check (any trigger) ran
 }
 
 // Latest returns the last answer; it never blocks on the network.
@@ -137,6 +139,50 @@ func (c *Checker) settingsChanged() bool {
 // caller then shows the answer it has.
 func (c *Checker) Refresh(ctx context.Context) bool {
 	return c.fetch(ctx, true, true)
+}
+
+// StartRefresh starts a check in the background for "Check now" and returns
+// at once: true when a check runs (started now or already running), false
+// when the cooldown, update_check off or unreadable settings keep GitHub out
+// of it. The check is bounded by Life (a Hub stop cancels it) and by 30 s;
+// no request ever waits for GitHub.
+func (c *Checker) StartRefresh() bool {
+	if !c.runMu.TryLock() {
+		return true // a check is running; its answer comes as usual
+	}
+	due := c.dueLocked()
+	c.runMu.Unlock()
+	if !due {
+		return false
+	}
+	life := c.Life
+	if life == nil {
+		life = context.Background()
+	}
+	c.checking.Store(true)
+	go func() {
+		defer c.checking.Store(false)
+		c.fetch(life, true, false)
+	}()
+	return true
+}
+
+// Checking reports whether a check started by StartRefresh still runs.
+func (c *Checker) Checking() bool { return c.checking.Load() }
+
+// dueLocked reports whether a cooldown-bound check would ask GitHub now; the
+// caller holds runMu.
+func (c *Checker) dueLocked() bool {
+	check, err1 := c.Setting(config.KeyUpdateCheck)
+	_, err2 := c.Setting(config.KeyUpdateChannel)
+	if err1 != nil || err2 != nil || check != "on" {
+		return false
+	}
+	gap := c.MinRefresh
+	if gap <= 0 {
+		gap = time.Minute
+	}
+	return c.lastAt.IsZero() || time.Since(c.lastAt) >= gap
 }
 
 // CheckOnce runs one check now, unless update_check is off (the daily check).
