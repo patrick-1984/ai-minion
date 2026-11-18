@@ -200,6 +200,9 @@ func TestFileVariantLeavesTheCallersShellAlone(t *testing.T) {
 
 // -- the Compose project -----------------------------------------------------
 
+// testComposeFP is a full Hub fingerprint (52 characters) for the projects.
+const testComposeFP = "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+
 // composeLine returns the trimmed text after prefix on the first line of s that
 // starts with it, after trimming.
 func composeLine(t *testing.T, s, prefix string) string {
@@ -217,7 +220,7 @@ func composeLine(t *testing.T, s, prefix string) string {
 // ends in `exec minion "$@"`, so the command holds the arguments of minion and
 // not its name; tmux is installed; the key is a secret file, never in the text.
 func TestComposeProjectStartsAWorker(t *testing.T) {
-	c := composeFile("https://hub.example.com")
+	c := composeFile("https://hub.example.com", testComposeFP)
 	if strings.Contains(c, sampleKey) || strings.Contains(c, "mnk_") {
 		t.Errorf("the project holds a key:\n%s", c)
 	}
@@ -243,6 +246,9 @@ func TestComposeProjectStartsAWorker(t *testing.T) {
 		"MINION_INVITE_KEY_FILE: /run/secrets/minion_invite_key",
 		"file: ./invite_key.txt",
 		`MINION_SERVER: "https://hub.example.com"`,
+		"MINION_HUB_FINGERPRINT: " + testComposeFP,
+		"MINION_SHARE_EXISTING: ${MINION_SHARE_EXISTING:-}",
+		"MINION_SHARE_EXISTING=later docker compose up -d",
 		"MINION_STATE_DIR: /data",
 		"MINION_CACHE_DIR: /cache",
 		"service_completed_successfully",
@@ -272,7 +278,7 @@ func TestComposeProjectStartsAWorker(t *testing.T) {
 		t.Errorf("the project depends on an image the user does not have:\n%s", c)
 	}
 	// Compose interpolates $ in values: a $ in the address is escaped.
-	if got := composeFile("https://hub.example.com/a$b"); !strings.Contains(got, `"https://hub.example.com/a$$b"`) {
+	if got := composeFile("https://hub.example.com/a$b", ""); !strings.Contains(got, `"https://hub.example.com/a$$b"`) {
 		t.Errorf("a $ in the address is not escaped:\n%s", got)
 	}
 }
@@ -288,7 +294,7 @@ func TestComposeProjectIsValidCompose(t *testing.T) {
 		t.Skip("no docker compose plugin")
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(composeFile("https://hub.example.com")), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(composeFile("https://hub.example.com", testComposeFP)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(docker, "compose", "-f", filepath.Join(dir, "compose.yaml"), "config", "--format", "json")
@@ -321,7 +327,8 @@ func TestComposeProjectIsValidCompose(t *testing.T) {
 	if !strings.Contains(w.Build.DockerfileInline, "tmux") || w.User != "10001:10001" {
 		t.Errorf("worker = %+v", w)
 	}
-	if w.Environment["MINION_SERVER"] != "https://hub.example.com" || w.Environment["MINION_VERSION"] != "latest" {
+	if w.Environment["MINION_SERVER"] != "https://hub.example.com" || w.Environment["MINION_VERSION"] != "latest" ||
+		w.Environment["MINION_HUB_FINGERPRINT"] != testComposeFP {
 		t.Errorf("environment = %v", w.Environment)
 	}
 }

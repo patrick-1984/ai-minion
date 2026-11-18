@@ -19,7 +19,7 @@ You need a Hub only if you want the web UI, several users or Workers on several 
    [macOS](docs/install/worker-macos.md),
    [Docker](docs/install/worker-docker.md),
    [Windows (preview)](docs/install/worker-windows-preview.md).
-3. **Join the Worker to the Hub** with a pairing code or an invitation key, and choose what the Hub may see: [pairing and sharing](docs/guides/pairing.md).
+3. **Join the Worker to the Hub**: the Hub's Add worker page gives one command with the Hub address, its fingerprint and a one-time key (`minion worker up --join mnj1-...`, or `docker run -e MINION_JOIN=...`); a pairing code or an invitation key work too. Then choose what the Hub may see: [pairing and sharing](docs/guides/pairing.md).
 
 ### One-line install
 
