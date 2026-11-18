@@ -130,7 +130,12 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	if err != nil {
 		return err
 	}
-	sinks, err := startWorkerSinks(cmd.Context(), res, live)
+
+	core, err := config.ResolveWorkerCore(res)
+	if err != nil {
+		return err
+	}
+	sinks, err := startWorkerSinks(cmd.Context(), res, live, workerOTelID(cmd.Context(), core.StateDir))
 	if err != nil {
 		return err
 	}
@@ -141,11 +146,6 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		defer cancel()
 		_ = sinks.Shutdown(ctx)
 	}()
-
-	core, err := config.ResolveWorkerCore(res)
-	if err != nil {
-		return err
-	}
 	reg := deps.registry
 	if reg == nil {
 		reg = agent.DefaultRegistry

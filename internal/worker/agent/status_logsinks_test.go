@@ -79,3 +79,12 @@ func TestLogSinksModuleStopsWithinItsShare(t *testing.T) {
 		t.Fatalf("stop budget %s, want %s", got, LogSinksStopLimit)
 	}
 }
+
+func TestLogSinksStopNeverFailsTheStop(t *testing.T) {
+	stop, _ := startLogSinks(context.Background(), &Env{rt: &Runtime{settings: Settings{StopLogSinks: func(context.Context) error {
+		return context.DeadlineExceeded
+	}}}})
+	if err := stop(context.Background()); err != nil {
+		t.Fatalf("stop = %v", err)
+	}
+}

@@ -77,12 +77,16 @@ func workerLogger(cmd *cobra.Command, res *config.Resolver, out io.Writer) (*slo
 // remote slots of live's fan-out. Standalone commands (CLI one-shots, minion
 // mcp, worker pair) never call it: they log to stderr only. A sink setting
 // that does not validate fails the start, as any other Worker setting does.
-func startWorkerSinks(ctx context.Context, res *config.Resolver, live *logx.Live) (*obs.Manager, error) {
+func startWorkerSinks(ctx context.Context, res *config.Resolver, live *logx.Live, workerID string) (*obs.Manager, error) {
 	sinks, err := config.ResolveSinks(res, config.SinkFiles{ReadPrivate: readPrivateSinkFile})
 	if err != nil {
 		return nil, err
 	}
-	m := obs.New(live.Fanout, obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: ops.NewUUIDv7()})
+	proc := obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: workerID, WorkerID: workerID}
+	if workerID == "" {
+		proc.InstanceID = ops.NewUUIDv7() // not enrolled yet: an id per start
+	}
+	m := obs.New(live.Fanout, proc)
 	if err := m.Apply(ctx, sinks); err != nil {
 		sctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -90,6 +94,18 @@ func startWorkerSinks(ctx context.Context, res *config.Resolver, live *logx.Live
 		return nil, err
 	}
 	return m, nil
+}
+
+// workerOTelID is the Worker id of the persisted enrollment, for the
+// resource of its exported records (service.instance.id and
+// minion.worker.id); "" when the Worker is not enrolled or the state cannot
+// be read now.
+func workerOTelID(ctx context.Context, stateDir string) string {
+	enr, ok, err := readPairing(ctx, stateDir)
+	if err != nil || !ok {
+		return ""
+	}
+	return enr.WorkerID
 }
 
 // maxSinkFile bounds a private file of a sink setting (header file, TLS key).

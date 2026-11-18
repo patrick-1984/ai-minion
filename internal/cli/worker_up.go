@@ -345,6 +345,14 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	if err != nil {
 		return err
 	}
+	// The service sees only the config file (and the variables the unit
+	// pins), never this shell's OTEL_EXPORTER_OTLP_* variables: check the
+	// log sinks as the service will resolve them, before any hook, save or
+	// restart, so that a typo cannot put a working Worker into a restart
+	// loop.
+	if err := checkServiceSinks(res); err != nil {
+		return fmt.Errorf("%w; nothing was saved and the service was not changed", err)
+	}
 	core, err := config.ResolveWorkerCore(res)
 	if err != nil {
 		return err
@@ -543,6 +551,35 @@ func runUpHooks(ctx context.Context, deps workerUpDeps, st agent.Settings, out i
 	return nil
 }
 
+// servicePathKeys are the file settings of the log sinks: relative paths
+// are saved absolute.
+var servicePathKeys = map[string]bool{
+	config.KeyOTelHeadersPath: true, config.KeySyslogCAFile: true, config.KeySyslogClientCertFile: true,
+	config.KeySyslogClientKeyFile: true, config.KeyOTelCAFile: true, config.KeyOTelClientCertFile: true,
+	config.KeyOTelClientKeyFile: true,
+}
+
+// checkServiceSinks resolves the log sinks as the installed service will:
+// the settings of this run that worker up saves (flags and MINION_*
+// variables) and the config file, without other variables of this shell
+// (an OTEL_EXPORTER_OTLP_ENDPOINT here does not reach the service). Relative
+// file paths resolve against this directory, as they will be saved
+// absolute.
+func checkServiceSinks(res *config.Resolver) error {
+	svc := *res
+	lookup := res.LookupEnv
+	svc.LookupEnv = func(name string) (string, bool) {
+		if !strings.HasPrefix(name, config.EnvPrefix) || lookup == nil {
+			return "", false
+		}
+		return lookup(name)
+	}
+	if _, err := config.ResolveSinks(&svc, config.SinkFiles{}); err != nil {
+		return fmt.Errorf("log export: %w (the service does not see OTEL_EXPORTER_OTLP_* variables of this shell; use --otel-endpoint)", err)
+	}
+	return nil
+}
+
 // fillUpConfig puts the non-secret settings that this run gave by flag or
 // environment into the config file. A setting that nobody set is left alone,
 // so that later changes of a default still apply.
@@ -564,6 +601,13 @@ func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.R
 			continue // A blank override can resolve as unset.
 		}
 		val := r.Value
+		if servicePathKeys[s.Key] && val != "" {
+			// The service starts in another directory (the home of its
+			// user): save the path this run resolved.
+			if val, err = filepath.Abs(val); err != nil {
+				return fmt.Errorf("setting %q: %w", s.Key, err)
+			}
+		}
 		if s.Key == config.KeyTmuxSocket && val != "" {
 			// The service starts in the home directory: save the path the
 			// hooks used, which is absolute against this process's directory.

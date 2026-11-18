@@ -381,6 +381,22 @@ func collectArgs(ctx context.Context, cmd *cobra.Command, fields []argField, std
 			}
 		}
 	}
+	// settings_set batches: a change that carries a value for a secret
+	// setting must come from standard input too (--changes -), never from
+	// the command line.
+	if raw, ok := members["changes"]; ok && literal["changes"] {
+		var changes []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if json.Unmarshal(raw, &changes) == nil {
+			for _, c := range changes {
+				if st, ok := config.Default.Lookup(c.Key); ok && st.Secret && c.Value != "" {
+					return nil, usagef("--changes: %q is a secret setting and its value is never taken from the command line; pass --changes - and give the JSON on standard input", c.Key)
+				}
+			}
+		}
+	}
 	return members, nil
 }
 

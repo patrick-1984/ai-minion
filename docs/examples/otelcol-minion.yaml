@@ -40,11 +40,16 @@ processors:
         statements:
           - replace_pattern(body, "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]")
           - replace_pattern(body, "(?i)(password[=:]\\s*)\\S+", "$${1}[REDACTED]")
+          # The syslog receiver copies the message into attributes.message:
+          # mask that copy as well.
+          - replace_pattern(attributes["message"], "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]") where attributes["message"] != nil
+          - replace_pattern(attributes["message"], "(?i)(password[=:]\\s*)\\S+", "$${1}[REDACTED]") where attributes["message"] != nil
   # Attributes: the redaction processor masks values that match.
   redaction/mask:
     allow_all_keys: true
     blocked_values:
       - "(?i)bearer\\s+[A-Za-z0-9._~+/=-]+"
+      - "(?i)password[=:]\\s*\\S+"
     summary: info
   batch: {}
 

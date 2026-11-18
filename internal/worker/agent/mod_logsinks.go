@@ -32,6 +32,11 @@ func startLogSinks(_ context.Context, env *Env) (StopFunc, error) {
 		}
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d)
 		defer cancel()
-		return stop(sctx)
+		// Records the sinks could not send are written to the local log
+		// by the sinks; that loss is expected (a dead collector) and must
+		// not turn a clean stop into a failure (or a self-update into a
+		// detached restart).
+		_ = stop(sctx)
+		return nil
 	}, nil
 }

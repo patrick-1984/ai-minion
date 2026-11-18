@@ -70,8 +70,64 @@ func TestWorkerUpPersistsTheLogSinkSettings(t *testing.T) {
 func TestStartWorkerSinksRefusesAnInvalidSetting(t *testing.T) {
 	res := &config.Resolver{Role: config.ScopeWorker, File: config.MapSource{"syslog": "on", "syslog_endpoint": "http://u:s3cr3t@h:1"},
 		LookupEnv: func(string) (string, bool) { return "", false }}
-	_, err := startWorkerSinks(t.Context(), res, nil)
+	_, err := startWorkerSinks(t.Context(), res, nil, "")
 	if err == nil || !strings.Contains(err.Error(), "syslog_endpoint") || strings.Contains(err.Error(), "s3cr3t") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// An enrolled Worker exports with its Worker id as service.instance.id and
+// minion.worker.id; an unenrolled one gets no id from the state.
+func TestWorkerOTelIDFromTheEnrollment(t *testing.T) {
+	if got := workerOTelID(t.Context(), pairedStateDir(t)); got != "w1" {
+		t.Fatalf("id = %q", got)
+	}
+	if got := workerOTelID(t.Context(), t.TempDir()); got != "" {
+		t.Fatalf("unenrolled id = %q", got)
+	}
+}
+
+// worker up checks the sinks as the service will resolve them before it
+// saves or restarts anything; a shell-only OTLP variable does not count.
+func TestWorkerUpRefusesSinksTheServiceCannotStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the user service fixture is Unix")
+	}
+	f := newUpFixture(t, false)
+	f.env["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:4318"
+	_, err := f.run("--name", "laptop", "--otel", "on")
+	if err == nil || !strings.Contains(err.Error(), "--otel-endpoint") || !strings.Contains(err.Error(), "nothing was saved") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.stateDir(), "config.json")); err == nil {
+		if got := readWorkerUpConfig(t, filepath.Join(f.stateDir(), "config.json")); got["otel"] != "" {
+			t.Fatalf("saved: %v", got)
+		}
+	}
+	for _, c := range f.runCalls() {
+		if strings.Contains(c, "restart") {
+			t.Fatalf("the service was restarted: %v", f.runCalls())
+		}
+	}
+}
+
+// Relative sink file paths are saved absolute: the service starts in
+// another directory.
+func TestWorkerUpSavesSinkPathsAbsolute(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the user service fixture is Unix")
+	}
+	f := newUpFixture(t, false)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hdr"), []byte("A: b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	if _, err := f.run("--otel", "on", "--otel-endpoint", "https://c.example", "--otel-headers-path", "hdr"); err != nil {
+		t.Fatalf("%v\n%s", err, f.stderr)
+	}
+	got := readWorkerUpConfig(t, filepath.Join(f.stateDir(), "config.json"))
+	if got["otel_headers_path"] != filepath.Join(dir, "hdr") {
+		t.Fatalf("otel_headers_path = %q", got["otel_headers_path"])
 	}
 }
