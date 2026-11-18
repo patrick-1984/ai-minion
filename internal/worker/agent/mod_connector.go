@@ -314,6 +314,11 @@ func connectorHealth(st Status, _ string) updateHealth {
 		return healthConnected
 	case st.State == ConnIdle && (st.Reason == ReasonQuarantined || st.Reason == ReasonNotEnrolled):
 		return healthTrustHold
+	case st.State == ConnIdle && st.Reason == ReasonPaused:
+		// Paused on purpose by the owner: a working binary that read its
+		// pause. The trial is committed, so a crash guard never restores a
+		// release that cannot pause (tray W5).
+		return healthTrustHold
 	}
 	return healthNone
 }

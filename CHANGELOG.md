@@ -17,6 +17,10 @@
 
 - **`minion worker up` without `sudo` no longer installs a user service beside an installed system service** `minion-worker@<user>.service` (enabled, running, or with the drop-in an earlier `sudo minion worker up` wrote): it names the unit, changes nothing and exits with status 1. The packaged unit template alone does not count.
 
+### Security
+
+- **An update rollback cannot lift a pause or a block of new sessions.** When an updated Worker keeps failing to start, the crash guard no longer restores a release older than 0.15.0 while a pause or `allow_new_sessions off` is in force (a release that cannot enforce them); the guard record stays and the reason is logged. A paused Worker commits its update trial like a quarantined one.
+
 ### Fixed
 
 - **`minion worker config share` never migrates the Worker database**: when the database has another schema than this `minion` (an older or newer installed Worker), it changes nothing and exits with status 28 ("start the Worker, or use the same minion version, then retry"), instead of moving the stopped Worker's database to a schema that Worker cannot open.

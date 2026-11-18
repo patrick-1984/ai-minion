@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -459,6 +460,14 @@ func guardOnStart(log *slog.Logger, dir, exe, running string, now time.Time) (ro
 		_ = os.Remove(filepath.Join(dir, pendingFile))
 		return nil, false, 0
 	}
+	// A pause or a block of new sessions that is in force must not be undone
+	// by restoring a binary that cannot enforce it (tray W5). The state files
+	// are the durable record; the guard stays, so a later start decides again.
+	if veto, what := restrictionVeto(dir, r.From, now); veto {
+		log.Warn("the updated Worker keeps failing to start, but the rollback is vetoed: "+what+
+			" is in force and the previous release cannot enforce it", "from", r.From, "to", r.To, "reason", why)
+		return nil, false, 0
+	}
 	old := exe + ".old"
 	if _, err := os.Stat(old); err != nil {
 		log.Error("the updated Worker keeps failing to start and there is no previous binary to restore", "to", r.To, "reason", why, "error", err.Error())
@@ -664,4 +673,43 @@ func recoverUpdate(ctx context.Context, log *slog.Logger, stateDir, exe string, 
 		return nil, 0, errors.New("agent: the restart with the restored binary returned")
 	}
 	return rolled, started, nil
+}
+
+// restrictionRelease is the first release that enforces a pause and a block
+// of new sessions created through Minion.
+const restrictionRelease = "v0.15.0"
+
+// restrictionVeto reports whether a rollback to from must not happen because
+// a restriction is active that from cannot enforce, and which one. A version
+// that cannot be parsed counts as older; a state file that cannot be read
+// counts as an active restriction.
+func restrictionVeto(dir, from string, now time.Time) (bool, string) {
+	if !predatesRestrictions(from) {
+		return false, ""
+	}
+	if p, err := ReadPause(dir); err != nil || p.Active(now) {
+		return true, "a pause of the Hub traffic (minion worker pause)"
+	}
+	res := &config.Resolver{Role: config.ScopeWorker}
+	f, err := config.LoadFile(filepath.Join(dir, WorkerConfigFile))
+	if err != nil {
+		return true, "a block of new sessions (allow_new_sessions)"
+	}
+	res.File = f
+	if t, err := config.ResolveTightenOnly(res, config.KeyAllowNewSessions); err != nil || t.Blocked {
+		return true, "a block of new sessions (allow_new_sessions off)"
+	}
+	return false, ""
+}
+
+// predatesRestrictions reports whether from is older than
+// [restrictionRelease] or cannot be parsed.
+func predatesRestrictions(from string) bool {
+	v, err := version.ParseVersion(from)
+	if err != nil {
+		return true
+	}
+	floor, _ := version.ParseVersion(restrictionRelease)
+	// A pre-release of 0.15.0 already enforces both.
+	return v.Major < floor.Major || (v.Major == floor.Major && (v.Minor < floor.Minor || (v.Minor == floor.Minor && v.Patch < floor.Patch)))
 }
