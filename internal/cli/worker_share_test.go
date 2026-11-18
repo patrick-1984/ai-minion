@@ -1,0 +1,224 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+
+	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
+	"github.com/patrick-1984/ai-minion/internal/worker/term"
+)
+
+type shareSessions []string
+
+func (s shareSessions) ListSessions(context.Context) ([]term.Session, error) {
+	var out []term.Session
+	for _, n := range s {
+		out = append(out, term.Session{Name: n})
+	}
+	return out, nil
+}
+
+type shareRig struct {
+	dir  string
+	env  map[string]string
+	deps workerShareDeps
+}
+
+func newShareRig(t *testing.T, sessions ...string) *shareRig {
+	t.Helper()
+	r := &shareRig{dir: t.TempDir()}
+	r.env = map[string]string{"MINION_STATE_DIR": r.dir, "MINION_TMUX_SOCKET": r.dir + "/tmux.sock"}
+	r.deps = defaultWorkerShareDeps()
+	r.deps.lookupEnv = func(k string) (string, bool) { v, ok := r.env[k]; return v, ok }
+	r.deps.sessions = func(string) agent.StatusSessions { return shareSessions(sessions) }
+	r.deps.call = func(context.Context, string, any) (json.RawMessage, error) { return nil, errors.New("no Worker") }
+	return r
+}
+
+func (r *shareRig) run(t *testing.T, args ...string) (map[string]any, int) {
+	t.Helper()
+	root := &cobra.Command{Use: "minion", SilenceUsage: true, SilenceErrors: true}
+	workerCommand(root).AddCommand(newWorkerShareCmd(r.deps))
+	var out, errOut bytes.Buffer
+	code := execute(context.Background(), root, append(append([]string{"worker", "share"}, args...), "--json"), &out, &errOut)
+	var obj map[string]any
+	if err := json.Unmarshal(out.Bytes(), &obj); err != nil {
+		t.Fatalf("%v: stdout %q: %v (stderr %q)", args, out.String(), err, errOut.String())
+	}
+	return obj, code
+}
+
+func (r *shareRig) saved(t *testing.T) store.ShareState {
+	t.Helper()
+	st, err := store.Open(r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	s, err := st.LoadShareStateContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func strs(v any) []string {
+	var out []string
+	for _, x := range v.([]any) {
+		out = append(out, x.(string))
+	}
+	return out
+}
+
+func TestSelectEmptyAllowedNothingShared(t *testing.T) {
+	r := newShareRig(t, "a", "b")
+	if _, code := r.run(t, "set", "select", "a", "b"); code != ExitOK {
+		t.Fatalf("set select a b: %d", code)
+	}
+	obj, code := r.run(t, "set", "select")
+	if code != ExitOK || obj["rule"] != "select" || len(obj["selected"].([]any)) != 0 {
+		t.Fatalf("set select (none) = %v, %d", obj, code)
+	}
+	for _, s := range obj["sessions"].([]any) {
+		if s.(map[string]any)["shared"] == true {
+			t.Fatalf("a session is shared: %v", obj)
+		}
+	}
+}
+
+func TestAddRemoveAtomic(t *testing.T) {
+	r := newShareRig(t, "a", "b", "c")
+	r.run(t, "set", "none")
+	before := r.saved(t).Revision
+	obj, code := r.run(t, "add", "a", "b")
+	if code != ExitOK || obj["rule"] != "select" || !slices.Equal(strs(obj["selected"]), []string{"a", "b"}) {
+		t.Fatalf("add = %v, %d", obj, code)
+	}
+	if got := r.saved(t).Revision; got != before+1 {
+		t.Fatalf("revision %d -> %d, want one commit", before, got)
+	}
+	obj, _ = r.run(t, "remove", "a")
+	if !slices.Equal(strs(obj["selected"]), []string{"b"}) {
+		t.Fatalf("remove = %v", obj)
+	}
+	// Adding under all changes nothing; removing under all needs select.
+	r.run(t, "set", "all")
+	rev := r.saved(t).Revision
+	if _, code := r.run(t, "add", "x"); code != ExitOK || r.saved(t).Revision != rev {
+		t.Fatalf("add under all: %d", code)
+	}
+	if _, code := r.run(t, "remove", "a"); code != ExitUsage {
+		t.Fatalf("remove under all: exit %d, want 2", code)
+	}
+}
+
+// A Hub share_set between the CLI's read and its change is detected (27).
+func TestConcurrentHubShareSetDetected(t *testing.T) {
+	r := newShareRig(t, "a")
+	obj, _ := r.run(t, "list")
+	rev := uint64(obj["revision"].(float64))
+	st, err := store.Open(r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CommitShareContext(context.Background(), store.ShareSelection{Mode: store.ShareNone}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	obj, code := r.run(t, "set", "all", "--if-revision", strings.TrimSpace(jsonNum(rev)))
+	if code != ExitStateChanged || obj["code"] != "state_changed" {
+		t.Fatalf("stale set = %v, %d", obj, code)
+	}
+	if r.saved(t).Mode != store.ShareNone {
+		t.Fatal("the stale change was applied")
+	}
+}
+
+func jsonNum(n uint64) string { b, _ := json.Marshal(n); return string(b) }
+
+// A share_existing in the environment sets the rule again at every start:
+// the change is saved and the command exits 22, naming the source.
+func TestEnvShareExistingOverriddenBy(t *testing.T) {
+	r := newShareRig(t, "a")
+	r.env["MINION_SHARE_EXISTING"] = "all"
+	obj, code := r.run(t, "set", "none")
+	if code != ExitNotInForce || !strings.Contains(obj["message"].(string), "env") {
+		t.Fatalf("set none = %v, %d", obj, code)
+	}
+	if r.saved(t).Mode != store.ShareNone {
+		t.Fatal("the change was not saved")
+	}
+}
+
+// The commands never write share_existing; they delete it first. A crash
+// between the file and the database leaves the narrower database choice,
+// which the next start keeps.
+func TestStaleSetAllInterruptedNarrowSurvives(t *testing.T) {
+	r := newShareRig(t, "a", "b")
+	r.run(t, "set", "select", "a")
+	cfg, err := config.LoadFile(r.dir + "/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Set(config.KeyShareExisting, "all") // a stale wider mode in the file
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	r.deps.beforeCommit = func() error { return errors.New("killed") }
+	if _, code := r.run(t, "set", "all"); code == ExitOK {
+		t.Fatal("the interrupted change reported success")
+	}
+	if got := readConfig(t, r.dir); got["share_existing"] != "" {
+		t.Fatalf("share_existing still in the file: %v", got)
+	}
+	// The next start applies the file (nothing) to the database: the
+	// narrower selection stands.
+	if s := r.saved(t); s.Mode != store.ShareSelect || !slices.Equal(s.Sessions, []string{"a"}) {
+		t.Fatalf("after the crash: %+v", s)
+	}
+	r.deps.beforeCommit = nil
+	if _, code := r.run(t, "set", "all"); code != ExitOK || readConfig(t, r.dir)["share_existing"] != "" {
+		t.Fatalf("set all: %d, file %v", code, readConfig(t, r.dir))
+	}
+}
+
+// A running Worker gets the op; another schema offline is 28.
+func TestNewerCLIAgainstOlderWorker(t *testing.T) {
+	r := newShareRig(t, "a")
+	r.deps.openStore = func(context.Context, string) (*store.Store, error) {
+		return nil, store.ErrSchemaMismatch
+	}
+	if obj, code := r.run(t, "set", "none"); code != ExitSchemaMismatch || obj["code"] != "schema_mismatch" {
+		t.Fatalf("stopped older Worker = %v, %d", obj, code)
+	}
+	// Running: the CLI never opens the database; the Worker applies it.
+	var ops []string
+	r.deps.lockState = func(string) (io.Closer, error) { return nil, agent.ErrStateInUse }
+	r.deps.call = func(_ context.Context, op string, _ any) (json.RawMessage, error) {
+		ops = append(ops, op)
+		switch op {
+		case agent.OpLocalStatus:
+			return json.Marshal(agent.LiveStatusReply{StateDir: r.dir, Instance: "i1"})
+		case "worker_share_list+share_local.v1", "worker_share_apply+share_local.v1":
+			return json.Marshal(agent.ShareListResult{Rule: "none", Revision: 4, Inventory: "ok", OverriddenBy: []string{}})
+		}
+		return nil, proto.NewError(proto.CodeUnsupportedOp, op)
+	}
+	if obj, code := r.run(t, "set", "none"); code != ExitOK || obj["rule"] != "none" {
+		t.Fatalf("running Worker = %v, %d", obj, code)
+	}
+	if !slices.Contains(ops, "worker_share_apply+share_local.v1") {
+		t.Fatalf("ops = %v", ops)
+	}
+}

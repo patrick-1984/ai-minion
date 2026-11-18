@@ -99,6 +99,18 @@ The share choice is read from the Worker's database and takes effect at once; th
 
 To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).
 
+### Choose the shared sessions one by one
+
+```sh
+minion worker share list                 # every session and whether the Hub sees it
+minion worker share add build            # share build too
+minion worker share remove build
+minion worker share set select a b       # exactly a and b; "set select" alone shares nothing
+minion worker share set all|none|later
+```
+
+A running Worker applies the change itself; without one it is saved in the state directory. `--if-revision R` (the `revision` that `list` shows) refuses a change when someone else changed the selection meanwhile (exit status 27). These commands remove `share_existing` from the config file instead of writing it, so the next start cannot undo the change; a `share_existing` set in the Worker's environment or flags still applies at every start, and then the command says so and exits 22. `--json` prints one JSON object.
+
 ### Block new sessions created through Minion
 
 ```sh
