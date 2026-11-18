@@ -38,7 +38,7 @@ var hostReasonTexts = map[string]string{
 	HostReasonSocketUnknown:       "the tmux socket of the Worker is not known",
 	HostReasonPrivateSocket:       "a private tmux socket, not the default tmux server of the user the Worker runs as (tmux -S <socket> ls shows them)",
 	HostReasonRootService:         "the Worker runs as root under a service manager (systemd or launchd); its sessions are in the tmux server of root",
-	HostReasonContainerTmux:       "the tmux server inside the Worker's container, not one on the host",
+	HostReasonContainerTmux:       "the tmux server inside the Minion image, not one on the host",
 	HostReasonVisibleSetting:      "sessions_visible is yes: the Worker serves the person's own tmux server (for example the host user's tmux socket mounted into its container)",
 	HostReasonContainerHostSocket: "the host user's tmux socket mounted into the Worker's container at /tmux/default (the documented Docker setup; tmux ls on the host shows them)",
 	HostReasonHiddenSetting:       "sessions_visible is no: the Worker's tmux server is not the person's own (for example a tmux inside its container)",

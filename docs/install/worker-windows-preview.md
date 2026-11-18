@@ -2,7 +2,7 @@
 
 Back to the [README](../../README.md).
 
-The Windows Worker is a **preview** in release 0.9.3. It works differently from the Linux and macOS Worker, and some things are missing. Read the limits before you rely on it.
+The Windows Worker is a **preview** in release 0.10.0. It works differently from the Linux and macOS Worker, and some things are missing. Read the limits before you rely on it.
 
 ## What it is
 
@@ -14,7 +14,7 @@ Windows terminals that are not psmux sessions (a plain PowerShell or cmd window)
 
 ## Visible and hidden sessions
 
-A session is **visible** when you can see and join it from your own terminal: psmux sessions in your default namespace show in `psmux ls` and you can `psmux attach` to them. A session is **hidden** when you cannot: a ConPTY session lives inside the Worker process (psmux is not installed, `session_host` is `conpty`, or the Worker runs as a Windows service as LocalSystem). The same holds on Linux and macOS: sessions on your default tmux server are visible, sessions on a private socket (`tmux_socket`), in the tmux server of root under a service manager, or on the tmux server inside a container are hidden. The Worker setting `sessions_visible` (`auto`, `yes`, `no`; Linux and macOS) overrides that guess, for example `yes` for a container that mounts your own tmux socket ([Docker](worker-docker.md)).
+A session is **visible** when you can see and join it from your own terminal: psmux sessions in your default namespace show in `psmux ls` and you can `psmux attach` to them. A session is **hidden** when you cannot: a ConPTY session lives inside the Worker process (psmux is not installed, `session_host` is `conpty`, or the Worker runs as a Windows service as LocalSystem). The same holds on Linux and macOS: sessions on your default tmux server are visible, sessions on a private socket (`tmux_socket`), in the tmux server of root under a service manager, or on the tmux server inside the Minion image are hidden (a `minion` installed by hand inside a container you work in, such as a Coder workspace, serves your own tmux server there: visible). The Worker setting `sessions_visible` (`auto`, `yes`, `no`; Linux and macOS) overrides that guess, for example `yes` for a container that mounts your own tmux socket ([Docker](worker-docker.md)).
 
 The Worker reports its session host and the reason to the Hub. The Worker page and the Workers list show it ("Sessions: psmux (visible)" or "ConPTY inside the Worker (hidden): psmux is not installed (winget install psmux)"). By default **the Hub refuses to create hidden sessions**: the New session button is disabled and says why and how to fix it (install psmux with `winget install psmux` and run `minion worker up --foreground` as yourself). You can allow hidden sessions for yourself in **Account > Sessions** (from your own signed-in browser session; an API key needs manage, and an administrator acting as you cannot change it); an administrator decides for everybody with the Hub setting `hidden_sessions` (`user-controlled`, the default, `allowed` or `disabled`). Sessions that already exist are not affected. A Windows Worker older than v0.10.0 does not report its session host; it counts as hidden (it may use ConPTY) until you update it.
 

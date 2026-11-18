@@ -24,7 +24,10 @@ func TestDecideTmuxHost(t *testing.T) {
 		{"root under a service manager", tmuxHostFacts{Socket: def, DefaultSocket: def, Root: true, ServiceManager: true}, true, transport.HostReasonRootService},
 		{"root in the foreground", tmuxHostFacts{Socket: def, DefaultSocket: def, Root: true, User: "root"}, false, transport.HostReasonTmuxDefault},
 		// Docker, self-contained: the container's own default tmux server.
-		{"container, own tmux", tmuxHostFacts{Socket: def, DefaultSocket: def, Container: true}, true, transport.HostReasonContainerTmux},
+		{"Minion image, own tmux", tmuxHostFacts{Socket: def, DefaultSocket: def, Container: true, MinionImage: true}, true, transport.HostReasonContainerTmux},
+		// A binary installed by hand in a container (a Coder workspace): the
+		// person works in that container, its default tmux server is theirs.
+		{"hand-installed in a container, default tmux", tmuxHostFacts{Socket: def, DefaultSocket: def, Container: true}, false, transport.HostReasonTmuxDefault},
 		// Docker, the host user's socket mounted at /tmux/default (compose sets yes).
 		// v0.9.3 Compose: the documented mount without sessions_visible.
 		{"container, host socket, auto", tmuxHostFacts{Socket: "/tmux/default", DefaultSocket: def, Container: true, Visible: "auto"}, false, transport.HostReasonContainerHostSocket},
@@ -98,6 +101,30 @@ func TestRestartEndsSessionsOnlyForConPTY(t *testing.T) {
 	} {
 		if got := restartEndsSessions(tc.goos, tc.kind); got != tc.want {
 			t.Errorf("restartEndsSessions(%q, %q) = %v, want %v", tc.goos, tc.kind, got, tc.want)
+		}
+	}
+}
+
+func TestRunsFromMinionImage(t *testing.T) {
+	env := func(v string) func(string) string {
+		return func(k string) string {
+			if k == "MINION_IN_CONTAINER" {
+				return v
+			}
+			return ""
+		}
+	}
+	cases := []struct {
+		name, exe, env string
+		want           bool
+	}{
+		{"ko image", "/ko-app/minion", "", true},
+		{"marked image", "/usr/local/bin/minion", "1", true},
+		{"hand install in a container", "/home/coder/.local/bin/minion", "", false},
+	}
+	for _, c := range cases {
+		if got := runsFromMinionImage(env(c.env), c.exe); got != c.want {
+			t.Errorf("%s: runsFromMinionImage = %v, want %v", c.name, got, c.want)
 		}
 	}
 }

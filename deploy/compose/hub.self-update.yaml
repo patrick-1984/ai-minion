@@ -5,8 +5,8 @@
 # This gives the Hub control of this Docker host through the Docker socket,
 # which is root-equivalent on the host. Use it only on a host you trust.
 #
-# - MINION_TAG must be a channel tag: 0.9 (patches of 0.9), 0 (releases of 0)
-#   or latest, and the same as the update_channel setting (minor = 0.9,
+# - MINION_TAG must be a channel tag: 0.10 (patches of 0.10), 0 (releases of 0)
+#   or latest, and the same as the update_channel setting (minor = 0.10,
 #   major = 0, latest = latest). The Hub replaces its container with the release image pinned by
 #   the digest in the signed release manifest and moves this tag locally to
 #   it, so a later "docker compose up" keeps the update. An exact tag such as
@@ -20,7 +20,7 @@
 #   minutes is removed, the copy restored and the previous Hub started again.
 services:
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_TAG:-0.9}
+    image: ghcr.io/patrick-1984/minion:${MINION_TAG:-0.10}
     group_add:
       - "${DOCKER_GID:-999}"
     volumes:
