@@ -234,6 +234,15 @@ linters:
           deny:
             - pkg: github.com/Microsoft/go-winio
               desc: only worker/localapi (listen and dial) may import go-winio (AD-1, AD-22); the client dials through localapi.DialContext
+        lib-otel:
+          files:
+            - $all
+            - "!**/internal/obs/**"
+          deny:
+            - pkg: go.opentelemetry.io
+              desc: only internal/obs may import OpenTelemetry (A49 design, a v0 bump stays local)
+            - pkg: github.com/go-logr/logr
+              desc: only internal/obs may import logr (the OpenTelemetry SDK logger)
         lib-sigstore:
           files:
             - $all
