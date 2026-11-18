@@ -66,9 +66,13 @@ To install it as a Windows service instead, pair first (run the command above un
 ```powershell
 minion worker status
 minion worker config share all
-minion worker down     # stop the running Worker (foreground or the Windows service)
+minion worker down     # stop the running Worker (foreground or the Windows service); also: minion worker stop
+minion worker start    # start the installed Windows service again (never installs)
+minion worker restart  # restart the running Worker in place
 minion worker reset    # after down: forget the Hub, the key and the share choice
 ```
+
+ConPTY sessions live inside the Worker, so they end when it stops or restarts. `down`, `stop` and `restart` let the running Worker count them first: when any would end they stop nothing and exit with status 23 (`sessions_lost`); repeat with `--accept-loss N`. When the sessions cannot be counted (an older Worker, or the service does not answer on your pipe) they exit with status 29: `--accept-unknown-loss` accepts that an unknown number of sessions will end. Starting or stopping the service without the pipe needs an elevated prompt (exit status 21 names the command).
 
 `minion worker reset` forgets the Hub, the key and the share choice and refuses while the Worker runs: stop it first with `minion worker down`. It does not tell the Hub: remove the Worker on the Hub's Workers page too.
 

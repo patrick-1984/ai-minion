@@ -25,7 +25,9 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
 
@@ -45,11 +47,15 @@ type workerDownDeps struct {
 	// windowsService stops the Windows service when it runs: stopped reports
 	// whether it ran and was stopped.
 	windowsService func() (stopped bool, err error)
-	// call is the local control socket of this user.
-	call  func(ctx context.Context, op string) (json.RawMessage, error)
-	euid  func() int
-	user  func() string
-	sleep func(time.Duration)
+	// call is the local control socket of this user; callArgs is the same
+	// with arguments (nil: call with no arguments).
+	call     func(ctx context.Context, op string) (json.RawMessage, error)
+	callArgs func(ctx context.Context, op string, args any) (json.RawMessage, error)
+	// windowsRunning reports whether the Windows service runs (query only).
+	windowsRunning func() bool
+	euid           func() int
+	user           func() string
+	sleep          func(time.Duration)
 	// stateFree reports whether the state lock in dir can be taken, that is
 	// whether the stopped Worker has released everything ("" = this user's
 	// default state directory).
@@ -70,7 +76,11 @@ func defaultWorkerDownDeps() workerDownDeps {
 		call: func(ctx context.Context, op string) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, nil)
 		},
-		euid: os.Geteuid,
+		callArgs: func(ctx context.Context, op string, args any) (json.RawMessage, error) {
+			return client.Local().Call(ctx, op, args)
+		},
+		windowsRunning: windowsServiceRunning,
+		euid:           os.Geteuid,
 		user: func() string {
 			if u, err := user.Current(); err == nil {
 				return u.Username
@@ -101,6 +111,21 @@ func workerStateFree(dir string) bool {
 	return true
 }
 
+// windowsServiceRunning reports whether the Windows service runs (query
+// only; false when unknown).
+func windowsServiceRunning() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	c, err := service.NewKardianosController(exe)
+	if err != nil {
+		return false
+	}
+	st, err := c.Status()
+	return err == nil && st == service.StatusRunning
+}
+
 func stopWindowsService() (bool, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -122,29 +147,162 @@ func stopWindowsService() (bool, error) {
 }
 
 func newWorkerDownCmd(d workerDownDeps) *cobra.Command {
-	return &cobra.Command{
+	var o downOptions
+	cmd := &cobra.Command{
 		Use:     "down",
 		Aliases: []string{"stop"},
 		Short:   "Stop the running Worker of this user (the opposite of worker up)",
 		Long: "Stop the running Worker of this user. A Worker run as a service is stopped through its service\n" +
 			"manager (systemd, launchd, Windows services), a foreground Worker over its control socket.\n" +
-			"Its sessions keep running (tmux, psmux); a service starts again at the next boot or login.",
+			"Its sessions keep running (tmux, psmux); a service starts again at the next boot or login.\n\n" +
+			"Sessions that live inside the Worker (Windows ConPTY) end with it. The running Worker counts them\n" +
+			"first: when any would end the command exits 23 with sessions_lost N and stops nothing; repeat it\n" +
+			"with --accept-loss N. When they cannot be counted (an older Worker, a Worker that does not answer)\n" +
+			"it exits 29; --accept-unknown-loss accepts that an unknown number of sessions will end.\n" +
+			"--scm-only stops the Windows service through the service control manager only (needs\n" +
+			"--accept-unknown-loss and an elevated prompt). --json prints one JSON result object.",
 		Args: cobra.NoArgs,
-		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error { return runWorkerDown(cmd, d) }, nil),
+		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error {
+			res, err := runWorkerDownOpts(cmd, d, o)
+			return emitResult(cmd.OutOrStdout(), cmd.ErrOrStderr(), o.json, res, err)
+		}, nil),
 	}
+	cmd.Flags().IntVar(&o.acceptLoss, "accept-loss", 0, "accept that up to this many sessions end (ConPTY)")
+	cmd.Flags().BoolVar(&o.acceptUnknown, "accept-unknown-loss", false, "accept that an unknown number of sessions end")
+	cmd.Flags().BoolVar(&o.scmOnly, "scm-only", false, "Windows: stop the service through the service control manager only")
+	cmd.Flags().BoolVar(&o.json, "json", false, "print one JSON result object")
+	return cmd
+}
+
+// downOptions are the flags of "worker down".
+type downOptions struct {
+	acceptLoss    int
+	acceptUnknown bool
+	scmOnly       bool
+	json          bool
+}
+
+// downResult is the JSON result of "worker down".
+type downResult struct {
+	Stopped      bool `json:"stopped"`
+	SessionsLost *int `json:"sessions_lost,omitempty"`
 }
 
 func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
+	_, err := runWorkerDownOpts(cmd, d, downOptions{})
+	return err
+}
+
+// hostKeepsSessions reports whether the sessions of host outlive the Worker
+// (tmux, psmux; on Linux and macOS always tmux).
+func hostKeepsSessions(goos, host string) bool {
+	return host == "tmux" || host == "psmux" || (host == "" && goos != "windows")
+}
+
+func runWorkerDownOpts(cmd *cobra.Command, d workerDownDeps, o downOptions) (downResult, error) {
+	var res downResult
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	out := cmd.OutOrStdout()
+	if o.json {
+		out = io.Discard
+	}
+	if o.scmOnly {
+		if !o.acceptUnknown {
+			return res, &usageError{errors.New("--scm-only stops without counting the sessions: add --accept-unknown-loss")}
+		}
+		stopped, err := stopServiceWorker(ctx, out, d)
+		res.Stopped = stopped
+		return res, err
+	}
+	// Ask the running Worker first: it counts the sessions that would end.
+	var reply agent.LiveStatusReply
+	live := false
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if d.call != nil {
+		if raw, serr := d.call(cctx, agent.OpLocalStatus); serr == nil && json.Unmarshal(raw, &reply) == nil {
+			live = true
+		}
+	}
+	cancel()
+	if live && d.callArgs != nil {
+		args := agent.LocalLifecycleArgs{Action: agent.LifecycleStop, Instance: reply.Instance, AcceptLoss: o.acceptLoss, AcceptUnknown: o.acceptUnknown}
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		raw, err := d.callArgs(cctx, localapi.QualifiedOp(agent.OpLocalLifecycle, []string{agent.FeatureLifecycle}), args)
+		cancel()
+		if err == nil {
+			var lr agent.LifecycleResult
+			if json.Unmarshal(raw, &lr) != nil {
+				return res, errors.New("the running Worker returned an invalid lifecycle result")
+			}
+			if lr.SessionsLost >= 0 {
+				n := lr.SessionsLost
+				res.SessionsLost = &n
+			}
+			if !lr.Exiting {
+				// systemd or launchd: stop the unit, or it starts again.
+				stopped, err := stopServiceWorker(ctx, out, d)
+				res.Stopped = stopped
+				return res, err
+			}
+			return res, waitStopped(ctx, out, d, reply.StateDir, &res)
+		}
+		if rerr := lifecycleRefusal(err); rerr != nil {
+			return res, rerr
+		}
+		var pe *proto.Error
+		tooOld := errors.Is(err, client.ErrWorkerTooOld) || (errors.As(err, &pe) && pe.Code == proto.CodeUnsupportedOp)
+		if !tooOld {
+			return res, fmt.Errorf("cannot ask the running Worker to stop: %w", err)
+		}
+		// An older Worker: its bare worker_stop ignores any count, so it is
+		// sent only where no session can end.
+		if !hostKeepsSessions(d.goos, reply.SessionHost) && !o.acceptUnknown {
+			return res, &resultError{Exit: ExitCountUnavailable, Message: "the running Worker is too old to count the sessions that would end; " +
+				"nothing was stopped. Repeat with --accept-unknown-loss to accept that an unknown number of sessions will end"}
+		}
+	} else if !live && d.goos == "windows" && d.windowsRunning != nil && d.windowsRunning() && !o.acceptUnknown {
+		return res, &resultError{Exit: ExitCountUnavailable, Message: "the Windows service runs but does not answer on this user's control socket, " +
+			"so the sessions that would end cannot be counted; nothing was stopped. Repeat with --accept-unknown-loss to accept that an unknown number of sessions will end"}
+	}
+	return res, legacyWorkerDown(ctx, out, d, &res)
+}
+
+// lifecycleRefusal maps a refusal of worker_lifecycle to its exit status, or
+// returns nil for another error.
+func lifecycleRefusal(err error) error {
+	var pe *proto.Error
+	if !errors.As(err, &pe) || pe.Code != proto.CodeConflict {
+		return nil
+	}
+	var det struct {
+		Reason       string `json:"reason"`
+		SessionsLost int    `json:"sessions_lost"`
+	}
+	_ = json.Unmarshal(pe.Details, &det)
+	switch det.Reason {
+	case agent.ReasonSessionsWouldEnd:
+		return &resultError{Exit: ExitSessionsWouldEnd, Message: pe.Message + "; repeat with --accept-loss " + strconv.Itoa(det.SessionsLost) + " to accept that",
+			Fields: map[string]any{"sessions_lost": det.SessionsLost}}
+	case agent.ReasonCountUnavailable:
+		return &resultError{Exit: ExitCountUnavailable, Message: pe.Message + "; repeat with --accept-unknown-loss to accept that an unknown number of sessions will end"}
+	case "state_changed":
+		return &resultError{Exit: ExitStateChanged, Message: pe.Message}
+	}
+	return nil
+}
+
+// legacyWorkerDown is the stop without a count: through the service manager,
+// else the bare worker_stop of the running Worker.
+func legacyWorkerDown(ctx context.Context, out io.Writer, d workerDownDeps, res *downResult) error {
 	stoppedService, err := stopServiceWorker(ctx, out, d)
 	if err != nil {
 		return err
 	}
 	if stoppedService {
+		res.Stopped = true
 		return nil
 	}
 	// A foreground Worker (or one no service manager runs).
@@ -167,16 +325,21 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 	case err != nil:
 		return fmt.Errorf("cannot ask the running Worker to stop: %w", err)
 	}
-	// Stopped means: no answer on the socket any more AND the state lock is
-	// free (the connector, the pipe and the store have finished), so that
-	// "worker reset" or "worker up" works right after (up to 30 seconds).
+	return waitStopped(ctx, out, d, stateDir, res)
+}
+
+// waitStopped waits until the Worker answers no more and its state lock is
+// free (the connector, the pipe and the store have finished), so that "worker
+// reset" or "worker up" works right after (up to 30 seconds).
+func waitStopped(ctx context.Context, out io.Writer, d workerDownDeps, stateDir string, res *downResult) error {
 	for i := 0; i < 120; i++ {
 		d.sleep(250 * time.Millisecond)
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		_, err := d.call(cctx, agent.OpLocalStatus)
 		cancel()
 		if errors.Is(err, client.ErrWorkerNotRunning) && d.stateFree(stateDir) {
-			_, _ = fmt.Fprintln(out, "The Worker stopped. Start it again with: minion worker up --foreground")
+			res.Stopped = true
+			_, _ = fmt.Fprintln(out, "The Worker stopped. Start it again with: minion worker start (a service) or minion worker up --foreground")
 			return nil
 		}
 	}
@@ -191,9 +354,9 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 	case "windows":
 		stopped, err := d.windowsService()
 		if err != nil {
-			return false, fmt.Errorf("the Worker runs as the Windows service %s and could not be stopped (%v); "+
+			return false, &resultError{Exit: ExitNeedsAdmin, Message: fmt.Sprintf("the Worker runs as the Windows service %s and could not be stopped (%v); "+
 				"in a terminal opened with \"Run as administrator\" run: minion worker down   (or: Stop-Service %s)",
-				service.WindowsServiceName, err, service.WindowsServiceName)
+				service.WindowsServiceName, err, service.WindowsServiceName)}
 		}
 		if stopped {
 			_, _ = fmt.Fprintf(out, "Stopped the Windows service %s. It starts again at the next boot; start it now with: Start-Service %s\n",
@@ -211,8 +374,8 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 		unit := service.SystemUnitFor(d.user())
 		if unitRunning(ctx, d, "", unit) {
 			if d.euid() != 0 {
-				return false, fmt.Errorf("the Worker runs as the system service %s; stop it with:\n  sudo systemctl stop %s\n"+
-					"(and keep it from starting at boot with: sudo systemctl disable %s)", unit, unit, unit)
+				return false, &resultError{Exit: ExitNeedsAdmin, Message: fmt.Sprintf("the Worker runs as the system service %s; stop it with:\n  sudo systemctl stop %s\n"+
+					"(and keep it from starting at boot with: sudo systemctl disable %s)", unit, unit, unit)}
 			}
 			if err := d.run(ctx, "systemctl", "stop", unit); err != nil {
 				return false, fmt.Errorf("cannot stop %s (%v); run: systemctl stop %s", unit, err, unit)

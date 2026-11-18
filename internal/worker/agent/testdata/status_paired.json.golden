@@ -49,5 +49,6 @@
   },
   "live_elsewhere": null,
   "cli_version": "",
-  "capabilities": []
+  "capabilities": [],
+  "sessions_lost_on_stop": null
 }

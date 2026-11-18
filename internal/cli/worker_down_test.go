@@ -84,8 +84,11 @@ func TestWorkerDownPrintsTheSudoCommandForASystemService(t *testing.T) {
 		}
 		return "inactive\n", nil
 	}
-	d.call = func(context.Context, string) (json.RawMessage, error) {
-		t.Fatal("the socket was used for a service")
+	d.call = func(_ context.Context, op string) (json.RawMessage, error) {
+		if op == agent.OpLocalStatus {
+			return nil, client.ErrWorkerNotRunning // the service's Worker does not answer here
+		}
+		t.Fatal("the socket was used to stop a service")
 		return nil, nil
 	}
 	_, err := downCmd(t, d)

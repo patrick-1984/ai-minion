@@ -73,6 +73,10 @@ type LiveStatusReply struct {
 	// local features (tray W10a); an older Worker omits them.
 	Version      string   `json:"version,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
+	// SessionsLostOnStop is how many sessions a stop would end, omitted when
+	// they cannot be counted; CountReported says the Worker reports it.
+	SessionsLostOnStop *int `json:"sessions_lost_on_stop,omitempty"`
+	CountReported      bool `json:"count_reported,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -100,6 +104,8 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		HubCheckAware:      true,
 		Paused:             live.Paused,
 		NewSessionsBlocked: live.NewSessionsBlocked,
+		SessionsLostOnStop: live.SessionsLostOnStop,
+		CountReported:      live.CountReported,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -149,6 +155,8 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		StateDir:           r.StateDir,
 		Version:            r.Version,
 		Capabilities:       r.Capabilities,
+		SessionsLostOnStop: r.SessionsLostOnStop,
+		CountReported:      r.CountReported,
 	}, nil
 }
 

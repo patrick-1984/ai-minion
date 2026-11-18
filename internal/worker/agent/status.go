@@ -98,6 +98,10 @@ type LiveStatus struct {
 	StateDir     string
 	Version      string
 	Capabilities []string
+	// SessionsLostOnStop is how many sessions a stop would end; nil when
+	// they cannot be counted. CountReported is false for an older Worker.
+	SessionsLostOnStop *int
+	CountReported      bool
 }
 
 // LiveElsewhereError is what a [LiveSource] returns when the running Worker
@@ -151,10 +155,12 @@ type LiveStatusSource struct {
 	Health  *SessionListHealth
 	// Pause is the pause of this Worker; nil reports none (pause unknown).
 	Pause *PauseService
+	// Counter counts the sessions a stop would end; nil reports none.
+	Counter *SessionCounter
 }
 
 // LiveStatus implements [LiveSource].
-func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
+func (s LiveStatusSource) LiveStatus(ctx context.Context) (LiveStatus, error) {
 	var out LiveStatus
 	if s.Connector != nil {
 		out.Connector = s.Connector.Status()
@@ -171,6 +177,14 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 	if s.Policy != nil {
 		blocked, _ := s.Policy.NewSessionsBlocked()
 		out.NewSessionsBlocked = &blocked
+	}
+	if s.Counter != nil {
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if n, known, _ := s.Counter.CountLost(cctx); known {
+			out.SessionsLostOnStop = &n
+		}
+		cancel()
+		out.CountReported = true
 	}
 	// The local status shows the details the hello leaves out (a socket
 	// path, a user name, the error itself): only this machine reads it.
@@ -411,6 +425,10 @@ type StatusReport struct {
 	Capabilities []string `json:"capabilities"`
 	// ProblemCodes are machine-readable codes of some Problems.
 	ProblemCodes []string `json:"problem_codes,omitempty"`
+	// SessionsLostOnStop is how many sessions a stop of the running Worker
+	// would end (ConPTY; 0 for tmux and psmux, whose sessions outlive it);
+	// null when they cannot be counted or no Worker runs.
+	SessionsLostOnStop *int `json:"sessions_lost_on_stop"`
 	// Problems lists what could not be read, in plain English.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -584,6 +602,7 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 			r.Live.StateDir = in.StateDir
 		}
 		r.Capabilities = append(r.Capabilities, live.Capabilities...)
+		r.SessionsLostOnStop = live.SessionsLostOnStop
 	}
 	if live != nil {
 		r.PendingPairingCode = live.PendingPairingCode

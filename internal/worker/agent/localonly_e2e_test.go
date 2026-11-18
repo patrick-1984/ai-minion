@@ -40,6 +40,7 @@ var expectedManagementOps = []string{
 	"worker_config_apply",
 	"worker_share_list",
 	"worker_share_apply",
+	"worker_lifecycle",
 }
 
 // helloDialer is a pairDialer that records the ops and features of every

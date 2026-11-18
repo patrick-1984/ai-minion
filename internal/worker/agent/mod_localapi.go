@@ -100,10 +100,21 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		}
 		return nil
 	}
+	hostKind := ""
+	if hostInfo != nil {
+		hostKind = hostInfo.Kind
+	}
+	instance := uuid.NewString()
+	runMode := workerRunMode()
+	lc := &lifecycleService{
+		ex: ex, counter: newSessionCounter(ex, hostKind), runMode: runMode, instance: instance, stop: env.RequestStop,
+		restart: func() { restartProcess(log, lifecycleExe()) },
+	}
+	live.Counter = &lc.counter
 	srv, err := localapi.New(localapi.Config{
 		Executor: localExecutor{
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
-			instance: uuid.NewString(), enrollments: enrollments,
+			instance: instance, enrollments: enrollments, lifecycle: lc,
 			pause: pause, hubConfigured: conn != nil && conn.cfg.HubURL != "",
 			configApply: configApplier{settings: env.Settings(), ex: ex}.apply,
 			share:       shareSvc,
@@ -149,6 +160,8 @@ type localExecutor struct {
 	configApply func(key string) (ConfigApplyResult, error)
 	// share serves worker_share_list and worker_share_apply; nil refuses.
 	share *shareLocal
+	// lifecycle serves worker_lifecycle; nil refuses.
+	lifecycle *lifecycleService
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {
