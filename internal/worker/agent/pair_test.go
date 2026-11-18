@@ -212,9 +212,9 @@ func TestPairerShowsTheCodeOnConsoleAndInTheLogAndSendsItToTheDialer(t *testing.
 	if got := f.shown()[0]; got != "MN-K7Q4-XY12" {
 		t.Fatalf("console code = %q", got)
 	}
-	if !strings.Contains(f.logs.String(), "MN-K7Q4-XY12") {
-		t.Fatalf("the code must be in the log too:\n%s", f.logs.String())
-	}
+	// The console box and the log line are written one after the other: wait
+	// for the log line too.
+	eventually(t, func() bool { return strings.Contains(f.logs.String(), "MN-K7Q4-XY12") })
 	p := f.dial.call(0)
 	if p.Code.PairingID() != "K7Q4" || p.Code.String() != "MN-K7Q4-XY12" {
 		t.Fatalf("the dialer got code %v", p.Code)
