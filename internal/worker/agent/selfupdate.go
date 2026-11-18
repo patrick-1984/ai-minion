@@ -613,27 +613,29 @@ func restoreStateDB(stateDir string, since time.Time) error {
 // is rolled back here. When it restored the previous binary it calls release
 // (which must free everything a new Worker process needs, such as the state's
 // lifecycle lock) and hands over to the restored binary (restartNow), never
-// returning; when ctx ended meanwhile (Ctrl+C or a service stop during the
-// restore), it exits instead of starting the restored binary, so the stop is
-// not lost. Otherwise it returns the rolled-back record to report, and the
-// start it recorded for an uncommitted update (0: none), which a clean stop
-// gives back (cleanStop).
-func RecoverUpdate(ctx context.Context, log *slog.Logger, stateDir string, release func()) (rolled *pendingRecord, started int64) {
+// returning. When ctx ended meanwhile (Ctrl+C or a service stop during the
+// restore), it does not start the restored binary and returns an error that
+// wraps ctx.Err() instead: the caller stops through its normal path (a
+// Windows service then reports SERVICE_STOPPED), and the restored binary,
+// already in place, runs on the next start. Otherwise it returns the
+// rolled-back record to report, and the start it recorded for an uncommitted
+// update (0: none), which a clean stop gives back (cleanStop).
+func RecoverUpdate(ctx context.Context, log *slog.Logger, stateDir string, release func()) (rolled *pendingRecord, started int64, err error) {
 	if stateDir == "" {
-		return nil, 0
+		return nil, 0, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return nil, 0
+		return nil, 0, nil
 	}
 	if real, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = real
 	}
-	return recoverUpdate(ctx, log, stateDir, exe, time.Now(), release, restartNow, os.Exit)
+	return recoverUpdate(ctx, log, stateDir, exe, time.Now(), release, restartNow)
 }
 
 func recoverUpdate(ctx context.Context, log *slog.Logger, stateDir, exe string, now time.Time, release func(),
-	restart func(*slog.Logger, string), exit func(int)) (*pendingRecord, int64) {
+	restart func(*slog.Logger, string)) (*pendingRecord, int64, error) {
 	rolled, again, started := guardOnStart(log, stateDir, exe, version.Version, now)
 	if again {
 		// A rollback happens before any module runs: hand over to the
@@ -641,12 +643,14 @@ func recoverUpdate(ctx context.Context, log *slog.Logger, stateDir, exe string, 
 		if release != nil {
 			release()
 		}
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
 			log.Info("stop requested during the rollback; the restored binary runs on the next start", "exe", exe)
-			exit(0)
-			return nil, 0
+			return nil, 0, fmt.Errorf("agent: stopped during the update rollback: %w", err)
 		}
 		restart(log, exe)
+		// restart does not return in production; never run on in the
+		// rejected binary if it does.
+		return nil, 0, errors.New("agent: the restart with the restored binary returned")
 	}
-	return rolled, started
+	return rolled, started, nil
 }

@@ -400,7 +400,7 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 		rt.mu.Unlock()
 		// A rollback hands over to the restored binary; the lifecycle lock
 		// is released first, as the restored Worker takes it again.
-		rolled, started := RecoverUpdate(ctx, s.logger(), s.StateDir, func() {
+		rolled, started, err := RecoverUpdate(ctx, s.logger(), s.StateDir, func() {
 			rt.mu.Lock()
 			defer rt.mu.Unlock()
 			if rt.held != nil {
@@ -408,6 +408,9 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 				rt.held = nil
 			}
 		})
+		if err != nil {
+			return fail(err)
+		}
 		if rolled != nil {
 			lastRollback.Store(rolled)
 		}

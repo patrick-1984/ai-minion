@@ -484,3 +484,22 @@ func TestResetEndsTheRecordOfAForgottenHub(t *testing.T) {
 		t.Fatalf("the record survived the reset: %v", got)
 	}
 }
+
+// `minion worker reset` (no Enrollments, another process) during an update
+// trial records the change, so a rollback across a migration never restores
+// the deleted pairing while the Worker key is gone.
+func TestResetDuringAnUpdateTrialHoldsTheRollback(t *testing.T) {
+	r := newResetRig(t)
+	r.pair()
+	trial := pendingRecord{From: "v0.10.0", To: "v0.11.0", At: time.Now()}
+	if err := writePending(r.dir, trial); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.reset(); err != nil {
+		t.Fatal(err)
+	}
+	hold, err := rollbackTrustHold(context.Background(), r.dir, trial)
+	if err != nil || !hold {
+		t.Fatalf("rollback hold after a reset = %v, %v; want a hold", hold, err)
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -751,13 +750,12 @@ func TestRecoverUpdateReleasesBeforeTheRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	var steps []string
-	noExit := func(int) { t.Fatal("exited") }
-	recoverUpdate(context.Background(), log, dir, exe, now, func() { steps = append(steps, "release") }, func(_ *slog.Logger, got string) {
+	_, _, _ = recoverUpdate(context.Background(), log, dir, exe, now, func() { steps = append(steps, "release") }, func(_ *slog.Logger, got string) {
 		if got != exe {
 			t.Errorf("restart exe = %q, want %q", got, exe)
 		}
 		steps = append(steps, "restart")
-	}, noExit)
+	})
 	if strings.Join(steps, ",") != "release,restart" {
 		t.Fatalf("steps = %v, want release then restart", steps)
 	}
@@ -766,9 +764,9 @@ func TestRecoverUpdateReleasesBeforeTheRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps = nil
-	_, started := recoverUpdate(context.Background(), log, dir, exe, now, func() { steps = append(steps, "release") },
-		func(*slog.Logger, string) { steps = append(steps, "restart") }, noExit)
-	if len(steps) != 0 || started != now.Unix() {
+	_, started, err := recoverUpdate(context.Background(), log, dir, exe, now, func() { steps = append(steps, "release") },
+		func(*slog.Logger, string) { steps = append(steps, "restart") })
+	if err != nil || len(steps) != 0 || started != now.Unix() {
 		t.Fatalf("steps = %v, started = %d", steps, started)
 	}
 }
@@ -783,8 +781,9 @@ func TestConsoleChildEnvDropsTheWaitVariable(t *testing.T) {
 }
 
 // A stop (Ctrl+C, a service stop) that arrives while the rollback restores the
-// previous binary is not lost: the restored binary is not started, the
-// process exits after releasing the state.
+// previous binary is not lost: the restored binary is not started, and the
+// start fails with the cancellation (no os.Exit), so that the normal stop path
+// runs (a Windows service reports SERVICE_STOPPED instead of a failure).
 func TestRecoverUpdateKeepsAStopDuringTheRollback(t *testing.T) {
 	dir, bin := t.TempDir(), t.TempDir()
 	exe := filepath.Join(bin, "minion")
@@ -802,12 +801,14 @@ func TestRecoverUpdateKeepsAStopDuringTheRollback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var steps []string
-	recoverUpdate(ctx, slog.New(slog.NewTextHandler(&logBuf{}, nil)), dir, exe, now,
+	_, _, err := recoverUpdate(ctx, slog.New(slog.NewTextHandler(&logBuf{}, nil)), dir, exe, now,
 		func() { steps = append(steps, "release") },
-		func(*slog.Logger, string) { steps = append(steps, "restart") },
-		func(code int) { steps = append(steps, fmt.Sprintf("exit %d", code)) })
-	if strings.Join(steps, ",") != "release,exit 0" {
-		t.Fatalf("steps = %v, want release then exit 0 without a restart", steps)
+		func(*slog.Logger, string) { steps = append(steps, "restart") })
+	if strings.Join(steps, ",") != "release" {
+		t.Fatalf("steps = %v, want only the release, no restart", steps)
+	}
+	if !errors.Is(err, context.Canceled) || !OnlyCanceled(err) {
+		t.Fatalf("err = %v, want only the cancellation", err)
 	}
 	if b, _ := os.ReadFile(exe); string(b) != "old" {
 		t.Fatalf("exe = %q, want the restored binary", b)
