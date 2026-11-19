@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/spf13/cobra"
 	"io"
 
 	"github.com/patrick-1984/ai-minion/internal/client"
@@ -162,4 +163,52 @@ func emitResult(stdout, stderr io.Writer, jsonOut bool, fields any, err error) e
 		_, _ = fmt.Fprintln(stderr, oneLine(err.Error()))
 	}
 	return &exitCodeError{exit}
+}
+
+// wantsJSON reports whether args ask for the JSON result (--json, --json=true
+// or --json true is not a form of a bool flag, so only the first two), before
+// any "--" delimiter.
+func wantsJSON(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if a == "--json" || a == "--json=true" || a == "--json=1" || a == "--json=t" || a == "--json=T" || a == "--json=TRUE" || a == "--json=True" {
+			return true
+		}
+	}
+	return false
+}
+
+// installJSONUsage makes a usage failure (a wrong number of arguments, an
+// unknown or malformed flag) of a command run with --json a result object
+// with exit status 2, like every other failure of that command; cobra
+// validates arguments and flags before RunE, where the commands emit their
+// own results. It changes nothing without --json in args.
+func installJSONUsage(root *cobra.Command, args []string) {
+	if !wantsJSON(args) {
+		return
+	}
+	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		return emitResult(c.OutOrStdout(), c.ErrOrStderr(), true, nil, &usageError{err})
+	})
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		if orig := c.Args; orig != nil && c.Flags().Lookup("json") != nil {
+			c.Args = func(cmd *cobra.Command, a []string) error {
+				if err := orig(cmd, a); err != nil {
+					var ue *usageError
+					if !errors.As(err, &ue) {
+						err = &usageError{err}
+					}
+					return emitResult(cmd.OutOrStdout(), cmd.ErrOrStderr(), true, nil, err)
+				}
+				return nil
+			}
+		}
+		for _, k := range c.Commands() {
+			walk(k)
+		}
+	}
+	walk(root)
 }
