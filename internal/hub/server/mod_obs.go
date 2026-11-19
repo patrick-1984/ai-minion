@@ -254,9 +254,24 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 		var lvl string
 		if err == nil {
 			t, err = config.ResolveTraffic(p, s)
+			if err != nil && unchangedAndInvalid(settings.Resolver(), p, files, trafficKeys, func(r *config.Resolver, s config.Sinks) error {
+				_, e := config.ResolveTraffic(r, s)
+				return e
+			}) {
+				// The traffic log is off already because of a setting that
+				// this change does not touch (an environment one, say): it
+				// must not keep the operator from stopping an export.
+				t, err = config.TrafficConfig{}, nil
+			}
 		}
 		if err == nil {
 			lvl, err = config.ResolveMetricsLevel(p, s)
+			if err != nil && unchangedAndInvalid(settings.Resolver(), p, files, []string{config.KeyOTelMetrics}, func(r *config.Resolver, s config.Sinks) error {
+				_, e := config.ResolveMetricsLevel(r, s)
+				return e
+			}) {
+				lvl, err = otelsink.MetricsOff, nil
+			}
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -344,4 +359,24 @@ func configureMetrics(ctx context.Context, svc *ObsService, level string, otlp c
 	}
 	res, _ := otelsink.NewResource(ctx, svc.proc)
 	return svc.Metrics.Configure(ctx, otelsink.MetricsConfig{Level: level, OTLP: otlp}, res)
+}
+
+var trafficKeys = []string{config.KeyTrafficLog, config.KeyTrafficLogTo, config.KeyTrafficLogWorkers}
+
+// unchangedAndInvalid reports whether a feature (traffic log, metrics) that
+// the proposed settings p cannot resolve is invalid in the same way in the
+// running settings cur too: the keys it reads are the same in both, and cur
+// does not resolve it either, so it is off already and p changes nothing
+// about it.
+func unchangedAndInvalid(cur, p *config.Resolver, files config.SinkFiles, keys []string,
+	resolve func(*config.Resolver, config.Sinks) error) bool {
+	for _, k := range keys {
+		a, ea := cur.Resolve(k)
+		b, eb := p.Resolve(k)
+		if ea != nil || eb != nil || a.Value != b.Value {
+			return false
+		}
+	}
+	cs, err := config.ResolveSinks(cur, files)
+	return err == nil && resolve(cur, cs) != nil
 }

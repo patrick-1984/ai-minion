@@ -87,7 +87,7 @@ func declareObs(r *Registry) {
 		Help: "Where the traffic log goes, a comma-separated list of local (standard error), syslog and otel; each " +
 			"destination must be on. Never the in-memory log"})
 	r.Declare(Setting{Key: KeyTrafficLogWorkers, Scope: ScopeHub,
-		Help: "Limit the Hub's traffic log to these Workers: a comma-separated list of Worker ids or names; empty: all"})
+		Help: "Limit the Hub's traffic log to these Workers: a comma-separated list of Worker ids or names (a name that contains a comma in double quotes); empty: all"})
 	onOff := []string{SinkOff, SinkOn}
 	// Path settings: the registry reserves names ending in _FILE for the
 	// file form of secrets, so their variables end in _PATH (as

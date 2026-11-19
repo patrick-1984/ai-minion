@@ -218,3 +218,24 @@ func TestRunReturnsWhenTheLocalOutputStallsDuringStop(t *testing.T) {
 		t.Fatal("Run did not return while the local output stalled")
 	}
 }
+
+// A traffic setting that is invalid and off already (here from the
+// environment, which the panel cannot change) does not keep the operator from
+// starting and stopping an unrelated log sink.
+func TestInvalidTrafficSettingDoesNotBlockStoppingASink(t *testing.T) {
+	o := newObsFixture(t, map[string]string{"MINION_WORKER_TRAFFIC_LOG": "metadata", "MINION_WORKER_TRAFFIC_LOG_TO": "otel"}, nil)
+	o.set(t, ops.SettingChange{Key: "syslog", Value: "on"}, ops.SettingChange{Key: "syslog_endpoint", Value: "udp://127.0.0.1:9"})
+	if st := o.svc.Manager.Status()[0]; !st.Enabled {
+		t.Fatalf("status = %+v", st)
+	}
+	o.set(t, ops.SettingChange{Key: "syslog", Value: "off"})
+	if st := o.svc.Manager.Status()[0]; st.Enabled {
+		t.Fatalf("the export was not stopped: %+v", st)
+	}
+	// A change that makes the traffic setting invalid is still refused.
+	o2 := newObsFixture(t, nil, nil)
+	if _, err := o2.settings.Set(context.Background(), admin, batchArgs(
+		ops.SettingChange{Key: "worker_traffic_log", Value: "metadata"}, ops.SettingChange{Key: "worker_traffic_log_to", Value: "syslog"})); err == nil {
+		t.Fatal("a new invalid traffic setting was accepted")
+	}
+}

@@ -1,7 +1,10 @@
 package config
 
 import (
+	"encoding/csv"
+	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 )
@@ -64,15 +67,44 @@ func ResolveTraffic(res *Resolver, sinks Sinks) (TrafficConfig, error) {
 	if err != nil {
 		return c, err
 	}
-	for _, w := range strings.Split(ws.Value, ",") {
-		if w = strings.TrimSpace(w); w != "" && !slices.Contains(c.Workers, w) {
-			c.Workers = append(c.Workers, w)
-		}
+	if c.Workers, err = ParseTrafficWorkers(ws.Value); err != nil {
+		return c, fmt.Errorf("setting %q: %w", KeyTrafficLogWorkers, err)
 	}
 	if len(c.Workers) > MaxTrafficWorkers {
 		return c, fmt.Errorf("setting %q lists more than %d Workers", KeyTrafficLogWorkers, MaxTrafficWorkers)
 	}
 	return c, nil
+}
+
+// ParseTrafficWorkers reads the worker_traffic_log_workers value: Worker ids
+// or names separated by commas; a name that contains a comma is written in
+// double quotes ("pi,usb", a quote inside it doubled). Empty means no
+// filter; a value that is not empty but names no Worker is an error (it
+// must not become "every Worker").
+func ParseTrafficWorkers(v string) ([]string, error) {
+	if strings.TrimSpace(v) == "" {
+		return nil, nil
+	}
+	r := csv.NewReader(strings.NewReader(v))
+	r.TrimLeadingSpace = true
+	r.FieldsPerRecord = -1
+	fields, err := r.Read()
+	if err != nil {
+		return nil, fmt.Errorf("expected a comma-separated list of Worker ids or names (quote a name that contains a comma): %v", err)
+	}
+	if _, err := r.Read(); err != io.EOF {
+		return nil, errors.New("expected one line: a comma-separated list of Worker ids or names")
+	}
+	var out []string
+	for _, w := range fields {
+		if w = strings.TrimSpace(w); w != "" && !slices.Contains(out, w) {
+			out = append(out, w)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("it names no Worker (leave it empty for all Workers)")
+	}
+	return out, nil
 }
 
 // ResolveMetricsLevel resolves otel_metrics (Hub): off, basic or detailed. A
