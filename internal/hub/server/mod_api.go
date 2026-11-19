@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"net/http"
 	"slices"
 
@@ -124,6 +125,9 @@ func initAPI(_ context.Context, env *Env, catalog *ops.Registry) error {
 	}
 	d := &api.Dispatcher{
 		Catalog: catalog, Handlers: handlers, Auth: authn, Authz: az, Audit: alog, Log: cfg.logger(),
+	}
+	if mon, err := Require[*compliance.Monitor](env); err == nil {
+		d.Monitor = mon
 	}
 	router, err := api.NewRouter(d, mux)
 	if err != nil {

@@ -55,6 +55,7 @@ const (
 	CodeReauthUnavailable       Code = "reauth_unavailable"
 	CodeTLSRequired             Code = "tls_required"
 	CodePassphraseInvalid       Code = "passphrase_invalid"
+	CodeMonitoringChanged       Code = "monitoring_changed"
 )
 
 type codeInfo struct {
@@ -110,6 +111,7 @@ var codeTable = []codeInfo{
 	{CodeReauthUnavailable, 403, "The sign-in method cannot prove a fresh authentication; the operation is refused."},
 	{CodeTLSRequired, 403, "The request did not arrive over HTTPS, so a passphrase is not accepted."},
 	{CodePassphraseInvalid, 403, "The passphrase was not accepted."},
+	{CodeMonitoringChanged, 409, "Session monitoring became stricter since the client last saw it; the request was not sent."},
 }
 
 var codeIndex = func() map[Code]codeInfo {

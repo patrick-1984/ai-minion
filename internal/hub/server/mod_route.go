@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
@@ -94,6 +95,18 @@ func initRoute(ctx context.Context, env *Env) error {
 	})
 	if err != nil {
 		return fmt.Errorf("route: %w", err)
+	}
+	if mon := monitorOf(env); mon != nil {
+		// The recorder asks the Hub for what only the Hub knows: whether a
+		// Worker is user-managed and whether it binds retries to the body.
+		reg := svc.Registry()
+		mon.SetDeps(compliance.Deps{
+			UserManaged: userManaged(st),
+			WorkerHasFeature: func(workerID, feature string) bool {
+				o, ok := reg.Get(workerID)
+				return ok && o.HasFeature(feature)
+			},
+		})
 	}
 	if err := api.RegisterWorkersList(handlers, rt); err != nil {
 		return fmt.Errorf("route: %w", err)

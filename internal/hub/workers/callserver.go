@@ -67,6 +67,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/apikey"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
@@ -190,6 +191,9 @@ type CallServerConfig struct {
 	// Logger receives problems, never arguments or keys. The default is
 	// slog.Default().
 	Logger *slog.Logger
+	// Monitor records the session content that passes through this front
+	// door (compliance monitoring). Nil: none.
+	Monitor *compliance.Monitor
 }
 
 // CallServer serves the call streams of the Workers.
@@ -445,6 +449,9 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	c := &CallContext{WorkerID: workerID, Principal: pr, Actor: actor, Op: op, Args: args,
 		SourceSession: req.SourceSession, RequestWorkerID: reqWorker}
 
+	capt := s.capture(ctx, pr, actor, grant, op, c)
+	capt.Attempted()
+
 	cctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	// The request is complete: any further byte or the end of the stream
@@ -477,7 +484,11 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 			if err := context.Cause(cctx); err != nil {
 				return err
 			}
-			return tooLargeAsError(reply(map[string]any{"type": proto.TypeOpProgress, "data": v}))
+			if err := tooLargeAsError(reply(map[string]any{"type": proto.TypeOpProgress, "data": v})); err != nil {
+				return err
+			}
+			capt.Element(v)
+			return nil
 		})
 		if err == nil {
 			res = struct{}{}
@@ -492,6 +503,11 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	}
 	if op.ChangesState() {
 		s.auditCall(ctx, actor, op.Name, callTarget(args), writeAuditOutcome(res, err))
+	}
+	if op.Stream {
+		capt.End(errCode(err))
+	} else if !errors.Is(cause, errCallerGone) {
+		capt.Done(res, errCode(err))
 	}
 	if errors.Is(cause, errCallerGone) {
 		outcome = "caller_gone"
@@ -711,6 +727,50 @@ func (s *CallServer) decodeArgs(ctx context.Context, pr authz.Principal, workerI
 	return args, reqWorker, nil
 }
 
+// capture starts the compliance recording of a call, after the caller was
+// authorised for the resource of its arguments: a call that authorisation
+// refuses is recorded as denied, without content, and the handler then
+// refuses it with its own error.
+func (s *CallServer) capture(ctx context.Context, pr authz.Principal, actor, grant string, op ops.Op, c *CallContext) *compliance.Capture {
+	if s.cfg.Monitor == nil || op.Scope != ops.ScopeWorker {
+		return nil
+	}
+	client := compliance.ClientCallStream
+	if grant != "" {
+		client = compliance.ClientGrant
+	}
+	capt := s.cfg.Monitor.Begin(ctx, compliance.CallInfo{
+		Path: compliance.PathCall, Op: op.Name, Args: c.Args, Client: client,
+		PrincipalKind: string(pr.Kind), Actor: actor, KeyID: pr.KeyID, WorkerID: callWorker(c),
+	})
+	if capt == nil {
+		return nil
+	}
+	type decider interface {
+		Decide(ctx context.Context, p authz.Principal, accepted ops.ActionSet, res authz.Resource) error
+	}
+	if d, ok := s.cfg.Authz.(decider); ok {
+		var res authz.Resource = authz.WorkerResource{ID: callWorker(c)}
+		if t, ok := targetOfArgs(c.Args); ok && t.WorkerID != "" {
+			res = authz.SessionResource{WorkerID: t.WorkerID, Name: t.SessionName}
+		}
+		if err := d.Decide(ctx, pr, op.Actions, res); err != nil {
+			capt.Denied()
+		}
+	}
+	return capt
+}
+
+// callWorker is the Worker a call is addressed to when its arguments do not
+// name one: the Worker of the stream's own session unless the request names
+// another (sessions_list).
+func callWorker(c *CallContext) string {
+	if c.RequestWorkerID != "" {
+		return c.RequestWorkerID
+	}
+	return c.WorkerID
+}
+
 // callTarget is the audit target of a call: "worker_id:session" of the op's
 // target, or "".
 func callTarget(args any) string {
@@ -802,3 +862,11 @@ type TurnSink interface {
 }
 
 var _ TurnSink = (*Pipe)(nil)
+
+// errCode is the error code of err for a compliance record; "" for nil.
+func errCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	return string(proto.CodeOf(err))
+}

@@ -19,7 +19,7 @@ const (
 // SectionOrder is the order of the sections on the page.
 var SectionOrder = []string{
 	SectionServer, SectionAccounts, SectionOIDC, SectionWorkers, SectionPipe,
-	SectionUpdates, SectionLogging, SectionLogExport, SectionStorage, SectionOther,
+	SectionUpdates, SectionLogging, SectionLogExport, SectionCompliance, SectionStorage, SectionOther,
 }
 
 // sectionOf maps a Hub setting key to its section and its rank inside the
@@ -84,6 +84,14 @@ var sectionOf = map[string]struct {
 	"worker_traffic_log_to":      {SectionLogExport, 4},
 	"worker_traffic_log_workers": {SectionLogExport, 4},
 	"otel_metrics":               {SectionLogExport, 2},
+
+	"compliance_monitoring":       {SectionCompliance, 0},
+	"compliance_input":            {SectionCompliance, 0},
+	"compliance_endpoint":         {SectionCompliance, 0},
+	"compliance_headers":          {SectionCompliance, 0},
+	"compliance_ca_file":          {SectionCompliance, 1},
+	"compliance_client_cert_file": {SectionCompliance, 1},
+	"compliance_client_key_file":  {SectionCompliance, 1},
 
 	"data_dir":  {SectionStorage, 1},
 	"state_dir": {SectionStorage, 1},

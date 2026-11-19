@@ -105,10 +105,18 @@ type SettingsValidateFunc func(proposed *config.Resolver) error
 // An error becomes the warning apply_failed of the change.
 type SettingsApplyFunc func(ctx context.Context, effective *config.Resolver) error
 
+// SettingsTxFunc runs inside the transaction of a change, after its settings
+// rows were written and before it commits: proposed resolves every Hub setting
+// as it is after the change, keys are the changed keys. An error rolls the
+// whole change back (the compliance policy version and its audit rows commit
+// with the settings, A49 T15).
+type SettingsTxFunc func(ctx context.Context, tx *sql.Tx, proposed *config.Resolver, actor SettingsActor, keys []string) error
+
 type settingsHook struct {
 	prefixes []string
 	validate SettingsValidateFunc
 	apply    SettingsApplyFunc
+	tx       SettingsTxFunc
 }
 
 func (h settingsHook) matches(key string) bool {
@@ -196,6 +204,14 @@ func (s *SettingsService) OnChange(prefixes []string, validate SettingsValidateF
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.hooks = append(s.hooks, settingsHook{prefixes: slices.Clone(prefixes), validate: validate, apply: apply})
+}
+
+// OnChangeTx registers tx, which runs in the transaction of a change of any
+// setting whose key starts with one of prefixes.
+func (s *SettingsService) OnChangeTx(prefixes []string, tx SettingsTxFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hooks = append(s.hooks, settingsHook{prefixes: slices.Clone(prefixes), tx: tx})
 }
 
 // NewSettingsService loads the panel values (the snapshot that non-live
@@ -327,6 +343,19 @@ func (s *SettingsService) panelHolds(key string) bool {
 // before it; when an audit record cannot be written, nothing is changed.
 // After the commit the apply hooks run.
 func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops.SettingsSetArgs) (ops.WriteResult, error) {
+	return s.set(ctx, actor, args, false)
+}
+
+// GatedRefusal is the message of settings_set for a compliance setting.
+const GatedRefusal = "compliance monitoring settings and the payload traffic level change only through compliance_set (a fresh sign-in of an administrator in the browser)"
+
+// SetGated is Set for the compliance_set operation: it accepts the gated keys
+// (and only them). The caller has checked who may change them.
+func (s *SettingsService) SetGated(ctx context.Context, actor SettingsActor, args ops.SettingsSetArgs) (ops.WriteResult, error) {
+	return s.set(ctx, actor, args, true)
+}
+
+func (s *SettingsService) set(ctx context.Context, actor SettingsActor, args ops.SettingsSetArgs, gateOpen bool) (ops.WriteResult, error) {
 	if actor.ID == "" {
 		return ops.WriteResult{}, errors.New("server: settings change without an actor")
 	}
@@ -355,6 +384,23 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "key"), Reason: "cannot be set in the panel; use MINION_DATA_DIR"}
 		}
 		unset := c.Unset || c.Value == ""
+		// The gate: the compliance keys and the payload traffic level change
+		// only through compliance_set; compliance_set changes nothing else.
+		// It comes before every other check of the value, so that a refusal
+		// says nothing about what would have been accepted.
+		gated := config.IsComplianceKey(st.Key)
+		payload := st.Key == config.KeyTrafficLog && !unset && c.Value == config.TrafficPayload
+		if payload && !gateOpen && s.storedValue(ctx, st.Key) == config.TrafficPayload {
+			payload = false // the value does not change: a form that sends the section back as it was
+		}
+		if !gateOpen && (gated || payload) {
+			_ = s.auditor.RecordSettingsEvent(ctx, SettingsAuditEvent{Actor: actor.ID, ActingAs: actor.ActingAs,
+				Action: AuditActionSettingSet, Target: st.Key, Outcome: AuditOutcomeRefused})
+			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "key"), Reason: GatedRefusal}
+		}
+		if gateOpen && !gated && st.Key != config.KeyTrafficLog {
+			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "key"), Reason: "compliance_set changes compliance monitoring settings only"}
+		}
 		if !unset && len(st.Choices) > 0 && !slices.Contains(st.Choices, c.Value) {
 			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "value"), Reason: fmt.Sprintf("must be one of %v", st.Choices)}
 		}
@@ -408,6 +454,7 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 		keys[i] = c.st.Key
 	}
 	hooks := s.hooksFor(keys)
+	var proposed *config.Resolver
 	if len(hooks) > 0 {
 		overlay := map[string]*string{}
 		for _, c := range changes {
@@ -417,7 +464,7 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 			}
 			overlay[c.st.Key] = &v
 		}
-		proposed := s.Resolver()
+		proposed = s.Resolver()
 		proposed.Panel = overlayPanel{base: s.panel, over: overlay}
 		for _, h := range hooks {
 			if h.validate == nil {
@@ -435,6 +482,11 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 
 	txAud, audOK := s.auditor.(SettingsTxAuditor)
 	txStore, stOK := s.store.(settingsTxStore)
+	for _, h := range hooks {
+		if h.tx != nil && !(audOK && stOK) {
+			return ops.WriteResult{}, errors.New("server: this setting changes only in one transaction with its audit rows, and the store cannot do that")
+		}
+	}
 	if audOK && stOK {
 		err := txStore.Tx(ctx, func(tx *sql.Tx) error {
 			for _, c := range changes {
@@ -449,6 +501,14 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 				}
 				if err != nil {
 					return fmt.Errorf("server: store setting %q: %w", c.st.Key, err)
+				}
+			}
+			for _, h := range hooks {
+				if h.tx == nil {
+					continue
+				}
+				if err := h.tx(ctx, tx, proposed, actor, keys); err != nil {
+					return err
 				}
 			}
 			return nil
@@ -480,6 +540,15 @@ func (s *SettingsService) Set(ctx context.Context, actor SettingsActor, args ops
 		}
 	}
 	return res, nil
+}
+
+// storedValue is the panel value of key ("" when the panel holds none).
+func (s *SettingsService) storedValue(ctx context.Context, key string) string {
+	rec, ok, err := s.store.GetSetting(ctx, key)
+	if err != nil || !ok {
+		return ""
+	}
+	return rec.Value
 }
 
 // revision identifies the stored panel value of key: a hash of the key, the

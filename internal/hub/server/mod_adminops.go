@@ -44,7 +44,8 @@ func catalogHas(catalog *ops.Registry, names ...string) bool {
 func initAdminOps(_ context.Context, env *Env, catalog *ops.Registry) error {
 	wantSettings := catalogHas(catalog, ops.OpSettingsList, ops.OpSettingsSet)
 	wantOIDC := catalogHas(catalog, ops.OpOIDCProviderList, ops.OpOIDCProviderSet, ops.OpRoleRuleSet)
-	if !wantSettings && !wantOIDC {
+	wantCompliance := catalogHas(catalog, ops.OpComplianceSet, ops.OpComplianceStatus)
+	if !wantSettings && !wantOIDC && !wantCompliance {
 		return nil
 	}
 	handlers, err := Require[*api.Registry](env)
@@ -57,6 +58,15 @@ func initAdminOps(_ context.Context, env *Env, catalog *ops.Registry) error {
 			return err
 		}
 		if err := registerSettingsOps(handlers, svc); err != nil {
+			return fmt.Errorf("adminops: %w", err)
+		}
+	}
+	if wantCompliance {
+		svc, err := Require[*ComplianceService](env)
+		if err != nil {
+			return err
+		}
+		if err := registerComplianceOps(handlers, svc); err != nil {
 			return fmt.Errorf("adminops: %w", err)
 		}
 	}

@@ -73,6 +73,21 @@ func RedactText(s string) string {
 	return s
 }
 
+// RedactTokens masks only Minion's own exactly known secret formats: API keys
+// mn_..., invitation keys mnk_<fingerprint>.<secret>, join tokens mnj1-... and
+// pairing codes MN-XXXX-XXXX (dashes optional). Nothing else is touched: no
+// URL, no heuristic. It is the masking of compliance content (A49 §5.6), where
+// the text is the record and must stay as it was sent.
+func RedactTokens(s string) string {
+	if !hasMN(s) {
+		return s
+	}
+	s = joinTokenText.ReplaceAllString(s, "mnj1-"+Redacted)
+	s = inviteKeyText.ReplaceAllString(s, "${1}."+Redacted)
+	s = apiKeyText.ReplaceAllString(s, "mn_"+Redacted)
+	return pairingCode.ReplaceAllString(s, "MN-"+Redacted)
+}
+
 // hasMN reports whether s contains "mn" in any letter case.
 func hasMN(s string) bool {
 	for i := 0; i+1 < len(s); i++ {

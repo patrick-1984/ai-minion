@@ -149,6 +149,10 @@ func TestHubIdentityCodesAreDeclaredAfterTheOlderOnes(t *testing.T) {
 		CodeTLSRequired: 403, CodePassphraseInvalid: 403,
 	}
 	all := Codes()
+	// Codes of later releases come after these.
+	for len(all) > 0 && all[len(all)-1] == CodeMonitoringChanged {
+		all = all[:len(all)-1]
+	}
 	tail := all[len(all)-len(want):]
 	for _, c := range tail {
 		st, ok := want[c]

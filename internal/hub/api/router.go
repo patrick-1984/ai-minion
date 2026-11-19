@@ -89,6 +89,9 @@ func (rt *Router) Handler(next http.Handler) http.Handler {
 		if muxRedirects(r) {
 			rt.d.armBody(w, r)
 		}
+		if strings.HasPrefix(r.URL.Path, Prefix) {
+			rt.d.setMonitoringHeader(w) // every API response carries the policy (§5.7)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

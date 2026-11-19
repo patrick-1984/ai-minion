@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"sync"
 	"time"
 
@@ -158,6 +159,7 @@ func initPipe(ctx context.Context, env *Env) error {
 		Auditor:   alog,
 		Grants:    st,
 		Logger:    log,
+		Monitor:   monitorOf(env),
 	})
 	if err := p.RegisterCalls(cs); err != nil {
 		return fmt.Errorf("pipe: %w", err)
@@ -210,4 +212,14 @@ func initPipe(ctx context.Context, env *Env) error {
 		return err
 	}
 	return Provide(env, cs)
+}
+
+// monitorOf returns the compliance Monitor, nil when the compliance module is
+// not part of this Hub (a test kernel without it).
+func monitorOf(env *Env) *compliance.Monitor {
+	m, err := Require[*compliance.Monitor](env)
+	if err != nil {
+		return nil
+	}
+	return m
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -82,6 +83,9 @@ type Dispatcher struct {
 	// StreamWriteTimeout bounds each write of a streaming response; zero
 	// means DefaultStreamWriteTimeout.
 	StreamWriteTimeout time.Duration
+	// Monitor records the session content that passes through this front
+	// door (compliance monitoring) and judges the live notice. Nil: none.
+	Monitor *compliance.Monitor
 }
 
 func (d *Dispatcher) logger() *slog.Logger {
@@ -138,6 +142,7 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	// covered too: net/http reads the unread rest of a body before it
 	// answers, and that read must not wait for a stalled client.
 	d.armBody(w, r)
+	d.setMonitoringHeader(w)
 	start := time.Now()
 	id, err := d.Auth.Authenticate(r)
 	if err != nil {
@@ -180,19 +185,30 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	}
 	call = &Call{Op: op, Args: args, Principal: id.Principal, Identity: id, Resource: res, IP: id.IP, Request: r}
 
+	var capt *compliance.Capture
+	if op.Scope == ops.ScopeWorker {
+		capt = d.Monitor.Begin(r.Context(), restCaptureInfo(op.Name, args, id, res))
+	}
 	if err := d.Authz.Decide(r.Context(), id.Principal, op.Actions, res); err != nil {
 		e := ErrorOf(err)
 		if e.Code == proto.CodeInternal {
 			d.logger().Error("authorisation failed", "op", op.Name, "error", err)
 		}
+		capt.Denied()
 		d.audit(r.Context(), call, AuditOutcomeDenied)
 		d.refused(w, op.Name, "authorize", id.Principal.Kind, e)
 		return
 	}
+	// The live notice: a client that last saw a less strict monitoring policy
+	// is refused once, before anything is routed (design §5.7).
+	if d.refuseStale(w, r, op.Name, id.Principal.Kind) {
+		return
+	}
+	capt.Attempted()
 
 	pending = op.Write || auditedMutation(op)
 	if ent.stream != nil {
-		d.serveStream(w, r, call, ent.stream)
+		d.serveStream(w, r, call, captureStream(ent.stream, capt))
 		pending = false
 		return
 	}
@@ -200,6 +216,7 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	pending = false
 	if err != nil {
 		e := ErrorOf(err)
+		capt.Done(nil, string(e.Code))
 		if e.Code == proto.CodeInternal {
 			d.logger().Error("operation failed", "op", op.Name, "error", err)
 		}
@@ -209,6 +226,7 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		WriteError(w, e)
 		return
 	}
+	capt.Done(result, "")
 	d.audit(r.Context(), call, outcomeOf(result))
 	d.logger().Debug("api request done", "op", op.Name, "principal_kind", string(id.Principal.Kind),
 		"outcome", "ok", "duration", time.Since(start).String())
