@@ -19,6 +19,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
@@ -53,6 +54,9 @@ type Settings struct {
 	// it after the lifecycle lock, the update guard and the pre-start hooks
 	// (enrollment). It never fails the start. Nil: none.
 	StartLogSinks func(ctx context.Context)
+	// TrafficTap observes the frames of the connection to the Hub (the
+	// Worker traffic log); nil: none.
+	TrafficTap transport.FrameTap
 	// StopLogSinks flushes and stops the remote log sinks within ctx; the
 	// log module calls it last in the stop sequence. Nil: nothing to stop.
 	StopLogSinks func(ctx context.Context) error

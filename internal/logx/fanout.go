@@ -191,3 +191,40 @@ func (v localView) WithAttrs(as []slog.Attr) slog.Handler {
 func (v localView) WithGroup(name string) slog.Handler {
 	return localView{v.f.WithGroup(name).(*Fanout)}
 }
+
+// Pick returns a handler that hands every record to the given slots as they
+// are at that moment, whatever their levels (a record class with a fixed
+// level of its own, such as the Worker traffic log). An empty slot is
+// skipped; a slot not listed (the ring, for example) never sees a record.
+func (f *Fanout) Pick(slots ...int) slog.Handler {
+	return pickView{f: f, slots: append([]int(nil), slots...)}
+}
+
+type pickView struct {
+	f     *Fanout
+	slots []int
+}
+
+func (v pickView) Enabled(context.Context, slog.Level) bool { return true }
+
+func (v pickView) Handle(ctx context.Context, rec slog.Record) error {
+	var first error
+	for _, i := range v.slots {
+		e := v.f.slots[i].Load()
+		if e == nil {
+			continue
+		}
+		if err := v.f.derived(i, e).Handle(ctx, rec.Clone()); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (v pickView) WithAttrs(as []slog.Attr) slog.Handler {
+	return pickView{f: v.f.WithAttrs(as).(*Fanout), slots: v.slots}
+}
+
+func (v pickView) WithGroup(name string) slog.Handler {
+	return pickView{f: v.f.WithGroup(name).(*Fanout), slots: v.slots}
+}

@@ -599,7 +599,11 @@ func checkServiceSinks(res *config.Resolver, read func(string) ([]byte, error)) 
 		}
 	}
 	svc.Flags = overlayFlags{base: res.Flags, over: over}
-	if _, err := config.ResolveSinks(&svc, config.SinkFiles{ReadPrivate: read}); err != nil {
+	sinks, err := config.ResolveSinks(&svc, config.SinkFiles{ReadPrivate: read})
+	if err == nil {
+		_, err = config.ResolveTraffic(&svc, sinks)
+	}
+	if err != nil {
 		return fmt.Errorf("log export: %w (the service does not see OTEL_EXPORTER_OTLP_* variables of this shell; use --otel-endpoint)", err)
 	}
 	return nil

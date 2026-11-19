@@ -59,6 +59,9 @@ type SessionOptions struct {
 	// KindTimeout bounds the wait for the kind prefix of an inbound
 	// stream; zero means DefaultKindTimeout.
 	KindTimeout time.Duration
+	// FrameTap, when set, observes every frame of every stream of the
+	// session that has a kind (op, ca, ev), in both directions.
+	FrameTap FrameTap
 }
 
 // Session is the yamux multiplexer on top of an authenticated connection
@@ -241,7 +244,7 @@ func (s *Session) openStream(ctx context.Context, kind Kind) (*Stream, error) {
 		resetStream(ys)
 		return nil, s.wrapErr(err)
 	}
-	return &Stream{ys: ys, kind: kind}, nil
+	return &Stream{ys: ys, kind: kind, tap: s.opts.FrameTap}, nil
 }
 
 // OpenRaw opens a stream and writes nothing to it, not even the kind prefix. No
@@ -411,7 +414,7 @@ func (s *Session) classify(ys *yamux.Stream, release func()) {
 	}
 	_ = ys.SetReadDeadline(time.Time{})
 	select {
-	case s.accepted <- &Stream{ys: ys, kind: kind, pre: release}:
+	case s.accepted <- &Stream{ys: ys, kind: kind, pre: release, tap: s.opts.FrameTap}:
 	case <-s.done:
 		resetStream(ys)
 		if release != nil {

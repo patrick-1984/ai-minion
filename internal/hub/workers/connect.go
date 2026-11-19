@@ -226,13 +226,14 @@ type Config struct {
 
 // Handler serves GET /api/v1/worker/connect.
 type Handler struct {
-	cfg     Config
-	log     *slog.Logger
-	mu      sync.RWMutex
-	modes   map[transport.Mode]ModeHandler
-	pairing PairingGate
-	done    chan struct{}
-	once    sync.Once
+	cfg       Config
+	telemetry telemetryBox
+	log       *slog.Logger
+	mu        sync.RWMutex
+	modes     map[transport.Mode]ModeHandler
+	pairing   PairingGate
+	done      chan struct{}
+	once      sync.Once
 
 	// afterRecheck, when set by a test before the first connect, is called
 	// when the post-registration admission recheck of a connection has
@@ -839,6 +840,9 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	adm := h.streamAdmission().attach(w.ID)
 	sopts := h.cfg.Session
 	sopts.Budget = adm
+	if t := h.telemetry.get(); t != nil {
+		sopts.FrameTap = t.FrameTap(w.ID, w.Name)
+	}
 	sess, err := transport.NewSession(c.res.Channel, transport.RoleHub, sopts)
 	if err != nil {
 		adm.detach()

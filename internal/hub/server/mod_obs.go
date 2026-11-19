@@ -17,6 +17,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/obs"
+	"github.com/patrick-1984/ai-minion/internal/obs/traffic"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
@@ -41,6 +42,8 @@ const (
 // Hub runs without a runtime-controllable logger (Config.LogLive, tests).
 type ObsService struct {
 	Manager *obs.Manager
+	// Traffic is the Worker traffic log (nil without a runtime logger).
+	Traffic *traffic.Log
 	live    *logx.Live
 	verbose *bool
 }
@@ -84,6 +87,9 @@ func initObs(_ context.Context, env *Env) error {
 		}
 		sctx, cancel := obs.StopContext(ctx, obsStopLimit)
 		defer cancel()
+		if svc.Traffic != nil {
+			svc.Traffic.Close(sctx) // queued traffic records first, bounded
+		}
 		_ = svc.Manager.Shutdown(sctx) // a loss is written to the local log
 		return nil
 	})
@@ -172,6 +178,7 @@ func initLogging(ctx context.Context, env *Env) error {
 	if err != nil {
 		return err
 	}
+	svc.Traffic = traffic.New(traffic.SideHub, svc.live.Fanout)
 	svc.Manager = obs.New(svc.live.Fanout, obs.Process{
 		Service: "minion-hub", Version: version.Version, InstanceID: hubInstanceID(cfg.DataDir),
 	})
@@ -215,44 +222,79 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 	if err != nil {
 		m.Disable(logx.ErrorText(err))
 		log.Error("log export could not be configured; both sinks are off", "error", logx.ErrorText(err))
-	} else if err := m.Apply(ctx, sinks); err != nil {
-		log.Error("log export could not be started", "error", logx.ErrorText(err))
+	} else {
+		if err := m.Apply(ctx, sinks); err != nil {
+			log.Error("log export could not be started", "error", logx.ErrorText(err))
+		}
+		applyTraffic(svc, settings.Resolver(), sinks, log)
 	}
 
 	// The configuration the validator resolved is the one applied after the
 	// commit (no second read of the files in between); changes are
 	// serialised by the settings service.
+	type resolved struct {
+		sinks   config.Sinks
+		traffic config.TrafficConfig
+	}
 	var mu sync.Mutex
-	var prepared *config.Sinks
+	var prepared *resolved
 	validateSinks := func(p *config.Resolver) error {
 		s, err := config.ResolveSinks(p, files)
+		var t config.TrafficConfig
+		if err == nil {
+			t, err = config.ResolveTraffic(p, s)
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		prepared = nil
 		if err != nil {
 			return err
 		}
-		prepared = &s
+		prepared = &resolved{sinks: s, traffic: t}
 		return nil
 	}
 	applySinks := func(ctx context.Context, eff *config.Resolver) error {
 		mu.Lock()
-		s := prepared
+		r := prepared
 		prepared = nil
 		mu.Unlock()
-		if s == nil {
-			r, err := config.ResolveSinks(eff, files)
+		if r == nil {
+			s, err := config.ResolveSinks(eff, files)
+			var t config.TrafficConfig
+			if err == nil {
+				t, err = config.ResolveTraffic(eff, s)
+			}
 			if err != nil {
 				m.Disable(logx.ErrorText(err))
+				if svc.Traffic != nil {
+					svc.Traffic.Configure(config.TrafficConfig{})
+				}
 				return err
 			}
-			s = &r
+			r = &resolved{sinks: s, traffic: t}
 		}
-		if err := m.Apply(ctx, *s); err != nil {
+		if err := m.Apply(ctx, r.sinks); err != nil {
 			return err
+		}
+		if svc.Traffic != nil {
+			svc.Traffic.Configure(r.traffic)
 		}
 		return nil
 	}
 	settings.OnChange(obsSettingKeys(), validateSinks, applySinks)
 	return nil
+}
+
+// applyTraffic resolves and applies the traffic log at start; a setting that
+// does not resolve leaves it off and says so locally.
+func applyTraffic(svc *ObsService, res *config.Resolver, sinks config.Sinks, log *slog.Logger) {
+	if svc.Traffic == nil {
+		return
+	}
+	t, err := config.ResolveTraffic(res, sinks)
+	if err != nil {
+		log.Error("the Worker traffic log is off: its settings are not valid", "error", logx.ErrorText(err))
+		t = config.TrafficConfig{}
+	}
+	svc.Traffic.Configure(t)
 }
