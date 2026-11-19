@@ -32,22 +32,26 @@ func launchWorker(ctx context.Context, stateDir string, args []string) error {
 		return err
 	}
 	freeConsole()
-	name, err := windows.UTF16PtrFromString(service.SupervisorMutexName)
+	release, already, err := service.AcquireSupervisor()
 	if err != nil {
 		return err
 	}
-	m, err := windows.CreateMutex(nil, false, name)
-	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		return nil // another supervisor runs the Worker of this session
+	if already {
+		return nil // another supervisor runs the Worker of this user
 	}
-	if err != nil {
-		return err
-	}
-	defer func() { _ = windows.CloseHandle(m) }()
+	defer release()
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
+	// The stop event comes right after the mutex and before any I/O, so
+	// "worker down" never sees a supervisor it cannot signal; it is closed
+	// (deferred later, so it runs first) before the mutex is released.
+	stop, closeStop, err := service.CreateSupervisorStopEvent()
+	if err != nil {
+		return err
+	}
+	defer closeStop()
 	logf, err := openLaunchLog(stateDir)
 	if err != nil {
 		return err
@@ -58,11 +62,6 @@ func launchWorker(ctx context.Context, stateDir string, args []string) error {
 	if !hasStateDirArg(args) {
 		args = append(args, "--state-dir", stateDir)
 	}
-	stop, closeStop, err := service.CreateSupervisorStopEvent()
-	if err != nil {
-		return err
-	}
-	defer closeStop()
 	s := supervisor{
 		stop: stop,
 		askStop: func() {

@@ -10,6 +10,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -84,8 +85,23 @@ func openLaunchLog(dir string) (*os.File, error) {
 		return nil, err
 	}
 	p := filepath.Join(dir, launchLogName)
-	if fi, err := os.Stat(p); err == nil && fi.Size() > maxLaunchLog {
-		_ = os.Rename(p, p+".1")
+	// A retained copy keeps the ACL of the file it was: keep one only when
+	// the log itself is private (checked on the open handle), and delete a
+	// backup that is not.
+	if f, err := identity.OpenPrivate(p); err == nil {
+		fi, serr := f.Stat()
+		_ = f.Close()
+		if serr == nil && fi.Size() > maxLaunchLog {
+			_ = os.Remove(p + ".1")
+			_ = os.Rename(p, p+".1")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(p) // not private: never kept, never rotated
+	}
+	if f, err := identity.OpenPrivate(p + ".1"); err == nil {
+		_ = f.Close()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(p + ".1")
 	}
 	return identity.OpenPrivateAppend(p)
 }

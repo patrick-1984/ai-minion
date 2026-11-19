@@ -6,10 +6,17 @@ import (
 )
 
 // LegacyRemovalCommand removes the LocalSystem service of releases up to
-// 0.13.1, in an elevated PowerShell. It names only Windows tools, never a
+// 0.13.1, in an elevated PowerShell: disable it first (so a recovery action
+// cannot start it again), stop it, check that it stopped, delete it, check
+// that the service manager no longer lists it. It names only Windows tools, never a
 // minion.exe: an elevated prompt must not run a file the user's programs can
 // change.
-const LegacyRemovalCommand = "in a PowerShell started as administrator run: Stop-Service " + WindowsServiceName + "; sc.exe delete " + WindowsServiceName
+const LegacyRemovalCommand = "in a PowerShell started as administrator run: " +
+	"$ErrorActionPreference='Stop'; Set-Service " + WindowsServiceName + " -StartupType Disabled; " +
+	"Stop-Service " + WindowsServiceName + " -Force; " +
+	"if ((Get-Service " + WindowsServiceName + ").Status -ne 'Stopped') { throw 'the service still runs' }; " +
+	"sc.exe delete " + WindowsServiceName + "; " +
+	"if (Get-Service " + WindowsServiceName + " -ErrorAction SilentlyContinue) { 'still listed: close the Services console' } else { 'removed' }"
 
 // IsLegacyService reports whether st is the Worker service of releases up to
 // 0.13.1: installed, and running as LocalSystem (or as an account that the

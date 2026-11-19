@@ -72,10 +72,15 @@ The Worker uses the same state directory as `minion worker up --foreground`, so 
 Do this **before** you upgrade or run any `minion worker up`, including with v0.13.1 or older (which would install the LocalSystem service again when run as administrator). Releases up to 0.13.1 installed the Worker as the Windows service `MinionWorker`, running as LocalSystem from the `minion.exe` in your profile. Any program running as you could replace that file and so run code as SYSTEM. This release no longer runs the Worker as a service: if that old service starts, it ends at once and says so. `minion worker status` warns while it exists, and `minion worker up` refuses (exit status 21) until it is gone. `minion worker up` also refuses while it cannot find out whether the service exists (the service manager denied the query). Remove it in a PowerShell started as administrator, with Windows' own tools (never run your `minion.exe` elevated):
 
 ```powershell
-Stop-Service MinionWorker; sc.exe delete MinionWorker
+$ErrorActionPreference='Stop'
+Set-Service MinionWorker -StartupType Disabled   # first: no recovery action can start it again
+Stop-Service MinionWorker -Force
+if ((Get-Service MinionWorker).Status -ne 'Stopped') { throw 'the service still runs' }
+sc.exe delete MinionWorker
+if (Get-Service MinionWorker -ErrorAction SilentlyContinue) { 'still listed: close the Services console' } else { 'removed' }
 ```
 
-Then run `minion worker up` in your normal terminal. (Run as an administrator account without a separate elevated prompt, `minion worker up` removes the old service itself.)
+Then run `minion worker up` in your normal terminal. (Only on an account that is always administrator, with no separate elevated prompt, does `minion worker up` remove the old service itself, with the same steps; that runs the `minion.exe` of your profile with administrator rights, so prefer the Windows commands above. `minion worker up --foreground` only warns, it does not refuse.)
 
 ## Check and reset
 

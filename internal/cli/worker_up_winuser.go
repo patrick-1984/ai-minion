@@ -31,8 +31,11 @@ type windowsUpDeps struct {
 	// supervisorRunning reports whether a supervisor of this session runs;
 	// signalStop asks it to stop (nil: the real ones).
 	supervisorRunning func() bool
-	removeLegacy      func(ctx context.Context) error
-	setAutostart      func(cmd string) error
+	// signalSupervisor asks the supervisor of this user to stop (nil: the
+	// real one); found is false when none runs.
+	signalSupervisor func() (found bool, err error)
+	removeLegacy     func(ctx context.Context) error
+	setAutostart     func(cmd string) error
 	// call is the local control pipe of this user.
 	call          func(ctx context.Context, op string) (json.RawMessage, error)
 	startLauncher func(exe string, args []string) error
@@ -47,6 +50,7 @@ func defaultWindowsUpDeps() windowsUpDeps {
 		elevation:         service.CurrentElevation,
 		isSystem:          systemAccount,
 		supervisorRunning: service.SupervisorRunning,
+		signalSupervisor:  service.SignalSupervisorStop,
 		removeLegacy:      service.RemoveLegacyService,
 		setAutostart:      service.SetAutostart,
 		call: func(ctx context.Context, op string) (json.RawMessage, error) {
@@ -128,8 +132,15 @@ func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, state
 	if err != nil {
 		return err
 	}
-	if err := d.setAutostart(runCmd); err != nil {
-		return fmt.Errorf("cannot write the Run entry %s of HKCU\\%s: %w", service.AutostartValueName, service.AutostartRunKey, err)
+	// Replace what runs first, and only then write the new Run value: a
+	// replacement that fails leaves the old entry as it was. A supervisor is
+	// signaled directly (it may be in its back-off or between a Worker's
+	// exit and restart, with no pipe to ask); the pipe stops a foreground
+	// Worker that has no supervisor.
+	if d.signalSupervisor != nil {
+		if _, err := d.signalSupervisor(); err != nil {
+			return fmt.Errorf("cannot stop the running Worker supervisor: %w", err)
+		}
 	}
 	if d.live(ctx) {
 		_, _ = fmt.Fprintln(out, "Stopping the running Worker so that it starts again with these settings.")
@@ -144,10 +155,13 @@ func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, state
 		}
 	}
 	// The pipe closes before the old Worker and its supervisor are gone; a
-	// new supervisor that starts meanwhile finds the session's mutex taken
-	// and ends, leaving no Worker. Wait for the old supervisor to leave.
+	// new supervisor that starts meanwhile finds the mutex taken and ends,
+	// leaving no Worker. Wait for the old supervisor to leave.
 	if !d.waitSupervisorGone() {
 		return errors.New("the previous Worker supervisor did not end within 30 seconds; stop it (minion worker down) and run the command again")
+	}
+	if err := d.setAutostart(runCmd); err != nil {
+		return fmt.Errorf("cannot write the Run entry %s of HKCU\\%s: %w", service.AutostartValueName, service.AutostartRunKey, err)
 	}
 	if err := d.startLauncher(binary, args); err != nil {
 		return fmt.Errorf("cannot start the Worker: %w", err)

@@ -32,3 +32,21 @@ func TestSCMEndRunsTheHandlerInAConsoleAndUnderTheManager(t *testing.T) {
 		t.Fatal(err, n)
 	}
 }
+
+// The removal command disables the service before it stops it, checks the
+// stop, deletes it and checks it is gone, in that order, and aborts on an
+// error.
+func TestLegacyRemovalCommandOrder(t *testing.T) {
+	c := LegacyRemovalCommand
+	last := -1
+	for _, part := range []string{"ErrorActionPreference='Stop'", "-StartupType Disabled", "Stop-Service MinionWorker -Force", "-ne 'Stopped'", "sc.exe delete MinionWorker", "Get-Service MinionWorker -ErrorAction SilentlyContinue"} {
+		i := strings.Index(c, part)
+		if i <= last {
+			t.Fatalf("%q is missing or out of order in:\n%s", part, c)
+		}
+		last = i
+	}
+	if strings.Contains(c, "minion.exe") {
+		t.Error("the removal must not run a minion.exe")
+	}
+}

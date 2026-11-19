@@ -283,3 +283,51 @@ func TestLaunchAndRunRefuseToRunAsSystem(t *testing.T) {
 		}
 	}
 }
+
+// A reused or restored log over the size limit that other accounts can read
+// is not kept as ".1": the rotation would carry its ACL (and the pairing
+// codes in it). A permissive old backup goes too. Runs natively on Windows
+// (TestOpenLaunchLogRotation...) with a real DACL.
+func TestOpenLaunchLogRotationNeverKeepsAPermissiveCopy(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, launchLogName)
+	big := []byte(strings.Repeat("pairing code MN-AAAA-BBBB\n", maxLaunchLog/20))
+	if err := os.WriteFile(p, big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	makePermissive(t, p)
+	if err := os.WriteFile(p+".1", []byte("old MN-CCCC-DDDD\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	makePermissive(t, p+".1")
+	f, err := openLaunchLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if _, err := os.Stat(p + ".1"); err == nil {
+		t.Error("a permissive copy was kept as .1")
+	}
+	if fi, err := os.Stat(p); err != nil || fi.Size() != 0 {
+		t.Errorf("the new log: %v, %v", fi, err)
+	}
+}
+
+// A private oversized log is rotated as before.
+func TestOpenLaunchLogRotatesAPrivateLog(t *testing.T) {
+	dir := t.TempDir()
+	f, err := openLaunchLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(strings.Repeat("x", maxLaunchLog+1))
+	_ = f.Close()
+	f, err = openLaunchLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if fi, err := os.Stat(filepath.Join(dir, launchLogName+".1")); err != nil || fi.Size() <= maxLaunchLog {
+		t.Errorf("not rotated: %v, %v", fi, err)
+	}
+}

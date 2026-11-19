@@ -168,6 +168,12 @@ that the identity survives a restart of the container.`,
 }
 
 func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser string) error {
+	// First of all, before a join token is expanded or any setup runs: the
+	// Worker never runs as LocalSystem (it would run the user's binary as
+	// SYSTEM); LocalSystem has no UAC split token, so the token SID is read.
+	if err := service.RefuseSystem(systemAccount()); err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
 	// A join token becomes --server, --hub-fingerprint and --invite-key before
 	// anything else looks at the settings (worker_join_token.go). Its
@@ -223,13 +229,14 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 
 // warnWindowsService warns a foreground Worker while the LocalSystem Windows
 // service of an older release exists, with the commands that remove it. It
-// only queries the service control manager; a failed query prints nothing.
+// only queries the service control manager; a failed query is reported as unknown state.
 func warnWindowsService(w io.Writer, query func() (service.WindowsServiceState, error)) {
 	if query == nil {
 		query = service.QueryWindowsService
 	}
 	st, err := query()
 	if err != nil {
+		_, _ = fmt.Fprintln(w, "Warning: "+service.LegacyQueryFailure(err))
 		return
 	}
 	if msg := service.LegacyServiceWarning(st); msg != "" {
@@ -417,7 +424,10 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		svc.Chown = deps.chown
 	}
 	if det.Manager == service.ManagerWindows {
-		return installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, pinState, out)
+		// The Run entry always names the state directory chosen now, so a
+		// MINION_STATE_DIR in the environment of a later logon (or of this
+		// shell) cannot select another profile.
+		return installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out)
 	}
 	_, err = service.Install(ctx, svc, service.Request{
 		Manager:     det.Manager,

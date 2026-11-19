@@ -4,6 +4,13 @@ package service
 
 import "errors"
 
+func supervisorSuffix() string { return "" }
+
+// AcquireSupervisor exists only on Windows.
+func AcquireSupervisor() (func(), bool, error) {
+	return nil, false, errors.New("the Worker supervisor runs on Windows only")
+}
+
 // SupervisorRunning is false outside Windows.
 func SupervisorRunning() bool { return false }
 

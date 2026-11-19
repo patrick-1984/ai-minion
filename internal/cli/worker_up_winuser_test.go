@@ -81,7 +81,8 @@ func TestWorkerUpWindowsInstallsTheLogonAutostart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if w.runValue != `C:\Users\ann\AppData\Local\Programs\minion\minion.exe worker launch` {
+	// The Run entry always names the state directory chosen now.
+	if want := `C:\Users\ann\AppData\Local\Programs\minion\minion.exe worker launch --state-dir ` + f.stateDir(); w.runValue != want {
 		t.Errorf("Run value = %q", w.runValue)
 	}
 	if got := strings.Join(w.events, ","); got != "run-entry,launch" {
@@ -115,7 +116,7 @@ func TestWorkerUpWindowsReplacesARunningWorker(t *testing.T) {
 	if _, err := f.run("--share-existing", "none"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(w.events, ","); got != "run-entry,stop,launch" || !w.running {
+	if got := strings.Join(w.events, ","); got != "stop,run-entry,launch" || !w.running {
 		t.Errorf("events = %s, running %v", got, w.running)
 	}
 }
@@ -296,7 +297,7 @@ func TestWorkerUpWindowsWaitsForTheOldSupervisor(t *testing.T) {
 	if _, err := f.run("--share-existing", "none"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(w.events, ","); got != "run-entry,stop,old-supervisor-gone,launch" {
+	if got := strings.Join(w.events, ","); got != "stop,old-supervisor-gone,run-entry,launch" {
 		t.Errorf("events = %s", got)
 	}
 
@@ -354,5 +355,63 @@ func TestWorkerStatusReportsAServiceQueryFailure(t *testing.T) {
 	out, _, err := runWorkerCmds(t, sd, workerConfigDeps{}, "worker", "status", "--json", "--state-dir", dir)
 	if err != nil || !strings.Contains(out, "Access is denied") || !strings.Contains(out, "sc.exe delete MinionWorker") {
 		t.Errorf("err=%v status:\n%s", err, out)
+	}
+}
+
+// Round 2: an explicit default --state-dir against a conflicting
+// MINION_STATE_DIR: the Run entry and the immediate start both name it.
+func TestWorkerUpWindowsPinsTheExplicitDefaultAgainstTheEnvironment(t *testing.T) {
+	f, w := newWinUp(t)
+	f.deps.run.lookupEnv = func(k string) (string, bool) {
+		if k == "MINION_STATE_DIR" {
+			return filepath.Join(t.TempDir(), "other-profile"), true
+		}
+		return "", false
+	}
+	if _, err := f.run("--share-existing", "none", "--state-dir", f.stateDir()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(w.runValue, " --state-dir "+f.stateDir()) || !strings.HasSuffix(w.starts[0], " --state-dir "+f.stateDir()) {
+		t.Errorf("Run value %q, started %q", w.runValue, w.starts)
+	}
+}
+
+// A supervisor in its back-off answers on no pipe: it is signaled directly,
+// before the Run value changes, and a failed replacement leaves the old Run
+// entry as it was.
+func TestWorkerUpWindowsSignalsABackingOffSupervisor(t *testing.T) {
+	f, w := newWinUp(t)
+	d := w.deps() // no Worker answers (running is false)
+	d.signalSupervisor = func() (bool, error) { w.events = append(w.events, "signal"); return true, nil }
+	f.deps.windows = d
+	if _, err := f.run("--share-existing", "none"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(w.events, ","); got != "signal,run-entry,launch" {
+		t.Errorf("events = %s", got)
+	}
+
+	f, w = newWinUp(t)
+	d = w.deps()
+	d.supervisorRunning = func() bool { return true } // never ends
+	f.deps.windows = d
+	if _, err := f.run("--share-existing", "none"); err == nil || w.runValue != "" {
+		t.Fatalf("err=%v runValue=%q: a failed replacement must not write the Run entry", err, w.runValue)
+	}
+}
+
+// LocalSystem is refused before the foreground setup (the psmux offer, the
+// saved settings) and before a join token is expanded.
+func TestWorkerUpForegroundRefusesLocalSystemFirst(t *testing.T) {
+	old := systemAccount
+	systemAccount = func() bool { return true }
+	defer func() { systemAccount = old }()
+	f, w := newWinUp(t)
+	_, err := f.run("--foreground", "--share-existing", "none")
+	if !errors.Is(err, service.ErrRunsAsSystem) || len(w.events) != 0 {
+		t.Fatalf("err=%v events=%v", err, w.events)
+	}
+	if _, err := os.Stat(filepath.Join(f.stateDir(), "config.json")); err == nil {
+		t.Error("settings were saved before the refusal")
 	}
 }

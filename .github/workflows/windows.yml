@@ -64,11 +64,11 @@ jobs:
         shell: bash
         run: |
           set -eu
-          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
+          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile|TestOpenPrivateAppendCreatesAProtectedFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
           service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestIsAccessDenied|TestAutostart|TestLegacyService)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
-          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
+          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused|TestOpenLaunchLogRotationNeverKeepsAPermissiveCopy|TestOpenLaunchLogRotatesAPrivateLog|TestOpenLaunchLogIsPrivate)$'
           CGO_ENABLED=0 go test -count=1 -v -run "$identity" ./internal/identity/
           CGO_ENABLED=0 go test -count=1 -v -run "$hubstore" ./internal/hub/store/
           CGO_ENABLED=0 go test -count=1 -v -run "$cli" ./internal/cli/
@@ -83,11 +83,11 @@ jobs:
         shell: bash
         run: |
           set -eu
-          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
+          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile|TestOpenPrivateAppendCreatesAProtectedFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
           service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestIsAccessDenied|TestAutostart|TestLegacyService)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
-          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
+          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused|TestOpenLaunchLogRotationNeverKeepsAPermissiveCopy|TestOpenLaunchLogRotatesAPrivateLog|TestOpenLaunchLogIsPrivate)$'
           CGO_ENABLED=1 go test -race -count=1 -run "$identity" ./internal/identity/
           CGO_ENABLED=1 go test -race -count=1 -run "$hubstore" ./internal/hub/store/
           CGO_ENABLED=1 go test -race -count=1 -run "$cli" ./internal/cli/
