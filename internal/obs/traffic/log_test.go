@@ -381,3 +381,33 @@ type gateWriter struct {
 }
 
 func (g gateWriter) Write(p []byte) (int, error) { <-g.gate; return g.to.Write(p) }
+
+// A frame that loaded the old filter before a combined sink rotation and
+// filter narrowing binds late (to the new sinks); it is never delivered,
+// because the old filter is not the current one any more.
+func TestLateFrameCannotUseTheOldFilterWithNewSinks(t *testing.T) {
+	f := logx.NewFanout()
+	var oldOut, newOut syncBuf
+	f.Set(logx.SlotOTel, slog.NewJSONHandler(&oldOut, nil), slog.LevelInfo)
+	l := New(SideHub, f)
+	defer l.Close(context.Background())
+	wide := config.TrafficConfig{Enabled: true, To: []string{config.TrafficToOTel}, Workers: []string{"a", "b"}}
+	l.Configure(wide)
+	old := l.cfg.Load()
+	l.Suspend()
+	f.Set(logx.SlotOTel, slog.NewJSONHandler(&newOut, nil), slog.LevelInfo)
+	late := l.bind(old) // a tap that loaded the old filter before Suspend
+	l.Configure(config.TrafficConfig{Enabled: true, To: []string{config.TrafficToOTel}, Workers: []string{"a"}})
+	if l.current(late) {
+		t.Fatal("the old filter is still current")
+	}
+	// The same configuration again restores the very same filter.
+	l.Suspend()
+	l.Configure(config.TrafficConfig{Enabled: true, To: []string{config.TrafficToOTel}, Workers: []string{"a"}})
+	cur := l.cfg.Load()
+	l.Suspend()
+	l.Configure(config.TrafficConfig{Enabled: true, To: []string{config.TrafficToOTel}, Workers: []string{"a"}})
+	if l.cfg.Load() != cur {
+		t.Fatal("an unchanged configuration got a new filter")
+	}
+}

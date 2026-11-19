@@ -239,3 +239,15 @@ func TestInvalidTrafficSettingDoesNotBlockStoppingASink(t *testing.T) {
 		t.Fatal("a new invalid traffic setting was accepted")
 	}
 }
+
+// The same holds when the environment holds an unsupported enum value.
+func TestInvalidEnvironmentEnumDoesNotBlockStoppingASink(t *testing.T) {
+	for _, env := range []map[string]string{{"MINION_WORKER_TRAFFIC_LOG": "payload"}, {"MINION_OTEL_METRICS": "full"}} {
+		o := newObsFixture(t, env, nil)
+		o.set(t, ops.SettingChange{Key: "syslog", Value: "on"}, ops.SettingChange{Key: "syslog_endpoint", Value: "udp://127.0.0.1:9"})
+		o.set(t, ops.SettingChange{Key: "syslog", Value: "off"})
+		if st := o.svc.Manager.Status()[0]; st.Enabled {
+			t.Fatalf("%v: the export was not stopped: %+v", env, st)
+		}
+	}
+}

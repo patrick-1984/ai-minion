@@ -309,7 +309,16 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 			}
 			r = &resolved{sinks: s, traffic: t, metrics: lvl}
 		}
+		// The sinks and the traffic filter change together: nothing is
+		// recorded between the two, so that no frame of a Worker that the
+		// new filter excludes meets the new destination.
+		if svc.Traffic != nil {
+			svc.Traffic.Suspend()
+		}
 		if err := m.Apply(ctx, r.sinks); err != nil {
+			if svc.Traffic != nil {
+				svc.Traffic.Configure(r.traffic)
+			}
 			return err
 		}
 		if svc.Traffic != nil {
@@ -373,7 +382,15 @@ func unchangedAndInvalid(cur, p *config.Resolver, files config.SinkFiles, keys [
 	for _, k := range keys {
 		a, ea := cur.Resolve(k)
 		b, eb := p.Resolve(k)
-		if ea != nil || eb != nil || a.Value != b.Value {
+		if ea != nil || eb != nil {
+			// The same unsupported value (an invalid environment enum, say)
+			// on both sides is an unchanged input.
+			if ea != nil && eb != nil && ea.Error() == eb.Error() {
+				continue
+			}
+			return false
+		}
+		if a.Value != b.Value {
 			return false
 		}
 	}

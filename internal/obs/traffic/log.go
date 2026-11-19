@@ -59,6 +59,7 @@ type Log struct {
 	now  func() time.Time
 
 	cfg     atomic.Pointer[filter]
+	prev    atomic.Pointer[filter] // the filter Suspend took down
 	bound   atomic.Pointer[binding]
 	q       chan record
 	dropped atomic.Uint64
@@ -116,6 +117,7 @@ func New(side Side, out *logx.Fanout) *Log {
 func (l *Log) Configure(c config.TrafficConfig) {
 	if !c.Enabled {
 		l.cfg.Store(nil)
+		l.prev.Store(nil)
 		return
 	}
 	var slots []int
@@ -129,10 +131,28 @@ func (l *Log) Configure(c config.TrafficConfig) {
 			slots = append(slots, logx.SlotOTel)
 		}
 	}
-	if old := l.cfg.Load(); old != nil && reflect.DeepEqual(old.TrafficConfig, c) {
-		return // nothing changed (a save of an unrelated setting): keep what is queued
+	old := l.cfg.Load()
+	if old == nil {
+		old = l.prev.Load()
+	}
+	l.prev.Store(nil)
+	if old != nil && reflect.DeepEqual(old.TrafficConfig, c) {
+		l.cfg.Store(old) // nothing changed (a save of an unrelated setting): keep what is queued
+		return
 	}
 	l.cfg.Store(&filter{TrafficConfig: c, slots: slots})
+}
+
+// Suspend takes the traffic log down until the next Configure: no frame is
+// recorded in between. A change of destinations and of the Worker filter is
+// published as Suspend, the sink change, Configure, so that a frame never
+// meets the new sinks with the old filter. A record that was bound before
+// stays bound to the old filter and is dropped unless Configure restores that
+// very filter (the same configuration).
+func (l *Log) Suspend() {
+	if f := l.cfg.Swap(nil); f != nil {
+		l.prev.Store(f)
+	}
 }
 
 // bind returns the binding of f to the sinks of now.
