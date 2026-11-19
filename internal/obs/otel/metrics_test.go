@@ -339,3 +339,20 @@ func TestDetailedOpSeriesFitTheWorkerCap(t *testing.T) {
 		t.Fatalf("%d op series, want %d", n, want)
 	}
 }
+
+// Sequential configuration changes never see an earlier completed build as
+// still outstanding.
+func TestSequentialConfigureNeverReportsABlockedBuild(t *testing.T) {
+	rcv := newMetricsReceiver(t)
+	m := NewMetrics()
+	defer func() { _ = m.Shutdown(context.Background()) }()
+	for i := range 200 {
+		lvl := MetricsBasic
+		if i%2 == 1 {
+			lvl = MetricsDetailed
+		}
+		if err := m.Configure(context.Background(), metricsConfig(t, rcv.srv.URL, lvl), nil); err != nil {
+			t.Fatalf("turn %d: %v", i, err)
+		}
+	}
+}

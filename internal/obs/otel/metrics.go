@@ -187,13 +187,16 @@ func (m *Metrics) buildBounded(ctx context.Context, c MetricsConfig, res *resour
 	var state atomic.Int32
 	ch := make(chan result, 1)
 	go func() {
-		defer m.building.Store(false)
 		s, err := m.build(ctx, c, res)
 		if state.CompareAndSwap(running, delivered) {
+			// Cleared before the result is published: the caller that
+			// receives it may configure again at once.
+			m.building.Store(false)
 			ch <- result{s, err}
 			return
 		}
 		retire(s) // nobody waits for it any more
+		m.building.Store(false)
 	}()
 	t := time.NewTimer(buildTimeout)
 	defer t.Stop()
