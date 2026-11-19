@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -891,5 +892,21 @@ func TestCallStreamWithdrawsAKeylessCallWhenTheOwnerLosesAccess(t *testing.T) {
 	st.mu.Unlock()
 	if code := errCodeOf(t, frames); code != proto.CodeForbidden {
 		t.Fatalf("code %q, want forbidden", code)
+	}
+}
+
+// A call whose answer cannot be written (the stream was reset or timed out)
+// is counted as a failure, not as ok.
+func TestCallStreamLostReplyIsNotASuccess(t *testing.T) {
+	rec := &recTelemetry{}
+	r := newCallRig(t, func(c *CallServerConfig) { c.Telemetry = func() Telemetry { return rec } })
+	st := newCallStream(t, request(ops.OpPipeSend,
+		map[string]any{"request_id": ops.NewUUIDv7(), "target": "pi-1:minion-1", "text": "x"}, ""))
+	st.writeErr = errors.New("stream reset")
+	r.cs.Serve(context.Background(), wAlicePi1.ID, st)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.served) != 1 || rec.served[0] != ops.OpPipeSend+" reply_failed" {
+		t.Fatalf("served %q", rec.served)
 	}
 }

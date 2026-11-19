@@ -30,20 +30,31 @@ const frameHeaderLen = 4
 // by encoding/json, so insignificant whitespace is dropped and <, > and & are
 // escaped; the size limit applies to the bytes actually written.
 func WriteFrame(w io.Writer, limit int, v any) error {
-	body, err := encodeBody(v)
+	buf, err := EncodeFrame(limit, v)
 	if err != nil {
 		return err
 	}
-	if err := checkSize(len(body), limit); err != nil {
-		return err
-	}
-	buf := make([]byte, frameHeaderLen+len(body))
-	binary.BigEndian.PutUint32(buf, uint32(len(body)))
-	copy(buf[frameHeaderLen:], body)
 	if _, err := w.Write(buf); err != nil {
 		return err
 	}
 	return nil
+}
+
+// EncodeFrame returns the wire form of v as one frame: the 4-byte length and
+// the JSON body (buf[4:]). It refuses what WriteFrame refuses, before
+// anything is written.
+func EncodeFrame(limit int, v any) ([]byte, error) {
+	body, err := encodeBody(v)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkSize(len(body), limit); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, frameHeaderLen+len(body))
+	binary.BigEndian.PutUint32(buf, uint32(len(body)))
+	copy(buf[frameHeaderLen:], body)
+	return buf, nil
 }
 
 // ReadFrame reads one frame from r and returns its JSON body, validated to be

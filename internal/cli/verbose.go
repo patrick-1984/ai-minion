@@ -15,8 +15,10 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/obs"
+	"github.com/patrick-1984/ai-minion/internal/obs/traffic"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
@@ -81,8 +83,12 @@ func workerLogger(cmd *cobra.Command, res *config.Resolver, out io.Writer) (*slo
 // both sinks stay off and the status and the local log say why; worker up
 // refuses such a setting before it saves it. Standalone commands (CLI
 // one-shots, minion mcp, worker pair) never call it: they log to stderr only.
-func newWorkerSinks(res *config.Resolver, live *logx.Live, logger *slog.Logger, stateDir string) (m *obs.Manager, start func(context.Context)) {
-	m = obs.New(live.Fanout, obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: ops.NewUUIDv7()})
+func newWorkerSinks(res *config.Resolver, live *logx.Live, logger *slog.Logger, stateDir string) (w *workerSinks, start func(context.Context)) {
+	w = &workerSinks{
+		m:       obs.New(live.Fanout, obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: ops.NewUUIDv7()}),
+		traffic: traffic.New(traffic.SideWorker, live.Fanout),
+	}
+	m := w.m
 	start = func(ctx context.Context) {
 		if id := workerOTelID(ctx, stateDir); id != "" {
 			m.SetProcess(obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: id, WorkerID: id})
@@ -96,8 +102,35 @@ func newWorkerSinks(res *config.Resolver, live *logx.Live, logger *slog.Logger, 
 		if err := m.Apply(ctx, sinks); err != nil {
 			logger.Error("log export could not be started", "error", logx.ErrorText(err))
 		}
+		// The traffic log, like the sinks, never stops the Worker: a
+		// setting that does not resolve leaves it off and says so.
+		t, err := config.ResolveTraffic(res, sinks)
+		if err != nil {
+			logger.Error("the Worker traffic log is off: its settings are not valid", "error", logx.ErrorText(err))
+			t = config.TrafficConfig{}
+		}
+		w.traffic.Configure(t)
 	}
-	return m, start
+	return w, start
+}
+
+// workerSinks are the log sinks and the traffic log of a running Worker.
+type workerSinks struct {
+	m       *obs.Manager
+	traffic *traffic.Log
+}
+
+// Status reports the sinks (minion worker status).
+func (w *workerSinks) Status() []ops.LogSinkStatus { return w.m.Status() }
+
+// Tap is the frame tap of the Worker's connection to its Hub.
+func (w *workerSinks) Tap() transport.FrameTap { return w.traffic.Tap(traffic.Peer{}) }
+
+// Shutdown writes what the traffic log has queued, then flushes and stops
+// the sinks, all within ctx.
+func (w *workerSinks) Shutdown(ctx context.Context) error {
+	w.traffic.Close(ctx)
+	return w.m.Shutdown(ctx)
 }
 
 // workerOTelID is the Worker id of the persisted enrollment, for the

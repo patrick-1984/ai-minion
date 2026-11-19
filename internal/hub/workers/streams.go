@@ -126,6 +126,7 @@ type hostedSession struct {
 	*transport.Session
 	adm      *workerAdmission
 	log      *slog.Logger
+	tel      Telemetry // nil: none
 	mu       sync.Mutex
 	handlers map[transport.Kind]StreamHandler
 	closed   bool
@@ -228,6 +229,9 @@ func (s *hostedSession) admit(ctx context.Context, st *transport.Stream) {
 		return
 	}
 	free, ok := s.adm.acquire(l)
+	if s.tel != nil {
+		s.tel.Admission(l.String(), ok)
+	}
 	if !ok {
 		s.refuse(st)
 		return

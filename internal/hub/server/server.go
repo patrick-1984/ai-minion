@@ -439,7 +439,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	if err := srv.Shutdown(sctx); err != nil {
 		_ = srv.Close()
-		log.Warn("graceful shutdown timed out; connections were closed", "error", err)
+		// Best effort: a stalled local output must not hold the stop.
+		logx.BestEffort(log, slog.LevelWarn, "graceful shutdown timed out; connections were closed", "error", err)
 	}
 	if err := kernel.Stop(sctx); err != nil {
 		runErr = errors.Join(runErr, err)

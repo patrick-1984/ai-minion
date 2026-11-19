@@ -76,6 +76,7 @@ func initWorkers(ctx context.Context, env *Env) error {
 	if err := az.SetWorkerLookup(svc.OwnerLookup()); err != nil {
 		return err
 	}
+	installTelemetry(env, svc)
 	if err := Provide(env, svc); err != nil {
 		return err
 	}

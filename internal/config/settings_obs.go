@@ -23,6 +23,28 @@ const (
 	KeyOTelCAFile         = "otel_ca_file"
 	KeyOTelClientCertFile = "otel_client_cert_file"
 	KeyOTelClientKeyFile  = "otel_client_key_file"
+
+	// The Worker traffic log (design §4.1): what the Hub sent to and received
+	// from Workers, and the Worker's own view.
+	KeyTrafficLog        = "worker_traffic_log"
+	KeyTrafficLogTo      = "worker_traffic_log_to"
+	KeyTrafficLogWorkers = "worker_traffic_log_workers"
+	// KeyOTelMetrics is the level of the Hub's Worker traffic metrics.
+	KeyOTelMetrics = "otel_metrics"
+)
+
+// Values of worker_traffic_log. The payload level (frame bodies) comes with
+// the compliance gate of a later release and is not accepted yet.
+const (
+	TrafficOff      = "off"
+	TrafficMetadata = "metadata"
+)
+
+// Destinations of worker_traffic_log_to.
+const (
+	TrafficToLocal  = "local"
+	TrafficToSyslog = "syslog"
+	TrafficToOTel   = "otel"
 )
 
 // Values of the sink switches.
@@ -46,6 +68,7 @@ var ObsSettingKeys = []string{
 	KeySyslogCAFile, KeySyslogClientCertFile, KeySyslogClientKeyFile,
 	KeyOTel, KeyOTelEndpoint, KeyOTelLevel, KeyOTelHeaders, KeyOTelHeadersPath,
 	KeyOTelCAFile, KeyOTelClientCertFile, KeyOTelClientKeyFile,
+	KeyTrafficLog, KeyTrafficLogTo, KeyTrafficLogWorkers, KeyOTelMetrics,
 }
 
 var sinkLevels = []string{"debug", "info", "warn", "error"}
@@ -53,6 +76,18 @@ var sinkLevels = []string{"debug", "info", "warn", "error"}
 func init() { declareObs(Default) }
 
 func declareObs(r *Registry) {
+	r.Declare(Setting{Key: KeyOTelMetrics, Scope: ScopeHub, Default: "off", Choices: []string{"off", "basic", "detailed"},
+		Help: "Worker traffic metrics to the OpenTelemetry endpoint (needs otel on): off; basic (Hub-wide counters: " +
+			"connections, Workers online, WebSocket and frame bytes, frames, ops, calls, stream admission, turns); " +
+			"detailed (basic per Worker, for the first 500 Workers, plus connection and op durations)"})
+	r.Declare(Setting{Key: KeyTrafficLog, Scope: ScopeAny, Default: TrafficOff, Choices: []string{TrafficOff, TrafficMetadata},
+		Help: "Log every frame between the Hub and its Workers (Hub: both directions per Worker; Worker: what it sent and " +
+			"received): off or metadata (stream, frame type, op, request id, size, duration and outcome; never a body)"})
+	r.Declare(Setting{Key: KeyTrafficLogTo, Scope: ScopeAny, Default: TrafficToLocal,
+		Help: "Where the traffic log goes, a comma-separated list of local (standard error), syslog and otel; each " +
+			"destination must be on. Never the in-memory log"})
+	r.Declare(Setting{Key: KeyTrafficLogWorkers, Scope: ScopeHub,
+		Help: "Limit the Hub's traffic log to these Workers: a comma-separated list of Worker ids or names (a name that contains a comma in double quotes); empty: all"})
 	onOff := []string{SinkOff, SinkOn}
 	// Path settings: the registry reserves names ending in _FILE for the
 	// file form of secrets, so their variables end in _PATH (as

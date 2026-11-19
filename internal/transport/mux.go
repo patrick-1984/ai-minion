@@ -59,6 +59,17 @@ type SessionOptions struct {
 	// KindTimeout bounds the wait for the kind prefix of an inbound
 	// stream; zero means DefaultKindTimeout.
 	KindTimeout time.Duration
+	// FrameTap, when set, observes every frame of every stream of the
+	// session that has a kind (op, ca, ev), in both directions.
+	FrameTap FrameTap
+}
+
+// SessionTapper is a FrameTap that keeps state per session: NewSession asks
+// it for the tap of the new session, so that a tap shared by the sessions of
+// a reconnecting Worker never carries the state of one into the next.
+type SessionTapper interface {
+	FrameTap
+	ForSession() FrameTap
 }
 
 // Session is the yamux multiplexer on top of an authenticated connection
@@ -94,6 +105,9 @@ func NewSession(conn net.Conn, role Role, opts SessionOptions) (*Session, error)
 	}
 	if opts.KindTimeout <= 0 {
 		opts.KindTimeout = DefaultKindTimeout
+	}
+	if st, ok := opts.FrameTap.(SessionTapper); ok {
+		opts.FrameTap = st.ForSession()
 	}
 	ac := &activityConn{Conn: conn, clk: opts.Keepalive.Clock}
 	ac.touch()
@@ -241,7 +255,7 @@ func (s *Session) openStream(ctx context.Context, kind Kind) (*Stream, error) {
 		resetStream(ys)
 		return nil, s.wrapErr(err)
 	}
-	return &Stream{ys: ys, kind: kind}, nil
+	return &Stream{ys: ys, kind: kind, tap: s.opts.FrameTap}, nil
 }
 
 // OpenRaw opens a stream and writes nothing to it, not even the kind prefix. No
@@ -411,7 +425,7 @@ func (s *Session) classify(ys *yamux.Stream, release func()) {
 	}
 	_ = ys.SetReadDeadline(time.Time{})
 	select {
-	case s.accepted <- &Stream{ys: ys, kind: kind, pre: release}:
+	case s.accepted <- &Stream{ys: ys, kind: kind, pre: release, tap: s.opts.FrameTap}:
 	case <-s.done:
 		resetStream(ys)
 		if release != nil {
