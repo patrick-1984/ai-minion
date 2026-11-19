@@ -18,7 +18,7 @@
     <form method="post" action="{{.UpdateURL}}" hx-post="{{.UpdateURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update {{.Name}} from {{.Build}} to {{.UpdateTo}}? The Worker installs the signed release and restarts; tmux sessions keep running." class="row-actions">
       <button type="submit" class="btn btn-secondary" data-control="update" aria-label="Update {{.Name}} to {{.UpdateTo}}">Update</button>
     </form>{{else if .UpdateBlock}} <span class="muted" data-update-block>({{.UpdateBlock}})</span>{{end}}{{end}}</td>
-  <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else if .Online}}{{if .NewSessionRefused}}<div class="row-actions" data-hidden-refused>
+  <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else}}<div class="action-row">{{if .Online}}{{if .NewSessionRefused}}<div class="row-actions" data-hidden-refused>
     <button type="button" class="btn btn-secondary" data-control="new-session" disabled aria-describedby="nsr-{{.ID}}">New session<span class="sr-only"> on {{.Name}} (not available)</span></button>
     <details class="note-more" data-keep-open="nsr-{{.ID}}">
       <summary data-control="new-session-note"><span class="summary-title">Why can't I start a session?</span></summary>
@@ -26,7 +26,9 @@
     </details>
   </div>{{else}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn btn-secondary" data-control="new-session" aria-label="New session on {{.Name}}">New session</button>
-  </form>{{end}}{{else}}<span class="muted">Offline</span>{{end}}{{if .SessionHostText}}
+  </form>{{end}}{{else}}<span class="muted">Offline</span>{{end}}{{if .RemoveURL}}<form method="post" action="{{.RemoveURL}}" hx-post="{{.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Name}}? The Hub removes it: the Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again, under a new code, to come back. Keys bound to it and its control settings go with it." class="row-actions">
+    <button type="submit" class="btn btn-secondary btn-danger" data-control="forget" aria-label="Forget worker {{.Name}}">{{template "icon" "i-trash"}}<span>Forget</span></button>
+  </form>{{end}}</div>{{end}}{{if .SessionHostText}}
     <p class="muted" data-session-host="{{.SessionHost}}" data-sessions-hidden="{{.SessionsHidden}}">Sessions: {{.SessionHostText}}</p>{{end}}</td>
 </tr>{{end}}
 

@@ -622,12 +622,46 @@
   document.body.addEventListener('keyup', function (ev) { if (ev && ev.key === 'Enter') { heldEnter = null; } }, true);
   if (typeof window.addEventListener === 'function') { window.addEventListener('blur', function () { heldEnter = null; }); }
 
+  // ---- autoscroll -----------------------------------------------------------
+  // The Autoscroll box (on by default) keeps the newest lines of the screen in
+  // view after every update; off keeps the position the reader scrolled to. The
+  // choice is a per-browser convenience in localStorage, never sent anywhere.
+  var AUTOSCROLL_KEY = 'minion.autoscroll';
+  var autoBox = document.getElementById('autoscroll');
+  function autoscrollOn() { return !autoBox || autoBox.checked; }
+  if (autoBox) {
+    // On by default: the box is rendered unchecked (no input box of this page
+    // is pre-checked in the markup) and turned on here unless the reader
+    // switched it off before.
+    var stored = null;
+    try { stored = window.localStorage.getItem(AUTOSCROLL_KEY); } catch (e) { /* default on */ }
+    autoBox.checked = stored !== '0';
+    autoBox.addEventListener('change', function () {
+      try { if (autoBox.checked) { window.localStorage.removeItem(AUTOSCROLL_KEY); } else { window.localStorage.setItem(AUTOSCROLL_KEY, '0'); } } catch (e) { /* not kept */ }
+      if (autoBox.checked) { scrollToNewest(); }
+    });
+  }
+  // scrollToNewest scrolls the screen, and each scrolling box around it up to
+  // the screen card, to its end; the page itself is never scrolled.
+  function scrollToNewest() {
+    var el = document.getElementById('screen');
+    var stop = document.getElementById('session-grid') || document.body;
+    while (el && el !== stop && el !== document.body) {
+      if (el.scrollHeight > el.clientHeight) {
+        var oy = window.getComputedStyle ? window.getComputedStyle(el).overflowY : 'auto';
+        if (oy === 'auto' || oy === 'scroll') { el.scrollTop = el.scrollHeight; }
+      }
+      el = el.parentElement;
+    }
+  }
+
   document.body.addEventListener('htmx:afterSwap', function () {
     var screen = document.getElementById('screen');
     if (!screen) { return; }
-    if (scroll) { screen.scrollTop = scroll.top; screen.scrollLeft = scroll.left; }
+    if (autoscrollOn()) { scrollToNewest(); if (scroll) { screen.scrollLeft = scroll.left; } } else if (scroll) { screen.scrollTop = scroll.top; screen.scrollLeft = scroll.left; }
     defineColors(document);
   });
+  if (autoscrollOn()) { scrollToNewest(); }
 
   document.body.addEventListener('minion-screen-refresh', schedule);
 

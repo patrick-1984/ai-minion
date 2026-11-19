@@ -1,6 +1,7 @@
 package web
 
 import (
+	"strings"
 	"net/url"
 	"testing"
 
@@ -83,4 +84,22 @@ func TestUpdateAllKeepsThePageScope(t *testing.T) {
 			t.Errorf("form %v: workers_list args %+v", tc.form, calls)
 		}
 	}
+}
+
+// A54: in the Workers list, New session and Forget sit in one row; Forget asks
+// for confirmation first.
+func TestWorkersRowHasNewSessionAndForgetInline(t *testing.T) {
+	withHubVersion(t, "v0.9.0")
+	cur := wOld
+	cur.Build = "v0.9.0"
+	d := Dashboard{Admin: true, Workers: []WorkerRow{cur}}
+	s, _ := listServer(t, d, d)
+	body := get(t, s, "/workers?scope=all", "X-Test-Session", adminHeader).Body.String()
+	i := strings.Index(body, `<div class="action-row">`)
+	j := strings.Index(body, `data-control="forget"`)
+	k := strings.Index(body, `data-control="new-session"`)
+	if i < 0 || j < i || k < i {
+		t.Fatalf("New session and Forget are not in one action row:\n%s", body)
+	}
+	mustHave(t, body, `hx-post="/workers/w1/remove"`, `hx-confirm="Forget worker laptop?`)
 }

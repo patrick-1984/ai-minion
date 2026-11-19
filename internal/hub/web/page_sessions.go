@@ -586,6 +586,9 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 		w.SessionCount = perWorker[w.ID]
 		w.SessionsURL = scopedLink("/sessions", all, "worker", w.ID)
 		w.NewURL = NewSessionPath(refs[w.ID])
+		// Forget (A54) sits next to New session in the row; the Hub checks on
+		// the post that the person may remove the Worker, as for a pending one.
+		w.RemoveURL = WorkerRemovePath(w.ID)
 		w.URL = WorkerPath(w.ID, all)
 		w.Sessions = nil
 		if f.matchWorker(w) {

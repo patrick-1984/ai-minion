@@ -397,7 +397,8 @@ func TestSessionInputDockIsSafeByDefault(t *testing.T) {
 		"Enter sends the text and presses Enter in the session. Shift+Enter adds a line break.", `to <strong>minion-1</strong> on <strong>pi-1</strong>`)
 	mustNotHave(t, body, `<input type="text" id="send-text"`, `Press Enter after the text`, `Send text</button>`)
 	// The only box is "Send without asking" in the header (A19), not an Enter box in the dock.
-	if n := strings.Count(body, `type="checkbox"`); n != 1 || !strings.Contains(body, `type="checkbox" id="unasked-session"`) {
+	// Besides it, only the view toggle Autoscroll (A53, turned on by the script).
+	if n := strings.Count(body, `type="checkbox"`); n != 2 || !strings.Contains(body, `type="checkbox" id="unasked-session"`) || !strings.Contains(body, `type="checkbox" id="autoscroll"`) {
 		t.Errorf("checkboxes = %d, want only Send without asking", n)
 	}
 	if n := strings.Count(body, `name="enter"`); n != 2 {
