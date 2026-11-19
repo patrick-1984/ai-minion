@@ -648,17 +648,35 @@
       if (ev.key === AUTOSCROLL_KEY || ev.key === null) { autoBox.checked = ev.newValue !== '0'; }
     });
   }
-  // newestBottom is the offset of the bottom of the last line that shows
-  // something (a tmux snapshot keeps the blank rows below a prompt), so that
-  // a short screen with its prompt near the top is not scrolled past it.
+  // newestBottom is the offset (in the screen's scroll space) of the bottom of
+  // the newest content: the last visible character, or the cursor when it is
+  // further down (a program waiting on an empty line). tmux keeps the blank
+  // rows below a prompt, so the physical end is not the newest line. It is
+  // measured on the rendered text, so wrapped lines (Text view) count right.
   function newestBottom(screen) {
-    var lines = String(screen.textContent || '').replace(/\n$/, '').split('\n');
-    var last = lines.length - 1;
-    while (last > 0 && lines[last].trim() === '') { last--; }
-    var cs = window.getComputedStyle ? window.getComputedStyle(screen) : null;
-    var pad = cs ? (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0) : 0;
-    var lineH = lines.length ? (screen.scrollHeight - pad) / lines.length : 0;
-    return (cs ? parseFloat(cs.paddingTop) || 0 : 0) + (last + 1) * lineH + (cs ? parseFloat(cs.paddingBottom) || 0 : 0);
+    try {
+      var doc = screen.ownerDocument || document;
+      var lastNode = null, lastIdx = -1;
+      var walker = doc.createTreeWalker(screen, 4 /* NodeFilter.SHOW_TEXT */);
+      for (var n = walker.nextNode(); n; n = walker.nextNode()) {
+        var t = n.nodeValue || '';
+        for (var k = t.length - 1; k >= 0; k--) { if (!/\s/.test(t.charAt(k))) { lastNode = n; lastIdx = k; break; } }
+      }
+      var rect = null;
+      var cur = screen.querySelector('.t-cur');
+      if (cur && (!lastNode || (lastNode.compareDocumentPosition(cur) & 4 /* FOLLOWING */))) {
+        rect = cur.getBoundingClientRect();
+      } else if (lastNode) {
+        var r = doc.createRange();
+        r.setStart(lastNode, lastIdx); r.setEnd(lastNode, lastIdx + 1);
+        rect = r.getBoundingClientRect();
+      }
+      if (!rect) { return 0; }
+      var cs = window.getComputedStyle(screen);
+      return rect.bottom - screen.getBoundingClientRect().top + screen.scrollTop + (parseFloat(cs.paddingBottom) || 0);
+    } catch (e) {
+      return screen.scrollHeight; // no layout API: the physical end
+    }
   }
   // scrollToNewest brings the newest line to the bottom of the screen box (and
   // of each scrolling box around it up to the screen card); the page itself is
@@ -695,6 +713,14 @@
     defineColors(document);
   });
   if (autoscrollOn()) { scrollToNewest(); }
+  // Text view and a resized window re-flow the screen without a new capture.
+  var tv = document.getElementById('text-view');
+  if (tv && typeof tv.addEventListener === 'function') {
+    tv.addEventListener('click', function () { if (autoscrollOn()) { window.setTimeout(scrollToNewest, 0); } });
+  }
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', function () { if (autoscrollOn()) { scrollToNewest(); } });
+  }
 
   document.body.addEventListener('minion-screen-refresh', schedule);
 
