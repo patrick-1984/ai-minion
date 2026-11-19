@@ -23,6 +23,7 @@ type trayActionsResult struct {
 	Elevated     map[trayactions.Elevate][]string `json:"elevated"`
 	Retry        map[string][]string              `json:"session_loss_retry"`
 	Placeholders map[string]string                `json:"placeholders"`
+	RetryAction  map[string]string                `json:"retry_action"`
 }
 
 func trayActions() trayActionsResult {
@@ -38,6 +39,7 @@ func trayActions() trayActionsResult {
 			"count_unavailable":  trayactions.AcceptUnknownLossArgv,
 		},
 		Placeholders: trayactions.Placeholders,
+		RetryAction:  trayactions.Retry,
 	}
 }
 

@@ -168,3 +168,31 @@ func TestTrayActionsJSON(t *testing.T) {
 		t.Error("tray-actions is not hidden")
 	}
 }
+
+// A tmux session called like an option stays a session name: the generated
+// argv puts the names after "--".
+func TestDashSessionNameIsAnOperand(t *testing.T) {
+	for _, id := range []string{"share.add", "share.remove", "share.select"} {
+		a, _ := trayactions.ByID(id)
+		argv, err := trayactions.Resolve(a.Argv, map[string][]string{
+			"session": {"--json"}, "sessions": {"--json", "-x"}, "revision": {"3"}, "state_dir": {t.TempDir()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := NewRoot()
+		cmd, rest, err := root.Find(argv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.ParseFlags(rest); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		args := cmd.Flags().Args()
+		if args[0] == "set" || args[0] == "select" {
+			args = args[1:]
+		}
+		if len(args) == 0 || args[0] != "--json" {
+			t.Errorf("%s: operands %q", id, cmd.Flags().Args())
+		}
+	}
+}

@@ -47,6 +47,19 @@ const (
 	ConfirmLeave Confirm = "leave"
 )
 
+// Retry names, per action, the action the tray runs after a yes instead of
+// repeating the original command, when repeating it would replay changes the
+// first run already saved (a join token that was consumed, a sharing choice
+// the owner changed while the question was open). The retry gets
+// [AcceptLossArgv] or [AcceptUnknownLossArgv] appended like any other.
+var Retry = map[string]string{
+	// The enrollment is done: finish it without the token.
+	"hub.join": "hub.join.resume",
+	// The address, fingerprint and sharing choice are saved: only the
+	// restart that starts the pairing is left.
+	"hub.pair": "restart",
+}
+
 // SessionLoss reports whether the session-loss retry applies to c.
 func (c Confirm) SessionLoss() bool { return c == ConfirmSessionLoss || c == ConfirmLeave }
 
@@ -147,8 +160,8 @@ var Placeholders = map[string]string{
 	"state_dir": "profile.state_dir of the tray's profile (C7)",
 	"n":         "sessions_lost of the refusal (exit 23)",
 	"session":   "the session name of the menu item",
-	"sessions":  "the names of the currently shared sessions (share.sessions), zero or more arguments",
-	"revision":  "the revision of minion worker share list --json",
+	"sessions":  "the names to share, taken from the SAME minion worker share list --json response as {revision} (never from status), zero or more arguments; always placed after a literal -- so that a session named like an option stays a name",
+	"revision":  "the revision of the minion worker share list --json response that the sessions (or the user's click) were read from",
 	"share":     "all, none or later, chosen in a dialog",
 	"url":       "the Hub address entered in a dialog",
 	"hub_fp":    "the Hub fingerprint (six words) entered in a dialog",
@@ -245,7 +258,7 @@ var All = []Action{
 	state("pause.indef", "Pause ▸ until I resume", []string{"worker", "pause", "--state-dir", "{state_dir}", "--json"}, "paused == true, paused_until empty"),
 	state("resume", "Resume", []string{"worker", "resume", "--state-dir", "{state_dir}", "--json"}, "paused == false"),
 
-	with(state("start", "Start the Worker", []string{"worker", "start", "--json"}, "live.running == true, live.state_dir == profile.state_dir"),
+	with(state("start", "Start the Worker", []string{"worker", "start", "--state-dir", "{state_dir}", "--json"}, "live.running == true, live.state_dir == profile.state_dir"),
 		func(a *Action) { a.Elevate = ElevateE1 }),
 	with(state("stop", "Stop the Worker…", []string{"worker", "stop", "--state-dir", "{state_dir}", "--json"}, "live.running == false"),
 		func(a *Action) { a.Confirm, a.Elevate = ConfirmSessionLoss, ElevateE2 }),
@@ -256,12 +269,12 @@ var All = []Action{
 		func(a *Action) { a.Effect = EffectRead }),
 	state("share.all", "Sessions shared with the Hub ▸ All", []string{"worker", "share", "set", "all", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json"}, "share.mode == all"),
 	state("share.none", "Sessions shared with the Hub ▸ None", []string{"worker", "share", "set", "none", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json"}, "share.mode == none"),
-	state("share.select", "Sessions shared with the Hub ▸ Selected", []string{"worker", "share", "set", "select", "{sessions}", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json"}, "share.mode == select, share.sessions unchanged"),
-	state("share.add", "Sessions shared with the Hub ▸ ☑ {session}", []string{"worker", "share", "add", "{session}", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json"}, "share.sessions contains {session}"),
-	state("share.remove", "Sessions shared with the Hub ▸ ☐ {session}", []string{"worker", "share", "remove", "{session}", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json"}, "share.sessions lacks {session}"),
+	state("share.select", "Sessions shared with the Hub ▸ Selected", []string{"worker", "share", "set", "select", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json", "--", "{sessions}"}, "share.mode == select, share.sessions unchanged"),
+	state("share.add", "Sessions shared with the Hub ▸ ☑ {session}", []string{"worker", "share", "add", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json", "--", "{session}"}, "share.sessions contains {session}"),
+	state("share.remove", "Sessions shared with the Hub ▸ ☐ {session}", []string{"worker", "share", "remove", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json", "--", "{session}"}, "share.sessions lacks {session}"),
 
-	state("block.on", "☑ Block new sessions created through Minion", []string{"worker", "config", "set", "allow_new_sessions", "off", "--state-dir", "{state_dir}"}, "new_sessions.blocked == true, new_sessions.in_force == true"),
-	state("block.off", "☐ Block new sessions created through Minion", []string{"worker", "config", "set", "allow_new_sessions", "on", "--state-dir", "{state_dir}"}, "new_sessions.blocked == false, new_sessions.in_force == true"),
+	state("block.on", "☑ Block new sessions created through Minion", []string{"worker", "config", "set", "allow_new_sessions", "off", "--state-dir", "{state_dir}", "--json"}, "new_sessions.blocked == true, new_sessions.in_force == true (the result carries the effective value, its sources and code saved_not_confirmed or saved_not_in_force on exit 22)"),
+	state("block.off", "☐ Block new sessions created through Minion", []string{"worker", "config", "set", "allow_new_sessions", "on", "--state-dir", "{state_dir}", "--json"}, "new_sessions.blocked == false, new_sessions.in_force == true (the result carries the effective value, its sources and, on exit 22, the code and the sources that keep the block)"),
 
 	with(state("hub.open", "Hub ▸ Open the Hub", []string{"worker", "open-hub", "--state-dir", "{state_dir}", "--json"}, "the browser opens hub_web_url (url of the result)"),
 		func(a *Action) { a.Effect = EffectBrowser }),
