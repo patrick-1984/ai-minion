@@ -142,6 +142,7 @@ func (c *HandlerCaller) CallOp(r *http.Request, op string, args, result any) err
 			req.Header.Add(h, v)
 		}
 	}
+	copySeen(req.Header, r.Header) // the policy version the page was rendered with
 	req.Host, req.RemoteAddr, req.TLS = r.Host, r.RemoteAddr, r.TLS
 
 	rec := &capture{header: http.Header{}, limit: maxOpResponseBytes}

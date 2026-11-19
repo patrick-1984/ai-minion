@@ -106,10 +106,19 @@ func initWeb(_ context.Context, env *Env, wr *web.Registry) error {
 			return fp.String()
 		})
 	}
+	// Every page carries the monitoring policy it was rendered with.
+	releaseMon := func() {}
+	if mon := monitorOf(env); mon != nil {
+		releaseMon = web.SetMonitoring(func() web.MonitoringView {
+			p := mon.Policy()
+			return web.MonitoringView{Version: p.Version, Notice: p.Notice()}
+		})
+	}
 	env.OnStop(func(context.Context) error {
 		web.DisconnectAdminOps(caller)
 		releaseURL()
 		releaseFP()
+		releaseMon()
 		return nil
 	})
 	return nil

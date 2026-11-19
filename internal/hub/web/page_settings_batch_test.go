@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -115,4 +116,61 @@ func TestDiagnosticsShowsTheSinks(t *testing.T) {
 	connect(t, f)
 	body := get(t, adminServer(t), pathAdminDiagnostics, "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, body, "<dt>Log export (syslog)</dt><dd>tls://logs.example:6514 at warn and above; sent 9, queued 0, dropped 0 (configuration 1)</dd>")
+}
+
+func complianceSettings() ops.SettingsListResult {
+	return ops.SettingsListResult{Settings: []ops.SettingInfo{
+		{Key: "compliance_monitoring", Env: "MINION_COMPLIANCE_MONITORING", Value: "off", Source: ops.SettingSourceDefault, Live: true,
+			Choices: []string{"off", "actions", "output"}, Section: "Compliance monitoring", Revision: "rev-m"},
+		{Key: "compliance_endpoint", Env: "MINION_COMPLIANCE_ENDPOINT", Value: "", Source: ops.SettingSourceDefault, Live: true,
+			Section: "Compliance monitoring", Revision: "rev-e"},
+		{Key: "worker_traffic_log", Env: "MINION_WORKER_TRAFFIC_LOG", Value: "metadata", Source: ops.SettingSourcePanel, Live: true,
+			Choices: []string{"off", "metadata"}, Section: "Log export", Revision: "rev-t"},
+	}}
+}
+
+// The compliance section is its own card: it posts to compliance_set, never to
+// settings_set, says plainly what is recorded, and also holds the traffic log
+// level (whose payload value is gated).
+func TestComplianceSectionPostsComplianceSetAndSaysWhatIsRecorded(t *testing.T) {
+	f := newFakeOps().reply(ops.OpSettingsList, complianceSettings()).reply(ops.OpHubDiagnostics, ops.HubDiagnosticsResult{})
+	connect(t, f)
+	s := adminServer(t)
+	body := get(t, s, pathAdminSettings, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `hx-post="/admin/compliance-section"`, "text sent through Minion is recorded as sent", "echo-off keeps typed passwords out of screens",
+		`name="v.compliance_monitoring"`)
+	if n := strings.Count(body, `name="v.worker_traffic_log"`); n != 2 {
+		t.Fatalf("the traffic log row must be in the Log export and the Compliance section, found %d", n)
+	}
+
+	f.reply(ops.OpComplianceSet, ops.ComplianceSetResult{Policy: ops.CompliancePolicy{Version: 2, Level: "actions"}})
+	rec := post(t, s, pathAdminComplianceSection, adminHeader, url.Values{
+		"v.compliance_monitoring": {"actions"}, "rev.compliance_monitoring": {"rev-m"},
+		"v.compliance_endpoint": {"http://127.0.0.1:4318"},
+	})
+	if rec.Code != 200 || rec.Header().Get("HX-Refresh") != "true" {
+		t.Fatalf("POST = %d %v", rec.Code, rec.Header())
+	}
+	if n := len(f.called(ops.OpSettingsSet)); n != 0 {
+		t.Fatalf("settings_set was called %d times", n)
+	}
+	calls := f.called(ops.OpComplianceSet)
+	if len(calls) != 1 || len(calls[0].Args["changes"].([]any)) != 2 {
+		t.Fatalf("compliance_set calls = %+v", calls)
+	}
+}
+
+// A sign-in older than five minutes: the answer says where to confirm it.
+func TestComplianceSectionAsksForAFreshSignIn(t *testing.T) {
+	f := newFakeOps().reply(ops.OpSettingsList, complianceSettings()).reply(ops.OpHubDiagnostics, ops.HubDiagnosticsResult{})
+	f.on(ops.OpComplianceSet, func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 403, Code: "reauth_required", Message: "Sign in again"}
+	})
+	connect(t, f)
+	s := adminServer(t)
+	rec := post(t, s, pathAdminComplianceSection, adminHeader, url.Values{"v.compliance_monitoring": {"actions"}})
+	mustHave(t, rec.Body.String(), "/admin/identity", "last five minutes")
+	if rec.Header().Get("HX-Refresh") != "" {
+		t.Fatal("a refused save must keep the form")
+	}
 }

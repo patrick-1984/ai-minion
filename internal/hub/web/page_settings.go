@@ -6,8 +6,10 @@ package web
 // variable", AD-19); a secret is never shown back, only "set" or "not set".
 
 import (
+	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -43,13 +45,19 @@ type SettingSection struct {
 	// changes): its settings only make sense together, such as a log sink's
 	// switch, endpoint, credentials and trust.
 	Batch bool
+	// Compliance says that the section is saved with compliance_set (a fresh
+	// sign-in of an administrator), not settings_set.
+	Compliance bool
 }
 
 // pathAdminSettingsSection saves a batch section.
 const pathAdminSettingsSection = "/admin/settings-section"
 
 // batchSections are the sections saved as one change.
-var batchSections = []string{config.SectionLogExport}
+var batchSections = []string{config.SectionLogExport, config.SectionCompliance}
+
+// pathAdminComplianceSection saves the compliance section.
+const pathAdminComplianceSection = "/admin/compliance-section"
 
 // SettingRow is one setting as the page shows it.
 type SettingRow struct {
@@ -161,7 +169,17 @@ func settingSections(rows []SettingRow) []SettingSection {
 			}
 			return strings.Compare(a.Key, b.Key)
 		})
-		out = append(out, SettingSection{Name: name, ID: sectionID(name), Rows: in, Batch: slices.Contains(batchSections, name)})
+		if name == config.SectionCompliance {
+			// The payload level of the traffic log belongs here too: it records
+			// session content and changes only through compliance_set.
+			for _, r := range rows {
+				if r.Key == config.KeyTrafficLog {
+					in = append(in, r)
+				}
+			}
+		}
+		out = append(out, SettingSection{Name: name, ID: sectionID(name), Rows: in,
+			Batch: slices.Contains(batchSections, name), Compliance: name == config.SectionCompliance})
 	}
 	return out
 }
@@ -213,9 +231,46 @@ func handleSettingSet(w http.ResponseWriter, r *http.Request, c OpCaller) {
 // its empty field keeps the stored secret unless "r.<key>" (remove) is
 // checked. An empty field of any other row returns it to its default.
 func handleSettingsSection(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	changes, expect, ok := sectionChanges(w, r)
+	if !ok {
+		return
+	}
+	args := ops.SettingsSetArgs{WriteArgs: newWriteArgs(), Changes: changes, Expect: expect}
+	writeOp(w, r, c, ops.OpSettingsSet, args, "The section "+r.PostForm.Get("section")+" is saved.")
+}
+
+// handleComplianceSection saves the compliance section with compliance_set.
+// The Hub requires a sign-in that is at most five minutes old; when it is
+// older, the answer says where to confirm it, and the form keeps its fields.
+func handleComplianceSection(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	changes, expect, ok := sectionChanges(w, r)
+	if !ok {
+		return
+	}
+	var res ops.ComplianceSetResult
+	if err := c.CallOp(r, ops.OpComplianceSet, ops.ComplianceSetArgs{Changes: changes, Expect: expect}, &res); err != nil {
+		var oe *OpError
+		if errors.As(err, &oe) && oe.Code == "reauth_required" {
+			writeResultError(w, "Compliance settings need a sign-in from the last five minutes. Open Hub identity (/admin/identity), confirm your sign-in there, then save this section again.")
+			return
+		}
+		writeResultError(w, failureText(err))
+		return
+	}
+	AddFlash(w, r, FlashInfo, "The section Compliance monitoring is saved (policy version "+strconv.FormatInt(res.Policy.Version, 10)+").")
+	for _, wn := range res.Warnings {
+		AddFlash(w, r, FlashWarning, wn.Message)
+	}
+	w.Header().Set("HX-Refresh", "true")
+	w.WriteHeader(http.StatusOK)
+}
+
+// sectionChanges reads the changes of a batch section form. It writes the
+// error answer and returns false when there is nothing to save.
+func sectionChanges(w http.ResponseWriter, r *http.Request) ([]ops.SettingChange, []ops.SettingRevision, bool) {
 	if err := r.ParseForm(); err != nil {
 		writeResultError(w, "The form could not be read.")
-		return
+		return nil, nil, false
 	}
 	var changes []ops.SettingChange
 	var expect []ops.SettingRevision
@@ -251,14 +306,14 @@ func handleSettingsSection(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	}
 	if len(changes) == 0 {
 		writeResultError(w, "Nothing to save.")
-		return
+		return nil, nil, false
 	}
-	args := ops.SettingsSetArgs{WriteArgs: newWriteArgs(), Changes: changes, Expect: expect}
-	writeOp(w, r, c, ops.OpSettingsSet, args, "The section "+r.PostForm.Get("section")+" is saved.")
+	return changes, expect, true
 }
 
 func init() {
 	RegisterRoute(Route{Pattern: "POST " + pathAdminSettingsSection, Handler: adminRoute(handleSettingsSection)})
+	RegisterRoute(Route{Pattern: "POST " + pathAdminComplianceSection, Handler: adminRoute(handleComplianceSection)})
 	RegisterPage(Page{Pattern: pathAdminSettings, Title: "Hub settings", Template: "settings.html", Data: adminPageData(settingsData)})
 	RegisterNav(NavItem{Label: "Hub settings", Path: pathAdminSettings, Order: adminNavOrder + 10, Roles: []authz.Role{authz.RoleAdmin}, Group: NavGroupAdmin, Icon: "i-settings"})
 	RegisterRoute(Route{Pattern: "POST " + pathAdminSettings + "/{key}", Handler: adminRoute(handleSettingSet)})

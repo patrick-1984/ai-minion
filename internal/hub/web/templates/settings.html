@@ -19,10 +19,11 @@
   <h2 class="settings-section" id="{{.ID}}-h">{{.Name}}</h2>
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
 {{if .Batch}}
-  <form class="settings-batch" method="post" hx-post="/admin/settings-section" hx-target="#result-{{.ID}}" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+  <form class="settings-batch" method="post" hx-post="{{if .Compliance}}/admin/compliance-section{{else}}/admin/settings-section{{end}}" hx-target="#result-{{.ID}}" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
   <input type="hidden" name="section" value="{{.Name}}">
   <p class="muted">These settings are saved together: the Hub checks the whole section and applies it at once, without a restart.</p>
-  {{if $.Data.Sinks}}<div class="diagnostic-facts" aria-label="Effective state">{{range $.Data.Sinks}}<dl><dt>{{.Label}}</dt><dd>{{.Value}}</dd></dl>{{end}}</div>{{end}}
+  {{if .Compliance}}<p class="muted"><strong>Session monitoring.</strong> Compliance records what the Hub accepts from and returns to callers, so it can hold the text people type and the screens they read; echo-off keeps typed passwords out of screens, but text sent through Minion is recorded as sent. Changing this needs a sign-in from the last five minutes and is audited; every user sees a notice. Only Minion's own key formats are masked at the source; use the collector's redaction for anything else. See the Compliance monitoring section of the observability guide.</p>{{end}}
+  {{if and $.Data.Sinks (not .Compliance)}}<div class="diagnostic-facts" aria-label="Effective state">{{range $.Data.Sinks}}<dl><dt>{{.Label}}</dt><dd>{{.Value}}</dd></dl>{{end}}</div>{{end}}
   <ul>
 {{range .Rows}}
   <li data-filter="{{.Key}} {{.Env}} {{.EnvFile}} {{.Help}}">

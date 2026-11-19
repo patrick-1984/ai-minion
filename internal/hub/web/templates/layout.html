@@ -15,6 +15,7 @@
 <script src="/static/forms.js" defer></script>
 <script src="/static/shell.js" defer></script>
 <script src="/static/ui-extras.js" defer></script>
+<script src="/static/monitoring.js" defer></script>
 </head>
 <body{{if .Embed}} class="embed"{{end}}{{if .CSRF}} hx-headers='{"X-Minion-CSRF":"{{.CSRF}}"}'{{end}} hx-ext="sse">
 <a class="skip-link" href="#content" data-modal-inert>Skip to content</a>
@@ -82,7 +83,8 @@
         </div>
       </div>
     </header>
-    <div id="banner-slot" data-modal-inert>{{range .Banners}}<div class="banner banner-{{.Kind}}" role="status"><span>{{.Text}}</span>{{with .Action}}
+    {{if or .Monitoring.Notice .Monitoring.Version}}<div id="monitor-banner" class="banner banner-warning" role="status" data-monitor-version="{{.Monitoring.VersionText}}"{{if not .Monitoring.Notice}} hidden{{end}}><span>{{.Monitoring.Notice}}</span></div>
+    {{end}}<div id="banner-slot" data-modal-inert>{{range .Banners}}<div class="banner banner-{{.Kind}}" role="status"><span>{{.Text}}</span>{{with .Action}}
       <form data-json-action="{{.URL}}"><button type="submit" class="btn-secondary">{{.Label}}</button></form>{{end}}</div>{{end}}</div>
     <div id="flash-area" aria-live="polite" data-modal-inert>{{range .Flashes}}<div class="flash flash-{{.Level}}" role="status">{{.Text}}</div>{{end}}</div>
     <main id="content" tabindex="-1">

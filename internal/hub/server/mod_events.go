@@ -98,6 +98,7 @@ func initEvents(ctx context.Context, env *Env) error {
 	}
 	events, err := api.NewEventsHandler(api.EventsConfig{
 		Auth: authn, Authz: az, Bus: hub, Lister: lister, Owners: svc.OwnerLookup(), Log: cfg.logger(),
+		Monitor: monitorOf(env),
 	})
 	if err != nil {
 		return fmt.Errorf("events: %w", err)

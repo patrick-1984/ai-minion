@@ -1079,6 +1079,11 @@
       es.addEventListener(name, function (ev) { if (mine(ev)) { reload(); } });
     });
     es.addEventListener('worker_resynced', function (ev) { if (mine(ev)) { schedule(); signal('events'); } });
+    // The monitoring policy changed (or this is the first look at it): the banner shows it without a reload, and the next
+    // request of this page carries the new version.
+    es.addEventListener('monitoring_changed', function (ev) {
+      try { if (window.minionMonitoring) { window.minionMonitoring.update(JSON.parse(ev.data)); } } catch (e) { /* keep the banner */ }
+    });
     // A message or a reply of this session's pipe conversation was committed (metadata only: the event names the Worker and the
     // session and nothing of the conversation). It wakes the pipe component alone, which reads its own authorised route
     // again; it does not refresh the screen and reloads nothing.

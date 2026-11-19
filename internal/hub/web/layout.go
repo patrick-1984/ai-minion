@@ -42,6 +42,8 @@ type View struct {
 	Initials  string
 	// Build is the version block at the bottom of the left rail.
 	Build BuildView
+	// Monitoring is the monitoring policy this page was rendered with.
+	Monitoring MonitoringView
 	// HubWords and HubFull are this Hub's fingerprint (six words, 52
 	// characters), shown in the top bar so that people can compare it with
 	// what their Worker pinned; empty while the Hub has no root.
@@ -511,6 +513,7 @@ func (s *Server) newView(w http.ResponseWriter, r *http.Request, title string, d
 			role = authz.RoleUser
 		}
 		v.Build = buildView(role)
+		v.Monitoring = currentMonitoring()
 		if fp := currentHubFingerprint(); fp != "" {
 			v.HubWords, v.HubFull = identity.Fingerprint(fp).Words(), fp
 		}

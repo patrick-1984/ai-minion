@@ -44,6 +44,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -119,6 +120,9 @@ type EventsConfig struct {
 	BodyTimeout time.Duration
 	// Log receives internal failures; nil means slog.Default.
 	Log *slog.Logger
+	// Monitor, when set, adds the monitoring_changed event: the policy in
+	// force right after the snapshot, and again on every change (A49 T16a).
+	Monitor *compliance.Monitor
 }
 
 // EventsHandler serves GET /api/v1/events.
@@ -333,6 +337,27 @@ func (s *eventStream) run(ctx context.Context, sub *workers.Subscription, out *s
 		s.endRevoked(ctx, rctx, out)
 		return
 	}
+	var monitoring <-chan compliance.Policy
+	if m := h.cfg.Monitor; m != nil {
+		ch := make(chan compliance.Policy, 1)
+		push := func(p compliance.Policy) {
+			// The latest policy wins: a full queue loses its older entry.
+			for {
+				select {
+				case ch <- p:
+					return
+				default:
+					select {
+					case <-ch:
+					default:
+					}
+				}
+			}
+		}
+		defer m.Subscribe(push)()
+		push(m.Policy())
+		monitoring = ch
+	}
 	beat := h.clk.After(h.cfg.Heartbeat)
 	for {
 		select {
@@ -343,6 +368,11 @@ func (s *eventStream) run(ctx context.Context, sub *workers.Subscription, out *s
 		case <-h.done:
 			_ = out.sendFinal("reset", resetData("shutdown"))
 			return
+		case p := <-monitoring:
+			if out.send("monitoring_changed", monitoringEvent(p)) != nil {
+				s.endRevoked(ctx, rctx, out)
+				return
+			}
 		case ev, ok := <-sub.C():
 			if !ok {
 				reason := "closed"
@@ -367,6 +397,31 @@ func (s *eventStream) run(ctx context.Context, sub *workers.Subscription, out *s
 			}
 		}
 	}
+}
+
+// MonitoringEvent is the data of the monitoring_changed event: the policy in
+// force and the text of the notice (empty while nothing is monitored). It
+// holds no destination and no content.
+type MonitoringEvent struct {
+	Version int64  `json:"version"`
+	Level   string `json:"level"`
+	Input   string `json:"input"`
+	Traffic string `json:"traffic"`
+	Notice  string `json:"notice"`
+}
+
+func monitoringEvent(p compliance.Policy) MonitoringEvent {
+	e := MonitoringEvent{Version: p.Version, Level: p.Level, Input: "off", Traffic: "metadata", Notice: p.Notice()}
+	if e.Level == "" {
+		e.Level = compliance.LevelOff
+	}
+	if p.Input {
+		e.Input = "on"
+	}
+	if p.TrafficPayload {
+		e.Traffic = "payload"
+	}
+	return e
 }
 
 // endRevoked sends access_lost when the re-check revoked the stream. It is

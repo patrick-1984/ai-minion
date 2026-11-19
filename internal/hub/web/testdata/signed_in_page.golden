@@ -15,6 +15,7 @@
 <script src="/static/forms.js" defer></script>
 <script src="/static/shell.js" defer></script>
 <script src="/static/ui-extras.js" defer></script>
+<script src="/static/monitoring.js" defer></script>
 </head>
 <body hx-headers='{"X-Minion-CSRF":"csrf-root"}' hx-ext="sse">
 <a class="skip-link" href="#content" data-modal-inert>Skip to content</a>
