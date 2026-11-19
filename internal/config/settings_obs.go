@@ -1,5 +1,7 @@
 package config
 
+import "strings"
+
 // Names of the log export settings (A49 design v2, §3 and §7): one syslog sink
 // and one OpenTelemetry (OTLP/HTTP) log sink, each with its own switch,
 // endpoint, level and trust. The Hub reads them from the environment and the
@@ -91,4 +93,20 @@ func declareObs(r *Registry) {
 		Help: "PEM client certificate for mutual TLS to the collector (https only); needs otel_client_key_file"})
 	r.Declare(Setting{Key: KeyOTelClientKeyFile, Scope: ScopeAny, Env: "MINION_OTEL_CLIENT_KEY_PATH",
 		Help: "PEM private key of otel_client_cert_file; mode 0600, owned by the user that runs Minion"})
+}
+
+// privatePathKeys name files that hold a secret (a TLS client key, the
+// Worker's header list).
+var privatePathKeys = map[string]bool{
+	KeySyslogClientKeyFile: true, KeyOTelClientKeyFile: true, KeyOTelHeadersPath: true,
+}
+
+// SecretPathValue reports whether value, set for the path setting key, looks
+// like the secret itself instead of a path (a pasted PEM key or header
+// text): such a value is never shown.
+func SecretPathValue(key, value string) bool {
+	if !privatePathKeys[key] {
+		return false
+	}
+	return strings.ContainsAny(value, "\n\r") || strings.Contains(value, "-----BEGIN") || strings.Contains(value, ": ") || len(value) > 4096
 }

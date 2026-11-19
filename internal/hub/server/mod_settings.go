@@ -282,6 +282,11 @@ func (s *SettingsService) List(ctx context.Context, _ ops.SettingsListArgs) (ops
 			continue
 		}
 		info.Value = res.Display()
+		if config.SecretPathValue(st.Key, res.Value) {
+			// A key pasted where its path belongs is never shown back.
+			info.Value = config.Redacted
+			info.Error = "the value is not a file path (it looks like the key itself); set the path of the key file"
+		}
 		info.Source = string(res.Source)
 		info.ReadOnly = info.ReadOnly || res.ReadOnly()
 		out.Settings = append(out.Settings, info)

@@ -148,3 +148,21 @@ func writeTestCA(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 }
+
+// A private key pasted into a key path setting is never shown back by
+// settings_list.
+func TestSettingsListHidesAnInlineKey(t *testing.T) {
+	f := newFixture(t)
+	f.env["MINION_OTEL_CLIENT_KEY_PATH"] = "-----BEGIN PRIVATE KEY-----\nMIIs3cr3t\n-----END PRIVATE KEY-----"
+	svc, err := NewSettingsService(context.Background(), SettingsDeps{Store: f.st, Auditor: f.aud, LookupEnv: f.env.lookup})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := listByKey(t, svc)["otel_client_key_file"]
+	if strings.Contains(info.Value, "s3cr3t") || info.Value != config.Redacted || !strings.Contains(info.Error, "not a file path") {
+		t.Fatalf("info = %+v", info)
+	}
+	if !config.SecretPathValue("otel_client_key_file", "a: b") || config.SecretPathValue("otel_client_key_file", "/etc/minion/key.pem") || config.SecretPathValue("otel_ca_file", "-----BEGIN") {
+		t.Fatal("SecretPathValue")
+	}
+}
