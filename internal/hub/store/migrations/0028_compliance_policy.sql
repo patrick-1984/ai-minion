@@ -11,6 +11,8 @@ CREATE TABLE compliance_policy (
     input           INTEGER NOT NULL CHECK (input IN (0, 1)),
     traffic_payload INTEGER NOT NULL CHECK (traffic_payload IN (0, 1)),
     dest_label      TEXT    NOT NULL,
+    dest_id         TEXT    NOT NULL DEFAULT '',   -- hash of the full endpoint URL, never shown
+    traffic_id      TEXT    NOT NULL DEFAULT '',   -- hash of the payload log's destinations and Worker scope
     updated_at      INTEGER NOT NULL,           -- unix milliseconds
     updated_by      TEXT    NOT NULL
 );

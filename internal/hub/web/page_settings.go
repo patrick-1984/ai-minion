@@ -101,7 +101,7 @@ func settingRows(list []ops.SettingInfo) []SettingRow {
 			Key: s.Key, Help: s.Help, Env: s.Env, EnvFile: s.EnvFile, Secret: s.Secret,
 			Choices: s.Choices, Source: s.Source, Locked: s.ReadOnly, Live: s.Live,
 			PendingRestart: s.PendingRestart, Error: s.Error, Revision: s.Revision,
-			Multiline: s.Key == config.KeyOTelHeaders,
+			Multiline: s.Key == config.KeyOTelHeaders || s.Key == config.KeyComplianceHeaders,
 		}
 		// The operation names the section; an older result without one
 		// falls back to the local table.

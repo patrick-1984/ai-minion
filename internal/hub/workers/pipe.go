@@ -524,6 +524,11 @@ func (p *Pipe) storeMessage(ctx context.Context, peer pipe.Peer, args ops.PipeSe
 			return pipe.Message{}, nil, false, err
 		}
 		if ok {
+			// The same request id with another text is another request: the
+			// answer of the first one must not be paired with it.
+			if m.Text != args.Text {
+				return pipe.Message{}, nil, false, proto.NewError(proto.CodeConflict, "this request_id was already used for a different request")
+			}
 			raw, err := p.store.MessageResult(ctx, m.ID)
 			if err != nil {
 				return pipe.Message{}, nil, false, err
@@ -531,6 +536,7 @@ func (p *Pipe) storeMessage(ctx context.Context, peer pipe.Peer, args ops.PipeSe
 			if len(raw) > 0 {
 				var wr ops.WriteResult
 				if json.Unmarshal(raw, &wr) == nil {
+					wr.Replayed = true // answered from the Hub's record, nothing was sent again
 					return m, &wr, false, nil
 				}
 			}

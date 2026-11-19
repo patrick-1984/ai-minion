@@ -16,10 +16,11 @@ type sink struct {
 	rec []Record
 }
 
-func (s *sink) Emit(r Record) {
+func (s *sink) Emit(r Record) bool {
 	s.mu.Lock()
 	s.rec = append(s.rec, r)
 	s.mu.Unlock()
+	return true
 }
 
 func attr(r Record, k string) any {

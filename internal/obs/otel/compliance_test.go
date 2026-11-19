@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -352,4 +353,113 @@ func TestNoMinionSecretLeavesInAnyRecord(t *testing.T) {
 	if seen < 6 {
 		t.Fatalf("redaction marker found %d times", seen)
 	}
+}
+
+// An ambient proxy never carries compliance content: with HTTP_PROXY set (and a
+// mixed-case loopback host, which Go's own bypass does not recognise) the
+// records still go straight to the endpoint.
+func TestComplianceIgnoresAmbientProxies(t *testing.T) {
+	var proxied atomic.Int64
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied.Add(1)
+		w.WriteHeader(502)
+	}))
+	defer proxy.Close()
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("http_proxy", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+	rcv := newReceiver(t)
+	url := strings.Replace(rcv.srv.URL, "127.0.0.1", "LocalHost", 1)
+	c := newComplianceForTest(t, url, map[string]string{"Authorization": "Bearer hidden"}, ComplianceOptions{Interval: 10 * time.Millisecond})
+	c.Emit(rec(compliance.EventAction, ""))
+	eventually(t, func() bool { return c.Stats().Sent == 1 || c.Stats().Failed == 1 })
+	if proxied.Load() != 0 {
+		t.Fatal("compliance content went through the ambient proxy")
+	}
+	if c.Stats().Sent != 1 {
+		t.Fatalf("stats = %+v", c.Stats())
+	}
+}
+
+// Plaintext http reaches only a loopback address, whatever the host is called.
+func TestCompliancePlaintextIsLoopbackOnly(t *testing.T) {
+	lan := httptest.NewUnstartedServer(http.NotFoundHandler())
+	l, err := listenOn("0.0.0.0:0")
+	if err != nil {
+		t.Skip("cannot listen on all interfaces")
+	}
+	lan.Listener = l
+	lan.Start()
+	defer lan.Close()
+	port := lan.Listener.Addr().(*net.TCPAddr).Port
+	ip := nonLoopbackIP()
+	if ip == "" {
+		t.Skip("no non-loopback address on this host")
+	}
+	c := newComplianceForTest(t, fmt.Sprintf("http://%s:%d", ip, port), nil, ComplianceOptions{Interval: 10 * time.Millisecond})
+	c.Emit(rec(compliance.EventAction, ""))
+	eventually(t, func() bool { return c.Stats().Failed == 1 })
+	if st := c.Stats(); st.Sent != 0 {
+		t.Fatalf("stats = %+v", st)
+	}
+}
+
+func listenOn(addr string) (net.Listener, error) { return net.Listen("tcp", addr) }
+
+func nonLoopbackIP() string {
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil && !ipn.IP.IsLoopback() {
+			return ipn.IP.String()
+		}
+	}
+	return ""
+}
+
+// The gap is reported between batches as soon as space returns, not only when
+// the queue happens to be empty; and Emit says whether the record was queued.
+func TestComplianceGapIsReportedWhileTheQueueStaysBusy(t *testing.T) {
+	slow := newSlowReceiver(t)
+	opts := ComplianceOptions{QueueRecords: 10, QueueBytes: 1 << 20, RequestRecords: 2, RequestBytes: 1 << 20, Interval: 10 * time.Millisecond}
+	c := newComplianceForTest(t, slow.srv.URL, nil, opts)
+	accepted, dropped := 0, 0
+	for i := 0; i < 40; i++ {
+		if c.Emit(rec(compliance.EventAction, "x")) {
+			accepted++
+		} else {
+			dropped++
+		}
+	}
+	if dropped == 0 || uint64(dropped) != c.Stats().Dropped[DropQueueFull] {
+		t.Fatalf("accepted %d dropped %d stats %+v", accepted, dropped, c.Stats())
+	}
+	slow.release()
+	// A steady trickle keeps the queue non-empty while the gap must still arrive.
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				c.Emit(rec(compliance.EventAction, "steady"))
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+	defer close(stop)
+	eventually(t, func() bool {
+		for _, g := range slow.requests() {
+			for _, rl := range g.req.ResourceLogs {
+				for _, sl := range rl.ScopeLogs {
+					for _, lr := range sl.LogRecords {
+						if lr.EventName == compliance.EventGap {
+							return true
+						}
+					}
+				}
+			}
+		}
+		return false
+	})
 }

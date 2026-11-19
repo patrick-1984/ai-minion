@@ -84,3 +84,25 @@ func TestRemoteSafeKeepsPayloadValidJSON(t *testing.T) {
 		t.Fatalf("oversized payload: %.60s", p)
 	}
 }
+
+// A command line with a quoted URL that has a query must stay valid JSON
+// through RemoteSafe (a second text pass would eat the escaping backslash).
+func TestRemoteSafePayloadWithQuotedURLStaysValidJSON(t *testing.T) {
+	var buf bytes.Buffer
+	h := RemoteSafe(slog.NewJSONHandler(&buf, nil))
+	payload := RedactPayload([]byte(`{"args":{"text":"curl \"https://example.com/x?a=b\" --fail"}}`), RemotePayloadMax)
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "worker traffic", 0)
+	rec.AddAttrs(slog.String(PayloadKey, payload))
+	_ = h.Handle(context.Background(), rec)
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := got[PayloadKey].(string)
+	if !json.Valid([]byte(p)) {
+		t.Fatalf("payload is not JSON: %s", p)
+	}
+	if strings.Contains(p, "a=b") {
+		t.Fatalf("the query survived: %s", p)
+	}
+}

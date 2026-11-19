@@ -226,7 +226,13 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		WriteError(w, e)
 		return
 	}
-	capt.Done(result, "")
+	// A write is settled at once (it happened whether or not the answer
+	// arrives); a read is recorded only after its answer was written, so the
+	// collector never says the Hub returned content that did not leave.
+	writes := op.Write || op.Mutates
+	if writes {
+		capt.Done(result, "")
+	}
 	d.audit(r.Context(), call, outcomeOf(result))
 	d.logger().Debug("api request done", "op", op.Name, "principal_kind", string(id.Principal.Kind),
 		"outcome", "ok", "duration", time.Since(start).String())
@@ -234,7 +240,14 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		result = struct{}{}
 	}
 	if err := WriteJSON(w, http.StatusOK, result); err != nil {
-		d.logger().Error("operation result cannot be encoded", "op", op.Name, "error", err)
+		d.logger().Error("operation result cannot be encoded or written", "op", op.Name, "error", err)
+		if !writes {
+			capt.Done(nil, "reply_failed")
+		}
+		return
+	}
+	if !writes {
+		capt.Done(result, "")
 	}
 }
 

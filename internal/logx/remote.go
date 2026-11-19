@@ -119,7 +119,12 @@ func remoteAttr(a slog.Attr) slog.Attr {
 		if a.Key == PayloadKey {
 			// A traffic payload is JSON that RedactPayload masked already; it
 			// is cut as a whole, never in the middle (a cut would not be JSON).
-			return slog.String(a.Key, capPayload(RedactText(s)))
+			// No second pass of RedactText: it works on text, and over encoded
+			// JSON its URL patterns can eat the backslash of an escaped quote.
+			if !json.Valid([]byte(s)) {
+				s = `{"invalid_json":true}`
+			}
+			return slog.String(a.Key, capPayload(s))
 		}
 		if errorKey(a.Key) {
 			s = RedactErrorText(s)

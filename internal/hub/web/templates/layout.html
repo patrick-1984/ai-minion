@@ -22,7 +22,8 @@
 {{block "skiplinks" .}}{{end}}
 {{if and .SignedIn .Embed}}
 {{template "icons"}}
-<main id="content" tabindex="-1">
+{{if or .Monitoring.Notice .Monitoring.Version}}<div id="monitor-banner" class="banner banner-warning" role="status" data-monitor-version="{{.Monitoring.VersionText}}"{{if not .Monitoring.Notice}} hidden{{end}}><span>{{.Monitoring.Notice}}</span></div>
+{{end}}<main id="content" tabindex="-1">
 {{template "content" .}}
 </main>
 {{else if .SignedIn}}

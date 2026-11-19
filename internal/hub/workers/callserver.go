@@ -504,17 +504,25 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	if op.ChangesState() {
 		s.auditCall(ctx, actor, op.Name, callTarget(args), writeAuditOutcome(res, err))
 	}
-	if op.Stream {
-		capt.End(errCode(err))
-	} else if !errors.Is(cause, errCallerGone) {
+	// A write is settled whatever happens to the answer: it reached the Worker
+	// (or did not) whether or not the caller is still there. A read is recorded
+	// only after its answer was written (below).
+	writes := op.Write || op.Mutates
+	if writes {
 		capt.Done(res, errCode(err))
 	}
 	if errors.Is(cause, errCallerGone) {
 		outcome = "caller_gone"
+		if !writes {
+			s.settleRead(capt, op, nil, "reply_failed")
+		}
 		st.Reset()
 		return
 	}
 	if err != nil {
+		if !writes {
+			s.settleRead(capt, op, nil, errCode(err))
+		}
 		fail(err)
 		return
 	}
@@ -523,13 +531,22 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	}
 	if err := reply(map[string]any{"type": proto.TypeOpResult, "result": res}); err != nil {
 		if errors.Is(err, proto.ErrFrameTooLarge) {
+			if !writes {
+				s.settleRead(capt, op, nil, "reply_failed")
+			}
 			fail(tooLargeAsError(err)) // nothing was written: answer with an error frame
 			return
 		}
 		// The caller never got its answer: not a success.
 		outcome = "reply_failed"
+		if !writes {
+			s.settleRead(capt, op, nil, "reply_failed")
+		}
 		st.Reset()
 		return
+	}
+	if !writes {
+		s.settleRead(capt, op, res, "")
 	}
 	_ = st.Close()
 }
@@ -761,6 +778,16 @@ func (s *CallServer) capture(ctx context.Context, pr authz.Principal, actor, gra
 	return capt
 }
 
+// settleRead records a read after its answer was written (or failed to be):
+// the collector never says the Hub returned content that did not leave.
+func (s *CallServer) settleRead(capt *compliance.Capture, op ops.Op, res any, code string) {
+	if op.Stream {
+		capt.End(code)
+		return
+	}
+	capt.Done(res, code)
+}
+
 // callWorker is the Worker a call is addressed to when its arguments do not
 // name one: the Worker of the stream's own session unless the request names
 // another (sessions_list).
@@ -785,6 +812,10 @@ func callTarget(args any) string {
 func targetOfArgs(args any) (ops.Target, bool) {
 	switch a := args.(type) {
 	case *ops.PipeSendArgs:
+		return a.Target, true
+	case *ops.PipeReadArgs:
+		return a.Target, true
+	case *ops.PipeWaitArgs:
 		return a.Target, true
 	case *ops.SessionSnapshotArgs:
 		return a.Target, true

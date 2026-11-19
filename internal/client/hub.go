@@ -199,6 +199,7 @@ type HubBackend struct {
 	// mon remembers the monitoring policy version the user saw; monNotice
 	// shows an active policy, once per run (monOnce).
 	mon       *MonitoringSeen
+	monKey    string // the Hub's identity for the state: scheme, host and base path
 	monNotice func(string)
 	monOnce   sync.Once
 }
@@ -219,6 +220,7 @@ func NewHub(cfg HubConfig, opts ...HubOption) (*HubBackend, error) {
 		return nil, err
 	}
 	b.base = base
+	b.monKey = strings.ToLower(base.Scheme) + "://" + strings.ToLower(base.Host) + strings.TrimRight(base.Path, "/")
 	if cfg.APIKeyFile == "" {
 		return nil, fmt.Errorf("%w: set MINION_API_KEY_FILE to a file that holds the API key", ErrAPIKeyMissing)
 	}
@@ -410,7 +412,11 @@ func (b *HubBackend) run(ctx context.Context, op string, args any, onProgress fu
 	req.Header.Set("Accept", "application/json, application/x-ndjson")
 	req.Header.Set("User-Agent", b.userAgent)
 	if b.mon != nil {
-		if seen, ok := b.mon.Get(b.label); ok {
+		seen, ok := b.mon.Get(b.monKey)
+		if !ok {
+			seen, ok = b.preflight(ctx)
+		}
+		if ok {
 			req.Header.Set(headerMonitoringSeen, strconv.FormatInt(seen, 10))
 		}
 	}

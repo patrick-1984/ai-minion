@@ -175,6 +175,18 @@ func argsDigestOf(ctx context.Context) string {
 	return s
 }
 
+// withArgsDigest puts the digest of a write request into ctx. Every entry
+// path to a write frame calls it (Execute, and the Solo pipe that runs its
+// write frame itself), so a retry is bound to its body however it arrived.
+func withArgsDigest(ctx context.Context, rq Request) context.Context {
+	if op, ok := ops.Lookup(rq.Op); ok && op.Write {
+		if d := ArgsDigest(rq.Args); d != "" {
+			return context.WithValue(ctx, argsDigestKey{}, d)
+		}
+	}
+	return ctx
+}
+
 // ArgsDigest is the digest the result cache binds a write to: the hex SHA-256
 // of the canonical JSON (sorted keys, no insignificant space) of the
 // arguments without request_id. Two requests that differ in any other member,
@@ -188,6 +200,9 @@ func ArgsDigest(raw json.RawMessage) string {
 		return ""
 	}
 	delete(m, "request_id")
+	// The Hub names the message it stored for a pipe_send; a retry that the Hub
+	// had to store again carries another id for the same caller request.
+	delete(m, "message_id")
 	b, err := json.Marshal(m)
 	if err != nil {
 		return ""

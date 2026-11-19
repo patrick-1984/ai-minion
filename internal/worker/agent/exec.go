@@ -207,11 +207,7 @@ func (e *Executor) Execute(ctx context.Context, rq Request) (json.RawMessage, er
 	if rq.Origin != nil {
 		ctx = context.WithValue(ctx, originCtxKey{}, rq.Origin)
 	}
-	if op, ok := ops.Lookup(rq.Op); ok && op.Write {
-		if d := ArgsDigest(rq.Args); d != "" {
-			ctx = context.WithValue(ctx, argsDigestKey{}, d)
-		}
-	}
+	ctx = withArgsDigest(ctx, rq)
 	e.mu.RLock()
 	h := e.handlers[rq.Op]
 	e.mu.RUnlock()

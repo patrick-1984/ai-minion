@@ -58,6 +58,7 @@ type CallInfo struct {
 // unconditionally. It is used by the one goroutine of the call.
 type Capture struct {
 	m      *Monitor
+	g      *generation
 	ctx    context.Context
 	info   CallInfo
 	pol    Policy
@@ -78,7 +79,8 @@ func (m *Monitor) Begin(ctx context.Context, info CallInfo) *Capture {
 	if m == nil {
 		return nil
 	}
-	pol := m.Policy()
+	g := m.gen.Load()
+	pol := g.pol
 	if !pol.Records() {
 		return nil
 	}
@@ -86,7 +88,7 @@ func (m *Monitor) Begin(ctx context.Context, info CallInfo) *Capture {
 	if row.Paths&info.Path == 0 {
 		return nil
 	}
-	c := &Capture{m: m, ctx: ctx, info: info, pol: pol, row: row, worker: info.WorkerID}
+	c := &Capture{m: m, g: g, ctx: ctx, info: info, pol: pol, row: row, worker: info.WorkerID}
 	if t, ok := targetOf(info.Args); ok {
 		if t.WorkerID != "" {
 			c.worker = t.WorkerID
@@ -104,7 +106,7 @@ func (c *Capture) Denied() {
 		return
 	}
 	c.denied = true
-	c.m.emit(c.action("denied", nil))
+	c.emit(c.action("denied", nil))
 }
 
 // Attempted records, before the call is routed, the content the Hub is about
@@ -118,7 +120,7 @@ func (c *Capture) Attempted() {
 	body, kind := inputOf(c.row.Input, c.info.Args)
 	attrs := c.base()
 	attrs = append(attrs, Attr{"minion.input.status", "attempted"}, Attr{"minion.input.kind", kind})
-	c.m.emit(c.withBody(EventInput, attrs, body))
+	c.emit(c.withBody(EventInput, attrs, body))
 }
 
 // Done records how the call ended: the action record with its outcome, then
@@ -131,7 +133,7 @@ func (c *Capture) Done(result any, code string) {
 	res := deref(result)
 	outcome, extra := c.outcome(res, code)
 	extra = append(extra, c.describe(res, code)...)
-	c.m.emit(c.action(outcome, extra))
+	c.emit(c.action(outcome, extra))
 	if code != "" || !c.pol.captureOutput() || c.row.Output == OutNone || !c.content() {
 		return
 	}
@@ -159,7 +161,7 @@ func (c *Capture) Element(v any) {
 	}
 	c.elements++
 	attrs := []Attr{{"minion.outcome", "ok"}, {"minion.turn.id", t.TurnID}}
-	c.m.emit(c.recordWith(EventAction, attrs, ""))
+	c.emit(c.recordWith(EventAction, attrs, ""))
 	if c.pol.captureOutput() && c.row.Output == OutTurns && c.content() {
 		c.turnOutput(t)
 	}
@@ -175,11 +177,14 @@ func (c *Capture) End(code string) {
 	if code != "" {
 		outcome = "refused:" + code
 	}
-	c.m.emit(c.recordWith(EventAction, []Attr{{"minion.outcome", outcome}, {"minion.stream.elements", int64(c.elements)}}, ""))
+	c.emit(c.recordWith(EventAction, []Attr{{"minion.outcome", outcome}, {"minion.stream.elements", int64(c.elements)}}, ""))
 }
 
 // content reports whether content may be recorded for this call: the Worker
 // is known and user-managed. It is asked once, and an error counts as no.
+// emit sends r to the sink of the generation the call was admitted under.
+func (c *Capture) emit(r Record) bool { return c.g.emit(c.m, r) }
+
 func (c *Capture) content() bool {
 	if c.contentKnown {
 		return c.contentOK
@@ -249,7 +254,9 @@ func (c *Capture) withBody(event string, attrs []Attr, body string) Record {
 				cut--
 			}
 			r.Attrs = append(r.Attrs, Attr{"minion.content.truncated_bytes", int64(len(body) - cut)})
-			body = body[:cut]
+			// A copy: a slice would keep the whole original allocation alive in
+			// the queue while the budget charges only the short length.
+			body = strings.Clone(body[:cut])
 		}
 		r.Body = body
 	}
@@ -347,7 +354,7 @@ func (c *Capture) describe(res any, code string) []Attr {
 func (c *Capture) screenOutput(kind, paneID string, s ops.Screen) {
 	fp := fingerprint(s)
 	scope := c.worker + "\x00" + c.sess + "\x00" + paneID + "\x00" + kind
-	changed := c.m.dedupe.ScreenChanged(scope, fp)
+	changed := c.g.dedupe.ScreenChanged(scope, fp)
 	attrs := []Attr{{"minion.output.kind", kind}, {"minion.content.sha256", fp}, {"minion.content.lines", int64(len(s.Lines))}}
 	body := ""
 	if changed {
@@ -359,17 +366,22 @@ func (c *Capture) screenOutput(kind, paneID string, s ops.Screen) {
 	if paneID != "" {
 		attrs = append(attrs, Attr{"minion.pane.id", paneID})
 	}
-	c.m.emit(c.recordWith(EventOutput, attrs, body))
+	if c.emit(c.recordWith(EventOutput, attrs, body)) && changed {
+		c.g.dedupe.MarkScreen(scope, fp)
+	}
 }
 
 // turnOutput emits the text of a pipe turn the first time it is returned.
 func (c *Capture) turnOutput(t ops.PipeTurn) {
-	if !c.m.dedupe.TurnNew(c.worker + "\x00" + t.Session + "\x00" + t.TurnID) {
+	key := c.worker + "\x00" + t.Session + "\x00" + t.TurnID
+	if !c.g.dedupe.TurnNew(key) {
 		return
 	}
 	attrs := []Attr{{"minion.output.kind", "turn"}, {"minion.turn.id", t.TurnID}, {"minion.turn.direction", t.Direction},
 		{"minion.content.sha256", sum256(t.Text)}}
-	c.m.emit(c.recordWith(EventOutput, attrs, t.Text))
+	if c.emit(c.recordWith(EventOutput, attrs, t.Text)) {
+		c.g.dedupe.MarkTurn(key)
+	}
 }
 
 // fingerprint is the SHA-256 of the screen payload that was returned: its
@@ -403,10 +415,17 @@ func inputOf(k InputKind, args any) (string, string) {
 	case ops.PipeSendArgs:
 		return a.Text, "message"
 	case ops.SessionCreateArgs:
+		// The decoded values are masked before they are encoded: in JSON text a
+		// key after a line break follows the "n" of its escape and would not
+		// start at a word boundary.
+		argv := make([]string, len(a.Argv))
+		for i, v := range a.Argv {
+			argv[i] = logx.RedactTokens(v)
+		}
 		b, _ := json.Marshal(struct {
 			Cwd  string   `json:"cwd,omitempty"`
 			Argv []string `json:"argv,omitempty"`
-		}{a.Cwd, a.Argv})
+		}{logx.RedactTokens(a.Cwd), argv})
 		return string(b), "create"
 	}
 	return "", ""
@@ -474,12 +493,25 @@ func capAttrs(in []Attr) []Attr {
 	out := in[:0:0]
 	total := 0
 	for _, a := range in {
-		if s, ok := a.Value.(string); ok && len(s) > maxAttrString {
-			cut := maxAttrString
-			for cut > 0 && !utf8.RuneStart(s[cut]) {
-				cut--
+		// Every exported string is masked first (a session name, a task id,
+		// whatever a caller chose), then cut on a rune boundary into a copy.
+		switch v := a.Value.(type) {
+		case string:
+			s := logx.RedactTokens(v)
+			if len(s) > maxAttrString {
+				cut := maxAttrString
+				for cut > 0 && !utf8.RuneStart(s[cut]) {
+					cut--
+				}
+				s = strings.Clone(s[:cut])
 			}
-			a.Value = s[:cut]
+			a.Value = s
+		case []string:
+			vs := make([]string, len(v))
+			for i, x := range v {
+				vs[i] = logx.RedactTokens(x)
+			}
+			a.Value = vs
 		}
 		n := len(a.Key) + attrSize(a.Value)
 		if total+n > MaxAttrBytes {
@@ -503,4 +535,18 @@ func attrSize(v any) int {
 		return n
 	}
 	return 8
+}
+
+// RecordAction writes one action record for an operation that is served outside
+// the two front doors' ordinary path (a Worker's own retirement). The matrix
+// row of the op says whether it is captured; nothing but actions is written.
+func (m *Monitor) RecordAction(info CallInfo, outcome string) {
+	if m == nil {
+		return
+	}
+	c := m.Begin(context.Background(), info)
+	if c == nil {
+		return
+	}
+	c.emit(c.recordWith(EventAction, []Attr{{"minion.outcome", outcome}}, ""))
 }

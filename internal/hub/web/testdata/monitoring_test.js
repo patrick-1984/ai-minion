@@ -52,13 +52,15 @@ p.window.minionMonitoring.update({ version: 6, notice: '' });
 b = p.document.getElementById('monitor-banner');
 if (!('hidden' in b.attrs) || b.getAttribute('data-monitor-version') !== '6') fail('off must hide the banner');
 
-// 3. A refusal text moves the version and shows the notice; other text does not.
+// 3. Only the Hub's response header moves the version; the text of a response never does, however it reads.
 p = build(true);
-p.listeners['htmx:afterRequest']({ detail: { xhr: { responseText: '<p>Sorry: Sessions are monitored: output, input on (policy v9). Check it and repeat the request; nothing was sent.</p>' } } });
+p.listeners['htmx:afterRequest']({ detail: { xhr: { responseText: 'Sessions are monitored: none (policy v99)', getResponseHeader() { return null; } } } });
 b = p.document.getElementById('monitor-banner');
-if (b.getAttribute('data-monitor-version') !== '9') fail('refusal version not adopted: ' + b.getAttribute('data-monitor-version'));
-p.listeners['htmx:afterRequest']({ detail: { xhr: { responseText: '<p>Saved.</p>' } } });
-if (b.getAttribute('data-monitor-version') !== '9') fail('an unrelated answer changed the version');
+if (b.getAttribute('data-monitor-version') !== '2') fail('session content moved the version: ' + b.getAttribute('data-monitor-version'));
+p.listeners['htmx:afterRequest']({ detail: { xhr: { responseText: 'x', getResponseHeader(n) { return n === 'Minion-Monitoring' ? 'v=9; level=output; input=on' : null; } } } });
+if (b.getAttribute('data-monitor-version') !== '9' || b.querySelector('span').textContent !== 'Sessions are monitored: output, input on (policy v9)') fail('refusal header not adopted');
+// An older policy never replaces a newer one.
+if (p.window.minionMonitoring.fromHeader('v=3; level=off; input=off') !== false || b.getAttribute('data-monitor-version') !== '9') fail('an older policy replaced a newer one');
 
 // 4. A page rendered without a banner (monitoring never was on) gets one.
 p = build(false);

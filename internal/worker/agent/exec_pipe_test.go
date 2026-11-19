@@ -1204,3 +1204,41 @@ func TestPipeSendFromAHubWithoutAMessageIDFailsBeforeAnyEffect(t *testing.T) {
 		t.Fatalf("a request record was stored: %+v", rec)
 	}
 }
+
+// A Hub that had to store a message again names it with another id for the
+// same caller request: the retry is the same request, not a conflict. The text
+// is still bound.
+func TestPipeSendRetryWithANewMessageIDIsNotAConflict(t *testing.T) {
+	p := newPipeEnv(t)
+	args := pipeSendArgs("work", "once", false)
+	args.MessageID = 7
+	if res, err := p.hubSend(allActions, args); err != nil || res.Outcome != ops.OutcomeDelivered {
+		t.Fatalf("first = %+v, %v", res, err)
+	}
+	again := args
+	again.MessageID = 8
+	res, err := p.hubSend(allActions, again)
+	if err != nil || !res.Replayed {
+		t.Fatalf("retry with a new message id = %+v, %v", res, err)
+	}
+	other := again
+	other.Text = "different"
+	if _, err := p.hubSend(allActions, other); err == nil {
+		t.Fatal("another text with the same request id was accepted")
+	}
+}
+
+// The Solo control-socket path runs its own write frame: it binds the retry to
+// the body as well.
+func TestSoloPipeSendBindsTheRetryToTheText(t *testing.T) {
+	p := newPipeEnv(t)
+	args := pipeSendArgs("work", "once", false)
+	if res, err := p.localSend(args); err != nil || res.Outcome != ops.OutcomeDelivered {
+		t.Fatalf("first = %+v, %v", res, err)
+	}
+	other := args
+	other.Text = "different text"
+	if _, err := p.localSend(other); err == nil {
+		t.Fatal("the Solo path answered another text from the cache")
+	}
+}

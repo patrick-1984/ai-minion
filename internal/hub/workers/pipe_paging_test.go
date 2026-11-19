@@ -519,3 +519,27 @@ func TestLivePagingFollowsTheCommitOrderWhateverTheClockSays(t *testing.T) {
 		t.Fatalf("entries after m1 = %v, want t1 then m2 in commit order", seen)
 	}
 }
+
+// The same request id with another text is another request: it is refused, and
+// an identical retry says it was answered from the record (replayed).
+func TestRetryWithOtherTextIsAConflictAndIdenticalRetryIsReplayed(t *testing.T) {
+	ctx := context.Background()
+	r := newPipeRig(t, 0)
+	alice := authz.NewSessionPrincipal(idAlice)
+	args := sendArgs(wAlicePi1, pipeSess, "original")
+	first, err := r.p.Send(ctx, alice, args)
+	if err != nil || first.Replayed {
+		t.Fatalf("first = %+v, %v", first, err)
+	}
+	again, err := r.p.Send(ctx, alice, args)
+	if err != nil || !again.Replayed || again.Outcome != ops.OutcomeDelivered {
+		t.Fatalf("identical retry = %+v, %v", again, err)
+	}
+	other := args
+	other.Text = "something else"
+	_, err = r.p.Send(ctx, alice, other)
+	wantCode(t, err, proto.CodeConflict)
+	if r.rt.count() != 1 {
+		t.Fatalf("%d calls routed", r.rt.count())
+	}
+}

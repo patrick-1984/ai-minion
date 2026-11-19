@@ -27,27 +27,38 @@ func NewDedupe(scopes, turns int) *Dedupe {
 	return &Dedupe{screens: newLRU(scopes), turns: newLRU(turns)}
 }
 
-// ScreenChanged records fp as the latest fingerprint of scope and reports
-// whether it differs from the previous one (true for a scope not seen).
+// ScreenChanged reports whether fp differs from the last fingerprint whose
+// text was delivered for scope (true for a scope not seen). It remembers
+// nothing: the caller calls MarkScreen once the record that carries the text
+// was accepted by the sink, so a dropped first body is sent again by the next
+// read.
 func (d *Dedupe) ScreenChanged(scope, fp string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if old, ok := d.screens.get(scope); ok && old == fp {
-		return false
-	}
-	d.screens.put(scope, fp)
-	return true
+	old, ok := d.screens.get(scope)
+	return !ok || old != fp
 }
 
-// TurnNew reports whether the turn was not emitted before, and remembers it.
+// MarkScreen records that the text of fp was accepted for scope.
+func (d *Dedupe) MarkScreen(scope, fp string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.screens.put(scope, fp)
+}
+
+// TurnNew reports whether the text of the turn was not delivered before.
 func (d *Dedupe) TurnNew(key string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d.turns.get(key); ok {
-		return false
-	}
+	_, ok := d.turns.get(key)
+	return !ok
+}
+
+// MarkTurn records that the text of the turn was accepted.
+func (d *Dedupe) MarkTurn(key string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.turns.put(key, "")
-	return true
 }
 
 // Reset forgets everything (a new policy version starts every consumer of the

@@ -21,6 +21,8 @@ func TestEveryWorkerOpHasAMatrixRow(t *testing.T) {
 			t.Errorf("Worker op %q has no row in the compliance matrix (internal/obs/compliance/matrix.go): decide what its record holds at each level", op.Name)
 		}
 	}
+	// Hub ops that act on a Worker's behalf and carry a row on purpose.
+	seen[ops.OpWorkerRetire] = true
 	for name := range Matrix {
 		if !seen[name] {
 			t.Errorf("the matrix has a row for %q, which is not a Worker op of the catalog", name)

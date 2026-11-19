@@ -373,6 +373,6 @@ func WriteJSON(w http.ResponseWriter, status int, v any) error {
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
-	_, _ = w.Write(append(b, '\n'))
-	return nil
+	_, werr := w.Write(append(b, '\n'))
+	return werr
 }

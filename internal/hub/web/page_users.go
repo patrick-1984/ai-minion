@@ -154,7 +154,11 @@ func (c *HandlerCaller) CallOp(r *http.Request, op string, args, result any) err
 		return fmt.Errorf("web: the answer of %s is larger than %d bytes", op, maxOpResponseBytes)
 	}
 	if rec.status/100 != 2 {
-		return decodeOpError(rec.status, rec.body.Bytes())
+		oe := decodeOpError(rec.status, rec.body.Bytes())
+		if oe.Code == "monitoring_changed" {
+			noteRefusal(r, rec.header)
+		}
+		return oe
 	}
 	if result == nil {
 		return nil

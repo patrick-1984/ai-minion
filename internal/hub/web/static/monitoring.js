@@ -3,8 +3,8 @@
 //   - sends that version with every htmx request (Minion-Monitoring-Seen), so a page that is
 //     older than a stricter policy is refused once with the notice;
 //   - updates the banner and the version when the event stream says the policy changed;
-//   - adopts the version named in a refusal, so the retry goes through. A draft is never
-//     touched here: the form keeps its fields when its request is refused.
+//   - adopts the version named in the Minion-Monitoring header of a refusal (a response header only the Hub sets), so the retry
+//     goes through. A draft is never touched here: the form keeps its fields when its request is refused.
 (function () {
   'use strict';
   var HEADER = 'Minion-Monitoring-Seen';
@@ -15,7 +15,7 @@
   function ensure() {
     var b = banner();
     if (b) { return b; }
-    var slot = document.getElementById('banner-slot');
+    var slot = document.getElementById('banner-slot') || document.getElementById('content');
     if (!slot || !slot.parentNode) { return null; }
     b = document.createElement('div');
     b.id = 'monitor-banner';
@@ -38,6 +38,8 @@
     if (!b || !p) { return false; }
     var v = String(p.version === undefined ? '' : p.version);
     if (v === '' || !/^[0-9]+$/.test(v)) { return false; }
+    // An older policy never replaces a newer one (events can arrive late).
+    if (Number(v) < Number(b.getAttribute('data-monitor-version') || '0')) { return false; }
     b.setAttribute('data-monitor-version', v);
     var text = typeof p.notice === 'string' ? p.notice : '';
     var span = b.querySelector('span');
@@ -46,15 +48,21 @@
     return true;
   }
 
-  // adopt reads the version of a refusal ("... (policy v3). Check it ...") out of a response text.
-  function adopt(text) {
-    var m = /Sessions are monitored: [^()]*\(policy v([0-9]+)\)/.exec(text || '');
-    if (!m) { return false; }
-    var b = ensure();
-    if (!b) { return false; }
-    var span = b.querySelector('span');
-    var line = /Sessions are monitored: [^()]*\(policy v[0-9]+\)/.exec(text)[0];
-    return update({ version: m[1], notice: line }) && !!span;
+  // fromHeader applies a Minion-Monitoring response header ("v=3; level=output; input=on; traffic=payload"),
+  // which only the Hub's own refusal carries. The text of a response is never read: session content can say anything.
+  function fromHeader(h) {
+    if (typeof h !== 'string' || h === '') { return false; }
+    var f = {};
+    h.split(';').forEach(function (part) {
+      var kv = part.trim().split('=');
+      if (kv.length === 2) { f[kv[0]] = kv[1]; }
+    });
+    if (!/^[0-9]+$/.test(f.v || '')) { return false; }
+    var parts = [];
+    if (f.level === 'actions' || f.level === 'output') { parts.push(f.level + ', input ' + (f.input === 'on' ? 'on' : 'off')); }
+    if (f.traffic === 'payload') { parts.push('Worker traffic with frame contents'); }
+    var notice = parts.length ? 'Sessions are monitored: ' + parts.join('; ') + ' (policy v' + f.v + ')' : '';
+    return update({ version: f.v, notice: notice });
   }
 
   document.addEventListener('htmx:configRequest', function (ev) {
@@ -62,9 +70,9 @@
   });
   var after = function (ev) {
     var x = ev.detail && ev.detail.xhr;
-    if (x && typeof x.responseText === 'string') { adopt(x.responseText); }
+    if (x && typeof x.getResponseHeader === 'function') { fromHeader(x.getResponseHeader('Minion-Monitoring')); }
   };
   document.addEventListener('htmx:afterRequest', after);
 
-  window.minionMonitoring = { update: update, version: version, adopt: adopt };
+  window.minionMonitoring = { update: update, version: version, fromHeader: fromHeader };
 })();

@@ -243,7 +243,7 @@ func TestInvalidTrafficSettingDoesNotBlockStoppingASink(t *testing.T) {
 
 // The same holds when the environment holds an unsupported enum value.
 func TestInvalidEnvironmentEnumDoesNotBlockStoppingASink(t *testing.T) {
-	for _, env := range []map[string]string{{"MINION_WORKER_TRAFFIC_LOG": "payload"}, {"MINION_OTEL_METRICS": "full"}} {
+	for _, env := range []map[string]string{{"MINION_WORKER_TRAFFIC_LOG": "bogus"}, {"MINION_OTEL_METRICS": "full"}} {
 		o := newObsFixture(t, env, nil)
 		o.set(t, ops.SettingChange{Key: "syslog", Value: "on"}, ops.SettingChange{Key: "syslog_endpoint", Value: "udp://127.0.0.1:9"})
 		o.set(t, ops.SettingChange{Key: "syslog", Value: "off"})
@@ -317,7 +317,7 @@ func TestRunStopsModulesWhenTheDrainTimesOutOnAStalledOutput(t *testing.T) {
 // unchanged invalid enum keeps the traffic log off: the running settings'
 // sink files are not read for that.
 func TestStoppingASinkWithAMissingCAAndAnInvalidEnum(t *testing.T) {
-	o := newObsFixture(t, map[string]string{"MINION_WORKER_TRAFFIC_LOG": "payload"}, nil)
+	o := newObsFixture(t, map[string]string{"MINION_WORKER_TRAFFIC_LOG": "bogus"}, nil)
 	ca := filepath.Join(t.TempDir(), "ca.pem")
 	writeTestCA(t, ca)
 	o.set(t, ops.SettingChange{Key: "syslog", Value: "on"}, ops.SettingChange{Key: "syslog_endpoint", Value: "tls://127.0.0.1:1"},

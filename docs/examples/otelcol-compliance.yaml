@@ -1,26 +1,42 @@
 # OpenTelemetry Collector (contrib distribution) configuration for Minion's
 # compliance monitoring: see "Compliance monitoring" in docs/guides/observability.md.
 #
-# Minion settings that match it (changed with a fresh sign-in, or by the Hub's environment):
-#   compliance_monitoring=output   compliance_input=on
-#   compliance_endpoint=https://<collector host>:4318      (or http://127.0.0.1:4318 for a collector on the Hub host)
-#   compliance_headers="Authorization: Bearer <token>"     (use a client certificate for mutual TLS instead)
+# This is an AUTHENTICATED setup. The compliance stream holds what people type and read; a
+# receiver that accepts anything from anyone would let any host that can reach it feed fabricated
+# records into the compliance pipeline. Two ways are shown:
 #
-# Minion masks only its own exact secret formats before a record leaves the Hub
-# (API keys, invitation keys, join tokens, pairing codes). Everything else that can be
-# in a session (a password someone typed, a token a program printed) is yours to mask
-# here, before any exporter: the processors below are a starting point.
+#  1. Local sidecar (this file's default): the Collector listens on loopback only, on the Hub's own
+#     host, and the Hub sends to http://127.0.0.1:4318 (the only plaintext destination Minion
+#     accepts). No other host can reach it.
+#  2. Remote collector: TLS with verified CLIENT certificates (mutual TLS), or TLS plus a bearer
+#     token. Uncomment the tls / auth / extensions blocks below. Minion settings: compliance_endpoint=
+#     https://<collector host>:4318 with compliance_client_cert_file and compliance_client_key_file
+#     (and compliance_ca_file for your CA), or compliance_headers="Authorization: Bearer <token>".
+#
+# Minion masks only its own exact secret formats before a record leaves the Hub (API keys,
+# invitation keys, join tokens, pairing codes). Everything else that can be in a session (a password
+# someone typed, a token a program printed) is yours to mask here, before any exporter: the
+# processors below are a starting point, not a guarantee. This file has not been run against a
+# Collector by the authors of this change; test it with your Collector version before relying on it.
+
+extensions:
+  # Remote option: validate "Authorization: Bearer <token>" on every request.
+  # bearertokenauth:
+  #   token: ${env:MINION_COMPLIANCE_TOKEN}
 
 receivers:
   otlp:
     protocols:
       http:
-        endpoint: 0.0.0.0:4318
-        # Terminate TLS here for compliance_endpoint=https://...; add client_ca_file for mutual TLS.
+        # Default: loopback only (the sidecar setup). For a remote collector use 0.0.0.0:4318 together
+        # with the tls block (and, for a bearer token, the auth block) below, never plaintext.
+        endpoint: 127.0.0.1:4318
         # tls:
         #   cert_file: /certs/server.pem
         #   key_file: /certs/server-key.pem
-        #   client_ca_file: /certs/clients-ca.pem
+        #   client_ca_file: /certs/clients-ca.pem     # requires and verifies client certificates
+        # auth:
+        #   authenticator: bearertokenauth
         # The Hub sends at most 4 MiB per request (the default limit of 20 MiB is never reached).
 
 processors:
@@ -34,7 +50,6 @@ processors:
           - replace_pattern(body.string, "(?i)(password[=:]\\s*)\\S+", "$${1}[REDACTED]")
           - replace_pattern(body.string, "\\b(?:ghp|gho|ghs)_[A-Za-z0-9]{30,}\\b", "[REDACTED]")
           - replace_pattern(body.string, "\\bAKIA[0-9A-Z]{16}\\b", "[REDACTED]")
-  # Attributes (session names, tasks are not attributes, but keep the net wide).
   redaction/mask:
     allow_all_keys: true
     blocked_values:
@@ -48,6 +63,7 @@ exporters:
     verbosity: detailed
 
 service:
+  # extensions: [bearertokenauth]    # remote option
   pipelines:
     logs:
       receivers: [otlp]

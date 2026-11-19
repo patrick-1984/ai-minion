@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -96,4 +97,50 @@ func renderSignedInPage(t *testing.T) string {
 		t.Fatalf("GET /sessions = %d", rec.Code)
 	}
 	return rec.Body.String()
+}
+
+// The browser learns the policy of a refusal from a response header that only
+// the Hub's own refusal sets; nothing else in a response can.
+func TestRefusalPolicyReachesTheBrowserAsAHeader(t *testing.T) {
+	sig := &monitorSignal{}
+	rec := httptest.NewRecorder()
+	w := &monitorWriter{ResponseWriter: rec, sig: sig}
+	req := httptest.NewRequest("POST", "/s/pi/x/text", nil).WithContext(context.WithValue(context.Background(), monitorSignalKey{}, sig))
+	api := http.Header{}
+	api.Set("Minion-Monitoring", "v=4; level=output; input=on")
+	noteRefusal(req, api)
+	_, _ = w.Write([]byte("Sessions are monitored: output, input on (policy v4)"))
+	if got := rec.Header().Get("Minion-Monitoring"); got != "v=4; level=output; input=on" {
+		t.Fatalf("header = %q", got)
+	}
+	// No refusal, no header; and a request without the signal is harmless.
+	rec2 := httptest.NewRecorder()
+	w2 := &monitorWriter{ResponseWriter: rec2, sig: &monitorSignal{}}
+	_, _ = w2.Write([]byte("Sessions are monitored: output, input on (policy v4)"))
+	if rec2.Header().Get("Minion-Monitoring") != "" {
+		t.Fatal("a header without a refusal")
+	}
+	noteRefusal(httptest.NewRequest("GET", "/", nil), api)
+}
+
+// The embedded (Inspector) layout carries the banner and the version too, so
+// an already-open Inspector can acknowledge and adopt a stricter policy.
+func TestEmbeddedLayoutCarriesTheMonitoringVersion(t *testing.T) {
+	release := SetMonitoring(func() MonitoringView {
+		return MonitoringView{Version: 6, Notice: "Sessions are monitored: output, input on (policy v6)"}
+	})
+	defer release()
+	reg := NewRegistry()
+	if err := reg.RegisterPage(Page{Pattern: "/sessions", Title: "Sessions", Template: "probe.html", Embeddable: true}); err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(t, reg)
+	req := httptest.NewRequest("GET", "/sessions?embed=1", nil)
+	req.Header.Set("X-Test-Session", "root:admin")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != 200 || !strings.Contains(body, `data-monitor-version="6"`) || !strings.Contains(body, "policy v6") {
+		t.Fatalf("%d embedded page without the banner:\n%s", rec.Code, body)
+	}
 }

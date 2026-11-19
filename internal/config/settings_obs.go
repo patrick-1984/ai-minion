@@ -136,7 +136,7 @@ func declareObs(r *Registry) {
 // privatePathKeys name files that hold a secret (a TLS client key, the
 // Worker's header list).
 var privatePathKeys = map[string]bool{
-	KeySyslogClientKeyFile: true, KeyOTelClientKeyFile: true, KeyOTelHeadersPath: true,
+	KeySyslogClientKeyFile: true, KeyOTelClientKeyFile: true, KeyOTelHeadersPath: true, KeyComplianceClientKeyFile: true,
 }
 
 // SecretPathValue reports whether value, set for the path setting key, looks

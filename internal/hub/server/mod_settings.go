@@ -362,6 +362,10 @@ func (s *SettingsService) set(ctx context.Context, actor SettingsActor, args ops
 	if err := args.Validate(); err != nil {
 		return ops.WriteResult{}, err
 	}
+	// One change at a time, from the first read to the commit: the gate below
+	// reads the stored payload level and must see what the commit will replace.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	batch := len(args.Changes) > 0
 	field := func(i int, name string) string {
 		if batch {
@@ -398,7 +402,17 @@ func (s *SettingsService) set(ctx context.Context, actor SettingsActor, args ops
 				Action: AuditActionSettingSet, Target: st.Key, Outcome: AuditOutcomeRefused})
 			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "key"), Reason: GatedRefusal}
 		}
-		if gateOpen && !gated && st.Key != config.KeyTrafficLog {
+		// While payload recording is on, what widens it (more Workers, other
+		// destinations) needs the same fresh approval as turning it on.
+		if !gateOpen && s.widensPayload(ctx, st.Key, c.Value, unset) {
+			_ = s.auditor.RecordSettingsEvent(ctx, SettingsAuditEvent{Actor: actor.ID, ActingAs: actor.ActingAs,
+				Action: AuditActionSettingSet, Target: st.Key, Outcome: AuditOutcomeRefused})
+			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "key"), Reason: "the payload traffic log is on: " + GatedRefusal + ", or turn the payload level off first"}
+		}
+		if config.SecretPathValue(st.Key, c.Value) && !unset {
+			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "value"), Reason: "must be the path of a file, not the key or header text itself"}
+		}
+		if gateOpen && !gated && st.Key != config.KeyTrafficLog && st.Key != config.KeyTrafficLogTo && st.Key != config.KeyTrafficLogWorkers {
 			return ops.WriteResult{}, &ops.ArgumentError{Field: field(i, "key"), Reason: "compliance_set changes compliance monitoring settings only"}
 		}
 		if !unset && len(st.Choices) > 0 && !slices.Contains(st.Choices, c.Value) {
@@ -429,9 +443,6 @@ func (s *SettingsService) set(ctx context.Context, actor SettingsActor, args ops
 	if refused {
 		return ops.WriteResult{}, proto.NewError(proto.CodeConflict, ReadOnlyMessage)
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	for i, c := range args.List() {
 		if c.Revision != "" && c.Revision != s.revision(ctx, c.Key) {
@@ -540,6 +551,26 @@ func (s *SettingsService) set(ctx context.Context, actor SettingsActor, args ops
 		}
 	}
 	return res, nil
+}
+
+// widensPayload reports whether changing key could widen payload recording that
+// is on now: the Worker scope and the destinations of the traffic log, and the
+// syslog and OpenTelemetry sinks it can write to.
+func (s *SettingsService) widensPayload(ctx context.Context, key, value string, unset bool) bool {
+	if (key == config.KeySyslog || key == config.KeyOTel) && (unset || value == config.SinkOff) {
+		return false // switching a sink off narrows
+	}
+	switch key {
+	case config.KeyTrafficLogTo, config.KeyTrafficLogWorkers:
+	case config.KeySyslogLevel, config.KeyOTelLevel, config.KeySyslogMaxBytes, config.KeyOTelMetrics:
+		return false
+	default:
+		if !strings.HasPrefix(key, "syslog") && !strings.HasPrefix(key, "otel") {
+			return false
+		}
+	}
+	r, err := s.Resolver().Resolve(config.KeyTrafficLog)
+	return err == nil && r.Value == config.TrafficPayload
 }
 
 // storedValue is the panel value of key ("" when the panel holds none).

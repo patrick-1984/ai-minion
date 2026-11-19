@@ -56,10 +56,13 @@ func (d *Dispatcher) refuseStale(w http.ResponseWriter, r *http.Request, op stri
 		return false
 	}
 	seen, have := SeenVersion(r)
-	notice, refuse := d.Monitor.Stale(seen, have, op)
+	notice, refuse, pol := d.Monitor.Stale(seen, have, op)
 	if !refuse {
 		return false
 	}
+	// One snapshot decides and answers: the header names the version the
+	// notice names, so the client's retry carries the version that goes through.
+	w.Header().Set(HeaderMonitoring, pol.Header())
 	d.refused(w, op, "monitoring_changed", kind, NewError(proto.CodeMonitoringChanged, notice))
 	return true
 }

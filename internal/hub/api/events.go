@@ -337,25 +337,20 @@ func (s *eventStream) run(ctx context.Context, sub *workers.Subscription, out *s
 		s.endRevoked(ctx, rctx, out)
 		return
 	}
-	var monitoring <-chan compliance.Policy
+	// A wake-up only: the policy is read when the loop consumes it, so the
+	// latest one is always what is sent, and subscribing before the first look
+	// leaves no window in which a change is missed.
+	var monitoring <-chan struct{}
 	if m := h.cfg.Monitor; m != nil {
-		ch := make(chan compliance.Policy, 1)
-		push := func(p compliance.Policy) {
-			// The latest policy wins: a full queue loses its older entry.
-			for {
-				select {
-				case ch <- p:
-					return
-				default:
-					select {
-					case <-ch:
-					default:
-					}
-				}
+		ch := make(chan struct{}, 1)
+		wake := func(compliance.Policy) {
+			select {
+			case ch <- struct{}{}:
+			default:
 			}
 		}
-		defer m.Subscribe(push)()
-		push(m.Policy())
+		defer m.Subscribe(wake)()
+		wake(compliance.Policy{})
 		monitoring = ch
 	}
 	beat := h.clk.After(h.cfg.Heartbeat)
@@ -368,8 +363,8 @@ func (s *eventStream) run(ctx context.Context, sub *workers.Subscription, out *s
 		case <-h.done:
 			_ = out.sendFinal("reset", resetData("shutdown"))
 			return
-		case p := <-monitoring:
-			if out.send("monitoring_changed", monitoringEvent(p)) != nil {
+		case <-monitoring:
+			if out.send("monitoring_changed", monitoringEvent(h.cfg.Monitor.Policy())) != nil {
 				s.endRevoked(ctx, rctx, out)
 				return
 			}

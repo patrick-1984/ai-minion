@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 )
 
@@ -51,5 +52,67 @@ const seenHeader = "Minion-Monitoring-Seen"
 func copySeen(dst, src http.Header) {
 	if v := src.Get(seenHeader); v != "" {
 		dst.Set(seenHeader, v)
+	}
+}
+
+// monitorSignal carries, from the in-process API call to the browser's
+// response, the monitoring policy of a refusal (409 monitoring_changed). The
+// page script takes the new version from this response header, never from the
+// text of a response (session content can look like anything).
+type monitorSignal struct {
+	mu sync.Mutex
+	v  string
+}
+
+type monitorSignalKey struct{}
+
+func (m *monitorSignal) set(v string) {
+	m.mu.Lock()
+	m.v = v
+	m.mu.Unlock()
+}
+
+func (m *monitorSignal) get() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.v
+}
+
+// monitorWriter adds the refusal's policy header when the response starts.
+type monitorWriter struct {
+	http.ResponseWriter
+	sig  *monitorSignal
+	done bool
+}
+
+func (w *monitorWriter) stamp() {
+	if w.done {
+		return
+	}
+	w.done = true
+	if v := w.sig.get(); v != "" {
+		w.Header().Set("Minion-Monitoring", v)
+	}
+}
+
+func (w *monitorWriter) WriteHeader(code int) { w.stamp(); w.ResponseWriter.WriteHeader(code) }
+
+func (w *monitorWriter) Write(b []byte) (int, error) { w.stamp(); return w.ResponseWriter.Write(b) }
+
+// Unwrap lets http.ResponseController reach the real writer (flush, deadlines).
+func (w *monitorWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *monitorWriter) Flush() {
+	w.stamp()
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// noteRefusal records the policy header of a refused API answer for the
+// browser's response.
+func noteRefusal(r *http.Request, h http.Header) {
+	if sig, ok := r.Context().Value(monitorSignalKey{}).(*monitorSignal); ok {
+		sig.set(h.Get("Minion-Monitoring"))
 	}
 }

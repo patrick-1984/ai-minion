@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"net"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -104,7 +107,7 @@ func newCompliance(ctx context.Context, cfg config.ComplianceConfig, p Process, 
 	if strings.HasPrefix(cfg.LogsURL, "https://") {
 		tlsCfg = cfg.TLSConfig()
 	}
-	client, status := exportClient(tlsCfg)
+	client, status := complianceClient(tlsCfg, tlsCfg == nil)
 	exp, err := otlploghttp.New(ctx,
 		otlploghttp.WithEndpointURL(cfg.LogsURL),
 		otlploghttp.WithHeaders(headers),
@@ -136,8 +139,13 @@ func newCompliance(ctx context.Context, cfg config.ComplianceConfig, p Process, 
 
 // Emit queues a record. It never blocks and never fails; a record that does
 // not fit the budgets is dropped and counted.
-func (c *Compliance) Emit(r compliance.Record) {
+func (c *Compliance) Emit(r compliance.Record) bool {
+	before := c.count.queueFull.Load() + c.count.shutdown.Load()
 	c.logger.Emit(context.Background(), toLogRecord(r))
+	// Dropped means the counters grew: a concurrent drop of another record can
+	// make this answer a false "dropped" (a body is then sent once more), never
+	// a false "queued".
+	return c.count.queueFull.Load()+c.count.shutdown.Load() == before
 }
 
 func toLogRecord(r compliance.Record) otellog.Record {
@@ -473,16 +481,26 @@ func (p *budgetProcessor) flushOnce() {
 			break
 		}
 		p.export(context.Background(), batch)
+		// The gap is reported as soon as space returns, between batches, not
+		// only when the queue happens to empty.
+		p.reportGap()
 	}
+	p.reportGap()
+}
+
+// reportGap emits the pending gap once space is back. The count is cleared
+// when it is taken; the gap record bypasses the queue limits, so its admission
+// does not depend on the space that was just checked.
+func (p *budgetProcessor) reportGap() {
 	if g, ok := p.pendingGap(); ok && p.emitGap != nil {
 		p.emitGap(g)
-		p.signal()
 	}
 }
 
 // drain exports what is queued until ctx ends or nothing is left.
 func (p *budgetProcessor) drain(ctx context.Context) {
 	for ctx.Err() == nil {
+		p.reportGap()
 		batch := p.take()
 		if len(batch) == 0 {
 			return
@@ -526,3 +544,28 @@ func (p *budgetProcessor) ForceFlush(ctx context.Context) error {
 }
 
 var _ sdklog.Processor = (*budgetProcessor)(nil)
+
+// complianceClient is the HTTP client of the compliance exporter: like
+// exportClient, but it never uses an ambient proxy (HTTP_PROXY and friends
+// would carry session content and headers to whatever the environment names),
+// and a plaintext endpoint may only connect to a loopback address, checked at
+// dial time on the address actually used, whatever the spelling of the host.
+func complianceClient(tlsCfg *tls.Config, plaintext bool) (*http.Client, *statusRecorder) {
+	c, status := exportClient(tlsCfg)
+	tr := c.Transport.(responseFilter).rt.(*http.Transport)
+	tr.Proxy = nil
+	if plaintext {
+		d := &net.Dialer{Timeout: 10 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return err
+			}
+			if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+				return errors.New("plaintext compliance export is allowed to a loopback address only")
+			}
+			return nil
+		}}
+		tr.DialContext = d.DialContext
+	}
+	return c, status
+}

@@ -72,6 +72,9 @@ var Matrix = map[string]Row{
 	ops.OpWorkerDebug:        {Paths: both, Action: "op, target, outcome"},
 	ops.OpWorkerLogs:         {Paths: both, Action: "op, target, outcome"},
 	ops.OpWorkerUpdate:       {Paths: both, Action: "op, target, outcome"},
+	// A Worker retires its own enrollment on its call stream (served by the
+	// connect handler, not the call server): actions only.
+	ops.OpWorkerRetire:       {Paths: PathCall, Action: "op, Worker, outcome"},
 	ops.OpWorkerUpdateStatus: {Paths: both, Action: "op, target, outcome"},
 }
 

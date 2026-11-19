@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -93,13 +94,14 @@ type recSink struct {
 	log *[]string
 }
 
-func (s *recSink) Emit(r compliance.Record) {
+func (s *recSink) Emit(r compliance.Record) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rec = append(s.rec, r)
 	if s.log != nil {
 		*s.log = append(*s.log, r.Event)
 	}
+	return true
 }
 
 func (s *recSink) events() []string {
@@ -369,11 +371,62 @@ func TestStaleClientIsRefusedOnceForContentOps(t *testing.T) {
 func TestLooserPolicyNeverRefuses(t *testing.T) {
 	mon, _ := newMonitor(compliance.Policy{Version: 1, Level: "output", Input: true}, true)
 	mon.SetPolicy(compliance.Policy{Version: 2, Level: "actions"})
-	if _, refuse := mon.Stale(1, true, ops.OpSendText); refuse {
+	if _, refuse, _ := mon.Stale(1, true, ops.OpSendText); refuse {
 		t.Fatal("a looser policy refused a client that saw the stricter one")
 	}
 	mon.SetPolicy(compliance.Policy{Version: 3, Level: "output", Input: true})
-	if _, refuse := mon.Stale(2, true, ops.OpSendText); !refuse {
+	if _, refuse, _ := mon.Stale(2, true, ops.OpSendText); !refuse {
 		t.Fatal("a stricter policy did not refuse")
 	}
 }
+
+// One snapshot of the policy decides a refusal and answers it: the header names
+// the version of the notice, so the client's retry carries the one that passes.
+func TestRefusalHeaderMatchesTheNotice(t *testing.T) {
+	worker := ops.NewUUIDv7()
+	mon, _ := newMonitor(compliance.Policy{Version: 2, Level: "actions"}, true)
+	r := newCatalogRig(t, ops.Default, mon)
+	mustHandle(t, r.reg, ops.OpSendText, func(context.Context, *Call) (any, error) { return ops.WriteResult{Outcome: ops.OutcomeDelivered}, nil })
+	// The policy tightens between the header (set first) and the decision.
+	r.decide.fn = func(decideCall) error {
+		mon.SetPolicy(compliance.Policy{Version: 3, Level: "output", Input: true})
+		return nil
+	}
+	req := httptest.NewRequest("POST", "/api/v1/ops/send_text", strings.NewReader(sendTextBody(worker)))
+	req.Header.Set(HeaderMonitoringSeen, "2")
+	w := httptest.NewRecorder()
+	r.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "policy v3") {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(HeaderMonitoring); got != (compliance.Policy{Version: 3, Level: "output", Input: true}).Header() {
+		t.Fatalf("header = %q", got)
+	}
+}
+
+// A read is recorded only after its answer was written: a client that went
+// away is not reported as having received the screen.
+func TestRESTReadIsRecordedAfterTheAnswerWasWritten(t *testing.T) {
+	worker := ops.NewUUIDv7()
+	mon, sink := newMonitor(compliance.Policy{Version: 1, Level: "output"}, true)
+	r := newCatalogRig(t, ops.Default, mon)
+	mustHandle(t, r.reg, ops.OpSessionSnapshot, func(context.Context, *Call) (any, error) {
+		return ops.SessionSnapshotResult{Pane: ops.PaneInfo{ID: "%1"}, Screen: ops.Screen{Lines: []string{"private"}}}, nil
+	})
+	body := `{"target":{"worker_id":"` + worker + `","session_name":"work"}}`
+	req := httptest.NewRequest("POST", "/api/v1/ops/session_snapshot", strings.NewReader(body))
+	w := &failingWriter{ResponseRecorder: httptest.NewRecorder()}
+	r.mux.ServeHTTP(w, req)
+	for _, rec := range sink.rec {
+		if rec.Event == compliance.EventOutput || rec.Body != "" {
+			t.Fatalf("content recorded for an answer that was not written: %+v", rec)
+		}
+	}
+	if len(sink.rec) != 1 || attrOf(sink.rec[0], "minion.outcome") != "refused:reply_failed" {
+		t.Fatalf("records = %+v", sink.rec)
+	}
+}
+
+type failingWriter struct{ *httptest.ResponseRecorder }
+
+func (f *failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }

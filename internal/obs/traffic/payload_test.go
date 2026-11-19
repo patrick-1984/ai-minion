@@ -71,3 +71,29 @@ func TestPayloadIsBoundedAndTheTapKeepsNoFrameBytes(t *testing.T) {
 	defer cancel()
 	l.Close(ctx)
 }
+
+// Until the gate says yes (the Hub publishes the monitoring policy that
+// announces payload capture), no body is recorded even though the filter asks
+// for payload: capture starts strictly after the notice.
+func TestPayloadWaitsForTheGate(t *testing.T) {
+	var out syncBuf
+	_, live, _ := logx.NewLiveLocal(logx.Options{Level: "error", Format: logx.FormatJSON, Output: &out})
+	l := New(SideHub, live.Fanout)
+	open := false
+	l.SetPayloadGate(func() bool { return open })
+	l.Configure(config.TrafficConfig{Enabled: true, Payload: true, To: []string{config.TrafficToLocal}})
+	body := `{"type":"op.request","op":"send_text","args":{"text":"hi"}}`
+	tap := l.Tap(Peer{WorkerID: "w"})
+	frame := transport.TapFrame{Kind: transport.KindOp, Stream: 1, Sent: true, Body: []byte(body), Size: len(body) + 4}
+	tap.TapFrame(frame)
+	open = true
+	tap.TapFrame(frame)
+	eventually(t, func() bool { return len(records(t, &out)) == 2 })
+	rs := records(t, &out)
+	if _, ok := rs[0]["payload"]; ok {
+		t.Fatal("a body was recorded before the gate opened")
+	}
+	if _, ok := rs[1]["payload"]; !ok {
+		t.Fatal("no body after the gate opened")
+	}
+}

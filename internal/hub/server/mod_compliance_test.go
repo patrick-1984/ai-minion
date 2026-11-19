@@ -25,10 +25,11 @@ type fakeExporter struct {
 	closed    bool
 }
 
-func (f *fakeExporter) Emit(r compliance.Record) {
+func (f *fakeExporter) Emit(r compliance.Record) bool {
 	f.mu.Lock()
 	f.records = append(f.records, r)
 	f.mu.Unlock()
+	return true
 }
 func (f *fakeExporter) Status() ops.LogSinkStatus { return ops.LogSinkStatus{Name: "compliance"} }
 func (f *fakeExporter) Close(context.Context) error {
@@ -374,4 +375,218 @@ func TestTrafficPayloadIsGated(t *testing.T) {
 	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyLogLevel, Value: "debug"}); err == nil {
 		t.Fatal("compliance_set accepted an ordinary key")
 	}
+}
+
+// A browser that disconnects right after the commit must not leave the old
+// exporter running under a policy that was audited as disabled.
+func TestDisableIsAppliedEvenWhenTheRequestContextIsGone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	armed := false
+	cf := newComplianceFixture(t, func(_ *fixture, s *ComplianceService) {
+		// Runs first among the apply hooks: the browser goes away right after the commit.
+		s.settings.OnChange(config.GatedKeys(), nil, func(context.Context, *config.Resolver) error {
+			if armed {
+				cancel()
+			}
+			return nil
+		})
+	})
+	on(t, cf, "output", "http://127.0.0.1:4318")
+	armed = true
+	_, err := cf.svc.settings.SetGated(ctx, admin, ops.SettingsSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()},
+		Changes: []ops.SettingChange{{Key: config.KeyComplianceMonitoring, Unset: true}, {Key: config.KeyComplianceEndpoint, Unset: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("the request context was not cancelled")
+	}
+	if cf.svc.Monitor.Policy().Active() {
+		t.Fatal("the policy in force is still active after the committed disable")
+	}
+	if !cf.built[0].discarded {
+		t.Fatal("the old exporter keeps running after an audited disable")
+	}
+}
+
+// Moving the exporter between two tenant paths on one host is a retarget: a new
+// version, a retarget row, and the old exporter's queue is discarded.
+func TestRetargetOnTheSameHostIsAVersionedRetarget(t *testing.T) {
+	cf := newComplianceFixture(t, nil)
+	on(t, cf, "actions", "http://127.0.0.1:4318/tenant-a")
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyComplianceEndpoint, Value: "http://127.0.0.1:4318/tenant-b"}); err != nil {
+		t.Fatal(err)
+	}
+	row, _, _ := cf.st.GetCompliancePolicy(context.Background())
+	if row.Version != 2 || row.DestLabel != "http://127.0.0.1:4318" || strings.Contains(row.DestLabel, "tenant") || row.DestID == "" {
+		t.Fatalf("row = %+v", row)
+	}
+	if n := len(cf.actions(t, AuditComplianceRetarget)); n != 1 {
+		t.Fatalf("retarget rows = %d", n)
+	}
+	for _, r := range cf.actions(t, "compliance.") {
+		if strings.Contains(r.Target, "tenant") {
+			t.Fatalf("a path reached the audit row: %q", r.Target)
+		}
+	}
+	if !cf.built[0].discarded {
+		t.Fatal("the old exporter was kept")
+	}
+}
+
+// The new exporter knows the policy before captures are admitted under it, and
+// the old generation's late records never reach it.
+func TestInstallSeedsThePolicyRecordBeforeAdmission(t *testing.T) {
+	cf := newComplianceFixture(t, nil)
+	on(t, cf, "output", "http://127.0.0.1:4318")
+	if r := cf.built[0].records; len(r) == 0 || r[0].Event != compliance.EventPolicy || attrVersion(r[0]) != 1 {
+		t.Fatalf("first record of the first exporter: %+v", r)
+	}
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyComplianceEndpoint, Value: "http://127.0.0.1:4319"}); err != nil {
+		t.Fatal(err)
+	}
+	if r := cf.built[1].records; len(r) != 1 || r[0].Event != compliance.EventPolicy || attrVersion(r[0]) != 2 {
+		t.Fatalf("second exporter records: %+v", r)
+	}
+}
+
+func attrVersion(r compliance.Record) int64 {
+	for _, a := range r.Attrs {
+		if a.Key == "minion.policy.version" {
+			v, _ := a.Value.(int64)
+			return v
+		}
+	}
+	return -1
+}
+
+// An invalid collector configuration never hides an active payload tap: the
+// policy that announces it is published on its own.
+func TestBadCollectorConfigDoesNotHideThePayloadNotice(t *testing.T) {
+	cf := newComplianceFixture(t, nil)
+	cf.env["MINION_WORKER_TRAFFIC_LOG"] = "payload"
+	cf.env["MINION_COMPLIANCE_MONITORING"] = "actions" // no endpoint: does not resolve
+	ss, err := NewSettingsService(context.Background(), SettingsDeps{
+		Store: cf.st, Auditor: settingsAuditAdapter{log: audit.New(cf.st)}, Registry: config.Default, Live: IsLiveSetting, LookupEnv: cf.env.lookup})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf.svc.settings = ss
+	if err := cf.svc.start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := cf.svc.Monitor.Policy()
+	if !p.TrafficPayload || p.Version < 1 || p.Level != "off" || !strings.Contains(p.Notice(), "frame contents") {
+		t.Fatalf("policy = %+v", p)
+	}
+	if len(cf.actions(t, AuditComplianceFailed)) == 0 {
+		t.Fatal("the failure was not audited")
+	}
+}
+
+// While payload recording is on, ordinary settings cannot widen it: the Worker
+// scope and the destinations change only through compliance_set.
+func TestOrdinarySettingsCannotWidenPayloadRecording(t *testing.T) {
+	cf := newComplianceFixture(t, nil)
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyTrafficLog, Value: "payload"},
+		ops.SettingChange{Key: config.KeyTrafficLogWorkers, Value: "pi"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []ops.SettingChange{
+		{Key: config.KeyTrafficLogWorkers, Unset: true},
+		{Key: config.KeyTrafficLogTo, Value: "local,otel"},
+		{Key: config.KeySyslogEndpoint, Value: "udp://203.0.113.9:514"},
+		{Key: config.KeyOTelEndpoint, Value: "https://elsewhere.example"},
+	} {
+		_, err := cf.ss.Set(context.Background(), admin, ops.SettingsSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Changes: []ops.SettingChange{c}})
+		if err == nil || !strings.Contains(err.Error(), "compliance_set") {
+			t.Fatalf("%s: %v", c.Key, err)
+		}
+	}
+	// Narrowing stays open: switching a sink off.
+	if _, err := cf.ss.Set(context.Background(), admin, ops.SettingsSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()},
+		Changes: []ops.SettingChange{{Key: config.KeyOTel, Value: "off"}}}); err != nil {
+		t.Fatalf("switching a sink off was refused: %v", err)
+	}
+	v := cf.svc.Monitor.Policy().Version
+	// Through the gate it works, and it is an effective change of the policy.
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyTrafficLogWorkers, Unset: true}); err != nil {
+		t.Fatal(err)
+	}
+	if p := cf.svc.Monitor.Policy(); p.Version != v+1 {
+		t.Fatalf("version %d, want %d", p.Version, v+1)
+	}
+	// With payload off the same changes are ordinary again.
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyTrafficLog, Value: "metadata"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cf.ss.Set(context.Background(), admin, ops.SettingsSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()},
+		Changes: []ops.SettingChange{{Key: config.KeyTrafficLogWorkers, Value: "pi"}}}); err != nil {
+		t.Fatalf("metadata scope change: %v", err)
+	}
+}
+
+// After payload was turned off, an ordinary write of "payload" is a new
+// payload level and is refused (the unchanged-value exception reads the store
+// under the settings lock).
+func TestPayloadResubmitAfterDisableIsRefused(t *testing.T) {
+	cf := newComplianceFixture(t, nil)
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyTrafficLog, Value: "payload"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyTrafficLog, Value: "off"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cf.ss.Set(context.Background(), admin, ops.SettingsSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Key: config.KeyTrafficLog, Value: "payload"})
+	if err == nil {
+		t.Fatal("an ordinary change turned payload recording back on")
+	}
+}
+
+// A private key pasted where its path belongs is refused and never stored.
+func TestPastedPrivateKeyInAPathSettingIsRefused(t *testing.T) {
+	cf := newComplianceFixture(t, nil)
+	pem := "-----BEGIN PRIVATE KEY-----\nMIIabc\n-----END PRIVATE KEY-----"
+	_, err := cf.set(t, ops.SettingChange{Key: config.KeyComplianceClientKeyFile, Value: pem})
+	if err == nil || strings.Contains(err.Error(), "MIIabc") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok, _ := cf.st.GetSetting(context.Background(), config.KeyComplianceClientKeyFile); ok {
+		t.Fatal("the key text was stored")
+	}
+	if !config.SecretPathValue(config.KeyComplianceClientKeyFile, pem) {
+		t.Fatal("settings_list would show the pasted key")
+	}
+}
+
+// The counters of an exporter that was replaced or stopped stay in the
+// diagnostics, and the entry survives a disable.
+func TestDiagnosticsKeepTheDropsOfReplacedExporters(t *testing.T) {
+	cf := newComplianceFixture(t, func(f *fixture, s *ComplianceService) {
+		s.build = func(c config.ComplianceConfig, _ obs.Process) (ComplianceExporter, error) {
+			return &statusExporter{fakeExporter: &fakeExporter{cfg: c}}, nil
+		}
+	})
+	on(t, cf, "actions", "http://127.0.0.1:4318")
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyComplianceEndpoint, Value: "http://127.0.0.1:4319"}); err != nil {
+		t.Fatal(err)
+	}
+	st := cf.svc.Status()
+	if st == nil || st.Dropped["reconfigure"] != 14 || st.Sent != 6 {
+		t.Fatalf("status = %+v", st)
+	}
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyComplianceMonitoring, Unset: true}, ops.SettingChange{Key: config.KeyComplianceEndpoint, Unset: true}); err != nil {
+		t.Fatal(err)
+	}
+	st = cf.svc.Status()
+	if st == nil || st.Enabled || st.Dropped["reconfigure"] != 14 || st.Sent != 3+3 {
+		t.Fatalf("status after disable = %+v", st)
+	}
+}
+
+// statusExporter reports 7 records dropped as reconfigure and 3 sent when it is retired.
+type statusExporter struct{ *fakeExporter }
+
+func (s *statusExporter) Status() ops.LogSinkStatus {
+	return ops.LogSinkStatus{Name: "compliance", Sent: 3, Dropped: map[string]uint64{"reconfigure": 7}}
 }

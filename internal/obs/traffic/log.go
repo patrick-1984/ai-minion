@@ -60,6 +60,11 @@ type Log struct {
 	out  *logx.Fanout
 	now  func() time.Time
 
+	// gate, when set, must say yes before a frame body is recorded: the Hub
+	// sets it to the monitoring policy in force, so payload capture starts only
+	// after the stricter notice is published (A49 review).
+	payloadGate atomic.Pointer[func() bool]
+
 	cfg     atomic.Pointer[filter]
 	prev    atomic.Pointer[filter] // the filter Suspend took down
 	bound   atomic.Pointer[binding]
@@ -114,6 +119,21 @@ func New(side Side, out *logx.Fanout) *Log {
 		stop: make(chan struct{}), abort: make(chan struct{}), done: make(chan struct{})}
 	go l.run()
 	return l
+}
+
+// SetPayloadGate sets the condition under which payload records carry a body;
+// nil removes it (the Worker side, which has no monitoring policy).
+func (l *Log) SetPayloadGate(f func() bool) {
+	if f == nil {
+		l.payloadGate.Store(nil)
+		return
+	}
+	l.payloadGate.Store(&f)
+}
+
+func (l *Log) payloadOpen() bool {
+	g := l.payloadGate.Load()
+	return g == nil || (*g)()
 }
 
 // Configure applies c. The destinations are slots of the process's fan-out
@@ -377,7 +397,7 @@ func (t *tap) TapFrame(f transport.TapFrame) {
 			r.op, r.reqID = p.op, p.reqID
 		}
 	}
-	if c.Payload {
+	if c.Payload && t.l.payloadOpen() {
 		// The body is masked and cut here, once: the queue holds text that
 		// may leave the machine, never the frame bytes.
 		r.payload = logx.RedactPayload(f.Body, logx.RemotePayloadMax)

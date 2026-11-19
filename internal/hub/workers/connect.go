@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
@@ -249,7 +251,9 @@ type Handler struct {
 
 	// removeMu guards remove and removeAudited, which [Handler.SetRemoveWorker]
 	// may replace while connections are served.
-	removeMu      sync.RWMutex
+	removeMu sync.RWMutex
+	// monitor records the action of a Worker's self-retirement (compliance).
+	monitor       atomic.Pointer[compliance.Monitor]
 	remove        RemoveWorkerFunc
 	removeAudited bool
 
@@ -1155,6 +1159,10 @@ func (s *Service) Handler() *Handler { return s.handler }
 func (s *Service) SetRemoveWorker(f RemoveWorkerFunc, audited bool) {
 	s.handler.SetRemoveWorker(f, audited)
 }
+
+// SetMonitor sets the compliance Monitor that records the Worker's own
+// retirement, which is served outside the call server.
+func (s *Service) SetMonitor(m *compliance.Monitor) { s.handler.monitor.Store(m) }
 
 // HandleCallOp registers the serving of an op on the Workers' call streams
 // ([Handler.HandleCallOp]): the extension point of Story 7.4. There is no

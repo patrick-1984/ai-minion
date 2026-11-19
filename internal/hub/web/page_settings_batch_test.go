@@ -174,3 +174,26 @@ func TestComplianceSectionAsksForAFreshSignIn(t *testing.T) {
 		t.Fatal("a refused save must keep the form")
 	}
 }
+
+// The compliance header list is a multi-line secret field: two header lines
+// survive the form (an input would strip the line break).
+func TestComplianceHeadersAreAMultilineField(t *testing.T) {
+	list := complianceSettings()
+	list.Settings = append(list.Settings, ops.SettingInfo{Key: "compliance_headers", Env: "MINION_COMPLIANCE_HEADERS", EnvFile: "MINION_COMPLIANCE_HEADERS_FILE",
+		Secret: true, Value: "[redacted]", Source: ops.SettingSourcePanel, Live: true, Section: "Compliance monitoring", Revision: "rev-h"})
+	f := newFakeOps().reply(ops.OpSettingsList, list).reply(ops.OpHubDiagnostics, ops.HubDiagnosticsResult{})
+	connect(t, f)
+	s := adminServer(t)
+	mustHave(t, get(t, s, pathAdminSettings, "X-Test-Session", adminHeader).Body.String(), `<textarea id="v-compliance_headers" name="v.compliance_headers"`)
+	f.reply(ops.OpComplianceSet, ops.ComplianceSetResult{})
+	post(t, s, pathAdminComplianceSection, adminHeader, url.Values{
+		"v.compliance_headers": {"Authorization: Bearer x\r\nX-Tenant: a"}, "s.compliance_headers": {"1"}})
+	calls := f.called(ops.OpComplianceSet)
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	ch := calls[0].Args["changes"].([]any)[0].(map[string]any)
+	if ch["value"] != "Authorization: Bearer x\nX-Tenant: a" {
+		t.Fatalf("value = %q", ch["value"])
+	}
+}

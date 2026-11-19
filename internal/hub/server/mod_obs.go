@@ -187,6 +187,9 @@ func initLogging(ctx context.Context, env *Env) error {
 		return err
 	}
 	svc.Traffic = traffic.New(traffic.SideHub, svc.live.Fanout)
+	// No body is recorded until the compliance module publishes the policy that
+	// announces it (SetPayloadGate there).
+	svc.Traffic.SetPayloadGate(func() bool { return false })
 	svc.proc = obs.Process{Service: "minion-hub", Version: version.Version, InstanceID: hubInstanceID(cfg.DataDir)}
 	svc.Manager = obs.New(svc.live.Fanout, svc.proc)
 	svc.Metrics = otelsink.NewMetrics()

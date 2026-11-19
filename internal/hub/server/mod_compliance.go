@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -71,6 +73,9 @@ type ComplianceService struct {
 	exp     ComplianceExporter
 	lastErr string
 	gen     uint64
+	// carry and carrySent are the counters of exporters that were replaced.
+	carry     map[string]uint64
+	carrySent uint64
 }
 
 // defaultComplianceBuilder builds the OTLP/HTTP exporter: its own provider,
@@ -121,6 +126,9 @@ func initCompliance(ctx context.Context, env *Env) error {
 	if obsSvc.proc.Service == "" {
 		svc.proc = obs.Process{Service: "minion-hub", Version: "", InstanceID: hubInstanceID(cfg.DataDir)}
 	}
+	if obsSvc.Traffic != nil {
+		obsSvc.Traffic.SetPayloadGate(func() bool { return svc.Monitor.Policy().TrafficPayload })
+	}
 	if err := Provide(env, svc); err != nil {
 		return err
 	}
@@ -153,25 +161,50 @@ func (s *ComplianceService) validate(p *config.Resolver) error {
 }
 
 // desired is the policy the resolver asks for (the version is set by the
-// caller).
+// caller). When the collector configuration does not resolve, the error is
+// returned together with the traffic part of the policy, which stands on its
+// own: a payload tap must be announced whatever happens to the collector.
 func (s *ComplianceService) desired(res *config.Resolver) (compliance.Policy, config.ComplianceConfig, error) {
-	cfg, err := config.ResolveCompliance(res, s.files)
-	if err != nil {
-		return compliance.Policy{}, cfg, err
-	}
+	cfg, cerr := config.ResolveCompliance(res, s.files)
+	p := compliance.Policy{Level: compliance.LevelOff}
 	lvl, err := res.Resolve(config.KeyTrafficLog)
 	if err != nil {
 		return compliance.Policy{}, cfg, err
 	}
-	p := compliance.Policy{Level: cfg.Level, Input: cfg.Input, TrafficPayload: lvl.Value == config.TrafficPayload}
+	if lvl.Value == config.TrafficPayload {
+		p.TrafficPayload = true
+		p.TrafficID = trafficID(res)
+	}
+	if cerr != nil {
+		return p, cfg, cerr
+	}
+	p.Level, p.Input = cfg.Level, cfg.Input
 	if cfg.Active() {
 		p.Destination = cfg.Destination()
+		p.DestID = digestOf(cfg.LogsURL)
 	}
 	return p, cfg, nil
 }
 
+func digestOf(parts ...string) string {
+	h := sha256.New()
+	for _, x := range parts {
+		_, _ = fmt.Fprintf(h, "%d:%s;", len(x), x)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// trafficID identifies where the payload log goes and for which Workers; a
+// change of either is an effective change of the policy.
+func trafficID(res *config.Resolver) string {
+	to, _ := res.Resolve(config.KeyTrafficLogTo)
+	ws, _ := res.Resolve(config.KeyTrafficLogWorkers)
+	return digestOf(to.Value, ws.Value)
+}
+
 func policyOfRow(r store.CompliancePolicyRow) compliance.Policy {
-	return compliance.Policy{Version: r.Version, Level: r.Level, Input: r.Input, TrafficPayload: r.TrafficPayload, Destination: r.DestLabel}
+	return compliance.Policy{Version: r.Version, Level: r.Level, Input: r.Input, TrafficPayload: r.TrafficPayload,
+		Destination: r.DestLabel, DestID: r.DestID, TrafficID: r.TrafficID}
 }
 
 // syncTx writes the policy row and the audit rows of an effective change in
@@ -212,7 +245,7 @@ func (s *ComplianceService) syncPolicy(ctx context.Context, tx *sql.Tx, want com
 		cur.Version = old.Version + 1
 		if err := store.PutCompliancePolicyTx(ctx, tx, store.CompliancePolicyRow{
 			Version: cur.Version, Level: cur.Level, Input: cur.Input, TrafficPayload: cur.TrafficPayload,
-			DestLabel: cur.Destination, UpdatedAt: store.UnixMS(s.now()), UpdatedBy: actor.ID,
+			DestLabel: cur.Destination, DestID: cur.DestID, TrafficID: cur.TrafficID, UpdatedAt: store.UnixMS(s.now()), UpdatedBy: actor.ID,
 		}); err != nil {
 			return compliance.Policy{}, false, err
 		}
@@ -223,10 +256,10 @@ func (s *ComplianceService) syncPolicy(ctx context.Context, tx *sql.Tx, want com
 		case old.Active() && !cur.Active():
 			actions = []string{AuditComplianceDisable}
 		default:
-			if old.Destination != cur.Destination {
+			if old.Destination != cur.Destination || old.DestID != cur.DestID {
 				actions = append(actions, AuditComplianceRetarget)
 			}
-			if old.Level != cur.Level || old.Input != cur.Input || old.TrafficPayload != cur.TrafficPayload {
+			if old.Level != cur.Level || old.Input != cur.Input || old.TrafficPayload != cur.TrafficPayload || old.TrafficID != cur.TrafficID {
 				actions = append(actions, AuditComplianceChange)
 			}
 		}
@@ -249,26 +282,27 @@ func (s *ComplianceService) syncPolicy(ctx context.Context, tx *sql.Tx, want com
 // start applies the configuration at the Hub's start: the policy row follows
 // the environment and the panel, a startup row records the provenance when the
 // environment sets any compliance key or monitoring is on, and the exporter is
-// built.
+// built. A collector configuration that does not resolve never hides the
+// traffic payload level: that part of the policy is published on its own.
 func (s *ComplianceService) start(ctx context.Context) error {
 	res := s.settings.Resolver()
 	want, cfg, err := s.desired(res)
+	var cerr error
 	if err != nil {
-		// Fail closed on the export, not on the Hub: the policy stays the
-		// stored one, nothing is exported, the reason is in the status.
-		s.fail(ctx, "start", err)
-		row, ok, rerr := s.store.GetCompliancePolicy(ctx)
-		if rerr == nil && ok {
-			s.Monitor.SetPolicy(policyOfRow(row))
+		cerr = err
+		if _, terr := res.Resolve(config.KeyTrafficLog); terr != nil {
+			// Not even the traffic level resolves: nothing is recorded, nothing is announced.
+			s.fail(ctx, "start", err)
+			return nil
 		}
-		return nil
+		cfg = config.ComplianceConfig{}
 	}
 	provenance := ""
 	actor := SettingsActor{ID: "panel"}
 	if cfg.Env {
 		actor = SettingsActor{ID: "environment"}
 	}
-	if cfg.Env || want.Active() {
+	if cfg.Env || want.Active() || cerr != nil {
 		provenance = actor.ID
 	}
 	var cur compliance.Policy
@@ -279,17 +313,30 @@ func (s *ComplianceService) start(ctx context.Context) error {
 	}); err != nil {
 		return fmt.Errorf("compliance: write the policy: %w", err)
 	}
-	s.Monitor.SetPolicy(cur)
-	// A failed export is already audited and logged by reload; the Hub starts.
-	_ = s.reload(ctx, cur, cfg, actor)
+	if cerr != nil {
+		// Fail closed on the export, not on the Hub.
+		s.install(ctx, cur, config.ComplianceConfig{}, actor)
+		s.fail(ctx, "start", cerr)
+		return nil
+	}
+	// A failed export is already audited and logged by install; the Hub starts.
+	_ = s.install(ctx, cur, cfg, actor)
 	return nil
 }
 
+// applyTimeout bounds the work after a committed change. It runs on a context
+// the Hub owns: a browser that went away right after the commit must not leave
+// the old exporter running under a policy that was audited as changed.
+const applyTimeout = 15 * time.Second
+
 // apply runs after a committed change: it publishes the policy in force and
-// rebuilds the exporter when the configuration changed.
+// rebuilds the exporter when the configuration changed, as one generation.
 func (s *ComplianceService) apply(ctx context.Context, eff *config.Resolver) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
+	defer cancel()
 	row, ok, err := s.store.GetCompliancePolicy(ctx)
 	if err != nil {
+		s.failClosed(err)
 		return err
 	}
 	pol := compliance.Policy{Level: compliance.LevelOff}
@@ -297,35 +344,75 @@ func (s *ComplianceService) apply(ctx context.Context, eff *config.Resolver) err
 		pol = policyOfRow(row)
 	}
 	cfg, cerr := config.ResolveCompliance(eff, s.files)
-	s.Monitor.SetPolicy(pol)
-	if cerr != nil {
-		s.fail(ctx, "apply", cerr)
-		return cerr
-	}
 	actor := SettingsActor{ID: "panel"}
 	if row.UpdatedBy != "" {
 		actor.ID = row.UpdatedBy
 	}
-	return s.reload(ctx, pol, cfg, actor)
+	if cerr != nil {
+		s.install(ctx, pol, config.ComplianceConfig{}, actor)
+		s.fail(ctx, "apply", cerr)
+		return cerr
+	}
+	return s.install(ctx, pol, cfg, actor)
 }
 
-// reload builds the exporter of cfg when it differs from the running one,
-// swaps it in, discards the old queue, and records the outcome.
-func (s *ComplianceService) reload(ctx context.Context, pol compliance.Policy, cfg config.ComplianceConfig, actor SettingsActor) error {
+// failClosed stops the export when the committed policy cannot be read: the
+// policy in force stays (users are told), nothing more is sent anywhere.
+func (s *ComplianceService) failClosed(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastErr = logx.ErrorText(err)
+	s.Monitor.Install(s.Monitor.Policy(), nil)
+	s.retire(s.exp)
+	s.exp, s.cfgDig = nil, ""
+	s.log.Error("compliance policy could not be applied; nothing is exported", "error", s.lastErr)
+}
+
+// retire discards the queue of an exporter that was replaced and keeps its
+// counters for the diagnostics.
+func (s *ComplianceService) retire(old ComplianceExporter) {
+	if old == nil {
+		return
+	}
+	old.Discard()
+	_ = old.Close(expired())
+	st := old.Status()
+	if s.carry == nil {
+		s.carry = map[string]uint64{}
+	}
+	for k, v := range st.Dropped {
+		s.carry[k] += v
+	}
+	s.carrySent += st.Sent
+}
+
+// install makes pol and the exporter of cfg the generation in force. The new
+// exporter is built and seeded with its policy record first; only then are the
+// policy and the exporter published together (Monitor.Install), so no capture
+// is admitted before its destination exists and none can reach a destination
+// its policy did not name. The old exporter is retired after the swap; records
+// of calls admitted under it are dropped and counted.
+func (s *ComplianceService) install(ctx context.Context, pol compliance.Policy, cfg config.ComplianceConfig, actor SettingsActor) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := s.exp
+	cur := s.Monitor.Policy()
 	if !cfg.Active() {
-		if s.exp != nil {
-			old := s.exp
-			s.Monitor.SetSink(nil)
-			s.exp = nil
-			old.Discard()
-			_ = old.Close(expired())
+		if old == nil && cur.Version == pol.Version && cur.Same(pol) {
+			s.cfgDig, s.lastErr = "", ""
+			return nil
 		}
-		s.cfgDig, s.lastErr = "", ""
+		s.Monitor.Install(pol, nil)
+		s.retire(old)
+		s.exp, s.cfgDig, s.lastErr = nil, "", ""
 		return nil
 	}
-	if s.exp != nil && s.cfgDig == cfg.Digest {
+	if old != nil && s.cfgDig == cfg.Digest {
+		if cur.Version != pol.Version || !cur.Same(pol) {
+			// Same destination, new policy: still one atomic swap, with a fresh dedupe.
+			old.Emit(s.policyRecord(pol))
+			s.Monitor.Install(pol, old)
+		}
 		return nil
 	}
 	s.gen++
@@ -336,28 +423,21 @@ func (s *ComplianceService) reload(ctx context.Context, pol compliance.Policy, c
 	} else {
 		next, err = s.build(cfg, s.proc)
 	}
-	old := s.exp
 	if err != nil {
-		// Fail closed: nothing is exported; the policy still says monitored,
-		// so users are told, and records are counted as not delivered.
-		s.Monitor.SetSink(nil)
+		// Fail closed: nothing is exported; the policy still says monitored, so
+		// users are told, and records are counted as not delivered.
+		s.Monitor.Install(pol, nil)
+		s.retire(old)
 		s.exp, s.cfgDig = nil, ""
 		s.lastErr = logx.ErrorText(err)
-		if old != nil {
-			old.Discard()
-			_ = old.Close(expired())
-		}
 		s.auditOutside(ctx, actor, AuditComplianceFailed, pol)
 		s.log.Error("compliance export could not be started; session records are not delivered", "error", s.lastErr)
 		return err
 	}
-	s.Monitor.SetSink(next)
+	next.Emit(s.policyRecord(pol))
+	s.Monitor.Install(pol, next)
+	s.retire(old)
 	s.exp, s.cfgDig, s.lastErr = next, cfg.Digest, ""
-	if old != nil {
-		old.Discard()
-		_ = old.Close(expired())
-	}
-	s.Monitor.Emit(s.policyRecord(pol))
 	s.auditOutside(ctx, actor, AuditComplianceEffective, pol)
 	return nil
 }
@@ -366,13 +446,6 @@ func (s *ComplianceService) reload(ctx context.Context, pol compliance.Policy, c
 func (s *ComplianceService) fail(ctx context.Context, stage string, err error) {
 	s.mu.Lock()
 	s.lastErr = logx.ErrorText(err)
-	if s.exp != nil {
-		old := s.exp
-		s.Monitor.SetSink(nil)
-		s.exp, s.cfgDig = nil, ""
-		old.Discard()
-		_ = old.Close(expired())
-	}
 	s.mu.Unlock()
 	pol := s.Monitor.Policy()
 	s.auditOutside(ctx, SettingsActor{ID: "environment"}, AuditComplianceFailed, pol)
@@ -418,28 +491,39 @@ func (s *ComplianceService) Close(ctx context.Context) {
 }
 
 // Status is the state of the compliance export for the diagnostics; nil when
-// monitoring is off.
+// monitoring is off and nothing was ever dropped or sent. The counters of
+// exporters that were replaced or stopped are carried over, so a retarget or a
+// disable under load does not make its losses disappear.
 func (s *ComplianceService) Status() *ops.LogSinkStatus {
 	s.mu.Lock()
 	exp, lastErr, gen := s.exp, s.lastErr, s.gen
+	carry := map[string]uint64{}
+	for k, v := range s.carry {
+		carry[k] = v
+	}
+	carrySent := s.carrySent
 	s.mu.Unlock()
 	pol := s.Monitor.Policy()
-	if !pol.Records() {
+	if !pol.Records() && len(carry) == 0 && carrySent == 0 && lastErr == "" {
 		return nil
 	}
-	st := ops.LogSinkStatus{Name: "compliance", Enabled: true, Destination: pol.Destination, Level: pol.Level, Generation: gen}
+	st := ops.LogSinkStatus{Name: "compliance", Enabled: pol.Records(), Destination: pol.Destination, Level: pol.Level, Generation: gen}
 	if exp != nil {
 		st = exp.Status()
 		st.Name, st.Enabled, st.Destination, st.Level, st.Generation = "compliance", true, pol.Destination, pol.Level, gen
+	}
+	st.Sent += carrySent
+	if st.Dropped == nil {
+		st.Dropped = map[string]uint64{}
+	}
+	for k, v := range carry {
+		st.Dropped[k] += v
 	}
 	if st.LastError == "" {
 		st.LastError = lastErr
 	}
 	if n := s.Monitor.NoSink(); n > 0 {
-		if st.Dropped == nil {
-			st.Dropped = map[string]uint64{}
-		}
-		st.Dropped["no_exporter"] = n
+		st.Dropped["no_exporter"] += n
 	}
 	return &st
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"sync"
 	"time"
 
@@ -259,6 +261,8 @@ func (h *Handler) retireWorker(ctx context.Context, w store.WorkerRow, sess call
 		}
 	}
 	h.log.Info("worker retired its own enrollment", "worker_id", w.ID, "name", w.Name)
+	h.monitor.Load().RecordAction(compliance.CallInfo{Path: compliance.PathCall, Op: ops.OpWorkerRetire, Client: compliance.ClientCallStream,
+		PrincipalKind: string(authz.KindWorker), Actor: actor, WorkerID: w.ID}, string(ops.OutcomeDelivered))
 	_ = st.SetWriteDeadline(time.Now().Add(controlTimeout))
 	if err := st.WriteFrame(map[string]any{
 		"type":   proto.TypeOpResult,

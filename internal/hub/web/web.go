@@ -564,8 +564,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := context.WithValue(r.Context(), secureKey{}, s.secure(r))
+	sig := &monitorSignal{}
+	ctx = context.WithValue(ctx, monitorSignalKey{}, sig)
 	r = r.WithContext(context.WithValue(ctx, contextKeyKey{}, s.ctxKey))
-	s.handler.ServeHTTP(w, r)
+	s.handler.ServeHTTP(&monitorWriter{ResponseWriter: w, sig: sig}, r)
 }
 
 // newStaticHandler serves the embedded assets. Directory listings are never

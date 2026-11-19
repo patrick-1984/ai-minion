@@ -317,6 +317,7 @@ func (s *PipeService) soloSend(ctx context.Context, rq Request) (any, error) {
 		return nil, err
 	}
 	peer := soloPeer(args.Target.SessionName)
+	ctx = withArgsDigest(ctx, rq)
 	return e.write(ctx, op, args.WriteArgs, args.Target, true, func(ctx context.Context) (ops.WriteResult, error) {
 		msg, err := s.broker.Send(ctx, peer, args.Text)
 		if err != nil {

@@ -14,6 +14,8 @@ type CompliancePolicyRow struct {
 	Input          bool
 	TrafficPayload bool
 	DestLabel      string
+	DestID         string
+	TrafficID      string
 	UpdatedAt      int64 // unix milliseconds
 	UpdatedBy      string
 }
@@ -24,8 +26,8 @@ func (s *Store) GetCompliancePolicy(ctx context.Context) (CompliancePolicyRow, b
 	var r CompliancePolicyRow
 	var in, tp int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT version, level, input, traffic_payload, dest_label, updated_at, updated_by FROM compliance_policy WHERE id = 1`).
-		Scan(&r.Version, &r.Level, &in, &tp, &r.DestLabel, &r.UpdatedAt, &r.UpdatedBy)
+		`SELECT version, level, input, traffic_payload, dest_label, dest_id, traffic_id, updated_at, updated_by FROM compliance_policy WHERE id = 1`).
+		Scan(&r.Version, &r.Level, &in, &tp, &r.DestLabel, &r.DestID, &r.TrafficID, &r.UpdatedAt, &r.UpdatedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CompliancePolicyRow{}, false, nil
 	}
@@ -41,8 +43,8 @@ func GetCompliancePolicyTx(ctx context.Context, tx *sql.Tx) (CompliancePolicyRow
 	var r CompliancePolicyRow
 	var in, tp int
 	err := tx.QueryRowContext(ctx,
-		`SELECT version, level, input, traffic_payload, dest_label, updated_at, updated_by FROM compliance_policy WHERE id = 1`).
-		Scan(&r.Version, &r.Level, &in, &tp, &r.DestLabel, &r.UpdatedAt, &r.UpdatedBy)
+		`SELECT version, level, input, traffic_payload, dest_label, dest_id, traffic_id, updated_at, updated_by FROM compliance_policy WHERE id = 1`).
+		Scan(&r.Version, &r.Level, &in, &tp, &r.DestLabel, &r.DestID, &r.TrafficID, &r.UpdatedAt, &r.UpdatedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CompliancePolicyRow{}, false, nil
 	}
@@ -56,12 +58,12 @@ func GetCompliancePolicyTx(ctx context.Context, tx *sql.Tx) (CompliancePolicyRow
 // PutCompliancePolicyTx writes the policy row inside the caller's transaction.
 func PutCompliancePolicyTx(ctx context.Context, ex Execer, r CompliancePolicyRow) error {
 	_, err := ex.ExecContext(ctx,
-		`INSERT INTO compliance_policy (id, version, level, input, traffic_payload, dest_label, updated_at, updated_by)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO compliance_policy (id, version, level, input, traffic_payload, dest_label, dest_id, traffic_id, updated_at, updated_by)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (id) DO UPDATE SET version = excluded.version, level = excluded.level, input = excluded.input,
-		   traffic_payload = excluded.traffic_payload, dest_label = excluded.dest_label,
+		   traffic_payload = excluded.traffic_payload, dest_label = excluded.dest_label, dest_id = excluded.dest_id, traffic_id = excluded.traffic_id,
 		   updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-		r.Version, r.Level, boolToInt(r.Input), boolToInt(r.TrafficPayload), r.DestLabel, r.UpdatedAt, r.UpdatedBy)
+		r.Version, r.Level, boolToInt(r.Input), boolToInt(r.TrafficPayload), r.DestLabel, r.DestID, r.TrafficID, r.UpdatedAt, r.UpdatedBy)
 	if err != nil {
 		return fmt.Errorf("store: write compliance policy: %w", err)
 	}

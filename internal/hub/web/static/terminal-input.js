@@ -214,6 +214,13 @@
   // no panel to swap): when the screen route answers again, the Worker is back
   // and the page is built from scratch. A Worker that is still offline answers
   // 503, so this never loops.
+  // seenHeaders names the monitoring policy version this page showed, on every read the Hub answers with content.
+  function seenHeaders() {
+    return { 'Minion-Monitoring-Seen': window.minionMonitoring ? window.minionMonitoring.version() : '0' };
+  }
+  function adoptRefusal(r) {
+    try { if (window.minionMonitoring && r.headers) { window.minionMonitoring.fromHeader(r.headers.get('Minion-Monitoring')); } } catch (e) { /* the banner stays */ }
+  }
   function probe() {
     pending = false;
     if (typeof window.fetch !== 'function') { return; }
@@ -222,9 +229,10 @@
       busy = false;
       if (pending) { later(RETRY_MS); }
     };
-    window.fetch(screenURL, { credentials: 'same-origin', cache: 'no-store' }).then(function (r) {
+    window.fetch(screenURL, { credentials: 'same-origin', cache: 'no-store', headers: seenHeaders() }).then(function (r) {
       done();
       if (r && r.ok) { reload(); }
+      else if (r && r.status === 409) { adoptRefusal(r); pending = true; }
     }, done);
   }
 
@@ -1274,9 +1282,11 @@
     if (gen !== readGen || suspended || !resuming) { return; }
     if (typeof window.fetch !== 'function') { return; } // no way to prove freshness: writes stay off
     var again = function () { if (gen === readGen && !suspended && resuming) { window.setTimeout(function () { freshRead(gen); }, RETRY_MS); } };
-    window.fetch(screenURL, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual' }).then(function (r) {
+    window.fetch(screenURL, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual', headers: seenHeaders() }).then(function (r) {
       if (gen !== readGen || suspended || !resuming) { return; }
       var st = r && typeof r.status === 'number' ? r.status : 0;
+      // A refusal for a monitoring policy that became stricter: the notice is shown, the version adopted, and the read is repeated.
+      if (st === 409) { adoptRefusal(r); again(); return; }
       if (r && r.type === 'opaqueredirect') { reload(true); return; }
       if (st === 401 || st === 403 || st === 404) { reload(true); return; }
       if (st === 503) {

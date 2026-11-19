@@ -23,8 +23,14 @@ type Policy struct {
 	Input bool
 	// TrafficPayload says that the Worker traffic log carries frame bodies.
 	TrafficPayload bool
-	// Destination is scheme://host:port of the collector; "" when off.
+	// Destination is scheme://host:port of the collector; "" when off. It is a
+	// label for people (the audit rows, the status); it has no path.
 	Destination string
+	// DestID identifies the full effective endpoint, headers excluded (a hash of
+	// the exact logs URL): two tenant paths on one host differ here though their
+	// labels are equal. TrafficID likewise identifies the destinations and the
+	// Worker scope of the traffic payload log. Neither is ever shown.
+	DestID, TrafficID string
 }
 
 // Active reports whether anything that holds session content or actions is
@@ -97,7 +103,8 @@ func (p Policy) AuditTarget() string {
 // Same reports whether q has the effective fields of p (the version
 // excluded).
 func (p Policy) Same(q Policy) bool {
-	return p.Level == q.Level && p.Input == q.Input && p.TrafficPayload == q.TrafficPayload && p.Destination == q.Destination
+	return p.Level == q.Level && p.Input == q.Input && p.TrafficPayload == q.TrafficPayload && p.Destination == q.Destination &&
+		p.DestID == q.DestID && p.TrafficID == q.TrafficID
 }
 
 // StricterThan reports whether p records a class of content that seen does

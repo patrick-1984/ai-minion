@@ -2,6 +2,7 @@ package workers
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -16,10 +17,11 @@ type captureSink struct {
 	rec []compliance.Record
 }
 
-func (s *captureSink) Emit(r compliance.Record) {
+func (s *captureSink) Emit(r compliance.Record) bool {
 	s.mu.Lock()
 	s.rec = append(s.rec, r)
 	s.mu.Unlock()
+	return true
 }
 
 func attr(r compliance.Record, key string) any {
@@ -113,6 +115,40 @@ func TestCallServerOffRecordsNothing(t *testing.T) {
 	args := scArgs(ops.OpSendText, ops.Target{WorkerID: wBobPi1.ID, SessionName: "build"})
 	_, _ = r.call(t, wRootLab.ID, scRequest(ops.OpSendText, args, "", "boss"), ops.WriteResult{Outcome: ops.OutcomeDelivered})
 	if len(sink.rec) != 0 {
+		t.Fatalf("records = %+v", sink.rec)
+	}
+}
+
+// pipe_read and pipe_wait name their session: the recorder decides the same
+// resource the handler does, so an authorised read is not recorded as denied.
+func TestTargetOfArgsKnowsPipeReadAndWait(t *testing.T) {
+	tgt := ops.Target{WorkerID: "w1", SessionName: "s1"}
+	for _, a := range []any{&ops.PipeReadArgs{Target: tgt}, &ops.PipeWaitArgs{Target: tgt}, &ops.PipeSendArgs{Target: tgt}} {
+		got, ok := targetOfArgs(a)
+		if !ok || got != tgt {
+			t.Fatalf("%T: %v %v", a, got, ok)
+		}
+	}
+}
+
+// A write is settled with its Worker outcome even when the caller went away;
+// a read is recorded only after its answer was written.
+func TestCallServerSettlesWritesAndRecordsReadsAfterTheReply(t *testing.T) {
+	r, sink := newMonitoredSCRig(t, compliance.Policy{Version: 1, Level: "output", Input: true}, true)
+	r.grants.set(t, wRootLab.ID, "boss", gBobBuild)
+	// A snapshot whose reply cannot be written: no output record, an action that says so.
+	args := scArgs(ops.OpSessionSnapshot, ops.Target{WorkerID: wBobPi1.ID, SessionName: "build"})
+	st := newCallStream(t, scRequest(ops.OpSessionSnapshot, args, "", "boss"))
+	st.writeErr = errors.New("reset")
+	sent := newFakeStream(resultFrame(t, ops.SessionSnapshotResult{Screen: ops.Screen{Lines: []string{"visible?"}}}))
+	r.script(sent)
+	r.cs.Serve(context.Background(), wRootLab.ID, st)
+	for _, rec := range sink.rec {
+		if rec.Event == compliance.EventOutput {
+			t.Fatalf("output recorded for a reply that failed: %+v", rec)
+		}
+	}
+	if n := len(sink.rec); n != 1 || attr(sink.rec[0], "minion.outcome") != "refused:reply_failed" {
 		t.Fatalf("records = %+v", sink.rec)
 	}
 }
