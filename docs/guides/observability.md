@@ -10,6 +10,8 @@ The Hub and every Worker write their log to standard error (and the Worker keeps
 - [OpenTelemetry](#opentelemetry)
 - [Hub: settings page, environment and live changes](#hub-settings-page-environment-and-live-changes)
 - [Worker: flags, environment and the service](#worker-flags-environment-and-the-service)
+- [Worker traffic log](#worker-traffic-log)
+- [Worker traffic metrics](#worker-traffic-metrics)
 - [Status and problems](#status-and-problems)
 - [A collector example](#a-collector-example)
 - [Settings reference](#settings-reference)
@@ -106,6 +108,50 @@ minion worker up --otel on --otel-endpoint https://otel.example.com --otel-heade
 
 `worker up` saves them in the Worker's config file like every other setting, so the installed service (systemd, launchd, Windows service) uses them; the header file stays where it is and only its path is saved (a relative path is saved absolute). Before it saves anything or touches the service, `worker up` checks the sinks as the service will see them: the service does not see `OTEL_EXPORTER_OTLP_*` variables of your shell, so use `--otel-endpoint`. The file must be a regular file of the Worker's user that nobody else can read (mode 0600 on Linux and macOS). `minion worker config set otel_level debug` changes one setting; restart the Worker to apply it. A sink setting that does not validate does not stop the Worker: both sinks stay off and `minion worker status` and the Worker's log name the setting. `worker up` refuses such a setting before it saves it, and checks the header and key files with the Worker's own rules (a regular file of the service's account, not a link, mode 0600); a relative path already in the config file is refused.
 
+## Worker traffic log
+
+`worker_traffic_log=metadata` writes one record per frame that the Hub and a Worker exchange on their streams: `op` (Hub to Worker requests and results), `ca` (Worker to Hub calls) and `ev` (events and pipe turns). The Hub and each Worker have their own setting: on the Hub it covers every Worker (or those listed in `worker_traffic_log_workers`, by id or name), on a Worker its own connection. Turn it on where you need it; the two are independent.
+
+A record never holds a frame body (no arguments, no screen, no message text). It has:
+
+| Field | Meaning |
+| --- | --- |
+| `direction` | Hub: `hub->worker` or `worker->hub`; Worker: `sent` or `received` |
+| `worker_id`, `worker` | the Worker (Hub only) |
+| `stream` | `op`, `ca` or `ev` |
+| `frame_type` | `op.request`, `op.progress`, `op.result`, `error`, `event`, `turn`, ... |
+| `op`, `request_id` | of the request, also on its progress and its result |
+| `bytes` | the frame on the wire: 4-byte length and JSON body |
+| `duration_ms`, `outcome` | on a result or an error: the time since the request and the outcome (`ok`, `delivered`, ...) or the error code |
+
+```text
+{"time":"2026-11-19T10:02:11.483Z","level":"INFO","msg":"worker traffic","component":"traffic","direction":"hub->worker","worker_id":"0193...","worker":"pi","stream":"op","frame_type":"op.request","bytes":212,"op":"session_snapshot","request_id":"0193..."}
+{"time":"2026-11-19T10:02:11.531Z","level":"INFO","msg":"worker traffic","component":"traffic","direction":"worker->hub","worker_id":"0193...","worker":"pi","stream":"op","frame_type":"op.result","bytes":4180,"op":"session_snapshot","request_id":"0193...","duration_ms":48,"outcome":"ok"}
+```
+
+`worker_traffic_log_to` lists where the records go: `local` (standard error, the default), `syslog`, `otel`; each must be on. The records have the fixed level `info`, whatever `log_level` and the sink levels say, and never go to the Worker's in-memory log (which the Hub can read). They are written by a goroutine of their own through a queue of 4096 records: a full queue drops the newest record (the stream it describes is never slowed down). The handshake and the pairing are not framed and never appear. The levels `metadata` and, in a later release, `payload` (with the frame bodies, behind the compliance gate) are the only planned ones; `payload` is not accepted yet.
+
+On the Hub the setting is live (Log export section). On a Worker it is a flag, variable or config-file key like the sinks: `minion worker up --worker-traffic-log metadata --worker-traffic-log-to local,otel`. A destination that is off is refused when you save it (Hub) or by `worker up`; a Worker that meets one at start keeps running with the traffic log off and says so.
+
+## Worker traffic metrics
+
+`otel_metrics` (Hub only, live) sends metrics about the Workers' traffic to the OpenTelemetry endpoint of `otel_endpoint` (`/v1/metrics`, the same headers and trust; it needs `otel=on`), every 60 seconds (`OTEL_METRIC_EXPORT_INTERVAL`, in milliseconds, changes it). Workers do not send metrics.
+
+Bytes are counted at two exact layers:
+
+| Layer | Where | Includes | Excludes |
+| --- | --- | --- | --- |
+| L1 WebSocket payload (`minion.worker.ws.io`) | the connection of each Worker WebSocket, from the upgrade to the close | the binary WebSocket message payloads: the sealed secure-channel records that carry the streams, the handshake included | WebSocket frame headers, TLS records, TCP/IP, the HTTP upgrade request |
+| L3 application frames (`minion.worker.frame.io`, `minion.worker.frame.count`) | every frame of the `op`, `ca` and `ev` streams | the 4-byte length and the JSON body | stream headers and window updates, keepalive pings |
+
+| Level | Instruments | Attributes |
+| --- | --- | --- |
+| `off` (default) | none | |
+| `basic` | `minion.worker.connection.opened` and `.closed` (each accepted WebSocket; closed has `minion.connection.end` = `handshake_failed` or `ended`), `minion.worker.online` (gauge: Workers online), `minion.worker.ws.io` (By, L1), `minion.worker.frame.io` (By, L3), `minion.worker.frame.count`, `minion.worker.op.count` (ops the Hub sent to Workers), `minion.worker.call.count` (Worker to Hub calls), `minion.worker.stream.admission` (streams admitted to or refused from the `call` and `event` lanes), `minion.pipe.turn.ingest` (pipe turns accepted, busy or rejected) | `network.io.direction` (`receive`, `transmit`), `minion.stream.kind`, `minion.op` (an op of the catalog, else `other`), `minion.outcome` (outcomes and error codes, else `other`), `minion.connection.authenticated` (L1: false for the bytes before the handshake identified the Worker), `minion.lane`, `minion.admission`. No Worker attribute: the series are Hub-wide |
+| `detailed` | `basic`, plus `minion.worker.connection.duration` and `minion.worker.op.duration` (histograms, seconds) | `basic` plus `minion.worker.id` on the byte, frame and op instruments (authenticated bytes only) |
+
+Cardinality: `basic` is bounded by the op catalog and the outcomes, whatever the number of Workers. `detailed` adds one set of series per Worker; it is meant for tens to hundreds of Workers. The first 500 Workers seen get their own series; further Workers are counted together with `otel.metric.overflow=true` (the OpenTelemetry overflow attribute). A change of the endpoint or the credential starts a new pipeline and drops what the old one had not exported; a change between `basic` and `detailed` keeps it.
+
 ## Status and problems
 
 - **Hub**: Administration > Diagnostics and the Log export section of Hub settings show the effective state of each sink; `minion hub_diagnostics` lists it as `sinks`: name, on or off, destination (scheme, host and port only), level, a generation number that grows with each change, last success, last error, queued, sent, and the number of records dropped by reason (`queue_full`, `write_failed`, `export_failed`, `reconfigure`, `shutdown`).
@@ -141,5 +187,9 @@ H = Hub (environment, then the panel; live), W = Worker (flag, then environment,
 | `otel_headers` | H | secret, `Name: value` lines (`MINION_OTEL_HEADERS_FILE`) | none |
 | `otel_headers_path` | W | path of a 0600 file with `Name: value` lines | none |
 | `otel_ca_file`, `otel_client_cert_file`, `otel_client_key_file` (`MINION_OTEL_CA_PATH`, `MINION_OTEL_CLIENT_CERT_PATH`, `MINION_OTEL_CLIENT_KEY_PATH`) | H, W | PEM files, key mode 0600 | system roots / none |
+| `worker_traffic_log` | H, W | `off`, `metadata` | `off` |
+| `worker_traffic_log_to` | H, W | comma list of `local`, `syslog`, `otel` | `local` |
+| `worker_traffic_log_workers` | H | comma list of Worker ids or names | empty: all |
+| `otel_metrics` | H | `off`, `basic`, `detailed` | `off` |
 
 Fixed: facility `local0`; OTLP timeout 5 s and gzip; the queue and batch sizes above.
