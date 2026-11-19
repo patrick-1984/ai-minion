@@ -555,7 +555,7 @@ func (rt *Runtime) stopAll(ctx context.Context, clean bool) error {
 		if err := stopWithin(modCtx, hardCtx, r.stop); err != nil {
 			errs = append(errs, fmt.Errorf("agent: module %q failed to stop: %w", r.module, err))
 		}
-		logx.BestEffort(log, slog.LevelDebug, "worker module stopped", "module", r.module)
+		logx.BestEffortUntil(hardCtx, log, slog.LevelDebug, "worker module stopped", "module", r.module)
 	}
 	if held != nil {
 		mark()

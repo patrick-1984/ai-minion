@@ -14,6 +14,15 @@ const BestEffortWait = 200 * time.Millisecond
 // which is a stop sequence: the write goes on in the background and the
 // caller waits for it at most [BestEffortWait].
 func BestEffort(l *slog.Logger, level slog.Level, msg string, args ...any) {
+	BestEffortUntil(context.Background(), l, level, msg, args...)
+}
+
+// BestEffortUntil is [BestEffort] that also stops waiting when ctx ends (the
+// hard deadline of a stop sequence); once ctx has ended nothing is written.
+func BestEffortUntil(ctx context.Context, l *slog.Logger, level slog.Level, msg string, args ...any) {
+	if ctx.Err() != nil {
+		return
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -24,5 +33,6 @@ func BestEffort(l *slog.Logger, level slog.Level, msg string, args ...any) {
 	select {
 	case <-done:
 	case <-t.C:
+	case <-ctx.Done():
 	}
 }
