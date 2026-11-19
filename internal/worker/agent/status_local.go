@@ -22,6 +22,21 @@ const OpLocalStatus = "worker_status"
 // socket can ask; the reply comes before the Worker stops.
 const OpLocalStop = "worker_stop"
 
+// FeatureStopGuard is the local capability of a worker_stop and a
+// worker_lifecycle that check LocalStopArgs.Instance and EnrollmentEpoch: a
+// client that sends them requires it, so that an older Worker, which would
+// ignore them and stop, refuses.
+const FeatureStopGuard = "stop_guard.v1"
+
+// LocalStopArgs are the optional arguments of [OpLocalStop]: the Worker stops
+// only when it is the instance the caller read and, when the caller sends
+// the enrollment generation, only while that enrollment is still the one in
+// the state directory.
+type LocalStopArgs struct {
+	Instance        string  `json:"instance,omitempty"`
+	EnrollmentEpoch *uint64 `json:"enrollment_epoch,omitempty"`
+}
+
 // LiveStatusReply is the JSON result of [OpLocalStatus]. It carries no secret:
 // the pairing code is the one the Worker shows to its human anyway (AD-20), and
 // it is only ever sent to the OS user that owns the socket.
@@ -74,6 +89,9 @@ type LiveStatusReply struct {
 	// NewSessionsBlocked is whether the Worker refuses new sessions
 	// (allow_new_sessions); an older Worker omits it.
 	NewSessionsBlocked *bool `json:"new_sessions_blocked,omitempty"`
+	// NewSessionsSources are the local sources (flag, env, file) that block
+	// them; an older Worker omits it.
+	NewSessionsSources []string `json:"new_sessions_sources,omitempty"`
 	// Version is the release of the running Worker and Capabilities its
 	// local features (tray W10a); an older Worker omits them.
 	Version      string   `json:"version,omitempty"`
@@ -113,6 +131,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		HubCheckAware:      true,
 		Paused:             live.Paused,
 		NewSessionsBlocked: live.NewSessionsBlocked,
+		NewSessionsSources: live.NewSessionsSources,
 		SessionsLostOnStop: live.SessionsLostOnStop,
 		CountReported:      live.CountReported,
 		LogSinks:           live.LogSinks,
@@ -168,6 +187,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		ListError:          r.SessionsListError,
 		Paused:             r.Paused,
 		NewSessionsBlocked: r.NewSessionsBlocked,
+		NewSessionsSources: r.NewSessionsSources,
 		Instance:           r.Instance,
 		StateDir:           r.StateDir,
 		Version:            r.Version,

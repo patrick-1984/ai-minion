@@ -83,9 +83,11 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	hostInfo, _ := lookupService[*SessionHostInfo](env.rt)
 	health, _ := lookupService[*SessionListHealth](env.rt)
 	pause, _ := lookupService[*PauseService](env.rt)
+	instance := uuid.NewString()
 	var shareSvc *shareLocal
 	if st, ok := lookupService[*store.Store](env.rt); ok {
-		shareSvc = &shareLocal{st: st, ex: ex, policy: ex.Policy(), overriddenBy: shareOverriddenBy(env.Settings())}
+		over, rule := shareOverriddenBy(env.Settings())
+		shareSvc = &shareLocal{st: st, ex: ex, policy: ex.Policy(), instance: instance, overriddenBy: over, launchRule: rule}
 	}
 	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health, Pause: pause,
 		LogSinks: env.Settings().LogSinks}
@@ -109,10 +111,9 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	if hostInfo != nil {
 		hostKind = hostInfo.Kind
 	}
-	instance := uuid.NewString()
 	runMode := workerRunMode()
 	lc := &lifecycleService{
-		ex: ex, counter: newSessionCounter(ex, hostKind), runMode: runMode, instance: instance, stop: env.RequestStop, markClean: env.rt.markCleanStop,
+		ex: ex, counter: newSessionCounter(ex, hostKind), runMode: runMode, instance: instance, stateDir: env.Settings().StateDir, stop: env.RequestStop, markClean: env.rt.markCleanStop,
 		restart: func() { restartProcess(log, lifecycleExe()) },
 	}
 	live.Counter = &lc.counter

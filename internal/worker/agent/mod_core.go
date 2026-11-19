@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -108,9 +111,20 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 		log.Warn("cannot list the sessions of the terminal host", "error", probeErr.Error())
 	}
 
-	sel, err := applyShareExisting(ctx, st, s.ShareExisting)
+	// The rule is resolved again now, under the lifecycle lock (the runtime
+	// took it before the first module): a CLI change that removed it from
+	// the file after this process read its config must not be undone by the
+	// stale value, and a flag or environment rule never widens a saved
+	// choice.
+	shareValue, launchRule := RereadShareExisting(s)
+	sel, refused, err := applyShareExisting(ctx, st, shareValue, launchRule)
 	if err != nil {
 		return nil, err
+	}
+	if refused {
+		log.Error("share_existing from the launch environment conflicts with the saved share choice and was NOT applied; "+
+			"change the choice with `minion worker share`, or remove share_existing from the Worker's environment or flags",
+			"rule", shareValue, "saved", string(sel.Mode))
 	}
 	policy := NewPolicy(st)
 	policy.SetPreviewOnly(s.PreviewOnly)
@@ -182,27 +196,64 @@ func closeHost(h term.SessionHost) error {
 // the selection in force. An empty value leaves the saved selection alone, so
 // a choice made later (from the Hub or the wizard) survives a restart. The
 // selected session names are kept for every mode.
-func applyShareExisting(ctx context.Context, st *store.Store, value string) (store.ShareSelection, error) {
-	sel, err := st.LoadShareContext(ctx)
+//
+// launch is true when value comes from a flag or the environment of this
+// launch. Such a rule that would widen a saved choice (a configured mode other
+// than all, with the rule all) is refused: the saved choice stays and refused
+// is true, so that the Worker reports it. The same rule narrowing the saved
+// choice, or a rule from the config file, applies.
+func applyShareExisting(ctx context.Context, st *store.Store, value string, launch bool) (sel store.ShareSelection, refused bool, err error) {
+	sel, err = st.LoadShareContext(ctx)
 	if err != nil {
-		return sel, err
+		return sel, false, err
 	}
 	if value == "" {
-		return sel, nil
+		return sel, false, nil
 	}
 	mode, err := shareModeOf(value)
 	if err != nil {
-		return sel, err
+		return sel, false, err
 	}
 	if sel.Configured && sel.Mode == mode {
-		return sel, nil
+		return sel, false, nil
+	}
+	if launch && sel.Configured && mode == store.ShareAll {
+		return sel, true, nil
 	}
 	sel.Mode = mode
 	if err := st.SaveShareContext(ctx, sel); err != nil {
-		return sel, fmt.Errorf("apply %s: %w", config.KeyShareExisting, err)
+		return sel, false, fmt.Errorf("apply %s: %w", config.KeyShareExisting, err)
 	}
 	sel.Configured = true
-	return sel, nil
+	return sel, false, nil
+}
+
+// RereadShareExisting resolves share_existing from the config file as it is
+// on disk now, with the flags and the environment of s, and says whether the
+// value comes from a flag or the environment of this launch. Without a
+// resolver or a state directory it is the value s carries. A file that cannot
+// be read gives no value (the saved choice stays; it never widens).
+func RereadShareExisting(s Settings) (value string, launch bool) {
+	if s.Resolver == nil || s.StateDir == "" {
+		return s.ShareExisting, false
+	}
+	res := &config.Resolver{Role: config.ScopeWorker, Registry: s.Resolver.Registry, Flags: s.Resolver.Flags, LookupEnv: s.Resolver.LookupEnv}
+	path := filepath.Join(s.StateDir, WorkerConfigFile)
+	if f, err := config.LoadFile(path); err == nil {
+		res.File = f
+	}
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) && s.ShareExisting != "" {
+		// No config file: nothing removed the value this process read from
+		// its flags, its environment or its defaults.
+		if r, err := res.Resolve(config.KeyShareExisting); err == nil && r.Value == "" {
+			return s.ShareExisting, false
+		}
+	}
+	r, err := res.Resolve(config.KeyShareExisting)
+	if err != nil {
+		return "", false
+	}
+	return r.Value, r.Source == config.SourceFlag || r.Source == config.SourceEnv
 }
 
 func shareModeOf(value string) (store.ShareMode, error) {

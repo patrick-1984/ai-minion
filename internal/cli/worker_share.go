@@ -131,6 +131,9 @@ func printShareList(w io.Writer, r agent.ShareListResult) {
 	if r.Lock {
 		_, _ = fmt.Fprintln(w, "The Hub cannot change it (share_lock).")
 	}
+	if r.LaunchRuleRefused != "" {
+		_, _ = fmt.Fprintf(w, "The Worker was started with share_existing %s, which would widen the saved choice; it did not apply it and keeps the saved choice.\n", r.LaunchRuleRefused)
+	}
 	if len(r.OverriddenBy) > 0 {
 		_, _ = fmt.Fprintf(w, "The Worker applies share_existing from %s at its next start.\n", strings.Join(r.OverriddenBy, ", "))
 	}
@@ -225,6 +228,8 @@ func shareLive(ctx context.Context, deps workerShareDeps, stateDir string, ch *s
 	} else {
 		a, _ = applyArgsFor(cur, *ch)
 	}
+	// Only the Worker that answered first takes the change.
+	a.Instance = inst
 	features := []string{agent.FeatureShareLocal}
 	if a.Replace {
 		features = append(features, agent.FeatureShareReplace)

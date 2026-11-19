@@ -189,6 +189,9 @@ type downOptions struct {
 	// stateDir binds the stop to the Worker of this state directory ("":
 	// whichever Worker of this user answers).
 	stateDir string
+	// expectEpoch, when set, is the enrollment generation the stop is
+	// bound to (leave): another one refuses with exit 27.
+	expectEpoch *uint64
 }
 
 // downResult is the JSON result of "worker down".
@@ -247,9 +250,13 @@ func runWorkerDownOpts(cmd *cobra.Command, d workerDownDeps, o downOptions) (dow
 		}
 	}
 	if live && d.callArgs != nil {
-		args := agent.LocalLifecycleArgs{Action: agent.LifecycleStop, Instance: reply.Instance, AcceptLoss: o.acceptLoss, AcceptUnknown: o.acceptUnknown}
+		args := agent.LocalLifecycleArgs{Action: agent.LifecycleStop, Instance: reply.Instance, AcceptLoss: o.acceptLoss, AcceptUnknown: o.acceptUnknown, EnrollmentEpoch: o.expectEpoch}
+		features := []string{agent.FeatureLifecycle}
+		if o.expectEpoch != nil {
+			features = append(features, agent.FeatureStopGuard)
+		}
 		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		raw, err := d.callArgs(cctx, localapi.QualifiedOp(agent.OpLocalLifecycle, []string{agent.FeatureLifecycle}), args)
+		raw, err := d.callArgs(cctx, localapi.QualifiedOp(agent.OpLocalLifecycle, features), args)
 		cancel()
 		if err == nil {
 			var lr agent.LifecycleResult
@@ -286,7 +293,7 @@ func runWorkerDownOpts(cmd *cobra.Command, d workerDownDeps, o downOptions) (dow
 		return res, &resultError{Exit: ExitCountUnavailable, Message: "the Windows service runs but does not answer on this user's control socket, " +
 			"so the sessions that would end cannot be counted; nothing was stopped. Repeat with --accept-unknown-loss to accept that an unknown number of sessions will end"}
 	}
-	return res, legacyWorkerDown(ctx, out, d, o, &res)
+	return res, legacyWorkerDown(ctx, out, d, o, reply.Instance, &res)
 }
 
 // lifecycleRefusal maps a refusal of worker_lifecycle to its exit status, or
@@ -315,7 +322,7 @@ func lifecycleRefusal(err error) error {
 
 // legacyWorkerDown is the stop without a count: through the service manager,
 // else the bare worker_stop of the running Worker.
-func legacyWorkerDown(ctx context.Context, out io.Writer, d workerDownDeps, o downOptions, res *downResult) error {
+func legacyWorkerDown(ctx context.Context, out io.Writer, d workerDownDeps, o downOptions, inst string, res *downResult) error {
 	stoppedService, err := stopServiceWorker(ctx, out, d, o.stateDir)
 	if err != nil {
 		return err
@@ -333,6 +340,9 @@ func legacyWorkerDown(ctx context.Context, out io.Writer, d workerDownDeps, o do
 		var reply agent.LiveStatusReply
 		if json.Unmarshal(raw, &reply) == nil {
 			stateDir = reply.StateDir
+			if inst == "" {
+				inst = reply.Instance
+			}
 			// A Worker that started answering since the first probe was
 			// not counted: verify its profile and its session host first.
 			if o.stateDir != "" && !sameDir(reply.StateDir, o.stateDir) {
@@ -346,7 +356,24 @@ func legacyWorkerDown(ctx context.Context, out io.Writer, d workerDownDeps, o do
 			}
 		}
 	}
-	_, err = d.call(cctx, agent.OpLocalStop)
+	if d.callArgs != nil && (inst != "" || o.expectEpoch != nil) {
+		// The stop is bound to the instance that was read and, for leave, to
+		// the enrollment generation. An older Worker does not know the
+		// guard and refuses the qualified op; then the bare stop below runs
+		// (the caller checked the generation just before).
+		_, err = d.callArgs(cctx, localapi.QualifiedOp(agent.OpLocalStop, []string{agent.FeatureStopGuard}),
+			agent.LocalStopArgs{Instance: inst, EnrollmentEpoch: o.expectEpoch})
+		var pe *proto.Error
+		switch {
+		case errors.As(err, &pe) && pe.Code == proto.CodeConflict:
+			cancel()
+			return &resultError{Exit: ExitStateChanged, Message: pe.Message, Err: err}
+		case err != nil && (errors.Is(err, client.ErrWorkerTooOld) || (errors.As(err, &pe) && pe.Code == proto.CodeUnsupportedOp)):
+			_, err = d.call(cctx, agent.OpLocalStop)
+		}
+	} else {
+		_, err = d.call(cctx, agent.OpLocalStop)
+	}
 	cancel()
 	switch {
 	case errors.Is(err, client.ErrWorkerNotRunning):

@@ -363,7 +363,7 @@ func leaveStop(cmd *cobra.Command, deps workerLeaveDeps, o leaveOptions, stateDi
 		return false, nil, fmt.Errorf("a Worker holds the state directory %s, but the Worker that answers this user's control socket uses %s; stop the Worker of %s first; nothing was changed",
 			stateDir, reply.StateDir, stateDir)
 	}
-	dres, err := runWorkerDownOpts(cmd, deps.down, downOptions{acceptLoss: o.acceptLoss, acceptUnknown: o.acceptUnknown, json: true})
+	dres, err := runWorkerDownOpts(cmd, deps.down, downOptions{acceptLoss: o.acceptLoss, acceptUnknown: o.acceptUnknown, json: true, expectEpoch: &o.expectEpoch})
 	if err != nil {
 		var re *resultError
 		if errors.As(err, &re) {

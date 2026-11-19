@@ -98,6 +98,10 @@ type LiveStatus struct {
 	// NewSessionsBlocked is whether the running Worker refuses new sessions
 	// (allow_new_sessions); nil when it does not report it (an older Worker).
 	NewSessionsBlocked *bool
+	// NewSessionsSources are the local sources (flag, env, file) the running
+	// Worker blocks new sessions for; empty when it does not block or does
+	// not report them.
+	NewSessionsSources []string
 	// Instance, StateDir, Version and Capabilities identify the answering
 	// Worker (tray W10a); an older Worker leaves Version and Capabilities
 	// empty.
@@ -188,8 +192,9 @@ func (s LiveStatusSource) LiveStatus(ctx context.Context) (LiveStatus, error) {
 		out.Paused = &paused
 	}
 	if s.Policy != nil {
-		blocked, _ := s.Policy.NewSessionsBlocked()
+		blocked, src := s.Policy.NewSessionsBlocked()
 		out.NewSessionsBlocked = &blocked
+		out.NewSessionsSources = src
 	}
 	if s.Counter != nil {
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -613,7 +618,8 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 	}
 
 	var live *LiveStatus
-	r.Connection, live = connectionOf(ctx, in, &r, problem)
+	var liveUnknown bool
+	r.Connection, live, liveUnknown = connectionOf(ctx, in, &r, problem)
 	r.PreviewOnly = in.PreviewOnly || r.PreviewOnlyHub
 	pauseOf(in, &r, live, problem)
 	newSessionsOf(in, &r, live)
@@ -627,6 +633,10 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 		r.HubKey = HubKeyOf(Enrollment{}, false, nil, r.Alarm)
 	}
 	lifecycleOf(ctx, in, &r, problem)
+	// A Worker that may run but cannot confirm what it enforces: unknown.
+	if live == nil && (liveUnknown || (r.Lifecycle != nil && r.Lifecycle.Running)) {
+		r.NewSessions.InForce = nil
+	}
 	return r
 }
 
@@ -675,11 +685,21 @@ func newSessionsOf(in StatusInputs, r *StatusReport, live *LiveStatus) {
 	inForce := true
 	switch {
 	case live == nil:
-	case live.NewSessionsBlocked == nil:
+	case live.NewSessionsBlocked != nil:
+		// The running Worker's own block and its sources are the report:
+		// what it enforces, not what this shell resolves.
+		b := *live.NewSessionsBlocked
+		r.NewSessions.Blocked = b
+		r.NewSessions.Sources = []string{}
+		if b {
+			r.NewSessions.Sources = slices.Clone(live.NewSessionsSources)
+			if len(r.NewSessions.Sources) == 0 {
+				r.NewSessions.Sources = []string{"worker"}
+			}
+		}
+	default:
 		// An older Worker cannot block: in force exactly when nothing is.
 		inForce = !r.NewSessions.Blocked
-	default:
-		inForce = *live.NewSessionsBlocked == r.NewSessions.Blocked
 	}
 	r.NewSessions.InForce = &inForce
 }
@@ -721,10 +741,12 @@ func pauseOf(in StatusInputs, r *StatusReport, live *LiveStatus, problem func(st
 
 // connectionOf fills the connection part and, from a live Worker, the fields
 // that are fresher than the stored ones.
-func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem func(string, ...any)) (StatusConnection, *LiveStatus) {
+func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem func(string, ...any)) (StatusConnection, *LiveStatus, bool) {
 	var live *LiveStatus
+	unknown := false
 	if in.Live != nil {
 		ls, err := in.Live.LiveStatus(ctx)
+		unknown = err != nil && !errors.Is(err, ErrNoLiveWorker)
 		var elsewhere *LiveElsewhereError
 		var denied *LiveDeniedError
 		switch {
@@ -798,15 +820,15 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 			t := ops.Timestamp(live.Connector.ConnectedSince.UTC())
 			c.ConnectedSince = &t
 		}
-		return c, live
+		return c, live, unknown
 	}
 	if in.HubURL == "" {
-		return StatusConnection{State: ConnNone, Reason: "no Hub URL is configured"}, nil
+		return StatusConnection{State: ConnNone, Reason: "no Hub URL is configured"}, nil, unknown
 	}
 	return StatusConnection{
 		State:  ConnUnknown,
 		Reason: "the connection state is known only to the running Worker and is not available here",
-	}, nil
+	}, nil, unknown
 }
 
 func nonNil(s []string) []string {

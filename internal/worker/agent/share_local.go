@@ -50,6 +50,10 @@ type ShareListResult struct {
 	// OverriddenBy names the sources (flag, env) whose share_existing the
 	// Worker applies again at its next start; empty when none.
 	OverriddenBy []string `json:"overridden_by"`
+	// LaunchRuleRefused is set when the Worker's flag or environment gives
+	// share_existing all but the saved choice is narrower: the Worker refused
+	// to widen it at its start and keeps the saved choice.
+	LaunchRuleRefused string `json:"launch_rule_refused,omitempty"`
 	// Inventory is ok, or unavailable when the sessions could not be listed:
 	// an empty Sessions then means "not known", never "no session".
 	Inventory string             `json:"inventory"`
@@ -67,6 +71,9 @@ type LocalShareApplyArgs struct {
 	// when the Worker applies it. A client that sets it requires
 	// [FeatureShareReplace], so that an older Worker, which would merge, refuses.
 	Replace bool `json:"replace,omitempty"`
+	// Instance, when given, must be this Worker's instance (the one the
+	// caller read in worker_status); another one is refused with conflict.
+	Instance string `json:"instance,omitempty"`
 }
 
 // shareLocal serves the local share ops.
@@ -74,24 +81,30 @@ type shareLocal struct {
 	st     *store.Store
 	ex     *Executor
 	policy *Policy
+	// instance is the instance of this Worker's control socket.
+	instance string
 	// overriddenBy is computed once from the Worker's start settings.
 	overriddenBy []string
+	// launchRule is the share_existing value of that flag or environment.
+	launchRule string
 }
 
-// shareOverriddenBy returns the sources (flag, env) of share_existing in s:
-// the Worker applies that mode at every start.
-func shareOverriddenBy(s Settings) []string {
+// shareOverriddenBy returns the sources (flag, env) of share_existing in s
+// and its value: the Worker applies that mode at every start, unless it would
+// widen the saved choice (then it refuses it, see [applyShareExisting]).
+func shareOverriddenBy(s Settings) (sources []string, value string) {
 	out := []string{}
 	if s.Resolver == nil {
-		return out
+		return out, ""
 	}
 	r := *s.Resolver
 	r.File = nil
 	if res, err := r.Resolve(config.KeyShareExisting); err == nil && res.Value != "" &&
 		(res.Source == config.SourceFlag || res.Source == config.SourceEnv) {
 		out = append(out, string(res.Source))
+		value = res.Value
 	}
-	return out
+	return out, value
 }
 
 func (s shareLocal) list(ctx context.Context, state store.ShareState) ShareListResult {
@@ -102,6 +115,12 @@ func (s shareLocal) list(ctx context.Context, state store.ShareState) ShareListR
 	}
 	if r.Selected == nil {
 		r.Selected = []string{}
+	}
+	if s.launchRule == config.ShareExistingAll && len(s.overriddenBy) > 0 && state.Configured && state.Mode != store.ShareAll {
+		// The Worker does not apply that rule at its next start: it would
+		// widen the saved choice.
+		r.OverriddenBy = []string{}
+		r.LaunchRuleRefused = s.launchRule
 	}
 	sessions, err := s.ex.host.ListSessions(ctx)
 	if err != nil {
@@ -127,6 +146,9 @@ func (s shareLocal) applyOp(ctx context.Context, raw json.RawMessage) (json.RawM
 	var a LocalShareApplyArgs
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return nil, apiErr(proto.CodeInvalidArgument, "", "invalid share change")
+	}
+	if a.Instance != "" && a.Instance != s.instance {
+		return nil, apiErr(proto.CodeConflict, "state_changed", "the Worker restarted since its status was read; nothing was changed")
 	}
 	state, err := s.st.ApplyShareChangeContext(ctx, store.ShareChange{
 		Mode: store.ShareMode(a.Mode), Add: a.Add, Remove: a.Remove, IfRevision: a.IfRevision, Replace: a.Replace,

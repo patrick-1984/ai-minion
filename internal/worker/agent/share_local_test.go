@@ -79,12 +79,12 @@ func TestInventoryUnavailableVsEmpty(t *testing.T) {
 func TestShareOverriddenBy(t *testing.T) {
 	env := func(k string) (string, bool) { return "all", k == "MINION_SHARE_EXISTING" }
 	s := Settings{Resolver: &config.Resolver{Role: config.ScopeWorker, LookupEnv: env, File: config.MapSource{config.KeyShareExisting: "none"}}}
-	if got := shareOverriddenBy(s); len(got) != 1 || got[0] != "env" {
+	if got, _ := shareOverriddenBy(s); len(got) != 1 || got[0] != "env" {
 		t.Fatalf("env = %v", got)
 	}
 	s.Resolver = &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(string) (string, bool) { return "", false },
 		File: config.MapSource{config.KeyShareExisting: "none"}}
-	if got := shareOverriddenBy(s); len(got) != 0 {
+	if got, _ := shareOverriddenBy(s); len(got) != 0 {
 		t.Fatalf("file only = %v", got)
 	}
 }

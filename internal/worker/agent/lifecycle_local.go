@@ -49,6 +49,9 @@ type LocalLifecycleArgs struct {
 	AcceptLoss int `json:"accept_loss"`
 	// AcceptUnknown accepts that sessions that cannot be counted end.
 	AcceptUnknown bool `json:"accept_unknown"`
+	// EnrollmentEpoch, when sent, must be the enrollment generation of the
+	// state directory (needs [FeatureStopGuard]).
+	EnrollmentEpoch *uint64 `json:"enrollment_epoch,omitempty"`
 }
 
 // LifecycleResult is the reply of [OpLocalLifecycle].
@@ -77,15 +80,17 @@ type lifecycleService struct {
 	// crash guard (the exit or exec below bypasses the runtime's own stop); nil
 	// does nothing.
 	markClean func()
+	// stateDir is read for the enrollment generation of a guarded stop.
+	stateDir string
 }
 
-func (s lifecycleService) serve(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
+func (s lifecycleService) serve(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 	var a LocalLifecycleArgs
 	if err := json.Unmarshal(raw, &a); err != nil || (a.Action != LifecycleStop && a.Action != LifecycleRestart) {
 		return nil, apiErr(proto.CodeInvalidArgument, "", "invalid lifecycle request: action stop or restart")
 	}
-	if a.Instance != "" && a.Instance != s.instance {
-		return nil, apiErr(proto.CodeConflict, "state_changed", "the Worker restarted since its status was read; nothing was done")
+	if err := checkStopGuard(ctx, s.instance, s.stateDir, LocalStopArgs{Instance: a.Instance, EnrollmentEpoch: a.EnrollmentEpoch}); err != nil {
+		return nil, err
 	}
 	// No new session from here on, then count the ones that would end.
 	release := s.ex.HoldCreate(HoldOwnerLifecycle, "the Worker is stopping")

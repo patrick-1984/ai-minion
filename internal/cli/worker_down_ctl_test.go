@@ -3,10 +3,14 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/patrick-1984/ai-minion/internal/client"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 )
 
@@ -79,5 +83,89 @@ func TestStopNeedsAdminBeforeHold(t *testing.T) {
 	m, code := downJSON(t, d)
 	if code != ExitNeedsAdmin || called {
 		t.Fatalf("%v %d lifecycle called=%v", m, code, called)
+	}
+}
+
+func stopCmd() *cobra.Command { return &cobra.Command{Use: "down"} }
+
+// Gate-1 C: leave's stop is bound to the instance that answered and to the
+// enrollment generation: the lifecycle op carries both, a refusal is 27.
+func TestStopSendsInstanceAndEpochAndRefusalIs27(t *testing.T) {
+	d := baseDown()
+	d.call = func(context.Context, string) (json.RawMessage, error) {
+		return json.Marshal(agent.LiveStatusReply{StateDir: "/x", Instance: "i1", SessionHost: "tmux"})
+	}
+	var got agent.LocalLifecycleArgs
+	var op string
+	d.callArgs = func(_ context.Context, o string, a any) (json.RawMessage, error) {
+		op, got = o, a.(agent.LocalLifecycleArgs)
+		pe := proto.NewError(proto.CodeConflict, "the enrollment changed")
+		pe.Details = json.RawMessage(`{"reason":"state_changed"}`)
+		return nil, pe
+	}
+	epoch := uint64(7)
+	_, err := runWorkerDownOpts(stopCmd(), d, downOptions{expectEpoch: &epoch})
+	var re *resultError
+	if !errors.As(err, &re) || re.Exit != ExitStateChanged {
+		t.Fatalf("err = %v", err)
+	}
+	if got.Instance != "i1" || got.EnrollmentEpoch == nil || *got.EnrollmentEpoch != 7 ||
+		!strings.Contains(op, agent.FeatureStopGuard) {
+		t.Fatalf("op %q args %+v", op, got)
+	}
+}
+
+// The bare worker_stop of the fallback carries the same guard, and an older
+// Worker that does not know it gets the plain stop.
+func TestLegacyStopCarriesGuardAndFallsBackOnOldWorker(t *testing.T) {
+	status := func() json.RawMessage {
+		b, _ := json.Marshal(agent.LiveStatusReply{StateDir: "/x", Instance: "i1", SessionHost: "tmux"})
+		return b
+	}
+	stopped := false
+	d := baseDown()
+	d.call = func(_ context.Context, op string) (json.RawMessage, error) {
+		switch {
+		case op == agent.OpLocalStatus && stopped:
+			return nil, client.ErrWorkerNotRunning
+		case op == agent.OpLocalStatus:
+			return status(), nil
+		case op == agent.OpLocalStop:
+			stopped = true
+			return nil, nil
+		}
+		return nil, nil
+	}
+	var stopArgs agent.LocalStopArgs
+	d.callArgs = func(_ context.Context, op string, a any) (json.RawMessage, error) {
+		if strings.HasPrefix(op, agent.OpLocalLifecycle) {
+			return nil, &proto.Error{Code: proto.CodeUnsupportedOp, Message: "old"}
+		}
+		stopArgs = a.(agent.LocalStopArgs)
+		if !strings.Contains(op, agent.FeatureStopGuard) {
+			t.Fatalf("stop op %q is not qualified", op)
+		}
+		return nil, &proto.Error{Code: proto.CodeUnsupportedOp, Message: "old"}
+	}
+	epoch := uint64(3)
+	if _, err := runWorkerDownOpts(stopCmd(), d, downOptions{expectEpoch: &epoch}); err != nil {
+		t.Fatalf("old Worker fallback: %v", err)
+	}
+	if stopArgs.Instance != "i1" || stopArgs.EnrollmentEpoch == nil || *stopArgs.EnrollmentEpoch != 3 || !stopped {
+		t.Fatalf("stop args %+v stopped=%v", stopArgs, stopped)
+	}
+	// A Worker that refuses the guard (another instance) ends with 27 and is
+	// not stopped.
+	stopped = false
+	d.callArgs = func(_ context.Context, op string, _ any) (json.RawMessage, error) {
+		if strings.HasPrefix(op, agent.OpLocalLifecycle) {
+			return nil, &proto.Error{Code: proto.CodeUnsupportedOp, Message: "old"}
+		}
+		return nil, &proto.Error{Code: proto.CodeConflict, Message: "the Worker restarted"}
+	}
+	_, err := runWorkerDownOpts(stopCmd(), d, downOptions{})
+	var re *resultError
+	if !errors.As(err, &re) || re.Exit != ExitStateChanged || stopped {
+		t.Fatalf("err = %v stopped=%v", err, stopped)
 	}
 }

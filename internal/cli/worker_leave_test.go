@@ -106,10 +106,13 @@ func (w *leaveWorker) call(_ context.Context, op string) (json.RawMessage, error
 }
 
 func (w *leaveWorker) callArgs(_ context.Context, op string, args any) (json.RawMessage, error) {
-	if op != "worker_lifecycle+lifecycle.v1" {
+	if op != "worker_lifecycle+lifecycle.v1+stop_guard.v1" {
 		return nil, errors.New("unexpected op " + op)
 	}
 	a := args.(agent.LocalLifecycleArgs)
+	if a.Instance != "i1" || a.EnrollmentEpoch == nil {
+		return nil, errors.New("leave's stop is not bound to the instance and the enrollment generation")
+	}
 	refuse := func(reason string) error {
 		det, _ := json.Marshal(map[string]any{"reason": reason, "sessions_lost": w.lossy})
 		pe := proto.NewError(proto.CodeConflict, "nothing was done")

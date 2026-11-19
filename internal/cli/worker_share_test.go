@@ -395,7 +395,7 @@ func TestShareLiveSendsReadRevisionAndChecksInstance(t *testing.T) {
 			return json.Marshal(agent.ShareListResult{Rule: "select", Selected: []string{"b"}, Revision: 8})
 		}
 	}
-	if obj, code := r.run(t, "add", "b"); code != ExitOK || applied.IfRevision != 7 || !slices.Equal(applied.Add, []string{"b"}) {
+	if obj, code := r.run(t, "add", "b"); code != ExitOK || applied.IfRevision != 7 || applied.Instance != "i1" || !slices.Equal(applied.Add, []string{"b"}) {
 		t.Fatalf("code %d %v applied %+v", code, obj, applied)
 	}
 	// The Worker is replaced between the read and the apply.

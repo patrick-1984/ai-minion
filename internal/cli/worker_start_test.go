@@ -100,14 +100,14 @@ func TestWorkerStartBindsTheProfile(t *testing.T) {
 	mine, other := t.TempDir(), t.TempDir()
 	started := false
 	r := startRunner{answer: func(line string) (string, error) {
-		switch {
-		case line == "systemctl is-enabled minion-worker@ann.service":
+		switch line {
+		case "systemctl is-enabled minion-worker@ann.service":
 			return "", errors.New("exit 1")
-		case line == "systemctl --user is-enabled minion-worker.service":
+		case "systemctl --user is-enabled minion-worker.service":
 			return "enabled", nil
-		case line == "systemctl --user show -p Environment --value minion-worker.service":
+		case "systemctl --user show -p Environment --value minion-worker.service":
 			return "MINION_STATE_DIR=" + other + " X=y\n", nil
-		case line == "systemctl --user start minion-worker.service":
+		case "systemctl --user start minion-worker.service":
 			started = true
 			return "", nil
 		}
