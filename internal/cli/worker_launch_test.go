@@ -331,3 +331,21 @@ func TestOpenLaunchLogRotatesAPrivateLog(t *testing.T) {
 		t.Errorf("not rotated: %v, %v", fi, err)
 	}
 }
+
+// A readable backup that cannot be deleted stops the start, so that no
+// pairing code is written next to it. (Here the backup is a non-empty
+// directory, which cannot be removed on any platform.)
+func TestOpenLaunchLogRefusesWhenAReadableBackupCannotBeDeleted(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, launchLogName+".1", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := openLaunchLog(dir)
+	if err == nil {
+		_ = f.Close()
+		t.Fatal("the log was opened next to a backup that stays readable")
+	}
+	if !strings.Contains(err.Error(), "cannot be deleted") {
+		t.Errorf("err = %v", err)
+	}
+}

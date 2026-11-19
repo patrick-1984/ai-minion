@@ -157,3 +157,13 @@ func RemoveLegacyService(ctx context.Context) error {
 		}
 	}
 }
+
+// CheckAutostartWritable opens the user's Run key for writing, creating
+// nothing but the key, and changes no value.
+func CheckAutostartWritable() error {
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, AutostartRunKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	return k.Close()
+}

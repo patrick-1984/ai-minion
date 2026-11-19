@@ -28,3 +28,6 @@ func CurrentElevation() Elevation { return Elevation{} }
 
 // RemoveLegacyService has no Windows service to remove outside Windows.
 func RemoveLegacyService(context.Context) error { return nil }
+
+// CheckAutostartWritable has no Run key outside Windows.
+func CheckAutostartWritable() error { return nil }

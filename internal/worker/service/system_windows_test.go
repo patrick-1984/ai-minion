@@ -5,6 +5,8 @@ package service
 import (
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // The CI runner and a developer's account are not LocalSystem.
@@ -62,4 +64,35 @@ func TestWindowsSupervisorOwnershipAndStartingRace(t *testing.T) {
 	}
 	closeFn2()
 	release()
+}
+
+// An object owned by another account is not a supervisor of this user.
+func TestWindowsOwnerAllowed(t *testing.T) {
+	user, _ := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+	system, _ := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+	everyone, _ := windows.CreateWellKnownSid(windows.WinWorldSid)
+	if !ownerAllowed(user, user, system, nil) || !ownerAllowed(system, user, system, nil) {
+		t.Error("the user and SYSTEM may own the objects")
+	}
+	if ownerAllowed(everyone, user, system, nil) || ownerAllowed(nil, user, system, nil) {
+		t.Error("another owner was accepted")
+	}
+	if !ownerAllowed(everyone, user, system, everyone) {
+		t.Error("the default owner of the token may own the objects")
+	}
+}
+
+func TestWindowsAcquireSupervisorRefusesAnObjectOfAnotherOwner(t *testing.T) {
+	if SupervisorRunning() {
+		t.Skip("a supervisor of this user runs")
+	}
+	// An object we create is ours, never ErrSupervisorNameTaken.
+	release, already, err := AcquireSupervisor()
+	if err != nil || already {
+		t.Fatalf("already=%v err=%v", already, err)
+	}
+	defer release()
+	if _, again, err := AcquireSupervisor(); err != nil || !again {
+		t.Fatalf("our own mutex was refused: again=%v err=%v", again, err)
+	}
 }

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
@@ -413,5 +415,74 @@ func TestWorkerUpForegroundRefusesLocalSystemFirst(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.stateDir(), "config.json")); err == nil {
 		t.Error("settings were saved before the refusal")
+	}
+}
+
+// Round 3: only the supervisor stops its Worker; a connection that ends as
+// the Worker shuts down is not an error.
+func TestWorkerUpWindowsLetsTheSupervisorStopItsWorker(t *testing.T) {
+	f, w := newWinUp(t)
+	w.running = true
+	d := w.deps()
+	d.signalSupervisor = func() (bool, error) {
+		w.events = append(w.events, "signal")
+		w.running = false // the supervisor stopped its Worker
+		return true, nil
+	}
+	d.supervisorRunning = func() bool { return w.running }
+	f.deps.windows = d
+	if _, err := f.run("--share-existing", "none"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(w.events, ","); got != "signal,run-entry,launch" {
+		t.Errorf("events = %s (no second stop request over the pipe)", got)
+	}
+
+	f, w = newWinUp(t)
+	w.running = true
+	d = w.deps()
+	inner := d.call
+	d.call = func(ctx context.Context, op string) (json.RawMessage, error) {
+		if op == agent.OpLocalStop {
+			w.running = false
+			return nil, client.ErrConnectionLost // the Worker closed the pipe
+		}
+		return inner(ctx, op)
+	}
+	f.deps.windows = d
+	if _, err := f.run("--share-existing", "none"); err != nil {
+		t.Fatalf("a connection lost during the stop must count as stopped: %v", err)
+	}
+}
+
+// A Run key that cannot be written is found before the Worker is stopped.
+func TestWorkerUpWindowsChecksTheRunKeyBeforeStopping(t *testing.T) {
+	f, w := newWinUp(t)
+	w.running = true
+	d := w.deps()
+	d.checkWritable = func() error { return errors.New("Access is denied") }
+	f.deps.windows = d
+	_, err := f.run("--share-existing", "none")
+	if err == nil || !strings.Contains(err.Error(), "Access is denied") || !strings.Contains(err.Error(), "not touched") {
+		t.Fatalf("err = %v", err)
+	}
+	if !w.running || w.stops != 0 || len(w.events) != 0 {
+		t.Errorf("the Worker was touched: running=%v events=%v", w.running, w.events)
+	}
+}
+
+// LocalSystem is refused before the hub line reads any state.
+func TestWithHubLineSkipsTheStateReadsForLocalSystem(t *testing.T) {
+	old := systemAccount
+	systemAccount = func() bool { return true }
+	defer func() { systemAccount = old }()
+	read := false
+	ran := false
+	run := withHubLine(func(*cobra.Command, []string) error { ran = true; return nil },
+		func(string) (string, bool) { read = true; return "", false })
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	if err := run(cmd, nil); err != nil || !ran || read {
+		t.Fatalf("err=%v ran=%v read=%v", err, ran, read)
 	}
 }

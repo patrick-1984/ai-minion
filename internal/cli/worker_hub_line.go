@@ -58,7 +58,13 @@ func hubIdentityLine(ctx context.Context, res *config.Resolver) string {
 // before running it.
 func withHubLine(run func(*cobra.Command, []string) error, lookupEnv func(string) (string, bool)) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		printHubLine(cmd, cmd.ErrOrStderr(), lookupEnv)
+		// LocalSystem is refused by the command itself; the line reads the
+		// config and the Worker database, which a SYSTEM process must not
+		// touch first (a state directory on a share would be contacted with
+		// the machine account).
+		if !systemAccount() {
+			printHubLine(cmd, cmd.ErrOrStderr(), lookupEnv)
+		}
 		return run(cmd, args)
 	}
 }

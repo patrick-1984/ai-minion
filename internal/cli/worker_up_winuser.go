@@ -31,6 +31,9 @@ type windowsUpDeps struct {
 	// supervisorRunning reports whether a supervisor of this session runs;
 	// signalStop asks it to stop (nil: the real ones).
 	supervisorRunning func() bool
+	// checkWritable opens the Run key for writing without changing it (nil:
+	// the real one); it runs before anything is stopped.
+	checkWritable func() error
 	// signalSupervisor asks the supervisor of this user to stop (nil: the
 	// real one); found is false when none runs.
 	signalSupervisor func() (found bool, err error)
@@ -51,6 +54,7 @@ func defaultWindowsUpDeps() windowsUpDeps {
 		isSystem:          systemAccount,
 		supervisorRunning: service.SupervisorRunning,
 		signalSupervisor:  service.SignalSupervisorStop,
+		checkWritable:     service.CheckAutostartWritable,
 		removeLegacy:      service.RemoveLegacyService,
 		setAutostart:      service.SetAutostart,
 		call: func(ctx context.Context, op string) (json.RawMessage, error) {
@@ -132,14 +136,27 @@ func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, state
 	if err != nil {
 		return err
 	}
+	// The Run key must be writable before a healthy Worker is stopped: a
+	// policy or an ACL that denies updates must leave the Worker as it was.
+	if d.checkWritable != nil {
+		if err := d.checkWritable(); err != nil {
+			return fmt.Errorf("cannot write the Run entry %s of HKCU\\%s (the running Worker was not touched): %w", service.AutostartValueName, service.AutostartRunKey, err)
+		}
+	}
 	// Replace what runs first, and only then write the new Run value: a
 	// replacement that fails leaves the old entry as it was. A supervisor is
 	// signaled directly (it may be in its back-off or between a Worker's
-	// exit and restart, with no pipe to ask); the pipe stops a foreground
-	// Worker that has no supervisor.
+	// exit and restart, with no pipe to ask) and is the only one that stops
+	// "its" Worker; it is waited for. The pipe stops only a foreground
+	// Worker that has no supervisor, and a connection that ends while the
+	// Worker shuts down counts as stopped.
 	if d.signalSupervisor != nil {
-		if _, err := d.signalSupervisor(); err != nil {
+		found, err := d.signalSupervisor()
+		if err != nil {
 			return fmt.Errorf("cannot stop the running Worker supervisor: %w", err)
+		}
+		if found && !d.waitSupervisorGone() {
+			return errors.New("the previous Worker supervisor did not end within 30 seconds; stop it (minion worker down) and run the command again")
 		}
 	}
 	if d.live(ctx) {
@@ -147,7 +164,7 @@ func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, state
 		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		_, err := d.call(cctx, agent.OpLocalStop)
 		cancel()
-		if err != nil && !errors.Is(err, client.ErrWorkerNotRunning) {
+		if err != nil && !errors.Is(err, client.ErrWorkerNotRunning) && !errors.Is(err, client.ErrConnectionLost) {
 			return fmt.Errorf("cannot ask the running Worker to stop: %w", err)
 		}
 		if !d.waitLive(ctx, false) {

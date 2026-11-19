@@ -87,21 +87,27 @@ func openLaunchLog(dir string) (*os.File, error) {
 	p := filepath.Join(dir, launchLogName)
 	// A retained copy keeps the ACL of the file it was: keep one only when
 	// the log itself is private (checked on the open handle), and delete a
-	// backup that is not.
+	// backup that is not. A readable backup that cannot be deleted stops the
+	// start: pairing codes must not be written next to it.
+	backup := p + ".1"
 	if f, err := identity.OpenPrivate(p); err == nil {
 		fi, serr := f.Stat()
 		_ = f.Close()
 		if serr == nil && fi.Size() > maxLaunchLog {
-			_ = os.Remove(p + ".1")
-			_ = os.Rename(p, p+".1")
+			if err := removeIfExists(backup); err != nil {
+				return nil, backupError(backup, err)
+			}
+			_ = os.Rename(p, backup)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		_ = os.Remove(p) // not private: never kept, never rotated
 	}
-	if f, err := identity.OpenPrivate(p + ".1"); err == nil {
+	if f, err := identity.OpenPrivate(backup); err == nil {
 		_ = f.Close()
 	} else if !errors.Is(err, os.ErrNotExist) {
-		_ = os.Remove(p + ".1")
+		if err := removeIfExists(backup); err != nil {
+			return nil, backupError(backup, err)
+		}
 	}
 	return identity.OpenPrivateAppend(p)
 }
@@ -268,4 +274,15 @@ func hasStateDirArg(args []string) bool {
 		}
 	}
 	return false
+}
+
+func removeIfExists(p string) error {
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func backupError(p string, err error) error {
+	return fmt.Errorf("the old log %s can be read by other accounts and cannot be deleted (%v); delete it, then start the Worker again", p, err)
 }
