@@ -152,3 +152,23 @@ func TestWorkerDownStopsTheLogonWorker(t *testing.T) {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 }
+
+// During the supervisor's back-off the Worker has no pipe: down stops the
+// supervisor first, so that it cannot bring the Worker back.
+func TestWorkerDownStopsTheSupervisorDuringBackoff(t *testing.T) {
+	d := baseDown()
+	d.goos = "windows"
+	d.call = func(context.Context, string) (json.RawMessage, error) { return nil, client.ErrWorkerNotRunning }
+	d.autostart = func() (string, bool, error) { return `C:\m\minion.exe worker launch`, true, nil }
+	stopped := false
+	d.stopSupervisor = func(context.Context) (bool, error) { stopped = true; return true, nil }
+	out, err := downCmd(t, d)
+	if err != nil || !stopped || !strings.Contains(out, "next logon") || strings.Contains(out, "No Worker is running") {
+		t.Fatalf("out=%q err=%v stopped=%v", out, err, stopped)
+	}
+
+	d.stopSupervisor = func(context.Context) (bool, error) { return true, errors.New("stuck") }
+	if _, err := downCmd(t, d); err == nil {
+		t.Error("a supervisor that does not end must fail the command")
+	}
+}

@@ -14,11 +14,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
@@ -42,6 +45,9 @@ func newWorkerLaunchCmd() *cobra.Command {
 		Short:  "Run the Worker under its supervisor (started at logon on Windows)",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := service.RefuseSystem(systemAccount()); err != nil {
+				return err
+			}
 			res := &config.Resolver{Role: config.ScopeWorker, Flags: changedFlags{cmd: cmd, reg: config.Default}, LookupEnv: os.LookupEnv}
 			if file, err := loadConfigFile(res, loadWorkerConfig); err == nil {
 				res.File = file
@@ -69,7 +75,10 @@ func launchArgs(argv []string) []string {
 }
 
 // openLaunchLog opens the log in dir for appending, after moving a large one
-// to .1.
+// to .1. The log holds the Worker's console output, which can include a
+// pairing code, so it is created with a private DACL (the user and SYSTEM on
+// Windows, 0600 elsewhere) and an existing log that is not private is
+// replaced.
 func openLaunchLog(dir string) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -78,7 +87,26 @@ func openLaunchLog(dir string) (*os.File, error) {
 	if fi, err := os.Stat(p); err == nil && fi.Size() > maxLaunchLog {
 		_ = os.Rename(p, p+".1")
 	}
-	return os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	return identity.OpenPrivateAppend(p)
+}
+
+// launchEnv is the environment of the supervised Worker: the user's own
+// environment without any MINION_ variable, then MINION_SUPERVISED=1. The
+// Worker reads its settings from the config file that "worker up" saved (and
+// from the flags of the Run entry), so a variable of the shell that started
+// "worker up" (MINION_SHARE_EXISTING, a one-time invitation key) can neither
+// widen nor change what the user chose, and the immediate start and the start
+// at logon behave alike.
+func launchEnv(environ []string) []string {
+	out := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(strings.ToUpper(name), "MINION_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, agent.SupervisedEnv+"=1")
 }
 
 // supervisor runs the Worker again and again (see [supervise]).
@@ -89,6 +117,17 @@ type supervisor struct {
 	sleep func(ctx context.Context, d time.Duration)
 	now   func() time.Time
 	log   io.Writer
+	// stop, when it is closed, is a request to end ("worker down"): pending
+	// restarts are cancelled, a running Worker is asked to stop through
+	// askStop (retried until it ends, since it may not serve its pipe yet) and
+	// forced after stopGrace. It is listened to during start-up and back-off.
+	stop    <-chan struct{}
+	askStop func()
+	// stopGrace bounds the wait for the Worker after a stop request; zero
+	// means 30 seconds.
+	stopGrace time.Duration
+	// stopEvery is the pause between stop requests; zero means 500 ms.
+	stopEvery time.Duration
 }
 
 // Restart delays: 5 s after the first failure, doubling up to one minute; a
@@ -104,11 +143,63 @@ const (
 // with the binary now at the same path; any other end starts it again after a
 // growing delay.
 func (s supervisor) supervise(ctx context.Context) {
+	var stopping atomic.Bool
+	sctx, scancel := context.WithCancel(ctx) // ends back-off sleeps
+	defer scancel()
+	runCtx, rcancel := context.WithCancel(ctx) // ends a Worker that ignores the request
+	defer rcancel()
+	if s.stop != nil {
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-s.stop:
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			}
+			stopping.Store(true)
+			scancel()
+			grace, every := s.stopGrace, s.stopEvery
+			if grace <= 0 {
+				grace = 30 * time.Second
+			}
+			if every <= 0 {
+				every = 500 * time.Millisecond
+			}
+			deadline := time.NewTimer(grace)
+			defer deadline.Stop()
+			tick := time.NewTicker(every)
+			defer tick.Stop()
+			for {
+				if s.askStop != nil {
+					s.askStop()
+				}
+				select {
+				case <-done:
+					return
+				case <-deadline.C:
+					rcancel()
+					return
+				case <-tick.C:
+				}
+			}
+		}()
+	}
 	delay := firstRestartDelay
 	for {
+		if stopping.Load() {
+			s.logf("stopped on request")
+			return
+		}
 		started := s.now()
-		code, err := s.run(ctx)
+		code, err := s.run(runCtx)
 		if ctx.Err() != nil {
+			return
+		}
+		if stopping.Load() {
+			s.logf("stopped on request")
 			return
 		}
 		switch {
@@ -128,7 +219,7 @@ func (s supervisor) supervise(ctx context.Context) {
 			delay = firstRestartDelay
 		}
 		s.logf("starting the Worker again in %s", delay)
-		s.sleep(ctx, delay)
+		s.sleep(sctx, delay)
 		if ctx.Err() != nil {
 			return
 		}
@@ -151,4 +242,14 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 	case <-ctx.Done():
 	case <-t.C:
 	}
+}
+
+// hasStateDirArg reports whether args already carry --state-dir.
+func hasStateDirArg(args []string) bool {
+	for _, a := range args {
+		if a == "--state-dir" || strings.HasPrefix(a, "--state-dir=") {
+			return true
+		}
+	}
+	return false
 }

@@ -2,7 +2,7 @@
 
 Back to the [README](../../README.md).
 
-The Windows Worker is a **preview** in release 0.13.1. It works differently from the Linux and macOS Worker, and some things are missing. Read the limits before you rely on it.
+The Windows Worker is a **preview**. **Use release v0.14.0 or later**: v0.13.1 and older install the Worker as a LocalSystem service, which is a way to SYSTEM (see [moving from the LocalSystem service](#move-from-the-localsystem-service)); the logon autostart described here exists only from v0.14.0. If you have v0.13.1 or older, do not run `minion worker up` as administrator: first remove the old service as described below. It works differently from the Linux and macOS Worker, and some things are missing. Read the limits before you rely on it.
 
 ## What it is
 
@@ -29,6 +29,8 @@ The Worker reports its session host and the reason to the Hub. The Worker page a
 - The Windows build has had less testing than the Linux build. The pairing handshake has not had an independent cryptographic review yet (see [security](../security.md)); that applies to every platform.
 
 ## Install
+
+Install **v0.14.0 or later**. While `releases/latest` still points to v0.13.1 or older, the one-line installer below installs an affected release: use the zip of a v0.14.0+ release from the releases page instead (by hand, below), and check with `minion version`.
 
 One line in PowerShell (Windows PowerShell 5.1 or PowerShell 7) installs `minion.exe` into `%LOCALAPPDATA%\Programs\minion` and adds that directory to your user `PATH`; it checks the zip against `checksums.txt` of the release:
 
@@ -61,13 +63,13 @@ Quickest: the join command of the Hub (**Workers**, **Add worker**, **Add a Work
 
 ## Run it at logon
 
-`minion worker up` without `--foreground`, in a normal terminal (not "as administrator"), installs the Worker for you: it writes the value `MinionWorker` into your own Run key, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which Windows runs at each logon of yours ([Run and RunOnce registry keys](https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys)), and starts the Worker now. No administrator is needed, nothing is installed for other users, and no Windows service is involved. The value runs `minion.exe worker launch` from the `minion.exe` you installed (with `--state-dir` when you use another state directory): a small supervisor that runs `minion worker run` without a console window (`CREATE_NO_WINDOW`, [process creation flags](https://learn.microsoft.com/windows/win32/procthread/process-creation-flags)), starts it again 5 seconds after a failure (doubling up to a minute), at once after a self-update, and ends when you stop the Worker. Its output goes to `worker-launch.log` in the state directory. At logon a console window may flash for a moment before the supervisor leaves it.
+`minion worker up` without `--foreground`, in a normal terminal (not "as administrator"), installs the Worker for you: it writes the value `MinionWorker` into your own Run key, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which Windows runs at each logon of yours ([Run and RunOnce registry keys](https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys)), and starts the Worker now. No administrator is needed, nothing is installed for other users, and no Windows service is involved. The value runs `minion.exe worker launch` from the `minion.exe` you installed (with `--state-dir` when you use another state directory): a small supervisor that runs `minion worker run` without a console window (`CREATE_NO_WINDOW`, [process creation flags](https://learn.microsoft.com/windows/win32/procthread/process-creation-flags)), starts it again 5 seconds after a failure (doubling up to a minute), at once after a self-update, and ends when you stop the Worker. Its output goes to `worker-launch.log` in the state directory, a file only you and SYSTEM can read (it can show a pairing code). The Worker is started without the `MINION_*` environment variables of your terminal: it uses the settings saved by `minion worker up`. At logon a console window may flash for a moment before the supervisor leaves it.
 
-The Worker uses the same state directory as `minion worker up --foreground`, so it keeps your pairing, and it serves your psmux sessions. `minion worker up` again applies new flags: it stops the running Worker and starts it with the saved settings. The command refuses to run in an elevated prompt, because the Worker would then run with administrator rights. To stop starting it at logon, stop it and remove the value: `minion worker down`, then `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v MinionWorker /f`.
+The Worker uses the same state directory as `minion worker up --foreground`, so it keeps your pairing, and it serves your psmux sessions. `minion worker up` again applies new flags: it stops the running Worker and starts it with the saved settings. The command refuses to run in an elevated prompt, because the Worker would then run with administrator rights. `minion worker down` also ends the supervisor, even while it waits to restart a failed Worker. To stop starting it at logon, stop it and remove the value: `minion worker down`, then `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v MinionWorker /f`.
 
 ## Move from the LocalSystem service
 
-Releases up to 0.13.1 installed the Worker as the Windows service `MinionWorker`, running as LocalSystem from the `minion.exe` in your profile. Any program running as you could replace that file and so run code as SYSTEM. This release no longer runs the Worker as a service: if that old service starts, it ends at once and says so. `minion worker status` warns while it exists, and `minion worker up` refuses (exit status 21) until it is gone. Remove it in a PowerShell started as administrator, with Windows' own tools (never run your `minion.exe` elevated):
+Do this **before** you upgrade or run any `minion worker up`, including with v0.13.1 or older (which would install the LocalSystem service again when run as administrator). Releases up to 0.13.1 installed the Worker as the Windows service `MinionWorker`, running as LocalSystem from the `minion.exe` in your profile. Any program running as you could replace that file and so run code as SYSTEM. This release no longer runs the Worker as a service: if that old service starts, it ends at once and says so. `minion worker status` warns while it exists, and `minion worker up` refuses (exit status 21) until it is gone. `minion worker up` also refuses while it cannot find out whether the service exists (the service manager denied the query). Remove it in a PowerShell started as administrator, with Windows' own tools (never run your `minion.exe` elevated):
 
 ```powershell
 Stop-Service MinionWorker; sc.exe delete MinionWorker

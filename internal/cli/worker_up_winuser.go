@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/client"
@@ -22,10 +24,15 @@ import (
 
 // windowsUpDeps are the seams of the Windows path of "worker up".
 type windowsUpDeps struct {
-	query        func() (service.WindowsServiceState, error)
-	elevation    func() service.Elevation
-	removeLegacy func(ctx context.Context) error
-	setAutostart func(cmd string) error
+	query     func() (service.WindowsServiceState, error)
+	elevation func() service.Elevation
+	// isSystem reports whether this process is LocalSystem (nil: the token).
+	isSystem func() bool
+	// supervisorRunning reports whether a supervisor of this session runs;
+	// signalStop asks it to stop (nil: the real ones).
+	supervisorRunning func() bool
+	removeLegacy      func(ctx context.Context) error
+	setAutostart      func(cmd string) error
 	// call is the local control pipe of this user.
 	call          func(ctx context.Context, op string) (json.RawMessage, error)
 	startLauncher func(exe string, args []string) error
@@ -36,10 +43,12 @@ type windowsUpDeps struct {
 
 func defaultWindowsUpDeps() windowsUpDeps {
 	return windowsUpDeps{
-		query:        service.QueryWindowsService,
-		elevation:    service.CurrentElevation,
-		removeLegacy: service.RemoveLegacyService,
-		setAutostart: service.SetAutostart,
+		query:             service.QueryWindowsService,
+		elevation:         service.CurrentElevation,
+		isSystem:          systemAccount,
+		supervisorRunning: service.SupervisorRunning,
+		removeLegacy:      service.RemoveLegacyService,
+		setAutostart:      service.SetAutostart,
 		call: func(ctx context.Context, op string) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, nil)
 		},
@@ -66,8 +75,17 @@ func (e *needsAdminError) Error() string { return e.msg }
 // when it may not, and refuses an elevated prompt, whose token the Worker
 // would inherit. done is true when the command has nothing more to do.
 func windowsPreflight(ctx context.Context, d windowsUpDeps, out io.Writer) error {
+	if d.isSystem != nil && d.isSystem() {
+		return service.ErrRunsAsSystem
+	}
 	elev := d.elevation()
-	if st, err := d.query(); err == nil && service.IsLegacyService(st) {
+	st, qerr := d.query()
+	if qerr != nil {
+		// Fail closed: the state of the old service is unknown, and it may
+		// still be registered against a file the user can replace.
+		return &needsAdminError{msg: service.LegacyQueryFailure(qerr)}
+	}
+	if service.IsLegacyService(st) {
 		if !elev.Admin {
 			return &needsAdminError{msg: "the Windows service " + service.WindowsServiceName +
 				" of an older release runs minion as LocalSystem and must be removed before the Worker runs as you; " + service.LegacyRemovalCommand +
@@ -77,10 +95,20 @@ func windowsPreflight(ctx context.Context, d windowsUpDeps, out io.Writer) error
 		rctx, cancel := context.WithTimeout(ctx, time.Minute)
 		err := d.removeLegacy(rctx)
 		cancel()
-		if err != nil {
+		switch {
+		case errors.Is(err, service.ErrLegacyRemovalPending):
+			_, _ = fmt.Fprintf(out, "The service %s is stopped and marked for deletion; Windows removes it when the Services console is closed.\n", service.WindowsServiceName)
+		case err != nil:
 			return err
+		default:
+			// Confirm: the service must be gone before anything is installed.
+			if st2, qerr := d.query(); qerr != nil {
+				return &needsAdminError{msg: service.LegacyQueryFailure(qerr)}
+			} else if st2.Installed && st2.Running {
+				return errors.New("the service " + service.WindowsServiceName + " still runs after its removal; " + service.LegacyRemovalCommand)
+			}
+			_, _ = fmt.Fprintf(out, "Removed the service %s.\n", service.WindowsServiceName)
 		}
-		_, _ = fmt.Fprintf(out, "Removed the service %s.\n", service.WindowsServiceName)
 	}
 	if elev.Elevated {
 		return errors.New("this terminal runs as administrator (elevated); the Worker runs with the rights of the prompt that starts it, " +
@@ -115,11 +143,22 @@ func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, state
 			return errors.New("the running Worker did not stop within 30 seconds; stop it (minion worker down) and run the command again")
 		}
 	}
+	// The pipe closes before the old Worker and its supervisor are gone; a
+	// new supervisor that starts meanwhile finds the session's mutex taken
+	// and ends, leaving no Worker. Wait for the old supervisor to leave.
+	if !d.waitSupervisorGone() {
+		return errors.New("the previous Worker supervisor did not end within 30 seconds; stop it (minion worker down) and run the command again")
+	}
 	if err := d.startLauncher(binary, args); err != nil {
 		return fmt.Errorf("cannot start the Worker: %w", err)
 	}
 	if !d.waitLive(ctx, true) {
 		return errors.New("the Worker did not start within 30 seconds; its log is " + launchLogName + " in the state directory " + stateDir)
+	}
+	// The Worker that answers must be the replacement, serving the requested
+	// state directory (not another Worker of this user).
+	if got := d.liveStateDir(ctx); got != "" && !sameWinDir(got, stateDir) {
+		return fmt.Errorf("a Worker answers, but it serves the state directory %s, not %s; stop it (minion worker down) and run the command again", got, stateDir)
 	}
 	_, _ = fmt.Fprintf(out, "Installed the Worker for this user: it runs as you, starts at each logon (HKCU\\%s, value %s) and starts again by itself after a failure or an update. Stop it with: minion worker down\n",
 		service.AutostartRunKey, service.AutostartValueName)
@@ -146,4 +185,40 @@ func (d windowsUpDeps) waitLive(ctx context.Context, want bool) bool {
 		d.sleep(250 * time.Millisecond)
 	}
 	return false
+}
+
+// waitSupervisorGone waits until no supervisor of this session holds its
+// mutex.
+func (d windowsUpDeps) waitSupervisorGone() bool {
+	if d.supervisorRunning == nil {
+		return true
+	}
+	for i := 0; i < d.waitPolls(); i++ {
+		if !d.supervisorRunning() {
+			return true
+		}
+		d.sleep(250 * time.Millisecond)
+	}
+	return false
+}
+
+// liveStateDir returns the state directory the answering Worker names, or ""
+// when it does not say.
+func (d windowsUpDeps) liveStateDir(ctx context.Context) string {
+	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	raw, err := d.call(cctx, agent.OpLocalStatus)
+	if err != nil {
+		return ""
+	}
+	var reply agent.LiveStatusReply
+	if json.Unmarshal(raw, &reply) != nil {
+		return ""
+	}
+	return reply.StateDir
+}
+
+// sameWinDir compares two Windows paths: cleaned, case-insensitive.
+func sameWinDir(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }

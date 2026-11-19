@@ -80,9 +80,13 @@ func CurrentElevation() Elevation {
 	return e
 }
 
-// RemoveLegacyService stops the LocalSystem service MinionWorker of releases
-// up to 0.13.1 (bounded by ctx), deletes it and waits until the service
-// control manager no longer knows it. It needs an administrator.
+// RemoveLegacyService removes the LocalSystem service MinionWorker of
+// releases up to 0.13.1 (bounded by ctx). It first disables the service, so
+// that a queued recovery action cannot start it again, then stops it and
+// confirms the stop, deletes it and waits until the service control manager
+// no longer knows it. A removal that is only marked for deletion returns
+// [ErrLegacyRemovalPending]; a service that cannot be confirmed stopped is an
+// error. It needs an administrator.
 func RemoveLegacyService(ctx context.Context) error {
 	m, err := mgr.Connect()
 	if err != nil {
@@ -97,24 +101,45 @@ func RemoveLegacyService(ctx context.Context) error {
 		return windowsInstallError("remove", err)
 	}
 	defer func() { _ = s.Close() }()
-	if st, err := s.Query(); err == nil && st.State != svc.Stopped && st.State != svc.StopPending {
+	cfg, err := s.Config()
+	if err != nil {
+		return windowsInstallError("read the configuration of", err)
+	}
+	if cfg.StartType != mgr.StartDisabled {
+		cfg.StartType = mgr.StartDisabled
+		if err := s.UpdateConfig(cfg); err != nil {
+			return windowsInstallError("disable", err)
+		}
+	}
+	notStopped := errors.New("the service " + WindowsServiceName + " did not stop; " + LegacyRemovalCommand)
+	st, err := s.Query()
+	if err != nil {
+		return windowsInstallError("query", err)
+	}
+	if st.State != svc.Stopped && st.State != svc.StopPending {
 		if _, err := s.Control(svc.Stop); err != nil && !errors.Is(err, windows.ERROR_SERVICE_NOT_ACTIVE) {
 			return windowsInstallError("stop", err)
 		}
 	}
 	for {
 		st, err := s.Query()
-		if err != nil || st.State == svc.Stopped {
+		if err != nil {
+			return windowsInstallError("query", err)
+		}
+		if st.State == svc.Stopped {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			return errors.New("the service " + WindowsServiceName + " did not stop; " + LegacyRemovalCommand)
+			return notStopped
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
 	if err := s.Delete(); err != nil && !errors.Is(err, windows.ERROR_SERVICE_MARKED_FOR_DELETE) {
 		return windowsInstallError("delete", err)
+	}
+	if st, err := s.Query(); err != nil || st.State != svc.Stopped {
+		return notStopped
 	}
 	_ = s.Close()
 	for {
@@ -127,9 +152,7 @@ func RemoveLegacyService(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			// Marked for deletion: it goes when the last program that has it
-			// open (the Services console, for one) closes it.
-			return nil
+			return ErrLegacyRemovalPending
 		case <-time.After(250 * time.Millisecond):
 		}
 	}

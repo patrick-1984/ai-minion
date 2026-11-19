@@ -79,7 +79,7 @@ owner=$(powershell -NoProfile -Command "(Invoke-CimMethod -InputObject (Get-CimI
 [ "$(count_launchers)" = 1 ] || fail "not exactly one supervisor"
 
 log "3. a killed Worker is started again by its supervisor"
-taskkill //F //PID "$pid" > /dev/null
+taskkill /F /PID "$pid" > /dev/null
 restarted=0
 for _ in $(seq 1 60); do
 	sleep 1

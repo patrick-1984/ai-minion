@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"io"
 	"os"
 	"reflect"
@@ -86,6 +87,9 @@ Sessions are shared only when you say so: --share-existing all|none|later.`,
 // runWorkerRun resolves the settings, starts the Worker runtime and runs it
 // until the context ends or a signal arrives.
 func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
+	if err := service.RefuseSystem(systemAccount()); err != nil {
+		return err
+	}
 	lookupEnv := deps.lookupEnv
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
@@ -214,3 +218,7 @@ func isSwitch(s config.Setting) bool {
 	return (reflect.DeepEqual(c, []string{"false", "true"}) || reflect.DeepEqual(c, []string{"0", "1", "false", "true"})) &&
 		strings.EqualFold(s.Default, "false")
 }
+
+// systemAccount reports whether this process runs as LocalSystem; tests
+// replace it.
+var systemAccount = service.IsSystemAccount

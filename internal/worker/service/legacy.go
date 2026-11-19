@@ -1,6 +1,9 @@
 package service
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 // LegacyRemovalCommand removes the LocalSystem service of releases up to
 // 0.13.1, in an elevated PowerShell. It names only Windows tools, never a
@@ -33,3 +36,18 @@ func LegacyServiceWarning(st WindowsServiceState) string {
 		": it runs minion as LocalSystem, from a file your programs can change, so it is a way to SYSTEM; " +
 		"the Worker now runs as you. Remove the service: " + LegacyRemovalCommand
 }
+
+// LegacyQueryFailure is the message when the service control manager cannot
+// be asked whether the LocalSystem service exists (access denied on both
+// query rights, a failed connection): the state is unknown, so nothing may
+// proceed as if the service were absent.
+func LegacyQueryFailure(err error) string {
+	return "cannot tell whether the Windows service " + WindowsServiceName + " of an older release (LocalSystem) exists: " + err.Error() +
+		"; it must be removed before the Worker runs as you. Check and remove it " + LegacyRemovalCommand
+}
+
+// ErrLegacyRemovalPending says the service was stopped and marked for
+// deletion, but the service control manager still lists it because a program
+// (the Services console, for one) has it open; Windows removes it when that
+// program closes it. It is not a confirmed removal.
+var ErrLegacyRemovalPending = errors.New("the service " + WindowsServiceName + " is stopped and marked for deletion; Windows removes it when the programs that have it open (the Services console) are closed")

@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -44,4 +45,27 @@ func WritePrivate(path string, data []byte) error {
 	}
 	syncDir(dir)
 	return nil
+}
+
+// OpenPrivateAppend opens path for appending and creates it private (the user
+// and SYSTEM on Windows, mode 0600 elsewhere) when it does not exist. An
+// existing file that is not private (see [CheckPrivateFile]) is removed and
+// created again, so that a log never ends up readable by another account
+// through an old, permissive ACL. The caller closes the file.
+func OpenPrivateAppend(path string) (*os.File, error) {
+	for range 2 {
+		f, err := openAppendPrivate(path)
+		if err != nil {
+			return nil, err
+		}
+		cerr := CheckPrivateFile(f)
+		if cerr == nil {
+			return f, nil
+		}
+		_ = f.Close()
+		if err := os.Remove(path); err != nil {
+			return nil, fmt.Errorf("%s is not private (%v) and cannot be replaced: %w", path, cerr, err)
+		}
+	}
+	return nil, fmt.Errorf("cannot create %s as a private file", path)
 }

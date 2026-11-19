@@ -206,3 +206,9 @@ func checkTrustedDir(p string, stickyOK bool) error {
 // checkTrustedDirFinal checks the directory the path resolved to: the same, but
 // a sticky world-writable directory is not good enough for the directory itself.
 func checkTrustedDirFinal(p string) error { return checkTrustedDir(p, false) }
+
+// openAppendPrivate opens (creating it 0600) path for appending, never
+// following a symbolic link.
+func openAppendPrivate(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
+}

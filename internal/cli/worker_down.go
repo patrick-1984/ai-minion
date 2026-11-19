@@ -47,6 +47,10 @@ type workerDownDeps struct {
 	windowsService func() (stopped bool, err error)
 	// autostart reads the Worker's Run entry (Windows); nil means none.
 	autostart func() (string, bool, error)
+	// stopSupervisor asks the supervisor of the logon Worker (Windows) to
+	// stop, cancelling pending restarts, and waits until it has ended; found
+	// is false when none runs. nil means none.
+	stopSupervisor func(ctx context.Context) (found bool, err error)
 	// call is the local control socket of this user.
 	call  func(ctx context.Context, op string) (json.RawMessage, error)
 	euid  func() int
@@ -70,6 +74,7 @@ func defaultWorkerDownDeps() workerDownDeps {
 		},
 		windowsService: stopWindowsService,
 		autostart:      service.Autostart,
+		stopSupervisor: stopSupervisor,
 		call: func(ctx context.Context, op string) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, nil)
 		},
@@ -149,6 +154,17 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 	if stoppedService {
 		return nil
 	}
+	// The supervisor of the logon Worker (Windows) is stopped first: during
+	// its start-up and back-off the Worker has no pipe, and it would bring
+	// the Worker back after "down" had reported success.
+	supervised := false
+	if d.stopSupervisor != nil {
+		found, serr := d.stopSupervisor(ctx)
+		if serr != nil {
+			return fmt.Errorf("cannot stop the Worker supervisor: %w", serr)
+		}
+		supervised = found
+	}
 	// A foreground Worker (or one no service manager runs).
 	// The running Worker names its own state directory (it may be another one
 	// than this user's default, --state-dir): that is the lock to wait for.
@@ -164,6 +180,10 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 	cancel()
 	switch {
 	case errors.Is(err, client.ErrWorkerNotRunning):
+		if supervised {
+			_, _ = fmt.Fprintln(out, "The Worker stopped. It starts again at your next logon; start it now with: minion worker up")
+			return nil
+		}
 		_, _ = fmt.Fprintln(out, "No Worker is running for this user.")
 		return nil
 	case err != nil:
@@ -258,4 +278,24 @@ func unitRunning(ctx context.Context, d workerDownDeps, scope, unit string) bool
 		return true
 	}
 	return false
+}
+
+// stopSupervisor signals the supervisor of this session and waits (up to 40
+// seconds) until it has ended, which is after its Worker has stopped.
+func stopSupervisor(ctx context.Context) (bool, error) {
+	found, err := service.SignalSupervisorStop()
+	if err != nil || !found {
+		return false, err
+	}
+	for i := 0; i < 160; i++ {
+		if !service.SupervisorRunning() {
+			return true, nil
+		}
+		select {
+		case <-ctx.Done():
+			return true, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return true, errors.New("the supervisor did not end within 40 seconds; check it with: minion worker status")
 }

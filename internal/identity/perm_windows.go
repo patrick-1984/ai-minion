@@ -352,3 +352,42 @@ func checkSecurity(path string, sd *windows.SECURITY_DESCRIPTOR, strict bool) er
 	}
 	return nil
 }
+
+// openAppendPrivate opens path for appending; a file that does not exist is
+// created with a protected DACL for the user and SYSTEM only, given as the
+// SECURITY_ATTRIBUTES of CreateFile, so it never exists under the
+// directory's inherited ACL. A reparse point is opened as itself (and then
+// refused by [CheckPrivateFile]).
+func openAppendPrivate(path string) (*os.File, error) {
+	acl, err := privateACL()
+	if err != nil {
+		return nil, err
+	}
+	sd, err := windows.NewSecurityDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	if err := sd.SetDACL(acl, true, false); err != nil {
+		return nil, err
+	}
+	if err := sd.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
+		return nil, err
+	}
+	sa := &windows.SecurityAttributes{
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: sd,
+	}
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	h, err := windows.CreateFile(p, windows.FILE_APPEND_DATA|windows.READ_CONTROL|windows.SYNCHRONIZE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa,
+		windows.OPEN_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	runtime.KeepAlive(sd)
+	runtime.KeepAlive(acl)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(h), path), nil
+}

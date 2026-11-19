@@ -6,11 +6,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
 
 // fakeRuns is a Worker that ends with the given exit codes in turn, each
@@ -130,4 +135,151 @@ func TestSleepCtxEndsWithItsContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	sleepCtx(ctx, time.Hour) // returns at once
+}
+
+// The supervised Worker gets none of the MINION_ variables of the shell that
+// started "worker up", so a variable cannot override what the user saved.
+func TestLaunchEnvDropsEveryMinionVariable(t *testing.T) {
+	env := launchEnv([]string{"PATH=/bin", "MINION_SHARE_EXISTING=all", "minion_invite_key=secret", "MINION_SUPERVISED=0", "HOME=/h"})
+	want := []string{"PATH=/bin", "HOME=/h", "MINION_SUPERVISED=1"}
+	if !reflect.DeepEqual(env, want) {
+		t.Errorf("env = %v, want %v", env, want)
+	}
+}
+
+func TestHasStateDirArg(t *testing.T) {
+	for args, want := range map[string]bool{"": false, "--debug": false, "--state-dir x": true, "--state-dir=x": true} {
+		if got := hasStateDirArg(strings.Fields(args)); got != want {
+			t.Errorf("%q: %v", args, got)
+		}
+	}
+}
+
+// A stop request during the back-off cancels the pending restart: the
+// supervisor ends instead of bringing the Worker back.
+func TestSuperviseStopRequestCancelsAPendingRestart(t *testing.T) {
+	stop := make(chan struct{})
+	var starts atomic.Int32
+	s := supervisor{
+		stop: stop,
+		run: func(context.Context) (int, error) {
+			starts.Add(1)
+			return 1, nil
+		},
+		sleep: func(ctx context.Context, _ time.Duration) {
+			close(stop)
+			<-ctx.Done() // the back-off ends with the request
+		},
+		now: time.Now,
+		log: &strings.Builder{},
+	}
+	done := make(chan struct{})
+	go func() { s.supervise(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor did not end")
+	}
+	if starts.Load() != 1 {
+		t.Errorf("the Worker was started %d times", starts.Load())
+	}
+}
+
+// A stop request while the Worker starts (no control pipe yet) is retried
+// until the Worker answers and ends; the supervisor then ends too.
+func TestSuperviseStopRequestRetriesUntilTheWorkerEnds(t *testing.T) {
+	stop := make(chan struct{})
+	var asks atomic.Int32
+	ended := make(chan struct{})
+	s := supervisor{
+		stop:      stop,
+		stopEvery: time.Millisecond,
+		askStop: func() {
+			if asks.Add(1) == 3 {
+				close(ended)
+			}
+		},
+		run: func(context.Context) (int, error) {
+			close(stop)
+			<-ended
+			return 1, nil // ended with an error, but a stop was requested
+		},
+		sleep: func(context.Context, time.Duration) { t.Error("slept") },
+		now:   time.Now,
+	}
+	done := make(chan struct{})
+	go func() { s.supervise(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor did not end")
+	}
+}
+
+// A Worker that ignores the request is forced after the grace period.
+func TestSuperviseStopRequestForcesAWorkerThatIgnoresIt(t *testing.T) {
+	stop := make(chan struct{})
+	s := supervisor{
+		stop:      stop,
+		stopGrace: 20 * time.Millisecond,
+		stopEvery: time.Millisecond,
+		run: func(ctx context.Context) (int, error) {
+			close(stop)
+			<-ctx.Done()
+			return -1, ctx.Err()
+		},
+		sleep: func(context.Context, time.Duration) {},
+		now:   time.Now,
+	}
+	done := make(chan struct{})
+	go func() { s.supervise(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor did not end")
+	}
+}
+
+// The log holds the Worker's console output (a pairing code): an existing,
+// permissive log is replaced by a private one.
+func TestOpenLaunchLogIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the DACL is checked by the Windows-tagged tests of internal/identity")
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, launchLogName)
+	if err := os.WriteFile(p, []byte("old pairing code MN-AAAA-BBBB\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := openLaunchLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString("new\n"); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v, err %v", fi.Mode(), err)
+	}
+	b, _ := os.ReadFile(p)
+	if strings.Contains(string(b), "MN-AAAA") {
+		t.Errorf("the permissive log was kept: %q", b)
+	}
+}
+
+func TestLaunchAndRunRefuseToRunAsSystem(t *testing.T) {
+	old := systemAccount
+	systemAccount = func() bool { return true }
+	defer func() { systemAccount = old }()
+	for _, cmd := range []*cobra.Command{newWorkerLaunchCmd(), newWorkerRunCmd(workerRunDeps{stderr: &strings.Builder{}})} {
+		cmd.SetContext(context.Background())
+		cmd.SetArgs(nil)
+		cmd.SetOut(&strings.Builder{})
+		cmd.SetErr(&strings.Builder{})
+		if err := cmd.Execute(); !errors.Is(err, service.ErrRunsAsSystem) {
+			t.Errorf("%s: err = %v", cmd.Name(), err)
+		}
+	}
 }

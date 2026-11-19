@@ -30,6 +30,8 @@ type SCM struct {
 	// the service (restart) only to a process that ends that way: a service
 	// that reports itself stopped, even with an error, is not restarted.
 	Exit func(code int)
+	// EndUnderSCM replaces the real service handshake of [SCM.End] in tests.
+	EndUnderSCM func(fn func()) error
 }
 
 // ServiceRunner is the part of a kardianos service that hands the process to
@@ -190,4 +192,20 @@ func (p *scmProgram) result() error {
 		return nil
 	}
 	return p.err
+}
+
+// End is the entry point of the old LocalSystem service: under the service
+// control manager it reports a clean stop at once (a minimal handler that
+// returns a successful service exit, with no stop control sent to itself that
+// the manager could reject while the service is still starting) after fn
+// said why; in a console it only runs fn.
+func (s SCM) End(fn func()) error {
+	if s.goos() != "windows" || s.interactive() {
+		fn()
+		return nil
+	}
+	if s.EndUnderSCM != nil {
+		return s.EndUnderSCM(fn)
+	}
+	return endUnderSCM(fn)
 }

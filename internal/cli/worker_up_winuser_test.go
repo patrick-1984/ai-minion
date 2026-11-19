@@ -212,3 +212,147 @@ func TestWorkerStatusWarnsAboutTheLegacyService(t *testing.T) {
 		t.Errorf("status:\n%s", out)
 	}
 }
+
+// LocalSystem (a deployment task) has no UAC split token, so the elevation
+// check misses it: the token SID is checked, before anything is changed.
+func TestWorkerUpWindowsRefusesLocalSystem(t *testing.T) {
+	f, w := newWinUp(t)
+	d := w.deps()
+	d.isSystem = func() bool { return true }
+	f.deps.windows = d
+	_, err := f.run("--share-existing", "none")
+	if !errors.Is(err, service.ErrRunsAsSystem) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(w.events) != 0 {
+		t.Errorf("events = %v", w.events)
+	}
+}
+
+// A service manager that cannot be asked is not "no service": fail closed
+// with the trusted removal command, and change nothing.
+func TestWorkerUpWindowsFailsClosedWhenTheServiceQueryFails(t *testing.T) {
+	f, w := newWinUp(t)
+	d := w.deps()
+	d.query = func() (service.WindowsServiceState, error) {
+		return service.WindowsServiceState{}, errors.New("Access is denied")
+	}
+	f.deps.windows = d
+	_, err := f.run("--share-existing", "none")
+	var ec *exitCodeError
+	if !errors.As(err, &ec) || ec.code != 21 {
+		t.Fatalf("err = %v", err)
+	}
+	if msg := f.stderr.String(); !strings.Contains(msg, "Access is denied") || !strings.Contains(msg, "sc.exe delete MinionWorker") {
+		t.Errorf("message = %s", msg)
+	}
+	if len(w.events) != 0 {
+		t.Errorf("events = %v", w.events)
+	}
+}
+
+// A removal that only marked the service for deletion is not reported as
+// "Removed"; one that leaves the service running is an error.
+func TestWorkerUpWindowsDistinguishesPendingAndFailedRemoval(t *testing.T) {
+	f, w := newWinUp(t)
+	w.legacy = service.WindowsServiceState{Installed: true, Account: "LocalSystem"}
+	w.elev = service.Elevation{Admin: true}
+	d := w.deps()
+	d.removeLegacy = func(context.Context) error { return service.ErrLegacyRemovalPending }
+	f.deps.windows = d
+	out, err := f.run("--share-existing", "none")
+	if err != nil || strings.Contains(out, "Removed the service") || !strings.Contains(out, "marked for deletion") {
+		t.Fatalf("err=%v out:\n%s", err, out)
+	}
+
+	f, w = newWinUp(t)
+	w.legacy = service.WindowsServiceState{Installed: true, Running: true, Account: "LocalSystem"}
+	w.elev = service.Elevation{Admin: true}
+	d = w.deps()
+	d.removeLegacy = func(context.Context) error { return nil } // the fake leaves it running
+	f.deps.windows = d
+	out, err = f.run("--share-existing", "none")
+	if err == nil || strings.Contains(out, "Removed the service") || len(w.events) != 0 {
+		t.Fatalf("err=%v events=%v out:\n%s", err, w.events, out)
+	}
+}
+
+// The replacement starts only after the old supervisor released its mutex,
+// or the new one would find it taken and end, leaving no Worker.
+func TestWorkerUpWindowsWaitsForTheOldSupervisor(t *testing.T) {
+	f, w := newWinUp(t)
+	w.running = true
+	d := w.deps()
+	checks := 0
+	d.supervisorRunning = func() bool {
+		checks++
+		if checks < 3 {
+			return true
+		}
+		w.events = append(w.events, "old-supervisor-gone")
+		return false
+	}
+	f.deps.windows = d
+	if _, err := f.run("--share-existing", "none"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(w.events, ","); got != "run-entry,stop,old-supervisor-gone,launch" {
+		t.Errorf("events = %s", got)
+	}
+
+	f, w = newWinUp(t)
+	w.running = true
+	d = w.deps()
+	d.supervisorRunning = func() bool { return true }
+	f.deps.windows = d
+	_, err := f.run("--share-existing", "none")
+	if err == nil || !strings.Contains(err.Error(), "supervisor did not end") || len(w.starts) != 0 {
+		t.Fatalf("err=%v starts=%v", err, w.starts)
+	}
+}
+
+// The Worker that answers must serve the requested state directory.
+func TestWorkerUpWindowsChecksTheStateDirectoryOfTheAnsweringWorker(t *testing.T) {
+	f, w := newWinUp(t)
+	d := w.deps()
+	inner := d.call
+	d.call = func(ctx context.Context, op string) (json.RawMessage, error) {
+		raw, err := inner(ctx, op)
+		if err == nil && op == agent.OpLocalStatus {
+			return json.RawMessage(`{"state_dir":"C:\\other"}`), nil
+		}
+		return raw, err
+	}
+	f.deps.windows = d
+	_, err := f.run("--share-existing", "none")
+	if err == nil || !strings.Contains(err.Error(), "C:\\other") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The old service's entry point reports through the manager handshake
+// without sending a stop to itself.
+func TestWorkerServiceRunUnderTheManagerEndsWithoutStopControl(t *testing.T) {
+	var stderr bytes.Buffer
+	ended := false
+	scm := service.SCM{GOOS: "windows", Interactive: func() bool { return false },
+		EndUnderSCM: func(fn func()) error { fn(); ended = true; return nil }}
+	cmd := newWorkerServiceRunCmd(workerRunDeps{stderr: &stderr}, scm)
+	cmd.SetContext(context.Background())
+	cmd.SetArgs(nil)
+	if err := cmd.Execute(); err != nil || !ended || !strings.Contains(stderr.String(), "no longer runs") {
+		t.Fatalf("err=%v ended=%v stderr=%s", err, ended, stderr.String())
+	}
+}
+
+func TestWorkerStatusReportsAServiceQueryFailure(t *testing.T) {
+	dir := t.TempDir()
+	sd := testStatusDeps(nil)
+	sd.windowsService = func() (service.WindowsServiceState, error) {
+		return service.WindowsServiceState{}, errors.New("Access is denied")
+	}
+	out, _, err := runWorkerCmds(t, sd, workerConfigDeps{}, "worker", "status", "--json", "--state-dir", dir)
+	if err != nil || !strings.Contains(out, "Access is denied") || !strings.Contains(out, "sc.exe delete MinionWorker") {
+		t.Errorf("err=%v status:\n%s", err, out)
+	}
+}

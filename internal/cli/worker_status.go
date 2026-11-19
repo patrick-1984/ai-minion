@@ -211,10 +211,10 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 	if query == nil {
 		query = service.QueryWindowsService
 	}
-	if st, err := query(); err == nil {
-		if msg := service.LegacyServiceWarning(st); msg != "" {
-			problems = append(problems, msg)
-		}
+	if st, err := query(); err != nil {
+		problems = append(problems, service.LegacyQueryFailure(err))
+	} else if msg := service.LegacyServiceWarning(st); msg != "" {
+		problems = append(problems, msg)
 	}
 
 	report := agent.BuildStatus(cmd.Context(), in)

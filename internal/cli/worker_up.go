@@ -714,22 +714,17 @@ func newWorkerServiceRunCmd(deps workerRunDeps, scm service.SCM) *cobra.Command 
 		Hidden: true,
 		Args:   noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
 			// Releases up to 0.13.1 installed the Worker as the LocalSystem
 			// service MinionWorker with this entry point. It no longer runs
 			// the Worker as SYSTEM: it reports to the service control manager
 			// that it stopped cleanly (so the restart-on-failure action does
 			// not loop) and says what to do.
-			return scm.Run(ctx, "", func(context.Context) error {
+			return scm.End(func() {
 				w := deps.stderr
 				if w == nil {
 					w = cmd.ErrOrStderr()
 				}
 				_, _ = fmt.Fprintln(w, legacyServiceRunMessage)
-				return nil
 			})
 		},
 	}

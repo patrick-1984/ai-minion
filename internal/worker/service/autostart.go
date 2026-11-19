@@ -83,3 +83,12 @@ func quoteArg(a string) string {
 	}
 	return string(append(b, '"'))
 }
+
+// SupervisorMutexName is the mutex a supervisor holds while it runs, one per
+// logon session; SupervisorStopEvent is the event "worker down" sets to make
+// it stop (it listens during start-up and during the back-off between
+// restarts, when the Worker has no control pipe).
+const (
+	SupervisorMutexName = `Local\MinionWorkerLaunch`
+	SupervisorStopEvent = `Local\MinionWorkerLaunchStop`
+)
