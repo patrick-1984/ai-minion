@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/logx"
 )
 
 type stuckHandler struct{ release chan struct{} }
@@ -23,7 +25,7 @@ func TestShutdownMessageIsBestEffort(t *testing.T) {
 	h := stuckHandler{make(chan struct{})}
 	defer close(h.release)
 	start := time.Now()
-	bestEffortInfo(slog.New(h), "worker shutting down")
+	logx.BestEffort(slog.New(h), slog.LevelInfo, "worker shutting down")
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("blocked for %s", d)
 	}

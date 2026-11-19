@@ -21,6 +21,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -927,7 +928,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		_ = sess.Close()
 	}
 	<-streams
-	h.log.Info("worker offline", "worker_id", w.ID, "reason", causeText(sess.Err()))
+	logx.BestEffort(h.log, slog.LevelInfo, "worker offline", "worker_id", w.ID, "reason", causeText(sess.Err()))
 	return nil
 }
 
@@ -1199,7 +1200,7 @@ func (s *Service) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownWait)
 	defer cancel()
 	if err := s.handler.Wait(ctx); err != nil {
-		s.handler.log.Warn("workers: connection handlers did not stop in time", "error", err.Error())
+		logx.BestEffort(s.handler.log, slog.LevelWarn, "workers: connection handlers did not stop in time", "error", err.Error())
 	}
 }
 
