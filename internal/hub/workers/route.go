@@ -564,7 +564,14 @@ func (rt *Router) debugRouted(req CallRequest, start time.Time, res any, err err
 		}
 	}
 	if t := rt.tel(); t != nil {
-		t.OpRouted(req.WorkerID, req.Op, outcome, time.Since(start))
+		// Only a Worker that is online gets a per-Worker series: a call
+		// refused before dispatch for a made-up Worker id must not take
+		// one of the capped Worker slots.
+		wid := ""
+		if _, ok := rt.backend.Get(req.WorkerID); ok {
+			wid = req.WorkerID
+		}
+		t.OpRouted(wid, req.Op, outcome, time.Since(start))
 	}
 	rt.log.Debug("workers: op routed", "op", req.Op, "worker_id", req.WorkerID,
 		"principal_kind", string(req.Principal.Kind), "outcome", outcome, "duration", time.Since(start).String())

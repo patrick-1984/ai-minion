@@ -510,6 +510,8 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 			fail(tooLargeAsError(err)) // nothing was written: answer with an error frame
 			return
 		}
+		// The caller never got its answer: not a success.
+		outcome = "reply_failed"
 		st.Reset()
 		return
 	}

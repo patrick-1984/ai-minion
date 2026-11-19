@@ -831,6 +831,11 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	if h.cfg.OwnerName != nil {
 		owner = h.cfg.OwnerName(ctx, w.OwnerID)
 	}
+	// The key and the Worker row are checked: the bytes of the welcome
+	// belong to this Worker's series, not to the unauthenticated ones.
+	if c.tel != nil {
+		c.tel.Authenticated(w.ID)
+	}
 	if err := c.write(Welcome{
 		Type:     proto.TypeWelcome,
 		WorkerID: w.ID,
@@ -853,9 +858,6 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	sopts.Budget = adm
 	if t := h.telemetry.get(); t != nil {
 		sopts.FrameTap = t.FrameTap(w.ID, w.Name)
-	}
-	if c.tel != nil {
-		c.tel.Authenticated(w.ID)
 	}
 	sess, err := transport.NewSession(c.res.Channel, transport.RoleHub, sopts)
 	if err != nil {
