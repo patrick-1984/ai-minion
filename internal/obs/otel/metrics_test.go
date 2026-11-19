@@ -304,6 +304,12 @@ func TestFrameSeriesFitTheWorkerCap(t *testing.T) {
 // keep their own series in detailed mode (the op counter and the duration
 // histogram), none merges into the SDK overflow point.
 func TestDetailedOpSeriesFitTheWorkerCap(t *testing.T) {
+	if raceEnabled {
+		// One export of 25,500 series outlasts the fixed export timeout
+		// under the race detector; the count is deterministic, the normal
+		// test run checks it.
+		t.Skip("series budget is checked without -race")
+	}
 	rcv := newMetricsReceiver(t)
 	m := NewMetrics()
 	if err := m.Configure(context.Background(), metricsConfig(t, rcv.srv.URL, MetricsDetailed), nil); err != nil {
