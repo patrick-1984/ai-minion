@@ -223,8 +223,8 @@ func TestMetricsOffAndSwitches(t *testing.T) {
 	first := m.cur.Load()
 	cfg.Level = MetricsDetailed
 	_ = m.Configure(context.Background(), cfg, nil)
-	if m.cur.Load().mp != first.mp || !m.cur.Load().detailed {
-		t.Fatal("a level switch rebuilt the pipeline")
+	if m.cur.Load().mp == first.mp || !m.cur.Load().detailed {
+		t.Fatal("a level switch kept the pipeline")
 	}
 	other := newMetricsReceiver(t)
 	_ = m.Configure(context.Background(), metricsConfig(t, other.srv.URL, MetricsDetailed), nil)
@@ -237,5 +237,62 @@ func TestMetricsOffAndSwitches(t *testing.T) {
 	}
 	if len(rcv.points()) != 0 {
 		t.Fatal("a retired pipeline exported")
+	}
+}
+
+// After a change from detailed to basic, no export carries a Worker id or a
+// detailed histogram any more: the detailed pipeline is retired unexported.
+func TestDowngradeDropsWorkerSeries(t *testing.T) {
+	rcv := newMetricsReceiver(t)
+	m := NewMetrics()
+	cfg := metricsConfig(t, rcv.srv.URL, MetricsDetailed)
+	if err := m.Configure(context.Background(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	record(m)
+	cfg.Level = MetricsBasic
+	if err := m.Configure(context.Background(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	m.Frame("w-1", "op", true, 10)
+	_ = m.Shutdown(context.Background())
+	pts := rcv.points()
+	if len(pts) == 0 {
+		t.Fatal("no export")
+	}
+	for _, p := range pts {
+		if _, ok := p.attrs["minion.worker.id"]; ok || p.name == "minion.worker.op.duration" || p.name == "minion.worker.connection.duration" {
+			t.Fatalf("detailed data after the downgrade: %+v", p)
+		}
+	}
+}
+
+// 400 Workers with every stream kind and direction keep their own frame
+// series (the SDK's default limit of 2000 would merge them).
+func TestFrameSeriesFitTheWorkerCap(t *testing.T) {
+	rcv := newMetricsReceiver(t)
+	m := NewMetrics()
+	if err := m.Configure(context.Background(), metricsConfig(t, rcv.srv.URL, MetricsDetailed), nil); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 400 {
+		for _, k := range []string{"op", "ca", "ev"} {
+			m.Frame("w-"+strconv.Itoa(i), k, true, 1)
+			m.Frame("w-"+strconv.Itoa(i), k, false, 1)
+		}
+	}
+	_ = m.Shutdown(context.Background())
+	n := 0
+	for _, p := range rcv.points() {
+		if p.name != "minion.worker.frame.count" {
+			continue
+		}
+		if p.attrs["otel.metric.overflow"] == "true" || p.attrs["minion.worker.id"] == "" {
+			t.Fatalf("merged series: %+v", p)
+		}
+		n++
+	}
+	if n != 2400 {
+		t.Fatalf("%d series, want 2400", n)
 	}
 }

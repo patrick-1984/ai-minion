@@ -42,6 +42,18 @@ const (
 	ScopeMetrics = "github.com/patrick-1984/ai-minion/traffic"
 )
 
+// CardinalityLimit is the series budget of each instrument: the SDK
+// default (2000) would merge series below the 500-Worker cap (500 Workers
+// times 3 stream kinds times 2 directions on the frame instruments, more on
+// the op counter). It bounds the memory of the pipeline.
+const CardinalityLimit = 100_000
+
+// buildTimeout bounds the construction of the exporter, which reads the
+// OTEL_EXPORTER_OTLP_*CERTIFICATE files of the environment itself before
+// Minion's options replace them (a stalled mount must not hang a start or a
+// settings change).
+var buildTimeout = 5 * time.Second
+
 // Attribute values of the traffic metrics.
 const (
 	DirReceive  = "receive"
@@ -54,7 +66,8 @@ const (
 type Metrics struct {
 	online atomic.Pointer[func() int64]
 
-	mu     sync.Mutex // serialises Configure and Shutdown
+	mu     sync.Mutex // serialises Configure
+	closed atomic.Bool
 	cur    atomic.Pointer[meterSet]
 	digest string // of the configuration of the running pipeline
 }
@@ -98,45 +111,38 @@ func (m *Metrics) Configure(ctx context.Context, c MetricsConfig, res *resource.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	old := m.cur.Load()
-	if c.Level == MetricsOff || c.Level == "" || !c.OTLP.Enabled {
+	if c.Level == MetricsOff || c.Level == "" || !c.OTLP.Enabled || m.closed.Load() {
 		m.cur.Store(nil)
 		m.digest = ""
 		retire(old)
 		return nil
 	}
-	digest := c.OTLP.Digest
+	// The level is part of the pipeline: after a change from detailed to
+	// basic, a reused provider would keep exporting the per-Worker series
+	// it aggregated, so any change builds a new one.
+	digest := c.OTLP.Digest + "|" + c.Level
 	if old != nil && digest == m.digest {
-		if old.detailed != (c.Level == MetricsDetailed) {
-			next := old.clone()
-			next.detailed = c.Level == MetricsDetailed
-			m.cur.Store(next)
-		}
 		return nil
 	}
-	next, err := m.build(ctx, c, res)
+	next, err := m.buildBounded(ctx, c, res)
 	if err != nil {
 		m.cur.Store(nil)
 		m.digest = ""
 		retire(old)
 		return err
 	}
+	if m.closed.Load() {
+		retire(next)
+		return nil
+	}
 	m.cur.Store(next)
+	if m.closed.Load() && m.cur.CompareAndSwap(next, nil) {
+		retire(next) // Shutdown ran between the check and the store
+		return nil
+	}
 	m.digest = digest
 	retire(old)
 	return nil
-}
-
-// clone shares the instruments and the pipeline with s.
-func (s *meterSet) clone() *meterSet {
-	n := &meterSet{mp: s.mp, reg: s.reg, connOpened: s.connOpened, connClosed: s.connClosed, wsIO: s.wsIO, frameIO: s.frameIO,
-		frameCount: s.frameCount, opCount: s.opCount, callCount: s.callCount, admission: s.admission, turnIngest: s.turnIngest,
-		connDuration: s.connDuration, opDur: s.opDur, workers: map[string]bool{}}
-	s.wmu.Lock()
-	for k := range s.workers {
-		n.workers[k] = true
-	}
-	s.wmu.Unlock()
-	return n
 }
 
 // retire ends a pipeline at once, without a final export.
@@ -152,16 +158,39 @@ func retire(s *meterSet) {
 	_ = s.mp.Shutdown(ctx)
 }
 
-// Shutdown exports once more and stops, within ctx.
+// Shutdown exports once more and stops, within ctx. It does not wait for a
+// Configure in progress (which retires what it builds once it sees the
+// shutdown).
 func (m *Metrics) Shutdown(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.closed.Store(true)
 	s := m.cur.Swap(nil)
-	m.digest = ""
 	if s == nil {
 		return nil
 	}
 	return s.mp.Shutdown(ctx)
+}
+
+// buildBounded runs build with buildTimeout; a build that is still blocked
+// then is abandoned (its pipeline, if it ever completes, is shut down).
+func (m *Metrics) buildBounded(ctx context.Context, c MetricsConfig, res *resource.Resource) (*meterSet, error) {
+	type result struct {
+		s   *meterSet
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		s, err := m.build(ctx, c, res)
+		ch <- result{s, err}
+	}()
+	t := time.NewTimer(buildTimeout)
+	defer t.Stop()
+	select {
+	case r := <-ch:
+		return r.s, r.err
+	case <-t.C:
+		go func() { retire((<-ch).s) }()
+		return nil, errors.New("the OTLP metrics exporter could not be built in time")
+	}
 }
 
 func (m *Metrics) build(ctx context.Context, c MetricsConfig, res *resource.Resource) (*meterSet, error) {
@@ -170,7 +199,7 @@ func (m *Metrics) build(ctx context.Context, c MetricsConfig, res *resource.Reso
 	}
 	var tlsCfg *tls.Config
 	if strings.HasPrefix(c.OTLP.MetricsURL, "https://") {
-		tlsCfg = c.OTLP.TLSConfig()
+		tlsCfg = c.OTLP.MetricsTLSConfig()
 	}
 	headers := c.OTLP.Headers
 	if headers == nil {
@@ -190,7 +219,8 @@ func (m *Metrics) build(ctx context.Context, c MetricsConfig, res *resource.Reso
 		return nil, errors.New("the OTLP metrics exporter could not be built")
 	}
 	opts := []sdkmetric.Option{sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp,
-		sdkmetric.WithInterval(metricsInterval()), sdkmetric.WithTimeout(ExportTimeout)))}
+		sdkmetric.WithInterval(metricsInterval()), sdkmetric.WithTimeout(ExportTimeout))),
+		sdkmetric.WithCardinalityLimit(CardinalityLimit)}
 	if res != nil {
 		opts = append(opts, sdkmetric.WithResource(res))
 	}
