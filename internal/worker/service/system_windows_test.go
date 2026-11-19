@@ -14,24 +14,6 @@ func TestWindowsIsSystemAccountIsFalseForAUser(t *testing.T) {
 	}
 }
 
-func TestWindowsSupervisorEventRoundTrip(t *testing.T) {
-	if SupervisorRunning() {
-		t.Skip("a supervisor of this session runs")
-	}
-	if found, err := SignalSupervisorStop(); err != nil || found {
-		t.Fatalf("found=%v err=%v without a supervisor", found, err)
-	}
-	stop, closeFn, err := CreateSupervisorStopEvent()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeFn()
-	if found, err := SignalSupervisorStop(); err != nil || !found {
-		t.Fatalf("found=%v err=%v", found, err)
-	}
-	<-stop
-}
-
 // One supervisor per user machine-wide: a second acquire finds the first, a
 // stop signal reaches a supervisor that only holds the mutex (still starting)
 // once its event exists, and the role is free again after release.
