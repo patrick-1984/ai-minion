@@ -896,7 +896,6 @@ func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.Raw
 		}
 		return nil, proto.NewError(proto.CodeWorkerOffline, "the Worker connection could not take a new operation")
 	}
-	c.dispatched.Store(true)
 	// The context ending abandons the stream, which ends the blocked read.
 	stopWatch := context.AfterFunc(ctx, st.Reset)
 	defer stopWatch()
@@ -912,8 +911,10 @@ func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.Raw
 			st.Reset()
 			return nil, err
 		}
+		c.dispatched.Store(true) // bytes may have reached the Worker
 		return nil, lost(err)
 	}
+	c.dispatched.Store(true)
 	for {
 		body, err := readFrame(ctx, st)
 		if err != nil {
