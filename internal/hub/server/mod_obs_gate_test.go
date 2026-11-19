@@ -9,11 +9,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"io"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -164,5 +166,52 @@ func TestSettingsListHidesAnInlineKey(t *testing.T) {
 	}
 	if !config.SecretPathValue("otel_client_key_file", "a: b") || config.SecretPathValue("otel_client_key_file", "/etc/minion/key.pem") || config.SecretPathValue("otel_ca_file", "-----BEGIN") {
 		t.Fatal("SecretPathValue")
+	}
+}
+
+// stallWriter passes writes through until stalled, then blocks every write.
+type stallWriter struct {
+	stalled atomic.Bool
+	release chan struct{}
+}
+
+func (w *stallWriter) Write(p []byte) (int, error) {
+	if w.stalled.Load() {
+		<-w.release
+	}
+	return len(p), nil
+}
+
+// A local output that stalls during the stop (stderr behind the sinks' loss
+// warning) does not keep Run from returning.
+func TestRunReturnsWhenTheLocalOutputStallsDuringStop(t *testing.T) {
+	w := &stallWriter{release: make(chan struct{})}
+	defer close(w.release)
+	r := NewRegistry()
+	if err := registerCore(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register("stall", 5, func(_ context.Context, env *Env) error {
+		env.OnStop(func(context.Context) error { w.stalled.Store(true); return nil })
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "http://hub.example.com", Listen: "127.0.0.1:0",
+		Logger: slog.New(slog.NewTextHandler(w, nil))}
+	srv := New(cfg, r)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	select {
+	case <-srv.Started():
+	case <-time.After(20 * time.Second):
+		t.Fatal("the Hub did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return while the local output stalled")
 	}
 }

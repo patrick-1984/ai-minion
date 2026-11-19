@@ -56,6 +56,9 @@ const (
 	// is waiting to be written, so an idle SSE stream or Worker channel and a
 	// slow but reading client are not affected.
 	http2WriteByteTimeout = 30 * time.Second
+
+	// stopLogTimeout bounds the last log line of a stop.
+	stopLogTimeout = time.Second
 )
 
 // newHTTPServer returns the Hub's http.Server around handler. Run uses it with
@@ -441,7 +444,17 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := kernel.Stop(sctx); err != nil {
 		runErr = errors.Join(runErr, err)
 	}
-	log.Info("hub stopped")
+	// The last line is bounded: the local output may be stalled (a full
+	// stderr pipe, for example behind a log sink's loss warning), and the
+	// stop must still end.
+	logged := make(chan struct{})
+	go func() { defer close(logged); log.Info("hub stopped") }()
+	t := time.NewTimer(stopLogTimeout)
+	defer t.Stop()
+	select {
+	case <-logged:
+	case <-t.C:
+	}
 	return runErr
 }
 
