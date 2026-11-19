@@ -14,6 +14,9 @@ import (
 	colmetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/patrick-1984/ai-minion/internal/ops"
+	minionproto "github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // metricsReceiver is an in-process OTLP/HTTP metrics receiver.
@@ -294,5 +297,45 @@ func TestFrameSeriesFitTheWorkerCap(t *testing.T) {
 	}
 	if n != 2400 {
 		t.Fatalf("%d series, want 2400", n)
+	}
+}
+
+// 500 Workers, every op the Hub sends and every error code that can come back
+// keep their own series in detailed mode (the op counter and the duration
+// histogram), none merges into the SDK overflow point.
+func TestDetailedOpSeriesFitTheWorkerCap(t *testing.T) {
+	rcv := newMetricsReceiver(t)
+	m := NewMetrics()
+	if err := m.Configure(context.Background(), metricsConfig(t, rcv.srv.URL, MetricsDetailed), nil); err != nil {
+		t.Fatal(err)
+	}
+	var workerOps []string
+	for _, o := range ops.All() {
+		if o.Scope == ops.ScopeWorker {
+			workerOps = append(workerOps, o.Name)
+		}
+	}
+	codes := []string{"ok", "delivered", "unknown", string(minionproto.CodeForbidden), string(minionproto.CodeWorkerOffline), string(minionproto.CodeInternal), string(minionproto.CodeConnectionLost)}
+	for i := range MaxMetricWorkers {
+		for _, op := range workerOps {
+			for _, c := range codes {
+				m.Op("w-"+strconv.Itoa(i), op, c, time.Millisecond)
+			}
+		}
+	}
+	_ = m.Shutdown(context.Background())
+	for _, p := range rcv.points() {
+		if p.attrs["otel.metric.overflow"] == "true" {
+			t.Fatalf("merged series: %s %+v", p.name, p.attrs)
+		}
+	}
+	n := 0
+	for _, p := range rcv.points() {
+		if p.name == "minion.worker.op.count" {
+			n++
+		}
+	}
+	if want := MaxMetricWorkers * len(workerOps) * 3; n != want {
+		t.Fatalf("%d op series, want %d", n, want)
 	}
 }

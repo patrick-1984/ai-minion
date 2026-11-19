@@ -6,6 +6,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -35,6 +37,17 @@ func TestMetricsBuildWithAStalledCertificatePathIsBounded(t *testing.T) {
 		t.Fatal("Configure hung on the certificate path")
 	}
 	t.Logf("configure: %v", err)
+	// Retries while that build is stuck start nothing.
+	before := runtime.NumGoroutine()
+	for range 5 {
+		e := m.Configure(context.Background(), metricsConfig(t, rcv.srv.URL, MetricsBasic), nil)
+		if e == nil || !strings.Contains(e.Error(), "still blocked") {
+			t.Fatalf("retry: %v", e)
+		}
+	}
+	if after := runtime.NumGoroutine(); after > before+1 {
+		t.Fatalf("goroutines %d -> %d", before, after)
+	}
 	sd := make(chan struct{})
 	go func() { _ = m.Shutdown(context.Background()); close(sd) }()
 	select {

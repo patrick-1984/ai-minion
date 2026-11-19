@@ -66,10 +66,11 @@ const (
 type Metrics struct {
 	online atomic.Pointer[func() int64]
 
-	mu     sync.Mutex // serialises Configure
-	closed atomic.Bool
-	cur    atomic.Pointer[meterSet]
-	digest string // of the configuration of the running pipeline
+	mu       sync.Mutex // serialises Configure
+	closed   atomic.Bool
+	building atomic.Bool // a build is outstanding (buildBounded)
+	cur      atomic.Pointer[meterSet]
+	digest   string // of the configuration of the running pipeline
 }
 
 type meterSet struct {
@@ -171,16 +172,28 @@ func (m *Metrics) Shutdown(ctx context.Context) error {
 }
 
 // buildBounded runs build with buildTimeout; a build that is still blocked
-// then is abandoned (its pipeline, if it ever completes, is shut down).
+// then is abandoned (its pipeline, if it ever completes, is shut down). At
+// most one build is outstanding: while an abandoned one is stuck, a new
+// attempt fails at once instead of leaving another goroutine behind.
 func (m *Metrics) buildBounded(ctx context.Context, c MetricsConfig, res *resource.Resource) (*meterSet, error) {
+	if !m.building.CompareAndSwap(false, true) {
+		return nil, errors.New("an earlier attempt to build the OTLP metrics exporter is still blocked")
+	}
 	type result struct {
 		s   *meterSet
 		err error
 	}
+	const running, delivered, abandoned = 0, 1, 2
+	var state atomic.Int32
 	ch := make(chan result, 1)
 	go func() {
+		defer m.building.Store(false)
 		s, err := m.build(ctx, c, res)
-		ch <- result{s, err}
+		if state.CompareAndSwap(running, delivered) {
+			ch <- result{s, err}
+			return
+		}
+		retire(s) // nobody waits for it any more
 	}()
 	t := time.NewTimer(buildTimeout)
 	defer t.Stop()
@@ -188,8 +201,11 @@ func (m *Metrics) buildBounded(ctx context.Context, c MetricsConfig, res *resour
 	case r := <-ch:
 		return r.s, r.err
 	case <-t.C:
-		go func() { retire((<-ch).s) }()
-		return nil, errors.New("the OTLP metrics exporter could not be built in time")
+		if state.CompareAndSwap(running, abandoned) {
+			return nil, errors.New("the OTLP metrics exporter could not be built in time")
+		}
+		r := <-ch
+		return r.s, r.err
 	}
 }
 
@@ -368,12 +384,38 @@ func (m *Metrics) Op(workerID, op, outcome string, d time.Duration) {
 	if s == nil {
 		return
 	}
-	kv := []attribute.KeyValue{attribute.String("minion.op", boundOp(op)), attribute.String("minion.outcome", boundOutcome(outcome))}
 	if s.detailed && workerID != "" {
-		kv = append(kv, s.workerAttr(workerID))
+		// Per Worker, the series are few: the ops the Hub sends to Workers
+		// (the catalog's Worker scope) and an outcome class, so that
+		// 500 Workers times every op times every class stay far below
+		// CardinalityLimit whatever error codes come back.
+		kv := []attribute.KeyValue{attribute.String("minion.op", boundWorkerOp(op)),
+			attribute.String("minion.outcome", outcomeClass(outcome)), s.workerAttr(workerID)}
 		s.opDur.Record(context.Background(), d.Seconds(), metric.WithAttributes(kv...))
+		add(s.opCount, 1, kv...)
+		return
 	}
-	add(s.opCount, 1, kv...)
+	add(s.opCount, 1, attribute.String("minion.op", boundOp(op)), attribute.String("minion.outcome", boundOutcome(outcome)))
+}
+
+// boundWorkerOp keeps the op attribute within the ops the Hub sends to a
+// Worker.
+func boundWorkerOp(op string) string {
+	if o, ok := ops.Lookup(op); ok && o.Scope == ops.ScopeWorker {
+		return op
+	}
+	return "other"
+}
+
+// outcomeClass folds an outcome or error code into ok, unknown or error.
+func outcomeClass(o string) string {
+	switch o {
+	case "ok", string(ops.OutcomeDelivered), string(ops.OutcomePartial), "accepted":
+		return "ok"
+	case string(ops.OutcomeUnknown), string(proto.CodeConnectionLost):
+		return "unknown"
+	}
+	return "error"
 }
 
 // Call counts a Worker->Hub call stream request.
