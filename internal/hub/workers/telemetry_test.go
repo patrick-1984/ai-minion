@@ -2,9 +2,11 @@ package workers
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,9 +122,9 @@ func TestWelcomeIsAttributedToTheWorker(t *testing.T) {
 	}
 }
 
-// A call for a Worker that is not online (a made-up id, say) is counted
-// without a Worker id: it must not take one of the capped Worker slots.
-func TestRoutedMetricIgnoresUnknownWorkerIDs(t *testing.T) {
+// A call refused before dispatch (a made-up Worker id, say) is not an op
+// sent to a Worker: it is not counted and takes no Worker slot.
+func TestRoutedMetricIgnoresRefusals(t *testing.T) {
 	h := newTestHub(t, nil)
 	rec := &recTelemetry{}
 	h.svc.SetTelemetry(rec)
@@ -136,7 +138,65 @@ func TestRoutedMetricIgnoresUnknownWorkerIDs(t *testing.T) {
 	_, _ = rt.Call(context.Background(), CallRequest{Principal: routeAlice(), Op: ops.OpSessionsList, WorkerID: fake})
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.routed) != 1 || strings.Contains(rec.routed[0], fake) {
+	if len(rec.routed) != 0 {
 		t.Fatalf("routed %q", rec.routed)
+	}
+}
+
+// The sent op keeps its Worker id even when the registry no longer knows the
+// connection when the call ends (a disconnect).
+type goneBackend struct{ Backend }
+
+func (goneBackend) Get(string) (Online, bool) { return Online{}, false }
+
+func TestRoutedMetricKeepsTheWorkerAfterDisconnect(t *testing.T) {
+	h := newTestHub(t, nil)
+	rec := &recTelemetry{}
+	h.svc.SetTelemetry(rec)
+	w := connectScripted(t, h, idAlice, "tel-gone", nil, ops.OpSessionsList)
+	az := authz.New(fakeUsers{idAlice: {Role: authz.RoleUser, Active: true}}, h.svc.OwnerLookup())
+	rt, err := NewRouter(RouterConfig{Backend: goneBackend{RegistryBackend(h.svc.Registry())}, Directory: StoreDirectory{Store: h.st}, Authz: az,
+		Telemetry: h.svc.Telemetry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = rt.Call(context.Background(), CallRequest{Principal: routeAlice(), Op: ops.OpSessionsList, WorkerID: w.id})
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.routed) != 1 || !strings.HasPrefix(rec.routed[0], w.id+" ") {
+		t.Fatalf("routed %q", rec.routed)
+	}
+}
+
+type switchHandler struct {
+	stuck   *atomic.Bool
+	release chan struct{}
+}
+
+func (switchHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h switchHandler) Handle(context.Context, slog.Record) error {
+	if h.stuck.Load() {
+		<-h.release
+	}
+	return nil
+}
+func (h switchHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h switchHandler) WithGroup(string) slog.Handler      { return h }
+
+// With the local output stalled (its lock held by the traffic writer), the
+// Hub's close still returns: the offline and timeout records are best effort.
+func TestServiceCloseWithStalledLocalOutput(t *testing.T) {
+	stuck := &atomic.Bool{}
+	rel := make(chan struct{})
+	defer close(rel)
+	h := newTestHub(t, func(o *ServiceOptions) { o.Logger = slog.New(switchHandler{stuck, rel}) })
+	_ = connectScripted(t, h, idAlice, "stall-1", nil, ops.OpSessionsList)
+	stuck.Store(true)
+	done := make(chan struct{})
+	go func() { h.svc.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("Close hung on a stalled log output")
 	}
 }

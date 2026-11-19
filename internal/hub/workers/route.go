@@ -543,15 +543,16 @@ type CallRequest struct {
 // situation returns worker_offline.
 func (rt *Router) Call(ctx context.Context, req CallRequest) (any, error) {
 	start := time.Now()
-	res, err := rt.call(ctx, req)
-	rt.debugRouted(req, start, res, err)
+	var c *call
+	res, err := rt.call(ctx, req, &c)
+	rt.debugRouted(req, start, res, err, c)
 	return res, err
 }
 
 // debugRouted writes, at debug level, one line about an op routed to a
 // Worker: the op, the Worker, the outcome (ok, the write outcome or the error
 // code) and the duration. Arguments and results are never logged.
-func (rt *Router) debugRouted(req CallRequest, start time.Time, res any, err error) {
+func (rt *Router) debugRouted(req CallRequest, start time.Time, res any, err error, c *call) {
 	outcome := "ok"
 	if wr, ok := res.(ops.WriteResult); ok {
 		outcome = string(wr.Outcome)
@@ -563,25 +564,23 @@ func (rt *Router) debugRouted(req CallRequest, start time.Time, res any, err err
 			outcome = string(pe.Code)
 		}
 	}
-	if t := rt.tel(); t != nil {
-		// Only a Worker that is online gets a per-Worker series: a call
-		// refused before dispatch for a made-up Worker id must not take
-		// one of the capped Worker slots.
-		wid := ""
-		if _, ok := rt.backend.Get(req.WorkerID); ok {
-			wid = req.WorkerID
-		}
-		t.OpRouted(wid, req.Op, outcome, time.Since(start))
+	// The metric counts the ops that were sent to a Worker, for the Worker
+	// that took them (captured when the stream opened, so a connection that
+	// is gone by now keeps its attribution); a refusal before dispatch is
+	// not an op sent and takes no Worker slot.
+	if t := rt.tel(); t != nil && c != nil && c.dispatched.Load() {
+		t.OpRouted(c.workerID, req.Op, outcome, time.Since(start))
 	}
 	rt.log.Debug("workers: op routed", "op", req.Op, "worker_id", req.WorkerID,
 		"principal_kind", string(req.Principal.Kind), "outcome", outcome, "duration", time.Since(start).String())
 }
 
-func (rt *Router) call(ctx context.Context, req CallRequest) (any, error) {
+func (rt *Router) call(ctx context.Context, req CallRequest, out **call) (any, error) {
 	c, err := rt.prepare(ctx, req, false)
 	if err != nil {
 		return nil, err
 	}
+	*out = c
 	ctx, cancel := context.WithTimeout(ctx, rt.timeout)
 	defer cancel()
 	body, err := rt.exchange(ctx, c, nil)
@@ -646,16 +645,18 @@ func (e *OutcomeUnknownError) Unwrap() error { return e.Err }
 // ends with ctx, with the Worker's own timeout or with the connection.
 func (rt *Router) Stream(ctx context.Context, req CallRequest, emit func(any) error) error {
 	start := time.Now()
-	err := rt.stream(ctx, req, emit)
-	rt.debugRouted(req, start, nil, err)
+	var c *call
+	err := rt.stream(ctx, req, emit, &c)
+	rt.debugRouted(req, start, nil, err, c)
 	return err
 }
 
-func (rt *Router) stream(ctx context.Context, req CallRequest, emit func(any) error) error {
+func (rt *Router) stream(ctx context.Context, req CallRequest, emit func(any) error, out **call) error {
 	c, err := rt.prepare(ctx, req, true)
 	if err != nil {
 		return err
 	}
+	*out = c
 	_, err = rt.exchange(ctx, c, func(data json.RawMessage) error {
 		el, err := decodeResult(c.op, data)
 		if err != nil {
@@ -712,6 +713,9 @@ type call struct {
 	// check, when set, decides on the connection that gets the op (the
 	// hidden-session refusal of session_create).
 	check func(Online) error
+	// dispatched is set when the Worker's connection took the op (the
+	// stream opened): from then on it counts as an op sent to that Worker.
+	dispatched atomic.Bool
 }
 
 // prepare validates the request, decides it and computes the request frame.
@@ -892,6 +896,7 @@ func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.Raw
 		}
 		return nil, proto.NewError(proto.CodeWorkerOffline, "the Worker connection could not take a new operation")
 	}
+	c.dispatched.Store(true)
 	// The context ending abandons the stream, which ends the blocked read.
 	stopWatch := context.AfterFunc(ctx, st.Reset)
 	defer stopWatch()
