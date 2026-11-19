@@ -140,12 +140,13 @@ func stagedJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, args [
 		return res, &usageError{err}
 	}
 	if opt.resume {
+		// The sharing choice is applied only after resumeJoin verified the
+		// enrollment against the Hub: a refused resume changes nothing.
+		var commit func() error
 		if share.Source == config.SourceFlag {
-			if err := commitJoinShare(ctx, deps, core, share.Value); err != nil {
-				return res, err
-			}
+			commit = func() error { return commitJoinShare(ctx, deps, core, share.Value) }
 		}
-		return resumeJoin(ctx, cmd, deps, opt, r, core, res)
+		return resumeJoin(ctx, cmd, deps, opt, r, core, res, commit)
 	}
 
 	// The first join needs the sharing choice; it is asked before the token
@@ -163,6 +164,21 @@ func stagedJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, args [
 		return res, err
 	}
 	res.Hub = safeURL(tok.HubURL)
+	// Stdin may have been open for a long time: look at the pause and at the
+	// config file again, so that nothing decided before is stale (a pause
+	// the owner set, a Hub pin provisioned meanwhile).
+	if p, err := agent.ReadPause(core.StateDir); err != nil {
+		return res, err
+	} else if p.Active(time.Now()) {
+		return res, newResultError(ExitPaused, "this Worker was paused while the join token was read, so it talks to no Hub; resume it first (minion worker resume), then run this again. Nothing was changed.")
+	}
+	if deps.loadConfig != nil {
+		file, err := loadConfigFile(r, deps.loadConfig)
+		if err != nil {
+			return res, err
+		}
+		r.File = file
+	}
 	// The token must name the Hub that flags, environment and the config
 	// file name, if they name one; nothing is sent otherwise.
 	const from = "the join token (--token-file)"
@@ -347,7 +363,7 @@ func saveJoinConfig(deps workerPairDeps, stateDir, url, fingerprint string) erro
 // stored enrollment against the Hub the config (or a flag, or the
 // environment) names, then saves the config and restarts the Worker. It never
 // dials the Hub.
-func resumeJoin(ctx context.Context, cmd *cobra.Command, deps workerPairDeps, opt pairOptions, r *config.Resolver, core config.WorkerCore, res joinResult) (joinResult, error) {
+func resumeJoin(ctx context.Context, cmd *cobra.Command, deps workerPairDeps, opt pairOptions, r *config.Resolver, core config.WorkerCore, res joinResult, commit func() error) (joinResult, error) {
 	cur, ok, err := readPairing(ctx, core.StateDir)
 	if err != nil {
 		return res, err
@@ -381,6 +397,11 @@ func resumeJoin(ctx context.Context, cmd *cobra.Command, deps workerPairDeps, op
 		}
 	}
 	res.Enrollment = joinAlready
+	if commit != nil {
+		if err := commit(); err != nil {
+			return res, err
+		}
+	}
 
 	fileServer, _, _ := fileValue(r.File, config.KeyServer)
 	fileFp, _, _ := fileValue(r.File, config.KeyHubFingerprint)
@@ -476,7 +497,11 @@ func commitJoinShare(ctx context.Context, deps workerPairDeps, core config.Worke
 	_, err := shareWithCore(ctx, sd, core, &store.ShareChange{Mode: m})
 	var re *resultError
 	if errors.As(err, &re) && re.Exit == ExitNotInForce {
-		return nil
+		// The Worker applies share_existing from its environment or flags
+		// again at its next start, which would undo the choice the user gave
+		// to this join: refuse before enrolling or restarting.
+		return &resultError{Exit: ExitNotInForce, Code: "saved_not_in_force", Err: err,
+			Message: "the sharing choice is saved, but " + re.Message + "; the join was not done, so no session is exposed against your choice. Remove that setting, then run the join again"}
 	}
 	if err != nil {
 		return fmt.Errorf("save the sharing choice, nothing else was changed: %w", err)

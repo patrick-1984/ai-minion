@@ -145,6 +145,16 @@ func backgroundJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, ar
 		saveFp = expect.String()
 	}
 
+	// The pairing code must appear only in the status. A flag or an
+	// environment variable that asks for the console would win again at the
+	// restart: refuse instead of printing the code to a log.
+	if pd, err := r.Resolve(config.KeyPairingDisplay); err != nil {
+		return res, err
+	} else if pd.Source != config.SourceFile && pd.Source != config.SourceDefault && pd.Value == config.PairingDisplayConsole {
+		return res, newResultError(ExitError, "pairing_display=console is set by a flag or an environment variable ("+string(pd.Source)+
+			"); a background pairing shows its code only in the status. Remove it, then run this again. Nothing was changed")
+	}
+
 	// The first pairing of a Worker that has no sharing choice needs one, as
 	// the join with a token does; it is saved before anything else.
 	share, err := r.Resolve(config.KeyShareExisting)
@@ -207,6 +217,11 @@ func saveJoinHub(stateDir, url, fingerprint, source string, now time.Time) (agen
 	if err != nil {
 		return agent.JoinPin{}, err
 	}
+	// A pin provisioned while this command ran (the caller checked an older
+	// snapshot) is never replaced by another one.
+	if cur := strings.TrimSpace(fileFp); fingerprint != "" && cur != "" && !sameFingerprint(cur, fingerprint) {
+		return agent.JoinPin{}, fmt.Errorf("hub_fingerprint in the config file changed while this command ran (it is %s now); nothing was changed", strings.TrimSpace(fileFp))
+	}
 	// An unreadable record proves nothing about who set the values (ok is
 	// false then): it is replaced by what this join knows.
 	prev, hadPrev, _ := agent.ReadJoinPin(stateDir)
@@ -219,10 +234,14 @@ func saveJoinHub(stateDir, url, fingerprint, source string, now time.Time) (agen
 	if background {
 		f.Set(config.KeyPairingDisplay, config.PairingDisplayStatus)
 	}
-	if err := f.Save(); err != nil {
+	// The provenance record is written before the config file: a failure
+	// between the two leaves a record that claims values the file does not
+	// hold yet (a resume saves them), never values without a record (which a
+	// later leave would take for the user's own).
+	if err := agent.WriteJoinPin(stateDir, pin); err != nil {
 		return agent.JoinPin{}, err
 	}
-	if err := agent.WriteJoinPin(stateDir, pin); err != nil {
+	if err := f.Save(); err != nil {
 		return agent.JoinPin{}, err
 	}
 	// A new join asks for the pairing that an earlier cancel stopped (W8b).
@@ -232,4 +251,15 @@ func saveJoinHub(stateDir, url, fingerprint, source string, now time.Time) (agen
 		}
 	}
 	return pin, nil
+}
+
+// sameFingerprint compares two hub_fingerprint values in any accepted
+// notation.
+func sameFingerprint(a, b string) bool {
+	ma, ea := agent.ParseHubExpectation(a)
+	mb, eb := agent.ParseHubExpectation(b)
+	if ea != nil || eb != nil {
+		return a == b
+	}
+	return ma.String() == mb.String()
 }

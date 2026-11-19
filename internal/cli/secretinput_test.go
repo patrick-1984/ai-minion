@@ -488,3 +488,34 @@ func scanNoSecret(t *testing.T, name, dir string, secrets map[string][]byte) {
 		t.Fatalf("scan %s: %v", name, err)
 	}
 }
+
+// A FIFO without a writer must not hang the open: Ctrl+C ends it, and a FIFO
+// is not accepted as a token file.
+func TestSecretFileFIFONotBlocking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no FIFO")
+	}
+	p := filepath.Join(t.TempDir(), "fifo")
+	if err := syscallMkfifo(p); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := readSecretInput(ctx, p, nil, 100, "the join token"); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errSecretInterrupted) {
+			t.Fatalf("err = %v, want interrupted", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("readSecretInput hung on a FIFO without writer")
+	}
+}
+
+func TestSecretFileRejectsNonRegular(t *testing.T) {
+	_, err := readSecretInput(context.Background(), t.TempDir(), nil, 100, "the join token")
+	if err == nil {
+		t.Fatal("a directory was accepted")
+	}
+}
