@@ -249,6 +249,10 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 	if rep.PauseCleared, err = ClearPause(o.StateDir); err != nil {
 		return rep, err
 	}
+	// So does a cancelled pairing (tray W8b): the next setup pairs again.
+	if err := RemovePairCancel(o.StateDir); err != nil {
+		return rep, err
+	}
 
 	keyPath := filepath.Join(o.StateDir, WorkerKeyFile)
 	switch err := os.Remove(keyPath); {

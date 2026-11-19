@@ -41,13 +41,16 @@ var localOps = map[string]localOp{
 	OpLocalShareList:  localShareListOp,
 	OpLocalShareApply: localShareApplyOp,
 	OpLocalLifecycle:  localLifecycleOp,
+	OpLocalPairCancel: func(l localExecutor, ctx context.Context, rq localapi.Request) (json.RawMessage, error) {
+		return l.pairCancelOp(ctx, rq)
+	},
 }
 
 // localFeatures are the capabilities of the local-only ops (for example
 // lifecycle.v1) that a capability-qualified request may require. They are
 // added only to the qualified-op check of the local socket, never to
 // [Executor.Features], so they are not announced to the Hub.
-var localFeatures = []string{FeaturePause, FeatureConfigApply, FeatureShareLocal, FeatureLifecycle, FeaturePairingStatus}
+var localFeatures = []string{FeaturePause, FeatureConfigApply, FeatureShareLocal, FeatureLifecycle, FeaturePairingStatus, FeaturePairCancel}
 
 // localOpFor returns the local-only handler of op, if there is one.
 func localOpFor(op string) (localOp, bool) {

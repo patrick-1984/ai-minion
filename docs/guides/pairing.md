@@ -83,6 +83,17 @@ minion worker status --json      # "pairing": {"state":"pending","code":"MN-K7Q4
 - A `hub_fingerprint` already in the config file is kept; a different `--hub-fingerprint` is refused with nothing changed. The command records in `join-pin.json` in the state directory whether it created the `hub_fingerprint` expectation (and the `server` address), so that cancelling the pairing or leaving the Hub later removes only what the join set.
 - `pairing_display` (`console` or `status`, also `--pairing-display` and `MINION_PAIRING_DISPLAY`) applies only to the Worker's own pairing. `minion worker pair` and `minion worker join <url>` in a terminal always show the code box as before.
 
+### Cancel a background pairing: `worker pair cancel --attempt A`
+
+```sh
+minion worker pair cancel --attempt <pairing.attempt from minion worker status --json> [--json]
+```
+
+- The running Worker stops pairing at once: the code is no longer shown, its resume record is deleted, and the Worker does not pair by itself with this Hub address again, also not after a restart (`pair-cancel.json` in the state directory), until a new `minion worker join <url> --background` or `minion worker reset`.
+- The Worker key and the sharing choice are kept. `server`, `hub_fingerprint` and `pairing_display` are removed from the config file only when `join-pin.json` says the background join saved them and they still have that value; a value that was there before the join, or was edited since, stays (reported as `kept`). The JSON result lists `cleared` and `kept`.
+- Exit status: 0 when cancelled; 27 when the attempt is not the code shown now (a new code replaced it, or the pairing ended) or the Worker was paired meanwhile. Nothing is changed then, and a pairing that completed stays: leaving the Hub is a separate action. 24 when no Worker runs for the state directory; 20 when the running Worker is too old.
+- When the Hub accepted the code at the same moment as the cancel, the Worker stores nothing; the Hub may then list a Worker that never connects, which you remove on the Hub.
+
 The pairing handshake has not had an independent cryptographic review yet; see [security](../security.md).
 
 ### Give the Worker the Hub fingerprint

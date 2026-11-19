@@ -29,7 +29,9 @@ func init() {
 	Register(func(root *cobra.Command) {
 		worker := workerCommand(root)
 		deps := defaultWorkerPairDeps()
-		worker.AddCommand(newWorkerPairCmd(deps), newWorkerJoinCmd(deps))
+		pair := newWorkerPairCmd(deps)
+		pair.AddCommand(newWorkerPairCancelCmd(defaultWorkerPairCancelDeps()))
+		worker.AddCommand(pair, newWorkerJoinCmd(deps))
 	})
 }
 

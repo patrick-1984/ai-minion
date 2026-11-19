@@ -541,6 +541,17 @@ func (e *Enrollments) DeletePairResumeIf(ctx context.Context, gen uint64, pairin
 	})
 }
 
+// deletePairResumeOf deletes the pairing resume record under the state guard
+// when it is the one of pairingID and code (a cancelled pairing, tray W8b),
+// whatever the generation, and reports whether it did.
+func (e *Enrollments) deletePairResumeOf(ctx context.Context, pairingID, code string) (deleted bool, err error) {
+	err = e.locked(ctx, func() error {
+		deleted, err = e.repo.DeletePairResumeIf(ctx, pairingID, code)
+		return err
+	})
+	return deleted, err
+}
+
 // ApplyWelcome stores what the latest welcome said.
 func (e *Enrollments) ApplyWelcome(ctx context.Context, w HubWelcome) error {
 	return e.locked(ctx, func() error { return e.applyWelcome(ctx, w) })

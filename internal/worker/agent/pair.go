@@ -1444,6 +1444,14 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 		return Enrollment{}, fmt.Errorf("store the enrollment: %w", err)
 	}
 	defer release()
+	// The owner cancelled this pairing (tray W8b) before the commit got the
+	// lock: nothing is stored. The cancel checked "not paired" under this
+	// same lock, so either it or this commit wins, never both.
+	if errors.Is(context.Cause(ctx), errPairingCancelled) {
+		p.log.Warn("the Hub accepted the code, but the pairing was cancelled on this Worker first; nothing was stored "+
+			"(the Hub may list this Worker until it is removed there)", "hub", hubLabel(p.cfg.HubURL), "worker_id", w.WorkerID)
+		return Enrollment{}, errPairingCancelled
+	}
 	// The certificate of the connection that carried the welcome must still be
 	// valid when the commit happens, also after the wait for the locks.
 	var live func() bool

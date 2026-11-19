@@ -88,7 +88,8 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		shareSvc = &shareLocal{st: st, ex: ex, policy: ex.Policy(), overriddenBy: shareOverriddenBy(env.Settings())}
 	}
 	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health, Pause: pause}
-	if pairing, ok := lookupService[*PairingStatus](env.rt); ok && pairing != nil {
+	pairing, _ := lookupService[*PairingStatus](env.rt)
+	if pairing != nil {
 		live.Pairing = pairing.Pending
 	}
 	// The pipe module starts before this one. Without it the pipe ops are
@@ -121,6 +122,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 			pause: pause, hubConfigured: conn != nil && conn.cfg.HubURL != "",
 			configApply: configApplier{settings: env.Settings(), ex: ex}.apply,
 			share:       shareSvc,
+			pairing:     pairing,
 		},
 		Logger: log,
 	})
@@ -165,6 +167,8 @@ type localExecutor struct {
 	share *shareLocal
 	// lifecycle serves worker_lifecycle; nil refuses.
 	lifecycle *lifecycleService
+	// pairing serves worker_pair_cancel (with enrollments); nil refuses.
+	pairing *PairingStatus
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {

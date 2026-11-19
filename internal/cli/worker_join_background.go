@@ -212,5 +212,9 @@ func saveBackgroundJoin(stateDir, url, fingerprint string, now time.Time) (agent
 	if err := agent.WriteJoinPin(stateDir, pin); err != nil {
 		return agent.JoinPin{}, err
 	}
+	// A new join asks for the pairing that an earlier cancel stopped (W8b).
+	if err := agent.RemovePairCancel(stateDir); err != nil {
+		return agent.JoinPin{}, err
+	}
 	return pin, nil
 }

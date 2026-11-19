@@ -103,41 +103,8 @@ func NextJoinPin(prev JoinPin, hadPrev bool, fileServer, fileFingerprint, server
 // WriteJoinPin writes the provenance record durably and owner-only
 // (temporary file, fsync, rename, fsync of the directory). The caller holds
 // the config lock, under which it also wrote the config file.
-func WriteJoinPin(stateDir string, pin JoinPin) (err error) {
-	b, err := json.Marshal(pin)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return fmt.Errorf("create the state directory: %w", err)
-	}
-	f, err := os.CreateTemp(stateDir, ".join-pin-*.tmp")
-	if err != nil {
-		return fmt.Errorf("write %s: %w", JoinPinFile, err)
-	}
-	tmp := f.Name()
-	defer func() {
-		if err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
-		}
-	}()
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("write %s: %w", JoinPinFile, err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("write %s (fsync): %w", JoinPinFile, err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("write %s: %w", JoinPinFile, err)
-	}
-	if err := os.Rename(tmp, filepath.Join(stateDir, JoinPinFile)); err != nil {
-		return fmt.Errorf("write %s: %w", JoinPinFile, err)
-	}
-	if err := syncDirectory(stateDir); err != nil {
-		return fmt.Errorf("write %s (fsync of the directory): %w", JoinPinFile, err)
-	}
-	return nil
+func WriteJoinPin(stateDir string, pin JoinPin) error {
+	return writeStateJSON(stateDir, JoinPinFile, ".join-pin-*.tmp", pin)
 }
 
 // RemoveJoinPin removes the provenance record; a missing one is fine.

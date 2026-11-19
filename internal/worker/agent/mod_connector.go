@@ -288,6 +288,13 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, t autoPairTarge
 		return
 	}
 	log := s.logger()
+	if (t.status != nil && t.status.cancelled(hubURL)) || pairingCancelledFor(s.StateDir, hubURL) {
+		// The owner cancelled this pairing (tray W8b): no code again, also
+		// not after a restart, until a new join asks for it.
+		log.Info("the pairing with this Hub was cancelled; this Worker does not pair by itself. " +
+			"To pair, run minion worker join <url> --background or minion worker pair")
+		return
+	}
 	dialer := d.pairDialer
 	if dialer == nil {
 		dialer = NewPairDialer()
@@ -303,6 +310,12 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, t autoPairTarge
 	if err != nil {
 		log.Warn("cannot start pairing", "error", err.Error())
 		return
+	}
+	if t.status != nil {
+		// "minion worker pair cancel" ends this run through its context.
+		var end func()
+		ctx, end = t.status.track(ctx, hubURL)
+		defer end()
 	}
 	if t.display == config.PairingDisplayStatus {
 		log.Info("this Worker is not paired: it shows a pairing code in the tray and in minion worker status (not here); enter it in the Hub (Workers > Add worker)")

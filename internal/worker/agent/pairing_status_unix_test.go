@@ -28,12 +28,18 @@ type pairingWorker struct {
 	dir  string
 	out  *syncBuf
 	logs *logBuf
+	rt   *Runtime
 }
 
 func startPairingWorker(t *testing.T, display string) *pairingWorker {
 	t.Helper()
-	h := newStubPairHub(t)
-	dir := t.TempDir()
+	return startPairingWorkerIn(t, newStubPairHub(t), t.TempDir(), display)
+}
+
+// startPairingWorkerIn starts the Worker on the state directory dir with the
+// Hub h (a restart when dir was used before).
+func startPairingWorkerIn(t *testing.T, h *stubPairHub, dir, display string) *pairingWorker {
+	t.Helper()
 	host := newFakeHost()
 	core := coreDeps{
 		openStore:  func(ctx context.Context, d string) (*store.Store, error) { return store.OpenContext(ctx, d) },
@@ -63,8 +69,8 @@ func startPairingWorker(t *testing.T, display string) *pairingWorker {
 		env["MINION_PAIRING_DISPLAY"] = display
 	}
 	res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }}
-	w := &pairingWorker{hub: h, dir: dir, out: &syncBuf{}, logs: &logBuf{}}
 	rt := NewRuntime(r, Options{})
+	w := &pairingWorker{hub: h, dir: dir, out: &syncBuf{}, logs: &logBuf{}, rt: rt}
 	if err := rt.Start(context.Background(), Settings{
 		WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "pi"},
 		Resolver:   res,
