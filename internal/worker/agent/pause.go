@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -90,6 +91,15 @@ type PauseService struct {
 	state     PauseState
 	stopTimer func() bool
 	admission pauseAdmission
+	// closed is set when the Worker shuts down: no timer is armed after it
+	// and a timer that fires late changes nothing (the next process, for
+	// example the replacement of a restart, owns the pause file then).
+	closed bool
+
+	// hubWork counts the Hub work outside the connector that runs in the
+	// current unpaused interval (deferred enrollment, pairing): a pause is
+	// acknowledged only once it ended.
+	hubWork atomic.Int64
 }
 
 // NewPauseService reads the pause file of dir and returns the service with
@@ -151,7 +161,7 @@ func (p *PauseService) armTimer(st PauseState) {
 		p.stopTimer()
 		p.stopTimer = nil
 	}
-	if !st.Paused || st.Until.IsZero() {
+	if p.closed || !st.Paused || st.Until.IsZero() {
 		return
 	}
 	gen := st.Generation
@@ -160,6 +170,18 @@ func (p *PauseService) armTimer(st PauseState) {
 			p.log.Error("could not end the timed pause", "error", err)
 		}
 	})
+}
+
+// Close stops the timer of a timed pause at the shutdown of the Worker. A
+// timer that already fired waits for p.mu and then finds the service closed.
+func (p *PauseService) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	if p.stopTimer != nil {
+		p.stopTimer()
+		p.stopTimer = nil
+	}
 }
 
 // PauseResult is the reply of a pause: the new state and the writes that
@@ -201,13 +223,14 @@ func (p *PauseService) Pause(ctx context.Context, until time.Time) (PauseResult,
 	return res, nil
 }
 
-// waitDisconnected waits a short time for the connector to drop its link.
+// waitDisconnected waits a short time for the connector to drop its link and
+// for the other Hub work of the unpaused interval to end.
 func (p *PauseService) waitDisconnected(ctx context.Context) {
-	if p.connected == nil {
-		return
+	busy := func() bool {
+		return p.hubWork.Load() > 0 || (p.connected != nil && p.connected())
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for p.connected() && time.Now().Before(deadline) && ctx.Err() == nil {
+	for busy() && time.Now().Before(deadline) && ctx.Err() == nil {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -221,8 +244,18 @@ func (p *PauseService) Resume(ctx context.Context) (PauseState, error) {
 func (p *PauseService) resume(_ context.Context, gen uint64) (PauseState, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if gen != 0 && p.state.Generation != gen {
-		return p.state, nil // a later change replaced the timed pause
+	if gen != 0 {
+		if p.closed || p.state.Generation != gen {
+			return p.state, nil // a later change replaced the timed pause
+		}
+		// Another process (the replacement of a restart, the CLI of a
+		// stopped Worker) may have changed the file since: the saved
+		// generation decides, read under the same lock as the write.
+		if cur, err := ReadPause(p.dir); err != nil {
+			return PauseState{}, internalErr("read the pause", err)
+		} else if cur.Generation != gen {
+			return p.state, nil
+		}
 	}
 	st, err := p.set(p.dir, false, time.Time{}, p.now())
 	if err != nil {
@@ -322,15 +355,48 @@ func cancelOnPause(ctx context.Context, g *PauseGate) (context.Context, func() (
 	}
 }
 
-// Defer runs fn once after the next resume, or at once (in its own
-// goroutine) when the Worker is not paused. It is for the Hub work that a
-// paused start deferred: an invitation enrollment (tray W3c).
+// beginHubWork admits one piece of Hub work for the current unpaused
+// interval: its context ends at the next pause, and a pause is acknowledged
+// only after end was called (bounded like the wait for the connector). ok is
+// false when the Worker is paused now. end reports whether a pause ended the
+// work.
+func (p *PauseService) beginHubWork(ctx context.Context) (wctx context.Context, end func() (paused bool), ok bool) {
+	// Counted before the gate is read: a pause that sets the gate after this
+	// read waits for the count, one that set it before is seen here.
+	p.hubWork.Add(1)
+	if p.Paused() {
+		p.hubWork.Add(-1)
+		return nil, nil, false
+	}
+	wctx, stop := cancelOnPause(ctx, p.gate)
+	return wctx, func() bool {
+		paused := stop()
+		p.hubWork.Add(-1)
+		return paused
+	}, true
+}
+
+// Defer runs fn after the next resume, or at once (in its own goroutine)
+// when the Worker is not paused. It is for the Hub work that a paused start
+// deferred: an invitation enrollment (tray W3c). A pause ends fn's context
+// and is acknowledged after fn returned; fn then runs again after the next
+// resume (it returns at once when nothing is left to do).
 func (p *PauseService) Defer(ctx context.Context, name string, fn func(ctx context.Context)) {
 	go func() {
-		if err := waitUnpaused(ctx, p.gate); err != nil {
-			return
+		for {
+			if err := waitUnpaused(ctx, p.gate); err != nil {
+				return
+			}
+			wctx, end, ok := p.beginHubWork(ctx)
+			if !ok {
+				continue
+			}
+			p.log.Info("running the Hub work deferred while paused", "work", name)
+			fn(wctx)
+			if !end() {
+				return
+			}
+			p.log.Info("paused during the deferred Hub work; it runs again after the resume", "work", name)
 		}
-		p.log.Info("running the Hub work deferred while paused", "work", name)
-		fn(ctx)
 	}()
 }

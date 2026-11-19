@@ -73,6 +73,10 @@ type lifecycleService struct {
 	// stop and restart end the process (after the reply).
 	stop    func()
 	restart func()
+	// markClean records an intentional restart as a clean stop for the update
+	// crash guard (the exit or exec below bypasses the runtime's own stop); nil
+	// does nothing.
+	markClean func()
 }
 
 func (s lifecycleService) serve(_ context.Context, raw json.RawMessage) (json.RawMessage, error) {
@@ -112,7 +116,13 @@ func (s lifecycleService) serve(_ context.Context, raw json.RawMessage) (json.Ra
 	switch {
 	case a.Action == LifecycleRestart:
 		res.Exiting = true
-		go func() { time.Sleep(200 * time.Millisecond); s.restart() }()
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			if s.markClean != nil {
+				s.markClean()
+			}
+			s.restart()
+		}()
 	case s.runMode == RunModeSystemd || s.runMode == RunModeLaunchd:
 		// systemd Restart=always and launchd KeepAlive would start a Worker
 		// that exits: the caller stops the unit or agent.

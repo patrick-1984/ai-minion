@@ -80,10 +80,54 @@ func SetPause(stateDir string, paused bool, until, now time.Time) (PauseState, e
 	if paused && !until.IsZero() {
 		next.Until = until.UTC()
 	}
-	if err := writePauseFile(stateDir, next); err != nil {
+	b, err := json.Marshal(next)
+	if err != nil {
+		return PauseState{}, err
+	}
+	prev, rerr := os.ReadFile(filepath.Join(stateDir, PauseFile))
+	existed := rerr == nil
+	renamed, err := replacePauseFile(stateDir, append(b, '\n'))
+	if err != nil {
+		if renamed {
+			// The new file is in place but not known to be durable: the
+			// change is not acknowledged, so it must not take effect at a
+			// later start either (a failed resume must not resume).
+			if rerr := restorePauseFile(stateDir, prev, existed); rerr != nil {
+				err = fmt.Errorf("%w (and the previous pause state could not be restored: %v)", err, rerr)
+			}
+		}
 		return PauseState{}, err
 	}
 	return next, nil
+}
+
+// restorePauseFile puts the previous content of the pause file back (or
+// removes the file when there was none), best effort and without the fsync
+// that just failed.
+func restorePauseFile(stateDir string, prev []byte, existed bool) error {
+	path := filepath.Join(stateDir, PauseFile)
+	if !existed {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	f, err := os.CreateTemp(stateDir, ".pause-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, werr := f.Write(prev)
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp)
+		return errors.Join(werr, cerr)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // ClearPause removes the pause file (worker reset and leave). A missing file
@@ -99,18 +143,16 @@ func ClearPause(stateDir string) (removed bool, err error) {
 	}
 }
 
-func writePauseFile(stateDir string, p PauseState) (err error) {
-	b, err := json.Marshal(p)
-	if err != nil {
-		return err
-	}
+// replacePauseFile writes b durably as the pause file. renamed says the new
+// content is in place even though err is not nil (the directory flush failed).
+func replacePauseFile(stateDir string, b []byte) (renamed bool, err error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return fmt.Errorf("create the state directory: %w", err)
+		return false, fmt.Errorf("create the state directory: %w", err)
 	}
 	// CreateTemp creates the file owner-only (0600).
-	f, err := os.CreateTemp(stateDir, ".pause-*.tmp")
-	if err != nil {
-		return fmt.Errorf("write the pause file: %w", err)
+	f, cerr := os.CreateTemp(stateDir, ".pause-*.tmp")
+	if cerr != nil {
+		return false, fmt.Errorf("write the pause file: %w", cerr)
 	}
 	tmp := f.Name()
 	defer func() {
@@ -119,22 +161,22 @@ func writePauseFile(stateDir string, p PauseState) (err error) {
 			_ = os.Remove(tmp)
 		}
 	}()
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("write the pause file: %w", err)
+	if _, err := f.Write(b); err != nil {
+		return false, fmt.Errorf("write the pause file: %w", err)
 	}
 	if err := pauseFS.sync(f); err != nil {
-		return fmt.Errorf("write the pause file (fsync): %w", err)
+		return false, fmt.Errorf("write the pause file (fsync): %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("write the pause file: %w", err)
+		return false, fmt.Errorf("write the pause file: %w", err)
 	}
 	if err := pauseFS.rename(tmp, filepath.Join(stateDir, PauseFile)); err != nil {
-		return fmt.Errorf("write the pause file: %w", err)
+		return false, fmt.Errorf("write the pause file: %w", err)
 	}
 	if err := pauseFS.syncDir(stateDir); err != nil {
-		return fmt.Errorf("write the pause file (fsync of the directory): %w", err)
+		return true, fmt.Errorf("write the pause file (fsync of the directory): %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // syncDirectory makes a rename in dir durable. Windows cannot open a directory

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/patrick-1984/ai-minion/internal/version"
+	"io"
 	"sort"
 	"time"
 
@@ -63,6 +64,8 @@ type connectorDeps struct {
 	clock      transport.Clock
 	// inviteDialer enrolls a deferred invitation; nil means the production one.
 	inviteDialer InviteDialer
+	// inviteStdin is read for a deferred --invite-key -; nil means os.Stdin.
+	inviteStdin io.Reader
 }
 
 // startConnector is the module start function. It provides *Enrollments and
@@ -174,6 +177,15 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		log.Warn("cannot read pairing_display; the pairing code is shown in minion worker status only", "error", err.Error())
 		display = config.PairingDisplayStatus
 	}
+	// A pairing that "worker join --background" started shows its code in the
+	// status only, whatever a flag or the environment says now: they rank above
+	// the saved pairing_display=status, and the console and the Worker log
+	// must never get a code that the tray's pairing meant for the owner alone.
+	if display != config.PairingDisplayStatus && backgroundJoinFor(s.StateDir, hub.Server) {
+		log.Warn("a background join started this pairing: its code is shown in minion worker status only; " +
+			"pairing_display=" + display + " from a flag or the environment is ignored")
+		display = config.PairingDisplayStatus
+	}
 	su.hubRange = func() *version.ProtoRange { return connectorHubRange(c) }
 	if err := c.applyStoredPolicy(ctx); err != nil {
 		return nil, fmt.Errorf("apply the stored Hub policy: %w", err)
@@ -233,8 +245,11 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	// An invitation enrollment that a paused start deferred runs after the
 	// resume, without a restart (tray W3c).
 	if deferredInvite(s.StateDir) {
+		stdin := newCachedKeyReader(d.inviteStdin)
 		pause.Defer(loopCtx, "invitation enrollment", func(ctx context.Context) {
-			runDeferredInvite(ctx, s, enr, d.inviteDialer)
+			if deferredInvite(s.StateDir) {
+				runDeferredInvite(ctx, s, enr, d.inviteDialer, stdin)
+			}
 		})
 	}
 	pairDone := make(chan struct{})
@@ -246,15 +261,21 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 			if waitUnpaused(loopCtx, pause.Gate()) != nil {
 				return
 			}
-			pctx, stop := cancelOnPause(loopCtx, pause.Gate())
+			pctx, end, ok := pause.beginHubWork(loopCtx)
+			if !ok {
+				continue
+			}
 			d.autoPair(pctx, s, autoPairTarget{hubURL: hub.Server, expect: expect, display: display, status: pairing}, enr, ex)
-			if !stop() {
+			if !end() {
 				return
 			}
 		}
 	}()
 	return func(stopCtx context.Context) error {
 		cancel()
+		// A timed pause's timer must not fire into the pause file after this
+		// process stopped (a restart's replacement owns it then).
+		pause.Close()
 		for _, ch := range []chan struct{}{done, retDone, pairDone, commitDone} {
 			select {
 			case <-ch:
@@ -274,6 +295,20 @@ type autoPairTarget struct {
 	// display is the pairing_display setting; status feeds the local status.
 	display string
 	status  *PairingStatus
+}
+
+// backgroundJoinFor reports whether the join record says that a background
+// join saved hubURL (and with it pairing_display=status). An unreadable record
+// counts as one: the safe direction is to keep the code off the console.
+func backgroundJoinFor(stateDir, hubURL string) bool {
+	if stateDir == "" || hubURL == "" {
+		return false
+	}
+	pin, ok, err := ReadJoinPin(stateDir)
+	if err != nil {
+		return true
+	}
+	return ok && pin.Source == JoinPinSourceBackground && pin.Server == hubURL
 }
 
 // autoPair pairs a Worker that has a Hub address but no enrollment and no
@@ -305,6 +340,7 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, t autoPairTarge
 	}
 	if t.status != nil {
 		cfg.OnCode, cfg.OnDone = t.status.OnCode, t.status.OnDone
+		cfg.OwnerCancelled = func() bool { return t.status.cancelled(hubURL) }
 	}
 	p, err := NewPairer(cfg)
 	if err != nil {
@@ -314,7 +350,8 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, t autoPairTarge
 	if t.status != nil {
 		// "minion worker pair cancel" ends this run through its context.
 		var end func()
-		ctx, end = t.status.track(ctx, hubURL)
+		prov := readProvenance(s.StateDir)
+		ctx, end = t.status.track(ctx, hubURL, prov)
 		defer end()
 	}
 	if t.display == config.PairingDisplayStatus {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -165,7 +166,7 @@ func TestCancelClearsOnlyBackgroundJoinServer(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			cleared, kept, err := clearBackgroundJoinConfig(dir)
+			cleared, kept, err := clearBackgroundJoinConfig(dir, readProvenance(dir))
 			if err != nil || strings.Join(cleared, ",") != strings.Join(tc.cleared, ",") || strings.Join(kept, ",") != strings.Join(tc.kept, ",") {
 				t.Fatalf("cleared %v kept %v (%v), want %v and %v", cleared, kept, err, tc.cleared, tc.kept)
 			}
@@ -202,6 +203,38 @@ func TestCancelClearsOnlyBackgroundJoinServer(t *testing.T) {
 	}
 	if _, ok, _ := ReadJoinPin(dir); ok {
 		t.Fatal("the join record outlived the values it described")
+	}
+}
+
+// Gate 1: a join for Hub B that saved its settings after the cancelled run
+// for Hub A began owns them; cancelling A removes none of B's.
+func TestCancelKeepsANewerJoinsSettings(t *testing.T) {
+	const serverA, serverB = "https://a.example", "https://b.example"
+	fpB := "SHA256:" + strings.Repeat("B", 43)
+	dir := t.TempDir()
+	a := JoinPin{Version: JoinPinVersion, Source: JoinPinSourceBackground, Server: serverA, ServerCreated: true, At: time.Now().Add(-time.Minute)}
+	writeConfig(t, dir, map[string]string{config.KeyServer: serverA, config.KeyPairingDisplay: "status"})
+	if err := WriteJoinPin(dir, a); err != nil {
+		t.Fatal(err)
+	}
+	captured := readProvenance(dir) // the run for A began here
+	b := JoinPin{Version: JoinPinVersion, Source: JoinPinSourceBackground, Server: serverB, ServerCreated: true,
+		HubFingerprint: fpB, HubFingerprintCreated: true, At: time.Now()}
+	writeConfig(t, dir, map[string]string{config.KeyServer: serverB, config.KeyHubFingerprint: fpB, config.KeyPairingDisplay: "status"})
+	if err := WriteJoinPin(dir, b); err != nil {
+		t.Fatal(err)
+	}
+	cleared, kept, err := clearBackgroundJoinConfig(dir, captured)
+	if err != nil || len(cleared) != 0 || strings.Join(kept, ",") != "hub_fingerprint,server" {
+		t.Fatalf("cleared %v kept %v (%v)", cleared, kept, err)
+	}
+	for k, want := range map[string]string{config.KeyServer: serverB, config.KeyHubFingerprint: fpB, config.KeyPairingDisplay: "status"} {
+		if got, ok := readConfig(t, dir, k); !ok || got != want {
+			t.Fatalf("%s = %q, %v; B's setting was removed", k, got, ok)
+		}
+	}
+	if pin, ok, _ := ReadJoinPin(dir); !ok || pin.Server != serverB {
+		t.Fatalf("B's join record = %+v, %v", pin, ok)
 	}
 }
 
@@ -258,6 +291,46 @@ func TestCancelRacesCompletion(t *testing.T) {
 		}
 		if _, ok, _ := hp.enr.Load(context.Background()); ok {
 			t.Fatal("a cancelled pairing was committed")
+		}
+	})
+
+	// Gate 1: a pause ended the pairing's context first, so the owner's cancel
+	// is not the context's cause; the commit must still see the cancel that the
+	// owner won under the enrollment lock.
+	t.Run("cancel after the parent context ended", func(t *testing.T) {
+		h := newStubPairHub(t)
+		hp := newHubPairer(t, h.url())
+		var cancelled atomic.Bool
+		hp.cfg.OwnerCancelled = cancelled.Load
+		locked := make(chan func(), 1)
+		h.afterAuth = func() {
+			release, err := hp.enr.lockEnroll(context.Background())
+			if err != nil {
+				t.Error(err)
+			}
+			locked <- release
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+		done := make(chan error, 1)
+		go func() { _, err := hp.Run(ctx); done <- err }()
+		h.claim(hp.code(t, 1))
+		release := <-locked
+		eventually(t, func() bool { return h.welcomed.Load() == 1 })
+		time.Sleep(100 * time.Millisecond) // the commit waits for the lock
+		cancel(errors.New("paused"))       // the first cause wins
+		cancelled.Store(true)              // then the owner's cancel takes the lock
+		release()
+		select {
+		case err := <-done:
+			if !errors.Is(err, errPairingCancelled) {
+				t.Fatalf("run = %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("the run did not end")
+		}
+		if _, ok, _ := hp.enr.Load(context.Background()); ok {
+			t.Fatal("a pairing that the owner cancelled was committed")
 		}
 	})
 }

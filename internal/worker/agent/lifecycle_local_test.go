@@ -3,9 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
@@ -15,6 +19,57 @@ func lifecycleSvc(t *testing.T, e *env, counter SessionCounter, runMode string) 
 	stops, restarts := &atomic.Int32{}, &atomic.Int32{}
 	return &lifecycleService{ex: e.ex, counter: counter, runMode: runMode, instance: "i1",
 		stop: func() { stops.Add(1) }, restart: func() { restarts.Add(1) }}, stops, restarts
+}
+
+// Gate 1: an intentional restart takes its start back from the update crash
+// guard before the process is replaced, so that routine restarts never
+// count as failed starts of an uncommitted update.
+func TestLifecycleRestartMarksCleanStopFirst(t *testing.T) {
+	e := newEnv(t)
+	s, _, _ := lifecycleSvc(t, e, SessionCounter{Host: e.host}, RunModeForeground)
+	var order []string
+	var mu sync.Mutex
+	done := make(chan struct{})
+	s.markClean = func() { mu.Lock(); order = append(order, "clean"); mu.Unlock() }
+	s.restart = func() { mu.Lock(); order = append(order, "restart"); mu.Unlock(); close(done) }
+	if _, err := lifecycleCall(s, LocalLifecycleArgs{Action: LifecycleRestart, Instance: "i1"}); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(order, ",") != "clean,restart" {
+		t.Fatalf("order = %v, want clean before restart", order)
+	}
+}
+
+// Routine restarts of an uncommitted update that each take their start back
+// never reach the rollback limit; without it the guardMaxStarts-th one does.
+func TestRoutineRestartsLeaveNoFailedStart(t *testing.T) {
+	now := time.Now()
+	for _, clean := range []bool{true, false} {
+		dir := t.TempDir()
+		if err := writePending(dir, pendingRecord{From: "0.9.0", To: "1.0.0", At: now}); err != nil {
+			t.Fatal(err)
+		}
+		exe := filepath.Join(dir, "minion")
+		for _, f := range []string{exe, exe + ".old"} {
+			if err := os.WriteFile(f, []byte("x"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rolled := false
+		for range guardMaxStarts + 1 {
+			_, restart, started := guardOnStart(discardLogger(), dir, exe, "1.0.0", now)
+			rolled = rolled || restart
+			if clean {
+				cleanStop(dir, "1.0.0", started)
+			}
+		}
+		if clean == rolled {
+			t.Fatalf("clean stops = %t but rolled back = %t", clean, rolled)
+		}
+	}
 }
 
 func lifecycleCall(s *lifecycleService, a LocalLifecycleArgs) (LifecycleResult, error) {

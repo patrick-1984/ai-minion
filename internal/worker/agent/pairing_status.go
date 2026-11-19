@@ -58,6 +58,26 @@ type pairingRun struct {
 	cancel context.CancelCauseFunc
 	done   chan struct{}
 	hubURL string
+	// prov is the join record as it was when the run began: a cancel removes
+	// only what that join created (a later join's settings are not its own).
+	prov joinProvenance
+}
+
+// joinProvenance is the join record of the state directory at one moment.
+type joinProvenance struct {
+	pin JoinPin
+	ok  bool
+}
+
+// readProvenance reads the join record; an unreadable one proves nothing.
+func readProvenance(stateDir string) joinProvenance {
+	pin, ok, err := ReadJoinPin(stateDir)
+	return joinProvenance{pin: pin, ok: ok && err == nil}
+}
+
+// same reports whether cur is still the record that p captured.
+func (p joinProvenance) same(cur joinProvenance) bool {
+	return p.ok && cur.ok && p.pin.Source == cur.pin.Source && p.pin.Server == cur.pin.Server && p.pin.At.Equal(cur.pin.At)
 }
 
 // NewPairingStatus returns a source with no code pending.
@@ -189,9 +209,9 @@ func pairingCancelledFor(stateDir, hubURL string) bool {
 
 // track registers a pairing run with hubURL and returns its context, which
 // [PairingStatus.cancelAttempt] ends, and the function that ends the run.
-func (s *PairingStatus) track(ctx context.Context, hubURL string) (context.Context, func()) {
+func (s *PairingStatus) track(ctx context.Context, hubURL string, prov joinProvenance) (context.Context, func()) {
 	cctx, cancel := context.WithCancelCause(ctx)
-	r := &pairingRun{cancel: cancel, done: make(chan struct{}), hubURL: hubURL}
+	r := &pairingRun{cancel: cancel, done: make(chan struct{}), hubURL: hubURL, prov: prov}
 	s.mu.Lock()
 	s.run = r
 	s.mu.Unlock()
@@ -219,17 +239,17 @@ func (s *PairingStatus) cancelled(hubURL string) bool {
 // code replaced it, the run ended, or it never existed). It returns the code
 // it cancelled, the run's Hub address and the channel closed when the run has
 // returned.
-func (s *PairingStatus) cancelAttempt(attempt string) (p PendingPairing, hubURL string, done <-chan struct{}, ok bool) {
+func (s *PairingStatus) cancelAttempt(attempt string) (p PendingPairing, hubURL string, prov joinProvenance, done <-chan struct{}, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur := s.cur
 	if attempt == "" || cur.Code == "" || cur.Attempt != attempt || s.run == nil ||
 		(!cur.ExpiresAt.IsZero() && !s.now().Before(cur.ExpiresAt)) {
-		return PendingPairing{}, "", nil, false
+		return PendingPairing{}, "", joinProvenance{}, nil, false
 	}
 	s.run.cancel(errPairingCancelled)
 	s.cancelledFor = s.run.hubURL
-	return cur, s.run.hubURL, s.run.done, true
+	return cur, s.run.hubURL, s.run.prov, s.run.done, true
 }
 
 // pairCancelWait bounds the wait for the cancelled run to return.
@@ -299,7 +319,7 @@ func (l localExecutor) cancelPairingLocked(ctx context.Context, attempt string) 
 		return res, PendingPairing{}, nil, apiErr(proto.CodeConflict, "state_changed",
 			"this Worker was paired meanwhile, so there is no pairing to cancel; nothing was changed (leaving the Hub is a separate action: minion worker leave)")
 	}
-	pend, hubURL, done, ok := l.pairing.cancelAttempt(attempt)
+	pend, hubURL, prov, done, ok := l.pairing.cancelAttempt(attempt)
 	if !ok {
 		return res, PendingPairing{}, nil, apiErr(proto.CodeConflict, "state_changed",
 			"the pairing attempt "+attempt+" is no longer the one shown (a new code replaced it, or the pairing ended); nothing was changed")
@@ -311,7 +331,7 @@ func (l localExecutor) cancelPairingLocked(ctx context.Context, attempt string) 
 		PairCancel{Version: 1, Server: hubURL, Attempt: attempt, At: time.Now().UTC()}); err != nil {
 		return res, pend, done, fmt.Errorf("the pairing was stopped, but the cancel was not saved (it may start again at the next start): %w", err)
 	}
-	if res.Cleared, res.Kept, err = clearBackgroundJoinConfig(l.stateDir); err != nil {
+	if res.Cleared, res.Kept, err = clearBackgroundJoinConfig(l.stateDir, prov); err != nil {
 		return res, pend, done, fmt.Errorf("the pairing was cancelled, but the Hub settings of the background join were not removed: %w", err)
 	}
 	return res, pend, done, nil
@@ -323,7 +343,7 @@ func (l localExecutor) cancelPairingLocked(ctx context.Context, attempt string) 
 // pairing_display=status that such a join set. Values provisioned before the
 // join, or edited after it, are kept and reported. The join record goes once
 // something was removed. It holds the config lock.
-func clearBackgroundJoinConfig(stateDir string) (cleared, kept []string, err error) {
+func clearBackgroundJoinConfig(stateDir string, prov joinProvenance) (cleared, kept []string, err error) {
 	release, err := lockConfig(filepath.Join(stateDir, configLockName))
 	if err != nil {
 		return nil, nil, err
@@ -334,8 +354,11 @@ func clearBackgroundJoinConfig(stateDir string) (cleared, kept []string, err err
 		return nil, nil, err
 	}
 	// An unreadable record proves nothing about who set the values: kept.
-	pin, ok, perr := ReadJoinPin(stateDir)
-	ok = ok && perr == nil && pin.Source == JoinPinSourceBackground
+	// The record must still be the one of the run that was cancelled: a join
+	// for another Hub that saved its settings since (its restart may still be
+	// pending) owns them now, and nothing of them is removed.
+	pin := prov.pin
+	ok := prov.same(readProvenance(stateDir)) && pin.Source == JoinPinSourceBackground
 	for _, k := range []struct {
 		key     string
 		created func(string) bool

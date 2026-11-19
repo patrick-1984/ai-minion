@@ -161,6 +161,49 @@ func TestTimedPauseReplacedByIndefinite(t *testing.T) {
 	}
 }
 
+// Gate 1: the timer of a Worker that shut down never writes the pause file
+// (a replacement process owns it then), and a timer never undoes a pause that
+// another process saved since: the saved generation decides.
+func TestTimerOwnershipAcrossRestart(t *testing.T) {
+	clk := &pauseTimers{now: time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)}
+	dir := t.TempDir()
+	svc, err := newPauseService(dir, discardLogger(), clk.Now, clk.AfterFunc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Pause(context.Background(), clk.now.Add(30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// The replacement process makes the pause indefinite.
+	if _, err := SetPause(dir, true, time.Time{}, clk.now); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := ReadPause(dir)
+	clk.fire() // the old Worker's timer, still armed, matches its own generation
+	if got, _ := ReadPause(dir); got != want || !got.Paused {
+		t.Fatalf("the old timer rewrote the pause file: %+v, want %+v", got, want)
+	}
+
+	// After Close a timer that fires late changes nothing, and none is armed.
+	dir2 := t.TempDir()
+	svc2, _ := newPauseService(dir2, discardLogger(), clk.Now, clk.AfterFunc)
+	if _, err := svc2.Pause(context.Background(), clk.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	want2, _ := ReadPause(dir2)
+	svc2.Close()
+	clk.fire()
+	if got, _ := ReadPause(dir2); got != want2 {
+		t.Fatalf("a timer fired after Close: %+v, want %+v", got, want2)
+	}
+	if _, err := svc2.Pause(context.Background(), clk.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(clk.fns) != 0 {
+		t.Fatal("a timer was armed after Close")
+	}
+}
+
 // A timed pause that ended before the start counts as resumed; one that runs
 // on starts paused with its timer armed.
 func TestExpiredPauseAtStart(t *testing.T) {
