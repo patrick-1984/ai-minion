@@ -231,3 +231,21 @@ func TestPairingStatusCapabilityIsLocal(t *testing.T) {
 		t.Fatalf("localFeatures %v lacks %s", localFeatures, FeaturePairingStatus)
 	}
 }
+
+// Gate 1: a pairing that a background join started never shows its code on the
+// console or in the Worker log, also when a flag or the environment asks for
+// pairing_display=console.
+func TestBackgroundJoinPairingIgnoresConsoleDisplay(t *testing.T) {
+	h := newStubPairHub(t)
+	dir := t.TempDir()
+	if err := WriteJoinPin(dir, JoinPin{Version: JoinPinVersion, Source: JoinPinSourceBackground, Server: h.url(),
+		ServerCreated: true, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	w := startPairingWorkerIn(t, h, dir, config.PairingDisplayConsole)
+	p := w.pendingCode(t, "") // the code is in the status
+	time.Sleep(200 * time.Millisecond)
+	if strings.Contains(w.out.String(), p.Code) || strings.Contains(w.logs.String(), p.Code) {
+		t.Fatalf("the background join's code reached the console or the log:\n%s\n%s", w.out.String(), w.logs.String())
+	}
+}

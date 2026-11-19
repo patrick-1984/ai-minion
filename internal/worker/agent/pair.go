@@ -415,6 +415,11 @@ type PairerConfig struct {
 	OnCode func(code, attempt string, expires time.Time)
 	// OnDone, when set, is called once when Run returns.
 	OnDone func()
+	// OwnerCancelled, when set, reports that the owner cancelled this pairing
+	// on the Worker (tray W8b). It is read under the enrollment lock, where
+	// the cancel also took its decision, so it does not depend on which
+	// cancellation cause of the context came first.
+	OwnerCancelled func() bool
 }
 
 // Pairer runs the Worker side of pairing codes (R7, R54, R55, R77): it keeps
@@ -1449,7 +1454,7 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 	// The owner cancelled this pairing (tray W8b) before the commit got the
 	// lock: nothing is stored. The cancel checked "not paired" under this
 	// same lock, so either it or this commit wins, never both.
-	if errors.Is(context.Cause(ctx), errPairingCancelled) {
+	if errors.Is(context.Cause(ctx), errPairingCancelled) || (p.cfg.OwnerCancelled != nil && p.cfg.OwnerCancelled()) {
 		p.log.Warn("the Hub accepted the code, but the pairing was cancelled on this Worker first; nothing was stored "+
 			"(the Hub may list this Worker until it is removed there)", "hub", hubLabel(p.cfg.HubURL), "worker_id", w.WorkerID)
 		return Enrollment{}, errPairingCancelled

@@ -92,6 +92,38 @@ func TestPauseFileWriteErrorsAreReported(t *testing.T) {
 	}
 }
 
+// Gate 1: when the directory flush fails after the rename, the failed resume
+// must not take effect at the next start: the previous state is put back.
+func TestPauseFileDirectorySyncFailureKeepsThePreviousState(t *testing.T) {
+	saved := pauseFS
+	t.Cleanup(func() { pauseFS = saved })
+	dir := t.TempDir()
+	if _, err := SetPause(dir, true, time.Time{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	pauseFS.syncDir = func(string) error { return errors.New("I/O error") }
+	if _, err := SetPause(dir, false, time.Time{}, time.Now()); err == nil {
+		t.Fatal("the failed resume was reported as done")
+	}
+	if p, err := ReadPause(dir); err != nil || !p.Paused || p.Generation != 1 {
+		t.Fatalf("state after the failed resume = %+v, %v; want the paused one", p, err)
+	}
+	// With no file before, a failed first write leaves none.
+	empty := t.TempDir()
+	if _, err := SetPause(empty, true, time.Time{}, time.Now()); err == nil {
+		t.Fatal("the failed pause was reported as done")
+	}
+	if _, err := os.Stat(filepath.Join(empty, PauseFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a pause file remains after the failed first write: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() != PauseFile {
+			t.Fatalf("left behind: %s", e.Name())
+		}
+	}
+}
+
 func TestPauseFileInvalidIsAnError(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, PauseFile), []byte("{"), 0o600); err != nil {

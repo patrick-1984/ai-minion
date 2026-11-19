@@ -600,9 +600,9 @@ func clearDeferredInvite(dir string) {
 // runDeferredInvite runs the invitation enrollment that a paused start
 // deferred, on the running Worker's own enrollment state, so that the
 // connector sees the commit at once.
-func runDeferredInvite(ctx context.Context, s Settings, enr *Enrollments, dialer InviteDialer) {
+func runDeferredInvite(ctx context.Context, s Settings, enr *Enrollments, dialer InviteDialer, stdin *cachedKeyReader) {
 	d := defaultInviteHookDeps()
-	d.stdin, d.ignorePause, d.dialer = nil, true, dialer
+	d.stdin, d.ignorePause, d.dialer = stdin.reader(), true, dialer
 	d.openState = func(context.Context, string) (InviteState, func() error, error) {
 		return enr, func() error { return nil }, nil
 	}
@@ -611,6 +611,73 @@ func runDeferredInvite(ctx context.Context, s Settings, enr *Enrollments, dialer
 		return
 	}
 	clearDeferredInvite(s.StateDir)
+}
+
+// cachedKeyReader keeps the line of --invite-key - that a deferred
+// enrollment read from the Worker's stdin, so that a retry after a pause or
+// a failed attempt uses the same key: stdin can be read only once. The paused
+// start does not read it (no key is handled while paused, tray W3c).
+type cachedKeyReader struct {
+	src  io.Reader
+	once sync.Once
+	line []byte
+	err  error
+}
+
+// newCachedKeyReader caches the first line of src; nil means os.Stdin.
+func newCachedKeyReader(src io.Reader) *cachedKeyReader {
+	if src == nil {
+		src = os.Stdin
+	}
+	return &cachedKeyReader{src: src}
+}
+
+// reader returns a reader of the cached line, read from the source the first
+// time it is used.
+func (c *cachedKeyReader) reader() io.Reader {
+	if c == nil {
+		return nil
+	}
+	return &cachedLine{c: c}
+}
+
+func (c *cachedKeyReader) load() {
+	c.once.Do(func() {
+		var b [1]byte
+		for {
+			n, err := c.src.Read(b[:])
+			if n > 0 {
+				c.line = append(c.line, b[0])
+				if b[0] == '\n' {
+					return
+				}
+			}
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					c.err = err
+				}
+				return
+			}
+		}
+	})
+}
+
+type cachedLine struct {
+	c   *cachedKeyReader
+	off int
+}
+
+func (r *cachedLine) Read(p []byte) (int, error) {
+	r.c.load()
+	if r.c.err != nil {
+		return 0, r.c.err
+	}
+	if r.off >= len(r.c.line) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.c.line[r.off:])
+	r.off += n
+	return n, nil
 }
 
 func defaultInviteHookDeps() inviteHookDeps {
