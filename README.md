@@ -172,6 +172,7 @@ docker compose exec hub minion hub identity set-passphrase
 | [Minion control](docs/guides/minion-control.md) | Master and slave sessions, which Workers accept control from which, user-managed Workers (Access > Minion control, 0.9.0) |
 | [Session control](docs/guides/session-control.md) | Letting one session list, read and type into sessions on other Workers (administrator grants, 0.8.0 or later) |
 | [Hub identity](docs/guides/hub-identity.md) | The sealed root key and its passphrase, certificate re-issue, master-key rotation, `minion hub identity` |
+| [Tray app and CLI parity](docs/guides/tray.md) | The tray app's menu and the `minion` command behind each item (start, stop, pause, sharing, block new sessions, join, pair, leave), what the tray does and does not do |
 | [Troubleshooting](docs/guides/troubleshooting.md) | Verbose logs (`-v`, `MINION_VERBOSE`), `minion worker status --json`, Administration > Diagnostics and `hub_diagnostics` |
 | [Backup and restore](docs/guides/backup-restore.md) | The Hub's data, keys and identity |
 | [Security and trust model](docs/security.md) | What the Hub sees, what to trust, what is not reviewed yet |

@@ -160,9 +160,16 @@ func newWorkerDownCmd(d workerDownDeps) *cobra.Command {
 			"with --accept-loss N. When they cannot be counted (an older Worker, a Worker that does not answer)\n" +
 			"it exits 29; --accept-unknown-loss accepts that an unknown number of sessions will end.\n" +
 			"--scm-only stops the Windows service through the service control manager only (needs\n" +
-			"--accept-unknown-loss and an elevated prompt). --json prints one JSON result object.",
+			"--accept-unknown-loss and an elevated prompt). --state-dir D stops only a Worker that answers\n" +
+			"for that state directory: a Worker of another one is left running and the command exits 27\n" +
+			"(the tray passes its profile this way). --json prints one JSON result object.",
 		Args: cobra.NoArgs,
 		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error {
+			dir, err := explicitStateDir(cmd)
+			if err != nil {
+				return emitResult(cmd.OutOrStdout(), cmd.ErrOrStderr(), o.json, downResult{}, err)
+			}
+			o.stateDir = dir
 			res, err := runWorkerDownOpts(cmd, d, o)
 			return emitResult(cmd.OutOrStdout(), cmd.ErrOrStderr(), o.json, res, err)
 		}, nil),
@@ -171,6 +178,7 @@ func newWorkerDownCmd(d workerDownDeps) *cobra.Command {
 	cmd.Flags().BoolVar(&o.acceptUnknown, "accept-unknown-loss", false, "accept that an unknown number of sessions end")
 	cmd.Flags().BoolVar(&o.scmOnly, "scm-only", false, "Windows: stop the service through the service control manager only")
 	cmd.Flags().BoolVar(&o.json, "json", false, "print one JSON result object")
+	addNamedSettingFlags(cmd, config.Default, config.KeyStateDir)
 	return cmd
 }
 
@@ -180,6 +188,9 @@ type downOptions struct {
 	acceptUnknown bool
 	scmOnly       bool
 	json          bool
+	// stateDir binds the stop to the Worker of this state directory ("":
+	// whichever Worker of this user answers).
+	stateDir string
 }
 
 // downResult is the JSON result of "worker down".
@@ -227,6 +238,9 @@ func runWorkerDownOpts(cmd *cobra.Command, d workerDownDeps, o downOptions) (dow
 		}
 	}
 	cancel()
+	if live && o.stateDir != "" && !sameDir(reply.StateDir, o.stateDir) {
+		return res, otherProfileError("stopped", reply.StateDir, o.stateDir)
+	}
 	if live && d.callArgs != nil {
 		args := agent.LocalLifecycleArgs{Action: agent.LifecycleStop, Instance: reply.Instance, AcceptLoss: o.acceptLoss, AcceptUnknown: o.acceptUnknown}
 		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)

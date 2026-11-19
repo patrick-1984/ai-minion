@@ -434,7 +434,7 @@ func activateJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, stat
 	if deps.restartWait > 0 {
 		rd.wait = deps.restartWait
 	}
-	rr, err := runWorkerRestart(cmd, rd, opt.acceptLoss, opt.acceptUnknown)
+	rr, err := runWorkerRestart(cmd, rd, stateDir, opt.acceptLoss, opt.acceptUnknown)
 	res.SessionsLost = rr.SessionsLost
 	if err != nil {
 		res.Activation = joinFailed

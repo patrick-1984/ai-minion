@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/client"
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
@@ -61,10 +63,16 @@ Sessions that live inside the Worker (Windows ConPTY) end: the Worker counts
 them first and the command exits 23 with sessions_lost N unless --accept-loss N
 is given (29 when they cannot be counted; --accept-unknown-loss accepts that).
 The command waits until a new Worker instance answers for the same state
-directory. Without a running Worker it exits 24. --json prints one JSON object.`,
+directory. Without a running Worker it exits 24. --state-dir D restarts only a
+Worker that answers for that state directory (another one: exit 27, nothing is
+done). --json prints one JSON object.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			res, err := runWorkerRestart(cmd, d, acceptLoss, acceptUnknown)
+			dir, err := explicitStateDir(cmd)
+			if err != nil {
+				return emitResult(cmd.OutOrStdout(), cmd.ErrOrStderr(), asJSON, workerRestartResult{}, err)
+			}
+			res, err := runWorkerRestart(cmd, d, dir, acceptLoss, acceptUnknown)
 			if err == nil && !asJSON {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "The Worker restarted (state directory %s).\n", res.StateDir)
 			}
@@ -74,7 +82,30 @@ directory. Without a running Worker it exits 24. --json prints one JSON object.`
 	cmd.Flags().IntVar(&acceptLoss, "accept-loss", 0, "accept that up to this many sessions end (ConPTY)")
 	cmd.Flags().BoolVar(&acceptUnknown, "accept-unknown-loss", false, "accept that an unknown number of sessions end")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print one JSON result object")
+	addNamedSettingFlags(cmd, config.Default, config.KeyStateDir)
 	return cmd
+}
+
+// explicitStateDir returns the absolute --state-dir given on cmd's command
+// line, or "" when the flag was not given (the command then acts on
+// whichever Worker of this user answers, as before).
+func explicitStateDir(cmd *cobra.Command) (string, error) {
+	f := cmd.Flags().Lookup("state-dir")
+	if f == nil || !f.Changed {
+		return "", nil
+	}
+	if f.Value.String() == "" {
+		return "", &usageError{errors.New("--state-dir needs a directory")}
+	}
+	return filepath.Abs(f.Value.String())
+}
+
+// otherProfileError is the refusal when the Worker that answers uses another
+// state directory than the one the command was bound to: nothing is done.
+func otherProfileError(verb, running, want string) error {
+	return &resultError{Exit: ExitStateChanged, Message: fmt.Sprintf(
+		"the running Worker uses the state directory %s, not %s; it was not %s and nothing was changed", running, want, verb),
+		Fields: map[string]any{"live_state_dir": running}}
 }
 
 func liveReply(ctx context.Context, call func(context.Context, string, any) (json.RawMessage, error)) (agent.LiveStatusReply, error) {
@@ -91,7 +122,7 @@ func liveReply(ctx context.Context, call func(context.Context, string, any) (jso
 	return r, nil
 }
 
-func runWorkerRestart(cmd *cobra.Command, d workerRestartDeps, acceptLoss int, acceptUnknown bool) (workerRestartResult, error) {
+func runWorkerRestart(cmd *cobra.Command, d workerRestartDeps, stateDir string, acceptLoss int, acceptUnknown bool) (workerRestartResult, error) {
 	var res workerRestartResult
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -103,6 +134,9 @@ func runWorkerRestart(cmd *cobra.Command, d workerRestartDeps, acceptLoss int, a
 	}
 	if err != nil {
 		return res, fmt.Errorf("cannot ask the running Worker: %w", err)
+	}
+	if stateDir != "" && !sameDir(before.StateDir, stateDir) {
+		return res, otherProfileError("restarted", before.StateDir, stateDir)
 	}
 	res.StateDir, res.OldInstance = before.StateDir, before.Instance
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
