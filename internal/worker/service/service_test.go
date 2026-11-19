@@ -8,28 +8,6 @@ import (
 	"testing"
 )
 
-type fakeController struct {
-	calls     []string
-	statuses  []Status
-	installEr error
-	startErr  error
-}
-
-func (f *fakeController) Install() error   { f.calls = append(f.calls, "install"); return f.installEr }
-func (f *fakeController) Start() error     { f.calls = append(f.calls, "start"); return f.startErr }
-func (f *fakeController) Uninstall() error { f.calls = append(f.calls, "uninstall"); return nil }
-func (f *fakeController) Status() (Status, error) {
-	f.calls = append(f.calls, "status")
-	if len(f.statuses) == 0 {
-		return StatusStopped, nil
-	}
-	s := f.statuses[0]
-	if len(f.statuses) > 1 {
-		f.statuses = f.statuses[1:]
-	}
-	return s, nil
-}
-
 func TestKardianosConfigRunsTheSCMEntryPoint(t *testing.T) {
 	c := KardianosConfig(`C:\Program Files\minion\minion.exe`)
 	if c.Name != WindowsServiceName || c.Executable != `C:\Program Files\minion\minion.exe` ||
@@ -43,43 +21,6 @@ func TestNewKardianosControllerBuilds(t *testing.T) {
 	// platform without one reports an error instead of panicking.
 	if c, err := NewKardianosController("/usr/bin/minion"); err == nil && c == nil {
 		t.Fatal("nil controller without an error")
-	}
-}
-
-func TestInstallControllerWindowsFlow(t *testing.T) {
-	fc := &fakeController{statuses: []Status{StatusStopped, StatusRunning}}
-	d := testDeps(t, nil)
-	d.NewController = func(string) (Controller, error) { return fc, nil }
-	res, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Scope: ScopeSystem, Binary: `C:\minion.exe`}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(fc.calls, ","); !strings.HasPrefix(got, "uninstall,install,start,status") {
-		t.Errorf("calls = %s", got)
-	}
-	if res.Unit != WindowsServiceName {
-		t.Errorf("result = %+v", res)
-	}
-}
-
-func TestInstallControllerErrors(t *testing.T) {
-	d := testDeps(t, nil)
-	for name, fc := range map[string]*fakeController{
-		"install": {installEr: errors.New("access denied")},
-		"start":   {startErr: errors.New("cannot start")},
-		"stopped": {statuses: []Status{StatusStopped}},
-	} {
-		d.NewController = func(string) (Controller, error) { return fc, nil }
-		if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: `C:\minion.exe`}, nil); err == nil {
-			t.Errorf("%s: no error", name)
-		}
-	}
-	d.NewController = func(string) (Controller, error) { return nil, errors.New("no scm") }
-	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows, Binary: "x"}, nil); err == nil {
-		t.Error("controller error ignored")
-	}
-	if _, err := Install(context.Background(), d, Request{Manager: ManagerWindows}, nil); err == nil {
-		t.Error("empty binary accepted")
 	}
 }
 

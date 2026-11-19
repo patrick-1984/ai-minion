@@ -111,15 +111,64 @@ func TestWorkerDownStopsTheUserServiceAndTheWindowsService(t *testing.T) {
 	if err != nil || !strings.Contains(strings.Join(ran, ";"), "systemctl --user stop minion-worker.service") || !strings.Contains(out, "systemctl --user start") {
 		t.Fatalf("ran=%v out=%q err=%v", ran, out, err)
 	}
+	// Windows: an old LocalSystem service is stopped and named for removal;
+	// the Worker of the user is stopped over its pipe as well.
 	w := baseDown()
 	w.goos = "windows"
 	w.windowsService = func() (bool, error) { return true, nil }
+	calls := 0
+	w.call = func(context.Context, string) (json.RawMessage, error) {
+		calls++
+		return nil, client.ErrWorkerNotRunning
+	}
 	out, err = downCmd(t, w)
-	if err != nil || !strings.Contains(out, "Start-Service MinionWorker") {
-		t.Fatalf("windows: out=%q err=%v", out, err)
+	if err != nil || !strings.Contains(out, "sc.exe delete MinionWorker") || calls == 0 {
+		t.Fatalf("windows: out=%q err=%v calls=%d", out, err, calls)
 	}
 	w.windowsService = func() (bool, error) { return true, errors.New("access denied") }
-	if _, err := downCmd(t, w); err == nil || !strings.Contains(err.Error(), "Run as administrator") {
+	if _, err := downCmd(t, w); err == nil || !strings.Contains(err.Error(), "administrator") || strings.Contains(err.Error(), "minion worker down") {
 		t.Fatalf("windows denied: %v", err)
+	}
+}
+
+// The Worker started at logon (Run entry) is stopped over its pipe; the
+// message says it comes back at the next logon.
+func TestWorkerDownStopsTheLogonWorker(t *testing.T) {
+	d := baseDown()
+	d.goos = "windows"
+	running := true
+	d.call = func(_ context.Context, op string) (json.RawMessage, error) {
+		if !running {
+			return nil, client.ErrWorkerNotRunning
+		}
+		if op == agent.OpLocalStop {
+			running = false
+		}
+		return json.RawMessage(`{}`), nil
+	}
+	d.autostart = func() (string, bool, error) { return `C:\m\minion.exe worker launch`, true, nil }
+	out, err := downCmd(t, d)
+	if err != nil || !strings.Contains(out, "next logon") || !strings.Contains(out, "minion worker up") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+// During the supervisor's back-off the Worker has no pipe: down stops the
+// supervisor first, so that it cannot bring the Worker back.
+func TestWorkerDownStopsTheSupervisorDuringBackoff(t *testing.T) {
+	d := baseDown()
+	d.goos = "windows"
+	d.call = func(context.Context, string) (json.RawMessage, error) { return nil, client.ErrWorkerNotRunning }
+	d.autostart = func() (string, bool, error) { return `C:\m\minion.exe worker launch`, true, nil }
+	stopped := false
+	d.stopSupervisor = func(context.Context) (bool, error) { stopped = true; return true, nil }
+	out, err := downCmd(t, d)
+	if err != nil || !stopped || !strings.Contains(out, "next logon") || strings.Contains(out, "No Worker is running") {
+		t.Fatalf("out=%q err=%v stopped=%v", out, err, stopped)
+	}
+
+	d.stopSupervisor = func(context.Context) (bool, error) { return true, errors.New("stuck") }
+	if _, err := downCmd(t, d); err == nil {
+		t.Error("a supervisor that does not end must fail the command")
 	}
 }

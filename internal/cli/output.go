@@ -21,6 +21,9 @@ const (
 	ExitUsage         = 2
 	ExitFailedNotSent = 3
 	ExitPartial       = 4 // partial or unknown
+	// ExitNeedsAdmin means the command needs rights this process does not
+	// have (an administrator on Windows); the message says what to run.
+	ExitNeedsAdmin = 21
 )
 
 // exitCodeError ends the process with a status without an error message: the

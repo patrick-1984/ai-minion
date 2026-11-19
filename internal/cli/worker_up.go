@@ -47,6 +47,16 @@ type workerUpDeps struct {
 	// windowsService looks at the Worker's Windows service, query only; nil
 	// means service.QueryWindowsService (nothing off Windows).
 	windowsService func() (service.WindowsServiceState, error)
+	// windows holds the seams of the Windows path (Run entry, supervisor);
+	// nil means the real machine.
+	windows *windowsUpDeps
+}
+
+func (d workerUpDeps) windowsDeps() windowsUpDeps {
+	if d.windows != nil {
+		return *d.windows
+	}
+	return defaultWindowsUpDeps()
 }
 
 // setupDeps returns the wizard dependencies with the environment and config
@@ -99,7 +109,12 @@ service minion-worker@<user>.service (User=<user>, Restart=always, ExecStart=
 user service is installed instead; the command then enables lingering for you
 (loginctl enable-linger) or, when that is not allowed, prints the exact command
 to run and exits with an error. On macOS a launchd agent is installed and
-loaded for the current user.
+loaded for the current user. On Windows the Worker runs as you: a value in
+your Run key (HKCU) starts its supervisor ("minion worker launch") at each
+logon, without a console window, and it is started now; no administrator is
+needed and no Windows service is installed. Run it in a normal terminal, not
+as administrator. A LocalSystem service MinionWorker of an older release is
+removed first (that needs an administrator).
 
 Every Worker setting is a flag (the same flags as "worker run"). The flags,
 and the settings given by MINION_* environment variables, are written to the
@@ -153,6 +168,12 @@ that the identity survives a restart of the container.`,
 }
 
 func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser string) error {
+	// First of all, before a join token is expanded or any setup runs: the
+	// Worker never runs as LocalSystem (it would run the user's binary as
+	// SYSTEM); LocalSystem has no UAC split token, so the token SID is read.
+	if err := service.RefuseSystem(systemAccount()); err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
 	// A join token becomes --server, --hub-fingerprint and --invite-key before
 	// anything else looks at the settings (worker_join_token.go). Its
@@ -206,21 +227,20 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 	return installWorkerService(cmd, deps, det, asUser)
 }
 
-// warnWindowsService warns a foreground Worker that the Worker's Windows
-// service is also installed and running or set to start at boot (it serves
-// only hidden ConPTY sessions and keeps a Worker connected after the console
-// closes), with the commands that stop and remove it. It only queries the
-// service control manager; a failed query prints nothing.
+// warnWindowsService warns a foreground Worker while the LocalSystem Windows
+// service of an older release exists, with the commands that remove it. It
+// only queries the service control manager; a failed query is reported as unknown state.
 func warnWindowsService(w io.Writer, query func() (service.WindowsServiceState, error)) {
 	if query == nil {
 		query = service.QueryWindowsService
 	}
 	st, err := query()
 	if err != nil {
+		_, _ = fmt.Fprintln(w, "Warning: "+service.LegacyQueryFailure(err))
 		return
 	}
-	if msg := service.ForegroundServiceWarning(st); msg != "" {
-		_, _ = fmt.Fprintln(w, msg)
+	if msg := service.LegacyServiceWarning(st); msg != "" {
+		_, _ = fmt.Fprintln(w, "Warning: "+msg)
 	}
 }
 
@@ -259,6 +279,18 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		stderr = cmd.ErrOrStderr()
 	}
 
+	// Windows: an older LocalSystem service goes, and an elevated prompt is
+	// refused, before anything is saved or changed.
+	if det.Manager == service.ManagerWindows {
+		if err := windowsPreflight(ctx, deps.windowsDeps(), out); err != nil {
+			var na *needsAdminError
+			if errors.As(err, &na) {
+				_, _ = fmt.Fprintln(stderr, "Error: "+na.msg)
+				return &exitCodeError{ExitNeedsAdmin}
+			}
+			return err
+		}
+	}
 	target, err := service.ResolveTarget(deps.targetEnv, asUser)
 	if err != nil {
 		return err
@@ -390,6 +422,12 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	svc.Chown = nil
 	if owned {
 		svc.Chown = deps.chown
+	}
+	if det.Manager == service.ManagerWindows {
+		// The Run entry always names the state directory chosen now, so a
+		// MINION_STATE_DIR in the environment of a later logon (or of this
+		// shell) cannot select another profile.
+		return installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out)
 	}
 	_, err = service.Install(ctx, svc, service.Request{
 		Manager:     det.Manager,
@@ -679,27 +717,36 @@ func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.R
 	return nil
 }
 
-// newWorkerServiceRunCmd is the entry point of the Windows service: the
-// command the service control manager runs. It is "worker run" under the
-// service handshake (see [service.SCM]); started from a console it runs like
-// "worker run". It is hidden because nobody types it.
+// newWorkerServiceRunCmd is the command the LocalSystem service of releases up
+// to 0.13.1 runs. It no longer runs the Worker: under the service handshake
+// (see [service.SCM]) it reports a clean stop, so the service is not restarted,
+// and says how to remove the service. It is hidden because nobody types it.
 func newWorkerServiceRunCmd(deps workerRunDeps, scm service.SCM) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    service.WindowsServiceCommand,
-		Short:  "Run the Worker under the Windows service control manager",
+		Short:  "End a Windows service of an older release (the Worker now runs as the user)",
 		Hidden: true,
 		Args:   noArgsRedacted,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			return scm.Run(ctx, "", func(ctx context.Context) error {
-				cmd.SetContext(ctx)
-				return runWorkerRun(cmd, deps)
+			// Releases up to 0.13.1 installed the Worker as the LocalSystem
+			// service MinionWorker with this entry point. It no longer runs
+			// the Worker as SYSTEM: it reports to the service control manager
+			// that it stopped cleanly (so the restart-on-failure action does
+			// not loop) and says what to do.
+			return scm.End(func() {
+				w := deps.stderr
+				if w == nil {
+					w = cmd.ErrOrStderr()
+				}
+				_, _ = fmt.Fprintln(w, legacyServiceRunMessage)
 			})
 		},
 	}
 	addSettingFlags(cmd, config.Default, config.ScopeWorker)
 	return cmd
 }
+
+// legacyServiceRunMessage is what "worker service-run" says instead of running
+// the Worker as SYSTEM.
+const legacyServiceRunMessage = "minion no longer runs the Worker as the LocalSystem service " + service.WindowsServiceName +
+	"; the service ends. Remove it (" + service.LegacyRemovalCommand + ") and run minion worker up as yourself."

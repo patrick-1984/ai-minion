@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"strings"
 	"time"
 
 	ksvc "github.com/kardianos/service"
@@ -172,17 +171,6 @@ type Deps struct {
 	// LinkOwner is the user whose symbolic links may be followed in the path
 	// of a directory of the target; the zero value is root (see [DirSpec]).
 	LinkOwner int
-	// NewController creates the Windows service controller from the binary
-	// path alone; when set it wins over NewControllerFromConfig (the
-	// settings are then the controller's business). Nil means the path
-	// below.
-	NewController func(binary string) (Controller, error)
-	// NewControllerFromConfig creates the Windows service controller of the
-	// configuration [WindowsConfig] built; nil means [NewConfigController].
-	NewControllerFromConfig func(cfg *ksvc.Config) (Controller, error)
-	// UserSID returns the SID of the user that installs the Windows service;
-	// nil means [CurrentUserSID].
-	UserSID func() (string, error)
 	// Getenv reads the environment (XDG_RUNTIME_DIR); nil means empty.
 	Getenv func(string) string
 	// Sleep waits; nil means time.Sleep honouring ctx.
@@ -280,7 +268,9 @@ func Install(ctx context.Context, d Deps, req Request, out io.Writer) (Result, e
 	case ManagerLaunchd:
 		res, err = d.installLaunchd(ctx, req)
 	case ManagerWindows:
-		res, err = d.installController(ctx, req)
+		// The Windows Worker runs as the user who installs it, started at
+		// logon (see InstallAutostart); there is no Windows service.
+		return Result{}, errors.New("on Windows the Worker is not installed as a service: it runs as you, started at logon (minion worker up)")
 	default:
 		return Result{}, fmt.Errorf("no service manager to install into (%q); use --foreground", req.Manager)
 	}
@@ -301,63 +291,4 @@ func Install(ctx context.Context, d Deps, req Request, out io.Writer) (Result, e
 func isLinger(err error) bool {
 	var le *LingerError
 	return errors.As(err, &le)
-}
-
-func (d Deps) installController(ctx context.Context, req Request) (Result, error) {
-	if err := validateBinaryAny(req.Binary); err != nil {
-		return Result{}, err
-	}
-	c, err := d.windowsController(req)
-	if err != nil {
-		return Result{}, fmt.Errorf("service manager: %w", err)
-	}
-	// An existing installation is replaced so that the settings of this run
-	// apply; "not installed" is not an error.
-	_ = c.Uninstall()
-	if err := c.Install(); err != nil {
-		return Result{}, windowsInstallError("install", err)
-	}
-	if err := c.Start(); err != nil {
-		return Result{}, windowsInstallError("start", err)
-	}
-	var state Status
-	for i := 0; i < d.activePolls(); i++ {
-		if state, err = c.Status(); err == nil && state == StatusRunning {
-			return Result{Manager: ManagerWindows, Scope: ScopeSystem, Unit: WindowsServiceName, Note: windowsServiceNote}, nil
-		}
-		if cerr := ctx.Err(); cerr != nil {
-			return Result{}, cerr
-		}
-		d.sleep(ctx, d.pollInterval())
-	}
-	return Result{}, errors.New("the service " + WindowsServiceName + " is not running after the start")
-}
-
-// windowsController returns the controller of the service to install.
-func (d Deps) windowsController(req Request) (Controller, error) {
-	if d.NewController != nil {
-		return d.NewController(req.Binary)
-	}
-	userSID := d.UserSID
-	if userSID == nil {
-		userSID = CurrentUserSID
-	}
-	sid, err := userSID()
-	if err != nil {
-		return nil, fmt.Errorf("cannot read your user SID: %w", err)
-	}
-	cfg := WindowsConfig(req.Binary, req.StateDir, sid)
-	if d.NewControllerFromConfig != nil {
-		return d.NewControllerFromConfig(cfg)
-	}
-	return NewConfigController(cfg)
-}
-
-// validateBinaryAny accepts any non-empty absolute-looking path: the Windows
-// service manager takes the executable as a separate value and quotes it.
-func validateBinaryAny(binary string) error {
-	if strings.TrimSpace(binary) == "" {
-		return errors.New("the binary path is empty")
-	}
-	return nil
 }

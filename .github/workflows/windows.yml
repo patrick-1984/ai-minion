@@ -3,8 +3,9 @@
 # runner only. Story 8.2: the Windows-tagged tests of the identity and store
 # packages (A-11: protected DACLs), the named pipe and the Windows service
 # packages, a foreground Worker that the CLI reaches over its named pipe and
-# that runs session operations, and the real Windows service (install, start,
-# restart after a crash, stop, state still readable by the installing user).
+# that runs session operations, and the Worker that runs as the user from the
+# logon Run entry (install, restart after a crash, stop, migration from the
+# LocalSystem service of older releases).
 # Actions are pinned to commit SHAs (the comment gives the tag).
 name: windows
 
@@ -63,11 +64,11 @@ jobs:
         shell: bash
         run: |
           set -eu
-          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
+          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile|TestOpenPrivateAppendCreatesAProtectedFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
-          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied)'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestIsAccessDenied|TestAutostart|TestLegacyService)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
-          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
+          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused|TestOpenLaunchLogRotationNeverKeepsAPermissiveCopy|TestOpenLaunchLogRotatesAPrivateLog|TestOpenLaunchLogIsPrivate|TestOpenLaunchLogRefusesWhenAReadableBackupCannotBeDeleted)$'
           CGO_ENABLED=0 go test -count=1 -v -run "$identity" ./internal/identity/
           CGO_ENABLED=0 go test -count=1 -v -run "$hubstore" ./internal/hub/store/
           CGO_ENABLED=0 go test -count=1 -v -run "$cli" ./internal/cli/
@@ -82,11 +83,11 @@ jobs:
         shell: bash
         run: |
           set -eu
-          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
+          identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile|TestOpenPrivateAppendCreatesAProtectedFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
-          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied)'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestIsAccessDenied|TestAutostart|TestLegacyService)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
-          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
+          cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused|TestOpenLaunchLogRotationNeverKeepsAPermissiveCopy|TestOpenLaunchLogRotatesAPrivateLog|TestOpenLaunchLogIsPrivate|TestOpenLaunchLogRefusesWhenAReadableBackupCannotBeDeleted)$'
           CGO_ENABLED=1 go test -race -count=1 -run "$identity" ./internal/identity/
           CGO_ENABLED=1 go test -race -count=1 -run "$hubstore" ./internal/hub/store/
           CGO_ENABLED=1 go test -race -count=1 -run "$cli" ./internal/cli/
@@ -152,9 +153,12 @@ jobs:
           grep -q 'control socket listening' worker.log
           grep -q 'minion-worker-S-1-' worker.log
 
-  worker-service:
-    name: Windows service (install, start, restart, stop)
-    runs-on: windows-latest # runs elevated, which installing a service needs
+  worker-logon:
+    # Security fix S1: the Windows Worker runs as the user, started at logon
+    # from the user's Run key by its supervisor (minion worker launch); an
+    # older LocalSystem service is reported, ends cleanly and is removed.
+    name: Windows Worker as the user (logon autostart, migration)
+    runs-on: windows-latest
     timeout-minutes: 15
     env:
       MSYS_NO_PATHCONV: '1'
@@ -164,96 +168,71 @@ jobs:
         with:
           go-version-file: go.mod
       # The runner context is not available in a job-level env block.
-      - name: State directory of the service test
+      - name: State directory of the test
         shell: bash
         run: echo "MINION_STATE_DIR=$(cygpath -w "$RUNNER_TEMP")\\minion-state" >> "$GITHUB_ENV"
-      - name: Build minion.exe (CGO_ENABLED=0, as released)
-        shell: bash
-        run: CGO_ENABLED=0 go build -o minion.exe ./cmd/minion
-      - name: Install and start the service (minion worker up, no --foreground)
+      - name: Build minion.exe (CGO_ENABLED=0, as released) into the user's programs, as install.ps1 does
         shell: bash
         run: |
           set -eu
-          ./minion.exe worker up --share-existing none 2>&1 | tee up.log
-          grep -q 'MinionWorker' up.log
-          # Automatic start at boot and restart on failure (AC2).
-          sc.exe qc MinionWorker | tee qc.txt
-          grep -q 'AUTO_START' qc.txt
-          sc.exe qfailure MinionWorker | tee qfailure.txt
-          grep -q 'RESTART' qfailure.txt
-          # The reset period is 86400 seconds (one day), not 10.
-          grep -q '86400' qfailure.txt
-      - name: The CLI reaches the service over the pipe of this user
+          dir="$(cygpath -u "$LOCALAPPDATA")/Programs/minion"
+          mkdir -p "$dir"
+          # go.exe is a native program: with MSYS_NO_PATHCONV it gets the
+          # path verbatim, so pass the Windows form.
+          CGO_ENABLED=0 go build -o "$(cygpath -w "$dir")\\minion.exe" ./cmd/minion
+          test -f "$dir/minion.exe"
+          echo "USER_MINION=$dir/minion.exe" >> "$GITHUB_ENV"
+      - name: Migration, install, restart, stop
         shell: bash
+        run: scripts/windows-logon-worker.sh "$USER_MINION"
+      # Evidence for the design (does not gate the job): may a standard user
+      # create an "At log on" scheduled task for themselves without
+      # elevation, and write their own Run key? Run as a fresh local account
+      # that is not an administrator.
+      - name: Evidence - logon task and Run key as a standard user
+        continue-on-error: true
+        shell: pwsh
         run: |
-          set -eu
-          ok=0
-          for _ in $(seq 1 60); do
-            if ./minion.exe worker status --json > status.json 2> status.err \
-              && grep -q '"live": true' status.json \
-              && ! grep -q '"problems"' status.json; then
-              ok=1
-              break
-            fi
-            sleep 1
-          done
-          cat status.json || true
-          cat status.err || true
-          sc.exe query MinionWorker || true
-          if [ "$ok" != 1 ]; then
-            echo "the CLI did not reach the Windows service over its named pipe"
-            exit 1
-          fi
-          grep -q '"preview": true' status.json
-          grep -q '"platform": "windows"' status.json
-      - name: The service restarts after its process is killed
-        shell: bash
-        # A new instance (another process id, or the same id with another
-        # creation time) that is running and answers over the pipe. The
-        # script writes every command to a file and checks its exit status;
-        # a failure prints the polls, the last outputs, the SCM state and the
-        # event log. Failure actions are the ones the install set (qfailure
-        # above); nothing here changes them.
-        run: scripts/windows-service-restart-probe.sh
-      - name: Stop the service; the installing user still reads the state
-        shell: bash
-        run: |
-          set -eu
-          sc.exe stop MinionWorker
-          stopped=0
-          # The query goes to a file and is read from there: grep -q on a pipe
-          # makes the producer fail, and pipefail then makes that false.
-          for _ in $(seq 1 60); do
-            sc.exe query MinionWorker > query.txt 2> query.err || true
-            if grep -q 'STOPPED' query.txt; then
-              stopped=1
-              break
-            fi
-            sleep 1
-          done
-          if [ "$stopped" != 1 ]; then
-            echo "the service did not stop"
-            cat query.txt query.err || true
-            exit 1
-          fi
-          # The service ran as LocalSystem. This process runs as the runner
-          # user: the state directory and the database must still be readable
-          # (the private DACL names the installing user and SYSTEM), and the
-          # CLI must report them without a problem.
-          ./minion.exe worker status --json > after.json
-          cat after.json
-          if grep -q '"problems"' after.json; then
-            echo "the installing user cannot use the state after the service ran"
-            exit 1
-          fi
-          grep -q '"live": false' after.json
-          # The state of the service is also deletable by this user.
-          test -f "$MINION_STATE_DIR/worker.db"
-          cp "$MINION_STATE_DIR/worker.db" "$RUNNER_TEMP/worker.db.copy"
-      - name: Remove the service
+          $name = 'mnstd' + (Get-Random -Maximum 9999)
+          $pw = 'Aa1!' + [Guid]::NewGuid().ToString('N').Substring(0, 16)
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+          New-LocalUser -Name $name -Password $sec -AccountNeverExpires | Out-Null
+          $cred = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$name", $sec)
+          $out = Join-Path $env:RUNNER_TEMP 'evidence'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          icacls $out /grant "${name}:(OI)(CI)F" | Out-Null
+          $script = Join-Path $out 'probe.ps1'
+          @"
+          `$r = @()
+          `$r += 'whoami: ' + (whoami)
+          `$r += 'elevated: ' + ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          `$o = schtasks.exe /create /tn MinionProbe /sc onlogon /ru `$env:USERNAME /tr 'cmd.exe /c exit 0' /f 2>&1
+          `$r += 'schtasks /sc onlogon exit ' + `$LASTEXITCODE + ': ' + (`$o -join ' ')
+          try {
+            `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit 0'
+            `$t = New-ScheduledTaskTrigger -AtLogOn -User `$env:USERNAME
+            Register-ScheduledTask -TaskName MinionProbe2 -Action `$a -Trigger `$t -ErrorAction Stop | Out-Null
+            `$r += 'Register-ScheduledTask -AtLogOn -User self: ok'
+          } catch { `$r += 'Register-ScheduledTask -AtLogOn -User self: ' + `$_.Exception.Message }
+          try {
+            New-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name MinionProbe -Value 'cmd.exe /c exit 0' -Force -ErrorAction Stop | Out-Null
+            `$r += 'HKCU Run write: ok'
+          } catch { `$r += 'HKCU Run write: ' + `$_.Exception.Message }
+          `$r | Set-Content -Path '$out\result.txt'
+          "@ | Set-Content -Path $script
+          try {
+            $p = Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script -Credential $cred -LoadUserProfile -WorkingDirectory $out -PassThru -Wait
+            Write-Host "probe exit code: $($p.ExitCode)"
+          } catch { Write-Host "cannot start a process as the standard user: $_" }
+          Get-Content (Join-Path $out 'result.txt') -ErrorAction SilentlyContinue
+          schtasks.exe /delete /tn MinionProbe /f 2>$null
+          schtasks.exe /delete /tn MinionProbe2 /f 2>$null
+      - name: Clean up
         if: always()
         shell: bash
         run: |
+          "$USER_MINION" worker down || true
+          reg.exe delete 'HKCU\Software\Microsoft\Windows\CurrentVersion\Run' /v MinionWorker /f || true
           sc.exe stop MinionWorker || true
           sc.exe delete MinionWorker || true
 

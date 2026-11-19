@@ -4,8 +4,11 @@ package agent
 const (
 	RunModeForeground     = "foreground console"
 	RunModeWindowsService = "Windows service"
-	RunModeSystemd        = "systemd service"
-	RunModeLaunchd        = "launchd service"
+	// RunModeWindowsLogon is the Windows Worker started at logon from the
+	// user's Run key by its supervisor (minion worker launch), as the user.
+	RunModeWindowsLogon = "Windows logon autostart"
+	RunModeSystemd      = "systemd service"
+	RunModeLaunchd      = "launchd service"
 )
 
 // unixRunMode tells how a Worker on Linux or macOS runs from its environment:
