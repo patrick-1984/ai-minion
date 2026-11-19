@@ -1,0 +1,55 @@
+# OpenTelemetry Collector (contrib distribution) configuration for Minion's
+# compliance monitoring: see "Compliance monitoring" in docs/guides/observability.md.
+#
+# Minion settings that match it (changed with a fresh sign-in, or by the Hub's environment):
+#   compliance_monitoring=output   compliance_input=on
+#   compliance_endpoint=https://<collector host>:4318      (or http://127.0.0.1:4318 for a collector on the Hub host)
+#   compliance_headers="Authorization: Bearer <token>"     (use a client certificate for mutual TLS instead)
+#
+# Minion masks only its own exact secret formats before a record leaves the Hub
+# (API keys, invitation keys, join tokens, pairing codes). Everything else that can be
+# in a session (a password someone typed, a token a program printed) is yours to mask
+# here, before any exporter: the processors below are a starting point.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        # Terminate TLS here for compliance_endpoint=https://...; add client_ca_file for mutual TLS.
+        # tls:
+        #   cert_file: /certs/server.pem
+        #   key_file: /certs/server-key.pem
+        #   client_ca_file: /certs/clients-ca.pem
+        # The Hub sends at most 4 MiB per request (the default limit of 20 MiB is never reached).
+
+processors:
+  # Bodies hold session text (input and output records): OTTL replace_pattern.
+  transform/mask:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - replace_pattern(body.string, "(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]")
+          - replace_pattern(body.string, "(?i)(password[=:]\\s*)\\S+", "$${1}[REDACTED]")
+          - replace_pattern(body.string, "\\b(?:ghp|gho|ghs)_[A-Za-z0-9]{30,}\\b", "[REDACTED]")
+          - replace_pattern(body.string, "\\bAKIA[0-9A-Z]{16}\\b", "[REDACTED]")
+  # Attributes (session names, tasks are not attributes, but keep the net wide).
+  redaction/mask:
+    allow_all_keys: true
+    blocked_values:
+      - "(?i)bearer\\s+[A-Za-z0-9._~+/=-]+"
+    summary: info
+  batch: {}
+
+exporters:
+  # Replace with the store that your compliance team reads (file, Loki, Elasticsearch, ...).
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [transform/mask, redaction/mask, batch]
+      exporters: [debug]

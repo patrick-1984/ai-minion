@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Compliance monitoring** (Hub, off by default; nothing changes unless you turn it on). `compliance_monitoring` = `off`, `actions` or `output` and, separately, `compliance_input` = `off` or `on` record what the Hub accepted from and returned to callers at its two front doors (the REST API, which also serves the browser, `minion` and MCP, and the Worker call streams): who did what to which session, when, with sizes and outcomes; the screens, captures and pipe turns it returned; the text, keys, answers, tasks and messages it accepted. Records go over OTLP/HTTP to a collector of its own (`compliance_endpoint`, `compliance_headers`, `compliance_ca_file`, client certificate): `https://`, or `http://` to loopback; never `otel_endpoint`. The typed matrix of ops and levels is tested for completeness. Text sent through Minion is recorded as sent; echo-off keeps typed passwords out of screens. Only Minion's own secret formats (`mn_`, `mnk_`, `mnj1-`, pairing codes) are masked at the source; mask the rest in the collector ([example](docs/examples/otelcol-compliance.yaml)). See [Compliance monitoring](docs/guides/observability.md#compliance-monitoring).
+- **Who may turn it on.** The new operation `compliance_set` (the settings page section *Compliance monitoring*) needs a direct administrator browser session whose sign-in is at most five minutes old; API keys (also everything-scope ones), act-as sessions and Workers are refused, and `settings_set` refuses the compliance keys. Every effective change raises a policy version in the same transaction as the settings and the audit rows (`compliance.enable`, `.change`, `.retarget`, `.disable`, `.startup`, `.effective`, `.failed`). `compliance_status` shows the policy and the export.
+- **Users are told.** Pages show "Sessions are monitored: ..." while it is on and learn of a change without a reload; every API response carries `Minion-Monitoring`; a client that sends `Minion-Monitoring-Seen` (the browser, `minion` and MCP do) and last saw a less strict policy is refused once with `409 monitoring_changed` and the notice, before anything is sent.
+- **Honest outcomes.** Input is recorded as `attempted` before routing and the action record carries the outcome (`delivered`, `partial`, `failed_not_sent`, `unknown`, `refused:<code>`, `denied`) and `replayed`, joined by the request id. A Worker now binds its result cache to a digest of the request body (feature `args.digest`): a retry with the same request id and body returns the cached result with `replayed: true`, a retry with other text is a `conflict` ("this request_id was already used for a different request").
+- **Compliance queue.** Its own queue with budgets (4096 records, 16 MiB; requests of 256 records, 4 MiB, far below a collector's 20 MiB default), drops of new records counted by reason and reported to the collector as `minion.compliance.gap`; counters in `hub_diagnostics` (`compliance`).
+- **`worker_traffic_log=payload`**: the redacted frame body (secret fields and Minion's key formats masked, at most 12 KiB, always valid JSON) in the traffic record. On the Hub it changes only through `compliance_set` and is part of the policy and the notice; a Worker with it announces it and the Hub shows a notice on its sessions.
+
+### Changed
+
+- A Worker answers a repeated request id with **another body** as `conflict` (before, it returned the cached result of the first request whatever the new text was). `WriteResult` has the optional member `replayed`.
+
 ## v0.14.0
 
 Released 2026-11-19.

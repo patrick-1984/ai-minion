@@ -2,8 +2,10 @@
 // (design §4.1, metadata level): one record per frame on the op, ca and ev
 // streams with the direction, the Worker, the stream kind, the frame type,
 // the op, the request id, the size and, for a result, the duration since its
-// request and the outcome or error code. It never keeps or records a frame
-// body. The same package counts the traffic for the metrics (metrics.go).
+// request and the outcome or error code. At the metadata level it never keeps
+// or records a frame body; at the payload level (A49 T19, gated like
+// compliance monitoring) it adds the frame body after logx.RedactPayload:
+// masked, at most 12 KiB, always valid JSON. The same package counts the traffic for the metrics (metrics.go).
 //
 // Owner: A49 PR 2 (T11, T12).
 package traffic

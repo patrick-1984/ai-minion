@@ -12,6 +12,7 @@ The Hub and every Worker write their log to standard error (and the Worker keeps
 - [Worker: flags, environment and the service](#worker-flags-environment-and-the-service)
 - [Worker traffic log](#worker-traffic-log)
 - [Worker traffic metrics](#worker-traffic-metrics)
+- [Compliance monitoring](#compliance-monitoring)
 - [Status and problems](#status-and-problems)
 - [A collector example](#a-collector-example)
 - [Settings reference](#settings-reference)
@@ -112,7 +113,7 @@ minion worker up --otel on --otel-endpoint https://otel.example.com --otel-heade
 
 `worker_traffic_log=metadata` writes one record per frame that the Hub and a Worker exchange on their streams: `op` (Hub to Worker requests and results), `ca` (Worker to Hub calls) and `ev` (events and pipe turns). The Hub and each Worker have their own setting: on the Hub it covers every Worker (or those listed in `worker_traffic_log_workers`, by id or name; a name that contains a comma is written in double quotes, and a list that names no Worker is refused), on a Worker its own connection. Turn it on where you need it; the two are independent.
 
-A record never holds a frame body (no arguments, no screen, no message text). It has:
+At the `metadata` level a record never holds a frame body (no arguments, no screen, no message text); the `payload` level, which does, is described under [Compliance monitoring](#traffic-payload-level). A `metadata` record has:
 
 | Field | Meaning |
 | --- | --- |
@@ -129,7 +130,7 @@ A record never holds a frame body (no arguments, no screen, no message text). It
 {"time":"2026-11-19T10:02:11.531Z","level":"INFO","msg":"worker traffic","component":"traffic","direction":"worker->hub","worker_id":"0193...","worker":"pi","stream":"op","frame_type":"op.result","bytes":4180,"op":"session_snapshot","request_id":"0193...","duration_ms":48,"outcome":"ok"}
 ```
 
-`worker_traffic_log_to` lists where the records go: `local` (standard error, the default), `syslog`, `otel`; each must be on. The records have the fixed level `info`, whatever `log_level` and the sink levels say, and never go to the Worker's in-memory log (which the Hub can read). They are written by a goroutine of their own through a queue of 4096 records: a full queue drops the newest record (the stream it describes is never slowed down). The handshake and the pairing are not framed and never appear. The levels `metadata` and, in a later release, `payload` (with the frame bodies, behind the compliance gate) are the only planned ones; `payload` is not accepted yet.
+`worker_traffic_log_to` lists where the records go: `local` (standard error, the default), `syslog`, `otel`; each must be on. The records have the fixed level `info`, whatever `log_level` and the sink levels say, and never go to the Worker's in-memory log (which the Hub can read). They are written by a goroutine of their own through a queue of 4096 records: a full queue drops the newest record (the stream it describes is never slowed down). The handshake and the pairing are not framed and never appear. The levels are `off`, `metadata` and `payload`.
 
 On the Hub the setting is live (Log export section). On a Worker it is a flag, variable or config-file key like the sinks: `minion worker up --worker-traffic-log metadata --worker-traffic-log-to local,otel`. A destination that is off is refused when you save it (Hub) or by `worker up`; a Worker that meets one at start keeps running with the traffic log off and says so.
 
@@ -151,6 +152,76 @@ Bytes are counted at two exact layers:
 | `detailed` | `basic`, plus `minion.worker.connection.duration` and `minion.worker.op.duration` (histograms, seconds) | `basic` plus `minion.worker.id` on the byte, frame and op instruments (authenticated bytes only); on the per-Worker op series `minion.outcome` is a class (`ok`, `unknown`, `error`) and `minion.op` is an op the Hub sends to Workers, so that 500 Workers stay within the series budget |
 
 Cardinality: `basic` is bounded by the op catalog and the outcomes, whatever the number of Workers. `detailed` adds one set of series per Worker; it is meant for tens to hundreds of Workers. The first 500 Workers seen get their own series; further Workers are counted together with `otel.metric.overflow=true` (the OpenTelemetry overflow attribute). A change of the endpoint or the credential starts a new pipeline and drops what the old one had not exported; a change between `basic` and `detailed` does the same, so that after a change to `basic` no export carries a Worker id or a detailed histogram any more. Each instrument keeps up to 100,000 series, so the supported 500 Workers keep their own series on every stream kind, direction, op and outcome.
+
+## Compliance monitoring
+
+Compliance monitoring records what the **Hub** accepts from and returns to the people and programs that use sessions through it, and sends that record to a collector of its own. It is **off by default**, and nothing changes for anyone who does not turn it on. Turn it on only if you may record what people type and read; the Hub tells every user that it is on.
+
+### What is recorded, and what is not
+
+Two keys, two separate decisions (a Teleport-style split: output by default when you record content, input only when you ask for it):
+
+| Key | Value | Records |
+| --- | --- | --- |
+| `compliance_monitoring` | `off` (default) | nothing |
+| | `actions` | `minion.session.action`: who (account, "acting as", kind of caller, API key id, and whether the call came from the browser, an API key, a Worker call stream or a session-control grant), the Worker, the session, the op, the request id, sizes, the outcome, whether the answer was `replayed`, and the policy version. No content. |
+| | `output` | `actions` plus `minion.session.output`: the content the Hub **returned** to a caller (screens, captures, pipe turns). |
+| `compliance_input` | `off` (default) / `on` | `minion.session.input`: the content the Hub **accepted to send** into a session (text, keys, answers, tasks, pipe messages, the program and directory of a new session). Needs `actions` or `output`. |
+
+What each op records (everything not listed carries actions only; a test fails when an op has no row):
+
+| Op | Action record | Output | Input |
+| --- | --- | --- | --- |
+| `sessions_list` | Worker, count | | |
+| `session_snapshot` | target, pane, rows x columns, SHA-256 of the screen | screen text (style dropped) | |
+| `session_capture` | target, pane, lines requested and returned, SHA-256 | captured text | |
+| `session_create` | Worker, session name, outcome | | directory and program |
+| `send_text`, `send_keys`, `answer`, `set_task` | target, request id, length or key count, outcome, replayed | | the text, the keys, the choice, the task |
+| `pipe_send` | peer, request id, length, outcome, replayed | | the message |
+| `pipe_read`, `pipe_wait` | target, turn ids returned, withheld count (a stream: one record per turn) | each turn's text, once per turn id | |
+| `share_*`, `worker_debug`, `worker_logs`, `worker_update*` | op, target, outcome | | |
+
+The Hub records at its two front doors: the REST API (the browser, `minion` commands, MCP and API keys) and the Worker call streams (pipe calls of Worker-bound keys and session-control grants). It does **not** see typing in a local terminal or tmux, anything on the Worker's own control socket (`mn`, local commands, Solo MCP), screens nobody read through the Hub, or what a browser chose to show from a returned screen. Sessions of a Worker that is not user-managed (Access > Minion control) get action records only, at every level, as no person can read them through the Hub.
+
+**Plainly:** text that people send through Minion is recorded **as sent**: a password pasted into a prompt is in the input record. A password typed into a prompt that does not echo is not on the screen, so echo-off keeps typed passwords out of the *output*, and only out of the output. Minion cannot tell which text is a secret.
+
+Records of a call are tied together by the request id. The input record is written after authorisation and **before** the call is routed, with `minion.input.status=attempted`; the action record after it carries the outcome: `delivered` (the Worker pasted or sent it; not that a program read it), `partial`, `failed_not_sent`, `unknown` (the connection was lost), `refused:<code>`, or `denied`. An `attempted` input without a result means the Hub stopped in the middle. A Worker (from this release) binds its cache of results to a digest of the request body: a retry with the same request id and the same body is answered from the cache and says `replayed: true`; a retry with other text is refused as a conflict instead of being reported as delivered. For a Worker that predates this the record says `replayed=unknown`.
+
+Output is not repeated: the fingerprint is the SHA-256 of the payload that was returned. A screen or capture is recorded with its text when its fingerprint differs from the last one recorded for the same Worker, session, pane and kind; otherwise the record names the fingerprint only. Every read still produces a record, so "who saw what, when" is complete. A turn's text is recorded once per turn id. A record's content is cut at 64 KiB on a character boundary (`minion.content.truncated_bytes`).
+
+### Who may turn it on, and how that is recorded
+
+- **Only a fresh, direct administrator browser session.** The settings page section *Compliance monitoring* saves with the operation `compliance_set`. An API key (also an everything-scope one), an act-as session and a Worker are refused; so is an administrator whose sign-in is older than five minutes (the page says where to confirm it: Hub identity). `settings_set` refuses these keys.
+- Environment variables work as for every Hub setting (`MINION_COMPLIANCE_MONITORING`, `MINION_COMPLIANCE_INPUT`, `MINION_COMPLIANCE_ENDPOINT`, `MINION_COMPLIANCE_HEADERS_FILE`, `MINION_COMPLIANCE_CA_PATH`, `MINION_COMPLIANCE_CLIENT_CERT_PATH`, `MINION_COMPLIANCE_CLIENT_KEY_PATH`) and are recorded at start with the provenance `environment`.
+- **Own destination.** `compliance_endpoint` is an OTLP/HTTP base URL (`/v1/logs` is appended): `https://`, or `http://` to a loopback address (a collector on the Hub host). A destination that is not loopback needs `compliance_headers` or a client certificate. It never falls back to `otel_endpoint`, and it has its own headers, CA and client certificate, so changing the ordinary OpenTelemetry settings cannot redirect session content. Content never goes to syslog and never to the local log.
+- **Policy version.** Every effective change (level, input, destination, traffic payload) raises the policy version by one in the same transaction as the settings and the audit rows. The audit log gets `compliance.enable`, `compliance.change`, `compliance.retarget`, `compliance.disable` and, at every start with the environment or monitoring on, `compliance.startup`; `compliance.effective` and `compliance.failed` say whether the exporter then started. The target reads `v=3 level=output input=on traffic=metadata dest=https://collector.example:4318`: no credential, no content. The first record of the stream (`minion.compliance.policy`) states the policy, so the collector sees the activation.
+- A change is checked as a whole before it is stored (a refused combination changes nothing) and applied at once; the old queue is discarded, so nothing queued for an old destination or credential is sent anywhere else.
+
+### Notice
+
+While monitoring (or the traffic payload level) is on, every page shows "Sessions are monitored: output, input on (policy v3)". An open session page learns of a change through the event stream, without a reload. Every API response carries `Minion-Monitoring: v=3; level=output; input=on`. A client that sends `Minion-Monitoring-Seen: <version>` and last saw a **less strict** policy is refused **once** with `409 monitoring_changed` and the notice, before anything is routed; the next request (with the new version) goes through. The browser, the `minion` command line and MCP do this: the first content-bearing command after monitoring was turned on or made stricter fails with the notice, and succeeds when repeated (the command line keeps the last seen version per Hub in `hub-monitoring.json` in your user config directory; if that file cannot be used it sends no version and only shows the notice). A looser policy never refuses. A third-party client that sends no version is informed by the response header only.
+
+### Queue, losses and delivery
+
+The compliance export has its own queue, separate from the log sinks and their levels: at most 4096 records and 16 MiB estimated, and requests of at most 256 records and 4 MiB (the Collector's default limit is 20 MiB). When the queue is full, **new** records are dropped (what is queued keeps its order) and counted by event; when space returns, the collector receives one `minion.compliance.gap` record with the number dropped, which events, and the first and last time. Sessions are never slowed down or blocked. Delivery is best effort: there is no disk spool, and a stop gives the export up to 3 seconds. `hub_diagnostics` and Administration > Diagnostics show the export next to the log sinks (`compliance`: queued, sent, dropped by reason `queue_full`, `export_failed`, `reconfigure`, `shutdown`, `no_exporter`, last error).
+
+### Masking, honestly
+
+At the source the Hub masks only **Minion's own exact secret formats**, in content, before it is cut and queued: API keys `mn_...`, invitation keys `mnk_<fingerprint>.<secret>`, join tokens `mnj1-...` and pairing codes `MN-XXXX-XXXX`. It does not guess: free text, a secret split over several `send_keys`, a pasted password, anything a program prints, and a bare eight-character pairing code are **not** masked. Mask what you know at the collector, before any exporter: [`docs/examples/otelcol-compliance.yaml`](../examples/otelcol-compliance.yaml) uses the `transform` processor (OTTL `replace_pattern` on bodies) and the `redaction` processor (`blocked_values`). Adapt the patterns to what your people really use; they are a starting point, not a guarantee.
+
+### Traffic payload level
+
+`worker_traffic_log=payload` adds the body of every frame to the [traffic log](#worker-traffic-log) record: the arguments the Hub sends, the screens and results a Worker returns, the text of pipe turns. Secret fields (`password`, `token`, `authorization`, ...) and Minion's key formats are masked; a body is at most 12 KiB, cut into `{"truncated":N,"head":"..."}` when larger, and always valid JSON. On the Hub it changes only through `compliance_set` (the same fresh-session gate; stepping down to `off` or `metadata` is open) and counts in the policy version and the notice, so the notice appears while it is on. On a Worker it is the Worker operator's own setting; the Worker announces it in its hello and the Hub shows a notice on that Worker's sessions. The records go where `worker_traffic_log_to` says (`local`, `syslog`, `otel`): remember that these are the ordinary log sinks, not the compliance collector.
+
+### Settings
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `compliance_monitoring` | `off`, `actions`, `output` | `off` |
+| `compliance_input` | `off`, `on` | `off` |
+| `compliance_endpoint` | `https://` base URL, or `http://` to loopback | none (needed when on) |
+| `compliance_headers` | secret, `Name: value` lines | none |
+| `compliance_ca_file`, `compliance_client_cert_file`, `compliance_client_key_file` | PEM files, key mode 0600 | system roots / none |
 
 ## Status and problems
 
@@ -187,9 +258,10 @@ H = Hub (environment, then the panel; live), W = Worker (flag, then environment,
 | `otel_headers` | H | secret, `Name: value` lines (`MINION_OTEL_HEADERS_FILE`) | none |
 | `otel_headers_path` | W | path of a 0600 file with `Name: value` lines | none |
 | `otel_ca_file`, `otel_client_cert_file`, `otel_client_key_file` (`MINION_OTEL_CA_PATH`, `MINION_OTEL_CLIENT_CERT_PATH`, `MINION_OTEL_CLIENT_KEY_PATH`) | H, W | PEM files, key mode 0600 | system roots / none |
-| `worker_traffic_log` | H, W | `off`, `metadata` | `off` |
+| `worker_traffic_log` | H, W | `off`, `metadata`, `payload` (Hub: only with a fresh sign-in) | `off` |
 | `worker_traffic_log_to` | H, W | comma list of `local`, `syslog`, `otel` | `local` |
 | `worker_traffic_log_workers` | H | comma list of Worker ids or names (a name with a comma in double quotes) | empty: all |
 | `otel_metrics` | H | `off`, `basic`, `detailed` | `off` |
+| `compliance_monitoring`, `compliance_input`, `compliance_endpoint`, `compliance_headers`, `compliance_ca_file`, `compliance_client_cert_file`, `compliance_client_key_file` | H (fresh sign-in) | see [Compliance monitoring](#settings) | `off` |
 
 Fixed: facility `local0`; OTLP timeout 5 s and gzip; the queue and batch sizes above.
