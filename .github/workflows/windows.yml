@@ -215,6 +215,174 @@ jobs:
         # event log. Failure actions are the ones the install set (qfailure
         # above); nothing here changes them.
         run: scripts/windows-service-restart-probe.sh
+      # Tray ticket W1b, acceptance 3: three Windows principals against the
+      # installed service (tickets v3, Astra finding 3). The service serves the
+      # pipe of the installing user (MINION_PIPE_USER_SID) only; no other
+      # principal gets a pipe grant. scripts/windows-runas.ps1 runs a command
+      # line as each principal without a window or a prompt:
+      #   (a) the installer SID with an unelevated token: the SAFER "Normal
+      #       User" level, what runas /trustlevel:0x20000 gives (Administrators
+      #       deny-only), via CreateProcessAsUser;
+      #   (b) a new standard user (New-LocalUser), via CreateProcessWithLogonW;
+      #   (c) an alternate administrator, the same way.
+      # The commands run C:\minion-ci\minion.exe, a copy every principal can
+      # read; the service itself runs the minion.exe of the workspace that
+      # "worker up" installed. After PR #69 the service runs its verified copy
+      # %ProgramFiles%\Minion\minion.exe instead: the principals can then run
+      # that one and the copy goes away; the assertions stay the same.
+      - name: 'W1b principals: set up the principals and record the service environment'
+        shell: pwsh
+        run: |
+          . ./scripts/windows-runas.ps1
+          New-Item -ItemType Directory -Force -Path C:\minion-ci | Out-Null
+          # Authenticated Users may write their results here.
+          icacls C:\minion-ci /grant '*S-1-5-11:(OI)(CI)M' | Out-Null
+          Copy-Item -LiteralPath minion.exe -Destination C:\minion-ci\minion.exe
+          $uac = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System').EnableLUA
+          Write-Host "UAC EnableLUA = $uac"
+          $envBefore = Get-CiServiceEnvironment
+          $envBefore | Write-Host
+          $pin = @($envBefore | Where-Object { $_ -like 'MINION_PIPE_USER_SID=*' })
+          Assert-Ci ($pin.Count -eq 1) 'the service environment has one MINION_PIPE_USER_SID'
+          $sid = $pin[0].Substring('MINION_PIPE_USER_SID='.Length)
+          $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          Assert-Ci ($sid -eq $me) "the pinned pipe SID $sid is the installer $me"
+          $envBefore | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'service-env-before.txt')
+          "MINION_CI_PIPE=minion-worker-$sid" | Add-Content -LiteralPath $env:GITHUB_ENV
+          # The credentials stay in the runner's temp directory (DPAPI of
+          # this user), for the next steps.
+          New-CiLocalUser -Name minion-std | Export-Clixml -LiteralPath (Join-Path $env:RUNNER_TEMP 'cred-std.xml')
+          New-CiLocalUser -Name minion-adm2 -Admin | Export-Clixml -LiteralPath (Join-Path $env:RUNNER_TEMP 'cred-adm2.xml')
+          # Positive control of the pipe probe: the installer reaches its pipe.
+          $code = Invoke-AsSaferNormalUser -CommandLine (Get-CiPipeProbeCommandLine "minion-worker-$sid") -Out C:\minion-ci\probe-a.txt -Err C:\minion-ci\probe-a.err
+          Show-CiFile C:\minion-ci\probe-a.txt
+          Show-CiFile C:\minion-ci\probe-a.err
+          Assert-Ci ($code -eq 0) "the installer's unelevated token connects to its pipe (probe exit $code)"
+          Assert-Ci ((Get-CiServiceStatus) -eq 'Running') 'the service runs'
+          exit 0
+      - name: 'W1b principal b: a standard user is denied the pipe and the service'
+        shell: pwsh
+        run: |
+          . ./scripts/windows-runas.ps1
+          $cred = Import-Clixml -LiteralPath (Join-Path $env:RUNNER_TEMP 'cred-std.xml')
+          $m = 'C:\minion-ci\minion.exe'
+          $d = 'C:\minion-ci'
+          $null = Invoke-AsCredential -Credential $cred -CommandLine 'whoami /user /groups' -Out "$d\b-whoami.txt" -Err "$d\b-whoami.err"
+          Show-CiFile "$d\b-whoami.txt"
+          # The pipe of the installer refuses this user.
+          $code = Invoke-AsCredential -Credential $cred -CommandLine (Get-CiPipeProbeCommandLine $env:MINION_CI_PIPE) -Out "$d\b-probe.txt" -Err "$d\b-probe.err"
+          Show-CiFile "$d\b-probe.txt"; Show-CiFile "$d\b-probe.err"
+          Assert-Ci ($code -eq 5) "the installer's pipe denies the standard user (probe exit $code, want 5)"
+          # Status: no live answer and no private field (pairing.code absent).
+          $code = Invoke-AsCredential -Credential $cred -CommandLine "$m worker status --json" -Out "$d\b-status.json" -Err "$d\b-status.err"
+          Show-CiFile "$d\b-status.json"; Show-CiFile "$d\b-status.err"
+          $st = Get-Content -Raw "$d\b-status.json" | ConvertFrom-Json
+          Assert-Ci (-not $st.live) 'the standard user gets no live answer'
+          Assert-Ci (-not ($st.pairing.PSObject.Properties.Name -contains 'code')) 'pairing.code is absent'
+          Assert-Ci ([string]::IsNullOrEmpty($st.pending_pairing_code)) 'pending_pairing_code is empty'
+          # Stop without flags: the service runs but does not answer on this
+          # user's pipe, so the sessions cannot be counted: 29.
+          $code = Invoke-AsCredential -Credential $cred -CommandLine "$m worker stop --json" -Out "$d\b-stop.json" -Err "$d\b-stop.err"
+          Show-CiFile "$d\b-stop.json"; Show-CiFile "$d\b-stop.err"
+          Assert-Ci ($code -eq 29) "worker stop as a standard user exits 29 count_unavailable (got $code)"
+          # Accepting the unknown loss reaches the SCM, which denies the stop: 21.
+          $code = Invoke-AsCredential -Credential $cred -CommandLine "$m worker stop --accept-unknown-loss --json" -Out "$d\b-stop2.json" -Err "$d\b-stop2.err"
+          Show-CiFile "$d\b-stop2.json"; Show-CiFile "$d\b-stop2.err"
+          Assert-Ci ($code -eq 21) "worker stop --accept-unknown-loss as a standard user exits 21 needs_admin (got $code)"
+          Assert-Ci ((Get-Content -Raw "$d\b-stop2.json" | ConvertFrom-Json).code -eq 'needs_admin') 'code needs_admin'
+          Assert-Ci ((Get-CiServiceStatus) -eq 'Running') 'the service still runs'
+          # Start (the service runs): the SCM denies the open: 21.
+          $code = Invoke-AsCredential -Credential $cred -CommandLine "$m worker start --json" -Out "$d\b-start.json" -Err "$d\b-start.err"
+          Show-CiFile "$d\b-start.json"; Show-CiFile "$d\b-start.err"
+          Assert-Ci ($code -eq 21) "worker start as a standard user exits 21 needs_admin (got $code)"
+          exit 0
+      - name: 'W1b principal c: an alternate administrator is denied the pipe'
+        shell: pwsh
+        run: |
+          . ./scripts/windows-runas.ps1
+          $cred = Import-Clixml -LiteralPath (Join-Path $env:RUNNER_TEMP 'cred-adm2.xml')
+          $m = 'C:\minion-ci\minion.exe'
+          $d = 'C:\minion-ci'
+          $null = Invoke-AsCredential -Credential $cred -CommandLine 'whoami /user /groups' -Out "$d\c-whoami.txt" -Err "$d\c-whoami.err"
+          Show-CiFile "$d\c-whoami.txt"
+          $admLine = @(Get-Content "$d\c-whoami.txt" | Where-Object { $_ -match 'S-1-5-32-544' })
+          Assert-Ci ($admLine.Count -eq 1 -and $admLine[0] -notmatch 'deny only') 'the alternate administrator runs with an enabled Administrators group'
+          $code = Invoke-AsCredential -Credential $cred -CommandLine (Get-CiPipeProbeCommandLine $env:MINION_CI_PIPE) -Out "$d\c-probe.txt" -Err "$d\c-probe.err"
+          Show-CiFile "$d\c-probe.txt"; Show-CiFile "$d\c-probe.err"
+          Assert-Ci ($code -eq 5) "the installer's pipe denies the alternate administrator (probe exit $code, want 5)"
+          $null = Invoke-AsCredential -Credential $cred -CommandLine "$m worker status --json" -Out "$d\c-status.json" -Err "$d\c-status.err"
+          Show-CiFile "$d\c-status.json"; Show-CiFile "$d\c-status.err"
+          $st = Get-Content -Raw "$d\c-status.json" | ConvertFrom-Json
+          Assert-Ci (-not $st.live) 'the alternate administrator gets no live answer'
+          Assert-Ci (-not ($st.pairing.PSObject.Properties.Name -contains 'code')) 'pairing.code is absent'
+          exit 0
+      - name: 'W1b principal a: the installer, unelevated, stops the service over its pipe'
+        shell: pwsh
+        run: |
+          . ./scripts/windows-runas.ps1
+          $m = 'C:\minion-ci\minion.exe'
+          $d = 'C:\minion-ci'
+          $null = Invoke-AsSaferNormalUser -CommandLine 'whoami /user /groups' -Out "$d\a-whoami.txt" -Err "$d\a-whoami.err"
+          Show-CiFile "$d\a-whoami.txt"
+          $admLine = @(Get-Content "$d\a-whoami.txt" | Where-Object { $_ -match 'S-1-5-32-544' })
+          Assert-Ci ($admLine.Count -eq 1 -and $admLine[0] -match 'deny only') 'the unelevated token has Administrators deny-only'
+          $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          Assert-Ci ((Get-Content -Raw "$d\a-whoami.txt") -match [regex]::Escape($me)) 'the unelevated token is the installer SID'
+          Assert-Ci ((Get-CiServiceStatus) -eq 'Running') 'the service runs before the stop'
+          # worker stop sends worker_lifecycle+lifecycle.v1 over the pipe; the
+          # Windows service stops itself (no SCM right is needed) and the CLI
+          # waits until the pipe is gone and the state lock is free.
+          $code = Invoke-AsSaferNormalUser -CommandLine "$m worker stop --json" -Out "$d\a-stop.json" -Err "$d\a-stop.err"
+          Show-CiFile "$d\a-stop.json"; Show-CiFile "$d\a-stop.err"
+          Assert-Ci ($code -eq 0) "worker stop by the unelevated installer exits 0 (got $code)"
+          $res = Get-Content -Raw "$d\a-stop.json" | ConvertFrom-Json
+          Assert-Ci ($res.ok -and $res.stopped) 'the result says ok and stopped'
+          # Stopped, and it stays stopped (no recovery restart) for 10 seconds.
+          $deadline = (Get-Date).AddSeconds(30)
+          while ((Get-CiServiceStatus) -ne 'Stopped' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          Assert-Ci ((Get-CiServiceStatus) -eq 'Stopped') 'the service stopped'
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Milliseconds 500
+            $s = Get-CiServiceStatus
+            Assert-Ci ($s -eq 'Stopped') "the service stays stopped (state $s after $(($i + 1) / 2) s)"
+          }
+          sc.exe query MinionWorker
+          exit 0
+      - name: 'W1b principals c and b: start; the alternate administrator may, the standard user may not'
+        shell: pwsh
+        run: |
+          . ./scripts/windows-runas.ps1
+          $m = 'C:\minion-ci\minion.exe'
+          $d = 'C:\minion-ci'
+          Assert-Ci ((Get-CiServiceStatus) -eq 'Stopped') 'the service is stopped'
+          $std = Import-Clixml -LiteralPath (Join-Path $env:RUNNER_TEMP 'cred-std.xml')
+          $code = Invoke-AsCredential -Credential $std -CommandLine "$m worker start --json" -Out "$d\b-start2.json" -Err "$d\b-start2.err"
+          Show-CiFile "$d\b-start2.json"; Show-CiFile "$d\b-start2.err"
+          Assert-Ci ($code -eq 21) "worker start of a stopped service as a standard user exits 21 (got $code)"
+          Assert-Ci ((Get-CiServiceStatus) -eq 'Stopped') 'the service is still stopped'
+          $adm = Import-Clixml -LiteralPath (Join-Path $env:RUNNER_TEMP 'cred-adm2.xml')
+          $code = Invoke-AsCredential -Credential $adm -CommandLine "$m worker start --json" -Out "$d\c-start.json" -Err "$d\c-start.err"
+          Show-CiFile "$d\c-start.json"; Show-CiFile "$d\c-start.err"
+          Assert-Ci ($code -eq 0) "worker start by the alternate administrator exits 0 (got $code)"
+          # The start changed nothing in the service: the pipe stays the
+          # installer's (MINION_PIPE_USER_SID unchanged).
+          $before = Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'service-env-before.txt')
+          $after = Get-CiServiceEnvironment
+          $after | Write-Host
+          Assert-Ci (($before -join "`n") -eq ($after -join "`n")) 'the service environment (MINION_PIPE_USER_SID) is unchanged'
+          # The service runs again and answers the installer, not the
+          # alternate administrator.
+          $ok = $false
+          for ($i = 0; $i -lt 60 -and -not $ok; $i++) {
+            & ./minion.exe worker status --json > status-c.json 2> status-c.err
+            $ok = ((Get-Content -Raw status-c.json | ConvertFrom-Json).live -eq $true)
+            if (-not $ok) { Start-Sleep -Seconds 1 }
+          }
+          Assert-Ci $ok 'the installer reaches the restarted service over its pipe'
+          $code = Invoke-AsCredential -Credential $adm -CommandLine (Get-CiPipeProbeCommandLine $env:MINION_CI_PIPE) -Out "$d\c-probe2.txt" -Err "$d\c-probe2.err"
+          Show-CiFile "$d\c-probe2.txt"
+          Assert-Ci ($code -eq 5) "the pipe still denies the alternate administrator (probe exit $code)"
+          exit 0
       - name: Stop the service; the installing user still reads the state
         shell: bash
         run: |
@@ -256,6 +424,8 @@ jobs:
         run: |
           sc.exe stop MinionWorker || true
           sc.exe delete MinionWorker || true
+          net user minion-std /delete || true
+          net user minion-adm2 /delete || true
 
   psmux:
     # v0.9.0 spike: the tmux adapter drives psmux (tmux-compatible server for
