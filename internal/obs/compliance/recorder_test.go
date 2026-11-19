@@ -136,7 +136,7 @@ func TestReplayedFlagAndOutcomes(t *testing.T) {
 }
 
 func TestBodyCapAndRuneBoundary(t *testing.T) {
-	text := strings.Repeat("é", MaxBody) // 2 bytes each: cut inside a rune is possible
+	text := strings.Repeat("\u00e9", MaxBody) // 2 bytes each: cut inside a rune is possible
 	m, s := mon(Policy{Version: 1, Level: LevelActions, Input: true}, true, true)
 	args := &ops.SendTextArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: tgt(), Text: text}
 	m.Begin(context.Background(), info(ops.OpSendText, args)).Attempted()

@@ -49,7 +49,7 @@ func TestComplianceRecordsReachTheCollector(t *testing.T) {
 	var names []string
 	var body string
 	attrs := map[string]string{}
-	var res map[string]string = map[string]string{}
+	res := map[string]string{}
 	for _, g := range reqs {
 		for _, rl := range g.req.ResourceLogs {
 			for _, kv := range rl.GetResource().GetAttributes() {

@@ -280,7 +280,8 @@ func (s *ComplianceService) start(ctx context.Context) error {
 		return fmt.Errorf("compliance: write the policy: %w", err)
 	}
 	s.Monitor.SetPolicy(cur)
-	s.reload(ctx, cur, cfg, actor)
+	// A failed export is already audited and logged by reload; the Hub starts.
+	_ = s.reload(ctx, cur, cfg, actor)
 	return nil
 }
 

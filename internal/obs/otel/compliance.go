@@ -336,7 +336,7 @@ func estimate(r *sdklog.Record) int {
 		if kv.Value.Type() == attribute.STRING {
 			n += len(kv.Value.AsString())
 		} else {
-			n += len(kv.Value.Emit())
+			n += len(kv.Value.String())
 		}
 		return true
 	})

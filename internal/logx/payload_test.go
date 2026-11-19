@@ -29,7 +29,7 @@ func TestRedactPayloadMasksSecretKeysAndTokens(t *testing.T) {
 }
 
 func TestRedactPayloadAlwaysValidAndWithinTheCap(t *testing.T) {
-	big := strings.Repeat("é\"\\\n ", 20000)
+	big := strings.Repeat("\u00e9\"\\\n ", 20000)
 	b, _ := json.Marshal(map[string]string{"screen": big, "k": "mn_" + strings.Repeat("a", 52)})
 	for _, max := range []int{64, 200, 1 << 10, 12 << 10} {
 		out := RedactPayload(b, max)

@@ -483,7 +483,7 @@ func (s *SettingsService) set(ctx context.Context, actor SettingsActor, args ops
 	txAud, audOK := s.auditor.(SettingsTxAuditor)
 	txStore, stOK := s.store.(settingsTxStore)
 	for _, h := range hooks {
-		if h.tx != nil && !(audOK && stOK) {
+		if h.tx != nil && (!audOK || !stOK) {
 			return ops.WriteResult{}, errors.New("server: this setting changes only in one transaction with its audit rows, and the store cannot do that")
 		}
 	}
