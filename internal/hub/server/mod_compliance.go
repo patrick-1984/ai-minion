@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/obs"
 	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
+	otelsink "github.com/patrick-1984/ai-minion/internal/obs/otel"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -72,8 +73,13 @@ type ComplianceService struct {
 	gen     uint64
 }
 
-// defaultComplianceBuilder builds the OTLP exporter (compliance_exporter.go).
-var defaultComplianceBuilder ComplianceBuilder
+// defaultComplianceBuilder builds the OTLP/HTTP exporter: its own provider,
+// credentials, trust and queue (internal/obs/otel/compliance.go).
+var defaultComplianceBuilder ComplianceBuilder = func(cfg config.ComplianceConfig, proc obs.Process) (ComplianceExporter, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return otelsink.NewCompliance(ctx, cfg, proc)
+}
 
 func init() {
 	for _, k := range config.ComplianceKeys {

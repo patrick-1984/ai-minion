@@ -84,8 +84,26 @@ func registerDiagnosticsModule(r *Registry, catalog *ops.Registry) {
 			Request: nw.Diagnose,
 			Workers: func() (connected, pending int) { return countWorkers(svc.Registry().List()) },
 		}
+		var base func() []ops.LogSinkStatus
 		if o, err := Require[*ObsService](env); err == nil && o.Manager != nil {
-			src.Sinks = o.Manager.Status
+			base = o.Manager.Status
+		}
+		// The compliance export is reported next to the log sinks: its own
+		// queue, its drops by reason, its last error (A49 T18).
+		comp, _ := Require[*ComplianceService](env)
+		if base != nil || comp != nil {
+			src.Sinks = func() []ops.LogSinkStatus {
+				var out []ops.LogSinkStatus
+				if base != nil {
+					out = append(out, base()...)
+				}
+				if comp != nil {
+					if st := comp.Status(); st != nil {
+						out = append(out, *st)
+					}
+				}
+				return out
+			}
 		}
 		if err := api.RegisterHubDiagnostics(handlers, src); err != nil {
 			return fmt.Errorf("diagnostics: %w", err)
