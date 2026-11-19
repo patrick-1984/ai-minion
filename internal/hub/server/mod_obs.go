@@ -17,6 +17,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/obs"
+	otelsink "github.com/patrick-1984/ai-minion/internal/obs/otel"
 	"github.com/patrick-1984/ai-minion/internal/obs/traffic"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -42,8 +43,12 @@ const (
 // Hub runs without a runtime-controllable logger (Config.LogLive, tests).
 type ObsService struct {
 	Manager *obs.Manager
-	// Traffic is the Worker traffic log (nil without a runtime logger).
+	// Traffic is the Worker traffic log and Metrics the Worker traffic
+	// metrics (both nil without a runtime logger).
 	Traffic *traffic.Log
+	Metrics *otelsink.Metrics
+	// proc is the identity of the Hub's exported data.
+	proc    obs.Process
 	live    *logx.Live
 	verbose *bool
 }
@@ -89,6 +94,9 @@ func initObs(_ context.Context, env *Env) error {
 		defer cancel()
 		if svc.Traffic != nil {
 			svc.Traffic.Close(sctx) // queued traffic records first, bounded
+		}
+		if svc.Metrics != nil {
+			_ = svc.Metrics.Shutdown(sctx)
 		}
 		_ = svc.Manager.Shutdown(sctx) // a loss is written to the local log
 		return nil
@@ -179,9 +187,9 @@ func initLogging(ctx context.Context, env *Env) error {
 		return err
 	}
 	svc.Traffic = traffic.New(traffic.SideHub, svc.live.Fanout)
-	svc.Manager = obs.New(svc.live.Fanout, obs.Process{
-		Service: "minion-hub", Version: version.Version, InstanceID: hubInstanceID(cfg.DataDir),
-	})
+	svc.proc = obs.Process{Service: "minion-hub", Version: version.Version, InstanceID: hubInstanceID(cfg.DataDir)}
+	svc.Manager = obs.New(svc.live.Fanout, svc.proc)
+	svc.Metrics = otelsink.NewMetrics()
 	return wireLogging(ctx, svc, settings, hubSinkFiles())
 }
 
@@ -227,6 +235,7 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 			log.Error("log export could not be started", "error", logx.ErrorText(err))
 		}
 		applyTraffic(svc, settings.Resolver(), sinks, log)
+		applyMetrics(ctx, svc, settings.Resolver(), sinks, log)
 	}
 
 	// The configuration the validator resolved is the one applied after the
@@ -235,14 +244,19 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 	type resolved struct {
 		sinks   config.Sinks
 		traffic config.TrafficConfig
+		metrics string
 	}
 	var mu sync.Mutex
 	var prepared *resolved
 	validateSinks := func(p *config.Resolver) error {
 		s, err := config.ResolveSinks(p, files)
 		var t config.TrafficConfig
+		var lvl string
 		if err == nil {
 			t, err = config.ResolveTraffic(p, s)
+		}
+		if err == nil {
+			lvl, err = config.ResolveMetricsLevel(p, s)
 		}
 		mu.Lock()
 		defer mu.Unlock()
@@ -250,7 +264,7 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 		if err != nil {
 			return err
 		}
-		prepared = &resolved{sinks: s, traffic: t}
+		prepared = &resolved{sinks: s, traffic: t, metrics: lvl}
 		return nil
 	}
 	applySinks := func(ctx context.Context, eff *config.Resolver) error {
@@ -261,17 +275,24 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 		if r == nil {
 			s, err := config.ResolveSinks(eff, files)
 			var t config.TrafficConfig
+			var lvl string
 			if err == nil {
 				t, err = config.ResolveTraffic(eff, s)
+			}
+			if err == nil {
+				lvl, err = config.ResolveMetricsLevel(eff, s)
 			}
 			if err != nil {
 				m.Disable(logx.ErrorText(err))
 				if svc.Traffic != nil {
 					svc.Traffic.Configure(config.TrafficConfig{})
 				}
+				if svc.Metrics != nil {
+					_ = svc.Metrics.Configure(ctx, otelsink.MetricsConfig{}, nil)
+				}
 				return err
 			}
-			r = &resolved{sinks: s, traffic: t}
+			r = &resolved{sinks: s, traffic: t, metrics: lvl}
 		}
 		if err := m.Apply(ctx, r.sinks); err != nil {
 			return err
@@ -279,7 +300,7 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 		if svc.Traffic != nil {
 			svc.Traffic.Configure(r.traffic)
 		}
-		return nil
+		return configureMetrics(ctx, svc, r.metrics, r.sinks.OTLP)
 	}
 	settings.OnChange(obsSettingKeys(), validateSinks, applySinks)
 	return nil
@@ -297,4 +318,30 @@ func applyTraffic(svc *ObsService, res *config.Resolver, sinks config.Sinks, log
 		t = config.TrafficConfig{}
 	}
 	svc.Traffic.Configure(t)
+}
+
+// applyMetrics resolves and applies the traffic metrics at start; a setting
+// that does not resolve leaves them off and says so locally.
+func applyMetrics(ctx context.Context, svc *ObsService, res *config.Resolver, sinks config.Sinks, log *slog.Logger) {
+	if svc.Metrics == nil {
+		return
+	}
+	lvl, err := config.ResolveMetricsLevel(res, sinks)
+	if err != nil {
+		log.Error("the Worker traffic metrics are off: their settings are not valid", "error", logx.ErrorText(err))
+		lvl = otelsink.MetricsOff
+	}
+	if err := configureMetrics(ctx, svc, lvl, sinks.OTLP); err != nil {
+		log.Error("the Worker traffic metrics could not be started", "error", logx.ErrorText(err))
+	}
+}
+
+// configureMetrics applies the metrics level with the OpenTelemetry sink's
+// endpoint, headers and trust.
+func configureMetrics(ctx context.Context, svc *ObsService, level string, otlp config.OTLPConfig) error {
+	if svc.Metrics == nil {
+		return nil
+	}
+	res, _ := otelsink.NewResource(ctx, svc.proc)
+	return svc.Metrics.Configure(ctx, otelsink.MetricsConfig{Level: level, OTLP: otlp}, res)
 }

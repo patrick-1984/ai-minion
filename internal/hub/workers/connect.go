@@ -577,6 +577,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return // Accept has answered the request
 	}
+	// Layer L1 of the traffic metrics: the payload bytes of this WebSocket,
+	// from the upgrade to the close, the handshake included.
+	var ct ConnTelemetry
+	handshakeOK := false
+	if t := h.telemetry.get(); t != nil {
+		conn, ct = t.Conn(conn)
+		defer func() { ct.Closed(handshakeOK) }()
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	if !h.track(conn, cancel) {
@@ -615,7 +623,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("worker connect: handshake failed", "client_ip", ip.String(), "code", string(transport.ErrorCode(err)))
 		return
 	}
-	c := &Conn{h: h, res: res, ip: ip, pairing: pairingTicket, snap: snap, hubTLS: hubTLS}
+	handshakeOK = true
+	c := &Conn{h: h, res: res, ip: ip, pairing: pairingTicket, snap: snap, hubTLS: hubTLS, tel: ct}
 	defer c.finish()
 
 	if res.Worker.Mode == transport.ModeConnect {
@@ -736,6 +745,8 @@ type Conn struct {
 	pairing *PairingTicket
 	// hubTLS is what the welcome states about the path of this request.
 	hubTLS *HubTLS
+	// tel follows the connection for the traffic metrics; nil: none.
+	tel ConnTelemetry
 }
 
 // Worker returns the validated Worker hello.
@@ -843,6 +854,9 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	if t := h.telemetry.get(); t != nil {
 		sopts.FrameTap = t.FrameTap(w.ID, w.Name)
 	}
+	if c.tel != nil {
+		c.tel.Authenticated(w.ID)
+	}
 	sess, err := transport.NewSession(c.res.Channel, transport.RoleHub, sopts)
 	if err != nil {
 		adm.detach()
@@ -855,6 +869,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	// the registry can take the kind; modules (the event ingest) join the host
 	// from their Registry.OnAdd hook.
 	host := newHostedSession(sess, adm, h.log)
+	host.tel = h.telemetry.get()
 	host.Handle(transport.KindCall, newCallStreams(h, w, sess))
 	if h.beforeRegister != nil {
 		h.beforeRegister()

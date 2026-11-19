@@ -49,6 +49,9 @@ func (b *telemetryBox) get() Telemetry {
 	return nil
 }
 
+// Telemetry returns the installed telemetry, or nil.
+func (s *Service) Telemetry() Telemetry { return s.handler.telemetry.get() }
+
 // SetTelemetry installs t (nil removes it). Connections accepted before keep
 // the telemetry they started with.
 func (s *Service) SetTelemetry(t Telemetry) {

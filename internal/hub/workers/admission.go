@@ -116,6 +116,14 @@ func (l StreamLimits) withDefaults() StreamLimits {
 
 type lane int
 
+// String names the lane for the metrics: call or event.
+func (l lane) String() string {
+	if l == laneCall {
+		return "call"
+	}
+	return "event"
+}
+
 const (
 	laneCall lane = iota
 	laneEvent

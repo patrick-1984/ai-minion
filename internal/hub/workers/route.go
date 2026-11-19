@@ -209,6 +209,8 @@ func (d StoreDirectory) AllWorkers(ctx context.Context) ([]WorkerRecord, error) 
 
 // RouterConfig configures [NewRouter].
 type RouterConfig struct {
+	// Telemetry returns the traffic telemetry (op counts); nil: none.
+	Telemetry func() Telemetry
 	// Backend opens op streams and tells which Workers are online. Required;
 	// use [RegistryBackend].
 	Backend Backend
@@ -247,6 +249,7 @@ type Router struct {
 	log       *slog.Logger
 	userMgd   func(ctx context.Context, workerID string) (bool, error)
 	hidden    HiddenSessionsPolicyFunc
+	telemetry func() Telemetry
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
 	synced atomic.Pointer[func(workerID string) bool]
@@ -268,7 +271,8 @@ func NewRouter(c RouterConfig) (*Router, error) {
 		return nil, errors.New("workers: a Router needs a Backend, a Directory and an Authorizer")
 	}
 	rt := &Router{
-		userMgd: c.UserManaged, hidden: c.HiddenSessions,
+		telemetry: c.Telemetry,
+		userMgd:   c.UserManaged, hidden: c.HiddenSessions,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
 	}
@@ -558,6 +562,9 @@ func (rt *Router) debugRouted(req CallRequest, start time.Time, res any, err err
 		if errors.As(err, &pe) {
 			outcome = string(pe.Code)
 		}
+	}
+	if t := rt.tel(); t != nil {
+		t.OpRouted(req.WorkerID, req.Op, outcome, time.Since(start))
 	}
 	rt.log.Debug("workers: op routed", "op", req.Op, "worker_id", req.WorkerID,
 		"principal_kind", string(req.Principal.Kind), "outcome", outcome, "duration", time.Since(start).String())
@@ -1001,4 +1008,12 @@ func decodeResult(op ops.Op, body json.RawMessage) (any, error) {
 		return nil, err
 	}
 	return reflect.ValueOf(ptr).Elem().Interface(), nil
+}
+
+// tel returns the Router's telemetry, or nil.
+func (rt *Router) tel() Telemetry {
+	if rt.telemetry == nil {
+		return nil
+	}
+	return rt.telemetry()
 }

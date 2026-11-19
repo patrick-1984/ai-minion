@@ -77,6 +77,7 @@ func initRoute(ctx context.Context, env *Env) error {
 		return r.Value
 	}
 	rt, err := workers.NewRouter(workers.RouterConfig{
+		Telemetry: svc.Telemetry,
 		Backend:   workers.RegistryBackend(svc.Registry()),
 		Directory: workers.StoreDirectory{Store: st},
 		Authz:     az,

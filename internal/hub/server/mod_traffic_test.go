@@ -46,3 +46,16 @@ func TestHubTrafficLogIsLiveAndValidated(t *testing.T) {
 		t.Fatal("logged after off")
 	}
 }
+
+// otel_metrics needs the OpenTelemetry sink: a batch that turns metrics on
+// without it is refused before anything is stored.
+func TestHubMetricsNeedOTel(t *testing.T) {
+	o := newObsFixture(t, nil, nil)
+	_, err := o.settings.Set(context.Background(), admin, batchArgs(ops.SettingChange{Key: "otel_metrics", Value: "basic"}))
+	if err == nil || !strings.Contains(err.Error(), "otel_metrics") {
+		t.Fatalf("err = %v", err)
+	}
+	if recs, _ := o.st.ListSettings(context.Background()); len(recs) != 0 {
+		t.Fatalf("stored: %+v", recs)
+	}
+}

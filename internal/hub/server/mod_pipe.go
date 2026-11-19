@@ -116,6 +116,7 @@ func initPipe(ctx context.Context, env *Env) error {
 		return err
 	}
 	p, err := workers.NewPipe(workers.PipeConfig{
+		Telemetry: svc.Telemetry,
 		// A session that share_set took away from the share keeps its stored
 		// history, hidden: reads and waits ask the Hub's session state.
 		Shared: func(workerID, session string) bool { return !events.Fenced(workerID, session) },
@@ -149,13 +150,14 @@ func initPipe(ctx context.Context, env *Env) error {
 	}
 	// Worker call streams: the ops join the call loop of the connect handler.
 	cs := workers.NewCallServer(workers.CallServerConfig{
-		Keys:     keys,
-		Resolver: rt,
-		Owners:   svc.OwnerLookup(),
-		Authz:    az,
-		Auditor:  alog,
-		Grants:   st,
-		Logger:   log,
+		Telemetry: svc.Telemetry,
+		Keys:      keys,
+		Resolver:  rt,
+		Owners:    svc.OwnerLookup(),
+		Authz:     az,
+		Auditor:   alog,
+		Grants:    st,
+		Logger:    log,
 	})
 	if err := p.RegisterCalls(cs); err != nil {
 		return fmt.Errorf("pipe: %w", err)
