@@ -154,3 +154,26 @@ func TestInvalidResourceUTF8StillExports(t *testing.T) {
 }
 
 func newPipeLog(l *Logs) *slog.Logger { return slog.New(l.Handler()) }
+
+// A non-empty 2xx without a protobuf media type is a failure; a protobuf
+// answer with a variant spelling is decoded; an empty answer is a delivery.
+func TestOnlyOTLPAnswersAreDeliveries(t *testing.T) {
+	cases := []struct {
+		name, resp string
+		sent       bool
+	}{
+		{"no content type", "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", false},
+		{"variant protobuf", "HTTP/1.1 200 OK\r\nContent-Type: Application/X-Protobuf; charset=binary\r\nContent-Length: 0\r\n\r\n", true},
+		{"empty", "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", true},
+		{"truncated body", "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 50\r\n\r\nshort", false},
+	}
+	for _, c := range cases {
+		url := rawServer(t, c.resp)
+		logs, log, _ := newPipe(t, url, "")
+		log.Info("x")
+		_ = logs.Shutdown(context.Background())
+		if s := logs.Stats(); (s.Sent == 1) != c.sent {
+			t.Errorf("%s: stats %+v", c.name, s)
+		}
+	}
+}

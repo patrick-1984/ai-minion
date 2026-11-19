@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -210,17 +211,28 @@ func (f responseFilter) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	f.status.code.Store(int64(resp.StatusCode))
 	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
-		ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
-		if ct == "" || ct == "application/x-protobuf" {
-			return resp, nil
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1))
+		// The whole answer is read first: empty only after a successful
+		// read, protobuf (any spelling of the media type) when not empty,
+		// handed on with the exact header the exporter checks before it
+		// decodes (it reports success for anything else).
+		body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxOTLPResponse+1))
 		_ = resp.Body.Close()
-		if len(body) == 0 {
-			resp.Body = io.NopCloser(strings.NewReader(""))
-			return resp, nil
+		if rerr != nil {
+			return nil, rerr
 		}
-		return nil, errNotOTLP
+		if len(body) > maxOTLPResponse {
+			return nil, errNotOTLP
+		}
+		ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+		if len(body) > 0 && ct != "application/x-protobuf" {
+			return nil, errNotOTLP
+		}
+		if len(body) > 0 {
+			resp.Header.Set("Content-Type", "application/x-protobuf")
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		return resp, nil
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
@@ -236,6 +248,9 @@ func (f responseFilter) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp.Status = strconv.Itoa(resp.StatusCode) + " " + http.StatusText(resp.StatusCode)
 	return resp, nil
 }
+
+// maxOTLPResponse bounds an OTLP answer (a partial-success message).
+const maxOTLPResponse = 64 << 10
 
 // errNotOTLP is a 2xx answer that is not an OTLP response.
 var errNotOTLP = errors.New("the endpoint answered, but not as an OTLP collector")
