@@ -222,7 +222,7 @@ func runWorkerDownOpts(cmd *cobra.Command, d workerDownDeps, o downOptions) (dow
 		if !o.acceptUnknown {
 			return res, &usageError{errors.New("--scm-only stops without counting the sessions: add --accept-unknown-loss")}
 		}
-		stopped, err := stopServiceWorker(ctx, out, d)
+		stopped, err := stopServiceWorker(ctx, out, d, o.stateDir)
 		res.Stopped = stopped
 		return res, err
 	}
@@ -238,6 +238,13 @@ func runWorkerDownOpts(cmd *cobra.Command, d workerDownDeps, o downOptions) (dow
 	cancel()
 	if live && o.stateDir != "" && !sameDir(reply.StateDir, o.stateDir) {
 		return res, otherProfileError("stopped", reply.StateDir, o.stateDir)
+	}
+	if live && d.goos == "linux" {
+		// Refuse before the Worker takes its create hold: a system unit that
+		// this user may not stop would leave the hold in place.
+		if err := stopPermitted(ctx, d); err != nil {
+			return res, err
+		}
 	}
 	if live && d.callArgs != nil {
 		args := agent.LocalLifecycleArgs{Action: agent.LifecycleStop, Instance: reply.Instance, AcceptLoss: o.acceptLoss, AcceptUnknown: o.acceptUnknown}
@@ -255,7 +262,7 @@ func runWorkerDownOpts(cmd *cobra.Command, d workerDownDeps, o downOptions) (dow
 			}
 			if !lr.Exiting {
 				// systemd or launchd: stop the unit, or it starts again.
-				stopped, err := stopServiceWorker(ctx, out, d)
+				stopped, err := stopServiceWorker(ctx, out, d, reply.StateDir)
 				res.Stopped = stopped
 				return res, err
 			}
@@ -279,7 +286,7 @@ func runWorkerDownOpts(cmd *cobra.Command, d workerDownDeps, o downOptions) (dow
 		return res, &resultError{Exit: ExitCountUnavailable, Message: "the Windows service runs but does not answer on this user's control socket, " +
 			"so the sessions that would end cannot be counted; nothing was stopped. Repeat with --accept-unknown-loss to accept that an unknown number of sessions will end"}
 	}
-	return res, legacyWorkerDown(ctx, out, d, &res)
+	return res, legacyWorkerDown(ctx, out, d, o, &res)
 }
 
 // lifecycleRefusal maps a refusal of worker_lifecycle to its exit status, or
@@ -308,8 +315,8 @@ func lifecycleRefusal(err error) error {
 
 // legacyWorkerDown is the stop without a count: through the service manager,
 // else the bare worker_stop of the running Worker.
-func legacyWorkerDown(ctx context.Context, out io.Writer, d workerDownDeps, res *downResult) error {
-	stoppedService, err := stopServiceWorker(ctx, out, d)
+func legacyWorkerDown(ctx context.Context, out io.Writer, d workerDownDeps, o downOptions, res *downResult) error {
+	stoppedService, err := stopServiceWorker(ctx, out, d, o.stateDir)
 	if err != nil {
 		return err
 	}
@@ -326,6 +333,17 @@ func legacyWorkerDown(ctx context.Context, out io.Writer, d workerDownDeps, res 
 		var reply agent.LiveStatusReply
 		if json.Unmarshal(raw, &reply) == nil {
 			stateDir = reply.StateDir
+			// A Worker that started answering since the first probe was
+			// not counted: verify its profile and its session host first.
+			if o.stateDir != "" && !sameDir(reply.StateDir, o.stateDir) {
+				cancel()
+				return otherProfileError("stopped", reply.StateDir, o.stateDir)
+			}
+			if !hostKeepsSessions(d.goos, reply.SessionHost) && !o.acceptUnknown {
+				cancel()
+				return &resultError{Exit: ExitCountUnavailable, Message: "a Worker started answering after the sessions were counted, so the sessions that would end " +
+					"cannot be counted; nothing was stopped. Repeat with --accept-unknown-loss to accept that an unknown number of sessions will end"}
+			}
 		}
 	}
 	_, err = d.call(cctx, agent.OpLocalStop)
@@ -361,7 +379,7 @@ func waitStopped(ctx context.Context, out io.Writer, d workerDownDeps, stateDir 
 // stopServiceWorker stops the Worker service of this user when one runs. It
 // reports whether it stopped one; an error carries the command to run when
 // this process lacks the rights.
-func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bool, error) {
+func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps, wantDir string) (bool, error) {
 	switch d.goos {
 	case "windows":
 		stopped, err := d.windowsService()
@@ -377,6 +395,9 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 		return stopped, nil
 	case "linux":
 		if unitRunning(ctx, d, "--user", service.UserUnitName) {
+			if err := unitProfileMatches(ctx, d, "--user", service.UserUnitName, wantDir); err != nil {
+				return false, err
+			}
 			if err := d.run(ctx, "systemctl", "--user", "stop", service.UserUnitName); err != nil {
 				return false, fmt.Errorf("cannot stop the user service %s (%v); run: systemctl --user stop %s", service.UserUnitName, err, service.UserUnitName)
 			}
@@ -385,6 +406,9 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 		}
 		unit := service.SystemUnitFor(d.user())
 		if unitRunning(ctx, d, "", unit) {
+			if err := unitProfileMatches(ctx, d, "", unit, wantDir); err != nil {
+				return false, err
+			}
 			if d.euid() != 0 {
 				return false, &resultError{Exit: ExitNeedsAdmin, Message: fmt.Sprintf("the Worker runs as the system service %s; stop it with:\n  sudo systemctl stop %s\n"+
 					"(and keep it from starting at boot with: sudo systemctl disable %s)", unit, unit, unit)}
@@ -424,4 +448,58 @@ func unitRunning(ctx context.Context, d workerDownDeps, scope, unit string) bool
 		return true
 	}
 	return false
+}
+
+// stopPermitted fails with exit 21 when the only running unit is a system
+// unit that this user may not stop, before anything is asked of the Worker.
+func stopPermitted(ctx context.Context, d workerDownDeps) error {
+	if d.euid == nil || d.euid() == 0 || d.output == nil {
+		return nil
+	}
+	if unitRunning(ctx, d, "--user", service.UserUnitName) {
+		return nil
+	}
+	unit := service.SystemUnitFor(d.user())
+	if unitRunning(ctx, d, "", unit) {
+		return &resultError{Exit: ExitNeedsAdmin, Message: fmt.Sprintf("the Worker runs as the system service %s; stop it with:\n  sudo systemctl stop %s\n"+
+			"(and keep it from starting at boot with: sudo systemctl disable %s); nothing was stopped", unit, unit, unit)}
+	}
+	return nil
+}
+
+// unitProfileMatches checks that the systemd unit runs the Worker of want
+// (the MINION_STATE_DIR it pins, else the default state directory). want ""
+// asks for no check.
+func unitProfileMatches(ctx context.Context, d workerDownDeps, scope, unit, want string) error {
+	if want == "" {
+		return nil
+	}
+	args := []string{"show", "-p", "Environment", "--value", unit}
+	if scope != "" {
+		args = append([]string{scope}, args...)
+	}
+	out, err := d.output(ctx, "systemctl", args...)
+	if err != nil {
+		return nil // unreadable: the unit's own refusal rules apply
+	}
+	got := defaultStateDirOf()
+	for _, kv := range strings.Fields(out) {
+		if v, ok := strings.CutPrefix(kv, "MINION_STATE_DIR="); ok {
+			got = strings.Trim(v, `"`)
+		}
+	}
+	if got != "" && !sameDir(got, want) {
+		return otherProfileError("stopped", got, want)
+	}
+	return nil
+}
+
+// defaultStateDirOf is the state directory a Worker uses with no pin.
+func defaultStateDirOf() string {
+	res := &config.Resolver{Registry: config.Default, Role: config.ScopeWorker, LookupEnv: func(string) (string, bool) { return "", false }}
+	r, err := res.Resolve(config.KeyStateDir)
+	if err != nil {
+		return ""
+	}
+	return r.Value
 }
