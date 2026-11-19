@@ -116,6 +116,11 @@ func remoteAttr(a slog.Attr) slog.Attr {
 	switch v.Kind() {
 	case slog.KindString:
 		s := validUTF8(v.String())
+		if a.Key == PayloadKey {
+			// A traffic payload is JSON that RedactPayload masked already; it
+			// is cut as a whole, never in the middle (a cut would not be JSON).
+			return slog.String(a.Key, capPayload(RedactText(s)))
+		}
 		if errorKey(a.Key) {
 			s = RedactErrorText(s)
 		} else {

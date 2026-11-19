@@ -22,9 +22,12 @@ func TestResolveTraffic(t *testing.T) {
 			t.Errorf("%q: %v", to, err)
 		}
 	}
-	// The payload level is not available yet.
-	if _, err := ResolveTraffic(hubRes(nil, map[string]string{"worker_traffic_log": "payload"}), sinks); err == nil {
-		t.Fatal("payload accepted")
+	// The payload level adds the frame body; metadata does not.
+	if c, err := ResolveTraffic(hubRes(nil, map[string]string{"worker_traffic_log": "payload"}), sinks); err != nil || !c.Enabled || !c.Payload {
+		t.Fatalf("payload = %+v, %v", c, err)
+	}
+	if c, _ := ResolveTraffic(hubRes(nil, map[string]string{"worker_traffic_log": "metadata"}), sinks); c.Payload {
+		t.Fatal("metadata carries no payload")
 	}
 	// A Worker has no Worker filter.
 	c, err = ResolveTraffic(workerRes(nil, map[string]string{"worker_traffic_log": "metadata"}), Sinks{})

@@ -121,6 +121,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	dbg := setupDebugRemote(log, s, ex)
 	facts = withDebugFact(facts, dbg)
+	facts = withTrafficFact(facts, s)
 	c, err := NewConnector(ConnectorConfig{
 		HubURL:     hub.Server,
 		Name:       s.Name,
@@ -286,4 +287,18 @@ func connectorHealth(st Status, _ string) updateHealth {
 		return healthTrustHold
 	}
 	return healthNone
+}
+
+// withTrafficFact adds to the hello facts whether this Worker's traffic log
+// records frame bodies, so that the Hub says so on the Worker's sessions.
+func withTrafficFact(facts func() transport.WorkerFacts, s Settings) func() transport.WorkerFacts {
+	return func() transport.WorkerFacts {
+		f := facts()
+		if s.Resolver != nil {
+			if r, err := s.Resolver.Resolve(config.KeyTrafficLog); err == nil && r.Value == config.TrafficPayload {
+				f.TrafficPayload = true
+			}
+		}
+		return f
+	}
 }

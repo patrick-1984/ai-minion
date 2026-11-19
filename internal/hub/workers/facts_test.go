@@ -46,3 +46,14 @@ func TestCleanFactsKeepsAKnownHubCheckOnly(t *testing.T) {
 		}
 	}
 }
+
+// The Worker's traffic_payload fact is a plain bool that survives cleaning, so
+// the Hub can show the notice on that Worker's sessions.
+func TestCleanFactsKeepsTheTrafficPayloadFact(t *testing.T) {
+	if !CleanFacts(transport.WorkerFacts{TrafficPayload: true}).TrafficPayload {
+		t.Fatal("dropped")
+	}
+	if CleanFacts(transport.WorkerFacts{}).TrafficPayload {
+		t.Fatal("invented")
+	}
+}

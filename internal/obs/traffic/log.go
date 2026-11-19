@@ -100,6 +100,10 @@ type record struct {
 	duration time.Duration
 	result   bool
 	outcome  string
+	// payload is the redacted frame body (payload level): valid JSON, at most
+	// logx.RemotePayloadMax bytes, a copy that the tap made (the frame body
+	// is valid only during the tap call).
+	payload string
 }
 
 // New returns a log that is off until Configure turns it on.
@@ -255,6 +259,9 @@ func (l *Log) write(r record) {
 			rec.AddAttrs(slog.String("outcome", r.outcome))
 		}
 	}
+	if r.payload != "" {
+		rec.AddAttrs(slog.String(logx.PayloadKey, r.payload))
+	}
 	// The remote destinations are RemoteSafe handlers like for any record.
 	_ = r.b.handler.Handle(context.Background(), rec)
 }
@@ -367,6 +374,11 @@ func (t *tap) TapFrame(f transport.TapFrame) {
 		if ok {
 			r.op, r.reqID = p.op, p.reqID
 		}
+	}
+	if c.Payload {
+		// The body is masked and cut here, once: the queue holds text that
+		// may leave the machine, never the frame bytes.
+		r.payload = logx.RedactPayload(f.Body, logx.RemotePayloadMax)
 	}
 	t.l.gate.RLock()
 	defer t.l.gate.RUnlock()

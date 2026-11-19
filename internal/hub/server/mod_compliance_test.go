@@ -324,3 +324,54 @@ func TestComplianceExporterFailureIsAuditedAndFailsClosed(t *testing.T) {
 		t.Fatalf("dropped = %+v", st.Dropped)
 	}
 }
+
+// The payload level of the traffic log is gated like compliance: settings_set
+// refuses it, compliance_set accepts it and bumps the policy; metadata and
+// off stay open to settings_set, and a form that resends an unchanged payload
+// is not a change.
+func TestTrafficPayloadIsGated(t *testing.T) {
+	cf := newComplianceFixture(t, nil)
+	_, err := cf.ss.Set(context.Background(), admin, ops.SettingsSetArgs{
+		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Key: config.KeyTrafficLog, Value: config.TrafficPayload})
+	if err == nil || !strings.Contains(err.Error(), "compliance_set") {
+		t.Fatalf("settings_set payload: %v", err)
+	}
+	if _, err := cf.ss.Set(context.Background(), admin, ops.SettingsSetArgs{
+		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Key: config.KeyTrafficLog, Value: config.TrafficMetadata}); err != nil {
+		t.Fatalf("settings_set metadata: %v", err)
+	}
+	res, err := cf.set(t, ops.SettingChange{Key: config.KeyTrafficLog, Value: config.TrafficPayload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Policy.Traffic != "payload" || res.Policy.Version != 1 || res.Policy.Level != "off" {
+		t.Fatalf("policy = %+v", res.Policy)
+	}
+	if !cf.svc.Monitor.Policy().TrafficPayload || !cf.svc.Monitor.Policy().Active() {
+		t.Fatal("the monitor does not know about the payload level")
+	}
+	rows := cf.actions(t, AuditComplianceEnable)
+	if len(rows) != 1 || !strings.Contains(rows[0].Target, "traffic=payload") {
+		t.Fatalf("rows = %+v", rows)
+	}
+	// Resending the same value through settings_set is not a change.
+	if _, err := cf.ss.Set(context.Background(), admin, ops.SettingsSetArgs{
+		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Key: config.KeyTrafficLog, Value: config.TrafficPayload}); err != nil {
+		t.Fatalf("an unchanged payload value was refused: %v", err)
+	}
+	// Stepping down is open, and it is an effective change of the policy.
+	if _, err := cf.ss.Set(context.Background(), admin, ops.SettingsSetArgs{
+		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Key: config.KeyTrafficLog, Value: config.TrafficMetadata}); err != nil {
+		t.Fatal(err)
+	}
+	if p := cf.svc.Monitor.Policy(); p.TrafficPayload || p.Version != 2 {
+		t.Fatalf("policy = %+v", p)
+	}
+	if n := len(cf.actions(t, AuditComplianceDisable)); n != 1 {
+		t.Fatalf("disable rows = %d", n)
+	}
+	// compliance_set changes nothing but the gated keys.
+	if _, err := cf.set(t, ops.SettingChange{Key: config.KeyLogLevel, Value: "debug"}); err == nil {
+		t.Fatal("compliance_set accepted an ordinary key")
+	}
+}

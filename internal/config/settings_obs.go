@@ -33,8 +33,8 @@ const (
 	KeyOTelMetrics = "otel_metrics"
 )
 
-// Values of worker_traffic_log. The payload level (frame bodies) comes with
-// the compliance gate of a later release and is not accepted yet.
+// Values of worker_traffic_log (TrafficPayload is declared with the compliance
+// settings).
 const (
 	TrafficOff      = "off"
 	TrafficMetadata = "metadata"
@@ -80,9 +80,12 @@ func declareObs(r *Registry) {
 		Help: "Worker traffic metrics to the OpenTelemetry endpoint (needs otel on): off; basic (Hub-wide counters: " +
 			"connections, Workers online, WebSocket and frame bytes, frames, ops, calls, stream admission, turns); " +
 			"detailed (basic per Worker, for the first 500 Workers, plus connection and op durations)"})
-	r.Declare(Setting{Key: KeyTrafficLog, Scope: ScopeAny, Default: TrafficOff, Choices: []string{TrafficOff, TrafficMetadata},
+	r.Declare(Setting{Key: KeyTrafficLog, Scope: ScopeAny, Default: TrafficOff, Choices: []string{TrafficOff, TrafficMetadata, TrafficPayload},
 		Help: "Log every frame between the Hub and its Workers (Hub: both directions per Worker; Worker: what it sent and " +
-			"received): off or metadata (stream, frame type, op, request id, size, duration and outcome; never a body)"})
+			"received): off; metadata (stream, frame type, op, request id, size, duration and outcome; never a body); payload " +
+			"(metadata plus the frame body, which holds the text people send and the screens they read; Minion's key formats and " +
+			"secret fields are masked, nothing else). On the Hub, payload needs a fresh sign-in (Compliance monitoring section); " +
+			"on a Worker the Hub shows a notice on its sessions"})
 	r.Declare(Setting{Key: KeyTrafficLogTo, Scope: ScopeAny, Default: TrafficToLocal,
 		Help: "Where the traffic log goes, a comma-separated list of local (standard error), syslog and otel; each " +
 			"destination must be on. Never the in-memory log"})

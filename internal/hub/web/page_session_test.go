@@ -1208,3 +1208,16 @@ func TestWorkerUnknownAndPartialOutcomesAreSignalledToTheBrowser(t *testing.T) {
 		}
 	}
 }
+
+// A Worker that records frame bodies in its own log (traffic_payload in its
+// hello) is named on its sessions (A49 T19); one that does not is not.
+func TestSessionPageSaysWhenTheWorkerRecordsPayloads(t *testing.T) {
+	s, f := sessionOps(t)
+	w := sessionWorker()
+	w.TrafficPayload = true
+	f.reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{w}})
+	mustHave(t, sessGet(t, s, "/s/pi-1/minion-1", sessUser).Body.String(), "This Worker records its traffic with the Hub, including the text sent to this session")
+	w.TrafficPayload = false
+	f.reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{w}})
+	mustNotHave(t, sessGet(t, s, "/s/pi-1/minion-1", sessUser).Body.String(), "records its traffic")
+}

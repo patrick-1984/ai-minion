@@ -66,6 +66,7 @@
     </ul>
   </header>
   {{if .Data.Notice}}<p class="notice notice-warning" role="status">{{.Data.Notice}}</p>{{end}}
+  {{if .Data.WorkerRecording}}<p class="notice notice-warning" role="status">{{.Data.WorkerRecording}}</p>{{end}}
   {{if and .Data.Online (not .Data.Operate)}}<p class="notice notice-info" role="status">You can view this session. You don't have permission to send input.</p>{{end}}
   <div class="session-grid{{if $panes}} has-pane{{end}}" id="session-grid">
     <div class="terminal-card">

@@ -345,22 +345,26 @@ func reviewedFromForm(r *http.Request) (ops.ReviewedDialog, bool) {
 
 // SessionPage is what session.html sees as .Data.
 type SessionPage struct {
-	Worker    string
-	WorkerID  string
-	Owner     string
-	Session   string
-	Online    bool
-	Task      string
-	Notice    string
-	Operate   bool
-	Panel     PanelView
-	Keys      []KeyButton
-	ScreenURL string
-	EventsURL string
-	TextURL   string
-	KeysURL   string
-	TaskURL   string
-	NewURL    string
+	Worker   string
+	WorkerID string
+	Owner    string
+	Session  string
+	Online   bool
+	Task     string
+	Notice   string
+	// WorkerRecording is set when this Worker records the frame bodies of its
+	// connection to the Hub in its own log (worker_traffic_log=payload on the
+	// Worker): the page says so (A49 T19).
+	WorkerRecording string
+	Operate         bool
+	Panel           PanelView
+	Keys            []KeyButton
+	ScreenURL       string
+	EventsURL       string
+	TextURL         string
+	KeysURL         string
+	TaskURL         string
+	NewURL          string
 	// NewRefused is why New session would be refused (the new session would
 	// be hidden and the hidden_sessions policy does not allow it); the button
 	// is then disabled and shows it.
@@ -627,6 +631,9 @@ func sessionData(r *http.Request) (any, error) {
 		EventsURL: eventsPath + "?all=true&worker=" + url.QueryEscape(t.worker.ID),
 		TextURL:   t.path() + "/text", KeysURL: t.path() + "/keys", TaskURL: t.path() + "/task",
 		NewURL: NewSessionPath(t.ref), Context: principalContext(r), NewRefused: t.worker.NewSessionRefused,
+	}
+	if t.worker.TrafficPayload {
+		page.WorkerRecording = "This Worker records its traffic with the Hub, including the text sent to this session and the screens it returns, in its own log (worker_traffic_log=payload on the Worker)."
 	}
 	if !t.worker.Online {
 		page.Notice = "This Worker is offline. The screen and the controls come back when it reconnects."

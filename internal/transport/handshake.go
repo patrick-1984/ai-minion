@@ -198,6 +198,11 @@ type WorkerFacts struct {
 	// administrators to switch debug logging on and read its recent log
 	// (allow_debug_remote, v0.10.0).
 	DebugRemote bool `json:"debug_remote,omitempty"`
+	// TrafficPayload is true when the Worker's own traffic log records the
+	// frame bodies of its connection to the Hub (worker_traffic_log=payload):
+	// the text the Hub sends and the screens the Worker returns. The Hub shows
+	// a notice on that Worker's sessions (A49 T19).
+	TrafficPayload bool `json:"traffic_payload,omitempty"`
 }
 
 // HubHello is the Hub's reply. Chain is present in connect mode only.

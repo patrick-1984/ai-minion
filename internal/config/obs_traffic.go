@@ -19,6 +19,9 @@ type TrafficConfig struct {
 	To []string
 	// Workers narrows the Hub's log to these Worker ids or names; empty: all.
 	Workers []string
+	// Payload adds the frame body (redacted, at most logx.RemotePayloadMax
+	// bytes, always valid JSON) to every record. It holds session content.
+	Payload bool
 }
 
 // ResolveTraffic resolves the traffic log settings of res's role. A
@@ -29,10 +32,11 @@ func ResolveTraffic(res *Resolver, sinks Sinks) (TrafficConfig, error) {
 	if err != nil {
 		return c, err
 	}
-	if lvl.Value != TrafficMetadata {
+	if lvl.Value != TrafficMetadata && lvl.Value != TrafficPayload {
 		return c, nil
 	}
 	c.Enabled = true
+	c.Payload = lvl.Value == TrafficPayload
 	to, err := res.Resolve(KeyTrafficLogTo)
 	if err != nil {
 		return c, err

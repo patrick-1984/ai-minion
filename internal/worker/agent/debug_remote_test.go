@@ -264,3 +264,22 @@ func TestDebugRemoteResetsOnIdentityChange(t *testing.T) {
 		t.Fatal("the removal kept the log")
 	}
 }
+
+// A Worker whose own traffic log records frame bodies says so in its hello,
+// so that the Hub shows a notice on its sessions (A49 T19).
+func TestTrafficPayloadFact(t *testing.T) {
+	for _, tc := range []struct {
+		level string
+		want  bool
+	}{{"", false}, {"off", false}, {"metadata", false}, {"payload", true}, {"bogus", false}} {
+		env := map[string]string{}
+		if tc.level != "" {
+			env["MINION_WORKER_TRAFFIC_LOG"] = tc.level
+		}
+		res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }}
+		f := withTrafficFact(func() transport.WorkerFacts { return transport.WorkerFacts{Build: "dev"} }, Settings{Resolver: res})()
+		if f.TrafficPayload != tc.want || f.Build != "dev" {
+			t.Errorf("%q: facts = %+v", tc.level, f)
+		}
+	}
+}

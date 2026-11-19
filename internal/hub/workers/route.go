@@ -378,6 +378,7 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 				}
 			}
 			info.DebugRemote = on.Facts.DebugRemote
+			info.TrafficPayload = on.Facts.TrafficPayload
 			info.HubCheck = on.Facts.HubCheck
 			if w.Pending {
 				// Nothing is routed to a pending Worker; do not offer what it announced.

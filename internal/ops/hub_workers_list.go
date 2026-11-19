@@ -88,6 +88,10 @@ type WorkerInfo struct {
 	// DebugRemote is true when the connected Worker allows remote debug
 	// (worker_debug, worker_logs; allow_debug_remote on the Worker).
 	DebugRemote bool `json:"debug_remote,omitempty"`
+	// TrafficPayload is true when the connected Worker records the frame
+	// bodies of its connection to the Hub in its own log (A49 T19); the Hub
+	// shows a notice on its sessions.
+	TrafficPayload bool `json:"traffic_payload,omitempty"`
 	// Pending is true while the Worker waits for approval by its owner or an
 	// admin (F-02): it may be connected, but the Hub routes no operation to it.
 	Pending bool `json:"pending,omitempty"`
