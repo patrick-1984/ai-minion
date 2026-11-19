@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,9 +120,15 @@ func newJoinCLI(t *testing.T) *joinCLI {
 // result object and the exit status.
 func (c *joinCLI) run(stdin string, args ...string) (map[string]any, int) {
 	c.t.Helper()
+	return c.runReader(strings.NewReader(stdin), args...)
+}
+
+// runReader is run with any stdin.
+func (c *joinCLI) runReader(stdin io.Reader, args ...string) (map[string]any, int) {
+	c.t.Helper()
 	c.stdout.Reset()
 	c.stderr.Reset()
-	c.deps.stdin = strings.NewReader(stdin)
+	c.deps.stdin = stdin
 	root := &cobra.Command{Use: "minion", SilenceUsage: true, SilenceErrors: true}
 	workerCommand(root).AddCommand(newWorkerJoinCmd(c.deps))
 	var errOut bytes.Buffer
