@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -52,7 +51,7 @@ const (
 )
 
 // maxJoinTokenInput bounds what is read from the token file or stdin.
-const maxJoinTokenInput = 8 << 10
+const maxJoinTokenInput = maxSecretInput
 
 // joinResult is the JSON result of the staged join.
 type joinResult struct {
@@ -159,7 +158,7 @@ func stagedJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, args [
 		return res, usagef("this Worker has no sharing choice yet: give --share-existing all|none|later (what the Hub may see of the tmux sessions). Nothing was changed")
 	}
 
-	tok, err := readJoinToken(opt.tokenFile, deps.stdin)
+	tok, err := readJoinToken(ctx, opt.tokenFile, deps.stdin)
 	if err != nil {
 		return res, err
 	}
@@ -225,33 +224,21 @@ func stagedJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, args [
 }
 
 // readJoinToken reads and parses the join token from the file path, or from
-// stdin for "-". The token and the bytes read are never put into an error.
-func readJoinToken(path string, stdin io.Reader) (identity.JoinToken, error) {
+// stdin for "-" (see [readSecretInput]). The token and the bytes read are
+// never put into an error, and a file error does not name the path. A read
+// that ctx ends is exit 130 (interrupted), with nothing changed.
+func readJoinToken(ctx context.Context, path string, stdin io.Reader) (identity.JoinToken, error) {
 	var none identity.JoinToken
 	if identity.LooksLikeJoinToken(path) {
 		return none, usagef("--token-file takes the path of a file that holds the join token, or - for stdin; the token itself is never an argument")
 	}
-	var in io.Reader
-	if path == "-" {
-		if stdin == nil {
-			return none, errors.New("--token-file -: there is no stdin to read the join token from")
-		}
-		in = stdin
-	} else {
-		f, err := os.Open(path)
-		if err != nil {
-			return none, fmt.Errorf("cannot read the join token file: %w", pathlessError(err))
-		}
-		defer func() { _ = f.Close() }()
-		in = f
-	}
-	raw, err := io.ReadAll(io.LimitReader(in, maxJoinTokenInput+1))
+	raw, err := readSecretInput(ctx, path, stdin, maxJoinTokenInput, "the join token")
 	defer clear(raw)
-	if err != nil {
-		return none, fmt.Errorf("cannot read the join token: %w", pathlessError(err))
+	if errors.Is(err, errSecretInterrupted) {
+		return none, newResultError(ExitInterrupted, "interrupted before the join token was read; nothing was changed")
 	}
-	if len(raw) > maxJoinTokenInput {
-		return none, errors.New("malformed join token: the input is too long; give only the token from the Hub's Add worker page")
+	if err != nil {
+		return none, err
 	}
 	text := strings.TrimSpace(string(raw))
 	if text == "" {
@@ -262,15 +249,6 @@ func readJoinToken(path string, stdin io.Reader) (identity.JoinToken, error) {
 		return none, fmt.Errorf("%w; copy the whole token from the Hub's Add worker page", err)
 	}
 	return tok, nil
-}
-
-// pathlessError drops the path of a file error.
-func pathlessError(err error) error {
-	var pe *fs.PathError
-	if errors.As(err, &pe) {
-		return pe.Err
-	}
-	return err
 }
 
 // fileValue looks key up in the config file (nil: absent).

@@ -25,6 +25,7 @@
 ### Security
 
 - **An update rollback cannot lift a pause or a block of new sessions.** When an updated Worker keeps failing to start, the crash guard no longer restores a release older than 0.15.0 while a pause or `allow_new_sessions off` is in force (a release that cannot enforce them); the guard record stays and the reason is logged. A paused Worker commits its update trial like a quarantined one.
+- **`minion worker join --token-file` reads the join token with a bound and can be interrupted.** It reads at most 8 KiB from the file or stdin, a stdin that never ends no longer hangs the command (Ctrl+C or SIGTERM ends it with exit status 130, nothing changed), and an error about the token file does not name its path. A Hub fingerprint configured for this Worker that differs from the token's stops the join before the invitation key is sent. Tests check that neither the token nor its invitation key appears in the command line, the output, the log or any file of the state and temp directories, also on failures.
 
 ### Fixed
 

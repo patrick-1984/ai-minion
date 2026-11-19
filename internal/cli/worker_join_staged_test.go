@@ -23,15 +23,19 @@ import (
 )
 
 // fakeInviteDialer enrolls every call at the Hub of testHubFingerprint().
+// It records the fingerprint of every invitation key it was given (never the
+// key itself).
 type fakeInviteDialer struct {
 	mu    sync.Mutex
 	calls int
+	keys  []identity.Fingerprint
 }
 
-func (d *fakeInviteDialer) Enroll(_ context.Context, _ agent.InviteParams) (*agent.InviteOutcome, error) {
+func (d *fakeInviteDialer) Enroll(_ context.Context, p agent.InviteParams) (*agent.InviteOutcome, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls++
+	d.keys = append(d.keys, p.Invite.Fingerprint)
 	return &agent.InviteOutcome{Pin: identity.Pin{Pub: bytes.Repeat([]byte{9}, 32)}, Welcome: agent.HubWelcome{
 		Type: proto.TypeWelcome, WorkerID: "w-1", Name: "pi", Owner: "alice", Kind: "private",
 	}}, nil
