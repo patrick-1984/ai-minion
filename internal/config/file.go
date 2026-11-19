@@ -215,5 +215,11 @@ func (f *ConfigFile) Save() error {
 		cleanup()
 		return fmt.Errorf("config file: %w", err)
 	}
+	// The rename is durable only once the directory entry is: a power loss
+	// must not bring back the old file after a block or a removal was
+	// acknowledged.
+	if err := syncDirFn(dir); err != nil {
+		return fmt.Errorf("config file: the directory %s could not be synced: %w", dir, err)
+	}
 	return nil
 }

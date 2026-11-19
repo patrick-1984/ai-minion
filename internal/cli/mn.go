@@ -43,6 +43,7 @@ func Run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 
 // execute runs root with args and maps the error to the exit status.
 func execute(ctx context.Context, root *cobra.Command, args []string, stdout, stderr io.Writer) int {
+	installJSONUsage(root, args)
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)

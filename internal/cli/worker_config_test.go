@@ -95,7 +95,7 @@ func TestConfigSetServerSavesTheURLInTheConfigFile(t *testing.T) {
 	// Status resolves the saved value through the normal precedence chain.
 	sd := testStatusDeps(nil)
 	st, _, err := runWorkerCmds(t, sd, workerConfigDeps{}, "worker", "status", "--json", "--state-dir", dir)
-	if err != nil || !strings.Contains(st, `"hub_url": "https://hub.example:8443/prefix"`) {
+	if err != nil || !strings.Contains(st, `"hub_url":"https://hub.example:8443/prefix"`) {
 		t.Fatalf("status = %s, %v", st, err)
 	}
 }

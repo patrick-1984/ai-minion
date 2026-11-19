@@ -273,7 +273,7 @@ var All = []Action{
 	state("share.add", "Sessions shared with the Hub ▸ ☑ {session}", []string{"worker", "share", "add", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json", "--", "{session}"}, "share.sessions contains {session}"),
 	state("share.remove", "Sessions shared with the Hub ▸ ☐ {session}", []string{"worker", "share", "remove", "--if-revision", "{revision}", "--state-dir", "{state_dir}", "--json", "--", "{session}"}, "share.sessions lacks {session}"),
 
-	state("block.on", "☑ Block new sessions created through Minion", []string{"worker", "config", "set", "allow_new_sessions", "off", "--state-dir", "{state_dir}", "--json"}, "new_sessions.blocked == true, new_sessions.in_force == true (the result carries the effective value, its sources and code saved_not_confirmed or saved_not_in_force on exit 22)"),
+	state("block.on", "☑ Block new sessions created through Minion", []string{"worker", "config", "set", "allow_new_sessions", "off", "--state-dir", "{state_dir}", "--json"}, "new_sessions.blocked == true, new_sessions.in_force == true (the result carries the effective value, its sources and code saved_not_confirmed or saved_overridden on exit 22)"),
 	state("block.off", "☐ Block new sessions created through Minion", []string{"worker", "config", "set", "allow_new_sessions", "on", "--state-dir", "{state_dir}", "--json"}, "new_sessions.blocked == false, new_sessions.in_force == true (the result carries the effective value, its sources and, on exit 22, the code and the sources that keep the block)"),
 
 	with(state("hub.open", "Hub ▸ Open the Hub", []string{"worker", "open-hub", "--state-dir", "{state_dir}", "--json"}, "the browser opens hub_web_url (url of the result)"),

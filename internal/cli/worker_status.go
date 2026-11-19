@@ -43,6 +43,9 @@ type workerStatusDeps struct {
 	// lifecycle looks at the Worker service of this user (tray W10b); nil
 	// leaves the lifecycle block null.
 	lifecycle func(ctx context.Context) (service.Lifecycle, error)
+	// unitDir returns the state directory the installed service of this user
+	// runs; nil or !ok: not known (then can_start is not narrowed).
+	unitDir func(ctx context.Context) (string, bool)
 }
 
 func defaultWorkerStatusDeps() workerStatusDeps {
@@ -55,6 +58,7 @@ func defaultWorkerStatusDeps() workerStatusDeps {
 		},
 		sessions:  tmuxSessions,
 		lifecycle: probeLifecycle(runtime.GOOS, service.SystemTargetEnv(), withEnv(service.DefaultDeps()), nil),
+		unitDir:   probeUnitDir(runtime.GOOS, service.SystemTargetEnv(), withEnv(service.DefaultDeps())),
 	}
 }
 
@@ -194,17 +198,21 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 	if deps.loadConfig != nil {
 		file, err := loadConfigFile(res, deps.loadConfig)
 		if err != nil {
-			return err
+			return emitStatusErr(cmd, asJSON, err)
 		}
 		res.File = file
 	}
 	core, err := config.ResolveWorkerCore(res)
 	if err != nil {
-		return err
+		return emitStatusErr(cmd, asJSON, err)
 	}
 	hub, err := config.ResolveWorkerHub(res)
 	if err != nil {
-		return err
+		return emitStatusErr(cmd, asJSON, err)
+	}
+	liveCap := &capturingLive{}
+	if deps.live != nil {
+		liveCap.inner = deps.live(core.StateDir)
 	}
 	in := agent.StatusInputs{
 		Version:     deps.version(),
@@ -213,12 +221,15 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		TmuxSocket:  core.TmuxSocket,
 		PreviewOnly: core.PreviewOnly,
 		Platform:    runtime.GOOS,
-		Live:        deps.live(core.StateDir),
+		Live:        nil,
 		Pause:       func() (agent.PauseState, error) { return agent.ReadPause(core.StateDir) },
 		NewSessions: &core.NewSessions,
 		StateDir:    core.StateDir,
 		CLIVersion:  deps.version(),
 		Lifecycle:   deps.lifecycle,
+	}
+	if liveCap.inner != nil {
+		in.Live = liveCap
 	}
 	if sd, err := res.Resolve(config.KeyStateDir); err == nil {
 		in.DefaultStateDir = sd.Source == config.SourceDefault
@@ -250,8 +261,15 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 
 	report := agent.BuildStatus(cmd.Context(), in)
 	report.Problems = append(problems, report.Problems...)
+	liveCap.adjust(&report)
+	if lc := report.Lifecycle; lc != nil && lc.CanStart && deps.unitDir != nil {
+		// A service registered for another profile cannot start this one.
+		if dir, ok := deps.unitDir(cmd.Context()); ok && !sameDir(dir, core.StateDir) {
+			lc.CanStart = false
+		}
+	}
 	if asJSON {
-		return report.WriteJSON(cmd.OutOrStdout())
+		return emitResult(cmd.OutOrStdout(), cmd.ErrOrStderr(), true, report, nil)
 	}
 	return report.WriteText(cmd.OutOrStdout())
 }
@@ -270,5 +288,75 @@ func addNamedSettingFlags(cmd *cobra.Command, reg *config.Registry, keys ...stri
 			help = s.Key
 		}
 		cmd.Flags().String(s.FlagName(), "", fmt.Sprintf("%s (env %s)", help, s.EnvName()))
+	}
+}
+
+// emitStatusErr ends status with a failure: a JSON result object with
+// ok:false when --json is given, the plain error otherwise.
+func emitStatusErr(cmd *cobra.Command, asJSON bool, err error) error {
+	if !asJSON {
+		return err
+	}
+	return emitResult(cmd.OutOrStdout(), cmd.ErrOrStderr(), true, nil, err)
+}
+
+// capturingLive remembers the answer of the running Worker, so that status
+// reports the block of new sessions the Worker enforces, not the one this
+// shell resolves.
+type capturingLive struct {
+	inner agent.LiveSource
+	got   *agent.LiveStatus
+	err   error
+}
+
+func (c *capturingLive) LiveStatus(ctx context.Context) (agent.LiveStatus, error) {
+	ls, err := c.inner.LiveStatus(ctx)
+	if err == nil {
+		c.got = &ls
+	} else {
+		c.err = err
+	}
+	return ls, err
+}
+
+// adjust makes the new-session block the daemon's own when it answers, and
+// "unknown" (in_force null) when a Worker may run but cannot confirm it.
+func (c *capturingLive) adjust(r *agent.StatusReport) {
+	switch {
+	case c.got != nil && c.got.NewSessionsBlocked != nil:
+		b := *c.got.NewSessionsBlocked
+		if b && !r.NewSessions.Blocked && len(r.NewSessions.Sources) == 0 {
+			r.NewSessions.Sources = []string{"worker"}
+		}
+		if !b {
+			r.NewSessions.Sources = []string{}
+		}
+		r.NewSessions.Blocked = b
+		t := true
+		r.NewSessions.InForce = &t
+	case c.got == nil && c.err != nil && !errors.Is(c.err, agent.ErrNoLiveWorker) ||
+		c.got == nil && r.Lifecycle != nil && r.Lifecycle.Running:
+		r.NewSessions.InForce = nil
+	}
+}
+
+// probeUnitDir returns the state directory of the installed service of the
+// user this process runs as (see [unitStateDir]).
+func probeUnitDir(goos string, env service.TargetEnv, d service.Deps) func(context.Context) (string, bool) {
+	return func(ctx context.Context) (string, bool) {
+		if goos == "windows" || ctx == nil {
+			return "", false
+		}
+		ctx, cancel := context.WithTimeout(ctx, lifecycleProbeTimeout)
+		defer cancel()
+		cur, err := env.Current()
+		if err != nil {
+			return "", false
+		}
+		t, err := service.ResolveTarget(env, cur.Username)
+		if err != nil {
+			return "", false
+		}
+		return unitStateDir(ctx, d, goos, t.User, t.Home)
 	}
 }
