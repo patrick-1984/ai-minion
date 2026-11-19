@@ -128,6 +128,10 @@ type configEnv struct {
 	out      io.Writer
 	errOut   io.Writer
 	release  func()
+	// json: the command ends with one JSON result object on stdout (rawOut);
+	// out then discards the human text.
+	json   bool
+	rawOut io.Writer
 }
 
 // configLockName is the lock file in the state directory that serializes the
@@ -174,7 +178,11 @@ func (d workerConfigDeps) env(cmd *cobra.Command) (*configEnv, error) {
 		release()
 		return nil, err
 	}
-	return &configEnv{stateDir: abs, file: file, out: cmd.OutOrStdout(), errOut: cmd.ErrOrStderr(), release: release}, nil
+	ce := &configEnv{stateDir: abs, file: file, out: cmd.OutOrStdout(), rawOut: cmd.OutOrStdout(), errOut: cmd.ErrOrStderr(), release: release}
+	if f := cmd.Flags().Lookup("json"); f != nil && f.Value.String() == "true" {
+		ce.json, ce.out = true, io.Discard
+	}
+	return ce, nil
 }
 
 func newConfigSetCmd(deps workerConfigDeps) *cobra.Command {
@@ -187,6 +195,7 @@ func newConfigSetCmd(deps workerConfigDeps) *cobra.Command {
 		},
 	}
 	addNamedSettingFlags(cmd, deps.reg(), config.KeyStateDir)
+	cmd.Flags().Bool("json", false, "print one JSON result object (allow_new_sessions)")
 	return cmd
 }
 
@@ -200,6 +209,7 @@ func newConfigUnsetCmd(deps workerConfigDeps) *cobra.Command {
 		},
 	}
 	addNamedSettingFlags(cmd, deps.reg(), config.KeyStateDir)
+	cmd.Flags().Bool("json", false, "print one JSON result object (allow_new_sessions)")
 	return cmd
 }
 

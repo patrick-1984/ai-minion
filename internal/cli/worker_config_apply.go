@@ -148,19 +148,35 @@ func (d workerConfigDeps) applyTightenChange(ctx context.Context, ce *configEnv,
 		want = config.AllowNewSessionsOff
 	}
 	out, err := d.tighten.applyTighten(ctx, ce.stateDir, key, offline)
+	fields := map[string]any{"key": key, "saved": want, "effective": out.Effective, "sources": nonNilStrings(out.Sources), "live": out.Live}
 	if err != nil {
 		var re *resultError
 		if errors.As(err, &re) {
+			if ce.json {
+				if re.Code == "" {
+					re.Code = resultCode(re.Exit)
+				}
+				return emitResult(ce.rawOut, ce.errOut, true, fields, re)
+			}
 			_ = writef(ce.errOut, "Error: %s\n", re.Error())
 			return &exitCodeError{re.Exit}
+		}
+		if ce.json {
+			return emitResult(ce.rawOut, ce.errOut, true, fields, err)
 		}
 		return err
 	}
 	if out.Effective != want {
 		src := strings.Join(out.Sources, ", ")
-		_ = writef(ce.errOut, "Error: the value is saved, but %s stays %s: it is set to %s by %s, which the config file cannot override (tighten-only).\n",
-			key, out.Effective, out.Effective, src)
+		msg := fmt.Sprintf("the value is saved, but %s stays %s: it is set to %s by %s, which the config file cannot override (tighten-only)", key, out.Effective, out.Effective, src)
+		if ce.json {
+			return emitResult(ce.rawOut, ce.errOut, true, fields, &resultError{Exit: ExitNotInForce, Code: "saved_overridden", Message: msg})
+		}
+		_ = writef(ce.errOut, "Error: %s.\n", msg)
 		return &exitCodeError{ExitNotInForce}
+	}
+	if ce.json {
+		return emitResult(ce.rawOut, ce.errOut, true, fields, nil)
 	}
 	if out.Live {
 		return writef(ce.out, "The running Worker applied it: %s is %s.\n", key, out.Effective)
@@ -169,4 +185,11 @@ func (d workerConfigDeps) applyTightenChange(ctx context.Context, ce *configEnv,
 		_ = writef(ce.errOut, "note: %s in this shell's environment restricts it too.\n", "MINION_ALLOW_NEW_SESSIONS")
 	}
 	return writef(ce.out, "No Worker is running on this state directory; it reads %s when it starts.\n", key)
+}
+
+func nonNilStrings(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
