@@ -177,3 +177,15 @@ func TestReplaceAndActivateHoldsTheUpdateLock(t *testing.T) {
 		t.Errorf("minion.exe = %q", readOr(dst))
 	}
 }
+
+func TestIsOwnFile(t *testing.T) {
+	for name, want := range map[string]bool{
+		"minion.exe": true, "minion.exe.update-lock": true, "minion.exe.previous": true, "minion.exe.old": true,
+		"minion.exe.old-123": true, ".minion-replaced-1": true, ".minion-install-x": true, ".minion-update-y": true,
+		"version.dll": false, "minion-tray.exe": false, "minion.exe.local": false,
+	} {
+		if got := isOwnFile(name); got != want {
+			t.Errorf("isOwnFile(%q) = %v", name, got)
+		}
+	}
+}

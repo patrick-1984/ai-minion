@@ -81,8 +81,8 @@ func installServiceBinaryIn(bi BinaryInstall, dir string, ancestors bool, activa
 		return "", err
 	}
 	err := replaceAndActivate(dst, bi, installedTrusted, func(dst string) error {
-		if err := applySDDL(dst, serviceFileSDDL); err != nil {
-			return fmt.Errorf("protect %s: %w", dst, err)
+		if err := protectOwnFiles(dir); err != nil {
+			return err
 		}
 		for _, step := range chain {
 			if err := checkStep(step); err != nil {
@@ -98,6 +98,29 @@ func installServiceBinaryIn(bi BinaryInstall, dir string, ancestors bool, activa
 		return "", err
 	}
 	return dst, nil
+}
+
+// protectOwnFiles gives every file that the installer and the updater create
+// in dir (the binary, its update lock, the previous and the rollback binary,
+// their scratch files) the owner Administrators and the protected DACL of
+// the binary. A file's owner is the creator's default owner, which for the
+// built-in Administrator account (or with UAC off) is that user, not the
+// Administrators group. Anything else in dir is left as it is and checked.
+func protectOwnFiles(dir string) error {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		if e.IsDir() || !isOwnFile(e.Name()) {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if err := applySDDL(p, serviceFileSDDL); err != nil {
+			return fmt.Errorf("protect %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 // installedTrusted reads the release of the protected binary by running it

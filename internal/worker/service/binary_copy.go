@@ -193,3 +193,18 @@ func removeReplaced(dir string) {
 		}
 	}
 }
+
+// isOwnFile reports whether name is a file the installer or the updater
+// creates in the service binary directory.
+func isOwnFile(name string) bool {
+	switch name {
+	case serviceBinaryName, serviceBinaryName + ".update-lock", serviceBinaryName + previousSuffix, serviceBinaryName + ".old":
+		return true
+	}
+	for _, p := range []string{replacedPrefix, ".minion-install-", ".minion-update-", serviceBinaryName + ".old-"} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
