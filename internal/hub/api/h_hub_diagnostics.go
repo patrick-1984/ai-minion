@@ -23,6 +23,8 @@ type HubDiagnosticsSource struct {
 	// Workers counts the connected Workers and those of them that wait for
 	// approval.
 	Workers func() (connected, pending int)
+	// Sinks reports the remote log sinks; nil reports none.
+	Sinks func() []ops.LogSinkStatus
 	// Now defaults to time.Now.
 	Now func() time.Time
 }
@@ -53,6 +55,10 @@ func RegisterHubDiagnostics(r *Registry, src HubDiagnosticsSource) error {
 			res.Request.ForwardedHeaders = []ops.HubDiagnosticsHeader{}
 		}
 		res.WorkersConnected, res.WorkersPending = src.Workers()
+		res.Sinks = []ops.LogSinkStatus{}
+		if src.Sinks != nil {
+			res.Sinks = append(res.Sinks, src.Sinks()...)
+		}
 		return res, nil
 	})
 }

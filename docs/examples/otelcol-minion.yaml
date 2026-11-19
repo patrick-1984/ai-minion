@@ -1,0 +1,70 @@
+# OpenTelemetry Collector (contrib distribution) configuration for Minion's log
+# export: see docs/guides/observability.md.
+#
+#   docker run --rm -p 4318:4318 -p 6514:6514 \
+#     -v "$PWD/docs/examples/otelcol-minion.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+#     otel/opentelemetry-collector-contrib:0.165.0
+#
+# Minion settings that match it:
+#   otel=on    otel_endpoint=http://<collector host>:4318
+#   syslog=on  syslog_endpoint=tcp://<collector host>:6514   (tls://... with the tls block below)
+
+receivers:
+  # Minion's OpenTelemetry sink: OTLP over HTTP (protobuf, gzip).
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Minion's syslog sink: RFC 5424 with octet counting over TCP or TLS.
+  syslog:
+    protocol: rfc5424
+    enable_octet_counting: true
+    tcp:
+      listen_address: 0.0.0.0:6514
+      # For syslog_endpoint=tls://...: the server certificate, and the CA of
+      # the client certificates for mutual TLS (syslog_client_cert_file).
+      # tls:
+      #   cert_file: /certs/server.pem
+      #   key_file: /certs/server-key.pem
+      #   client_ca_file: /certs/clients-ca.pem
+
+processors:
+  # The body of a syslog record is Minion's JSON text, so whitespace inside
+  # a value can appear as an escape (\t, \n, \r): the patterns match it.
+  # Masking of free text that Minion cannot recognise as a secret (Minion
+  # already masks its own token formats, URL credentials and secret attribute
+  # names before a record leaves the machine). Bodies: OTTL replace_pattern.
+  transform/mask:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - replace_pattern(body, "(?i)(bearer(?:\\s|\\\\[tnr])+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]")
+          - replace_pattern(body, "(?i)(password[=:](?:\\s|\\\\[tnr])*)\\S+", "$${1}[REDACTED]")
+          # The syslog receiver copies the message into attributes.message:
+          # mask that copy as well.
+          - replace_pattern(attributes["message"], "(?i)(bearer(?:\\s|\\\\[tnr])+)[A-Za-z0-9._~+/=-]+", "$${1}[REDACTED]") where attributes["message"] != nil
+          - replace_pattern(attributes["message"], "(?i)(password[=:](?:\\s|\\\\[tnr])*)\\S+", "$${1}[REDACTED]") where attributes["message"] != nil
+  # Attributes: the redaction processor masks values that match.
+  redaction/mask:
+    allow_all_keys: true
+    blocked_values:
+      - "(?i)bearer(?:\\s|\\\\[tnr])+[A-Za-z0-9._~+/=-]+"
+      # Attributes are decoded text: a backslash in a password is part of
+      # it, so the value runs to the next whitespace.
+      - "(?i)password[=:]\\s*\\S+"
+    summary: info
+  batch: {}
+
+exporters:
+  # Prints every record; replace it with the exporter of your backend.
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp, syslog]
+      processors: [transform/mask, redaction/mask, batch]
+      exporters: [debug]

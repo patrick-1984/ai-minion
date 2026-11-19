@@ -166,7 +166,9 @@ func (s *Seeder) Seed(ctx context.Context, cfg SeedConfig) (SeedResult, error) {
 		// committed, so a record that a threshold of "error" hides would lock
 		// the operator out for good (a restart never reseeds). Every
 		// supported MINION_LOG_LEVEL lets it through.
-		log.Log(ctx, slog.LevelError, "initial admin account created with a generated password; sign in and change it, it is not shown again",
+		// A human notice: the console keeps it, no remote log sink
+		// (syslog, OpenTelemetry) ever receives it.
+		logx.HumanNotice(ctx, log, slog.LevelError, "initial admin account created with a generated password; sign in and change it, it is not shown again",
 			"username", username, "password", password, "must_change_password", true)
 	} else {
 		log.Info("initial admin account created from the configured password", "username", username)

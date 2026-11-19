@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Log export to syslog and OpenTelemetry** (Hub and Worker). Each sink has its own switch, endpoint and level (`syslog`, `syslog_endpoint`, `syslog_level`; `otel`, `otel_endpoint`, `otel_level`), independent of `log_level`. Syslog: RFC 5424 (facility local0, UTF-8 BOM, the MSG is one JSON object within `syslog_max_bytes`, default 2048) over `udp://`, `tcp://` or `tls://` with octet counting, CA file and optional client certificate (mutual TLS). OpenTelemetry: OTLP over HTTP (protobuf, gzip) to `<otel_endpoint>/v1/logs`, or the standard `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT`; headers from the Hub secret `otel_headers` or the Worker file `otel_headers_path` (`OTEL_EXPORTER_OTLP_HEADERS` is ignored with a warning). Logging never waits for a sink (bounded queues, 5 s deadlines, reconnect with backoff); sink problems are reported on standard error only, once a minute. Guide: [log export](docs/guides/observability.md), collector example `docs/examples/otelcol-minion.yaml`.
+- **What leaves the machine is masked first.** The generated initial admin password and the pairing code stay on the console (same level and text as before) and never reach a sink; secret attribute names, URL credentials and queries, pairing codes and Minion's own API keys (`mn_`), invitation keys (`mnk_`) and join tokens (`mnj1-`) are masked in messages and attributes, values are capped in size. The in-memory Worker log (`worker_logs`) now also masks `mn_`, `mnk_` and `mnj1-` secrets.
+- **Hub settings: Log export section saved as one change**, checked as a whole before it is stored and applied at once without a restart (the old sink's queue is dropped, so nothing queued for an old endpoint or credential is sent with a new one). `settings_set` accepts `changes` (several keys, all or nothing, one transaction with its audit rows); a refused combination stores nothing. `hub_diagnostics` reports `sinks` (destination, level, sent, queued, dropped by reason, last error); `minion worker status` shows them too (`log_sinks` in `--json`).
+- **Safe live changes:** `settings_list` reports a `revision` per setting and a change may name it; a settings page loaded before someone else's change is refused instead of undoing it. A configuration that cannot be applied switches both sinks off and the status says why. A batch with a secret value is read from standard input only (`--changes -`). OTLP redirects are not followed and collector error texts are never shown or logged. Administration > Diagnostics shows the sinks.
+- **Worker:** the sink settings are flags (`--syslog`, `--syslog-endpoint`, `--otel-headers-path`, ...), variables and config-file keys; `worker up` checks them as the service will see them before it saves anything, saves relative file paths absolute, and the service uses them. An enrolled Worker exports with its Worker id as `service.instance.id` and `minion.worker.id`. A sink setting that does not validate never stops a Worker or the Hub: both sinks stay off and the status says why. Certificate and key paths use `MINION_..._PATH` variables (for example `MINION_SYSLOG_CA_PATH`).
+
+### Changed
+
+- **The Hub's `log_level` from Administration > Hub settings now applies, at once.** Before v0.14.0 a `log_level` stored in the panel did nothing; the Hub read only `MINION_LOG_LEVEL` and `-v`. The order is `MINION_LOG_LEVEL`, then the panel, then `-v` / `MINION_VERBOSE`, then `info`.
+- Dependencies: `go.opentelemetry.io/otel/sdk/log` v1.47.0, `otlploghttp` v0.23.0, `contrib/bridges/otelslog` v0.21.0, `otel/sdk` v1.47.0 (only in `internal/obs`; no gRPC).
+
 ## v0.13.1
 
 Released 2026-11-18.

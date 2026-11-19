@@ -12,6 +12,7 @@
 <section class="settings-list" id="s-server-and-network" aria-labelledby="s-server-and-network-h">
   <h2 class="settings-section" id="s-server-and-network-h">Server and network</h2>
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+
   <ul>
 
   <li data-filter="listen MINION_LISTEN  Address the Hub listens on">
@@ -114,11 +115,13 @@
   </li>
 
   </ul>
+
 </section>
 
 <section class="settings-list" id="s-single-sign-on-oidc" aria-labelledby="s-single-sign-on-oidc-h">
   <h2 class="settings-section" id="s-single-sign-on-oidc-h">Single sign-on (OIDC)</h2>
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+
   <ul>
 
   <li data-filter="oidc_client_secret MINION_OIDC_CLIENT_SECRET MINION_OIDC_CLIENT_SECRET_FILE Client secret">
@@ -154,11 +157,13 @@
   </li>
 
   </ul>
+
 </section>
 
 <section class="settings-list" id="s-storage" aria-labelledby="s-storage-h">
   <h2 class="settings-section" id="s-storage-h">Storage</h2>
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+
   <ul>
 
   <li data-filter="data_dir MINION_DATA_DIR  Data directory">
@@ -194,11 +199,13 @@
   </li>
 
   </ul>
+
 </section>
 
 <section class="settings-list" id="s-other" aria-labelledby="s-other-h">
   <h2 class="settings-section" id="s-other-h">Other</h2>
   <div class="srow srow-head" aria-hidden="true"><span class="s-key">Setting</span><span class="s-value">Value</span><span class="s-actions">Actions</span><span class="s-desc">Description</span></div>
+
   <ul>
 
   <li data-filter="backup_key MINION_BACKUP_KEY MINION_BACKUP_KEY_FILE Backup key">
@@ -268,6 +275,7 @@
   </li>
 
   </ul>
+
 </section>
 
 </div>

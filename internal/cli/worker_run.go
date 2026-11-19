@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -134,6 +135,14 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	if err != nil {
 		return err
 	}
+	sinks, startSinks := newWorkerSinks(res, live, logger, core.StateDir)
+	// Stopped by the log sinks module, last in the stop sequence; this is
+	// the fallback when the Worker never got that far.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), agent.LogSinksStopLimit)
+		defer cancel()
+		_ = sinks.Shutdown(ctx)
+	}()
 	reg := deps.registry
 	if reg == nil {
 		reg = agent.DefaultRegistry
@@ -144,7 +153,11 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		Resolver:   res,
 		Logger:     logger,
 		LogLive:    live,
-		Out:        cmd.OutOrStdout(),
+
+		LogSinks:      sinks.Status,
+		StartLogSinks: startSinks,
+		StopLogSinks:  sinks.Shutdown,
+		Out:           cmd.OutOrStdout(),
 
 		InviteArgvWarned: deps.inviteArgvWarned,
 	})

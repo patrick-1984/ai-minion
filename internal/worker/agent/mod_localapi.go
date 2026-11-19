@@ -82,7 +82,8 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	enrollments, _ := lookupService[*Enrollments](env.rt)
 	hostInfo, _ := lookupService[*SessionHostInfo](env.rt)
 	health, _ := lookupService[*SessionListHealth](env.rt)
-	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health}
+	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health,
+		LogSinks: env.Settings().LogSinks}
 	// The pipe module starts before this one. Without it the pipe ops are
 	// refused here and never reach the executor, whose pipe_send is the
 	// Hub-origin write (exec_pipe.go).

@@ -4,21 +4,22 @@ package config
 // a test keeps the table complete, so a new setting cannot land in "Other" by
 // accident.
 const (
-	SectionServer   = "Server and network"
-	SectionAccounts = "Sign-in and accounts"
-	SectionOIDC     = "Single sign-on (OIDC)"
-	SectionWorkers  = "Workers and invitations"
-	SectionPipe     = "Messages between sessions"
-	SectionUpdates  = "Updates"
-	SectionLogging  = "Logging and troubleshooting"
-	SectionStorage  = "Storage"
-	SectionOther    = "Other"
+	SectionServer    = "Server and network"
+	SectionAccounts  = "Sign-in and accounts"
+	SectionOIDC      = "Single sign-on (OIDC)"
+	SectionWorkers   = "Workers and invitations"
+	SectionPipe      = "Messages between sessions"
+	SectionUpdates   = "Updates"
+	SectionLogging   = "Logging and troubleshooting"
+	SectionLogExport = "Log export"
+	SectionStorage   = "Storage"
+	SectionOther     = "Other"
 )
 
 // SectionOrder is the order of the sections on the page.
 var SectionOrder = []string{
 	SectionServer, SectionAccounts, SectionOIDC, SectionWorkers, SectionPipe,
-	SectionUpdates, SectionLogging, SectionStorage, SectionOther,
+	SectionUpdates, SectionLogging, SectionLogExport, SectionStorage, SectionOther,
 }
 
 // sectionOf maps a Hub setting key to its section and its rank inside the
@@ -63,6 +64,21 @@ var sectionOf = map[string]struct {
 	"log_level":  {SectionLogging, 1},
 	"log_format": {SectionLogging, 1},
 	"verbose":    {SectionLogging, 1},
+
+	"syslog":                  {SectionLogExport, 0},
+	"syslog_endpoint":         {SectionLogExport, 0},
+	"syslog_level":            {SectionLogExport, 0},
+	"syslog_max_bytes":        {SectionLogExport, 1},
+	"syslog_ca_file":          {SectionLogExport, 1},
+	"syslog_client_cert_file": {SectionLogExport, 1},
+	"syslog_client_key_file":  {SectionLogExport, 1},
+	"otel":                    {SectionLogExport, 2},
+	"otel_endpoint":           {SectionLogExport, 2},
+	"otel_level":              {SectionLogExport, 2},
+	"otel_headers":            {SectionLogExport, 2},
+	"otel_ca_file":            {SectionLogExport, 3},
+	"otel_client_cert_file":   {SectionLogExport, 3},
+	"otel_client_key_file":    {SectionLogExport, 3},
 
 	"data_dir":  {SectionStorage, 1},
 	"state_dir": {SectionStorage, 1},

@@ -90,7 +90,10 @@ func runHubServe(ctx context.Context, d hubServeDeps) error {
 	if err != nil {
 		return err
 	}
-	logger, err := logx.New(logx.Options{Level: level, Format: logx.Format(format.Value), Output: d.stderr})
+	// The local level is live (the panel's log_level applies without a
+	// restart) and the remote sinks (syslog, OpenTelemetry) are slots of the
+	// same fan-out, filled by the obs module.
+	logger, live, err := logx.NewLiveLocal(logx.Options{Level: level, Format: logx.Format(format.Value), Output: d.stderr})
 	if err != nil {
 		return err
 	}
@@ -99,6 +102,8 @@ func runHubServe(ctx context.Context, d hubServeDeps) error {
 	if err != nil {
 		return err
 	}
+	cfg.LogLive = live
+	cfg.Verbose = d.verbose
 	reg := d.registry
 	if reg == nil {
 		reg = server.DefaultRegistry

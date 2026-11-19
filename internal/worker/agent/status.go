@@ -84,6 +84,9 @@ type LiveStatus struct {
 	// are hidden; zero when not known. ListError is the latest listing error.
 	Host      SessionHostInfo
 	ListError string
+	// LogSinks is the state of the remote log sinks (syslog, otel); nil
+	// from an older Worker.
+	LogSinks []ops.LogSinkStatus
 }
 
 // LiveSource answers for a running Worker. It returns [ErrNoLiveWorker] when
@@ -106,6 +109,8 @@ type LiveStatusSource struct {
 	RunMode string
 	Host    *SessionHostInfo
 	Health  *SessionListHealth
+	// LogSinks reports the remote log sinks; nil reports none.
+	LogSinks func() []ops.LogSinkStatus
 }
 
 // LiveStatus implements [LiveSource].
@@ -126,6 +131,9 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 		out.Host.Reason = s.Host.localReason()
 	}
 	out.ListError = s.Health.LocalText()
+	if s.LogSinks != nil {
+		out.LogSinks = s.LogSinks()
+	}
 	if s.Pairing != nil {
 		out.PairingKnown = true
 		if code, ok := s.Pairing(); ok {
@@ -286,6 +294,9 @@ type StatusReport struct {
 	// SessionsListError is why the running Worker's latest look at its
 	// sessions failed; empty when it worked.
 	SessionsListError string `json:"sessions_list_error,omitempty"`
+	// LogSinks is the state of the remote log sinks of the running Worker
+	// (syslog, otel); empty when no running Worker answered.
+	LogSinks []ops.LogSinkStatus `json:"log_sinks,omitempty"`
 	// Problems lists what could not be read, in plain English.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -395,6 +406,7 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		r.RunMode = live.RunMode
 		r.SessionHost, r.SessionsHidden, r.SessionHostReason = live.Host.Kind, live.Host.Hidden, live.Host.Reason
 		r.SessionsListError = live.ListError
+		r.LogSinks = live.LogSinks
 		r.Alarm = live.Connector.Alarm
 		if live.Connector.TLSPath != "" {
 			r.TLS = &StatusTLS{State: live.Connector.TLSPath, Line: live.Connector.TLSLine}
@@ -479,6 +491,9 @@ func (r StatusReport) WriteText(w io.Writer) error {
 		{"tmux socket", orDash(r.TmuxSocket, "none")},
 		{"Sessions", r.sessionsText()},
 	}
+	for _, st := range r.LogSinks {
+		rows = append(rows, [2]string{"Log export (" + st.Name + ")", logSinkText(st)})
+	}
 	if r.Alarm == AlarmHubIdentityChanged {
 		for i, row := range rows {
 			if row[0] == "Hub check" {
@@ -507,6 +522,26 @@ func (r StatusReport) WriteText(w io.Writer) error {
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// logSinkText is one remote log sink for a person: off, or the destination
+// and level with what was sent and dropped.
+func logSinkText(st ops.LogSinkStatus) string {
+	if !st.Enabled {
+		if st.LastError != "" {
+			return "off (" + st.LastError + ")"
+		}
+		return "off"
+	}
+	var dropped uint64
+	for _, n := range st.Dropped {
+		dropped += n
+	}
+	out := fmt.Sprintf("%s at %s and above; sent %d, queued %d, dropped %d", st.Destination, st.Level, st.Sent, st.Queued, dropped)
+	if st.LastError != "" {
+		out += "; last error: " + st.LastError
+	}
+	return out
 }
 
 // previewPlatforms maps the platforms that are a preview in release 1 to the

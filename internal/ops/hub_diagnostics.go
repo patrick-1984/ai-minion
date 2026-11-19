@@ -56,6 +56,8 @@ type HubDiagnosticsResult struct {
 	// those of them that wait for approval.
 	WorkersConnected int `json:"workers_connected"`
 	WorkersPending   int `json:"workers_pending"`
+	// Sinks is the effective state of the remote log sinks.
+	Sinks []LogSinkStatus `json:"sinks"`
 }
 
 func init() {
@@ -66,4 +68,28 @@ func init() {
 		Scope: ScopeHub, Actions: MustActionSet(ActionManage),
 		Args: reflect.TypeFor[HubDiagnosticsArgs](), Result: reflect.TypeFor[HubDiagnosticsResult](),
 	})
+}
+
+// LogSinkStatus is the effective state of one remote log sink (syslog or
+// otel), as hub_diagnostics and minion worker status report it. It never
+// holds a credential: the destination is scheme, host and port only.
+type LogSinkStatus struct {
+	// Name is syslog or otel.
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	// Destination is the endpoint without user information, path or query.
+	Destination string `json:"destination,omitempty"`
+	Level       string `json:"level,omitempty"`
+	// Generation counts the configurations built since the start; it grows
+	// with every change that rebuilt the sink.
+	Generation  uint64     `json:"generation"`
+	LastSuccess *Timestamp `json:"last_success,omitempty"`
+	// LastError is the last connection or export error, sanitised.
+	LastError string `json:"last_error,omitempty"`
+	// Queued counts records waiting to be sent; Sent those delivered.
+	Queued uint64 `json:"queued"`
+	Sent   uint64 `json:"sent"`
+	// Dropped counts records never sent, by reason (queue_full,
+	// write_failed, export_failed, reconfigure, shutdown).
+	Dropped map[string]uint64 `json:"dropped,omitempty"`
 }

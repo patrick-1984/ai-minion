@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"fmt"
 	"reflect"
 	"unicode/utf8"
 )
@@ -27,6 +28,10 @@ const (
 	// WarnRestartRequired says the value is stored but takes effect only
 	// after the next Hub restart, because the setting is not live.
 	WarnRestartRequired = "restart_required"
+	// WarnApplyFailed says the value is stored but could not be applied
+	// right away (for example a log sink that could not be built); the
+	// message says why and the status shows the effective state.
+	WarnApplyFailed = "apply_failed"
 )
 
 // guardSettingNotEnv refuses to change a setting that the environment sets
@@ -64,6 +69,9 @@ type SettingInfo struct {
 	// Section is the group of the setting on the settings page, for example
 	// "Server and network".
 	Section string `json:"section"`
+	// Revision identifies the stored panel value; a change that names it
+	// (SettingChange.Revision) is refused when the value changed since.
+	Revision string `json:"revision,omitempty"`
 }
 
 // SettingsListResult is the result of settings_list, ordered by key.
@@ -71,17 +79,59 @@ type SettingsListResult struct {
 	Settings []SettingInfo `json:"settings"`
 }
 
-// SettingsSetArgs are the arguments of settings_set.
+// MaxSettingChanges caps the changes of one settings_set batch.
+const MaxSettingChanges = 64
+
+// SettingChange is one change of a settings_set batch.
+type SettingChange struct {
+	// Key is the setting key as listed by settings_list.
+	Key string `json:"key"`
+	// Value is the new panel value; empty or Unset removes it.
+	Value string `json:"value,omitempty"`
+	// Unset removes the panel value. It excludes Value.
+	Unset bool `json:"unset,omitempty"`
+	// Revision, when set, is the revision settings_list reported: the
+	// change is refused with a conflict when the stored value changed since
+	// (a page loaded before someone else's change).
+	Revision string `json:"revision,omitempty"`
+}
+
+// SettingsSetArgs are the arguments of settings_set: one key (Key, Value,
+// Unset) or a batch (Changes), never both. A batch is validated as a whole
+// and stored in one transaction: all of it or nothing.
 type SettingsSetArgs struct {
 	WriteArgs
 	// Key is the setting key as listed by settings_list.
-	Key string `json:"key"`
+	Key string `json:"key,omitempty"`
 	// Value is the new panel value. For a secret it is encrypted at rest and
 	// never echoed back.
 	Value string `json:"value,omitempty"`
 	// Unset removes the panel value so that the default applies again. It
 	// excludes Value.
 	Unset bool `json:"unset,omitempty"`
+	// Changes is a batch of changes (for example one section of the
+	// settings page), applied all or nothing. It excludes Key, Value and
+	// Unset.
+	Changes []SettingChange `json:"changes,omitempty"`
+	// Expect lists settings the change does not touch but relies on: each
+	// must still have the given revision (for example a stored secret a
+	// form keeps while it changes the endpoint next to it).
+	Expect []SettingRevision `json:"expect,omitempty"`
+}
+
+// SettingRevision is a setting and the revision settings_list reported.
+type SettingRevision struct {
+	Key      string `json:"key"`
+	Revision string `json:"revision"`
+}
+
+// List returns the changes of the request: Changes, or the single change of
+// Key, Value and Unset.
+func (a SettingsSetArgs) List() []SettingChange {
+	if len(a.Changes) > 0 {
+		return a.Changes
+	}
+	return []SettingChange{{Key: a.Key, Value: a.Value, Unset: a.Unset}}
 }
 
 // Validate checks the request id, the key shape, the value size and that a
@@ -91,17 +141,49 @@ func (a SettingsSetArgs) Validate() error {
 	if err := a.WriteArgs.Validate(); err != nil {
 		return err
 	}
-	if !isSnakeCase(a.Key) {
-		return invalid("key", "must be a snake_case setting key")
+	if len(a.Changes) > 0 {
+		if a.Key != "" || a.Value != "" || a.Unset {
+			return invalid("changes", "must not be combined with key, value or unset")
+		}
+		if len(a.Changes) > MaxSettingChanges {
+			return invalid("changes", "must hold at most %d changes", MaxSettingChanges)
+		}
+		seen := map[string]bool{}
+		for i, c := range a.Changes {
+			if err := c.validate(fmt.Sprintf("changes[%d].", i)); err != nil {
+				return err
+			}
+			if seen[c.Key] {
+				return invalid(fmt.Sprintf("changes[%d].key", i), "repeats a key of the batch")
+			}
+			seen[c.Key] = true
+		}
+	} else if err := (SettingChange{Key: a.Key, Value: a.Value, Unset: a.Unset}).validate(""); err != nil {
+		return err
 	}
-	if a.Unset && a.Value != "" {
-		return invalid("value", "must be empty when unset is true")
+	if len(a.Expect) > MaxSettingChanges {
+		return invalid("expect", "must hold at most %d entries", MaxSettingChanges)
 	}
-	if len(a.Value) > MaxSettingValueLen {
-		return invalid("value", "must be at most %d bytes", MaxSettingValueLen)
+	for i, e := range a.Expect {
+		if !isSnakeCase(e.Key) || e.Revision == "" {
+			return invalid(fmt.Sprintf("expect[%d]", i), "needs a snake_case key and a revision")
+		}
 	}
-	if !utf8.ValidString(a.Value) {
-		return invalid("value", "must be valid UTF-8")
+	return nil
+}
+
+func (c SettingChange) validate(prefix string) error {
+	if !isSnakeCase(c.Key) {
+		return invalid(prefix+"key", "must be a snake_case setting key")
+	}
+	if c.Unset && c.Value != "" {
+		return invalid(prefix+"value", "must be empty when unset is true")
+	}
+	if len(c.Value) > MaxSettingValueLen {
+		return invalid(prefix+"value", "must be at most %d bytes", MaxSettingValueLen)
+	}
+	if !utf8.ValidString(c.Value) {
+		return invalid(prefix+"value", "must be valid UTF-8")
 	}
 	return nil
 }
@@ -115,7 +197,7 @@ func init() {
 		Args: reflect.TypeFor[SettingsListArgs](), Result: reflect.TypeFor[SettingsListResult](),
 	})
 	Register(Op{
-		Name: OpSettingsSet, Summary: "Set or unset a Hub setting in the panel unless the environment sets it.",
+		Name: OpSettingsSet, Summary: "Set or unset a Hub setting in the panel unless the environment sets it; changes sets several at once, all or nothing.",
 		Scope: ScopeHub, Actions: manage, Write: true,
 		Guards: []Guard{guardSettingNotEnv},
 		Args:   reflect.TypeFor[SettingsSetArgs](), Result: reflect.TypeFor[WriteResult](),

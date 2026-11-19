@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -10,9 +12,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/obs"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
 // flagVerbose is the flag of the verbose setting ([config.KeyVerbose]). It is
@@ -65,6 +70,68 @@ func workerLogger(cmd *cobra.Command, res *config.Resolver, out io.Writer) (*slo
 		return nil, nil, err
 	}
 	return logx.NewLive(logx.Options{Level: level, Format: logx.Format(format.Value), Output: out}, logx.NewRing(0, 0))
+}
+
+// newWorkerSinks prepares the remote log sinks (syslog, OpenTelemetry) of a
+// running Worker: the manager owns the remote slots of live's fan-out, and
+// start builds the sinks once the Worker's lifecycle lock, update guard and
+// enrollment are in place (the log sinks module calls it). A sink setting
+// that does not validate never stops the Worker (a stricter check in a new
+// release must not make an update look failed, nor keep a service down):
+// both sinks stay off and the status and the local log say why; worker up
+// refuses such a setting before it saves it. Standalone commands (CLI
+// one-shots, minion mcp, worker pair) never call it: they log to stderr only.
+func newWorkerSinks(res *config.Resolver, live *logx.Live, logger *slog.Logger, stateDir string) (m *obs.Manager, start func(context.Context)) {
+	m = obs.New(live.Fanout, obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: ops.NewUUIDv7()})
+	start = func(ctx context.Context) {
+		if id := workerOTelID(ctx, stateDir); id != "" {
+			m.SetProcess(obs.Process{Service: "minion-worker", Version: version.Version, InstanceID: id, WorkerID: id})
+		}
+		sinks, err := config.ResolveSinks(res, config.SinkFiles{ReadPrivate: readPrivateSinkFile})
+		if err != nil {
+			m.Disable(logx.ErrorText(err))
+			logger.Error("log export is off: its settings are not valid", "error", logx.ErrorText(err))
+			return
+		}
+		if err := m.Apply(ctx, sinks); err != nil {
+			logger.Error("log export could not be started", "error", logx.ErrorText(err))
+		}
+	}
+	return m, start
+}
+
+// workerOTelID is the Worker id of the persisted enrollment, for the
+// resource of its exported records (service.instance.id and
+// minion.worker.id); "" when the Worker is not enrolled or the state cannot
+// be read now.
+func workerOTelID(ctx context.Context, stateDir string) string {
+	enr, ok, err := readPairing(ctx, stateDir)
+	if err != nil || !ok {
+		return ""
+	}
+	return enr.WorkerID
+}
+
+// maxSinkFile bounds a private file of a sink setting (header file, TLS key).
+const maxSinkFile = 1 << 20
+
+// readPrivateSinkFile reads a secret file of a sink setting through
+// identity.OpenPrivate: a regular file of this user that nobody else can
+// read (Unix mode, Windows ACL), checked on the open handle.
+func readPrivateSinkFile(path string) ([]byte, error) {
+	f, err := identity.OpenPrivate(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, maxSinkFile+1))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s", path)
+	}
+	if len(b) > maxSinkFile {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxSinkFile)
+	}
+	return b, nil
 }
 
 // debugOpCall writes one debug line about an op command's call: the op, the

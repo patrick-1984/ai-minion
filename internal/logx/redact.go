@@ -30,23 +30,57 @@ var (
 	// urlUserinfo is the user information of a URL inside free text: the
 	// authority up to its LAST '@', so that an unescaped '@' in a user name or
 	// password (https://us@er:p@ss@host) is masked whole.
-	urlUserinfo = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#"'<>]*@`)
+	urlUserinfo = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/?#"<>]*@`)
 	// urlWhole is a URL inside free text: scheme, authority and the rest up to
-	// whitespace or a quote.
-	urlWhole = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^\s/?#"'<>]*)[^\s"'<>]*`)
+	// whitespace, a double quote or an angle bracket. An apostrophe is
+	// legal inside a URL (user information, query), so it does not end one.
+	urlWhole = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)([^\s/?#"<>]*)[^\s"<>]*`)
 	// urlQuery is the query of a URL inside free text (it can carry a token).
-	urlQuery = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"'<>]*)\?[^\s#"'<>]*`)
+	urlQuery = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"<>]*)\?[^\s#"<>]*`)
 	// pairingCode is a pairing code MN-XXXX-XXXX, also typed without dashes.
 	pairingCode = regexp.MustCompile(`(?i)\bMN-?[0-9A-Z]{4}-?[0-9A-Z]{4}\b`)
+	// apiKeyText is a Minion API key: "mn_" plus 52 base32 characters
+	// (internal/identity/apikey.go).
+	apiKeyText = regexp.MustCompile(`(?i)\bmn_[a-z2-7]{52}`)
+	// inviteKeyText is an invitation key mnk_<fingerprint>.<secret>
+	// (internal/identity/invite.go); the fingerprint is public and kept.
+	inviteKeyText = regexp.MustCompile(`(?i)\b(mnk_[a-z2-7]+)\.[a-z2-7]+`)
+	// joinTokenText is a join token mnj1-<base64url payload>
+	// (internal/identity/jointoken.go).
+	joinTokenText = regexp.MustCompile(`(?i)\bmnj1-[A-Za-z0-9._~-]+`)
 )
 
 // RedactText masks what free text (an error message, a log message) must not
 // carry into a log that leaves the machine: the user information and the query
-// of every URL in it, and pairing codes.
+// of every URL in it, Minion's own secret formats (API keys mn_..., invitation
+// keys mnk_<fingerprint>.<secret>, join tokens mnj1-...) and pairing codes.
 func RedactText(s string) string {
-	s = urlUserinfo.ReplaceAllString(s, "${1}"+Redacted+"@")
-	s = urlQuery.ReplaceAllString(s, "${1}?"+Redacted)
-	return pairingCode.ReplaceAllString(s, "MN-"+Redacted)
+	// Cheap checks first: every pattern below needs "mn" (any case) or
+	// "://", and most log text has neither.
+	mn := hasMN(s)
+	if mn {
+		s = joinTokenText.ReplaceAllString(s, "mnj1-"+Redacted)
+		s = inviteKeyText.ReplaceAllString(s, "${1}."+Redacted)
+		s = apiKeyText.ReplaceAllString(s, "mn_"+Redacted)
+	}
+	if strings.Contains(s, "://") {
+		s = urlUserinfo.ReplaceAllString(s, "${1}"+Redacted+"@")
+		s = urlQuery.ReplaceAllString(s, "${1}?"+Redacted)
+	}
+	if mn {
+		s = pairingCode.ReplaceAllString(s, "MN-"+Redacted)
+	}
+	return s
+}
+
+// hasMN reports whether s contains "mn" in any letter case.
+func hasMN(s string) bool {
+	for i := 0; i+1 < len(s); i++ {
+		if s[i]|0x20 == 'm' && s[i+1]|0x20 == 'n' {
+			return true
+		}
+	}
+	return false
 }
 
 // RedactErrorText masks free text of an error: every URL in it is cut to its
@@ -54,6 +88,9 @@ func RedactText(s string) string {
 // reverse-proxy prefix or a mirror can use for a credential), then
 // [RedactText] applies.
 func RedactErrorText(s string) string {
+	if !strings.Contains(s, "://") {
+		return RedactText(s)
+	}
 	s = urlWhole.ReplaceAllStringFunc(s, func(m string) string {
 		sub := urlWhole.FindStringSubmatch(m)
 		host := sub[2]

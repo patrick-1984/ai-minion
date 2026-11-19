@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -1296,7 +1297,8 @@ func (p *Pairer) showCode(c identity.PairingCode, notice string, root []byte, ad
 	// The code is a secret that is printed for the human on purpose (AD-20):
 	// the console above and the log (docker logs) are the only places.
 	hubSeen := fingerprintOfPub(root)
-	p.log.Info("pairing code", "pairing_code", c.String(), "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
+	// A human notice: no remote log sink (syslog, OpenTelemetry) receives it.
+	logx.HumanNotice(context.Background(), p.log, slog.LevelInfo, "pairing code", "pairing_code", c.String(), "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
 		"worker_fingerprint", p.fpr, "worker_fingerprint_words", identity.Fingerprint(p.fpr).Words(),
 		"hub_fingerprint", string(hubSeen), "hub_fingerprint_words", hubSeen.Words(), "pairing_request", admit && len(root) > 0,
 		"hub_fingerprint_expected", p.cfg.ExpectHub.String(), "tls_certificate", TLSFacts(seen))
