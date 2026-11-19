@@ -49,7 +49,10 @@ func readSecretInput(ctx context.Context, path string, stdin io.Reader, limit in
 		}
 		in = stdin
 	} else {
-		f, err := os.Open(path)
+		f, err := openRegularSecretFile(ctx, path)
+		if errors.Is(err, errSecretInterrupted) {
+			return nil, fmt.Errorf("%s was not read: %w (%w)", what, errSecretInterrupted, ctx.Err())
+		}
 		if err != nil {
 			return nil, fmt.Errorf("cannot read the file of %s: %w", what, pathlessError(err))
 		}
@@ -67,6 +70,45 @@ func readSecretInput(ctx context.Context, path string, stdin io.Reader, limit in
 		return nil, fmt.Errorf("cannot read %s: %w", what, pathlessError(err))
 	}
 	return raw, nil
+}
+
+// errSecretNotRegular is the error of a secret path that is not a regular
+// file (a FIFO or device); use "-" to read a pipe.
+var errSecretNotRegular = errors.New("not a regular file (use --token-file - to read a pipe)")
+
+// openRegularSecretFile opens path in a goroutine that ctx can abandon (the
+// open of a FIFO without a writer blocks, and Ctrl+C must still end the
+// command), and accepts only a regular file.
+func openRegularSecretFile(ctx context.Context, path string) (*os.File, error) {
+	type result struct {
+		f   *os.File
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		f, err := os.Open(path)
+		if err == nil {
+			if fi, serr := f.Stat(); serr != nil || !fi.Mode().IsRegular() {
+				_ = f.Close()
+				f, err = nil, errSecretNotRegular
+				if serr != nil {
+					err = serr
+				}
+			}
+		}
+		done <- result{f, err}
+	}()
+	select {
+	case r := <-done:
+		return r.f, r.err
+	case <-ctx.Done():
+		go func() {
+			if r := <-done; r.f != nil {
+				_ = r.f.Close()
+			}
+		}()
+		return nil, errSecretInterrupted
+	}
 }
 
 // readBounded reads in to its end, at most limit bytes (errSecretTooLong

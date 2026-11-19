@@ -61,6 +61,7 @@ func ParityMarkdown() string {
 	b.WriteString("\nWhen a command refuses because sessions would end, the tray names the loss and, after a yes, runs the same command again with `" +
 		strings.Join(AcceptLossArgv, " ") + "` (exit 23 named N sessions) or `" + strings.Join(AcceptUnknownLossArgv, " ") +
 		"` (exit 29: an unknown number of sessions will end).\n")
+	b.WriteString("\nFor `hub.join` and `hub.pair` that run is not the same command again: the tray runs `hub.join.resume` and `restart` (see Retry), so that a consumed token or a changed sharing choice is never replayed.\n")
 	b.WriteString("\nThe only commands a Windows tray runs elevated, on the registered service binary only:\n\n")
 	for _, e := range []Elevate{ElevateE1, ElevateE2} {
 		b.WriteString("- " + string(e) + ": `minion " + strings.Join(ElevatedArgv(e), " ") + "`\n")

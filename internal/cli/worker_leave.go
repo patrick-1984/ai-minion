@@ -277,15 +277,22 @@ func runWorkerLeave(cmd *cobra.Command, deps workerLeaveDeps, o leaveOptions) (l
 		return res, fmt.Errorf("open the Worker state in %s: %w", stateDir, err)
 	}
 	defer func() { _ = closer.Close() }()
-	rep, err := agent.ResetWorker(ctx, agent.ResetOptions{
+	ro := agent.ResetOptions{
 		StateDir:   stateDir,
 		ConfigPath: filepath.Join(stateDir, workerConfigName),
 		Store:      st,
-	})
+	}
+	// Advance the enrollment generation under the state guard, so that a
+	// foreground pairing that still waits for the Hub with the old key cannot
+	// commit after the reset (its commit sees a moved generation).
+	if repo, ok := st.(agent.EnrollmentRepo); ok {
+		ro.Enrollments = agent.NewEnrollments(repo, stateDir)
+	}
+	rep, err := agent.ResetWorker(ctx, ro)
 	res.StepsDone = append(res.StepsDone, rep.Steps...)
 	res.Removed, res.Kept, res.PauseCleared = rep.ConfigKeys, rep.Kept, rep.PauseCleared
 	if err != nil {
-		return res, &resultError{Exit: ExitError, Err: err, Message: fmt.Sprintf("leaving the Hub stopped half way (%s); done: %s. Run the same command again to finish",
+		return res, &resultError{Exit: ExitError, Err: err, Message: fmt.Sprintf("leaving the Hub stopped half way (%s); done: %s. The reset moved enrollment_epoch: read it again (minion worker status) and run leave again to finish",
 			oneLine(err.Error()), strings.Join(res.StepsDone, ", "))}
 	}
 	res.NotRemoved = leaveEnvPins(deps.lookupEnv)

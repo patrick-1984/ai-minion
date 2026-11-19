@@ -435,6 +435,7 @@ func TestLeavePartialFailureListsStepsDone(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(dir, agent.PauseFile)); err != nil {
 		t.Fatal(err)
 	}
+	args = expectArgs(t, dir) // the reset moved the enrollment epoch
 	if m, code := runLeave(t, leaveTestDeps(nil, nil), args...); code != ExitOK || keyExists(dir) {
 		t.Fatalf("second leave = %v, %d", m, code)
 	}
@@ -496,5 +497,25 @@ func TestLeaveUsage(t *testing.T) {
 	}
 	if !keyExists(dir) {
 		t.Fatal("a refused leave deleted the key")
+	}
+}
+
+// Leave moves the enrollment generation, so a foreground pairing that still
+// waits for the Hub with the old key cannot commit after the reset.
+func TestLeaveAdvancesEnrollmentEpoch(t *testing.T) {
+	dir := pairedStateDir(t)
+	_, before, err := leaveIdentity(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, code := runLeave(t, leaveTestDeps(nil, nil), expectArgs(t, dir)...); code != ExitOK {
+		t.Fatalf("leave = %v, %d", m, code)
+	}
+	_, after, err := leaveIdentity(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after == before {
+		t.Fatalf("enrollment epoch stayed %d after leave", after)
 	}
 }

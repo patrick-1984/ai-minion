@@ -33,17 +33,17 @@ Every control of the tray menu and the command that does the same thing. `{name}
 | `pause.2h` | Pause ▸ for 2 hours | `minion worker pause --for 2h --state-dir {state_dir} --json` | — | state | paused == true, paused_until set |
 | `pause.indef` | Pause ▸ until I resume | `minion worker pause --state-dir {state_dir} --json` | — | state | paused == true, paused_until empty |
 | `resume` | Resume | `minion worker resume --state-dir {state_dir} --json` | — | state | paused == false |
-| `start` | Start the Worker | `minion worker start --json` | Windows, on exit 21: elevated E1 | state | live.running == true, live.state_dir == profile.state_dir |
+| `start` | Start the Worker | `minion worker start --state-dir {state_dir} --json` | Windows, on exit 21: elevated E1 | state | live.running == true, live.state_dir == profile.state_dir |
 | `stop` | Stop the Worker… | `minion worker stop --state-dir {state_dir} --json` | asks when sessions would end (23, 29); Windows, on exit 21: elevated E2 | state | live.running == false |
 | `restart` | Restart the Worker… | `minion worker restart --state-dir {state_dir} --json` | asks when sessions would end (23, 29) | state | live.instance changed, live.state_dir unchanged |
 | `share.list` | Sessions shared with the Hub ▸ (contents) | `minion worker share list --state-dir {state_dir} --json` | — | read | rule, revision, sessions[].shared of the result |
 | `share.all` | Sessions shared with the Hub ▸ All | `minion worker share set all --if-revision {revision} --state-dir {state_dir} --json` | — | state | share.mode == all |
 | `share.none` | Sessions shared with the Hub ▸ None | `minion worker share set none --if-revision {revision} --state-dir {state_dir} --json` | — | state | share.mode == none |
-| `share.select` | Sessions shared with the Hub ▸ Selected | `minion worker share set select {sessions} --if-revision {revision} --state-dir {state_dir} --json` | — | state | share.mode == select, share.sessions unchanged |
-| `share.add` | Sessions shared with the Hub ▸ ☑ {session} | `minion worker share add {session} --if-revision {revision} --state-dir {state_dir} --json` | — | state | share.sessions contains {session} |
-| `share.remove` | Sessions shared with the Hub ▸ ☐ {session} | `minion worker share remove {session} --if-revision {revision} --state-dir {state_dir} --json` | — | state | share.sessions lacks {session} |
-| `block.on` | ☑ Block new sessions created through Minion | `minion worker config set allow_new_sessions off --state-dir {state_dir}` | — | state | new_sessions.blocked == true, new_sessions.in_force == true |
-| `block.off` | ☐ Block new sessions created through Minion | `minion worker config set allow_new_sessions on --state-dir {state_dir}` | — | state | new_sessions.blocked == false, new_sessions.in_force == true |
+| `share.select` | Sessions shared with the Hub ▸ Selected | `minion worker share set select --if-revision {revision} --state-dir {state_dir} --json -- {sessions}` | — | state | share.mode == select, share.sessions unchanged |
+| `share.add` | Sessions shared with the Hub ▸ ☑ {session} | `minion worker share add --if-revision {revision} --state-dir {state_dir} --json -- {session}` | — | state | share.sessions contains {session} |
+| `share.remove` | Sessions shared with the Hub ▸ ☐ {session} | `minion worker share remove --if-revision {revision} --state-dir {state_dir} --json -- {session}` | — | state | share.sessions lacks {session} |
+| `block.on` | ☑ Block new sessions created through Minion | `minion worker config set allow_new_sessions off --state-dir {state_dir} --json` | — | state | new_sessions.blocked == true, new_sessions.in_force == true (the result carries the effective value, its sources and code saved_not_confirmed or saved_overridden on exit 22) |
+| `block.off` | ☐ Block new sessions created through Minion | `minion worker config set allow_new_sessions on --state-dir {state_dir} --json` | — | state | new_sessions.blocked == false, new_sessions.in_force == true (the result carries the effective value, its sources and, on exit 22, the code and the sources that keep the block) |
 | `hub.open` | Hub ▸ Open the Hub | `minion worker open-hub --state-dir {state_dir} --json` | — | browser | the browser opens hub_web_url (url of the result) |
 | `hub.join` | Hub ▸ Join with a join token… | `minion worker join --token-file - --state-dir {state_dir} --json [--share-existing {share}]` | join token on stdin; asks when sessions would end (23, 29) | state | paired == true, live.running == true (enrollment, config, activation of the result) |
 | `hub.join.resume` | Hub ▸ Finish joining | `minion worker join --resume --state-dir {state_dir} --json` | asks when sessions would end (23, 29) | state | paired == true, live.running == true |
@@ -62,6 +62,8 @@ Every control of the tray menu and the command that does the same thing. `{name}
 
 When a command refuses because sessions would end, the tray names the loss and, after a yes, runs the same command again with `--accept-loss {n}` (exit 23 named N sessions) or `--accept-unknown-loss` (exit 29: an unknown number of sessions will end).
 
+For `hub.join` and `hub.pair` that run is not the same command again: the tray runs `hub.join.resume` and `restart` (see Retry), so that a consumed token or a changed sharing choice is never replayed.
+
 The only commands a Windows tray runs elevated, on the registered service binary only:
 
 - E1: `minion worker start --json`
@@ -74,9 +76,9 @@ Placeholders:
 - `{fp}`: worker_fingerprint of the status (may be empty)
 - `{hub_fp}`: the Hub fingerprint (six words) entered in a dialog
 - `{n}`: sessions_lost of the refusal (exit 23)
-- `{revision}`: the revision of minion worker share list --json
+- `{revision}`: the revision of the minion worker share list --json response that the sessions (or the user's click) were read from
 - `{session}`: the session name of the menu item
-- `{sessions}`: the names of the currently shared sessions (share.sessions), zero or more arguments
+- `{sessions}`: the names to share, taken from the SAME minion worker share list --json response as {revision} (never from status), zero or more arguments; always placed after a literal -- so that a session named like an option stays a name
 - `{share}`: all, none or later, chosen in a dialog
 - `{state_dir}`: profile.state_dir of the tray's profile (C7)
 - `{url}`: the Hub address entered in a dialog

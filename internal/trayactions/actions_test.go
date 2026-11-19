@@ -193,3 +193,79 @@ func TestSplice(t *testing.T) {
 		}
 	}
 }
+
+// Session names are operands, never options: every argv that carries a
+// session name has every flag before a literal "--" and the names after it
+// (a tmux session may be called "--json").
+func TestSessionNamesAfterDoubleDash(t *testing.T) {
+	n := 0
+	for _, a := range All {
+		for i, arg := range a.Argv {
+			if arg != "{session}" && arg != "{sessions}" {
+				continue
+			}
+			n++
+			if i == 0 || a.Argv[i-1] != "--" || i != len(a.Argv)-1 {
+				t.Errorf("%s: %s must be the last argument, right after --: %v", a.ID, arg, a.Argv)
+			}
+			if slices.Index(a.Argv, "--") != i-1 {
+				t.Errorf("%s: more than one -- in %v", a.ID, a.Argv)
+			}
+		}
+	}
+	if n != 3 {
+		t.Errorf("%d argv carry session names, want share.select, share.add and share.remove", n)
+	}
+}
+
+// The names of Selected and the revision come from the same share list
+// response (stale names under a fresh revision would share again a session
+// the owner just removed).
+func TestSelectedNamesAndRevisionShareASource(t *testing.T) {
+	for _, name := range []string{"sessions", "revision"} {
+		if !strings.Contains(Placeholders[name], "share list") {
+			t.Errorf("{%s} = %q: it must say it comes from the share list response", name, Placeholders[name])
+		}
+	}
+	if strings.Contains(Placeholders["sessions"], "share.sessions") || !strings.Contains(Placeholders["sessions"], "SAME") {
+		t.Errorf("{sessions} = %q", Placeholders["sessions"])
+	}
+}
+
+// A confirmed session loss never replays what the first run saved: the retry
+// of a join is the resume (no token), the retry of a pairing is the restart.
+func TestRetryDoesNotReplay(t *testing.T) {
+	for id, to := range Retry {
+		a, ok := ByID(id)
+		b, ok2 := ByID(to)
+		if !ok || !ok2 {
+			t.Fatalf("retry %s -> %s names an unknown action", id, to)
+		}
+		if !a.Confirm.SessionLoss() || !b.Confirm.SessionLoss() {
+			t.Errorf("%s -> %s: both need the session-loss confirmation", id, to)
+		}
+		if b.Stdin != StdinNone || len(b.Optional) != 0 {
+			t.Errorf("%s needs no stdin and no sharing choice: %+v", to, b)
+		}
+		for _, arg := range b.Argv {
+			if arg == "--share-existing" || arg == "--token-file" {
+				t.Errorf("%s replays %s", to, arg)
+			}
+		}
+	}
+	for _, id := range []string{"hub.join", "hub.pair"} {
+		if Retry[id] == "" {
+			t.Errorf("%s has no retry", id)
+		}
+	}
+}
+
+// The block commands, start and stop all ask for JSON and bind the profile.
+func TestProfileBoundAndJSON(t *testing.T) {
+	for _, id := range []string{"start", "stop", "restart", "block.on", "block.off"} {
+		a, _ := ByID(id)
+		if !slices.Contains(a.Argv, "--json") || !slices.Contains(a.Argv, "--state-dir") {
+			t.Errorf("%s: %v lacks --json or --state-dir", id, a.Argv)
+		}
+	}
+}
