@@ -83,6 +83,7 @@ check-headless: ## Fail if ./cmd/minion depends on a GUI module (fyne.io/systray
 	go run ./scripts/headlesscheck -dir .
 
 check-nomigration: ## Fail if a Worker database migration was added after 0011 (the tray work keeps its state in files, tickets v3 C3)
+	scripts/selftest-nomigration.sh
 	scripts/nomigration.sh
 
 check-docs: ## Fail on a broken relative link, anchor or missing README backlink in the user documentation (no network)

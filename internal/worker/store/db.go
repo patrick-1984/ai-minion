@@ -116,35 +116,127 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 	if err != nil {
 		return nil, fmt.Errorf("store: state directory %q: %w", dir, err)
 	}
-	if err := os.MkdirAll(abs, 0o700); err != nil {
-		return nil, fmt.Errorf("store: cannot create the state directory %q: %w; make it writable for the user that runs the Worker", abs, err)
-	}
-
-	if err := protectStateDir(abs); err != nil {
-		return nil, err
-	}
-
 	dbPath := filepath.Join(abs, DBFile)
 	if cfg.noMigrate {
-		// Checked read-only, before the file is touched for writing.
-		if err := checkSameSchema(ctx, abs, dbPath, cfg.migrations); err != nil {
-			return nil, err
-		}
+		return openNoMigrate(ctx, abs, dbPath, cfg)
+	}
+	if err := prepareStateDir(abs); err != nil {
+		return nil, err
 	}
 	if err := ensureOwnerOnly(dbPath); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", dsn(dbPath))
+	db, err := openRW(ctx, dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := migrate(ctx, db, abs, cfg.migrations, cfg.clock); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate database: %w", err)
+	}
+	return &Store{db: db, dir: abs, clock: cfg.clock}, nil
+}
+
+// protectDir is [protectStateDir]; tests replace it to see whether it ran.
+var protectDir = protectStateDir
+
+// testHookNoMigrateFresh runs in a [NoMigrate] open of a state directory
+// without a database, after the new database was built aside and before it
+// is linked into place. It exists for tests.
+var testHookNoMigrateFresh func()
+
+// prepareStateDir creates the state directory (mode 0700) and protects it.
+func prepareStateDir(abs string) error {
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return fmt.Errorf("store: cannot create the state directory %q: %w; make it writable for the user that runs the Worker", abs, err)
+	}
+	return protectDir(abs)
+}
+
+// openRW opens the database at path for reading and writing (WAL, busy
+// timeout, immediate transactions) and checks the connection.
+func openRW(ctx context.Context, path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("store: open database: %w", err)
 	}
 	if err := pingWithBusyRetry(ctx, db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("store: open database %q: %w", dbPath, err)
+		return nil, fmt.Errorf("store: open database %q: %w", path, err)
+	}
+	return db, nil
+}
+
+// openNoMigrate is the [NoMigrate] open. It never runs a migration on a file
+// that already exists at dbPath, whoever created it: an existing database is
+// opened only when its applied migrations are exactly this binary's, checked
+// read-only before anything (the state directory's ACL included) is written
+// and again on the connection the caller writes through. A state directory
+// without a database gets a new one built aside under a private temporary
+// name and linked into place only when no worker.db appeared meanwhile; if an
+// (older) Worker created one first, that database is left to the Worker and
+// checked like any existing one.
+func openNoMigrate(ctx context.Context, abs, dbPath string, cfg openConfig) (*Store, error) {
+	if _, err := os.Stat(dbPath); err == nil {
+		return openExistingNoMigrate(ctx, abs, dbPath, cfg)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("store: database file %q: %w", dbPath, err)
+	}
+	if err := prepareStateDir(abs); err != nil {
+		return nil, err
+	}
+	tmp := filepath.Join(abs, fmt.Sprintf(".%s.new-%d-%d", DBFile, os.Getpid(), time.Now().UnixNano()))
+	defer func() {
+		for _, p := range []string{tmp, tmp + "-wal", tmp + "-shm", tmp + "-journal"} {
+			_ = os.Remove(p)
+		}
+	}()
+	if err := identity.WritePrivate(tmp, nil); err != nil {
+		return nil, fmt.Errorf("store: create database file %q: %w", tmp, err)
+	}
+	db, err := openRW(ctx, tmp)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := migrate(ctx, db, abs, cfg.migrations, cfg.clock); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: migrate database: %w", err)
+	}
+	if err := db.Close(); err != nil { // checkpoints the WAL into the file
+		return nil, fmt.Errorf("store: close new database: %w", err)
+	}
+	if testHookNoMigrateFresh != nil {
+		testHookNoMigrateFresh()
+	}
+	if err := os.Link(tmp, dbPath); err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, fmt.Errorf("store: create database file %q: %w", dbPath, err)
+	}
+	return openExistingNoMigrate(ctx, abs, dbPath, cfg)
+}
+
+// openExistingNoMigrate opens the existing database at dbPath without
+// migrating it; see [openNoMigrate].
+func openExistingNoMigrate(ctx context.Context, abs, dbPath string, cfg openConfig) (*Store, error) {
+	if err := checkSameSchema(ctx, abs, cfg.migrations); err != nil {
+		return nil, err
+	}
+	if err := prepareStateDir(abs); err != nil {
+		return nil, err
+	}
+	if runtime.GOOS != "windows" {
+		for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+			if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("store: protect database file %q: %w", p, err)
+			}
+		}
+	}
+	db, err := openRW(ctx, dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := sameSchema(ctx, db, cfg.migrations); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	return &Store{db: db, dir: abs, clock: cfg.clock}, nil
 }
@@ -232,24 +324,25 @@ func databaseURL(path string) url.URL {
 	return url.URL{Scheme: "file", Path: p}
 }
 
-// checkSameSchema refuses an existing database whose applied migrations are
-// not exactly the ones of set. A missing database passes (it is created at
-// this binary's schema).
-func checkSameSchema(ctx context.Context, dir, dbPath string, set migrationSet) error {
-	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+// checkSameSchema refuses the existing database of dir, opened read-only,
+// unless its applied migrations are exactly the ones of set.
+func checkSameSchema(ctx context.Context, dir string, set migrationSet) error {
 	ro, err := OpenReadOnlyContext(ctx, dir)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ro.Close() }()
-	applied, exists, err := sqlmigrate.Applied(ctx, ro.db)
+	return sameSchema(ctx, ro.db, set)
+}
+
+// sameSchema returns [ErrSchemaMismatch] unless the applied migrations of db
+// are exactly the ones of set. A database without a migration ledger (an
+// empty file, or tables an older Worker has not finished creating) is a
+// mismatch too: [NoMigrate] never initializes a file it did not create.
+func sameSchema(ctx context.Context, db *sql.DB, set migrationSet) error {
+	applied, _, err := sqlmigrate.Applied(ctx, db)
 	if err != nil {
 		return err
-	}
-	if !exists {
-		return nil // an empty database file: new
 	}
 	migs, err := sqlmigrate.Load(set.fsys, set.dir)
 	if err != nil {
