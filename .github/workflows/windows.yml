@@ -151,6 +151,64 @@ jobs:
           grep -q '"preview": true' status.json
           grep -q 'control socket listening' worker.log
           grep -q 'minion-worker-S-1-' worker.log
+      # Tray ticket W2b, acceptance 8: ConPTY sessions live inside the Worker
+      # and end with it, so "worker stop" counts them first (worker_lifecycle+
+      # lifecycle.v1): with 2 sessions it exits 23 sessions_would_end with
+      # sessions_lost 2 and stops nothing (both sessions still listed), one
+      # accepted loss is not enough, and --accept-loss 2 stops. A foreground
+      # Worker is used: the service runs as LocalSystem, and its ConPTY
+      # sessions would run as that account (the windows service note).
+      - name: 'W2b: ConPTY sessions refuse a stop until their loss is accepted'
+        shell: bash
+        run: |
+          set -u
+          export MINION_STATE_DIR="$RUNNER_TEMP/minion-state-w2b"
+          # The Worker of the step before must be gone: the pipe is per user.
+          for _ in $(seq 1 30); do
+            ./minion.exe worker status --json > pre.json 2>/dev/null || true
+            grep -q '"live": true' pre.json || break
+            sleep 1
+          done
+          if grep -q '"live": true' pre.json; then echo "the Worker of the step before still runs"; exit 1; fi
+          ./minion.exe worker up --foreground --share-existing all > w2b.log 2>&1 &
+          worker=$!
+          fail() { echo "FAIL: $*"; cat w2b.log || true; kill "$worker" 2>/dev/null || true; exit 1; }
+          ok=0
+          for _ in $(seq 1 30); do
+            if ./minion.exe worker status --json > w2b-status.json 2>/dev/null && grep -q '"live": true' w2b-status.json; then ok=1; break; fi
+            sleep 1
+          done
+          [ "$ok" = 1 ] || fail "the foreground Worker did not answer"
+          grep -q '"session_host": "conpty"' w2b-status.json || { cat w2b-status.json; fail "the session host is not conpty"; }
+          for n in w2b-one w2b-two; do
+            rc=0; ./minion.exe session_create --name "$n" --argv cmd.exe --json > "create-$n.json" 2>&1 || rc=$?
+            cat "create-$n.json"
+            [ "$rc" = 0 ] || fail "session_create $n exited $rc"
+          done
+          listed() {
+            ./minion.exe sessions_list --json > list.json 2> list.err || { cat list.json list.err; fail "sessions_list failed"; }
+            cat list.json
+            jq -e '[.sessions[].name] | index("w2b-one") != null and index("w2b-two") != null' list.json > /dev/null || fail "both sessions are not listed ($1)"
+          }
+          listed "before the stop"
+          rc=0; ./minion.exe worker stop --json > stop1.json 2> stop1.err || rc=$?
+          cat stop1.json stop1.err
+          [ "$rc" = 23 ] || fail "worker stop exited $rc, want 23"
+          jq -e '.code == "sessions_would_end" and .sessions_lost == 2 and .ok == false' stop1.json > /dev/null || fail "the refusal is not sessions_would_end with sessions_lost 2"
+          listed "after the refusal"
+          # One accepted loss is not enough for two sessions.
+          rc=0; ./minion.exe worker stop --accept-loss 1 --json > stop2.json 2> stop2.err || rc=$?
+          cat stop2.json stop2.err
+          [ "$rc" = 23 ] || fail "worker stop --accept-loss 1 exited $rc, want 23"
+          listed "after the second refusal"
+          ./minion.exe worker status --json > w2b-status.json 2>/dev/null || true
+          grep -q '"live": true' w2b-status.json || fail "the Worker does not run after the refusals"
+          rc=0; ./minion.exe worker stop --accept-loss 2 --json > stop3.json 2> stop3.err || rc=$?
+          cat stop3.json stop3.err
+          [ "$rc" = 0 ] || fail "worker stop --accept-loss 2 exited $rc, want 0"
+          jq -e '.ok == true and .stopped == true and .sessions_lost == 2' stop3.json > /dev/null || fail "the stop result is not ok/stopped/sessions_lost 2"
+          ./minion.exe worker status --json > w2b-after.json 2>/dev/null || true
+          grep -q '"live": false' w2b-after.json || { cat w2b-after.json; fail "the Worker still answers after the stop"; }
 
   worker-service:
     name: Windows service (install, start, restart, stop)
