@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -195,6 +196,11 @@ type HubBackend struct {
 	callTimeout time.Duration
 	warn        func(string)
 	userAgent   string
+	// mon remembers the monitoring policy version the user saw; monNotice
+	// shows an active policy, once per run (monOnce).
+	mon       *MonitoringSeen
+	monNotice func(string)
+	monOnce   sync.Once
 }
 
 var _ Backend = (*HubBackend)(nil)
@@ -403,12 +409,18 @@ func (b *HubBackend) run(ctx context.Context, op string, args any, onProgress fu
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, application/x-ndjson")
 	req.Header.Set("User-Agent", b.userAgent)
+	if b.mon != nil {
+		if seen, ok := b.mon.Get(b.label); ok {
+			req.Header.Set(headerMonitoringSeen, strconv.FormatInt(seen, 10))
+		}
+	}
 
 	resp, err := b.hc.Do(req)
 	if err != nil {
 		return nil, b.transportError(ctx, callCtx, err, key, maybeSent.Load())
 	}
 	defer func() { _ = resp.Body.Close() }()
+	b.noteMonitoring(resp.Header, false)
 
 	switch {
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
@@ -547,6 +559,10 @@ func (b *HubBackend) reason(err error, key string) string {
 func (b *HubBackend) statusError(resp *http.Response, key string, write bool) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	if pe := parseEnvelope(data, key); pe != nil {
+		if pe.Code == proto.CodeMonitoringChanged {
+			// The error is the notice; the next call carries the new version.
+			b.noteMonitoring(resp.Header, true)
+		}
 		if wait, ok := retryAfter(resp.Header); ok && pe.Code == proto.CodeRateLimited {
 			pe.Message += fmt.Sprintf(" (the Hub asks to wait %d s)", int(wait/time.Second))
 		}

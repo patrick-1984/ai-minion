@@ -179,7 +179,11 @@ func selectMCPBackend(cmd *cobra.Command, deps mcpDeps, logger *slog.Logger) (cl
 	}
 	b, kind, err := client.Select(hubConfig(cfg), localBackend,
 		client.WithHubUserAgent("minion/"+version.Get().Version),
-		client.WithHubWarn(func(msg string) { logger.Warn(msg) }))
+		client.WithHubWarn(func(msg string) { logger.Warn(msg) }),
+		// The refusal of the first content-bearing tool call after monitoring
+		// became stricter is returned to the model as the tool error; an
+		// active policy is also logged once.
+		client.WithHubMonitoring(client.NewMonitoringSeen(client.DefaultMonitoringPath()), func(msg string) { logger.Info(msg) }))
 	if err != nil {
 		return nil, nil, fmt.Errorf("configure the Hub backend: %w", err)
 	}
