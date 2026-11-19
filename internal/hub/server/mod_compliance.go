@@ -315,7 +315,7 @@ func (s *ComplianceService) start(ctx context.Context) error {
 	}
 	if cerr != nil {
 		// Fail closed on the export, not on the Hub.
-		s.install(ctx, cur, config.ComplianceConfig{}, actor)
+		_ = s.install(ctx, cur, config.ComplianceConfig{}, actor)
 		s.fail(ctx, "start", cerr)
 		return nil
 	}
@@ -349,7 +349,7 @@ func (s *ComplianceService) apply(ctx context.Context, eff *config.Resolver) err
 		actor.ID = row.UpdatedBy
 	}
 	if cerr != nil {
-		s.install(ctx, pol, config.ComplianceConfig{}, actor)
+		_ = s.install(ctx, pol, config.ComplianceConfig{}, actor)
 		s.fail(ctx, "apply", cerr)
 		return cerr
 	}
