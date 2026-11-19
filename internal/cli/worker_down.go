@@ -112,21 +112,23 @@ func workerStateFree(dir string) bool {
 }
 
 // windowsServiceRunning reports whether the Windows service runs (query
-// only; false when unknown).
+// only; false when unknown). It asks with query rights only: the status of
+// the kardianos controller opens the service with start and stop rights too,
+// which a standard user does not have, and would report "not running" for a
+// service that runs (windows.yml, principal b).
 func windowsServiceRunning() bool {
-	exe, err := os.Executable()
-	if err != nil {
-		return false
-	}
-	c, err := service.NewKardianosController(exe)
-	if err != nil {
-		return false
-	}
-	st, err := c.Status()
-	return err == nil && st == service.StatusRunning
+	st, err := service.QueryWindowsService()
+	return err == nil && st.Running
 }
 
+// stopWindowsService stops the Windows service when it runs. Whether it runs
+// is asked with query rights only, so that a user who may not stop it gets the
+// access-denied error of the stop (exit 21) instead of "not running".
 func stopWindowsService() (bool, error) {
+	st, err := service.QueryWindowsService()
+	if err != nil || !st.Running {
+		return false, nil // not installed, not running, or not readable
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return false, err
@@ -134,10 +136,6 @@ func stopWindowsService() (bool, error) {
 	c, err := service.NewKardianosController(exe)
 	if err != nil {
 		return false, err
-	}
-	st, err := c.Status()
-	if err != nil || st != service.StatusRunning {
-		return false, nil // not installed or not running
 	}
 	stopper, ok := c.(interface{ Stop() error })
 	if !ok {
