@@ -52,5 +52,13 @@
   "live_elsewhere": null,
   "cli_version": "",
   "capabilities": [],
-  "sessions_lost_on_stop": null
+  "sessions_lost_on_stop": null,
+  "hub_key": {
+    "state": "none",
+    "words": "",
+    "line": "Hub key: none (this Worker is not paired)"
+  },
+  "hub_web_url": "https://hub.example:8443",
+  "lifecycle": null,
+  "other_account_worker": false
 }

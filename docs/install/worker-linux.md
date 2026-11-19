@@ -152,6 +152,7 @@ minion worker down           # as that user: stops the running Worker (or prints
 minion worker start          # starts the installed service again; never installs (exit 26 without one, 21 with the sudo command for a system service)
 minion worker reset          # as that user: forgets the Hub, the key, the enrollment and the share choice
 minion worker leave          # as that user: stops the Worker of this state directory, then resets it
+minion worker open-hub       # opens the Hub of this Worker in the browser (--print prints the address)
 ```
 
 `minion worker leave` stops the Worker and resets it in one step, and also removes the `hub_fingerprint` that a join saved, so that the Worker can join another Hub (see [leave the Hub](../guides/pairing.md#leave-the-hub-worker-leave)).

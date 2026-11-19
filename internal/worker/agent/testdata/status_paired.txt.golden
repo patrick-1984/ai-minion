@@ -2,6 +2,7 @@ Version:                    v0.1.0
 Name:                       lab-pi
 Mode:                       Hub
 Hub URL:                    https://hub.example:8443
+Hub key:                    crucial-position-tower-kingdom-panther-layer (compare with the Hub's top bar)
 Connection:                 connected (since 2026-11-10T12:30:00Z)
 Last error:                 none
 Hub fingerprint:            crucial-position-tower-kingdom-panther-layer

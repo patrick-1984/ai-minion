@@ -16,6 +16,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
@@ -39,6 +40,9 @@ type workerStatusDeps struct {
 	// sessions returns the session lister for the tmux socket; nil or a nil
 	// result means "cannot count".
 	sessions func(socket string) agent.StatusSessions
+	// lifecycle looks at the Worker service of this user (tray W10b); nil
+	// leaves the lifecycle block null.
+	lifecycle func(ctx context.Context) (service.Lifecycle, error)
 }
 
 func defaultWorkerStatusDeps() workerStatusDeps {
@@ -49,7 +53,36 @@ func defaultWorkerStatusDeps() workerStatusDeps {
 		live: func(stateDir string) agent.LiveSource {
 			return localLive{stateDir: stateDir, backend: client.Local()}
 		},
-		sessions: tmuxSessions,
+		sessions:  tmuxSessions,
+		lifecycle: probeLifecycle(runtime.GOOS, service.SystemTargetEnv(), withEnv(service.DefaultDeps()), nil),
+	}
+}
+
+// lifecycleProbeTimeout bounds the questions to the service manager.
+const lifecycleProbeTimeout = 3 * time.Second
+
+// probeLifecycle returns the lifecycle look of status: the service of the
+// user this process runs as, query only. queryWindows nil means the real
+// query-only look at the service control manager.
+func probeLifecycle(goos string, env service.TargetEnv, d service.Deps, queryWindows func() (service.WindowsServiceState, error)) func(context.Context) (service.Lifecycle, error) {
+	return func(ctx context.Context) (service.Lifecycle, error) {
+		ctx, cancel := context.WithTimeout(ctx, lifecycleProbeTimeout)
+		defer cancel()
+		req := service.LifecycleRequest{GOOS: goos, EUID: env.EUID, QueryWindows: queryWindows}
+		if goos != "windows" {
+			// The account this process runs as (also under sudo): status is
+			// about this user's profile.
+			cur, err := env.Current()
+			if err != nil {
+				return service.Lifecycle{Manager: service.ManagerNone}, err
+			}
+			t, err := service.ResolveTarget(env, cur.Username)
+			if err != nil {
+				return service.Lifecycle{Manager: service.ManagerNone}, err
+			}
+			req.User, req.Home, req.UID = t.User, t.Home, t.UID
+		}
+		return d.ProbeLifecycle(ctx, req)
 	}
 }
 
@@ -185,6 +218,7 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		NewSessions: &core.NewSessions,
 		StateDir:    core.StateDir,
 		CLIVersion:  deps.version(),
+		Lifecycle:   deps.lifecycle,
 	}
 	if sd, err := res.Resolve(config.KeyStateDir); err == nil {
 		in.DefaultStateDir = sd.Source == config.SourceDefault
@@ -204,6 +238,7 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		st, err := store.OpenReadOnlyContext(cmd.Context(), core.StateDir)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("cannot open the Worker state in %s: %v", core.StateDir, err))
+			in.StateUnreadable = true
 		} else {
 			defer func() { _ = st.Close() }()
 			enr = agent.NewEnrollments(st, core.StateDir)

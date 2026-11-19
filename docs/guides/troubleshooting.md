@@ -64,15 +64,24 @@ minion worker status --json
 
 prints the Worker's state for scripts and bug reports: `hub_url`, `paired` (enrolled with a Hub), `worker_id`, `approval` (`approved`, `pending` or `unknown`) and `connection` with `state`, `reason`, `last_error` and `last_error_at`. The connection, the approval and the pairing code are live data: they are known only while the Worker runs, otherwise they say `unknown`. Since 0.11.0 it also has `hub_fingerprint_words`, `worker_fingerprint_words`, `hub_check`, `hub_check_at`, `hub_check_anchor`, `hub_check_text`, `alarm` and `tls` (`state`, `line`).
 
-Without `--json` the rows about the Hub are:
+For the tray it also reports:
+
+- `hub_key`: `state` (`none` not paired, `ok` checked, `unverified` not checked yet, `mismatch` when the Worker refuses the key the Hub presented, `unknown` when the state cannot be read), `words` and `line`. `line` is the "Hub key: ..." line the Worker commands print first, byte for byte. The state is the Worker's own check, so a stored mismatch shows while the Worker is stopped.
+- `hub_web_url`: the Hub's address for a browser (`ws`/`wss` become `http`/`https`, the base path stays, a user name, password, query and fragment are dropped). `minion worker open-hub` opens it, `minion worker open-hub --print` prints it.
+- `lifecycle`: the Worker service of this user, `manager` (`systemd`, `launchd`, `windows` or `none`), `scope` (`user` or `system`), `unit`, `installed`, `running`, `can_start` (installed, stopped and no Worker runs on this state directory), `can_stop`, `start_hint` (the command with the rights, for example `sudo systemctl start minion-worker@<user>.service`) and `service_binary_trusted` (`null`: not checked in this release). The systemd template that the packages install for every machine is not an installed Worker; the Windows service is only queried. The block never names the binary of a service.
+- `other_account_worker`: a Worker service runs, but no Worker answers that this user may trust (on Windows: the service belongs to the account that installed it).
+
+Without `--json` the rows about the Hub and the service are:
 
 | Row | Shows |
 | --- | --- |
+| Hub key | the "Hub key: ..." line of the Worker commands without its label: the six words to compare with the Hub's top bar, with `MISMATCH` when the Worker refuses the key the Hub presented; `none` or `unknown` otherwise |
 | Hub fingerprint, Hub fingerprint (full) | the pinned Hub key as six words and as 52 characters |
 | Hub check | `not verified`, `matched the fingerprint you gave`, `from the invitation key` or `DOES NOT MATCH the fingerprint you gave - not connecting`; after a master-key rotation it adds `; the Hub key was reached by verified rotation from <words>` |
 | Hub identity | `CHANGED - not connecting`, only while that alarm is on |
 | TLS | the [TLS path](reverse-proxy.md#what-a-worker-reports-behind-a-proxy) and the certificate the running Worker saw |
 | Worker fingerprint, Worker fingerprint (full) | this Worker's key, to compare when you approve it |
+| Service | the Worker service of this user (manager, scope, unit, running or stopped, the command that starts it when you need more rights) |
 
 ## Hub fingerprint messages
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	wsvc "github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
@@ -266,6 +268,12 @@ type StatusInputs struct {
 	CLIVersion      string
 	// Now is the clock of a timed pause; nil means time.Now.
 	Now func() time.Time
+	// StateUnreadable is true when the state database exists but cannot be
+	// opened (Enrollment is then nil): hub_key says unknown, not "not paired".
+	StateUnreadable bool
+	// Lifecycle looks at the Worker service of this user (tray W10b); nil
+	// leaves the lifecycle block null.
+	Lifecycle func(ctx context.Context) (wsvc.Lifecycle, error)
 }
 
 // StatusConnection is the connection part of the report.
@@ -337,6 +345,34 @@ type StatusLive struct {
 type StatusLiveElsewhere struct {
 	StateDir string `json:"state_dir"`
 	Instance string `json:"instance,omitempty"`
+}
+
+// StatusLifecycle is the Worker service of this user as the service manager
+// reports it (tray W10b). It never names the binary the service runs.
+type StatusLifecycle struct {
+	// Manager is systemd, launchd, windows or none (nothing installed).
+	Manager string `json:"manager"`
+	// Scope is user or system; empty for none.
+	Scope string `json:"scope"`
+	// Unit is the unit, agent label or service name; empty for none.
+	Unit string `json:"unit"`
+	// Installed is true when "minion worker up" installed it; Running when it
+	// runs (or is starting).
+	Installed bool `json:"installed"`
+	Running   bool `json:"running"`
+	// CanStart is true when "minion worker start" has something to start: the
+	// service is installed and stopped, and no Worker runs on this profile.
+	CanStart bool `json:"can_start"`
+	// CanStop is true when a Worker of this profile runs (it answers), or the
+	// service of this user runs.
+	CanStop bool `json:"can_stop"`
+	// StartHint is the command that starts the service when this user lacks
+	// the rights ("sudo systemctl start ..."); empty otherwise.
+	StartHint string `json:"start_hint"`
+	// ServiceBinaryTrusted is whether the registered Windows service binary
+	// passed the protected-path check; null when it was not checked (the
+	// check is not part of this release, and other platforms have none).
+	ServiceBinaryTrusted *bool `json:"service_binary_trusted"`
 }
 
 // StatusTLS is the TLS path of a connection: the state (TLSPath*) and the
@@ -458,6 +494,17 @@ type StatusReport struct {
 	// would end (ConPTY; 0 for tmux and psmux, whose sessions outlive it);
 	// null when they cannot be counted or no Worker runs.
 	SessionsLostOnStop *int `json:"sessions_lost_on_stop"`
+	// HubKey is the pinned Hub key: state (none, ok, unverified, mismatch,
+	// unknown), words and the line the Worker commands print first (tray
+	// W10b).
+	HubKey HubKey `json:"hub_key"`
+	// HubWebURL is the browser URL of the Hub (no user info), empty in Solo.
+	HubWebURL string `json:"hub_web_url"`
+	// Lifecycle is the Worker service of this user; null when not looked at.
+	Lifecycle *StatusLifecycle `json:"lifecycle"`
+	// OtherAccountWorker is true when a Worker service runs but no trusted
+	// endpoint answers for this user: it belongs to another account.
+	OtherAccountWorker bool `json:"other_account_worker"`
 	// Problems lists what could not be read, in plain English.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -470,6 +517,7 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 		Name:       in.Name,
 		Mode:       ModeSolo,
 		HubURL:     in.HubURL,
+		HubWebURL:  HubWebURL(in.HubURL),
 		TmuxSocket: in.TmuxSocket,
 		Share:      StatusShare{Mode: string(store.ShareLater), Sessions: []string{}},
 
@@ -496,8 +544,12 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 		}
 		r.EnrollmentEpoch = n
 	}
+	var enr Enrollment
+	var enrOK bool
+	var enrErr error
 	if in.Enrollment != nil {
-		enr, ok, err := in.Enrollment.Load(ctx)
+		enr, enrOK, enrErr = in.Enrollment.Load(ctx)
+		ok, err := enrOK, enrErr
 		switch {
 		case err != nil:
 			problem("cannot read the enrollment: %v", err)
@@ -555,7 +607,50 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 	pauseOf(in, &r, live, problem)
 	newSessionsOf(in, &r, live)
 	r.Pairing.State = r.PairingState
+	switch {
+	case in.Enrollment != nil:
+		r.HubKey = HubKeyOf(enr, enrOK, enrErr, r.Alarm)
+	case in.StateUnreadable:
+		r.HubKey = HubKeyStateUnreadable()
+	default:
+		r.HubKey = HubKeyOf(Enrollment{}, false, nil, r.Alarm)
+	}
+	lifecycleOf(ctx, in, &r, problem)
 	return r
+}
+
+// lifecycleOf fills the lifecycle block and other_account_worker. A Worker
+// service that runs while no trusted endpoint answers for this user is
+// another account's: on Windows the service answers on the pipe of the user
+// that installed it, so no answer (or a refused one) means another account;
+// on Linux and macOS the unit and the agent are per user, so only an
+// untrusted control socket does.
+func lifecycleOf(ctx context.Context, in StatusInputs, r *StatusReport, problem func(string, ...any)) {
+	if in.Lifecycle == nil {
+		return
+	}
+	l, err := in.Lifecycle(ctx)
+	if err != nil {
+		problem("cannot ask the service manager about the Worker service: %v", err)
+	}
+	denied := slices.Contains(r.ProblemCodes, ProblemControlSocketDenied)
+	if l.Running && !r.Live.Running && r.LiveElsewhere == nil &&
+		(denied || l.Manager == wsvc.ManagerWindows) {
+		r.OtherAccountWorker = true
+	}
+	r.Lifecycle = &StatusLifecycle{
+		Manager:   string(l.Manager),
+		Scope:     string(l.Scope),
+		Unit:      l.Unit,
+		Installed: l.Installed,
+		Running:   l.Running,
+		CanStart:  l.Installed && !l.Running && !r.Live.Running,
+		CanStop:   r.Live.Running || (l.Running && !r.OtherAccountWorker),
+		StartHint: l.StartHint,
+	}
+	if r.Lifecycle.Manager == "" {
+		r.Lifecycle.Manager = string(wsvc.ManagerNone)
+	}
 }
 
 // newSessionsOf fills the new-session block from the resolved setting and
@@ -723,6 +818,7 @@ func (r StatusReport) WriteText(w io.Writer) error {
 		{"Name", r.Name},
 		{"Mode", r.modeText()},
 		{"Hub URL", orDash(r.HubURL, "none (Solo)")},
+		{"Hub key", strings.TrimPrefix(r.HubKey.Line, "Hub key: ")},
 		{"Connection", r.connectionText()},
 		{"Last error", r.lastErrorText()},
 		{"Hub fingerprint", orDash(r.HubFingerprintWords, "none (not paired)")},
@@ -741,6 +837,9 @@ func (r StatusReport) WriteText(w io.Writer) error {
 		{"Session host", r.sessionHostText()},
 		{"tmux socket", orDash(r.TmuxSocket, "none")},
 		{"Sessions", r.sessionsText()},
+	}
+	if r.Lifecycle != nil {
+		rows = append(rows, [2]string{"Service", r.lifecycleText()})
 	}
 	if r.Alarm == AlarmHubIdentityChanged {
 		for i, row := range rows {
@@ -811,6 +910,26 @@ func (r StatusReport) pauseText() string {
 		t += "; the running Worker does not enforce it yet"
 	} else if r.PauseInForce == nil {
 		t += "; the running Worker does not support pause"
+	}
+	return t
+}
+
+func (r StatusReport) lifecycleText() string {
+	l := r.Lifecycle
+	if !l.Installed {
+		return "none installed (minion worker up installs one)"
+	}
+	t := l.Manager + " " + l.Scope + " " + l.Unit
+	if l.Running {
+		t += ", running"
+	} else {
+		t += ", stopped"
+	}
+	if r.OtherAccountWorker {
+		t += "; it belongs to another account (no Worker answers for this user)"
+	}
+	if l.StartHint != "" && !l.Running {
+		t += "; start it with: " + l.StartHint
 	}
 	return t
 }

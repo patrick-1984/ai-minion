@@ -2,6 +2,7 @@ Version:                    dev
 Name:                       laptop
 Mode:                       Solo
 Hub URL:                    none (Solo)
+Hub key:                    none (this Worker is not paired)
 Connection:                 none (no Hub URL is configured)
 Last error:                 none
 Hub fingerprint:            none (not paired)

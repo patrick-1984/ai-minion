@@ -57,5 +57,13 @@
   "live_elsewhere": null,
   "cli_version": "",
   "capabilities": [],
-  "sessions_lost_on_stop": null
+  "sessions_lost_on_stop": null,
+  "hub_key": {
+    "state": "unverified",
+    "words": "crucial-position-tower-kingdom-panther-layer",
+    "line": "Hub key: crucial-position-tower-kingdom-panther-layer (compare with the Hub's top bar)"
+  },
+  "hub_web_url": "https://hub.example:8443",
+  "lifecycle": null,
+  "other_account_worker": false
 }
