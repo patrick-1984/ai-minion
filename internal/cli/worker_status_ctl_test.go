@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
@@ -59,6 +61,24 @@ func TestStatusUnknownEnforcementWhenWorkerCannotAnswer(t *testing.T) {
 		} `json:"new_sessions"`
 	}
 	if err := json.Unmarshal([]byte(out), &m); err != nil || m.NS.InForce != nil {
+		t.Fatalf("status = %q, %v", out, err)
+	}
+}
+
+// A service registered for another profile is not offered as can_start.
+func TestStatusCanStartIsFalseForAnotherProfilesService(t *testing.T) {
+	sd := testStatusDeps(nil)
+	sd.lifecycle = func(context.Context) (service.Lifecycle, error) {
+		return service.Lifecycle{Manager: service.ManagerSystemd, Installed: true}, nil
+	}
+	sd.unitDir = func(context.Context) (string, bool) { return "/some/other/profile", true }
+	out, _, _ := runWorkerCmds(t, sd, workerConfigDeps{}, "worker", "status", "--json", "--state-dir", t.TempDir())
+	var m struct {
+		LC struct {
+			CanStart bool `json:"can_start"`
+		} `json:"lifecycle"`
+	}
+	if err := json.Unmarshal([]byte(out), &m); err != nil || m.LC.CanStart {
 		t.Fatalf("status = %q, %v", out, err)
 	}
 }

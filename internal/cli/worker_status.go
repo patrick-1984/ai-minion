@@ -43,6 +43,9 @@ type workerStatusDeps struct {
 	// lifecycle looks at the Worker service of this user (tray W10b); nil
 	// leaves the lifecycle block null.
 	lifecycle func(ctx context.Context) (service.Lifecycle, error)
+	// unitDir returns the state directory the installed service of this user
+	// runs; nil or !ok: not known (then can_start is not narrowed).
+	unitDir func(ctx context.Context) (string, bool)
 }
 
 func defaultWorkerStatusDeps() workerStatusDeps {
@@ -55,6 +58,7 @@ func defaultWorkerStatusDeps() workerStatusDeps {
 		},
 		sessions:  tmuxSessions,
 		lifecycle: probeLifecycle(runtime.GOOS, service.SystemTargetEnv(), withEnv(service.DefaultDeps()), nil),
+		unitDir:   probeUnitDir(runtime.GOOS, service.SystemTargetEnv(), withEnv(service.DefaultDeps())),
 	}
 }
 
@@ -258,6 +262,12 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 	report := agent.BuildStatus(cmd.Context(), in)
 	report.Problems = append(problems, report.Problems...)
 	liveCap.adjust(&report)
+	if lc := report.Lifecycle; lc != nil && lc.CanStart && deps.unitDir != nil {
+		// A service registered for another profile cannot start this one.
+		if dir, ok := deps.unitDir(cmd.Context()); ok && !sameDir(dir, core.StateDir) {
+			lc.CanStart = false
+		}
+	}
 	if asJSON {
 		return emitResult(cmd.OutOrStdout(), cmd.ErrOrStderr(), true, report, nil)
 	}
@@ -327,5 +337,26 @@ func (c *capturingLive) adjust(r *agent.StatusReport) {
 	case c.got == nil && c.err != nil && !errors.Is(c.err, agent.ErrNoLiveWorker) ||
 		c.got == nil && r.Lifecycle != nil && r.Lifecycle.Running:
 		r.NewSessions.InForce = nil
+	}
+}
+
+// probeUnitDir returns the state directory of the installed service of the
+// user this process runs as (see [unitStateDir]).
+func probeUnitDir(goos string, env service.TargetEnv, d service.Deps) func(context.Context) (string, bool) {
+	return func(ctx context.Context) (string, bool) {
+		if goos == "windows" || ctx == nil {
+			return "", false
+		}
+		ctx, cancel := context.WithTimeout(ctx, lifecycleProbeTimeout)
+		defer cancel()
+		cur, err := env.Current()
+		if err != nil {
+			return "", false
+		}
+		t, err := service.ResolveTarget(env, cur.Username)
+		if err != nil {
+			return "", false
+		}
+		return unitStateDir(ctx, d, goos, t.User, t.Home)
 	}
 }

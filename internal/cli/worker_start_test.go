@@ -93,3 +93,34 @@ func TestWorkerStopIsAnAliasOfDown(t *testing.T) {
 		t.Fatalf("worker start = %v", err)
 	}
 }
+
+// Gate-1 C: "worker start --state-dir D" never starts a service registered
+// for another profile; the plain argv (elevated E1) is unchanged.
+func TestWorkerStartBindsTheProfile(t *testing.T) {
+	mine, other := t.TempDir(), t.TempDir()
+	started := false
+	r := startRunner{answer: func(line string) (string, error) {
+		switch {
+		case line == "systemctl is-enabled minion-worker@ann.service":
+			return "", errors.New("exit 1")
+		case line == "systemctl --user is-enabled minion-worker.service":
+			return "enabled", nil
+		case line == "systemctl --user show -p Environment --value minion-worker.service":
+			return "MINION_STATE_DIR=" + other + " X=y\n", nil
+		case line == "systemctl --user start minion-worker.service":
+			started = true
+			return "", nil
+		}
+		return "inactive", errors.New("exit 3")
+	}}
+	root := &cobra.Command{Use: "minion", SilenceUsage: true, SilenceErrors: true}
+	d := workerStartDeps{goos: "linux", targetEnv: startTarget(t.TempDir()), service: service.Deps{Runner: r, SystemUnitDir: t.TempDir()}}
+	workerCommand(root).AddCommand(newWorkerStartCmd(d))
+	var out, errOut bytes.Buffer
+	code := execute(context.Background(), root, []string{"worker", "start", "--json", "--state-dir", mine}, &out, &errOut)
+	var m map[string]any
+	_ = json.Unmarshal(out.Bytes(), &m)
+	if code != ExitStateChanged || started || m["code"] != "state_changed" {
+		t.Fatalf("(%v %d started=%v %s)", m, code, started, errOut.String())
+	}
+}

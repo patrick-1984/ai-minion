@@ -245,7 +245,7 @@ var All = []Action{
 	state("pause.indef", "Pause ▸ until I resume", []string{"worker", "pause", "--state-dir", "{state_dir}", "--json"}, "paused == true, paused_until empty"),
 	state("resume", "Resume", []string{"worker", "resume", "--state-dir", "{state_dir}", "--json"}, "paused == false"),
 
-	with(state("start", "Start the Worker", []string{"worker", "start", "--json"}, "live.running == true, live.state_dir == profile.state_dir"),
+	with(state("start", "Start the Worker", []string{"worker", "start", "--state-dir", "{state_dir}", "--json"}, "live.running == true, live.state_dir == profile.state_dir"),
 		func(a *Action) { a.Elevate = ElevateE1 }),
 	with(state("stop", "Stop the Worker…", []string{"worker", "stop", "--state-dir", "{state_dir}", "--json"}, "live.running == false"),
 		func(a *Action) { a.Confirm, a.Elevate = ConfirmSessionLoss, ElevateE2 }),
