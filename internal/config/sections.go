@@ -83,6 +83,7 @@ var sectionOf = map[string]struct {
 	"worker_traffic_log":         {SectionLogExport, 4},
 	"worker_traffic_log_to":      {SectionLogExport, 4},
 	"worker_traffic_log_workers": {SectionLogExport, 4},
+	"otel_metrics":               {SectionLogExport, 2},
 
 	"data_dir":  {SectionStorage, 1},
 	"state_dir": {SectionStorage, 1},

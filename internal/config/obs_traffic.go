@@ -74,3 +74,20 @@ func ResolveTraffic(res *Resolver, sinks Sinks) (TrafficConfig, error) {
 	}
 	return c, nil
 }
+
+// ResolveMetricsLevel resolves otel_metrics (Hub): off, basic or detailed. A
+// level other than off needs the OpenTelemetry sink on, whose endpoint,
+// headers and trust the metrics use.
+func ResolveMetricsLevel(res *Resolver, sinks Sinks) (string, error) {
+	r, err := res.Resolve(KeyOTelMetrics)
+	if err != nil {
+		return "", err
+	}
+	if r.Value != "off" && !sinks.OTLP.Enabled {
+		return "", fmt.Errorf("setting %q needs %q on: the metrics use its endpoint, headers and trust", KeyOTelMetrics, KeyOTel)
+	}
+	if r.Value != "off" && sinks.OTLP.MetricsURL == "" {
+		return "", fmt.Errorf("setting %q: the OpenTelemetry endpoint has no metrics URL", KeyOTelMetrics)
+	}
+	return r.Value, nil
+}

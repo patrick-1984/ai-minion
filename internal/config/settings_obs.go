@@ -29,6 +29,8 @@ const (
 	KeyTrafficLog        = "worker_traffic_log"
 	KeyTrafficLogTo      = "worker_traffic_log_to"
 	KeyTrafficLogWorkers = "worker_traffic_log_workers"
+	// KeyOTelMetrics is the level of the Hub's Worker traffic metrics.
+	KeyOTelMetrics = "otel_metrics"
 )
 
 // Values of worker_traffic_log. The payload level (frame bodies) comes with
@@ -66,7 +68,7 @@ var ObsSettingKeys = []string{
 	KeySyslogCAFile, KeySyslogClientCertFile, KeySyslogClientKeyFile,
 	KeyOTel, KeyOTelEndpoint, KeyOTelLevel, KeyOTelHeaders, KeyOTelHeadersPath,
 	KeyOTelCAFile, KeyOTelClientCertFile, KeyOTelClientKeyFile,
-	KeyTrafficLog, KeyTrafficLogTo, KeyTrafficLogWorkers,
+	KeyTrafficLog, KeyTrafficLogTo, KeyTrafficLogWorkers, KeyOTelMetrics,
 }
 
 var sinkLevels = []string{"debug", "info", "warn", "error"}
@@ -74,6 +76,10 @@ var sinkLevels = []string{"debug", "info", "warn", "error"}
 func init() { declareObs(Default) }
 
 func declareObs(r *Registry) {
+	r.Declare(Setting{Key: KeyOTelMetrics, Scope: ScopeHub, Default: "off", Choices: []string{"off", "basic", "detailed"},
+		Help: "Worker traffic metrics to the OpenTelemetry endpoint (needs otel on): off; basic (Hub-wide counters: " +
+			"connections, Workers online, WebSocket and frame bytes, frames, ops, calls, stream admission, turns); " +
+			"detailed (basic per Worker, for the first 500 Workers, plus connection and op durations)"})
 	r.Declare(Setting{Key: KeyTrafficLog, Scope: ScopeAny, Default: TrafficOff, Choices: []string{TrafficOff, TrafficMetadata},
 		Help: "Log every frame between the Hub and its Workers (Hub: both directions per Worker; Worker: what it sent and " +
 			"received): off or metadata (stream, frame type, op, request id, size, duration and outcome; never a body)"})

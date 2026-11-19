@@ -31,3 +31,16 @@ func TestResolveTraffic(t *testing.T) {
 		t.Fatalf("worker = %+v, %v", c, err)
 	}
 }
+
+func TestResolveMetricsLevel(t *testing.T) {
+	on := Sinks{OTLP: OTLPConfig{Enabled: true, MetricsURL: "http://c:4318/v1/metrics"}}
+	if l, err := ResolveMetricsLevel(hubRes(nil, map[string]string{"otel_metrics": "detailed"}), on); err != nil || l != "detailed" {
+		t.Fatalf("%q %v", l, err)
+	}
+	if _, err := ResolveMetricsLevel(hubRes(nil, map[string]string{"otel_metrics": "basic"}), Sinks{}); err == nil || !strings.Contains(err.Error(), `"otel"`) {
+		t.Fatalf("err = %v", err)
+	}
+	if l, err := ResolveMetricsLevel(hubRes(nil, nil), Sinks{}); err != nil || l != "off" {
+		t.Fatalf("default %q %v", l, err)
+	}
+}
