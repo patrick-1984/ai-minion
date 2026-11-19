@@ -93,3 +93,15 @@ func TestSecretFileErrorsDoNotQuoteThePath(t *testing.T) {
 		t.Fatalf("key: %v", err)
 	}
 }
+
+// Empty and oversized secret files are reported without their path.
+func TestEmptyAndOversizedSecretFilesHideThePath(t *testing.T) {
+	for name, content := range map[string]string{"empty": "", "big": strings.Repeat("x", 70<<10)} {
+		inline := "/tmp/Authorization: Bearer s3cr3t-" + name
+		res := hubRes(map[string]string{"MINION_OTEL_HEADERS_FILE": inline}, nil)
+		res.ReadFile = func(string) ([]byte, error) { return []byte(content), nil }
+		if _, err := res.Resolve(KeyOTelHeaders); err == nil || strings.Contains(err.Error(), "s3cr3t") {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}

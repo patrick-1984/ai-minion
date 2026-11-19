@@ -28,15 +28,17 @@ func readSecretFile(read func(string) ([]byte, error), path string) (string, err
 		// os errors carry the path and the reason, not the contents.
 		return "", fmt.Errorf("cannot read secret file: %w", err)
 	}
+	// The size and content errors do not quote the path: a *_FILE value can
+	// hold the secret itself by mistake.
 	if len(data) > maxSecretFileSize {
-		return "", fmt.Errorf("secret file %q is larger than %d bytes", path, maxSecretFileSize)
+		return "", fmt.Errorf("the secret file is larger than %d bytes", maxSecretFileSize)
 	}
 	v := string(data)
 	if t, ok := strings.CutSuffix(v, "\n"); ok {
 		v = strings.TrimSuffix(t, "\r")
 	}
 	if v == "" {
-		return "", fmt.Errorf("secret file %q is empty", path)
+		return "", errors.New("the secret file is empty")
 	}
 	return v, nil
 }
