@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.14.0
+
+Released 2026-11-19.
+
+**Windows: upgrade with care.** Releases up to 0.13.1 installed the Windows Worker as a LocalSystem service that ran a `minion.exe` your programs can change. From this release the Worker runs as you, started at logon; remove the old service first as described in [the Windows guide](docs/install/worker-windows-preview.md#move-from-the-localsystem-service).
 
 ### Added
 
