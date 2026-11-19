@@ -161,6 +161,8 @@ type CallFunc func(ctx context.Context, c *CallContext, emit func(any) error) (a
 
 // CallServerConfig configures [NewCallServer].
 type CallServerConfig struct {
+	// Telemetry returns the traffic telemetry (call counts); nil: none.
+	Telemetry func() Telemetry
 	// Keys authenticates API keys. Nil refuses every key.
 	Keys KeyAuthenticator
 	// Resolver resolves "worker-name:session-name" targets. Nil accepts only
@@ -192,10 +194,11 @@ type CallServerConfig struct {
 
 // CallServer serves the call streams of the Workers.
 type CallServer struct {
-	cfg      CallServerConfig
-	log      *slog.Logger
-	mu       sync.Mutex
-	handlers map[string]CallFunc
+	cfg       CallServerConfig
+	log       *slog.Logger
+	telemetry func() Telemetry
+	mu        sync.Mutex
+	handlers  map[string]CallFunc
 	// grantOnly are the ops served only to a caller with a grant.
 	grantOnly map[string]bool
 	active    map[string]int
@@ -221,7 +224,7 @@ func NewCallServer(cfg CallServerConfig) *CallServer {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &CallServer{cfg: cfg, log: log, handlers: map[string]CallFunc{}, grantOnly: map[string]bool{}, active: map[string]int{}}
+	return &CallServer{cfg: cfg, log: log, telemetry: cfg.Telemetry, handlers: map[string]CallFunc{}, grantOnly: map[string]bool{}, active: map[string]int{}}
 }
 
 // Handle makes op available on call streams. The op must be a Worker-scope
@@ -386,6 +389,11 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	// credential spoke for it and how it ended.
 	start, credential, outcome := time.Now(), "", "ok"
 	defer func() {
+		if s.telemetry != nil {
+			if t := s.telemetry(); t != nil {
+				t.CallServed(workerID, req.Op, outcome)
+			}
+		}
 		s.log.Debug("workers: call stream", "op", req.Op, "worker_id", workerID, "source_session", req.SourceSession,
 			"credential", credential, "outcome", outcome, "duration", time.Since(start).String())
 	}()
@@ -502,6 +510,8 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 			fail(tooLargeAsError(err)) // nothing was written: answer with an error frame
 			return
 		}
+		// The caller never got its answer: not a success.
+		outcome = "reply_failed"
 		st.Reset()
 		return
 	}

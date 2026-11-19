@@ -157,6 +157,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		LogSinks:      sinks.Status,
 		StartLogSinks: startSinks,
 		StopLogSinks:  sinks.Shutdown,
+		TrafficTap:    sinks.Tap(),
 		Out:           cmd.OutOrStdout(),
 
 		InviteArgvWarned: deps.inviteArgvWarned,

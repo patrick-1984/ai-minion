@@ -21,6 +21,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/hubid"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -226,13 +227,14 @@ type Config struct {
 
 // Handler serves GET /api/v1/worker/connect.
 type Handler struct {
-	cfg     Config
-	log     *slog.Logger
-	mu      sync.RWMutex
-	modes   map[transport.Mode]ModeHandler
-	pairing PairingGate
-	done    chan struct{}
-	once    sync.Once
+	cfg       Config
+	telemetry telemetryBox
+	log       *slog.Logger
+	mu        sync.RWMutex
+	modes     map[transport.Mode]ModeHandler
+	pairing   PairingGate
+	done      chan struct{}
+	once      sync.Once
 
 	// afterRecheck, when set by a test before the first connect, is called
 	// when the post-registration admission recheck of a connection has
@@ -576,6 +578,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return // Accept has answered the request
 	}
+	// Layer L1 of the traffic metrics: the payload bytes of this WebSocket,
+	// from the upgrade to the close, the handshake included.
+	var ct ConnTelemetry
+	handshakeOK := false
+	if t := h.telemetry.get(); t != nil {
+		conn, ct = t.Conn(conn)
+		defer func() { ct.Closed(handshakeOK) }()
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	if !h.track(conn, cancel) {
@@ -614,7 +624,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("worker connect: handshake failed", "client_ip", ip.String(), "code", string(transport.ErrorCode(err)))
 		return
 	}
-	c := &Conn{h: h, res: res, ip: ip, pairing: pairingTicket, snap: snap, hubTLS: hubTLS}
+	handshakeOK = true
+	c := &Conn{h: h, res: res, ip: ip, pairing: pairingTicket, snap: snap, hubTLS: hubTLS, tel: ct}
 	defer c.finish()
 
 	if res.Worker.Mode == transport.ModeConnect {
@@ -735,6 +746,8 @@ type Conn struct {
 	pairing *PairingTicket
 	// hubTLS is what the welcome states about the path of this request.
 	hubTLS *HubTLS
+	// tel follows the connection for the traffic metrics; nil: none.
+	tel ConnTelemetry
 }
 
 // Worker returns the validated Worker hello.
@@ -819,6 +832,11 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	if h.cfg.OwnerName != nil {
 		owner = h.cfg.OwnerName(ctx, w.OwnerID)
 	}
+	// The key and the Worker row are checked: the bytes of the welcome
+	// belong to this Worker's series, not to the unauthenticated ones.
+	if c.tel != nil {
+		c.tel.Authenticated(w.ID)
+	}
 	if err := c.write(Welcome{
 		Type:     proto.TypeWelcome,
 		WorkerID: w.ID,
@@ -839,6 +857,9 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	adm := h.streamAdmission().attach(w.ID)
 	sopts := h.cfg.Session
 	sopts.Budget = adm
+	if t := h.telemetry.get(); t != nil {
+		sopts.FrameTap = t.FrameTap(w.ID, w.Name)
+	}
 	sess, err := transport.NewSession(c.res.Channel, transport.RoleHub, sopts)
 	if err != nil {
 		adm.detach()
@@ -851,6 +872,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	// the registry can take the kind; modules (the event ingest) join the host
 	// from their Registry.OnAdd hook.
 	host := newHostedSession(sess, adm, h.log)
+	host.tel = h.telemetry.get()
 	host.Handle(transport.KindCall, newCallStreams(h, w, sess))
 	if h.beforeRegister != nil {
 		h.beforeRegister()
@@ -906,7 +928,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		_ = sess.Close()
 	}
 	<-streams
-	h.log.Info("worker offline", "worker_id", w.ID, "reason", causeText(sess.Err()))
+	logx.BestEffort(h.log, slog.LevelInfo, "worker offline", "worker_id", w.ID, "reason", causeText(sess.Err()))
 	return nil
 }
 
@@ -1178,7 +1200,7 @@ func (s *Service) Close() {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownWait)
 	defer cancel()
 	if err := s.handler.Wait(ctx); err != nil {
-		s.handler.log.Warn("workers: connection handlers did not stop in time", "error", err.Error())
+		logx.BestEffort(s.handler.log, slog.LevelWarn, "workers: connection handlers did not stop in time", "error", err.Error())
 	}
 }
 

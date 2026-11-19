@@ -94,6 +94,16 @@ type OTLPConfig struct {
 	Digest string
 }
 
+// MetricsTLSConfig is TLSConfig for the metrics URL, which may name another
+// host (OTEL_EXPORTER_OTLP_METRICS_ENDPOINT).
+func (c OTLPConfig) MetricsTLSConfig() *tls.Config {
+	host := ""
+	if u, err := url.Parse(c.MetricsURL); err == nil {
+		host = u.Hostname()
+	}
+	return clientTLS(c.RootCAs, c.ClientCert, host)
+}
+
 // TLSConfig returns the client TLS configuration of the exporter.
 func (c OTLPConfig) TLSConfig() *tls.Config {
 	host := ""
@@ -238,6 +248,8 @@ func resolveOTLP(res *Resolver, files SinkFiles) (OTLPConfig, []string, error) {
 	}
 	if u, _ := url.Parse(c.LogsURL); u != nil && u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
 		warn = append(warn, "the OpenTelemetry endpoint uses http:// to a host that is not loopback: records and headers travel unencrypted")
+	} else if u, _ := url.Parse(c.MetricsURL); u != nil && u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		warn = append(warn, "the OpenTelemetry metrics endpoint uses http:// to a host that is not loopback: metrics and headers travel unencrypted")
 	}
 	lvl, err := res.Resolve(KeyOTelLevel)
 	if err != nil {
@@ -248,7 +260,9 @@ func resolveOTLP(res *Resolver, files SinkFiles) (OTLPConfig, []string, error) {
 	if c.Headers, err = resolveHeaders(res, files, d); err != nil {
 		return c, nil, err
 	}
-	isTLS := strings.HasPrefix(c.LogsURL, "https://")
+	// Trust is needed when either signal goes to an https:// endpoint; each
+	// signal's client applies it only to its own https:// URL.
+	isTLS := strings.HasPrefix(c.LogsURL, "https://") || strings.HasPrefix(c.MetricsURL, "https://")
 	c.RootCAs, c.ClientCert, err = resolveTLSFiles(res, files, d, isTLS, "an https:// endpoint",
 		KeyOTelCAFile, KeyOTelClientCertFile, KeyOTelClientKeyFile)
 	if err != nil {

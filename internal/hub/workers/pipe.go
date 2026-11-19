@@ -193,10 +193,13 @@ var (
 // PipeConfig configures [NewPipe]. Store, Authz, Router and Trust are
 // required.
 type PipeConfig struct {
-	Store  PipeStore
-	Authz  PipeDecider
-	Router PipeRouter
-	Trust  PipeTrust
+	// Telemetry returns the traffic telemetry (turn ingest counts); nil:
+	// none.
+	Telemetry func() Telemetry
+	Store     PipeStore
+	Authz     PipeDecider
+	Router    PipeRouter
+	Trust     PipeTrust
 	// Catalog declares the ops; the default is ops.Default.
 	Catalog *ops.Registry
 	// BudgetPerDay is the task budget (setting pipe_budget_per_day); zero
@@ -246,14 +249,15 @@ type PipeConfig struct {
 
 // Pipe is the Hub's pipe service. It is safe for concurrent use.
 type Pipe struct {
-	broker *pipe.Broker
-	store  PipeStore
-	az     PipeDecider
-	rt     PipeRouter
-	trust  PipeTrust
-	now    func() time.Time
-	poll   time.Duration
-	log    *slog.Logger
+	telemetry func() Telemetry
+	broker    *pipe.Broker
+	store     PipeStore
+	az        PipeDecider
+	rt        PipeRouter
+	trust     PipeTrust
+	now       func() time.Time
+	poll      time.Duration
+	log       *slog.Logger
 
 	sendActions ops.ActionSet
 	readActions ops.ActionSet
@@ -304,7 +308,8 @@ func NewPipe(c PipeConfig) (*Pipe, error) {
 		return nil, err
 	}
 	p := &Pipe{
-		broker: broker, store: c.Store, az: c.Authz, rt: c.Router, trust: c.Trust,
+		telemetry: c.Telemetry,
+		broker:    broker, store: c.Store, az: c.Authz, rt: c.Router, trust: c.Trust,
 		now: now, poll: c.Poll, log: c.Logger,
 		sendActions: send.Actions, readActions: read.Actions,
 		subs:   map[pipe.Peer]map[chan struct{}]struct{}{},
@@ -954,6 +959,24 @@ func (p *Pipe) IngestTurn(ctx context.Context, workerID string, f TurnFrame) (pi
 // ingestTurn is IngestTurn for a frame of size bytes on the wire, which is
 // charged to the frame budget of the Worker first.
 func (p *Pipe) ingestTurn(ctx context.Context, workerID string, f TurnFrame, size int) (pipe.Ack, error) {
+	ack, err := p.ingestTurnFrame(ctx, workerID, f, size)
+	if p.telemetry != nil {
+		if t := p.telemetry(); t != nil {
+			result := "rejected"
+			switch {
+			case err != nil:
+			case ack.Status == pipe.AckStored:
+				result = "accepted"
+			case ack.Status == pipe.AckBusy:
+				result = "busy"
+			}
+			t.TurnIngest(result)
+		}
+	}
+	return ack, err
+}
+
+func (p *Pipe) ingestTurnFrame(ctx context.Context, workerID string, f TurnFrame, size int) (pipe.Ack, error) {
 	// The ack echoes the turn_id; a frame can carry any string there.
 	id := f.TurnID
 	if len(id) > 64 {

@@ -150,16 +150,7 @@ func newLogs(ctx context.Context, cfg config.OTLPConfig, res *resource.Resource,
 	if strings.HasPrefix(cfg.LogsURL, "https://") {
 		tlsCfg = cfg.TLSConfig()
 	}
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.TLSClientConfig = tlsCfg
-	status := &statusRecorder{}
-	client := &http.Client{
-		Transport: responseFilter{rt: tr, status: status},
-		Timeout:   ExportTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client, status := exportClient(tlsCfg)
 	exp, err := otlploghttp.New(ctx,
 		otlploghttp.WithEndpointURL(cfg.LogsURL),
 		otlploghttp.WithHeaders(headers),
@@ -188,6 +179,23 @@ func newLogs(ctx context.Context, cfg config.OTLPConfig, res *resource.Resource,
 	lp := sdklog.NewLoggerProvider(opts...)
 	h := otelslog.NewHandler(ScopeName, otelslog.WithLoggerProvider(lp))
 	return &Logs{provider: lp, proc: proc, handler: logx.RemoteSafe(h), count: c, exp: ce}, nil
+}
+
+// exportClient is the HTTP client of an OTLP exporter: no redirects (a 307
+// or 308 would replay the batch and the headers to another origin), the
+// given TLS configuration, the export timeout, and the response filter that
+// keeps collector text out of every error.
+func exportClient(tlsCfg *tls.Config) (*http.Client, *statusRecorder) {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = tlsCfg
+	status := &statusRecorder{}
+	return &http.Client{
+		Transport: responseFilter{rt: tr, status: status},
+		Timeout:   ExportTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}, status
 }
 
 // statusRecorder keeps the HTTP status of the last response of an export.

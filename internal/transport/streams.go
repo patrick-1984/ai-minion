@@ -134,6 +134,8 @@ const resetGrace = 5 * time.Second
 type Stream struct {
 	ys   *yamux.Stream
 	kind Kind
+	// tap observes every frame of the stream; nil when nothing taps.
+	tap FrameTap
 
 	// drain runs at most once per stream: Reset and Release both start it and
 	// Release waits for it, so a stream never has two drain goroutines.
@@ -225,9 +227,19 @@ func (s *Stream) SetWriteDeadline(t time.Time) error { return s.ys.SetWriteDeadl
 // competes with the handler for yamux's one-slot read notification nor resets
 // the read deadline that wakes it.
 func (s *Stream) Reset() {
+	s.tapEnd()
 	s.markReset()
 	_ = s.ys.Close()
 	s.startDrain()
+}
+
+// tapEnd tells the tap that the exchange of the stream ends here, so that it
+// forgets what it kept for it (a reset or abandoned stream sends no last
+// frame).
+func (s *Stream) tapEnd() {
+	if s.tap != nil {
+		s.tap.TapFrame(TapFrame{Kind: s.kind, Stream: s.ys.StreamID(), End: true})
+	}
 }
 
 // markReset forbids new reads, and wakes the reader that waits, if any.
@@ -283,6 +295,7 @@ const resetWake = 5 * time.Millisecond
 // a peer that never completes the close cannot make the slot free early. It
 // may be called after Reset or Close, and more than once.
 func (s *Stream) Release() {
+	s.tapEnd()
 	s.markReset()
 	_ = s.ys.Close()
 	s.startDrain()
@@ -328,7 +341,18 @@ func drainStream(ys *yamux.Stream) {
 // proto.StreamFrameLimit) and a UTF-8 JSON object with a type field. A frame
 // that is too large or malformed is refused before anything is written.
 func (s *Stream) WriteFrame(v any) error {
-	return proto.WriteFrame(s.ys, proto.StreamFrameLimit, v)
+	if s.tap == nil {
+		return proto.WriteFrame(s.ys, proto.StreamFrameLimit, v)
+	}
+	buf, err := proto.EncodeFrame(proto.StreamFrameLimit, v)
+	if err != nil {
+		return err
+	}
+	if _, err := s.ys.Write(buf); err != nil {
+		return err
+	}
+	s.tap.TapFrame(TapFrame{Kind: s.kind, Stream: s.ys.StreamID(), Sent: true, Body: buf[4:], Size: len(buf)})
+	return nil
 }
 
 // ReadFrame reads one frame body. A frame announcing more than
@@ -343,9 +367,40 @@ func (s *Stream) ReadFrame() (json.RawMessage, error) {
 		if errors.As(err, &pe) {
 			s.Reset()
 		}
+		if s.tap != nil && errors.Is(err, io.EOF) {
+			s.tap.TapFrame(TapFrame{Kind: s.kind, Stream: s.ys.StreamID(), End: true})
+		}
 		return nil, err
 	}
+	if s.tap != nil {
+		s.tap.TapFrame(TapFrame{Kind: s.kind, Stream: s.ys.StreamID(), Body: body, Size: len(body) + 4})
+	}
 	return body, nil
+}
+
+// FrameTap observes the framed traffic of a session (the Worker traffic log
+// and metrics, internal/obs). TapFrame is called on the stream's goroutine
+// for every frame written or read, after the write or the read: it must not
+// block and must not keep Body, which is valid only during the call. Raw
+// streams and the handshake carry no frames and are never tapped.
+type FrameTap interface {
+	TapFrame(f TapFrame)
+}
+
+// TapFrame is one frame as a FrameTap sees it.
+type TapFrame struct {
+	Kind Kind
+	// Stream is the yamux stream id: frames of one exchange share it.
+	Stream uint32
+	// Sent is true for a frame this side wrote, false for one it read.
+	Sent bool
+	// Body is the JSON body (valid only during the call); Size is the frame
+	// on the wire: 4-byte length plus body.
+	Body []byte
+	Size int
+	// End marks the end of an exchange: the peer's clean close or a reset
+	// of the stream (no body).
+	End bool
 }
 
 // readKind reads and validates the two-byte prefix of an inbound stream.

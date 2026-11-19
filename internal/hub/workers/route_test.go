@@ -775,13 +775,20 @@ func TestDroppedStreamDuringAWriteIsUnknownAndNeverRetried(t *testing.T) {
 }
 
 func TestOversizedRequestIsRefusedAsAnErrorNotAnOutcome(t *testing.T) {
-	r := newRig(t, nil)
+	rec := &recTelemetry{}
+	r := newRig(t, func(c *RouterConfig) { c.Telemetry = func() Telemetry { return rec } })
 	st := newFakeStream()
 	st.writeErr = proto.NewError(proto.CodeFrameTooLarge, "too large")
 	r.script(st)
 	res, err := r.rt.Call(context.Background(), writeReq(t, ops.NewUUIDv7()))
 	if code(err) != proto.CodeFrameTooLarge || res != nil {
 		t.Fatalf("res = %#v, err = %v: nothing was written, so this is not an unknown outcome", res, err)
+	}
+	// Nothing was sent, so no op was routed to the Worker.
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.routed) != 0 {
+		t.Fatalf("routed %q", rec.routed)
 	}
 }
 

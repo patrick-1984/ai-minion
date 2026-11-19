@@ -18,6 +18,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/obs"
+	"github.com/patrick-1984/ai-minion/internal/obs/traffic"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -90,7 +91,7 @@ func newObsFixture(t *testing.T, env map[string]string, verbose *bool) *obsFixtu
 	}
 	m := obs.New(live.Fanout, obs.Process{Service: "minion-hub"})
 	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
-	svc := &ObsService{Manager: m, live: live, verbose: verbose}
+	svc := &ObsService{Manager: m, Traffic: traffic.New(traffic.SideHub, live.Fanout), live: live, verbose: verbose}
 	if err := wireLogging(context.Background(), svc, settings, config.SinkFiles{}); err != nil {
 		t.Fatal(err)
 	}

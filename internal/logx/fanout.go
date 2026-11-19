@@ -37,6 +37,8 @@ type sinkEntry struct {
 // sink wants it.
 type Fanout struct {
 	slots *[NumSlots]atomic.Pointer[sinkEntry]
+	// gen counts the slot changes (shared by derived Fanouts).
+	gen *atomic.Uint64
 	// chain is the WithAttrs and WithGroup history of a derived handler,
 	// applied to a slot's handler on first use and cached per slot entry.
 	chain []chainOp
@@ -55,13 +57,14 @@ type derivedEntry struct {
 
 // NewFanout returns a Fanout with every slot empty.
 func NewFanout() *Fanout {
-	return &Fanout{slots: new([NumSlots]atomic.Pointer[sinkEntry]), cache: new([NumSlots]atomic.Pointer[derivedEntry])}
+	return &Fanout{slots: new([NumSlots]atomic.Pointer[sinkEntry]), gen: new(atomic.Uint64), cache: new([NumSlots]atomic.Pointer[derivedEntry])}
 }
 
 // Set puts h into slot at level (a *slog.LevelVar lets the level change
 // later); a nil h empties the slot. Records that are being handled while the
 // slot changes go to the old or to the new handler, never to both.
 func (f *Fanout) Set(slot int, h slog.Handler, level slog.Leveler) {
+	defer f.gen.Add(1)
 	if h == nil {
 		f.slots[slot].Store(nil)
 		return
@@ -149,7 +152,7 @@ func (f *Fanout) derived(slot int, e *sinkEntry) slog.Handler {
 func (f *Fanout) with(op chainOp) *Fanout {
 	chain := make([]chainOp, len(f.chain), len(f.chain)+1)
 	copy(chain, f.chain)
-	return &Fanout{slots: f.slots, chain: append(chain, op), cache: new([NumSlots]atomic.Pointer[derivedEntry])}
+	return &Fanout{slots: f.slots, gen: f.gen, chain: append(chain, op), cache: new([NumSlots]atomic.Pointer[derivedEntry])}
 }
 
 // WithAttrs implements slog.Handler.
@@ -190,4 +193,53 @@ func (v localView) WithAttrs(as []slog.Attr) slog.Handler {
 
 func (v localView) WithGroup(name string) slog.Handler {
 	return localView{v.f.WithGroup(name).(*Fanout)}
+}
+
+// Gen counts the slot changes: it differs whenever a slot was set since.
+func (f *Fanout) Gen() uint64 { return f.gen.Load() }
+
+// Bind returns a handler over the handlers that the given slots hold now,
+// whatever their levels (a record class with a fixed level of its own, such
+// as the Worker traffic log). It does not follow later changes: a record
+// bound to a sink that was replaced since goes to the replaced sink (which
+// drops it), never to its successor. A slot that is empty now and a slot not
+// listed (the ring, for example) never see a record.
+func (f *Fanout) Bind(slots ...int) slog.Handler {
+	var hs []slog.Handler
+	for _, i := range slots {
+		if e := f.slots[i].Load(); e != nil {
+			hs = append(hs, f.derived(i, e))
+		}
+	}
+	return boundView(hs)
+}
+
+type boundView []slog.Handler
+
+func (v boundView) Enabled(context.Context, slog.Level) bool { return true }
+
+func (v boundView) Handle(ctx context.Context, rec slog.Record) error {
+	var first error
+	for _, h := range v {
+		if err := h.Handle(ctx, rec.Clone()); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (v boundView) WithAttrs(as []slog.Attr) slog.Handler {
+	out := make(boundView, len(v))
+	for i, h := range v {
+		out[i] = h.WithAttrs(slices.Clone(as))
+	}
+	return out
+}
+
+func (v boundView) WithGroup(name string) slog.Handler {
+	out := make(boundView, len(v))
+	for i, h := range v {
+		out[i] = h.WithGroup(name)
+	}
+	return out
 }
