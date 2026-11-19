@@ -16,6 +16,12 @@
   "owner": "",
   "pending_pairing_code": "",
   "pairing_state": "unknown",
+  "pairing": {
+    "state": "unknown",
+    "code": "",
+    "attempt": "",
+    "expires_at": ""
+  },
   "share": {
     "mode": "later",
     "configured": false,

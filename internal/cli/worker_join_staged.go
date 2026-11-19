@@ -220,7 +220,7 @@ func stagedJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, args [
 			oneLine(err.Error()) + "); fix that, then run minion worker join --resume", Err: err}
 	}
 	res.Config = joinSaved
-	return res, activateJoin(cmd, deps, opt, core.StateDir, &res)
+	return res, activateJoin(cmd, deps, opt, core.StateDir, &res, joinSavedText)
 }
 
 // readJoinToken reads and parses the join token from the file path, or from
@@ -399,13 +399,17 @@ func resumeJoin(ctx context.Context, cmd *cobra.Command, deps workerPairDeps, op
 		}
 	}
 	res.Config = joinSaved
-	return res, activateJoin(cmd, deps, opt, core.StateDir, &res)
+	return res, activateJoin(cmd, deps, opt, core.StateDir, &res, joinSavedText)
 }
+
+// joinSavedText says what a staged join did before its activation.
+const joinSavedText = "the Worker is enrolled and its config is saved"
 
 // activateJoin restarts the running Worker of stateDir so that it uses the
 // new enrollment and config: activation restarted, not_running (exit 24) or
-// failed (with the exit status of the restart, for example 23).
-func activateJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, stateDir string, res *joinResult) error {
+// failed (with the exit status of the restart, for example 23). saved says
+// what was done before, for the messages.
+func activateJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, stateDir string, res *joinResult, saved string) error {
 	call := deps.call
 	if call == nil {
 		call = func(ctx context.Context, op string, args any) (json.RawMessage, error) {
@@ -416,7 +420,7 @@ func activateJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, stat
 	switch {
 	case errors.Is(err, client.ErrWorkerNotRunning) || (err == nil && !sameDir(live.StateDir, stateDir)):
 		res.Activation = joinNotRunning
-		return newResultError(ExitNotRunning, "the Worker is enrolled and its config is saved, but no Worker runs for "+stateDir+
+		return newResultError(ExitNotRunning, saved+", but no Worker runs for "+stateDir+
 			"; start it with minion worker start")
 	case err != nil:
 		res.Activation = joinFailed
@@ -437,8 +441,7 @@ func activateJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, stat
 		var re *resultError
 		if errors.As(err, &re) {
 			wrapped := *re
-			wrapped.Message = "the Worker is enrolled and its config is saved, but it did not restart: " + re.Error() +
-				" (finish with minion worker join --resume)"
+			wrapped.Message = saved + ", but the Worker did not restart: " + re.Error() + resumeHint(saved)
 			return &wrapped
 		}
 		return err
@@ -479,4 +482,12 @@ func commitJoinShare(ctx context.Context, deps workerPairDeps, core config.Worke
 		return fmt.Errorf("save the sharing choice, nothing else was changed: %w", err)
 	}
 	return nil
+}
+
+// resumeHint is how to finish after a failed restart.
+func resumeHint(saved string) string {
+	if saved == joinSavedText {
+		return " (finish with minion worker join --resume)"
+	}
+	return " (restart it with minion worker restart)"
 }

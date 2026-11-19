@@ -45,6 +45,10 @@ type LiveStatusReply struct {
 	// so that "no code" is not mistaken for "no code pending".
 	PairingKnown       bool   `json:"pairing_known"`
 	PendingPairingCode string `json:"pending_pairing_code,omitempty"`
+	// PairingAttempt and PairingExpiresAt (RFC 3339) belong to the pending
+	// code (tray W8a); an older Worker omits them.
+	PairingAttempt   string `json:"pairing_attempt,omitempty"`
+	PairingExpiresAt string `json:"pairing_expires_at,omitempty"`
 	// RunMode, the session host and the latest listing error (v0.10.0); an
 	// older Worker omits them.
 	RunMode           string `json:"run_mode,omitempty"`
@@ -93,6 +97,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		HubPreviewOnly:     live.HubPreviewOnly,
 		PairingKnown:       live.PairingKnown || live.PendingPairingCode != "",
 		PendingPairingCode: live.PendingPairingCode,
+		PairingAttempt:     live.PairingAttempt,
 		RunMode:            live.RunMode,
 		SessionHost:        live.Host.Kind,
 		SessionsHidden:     live.Host.Hidden,
@@ -110,6 +115,9 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
 	}
+	if !live.PairingExpiresAt.IsZero() {
+		r.PairingExpiresAt = live.PairingExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
 	if !c.ConnectedSince.IsZero() {
 		r.ConnectedSince = c.ConnectedSince.UTC().Format(time.RFC3339Nano)
 	}
@@ -123,6 +131,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 	if r.Pending != nil {
 		c.Welcome.Pending = *r.Pending
 	}
+	var pairingExpires time.Time
 	for _, f := range []struct {
 		name string
 		in   string
@@ -130,6 +139,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 	}{
 		{"last_error_at", r.LastErrorAt, &c.LastErrorAt},
 		{"connected_since", r.ConnectedSince, &c.ConnectedSince},
+		{"pairing_expires_at", r.PairingExpiresAt, &pairingExpires},
 	} {
 		if f.in == "" {
 			continue
@@ -146,6 +156,8 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		ApprovalKnown:      r.Pending != nil,
 		PairingKnown:       r.PairingKnown,
 		PendingPairingCode: r.PendingPairingCode,
+		PairingAttempt:     r.PairingAttempt,
+		PairingExpiresAt:   pairingExpires,
 		RunMode:            r.RunMode,
 		Host:               SessionHostInfo{Kind: r.SessionHost, Hidden: r.SessionsHidden, Reason: r.SessionHostReason},
 		ListError:          r.SessionsListError,

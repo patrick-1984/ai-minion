@@ -114,8 +114,8 @@ func TestLocalSocketServesTheLiveConnectorStatus(t *testing.T) {
 	if got.State != string(ConnConnected) || got.ConnectedSince == "" || got.StateDir != run.dir {
 		t.Fatalf("connected reply = %+v", got)
 	}
-	if got.PairingKnown || got.PendingPairingCode != "" {
-		t.Fatalf("the Worker has no pairing source, the reply must not claim one: %+v", got)
+	if !got.PairingKnown || got.PendingPairingCode != "" {
+		t.Fatalf("a paired Worker knows that no pairing code is pending (tray W8a): %+v", got)
 	}
 	live, err := got.LiveStatus()
 	if err != nil || live.Connector.State != ConnConnected || live.Connector.ConnectedSince.IsZero() {
@@ -200,12 +200,12 @@ func TestLiveStatusSourceReportsWhetherItKnowsThePairingCode(t *testing.T) {
 	if none.PairingKnown {
 		t.Fatal("a source without a pairing function claims to know")
 	}
-	idle, _ := LiveStatusSource{Pairing: func() (string, bool) { return "", false }}.LiveStatus(context.Background())
+	idle, _ := LiveStatusSource{Pairing: func() (PendingPairing, bool) { return PendingPairing{}, false }}.LiveStatus(context.Background())
 	if !idle.PairingKnown || idle.PendingPairingCode != "" {
 		t.Fatalf("known and none = %+v", idle)
 	}
-	pend, _ := LiveStatusSource{Pairing: func() (string, bool) { return "MN-AAAA-BBBB", true }}.LiveStatus(context.Background())
-	if !pend.PairingKnown || pend.PendingPairingCode != "MN-AAAA-BBBB" {
+	pend, _ := LiveStatusSource{Pairing: func() (PendingPairing, bool) { return PendingPairing{Code: "MN-AAAA-BBBB", Attempt: "a1"}, true }}.LiveStatus(context.Background())
+	if !pend.PairingKnown || pend.PendingPairingCode != "MN-AAAA-BBBB" || pend.PairingAttempt != "a1" {
 		t.Fatalf("pending = %+v", pend)
 	}
 }

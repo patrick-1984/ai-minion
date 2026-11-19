@@ -47,7 +47,7 @@ var localOps = map[string]localOp{
 // lifecycle.v1) that a capability-qualified request may require. They are
 // added only to the qualified-op check of the local socket, never to
 // [Executor.Features], so they are not announced to the Hub.
-var localFeatures = []string{FeaturePause, FeatureConfigApply, FeatureShareLocal, FeatureLifecycle}
+var localFeatures = []string{FeaturePause, FeatureConfigApply, FeatureShareLocal, FeatureLifecycle, FeaturePairingStatus}
 
 // localOpFor returns the local-only handler of op, if there is one.
 func localOpFor(op string) (localOp, bool) {

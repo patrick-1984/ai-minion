@@ -76,8 +76,8 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	}
 	// The connector is optional here: it starts earlier (same order, name
 	// sorts first) in a real Worker, and a Worker without one reports an idle
-	// connector. The pairing code has no source in the Worker yet, so the
-	// status says "unknown" for it instead of "none".
+	// connector. The pairing code comes from the connector's own pairing
+	// (tray W8a); without a connector the status says "unknown" for it.
 	conn, _ := lookupService[*Connector](env.rt)
 	enrollments, _ := lookupService[*Enrollments](env.rt)
 	hostInfo, _ := lookupService[*SessionHostInfo](env.rt)
@@ -88,6 +88,9 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		shareSvc = &shareLocal{st: st, ex: ex, policy: ex.Policy(), overriddenBy: shareOverriddenBy(env.Settings())}
 	}
 	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health, Pause: pause}
+	if pairing, ok := lookupService[*PairingStatus](env.rt); ok && pairing != nil {
+		live.Pairing = pairing.Pending
+	}
 	// The pipe module starts before this one. Without it the pipe ops are
 	// refused here and never reach the executor, whose pipe_send is the
 	// Hub-origin write (exec_pipe.go).

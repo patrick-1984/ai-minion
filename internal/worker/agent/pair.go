@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -398,6 +401,19 @@ type PairerConfig struct {
 	// Logger receives the code too (the one place a secret is logged, AD-20)
 	// and operational messages. Nil discards them.
 	Logger *slog.Logger
+	// Display is where the code is shown: config.PairingDisplayConsole (or
+	// empty) prints it in the box on Out and in the log (AD-20);
+	// config.PairingDisplayStatus (a pairing the tray started in the
+	// background, tray W8a) prints the box and logs the event without the
+	// code, which then only reaches OnCode (the Worker's status).
+	Display string
+	// OnCode, when set, is called whenever a code is shown (its box is
+	// printed): the code, the attempt id of this code (it changes with the
+	// code) and the code's expiry. It is called with an empty code when the
+	// code shown before was retired and no new one is shown yet.
+	OnCode func(code, attempt string, expires time.Time)
+	// OnDone, when set, is called once when Run returns.
+	OnDone func()
 }
 
 // Pairer runs the Worker side of pairing codes (R7, R54, R55, R77): it keeps
@@ -500,6 +516,32 @@ type codeLife struct {
 	// shownRoot is the Hub root the box showed (nil: the box showed no Hub
 	// words). Every later attempt with this code must present the same root.
 	shownRoot []byte
+	// attempt identifies this code in the status (tray W8a); it is created
+	// when the code is first shown.
+	attempt string
+}
+
+// attemptID returns the attempt id of this code, creating it the first time.
+func (l *codeLife) attemptID() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.attempt == "" {
+		var b [8]byte
+		_, _ = rand.Read(b[:])
+		l.attempt = hex.EncodeToString(b[:])
+	}
+	return l.attempt
+}
+
+// shownUntil is the code's expiry for the status: the end of its life, or
+// ttl from now for a code whose wait has not started yet.
+func (l *codeLife) shownUntil(now time.Time, ttl time.Duration) time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.shown && (l.resume == nil || !l.restored) {
+		return now.Add(ttl)
+	}
+	return l.until(ttl)
 }
 
 // acceptRoot decides on the root of a Hub hello for this code: the first one
@@ -658,6 +700,9 @@ var errPairingStateChanged = errors.New("the Worker's enrollment state changed w
 // conditional on that generation, so a paired Worker is never offered a code and
 // an enrollment written meanwhile is never replaced (AD-8).
 func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
+	if p.cfg.OnDone != nil {
+		defer p.cfg.OnDone()
+	}
 	gen, moved, key, err := p.begin(ctx)
 	if err != nil {
 		return Enrollment{}, err
@@ -1030,6 +1075,10 @@ func (p *Pairer) dropResume(gen uint64, l *codeLife) {
 }
 
 func (p *Pairer) renew(gen uint64, old *codeLife) *codeLife {
+	if old.wasPrinted() && p.cfg.OnCode != nil {
+		// The status no longer offers the retired code.
+		p.cfg.OnCode("", "", time.Time{})
+	}
 	if old.hasRecord() {
 		// The old code is abandoned (it expired, or an attempt exposed it
 		// without authenticating the Hub): its record goes, so that the next
@@ -1213,7 +1262,7 @@ func (b *codeBox) hubHello(root []byte, admit bool) error {
 		return err
 	}
 	if print {
-		b.p.showCode(b.life.code, b.notice, root, admit)
+		b.p.showCode(b.life, b.notice, root, admit)
 	}
 	return nil
 }
@@ -1235,11 +1284,13 @@ func (b *codeBox) print() {
 	if !b.life.markPrinted() {
 		return
 	}
-	b.p.showCode(b.life.code, b.notice, nil, false)
+	b.p.showCode(b.life, b.notice, nil, false)
 }
 
 // showCode prints the code on the console and in the log: the one place a
-// secret is printed (AD-20, NFR1). The box (M2) also says which Hub is
+// secret is printed (AD-20, NFR1). With the status display (a pairing the
+// tray started, tray W8a) the box and the log leave the code out, and only
+// OnCode receives it. The box (M2) also says which Hub is
 // expected and what the dial saw of TLS, as facts and before the Hub is
 // authenticated, so without any verdict.
 //
@@ -1249,7 +1300,9 @@ func (b *codeBox) print() {
 // exactly this key, and the Hub shows the same words on Workers > Add worker.
 // An older Hub answers only after the claim; the line is then left out.
 // admit says that the Hub may admit this connection's pairing request.
-func (p *Pairer) showCode(c identity.PairingCode, notice string, root []byte, admit bool) {
+func (p *Pairer) showCode(life *codeLife, notice string, root []byte, admit bool) {
+	c := life.code
+	inStatus := p.cfg.Display == config.PairingDisplayStatus
 	lines := []string{}
 	if notice != "" {
 		lines = append(lines, notice, "")
@@ -1277,7 +1330,11 @@ func (p *Pairer) showCode(c identity.PairingCode, notice string, root []byte, ad
 		}
 		lines = append(lines, boxField("TLS certificate:", facts)...)
 	}
-	lines = append(lines, boxField("Pairing code:", c.String()+"      (valid for "+ttlText(p.ttl)+")")...)
+	if inStatus {
+		lines = append(lines, boxField("Pairing code:", "shown in the tray and by minion worker status (valid for "+ttlText(p.ttl)+")")...)
+	} else {
+		lines = append(lines, boxField("Pairing code:", c.String()+"      (valid for "+ttlText(p.ttl)+")")...)
+	}
 	if p.fpr != "" {
 		lines = append(lines, fingerprintLines("Worker fingerprint:", identity.Fingerprint(p.fpr))...)
 	}
@@ -1294,12 +1351,20 @@ func (p *Pairer) showCode(c identity.PairingCode, notice string, root []byte, ad
 	}
 	writeConsoleBox(p.out, "MINION WORKER PAIRING", lines...)
 	// The code is a secret that is printed for the human on purpose (AD-20):
-	// the console above and the log (docker logs) are the only places.
+	// the console above and the log (docker logs) are the only places. A
+	// pairing the tray started shows it in the status only.
 	hubSeen := fingerprintOfPub(root)
-	p.log.Info("pairing code", "pairing_code", c.String(), "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
+	codeAttr := slog.String("pairing_code", c.String())
+	if inStatus {
+		codeAttr = slog.String("pairing_code_shown_in", "status")
+	}
+	p.log.Info("pairing code", codeAttr, "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
 		"worker_fingerprint", p.fpr, "worker_fingerprint_words", identity.Fingerprint(p.fpr).Words(),
 		"hub_fingerprint", string(hubSeen), "hub_fingerprint_words", hubSeen.Words(), "pairing_request", admit && len(root) > 0,
 		"hub_fingerprint_expected", p.cfg.ExpectHub.String(), "tls_certificate", TLSFacts(seen))
+	if p.cfg.OnCode != nil {
+		p.cfg.OnCode(c.String(), life.attemptID(), life.shownUntil(p.clk.Now(), p.ttl))
+	}
 }
 
 // showRefused prints box M4 and logs the refusal of a Hub whose root is not

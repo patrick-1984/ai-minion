@@ -368,7 +368,7 @@ func TestLiveStatusSourceReadsConnectorPolicyAndPairing(t *testing.T) {
 	p.SetHubPreviewOnly(true)
 	got, err := LiveStatusSource{
 		Policy:  p,
-		Pairing: func() (string, bool) { return "MN-1111-2222", true },
+		Pairing: func() (PendingPairing, bool) { return PendingPairing{Code: "MN-1111-2222"}, true },
 	}.LiveStatus(context.Background())
 	if err != nil {
 		t.Fatal(err)

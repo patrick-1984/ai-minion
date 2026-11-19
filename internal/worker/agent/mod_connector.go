@@ -162,6 +162,18 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	if err := Provide(env, pause); err != nil {
 		return nil, err
 	}
+	// The code of the Worker's own pairing, for the local status (tray W8a).
+	pairing := NewPairingStatus()
+	if err := Provide(env, pairing); err != nil {
+		return nil, err
+	}
+	display, err := config.ResolvePairingDisplay(s.Resolver)
+	if err != nil {
+		// Never a reason to print the code: an unreadable setting keeps it
+		// out of the console and the log, and the Worker still starts.
+		log.Warn("cannot read pairing_display; the pairing code is shown in minion worker status only", "error", err.Error())
+		display = config.PairingDisplayStatus
+	}
 	su.hubRange = func() *version.ProtoRange { return connectorHubRange(c) }
 	if err := c.applyStoredPolicy(ctx); err != nil {
 		return nil, fmt.Errorf("apply the stored Hub policy: %w", err)
@@ -235,7 +247,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 				return
 			}
 			pctx, stop := cancelOnPause(loopCtx, pause.Gate())
-			d.autoPair(pctx, s, hub.Server, expect, enr, ex)
+			d.autoPair(pctx, s, autoPairTarget{hubURL: hub.Server, expect: expect, display: display, status: pairing}, enr, ex)
 			if !stop() {
 				return
 			}
@@ -254,12 +266,24 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	}, nil
 }
 
+// autoPairTarget is what the Worker's own pairing pairs with and where it
+// shows the code.
+type autoPairTarget struct {
+	hubURL string
+	expect identity.FingerprintMatcher
+	// display is the pairing_display setting; status feeds the local status.
+	display string
+	status  *PairingStatus
+}
+
 // autoPair pairs a Worker that has a Hub address but no enrollment and no
 // invitation key: it shows a pairing code (console and log), exactly like
 // "minion worker pair", and the connector connects as soon as the pairing is
 // stored. Without it such a Worker only idled as "not enrolled" and showed
-// nothing to type into the Hub.
-func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, expect identity.FingerprintMatcher, enr *Enrollments, ex *Executor) {
+// nothing to type into the Hub. The code is also in the local status; with
+// pairing_display=status (a pairing the tray started) only there.
+func (d connectorDeps) autoPair(ctx context.Context, s Settings, t autoPairTarget, enr *Enrollments, ex *Executor) {
+	hubURL, expect := t.hubURL, t.expect
 	if !needsAutoPair(ctx, s, hubURL, enr) {
 		return
 	}
@@ -268,15 +292,23 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, 
 	if dialer == nil {
 		dialer = NewPairDialer()
 	}
-	p, err := NewPairer(PairerConfig{
+	cfg := PairerConfig{
 		HubURL: hubURL, Name: s.Name, Ops: ex.Ops, Features: ex.Features, ExpectHub: expect,
-		Enrollment: enr, Dialer: dialer, Clock: d.clock, Out: s.Out, Logger: log,
-	})
+		Enrollment: enr, Dialer: dialer, Clock: d.clock, Out: s.Out, Logger: log, Display: t.display,
+	}
+	if t.status != nil {
+		cfg.OnCode, cfg.OnDone = t.status.OnCode, t.status.OnDone
+	}
+	p, err := NewPairer(cfg)
 	if err != nil {
 		log.Warn("cannot start pairing", "error", err.Error())
 		return
 	}
-	log.Info("this Worker is not paired: showing a pairing code; enter it in the Hub (Workers > Add worker)")
+	if t.display == config.PairingDisplayStatus {
+		log.Info("this Worker is not paired: it shows a pairing code in the tray and in minion worker status (not here); enter it in the Hub (Workers > Add worker)")
+	} else {
+		log.Info("this Worker is not paired: showing a pairing code; enter it in the Hub (Workers > Add worker)")
+	}
 	if expect.IsZero() {
 		// First use without an expectation stays allowed (as before) and is
 		// still reported as hub_check=none ("not verified") in the status and

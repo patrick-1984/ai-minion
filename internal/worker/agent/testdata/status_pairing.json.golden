@@ -18,6 +18,12 @@
   "owner": "",
   "pending_pairing_code": "MN-ABCD-EFGH",
   "pairing_state": "pending",
+  "pairing": {
+    "state": "pending",
+    "code": "MN-ABCD-EFGH",
+    "attempt": "",
+    "expires_at": ""
+  },
   "share": {
     "mode": "all",
     "configured": true,

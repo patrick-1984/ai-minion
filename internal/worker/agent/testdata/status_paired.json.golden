@@ -20,6 +20,12 @@
   "owner": "alice",
   "pending_pairing_code": "",
   "pairing_state": "none",
+  "pairing": {
+    "state": "none",
+    "code": "",
+    "attempt": "",
+    "expires_at": ""
+  },
   "share": {
     "mode": "select",
     "configured": true,

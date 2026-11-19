@@ -18,6 +18,22 @@ const (
 	// enroll with (v0.11.0). It is parsed by its callers: the kernel package
 	// config does not import identity.
 	KeyHubFingerprint = "hub_fingerprint"
+	// KeyPairingDisplay says where a Worker that pairs by itself shows its
+	// pairing code (tray W8a): on the console and in the log, or only in the
+	// status of the local control socket.
+	KeyPairingDisplay = "pairing_display"
+)
+
+// Values of the pairing_display setting.
+const (
+	// PairingDisplayConsole prints the pairing code in the console box and the
+	// log (AD-20), as "minion worker pair" does. It is the default.
+	PairingDisplayConsole = "console"
+	// PairingDisplayStatus shows the code only in the Worker's status (the tray
+	// reads it from "minion worker status --json"); the console and the log
+	// say that a code is shown, without the code. "minion worker join <url>
+	// --background" saves it.
+	PairingDisplayStatus = "status"
 )
 
 func init() { declareWorkerHub(Default) }
@@ -68,6 +84,27 @@ func declareWorkerHub(r *Registry) {
 			"\"minion hub identity --words\" prints on the Hub host. Any other Hub is refused. On a paired Worker " +
 			"it is compared with the paired Hub at every start",
 	})
+	r.Declare(Setting{
+		Key:   KeyPairingDisplay,
+		Scope: ScopeWorker,
+		Help: "Where a Worker that pairs by itself shows its pairing code: console (the console and the log) or " +
+			"status (only minion worker status, for the tray; the console and the log leave the code out)",
+		Default: PairingDisplayConsole,
+		Choices: []string{PairingDisplayConsole, PairingDisplayStatus},
+	})
+}
+
+// ResolvePairingDisplay resolves pairing_display with res (a Worker
+// resolver); nil res means the default.
+func ResolvePairingDisplay(res *Resolver) (string, error) {
+	if res == nil {
+		return PairingDisplayConsole, nil
+	}
+	v, err := res.Resolve(KeyPairingDisplay)
+	if err != nil {
+		return "", err
+	}
+	return v.Value, nil
 }
 
 // WorkerHub is the resolved Hub configuration of a Worker run.

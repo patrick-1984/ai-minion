@@ -109,11 +109,14 @@ func TestWorkerStatusAsksTheRunningWorkerOverItsSocket(t *testing.T) {
 	if r.Connection.State != string(agent.ConnIdle) || !strings.Contains(r.Connection.Reason, "enrolled") {
 		t.Fatalf("connection = %+v", r.Connection)
 	}
-	if r.Mode != agent.ModeHub || r.PairingState != agent.PairingUnknown || r.PendingPairingCode != "" {
+	// The Worker pairs by itself, but no Hub answers, so it shows no code:
+	// it knows that none is pending (tray W8a).
+	if r.Mode != agent.ModeHub || r.PairingState != agent.PairingNone || r.PendingPairingCode != "" ||
+		r.Pairing.State != agent.PairingNone || r.Pairing.Code != "" {
 		t.Fatalf("report = %+v", r)
 	}
 
-	// The text form says the same and does not turn the unknown into "none".
+	// The text form says the same.
 	sd := defaultWorkerStatusDeps()
 	sd.lookupEnv = envFrom(env)
 	sd.sessions = func(string) agent.StatusSessions { return nil }
@@ -121,7 +124,7 @@ func TestWorkerStatusAsksTheRunningWorkerOverItsSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "not available here") || strings.Contains(out, "none pending") {
+	if strings.Contains(out, "not available here") || !strings.Contains(out, "none pending") {
 		t.Fatalf("status = %s", out)
 	}
 

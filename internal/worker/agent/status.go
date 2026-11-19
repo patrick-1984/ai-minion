@@ -70,6 +70,10 @@ type LiveStatus struct {
 	// PendingPairingCode is the pairing code the Worker shows and waits for,
 	// empty when there is none. It is printed for the human (AD-20).
 	PendingPairingCode string
+	// PairingAttempt identifies that code (it changes with the code) and
+	// PairingExpiresAt is its expiry; empty for an older Worker (tray W8a).
+	PairingAttempt   string
+	PairingExpiresAt time.Time
 	// ApprovalKnown is true when Connector.Welcome.Pending is reported: a
 	// Worker of an older version does not send it, and its false then means
 	// "not known", not "approved".
@@ -146,8 +150,9 @@ type LiveStatusSource struct {
 	Connector *Connector
 	// Policy is the local policy; nil means no Hub restriction is known.
 	Policy *Policy
-	// Pairing returns the pending pairing code, if any; nil means none.
-	Pairing func() (code string, ok bool)
+	// Pairing returns the pending pairing code, if any; nil means the Worker
+	// has no pairing source (the status then says "unknown").
+	Pairing func() (PendingPairing, bool)
 	// RunMode is how this Worker runs; Host its session host; Health the
 	// outcome of its latest look at the sessions. Each may be empty or nil.
 	RunMode string
@@ -195,8 +200,8 @@ func (s LiveStatusSource) LiveStatus(ctx context.Context) (LiveStatus, error) {
 	out.ListError = s.Health.LocalText()
 	if s.Pairing != nil {
 		out.PairingKnown = true
-		if code, ok := s.Pairing(); ok {
-			out.PendingPairingCode = code
+		if p, ok := s.Pairing(); ok {
+			out.PendingPairingCode, out.PairingAttempt, out.PairingExpiresAt = p.Code, p.Attempt, p.ExpiresAt
 		}
 	}
 	return out, nil
@@ -305,6 +310,20 @@ type StatusProfile struct {
 	Default  bool   `json:"default"`
 }
 
+// StatusPairing is the pairing state of the running Worker (tray W8a).
+type StatusPairing struct {
+	// State is [PairingPending], [PairingNone] or [PairingUnknown] (no
+	// running Worker, or one that cannot tell).
+	State string `json:"state"`
+	// Code is the pairing code to type into the Hub, Attempt its id (it
+	// changes with the code) and ExpiresAt its expiry (RFC 3339); all empty
+	// unless State is pending. An older Worker leaves Attempt and ExpiresAt
+	// empty.
+	Code      string `json:"code"`
+	Attempt   string `json:"attempt"`
+	ExpiresAt string `json:"expires_at"`
+}
+
 // StatusLive is the running Worker of the profile.
 type StatusLive struct {
 	Running  bool   `json:"running"`
@@ -375,8 +394,13 @@ type StatusReport struct {
 	// PairingState is [PairingPending], [PairingNone] or [PairingUnknown].
 	// Only a running Worker knows it, so a report without a live answer says
 	// unknown rather than "none".
-	PairingState string      `json:"pairing_state"`
-	Share        StatusShare `json:"share"`
+	PairingState string `json:"pairing_state"`
+	// Pairing is the same as one object for the tray (tray W8a): the state,
+	// the code with its attempt id and expiry. The code goes only to the OS
+	// user that owns the Worker's control socket (and its log and console
+	// unless pairing_display=status), the ones the code is shown to anyway.
+	Pairing StatusPairing `json:"pairing"`
+	Share   StatusShare   `json:"share"`
 	// PreviewOnly is the effective flag: the local setting or the Hub's
 	// restriction. PreviewOnlyHub says the Hub contributes to it.
 	PreviewOnly    bool   `json:"preview_only"`
@@ -517,6 +541,7 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 	r.PreviewOnly = in.PreviewOnly || r.PreviewOnlyHub
 	pauseOf(in, &r, live, problem)
 	newSessionsOf(in, &r, live)
+	r.Pairing.State = r.PairingState
 	return r
 }
 
@@ -609,6 +634,10 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		switch {
 		case live.PendingPairingCode != "":
 			r.PairingState = PairingPending
+			r.Pairing.Code, r.Pairing.Attempt = live.PendingPairingCode, live.PairingAttempt
+			if !live.PairingExpiresAt.IsZero() {
+				r.Pairing.ExpiresAt = live.PairingExpiresAt.UTC().Format(time.RFC3339)
+			}
 		case live.PairingKnown:
 			r.PairingState = PairingNone
 		}

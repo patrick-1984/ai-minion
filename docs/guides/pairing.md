@@ -68,6 +68,21 @@ In a terminal without `--hub-fingerprint`, the Worker first asks for the Hub's f
 - A paired Worker refuses with `already_paired`. `--new-code` creates a new Worker key, wipes the old enrollment, revokes the old identity at its Hub and pairs again, after a confirmation unless you give `--yes`.
 - `minion worker setup` does the same inside its wizard.
 
+### Pair in the background: `worker join <url> --background`
+
+The tray pairs through the running Worker, so that no console has to stay open and the code never lands in a log:
+
+```sh
+minion worker join https://hub.example.com --background --hub-fingerprint <52 characters> [--share-existing later] [--json]
+minion worker status --json      # "pairing": {"state":"pending","code":"MN-K7Q4-XY12","attempt":"…","expires_at":"…"}
+```
+
+- The command saves `server`, `hub_fingerprint` (when given) and `pairing_display=status` in the Worker's config file, then restarts the running Worker. The Worker pairs by itself, as above, but its console and its log say only that a code is shown, **without the code**. The code is in `minion worker status` only, which the Worker sends to the OS user that owns it. The command itself never prints the code.
+- `pairing` in `minion worker status --json` is `pending` with `code`, `attempt` (an id that changes with every new code) and `expires_at` while a code is shown; `none` when a running Worker shows none (also once it is paired); `unknown` when no Worker runs or it is too old to tell. A Worker that reports it lists `pairing_status.v1` in `capabilities`. A new code replaces the old one in the status when it expires or the Hub rejects it.
+- Exit status: 0 when the Worker restarted; 24 when no Worker runs (the address is saved: start it with `minion worker start`, it then pairs in the background); 25 when the Worker is paused (nothing changed); 23 or 29 when the restart would end sessions. A paired Worker refuses with `already_paired` and nothing is changed. The first pairing of a Worker without a sharing choice needs `--share-existing` (exit 2).
+- A `hub_fingerprint` already in the config file is kept; a different `--hub-fingerprint` is refused with nothing changed. The command records in `join-pin.json` in the state directory whether it created the `hub_fingerprint` expectation (and the `server` address), so that cancelling the pairing or leaving the Hub later removes only what the join set.
+- `pairing_display` (`console` or `status`, also `--pairing-display` and `MINION_PAIRING_DISPLAY`) applies only to the Worker's own pairing. `minion worker pair` and `minion worker join <url>` in a terminal always show the code box as before.
+
 The pairing handshake has not had an independent cryptographic review yet; see [security](../security.md).
 
 ### Give the Worker the Hub fingerprint
