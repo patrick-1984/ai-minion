@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -203,27 +202,40 @@ func shareLive(ctx context.Context, deps workerShareDeps, stateDir string, ch *s
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	op, args := agent.OpLocalShareList, any(nil)
+	features := []string{agent.FeatureShareLocal}
 	if ch != nil {
-		cur, err := shareCall(cctx, deps, agent.OpLocalShareList, nil)
-		if err != nil {
-			return r, err
+		// An explicit rule needs no list: it replaces the selection by what
+		// it says, so it also works when the saved selection is too large to
+		// be listed. Only add and remove depend on the current rule.
+		var cur agent.ShareListResult
+		if ch.Mode == "" {
+			var err error
+			if cur, err = shareCall(cctx, deps, agent.OpLocalShareList, nil); err != nil {
+				return r, err
+			}
 		}
 		a, done := applyArgsFor(cur, *ch)
 		if done {
 			return cur, nil
 		}
 		op, args = agent.OpLocalShareApply, a
+		if a.Replace {
+			features = append(features, agent.FeatureShareReplace)
+		}
 	}
-	r, err := shareCall(cctx, deps, op, args)
+	r, err := shareCall(cctx, deps, op, args, features...)
 	if err != nil {
 		return r, err
 	}
 	return r, overrideResult(r, ch)
 }
 
-func shareCall(ctx context.Context, deps workerShareDeps, op string, args any) (agent.ShareListResult, error) {
+func shareCall(ctx context.Context, deps workerShareDeps, op string, args any, features ...string) (agent.ShareListResult, error) {
+	if len(features) == 0 {
+		features = []string{agent.FeatureShareLocal}
+	}
 	var r agent.ShareListResult
-	raw, err := deps.call(ctx, localapi.QualifiedOp(op, []string{agent.FeatureShareLocal}), args)
+	raw, err := deps.call(ctx, localapi.QualifiedOp(op, features), args)
 	var pe *proto.Error
 	if errors.As(err, &pe) && pe.Code == proto.CodeConflict {
 		return r, &resultError{Exit: ExitStateChanged, Message: pe.Message, Err: err}
@@ -251,17 +263,12 @@ func applyArgsFor(cur agent.ShareListResult, ch store.ShareChange) (agent.LocalS
 	}
 	if ch.Mode == store.ShareSelect {
 		// set select replaces the list: exactly the names given (none:
-		// nothing shared).
+		// nothing shared), decided where the selection is saved, not from a
+		// list that another writer may have changed since.
 		if a.Add == nil {
 			a.Add = []string{}
 		}
-		if cur.Rule == string(store.ShareSelect) {
-			for _, n := range cur.Selected {
-				if !slices.Contains(ch.Add, n) {
-					a.Remove = append(a.Remove, n)
-				}
-			}
-		}
+		a.Replace = true
 	}
 	return a, false
 }
@@ -344,7 +351,7 @@ func shareOffline(ctx context.Context, deps workerShareDeps, core config.WorkerC
 					return r, err
 				}
 			}
-			state, err = st.ApplyShareChangeContext(ctx, store.ShareChange{Mode: store.ShareMode(a.Mode), Add: a.Add, Remove: a.Remove, IfRevision: a.IfRevision})
+			state, err = st.ApplyShareChangeContext(ctx, store.ShareChange{Mode: store.ShareMode(a.Mode), Add: a.Add, Remove: a.Remove, IfRevision: a.IfRevision, Replace: a.Replace})
 			switch {
 			case errors.Is(err, store.ErrShareRevision):
 				return r, &resultError{Exit: ExitStateChanged, Message: "the share selection changed since it was read; nothing was changed", Err: err}

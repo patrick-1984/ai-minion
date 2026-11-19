@@ -6,9 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/spf13/cobra"
 
@@ -220,5 +225,118 @@ func TestNewerCLIAgainstOlderWorker(t *testing.T) {
 	}
 	if !slices.Contains(ops, "worker_share_apply+share_local.v1") {
 		t.Fatalf("ops = %v", ops)
+	}
+}
+
+// Gate 1: against a running Worker, "set select" asks for an exact
+// replacement and never lists first: the names it computed from an earlier
+// list could miss what the Hub saved since, and a selection too large to list
+// must still be replaceable.
+func TestLiveSetSelectReplacesWithoutListing(t *testing.T) {
+	r := newShareRig(t, "work")
+	var ops []string
+	var applied agent.LocalShareApplyArgs
+	r.deps.lockState = func(string) (io.Closer, error) { return nil, agent.ErrStateInUse }
+	r.deps.call = func(_ context.Context, op string, args any) (json.RawMessage, error) {
+		ops = append(ops, op)
+		switch {
+		case op == agent.OpLocalStatus:
+			return json.Marshal(agent.LiveStatusReply{StateDir: r.dir, Instance: "i1"})
+		case strings.HasPrefix(op, agent.OpLocalShareApply+"+"):
+			applied = args.(agent.LocalShareApplyArgs)
+			return json.Marshal(agent.ShareListResult{Rule: "select", Selected: []string{"work"}, Revision: 9, Inventory: "ok", OverriddenBy: []string{}})
+		}
+		return nil, proto.NewError(proto.CodeUnsupportedOp, op)
+	}
+	if obj, code := r.run(t, "set", "select", "work"); code != ExitOK || obj["rule"] != "select" {
+		t.Fatalf("set select work = %v, %d", obj, code)
+	}
+	for _, op := range ops {
+		if strings.HasPrefix(op, agent.OpLocalShareList) {
+			t.Fatalf("set select listed the selection first: %v", ops)
+		}
+	}
+	if !applied.Replace || applied.Mode != "select" || !slices.Equal(applied.Add, []string{"work"}) || len(applied.Remove) != 0 {
+		t.Fatalf("apply args = %+v", applied)
+	}
+	want := "worker_share_apply+share_local.v1+share_replace.v1"
+	if !slices.Contains(ops, want) {
+		t.Fatalf("ops = %v; the replacement must require %s", ops, agent.FeatureShareReplace)
+	}
+}
+
+// W6a with a real database: a newer CLI never moves an older Worker's database
+// out of its schema. A stopped older Worker is exit 28 and its stored state
+// and ledger are exactly as they were when it starts again; a running one
+// handles the change itself.
+func TestNewerCLIDoesNotUpgradeOlderWorkerDatabase(t *testing.T) {
+	r := newShareRig(t, "a")
+	// The older Worker's database: this binary's migrations without the last.
+	src := os.DirFS("../worker/store")
+	older := fstest.MapFS{}
+	entries, err := fs.ReadDir(src, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names[:len(names)-1] {
+		b, err := fs.ReadFile(src, "migrations/"+n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		older["migrations/"+n] = &fstest.MapFile{Data: b}
+	}
+	oldOpen := func() *store.Store {
+		st, err := store.Open(r.dir, store.WithMigrations(older, "migrations"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	st := oldOpen()
+	if _, err := st.ApplyShareChangeContext(context.Background(), store.ShareChange{Mode: store.ShareSelect, Add: []string{"keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	dbFile := filepath.Join(r.dir, store.DBFile)
+	before, err := os.ReadFile(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stopped: the production openStore (NoMigrate) refuses with exit 28.
+	if obj, code := r.run(t, "set", "all"); code != ExitSchemaMismatch || obj["code"] != "schema_mismatch" {
+		t.Fatalf("stopped older Worker = %v, %d", obj, code)
+	}
+	if after, err := os.ReadFile(dbFile); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("the refused command changed the older Worker's database file (%v)", err)
+	}
+	// The older Worker starts again: its schema and its state are as stored.
+	st = oldOpen()
+	got, err := st.LoadShareStateContext(context.Background())
+	_ = st.Close()
+	if err != nil || got.Mode != store.ShareSelect || !slices.Equal(got.Sessions, []string{"keep"}) {
+		t.Fatalf("the older Worker's state after the command = %+v, %v", got, err)
+	}
+	// Running: the CLI never opens the database; the Worker gets the op.
+	var ops []string
+	r.deps.lockState = func(string) (io.Closer, error) { return nil, agent.ErrStateInUse }
+	r.deps.call = func(_ context.Context, op string, _ any) (json.RawMessage, error) {
+		ops = append(ops, op)
+		if op == agent.OpLocalStatus {
+			return json.Marshal(agent.LiveStatusReply{StateDir: r.dir, Instance: "i1"})
+		}
+		return json.Marshal(agent.ShareListResult{Rule: "all", Revision: 4, Inventory: "ok", OverriddenBy: []string{}})
+	}
+	if _, code := r.run(t, "set", "all"); code != ExitOK || !slices.Contains(ops, "worker_share_apply+share_local.v1") {
+		t.Fatalf("running older Worker: exit %d, ops %v", code, ops)
+	}
+	if after, err := os.ReadFile(dbFile); err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("the live command touched the database file (%v)", err)
 	}
 }

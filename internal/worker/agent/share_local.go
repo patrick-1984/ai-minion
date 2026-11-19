@@ -20,6 +20,9 @@ const (
 	OpLocalShareApply = "worker_share_apply"
 	// FeatureShareLocal is their local capability.
 	FeatureShareLocal = "share_local.v1"
+	// FeatureShareReplace is the local capability of an exact replacement of
+	// the selection (LocalShareApplyArgs.Replace).
+	FeatureShareReplace = "share_replace.v1"
 )
 
 // Inventory states of [ShareListResult].
@@ -60,6 +63,10 @@ type LocalShareApplyArgs struct {
 	Add        []string `json:"add,omitempty"`
 	Remove     []string `json:"remove,omitempty"`
 	IfRevision uint64   `json:"if_revision"`
+	// Replace makes the selection exactly Add (mode select), whatever it is
+	// when the Worker applies it. A client that sets it requires
+	// [FeatureShareReplace], so that an older Worker, which would merge, refuses.
+	Replace bool `json:"replace,omitempty"`
 }
 
 // shareLocal serves the local share ops.
@@ -122,7 +129,7 @@ func (s shareLocal) applyOp(ctx context.Context, raw json.RawMessage) (json.RawM
 		return nil, apiErr(proto.CodeInvalidArgument, "", "invalid share change")
 	}
 	state, err := s.st.ApplyShareChangeContext(ctx, store.ShareChange{
-		Mode: store.ShareMode(a.Mode), Add: a.Add, Remove: a.Remove, IfRevision: a.IfRevision,
+		Mode: store.ShareMode(a.Mode), Add: a.Add, Remove: a.Remove, IfRevision: a.IfRevision, Replace: a.Replace,
 	})
 	switch {
 	case errors.Is(err, store.ErrShareRevision):

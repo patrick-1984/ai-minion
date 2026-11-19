@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -17,12 +18,20 @@ var ErrShareRevision = errors.New("store: the share selection changed since it w
 // mode, then sessions added to and removed from the selected list. A change
 // with Add or Remove needs the resulting mode select. IfRevision, when not
 // zero, is the revision the caller read; zero applies without the check.
+// Replace makes the selection exactly Add (empty: nothing shared), whatever
+// the saved selection is when the transaction reads it; it needs mode select.
 type ShareChange struct {
 	Mode       ShareMode
 	Add        []string
 	Remove     []string
 	IfRevision uint64
+	Replace    bool
 }
+
+// MaxShareSelectionBytes bounds the JSON encoding of a saved selection, so
+// that the local API (frames of at most 1 MiB) can always list it and a
+// replacement or "set none" never depends on a list that cannot be fetched.
+const MaxShareSelectionBytes = 256 << 10
 
 // ApplyShareChangeContext applies c in one transaction: it reads the saved
 // selection and its revision, checks IfRevision, computes the new selection
@@ -65,26 +74,17 @@ func (s *Store) ApplyShareChangeContext(ctx context.Context, c ShareChange) (Sha
 	if c.Mode != "" {
 		next = c.Mode
 	}
-	if (len(c.Add) > 0 || len(c.Remove) > 0) && next != ShareSelect {
+	if (len(c.Add) > 0 || len(c.Remove) > 0 || c.Replace) && next != ShareSelect {
 		return ShareState{}, fmt.Errorf("%w: adding or removing sessions needs mode select (the mode is %s)", ErrInvalidShare, next)
 	}
 	var names []string
 	if next == ShareSelect {
-		rows, err := tx.QueryContext(ctx, `SELECT session_name FROM share_selected ORDER BY position`)
-		if err != nil {
+		var err error
+		if names, err = selectedNames(ctx, tx); err != nil {
 			return ShareState{}, fmt.Errorf("store: change share selection: %w", err)
 		}
-		for rows.Next() {
-			var n string
-			if err := rows.Scan(&n); err != nil {
-				_ = rows.Close()
-				return ShareState{}, fmt.Errorf("store: change share selection: %w", err)
-			}
-			names = append(names, n)
-		}
-		_ = rows.Close()
-		if c.Mode == ShareSelect && mode.String != string(ShareSelect) {
-			names = nil // a new select starts from the names given
+		if c.Replace || (c.Mode == ShareSelect && mode.String != string(ShareSelect)) {
+			names = nil // a replacement and a new select start from the names given
 		}
 		for _, n := range c.Add {
 			if !slices.Contains(names, n) {
@@ -92,6 +92,12 @@ func (s *Store) ApplyShareChangeContext(ctx context.Context, c ShareChange) (Sha
 			}
 		}
 		names = slices.DeleteFunc(names, func(n string) bool { return slices.Contains(c.Remove, n) })
+	}
+	if enc, err := json.Marshal(names); err != nil {
+		return ShareState{}, fmt.Errorf("store: change share selection: %w", err)
+	} else if len(enc) > MaxShareSelectionBytes {
+		return ShareState{}, fmt.Errorf("%w: the selection would be %d bytes encoded, more than the %d the local API can list",
+			ErrInvalidShare, len(enc), MaxShareSelectionBytes)
 	}
 	now := s.clock.now().UnixMilli()
 	if _, err := tx.ExecContext(ctx,
@@ -119,4 +125,34 @@ func (s *Store) ApplyShareChangeContext(ctx context.Context, c ShareChange) (Sha
 		names = []string{}
 	}
 	return ShareState{ShareSelection: ShareSelection{Mode: next, Sessions: names, Configured: true}, Revision: newRev}, nil
+}
+
+// testHookAfterSelectedRow runs after each row of [selectedNames]; tests use it
+// to fail the iteration.
+var testHookAfterSelectedRow func()
+
+// selectedNames reads the saved selection in order. An iteration error
+// (Rows.Next returns false for it as for the end) is returned, so that no
+// write follows a partial read.
+func selectedNames(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT session_name FROM share_selected ORDER BY position`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+		if testHookAfterSelectedRow != nil {
+			testHookAfterSelectedRow()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return names, nil
 }
