@@ -88,3 +88,14 @@ func TestTrafficWorkersList(t *testing.T) {
 		t.Fatal("a separator-only filter resolved")
 	}
 }
+
+// Logs to a loopback http collector and metrics to an https one that needs a
+// private CA: the trust is resolved for the metrics signal.
+func TestSplitEndpointsHTTPLogsHTTPSMetricsWithPrivateCA(t *testing.T) {
+	cert, _ := writePEMPair(t, t.TempDir(), 0o600)
+	env := map[string]string{EnvOTLPLogsEndpoint: "http://127.0.0.1:4318/v1/logs", EnvOTLPMetricsEndpoint: "https://metrics.example/v1/metrics"}
+	s, err := ResolveSinks(hubRes(env, map[string]string{"otel": "on", "otel_ca_file": cert}), SinkFiles{})
+	if err != nil || s.OTLP.RootCAs == nil || s.OTLP.MetricsTLSConfig().RootCAs == nil || s.OTLP.MetricsTLSConfig().ServerName != "metrics.example" {
+		t.Fatalf("%+v %v", s.OTLP, err)
+	}
+}

@@ -260,7 +260,9 @@ func resolveOTLP(res *Resolver, files SinkFiles) (OTLPConfig, []string, error) {
 	if c.Headers, err = resolveHeaders(res, files, d); err != nil {
 		return c, nil, err
 	}
-	isTLS := strings.HasPrefix(c.LogsURL, "https://")
+	// Trust is needed when either signal goes to an https:// endpoint; each
+	// signal's client applies it only to its own https:// URL.
+	isTLS := strings.HasPrefix(c.LogsURL, "https://") || strings.HasPrefix(c.MetricsURL, "https://")
 	c.RootCAs, c.ClientCert, err = resolveTLSFiles(res, files, d, isTLS, "an https:// endpoint",
 		KeyOTelCAFile, KeyOTelClientCertFile, KeyOTelClientKeyFile)
 	if err != nil {
