@@ -189,36 +189,71 @@ func shareWithCore(ctx context.Context, deps workerShareDeps, core config.Worker
 	return shareLive(ctx, deps, core.StateDir, ch)
 }
 
-// shareLive asks the running Worker; it owns the database.
+// shareLive asks the running Worker; it owns the database. Every call is
+// made only while the Worker that answered first still answers; a replaced
+// Worker (another profile or instance) ends the command with exit 27.
 func shareLive(ctx context.Context, deps workerShareDeps, stateDir string, ch *store.ShareChange) (agent.ShareListResult, error) {
 	var r agent.ShareListResult
-	if _, ok := liveInstance(ctx, deps.call, stateDir); !ok {
+	inst, ok := liveInstance(ctx, deps.call, stateDir)
+	if !ok {
 		return r, newResultError(ExitError, "a Worker runs on "+stateDir+" but does not answer on this user's control socket; nothing was changed")
-	}
-	if ch != nil {
-		if err := removeShareExisting(deps, stateDir); err != nil {
-			return r, err
-		}
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	op, args := agent.OpLocalShareList, any(nil)
-	if ch != nil {
-		cur, err := shareCall(cctx, deps, agent.OpLocalShareList, nil)
-		if err != nil {
-			return r, err
-		}
-		a, done := applyArgsFor(cur, *ch)
-		if done {
-			return cur, nil
-		}
-		op, args = agent.OpLocalShareApply, a
+	if ch == nil {
+		r, err := shareCall(cctx, deps, agent.OpLocalShareList, nil)
+		return r, err
 	}
-	r, err := shareCall(cctx, deps, op, args)
+	// Read first: an old Worker, a stale revision or a no-op is refused
+	// before anything is written.
+	cur, err := shareCall(cctx, deps, agent.OpLocalShareList, nil)
 	if err != nil {
 		return r, err
 	}
+	a, done, err := shareApplyArgs(cur, *ch)
+	if err != nil || done {
+		return cur, err
+	}
+	// The removal of the file's rule comes before the commit (a crash must
+	// never leave a wider rule to restart from) and goes back when the
+	// commit is refused.
+	undo, err := removeShareExisting(deps, stateDir)
+	if err != nil {
+		return r, err
+	}
+	// Still the same Worker?
+	if now, ok := liveInstance(ctx, deps.call, stateDir); !ok || now != inst {
+		undo()
+		return r, newResultError(ExitStateChanged, "the Worker that answered was replaced; nothing was changed")
+	}
+	r, err = shareCall(cctx, deps, agent.OpLocalShareApply, a)
+	if err != nil {
+		// Only a definite refusal puts the file back; after a timeout the
+		// commit may have happened and the file must not widen it again.
+		var re *resultError
+		if errors.As(err, &re) && re.Exit == ExitStateChanged {
+			undo()
+		}
+		return r, err
+	}
 	return r, overrideResult(r, ch)
+}
+
+// shareApplyArgs turns a change into the arguments of worker_share_apply
+// from the rule that was just read. The revision read is the condition when
+// the caller gave none, so that a change between the read and the apply is
+// refused (27) and never merged; an explicit revision is also checked for a
+// change that needs nothing (done).
+func shareApplyArgs(cur agent.ShareListResult, ch store.ShareChange) (agent.LocalShareApplyArgs, bool, error) {
+	if ch.IfRevision != 0 && cur.Revision != ch.IfRevision {
+		return agent.LocalShareApplyArgs{}, false, &resultError{Exit: ExitStateChanged,
+			Message: "the share selection changed since it was read; nothing was changed", Err: store.ErrShareRevision}
+	}
+	a, done := applyArgsFor(cur, ch)
+	if a.IfRevision == 0 {
+		a.IfRevision = cur.Revision
+	}
+	return a, done, nil
 }
 
 func shareCall(ctx context.Context, deps workerShareDeps, op string, args any) (agent.ShareListResult, error) {
@@ -294,25 +329,43 @@ func liveInstance(ctx context.Context, call func(context.Context, string, any) (
 
 // removeShareExisting deletes share_existing from the config file, never
 // writes it: a crash after this leaves the database's choice, never a wider
-// mode from the file.
-func removeShareExisting(deps workerShareDeps, stateDir string) error {
+// mode from the file. The returned func puts the old value back, for a change
+// that was refused afterwards.
+func removeShareExisting(deps workerShareDeps, stateDir string) (func(), error) {
+	noop := func() {}
 	release, err := deps.lockConfig(filepath.Join(stateDir, configLockName))
 	if err != nil {
-		return err
+		return noop, err
 	}
 	defer release()
-	f, err := config.LoadFile(filepath.Join(stateDir, workerConfigName))
+	path := filepath.Join(stateDir, workerConfigName)
+	f, err := config.LoadFile(path)
 	if err != nil {
-		return err
+		return noop, err
 	}
-	if _, ok, _ := f.Lookup(config.KeyShareExisting); !ok {
-		return nil
+	prev, ok, _ := f.Lookup(config.KeyShareExisting)
+	if !ok {
+		return noop, nil
 	}
 	f.Delete(config.KeyShareExisting)
 	if err := f.Save(); err != nil {
-		return fmt.Errorf("the config file %s could not be updated, nothing was changed: %w", f.Path(), err)
+		return noop, fmt.Errorf("the config file %s could not be updated, nothing was changed: %w", f.Path(), err)
 	}
-	return nil
+	return func() {
+		rel, err := deps.lockConfig(filepath.Join(stateDir, configLockName))
+		if err != nil {
+			return
+		}
+		defer rel()
+		g, err := config.LoadFile(path)
+		if err != nil {
+			return
+		}
+		if _, set, _ := g.Lookup(config.KeyShareExisting); !set {
+			g.Set(config.KeyShareExisting, prev)
+			_ = g.Save()
+		}
+	}, nil
 }
 
 // shareOffline changes the database directly while the CLI holds the
@@ -334,9 +387,14 @@ func shareOffline(ctx context.Context, deps workerShareDeps, core config.WorkerC
 	overridden := shareEnvOverride(deps.lookupEnv)
 	if ch != nil {
 		cur := agent.ShareListResult{Rule: string(state.Mode), Selected: state.Sessions}
-		a, done := applyArgsFor(cur, *ch)
+		cur.Revision = state.Revision
+		a, done, aerr := shareApplyArgs(cur, *ch)
+		if aerr != nil {
+			return r, aerr
+		}
 		if !done {
-			if err := removeShareExisting(deps, core.StateDir); err != nil {
+			undo, err := removeShareExisting(deps, core.StateDir)
+			if err != nil {
 				return r, err
 			}
 			if deps.beforeCommit != nil {
@@ -345,6 +403,9 @@ func shareOffline(ctx context.Context, deps workerShareDeps, core config.WorkerC
 				}
 			}
 			state, err = st.ApplyShareChangeContext(ctx, store.ShareChange{Mode: store.ShareMode(a.Mode), Add: a.Add, Remove: a.Remove, IfRevision: a.IfRevision})
+			if errors.Is(err, store.ErrShareRevision) || errors.Is(err, store.ErrInvalidShare) {
+				undo()
+			}
 			switch {
 			case errors.Is(err, store.ErrShareRevision):
 				return r, &resultError{Exit: ExitStateChanged, Message: "the share selection changed since it was read; nothing was changed", Err: err}

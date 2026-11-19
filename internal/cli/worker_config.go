@@ -66,6 +66,11 @@ type workerConfigDeps struct {
 	tighten tightenApplier
 	// registry is the settings registry; nil means config.Default.
 	registry *config.Registry
+	// lockState takes the lifecycle lock of a state directory (nil:
+	// agent.LockLifecycle); share is the live path of "worker share" (nil:
+	// its defaults).
+	lockState func(stateDir string) (io.Closer, error)
+	share     *workerShareDeps
 }
 
 func (d workerConfigDeps) reg() *config.Registry {
@@ -430,7 +435,30 @@ func runConfigShare(cmd *cobra.Command, deps workerConfigDeps, modeArg string, n
 	if err != nil {
 		return err
 	}
-	defer ce.release()
+	released := false
+	defer func() {
+		if !released {
+			ce.release()
+		}
+	}()
+	// The database is never opened while a Worker may be starting or running:
+	// take the lifecycle lock like "worker share" does, or go through the
+	// running Worker.
+	lock := deps.lockState
+	if lock == nil {
+		lock = agent.LockLifecycle
+	}
+	l, lerr := lock(ce.stateDir)
+	switch {
+	case lerr == nil:
+		defer func() { _ = l.Close() }()
+	case errors.Is(lerr, agent.ErrStateInUse):
+		ce.release()
+		released = true
+		return runConfigShareLive(cmd, deps, ce, mode, names)
+	default:
+		return fmt.Errorf("cannot take the lifecycle lock of %s (%w); nothing was changed", ce.stateDir, lerr)
+	}
 	ctx := cmd.Context()
 	st, err := deps.openStore(ctx, ce.stateDir)
 	if errors.Is(err, store.ErrSchemaMismatch) {
@@ -503,4 +531,39 @@ func describeShare(sel store.ShareSelection) string {
 		return "select (" + strings.Join(sel.Sessions, ", ") + ")"
 	}
 	return string(sel.Mode)
+}
+
+// runConfigShareLive changes the share rule through the running Worker, the
+// way "worker share set" does.
+func runConfigShareLive(cmd *cobra.Command, deps workerConfigDeps, ce *configEnv, mode store.ShareMode, names []string) error {
+	sd := defaultWorkerShareDeps()
+	if deps.share != nil {
+		sd = *deps.share
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ch := store.ShareChange{Mode: mode, Add: names}
+	if mode == store.ShareSelect && len(names) == 0 {
+		// "select" without names keeps the sessions chosen before.
+		cur, err := shareLive(ctx, sd, ce.stateDir, nil)
+		if err != nil {
+			return err
+		}
+		if len(cur.Selected) == 0 {
+			return errors.New("name the sessions to share, for example: minion worker config share select build docs")
+		}
+		ch.Add = cur.Selected
+	}
+	r, err := shareLive(ctx, sd, ce.stateDir, &ch)
+	if err != nil {
+		var re *resultError
+		if errors.As(err, &re) {
+			_ = writef(ce.errOut, "Error: %s\n", re.Error())
+			return &exitCodeError{re.Exit}
+		}
+		return err
+	}
+	return writef(ce.out, "Share mode is now %s (applied by the running Worker).\n", describeShare(store.ShareSelection{Mode: store.ShareMode(r.Rule), Sessions: r.Selected}))
 }

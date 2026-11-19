@@ -222,3 +222,82 @@ func TestNewerCLIAgainstOlderWorker(t *testing.T) {
 		t.Fatalf("ops = %v", ops)
 	}
 }
+
+// Gate-1 C: a refused change leaves the restrictive file rule in place
+// (offline: stale explicit revision).
+func TestShareRefusedChangeKeepsFileRule(t *testing.T) {
+	r := newShareRig(t, "a")
+	r.env["MINION_STATE_DIR"] = r.dir
+	// the file says none, the database has been moved to all by "the Hub"
+	if _, code := r.run(t, "set", "all"); code != ExitOK {
+		t.Fatalf("set all = %d", code)
+	}
+	f, _ := config.LoadFile(r.dir + "/" + workerConfigName)
+	f.Set(config.KeyShareExisting, "none")
+	if err := f.Save(); err != nil {
+		t.Fatal(err)
+	}
+	obj, code := r.run(t, "add", "a", "--if-revision", "999")
+	if code != ExitStateChanged {
+		t.Fatalf("stale add = %d %v", code, obj)
+	}
+	g, _ := config.LoadFile(r.dir + "/" + workerConfigName)
+	if v, ok, _ := g.Lookup(config.KeyShareExisting); !ok || v != "none" {
+		t.Fatalf("the file rule was removed by a refused change: %q %v", v, ok)
+	}
+}
+
+// An explicit stale revision is refused even where the change is a no-op.
+func TestShareNoOpChecksExplicitRevision(t *testing.T) {
+	r := newShareRig(t, "a")
+	if _, code := r.run(t, "set", "all"); code != ExitOK {
+		t.Fatal(code)
+	}
+	if obj, code := r.run(t, "add", "a", "--if-revision", "999"); code != ExitStateChanged {
+		t.Fatalf("no-op with stale revision = %d %v", code, obj)
+	}
+}
+
+// Live: the revision read is sent with the apply when the caller gave none,
+// and a replaced Worker ends the command with 27 before the file changes.
+func TestShareLiveSendsReadRevisionAndChecksInstance(t *testing.T) {
+	r := newShareRig(t, "a", "b")
+	lockHeld := func(string) (io.Closer, error) { return nil, agent.ErrStateInUse }
+	r.deps.lockState = lockHeld
+	inst := "i1"
+	var applied agent.LocalShareApplyArgs
+	r.deps.call = func(_ context.Context, op string, args any) (json.RawMessage, error) {
+		switch {
+		case op == agent.OpLocalStatus:
+			return json.Marshal(agent.LiveStatusReply{StateDir: r.dir, Instance: inst})
+		case strings.Contains(op, agent.OpLocalShareList):
+			return json.Marshal(agent.ShareListResult{Rule: "select", Selected: []string{"a"}, Revision: 7})
+		default:
+			applied = args.(agent.LocalShareApplyArgs)
+			return json.Marshal(agent.ShareListResult{Rule: "select", Selected: []string{"b"}, Revision: 8})
+		}
+	}
+	if obj, code := r.run(t, "set", "select", "b"); code != ExitOK || applied.IfRevision != 7 || len(applied.Remove) != 1 {
+		t.Fatalf("code %d %v applied %+v", code, obj, applied)
+	}
+	// The Worker is replaced between the read and the apply.
+	calls := 0
+	r.deps.call = func(_ context.Context, op string, args any) (json.RawMessage, error) {
+		switch {
+		case op == agent.OpLocalStatus:
+			calls++
+			in := "i1"
+			if calls > 1 {
+				in = "i2"
+			}
+			return json.Marshal(agent.LiveStatusReply{StateDir: r.dir, Instance: in})
+		case strings.Contains(op, agent.OpLocalShareList):
+			return json.Marshal(agent.ShareListResult{Rule: "select", Selected: []string{"a"}, Revision: 7})
+		}
+		t.Fatal("apply sent to a replaced Worker")
+		return nil, nil
+	}
+	if obj, code := r.run(t, "add", "b"); code != ExitStateChanged {
+		t.Fatalf("replaced Worker = %d %v", code, obj)
+	}
+}

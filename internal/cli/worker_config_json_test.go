@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"io"
 	"strings"
 	"testing"
 )
@@ -28,5 +31,34 @@ func TestConfigSetBlockJSON(t *testing.T) {
 	}
 	if m["ok"] != false || m["code"] != "saved_overridden" || m["effective"] != "off" || m["sources"] == nil {
 		t.Fatalf("unblock: %v", m)
+	}
+}
+
+// Gate-1 C: "config share" never opens worker.db while a Worker holds the
+// lifecycle lock; it goes through the running Worker.
+func TestConfigShareGoesThroughTheRunningWorker(t *testing.T) {
+	dir := t.TempDir()
+	cd := testConfigDeps(nil)
+	cd.lockState = func(string) (io.Closer, error) { return nil, agent.ErrStateInUse }
+	cd.openStore = func(context.Context, string) (shareStore, error) {
+		t.Fatal("worker.db opened while a Worker runs")
+		return nil, nil
+	}
+	sd := defaultWorkerShareDeps()
+	var applied agent.LocalShareApplyArgs
+	sd.call = func(_ context.Context, op string, args any) (json.RawMessage, error) {
+		switch {
+		case op == agent.OpLocalStatus:
+			return json.Marshal(agent.LiveStatusReply{StateDir: dir, Instance: "i"})
+		case strings.Contains(op, agent.OpLocalShareList):
+			return json.Marshal(agent.ShareListResult{Rule: "all", Revision: 3})
+		}
+		applied = args.(agent.LocalShareApplyArgs)
+		return json.Marshal(agent.ShareListResult{Rule: "none", Revision: 4})
+	}
+	cd.share = &sd
+	_, _, err := runWorkerCmds(t, testStatusDeps(nil), cd, "worker", "config", "share", "none", "--state-dir", dir)
+	if err != nil || applied.Mode != "none" || applied.IfRevision != 3 {
+		t.Fatalf("err %v applied %+v", err, applied)
 	}
 }
