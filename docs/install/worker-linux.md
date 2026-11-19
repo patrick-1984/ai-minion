@@ -153,6 +153,8 @@ minion worker start          # starts the installed service again; never install
 minion worker reset          # as that user: forgets the Hub, the key, the enrollment and the share choice
 minion worker leave          # as that user: stops the Worker of this state directory, then resets it
 minion worker open-hub       # opens the Hub of this Worker in the browser (--print prints the address)
+minion worker copy hub-key   # copies the words of the pinned Hub key to the clipboard (worker-key: this Worker's key; --print also prints them)
+minion docs worker           # opens this install guide in the browser (minion docs: the tray guide; --print prints the address)
 ```
 
 `minion worker leave` stops the Worker and resets it in one step, and also removes the `hub_fingerprint` that a join saved, so that the Worker can join another Hub (see [leave the Hub](../guides/pairing.md#leave-the-hub-worker-leave)).
