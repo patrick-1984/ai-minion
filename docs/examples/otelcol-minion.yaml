@@ -51,7 +51,9 @@ processors:
     allow_all_keys: true
     blocked_values:
       - "(?i)bearer(?:\\s|\\\\[tnr])+[A-Za-z0-9._~+/=-]+"
-      - "(?i)password[=:](?:\\s|\\\\[tnr])*[^\\s\\\\]+"
+      # Attributes are decoded text: a backslash in a password is part of
+      # it, so the value runs to the next whitespace.
+      - "(?i)password[=:]\\s*\\S+"
     summary: info
   batch: {}
 
