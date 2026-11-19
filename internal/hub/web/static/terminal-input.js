@@ -622,12 +622,105 @@
   document.body.addEventListener('keyup', function (ev) { if (ev && ev.key === 'Enter') { heldEnter = null; } }, true);
   if (typeof window.addEventListener === 'function') { window.addEventListener('blur', function () { heldEnter = null; }); }
 
-  document.body.addEventListener('htmx:afterSwap', function () {
+  // ---- autoscroll -----------------------------------------------------------
+  // The Autoscroll box (on by default) keeps the newest lines of the screen in
+  // view after every update; off keeps the position the reader scrolled to. The
+  // choice is a per-browser convenience in localStorage, never sent anywhere.
+  var AUTOSCROLL_KEY = 'minion.autoscroll';
+  var autoBox = document.getElementById('autoscroll');
+  function autoscrollOn() { return !autoBox || autoBox.checked; }
+  if (autoBox) {
+    // On by default: the box is rendered unchecked (no input box of this page
+    // is pre-checked in the markup) and turned on here unless the reader
+    // switched it off before.
+    var stored = null;
+    try { stored = window.localStorage.getItem(AUTOSCROLL_KEY); } catch (e) { /* default on */ }
+    autoBox.checked = stored !== '0';
+    autoBox.addEventListener('change', function () {
+      try { if (autoBox.checked) { window.localStorage.removeItem(AUTOSCROLL_KEY); } else { window.localStorage.setItem(AUTOSCROLL_KEY, '0'); } } catch (e) { /* not kept */ }
+      if (autoBox.checked) { scrollToNewest(); }
+    });
+  }
+  // Another view of this browser (a cached pane, the full page) may change the
+  // choice; follow it.
+  if (autoBox && typeof window.addEventListener === 'function') {
+    window.addEventListener('storage', function (ev) {
+      if (ev.key === AUTOSCROLL_KEY || ev.key === null) { autoBox.checked = ev.newValue !== '0'; }
+    });
+  }
+  // newestBottom is the offset (in the screen's scroll space) of the bottom of
+  // the newest content: the last visible character, or the cursor when it is
+  // further down (a program waiting on an empty line). tmux keeps the blank
+  // rows below a prompt, so the physical end is not the newest line. It is
+  // measured on the rendered text, so wrapped lines (Text view) count right.
+  function newestBottom(screen) {
+    try {
+      var doc = screen.ownerDocument || document;
+      var lastNode = null, lastIdx = -1;
+      var walker = doc.createTreeWalker(screen, 4 /* NodeFilter.SHOW_TEXT */);
+      for (var n = walker.nextNode(); n; n = walker.nextNode()) {
+        var t = n.nodeValue || '';
+        for (var k = t.length - 1; k >= 0; k--) { if (!/\s/.test(t.charAt(k))) { lastNode = n; lastIdx = k; break; } }
+      }
+      var rect = null;
+      var cur = screen.querySelector('.t-cur');
+      if (cur && (!lastNode || (lastNode.compareDocumentPosition(cur) & 4 /* FOLLOWING */))) {
+        rect = cur.getBoundingClientRect();
+      } else if (lastNode) {
+        var r = doc.createRange();
+        r.setStart(lastNode, lastIdx); r.setEnd(lastNode, lastIdx + 1);
+        rect = r.getBoundingClientRect();
+      }
+      if (!rect) { return 0; }
+      var cs = window.getComputedStyle(screen);
+      return rect.bottom - screen.getBoundingClientRect().top + screen.scrollTop + (parseFloat(cs.paddingBottom) || 0);
+    } catch (e) {
+      return screen.scrollHeight; // no layout API: the physical end
+    }
+  }
+  // scrollToNewest brings the newest line to the bottom of the screen box (and
+  // of each scrolling box around it up to the screen card); the page itself is
+  // never scrolled.
+  function scrollToNewest() {
     var screen = document.getElementById('screen');
     if (!screen) { return; }
-    if (scroll) { screen.scrollTop = scroll.top; screen.scrollLeft = scroll.left; }
+    var want = newestBottom(screen) - screen.clientHeight;
+    if (screen.scrollHeight > screen.clientHeight) { screen.scrollTop = Math.max(0, Math.min(want, screen.scrollHeight - screen.clientHeight)); }
+    var el = screen.parentElement;
+    var stop = document.getElementById('session-grid') || document.body;
+    while (el && el !== stop && el !== document.body) {
+      if (el.scrollHeight > el.clientHeight) {
+        var oy = window.getComputedStyle ? window.getComputedStyle(el).overflowY : 'auto';
+        if (oy === 'auto' || oy === 'scroll') { el.scrollTop = el.scrollHeight; }
+      }
+      el = el.parentElement;
+    }
+  }
+  // The reader's position is kept as they scroll, so a refresh that started
+  // before they scrolled does not move them back.
+  document.body.addEventListener('scroll', function (ev) {
+    if (ev.target && ev.target.id === 'screen') { scroll = { top: ev.target.scrollTop, left: ev.target.scrollLeft }; }
+  }, true);
+
+  document.body.addEventListener('htmx:afterSwap', function (ev) {
+    var screen = document.getElementById('screen');
+    if (!screen) { return; }
+    // Only a new screen moves it: other swaps (a send result, a task) leave
+    // the reader where they are.
+    var t = ev && ev.detail && ev.detail.target;
+    if (!t || (t.id !== 'screen-panel' && t.id !== 'screen')) { return; }
+    if (autoscrollOn()) { scrollToNewest(); if (scroll) { screen.scrollLeft = scroll.left; } } else if (scroll) { screen.scrollTop = scroll.top; screen.scrollLeft = scroll.left; }
     defineColors(document);
   });
+  if (autoscrollOn()) { scrollToNewest(); }
+  // Text view and a resized window re-flow the screen without a new capture.
+  var tv = document.getElementById('text-view');
+  if (tv && typeof tv.addEventListener === 'function') {
+    tv.addEventListener('click', function () { if (autoscrollOn()) { window.setTimeout(scrollToNewest, 0); } });
+  }
+  if (typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', function () { if (autoscrollOn()) { scrollToNewest(); } });
+  }
 
   document.body.addEventListener('minion-screen-refresh', schedule);
 

@@ -76,12 +76,13 @@
         <button type="button" class="btn btn-secondary" id="pause-toggle" aria-pressed="false" hidden>{{template "icon" "i-pause"}}<span>Pause</span></button>
         <button type="button" class="btn btn-secondary" id="copy-screen" hidden>{{template "icon" "i-copy"}}<span>Copy screen</span></button>
         <button type="button" class="btn btn-secondary" id="text-view" aria-pressed="false" hidden><span>Text view</span></button>
+        {{if not .Data.Operate}}<label class="autoscroll-toggle"><input type="checkbox" id="autoscroll" data-autoscroll> Autoscroll</label>{{end}}
       </div>
       <p class="screen-meta" id="conn-note" hidden></p>
       <p class="sr-only" id="conn-live" role="status" aria-live="polite"></p>
       {{template "panel" .Data.Panel}}{{end}}
       {{if .Data.Operate}}<div class="dock" id="session-controls" tabindex="-1">
-        <div class="dock-head"><h2 class="sr-only">Send input</h2><p class="dock-target">Input goes to <strong>{{.Data.Session}}</strong> on <strong>{{.Data.Worker}}</strong>.</p></div>
+        <div class="dock-head"><h2 class="sr-only">Send input</h2><p class="dock-target">Input goes to <strong>{{.Data.Session}}</strong> on <strong>{{.Data.Worker}}</strong>.</p>{{if .Data.Online}}<label class="autoscroll-toggle"><input type="checkbox" id="autoscroll" data-autoscroll> Autoscroll</label>{{end}}</div>
         <div id="session-unknown" aria-live="polite"></div>
         <div id="session-result" aria-live="polite"></div>
         <div class="tabs" role="tablist" aria-label="Kind of input" id="dock-tabs" hidden>

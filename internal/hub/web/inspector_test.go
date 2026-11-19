@@ -64,7 +64,8 @@ func TestEmbeddedSessionViewIsCompactAndOnlyFrameableBySameOrigin(t *testing.T) 
 		`<script src="/static/terminal-input.js" defer></script>`, `<script src="/static/session-ui.js" defer></script>`, `<script src="/static/frame-child.js" defer></script>`)
 	mustNotHave(t, body, ` checked`) // nothing is pre-checked
 	// The only box is "Send without asking" (A19); there is no Enter box: Send is the Enter action.
-	if n := strings.Count(body, `type="checkbox"`); n != 1 || !strings.Contains(body, `type="checkbox" id="unasked-session"`) {
+	// Besides it, only the view toggle Autoscroll (A53, turned on by the script).
+	if n := strings.Count(body, `type="checkbox"`); n != 2 || !strings.Contains(body, `type="checkbox" id="unasked-session"`) || !strings.Contains(body, `type="checkbox" id="autoscroll"`) {
 		t.Errorf("checkboxes = %d, want only Send without asking", n)
 	}
 	// No global chrome, nothing that could move the frame to another resource.
@@ -655,4 +656,16 @@ func TestCompactSessionViewKeepsTheComposerInViewAndTheFullPageIsUntouched(t *te
 		t.Errorf("order in the compact view: screen %d, dock %d, Send %d", screen, dock, send)
 	}
 	mustHave(t, body, `<label for="send-text">Text to send</label>`, `<textarea id="send-text" name="text" rows="3"`, `class="dock-target">Input goes to <strong>minion-1</strong> on <strong>pi-1</strong>`)
+}
+
+// A53: the session view offers Autoscroll next to the input target; the box is
+// turned on by the script (no box is pre-checked in the markup).
+func TestSessionViewOffersAutoscroll(t *testing.T) {
+	s, _ := sessionOps(t)
+	body := sessGet(t, s, "/s/pi-1/minion-1?embed=1", sessUser).Body.String()
+	i, j := strings.Index(body, `class="dock-target"`), strings.Index(body, `id="autoscroll"`)
+	if i < 0 || j < i {
+		t.Fatalf("Autoscroll is not after the input target:\n%s", body)
+	}
+	mustNotHave(t, body, `id="autoscroll" checked`)
 }

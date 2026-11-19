@@ -462,6 +462,11 @@ td.empty { padding: 24px 14px; color: var(--muted); }
 .dock { border-top: 1px solid var(--border); padding: 12px; display: grid; gap: 12px; background: var(--surface); }
 .dock-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; justify-content: space-between; }
 .dock-target { margin: 0; color: var(--muted); }
+.action-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-block: 8px; }
+.action-row > .row-actions { margin: 0; }
+td .action-row { flex-wrap: nowrap; }
+td .action-row .btn { white-space: nowrap; }
+.autoscroll-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; cursor: pointer; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
 .tabs [role="tab"] { background: transparent; color: var(--muted); border: 0; border-bottom: 3px solid transparent; border-radius: var(--r-sm) var(--r-sm) 0 0;
   min-height: 40px; padding: 4px 14px; }
