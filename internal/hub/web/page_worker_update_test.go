@@ -1,8 +1,8 @@
 package web
 
 import (
-	"strings"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -101,5 +101,5 @@ func TestWorkersRowHasNewSessionAndForgetInline(t *testing.T) {
 	if i < 0 || j < i || k < i {
 		t.Fatalf("New session and Forget are not in one action row:\n%s", body)
 	}
-	mustHave(t, body, `hx-post="/workers/w1/remove"`, `hx-confirm="Forget worker laptop?`)
+	mustHave(t, body, `hx-post="/workers/w1/remove"`, `hx-confirm="Forget worker laptop of alice (id w1)?`)
 }

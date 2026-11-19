@@ -79,7 +79,7 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
   </div>{{else if .Operate}}<form method="post" action="{{.Worker.NewURL}}" hx-post="{{.Worker.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions" data-key="worker-actions-{{.Worker.ID}}">
     <button type="submit" class="btn" data-control="new-session" aria-label="New session on {{.Worker.Name}}">New session</button>
   </form>{{end}}
-  {{if $forget}}<form method="post" action="{{.Worker.RemoveURL}}" hx-post="{{.Worker.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Worker.Name}}? The Hub removes it: the Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again, under a new code, to come back. Keys bound to it and its control settings go with it." class="row-actions" data-key="worker-forget-{{.Worker.ID}}">
+  {{if $forget}}<form method="post" action="{{.Worker.RemoveURL}}" hx-post="{{.Worker.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Worker.Name}}{{if .Worker.Owner}} of {{.Worker.Owner}}{{end}} (id {{.Worker.ID}})? The Hub removes it: the Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again, under a new code, to come back. Keys bound to it and its control settings go with it." class="row-actions" data-key="worker-forget-{{.Worker.ID}}">
     <button type="submit" class="btn btn-danger" data-control="forget" aria-label="Forget worker {{.Worker.Name}}">{{template "icon" "i-trash"}}<span>Forget</span></button>
   </form>{{end}}
   </div>{{end}}

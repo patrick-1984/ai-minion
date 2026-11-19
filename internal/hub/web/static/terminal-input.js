@@ -641,10 +641,34 @@
       if (autoBox.checked) { scrollToNewest(); }
     });
   }
-  // scrollToNewest scrolls the screen, and each scrolling box around it up to
-  // the screen card, to its end; the page itself is never scrolled.
+  // Another view of this browser (a cached pane, the full page) may change the
+  // choice; follow it.
+  if (autoBox && typeof window.addEventListener === 'function') {
+    window.addEventListener('storage', function (ev) {
+      if (ev.key === AUTOSCROLL_KEY || ev.key === null) { autoBox.checked = ev.newValue !== '0'; }
+    });
+  }
+  // newestBottom is the offset of the bottom of the last line that shows
+  // something (a tmux snapshot keeps the blank rows below a prompt), so that
+  // a short screen with its prompt near the top is not scrolled past it.
+  function newestBottom(screen) {
+    var lines = String(screen.textContent || '').replace(/\n$/, '').split('\n');
+    var last = lines.length - 1;
+    while (last > 0 && lines[last].trim() === '') { last--; }
+    var cs = window.getComputedStyle ? window.getComputedStyle(screen) : null;
+    var pad = cs ? (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0) : 0;
+    var lineH = lines.length ? (screen.scrollHeight - pad) / lines.length : 0;
+    return (cs ? parseFloat(cs.paddingTop) || 0 : 0) + (last + 1) * lineH + (cs ? parseFloat(cs.paddingBottom) || 0 : 0);
+  }
+  // scrollToNewest brings the newest line to the bottom of the screen box (and
+  // of each scrolling box around it up to the screen card); the page itself is
+  // never scrolled.
   function scrollToNewest() {
-    var el = document.getElementById('screen');
+    var screen = document.getElementById('screen');
+    if (!screen) { return; }
+    var want = newestBottom(screen) - screen.clientHeight;
+    if (screen.scrollHeight > screen.clientHeight) { screen.scrollTop = Math.max(0, Math.min(want, screen.scrollHeight - screen.clientHeight)); }
+    var el = screen.parentElement;
     var stop = document.getElementById('session-grid') || document.body;
     while (el && el !== stop && el !== document.body) {
       if (el.scrollHeight > el.clientHeight) {
@@ -654,10 +678,19 @@
       el = el.parentElement;
     }
   }
+  // The reader's position is kept as they scroll, so a refresh that started
+  // before they scrolled does not move them back.
+  document.body.addEventListener('scroll', function (ev) {
+    if (ev.target && ev.target.id === 'screen') { scroll = { top: ev.target.scrollTop, left: ev.target.scrollLeft }; }
+  }, true);
 
-  document.body.addEventListener('htmx:afterSwap', function () {
+  document.body.addEventListener('htmx:afterSwap', function (ev) {
     var screen = document.getElementById('screen');
     if (!screen) { return; }
+    // Only a new screen moves it: other swaps (a send result, a task) leave
+    // the reader where they are.
+    var t = ev && ev.detail && ev.detail.target;
+    if (!t || (t.id !== 'screen-panel' && t.id !== 'screen')) { return; }
     if (autoscrollOn()) { scrollToNewest(); if (scroll) { screen.scrollLeft = scroll.left; } } else if (scroll) { screen.scrollTop = scroll.top; screen.scrollLeft = scroll.left; }
     defineColors(document);
   });

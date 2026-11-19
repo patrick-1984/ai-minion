@@ -26,7 +26,7 @@
     </details>
   </div>{{else}}<form method="post" action="{{.NewURL}}" hx-post="{{.NewURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn btn-secondary" data-control="new-session" aria-label="New session on {{.Name}}">New session</button>
-  </form>{{end}}{{else}}<span class="muted">Offline</span>{{end}}{{if .RemoveURL}}<form method="post" action="{{.RemoveURL}}" hx-post="{{.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Name}}? The Hub removes it: the Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again, under a new code, to come back. Keys bound to it and its control settings go with it." class="row-actions">
+  </form>{{end}}{{else}}<span class="muted">Offline</span>{{end}}{{if .RemoveURL}}<form method="post" action="{{.RemoveURL}}" hx-post="{{.RemoveURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Forget worker {{.Name}}{{if .Owner}} of {{.Owner}}{{end}} (id {{.ID}})? The Hub removes it: the Worker is told to forget this Hub (its pairing is wiped, its sessions keep running) and must be paired again, under a new code, to come back. Keys bound to it and its control settings go with it." class="row-actions">
     <button type="submit" class="btn btn-secondary btn-danger" data-control="forget" aria-label="Forget worker {{.Name}}">{{template "icon" "i-trash"}}<span>Forget</span></button>
   </form>{{end}}</div>{{end}}{{if .SessionHostText}}
     <p class="muted" data-session-host="{{.SessionHost}}" data-sessions-hidden="{{.SessionsHidden}}">Sessions: {{.SessionHostText}}</p>{{end}}</td>
