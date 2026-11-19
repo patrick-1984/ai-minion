@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -62,6 +63,16 @@ type workerPairDeps struct {
 	// interactive reports whether the command may ask (a terminal on both
 	// ends); nil means the real check.
 	interactive func(in io.Reader, out io.Writer) bool
+	// inviteDialer is the enroll_invite transport of "join --token-file";
+	// nil means agent.NewInviteDialer().
+	inviteDialer agent.InviteDialer
+	// call asks the running Worker over the local API (status, restart,
+	// share); nil means the control socket of this user.
+	call func(ctx context.Context, op string, args any) (json.RawMessage, error)
+	// restartSleep and restartWait tune the wait for the restarted Worker;
+	// nil and zero mean the defaults of "worker restart".
+	restartSleep func(time.Duration)
+	restartWait  time.Duration
 }
 
 func defaultWorkerPairDeps() workerPairDeps {
@@ -84,6 +95,13 @@ type pairOptions struct {
 	yes     bool
 	// join is the Hub URL argument of "join"; empty for "pair".
 	join string
+	// The staged join with a join token (tray W7a): --token-file, --resume,
+	// --json, --accept-loss and --accept-unknown-loss.
+	tokenFile     string
+	resume        bool
+	asJSON        bool
+	acceptLoss    int
+	acceptUnknown bool
 }
 
 func newWorkerPairCmd(deps workerPairDeps) *cobra.Command {
@@ -119,24 +137,58 @@ connection to the old Hub at once.`,
 func newWorkerJoinCmd(deps workerPairDeps) *cobra.Command {
 	var opt pairOptions
 	cmd := &cobra.Command{
-		Use:   "join <url>",
-		Short: "Remember the Hub address and pair with a code",
-		Long: `Remember the Hub address in the Worker's config file and start pairing with it:
-the same as "minion worker pair --server <url>", but the address is kept, so
-that the Worker service connects to this Hub afterwards. A Worker service
-that is already running keeps the address it started with: restart it. A
-paired Worker refuses with already_paired and the address is not changed.
+		Use:   "join <url> | join --token-file PATH|- | join --resume",
+		Short: "Join a Hub: pair with a code, or enroll with a join token",
+		Long: `Two ways to join a Hub.
 
-A join token (mnj1-... from the Hub's Add worker page) is not taken here:
-run "minion worker up --join <token>", which enrolls without a code.`,
-		Args: cobra.ExactArgs(1),
+minion worker join <url>
+  Remember the Hub address in the Worker's config file and start pairing with
+  it: the same as "minion worker pair --server <url>", but the address is
+  kept, so that the Worker service connects to this Hub afterwards. A Worker
+  service that is already running keeps the address it started with: restart
+  it. A paired Worker refuses with already_paired and the address is not
+  changed.
+
+minion worker join --token-file PATH|- [--share-existing all|none|later] [--json]
+  Enroll with a join token (mnj1-... from the Hub's Add worker page), read
+  from the file PATH or, with "-", from stdin; the token is never an argument.
+  The join runs in three stages and reports each one:
+    enrollment  committed | already   the Worker is enrolled with the token's Hub
+    config      saved | failed        server and hub_fingerprint are in the config file
+    activation  restarted | not_running | failed
+                                      the running Worker of this state directory restarted
+  It exits 0 only when all three are done: 24 when no Worker runs (start it
+  with minion worker start), 23 or 29 when the restart would end sessions
+  (repeat with --resume --accept-loss N), 1 when the config could not be saved.
+  The first join of a Worker that has no sharing choice needs
+  --share-existing; the choice is saved before the Worker enrolls. A paused
+  Worker refuses (exit 25). A token whose Hub differs from the server or
+  hub_fingerprint already saved or given is refused before anything is sent.
+
+minion worker join --resume [--accept-loss N] [--json]
+  Finish an unfinished join without the token: check that the stored
+  enrollment was made with the saved (or given) Hub address and fingerprint
+  (exit 27 when it was not), then save the config and restart the Worker. It
+  never contacts the Hub.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: withHubLine(func(cmd *cobra.Command, args []string) error {
+			if opt.tokenFile != "" || opt.resume || opt.asJSON || cmd.Flags().Changed("accept-loss") || opt.acceptUnknown {
+				return runWorkerJoinStaged(cmd, deps, opt, args)
+			}
+			if len(args) != 1 {
+				return usagef("give the Hub address (minion worker join <url>), or a join token with --token-file PATH|-")
+			}
 			opt.join = args[0]
 			return runWorkerPair(cmd, deps, opt)
 		}, deps.lookupEnv),
 	}
 	cmd.Flags().BoolVar(&opt.newCode, "new-code", false, "pair again with a new Worker key (asks first when the Worker is paired)")
 	cmd.Flags().BoolVar(&opt.yes, "yes", false, "do not ask for confirmation")
+	cmd.Flags().StringVar(&opt.tokenFile, "token-file", "", "enroll with the join token in this file (- reads it from stdin)")
+	cmd.Flags().BoolVar(&opt.resume, "resume", false, "finish an unfinished join (config and restart) without the token")
+	cmd.Flags().BoolVar(&opt.asJSON, "json", false, "print one JSON result object (with --token-file or --resume)")
+	cmd.Flags().IntVar(&opt.acceptLoss, "accept-loss", 0, "accept that up to this many sessions end when the Worker restarts (ConPTY)")
+	cmd.Flags().BoolVar(&opt.acceptUnknown, "accept-unknown-loss", false, "accept that an unknown number of sessions end when the Worker restarts")
 	addSettingFlags(cmd, config.Default, config.ScopeWorker)
 	return cmd
 }

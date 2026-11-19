@@ -170,6 +170,14 @@ func runWorkerShare(cmd *cobra.Command, deps workerShareDeps, ch *store.ShareCha
 	if ch != nil {
 		ch.IfRevision = ifRev
 	}
+	return shareWithCore(ctx, deps, core, ch)
+}
+
+// shareWithCore lists or changes the selection of the Worker in
+// core.StateDir: offline under the lifecycle lock, else through the running
+// Worker.
+func shareWithCore(ctx context.Context, deps workerShareDeps, core config.WorkerCore, ch *store.ShareChange) (agent.ShareListResult, error) {
+	var none agent.ShareListResult
 	l, err := deps.lockState(core.StateDir)
 	switch {
 	case err == nil:

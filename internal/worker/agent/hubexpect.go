@@ -507,3 +507,10 @@ func (l localExecutor) verifyHub(ctx context.Context, raw json.RawMessage) (json
 	}
 	return json.Marshal(result)
 }
+
+// EnrollmentNamesHub reports whether m names the Hub of enr: its pinned key,
+// or the key it was checked with and the keys the pin moved through since
+// (the rule of the Worker's own hub_fingerprint check).
+func EnrollmentNamesHub(enr Enrollment, m identity.FingerprintMatcher) bool {
+	return matchEnrolled(enr, m) != matchNone
+}

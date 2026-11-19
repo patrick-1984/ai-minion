@@ -22,7 +22,34 @@ a Linux **system service** variant (it writes the token to a private temporary f
 - The format is `mnj1-` followed by the base64url (no padding) of the compact JSON `{"hub":"<Hub URL>","key":"mnk_<fingerprint>.<secret>"}`; the Worker accepts only that canonical form.
 - The commands need Worker **v0.12.0** or later. For an older Worker the page also shows the same with separate flags: `minion worker up --server <url> --hub-fingerprint <52 characters> --invite-key <key>` (v0.11.0 or later).
 - The page shows the token over the same connection as everything else. If a reverse proxy is in front of the Hub and you do not want to rely on it, create the key on the Hub host instead ([below](#when-you-do-not-want-to-rely-on-the-proxy)).
-- `minion worker join` and `minion worker pair` take no join token: they pair with a code.
+- `minion worker pair` and `minion worker join <url>` take no join token: they pair with a code. A token never goes on their command line.
+
+### Join an installed Worker with a token: `worker join --token-file`
+
+For a Worker that is already installed (and possibly running), `minion worker join` enrolls with a join token read from a file or from stdin, so the token is never in the process list:
+
+```sh
+minion worker join --token-file - --share-existing later      # paste the token, then Ctrl-D
+minion worker join --token-file ~/join.txt                    # a private file that holds the token
+```
+
+The join runs in three stages and reports each one (with `--json` as one JSON object, `{"enrollment":…,"config":…,"activation":…}`):
+
+| Stage | Values | Meaning |
+|---|---|---|
+| `enrollment` | `committed`, `already` | the Worker enrolled with the token's Hub, or was enrolled with that Hub before (the one-time key is then not used) |
+| `config` | `saved`, `failed` | `server` and `hub_fingerprint` are saved in the Worker's config file |
+| `activation` | `restarted`, `not_running`, `failed` | the running Worker of this state directory restarted with the new enrollment |
+
+It exits with status 0 only when all three are done. An enrollment that already existed is not a success by itself: the stages after it still count.
+
+- No Worker runs for this state directory: `activation` is `not_running` and the exit status is 24; start it with `minion worker start`.
+- The restart would end sessions (Windows ConPTY): exit 23 with `sessions_lost` (or 29 when they cannot be counted); finish with `minion worker join --resume --accept-loss N` (or `--accept-unknown-loss`).
+- The config file could not be saved: exit 1 with `config` `failed`; fix the cause and run `minion worker join --resume`.
+- The first join of a Worker without a sharing choice needs `--share-existing all|none|later` (exit 2 otherwise, nothing read or changed); the choice is saved before the Worker enrolls.
+- A paused Worker refuses with exit 25. A token whose Hub differs from a `server` or `hub_fingerprint` given by flag, environment or the config file is refused before anything is sent, as with `worker up --join`. A Worker enrolled with another Hub refuses with exit 27.
+
+`minion worker join --resume` finishes an unfinished join **without the token** and without contacting the Hub: it checks that the stored enrollment was authenticated by the Hub that the config (or `--server`, `--hub-fingerprint`) names, exits 27 when it was not, and otherwise saves the config and restarts the Worker.
 
 ## Pair with a code
 

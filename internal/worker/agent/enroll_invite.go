@@ -821,3 +821,15 @@ func diskHasInviteKey(path string) bool {
 	_, has, _ := fresh.Lookup(config.KeyInviteKey)
 	return has
 }
+
+// LockEnrollment takes the enrollment lock of the state directory stateDir
+// (the one the pre-start hook takes), creating the directory first, and
+// returns the function that releases it. "minion worker join --token-file"
+// enrolls from the CLI under it, so that a Worker that starts meanwhile does
+// not create a second key.
+func LockEnrollment(ctx context.Context, stateDir string) (func(), error) {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create the state directory %s: %w", stateDir, err)
+	}
+	return lockEnrollment(ctx, filepath.Join(stateDir, enrollLockName))
+}

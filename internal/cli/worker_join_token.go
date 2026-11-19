@@ -41,7 +41,8 @@ type joinExpansion struct {
 }
 
 // joinHint is the way to a join token from the commands that do not take one.
-const joinHint = "a join token (mnj1-...) enrolls with `minion worker up --join <token>`"
+const joinHint = "a join token (mnj1-...) enrolls with `minion worker join --token-file -` (the token on stdin) " +
+	"or `minion worker up --join <token>`"
 
 // addJoinFlag adds --join to a command that expands it.
 func addJoinFlag(cmd *cobra.Command, reg *config.Registry) {
@@ -193,7 +194,17 @@ func joinFileConflict(cmd *cobra.Command, reg *config.Registry, file config.File
 		}
 		return ""
 	}
-	const from = "the join token (--join, MINION_JOIN or MINION_JOIN_FILE)"
+	return joinFileConflictWith(file, "the join token (--join, MINION_JOIN or MINION_JOIN_FILE)",
+		flag(config.KeyServer), flag(config.KeyHubFingerprint))
+}
+
+// joinFileConflictWith compares the Hub address tokServer and fingerprint
+// tokFingerprint of a join token (named from) with the Hub address and
+// fingerprint saved in the Worker's config file (nil: none).
+func joinFileConflictWith(file config.FileSource, from, tokServer, tokFingerprint string) error {
+	if file == nil {
+		return nil
+	}
 	fix := "; to move this Worker to the Hub of the token, run `minion worker config unset server hub_fingerprint` first"
 	if v, ok, err := file.Lookup(config.KeyHubFingerprint); err != nil {
 		return fmt.Errorf("setting %q (%s): %w", config.KeyHubFingerprint, config.SourceFile, err)
@@ -202,7 +213,7 @@ func joinFileConflict(cmd *cobra.Command, reg *config.Registry, file config.File
 		if err != nil {
 			return fmt.Errorf("the config file: %w", err)
 		}
-		tokFp, err := identity.ParseFingerprint(flag(config.KeyHubFingerprint))
+		tokFp, err := identity.ParseFingerprint(tokFingerprint)
 		if err != nil || !m.MatchesFingerprint(tokFp) {
 			return fmt.Errorf("%s names the Hub fingerprint %s, but hub_fingerprint in the config file names %s; nothing was sent%s",
 				from, tokFp.Words(), m.Words(), fix)
@@ -210,9 +221,9 @@ func joinFileConflict(cmd *cobra.Command, reg *config.Registry, file config.File
 	}
 	if v, ok, err := file.Lookup(config.KeyServer); err != nil {
 		return fmt.Errorf("setting %q (%s): %w", config.KeyServer, config.SourceFile, err)
-	} else if ok && strings.TrimSpace(v) != "" && !sameHubURL(v, flag(config.KeyServer)) {
+	} else if ok && strings.TrimSpace(v) != "" && !sameHubURL(v, tokServer) {
 		return fmt.Errorf("%s names the Hub %s, but server in the config file names %s; nothing was sent%s",
-			from, safeURL(flag(config.KeyServer)), safeURL(v), fix)
+			from, safeURL(tokServer), safeURL(v), fix)
 	}
 	return nil
 }
