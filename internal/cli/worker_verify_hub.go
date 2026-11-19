@@ -47,8 +47,10 @@ func defaultWorkerVerifyHubDeps() workerVerifyHubDeps {
 		stdout:     os.Stdout,
 		lookupEnv:  os.LookupEnv,
 		loadConfig: loadWorkerConfig,
-		openStore:  func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) },
-		lockState:  agent.LockLifecycle,
+		openStore: func(ctx context.Context, dir string) (*store.Store, error) {
+			return store.OpenContext(ctx, dir, store.NoMigrate())
+		},
+		lockState: agent.LockLifecycle,
 		call: func(ctx context.Context, op string, args any) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, args)
 		},

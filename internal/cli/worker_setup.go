@@ -92,7 +92,7 @@ func (d workerSetupDeps) open(ctx context.Context, stateDir string) (setupStore,
 	if d.openStore != nil {
 		return d.openStore(ctx, stateDir)
 	}
-	return store.OpenContext(ctx, stateDir)
+	return store.OpenContext(ctx, stateDir, store.NoMigrate())
 }
 
 func newWorkerSetupCmd(deps workerSetupDeps) *cobra.Command {

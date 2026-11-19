@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // IsMN reports whether the program was started under the name `mn` (or
@@ -53,6 +55,11 @@ func execute(ctx context.Context, root *cobra.Command, args []string, stdout, st
 		return ec.code
 	}
 	_, _ = io.WriteString(stderr, "Error: "+err.Error()+"\n")
+	if errors.Is(err, store.ErrSchemaMismatch) {
+		// The CLI never migrates the database of an installed Worker (tray
+		// tickets v3, C3): another schema is its own status.
+		return ExitSchemaMismatch
+	}
 	var ue *usageError
 	if errors.As(err, &ue) {
 		return ExitUsage

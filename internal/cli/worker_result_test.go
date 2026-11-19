@@ -2,14 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // Every result is exactly one JSON object on stdout with ok, code and
@@ -99,5 +103,16 @@ func TestResultCodesAreDistinct(t *testing.T) {
 	}
 	if resultCode(99) != "error" {
 		t.Fatal("an unknown status must map to error")
+	}
+}
+
+// Every CLI path that opens worker.db does so without migrating it; another
+// schema ends the command with 28 (tray W6a, PR-1 rule).
+func TestSchemaMismatchExits28(t *testing.T) {
+	root := &cobra.Command{Use: "minion", SilenceUsage: true, SilenceErrors: true,
+		RunE: func(*cobra.Command, []string) error { return fmt.Errorf("open: %w", store.ErrSchemaMismatch) }}
+	var out, errOut bytes.Buffer
+	if code := execute(context.Background(), root, nil, &out, &errOut); code != ExitSchemaMismatch {
+		t.Fatalf("exit %d, want 28", code)
 	}
 }

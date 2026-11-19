@@ -26,7 +26,7 @@
 
 ### Fixed
 
-- **`minion worker config share` never migrates the Worker database**: when the database has another schema than this `minion` (an older or newer installed Worker), it changes nothing and exits with status 28 ("start the Worker, or use the same minion version, then retry"), instead of moving the stopped Worker's database to a schema that Worker cannot open.
+- **No `minion worker` command migrates the Worker database any more** (`config share`, `share`, `pair`, `join`, `setup`, `reset`, `verify-hub`): when the database has another schema than this `minion` (an older or newer installed Worker), it changes nothing and exits with status 28 ("start the Worker, or use the same minion version, then retry"), instead of moving the stopped Worker's database to a schema that Worker cannot open.
 - **`minion worker config set|unset` no longer exits 0 when the running Worker could not apply the change**: it exits 22 (saved, not in force).
 
 - **A Windows Worker no longer updates itself when it cannot count its ConPTY sessions.** A failed session listing used to count as "no session would end", so a Hub-started update could end running sessions without asking; it is now refused unless the update is forced. Holds on new sessions have owners: a failed or refused update lifts only its own hold.

@@ -71,7 +71,9 @@ func defaultWorkerPairDeps() workerPairDeps {
 		stderr:     os.Stderr,
 		lookupEnv:  os.LookupEnv,
 		loadConfig: loadWorkerConfig,
-		openStore:  func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) },
+		openStore: func(ctx context.Context, dir string) (*store.Store, error) {
+			return store.OpenContext(ctx, dir, store.NoMigrate())
+		},
 		saveServer: saveWorkerHub,
 	}
 }
@@ -255,7 +257,9 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 
 	open := deps.openStore
 	if open == nil {
-		open = func(ctx context.Context, dir string) (*store.Store, error) { return store.OpenContext(ctx, dir) }
+		open = func(ctx context.Context, dir string) (*store.Store, error) {
+			return store.OpenContext(ctx, dir, store.NoMigrate())
+		}
 	}
 	st, err := open(ctx, core.StateDir)
 	if err != nil {

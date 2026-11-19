@@ -58,7 +58,7 @@ func defaultWorkerResetDeps() workerResetDeps {
 		},
 		lockState: agent.LockLifecycle,
 		openStore: func(ctx context.Context, dir string) (agent.ResetStore, io.Closer, error) {
-			st, err := store.OpenContext(ctx, dir)
+			st, err := store.OpenContext(ctx, dir, store.NoMigrate())
 			if err != nil {
 				return nil, nil, err
 			}
