@@ -84,6 +84,9 @@ func registerDiagnosticsModule(r *Registry, catalog *ops.Registry) {
 			Request: nw.Diagnose,
 			Workers: func() (connected, pending int) { return countWorkers(svc.Registry().List()) },
 		}
+		if o, err := Require[*ObsService](env); err == nil && o.Manager != nil {
+			src.Sinks = o.Manager.Status
+		}
 		if err := api.RegisterHubDiagnostics(handlers, src); err != nil {
 			return fmt.Errorf("diagnostics: %w", err)
 		}

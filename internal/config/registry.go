@@ -82,6 +82,11 @@ type Setting struct {
 	// declares it for --invite-key). A resolved value from the flag carries a
 	// warning for the CLI to print.
 	ArgvAllowedWithWarning bool
+	// RegularFileOnly makes "<ENV>_FILE" accept only a regular file, opened
+	// without blocking: for a secret that the Hub reads on its request path
+	// (the settings page), where a FIFO without a writer would hang. Other
+	// secrets keep accepting a FIFO (a join token passed through one).
+	RegularFileOnly bool
 }
 
 // EnvName returns the environment name of the setting.

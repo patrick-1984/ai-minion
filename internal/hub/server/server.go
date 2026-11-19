@@ -21,6 +21,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/httpbody"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 )
 
 // OrderCore is the init order of the core module. It provides the services
@@ -55,6 +56,9 @@ const (
 	// is waiting to be written, so an idle SSE stream or Worker channel and a
 	// slow but reading client are not affected.
 	http2WriteByteTimeout = 30 * time.Second
+
+	// stopLogTimeout bounds the last log line of a stop.
+	stopLogTimeout = time.Second
 )
 
 // newHTTPServer returns the Hub's http.Server around handler. Run uses it with
@@ -97,6 +101,13 @@ type Config struct {
 	ManagementListen string
 	// Logger receives the Hub's log records; nil means [slog.Default].
 	Logger *slog.Logger
+	// LogLive is the runtime control of Logger: its local level (the live
+	// log_level) and the fan-out whose remote slots the obs module fills.
+	// Nil (tests): no live level and no log export.
+	LogLive *logx.Live
+	// Verbose is -v/--verbose when it was given (nil otherwise), for the
+	// resolution of the live log level.
+	Verbose *bool
 }
 
 // NewConfig validates the raw settings and builds the Config. It fails, with
@@ -433,7 +444,17 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := kernel.Stop(sctx); err != nil {
 		runErr = errors.Join(runErr, err)
 	}
-	log.Info("hub stopped")
+	// The last line is bounded: the local output may be stalled (a full
+	// stderr pipe, for example behind a log sink's loss warning), and the
+	// stop must still end.
+	logged := make(chan struct{})
+	go func() { defer close(logged); log.Info("hub stopped") }()
+	t := time.NewTimer(stopLogTimeout)
+	defer t.Stop()
+	select {
+	case <-logged:
+	case <-t.C:
+	}
 	return runErr
 }
 

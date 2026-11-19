@@ -1041,9 +1041,11 @@ func TestCoreModuleNeedsServerRun(t *testing.T) {
 	}
 }
 
+// The log sinks (obs) come right after the core, before the store: they
+// start first and stop last, so that they carry every other module's lines.
 func TestDefaultRegistryHasCoreThenStore(t *testing.T) {
 	names := DefaultRegistry.Names()
-	if len(names) < 2 || names[0] != "core" || names[1] != "store" {
-		t.Fatalf("default modules = %v, want core then store first", names)
+	if len(names) < 3 || names[0] != "core" || names[1] != "obs" || names[2] != "store" {
+		t.Fatalf("default modules = %v, want core, obs, then store first", names)
 	}
 }

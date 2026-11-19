@@ -23,6 +23,38 @@ const pathAdminDiagnostics = "/admin/diagnostics"
 type DiagnosticsPage struct {
 	Hub     []DiagnosticsFact
 	Request []DiagnosticsFact
+	// Sinks is the effective state of the remote log sinks.
+	Sinks []DiagnosticsFact
+}
+
+// sinkFacts describes the remote log sinks as the Hub runs them.
+func sinkFacts(list []ops.LogSinkStatus) []DiagnosticsFact {
+	out := make([]DiagnosticsFact, 0, len(list))
+	for _, st := range list {
+		out = append(out, DiagnosticsFact{Label: "Log export (" + st.Name + ")", Value: sinkText(st)})
+	}
+	return out
+}
+
+// sinkText is one remote log sink for a person: off (with the reason), or
+// the destination and level with what was sent, queued and dropped.
+func sinkText(st ops.LogSinkStatus) string {
+	var dropped uint64
+	for _, n := range st.Dropped {
+		dropped += n
+	}
+	var b strings.Builder
+	if st.Enabled {
+		b.WriteString(st.Destination + " at " + st.Level + " and above; sent " + strconv.FormatUint(st.Sent, 10) +
+			", queued " + strconv.FormatUint(st.Queued, 10) + ", dropped " + strconv.FormatUint(dropped, 10))
+	} else {
+		b.WriteString("off")
+	}
+	b.WriteString(" (configuration " + strconv.FormatUint(st.Generation, 10) + ")")
+	if st.LastError != "" {
+		b.WriteString("; last error: " + st.LastError)
+	}
+	return b.String()
 }
 
 // DiagnosticsFact is one label and value of the grid.
@@ -49,6 +81,7 @@ func diagnosticsData(r *http.Request, c OpCaller) (any, error) {
 			{"Workers waiting for approval", strconv.Itoa(d.WorkersPending)},
 		},
 	}
+	page.Sinks = sinkFacts(d.Sinks)
 	q := d.Request
 	var headers []string
 	for _, h := range q.ForwardedHeaders {

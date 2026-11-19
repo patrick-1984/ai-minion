@@ -100,6 +100,12 @@ func (s *Store) ListSettings(ctx context.Context) ([]SettingRecord, error) {
 // encrypted with the data key and never written as text. updatedBy is the
 // actor id, kept for the panel; it is not the audit record.
 func (s *Store) PutSetting(ctx context.Context, key, value string, secret bool, updatedBy string) error {
+	return s.PutSettingTx(ctx, s.db, key, value, secret, updatedBy)
+}
+
+// PutSettingTx is [Store.PutSetting] on ex, the caller's open transaction, so
+// that several settings and their audit rows commit together.
+func (s *Store) PutSettingTx(ctx context.Context, ex Execer, key, value string, secret bool, updatedBy string) error {
 	if key == "" {
 		return errors.New("store: setting key is empty")
 	}
@@ -112,7 +118,7 @@ func (s *Store) PutSetting(ctx context.Context, key, value string, secret bool, 
 		}
 		text, sealed = nil, b
 	}
-	_, err := s.db.ExecContext(ctx, `
+	_, err := ex.ExecContext(ctx, `
 INSERT INTO settings (key, value, value_enc, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value, value_enc = excluded.value_enc,
@@ -127,7 +133,13 @@ ON CONFLICT(key) DO UPDATE SET
 // DeleteSetting removes the panel value of key, so that the default applies
 // again. It reports whether a row existed.
 func (s *Store) DeleteSetting(ctx context.Context, key string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key)
+	return s.DeleteSettingTx(ctx, s.db, key)
+}
+
+// DeleteSettingTx is [Store.DeleteSetting] on ex, the caller's open
+// transaction.
+func (s *Store) DeleteSettingTx(ctx context.Context, ex Execer, key string) (bool, error) {
+	res, err := ex.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key)
 	if err != nil {
 		return false, fmt.Errorf("store: delete setting %q: %w", key, err)
 	}

@@ -45,3 +45,9 @@ type settingsAuditAdapter struct{ log *audit.Log }
 func (a settingsAuditAdapter) RecordSettingsEvent(ctx context.Context, e SettingsAuditEvent) error {
 	return a.log.Record(ctx, audit.Event{Actor: e.Actor, ActingAs: e.ActingAs, Action: e.Action, Target: e.Target, Outcome: e.Outcome})
 }
+
+// RecordSettingsEventTx implements SettingsTxAuditor: the row commits or
+// rolls back with the settings change it describes.
+func (a settingsAuditAdapter) RecordSettingsEventTx(ctx context.Context, ex store.Execer, e SettingsAuditEvent) error {
+	return a.log.RecordTx(ctx, ex, audit.Event{Actor: e.Actor, ActingAs: e.ActingAs, Action: e.Action, Target: e.Target, Outcome: e.Outcome})
+}

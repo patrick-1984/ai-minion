@@ -256,6 +256,15 @@ linters:
           deny:
             - pkg: github.com/godbus/dbus
               desc: only cmd/minion-tray, internal/tray/adapter and test/traye2e may import godbus (tray R1)
+        lib-otel:
+          files:
+            - $all
+            - "!**/internal/obs/**"
+          deny:
+            - pkg: go.opentelemetry.io
+              desc: only internal/obs may import OpenTelemetry (A49 design, a v0 bump stays local)
+            - pkg: github.com/go-logr/logr
+              desc: only internal/obs may import logr (the OpenTelemetry SDK logger)
         lib-sigstore:
           files:
             - $all

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
@@ -81,6 +82,9 @@ type LiveStatusReply struct {
 	// they cannot be counted; CountReported says the Worker reports it.
 	SessionsLostOnStop *int `json:"sessions_lost_on_stop,omitempty"`
 	CountReported      bool `json:"count_reported,omitempty"`
+	// LogSinks is the state of the remote log sinks (v0.14.0); an older
+	// Worker omits it.
+	LogSinks []ops.LogSinkStatus `json:"log_sinks,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -111,6 +115,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		NewSessionsBlocked: live.NewSessionsBlocked,
 		SessionsLostOnStop: live.SessionsLostOnStop,
 		CountReported:      live.CountReported,
+		LogSinks:           live.LogSinks,
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -169,6 +174,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		Capabilities:       r.Capabilities,
 		SessionsLostOnStop: r.SessionsLostOnStop,
 		CountReported:      r.CountReported,
+		LogSinks:           r.LogSinks,
 	}, nil
 }
 

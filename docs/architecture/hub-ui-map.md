@@ -168,6 +168,7 @@ POST routes behind `gate` (36). "Result" = what answers the htmx call. U = any s
 | `/admin/users/{id}/act-as` | `handleActAsStart` (`:582`) | A | `act_as_start` | redirect/refresh into act-as |
 | `/admin/users/{id}/identities/{identity}/detach` | `handleIdentityDetach` (`:600`) | A | `identity_detach` | result |
 | `/admin/settings/{key}` | `handleSettingSet` (`page_settings.go:190`) | A | `settings_set` | "The setting K is saved." / "...is back to its default." / "Enter a value, or use Remove to clear the secret." |
+| `/admin/settings-section` | `handleSettingsSection` (`page_settings.go`) | A | `settings_set` with `changes` | "The section S is saved." / "Nothing to save." |
 | `/admin/oidc/providers` | `handleOIDCSave` (`page_oidc.go:97`) | A | `oidc_provider_set` | result |
 | `/admin/oidc/providers/{id}/roles` | `handleOIDCRoles` (`:127`) | A | `role_rule_set` | result |
 | `/admin/oidc/providers/{id}/delete` | `handleOIDCDelete` (`:116`) | A | `oidc_provider_set` (delete) | result |
@@ -411,7 +412,7 @@ On `/`, `/workers`, `/sessions`, `/workers/{id}`: click on a `data-inspect` sess
 7. Act as: `POST /admin/users/{id}/act-as` (`minutes`) -> banner "Acting as ..." with "Exit" (`POST /api/v1/ops/act_as_stop`); during act-as admin pages 404, scope switch hidden, hidden-session preference read-only, build update notice hidden, audit "Acting as" column records the pair.
 
 ### 3.10 Hub settings (A)
-`/admin/settings` filter (`#settings-filter`), jump links; per key: Save (`action=set`, `value`, `secret=1` for secrets) or Use the default/Remove (`action=unset`) -> `POST /admin/settings/{key}` (op `settings_set`); env-locked rows are read-only; "applies after restart" noted per row.
+`/admin/settings` filter (`#settings-filter`), jump links; per key: Save (`action=set`, `value`, `secret=1` for secrets) or Use the default/Remove (`action=unset`) -> `POST /admin/settings/{key}` (op `settings_set`); env-locked rows are read-only; "applies after restart" noted per row. The section "Log export" (v0.14.0) is one form `form.settings-batch` with `v.<key>` per editable row, `s.<key>`=1 and a "Remove" checkbox `r.<key>` for secrets, and one "Save section" button -> `POST /admin/settings-section` (op `settings_set` with `changes`, all or nothing; result in `#result-<section id>`).
 
 ### 3.11 Hub identity (A)
 1. State on `/admin/identity`; admin banner and Workers header badge (`#identity-countdown`) point here when action is needed.

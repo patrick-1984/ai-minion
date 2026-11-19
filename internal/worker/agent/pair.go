@@ -18,6 +18,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -1358,7 +1359,8 @@ func (p *Pairer) showCode(life *codeLife, notice string, root []byte, admit bool
 	if inStatus {
 		codeAttr = slog.String("pairing_code_shown_in", "status")
 	}
-	p.log.Info("pairing code", codeAttr, "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
+	// A human notice: no remote log sink (syslog, OpenTelemetry) receives it.
+	logx.HumanNotice(context.Background(), p.log, slog.LevelInfo, "pairing code", codeAttr, "valid_for", p.ttl.String(), "hub", hubLabel(p.cfg.HubURL),
 		"worker_fingerprint", p.fpr, "worker_fingerprint_words", identity.Fingerprint(p.fpr).Words(),
 		"hub_fingerprint", string(hubSeen), "hub_fingerprint_words", hubSeen.Words(), "pairing_request", admit && len(root) > 0,
 		"hub_fingerprint_expected", p.cfg.ExpectHub.String(), "tls_certificate", TLSFacts(seen))

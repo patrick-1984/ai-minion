@@ -87,7 +87,8 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	if st, ok := lookupService[*store.Store](env.rt); ok {
 		shareSvc = &shareLocal{st: st, ex: ex, policy: ex.Policy(), overriddenBy: shareOverriddenBy(env.Settings())}
 	}
-	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health, Pause: pause}
+	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health, Pause: pause,
+		LogSinks: env.Settings().LogSinks}
 	pairing, _ := lookupService[*PairingStatus](env.rt)
 	if pairing != nil {
 		live.Pairing = pairing.Pending

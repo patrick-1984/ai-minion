@@ -1,0 +1,1 @@
+<131>1 2026-11-18T20:48:01.123456+01:00 hub-1.example minion-hub 4242 x - ﻿{"time":"2026-11-18T20:48:01.123456789+01:00","level":"ERROR","msg":"failed","error":"boom"}

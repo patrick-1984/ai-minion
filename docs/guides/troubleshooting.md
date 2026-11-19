@@ -23,6 +23,14 @@ Debug lines never contain keys, passphrases, pairing codes, API keys, terminal c
 
 `minion worker up -v` saves the verbose setting to the Worker's config file like any other setting, so the installed service logs at debug level too. Run `minion worker up --verbose=false` to turn it off again.
 
+### Which level applies where
+
+| Process | Standard error (and the Worker's in-memory log) | Log export (`syslog_level`, `otel_level`) |
+| --- | --- | --- |
+| Hub | `MINION_LOG_LEVEL`, then `log_level` in Administration > Hub settings (applies at once since v0.14.0), then `-v` / `MINION_VERBOSE`, then `info` | per sink, see [log export](observability.md#levels) |
+| Worker | `--debug`, then `log_level` (flag, environment, config file), then `-v`, then `verbose`, then `info`; remote debug lowers it for a while | per sink; remote debug does not change it |
+| One-shot commands | as the Worker, standard error only | never exported |
+
 ## Worker debug: `--debug` and `MINION_DEBUG`
 
 `minion worker up --debug` (or `minion worker run --debug`, or `MINION_DEBUG=1`) runs the Worker at debug level. It is the Worker's own switch for `log_level=debug` and wins over every other level. Besides the lines above, a debug Worker logs:
