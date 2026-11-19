@@ -8,5 +8,8 @@ func workerRunMode() string {
 	if underServiceManager() {
 		return RunModeWindowsService
 	}
+	if supervised {
+		return RunModeWindowsLogon
+	}
 	return RunModeForeground
 }

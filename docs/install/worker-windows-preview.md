@@ -6,7 +6,7 @@ The Windows Worker is a **preview** in release 0.13.1. It works differently from
 
 ## What it is
 
-**With psmux (0.9.2 and later).** [psmux](https://github.com/psmux/psmux) is tmux for Windows. When psmux 3.4.0 or later is installed and the Worker runs as you (`minion worker up --foreground`), the Worker serves **your psmux sessions**: the ones you start with `psmux new -s work` show up in the Hub, and the sessions the Worker creates are psmux sessions you can `psmux attach` to. They keep running when the Worker stops, restarts or updates. On the first start in a console without psmux, the Worker asks once whether to install it with `winget install psmux` (the answer is kept in `psmux_offer`; `minion worker config set psmux_offer ask` asks again). `minion worker config set session_host conpty` (or `psmux`) chooses explicitly; the default `auto` uses psmux when it is installed and the Worker is not a Windows service.
+**With psmux (0.9.2 and later).** [psmux](https://github.com/psmux/psmux) is tmux for Windows. When psmux 3.4.0 or later is installed (the Worker always runs as you, `minion worker up` or `minion worker up --foreground`), the Worker serves **your psmux sessions**: the ones you start with `psmux new -s work` show up in the Hub, and the sessions the Worker creates are psmux sessions you can `psmux attach` to. They keep running when the Worker stops, restarts or updates. On the first start in a console without psmux, the Worker asks once whether to install it with `winget install psmux` (the answer is kept in `psmux_offer`; `minion worker config set psmux_offer ask` asks again). `minion worker config set session_host conpty` (or `psmux`) chooses explicitly; the default `auto` uses psmux when it is installed.
 
 Windows terminals that are not psmux sessions (a plain PowerShell or cmd window) are not visible: run the work you want to reach from the Hub inside psmux.
 
@@ -14,18 +14,18 @@ Windows terminals that are not psmux sessions (a plain PowerShell or cmd window)
 
 ## Visible and hidden sessions
 
-A session is **visible** when you can see and join it from your own terminal: psmux sessions in your default namespace show in `psmux ls` and you can `psmux attach` to them. A session is **hidden** when you cannot: a ConPTY session lives inside the Worker process (psmux is not installed, `session_host` is `conpty`, or the Worker runs as a Windows service as LocalSystem). The same holds on Linux and macOS: sessions on your default tmux server are visible, sessions on a private socket (`tmux_socket`), in the tmux server of root under a service manager, or on the tmux server inside the Minion image are hidden (a `minion` installed by hand inside a container you work in, such as a Coder workspace, serves your own tmux server there: visible). The Worker setting `sessions_visible` (`auto`, `yes`, `no`; Linux and macOS) overrides that guess, for example `yes` for a container that mounts your own tmux socket ([Docker](worker-docker.md)).
+A session is **visible** when you can see and join it from your own terminal: psmux sessions in your default namespace show in `psmux ls` and you can `psmux attach` to them. A session is **hidden** when you cannot: a ConPTY session lives inside the Worker process (psmux is not installed, or `session_host` is `conpty`). The same holds on Linux and macOS: sessions on your default tmux server are visible, sessions on a private socket (`tmux_socket`), in the tmux server of root under a service manager, or on the tmux server inside the Minion image are hidden (a `minion` installed by hand inside a container you work in, such as a Coder workspace, serves your own tmux server there: visible). The Worker setting `sessions_visible` (`auto`, `yes`, `no`; Linux and macOS) overrides that guess, for example `yes` for a container that mounts your own tmux socket ([Docker](worker-docker.md)).
 
 The Worker reports its session host and the reason to the Hub. The Worker page and the Workers list show it ("Sessions: psmux (visible)" or "ConPTY inside the Worker (hidden): psmux is not installed (winget install psmux)"). By default **the Hub refuses to create hidden sessions**: the New session button is disabled and says why and how to fix it (install psmux with `winget install psmux` and run `minion worker up --foreground` as yourself). You can allow hidden sessions for yourself in **Account > Sessions** (from your own signed-in browser session; an API key needs manage, and an administrator acting as you cannot change it); an administrator decides for everybody with the Hub setting `hidden_sessions` (`user-controlled`, the default, `allowed` or `disabled`). Sessions that already exist are not affected. A Windows Worker older than v0.10.0 does not report its session host; it counts as hidden (it may use ConPTY) until you update it.
 
-`minion worker status` shows the run mode (foreground console or Windows service) and the session host with its reason. If the `MinionWorker` service is installed and running (or set to start at boot) while you start `minion worker up --foreground`, the Worker warns you: that service keeps serving hidden ConPTY sessions after you close the console. In an elevated PowerShell, stop and remove it with `sc.exe stop MinionWorker`, then `sc.exe delete MinionWorker` (a stopped service that starts at boot: `sc.exe delete MinionWorker`, or `sc.exe config MinionWorker start= demand` to keep it). Do not use `minion worker down` for this: once the service is stopped it stops the foreground Worker of your console instead. With psmux, a self-update is not refused for the sessions: psmux sessions survive the restart.
+`minion worker status` shows the run mode (foreground console, or Windows logon autostart for the Worker that `minion worker up` installs) and the session host with its reason. With psmux, a self-update is not refused for the sessions: psmux sessions survive the restart.
 
 ## Limits of the preview
 
 - **Without psmux, sessions end with the Worker.** There is no server that outlives the Worker. Restarting or stopping the Worker ends every session, and the session list is empty afterwards. Sessions are not saved and not adopted again.
 - **No replies through the pipe.** A message sent with `pipe_send` is delivered, but the Windows Worker extracts no agent reply from the screen (the reason reported is `no_evidence`). See [the pipe](../guides/pipe.md).
 - **psmux checks and pastes in two steps.** With tmux the Worker checks that a pane still runs the program you reviewed and pastes in one step; psmux 3.4 runs that check and the paste as two requests, so a program that exits exactly then can leave the text to the shell that follows it. Session names that psmux cannot address literally (starting with `%`, `@`, `$` or `=`, or containing `:`, `.`, quotes, `#` or `;`) are not served.
-- **The service runs as LocalSystem.** When you install the Worker as a Windows service, the sessions it creates run as that account, not as you, and it uses ConPTY (it does not see your psmux sessions). To run sessions as yourself, stop the service and run `minion worker up --foreground` in your own terminal.
+- **There is no Windows service.** The Worker runs as you, with your rights, never as LocalSystem; see [the Worker at logon](#run-it-at-logon). Releases up to 0.13.1 installed a LocalSystem service; see [moving from the LocalSystem service](#move-from-the-localsystem-service).
 - The Windows build has had less testing than the Linux build. The pairing handshake has not had an independent cryptographic review yet (see [security](../security.md)); that applies to every platform.
 
 ## Install
@@ -59,14 +59,28 @@ Quickest: the join command of the Hub (**Workers**, **Add worker**, **Add a Work
 
 `--share-existing` has no tmux sessions to count on Windows; it decides what the Hub may see of the sessions you create.
 
-To install it as a Windows service instead, pair first (run the command above until the Worker is paired, or `minion worker pair`), then run the same `worker up` command from an elevated terminal without `--foreground`. The service uses the state directory of the user who installs it, so it keeps that pairing. The command prints a note about the LocalSystem account when it installs the service. The service starts at boot and is restarted five seconds after a failure; the command line reaches it over a named pipe that only the installing user and the system may open.
+## Run it at logon
+
+`minion worker up` without `--foreground`, in a normal terminal (not "as administrator"), installs the Worker for you: it writes the value `MinionWorker` into your own Run key, `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which Windows runs at each logon of yours ([Run and RunOnce registry keys](https://learn.microsoft.com/windows/win32/setupapi/run-and-runonce-registry-keys)), and starts the Worker now. No administrator is needed, nothing is installed for other users, and no Windows service is involved. The value runs `minion.exe worker launch` from the `minion.exe` you installed (with `--state-dir` when you use another state directory): a small supervisor that runs `minion worker run` without a console window (`CREATE_NO_WINDOW`, [process creation flags](https://learn.microsoft.com/windows/win32/procthread/process-creation-flags)), starts it again 5 seconds after a failure (doubling up to a minute), at once after a self-update, and ends when you stop the Worker. Its output goes to `worker-launch.log` in the state directory. At logon a console window may flash for a moment before the supervisor leaves it.
+
+The Worker uses the same state directory as `minion worker up --foreground`, so it keeps your pairing, and it serves your psmux sessions. `minion worker up` again applies new flags: it stops the running Worker and starts it with the saved settings. The command refuses to run in an elevated prompt, because the Worker would then run with administrator rights. To stop starting it at logon, stop it and remove the value: `minion worker down`, then `reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v MinionWorker /f`.
+
+## Move from the LocalSystem service
+
+Releases up to 0.13.1 installed the Worker as the Windows service `MinionWorker`, running as LocalSystem from the `minion.exe` in your profile. Any program running as you could replace that file and so run code as SYSTEM. This release no longer runs the Worker as a service: if that old service starts, it ends at once and says so. `minion worker status` warns while it exists, and `minion worker up` refuses (exit status 21) until it is gone. Remove it in a PowerShell started as administrator, with Windows' own tools (never run your `minion.exe` elevated):
+
+```powershell
+Stop-Service MinionWorker; sc.exe delete MinionWorker
+```
+
+Then run `minion worker up` in your normal terminal. (Run as an administrator account without a separate elevated prompt, `minion worker up` removes the old service itself.)
 
 ## Check and reset
 
 ```powershell
 minion worker status
 minion worker config share all
-minion worker down     # stop the running Worker (foreground or the Windows service)
+minion worker down     # stop the running Worker (foreground, or the one started at logon)
 minion worker reset    # after down: forget the Hub, the key and the share choice
 ```
 

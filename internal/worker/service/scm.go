@@ -88,7 +88,7 @@ func (s SCM) stopTimeout() time.Duration {
 // error (the state database cannot be opened, the control pipe is taken), the
 // error is written to the Windows event log and the process exits with code 1
 // without reporting the service as stopped, so that the failure actions of the
-// service (restart after 5 seconds, see [WindowsConfig]) apply. An operator
+// service (restart after 5 seconds) apply. An operator
 // stop never restarts the service.
 func (s SCM) Run(ctx context.Context, binary string, fn func(context.Context) error) error {
 	if s.goos() != "windows" || s.interactive() {

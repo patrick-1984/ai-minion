@@ -1020,9 +1020,9 @@ func TestWorkerUpForegroundWarnsExactlyOnceAboutALiteralInvitationKey(t *testing
 	}
 }
 
-// A foreground Worker warns when the Windows service is also installed and
-// running (it serves only hidden ConPTY sessions), with the real commands; a
-// stopped manual service, no service and a failed query print nothing.
+// A foreground Worker warns while the LocalSystem service of an older release
+// exists, with the commands that remove it; no service, a service that runs
+// as another account and a failed query print nothing.
 func TestWarnWindowsService(t *testing.T) {
 	for _, tc := range []struct {
 		st   service.WindowsServiceState
@@ -1031,7 +1031,7 @@ func TestWarnWindowsService(t *testing.T) {
 	}{
 		{service.WindowsServiceState{Installed: true, Running: true, Account: "LocalSystem"}, nil, true},
 		{service.WindowsServiceState{Installed: true, AutoStart: true}, nil, true},
-		{service.WindowsServiceState{Installed: true}, nil, false},
+		{service.WindowsServiceState{Installed: true, Account: `.\ann`}, nil, false},
 		{service.WindowsServiceState{}, nil, false},
 		{service.WindowsServiceState{Installed: true, Running: true}, errors.New("access denied"), false},
 	} {

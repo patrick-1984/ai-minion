@@ -27,8 +27,8 @@ func underServiceManager() bool {
 // console and waits for it (v0.9.3); without a running runtime the new binary is
 // started with the same arguments and console, then this process exits.
 func restartProcess(log *slog.Logger, exe string) {
-	if underServiceManager() {
-		log.Info("restarting the Worker", "path", "service", "how", "exit with the restart code; the service recovery starts the new binary", "exe", exe)
+	if underServiceManager() || supervised {
+		log.Info("restarting the Worker", "path", "supervisor", "how", "exit with the restart code; the supervisor starts the new binary", "exe", exe)
 		os.Exit(exitRestart)
 	}
 	// Foreground: stop cleanly and let the command restart the new binary in
@@ -53,7 +53,7 @@ func restartProcess(log *slog.Logger, exe string) {
 // lock; no module runs yet, so nothing else this process holds blocks the new
 // Worker, and the new one must not wait for this one (waitForParent).
 func restartNow(log *slog.Logger, exe string) {
-	if underServiceManager() {
+	if underServiceManager() || supervised {
 		os.Exit(exitRestart)
 	}
 	log.Info("restarting the Worker", "path", "console", "how", "run the restored binary in this console and wait for it", "exe", exe)
@@ -104,7 +104,7 @@ func runInConsole(log *slog.Logger, exe string) int {
 // releases (a stop that did not finish): the new process waits for this one
 // to exit before it starts its modules (waitForParent).
 func restartDetached(log *slog.Logger, exe string) {
-	if underServiceManager() {
+	if underServiceManager() || supervised {
 		os.Exit(exitRestart)
 	}
 	cmd := exec.Command(exe, os.Args[1:]...)

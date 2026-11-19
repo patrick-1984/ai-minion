@@ -20,14 +20,14 @@
 //   - service.go: [Install], the entry point that dispatches on the detected
 //     manager, the [Runner] and [Controller] ports, and the kardianos/service
 //     wrapper used for the Windows service control manager.
-//   - scm.go: [SCM.Run], the service handshake of the Windows service: the
-//     process that the service control manager starts runs `minion worker
-//     service-run`, which calls it, so that the manager sees the service start
-//     and stop.
-//   - windows.go: [WindowsConfig], the Windows service as installed by Story
-//     8.2 (preview): the state directory and the SID of the installing user in
-//     the service environment, automatic start, restart on failure and the
-//     preview note; usersid_windows.go reads the SID of the user.
+//   - autostart.go: the Windows Worker, which runs as the user (security fix
+//     S1): the command line of the per-user Run entry that starts it at logon
+//     ("minion worker launch", a supervisor that keeps "worker run" running
+//     without a console window).
+//   - legacy.go: the LocalSystem service MinionWorker of releases up to
+//     0.13.1, which is found, reported and removed; scm.go: [SCM.Run], the
+//     service handshake that "worker service-run" still uses so that such a
+//     service, if it starts, ends cleanly.
 //
 // Nothing here resolves settings or runs pre-start hooks: that is the job of
 // internal/cli/worker_up.go.

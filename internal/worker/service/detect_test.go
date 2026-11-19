@@ -33,7 +33,7 @@ func TestDetectMatrix(t *testing.T) {
 		{"systemd inside a container wins", envOf("linux", 0, append([]string{"/.dockerenv"}, systemd...), nil), ManagerSystemd, ScopeSystem},
 		{"macOS", envOf("darwin", 501, nil, nil), ManagerLaunchd, ScopeUser},
 		{"macOS as root", envOf("darwin", 0, nil, nil), ManagerLaunchd, ScopeUser},
-		{"windows", envOf("windows", 0, nil, nil), ManagerWindows, ScopeSystem},
+		{"windows", envOf("windows", 0, nil, nil), ManagerWindows, ScopeUser},
 		{"freebsd", envOf("freebsd", 0, nil, nil), ManagerNone, ""},
 	}
 	for _, c := range cases {

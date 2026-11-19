@@ -16,6 +16,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
@@ -39,6 +40,9 @@ type workerStatusDeps struct {
 	// sessions returns the session lister for the tmux socket; nil or a nil
 	// result means "cannot count".
 	sessions func(socket string) agent.StatusSessions
+	// windowsService looks at the Worker's Windows service (query only); nil
+	// means service.QueryWindowsService (nothing off Windows).
+	windowsService func() (service.WindowsServiceState, error)
 }
 
 func defaultWorkerStatusDeps() workerStatusDeps {
@@ -199,6 +203,18 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		problems = append(problems, fmt.Sprintf("cannot look at the Worker state in %s: %v", core.StateDir, err))
+	}
+
+	// The LocalSystem service of an older release is a way to SYSTEM until it
+	// is removed.
+	query := deps.windowsService
+	if query == nil {
+		query = service.QueryWindowsService
+	}
+	if st, err := query(); err == nil {
+		if msg := service.LegacyServiceWarning(st); msg != "" {
+			problems = append(problems, msg)
+		}
 	}
 
 	report := agent.BuildStatus(cmd.Context(), in)

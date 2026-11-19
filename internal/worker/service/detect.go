@@ -71,13 +71,14 @@ type Detection struct {
 // Detect decides which service manager is available. On Linux that is systemd
 // when it is running (a system unit when the caller is root, a user unit
 // otherwise); a container without systemd, or a host without it, has none. On
-// macOS it is launchd (a user agent), on Windows the service control manager.
+// macOS it is launchd (a user agent), on Windows the user's Run key (the
+// Worker runs as the user, see autostart.go).
 func Detect(env Env) Detection {
 	switch env.GOOS {
 	case "darwin":
 		return Detection{Manager: ManagerLaunchd, Scope: ScopeUser, Reason: "macOS: launchd agent for the current user"}
 	case "windows":
-		return Detection{Manager: ManagerWindows, Scope: ScopeSystem, Reason: "Windows: service control manager"}
+		return Detection{Manager: ManagerWindows, Scope: ScopeUser, Reason: "Windows: started at logon from your Run key, as you"}
 	case "linux":
 		return detectLinux(env)
 	default:
