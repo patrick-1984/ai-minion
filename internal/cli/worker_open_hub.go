@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -46,8 +47,24 @@ func startDetached(_ context.Context, name string, args ...string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	return cmd.Process.Release()
+	// An opener that cannot dispatch the URL exits nonzero at once: wait a
+	// short while for that. One that keeps running (a browser it started) is
+	// released.
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			return fmt.Errorf("%s did not open the URL: %w", name, err)
+		}
+		return nil
+	case <-time.After(openerGrace):
+		return nil
+	}
 }
+
+// openerGrace is how long startDetached waits for an opener to fail.
+var openerGrace = 2 * time.Second
 
 // urlOpener returns the program and arguments that open url in the browser
 // of the desktop on goos: xdg-open, open, or the URL handler of Windows.

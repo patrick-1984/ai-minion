@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -91,5 +92,18 @@ func TestOpenHubSolo(t *testing.T) {
 	_, errOut, code := runOpenHub(t, openHubDeps("linux", map[string]string{"MINION_STATE_DIR": t.TempDir()}, o))
 	if code != ExitError || len(o.calls) != 0 || !strings.Contains(errOut, "no Hub URL") {
 		t.Fatalf("solo = %q, %d, calls %v", errOut, code, o.calls)
+	}
+}
+
+// An opener that starts and then exits nonzero is a failure, not "opened".
+func TestStartDetachedReportsEarlyFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs sh")
+	}
+	if err := startDetached(context.Background(), "sh", "-c", "exit 3"); err == nil {
+		t.Fatal("an opener that exited 3 was reported as opened")
+	}
+	if err := startDetached(context.Background(), "sh", "-c", "exit 0"); err != nil {
+		t.Fatalf("a successful opener failed: %v", err)
 	}
 }
