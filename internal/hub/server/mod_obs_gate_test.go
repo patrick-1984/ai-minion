@@ -210,7 +210,10 @@ func TestRunReturnsWhenTheLocalOutputStallsDuringStop(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run = %v", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return while the local output stalled")
 	}
