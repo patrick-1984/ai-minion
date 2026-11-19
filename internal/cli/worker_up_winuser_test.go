@@ -319,13 +319,13 @@ func TestWorkerUpWindowsChecksTheStateDirectoryOfTheAnsweringWorker(t *testing.T
 	d.call = func(ctx context.Context, op string) (json.RawMessage, error) {
 		raw, err := inner(ctx, op)
 		if err == nil && op == agent.OpLocalStatus {
-			return json.RawMessage(`{"state_dir":"C:\\other"}`), nil
+			return json.RawMessage(`{"state_dir":"C:\\elsewhere"}`), nil
 		}
 		return raw, err
 	}
 	f.deps.windows = d
 	_, err := f.run("--share-existing", "none")
-	if err == nil || !strings.Contains(err.Error(), "C:\\other") {
+	if err == nil || !strings.Contains(err.Error(), "C:\\elsewhere") {
 		t.Fatalf("err = %v", err)
 	}
 }
