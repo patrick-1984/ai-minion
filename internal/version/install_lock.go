@@ -105,3 +105,8 @@ func LockBinary(path string) (release func(), err error) {
 	}
 	return takeLock(real + ".update-lock")
 }
+
+// InstalledVersion runs "<exe> version" and returns the release it reports;
+// false when it does not report one. Run it only on a binary nobody else
+// can have changed.
+func InstalledVersion(exe string) (SemVer, bool) { return installedVersion(exe) }

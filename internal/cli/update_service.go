@@ -55,10 +55,9 @@ func restartNote() string {
 
 // legacyServiceNote is for a service that still runs a binary outside
 // %ProgramFiles%\Minion. Elevating that binary is what must not happen; the
-// way out is a fresh, checked install and the move by "worker up".
+// way out is the install.ps1 bootstrap, which never runs a user-writable file.
 func legacyServiceNote(svc string) string {
-	return fmt.Sprintf("The Windows service %s still runs %s, a file outside %%ProgramFiles%%\\Minion that non-administrators may be able to change. "+
-		"Move it: in an elevated PowerShell run Stop-Service %s, install minion again with install.ps1 (it checks the release), "+
-		"then run minion worker up there; it installs the verified release into %%ProgramFiles%%\\Minion",
-		service.WindowsServiceName, svc, service.WindowsServiceName)
+	return fmt.Sprintf("The Windows service %s still runs %s, a file outside %%ProgramFiles%%\\Minion that non-administrators may be able to change; do not run it elevated. "+
+		"Move the service to the verified release: in an elevated PowerShell run %s",
+		service.WindowsServiceName, svc, service.BootstrapCommand())
 }

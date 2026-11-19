@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/patrick-1984/ai-minion/internal/version"
+
 	ksvc "github.com/kardianos/service"
 )
 
@@ -91,22 +93,39 @@ var accessDenied = isAccessDenied
 func windowsInstallError(op string, err error) error {
 	err = fmt.Errorf("%s the service: %w", op, err)
 	if accessDenied(err) {
-		err = fmt.Errorf("%w; installing a Windows service needs an administrator: run %s in a terminal started as administrator, or use --foreground", err, elevatedUpCommand())
+		err = fmt.Errorf("%w; installing a Windows service needs an administrator: use --foreground, or install it as an administrator. %s", err, ElevationGuidance())
 	}
 	return err
 }
 
-// elevatedUpCommand is the command to run elevated: the protected service
-// binary when it exists (an elevated prompt should not run the copy in the
-// user's profile, which the user's programs can change), else "minion worker
-// up".
-func elevatedUpCommand() string {
+// ElevationGuidance says how to run "worker up" elevated without running a
+// file that non-administrators can change. When the protected service binary
+// exists and nothing on its path can be changed by anyone else, that binary
+// by its absolute path; otherwise the bootstrap of install.ps1 (see
+// [BootstrapCommand]), never the minion.exe in the user's profile.
+func ElevationGuidance() string {
 	if p, err := ServiceBinaryLocation(); err == nil {
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
 			if f, err := CheckServiceBinary(p); err == nil && len(f) == 0 {
-				return "\"" + p + "\" worker up"
+				return "In an elevated PowerShell run: & \"" + p + "\" worker up"
 			}
 		}
 	}
-	return "\"minion worker up\""
+	return "In an elevated PowerShell run: " + BootstrapCommand() +
+		"  (it downloads minion into a directory only administrators can open, checks it against the release's checksums.txt and runs \"worker up\" from there; " +
+		"do not run a minion.exe from your profile elevated)"
+}
+
+// BootstrapCommand is the PowerShell line that installs the Windows service
+// from a release without running a user-writable file elevated: install.ps1
+// in service mode (MINION_INSTALL_SERVICE=1) of this release, or of the
+// latest one for a development build.
+func BootstrapCommand() string {
+	base := "https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1"
+	pin := ""
+	if v, err := version.ParseVersion(version.Version); err == nil && v.String() == version.Version {
+		base = "https://github.com/patrick-1984/ai-minion/releases/download/" + version.Version + "/install.ps1"
+		pin = "$env:MINION_VERSION='" + version.Version + "'; "
+	}
+	return pin + "$env:MINION_INSTALL_SERVICE='1'; irm " + base + " | iex"
 }

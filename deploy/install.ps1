@@ -22,6 +22,21 @@
 #   MINION_RELEASE_BASE, MINION_RELEASE_API
 #                       where archives and the latest release are looked up
 #                       (mirrors, tests)
+#   MINION_INSTALL_SERVICE=1
+#                       install the Worker as the Windows service instead
+#                       (needs an elevated PowerShell): the zip is downloaded,
+#                       checked and unpacked in a new directory below
+#                       Program Files that only administrators and SYSTEM can
+#                       open, never in your profile, and "minion worker up" runs
+#                       from there. It installs the signed release, verified,
+#                       into %ProgramFiles%\Minion and starts the service; the
+#                       bootstrap directory is removed afterwards. Nothing is
+#                       put in your profile or PATH. Pair the Worker first
+#                       ("minion worker pair") so that the saved settings
+#                       apply.
+#   MINION_SERVICE_ARGS more arguments for "worker up" in service mode,
+#                       separated by spaces (for example
+#                       "--share-existing none")
 #
 # Runs in Windows PowerShell 5.1 and in PowerShell 7. Errors are thrown, not
 # "exit": with "irm | iex" an exit would close the user's window.
@@ -53,8 +68,26 @@
     $zip = "minion_$($ver.Substring(1))_windows_$($arch)_preview.zip"
     $baseRoot = if ($env:MINION_RELEASE_BASE) { $env:MINION_RELEASE_BASE } else { "https://github.com/$repo/releases/download" }
     $base = "$baseRoot/$ver"
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("minion-install-" + [Guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $tmp | Out-Null
+    $service = $env:MINION_INSTALL_SERVICE -eq '1'
+    if ($service) {
+        $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw "install.ps1: MINION_INSTALL_SERVICE=1 installs a Windows service: run it in a PowerShell started as administrator"
+        }
+        # A new directory below Program Files (where only administrators may
+        # create anything), closed to everyone but SYSTEM and the
+        # administrators before anything is put in it: the binary that runs
+        # elevated never lies where a user's program could change it.
+        $pf = [Environment]::GetFolderPath('ProgramFiles')
+        $tmp = Join-Path $pf ("Minion.bootstrap-" + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        $acl = New-Object Security.AccessControl.DirectorySecurity
+        $acl.SetSecurityDescriptorSddlForm('O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+        Set-Acl -LiteralPath $tmp -AclObject $acl
+    } else {
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ("minion-install-" + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+    }
     try {
         Write-Host "Downloading $zip ($ver)"
         Invoke-WebRequest -UseBasicParsing -Uri "$base/$zip" -OutFile (Join-Path $tmp $zip)
@@ -73,6 +106,22 @@
         Expand-Archive -LiteralPath (Join-Path $tmp $zip) -DestinationPath $unpacked -Force
         $exe = Join-Path $unpacked 'minion.exe'
         if (-not (Test-Path -LiteralPath $exe)) { throw "install.ps1: $zip holds no minion.exe" }
+
+        if ($service) {
+            # Only a release that installs the protected service (it fetches
+            # and verifies its own signed release into %ProgramFiles%\Minion)
+            # may be used for it; an older one would register this directory.
+            $help = (& $exe worker up --help 2>&1) -join "`n"
+            if ($help -notmatch 'allow-unverified-service-binary') {
+                throw "install.ps1: $ver does not install the Windows service into a protected directory; use a newer release (MINION_VERSION)"
+            }
+            $svcArgs = @()
+            if ($env:MINION_SERVICE_ARGS) { $svcArgs = @($env:MINION_SERVICE_ARGS -split '\s+' | Where-Object { $_ }) }
+            Write-Host "Running $exe worker up $($svcArgs -join ' ')"
+            & $exe worker up @svcArgs
+            if ($LASTEXITCODE -ne 0) { throw "install.ps1: minion worker up failed with exit status $LASTEXITCODE" }
+            return
+        }
 
         $dir = if ($env:MINION_INSTALL_DIR) { $env:MINION_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\minion' }
         New-Item -ItemType Directory -Force -Path $dir | Out-Null

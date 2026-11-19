@@ -136,6 +136,10 @@ type Request struct {
 	// AllowUnverified installs the Windows service from Binary as it is,
 	// without a verified digest (development builds only).
 	AllowUnverified bool
+	// Version is the release Binary is; an installed newer release is not
+	// replaced unless AllowDowngrade.
+	Version        string
+	AllowDowngrade bool
 	// PinStateDir writes StateDir into the service (MINION_STATE_DIR) because
 	// it is not the directory the service would resolve without help: the
 	// service manager does not carry the environment of the shell that ran
@@ -201,10 +205,14 @@ type Deps struct {
 	// nil means [CurrentUserSID].
 	UserSID func() (string, error)
 	// ServiceBinary puts the binary the Windows service runs where only SYSTEM
-	// and the administrators can change it and returns that path; the copied
-	// bytes must hash to wantSHA256 when it is set. Nil means the copy to
-	// %ProgramFiles%\Minion\minion.exe (security fix S1).
-	ServiceBinary func(src, wantSHA256 string) (string, error)
+	// and the administrators can change it, runs activate with that path
+	// (under the update lock of the file; on failure the previous binary is
+	// put back) and returns the path. Nil means %ProgramFiles%\Minion\
+	// minion.exe (security fix S1).
+	ServiceBinary func(bi BinaryInstall, activate func(dst string) error) (string, error)
+	// Reconfigure points the existing Windows service at cfg and env in place
+	// and returns how to undo that; nil means the service control manager.
+	Reconfigure func(cfg *ksvc.Config, env map[string]string) (restore func() error, err error)
 	// ServiceKeyGone reports whether the registry key of the Windows service
 	// is gone; nil means the registry of this machine.
 	ServiceKeyGone func() bool
@@ -352,61 +360,97 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 	if req.BinarySHA256 == "" && !req.AllowUnverified {
 		return Result{}, ErrUnverifiedServiceBinary
 	}
-	// The protected copy is put in place first, while a running service
-	// keeps running (its binary, if it is that file, is renamed aside): a
-	// copy that fails stops nothing. The service runs as LocalSystem, so it
-	// must never start a binary that the user (or anyone but SYSTEM and the
-	// administrators) can change, such as the one the installer put in
-	// %LOCALAPPDATA%. Registering the copy also moves an existing service
-	// that still points at a user-writable path.
-	binary, err := d.serviceBinary(req.Binary, req.BinarySHA256)
-	if err != nil {
-		return Result{}, windowsInstallError("prepare the binary of", err)
-	}
-	req.Binary = binary
 	// Service operations below go by name; the path of this controller does
 	// not matter.
 	old, err := d.windowsController(req)
 	if err != nil {
 		return Result{}, fmt.Errorf("service manager: %w", err)
 	}
-	wasRunning, err := d.stopService(ctx)
+	_, serr := old.Status()
+	exists := !errors.Is(serr, ErrNotInstalled)
+	stopped := false
+	// activate runs once the verified binary is in place (and protected, and
+	// checked), under the update lock of that file: it points the service at
+	// it and starts it. A failure leaves the previous configuration in place;
+	// the caller then puts the previous binary back.
+	activate := func(dst string) error {
+		req.Binary = dst
+		if !exists {
+			return d.createService(ctx, req)
+		}
+		// An existing service is changed in place, never deleted and
+		// created again: a deletion hangs while any program holds a handle
+		// to the service and can leave none at all.
+		wasRunning, err := d.stopService(ctx)
+		if err != nil {
+			return windowsInstallError("stop", err)
+		}
+		stopped = wasRunning
+		cfg, env, err := d.serviceConfig(req)
+		if err != nil {
+			return err
+		}
+		reconfigure := d.Reconfigure
+		if reconfigure == nil {
+			reconfigure = reconfigureService
+		}
+		restore, err := reconfigure(cfg, env)
+		if err != nil {
+			return windowsInstallError("change", err)
+		}
+		if err := d.startAndWait(ctx, old); err != nil {
+			if rerr := restore(); rerr != nil {
+				return errors.Join(err, fmt.Errorf("cannot restore the previous configuration of the service: %w", rerr))
+			}
+			return err
+		}
+		return nil
+	}
+	binary, err := d.serviceBinary(BinaryInstall{
+		Src: req.Binary, SHA256: req.BinarySHA256, Version: req.Version, AllowDowngrade: req.AllowDowngrade,
+	}, activate)
 	if err != nil {
-		return Result{}, windowsInstallError("stop", err)
+		err = windowsInstallError("install the binary of", err)
+		if stopped {
+			// The previous binary and configuration are back: run them again.
+			if serr := old.Start(); serr == nil {
+				return Result{}, fmt.Errorf("%w (the previous service runs again)", err)
+			}
+			return Result{}, fmt.Errorf("%w; the Worker service is stopped: start it with Start-Service %s", err, WindowsServiceName)
+		}
+		return Result{}, err
 	}
-	// From here on a failure leaves the Worker stopped unless the old service
-	// can be started again; say which.
-	recoverOld := func(cause error) error {
-		if !wasRunning {
-			return cause
-		}
-		if serr := old.Start(); serr == nil {
-			return fmt.Errorf("%w (the previous service was started again)", cause)
-		}
-		return fmt.Errorf("%w; the Worker service is stopped: start it with Start-Service %s once the problem is fixed, or run the command again", cause, WindowsServiceName)
+	return Result{Manager: ManagerWindows, Scope: ScopeSystem, Unit: WindowsServiceName,
+		Note: serviceBinaryNote(binary, req.BinarySHA256 != "") + windowsServiceNote, Binary: binary}, nil
+}
+
+// createService creates the service for req, writes its environment and
+// starts it; a failure removes what it created.
+func (d Deps) createService(ctx context.Context, req Request) error {
+	// A registry key without a service is an orphan of a creation that failed
+	// half way; the new service gets a clean key.
+	keyGone := d.ServiceKeyGone
+	if keyGone == nil {
+		keyGone = serviceKeyGone
 	}
-	// An existing installation is replaced so that the settings of this run
-	// apply. Uninstall can fail after it deleted the service (kardianos then
-	// removes an event log source, which a service created by hand does not
-	// have), so the wait for the deletion does not depend on its result.
-	uerr := old.Uninstall()
-	if err := d.waitDeleted(ctx, old); err != nil {
-		if uerr != nil {
-			return Result{}, recoverOld(windowsInstallError("remove the old version of", uerr))
+	if !keyGone() {
+		removeKey := d.RemoveServiceKey
+		if removeKey == nil {
+			removeKey = removeServiceKey
 		}
-		return Result{}, recoverOld(err)
+		if err := removeKey(); err != nil {
+			return fmt.Errorf("the registry key of a removed service %s stays (HKLM\\SYSTEM\\CurrentControlSet\\Services\\%s) and cannot be removed: %w", WindowsServiceName, WindowsServiceName, err)
+		}
 	}
 	c, err := d.windowsController(req)
 	if err != nil {
-		return Result{}, d.removedError(fmt.Errorf("service manager: %w", err))
+		return fmt.Errorf("service manager: %w", err)
 	}
 	if err := c.Install(); err != nil {
-		return Result{}, d.removedError(windowsInstallError("install", err))
+		return windowsInstallError("install", err)
 	}
 	// The environment (state directory, pipe user) is written into the key
-	// of the service that now exists, not before it is created: a key written
-	// first can be one that is still being removed, or be left behind when
-	// the creation fails.
+	// of the service that now exists, not before it is created.
 	if env := d.serviceEnv(req); len(env) > 0 {
 		set := d.SetServiceEnv
 		if set == nil {
@@ -414,30 +458,45 @@ func (d Deps) installController(ctx context.Context, req Request) (Result, error
 		}
 		if err := set(env); err != nil {
 			_ = c.Uninstall()
-			return Result{}, d.removedError(windowsInstallError("set the environment of", err))
+			return windowsInstallError("set the environment of", err)
 		}
 	}
-	if err := c.Start(); err != nil {
-		return Result{}, windowsInstallError("start", err)
+	if err := d.startAndWait(ctx, c); err != nil {
+		_ = c.Uninstall()
+		return err
 	}
-	var state Status
+	return nil
+}
+
+// startAndWait starts the service and waits until it runs.
+func (d Deps) startAndWait(ctx context.Context, c Controller) error {
+	if err := c.Start(); err != nil {
+		return windowsInstallError("start", err)
+	}
 	for i := 0; i < d.activePolls(); i++ {
-		if state, err = c.Status(); err == nil && state == StatusRunning {
-			return Result{Manager: ManagerWindows, Scope: ScopeSystem, Unit: WindowsServiceName,
-				Note: serviceBinaryNote(binary, req.BinarySHA256 != "") + windowsServiceNote, Binary: binary}, nil
+		if state, err := c.Status(); err == nil && state == StatusRunning {
+			return nil
 		}
 		if cerr := ctx.Err(); cerr != nil {
-			return Result{}, cerr
+			return cerr
 		}
 		d.sleep(ctx, d.pollInterval())
 	}
-	return Result{}, errors.New("the service " + WindowsServiceName + " is not running after the start")
+	return errors.New("the service " + WindowsServiceName + " is not running after the start")
 }
 
-// removedError says that the old service is gone and the new one is not
-// there.
-func (d Deps) removedError(cause error) error {
-	return fmt.Errorf("%w; the service %s was removed and is not installed now: fix the cause and run the command again", cause, WindowsServiceName)
+// serviceConfig is the configuration and environment of the service of req.
+func (d Deps) serviceConfig(req Request) (*ksvc.Config, map[string]string, error) {
+	userSID := d.UserSID
+	if userSID == nil {
+		userSID = CurrentUserSID
+	}
+	sid, err := userSID()
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot read your user SID: %w", err)
+	}
+	cfg := WindowsConfig(req.Binary, req.StateDir, sid)
+	return withoutEnv(cfg), cfg.EnvVars, nil
 }
 
 // serviceEnv is the environment [WindowsConfig] gives the service of req; nil
@@ -447,50 +506,11 @@ func (d Deps) serviceEnv(req Request) map[string]string {
 	if d.NewController != nil {
 		return nil
 	}
-	userSID := d.UserSID
-	if userSID == nil {
-		userSID = CurrentUserSID
-	}
-	sid, err := userSID()
+	_, env, err := d.serviceConfig(req)
 	if err != nil {
 		return nil
 	}
-	return WindowsConfig(req.Binary, req.StateDir, sid).EnvVars
-}
-
-// waitDeleted waits until the service control manager has really removed a
-// deleted service and its registry key. DeleteService only marks a service
-// for deletion; it goes once the last handle to it is closed, and its key
-// after that. A key that stays although the service is gone is an orphan (a
-// creation that failed half way): it is removed.
-func (d Deps) waitDeleted(ctx context.Context, c Controller) error {
-	keyGone := d.ServiceKeyGone
-	if keyGone == nil {
-		keyGone = serviceKeyGone
-	}
-	removeKey := d.RemoveServiceKey
-	if removeKey == nil {
-		removeKey = removeServiceKey
-	}
-	polls := d.stopPolls()
-	for i := 0; i < polls; i++ {
-		if _, err := c.Status(); errors.Is(err, ErrNotInstalled) {
-			if keyGone() {
-				return nil
-			}
-			if i == polls-1 {
-				if err := removeKey(); err != nil {
-					return fmt.Errorf("the registry key of the removed service %s stays (HKLM\\SYSTEM\\CurrentControlSet\\Services\\%s) and cannot be removed: %w", WindowsServiceName, WindowsServiceName, err)
-				}
-				return nil
-			}
-		}
-		if cerr := ctx.Err(); cerr != nil {
-			return cerr
-		}
-		d.sleep(ctx, d.pollInterval())
-	}
-	return errors.New("the old service " + WindowsServiceName + " is still being deleted; close the Services console and Event Viewer, then run the command again")
+	return env
 }
 
 func (d Deps) stopPolls() int {
@@ -511,11 +531,11 @@ func serviceBinaryNote(binary string, verified bool) string {
 }
 
 // serviceBinary is the ServiceBinary step with its default.
-func (d Deps) serviceBinary(src, wantSHA256 string) (string, error) {
+func (d Deps) serviceBinary(bi BinaryInstall, activate func(dst string) error) (string, error) {
 	if d.ServiceBinary != nil {
-		return d.ServiceBinary(src, wantSHA256)
+		return d.ServiceBinary(bi, activate)
 	}
-	return installServiceBinary(src, wantSHA256)
+	return installServiceBinary(bi, activate)
 }
 
 // ErrUnverifiedServiceBinary refuses a Windows service install without the

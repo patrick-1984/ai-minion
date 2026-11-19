@@ -65,7 +65,7 @@ jobs:
           set -eu
           identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
-          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor|TestCopyServiceBinary|TestWithoutEnv|TestReadSecurity)'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor|TestCopyServiceBinary|TestWithoutEnv|TestReadSecurity|TestReplaceAndActivate|TestElevationGuidance|TestBootstrapCommand)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
           cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
           CGO_ENABLED=0 go test -count=1 -v -run "$identity" ./internal/identity/
@@ -84,7 +84,7 @@ jobs:
           set -eu
           identity='^(TestSaveKeyProtectedDACL|TestWritePrivateProtectedDACL|TestCreatePrivateTempProtectedAtCreation|TestLoadKeyRefusesOtherPrincipals|TestLoadKeyAcceptsOwnerAndSystem|TestLoadKeyUsesOpenPrivateChecks|TestLoadKeyRefusesConditionalAllowACE|TestPrivateACLForAPinnedUserGrantsThatUserAndSystem|TestPrivateUserIgnoresThePinOutsideSystem|TestPrivateUserSID|TestValidSID|TestPipeUserSIDEnvName|TestReadAPIKeyFileOfAPrivateFile)$'
           store='^(TestOpenCreatesProtectedDatabaseInPermissiveDir|TestOpenProtectsExistingPermissiveStateDir|TestMigrationBackupIsPrivateInPermissiveDir|TestApplyPrivateDACLForAPinnedUserGrantsThatUserAndSystem)$'
-          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor|TestCopyServiceBinary|TestWithoutEnv|TestReadSecurity)'
+          service='^(TestSCM|TestPipeUserSIDEnv|TestWindows|TestNewConfigController|TestInstallOnWindows|TestCurrentUserSID|TestIsAccessDenied|TestInstallServiceBinary|TestCheckServiceBinary|TestServiceBinary|TestUntrustedWriters|TestBinaryChain|TestParseServiceImagePath|TestSameWindowsPath|TestFindingsFor|TestCopyServiceBinary|TestWithoutEnv|TestReadSecurity|TestReplaceAndActivate|TestElevationGuidance|TestBootstrapCommand)'
           hubstore='^(TestRestoreRefusesAnArchiveWithoutTheRecordedIdentityKey|TestRestoreRefusesAMismatchedIdentityKey|TestRestoreRefusesAnExcessiveScryptWorkFactorWithoutRunningIt|TestRestoreRefusesDeclaredSizesOfSmallFiles|TestRestoreEnforcesTheTotalSizeLimit|TestRestoreWithACancelledContextStopsAndLeavesNothing|TestRestoreRequiresAVerifiedGzipEnd|TestARejectedRestoreLeavesAnAbsentDestinationAbsent|TestEncryptedBackupRoundTripDecryptsTheOIDCSecret|TestRestoreCountsExtensionHeadersAgainstTheBudget|TestRestoreStopsOnACancelledContextWhileReadingExtensionHeaders|TestRestoreRefusesADecryptedStreamOverTheLimitWithSmallManifestTotals|TestFailedRestoreRemovesTheAncestorDirectoriesItCreated)$'
           cli='^(TestHubRestoreMaxSizeRefusesAnOversizedArchive|TestHubBackupWithoutAnEncryptionChoiceIsRefused)$'
           CGO_ENABLED=1 go test -race -count=1 -run "$identity" ./internal/identity/
@@ -209,15 +209,26 @@ jobs:
           # Nothing changed: the old service still points at the user's copy.
           sc.exe qc MinionWorker > qc-old.txt
           grep -q 'AppData' qc-old.txt
-      - name: Install and start the service (minion worker up, no --foreground)
+      # The documented way to install (or move) the service without running a
+      # user-writable minion.exe elevated: install.ps1 in service mode, here
+      # from a local mirror of a release that holds this build.
+      - name: Install and start the service with the install.ps1 bootstrap (no --foreground)
         shell: bash
         run: |
           set -eu
-          # Run from the user-writable copy, as a user of install.ps1 would:
-          # the service must not run this file but a protected copy. A
-          # development build needs the explicit flag (a release would install
-          # its verified signed binary instead).
-          "$USER_MINION" worker up --share-existing none --allow-unverified-service-binary 2>&1 | tee up.log
+          mirror="$RUNNER_TEMP/mirror"
+          mkdir -p "$mirror/v0.0.1"
+          pwsh -NoProfile -Command "Compress-Archive -Path minion.exe -DestinationPath '$(cygpath -w "$mirror/v0.0.1")\\minion_0.0.1_windows_amd64_preview.zip'"
+          (cd "$mirror/v0.0.1" && sha256sum minion_0.0.1_windows_amd64_preview.zip > checksums.txt)
+          (cd "$mirror" && python -m http.server 8765 --bind 127.0.0.1 > "$RUNNER_TEMP/mirror.log" 2>&1 &)
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8765/v0.0.1/checksums.txt > /dev/null && break; sleep 1; done
+          # A development build needs the explicit flag (a release installs its
+          # verified signed binary instead).
+          MINION_INSTALL_SERVICE=1 MINION_VERSION=v0.0.1 MINION_RELEASE_BASE=http://127.0.0.1:8765 \
+            MINION_SERVICE_ARGS='--share-existing none --allow-unverified-service-binary' \
+            pwsh -NoProfile -File deploy/install.ps1 2>&1 | tee up.log
+          # The bootstrap directory is gone.
+          if ls "$(cygpath -u "$PROGRAMFILES")" | grep -q 'Minion.bootstrap-'; then echo "bootstrap directory left behind"; exit 1; fi
           grep -q 'MinionWorker' up.log
           grep -q 'Program Files' up.log
           # Automatic start at boot and restart on failure (AC2).
@@ -237,7 +248,9 @@ jobs:
         shell: bash
         run: |
           set -eu
-          "$USER_MINION" worker up --share-existing none --allow-unverified-service-binary 2>&1 | tee up2.log
+          # Through the protected binary, by its absolute path, as the
+          # messages of minion say once it exists.
+          "$(cygpath -u "$PROGRAMFILES")/Minion/minion.exe" worker up --share-existing none --allow-unverified-service-binary 2>&1 | tee up2.log
           grep -q 'Installed windows system service MinionWorker' up2.log
           reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Services\MinionWorker' /v Environment | tee env.txt
           grep -q 'MINION_STATE_DIR' env.txt

@@ -42,48 +42,84 @@ func (c winController) Status() (service.Status, error) {
 	return service.StatusRunning, nil
 }
 
-const verifiedSum = "0d5f0e3c2b1a99887766554433221100ffeeddccbbaa99887766554433221100"
+const (
+	verifiedSum  = "0d5f0e3c2b1a99887766554433221100ffeeddccbbaa99887766554433221100"
+	stagingDir   = `C:\Program Files\Minion.staging-test`
+	releaseInDir = stagingDir + `\v1.2.3\minion.exe`
+)
 
-// newWindowsUpFixture is the up fixture on a (simulated) Windows host whose
-// service steps are fakes; copied records what the install copied.
-func newWindowsUpFixture(t *testing.T) (f *upFixture, calls *[]string, copied *[2]string) {
-	f = newUpFixture(t, false)
-	calls, copied = &[]string{}, &[2]string{}
-	f.deps.detectEnv = service.Env{GOOS: "windows"}
-	f.deps.executable = func() (string, error) { return `C:\Users\ann\AppData\Local\Programs\minion\minion.exe`, nil }
-	installed := new(bool)
-	f.deps.service.NewController = func(string) (service.Controller, error) {
-		return winController{calls: calls, installed: installed}, nil
-	}
-	f.deps.service.ServiceBinary = func(src, sum string) (string, error) {
-		*copied = [2]string{src, sum}
-		return `C:\Program Files\Minion\minion.exe`, nil
-	}
-	f.deps.service.ServiceKeyGone = func() bool { return true }
-	f.deps.service.SetServiceEnv = func(map[string]string) error { return nil }
-	f.deps.service.RemoveServiceKey = func() error { return nil }
-	f.deps.service.StopService = func(context.Context) (bool, error) { return false, nil }
-	f.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer) (version.Fetched, error) {
-		return version.Fetched{Tag: "v1.2.3", Path: `C:\Users\ann\AppData\Local\minion\cache\v1.2.3\minion.exe`, SHA256: verifiedSum}, nil
-	}
-	return f, calls, copied
+// winFixture is the up fixture on a (simulated) Windows host whose service
+// steps are fakes, running as release v1.2.3.
+type winFixture struct {
+	*upFixture
+	calls    *[]string
+	install  *service.BinaryInstall
+	cacheDir *string
 }
 
-// The service runs the verified release, never the file the user ran.
+func newWindowsUpFixture(t *testing.T) winFixture {
+	t.Helper()
+	old := version.Version
+	version.Version = "v1.2.3"
+	t.Cleanup(func() { version.Version = old })
+	w := winFixture{upFixture: newUpFixture(t, false), calls: &[]string{}, install: &service.BinaryInstall{}, cacheDir: new(string)}
+	installed := new(bool)
+	w.deps.detectEnv = service.Env{GOOS: "windows"}
+	w.deps.executable = func() (string, error) { return `C:\Users\ann\AppData\Local\Programs\minion\minion.exe`, nil }
+	w.deps.service.NewController = func(string) (service.Controller, error) {
+		return winController{calls: w.calls, installed: installed}, nil
+	}
+	w.deps.service.ServiceBinary = func(bi service.BinaryInstall, activate func(string) error) (string, error) {
+		*w.install = bi
+		const dst = `C:\Program Files\Minion\minion.exe`
+		return dst, activate(dst)
+	}
+	w.deps.service.ServiceKeyGone = func() bool { return true }
+	w.deps.service.SetServiceEnv = func(map[string]string) error { return nil }
+	w.deps.service.RemoveServiceKey = func() error { return nil }
+	w.deps.service.StopService = func(context.Context) (bool, error) { return false, nil }
+	w.deps.serviceStaging = func() (string, func(), error) {
+		*w.calls = append(*w.calls, "staging")
+		return stagingDir, func() { *w.calls = append(*w.calls, "cleanup") }, nil
+	}
+	w.deps.serviceRelease = func(_ context.Context, _ *config.Resolver, _ io.Writer, cacheDir string) (version.Fetched, error) {
+		*w.cacheDir = cacheDir
+		return version.Fetched{Tag: "v1.2.3", Path: releaseInDir, SHA256: verifiedSum}, nil
+	}
+	return w
+}
+
+// The service runs the verified release, fetched and verified in an
+// administrator-only staging directory (never the user's update cache), never
+// the file the user ran.
 func TestWorkerUpWindowsServiceInstallsTheVerifiedRelease(t *testing.T) {
-	f, calls, copied := newWindowsUpFixture(t)
-	out, err := f.run("--share-existing", "none")
+	w := newWindowsUpFixture(t)
+	out, err := w.run("--share-existing", "none")
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if copied[0] != `C:\Users\ann\AppData\Local\minion\cache\v1.2.3\minion.exe` || copied[1] != verifiedSum {
-		t.Errorf("copied %q with digest %q", copied[0], copied[1])
+	if *w.cacheDir != stagingDir {
+		t.Errorf("verified in %q", *w.cacheDir)
 	}
-	if !strings.Contains(strings.Join(*calls, ","), "install,start") {
-		t.Errorf("calls = %v", *calls)
+	if w.install.Src != releaseInDir || w.install.SHA256 != verifiedSum || w.install.Version != "v1.2.3" || w.install.AllowDowngrade {
+		t.Errorf("installed %+v", *w.install)
+	}
+	got := strings.Join(*w.calls, ",")
+	if !strings.HasPrefix(got, "staging,") || !strings.Contains(got, "install,start") || !strings.HasSuffix(got, "cleanup") {
+		t.Errorf("calls = %s", got)
 	}
 	if !strings.Contains(out, "verifying the signed release") || !strings.Contains(out, `C:\Program Files\Minion\minion.exe`) {
 		t.Errorf("output:\n%s", out)
+	}
+}
+
+func TestWorkerUpWindowsServicePassesTheDowngradeFlag(t *testing.T) {
+	w := newWindowsUpFixture(t)
+	if _, err := w.run("--share-existing", "none", "--"+allowDowngradeFlag); err != nil {
+		t.Fatal(err)
+	}
+	if !w.install.AllowDowngrade {
+		t.Errorf("installed %+v", *w.install)
 	}
 }
 
@@ -91,37 +127,37 @@ func TestWorkerUpWindowsServiceInstallsTheVerifiedRelease(t *testing.T) {
 // and before any setting is saved: a release that cannot be verified changes
 // nothing.
 func TestWorkerUpWindowsServiceStopsWhenTheReleaseCannotBeVerified(t *testing.T) {
-	f, calls, copied := newWindowsUpFixture(t)
+	w := newWindowsUpFixture(t)
 	hookRan := false
-	f.hook("enroll", func(agent.Settings) error { hookRan = true; return nil })
+	w.hook("enroll", func(agent.Settings) error { hookRan = true; return nil })
 	var deadline bool
-	f.deps.serviceRelease = func(ctx context.Context, _ *config.Resolver, _ io.Writer) (version.Fetched, error) {
+	w.deps.serviceRelease = func(ctx context.Context, _ *config.Resolver, _ io.Writer, _ string) (version.Fetched, error) {
 		_, deadline = ctx.Deadline()
 		return version.Fetched{}, version.ErrChecksum
 	}
-	_, err := f.run("--share-existing", "none", "--name", "lab")
+	_, err := w.run("--share-existing", "none", "--name", "lab")
 	if !errors.Is(err, version.ErrChecksum) || !strings.Contains(err.Error(), "verified release") {
 		t.Fatalf("err = %v", err)
 	}
 	if !deadline {
 		t.Error("the release fetch has no deadline")
 	}
-	if len(*calls) != 0 || copied[0] != "" || hookRan {
-		t.Errorf("something ran: calls %v, copied %v, hook %v", *calls, *copied, hookRan)
+	if got := strings.Join(*w.calls, ","); got != "staging,cleanup" || w.install.Src != "" || hookRan {
+		t.Errorf("something ran: calls %s, install %+v, hook %v", got, *w.install, hookRan)
 	}
-	if _, serr := os.Stat(filepath.Join(f.stateDir(), "config.json")); serr == nil {
+	if _, serr := os.Stat(filepath.Join(w.stateDir(), "config.json")); serr == nil {
 		t.Error("settings were saved")
 	}
 }
 
 // A release mirror URL with a credential in it is not printed.
 func TestWorkerUpWindowsServiceRedactsTheReleaseURL(t *testing.T) {
-	f, _, _ := newWindowsUpFixture(t)
+	w := newWindowsUpFixture(t)
 	secret := "https://ci:s3cr3t-token@mirror.example/api/s3cr3t-path-token/releases"
-	f.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer) (version.Fetched, error) {
+	w.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer, string) (version.Fetched, error) {
 		return version.Fetched{}, fmt.Errorf("%w: %w", version.ErrNetwork, &url.Error{Op: "Get", URL: secret, Err: errors.New("connection reset")})
 	}
-	_, err := f.run("--share-existing", "none")
+	_, err := w.run("--share-existing", "none")
 	if err == nil || strings.Contains(err.Error(), "s3cr3t") || !errors.Is(err, version.ErrNetwork) {
 		t.Fatalf("err = %v", err)
 	}
@@ -130,46 +166,62 @@ func TestWorkerUpWindowsServiceRedactsTheReleaseURL(t *testing.T) {
 	}
 }
 
+// Without the administrator-only staging directory nothing is fetched, and
+// the guidance never asks to elevate the user's copy.
+func TestWorkerUpWindowsServiceNeedsTheStagingDirectory(t *testing.T) {
+	w := newWindowsUpFixture(t)
+	w.deps.serviceStaging = func() (string, func(), error) { return "", nil, os.ErrPermission }
+	fetched := false
+	w.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer, string) (version.Fetched, error) {
+		fetched = true
+		return version.Fetched{}, nil
+	}
+	_, err := w.run("--share-existing", "none")
+	if err == nil || fetched || !strings.Contains(err.Error(), "MINION_INSTALL_SERVICE") || strings.Contains(err.Error(), "AppData") {
+		t.Fatalf("fetched %v, err = %v", fetched, err)
+	}
+}
+
 // The bypass exists only in development builds.
 func TestWorkerUpWindowsServiceRefusesTheBypassInARelease(t *testing.T) {
-	f, calls, _ := newWindowsUpFixture(t)
-	old := version.Version
-	version.Version = "v1.2.3"
-	t.Cleanup(func() { version.Version = old })
-	_, err := f.run("--share-existing", "none", "--"+allowUnverifiedFlag)
+	w := newWindowsUpFixture(t)
+	_, err := w.run("--share-existing", "none", "--"+allowUnverifiedFlag)
 	if err == nil || !strings.Contains(err.Error(), "only for development builds") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(*calls) != 0 {
-		t.Errorf("calls %v", *calls)
+	if len(*w.calls) != 0 {
+		t.Errorf("calls %v", *w.calls)
 	}
 }
 
 func TestWorkerUpWindowsServiceUnverifiedNeedsTheFlagAndWarns(t *testing.T) {
-	f, _, copied := newWindowsUpFixture(t)
-	f.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer) (version.Fetched, error) {
+	w := newWindowsUpFixture(t)
+	version.Version = "dev"
+	w.deps.serviceRelease = func(context.Context, *config.Resolver, io.Writer, string) (version.Fetched, error) {
 		t.Fatal("fetched although the flag was given")
 		return version.Fetched{}, nil
 	}
-	if _, err := f.run("--share-existing", "none", "--"+allowUnverifiedFlag); err != nil {
+	if _, err := w.run("--share-existing", "none", "--"+allowUnverifiedFlag); err != nil {
 		t.Fatal(err)
 	}
-	if copied[0] != `C:\Users\ann\AppData\Local\Programs\minion\minion.exe` || copied[1] != "" {
-		t.Errorf("copied %v", *copied)
+	if w.install.Src != `C:\Users\ann\AppData\Local\Programs\minion\minion.exe` || w.install.SHA256 != "" {
+		t.Errorf("installed %+v", *w.install)
 	}
-	if !strings.Contains(f.stderr.String(), "without checking that it is a signed release") {
-		t.Errorf("stderr = %s", f.stderr.String())
+	if !strings.Contains(w.stderr.String(), "without checking that it is a signed release") {
+		t.Errorf("stderr = %s", w.stderr.String())
 	}
 }
 
-// A development build ("dev") has no signed release to install.
-func TestFetchServiceReleaseRefusesADevelopmentBuild(t *testing.T) {
-	if version.Version != "dev" {
-		t.Skip("built as a release")
-	}
-	res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(string) (string, bool) { return "", false }}
-	_, err := fetchServiceRelease(context.Background(), res, io.Discard)
+// A development build ("dev") has no signed release to install, and nothing
+// is created for it.
+func TestWorkerUpWindowsServiceRefusesADevelopmentBuild(t *testing.T) {
+	w := newWindowsUpFixture(t)
+	version.Version = "dev"
+	_, err := w.run("--share-existing", "none")
 	if err == nil || !strings.Contains(err.Error(), "not a release") || !strings.Contains(err.Error(), "--"+allowUnverifiedFlag) {
 		t.Fatalf("err = %v", err)
+	}
+	if len(*w.calls) != 0 {
+		t.Errorf("calls %v", *w.calls)
 	}
 }

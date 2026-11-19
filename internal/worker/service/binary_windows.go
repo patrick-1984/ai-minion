@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
 // serviceDirSDDL is the security descriptor of %ProgramFiles%\Minion: owned by
@@ -39,26 +42,30 @@ func ServiceBinaryLocation() (string, error) {
 	return ServiceBinaryPath(pf), nil
 }
 
-// installServiceBinary copies src to %ProgramFiles%\Minion\minion.exe (see
-// [installServiceBinaryIn]) and returns that path.
-func installServiceBinary(src, wantSHA256 string) (string, error) {
+// installServiceBinary puts bi in place as %ProgramFiles%\Minion\minion.exe
+// and activates it (see [installServiceBinaryIn]); it returns that path.
+func installServiceBinary(bi BinaryInstall, activate func(dst string) error) (string, error) {
 	pf, err := programFiles()
 	if err != nil {
 		return "", fmt.Errorf("cannot find the Program Files directory: %w", err)
 	}
-	return installServiceBinaryIn(src, ServiceBinaryDir(pf), wantSHA256, true)
+	return installServiceBinaryIn(bi, ServiceBinaryDir(pf), true, activate)
 }
 
+// dirIdentityStore records which directory this installer created; tests
+// replace it (the real one is HKLM, which only administrators may change).
+var dirIdentityStore = struct {
+	get func() string
+	set func(string) error
+}{recordedServiceDir, recordServiceDir}
+
 // installServiceBinaryIn makes dir a directory only SYSTEM and the
-// administrators can change, copies src into it as minion.exe, protects the
-// file the same way and checks the result: an install that leaves the binary,
-// its directory or a directory above it replaceable by anyone else, or that
-// goes through a symbolic link or junction, fails. With wantSHA256 the copied
-// bytes must hash to it (src is then a verified release in a cache the user
-// may be able to change); without it (an unverified install) src that is the
-// copy already is kept. ancestors is false only in tests, whose temporary
-// directories lie below the test user's profile.
-func installServiceBinaryIn(src, dir, wantSHA256 string, ancestors bool) (string, error) {
+// administrators have ever been able to change, copies bi into it as
+// minion.exe and, before activate runs, protects the file, checks that
+// nothing in dir and nothing on the way to it can be changed by anyone else
+// and that the path has no symbolic link or junction. ancestors is false only
+// in tests, whose temporary directories lie below the test user's profile.
+func installServiceBinaryIn(bi BinaryInstall, dir string, ancestors bool, activate func(dst string) error) (string, error) {
 	dst := dir + `\` + serviceBinaryName
 	chain := BinaryChain(dst)
 	if !ancestors {
@@ -73,21 +80,51 @@ func installServiceBinaryIn(src, dir, wantSHA256 string, ancestors bool) (string
 	if err := secureServiceDir(dir); err != nil {
 		return "", err
 	}
-	if wantSHA256 != "" || !SameWindowsPath(src, dst) {
-		if err := copyServiceBinary(src, dst, wantSHA256); err != nil {
-			return "", err
+	err := replaceAndActivate(dst, bi, installedTrusted, func(dst string) error {
+		if err := applySDDL(dst, serviceFileSDDL); err != nil {
+			return fmt.Errorf("protect %s: %w", dst, err)
 		}
-	}
-	if err := applySDDL(dst, serviceFileSDDL); err != nil {
-		return "", fmt.Errorf("protect %s: %w", dst, err)
-	}
-	// The whole chain, as it is now that the file is in place.
-	for _, step := range chain {
-		if err := checkStep(step); err != nil {
-			return "", fmt.Errorf("%w; refusing to register it for the service", err)
+		for _, step := range chain {
+			if err := checkStep(step); err != nil {
+				return fmt.Errorf("%w; refusing to register it for the service", err)
+			}
 		}
+		if err := checkEntries(dir); err != nil {
+			return err
+		}
+		return activate(dst)
+	})
+	if err != nil {
+		return "", err
 	}
 	return dst, nil
+}
+
+// installedTrusted reads the release of the protected binary by running it
+// ("version"); it is run only when nobody else can have changed it.
+func installedTrusted(path string) (version.SemVer, bool) {
+	if f, err := CheckServiceBinary(path); err != nil || len(f) > 0 {
+		return version.SemVer{}, false
+	}
+	return version.InstalledVersion(path)
+}
+
+// checkEntries fails when anything in dir, at any depth, can be changed by
+// anyone but SYSTEM and the administrators or is a link or junction.
+func checkEntries(dir string) error {
+	return filepath.WalkDir(dir, func(p string, e os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == dir {
+			return nil
+		}
+		role := RoleFile
+		if e.IsDir() {
+			role = RoleDir
+		}
+		return checkStep(ChainStep{Path: p, Role: role})
+	})
 }
 
 // checkStep fails when principals other than SYSTEM, the administrators and
@@ -104,29 +141,25 @@ func checkStep(step ChainStep) error {
 	return nil
 }
 
-// secureServiceDir creates dir with [serviceDirSDDL]. An existing directory
-// is kept only when it is already safe (nobody else may change it; it is not
-// a link or junction), and then given that security descriptor again. Any
-// other one is not adopted, because a process that opened it while it was
-// open to others may still hold a handle that can change its DACL: it is moved
-// aside and a fresh directory is created.
+// secureServiceDir provides dir as a directory that only SYSTEM and the
+// administrators have ever been able to change. A directory this installer
+// created (with [serviceDirSDDL] at creation, its identity recorded in the
+// registry where only administrators can write) is kept and given that
+// security descriptor again. Any other one is not adopted, whatever its
+// access list says now: a process that opened it while it was open to others
+// may still hold a handle that can change it. It is moved aside and a fresh
+// directory is created and recorded.
 func secureServiceDir(dir string) error {
-	sd, err := windows.SecurityDescriptorFromString(serviceDirSDDL)
+	created, err := createProtectedDir(dir)
 	if err != nil {
 		return err
+	}
+	if created {
+		return recordDir(dir)
 	}
 	p, err := windows.UTF16PtrFromString(dir)
 	if err != nil {
 		return err
-	}
-	sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
-	sa.Length = uint32(unsafe.Sizeof(*sa))
-	err = windows.CreateDirectory(p, sa)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		return &os.PathError{Op: "mkdir", Path: dir, Err: err}
 	}
 	attrs, err := windows.GetFileAttributes(p)
 	if err != nil {
@@ -136,16 +169,54 @@ func secureServiceDir(dir string) error {
 		return fmt.Errorf("%s exists and is not a directory", dir)
 	}
 	if attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-		if cur, err := readSecurity(dir); err == nil && len(UntrustedWriters(cur, RoleDir)) == 0 {
+		if id, err := dirIdentity(dir); err == nil && id != "" && id == dirIdentityStore.get() {
 			return applySDDL(dir, serviceDirSDDL)
 		}
 	}
 	aside := fmt.Sprintf("%s.untrusted-%d", dir, time.Now().UnixNano())
 	if err := os.Rename(dir, aside); err != nil {
-		return fmt.Errorf("%s exists and others may change it; it is not used. Remove it in an elevated prompt (Remove-Item -Recurse %q) and run the command again: %w", dir, dir, err)
+		return fmt.Errorf("%s was not created by this installer and others may have changed it, so it is not used; "+
+			"stop the service (Stop-Service %s), remove the directory in an elevated prompt (Remove-Item -Recurse %q) and run the command again: %w",
+			dir, WindowsServiceName, dir, err)
 	}
-	if err := windows.CreateDirectory(p, sa); err != nil {
-		return &os.PathError{Op: "mkdir", Path: dir, Err: err}
+	if created, err := createProtectedDir(dir); err != nil {
+		return err
+	} else if !created {
+		return fmt.Errorf("%s appeared again while it was being replaced", dir)
+	}
+	return recordDir(dir)
+}
+
+// createProtectedDir creates dir with [serviceDirSDDL] at creation; created
+// is false when it exists already.
+func createProtectedDir(dir string) (created bool, err error) {
+	sd, err := windows.SecurityDescriptorFromString(serviceDirSDDL)
+	if err != nil {
+		return false, err
+	}
+	p, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return false, err
+	}
+	sa := &windows.SecurityAttributes{SecurityDescriptor: sd}
+	sa.Length = uint32(unsafe.Sizeof(*sa))
+	err = windows.CreateDirectory(p, sa)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		return false, nil
+	}
+	return false, &os.PathError{Op: "mkdir", Path: dir, Err: err}
+}
+
+func recordDir(dir string) error {
+	id, err := dirIdentity(dir)
+	if err != nil {
+		return err
+	}
+	if err := dirIdentityStore.set(id); err != nil {
+		return fmt.Errorf("cannot record the service directory: %w", err)
 	}
 	return nil
 }

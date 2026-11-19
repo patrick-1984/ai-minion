@@ -115,7 +115,7 @@ func TestInstallOnWindowsBuildsTheConfigFromTheRequest(t *testing.T) {
 	if fx.cfg == nil || fx.cfg.EnvVars["MINION_STATE_DIR"] != testState || fx.cfg.EnvVars[localapi.PipeUserSIDEnv] != testSID {
 		t.Fatalf("config = %+v", fx.cfg)
 	}
-	if got := strings.Join(fx.fc.calls, ","); !strings.HasPrefix(got, "uninstall,gone,install,start,status") {
+	if got := strings.Join(fx.fc.calls, ","); !strings.HasPrefix(got, "status,install,start,status") {
 		t.Errorf("calls = %s", got)
 	}
 	if res.Unit != WindowsServiceName || res.Manager != ManagerWindows {

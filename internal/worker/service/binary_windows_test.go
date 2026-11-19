@@ -24,6 +24,23 @@ func elevated(t *testing.T) {
 	}
 }
 
+// memoryIdentity keeps the recorded service directory in memory, not in the
+// registry of the test machine.
+func memoryIdentity(t *testing.T) *string {
+	t.Helper()
+	rec := new(string)
+	old := dirIdentityStore
+	dirIdentityStore.get = func() string { return *rec }
+	dirIdentityStore.set = func(id string) error { *rec = id; return nil }
+	t.Cleanup(func() { dirIdentityStore = old })
+	return rec
+}
+
+// install runs installServiceBinaryIn with an activation that does nothing.
+func install(src, dir, sum string) (string, error) {
+	return installServiceBinaryIn(BinaryInstall{Src: src, SHA256: sum}, dir, false, func(string) error { return nil })
+}
+
 func writeFakeBinary(t *testing.T, content string) string {
 	t.Helper()
 	src := filepath.Join(t.TempDir(), "minion.exe")
@@ -54,14 +71,18 @@ func daclOf(t *testing.T, path string) (windows.SECURITY_DESCRIPTOR_CONTROL, Sec
 
 func TestInstallServiceBinaryInProtectsTheDirectoryAndTheFile(t *testing.T) {
 	elevated(t)
+	rec := memoryIdentity(t)
 	src := writeFakeBinary(t, "first")
 	dir := filepath.Join(t.TempDir(), "Minion")
-	dst, err := installServiceBinaryIn(src, dir, sumOf("first"), false)
+	dst, err := install(src, dir, sumOf("first"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !SameWindowsPath(dst, filepath.Join(dir, "minion.exe")) {
 		t.Fatalf("dst = %s", dst)
+	}
+	if id, _ := dirIdentity(dir); id == "" || *rec != id {
+		t.Errorf("recorded %q, directory %q", *rec, id)
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "first" {
 		t.Fatalf("content = %q", b)
@@ -104,21 +125,21 @@ func TestInstallServiceBinaryInProtectsTheDirectoryAndTheFile(t *testing.T) {
 	}
 
 	// Running it again replaces the copy.
-	if _, err := installServiceBinaryIn(writeFakeBinary(t, "second"), dir, sumOf("second"), false); err != nil {
+	if _, err := install(writeFakeBinary(t, "second"), dir, sumOf("second")); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "second" {
 		t.Fatalf("content after the second install = %q", b)
 	}
 	// A source that does not match the verified digest changes nothing.
-	if _, err := installServiceBinaryIn(writeFakeBinary(t, "planted"), dir, sumOf("third"), false); err == nil {
+	if _, err := install(writeFakeBinary(t, "planted"), dir, sumOf("third")); err == nil {
 		t.Fatal("a binary that does not match the verified digest was installed")
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "second" {
 		t.Fatalf("content after a refused install = %q", b)
 	}
 	// Installing unverified from the copy itself keeps it.
-	if _, err := installServiceBinaryIn(dst, dir, "", false); err != nil {
+	if _, err := install(dst, dir, ""); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(dst); string(b) != "second" {
@@ -128,6 +149,7 @@ func TestInstallServiceBinaryInProtectsTheDirectoryAndTheFile(t *testing.T) {
 
 func TestInstallServiceBinaryInResetsALooseExistingDirectory(t *testing.T) {
 	elevated(t)
+	memoryIdentity(t)
 	dir := filepath.Join(t.TempDir(), "Minion")
 	loose, err := windows.SecurityDescriptorFromString("D:PAI(A;OICI;FA;;;WD)")
 	if err != nil {
@@ -146,7 +168,7 @@ func TestInstallServiceBinaryInResetsALooseExistingDirectory(t *testing.T) {
 	if _, info := daclOf(t, filepath.Join(dir, "minion.exe")); len(UntrustedWriters(info, RoleFile)) == 0 {
 		t.Fatal("the fixture is not loose")
 	}
-	dst, err := installServiceBinaryIn(writeFakeBinary(t, "new"), dir, sumOf("new"), false)
+	dst, err := install(writeFakeBinary(t, "new"), dir, sumOf("new"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,5 +252,68 @@ func TestServiceBinaryLocationIsBelowProgramFiles(t *testing.T) {
 	}
 	if !bytes.HasPrefix([]byte(strings.ToLower(p)), []byte(strings.ToLower(pf))) {
 		t.Errorf("%s is not below %s", p, pf)
+	}
+}
+
+// A directory whose access list is safe now but that this installer did not
+// create (its history is unknown: a handle opened while it was open to others
+// may still change it) is not reused, it is replaced.
+func TestInstallServiceBinaryInDoesNotReuseADirectoryItDidNotCreate(t *testing.T) {
+	elevated(t)
+	rec := memoryIdentity(t)
+	dir := filepath.Join(t.TempDir(), "Minion")
+	if created, err := createProtectedDir(dir); err != nil || !created {
+		t.Fatalf("created %v, err %v", created, err)
+	}
+	before, _ := dirIdentity(dir)
+	if _, err := install(writeFakeBinary(t, "x"), dir, sumOf("x")); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := dirIdentity(dir)
+	if after == before || *rec != after {
+		t.Errorf("identity before %q, after %q, recorded %q", before, after, *rec)
+	}
+	if aside, _ := filepath.Glob(dir + ".untrusted-*"); len(aside) != 1 {
+		t.Errorf("moved aside: %v", aside)
+	}
+	// The directory it created and recorded is reused.
+	if _, err := install(writeFakeBinary(t, "y"), dir, sumOf("y")); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := dirIdentity(dir); again != after {
+		t.Errorf("its own directory was replaced: %q, then %q", after, again)
+	}
+}
+
+// Anything in the directory that others may change stops the install before
+// the service is activated.
+func TestInstallServiceBinaryInChecksEveryEntryBeforeActivating(t *testing.T) {
+	elevated(t)
+	memoryIdentity(t)
+	dir := filepath.Join(t.TempDir(), "Minion")
+	if _, err := install(writeFakeBinary(t, "x"), dir, sumOf("x")); err != nil {
+		t.Fatal(err)
+	}
+	loose, err := windows.SecurityDescriptorFromString("D:PAI(A;;FA;;;WD)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(dir, "version.dll")
+	if err := os.WriteFile(planted, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, _ := loose.DACL()
+	if err := windows.SetNamedSecurityInfo(planted, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		t.Fatal(err)
+	}
+	activated := false
+	_, err = installServiceBinaryIn(BinaryInstall{Src: writeFakeBinary(t, "z"), SHA256: sumOf("z")}, dir, false,
+		func(string) error { activated = true; return nil })
+	if err == nil || !strings.Contains(err.Error(), "version.dll") || activated {
+		t.Fatalf("err = %v, activated %v", err, activated)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "minion.exe")); string(b) != "x" {
+		t.Errorf("minion.exe = %q after a refused install", b)
 	}
 }

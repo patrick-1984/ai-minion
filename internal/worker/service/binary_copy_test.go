@@ -17,23 +17,33 @@ func sumOf(b string) string {
 	return hex.EncodeToString(s[:])
 }
 
+func writeAll(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func readOr(p string) string {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "<" + err.Error() + ">"
+	}
+	return string(b)
+}
+
 func TestCopyServiceBinaryChecksTheVerifiedDigest(t *testing.T) {
 	dir := t.TempDir()
-	src := filepath.Join(dir, "cache-minion")
-	dst := filepath.Join(dir, "minion.exe")
-	if err := os.WriteFile(src, []byte("release"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dst, []byte("old"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeAll(t, dir, map[string]string{"src": "release", "minion.exe": "old"})
+	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "minion.exe")
 	// A source that was changed after it was verified is not installed.
-	err := copyServiceBinary(src, dst, sumOf("something else"))
-	if !errors.Is(err, ErrBinaryDigest) {
+	if _, err := copyServiceBinary(src, dst, sumOf("something else")); !errors.Is(err, ErrBinaryDigest) {
 		t.Fatalf("err = %v", err)
 	}
-	if b, _ := os.ReadFile(dst); string(b) != "old" {
-		t.Errorf("dst = %q after a refused copy", b)
+	if got := readOr(dst); got != "old" {
+		t.Errorf("dst = %q after a refused copy", got)
 	}
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
@@ -41,59 +51,116 @@ func TestCopyServiceBinaryChecksTheVerifiedDigest(t *testing.T) {
 			t.Errorf("leftover: %s", e.Name())
 		}
 	}
-	if err := copyServiceBinary(src, dst, sumOf("release")); err != nil {
+	prev, err := copyServiceBinary(src, dst, sumOf("release"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(dst); string(b) != "release" {
-		t.Errorf("dst = %q", b)
+	if readOr(dst) != "release" || prev != dst+".previous" || readOr(prev) != "old" {
+		t.Errorf("dst %q, previous %s = %q", readOr(dst), prev, readOr(prev))
 	}
-	// Nothing is left beside it but the update lock.
-	ents, _ = os.ReadDir(dir)
-	for _, e := range ents {
-		if n := e.Name(); n != "cache-minion" && n != "minion.exe" && n != "minion.exe.update-lock" {
-			t.Errorf("left behind: %s", n)
-		}
-	}
-	// Without a digest (an explicitly unverified install) it copies as is.
-	if err := copyServiceBinary(src, filepath.Join(dir, "other.exe"), ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := copyServiceBinary(dir, dst, ""); err == nil {
+	if _, err := copyServiceBinary(dir, dst, ""); err == nil {
 		t.Error("a directory was copied")
 	}
 }
 
-// The remote update keeps the previous release as minion.exe.old for its
-// crash rollback; installing the service binary must not touch it.
-func TestCopyServiceBinaryKeepsTheRollbackBinaryOfTheRemoteUpdate(t *testing.T) {
-	dir := t.TempDir()
-	dst := filepath.Join(dir, "minion.exe")
-	for name, content := range map[string]string{"minion.exe": "current", "minion.exe.old": "previous", "src": "release"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
+func installedAt(versions map[string]string) func(string) (version.SemVer, bool) {
+	return func(p string) (version.SemVer, bool) {
+		v, ok := versions[readOr(p)]
+		if !ok {
+			return version.SemVer{}, false
 		}
-	}
-	if err := copyServiceBinary(filepath.Join(dir, "src"), dst, sumOf("release")); err != nil {
-		t.Fatal(err)
-	}
-	if b, _ := os.ReadFile(dst + ".old"); string(b) != "previous" {
-		t.Errorf("minion.exe.old = %q", b)
-	}
-	if b, _ := os.ReadFile(dst); string(b) != "release" {
-		t.Errorf("minion.exe = %q", b)
+		s, err := version.ParseVersion(v)
+		return s, err == nil
 	}
 }
 
-// The update lock is the one "minion update" takes: an update in progress
-// blocks the install, which then changes nothing.
-func TestCopyServiceBinaryWaitsForTheUpdateLock(t *testing.T) {
+// The remote update keeps the previous release as minion.exe.old for its
+// crash rollback; installing the service binary must not touch it. The
+// replaced binary goes once the new one is active.
+func TestReplaceAndActivateKeepsTheRollbackBinaryAndRetiresThePrevious(t *testing.T) {
 	dir := t.TempDir()
+	writeAll(t, dir, map[string]string{"minion.exe": "current", "minion.exe.old": "previous", "src": "release"})
 	dst := filepath.Join(dir, "minion.exe")
-	if err := os.WriteFile(dst, []byte("current"), 0o644); err != nil {
+	var active string
+	err := replaceAndActivate(dst, BinaryInstall{Src: filepath.Join(dir, "src"), SHA256: sumOf("release")}, nil,
+		func(p string) error { active = readOr(p); return nil })
+	if err != nil {
 		t.Fatal(err)
 	}
-	src := filepath.Join(dir, "src")
-	if err := os.WriteFile(src, []byte("release"), 0o644); err != nil {
+	if active != "release" || readOr(dst) != "release" || readOr(dst+".old") != "previous" {
+		t.Errorf("active %q, dst %q, old %q", active, readOr(dst), readOr(dst+".old"))
+	}
+	if _, err := os.Stat(dst + ".previous"); !os.IsNotExist(err) {
+		t.Errorf("the replaced binary stays: %v", err)
+	}
+}
+
+// A failed activation puts the previous binary back.
+func TestReplaceAndActivatePutsThePreviousBinaryBackOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeAll(t, dir, map[string]string{"minion.exe": "current", "src": "release"})
+	dst := filepath.Join(dir, "minion.exe")
+	boom := errors.New("the service did not start")
+	err := replaceAndActivate(dst, BinaryInstall{Src: filepath.Join(dir, "src"), SHA256: sumOf("release")}, nil,
+		func(string) error { return boom })
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	if readOr(dst) != "current" {
+		t.Errorf("dst = %q", readOr(dst))
+	}
+	if _, err := os.Stat(dst + ".previous"); !os.IsNotExist(err) {
+		t.Errorf("previous left: %v", err)
+	}
+}
+
+// The Hub may have updated the service past the CLI that runs "worker up":
+// that is not undone without an explicit flag.
+func TestReplaceAndActivateRefusesADowngrade(t *testing.T) {
+	dir := t.TempDir()
+	writeAll(t, dir, map[string]string{"minion.exe": "hub-updated", "src": "release"})
+	dst := filepath.Join(dir, "minion.exe")
+	installed := installedAt(map[string]string{"hub-updated": "v1.3.0", "release": "v1.2.0"})
+	bi := BinaryInstall{Src: filepath.Join(dir, "src"), SHA256: sumOf("release"), Version: "v1.2.0"}
+	activated := false
+	err := replaceAndActivate(dst, bi, installed, func(string) error { activated = true; return nil })
+	if !errors.Is(err, ErrServiceDowngrade) || !strings.Contains(err.Error(), "--allow-service-downgrade") {
+		t.Fatalf("err = %v", err)
+	}
+	if activated || readOr(dst) != "hub-updated" {
+		t.Errorf("activated %v, dst %q", activated, readOr(dst))
+	}
+	bi.AllowDowngrade = true
+	if err := replaceAndActivate(dst, bi, installed, func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if readOr(dst) != "release" {
+		t.Errorf("dst = %q", readOr(dst))
+	}
+	// The same or a newer release needs no flag.
+	writeAll(t, dir, map[string]string{"src": "newer"})
+	installed = installedAt(map[string]string{"release": "v1.2.0", "newer": "v1.4.0"})
+	if err := replaceAndActivate(dst, BinaryInstall{Src: filepath.Join(dir, "src"), SHA256: sumOf("newer"), Version: "v1.4.0"}, installed,
+		func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The update lock is the one "minion update" and the remote update take: it
+// is held from the copy through the activation, and an update in progress
+// blocks the install, which then changes nothing.
+func TestReplaceAndActivateHoldsTheUpdateLock(t *testing.T) {
+	dir := t.TempDir()
+	writeAll(t, dir, map[string]string{"minion.exe": "current", "src": "release"})
+	dst := filepath.Join(dir, "minion.exe")
+	bi := BinaryInstall{Src: filepath.Join(dir, "src"), SHA256: sumOf("release")}
+	err := replaceAndActivate(dst, bi, nil, func(string) error {
+		if _, err := version.LockBinary(dst); err == nil {
+			t.Error("the update lock is free during the activation")
+		}
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	release, err := version.LockBinary(dst)
@@ -101,10 +168,12 @@ func TestCopyServiceBinaryWaitsForTheUpdateLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	if err := copyServiceBinary(src, dst, sumOf("release")); err == nil {
+	writeAll(t, dir, map[string]string{"src": "other"})
+	if err := replaceAndActivate(dst, BinaryInstall{Src: filepath.Join(dir, "src"), SHA256: sumOf("other")}, nil,
+		func(string) error { return nil }); err == nil {
 		t.Error("installed while an update held the lock")
 	}
-	if b, _ := os.ReadFile(dst); string(b) != "current" {
-		t.Errorf("minion.exe = %q", b)
+	if readOr(dst) != "release" {
+		t.Errorf("minion.exe = %q", readOr(dst))
 	}
 }

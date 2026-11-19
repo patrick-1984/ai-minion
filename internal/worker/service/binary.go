@@ -389,7 +389,6 @@ func ServiceBinaryWarning(binary string, findings []BinaryFinding) string {
 	}
 	return fmt.Sprintf("the service binary %s of the Windows service %s is writable by non-administrators: %s%s; "+
 		"any process of those accounts could run code as LocalSystem at the next service start. "+
-		"Do not run that file elevated. Move the service: in an elevated PowerShell run Stop-Service %s, install minion again with install.ps1, "+
-		"then run 'minion worker up' there; it installs the verified release into %%ProgramFiles%%\\%s",
-		binary, WindowsServiceName, strings.Join(who, ", "), more, WindowsServiceName, ServiceBinaryDirName)
+		"Do not run that file elevated. Move the service to the verified release in %%ProgramFiles%%\\%s: in an elevated PowerShell run %s",
+		binary, WindowsServiceName, strings.Join(who, ", "), more, ServiceBinaryDirName, BootstrapCommand())
 }

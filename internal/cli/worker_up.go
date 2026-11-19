@@ -52,9 +52,17 @@ type workerUpDeps struct {
 	// means service.QueryWindowsService (nothing off Windows).
 	windowsService func() (service.WindowsServiceState, error)
 	// serviceRelease fetches and verifies the signed release of this
-	// version for the Windows service; nil means [fetchServiceRelease].
-	serviceRelease func(ctx context.Context, res *config.Resolver, out io.Writer) (version.Fetched, error)
+	// version for the Windows service into cacheDir; nil means
+	// [fetchServiceRelease].
+	serviceRelease func(ctx context.Context, res *config.Resolver, out io.Writer, cacheDir string) (version.Fetched, error)
+	// serviceStaging creates the administrator-only directory that release
+	// is fetched and verified in; nil means service.NewStagingDir.
+	serviceStaging func() (dir string, cleanup func(), err error)
 }
+
+// allowDowngradeFlag lets "worker up" replace a newer service binary (one
+// the Hub updated) with the release of this minion.
+const allowDowngradeFlag = "allow-service-downgrade"
 
 // allowUnverifiedFlag installs the Windows service from the running binary
 // without verifying it (development builds).
@@ -65,7 +73,12 @@ const allowUnverifiedFlag = "allow-unverified-service-binary"
 // S1): the Windows service runs that executable, never the file the user ran,
 // which the user's own programs could have changed. A build that is not a
 // release has nothing to verify against and is refused.
-func fetchServiceRelease(ctx context.Context, res *config.Resolver, out io.Writer) (version.Fetched, error) {
+//
+// The release is downloaded, verified and extracted in cacheDir, a fresh
+// directory only administrators and SYSTEM can open, never in the user's
+// update cache: this runs elevated, and the user's programs can change that
+// cache (plant a junction, swap a file) while it works.
+func fetchServiceRelease(ctx context.Context, res *config.Resolver, out io.Writer, cacheDir string) (version.Fetched, error) {
 	sel, err := version.ParseSelector(version.Version)
 	if err != nil || sel.IsChannel() {
 		return version.Fetched{}, fmt.Errorf("this minion is not a release (version %q), so there is no signed release to install as the Windows service; "+
@@ -76,10 +89,6 @@ func fetchServiceRelease(ctx context.Context, res *config.Resolver, out io.Write
 		return r.Value, err
 	}
 	apiURL, err := get(config.KeyUpdateAPIURL)
-	if err != nil {
-		return version.Fetched{}, err
-	}
-	cacheDir, err := get(config.KeyUpdateCacheDir)
 	if err != nil {
 		return version.Fetched{}, err
 	}
@@ -189,6 +198,7 @@ that the identity survives a restart of the container.`,
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run the Worker in the foreground instead of installing a service")
 	cmd.Flags().StringVar(&asUser, "as-user", "", "Install the service for this Unix user (needs root; default: the user that ran sudo)")
 	cmd.Flags().Bool(allowUnverifiedFlag, false, "Windows, development only: install the service from this binary although it is not a verified release (the service runs it as LocalSystem)")
+	cmd.Flags().Bool(allowDowngradeFlag, false, "Windows: replace the service binary although it is a newer release (for example one the Hub updated)")
 	addSettingFlags(cmd, deps.registry(), config.ScopeWorker)
 	addJoinFlag(cmd, deps.registry())
 	return cmd
@@ -368,10 +378,11 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 			return err
 		}
 		pre := &config.Resolver{Registry: reg, Role: config.ScopeWorker, Flags: flags, File: saved, LookupEnv: lookupEnv}
-		r, err := windowsServiceBinary(ctx, cmd, deps, pre, service.Request{Binary: binary}, cmd.OutOrStdout(), stderr)
+		r, cleanup, err := windowsServiceBinary(ctx, cmd, deps, pre, service.Request{Binary: binary}, cmd.OutOrStdout(), stderr)
 		if err != nil {
 			return err
 		}
+		defer cleanup()
 		winBin = &r
 	}
 
@@ -452,6 +463,7 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	}
 	if winBin != nil {
 		req.Binary, req.BinarySHA256, req.AllowUnverified = winBin.Binary, winBin.BinarySHA256, winBin.AllowUnverified
+		req.Version, req.AllowDowngrade = winBin.Version, winBin.AllowDowngrade
 	}
 	_, err = service.Install(ctx, svc, req, out)
 	var linger *service.LingerError
@@ -466,15 +478,29 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 // service-binary on a development build, the running binary as it is (with
 // a warning). The fetch is bounded by serviceReleaseTimeout.
 func windowsServiceBinary(ctx context.Context, cmd *cobra.Command, deps workerUpDeps, res *config.Resolver,
-	req service.Request, out, stderr io.Writer) (service.Request, error) {
+	req service.Request, out, stderr io.Writer) (service.Request, func(), error) {
+	nothing := func() {}
+	req.AllowDowngrade, _ = cmd.Flags().GetBool(allowDowngradeFlag)
 	if unverified, _ := cmd.Flags().GetBool(allowUnverifiedFlag); unverified {
 		if isReleaseBuild() {
-			return req, fmt.Errorf("--%s is only for development builds; this is release %s, whose signed release is installed without it", allowUnverifiedFlag, version.Version)
+			return req, nothing, fmt.Errorf("--%s is only for development builds; this is release %s, whose signed release is installed without it", allowUnverifiedFlag, version.Version)
 		}
 		_, _ = fmt.Fprintf(stderr, "Warning: --%s: the service will run %s as LocalSystem without checking that it is a signed release. Use this for development only.\n",
 			allowUnverifiedFlag, req.Binary)
 		req.AllowUnverified = true
-		return req, nil
+		return req, nothing, nil
+	}
+	if !isReleaseBuild() {
+		return req, nothing, fmt.Errorf("this minion is not a release (version %q), so there is no signed release to install as the Windows service; "+
+			"install a release and run it again, or, for development only, pass --%s", version.Version, allowUnverifiedFlag)
+	}
+	staging := deps.serviceStaging
+	if staging == nil {
+		staging = service.NewStagingDir
+	}
+	dir, cleanup, err := staging()
+	if err != nil {
+		return req, nothing, windowsInstallHint(fmt.Errorf("cannot create the directory to verify the release in: %w", err))
 	}
 	fetch := deps.serviceRelease
 	if fetch == nil {
@@ -483,12 +509,21 @@ func windowsServiceBinary(ctx context.Context, cmd *cobra.Command, deps workerUp
 	_, _ = fmt.Fprintf(out, "Fetching and verifying the signed release %s for the Windows service.\n", version.Version)
 	fctx, cancel := context.WithTimeout(ctx, serviceReleaseTimeout)
 	defer cancel()
-	f, err := fetch(fctx, res, out)
+	f, err := fetch(fctx, res, out, dir)
 	if err != nil {
-		return req, redactedError{msg: "cannot get the verified release for the Windows service: " + logx.ErrorText(err), err: err}
+		cleanup()
+		return req, nothing, redactedError{msg: "cannot get the verified release for the Windows service: " + logx.ErrorText(err), err: err}
 	}
-	req.Binary, req.BinarySHA256 = f.Path, f.SHA256
-	return req, nil
+	req.Binary, req.BinarySHA256, req.Version = f.Path, f.SHA256, f.Tag
+	return req, cleanup, nil
+}
+
+// windowsInstallHint adds what to do when this needs an administrator.
+func windowsInstallHint(err error) error {
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("%w; installing the Windows service needs an administrator. %s", err, service.ElevationGuidance())
+	}
+	return err
 }
 
 // serviceReleaseTimeout bounds fetching the release for the Windows service.

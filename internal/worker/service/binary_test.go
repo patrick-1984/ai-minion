@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	ksvc "github.com/kardianos/service"
+
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
 const (
@@ -219,7 +222,7 @@ func TestFindingsForWalksTheChainAndWarns(t *testing.T) {
 		t.Fatalf("findings = %+v, err = %v", f, err)
 	}
 	w := ServiceBinaryWarning(pfMinionExe, append(f, BinaryFinding{Path: pfMinionExe, SID: sidUsers}))
-	for _, want := range []string{"writable by non-administrators", pfMinionExe, userSID, `BUILTIN\Users`, "minion worker up", "elevated", "LocalSystem"} {
+	for _, want := range []string{"writable by non-administrators", pfMinionExe, userSID, `BUILTIN\Users`, "Do not run that file elevated", "MINION_INSTALL_SERVICE", "install.ps1", "LocalSystem"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warning lacks %q: %s", want, w)
 		}
@@ -240,18 +243,15 @@ func TestServiceBinaryWarningShortensLongLists(t *testing.T) {
 	}
 }
 
-// stoppableController is a fake service that runs until it is stopped; it
-// records every call, the service binary steps included, in one log.
+// stoppableController is a fake service; it records every call, the service
+// binary steps included, in one log.
 type stoppableController struct {
-	log      *[]string
-	running  bool
-	stopErr  error
-	stuck    bool // keeps running after a stop request
-	startErr error
-	// deleted is set between Uninstall and Install; lingering is how many
-	// Status calls still see the deleted service (marked for deletion).
-	deleted   bool
-	lingering int
+	log       *[]string
+	installed bool
+	running   bool
+	stopErr   error
+	stuck     bool // keeps running after a stop request
+	startErr  error
 	installEr error
 }
 
@@ -260,12 +260,12 @@ func (s *stoppableController) Install() error {
 	if s.installEr != nil {
 		return s.installEr
 	}
-	s.deleted = false
+	s.installed = true
 	return nil
 }
 func (s *stoppableController) Uninstall() error {
 	*s.log = append(*s.log, "uninstall")
-	s.deleted = true
+	s.installed = false
 	return nil
 }
 func (s *stoppableController) Start() error {
@@ -277,14 +277,10 @@ func (s *stoppableController) Start() error {
 	return nil
 }
 func (s *stoppableController) Status() (Status, error) {
-	if s.deleted {
-		if s.lingering == 0 {
-			*s.log = append(*s.log, "gone")
-			return StatusUnknown, ErrNotInstalled
-		}
-		s.lingering--
-	}
 	*s.log = append(*s.log, "status")
+	if !s.installed {
+		return StatusUnknown, ErrNotInstalled
+	}
 	if s.running {
 		return StatusRunning, nil
 	}
@@ -308,7 +304,8 @@ func (s *stoppableController) stop(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// installDeps are Deps whose service steps all go to fc and its log.
+// installDeps are Deps whose service steps all go to fc and its log. The
+// binary step copies nothing and puts "back" on a failed activation.
 func installDeps(t *testing.T, fc *stoppableController) (Deps, *[]*ksvc.Config) {
 	t.Helper()
 	d := testDeps(t, nil)
@@ -316,12 +313,21 @@ func installDeps(t *testing.T, fc *stoppableController) (Deps, *[]*ksvc.Config) 
 	cfgs := &[]*ksvc.Config{}
 	d.NewControllerFromConfig = func(cfg *ksvc.Config) (Controller, error) { *cfgs = append(*cfgs, cfg); return fc, nil }
 	d.StopService = fc.stop
-	d.ServiceBinary = func(src, sum string) (string, error) {
+	d.ServiceBinary = func(bi BinaryInstall, activate func(string) error) (string, error) {
 		*fc.log = append(*fc.log, "copy")
-		if sum != testSum {
-			t.Errorf("copy without the verified digest: %q", sum)
+		if bi.SHA256 != testSum {
+			t.Errorf("copy without the verified digest: %q", bi.SHA256)
+		}
+		if err := activate(pfMinionExe); err != nil {
+			*fc.log = append(*fc.log, "back")
+			return "", err
 		}
 		return pfMinionExe, nil
+	}
+	d.Reconfigure = func(cfg *ksvc.Config, env map[string]string) (func() error, error) {
+		*fc.log = append(*fc.log, "reconfigure "+cfg.Executable)
+		*cfgs = append(*cfgs, cfg)
+		return func() error { *fc.log = append(*fc.log, "restore"); return nil }, nil
 	}
 	d.SetServiceEnv = func(map[string]string) error { *fc.log = append(*fc.log, "env"); return nil }
 	d.PollInterval = time.Millisecond
@@ -332,40 +338,97 @@ func winReq() Request {
 	return Request{Manager: ManagerWindows, Scope: ScopeSystem, Binary: userWinExe, BinarySHA256: testSum, StateDir: testState}
 }
 
-func TestInstallOnWindowsRegistersTheProtectedCopy(t *testing.T) {
+// An existing service (here an old one on the user's copy) is changed in
+// place: stopped, pointed at the protected copy, started. It is never
+// deleted.
+func TestInstallOnWindowsChangesAnExistingServiceInPlace(t *testing.T) {
 	var log []string
-	fc := &stoppableController{log: &log, running: true}
+	fc := &stoppableController{log: &log, installed: true, running: true}
 	d, cfgs := installDeps(t, fc)
 	var out bytes.Buffer
 	res, err := Install(context.Background(), d, winReq(), &out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The copy is in place before the running service (of an older install)
-	// is stopped; the environment is written once the new service exists.
-	if got := strings.Join(log, ","); !strings.HasPrefix(got, "copy,stop,uninstall,gone,install,env,start,status") {
+	if got := strings.Join(log, ","); got != "status,copy,stop,reconfigure "+pfMinionExe+",start,status" {
 		t.Errorf("calls = %s", got)
 	}
 	last := (*cfgs)[len(*cfgs)-1]
-	if last.Executable != pfMinionExe {
-		t.Errorf("registered %q", last.Executable)
+	if last.Executable != pfMinionExe || len(last.EnvVars) != 0 {
+		t.Errorf("config %+v", last)
 	}
-	if res.Binary != pfMinionExe || !strings.Contains(out.String(), pfMinionExe) || !strings.Contains(out.String(), "verified signed release") {
+	if res.Binary != pfMinionExe || !strings.Contains(out.String(), "verified signed release") {
 		t.Errorf("result %+v, output:\n%s", res, out.String())
+	}
+}
+
+func TestInstallOnWindowsCreatesAMissingService(t *testing.T) {
+	var log []string
+	fc := &stoppableController{log: &log}
+	d, cfgs := installDeps(t, fc)
+	var env map[string]string
+	d.SetServiceEnv = func(e map[string]string) error { log = append(log, "env"); env = e; return nil }
+	if _, err := Install(context.Background(), d, winReq(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(log, ","); got != "status,copy,install,env,start,status" {
+		t.Errorf("calls = %s", got)
+	}
+	if (*cfgs)[len(*cfgs)-1].Executable != pfMinionExe {
+		t.Errorf("registered %q", (*cfgs)[len(*cfgs)-1].Executable)
+	}
+	if env["MINION_STATE_DIR"] != testState || env[pipeUserSIDEnv] != testSID {
+		t.Errorf("env = %v", env)
+	}
+}
+
+// When the new binary does not start, the previous configuration and binary
+// are put back and the previous service runs again: a failed reinstall never
+// leaves no service.
+func TestInstallOnWindowsRestoresTheServiceWhenTheNewOneDoesNotStart(t *testing.T) {
+	var log []string
+	fc := &stoppableController{log: &log, installed: true, running: true}
+	d, _ := installDeps(t, fc)
+	d.Reconfigure = func(cfg *ksvc.Config, env map[string]string) (func() error, error) {
+		log = append(log, "reconfigure")
+		fc.startErr = errors.New("the new binary exits at once")
+		return func() error { log = append(log, "restore"); return nil }, nil
+	}
+	_, err := Install(context.Background(), d, winReq(), nil)
+	if err == nil || !strings.Contains(err.Error(), "exits at once") {
+		t.Fatalf("err = %v", err)
+	}
+	if got := strings.Join(log, ","); !strings.HasPrefix(got, "status,copy,stop,reconfigure,start,restore,back,start") {
+		t.Errorf("calls = %s", got)
+	}
+	if strings.Contains(strings.Join(log, ","), "uninstall") {
+		t.Errorf("the service was deleted: %v", log)
+	}
+}
+
+func TestInstallOnWindowsRemovesAServiceItCreatedThatDoesNotStart(t *testing.T) {
+	var log []string
+	fc := &stoppableController{log: &log, startErr: errors.New("no")}
+	d, _ := installDeps(t, fc)
+	if _, err := Install(context.Background(), d, winReq(), nil); err == nil {
+		t.Fatal("no error")
+	}
+	if got := strings.Join(log, ","); !strings.HasSuffix(got, "start,uninstall,back") {
+		t.Errorf("calls = %s", got)
 	}
 }
 
 func TestInstallOnWindowsStopsNothingWhenTheCopyFails(t *testing.T) {
 	denyAccess(t)
 	var log []string
-	fc := &stoppableController{log: &log, running: true}
+	fc := &stoppableController{log: &log, installed: true, running: true}
 	d, _ := installDeps(t, fc)
-	d.ServiceBinary = func(string, string) (string, error) { return "", errDenied }
+	d.ServiceBinary = func(BinaryInstall, func(string) error) (string, error) { return "", errDenied }
 	_, err := Install(context.Background(), d, winReq(), nil)
-	if err == nil || !strings.Contains(err.Error(), "prepare the binary of the service") || !strings.Contains(err.Error(), "administrator") {
+	if err == nil || !strings.Contains(err.Error(), "administrator") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(log) != 0 || !fc.running {
+	if strings.Join(log, ",") != "status" || !fc.running {
 		t.Errorf("the service was touched: %v (running %v)", log, fc.running)
 	}
 }
@@ -373,13 +436,13 @@ func TestInstallOnWindowsStopsNothingWhenTheCopyFails(t *testing.T) {
 func TestInstallOnWindowsKeepsTheServiceWhenTheStopIsDenied(t *testing.T) {
 	denyAccess(t)
 	var log []string
-	fc := &stoppableController{log: &log, running: true, stopErr: errDenied}
+	fc := &stoppableController{log: &log, installed: true, running: true, stopErr: errDenied}
 	d, _ := installDeps(t, fc)
 	_, err := Install(context.Background(), d, winReq(), nil)
 	if err == nil || !strings.Contains(err.Error(), "administrator") {
 		t.Fatalf("err = %v", err)
 	}
-	if strings.Contains(strings.Join(log, ","), "uninstall") {
+	if strings.Contains(strings.Join(log, ","), "reconfigure") || !strings.Contains(strings.Join(log, ","), "back") {
 		t.Errorf("calls = %v", log)
 	}
 }
@@ -388,7 +451,7 @@ func TestInstallOnWindowsKeepsTheServiceWhenTheStopIsDenied(t *testing.T) {
 // command instead of blocking it.
 func TestInstallOnWindowsBoundsTheStop(t *testing.T) {
 	var log []string
-	fc := &stoppableController{log: &log, running: true, stuck: true}
+	fc := &stoppableController{log: &log, installed: true, running: true, stuck: true}
 	d, _ := installDeps(t, fc)
 	d.StopPolls = 3
 	done := make(chan error, 1)
@@ -401,128 +464,48 @@ func TestInstallOnWindowsBoundsTheStop(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the install did not end")
 	}
-	if strings.Contains(strings.Join(log, ","), "uninstall") {
+	if strings.Contains(strings.Join(log, ","), "reconfigure") {
 		t.Errorf("calls = %v", log)
 	}
 }
 
-// After the stop, a failure before the new service exists starts the old
-// one again.
-func TestInstallOnWindowsStartsTheOldServiceAgainWhenTheRemovalFails(t *testing.T) {
-	var log []string
-	fc := &stoppableController{log: &log, running: true, lingering: 1 << 20}
-	d, _ := installDeps(t, fc)
-	d.StopPolls = 2
-	_, err := Install(context.Background(), d, winReq(), nil)
-	if err == nil || !strings.Contains(err.Error(), "still being deleted") || !strings.Contains(err.Error(), "started again") {
-		t.Fatalf("err = %v", err)
-	}
-	if !fc.running {
-		t.Error("the old service was left stopped")
-	}
-	fc = &stoppableController{log: &log, running: true, lingering: 1 << 20, startErr: errors.New("no")}
-	d, _ = installDeps(t, fc)
-	d.StopPolls = 2
-	_, err = Install(context.Background(), d, winReq(), nil)
-	if err == nil || !strings.Contains(err.Error(), "Start-Service MinionWorker") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestInstallOnWindowsSaysTheServiceIsGoneWhenTheCreationFails(t *testing.T) {
-	var log []string
-	fc := &stoppableController{log: &log, running: true, installEr: errors.New("display name in use")}
-	d, _ := installDeps(t, fc)
-	_, err := Install(context.Background(), d, winReq(), nil)
-	if err == nil || !strings.Contains(err.Error(), "display name in use") || !strings.Contains(err.Error(), "was removed and is not installed now") {
-		t.Fatalf("err = %v", err)
-	}
-	// Nothing was written for a service that does not exist.
-	if strings.Contains(strings.Join(log, ","), "env") {
-		t.Errorf("calls = %v", log)
-	}
-}
-
-func TestInstallOnWindowsRemovesAServiceWhoseEnvironmentCannotBeWritten(t *testing.T) {
+// A registry key without a service (a creation that failed half way) is
+// removed before the service is created.
+func TestInstallOnWindowsRemovesAnOrphanKeyBeforeCreating(t *testing.T) {
 	var log []string
 	fc := &stoppableController{log: &log}
 	d, _ := installDeps(t, fc)
-	d.SetServiceEnv = func(map[string]string) error { return errors.New("registry says no") }
-	_, err := Install(context.Background(), d, winReq(), nil)
-	if err == nil || !strings.Contains(err.Error(), "registry says no") {
-		t.Fatalf("err = %v", err)
-	}
-	if got := strings.Join(log, ","); !strings.HasSuffix(got, "install,uninstall") {
-		t.Errorf("calls = %s", got)
-	}
-}
-
-// DeleteService only marks the service for deletion: the install waits until
-// it is gone before it creates it again.
-func TestInstallOnWindowsWaitsUntilTheOldServiceIsGone(t *testing.T) {
-	var log []string
-	fc := &stoppableController{log: &log, lingering: 2}
-	d, _ := installDeps(t, fc)
-	if _, err := Install(context.Background(), d, winReq(), nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(log, ","); !strings.Contains(got, "uninstall,status,status,gone,install") {
-		t.Errorf("calls = %s", got)
-	}
-}
-
-// The registry key goes after the service; one that stays although the
-// service is gone (a creation that failed half way) is removed.
-func TestInstallOnWindowsWaitsForTheRegistryKeyAndRemovesAnOrphan(t *testing.T) {
-	var log []string
-	fc := &stoppableController{log: &log}
-	d, _ := installDeps(t, fc)
-	keyLeft := 2
-	d.ServiceKeyGone = func() bool {
-		log = append(log, "key?")
-		if keyLeft > 0 {
-			keyLeft--
-			return false
-		}
-		return true
-	}
-	if _, err := Install(context.Background(), d, winReq(), nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(log, ","); !strings.Contains(got, "uninstall,gone,key?,gone,key?,gone,key?,install,env,start") {
-		t.Errorf("calls = %s", got)
-	}
-
-	log = nil
-	fc = &stoppableController{log: &log}
-	d, _ = installDeps(t, fc)
-	d.StopPolls = 3
 	d.ServiceKeyGone = func() bool { return false }
-	removed := 0
-	d.RemoveServiceKey = func() error { removed++; return nil }
+	d.RemoveServiceKey = func() error { log = append(log, "rmkey"); return nil }
 	if _, err := Install(context.Background(), d, winReq(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if removed != 1 {
-		t.Errorf("orphan key removed %d times", removed)
+	if got := strings.Join(log, ","); !strings.Contains(got, "copy,rmkey,install") {
+		t.Errorf("calls = %s", got)
 	}
 	d.RemoveServiceKey = func() error { return errors.New("access denied") }
+	fc.installed = false
 	if _, err := Install(context.Background(), d, winReq(), nil); err == nil || !strings.Contains(err.Error(), "registry key") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestInstallOnWindowsWritesTheEnvironmentOfTheRequest(t *testing.T) {
+func TestInstallOnWindowsPassesTheVersionForTheDowngradeCheck(t *testing.T) {
 	var log []string
 	fc := &stoppableController{log: &log}
 	d, _ := installDeps(t, fc)
-	var env map[string]string
-	d.SetServiceEnv = func(e map[string]string) error { env = e; return nil }
-	if _, err := Install(context.Background(), d, winReq(), nil); err != nil {
-		t.Fatal(err)
+	var got BinaryInstall
+	d.ServiceBinary = func(bi BinaryInstall, activate func(string) error) (string, error) {
+		got = bi
+		return "", ErrServiceDowngrade
 	}
-	if env["MINION_STATE_DIR"] != testState || env[pipeUserSIDEnv] != testSID {
-		t.Errorf("env = %v", env)
+	req := winReq()
+	req.Version, req.AllowDowngrade = "v1.2.3", true
+	if _, err := Install(context.Background(), d, req, nil); !errors.Is(err, ErrServiceDowngrade) {
+		t.Fatalf("err = %v", err)
+	}
+	if got.Version != "v1.2.3" || !got.AllowDowngrade || got.Src != userWinExe || got.SHA256 != testSum {
+		t.Errorf("binary install = %+v", got)
 	}
 }
 
@@ -551,7 +534,10 @@ func TestInstallOnWindowsRefusesAnUnverifiedBinary(t *testing.T) {
 	}
 	// Explicitly allowed (development builds): the running binary, no digest.
 	gotSum := "unset"
-	d.ServiceBinary = func(_, sum string) (string, error) { gotSum = sum; return pfMinionExe, nil }
+	d.ServiceBinary = func(bi BinaryInstall, activate func(string) error) (string, error) {
+		gotSum = bi.SHA256
+		return pfMinionExe, activate(pfMinionExe)
+	}
 	req.AllowUnverified = true
 	var out bytes.Buffer
 	if _, err := Install(context.Background(), d, req, &out); err != nil {
@@ -562,39 +548,6 @@ func TestInstallOnWindowsRefusesAnUnverifiedBinary(t *testing.T) {
 	}
 }
 
-// kardianos' Uninstall reports an error after it deleted a service that has no
-// event log source (one created by hand, or by an old version): the install
-// still waits until it is gone.
-func TestInstallOnWindowsWaitsAlsoWhenUninstallReportsAnError(t *testing.T) {
-	var log []string
-	fc := &uninstallErrController{stoppableController{log: &log, lingering: 1}}
-	d, _ := installDeps(t, &fc.stoppableController)
-	d.NewControllerFromConfig = func(*ksvc.Config) (Controller, error) { return fc, nil }
-	if _, err := Install(context.Background(), d, winReq(), nil); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(log, ","); !strings.Contains(got, "uninstall,status,gone,install") {
-		t.Errorf("calls = %s", got)
-	}
-	// When it never goes, the error of the uninstall is the one reported.
-	log = nil
-	fc = &uninstallErrController{stoppableController{log: &log, lingering: 1 << 20}}
-	d, _ = installDeps(t, &fc.stoppableController)
-	d.NewControllerFromConfig = func(*ksvc.Config) (Controller, error) { return fc, nil }
-	d.StopPolls = 2
-	_, err := Install(context.Background(), d, winReq(), nil)
-	if err == nil || !strings.Contains(err.Error(), "event log source") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-type uninstallErrController struct{ stoppableController }
-
-func (u *uninstallErrController) Uninstall() error {
-	_ = u.stoppableController.Uninstall()
-	return errors.New("RemoveEventLogSource() failed: no event log source")
-}
-
 func TestUntrustedWritersFlagsAReparsePoint(t *testing.T) {
 	sd := sdProgramFiles
 	sd.Reparse = true
@@ -602,5 +555,31 @@ func TestUntrustedWritersFlagsAReparsePoint(t *testing.T) {
 		if w := UntrustedWriters(sd, role); len(w) != 1 || w[0] != sidReparseLabel {
 			t.Errorf("role %d: writers %v", role, w)
 		}
+	}
+}
+
+// Off Windows there is no protected binary: the guidance is the bootstrap,
+// which never runs a minion.exe from the user's profile elevated.
+func TestElevationGuidanceIsTheBootstrapWithoutAProtectedBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("depends on the machine's Program Files")
+	}
+	g := ElevationGuidance()
+	if !strings.Contains(g, BootstrapCommand()) || strings.Contains(g, "minion worker up") {
+		t.Errorf("guidance = %s", g)
+	}
+}
+
+func TestBootstrapCommandPinsAReleaseBuild(t *testing.T) {
+	old := version.Version
+	t.Cleanup(func() { version.Version = old })
+	version.Version = "dev"
+	if c := BootstrapCommand(); !strings.Contains(c, "releases/latest/download/install.ps1") || !strings.Contains(c, "MINION_INSTALL_SERVICE='1'") {
+		t.Errorf("dev: %s", c)
+	}
+	version.Version = "v1.2.3"
+	c := BootstrapCommand()
+	if !strings.Contains(c, "releases/download/v1.2.3/install.ps1") || !strings.Contains(c, "MINION_VERSION='v1.2.3'") {
+		t.Errorf("release: %s", c)
 	}
 }

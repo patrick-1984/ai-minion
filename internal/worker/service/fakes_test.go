@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	ksvc "github.com/kardianos/service"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files")
@@ -80,7 +82,15 @@ func testDeps(t *testing.T, r Runner) Deps {
 		Sleep:            func(context.Context, time.Duration) {},
 		ActivePolls:      3,
 		// A test never copies into the real %ProgramFiles%.
-		ServiceBinary: func(src, _ string) (string, error) { return src, nil },
+		ServiceBinary: func(bi BinaryInstall, activate func(string) error) (string, error) {
+			if err := activate(bi.Src); err != nil {
+				return "", err
+			}
+			return bi.Src, nil
+		},
+		Reconfigure: func(*ksvc.Config, map[string]string) (func() error, error) {
+			return func() error { return nil }, nil
+		},
 		// Nor touches the registry of the machine.
 		ServiceKeyGone:   func() bool { return true },
 		SetServiceEnv:    func(map[string]string) error { return nil },

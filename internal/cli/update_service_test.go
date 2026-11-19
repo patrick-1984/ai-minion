@@ -29,7 +29,7 @@ func TestServiceUpdateGuard(t *testing.T) {
 		"service copy, SCM unreadable":  {exe: svcExe, refuse: []string{"elevated prompt"}},
 		"service copy, admin":           {st: protected, exe: svcExe, elevated: true, note: []string{"Restart-Service MinionWorker"}},
 		"user copy":                     {st: protected, exe: userExe, note: []string{"did not change", svcExe, "elevated prompt", "Restart-Service MinionWorker"}},
-		"legacy service runs this copy": {st: legacy, exe: userExe, note: []string{"still runs", "install.ps1", "Stop-Service MinionWorker", "minion worker up"}},
+		"legacy service runs this copy": {st: legacy, exe: userExe, note: []string{"still runs", "do not run it elevated", "MINION_INSTALL_SERVICE", "install.ps1"}},
 		"legacy, elevated":              {st: legacy, exe: userExe, elevated: true, note: []string{"still runs"}},
 	} {
 		refuse, note := serviceUpdateGuard(c.st, c.exe, svcExe, c.elevated)
