@@ -80,9 +80,13 @@ func forbiddenModule(pkg string) string {
 // listDeps returns every package in the graph of pkg for t with the packages
 // each one imports ("go list -deps", CGO_ENABLED=0, run in dir).
 func listDeps(ctx context.Context, dir, pkg string, t target) (map[string][]string, error) {
-	cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-f", "{{.ImportPath}}{{range .Imports}} {{.}}{{end}}", pkg)
+	// -mod=readonly on the command line (it wins over GOFLAGS): the gate
+	// certifies the module graph as go.mod and go.sum declare it, the way the
+	// release build resolves it, and never adds or repairs a requirement. It
+	// is also the one -mod value a Go workspace accepts.
+	cmd := exec.CommandContext(ctx, "go", "list", "-mod=readonly", "-deps", "-f", "{{.ImportPath}}{{range .Imports}} {{.}}{{end}}", pkg)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+t.goos, "GOARCH="+t.goarch, "GOARM="+t.goarm, "GOFLAGS=-mod=mod")
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+t.goos, "GOARCH="+t.goarch, "GOARM="+t.goarm)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -84,5 +85,54 @@ func TestForbiddenModuleMatch(t *testing.T) {
 		if got := forbiddenModule(pkg); got != want {
 			t.Errorf("forbiddenModule(%q) = %q, want %q", pkg, got, want)
 		}
+	}
+}
+
+// The gate certifies the module graph as declared: a fixture that imports a
+// module its go.mod does not require fails, and the gate leaves go.mod as it
+// was (it never resolves with -mod=mod), also when GOFLAGS asks for -mod=mod.
+func TestMissingRequirementFailsReadOnly(t *testing.T) {
+	needGo(t)
+	t.Setenv("GOFLAGS", "-mod=mod")
+	t.Setenv("GOWORK", "off")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS("testdata/missingreq")); err != nil {
+		t.Fatal(err)
+	}
+	before := readFile(t, filepath.Join(dir, "go.mod"))
+	err := check(ctx, dir, ".", []target{{name: "linux/amd64", goos: "linux", goarch: "amd64"}})
+	if err == nil {
+		t.Fatal("the gate accepted a module graph with a missing requirement")
+	}
+	if after := readFile(t, filepath.Join(dir, "go.mod")); after != before {
+		t.Fatalf("the gate changed go.mod:\n%s\nwas:\n%s", after, before)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go.sum")); err == nil {
+		t.Fatal("the gate wrote a go.sum")
+	}
+}
+
+// Inside a Go workspace the gate runs (-mod=mod is the one value a workspace
+// rejects) and still checks the packages.
+func TestRunsInsideAGoWorkspace(t *testing.T) {
+	needGo(t)
+	t.Setenv("GOFLAGS", "")
+	t.Setenv("GOWORK", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"go.mod":  "module example.test/ws\n\ngo 1.21\n",
+		"go.work": "go 1.21\n\nuse .\n",
+		"main.go": "package main\n\nfunc main() {}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := check(ctx, dir, ".", []target{{name: "linux/amd64", goos: "linux", goarch: "amd64"}}); err != nil {
+		t.Fatalf("the gate failed inside a workspace: %v", err)
 	}
 }
