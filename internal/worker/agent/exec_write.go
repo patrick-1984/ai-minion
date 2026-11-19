@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -74,6 +77,7 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 		return res, err
 	}
 
+	digest := argsDigestOf(ctx)
 	rec, hit := e.memResult(wa.RequestID)
 	if !hit {
 		var gerr error
@@ -83,12 +87,14 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 		}
 	}
 	if hit {
-		if rec.Op != op.Name || rec.Session != t.SessionName || rec.Force != wa.Force {
+		if rec.Op != op.Name || rec.Session != t.SessionName || rec.Force != wa.Force ||
+			(rec.ArgsSHA256 != "" && digest != "" && rec.ArgsSHA256 != digest) {
 			return res, apiErr(proto.CodeConflict, "", "this request_id was already used for a different request")
 		}
 		if jerr := json.Unmarshal(rec.Result, &res); jerr != nil {
 			return res, internalErr("decode the cached result", jerr)
 		}
+		res.Replayed = true
 		cached = true
 		return res, nil
 	}
@@ -97,7 +103,7 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 	// result cannot be stored afterwards, a duplicate finds this record and
 	// answers unknown instead of sending again (AD-15). Without the record the
 	// request does not run.
-	rec = store.ResultRecord{RequestID: wa.RequestID, Op: op.Name, Session: t.SessionName, Force: wa.Force, Result: []byte(unfinishedResult)}
+	rec = store.ResultRecord{RequestID: wa.RequestID, Op: op.Name, Session: t.SessionName, Force: wa.Force, ArgsSHA256: digest, Result: []byte(unfinishedResult)}
 	if perr := e.state.PutResult(ctx, rec); perr != nil {
 		return res, internalErr("record the request", perr)
 	}
@@ -157,6 +163,37 @@ func (e *Executor) checkPolicy(ctx context.Context, t ops.Target, checkShared bo
 		}
 	}
 	return nil
+}
+
+// argsDigestKey carries the digest of the request body to write.
+type argsDigestKey struct{}
+
+// argsDigestOf returns the digest Execute put into ctx; empty when none (a
+// caller that bypasses Execute matches on op, session and force only).
+func argsDigestOf(ctx context.Context) string {
+	s, _ := ctx.Value(argsDigestKey{}).(string)
+	return s
+}
+
+// ArgsDigest is the digest the result cache binds a write to: the hex SHA-256
+// of the canonical JSON (sorted keys, no insignificant space) of the
+// arguments without request_id. Two requests that differ in any other member,
+// the text of a send_text for one, have different digests. An argument object
+// that cannot be read gives "" (the cache then matches as it did before).
+func ArgsDigest(raw json.RawMessage) string {
+	var m map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil || m == nil {
+		return ""
+	}
+	delete(m, "request_id")
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // unfinishedResult is the result a duplicate gets for a request that was

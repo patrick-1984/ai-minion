@@ -21,6 +21,9 @@ type ResultRecord struct {
 	Op      string
 	Session string
 	Force   bool
+	// ArgsSHA256 is the hex SHA-256 of the canonical arguments without the
+	// request id; empty for a row written before the digest existed.
+	ArgsSHA256 string
 	// Result is the JSON of the WriteResult. It never holds terminal content.
 	Result []byte
 	// CreatedAt is set by [Store.PutResult] and returned by [Store.GetResult].
@@ -45,9 +48,9 @@ func (s *Store) PutResult(ctx context.Context, rec ResultRecord) error {
 		return fmt.Errorf("store: put result: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO NOTHING`,
-		rec.RequestID, rec.Op, rec.Session, boolInt(rec.Force), string(rec.Result), now.UnixMilli()); err != nil {
+		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at, args_sha256)
+		 VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO NOTHING`,
+		rec.RequestID, rec.Op, rec.Session, boolInt(rec.Force), string(rec.Result), now.UnixMilli(), rec.ArgsSHA256); err != nil {
 		return fmt.Errorf("store: put result: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -75,11 +78,12 @@ func (s *Store) ReplaceResult(ctx context.Context, rec ResultRecord) error {
 		return fmt.Errorf("store: replace result: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at, args_sha256)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (request_id) DO UPDATE SET
-		   op = excluded.op, session_name = excluded.session_name, force = excluded.force, result = excluded.result`,
-		rec.RequestID, rec.Op, rec.Session, boolInt(rec.Force), string(rec.Result), now.UnixMilli()); err != nil {
+		   op = excluded.op, session_name = excluded.session_name, force = excluded.force, result = excluded.result,
+		   args_sha256 = excluded.args_sha256`,
+		rec.RequestID, rec.Op, rec.Session, boolInt(rec.Force), string(rec.Result), now.UnixMilli(), rec.ArgsSHA256); err != nil {
 		return fmt.Errorf("store: replace result: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -108,10 +112,10 @@ func (s *Store) GetResult(ctx context.Context, requestID string) (ResultRecord, 
 		created int64
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT request_id, op, session_name, force, result, created_at
+		`SELECT request_id, op, session_name, force, result, created_at, args_sha256
 		 FROM op_results WHERE request_id = ? AND created_at > ?`,
 		requestID, s.clock.now().Add(-ResultTTL).UnixMilli()).
-		Scan(&rec.RequestID, &rec.Op, &rec.Session, &force, &result, &created)
+		Scan(&rec.RequestID, &rec.Op, &rec.Session, &force, &result, &created, &rec.ArgsSHA256)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ResultRecord{}, false, nil
 	}

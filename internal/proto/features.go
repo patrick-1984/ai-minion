@@ -47,6 +47,13 @@ const (
 	// admitted after comparing the fingerprint words, v0.12.0). The Hub lists
 	// only such Workers under Pairing requests.
 	FeaturePairAdmit = "pair.admit"
+	// FeatureArgsDigest: the Worker binds its cache of write results to a
+	// digest of the request body. A request id reused with another body is
+	// refused with conflict, and a duplicate with the same body is answered
+	// from the cache with replayed=true. A Worker without it can answer a
+	// retry with other text as delivered, so the Hub treats "replayed" as
+	// unknown for such a Worker (A49 T14).
+	FeatureArgsDigest = "args.digest"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

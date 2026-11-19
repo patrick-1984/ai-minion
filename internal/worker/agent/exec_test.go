@@ -299,6 +299,10 @@ func TestDuplicateRequestIDReturnsTheCachedResult(t *testing.T) {
 	e.host.mu.Unlock()
 
 	second := e.mustWrite(ops.OpSendText, args)
+	if !second.Replayed {
+		t.Fatal("a cached answer must say replayed")
+	}
+	second.Replayed = false
 	if got := mustJSON(t, second); string(got) != string(mustJSON(t, first)) {
 		t.Fatalf("second = %s, first = %s", got, mustJSON(t, first))
 	}
@@ -324,6 +328,7 @@ func TestDuplicateRequestIDAnswersCachedRefusalToo(t *testing.T) {
 	first := e.mustWrite(ops.OpSendText, args)
 	e.cls.set("claude", "agent:claude", ops.PaneStateStable) // now it would be delivered
 	second := e.mustWrite(ops.OpSendText, args)
+	second.Replayed = false
 	if string(mustJSON(t, first)) != string(mustJSON(t, second)) || second.Outcome != ops.OutcomeFailedNotSent {
 		t.Fatalf("first %+v, second %+v", first, second)
 	}
@@ -1276,6 +1281,7 @@ func TestResultStoreFailureAfterDeliveryStillDeduplicates(t *testing.T) {
 	args := sendText("work", "once", false)
 	first := e.mustWrite(ops.OpSendText, args)
 	second := e.mustWrite(ops.OpSendText, args)
+	second.Replayed = false
 	if first.Outcome != ops.OutcomeDelivered || string(mustJSON(t, first)) != string(mustJSON(t, second)) {
 		t.Fatalf("first %+v second %+v", first, second)
 	}

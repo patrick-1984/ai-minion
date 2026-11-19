@@ -220,6 +220,10 @@ type WriteResult struct {
 	Forced    bool      `json:"forced"`    // force=true was given and overrode a FORCE guard
 	Warnings  []Warning `json:"warnings"`  // always an array, never null
 	Pane      *PaneInfo `json:"pane"`      // the resolved pane, null when none was resolved
+	// Replayed is true when the Worker answered this call from its cache of an
+	// earlier request with the same request id and the same body: nothing was
+	// sent again. Absent otherwise (A49 T14).
+	Replayed bool `json:"replayed,omitempty"`
 }
 
 // MarshalJSON writes warnings as an empty array instead of null.

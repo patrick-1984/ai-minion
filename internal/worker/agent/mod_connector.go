@@ -49,7 +49,7 @@ func (e *Executor) Ops() []string {
 // pipe delivery are code of this executor; the verbatim text is a property of
 // the terminal host and is announced only when the host guarantees it.
 func (e *Executor) Features() []string {
-	out := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextSubmit}
+	out := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextSubmit, proto.FeatureArgsDigest}
 	if term.IsVerbatim(e.host) {
 		out = append(out, proto.FeatureTextVerbatim)
 	}
