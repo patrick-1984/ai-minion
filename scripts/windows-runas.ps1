@@ -21,7 +21,11 @@
 #
 # Invoke-AsCredential logs on as another local account with its password
 # (CreateProcessWithLogonW through .NET Process, LOGON_WITH_PROFILE). The new
-# process gets the environment of that user's profile, not this one.
+# process gets the environment of that user's profile, not this one. With
+# -Elevated it runs a scheduled task with the highest run level instead, the
+# full token of an administrator also when UAC is on (GitHub's Windows
+# runners have EnableLUA=1; their runner account is the built-in
+# Administrator, which UAC does not filter).
 
 if (-not ('MinionCi.Safer' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -159,8 +163,12 @@ function Invoke-AsCredential {
         [Parameter(Mandatory)][string]$CommandLine,
         [Parameter(Mandatory)][string]$Out,
         [Parameter(Mandatory)][string]$Err,
-        [string]$WorkingDirectory = 'C:\minion-ci'
+        [string]$WorkingDirectory = 'C:\minion-ci',
+        [switch]$Elevated
     )
+    if ($Elevated) {
+        return Invoke-AsCredentialElevated -Credential $Credential -CommandLine $CommandLine -Out $Out -Err $Err -WorkingDirectory $WorkingDirectory
+    }
     $psi = [System.Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\cmd.exe'))
     $psi.Arguments = Get-CiCmdArguments $CommandLine $Out $Err
     $psi.UserName = $Credential.UserName
@@ -179,30 +187,71 @@ function Invoke-AsCredential {
     return $code
 }
 
+# Invoke-AsCredentialElevated runs the command line as the account with its
+# full (elevated) token: a scheduled task with the highest run level, logged
+# on with the password (batch logon). With UAC on, a logon through
+# CreateProcessWithLogonW gives an administrator only the filtered token.
+function Invoke-AsCredentialElevated {
+    param(
+        [Parameter(Mandatory)][pscredential]$Credential,
+        [Parameter(Mandatory)][string]$CommandLine,
+        [Parameter(Mandatory)][string]$Out,
+        [Parameter(Mandatory)][string]$Err,
+        [string]$WorkingDirectory = 'C:\minion-ci'
+    )
+    $name = 'minion-ci-' + [guid]::NewGuid().ToString('N')
+    $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\cmd.exe') -Argument (Get-CiCmdArguments $CommandLine $Out $Err) -WorkingDirectory $WorkingDirectory
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+    $null = Register-ScheduledTask -TaskName $name -Action $action -Settings $settings -RunLevel Highest `
+        -User "$env:COMPUTERNAME\$($Credential.UserName)" -Password $Credential.GetNetworkCredential().Password
+    try {
+        Start-ScheduledTask -TaskName $name
+        $deadline = (Get-Date).AddMinutes(3)
+        do {
+            Start-Sleep -Milliseconds 500
+            $state = [string](Get-ScheduledTask -TaskName $name).State
+            $info = Get-ScheduledTaskInfo -TaskName $name
+            # 267009: running; 267011: has not run yet.
+            $done = $state -eq 'Ready' -and $info.LastTaskResult -ne 267009 -and $info.LastTaskResult -ne 267011
+        } while (-not $done -and (Get-Date) -lt $deadline)
+        if (-not $done) { throw "the scheduled task of $CommandLine did not finish (state $state, result $($info.LastTaskResult))" }
+        $code = [int]$info.LastTaskResult
+    } finally {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false
+    }
+    Write-Host "[$($Credential.UserName), elevated task] $CommandLine -> exit $code"
+    return $code
+}
+
 # Get-CiPipeProbeCommandLine returns a command line that connects to the named
 # pipe \\.\pipe\$Name as whoever runs it and exits 0 when connected, 5 when
 # access is denied, 2 when nothing answers in 5 seconds, 9 on another error.
-# It is a PowerShell -EncodedCommand, so no quoting reaches cmd.exe.
-function Get-CiPipeProbeCommandLine([string]$Name) {
-    $probe = @"
-`$c = [System.IO.Pipes.NamedPipeClientStream]::new('.', '$Name', [System.IO.Pipes.PipeDirection]::InOut)
-`$code = 9
-try { `$c.Connect(5000); 'connected'; `$code = 0 }
+# The probe is a script file in $Dir (readable by every principal): a command
+# line of CreateProcessWithLogonW may not exceed 1024 characters, so an
+# -EncodedCommand does not fit.
+function Get-CiPipeProbeCommandLine([string]$Name, [string]$Dir = 'C:\minion-ci') {
+    $file = Join-Path $Dir 'pipe-probe.ps1'
+    if (-not (Test-Path -LiteralPath $file)) {
+        Set-Content -LiteralPath $file -Encoding utf8 -Value @'
+param([Parameter(Mandatory)][string]$Name)
+$c = [System.IO.Pipes.NamedPipeClientStream]::new('.', $Name, [System.IO.Pipes.PipeDirection]::InOut)
+$code = 9
+try { $c.Connect(5000); 'connected'; $code = 0 }
 catch {
-    `$e = `$_.Exception
-    while (`$e) {
-        if (`$e -is [System.UnauthorizedAccessException]) { `$code = 5; break }
-        if (`$e -is [System.TimeoutException]) { `$code = 2; break }
-        `$e = `$e.InnerException
+    $e = $_.Exception
+    while ($e) {
+        if ($e -is [System.UnauthorizedAccessException]) { $code = 5; break }
+        if ($e -is [System.TimeoutException]) { $code = 2; break }
+        $e = $e.InnerException
     }
-    "probe: `$(`$_.Exception.GetType().FullName): `$(`$_.Exception.Message)"
+    "probe: $($_.Exception.GetType().FullName): $($_.Exception.Message)"
 }
-finally { `$c.Dispose() }
-exit `$code
-"@
-    $enc = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($probe))
+finally { $c.Dispose() }
+exit $code
+'@
+    }
     $pwsh = (Get-Command pwsh).Source
-    return "`"$pwsh`" -NoProfile -NonInteractive -EncodedCommand $enc"
+    return "`"$pwsh`" -NoProfile -NonInteractive -File `"$file`" -Name $Name"
 }
 
 # Assert-Ci throws $Message when $Condition is false.

@@ -282,7 +282,9 @@ jobs:
       #       User" level, what runas /trustlevel:0x20000 gives (Administrators
       #       deny-only), via CreateProcessAsUser;
       #   (b) a new standard user (New-LocalUser), via CreateProcessWithLogonW;
-      #   (c) an alternate administrator, the same way.
+      #   (c) an alternate administrator with its full token: a scheduled
+      #       task with the highest run level (UAC is on on the runners, so
+      #       a CreateProcessWithLogonW logon would get the filtered token).
       # The commands run C:\minion-ci\minion.exe, a copy every principal can
       # read; the service itself runs the minion.exe of the workspace that
       # "worker up" installed. After PR #69 the service runs its verified copy
@@ -361,14 +363,14 @@ jobs:
           $cred = Import-Clixml -LiteralPath (Join-Path $env:RUNNER_TEMP 'cred-adm2.xml')
           $m = 'C:\minion-ci\minion.exe'
           $d = 'C:\minion-ci'
-          $null = Invoke-AsCredential -Credential $cred -CommandLine 'whoami /user /groups' -Out "$d\c-whoami.txt" -Err "$d\c-whoami.err"
+          $null = Invoke-AsCredential -Elevated -Credential $cred -CommandLine 'whoami /user /groups' -Out "$d\c-whoami.txt" -Err "$d\c-whoami.err"
           Show-CiFile "$d\c-whoami.txt"
           $admLine = @(Get-Content "$d\c-whoami.txt" | Where-Object { $_ -match 'S-1-5-32-544' })
           Assert-Ci ($admLine.Count -eq 1 -and $admLine[0] -notmatch 'deny only') 'the alternate administrator runs with an enabled Administrators group'
-          $code = Invoke-AsCredential -Credential $cred -CommandLine (Get-CiPipeProbeCommandLine $env:MINION_CI_PIPE) -Out "$d\c-probe.txt" -Err "$d\c-probe.err"
+          $code = Invoke-AsCredential -Elevated -Credential $cred -CommandLine (Get-CiPipeProbeCommandLine $env:MINION_CI_PIPE) -Out "$d\c-probe.txt" -Err "$d\c-probe.err"
           Show-CiFile "$d\c-probe.txt"; Show-CiFile "$d\c-probe.err"
           Assert-Ci ($code -eq 5) "the installer's pipe denies the alternate administrator (probe exit $code, want 5)"
-          $null = Invoke-AsCredential -Credential $cred -CommandLine "$m worker status --json" -Out "$d\c-status.json" -Err "$d\c-status.err"
+          $null = Invoke-AsCredential -Elevated -Credential $cred -CommandLine "$m worker status --json" -Out "$d\c-status.json" -Err "$d\c-status.err"
           Show-CiFile "$d\c-status.json"; Show-CiFile "$d\c-status.err"
           $st = Get-Content -Raw "$d\c-status.json" | ConvertFrom-Json
           Assert-Ci (-not $st.live) 'the alternate administrator gets no live answer'
@@ -419,7 +421,7 @@ jobs:
           Assert-Ci ($code -eq 21) "worker start of a stopped service as a standard user exits 21 (got $code)"
           Assert-Ci ((Get-CiServiceStatus) -eq 'Stopped') 'the service is still stopped'
           $adm = Import-Clixml -LiteralPath (Join-Path $env:RUNNER_TEMP 'cred-adm2.xml')
-          $code = Invoke-AsCredential -Credential $adm -CommandLine "$m worker start --json" -Out "$d\c-start.json" -Err "$d\c-start.err"
+          $code = Invoke-AsCredential -Elevated -Credential $adm -CommandLine "$m worker start --json" -Out "$d\c-start.json" -Err "$d\c-start.err"
           Show-CiFile "$d\c-start.json"; Show-CiFile "$d\c-start.err"
           Assert-Ci ($code -eq 0) "worker start by the alternate administrator exits 0 (got $code)"
           # The start changed nothing in the service: the pipe stays the
@@ -437,7 +439,7 @@ jobs:
             if (-not $ok) { Start-Sleep -Seconds 1 }
           }
           Assert-Ci $ok 'the installer reaches the restarted service over its pipe'
-          $code = Invoke-AsCredential -Credential $adm -CommandLine (Get-CiPipeProbeCommandLine $env:MINION_CI_PIPE) -Out "$d\c-probe2.txt" -Err "$d\c-probe2.err"
+          $code = Invoke-AsCredential -Elevated -Credential $adm -CommandLine (Get-CiPipeProbeCommandLine $env:MINION_CI_PIPE) -Out "$d\c-probe2.txt" -Err "$d\c-probe2.err"
           Show-CiFile "$d\c-probe2.txt"
           Assert-Ci ($code -eq 5) "the pipe still denies the alternate administrator (probe exit $code)"
           exit 0
