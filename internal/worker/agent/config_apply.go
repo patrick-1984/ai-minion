@@ -79,10 +79,17 @@ func (a configApplier) apply(key string) (ConfigApplyResult, error) {
 		return ConfigApplyResult{}, apiErr(proto.CodeInvalidArgument, "",
 			"only allow_new_sessions can be applied to a running Worker; restart the Worker to apply "+key)
 	}
-	t := RereadTightenOnly(a.settings, key)
-	src := sourceNames(t.Sources)
-	a.ex.SetNewSessionsBlocked(t.Blocked, src)
-	return ConfigApplyResult{Key: key, Effective: t.Value(key), Sources: src}, nil
+	// The file is reread under the exclusive create lock, not before it: a
+	// handler that waited there for the creations in flight must not install
+	// a value that another CLI saved over meanwhile (W4b, gate 1).
+	var res ConfigApplyResult
+	a.ex.ApplyNewSessions(func() (bool, []string) {
+		t := RereadTightenOnly(a.settings, key)
+		src := sourceNames(t.Sources)
+		res = ConfigApplyResult{Key: key, Effective: t.Value(key), Sources: src}
+		return t.Blocked, src
+	})
+	return res, nil
 }
 
 // configApplyOp serves [OpLocalConfigApply].

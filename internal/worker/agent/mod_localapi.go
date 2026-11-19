@@ -112,7 +112,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	instance := uuid.NewString()
 	runMode := workerRunMode()
 	lc := &lifecycleService{
-		ex: ex, counter: newSessionCounter(ex, hostKind), runMode: runMode, instance: instance, stop: env.RequestStop,
+		ex: ex, counter: newSessionCounter(ex, hostKind), runMode: runMode, instance: instance, stop: env.RequestStop, markClean: env.rt.markCleanStop,
 		restart: func() { restartProcess(log, lifecycleExe()) },
 	}
 	live.Counter = &lc.counter

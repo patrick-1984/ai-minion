@@ -254,8 +254,18 @@ func (e *Executor) CreateHeld() (string, bool) {
 // after the creations in flight ended: none can finish unseen after it.
 // sources are the local sources that block (for the status).
 func (e *Executor) SetNewSessionsBlocked(blocked bool, sources []string) {
+	e.ApplyNewSessions(func() (bool, []string) { return blocked, sources })
+}
+
+// ApplyNewSessions is SetNewSessionsBlocked with the value resolved by
+// resolve after createMu is held exclusively: the live apply rereads the
+// saved setting only once the creations in flight ended, so that a handler
+// that waited for them never installs a value that a later save replaced
+// (two applies run one after the other, each with the file as it is then).
+func (e *Executor) ApplyNewSessions(resolve func() (blocked bool, sources []string)) {
 	e.createMu.Lock()
 	defer e.createMu.Unlock()
+	blocked, sources := resolve()
 	src := slices.Clone(sources)
 	e.policy.newSessionsSources.Store(&src)
 	e.policy.newSessionsBlocked.Store(blocked)

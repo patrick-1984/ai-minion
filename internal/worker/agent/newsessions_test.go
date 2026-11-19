@@ -223,3 +223,30 @@ func TestLiveApplyIgnoresCachedResolver(t *testing.T) {
 		t.Fatalf("preview_only = %v", err)
 	}
 }
+
+// Gate 1: an apply that waits for a creation in flight rereads the file only
+// once it holds the create lock, so that a later save of "off" is never
+// undone by the stale "on" it would have read before the wait.
+func TestLiveApplyRereadsAfterWaitingForCreates(t *testing.T) {
+	dir := t.TempDir()
+	res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(string) (string, bool) { return "", false }}
+	s := Settings{WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w"},
+		Resolver: res, Logger: slog.New(slog.DiscardHandler)}
+	rt, _ := startCoreWith(t, s)
+	ex, _ := Lookup[*Executor](rt)
+	a := configApplier{settings: s, ex: ex}
+	saveAllowNewSessions(t, dir, "on")
+	ex.createMu.RLock() // a creation in flight
+	done := make(chan ConfigApplyResult)
+	go func() {
+		got, _ := a.apply(config.KeyAllowNewSessions)
+		done <- got
+	}()
+	time.Sleep(50 * time.Millisecond) // the apply waits for the creation
+	saveAllowNewSessions(t, dir, "off")
+	ex.createMu.RUnlock()
+	got := <-done
+	if blocked, _ := ex.Policy().NewSessionsBlocked(); !blocked || got.Effective != "off" {
+		t.Fatalf("after the later save of off: blocked=%v, apply=%+v", blocked, got)
+	}
+}
