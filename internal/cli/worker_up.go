@@ -350,7 +350,7 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// log sinks as the service will resolve them, before any hook, save or
 	// restart, so that a typo cannot put a working Worker into a restart
 	// loop.
-	if err := checkServiceSinks(res, serviceSinkReader(owned, target.UID)); err != nil {
+	if err := checkServiceSinks(res, serviceSinkReader(owned, target.UID, target.GID)); err != nil {
 		return fmt.Errorf("%w; nothing was saved and the service was not changed", err)
 	}
 	core, err := config.ResolveWorkerCore(res)
@@ -625,11 +625,11 @@ func (o overlayFlags) Lookup(key string) (string, bool, error) {
 // daemon (identity.OpenPrivate: no link, a regular file of the user, no
 // access for others). When root installs the service of another account,
 // the file must belong to that account instead (serviceOwnedPrivate).
-func serviceSinkReader(owned bool, uid int) func(string) ([]byte, error) {
+func serviceSinkReader(owned bool, uid, gid int) func(string) ([]byte, error) {
 	if !owned {
 		return readPrivateSinkFile
 	}
-	return func(path string) ([]byte, error) { return serviceOwnedPrivate(path, uid) }
+	return func(path string) ([]byte, error) { return serviceOwnedPrivate(path, uid, gid) }
 }
 
 // fillUpConfig puts the non-secret settings that this run gave by flag or

@@ -71,19 +71,44 @@ func TestServiceOwnedPrivate(t *testing.T) {
 	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := serviceOwnedPrivate(p, os.Getuid()); err != nil {
+	uid, gid := os.Getuid(), os.Getgid()
+	if _, err := serviceOwnedPrivate(p, uid, gid); err != nil {
 		t.Fatalf("own file: %v", err)
 	}
-	if _, err := serviceOwnedPrivate(p, os.Getuid()+1); err == nil {
+	if _, err := serviceOwnedPrivate(p, uid+1, gid); err == nil {
 		t.Fatal("a file of another account was accepted")
 	}
 	l := filepath.Join(dir, "l")
 	_ = os.Symlink(p, l)
-	if _, err := serviceOwnedPrivate(l, os.Getuid()); err == nil {
+	if _, err := serviceOwnedPrivate(l, uid, gid); err == nil {
 		t.Fatal("a link was accepted")
 	}
+	// A directory on the way that the service account cannot search: the
+	// file would pass for root, never for the service.
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(locked, "k")
+	if err := os.WriteFile(inner, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if uid != 0 {
+		if _, err := serviceOwnedPrivate(inner, uid, gid); err != nil {
+			t.Fatalf("own searchable dir: %v", err)
+		}
+	}
+	if err := os.Chmod(locked, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(locked, 0o700) }()
+	if uid != 0 {
+		if _, err := serviceOwnedPrivate(inner, uid, gid); err == nil {
+			t.Fatal("a file behind an unsearchable directory was accepted")
+		}
+	}
 	_ = os.Chmod(p, 0o640)
-	if _, err := serviceOwnedPrivate(p, os.Getuid()); err == nil {
+	if _, err := serviceOwnedPrivate(p, uid, gid); err == nil {
 		t.Fatal("a group-readable file was accepted")
 	}
 }
