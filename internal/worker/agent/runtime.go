@@ -590,9 +590,9 @@ func (rt *Runtime) Run(ctx context.Context, s Settings) error {
 	select {
 	case <-sigCtx.Done():
 	case <-rt.stopReq:
-		s.logger().Info("stop requested over the local control socket (minion worker down)")
+		bestEffortInfo(s.logger(), "stop requested over the local control socket (minion worker down)")
 	}
-	s.logger().Info("worker shutting down", "timeout", rt.opts.StopTimeout.String())
+	bestEffortInfo(s.logger(), "worker shutting down", "timeout", rt.opts.StopTimeout.String())
 	// The Worker started and was asked to stop (Ctrl+C, worker down, a
 	// service stop): once its modules stopped cleanly, this run is not a
 	// failed start of an uncommitted update (Stop records that).
@@ -642,4 +642,24 @@ func safely(fn func() error) (err error) {
 		}
 	}()
 	return fn()
+}
+
+// logWait is how long the shutdown waits for one of its own log lines.
+const logWait = 200 * time.Millisecond
+
+// bestEffortInfo writes an info record without letting a stalled output (a
+// standard error that nobody reads) delay the stop sequence: the write goes
+// on in the background and the shutdown waits for it at most [logWait].
+func bestEffortInfo(l *slog.Logger, msg string, args ...any) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		l.Info(msg, args...)
+	}()
+	t := time.NewTimer(logWait)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+	}
 }

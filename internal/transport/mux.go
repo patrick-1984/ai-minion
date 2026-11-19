@@ -64,6 +64,14 @@ type SessionOptions struct {
 	FrameTap FrameTap
 }
 
+// SessionTapper is a FrameTap that keeps state per session: NewSession asks
+// it for the tap of the new session, so that a tap shared by the sessions of
+// a reconnecting Worker never carries the state of one into the next.
+type SessionTapper interface {
+	FrameTap
+	ForSession() FrameTap
+}
+
 // Session is the yamux multiplexer on top of an authenticated connection
 // (normally a Channel). The Worker side is the yamux client and the Hub side
 // the yamux server. Streams carry a two-byte kind prefix; Accept delivers only
@@ -97,6 +105,9 @@ func NewSession(conn net.Conn, role Role, opts SessionOptions) (*Session, error)
 	}
 	if opts.KindTimeout <= 0 {
 		opts.KindTimeout = DefaultKindTimeout
+	}
+	if st, ok := opts.FrameTap.(SessionTapper); ok {
+		opts.FrameTap = st.ForSession()
 	}
 	ac := &activityConn{Conn: conn, clk: opts.Keepalive.Clock}
 	ac.touch()

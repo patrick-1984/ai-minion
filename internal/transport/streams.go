@@ -227,9 +227,19 @@ func (s *Stream) SetWriteDeadline(t time.Time) error { return s.ys.SetWriteDeadl
 // competes with the handler for yamux's one-slot read notification nor resets
 // the read deadline that wakes it.
 func (s *Stream) Reset() {
+	s.tapEnd()
 	s.markReset()
 	_ = s.ys.Close()
 	s.startDrain()
+}
+
+// tapEnd tells the tap that the exchange of the stream ends here, so that it
+// forgets what it kept for it (a reset or abandoned stream sends no last
+// frame).
+func (s *Stream) tapEnd() {
+	if s.tap != nil {
+		s.tap.TapFrame(TapFrame{Kind: s.kind, Stream: s.ys.StreamID(), End: true})
+	}
 }
 
 // markReset forbids new reads, and wakes the reader that waits, if any.
@@ -285,6 +295,7 @@ const resetWake = 5 * time.Millisecond
 // a peer that never completes the close cannot make the slot free early. It
 // may be called after Reset or Close, and more than once.
 func (s *Stream) Release() {
+	s.tapEnd()
 	s.markReset()
 	_ = s.ys.Close()
 	s.startDrain()
@@ -387,7 +398,8 @@ type TapFrame struct {
 	// on the wire: 4-byte length plus body.
 	Body []byte
 	Size int
-	// End marks the clean end of the peer's side of the stream (no body).
+	// End marks the end of an exchange: the peer's clean close or a reset
+	// of the stream (no body).
 	End bool
 }
 

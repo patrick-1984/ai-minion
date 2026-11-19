@@ -258,3 +258,126 @@ func sessionsB(b *testing.B, tap transport.FrameTap) (*transport.Session, *trans
 	b.Cleanup(func() { _ = hub.Close(); _ = w.Close() })
 	return hub, w
 }
+
+// A record that is queued while the output stalls never reaches a destination
+// that replaced the one it was queued for, nor a destination that left the
+// configuration.
+func TestQueuedRecordsDoNotCrossASinkRotation(t *testing.T) {
+	block := make(chan struct{})
+	f := logx.NewFanout()
+	f.Set(logx.SlotLocal, slog.NewJSONHandler(blockWriter{block}, nil), slog.LevelInfo)
+	var oldOut, newOut syncBuf
+	f.Set(logx.SlotOTel, slog.NewJSONHandler(&oldOut, nil), slog.LevelInfo)
+	l := New(SideHub, f)
+	defer l.Close(context.Background())
+	l.Configure(config.TrafficConfig{Enabled: true, To: []string{config.TrafficToLocal, config.TrafficToOTel}})
+	tp := l.Tap(Peer{WorkerID: "w"})
+	fr := transport.TapFrame{Kind: transport.KindOp, Stream: 1, Sent: true, Body: []byte(`{"type":"op.request","op":"x"}`), Size: 34}
+	tp.TapFrame(fr) // the writer takes it and stalls in the local output
+	time.Sleep(50 * time.Millisecond)
+	for range 3 {
+		tp.TapFrame(fr)
+	}
+	f.Set(logx.SlotOTel, slog.NewJSONHandler(&newOut, nil), slog.LevelInfo) // the collector is replaced
+	close(block)
+	eventually(t, func() bool { return l.Dropped() >= 3 })
+	time.Sleep(50 * time.Millisecond)
+	if strings.Contains(newOut.String(), "worker traffic") {
+		t.Fatalf("a queued record reached the replacement: %s", newOut.String())
+	}
+}
+
+// What the peer chooses is bounded before it is kept: an oversized or
+// non-identifier op, type, outcome or request id is replaced.
+func TestPeerMetadataIsBounded(t *testing.T) {
+	var out syncBuf
+	_, live, _ := logx.NewLiveLocal(logx.Options{Format: logx.FormatJSON, Output: &out})
+	l := New(SideHub, live.Fanout)
+	defer l.Close(context.Background())
+	l.Configure(config.TrafficConfig{Enabled: true, To: []string{config.TrafficToLocal}})
+	tp := l.Tap(Peer{WorkerID: "w"})
+	big := strings.Repeat("A", 1<<16)
+	body := `{"type":"op.request","op":"` + big + `","request_id":"password=hunter2 secret"}`
+	tp.TapFrame(transport.TapFrame{Kind: transport.KindOp, Stream: 1, Body: []byte(body), Size: len(body)})
+	body = `{"type":"error","code":"` + big + `"}`
+	tp.TapFrame(transport.TapFrame{Kind: transport.KindOp, Stream: 1, Body: []byte(body), Size: len(body)})
+	body = `{"type":"` + big + `"}`
+	tp.TapFrame(transport.TapFrame{Kind: transport.KindOp, Stream: 2, Body: []byte(body), Size: len(body)})
+	eventually(t, func() bool { return len(records(t, &out)) == 3 })
+	if s := out.String(); strings.Contains(s, "AAAA") || strings.Contains(s, "hunter2") || len(s) > 4000 {
+		t.Fatalf("peer text reached the log (%d bytes): %.300s", len(s), s)
+	}
+}
+
+// A reset stream forgets its open request, and a tap that serves a
+// reconnecting Worker starts every session empty.
+func TestResetStreamForgetsItsRequest(t *testing.T) {
+	var out syncBuf
+	_, live, _ := logx.NewLiveLocal(logx.Options{Format: logx.FormatJSON, Output: &out})
+	l := New(SideHub, live.Fanout)
+	defer l.Close(context.Background())
+	l.Configure(config.TrafficConfig{Enabled: true, To: []string{config.TrafficToLocal}})
+	hubTap := l.Tap(Peer{WorkerID: "w"})
+	hub, worker := sessions(t, hubTap, nil)
+	ctx := context.Background()
+	st, err := hub.OpenOp(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.WriteFrame(map[string]any{"type": "op.request", "op": "x", "request_id": "r"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = worker
+	st.Reset()
+	tp := hubTap.(*tap)
+	eventually(t, func() bool { tp.mu.Lock(); defer tp.mu.Unlock(); return len(tp.open) == 0 })
+
+	// The Worker side: one tap, two sessions.
+	wl := l.Tap(Peer{})
+	tp = wl.(*tap)
+	tp.TapFrame(transport.TapFrame{Kind: transport.KindOp, Stream: 7, Sent: true, Body: []byte(`{"type":"op.request","op":"x"}`), Size: 10})
+	next := tp.ForSession().(*tap)
+	next.mu.Lock()
+	n := len(next.open)
+	next.mu.Unlock()
+	if n != 0 || next == tp {
+		t.Fatalf("the next session starts with %d open requests", n)
+	}
+}
+
+// After Close returned (its budget over) nothing is written and a late tap
+// is counted, not queued.
+func TestNothingIsWrittenAfterClose(t *testing.T) {
+	block := make(chan struct{})
+	var wrote syncBuf
+	f := logx.NewFanout()
+	f.Set(logx.SlotLocal, slog.NewJSONHandler(gateWriter{block, &wrote}, nil), slog.LevelInfo)
+	l := New(SideHub, f)
+	l.Configure(config.TrafficConfig{Enabled: true, To: []string{config.TrafficToLocal}})
+	tp := l.Tap(Peer{WorkerID: "w"})
+	fr := transport.TapFrame{Kind: transport.KindOp, Stream: 1, Sent: true, Body: []byte(`{"type":"op.request","op":"x"}`), Size: 34}
+	tp.TapFrame(fr)
+	time.Sleep(50 * time.Millisecond)
+	for range 5 {
+		tp.TapFrame(fr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	l.Close(ctx)
+	tp.TapFrame(fr)
+	close(block) // the stalled write returns after the deadline
+	eventually(t, func() bool { return l.Dropped() >= 6 })
+	time.Sleep(50 * time.Millisecond)
+	// only the write that was in flight when the budget ended may complete
+	if strings.Count(wrote.String(), "worker traffic") > 1 {
+		t.Fatalf("records were written after Close: %s", wrote.String())
+	}
+}
+
+// gateWriter blocks each write until gate is closed, then records it.
+type gateWriter struct {
+	gate chan struct{}
+	to   *syncBuf
+}
+
+func (g gateWriter) Write(p []byte) (int, error) { <-g.gate; return g.to.Write(p) }
