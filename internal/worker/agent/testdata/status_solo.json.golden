@@ -10,6 +10,7 @@
   },
   "hub_fingerprint": "",
   "worker_fingerprint": "",
+  "enrollment_epoch": 0,
   "paired": false,
   "worker_id": "",
   "approval": "unknown",

@@ -70,10 +70,11 @@ minion worker down     # stop the running Worker (foreground or the Windows serv
 minion worker start    # start the installed Windows service again (never installs)
 minion worker restart  # restart the running Worker in place
 minion worker reset    # after down: forget the Hub, the key and the share choice
+minion worker leave    # stop the Worker (counting ConPTY sessions) and reset it in one step
 ```
 
 ConPTY sessions live inside the Worker, so they end when it stops or restarts. `down`, `stop` and `restart` let the running Worker count them first: when any would end they stop nothing and exit with status 23 (`sessions_lost`); repeat with `--accept-loss N`. When the sessions cannot be counted (an older Worker, or the service does not answer on your pipe) they exit with status 29: `--accept-unknown-loss` accepts that an unknown number of sessions will end. Starting or stopping the service without the pipe needs an elevated prompt (exit status 21 names the command).
 
-`minion worker reset` forgets the Hub, the key and the share choice and refuses while the Worker runs: stop it first with `minion worker down`. It does not tell the Hub: remove the Worker on the Hub's Workers page too.
+`minion worker reset` forgets the Hub, the key and the share choice and refuses while the Worker runs: stop it first with `minion worker down`. It does not tell the Hub: remove the Worker on the Hub's Workers page too. `minion worker leave` does both in one step, with the same exit statuses 23 and 29 for ConPTY sessions, and also removes the `hub_fingerprint` that a join saved (see [leave the Hub](../guides/pairing.md#leave-the-hub-worker-leave)).
 
 To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).

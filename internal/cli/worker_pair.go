@@ -500,23 +500,12 @@ func confirmNewCode(in io.Reader, out io.Writer, enr agent.Enrollment) error {
 // service applies the same rule when it pairs or resumes by itself. The read-modify-write runs under the same
 // config lock as `minion worker config set|unset|share` and the cleanup of the
 // invitation key, so that a change made meanwhile is not lost; the state
-// directory is created first, like those commands do.
+// directory is created first, like those commands do. It records the C11
+// provenance of the join besides.
 func saveWorkerHub(stateDir, url, fingerprint string) error {
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return fmt.Errorf("cannot create the state directory %q: %w", stateDir, err)
-	}
-	release, err := lockConfigFile(filepath.Join(stateDir, configLockName))
-	if err != nil {
-		return err
-	}
-	defer release()
-	f, err := config.LoadFile(filepath.Join(stateDir, workerConfigName))
-	if err != nil {
-		return err
-	}
-	f.Set(config.KeyServer, url)
-	if fingerprint != "" {
-		f.Set(config.KeyHubFingerprint, fingerprint)
-	}
-	return f.Save()
+	// The provenance record (tray C11) says whether this join created the
+	// hub_fingerprint expectation, so that "minion worker leave" removes
+	// only what a join set.
+	_, err := saveJoinHub(stateDir, url, fingerprint, agent.JoinPinSourceJoin, time.Now())
+	return err
 }

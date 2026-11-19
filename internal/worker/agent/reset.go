@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -149,8 +150,9 @@ func (c *Connector) serveControlStream(l *Link, st *transport.Stream) {
 // ResetConfigKeys are the keys that `minion worker reset` removes from the
 // config file: the local policy (preview_only, share_existing) and the Hub
 // settings (server, hub_ca_file, hub_insecure) that the first-run wizard asks
-// for again. Machine settings (state directory, tmux socket, name, logging)
-// stay. Values given by flag or environment are not in the file and cannot be
+// for again. hub_fingerprint is removed besides only when a join created it
+// (tray C11, see [JoinPin]). Machine settings (state directory, tmux socket,
+// name, logging, allow_new_sessions) stay. Values given by flag or environment are not in the file and cannot be
 // reset from here.
 var ResetConfigKeys = []string{
 	config.KeyPreviewOnly, config.KeyShareExisting,
@@ -194,7 +196,24 @@ type ResetReport struct {
 	ConfigKeys []string
 	// PauseCleared is true when a pause file existed (tray W3a).
 	PauseCleared bool
+	// Kept are config keys that stay because nothing proves a join set them
+	// (tray C11): hub_fingerprint that was provisioned before a join, edited
+	// after it, or saved by a join that kept no record.
+	Kept []string
+	// Steps are the steps that finished, in order (ResetStep*); after an
+	// error they say how far the reset came.
+	Steps []string
 }
+
+// The steps of [ResetWorker], in their order.
+const (
+	ResetStepPairing    = "pairing_deleted"
+	ResetStepConfig     = "config_cleared"
+	ResetStepPause      = "pause_cleared"
+	ResetStepPairCancel = "pair_cancel_cleared"
+	ResetStepKey        = "key_deleted"
+	ResetStepForgotten  = "forgotten_hubs_cleared"
+)
 
 // Nothing reports whether the Worker was already in the unconfigured state.
 func (r ResetReport) Nothing() bool {
@@ -222,8 +241,7 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 		path = filepath.Join(o.StateDir, "config.json")
 	}
 	// An unreadable config file stops the reset before anything is deleted.
-	cfg, err := config.LoadFile(path)
-	if err != nil {
+	if _, err := config.LoadFile(path); err != nil {
 		return rep, fmt.Errorf("read the config file: %w", err)
 	}
 	// A reset during an update trial: a rollback must not restore the
@@ -241,18 +259,22 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 			return rep, fmt.Errorf("reset the enrollment state: %w", err)
 		}
 	}
-	if rep.ConfigKeys, err = clearConfigKeys(cfg, ResetConfigKeys); err != nil {
+	rep.Steps = append(rep.Steps, ResetStepPairing)
+	if rep.ConfigKeys, rep.Kept, err = clearResetConfig(o.StateDir, path); err != nil {
 		return rep, err
 	}
+	rep.Steps = append(rep.Steps, ResetStepConfig)
 	// A pause belongs to the Hub link that is gone: the next setup starts
 	// unpaused (tray W3a).
 	if rep.PauseCleared, err = ClearPause(o.StateDir); err != nil {
 		return rep, err
 	}
+	rep.Steps = append(rep.Steps, ResetStepPause)
 	// So does a cancelled pairing (tray W8b): the next setup pairs again.
 	if err := RemovePairCancel(o.StateDir); err != nil {
 		return rep, err
 	}
+	rep.Steps = append(rep.Steps, ResetStepPairCancel)
 
 	keyPath := filepath.Join(o.StateDir, WorkerKeyFile)
 	switch err := os.Remove(keyPath); {
@@ -262,12 +284,55 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 	default:
 		return rep, fmt.Errorf("delete the Worker key %s: %w", keyPath, err)
 	}
+	rep.Steps = append(rep.Steps, ResetStepKey)
 	// The record of a removed pairing goes last: while the old Worker key
 	// exists, an invitation of the removed Hub could restore its Worker row.
 	if err := ClearForgottenHubs(o.StateDir); err != nil {
 		return rep, err
 	}
+	rep.Steps = append(rep.Steps, ResetStepForgotten)
 	return rep, nil
+}
+
+// clearResetConfig removes [ResetConfigKeys] from the config file at path
+// under the config lock of stateDir, and hub_fingerprint only when the join
+// record says a join created it and it still has that value (tray C11). A
+// hub_fingerprint that was provisioned before the join, edited after it, or
+// saved without a record (an older join) is kept and reported in kept. The
+// join record goes with the reset: the next join starts from the file as it
+// is then.
+func clearResetConfig(stateDir, path string) (removed, kept []string, err error) {
+	release, err := lockConfig(filepath.Join(stateDir, configLockName))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
+	// Read again under the lock: a writer may have saved since the first read.
+	f, err := config.LoadFile(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the config file: %w", err)
+	}
+	keys := append([]string(nil), ResetConfigKeys...)
+	v, has, err := f.Lookup(config.KeyHubFingerprint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the config file: %w", err)
+	}
+	if has {
+		// An unreadable record proves nothing about who set the value: kept.
+		pin, ok, perr := ReadJoinPin(stateDir)
+		if ok && perr == nil && pin.CreatedFingerprint(strings.TrimSpace(v)) {
+			keys = append(keys, config.KeyHubFingerprint)
+		} else {
+			kept = []string{config.KeyHubFingerprint}
+		}
+	}
+	if removed, err = clearConfigKeys(f, keys); err != nil {
+		return nil, kept, err
+	}
+	if err := RemoveJoinPin(stateDir); err != nil {
+		return removed, kept, err
+	}
+	return removed, kept, nil
 }
 
 // clearConfigKeys removes keys from the loaded config file and reports the

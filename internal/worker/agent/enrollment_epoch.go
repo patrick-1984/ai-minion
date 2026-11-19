@@ -197,3 +197,21 @@ func (e *Enrollments) Snapshot(ctx context.Context) (gen uint64, changed <-chan 
 	})
 	return gen, changed, enr, ok, err
 }
+
+// ReadEnrollmentEpoch returns the enrollment generation of stateDir (0 before
+// the first enrollment), read under the cross-process state lock, so that it
+// is not read in the middle of a writer's change. "minion worker status"
+// reports it (enrollment_epoch) and "minion worker leave" compares it with
+// --expect-enrollment-epoch. A missing state directory is generation 0.
+func ReadEnrollmentEpoch(ctx context.Context, stateDir string) (uint64, error) {
+	if _, err := os.Stat(stateDir); errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	e := &Enrollments{stateDir: stateDir}
+	unlock, err := e.lockState(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	return readEpoch(e.epochPath())
+}

@@ -100,6 +100,8 @@ sudo minion update
 
 `minion worker reset` forgets the Hub, the key and the share choice on this Mac and does not touch your tmux sessions. It refuses while the Worker runs, so stop it first with `minion worker down` (it stops the launchd agent). It does not tell the Hub: remove the Worker on the Hub's Workers page too.
 
+`minion worker leave` stops the Worker and resets it in one step, and also removes the `hub_fingerprint` that a join saved, so that the Worker can join another Hub (see [leave the Hub](../guides/pairing.md#leave-the-hub-worker-leave)). The Worker stays listed on the Hub until you remove it there.
+
 ## Docker Desktop is not a way to run this Worker
 
 A Worker in a Docker container on macOS runs inside a Linux virtual machine and cannot reach the tmux server of your Mac. Run the Worker natively as above.

@@ -177,6 +177,16 @@ func backgroundJoin(cmd *cobra.Command, deps workerPairDeps, opt pairOptions, ar
 // empty) and pairing_display=status in the Worker config file, and the C11
 // provenance record, under the config lock that `minion worker config` holds.
 func saveBackgroundJoin(stateDir, url, fingerprint string, now time.Time) (agent.JoinPin, error) {
+	return saveJoinHub(stateDir, url, fingerprint, agent.JoinPinSourceBackground, now)
+}
+
+// saveJoinHub saves server and hub_fingerprint (when fingerprint is not
+// empty) in the Worker config file together with the C11 provenance record
+// of the join named by source, under the config lock that `minion worker
+// config` holds. A background join also saves pairing_display=status and
+// lifts an earlier cancel (W8b).
+func saveJoinHub(stateDir, url, fingerprint, source string, now time.Time) (agent.JoinPin, error) {
+	background := source == agent.JoinPinSourceBackground
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return agent.JoinPin{}, fmt.Errorf("cannot create the state directory %q: %w", stateDir, err)
 	}
@@ -201,11 +211,14 @@ func saveBackgroundJoin(stateDir, url, fingerprint string, now time.Time) (agent
 	// false then): it is replaced by what this join knows.
 	prev, hadPrev, _ := agent.ReadJoinPin(stateDir)
 	pin := agent.NextJoinPin(prev, hadPrev, strings.TrimSpace(fileServer), strings.TrimSpace(fileFp), url, fingerprint, now)
+	pin.Source = source
 	f.Set(config.KeyServer, url)
 	if fingerprint != "" {
 		f.Set(config.KeyHubFingerprint, fingerprint)
 	}
-	f.Set(config.KeyPairingDisplay, config.PairingDisplayStatus)
+	if background {
+		f.Set(config.KeyPairingDisplay, config.PairingDisplayStatus)
+	}
 	if err := f.Save(); err != nil {
 		return agent.JoinPin{}, err
 	}
@@ -213,8 +226,10 @@ func saveBackgroundJoin(stateDir, url, fingerprint string, now time.Time) (agent
 		return agent.JoinPin{}, err
 	}
 	// A new join asks for the pairing that an earlier cancel stopped (W8b).
-	if err := agent.RemovePairCancel(stateDir); err != nil {
-		return agent.JoinPin{}, err
+	if background {
+		if err := agent.RemovePairCancel(stateDir); err != nil {
+			return agent.JoinPin{}, err
+		}
 	}
 	return pin, nil
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -362,6 +363,10 @@ type StatusReport struct {
 	HubFingerprint string `json:"hub_fingerprint"`
 	// WorkerFingerprint is the Worker's own key, empty before the key exists.
 	WorkerFingerprint string `json:"worker_fingerprint"`
+	// EnrollmentEpoch is the enrollment generation of the profile (0 before
+	// the first enrollment); every enrollment, re-pairing or wipe advances it.
+	// "minion worker leave --expect-enrollment-epoch" takes it (tray W9).
+	EnrollmentEpoch uint64 `json:"enrollment_epoch"`
 	// HubFingerprintWords and WorkerFingerprintWords are the same keys as
 	// six words (v0.11.0).
 	HubFingerprintWords    string `json:"hub_fingerprint_words,omitempty"`
@@ -483,6 +488,14 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 	}
 	problem := func(format string, a ...any) { r.Problems = append(r.Problems, fmt.Sprintf(format, a...)) }
 
+	if in.StateDir != "" {
+		// Without the lock: the writers replace the file atomically.
+		n, err := readEpoch(filepath.Join(in.StateDir, enrollmentEpochFile))
+		if err != nil {
+			problem("cannot read the enrollment generation: %v", err)
+		}
+		r.EnrollmentEpoch = n
+	}
 	if in.Enrollment != nil {
 		enr, ok, err := in.Enrollment.Load(ctx)
 		switch {

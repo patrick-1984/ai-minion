@@ -10,6 +10,7 @@
   },
   "hub_fingerprint": "gr2q7gf5lh6pzfdnurnkvputhpqvjjfvbfhbysv7ikdgkbptzf7a",
   "worker_fingerprint": "ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq",
+  "enrollment_epoch": 0,
   "hub_fingerprint_words": "crucial-position-tower-kingdom-panther-layer",
   "worker_fingerprint_words": "health-scale-voice-thing-october-bench",
   "hub_check": "none",

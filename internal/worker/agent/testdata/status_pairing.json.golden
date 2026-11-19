@@ -11,6 +11,7 @@
   },
   "hub_fingerprint": "",
   "worker_fingerprint": "ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq",
+  "enrollment_epoch": 0,
   "worker_fingerprint_words": "health-scale-voice-thing-october-bench",
   "paired": false,
   "worker_id": "",

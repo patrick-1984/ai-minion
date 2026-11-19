@@ -244,6 +244,9 @@ func printResetReport(w io.Writer, stateDir string, rep agent.ResetReport) {
 	if rep.PauseCleared {
 		_, _ = fmt.Fprintln(w, "The pause of the Hub connection is cleared.")
 	}
+	if len(rep.Kept) > 0 {
+		_, _ = fmt.Fprintf(w, "Kept in the config file (not set by a join, or changed since): %s.\n", strings.Join(rep.Kept, ", "))
+	}
 	_, _ = fmt.Fprintln(w, "Your tmux sessions and the session counter were not touched.")
 	_, _ = fmt.Fprintln(w, "The next \"minion worker up\" runs the first-run wizard.")
 	if rep.WasEnrolled {
@@ -268,4 +271,33 @@ func liveControlSocket(env config.PathEnv, timeout time.Duration) (string, bool)
 		}
 	}
 	return "", false
+}
+
+// lockLifecycleAndEnrollment takes, in this order, the lifecycle lock of
+// stateDir without waiting (no Worker runs on it; agent.ErrStateInUse when
+// one does) and the enrollment lock <state>/.enroll.lock, waiting up to
+// enrollWait for a join or pairing that holds it. "minion worker leave"
+// revalidates its preconditions and resets under both, so that neither a
+// starting Worker nor a join in another process changes the enrollment in
+// between. release frees both, in reverse order.
+func lockLifecycleAndEnrollment(ctx context.Context, stateDir string,
+	lockState func(string) (io.Closer, error),
+	lockEnroll func(context.Context, string) (func(), error),
+	enrollWait time.Duration,
+) (release func(), err error) {
+	life, err := lockState(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	ectx, cancel := context.WithTimeout(ctx, enrollWait)
+	defer cancel()
+	unlock, err := lockEnroll(ectx, stateDir)
+	if err != nil {
+		_ = life.Close()
+		return nil, fmt.Errorf("lock the enrollment of %s (a join or pairing may still run): %w", stateDir, err)
+	}
+	return func() {
+		unlock()
+		_ = life.Close()
+	}, nil
 }

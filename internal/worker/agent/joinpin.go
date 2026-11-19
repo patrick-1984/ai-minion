@@ -26,6 +26,10 @@ const JoinPinVersion = 1
 const (
 	// JoinPinSourceBackground: "minion worker join <url> --background".
 	JoinPinSourceBackground = "join_background"
+	// JoinPinSourceJoin: "minion worker join" in the foreground, with a join
+	// token (--token-file) or a pairing code. Cancelling a background
+	// pairing (W8b) leaves its values alone; leaving the Hub (W9) does not.
+	JoinPinSourceJoin = "join"
 )
 
 // JoinPin is the content of [JoinPinFile].

@@ -94,6 +94,19 @@ minion worker pair cancel --attempt <pairing.attempt from minion worker status -
 - Exit status: 0 when cancelled; 27 when the attempt is not the code shown now (a new code replaced it, or the pairing ended) or the Worker was paired meanwhile. Nothing is changed then, and a pairing that completed stays: leaving the Hub is a separate action. 24 when no Worker runs for the state directory; 20 when the running Worker is too old.
 - When the Hub accepted the code at the same moment as the cancel, the Worker stores nothing; the Hub may then list a Worker that never connects, which you remove on the Hub.
 
+### Leave the Hub: `worker leave`
+
+```sh
+minion worker leave [--state-dir D]          # shows what it deletes and asks
+minion worker leave --yes --state-dir D --expect-worker-fingerprint FP --expect-enrollment-epoch E [--accept-loss N|--accept-unknown-loss] [--json]
+```
+
+- One command for one state directory: it stops the Worker of that directory (with the session count of `minion worker down`: exit status 23 with `sessions_lost` unless `--accept-loss N`, 29 when the sessions cannot be counted unless `--accept-unknown-loss`), waits until it has released its state, and then resets it like `minion worker reset`: the Worker key pair, the pinned Hub key and the enrollment, the share selection, the local policy and the Hub address go, and a pause is cleared. A Worker of yours that runs on another state directory is not stopped.
+- `hub_fingerprint` is removed only when `join-pin.json` says a join (`minion worker join --token-file`, `join <url>` or `join <url> --background`) created it and it still has that value, also when the Hub has rotated its key since. A value provisioned before the join, edited after it, or saved by a join of an older release (no record) is kept and reported as `kept: ["hub_fingerprint"]`. `allow_new_sessions` and the other machine settings stay; your tmux sessions and the session counter are not touched.
+- With `--yes`, give what `minion worker status --json` reports: `worker_fingerprint` (`""` for none) and `enrollment_epoch`. When the Worker key or the enrollment changed (for example a join completed meanwhile), the exit status is 27 and nothing is deleted; the command checks both again after the stop, under the Worker's lifecycle lock and its enrollment lock, right before it deletes.
+- Hub settings from environment variables are not stored and stay in effect: the result lists them as `not_removed` (settings from service flags are not inspected). After a failure half way, `steps_done` lists what was done; the same command finishes the job.
+- The Hub is not told: **the Worker stays listed on the Hub until you remove it there.**
+
 The pairing handshake has not had an independent cryptographic review yet; see [security](../security.md).
 
 ### Give the Worker the Hub fingerprint
@@ -253,5 +266,5 @@ Ways to choose (any of them; the last change wins):
 ## After pairing
 
 - **Workers** in the Hub lists the Worker with its owner, kind and whether it is online, or pending approval. `minion worker status` shows the same from the Worker's side: the connection state, the Hub fingerprint (words and full), the Hub check, the TLS path, the Worker fingerprint and the share choice ([troubleshooting](troubleshooting.md#worker-status-as-json)).
-- To end a pairing, remove the Worker in the Hub: it becomes a tombstone, its trust and bound API keys are deleted, and the Worker is told to wipe its pairing. From the machine's side, `minion worker reset` (the Hub is not told: remove the Worker in the Hub as well).
+- To end a pairing, remove the Worker in the Hub: it becomes a tombstone, its trust and bound API keys are deleted, and the Worker is told to wipe its pairing. From the machine's side, `minion worker leave` (stops the Worker and resets it) or `minion worker reset` (the Hub is not told: remove the Worker in the Hub as well).
 - Hub administrators can rename, reassign and restrict Workers (to preview only, which refuses every write to a session while it is on).

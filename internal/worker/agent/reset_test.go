@@ -522,3 +522,75 @@ func TestResetClearsThePause(t *testing.T) {
 		t.Fatalf("second reset = %+v, %v", rep, err)
 	}
 }
+
+// hub_fingerprint goes only when the join record says a join created it and
+// it is unchanged (tray C11); allow_new_sessions stays; the steps are listed.
+func TestResetRemovesOnlyAJoinCreatedHubFingerprint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		record  *JoinPin
+		value   string
+		removed bool
+	}{
+		{"created by a join", &JoinPin{Version: JoinPinVersion, Source: JoinPinSourceJoin, HubFingerprint: "F", HubFingerprintCreated: true}, "F", true},
+		{"edited after the join", &JoinPin{Version: JoinPinVersion, Source: JoinPinSourceJoin, HubFingerprint: "F", HubFingerprintCreated: true}, "G", false},
+		{"provisioned before the join", &JoinPin{Version: JoinPinVersion, Source: JoinPinSourceJoin, HubFingerprint: "F"}, "F", false},
+		{"no record", nil, "F", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newResetRig(t)
+			r.pair()
+			cfg, err := config.LoadFile(r.configPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Set(config.KeyHubFingerprint, tc.value)
+			cfg.Set(config.KeyAllowNewSessions, "false")
+			if err := cfg.Save(); err != nil {
+				t.Fatal(err)
+			}
+			if tc.record != nil {
+				if err := WriteJoinPin(r.dir, *tc.record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rep, err := r.reset()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err = config.LoadFile(r.configPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, has, _ := cfg.Lookup(config.KeyHubFingerprint)
+			if has == tc.removed || (len(rep.Kept) == 1) == tc.removed {
+				t.Fatalf("hub_fingerprint present %v, report %+v", has, rep)
+			}
+			if v, ok, _ := cfg.Lookup(config.KeyAllowNewSessions); !ok || v != "false" {
+				t.Fatalf("allow_new_sessions = %q, %v", v, ok)
+			}
+			if _, ok, _ := ReadJoinPin(r.dir); ok {
+				t.Fatal("the join record survived the reset")
+			}
+			want := []string{ResetStepPairing, ResetStepConfig, ResetStepPause, ResetStepPairCancel, ResetStepKey, ResetStepForgotten}
+			if strings.Join(rep.Steps, ",") != strings.Join(want, ",") {
+				t.Fatalf("steps = %v", rep.Steps)
+			}
+		})
+	}
+}
+
+func TestReadEnrollmentEpochAndStatus(t *testing.T) {
+	r := newResetRig(t)
+	if n, err := ReadEnrollmentEpoch(context.Background(), filepath.Join(r.dir, "missing")); err != nil || n != 0 {
+		t.Fatalf("missing dir = %d, %v", n, err)
+	}
+	r.pair()
+	n, err := ReadEnrollmentEpoch(context.Background(), r.dir)
+	if err != nil || n == 0 {
+		t.Fatalf("epoch = %d, %v", n, err)
+	}
+	if got := BuildStatus(context.Background(), StatusInputs{StateDir: r.dir}).EnrollmentEpoch; got != n {
+		t.Fatalf("status enrollment_epoch = %d, want %d", got, n)
+	}
+}
