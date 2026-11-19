@@ -177,7 +177,10 @@ jobs:
           set -eu
           dir="$(cygpath -u "$LOCALAPPDATA")/Programs/minion"
           mkdir -p "$dir"
-          CGO_ENABLED=0 go build -o "$dir/minion.exe" ./cmd/minion
+          # go.exe is a native program: with MSYS_NO_PATHCONV it gets the
+          # path verbatim, so pass the Windows form.
+          CGO_ENABLED=0 go build -o "$(cygpath -w "$dir")\\minion.exe" ./cmd/minion
+          test -f "$dir/minion.exe"
           echo "USER_MINION=$dir/minion.exe" >> "$GITHUB_ENV"
       - name: Migration, install, restart, stop
         shell: bash
