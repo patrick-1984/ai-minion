@@ -208,7 +208,7 @@ jobs:
           [ "$rc" = 0 ] || fail "worker stop --accept-loss 2 exited $rc, want 0"
           jq -e '.ok == true and .stopped == true and .sessions_lost == 2' stop3.json > /dev/null || fail "the stop result is not ok/stopped/sessions_lost 2"
           ./minion.exe worker status --json > w2b-after.json 2>/dev/null || true
-          grep -q '"live": false' w2b-after.json || { cat w2b-after.json; fail "the Worker still answers after the stop"; }
+          jq -e '.connection.live == false and .live.running == false' w2b-after.json > /dev/null || { cat w2b-after.json; fail "the Worker still answers after the stop"; }
 
   worker-service:
     name: Windows service (install, start, restart, stop)
@@ -337,9 +337,13 @@ jobs:
           $code = Invoke-AsCredential -Credential $cred -CommandLine "$m worker status --json" -Out "$d\b-status.json" -Err "$d\b-status.err"
           Show-CiFile "$d\b-status.json"; Show-CiFile "$d\b-status.err"
           $st = Get-Content -Raw "$d\b-status.json" | ConvertFrom-Json
-          Assert-Ci (-not $st.live) 'the standard user gets no live answer'
-          Assert-Ci (-not ($st.pairing.PSObject.Properties.Name -contains 'code')) 'pairing.code is absent'
+          # The report always has the member pairing.code (status.go,
+          # StatusPairing); "absent" is checked as no value: empty or missing.
+          Assert-Ci (-not $st.connection.live -and -not $st.live.running) 'the standard user gets no live answer'
+          Assert-Ci ([string]::IsNullOrEmpty([string]$st.pairing.code)) 'pairing.code carries no value'
           Assert-Ci ([string]::IsNullOrEmpty($st.pending_pairing_code)) 'pending_pairing_code is empty'
+          Assert-Ci ($st.pairing.state -ne 'pending') 'no pairing state of the service'
+          Assert-Ci ($st.other_account_worker -eq $true) 'the service is reported as the Worker of another account'
           # Stop without flags: the service runs but does not answer on this
           # user's pipe, so the sessions cannot be counted: 29.
           $code = Invoke-AsCredential -Credential $cred -CommandLine "$m worker stop --json" -Out "$d\b-stop.json" -Err "$d\b-stop.err"
@@ -373,8 +377,8 @@ jobs:
           $null = Invoke-AsCredential -Elevated -Credential $cred -CommandLine "$m worker status --json" -Out "$d\c-status.json" -Err "$d\c-status.err"
           Show-CiFile "$d\c-status.json"; Show-CiFile "$d\c-status.err"
           $st = Get-Content -Raw "$d\c-status.json" | ConvertFrom-Json
-          Assert-Ci (-not $st.live) 'the alternate administrator gets no live answer'
-          Assert-Ci (-not ($st.pairing.PSObject.Properties.Name -contains 'code')) 'pairing.code is absent'
+          Assert-Ci (-not $st.connection.live -and -not $st.live.running) 'the alternate administrator gets no live answer'
+          Assert-Ci ([string]::IsNullOrEmpty([string]$st.pairing.code)) 'pairing.code carries no value'
           exit 0
       - name: 'W1b principal a: the installer, unelevated, stops the service over its pipe'
         shell: pwsh
@@ -435,7 +439,7 @@ jobs:
           $ok = $false
           for ($i = 0; $i -lt 60 -and -not $ok; $i++) {
             & ./minion.exe worker status --json > status-c.json 2> status-c.err
-            $ok = ((Get-Content -Raw status-c.json | ConvertFrom-Json).live -eq $true)
+            $ok = ((Get-Content -Raw status-c.json | ConvertFrom-Json).live.running -eq $true)
             if (-not $ok) { Start-Sleep -Seconds 1 }
           }
           Assert-Ci $ok 'the installer reaches the restarted service over its pipe'
