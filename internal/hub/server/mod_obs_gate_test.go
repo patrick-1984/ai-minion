@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -249,5 +250,86 @@ func TestInvalidEnvironmentEnumDoesNotBlockStoppingASink(t *testing.T) {
 		if st := o.svc.Manager.Status()[0]; st.Enabled {
 			t.Fatalf("%v: the export was not stopped: %+v", env, st)
 		}
+	}
+}
+
+// An HTTP request that outlives the drain deadline, with the local output
+// stalled: the timeout warning does not hold the stop, and the modules'
+// cleanup still runs.
+func TestRunStopsModulesWhenTheDrainTimesOutOnAStalledOutput(t *testing.T) {
+	w := &stallWriter{release: make(chan struct{})}
+	defer close(w.release)
+	hold := make(chan struct{})
+	defer close(hold)
+	entered := make(chan struct{})
+	var cleaned atomic.Bool
+	r := NewRegistry()
+	if err := registerCore(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register("holder", 5, func(_ context.Context, env *Env) error {
+		mux, err := Require[*http.ServeMux](env)
+		if err != nil {
+			return err
+		}
+		mux.HandleFunc("/hold", func(rw http.ResponseWriter, _ *http.Request) {
+			close(entered)
+			<-hold
+		})
+		env.OnStop(func(context.Context) error { cleaned.Store(true); return nil })
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{DataDir: t.TempDir(), TLSOff: true, PublicURL: "http://hub.example.com", Listen: "127.0.0.1:0",
+		Logger: slog.New(slog.NewTextHandler(w, nil))}
+	srv := New(cfg, r, WithShutdownTimeout(300*time.Millisecond))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	select {
+	case <-srv.Started():
+	case <-time.After(20 * time.Second):
+		t.Fatal("the Hub did not start")
+	}
+	go func() { _, _ = http.Get("http://" + srv.Addr() + "/hold") }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request did not arrive")
+	}
+	w.stalled.Store(true)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Logf("Run = %v", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Run hung on the drain timeout warning")
+	}
+	if !cleaned.Load() {
+		t.Fatal("module cleanup did not run")
+	}
+}
+
+// An active TLS sink whose CA file is gone can still be stopped while an
+// unchanged invalid enum keeps the traffic log off: the running settings'
+// sink files are not read for that.
+func TestStoppingASinkWithAMissingCAAndAnInvalidEnum(t *testing.T) {
+	o := newObsFixture(t, map[string]string{"MINION_WORKER_TRAFFIC_LOG": "payload"}, nil)
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	writeTestCA(t, ca)
+	o.set(t, ops.SettingChange{Key: "syslog", Value: "on"}, ops.SettingChange{Key: "syslog_endpoint", Value: "tls://127.0.0.1:1"},
+		ops.SettingChange{Key: "syslog_ca_file", Value: ca})
+	if st := o.svc.Manager.Status()[0]; !st.Enabled {
+		t.Fatalf("status = %+v", st)
+	}
+	if err := os.Remove(ca); err != nil {
+		t.Fatal(err)
+	}
+	o.set(t, ops.SettingChange{Key: "syslog", Value: "off"})
+	if st := o.svc.Manager.Status()[0]; st.Enabled {
+		t.Fatalf("the export was not stopped: %+v", st)
 	}
 }

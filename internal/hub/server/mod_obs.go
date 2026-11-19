@@ -379,6 +379,7 @@ var trafficKeys = []string{config.KeyTrafficLog, config.KeyTrafficLogTo, config.
 // about it.
 func unchangedAndInvalid(cur, p *config.Resolver, files config.SinkFiles, keys []string,
 	resolve func(*config.Resolver, config.Sinks) error) bool {
+	sameErr := false
 	for _, k := range keys {
 		a, ea := cur.Resolve(k)
 		b, eb := p.Resolve(k)
@@ -386,6 +387,7 @@ func unchangedAndInvalid(cur, p *config.Resolver, files config.SinkFiles, keys [
 			// The same unsupported value (an invalid environment enum, say)
 			// on both sides is an unchanged input.
 			if ea != nil && eb != nil && ea.Error() == eb.Error() {
+				sameErr = true
 				continue
 			}
 			return false
@@ -393,6 +395,12 @@ func unchangedAndInvalid(cur, p *config.Resolver, files config.SinkFiles, keys [
 		if a.Value != b.Value {
 			return false
 		}
+	}
+	if sameErr {
+		// The value itself is unsupported, so the feature is off whatever
+		// the sinks are: the sink files of the running settings are not
+		// read (one may be gone while its sink keeps the trust it loaded).
+		return true
 	}
 	cs, err := config.ResolveSinks(cur, files)
 	return err == nil && resolve(cur, cs) != nil
