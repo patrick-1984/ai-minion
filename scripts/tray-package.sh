@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tray-package.sh GOOS GOARCH VERSION: builds the desktop tray and writes
-# dist/tray/minion-tray_<version>_<goos>_<goarch>.{tar.gz,zip}.
+# dist/tray/minion-tray-<version>_<goos>_<goarch>.{tar.gz,zip}.
 # GOARCH "universal" (darwin only) builds amd64 and arm64 with cgo and joins
 # them with lipo; it needs a macOS host. Everything else is a pure Go build.
 set -euo pipefail
@@ -8,7 +8,9 @@ goos=$1 goarch=$2 v=${3:-dev}
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 mod=github.com/patrick-1984/ai-minion
 flags="-s -w -X $mod/internal/version.Version=$v"
-name="minion-tray_${v#v}_${goos}_${goarch}"
+# Hyphens, not underscores: the asset globs of the headless release
+# (minion_*_linux_amd64.tar.gz) must never match a tray archive.
+name="minion-tray-${v#v}-${goos}-${goarch}"
 dir="dist/tray/$name"
 rm -rf "$dir"; mkdir -p "$dir"
 if [ "$goos" = darwin ]; then

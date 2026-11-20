@@ -24,7 +24,7 @@ if [ -n "$bad" ]; then echo "the linux/arm tray build links a GUI library:"; ech
 
 # The tray is built by the tray workflow only, never for 32-bit ARM, and never
 # by the headless release (goreleaser) or `make cross`.
-if grep -q 'minion-tray' .goreleaser.yaml; then echo ".goreleaser.yaml must not build minion-tray"; fail=1; fi
+if grep -q 'cmd/minion-tray' .goreleaser.yaml; then echo ".goreleaser.yaml must not build minion-tray"; fail=1; fi
 if grep -q 'minion-tray' <(sed -n '/^cross:/,/^$/p' Makefile); then echo "make cross must not build minion-tray"; fail=1; fi
 if grep -Eq 'goarch: *arm$|GOARCH: *arm$|goarm|GOARM' .github/workflows/tray.yml; then echo "tray.yml must not build for 32-bit ARM"; fail=1; fi
 

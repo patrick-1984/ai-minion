@@ -61,6 +61,7 @@ func (r ExecRunner) Run(ctx context.Context, stdin string, args ...string) (stri
 	defer cancel()
 	cmd := exec.CommandContext(ctx, r.Path, args...)
 	cmd.WaitDelay = 2 * time.Second
+	hideWindow(cmd)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
@@ -129,12 +130,14 @@ func (s Status) Mismatch() bool {
 // Running is true when a running Worker answered.
 func (s Status) Running() bool { return s.Connection.Live }
 
-// SessionsCouldEnd is true when stopping may end open terminal sessions: any
-// counted session, an unknown count, or the ConPTY host (its sessions live
-// inside the Worker).
-func (s Status) SessionsCouldEnd() bool {
+// SessionsCouldEnd is true when stopping or replacing the Worker may end open
+// terminal sessions: a running Worker with a counted session, an unknown count
+// or the ConPTY host (its sessions live inside the Worker); and, on Windows, a
+// Worker that is set up but did not answer (a slow status pipe is not proof
+// that nothing runs, and `worker down` signals the supervisor anyway).
+func (s Status) SessionsCouldEnd(goos string) bool {
 	if !s.Running() {
-		return false
+		return goos == "windows" && s.Paired
 	}
 	return s.SessionHost == "conpty" || s.Sessions == nil || *s.Sessions > 0
 }
@@ -218,6 +221,8 @@ type Dialogs interface {
 	Confirm(text string) bool
 	// Pick shows a checklist; checked names are preselected.
 	Pick(text string, all, checked []string) (chosen []string, ok bool)
+	// Mode asks which sharing rule to apply: "keep", "all" or "none".
+	Mode(text, current string) (mode string, ok bool)
 	Info(text string)
 	Error(text string)
 }
@@ -232,6 +237,9 @@ type Controller struct {
 	R Runner
 	D Dialogs
 	V View
+
+	// GOOS is the host system; empty means runtime.GOOS.
+	GOOS string
 
 	mu   sync.Mutex // one action at a time
 	last Status
@@ -271,6 +279,23 @@ func (c *Controller) do(stdin string, args ...string) bool {
 	return err == nil
 }
 
+func (c *Controller) goos() string {
+	if c.GOOS != "" {
+		return c.GOOS
+	}
+	return runtime.GOOS
+}
+
+// confirmEnd asks before an action that can end open terminal sessions. It
+// reads a fresh status first. False means: do not go on.
+func (c *Controller) confirmEnd(what string) bool {
+	c.refresh()
+	if !c.last.SessionsCouldEnd(c.goos()) {
+		return true
+	}
+	return c.D.Confirm(what + " can end the terminal sessions that are open. Go on?")
+}
+
 // Start is `minion worker start`.
 func (c *Controller) Start() {
 	c.mu.Lock()
@@ -283,8 +308,7 @@ func (c *Controller) Start() {
 func (c *Controller) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.refresh()
-	if c.last.SessionsCouldEnd() && !c.D.Confirm("Stopping the Worker can end the terminal sessions that are open. Stop it?") {
+	if !c.confirmEnd("Stopping the Worker") {
 		return
 	}
 	c.do("", "worker", "down")
@@ -314,14 +338,22 @@ func (c *Controller) Setup() {
 	if !ok || tok == "" {
 		return
 	}
+	// `worker up` can replace a Worker that is running.
+	if !c.confirmEnd("Setting up the Hub (it may restart the Worker)") {
+		return
+	}
 	if c.do(tok+"\n", "worker", "up", "--join", "-") {
 		c.D.Info("The Worker is set up. Check the Hub key words in the menu against the ones your Hub shows.")
 	}
 	c.refresh()
 }
 
-// ShareSessions is the session picker: `config share list --json`, then
-// `config share select --revision N -- names` (or `none`).
+// ShareSessions is the session picker. It reads `config share list --json`
+// and saves with `config share select|all|none --revision N [-- names]`, always
+// with the revision of that listing, so a newer decision is never overwritten.
+// Where the host cannot list its sessions (Windows ConPTY), or has none, only
+// the rule is offered (keep, all, none): the tray never sends a name the
+// listing did not give it.
 func (c *Controller) ShareSessions() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -330,33 +362,39 @@ func (c *Controller) ShareSessions() {
 		c.D.Error(err.Error())
 		return
 	}
-	all, checked := l.Names()
-	text := "Choose the sessions the Hub may show."
+	if l.Revision == "" {
+		c.D.Error("There is no saved sharing choice yet: set up the Hub first, then choose the shared sessions.")
+		return
+	}
+	text := "Choose what the Hub may show."
 	if l.Locked {
 		text += " (The Hub cannot change this choice; you can.)"
 	}
-	if len(all) == 0 {
-		c.D.Info("This host has no sessions to share yet.")
-		return
-	}
-	chosen, ok := c.D.Pick(text, all, checked)
-	if !ok {
-		return
-	}
-	args := []string{"worker", "config", "share"}
-	if len(chosen) == 0 {
-		args = append(args, "none")
+	all, checked := l.Names()
+	var args []string
+	if !l.SessionsKnown || len(all) == 0 {
+		mode, ok := c.D.Mode(text, l.Mode)
+		if !ok || (mode != "all" && mode != "none") {
+			return
+		}
+		args = []string{mode}
 	} else {
-		args = append(args, "select")
+		chosen, ok := c.D.Pick(text, all, checked)
+		if !ok {
+			return
+		}
+		if len(chosen) == 0 {
+			args = []string{"none"}
+		} else {
+			args = append([]string{"select"}, "--revision", l.Revision, "--")
+			args = append(args, chosen...)
+		}
 	}
-	if l.Revision != "" {
-		args = append(args, "--revision", l.Revision)
+	full := append([]string{"worker", "config", "share"}, args...)
+	if args[0] != "select" {
+		full = append(full, "--revision", l.Revision)
 	}
-	if len(chosen) > 0 {
-		args = append(args, "--")
-		args = append(args, chosen...)
-	}
-	if _, err := c.run("", args...); err != nil {
+	if _, err := c.run("", full...); err != nil {
 		if again, lerr := c.shareList(); lerr == nil && again.Revision != l.Revision {
 			c.D.Error("The sharing choice changed while you were choosing. Nothing was changed; open the picker again to see the current choice.")
 		} else {
@@ -365,6 +403,19 @@ func (c *Controller) ShareSessions() {
 		return
 	}
 	c.refresh()
+}
+
+// PickLabels returns one label per name for a checklist dialog, and a lookup
+// from a label back to the name. Labels never start with a dash, so no dialog
+// program reads a session name as an option; names can hold any character.
+func PickLabels(names []string) (labels []string, name func(label string) (string, bool)) {
+	byLabel := make(map[string]string, len(names))
+	for i, n := range names {
+		l := fmt.Sprintf("%d. %s", i+1, n)
+		labels = append(labels, l)
+		byLabel[l] = n
+	}
+	return labels, func(l string) (string, bool) { n, ok := byLabel[l]; return n, ok }
 }
 
 func (c *Controller) shareList() (ShareList, error) {
@@ -379,17 +430,29 @@ func (c *Controller) shareList() (ShareList, error) {
 	return l, nil
 }
 
-// ToggleNewSessions flips `config set allow_new_sessions`. The checkbox shows
-// the status; unknown counts as on, so a click blocks.
-func (c *Controller) ToggleNewSessions() {
+// SetNewSessions sets `config set allow_new_sessions` to target ("on" or
+// "off"). The target comes from the checkbox the person clicked, never from a
+// guess about the current state: if the state already is the target nothing is
+// written, and the person confirms the target state first.
+func (c *Controller) SetNewSessions(target string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.refresh()
-	next := "off"
-	if c.last.NewSessions == "off" {
-		next = "on"
+	if target != "on" && target != "off" {
+		return
 	}
-	c.do("", "worker", "config", "set", "allow_new_sessions", next)
+	c.refresh()
+	if c.last.NewSessions == target {
+		return
+	}
+	q := "Block every new session on this machine? The Hub cannot lift the block."
+	if target == "on" {
+		q = "Allow new sessions on this machine again?"
+	}
+	if !c.D.Confirm(q) {
+		c.refresh()
+		return
+	}
+	c.do("", "worker", "config", "set", "allow_new_sessions", target)
 	c.refresh()
 }
 

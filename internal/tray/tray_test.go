@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,9 @@ type fakeDialogs struct {
 	pickOK    bool
 	pickAll   []string
 	pickCheck []string
+	mode      string
+	modeOK    bool
+	modes     int
 	errs      []string
 	infos     []string
 }
@@ -71,8 +75,9 @@ func (d *fakeDialogs) Pick(_ string, all, checked []string) ([]string, bool) {
 	d.pickAll, d.pickCheck = all, checked
 	return d.pickWant, d.pickOK
 }
-func (d *fakeDialogs) Info(s string)  { d.infos = append(d.infos, s) }
-func (d *fakeDialogs) Error(s string) { d.errs = append(d.errs, s) }
+func (d *fakeDialogs) Mode(string, string) (string, bool) { d.modes++; return d.mode, d.modeOK }
+func (d *fakeDialogs) Info(s string)                      { d.infos = append(d.infos, s) }
+func (d *fakeDialogs) Error(s string)                     { d.errs = append(d.errs, s) }
 
 type fakeView struct {
 	s    Status
@@ -244,7 +249,7 @@ func TestConPTYAlwaysConfirms(t *testing.T) {
 	s.Connection.Live = true
 	zero := 0
 	s.Sessions = &zero
-	if !s.SessionsCouldEnd() {
+	if !s.SessionsCouldEnd("windows") {
 		t.Fatal("conpty sessions live in the Worker")
 	}
 }
@@ -268,12 +273,12 @@ func TestPauseResume(t *testing.T) {
 
 func TestSetupSendsTokenOnStdinOnly(t *testing.T) {
 	r := newRig(t)
-	r.d.token, r.d.tokenOK = "  SECRET-TOKEN \n", true
+	r.d.token, r.d.tokenOK, r.d.confirm = "  SECRET-TOKEN \n", true, true
 	r.reply(t, "worker status --json", statusJSON)
 	r.c.Setup()
 	cs := r.calls(t)
-	if !reflect.DeepEqual(cs[0].Args, []string{"worker", "up", "--join", "-"}) || cs[0].Stdin != "SECRET-TOKEN\n" {
-		t.Fatalf("%+v", cs[0])
+	if !reflect.DeepEqual(cs[1].Args, []string{"worker", "up", "--join", "-"}) || cs[1].Stdin != "SECRET-TOKEN\n" {
+		t.Fatalf("%+v", cs)
 	}
 	for _, c := range cs {
 		if strings.Contains(strings.Join(c.Args, " "), "SECRET") {
@@ -298,7 +303,8 @@ func TestSetupCancelledOrEmptyRunsNothing(t *testing.T) {
 
 func TestSetupFailureShowsMessage(t *testing.T) {
 	r := newRig(t)
-	r.d.token, r.d.tokenOK = "tok", true
+	r.d.token, r.d.tokenOK, r.d.confirm = "tok", true, true
+	r.reply(t, "worker status --json", statusJSON)
 	r.fail(t, "worker up --join -", "the invitation has expired")
 	r.c.Setup()
 	if len(r.d.errs) != 1 || !strings.Contains(r.d.errs[0], "expired") || len(r.d.infos) != 0 {
@@ -396,20 +402,129 @@ func TestShareListFailure(t *testing.T) {
 	}
 }
 
-func TestShareWithoutKnownSessionsOffersSavedSelection(t *testing.T) {
-	l := ShareList{Selected: []string{"x"}}
-	all, checked := l.Names()
-	if !reflect.DeepEqual(all, []string{"x"}) || !reflect.DeepEqual(checked, []string{"x"}) {
-		t.Fatal(all, checked)
+const winShareJSON = `{"mode":"none","revision":"4","locked":false,"selected":["blocked"],"sessions_known":false,"sessions":[]}`
+
+func TestShareUnknownSessionsOffersRuleOnlyNeverNames(t *testing.T) {
+	r := newRig(t)
+	r.reply(t, "worker config share list --json", winShareJSON)
+	// Save without a change: keep sends nothing, the blocked name is not re-shared.
+	r.d.modeOK, r.d.mode = true, "keep"
+	r.c.ShareSessions()
+	if r.d.modes != 1 || r.d.pickAll != nil || len(r.argv(t)) != 1 {
+		t.Fatal(r.d.modes, r.argv(t))
+	}
+	r.d.mode = "all"
+	r.c.ShareSessions()
+	got := r.argv(t)
+	if !slices.Contains(got, "worker config share all --revision 4") {
+		t.Fatal(got)
+	}
+	for _, a := range got {
+		if strings.Contains(a, "blocked") {
+			t.Fatal("sent a name the listing did not give", a)
+		}
 	}
 }
 
-func TestNewSessionsToggle(t *testing.T) {
+func TestShareEmptyInventoryStillOffersRule(t *testing.T) {
+	r := newRig(t)
+	r.reply(t, "worker config share list --json", `{"mode":"all","revision":"2","sessions_known":true,"sessions":[]}`)
+	r.d.modeOK, r.d.mode = true, "none"
+	r.c.ShareSessions()
+	got := r.argv(t)
+	if !slices.Contains(got, "worker config share none --revision 2") {
+		t.Fatal(got)
+	}
+}
+
+func TestShareWithoutRevisionIsRefused(t *testing.T) {
+	r := newRig(t)
+	r.reply(t, "worker config share list --json", strings.Replace(shareJSON, `"revision":"7"`, `"revision":""`, 1))
+	r.d.pickOK, r.d.pickWant = true, []string{"a"}
+	r.c.ShareSessions()
+	if len(r.d.errs) != 1 || len(r.argv(t)) != 1 || r.d.pickAll != nil {
+		t.Fatal(r.d.errs, r.argv(t))
+	}
+}
+
+func TestPickLabelsNeverStartWithDash(t *testing.T) {
+	names := []string{"-rm", "--help", "a b", "1. x"}
+	labels, name := PickLabels(names)
+	for i, l := range labels {
+		if strings.HasPrefix(l, "-") {
+			t.Fatal(l)
+		}
+		if n, ok := name(l); !ok || n != names[i] {
+			t.Fatal(l, n)
+		}
+	}
+	if _, ok := name("nothing"); ok {
+		t.Fatal("unknown label")
+	}
+}
+
+func TestStopUncertainWindowsStatusConfirms(t *testing.T) {
+	r := newRig(t)
+	r.c.GOOS = "windows"
+	// The status pipe did not answer: live false, but a Worker is set up.
+	r.reply(t, "worker status --json", `{"paired":true,"connection":{"live":false}}`)
+	r.c.Stop()
+	if r.d.confirms != 1 {
+		t.Fatal("no confirmation")
+	}
+	for _, a := range r.argv(t) {
+		if a == "worker down" {
+			t.Fatal("stopped without confirmation")
+		}
+	}
+	// The same status on Linux needs none.
+	r2 := newRig(t)
+	r2.c.GOOS = "linux"
+	r2.reply(t, "worker status --json", `{"paired":true,"connection":{"live":false}}`)
+	r2.c.Stop()
+	if r2.d.confirms != 0 {
+		t.Fatal("asked on linux")
+	}
+}
+
+func TestSetupConfirmsWhenItCouldReplaceRunningWorker(t *testing.T) {
+	r := newRig(t)
+	r.d.token, r.d.tokenOK = "tok", true
+	r.reply(t, "worker status --json", statusJSON) // 2 sessions
+	r.c.Setup()                                    // confirm declined
+	for _, c := range r.calls(t) {
+		if len(c.Args) > 1 && c.Args[1] == "up" {
+			t.Fatal("ran up without confirmation")
+		}
+	}
+	if r.d.confirms != 1 {
+		t.Fatal("no confirmation")
+	}
+	r.d.confirm = true
+	r.c.Setup()
+	last := r.calls(t)
+	found := false
+	for _, c := range last {
+		found = found || (len(c.Args) > 1 && c.Args[1] == "up" && c.Stdin == "tok\n")
+	}
+	if !found {
+		t.Fatal(r.argv(t))
+	}
+}
+
+func TestNewSessionsExplicitTargetWithConfirmation(t *testing.T) {
 	r := newRig(t)
 	r.reply(t, "worker status --json", statusJSON) // on
-	r.c.ToggleNewSessions()
+	r.c.SetNewSessions("off")                      // declined
+	for _, a := range r.argv(t) {
+		if strings.Contains(a, "config set") {
+			t.Fatal("wrote without confirmation")
+		}
+	}
+	r.d.confirm = true
+	r.c.SetNewSessions("off")
 	r.reply(t, "worker status --json", strings.Replace(statusJSON, `"new_sessions":"on"`, `"new_sessions":"off"`, 1))
-	r.c.ToggleNewSessions()
+	r.c.SetNewSessions("on")
 	var got []string
 	for _, a := range r.argv(t) {
 		if strings.Contains(a, "config set") {
@@ -421,11 +536,29 @@ func TestNewSessionsToggle(t *testing.T) {
 	}
 }
 
+func TestNewSessionsStaleClickNeverTurnsCreationBackOn(t *testing.T) {
+	r := newRig(t)
+	// The box showed "on" and the click asked for "off", but another client
+	// already blocked creation: nothing is written, and nothing asked.
+	r.reply(t, "worker status --json", strings.Replace(statusJSON, `"new_sessions":"on"`, `"new_sessions":"off"`, 1))
+	r.d.confirm = true
+	r.c.SetNewSessions("off")
+	for _, a := range r.argv(t) {
+		if strings.Contains(a, "config set") {
+			t.Fatal("wrote", a)
+		}
+	}
+	if r.d.confirms != 0 {
+		t.Fatal("asked")
+	}
+}
+
 func TestNewSessionsFailureShown(t *testing.T) {
 	r := newRig(t)
+	r.d.confirm = true
 	r.reply(t, "worker status --json", statusJSON)
 	r.fail(t, "worker config set allow_new_sessions off", "cannot write the config")
-	r.c.ToggleNewSessions()
+	r.c.SetNewSessions("off")
 	if len(r.d.errs) != 1 {
 		t.Fatal(r.d.errs)
 	}

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"fyne.io/systray"
@@ -29,9 +30,54 @@ func (dialogs) Confirm(text string) bool {
 }
 
 func (dialogs) Pick(text string, all, checked []string) ([]string, bool) {
-	out, err := zenity.ListMultiple(text, all, zenity.Title("Minion: shared sessions"),
-		zenity.DefaultItems(checked...), zenity.OKLabel("Save"))
-	return out, err == nil
+	// Labels never start with a dash: zenity would read such a name as an option.
+	labels, name := tray.PickLabels(all)
+	var pre []string
+	for _, c := range checked {
+		for i, n := range all {
+			if n == c {
+				pre = append(pre, labels[i])
+			}
+		}
+	}
+	out, err := zenity.ListMultiple(text, labels, zenity.Title("Minion: shared sessions"),
+		zenity.DefaultItems(pre...), zenity.OKLabel("Save"))
+	if err != nil {
+		if !errors.Is(err, zenity.ErrCanceled) {
+			zenityError(err)
+		}
+		return nil, false
+	}
+	var names []string
+	for _, l := range out {
+		if n, ok := name(l); ok {
+			names = append(names, n)
+		}
+	}
+	return names, true
+}
+
+func (dialogs) Mode(text, current string) (string, bool) {
+	const keep, all, none = "Keep the current choice", "Share all sessions", "Share no session"
+	out, err := zenity.List(text+" Now: "+current+".", []string{keep, all, none},
+		zenity.Title("Minion: shared sessions"), zenity.OKLabel("Save"))
+	if err != nil {
+		if !errors.Is(err, zenity.ErrCanceled) {
+			zenityError(err)
+		}
+		return "", false
+	}
+	switch out {
+	case all:
+		return "all", true
+	case none:
+		return "none", true
+	}
+	return "keep", true
+}
+
+func zenityError(err error) {
+	_ = zenity.Error("The dialog failed: "+err.Error(), zenity.Title("Minion"))
 }
 
 func (dialogs) Info(text string)  { _ = zenity.Info(text, zenity.Title("Minion")) }
@@ -126,7 +172,12 @@ func runTray() error {
 				case <-m.share.ClickedCh:
 					go c.ShareSessions()
 				case <-m.newSessions.ClickedCh:
-					go c.ToggleNewSessions()
+					// The target is the opposite of the box as shown.
+					next := "off"
+					if !m.newSessions.Checked() {
+						next = "on"
+					}
+					go c.SetNewSessions(next)
 				case <-refresh.ClickedCh:
 					go c.Refresh()
 				case <-quit.ClickedCh:

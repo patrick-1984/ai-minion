@@ -6,13 +6,13 @@ Every menu item runs a `minion` command (the table below), so anything the tray 
 
 ## Install
 
-Download the archive for your system from the release page (files `minion-tray_<version>_<os>_<arch>`, with `minion-tray_checksums.txt`). The tray runs the `minion` that is next to it, else the one on `PATH`, so [install `minion`](../../README.md) first and check it with `minion worker status`. A Worker must be set up (menu item "Set up the Hub...", or `minion worker up --join -`) before Start does anything.
+Download the archive for your system from the release page (files `minion-tray-<version>-<os>-<arch>`; they are listed in the signed `checksums.txt` of the release, so the verification of the install guides covers them). The tray runs the `minion` that is next to it, else the one on `PATH`, so [install `minion`](../../README.md) first and check it with `minion worker status`. A Worker must be set up (menu item "Set up the Hub...", or `minion worker up --join -`) before Start does anything.
 
 | System | Archive | Steps |
 | --- | --- | --- |
-| Windows 10/11 | `..._windows_amd64.zip`, `..._windows_arm64.zip` | Unzip, put `minion-tray.exe` next to `minion.exe` (or anywhere), double-click it. To start it at logon, put a shortcut in `shell:startup`. |
-| Ubuntu desktop (GNOME) | `..._linux_amd64.tar.gz`, `..._linux_arm64.tar.gz` | Unpack, copy `minion-tray` to `~/.local/bin`, run it. It needs the `zenity` program for its dialogs (installed on Ubuntu desktop; otherwise `sudo apt install zenity`). GNOME shows no tray icons by itself: install the AppIndicator extension, `sudo apt install gnome-shell-extension-appindicator`, then log out and in and enable it in the Extensions app. KDE, Xfce and Cinnamon show the icon without it. |
-| macOS 12 or newer, Intel and Apple Silicon | `..._darwin_universal.tar.gz` | Unpack, run `minion-tray`. The binary is not notarized: if macOS refuses it, run `xattr -d com.apple.quarantine minion-tray` once. Add it to System Settings, General, Login Items to start it at login. |
+| Windows 10/11 | `...-windows-amd64.zip`, `...-windows-arm64.zip` | Unzip, put `minion-tray.exe` next to `minion.exe` (or anywhere), double-click it. To start it at logon, put a shortcut in `shell:startup`. |
+| Ubuntu desktop (GNOME) | `...-linux-amd64.tar.gz`, `...-linux-arm64.tar.gz` | Unpack, copy `minion-tray` to `~/.local/bin`, run it. It needs the `zenity` program for its dialogs (installed on Ubuntu desktop; otherwise `sudo apt install zenity`). GNOME shows no tray icons by itself: install the AppIndicator extension, `sudo apt install gnome-shell-extension-appindicator`, then log out and in and enable it in the Extensions app. KDE, Xfce and Cinnamon show the icon without it. |
+| macOS 13 (Ventura) or newer, Intel and Apple Silicon | `...-darwin-universal.tar.gz` | Unpack, run `minion-tray`. This is the oldest macOS release the Go 1.27 toolchain supports, and the build has not been run on it yet. The binary is not notarized: if macOS refuses it, run `xattr -d com.apple.quarantine minion-tray` once. Add it to System Settings, General, Login Items to start it at login. |
 
 `minion-tray --version` prints the version and exits. Quit the tray from its menu ("Quit tray"); that does not stop the Worker.
 
@@ -22,11 +22,11 @@ Download the archive for your system from the release page (files `minion-tray_<
 | --- | --- |
 | Status line, Hub address, Hub key words (also every 5 s and after each action) | `minion worker status --json` |
 | Start | `minion worker start` |
-| Stop (asks first when open sessions could end, always on the ConPTY host of Windows) | `minion worker down` |
+| Stop (asks first when open sessions could end: a counted or unknown number of sessions, the ConPTY host of Windows, or a Windows Worker that did not answer) | `minion worker down` |
 | Pause / Resume | `minion worker pause` / `minion worker resume` |
-| Set up the Hub... (token pasted into a dialog, sent on standard input, never in an argument list) | `minion worker up --join -` |
-| Shared sessions... (checklist) | `minion worker config share list --json`, then `minion worker config share select --revision <N> -- <name>...` (`share none --revision <N>` when nothing is checked) |
-| Allow new sessions (checkbox; off blocks every new session on this machine, the Hub cannot lift it) | `minion worker config set allow_new_sessions on` / `off` |
+| Set up the Hub... (token pasted into a dialog, sent on standard input, never in an argument list; asks first when it could replace a Worker with open sessions) | `minion worker up --join -` |
+| Shared sessions... (checklist; on Windows, where the sessions cannot be listed from outside the Worker, or with no sessions, only: keep / share all / share none) | `minion worker config share list --json`, then `minion worker config share select --revision <N> -- <name>...` (`share none --revision <N>` when nothing is checked; `share all\|none --revision <N>` for the rule-only dialog). The revision of the listing is always sent. |
+| Allow new sessions (checkbox; a click asks to confirm the opposite of what the box shows; off blocks every new session on this machine, the Hub cannot lift it) | `minion worker config set allow_new_sessions on` / `off` |
 | Refresh | `minion worker status --json` |
 | Quit tray | none (closes the tray only) |
 
