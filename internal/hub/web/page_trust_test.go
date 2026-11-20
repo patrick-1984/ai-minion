@@ -106,3 +106,33 @@ func TestTopBarShowsTheHubWords(t *testing.T) {
 		t.Fatalf("the Hub words are not before the theme switch (%d, %d)", i, j)
 	}
 }
+
+// A55: the Hub key words are compared by eye, so no rule may cut, shorten or
+// hide them (no ellipsis, no width cap, no display:none) at any width.
+func TestHubKeyWordsAreNeverCutOrHidden(t *testing.T) {
+	css, err := staticFiles.ReadFile("static/minion.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range strings.Split(string(css), "}") {
+		// The innermost selector: a rule inside @media follows the
+		// brace of the media query.
+		i := strings.LastIndex(rule, "{")
+		if i < 0 {
+			continue
+		}
+		sel := rule[:i]
+		if j := strings.LastIndex(sel, "{"); j >= 0 {
+			sel = sel[j+1:]
+		}
+		if !strings.Contains(sel, "hub-id") {
+			continue
+		}
+		body := strings.Join(strings.Fields(rule[i:]), "")
+		for _, bad := range []string{"text-overflow", "max-width", "display:none", "visibility:hidden", "overflow:hidden", "-webkit-line-clamp"} {
+			if strings.Contains(body, bad) {
+				t.Errorf("rule %q has %q: the Hub key words must stay complete", strings.TrimSpace(sel), bad)
+			}
+		}
+	}
+}
