@@ -44,6 +44,11 @@ type workerStartDeps struct {
 	autostart         func() (string, bool, error)
 	supervisorRunning func() bool
 	startLauncher     func(exe string, args []string) error
+	// elevation and isSystem describe the token of this process (Windows): the
+	// supervisor passes its token on to the Worker, so it is never started
+	// from an elevated prompt or as SYSTEM.
+	elevation func() service.Elevation
+	isSystem  func() bool
 	// call is the local control socket of this user.
 	call       func(ctx context.Context, op string) error
 	fileExists func(path string) bool
@@ -69,6 +74,8 @@ func defaultWorkerStartDeps() workerStartDeps {
 		autostart:         service.Autostart,
 		supervisorRunning: service.SupervisorRunning,
 		startLauncher:     startLauncher,
+		elevation:         service.CurrentElevation,
+		isSystem:          systemAccount,
 		call: func(ctx context.Context, op string) error {
 			_, err := client.Local().Call(ctx, op, nil)
 			return err
@@ -156,6 +163,13 @@ func (d workerStartDeps) startManaged(ctx context.Context) (started bool, err er
 }
 
 func (d workerStartDeps) startWindows() (bool, error) {
+	if d.isSystem != nil && d.isSystem() {
+		return false, service.ErrRunsAsSystem
+	}
+	if d.elevation != nil && d.elevation().Elevated {
+		return false, errors.New("this terminal runs as administrator (elevated); the Worker would run with the rights of the prompt that starts it, " +
+			"so run minion worker start again in a normal terminal, not \"as administrator\"")
+	}
 	cmdline, ok, err := d.autostart()
 	if err != nil {
 		return false, fmt.Errorf("cannot read the Worker's Run entry: %w", err)
@@ -202,13 +216,30 @@ func (d workerStartDeps) startSystemd(ctx context.Context) (bool, error) {
 	return false, errNotInstalled
 }
 
+// unitLoaded reports whether unit is a Worker that "worker up" configured:
+// loaded and enabled. A unit that systemd resolves only from the packaged
+// template (minion-worker@.service) is loaded but not enabled, and is not a
+// Worker of this user.
 func (d workerStartDeps) unitLoaded(ctx context.Context, scope, unit string) bool {
-	args := []string{"show", "-p", "LoadState", "--value", unit}
-	if scope != "" {
-		args = append([]string{scope}, args...)
+	show := func(prop string) string {
+		args := []string{"show", "-p", prop, "--value", unit}
+		if scope != "" {
+			args = append([]string{scope}, args...)
+		}
+		out, err := d.output(ctx, "systemctl", args...)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(out)
 	}
-	out, err := d.output(ctx, "systemctl", args...)
-	return err == nil && strings.TrimSpace(out) == "loaded"
+	if show("LoadState") != "loaded" {
+		return false
+	}
+	switch show("UnitFileState") {
+	case "enabled", "enabled-runtime", "linked", "linked-runtime":
+		return true
+	}
+	return false
 }
 
 func (d workerStartDeps) startLaunchd(ctx context.Context) (bool, error) {
