@@ -9,6 +9,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -78,6 +79,7 @@ func initRoute(ctx context.Context, env *Env) error {
 	}
 	rt, err := workers.NewRouter(workers.RouterConfig{
 		Telemetry: svc.Telemetry,
+		Monitor:   complianceMonitor(env),
 		Backend:   workers.RegistryBackend(svc.Registry()),
 		Directory: workers.StoreDirectory{Store: st},
 		Authz:     az,
@@ -90,6 +92,7 @@ func initRoute(ctx context.Context, env *Env) error {
 		},
 		Logger:         cfg.logger(),
 		UserManaged:    userManaged(st),
+		ContentManaged: contentManaged(st),
 		HiddenSessions: hiddenSessionsPolicy(hubPolicy, st),
 	})
 	if err != nil {
@@ -133,6 +136,13 @@ func initRoute(ctx context.Context, env *Env) error {
 }
 
 // userManaged reads the user-managed switch of a Worker (Minion control).
+// contentManaged is userManaged for recording session content: a Worker the
+// Hub no longer has (it is being removed) is not user-managed, whatever the
+// default of a missing control row says.
+func contentManaged(st *store.Store) func(ctx context.Context, workerID string) (bool, error) {
+	return st.WorkerContentManaged
+}
+
 func userManaged(st *store.Store) func(ctx context.Context, workerID string) (bool, error) {
 	return func(ctx context.Context, workerID string) (bool, error) {
 		c, err := st.WorkerControl(ctx, workerID)
@@ -158,4 +168,13 @@ func hiddenSessionsPolicy(hubPolicy func() string, st *store.Store) workers.Hidd
 		pol.UserAllows = prefs.AllowHiddenSessions
 		return pol, nil
 	}
+}
+
+// complianceMonitor is the Hub's compliance monitor; nil without the log
+// export module (the Router then records nothing).
+func complianceMonitor(env *Env) *compliance.Monitor {
+	if o, err := Require[*ObsService](env); err == nil {
+		return o.Compliance
+	}
+	return nil
 }

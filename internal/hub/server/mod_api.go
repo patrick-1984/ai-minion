@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
@@ -136,6 +138,9 @@ func initAPI(_ context.Context, env *Env, catalog *ops.Registry) error {
 	if err := root.Wrap(router.Handler); err != nil {
 		return err
 	}
+	if err := root.Wrap(monitoringHeader(complianceMonitor(env))); err != nil {
+		return err
+	}
 	if _, ok := catalog.Lookup(ops.OpAuditList); ok {
 		if err := router.AddAlias(api.Alias{Method: http.MethodGet, Pattern: "/api/v1/audit", Op: ops.OpAuditList}); err != nil {
 			return err
@@ -151,4 +156,28 @@ func initAPI(_ context.Context, env *Env, catalog *ops.Registry) error {
 		}
 	}
 	return nil
+}
+
+// MonitoringHeader names the response header that tells a client, while
+// compliance monitoring is on, which level it is. It is informational: no
+// client has to acknowledge it, and nothing is refused because of it.
+const MonitoringHeader = "Minion-Monitoring"
+
+// monitoringHeader sets MonitoringHeader on the API responses while the
+// monitor is not off.
+func monitoringHeader(mon *compliance.Monitor) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if md := mon.Mode(); md != compliance.Off && strings.HasPrefix(r.URL.Path, "/api/") {
+				w.Header().Set(MonitoringHeader, md.String())
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// monitoringLevelFunc is the live level for the session page banner: asked on
+// every page, never captured at start.
+func monitoringLevelFunc(mon *compliance.Monitor) func() string {
+	return func() string { return mon.Mode().String() }
 }

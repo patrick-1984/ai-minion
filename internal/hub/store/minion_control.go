@@ -455,3 +455,19 @@ func targetsJSON(t []controlResource) string {
 	b, _ := json.Marshal(t)
 	return string(b)
 }
+
+// WorkerContentManaged reports whether the sessions of a Worker are user-managed,
+// in one query: false for a Worker that does not exist (it is being removed), and
+// the default (true) only for an existing Worker without a control row.
+func (s *Store) WorkerContentManaged(ctx context.Context, workerID string) (bool, error) {
+	var um int
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(c.user_managed, 1) FROM workers w
+		LEFT JOIN worker_control c ON c.worker_id = w.id WHERE w.id = ?`, workerID).Scan(&um)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("store: read worker control: %w", err)
+	}
+	return um == 1, nil
+}

@@ -117,6 +117,9 @@ func initPipe(ctx context.Context, env *Env) error {
 	}
 	p, err := workers.NewPipe(workers.PipeConfig{
 		Telemetry: svc.Telemetry,
+		Monitor:   complianceMonitor(env),
+		// Content is recorded only for Workers that are user-managed.
+		ContentAllowed: rt.ContentAllowed,
 		// A session that share_set took away from the share keeps its stored
 		// history, hidden: reads and waits ask the Hub's session state.
 		Shared: func(workerID, session string) bool { return !events.Fenced(workerID, session) },

@@ -31,6 +31,17 @@ const (
 	KeyTrafficLogWorkers = "worker_traffic_log_workers"
 	// KeyOTelMetrics is the level of the Hub's Worker traffic metrics.
 	KeyOTelMetrics = "otel_metrics"
+	// KeyCompliance is the compliance monitoring level (Hub): session content
+	// sent to the OpenTelemetry sink as minion.session.* events.
+	KeyCompliance = "compliance_monitoring"
+)
+
+// Values of compliance_monitoring, from least to most.
+const (
+	ComplianceOff     = "off"
+	ComplianceActions = "actions"
+	ComplianceOutput  = "output"
+	ComplianceFull    = "full"
 )
 
 // Values of worker_traffic_log. The payload level (frame bodies) comes with
@@ -68,7 +79,7 @@ var ObsSettingKeys = []string{
 	KeySyslogCAFile, KeySyslogClientCertFile, KeySyslogClientKeyFile,
 	KeyOTel, KeyOTelEndpoint, KeyOTelLevel, KeyOTelHeaders, KeyOTelHeadersPath,
 	KeyOTelCAFile, KeyOTelClientCertFile, KeyOTelClientKeyFile,
-	KeyTrafficLog, KeyTrafficLogTo, KeyTrafficLogWorkers, KeyOTelMetrics,
+	KeyTrafficLog, KeyTrafficLogTo, KeyTrafficLogWorkers, KeyOTelMetrics, KeyCompliance,
 }
 
 var sinkLevels = []string{"debug", "info", "warn", "error"}
@@ -80,6 +91,14 @@ func declareObs(r *Registry) {
 		Help: "Worker traffic metrics to the OpenTelemetry endpoint (needs otel on): off; basic (Hub-wide counters: " +
 			"connections, Workers online, WebSocket and frame bytes, frames, ops, calls, stream admission, turns); " +
 			"detailed (basic per Worker, for the first 500 Workers, plus connection and op durations)"})
+	r.Declare(Setting{Key: KeyCompliance, Scope: ScopeHub, Default: ComplianceOff,
+		Choices: []string{ComplianceOff, ComplianceActions, ComplianceOutput, ComplianceFull},
+		Help: "Compliance monitoring: send what happens in sessions through the Hub to the OpenTelemetry sink (needs otel on, " +
+			"https or a loopback http endpoint, and otel_level info or lower) as minion.session.* events. off; actions (who did " +
+			"which operation on which session, and the outcome); output (adds screens, captures and pipe replies the Hub " +
+			"returned); full (adds the text, keys, answers, tasks and commands sent through Minion, and sent pipe messages). " +
+			"Known Minion secret formats are masked; local typing and unread screens are not captured. Future events follow " +
+			"the otel endpoint and headers"})
 	r.Declare(Setting{Key: KeyTrafficLog, Scope: ScopeAny, Default: TrafficOff, Choices: []string{TrafficOff, TrafficMetadata},
 		Help: "Log every frame between the Hub and its Workers (Hub: both directions per Worker; Worker: what it sent and " +
 			"received): off or metadata (stream, frame type, op, request id, size, duration and outcome; never a body)"})
