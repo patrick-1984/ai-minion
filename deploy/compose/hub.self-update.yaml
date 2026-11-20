@@ -20,7 +20,7 @@
 #   minutes is removed, the copy restored and the previous Hub started again.
 services:
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_TAG:-0.15}
+    image: ghcr.io/patrick-1984/minion:${MINION_TAG:-0.16}
     group_add:
       - "${DOCKER_GID:-999}"
     volumes:
