@@ -560,13 +560,21 @@ func (c *Connector) cycle(ctx context.Context) (backoff bool) {
 		return false
 	}
 	c.clearIdleLog()
+	// The attempt is admitted under the pause gate before anything else (the
+	// key load included): a pause that follows waits for it to end, and one
+	// that came first refuses it.
+	wctx, endWork, ok := c.cfg.Pause.beginWork(ctx)
+	if !ok {
+		return false
+	}
+	defer endWork()
 	key, err := c.cfg.Key()
 	if err != nil {
 		c.fail("cannot load the Worker key", err)
 		return true
 	}
 
-	actx, cancel := context.WithCancelCause(ctx)
+	actx, cancel := context.WithCancelCause(wctx)
 	defer cancel(nil)
 	go func() {
 		// A real ticker, not the injected clock: this is a check against another
@@ -685,6 +693,11 @@ func (c *Connector) failMsg(msg string) {
 // backoff wait follows (false only after a valid revoke, which leaves nothing
 // to connect to).
 func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key *identity.Key) (backoff bool) {
+	// The gate is read again right before the dial: a pause that came while
+	// the key loaded is final, whether or not its cancellation has arrived.
+	if paused, _ := c.cfg.Pause.Paused(); paused {
+		return false
+	}
 	c.mu.Lock()
 	c.status.State, c.status.Reason = ConnConnecting, ""
 	c.status.Attempts++
