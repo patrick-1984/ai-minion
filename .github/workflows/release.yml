@@ -211,6 +211,51 @@ jobs:
       - name: go test -race -tags tmux ./...
         run: make test-race TAGS=tmux
 
+  tests-tmux-3-0:
+    name: test (race, tmux 3.0a from source, the oldest supported)
+    env:
+      TMUX_VERSION: "3.0a"
+      TMUX_SHA256: 4ad1df28b4afa969e59c08061b45082fdc49ff512f30fc8e43217d7b0e5f8db9
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Identify the runner image (part of the tmux cache key)
+        id: img
+        run: echo "id=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
+      - name: Cache tmux ${{ env.TMUX_VERSION }}
+        id: tmux-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/tmux-${{ env.TMUX_VERSION }}
+          key: tmux-${{ env.TMUX_VERSION }}-${{ steps.img.outputs.id }}-${{ runner.arch }}-1
+      - name: Install libevent and ncurses (build and run time of tmux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libncurses-dev
+      - name: Build tmux ${{ env.TMUX_VERSION }} from source
+        if: steps.tmux-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y build-essential bison pkg-config
+          curl -fsSL -o tmux.tar.gz "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz"
+          echo "${TMUX_SHA256}  tmux.tar.gz" | sha256sum -c -
+          tar xzf tmux.tar.gz
+          cd "tmux-${TMUX_VERSION}"
+          ./configure --prefix="$HOME/tmux-${TMUX_VERSION}"
+          make -j"$(nproc)"
+          make install
+      - name: Put tmux ${{ env.TMUX_VERSION }} first on PATH and check the version
+        run: |
+          echo "$HOME/tmux-${TMUX_VERSION}/bin" >> "$GITHUB_PATH"
+          "$HOME/tmux-${TMUX_VERSION}/bin/tmux" -V | grep -F "tmux ${TMUX_VERSION}"
+      - name: go test -race -tags tmux ./...
+        run: make test-race TAGS=tmux
+
   tests-vuln:
     name: govulncheck
     if: github.ref_type == 'tag'
@@ -312,6 +357,7 @@ jobs:
       - tests-lint
       - tests-distro-tmux
       - tests-tmux-3-8
+      - tests-tmux-3-0
       - tests-vuln
       - tests-cross
       - tests-e2e

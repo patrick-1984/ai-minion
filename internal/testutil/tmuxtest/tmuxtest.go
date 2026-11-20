@@ -539,7 +539,13 @@ func (s *Server) captureCtx(ctx context.Context, target string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
 	}
-	return out, nil
+	// tmux 3.0 keeps the trailing spaces of each row with -J; later versions
+	// drop them. Drop them here so every version reads the same.
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " ")
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // baseArgs is the fixed prefix of every tmux invocation of the harness: the

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The Worker works with tmux 3.0 and newer (was 3.2), so the tmux of Ubuntu 20.04, Debian 11 and the Orange Pi images is enough. CI now also tests tmux 3.0a.
+
 ## v0.15.0
 
 Released 2026-11-20.

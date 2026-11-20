@@ -190,14 +190,15 @@ func TestParseVersion(t *testing.T) {
 		{"tmux 3.8", true, true},
 		{"tmux 3.2", true, true},
 		{"tmux 3.2a", true, true},
-		{"tmux 3.1c", true, false},
-		{"tmux 3.0a", true, false},
+		{"tmux 3.1c", true, true},
+		{"tmux 3.0a", true, true},
 		{"tmux 2.9", true, false},
 		{"tmux 1.8", true, false},
 		{"tmux 4.0", true, true},
 		{"tmux 10.1", true, true},
 		{"tmux next-3.6", true, true},
-		{"tmux next-3.1", true, false},
+		{"tmux next-3.1", true, true},
+		{"tmux next-2.9", true, false},
 		{"tmux master", true, true},
 		{"tmux", false, false},
 		{"screen 4.09", false, false},
@@ -211,7 +212,7 @@ func TestParseVersion(t *testing.T) {
 			continue
 		}
 		if err == nil && v.AtLeast(MinMajor, MinMinor) != tc.atLeast {
-			t.Errorf("ParseVersion(%q).AtLeast(3,2) = %v, want %v", tc.in, !tc.atLeast, tc.atLeast)
+			t.Errorf("ParseVersion(%q).AtLeast(3,0) = %v, want %v", tc.in, !tc.atLeast, tc.atLeast)
 		}
 	}
 	v, _ := ParseVersion("tmux 3.5a")
@@ -221,17 +222,17 @@ func TestParseVersion(t *testing.T) {
 }
 
 func TestNewRefusesOldTmux(t *testing.T) {
-	f := &fake{version: "tmux 3.1c\n"}
+	f := &fake{version: "tmux 2.9a\n"}
 	_, err := New(fakeSocket, WithExec(f.exec))
 	if err == nil {
-		t.Fatal("New accepted tmux 3.1c")
+		t.Fatal("New accepted tmux 2.9a")
 	}
-	for _, want := range []string{"3.1c", "too old", "3.2"} {
+	for _, want := range []string{"2.9a", "too old", "3.0"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}
 	}
-	for _, v := range []string{"tmux 3.2\n", "tmux 3.5a\n", "tmux 3.8\n"} {
+	for _, v := range []string{"tmux 3.0a\n", "tmux 3.2\n", "tmux 3.5a\n", "tmux 3.8\n"} {
 		f := &fake{version: v}
 		h, err := New(fakeSocket, WithExec(f.exec))
 		if err != nil {
@@ -778,7 +779,28 @@ func TestIntegrationStoredSessionNames(t *testing.T) {
 	// pane_current_command alone does not settle it.
 	srv.WaitAllExec("sleep", 5*time.Second)
 	by, got := listedByName(t, h)
-	if len(got) != len(want) {
+	// tmux 3.0 stores a name as it was created; later versions vis-escape it.
+	// A raw control character is listed but cannot be addressed (the adapter
+	// refuses such a name), so that case is only listed on tmux 3.0.
+	var kept []string
+	for _, c := range cases {
+		if _, ok := by[c.stored]; !ok {
+			if s, ok := by[c.created]; ok {
+				if strings.ContainsAny(c.created, "\t\n") {
+					t.Logf("tmux stores %q raw; listed, not resolved", c.created)
+					continue
+				}
+				by[c.stored] = s
+			}
+		}
+		for _, w := range want {
+			if w == c.stored {
+				kept = append(kept, w)
+			}
+		}
+	}
+	want = kept
+	if len(got) < len(want) {
 		t.Fatalf("sessions = %+v, want %q", got, want)
 	}
 	for _, name := range want {

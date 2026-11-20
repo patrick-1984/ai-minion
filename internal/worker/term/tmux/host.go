@@ -21,9 +21,9 @@ import (
 )
 
 const (
-	// MinMajor and MinMinor are the oldest supported tmux version (3.2).
+	// MinMajor and MinMinor are the oldest supported tmux version (3.0, Ubuntu 20.04).
 	MinMajor = 3
-	MinMinor = 2
+	MinMinor = 0
 
 	defaultTimeout = 10 * time.Second
 	maxStdout      = 16 << 20 // a capture of a very long scrollback stays far below this
