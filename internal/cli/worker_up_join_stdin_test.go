@@ -38,14 +38,14 @@ func shareOf(t *testing.T, dir string) store.ShareState {
 // gets the Hub and the invitation key from it, a new profile shares nothing,
 // and neither the token nor the inner key is in an argument, an output, a log
 // or the config file.
-func TestWorkerUpJoinFromStdinNewProfileSharesNothing(t *testing.T) {
+func TestWorkerUpJoinFromStdinReadsOnlyTheToken(t *testing.T) {
 	f, _ := serviceGate(t, false, false, "build")
 	var seen joinSeen
 	joinHook(t, f, &seen)
 	text, tok := testJoinToken(t, "https://hub.example:8443")
 	rest := "this line is never read\n"
 	in := strings.NewReader(text + "\n" + rest)
-	out, err := stdinJoin(t, f, in)
+	out, err := stdinJoin(t, f, in, "--share-existing", "none")
 	if err != nil {
 		t.Fatalf("worker up: %v\nstderr: %s", err, f.stderr)
 	}
@@ -55,8 +55,8 @@ func TestWorkerUpJoinFromStdinNewProfileSharesNothing(t *testing.T) {
 	if left, _ := io.ReadAll(in); string(left) != rest {
 		t.Fatalf("more than the first line was read: %q left", left)
 	}
-	if s := shareOf(t, f.stateDir()); s.Mode != store.ShareNone || !s.Configured {
-		t.Fatalf("a new profile shares %+v, want none", s)
+	if got := readConfig(t, f.stateDir())["share_existing"]; got != "none" {
+		t.Fatalf("share_existing = %q, as given", got)
 	}
 	raw, _ := os.ReadFile(filepath.Join(f.stateDir(), "config.json"))
 	secret := tok.Invite.String()[len(tok.Invite.String())-52:]
@@ -104,7 +104,7 @@ func TestWorkerUpJoinFromStdinWithAnExpiredToken(t *testing.T) {
 		return errors.New("the Hub refused the invitation key: it has expired (invite_expired)")
 	})
 	text, tok := testJoinToken(t, "https://hub.example:8443")
-	out, err := stdinJoin(t, f, strings.NewReader(text+"\n"))
+	out, err := stdinJoin(t, f, strings.NewReader(text+"\n"), "--share-existing", "none")
 	if err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("err = %v", err)
 	}

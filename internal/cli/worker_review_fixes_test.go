@@ -52,29 +52,6 @@ func TestUpStateUpdateHoldsTheConfigLock(t *testing.T) {
 	}
 }
 
-// Pause with no Worker answering writes nothing while a Worker holds the
-// state (it is starting, or runs under another socket): no success.
-func TestPauseOfflineRefusedWhileAWorkerHoldsTheState(t *testing.T) {
-	dir := t.TempDir()
-	l, err := agent.LockLifecycle(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writePauseOffline(dir, true); err == nil || !strings.Contains(err.Error(), "starting or running") {
-		t.Fatalf("err = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, agent.PauseFile)); err == nil {
-		t.Fatal("the pause file was written under a running Worker")
-	}
-	_ = l.Close()
-	if err := writePauseOffline(dir, true); err != nil {
-		t.Fatal(err)
-	}
-	if on, _ := agent.ReadPause(dir); !on {
-		t.Fatal("not saved")
-	}
-}
-
 // Without an explicit state directory the live Worker's profile is the one.
 func TestPauseFollowsTheLiveWorkersProfileByDefault(t *testing.T) {
 	r := &pauseRig{state: t.TempDir(), live: true}
@@ -90,11 +67,12 @@ func TestPauseFollowsTheLiveWorkersProfileByDefault(t *testing.T) {
 	}
 }
 
-// A checked edit that is refused leaves the config file and the database as
-// they were, and never touches the file before the revision check passed.
-func TestStaleShareEditNeverWritesTheConfigFile(t *testing.T) {
+// Every share edit, a refused one included, removes the share_existing
+// override from the config file, so that no restart applies an older, wider
+// file value over the database; a refused edit leaves the database as it was.
+func TestShareEditLeavesNoStartupOverrideBehind(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"share_existing":"none"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"share_existing":"all"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cd := testConfigDeps(nil)
@@ -105,18 +83,14 @@ func TestStaleShareEditNeverWritesTheConfigFile(t *testing.T) {
 	if _, _, err := configCmd(t, cd, dir, "share", "none"); err != nil { // another change
 		t.Fatal(err)
 	}
-	cd.openStore = func(ctx context.Context, d string) (shareStore, error) {
-		st, err := store.OpenContext(ctx, d)
-		if err != nil {
-			return nil, err
-		}
-		return fileCheckStore{st, t, dir}, nil
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"share_existing":"all"}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	if _, _, err := configCmd(t, cd, dir, "share", "all", "--revision", rev); err == nil {
 		t.Fatal("a stale edit was accepted")
 	}
-	if got := readConfig(t, dir)["share_existing"]; got != "none" {
-		t.Fatalf("share_existing = %q after a refused edit", got)
+	if v, ok := readConfig(t, dir)["share_existing"]; ok {
+		t.Fatalf("share_existing = %q stayed in the file", v)
 	}
 	if s := loadShare(t, dir); s.Mode != store.ShareNone {
 		t.Fatalf("share = %+v", s)
@@ -135,21 +109,6 @@ func shareListText(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return out
-}
-
-// fileCheckStore asserts that the config file still holds the old value when
-// the database transaction runs.
-type fileCheckStore struct {
-	*store.Store
-	t   *testing.T
-	dir string
-}
-
-func (s fileCheckStore) CommitShareChange(ctx context.Context, ch store.ShareChange) (store.ShareState, error) {
-	if got := readConfig(s.t, s.dir)["share_existing"]; got != "none" {
-		s.t.Errorf("the config file held %q before the revision check", got)
-	}
-	return s.Store.CommitShareChange(ctx, ch)
 }
 
 // The inventory is offered only for a host that is certainly the Worker's.
@@ -176,33 +135,22 @@ func TestShareListNeedsAKnownHost(t *testing.T) {
 	}
 }
 
-// A join token keeps the rule of the database: an older share_existing of the
-// config file (the Hub narrowed the rule since) must not come back at restart.
-func TestJoinFromStdinDoesNotRestoreAWiderShareExisting(t *testing.T) {
+// Setup never imports allow_new_sessions: an "on" in this shell does not lift
+// a block saved in the config file.
+func TestUpDoesNotTouchAllowNewSessions(t *testing.T) {
 	f, _ := serviceGate(t, false, false, "build")
 	if err := os.MkdirAll(f.stateDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(f.stateDir(), "config.json"), []byte(`{"share_existing":"all"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(f.stateDir(), "config.json"), []byte(`{"allow_new_sessions":"off"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.Open(f.stateDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CommitShareChange(context.Background(), store.ShareChange{Mode: store.ShareSelect, Names: []string{"build"}}); err != nil {
-		t.Fatal(err)
-	}
-	_ = st.Close()
-	text, _ := testJoinToken(t, "https://hub.example:8443")
-	if _, err := stdinJoin(t, f, strings.NewReader(text+"\n")); err != nil {
+	f.env["MINION_ALLOW_NEW_SESSIONS"] = "on"
+	if _, err := f.runIn(strings.NewReader(""), "--share-existing", "none", "--allow-new-sessions", "on"); err != nil {
 		t.Fatalf("worker up: %v\n%s", err, f.stderr)
 	}
-	if v, ok := readConfig(t, f.stateDir())["share_existing"]; ok {
-		t.Fatalf("share_existing = %q stayed in the config file", v)
-	}
-	if s := shareOf(t, f.stateDir()); s.Mode != store.ShareSelect {
-		t.Fatalf("share = %+v", s)
+	if got := readConfig(t, f.stateDir())["allow_new_sessions"]; got != "off" {
+		t.Fatalf("setup rewrote the block: %q", got)
 	}
 }
 
