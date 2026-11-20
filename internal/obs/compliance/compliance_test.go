@@ -1,0 +1,82 @@
+package compliance
+
+import (
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
+
+type collect struct {
+	bodies []string
+	attrs  [][]KV
+}
+
+func (c *collect) EmitEvent(_ string, _ time.Time, body string, attrs []KV) {
+	c.bodies = append(c.bodies, body)
+	c.attrs = append(c.attrs, attrs)
+}
+
+func TestChunksKeepRunesWholeAndLoseNothing(t *testing.T) {
+	s := strings.Repeat("aé€😀", 40)
+	got := Chunks(s, 7)
+	if strings.Join(got, "") != s {
+		t.Fatal("chunks do not add up to the text")
+	}
+	for _, c := range got {
+		if len(c) > 7 || !utf8.ValidString(c) {
+			t.Fatalf("bad chunk %q", c)
+		}
+	}
+}
+
+func TestEmitMasksBeforeSplittingAndGatesByMode(t *testing.T) {
+	key := "mn_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+	// The key straddles the first chunk boundary.
+	text := strings.Repeat("x", ChunkBytes-10) + " " + key + " tail"
+	c := &collect{}
+	m := New(func() Sink { return c })
+	m.Emit(Actions, EventInput, text) // mode is off
+	if len(c.bodies) != 0 {
+		t.Fatal("recorded while off")
+	}
+	m.SetMode(Full)
+	m.Emit(Full, EventInput, text)
+	all := strings.Join(c.bodies, "")
+	if strings.Contains(all, key) || strings.Contains(all, key[:20]) || !strings.HasSuffix(all, " tail") {
+		t.Fatalf("not masked before the split: ...%q", all[len(all)-80:])
+	}
+	if len(c.bodies) < 2 {
+		t.Fatalf("expected a split, got %d chunks", len(c.bodies))
+	}
+	last := c.attrs[len(c.attrs)-1]
+	var idx, cnt int64
+	for _, a := range last {
+		switch a.Key {
+		case "minion.chunk.index":
+			idx = a.Value.(int64)
+		case "minion.chunk.count":
+			cnt = a.Value.(int64)
+		}
+	}
+	if cnt != int64(len(c.bodies)) || idx != cnt-1 {
+		t.Fatalf("chunk index/count = %d/%d for %d chunks", idx, cnt, len(c.bodies))
+	}
+	m.SetMode(Output)
+	n := len(c.bodies)
+	m.Emit(Full, EventInput, "more")
+	if len(c.bodies) != n {
+		t.Fatal("full event recorded at output level")
+	}
+}
+
+func TestNoSinkNeverPanicsOrBlocks(t *testing.T) {
+	var m *Monitor
+	m.Emit(Actions, EventAction, "x")
+	m2 := New(func() Sink { return nil })
+	m2.SetMode(Full)
+	m2.Emit(Actions, EventAction, "x")
+	if !strings.Contains(m2.Status(), "otel_level") {
+		t.Fatal("status does not say why nothing is sent")
+	}
+}

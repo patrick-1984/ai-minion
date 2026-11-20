@@ -146,7 +146,7 @@ func ResolveCompliance(res *Resolver, sinks Sinks) (string, error) {
 	if err != nil || u.Host == "" {
 		return "", fmt.Errorf("setting %q: the OpenTelemetry endpoint is not valid", KeyCompliance)
 	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && loopbackHost(u.Hostname())) {
+	if u.Scheme != "https" && (u.Scheme != "http" || !loopbackHost(u.Hostname())) {
 		return "", fmt.Errorf("setting %q needs an https OpenTelemetry endpoint (or http to localhost)", KeyCompliance)
 	}
 	return r.Value, nil

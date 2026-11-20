@@ -82,7 +82,11 @@ func New(source func() Sink) *Monitor {
 }
 
 // SetMode sets the effective mode.
-func (m *Monitor) SetMode(md Mode) { m.mode.Store(int32(md)) }
+func (m *Monitor) SetMode(md Mode) {
+	if m != nil {
+		m.mode.Store(int32(md))
+	}
+}
 
 // Mode returns the effective mode (Off for a nil Monitor).
 func (m *Monitor) Mode() Mode {
@@ -99,7 +103,7 @@ func (m *Monitor) Status() string {
 	if md == Off {
 		return ""
 	}
-	if m.source() == nil {
+	if m.source == nil || m.source() == nil {
 		return md.String() + " (not sent: otel_level filters info events)"
 	}
 	return md.String()

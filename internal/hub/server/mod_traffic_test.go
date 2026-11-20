@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
@@ -57,5 +58,43 @@ func TestHubMetricsNeedOTel(t *testing.T) {
 	}
 	if recs, _ := o.st.ListSettings(context.Background()); len(recs) != 0 {
 		t.Fatalf("stored: %+v", recs)
+	}
+}
+
+// compliance_monitoring needs the otel sink with an https or loopback
+// endpoint; it is live; switching the sink off ends capture without being
+// refused; and it is stored like any setting.
+func TestHubComplianceMonitoringSetting(t *testing.T) {
+	o := newObsFixture(t, nil, nil)
+	ctx := context.Background()
+	refused := func(want string, changes ...ops.SettingChange) {
+		t.Helper()
+		_, err := o.settings.Set(ctx, admin, batchArgs(changes...))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	}
+	refused("needs", ops.SettingChange{Key: "compliance_monitoring", Value: "full"})
+	refused("https", ops.SettingChange{Key: "compliance_monitoring", Value: "output"},
+		ops.SettingChange{Key: "otel", Value: "on"}, ops.SettingChange{Key: "otel_endpoint", Value: "http://collector.example:4318"})
+	if recs, _ := o.st.ListSettings(ctx); len(recs) != 0 {
+		t.Fatalf("stored: %+v", recs)
+	}
+	sink := newOTLPSink(t, "")
+	o.set(t, ops.SettingChange{Key: "otel", Value: "on"}, ops.SettingChange{Key: "otel_endpoint", Value: sink.srv.URL},
+		ops.SettingChange{Key: "compliance_monitoring", Value: "full"})
+	if got := o.svc.Compliance.Mode(); got != compliance.Full {
+		t.Fatalf("mode = %v", got)
+	}
+	// A retarget to a clear-text remote endpoint is refused while capture is on.
+	refused("https", ops.SettingChange{Key: "otel_endpoint", Value: "http://collector.example:4318"})
+	o.set(t, ops.SettingChange{Key: "compliance_monitoring", Value: "actions"})
+	if got := o.svc.Compliance.Mode(); got != compliance.Actions {
+		t.Fatalf("mode = %v", got)
+	}
+	// Switching the sink off is never refused; capture ends.
+	o.set(t, ops.SettingChange{Key: "otel", Value: "off"})
+	if got := o.svc.Compliance.Mode(); got != compliance.Off {
+		t.Fatalf("mode = %v after the sink was switched off", got)
 	}
 }

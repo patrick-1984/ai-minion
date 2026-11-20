@@ -1208,3 +1208,15 @@ func TestWorkerUnknownAndPartialOutcomesAreSignalledToTheBrowser(t *testing.T) {
 		}
 	}
 }
+
+// The session page shows a banner while compliance monitoring is on, and none
+// while it is off.
+func TestSessionPageShowsTheMonitoringBanner(t *testing.T) {
+	s, _ := sessionOps(t)
+	level := "full"
+	t.Cleanup(SetMonitoringLevel(func() string { return level }))
+	body := sessGet(t, s, "/s/pi-1/minion-1", sessUser).Body.String()
+	mustHave(t, body, `data-monitoring="full"`, "Compliance monitoring is on (full)")
+	level = "off"
+	mustNotHave(t, sessGet(t, s, "/s/pi-1/minion-1", sessUser).Body.String(), "Compliance monitoring")
+}
