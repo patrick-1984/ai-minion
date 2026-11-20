@@ -388,8 +388,8 @@ func TestConfigFileThatOthersCanReadIsRefused(t *testing.T) {
 // failingSaveStore is a share store whose write is refused.
 type failingSaveStore struct{ shareStore }
 
-func (failingSaveStore) SaveShareContext(context.Context, store.ShareSelection) error {
-	return errors.New("disk full")
+func (failingSaveStore) CommitShareChange(context.Context, store.ShareChange) (store.ShareState, error) {
+	return store.ShareState{}, errors.New("disk full")
 }
 
 // A store that refuses the write must not leave the config file ahead of it:
