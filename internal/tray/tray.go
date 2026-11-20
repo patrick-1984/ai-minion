@@ -4,7 +4,7 @@
 // interfaces, so the handlers are tested with a fake `minion` child process.
 //
 // Every action is a `minion` command; the tray reads nothing but the output of
-// `minion worker status --json` and `minion worker config share list --json`.
+// `minion worker status --json`.
 package tray
 
 import (
