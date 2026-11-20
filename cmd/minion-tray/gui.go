@@ -58,9 +58,13 @@ func (dialogs) Pick(text string, all, checked []string) ([]string, bool) {
 	return names, true
 }
 
-func (dialogs) Mode(text, current string) (string, bool) {
-	const keep, all, none = "Keep the current choice", "Share all sessions", "Share no session"
-	out, err := zenity.List(text+" Now: "+current+".", []string{keep, all, none},
+func (dialogs) Mode(text, current string, canSelect bool) (string, bool) {
+	const keep, all, none, sel = "Keep the current choice", "Share all sessions", "Share no session", "Stop sharing some of the shared sessions..."
+	items := []string{keep, all, none}
+	if canSelect {
+		items = append(items, sel)
+	}
+	out, err := zenity.List(text+" Now: "+current+".", items,
 		zenity.Title("Minion: shared sessions"), zenity.OKLabel("Save"))
 	if err != nil {
 		if !errors.Is(err, zenity.ErrCanceled) {
@@ -73,6 +77,8 @@ func (dialogs) Mode(text, current string) (string, bool) {
 		return "all", true
 	case none:
 		return "none", true
+	case sel:
+		return "select", true
 	}
 	return "keep", true
 }

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +64,7 @@ type fakeDialogs struct {
 	mode      string
 	modeOK    bool
 	modes     int
+	canSelect bool
 	errs      []string
 	infos     []string
 }
@@ -75,9 +75,13 @@ func (d *fakeDialogs) Pick(_ string, all, checked []string) ([]string, bool) {
 	d.pickAll, d.pickCheck = all, checked
 	return d.pickWant, d.pickOK
 }
-func (d *fakeDialogs) Mode(string, string) (string, bool) { d.modes++; return d.mode, d.modeOK }
-func (d *fakeDialogs) Info(s string)                      { d.infos = append(d.infos, s) }
-func (d *fakeDialogs) Error(s string)                     { d.errs = append(d.errs, s) }
+func (d *fakeDialogs) Mode(_, _ string, canSelect bool) (string, bool) {
+	d.modes++
+	d.canSelect = canSelect
+	return d.mode, d.modeOK
+}
+func (d *fakeDialogs) Info(s string)  { d.infos = append(d.infos, s) }
+func (d *fakeDialogs) Error(s string) { d.errs = append(d.errs, s) }
 
 type fakeView struct {
 	s    Status
@@ -341,138 +345,106 @@ func TestSetupFailureShowsMessage(t *testing.T) {
 	}
 }
 
-const shareJSON = `{"mode":"select","revision":"7","locked":false,"selected":["a"],"sessions_known":true,
-"sessions":[{"name":"a","shared":true},{"name":"-rm","shared":false},{"name":"b c","shared":false}]}`
-
-func TestSharePickerPutsNamesAfterDashDash(t *testing.T) {
-	r := newRig(t)
-	r.reply(t, "worker config share list --json", shareJSON)
-	r.reply(t, "worker status --json", statusJSON)
-	r.d.pickOK, r.d.pickWant = true, []string{"a", "-rm", "b c"}
-	r.c.ShareSessions()
-	if !reflect.DeepEqual(r.d.pickAll, []string{"a", "-rm", "b c"}) || !reflect.DeepEqual(r.d.pickCheck, []string{"a"}) {
-		t.Fatal(r.d.pickAll, r.d.pickCheck)
-	}
-	cs := r.calls(t)
-	want := []string{"worker", "config", "share", "select", "--revision", "7", "--", "a", "-rm", "b c"}
-	if !reflect.DeepEqual(cs[1].Args, want) {
-		t.Fatalf("%q", cs[1].Args)
-	}
+func shareStatus(mode string, names ...string) string {
+	n, _ := json.Marshal(names)
+	return `{"paired":true,"connection":{"live":true},"sessions":0,"share":{"mode":"` + mode + `","sessions":` + string(n) + `}}`
 }
 
-func TestShareNothingChosenIsNone(t *testing.T) {
-	r := newRig(t)
-	r.reply(t, "worker config share list --json", shareJSON)
-	r.d.pickOK = true
-	r.c.ShareSessions()
-	want := []string{"worker", "config", "share", "none", "--revision", "7"}
-	if cs := r.calls(t); !reflect.DeepEqual(cs[1].Args, want) {
-		t.Fatalf("%q", cs[1].Args)
+func (r *rig) shareArgv(t *testing.T) []string {
+	var out []string
+	for _, a := range r.argv(t) {
+		if strings.HasPrefix(a, "worker config share") {
+			out = append(out, a)
+		}
 	}
+	return out
 }
 
-func TestShareCancelledChangesNothing(t *testing.T) {
+func TestShareSelectNarrowsWithNamesAfterDashDash(t *testing.T) {
 	r := newRig(t)
-	r.reply(t, "worker config share list --json", shareJSON)
+	r.reply(t, "worker status --json", shareStatus("select", "a", "-rm", "b c"))
+	r.d.modeOK, r.d.mode = true, "select"
+	r.d.pickOK, r.d.pickWant = true, []string{"a", "-rm"}
 	r.c.ShareSessions()
-	if got := r.argv(t); len(got) != 1 {
+	if !r.d.canSelect || !reflect.DeepEqual(r.d.pickAll, []string{"a", "-rm", "b c"}) || !reflect.DeepEqual(r.d.pickCheck, r.d.pickAll) {
+		t.Fatal(r.d.canSelect, r.d.pickAll, r.d.pickCheck)
+	}
+	if got := r.shareArgv(t); !reflect.DeepEqual(got, []string{"worker config share select -- a -rm"}) {
 		t.Fatal(got)
 	}
 }
 
-func TestShareStaleRevisionExplainsAndKeepsChoice(t *testing.T) {
+func TestShareNothingLeftIsNone(t *testing.T) {
 	r := newRig(t)
-	r.reply(t, "worker config share list --json", shareJSON)
-	r.fail(t, "worker config share select --revision 7 -- a", "share choice changed (revision 8)")
-	r.d.pickOK, r.d.pickWant = true, []string{"a"}
-	// The second listing, after the failure, shows the newer revision.
-	r.c.R = &afterFirst{inner: r.c.R, key: "worker config share list --json", second: strings.Replace(shareJSON, `"7"`, `"8"`, 1)}
+	r.reply(t, "worker status --json", shareStatus("select", "a"))
+	r.d.modeOK, r.d.mode, r.d.pickOK = true, "select", true
 	r.c.ShareSessions()
-	if len(r.d.errs) != 1 || !strings.Contains(r.d.errs[0], "changed while you were choosing") {
-		t.Fatal(r.d.errs)
+	if got := r.shareArgv(t); !reflect.DeepEqual(got, []string{"worker config share none"}) {
+		t.Fatal(got)
 	}
 }
 
-// afterFirst answers the second call of key with a canned output.
-type afterFirst struct {
-	inner  Runner
-	key    string
-	second string
-	n      int
-}
-
-func (a *afterFirst) Run(ctx context.Context, stdin string, args ...string) (string, error) {
-	if strings.Join(args, " ") == a.key {
-		a.n++
-		if a.n == 2 {
-			return a.second, nil
+func TestShareAllAndNone(t *testing.T) {
+	for _, m := range []string{"all", "none"} {
+		r := newRig(t)
+		r.reply(t, "worker status --json", shareStatus("later"))
+		r.d.modeOK, r.d.mode = true, m
+		r.c.ShareSessions()
+		if got := r.shareArgv(t); !reflect.DeepEqual(got, []string{"worker config share " + m}) {
+			t.Fatal(got)
 		}
 	}
-	return a.inner.Run(ctx, stdin, args...)
 }
 
-func TestShareOtherFailureShowsItsMessage(t *testing.T) {
+func TestShareKeepOrCancelChangesNothing(t *testing.T) {
 	r := newRig(t)
-	r.reply(t, "worker config share list --json", shareJSON)
-	r.fail(t, "worker config share none --revision 7", "state is locked")
-	r.d.pickOK = true
+	r.reply(t, "worker status --json", shareStatus("select", "a"))
+	r.d.modeOK, r.d.mode = true, "keep"
+	r.c.ShareSessions()
+	r.d.modeOK = false
+	r.c.ShareSessions()
+	r.d.modeOK, r.d.mode = true, "select" // pick cancelled
+	r.c.ShareSessions()
+	if got := r.shareArgv(t); len(got) != 0 {
+		t.Fatal(got)
+	}
+}
+
+func TestShareNeverOffersNamesOfARuleThatIsNotSelect(t *testing.T) {
+	// Mode none keeps the saved names; offering them would re-share them.
+	r := newRig(t)
+	r.reply(t, "worker status --json", shareStatus("none", "blocked"))
+	r.d.modeOK, r.d.mode = true, "keep"
+	r.c.ShareSessions()
+	if r.d.canSelect {
+		t.Fatal("offered the names of mode none")
+	}
+	r.d.mode = "select" // even if a dialog misbehaves
+	r.c.ShareSessions()
+	if r.d.pickAll != nil || len(r.shareArgv(t)) != 0 {
+		t.Fatal(r.argv(t))
+	}
+}
+
+func TestShareOnWindowsOffersRulesOnly(t *testing.T) {
+	r := newRig(t)
+	r.c.GOOS = "windows"
+	r.reply(t, "worker status --json", shareStatus("select", "x"))
+	r.d.modeOK, r.d.mode = true, "none"
+	r.c.ShareSessions()
+	if r.d.canSelect || r.d.pickAll != nil {
+		t.Fatal("checklist on windows")
+	}
+}
+
+func TestShareFailureShown(t *testing.T) {
+	r := newRig(t)
+	r.reply(t, "worker status --json", shareStatus("later"))
+	r.fail(t, "worker config share none", "state is locked")
+	r.d.modeOK, r.d.mode = true, "none"
 	r.c.ShareSessions()
 	if len(r.d.errs) != 1 || !strings.Contains(r.d.errs[0], "state is locked") {
 		t.Fatal(r.d.errs)
-	}
-}
-
-func TestShareListFailure(t *testing.T) {
-	r := newRig(t)
-	r.fail(t, "worker config share list --json", "no state")
-	r.c.ShareSessions()
-	if len(r.d.errs) != 1 || r.d.confirms != 0 {
-		t.Fatal(r.d.errs)
-	}
-}
-
-const winShareJSON = `{"mode":"none","revision":"4","locked":false,"selected":["blocked"],"sessions_known":false,"sessions":[]}`
-
-func TestShareUnknownSessionsOffersRuleOnlyNeverNames(t *testing.T) {
-	r := newRig(t)
-	r.reply(t, "worker config share list --json", winShareJSON)
-	// Save without a change: keep sends nothing, the blocked name is not re-shared.
-	r.d.modeOK, r.d.mode = true, "keep"
-	r.c.ShareSessions()
-	if r.d.modes != 1 || r.d.pickAll != nil || len(r.argv(t)) != 1 {
-		t.Fatal(r.d.modes, r.argv(t))
-	}
-	r.d.mode = "all"
-	r.c.ShareSessions()
-	got := r.argv(t)
-	if !slices.Contains(got, "worker config share all --revision 4") {
-		t.Fatal(got)
-	}
-	for _, a := range got {
-		if strings.Contains(a, "blocked") {
-			t.Fatal("sent a name the listing did not give", a)
-		}
-	}
-}
-
-func TestShareEmptyInventoryStillOffersRule(t *testing.T) {
-	r := newRig(t)
-	r.reply(t, "worker config share list --json", `{"mode":"all","revision":"2","sessions_known":true,"sessions":[]}`)
-	r.d.modeOK, r.d.mode = true, "none"
-	r.c.ShareSessions()
-	got := r.argv(t)
-	if !slices.Contains(got, "worker config share none --revision 2") {
-		t.Fatal(got)
-	}
-}
-
-func TestShareWithoutRevisionIsRefused(t *testing.T) {
-	r := newRig(t)
-	r.reply(t, "worker config share list --json", strings.Replace(shareJSON, `"revision":"7"`, `"revision":""`, 1))
-	r.d.pickOK, r.d.pickWant = true, []string{"a"}
-	r.c.ShareSessions()
-	if len(r.d.errs) != 1 || len(r.argv(t)) != 1 || r.d.pickAll != nil {
-		t.Fatal(r.d.errs, r.argv(t))
 	}
 }
 

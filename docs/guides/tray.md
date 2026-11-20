@@ -2,7 +2,7 @@
 
 A small menu in the notification area (Windows), the top bar (macOS) or the panel (Ubuntu desktop) to control the Worker of your own user. It is for desktops only: a headless Linux host, a Raspberry Pi (armv7), the `minion` deb and rpm packages and the container image never contain it and have no GUI dependency. The tray is a separate program, `minion-tray`, in a separate download.
 
-Every menu item runs a `minion` command (the table below), so anything the tray does you can also type. The tray shows nothing it did not read from `minion worker status --json` or `minion worker config share list --json`, and it needs no administrator rights.
+Every menu item runs a `minion` command (the table below), so anything the tray does you can also type. The tray shows nothing it did not read from `minion worker status --json`, and it needs no administrator rights.
 
 ## Install
 
@@ -25,14 +25,14 @@ Download the archive for your system from the release page (files `minion-tray-<
 | Stop (asks first when open sessions could end: a counted or unknown number of sessions, the ConPTY host of Windows, or a Windows Worker that did not answer) | `minion worker down` |
 | Pause / Resume | `minion worker pause` / `minion worker resume` |
 | Set up the Hub... (token pasted into a dialog, sent on standard input, never in an argument list; asks first when it could replace a Worker with open sessions) | `minion worker up --join -` |
-| Shared sessions... (checklist; on Windows, where the sessions cannot be listed from outside the Worker, or with no sessions, only: keep / share all / share none) | `minion worker config share list --json`, then `minion worker config share select --revision <N> -- <name>...` (`share none --revision <N>` when nothing is checked; `share all\|none --revision <N>` for the rule-only dialog). The revision of the listing is always sent. |
+| Shared sessions... (dialog: keep / share all / share none, and, when the rule is "select", a checklist of the shared sessions to uncheck; on Windows only keep / all / none) | `minion worker status --json` (the `share` section), then `minion worker config share all`, `share none`, or `share select -- <name>...` (nothing left checked is `share none`) |
 | Allow new sessions (checkbox; a click asks to confirm the opposite of what the box shows; off blocks every new session on this machine, the Hub cannot lift it) | `minion worker config set allow_new_sessions on` / `off` |
 | Refresh | `minion worker status --json` |
 | Quit tray | none (closes the tray only) |
 
 The Hub key line shows the six words of the Hub this Worker trusts: compare them with the ones your Hub shows. When the stored check says the key did not match, or the running Worker refuses the key the Hub now answers with, the line turns into `!! MISMATCH ... !!` and the icon red. Do not use that Hub until you know why.
 
-A failed command shows its message in a dialog and the tray refreshes anyway. If someone else changed the sharing choice while the checklist was open, nothing is changed and the tray says so: open the checklist again. Every `minion` command has a 30 second limit. Details of each command: [Control a Worker from the command line](worker-control.md).
+A failed command shows its message in a dialog and the tray refreshes anyway. The checklist only narrows what is shared: it lists the sessions the rule "select" already shares, never the ones that are hidden. Every `minion` command has a 30 second limit. Details of each command: [Control a Worker from the command line](worker-control.md).
 
 ## Build it yourself
 

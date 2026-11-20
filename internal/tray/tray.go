@@ -115,7 +115,11 @@ type Status struct {
 	Alarm        string `json:"alarm"`
 	PairingState string `json:"pairing_state"`
 	Approval     string `json:"approval"`
-	Connection   struct {
+	Share        struct {
+		Mode     string   `json:"mode"`
+		Sessions []string `json:"sessions"`
+	} `json:"share"`
+	Connection struct {
 		State string `json:"state"`
 		Live  bool   `json:"live"`
 	} `json:"connection"`
@@ -187,34 +191,6 @@ func orDash(v string) string {
 	return v
 }
 
-// ShareList is `minion worker config share list --json`.
-type ShareList struct {
-	Mode          string   `json:"mode"`
-	Revision      string   `json:"revision"`
-	Locked        bool     `json:"locked"`
-	Selected      []string `json:"selected"`
-	SessionsKnown bool     `json:"sessions_known"`
-	Sessions      []struct {
-		Name   string `json:"name"`
-		Shared bool   `json:"shared"`
-	} `json:"sessions"`
-}
-
-// Names are the sessions to offer and the ones checked now. Where the host
-// cannot list its sessions (Windows ConPTY) the saved selection is all there is.
-func (l ShareList) Names() (all, checked []string) {
-	if !l.SessionsKnown {
-		return append([]string{}, l.Selected...), append([]string{}, l.Selected...)
-	}
-	for _, s := range l.Sessions {
-		all = append(all, s.Name)
-		if s.Shared {
-			checked = append(checked, s.Name)
-		}
-	}
-	return all, checked
-}
-
 // Dialogs are the native dialogs. A cancelled dialog returns ok false.
 type Dialogs interface {
 	// Token asks for the join token (input hidden).
@@ -223,8 +199,9 @@ type Dialogs interface {
 	Confirm(text string) bool
 	// Pick shows a checklist; checked names are preselected.
 	Pick(text string, all, checked []string) (chosen []string, ok bool)
-	// Mode asks which sharing rule to apply: "keep", "all" or "none".
-	Mode(text, current string) (mode string, ok bool)
+	// Mode asks which sharing rule to apply: "keep", "all", "none", or, when
+	// canSelect, "select" (narrow the shared sessions).
+	Mode(text, current string, canSelect bool) (mode string, ok bool)
 	Info(text string)
 	Error(text string)
 }
@@ -356,61 +333,47 @@ func (c *Controller) Setup() {
 	c.refresh()
 }
 
-// ShareSessions is the session picker. It reads `config share list --json`
-// and saves with `config share select|all|none --revision N [-- names]`, always
-// with the revision of that listing, so a newer decision is never overwritten.
-// Where the host cannot list its sessions (Windows ConPTY), or has none, only
-// the rule is offered (keep, all, none): the tray never sends a name the
-// listing did not give it.
+// ShareSessions is the sharing dialog. The current rule and the names come
+// from `worker status --json` (share section) and the change is written with
+// `worker config share all|none` or `share select -- <names>`. The saved names
+// of a rule that is not "select" are never offered (they are not shared), and
+// the checklist only narrows the shared sessions: the tray never sends a name
+// the status did not give it. Windows shows no checklist at all (its status
+// has no session names), only keep / all / none.
 func (c *Controller) ShareSessions() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	l, err := c.shareList()
-	if err != nil {
-		c.D.Error(err.Error())
+	c.refresh()
+	cur, names := c.last.Share.Mode, c.last.Share.Sessions
+	canSelect := cur == "select" && len(names) > 0 && c.goos() != "windows"
+	mode, ok := c.D.Mode("Choose what the Hub may show.", cur, canSelect)
+	if !ok {
 		return
 	}
-	if l.Revision == "" {
-		c.D.Error("There is no saved sharing choice yet: set up the Hub first, then choose the shared sessions.")
-		return
-	}
-	text := "Choose what the Hub may show."
-	if l.Locked {
-		text += " (The Hub cannot change this choice; you can.)"
-	}
-	all, checked := l.Names()
-	var args []string
-	if !l.SessionsKnown || len(all) == 0 {
-		mode, ok := c.D.Mode(text, l.Mode)
-		if !ok || (mode != "all" && mode != "none") {
+	args := []string{"worker", "config", "share"}
+	switch mode {
+	case "all", "none":
+		args = append(args, mode)
+	case "select":
+		if !canSelect {
 			return
 		}
-		args = []string{mode}
-	} else {
-		chosen, ok := c.D.Pick(text, all, checked)
+		chosen, ok := c.D.Pick("Uncheck the sessions the Hub may no longer show.", names, names)
 		if !ok {
 			return
 		}
 		if len(chosen) == 0 {
-			args = []string{"none"}
+			args = append(args, "none")
 		} else {
-			args = append([]string{"select"}, "--revision", l.Revision, "--")
+			args = append(args, "select", "--")
 			args = append(args, chosen...)
 		}
-	}
-	full := append([]string{"worker", "config", "share"}, args...)
-	if args[0] != "select" {
-		full = append(full, "--revision", l.Revision)
-	}
-	if _, err := c.run("", full...); err != nil {
-		if again, lerr := c.shareList(); lerr == nil && again.Revision != l.Revision {
-			c.D.Error("The sharing choice changed while you were choosing. Nothing was changed; open the picker again to see the current choice.")
-		} else {
-			c.D.Error(err.Error())
-		}
+	default:
 		return
 	}
-	c.refresh()
+	if c.do("", args...) {
+		c.refresh()
+	}
 }
 
 // PickLabels returns one label per name for a checklist dialog, and a lookup
@@ -424,18 +387,6 @@ func PickLabels(names []string) (labels []string, name func(label string) (strin
 		byLabel[l] = n
 	}
 	return labels, func(l string) (string, bool) { n, ok := byLabel[l]; return n, ok }
-}
-
-func (c *Controller) shareList() (ShareList, error) {
-	var l ShareList
-	out, err := c.run("", "worker", "config", "share", "list", "--json")
-	if err != nil {
-		return l, err
-	}
-	if err := json.Unmarshal([]byte(out), &l); err != nil {
-		return l, fmt.Errorf("cannot read the session list of minion: %w", err)
-	}
-	return l, nil
 }
 
 // SetNewSessions sets `config set allow_new_sessions` to target ("on" or
