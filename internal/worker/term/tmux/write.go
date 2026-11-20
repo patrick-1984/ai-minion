@@ -284,7 +284,8 @@ func ctrlNonLetter(k string) bool {
 		return utf8.RuneCountInString(k) == 1 // a non-ASCII base; key names (Enter, F1) pass
 	}
 	c := k[0]
-	return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == ' ' || strings.IndexByte("@[\\]^_", c) >= 0)
+	letter := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	return !letter && c != ' ' && strings.IndexByte("@[\\]^_", c) < 0
 }
 
 // escapeArg protects an argument from tmux's own command parser: an argument
