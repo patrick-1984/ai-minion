@@ -125,11 +125,11 @@ func TestHubKeyWordsAreNeverCutOrHidden(t *testing.T) {
 		if j := strings.LastIndex(sel, "{"); j >= 0 {
 			sel = sel[j+1:]
 		}
-		if !strings.Contains(sel, "hub-id") {
+		if !strings.Contains(sel, "hub-id") && !strings.Contains(sel, "fp-words") {
 			continue
 		}
 		body := strings.Join(strings.Fields(rule[i:]), "")
-		for _, bad := range []string{"text-overflow", "max-width", "display:none", "visibility:hidden", "overflow:hidden", "-webkit-line-clamp"} {
+		for _, bad := range []string{"text-overflow", "display:none", "visibility:hidden", "overflow:hidden", "overflow-x:auto", "overflow-x:hidden", "white-space:nowrap", "-webkit-line-clamp"} {
 			if strings.Contains(body, bad) {
 				t.Errorf("rule %q has %q: the Hub key words must stay complete", strings.TrimSpace(sel), bad)
 			}
