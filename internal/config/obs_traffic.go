@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"slices"
 	"strings"
 )
@@ -122,4 +124,38 @@ func ResolveMetricsLevel(res *Resolver, sinks Sinks) (string, error) {
 		return "", fmt.Errorf("setting %q: the OpenTelemetry endpoint has no metrics URL", KeyOTelMetrics)
 	}
 	return r.Value, nil
+}
+
+// ResolveCompliance resolves compliance_monitoring (Hub): off, actions, output
+// or full. Anything but off needs the OpenTelemetry sink on and its logs
+// endpoint to be https or http to a loopback host: session content never
+// leaves in clear text over a network. The level of the sink is not checked
+// here: the status shows when it filters the events.
+func ResolveCompliance(res *Resolver, sinks Sinks) (string, error) {
+	r, err := res.Resolve(KeyCompliance)
+	if err != nil {
+		return "", err
+	}
+	if r.Value == ComplianceOff {
+		return r.Value, nil
+	}
+	if !sinks.OTLP.Enabled {
+		return "", fmt.Errorf("setting %q needs %q on: the session events use its endpoint, headers and trust", KeyCompliance, KeyOTel)
+	}
+	u, err := url.Parse(sinks.OTLP.LogsURL)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("setting %q: the OpenTelemetry endpoint is not valid", KeyCompliance)
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopbackHost(u.Hostname())) {
+		return "", fmt.Errorf("setting %q needs an https OpenTelemetry endpoint (or http to localhost)", KeyCompliance)
+	}
+	return r.Value, nil
+}
+
+func loopbackHost(h string) bool {
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }

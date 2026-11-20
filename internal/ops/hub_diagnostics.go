@@ -92,4 +92,8 @@ type LogSinkStatus struct {
 	// Dropped counts records never sent, by reason (queue_full,
 	// write_failed, export_failed, reconfigure, shutdown).
 	Dropped map[string]uint64 `json:"dropped,omitempty"`
+	// SessionContent is the effective compliance monitoring level of the
+	// otel sink, with a note when otel_level keeps the events from being
+	// sent; empty when off.
+	SessionContent string `json:"session_content,omitempty"`
 }
