@@ -1,0 +1,17 @@
+# Control a Worker from the command line
+
+Commands for the Worker of your own user. Each works on Linux, macOS and Windows and is what a tray menu runs; none needs administrator rights.
+
+| Command | What it does |
+| --- | --- |
+| `minion worker start` | Starts the installed Worker through its manager: the logon supervisor on Windows, the systemd unit on Linux, the launchd agent on macOS. A Worker that runs is left alone. Nothing installed: it says so and points to `minion worker up`. A system-wide systemd unit needs `sudo systemctl start minion-worker@<user>`; the command prints it. |
+| `minion worker down` | Stops it (existing command). Open terminals of ConPTY on Windows end with the Worker. |
+| `minion worker pause` | Until `resume`: the Hub link is closed and the Worker makes no Hub request (no reconnect, no automatic pairing, no request that needs the Hub from `mn` or MCP). The command reports success only after that is true. Local control and the terminal sessions that are open keep working. The pause is saved, so a restart keeps it. |
+| `minion worker resume` | Connects again. With no Worker running, `pause` and `resume` only save the choice for the next start. A Worker older than this release cannot pause; update it and restart it. |
+| `minion worker config set allow_new_sessions off` (or `on`) | Blocks every new session made through Minion: the Hub, an API key, `mn`, MCP and local commands get `forbidden` / `new_sessions_blocked`. Existing sessions and other writes keep working. The Hub cannot lift it. `off` in the config file also holds against an `on` in the environment or a flag; a value that is not `on` or `off` blocks. A running Worker enforces the saved value at once. Limit: someone who may type in a writable shared terminal can still start programs there. |
+| `minion worker config share list [--json]` | Names only: the mode, the share `revision`, `locked` (share_lock), the `selected` names and every session of the host with `shared` true or false, also the ones the Hub does not list because they are not shared. On Windows the sessions live inside the Worker: `sessions_known` is false and only the saved selection is listed. |
+| `minion worker config share all\|none\|later\|select [<session>...] [--revision N]` | Changes the choice. A change of the mode alone keeps the chosen names (read in the same transaction); `select` without names keeps them. A picker passes the `revision` of its listing: if the choice changed since, nothing is changed and the command fails, so a stale checkbox never undoes someone else's change. `share_lock` stops only the Hub; you still change the choice here. These commands read and write the Worker state directly, so they work with a running Worker of any version. |
+| `minion worker status [--json]` | Shows `paused` and `new_sessions` (`on`, `off`, or `unknown` when a running Worker cannot confirm it, for example an older one). |
+| `minion worker up --join -` | Reads the join token from the first line of standard input (at most 4096 bytes), so it is in no argument list; `--join <token>`, `MINION_JOIN` and `MINION_JOIN_FILE` still work. The Hub pin and invitation checks are the same. Without a terminal a new profile shares nothing until you widen it with `config share`; an existing choice is kept. The token and the key inside it are never printed, logged or saved. |
+
+Pairing with a code stays `minion worker pair` or `minion worker join <url>` in a terminal.

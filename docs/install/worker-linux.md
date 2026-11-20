@@ -97,6 +97,10 @@ The share choice is read from the Worker's database and takes effect at once; th
 
 To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To let its owner or an administrator switch debug logging on and read its recent log from the Hub's Worker page, start it with `--allow-debug-remote` (or `minion worker config set allow_debug_remote true` and restart it); it is off by default. See [troubleshooting](../guides/troubleshooting.md#worker-debug---debug-and-minion_debug).
 
+## Start, pause, block new sessions, choose sessions
+
+`minion worker start` starts the installed Worker (it never installs anything); `minion worker pause` and `resume` take the Worker off the Hub and back without stopping your sessions; `minion worker config set allow_new_sessions off` blocks new sessions from every origin; `minion worker config share list` and `share ... --revision` back a session picker. `minion worker up --join -` reads the join token from standard input. All of them are described in [Control a Worker from the command line](../guides/worker-control.md).
+
 ## Several Workers on one machine
 
 Run one Worker per Unix user. For test setups with more than one Worker of the same user, give each its own `MINION_STATE_DIR`, `MINION_TMUX_SOCKET` and `XDG_RUNTIME_DIR`: the command line finds the Worker through the control socket `worker.sock` in the runtime directory, and two Workers that share one runtime directory share one socket path. A Worker started by a system service has no `XDG_RUNTIME_DIR`; the commands look for its socket in the per-user directory under the temporary directory as well.

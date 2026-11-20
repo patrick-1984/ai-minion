@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`minion worker start`**: starts the installed Worker through its manager (the Windows logon supervisor, the systemd unit, the launchd agent); a running Worker is left alone, and without an installation it points to `minion worker up`.
+- **`minion worker pause` and `resume`**: one saved choice, until resumed. A pause closes the Hub link and gates reconnect, automatic pairing and key retirement before it reports success; local control and open terminal sessions keep working, a restart keeps the pause, and `worker status` shows it (`paused`).
+- **`allow_new_sessions`** (`minion worker config set allow_new_sessions off`): a local block of new sessions for every origin (Hub, API keys, `mn`, MCP, local commands), enforced where sessions are created; the Hub cannot lift it. `worker status` shows `new_sessions` (`unknown` when a running Worker cannot confirm it). New error code `new_sessions_blocked` (and `paused`).
+- **`minion worker config share list [--json]`** (names only, also sessions the Hub does not list) and `share ... --revision N` (a checked edit refused when the choice changed meanwhile). A change of the mode alone now keeps the chosen names inside the write transaction instead of reading them first.
+- **`minion worker up --join -`** reads the join token from standard input; a new profile joined without a terminal shares nothing, an existing sharing choice is kept. See [Control a Worker from the command line](docs/guides/worker-control.md).
+
 ## v0.14.0
 
 Released 2026-11-19.
