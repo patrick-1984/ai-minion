@@ -78,6 +78,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/pipe"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -245,6 +246,11 @@ type PipeConfig struct {
 	// Logger receives operational messages, never message or turn text. The
 	// default is slog.Default().
 	Logger *slog.Logger
+	// Monitor records the pipe traffic for compliance monitoring; nil: none.
+	Monitor *compliance.Monitor
+	// ContentAllowed tells whether the content of a Worker's sessions may be
+	// recorded (it is user-managed); nil: yes.
+	ContentAllowed func(ctx context.Context, workerID string) bool
 }
 
 // Pipe is the Hub's pipe service. It is safe for concurrent use.
@@ -258,6 +264,9 @@ type Pipe struct {
 	now       func() time.Time
 	poll      time.Duration
 	log       *slog.Logger
+
+	mon            *compliance.Monitor
+	contentAllowed func(ctx context.Context, workerID string) bool
 
 	sendActions ops.ActionSet
 	readActions ops.ActionSet
@@ -310,7 +319,7 @@ func NewPipe(c PipeConfig) (*Pipe, error) {
 	p := &Pipe{
 		telemetry: c.Telemetry,
 		broker:    broker, store: c.Store, az: c.Authz, rt: c.Router, trust: c.Trust,
-		now: now, poll: c.Poll, log: c.Logger,
+		now: now, poll: c.Poll, log: c.Logger, mon: c.Monitor, contentAllowed: c.ContentAllowed,
 		sendActions: send.Actions, readActions: read.Actions,
 		subs:   map[pipe.Peer]map[chan struct{}]struct{}{},
 		reqs:   map[string]chan struct{}{},
@@ -408,7 +417,7 @@ const RerouteWindow = 8 * time.Minute
 //   - a send that failed before it reached the Worker, or that the Worker
 //     reports as failed_not_sent, leaves nothing behind: the next attempt is a
 //     new send with a new charge.
-func (p *Pipe) Send(ctx context.Context, pr authz.Principal, args ops.PipeSendArgs) (ops.WriteResult, error) {
+func (p *Pipe) Send(ctx context.Context, pr authz.Principal, args ops.PipeSendArgs) (out ops.WriteResult, rerr error) {
 	peer, res, err := peerOf(args.Target)
 	if err != nil {
 		return ops.WriteResult{}, err
@@ -418,6 +427,9 @@ func (p *Pipe) Send(ctx context.Context, pr authz.Principal, args ops.PipeSendAr
 	if err := p.az.Decide(ctx, pr, p.sendActions, res); err != nil {
 		return ops.WriteResult{}, err
 	}
+	// Recorded once, whichever way it ends: the request as submitted and the
+	// outcome it returned (compliance monitoring).
+	defer func() { p.observeSend(ctx, pr, peer, args, out, rerr) }()
 	if args.RequestID != "" {
 		unlock, err := p.lockRequest(ctx, peer, args.RequestID)
 		if err != nil {
@@ -435,7 +447,7 @@ func (p *Pipe) Send(ctx context.Context, pr authz.Principal, args ops.PipeSendAr
 	// The Worker names this id on the turn that answers the delivery. It is the
 	// Hub's, never the caller's.
 	args.MessageID = msg.ID
-	out, err := p.rt.Call(ctx, CallRequest{
+	routed, err := p.rt.Call(ctx, CallRequest{
 		Principal: pr, Op: ops.OpPipeSend, WorkerID: peer.WorkerID, Session: peer.SessionName, Args: args,
 	})
 	if err != nil {
@@ -460,7 +472,7 @@ func (p *Pipe) Send(ctx context.Context, pr authz.Principal, args ops.PipeSendAr
 		}
 		return ops.WriteResult{}, err
 	}
-	wr, ok := out.(ops.WriteResult)
+	wr, ok := routed.(ops.WriteResult)
 	if !ok {
 		return ops.WriteResult{}, proto.NewError(proto.CodeInternal, "the Worker answered pipe_send with an unexpected result")
 	}
@@ -757,6 +769,7 @@ func (p *Pipe) Read(ctx context.Context, pr authz.Principal, args ops.PipeReadAr
 				n, peer.SessionName)
 		}
 	}
+	p.observeTurns(ctx, pr, ops.OpPipeRead, peer, view.Turns, view.Withheld, nil)
 	return view, nil
 }
 
@@ -892,6 +905,7 @@ func (p *Pipe) Wait(ctx context.Context, pr authz.Principal, args ops.PipeWaitAr
 				if err := emit(receivedEntry(t)); err != nil {
 					return err
 				}
+				p.observeTurns(ctx, pr, ops.OpPipeWait, peer, []ops.PipeTurn{receivedEntry(t)}, 0, nil)
 			}
 			return nil
 		}

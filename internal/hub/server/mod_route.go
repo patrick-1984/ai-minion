@@ -9,6 +9,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -78,6 +79,7 @@ func initRoute(ctx context.Context, env *Env) error {
 	}
 	rt, err := workers.NewRouter(workers.RouterConfig{
 		Telemetry: svc.Telemetry,
+		Monitor:   complianceMonitor(env),
 		Backend:   workers.RegistryBackend(svc.Registry()),
 		Directory: workers.StoreDirectory{Store: st},
 		Authz:     az,
@@ -158,4 +160,13 @@ func hiddenSessionsPolicy(hubPolicy func() string, st *store.Store) workers.Hidd
 		pol.UserAllows = prefs.AllowHiddenSessions
 		return pol, nil
 	}
+}
+
+// complianceMonitor is the Hub's compliance monitor; nil without the log
+// export module (the Router then records nothing).
+func complianceMonitor(env *Env) *compliance.Monitor {
+	if o, err := Require[*ObsService](env); err == nil {
+		return o.Compliance
+	}
+	return nil
 }

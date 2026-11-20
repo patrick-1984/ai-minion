@@ -54,6 +54,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -236,6 +237,9 @@ type RouterConfig struct {
 	// setting hidden_sessions and the caller's own preference, v0.10.0).
 	// Nil means hidden sessions are never refused.
 	HiddenSessions HiddenSessionsPolicyFunc
+	// Monitor records the calls routed to Workers for compliance monitoring;
+	// nil: none.
+	Monitor *compliance.Monitor
 }
 
 // Router routes catalog Worker ops to the Workers that run them.
@@ -249,6 +253,7 @@ type Router struct {
 	log       *slog.Logger
 	userMgd   func(ctx context.Context, workerID string) (bool, error)
 	hidden    HiddenSessionsPolicyFunc
+	mon       *compliance.Monitor
 	telemetry func() Telemetry
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
@@ -272,7 +277,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 	}
 	rt := &Router{
 		telemetry: c.Telemetry,
-		userMgd:   c.UserManaged, hidden: c.HiddenSessions,
+		userMgd:   c.UserManaged, hidden: c.HiddenSessions, mon: c.Monitor,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
 	}
@@ -546,6 +551,7 @@ func (rt *Router) Call(ctx context.Context, req CallRequest) (any, error) {
 	var c *call
 	res, err := rt.call(ctx, req, &c)
 	rt.debugRouted(req, start, res, err, c)
+	rt.observe(ctx, req, c, res, err)
 	return res, err
 }
 
