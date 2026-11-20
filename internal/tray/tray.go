@@ -177,7 +177,7 @@ func (s Status) HubLine() string {
 func (s Status) KeysLine() string {
 	if s.Mismatch() {
 		if s.HubWords != "" {
-			return "!! MISMATCH: the Hub key changed (" + s.HubWords + "). Do not trust this Hub !!"
+			return "!! MISMATCH: the Hub now shows a different key than the one this Worker pinned (" + s.HubWords + "). Do not trust this Hub !!"
 		}
 		return "!! MISMATCH: the Hub key changed. Do not trust this Hub !!"
 	}

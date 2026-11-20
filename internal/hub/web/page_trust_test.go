@@ -115,14 +115,23 @@ func TestHubKeyWordsAreNeverCutOrHidden(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, rule := range strings.Split(string(css), "}") {
-		i := strings.Index(rule, "{")
-		if i < 0 || !strings.Contains(rule[:i], "hub-id") {
+		// The innermost selector: a rule inside @media follows the
+		// brace of the media query.
+		i := strings.LastIndex(rule, "{")
+		if i < 0 {
+			continue
+		}
+		sel := rule[:i]
+		if j := strings.LastIndex(sel, "{"); j >= 0 {
+			sel = sel[j+1:]
+		}
+		if !strings.Contains(sel, "hub-id") {
 			continue
 		}
 		body := rule[i:]
 		for _, bad := range []string{"text-overflow", "max-width", "display: none", "visibility: hidden", "overflow: hidden", "-webkit-line-clamp"} {
 			if strings.Contains(body, bad) {
-				t.Errorf("rule %q has %q: the Hub key words must stay complete", strings.TrimSpace(rule[:i]), bad)
+				t.Errorf("rule %q has %q: the Hub key words must stay complete", strings.TrimSpace(sel), bad)
 			}
 		}
 	}

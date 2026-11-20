@@ -1333,9 +1333,9 @@ button.is-busy { border-style: dashed; }
     overflow-wrap: anywhere; }
 }
 
-/* A55: below 1200px the Hub key words get their own row under the top bar,
+/* A55: below 1600px (inline beside a long key the breadcrumbs collapse) the Hub key words get their own row under the top bar,
    in full, instead of squeezing the breadcrumbs. */
-@media (max-width: 1199px) {
+@media (max-width: 1599px) {
   .topbar:has(> .top-search) > .top-tools { display: contents; }
   .topbar:has(> .top-search) .theme-toggle { grid-area: 1 / 4; justify-self: end; }
   .topbar:has(> .top-search) .hub-id { grid-row: 2; grid-column: 1 / -1; justify-self: end; padding: 0 4px; }
