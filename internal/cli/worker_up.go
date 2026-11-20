@@ -226,7 +226,13 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 		run.inviteArgvWarned = inviteWarned
 		return runWorkerRun(cmd, run)
 	}
-	return installWorkerService(cmd, deps, det, asUser)
+	err = installWorkerService(cmd, deps, det, asUser)
+	if errors.Is(err, errRunAsRoot) {
+		// Chosen in the sharing question: the Worker runs as root (A57).
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "The Worker will run as root and serve root's tmux sessions.")
+		return installWorkerService(cmd, deps, det, "root")
+	}
+	return err
 }
 
 // warnWindowsService warns a foreground Worker while the LocalSystem Windows
@@ -269,7 +275,7 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 		}
 	}
 	offerPsmux(cmd, res, defaultPsmuxOfferDeps())
-	return sd.firstRun(cmd, res, nil, "")
+	return sd.firstRun(cmd, res, nil, nil)
 }
 
 // installWorkerService is the service path of "worker up": resolve the
@@ -367,7 +373,21 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	for _, w := range warnings {
 		_, _ = fmt.Fprintln(stderr, w)
 	}
-	if err := firstRunService(cmd, deps, reg, flags, lookupEnv, st, target, owned); err != nil {
+	var owner *ownerSetup
+	if owned {
+		sock, err := pe.TmuxSocket()
+		if err != nil {
+			return err
+		}
+		if f, err := st.load(); err == nil {
+			r := &config.Resolver{Registry: reg, Role: config.ScopeWorker, Flags: flags, File: f, LookupEnv: lookupEnv}
+			if v, err := r.Resolve(config.KeyTmuxSocket); err == nil && v.Source != config.SourceDefault && v.Value != "" {
+				sock = v.Value
+			}
+		}
+		owner = &ownerSetup{Target: target, StateDir: stateDir, Socket: sock, Binary: binary}
+	}
+	if err := firstRunService(cmd, deps, reg, flags, lookupEnv, st, owner); err != nil {
 		return err
 	}
 
@@ -454,16 +474,12 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 }
 
 // firstRunService is the first-run gate of the service path.
-func firstRunService(cmd *cobra.Command, deps workerUpDeps, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool), st *upState, target service.Target, owned bool) error {
+func firstRunService(cmd *cobra.Command, deps workerUpDeps, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool), st *upState, owner *ownerSetup) error {
 	file, err := st.load()
 	if err != nil {
 		return err
 	}
 	res := &config.Resolver{Registry: reg, Role: config.ScopeWorker, Flags: flags, File: file, LookupEnv: lookupEnv}
-	owner := ""
-	if owned {
-		owner = target.User
-	}
 	return deps.setupDeps().firstRun(cmd, res, st, owner)
 }
 

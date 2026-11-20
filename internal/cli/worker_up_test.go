@@ -673,22 +673,19 @@ func TestWorkerUpAnEmptyStateDirVariableMeansTheTargetsDefault(t *testing.T) {
 	}
 }
 
-func TestWorkerUpRootWithoutSudoNeedsAsUser(t *testing.T) {
+// A root login without sudo runs the Worker as root on purpose (A57).
+func TestWorkerUpRootWithoutSudoRunsAsRoot(t *testing.T) {
 	f := newUpFixture(t, true)
+	home := t.TempDir()
 	f.deps.targetEnv.Getenv = func(string) string { return "" } // no SUDO_USER
 	f.deps.targetEnv.Current = func() (*user.User, error) {
-		return &user.User{Username: "root", Uid: "0", Gid: "0", HomeDir: "/root"}, nil
+		return &user.User{Username: "root", Uid: "0", Gid: "0", HomeDir: home}, nil
 	}
-	_, err := f.run()
-	if err == nil || !strings.Contains(err.Error(), "--as-user") {
-		t.Fatalf("err = %v", err)
+	if _, err := f.run("--state-dir", filepath.Join(home, "state")); err != nil {
+		t.Fatalf("err = %v\n%s", err, f.stderr)
 	}
-	if len(f.runCalls()) != 0 {
-		t.Error("the service was touched")
-	}
-	// Naming the user makes it work.
-	if _, err := f.run("--as-user", "ann"); err != nil {
-		t.Fatalf("--as-user ann: %v", err)
+	if len(f.runCalls()) == 0 {
+		t.Error("the service was not installed")
 	}
 }
 

@@ -190,7 +190,7 @@ func TestTerminalHappyPathNarrative(t *testing.T) {
 		"Step 1 of 3: What may the Hub see?",
 		"I see 3 tmux sessions:",
 		"Configure later from the Hub",
-		"Sharing: share no tmux session.",
+		"Sharing: share all tmux sessions, also the ones created later.",
 		"Step 2 of 3: Hub address",
 		"(I added https:// in front: https://hub.example:8443)",
 		"DNS", "TCP", "TLS", "Protocol",
@@ -202,7 +202,7 @@ func TestTerminalHappyPathNarrative(t *testing.T) {
 	if n := strings.Count(o.out, "paired to alice"); n != 2 { // the pairing line and the summary
 		t.Errorf("\"paired to alice\" appears %d times, want 2 (pairing line, summary):\n%s", n, o.out)
 	}
-	if got := r.per.saved(); len(got) != 1 || got[0].Share.Mode != store.ShareNone || got[0].Server != "https://hub.example:8443" {
+	if got := r.per.saved(); len(got) != 1 || got[0].Share.Mode != store.ShareAll || got[0].Server != "https://hub.example:8443" {
 		t.Errorf("saved = %+v", got)
 	}
 	if got := r.chk.called(); len(got) != 1 || got[0] != "https://hub.example:8443" {
