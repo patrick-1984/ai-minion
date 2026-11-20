@@ -107,7 +107,8 @@ func resolveHubSettings(fs *pflag.FlagSet, lookupEnv func(string) (string, bool)
 func hubBackend(cfg config.ClientHub, warn io.Writer) (client.Backend, error) {
 	b, _, err := client.Select(hubConfig(cfg), nil,
 		client.WithHubUserAgent("minion/"+version.Get().Version),
-		client.WithHubWarn(func(msg string) { _, _ = fmt.Fprintln(warn, msg) }))
+		client.WithHubWarn(func(msg string) { _, _ = fmt.Fprintln(warn, msg) }),
+		client.WithHubNotice(func(msg string) { _, _ = fmt.Fprintln(warn, "minion: "+msg) }))
 	return b, err
 }
 

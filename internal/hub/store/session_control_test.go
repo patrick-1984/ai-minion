@@ -449,3 +449,17 @@ func TestPurgeKeepsASaveInTheSameMillisecond(t *testing.T) {
 		t.Fatalf("an older save was kept")
 	}
 }
+
+// Content of a Worker that does not exist (removal in progress) is never user-managed,
+// whatever a control row or the missing-row default says.
+func TestWorkerContentManagedNeedsTheWorker(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	on := true
+	_ = s.SetWorkerControl(ctx, "gone", &on, nil)
+	for _, id := range []string{"gone", "never-existed"} {
+		if ok, err := s.WorkerContentManaged(ctx, id); ok || err != nil {
+			t.Fatalf("%s = %v, %v", id, ok, err)
+		}
+	}
+}

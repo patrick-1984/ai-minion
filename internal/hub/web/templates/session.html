@@ -65,6 +65,7 @@
         <div class="info-pop" id="help-send-unasked" popover><p>Text, keys and task messages skip the confirmation for a shell, an open dialog or a busy agent. The Hub still checks dialog answers.</p></div></li>{{end}}
     </ul>
   </header>
+  {{if .Data.Monitoring}}<p class="notice notice-warning" role="status" data-monitoring="{{.Data.Monitoring}}">Compliance monitoring is on ({{.Data.Monitoring}}): what passes through this Hub for sessions is sent to its administrator's log collector. Text typed in a local terminal is not.</p>{{end}}
   {{if .Data.Notice}}<p class="notice notice-warning" role="status">{{.Data.Notice}}</p>{{end}}
   {{if and .Data.Online (not .Data.Operate)}}<p class="notice notice-info" role="status">You can view this session. You don't have permission to send input.</p>{{end}}
   <div class="session-grid{{if $panes}} has-pane{{end}}" id="session-grid">

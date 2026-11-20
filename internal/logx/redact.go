@@ -205,3 +205,19 @@ func (r redactHandler) WithAttrs(as []slog.Attr) slog.Handler {
 }
 
 func (r redactHandler) WithGroup(name string) slog.Handler { return redactHandler{r.h.WithGroup(name)} }
+
+// SecretSpans returns the byte ranges of s that hold one of Minion's own
+// secret formats (API key, invitation key, join token, pairing code), for
+// callers that must find them across text they have joined.
+func SecretSpans(s string) [][2]int {
+	var out [][2]int
+	if !hasMN(s) {
+		return nil
+	}
+	for _, re := range []*regexp.Regexp{joinTokenText, inviteKeyText, apiKeyText, pairingCode} {
+		for _, m := range re.FindAllStringIndex(s, -1) {
+			out = append(out, [2]int{m[0], m[1]})
+		}
+	}
+	return out
+}

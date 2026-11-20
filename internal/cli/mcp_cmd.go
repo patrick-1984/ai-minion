@@ -179,7 +179,8 @@ func selectMCPBackend(cmd *cobra.Command, deps mcpDeps, logger *slog.Logger) (cl
 	}
 	b, kind, err := client.Select(hubConfig(cfg), localBackend,
 		client.WithHubUserAgent("minion/"+version.Get().Version),
-		client.WithHubWarn(func(msg string) { logger.Warn(msg) }))
+		client.WithHubWarn(func(msg string) { logger.Warn(msg) }),
+		client.WithHubNotice(func(msg string) { logger.Info(msg) }))
 	if err != nil {
 		return nil, nil, fmt.Errorf("configure the Hub backend: %w", err)
 	}

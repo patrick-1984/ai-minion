@@ -17,6 +17,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/obs"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	otelsink "github.com/patrick-1984/ai-minion/internal/obs/otel"
 	"github.com/patrick-1984/ai-minion/internal/obs/traffic"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -47,6 +48,9 @@ type ObsService struct {
 	// metrics (both nil without a runtime logger).
 	Traffic *traffic.Log
 	Metrics *otelsink.Metrics
+	// Compliance sends session content to the OpenTelemetry sink at the level
+	// of compliance_monitoring; never nil, off until the settings are applied.
+	Compliance *compliance.Monitor
 	// proc is the identity of the Hub's exported data.
 	proc    obs.Process
 	live    *logx.Live
@@ -79,6 +83,12 @@ func initObs(_ context.Context, env *Env) error {
 		return err
 	}
 	svc := &ObsService{live: cfg.LogLive, verbose: cfg.Verbose}
+	svc.Compliance = compliance.New(func() compliance.Sink {
+		if svc.Manager == nil {
+			return nil
+		}
+		return svc.Manager.SessionSink()
+	})
 	if err := Provide(env, svc); err != nil {
 		return err
 	}
@@ -229,6 +239,7 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 	sinks, err := config.ResolveSinks(settings.Resolver(), files)
 	if err != nil {
 		m.Disable(logx.ErrorText(err))
+		svc.Compliance.SetMode(compliance.Off)
 		log.Error("log export could not be configured; both sinks are off", "error", logx.ErrorText(err))
 	} else {
 		if err := m.Apply(ctx, sinks); err != nil {
@@ -236,6 +247,15 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 		}
 		applyTraffic(svc, settings.Resolver(), sinks, log)
 		applyMetrics(ctx, svc, settings.Resolver(), sinks, log)
+		cm, cerr := config.ResolveCompliance(settings.Resolver(), sinks)
+		if cerr != nil {
+			log.Error("compliance monitoring is off: its settings are not valid", "error", logx.ErrorText(cerr))
+			cm = config.ComplianceOff
+		}
+		setCompliance(svc, settings.Resolver(), cm)
+		if r, err := settings.Resolver().Resolve(config.KeyCompliance); err == nil && cm != config.ComplianceOff && r.Source == config.SourceEnv {
+			log.Warn("compliance monitoring is on, set by the environment", "level", cm, "variable", "MINION_COMPLIANCE_MONITORING")
+		}
 	}
 
 	// The configuration the validator resolved is the one applied after the
@@ -245,13 +265,14 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 		sinks   config.Sinks
 		traffic config.TrafficConfig
 		metrics string
+		comp    string
 	}
 	var mu sync.Mutex
 	var prepared *resolved
 	validateSinks := func(p *config.Resolver) error {
 		s, err := config.ResolveSinks(p, files)
 		var t config.TrafficConfig
-		var lvl string
+		var lvl, cm string
 		if err == nil {
 			t, err = config.ResolveTraffic(p, s)
 			if err != nil && unchangedAndInvalid(settings.Resolver(), p, files, trafficKeys, func(r *config.Resolver, s config.Sinks) error {
@@ -273,13 +294,21 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 				lvl, err = otelsink.MetricsOff, nil
 			}
 		}
+		if err == nil {
+			cm, err = config.ResolveCompliance(p, s)
+			if err != nil && !s.OTLP.Enabled && complianceUnchanged(settings.Resolver(), p) {
+				// Switching the sink off must not be refused because of a
+				// compliance level the change does not touch: it stops capture.
+				cm, err = config.ComplianceOff, nil
+			}
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		prepared = nil
 		if err != nil {
 			return err
 		}
-		prepared = &resolved{sinks: s, traffic: t, metrics: lvl}
+		prepared = &resolved{sinks: s, traffic: t, metrics: lvl, comp: cm}
 		return nil
 	}
 	applySinks := func(ctx context.Context, eff *config.Resolver) error {
@@ -290,14 +319,20 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 		if r == nil {
 			s, err := config.ResolveSinks(eff, files)
 			var t config.TrafficConfig
-			var lvl string
+			var lvl, cm string
 			if err == nil {
 				t, err = config.ResolveTraffic(eff, s)
 			}
 			if err == nil {
 				lvl, err = config.ResolveMetricsLevel(eff, s)
 			}
+			if err == nil {
+				if cm, err = config.ResolveCompliance(eff, s); err != nil {
+					cm, err = config.ComplianceOff, nil
+				}
+			}
 			if err != nil {
+				svc.Compliance.SetMode(compliance.Off)
 				m.Disable(logx.ErrorText(err))
 				if svc.Traffic != nil {
 					svc.Traffic.Configure(config.TrafficConfig{})
@@ -307,7 +342,7 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 				}
 				return err
 			}
-			r = &resolved{sinks: s, traffic: t, metrics: lvl}
+			r = &resolved{sinks: s, traffic: t, metrics: lvl, comp: cm}
 		}
 		// The sinks and the traffic filter change together: nothing is
 		// recorded between the two, so that no frame of a Worker that the
@@ -315,12 +350,16 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 		if svc.Traffic != nil {
 			svc.Traffic.Suspend()
 		}
+		// Capture stops first, and restarts on the new sink only after it is
+		// in place: an observation never meets a half-changed configuration.
+		svc.Compliance.SetMode(compliance.Off)
 		if err := m.Apply(ctx, r.sinks); err != nil {
 			if svc.Traffic != nil {
 				svc.Traffic.Configure(r.traffic)
 			}
 			return err
 		}
+		setCompliance(svc, eff, r.comp)
 		if svc.Traffic != nil {
 			svc.Traffic.Configure(r.traffic)
 		}
@@ -368,6 +407,25 @@ func configureMetrics(ctx context.Context, svc *ObsService, level string, otlp c
 	}
 	res, _ := otelsink.NewResource(ctx, svc.proc)
 	return svc.Metrics.Configure(ctx, otelsink.MetricsConfig{Level: level, OTLP: otlp}, res)
+}
+
+// setCompliance makes cm the effective mode and records whether the
+// environment set it (a deployer's decision, shown in the status).
+func setCompliance(svc *ObsService, res *config.Resolver, cm string) {
+	svc.Compliance.SetMode(compliance.ParseMode(cm))
+	origin := ""
+	if r, err := res.Resolve(config.KeyCompliance); err == nil && r.Source == config.SourceEnv {
+		origin = "the environment"
+	}
+	svc.Compliance.SetOrigin(origin)
+}
+
+// complianceUnchanged reports whether the proposed settings p leave
+// compliance_monitoring as the running settings have it.
+func complianceUnchanged(cur, p *config.Resolver) bool {
+	a, ea := cur.Resolve(config.KeyCompliance)
+	b, eb := p.Resolve(config.KeyCompliance)
+	return ea == nil && eb == nil && a.Value == b.Value
 }
 
 var trafficKeys = []string{config.KeyTrafficLog, config.KeyTrafficLogTo, config.KeyTrafficLogWorkers}

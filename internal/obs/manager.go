@@ -13,6 +13,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/obs/otel"
 	"github.com/patrick-1984/ai-minion/internal/obs/syslog"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -190,6 +191,23 @@ func (m *Manager) applyOTel(ctx context.Context, c config.OTLPConfig) error {
 		m.errs[SinkOTel] = err.Error()
 	}
 	return err
+}
+
+// SessionSink returns the OpenTelemetry pipeline that is current now as the
+// sink of session events, or nil when the sink is off or its level (otel_level)
+// filters INFO events. The caller keeps the result for one observation, so
+// that all its chunks go to the same pipeline.
+func (m *Manager) SessionSink() compliance.Sink {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p := m.otl
+	if p == nil {
+		return nil
+	}
+	if lvl, err := logx.ParseLevel(p.cfg.Level); err != nil || lvl > slog.LevelInfo {
+		return nil
+	}
+	return p.logs
 }
 
 // Disable turns both sinks off and retires their pipelines (fail closed):

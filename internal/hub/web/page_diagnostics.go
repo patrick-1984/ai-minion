@@ -51,6 +51,9 @@ func sinkText(st ops.LogSinkStatus) string {
 		b.WriteString("off")
 	}
 	b.WriteString(" (configuration " + strconv.FormatUint(st.Generation, 10) + ")")
+	if st.SessionContent != "" {
+		b.WriteString("; compliance monitoring: " + st.SessionContent)
+	}
 	if st.LastError != "" {
 		b.WriteString("; last error: " + st.LastError)
 	}
