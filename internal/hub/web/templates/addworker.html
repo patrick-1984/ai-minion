@@ -12,7 +12,7 @@
   <pre id="join-unix">{{.Unix}}</pre>
   <button type="button" data-copy="#join-unix">Copy the command</button>
   <h3>Linux system service (sudo)</h3>
-  <p class="muted">Use sudo to install a system service on Linux with systemd. The sharing question lists the sessions of the user who ran sudo. Choose <code>r</code> there to run the Worker as root and serve root’s sessions instead. A first unattended installation defers sharing. To share all sessions immediately, change <code>--non-interactive-share later</code> to <code>--non-interactive-share all</code>.</p>
+  <p class="muted">Use sudo to install a system service on Linux with systemd. The sharing question lists the sessions of the user who ran sudo. Choose <code>r</code> there to run the Worker as root and serve root’s sessions instead. Without a terminal the Worker shares all sessions (the purpose of a Worker); change <code>--non-interactive-share all</code> to <code>none</code> or <code>later</code> to choose in the Hub instead.</p>
   <pre id="join-system">{{.System}}</pre>
   <button type="button" data-copy="#join-system">Copy the commands</button>
   <h3>Windows (PowerShell)</h3>

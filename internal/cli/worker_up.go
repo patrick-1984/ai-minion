@@ -139,8 +139,8 @@ A Worker that was never set up (no --share-existing, MINION_SHARE_EXISTING or
 config file value, and no choice saved by "minion worker setup") gets the
 first-run wizard when this runs in a terminal: what to share, the Hub address
 and a pairing code. The Hub join command supplies the Hub and invitation.
-On a fresh unattended installation it uses --non-interactive-share later,
-leaving sharing for you to choose in the Hub. Other unattended commands
+On a fresh unattended installation it uses --non-interactive-share all,
+sharing every session (change it in the Hub). Other unattended commands
 need an explicit sharing choice. Under sudo the sharing question lets you
 choose the invoking user's sessions or run the Worker as root. In a terminal, a
 Worker that is about to pair still asks for the Hub fingerprint.

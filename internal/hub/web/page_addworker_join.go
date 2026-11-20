@@ -63,7 +63,7 @@ func workerVersion() string {
 
 // joinCommands renders the commands for tok; name is the optional Worker name.
 func joinCommands(tok identity.JoinToken, name string) JoinCommands {
-	const initialShare = " --non-interactive-share later"
+	const initialShare = " --non-interactive-share all"
 	text := tok.Encode()
 	var unixName, psName string
 	if name != "" {
@@ -156,7 +156,7 @@ DOCKERFILE
   set -- -e MINION_STATE_DIR=/data -e MINION_CACHE_DIR=/cache -e MINION_VERSION=` + workerVersion() + ` \
     -v minion-worker-data:/data -v minion-worker-cache:/cache \
     --mount type=bind,source="$PWD/bootstrap.sh",target=/bootstrap.sh,readonly "$image" sh /bootstrap.sh &&
-  docker run --rm -i "$@" worker up --configure-only` + nameArg + ` --non-interactive-share later --join - <<'MINION_CREDENTIAL' &&
+  docker run --rm -i "$@" worker up --configure-only` + nameArg + ` --non-interactive-share all --join - <<'MINION_CREDENTIAL' &&
 ` + token + `
 MINION_CREDENTIAL
   docker run -d --name minion-worker --restart unless-stopped "$@" worker run &&
@@ -179,7 +179,7 @@ func joinComposeFile(name string) string {
 }
 
 func composeStart(token string) string {
-	return downloadBootstrap + `docker compose run --build --rm -T minion-worker worker up --configure-only --non-interactive-share later --join - <<'MINION_CREDENTIAL' &&
+	return downloadBootstrap + `docker compose run --build --rm -T minion-worker worker up --configure-only --non-interactive-share all --join - <<'MINION_CREDENTIAL' &&
 ` + token + `
 MINION_CREDENTIAL
 docker compose up -d &&

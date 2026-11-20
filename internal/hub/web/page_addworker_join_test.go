@@ -86,12 +86,12 @@ func TestAddWorkerJoinCreatesAOneTimeKeyAndShowsEverythingOnce(t *testing.T) {
 		"join-system":        {"sudo env MINION_JOIN_FILE=", "minion worker up --name build-1", text},
 		"join-windows":       {"minion.exe worker up --name build-1", "finally", "Remove-Item -LiteralPath $file", text},
 		"join-expanded":      {"--server https://hub.example.com:8443 --hub-fingerprint " + f.fp.String(), "--invite-key /dev/fd/3", f.key.String()},
-		"join-docker":        {"curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&", "--mount type=bind,source=", "apk add --no-cache tmux", "docker run --rm -i", "--configure-only --name build-1", "--non-interactive-share later --join -", "--restart unless-stopped", "worker status --wait", text},
+		"join-docker":        {"curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&", "--mount type=bind,source=", "apk add --no-cache tmux", "docker run --rm -i", "--configure-only --name build-1", "--non-interactive-share all --join -", "--restart unless-stopped", "worker status --wait", text},
 		"join-compose":       {`MINION_NAME: "build-1"`, `command: ["worker", "run"]`, "restart: unless-stopped"},
 		"join-compose-start": {"docker compose run --build --rm -T", "--configure-only", "--join -", "docker compose up -d", "worker status --wait", text},
 	} {
 		if id == "join-unix" || id == "join-system" || id == "join-windows" {
-			fragments = append(fragments, "--non-interactive-share later")
+			fragments = append(fragments, "--non-interactive-share all")
 		}
 		for _, fragment := range fragments {
 			if !strings.Contains(p[id], fragment) {
