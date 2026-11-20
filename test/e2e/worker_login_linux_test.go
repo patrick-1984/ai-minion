@@ -108,7 +108,7 @@ func TestLinuxLoginWorkerOnboarding(t *testing.T) {
 	r := status()
 	if !strings.Contains(out, "State: waiting for approval") || !strings.Contains(out, "Hub key (must match the Hub's top bar):") ||
 		!strings.Contains(out, key.Fingerprint.Words()) || r.WorkerFingerprintWords == "" || !strings.Contains(out, r.WorkerFingerprintWords) ||
-		!strings.Contains(out, "runs in the background") || r.RunMode != agent.RunModeDetached {
+		!strings.Contains(out, "runs as: "+agent.RunModeDetached) || r.RunMode != agent.RunModeDetached {
 		t.Fatalf("unexpected startup report: %s", out)
 	}
 	a, err := workers.NewApprover(workers.ApproverConfig{Store: h.st, Connections: h.service().Registry()})

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The startup summary names the run mode once (it said "background (background (shell login))").
+
 ## v0.16.0
 
 Released 2026-11-20.
