@@ -910,12 +910,12 @@ func TestSendKeysRefusesNulAndDelKeysBeforeTmux32(t *testing.T) {
 	s := &script{handler: livePane(&live)}
 	h := s.host(t)
 	h.version = Version{Major: 3, Minor: 0, Suffix: "a", raw: "3.0a"}
-	for _, k := range []string{"C-2", "C-?", "C-6", "C-C-2", "M-C-2"} {
+	for _, k := range []string{"C-2", "C-?", "C-6", "C-C-2", "M-C-2", "C-\u00e9"} {
 		if _, err := h.SendKeys(context.Background(), paneA, []string{k}, paneA); !errors.Is(err, ops.ErrInvalidArgument) || !strings.Contains(err.Error(), "3.2") {
 			t.Errorf("%s: err = %v", k, err)
 		}
 	}
-	for _, k := range []string{"C-a", "M-2", "C-Space"} {
+	for _, k := range []string{"C-a", "M-2", "C-Space", "C-[", "C-]", "C-@", "C-_", "C-\\", "C-^", "Enter", "C-Enter"} {
 		if ctrlNonLetter(k) {
 			t.Errorf("%s must stay allowed on tmux 3.0", k)
 		}

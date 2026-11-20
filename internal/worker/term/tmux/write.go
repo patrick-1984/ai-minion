@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -264,8 +263,9 @@ func checkKey(k string) error {
 	return nil
 }
 
-// ctrlNonLetter reports whether k is Ctrl (with any other modifiers, in any
-// order or repetition) on one character that is not a letter or space.
+// ctrlNonLetter reports whether k is a Ctrl key (with any other modifiers,
+// in any order or repetition) whose base tmux before 3.2 does not turn into
+// the control byte: anything but an ASCII letter, a space or @ [ \ ] ^ _.
 func ctrlNonLetter(k string) bool {
 	ctrl := false
 	for len(k) > 2 && k[1] == '-' && strings.ContainsRune("CMSms", rune(k[0])) {
@@ -274,11 +274,17 @@ func ctrlNonLetter(k string) bool {
 		}
 		k = k[2:]
 	}
-	if !ctrl || utf8.RuneCountInString(k) != 1 {
+	if !ctrl {
 		return false
 	}
-	r, _ := utf8.DecodeRuneInString(k)
-	return !unicode.IsLetter(r) && r != ' '
+	if k == "Space" {
+		return false
+	}
+	if len(k) != 1 {
+		return utf8.RuneCountInString(k) == 1 // a non-ASCII base; key names (Enter, F1) pass
+	}
+	c := k[0]
+	return !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == ' ' || strings.IndexByte("@[\\]^_", c) >= 0)
 }
 
 // escapeArg protects an argument from tmux's own command parser: an argument

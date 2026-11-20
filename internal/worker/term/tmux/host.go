@@ -69,10 +69,11 @@ func (h *Host) warnOldTmux() {
 	if h.psmux || v.raw == "" || v.AtLeast(3, 2) || (v.Major == 3 && v.Minor == 1 && v.Suffix >= "c") {
 		return
 	}
-	if h.log.Load() == nil || !h.oldWarned.CompareAndSwap(false, true) {
+	l := h.log.Load()
+	if l == nil || !h.oldWarned.CompareAndSwap(false, true) {
 		return
 	}
-	h.logger().Warn("tmux is older than 3.1c: make sure the security updates of your distribution are installed (CVE-2020-27347), or install a newer tmux",
+	l.Warn("tmux is older than 3.1c: make sure the security updates of your distribution are installed (CVE-2020-27347), or install a newer tmux",
 		"version", v.String())
 }
 
@@ -190,8 +191,10 @@ func (h *Host) tightenSocket() {
 	if h.socket == "" || h.psmux || h.version.AtLeast(3, 2) {
 		return
 	}
-	fi, err := os.Lstat(h.socket)
-	if err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode().Perm()&0o077 == 0 {
+	// Stat follows a symlink to the socket tmux connects to. Only a socket of
+	// this user is changed.
+	fi, err := os.Stat(h.socket)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode().Perm()&0o077 == 0 || !ownedByMe(fi) {
 		return
 	}
 	if err := os.Chmod(h.socket, fi.Mode().Perm()&0o700); err != nil {
