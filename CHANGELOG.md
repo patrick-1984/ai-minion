@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The Hub key words are always shown in full.** The top bar cut the six words after 34 characters (and hid them on phones), which defeated comparing them with a Worker. They are never shortened now: in the top bar on wide screens, on their own row under it on narrower ones. A tray MISMATCH line also shows the words.
+- **Workers list:** an offline Worker no longer shows a second "Offline" next to its Forget button; the buttons line up with the row.
+
 ## v0.15.0
 
 Released 2026-11-20.

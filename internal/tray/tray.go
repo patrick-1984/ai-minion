@@ -176,6 +176,9 @@ func (s Status) HubLine() string {
 // KeysLine is the six Hub key words, or a prominent MISMATCH.
 func (s Status) KeysLine() string {
 	if s.Mismatch() {
+		if s.HubWords != "" {
+			return "!! MISMATCH: the Hub key changed (" + s.HubWords + "). Do not trust this Hub !!"
+		}
 		return "!! MISMATCH: the Hub key changed. Do not trust this Hub !!"
 	}
 	if s.HubWords == "" {

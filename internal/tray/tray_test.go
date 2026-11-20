@@ -583,3 +583,11 @@ func TestRunnerTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A55: a MISMATCH line still shows the words the Worker sees.
+func TestMismatchLineKeepsTheWords(t *testing.T) {
+	s := Status{HubWords: "one-two-three-four-five-six", HubCheck: "mismatch"}
+	if got := s.KeysLine(); !strings.Contains(got, "MISMATCH") || !strings.Contains(got, "one-two-three-four-five-six") {
+		t.Fatalf("KeysLine = %q", got)
+	}
+}
