@@ -15,3 +15,5 @@ Commands for the Worker of your own user. Each works on Linux, macOS and Windows
 | `minion worker up --join -` | Reads the join token from the first line of standard input (at most 4096 bytes), so it is in no argument list; `--join <token>`, `MINION_JOIN` and `MINION_JOIN_FILE` still work. The Hub pin and invitation checks are the same. Without a terminal a new profile shares nothing until you widen it with `config share`; an existing choice is kept. The token and the key inside it are never printed, logged or saved. |
 
 Pairing with a code stays `minion worker pair` or `minion worker join <url>` in a terminal.
+
+Back to the [README](../../README.md).
