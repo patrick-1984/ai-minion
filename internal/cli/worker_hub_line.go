@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -86,6 +87,11 @@ func printHubLine(cmd *cobra.Command, w io.Writer, lookupEnv func(string) (strin
 	}
 	line := hubIdentityLine(cmd.Context(), res)
 	if line == "" {
+		return
+	}
+	// A first "worker up" has no Hub yet: the summary at its end shows the
+	// key, so the "none" line is only noise there.
+	if cmd.Name() == "up" && strings.HasPrefix(line, "Hub key: none") {
 		return
 	}
 	if cmd.Name() == "join" || cmd.Name() == "pair" || cmd.Flags().Changed("join") {

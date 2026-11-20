@@ -7,8 +7,8 @@ const (
 	// the Worker process) or auto (psmux when it is installed and the Worker
 	// runs as the user, else conpty). Other platforms always use tmux.
 	KeySessionHost = "session_host"
-	// KeyPsmuxOffer records the answer to "install psmux with winget?" so the
-	// first-run question is asked once: ask, declined or installed.
+	// KeyPsmuxOffer preserves a decision to use ConPTY without psmux made
+	// by a user of an earlier release.
 	KeyPsmuxOffer = "psmux_offer"
 	// KeySessionsVisible says whether the tmux sessions of a Linux or macOS
 	// Worker are visible to the person (v0.10.0): yes when the Worker serves
@@ -46,7 +46,7 @@ func declareSessionHost(r *Registry) {
 	r.Declare(Setting{
 		Key:     KeyPsmuxOffer,
 		Scope:   ScopeWorker,
-		Help:    "Windows: whether the first run still offers to install psmux with winget (ask, declined, installed)",
+		Help:    "Windows: previous psmux installer preference (declined permits auto to use ConPTY when psmux is missing)",
 		Default: "ask",
 		Choices: []string{"ask", "declined", "installed"},
 	})

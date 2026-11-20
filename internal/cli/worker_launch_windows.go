@@ -104,11 +104,15 @@ func freeConsole() {
 // logon.
 func startLauncher(exe string, args []string) error {
 	cmd := exec.Command(exe, append([]string{"worker", "launch"}, args...)...)
+	// The supervisor outlives the enrollment command, including on the
+	// fallback launch when a Windows job refuses breakaway.
+	cmd.Env = launchEnv(os.Environ())
 	flags := uint32(windows.CREATE_NO_WINDOW | windows.CREATE_NEW_PROCESS_GROUP)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: flags | windows.CREATE_BREAKAWAY_FROM_JOB}
 	if err := cmd.Start(); err != nil {
 		// A job that does not allow breaking away refuses the flag.
 		cmd = exec.Command(exe, append([]string{"worker", "launch"}, args...)...)
+		cmd.Env = launchEnv(os.Environ())
 		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: flags}
 		if err := cmd.Start(); err != nil {
 			return err

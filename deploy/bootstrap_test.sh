@@ -99,6 +99,9 @@ make_release() {
 		cat >"$b/minion" <<BIN
 #!/bin/sh
 echo "fake-minion $v $a args:\$*"
+if [ "\$*" = "worker up --configure-only --non-interactive-share later --join -" ]; then
+	IFS= read -r token && [ "\$token" = "test-onboarding-input" ] || exit 14
+fi
 env | grep -E '^MINION_(VERSION|SHA256|CACHE_DIR)=' | sed 's/^/leak: /'
 exit \${FAKE_MINION_EXIT:-0}
 BIN
@@ -1148,6 +1151,14 @@ assert_file "armv7: cosign cached per arch" "$CACHE/tools/cosign-v3.1.4-armv7"
 new_case
 MINION_VERSION=v1.4.2 MINION_SHA256="$SHA_142_AMD64" FAKE_MINION_EXIT=7 run_boot x
 assert_eq "exec: the exit status of minion is the exit status of the script" 7 "$RC"
+
+# A fresh Docker provisioning container sends its one-time token on stdin.
+new_case
+MINION_VERSION=v1.4.2 run_boot worker up --configure-only --non-interactive-share later --join - <<'INPUT'
+test-onboarding-input
+INPUT
+assert_eq "Docker enrollment stdin survives download and verification" 0 "$RC"
+assert_not_contains "bootstrap never prints the enrollment input" "$OUT" "test-onboarding-input"
 
 # the pins: every architecture has a 64-hex sha256 and the identity matches the
 # release workflow

@@ -2,7 +2,7 @@
 
 Back to the [README](../../README.md).
 
-A Worker serves the tmux sessions of one Unix user on one machine. It needs `tmux` (any version works for sessions; replies of agents through [the pipe](../guides/pipe.md) need tmux 3.8 or newer). The Worker never renames, closes or changes a session on its own. One Worker per Unix user: it sees the tmux server of the user it runs as.
+A Worker serves the tmux sessions of one Unix user on one machine. It needs `tmux` (3.0 or newer for sessions; replies of agents through [the pipe](../guides/pipe.md) need tmux 3.8 or newer). The Worker never renames, closes or changes a session on its own. One Worker per Unix user: it sees the tmux server of the user it runs as.
 
 ## 1. Install the binary
 
@@ -12,7 +12,7 @@ One line installs the latest `minion` into `/usr/local/bin` (when writable, for 
 curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh
 ```
 
- Install `tmux` with your package manager. The packages and the verified manual install below are the alternatives.
+The installer uses your package manager and, when needed, noninteractive sudo to install a missing tmux. The packages and the verified manual install below are the alternatives.
 
 Download from `https://github.com/patrick-1984/ai-minion/releases` the file for your architecture. Check the release page for the exact names; the packages end in the architecture of your machine, and the archives are named `minion_<version>_linux_<arch>.tar.gz` with `amd64`, `arm64` or `armv7`.
 
@@ -36,13 +36,31 @@ Both packages install `/usr/bin/minion` with `mn` as a second name, depend on `t
 sudo install -m 0755 minion /usr/local/bin/minion
 ```
 
-**Raspberry Pi:** use the `arm64` build on a 64-bit OS and the `armv7` build on a 32-bit OS (`uname -m` prints `aarch64` or `armv7l`). Install tmux first:
+**Raspberry Pi:** use the `arm64` build on a 64-bit OS and the `armv7` build on a 32-bit OS (`uname -m` prints `aarch64` or `armv7l`). The same installer installs tmux on the Pi. Everything else is the same as on any Linux machine.
+
+### Upgrading an old tmux
+
+Minion needs tmux 3.0 or newer, so Ubuntu 20.04's tmux 3.0a is fine (keep it updated with the distribution's security updates). Install a newer tmux from source only when the distribution offers something older than 3.0, or when you want the tmux release used in Minion CI (the pipe needs 3.8). On Debian or Ubuntu:
 
 ```sh
-sudo apt install tmux
+sudo apt-get update && sudo apt-get install -y build-essential bison pkg-config libevent-dev libncurses-dev curl
+(
+  set -eu
+  build_dir=$(mktemp -d)
+  trap 'rm -rf "$build_dir"' EXIT
+  cd "$build_dir"
+  curl -fsSLO https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz
+  echo 'e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e  tmux-3.8.tar.gz' | sha256sum -c -
+  tar xzf tmux-3.8.tar.gz
+  cd tmux-3.8
+  ./configure --prefix=/usr/local
+  make && sudo make install
+)
+hash -r
+tmux -V
 ```
 
-Everything else is the same as on any Linux machine.
+Then rerun the Hub's command. Existing tmux sessions belong to the server version that started them. Save their work and restart that server at a convenient time if it reports a client/server version mismatch.
 
 ## 2. Set the Worker up
 
@@ -65,7 +83,7 @@ sudo minion worker up --share-existing none --server https://hub.example.com
 ```
 Nothing is shared at first (`--share-existing none`): choose the sessions to share on the Worker's page in the Hub (**Sharing**: tick **Shared**, or **All** / **None**). The flag is saved and applied at every start, so once you share from the Hub remove it with `minion worker config unset share_existing`, or that choice is reset.
 
-Run by a user through `sudo`, this installs `minion-worker@<user>.service` for that user, enables it at boot and starts it. The unit runs `minion worker run` as that user (`Restart=always`, `KillMode=process`, so stopping or restarting the Worker does not end your tmux sessions). Use `--as-user <name>` to install it for another user; a first-run question is then not asked for you: give `--share-existing all|none|later` or run `minion worker setup` as that user.
+Run by a user through `sudo`, this installs `minion-worker@<user>.service` for that user, enables it at boot and starts it. The unit runs `minion worker run` as that user (`Restart=always`, `KillMode=process`, so stopping or restarting the Worker does not end your tmux sessions). Use `--as-user <name>` to install it for another user. In a terminal, the setup asks what to share for that user. An unattended installation can give `--share-existing all|none|later`.
 
 You can also enable the shipped unit yourself after the Worker has been set up:
 
@@ -87,6 +105,8 @@ Without `sudo` this installs a systemd user service. A user service stops when y
 
 **Visible sessions under systemd.** A service does not inherit your shell's environment. With `sessions_visible` at `auto` (the default) the Worker judges the tmux socket as seen by the service: its default socket is `/tmp/tmux-<uid>/default` unless the unit sets `TMUX_TMPDIR`. If your shell sets another `TMUX_TMPDIR` (or you use `tmux -S`/`-L`), the service's tmux server is not the one your `tmux ls` shows, although the Worker reports it as visible. Then point the Worker at your socket (`minion worker config set tmux_socket <path>`) and say what is true with `minion worker config set sessions_visible yes` (your own socket) or `no` (a separate server), and restart the service.
 
+**Without systemd** (including Coder workspaces), the same `minion worker up` command starts a detached Worker and returns the prompt. Its private log is `worker-launch.log` in the state directory. `minion worker down` stops it, and `minion worker start` starts it again. Login startup uses marked blocks in `~/.profile`, `~/.bashrc` and the active Bash login file if present. On zsh it also uses `~/.zprofile`. The blocks read the executable path from `~/.config/minion/worker-login`, which also records the state directory. To disable shell startup, remove that registration file. Use the Docker instructions if you want Docker to restart the Worker when the container starts.
+
 **In the foreground** (to try it, or under another supervisor), until Ctrl-C:
 
 ```sh
@@ -97,7 +117,7 @@ minion worker up --foreground
 
 ## 4. Join the Hub
 
-The quickest way: in the Hub open **Workers**, **Add worker**, **Add a Worker in one step**, and run the command it shows: `minion worker up --join mnj1-...` as the user whose sessions you serve (a user service; in a terminal it asks what to share), or the page's **system service** variant, which runs `sudo env MINION_JOIN_FILE=<private file> minion worker up --share-existing later` so that the token is neither on sudo's command line nor in its log. Either enrolls the Worker with a one-time key and connects only to the Hub with the fingerprint in the token ([add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step)).
+The quickest way to join is **Workers**, **Add worker**, **Add a Worker in one step**. Run the Linux command in the terminal of the user whose sessions you want to share. Use the sudo command for a system service. On its first interactive run, the sudo command offers to serve the invoking user’s sessions or root’s sessions. Both commands start the Worker in the background. Compare the words in the startup summary and approve it on the Workers page. [Add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step).
 
 If the wizard did not already pair the Worker, pair it now: [pairing and sharing](../guides/pairing.md). The wizard and `minion worker pair` ask for the Hub fingerprint first: read it on the Hub host with `minion hub identity --words`, or give it as `--hub-fingerprint` ([pairing](../guides/pairing.md#give-the-worker-the-hub-fingerprint)).
 
@@ -121,7 +141,7 @@ To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To l
 
 ## Several Workers on one machine
 
-Run one Worker per Unix user. For test setups with more than one Worker of the same user, give each its own `MINION_STATE_DIR`, `MINION_TMUX_SOCKET` and `XDG_RUNTIME_DIR`: the command line finds the Worker through the control socket `worker.sock` in the runtime directory, and two Workers that share one runtime directory share one socket path. A Worker started by a system service has no `XDG_RUNTIME_DIR`; the commands look for its socket in the per-user directory under the temporary directory as well.
+Run one Worker per Unix user. For test setups with more than one Worker of the same user, give each its own `MINION_STATE_DIR`, `MINION_TMUX_SOCKET`, `XDG_RUNTIME_DIR` and `TMPDIR`: the command line finds the Worker through the control socket `worker.sock` in the runtime directory, and two Workers that share one runtime directory share one socket path. A Worker started by a system service has no `XDG_RUNTIME_DIR`; the commands look for its socket in the per-user directory under the temporary directory as well.
 
 ## Update
 

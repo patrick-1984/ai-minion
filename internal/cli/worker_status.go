@@ -125,7 +125,7 @@ type failingSessions struct{ err error }
 func (f failingSessions) ListSessions(context.Context) ([]term.Session, error) { return nil, f.err }
 
 func newWorkerStatusCmd(deps workerStatusDeps) *cobra.Command {
-	var asJSON bool
+	var asJSON, wait bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show the state of this Worker",
@@ -140,37 +140,60 @@ are live data: status asks the running Worker for them over its local socket.
 When no Worker answers (or it cannot tell, as for the pairing code), status
 prints "unknown" for them.
 
---json prints the same facts as JSON.`,
+--json prints the same facts as JSON. --wait waits up to 30 seconds for the live
+connection status and prints a short startup summary.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runWorkerStatus(cmd, deps, asJSON)
+			return runWorkerStatus(cmd, deps, asJSON, wait)
 		},
 	}
+	cmd.Flags().BoolVar(&wait, "wait", false, "wait up to 30 seconds for live status and show the startup summary")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the status as JSON")
+	cmd.MarkFlagsMutuallyExclusive("json", "wait")
 	addNamedSettingFlags(cmd, config.Default, config.KeyStateDir, config.KeyTmuxSocket, config.KeyServer)
 	return cmd
 }
 
-func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) error {
+func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON, wait bool) error {
+	flags := changedFlags{cmd: cmd, reg: config.Default}
+	if wait {
+		deps.sessions = nil
+		report, err := waitForWorkerStatus(cmdContext(cmd), func(ctx context.Context) (agent.StatusReport, error) {
+			return deps.report(ctx, flags)
+		})
+		report.WriteStartupSummary(cmd.OutOrStdout(), nil)
+		return err
+	}
+	report, err := deps.report(cmd.Context(), flags)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return report.WriteJSON(cmd.OutOrStdout())
+	}
+	return report.WriteText(cmd.OutOrStdout())
+}
+
+func (deps workerStatusDeps) report(ctx context.Context, flags config.FlagSource) (agent.StatusReport, error) {
 	res := &config.Resolver{
 		Role:      config.ScopeWorker,
-		Flags:     changedFlags{cmd: cmd, reg: config.Default},
+		Flags:     flags,
 		LookupEnv: deps.lookupEnv,
 	}
 	if deps.loadConfig != nil {
 		file, err := loadConfigFile(res, deps.loadConfig)
 		if err != nil {
-			return err
+			return agent.StatusReport{}, err
 		}
 		res.File = file
 	}
 	core, err := config.ResolveWorkerCore(res)
 	if err != nil {
-		return err
+		return agent.StatusReport{}, err
 	}
 	hub, err := config.ResolveWorkerHub(res)
 	if err != nil {
-		return err
+		return agent.StatusReport{}, err
 	}
 	in := agent.StatusInputs{
 		Version:     deps.version(),
@@ -195,7 +218,7 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 	enr := agent.NewEnrollments(nil, core.StateDir)
 	in.Keys = enr
 	if _, err := os.Stat(filepath.Join(core.StateDir, store.DBFile)); err == nil {
-		st, err := store.OpenReadOnlyContext(cmd.Context(), core.StateDir)
+		st, err := store.OpenReadOnlyContext(ctx, core.StateDir)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("cannot open the Worker state in %s: %v", core.StateDir, err))
 		} else {
@@ -219,12 +242,9 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		problems = append(problems, msg)
 	}
 
-	report := agent.BuildStatus(cmd.Context(), in)
+	report := agent.BuildStatus(ctx, in)
 	report.Problems = append(problems, report.Problems...)
-	if asJSON {
-		return report.WriteJSON(cmd.OutOrStdout())
-	}
-	return report.WriteText(cmd.OutOrStdout())
+	return report, nil
 }
 
 // addNamedSettingFlags adds the flags of the named settings only. Commands

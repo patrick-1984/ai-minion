@@ -251,6 +251,7 @@ func TestOpenLaunchLogIsPrivate(t *testing.T) {
 	if err := os.WriteFile(p, []byte("old pairing code MN-AAAA-BBBB\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	makePermissive(t, p)
 	f, err := openLaunchLog(dir)
 	if err != nil {
 		t.Fatal(err)

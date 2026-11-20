@@ -15,6 +15,14 @@ PASS=0
 FAIL=0
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+# Keep all tests independent of the host's tmux and package managers.
+mkdir "$WORK/installed"
+printf '#!/bin/sh\nexit 0\n' >"$WORK/installed/tmux"
+chmod +x "$WORK/installed/tmux"
+for tool in sudo apt-get dnf yum apk pacman zypper brew; do
+	printf '#!/bin/sh\nexit 99\n' >"$WORK/installed/$tool"
+	chmod +x "$WORK/installed/$tool"
+done
 
 ok() {
 	PASS=$((PASS + 1))
@@ -83,7 +91,7 @@ fake_uname() {
 run_install() {
 	rd=$1 us=$2 um=$3
 	shift 3
-	OUT=$(env PATH="$(fake_uname "$us" "$um"):$PATH" HOME="$WORK/home" \
+	OUT=$(env PATH="$(fake_uname "$us" "$um"):$WORK/installed:$PATH" HOME="$WORK/home" \
 		MINION_RELEASE_BASE="file://$REL" MINION_RELEASE_API="file://$API" \
 		MINION_INSTALL_DIR="$rd" MINION_VERSION= "$@" sh "$SCRIPT" 2>&1)
 	RC=$?
@@ -94,6 +102,50 @@ run_install "$WORK/i1" Linux x86_64
 assert_contains "latest release, linux amd64: exit 0" "rc=$RC" "rc=0"
 assert_contains "latest release is resolved" "$OUT" "minion_1.3.0_linux_amd64.tar.gz (v1.3.0)"
 assert_contains "minion version is printed" "$OUT" "fake-minion v1.3.0 linux_amd64 version"
+
+# An isolated PATH contains exactly one package manager and no real sudo.
+depbin="$WORK/depbin"
+mkdir "$depbin"
+for tool in sh env tar gzip curl awk sed head mktemp cp chmod mv mkdir rm; do
+	ln -s "$(command -v "$tool")" "$depbin/$tool"
+done
+if command -v sha256sum >/dev/null 2>&1; then ln -s "$(command -v sha256sum)" "$depbin/sha256sum"
+else ln -s "$(command -v shasum)" "$depbin/shasum"; fi
+cp "$(fake_uname Linux x86_64)/uname" "$depbin/uname"
+cat >"$depbin/id" <<'EOF'
+#!/bin/sh
+echo 1000
+EOF
+cat >"$depbin/sudo" <<'EOF'
+#!/bin/sh
+echo "sudo $*" >>"$DEP_LOG"
+[ "$1" = "-n" ] || exit 1
+shift
+exec "$@"
+EOF
+chmod +x "$depbin/id" "$depbin/sudo"
+for spec in "apt-get install -y" "dnf install -y" "yum install -y" "apk add --no-cache" \
+	"pacman -S --noconfirm --needed" "zypper --non-interactive install" "brew install"; do
+	# shellcheck disable=SC2086 # split the command for this case
+	set -- $spec
+	manager=$1
+	cat >"$depbin/$manager" <<'EOF'
+#!/bin/sh
+echo "${0##*/} $*" >>"$DEP_LOG"
+[ "$1" = update ] && exit 0
+cp "$DEP_TMUX" "$DEP_BIN/tmux"
+EOF
+	chmod +x "$depbin/$manager"
+	: >"$WORK/deps.log"
+	run_install "$WORK/deps" Linux x86_64 PATH="$depbin" DEP_LOG="$WORK/deps.log" DEP_BIN="$depbin" DEP_TMUX="$WORK/installed/tmux"
+	assert_contains "$manager installs missing tmux" "rc=$RC" "rc=0"
+	assert_contains "$manager arguments" "$(cat "$WORK/deps.log")" "$spec tmux"
+	if [ "$manager" != brew ]; then assert_contains "$manager uses noninteractive sudo" "$(cat "$WORK/deps.log")" "sudo -n"; fi
+	rm -f "$depbin/$manager" "$depbin/tmux"
+done
+run_install "$WORK/deps" Linux x86_64 PATH="$depbin"
+assert_contains "missing package manager explains how to get tmux" "$OUT" "github.com/tmux/tmux/wiki/Installing"
+assert_contains "missing tmux does not block the install" "rc=$RC" "rc=0"
 
 for case in "Linux aarch64 linux_arm64" "Linux arm64 linux_arm64" "Linux armv7l linux_armv7" "Linux armv8l linux_armv7" \
 	"Darwin arm64 darwin_arm64" "Darwin x86_64 darwin_amd64"; do
@@ -140,7 +192,7 @@ assert_contains "missing release refused" "$OUT" "could not download"
 # Default directory: ~/.local/bin when /usr/local/bin is not writable, with a
 # PATH hint. (Skipped as root, where /usr/local/bin is writable.)
 if [ ! -w /usr/local/bin ]; then
-	OUT=$(env PATH="$(fake_uname Linux x86_64):/usr/bin:/bin" HOME="$WORK/home" \
+	OUT=$(env PATH="$(fake_uname Linux x86_64):$WORK/installed:/usr/bin:/bin" HOME="$WORK/home" \
 		MINION_RELEASE_BASE="file://$REL" MINION_RELEASE_API="file://$API" MINION_VERSION= MINION_INSTALL_DIR= \
 		sh "$SCRIPT" 2>&1)
 	assert_contains "default dir is ~/.local/bin" "$OUT" "Installed $WORK/home/.local/bin/minion"

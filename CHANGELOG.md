@@ -11,6 +11,9 @@
 ### Changed
 
 - **Copy buttons everywhere**: the join token and every join command on the Add worker page, and the Hub fingerprint in the header popover, now use the same copy icon as the rest of the Hub. The README and the install guides show one-line installs and standalone commands in code blocks, which GitHub gives a copy button.
+- **Worker onboarding** starts the Worker in the background and prints its live state and identity words. On Linux without systemd, the Worker starts at shell login and supports `worker down` and `worker start`. Run `worker up` again to move a foreground Worker into the background. Use `--foreground` for an attached terminal.
+- **Add worker** keeps the one-time credential out of background process arguments and generated Compose files. The native commands ask what to share on a terminal. Without a terminal the Hub commands share all sessions (`--non-interactive-share all`); the wizard default is all too. Under sudo you can choose the invoking user's sessions or root's.
+- **Terminal dependencies** are checked before setup. The Unix installer installs missing tmux through the platform package manager, and the Windows installer installs missing psmux through WinGet. See [upgrading an old tmux](docs/install/worker-linux.md#upgrading-an-old-tmux) for distributions shipping a version below 3.2.
 
 ### Changed
 

@@ -19,6 +19,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/setup"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -42,6 +43,8 @@ type setupStore interface {
 type workerSetupDeps struct {
 	lookupEnv  func(string) (string, bool)
 	loadConfig func(stateDir string) (config.FileSource, error)
+	// checkTerminal checks the session host before a sharing question or enrollment.
+	checkTerminal func(context.Context, *config.Resolver, string, *ownerSetup) error
 	// interactive reports whether in and out are a terminal, so that the
 	// wizard may ask questions; nil checks the real streams.
 	interactive func(in io.Reader, out io.Writer) bool
@@ -61,6 +64,8 @@ type workerSetupDeps struct {
 	// assumeSetUp skips the first-run gate of "worker up". It is for tests
 	// of other behavior of "worker up" that need no state of a first run.
 	assumeSetUp bool
+	// runAsUser runs this binary as the target user (A57); nil runs it for real.
+	runAsUser func(ctx context.Context, t service.Target, binary string, args []string, out io.Writer) error
 }
 
 func defaultWorkerSetupDeps() workerSetupDeps {
@@ -86,6 +91,11 @@ func (d workerSetupDeps) isInteractive(in io.Reader, out io.Writer) bool {
 func isTerminalStream(r io.Reader) bool {
 	f, ok := r.(*os.File)
 	return ok && logx.IsTerminal(f)
+}
+
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && isTerminalStream(f)
 }
 
 func (d workerSetupDeps) open(ctx context.Context, stateDir string) (setupStore, error) {
@@ -155,9 +165,20 @@ func runWorkerSetup(cmd *cobra.Command, deps workerSetupDeps) error {
 
 // Messages of the first-run gate of "worker up".
 const (
-	setupFlagsHint = "Give the sharing choice as --share-existing all|none|later (or MINION_SHARE_EXISTING), " +
-		"and --server <url> (or MINION_SERVER) to use a Hub"
+	setupFlagsHint = "Add --share-existing all (or none, or later) to the command; add --server <url> to use a Hub"
 )
+
+// serverHint is the part of a message that names --server, only when no Hub
+// address or join token is given yet (A58: no advice that does not apply).
+func serverHint(res *config.Resolver) string {
+	if hub, err := config.ResolveWorkerHub(res); err == nil && hub.Server != "" {
+		return ""
+	}
+	if r, err := res.Resolve(config.KeyJoin); err == nil && r.Value != "" {
+		return ""
+	}
+	return " (and --server <url> to use a Hub)"
+}
 
 // firstRun is the gate of "worker up": when the Worker has never been set up
 // it runs the wizard on a terminal, and otherwise it refuses with the exact
@@ -167,8 +188,9 @@ const (
 // wizard or by "worker config share").
 //
 // owner is the user whose Worker is set up when "worker up" runs as root for
-// somebody else ("" otherwise): the user runs the sharing wizard themselves.
-func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *upState, owner string) error {
+// somebody else (nil otherwise): root asks on its terminal what the Hub may
+// see of that user's sessions and saves the answer as that user (A57).
+func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *upState, owner *ownerSetup) error {
 	if d.assumeSetUp {
 		return nil
 	}
@@ -181,11 +203,38 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *
 	}
 	core.StateDir = st.dir
 	ctx := cmdContext(cmd)
-	// Root never opens the state of another user: that directory is theirs
-	// and may hold links. For them only the settings count.
-	needed, err := d.setupNeeded(ctx, res, core.StateDir, owner == "")
+	if d.checkTerminal != nil {
+		if err := d.checkTerminal(ctx, res, core.TmuxSocket, owner); err != nil {
+			return err
+		}
+	}
+	// Root reads configuration through the directory handle. The owner reads
+	// their own database when the sharing choice is absent from configuration.
+	needed, err := d.setupNeeded(ctx, res, core.StateDir, owner == nil)
 	if err != nil {
 		return err
+	}
+	if needed && owner != nil {
+		// A previous interactive setup saves sharing in the target's database.
+		// Read it under that UID, never by opening their SQLite files as root.
+		if _, err := st.root.Lstat(store.DBFile); err == nil {
+			r, err := readUpStatus(ctx, st.dir, owner)
+			if err != nil {
+				return err
+			}
+			// Anything the status could not read (the state, the share
+			// selection) means the saved choice is unknown.
+			shareUnread := r.Share.Mode == "" || len(r.Problems) > 0
+			if !r.Share.Configured && shareUnread {
+				// The database exists but its choice could not be read (an
+				// older schema, for example): never replace it with a default.
+				return fmt.Errorf("the saved sharing choice of %s could not be read, so nothing was changed; run as %s: minion worker config share all (or none, or later), then this command again",
+					owner.Target.User, owner.Target.User)
+			}
+			needed = !r.Share.Configured
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	if !needed {
 		// The sharing choice is given (--share-existing, for example), so
@@ -193,13 +242,37 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *
 		// for the Hub fingerprint before anything dials.
 		return d.fingerprintGate(cmd, res, st)
 	}
+	interactive := d.isInteractive(cmd.InOrStdin(), cmd.OutOrStdout())
+	fallback, _ := cmd.Flags().GetString("non-interactive-share")
+	if !interactive && fallback != "" {
+		switch fallback {
+		case config.ShareExistingAll, config.ShareExistingNone, config.ShareExistingLater:
+		default:
+			return errors.New("--non-interactive-share requires all, none or later")
+		}
+		if owner != nil {
+			return d.saveOwnerShare(ctx, owner, fallback, cmd.OutOrStdout())
+		}
+		db, err := d.open(ctx, st.dir)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = db.Close() }()
+		return db.SaveShareContext(ctx, store.ShareSelection{Mode: store.ShareMode(fallback)})
+	}
 	switch {
-	case owner != "":
-		return fmt.Errorf("this Worker is not set up yet. This command runs as root for %s, so it cannot ask about their tmux sessions "+
-			"and does not read their saved choice. Run `minion worker up` as %s, or %s", owner, owner, setupFlagsHint)
-	case !d.isInteractive(cmd.InOrStdin(), cmd.OutOrStdout()):
-		return fmt.Errorf("this Worker is not set up yet and there is no terminal to ask in, so nothing was started. %s. "+
-			"Or run `minion worker setup` in a terminal first", setupFlagsHint)
+	case owner != nil && interactive:
+		if err := d.askOwnerShare(cmd, owner); err != nil {
+			return err
+		}
+		return d.fingerprintGate(cmd, res, st)
+	case owner != nil:
+		return fmt.Errorf("this Worker is not set up yet and there is no terminal to ask what the Hub may see of %s's tmux sessions, so nothing was started. "+
+			"Add --share-existing all (or none, or later) to the command. "+
+			"To run the Worker as root and serve root's tmux sessions instead, add --as-user root", owner.Target.User)
+	case !interactive:
+		return fmt.Errorf("this Worker is not set up yet and there is no terminal to ask what the Hub may see, so nothing was started. "+
+			"Add --share-existing all (or none, or later) to the command%s, or run `minion worker setup` in a terminal first", serverHint(res))
 	}
 	_, err = d.runWizard(cmd, res, core, false)
 	return err

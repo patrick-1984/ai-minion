@@ -63,7 +63,7 @@ done
 live && fail "the old service runs a Worker"
 
 log "2. worker up removes it and installs the Worker as the user"
-"$minion" worker up --share-existing none 2>&1 | tee up.log
+"$minion" worker up --share-existing none --session-host conpty 2>&1 | tee up.log
 grep -q 'Removed the service MinionWorker' up.log || fail "the old service was not removed"
 grep -q 'runs as you' up.log || fail "worker up did not install the logon Worker"
 if sc.exe query MinionWorker > q.txt 2>&1; then fail "the service MinionWorker still exists"; fi

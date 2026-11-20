@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -9,7 +8,8 @@ import (
 )
 
 // Target is the user the Worker runs as. It sees the tmux sessions of that
-// user, so it is the person who ran sudo, never root by accident.
+// user: by default the person who ran sudo, or root itself on a root login
+// (a deliberate choice on hosts whose sessions run as root).
 type Target struct {
 	User string
 	UID  int
@@ -36,8 +36,8 @@ func SystemTargetEnv() TargetEnv {
 
 // ResolveTarget picks the account the Worker runs as. asUser is the explicit
 // choice (--as-user). Without it, root uses the account of SUDO_USER; a plain
-// root login without sudo must name the account, so that the Worker is never
-// installed as root by accident; any other caller uses their own account.
+// root login (no sudo) runs the Worker as root and serves root's tmux
+// sessions; any other caller uses their own account.
 func ResolveTarget(env TargetEnv, asUser string) (Target, error) {
 	getenv := env.Getenv
 	if getenv == nil {
@@ -52,8 +52,6 @@ func ResolveTarget(env TargetEnv, asUser string) (Target, error) {
 	case name != "":
 	case env.EUID == 0 && getenv("SUDO_USER") != "":
 		name = getenv("SUDO_USER")
-	case env.EUID == 0:
-		return Target{}, errors.New("running as root without sudo: name the user the Worker should run as with --as-user <name> (the Worker sees that user's tmux sessions)")
 	default:
 		name = cur.Username
 	}

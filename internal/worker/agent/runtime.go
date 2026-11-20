@@ -68,6 +68,8 @@ type Settings struct {
 	// enrollment hook then stays silent. False (the default, "worker run")
 	// leaves the warning to the hook.
 	InviteArgvWarned bool
+	// InviteStdin supplies --invite-key - when a provisioning command hands off enrollment.
+	InviteStdin io.Reader
 }
 
 func (s Settings) logger() *slog.Logger {

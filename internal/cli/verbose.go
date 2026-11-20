@@ -196,3 +196,18 @@ func outcomeCode(err error) string {
 	}
 	return "error"
 }
+
+// setupLogger is commandLogger for the one-time setup of "worker up": its
+// INFO lines (JSON) would bury the summary on the terminal, so it logs warnings
+// and errors only unless --verbose or log_level asks for more. The Worker
+// itself logs as configured.
+func setupLogger(cmd *cobra.Command, res *config.Resolver, out io.Writer) (*slog.Logger, error) {
+	if lvl, err := res.Resolve(config.KeyLogLevel); err == nil && lvl.Source == config.SourceDefault && verboseFlag(cmd) == nil {
+		format, err := res.Resolve(config.KeyLogFormat)
+		if err != nil {
+			return nil, err
+		}
+		return logx.New(logx.Options{Level: "warn", Format: logx.Format(format.Value), Output: out})
+	}
+	return commandLogger(cmd, res, out)
+}

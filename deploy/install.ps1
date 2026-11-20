@@ -9,6 +9,7 @@
 # checksums.txt, checks the zip's SHA-256 against checksums.txt, puts
 # minion.exe into "$env:LOCALAPPDATA\Programs\minion", adds that directory to
 # the PATH of the current user when it is missing, and prints "minion version".
+# When psmux is missing, WinGet installs it for the Worker's sessions.
 # No administrator rights are needed.
 #
 # The zip is checked against checksums.txt of the same release, both fetched
@@ -73,6 +74,34 @@
         Expand-Archive -LiteralPath (Join-Path $tmp $zip) -DestinationPath $unpacked -Force
         $exe = Join-Path $unpacked 'minion.exe'
         if (-not (Test-Path -LiteralPath $exe)) { throw "install.ps1: $zip holds no minion.exe" }
+
+        # A newly installed WinGet link may not be on this PowerShell's PATH yet.
+        $psmuxLink = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\psmux.exe'
+        function Find-Psmux {
+            (Get-Command 'psmux.exe' -CommandType Application -ErrorAction SilentlyContinue) -or
+                (Test-Path -LiteralPath $psmuxLink -PathType Leaf)
+        }
+        # psmux is offered on a fresh install only: an existing Worker state
+        # directory may hold a decision (psmux_offer) to run without it.
+        $stateDir = if ($env:MINION_STATE_DIR) { $env:MINION_STATE_DIR } else { Join-Path $env:LOCALAPPDATA 'minion\state' }
+        $freshInstall = -not (Test-Path -LiteralPath $stateDir) -or -not (Get-ChildItem -LiteralPath $stateDir -Force -ErrorAction SilentlyContinue)
+        if ($env:MINION_SESSION_HOST -ne 'conpty' -and $freshInstall -and -not (Find-Psmux)) {
+            if (-not (Get-Command 'winget.exe' -CommandType Application -ErrorAction SilentlyContinue)) {
+                Write-Warning 'install.ps1: psmux and WinGet are missing. The Worker will use ConPTY sessions. To use psmux, install it from https://github.com/psmux/psmux/releases.'
+            } else {
+                Write-Host 'Installing psmux with WinGet'
+                & winget.exe install --id marlocarlo.psmux --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warning "install.ps1: WinGet failed ($LASTEXITCODE). The Worker will use ConPTY sessions. Run 'winget install psmux' later to use psmux."
+                } else {
+                    # The running PowerShell still has the old PATH: read it again.
+                    $env:Path = (@([Environment]::GetEnvironmentVariable('Path', 'Machine'), [Environment]::GetEnvironmentVariable('Path', 'User')) | Where-Object { $_ }) -join ';'
+                    if (-not (Find-Psmux)) {
+                        Write-Warning 'install.ps1: WinGet finished but psmux.exe was not found. The Worker will use ConPTY sessions; open a new terminal later to pick psmux up.'
+                    }
+                }
+            }
+        }
 
         $dir = if ($env:MINION_INSTALL_DIR) { $env:MINION_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\minion' }
         New-Item -ItemType Directory -Force -Path $dir | Out-Null

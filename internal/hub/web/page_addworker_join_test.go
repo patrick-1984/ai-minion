@@ -81,28 +81,27 @@ func TestAddWorkerJoinCreatesAOneTimeKeyAndShowsEverythingOnce(t *testing.T) {
 		"connects only to the Hub with fingerprint", "works once and expires", "approve it on the Workers page")
 
 	p := pres(body)
-	want := map[string]string{
-		"join-unix":    "minion worker up --name build-1 --join " + text,
-		"join-windows": "minion.exe worker up --foreground --name build-1 --join " + text,
-		"join-expanded": "minion worker up --server https://hub.example.com:8443 --hub-fingerprint " + f.fp.String() +
-			" --name build-1 --invite-key " + f.key.String(),
-	}
-	for id, w := range want {
-		if p[id] != w {
-			t.Errorf("%s = %q, want %q", id, p[id], w)
+	for id, fragments := range map[string][]string{
+		"join-unix":          {"MINION_JOIN_FILE=/dev/fd/3 minion worker up --name build-1", text},
+		"join-system":        {"sudo env MINION_JOIN_FILE=", "minion worker up --name build-1", text},
+		"join-windows":       {"minion.exe worker up --name build-1", "finally", "Remove-Item -LiteralPath $file", text},
+		"join-expanded":      {"--server https://hub.example.com:8443 --hub-fingerprint " + f.fp.String(), "--invite-key /dev/fd/3", f.key.String()},
+		"join-docker":        {"curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&", "--mount type=bind,source=", "apk add --no-cache tmux", "docker run --rm -i", "--configure-only --name build-1", "--non-interactive-share all --join -", "--restart unless-stopped", "worker status --wait", text},
+		"join-compose":       {`MINION_NAME: "build-1"`, `command: ["worker", "run"]`, "restart: unless-stopped"},
+		"join-compose-start": {"docker compose run --build --rm -T", "--configure-only", "--join -", "docker compose up -d", "worker status --wait", text},
+	} {
+		if id == "join-unix" || id == "join-system" || id == "join-windows" {
+			fragments = append(fragments, "--non-interactive-share all")
+		}
+		for _, fragment := range fragments {
+			if !strings.Contains(p[id], fragment) {
+				t.Errorf("%s lacks %s", id, fragment)
+			}
 		}
 	}
-	for _, w := range []string{"-e MINION_JOIN=" + text, "-e MINION_NAME=build-1", "-e MINION_SHARE_EXISTING=later",
-		"curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&", "--mount type=bind,source=", "exec sh /bootstrap.sh worker up --foreground", "apk add --no-cache tmux"} {
-		if !strings.Contains(p["join-docker"], w) {
-			t.Errorf("docker lacks %q:\n%s", w, p["join-docker"])
-		}
-	}
-	for _, w := range []string{`MINION_JOIN: "` + text + `"`, `MINION_NAME: "build-1"`, "MINION_SHARE_EXISTING=later docker compose up -d"} {
-		if !strings.Contains(p["join-compose"], w) {
-			t.Errorf("compose lacks %q:\n%s", w, p["join-compose"])
-		}
-	}
+	mustNotHave(t, p["join-compose"], text, f.key.String(), "MINION_JOIN")
+	mustNotHave(t, p["join-system"], "--share-existing")
+	mustNotHave(t, p["join-windows"], "--foreground")
 	// The token parses back to this Hub and this key.
 	got, err := identity.ParseJoinToken(text)
 	if err != nil || got.HubURL != "https://hub.example.com:8443" || got.Fingerprint() != f.fp {
@@ -172,8 +171,8 @@ func TestAddWorkerPageOffersTheOneStepForm(t *testing.T) {
 	mustHave(t, admin, `value="1m"`, `<option value="1h" selected>`)
 }
 
-// The shell commands, run by a real POSIX shell with fake minion, curl and
-// docker on the PATH: the token arrives as one argument, unchanged.
+// Run the commands as shell input, like a paste at the prompt. The fake
+// clients capture arguments separately from credentials carried by fd/file/stdin.
 func TestJoinShellCommandsPassTheTokenIntact(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell")
@@ -189,14 +188,32 @@ func TestJoinShellCommandsPassTheTokenIntact(t *testing.T) {
 	jc := joinCommands(tok, "it's-a-name")
 	bin, out := t.TempDir(), t.TempDir()
 	fakes := map[string]string{
-		"minion": "printf '%s\\n' \"$@\" >> \"$OUT/minion\"\n" +
-			"[ -n \"$MINION_JOIN_FILE\" ] && cat \"$MINION_JOIN_FILE\" > \"$OUT/joinfile\" && ls -ld \"$MINION_JOIN_FILE\" | cut -c1-10 > \"$OUT/joinmode\"\nexit 0\n",
-		// curl writes the file named by -o, or fails like a failed download.
-		"curl": "printf '%s\\n' \"$@\" >> \"$OUT/curl\"\n[ -n \"$CURL_FAIL\" ] && exit 22\n" +
-			"while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then echo '#!/bin/sh' > \"$2\"; fi; shift; done\n",
-		"docker": "printf '%s\\n' \"$@\" >> \"$OUT/docker\"\n",
-		// sudo records its argv and runs the command.
-		"sudo": "printf '%s\\n' \"$@\" >> \"$OUT/sudo\"\nexec \"$@\"\n",
+		"minion": `printf '%s\n' "$@" >> "$OUT/argv"
+if [ -n "$MINION_JOIN_FILE" ]; then
+  cat "$MINION_JOIN_FILE" >> "$OUT/join"
+  if [ "$MINION_JOIN_FILE" != /dev/fd/3 ]; then
+    ls -ld "$MINION_JOIN_FILE" | cut -c1-10 > "$OUT/joinmode"
+    echo "$MINION_JOIN_FILE" > "$OUT/temppath"
+  fi
+else
+  cat /dev/fd/3 > "$OUT/invite"
+fi
+`,
+		"curl": `[ -z "$CURL_FAIL" ] || exit 22
+while [ $# -gt 0 ]; do if [ "$1" = -o ]; then echo '#!/bin/sh' > "$2"; fi; shift; done
+`,
+		"docker": `printf '%s\n' "$@" >> "$OUT/argv"
+case " $* " in
+*" container inspect "*) [ -n "$CONTAINER_EXISTS" ] ;;
+*" build -q "*) cat >/dev/null; echo alpine-image ;;
+*" --configure-only "*) cat >> "$OUT/join"; [ -z "$ENROLL_FAIL" ] ;;
+*" status --wait "*) echo ready >> "$OUT/status" ;;
+*) exit 0 ;;
+esac
+`,
+		"sudo": `printf '%s\n' "$@" >> "$OUT/argv"
+exec "$@"
+`,
 	}
 	for name, body := range fakes {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
@@ -204,7 +221,8 @@ func TestJoinShellCommandsPassTheTokenIntact(t *testing.T) {
 		}
 	}
 	run := func(cmdText string, env ...string) error {
-		cmd := exec.Command("/bin/sh", "-c", cmdText)
+		cmd := exec.Command("/bin/sh")
+		cmd.Stdin = strings.NewReader(cmdText)
 		cmd.Dir = out
 		cmd.Env = append([]string{"PATH=" + bin + ":/usr/bin:/bin", "OUT=" + out, "TMPDIR=" + t.TempDir()}, env...)
 		b, err := cmd.CombinedOutput()
@@ -213,56 +231,53 @@ func TestJoinShellCommandsPassTheTokenIntact(t *testing.T) {
 		}
 		return nil
 	}
-	// A failed download starts no container.
 	if err := run(jc.Docker, "CURL_FAIL=1"); err == nil {
 		t.Error("the docker block succeeded although curl failed")
 	}
-	if _, err := os.Stat(filepath.Join(out, "docker")); err == nil {
-		t.Error("docker ran after a failed download")
+	if _, err := os.Stat(filepath.Join(out, "argv")); !os.IsNotExist(err) {
+		t.Fatal("docker ran after a failed download")
 	}
-	for _, cmdText := range []string{jc.Unix, jc.Expanded, jc.Docker, jc.System} {
+	if err := run(jc.Docker, "CONTAINER_EXISTS=1"); err == nil || !strings.Contains(err.Error(), "A container named minion-worker exists") {
+		t.Errorf("the docker block did not stop before enrolling: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "argv")); strings.Contains(string(b), "--configure-only") {
+		t.Fatal("docker enrolled although the container name was taken")
+	}
+	if err := os.Remove(filepath.Join(out, "argv")); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmdText := range []string{jc.Unix, jc.Expanded, jc.Docker, jc.System, jc.ComposeStart} {
 		if err := run(cmdText); err != nil {
-			t.Fatalf("%s: %v", cmdText, err)
+			t.Fatal(err)
 		}
 	}
-	read := func(name string) []string {
+	read := func(name string) string {
+		t.Helper()
 		b, err := os.ReadFile(filepath.Join(out, name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return strings.Split(strings.TrimSpace(string(b)), "\n")
+		return string(b)
 	}
-	minion := read("minion")
-	wantUnix := []string{"worker", "up", "--name", "it's-a-name", "--join", tok.Encode()}
-	wantExp := []string{"worker", "up", "--server", "https://hub.example.com", "--hub-fingerprint", key.Fingerprint.String(),
-		"--name", "it's-a-name", "--invite-key", key.String()}
-	wantSys := []string{"worker", "up", "--share-existing", "later", "--name", "it's-a-name"}
-	if strings.Join(minion, "|") != strings.Join(append(append(wantUnix, wantExp...), wantSys...), "|") {
-		t.Errorf("minion got %q", minion)
+	if got := read("join"); got != strings.Repeat(tok.Encode()+"\n", 4) || strings.TrimSpace(read("invite")) != key.String() {
+		t.Error("a token or expanded invitation did not arrive intact")
 	}
-	docker := strings.Join(read("docker"), "|")
-	for _, w := range []string{"MINION_JOIN=" + tok.Encode(), "MINION_NAME=it's-a-name", "type=bind,source=" + out + "/bootstrap.sh,target=/bootstrap.sh,readonly", "alpine:3.22"} {
-		if !strings.Contains(docker, w) {
-			t.Errorf("docker lacks %q: %s", w, docker)
-		}
+	args := read("argv")
+	mustNotHave(t, args, tok.Encode(), key.String())
+	mustHave(t, args, "worker\nup\n--name\nit's-a-name", "worker\nrun", "--restart\nunless-stopped", "type=bind,source="+out+"/bootstrap.sh", "--invite-key\n/dev/fd/3", "env\nMINION_JOIN_FILE=")
+	if read("joinmode") != "-rw-------\n" {
+		t.Error("insecure temporary credential permissions")
 	}
-	if _, err := os.Stat(filepath.Join(out, "bootstrap.sh")); err != nil {
-		t.Errorf("bootstrap.sh was not put in place: %v", err)
+	if _, err := os.Stat(strings.TrimSpace(read("temppath"))); !os.IsNotExist(err) {
+		t.Error("credential file survived the command")
 	}
-	// The sudo variant: the token reaches the Worker through a private file,
-	// never through sudo's argv.
-	if got := strings.TrimSpace(strings.Join(read("joinfile"), "\n")); got != tok.Encode() {
-		t.Errorf("the join file holds %q", got)
+	if err := run(jc.Docker, "ENROLL_FAIL=1"); err == nil {
+		t.Fatal("docker enrollment failure lost")
 	}
-	if mode := strings.Join(read("joinmode"), ""); mode != "-rw-------" {
-		t.Errorf("the join file mode is %s", mode)
+	if got := read("status"); got != "ready\nready\n" {
+		t.Errorf("unexpected status checks: %q", got)
 	}
-	if sudo := strings.Join(read("sudo"), "|"); strings.Contains(sudo, tok.Encode()) || !strings.HasPrefix(sudo, "env|MINION_JOIN_FILE=") {
-		t.Errorf("sudo argv = %s", sudo)
-	}
-	if jc.Windows != "minion.exe worker up --foreground --name 'it''s-a-name' --join "+tok.Encode() {
-		t.Errorf("windows = %q", jc.Windows)
-	}
+	mustHave(t, jc.Windows, "minion.exe worker up --name 'it''s-a-name'")
 }
 
 func TestPSArgDoublesEverySingleQuote(t *testing.T) {
@@ -287,7 +302,7 @@ func TestContainerWorkerRunsTheHubsRelease(t *testing.T) {
 	if d := dockerRunJoin("mnj1-x", ""); !strings.Contains(d, "-e MINION_VERSION=v0.12.0-rc.1 ") {
 		t.Errorf("docker run:\n%s", d)
 	}
-	if c := joinComposeFile("mnj1-x", ""); !strings.Contains(c, "MINION_VERSION: ${MINION_VERSION:-v0.12.0-rc.1}") {
+	if c := joinComposeFile(""); !strings.Contains(c, "MINION_VERSION: ${MINION_VERSION:-v0.12.0-rc.1}") {
 		t.Errorf("compose:\n%s", c)
 	}
 	hubVersion = func() string { return "dev" }
@@ -307,7 +322,7 @@ func TestJoinComposeProjectIsValidCompose(t *testing.T) {
 	}
 	const token = "mnj1-eyJodWIiOiJodHRwczovL2h1Yi5leGFtcGxlIn0"
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(joinComposeFile(token, "build-1")), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(joinComposeFile("build-1")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(docker, "compose", "-f", filepath.Join(dir, "compose.yaml"), "config", "--format", "json")
@@ -326,7 +341,7 @@ func TestJoinComposeProjectIsValidCompose(t *testing.T) {
 		t.Fatalf("%v\n%s", err, b)
 	}
 	env := cfg.Services["minion-worker"].Environment
-	if env["MINION_JOIN"] != token || env["MINION_NAME"] != "build-1" || env["MINION_SHARE_EXISTING"] != "later" {
+	if bytes.Contains(b, []byte(token)) || env["MINION_JOIN"] != "" || env["MINION_NAME"] != "build-1" || env["MINION_SHARE_EXISTING"] != "later" {
 		t.Errorf("environment = %v", env)
 	}
 	if len(cfg.Services["minion-worker"].Secrets) != 0 || bytes.Contains(b, []byte("invite_key")) {

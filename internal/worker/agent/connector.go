@@ -332,10 +332,11 @@ type Connector struct {
 	cfg ConnectorConfig
 	// pendingShown makes the approval box appear once per process, not on
 	// every reconnect.
-	pendingShown atomic.Bool
-	log          *slog.Logger
-	clk          transport.Clock
-	bo           *transport.Backoff
+	connectedShown atomic.Bool // the connected box is shown once per process (A61)
+	pendingShown   atomic.Bool
+	log            *slog.Logger
+	clk            transport.Clock
+	bo             *transport.Backoff
 
 	mu       sync.Mutex
 	status   Status
@@ -1032,17 +1033,31 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		c.startHandler(r, nh)
 	}
 	c.mu.Unlock()
+	// A61: the Hub key words stand in the box, not only in a log line: they
+	// are compared by eye with the key in the Hub's top bar.
+	hubKey := func() []string {
+		f, err := identity.FingerprintOf(att.Pin.Pub)
+		if err != nil {
+			return nil
+		}
+		return append([]string{"Check that the Hub's top bar shows this Hub key:"}, fingerprintLines("Hub key:", f)...)
+	}
 	if w.Pending && c.notePending() {
-		lines := []string{
-			"This Worker is waiting for approval in the Hub: " + hubLabel(c.cfg.HubURL),
+		lines := hubKey()
+		lines = append(lines, "",
+			"This Worker is waiting for approval in the Hub: "+hubLabel(c.cfg.HubURL),
 			"The owner or an admin approves it on the Workers page",
 			"(or: minion hub worker approve). Approve only if the Hub shows:",
 			"",
-		}
+		)
 		if k, err := c.cfg.Key(); err == nil {
 			lines = append(lines, fingerprintLines("Worker fingerprint:", k.Fingerprint())...)
 		}
 		writeConsoleBox(c.cfg.Out, "MINION WORKER WAITING FOR APPROVAL", lines...)
+	} else if !w.Pending && c.connectedShown.CompareAndSwap(false, true) {
+		lines := hubKey()
+		lines = append(lines, "", "Connected to "+hubLabel(c.cfg.HubURL)+" as "+w.Name+" (owner "+w.Owner+").")
+		writeConsoleBox(c.cfg.Out, "MINION WORKER CONNECTED", lines...)
 	}
 	if w.Pending {
 		c.log.Warn("this Worker is waiting for approval: ask its owner or an admin to approve it in the Hub (Workers page, or `minion hub worker approve`); until then the Hub sends it no operations",

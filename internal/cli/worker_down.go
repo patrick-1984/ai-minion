@@ -130,15 +130,24 @@ func stopWindowsService() (bool, error) {
 }
 
 func newWorkerDownCmd(d workerDownDeps) *cobra.Command {
-	return &cobra.Command{
+	var foregroundState string
+	cmd := &cobra.Command{
 		Use:   "down",
 		Short: "Stop the running Worker of this user (the opposite of worker up)",
 		Long: "Stop the running Worker of this user. A Worker run as a service is stopped through its service\n" +
 			"manager (systemd, launchd, Windows services), a foreground Worker over its control socket.\n" +
 			"Its sessions keep running (tmux, psmux); a service starts again at the next boot or login.",
 		Args: cobra.NoArgs,
-		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error { return runWorkerDown(cmd, d) }, nil),
+		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error {
+			if foregroundState != "" {
+				return stopPriorWorker(cmdContext(cmd), foregroundState, true, client.Local())
+			}
+			return runWorkerDown(cmd, d)
+		}, nil),
 	}
+	cmd.Flags().StringVar(&foregroundState, "foreground-in", "", "stop only an existing foreground Worker serving this state directory")
+	_ = cmd.Flags().MarkHidden("foreground-in")
+	return cmd
 }
 
 func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
@@ -169,11 +178,13 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 	// The running Worker names its own state directory (it may be another one
 	// than this user's default, --state-dir): that is the lock to wait for.
 	stateDir := ""
+	runMode := ""
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	if raw, serr := d.call(cctx, agent.OpLocalStatus); serr == nil {
 		var reply agent.LiveStatusReply
 		if json.Unmarshal(raw, &reply) == nil {
 			stateDir = reply.StateDir
+			runMode = reply.RunMode
 		}
 	}
 	_, err = d.call(cctx, agent.OpLocalStop)
@@ -181,7 +192,7 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 	switch {
 	case errors.Is(err, client.ErrWorkerNotRunning):
 		if supervised {
-			_, _ = fmt.Fprintln(out, "The Worker stopped. It starts again at your next logon; start it now with: minion worker up")
+			_, _ = fmt.Fprintln(out, "The Worker stopped. It starts again at your next logon; start it now with: minion worker start")
 			return nil
 		}
 		_, _ = fmt.Fprintln(out, "No Worker is running for this user.")
@@ -198,9 +209,17 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 		_, err := d.call(cctx, agent.OpLocalStatus)
 		cancel()
 		if errors.Is(err, client.ErrWorkerNotRunning) && d.stateFree(stateDir) {
+			if runMode == agent.RunModeDetached {
+				if err := markLoginStopped(); err != nil {
+					_, _ = fmt.Fprintf(out, "The Worker stopped, but the next shell login may start it again (%v).\n", err)
+					return nil
+				}
+				_, _ = fmt.Fprintln(out, "The Worker stopped. It stays stopped until you run minion worker start (or until the next boot, when a login starts it again).")
+				return nil
+			}
 			if d.goos == "windows" && d.autostart != nil {
 				if _, ok, _ := d.autostart(); ok {
-					_, _ = fmt.Fprintln(out, "The Worker stopped. It starts again at your next logon; start it now with: minion worker up")
+					_, _ = fmt.Fprintln(out, "The Worker stopped. It starts again at your next logon; start it now with: minion worker start")
 					return nil
 				}
 			}
@@ -255,7 +274,7 @@ func stopServiceWorker(ctx context.Context, out io.Writer, d workerDownDeps) (bo
 			if err := d.run(ctx, "launchctl", "bootout", target); err != nil {
 				return false, fmt.Errorf("cannot stop the launchd agent (%v); run: launchctl bootout %s", err, target)
 			}
-			_, _ = fmt.Fprintf(out, "Stopped the launchd agent %s. It starts again at the next login; start it now with: minion worker up\n", service.LaunchdLabel)
+			_, _ = fmt.Fprintf(out, "Stopped the launchd agent %s. It starts again at the next login; start it now with: minion worker start\n", service.LaunchdLabel)
 			return true, nil
 		}
 	}

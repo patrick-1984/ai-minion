@@ -30,10 +30,7 @@ func TestWorkerUpForegroundWithTmux(t *testing.T) {
 		targetEnv: service.SystemTargetEnv(),
 		service:   service.Deps{Runner: failRunner{t}},
 	}
-	_, wait, out := startUp(t, deps, p, "--tmux-socket", srv.Socket(), "--share-existing", "all", "--name", "ctr")
-	if !strings.Contains(out.String(), "No service manager") {
-		t.Errorf("output: %q", out.String())
-	}
+	_, wait, _ := startUp(t, deps, p, "--foreground", "--tmux-socket", srv.Socket(), "--share-existing", "all", "--name", "ctr")
 	if _, err := os.Stat(filepath.Join(state, store.DBFile)); err != nil {
 		t.Fatalf("the Worker did not open its state: %v", err)
 	}

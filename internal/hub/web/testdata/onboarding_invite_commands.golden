@@ -51,7 +51,7 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/bootstrap.sh"]
-    command: ["worker", "up"]
+    command: ["worker", "up", "--foreground"]
     environment:
       MINION_VERSION: ${MINION_VERSION:-latest}
       MINION_CACHE_DIR: /cache

@@ -18,6 +18,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/setup"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
@@ -600,7 +601,7 @@ func TestWorkerUpUnconfiguredWithoutTerminalExitsWithAnActionableMessage(t *test
 	if err == nil {
 		t.Fatal("worker up started an unconfigured Worker without a terminal")
 	}
-	for _, want := range []string{"not set up yet", "no terminal", "--share-existing all|none|later", "MINION_SHARE_EXISTING", "minion worker setup"} {
+	for _, want := range []string{"not set up yet", "no terminal", "--share-existing all", "minion worker setup"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %q: %v", want, err)
 		}
@@ -768,19 +769,51 @@ func TestWorkerUpServiceUnconfiguredWithoutTerminalChangesNothing(t *testing.T) 
 	}
 }
 
-// Root cannot ask about another user's tmux or save into their state: the
-// message names the user and the way out, also on a terminal.
-func TestWorkerUpServiceUnderSudoNeverAsksAndNamesTheUser(t *testing.T) {
-	for _, tty := range []bool{false, true} {
-		f, _ := serviceGate(t, true, tty, "build")
-		_, err := f.runIn(readFailer{t})
-		if err == nil || !strings.Contains(err.Error(), "runs as root for ann") || !strings.Contains(err.Error(), "--share-existing") {
-			t.Fatalf("tty=%v: err = %v", tty, err)
-		}
-		if calls := f.runCalls(); len(calls) != 0 {
-			t.Errorf("tty=%v: service commands ran: %v", tty, calls)
-		}
+// Without a terminal, root names the user, the flag and the way to run as
+// root instead (A57, A58).
+func TestWorkerUpServiceUnderSudoWithoutTerminalNamesTheUser(t *testing.T) {
+	f, _ := serviceGate(t, true, false, "build")
+	_, err := f.runIn(readFailer{t})
+	if err == nil || !strings.Contains(err.Error(), "ann's tmux sessions") || !strings.Contains(err.Error(), "--share-existing all") ||
+		!strings.Contains(err.Error(), "--as-user root") {
+		t.Fatalf("err = %v", err)
 	}
+	if calls := f.runCalls(); len(calls) != 0 {
+		t.Errorf("service commands ran: %v", calls)
+	}
+}
+
+// On a terminal, root lists the user's sessions, asks, and saves the answer
+// by running "worker config share" as that user; then it installs (A57).
+func TestWorkerUpServiceUnderSudoAsksAndSavesAsTheUser(t *testing.T) {
+	f, _ := serviceGate(t, true, true, "build", "docs")
+	var ran []string
+	var as string
+	f.deps.setup.runAsUser = func(_ context.Context, tg service.Target, _ string, args []string, _ io.Writer) error {
+		as, ran = tg.User, args
+		return nil
+	}
+	if _, err := f.runIn(strings.NewReader("\n")); err != nil {
+		t.Logf("worker up: %v", err) // the fake share leaves the state unsaved; the save call is what counts
+	}
+	if as != "ann" || len(ran) < 4 {
+		t.Fatalf("ran as %q: %v", as, ran)
+	}
+	if strings.Join(ran[:4], " ") != "worker config share all" {
+		t.Errorf("args = %v, want worker config share all (Enter is all)", ran)
+	}
+}
+
+// "r" runs the Worker as root instead.
+func TestWorkerUpServiceUnderSudoCanChooseRoot(t *testing.T) {
+	f, _ := serviceGate(t, true, true, "build")
+	called := false
+	f.deps.setup.runAsUser = func(context.Context, service.Target, string, []string, io.Writer) error { called = true; return nil }
+	_, err := f.runIn(strings.NewReader("r\n"))
+	if called {
+		t.Error("the choice was saved for ann although root was chosen")
+	}
+	_ = err // the root run asks again on its own terminal; the fake input ends there
 }
 
 func TestWorkerUpServiceUnderSudoWithTheChoiceGivenInstalls(t *testing.T) {

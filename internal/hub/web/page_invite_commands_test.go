@@ -113,6 +113,13 @@ func TestFileVariantIgnoresAnExistingPermissiveFileAndASymlink(t *testing.T) {
 	if err := os.WriteFile(victim, []byte("do not touch\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// These fixtures must actually be readable by others even if the
+	// process running go test has a private umask.
+	for _, path := range []string{old, victim} {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// A planted link where a predictable name in TMPDIR would be, too.
 	for _, name := range []string{"invite.key", "minion-invite.key", "minion-invite.XXXXXX"} {
 		if err := os.Symlink(victim, filepath.Join(tmp, name)); err != nil {
@@ -234,8 +241,8 @@ func TestComposeProjectStartsAWorker(t *testing.T) {
 	if got := composeLine(t, c, "entrypoint:"); got != `["/bin/sh", "/bootstrap.sh"]` {
 		t.Errorf("entrypoint = %s", got)
 	}
-	if !strings.Contains(c, "\n    command: [\"worker\", \"up\"]\n") {
-		t.Errorf("the Worker service does not run [\"worker\", \"up\"]:\n%s", c)
+	if !strings.Contains(c, "\n    command: [\"worker\", \"up\", \"--foreground\"]\n") {
+		t.Errorf("the Worker service does not run [\"worker\", \"up\", \"--foreground\"]:\n%s", c)
 	}
 	if strings.Contains(c, `"minion", "worker"`) || strings.Contains(c, `["minion"`) {
 		t.Errorf("the command repeats the binary name that bootstrap.sh already runs:\n%s", c)
@@ -321,7 +328,7 @@ func TestComposeProjectIsValidCompose(t *testing.T) {
 	if !ok {
 		t.Fatalf("no minion-worker service:\n%s", out)
 	}
-	if strings.Join(append(w.Entrypoint, w.Command...), " ") != "/bin/sh /bootstrap.sh worker up" {
+	if strings.Join(append(w.Entrypoint, w.Command...), " ") != "/bin/sh /bootstrap.sh worker up --foreground" {
 		t.Errorf("the container runs %v %v", w.Entrypoint, w.Command)
 	}
 	if !strings.Contains(w.Build.DockerfileInline, "tmux") || w.User != "10001:10001" {

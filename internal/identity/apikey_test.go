@@ -130,7 +130,12 @@ func TestReadAPIKeyFile(t *testing.T) {
 		t.Errorf("missing file: %v", err)
 	}
 	if runtime.GOOS != "windows" {
-		if _, err := ReadAPIKeyFile(write("open", key.String(), 0o644)); err == nil {
+		open := write("open", key.String(), 0o644)
+		// Establish the permission being tested even under a private umask.
+		if err := os.Chmod(open, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadAPIKeyFile(open); err == nil {
 			t.Error("a file open to group and others was accepted")
 		}
 		link := filepath.Join(dir, "link")

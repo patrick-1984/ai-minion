@@ -142,19 +142,25 @@ func (d *dialog) shareStep(ctx context.Context) error {
 		return nil
 	}
 
-	def := "4"
+	def := "1"
 	switch v.Default.Mode {
-	case store.ShareAll:
-		def = "1"
+	case store.ShareNone:
+		def = "4"
 	case store.ShareSelect:
 		def = "2"
 	case store.ShareLater:
 		def = "3"
 	}
-	d.say("  1) all     Share all of them, also sessions you create later")
-	d.say("  2) choose  Choose now which sessions to share")
-	d.say("  3) later   Configure later from the Hub; nothing is shared until you do")
-	d.say("  4) none    Share no session (default; share sessions later from the Hub)")
+	mark := func(n string) string {
+		if n == def {
+			return " (default)"
+		}
+		return ""
+	}
+	d.say("  1) all     Share all of them, also sessions you create later%s", mark("1"))
+	d.say("  2) choose  Choose now which sessions to share%s", mark("2"))
+	d.say("  3) later   Configure later from the Hub; nothing is shared until you do%s", mark("3"))
+	d.say("  4) none    Share no session%s", mark("4"))
 	d.say("Sessions are never renamed, closed or changed by this choice.")
 	for {
 		ans, err := d.ask(ctx, fmt.Sprintf("Your choice [%s]: ", def))

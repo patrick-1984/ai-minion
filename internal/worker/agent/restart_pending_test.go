@@ -52,3 +52,11 @@ func TestLocalStopOpAsksTheRuntimeToStop(t *testing.T) {
 		t.Fatal("no stop")
 	}
 }
+
+func TestLocalStopRefusesAReplacementWorker(t *testing.T) {
+	l := localExecutor{instance: "replacement", stop: func() { t.Error("stopped the replacement") }}
+	_, err := l.Execute(context.Background(), localapi.Request{Op: OpLocalStop, Args: []byte(`{"instance":"previous"}`), Actions: localapi.FullActions()}, nil)
+	if err == nil {
+		t.Fatal("replacement accepted stop request")
+	}
+}

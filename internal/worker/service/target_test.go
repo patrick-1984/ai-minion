@@ -38,7 +38,7 @@ func TestResolveTarget(t *testing.T) {
 		{"plain user", fakeTargetEnv(1000, "ann", nil), "", "ann", ""},
 		{"sudo uses SUDO_USER", fakeTargetEnv(0, "root", map[string]string{"SUDO_USER": "ann"}), "", "ann", ""},
 		{"--as-user beats SUDO_USER", fakeTargetEnv(0, "root", map[string]string{"SUDO_USER": "ann"}), "bob", "bob", ""},
-		{"root without sudo must name a user", fakeTargetEnv(0, "root", nil), "", "", "--as-user"},
+		{"root login without sudo runs as root (A57)", fakeTargetEnv(0, "root", nil), "", "root", ""},
 		{"root can name root explicitly", fakeTargetEnv(0, "root", nil), "root", "root", ""},
 		{"as-user needs root", fakeTargetEnv(1000, "ann", nil), "bob", "", "needs root"},
 		{"as-user itself is fine", fakeTargetEnv(1000, "ann", nil), "ann", "ann", ""},

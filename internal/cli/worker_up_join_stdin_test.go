@@ -128,3 +128,25 @@ func TestReadJoinTokenLineTakesOneLine(t *testing.T) {
 		t.Fatalf("no newline: %q %v", got, err)
 	}
 }
+
+func TestUnattendedJoinPreservesSharingChoice(t *testing.T) {
+	f, _ := serviceGate(t, false, false)
+	token, _ := testJoinToken(t, "https://hub.example")
+	if _, err := stdinJoin(t, f, strings.NewReader(token+"\n"), "--non-interactive-share", "later"); err != nil {
+		t.Fatal(err)
+	}
+	if got := shareOf(t, f.stateDir()); !got.Configured || got.Mode != store.ShareLater {
+		t.Fatalf("initial share = %+v", got)
+	}
+	// The fallback is initial setup only. A later join cannot widen the
+	// saved choice, and it never pins a share_existing override at restart.
+	if _, err := stdinJoin(t, f, strings.NewReader(token+"\n"), "--non-interactive-share", "all"); err != nil {
+		t.Fatal(err)
+	}
+	if got := shareOf(t, f.stateDir()); got.Mode != store.ShareLater {
+		t.Fatalf("overrode share = %+v", got)
+	}
+	if _, ok := readConfig(t, f.stateDir())["share_existing"]; ok {
+		t.Fatal("fallback pinned in config")
+	}
+}

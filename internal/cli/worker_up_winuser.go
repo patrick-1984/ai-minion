@@ -82,7 +82,7 @@ func (e *needsAdminError) Error() string { return e.msg }
 // older LocalSystem service when this process may (an administrator), refuses
 // when it may not, and refuses an elevated prompt, whose token the Worker
 // would inherit. done is true when the command has nothing more to do.
-func windowsPreflight(ctx context.Context, d windowsUpDeps, out io.Writer) error {
+func windowsPreflight(ctx context.Context, d windowsUpDeps, out io.Writer, removeLegacy bool) error {
 	if d.isSystem != nil && d.isSystem() {
 		return service.ErrRunsAsSystem
 	}
@@ -94,7 +94,7 @@ func windowsPreflight(ctx context.Context, d windowsUpDeps, out io.Writer) error
 		return &needsAdminError{msg: service.LegacyQueryFailure(qerr)}
 	}
 	if service.IsLegacyService(st) {
-		if !elev.Admin {
+		if !elev.Admin || !removeLegacy {
 			return &needsAdminError{msg: "the Windows service " + service.WindowsServiceName +
 				" of an older release runs minion as LocalSystem and must be removed before the Worker runs as you; " + service.LegacyRemovalCommand +
 				", then run minion worker up again here"}
@@ -127,7 +127,7 @@ func windowsPreflight(ctx context.Context, d windowsUpDeps, out io.Writer) error
 
 // installWindowsAutostart writes the Run entry, replaces a running Worker of
 // this user (so that the new settings apply) and starts the supervisor now.
-func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, stateDir string, pinState bool, out io.Writer) error {
+func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, stateDir string, pinState bool, out io.Writer, summary func(context.Context) error) error {
 	var args []string
 	if pinState {
 		args = []string{"--state-dir", stateDir}
@@ -183,6 +183,9 @@ func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, state
 	if err := d.startLauncher(binary, args); err != nil {
 		return fmt.Errorf("cannot start the Worker: %w", err)
 	}
+	// Readiness on the pipe and the Hub approval summary share one deadline.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	if !d.waitLive(ctx, true) {
 		return errors.New("the Worker did not start within 30 seconds; its log is " + launchLogName + " in the state directory " + stateDir)
 	}
@@ -193,6 +196,10 @@ func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, state
 	}
 	_, _ = fmt.Fprintf(out, "Installed the Worker for this user: it runs as you, starts at each logon (HKCU\\%s, value %s) and starts again by itself after a failure or an update. Stop it with: minion worker down\n",
 		service.AutostartRunKey, service.AutostartValueName)
+	// The Worker runs now: a state that cannot be shown is not a setup failure.
+	if err := summary(ctx); err != nil {
+		_, _ = fmt.Fprintf(out, "The Worker was started, but its state could not be shown (%v). Check it with: minion worker status\n", err)
+	}
 	return nil
 }
 
