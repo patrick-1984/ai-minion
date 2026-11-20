@@ -6,6 +6,7 @@
 
 - **The Hub key words are always shown in full.** The top bar cut the six words after 34 characters (and hid them on phones), which defeated comparing them with a Worker. They are never shortened now: in the top bar on wide screens, on their own row under it on narrower ones. A tray MISMATCH line also shows the words.
 - **Workers list:** an offline Worker no longer shows a second "Offline" next to its Forget button; the buttons line up with the row.
+
 ### Changed
 
 - The Worker works with tmux 3.0 and newer (was 3.2), so the tmux of Ubuntu 20.04, Debian 11 and the Orange Pi images is enough. CI now also tests tmux 3.0a. With tmux older than 3.2 the Worker makes its tmux socket owner-only (older tmux creates it group-writable), refuses the keys C-2 and C-? (older tmux sends other bytes for them) and warns when tmux is older than 3.1c (CVE-2020-27347: install your distribution's security updates). On tmux 3.0 a session whose name contains a tab or newline is listed but cannot be opened.
