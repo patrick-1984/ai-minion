@@ -413,7 +413,7 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		Registry: reg, Role: config.ScopeWorker, Flags: flags, File: file,
 		LookupEnv: withTargetDefaults(lookupEnv, reg, plain, withFile, pe, stateDir),
 	}
-	logger, err := commandLogger(cmd, res, stderr)
+	logger, err := setupLogger(cmd, res, stderr)
 	if err != nil {
 		return err
 	}
