@@ -18,7 +18,7 @@ func (c *collect) EmitEvent(_ string, _ time.Time, body string, attrs []KV) {
 }
 
 func TestChunksKeepRunesWholeAndLoseNothing(t *testing.T) {
-	s := strings.Repeat("aé€😀", 40)
+	s := strings.Repeat("a\u00e9\u20ac\U0001F600", 40)
 	got := Chunks(s, 7)
 	if strings.Join(got, "") != s {
 		t.Fatal("chunks do not add up to the text")
