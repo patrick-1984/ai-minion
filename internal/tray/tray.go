@@ -134,10 +134,12 @@ func (s Status) Running() bool { return s.Connection.Live }
 // terminal sessions: a running Worker with a counted session, an unknown count
 // or the ConPTY host (its sessions live inside the Worker); and, on Windows, a
 // Worker that is set up but did not answer (a slow status pipe is not proof
-// that nothing runs, and `worker down` signals the supervisor anyway).
+// that nothing runs, and `worker down` signals the supervisor anyway). The
+// status query can also miss a Worker of another profile or state directory,
+// so on Windows an answer of "not running" never rules out a running Worker.
 func (s Status) SessionsCouldEnd(goos string) bool {
 	if !s.Running() {
-		return goos == "windows" && s.Paired
+		return goos == "windows"
 	}
 	return s.SessionHost == "conpty" || s.Sessions == nil || *s.Sessions > 0
 }
@@ -315,15 +317,21 @@ func (c *Controller) Stop() {
 	c.refresh()
 }
 
-// TogglePause is `minion worker pause` or `resume`, by the current status.
-func (c *Controller) TogglePause() {
+// SetPaused runs `minion worker pause` (true) or `resume` (false). The target
+// is the action of the menu item the person clicked, never derived from a
+// fresh status: a stale "Pause" label can never reconnect the Worker. When the
+// status already is the target, nothing runs.
+func (c *Controller) SetPaused(pause bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.refresh()
-	if c.last.Paused {
-		c.do("", "worker", "resume")
-	} else {
+	if c.last.Paused == pause {
+		return
+	}
+	if pause {
 		c.do("", "worker", "pause")
+	} else {
+		c.do("", "worker", "resume")
 	}
 	c.refresh()
 }

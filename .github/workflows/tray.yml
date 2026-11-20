@@ -124,6 +124,12 @@ jobs:
           tar -xzf dist/tray/minion-tray-*-darwin-universal.tar.gz -C "$d"
           bin="$(echo "$d"/minion-tray-*/minion-tray)"
           lipo -archs "$bin" | grep -w x86_64 | grep -w arm64
+          # The oldest macOS each slice runs on must be 13.0, not the runner's SDK.
+          for a in x86_64 arm64; do
+            minos="$(otool -arch "$a" -l "$bin" | awk '/LC_BUILD_VERSION/ {f=1} f && /minos/ {print $2; exit}')"
+            echo "$a minos $minos"
+            [ "$minos" = "13.0" ]
+          done
           out="$("$bin" --version)"
           echo "$out"
           echo "$out" | grep -E '^minion-tray '

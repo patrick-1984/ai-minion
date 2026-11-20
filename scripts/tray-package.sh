@@ -14,6 +14,9 @@ name="minion-tray-${v#v}-${goos}-${goarch}"
 dir="dist/tray/$name"
 rm -rf "$dir"; mkdir -p "$dir"
 if [ "$goos" = darwin ]; then
+  # Without a target the cgo build takes the SDK of the runner (macOS 26).
+  export MACOSX_DEPLOYMENT_TARGET=13.0
+  export CGO_CFLAGS="-mmacosx-version-min=13.0" CGO_LDFLAGS="-mmacosx-version-min=13.0"
   for a in amd64 arm64; do
     CGO_ENABLED=1 GOOS=darwin GOARCH=$a go build -trimpath -ldflags "$flags" -o "$dir/minion-tray.$a" ./cmd/minion-tray
   done

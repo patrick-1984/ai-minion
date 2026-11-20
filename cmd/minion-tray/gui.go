@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/systray"
@@ -87,6 +88,7 @@ func (dialogs) Error(text string) { _ = zenity.Error(text, zenity.Title("Minion"
 type menu struct {
 	status, hub, keys         *systray.MenuItem
 	start, stop, pause        *systray.MenuItem
+	paused                    atomic.Bool // what the Pause item shows now
 	setup, share, newSessions *systray.MenuItem
 }
 
@@ -116,6 +118,7 @@ func (m *menu) Show(s tray.Status, err error) {
 		m.start.Enable()
 		m.stop.Disable()
 	}
+	m.paused.Store(s.Paused)
 	if s.Paused {
 		m.pause.SetTitle("Resume")
 	} else {
@@ -166,7 +169,7 @@ func runTray() error {
 				case <-m.stop.ClickedCh:
 					go c.Stop()
 				case <-m.pause.ClickedCh:
-					go c.TogglePause()
+					go c.SetPaused(!m.paused.Load())
 				case <-m.setup.ClickedCh:
 					go c.Setup()
 				case <-m.share.ClickedCh:

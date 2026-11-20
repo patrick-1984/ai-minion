@@ -254,12 +254,12 @@ func TestConPTYAlwaysConfirms(t *testing.T) {
 	}
 }
 
-func TestPauseResume(t *testing.T) {
+func TestPauseAndResumeAreExplicit(t *testing.T) {
 	r := newRig(t)
-	r.reply(t, "worker status --json", statusJSON)
-	r.c.TogglePause()
+	r.reply(t, "worker status --json", statusJSON) // not paused
+	r.c.SetPaused(true)
 	r.reply(t, "worker status --json", strings.Replace(statusJSON, `"paused":false`, `"paused":true`, 1))
-	r.c.TogglePause()
+	r.c.SetPaused(false)
 	var got []string
 	for _, a := range r.argv(t) {
 		if a != "worker status --json" {
@@ -268,6 +268,35 @@ func TestPauseResume(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{"worker pause", "worker resume"}) {
 		t.Fatal(got)
+	}
+}
+
+func TestStalePauseClickNeverResumes(t *testing.T) {
+	r := newRig(t)
+	// The menu said Pause, but another client paused meanwhile.
+	r.reply(t, "worker status --json", strings.Replace(statusJSON, `"paused":false`, `"paused":true`, 1))
+	r.c.SetPaused(true)
+	for _, a := range r.argv(t) {
+		if a != "worker status --json" {
+			t.Fatal("ran", a)
+		}
+	}
+}
+
+func TestSetupOnWindowsConfirmsWhenStatusSeesNoWorker(t *testing.T) {
+	r := newRig(t)
+	r.c.GOOS = "windows"
+	r.d.token, r.d.tokenOK = "tok", true
+	// A Worker of another state directory is invisible to this status query.
+	r.reply(t, "worker status --json", `{"paired":false,"connection":{"live":false}}`)
+	r.c.Setup()
+	if r.d.confirms != 1 {
+		t.Fatal("no confirmation")
+	}
+	for _, c := range r.calls(t) {
+		if len(c.Args) > 1 && c.Args[1] == "up" {
+			t.Fatal("ran up without confirmation")
+		}
 	}
 }
 
