@@ -255,7 +255,7 @@ func TestComposeProjectStartsAWorker(t *testing.T) {
 		`MINION_SERVER: "https://hub.example.com"`,
 		"MINION_HUB_FINGERPRINT: " + testComposeFP,
 		"MINION_SHARE_EXISTING: ${MINION_SHARE_EXISTING:-}",
-		"MINION_SHARE_EXISTING=all docker compose up -d",
+		"MINION_SHARE_EXISTING=later docker compose up -d",
 		"MINION_STATE_DIR: /data",
 		"MINION_CACHE_DIR: /cache",
 		"service_completed_successfully",

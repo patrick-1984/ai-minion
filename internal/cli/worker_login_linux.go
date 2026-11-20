@@ -261,10 +261,12 @@ func bootID() string {
 }
 
 // markLoginStopped records that the user stopped the login Worker.
-func markLoginStopped() {
-	if p, err := loginStoppedMarker(); err == nil {
-		_ = identity.WritePrivate(p, []byte(bootID()+"\n"))
+func markLoginStopped() error {
+	p, err := loginStoppedMarker()
+	if err != nil {
+		return err
 	}
+	return identity.WritePrivate(p, []byte(bootID()+"\n"))
 }
 
 // clearLoginStopped forgets that mark (an explicit start or up).

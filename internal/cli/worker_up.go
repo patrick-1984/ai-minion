@@ -246,8 +246,8 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground, configureOnl
 	if errors.Is(err, errRunAsRoot) {
 		// Chosen in the sharing question: the Worker runs as root (A57). A
 		// state directory given for the user would become root's: refused.
-		if cmd.Flags().Changed("state-dir") || os.Getenv("MINION_STATE_DIR") != "" {
-			return errors.New("to run the Worker as root, run the command again without --state-dir and MINION_STATE_DIR (they name a directory of the user)")
+		if cmd.Flags().Changed("state-dir") || os.Getenv("MINION_STATE_DIR") != "" || os.Getenv("XDG_STATE_HOME") != "" {
+			return errors.New("to run the Worker as root, run the command again without --state-dir, MINION_STATE_DIR and XDG_STATE_HOME (they can name a directory of the user); sudo -i gives a clean root environment")
 		}
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "The Worker will run as root and serve root's tmux sessions.")
 		return installWorkerService(cmd, deps, det, "root", configureOnly)

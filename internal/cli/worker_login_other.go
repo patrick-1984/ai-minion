@@ -14,6 +14,6 @@ func installLoginWorker(context.Context, string, string, io.Writer) error {
 
 func startLoginWorker(context.Context) (bool, error) { return false, errNotInstalled }
 
-func markLoginStopped()  {}
-func clearLoginStopped() {}
-func loginStopped() bool { return false }
+func markLoginStopped() error { return nil }
+func clearLoginStopped()      {}
+func loginStopped() bool      { return false }

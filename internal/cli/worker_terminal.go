@@ -24,7 +24,7 @@ func checkTerminalHost(ctx context.Context, res *config.Resolver, socket string,
 	var opts []tmux.Option
 	if owner != nil {
 		socket = owner.Socket
-		opts = append(opts, tmux.WithExec(func(_ context.Context, args []string, _ []byte) ([]byte, []byte, error) {
+		opts = append(opts, tmux.WithUserProbe(), tmux.WithExec(func(_ context.Context, args []string, _ []byte) ([]byte, []byte, error) {
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			var out bytes.Buffer
@@ -77,14 +77,10 @@ func checkPsmux(res *config.Resolver) error {
 	}
 	bin := tmux.FindPsmux()
 	if bin == "" {
-		offer, err := res.Resolve(config.KeyPsmuxOffer)
-		if err != nil {
-			return err
+		if host.Value == config.SessionHostAuto {
+			return nil // session_host auto: the Worker uses ConPTY
 		}
-		if host.Value == config.SessionHostAuto && offer.Value == "declined" {
-			return nil
-		}
-		return errors.New("psmux is missing. Install it with: winget install psmux")
+		return errors.New("psmux is missing (session_host is psmux). Install it with: winget install psmux, or set session_host to auto")
 	}
 	if _, err := tmux.NewPsmux(bin); err != nil {
 		return fmt.Errorf("%w. Update psmux with: winget upgrade psmux", err)

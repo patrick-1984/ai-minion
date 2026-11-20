@@ -55,16 +55,16 @@ func TestPsmuxPreflight(t *testing.T) {
 	res := &config.Resolver{Registry: config.Default, Role: config.ScopeWorker, LookupEnv: os.LookupEnv}
 	t.Setenv("MINION_SESSION_HOST", "auto")
 	t.Setenv("MINION_PSMUX_OFFER", "ask")
-	if err := checkPsmux(res); err == nil || !strings.Contains(err.Error(), "winget install psmux") {
-		t.Fatalf("missing psmux: %v", err)
+	if err := checkPsmux(res); err != nil {
+		t.Fatalf("missing psmux with session_host auto falls back to ConPTY: %v", err)
 	}
 	t.Setenv("MINION_PSMUX_OFFER", "declined")
 	if err := checkPsmux(res); err != nil {
 		t.Fatal("declined in a previous release:", err)
 	}
 	t.Setenv("MINION_SESSION_HOST", "psmux")
-	if err := checkPsmux(res); err == nil {
-		t.Fatal("explicit psmux is required even after a previous decline")
+	if err := checkPsmux(res); err == nil || !strings.Contains(err.Error(), "winget install psmux") {
+		t.Fatalf("explicit psmux is required even after a previous decline: %v", err)
 	}
 	t.Setenv("MINION_SESSION_HOST", "conpty")
 	if err := checkPsmux(res); err != nil {

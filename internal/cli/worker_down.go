@@ -210,7 +210,10 @@ func runWorkerDown(cmd *cobra.Command, d workerDownDeps) error {
 		cancel()
 		if errors.Is(err, client.ErrWorkerNotRunning) && d.stateFree(stateDir) {
 			if runMode == agent.RunModeDetached {
-				markLoginStopped()
+				if err := markLoginStopped(); err != nil {
+					_, _ = fmt.Fprintf(out, "The Worker stopped, but the next shell login may start it again (%v).\n", err)
+					return nil
+				}
 				_, _ = fmt.Fprintln(out, "The Worker stopped. It stays stopped until you run minion worker start (or until the next boot, when a login starts it again).")
 				return nil
 			}

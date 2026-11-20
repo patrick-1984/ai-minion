@@ -196,7 +196,11 @@ func installWindowsAutostart(ctx context.Context, d windowsUpDeps, binary, state
 	}
 	_, _ = fmt.Fprintf(out, "Installed the Worker for this user: it runs as you, starts at each logon (HKCU\\%s, value %s) and starts again by itself after a failure or an update. Stop it with: minion worker down\n",
 		service.AutostartRunKey, service.AutostartValueName)
-	return summary(ctx)
+	// The Worker runs now: a state that cannot be shown is not a setup failure.
+	if err := summary(ctx); err != nil {
+		_, _ = fmt.Fprintf(out, "The Worker was started, but its state could not be shown (%v). Check it with: minion worker status\n", err)
+	}
+	return nil
 }
 
 // live reports whether a Worker of this user answers on its pipe.

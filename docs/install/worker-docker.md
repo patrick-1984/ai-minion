@@ -44,7 +44,7 @@ What the Hub may see of the sessions is still decided by the sharing choice ([pa
    export WORKER_UID=$(id -u) WORKER_GID=$(id -g)
    export MINION_SERVER=https://hub.example.com
    export MINION_HUB_FINGERPRINT=<52 characters from minion hub identity --words on the Hub host>
-   MINION_SHARE_EXISTING=all docker compose -f worker.yaml up -d --build
+   MINION_SHARE_EXISTING=later docker compose -f worker.yaml up -d --build
    docker compose -f worker.yaml logs worker
    ```
 

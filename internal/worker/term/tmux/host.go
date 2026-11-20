@@ -54,6 +54,10 @@ func WithTimeout(d time.Duration) Option { return func(h *Host) { h.timeout = d 
 
 // WithLogger sets the logger of the debug lines (version check, session
 // listings). The default writes nothing.
+// WithUserProbe marks a host whose ExecFunc runs tmux as another user (root
+// checking a user's tmux before sudo onboarding).
+func WithUserProbe() Option { return func(h *Host) { h.userProbe = true } }
+
 func WithLogger(l *slog.Logger) Option { return func(h *Host) { h.SetLogger(l) } }
 
 // SetLogger sets the logger of the debug lines; nil writes nothing. It never
@@ -85,6 +89,9 @@ type Host struct {
 	// the previous result out of the log.
 	log       atomic.Pointer[slog.Logger]
 	listDedup logx.Dedup
+	// userProbe marks a host whose tmux runs as another user (sudo
+	// onboarding): the root socket directory check does not apply.
+	userProbe bool
 }
 
 // MinPsmuxMajor and MinPsmuxMinor are the oldest supported psmux (3.4): older
@@ -133,8 +140,11 @@ func New(socketPath string, opts ...Option) (*Host, error) {
 		h.socket = filepath.Clean(socketPath)
 		// tmux -S skips its own checks of the socket directory. A root
 		// Worker must not talk to a server another account could put there.
-		if err := rootSocketDirSafe(filepath.Dir(h.socket)); err != nil {
-			return nil, err
+		// A probe that runs tmux as another user (WithUserProbe) is exempt.
+		if !h.userProbe {
+			if err := rootSocketDirSafe(filepath.Dir(h.socket)); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if h.exec == nil {
