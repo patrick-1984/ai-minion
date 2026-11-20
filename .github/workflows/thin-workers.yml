@@ -82,7 +82,7 @@ jobs:
       - name: Sources into the package directory
         run: clients/openwrt/prepare.sh
       - name: Build with the OpenWrt SDK
-        uses: openwrt/gh-action-sdk@b8cc97d1072dedff455e2945a73fc43f5c7e1749 # v9
+        uses: openwrt/gh-action-sdk@7fc2640243284ecc44f4a9c3f749a61746ee02cb # v11
         env:
           ARCH: ${{ matrix.arch }}-${{ matrix.release }}
           FEED_DIR: ${{ github.workspace }}/clients/openwrt
