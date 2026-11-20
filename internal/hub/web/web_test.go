@@ -1243,3 +1243,17 @@ func TestIntegrationMustChangeAccount(t *testing.T) {
 		t.Errorf("static asset for a must-change account: %d at %s", resp.StatusCode, resp.Request.URL)
 	}
 }
+
+// Every template that shows a key, token or command to paste carries the copy
+// button of the shared pattern.
+func TestTemplatesWithPasteValuesHaveCopyButtons(t *testing.T) {
+	for _, name := range []string{"invitations.html", "apikeys.html", "addworker.html", "users.html", "updates.html", "identity.html", "layout.html"} {
+		b, err := templateFiles.ReadFile("templates/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), `class="copy-btn"`) {
+			t.Errorf("%s has no copy-btn", name)
+		}
+	}
+}

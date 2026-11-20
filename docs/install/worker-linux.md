@@ -6,7 +6,13 @@ A Worker serves the tmux sessions of one Unix user on one machine. It needs `tmu
 
 ## 1. Install the binary
 
-One line installs the latest `minion` into `/usr/local/bin` (when writable, for example as root) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh`. The installer uses your package manager and, when needed, noninteractive sudo to install a missing tmux. The packages and the verified manual install below are the alternatives.
+One line installs the latest `minion` into `/usr/local/bin` (when writable, for example as root) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release:
+
+```sh
+curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh
+```
+
+The installer uses your package manager and, when needed, noninteractive sudo to install a missing tmux. The packages and the verified manual install below are the alternatives.
 
 Download from `https://github.com/patrick-1984/ai-minion/releases` the file for your architecture. Check the release page for the exact names; the packages end in the architecture of your machine, and the archives are named `minion_<version>_linux_<arch>.tar.gz` with `amd64`, `arm64` or `armv7`.
 
@@ -101,7 +107,13 @@ Without `sudo` this installs a systemd user service. A user service stops when y
 
 **Without systemd** (including Coder workspaces), the same `minion worker up` command starts a detached Worker and returns the prompt. Its private log is `worker-launch.log` in the state directory. `minion worker down` stops it, and `minion worker start` starts it again. Login startup uses marked blocks in `~/.profile`, `~/.bashrc` and the active Bash login file if present. On zsh it also uses `~/.zprofile`. The blocks read the executable path from `~/.config/minion/worker-login`, which also records the state directory. To disable shell startup, remove that registration file. Use the Docker instructions if you want Docker to restart the Worker when the container starts.
 
-**In the foreground** (to try it, or under another supervisor): `minion worker up --foreground`, or `minion worker run`, until Ctrl-C.
+**In the foreground** (to try it, or under another supervisor), until Ctrl-C:
+
+```sh
+minion worker up --foreground
+```
+
+`minion worker run` does the same without the setup steps.
 
 ## 4. Join the Hub
 

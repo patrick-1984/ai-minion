@@ -143,7 +143,7 @@ func (p *callPeer) pane(t *testing.T) string {
 	return p.tmux.Capture("=work:")
 }
 
-var apiKeyInHTML = regexp.MustCompile(`id="api-key" value="(mn_[^"]+)"`)
+var apiKeyInHTML = regexp.MustCompile(`id="api-key"[^>]*>(mn_[^<]+)</textarea>`)
 
 func TestCallKeyCreatedInTheBrowserFormAllowsACrossWorkerPipeSend(t *testing.T) {
 	ph := startShareHub(t)

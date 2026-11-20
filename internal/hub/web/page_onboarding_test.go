@@ -452,9 +452,16 @@ func TestInvitationCreateShowsTheKeyOnce(t *testing.T) {
 	body := rec.Body.String()
 	golden(t, "onboarding_invitation_created", body)
 	mustHave(t, body,
-		`value="`+sampleKey+`"`, `data-copy="#invite-key"`,
+		`>`+sampleKey+`</textarea>`, `data-copy="#invite-key"`,
 		`minion worker up --server https://hub.example.com --invite-key `+sampleKey,
 		"MINION_INVITE_KEY_FILE", "shown only once")
+	// The flow has a way out: a saved note and a Done link at the top and the
+	// bottom, a full-width key field and the refreshed list out of band.
+	mustHave(t, body, "data-invitation-saved", "Leaving this page does not delete it",
+		`copy-field copy-field-wide`)
+	if n := strings.Count(body, "data-invitation-done"); n != 2 {
+		t.Errorf("Done links = %d, want 2", n)
+	}
 	if c := f.called(ops.OpInvitationCreate); len(c) != 1 || c[0].Args["mode"] != "reusable" || c[0].Args["ttl"] != "1w" || c[0].Args["name"] != "build-farm" {
 		t.Errorf("create calls = %+v", c)
 	}
@@ -606,7 +613,7 @@ func TestAPIKeyCreateShowsTheKeyOnce(t *testing.T) {
 	}
 	body := rec.Body.String()
 	golden(t, "onboarding_apikey_created", body)
-	mustHave(t, body, `value="`+sampleAPIKey+`"`, `data-copy="#api-key"`, "shown only once", "mn_mfrggzdf...")
+	mustHave(t, body, `>`+sampleAPIKey+`</textarea>`, `data-copy="#api-key"`, "shown only once", "mn_mfrggzdf...")
 	c := f.called(ops.OpAPIKeyCreate)
 	if len(c) != 1 {
 		t.Fatalf("create calls = %+v", c)
@@ -994,7 +1001,7 @@ func TestOnboardingFlowOverTheRESTPipeline(t *testing.T) {
 
 	// Invitation: create, see it in the list, never the key, revoke.
 	rec := do("POST", pathInvitations, url.Values{"mode": {"reusable"}, "ttl": {"8h"}, "name": {"lab"}})
-	mustHave(t, rec.Body.String(), "Invitation key \"lab\" created.", `value="`+sampleKey+`"`, "--invite-key "+sampleKey)
+	mustHave(t, rec.Body.String(), "Invitation key \"lab\" created.", `>`+sampleKey+`</textarea>`, "--invite-key "+sampleKey)
 	rec = do("GET", pathInvitations, nil)
 	mustHave(t, rec.Body.String(), `<th scope="row">lab</th>`, "reusable", "2026-11-09 16:30 UTC", "active")
 	mustNotHave(t, rec.Body.String(), sampleKey)
@@ -1014,7 +1021,7 @@ func TestOnboardingFlowOverTheRESTPipeline(t *testing.T) {
 	rec = do("GET", pathAPIKeys, nil)
 	mustHave(t, rec.Body.String(), `value="user:`+onbUserID+`" checked`, `value="worker:`+onbWorkerID+`"`)
 	rec = do("POST", pathAPIKeys, url.Values{"name": {"ci"}, "resource": {"worker:" + onbWorkerID}, "action": {"read", "operate"}, "expires": {"90d"}})
-	mustHave(t, rec.Body.String(), `API key "ci" created.`, `value="`+sampleAPIKey+`"`, "Scope: Worker pi: read, operate")
+	mustHave(t, rec.Body.String(), `API key "ci" created.`, `>`+sampleAPIKey+`</textarea>`, "Scope: Worker pi: read, operate")
 	rec = do("GET", pathAPIKeys, nil)
 	mustHave(t, rec.Body.String(), `<th scope="row">ci</th>`, "<code>mn_mfrggzdf...</code>", "Worker pi: read, operate")
 	mustNotHave(t, rec.Body.String(), sampleAPIKey)
@@ -1068,5 +1075,20 @@ func TestAPIKeyFormBindsAKeyToAWorker(t *testing.T) {
 	ch := apiKeyBoundWorkerChoices(u, ws)
 	if len(ch) != 1 || ch[0].Value != onbWorkerID {
 		t.Fatalf("choices = %+v, want only the user's own Worker", ch)
+	}
+}
+
+// The create answer keeps the "every user" scope of the page it came from.
+func TestInvitationCreateKeepsTheAllScope(t *testing.T) {
+	create := ops.InvitationCreateResult{ID: onbInviteID, Key: sampleKey, Mode: ops.InvitationOneTime, Kind: ops.KindPrivate,
+		TTL: ops.TTL1w, CreatedAt: onbTime, ExpiresAt: &onbWeek}
+	f := newFakeOps().reply(ops.OpInvitationCreate, create).reply(ops.OpInvitationList, sampleInvitations())
+	connect(t, f)
+	rec := onbPost(t, onbAdmin(t), pathInvitations, url.Values{"mode": {"one_time"}, "ttl": {"1w"}, "all": {"1"}})
+	body := rec.Body.String()
+	mustHave(t, body, `href="/invitations?all=1" data-invitation-done`, "appears in the list below when you press Done")
+	mustNotHave(t, body, "hx-swap-oob")
+	if c := f.called(ops.OpInvitationList); len(c) != 0 {
+		t.Errorf("the create answer read the list: %+v", c)
 	}
 }

@@ -392,10 +392,13 @@ func invitationRow(i ops.InvitationInfo) InvitationRow {
 }
 
 func invitationsData(r *http.Request, c OpCaller, u pageUser) (any, error) {
-	all := u.Admin && r.URL.Query().Get("all") == "1"
+	return invitationsPage(r, c, u, u.Admin && r.URL.Query().Get("all") == "1")
+}
+
+func invitationsPage(r *http.Request, c OpCaller, u pageUser, all bool) (InvitationsPage, error) {
 	var res ops.InvitationListResult
 	if err := c.CallOp(r, ops.OpInvitationList, ops.InvitationListArgs{All: all}, &res); err != nil {
-		return nil, err
+		return InvitationsPage{}, err
 	}
 	page := InvitationsPage{Modes: invitationModes, TTLs: invitationTTLChoices(u.Admin), Admin: u.Admin, All: all,
 		MaxUsesDefault: ops.DefaultReusableMaxUses}
@@ -497,8 +500,8 @@ func composeFile(server, fingerprint string) string {
 		"1. Put bootstrap.sh next to this file. It is a file of the Minion release:",
 		"   " + bootstrapURL,
 		"2. Save the key as the only line of invite_key.txt next to this file.",
-		"3. Run: MINION_SHARE_EXISTING=later docker compose up -d",
-		"   (the first start needs the sharing choice: all, none or later; later shares nothing",
+		"3. Run: MINION_SHARE_EXISTING=all docker compose up -d",
+		"   (the first start needs the sharing choice: all shares every session; none or later share nothing",
 		"   until you choose in the Hub. Leave it out on later starts: it replaces the saved choice.)",
 		"4. Approve the new Worker in the Hub (Workers page): it starts pending and gets no operations until you do.",
 		"The image is built from Alpine with tmux (the Worker drives its sessions through tmux);",
@@ -616,12 +619,15 @@ type inviteResult struct {
 	Key   string
 	// HubWords are the six words of the Hub fingerprint inside the key (M12b).
 	HubWords string
+	// All keeps the "every user" view of the page the key was created on, for
+	// the Done links.
+	All bool
 	InviteCommands
 }
 
 var invitationFragments = fragments("invitations.html")
 
-func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
+func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	args := ops.InvitationCreateArgs{
 		Mode: r.PostFormValue("mode"),
 		TTL:  r.PostFormValue("ttl"),
@@ -654,6 +660,7 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	if res.MaxUses != nil {
 		out.Limit = fmt.Sprintf("%d %s", *res.MaxUses, map[bool]string{true: "enrollment", false: "enrollments"}[*res.MaxUses == 1])
 	}
+	out.All = u.Admin && r.PostFormValue("all") == "1"
 	writeFragmentTemplate(w, invitationFragments(), "invitation_key", out)
 }
 

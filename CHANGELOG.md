@@ -4,8 +4,13 @@
 
 ### Fixed
 
-- **The Hub key words are always shown in full.** The top bar cut the six words after 34 characters (and hid them on phones), which defeated comparing them with a Worker. They are never shortened now: in the top bar on wide screens, on their own row under it on narrower ones. A tray MISMATCH line also shows the words.
+- **The Hub key words are always shown in full.** The top bar cut the six words after 34 characters (and hid them on phones), which defeated comparing them with a Worker. They are never shortened now and have their own row under the top bar; everywhere else (invitation and join results, popover, Workers list) the words wrap at their hyphens instead of scrolling sideways. A tray MISMATCH line also shows the words.
 - **Workers list:** an offline Worker no longer shows a second "Offline" next to its Forget button; the buttons line up with the row.
+- **Invitation keys and join commands**: after "Create the key" (and "Create the join command") the panel now starts with a note that the invitation is saved and listed until it expires, is used or is revoked, and that only the secret text cannot be shown again. A Done button at the top and the bottom goes back to the page, the new key shows in the list at once, and the key field is as wide as the panel so the whole key is visible.
+
+### Changed
+
+- **Copy buttons everywhere**: the join token and every join command on the Add worker page, and the Hub fingerprint in the header popover, now use the same copy icon as the rest of the Hub. The README and the install guides show one-line installs and standalone commands in code blocks, which GitHub gives a copy button.
 - **Worker onboarding** starts the Worker in the background and prints its live state and identity words. On Linux without systemd, the Worker starts at shell login and supports `worker down` and `worker start`. Run `worker up` again to move a foreground Worker into the background. Use `--foreground` for an attached terminal.
 - **Add worker** keeps the one-time credential out of background process arguments and generated Compose files. The native commands ask what to share on a terminal. Without a terminal the Hub commands share all sessions (`--non-interactive-share all`); the wizard default is all too. Under sudo you can choose the invoking user's sessions or root's.
 - **Terminal dependencies** are checked before setup. The Unix installer installs missing tmux through the platform package manager, and the Windows installer installs missing psmux through WinGet. See [upgrading an old tmux](docs/install/worker-linux.md#upgrading-an-old-tmux) for distributions shipping a version below 3.2.

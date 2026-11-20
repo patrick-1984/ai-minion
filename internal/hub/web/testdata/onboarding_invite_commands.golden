@@ -14,8 +14,8 @@ EOF
 # 1. Put bootstrap.sh next to this file. It is a file of the Minion release:
 #    https://github.com/patrick-1984/ai-minion/releases/latest/download/bootstrap.sh
 # 2. Save the key as the only line of invite_key.txt next to this file.
-# 3. Run: MINION_SHARE_EXISTING=later docker compose up -d
-#    (the first start needs the sharing choice: all, none or later; later shares nothing
+# 3. Run: MINION_SHARE_EXISTING=all docker compose up -d
+#    (the first start needs the sharing choice: all shares every session; none or later share nothing
 #    until you choose in the Hub. Leave it out on later starts: it replaces the saved choice.)
 # 4. Approve the new Worker in the Hub (Workers page): it starts pending and gets no operations until you do.
 # The image is built from Alpine with tmux (the Worker drives its sessions through tmux);
