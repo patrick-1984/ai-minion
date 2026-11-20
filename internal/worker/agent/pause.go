@@ -42,16 +42,16 @@ func ReadPause(stateDir string) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read the pause file: %w", err)
+		// An unreadable choice is not a resume: stay paused.
+		return true, fmt.Errorf("the pause file %s cannot be read, so the Worker stays paused: %w", filepath.Join(stateDir, PauseFile), err)
 	}
 	var p struct {
-		Paused bool `json:"paused"`
+		Paused *bool `json:"paused"`
 	}
-	if err := json.Unmarshal(b, &p); err != nil {
-		// An unreadable choice is not a resume: stay paused.
-		return true, fmt.Errorf("the pause file %s is not valid: %w", filepath.Join(stateDir, PauseFile), err)
+	if err := json.Unmarshal(b, &p); err != nil || p.Paused == nil {
+		return true, fmt.Errorf("the pause file %s is not valid, so the Worker stays paused; fix it or run minion worker resume", filepath.Join(stateDir, PauseFile))
 	}
-	return p.Paused, nil
+	return *p.Paused, nil
 }
 
 // WritePause saves the pause durably (temporary file, fsync, rename, owner

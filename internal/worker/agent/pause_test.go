@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/identity"
 
 	"context"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -179,5 +180,78 @@ func TestLocalPauseOpKeepsLocalControl(t *testing.T) {
 	}
 	if _, err := call(OpLocalPause, map[string]string{"x": "y"}); proto.CodeOf(err) != proto.CodeInvalidArgument {
 		t.Fatalf("bad args: %v", err)
+	}
+}
+
+// A pause that follows a resume must wait for the attempt that the resume
+// admitted (it is loading its key), and no dial happens after it.
+func TestSecondPauseWaitsForTheAdmittedAttempt(t *testing.T) {
+	f := newConnFixture(t)
+	if err := WritePause(f.dir, true); err != nil {
+		t.Fatal(err)
+	}
+	ps := NewPauseService(f.dir, nil)
+	inKey, release := make(chan struct{}, 1), make(chan struct{})
+	f.conn = f.newConnector(func(c *ConnectorConfig) {
+		c.Pause = ps.Gate()
+		load := c.Key
+		c.Key = func() (*identity.Key, error) {
+			inKey <- struct{}{}
+			<-release
+			return load()
+		}
+	})
+	ps.settled = func() bool {
+		st := f.conn.Status()
+		return st.State == ConnIdle && st.Reason == ReasonPaused
+	}
+	f.dial.script(f.welcomeStep(newFakeSession(), okWelcome()))
+	f.run()
+	f.waitIdle(ReasonPaused) // paused and settled, as after a first pause
+
+	if err := ps.Set(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	<-inKey // the attempt is admitted and sits in the key load
+	done := make(chan error, 1)
+	go func() { done <- ps.Set(context.Background(), true) }()
+	select {
+	case err := <-done:
+		t.Fatalf("the second pause was acknowledged with an attempt in flight: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := f.dial.count(); n != 0 {
+		t.Fatalf("%d dials after the pause", n)
+	}
+}
+
+// An unreadable or empty pause file keeps the Worker paused.
+func TestPauseFileFailsClosed(t *testing.T) {
+	for name, body := range map[string]string{"empty object": `{}`, "null": `null`, "wrong type": `{"paused":"no"}`} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, PauseFile), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if on, err := ReadPause(dir); !on || err == nil {
+			t.Errorf("%s: paused=%v err=%v", name, on, err)
+		}
+		if !NewPauseService(dir, nil).Paused() {
+			t.Errorf("%s: the Worker started resumed", name)
+		}
+	}
+	// A pause file that cannot be read (here: a directory).
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, PauseFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if on, err := ReadPause(dir); !on || err == nil {
+		t.Errorf("unreadable: paused=%v err=%v", on, err)
+	}
+	if on, err := ReadPause(t.TempDir()); on || err != nil {
+		t.Errorf("missing file: paused=%v err=%v", on, err)
 	}
 }
