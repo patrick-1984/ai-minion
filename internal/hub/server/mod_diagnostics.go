@@ -10,6 +10,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
+	"github.com/patrick-1984/ai-minion/internal/obs"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
@@ -85,7 +86,15 @@ func registerDiagnosticsModule(r *Registry, catalog *ops.Registry) {
 			Workers: func() (connected, pending int) { return countWorkers(svc.Registry().List()) },
 		}
 		if o, err := Require[*ObsService](env); err == nil && o.Manager != nil {
-			src.Sinks = o.Manager.Status
+			src.Sinks = func() []ops.LogSinkStatus {
+				list := o.Manager.Status()
+				for i := range list {
+					if list[i].Name == obs.SinkOTel {
+						list[i].SessionContent = o.Compliance.Status()
+					}
+				}
+				return list
+			}
 		}
 		if err := api.RegisterHubDiagnostics(handlers, src); err != nil {
 			return fmt.Errorf("diagnostics: %w", err)

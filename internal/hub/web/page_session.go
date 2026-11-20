@@ -53,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -343,24 +344,53 @@ func reviewedFromForm(r *http.Request) (ops.ReviewedDialog, bool) {
 	return rd, rd.Validate() == nil
 }
 
+// monitoringLevel is the optional source of the compliance monitoring level.
+var monitoringLevel atomic.Pointer[func() string]
+
+// SetMonitoringLevel tells the session page how to find the compliance
+// monitoring level ("" or "off": none). The page shows a banner while it is
+// on; the banner is informational. The returned function removes the source
+// again, but only while it is still the current one.
+func SetMonitoringLevel(f func() string) (release func()) {
+	if f == nil {
+		monitoringLevel.Store(nil)
+		return func() {}
+	}
+	p := &f
+	monitoringLevel.Store(p)
+	return func() { monitoringLevel.CompareAndSwap(p, nil) }
+}
+
+// MonitoringLevel returns the level to show, "" when monitoring is off.
+func MonitoringLevel() string {
+	if p := monitoringLevel.Load(); p != nil {
+		if l := (*p)(); l != "off" {
+			return l
+		}
+	}
+	return ""
+}
+
 // SessionPage is what session.html sees as .Data.
 type SessionPage struct {
-	Worker    string
-	WorkerID  string
-	Owner     string
-	Session   string
-	Online    bool
-	Task      string
-	Notice    string
-	Operate   bool
-	Panel     PanelView
-	Keys      []KeyButton
-	ScreenURL string
-	EventsURL string
-	TextURL   string
-	KeysURL   string
-	TaskURL   string
-	NewURL    string
+	Worker   string
+	WorkerID string
+	Owner    string
+	Session  string
+	Online   bool
+	Task     string
+	Notice   string
+	// Monitoring is the compliance monitoring level while it is on ("" when off).
+	Monitoring string
+	Operate    bool
+	Panel      PanelView
+	Keys       []KeyButton
+	ScreenURL  string
+	EventsURL  string
+	TextURL    string
+	KeysURL    string
+	TaskURL    string
+	NewURL     string
 	// NewRefused is why New session would be refused (the new session would
 	// be hidden and the hidden_sessions policy does not allow it); the button
 	// is then disabled and shows it.
@@ -627,6 +657,7 @@ func sessionData(r *http.Request) (any, error) {
 		EventsURL: eventsPath + "?all=true&worker=" + url.QueryEscape(t.worker.ID),
 		TextURL:   t.path() + "/text", KeysURL: t.path() + "/keys", TaskURL: t.path() + "/task",
 		NewURL: NewSessionPath(t.ref), Context: principalContext(r), NewRefused: t.worker.NewSessionRefused,
+		Monitoring: MonitoringLevel(),
 	}
 	if !t.worker.Online {
 		page.Notice = "This Worker is offline. The screen and the controls come back when it reconnects."

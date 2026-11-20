@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -176,6 +177,19 @@ type HubOption func(*HubBackend)
 // (default: nowhere).
 func WithHubWarn(f func(string)) HubOption { return func(b *HubBackend) { b.warn = f } }
 
+// MonitoringHeader is the response header with which a Hub says that
+// compliance monitoring is on (its value is the level).
+const MonitoringHeader = "Minion-Monitoring"
+
+// WithHubNotice sets where the compliance monitoring notice goes: a line,
+// once, when the Hub says monitoring is on. It is informational only.
+func WithHubNotice(f func(string)) HubOption { return func(b *HubBackend) { b.notice = f } }
+
+// MonitoringNotice is the line shown while monitoring is on.
+func MonitoringNotice(level string) string {
+	return "compliance monitoring is on (" + level + "): this Hub sends what passes through it for sessions to its administrator's log collector"
+}
+
 // WithHubCallTimeout changes the bound of a scalar call.
 func WithHubCallTimeout(d time.Duration) HubOption {
 	return func(b *HubBackend) { b.callTimeout = d }
@@ -195,6 +209,9 @@ type HubBackend struct {
 	callTimeout time.Duration
 	warn        func(string)
 	userAgent   string
+	// notice receives the compliance monitoring notice, once per backend.
+	notice     func(string)
+	noticeOnce sync.Once
 }
 
 var _ Backend = (*HubBackend)(nil)
@@ -409,6 +426,9 @@ func (b *HubBackend) run(ctx context.Context, op string, args any, onProgress fu
 		return nil, b.transportError(ctx, callCtx, err, key, maybeSent.Load())
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if lvl := resp.Header.Get(MonitoringHeader); (lvl == "actions" || lvl == "output" || lvl == "full") && b.notice != nil {
+		b.noticeOnce.Do(func() { deliverNotice(b.notice, MonitoringNotice(lvl)) })
+	}
 
 	switch {
 	case resp.StatusCode >= 300 && resp.StatusCode < 400:
@@ -900,4 +920,24 @@ func retryAfter(h http.Header) (time.Duration, bool) {
 		return 0, false
 	}
 	return time.Duration(n) * time.Second, true
+}
+
+// noticeWait bounds how long a response waits for the notice to be written.
+const noticeWait = 200 * time.Millisecond
+
+// deliverNotice writes the notice and waits for it at most noticeWait: a
+// command that exits right after still prints it, and a stalled stderr never
+// holds a response for longer.
+func deliverNotice(f func(string), msg string) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f(msg)
+	}()
+	t := time.NewTimer(noticeWait)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+	}
 }

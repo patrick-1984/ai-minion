@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Compliance monitoring** (`compliance_monitoring` = `off`, `actions`, `output`, `full`; Hub, live, in the Log export settings, off by default). Sends what happens in sessions through the Hub to the OpenTelemetry log sink as `minion.session.action`, `.output` and `.input` events: who did which operation, the screens and received pipe turns that were returned, and at `full` the text, keys, answers, tasks and messages that were sent. Needs the otel sink on with an https (or loopback http) endpoint and follows `otel_level`; Minion's secret formats are masked before long text is split into chunks. Session pages show a banner and `minion` prints a line to standard error while it is on. Local typing and unread screens are not captured; text sent through Minion is recorded as sent. See [Compliance monitoring](docs/guides/observability.md#compliance-monitoring).
+
 ## v0.14.0
 
 Released 2026-11-19.

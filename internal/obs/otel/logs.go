@@ -19,12 +19,15 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/resource"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 )
 
 // Fixed parameters of the log pipeline (design §3.4): with records capped at
@@ -151,6 +154,9 @@ func newLogs(ctx context.Context, cfg config.OTLPConfig, res *resource.Resource,
 		tlsCfg = cfg.TLSConfig()
 	}
 	client, status := exportClient(tlsCfg)
+	if u, _ := url.Parse(cfg.LogsURL); u != nil && config.LoopbackHost(u.Hostname()) {
+		noProxy(client)
+	}
 	exp, err := otlploghttp.New(ctx,
 		otlploghttp.WithEndpointURL(cfg.LogsURL),
 		otlploghttp.WithHeaders(headers),
@@ -196,6 +202,13 @@ func exportClient(tlsCfg *tls.Config) (*http.Client, *statusRecorder) {
 			return http.ErrUseLastResponse
 		},
 	}, status
+}
+
+// noProxy makes client connect directly: a collector on this host is never
+// reached through a proxy named by the environment, which session content
+// must not be handed to.
+func noProxy(client *http.Client) {
+	client.Transport.(responseFilter).rt.(*http.Transport).Proxy = nil
 }
 
 // statusRecorder keeps the HTTP status of the last response of an export.
@@ -262,6 +275,36 @@ const maxOTLPResponse = 64 << 10
 
 // errNotOTLP is a 2xx answer that is not an OTLP response.
 var errNotOTLP = errors.New("the endpoint answered, but not as an OTLP collector")
+
+// EmitEvent queues a session event (compliance monitoring) with its OTLP
+// event name, at INFO, on this pipeline only: not through the log fan-out, so
+// it reaches neither standard error, the in-memory log nor syslog. The body
+// and the attributes were masked and bounded by the caller. It never blocks;
+// a full queue drops the event (counted as queue_full).
+func (l *Logs) EmitEvent(name string, at time.Time, body string, attrs []compliance.KV) {
+	var rec otellog.Record
+	rec.SetEventName(name)
+	rec.SetTimestamp(at)
+	rec.SetObservedTimestamp(time.Now())
+	rec.SetSeverity(otellog.SeverityInfo)
+	rec.SetSeverityText("INFO")
+	if body != "" {
+		rec.SetBody(attribute.StringValue(body))
+	}
+	kvs := make([]attribute.KeyValue, 0, len(attrs))
+	for _, a := range attrs {
+		switch v := a.Value.(type) {
+		case string:
+			kvs = append(kvs, attribute.String(a.Key, v))
+		case int64:
+			kvs = append(kvs, attribute.Int64(a.Key, v))
+		case bool:
+			kvs = append(kvs, attribute.Bool(a.Key, v))
+		}
+	}
+	rec.AddAttributes(kvs...)
+	l.provider.Logger(ScopeName).Emit(context.Background(), rec)
+}
 
 // Handler returns the slog handler of the pipeline, behind logx.RemoteSafe.
 func (l *Logs) Handler() slog.Handler { return l.handler }
