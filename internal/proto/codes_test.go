@@ -149,6 +149,8 @@ func TestHubIdentityCodesAreDeclaredAfterTheOlderOnes(t *testing.T) {
 		CodeTLSRequired: 403, CodePassphraseInvalid: 403,
 	}
 	all := Codes()
+	// The tray codes of 0.15.0 (paused, new_sessions_blocked) follow them.
+	all = all[:len(all)-len(trayCodes)]
 	tail := all[len(all)-len(want):]
 	for _, c := range tail {
 		st, ok := want[c]
@@ -162,5 +164,18 @@ func TestHubIdentityCodesAreDeclaredAfterTheOlderOnes(t *testing.T) {
 	}
 	if tail[0] != CodeHubCertExpired {
 		t.Errorf("the 0.7.0 codes start with %q, want hub_cert_expired", tail[0])
+	}
+}
+
+// trayCodes are the codes of the tray work (0.15.0), declared last.
+var trayCodes = map[Code]int{CodePaused: 503, CodeNewSessionsBlocked: 403}
+
+func TestTrayCodesAreDeclaredLast(t *testing.T) {
+	all := Codes()
+	for _, c := range all[len(all)-len(trayCodes):] {
+		st, ok := trayCodes[c]
+		if !ok || HTTPStatus(c) != st {
+			t.Errorf("code %q among the last %d: tray code %t, status %d", c, len(trayCodes), ok, HTTPStatus(c))
+		}
 	}
 }

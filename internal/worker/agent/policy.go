@@ -42,6 +42,23 @@ type Policy struct {
 	ownerID        atomic.Pointer[string]
 	onIdentity     atomic.Pointer[func()]
 	pipeAccept     atomic.Pointer[config.PipeAcceptFrom]
+	// newSessions answers whether session_create is allowed (the local
+	// setting allow_new_sessions); nil allows.
+	newSessions atomic.Pointer[func() bool]
+}
+
+// SetNewSessionsCheck sets the function that says whether new sessions may be
+// created. It is asked at every session_create, so a saved change applies at
+// once.
+func (p *Policy) SetNewSessionsCheck(f func() bool) { p.newSessions.Store(&f) }
+
+// NewSessionsAllowed reports whether session_create is allowed by the local
+// setting allow_new_sessions.
+func (p *Policy) NewSessionsAllowed() bool {
+	if f := p.newSessions.Load(); f != nil && *f != nil {
+		return (*f)()
+	}
+	return true
 }
 
 // NewPolicy returns a Policy that reads the share selection from share. A nil

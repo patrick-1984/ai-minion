@@ -180,6 +180,8 @@ func runWorkerStatus(cmd *cobra.Command, deps workerStatusDeps, asJSON bool) err
 		PreviewOnly: core.PreviewOnly,
 		Platform:    runtime.GOOS,
 		Live:        deps.live(core.StateDir),
+		StateDir:    core.StateDir,
+		NewSessions: allowNewSessionsText(res, core.StateDir),
 	}
 	if deps.sessions != nil {
 		if s := deps.sessions(core.TmuxSocket); s != nil {
@@ -240,4 +242,12 @@ func addNamedSettingFlags(cmd *cobra.Command, reg *config.Registry, keys ...stri
 		}
 		cmd.Flags().String(s.FlagName(), "", fmt.Sprintf("%s (env %s)", help, s.EnvName()))
 	}
+}
+
+// allowNewSessionsText is allow_new_sessions as the next start enforces it.
+func allowNewSessionsText(res *config.Resolver, stateDir string) string {
+	if config.ResolveAllowNewSessions(res, filepath.Join(stateDir, workerConfigName)) {
+		return config.AllowNewSessionsOn
+	}
+	return config.AllowNewSessionsOff
 }

@@ -23,6 +23,8 @@
   },
   "preview_only": false,
   "preview_only_hub": false,
+  "paused": false,
+  "new_sessions": "unknown",
   "tmux_socket": "/tmp/tmux-1000/default",
   "sessions": null
 }

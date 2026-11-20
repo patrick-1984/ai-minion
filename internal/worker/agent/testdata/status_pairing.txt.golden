@@ -16,6 +16,8 @@ Approval:                   unknown (only a connected Worker knows it)
 Pairing code:               MN-ABCD-EFGH
 Share mode:                 all
 Preview only:               yes
+Paused:                     no
+New sessions:               unknown (the running Worker cannot confirm it)
 Run mode:                   unknown (only a running Worker knows it)
 Session host:               unknown (only a running Worker knows it)
 tmux socket:                /run/user/1000/tmux-1000/default

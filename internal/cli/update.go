@@ -86,7 +86,7 @@ func defaultUpdateDeps() updateDeps {
 
 // workerConfigName is the file name of the Worker config file inside the
 // state directory (AD-16).
-const workerConfigName = "config.json"
+const workerConfigName = config.WorkerConfigFile
 
 // loadWorkerConfig reads the Worker config file of the state directory. A
 // missing file is empty; an unreadable or too open one is an error, because

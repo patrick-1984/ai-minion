@@ -121,7 +121,10 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	dbg := setupDebugRemote(log, s, ex)
 	facts = withDebugFact(facts, dbg)
+	// The saved pause applies from the first cycle.
+	pause := NewPauseService(s.StateDir, log)
 	c, err := NewConnector(ConnectorConfig{
+		Pause:      pause.Gate(),
 		HubURL:     hub.Server,
 		Name:       s.Name,
 		Ops:        ex.Ops,
@@ -143,6 +146,13 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		return nil, err
 	}
 	if err := Provide(env, c); err != nil {
+		return nil, err
+	}
+	pause.settled = func() bool {
+		st := c.Status()
+		return st.State == ConnIdle && st.Reason == ReasonPaused
+	}
+	if err := Provide(env, pause); err != nil {
 		return nil, err
 	}
 	su.hubRange = func() *version.ProtoRange { return connectorHubRange(c) }
@@ -174,7 +184,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	// Old identities that `minion worker pair --new-code` replaced are revoked
 	// at their Hub from here, with the same dialer (Story 4.7).
 	ret, err := NewRetirer(RetirerConfig{
-		Store: enr.RetiredStore(), Dialer: d.dialer, Name: s.Name, Clock: d.clock,
+		Store: enr.RetiredStore(), Dialer: d.dialer, Name: s.Name, Clock: d.clock, Pause: pause.Gate(),
 		Session: transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}},
 		Logger:  log,
 	})
@@ -204,7 +214,21 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	pairDone := make(chan struct{})
 	go func() {
 		defer close(pairDone)
-		d.autoPair(loopCtx, s, hub.Server, expect, enr, ex)
+		// Pairing talks to the Hub: it waits for the resume, and a pause during
+		// it ends the attempt, which starts over after the resume.
+		for loopCtx.Err() == nil {
+			if waitUnpaused(loopCtx, pause.Gate()) != nil {
+				return
+			}
+			pctx, end, ok := pause.Gate().beginWork(loopCtx)
+			if !ok {
+				continue
+			}
+			d.autoPair(pctx, s, hub.Server, expect, enr, ex)
+			if !end() {
+				return
+			}
+		}
 	}()
 	return func(stopCtx context.Context) error {
 		cancel()

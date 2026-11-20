@@ -82,6 +82,10 @@ if (Get-Service MinionWorker -ErrorAction SilentlyContinue) { 'still listed: clo
 
 Then run `minion worker up` in your normal terminal. (Only on an account that is always administrator, with no separate elevated prompt, does `minion worker up` remove the old service itself, with the same steps; that runs the `minion.exe` of your profile with administrator rights, so prefer the Windows commands above. `minion worker up --foreground` only warns, it does not refuse.)
 
+## Start, pause, block new sessions, choose sessions
+
+`minion worker start` starts the Worker that `minion worker up` installed (the logon supervisor; it installs nothing and leaves a running Worker alone); `minion worker pause` and `resume` take the Worker off the Hub and back without ending your sessions; `minion worker config set allow_new_sessions off` blocks new sessions from every origin. `minion worker up --join -` reads the join token from standard input. See [Control a Worker from the command line](../guides/worker-control.md).
+
 ## Check and reset
 
 ```powershell

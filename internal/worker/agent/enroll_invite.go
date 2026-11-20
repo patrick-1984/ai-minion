@@ -335,7 +335,7 @@ func permanentInviteError(err error) bool {
 	return errors.As(err, &pe) || errors.As(err, &fm) || errors.As(err, &re) || errors.As(err, &ce) ||
 		errors.Is(err, transport.ErrFingerprintMismatch) || errors.Is(err, transport.ErrPinMismatch) ||
 		errors.Is(err, transport.ErrBadSignature) || errors.Is(err, transport.ErrChainInvalid) ||
-		errors.Is(err, transport.ErrProtocol) || errors.Is(err, transport.ErrConfig)
+		errors.Is(err, transport.ErrProtocol) || errors.Is(err, transport.ErrConfig) || errors.Is(err, errEnrollPaused)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -615,6 +615,11 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 	if !given {
 		return nil
 	}
+	if paused, _ := ReadPause(s.StateDir); paused {
+		// No Hub traffic while paused: the key stays unused; resume, then restart.
+		s.logger().Info("the Worker is paused: the invitation key is not used. Run minion worker resume, then start the Worker again to enroll")
+		return nil
+	}
 	if literal && d.stderr != nil && !s.InviteArgvWarned {
 		_, _ = fmt.Fprintln(d.stderr, config.InviteKeyArgvWarning)
 	}
@@ -691,6 +696,7 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 	if dialer == nil {
 		dialer = NewInviteDialer()
 	}
+	dialer = pauseGuardDialer{inner: dialer, stateDir: s.StateDir}
 	enroller, err := NewInviteEnroller(InviteEnrollerConfig{
 		State: state, Dialer: dialer, HubURL: hub.Server, Name: s.Name, HubCheck: check,
 		Attempts: d.attempts, RetryWait: d.wait, Sleep: d.sleep, Logger: s.logger(),
@@ -769,3 +775,22 @@ func diskHasInviteKey(path string) bool {
 	_, has, _ := fresh.Lookup(config.KeyInviteKey)
 	return has
 }
+
+// pauseGuardDialer reads the pause right before every dial of an invitation
+// enrollment: a pause that was saved after the hook started refuses the
+// attempt, so no Hub request follows it.
+type pauseGuardDialer struct {
+	inner    InviteDialer
+	stateDir string
+}
+
+func (g pauseGuardDialer) Enroll(ctx context.Context, p InviteParams) (*InviteOutcome, error) {
+	if paused, _ := ReadPause(g.stateDir); paused {
+		return nil, errEnrollPaused
+	}
+	return g.inner.Enroll(ctx, p)
+}
+
+// errEnrollPaused ends an enrollment that a pause refused (permanent: the
+// operator resumes and runs the command again with a fresh token).
+var errEnrollPaused = errors.New("the Worker is paused, so nothing was sent to the Hub; run minion worker resume, then enroll again")

@@ -181,6 +181,30 @@ func (s *upState) load() (*config.ConfigFile, error) {
 	return f, nil
 }
 
+// update loads the config file, applies fn and saves it, holding the config
+// lock of the "worker config" commands throughout (not when root works on
+// another user's directory: no lock file is created there).
+func (s *upState) update(fn func(*config.ConfigFile) error) (string, error) {
+	if s.root == nil {
+		if err := os.MkdirAll(s.dir, 0o700); err != nil {
+			return "", err
+		}
+		release, err := lockConfigFile(filepath.Join(s.dir, configLockName))
+		if err != nil {
+			return "", err
+		}
+		defer release()
+	}
+	file, err := s.load()
+	if err != nil {
+		return "", err
+	}
+	if err := fn(file); err != nil {
+		return "", err
+	}
+	return s.save(file)
+}
+
 // save writes file, which load returned, back to the state and returns the
 // path of the saved config file.
 func (s *upState) save(file *config.ConfigFile) (string, error) {

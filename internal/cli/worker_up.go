@@ -140,7 +140,9 @@ one-time invitation key, and sets --server, --hub-fingerprint and
 --invite-key: the Worker connects only to the Hub with that fingerprint and
 enrolls with the key, which works once and expires. Giving one of these three
 with a different value is an error. The Hub address and fingerprint are saved
-for the service; the token itself is never saved or printed.
+for the service; the token itself is never saved or printed. --join - reads
+the token from the first line of standard input (at most 4096 bytes), so that it
+is in no argument list; sharing behaves exactly as with --join <token>.
 
 "worker up" first runs the pre-start hooks (for example invitation
 enrollment) and reports their result. A failing hook stops the command with an
@@ -261,6 +263,11 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 			return err
 		}
 	}
+	if core, err := config.ResolveWorkerCore(res); err == nil {
+		if err := refuseJoinWhilePaused(cmdContext(cmd), cmd, &upState{dir: core.StateDir}); err != nil {
+			return err
+		}
+	}
 	offerPsmux(cmd, res, defaultPsmuxOfferDeps())
 	return sd.firstRun(cmd, res, nil, "")
 }
@@ -347,6 +354,9 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	} else if err := joinFileConflict(cmd, reg, saved); err != nil {
 		return err
 	}
+	if err := refuseJoinWhilePaused(ctx, cmd, st); err != nil {
+		return err
+	}
 
 	// A Worker that was never set up gets the wizard (on a terminal) or a
 	// clear refusal, before anything is installed or changed. The wizard saves
@@ -403,13 +413,12 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	}
 
 	// A hook may have written the config file itself: start from what is on disk.
-	if file, err = st.load(); err != nil {
-		return err
-	}
-	if err := fillUpConfig(file, plain, reg, flags, lookupEnv); err != nil {
-		return err
-	}
-	path, err := st.save(file)
+	// Under the config lock of "worker config set", from the reload to the
+	// save: a change saved meanwhile (allow_new_sessions off, for example) is
+	// kept, never written over with the older file.
+	path, err := st.update(func(file *config.ConfigFile) error {
+		return fillUpConfig(file, plain, reg, flags, lookupEnv)
+	})
 	if err != nil {
 		return err
 	}
@@ -679,6 +688,8 @@ func serviceSinkReader(owned bool, uid, gid int) func(string) ([]byte, error) {
 // so that later changes of a default still apply.
 func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool)) error {
 	for _, s := range reg.ForScope(config.ScopeWorker) {
+		// Only a value given by flag or environment is saved; a saved
+		// allow_new_sessions is never overwritten otherwise.
 		if s.Secret || s.Key == config.KeyStateDir {
 			continue
 		}
@@ -750,3 +761,20 @@ func newWorkerServiceRunCmd(deps workerRunDeps, scm service.SCM) *cobra.Command 
 // the Worker as SYSTEM.
 const legacyServiceRunMessage = "minion no longer runs the Worker as the LocalSystem service " + service.WindowsServiceName +
 	"; the service ends. Remove it (" + service.LegacyRemovalCommand + ") and run minion worker up as yourself."
+
+// refuseJoinWhilePaused stops a join token on a paused Worker that is not
+// enrolled yet: a paused Worker makes no Hub request, so the invitation would
+// not be checked, and the command would report a join that did not happen.
+func refuseJoinWhilePaused(ctx context.Context, cmd *cobra.Command, st *upState) error {
+	if cmd.Annotations[joinAppliedAnnotation] == "" {
+		return nil
+	}
+	if paused, _ := agent.ReadPause(st.dir); !paused {
+		return nil
+	}
+	if enrolled, err := st.enrolled(ctx); err != nil || enrolled {
+		return err
+	}
+	return errors.New("this Worker is paused, so it makes no Hub request and cannot use the join token; nothing was changed. " +
+		"Run minion worker resume, then run this command again with a fresh token")
+}
