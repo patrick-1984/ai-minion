@@ -92,6 +92,7 @@ func initRoute(ctx context.Context, env *Env) error {
 		},
 		Logger:         cfg.logger(),
 		UserManaged:    userManaged(st),
+		ContentManaged: contentManaged(st),
 		HiddenSessions: hiddenSessionsPolicy(hubPolicy, st),
 	})
 	if err != nil {
@@ -135,6 +136,19 @@ func initRoute(ctx context.Context, env *Env) error {
 }
 
 // userManaged reads the user-managed switch of a Worker (Minion control).
+// contentManaged is userManaged for recording session content: a Worker the
+// Hub no longer has (it is being removed) is not user-managed, whatever the
+// default of a missing control row says.
+func contentManaged(st *store.Store) func(ctx context.Context, workerID string) (bool, error) {
+	return func(ctx context.Context, workerID string) (bool, error) {
+		if _, err := st.WorkerByID(ctx, workerID); err != nil {
+			return false, err
+		}
+		c, err := st.WorkerControl(ctx, workerID)
+		return c.UserManaged, err
+	}
+}
+
 func userManaged(st *store.Store) func(ctx context.Context, workerID string) (bool, error) {
 	return func(ctx context.Context, workerID string) (bool, error) {
 		c, err := st.WorkerControl(ctx, workerID)

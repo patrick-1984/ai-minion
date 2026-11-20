@@ -98,3 +98,29 @@ func TestHubComplianceMonitoringSetting(t *testing.T) {
 		t.Fatalf("mode = %v after the sink was switched off", got)
 	}
 }
+
+// The banner and the status follow the live level; the environment's origin is
+// shown; a Worker the Hub does not know is not user-managed for content.
+func TestComplianceLiveLevelOriginAndContentManaged(t *testing.T) {
+	mon := compliance.New(func() compliance.Sink { return nil })
+	level := monitoringLevelFunc(mon)
+	if level() != "off" {
+		t.Fatalf("level = %q", level())
+	}
+	mon.SetMode(compliance.Full)
+	if level() != "full" {
+		t.Fatalf("the banner level is frozen: %q", level())
+	}
+
+	sink := newOTLPSink(t, "")
+	o := newObsFixture(t, map[string]string{"MINION_OTEL": "on", "MINION_OTEL_ENDPOINT": sink.srv.URL, "MINION_COMPLIANCE_MONITORING": "full"}, nil)
+	if o.svc.Compliance.Mode() != compliance.Full || !strings.Contains(o.svc.Compliance.Status(), "the environment") {
+		t.Fatalf("mode %v, status %q", o.svc.Compliance.Mode(), o.svc.Compliance.Status())
+	}
+	if !strings.Contains(o.local.String(), "MINION_COMPLIANCE_MONITORING") {
+		t.Errorf("no start-up line about the environment setting: %s", o.local.String())
+	}
+	if ok, err := contentManaged(o.st)(context.Background(), "no-such-worker"); ok || err == nil {
+		t.Fatalf("an unknown Worker counts as user-managed: %v %v", ok, err)
+	}
+}

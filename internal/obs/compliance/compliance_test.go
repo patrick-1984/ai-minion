@@ -80,3 +80,39 @@ func TestNoSinkNeverPanicsOrBlocks(t *testing.T) {
 		t.Fatal("status does not say why nothing is sent")
 	}
 }
+
+// A configuration change between the mode check and the sink lookup drops the
+// record: it is never sent to the replacement sink.
+func TestEmitDropsWhenTheConfigurationChangesMidway(t *testing.T) {
+	c := &collect{}
+	var m *Monitor
+	m = New(func() Sink {
+		m.SetMode(Off) // an admin turns monitoring off and retargets, right now
+		return c
+	})
+	m.SetMode(Full)
+	m.Emit(Full, EventInput, "typed text")
+	if len(c.bodies) != 0 {
+		t.Fatalf("sent %v to the sink of a configuration that was gone", c.bodies)
+	}
+}
+
+// Every string attribute is masked and bounded; a secret split by line breaks
+// is masked whole.
+func TestAttributesAreMaskedAndBoundedAndWrapsAreJoined(t *testing.T) {
+	key := "mn_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+	c := &collect{}
+	m := New(func() Sink { return c })
+	m.SetMode(Full)
+	m.Emit(Actions, EventAction, "", KV{"minion.session", "name-" + key}, KV{"minion.outcome", strings.Repeat("o", 5000)})
+	for _, a := range c.attrs[0] {
+		v := a.Value.(string)
+		if strings.Contains(v, key[:12]) || len(v) > MaxAttrBytes {
+			t.Fatalf("attribute %s = %d bytes: %.60q", a.Key, len(v), v)
+		}
+	}
+	m.Emit(Output, EventOutput, "row one "+key[:25]+"\n"+key[25:]+"\nrow three")
+	if b := c.bodies[1]; strings.Contains(b, key[:12]) || strings.Contains(b, key[25:37]) {
+		t.Fatalf("wrapped secret not masked: %q", b)
+	}
+}

@@ -240,21 +240,25 @@ type RouterConfig struct {
 	// Monitor records the calls routed to Workers for compliance monitoring;
 	// nil: none.
 	Monitor *compliance.Monitor
+	// ContentManaged tells whether the content of a Worker's sessions may be
+	// recorded; it must say no for a Worker it does not know. Nil: UserManaged.
+	ContentManaged func(ctx context.Context, workerID string) (bool, error)
 }
 
 // Router routes catalog Worker ops to the Workers that run them.
 type Router struct {
-	backend   Backend
-	dir       Directory
-	az        *authz.Authorizer
-	catalog   *ops.Registry
-	ownerName func(ctx context.Context, ownerID string) string
-	timeout   time.Duration
-	log       *slog.Logger
-	userMgd   func(ctx context.Context, workerID string) (bool, error)
-	hidden    HiddenSessionsPolicyFunc
-	mon       *compliance.Monitor
-	telemetry func() Telemetry
+	backend    Backend
+	dir        Directory
+	az         *authz.Authorizer
+	catalog    *ops.Registry
+	ownerName  func(ctx context.Context, ownerID string) string
+	timeout    time.Duration
+	log        *slog.Logger
+	userMgd    func(ctx context.Context, workerID string) (bool, error)
+	hidden     HiddenSessionsPolicyFunc
+	mon        *compliance.Monitor
+	contentMgd func(ctx context.Context, workerID string) (bool, error)
+	telemetry  func() Telemetry
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
 	synced atomic.Pointer[func(workerID string) bool]
@@ -277,7 +281,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 	}
 	rt := &Router{
 		telemetry: c.Telemetry,
-		userMgd:   c.UserManaged, hidden: c.HiddenSessions, mon: c.Monitor,
+		userMgd:   c.UserManaged, hidden: c.HiddenSessions, mon: c.Monitor, contentMgd: c.ContentManaged,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
 	}

@@ -106,7 +106,7 @@ func initWeb(_ context.Context, env *Env, wr *web.Registry) error {
 			return fp.String()
 		})
 	}
-	releaseMon := web.SetMonitoringLevel(complianceMonitor(env).Mode().String)
+	releaseMon := web.SetMonitoringLevel(monitoringLevelFunc(complianceMonitor(env)))
 	env.OnStop(func(context.Context) error {
 		releaseMon()
 		web.DisconnectAdminOps(caller)

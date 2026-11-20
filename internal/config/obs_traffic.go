@@ -146,13 +146,15 @@ func ResolveCompliance(res *Resolver, sinks Sinks) (string, error) {
 	if err != nil || u.Host == "" {
 		return "", fmt.Errorf("setting %q: the OpenTelemetry endpoint is not valid", KeyCompliance)
 	}
-	if u.Scheme != "https" && (u.Scheme != "http" || !loopbackHost(u.Hostname())) {
+	if u.Scheme != "https" && (u.Scheme != "http" || !LoopbackHost(u.Hostname())) {
 		return "", fmt.Errorf("setting %q needs an https OpenTelemetry endpoint (or http to localhost)", KeyCompliance)
 	}
 	return r.Value, nil
 }
 
-func loopbackHost(h string) bool {
+// LoopbackHost reports whether h (a host name or address, any letter case)
+// is localhost or a loopback address.
+func LoopbackHost(h string) bool {
 	if strings.EqualFold(h, "localhost") {
 		return true
 	}

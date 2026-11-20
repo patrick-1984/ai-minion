@@ -2,13 +2,11 @@ package workers
 
 import (
 	"context"
-	"errors"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/pipe"
-	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // The Pipe is the one place that records pipe traffic for compliance
@@ -35,11 +33,7 @@ func outcomeOf(wr ops.WriteResult, err error) string {
 	if err == nil {
 		return string(wr.Outcome)
 	}
-	var pe *proto.Error
-	if errors.As(err, &pe) {
-		return string(pe.Code)
-	}
-	return "error"
+	return errorOutcome(err)
 }
 
 // observeSend records an authorised pipe_send.
@@ -50,7 +44,9 @@ func (p *Pipe) observeSend(ctx context.Context, pr authz.Principal, peer pipe.Pe
 	}
 	attrs := p.pipeAttrs(pr, ops.OpPipeSend, peer, outcomeOf(wr, err))
 	mon.Emit(compliance.Actions, compliance.EventAction, "", attrs...)
-	if mon.Mode() == compliance.Full && p.contentOK(ctx, peer) {
+	// Only what the Worker took: a refused delivery (pipe_origin_refused, a
+	// Worker error) or a send that went nowhere is not input.
+	if err == nil && wr.Outcome != ops.OutcomeFailedNotSent && mon.Mode() == compliance.Full && p.contentOK(ctx, peer) {
 		mon.Emit(compliance.Full, compliance.EventInput, args.Text, append(attrs, compliance.KV{Key: "minion.input.kind", Value: "pipe_send"})...)
 	}
 }
@@ -70,11 +66,12 @@ func (p *Pipe) observeTurns(ctx context.Context, pr authz.Principal, op string, 
 		return
 	}
 	for _, t := range turns {
-		min := compliance.Output
+		min, event := compliance.Output, compliance.EventOutput
 		if t.Direction == ops.PipeSent {
-			min = compliance.Full
+			// What the history returns of a message that was sent is input.
+			min, event = compliance.Full, compliance.EventInput
 		}
-		mon.Emit(min, compliance.EventOutput, t.Text, append(attrs,
+		mon.Emit(min, event, t.Text, append(attrs,
 			compliance.KV{Key: "minion.output.kind", Value: "pipe_turn"},
 			compliance.KV{Key: "minion.turn.id", Value: t.TurnID},
 			compliance.KV{Key: "minion.turn.direction", Value: t.Direction})...)

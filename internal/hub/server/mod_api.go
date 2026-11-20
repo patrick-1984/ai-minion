@@ -175,3 +175,9 @@ func monitoringHeader(mon *compliance.Monitor) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// monitoringLevelFunc is the live level for the session page banner: asked on
+// every page, never captured at start.
+func monitoringLevelFunc(mon *compliance.Monitor) func() string {
+	return func() string { return mon.Mode().String() }
+}

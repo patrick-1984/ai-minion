@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
@@ -33,11 +34,7 @@ func (rt *Router) observe(ctx context.Context, req CallRequest, c *call, res any
 		outcome = string(wr.Outcome)
 	}
 	if err != nil {
-		outcome = "error"
-		var pe *proto.Error
-		if errors.As(err, &pe) {
-			outcome = string(pe.Code)
-		}
+		outcome = errorOutcome(err)
 	}
 	attrs := append(PrincipalAttrs(req.Principal),
 		compliance.KV{Key: "minion.op", Value: req.Op},
@@ -55,6 +52,11 @@ func (rt *Router) observe(ctx context.Context, req CallRequest, c *call, res any
 			mon.Emit(compliance.Output, compliance.EventOutput, text, append(attrs, compliance.KV{Key: "minion.output.kind", Value: kind})...)
 		}
 	}
+	// Input is recorded only when the Worker took the request: not when it
+	// refused it (an error) or reported that nothing was sent.
+	if wr, ok := res.(ops.WriteResult); err != nil || (ok && wr.Outcome == ops.OutcomeFailedNotSent) {
+		return
+	}
 	if kind, text := inputText(req.Args); kind != "" {
 		mon.Emit(compliance.Full, compliance.EventInput, text, append(attrs, compliance.KV{Key: "minion.input.kind", Value: kind})...)
 	}
@@ -64,14 +66,28 @@ func (rt *Router) contentAllowed(ctx context.Context, req CallRequest) bool {
 	return rt.ContentAllowed(ctx, req.WorkerID)
 }
 
+// errorOutcome is the outcome of a failed call: its error code when that is a
+// code of the protocol, else "error". A Worker's own text never gets through.
+func errorOutcome(err error) string {
+	var pe *proto.Error
+	if errors.As(err, &pe) && pe.Code.Known() {
+		return string(pe.Code)
+	}
+	return "error"
+}
+
 // ContentAllowed reports whether content of the Worker's sessions may be
-// recorded for compliance monitoring: it is user-managed (a failed lookup
-// says no).
+// recorded for compliance monitoring: it is user-managed (a failed lookup, or
+// a Worker the Hub no longer knows, says no).
 func (rt *Router) ContentAllowed(ctx context.Context, workerID string) bool {
-	if rt.userMgd == nil {
+	check := rt.contentMgd
+	if check == nil {
+		check = rt.userMgd
+	}
+	if check == nil {
 		return true
 	}
-	ok, err := rt.userMgd(ctx, workerID)
+	ok, err := check(ctx, workerID)
 	return err == nil && ok
 }
 
@@ -113,7 +129,7 @@ func inputText(args any) (kind, text string) {
 	case *ops.SendTextArgs:
 		return inputText(*a)
 	case ops.SendKeysArgs:
-		return "keys", strings.Join(a.Keys, " ")
+		return "keys", keysText(a.Keys)
 	case *ops.SendKeysArgs:
 		return inputText(*a)
 	case ops.AnswerArgs:
@@ -132,4 +148,18 @@ func inputText(args any) (kind, text string) {
 		return inputText(*a)
 	}
 	return "", ""
+}
+
+// keysText renders a key list as typed: literal characters run together (so a
+// secret typed key by key is one string to mask), named keys show as <Name>.
+func keysText(keys []string) string {
+	var b strings.Builder
+	for _, k := range keys {
+		if utf8.RuneCountInString(k) == 1 {
+			b.WriteString(k)
+		} else {
+			b.WriteString("<" + k + ">")
+		}
+	}
+	return b.String()
 }

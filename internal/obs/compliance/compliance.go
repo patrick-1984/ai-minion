@@ -69,10 +69,16 @@ type Sink interface {
 
 // Monitor holds the current mode and finds the sink of an observation.
 type Monitor struct {
-	mode atomic.Int32
+	// state packs a generation (high bits) and the mode (low byte): every
+	// SetMode changes it, so an observation can tell that the configuration
+	// changed while it looked up its sink.
+	state atomic.Uint64
 	// source returns the current sink, nil when there is none or the sink's
 	// level filters INFO.
 	source func() Sink
+	// origin says where the setting came from when that is not the panel
+	// ("the environment"); shown in the status.
+	origin atomic.Pointer[string]
 	now    func() time.Time
 }
 
@@ -83,8 +89,21 @@ func New(source func() Sink) *Monitor {
 
 // SetMode sets the effective mode.
 func (m *Monitor) SetMode(md Mode) {
+	if m == nil {
+		return
+	}
+	for {
+		old := m.state.Load()
+		if m.state.CompareAndSwap(old, ((old>>8)+1)<<8|uint64(md)) {
+			return
+		}
+	}
+}
+
+// SetOrigin records where the mode was set when it was not the settings panel.
+func (m *Monitor) SetOrigin(o string) {
 	if m != nil {
-		m.mode.Store(int32(md))
+		m.origin.Store(&o)
 	}
 }
 
@@ -93,7 +112,7 @@ func (m *Monitor) Mode() Mode {
 	if m == nil {
 		return Off
 	}
-	return Mode(m.mode.Load())
+	return Mode(m.state.Load() & 0xff)
 }
 
 // Status is the mode as the sink status shows it: with a note when the sink's
@@ -103,10 +122,14 @@ func (m *Monitor) Status() string {
 	if md == Off {
 		return ""
 	}
-	if m.source == nil || m.source() == nil {
-		return md.String() + " (not sent: otel_level filters info events)"
+	st := md.String()
+	if o := m.origin.Load(); o != nil && *o != "" {
+		st += " (set by " + *o + ")"
 	}
-	return md.String()
+	if m.source == nil || m.source() == nil {
+		st += " (not sent: otel_level filters info events)"
+	}
+	return st
 }
 
 // Emit records one observation if the mode is at least min. text, when not
@@ -114,25 +137,65 @@ func (m *Monitor) Status() string {
 // at most ChunkBytes, each an event with the observation id, chunk index and
 // chunk count. All chunks go to the sink found at the start.
 func (m *Monitor) Emit(min Mode, event string, text string, attrs ...KV) {
-	if m.Mode() < min || m.source == nil {
+	if m == nil || m.source == nil {
+		return
+	}
+	// One snapshot: the mode, then the sink, then the mode again. If the
+	// configuration changed in between (a retarget, a level change), the
+	// record is dropped rather than sent to a sink the mode did not admit.
+	before := m.state.Load()
+	if Mode(before&0xff) < min {
 		return
 	}
 	sink := m.source()
-	if sink == nil {
+	if sink == nil || m.state.Load() != before {
 		return
 	}
+	attrs = sanitize(attrs)
 	at := m.now()
 	if text == "" {
 		sink.EmitEvent(event, at, "", attrs)
 		return
 	}
-	chunks := Chunks(logx.RedactText(strings.ToValidUTF8(text, "\uFFFD")), ChunkBytes)
+	chunks := Chunks(maskText(text), ChunkBytes)
 	id := ops.NewUUIDv7()
 	for i, c := range chunks {
 		a := append(append([]KV(nil), attrs...),
 			KV{"minion.observation.id", id}, KV{"minion.chunk.index", int64(i)}, KV{"minion.chunk.count", int64(len(chunks))})
 		sink.EmitEvent(event, at, c, a)
 	}
+}
+
+// MaxAttrBytes bounds a string attribute of an event.
+const MaxAttrBytes = 256
+
+// sanitize masks and bounds every string attribute (session names and
+// outcomes come from callers and Workers, not from Minion).
+func sanitize(in []KV) []KV {
+	out := make([]KV, len(in))
+	for i, a := range in {
+		if v, ok := a.Value.(string); ok {
+			a.Value = logx.CapText(logx.RedactText(strings.ToValidUTF8(v, "\uFFFD")), MaxAttrBytes)
+		}
+		out[i] = a
+	}
+	return out
+}
+
+// maskText masks Minion's secret formats. A terminal screen holds physical
+// rows: a secret that wrapped is split by a line break, so when the text with
+// its line breaks removed matches a secret format that the text itself does
+// not, the rows are joined (and masked) instead.
+func maskText(text string) string {
+	text = strings.ToValidUTF8(text, "\uFFFD")
+	masked := logx.RedactText(text)
+	if strings.Contains(text, "\n") {
+		flat := strings.ReplaceAll(strings.ReplaceAll(masked, "\r", ""), "\n", "")
+		if r := logx.RedactText(flat); r != flat {
+			return r // what the line breaks hid
+		}
+	}
+	return masked
 }
 
 // Chunks splits s into pieces of at most max bytes, each valid UTF-8 (a cut

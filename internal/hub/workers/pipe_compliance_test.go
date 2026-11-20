@@ -2,6 +2,7 @@ package workers
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/obs/compliance"
 	"github.com/patrick-1984/ai-minion/internal/obs/otlptest"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // memSink collects the events of a Monitor.
@@ -115,11 +117,13 @@ func TestPipeComplianceLevels(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = sink.take()
-	if in := eventTexts(got, compliance.EventInput); len(in) != 1 || in[0] != "q4" {
-		t.Fatalf("full recorded input %v", in)
+	// Sent text is input: the send, and the history a read returns again.
+	in := strings.Join(eventTexts(got, compliance.EventInput), "|")
+	if !strings.Contains(in, "q4") || !strings.Contains(in, "secret question") {
+		t.Fatalf("full recorded input %q", in)
 	}
-	if o := strings.Join(eventTexts(got, compliance.EventOutput), "|"); !strings.Contains(o, "secret question") || !strings.Contains(o, "answer text") {
-		t.Fatalf("full read recorded %q", o)
+	if o := strings.Join(eventTexts(got, compliance.EventOutput), "|"); strings.Contains(o, "secret question") || !strings.Contains(o, "answer text") {
+		t.Fatalf("full read recorded output %q: sent text must be input, received text output", o)
 	}
 
 	// a model that does not trust the source: the turn is withheld, so it is
@@ -207,5 +211,84 @@ func TestRouterComplianceSkipsPipeOpsAndForeignContent(t *testing.T) {
 	got := sink.take()
 	if len(got) != 1 || got[0].Name != compliance.EventAction || got[0].Body != "" {
 		t.Fatalf("recorded %+v, want the action only", got)
+	}
+}
+
+// A Worker that refuses a delivery (pipe_origin_refused) or a Router call that
+// the Worker answers with an error exports no input: only the action.
+func TestComplianceRecordsInputOnlyWhenTheWorkerTookIt(t *testing.T) {
+	ctx := context.Background()
+	sink := &memSink{}
+	mon := compliance.New(func() compliance.Sink { return sink })
+	mon.SetMode(compliance.Full)
+
+	r := newRig(t, func(c *RouterConfig) { c.Monitor = mon })
+	target := ops.Target{WorkerID: wAlicePi1.ID, SessionName: "minion-1"}
+	r.script(newFakeStream(errorFrame(t, proto.CodeForbidden)))
+	_, err := r.rt.Call(ctx, CallRequest{Principal: routeAlice(), Op: ops.OpSendText, WorkerID: target.WorkerID, Session: target.SessionName,
+		Args: ops.SendTextArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: target, Text: "refused text"}})
+	if err == nil {
+		t.Fatal("the Worker's refusal was not returned")
+	}
+	got := sink.take()
+	if len(got) != 1 || got[0].Name != compliance.EventAction || got[0].Attrs["minion.outcome"] != "forbidden" {
+		t.Fatalf("recorded %+v, want only the action", got)
+	}
+	// An unknown error code from a Worker never becomes an attribute.
+	r.script(newFakeStream(errorFrame(t, proto.Code("secret mn_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"))))
+	_, _ = r.rt.Call(ctx, CallRequest{Principal: routeAlice(), Op: ops.OpSendText, WorkerID: target.WorkerID, Session: target.SessionName,
+		Args: ops.SendTextArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: target, Text: "x"}})
+	if got := sink.take(); len(got) != 1 || got[0].Attrs["minion.outcome"] == "" || strings.Contains(got[0].Attrs["minion.outcome"], "mn_") {
+		t.Fatalf("outcome of an unknown code: %+v", got)
+	}
+
+	// The pipe broker: a delivery the receiver refused is not input.
+	pr := newPipeRigWith(t, 0, func(c *PipeConfig) { c.Monitor = mon })
+	pr.rt.err = proto.NewError(proto.CodePipeOriginRefused, "refused")
+	_, _ = pr.p.Send(ctx, authz.NewSessionPrincipal(idAlice), sendArgs(wAlicePi1, pipeSess, "refused message"))
+	got = sink.take()
+	if len(got) != 1 || got[0].Name != compliance.EventAction || got[0].Attrs["minion.outcome"] != string(proto.CodePipeOriginRefused) {
+		t.Fatalf("pipe recorded %+v, want only the action", got)
+	}
+}
+
+// A Worker that is not known (being removed) is not user-managed for content.
+func TestRouterContentFollowsTheContentCheck(t *testing.T) {
+	ctx := context.Background()
+	sink := &memSink{}
+	mon := compliance.New(func() compliance.Sink { return sink })
+	mon.SetMode(compliance.Full)
+	r := newRig(t, func(c *RouterConfig) {
+		c.Monitor = mon
+		c.ContentManaged = func(context.Context, string) (bool, error) { return false, errors.New("unknown Worker") }
+	})
+	target := ops.Target{WorkerID: wAlicePi1.ID, SessionName: "minion-1"}
+	r.script(newFakeStream(resultFrame(t, ops.WriteResult{Outcome: ops.OutcomeDelivered})))
+	if _, err := r.rt.Call(ctx, CallRequest{Principal: routeAlice(), Op: ops.OpSendText, WorkerID: target.WorkerID, Session: target.SessionName,
+		Args: ops.SendTextArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: target, Text: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := sink.take(); len(got) != 1 || got[0].Body != "" {
+		t.Fatalf("recorded %+v", got)
+	}
+}
+
+// Keys typed one by one and rows of a wrapped secret are masked whole.
+func TestComplianceMasksKeysAndWrappedRows(t *testing.T) {
+	key := "mn_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+	var keys []string
+	for _, c := range key {
+		keys = append(keys, string(c))
+	}
+	_, text := inputText(ops.SendKeysArgs{Keys: append(keys, "Enter")})
+	sink := &memSink{}
+	mon := compliance.New(func() compliance.Sink { return sink })
+	mon.SetMode(compliance.Full)
+	mon.Emit(compliance.Full, compliance.EventInput, text)
+	mon.Emit(compliance.Full, compliance.EventOutput, "$ echo "+key[:30]+"\n"+key[30:]+"\nnext")
+	for _, e := range sink.take() {
+		if strings.Contains(e.Body, key[:12]) || strings.Contains(e.Body, key[30:42]) {
+			t.Fatalf("secret in %q", e.Body)
+		}
 	}
 }

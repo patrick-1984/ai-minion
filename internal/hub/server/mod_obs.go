@@ -252,7 +252,10 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 			log.Error("compliance monitoring is off: its settings are not valid", "error", logx.ErrorText(cerr))
 			cm = config.ComplianceOff
 		}
-		svc.Compliance.SetMode(compliance.ParseMode(cm))
+		setCompliance(svc, settings.Resolver(), cm)
+		if r, err := settings.Resolver().Resolve(config.KeyCompliance); err == nil && cm != config.ComplianceOff && r.Source == config.SourceEnv {
+			log.Warn("compliance monitoring is on, set by the environment", "level", cm, "variable", "MINION_COMPLIANCE_MONITORING")
+		}
 	}
 
 	// The configuration the validator resolved is the one applied after the
@@ -356,7 +359,7 @@ func wireLogging(ctx context.Context, svc *ObsService, settings *SettingsService
 			}
 			return err
 		}
-		svc.Compliance.SetMode(compliance.ParseMode(r.comp))
+		setCompliance(svc, eff, r.comp)
 		if svc.Traffic != nil {
 			svc.Traffic.Configure(r.traffic)
 		}
@@ -404,6 +407,17 @@ func configureMetrics(ctx context.Context, svc *ObsService, level string, otlp c
 	}
 	res, _ := otelsink.NewResource(ctx, svc.proc)
 	return svc.Metrics.Configure(ctx, otelsink.MetricsConfig{Level: level, OTLP: otlp}, res)
+}
+
+// setCompliance makes cm the effective mode and records whether the
+// environment set it (a deployer's decision, shown in the status).
+func setCompliance(svc *ObsService, res *config.Resolver, cm string) {
+	svc.Compliance.SetMode(compliance.ParseMode(cm))
+	origin := ""
+	if r, err := res.Resolve(config.KeyCompliance); err == nil && r.Source == config.SourceEnv {
+		origin = "the environment"
+	}
+	svc.Compliance.SetOrigin(origin)
 }
 
 // complianceUnchanged reports whether the proposed settings p leave

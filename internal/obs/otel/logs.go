@@ -154,6 +154,9 @@ func newLogs(ctx context.Context, cfg config.OTLPConfig, res *resource.Resource,
 		tlsCfg = cfg.TLSConfig()
 	}
 	client, status := exportClient(tlsCfg)
+	if u, _ := url.Parse(cfg.LogsURL); u != nil && config.LoopbackHost(u.Hostname()) {
+		noProxy(client)
+	}
 	exp, err := otlploghttp.New(ctx,
 		otlploghttp.WithEndpointURL(cfg.LogsURL),
 		otlploghttp.WithHeaders(headers),
@@ -199,6 +202,13 @@ func exportClient(tlsCfg *tls.Config) (*http.Client, *statusRecorder) {
 			return http.ErrUseLastResponse
 		},
 	}, status
+}
+
+// noProxy makes client connect directly: a collector on this host is never
+// reached through a proxy named by the environment, which session content
+// must not be handed to.
+func noProxy(client *http.Client) {
+	client.Transport.(responseFilter).rt.(*http.Transport).Proxy = nil
 }
 
 // statusRecorder keeps the HTTP status of the last response of an export.
