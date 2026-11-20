@@ -222,12 +222,9 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *
 			if err != nil {
 				return err
 			}
-			shareUnread := r.Share.Mode == ""
-			for _, pr := range r.Problems {
-				if strings.Contains(pr, "share selection") {
-					shareUnread = true
-				}
-			}
+			// Anything the status could not read (the state, the share
+			// selection) means the saved choice is unknown.
+			shareUnread := r.Share.Mode == "" || len(r.Problems) > 0
 			if !r.Share.Configured && shareUnread {
 				// The database exists but its choice could not be read (an
 				// older schema, for example): never replace it with a default.

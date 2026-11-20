@@ -75,14 +75,18 @@ func checkPsmux(res *config.Resolver) error {
 	if err != nil || host.Value == config.SessionHostConPTY {
 		return err
 	}
+	auto := host.Value == config.SessionHostAuto || host.Value == ""
 	bin := tmux.FindPsmux()
 	if bin == "" {
-		if host.Value == config.SessionHostAuto {
+		if auto {
 			return nil // session_host auto: the Worker uses ConPTY
 		}
 		return errors.New("psmux is missing (session_host is psmux). Install it with: winget install psmux, or set session_host to auto")
 	}
 	if _, err := tmux.NewPsmux(bin); err != nil {
+		if auto {
+			return nil // an unusable psmux: auto falls back to ConPTY, as the Worker does
+		}
 		return fmt.Errorf("%w. Update psmux with: winget upgrade psmux", err)
 	}
 	return nil
