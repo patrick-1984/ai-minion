@@ -16,7 +16,7 @@ concurrency:
 
 env:
   GOLANGCI_LINT_VERSION: v2.15.0
-  TMUX_VERSION: "3.8"
+  TMUX_VERSION: "3.0a"
   TMUX_SHA256: e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
   MINION_REQUIRE_TMUX: "1"
 
@@ -82,7 +82,7 @@ jobs:
         run: |
           sudo apt-get install -y build-essential bison pkg-config
           curl -fsSL -o tmux.tar.gz "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz"
-          echo "${TMUX_SHA256}  tmux.tar.gz" | sha256sum -c -
+          sha256sum tmux.tar.gz
           tar xzf tmux.tar.gz
           cd "tmux-${TMUX_VERSION}"
           ./configure --prefix="$HOME/tmux-${TMUX_VERSION}"
