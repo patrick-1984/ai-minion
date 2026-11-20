@@ -902,3 +902,26 @@ func waitPaneDead(t *testing.T, h *Host, pane string) {
 	}
 	t.Fatalf("pane %s did not become dead", pane)
 }
+
+// tmux before 3.2 sends an escape sequence for C-2 and C-?, not NUL and DEL:
+// the key is refused instead of being reported as delivered (A56).
+func TestSendKeysRefusesNulAndDelKeysBeforeTmux32(t *testing.T) {
+	live := paneA
+	s := &script{handler: livePane(&live)}
+	h := s.host(t)
+	h.version = Version{Major: 3, Minor: 0, Suffix: "a", raw: "3.0a"}
+	for _, k := range []string{"C-2", "C-?", "C-6", "C-C-2", "M-C-2", "C-\u00e9"} {
+		if _, err := h.SendKeys(context.Background(), paneA, []string{k}, paneA); !errors.Is(err, ops.ErrInvalidArgument) || !strings.Contains(err.Error(), "3.2") {
+			t.Errorf("%s: err = %v", k, err)
+		}
+	}
+	for _, k := range []string{"C-a", "M-2", "C-Space", "C-[", "C-]", "C-@", "C-_", "C-\\", "C-^", "Enter", "C-Enter"} {
+		if ctrlNonLetter(k) {
+			t.Errorf("%s must stay allowed on tmux 3.0", k)
+		}
+	}
+	h.version = Version{Major: 3, Minor: 2, raw: "3.2"}
+	if _, err := h.SendKeys(context.Background(), paneA, []string{"C-2"}, paneA); err != nil {
+		t.Errorf("tmux 3.2 must send C-2: %v", err)
+	}
+}

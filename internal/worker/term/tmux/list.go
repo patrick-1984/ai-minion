@@ -57,6 +57,9 @@ func (c paneCodec) format() string { return fmt.Sprintf(paneFormatFields, c.fs, 
 // and every later command match, so it is not decoded. A server that is not running has no sessions: the result is
 // empty and the error nil.
 func (h *Host) ListSessions(ctx context.Context) ([]term.Session, error) {
+	// A server that another process started on an old tmux may have a
+	// group-writable socket; the listing runs every poll, so it is fixed soon.
+	h.tightenSocket()
 	sessions, err := h.listPanes(ctx)
 	if errors.Is(err, term.ErrNotFound) {
 		return nil, nil

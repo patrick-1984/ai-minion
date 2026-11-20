@@ -312,7 +312,9 @@ func TestWaitAllExecInspectionErrorIsNotSettled(t *testing.T) {
 // server: it reads the server's socket path back.
 func TestTmuxRunsOnThePrivateSocket(t *testing.T) {
 	srv := New(t)
-	out, err := srv.Tmux("display-message", "-p", "#{socket_path}")
+	target := srv.NewSession("sock", "sleep", "60")
+	// With a target: tmux 3.0 has no current target for display-message.
+	out, err := srv.Tmux("display-message", "-p", "-t", target, "#{socket_path}")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -234,8 +234,9 @@ func TestNewStartsPrivateServer(t *testing.T) {
 	}
 	// The server stays up without any session (exit-empty off).
 	time.Sleep(200 * time.Millisecond)
-	out, err := srv.run("display-message", "-p", "#{socket_path}")
-	if err != nil || !sameSocket(strings.TrimSpace(out), sock) {
+	// show-options needs no current target (display-message does on tmux 3.0).
+	out, err := srv.run("show-options", "-g", "exit-empty")
+	if err != nil || strings.TrimSpace(out) != "exit-empty off" {
 		t.Fatalf("server not answering on the private socket %s: %v %q", sock, err, out)
 	}
 }
