@@ -148,7 +148,7 @@ func TestWorkerDownStopsTheLogonWorker(t *testing.T) {
 	}
 	d.autostart = func() (string, bool, error) { return `C:\m\minion.exe worker launch`, true, nil }
 	out, err := downCmd(t, d)
-	if err != nil || !strings.Contains(out, "next logon") || !strings.Contains(out, "minion worker up") {
+	if err != nil || !strings.Contains(out, "next logon") || !strings.Contains(out, "minion worker start") {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 }

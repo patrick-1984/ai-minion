@@ -159,6 +159,19 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		if l.stop == nil {
 			return nil, l.protoError(rq.Op, apiErr(proto.CodeUnsupportedOp, "", "this Worker cannot be stopped over its control socket"))
 		}
+		// An installer may have inspected a foreground Worker just before
+		// another instance took over this socket. Only stop the inspected one.
+		var args struct {
+			Instance string `json:"instance"`
+		}
+		if len(rq.Args) != 0 {
+			if err := json.Unmarshal(rq.Args, &args); err != nil {
+				return nil, l.protoError(rq.Op, apiErr(proto.CodeInvalidArgument, "", "invalid stop request"))
+			}
+			if args.Instance != "" && args.Instance != l.instance {
+				return nil, l.protoError(rq.Op, apiErr(proto.CodeConflict, "", "the running Worker changed"))
+			}
+		}
 		// Reply first: the stop closes this socket.
 		go func() { time.Sleep(200 * time.Millisecond); l.stop() }()
 		return json.RawMessage(`{"stopping":true}`), nil

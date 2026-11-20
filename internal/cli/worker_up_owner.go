@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"sort"
 	"strings"
 
@@ -67,17 +66,6 @@ func (d workerSetupDeps) ownerSessions(ctx context.Context, socket string) ([]st
 	return names, nil
 }
 
-// tmuxProblem turns a failure to start tmux into the cause and the fix (A58).
-func tmuxProblem(err error) error {
-	switch {
-	case errors.Is(err, exec.ErrNotFound):
-		return fmt.Errorf("tmux is not installed. Install it (Debian/Ubuntu: sudo apt-get install tmux; Fedora: sudo dnf install tmux; macOS: brew install tmux), then run this command again")
-	case strings.Contains(err.Error(), "too old"):
-		return fmt.Errorf("%w. Install a newer tmux, then run this command again", err)
-	}
-	return err
-}
-
 // askOwnerShare asks root's terminal what the Hub may see of the target
 // user's sessions and saves the answer as that user.
 func (d workerSetupDeps) askOwnerShare(cmd *cobra.Command, o *ownerSetup) error {
@@ -120,16 +108,20 @@ func (d workerSetupDeps) askOwnerShare(cmd *cobra.Command, o *ownerSetup) error 
 	}
 	if lerr != nil && mode == "all" {
 		// Sharing works without listing; tmux itself must work, though.
-		if strings.Contains(lerr.Error(), "tmux is not installed") || strings.Contains(lerr.Error(), "too old") {
+		if errors.Is(lerr, errMissingTmux) || strings.Contains(lerr.Error(), "too old") {
 			return fmt.Errorf("nothing was started: %w", lerr)
 		}
 	}
+	return d.saveOwnerShare(ctx, o, mode, out)
+}
+
+func (d workerSetupDeps) saveOwnerShare(ctx context.Context, o *ownerSetup, mode string, out io.Writer) error {
 	run := d.runAsUser
 	if run == nil {
 		run = runAsUser
 	}
 	if err := run(ctx, o.Target, o.Binary, []string{"worker", "config", "share", mode, "--state-dir", o.StateDir}, out); err != nil {
-		return fmt.Errorf("nothing was started: saving the choice as %s failed: %w", user, err)
+		return fmt.Errorf("nothing was started: saving the choice as %s failed: %w", o.Target.User, err)
 	}
 	return nil
 }

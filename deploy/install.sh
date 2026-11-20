@@ -8,8 +8,8 @@
 # release's checksums.txt, checks the archive's sha256 against checksums.txt,
 # and installs "minion" into /usr/local/bin when that directory is writable
 # (as root, for example), otherwise into ~/.local/bin. It then prints
-# "minion version". It installs nothing else: tmux comes from your package
-# manager, and the Worker is set up with "minion worker up".
+# "minion version". If tmux is missing, it installs tmux with the local
+# package manager. Set up the Worker with "minion worker up".
 #
 # The archive is checked against checksums.txt of the same release, both
 # fetched over HTTPS from GitHub. The signature of checksums.txt is not checked
@@ -41,6 +41,35 @@ sha256() {
 	else
 		die "neither sha256sum nor shasum is installed"
 	fi
+}
+
+install_tmux() {
+	command -v tmux >/dev/null 2>&1 && return 0
+	if command -v apt-get >/dev/null 2>&1; then
+		set -- env DEBIAN_FRONTEND=noninteractive apt-get install -y tmux
+	elif command -v dnf >/dev/null 2>&1; then set -- dnf install -y tmux
+	elif command -v yum >/dev/null 2>&1; then set -- yum install -y tmux
+	elif command -v apk >/dev/null 2>&1; then set -- apk add --no-cache tmux
+	elif command -v pacman >/dev/null 2>&1; then set -- pacman -S --noconfirm --needed tmux
+	elif command -v zypper >/dev/null 2>&1; then set -- zypper --non-interactive install tmux
+	elif command -v brew >/dev/null 2>&1; then set -- brew install tmux
+	else die "tmux is missing. Install tmux from https://github.com/tmux/tmux/wiki/Installing and run the installer again."
+	fi
+	if [ "$1" != brew ] && [ "$(id -u)" != 0 ]; then
+		command -v sudo >/dev/null 2>&1 || die "tmux is missing and sudo is unavailable. As root, run '$*', then rerun the installer."
+		set -- sudo -n "$@"
+	elif [ "$1" = brew ] && [ "$(id -u)" = 0 ]; then
+		[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || die "Homebrew needs a regular user. Run 'brew install tmux' as the Homebrew owner, then rerun the installer."
+		set -- sudo -n -H -u "$SUDO_USER" "$(command -v brew)" install tmux
+	fi
+	printf 'Installing tmux with %s\n' "$*"
+	# Minimal Debian images often have no package index yet.
+	if command -v apt-get >/dev/null 2>&1; then
+		if [ "$(id -u)" = 0 ]; then apt-get update; else sudo -n apt-get update; fi ||
+			die "cannot refresh the apt package index. Run 'sudo apt-get update && sudo apt-get install tmux', then rerun the installer."
+	fi
+	"$@" </dev/null || die "tmux installation failed. Run '$(printf '%s' "$*" | sed 's/^sudo -n /sudo /')' in a terminal, then rerun the installer."
+	command -v tmux >/dev/null 2>&1 || die "the package manager finished but tmux is missing from PATH. Open a new terminal and rerun the installer."
 }
 
 # platform prints "<os>_<arch>" as in the archive names of a release.
@@ -95,6 +124,7 @@ got=$(sha256 "$tmp/$archive")
 [ "$got" = "$want" ] || die "checksum mismatch for $archive: got $got, checksums.txt says $want; nothing was installed"
 
 tar -xzf "$tmp/$archive" -C "$tmp" minion || die "could not unpack minion from $archive"
+install_tmux
 
 dir=${MINION_INSTALL_DIR:-}
 if [ -z "$dir" ]; then

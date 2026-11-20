@@ -39,22 +39,11 @@ func joinTTLChoices(admin bool) []Choice {
 // JoinCommands are the texts the page offers for one join token. They hold the
 // secret, so they exist only in the answer to the post that created it.
 type JoinCommands struct {
-	// Unix is `minion worker up --join <token>` for Linux and macOS without
-	// sudo: a user service, and the sharing question in a terminal.
-	Unix string
-	// System installs the Linux system service with sudo: the token goes
-	// through a private file (MINION_JOIN_FILE), never into sudo's argv or
-	// log, and the sharing choice is given, because root cannot ask.
-	System string
-	// Windows is the PowerShell command of the Windows preview.
-	Windows string
-	// Expanded is the same with --server, --hub-fingerprint and --invite-key,
-	// for Workers before 0.12.0 and for scripts.
+	Unix, System, Windows string
+	// Expanded also works on older Workers with invitation keys.
 	Expanded string
-	// Docker is one docker run, after the download of bootstrap.sh.
-	Docker string
-	// Compose is a complete Compose project with MINION_JOIN.
-	Compose string
+	// Compose holds no credentials. ComposeStart enrolls with the one-time token.
+	Docker, Compose, ComposeStart string
 }
 
 // hubVersion is the version of this Hub; tests replace it.
@@ -74,40 +63,60 @@ func workerVersion() string {
 
 // joinCommands renders the commands for tok; name is the optional Worker name.
 func joinCommands(tok identity.JoinToken, name string) JoinCommands {
+	const initialShare = " --non-interactive-share later"
 	text := tok.Encode()
 	var unixName, psName string
 	if name != "" {
 		unixName = " --name " + shellArg(name)
 		psName = " --name " + psArg(name)
 	}
+	// Keep stdin on the terminal for the sharing question. The shell gives
+	// the Worker a separate read-only descriptor for the one-use credential.
 	return JoinCommands{
-		Unix:    "minion worker up" + unixName + " --join " + shellArg(text),
-		System:  systemJoin(text, unixName),
-		Windows: "minion.exe worker up --foreground" + psName + " --join " + psArg(text),
+		Unix:    "MINION_JOIN_FILE=/dev/fd/3 minion worker up" + unixName + initialShare + credentialFD(text),
+		System:  systemJoin(text, unixName+initialShare),
+		Windows: windowsJoin(text, psName+initialShare),
 		Expanded: "minion worker up --server " + shellArg(tok.HubURL) + " --hub-fingerprint " + tok.Fingerprint().String() +
-			unixName + " --invite-key " + tok.Invite.String(),
-		Docker:  dockerRunJoin(text, name),
-		Compose: joinComposeFile(text, name),
+			unixName + " --invite-key /dev/fd/3" + credentialFD(tok.Invite.String()),
+		Docker:       dockerRunJoin(text, name),
+		Compose:      joinComposeFile(name),
+		ComposeStart: composeStart(text),
 	}
 }
 
-// systemJoin renders the sudo variant. Like the invitation's file variant,
-// the token goes into a new file in a fresh private directory that the EXIT
-// trap removes; `sudo env` passes only the path, so the token is neither in
-// argv nor in sudo's log. Root cannot ask the sharing question for the user,
-// so the command gives --share-existing later (nothing is shared until the
-// user chooses in the Hub).
+// credentialFD sends the credential on descriptor 3, leaving stdin available.
+func credentialFD(secret string) string {
+	return " 3<<'MINION_CREDENTIAL'\n" + secret + "\nMINION_CREDENTIAL\n"
+}
+
+// sudo closes extra descriptors. Give it just a temporary file's name and
+// leave the terminal free for choosing a target account and what to share.
 func systemJoin(token, nameArg string) string {
-	var f strings.Builder
-	f.WriteString("(\n")
-	f.WriteString("  umask 077 &&\n")
-	f.WriteString("  dir=$(mktemp -d \"${TMPDIR:-/tmp}/minion-join.XXXXXX\") &&\n")
-	f.WriteString("  trap 'rm -rf \"$dir\"' EXIT &&\n")
-	f.WriteString("  cat > \"$dir/join\" <<'EOF' &&\n")
-	f.WriteString(token + "\nEOF\n")
-	f.WriteString("  sudo env MINION_JOIN_FILE=\"$dir/join\" minion worker up --share-existing later" + nameArg + "\n")
-	f.WriteString(")\n")
-	return f.String()
+	return `(
+  umask 077 &&
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/minion-join.XXXXXX") &&
+  trap 'rm -rf "$dir"' EXIT &&
+  cat > "$dir/join" <<'MINION_CREDENTIAL' &&
+` + token + `
+MINION_CREDENTIAL
+  sudo env MINION_JOIN_FILE="$dir/join" minion worker up` + nameArg + "\n)\n"
+}
+
+// Preserve console input for the Windows wizard and restore the calling
+// shell's environment even if PowerShell or the Worker reports a failure.
+func windowsJoin(token, nameArg string) string {
+	return `& {
+  $previous = $env:MINION_JOIN_FILE
+  $file = [IO.Path]::GetTempFileName()
+  try {
+    [IO.File]::WriteAllText($file, '` + token + `')
+    $env:MINION_JOIN_FILE = $file
+    minion.exe worker up` + nameArg + `
+  } finally {
+    $env:MINION_JOIN_FILE = $previous
+    Remove-Item -LiteralPath $file
+  }
+}`
 }
 
 // psQuotes are the characters PowerShell treats as a single quote: the ASCII
@@ -126,55 +135,57 @@ func psArg(s string) string {
 	return "'" + s + "'"
 }
 
-// dockerRunJoin renders the docker run command of a Worker with MINION_JOIN.
-// The Worker runs in an Alpine container with tmux; bootstrap.sh downloads,
-// verifies and caches the minion binary and runs it. Every step is chained
-// with &&: docker runs only after a complete download, which replaces any
-// older bootstrap.sh, and --mount fails if the file is missing (a -v would
-// create a directory). MINION_VERSION is the Hub's release. The token stays
-// in the container's environment: on every start the Worker takes the Hub
-// address and fingerprint from it, and an enrolled Worker ignores the used
-// key.
+// Docker supervises the foreground process. Only the disposable configuration
+// container gets the one-use token, on stdin. Both containers see the same
+// persistent state, which holds the public Hub settings and enrolled identity.
+const downloadBootstrap = "curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&\nmv -f bootstrap.sh.new bootstrap.sh &&\n"
+
 func dockerRunJoin(token, name string) string {
-	var d strings.Builder
-	d.WriteString("curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&\n")
-	d.WriteString("mv -f bootstrap.sh.new bootstrap.sh &&\n")
-	d.WriteString("docker run -d --name minion-worker --restart unless-stopped \\\n")
-	d.WriteString("  -e MINION_JOIN=" + shellArg(token) + " \\\n")
+	var nameArg string
 	if name != "" {
-		d.WriteString("  -e MINION_NAME=" + shellArg(name) + " \\\n")
+		nameArg = " --name " + shellArg(name)
 	}
-	d.WriteString("  -e MINION_SHARE_EXISTING=later -e MINION_VERSION=" + workerVersion() + " \\\n")
-	d.WriteString("  -e MINION_STATE_DIR=/data -e MINION_CACHE_DIR=/cache \\\n")
-	d.WriteString("  -v minion-worker-data:/data -v minion-worker-cache:/cache \\\n")
-	d.WriteString("  --mount type=bind,source=\"$PWD/bootstrap.sh\",target=/bootstrap.sh,readonly \\\n")
-	d.WriteString("  alpine:3.22 sh -c 'apk add --no-cache tmux >/dev/null && exec sh /bootstrap.sh worker up --foreground'\n")
-	return d.String()
+	// Set positional parameters inside a subshell so both runs get the same
+	// state, cache, release and image without changing the caller's shell.
+	return downloadBootstrap + `(
+  image=$(docker build -q - <<'DOCKERFILE'
+FROM alpine:3.22
+RUN apk add --no-cache tmux
+DOCKERFILE
+  ) &&
+  set -- -e MINION_STATE_DIR=/data -e MINION_CACHE_DIR=/cache -e MINION_VERSION=` + workerVersion() + ` \
+    -v minion-worker-data:/data -v minion-worker-cache:/cache \
+    --mount type=bind,source="$PWD/bootstrap.sh",target=/bootstrap.sh,readonly "$image" sh /bootstrap.sh &&
+  docker run --rm -i "$@" worker up --configure-only` + nameArg + ` --non-interactive-share later --join - <<'MINION_CREDENTIAL' &&
+` + token + `
+MINION_CREDENTIAL
+  docker run -d --name minion-worker --restart unless-stopped "$@" worker run &&
+  docker exec minion-worker sh /bootstrap.sh worker status --wait &&
+  printf '%s\n' 'docker logs minion-worker' 'docker stop minion-worker' 'docker start minion-worker'
+)
+`
 }
 
-// joinComposeFile renders the Compose project of a Worker with MINION_JOIN. It
-// holds the token: the file is a secret until the Worker has enrolled.
-func joinComposeFile(token, name string) string {
+func joinComposeFile(name string) string {
 	head := []string{
-		"A Minion Worker in Docker, joined with a one-time join token. Before you start:",
-		"1. Put bootstrap.sh next to this file. It is a file of the Minion release:",
-		"   " + bootstrapURL,
-		"2. Run: MINION_SHARE_EXISTING=later docker compose up -d",
-		"   (the first start needs the sharing choice: all, none or later; later shares nothing",
-		"   until you choose in the Hub. Leave it out on later starts: it replaces the saved choice.)",
-		"3. Approve the new Worker in the Hub (Workers page): it starts pending and gets no operations until you do.",
-		"MINION_JOIN holds the Hub address, the full Hub fingerprint and a one-time invitation key:",
-		"the Worker connects only to the Hub with that fingerprint and enrolls with the key, which",
-		"works once and expires. Treat this file as a secret until the Worker has enrolled; after that",
-		"the key is used up and the Worker keeps taking the Hub address and fingerprint from MINION_JOIN.",
-		"The image is built from Alpine with tmux; bootstrap.sh downloads and verifies the minion",
-		"binary on the first start and keeps it in the cache volume.",
+		"Save as compose.yaml and run the enrollment command from the Add worker page once.",
+		"The enrolled identity and settings persist in worker-data.",
 	}
-	env := [][2]string{{"MINION_JOIN", yamlString(token)}}
+	var env [][2]string
 	if name != "" {
 		env = append(env, [2]string{"MINION_NAME", yamlString(strings.ReplaceAll(name, "$", "$$"))})
 	}
 	return composeProject(head, env, false, workerVersion())
+}
+
+func composeStart(token string) string {
+	return downloadBootstrap + `docker compose run --build --rm -T minion-worker worker up --configure-only --non-interactive-share later --join - <<'MINION_CREDENTIAL' &&
+` + token + `
+MINION_CREDENTIAL
+docker compose up -d &&
+docker compose exec -T minion-worker sh /bootstrap.sh worker status --wait &&
+printf '%s\n' 'docker compose logs minion-worker' 'docker compose stop minion-worker' 'docker compose start minion-worker'
+`
 }
 
 // joinResult is what the join_created fragment renders: the token, once.

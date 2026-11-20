@@ -43,6 +43,8 @@ type setupStore interface {
 type workerSetupDeps struct {
 	lookupEnv  func(string) (string, bool)
 	loadConfig func(stateDir string) (config.FileSource, error)
+	// checkTerminal checks the session host before a sharing question or enrollment.
+	checkTerminal func(context.Context, *config.Resolver, string, *ownerSetup) error
 	// interactive reports whether in and out are a terminal, so that the
 	// wizard may ask questions; nil checks the real streams.
 	interactive func(in io.Reader, out io.Writer) bool
@@ -89,6 +91,11 @@ func (d workerSetupDeps) isInteractive(in io.Reader, out io.Writer) bool {
 func isTerminalStream(r io.Reader) bool {
 	f, ok := r.(*os.File)
 	return ok && logx.IsTerminal(f)
+}
+
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && isTerminalStream(f)
 }
 
 func (d workerSetupDeps) open(ctx context.Context, stateDir string) (setupStore, error) {
@@ -196,11 +203,29 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *
 	}
 	core.StateDir = st.dir
 	ctx := cmdContext(cmd)
-	// Root never opens the state of another user: that directory is theirs
-	// and may hold links. For them only the settings count.
+	if d.checkTerminal != nil {
+		if err := d.checkTerminal(ctx, res, core.TmuxSocket, owner); err != nil {
+			return err
+		}
+	}
+	// Root reads configuration through the directory handle. The owner reads
+	// their own database when the sharing choice is absent from configuration.
 	needed, err := d.setupNeeded(ctx, res, core.StateDir, owner == nil)
 	if err != nil {
 		return err
+	}
+	if needed && owner != nil {
+		// A previous interactive setup saves sharing in the target's database.
+		// Read it under that UID, never by opening their SQLite files as root.
+		if _, err := st.root.Lstat(store.DBFile); err == nil {
+			r, err := readUpStatus(ctx, st.dir, owner)
+			if err != nil {
+				return err
+			}
+			needed = !r.Share.Configured
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	if !needed {
 		// The sharing choice is given (--share-existing, for example), so
@@ -209,6 +234,23 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *
 		return d.fingerprintGate(cmd, res, st)
 	}
 	interactive := d.isInteractive(cmd.InOrStdin(), cmd.OutOrStdout())
+	fallback, _ := cmd.Flags().GetString("non-interactive-share")
+	if !interactive && fallback != "" {
+		switch fallback {
+		case config.ShareExistingAll, config.ShareExistingNone, config.ShareExistingLater:
+		default:
+			return errors.New("--non-interactive-share requires all, none or later")
+		}
+		if owner != nil {
+			return d.saveOwnerShare(ctx, owner, fallback, cmd.OutOrStdout())
+		}
+		db, err := d.open(ctx, st.dir)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		return db.SaveShareContext(ctx, store.ShareSelection{Mode: store.ShareMode(fallback)})
+	}
 	switch {
 	case owner != nil && interactive:
 		if err := d.askOwnerShare(cmd, owner); err != nil {

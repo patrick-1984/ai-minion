@@ -6,7 +6,7 @@ A Worker serves the tmux sessions of the macOS user who runs it. It needs `tmux`
 
 ## 1. Install tmux and the binary
 
-One line installs the latest `minion` into `/usr/local/bin` (when writable) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh`. Then install tmux (`brew install tmux`). The verified manual install below is the alternative.
+One line installs the latest `minion` into `/usr/local/bin` (when writable) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh`. The installer uses Homebrew to install tmux if it is missing. For a manual install, first install tmux 3.2 or newer.
 
 ```sh
 brew install tmux
@@ -43,7 +43,7 @@ On macOS `minion worker up` installs a launchd agent for the current user and lo
 
 Run it in the foreground instead (to try it) with `minion worker up --foreground`.
 
-Instead of the pairing code, the join command of the Hub (**Workers**, **Add worker**, **Add a Worker in one step**) sets up the Hub address, the Hub fingerprint and a one-time invitation key in one go: `minion worker up --join mnj1-... --share-existing none` ([add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step)).
+To enroll and start the launchd agent in one step, open **Workers**, **Add worker**, **Add a Worker in one step** in the Hub and paste its macOS command into your terminal. Choose what to share, then compare the fingerprints from the startup summary when approving the Worker. [Add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step).
 
 ## Check and change
 

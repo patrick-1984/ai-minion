@@ -8,7 +8,7 @@ The example [`deploy/compose/worker.yaml`](../../deploy/compose/worker.yaml) run
 
 ## Quick start: one docker run
 
-For a self-contained Worker (way B below), the Hub writes the command for you: **Workers**, **Add worker**, **Add a Worker in one step**. It shows a `docker run` (after downloading `bootstrap.sh`) and a Compose project, both with `MINION_JOIN=mnj1-...`: one token with the Hub address, the full Hub fingerprint and a one-time invitation key. The Worker connects only to the Hub with that fingerprint and enrolls with the key, which works once and expires. The token stays in the container's settings (`docker inspect` shows it); it is useless once the Worker has enrolled, and the Worker keeps taking the Hub address and fingerprint from it. `MINION_JOIN_FILE` reads it from a file instead. Then approve the Worker as in step 4 below. Details: [add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step).
+For a self-contained Worker (way B below), open **Workers**, **Add worker**, **Add a Worker in one step**. Paste the Docker command, or save the generated Compose file and paste its enrollment command. A disposable configuration container reads the one-time credential from standard input. The long-running container starts from the enrolled identity in the data volume, and Docker starts it again under the `unless-stopped` restart policy. The command prints the live Worker and Hub fingerprints for approval and returns to the prompt. [Add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step).
 
 ## Two ways to use it
 

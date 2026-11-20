@@ -58,7 +58,8 @@ type workerStartDeps struct {
 	user       func() string
 	sleep      func(time.Duration)
 	// polls bounds the wait for the started Worker in steps of 250 ms.
-	polls int
+	startLogin func(context.Context) (bool, error)
+	polls      int
 }
 
 func defaultWorkerStartDeps() workerStartDeps {
@@ -93,7 +94,8 @@ func defaultWorkerStartDeps() workerStartDeps {
 			}
 			return os.Getenv("USER")
 		},
-		sleep: time.Sleep,
+		sleep:      time.Sleep,
+		startLogin: startLoginWorker,
 	}
 }
 
@@ -102,7 +104,7 @@ func newWorkerStartCmd(d workerStartDeps) *cobra.Command {
 		Use:   "start",
 		Short: "Start the installed Worker of this user (the opposite of worker down)",
 		Long: "Start the Worker that \"minion worker up\" installed, through its own manager: the logon supervisor on\n" +
-			"Windows, the systemd unit on Linux, the launchd agent on macOS. A Worker that already runs is left\n" +
+			"Windows, the systemd unit or login entry on Linux, the launchd agent on macOS. A Worker that already runs is left\n" +
 			"alone. Nothing is installed or changed; without an installed Worker the command says so and points to\n" +
 			"\"minion worker up\".",
 		Args: cobra.NoArgs,
@@ -155,6 +157,9 @@ func (d workerStartDeps) startManaged(ctx context.Context) (started bool, err er
 	case "windows":
 		return d.startWindows()
 	case "linux":
+		if d.startLogin != nil && service.Detect(service.SystemEnv()).Manager == service.ManagerNone {
+			return d.startLogin(ctx)
+		}
 		return d.startSystemd(ctx)
 	case "darwin":
 		return d.startLaunchd(ctx)

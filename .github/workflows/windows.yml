@@ -116,7 +116,7 @@ jobs:
         run: |
           set -eu
           export MINION_STATE_DIR="$RUNNER_TEMP/minion-state"
-          ./minion.exe worker up --foreground --share-existing all > worker.log 2>&1 &
+          ./minion.exe worker up --foreground --session-host conpty --share-existing all > worker.log 2>&1 &
           worker=$!
           ok=0
           for _ in $(seq 1 30); do

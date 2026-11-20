@@ -26,6 +26,9 @@ func runProductionWorker(t *testing.T, env map[string]string) (stop func()) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(rtDir) })
 	t.Setenv("XDG_RUNTIME_DIR", rtDir)
+	// Isolate the fallback socket as well, including while the test Worker
+	// is starting or stopping and the primary socket has no listener.
+	t.Setenv("TMPDIR", rtDir)
 
 	deps := workerRunDeps{stderr: &lockedBuf{}, lookupEnv: envFrom(env), loadConfig: loadWorkerConfig}
 	root := workerRoot(deps)

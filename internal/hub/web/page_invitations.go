@@ -566,13 +566,21 @@ func composeProject(head []string, env [][2]string, inviteFile bool, minionVersi
 	c.WriteString("      dockerfile_inline: |\n")
 	c.WriteString("        FROM alpine:3.22\n")
 	c.WriteString("        RUN apk add --no-cache tmux\n")
+	if !inviteFile {
+		// The one-off configuration container resolves its user by name.
+		c.WriteString(fmt.Sprintf("        RUN addgroup -g %d minion && adduser -D -G minion -u %d minion\n", workerContainerUID, workerContainerUID))
+	}
 	c.WriteString("    user: \"" + uid + "\"\n")
 	c.WriteString("    depends_on:\n")
 	c.WriteString("      init:\n")
 	c.WriteString("        condition: service_completed_successfully\n")
 	c.WriteString("    restart: unless-stopped\n")
 	c.WriteString("    entrypoint: [\"/bin/sh\", \"/bootstrap.sh\"]\n")
-	c.WriteString("    command: [\"worker\", \"up\"]\n")
+	if inviteFile {
+		c.WriteString("    command: [\"worker\", \"up\", \"--foreground\"]\n")
+	} else {
+		c.WriteString("    command: [\"worker\", \"run\"]\n")
+	}
 	c.WriteString("    environment:\n")
 	c.WriteString("      MINION_VERSION: ${MINION_VERSION:-" + minionVersion + "}\n")
 	c.WriteString("      MINION_CACHE_DIR: /cache\n")

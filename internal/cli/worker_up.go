@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -49,7 +50,12 @@ type workerUpDeps struct {
 	windowsService func() (service.WindowsServiceState, error)
 	// windows holds the seams of the Windows path (Run entry, supervisor);
 	// nil means the real machine.
-	windows *windowsUpDeps
+	installLogin func(context.Context, string, string, io.Writer) error
+	windows      *windowsUpDeps
+	// readStatus asks the newly started Worker for its onboarding summary.
+	ownerHooks     func(context.Context, *ownerSetup, agent.Settings, io.Reader, io.Writer) error
+	readStatus     upStatusReader
+	stopForeground func(context.Context, string, *ownerSetup) error
 }
 
 func (d workerUpDeps) windowsDeps() windowsUpDeps {
@@ -74,12 +80,17 @@ func (d workerUpDeps) setupDeps() workerSetupDeps {
 
 func defaultWorkerUpDeps(stderr io.Writer) workerUpDeps {
 	return workerUpDeps{
-		run:        defaultWorkerRunDeps(stderr),
-		detectEnv:  service.SystemEnv(),
-		targetEnv:  service.SystemTargetEnv(),
-		executable: os.Executable,
-		service:    withEnv(service.DefaultDeps()),
-		chown:      service.OSChowner{},
+		setup:          workerSetupDeps{checkTerminal: checkTerminalHost},
+		run:            defaultWorkerRunDeps(stderr),
+		detectEnv:      service.SystemEnv(),
+		targetEnv:      service.SystemTargetEnv(),
+		executable:     os.Executable,
+		installLogin:   installLoginWorker,
+		service:        withEnv(service.DefaultDeps()),
+		chown:          service.OSChowner{},
+		stopForeground: stopForegroundForService,
+		readStatus:     readUpStatus,
+		ownerHooks:     runOwnerHooks,
 	}
 }
 
@@ -96,11 +107,11 @@ func (d workerUpDeps) registry() *config.Registry {
 }
 
 func newWorkerUpCmd(deps workerUpDeps) *cobra.Command {
-	var foreground bool
+	var foreground, configureOnly bool
 	var asUser string
 	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Install the Worker as a service and start it, or run it in the foreground",
+		Short: "Set up the Worker, start it in the background, and enable startup at boot or login",
 		Long: `Provision this machine as a Minion Worker with one command.
 
 On Linux with systemd, run with sudo: the Worker is installed as the system
@@ -127,10 +138,11 @@ exactly the directory this command saved to.
 A Worker that was never set up (no --share-existing, MINION_SHARE_EXISTING or
 config file value, and no choice saved by "minion worker setup") gets the
 first-run wizard when this runs in a terminal: what to share, the Hub address
-and a pairing code. Without a terminal nothing is asked: the command stops
-before it changes anything and names the flags to give. Run as root for
-another user it needs the sharing choice up front: run "minion worker setup"
-as that user, or give --share-existing all|none|later. In a terminal, a
+and a pairing code. The Hub join command supplies the Hub and invitation.
+On a fresh unattended installation it uses --non-interactive-share later,
+leaving sharing for you to choose in the Hub. Other unattended commands
+need an explicit sharing choice. Under sudo the sharing question lets you
+choose the invoking user's sessions or run the Worker as root. In a terminal, a
 Worker that is about to pair still asks for the Hub fingerprint.
 
 The quickest way to join a Hub is the join token from the Hub's "Add worker"
@@ -148,35 +160,37 @@ is in no argument list; sharing behaves exactly as with --join <token>.
 enrollment) and reports their result. A failing hook stops the command with an
 error before any service is installed or changed.
 
-Without a service manager (a container) or with --foreground, the Worker runs
-in the foreground exactly like "worker run" with the same settings, until
-SIGINT or SIGTERM; the pre-start hooks run as its first step. In a container
-configure it with the environment: MINION_SERVER (the Hub URL),
-MINION_INVITE_KEY_FILE (path of a file with the invitation key) and
-MINION_SHARE_EXISTING (all, none or later; required, since a container has no
-terminal to ask on). The Worker identity and its
-database live under MINION_STATE_DIR; use /data and mount a volume there so
-that the identity survives a restart of the container.`,
+On Linux without systemd, the Worker starts in the background, writes to
+worker-launch.log in its state directory and starts again at shell login.
+Use "worker down" to stop it and "worker start" to start it again.
+With --foreground it runs on this terminal until SIGINT or SIGTERM.
+For Docker, use --configure-only to enroll once on a persistent state volume.
+Run "minion worker run" in the container with Docker's restart policy enabled.
+Mount the volume at /data and set MINION_STATE_DIR=/data. To enroll from an
+invitation file, set MINION_SERVER to the Hub URL and MINION_INVITE_KEY_FILE
+to the mounted file during configuration.`,
 		Args: noArgsRedacted,
 		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error {
-			return runWorkerUp(cmd, deps, foreground, asUser)
+			return runWorkerUp(cmd, deps, foreground, configureOnly, asUser)
 		}, deps.run.lookupEnv),
 	}
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run the Worker in the foreground instead of installing a service")
+	cmd.Flags().BoolVar(&configureOnly, "configure-only", false, "Enroll and save settings for an external supervisor such as Docker, then exit")
+	cmd.MarkFlagsMutuallyExclusive("foreground", "configure-only")
+	cmd.Flags().String("non-interactive-share", "", "Initial sharing choice (all, none or later) for an unattended Worker with no saved choice")
 	cmd.Flags().StringVar(&asUser, "as-user", "", "Install the service for this Unix user (needs root; default: the user that ran sudo)")
 	addSettingFlags(cmd, deps.registry(), config.ScopeWorker)
 	addJoinFlag(cmd, deps.registry())
 	return cmd
 }
 
-func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser string) error {
+func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground, configureOnly bool, asUser string) error {
 	// First of all, before a join token is expanded or any setup runs: the
 	// Worker never runs as LocalSystem (it would run the user's binary as
 	// SYSTEM); LocalSystem has no UAC split token, so the token SID is read.
 	if err := service.RefuseSystem(systemAccount()); err != nil {
 		return err
 	}
-	out := cmd.OutOrStdout()
 	// A join token becomes --server, --hub-fingerprint and --invite-key before
 	// anything else looks at the settings (worker_join_token.go). Its
 	// process-list warning comes with the other secret warnings below.
@@ -196,10 +210,7 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 		_, _ = fmt.Fprintln(w, join.Warning)
 	}
 	det := service.Detect(deps.detectEnv)
-	if foreground || det.Manager == service.ManagerNone {
-		if !foreground {
-			_, _ = fmt.Fprintf(out, "No service manager (%s): running the Worker in the foreground.\n", det.Reason)
-		}
+	if foreground {
 		// The foreground Worker takes the same flags: a secret given on the
 		// command line is as visible in the process list as for a service (R85).
 		stderr := deps.run.stderr
@@ -226,11 +237,11 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground bool, asUser 
 		run.inviteArgvWarned = inviteWarned
 		return runWorkerRun(cmd, run)
 	}
-	err = installWorkerService(cmd, deps, det, asUser)
+	err = installWorkerService(cmd, deps, det, asUser, configureOnly)
 	if errors.Is(err, errRunAsRoot) {
 		// Chosen in the sharing question: the Worker runs as root (A57).
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "The Worker will run as root and serve root's tmux sessions.")
-		return installWorkerService(cmd, deps, det, "root")
+		return installWorkerService(cmd, deps, det, "root", configureOnly)
 	}
 	return err
 }
@@ -274,14 +285,13 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 			return err
 		}
 	}
-	offerPsmux(cmd, res, defaultPsmuxOfferDeps())
 	return sd.firstRun(cmd, res, nil, nil)
 }
 
 // installWorkerService is the service path of "worker up": resolve the
 // settings for the target user, run the pre-start hooks, save the config file
 // and install the service.
-func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Detection, asUser string) (err error) {
+func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Detection, asUser string, configureOnly bool) (err error) {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
@@ -295,7 +305,7 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// Windows: an older LocalSystem service goes, and an elevated prompt is
 	// refused, before anything is saved or changed.
 	if det.Manager == service.ManagerWindows {
-		if err := windowsPreflight(ctx, deps.windowsDeps(), out); err != nil {
+		if err := windowsPreflight(ctx, deps.windowsDeps(), out, !configureOnly); err != nil {
 			var na *needsAdminError
 			if errors.As(err, &na) {
 				_, _ = fmt.Fprintln(stderr, "Error: "+na.msg)
@@ -428,7 +438,16 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		}
 	}()
 
-	if err := runUpHooks(ctx, deps, agent.Settings{WorkerCore: core, Resolver: res, Logger: logger, InviteArgvWarned: inviteWarned}, out); err != nil {
+	hookSettings := agent.Settings{WorkerCore: core, Resolver: res, Logger: logger, InviteArgvWarned: inviteWarned}
+	if owned && deps.ownerHooks != nil {
+		if err := st.give(); err != nil {
+			return err
+		}
+		err = deps.ownerHooks(ctx, owner, hookSettings, cmd.InOrStdin(), out)
+	} else {
+		err = runUpHooks(ctx, deps, hookSettings, out)
+	}
+	if err != nil {
 		return err
 	}
 
@@ -446,6 +465,18 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "Settings saved to %s.\n", path)
+	if configureOnly {
+		return nil
+	}
+
+	// All background managers use the same identity and readiness summary.
+	summary := func(ctx context.Context) error {
+		if deps.readStatus == nil {
+			return nil
+		}
+		commands := upNextCommands(det, target, owner != nil, pinState, stateDir)
+		return showUpStatus(ctx, out, stateDir, owner, deps.readStatus, commands)
+	}
 
 	svc := deps.service
 	svc.Chown = nil
@@ -456,21 +487,42 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		// The Run entry always names the state directory chosen now, so a
 		// MINION_STATE_DIR in the environment of a later logon (or of this
 		// shell) cannot select another profile.
-		return installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out)
+		return installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out, summary)
 	}
-	_, err = service.Install(ctx, svc, service.Request{
-		Manager:     det.Manager,
-		Scope:       det.Scope,
-		Binary:      binary,
-		Target:      target,
-		StateDir:    stateDir,
-		PinStateDir: pinState,
-	}, out)
-	var linger *service.LingerError
-	if errors.As(err, &linger) {
-		_, _ = fmt.Fprintf(stderr, "Lingering is not enabled for %s. Run this command, then run minion worker up again:\n  %s\n", linger.User, linger.Command)
+	if det.Manager == service.ManagerNone {
+		// Share one deadline between binding the socket and waiting for the
+		// Hub welcome so an unreachable Hub cannot hold the shell open.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if owned || (target.UID == 0 && asUser == "root" && target.Home != os.Getenv("HOME")) {
+			err = runAsUser(ctx, target, binary, []string{"worker", "install-login", stateDir}, out)
+		} else {
+			err = deps.installLogin(ctx, binary, stateDir, out)
+		}
+	} else {
+		if deps.stopForeground != nil {
+			if err := deps.stopForeground(ctx, stateDir, owner); err != nil {
+				return err
+			}
+		}
+		_, err = service.Install(ctx, svc, service.Request{
+			Manager:     det.Manager,
+			Scope:       det.Scope,
+			Binary:      binary,
+			Target:      target,
+			StateDir:    stateDir,
+			PinStateDir: pinState,
+		}, out)
+		var linger *service.LingerError
+		if errors.As(err, &linger) {
+			_, _ = fmt.Fprintf(stderr, "Lingering is not enabled for %s. Run this command, then run minion worker up again:\n  %s\n", linger.User, linger.Command)
+		}
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return summary(ctx)
 }
 
 // firstRunService is the first-run gate of the service path.

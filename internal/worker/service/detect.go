@@ -9,7 +9,7 @@ import (
 type Manager string
 
 const (
-	// ManagerNone means no service manager: the Worker runs in the foreground
+	// ManagerNone means no service manager. Linux uses shell login startup
 	// (a container, or a host that does not run systemd).
 	ManagerNone Manager = "none"
 	// ManagerSystemd is systemd on Linux.
@@ -64,7 +64,7 @@ type Detection struct {
 	// Scope is meaningful when Manager is not [ManagerNone].
 	Scope Scope
 	// Reason says in one line why Manager was chosen; for ManagerNone it
-	// explains why the Worker will run in the foreground.
+	// explains why no manager is available.
 	Reason string
 }
 

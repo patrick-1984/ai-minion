@@ -9,6 +9,7 @@
 # checksums.txt, checks the zip's SHA-256 against checksums.txt, puts
 # minion.exe into "$env:LOCALAPPDATA\Programs\minion", adds that directory to
 # the PATH of the current user when it is missing, and prints "minion version".
+# When psmux is missing, WinGet installs it for the Worker's sessions.
 # No administrator rights are needed.
 #
 # The zip is checked against checksums.txt of the same release, both fetched
@@ -73,6 +74,22 @@
         Expand-Archive -LiteralPath (Join-Path $tmp $zip) -DestinationPath $unpacked -Force
         $exe = Join-Path $unpacked 'minion.exe'
         if (-not (Test-Path -LiteralPath $exe)) { throw "install.ps1: $zip holds no minion.exe" }
+
+        # A newly installed WinGet link may not be on this PowerShell's PATH yet.
+        $psmuxLink = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\psmux.exe'
+        function Find-Psmux {
+            (Get-Command 'psmux.exe' -CommandType Application -ErrorAction SilentlyContinue) -or
+                (Test-Path -LiteralPath $psmuxLink -PathType Leaf)
+        }
+        if ($env:MINION_SESSION_HOST -ne 'conpty' -and -not (Find-Psmux)) {
+            if (-not (Get-Command 'winget.exe' -CommandType Application -ErrorAction SilentlyContinue)) {
+                throw 'install.ps1: psmux and WinGet are missing. Install psmux from https://github.com/psmux/psmux/releases and rerun this installer.'
+            }
+            Write-Host 'Installing psmux with WinGet'
+            & winget.exe install --id marlocarlo.psmux --exact --source winget --accept-source-agreements --accept-package-agreements --disable-interactivity
+            if ($LASTEXITCODE -ne 0) { throw "install.ps1: WinGet failed ($LASTEXITCODE). Run 'winget install psmux' and rerun this installer." }
+            if (-not (Find-Psmux)) { throw 'install.ps1: WinGet finished but psmux.exe is missing from PATH. Open a new terminal and rerun this installer.' }
+        }
 
         $dir = if ($env:MINION_INSTALL_DIR) { $env:MINION_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\minion' }
         New-Item -ItemType Directory -Force -Path $dir | Out-Null

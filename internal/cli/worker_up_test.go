@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -793,28 +794,27 @@ func TestWorkerUpForegroundFlagRunsTheWorkerWithoutAService(t *testing.T) {
 	}
 }
 
-func TestWorkerUpWithoutServiceManagerRunsInTheForegroundFromTheEnvironment(t *testing.T) {
-	env := map[string]string{
-		"MINION_SERVER":          "https://hub.example",
-		"MINION_INVITE_KEY_FILE": "/run/secrets/invite",
-		"MINION_SHARE_EXISTING":  "all",
+func TestWorkerUpWithoutServiceManagerStartsAfterEnrollmentAndSave(t *testing.T) {
+	f := newUpFixture(t, false)
+	f.deps.detectEnv.Exists = func(p string) bool { return p == "/.dockerenv" }
+	f.env["MINION_SHARE_EXISTING"] = "none"
+	token, join := testJoinToken(t, "https://hub.example")
+	var seen joinSeen
+	joinHook(t, f, &seen)
+	started := false
+	f.deps.installLogin = func(_ context.Context, bin, dir string, out io.Writer) error {
+		started = true
+		if seen.invite.Value != join.Invite.String() || dir != f.stateDir() {
+			t.Fatal("detached start before enrollment or with another state directory")
+		}
+		file := readConfig(t, dir)
+		if file["server"] != join.HubURL || file["share_existing"] != "none" || file["invite_key"] != "" || file["join"] != "" {
+			t.Fatal("unexpected saved Worker configuration")
+		}
+		return nil
 	}
-	deps, p, _ := foregroundFixture(t, env)
-	// A container: no systemd, a docker marker.
-	deps.detectEnv = service.Env{GOOS: "linux", EUID: 0, Exists: func(p string) bool { return p == "/.dockerenv" }}
-	cancel, wait, out := startUp(t, deps, p)
-	if got := p.seen(); got.ShareExisting != "all" {
-		t.Errorf("MINION_SHARE_EXISTING was not applied: %+v", got.WorkerCore)
-	}
-	if got := p.seen().StateDir; got != env["MINION_STATE_DIR"] {
-		t.Errorf("state dir = %q, want MINION_STATE_DIR %q", got, env["MINION_STATE_DIR"])
-	}
-	if !strings.Contains(out.String(), "No service manager") || !strings.Contains(out.String(), "/.dockerenv") {
-		t.Errorf("the mode is not explained: %q", out.String())
-	}
-	cancel()
-	if err := wait(); err != nil {
-		t.Fatal(err)
+	if _, err := f.run("--join", token); err != nil || !started || len(f.runCalls()) != 0 {
+		t.Fatalf("started=%t service calls=%v err=%v", started, f.runCalls(), err)
 	}
 }
 

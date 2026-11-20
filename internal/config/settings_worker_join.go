@@ -19,10 +19,11 @@ func init() { declareWorkerJoin(Default) }
 // one-off setup keys of Tailscale and NetBird): the secret works once and
 // expires within hours, and it is useless once the Worker has enrolled.
 //
-//   - ArgvAllowedWithWarning: `minion worker up --join <token>` is the command
-//     the page shows; a one-line warning names the process list.
-//   - PlainEnvAllowed: `docker run -e MINION_JOIN=<token>` is the container
-//     form. MINION_JOIN_FILE reads the token from a file instead.
+//   - ArgvAllowedWithWarning preserves the original --join <token> form.
+//   - PlainEnvAllowed preserves older container setups using MINION_JOIN.
+//
+// The Hub generates commands with a file descriptor, temporary file or stdin
+// so enrollment credentials stay out of process arguments and container settings.
 //
 // The config file is never a source of the token: the CLI resolves it from
 // the flag and the environment only, and `minion worker config` refuses it.

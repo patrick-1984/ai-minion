@@ -662,7 +662,11 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 		return errors.New(ForgottenInviteMessage)
 	}
 
-	in, err := config.ResolveWorkerInviteKeyContext(ctx, s.Resolver, d.stdin)
+	stdin := d.stdin
+	if s.InviteStdin != nil {
+		stdin = s.InviteStdin
+	}
+	in, err := config.ResolveWorkerInviteKeyContext(ctx, s.Resolver, stdin)
 	if err != nil {
 		return err
 	}

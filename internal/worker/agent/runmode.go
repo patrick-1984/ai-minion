@@ -7,6 +7,7 @@ const (
 	// RunModeWindowsLogon is the Windows Worker started at logon from the
 	// user's Run key by its supervisor (minion worker launch), as the user.
 	RunModeWindowsLogon = "Windows logon autostart"
+	RunModeDetached     = "background (shell login)"
 	RunModeSystemd      = "systemd service"
 	RunModeLaunchd      = "launchd service"
 )
@@ -15,6 +16,9 @@ const (
 // systemd sets INVOCATION_ID for every unit it starts, launchd sets
 // XPC_SERVICE_NAME (to "0" in a plain terminal).
 func unixRunMode(getenv func(string) string) string {
+	if getenv("MINION_DETACHED") == "1" {
+		return RunModeDetached
+	}
 	if getenv("INVOCATION_ID") != "" {
 		return RunModeSystemd
 	}

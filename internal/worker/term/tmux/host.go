@@ -22,6 +22,8 @@ import (
 
 const (
 	// MinMajor and MinMinor are the oldest supported tmux version (3.2).
+	// tmux 3.0a can list literal control characters in a session name that
+	// the Worker's target format cannot address.
 	MinMajor = 3
 	MinMinor = 2
 

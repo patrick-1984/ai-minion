@@ -19,7 +19,7 @@ You need a Hub only if you want the web UI, several users or Workers on several 
    [macOS](docs/install/worker-macos.md),
    [Docker](docs/install/worker-docker.md),
    [Windows (preview)](docs/install/worker-windows-preview.md).
-3. **Join the Worker to the Hub**: the Hub's Add worker page gives one command with the Hub address, its fingerprint and a one-time key (`minion worker up --join mnj1-...`, or `docker run -e MINION_JOIN=...`); a pairing code or an invitation key work too. Then choose what the Hub may see: [pairing and sharing](docs/guides/pairing.md).
+3. **Join the Worker to the Hub**: the Hub's Add worker page gives one command with the Hub address, its fingerprint and a one-time key (including a Docker variant that takes the one-time credential on standard input); a pairing code or an invitation key work too. Then choose what the Hub may see: [pairing and sharing](docs/guides/pairing.md).
 
 ### One-line install
 
@@ -29,7 +29,7 @@ You need a Hub only if you want the web UI, several users or Workers on several 
 | Windows (preview, PowerShell) | `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://github.com/patrick-1984/ai-minion/releases/latest/download/install.ps1 \| iex` |
 | Docker (Hub) | `docker run ... ghcr.io/patrick-1984/minion:v0.15.0 hub serve`, see [Quick start: the Hub in Docker](#quick-start-the-hub-in-docker) |
 
-The scripts install the latest `minion` (`MINION_VERSION=v0.15.0` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. They install nothing else: tmux comes from your package manager. The install guides below also show the manual install that verifies the signature.
+The scripts install the latest `minion` (`MINION_VERSION=v0.15.0` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. When the session host is missing, the installer installs tmux with the system package manager on Linux and macOS, or psmux with WinGet on Windows. The install guides below also show the manual install that verifies the signature.
 
 A minimal local try-out, no Hub and no install beyond the binary and tmux:
 
