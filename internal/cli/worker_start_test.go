@@ -181,11 +181,16 @@ func TestStartWindowsRefusesAnElevatedPromptAndSystem(t *testing.T) {
 	if _, err := r.start(t); !errors.Is(err, service.ErrRunsAsSystem) || len(r.launched) != 0 {
 		t.Fatalf("system: err=%v launched=%v", err, r.launched)
 	}
-	// An administrator in a normal (split token, not elevated) prompt may start it.
+	// An administrator whose token is not filtered (UAC off) holds the rights too.
 	r = newStartRig("windows")
 	r.d.elevation = func() service.Elevation { return service.Elevation{Admin: true} }
+	if _, err := r.start(t); err == nil || len(r.launched) != 0 {
+		t.Fatalf("unfiltered admin: err=%v launched=%v", err, r.launched)
+	}
+	// A normal (filtered) token starts it.
+	r = newStartRig("windows")
 	if _, err := r.start(t); err != nil || len(r.launched) != 1 {
-		t.Fatalf("non-elevated admin: err=%v launched=%v", err, r.launched)
+		t.Fatalf("normal token: err=%v launched=%v", err, r.launched)
 	}
 }
 

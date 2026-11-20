@@ -166,8 +166,8 @@ func (d workerStartDeps) startWindows() (bool, error) {
 	if d.isSystem != nil && d.isSystem() {
 		return false, service.ErrRunsAsSystem
 	}
-	if d.elevation != nil && d.elevation().Elevated {
-		return false, errors.New("this terminal runs as administrator (elevated); the Worker would run with the rights of the prompt that starts it, " +
+	if d.elevation != nil && (d.elevation().Elevated || d.elevation().Admin) {
+		return false, errors.New("this process has administrator rights (an elevated prompt, or an administrator without a filtered token); the Worker would run with the rights of the prompt that starts it, " +
 			"so run minion worker start again in a normal terminal, not \"as administrator\"")
 	}
 	cmdline, ok, err := d.autostart()
