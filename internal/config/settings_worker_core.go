@@ -23,7 +23,20 @@ const (
 	KeyCallAPIKeyFile = "call_api_key_file"
 	// KeyPipeAcceptFrom is the receiver policy for messages from other Workers.
 	KeyPipeAcceptFrom = "pipe_accept_from"
+	// KeyAllowNewSessions is the local block of new sessions created through
+	// Minion: on (default) or off.
+	KeyAllowNewSessions = "allow_new_sessions"
 )
+
+// Values of allow_new_sessions.
+const (
+	AllowNewSessionsOn  = "on"
+	AllowNewSessionsOff = "off"
+)
+
+// WorkerConfigFile is the file name of the Worker config file inside the
+// state directory (AD-16).
+const WorkerConfigFile = "config.json"
 
 // Values of share_existing. They match the share modes of the Worker state
 // database; the empty value means "not set".
@@ -96,6 +109,39 @@ func declareWorkerCore(r *Registry) {
 			"the Hub cannot change it",
 		Default: PipeAcceptNone,
 	})
+	r.Declare(Setting{
+		Key:   KeyAllowNewSessions,
+		Scope: ScopeWorker,
+		Help: "Allow new sessions created through Minion (on or off). off refuses session_create from every origin (the Hub, " +
+			"local commands, mn, MCP) and the Hub cannot lift it; existing sessions keep working. off from the config file " +
+			"also holds against an on in the environment. A writable shared terminal can still start programs by typing",
+		Default: AllowNewSessionsOn,
+		Choices: []string{AllowNewSessionsOn, AllowNewSessionsOff},
+	})
+}
+
+// ResolveAllowNewSessions reports whether new sessions may be created through
+// Minion. It reads the config file again at every call, so that a change made
+// by `minion worker config set` applies at once, and it fails closed: a value
+// that is not "on", from the flag, the environment or the file (a block saved
+// in the file is not lifted by an "on" in a service environment), or a config
+// file that cannot be read, blocks.
+func ResolveAllowNewSessions(res *Resolver, configPath string) bool {
+	if res == nil {
+		return true
+	}
+	r := *res
+	file, err := LoadFile(configPath)
+	if err != nil {
+		return false
+	}
+	r.File = file
+	v, err := r.Resolve(KeyAllowNewSessions)
+	if err != nil || v.Value != AllowNewSessionsOn {
+		return false
+	}
+	saved, ok, _ := file.Lookup(KeyAllowNewSessions)
+	return !ok || saved == AllowNewSessionsOn
 }
 
 // Values of pipe_accept_from besides a list of Worker ids and fingerprints.

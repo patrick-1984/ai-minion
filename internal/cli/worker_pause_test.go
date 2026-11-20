@@ -95,3 +95,51 @@ func TestPauseRefusedByAnOlderWorkerAndFailureIsNotSuccess(t *testing.T) {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 }
+
+func TestStatusApplierConfirmsAllowNewSessions(t *testing.T) {
+	dir := t.TempDir()
+	reply := func(state, v string) func(context.Context, string) (json.RawMessage, error) {
+		return func(context.Context, string) (json.RawMessage, error) {
+			return json.Marshal(agent.LiveStatusReply{StateDir: state, AllowNewSessions: v})
+		}
+	}
+	off := configChange{Key: "allow_new_sessions", Value: "off"}
+	for _, tc := range []struct {
+		name   string
+		call   func(context.Context, string) (json.RawMessage, error)
+		change configChange
+		want   string // "" ok; else part of the error
+	}{
+		{"confirmed", reply(dir, "off"), off, ""},
+		{"unset means on", reply(dir, "on"), configChange{Key: "allow_new_sessions", Unset: true}, ""},
+		{"an older Worker cannot confirm", reply(dir, ""), off, "too old"},
+		{"another source keeps it open", reply(dir, "on"), off, "enforces"},
+		{"no Worker", func(context.Context, string) (json.RawMessage, error) { return nil, client.ErrWorkerNotRunning }, off, "no running"},
+		{"another key is applied at the next start", reply(dir, "on"), configChange{Key: "name", Value: "x"}, "no running"},
+	} {
+		err := statusApplier{call: tc.call}.ApplyConfig(context.Background(), dir, tc.change)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%s: %v", tc.name, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestConfigSetAllowNewSessionsSavesAndRefusesBadValues(t *testing.T) {
+	dir := t.TempDir()
+	cd := testConfigDeps(nil)
+	rec := &recordingApplier{}
+	cd.applier = rec
+	if _, _, err := configCmd(t, cd, dir, "set", "allow_new_sessions", "maybe"); err == nil {
+		t.Fatal("maybe was accepted")
+	}
+	out, _, err := configCmd(t, cd, dir, "set", "allow_new_sessions", "off")
+	if err != nil || !strings.Contains(out, "applied") {
+		t.Fatalf("out=%q err=%v", out, err)
+	}
+	if readConfig(t, dir)["allow_new_sessions"] != "off" || len(rec.changes) != 1 || rec.changes[0].Value != "off" {
+		t.Fatalf("file %v changes %v", readConfig(t, dir), rec.changes)
+	}
+}

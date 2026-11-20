@@ -298,6 +298,12 @@ func trimBottomBlank(lines []string) []string {
 // number of the persisted counter (minion-N, never reused, R74); a name that
 // is taken is a conflict and the existing session is never touched (R86).
 func (e *Executor) sessionCreate(ctx context.Context, rq Request) (any, error) {
+	// The local block of new sessions (allow_new_sessions off) holds for every
+	// origin: this is the one entry point of the Hub, the local socket, mn and
+	// MCP, and the Hub cannot lift it.
+	if !e.policy.NewSessionsAllowed() {
+		return nil, apiErr(proto.CodeForbidden, proto.CodeNewSessionsBlocked, "new sessions are blocked on this Worker (allow_new_sessions is off); existing sessions keep working")
+	}
 	e.createMu.RLock()
 	defer e.createMu.RUnlock()
 	if reason := e.createHold.Load(); reason != nil {

@@ -67,6 +67,9 @@ type LiveStatusReply struct {
 	LogSinks []ops.LogSinkStatus `json:"log_sinks,omitempty"`
 	// Paused is the pause the Worker applies; an older Worker omits it.
 	Paused *bool `json:"paused,omitempty"`
+	// AllowNewSessions is on or off as this Worker enforces it now; an older
+	// Worker omits it.
+	AllowNewSessions string `json:"allow_new_sessions,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -97,6 +100,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 	if live.PauseKnown {
 		r.Paused = &live.Paused
 	}
+	r.AllowNewSessions = live.NewSessions
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
 	}
@@ -142,6 +146,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		LogSinks:           r.LogSinks,
 		Paused:             r.Paused != nil && *r.Paused,
 		PauseKnown:         r.Paused != nil,
+		NewSessions:        r.AllowNewSessions,
 	}, nil
 }
 

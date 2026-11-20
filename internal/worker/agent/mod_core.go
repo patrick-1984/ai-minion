@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
@@ -115,6 +116,10 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	policy := NewPolicy(st)
 	policy.SetPreviewOnly(s.PreviewOnly)
 	policy.SetShareLock(s.ShareLock)
+	if s.Resolver != nil {
+		cfgPath := filepath.Join(s.StateDir, config.WorkerConfigFile)
+		policy.SetNewSessionsCheck(func() bool { return config.ResolveAllowNewSessions(s.Resolver, cfgPath) })
+	}
 	policy.SetPipeAcceptFrom(s.PipeAcceptFrom)
 
 	// The id the Hub gave this Worker, from its enrollment (the connector sets

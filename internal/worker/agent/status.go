@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -90,6 +91,9 @@ type LiveStatus struct {
 	// Paused is the pause the running Worker applies; PauseKnown is false for
 	// an older Worker, which cannot pause.
 	Paused, PauseKnown bool
+	// NewSessions is allow_new_sessions (on or off) as the running Worker
+	// enforces it; empty from an older Worker.
+	NewSessions string
 }
 
 // LiveSource answers for a running Worker. It returns [ErrNoLiveWorker] when
@@ -127,6 +131,10 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 	}
 	if s.Policy != nil {
 		out.HubPreviewOnly = s.Policy.HubPreviewOnly()
+		out.NewSessions = config.AllowNewSessionsOn
+		if !s.Policy.NewSessionsAllowed() {
+			out.NewSessions = config.AllowNewSessionsOff
+		}
 	}
 	out.RunMode = s.RunMode
 	if s.Pause != nil {
@@ -198,6 +206,9 @@ type StatusInputs struct {
 	// StateDir is where the saved pause is read when no running Worker
 	// answers; empty reads none.
 	StateDir string
+	// NewSessions is allow_new_sessions (on or off) from the settings: what
+	// the next start enforces, reported when no Worker runs.
+	NewSessions string
 }
 
 // StatusConnection is the connection part of the report.
@@ -290,8 +301,12 @@ type StatusReport struct {
 	PreviewOnlyHub bool `json:"preview_only_hub"`
 	// Paused is the pause (minion worker pause): the running Worker's, else
 	// the saved choice, which a start applies.
-	Paused     bool   `json:"paused"`
-	TmuxSocket string `json:"tmux_socket"`
+	Paused bool `json:"paused"`
+	// NewSessions is allow_new_sessions as the running Worker enforces it (on
+	// or off); "unknown" when a running Worker cannot confirm it; the saved
+	// value when no Worker runs.
+	NewSessions string `json:"new_sessions"`
+	TmuxSocket  string `json:"tmux_socket"`
 	// Sessions is the number of tmux sessions on the socket; nil when it
 	// could not be counted.
 	Sessions *int `json:"sessions"`
@@ -397,6 +412,7 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 		}
 		r.Paused = paused
 	}
+	r.NewSessions = orDash(in.NewSessions, NewSessionsUnknown)
 	r.Connection = connectionOf(ctx, in, &r, problem)
 	r.PreviewOnly = in.PreviewOnly || r.PreviewOnlyHub
 	return r
@@ -413,6 +429,7 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		case errors.Is(err, ErrNoLiveWorker):
 		default:
 			problem("cannot ask the running Worker: %v", err)
+			r.NewSessions = NewSessionsUnknown
 		}
 	}
 	if live != nil {
@@ -427,6 +444,7 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		if live.PauseKnown {
 			r.Paused = live.Paused
 		}
+		r.NewSessions = orDash(live.NewSessions, NewSessionsUnknown)
 		r.RunMode = live.RunMode
 		r.SessionHost, r.SessionsHidden, r.SessionHostReason = live.Host.Kind, live.Host.Hidden, live.Host.Reason
 		r.SessionsListError = live.ListError
@@ -511,6 +529,7 @@ func (r StatusReport) WriteText(w io.Writer) error {
 		{"Share mode", r.shareText()},
 		{"Preview only", r.previewText()},
 		{"Paused", r.pausedText()},
+		{"New sessions", r.newSessionsText()},
 		{"Run mode", r.runModeText()},
 		{"Session host", r.sessionHostText()},
 		{"tmux socket", orDash(r.TmuxSocket, "none")},
@@ -674,6 +693,20 @@ func (r StatusReport) previewText() string {
 		return "yes (the Hub restricts this Worker)"
 	}
 	return "yes"
+}
+
+// NewSessionsUnknown is the value of StatusReport.NewSessions when a running
+// Worker cannot confirm what it enforces.
+const NewSessionsUnknown = "unknown"
+
+func (r StatusReport) newSessionsText() string {
+	switch r.NewSessions {
+	case config.AllowNewSessionsOn:
+		return "allowed"
+	case config.AllowNewSessionsOff:
+		return "blocked (allow_new_sessions off)"
+	}
+	return "unknown (the running Worker cannot confirm it)"
 }
 
 func (r StatusReport) pausedText() string {

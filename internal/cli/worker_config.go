@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,9 +10,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -49,6 +52,45 @@ func (noLiveApplier) ApplyConfig(context.Context, string, configChange) error {
 	return agent.ErrNoLiveWorker
 }
 
+// statusApplier confirms allow_new_sessions with a running Worker: the Worker
+// reads the saved value at every session_create, so applying means asking what
+// it enforces now. Any other key is used at the next start.
+type statusApplier struct {
+	call func(ctx context.Context, op string) (json.RawMessage, error)
+}
+
+func (a statusApplier) ApplyConfig(ctx context.Context, stateDir string, c configChange) error {
+	if c.Key != config.KeyAllowNewSessions {
+		return agent.ErrNoLiveWorker
+	}
+	want := c.Value
+	if c.Unset {
+		want = config.AllowNewSessionsOn
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	raw, err := a.call(ctx, agent.OpLocalStatus)
+	if errors.Is(err, client.ErrWorkerNotRunning) {
+		return agent.ErrNoLiveWorker
+	}
+	if err != nil {
+		return err
+	}
+	var reply agent.LiveStatusReply
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return err
+	}
+	switch {
+	case reply.StateDir != "" && !sameDir(reply.StateDir, stateDir):
+		return agent.ErrNoLiveWorker
+	case reply.AllowNewSessions == "":
+		return errors.New("it is too old to enforce allow_new_sessions")
+	case reply.AllowNewSessions != want:
+		return fmt.Errorf("it enforces %q: a flag or environment variable of the Worker decides, or the block is in the config file", reply.AllowNewSessions)
+	}
+	return nil
+}
+
 // shareStore is the part of the Worker state that "config share" uses;
 // *store.Store implements it.
 type shareStore interface {
@@ -77,7 +119,9 @@ func defaultWorkerConfigDeps() workerConfigDeps {
 	return workerConfigDeps{
 		lookupEnv: os.LookupEnv,
 		openStore: func(ctx context.Context, dir string) (shareStore, error) { return store.OpenContext(ctx, dir) },
-		applier:   noLiveApplier{},
+		applier: statusApplier{call: func(ctx context.Context, op string) (json.RawMessage, error) {
+			return client.Local().Call(ctx, op, nil)
+		}},
 	}
 }
 
