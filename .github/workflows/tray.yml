@@ -1,0 +1,140 @@
+# The desktop tray (cmd/minion-tray) is an opt-in, separate artifact. It is not
+# part of the goreleaser release of `minion`, so the headless binary, its deb
+# and rpm, the container image and the armv7 build never see a GUI dependency.
+#
+# Pull requests that touch the tray build and smoke-test it. On a vX.Y.Z tag
+# release.yml calls this workflow (workflow_call) before goreleaser: the
+# archives are downloaded into tray-dist/, covered by the signed checksums.txt
+# and uploaded with the other assets of the draft. This workflow never touches
+# a release itself, so the signed asset set is never changed afterwards.
+#
+#   linux amd64/arm64, windows amd64/arm64: pure Go, built on Linux
+#   darwin universal (amd64 + arm64): cgo, built on a macOS runner (lipo)
+#   armv7: never built
+#
+# Every archive is smoke-tested by running `minion-tray --version`. The arm64
+# builds cannot run on these runners and are only built.
+name: tray
+
+on:
+  workflow_call: # release.yml, before goreleaser signs checksums.txt
+  pull_request:
+    paths:
+      - cmd/minion-tray/**
+      - internal/tray/**
+      - scripts/check-headless.sh
+      - scripts/tray-package.sh
+      - .github/workflows/tray.yml
+      - go.mod
+      - go.sum
+
+permissions:
+  contents: read
+
+jobs:
+  headless:
+    name: headless packages import no GUI library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: scripts/check-headless.sh
+      - name: Tray logic tests
+        run: go test -race -count=1 ./internal/tray/... ./cmd/minion-tray/...
+
+  build-linux-windows:
+    name: build ${{ matrix.goos }} ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the archive
+        run: |
+          v=dev; [ "$GITHUB_REF_TYPE" = tag ] && v="$GITHUB_REF_NAME"
+          scripts/tray-package.sh "${{ matrix.goos }}" "${{ matrix.goarch }}" "$v"
+      - name: Smoke test, linux amd64 (extract into an empty directory, run --version)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          tar -xzf dist/tray/minion-tray-*-linux-amd64.tar.gz -C "$d"
+          out="$("$d"/minion-tray-*/minion-tray --version)"
+          echo "$out"
+          echo "$out" | grep -E '^minion-tray '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tray-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/tray/*
+          if-no-files-found: error
+
+  smoke-windows:
+    name: smoke test windows amd64
+    needs: build-linux-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tray-windows-amd64
+          path: pkg
+      - name: Extract into an empty directory and start the tray with --version
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP "tray-smoke"
+          New-Item -ItemType Directory -Path $d | Out-Null
+          Expand-Archive -Path (Get-ChildItem pkg/*.zip).FullName -DestinationPath $d
+          $exe = (Get-ChildItem -Recurse $d -Filter minion-tray.exe).FullName
+          # A GUI-subsystem exe has no console: wait for it and check the exit code.
+          $p = Start-Process -FilePath $exe -ArgumentList "--version" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "minion-tray --version exited with $($p.ExitCode)" }
+
+  build-macos:
+    name: build and smoke test macOS universal (cgo)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the universal archive
+        run: |
+          v=dev; [ "$GITHUB_REF_TYPE" = tag ] && v="$GITHUB_REF_NAME"
+          scripts/tray-package.sh darwin universal "$v"
+      - name: Smoke test (extract into an empty directory, run --version, check both architectures)
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          tar -xzf dist/tray/minion-tray-*-darwin-universal.tar.gz -C "$d"
+          bin="$(echo "$d"/minion-tray-*/minion-tray)"
+          lipo -archs "$bin" | grep -w x86_64 | grep -w arm64
+          # The oldest macOS each slice runs on must be 13.0, not the runner's SDK.
+          for a in x86_64 arm64; do
+            minos="$(otool -arch "$a" -l "$bin" | awk '/LC_BUILD_VERSION/ {f=1} f && /minos/ {print $2; exit}')"
+            echo "$a minos $minos"
+            [ "$minos" = "13.0" ]
+          done
+          out="$("$bin" --version)"
+          echo "$out"
+          echo "$out" | grep -E '^minion-tray '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tray-darwin-universal
+          path: dist/tray/*
+          if-no-files-found: error

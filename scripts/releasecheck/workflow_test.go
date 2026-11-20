@@ -187,11 +187,27 @@ func TestRunStepsParser(t *testing.T) {
 func TestReleaseWorkflowIsPinnedAndNeverPublishes(t *testing.T) {
 	doc := readRepoFile(t, ".github/workflows/release.yml")
 	pinned := regexp.MustCompile(`^[\w./-]+@[0-9a-f]{40}( #.*)?$`)
+	// A workflow of this repository, called at the same commit, is the one
+	// local exception (the desktop tray, tray.yml).
+	local := regexp.MustCompile(`^\./\.github/workflows/[\w.-]+\.yml$`)
 	for _, m := range regexp.MustCompile(`(?m)^\s*(?:- )?uses: (.*)$`).FindAllStringSubmatch(doc, -1) {
-		if !pinned.MatchString(strings.TrimSpace(m[1])) {
+		if u := strings.TrimSpace(m[1]); !pinned.MatchString(u) && !local.MatchString(u) {
 			t.Errorf("action %q is not pinned to a commit SHA", m[1])
 		}
 	}
+	// The called tray workflow follows the same rules and never touches a release:
+	// the signed asset set is final once goreleaser has run.
+	tray := readRepoFile(t, ".github/workflows/tray.yml")
+	for _, m := range regexp.MustCompile(`(?m)^\s*(?:- )?uses: (.*)$`).FindAllStringSubmatch(tray, -1) {
+		if !pinned.MatchString(strings.TrimSpace(m[1])) {
+			t.Errorf("tray.yml: action %q is not pinned to a commit SHA", m[1])
+		}
+	}
+	mustNotContain(t, "tray.yml", tray, "gh release", "contents: write", "gh api")
+	// The tray archives are in the signed checksums.txt and in the draft.
+	gr := readRepoFile(t, ".goreleaser.yaml")
+	mustContain(t, ".goreleaser.yaml", gr, "extra_files:", "glob: tray-dist/minion-tray-*")
+	mustContain(t, "release.yml", doc, "uses: ./.github/workflows/tray.yml", "path: tray-dist")
 	mustNotContain(t, "release.yml", doc,
 		"--draft=false", "--prerelease", "--latest", "imagetools create", "docker tag ", "docker push",
 		"password ${{", "--password ", "-p ${{",

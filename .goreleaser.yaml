@@ -106,6 +106,11 @@ sboms:
 checksum:
   name_template: checksums.txt
   algorithm: sha256
+  # The optional desktop tray archives (built by tray.yml, called from
+  # release.yml into tray-dist/) are covered by the same signed checksums.txt.
+  # No match (snapshot, local build) is fine.
+  extra_files:
+    - glob: tray-dist/minion-tray-*
 
 # checksums.txt is signed with cosign keyless (GitHub OIDC): the bundle
 # checksums.txt.sigstore.json carries the certificate, the signature and the
@@ -172,6 +177,8 @@ docker_signs:
     output: true
 
 release:
+  extra_files:
+    - glob: tray-dist/minion-tray-*
   github:
     owner: patrick-1984
     name: ai-minion
