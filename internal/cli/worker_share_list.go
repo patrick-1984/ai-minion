@@ -84,7 +84,12 @@ func runConfigShareList(cmd *cobra.Command, deps workerConfigDeps, asJSON bool) 
 		Mode: string(state.Mode), Configured: state.Configured, Revision: ops.FormatShareRevision(state.Revision),
 		Locked: core.ShareLock, Selected: slices.Clone(state.Sessions), Sessions: []shareListSession{},
 	}
-	if deps.sessions != nil {
+	// Only a host that is certainly the Worker's is listed: a socket saved in
+	// the config file (the service reads the same one) or the default one when
+	// this shell does not move it with TMUX_TMPDIR (the service would not
+	// know). Otherwise the same session name could belong to another tmux
+	// server, and the picker would check the wrong session: no inventory.
+	if deps.sessions != nil && core.TmuxSocket != "" && hostIsTheWorkers(res, deps.lookupEnv) {
 		if h := deps.sessions(core.TmuxSocket); h != nil {
 			all, err := h.ListSessions(cmd.Context())
 			if err != nil {
@@ -130,4 +135,21 @@ func orNone(v string) string {
 		return "none"
 	}
 	return v
+}
+
+// hostIsTheWorkers reports whether the tmux socket this command resolves is
+// the one the Worker uses.
+func hostIsTheWorkers(res *config.Resolver, lookupEnv func(string) (string, bool)) bool {
+	r, err := res.Resolve(config.KeyTmuxSocket)
+	if err != nil {
+		return false
+	}
+	switch r.Source {
+	case config.SourceFile:
+		return true
+	case config.SourceDefault:
+		v, _ := lookupEnv("TMUX_TMPDIR")
+		return v == ""
+	}
+	return false
 }
