@@ -108,14 +108,17 @@ func windowsJoin(token, nameArg string) string {
 	return `& {
   $previous = $env:MINION_JOIN_FILE
   $file = [IO.Path]::GetTempFileName()
+  $rc = 0
   try {
     [IO.File]::WriteAllText($file, '` + token + `')
     $env:MINION_JOIN_FILE = $file
     minion.exe worker up` + nameArg + `
+    $rc = $LASTEXITCODE
   } finally {
     $env:MINION_JOIN_FILE = $previous
     Remove-Item -LiteralPath $file
   }
+  if ($rc -ne 0) { Write-Error "minion worker up failed (exit code $rc)" }
 }`
 }
 
@@ -138,7 +141,7 @@ func psArg(s string) string {
 // Docker supervises the foreground process. Only the disposable configuration
 // container gets the one-use token, on stdin. Both containers see the same
 // persistent state, which holds the public Hub settings and enrolled identity.
-const downloadBootstrap = "curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&\nmv -f bootstrap.sh.new bootstrap.sh &&\n"
+const downloadBootstrap = "curl -fsSL -o bootstrap.sh.new " + bootstrapURL + " &&\nmv -f bootstrap.sh.new bootstrap.sh &&\nchmod 0644 bootstrap.sh &&\n"
 
 func dockerRunJoin(token, name string) string {
 	var nameArg string
@@ -148,6 +151,10 @@ func dockerRunJoin(token, name string) string {
 	// Set positional parameters inside a subshell so both runs get the same
 	// state, cache, release and image without changing the caller's shell.
 	return downloadBootstrap + `(
+  if docker container inspect minion-worker >/dev/null 2>&1; then
+    echo "A container named minion-worker exists: remove it or rename the new one" >&2
+    exit 1
+  fi &&
   image=$(docker build -q - <<'DOCKERFILE'
 FROM alpine:3.22
 RUN apk add --no-cache tmux

@@ -204,6 +204,7 @@ while [ $# -gt 0 ]; do if [ "$1" = -o ]; then echo '#!/bin/sh' > "$2"; fi; shift
 `,
 		"docker": `printf '%s\n' "$@" >> "$OUT/argv"
 case " $* " in
+*" container inspect "*) [ -n "$CONTAINER_EXISTS" ] ;;
 *" build -q "*) cat >/dev/null; echo alpine-image ;;
 *" --configure-only "*) cat >> "$OUT/join"; [ -z "$ENROLL_FAIL" ] ;;
 *" status --wait "*) echo ready >> "$OUT/status" ;;
@@ -235,6 +236,15 @@ exec "$@"
 	}
 	if _, err := os.Stat(filepath.Join(out, "argv")); !os.IsNotExist(err) {
 		t.Fatal("docker ran after a failed download")
+	}
+	if err := run(jc.Docker, "CONTAINER_EXISTS=1"); err == nil || !strings.Contains(err.Error(), "A container named minion-worker exists") {
+		t.Errorf("the docker block did not stop before enrolling: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "argv")); strings.Contains(string(b), "--configure-only") {
+		t.Fatal("docker enrolled although the container name was taken")
+	}
+	if err := os.Remove(filepath.Join(out, "argv")); err != nil {
+		t.Fatal(err)
 	}
 	for _, cmdText := range []string{jc.Unix, jc.Expanded, jc.Docker, jc.System, jc.ComposeStart} {
 		if err := run(cmdText); err != nil {

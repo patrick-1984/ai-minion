@@ -106,8 +106,9 @@ func TestLinuxLoginWorkerOnboarding(t *testing.T) {
 		t.Fatal("old foreground worker still running")
 	}
 	r := status()
-	if !strings.Contains(out, "State: waiting for approval") || !strings.Contains(out, "Hub key: "+key.Fingerprint.Words()) ||
-		r.WorkerFingerprintWords == "" || !strings.Contains(out, "Worker fingerprint: "+r.WorkerFingerprintWords) || r.RunMode != agent.RunModeDetached {
+	if !strings.Contains(out, "State: waiting for approval") || !strings.Contains(out, "Hub key (must match the Hub's top bar):") ||
+		!strings.Contains(out, key.Fingerprint.Words()) || r.WorkerFingerprintWords == "" || !strings.Contains(out, r.WorkerFingerprintWords) ||
+		!strings.Contains(out, "runs in the background") || r.RunMode != agent.RunModeDetached {
 		t.Fatalf("unexpected startup report: %s", out)
 	}
 	a, err := workers.NewApprover(workers.ApproverConfig{Store: h.st, Connections: h.service().Registry()})
@@ -133,11 +134,26 @@ func TestLinuxLoginWorkerOnboarding(t *testing.T) {
 			t.Fatalf("duplicate/missing login hook in %s: %v", name, err)
 		}
 	}
-	login := exec.Command("sh", "-l", "-c", ":")
-	login.Env = env[:4] // fresh shell with no MINION settings or credentials
-	if out, err := login.CombinedOutput(); err != nil {
-		t.Fatalf("login: %v: %s", err, out)
+	login := func() {
+		t.Helper()
+		c := exec.Command("sh", "-l", "-c", ":")
+		c.Env = env[:4] // fresh shell with no MINION settings or credentials
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("login: %v: %s", err, out)
+		}
 	}
+	// A Worker the user stopped stays stopped in this boot: a new shell (a
+	// tmux pane) does not bring it back.
+	login()
+	time.Sleep(2 * time.Second)
+	if status().Connection.Live {
+		t.Fatal("a login restarted a Worker that was stopped with worker down")
+	}
+	// After a reboot (the stop mark is for another boot) a login starts it.
+	if err := os.WriteFile(filepath.Join(dir, ".config", "minion", "worker-login.stopped"), []byte("another-boot\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	login()
 	eventually(t, "login restarts the approved Worker", func() bool {
 		return h.service().Registry().IsOnline(r.WorkerID) && status().RunMode == agent.RunModeDetached
 	})

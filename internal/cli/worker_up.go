@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
@@ -51,7 +52,10 @@ type workerUpDeps struct {
 	// windows holds the seams of the Windows path (Run entry, supervisor);
 	// nil means the real machine.
 	installLogin func(context.Context, string, string, io.Writer) error
-	windows      *windowsUpDeps
+	// liveClient asks a running Worker of this user before a migration; nil
+	// skips that check (tests).
+	liveClient func() client.Backend
+	windows    *windowsUpDeps
 	// readStatus asks the newly started Worker for its onboarding summary.
 	ownerHooks     func(context.Context, *ownerSetup, agent.Settings, io.Reader, io.Writer) error
 	readStatus     upStatusReader
@@ -86,6 +90,7 @@ func defaultWorkerUpDeps(stderr io.Writer) workerUpDeps {
 		targetEnv:      service.SystemTargetEnv(),
 		executable:     os.Executable,
 		installLogin:   installLoginWorker,
+		liveClient:     func() client.Backend { return client.Local() },
 		service:        withEnv(service.DefaultDeps()),
 		chown:          service.OSChowner{},
 		stopForeground: stopForegroundForService,
@@ -239,7 +244,11 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground, configureOnl
 	}
 	err = installWorkerService(cmd, deps, det, asUser, configureOnly)
 	if errors.Is(err, errRunAsRoot) {
-		// Chosen in the sharing question: the Worker runs as root (A57).
+		// Chosen in the sharing question: the Worker runs as root (A57). A
+		// state directory given for the user would become root's: refused.
+		if cmd.Flags().Changed("state-dir") || os.Getenv("MINION_STATE_DIR") != "" {
+			return errors.New("to run the Worker as root, run the command again without --state-dir and MINION_STATE_DIR (they name a directory of the user)")
+		}
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "The Worker will run as root and serve root's tmux sessions.")
 		return installWorkerService(cmd, deps, det, "root", configureOnly)
 	}
@@ -321,6 +330,13 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	binary, err := resolveBinary(deps.executable)
 	if err != nil {
 		return err
+	}
+	// A Worker of root runs this binary as root at every start: only root may
+	// be able to change it (checked before anything is stopped or saved).
+	if runningAsRoot() && target.UID == 0 && det.Manager != service.ManagerWindows && !configureOnly {
+		if err := checkRootExecutable(binary); err != nil {
+			return err
+		}
 	}
 	lookupEnv := deps.run.lookupEnv
 	if lookupEnv == nil {
@@ -478,6 +494,12 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		return showUpStatus(ctx, out, stateDir, owner, deps.readStatus, commands)
 	}
 
+	if !owned && deps.liveClient != nil {
+		hub, _ := config.ResolveWorkerHub(res)
+		if err := checkMigrationKeepsHub(ctx, stateDir, hub.Server != "", deps.liveClient()); err != nil {
+			return err
+		}
+	}
 	svc := deps.service
 	svc.Chown = nil
 	if owned {
@@ -522,7 +544,12 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	if err != nil {
 		return err
 	}
-	return summary(ctx)
+	// The Worker runs now; a status that cannot be shown is not a failure of
+	// the setup (the one-time invitation is already used).
+	if err := summary(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "The Worker was started, but its state could not be shown (%v). Check it with: minion worker status\n", err)
+	}
+	return nil
 }
 
 // firstRunService is the first-run gate of the service path.

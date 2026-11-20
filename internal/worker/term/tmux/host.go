@@ -131,6 +131,11 @@ func New(socketPath string, opts ...Option) (*Host, error) {
 		return nil, fmt.Errorf("tmux: socket path %q is not absolute; an absolute path is required", socketPath)
 	default:
 		h.socket = filepath.Clean(socketPath)
+		// tmux -S skips its own checks of the socket directory. A root
+		// Worker must not talk to a server another account could put there.
+		if err := rootSocketDirSafe(filepath.Dir(h.socket)); err != nil {
+			return nil, err
+		}
 	}
 	if h.exec == nil {
 		h.exec = h.execProcess

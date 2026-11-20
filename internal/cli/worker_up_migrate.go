@@ -60,3 +60,28 @@ func stopPriorWorker(ctx context.Context, state string, foregroundOnly bool, c c
 	}
 	return nil
 }
+
+// checkMigrationKeepsHub refuses to replace a running foreground Worker that
+// is connected to a Hub with a background Worker whose saved settings name no
+// Hub: the foreground Worker may have had its Hub from flags only, and the
+// replacement would silently run alone (Solo).
+func checkMigrationKeepsHub(ctx context.Context, state string, hasHub bool, c client.Backend) error {
+	if hasHub {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	raw, err := c.Call(ctx, agent.OpLocalStatus, nil)
+	if err != nil {
+		return nil // nothing running (or nothing that answers): nothing to keep
+	}
+	var live agent.LiveStatusReply
+	if json.Unmarshal(raw, &live) != nil || live.RunMode != agent.RunModeForeground || !sameDir(live.StateDir, state) {
+		return nil
+	}
+	if live.Reason == agent.ReasonNoHubConfigured {
+		return nil
+	}
+	return errors.New("the Worker running in the foreground uses a Hub that the saved settings do not name, so a background Worker would run alone; " +
+		"nothing was changed. Run the Hub's command again, or add --server <url> (and --hub-fingerprint) to this command")
+}

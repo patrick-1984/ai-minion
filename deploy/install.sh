@@ -33,6 +33,12 @@ die() {
 	exit 1
 }
 
+# warn reports a problem that does not stop the installation: tmux is only
+# needed on a machine that runs a Worker, a Hub-only install works without it.
+warn() {
+	printf 'install.sh: warning: %s\nContinuing without tmux: a Worker needs it, a Hub does not.\n' "$*" >&2
+}
+
 sha256() {
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum "$1" | awk '{print $1}'
@@ -53,23 +59,23 @@ install_tmux() {
 	elif command -v pacman >/dev/null 2>&1; then set -- pacman -S --noconfirm --needed tmux
 	elif command -v zypper >/dev/null 2>&1; then set -- zypper --non-interactive install tmux
 	elif command -v brew >/dev/null 2>&1; then set -- brew install tmux
-	else die "tmux is missing. Install tmux from https://github.com/tmux/tmux/wiki/Installing and run the installer again."
+	else { warn "tmux is missing. Install tmux from https://github.com/tmux/tmux/wiki/Installing and run the installer again."; return 0; }
 	fi
 	if [ "$1" != brew ] && [ "$(id -u)" != 0 ]; then
-		command -v sudo >/dev/null 2>&1 || die "tmux is missing and sudo is unavailable. As root, run '$*', then rerun the installer."
+		command -v sudo >/dev/null 2>&1 || { warn "tmux is missing and sudo is unavailable. As root, run '$*', then rerun the installer."; return 0; }
 		set -- sudo -n "$@"
 	elif [ "$1" = brew ] && [ "$(id -u)" = 0 ]; then
-		[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || die "Homebrew needs a regular user. Run 'brew install tmux' as the Homebrew owner, then rerun the installer."
+		[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || { warn "Homebrew needs a regular user. Run 'brew install tmux' as the Homebrew owner, then rerun the installer."; return 0; }
 		set -- sudo -n -H -u "$SUDO_USER" "$(command -v brew)" install tmux
 	fi
 	printf 'Installing tmux with %s\n' "$*"
 	# Minimal Debian images often have no package index yet.
 	if command -v apt-get >/dev/null 2>&1; then
 		if [ "$(id -u)" = 0 ]; then apt-get update; else sudo -n apt-get update; fi ||
-			die "cannot refresh the apt package index. Run 'sudo apt-get update && sudo apt-get install tmux', then rerun the installer."
+			{ warn "cannot refresh the apt package index. Run 'sudo apt-get update && sudo apt-get install tmux', then rerun the installer."; return 0; }
 	fi
-	"$@" </dev/null || die "tmux installation failed. Run '$(printf '%s' "$*" | sed 's/^sudo -n /sudo /')' in a terminal, then rerun the installer."
-	command -v tmux >/dev/null 2>&1 || die "the package manager finished but tmux is missing from PATH. Open a new terminal and rerun the installer."
+	"$@" </dev/null || { warn "tmux installation failed. Run '$(printf '%s' "$*" | sed 's/^sudo -n /sudo /')' in a terminal."; return 0; }
+	command -v tmux >/dev/null 2>&1 || { warn "the package manager finished but tmux is missing from PATH. Open a new terminal and rerun the installer."; return 0; }
 }
 
 # platform prints "<os>_<arch>" as in the archive names of a release.

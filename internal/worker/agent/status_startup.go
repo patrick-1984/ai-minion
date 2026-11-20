@@ -21,7 +21,10 @@ func (r StatusReport) WriteStartupSummary(w io.Writer, commands []string) {
 	case r.PairingState == PairingPending:
 		state = "waiting for pairing"
 	}
-	lines := []string{"The Worker runs in the background. State: " + state}
+	lines := []string{"State: " + state}
+	if r.RunMode != "" && r.RunMode != RunModeForeground {
+		lines[0] = "The Worker runs in the background (" + r.RunMode + "). State: " + state
+	}
 	if r.HubFingerprintWords != "" {
 		lines = append(lines, "", "Hub key (must match the Hub's top bar):", "  "+r.HubFingerprintWords)
 	} else if r.Mode == ModeHub {

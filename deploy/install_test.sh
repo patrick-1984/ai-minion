@@ -145,6 +145,7 @@ EOF
 done
 run_install "$WORK/deps" Linux x86_64 PATH="$depbin"
 assert_contains "missing package manager explains how to get tmux" "$OUT" "github.com/tmux/tmux/wiki/Installing"
+assert_contains "missing tmux does not block the install" "rc=$RC" "rc=0"
 
 for case in "Linux aarch64 linux_arm64" "Linux arm64 linux_arm64" "Linux armv7l linux_armv7" "Linux armv8l linux_armv7" \
 	"Darwin arm64 darwin_arm64" "Darwin x86_64 darwin_amd64"; do

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -77,6 +78,9 @@ func upNextCommands(det service.Detection, target service.Target, owned, pinStat
 	}
 	if owned {
 		minion = "sudo -H -u " + quote(target.User) + " -- " + minion
+	} else if target.UID == 0 && os.Getenv("SUDO_USER") != "" && det.Manager != service.ManagerWindows {
+		// Root's Worker, set up through sudo: the commands run as root too.
+		minion = "sudo " + minion
 	}
 	status := minion + "status"
 	if pinState {

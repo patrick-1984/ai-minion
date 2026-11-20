@@ -222,6 +222,12 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *
 			if err != nil {
 				return err
 			}
+			if !r.Share.Configured && r.Share.Mode == "" {
+				// The database exists but its choice could not be read (an
+				// older schema, for example): never replace it with a default.
+				return fmt.Errorf("the saved sharing choice of %s could not be read, so nothing was changed; run as %s: minion worker config share all (or none, or later), then this command again",
+					owner.Target.User, owner.Target.User)
+			}
 			needed = !r.Share.Configured
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err

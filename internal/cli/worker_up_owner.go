@@ -1,25 +1,25 @@
 package cli
 
 // The sharing question when "worker up" runs as root for another user (A57).
-// Root can see that user's tmux sessions (it connects to their tmux socket,
-// read only), so it asks on its terminal like the wizard does. The answer is
+// Root lists that user's tmux sessions by running tmux as the user, and asks
+// on its terminal like the wizard does. The answer is
 // saved by "minion worker config share" started as that user, so root never
 // writes into the user's state directory itself. "r" makes the Worker run as
 // root instead: on some hosts the sessions run as root on purpose.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
-	"github.com/patrick-1984/ai-minion/internal/worker/term"
-	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
 )
 
 // errRunAsRoot asks "worker up" to start over with the Worker running as root.
@@ -34,33 +34,48 @@ type ownerSetup struct {
 }
 
 // ownerSessions lists the session names in the target user's tmux server.
-// An error says, in plain words, why they could not be listed.
-func (d workerSetupDeps) ownerSessions(ctx context.Context, socket string) ([]string, error) {
-	var l interface {
-		ListSessions(context.Context) ([]term.Session, error)
-	}
+// tmux runs as that user, never as root: the socket belongs to the user, and a
+// tmux client of root would trust a server the user controls. An error says,
+// in plain words, why they could not be listed.
+func (d workerSetupDeps) ownerSessions(ctx context.Context, o *ownerSetup) ([]string, error) {
 	if d.sessions != nil {
-		if l = d.sessions(socket); l == nil {
+		l := d.sessions(o.Socket)
+		if l == nil {
 			return nil, errors.New("tmux cannot be asked")
 		}
-	} else {
-		h, err := tmux.New(socket)
+		ss, err := l.ListSessions(ctx)
 		if err != nil {
-			return nil, tmuxProblem(err)
+			return nil, err
 		}
-		l = h
+		names := make([]string, 0, len(ss))
+		for _, s := range ss {
+			names = append(names, s.Name)
+		}
+		sort.Strings(names)
+		return names, nil
 	}
-	ss, err := l.ListSessions(ctx)
+	bin, err := exec.LookPath("tmux")
 	if err != nil {
-		if strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "No such file") ||
-			strings.Contains(err.Error(), "error connecting") {
+		return nil, tmuxProblem(err)
+	}
+	run := d.runAsUser
+	if run == nil {
+		run = runAsUser
+	}
+	var buf bytes.Buffer
+	err = run(ctx, o.Target, bin, []string{"-S", o.Socket, "list-sessions", "-F", "#{session_name}"}, &buf)
+	out := strings.TrimSpace(buf.String())
+	if err != nil {
+		if strings.Contains(out, "no server running") || strings.Contains(out, "No such file") || strings.Contains(out, "error connecting") {
 			return nil, nil // no tmux server yet: no sessions
 		}
-		return nil, err
+		return nil, fmt.Errorf("%v: %s", err, out)
 	}
-	names := make([]string, 0, len(ss))
-	for _, s := range ss {
-		names = append(names, s.Name)
+	var names []string
+	for _, n := range strings.Split(out, "\n") {
+		if n != "" {
+			names = append(names, n)
+		}
 	}
 	sort.Strings(names)
 	return names, nil
@@ -72,7 +87,7 @@ func (d workerSetupDeps) askOwnerShare(cmd *cobra.Command, o *ownerSetup) error 
 	ctx := cmdContext(cmd)
 	in, out := cmd.InOrStdin(), cmd.OutOrStdout()
 	user := o.Target.User
-	names, lerr := d.ownerSessions(ctx, o.Socket)
+	names, lerr := d.ownerSessions(ctx, o)
 	_, _ = fmt.Fprintf(out, "\nMinion Worker setup\nThe Worker will run as %s and serve the tmux sessions of %s.\n", user, user)
 	switch {
 	case lerr != nil:

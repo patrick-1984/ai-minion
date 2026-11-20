@@ -20,7 +20,7 @@
   <pre id="join-windows">{{.Windows}}</pre>
   <button type="button" data-copy="#join-windows">Copy the command</button>
   <h3>Docker</h3>
-  <p class="muted">Downloads <code>bootstrap.sh</code>, enrolls using a temporary container, and starts the enrolled Worker with Docker’s restart policy. The container hosts its own tmux sessions. Sharing starts at <code>later</code>. The identity and settings stay in the data volume.</p>
+  <p class="muted">Downloads <code>bootstrap.sh</code>, enrolls using a temporary container, and starts the enrolled Worker with Docker’s restart policy. The container hosts its own tmux sessions. Without a terminal the Worker shares all sessions (the purpose of a Worker); to keep them private, change <code>--non-interactive-share all</code> to <code>none</code> or <code>later</code> and choose in the Hub. The identity and settings stay in the data volume.</p>
   <pre id="join-docker">{{.Docker}}</pre>
   <button type="button" data-copy="#join-docker">Copy the commands</button>
   <h3>Docker Compose</h3>

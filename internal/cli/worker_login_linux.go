@@ -26,7 +26,7 @@ import (
 const loginBlock = `
 # Minion Worker login startup
 if [ -r "$HOME/.config/minion/worker-login" ]; then
-    (IFS= read -r minion_bin && exec "$minion_bin" worker start </dev/null) < "$HOME/.config/minion/worker-login" >/dev/null 2>&1 &
+    (IFS= read -r minion_bin && exec "$minion_bin" worker start --at-login </dev/null) < "$HOME/.config/minion/worker-login" >/dev/null 2>&1 &
 fi
 # End Minion Worker login startup
 `
@@ -90,7 +90,9 @@ func installLoginWorker(ctx context.Context, binary, state string, out io.Writer
 			return err
 		}
 	}
-	if filepath.Base(os.Getenv("SHELL")) == "zsh" {
+	// zsh does not read .profile: also .zprofile when zsh is the login
+	// shell, or the user has zsh files (under sudo SHELL is root's).
+	if _, err := os.Stat(filepath.Join(home, ".zshrc")); filepath.Base(os.Getenv("SHELL")) == "zsh" || err == nil {
 		profiles = append(profiles, ".zprofile")
 	}
 	for _, name := range profiles {
@@ -99,33 +101,26 @@ func installLoginWorker(ctx context.Context, binary, state string, out io.Writer
 		}
 	}
 
+	// Everything the replacement needs is written and checked before the
+	// running Worker is stopped, so a failure here leaves it running.
+	if err := identity.WritePrivate(reg, []byte(binary+"\n"+state+"\n")); err != nil {
+		return err
+	}
+	if f, err := os.OpenFile(filepath.Join(state, launchLogName), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600); err != nil {
+		return fmt.Errorf("the Worker log cannot be written (%w); nothing was stopped", err)
+	} else {
+		_ = f.Close()
+	}
 	// Restart an existing Worker on this profile so a foreground Worker
 	// releases the terminal and new settings take effect.
 	if err := stopPriorWorker(ctx, state, false, client.Local()); err != nil {
 		return err
 	}
-	if err := identity.WritePrivate(reg, []byte(binary+"\n"+state+"\n")); err != nil {
-		return err
-	}
+	clearLoginStopped()
 	if err := spawnLoginWorker(ctx, binary, state); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "Started the Worker in the background. It starts again at shell login. Log: %s\n", filepath.Join(state, launchLogName))
-	return nil
-}
-
-// A login shell will execute this path as root on future logins.
-func checkRootExecutable(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if err := identity.CheckPrivateDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("cannot use %s for root login startup: %w; install minion in /usr/local/bin as root", path, err)
-	}
-	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&022 != 0 {
-		return fmt.Errorf("root login startup requires a root-owned executable: install minion in /usr/local/bin as root, then run /usr/local/bin/minion worker up")
-	}
 	return nil
 }
 
@@ -244,4 +239,50 @@ func spawnLoginWorker(ctx context.Context, bin, state string) error {
 			}
 		}
 	}
+}
+
+// loginStoppedMarker is written by "worker down" for a Worker that the login
+// entry starts: a new shell (a tmux pane, a terminal) then leaves it stopped
+// until "worker start", "worker up" or the next boot.
+func loginStoppedMarker() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return loginRegistration(home) + ".stopped", nil
+}
+
+func bootID() string {
+	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// markLoginStopped records that the user stopped the login Worker.
+func markLoginStopped() {
+	if p, err := loginStoppedMarker(); err == nil {
+		_ = identity.WritePrivate(p, []byte(bootID()+"\n"))
+	}
+}
+
+// clearLoginStopped forgets that mark (an explicit start or up).
+func clearLoginStopped() {
+	if p, err := loginStoppedMarker(); err == nil {
+		_ = os.Remove(p)
+	}
+}
+
+// loginStopped reports whether the user stopped the login Worker in this boot.
+func loginStopped() bool {
+	p, err := loginStoppedMarker()
+	if err != nil {
+		return false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == bootID()
 }

@@ -100,7 +100,7 @@ func defaultWorkerStartDeps() workerStartDeps {
 }
 
 func newWorkerStartCmd(d workerStartDeps) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the installed Worker of this user (the opposite of worker down)",
 		Long: "Start the Worker that \"minion worker up\" installed, through its own manager: the logon supervisor on\n" +
@@ -108,8 +108,21 @@ func newWorkerStartCmd(d workerStartDeps) *cobra.Command {
 			"alone. Nothing is installed or changed; without an installed Worker the command says so and points to\n" +
 			"\"minion worker up\".",
 		Args: cobra.NoArgs,
-		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error { return runWorkerStart(cmd, d) }, nil),
+		RunE: withHubLine(func(cmd *cobra.Command, _ []string) error {
+			if atLogin, _ := cmd.Flags().GetBool("at-login"); atLogin {
+				// From the login entry: a Worker the user stopped stays stopped.
+				if loginStopped() {
+					return nil
+				}
+			} else {
+				clearLoginStopped()
+			}
+			return runWorkerStart(cmd, d)
+		}, nil),
 	}
+	cmd.Flags().Bool("at-login", false, "Used by the login entry: do nothing when the Worker was stopped with worker down in this boot")
+	_ = cmd.Flags().MarkHidden("at-login")
+	return cmd
 }
 
 func (d workerStartDeps) live(ctx context.Context) bool {

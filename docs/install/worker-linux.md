@@ -2,7 +2,7 @@
 
 Back to the [README](../../README.md).
 
-A Worker serves the tmux sessions of one Unix user on one machine. It needs `tmux` (3.2 or newer for sessions; replies of agents through [the pipe](../guides/pipe.md) need tmux 3.8 or newer). The Worker never renames, closes or changes a session on its own. One Worker per Unix user: it sees the tmux server of the user it runs as.
+A Worker serves the tmux sessions of one Unix user on one machine. It needs `tmux` (3.0 or newer for sessions; replies of agents through [the pipe](../guides/pipe.md) need tmux 3.8 or newer). The Worker never renames, closes or changes a session on its own. One Worker per Unix user: it sees the tmux server of the user it runs as.
 
 ## 1. Install the binary
 
@@ -34,7 +34,7 @@ sudo install -m 0755 minion /usr/local/bin/minion
 
 ### Upgrading an old tmux
 
-Ubuntu 20.04 ships tmux 3.0a. This release can store session names containing literal control characters that Minion cannot address. When the distribution repository offers only an older tmux, install the tmux release used in Minion CI from source. On Debian or Ubuntu:
+Minion needs tmux 3.0 or newer, so Ubuntu 20.04's tmux 3.0a is fine (keep it updated with the distribution's security updates). Install a newer tmux from source only when the distribution offers something older than 3.0, or when you want the tmux release used in Minion CI (the pipe needs 3.8). On Debian or Ubuntu:
 
 ```sh
 sudo apt-get update && sudo apt-get install -y build-essential bison pkg-config libevent-dev libncurses-dev curl
