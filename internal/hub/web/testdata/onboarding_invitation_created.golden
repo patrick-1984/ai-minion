@@ -6,7 +6,7 @@
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="invite-key">Invitation key</label>
-    <div><div class="copy-field copy-field-wide"><input type="text" class="copy-value" id="invite-key" value="mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm" readonly autocomplete="off" spellcheck="false"><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+    <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="invite-key" rows="1" readonly autocomplete="off" spellcheck="false">mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm</textarea><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
   <h3>Start a Worker with one command</h3>
   <p class="muted">Run this on the machine that should become a Worker. The key is visible in the process list while the command runs; use the file variant below on shared machines.</p>

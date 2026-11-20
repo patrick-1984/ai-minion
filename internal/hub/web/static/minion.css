@@ -1335,3 +1335,5 @@ button.is-busy { border-style: dashed; }
 /* A key or token the user copies in full: the field spans the panel and the whole value shows. */
 .copy-field.copy-field-wide { display: flex; width: 100%; }
 .copy-field.copy-field-wide > .copy-value { flex: 1 1 auto; width: 100%; }
+.copy-field > textarea.copy-wrap { resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
+  field-sizing: content; min-height: 0; height: auto; font: inherit; font-family: var(--font-mono); }

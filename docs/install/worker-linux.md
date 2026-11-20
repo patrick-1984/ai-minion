@@ -6,7 +6,13 @@ A Worker serves the tmux sessions of one Unix user on one machine. It needs `tmu
 
 ## 1. Install the binary
 
-One line installs the latest `minion` into `/usr/local/bin` (when writable, for example as root) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh`. Install `tmux` with your package manager. The packages and the verified manual install below are the alternatives.
+One line installs the latest `minion` into `/usr/local/bin` (when writable, for example as root) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release:
+
+```sh
+curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh
+```
+
+ Install `tmux` with your package manager. The packages and the verified manual install below are the alternatives.
 
 Download from `https://github.com/patrick-1984/ai-minion/releases` the file for your architecture. Check the release page for the exact names; the packages end in the architecture of your machine, and the archives are named `minion_<version>_linux_<arch>.tar.gz` with `amd64`, `arm64` or `armv7`.
 

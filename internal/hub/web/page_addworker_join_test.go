@@ -77,7 +77,7 @@ func TestAddWorkerJoinCreatesAOneTimeKeyAndShowsEverythingOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := tok.Encode()
-	mustHave(t, body, `value="`+text+`"`, `data-copy="#join-token"`, "data-join-saved", "data-join-done", "copy-btn", "shown only once", f.fp.Words(), f.fp.String(),
+	mustHave(t, body, `>`+text+`</textarea>`, `data-copy="#join-token"`, "data-join-saved", "data-join-done", "copy-btn", "shown only once", f.fp.Words(), f.fp.String(),
 		"connects only to the Hub with fingerprint", "works once and expires", "approve it on the Workers page")
 
 	p := pres(body)

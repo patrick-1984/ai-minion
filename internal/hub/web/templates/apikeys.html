@@ -3,7 +3,7 @@
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="api-key">API key</label>
-    <div><div class="copy-field copy-field-wide"><input type="text" class="copy-value" id="api-key" value="{{.Key}}" readonly autocomplete="off" spellcheck="false"><button type="button" class="copy-btn" data-copy="#api-key" data-copy-target="#api-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+    <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="api-key" rows="1" readonly autocomplete="off" spellcheck="false">{{.Key}}</textarea><button type="button" class="copy-btn" data-copy="#api-key" data-copy-target="#api-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
   <p class="muted">Send it to this server:</p>
   <div><div class="copy-field"><code class="copy-value" id="cp-api-server">{{.Server}}</code><button type="button" class="copy-btn" data-copy-target="#cp-api-server" aria-label="Copy the server URL" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>

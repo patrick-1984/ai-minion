@@ -247,6 +247,23 @@
     return copied;
   }
 
+  // Read-only keys and tokens show in full: the box grows to the value and
+  // selects it when focused.
+  function sizeCopyWrap(root) {
+    var list = (root || document).querySelectorAll('textarea.copy-wrap');
+    for (var i = 0; i < list.length; i++) {
+      list[i].style.height = 'auto';
+      list[i].style.height = list[i].scrollHeight + 'px';
+    }
+  }
+  document.addEventListener('focusin', function (event) {
+    var t = event.target;
+    if (t && t.matches && t.matches('textarea.copy-wrap')) { t.select(); }
+  });
+  document.addEventListener('htmx:afterSwap', function () { sizeCopyWrap(); });
+  window.addEventListener('resize', function () { sizeCopyWrap(); });
+  sizeCopyWrap();
+
   document.addEventListener('click', function (event) {
     var button = event.target.closest && event.target.closest('button[data-copy-target]');
     if (!button || button.disabled) { return; }
@@ -262,8 +279,19 @@
     function fallback() {
       if (fallbackCopy(text)) { copied(); }
       else {
-        button.title = 'Select the value and press Ctrl+C to copy';
-        button.setAttribute('aria-label', button.title);
+        // Both methods failed: select the value itself and ask for Ctrl+C.
+        try {
+          if (typeof target.select === 'function') { target.focus(); target.select(); }
+          else {
+            var range = document.createRange();
+            range.selectNodeContents(target);
+            var sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+        } catch (error) { /* the prompt below still tells what to do */ }
+        button.title = 'Press Ctrl+C to copy';
+        button.setAttribute('aria-label', 'Value selected. Press Ctrl+C to copy');
       }
     }
     function copied() {

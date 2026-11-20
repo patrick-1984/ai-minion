@@ -6,7 +6,7 @@
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke the key on the <a href="/invitations">Invitations</a> page and create a new command. The new Worker starts as <strong>pending</strong>: approve it on the Workers page.</p>
   <div class="field">
     <label for="join-token">Join token</label>
-    <div><div class="copy-field copy-field-wide"><input type="text" class="copy-value" id="join-token" value="{{.Token}}" readonly autocomplete="off" spellcheck="false"><button type="button" class="copy-btn" data-copy="#join-token" data-copy-target="#join-token" aria-label="Copy the token" title="Copy">{{template "copy-icons"}}</button></div></div>
+    <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="join-token" rows="1" readonly autocomplete="off" spellcheck="false">{{.Token}}</textarea><button type="button" class="copy-btn" data-copy="#join-token" data-copy-target="#join-token" aria-label="Copy the token" title="Copy">{{template "copy-icons"}}</button></div></div>
   </div>
   <h3>Linux or macOS</h3>
   <p class="muted">Run it as the user whose sessions the Worker serves, without sudo: it installs a user service (systemd with lingering, or a launchd agent on macOS) and, in a terminal, asks what the Hub may see. The token is visible in the process list while the command runs; it is useless once the Worker has enrolled.</p>

@@ -28,7 +28,7 @@
 </section>{{end}}
 {{define "invitation_key"}}<div class="secret" role="status">
   <p class="notice notice-info" data-invitation-saved><strong>The invitation is saved.</strong> It stays listed under "Your invitation keys" until it expires, is used up or you revoke it. Leaving this page does not delete it. Only the secret key text cannot be shown again, so copy it first.</p>
-  <p><a class="btn" href="/invitations" data-invitation-done>Done</a></p>
+  <p><a class="btn" href="/invitations{{if .All}}?all=1{{end}}" data-invitation-done>Done</a></p>
   <p><strong>Invitation key{{if .Name}} "{{.Name}}"{{end}} created.</strong> It is {{.Mode}}, kind {{.Kind}}, {{if .Limit}}allows {{.Limit}}, {{end}}and expires: {{.Expires}}.</p>
   <p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>{{if .HubWords}}
   <div data-hub-words><p>This key is bound to Hub fingerprint:</p>
@@ -38,7 +38,7 @@
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke it and create a new one.</p>
   <div class="field">
     <label for="invite-key">Invitation key</label>
-    <div><div class="copy-field copy-field-wide"><input type="text" class="copy-value" id="invite-key" value="{{.Key}}" readonly autocomplete="off" spellcheck="false"><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+    <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="invite-key" rows="1" readonly autocomplete="off" spellcheck="false">{{.Key}}</textarea><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
   <h3>Start a Worker with one command</h3>
   <p class="muted">Run this on the machine that should become a Worker. The key is visible in the process list while the command runs; use the file variant below on shared machines.</p>
@@ -48,7 +48,7 @@
   <h3>Docker Compose</h3>
   <p class="muted">A complete Compose project that needs only Docker, <code>bootstrap.sh</code> from the release and the key in a file. The key stays in a secret file; the container reads it through <code>MINION_INVITE_KEY_FILE</code>.</p>
   <div><div class="copy-field"><pre class="copy-value" id="invite-compose">{{.Compose}}</pre><button type="button" class="copy-btn" data-copy="#invite-compose" data-copy-target="#invite-compose" aria-label="Copy the Compose file" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
-  <p><a class="btn" href="/invitations" data-invitation-done>Done</a></p>
+  <p><a class="btn" href="/invitations{{if .All}}?all=1{{end}}" data-invitation-done>Done</a></p>
 </div>{{if .List}}
 <div id="invitation-list-section" hx-swap-oob="outerHTML">{{template "invitation_list" .List}}</div>{{end}}{{end}}
 {{define "content"}}
@@ -60,6 +60,7 @@
   <h2 id="create-invitation">Create an invitation key <button type="button" class="info-btn" popovertarget="help-invitation-key" aria-label="About invitation keys">{{template "icon" "i-info"}}</button></h2>
   <div class="info-pop" id="help-invitation-key" popover><p>A Worker uses the key to enroll itself without a pairing code. It starts pending and cannot receive operations until approved.</p></div>
   <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    {{if .Data.All}}<input type="hidden" name="all" value="1">{{end}}
     <div class="field">
       <label for="inv-mode">Use</label>
       <select id="inv-mode" name="mode">
