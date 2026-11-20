@@ -14,6 +14,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 func init() {
@@ -265,6 +266,11 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 			return err
 		}
 	}
+	if core, err := config.ResolveWorkerCore(res); err == nil {
+		if err := refuseJoinWhilePaused(cmdContext(cmd), cmd, &upState{dir: core.StateDir}); err != nil {
+			return err
+		}
+	}
 	offerPsmux(cmd, res, defaultPsmuxOfferDeps())
 	return sd.firstRun(cmd, res, nil, "")
 }
@@ -351,6 +357,9 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	} else if err := joinFileConflict(cmd, reg, saved); err != nil {
 		return err
 	}
+	if err := refuseJoinWhilePaused(ctx, cmd, st); err != nil {
+		return err
+	}
 
 	// A Worker that was never set up gets the wizard (on a terminal) or a
 	// clear refusal, before anything is installed or changed. The wizard saves
@@ -407,13 +416,15 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	}
 
 	// A hook may have written the config file itself: start from what is on disk.
-	if file, err = st.load(); err != nil {
-		return err
-	}
-	if err := fillUpConfig(file, plain, reg, flags, lookupEnv); err != nil {
-		return err
-	}
-	path, err := st.save(file)
+	// Under the config lock of "worker config set", from the reload to the
+	// save: a change saved meanwhile (allow_new_sessions off, for example) is
+	// kept, never written over with the older file.
+	path, err := st.update(func(file *config.ConfigFile) error {
+		if err := fillUpConfig(file, plain, reg, flags, lookupEnv); err != nil {
+			return err
+		}
+		return keepDatabaseShare(ctx, cmd, reg, flags, lookupEnv, st, file)
+	})
 	if err != nil {
 		return err
 	}
@@ -754,3 +765,61 @@ func newWorkerServiceRunCmd(deps workerRunDeps, scm service.SCM) *cobra.Command 
 // the Worker as SYSTEM.
 const legacyServiceRunMessage = "minion no longer runs the Worker as the LocalSystem service " + service.WindowsServiceName +
 	"; the service ends. Remove it (" + service.LegacyRemovalCommand + ") and run minion worker up as yourself."
+
+// keepDatabaseShare makes a join token leave the sharing rule alone: when the
+// state database holds a choice (which the Hub or "worker config share" may
+// have narrowed since the config file was written) and this run gives no new
+// one, an older share_existing of the config file is removed, so that the
+// restarted Worker does not apply it over the database and show hidden
+// sessions again.
+func keepDatabaseShare(ctx context.Context, cmd *cobra.Command, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool), st *upState, file *config.ConfigFile) error {
+	if cmd.Annotations[joinAppliedAnnotation] == "" || st.root != nil {
+		return nil
+	}
+	s, ok := reg.Lookup(config.KeyShareExisting)
+	if !ok {
+		return nil
+	}
+	if _, byFlag, _ := flags.Lookup(s.Key); byFlag {
+		return nil
+	}
+	if v, byEnv := lookupEnv(s.EnvName()); byEnv && v != "" {
+		return nil
+	}
+	if _, has, _ := file.Lookup(s.Key); !has {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, store.DBFile)); err != nil {
+		return nil
+	}
+	ro, err := store.OpenReadOnlyContext(ctx, st.dir)
+	if err != nil {
+		return fmt.Errorf("open the Worker state in %s: %w", st.dir, err)
+	}
+	sel, err := ro.LoadShareContext(ctx)
+	_ = ro.Close()
+	if err != nil {
+		return err
+	}
+	if sel.Configured {
+		file.Delete(s.Key)
+	}
+	return nil
+}
+
+// refuseJoinWhilePaused stops a join token on a paused Worker that is not
+// enrolled yet: a paused Worker makes no Hub request, so the invitation would
+// not be checked, and the command would report a join that did not happen.
+func refuseJoinWhilePaused(ctx context.Context, cmd *cobra.Command, st *upState) error {
+	if cmd.Annotations[joinAppliedAnnotation] == "" {
+		return nil
+	}
+	if paused, _ := agent.ReadPause(st.dir); !paused {
+		return nil
+	}
+	if enrolled, err := st.enrolled(ctx); err != nil || enrolled {
+		return err
+	}
+	return errors.New("this Worker is paused, so it makes no Hub request and cannot use the join token; nothing was changed. " +
+		"Run minion worker resume, then run this command again with a fresh token")
+}
