@@ -16,7 +16,9 @@ package cli
 // a secret: it is never printed, logged or put into an error.
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 
@@ -49,7 +51,7 @@ func addJoinFlag(cmd *cobra.Command, reg *config.Registry) {
 	if !ok || cmd.Flags().Lookup(s.FlagName()) != nil {
 		return
 	}
-	cmd.Flags().String(s.FlagName(), "", fmt.Sprintf("%s (env %s)", s.Help, s.EnvName()))
+	cmd.Flags().String(s.FlagName(), "", fmt.Sprintf("%s (env %s; --%s - reads the token from standard input, so it is in no argument list)", s.Help, s.EnvName(), s.FlagName()))
 }
 
 // expandJoinToken reads the join token of cmd and, when there is one, sets the
@@ -80,6 +82,15 @@ func expandJoinToken(cmd *cobra.Command, reg *config.Registry, lookupEnv func(st
 		return joinExpansion{}, nil
 	}
 	from := sourceName(js, r)
+	if r.Source == config.SourceFlag && strings.TrimSpace(r.Value) == "-" {
+		// --join - reads the token from standard input, so that it is in no
+		// argument list (the way a program, such as the tray, hands it over).
+		line, err := readJoinTokenLine(cmd.InOrStdin())
+		if err != nil {
+			return joinExpansion{}, fmt.Errorf("--%s -: %w", js.FlagName(), err)
+		}
+		r.Value, r.Warning = line, ""
+	}
 	if strings.TrimSpace(r.Value) == "" {
 		// Given, but blank: a quoted empty --join or a file of white space
 		// is a mistake, never "no token".
@@ -123,6 +134,41 @@ func expandJoinToken(cmd *cobra.Command, reg *config.Registry, lookupEnv func(st
 	}
 	cmd.Annotations[joinAppliedAnnotation] = "1"
 	return joinExpansion{Applied: true, Warning: r.Warning}, nil
+}
+
+// maxJoinTokenInput bounds what --join - reads: a join token is about 250
+// characters and identity.ParseJoinToken refuses more than 4096.
+const maxJoinTokenInput = 4096
+
+// readJoinTokenLine reads the first line of r, one byte at a time so that
+// nothing after it is taken (the wizard may read the next answer from the same
+// input), and at most maxJoinTokenInput bytes. The error never holds the input.
+func readJoinTokenLine(r io.Reader) (string, error) {
+	var buf []byte
+	one := make([]byte, 1)
+	for {
+		n, err := r.Read(one)
+		if n == 1 {
+			if one[0] == '\n' {
+				break
+			}
+			if len(buf) >= maxJoinTokenInput {
+				return "", fmt.Errorf("the input is longer than %d bytes; it is not a join token", maxJoinTokenInput)
+			}
+			buf = append(buf, one[0])
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", fmt.Errorf("cannot read the join token: %w", err)
+		}
+	}
+	line := strings.TrimSpace(string(buf))
+	if line == "" {
+		return "", errors.New("the input holds no join token; copy the whole token from the Hub's Add worker page")
+	}
+	return line, nil
 }
 
 // sourceName names where a resolved value came from: the flag, or the

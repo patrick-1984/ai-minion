@@ -140,7 +140,11 @@ one-time invitation key, and sets --server, --hub-fingerprint and
 --invite-key: the Worker connects only to the Hub with that fingerprint and
 enrolls with the key, which works once and expires. Giving one of these three
 with a different value is an error. The Hub address and fingerprint are saved
-for the service; the token itself is never saved or printed.
+for the service; the token itself is never saved or printed. --join - reads
+the token from the first line of standard input (at most 4096 bytes), so that it
+is in no argument list; without a terminal a new profile then shares nothing
+(give --share-existing for more, or widen it later with: minion worker config
+share), and an existing sharing choice is kept.
 
 "worker up" first runs the pre-start hooks (for example invitation
 enrollment) and reports their result. A failing hook stops the command with an

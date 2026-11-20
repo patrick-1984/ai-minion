@@ -198,8 +198,18 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *
 		return fmt.Errorf("this Worker is not set up yet. This command runs as root for %s, so it cannot ask about their tmux sessions "+
 			"and does not read their saved choice. Run `minion worker up` as %s, or %s", owner, owner, setupFlagsHint)
 	case !d.isInteractive(cmd.InOrStdin(), cmd.OutOrStdout()):
-		return fmt.Errorf("this Worker is not set up yet and there is no terminal to ask in, so nothing was started. %s. "+
-			"Or run `minion worker setup` in a terminal first", setupFlagsHint)
+		if cmd.Annotations[joinAppliedAnnotation] == "" {
+			return fmt.Errorf("this Worker is not set up yet and there is no terminal to ask in, so nothing was started. %s. "+
+				"Or run `minion worker setup` in a terminal first", setupFlagsHint)
+		}
+		// A join token without a terminal (the tray): a new profile shares
+		// nothing until its owner widens it, after the enrollment worked
+		// (minion worker config share), unless --share-existing says more.
+		if se, ok := config.Default.Lookup(config.KeyShareExisting); ok {
+			if f := cmd.Flags().Lookup(se.FlagName()); f != nil && !f.Changed {
+				_ = cmd.Flags().Set(se.FlagName(), config.ShareExistingNone)
+			}
+		}
 	}
 	_, err = d.runWizard(cmd, res, core, false)
 	return err
