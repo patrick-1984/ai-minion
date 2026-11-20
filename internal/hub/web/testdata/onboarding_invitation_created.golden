@@ -1,5 +1,5 @@
 <div class="secret" role="status">
-  <p class="notice notice-info" data-invitation-saved><strong>The invitation is saved.</strong> It stays listed under "Your invitation keys" until it expires, is used up or you revoke it. Leaving this page does not delete it. Only the secret key text cannot be shown again, so copy it first.</p>
+  <p class="notice notice-info" data-invitation-saved><strong>The invitation is saved.</strong> It appears in the list below when you press Done, and stays listed under "Your invitation keys" until it expires, is used up or you revoke it. Leaving this page does not delete it. Only the secret key text cannot be shown again, so copy it first.</p>
   <p><a class="btn" href="/invitations" data-invitation-done>Done</a></p>
   <p><strong>Invitation key "build-farm" created.</strong> It is reusable, kind private, and expires: 2026-11-16 08:30 UTC.</p>
   <p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>
@@ -87,49 +87,3 @@ volumes:
 </pre><button type="button" class="copy-btn" data-copy="#invite-compose" data-copy-target="#invite-compose" aria-label="Copy the Compose file" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   <p><a class="btn" href="/invitations" data-invitation-done>Done</a></p>
 </div>
-<div id="invitation-list-section" hx-swap-oob="outerHTML"><section aria-labelledby="invitation-list">
-  <h2 id="invitation-list">Your invitation keys</h2>
-  
-  <div class="table-wrap"><table data-sortable>
-    <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Use</th><th scope="col" data-sort="text">Kind</th><th scope="col">Uses</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">State</th><th scope="col"><span class="muted">Actions</span></th></tr></thead>
-    <tbody>
-    <tr>
-      <th scope="row">build-farm</th>
-      <td>reusable</td>
-      <td>private</td>
-      <td>3</td>
-      <td><time datetime="2026-11-16T08:30:00Z">2026-11-16 08:30 UTC</time></td>
-      <td>active</td>
-      
-      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d1/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke build-farm</span></button>
-          <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d1" aria-live="polite"></span>
-        </form></td>
-    </tr>
-    <tr>
-      <th scope="row">laptop</th>
-      <td>one-time</td>
-      <td>private</td>
-      <td>0 of 1</td>
-      <td>never</td>
-      <td>active</td>
-      
-      <td><form method="post" hx-post="/invitations/0190a1b2-c3d4-7e5f-8a6b-0000000000d2/revoke" hx-target="#revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" hx-swap="innerHTML" hx-confirm="Revoke this invitation key? No further Worker can enroll with it." hx-disabled-elt="find button">
-          <button type="submit" class="btn-danger"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-trash"/></svg><span>Revoke laptop</span></button>
-          <span id="revoke-0190a1b2-c3d4-7e5f-8a6b-0000000000d2" aria-live="polite"></span>
-        </form></td>
-    </tr>
-    <tr>
-      <th scope="row">old</th>
-      <td>one-time</td>
-      <td>private</td>
-      <td>1 of 1</td>
-      <td><time datetime="2026-11-09T08:30:00Z">2026-11-09 08:30 UTC</time></td>
-      <td>exhausted</td>
-      
-      <td><span class="muted">none</span></td>
-    </tr>
-    
-    </tbody>
-  </table></div>
-</section></div>

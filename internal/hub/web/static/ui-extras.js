@@ -290,8 +290,18 @@
             sel.addRange(range);
           }
         } catch (error) { /* the prompt below still tells what to do */ }
-        button.title = 'Press Ctrl+C to copy';
-        button.setAttribute('aria-label', 'Value selected. Press Ctrl+C to copy');
+        var mac = /Mac|iPhone|iPad/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '');
+        var field = button.closest('.copy-field') || button.parentNode;
+        var hint = field.parentNode.querySelector('.copy-hint');
+        if (!hint) {
+          hint = document.createElement('span');
+          hint.className = 'copy-hint';
+          hint.setAttribute('role', 'status');
+          hint.setAttribute('aria-live', 'polite');
+          field.parentNode.insertBefore(hint, field.nextSibling);
+        }
+        hint.textContent = '';
+        hint.textContent = mac ? 'Selected. Press \u2318C to copy.' : 'Selected. Press Ctrl+C to copy.';
       }
     }
     function copied() {

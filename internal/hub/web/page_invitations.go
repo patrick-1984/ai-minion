@@ -611,11 +611,8 @@ type inviteResult struct {
 	Key   string
 	// HubWords are the six words of the Hub fingerprint inside the key (M12b).
 	HubWords string
-	// List is the refreshed key list, swapped into the page out of band so the
-	// new key shows at once. Nil when the list could not be read.
-	List *InvitationsPage
 	// All keeps the "every user" view of the page the key was created on, for
-	// the list and the Done links.
+	// the Done links.
 	All bool
 	InviteCommands
 }
@@ -656,36 +653,7 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 		out.Limit = fmt.Sprintf("%d %s", *res.MaxUses, map[bool]string{true: "enrollment", false: "enrollments"}[*res.MaxUses == 1])
 	}
 	out.All = u.Admin && r.PostFormValue("all") == "1"
-	out.List = refreshedInvitationList(r, c, u, out.All)
 	writeFragmentTemplate(w, invitationFragments(), "invitation_key", out)
-}
-
-// invitationListWait is how long the answer to a create waits for the refreshed
-// list. The secret key must never be delayed or lost because of the list.
-var invitationListWait = 2 * time.Second
-
-// refreshedInvitationList reads the list for the out-of-band swap, or returns
-// nil on any error or when it takes longer than invitationListWait (the Done
-// link reloads the page and shows the list).
-func refreshedInvitationList(r *http.Request, c OpCaller, u pageUser, all bool) *InvitationsPage {
-	type answer struct {
-		p   InvitationsPage
-		err error
-	}
-	ch := make(chan answer, 1)
-	go func() {
-		p, err := invitationsPage(r, c, u, all)
-		ch <- answer{p, err}
-	}()
-	select {
-	case a := <-ch:
-		if a.err != nil {
-			return nil
-		}
-		return &a.p
-	case <-time.After(invitationListWait):
-		return nil
-	}
 }
 
 func handleInvitationRevoke(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {

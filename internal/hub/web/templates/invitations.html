@@ -27,7 +27,7 @@
   </table></div>
 </section>{{end}}
 {{define "invitation_key"}}<div class="secret" role="status">
-  <p class="notice notice-info" data-invitation-saved><strong>The invitation is saved.</strong> It stays listed under "Your invitation keys" until it expires, is used up or you revoke it. Leaving this page does not delete it. Only the secret key text cannot be shown again, so copy it first.</p>
+  <p class="notice notice-info" data-invitation-saved><strong>The invitation is saved.</strong> It appears in the list below when you press Done, and stays listed under "Your invitation keys" until it expires, is used up or you revoke it. Leaving this page does not delete it. Only the secret key text cannot be shown again, so copy it first.</p>
   <p><a class="btn" href="/invitations{{if .All}}?all=1{{end}}" data-invitation-done>Done</a></p>
   <p><strong>Invitation key{{if .Name}} "{{.Name}}"{{end}} created.</strong> It is {{.Mode}}, kind {{.Kind}}, {{if .Limit}}allows {{.Limit}}, {{end}}and expires: {{.Expires}}.</p>
   <p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>{{if .HubWords}}
@@ -49,8 +49,7 @@
   <p class="muted">A complete Compose project that needs only Docker, <code>bootstrap.sh</code> from the release and the key in a file. The key stays in a secret file; the container reads it through <code>MINION_INVITE_KEY_FILE</code>.</p>
   <div><div class="copy-field"><pre class="copy-value" id="invite-compose">{{.Compose}}</pre><button type="button" class="copy-btn" data-copy="#invite-compose" data-copy-target="#invite-compose" aria-label="Copy the Compose file" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   <p><a class="btn" href="/invitations{{if .All}}?all=1{{end}}" data-invitation-done>Done</a></p>
-</div>{{if .List}}
-<div id="invitation-list-section" hx-swap-oob="outerHTML">{{template "invitation_list" .List}}</div>{{end}}{{end}}
+</div>{{end}}
 {{define "content"}}
 <div class="page-head"><div><h1>Invitation keys</h1><p>An invitation key lets a machine enroll itself as a Worker in your space. Expiry only stops new enrollments: a Worker that has enrolled keeps working.</p></div></div>
 <div class="stack">

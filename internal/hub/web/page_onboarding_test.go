@@ -458,7 +458,7 @@ func TestInvitationCreateShowsTheKeyOnce(t *testing.T) {
 	// The flow has a way out: a saved note and a Done link at the top and the
 	// bottom, a full-width key field and the refreshed list out of band.
 	mustHave(t, body, "data-invitation-saved", "Leaving this page does not delete it",
-		`copy-field copy-field-wide`, `hx-swap-oob="outerHTML"`, `id="invitation-list-section"`)
+		`copy-field copy-field-wide`)
 	if n := strings.Count(body, "data-invitation-done"); n != 2 {
 		t.Errorf("Done links = %d, want 2", n)
 	}
@@ -1085,35 +1085,10 @@ func TestInvitationCreateKeepsTheAllScope(t *testing.T) {
 	f := newFakeOps().reply(ops.OpInvitationCreate, create).reply(ops.OpInvitationList, sampleInvitations())
 	connect(t, f)
 	rec := onbPost(t, onbAdmin(t), pathInvitations, url.Values{"mode": {"one_time"}, "ttl": {"1w"}, "all": {"1"}})
-	mustHave(t, rec.Body.String(), `href="/invitations?all=1" data-invitation-done`, "All invitation keys")
-	if c := f.called(ops.OpInvitationList); len(c) != 1 || c[0].Args["all"] != true {
-		t.Errorf("list calls = %+v", c)
-	}
-}
-
-// A list that fails never costs the user the secret key.
-func TestInvitationCreateSurvivesAFailingList(t *testing.T) {
-	create := ops.InvitationCreateResult{ID: onbInviteID, Key: sampleKey, Mode: ops.InvitationOneTime, Kind: ops.KindPrivate,
-		TTL: ops.TTL1w, CreatedAt: onbTime, ExpiresAt: &onbWeek}
-	connect(t, newFakeOps().reply(ops.OpInvitationCreate, create))
-	rec := onbPost(t, onbUser(t), pathInvitations, url.Values{"mode": {"one_time"}, "ttl": {"1w"}})
 	body := rec.Body.String()
-	mustHave(t, body, ">"+sampleKey+"</textarea>", "data-invitation-done")
+	mustHave(t, body, `href="/invitations?all=1" data-invitation-done`, "appears in the list below when you press Done")
 	mustNotHave(t, body, "hx-swap-oob")
-}
-
-type blockingCaller struct{ release chan struct{} }
-
-func (b blockingCaller) CallOp(*http.Request, string, any, any) error { <-b.release; return nil }
-
-// A list that hangs is given up after the wait.
-func TestRefreshedInvitationListGivesUpWhenSlow(t *testing.T) {
-	old := invitationListWait
-	invitationListWait = 20 * time.Millisecond
-	defer func() { invitationListWait = old }()
-	b := blockingCaller{release: make(chan struct{})}
-	defer close(b.release)
-	if got := refreshedInvitationList(httptest.NewRequest(http.MethodPost, "/invitations", nil), b, pageUser{}, false); got != nil {
-		t.Errorf("list = %+v, want nil", got)
+	if c := f.called(ops.OpInvitationList); len(c) != 0 {
+		t.Errorf("the create answer read the list: %+v", c)
 	}
 }
