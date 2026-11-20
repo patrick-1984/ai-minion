@@ -392,10 +392,13 @@ func invitationRow(i ops.InvitationInfo) InvitationRow {
 }
 
 func invitationsData(r *http.Request, c OpCaller, u pageUser) (any, error) {
-	all := u.Admin && r.URL.Query().Get("all") == "1"
+	return invitationsPage(r, c, u, u.Admin && r.URL.Query().Get("all") == "1")
+}
+
+func invitationsPage(r *http.Request, c OpCaller, u pageUser, all bool) (InvitationsPage, error) {
 	var res ops.InvitationListResult
 	if err := c.CallOp(r, ops.OpInvitationList, ops.InvitationListArgs{All: all}, &res); err != nil {
-		return nil, err
+		return InvitationsPage{}, err
 	}
 	page := InvitationsPage{Modes: invitationModes, TTLs: invitationTTLChoices(u.Admin), Admin: u.Admin, All: all,
 		MaxUsesDefault: ops.DefaultReusableMaxUses}
@@ -608,12 +611,15 @@ type inviteResult struct {
 	Key   string
 	// HubWords are the six words of the Hub fingerprint inside the key (M12b).
 	HubWords string
+	// All keeps the "every user" view of the page the key was created on, for
+	// the Done links.
+	All bool
 	InviteCommands
 }
 
 var invitationFragments = fragments("invitations.html")
 
-func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
+func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	args := ops.InvitationCreateArgs{
 		Mode: r.PostFormValue("mode"),
 		TTL:  r.PostFormValue("ttl"),
@@ -646,6 +652,7 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	if res.MaxUses != nil {
 		out.Limit = fmt.Sprintf("%d %s", *res.MaxUses, map[bool]string{true: "enrollment", false: "enrollments"}[*res.MaxUses == 1])
 	}
+	out.All = u.Admin && r.PostFormValue("all") == "1"
 	writeFragmentTemplate(w, invitationFragments(), "invitation_key", out)
 }
 

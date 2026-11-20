@@ -353,7 +353,7 @@ func writeFragmentTemplate(w http.ResponseWriter, t *template.Template, name str
 // route can render a fragment the file defines next to its "content" block.
 func fragments(file string) func() *template.Template {
 	return sync.OnceValue(func() *template.Template {
-		return template.Must(template.ParseFS(templateFiles, "templates/"+file))
+		return template.Must(template.ParseFS(templateFiles, "templates/_icons.html", "templates/"+file))
 	})
 }
 

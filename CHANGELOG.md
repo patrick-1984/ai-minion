@@ -4,8 +4,13 @@
 
 ### Fixed
 
-- **The Hub key words are always shown in full.** The top bar cut the six words after 34 characters (and hid them on phones), which defeated comparing them with a Worker. They are never shortened now: in the top bar on wide screens, on their own row under it on narrower ones. A tray MISMATCH line also shows the words.
+- **The Hub key words are always shown in full.** The top bar cut the six words after 34 characters (and hid them on phones), which defeated comparing them with a Worker. They are never shortened now and have their own row under the top bar; everywhere else (invitation and join results, popover, Workers list) the words wrap at their hyphens instead of scrolling sideways. A tray MISMATCH line also shows the words.
 - **Workers list:** an offline Worker no longer shows a second "Offline" next to its Forget button; the buttons line up with the row.
+- **Invitation keys and join commands**: after "Create the key" (and "Create the join command") the panel now starts with a note that the invitation is saved and listed until it expires, is used or is revoked, and that only the secret text cannot be shown again. A Done button at the top and the bottom goes back to the page, the new key shows in the list at once, and the key field is as wide as the panel so the whole key is visible.
+
+### Changed
+
+- **Copy buttons everywhere**: the join token and every join command on the Add worker page, and the Hub fingerprint in the header popover, now use the same copy icon as the rest of the Hub. The README and the install guides show one-line installs and standalone commands in code blocks, which GitHub gives a copy button.
 
 ## v0.15.0
 

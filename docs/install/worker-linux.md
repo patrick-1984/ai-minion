@@ -6,7 +6,13 @@ A Worker serves the tmux sessions of one Unix user on one machine. It needs `tmu
 
 ## 1. Install the binary
 
-One line installs the latest `minion` into `/usr/local/bin` (when writable, for example as root) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh`. Install `tmux` with your package manager. The packages and the verified manual install below are the alternatives.
+One line installs the latest `minion` into `/usr/local/bin` (when writable, for example as root) or `~/.local/bin`, after it checked the archive against `checksums.txt` of the release:
+
+```sh
+curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sh
+```
+
+ Install `tmux` with your package manager. The packages and the verified manual install below are the alternatives.
 
 Download from `https://github.com/patrick-1984/ai-minion/releases` the file for your architecture. Check the release page for the exact names; the packages end in the architecture of your machine, and the archives are named `minion_<version>_linux_<arch>.tar.gz` with `amd64`, `arm64` or `armv7`.
 
@@ -30,7 +36,13 @@ Both packages install `/usr/bin/minion` with `mn` as a second name, depend on `t
 sudo install -m 0755 minion /usr/local/bin/minion
 ```
 
-**Raspberry Pi:** use the `arm64` build on a 64-bit OS and the `armv7` build on a 32-bit OS (`uname -m` prints `aarch64` or `armv7l`). Install tmux first (`sudo apt install tmux`). Everything else is the same as on any Linux machine.
+**Raspberry Pi:** use the `arm64` build on a 64-bit OS and the `armv7` build on a 32-bit OS (`uname -m` prints `aarch64` or `armv7l`). Install tmux first:
+
+```sh
+sudo apt install tmux
+```
+
+Everything else is the same as on any Linux machine.
 
 ## 2. Set the Worker up
 
@@ -75,7 +87,13 @@ Without `sudo` this installs a systemd user service. A user service stops when y
 
 **Visible sessions under systemd.** A service does not inherit your shell's environment. With `sessions_visible` at `auto` (the default) the Worker judges the tmux socket as seen by the service: its default socket is `/tmp/tmux-<uid>/default` unless the unit sets `TMUX_TMPDIR`. If your shell sets another `TMUX_TMPDIR` (or you use `tmux -S`/`-L`), the service's tmux server is not the one your `tmux ls` shows, although the Worker reports it as visible. Then point the Worker at your socket (`minion worker config set tmux_socket <path>`) and say what is true with `minion worker config set sessions_visible yes` (your own socket) or `no` (a separate server), and restart the service.
 
-**In the foreground** (to try it, or under another supervisor): `minion worker up --foreground`, or `minion worker run`, until Ctrl-C.
+**In the foreground** (to try it, or under another supervisor), until Ctrl-C:
+
+```sh
+minion worker up --foreground
+```
+
+`minion worker run` does the same without the setup steps.
 
 ## 4. Join the Hub
 

@@ -7,6 +7,7 @@
   <h2 id="create-invitation">Create an invitation key <button type="button" class="info-btn" popovertarget="help-invitation-key" aria-label="About invitation keys"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info"/></svg></button></h2>
   <div class="info-pop" id="help-invitation-key" popover><p>A Worker uses the key to enroll itself without a pairing code. It starts pending and cannot receive operations until approved.</p></div>
   <form method="post" hx-post="/invitations" hx-target="#create-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    
     <div class="field">
       <label for="inv-mode">Use</label>
       <select id="inv-mode" name="mode">
@@ -41,7 +42,7 @@
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
 </section>
-<section aria-labelledby="invitation-list">
+<div id="invitation-list-section"><section aria-labelledby="invitation-list">
   <h2 id="invitation-list">Your invitation keys</h2>
   
   <div class="table-wrap"><table data-sortable>
@@ -86,7 +87,7 @@
     
     </tbody>
   </table></div>
-</section>
+</section></div>
 </div>
 <script src="/onboarding.js" defer></script>
 

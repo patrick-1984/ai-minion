@@ -75,7 +75,7 @@ func TestAPIKeyPageShowsTheRealLastUse(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("create key = %d\n%s", code, body)
 	}
-	m := regexp.MustCompile(`value="(mn_[A-Za-z2-7]{52})"`).FindStringSubmatch(body)
+	m := regexp.MustCompile(`>(mn_[A-Za-z2-7]{52})</textarea>`).FindStringSubmatch(body)
 	if m == nil {
 		t.Fatalf("the answer does not show the key:\n%s", body)
 	}

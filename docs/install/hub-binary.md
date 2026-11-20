@@ -6,7 +6,13 @@ The Hub is the `minion` binary with the command `minion hub serve`. Use this gui
 
 ## Get the binary
 
-One line on Linux or macOS installs the latest `minion` into `/usr/local/bin`, where the service below expects it, after it checked the archive against `checksums.txt` of the release: `curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sudo sh` (without `sudo` it installs into `~/.local/bin` of the invoking user, which the `minion-hub` user cannot use). The manual install below also verifies the signature of `checksums.txt`.
+One line on Linux or macOS installs the latest `minion` into `/usr/local/bin`, where the service below expects it, after it checked the archive against `checksums.txt` of the release:
+
+```sh
+curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/install.sh | sudo sh
+```
+
+Without `sudo` it installs into `~/.local/bin` of the invoking user, which the `minion-hub` user cannot use. The manual install below also verifies the signature of `checksums.txt`.
 
 Releases are published on `https://github.com/patrick-1984/ai-minion/releases`. Each release has, per platform, an archive `minion_<version>_<os>_<arch>.tar.gz` (a `.zip` for Windows, which is a preview and is not documented for the Hub), the packages for Linux, `checksums.txt`, its signature bundle `checksums.txt.sigstore.json` and an SBOM per archive. Pick the archive for your machine: `linux` and `darwin` with `amd64` or `arm64`, and `linux` with `armv7` for a 32-bit Raspberry Pi.
 

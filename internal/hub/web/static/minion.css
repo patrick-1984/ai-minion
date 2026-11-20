@@ -139,7 +139,7 @@ h3 { font-size: 14px; font-weight: 650; }
 p { margin: 0 0 12px; }
 code, pre, kbd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.93em; }
 /* Fingerprint words (six BIP39 words joined with "-"): one line, monospace, never broken inside a word. */
-.fp-words { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.93em; font-weight: 600; white-space: nowrap; }
+.fp-words { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.93em; font-weight: 600; white-space: normal; overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-subtle); border: 1px solid var(--border);
   border-radius: var(--r-md); padding: 12px; margin: 0 0 12px; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
@@ -978,7 +978,7 @@ td time { white-space: nowrap; }
 .pipe-meta { font-family: var(--font-mono); font-size: 10px; }
 .pipe-turn { padding: 10px 12px; }
 dialog { width: calc(100% - 32px); max-width: 30rem; padding: 24px; }
-.fp-words { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: bottom; }
+.fp-words { display: inline-block; max-width: 100%; vertical-align: bottom; } /* never scrolled or cut: wraps at the hyphens (A55) */
 .check-form select { min-width: min(18rem, 100%); }
 .share-bulk { flex-wrap: wrap; }
 .page-head > div, .row > *, .field, .panel, .card, .empty-state { min-width: 0; }
@@ -1141,15 +1141,16 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--input-bor
   .top-search-input { font-size: 16px; }
 }
 
-/* Copyable values stay compact; only the value scrolls, leaving its button visible. */
+/* Copyable values stay compact and are never cut: a long value wraps (A55, A60). */
 .copy-field { display: inline-flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; min-width: 0;
   padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle);
   vertical-align: middle; }
 .copy-field > .copy-value { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; margin: 0; padding: 0;
   border: 0; border-radius: 0; background: transparent; color: var(--text); font-family: var(--font-mono);
-  white-space: nowrap; overflow-wrap: normal; word-break: normal; overflow-x: auto;
+  white-space: normal; overflow-wrap: anywhere; word-break: normal; overflow-x: visible;
   -webkit-user-select: text; user-select: text; }
-.copy-field > pre.copy-value { white-space: pre; }
+/* Commands wrap instead of hiding their end (A60); the copied text is unchanged. */
+.copy-field > pre.copy-value { white-space: pre-wrap; overflow-wrap: anywhere; }
 .copy-btn { flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 0; gap: 0;
   border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); }
 .copy-btn:hover:not(:disabled) { background: var(--hover); border-color: var(--border); color: var(--text); filter: none; }
@@ -1291,7 +1292,7 @@ button.is-busy { border-style: dashed; }
 /* Keep table semantics: a clamped cell stays a cell, while inline values get a clipping box. */
 .cell-clamp { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-clamp:where(:not(td, th)) { display: inline-block; max-width: min(32ch, 100%); vertical-align: bottom; }
-.copy-field > .copy-value.cell-clamp { max-width: min(32ch, 100%); overflow: hidden; text-overflow: ellipsis; }
+.copy-field > .copy-value.cell-clamp { max-width: min(32ch, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-clamp[tabindex] { cursor: pointer; }
 .cell-clamp:is(.is-expanded, :focus, :focus-within),
 .copy-field > .copy-value.cell-clamp:is(.is-expanded, :focus, :focus-within) { overflow: visible; white-space: normal;
@@ -1333,6 +1334,11 @@ button.is-busy { border-style: dashed; }
     overflow-wrap: anywhere; }
 }
 
+/* A key or token the user copies in full: the field spans the panel and the whole value shows. */
+.copy-field.copy-field-wide { display: flex; width: 100%; }
+.copy-field.copy-field-wide > .copy-value { flex: 1 1 auto; width: 100%; }
+.copy-field > textarea.copy-wrap { resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
+  field-sizing: content; min-height: 0; height: auto; font: inherit; font-family: var(--font-mono); }
 /* A55: the Hub key words always get their own row under the top bar, in
    full, at every width: inline they squeeze the breadcrumbs. */
 .topbar:has(> .top-search) > .top-tools { display: contents; }
@@ -1342,3 +1348,5 @@ button.is-busy { border-style: dashed; }
   .topbar:has(> .top-search) .theme-toggle { grid-area: 1 / 3; }
   .topbar:has(> .top-search) .hub-id { grid-row: 3; grid-column: 1 / -1; justify-self: start; }
 }
+.copy-field > .copy-value.copy-wrap-text { white-space: normal; overflow-wrap: anywhere; overflow-x: visible; }
+.copy-hint { display: block; margin-top: 4px; font-size: 0.875rem; color: var(--muted); }
