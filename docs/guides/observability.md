@@ -12,6 +12,7 @@ The Hub and every Worker write their log to standard error (and the Worker keeps
 - [Worker: flags, environment and the service](#worker-flags-environment-and-the-service)
 - [Worker traffic log](#worker-traffic-log)
 - [Worker traffic metrics](#worker-traffic-metrics)
+- [Compliance monitoring](#compliance-monitoring)
 - [Status and problems](#status-and-problems)
 - [A collector example](#a-collector-example)
 - [Settings reference](#settings-reference)
@@ -152,6 +153,34 @@ Bytes are counted at two exact layers:
 
 Cardinality: `basic` is bounded by the op catalog and the outcomes, whatever the number of Workers. `detailed` adds one set of series per Worker; it is meant for tens to hundreds of Workers. The first 500 Workers seen get their own series; further Workers are counted together with `otel.metric.overflow=true` (the OpenTelemetry overflow attribute). A change of the endpoint or the credential starts a new pipeline and drops what the old one had not exported; a change between `basic` and `detailed` does the same, so that after a change to `basic` no export carries a Worker id or a detailed histogram any more. Each instrument keeps up to 100,000 series, so the supported 500 Workers keep their own series on every stream kind, direction, op and outcome.
 
+## Compliance monitoring
+
+Compliance monitoring sends what people and programs do in sessions **through the Hub** to the [OpenTelemetry sink](#opentelemetry) as log events named `minion.session.*`. It is **off by default**. It is one Hub setting, `compliance_monitoring`, in the Log export section of the settings page, changed like every other setting (Hub-wide administrators only, recorded in the audit log).
+
+| Value | Records |
+| --- | --- |
+| `off` | nothing |
+| `actions` | `minion.session.action`: who (kind of caller, user, "acting as" admin, API key, source Worker), which Worker and session, which operation, the outcome. No content. |
+| `output` | `actions` plus `minion.session.output`: the screen text of `session_snapshot` and `session_capture`, and the **received** turns that `pipe_read` and `pipe_wait` returned (never turns withheld from an untrusted source: the action record counts them). |
+| `full` | `output` plus `minion.session.input`: the text, keys, answers, tasks and the directory and program of a new session that were submitted through Minion, and the text of pipe messages sent, also when a `pipe_read` returns them again. |
+
+It needs the OpenTelemetry sink to be on, and its endpoint to be `https://` or `http://` to localhost: the setting is refused otherwise. It uses that sink's endpoint, headers, trust and level, so a later change of those changes where the events go (the old queue is dropped, nothing queued for an old endpoint is sent to a new one). The events are `INFO` and follow `otel_level`: with `warn` or `error` they are not sent, and Administration > Diagnostics and `hub_diagnostics` say so next to the sink. They go to the OTLP sink only, never to standard error, the in-memory log or syslog. A sink that is off, invalid or stalled never blocks a session: events wait in the sink's bounded queue (1024 records) and the newest are dropped when it is full (counted as `queue_full` in the sink status). A text longer than 8 KiB is split into events with `minion.observation.id`, `minion.chunk.index` and `minion.chunk.count`, so a lost piece is visible.
+
+### What is captured, and what is not
+
+- Captured: terminal operations that pass the Hub's Worker router (the browser, the `minion` command line, MCP, API keys, and session-control calls from other Workers), and the Hub's pipe broker. Calls that were refused (not allowed, a Worker that is not user-managed) are not recorded. The record is the request as submitted and the outcome the call returned; a retry is simply another record.
+- The content of a Worker that is not user-managed (Access > Minion control) is never recorded; its action records are.
+- **Not captured:** text typed in a local terminal or tmux, calls a Worker executes only on its own local socket, and screens nobody read through the Hub. Repeated reads can record the same screen or turn more than once.
+- A program that does not echo (a password prompt) keeps what is typed there off the screen, so it stays out of `output`. But text that is **sent through Minion is recorded as sent** at `full`: a password pasted into a prompt is in the input event. Minion cannot tell a secret from other text: Claude and Codex do not mark theirs.
+
+### Masking
+
+Before text is split and queued the Hub masks **Minion's own secret formats** (API keys `mn_`, invitation keys `mnk_`, join tokens `mnj1-`, pairing codes, URL credentials and queries), as for every log record. It does not guess anything else. For patterns of your site (passwords, internal tokens) use the Collector: its `transform` processor (OTTL `replace_pattern` on the log body) and `redaction` processor (`blocked_values`), as in [`docs/examples/otelcol-minion.yaml`](../examples/otelcol-minion.yaml), applied to events whose name starts with `minion.session.`.
+
+### Notice
+
+While it is on, session pages show a banner, every API response carries the header `Minion-Monitoring: <level>`, and `minion` commands and MCP print one line to standard error. This is information only: nothing asks for acknowledgement and nothing is refused. An open page keeps the banner it was loaded with.
+
 ## Status and problems
 
 - **Hub**: Administration > Diagnostics and the Log export section of Hub settings show the effective state of each sink; `minion hub_diagnostics` lists it as `sinks`: name, on or off, destination (scheme, host and port only), level, a generation number that grows with each change, last success, last error, queued, sent, and the number of records dropped by reason (`queue_full`, `write_failed`, `export_failed`, `reconfigure`, `shutdown`).
@@ -191,5 +220,6 @@ H = Hub (environment, then the panel; live), W = Worker (flag, then environment,
 | `worker_traffic_log_to` | H, W | comma list of `local`, `syslog`, `otel` | `local` |
 | `worker_traffic_log_workers` | H | comma list of Worker ids or names (a name with a comma in double quotes) | empty: all |
 | `otel_metrics` | H | `off`, `basic`, `detailed` | `off` |
+| `compliance_monitoring` | H | `off`, `actions`, `output`, `full` | `off` |
 
 Fixed: facility `local0`; OTLP timeout 5 s and gzip; the queue and batch sizes above.
