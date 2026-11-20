@@ -11,7 +11,6 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
-	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 // Setup reloads, merges and saves the config file under the config lock of
@@ -67,90 +66,31 @@ func TestPauseFollowsTheLiveWorkersProfileByDefault(t *testing.T) {
 	}
 }
 
-// Every share edit, a refused one included, removes the share_existing
-// override from the config file, so that no restart applies an older, wider
-// file value over the database; a refused edit leaves the database as it was.
-func TestShareEditLeavesNoStartupOverrideBehind(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"share_existing":"all"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cd := testConfigDeps(nil)
-	if _, _, err := configCmd(t, cd, dir, "share", "none"); err != nil {
-		t.Fatal(err)
-	}
-	rev := shareOfRevision(t, dir)
-	if _, _, err := configCmd(t, cd, dir, "share", "none"); err != nil { // another change
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"share_existing":"all"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := configCmd(t, cd, dir, "share", "all", "--revision", rev); err == nil {
-		t.Fatal("a stale edit was accepted")
-	}
-	if v, ok := readConfig(t, dir)["share_existing"]; ok {
-		t.Fatalf("share_existing = %q stayed in the file", v)
-	}
-	if s := loadShare(t, dir); s.Mode != store.ShareNone {
-		t.Fatalf("share = %+v", s)
-	}
-}
-
-func shareOfRevision(t *testing.T, dir string) string {
-	t.Helper()
-	return strings.TrimSpace(strings.Split(strings.Split(shareListText(t, dir), "(revision ")[1], ")")[0])
-}
-
-func shareListText(t *testing.T, dir string) string {
-	t.Helper()
-	out, _, err := configCmd(t, testConfigDeps(nil), dir, "share", "list")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return out
-}
-
-// The inventory is offered only for a host that is certainly the Worker's.
-func TestShareListNeedsAKnownHost(t *testing.T) {
-	dir := t.TempDir()
-	cd := testConfigDeps(map[string]string{"TMUX_TMPDIR": "/somewhere/else"})
-	cd.sessions = func(string) agent.StatusSessions { return listerNames{"a"} }
-	if r := shareList(t, cd, dir); r.SessionsKnown || len(r.Sessions) != 0 {
-		t.Fatalf("a shell with its own TMUX_TMPDIR got an inventory: %+v", r)
-	}
-	// A socket saved in the config file is the service's too.
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"tmux_socket":"`+filepath.Join(dir, "t.sock")+`"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if r := shareList(t, cd, dir); !r.SessionsKnown {
-		t.Fatalf("a configured socket was not trusted: %+v", r)
-	}
-	// A socket only this shell names (flag or environment) is not.
-	cd = testConfigDeps(map[string]string{"MINION_TMUX_SOCKET": filepath.Join(dir, "x.sock")})
-	cd.sessions = func(string) agent.StatusSessions { return listerNames{"a"} }
-	_ = os.Remove(filepath.Join(dir, "config.json"))
-	if r := shareList(t, cd, dir); r.SessionsKnown {
-		t.Fatalf("a shell-only socket was trusted: %+v", r)
-	}
-}
-
-// Setup never imports allow_new_sessions: an "on" in this shell does not lift
-// a block saved in the config file.
-func TestUpDoesNotTouchAllowNewSessions(t *testing.T) {
+// Setup saves allow_new_sessions only when this run gives it (flag or
+// environment) and never overwrites a saved value otherwise.
+func TestUpSavesAllowNewSessionsOnlyWhenGiven(t *testing.T) {
 	f, _ := serviceGate(t, false, false, "build")
 	if err := os.MkdirAll(f.stateDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(f.stateDir(), "config.json"), []byte(`{"allow_new_sessions":"off"}`), 0o600); err != nil {
+	cfg := filepath.Join(f.stateDir(), "config.json")
+	if err := os.WriteFile(cfg, []byte(`{"allow_new_sessions":"off"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f.env["MINION_ALLOW_NEW_SESSIONS"] = "on"
-	if _, err := f.runIn(strings.NewReader(""), "--share-existing", "none", "--allow-new-sessions", "on"); err != nil {
+	if _, err := f.runIn(strings.NewReader(""), "--share-existing", "none"); err != nil {
 		t.Fatalf("worker up: %v\n%s", err, f.stderr)
 	}
 	if got := readConfig(t, f.stateDir())["allow_new_sessions"]; got != "off" {
-		t.Fatalf("setup rewrote the block: %q", got)
+		t.Fatalf("a run that gave nothing rewrote the block: %q", got)
+	}
+	if err := os.WriteFile(cfg, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.runIn(strings.NewReader(""), "--share-existing", "none", "--allow-new-sessions", "off"); err != nil {
+		t.Fatalf("worker up: %v\n%s", err, f.stderr)
+	}
+	if got := readConfig(t, f.stateDir())["allow_new_sessions"]; got != "off" {
+		t.Fatalf("an explicit --allow-new-sessions off was not saved: %q", got)
 	}
 }
 

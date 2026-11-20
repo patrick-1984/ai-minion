@@ -286,3 +286,25 @@ type inviteDialerFunc func(context.Context, InviteParams) (*InviteOutcome, error
 func (f inviteDialerFunc) Enroll(ctx context.Context, p InviteParams) (*InviteOutcome, error) {
 	return f(ctx, p)
 }
+
+// A Worker that is not enrolled has nothing to pause: the op refuses (setup
+// or an enrollment may still be running), and an enrolled one pauses.
+func TestPauseRefusedBeforeEnrollment(t *testing.T) {
+	f := newConnFixture(t) // enrolled
+	ps := NewPauseService(t.TempDir(), nil)
+	l := localExecutor{ex: newEnv(t).ex, log: discardLogger(), pause: ps, enrollments: f.enr}
+	call := func() error {
+		_, err := l.Execute(context.Background(), localapiRequest(OpLocalPause, mustJSON(t, map[string]bool{"paused": true})), func(json.RawMessage) {})
+		return err
+	}
+	if err := call(); err != nil || !ps.Paused() {
+		t.Fatalf("enrolled: err=%v paused=%v", err, ps.Paused())
+	}
+	ps2 := NewPauseService(t.TempDir(), nil)
+	e2 := newEnv(t)
+	l = localExecutor{ex: e2.ex, log: discardLogger(), pause: ps2, enrollments: NewEnrollments(e2.st, t.TempDir())}
+	err := call()
+	if proto.CodeOf(err) != proto.CodeConflict || ps2.Paused() {
+		t.Fatalf("not enrolled: err=%v paused=%v", err, ps2.Paused())
+	}
+}

@@ -688,10 +688,9 @@ func serviceSinkReader(owned bool, uid, gid int) func(string) ([]byte, error) {
 // so that later changes of a default still apply.
 func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool)) error {
 	for _, s := range reg.ForScope(config.ScopeWorker) {
-		// allow_new_sessions is a local block that only "worker config set"
-		// changes: setup never imports it, so an "on" in this shell cannot
-		// lift a block saved in the file.
-		if s.Secret || s.Key == config.KeyStateDir || s.Key == config.KeyAllowNewSessions {
+		// Only a value given by flag or environment is saved; a saved
+		// allow_new_sessions is never overwritten otherwise.
+		if s.Secret || s.Key == config.KeyStateDir {
 			continue
 		}
 		_, byFlag, _ := flags.Lookup(s.Key)

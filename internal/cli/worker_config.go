@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -107,9 +106,6 @@ type workerConfigDeps struct {
 	applier   configApplier
 	// registry is the settings registry; nil means config.Default.
 	registry *config.Registry
-	// sessions lists the sessions of the tmux socket (nil, or a nil result:
-	// they cannot be listed here, as on Windows where the Worker hosts them).
-	sessions func(socket string) agent.StatusSessions
 }
 
 func (d workerConfigDeps) reg() *config.Registry {
@@ -123,7 +119,6 @@ func defaultWorkerConfigDeps() workerConfigDeps {
 	return workerConfigDeps{
 		lookupEnv: os.LookupEnv,
 		openStore: func(ctx context.Context, dir string) (shareStore, error) { return store.OpenContext(ctx, dir) },
-		sessions:  tmuxSessions,
 		applier: statusApplier{call: func(ctx context.Context, op string) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, nil)
 		}},
@@ -246,10 +241,8 @@ func newConfigUnsetCmd(deps workerConfigDeps) *cobra.Command {
 }
 
 func newConfigShareCmd(deps workerConfigDeps) *cobra.Command {
-	var revision uint64
-	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "share all|none|later | select [<session>...] | list",
+		Use:   "share all|none|later | select <session>...",
 		Short: "Choose which tmux sessions the Hub may see",
 		Long: `Choose which tmux sessions the Hub may see.
 
@@ -257,35 +250,14 @@ func newConfigShareCmd(deps workerConfigDeps) *cobra.Command {
   none     share no session
   select   share exactly the named sessions
   later    decide later (for example from the Hub); nothing is shared until then
-  list     names only: the mode, the share revision, whether share_lock is on,
-           and every session of this host with whether it is shared (also the
-           sessions the Hub does not list, because they are not shared)
 
-"select" without names keeps the sessions chosen before. A change of the mode
-alone (all, none, later) keeps the chosen names, read when the change is saved.
-
-A picker lists first and then saves with --revision <value of the list>: when the
-share choice changed since the list (from the Hub, or another command) nothing
-is changed and the command fails, so that a stale checkbox never undoes
-another change. The lock share_lock only stops the Hub from changing the choice;
-you still change it here. This command reads and writes the Worker state
-directly, so it works while the Worker runs, also an older Worker. On Windows
-the sessions live inside the Worker and cannot be listed here: list shows the
-saved selection only (sessions_known is false).`,
+"select" without names keeps the sessions chosen before.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if args[0] == "list" {
-				if len(args) > 1 || revision != 0 {
-					return errors.New("list takes no names and no --revision")
-				}
-				return runConfigShareList(cmd, deps, asJSON)
-			}
-			return runConfigShare(cmd, deps, args[0], args[1:], revision)
+			return runConfigShare(cmd, deps, args[0], args[1:])
 		},
 	}
-	cmd.Flags().Uint64Var(&revision, "revision", 0, "save only if the share revision is still this one (the revision of `share list`)")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "list: print JSON")
-	addNamedSettingFlags(cmd, deps.reg(), config.KeyStateDir, config.KeyTmuxSocket)
+	addNamedSettingFlags(cmd, deps.reg(), config.KeyStateDir)
 	return cmd
 }
 
@@ -334,7 +306,7 @@ func runConfigSet(cmd *cobra.Command, deps workerConfigDeps, key, value string) 
 		if value == "select" {
 			return errors.New("share_existing takes all, none or later; use `minion worker config share select <session>...` to choose sessions")
 		}
-		return runConfigShare(cmd, deps, value, nil, 0)
+		return runConfigShare(cmd, deps, value, nil)
 	}
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("the value is empty; use `minion worker config unset %s` to remove the setting", s.Key)
@@ -450,10 +422,10 @@ func (d workerConfigDeps) apply(ctx context.Context, ce *configEnv, c configChan
 	}
 }
 
-func runConfigShare(cmd *cobra.Command, deps workerConfigDeps, modeArg string, names []string, revision uint64) error {
+func runConfigShare(cmd *cobra.Command, deps workerConfigDeps, modeArg string, names []string) error {
 	mode := store.ShareMode(modeArg)
 	if !mode.Valid() {
-		return fmt.Errorf("unknown share mode %q; use all, none, select, later or list", modeArg)
+		return fmt.Errorf("unknown share mode %q; use all, none, select or later", modeArg)
 	}
 	if mode != store.ShareSelect && len(names) > 0 {
 		return fmt.Errorf("session names only go with `select`; %q takes none", modeArg)
@@ -474,57 +446,53 @@ func runConfigShare(cmd *cobra.Command, deps workerConfigDeps, modeArg string, n
 		return fmt.Errorf("open the Worker state in %s: %w", ce.stateDir, err)
 	}
 	defer func() { _ = st.Close() }()
-	committer, ok := st.(interface {
-		CommitShareChange(context.Context, store.ShareChange) (store.ShareState, error)
-	})
-	if !ok {
-		return errors.New("this Worker state cannot apply a share change")
-	}
-	change := store.ShareChange{Mode: mode, ExpectRevision: revision}
-	if len(names) > 0 {
-		change.Names = names
-	}
 
-	// A name the picker offers must exist now: a stale or foreign inventory
-	// never selects a session that was not displayed (when the host is known;
-	// where it is not, there is no picker inventory to check against).
-	if mode == store.ShareSelect && len(names) > 0 {
-		if inv, known, err := shareInventory(cmd, deps, ce); err != nil {
-			return err
-		} else if known {
-			for _, n := range names {
-				if !slices.Contains(inv, n) {
-					return fmt.Errorf("there is no session %q on this Worker's host now; list the sessions again: minion worker config share list", n)
-				}
-			}
+	sel, err := st.LoadShareContext(ctx)
+	if err != nil {
+		return err
+	}
+	if mode == store.ShareSelect {
+		if len(names) > 0 {
+			sel.Sessions = names
+		}
+		if len(sel.Sessions) == 0 {
+			return errors.New("name the sessions to share, for example: minion worker config share select build docs")
 		}
 	}
+	sel.Mode = mode
 
-	// share_existing in the config file is a start-time override of the
-	// database. A share edit makes the database the only rule: the override is
-	// removed first (the database keeps its value until the commit, so this
-	// never widens anything), so that no restart, early or after an interrupted
-	// command, applies an older file value over the edit. A refused edit leaves
-	// the database as it was and the override gone.
-	if _, had, _ := ce.file.Lookup(config.KeyShareExisting); had {
-		ce.file.Delete(config.KeyShareExisting)
+	// The config file may hold share_existing, which the Worker applies to the
+	// store at every start. Keep it in step, or the next start would undo this
+	// choice. share_existing has no "select", so that mode removes it and the
+	// saved selection stands.
+	//
+	// The file is written first and the store second. A crash between the two
+	// leaves the file at the new choice, which the next start applies to the
+	// store, so the start never reinstates the old, possibly wider, choice. A
+	// store that refuses the write gets the file put back, so the command
+	// fails without changing anything.
+	prev, had, _ := ce.file.Lookup(config.KeyShareExisting)
+	if had {
+		if mode == store.ShareSelect {
+			ce.file.Delete(config.KeyShareExisting)
+		} else {
+			ce.file.Set(config.KeyShareExisting, string(mode))
+		}
 		if err := ce.file.Save(); err != nil {
 			return fmt.Errorf("the config file %s could not be updated, nothing was changed: %w", ce.file.Path(), err)
 		}
 	}
-	saved, err := committer.CommitShareChange(ctx, change)
-	if err != nil {
-		switch {
-		case errors.Is(err, store.ErrShareConflict):
-			return fmt.Errorf("the share choice changed since it was listed, so nothing was changed (%v); list it again: minion worker config share list", err)
-		case errors.Is(err, store.ErrShareNoSessions):
-			return errors.New("name the sessions to share, for example: minion worker config share select build docs")
+	if err := st.SaveShareContext(ctx, sel); err != nil {
+		if had {
+			ce.file.Set(config.KeyShareExisting, prev)
+			if rerr := ce.file.Save(); rerr != nil {
+				return fmt.Errorf("%w; the config file %s could not be put back (%v), so the Worker applies the new share_existing at its next start", err, ce.file.Path(), rerr)
+			}
 		}
 		return err
 	}
-	sel := saved.ShareSelection
 
-	if err := writef(ce.out, "Share mode is now %s (revision %d).\n", describeShare(sel), saved.Revision); err != nil {
+	if err := writef(ce.out, "Share mode is now %s.\n", describeShare(sel)); err != nil {
 		return err
 	}
 	if s, ok := deps.reg().Lookup(config.KeyShareExisting); ok {

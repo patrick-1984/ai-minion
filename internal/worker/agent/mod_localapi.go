@@ -277,6 +277,15 @@ func (l localExecutor) setPause(ctx context.Context, args json.RawMessage) (json
 	if err := json.Unmarshal(args, &a); err != nil || a.Paused == nil {
 		return nil, apiErr(proto.CodeInvalidArgument, "", `the pause op takes {"paused": true|false}`)
 	}
+	if *a.Paused && l.enrollments != nil {
+		// Nothing to pause before the Worker is enrolled: a setup or an
+		// enrollment may still be talking to the Hub on its own.
+		if _, ok, err := l.enrollments.Load(ctx); err != nil {
+			return nil, apiErr(proto.CodeInternal, "", "cannot read the enrollment: "+err.Error())
+		} else if !ok {
+			return nil, apiErr(proto.CodeConflict, "", "this Worker is not enrolled with a Hub yet, so there is nothing to pause; finish or cancel the setup first")
+		}
+	}
 	if err := l.pause.Set(ctx, *a.Paused); err != nil {
 		return nil, apiErr(proto.CodeInternal, "", err.Error())
 	}

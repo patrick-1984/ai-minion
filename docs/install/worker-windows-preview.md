@@ -84,7 +84,7 @@ Then run `minion worker up` in your normal terminal. (Only on an account that is
 
 ## Start, pause, block new sessions, choose sessions
 
-`minion worker start` starts the Worker that `minion worker up` installed (the logon supervisor; it installs nothing and leaves a running Worker alone); `minion worker pause` and `resume` take the Worker off the Hub and back without ending your sessions; `minion worker config set allow_new_sessions off` blocks new sessions from every origin; `minion worker config share list` and `share ... --revision` back a session picker (on Windows the sessions live inside the Worker, so the list shows the saved selection only). `minion worker up --join -` reads the join token from standard input. See [Control a Worker from the command line](../guides/worker-control.md).
+`minion worker start` starts the Worker that `minion worker up` installed (the logon supervisor; it installs nothing and leaves a running Worker alone); `minion worker pause` and `resume` take the Worker off the Hub and back without ending your sessions; `minion worker config set allow_new_sessions off` blocks new sessions from every origin. `minion worker up --join -` reads the join token from standard input. See [Control a Worker from the command line](../guides/worker-control.md).
 
 ## Check and reset
 

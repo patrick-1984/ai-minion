@@ -318,15 +318,18 @@ func TestConfigShareKeepsTheShareExistingKeyOfTheConfigFileInStep(t *testing.T) 
 	if _, _, err := configCmd(t, cd, dir, "share", "none"); err != nil {
 		t.Fatal(err)
 	}
-	// The database is the only rule after an edit: otherwise the next start
-	// would apply "all" over this choice.
-	if got := readConfig(t, dir); got["name"] != "lab" {
+	// Otherwise the next start would apply "all" over this choice.
+	if got := readConfig(t, dir); got["share_existing"] != "none" || got["name"] != "lab" {
 		t.Fatalf("config = %v", got)
-	} else if _, ok := got["share_existing"]; ok {
-		t.Fatalf("share_existing stayed in the file: %v", got)
 	}
-	if sel := loadShare(t, dir); sel.Mode != store.ShareNone {
-		t.Fatalf("share = %+v", sel)
+	if _, _, err := configCmd(t, cd, dir, "share", "select", "build"); err != nil {
+		t.Fatal(err)
+	}
+	if got := readConfig(t, dir); got["share_existing"] != "" || got["name"] != "lab" {
+		t.Fatalf("config = %v", got)
+	}
+	if _, ok := readConfig(t, dir)["share_existing"]; ok {
+		t.Fatal("share_existing must be removed for select, which it cannot express")
 	}
 
 	// Without the key the file is not created for nothing.
@@ -385,8 +388,8 @@ func TestConfigFileThatOthersCanReadIsRefused(t *testing.T) {
 // failingSaveStore is a share store whose write is refused.
 type failingSaveStore struct{ shareStore }
 
-func (failingSaveStore) CommitShareChange(context.Context, store.ShareChange) (store.ShareState, error) {
-	return store.ShareState{}, errors.New("disk full")
+func (failingSaveStore) SaveShareContext(context.Context, store.ShareSelection) error {
+	return errors.New("disk full")
 }
 
 // A store that refuses the write must not leave the config file ahead of it:
@@ -411,10 +414,8 @@ func TestConfigShareLeavesNothingChangedWhenTheStoreRefuses(t *testing.T) {
 		if _, _, err := configCmd(t, cd, dir, args...); err == nil || !strings.Contains(err.Error(), "disk full") {
 			t.Fatalf("%v: err = %v", args, err)
 		}
-		// The override is gone and the database keeps "all" as it was: a
-		// restart applies nothing over it.
-		if got, ok := readConfig(t, dir)["share_existing"]; ok {
-			t.Fatalf("%v left share_existing = %q in the file", args, got)
+		if got := readConfig(t, dir)["share_existing"]; got != "all" {
+			t.Fatalf("%v left share_existing = %q in the file, the store still says all", args, got)
 		}
 	}
 	if sel := loadShare(t, dir); sel.Mode != store.ShareAll {

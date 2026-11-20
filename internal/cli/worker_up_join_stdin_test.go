@@ -71,31 +71,6 @@ func TestWorkerUpJoinFromStdinReadsOnlyTheToken(t *testing.T) {
 	}
 }
 
-// An existing sharing choice is kept when a token joins again.
-func TestWorkerUpJoinFromStdinKeepsTheSharingChoice(t *testing.T) {
-	f, _ := serviceGate(t, false, false, "build")
-	if err := os.MkdirAll(f.stateDir(), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	st, err := store.Open(f.stateDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.CommitShareChange(context.Background(), store.ShareChange{Mode: store.ShareSelect, Names: []string{"build", "docs"}}); err != nil {
-		t.Fatal(err)
-	}
-	_ = st.Close()
-	before := shareOf(t, f.stateDir())
-	text, _ := testJoinToken(t, "https://hub.example:8443")
-	if _, err := stdinJoin(t, f, strings.NewReader(text+"\n")); err != nil {
-		t.Fatalf("worker up: %v\nstderr: %s", err, f.stderr)
-	}
-	after := shareOf(t, f.stateDir())
-	if after.Mode != store.ShareSelect || strings.Join(after.Sessions, ",") != "build,docs" || after.Revision != before.Revision {
-		t.Fatalf("the sharing choice changed: %+v -> %+v", before, after)
-	}
-}
-
 // An expired invitation fails the command, names no secret, leaves no
 // enrollment, and leaves the new profile sharing nothing.
 func TestWorkerUpJoinFromStdinWithAnExpiredToken(t *testing.T) {

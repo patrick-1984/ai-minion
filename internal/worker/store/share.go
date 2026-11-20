@@ -97,44 +97,12 @@ func (s *Store) SaveShareContext(ctx context.Context, sel ShareSelection) error 
 // has just made durable without reading the database again (a read after the
 // commit can fail; the commit stands).
 func (s *Store) CommitShareContext(ctx context.Context, sel ShareSelection) (ShareState, error) {
-	names := sel.Sessions
-	if names == nil {
-		names = []string{}
+	if !sel.Mode.Valid() {
+		return ShareState{}, fmt.Errorf("%w: unknown mode %q (want all, none, select or later)", ErrInvalidShare, sel.Mode)
 	}
-	return s.CommitShareChange(ctx, ShareChange{Mode: sel.Mode, Names: names})
-}
-
-// ShareChange is one change of the share choice.
-type ShareChange struct {
-	Mode ShareMode
-	// Names are the selected sessions; nil keeps the names that are saved when
-	// the change commits (a change of the mode only), read in the same
-	// transaction, so that no other writer's change is overwritten.
-	Names []string
-	// ExpectRevision, when not 0, is the revision the caller based the change
-	// on: the change is refused with [ErrShareConflict] when another change
-	// was committed since.
-	ExpectRevision uint64
-}
-
-// ErrShareConflict is returned (wrapped, with the revision now in force) by
-// [Store.CommitShareChange] when the revision is not the expected one.
-var ErrShareConflict = errors.New("store: the share choice changed since it was read")
-
-// ErrShareNoSessions is returned by [Store.CommitShareChange] for the mode
-// select when no session is named and none is saved.
-var ErrShareNoSessions = errors.New("store: select needs at least one session name")
-
-// CommitShareChange applies ch in one transaction and returns what it
-// committed. The revision check, the read of the kept names and the write
-// happen under the same write lock.
-func (s *Store) CommitShareChange(ctx context.Context, ch ShareChange) (ShareState, error) {
-	if !ch.Mode.Valid() {
-		return ShareState{}, fmt.Errorf("%w: unknown mode %q (want all, none, select or later)", ErrInvalidShare, ch.Mode)
-	}
-	var names []string
-	seen := make(map[string]bool, len(ch.Names))
-	for _, n := range ch.Names {
+	names := make([]string, 0, len(sel.Sessions))
+	seen := make(map[string]bool, len(sel.Sessions))
+	for _, n := range sel.Sessions {
 		if n == "" {
 			return ShareState{}, fmt.Errorf("%w: empty session name", ErrInvalidShare)
 		}
@@ -150,42 +118,10 @@ func (s *Store) CommitShareChange(ctx context.Context, ch ShareChange) (ShareSta
 		return ShareState{}, fmt.Errorf("store: save share selection: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if ch.ExpectRevision != 0 {
-		var cur int64
-		if err := tx.QueryRowContext(ctx, `SELECT revision FROM share_revision WHERE id = 1`).Scan(&cur); err != nil {
-			return ShareState{}, fmt.Errorf("store: read the share revision: %w", err)
-		}
-		if uint64(cur) != ch.ExpectRevision {
-			return ShareState{}, fmt.Errorf("%w (revision %d, expected %d)", ErrShareConflict, cur, ch.ExpectRevision)
-		}
-	}
-	if ch.Names == nil {
-		rows, err := tx.QueryContext(ctx, `SELECT session_name FROM share_selected ORDER BY position`)
-		if err != nil {
-			return ShareState{}, fmt.Errorf("store: read the selected sessions: %w", err)
-		}
-		for rows.Next() {
-			var n string
-			if err := rows.Scan(&n); err != nil {
-				_ = rows.Close()
-				return ShareState{}, fmt.Errorf("store: read the selected sessions: %w", err)
-			}
-			names = append(names, n)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return ShareState{}, fmt.Errorf("store: read the selected sessions: %w", err)
-		}
-		if ch.Mode == ShareSelect && len(names) == 0 {
-			return ShareState{}, ErrShareNoSessions
-		}
-	}
-	if names == nil {
-		names = []string{}
-	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO share_config (id, mode, updated_at) VALUES (1, ?, ?)
 		 ON CONFLICT (id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at`,
-		string(ch.Mode), now); err != nil {
+		string(sel.Mode), now); err != nil {
 		return ShareState{}, fmt.Errorf("store: save share selection: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM share_selected`); err != nil {
@@ -204,7 +140,7 @@ func (s *Store) CommitShareChange(ctx context.Context, ch ShareChange) (ShareSta
 	if err := tx.Commit(); err != nil {
 		return ShareState{}, fmt.Errorf("store: save share selection: %w", err)
 	}
-	return ShareState{ShareSelection: ShareSelection{Mode: ch.Mode, Sessions: names, Configured: true}, Revision: rev}, nil
+	return ShareState{ShareSelection: ShareSelection{Mode: sel.Mode, Sessions: names, Configured: true}, Revision: rev}, nil
 }
 
 // bumpShareRevision raises the share revision by one inside tx and returns it.
