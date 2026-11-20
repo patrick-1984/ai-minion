@@ -45,8 +45,25 @@ func defaultWorkerPauseDeps() workerPauseDeps {
 		call: func(ctx context.Context, op string, args any) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, args)
 		},
-		write: agent.WritePause,
+		write: writePauseOffline,
 	}
+}
+
+// writePauseOffline saves the choice for a Worker that is not running. The
+// lifecycle lock of the state directory is held across the write: a Worker
+// that is starting (it reads the pause before its control socket answers) or
+// that runs under a profile this command did not find holds it, and then
+// nothing is written and success is not reported.
+func writePauseOffline(stateDir string, paused bool) error {
+	l, err := agent.LockLifecycle(stateDir)
+	if errors.Is(err, agent.ErrStateInUse) {
+		return errors.New("a Worker is starting or running with this state directory but its control socket does not answer; try again in a moment, or give the --state-dir of the running Worker")
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = l.Close() }()
+	return agent.WritePause(stateDir, paused)
 }
 
 func newWorkerPauseCmd(d workerPauseDeps, pause bool) *cobra.Command {
@@ -85,7 +102,7 @@ func runWorkerPause(cmd *cobra.Command, d workerPauseDeps, pause bool) error {
 
 	cctx, cancel := context.WithTimeout(ctx, agent.PauseSettleTimeout+10*time.Second)
 	defer cancel()
-	live, err := d.liveFor(cctx, stateDir)
+	live, err := d.liveFor(cctx, stateDir, dir.Source != config.SourceDefault)
 	if err != nil {
 		return err
 	}
@@ -115,7 +132,10 @@ func runWorkerPause(cmd *cobra.Command, d workerPauseDeps, pause bool) error {
 
 // liveFor reports whether a Worker of this state directory answers. A Worker
 // of another state directory is not the one this command is about.
-func (d workerPauseDeps) liveFor(ctx context.Context, stateDir string) (bool, error) {
+//
+// Without an explicit state directory the running Worker's own profile is the
+// one that is meant, whatever its directory.
+func (d workerPauseDeps) liveFor(ctx context.Context, stateDir string, explicit bool) (bool, error) {
 	raw, err := d.call(ctx, agent.OpLocalStatus, nil)
 	if errors.Is(err, client.ErrWorkerNotRunning) {
 		return false, nil
@@ -124,7 +144,7 @@ func (d workerPauseDeps) liveFor(ctx context.Context, stateDir string) (bool, er
 		return false, fmt.Errorf("cannot ask the running Worker: %w", err)
 	}
 	var reply agent.LiveStatusReply
-	if json.Unmarshal(raw, &reply) == nil && reply.StateDir != "" && !sameDir(reply.StateDir, stateDir) {
+	if json.Unmarshal(raw, &reply) == nil && explicit && reply.StateDir != "" && !sameDir(reply.StateDir, stateDir) {
 		return false, nil
 	}
 	return true, nil
