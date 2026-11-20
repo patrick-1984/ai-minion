@@ -23,7 +23,7 @@ func (r StatusReport) WriteStartupSummary(w io.Writer, commands []string) {
 	}
 	lines := []string{"State: " + state}
 	if r.RunMode != "" && r.RunMode != RunModeForeground {
-		lines[0] = "State: " + state + " · runs as: " + r.RunMode
+		lines[0] = "State: " + state + "; runs as: " + r.RunMode
 	}
 	if r.HubFingerprintWords != "" {
 		lines = append(lines, "", "Hub key (must match the Hub's top bar):", "  "+r.HubFingerprintWords)
