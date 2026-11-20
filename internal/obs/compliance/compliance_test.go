@@ -116,3 +116,15 @@ func TestAttributesAreMaskedAndBoundedAndWrapsAreJoined(t *testing.T) {
 		t.Fatalf("wrapped secret not masked: %q", b)
 	}
 }
+
+// A join token that wraps before its embedded secret: the continuation is
+// masked with the rest.
+func TestWrappedJoinTokenIsMaskedWhole(t *testing.T) {
+	c := &collect{}
+	m := New(func() Sink { return c })
+	m.SetMode(Output)
+	m.Emit(Output, EventOutput, "$ minion join mnj1-eyJhIjoi\nSECRETPAYLOADxyz123\n$")
+	if b := c.bodies[0]; strings.Contains(b, "SECRETPAYLOAD") || strings.Contains(b, "eyJhIjoi") {
+		t.Fatalf("not masked: %q", b)
+	}
+}

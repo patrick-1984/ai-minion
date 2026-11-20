@@ -117,13 +117,14 @@ func TestPipeComplianceLevels(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = sink.take()
-	// Sent text is input: the send, and the history a read returns again.
+	// Sent text is input, recorded when it is sent; the history a read returns
+	// again is not exported (a stored row can be pending or refused).
 	in := strings.Join(eventTexts(got, compliance.EventInput), "|")
-	if !strings.Contains(in, "q4") || !strings.Contains(in, "secret question") {
-		t.Fatalf("full recorded input %q", in)
+	if in != "q4" {
+		t.Fatalf("full recorded input %q, want only the send", in)
 	}
-	if o := strings.Join(eventTexts(got, compliance.EventOutput), "|"); strings.Contains(o, "secret question") || !strings.Contains(o, "answer text") {
-		t.Fatalf("full read recorded output %q: sent text must be input, received text output", o)
+	if o := strings.Join(eventTexts(got, compliance.EventOutput), "|"); strings.Contains(o, "secret question") || strings.Contains(o, "q2") || !strings.Contains(o, "answer text") {
+		t.Fatalf("full read recorded output %q", o)
 	}
 
 	// a model that does not trust the source: the turn is withheld, so it is
@@ -289,6 +290,29 @@ func TestComplianceMasksKeysAndWrappedRows(t *testing.T) {
 	for _, e := range sink.take() {
 		if strings.Contains(e.Body, key[:12]) || strings.Contains(e.Body, key[30:42]) {
 			t.Fatalf("secret in %q", e.Body)
+		}
+	}
+}
+
+// A retry with the same request id is answered from the stored result: the
+// replacement text was not delivered and is not exported.
+func TestPipeComplianceCachedReplyExportsNoReplacementText(t *testing.T) {
+	ctx := context.Background()
+	sink := &memSink{}
+	mon := compliance.New(func() compliance.Sink { return sink })
+	mon.SetMode(compliance.Full)
+	r := newPipeRigWith(t, 0, func(c *PipeConfig) { c.Monitor = mon })
+	alice := authz.NewSessionPrincipal(idAlice)
+	a := sendArgs(wAlicePi1, pipeSess, "original")
+	if _, err := r.p.Send(ctx, alice, a); err != nil {
+		t.Fatal(err)
+	}
+	sink.take()
+	a.Text = "replacement"
+	_, _ = r.p.Send(ctx, alice, a)
+	for _, e := range sink.take() {
+		if e.Name == compliance.EventInput || strings.Contains(e.Body, "replacement") {
+			t.Fatalf("exported %+v", e)
 		}
 	}
 }

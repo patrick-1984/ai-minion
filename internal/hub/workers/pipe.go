@@ -429,7 +429,8 @@ func (p *Pipe) Send(ctx context.Context, pr authz.Principal, args ops.PipeSendAr
 	}
 	// Recorded once, whichever way it ends: the request as submitted and the
 	// outcome it returned (compliance monitoring).
-	defer func() { p.observeSend(ctx, pr, peer, args, out, rerr) }()
+	cached := false // the answer is a stored one: nothing was delivered now
+	defer func() { p.observeSend(ctx, pr, peer, args, out, rerr, cached) }()
 	if args.RequestID != "" {
 		unlock, err := p.lockRequest(ctx, peer, args.RequestID)
 		if err != nil {
@@ -442,6 +443,7 @@ func (p *Pipe) Send(ctx context.Context, pr authz.Principal, args ops.PipeSendAr
 		return ops.WriteResult{}, err
 	}
 	if prior != nil {
+		cached = true
 		return *prior, nil
 	}
 	// The Worker names this id on the turn that answers the delivery. It is the

@@ -190,9 +190,12 @@ func maskText(text string) string {
 	text = strings.ToValidUTF8(text, "\uFFFD")
 	masked := logx.RedactText(text)
 	if strings.Contains(text, "\n") {
-		flat := strings.ReplaceAll(strings.ReplaceAll(masked, "\r", ""), "\n", "")
-		if r := logx.RedactText(flat); r != flat {
-			return r // what the line breaks hid
+		// Look for secrets in the joined ORIGINAL rows: masking the rows first
+		// would leave the continuation of a token whose visible prefix matched.
+		flat := strings.ReplaceAll(strings.ReplaceAll(text, "\r", ""), "\n", "")
+		joined := logx.RedactText(flat)
+		if joined != strings.ReplaceAll(strings.ReplaceAll(masked, "\r", ""), "\n", "") {
+			return joined // what the line breaks hid
 		}
 	}
 	return masked

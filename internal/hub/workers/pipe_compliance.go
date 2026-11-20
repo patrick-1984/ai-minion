@@ -14,8 +14,8 @@ import (
 // the pipe ops it routes for the broker). Only calls the caller was
 // authorised for are recorded. A turn is content only when the Worker of its
 // session is user-managed. Received turns are output; the text of a sent
-// message is input and is recorded only at the full level, also when a read
-// returns it again.
+// message is input, recorded at the full level when the Worker took the send,
+// never from the history a read returns (that row may be pending or refused).
 
 func (p *Pipe) pipeAttrs(pr authz.Principal, op string, peer pipe.Peer, outcome string) []compliance.KV {
 	return append(PrincipalAttrs(pr),
@@ -37,7 +37,7 @@ func outcomeOf(wr ops.WriteResult, err error) string {
 }
 
 // observeSend records an authorised pipe_send.
-func (p *Pipe) observeSend(ctx context.Context, pr authz.Principal, peer pipe.Peer, args ops.PipeSendArgs, wr ops.WriteResult, err error) {
+func (p *Pipe) observeSend(ctx context.Context, pr authz.Principal, peer pipe.Peer, args ops.PipeSendArgs, wr ops.WriteResult, err error, cached bool) {
 	mon := p.mon
 	if mon.Mode() == compliance.Off {
 		return
@@ -46,7 +46,7 @@ func (p *Pipe) observeSend(ctx context.Context, pr authz.Principal, peer pipe.Pe
 	mon.Emit(compliance.Actions, compliance.EventAction, "", attrs...)
 	// Only what the Worker took: a refused delivery (pipe_origin_refused, a
 	// Worker error) or a send that went nowhere is not input.
-	if err == nil && wr.Outcome != ops.OutcomeFailedNotSent && mon.Mode() == compliance.Full && p.contentOK(ctx, peer) {
+	if err == nil && !cached && wr.Outcome != ops.OutcomeFailedNotSent && mon.Mode() == compliance.Full && p.contentOK(ctx, peer) {
 		mon.Emit(compliance.Full, compliance.EventInput, args.Text, append(attrs, compliance.KV{Key: "minion.input.kind", Value: "pipe_send"})...)
 	}
 }
@@ -66,12 +66,12 @@ func (p *Pipe) observeTurns(ctx context.Context, pr authz.Principal, op string, 
 		return
 	}
 	for _, t := range turns {
-		min, event := compliance.Output, compliance.EventOutput
 		if t.Direction == ops.PipeSent {
-			// What the history returns of a message that was sent is input.
-			min, event = compliance.Full, compliance.EventInput
+			// A sent message is recorded when it is sent (input), not from
+			// the history: a stored row can be pending or refused.
+			continue
 		}
-		mon.Emit(min, event, t.Text, append(attrs,
+		mon.Emit(compliance.Output, compliance.EventOutput, t.Text, append(attrs,
 			compliance.KV{Key: "minion.output.kind", Value: "pipe_turn"},
 			compliance.KV{Key: "minion.turn.id", Value: t.TurnID},
 			compliance.KV{Key: "minion.turn.direction", Value: t.Direction})...)

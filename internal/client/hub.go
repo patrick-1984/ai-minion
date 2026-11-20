@@ -427,7 +427,10 @@ func (b *HubBackend) run(ctx context.Context, op string, args any, onProgress fu
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if lvl := resp.Header.Get(MonitoringHeader); (lvl == "actions" || lvl == "output" || lvl == "full") && b.notice != nil {
-		b.noticeOnce.Do(func() { b.notice(MonitoringNotice(lvl)) })
+		b.noticeOnce.Do(func() {
+			// Best effort: a stalled stderr never holds a response.
+			go b.notice(MonitoringNotice(lvl))
+		})
 	}
 
 	switch {

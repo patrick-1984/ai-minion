@@ -120,7 +120,7 @@ func TestComplianceLiveLevelOriginAndContentManaged(t *testing.T) {
 	if !strings.Contains(o.local.String(), "MINION_COMPLIANCE_MONITORING") {
 		t.Errorf("no start-up line about the environment setting: %s", o.local.String())
 	}
-	if ok, err := contentManaged(o.st)(context.Background(), "no-such-worker"); ok || err == nil {
+	if ok, err := contentManaged(o.st)(context.Background(), "no-such-worker"); ok || err != nil {
 		t.Fatalf("an unknown Worker counts as user-managed: %v %v", ok, err)
 	}
 }

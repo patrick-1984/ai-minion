@@ -140,13 +140,7 @@ func initRoute(ctx context.Context, env *Env) error {
 // Hub no longer has (it is being removed) is not user-managed, whatever the
 // default of a missing control row says.
 func contentManaged(st *store.Store) func(ctx context.Context, workerID string) (bool, error) {
-	return func(ctx context.Context, workerID string) (bool, error) {
-		if _, err := st.WorkerByID(ctx, workerID); err != nil {
-			return false, err
-		}
-		c, err := st.WorkerControl(ctx, workerID)
-		return c.UserManaged, err
-	}
+	return st.WorkerContentManaged
 }
 
 func userManaged(st *store.Store) func(ctx context.Context, workerID string) (bool, error) {
