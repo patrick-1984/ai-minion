@@ -615,6 +615,11 @@ func (d inviteHookDeps) run(ctx context.Context, s Settings) error {
 	if !given {
 		return nil
 	}
+	if paused, _ := ReadPause(s.StateDir); paused {
+		// No Hub traffic while paused: the key stays unused; resume, then restart.
+		s.logger().Info("the Worker is paused: the invitation key is not used. Run minion worker resume, then start the Worker again to enroll")
+		return nil
+	}
 	if literal && d.stderr != nil && !s.InviteArgvWarned {
 		_, _ = fmt.Fprintln(d.stderr, config.InviteKeyArgvWarning)
 	}

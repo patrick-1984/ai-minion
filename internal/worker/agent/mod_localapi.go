@@ -82,8 +82,9 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	enrollments, _ := lookupService[*Enrollments](env.rt)
 	hostInfo, _ := lookupService[*SessionHostInfo](env.rt)
 	health, _ := lookupService[*SessionListHealth](env.rt)
+	pause, _ := lookupService[*PauseService](env.rt)
 	live := LiveStatusSource{Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health,
-		LogSinks: env.Settings().LogSinks}
+		LogSinks: env.Settings().LogSinks, Pause: pause}
 	// The pipe module starts before this one. Without it the pipe ops are
 	// refused here and never reach the executor, whose pipe_send is the
 	// Hub-origin write (exec_pipe.go).
@@ -99,7 +100,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	srv, err := localapi.New(localapi.Config{
 		Executor: localExecutor{
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
-			instance: uuid.NewString(), enrollments: enrollments,
+			instance: uuid.NewString(), enrollments: enrollments, pause: pause,
 		},
 		Logger: log,
 	})
@@ -134,6 +135,8 @@ type localExecutor struct {
 	calls func() PipeCaller
 	// stop asks the runtime to stop the Worker (OpLocalStop); nil refuses it.
 	stop func()
+	// pause is the pause of the Hub traffic (OpLocalPause); nil refuses it.
+	pause *PauseService
 }
 
 func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progress func(json.RawMessage)) (json.RawMessage, error) {
@@ -160,6 +163,10 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		go func() { time.Sleep(200 * time.Millisecond); l.stop() }()
 		return json.RawMessage(`{"stopping":true}`), nil
 	}
+	if rq.Op == OpLocalPause {
+		raw, err := l.setPause(ctx, rq.Args)
+		return raw, l.protoError(rq.Op, err)
+	}
 	if rq.Op == OpLocalStatus && l.live != nil {
 		raw, err := statusOp(ctx, l.stateDir, l.instance, l.live)
 		if err != nil {
@@ -173,6 +180,9 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 	}
 	ctx = WithProgress(ctx, progress)
 	if forwardsToHub(rq.Op, rq.Args, l.ex.policy.WorkerID()) {
+		if l.pause != nil && l.pause.Paused() {
+			return nil, l.protoError(rq.Op, pauseRefusal())
+		}
 		// The target is on another Worker: only the Hub reaches it.
 		raw, err := l.forwardSessionControl(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, rq.Pane)
 		if err != nil {
@@ -253,4 +263,22 @@ func EmitProgress(ctx context.Context, v any) error {
 	}
 	fn(b)
 	return nil
+}
+
+// setPause serves OpLocalPause: {"paused": true|false}. The reply comes after
+// a pause has closed the Hub link, or not at all.
+func (l localExecutor) setPause(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	if l.pause == nil {
+		return nil, apiErr(proto.CodeUnsupportedOp, "", "this Worker cannot be paused")
+	}
+	var a struct {
+		Paused *bool `json:"paused"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil || a.Paused == nil {
+		return nil, apiErr(proto.CodeInvalidArgument, "", `the pause op takes {"paused": true|false}`)
+	}
+	if err := l.pause.Set(ctx, *a.Paused); err != nil {
+		return nil, apiErr(proto.CodeInternal, "", err.Error())
+	}
+	return json.Marshal(map[string]bool{"paused": *a.Paused})
 }

@@ -65,6 +65,8 @@ type LiveStatusReply struct {
 	// LogSinks is the state of the remote log sinks (v0.14.0); an older
 	// Worker omits it.
 	LogSinks []ops.LogSinkStatus `json:"log_sinks,omitempty"`
+	// Paused is the pause the Worker applies; an older Worker omits it.
+	Paused *bool `json:"paused,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -91,6 +93,9 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		TLSLine:            c.TLSLine,
 		HubCheckAware:      true,
 		LogSinks:           live.LogSinks,
+	}
+	if live.PauseKnown {
+		r.Paused = &live.Paused
 	}
 	if !c.LastErrorAt.IsZero() {
 		r.LastErrorAt = c.LastErrorAt.UTC().Format(time.RFC3339Nano)
@@ -135,6 +140,8 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		Host:               SessionHostInfo{Kind: r.SessionHost, Hidden: r.SessionsHidden, Reason: r.SessionHostReason},
 		ListError:          r.SessionsListError,
 		LogSinks:           r.LogSinks,
+		Paused:             r.Paused != nil && *r.Paused,
+		PauseKnown:         r.Paused != nil,
 	}, nil
 }
 

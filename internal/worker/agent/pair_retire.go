@@ -346,6 +346,9 @@ type RetirerConfig struct {
 	// AdmittedRetry is the least wait after an attempt that was admitted but
 	// not retired; zero means [DefaultAdmittedRetry].
 	AdmittedRetry time.Duration
+	// Pause defers every retirement while the Worker is paused: nothing is
+	// dialed until the resume. Nil never pauses.
+	Pause *PauseGate
 	// Logger receives operational messages, never key material. Nil discards
 	// them.
 	Logger *slog.Logger
@@ -471,7 +474,17 @@ func (r *Retirer) retireLocked(ctx context.Context, fp string) (RetiredIdentity,
 // the poll interval, because the CLI adds records from another process.
 func (r *Retirer) Run(ctx context.Context) {
 	for ctx.Err() == nil {
-		remaining, err := r.RunOnce(ctx)
+		if err := waitUnpaused(ctx, r.cfg.Pause); err != nil {
+			return
+		}
+		rctx, end, ok := r.cfg.Pause.beginWork(ctx)
+		if !ok {
+			continue
+		}
+		remaining, err := r.RunOnce(rctx)
+		if end() {
+			continue
+		}
 		if err != nil {
 			return
 		}

@@ -30,6 +30,7 @@
   },
   "preview_only": false,
   "preview_only_hub": false,
+  "paused": false,
   "tmux_socket": "/run/user/1000/tmux-1000/default",
   "sessions": 3
 }

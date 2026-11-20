@@ -38,7 +38,9 @@ func newStartRig(goos string) *startRig {
 			}
 			return r.loaded[unit], nil
 		},
-		autostart:         func() (string, bool, error) { return `"C:\Program Files\minion.exe" worker launch --state-dir "D:\my state"`, true, nil },
+		autostart: func() (string, bool, error) {
+			return `"C:\Program Files\minion.exe" worker launch --state-dir "D:\my state"`, true, nil
+		},
 		supervisorRunning: func() bool { return r.supRuns },
 		startLauncher: func(exe string, args []string) error {
 			r.launched = append(r.launched, append([]string{exe}, args...))
