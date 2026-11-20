@@ -44,10 +44,10 @@ func shareList(t *testing.T, cd workerConfigDeps, dir string) shareListReply {
 func TestShareListIsNamesOnlyAndShowsHiddenSessions(t *testing.T) {
 	dir := t.TempDir()
 	cd := testConfigDeps(map[string]string{"MINION_SHARE_LOCK": "true"})
-	cd.sessions = func(string) agent.StatusSessions { return listerNames{"zeta", "alpha", "beta"} }
-	if _, _, err := configCmd(t, cd, dir, "share", "select", "beta", "gone"); err != nil {
+	if _, _, err := configCmd(t, cd, dir, "share", "select", "beta", "gone"); err != nil { // no inventory yet
 		t.Fatal(err)
 	}
+	cd.sessions = func(string) agent.StatusSessions { return listerNames{"zeta", "alpha", "beta"} }
 	r := shareList(t, cd, dir)
 	want := []shareListSession{{"alpha", false}, {"beta", true}, {"zeta", false}}
 	if r.Mode != "select" || !reflect.DeepEqual(r.Sessions, want) || !reflect.DeepEqual(r.Selected, []string{"beta", "gone"}) ||
@@ -180,5 +180,24 @@ func TestShareCommandsWorkWhileAWorkerHoldsTheState(t *testing.T) {
 	}
 	if ok, _ := worker.IsShared("b"); ok {
 		t.Fatal("the Worker shares an unchecked session")
+	}
+}
+
+// A name that is not in the current inventory is refused: the picker never
+// selects a session it did not display (an unknown host has no inventory to
+// check against).
+func TestShareSelectRefusesANameNotInTheInventory(t *testing.T) {
+	dir := t.TempDir()
+	cd := testConfigDeps(nil)
+	cd.sessions = func(string) agent.StatusSessions { return listerNames{"a", "b"} }
+	_, _, err := configCmd(t, cd, dir, "share", "select", "a", "other-host-session")
+	if err == nil || !strings.Contains(err.Error(), "no session") {
+		t.Fatalf("err = %v", err)
+	}
+	if s := loadShare(t, dir); s.Configured {
+		t.Fatalf("a refused edit saved %+v", s)
+	}
+	if _, _, err := configCmd(t, cd, dir, "share", "select", "a"); err != nil {
+		t.Fatal(err)
 	}
 }

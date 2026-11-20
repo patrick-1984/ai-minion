@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -484,17 +485,35 @@ func runConfigShare(cmd *cobra.Command, deps workerConfigDeps, modeArg string, n
 		change.Names = names
 	}
 
-	// The config file may hold share_existing, which the Worker applies to the
-	// store at every start. Keep it in step, or the next start would undo this
-	// choice. share_existing has no "select", so that mode removes it and the
-	// saved selection stands.
-	//
-	// The file is written first and the store second. A crash between the two
-	// leaves the file at the new choice, which the next start applies to the
-	// store, so the start never reinstates the old, possibly wider, choice. A
-	// store that refuses the write (a stale --revision, no session to select)
-	// gets the file put back, so the command fails without changing anything.
-	mapErr := func(err error) error {
+	// A name the picker offers must exist now: a stale or foreign inventory
+	// never selects a session that was not displayed (when the host is known;
+	// where it is not, there is no picker inventory to check against).
+	if mode == store.ShareSelect && len(names) > 0 {
+		if inv, known, err := shareInventory(cmd, deps, ce); err != nil {
+			return err
+		} else if known {
+			for _, n := range names {
+				if !slices.Contains(inv, n) {
+					return fmt.Errorf("there is no session %q on this Worker's host now; list the sessions again: minion worker config share list", n)
+				}
+			}
+		}
+	}
+
+	// share_existing in the config file is a start-time override of the
+	// database. A share edit makes the database the only rule: the override is
+	// removed first (the database keeps its value until the commit, so this
+	// never widens anything), so that no restart, early or after an interrupted
+	// command, applies an older file value over the edit. A refused edit leaves
+	// the database as it was and the override gone.
+	if _, had, _ := ce.file.Lookup(config.KeyShareExisting); had {
+		ce.file.Delete(config.KeyShareExisting)
+		if err := ce.file.Save(); err != nil {
+			return fmt.Errorf("the config file %s could not be updated, nothing was changed: %w", ce.file.Path(), err)
+		}
+	}
+	saved, err := committer.CommitShareChange(ctx, change)
+	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrShareConflict):
 			return fmt.Errorf("the share choice changed since it was listed, so nothing was changed (%v); list it again: minion worker config share list", err)
@@ -502,50 +521,6 @@ func runConfigShare(cmd *cobra.Command, deps workerConfigDeps, modeArg string, n
 			return errors.New("name the sessions to share, for example: minion worker config share select build docs")
 		}
 		return err
-	}
-	prev, had, _ := ce.file.Lookup(config.KeyShareExisting)
-	syncFile := func() error {
-		if mode == store.ShareSelect {
-			ce.file.Delete(config.KeyShareExisting)
-		} else {
-			ce.file.Set(config.KeyShareExisting, string(mode))
-		}
-		if err := ce.file.Save(); err != nil {
-			return fmt.Errorf("the config file %s could not be updated: %w", ce.file.Path(), err)
-		}
-		return nil
-	}
-	var saved store.ShareState
-	if revision != 0 {
-		// A checked edit: the revision check of the database transaction is
-		// the authority. The config file is not touched before it passed, so a
-		// refused edit never leaves a wider share_existing for a Worker that
-		// restarts meanwhile; the file follows the committed choice.
-		saved, err = committer.CommitShareChange(ctx, change)
-		if err != nil {
-			return mapErr(err)
-		}
-		if had {
-			if err := syncFile(); err != nil {
-				return fmt.Errorf("the choice is saved, but %w; a restart would apply the old share_existing, so run the command again without --revision", err)
-			}
-		}
-	} else {
-		if had {
-			if err := syncFile(); err != nil {
-				return fmt.Errorf("%w, nothing was changed", err)
-			}
-		}
-		saved, err = committer.CommitShareChange(ctx, change)
-		if err != nil {
-			if had {
-				ce.file.Set(config.KeyShareExisting, prev)
-				if rerr := ce.file.Save(); rerr != nil {
-					return fmt.Errorf("%w; the config file %s could not be put back (%v), so the Worker applies the new share_existing at its next start", err, ce.file.Path(), rerr)
-				}
-			}
-			return mapErr(err)
-		}
 	}
 	sel := saved.ShareSelection
 

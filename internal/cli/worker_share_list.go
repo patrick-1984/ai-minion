@@ -54,15 +54,15 @@ func runConfigShareList(cmd *cobra.Command, deps workerConfigDeps, asJSON bool) 
 	if err != nil {
 		return err
 	}
-	res := &config.Resolver{
-		Role: config.ScopeWorker, Registry: deps.reg(), File: ce.file,
-		Flags: changedFlags{cmd: cmd, reg: deps.reg()}, LookupEnv: deps.lookupEnv,
-	}
-	core, cerr := config.ResolveWorkerCore(res)
+	core, cerr := shareCore(cmd, deps, ce)
+	inv, known, ierr := shareInventory(cmd, deps, ce)
 	stateDir, out := ce.stateDir, ce.out
 	ce.release() // nothing below writes
 	if cerr != nil {
 		return cerr
+	}
+	if ierr != nil {
+		return ierr
 	}
 
 	state := store.ShareState{ShareSelection: store.ShareSelection{Mode: store.ShareLater, Sessions: []string{}}}
@@ -84,23 +84,9 @@ func runConfigShareList(cmd *cobra.Command, deps workerConfigDeps, asJSON bool) 
 		Mode: string(state.Mode), Configured: state.Configured, Revision: ops.FormatShareRevision(state.Revision),
 		Locked: core.ShareLock, Selected: slices.Clone(state.Sessions), Sessions: []shareListSession{},
 	}
-	// Only a host that is certainly the Worker's is listed: a socket saved in
-	// the config file (the service reads the same one) or the default one when
-	// this shell does not move it with TMUX_TMPDIR (the service would not
-	// know). Otherwise the same session name could belong to another tmux
-	// server, and the picker would check the wrong session: no inventory.
-	if deps.sessions != nil && core.TmuxSocket != "" && hostIsTheWorkers(res, deps.lookupEnv) {
-		if h := deps.sessions(core.TmuxSocket); h != nil {
-			all, err := h.ListSessions(cmd.Context())
-			if err != nil {
-				return fmt.Errorf("cannot list the sessions of this host: %w", err)
-			}
-			reply.SessionsKnown = true
-			for _, s := range all {
-				reply.Sessions = append(reply.Sessions, shareListSession{Name: s.Name, Shared: state.Includes(s.Name)})
-			}
-			sort.Slice(reply.Sessions, func(i, j int) bool { return reply.Sessions[i].Name < reply.Sessions[j].Name })
-		}
+	reply.SessionsKnown = known
+	for _, n := range inv {
+		reply.Sessions = append(reply.Sessions, shareListSession{Name: n, Shared: state.Includes(n)})
 	}
 	if asJSON {
 		enc := json.NewEncoder(out)
@@ -152,4 +138,45 @@ func hostIsTheWorkers(res *config.Resolver, lookupEnv func(string) (string, bool
 		return v == ""
 	}
 	return false
+}
+
+func shareCore(cmd *cobra.Command, deps workerConfigDeps, ce *configEnv) (config.WorkerCore, error) {
+	return config.ResolveWorkerCore(shareResolver(cmd, deps, ce))
+}
+
+func shareResolver(cmd *cobra.Command, deps workerConfigDeps, ce *configEnv) *config.Resolver {
+	return &config.Resolver{
+		Role: config.ScopeWorker, Registry: deps.reg(), File: ce.file,
+		Flags: changedFlags{cmd: cmd, reg: deps.reg()}, LookupEnv: deps.lookupEnv,
+	}
+}
+
+// shareInventory returns the names of the sessions of this Worker's host,
+// sorted, and whether that host is known. Only a host that is certainly the
+// Worker's is listed: a socket saved in the config file (the service reads the
+// same one) or the default one when this shell does not move it with
+// TMUX_TMPDIR. Otherwise the same name could belong to another tmux server.
+func shareInventory(cmd *cobra.Command, deps workerConfigDeps, ce *configEnv) ([]string, bool, error) {
+	res := shareResolver(cmd, deps, ce)
+	core, err := config.ResolveWorkerCore(res)
+	if err != nil {
+		return nil, false, err
+	}
+	if deps.sessions == nil || core.TmuxSocket == "" || !hostIsTheWorkers(res, deps.lookupEnv) {
+		return nil, false, nil
+	}
+	h := deps.sessions(core.TmuxSocket)
+	if h == nil {
+		return nil, false, nil
+	}
+	all, err := h.ListSessions(cmd.Context())
+	if err != nil {
+		return nil, false, fmt.Errorf("cannot list the sessions of this host: %w", err)
+	}
+	names := []string{}
+	for _, s := range all {
+		names = append(names, s.Name)
+	}
+	sort.Strings(names)
+	return names, true, nil
 }
