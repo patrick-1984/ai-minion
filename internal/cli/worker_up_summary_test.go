@@ -61,7 +61,7 @@ func TestWorkerUpReportsPendingApprovalOnEachManager(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := []string{"State: waiting for approval", "Hub key: " + hub, "Worker fingerprint: " + worker}
+			want := []string{"State: waiting for approval", "Hub key (must match the Hub's top bar):", hub, "approve on the Hub's Workers page only if it shows this", worker}
 			if manager == service.ManagerSystemd {
 				want = append(want, "sudo -H -u 'ann' -- minion worker status", "sudo systemctl stop 'minion-worker@ann.service'", "sudo systemctl start 'minion-worker@ann.service'")
 			}
@@ -96,14 +96,14 @@ func TestWorkerStatusWaitUsesStoredKeysAndLiveWelcome(t *testing.T) {
 		return out
 	}
 	out := run()
-	for _, want := range []string{"State: waiting for approval", "Hub key: " + identity.Fingerprint(hub).Words(),
-		"Worker fingerprint: " + identity.Fingerprint(worker).Words()} {
+	for _, want := range []string{"State: waiting for approval", "Hub key (must match the Hub's top bar):", identity.Fingerprint(hub).Words(),
+		identity.Fingerprint(worker).Words()} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in %s", want, out)
 		}
 	}
 	out = run()
-	if !strings.Contains(out, "State: connected") || !strings.Contains(out, "Hub key: "+identity.Fingerprint(hub).Words()) ||
+	if !strings.Contains(out, "State: connected") || !strings.Contains(out, identity.Fingerprint(hub).Words()) ||
 		strings.Contains(out, "waiting for approval") {
 		t.Fatalf("approved connection: %s", out)
 	}
