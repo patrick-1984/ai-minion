@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -1101,5 +1102,21 @@ func TestCreateSessionLeavesThePrivateSocketOwnerOnly(t *testing.T) {
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
 		t.Errorf("socket mode = %v, want owner only", fi.Mode().Perm())
+	}
+}
+
+// The old-tmux warning reaches the logger set after New (the Worker sets it
+// then), once.
+func TestOldTmuxWarningReachesALaterLogger(t *testing.T) {
+	f := &fake{version: "tmux 3.0a\n"}
+	h, err := New(fakeSocket, WithExec(f.exec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	h.SetLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+	h.SetLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+	if n := strings.Count(buf.String(), "CVE-2020-27347"); n != 1 {
+		t.Errorf("warnings = %d, want 1: %s", n, buf.String())
 	}
 }

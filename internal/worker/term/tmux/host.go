@@ -56,7 +56,25 @@ func WithLogger(l *slog.Logger) Option { return func(h *Host) { h.SetLogger(l) }
 
 // SetLogger sets the logger of the debug lines; nil writes nothing. It never
 // logs terminal content: commands, exit status, counts and errors only.
-func (h *Host) SetLogger(l *slog.Logger) { h.log.Store(l) }
+func (h *Host) SetLogger(l *slog.Logger) {
+	h.log.Store(l)
+	h.warnOldTmux()
+}
+
+// warnOldTmux logs once, as soon as a logger is set, that tmux is older than
+// 3.1c: CVE-2020-27347 is fixed upstream in 3.1c, and distributions backport
+// it (Ubuntu 20.04: 3.0a-2ubuntu0.2) without changing what tmux -V prints.
+func (h *Host) warnOldTmux() {
+	v := h.version
+	if h.psmux || v.raw == "" || v.AtLeast(3, 2) || (v.Major == 3 && v.Minor == 1 && v.Suffix >= "c") {
+		return
+	}
+	if h.log.Load() == nil || !h.oldWarned.CompareAndSwap(false, true) {
+		return
+	}
+	h.logger().Warn("tmux is older than 3.1c: make sure the security updates of your distribution are installed (CVE-2020-27347), or install a newer tmux",
+		"version", v.String())
+}
 
 func (h *Host) logger() *slog.Logger {
 	if l := h.log.Load(); l != nil {
@@ -83,6 +101,8 @@ type Host struct {
 	// the previous result out of the log.
 	log       atomic.Pointer[slog.Logger]
 	listDedup logx.Dedup
+	// oldWarned makes the old-tmux security warning appear once.
+	oldWarned atomic.Bool
 }
 
 // MinPsmuxMajor and MinPsmuxMinor are the oldest supported psmux (3.4): older
@@ -156,12 +176,9 @@ func New(socketPath string, opts ...Option) (*Host, error) {
 		return nil, fmt.Errorf("tmux: version %s is too old; tmux %d.%d or newer is required", v, MinMajor, MinMinor)
 	}
 	h.version = v
-	if !h.psmux && !v.AtLeast(3, 2) && !(v.Major == 3 && v.Minor == 1 && v.Suffix >= "c") {
-		// CVE-2020-27347 is fixed upstream in 3.1c; distributions backport it
-		// (Ubuntu 20.04: 3.0a-2ubuntu0.2) without changing what tmux -V prints.
-		h.logger().Warn("tmux is older than 3.1c: make sure the security updates of your distribution are installed (CVE-2020-27347), or install a newer tmux",
-			"version", v.String())
-	}
+	h.warnOldTmux()
+	// An existing server of tmux before 3.2 may have a group-writable socket.
+	h.tightenSocket()
 	h.logger().Debug("terminal host ready", "binary", h.bin, "psmux", h.psmux, "version", v.String())
 	return h, nil
 }

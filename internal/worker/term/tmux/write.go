@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -225,8 +226,9 @@ func (h *Host) SendKeys(ctx context.Context, pane term.PaneRef, keys []string, e
 		if err := checkKey(k); err != nil {
 			return 0, err
 		}
-		if (k == "C-2" || k == "C-?") && !h.psmux && !h.version.AtLeast(3, 2) {
-			// tmux before 3.2 sends an escape sequence for these, not NUL or DEL.
+		if !h.psmux && !h.version.AtLeast(3, 2) && ctrlNonLetter(k) {
+			// tmux before 3.2 sends an escape sequence for Ctrl with a digit
+			// or punctuation (C-2, C-6, C-?), not the control byte.
 			return 0, fmt.Errorf("key %q needs tmux 3.2 or newer (this tmux is %s): %w", k, h.version, ops.ErrInvalidArgument)
 		}
 		if h.psmux && strings.HasSuffix(k, ";") {
@@ -260,6 +262,23 @@ func checkKey(k string) error {
 		}
 	}
 	return nil
+}
+
+// ctrlNonLetter reports whether k is Ctrl (with any other modifiers, in any
+// order or repetition) on one character that is not a letter or space.
+func ctrlNonLetter(k string) bool {
+	ctrl := false
+	for len(k) > 2 && k[1] == '-' && strings.ContainsRune("CMSms", rune(k[0])) {
+		if k[0] == 'C' {
+			ctrl = true
+		}
+		k = k[2:]
+	}
+	if !ctrl || utf8.RuneCountInString(k) != 1 {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(k)
+	return !unicode.IsLetter(r) && r != ' '
 }
 
 // escapeArg protects an argument from tmux's own command parser: an argument
