@@ -128,3 +128,17 @@ func TestWrappedJoinTokenIsMaskedWhole(t *testing.T) {
 		t.Fatalf("not masked: %q", b)
 	}
 }
+
+// An intact credential at the start of a row that follows a letter, and a
+// wrapped one, in the same observation: both are masked.
+func TestIntactAndWrappedCredentialsTogether(t *testing.T) {
+	key := "mn_abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+	c := &collect{}
+	m := New(func() Sink { return c })
+	m.SetMode(Output)
+	m.Emit(Output, EventOutput, "prompt$ abc\n"+key+"\nrow mn_"+key[3:30]+"\n"+key[30:]+"\nend")
+	b := c.bodies[0]
+	if strings.Contains(b, key[3:20]) || strings.Contains(b, key[30:45]) || !strings.Contains(b, "end") {
+		t.Fatalf("not masked: %q", b)
+	}
+}

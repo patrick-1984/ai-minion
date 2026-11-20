@@ -7,6 +7,7 @@
 package compliance
 
 import (
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -183,22 +184,45 @@ func sanitize(in []KV) []KV {
 }
 
 // maskText masks Minion's secret formats. A terminal screen holds physical
-// rows: a secret that wrapped is split by a line break, so when the text with
-// its line breaks removed matches a secret format that the text itself does
-// not, the rows are joined (and masked) instead.
+// rows, so a secret that wrapped is split by a line break, and a secret at the
+// start of a row follows a letter once the rows are joined. Both are found
+// first, on the rows as they are and on the rows joined, and every span either
+// search found is masked together (so one never undoes the other); URL and
+// other text patterns are masked after.
 func maskText(text string) string {
 	text = strings.ToValidUTF8(text, "\uFFFD")
-	masked := logx.RedactText(text)
+	spans := logx.SecretSpans(text)
 	if strings.Contains(text, "\n") {
-		// Look for secrets in the joined ORIGINAL rows: masking the rows first
-		// would leave the continuation of a token whose visible prefix matched.
-		flat := strings.ReplaceAll(strings.ReplaceAll(text, "\r", ""), "\n", "")
-		joined := logx.RedactText(flat)
-		if joined != strings.ReplaceAll(strings.ReplaceAll(masked, "\r", ""), "\n", "") {
-			return joined // what the line breaks hid
+		flat := make([]byte, 0, len(text))
+		at := make([]int, 0, len(text)) // at[k]: where byte k of the joined text was
+		for i := 0; i < len(text); i++ {
+			if text[i] != '\n' && text[i] != '\r' {
+				flat = append(flat, text[i])
+				at = append(at, i)
+			}
+		}
+		for _, sp := range logx.SecretSpans(string(flat)) {
+			spans = append(spans, [2]int{at[sp[0]], at[sp[1]-1] + 1})
 		}
 	}
-	return masked
+	if len(spans) == 0 {
+		return logx.RedactText(text)
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	var b strings.Builder
+	pos := 0
+	for _, sp := range spans {
+		if sp[1] <= pos {
+			continue
+		}
+		if sp[0] > pos {
+			b.WriteString(text[pos:sp[0]])
+		}
+		b.WriteString(logx.Redacted)
+		pos = sp[1]
+	}
+	b.WriteString(text[pos:])
+	return logx.RedactText(b.String())
 }
 
 // Chunks splits s into pieces of at most max bytes, each valid UTF-8 (a cut

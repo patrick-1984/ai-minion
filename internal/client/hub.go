@@ -427,10 +427,7 @@ func (b *HubBackend) run(ctx context.Context, op string, args any, onProgress fu
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if lvl := resp.Header.Get(MonitoringHeader); (lvl == "actions" || lvl == "output" || lvl == "full") && b.notice != nil {
-		b.noticeOnce.Do(func() {
-			// Best effort: a stalled stderr never holds a response.
-			go b.notice(MonitoringNotice(lvl))
-		})
+		b.noticeOnce.Do(func() { deliverNotice(b.notice, MonitoringNotice(lvl)) })
 	}
 
 	switch {
@@ -923,4 +920,24 @@ func retryAfter(h http.Header) (time.Duration, bool) {
 		return 0, false
 	}
 	return time.Duration(n) * time.Second, true
+}
+
+// noticeWait bounds how long a response waits for the notice to be written.
+const noticeWait = 200 * time.Millisecond
+
+// deliverNotice writes the notice and waits for it at most noticeWait: a
+// command that exits right after still prints it, and a stalled stderr never
+// holds a response for longer.
+func deliverNotice(f func(string), msg string) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f(msg)
+	}()
+	t := time.NewTimer(noticeWait)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+	}
 }

@@ -99,7 +99,7 @@ func TestComplianceMonitoringEndToEnd(t *testing.T) {
 	if ev[0].Name != compliance.EventAction || ev[1].Name != compliance.EventOutput || ev[2].Name != compliance.EventAction {
 		t.Fatalf("output mode events = %+v", ev)
 	}
-	if !strings.Contains(ev[1].Body, "$ deploy") || strings.Contains(ev[1].Body, e2eKey) || !strings.Contains(ev[1].Body, "mn_") {
+	if !strings.Contains(ev[1].Body, "$ deploy") || strings.Contains(ev[1].Body, e2eKey) || !strings.Contains(ev[1].Body, "[redacted]") {
 		t.Errorf("output body not masked: %q", ev[1].Body)
 	}
 
@@ -115,7 +115,7 @@ func TestComplianceMonitoringEndToEnd(t *testing.T) {
 	if ev[0].Name != compliance.EventAction || ev[1].Name != compliance.EventInput {
 		t.Fatalf("full mode events = %+v", ev)
 	}
-	if ev[1].Attrs["minion.input.kind"] != "text" || !strings.HasPrefix(ev[1].Body, "echo mn_") || strings.Contains(ev[1].Body, e2eKey) {
+	if ev[1].Attrs["minion.input.kind"] != "text" || !strings.HasPrefix(ev[1].Body, "echo [redacted]") || strings.Contains(ev[1].Body, e2eKey) {
 		t.Errorf("input event = %+v", ev[1])
 	}
 

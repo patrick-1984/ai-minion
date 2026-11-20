@@ -46,7 +46,7 @@ func (p *Pipe) observeSend(ctx context.Context, pr authz.Principal, peer pipe.Pe
 	mon.Emit(compliance.Actions, compliance.EventAction, "", attrs...)
 	// Only what the Worker took: a refused delivery (pipe_origin_refused, a
 	// Worker error) or a send that went nowhere is not input.
-	if err == nil && !cached && wr.Outcome != ops.OutcomeFailedNotSent && mon.Mode() == compliance.Full && p.contentOK(ctx, peer) {
+	if err == nil && !cached && tookInput(wr.Outcome) && mon.Mode() == compliance.Full && p.contentOK(ctx, peer) {
 		mon.Emit(compliance.Full, compliance.EventInput, args.Text, append(attrs, compliance.KV{Key: "minion.input.kind", Value: "pipe_send"})...)
 	}
 }
@@ -76,4 +76,12 @@ func (p *Pipe) observeTurns(ctx context.Context, pr authz.Principal, op string, 
 			compliance.KV{Key: "minion.turn.id", Value: t.TurnID},
 			compliance.KV{Key: "minion.turn.direction", Value: t.Direction})...)
 	}
+}
+
+// tookInput reports whether a write outcome says the Worker took the text.
+// An unknown outcome, or a refusal, records the action only: the Worker may
+// have answered from its own cache (a retry within its replay window) or never
+// have got the text, and the result cannot tell which.
+func tookInput(o ops.Outcome) bool {
+	return o == ops.OutcomeDelivered || o == ops.OutcomePartial
 }

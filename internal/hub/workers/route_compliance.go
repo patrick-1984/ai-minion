@@ -53,8 +53,8 @@ func (rt *Router) observe(ctx context.Context, req CallRequest, c *call, res any
 		}
 	}
 	// Input is recorded only when the Worker took the request: not when it
-	// refused it (an error) or reported that nothing was sent.
-	if wr, ok := res.(ops.WriteResult); err != nil || (ok && wr.Outcome == ops.OutcomeFailedNotSent) {
+	// refused it (an error), reported that nothing was sent or could not say.
+	if wr, ok := res.(ops.WriteResult); err != nil || (ok && !tookInput(wr.Outcome)) {
 		return
 	}
 	if kind, text := inputText(req.Args); kind != "" {
