@@ -83,7 +83,7 @@ With an exact tag, change `MINION_VERSION` (an environment variable or a `.env` 
 From 0.9.0 an administrator can update the Hub from **Administration > Updates** (the left rail shows `vX → vY` when a newer release exists in the channel `update_channel`). It needs the Docker socket and a channel tag, both given by the overlay [`deploy/compose/hub.self-update.yaml`](../../deploy/compose/hub.self-update.yaml):
 
 ```sh
-echo "MINION_TAG=0.15" >> .env                     # 0.15, 0 or latest; not an exact vX.Y.Z
+echo "MINION_TAG=0.16" >> .env                     # 0.16, 0 or latest; not an exact vX.Y.Z
 echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
 docker compose -f hub.yaml -f hub.self-update.yaml up -d
 ```
