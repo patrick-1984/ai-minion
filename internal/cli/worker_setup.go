@@ -257,7 +257,7 @@ func (d workerSetupDeps) firstRun(cmd *cobra.Command, res *config.Resolver, st *
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		return db.SaveShareContext(ctx, store.ShareSelection{Mode: store.ShareMode(fallback)})
 	}
 	switch {

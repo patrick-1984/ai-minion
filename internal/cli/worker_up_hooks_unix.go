@@ -39,12 +39,12 @@ func runOwnerHooks(ctx context.Context, owner *ownerSetup, s agent.Settings, in 
 	if err != nil {
 		return err
 	}
-	defer request.Close()
+	defer func() { _ = request.Close() }()
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {
 		return err

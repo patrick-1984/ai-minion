@@ -133,7 +133,7 @@ func appendLoginBlock(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		return err
@@ -175,7 +175,7 @@ func startLoginWorker(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	b, err := io.ReadAll(io.LimitReader(f, 2*syscall.PathMax+2))
 	if err != nil {
 		return false, err
@@ -204,7 +204,7 @@ func spawnLoginWorker(ctx context.Context, bin, state string) error {
 	if err != nil {
 		return fmt.Errorf("open the Worker log: %w", err)
 	}
-	defer log.Close()
+	defer func() { _ = log.Close() }()
 	// No enrollment or other credentials are copied to the child. Shell
 	// runtime paths are needed by the local control and tmux sockets.
 	cmd := exec.Command(bin, "worker", "run", "--state-dir", state)

@@ -571,7 +571,7 @@ func composeProject(head []string, env [][2]string, inviteFile bool, minionVersi
 	c.WriteString("        RUN apk add --no-cache tmux\n")
 	if !inviteFile {
 		// The one-off configuration container resolves its user by name.
-		c.WriteString(fmt.Sprintf("        RUN addgroup -g %d minion && adduser -D -G minion -u %d minion\n", workerContainerUID, workerContainerUID))
+		fmt.Fprintf(&c, "        RUN addgroup -g %d minion && adduser -D -G minion -u %d minion\n", workerContainerUID, workerContainerUID)
 	}
 	c.WriteString("    user: \"" + uid + "\"\n")
 	c.WriteString("    depends_on:\n")

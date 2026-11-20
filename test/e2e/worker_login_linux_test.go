@@ -36,7 +36,7 @@ func TestLinuxLoginWorkerOnboarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	state := filepath.Join(dir, "state")
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "TMPDIR=" + dir, "XDG_RUNTIME_DIR=" + dir,
 		"MINION_STATE_DIR=" + state, "MINION_TMUX_SOCKET=" + filepath.Join(dir, "tmux.sock")}
