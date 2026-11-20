@@ -1,0 +1,168 @@
+# The desktop tray (cmd/minion-tray) is an opt-in, separate artifact. It is not
+# part of the goreleaser release of `minion`, so the headless binary, its deb
+# and rpm, the container image and the armv7 build never see a GUI dependency.
+#
+# Pull requests that touch the tray build and smoke-test it. A vX.Y.Z tag builds
+# the archives and attaches them, with their own SHA-256 file, to the draft
+# release that release.yml creates; this workflow never publishes a release.
+#
+#   linux amd64/arm64, windows amd64/arm64: pure Go, built on Linux
+#   darwin universal (amd64 + arm64): cgo, built on a macOS runner (lipo)
+#   armv7: never built
+#
+# Every archive is smoke-tested by running `minion-tray --version`. The arm64
+# builds cannot run on these runners and are only built.
+name: tray
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+  pull_request:
+    paths:
+      - cmd/minion-tray/**
+      - internal/tray/**
+      - scripts/check-headless.sh
+      - scripts/tray-package.sh
+      - .github/workflows/tray.yml
+      - go.mod
+      - go.sum
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tray-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  headless:
+    name: headless packages import no GUI library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: scripts/check-headless.sh
+      - name: Tray logic tests
+        run: go test -race -count=1 ./internal/tray/... ./cmd/minion-tray/...
+
+  build-linux-windows:
+    name: build ${{ matrix.goos }} ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the archive
+        run: |
+          v=dev; [ "$GITHUB_REF_TYPE" = tag ] && v="$GITHUB_REF_NAME"
+          scripts/tray-package.sh "${{ matrix.goos }}" "${{ matrix.goarch }}" "$v"
+      - name: Smoke test, linux amd64 (extract into an empty directory, run --version)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          tar -xzf dist/tray/minion-tray_*_linux_amd64.tar.gz -C "$d"
+          out="$("$d"/minion-tray_*/minion-tray --version)"
+          echo "$out"
+          echo "$out" | grep -E '^minion-tray '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tray-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/tray/*
+          if-no-files-found: error
+
+  smoke-windows:
+    name: smoke test windows amd64
+    needs: build-linux-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tray-windows-amd64
+          path: pkg
+      - name: Extract into an empty directory and start the tray with --version
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP "tray-smoke"
+          New-Item -ItemType Directory -Path $d | Out-Null
+          Expand-Archive -Path (Get-ChildItem pkg/*.zip).FullName -DestinationPath $d
+          $exe = (Get-ChildItem -Recurse $d -Filter minion-tray.exe).FullName
+          # A GUI-subsystem exe has no console: wait for it and check the exit code.
+          $p = Start-Process -FilePath $exe -ArgumentList "--version" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "minion-tray --version exited with $($p.ExitCode)" }
+
+  build-macos:
+    name: build and smoke test macOS universal (cgo)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the universal archive
+        run: |
+          v=dev; [ "$GITHUB_REF_TYPE" = tag ] && v="$GITHUB_REF_NAME"
+          scripts/tray-package.sh darwin universal "$v"
+      - name: Smoke test (extract into an empty directory, run --version, check both architectures)
+        run: |
+          set -euo pipefail
+          d="$(mktemp -d)"
+          tar -xzf dist/tray/minion-tray_*_darwin_universal.tar.gz -C "$d"
+          bin="$(echo "$d"/minion-tray_*/minion-tray)"
+          lipo -archs "$bin" | grep -w x86_64 | grep -w arm64
+          out="$("$bin" --version)"
+          echo "$out"
+          echo "$out" | grep -E '^minion-tray '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tray-darwin-universal
+          path: dist/tray/*
+          if-no-files-found: error
+
+  # Tag only: attach the archives to the draft release of release.yml. The
+  # draft may appear a few minutes after this workflow starts, so wait for it.
+  attach:
+    name: attach to the draft release
+    if: github.ref_type == 'tag'
+    needs: [headless, smoke-windows, build-linux-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tray-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum minion-tray_* > minion-tray_checksums.txt
+          for i in $(seq 1 60); do
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then break; fi
+            echo "waiting for the release $TAG ($i)"; sleep 30
+          done
+          gh release upload "$TAG" minion-tray_* --clobber --repo "$GITHUB_REPOSITORY"

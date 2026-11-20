@@ -8,6 +8,7 @@
 - **`minion worker pause` and `resume`**: one saved choice, until resumed. A pause closes the Hub link and gates reconnect, automatic pairing and key retirement before it reports success; local control and open terminal sessions keep working, a restart keeps the pause, only a running Worker pauses, and `worker status` shows it (`paused`).
 - **`allow_new_sessions`** (`minion worker config set allow_new_sessions off`): a local block of new sessions for every origin (Hub, API keys, `mn`, MCP, local commands), enforced where sessions are created; the Hub cannot lift it. `worker status` shows `new_sessions` (`unknown` when a running Worker cannot confirm it). New error code `new_sessions_blocked` (and `paused`).
 - **`minion worker up --join -`** reads the join token from standard input; nothing else changes (sharing as with `--join <token>`). `worker up` saves `allow_new_sessions` only when given by flag or environment. See [Control a Worker from the command line](docs/guides/worker-control.md).
+- **Desktop tray `minion-tray`** (Windows, Ubuntu desktop, macOS Intel and Apple Silicon), a separate opt-in download built by the `tray` workflow: status, Start, Stop, Pause/Resume, Hub address and six key words with a prominent MISMATCH, Hub setup (token on stdin), session picker, new-session block. Every item runs a `minion` command; see [Desktop tray](docs/guides/tray.md). `minion`, its packages, the image and the armv7 build gain no GUI dependency; `make lint` checks it (`scripts/check-headless.sh`).
 
 ## v0.14.0
 
