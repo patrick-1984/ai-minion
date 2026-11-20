@@ -156,8 +156,30 @@ func New(socketPath string, opts ...Option) (*Host, error) {
 		return nil, fmt.Errorf("tmux: version %s is too old; tmux %d.%d or newer is required", v, MinMajor, MinMinor)
 	}
 	h.version = v
+	if !h.psmux && !v.AtLeast(3, 2) && !(v.Major == 3 && v.Minor == 1 && v.Suffix >= "c") {
+		// CVE-2020-27347 is fixed upstream in 3.1c; distributions backport it
+		// (Ubuntu 20.04: 3.0a-2ubuntu0.2) without changing what tmux -V prints.
+		h.logger().Warn("tmux is older than 3.1c: make sure the security updates of your distribution are installed (CVE-2020-27347), or install a newer tmux",
+			"version", v.String())
+	}
 	h.logger().Debug("terminal host ready", "binary", h.bin, "psmux", h.psmux, "version", v.String())
 	return h, nil
+}
+
+// tightenSocket makes a socket that tmux before 3.2 created group-writable
+// (mode 0660, whatever the umask) private to its owner again, so no other
+// account in the group can talk to the server around the Worker.
+func (h *Host) tightenSocket() {
+	if h.socket == "" || h.psmux || h.version.AtLeast(3, 2) {
+		return
+	}
+	fi, err := os.Lstat(h.socket)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode().Perm()&0o077 == 0 {
+		return
+	}
+	if err := os.Chmod(h.socket, fi.Mode().Perm()&0o700); err != nil {
+		h.logger().Warn("cannot make the tmux socket private", "socket", h.socket, "error", err.Error())
+	}
 }
 
 // errText is err's text, or "" for nil (for a log attribute).

@@ -518,7 +518,7 @@ func (s *Server) waitFor(target, substring string, timeout time.Duration) (strin
 			}
 			break
 		}
-		if err == nil && strings.Contains(out, substring) {
+		if err == nil && (strings.Contains(out, substring) || strings.Contains(trimRows(out), substring)) {
 			return out, nil
 		}
 		last, lastErr = out, err
@@ -530,6 +530,17 @@ func (s *Server) waitFor(target, substring string, timeout time.Duration) (strin
 	return "", fmt.Errorf("timeout after %s waiting for %q in %q; last capture:\n%s", timeout, substring, target, last)
 }
 
+// trimRows drops the trailing spaces of each row: tmux 3.0 keeps them with
+// capture-pane -J, later versions drop them. waitFor matches either form, so a
+// prompt that ends in a space ("$ ") still matches.
+func trimRows(out string) string {
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (s *Server) capture(target string) (string, error) {
 	return s.captureCtx(context.Background(), target)
 }
@@ -539,13 +550,7 @@ func (s *Server) captureCtx(ctx context.Context, target string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
 	}
-	// tmux 3.0 keeps the trailing spaces of each row with -J; later versions
-	// drop them. Drop them here so every version reads the same.
-	lines := strings.Split(out, "\n")
-	for i, l := range lines {
-		lines[i] = strings.TrimRight(l, " ")
-	}
-	return strings.Join(lines, "\n"), nil
+	return out, nil
 }
 
 // baseArgs is the fixed prefix of every tmux invocation of the harness: the

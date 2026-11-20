@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -1079,4 +1080,26 @@ func TestIntegrationAServerWithoutSessionsListsNothingAndCreatesTheFirstSession(
 		t.Fatalf("ListSessions after the create = %+v, %v", got, err)
 	}
 	_ = srv
+}
+
+// tmux before 3.2 creates its socket group-writable whatever the umask; the
+// Worker makes it private after starting the server (A56).
+func TestCreateSessionLeavesThePrivateSocketOwnerOnly(t *testing.T) {
+	h, srv := newRealHost(t)
+	if err := os.Chmod(srv.Socket(), 0o660); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.CreateSession(context.Background(), "perm", "", []string{"sleep", "300"}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(srv.Socket())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.version.AtLeast(3, 2) {
+		t.Skipf("tmux %s creates a private socket itself", h.version)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		t.Errorf("socket mode = %v, want owner only", fi.Mode().Perm())
+	}
 }

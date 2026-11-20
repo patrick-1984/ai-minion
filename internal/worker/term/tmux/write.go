@@ -225,6 +225,10 @@ func (h *Host) SendKeys(ctx context.Context, pane term.PaneRef, keys []string, e
 		if err := checkKey(k); err != nil {
 			return 0, err
 		}
+		if (k == "C-2" || k == "C-?") && !h.psmux && !h.version.AtLeast(3, 2) {
+			// tmux before 3.2 sends an escape sequence for these, not NUL or DEL.
+			return 0, fmt.Errorf("key %q needs tmux 3.2 or newer (this tmux is %s): %w", k, h.version, ops.ErrInvalidArgument)
+		}
 		if h.psmux && strings.HasSuffix(k, ";") {
 			return 0, fmt.Errorf("key %q: psmux would read it as a command separator: %w", k, ops.ErrInvalidArgument)
 		}

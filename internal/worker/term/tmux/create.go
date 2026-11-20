@@ -84,6 +84,9 @@ func (h *Host) CreateSession(ctx context.Context, name, cwd string, argv []strin
 		transient["psmux"] = true
 	}
 	out, err := h.run(ctx, newSessionArgs(name, cwd, argv, !h.psmux)...)
+	if err == nil {
+		h.tightenSocket()
+	}
 	if err != nil {
 		var te *tmuxError
 		if errors.As(err, &te) && strings.Contains(te.stderr, "duplicate session") {
