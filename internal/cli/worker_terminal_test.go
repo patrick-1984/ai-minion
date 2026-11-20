@@ -22,7 +22,7 @@ func TestWorkerUpChecksTmuxBeforeSetup(t *testing.T) {
 		name, version, want, fix string
 	}{
 		{"missing", "", "tmux is missing from PATH", "apt-get install tmux"},
-		{"too old", "tmux 3.0a", "tmux 3.2 or newer is required", upgrade},
+		{"too old", "tmux 2.9a", "tmux 3.0 or newer is required", upgrade},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin := t.TempDir()

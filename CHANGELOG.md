@@ -15,6 +15,10 @@
 - **Add worker** keeps the one-time credential out of background process arguments and generated Compose files. The native commands ask what to share on a terminal. Without a terminal the Hub commands share all sessions (`--non-interactive-share all`); the wizard default is all too. Under sudo you can choose the invoking user's sessions or root's.
 - **Terminal dependencies** are checked before setup. The Unix installer installs missing tmux through the platform package manager, and the Windows installer installs missing psmux through WinGet. See [upgrading an old tmux](docs/install/worker-linux.md#upgrading-an-old-tmux) for distributions shipping a version below 3.2.
 
+### Changed
+
+- The Worker works with tmux 3.0 and newer (was 3.2), so the tmux of Ubuntu 20.04, Debian 11 and the Orange Pi images is enough. CI now also tests tmux 3.0a. With tmux older than 3.2 the Worker makes its tmux socket owner-only (older tmux creates it group-writable), refuses the keys C-2 and C-? (older tmux sends other bytes for them) and warns when tmux is older than 3.1c (CVE-2020-27347: install your distribution's security updates). On tmux 3.0 a session whose name contains a tab or newline is listed but cannot be opened.
+
 ## v0.15.0
 
 Released 2026-11-20.
