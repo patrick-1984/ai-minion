@@ -1330,3 +1330,7 @@ button.is-busy { border-style: dashed; }
     max-width: none; overflow: visible; white-space: normal;
     overflow-wrap: anywhere; }
 }
+
+/* A key or token the user copies in full: the field spans the panel and the whole value shows. */
+.copy-field.copy-field-wide { display: flex; width: 100%; }
+.copy-field.copy-field-wide > .copy-value { flex: 1 1 auto; width: 100%; }

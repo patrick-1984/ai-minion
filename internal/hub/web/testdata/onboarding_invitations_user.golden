@@ -41,7 +41,7 @@
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
 </section>
-<section aria-labelledby="invitation-list">
+<div id="invitation-list-section"><section aria-labelledby="invitation-list">
   <h2 id="invitation-list">Your invitation keys</h2>
   
   <div class="table-wrap"><table data-sortable>
@@ -86,7 +86,7 @@
     
     </tbody>
   </table></div>
-</section>
+</section></div>
 </div>
 <script src="/onboarding.js" defer></script>
 

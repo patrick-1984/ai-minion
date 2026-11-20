@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Invitation keys and join commands**: after "Create the key" (and "Create the join command") the panel now starts with a note that the invitation is saved and listed until it expires, is used or is revoked, and that only the secret text cannot be shown again. A Done button at the top and the bottom goes back to the page, the new key shows in the list at once, and the key field is as wide as the panel so the whole key is visible.
+
+### Changed
+
+- **Copy buttons everywhere**: the join token and every join command on the Add worker page, and the Hub fingerprint in the header popover, now use the same copy icon as the rest of the Hub. The README and the install guides show one-line installs and standalone commands in code blocks, which GitHub gives a copy button.
+
 ## v0.15.0
 
 Released 2026-11-20.

@@ -455,6 +455,13 @@ func TestInvitationCreateShowsTheKeyOnce(t *testing.T) {
 		`value="`+sampleKey+`"`, `data-copy="#invite-key"`,
 		`minion worker up --server https://hub.example.com --invite-key `+sampleKey,
 		"MINION_INVITE_KEY_FILE", "shown only once")
+	// The flow has a way out: a saved note and a Done link at the top and the
+	// bottom, a full-width key field and the refreshed list out of band.
+	mustHave(t, body, "data-invitation-saved", "Leaving this page does not delete it",
+		`copy-field copy-field-wide`, `hx-swap-oob="outerHTML"`, `id="invitation-list-section"`)
+	if n := strings.Count(body, "data-invitation-done"); n != 2 {
+		t.Errorf("Done links = %d, want 2", n)
+	}
 	if c := f.called(ops.OpInvitationCreate); len(c) != 1 || c[0].Args["mode"] != "reusable" || c[0].Args["ttl"] != "1w" || c[0].Args["name"] != "build-farm" {
 		t.Errorf("create calls = %+v", c)
 	}

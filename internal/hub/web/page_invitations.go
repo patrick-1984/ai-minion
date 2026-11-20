@@ -608,12 +608,15 @@ type inviteResult struct {
 	Key   string
 	// HubWords are the six words of the Hub fingerprint inside the key (M12b).
 	HubWords string
+	// List is the refreshed key list, swapped into the page out of band so the
+	// new key shows at once. Nil when the list could not be read.
+	List *InvitationsPage
 	InviteCommands
 }
 
 var invitationFragments = fragments("invitations.html")
 
-func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
+func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	args := ops.InvitationCreateArgs{
 		Mode: r.PostFormValue("mode"),
 		TTL:  r.PostFormValue("ttl"),
@@ -645,6 +648,11 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	}
 	if res.MaxUses != nil {
 		out.Limit = fmt.Sprintf("%d %s", *res.MaxUses, map[bool]string{true: "enrollment", false: "enrollments"}[*res.MaxUses == 1])
+	}
+	if d, err := invitationsData(r, c, u); err == nil {
+		if p, ok := d.(InvitationsPage); ok {
+			out.List = &p
+		}
 	}
 	writeFragmentTemplate(w, invitationFragments(), "invitation_key", out)
 }

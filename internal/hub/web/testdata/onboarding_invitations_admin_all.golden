@@ -49,7 +49,7 @@
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
 </section>
-<section aria-labelledby="invitation-list">
+<div id="invitation-list-section"><section aria-labelledby="invitation-list">
   <h2 id="invitation-list">All invitation keys</h2>
   <p class="muted"><a href="/invitations">Show only my keys</a></p>
   <div class="table-wrap"><table data-sortable>
@@ -94,7 +94,7 @@
     
     </tbody>
   </table></div>
-</section>
+</section></div>
 </div>
 <script src="/onboarding.js" defer></script>
 
