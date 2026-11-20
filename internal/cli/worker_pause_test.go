@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,13 +16,11 @@ import (
 )
 
 type pauseRig struct {
-	state  string
-	live   bool
-	opErr  error
-	calls  []string
-	args   []any
-	wrote  []bool
-	writeE error
+	state string
+	live  bool
+	opErr error
+	calls []string
+	args  []any
 }
 
 func (r *pauseRig) deps() workerPauseDeps {
@@ -41,7 +41,6 @@ func (r *pauseRig) deps() workerPauseDeps {
 			}
 			return json.RawMessage(`{}`), r.opErr
 		},
-		write: func(_ string, p bool) error { r.wrote = append(r.wrote, p); return r.writeE },
 	}
 }
 
@@ -59,8 +58,8 @@ func (r *pauseRig) run(t *testing.T, pause bool) (string, error) {
 func TestPauseAsksTheRunningWorker(t *testing.T) {
 	r := &pauseRig{state: t.TempDir(), live: true}
 	out, err := r.run(t, true)
-	if err != nil || !strings.Contains(out, "is paused") || len(r.wrote) != 0 {
-		t.Fatalf("out=%q err=%v wrote=%v", out, err, r.wrote)
+	if err != nil || !strings.Contains(out, "is paused") || false {
+		t.Fatalf("out=%q err=%v", out, err)
 	}
 	if r.calls[len(r.calls)-1] != agent.OpLocalPause {
 		t.Fatalf("calls %v", r.calls)
@@ -74,14 +73,18 @@ func TestPauseAsksTheRunningWorker(t *testing.T) {
 	}
 }
 
-func TestPauseWithoutAWorkerSavesTheChoice(t *testing.T) {
+// Only a running Worker pauses: with none running nothing is written and the
+// command fails, so a pause never lands in a profile Start does not read.
+func TestPauseNeedsARunningWorker(t *testing.T) {
 	r := &pauseRig{state: t.TempDir()}
-	if out, err := r.run(t, true); err != nil || !strings.Contains(out, "saved") || len(r.wrote) != 1 || !r.wrote[0] {
-		t.Fatalf("out=%q err=%v wrote=%v", out, err, r.wrote)
+	for _, pause := range []bool{true, false} {
+		out, err := r.run(t, pause)
+		if err == nil || !strings.Contains(err.Error(), "minion worker start") || out != "" {
+			t.Fatalf("pause=%v: out=%q err=%v", pause, out, err)
+		}
 	}
-	r.writeE = errors.New("disk full")
-	if _, err := r.run(t, true); err == nil || !strings.Contains(err.Error(), "disk full") {
-		t.Fatalf("a save failure was reported as success: %v", err)
+	if _, err := os.Stat(filepath.Join(r.state, agent.PauseFile)); err == nil {
+		t.Fatal("a pause file was written without a Worker")
 	}
 }
 

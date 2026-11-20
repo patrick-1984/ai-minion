@@ -35,8 +35,6 @@ type workerPauseDeps struct {
 	lookupEnv func(string) (string, bool)
 	// call is the local control socket of this user.
 	call func(ctx context.Context, op string, args any) (json.RawMessage, error)
-	// write saves the choice when no Worker runs.
-	write func(stateDir string, paused bool) error
 }
 
 func defaultWorkerPauseDeps() workerPauseDeps {
@@ -45,25 +43,7 @@ func defaultWorkerPauseDeps() workerPauseDeps {
 		call: func(ctx context.Context, op string, args any) (json.RawMessage, error) {
 			return client.Local().Call(ctx, op, args)
 		},
-		write: writePauseOffline,
 	}
-}
-
-// writePauseOffline saves the choice for a Worker that is not running. The
-// lifecycle lock of the state directory is held across the write: a Worker
-// that is starting (it reads the pause before its control socket answers) or
-// that runs under a profile this command did not find holds it, and then
-// nothing is written and success is not reported.
-func writePauseOffline(stateDir string, paused bool) error {
-	l, err := agent.LockLifecycle(stateDir)
-	if errors.Is(err, agent.ErrStateInUse) {
-		return errors.New("a Worker is starting or running with this state directory but its control socket does not answer; try again in a moment, or give the --state-dir of the running Worker")
-	}
-	if err != nil {
-		return err
-	}
-	defer func() { _ = l.Close() }()
-	return agent.WritePause(stateDir, paused)
 }
 
 func newWorkerPauseCmd(d workerPauseDeps, pause bool) *cobra.Command {
@@ -116,18 +96,16 @@ func runWorkerPause(cmd *cobra.Command, d workerPauseDeps, pause bool) error {
 		default:
 			return fmt.Errorf("the Worker did not confirm: %w", err)
 		}
-	} else if err := d.write(stateDir, pause); err != nil {
-		return fmt.Errorf("cannot save the pause: %w", err)
+	} else {
+		// Only a running Worker pauses: it is the one that saves the choice in
+		// the profile it serves, so the pause cannot land in a state directory
+		// that the Worker which starts later does not read.
+		return errors.New("no Worker is running for this user; start it with: minion worker start, then run this command again")
 	}
-	switch {
-	case pause && live:
+	if pause {
 		return writef(out, "The Worker is paused: its Hub link is closed and it makes no Hub request. Local control and open terminal sessions keep working. Resume with: minion worker resume\n")
-	case pause:
-		return writef(out, "No Worker is running. The pause is saved: a Worker that starts makes no Hub request until: minion worker resume\n")
-	case live:
-		return writef(out, "The Worker is resumed: it connects to its Hub again.\n")
 	}
-	return writef(out, "No Worker is running. The pause is removed: a Worker that starts connects to its Hub.\n")
+	return writef(out, "The Worker is resumed: it connects to its Hub again.\n")
 }
 
 // liveFor reports whether a Worker of this state directory answers. A Worker
