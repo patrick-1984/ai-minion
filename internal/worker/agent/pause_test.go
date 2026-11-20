@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 
 	"context"
@@ -254,4 +255,34 @@ func TestPauseFileFailsClosed(t *testing.T) {
 	if on, err := ReadPause(t.TempDir()); on || err != nil {
 		t.Errorf("missing file: paused=%v err=%v", on, err)
 	}
+}
+
+// An invitation enrollment reads the pause right before each dial: after a
+// pause nothing reaches the Hub, and the failure is final (no retry).
+func TestInviteDialIsGuardedByThePause(t *testing.T) {
+	dir := t.TempDir()
+	calls := 0
+	inner := inviteDialerFunc(func(context.Context, InviteParams) (*InviteOutcome, error) {
+		calls++
+		return nil, errors.New("reached the Hub")
+	})
+	g := pauseGuardDialer{inner: inner, stateDir: dir}
+	if _, err := g.Enroll(context.Background(), InviteParams{}); err == nil || calls != 1 {
+		t.Fatalf("unpaused: err=%v calls=%d", err, calls)
+	}
+	if err := WritePause(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Enroll(context.Background(), InviteParams{}); !errors.Is(err, errEnrollPaused) || calls != 1 {
+		t.Fatalf("paused: err=%v calls=%d", err, calls)
+	}
+	if !permanentInviteError(errEnrollPaused) {
+		t.Fatal("a paused refusal would be retried")
+	}
+}
+
+type inviteDialerFunc func(context.Context, InviteParams) (*InviteOutcome, error)
+
+func (f inviteDialerFunc) Enroll(ctx context.Context, p InviteParams) (*InviteOutcome, error) {
+	return f(ctx, p)
 }
