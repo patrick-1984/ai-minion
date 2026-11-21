@@ -22,11 +22,15 @@
       </select>
     </div>
     <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create the join command</span></button>
-    <div id="join-result" aria-live="polite"></div>
+    <div id="join-result"></div>
   </form>
   <noscript><p class="muted">Creating a join command needs JavaScript in this browser.</p></noscript>
   
   <script src="/onboarding.js" defer></script>
+</section>
+<section class="panel" aria-labelledby="other-devices">
+  <h2 id="other-devices">Other devices</h2>
+  <p><a href="/workers/esphome">ESP32 and ESPHome setup</a></p>
 </section>
 <div class="method-grid">
 <section class="panel" aria-labelledby="pair-form">

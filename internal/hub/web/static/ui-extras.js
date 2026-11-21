@@ -280,6 +280,9 @@
       if (fallbackCopy(text)) { copied(); }
       else {
         // Both methods failed: select the value itself and ask for Ctrl+C.
+        // A folded command is opened first, so the whole text is selected.
+        var fold = target.closest && target.closest('details');
+        if (fold) { fold.open = true; }
         try {
           if (typeof target.select === 'function') { target.focus(); target.select(); }
           else {

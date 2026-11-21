@@ -853,3 +853,72 @@ func newTUFFetcher(ctx context.Context) fetcher.Fetcher {
 	f.SetHTTPClient(ctxDoer{ctx: ctx, client: client})
 	return f
 }
+
+// InstallerAsset is the install script of a release: a release asset of its
+// own, listed with its digest in the signed release manifest.
+const InstallerAsset = "install.sh"
+
+// InstallerDigest returns the lower-case hex SHA-256 that the release manifest
+// of rel (already verified, see [Updater.VerifiedRelease]) records for the
+// install script. A release without the script, or one whose asset list lacks
+// it, has none: the caller then shows the manual steps.
+func InstallerDigest(rel Release, man Manifest) (string, error) {
+	if man.Version != rel.Tag {
+		return "", fmt.Errorf("release manifest describes %q, not the release %q", man.Version, rel.Tag)
+	}
+	sum, ok := man.Digest(InstallerAsset)
+	if !ok {
+		return "", fmt.Errorf("release %s lists no %s in its signed manifest", rel.Tag, InstallerAsset)
+	}
+	if _, ok := rel.Asset(InstallerAsset); !ok {
+		return "", fmt.Errorf("release %s has no %s asset", rel.Tag, InstallerAsset)
+	}
+	return sum, nil
+}
+
+// InstallerInfo is what a Hub learns from the verified release of one tag:
+// the SHA-256 of install.sh (from the signed manifest) and of checksums.txt
+// (the file whose signature was verified, so the installer can refuse a
+// checksums.txt that is not the signed one and thereby authenticates the
+// archives it lists).
+type InstallerInfo struct {
+	InstallerSHA256, ChecksumsSHA256 string
+}
+
+// VerifiedInstaller returns the verified digests of the exact release tag.
+// Both signatures of the release are verified exactly as for an install, so
+// the digests are the publisher's.
+func (u *Updater) VerifiedInstaller(ctx context.Context, tag string) (InstallerInfo, error) {
+	v, err := ParseVersion(tag)
+	if err != nil {
+		return InstallerInfo{}, err
+	}
+	if u.Verifier == nil || u.Source == nil {
+		return InstallerInfo{}, errors.New("update: no source or verifier configured")
+	}
+	releases, err := u.Source.Releases(ctx)
+	if err != nil {
+		return InstallerInfo{}, withOfflineHint(err)
+	}
+	rel, _, err := Selector{Kind: SelectExact, Exact: v}.Resolve(releases)
+	if err != nil {
+		return InstallerInfo{}, err
+	}
+	if err := u.Cache.Prepare(); err != nil {
+		return InstallerInfo{}, err
+	}
+	verifier, err := u.Verifier(ctx, false)
+	if err != nil {
+		return InstallerInfo{}, withOfflineHint(err)
+	}
+	meta, err := u.fetchMetadata(ctx, verifier, rel)
+	if err != nil {
+		return InstallerInfo{}, err
+	}
+	sum, err := InstallerDigest(rel, meta.manifest)
+	if err != nil {
+		return InstallerInfo{}, err
+	}
+	c := sha256.Sum256(meta.checksumsRaw)
+	return InstallerInfo{InstallerSHA256: sum, ChecksumsSHA256: hex.EncodeToString(c[:])}, nil
+}

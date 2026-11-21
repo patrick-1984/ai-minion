@@ -478,7 +478,7 @@ jobs:
           # checksums.txt, listed in release-manifest.json and signed one by one.
           extras=()
           scripts=()
-          for s in bootstrap.sh install.sh install.ps1; do
+          for s in bootstrap.sh install.sh install.ps1 android.sh esp32.sh; do
             if [ -f "deploy/$s" ]; then
               cp "deploy/$s" "dist/$s"
               extras+=(--extra "dist/$s")

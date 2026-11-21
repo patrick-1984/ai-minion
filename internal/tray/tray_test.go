@@ -310,7 +310,7 @@ func TestSetupSendsTokenOnStdinOnly(t *testing.T) {
 	r.reply(t, "worker status --json", statusJSON)
 	r.c.Setup()
 	cs := r.calls(t)
-	if !reflect.DeepEqual(cs[1].Args, []string{"worker", "up", "--join", "-"}) || cs[1].Stdin != "SECRET-TOKEN\n" {
+	if !reflect.DeepEqual(cs[1].Args, []string{"worker", "up", "--join", "-", "--legacy-join"}) || cs[1].Stdin != "SECRET-TOKEN\n" {
 		t.Fatalf("%+v", cs)
 	}
 	for _, c := range cs {
@@ -338,7 +338,7 @@ func TestSetupFailureShowsMessage(t *testing.T) {
 	r := newRig(t)
 	r.d.token, r.d.tokenOK, r.d.confirm = "tok", true, true
 	r.reply(t, "worker status --json", statusJSON)
-	r.fail(t, "worker up --join -", "the invitation has expired")
+	r.fail(t, "worker up --join - --legacy-join", "the invitation has expired")
 	r.c.Setup()
 	if len(r.d.errs) != 1 || !strings.Contains(r.d.errs[0], "expired") || len(r.d.infos) != 0 {
 		t.Fatal(r.d.errs, r.d.infos)

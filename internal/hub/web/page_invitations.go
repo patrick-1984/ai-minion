@@ -623,9 +623,17 @@ type inviteResult struct {
 	// the Done links.
 	All bool
 	InviteCommands
+	Hosted hostedJoin
+	Token  string
+	Fold   inviteFolds
 }
 
-var invitationFragments = fragments("invitations.html")
+// inviteFolds are the commands of a new key as foldable blocks.
+type inviteFolds struct {
+	OneLiner, FileVariant, Compose FoldBlock
+}
+
+var invitationFragments = fragments("invitations.html", "_hosted_join.html")
 
 func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	args := ops.InvitationCreateArgs{
@@ -651,8 +659,19 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 		Name: res.Name, Mode: "one-time", Kind: res.Kind, Expires: formatTime(res.ExpiresAt, "never"),
 		Key: res.Key, InviteCommands: inviteCommands(hubURL(r), res.Key),
 	}
+	out.Fold = inviteFolds{
+		OneLiner:    foldBlock("invite-oneliner", "Copy the command", out.OneLiner),
+		FileVariant: foldBlock("invite-file", "Copy the commands", out.FileVariant),
+		Compose:     foldBlock("invite-compose", "Copy the Compose file", out.Compose),
+	}
 	if k, err := identity.ParseInviteKey(res.Key); err == nil {
 		out.HubWords = k.Fingerprint.Words()
+		if installerTag() != "" {
+			if tok, err := identity.NewJoinToken(hubURL(r), k); err == nil {
+				out.Token = tok.Encode()
+				out.Hosted = hostedJoinCommands(out.Token, res.Name, false)
+			}
+		}
 	}
 	if res.Mode == ops.InvitationReusable {
 		out.Mode = "reusable"

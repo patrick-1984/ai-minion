@@ -1,0 +1,32 @@
+{{define "content"}}
+<div class="page-head"><div><h1>ESP32 and ESPHome</h1><p>Use an ESP32 as a Worker or bring a separate ESPHome device’s logs into the Hub.</p></div></div>
+<p><a href="/workers/add">Back to Add worker</a></p>
+
+<section class="panel">
+  <h2>Install Minion on an ESP32</h2>
+  <p>Connect an ESP32, ESP32-S3, ESP32-C3 or ESP32-C6 with at least 4 MB of flash over USB. Use a computer with Python 3 and uv, pipx or esptool 4.x. Replace <code>/dev/ttyUSB0</code> with the board’s serial port.</p>
+  {{if .Data.Install.Text}}{{template "fold" .Data.Install}}{{else}}<p>The flash command is available from a released Hub build.</p>{{end}}
+  <p>Installing the Minion firmware replaces the application on the board. The script asks before overwriting an existing flash layout. Insert <code>--update</code> after the port on a board already running Minion to update the application and keep its identity and settings.</p>
+  <ol>
+    <li>Open the board’s serial console at 115200 baud and run <code>wifi set &lt;ssid&gt;</code>. Enter the Wi-Fi password at the hidden prompt.</li>
+    <li>Run <code>config set hub &lt;Hub URL&gt;</code> and <code>reboot</code>.</li>
+    <li><a href="/invitations">Create an invitation key</a>. Run <code>enroll</code> on the board and paste the key at the hidden prompt.</li>
+    <li>Run <code>status</code> on the board. Compare its Hub fingerprint with the fingerprint shown in this Hub and approve the matching Worker in <a href="/workers">Workers</a>.</li>
+  </ol>
+</section>
+
+<section class="panel">
+  <h2>Keep ESPHome and bridge its logs</h2>
+  <p>Use a second ESP32 running Minion and connect its UART RX to the ESPHome device’s hardware UART TX. Share ground and use matching logic voltage and baud. Leave Minion’s TX wire disconnected for a receive-only connection.</p>
+  <p>In ESPHome, direct <code>logger</code> to that hardware UART. In the Minion board’s local console, set allowed GPIOs with <code>config set gpio_allow &lt;pins&gt;</code>, run <code>uart set &lt;baud&gt; &lt;tx-pin&gt; &lt;rx-pin&gt;</code> and reboot. The TX pin is configured on the Minion board and stays unwired. </p>
+  <pre>logger:
+  hardware_uart: UART0
+  baud_rate: 115200</pre>
+  <p>Use the UART that your ESPHome board routes to the chosen TX pin.</p>
+</section>
+
+<section class="panel">
+  <h2>Open a device session</h2>
+  <p>Open <a href="/sessions">Sessions</a> and choose the Worker. Open <code>console</code> to run firmware commands, <code>log</code> to read the Minion board’s logs, or <code>uart</code> to read the bridged device’s logs. MCP and API clients can find these sessions with <code>sessions_list</code> and read them with <code>session_snapshot</code>.</p>
+</section>
+{{end}}

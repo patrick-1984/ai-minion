@@ -60,6 +60,11 @@ type workerUpDeps struct {
 	ownerHooks     func(context.Context, *ownerSetup, agent.Settings, io.Reader, io.Writer) error
 	readStatus     upStatusReader
 	stopForeground func(context.Context, string, *ownerSetup) error
+	// replace holds the seams of the existing-Worker flow (--replace, --keep,
+	// --interactive-replace); requireLive makes a new Worker that does not
+	// come up an error, so that the replacement can be undone.
+	replace     replaceDeps
+	requireLive bool
 }
 
 func (d workerUpDeps) windowsDeps() windowsUpDeps {
@@ -96,6 +101,7 @@ func defaultWorkerUpDeps(stderr io.Writer) workerUpDeps {
 		stopForeground: stopForegroundForService,
 		readStatus:     readUpStatus,
 		ownerHooks:     runOwnerHooks,
+		replace:        defaultReplaceDeps(),
 	}
 }
 
@@ -186,6 +192,7 @@ to the mounted file during configuration.`,
 	cmd.Flags().StringVar(&asUser, "as-user", "", "Install the service for this Unix user (needs root; default: the user that ran sudo)")
 	addSettingFlags(cmd, deps.registry(), config.ScopeWorker)
 	addJoinFlag(cmd, deps.registry())
+	addReplaceFlags(cmd)
 	return cmd
 }
 
@@ -215,6 +222,25 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground, configureOnl
 		_, _ = fmt.Fprintln(w, join.Warning)
 	}
 	det := service.Detect(deps.detectEnv)
+	if replaceRequested(cmd) && !join.Applied {
+		return errors.New("--replace, --keep and --interactive-replace go with --join: they decide what happens to an existing Worker when a join token is used")
+	}
+	joinArg, _ := cmd.Flags().GetString("join")
+	if join.Applied && !foreground && (replaceRequested(cmd) || strings.TrimSpace(joinArg) == "-") {
+		handled, err := runWorkerUpReplace(cmd, deps, det, asUser, configureOnly, replaceRequested(cmd))
+		if handled {
+			if errors.Is(err, errReplaceDeclined) {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), declinedMarker)
+				return nil
+			}
+			return err
+		}
+		if consent, _ := cmd.Flags().GetString("join-consent"); consent != "" {
+			deps.requireLive = true
+		}
+	} else if replaceRequested(cmd) && foreground {
+		return errors.New("--replace, --keep and --interactive-replace do not work with --foreground")
+	}
 	if foreground {
 		// The foreground Worker takes the same flags: a secret given on the
 		// command line is as visible in the process list as for a service (R85).
@@ -509,7 +535,15 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		// The Run entry always names the state directory chosen now, so a
 		// MINION_STATE_DIR in the environment of a later logon (or of this
 		// shell) cannot select another profile.
-		return installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out, summary)
+		var summaryErr error
+		err := installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out, func(ctx context.Context) error {
+			summaryErr = summary(ctx)
+			return summaryErr
+		})
+		if err == nil && deps.requireLive && summaryErr != nil {
+			return fmt.Errorf("the new Worker did not come up: %w", summaryErr)
+		}
+		return err
 	}
 	if det.Manager == service.ManagerNone {
 		// Share one deadline between binding the socket and waiting for the
@@ -547,6 +581,9 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// The Worker runs now; a status that cannot be shown is not a failure of
 	// the setup (the one-time invitation is already used).
 	if err := summary(ctx); err != nil {
+		if deps.requireLive {
+			return fmt.Errorf("the new Worker did not come up: %w", err)
+		}
 		_, _ = fmt.Fprintf(stderr, "The Worker was started, but its state could not be shown (%v). Check it with: minion worker status\n", err)
 	}
 	return nil
