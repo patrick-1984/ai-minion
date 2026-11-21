@@ -16,9 +16,9 @@ A run happens every 15 minutes. In this order:
 4. **Admission.** Unattended attempts need `enabled: true` and the current UTC hour inside `window`; a valid one-shot request is admitted at any hour.
 5. **Select and verify.** It resolves the channel with the same release selector and Sigstore verification as `minion update`, takes the image digest from the **signed release manifest** and requires a newer **stable** release whose signed protocol range contains the range of the running release. A digest that failed before is quarantined and not retried.
 6. **Bind the images and the data.** It pulls `repository@sha256:...` for the candidate (and the previous release when missing), maps both to local image ids and checks that the running Hub container runs the previous id. It also resolves the host source of the container's data mount and requires that it is exactly the configured dataset (its name and GUID are recorded and checked again before the snapshot and the rollback). The policy window and a one-shot request are checked once more immediately before the attempt is recorded.
-7. **Transaction.** `app.stop`; wait until no container of the app runs; `zfs snapshot` of exactly the configured dataset, held; `app.update` with the full compose document, the Hub image changed to `repository@digest` and `MINION_MAINTENANCE=readonly` added, while the app is stopped; `app.start`; sustained `/readyz` (60 s in a row within 5 min) asked of the candidate container's own address, restarting the timer when the container is replaced; then `app.update` without the read-only flag (the middleware redeploys the app), 20 s of sustained readiness again, and commit (snapshot released and destroyed).
+7. **Transaction.** `app.stop`; wait until no container of the app runs; `zfs snapshot` of exactly the configured dataset, held; `app.update` with the full compose document, the Hub image changed to `repository@digest` and `MINION_MAINTENANCE=readonly` added, while the app is stopped; `app.start`; sustained `/readyz` (60 s in a row within 5 min) asked of the candidate container's own address, restarting the timer when the container is replaced; then `app.update` without the read-only flag (the middleware redeploys the app), a durable forward-only decision before writers are enabled, then 20 s of full-service readiness and commit (snapshot released and destroyed). After that decision a failure is recovered forward; the snapshot is never rolled back over acknowledged client writes.
 
-While `MINION_MAINTENANCE=readonly` is set the Hub answers 503 to every request that could change state (any method but GET, HEAD and OPTIONS, and every WebSocket upgrade, so Workers wait and retry). The trial therefore cannot acknowledge a write that a later rollback would erase. The window after the flag is lifted is short (20 s) but writes accepted in it are lost if that last check fails.
+While `MINION_MAINTENANCE=readonly` is set the Hub starts only its core and database modules and answers 503 to all application traffic. Only `/healthz` and `/readyz` probes are served; no OIDC refresh jobs, Worker connections, management listener or local admin socket run. The trial checks database migration and basic readiness. Before normal modules and writers start, the updater records a durable forward-only decision. If full-service readiness later fails, subsequent ticks recover the candidate forward and preserve the checkpoint for the operator; they never erase acknowledged writes.
 8. **On failure:** (after every middleware job of the attempt has ended) `app.stop`, `zfs rollback` to the snapshot, `app.update` back to the saved compose document with the previous image **pinned by the verified digest** (never a tag), `app.start`, verify that the previous image id is ready; then the failed digest is quarantined. If an administrator edited the app meanwhile, nothing is overwritten: the state is `recovery_required` (`compose_changed_by_admin`). If the rollback itself fails (usually because a newer snapshot of the dataset exists) the held snapshot is kept, the app stays stopped and the status says `recovery_required` (see [recovery](#recovery)).
 
 The database migrates forward only, so the rollback restores the snapshot taken before the candidate started. Every wait and every external command is bounded (one call 30 s, pull 15 min, middleware job 10 min, stop 3 min, readiness 5 min, whole restore 30 min, whole run 45 min).
@@ -32,7 +32,7 @@ The compose document is sent to the middleware through the TrueNAS built-in Pyth
 - A **dedicated ZFS dataset** that holds exactly the Hub data directory (the app's `/data` bind mount) and nothing else. The updater snapshots and rolls back that dataset as a whole.
 - Exclude that dataset from periodic snapshot tasks (or accept `recovery_required` when one runs during an attempt): a plain `zfs rollback` refuses to run when a newer snapshot exists, and the updater never uses `-r`.
 - The Hub image reference in the app's YAML must be the Hub service you name in `service` (default `minion-hub`).
-- The `docker`, `zfs` and `python3` commands of the TrueNAS host (all present).
+- The `docker`, `zfs`, `findmnt` and `python3` commands of the TrueNAS host. The Hub needs a dedicated container network namespace; host networking is refused because readiness cannot be tied to that container.
 
 ## Install
 
@@ -95,7 +95,18 @@ In the TrueNAS UI: **System > Advanced > Cron Jobs > Add**. Command `/mnt/tank/m
 
 ## The exchange with the Hub
 
-Two files in two directories. The Hub side is not part of this release; the format is fixed here.
+Two files in two directories. Administration > Updates displays the host status and can save its policy or queue an expiring update. Configure the paths once in the Hub deployment, mount the request directory writable and the status directory read-only:
+
+```yaml
+environment:
+  MINION_HUB_UPDATER_REQUEST_FILE: /hub-updater/in/request.json
+  MINION_HUB_UPDATER_STATUS_FILE: /hub-updater/out/status.json
+volumes:
+  - /mnt/tank/apps/minion-hub-exchange/in:/hub-updater/in
+  - /mnt/tank/apps/minion-hub-exchange/out:/hub-updater/out:ro
+```
+
+Give the Hub UID write access to the `in` directory only. Set `allow_hub_policy: true` in the root-owned host config to permit the administrator browser to arm a schedule; API keys and act-as sessions cannot arm it or queue an update. A queued update expires after one hour; saving a policy cancels it. Status older than 45 minutes is marked stale and prevents new arming/queued requests. The Cron Task must already be installed by the host owner; the Hub needs no NAS credentials, root privileges or Docker socket.
 
 | File | Written by | Read by | Rules |
 | --- | --- | --- | --- |
@@ -133,7 +144,7 @@ cat > /mnt/tank/apps/minion-hub-exchange/in/request.json <<'JSON'
 JSON
 ```
 
-The next Cron tick (or a manual run) verifies both releases, checks the running image id, and runs the transaction above. The stored YAML then names `repository@sha256:...`, so a later TrueNAS redeploy or reboot keeps the new Hub. Remove the file afterwards. Arm unattended updates by setting `"enabled": true` in the config (or, later, from the Hub's Updates page).
+The next Cron tick (or a manual run) verifies both releases, checks the running image id, and runs the transaction above. The stored YAML then names `repository@sha256:...`, so a later TrueNAS redeploy or reboot keeps the new Hub. Remove the file afterwards. Arm unattended updates by setting `"enabled": true` in the config (or from the Hub's Updates page with `allow_hub_policy: true`).
 
 ## Test it first
 
@@ -150,14 +161,14 @@ zfs list -t snapshot -o name,creation tank/apps/minion-hub-data
 zfs holds tank/apps/minion-hub-data@<snapshot>
 ```
 
-- `tick: reconcile_pending`: a middleware job of an interrupted run still runs, or a restore step failed and will be retried. Do nothing; the next tick continues.
+- `tick: reconcile_pending`: a middleware job is active or its submission outcome is uncertain, a restore step needs retry, or the candidate must recover forward after writers were enabled. The next tick retries safe steps. An uncertain submission with no discoverable job stays pending rather than guessing that it never ran; inspect host middleware jobs before manual intervention. A finalizing candidate is never automatically rolled back.
 - `tick: recovery_required` (the app is usually stopped; the Cron Task shows a failure): the updater did everything safe and stopped. `reason` says why: `rollback_failed` (a newer snapshot exists), `snapshot_missing`, `dataset_changed`, `saved_compose_missing`, `previous_not_ready`, `previous_image_changed`, `compose_changed_by_admin` (you edited the app during the attempt: nothing was overwritten). Restore by hand:
   1. Stop the app in the TrueNAS UI (Apps, the app, Stop) and confirm that no container runs: `docker ps --filter label=com.docker.compose.project=ix-<app>` lists nothing.
   2. If the data must go back (the candidate started: `candidate_started` is true in `attempt.json`), roll the dataset back: `zfs rollback -r tank/apps/minion-hub-data@<snapshot>` (this destroys newer snapshots; decide that yourself), then `zfs release minion-hub-updater tank/apps/minion-hub-data@<snapshot>`.
   3. Put the previous image back: edit the app YAML in the UI so the Hub image is `previous_ref` of `attempt.json` (a `repository@sha256:...` digest), and remove `MINION_MAINTENANCE` if present. `compose-before.json` holds the whole previous document (it contains your configuration, readable by root only).
   4. Start the app in the UI and check the Hub.
   5. Tell the updater: `... minion hub-updater --config ... --resolve-recovery`.
-- `tick: reconcile_pending`: a middleware job of an interrupted run still runs, or a restore step failed and will be retried. Do nothing; the next tick continues.
+- `tick: reconcile_pending`: a middleware job is active or its submission outcome is uncertain, a restore step needs retry, or the candidate must recover forward after writers were enabled. The next tick retries safe steps. An uncertain submission with no discoverable job stays pending rather than guessing that it never ran; inspect host middleware jobs before manual intervention. A finalizing candidate is never automatically rolled back.
 - A digest that failed is quarantined and not retried. When a fixed release has a new digest it is picked up by itself. To retry the same digest: `minion hub-updater --config ... --clear-quarantine`.
 - A leftover snapshot named `minion-pre-<version>-<id>` after a finished attempt is removed by the next tick; destroy it by hand (`zfs release` first) if that does not happen.
 - To stop the updater, set `"enabled": false` (it still reconciles) or disable the Cron Task. The updater never touches the app outside an attempt.

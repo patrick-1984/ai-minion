@@ -14,12 +14,39 @@
     <button type="submit" class="btn-secondary" data-control="update-check-now">{{template "icon" "i-refresh"}}<span>Check now</span></button>
   </form>
   {{if $pending}}{{else}}{{if .ReleaseURL}}<div><div class="copy-field"><code class="copy-value" id="cp-update-url">{{.ReleaseURL}}</code><button type="button" class="copy-btn" data-copy-target="#cp-update-url" aria-label="Copy the release URL" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
-  {{if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready." class="row-actions">
-    <button type="submit" class="btn" data-control="hub-update">Update the Hub to {{.Latest}}</button>
+  {{if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="{{if .HostUpdater}}Queue the verified update for the host updater's next Cron run? It checkpoints the Hub data and verifies the candidate before enabling normal traffic.{{else}}Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready.{{end}}" class="row-actions">
+    <button type="submit" class="btn" data-control="hub-update">{{if .HostUpdater}}Queue update{{else}}Update the Hub{{end}} to {{.Latest}}</button>
   </form>
   {{else if .Newer}}<p class="notice notice-info" role="status" data-hub-manual>The Hub cannot update itself here: {{.Reason}}.</p>
   <div><div class="copy-field"><pre class="copy-value" id="cp-update-instructions">{{.Command}}</pre><button type="button" class="copy-btn" data-copy-target="#cp-update-instructions" aria-label="Copy the update instructions" title="Copy">{{template "copy-icons"}}</button></div></div>
   {{end}}{{end}}
+</section>
+{{end}}
+{{with .Data.Check.HostUpdater}}
+<section class="panel" aria-labelledby="host-updater-h">
+  <h2 id="host-updater-h">TrueNAS host updater</h2>
+  {{if .Available}}
+  <dl class="facts">
+    <div><dt>App</dt><dd>{{.App}}</dd></div>
+    <div><dt>Last run</dt><dd>{{.UpdatedAt}}{{if .Stale}} <span class="badge" data-tone="warning">stale — check the Cron Task</span>{{end}}</dd></div>
+    <div><dt>Status</dt><dd>{{.Tick}}{{if .Detail}} · {{.Detail}}{{end}}</dd></div>
+    <div><dt>Automatic updates</dt><dd>{{if .Enabled}}On{{else}}Off{{end}} · {{.Window}} UTC · channel {{.Channel}}</dd></div>
+    {{if .Attempt}}<div><dt>Last attempt</dt><dd>{{.Attempt}}{{if .Outcome}} · {{.Outcome}}{{end}}</dd></div>{{end}}
+    {{if .PendingRequest}}<div><dt>Queued update</dt><dd>{{.PendingRequest}} — waiting for the next host run</dd></div>{{end}}
+    {{if .RequestError}}<div><dt>Request</dt><dd>{{.RequestError}}</dd></div>{{end}}
+  </dl>
+  {{if .AllowHubPolicy}}
+  <form method="post" action="/admin/updates/policy" class="stack" data-host-policy>
+    <input type="hidden" name="revision" value="{{.PolicyRevision}}">
+    <label><input type="checkbox" name="enabled" {{if .Enabled}}checked{{end}}> Automatically apply verified releases inside the UTC window</label>
+    <label>UTC window <input name="window" value="{{.Window}}" pattern="[0-9]{2}-[0-9]{2}" required aria-describedby="host-window-help"></label>
+    <p id="host-window-help" class="muted">Hours HH-HH, for example 03-05. A window such as 22-02 crosses midnight.</p>
+    <label>Channel <input name="channel" value="{{.Channel}}" required aria-describedby="host-channel-help"></label>
+    <p id="host-channel-help" class="muted">Use latest, a major version such as 0, or a minor version such as 0.17. Saving cancels any queued update.</p>
+    <button type="submit" class="btn-secondary">Save update policy</button>
+  </form>
+  {{else}}<p class="notice notice-info">The host owner controls the schedule. Set <code>allow_hub_policy: true</code> in the host updater configuration to manage it here.</p>{{end}}
+  {{else}}<p class="notice notice-info">The host updater has not reported a readable status. Check the Cron Task and the request/status directory mounts.</p>{{end}}
 </section>
 {{end}}
 <section class="panel" aria-labelledby="workers-h">

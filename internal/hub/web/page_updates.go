@@ -7,6 +7,7 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -53,6 +54,8 @@ func handleHubUpdate(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	switch {
 	case err != nil:
 		writeResultError(w, failureText(err))
+	case res.Queued:
+		done(w, r, fmt.Sprintf("Update to %s queued for the host updater's next Cron run. No restart has happened yet; the request expires in one hour.", res.To), ops.WriteResult{})
 	case !res.Started:
 		writeResultError(w, "The Hub was not updated: "+res.Reason+".")
 	default:
@@ -60,9 +63,27 @@ func handleHubUpdate(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	}
 }
 
+func handleHubUpdatePolicy(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	rev, err := strconv.ParseInt(r.PostFormValue("revision"), 10, 64)
+	if err != nil {
+		writeResultError(w, "Reload the page before changing the policy.")
+		return
+	}
+	var res ops.HubUpdateCheckResult
+	if err := c.CallOp(r, ops.OpHubUpdatePolicy, ops.HubUpdatePolicyArgs{Enabled: r.PostFormValue("enabled") == "on", Window: r.PostFormValue("window"), Channel: r.PostFormValue("channel"), Revision: rev}, &res); err != nil {
+		writeResultError(w, failureText(err))
+		return
+	}
+	// Reload to show the saved revision, so a second edit is not based on an
+	// obsolete hidden value. HTMX follows HX-Redirect as a full navigation.
+	w.Header().Set("HX-Redirect", pathAdminUpdates)
+	http.Redirect(w, r, pathAdminUpdates, http.StatusSeeOther)
+}
+
 func init() {
 	RegisterPage(Page{Pattern: pathAdminUpdates, Title: "Updates", Template: "updates.html", Data: adminPageData(updatesData)})
 	RegisterNav(NavItem{Label: "Updates", Path: pathAdminUpdates, Order: adminNavOrder + 12, Roles: []authz.Role{authz.RoleAdmin}, Group: NavGroupAdmin, Icon: "i-settings"})
 	RegisterRoute(Route{Pattern: "POST " + pathAdminUpdates + "/hub", Handler: adminRoute(handleHubUpdate)})
 	RegisterRoute(Route{Pattern: "POST " + pathAdminUpdates + "/check", Handler: adminRoute(handleUpdateCheckNow)})
+	RegisterRoute(Route{Pattern: "POST " + pathAdminUpdates + "/policy", Handler: adminRoute(handleHubUpdatePolicy)})
 }
