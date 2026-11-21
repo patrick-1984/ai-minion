@@ -27,8 +27,8 @@ type UsageListArgs struct {
 }
 
 func (a UsageListArgs) Validate() error {
-	if a.Section != "sessions" && a.Section != "accounts" && a.Section != "workers" {
-		return invalid("section", "choose sessions, accounts or workers")
+	if a.Section != "sessions" && a.Section != "accounts" && a.Section != "workers" && a.Section != "overview" {
+		return invalid("section", "choose sessions, accounts, workers or overview")
 	}
 	if a.Limit < 0 || a.Limit > 200 {
 		return invalid("limit", "choose 1 to 200")
@@ -65,6 +65,7 @@ type UsageWorkerRow struct {
 }
 
 type UsageListResult struct {
+	Overview *UsageOverview    `json:"overview,omitempty"`
 	Version  int               `json:"version"`
 	AsOf     int64             `json:"as_of"`
 	Sessions []UsageSessionRow `json:"sessions,omitempty"`

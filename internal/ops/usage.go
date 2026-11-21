@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -25,6 +26,11 @@ type UsageHarness struct {
 }
 
 type UsageCounters struct {
+	ReasoningTokens  *int64   `json:"reasoning_tokens"`
+	ContextTokens    *int64   `json:"context_tokens"`
+	ContextLimit     *int64   `json:"context_limit"`
+	EstimatedCostUSD *float64 `json:"estimated_cost_usd"`
+
 	InputTokens      *int64   `json:"input_tokens"`
 	OutputTokens     *int64   `json:"output_tokens"`
 	CacheReadTokens  *int64   `json:"cache_read_tokens"`
@@ -108,12 +114,17 @@ func usagePercent(v *float64) bool   { return v == nil || (*v >= 0 && *v <= 100)
 func usageTime(t, latest int64) bool { return t > 0 && t <= latest }
 
 func (c UsageCounters) valid() bool {
-	for _, n := range []*int64{c.InputTokens, c.OutputTokens, c.CacheReadTokens, c.CacheWriteTokens, c.DurationMS, c.Tasks, c.Subagents} {
+	for _, n := range []*int64{c.InputTokens, c.OutputTokens, c.ReasoningTokens, c.ContextTokens, c.ContextLimit, c.CacheReadTokens, c.CacheWriteTokens, c.DurationMS, c.Tasks, c.Subagents} {
 		if n != nil && *n < 0 {
 			return false
 		}
 	}
-	return c.CostUSD == nil || *c.CostUSD >= 0 && !math.IsInf(*c.CostUSD, 0)
+	for _, price := range []*float64{c.CostUSD, c.EstimatedCostUSD} {
+		if price != nil && (*price < 0 || math.IsInf(*price, 0) || math.IsNaN(*price)) {
+			return false
+		}
+	}
+	return true
 }
 
 // Check rejects a malformed report as a unit; the domain layer never stores
@@ -142,7 +153,7 @@ func (r UsageReport) Check(now time.Time) error {
 		for _, w := range a.Windows {
 			key := w.Scope + "\x00" + w.Period
 			if w.DurationMS != nil {
-				key += "\x00" + time.Duration(*w.DurationMS).String()
+				key += "\x00" + strconv.FormatInt(*w.DurationMS, 10)
 			}
 			if windowKeys[key] || w.Scope == "" || !usageText(w.Scope, 96) || (w.Period != "rolling" && w.Period != "fixed" && w.Period != "total") || !usagePercent(w.UsedPercent) || w.DurationMS != nil && *w.DurationMS <= 0 || w.ResetsAt != nil && *w.ResetsAt <= 0 {
 				return invalid("windows", "invalid or duplicate usage window")

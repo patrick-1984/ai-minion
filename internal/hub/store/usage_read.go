@@ -42,6 +42,27 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 	if err := args.Validate(); err != nil {
 		return out, err
 	}
+	if args.Section == "overview" {
+		args.Section = "accounts"
+		args.Limit = 200
+		args.After = ""
+		args.SubscriptionOnly = true
+		var all []ops.UsageAccountRow
+		for {
+			page, err := s.ReadUsage(ctx, workers, bucketOwner, args, now)
+			if err != nil {
+				return out, err
+			}
+			all = append(all, page.Accounts...)
+			if page.Next == "" {
+				break
+			}
+			args.After = page.Next
+		}
+		summary := ops.SummarizeUsage(all, now)
+		out.Overview = &summary
+		return out, nil
+	}
 	visible, err := usageVisibleJSON(workers)
 	if err != nil {
 		return out, err
