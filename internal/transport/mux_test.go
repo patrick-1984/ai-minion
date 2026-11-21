@@ -158,8 +158,21 @@ func TestSessionDiesAfterTwoMinutesOfSilence(t *testing.T) {
 // threshold however long the link is idle.
 func TestIdleLinkSurvivesThanksToPings(t *testing.T) {
 	clk := newFakeClock()
-	opts := SessionOptions{Keepalive: KeepaliveConfig{Clock: clk}}
-	hub, worker := pairedSessions(t, opts, opts)
+	// Yamux shares timer channels through a process-wide pool, so these
+	// sessions cannot use a testing/synctest bubble as a completion barrier.
+	hubPingDone, workerPingDone := make(chan struct{}, 1), make(chan struct{}, 1)
+	hub, worker := pairedSessions(t,
+		SessionOptions{Keepalive: KeepaliveConfig{Clock: clk, pingDone: hubPingDone}},
+		SessionOptions{Keepalive: KeepaliveConfig{Clock: clk, pingDone: workerPingDone}},
+	)
+	awaitPing := func(side string, done <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(testWait):
+			t.Fatalf("timed out waiting for the %s ping to complete", side)
+		}
+	}
 	for clk.waiters() < 2 {
 		time.Sleep(time.Millisecond)
 	}
@@ -168,6 +181,10 @@ func TestIdleLinkSurvivesThanksToPings(t *testing.T) {
 		want := clk.Now()
 		waitFor(t, "ping reply on the hub", func() bool { return !hub.conn.lastRead().Before(want) })
 		waitFor(t, "ping reply on the worker", func() bool { return !worker.conn.lastRead().Before(want) })
+		// The reads can finish before the monitors clear their in-flight
+		// flags. Wait for both monitors before delivering the next tick.
+		awaitPing("hub", hubPingDone)
+		awaitPing("worker", workerPingDone)
 	}
 	if hub.Err() != nil || worker.Err() != nil {
 		t.Fatalf("idle link died: %v / %v", hub.Err(), worker.Err())
