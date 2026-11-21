@@ -73,14 +73,24 @@ jobs="$(nproc 2>/dev/null || echo 2)"
 # Verify the archive on every use. The lock is shared by concurrent builds
 # using the same download cache.
 fetch() (
-  local url="$1" sha="$2" file="$3"
+  local url="$1" sha="$2" file="$3" source
+  shift 3
   flock 9
-  if [ ! -f "$file" ]; then
-    log "download $url"
-    curl -fsSL --connect-timeout 20 --max-time 600 --retry 3 --retry-max-time 900 -o "$file.part" "$url"
-    mv "$file.part" "$file"
+  if [ -f "$file" ]; then
+    echo "$sha  $file" | sha256sum -c --quiet - || { rm -f "${file:?}"; die "SHA-256 mismatch for $url"; }
+    exit 0
   fi
-  echo "$sha  $file" | sha256sum -c --quiet - || { rm -f "${file:?}"; die "SHA-256 mismatch for $url"; }
+  for source in "$url" "$@"; do
+    log "download $source"
+    if curl -fsSL --connect-timeout 20 --max-time 600 --retry 2 --retry-max-time 900 -o "$file.part" "$source" &&
+       echo "$sha  $file.part" | sha256sum -c --quiet -; then
+      mv "$file.part" "$file"
+      exit 0
+    fi
+    log "could not download or verify $source"
+  done
+  rm -f "${file:?}.part"
+  die "no pinned source supplied a valid archive for ${file##*/}"
 ) 9>"$3.lock"
 
 # --- NDK ----------------------------------------------------------------------
@@ -104,16 +114,17 @@ export NDK_BIN="$tc/bin"
 # --- Sources, patches ---------------------------------------------------------
 src="$work/src"
 mkdir -p "$src"
-unpack() { # NAME VERSION URL SHA
+unpack() { # NAME VERSION URL SHA [MIRROR]...
   local name="$1" ver="$2" url="$3" sha="$4"
+  shift 4
   local archive="$cache/$name-$ver.tar.gz"
-  fetch "$url" "$sha" "$archive"
+  fetch "$url" "$sha" "$archive" "$@"
   mkdir -p "$src/$name-$ver"
   tar xzf "$archive" -C "$src/$name-$ver" --strip-components=1
 }
 unpack tmux "$TMUX_VERSION" "$TMUX_URL" "$TMUX_SHA256"
 unpack libevent "$LIBEVENT_VERSION" "$LIBEVENT_URL" "$LIBEVENT_SHA256"
-unpack ncurses "$NCURSES_VERSION" "$NCURSES_URL" "$NCURSES_SHA256"
+unpack ncurses "$NCURSES_VERSION" "$NCURSES_URL" "$NCURSES_SHA256" "$NCURSES_MIRROR_URL" "$NCURSES_GNU_URL"
 
 apply_patches() {
   local dir="$1" pdir="$root/android/native/patches" listed=() f sha p
