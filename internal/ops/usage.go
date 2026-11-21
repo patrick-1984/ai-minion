@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,13 @@ type UsageHarness struct {
 }
 
 type UsageCounters struct {
+	APIDurationMS *int64   `json:"api_duration_ms"`
+	LinesAdded    *int64   `json:"lines_added"`
+	LinesRemoved  *int64   `json:"lines_removed"`
+	CacheRequests *int64   `json:"cache_requests"`
+	CacheMisses   *int64   `json:"cache_misses"`
+	CacheHitRatio *float64 `json:"cache_hit_ratio"`
+
 	ReasoningTokens  *int64   `json:"reasoning_tokens"`
 	ContextTokens    *int64   `json:"context_tokens"`
 	ContextLimit     *int64   `json:"context_limit"`
@@ -70,10 +78,23 @@ func (e UsageEvent) Valid() bool {
 	return (e.AccountID == "" || usageIDValid(e.AccountID)) && usageIDValid(e.ID) && (usageIDValid(e.SessionID) || e.SessionID == "" && usageIDValid(e.NativeID)) && usageText(e.Source, 64) && e.Source != "" && e.ObservedAt > 0 && e.Seq >= 0
 }
 
+// UsageSpendBudget is a gateway's monetary allowance, separate from
+// subscription capacity and from the cost of a session.
+type UsageSpendBudget struct {
+	Source           string   `json:"source"`
+	ObservedAt       int64    `json:"observed_at"`
+	Period           string   `json:"period,omitempty"`
+	UsedPercent      *float64 `json:"used_percent"`
+	ResetsAt         *int64   `json:"resets_at"`
+	EstimatedUsedUSD *float64 `json:"estimated_used_usd"`
+	LimitUSD         *float64 `json:"limit_usd"`
+}
+
 type UsageSession struct {
-	TimeSource string       `json:"time_source,omitempty"`
-	NativeID   string       `json:"native_id,omitempty"`
-	Models     []UsageModel `json:"models,omitempty"`
+	GatewaySpend *UsageSpendBudget `json:"gateway_spend,omitempty"`
+	TimeSource   string            `json:"time_source,omitempty"`
+	NativeID     string            `json:"native_id,omitempty"`
+	Models       []UsageModel      `json:"models,omitempty"`
 
 	ID         string `json:"id"` // opaque identity of this session incarnation on this Worker
 	Name       string `json:"name"`
@@ -104,6 +125,8 @@ type UsageWindow struct {
 }
 
 type UsageAccount struct {
+	EndpointOrigin  string        `json:"endpoint_origin,omitempty"`
+	KeyHint         string        `json:"key_hint,omitempty"`
 	Plan            string        `json:"plan,omitempty"`
 	TimeSource      string        `json:"time_source,omitempty"`
 	SourceSessionID string        `json:"source_session_id,omitempty"`
@@ -165,10 +188,13 @@ func usagePercent(v *float64) bool   { return v == nil || (*v >= 0 && *v <= 100)
 func usageTime(t, latest int64) bool { return t > 0 && t <= latest }
 
 func (c UsageCounters) valid() bool {
-	for _, n := range []*int64{c.InputTokens, c.OutputTokens, c.ReasoningTokens, c.ContextTokens, c.ContextLimit, c.CacheReadTokens, c.CacheWriteTokens, c.DurationMS, c.Tasks, c.Subagents} {
+	for _, n := range []*int64{c.APIDurationMS, c.LinesAdded, c.LinesRemoved, c.CacheRequests, c.CacheMisses, c.InputTokens, c.OutputTokens, c.ReasoningTokens, c.ContextTokens, c.ContextLimit, c.CacheReadTokens, c.CacheWriteTokens, c.DurationMS, c.Tasks, c.Subagents} {
 		if n != nil && *n < 0 {
 			return false
 		}
+	}
+	if c.CacheHitRatio != nil && !(*c.CacheHitRatio >= 0 && *c.CacheHitRatio <= 1) {
+		return false
 	}
 	for _, price := range []*float64{c.CostUSD, c.EstimatedCostUSD} {
 		if price != nil && (*price < 0 || math.IsInf(*price, 0) || math.IsNaN(*price)) {
@@ -227,6 +253,16 @@ func (r UsageReport) Check(now time.Time) error {
 			!s.valid() {
 			return invalid("sessions", "invalid usage metadata")
 		}
+		if b := s.GatewaySpend; b != nil {
+			if b.Source != "claude-statusline" || !usageTime(b.ObservedAt, r.ObservedAt) || b.Period != "" && b.Period != "daily" && b.Period != "weekly" && b.Period != "monthly" || b.ResetsAt != nil && *b.ResetsAt <= 0 {
+				return invalid("gateway_spend", "invalid source, timestamp or period")
+			}
+			for _, v := range []*float64{b.UsedPercent, b.EstimatedUsedUSD, b.LimitUSD} {
+				if v != nil && (*v < 0 || math.IsNaN(*v) || math.IsInf(*v, 0)) {
+					return invalid("gateway_spend", "invalid monetary observation")
+				}
+			}
+		}
 		if s.StartedAt != nil && !usageTime(*s.StartedAt, s.ObservedAt) ||
 			s.StoppedAt != nil && (!usageTime(*s.StoppedAt, s.ObservedAt) ||
 				s.StartedAt != nil && *s.StoppedAt < *s.StartedAt) {
@@ -259,6 +295,11 @@ func (r UsageReport) Check(now time.Time) error {
 			len(a.Windows) > 32 ||
 			a.AuthMode != "subscription" && len(a.Windows) > 0 {
 			return invalid("accounts", "invalid account metadata")
+		}
+		if a.EndpointOrigin != "" || a.KeyHint != "" {
+			if a.AuthMode != "api" || !safeUsageOrigin(a.EndpointOrigin) || !validKeyHint(a.KeyHint, a.ID) {
+				return invalid("accounts", "invalid API identity display")
+			}
 		}
 		seen[key] = true
 		windowKeys := map[string]bool{}
@@ -325,4 +366,23 @@ func (w UsageWindow) Pace(now time.Time) string {
 	default:
 		return "on_pace"
 	}
+}
+
+func safeUsageOrigin(value string) bool {
+	if value == "" {
+		return true
+	}
+	u, err := url.Parse(value)
+	return err == nil && len(value) <= 300 && (u.Scheme == "https" || u.Scheme == "http") && u.Hostname() != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && !u.ForceQuery && !strings.Contains(value, "#")
+}
+
+func validKeyHint(hint, id string) bool {
+	if hint == "" {
+		return true
+	}
+	if !strings.HasSuffix(hint, " / "+id[:10]) {
+		return false
+	}
+	value := strings.TrimSuffix(hint, " / "+id[:10])
+	return value == "Credential" || len(value) == 13 && strings.HasSuffix(value, "...") && usageText(value, 13)
 }

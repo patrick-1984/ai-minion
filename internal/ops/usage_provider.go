@@ -14,6 +14,8 @@ func UsageProvider(name string) string {
 		return "Anthropic"
 	case "google", "google ai", "google gemini":
 		return "Google"
+	case "openrouter", "open router", "openrouter.ai":
+		return "OpenRouter"
 	case "deepseek", "deep seek", "deepseek-ai":
 		return "DeepSeek"
 	case "amazon bedrock", "aws bedrock":

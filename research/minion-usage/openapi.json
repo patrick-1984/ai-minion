@@ -309,6 +309,42 @@
                 "counters": {
                   "type": "object",
                   "properties": {
+                    "api_duration_ms": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "lines_added": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "lines_removed": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cache_requests": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cache_misses": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cache_hit_ratio": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
                     "reasoning_tokens": {
                       "type": [
                         "null",
@@ -383,6 +419,12 @@
                     }
                   },
                   "required": [
+                    "api_duration_ms",
+                    "lines_added",
+                    "lines_removed",
+                    "cache_requests",
+                    "cache_misses",
+                    "cache_hit_ratio",
                     "reasoning_tokens",
                     "context_tokens",
                     "context_limit",
@@ -504,6 +546,56 @@
                 "stop_source": {
                   "type": "string"
                 },
+                "gateway_spend": {
+                  "type": [
+                    "null",
+                    "object"
+                  ],
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "observed_at": {
+                      "type": "integer"
+                    },
+                    "period": {
+                      "type": "string"
+                    },
+                    "used_percent": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "resets_at": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "estimated_used_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "limit_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "observed_at",
+                    "used_percent",
+                    "resets_at",
+                    "estimated_used_usd",
+                    "limit_usd"
+                  ],
+                  "additionalProperties": false
+                },
                 "time_source": {
                   "type": "string"
                 },
@@ -520,6 +612,42 @@
                     "properties": {
                       "model": {
                         "type": "string"
+                      },
+                      "api_duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "lines_added": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "lines_removed": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_requests": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_misses": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_hit_ratio": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
                       },
                       "reasoning_tokens": {
                         "type": [
@@ -596,6 +724,12 @@
                     },
                     "required": [
                       "model",
+                      "api_duration_ms",
+                      "lines_added",
+                      "lines_removed",
+                      "cache_requests",
+                      "cache_misses",
+                      "cache_hit_ratio",
                       "reasoning_tokens",
                       "context_tokens",
                       "context_limit",
@@ -656,6 +790,42 @@
                 },
                 "source": {
                   "type": "string"
+                },
+                "api_duration_ms": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "lines_added": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "lines_removed": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_requests": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_misses": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_hit_ratio": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
                 },
                 "reasoning_tokens": {
                   "type": [
@@ -747,6 +917,12 @@
                 "stopped_at",
                 "observed_at",
                 "source",
+                "api_duration_ms",
+                "lines_added",
+                "lines_removed",
+                "cache_requests",
+                "cache_misses",
+                "cache_hit_ratio",
                 "reasoning_tokens",
                 "context_tokens",
                 "context_limit",
@@ -849,6 +1025,12 @@
                     "last_success"
                   ],
                   "additionalProperties": false
+                },
+                "endpoint_origin": {
+                  "type": "string"
+                },
+                "key_hint": {
+                  "type": "string"
                 },
                 "plan": {
                   "type": "string"
@@ -1190,6 +1372,56 @@
             "items": {
               "type": "object",
               "properties": {
+                "gateway_spend": {
+                  "type": [
+                    "null",
+                    "object"
+                  ],
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "observed_at": {
+                      "type": "integer"
+                    },
+                    "period": {
+                      "type": "string"
+                    },
+                    "used_percent": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "resets_at": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "estimated_used_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "limit_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "observed_at",
+                    "used_percent",
+                    "resets_at",
+                    "estimated_used_usd",
+                    "limit_usd"
+                  ],
+                  "additionalProperties": false
+                },
                 "time_source": {
                   "type": "string"
                 },
@@ -1206,6 +1438,42 @@
                     "properties": {
                       "model": {
                         "type": "string"
+                      },
+                      "api_duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "lines_added": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "lines_removed": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_requests": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_misses": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_hit_ratio": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
                       },
                       "reasoning_tokens": {
                         "type": [
@@ -1282,6 +1550,12 @@
                     },
                     "required": [
                       "model",
+                      "api_duration_ms",
+                      "lines_added",
+                      "lines_removed",
+                      "cache_requests",
+                      "cache_misses",
+                      "cache_hit_ratio",
                       "reasoning_tokens",
                       "context_tokens",
                       "context_limit",
@@ -1342,6 +1616,42 @@
                 },
                 "source": {
                   "type": "string"
+                },
+                "api_duration_ms": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "lines_added": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "lines_removed": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_requests": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_misses": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_hit_ratio": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
                 },
                 "reasoning_tokens": {
                   "type": [
@@ -1424,6 +1734,12 @@
                 "stopped_at",
                 "observed_at",
                 "source",
+                "api_duration_ms",
+                "lines_added",
+                "lines_removed",
+                "cache_requests",
+                "cache_misses",
+                "cache_hit_ratio",
                 "reasoning_tokens",
                 "context_tokens",
                 "context_limit",
@@ -1448,6 +1764,12 @@
             "items": {
               "type": "object",
               "properties": {
+                "endpoint_origin": {
+                  "type": "string"
+                },
+                "key_hint": {
+                  "type": "string"
+                },
                 "plan": {
                   "type": "string"
                 },

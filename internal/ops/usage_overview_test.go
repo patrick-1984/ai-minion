@@ -93,3 +93,22 @@ func TestUsageProviderAliasesShareQuotaCohort(t *testing.T) {
 		t.Fatalf("alias cohorts: %+v", o.Groups)
 	}
 }
+
+func TestUsageIngressRejectsEndpointPathsAndCredentialPayloads(t *testing.T) {
+	now := time.Now()
+	id := UsageID("fixture", "key")
+	a := UsageAccount{ID: id, Provider: "OpenRouter", AuthMode: "api", Source: "native-api-identity", ObservedAt: now.UnixMilli(), KeyHint: "Credential / " + id[:10]}
+	for _, origin := range []string{"https://user:password@example.invalid", "https://example.invalid/private", "https://example.invalid?token=private", "https://example.invalid#private"} {
+		a.EndpointOrigin = origin
+		r := UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Accounts: []UsageAccount{a}}
+		if r.Check(now) == nil {
+			t.Fatal("accepted unsafe endpoint")
+		}
+	}
+	a.EndpointOrigin = "https://example.invalid:8443"
+	a.KeyHint = "full-credential-value"
+	r := UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Accounts: []UsageAccount{a}}
+	if r.Check(now) == nil {
+		t.Fatal("accepted a free-form key hint")
+	}
+}

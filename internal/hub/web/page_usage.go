@@ -43,6 +43,8 @@ type usageWindowView struct {
 	Elapsed, Projected, Unit, RemainingPercent string
 }
 
+func (p usagePage) At(ms int64) string { return p.Time(&ms) }
+
 func (p usagePage) Time(ms *int64) string {
 	if ms == nil || *ms == 0 {
 		return "Unknown"
@@ -139,7 +141,7 @@ func (p usagePage) Harness(value string) string {
 type usageFact struct{ Label, Value string }
 
 func (p usagePage) Counters(c ops.UsageCounters) []usageFact {
-	return []usageFact{
+	facts := []usageFact{
 		{"Input tokens", p.Number(c.InputTokens)},
 		{"Output tokens", p.Number(c.OutputTokens)},
 		{"Cache read / write", p.Number(c.CacheReadTokens) + " / " + p.Number(c.CacheWriteTokens)},
@@ -150,6 +152,20 @@ func (p usagePage) Counters(c ops.UsageCounters) []usageFact {
 		{"Estimated cost", p.Dollars(c.EstimatedCostUSD)},
 		{"Tasks / subagents", p.Number(c.Tasks) + " / " + p.Number(c.Subagents)},
 	}
+	if c.APIDurationMS != nil {
+		facts = append(facts, usageFact{"API wait", p.Duration(c.APIDurationMS)})
+	}
+	if c.LinesAdded != nil || c.LinesRemoved != nil {
+		facts = append(facts, usageFact{"Lines added / removed", p.Number(c.LinesAdded) + " / " + p.Number(c.LinesRemoved)})
+	}
+	if c.CacheRequests != nil || c.CacheMisses != nil {
+		facts = append(facts, usageFact{"Main conversation cache requests / misses", p.Number(c.CacheRequests) + " / " + p.Number(c.CacheMisses)})
+	}
+	if c.CacheHitRatio != nil {
+		percent := 100 * *c.CacheHitRatio
+		facts = append(facts, usageFact{"Main conversation cache hit ratio", p.Percent(&percent)})
+	}
+	return facts
 }
 
 func (p usagePage) WorkerName(id string) string {

@@ -34,6 +34,9 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 			Dir string `json:"current_dir"`
 		} `json:"workspace"`
 		Cost struct {
+			API       *int64   `json:"total_api_duration_ms"`
+			Added     *int64   `json:"total_lines_added"`
+			Removed   *int64   `json:"total_lines_removed"`
 			Estimated *float64 `json:"total_cost_usd"`
 			Duration  *int64   `json:"total_duration_ms"`
 		} `json:"cost"`
@@ -42,9 +45,19 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 			Limit   *int64 `json:"context_window_size"`
 		} `json:"context_window"`
 		Cache struct {
-			Writes *int64 `json:"cache_write_tokens"`
+			Requests *int64   `json:"requests"`
+			Misses   *int64   `json:"misses"`
+			HitRatio *float64 `json:"hit_ratio"`
+			Writes   *int64   `json:"cache_write_tokens"`
 		} `json:"prompt_cache"`
 		Limits struct {
+			Spend *struct {
+				Percent  *float64 `json:"used_percentage"`
+				ResetsAt *int64   `json:"resets_at"`
+				Used     *float64 `json:"used_usd"`
+				Limit    *float64 `json:"limit_usd"`
+				Period   string   `json:"period"`
+			} `json:"spend_limit"`
 			Five *claudeUsageWindow `json:"five_hour"`
 			Week *claudeUsageWindow `json:"seven_day"`
 		} `json:"rate_limits"`
@@ -56,11 +69,35 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 	s.Version = n.Version
 	s.Model = n.Model.ID
 	s.Folder = n.Workspace.Dir
+	s.APIDurationMS = n.Cost.API
+	s.LinesAdded = n.Cost.Added
+	s.LinesRemoved = n.Cost.Removed
+	s.CacheRequests = n.Cache.Requests
+	s.CacheMisses = n.Cache.Misses
+	s.CacheHitRatio = n.Cache.HitRatio
 	s.EstimatedCostUSD = n.Cost.Estimated
 	s.DurationMS = n.Cost.Duration
 	s.ContextTokens = n.Context.Current
 	s.ContextLimit = n.Context.Limit
 	s.CacheWriteTokens = n.Cache.Writes
+	if limit := n.Limits.Spend; limit != nil {
+		b := &ops.UsageSpendBudget{Source: "claude-statusline", ObservedAt: s.ObservedAt, UsedPercent: limit.Percent, EstimatedUsedUSD: limit.Used, LimitUSD: limit.Limit}
+		switch limit.Period {
+		case "daily", "weekly", "monthly":
+			b.Period = limit.Period
+		}
+		if limit.ResetsAt != nil && *limit.ResetsAt > 0 && *limit.ResetsAt < 253402300800 {
+			v := *limit.ResetsAt * 1000
+			b.ResetsAt = &v
+		}
+		s.GatewaySpend = b
+		if n.Limits.Five == nil && n.Limits.Week == nil && a != nil && a.AuthMode == "subscription" {
+			s.AccountID = ""
+			s.Provider = ""
+			s.AuthMode = "unknown"
+			return n.Session, nil
+		}
+	}
 	if a != nil && a.AuthMode == "subscription" && a.Provider == "Anthropic" {
 		a.Source = "claude-statusline"
 		a.ObservedAt = s.ObservedAt
@@ -297,7 +334,7 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 	s.NativeID = ops.UsageID("native-session", s.Harness, native)
 	s.ID = s.NativeID
 	r := ops.UsageReport{Version: ops.UsageVersion, ObservedAt: now.UnixMilli(), Sessions: []ops.UsageSession{s}}
-	if a != nil {
+	if a != nil && s.AccountID != "" {
 		r.Accounts = []ops.UsageAccount{*a}
 	}
 	if kind != "" {

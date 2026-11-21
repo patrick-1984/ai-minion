@@ -143,6 +143,9 @@
       </div>
       <dl class="usage-facts">
         <div><dt>Access</dt><dd>{{$p.Access $a.AuthMode}}</dd></div>
+        {{if $a.Plan}}<div><dt>Native plan</dt><dd>{{$a.Plan}}</dd></div>{{end}}
+        {{if eq $a.AuthMode "api"}}<div><dt>API endpoint origin</dt><dd>{{if $a.EndpointOrigin}}<code>{{$a.EndpointOrigin}}</code>{{else}}Undisclosed{{end}}</dd></div>
+        {{if $a.KeyHint}}<div><dt>Credential hint</dt><dd><code>{{$a.KeyHint}}</code></dd></div>{{end}}{{end}}
         <div><dt>Observation</dt><dd>{{$card.Freshness}} · {{$card.Observed}}</dd></div>
         <div><dt>Source</dt><dd>{{$p.WorkerName $a.WorkerID}} · {{$a.Source}}</dd></div>
         {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName $a.BucketID}}</dd></div>{{end}}
@@ -258,6 +261,13 @@
         <h3>{{.Name}}</h3>
         {{if $p.Private}}<label class="usage-check"><input type="checkbox" name="member" value="{{.ID}}" form="usage-selected"><span>Select<span class="sr-only"> {{.Name}}</span></span></label>{{end}}
       </div>
+      {{with .GatewaySpend}}<section class="usage-window"><h4>Gateway spending budget</h4>
+      <dl class="usage-facts"><div><dt>Allowance used</dt><dd>{{$p.Percent .UsedPercent}}</dd></div>
+      <div><dt>Estimated spend / limit</dt><dd>{{$p.Dollars .EstimatedUsedUSD}} / {{$p.Dollars .LimitUSD}}</dd></div>
+      <div><dt>Period</dt><dd>{{if .Period}}{{.Period}}{{else}}Unknown{{end}}</dd></div>
+      <div><dt>Resets</dt><dd>{{$p.Time .ResetsAt}}</dd></div><div><dt>Observed</dt><dd>{{$p.At .ObservedAt}}</dd></div>
+      <div><dt>Source</dt><dd>{{.Source}}</dd></div></dl>
+      <p class="muted">The gateway's dollar estimate can lag its percentage by about five minutes.</p></section>{{end}}
       {{if .Folder}}<p class="usage-path"><code>{{.Folder}}</code></p>{{end}}
       <dl class="usage-facts">
         <div><dt>Worker</dt><dd>{{$p.WorkerName .WorkerID}}</dd></div>

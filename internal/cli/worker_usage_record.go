@@ -99,7 +99,7 @@ func newUsageRecordCmd(deps workerConfigDeps) *cobra.Command {
 			} else {
 				// This is the explicitly selected producer's own environment.
 				// Never inspect another process or the harness credential store.
-				name := map[string]string{"Anthropic": "ANTHROPIC_API_KEY", "OpenAI": "OPENAI_API_KEY", "DeepSeek": "DEEPSEEK_API_KEY"}[opts.Provider]
+				name := map[string]string{"Anthropic": "ANTHROPIC_API_KEY", "OpenAI": "OPENAI_API_KEY", "DeepSeek": "DEEPSEEK_API_KEY", "OpenRouter": "OPENROUTER_API_KEY"}[opts.Provider]
 				if name == "" {
 					return errors.New("use an explicit credential file for this provider")
 				}

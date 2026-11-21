@@ -135,3 +135,24 @@ func TestUsageCanonicalProviderAndEndpointIdentity(t *testing.T) {
 		t.Fatal("distinct custom namespaces merged")
 	}
 }
+
+func TestOpenRouterOriginAndHintsForDistinctCredentials(t *testing.T) {
+	scope := strings.Repeat("a", 64)
+	ids := map[string]bool{}
+	for _, ending := range []string{"a", "b", "c", "d", "e"} {
+		key := "sk-or-v1-" + strings.Repeat("0123456789abcdef", 3) + "0123456789abcde" + ending
+		a, err := NativeAPIUsageAccount("openrouter.ai", "https://OPENROUTER.AI:443/private-proxy-path", key, scope, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(a)
+		if a.Provider != "OpenRouter" || a.EndpointOrigin != "https://openrouter.ai" || !strings.HasPrefix(a.KeyHint, key[:10]+"... / ") || ids[a.ID] || bytes.Contains(b, []byte(key)) || bytes.Contains(b, []byte("private-proxy-path")) {
+			t.Fatalf("unsafe or ambiguous API metadata: %s", a.ID)
+		}
+		ids[a.ID] = true
+	}
+	short, err := APIUsageAccount("test", "https://Z7SHORT.example.invalid/private", "z7short", []byte(scope), 1)
+	if err != nil || short.EndpointOrigin != "" || strings.Contains(strings.ToLower(short.KeyHint), "z7short") {
+		t.Fatal("credential in hostname was disclosed")
+	}
+}

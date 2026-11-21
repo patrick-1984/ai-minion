@@ -206,3 +206,26 @@ func TestUsageReadOnlyInventoryAndPassiveCollectorEntryPoints(t *testing.T) {
 		t.Fatalf("inventory calls: %+v", calls)
 	}
 }
+
+func TestUsageShowsSeparateGatewaySpendAndAPICredentialDetails(t *testing.T) {
+	now := time.Now()
+	at := now.UnixMilli()
+	pct := 112.5
+	usd := 4.2
+	limit := 5.
+	api := ops.UsageAccountRow{UsageAccount: ops.UsageAccount{ID: ops.UsageID("fixture", "key"), Provider: "OpenRouter", Label: "My work alias", AuthMode: "api", EndpointOrigin: "https://openrouter.ai", KeyHint: "sk-or-v1-0... / 0123456789", ObservedAt: at, Source: "test"}, Alias: "My work alias"}
+	result := ops.UsageListResult{Version: 1, AsOf: at, Accounts: []ops.UsageAccountRow{api}, Sessions: []ops.UsageSessionRow{{UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", "budget"), Name: "gateway", Source: "claude-statusline", AuthMode: "unknown", GatewaySpend: &ops.UsageSpendBudget{Source: "claude-statusline", Period: "monthly", UsedPercent: &pct, EstimatedUsedUSD: &usd, LimitUSD: &limit, ObservedAt: at}}}}}
+	f := usagePageFixtures().reply(ops.OpUsageList, result)
+	connect(t, f)
+	srv := adminServer(t)
+	for _, view := range []struct {
+		path string
+		want []string
+	}{{"accounts", []string{"My work alias", "https://openrouter.ai", "sk-or-v1-0... / 0123456789"}}, {"sessions", []string{"Gateway spending budget", "112.5%", "monthly", "about five minutes"}}} {
+		res := get(t, srv, "/usage?view="+view.path, "X-Test-Session", userHeader)
+		if res.Code != 200 {
+			t.Fatalf("%s: %d", view.path, res.Code)
+		}
+		mustHave(t, res.Body.String(), view.want...)
+	}
+}

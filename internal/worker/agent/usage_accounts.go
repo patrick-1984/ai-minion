@@ -146,7 +146,11 @@ func APIUsageAccount(provider, endpoint, key string, domainSecret []byte, at int
 	if len(key) >= 34 && strings.IndexFunc(key, func(c rune) bool { return c <= 32 || c > 126 }) < 0 {
 		label = key[:10] + "... / " + digest[:10]
 	}
-	return ops.UsageAccount{ID: digest, Provider: provider, Label: label, AuthMode: "api", Source: "native-api-identity", ObservedAt: at}, nil
+	origin := (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+	if strings.Contains(strings.ToLower(origin), strings.ToLower(key)) {
+		origin = ""
+	}
+	return ops.UsageAccount{EndpointOrigin: origin, KeyHint: label, ID: digest, Provider: provider, Label: label, AuthMode: "api", Source: "native-api-identity", ObservedAt: at}, nil
 }
 
 // NativeAPIUsageAccount uses only keys that fit a known, high-entropy
@@ -163,6 +167,8 @@ func NativeAPIUsageAccount(provider, endpoint, key, hubPublic string, at int64) 
 		validFormat = strings.HasPrefix(key, "sk-ant-api03-") && len(key) >= 80
 	case "OpenAI":
 		validFormat = strings.HasPrefix(key, "sk-proj-") && len(key) >= 80
+	case "OpenRouter":
+		validFormat = strings.HasPrefix(key, "sk-or-v1-") && len(key) == 73
 	case "DeepSeek":
 		validFormat = strings.HasPrefix(key, "sk-") && len(key) == 35
 	}
@@ -425,7 +431,7 @@ func openCodeAuth(raw []byte) (string, string, []string) {
 	if err := json.Unmarshal(raw, &integrations); err != nil {
 		return "unknown", "unavailable", nil
 	}
-	known := map[string]string{"deepseek": "DeepSeek", "anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "opencode-go": "OpenCode Go", "opencode": "OpenCode Zen"}
+	known := map[string]string{"deepseek": "DeepSeek", "openrouter": "OpenRouter", "anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "opencode-go": "OpenCode Go", "opencode": "OpenCode Zen"}
 	modes := map[string]bool{}
 	providers := []string{}
 	for _, i := range integrations {
