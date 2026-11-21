@@ -41,7 +41,7 @@ func usageForbidden() error {
 	return api.NewError(proto.CodeForbidden, "private usage buckets require the owner's own session or full-scope key")
 }
 
-func initUsage(_ context.Context, env *Env) error {
+func initUsage(ctx context.Context, env *Env) error {
 	st, err := Require[*store.Store](env)
 	if err != nil {
 		return err
@@ -55,6 +55,9 @@ func initUsage(_ context.Context, env *Env) error {
 		return err
 	}
 
+	if err := registerUsageCollection(ctx, env, st, r, rt); err != nil {
+		return err
+	}
 	if err = api.HandleTyped(r, ops.OpUsageList, func(ctx context.Context, c *api.Call, a ops.UsageListArgs) (ops.UsageListResult, error) {
 		owner := usageBucketOwner(c.Principal)
 		if a.BucketID != "" && owner == "" {

@@ -15,6 +15,9 @@ import (
 // a session. A missing counter is unknown; a pointer to zero is a known zero.
 const UsageVersion = 1
 
+// UsageDisclosure is shared by Worker registration and the Hub interface.
+const UsageDisclosure = "Your Hub administrator and Worker owner can see usage statistics for every session on this Worker, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, limits and collection diagnostics. Console sharing and control have separate permissions."
+
 type UsageHarness struct {
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`

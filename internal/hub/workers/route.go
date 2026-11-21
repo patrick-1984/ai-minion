@@ -690,7 +690,7 @@ var errStaleOwner = proto.NewError(proto.CodeConflict, "the Worker is reconnecti
 // is the current owner (read here, right before dispatch); otherwise it is
 // refused and the caller retries once the Worker has reconnected.
 func (rt *Router) debugOwnerCheck(ctx context.Context, op, workerID string) (func(Online) error, error) {
-	if op != ops.OpWorkerDebug && op != ops.OpWorkerLogs {
+	if op != ops.OpWorkerDebug && op != ops.OpWorkerLogs && op != ops.OpWorkerUsage {
 		return nil, nil
 	}
 	recs, err := rt.dir.Workers(ctx)

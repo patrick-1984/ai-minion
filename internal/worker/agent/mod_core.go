@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
@@ -135,6 +136,8 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 	if err != nil {
 		return nil, err
 	}
+	ex.registerUsage(st)
+	log.Info("Worker usage monitoring", "notice", ops.UsageDisclosure, "registration", "minion worker config usage")
 	for _, p := range []func() error{
 		func() error { return Provide(env, st) },
 		func() error { return Provide(env, host) },

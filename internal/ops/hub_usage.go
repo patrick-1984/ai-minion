@@ -145,5 +145,5 @@ func init() {
 	Register(Op{Name: OpUsageList, Summary: "Read authorized Worker, session or account usage statistics, including metadata for unshared sessions on your Workers.", Scope: ScopeHub, Actions: read, Args: reflect.TypeFor[UsageListArgs](), Result: reflect.TypeFor[UsageListResult]()})
 	Register(Op{Name: OpUsageBucketList, Summary: "List your private usage buckets.", Scope: ScopeHub, Actions: read, Args: reflect.TypeFor[UsageBucketListArgs](), Result: reflect.TypeFor[UsageBucketListResult]()})
 	Register(Op{Name: OpUsageBucketSet, Summary: "Save, reorder, delete or assign members to your private usage buckets.", Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, Args: reflect.TypeFor[UsageBucketSetArgs](), Result: reflect.TypeFor[UsageBucketSetResult]()})
-	Register(Op{Name: OpWorkerUsage, Summary: "Read registered Worker usage metadata and optionally refresh its installed harness inventory.", Scope: ScopeWorker, Actions: MustActionSet(ActionOperate, ActionManage), Args: reflect.TypeFor[WorkerUsageArgs](), Result: reflect.TypeFor[UsageReport]()})
+	Register(Op{Name: OpWorkerUsage, Summary: "Read registered Worker usage metadata and optionally refresh its installed harness inventory.", Scope: ScopeWorker, Actions: read, Args: reflect.TypeFor[WorkerUsageArgs](), Result: reflect.TypeFor[UsageReport]()})
 }

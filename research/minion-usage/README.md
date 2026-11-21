@@ -44,3 +44,22 @@ No cited provider promises a portable safe polling interval. Five minutes is the
 The owner ledger maps A69 to U01/U05/U06, A70 to U02/U04/U08, A71 to U04/U07, A72 to U02/U03, A73 to U08/U09, A74 to U06/U10/U11, A75 to U10 and A76 to U12 and the delivery ledger. Bucket assignment never determines which Worker metadata contributes to totals.
 
 A local SQLite benchmark with 50 synthetic active sessions, five-second logical ticks and unchanged cumulative counters took 0.96 ms per batch across 50 transactions on linux/amd64 (AMD Ryzen AI Max+ 395). This measures a warm local database. Closed sessions retain 90 days of detail; hourly observations retain 30 days. The store test exercises identity deduplication, private bulk assignments, stale-owner reports, replay, partial enumeration, and retention.
+
+### Registration and upgrade
+
+A new or upgraded Worker starts with usage monitoring pending. Run `minion worker config usage` on the Worker to see exactly what is disclosed, its pinned Hub fingerprint and its owning account. The local command `minion worker config usage --accept` accepts that disclosure for this enrollment. It takes effect on the next collection attempt. Replacing the Hub key, changing owners or resetting enrollment clears the grant. Once accepted, session metadata includes every session visible to the Worker's host; bucket changes and console sharing rules have no effect on the set metered. Legacy Workers without this operation remain visible as unavailable to the Usage collector.
+
+### Implementation evidence
+
+| Ticket | Current evidence | Remaining acceptance |
+|---|---|---|
+| U01 | Worker allowlisted version inventory and executable-name recognition | Hub button and native provider/model distinction in running harnesses |
+| U02 | Worker metadata projection, session open/end reconciliation, cumulative hourly snapshots | Folder change, task/subagent lifecycle and native token/cost counters |
+| U03 | Local registration policy v1, owner/pin binding, one-time acceptance, Worker log notice and synthetic privacy tests | Hub notice, accessible enrollment prompts and bounded diagnostics |
+| U04 | Typed auth mode, stable domain-separated fingerprints, native status research | Real native account adapters, recognizable safe display and multi-account association |
+| U05–U06 | Isolated worker metadata collection, bounded concurrency, transient backoff | Account-level scheduler, selection, durable leases, Retry-After and native queries |
+| U07 | Scoped SQL queries, private bucket CRUD/reorder and atomic bulk assignment, isolation tests | Hub editing controls and integration tests |
+| U08–U09 | Native duration/percent/reset model, subscription-only filter, per-account dedup and pace function | Coverage-aware aggregate and visible account/window views |
+| U10 | SQLite migration, replay/ownership/retention tests, measured 50-session workload, cursor-paged HTTP catalog and Hub read-only MCP tools | Machine-readable OpenAPI, public lifecycle/history endpoints and end-to-end client validation |
+| U11 | CPA design 08/09 investigated read-only | Complete |
+| U12 | Isolated branch with requirement trace | Candidate, full regression/visual checks, release and installation evidence |

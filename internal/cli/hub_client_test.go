@@ -325,7 +325,7 @@ func hubMCPDeps(env map[string]string, local client.Backend) (mcpDeps, *lockedBu
 	return deps, stderr
 }
 
-func TestMCPEntrypointChoosesTheHubAndKeepsTheSameTools(t *testing.T) {
+func TestMCPEntrypointChoosesTheHubAndAddsReadOnlyUsageTools(t *testing.T) {
 	hub := newHubStub(t, func(w http.ResponseWriter, r *http.Request, s *hubStub) {
 		stubJSON(w, 200, `{"sessions":[{"name":"remote","created":"2026-11-09T10:00:00.000Z","windows":1,"attached":false}]}`)
 	})
@@ -346,12 +346,12 @@ func TestMCPEntrypointChoosesTheHubAndKeepsTheSameTools(t *testing.T) {
 	if strings.Contains(stderr.String(), hub.key) || strings.Contains(string(got[3]), hub.key) {
 		t.Error("the key reached a log or a result")
 	}
-	// The tool set is the one of Solo mode, and still read-only.
+	// The Hub adds two private telemetry queries to the read-only Solo tools.
 	hubTools := toolNamesOf(t, got[2])
 	localDeps, _ := testMCPDeps(map[string]string{}, local, mcp.TrustAll)
 	soloGot, _ := rpc(t, localDeps, nil, listRequest)
 	soloTools := toolNamesOf(t, soloGot[2])
-	if len(hubTools) != len(soloTools) {
+	if !hubTools[ops.OpUsageList] || !hubTools[ops.OpUsageBucketList] || hubTools[ops.OpUsageBucketSet] || len(hubTools) != len(soloTools)+2 {
 		t.Errorf("tools differ: hub %v, solo %v", hubTools, soloTools)
 	}
 	for name := range soloTools {
