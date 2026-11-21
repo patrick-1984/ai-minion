@@ -28,22 +28,25 @@ func init() { declareManagedHost(Default) }
 
 func declareManagedHost(r *Registry) {
 	r.Declare(Setting{
-		Key:   KeyTmuxBinary,
-		Scope: ScopeWorker,
+		Key:            KeyTmuxBinary,
+		SupervisorOnly: true,
+		Scope:          ScopeWorker,
 		Help: "Absolute path of the tmux executable the Worker uses, for every tmux call (run, status, setup); " +
 			"unset: tmux from PATH. The Android app passes it through the environment on every launch",
 	})
 	r.Declare(Setting{
-		Key:     KeyManagedHost,
-		Scope:   ScopeWorker,
-		Help:    "off (default) or android: a supervisor (the Android app) owns the tmux server. The Worker then runs every tmux command with -N and the fixed tmux_config, never starts a server, and reports its sessions as hidden",
-		Default: ManagedHostOff,
-		Choices: []string{ManagedHostOff, ManagedHostAndroid},
+		Key:            KeyManagedHost,
+		SupervisorOnly: true,
+		Scope:          ScopeWorker,
+		Help:           "off (default) or android: a supervisor (the Android app) owns the tmux server. The Worker then runs every tmux command with -N and the fixed tmux_config, never starts a server, and reports its sessions as hidden",
+		Default:        ManagedHostOff,
+		Choices:        []string{ManagedHostOff, ManagedHostAndroid},
 	})
 	r.Declare(Setting{
-		Key:   KeyTmuxConfig,
-		Scope: ScopeWorker,
-		Help:  "Absolute path of the fixed tmux configuration file of a managed host (managed_host android); the default is /dev/null",
+		Key:            KeyTmuxConfig,
+		SupervisorOnly: true,
+		Scope:          ScopeWorker,
+		Help:           "Absolute path of the fixed tmux configuration file of a managed host (managed_host android); the default is /dev/null",
 	})
 }
 

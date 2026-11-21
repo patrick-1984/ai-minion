@@ -427,6 +427,21 @@ var notFoundMarkers = []string{
 	"(Connection refused)",
 }
 
+// serverGone reports whether err says that no server answers on the socket
+// (as opposed to a missing session, window or pane of a running server).
+func (h *Host) serverGone(err error) bool {
+	var te *tmuxError
+	if !errors.As(err, &te) {
+		return false
+	}
+	for _, m := range []string{"no server running", "(No such file or directory)", "(Connection refused)", "error connecting to"} {
+		if strings.Contains(te.stderr, m) {
+			return true
+		}
+	}
+	return false
+}
+
 func isNotFound(stderr string) bool {
 	for _, m := range notFoundMarkers {
 		if strings.Contains(stderr, m) {

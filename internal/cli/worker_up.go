@@ -366,6 +366,13 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	if err != nil {
 		return err
 	}
+	if !configureOnly {
+		// The installed service cannot receive them: refuse before anything is
+		// enrolled or written (use --configure-only or --foreground).
+		if err := refuseSupervisorSettings(plain, reg); err != nil {
+			return err
+		}
+	}
 	stateDir := defaultState
 	if stateRes.Source != config.SourceDefault {
 		if stateDir, err = filepath.Abs(stateRes.Value); err != nil {
@@ -556,6 +563,22 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// the setup (the one-time invitation is already used).
 	if err := summary(ctx); err != nil {
 		_, _ = fmt.Fprintf(stderr, "The Worker was started, but its state could not be shown (%v). Check it with: minion worker status\n", err)
+	}
+	return nil
+}
+
+// refuseSupervisorSettings stops an installed service from silently losing
+// the settings that only a supervisor gives at every start: the service
+// definition would not carry them, so the daemon would start with another tmux.
+func refuseSupervisorSettings(res *config.Resolver, reg *config.Registry) error {
+	for _, s := range reg.ForScope(config.ScopeWorker) {
+		if !s.SupervisorOnly {
+			continue
+		}
+		if r, err := res.Resolve(s.Key); err == nil && (r.Source == config.SourceFlag || r.Source == config.SourceEnv) {
+			return fmt.Errorf("%s (--%s or %s) is only for a supervisor that gives it at every start, such as the Android app; "+
+				"an installed service would not receive it. Use --configure-only or --foreground, or leave it out", s.Key, s.FlagName(), s.EnvName())
+		}
 	}
 	return nil
 }
@@ -827,11 +850,6 @@ func serviceSinkReader(owned bool, uid, gid int) func(string) ([]byte, error) {
 	return func(path string) ([]byte, error) { return serviceOwnedPrivate(path, uid, gid) }
 }
 
-// managedHostKeys are given by the supervisor (the Android app) through the
-// environment at every launch and never saved: an APK update moves the
-// bundled tmux binary, and a saved path would go stale.
-var managedHostKeys = map[string]bool{config.KeyTmuxBinary: true, config.KeyManagedHost: true, config.KeyTmuxConfig: true}
-
 // fillUpConfig puts the non-secret settings that this run gave by flag or
 // environment into the config file. A setting that nobody set is left alone,
 // so that later changes of a default still apply.
@@ -839,7 +857,7 @@ func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.R
 	for _, s := range reg.ForScope(config.ScopeWorker) {
 		// Only a value given by flag or environment is saved; a saved
 		// allow_new_sessions is never overwritten otherwise.
-		if s.Secret || s.Key == config.KeyStateDir || managedHostKeys[s.Key] {
+		if s.Secret || s.Key == config.KeyStateDir || s.SupervisorOnly {
 			continue
 		}
 		_, byFlag, _ := flags.Lookup(s.Key)

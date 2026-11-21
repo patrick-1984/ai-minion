@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -190,5 +192,21 @@ func skipWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the managed Android host is not available on Windows")
+	}
+}
+
+// A create on a managed host that is down is a plain failure, not a cached
+// unknown: the same request works after the supervisor restarted the server.
+func TestSessionCreateOnADownManagedHostIsNotCachedUnknown(t *testing.T) {
+	e := newEnv(t)
+	e.host.createErr = fmt.Errorf("tmux: the managed server is not running: %w", term.ErrHostDown)
+	args := ops.SessionCreateArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}}
+	if _, err := e.ex.Execute(context.Background(), Request{Op: ops.OpSessionCreate, Args: mustJSON(t, args)}); err == nil {
+		t.Fatal("a create on a down host succeeded")
+	}
+	e.host.createErr = nil
+	res := e.mustWrite(ops.OpSessionCreate, args)
+	if res.Outcome == ops.OutcomeUnknown {
+		t.Fatalf("the failure was cached as unknown: %+v", res)
 	}
 }

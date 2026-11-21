@@ -2,7 +2,9 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"runtime"
 	"strings"
 	"testing"
@@ -96,5 +98,37 @@ func skipWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("slash socket paths are not absolute on Windows")
+	}
+}
+
+func downExec(stderr string) ExecFunc {
+	return func(_ context.Context, args []string, _ []byte) ([]byte, []byte, error) {
+		if args[len(args)-1] == "-V" {
+			return []byte("tmux 3.8\n"), nil, nil
+		}
+		return nil, []byte(stderr), fmt.Errorf("exit status 1")
+	}
+}
+
+// With -N a missing managed server is an outage, never a healthy empty list,
+// and a create during it is a definite failure (nothing was started).
+func TestManagedServerOutageIsNotAnEmptyList(t *testing.T) {
+	skipWindows(t)
+	for _, msg := range []string{"no server running on /data/run/tmux.sock", "error connecting to /data/run/tmux.sock (No such file or directory)"} {
+		h, err := New("/data/run/tmux.sock", WithExec(downExec(msg)), WithManaged(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ss, err := h.ListSessions(context.Background()); !errors.Is(err, term.ErrHostDown) || ss != nil {
+			t.Errorf("%q: list = %v, %v", msg, ss, err)
+		}
+		if _, err := h.CreateSession(context.Background(), "minion-1", "", []string{"sh"}); !errors.Is(err, term.ErrHostDown) {
+			t.Errorf("%q: create err = %v", msg, err)
+		}
+		// An ordinary host keeps treating a missing server as no sessions.
+		o, _ := New("/data/run/tmux.sock", WithExec(downExec(msg)))
+		if ss, err := o.ListSessions(context.Background()); err != nil || ss != nil {
+			t.Errorf("ordinary host: %v, %v", ss, err)
+		}
 	}
 }
