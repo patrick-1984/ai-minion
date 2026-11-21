@@ -356,7 +356,7 @@ exit 0
 // complete asset set of a real release.
 func fullReleaseFiles() map[string]string {
 	files := releaseFiles()
-	files["release-manifest.json"] = `{"version":"v0.1.0"}`
+	files["release-manifest.json"] = `{"version":"v0.1.0","image":{"repository":"ghcr.io/patrick-1984/minion","digest":"` + stubDigest + `"}}`
 	files["minion_0.1.0_linux_amd64.tar.gz.sbom.json"] = "sbom-bytes"
 	return files
 }
@@ -423,6 +423,22 @@ func TestPinChecksTheCompleteAssetSetAndTheImage(t *testing.T) {
 	bad := append(append([]string{}, env...), "COSIGN_RC=1")
 	if r := script(t, bad, "", "pin.sh", testTag, manifest, tested); r.code == 0 || !strings.Contains(r.stderr, "does not verify") {
 		t.Errorf("a bad signature passed: exit %d %s", r.code, r.stderr)
+	}
+	// The signed manifest names another image digest (or none) than the tested one.
+	for name, body := range map[string]string{
+		"another digest": `{"image":{"repository":"ghcr.io/patrick-1984/minion","digest":"sha256:` + strings.Repeat("c", 64) + `"}}`,
+		"another repo":   `{"image":{"repository":"ghcr.io/evil/minion","digest":"` + tested + `"}}`,
+		"no image":       `{"version":"v0.1.0"}`,
+	} {
+		files := fullReleaseFiles()
+		files["release-manifest.json"] = body
+		dir := fixtureAssets(t, files)
+		m := filepath.Join(t.TempDir(), "assets.manifest")
+		writeFile(t, m, assetManifest(t, dir), 0o644)
+		e := append(append([]string{}, env...), "FIXTURE="+dir)
+		if r := script(t, e, "", "pin.sh", testTag, m, tested); r.code == 0 || !strings.Contains(r.stderr, "release-manifest.json names image") {
+			t.Errorf("manifest with %s passed: exit %d %s", name, r.code, r.stderr)
+		}
 	}
 	// The image tag was pushed again: another digest.
 	moved := append(append([]string{}, env...), "STUB_DIGEST=sha256:"+strings.Repeat("b", 64))

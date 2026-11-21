@@ -237,10 +237,30 @@ func TestReleaseWorkflowAttachesManifestAndBootstrap(t *testing.T) {
 		"--bundle dist/checksums.txt.sigstore.json",
 		"--certificate-identity \"$SIGNER_IDENTITY\"",
 		"https://token.actions.githubusercontent.com",
-		"cosign verify \"ghcr.io/patrick-1984/minion:${TAG}\"",
+		"cosign verify \"$IMAGE_REF\"",
 		"docker buildx imagetools inspect",
 		`"arm/v7"`,
 	)
+	// The image tag is resolved once; later steps use the digest reference.
+	if n := strings.Count(release, "imagetools inspect \"ghcr.io/patrick-1984/minion:"); n != 1 {
+		t.Errorf("the image tag must be resolved exactly once, found %d tag lookups", n)
+	}
+	mustContain(t, "release job", release,
+		"id: image",
+		`echo "ref=ghcr.io/patrick-1984/minion@${digest}" >> "$GITHUB_OUTPUT"`,
+		"IMAGE_REF: ${{ steps.image.outputs.ref }}",
+		`--image "$IMAGE_REF"`,
+		`imagetools inspect "$IMAGE_REF" --raw`,
+	)
+	resolve := strings.Index(release, "Resolve the pushed image digest once")
+	verify := strings.Index(release, "Verify the signatures")
+	if resolve < 0 || verify < resolve {
+		t.Error("the digest must be resolved before the signatures are verified")
+	}
+	// Nothing after the resolving step may name the image by tag.
+	if after := release[verify:]; strings.Contains(after, "minion:${TAG}") || strings.Contains(after, "minion:$TAG") {
+		t.Error("steps after the digest resolution must not use the image tag")
+	}
 	mustContain(t, "release job", release,
 		"SIGNER_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}")
 }

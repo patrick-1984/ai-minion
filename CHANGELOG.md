@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- The release resolves the image digest once and signs, verifies and publishes that exact digest; the pre-publish check fails if the signed manifest names another digest than the smoke-tested one.
 - The startup summary names the run mode once (it said "background (background (shell login))").
 
 ## v0.16.0
