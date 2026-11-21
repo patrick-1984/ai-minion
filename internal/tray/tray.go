@@ -330,7 +330,7 @@ func (c *Controller) Setup() {
 	if !c.confirmEnd("Setting up the Hub (it may restart the Worker)") {
 		return
 	}
-	if c.do(tok+"\n", "worker", "up", "--join", "-") {
+	if c.do(tok+"\n", "worker", "up", "--join", "-", "--legacy-join") {
 		c.D.Info("The Worker is set up. Check the Hub key words in the menu against the ones your Hub shows.")
 	}
 	c.refresh()

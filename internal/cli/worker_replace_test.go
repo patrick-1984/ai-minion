@@ -13,6 +13,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/service"
 )
 
 // replaceRig is an upFixture with an old profile on disk, a fake terminal and
@@ -239,7 +240,7 @@ func TestReplaceFlagsNeedAJoinToken(t *testing.T) {
 func TestJoinWithoutReplaceFlagsKeepsTheOldBehaviour(t *testing.T) {
 	r := newReplaceRig(t)
 	r.enrolledHook()
-	_, err := r.run(t)
+	_, err := r.run(t, "--legacy-join")
 	if err == nil {
 		t.Fatal("a join over a pinned Hub must still be refused without the flags")
 	}
@@ -259,5 +260,49 @@ func TestReplaceOnAFreshMachineJustJoins(t *testing.T) {
 	}
 	if seen.hub.Server != "https://new.example:9443" {
 		t.Errorf("hook saw %+v", seen.hub)
+	}
+}
+
+func TestReplacePreparationRechecksConsent(t *testing.T) {
+	r := newReplaceRig(t)
+	out, err := r.run(t, "--prepare-join", "--replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consent := strings.TrimSpace(out)
+	if len(consent) != 64 {
+		t.Fatalf("consent = %q", out)
+	}
+	r.oldIntact(t)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(r.stateDir()), ".minion-replace.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inspection created a lock: %v", err)
+	}
+	if err = agent.WritePause(r.stateDir(), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.run(t, "--join-consent", consent); err == nil || !strings.Contains(err.Error(), "profile changed") {
+		t.Fatalf("stale consent accepted: %v", err)
+	}
+	if !r.live || len(r.runCalls()) != 0 || len(r.events) != 0 {
+		t.Fatalf("stale consent touched the incumbent: %v", r.events)
+	}
+}
+
+func TestReplaceFindsTheIncumbentsCustomState(t *testing.T) {
+	r := newReplaceRig(t)
+	custom := filepath.Join(r.home, "custom-state")
+	if err := os.Rename(r.stateDir(), custom); err != nil {
+		t.Fatal(err)
+	}
+	r.deps.replace.incumbentDirs = func(context.Context, service.Target) []string { return []string{custom} }
+	out, err := r.run(t, "--keep")
+	if err != nil || !strings.Contains(out, custom) {
+		t.Fatalf("keep custom Worker: %v, %s", err, out)
+	}
+	if _, err := os.Stat(r.stateDir()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the default path changed: %v", err)
+	}
+	if _, err := r.run(t, "--replace", "--state-dir", r.stateDir()); err == nil || !strings.Contains(err.Error(), custom) {
+		t.Fatalf("replacement accepted a conflicting profile: %v", err)
 	}
 }

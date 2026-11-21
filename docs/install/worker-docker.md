@@ -8,7 +8,7 @@ The example [`deploy/compose/worker.yaml`](../../deploy/compose/worker.yaml) run
 
 ## Quick start: one docker run
 
-For a self-contained Worker (way B below), open **Workers**, **Add worker**, **Add a Worker in one step**. Paste the Docker command, or save the generated Compose file and paste its enrollment command. A disposable configuration container reads the one-time credential from standard input. The long-running container starts from the enrolled identity in the data volume, and Docker starts it again under the `unless-stopped` restart policy. The command prints the live Worker and Hub fingerprints for approval and returns to the prompt. [Add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step).
+For a self-contained Worker (way B below), open **Workers**, **Add worker**, **Add a Worker in one step**. Paste **Docker Compose** to create and start a project in a new subfolder of your working directory. The Docker CLI and Compose plugin need access to a running Docker daemon. Expand **All commands and files** for the Docker run command or the individual Compose steps. A disposable configuration container reads the one-time credential from standard input. The long-running container starts from the enrolled identity in the data volume, and Docker starts it again under the `unless-stopped` restart policy. The command prints the live Worker and Hub fingerprints for approval and returns to the prompt. [Add a Worker in one step](../guides/pairing.md#add-a-worker-in-one-step).
 
 ## Two ways to use it
 

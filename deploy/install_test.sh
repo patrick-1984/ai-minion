@@ -70,7 +70,7 @@ make_release() {
 		if [ "$kind" = join ]; then
 			# "worker up" records its arguments and its standard input.
 			# shellcheck disable=SC2016 # the fake binary expands its own variables
-			printf '#!/bin/sh\nif [ "$1 $2" = "worker up" ]; then\n  printf "%%s\\n" "$@" >"$JOINLOG.argv"\n  cat >"$JOINLOG.stdin"\n  exit "${FAKE_RC:-0}"\nfi\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
+			printf '#!/bin/sh\nif [ "$1 $2" = "worker up" ]; then\n  if [ "$5" = "--prepare-join" ]; then\n    cat >"$JOINLOG.prepared"\n    if [ -n "${FAKE_DECLINE:-}" ]; then\n      echo "minion: join skipped: existing Worker kept"\n    else\n      echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n    fi\n    exit 0\n  fi\n  printf "%%s\\n" "$@" >"$JOINLOG.argv"\n  cat >"$JOINLOG.stdin"\n  exit "${FAKE_RC:-0}"\nfi\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
 		else
 			printf '#!/bin/sh\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
 		fi
@@ -119,7 +119,7 @@ assert_contains "minion version is printed" "$OUT" "fake-minion v1.3.0 linux_amd
 # An isolated PATH contains exactly one package manager and no real sudo.
 depbin="$WORK/depbin"
 mkdir "$depbin"
-for tool in sh env tar gzip curl awk sed head mktemp cp chmod mv mkdir rm; do
+for tool in sh env tar gzip curl awk sed head grep mktemp cp chmod mv mkdir rm cat; do
 	ln -s "$(command -v "$tool")" "$depbin/$tool"
 done
 if command -v sha256sum >/dev/null 2>&1; then ln -s "$(command -v sha256sum)" "$depbin/sha256sum"
@@ -227,15 +227,16 @@ SCRIPT_ARGS=--join
 rm -f "$JL".*
 run_install "$WORK/j1" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
 assert_contains "--join installs and joins: exit 0" "rc=$RC" "rc=0"
-assert_contains "--join announces the share default" "$OUT" "shares all sessions first"
+assert_contains "--join announces the share default" "$OUT" "initial sharing: all"
 want_argv='worker
 up
 --join
 -
---interactive-replace
---non-interactive-share
+--join-consent
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+--share-existing
 all'
-if [ "$(cat "$JL.argv" 2>/dev/null)" = "$want_argv" ]; then ok "--join runs: worker up --join - --interactive-replace --non-interactive-share all"; else bad "--join arguments" "$(cat "$JL.argv" 2>/dev/null)"; fi
+if [ "$(cat "$JL.argv" 2>/dev/null)" = "$want_argv" ]; then ok "--join runs: worker up --join - --join-consent (decision) --share-existing all"; else bad "--join arguments" "$(cat "$JL.argv" 2>/dev/null)"; fi
 if [ "$(cat "$JL.stdin" 2>/dev/null)" = "$TOKEN" ]; then ok "the token arrives on standard input"; else bad "the token arrives on standard input" "$(cat "$JL.stdin" 2>/dev/null)"; fi
 case "$(cat "$JL.argv")$OUT" in
 *"$TOKEN"*) bad "the token is in no argument list and no output" ;;
@@ -243,10 +244,18 @@ case "$(cat "$JL.argv")$OUT" in
 esac
 assert_contains "--join ran the installed binary by absolute path" "$OUT" "Installed $WORK/j1/minion"
 
+# A declined staged preflight leaves the prior binary untouched and does not join.
+rm -f "$JL".*
+run_install "$WORK/i1" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" FAKE_DECLINE=1
+assert_contains "decline exits successfully" "rc=$RC" "rc=0"
+assert_contains "decline keeps the prior binary" "$("$WORK/i1/minion" version)" "fake-minion v1.2.0"
+assert_no_file "decline does not join" "$JL.argv"
+case "$OUT" in *"install.sh: finished"*) bad "decline reports a join" ;; *) ok "decline omits success summary" ;; esac
+
 rm -f "$JL".*
 SCRIPT_ARGS="--join --share later"
-run_install "$WORK/j2" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
-assert_contains "--share later is passed on" "$(cat "$JL.argv" 2>/dev/null | tr '\n' ' ')" "--non-interactive-share later"
+run_install "$WORK/j2" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" MINION_SHARE_EXISTING=all JOINLOG="$JL"
+assert_contains "--share later is passed on" "$(cat "$JL.argv" 2>/dev/null | tr '\n' ' ')" "--share-existing later"
 SCRIPT_ARGS="--join --share everything"
 run_install "$WORK/j2b" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
 assert_contains "a bad --share is refused" "$OUT" "--share must be all, none or later"
@@ -300,7 +309,7 @@ done
 rm -f "$JL".*
 SCRIPT_ARGS="--join --name build-1"
 run_install "$WORK/n1" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
-assert_contains "--name is passed to worker up" "$(tr '\n' ' ' <"$JL.argv")" "--non-interactive-share all --name build-1"
+assert_contains "--name is passed to worker up" "$(tr '\n' ' ' <"$JL.argv")" "--share-existing all --name build-1"
 SCRIPT_ARGS=--join
 rm -f "$JL".*
 run_install "$WORK/n2" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_CHECKSUMS_SHA256="$(sha "$REL/v1.6.0/checksums.txt")"
@@ -354,6 +363,36 @@ assert_no_file "without --join nothing joins" "$JL.argv"
 sed '$d' "$SCRIPT" >"$WORK/cut.sh"
 OUT=$(env HOME="$WORK/home" MINION_RELEASE_BASE="file://$REL" MINION_INSTALL_DIR="$WORK/cut" MINION_VERSION=v1.6.0 sh "$WORK/cut.sh" 2>&1)
 assert_no_file "a script without its last line installs nothing" "$WORK/cut/minion"
+
+# Compose enrolls through a disposable container, then runs only credential-free services.
+mkdir "$WORK/compose" "$WORK/dockerbin"
+printf '#!/bin/sh\nexit 0\n' >"$REL/v1.6.0/bootstrap.sh"
+cat >"$WORK/dockerbin/docker" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$DOCKER_LOG"
+if [ "$2" = run ]; then cat >"$DOCKER_LOG.stdin"; fi
+EOF
+chmod +x "$WORK/dockerbin/docker"
+real_docker=$(command -v docker || true)
+compose_out=$(cd "$WORK/compose" && env PATH="$WORK/dockerbin:$(fake_uname Linux x86_64):$WORK/installed:$PATH" \
+	MINION_RELEASE_BASE="file://$REL" MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" DOCKER_LOG="$WORK/docker.log" \
+	sh "$SCRIPT" --compose --name 'OrangePi' --share none 2>&1)
+assert_contains "Compose runs configure-only via stdin" "$(cat "$WORK/docker.log")" "worker up --configure-only --join - --share-existing none --name OrangePi"
+assert_contains "Compose starts in the background" "$(cat "$WORK/docker.log")" "compose up -d"
+assert_contains "Compose receives the token on stdin" "$(cat "$WORK/docker.log.stdin")" "$TOKEN"
+assert_contains "Compose prints the project directory" "$compose_out" "minion-worker-orangepi"
+project="$WORK/compose/minion-worker-orangepi"
+case "$(cat "$project/compose.yaml" "$WORK/docker.log")$compose_out" in
+*"$TOKEN"*) bad "Compose keeps the token out of files, arguments and output" ;;
+*) ok "Compose keeps the token out of files, arguments and output" ;;
+esac
+if [ -n "$real_docker" ] && "$real_docker" compose version >/dev/null 2>&1; then
+	if "$real_docker" compose -f "$project/compose.yaml" config -q; then ok "generated Compose file validates"; else bad "generated Compose file validates"; fi
+fi
+compose_out=$(cd "$WORK/compose" && env PATH="$WORK/dockerbin:$(fake_uname Linux x86_64):$WORK/installed:$PATH" \
+	MINION_RELEASE_BASE="file://$REL" MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" DOCKER_LOG="$WORK/docker.log" \
+	sh "$SCRIPT" --compose --name 'OrangePi' 2>&1)
+assert_contains "an existing Compose project is untouched" "$compose_out" "minion-worker-orangepi already exists"
 
 if command -v shellcheck >/dev/null 2>&1; then
 	if SC=$(shellcheck -s sh "$SCRIPT" "$0" 2>&1); then ok "shellcheck"; else bad "shellcheck" "$SC"; fi

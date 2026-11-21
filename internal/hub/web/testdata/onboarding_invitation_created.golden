@@ -9,6 +9,7 @@
     <label for="invite-key">Invitation key</label>
     <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="invite-key" rows="1" readonly autocomplete="off" spellcheck="false">mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm</textarea><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
+  <details><summary>All commands and files</summary>
   <h3>Start a Worker with one command</h3>
   <p class="muted">Run this on the machine that should become a Worker. The key is visible in the process list while the command runs; use the file variant below on shared machines.</p>
   <div><div class="copy-field"><pre class="copy-value" id="invite-oneliner">minion worker up --server https://hub.example.com --invite-key mnk_9f2c1ab7.m5xwy3dpnz2g65tfobqxgzljnrswc43foj2xizlsmvzwk5dm</pre><button type="button" class="copy-btn" data-copy="#invite-oneliner" data-copy-target="#invite-oneliner" aria-label="Copy the command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
@@ -90,5 +91,6 @@ secrets:
 volumes:
   minion-cache:
 </pre></details><button type="button" class="copy-btn fold-copy" data-copy="#invite-compose" data-copy-target="#invite-compose" aria-label="Copy the Compose file" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  </details>
   <p><a class="btn" href="/invitations" data-invitation-done>Done</a></p>
 </div>

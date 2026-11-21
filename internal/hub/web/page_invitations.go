@@ -623,7 +623,9 @@ type inviteResult struct {
 	// the Done links.
 	All bool
 	InviteCommands
-	Fold inviteFolds
+	Hosted hostedJoin
+	Token  string
+	Fold   inviteFolds
 }
 
 // inviteFolds are the commands of a new key as foldable blocks.
@@ -631,7 +633,7 @@ type inviteFolds struct {
 	OneLiner, FileVariant, Compose FoldBlock
 }
 
-var invitationFragments = fragments("invitations.html")
+var invitationFragments = fragments("invitations.html", "_hosted_join.html")
 
 func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	args := ops.InvitationCreateArgs{
@@ -664,6 +666,12 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	}
 	if k, err := identity.ParseInviteKey(res.Key); err == nil {
 		out.HubWords = k.Fingerprint.Words()
+		if installerTag() != "" {
+			if tok, err := identity.NewJoinToken(hubURL(r), k); err == nil {
+				out.Token = tok.Encode()
+				out.Hosted = hostedJoinCommands(out.Token, res.Name, false)
+			}
+		}
 	}
 	if res.Mode == ops.InvitationReusable {
 		out.Mode = "reusable"

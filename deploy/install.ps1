@@ -27,10 +27,25 @@
 # Runs in Windows PowerShell 5.1 and in PowerShell 7. Errors are thrown, not
 # "exit": with "irm | iex" an exit would close the user's window.
 
+param(
+    [switch]$Join,
+    [string]$Version,
+    [string]$Name,
+    [ValidateSet('all', 'none', 'later')][string]$Share = 'all'
+)
+
 & {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest is slow with a progress bar in 5.1
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $token = $null
+    if ($Join) {
+        $secret = Read-Host 'Join token from the Hub Add worker page' -AsSecureString
+        $buffer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+        try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($buffer) }
+        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($buffer); $secret.Dispose() }
+        if ($token -notmatch '^mnj1-[A-Za-z0-9_.-]+$') { throw 'install.ps1: paste the full join token from the Hub Add worker page' }
+    }
     $repo = 'patrick-1984/ai-minion'
 
     # A 32-bit PowerShell on a 64-bit Windows reports x86 here and the real
@@ -42,14 +57,14 @@
         default { throw "install.ps1: unsupported architecture '$cpu' (supported: AMD64, ARM64)" }
     }
 
-    $ver = $env:MINION_VERSION
+    $ver = if ($Version) { $Version } else { $env:MINION_VERSION }
     if (-not $ver) {
         $api = if ($env:MINION_RELEASE_API) { $env:MINION_RELEASE_API } else { "https://api.github.com/repos/$repo/releases" }
         $ver = (Invoke-RestMethod -UseBasicParsing -Uri "$api/latest").tag_name
         if (-not $ver) { throw "install.ps1: could not read the latest release from $api/latest" }
     }
     if (-not $ver.StartsWith('v')) { $ver = "v$ver" }
-    if ($ver -notmatch '^v\d+\.\d+\.\d+') { throw "install.ps1: invalid MINION_VERSION '$ver': give an exact version such as v0.8.1" }
+    if ($ver -notmatch '^v\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$') { throw "install.ps1: invalid MINION_VERSION '$ver': give an exact version such as v0.8.1" }
 
     $zip = "minion_$($ver.Substring(1))_windows_$($arch)_preview.zip"
     $baseRoot = if ($env:MINION_RELEASE_BASE) { $env:MINION_RELEASE_BASE } else { "https://github.com/$repo/releases/download" }
@@ -74,6 +89,15 @@
         Expand-Archive -LiteralPath (Join-Path $tmp $zip) -DestinationPath $unpacked -Force
         $exe = Join-Path $unpacked 'minion.exe'
         if (-not (Test-Path -LiteralPath $exe)) { throw "install.ps1: $zip holds no minion.exe" }
+
+        $workerArgs = @('worker', 'up', '--join', '-')
+        if ($Name) { $workerArgs += @('--name', $Name) }
+        if ($Join) {
+            $consent = $token | & $exe @workerArgs --prepare-join
+            if ($LASTEXITCODE -ne 0) { throw "install.ps1: Worker inspection failed (exit $LASTEXITCODE)" }
+            if ($consent -eq 'minion: join skipped: existing Worker kept') { return }
+            if ($consent -notmatch '^[0-9a-f]{64}$') { throw 'install.ps1: could not get the Worker profile decision' }
+        }
 
         # A newly installed WinGet link may not be on this PowerShell's PATH yet.
         $psmuxLink = Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\psmux.exe'
@@ -104,13 +128,28 @@
         }
 
         $dir = if ($env:MINION_INSTALL_DIR) { $env:MINION_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\minion' }
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        try {
-            Copy-Item -Force -LiteralPath $exe -Destination (Join-Path $dir 'minion.exe')
-        } catch {
-            throw "install.ps1: cannot write $dir\minion.exe (is a Worker running? stop it first): $_"
+        if ($Join) {
+            # The incumbent may still be using its executable. Keep the
+            # candidate at a separate path so rollback can restart the old one.
+            $dir = Join-Path $dir "releases\$ver-$($got.Substring(0, 12))"
         }
-        Write-Host "Installed $dir\minion.exe"
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $installed = Join-Path $dir 'minion.exe'
+        try {
+            $alreadyInstalled = (Test-Path -LiteralPath $installed -PathType Leaf) -and
+                ((Get-FileHash -Algorithm SHA256 -LiteralPath $installed).Hash -eq (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash)
+            if (-not $alreadyInstalled) { Copy-Item -Force -LiteralPath $exe -Destination $installed }
+        } catch {
+            throw "install.ps1: cannot write $installed (is a Worker running? stop it first): $_"
+        }
+        Write-Host "Installed $installed"
+
+        & $installed version
+        if ($Join) {
+            $token | & $installed @workerArgs --join-consent $consent --share-existing $Share
+            $token = $null
+            if ($LASTEXITCODE -ne 0) { throw "install.ps1: Worker setup failed (exit $LASTEXITCODE)" }
+        }
 
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         # @() keeps a PATH with one entry a list, so that + appends an element.
@@ -121,7 +160,6 @@
         }
         if (($env:Path -split ';') -notcontains $dir) { $env:Path = "$env:Path;$dir" }
 
-        & (Join-Path $dir 'minion.exe') version
     } finally {
         Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
     }

@@ -101,6 +101,7 @@ func defaultWorkerUpDeps(stderr io.Writer) workerUpDeps {
 		stopForeground: stopForegroundForService,
 		readStatus:     readUpStatus,
 		ownerHooks:     runOwnerHooks,
+		replace:        defaultReplaceDeps(),
 	}
 }
 
@@ -232,6 +233,9 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground, configureOnl
 				return nil
 			}
 			return err
+		}
+		if consent, _ := cmd.Flags().GetString("join-consent"); consent != "" {
+			deps.requireLive = true
 		}
 	} else if replaceRequested(cmd) && foreground {
 		return errors.New("--replace, --keep and --interactive-replace do not work with --foreground")
@@ -530,7 +534,15 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		// The Run entry always names the state directory chosen now, so a
 		// MINION_STATE_DIR in the environment of a later logon (or of this
 		// shell) cannot select another profile.
-		return installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out, summary)
+		var summaryErr error
+		err := installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out, func(ctx context.Context) error {
+			summaryErr = summary(ctx)
+			return summaryErr
+		})
+		if err == nil && deps.requireLive && summaryErr != nil {
+			return fmt.Errorf("the new Worker did not come up: %w", summaryErr)
+		}
+		return err
 	}
 	if det.Manager == service.ManagerNone {
 		// Share one deadline between binding the socket and waiting for the

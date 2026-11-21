@@ -65,6 +65,21 @@ func LockLifecycle(stateDir string) (io.Closer, error) {
 	return &lifecycleLock{f: f}, nil
 }
 
+// LifecycleAvailable checks the lifecycle lock without creating a directory
+// or a lock file. A permission or I/O failure leaves availability unknown.
+func LifecycleAvailable(stateDir string) bool {
+	f, err := os.OpenFile(filepath.Join(stateDir, LifecycleLockFile), os.O_RDWR, 0)
+	if err != nil {
+		return errors.Is(err, os.ErrNotExist)
+	}
+	defer func() { _ = f.Close() }()
+	if err := lockFileNB(f); err != nil {
+		return false
+	}
+	_ = unlockFile(f)
+	return true
+}
+
 // errLockHeld is what the platform lock code returns when the lock belongs to
 // someone else.
 var errLockHeld = errors.New("lock held")

@@ -25,6 +25,7 @@ type AddWorkerPage struct {
 	TTLs []Choice
 	// AdminTTL is true when the choices go beyond one week (an admin).
 	AdminTTL bool
+	Android  FoldBlock
 	// HubWords and HubFull are the Hub fingerprint as six words and as 52
 	// characters, and JoinCommand the command that pairs a Worker with a code
 	// and with this Hub only (block M12a). All three are empty while the Hub
@@ -35,6 +36,9 @@ type AddWorkerPage struct {
 func addWorkerData(r *http.Request, _ OpCaller, u pageUser) (any, error) {
 	warmInstaller()
 	p := AddWorkerPage{MaxName: ops.MaxWorkerNameLen, TTLs: joinTTLChoices(u.Admin), AdminTTL: u.Admin}
+	if tag := installerTag(); tag != "" {
+		p.Android = foldBlock("android-install", "Copy the ADB command", androidInstallerLine(tag))
+	}
 	if fp := currentHubFingerprint(); fp != "" {
 		p.HubWords, p.HubFull = identity.Fingerprint(fp).Words(), fp
 		p.JoinCommand = "minion worker join " + shellArg(hubURL(r)) + " --hub-fingerprint " + fp
@@ -72,7 +76,7 @@ type addedWorker struct {
 	Warnings []string
 }
 
-var addWorkerFragments = fragments("addworker.html")
+var addWorkerFragments = fragments("addworker.html", "_hosted_join.html")
 
 // workerIDs lists the Worker ids of the user, so that the Worker a claim
 // created can be found afterwards: pairing_claim answers with the outcome only.

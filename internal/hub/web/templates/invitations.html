@@ -41,6 +41,14 @@
     <label for="invite-key">Invitation key</label>
     <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="invite-key" rows="1" readonly autocomplete="off" spellcheck="false">{{.Key}}</textarea><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
+  {{if .Hosted.HasInstaller -}}
+  {{template "hosted_join" .Hosted}}
+  <div class="field">
+    <label for="invite-join-token">Join token for the installer</label>
+    <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="invite-join-token" rows="1" readonly autocomplete="off" spellcheck="false">{{.Token}}</textarea><button type="button" class="copy-btn" data-copy-target="#invite-join-token" aria-label="Copy the join token" title="Copy">{{template "copy-icons"}}</button></div></div>
+  </div>
+  {{end -}}
+  <details><summary>All commands and files</summary>
   <h3>Start a Worker with one command</h3>
   <p class="muted">Run this on the machine that should become a Worker. The key is visible in the process list while the command runs; use the file variant below on shared machines.</p>
   {{template "fold" .Fold.OneLiner}}
@@ -49,6 +57,7 @@
   <h3>Docker Compose</h3>
   <p class="muted">A complete Compose project that needs only Docker, <code>bootstrap.sh</code> from the release and the key in a file. The key stays in a secret file; the container reads it through <code>MINION_INVITE_KEY_FILE</code>.</p>
   {{template "fold" .Fold.Compose}}
+  </details>
   <p><a class="btn" href="/invitations{{if .All}}?all=1{{end}}" data-invitation-done>Done</a></p>
 </div>{{end}}
 {{define "content"}}

@@ -184,5 +184,31 @@ func joinEnv(token string) string {
 // cut-short download runs nothing, and it verifies the binary against the
 // release checksums.
 func pipeLine(tag, token, name string) string {
-	return "curl -fsSL " + shellArg(releaseDownloadBase+tag+"/install.sh") + " | MINION_VERSION=" + tag + " " + joinEnv(token) + "sh -s -- --join" + nameArg(name)
+	return installerModeLine(tag, token, name, "--join")
+}
+
+func installerModeLine(tag, token, name, mode string) string {
+	return downloadedInstallerLine(tag, "install.sh", "MINION_VERSION="+tag+" "+joinEnv(token)+"sh -s -- "+mode+nameArg(name))
+}
+
+func windowsInstallerLine(tag, name string) string {
+	line := `[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm '` + releaseDownloadBase + tag + `/install.ps1'))) -Join -Version ` + tag
+	if name != "" {
+		line += " -Name " + psArg(name)
+	}
+	return line
+}
+
+func androidInstallerLine(tag string) string {
+	return deviceInstallerLine(tag, "android.sh", "--version "+tag)
+}
+
+func deviceInstallerLine(tag, asset, args string) string {
+	return downloadedInstallerLine(tag, asset, "sh -s -- "+args)
+}
+
+// The suffix detects an empty or incomplete script even when curl succeeds.
+// The token is assigned only to the shell that executes the complete script.
+func downloadedInstallerLine(tag, asset, run string) string {
+	return `(s=$(curl -fsSL ` + shellArg(releaseDownloadBase+tag+"/"+asset) + `) && case "$s" in *'# minion installer complete') printf '%s\n' "$s" | ` + run + `;; *) echo "Incomplete Minion installer" >&2; exit 1;; esac)`
 }

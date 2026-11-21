@@ -1151,6 +1151,13 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--input-bor
   -webkit-user-select: text; user-select: text; }
 /* Commands wrap instead of hiding their end (A60); the copied text is unchanged. */
 .copy-field > pre.copy-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Hosted one-liners stay one line on narrow screens. The command can be
+   scrolled, and Copy always takes the full text. Fingerprints still wrap. */
+[data-join-oneline] .copy-field > pre.copy-value,
+.copy-field > :is(#android-install, #esp32-install) {
+  white-space: pre; overflow-wrap: normal; overflow-x: auto;
+}
+[data-join-oneline] > h3 { margin-block-start: 12px; }
 .copy-btn { flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px; padding: 0; gap: 0;
   border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); }
 .copy-btn:hover:not(:disabled) { background: var(--hover); border-color: var(--border); color: var(--text); filter: none; }

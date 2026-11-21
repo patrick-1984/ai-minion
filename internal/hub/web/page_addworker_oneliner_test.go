@@ -71,12 +71,19 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := pres(body)
-	simple := p["join-oneliner"]
-	if want := "curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh | MINION_VERSION=v1.2.3 MINION_JOIN=" + tok.Encode() + " sh -s -- --join --name build-1"; simple != want {
-		t.Errorf("top command:\n%s\nwant\n%s", simple, want)
-	}
-	if m := p["join-masked"]; m != "curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh | MINION_VERSION=v1.2.3 MINION_JOIN= sh -s -- --join --name build-1" {
-		t.Errorf("masked: %s", m)
+	for id, parts := range map[string][]string{
+		"join-oneliner":        {"install.sh) && case", "MINION_JOIN=" + tok.Encode(), "sh -s -- --join --name build-1"},
+		"join-masked":          {"MINION_JOIN= sh -s -- --join --name build-1"},
+		"join-service-install": {"--service --name build-1"},
+		"join-root-install":    {"--root --name build-1"},
+		"join-compose-install": {"--compose --name build-1"},
+		"join-windows-install": {"install.ps1", "-Join -Version v1.2.3 -Name build-1"},
+	} {
+		for _, part := range parts {
+			if !strings.Contains(p[id], part) || strings.Contains(p[id], "\n") {
+				t.Errorf("%s lacks %q or is not one line", id, part)
+			}
+		}
 	}
 	mustHave(t, body, "<details data-join-verified><summary>Verified variant (checks the installer's SHA-256 from the signed release first)")
 	line := p["join-verified"]
@@ -288,5 +295,42 @@ func TestInstallerFailureDoesNotEraseAGoodResult(t *testing.T) {
 	installerMu.Unlock()
 	if _, ok := cachedInstaller(); !ok {
 		t.Fatal("a good cached digest was lost")
+	}
+}
+
+func TestSimpleOneLinerNeedsACompleteDownload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell")
+	}
+	dir := t.TempDir()
+	curl := "#!/bin/sh\ncat \"$SERVED\"\nexit \"${CURL_STATUS:-0}\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(curl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const script = "{ [ \"$MINION_JOIN\" = \"mnj1-test-token\" ] && [ \"$1\" = \"--service\" ] && touch \"$RAN\"; } # minion installer complete"
+	for _, tt := range []struct {
+		name, served, curlStatus string
+		runs                     bool
+	}{
+		{"complete", script, "0", true},
+		{"empty", "", "0", false},
+		{"truncated", strings.Split(script, " #")[0], "0", false},
+		{"failed transfer", script, "18", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dest := t.TempDir()
+			scriptFile := filepath.Join(dest, "served")
+			marker := filepath.Join(dest, "ran")
+			if err := os.WriteFile(scriptFile, []byte(tt.served), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("sh", "-c", installerModeLine("v1.2.3", "mnj1-test-token", "", "--service"))
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "SERVED="+scriptFile, "RAN="+marker, "CURL_STATUS="+tt.curlStatus)
+			out, err := cmd.CombinedOutput()
+			_, markerErr := os.Stat(marker)
+			if (err == nil) != tt.runs || (markerErr == nil) != tt.runs || strings.Contains(string(out), "mnj1-test-token") {
+				t.Errorf("installer status = %v, marker = %v, output length = %d", err, markerErr, len(out))
+			}
+		})
 	}
 }

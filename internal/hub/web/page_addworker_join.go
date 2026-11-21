@@ -204,19 +204,43 @@ type joinResult struct {
 	HubFull  string
 	Token    string
 	JoinCommands
-	// OneLiner and Masked are the hosted, verified installer commands (the
-	// first holds the token, the second asks for it); both empty when the Hub
-	// cannot know the digest of its installer. OneLinerOK says whether the
-	// keyed commands may be shown at all: a key without a finite lifetime only
-	// gets the masked one.
-	OneLiner, Masked FoldBlock
-	// Verified and VerifiedMasked download the installer first and check its
-	// SHA-256 against the signed manifest (HasVerified).
-	Verified, VerifiedMasked FoldBlock
-	HasInstaller             bool
-	HasVerified              bool
-	KeyedOK                  bool
-	Fold                     joinFolds
+	hostedJoin
+	Fold joinFolds
+}
+
+// hostedJoin contains the release installer variants for a newly issued token.
+type hostedJoin struct {
+	OneLiner, Masked, Service, Root, ComposeInstall, WindowsInstall FoldBlock
+	Verified, VerifiedMasked                                        FoldBlock
+	HasInstaller, HasVerified, KeyedOK                              bool
+}
+
+func hostedJoinCommands(token, name string, keyed bool) hostedJoin {
+	out := hostedJoin{KeyedOK: keyed}
+	tag := installerTag()
+	if tag == "" {
+		return out
+	}
+	out.HasInstaller = true
+	out.Masked = foldBlock("join-masked", "Copy the command", pipeLine(tag, "", name))
+	if !keyed {
+		token = ""
+	} else {
+		out.OneLiner = foldBlock("join-oneliner", "Copy the command", pipeLine(tag, token, name))
+	}
+	out.Service = foldBlock("join-service-install", "Copy the command", installerModeLine(tag, token, name, "--service"))
+	out.Root = foldBlock("join-root-install", "Copy the command", installerModeLine(tag, token, name, "--root"))
+	out.ComposeInstall = foldBlock("join-compose-install", "Copy the command", installerModeLine(tag, token, name, "--compose"))
+	out.WindowsInstall = foldBlock("join-windows-install", "Copy the command", windowsInstallerLine(tag, name))
+	warmInstaller()
+	if offer, ok := cachedInstaller(); ok {
+		out.HasVerified = true
+		out.VerifiedMasked = foldBlock("join-verified-masked", "Copy the command", installLine(offer, "", name))
+		if keyed {
+			out.Verified = foldBlock("join-verified", "Copy the command", installLine(offer, token, name))
+		}
+	}
+	return out
 }
 
 // joinFolds are the long commands as foldable blocks.
@@ -278,27 +302,11 @@ func handleAddWorkerJoin(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 		Token: tok.Encode(),
 		// One use is fixed above; a lifetime must be finite for a command
 		// that holds the token (also for an administrator).
-		KeyedOK: res.ExpiresAt != nil && ttl != ops.TTLUnlimited,
+		hostedJoin: hostedJoinCommands(tok.Encode(), name, res.ExpiresAt != nil && ttl != ops.TTLUnlimited),
 	}
 	if out.KeyedOK {
 		out.JoinCommands = joinCommands(tok, name)
 		out.Fold = foldJoin(out.JoinCommands)
-	}
-	if tag := installerTag(); tag != "" {
-		out.HasInstaller = true
-		out.Masked = foldBlock("join-masked", "Copy the command", pipeLine(tag, "", name))
-		if out.KeyedOK {
-			out.OneLiner = foldBlock("join-oneliner", "Copy the command", pipeLine(tag, tok.Encode(), name))
-		}
-		// Whatever the warmer has found; the request never waits for it.
-		warmInstaller()
-		if offer, ok := cachedInstaller(); ok {
-			out.HasVerified = true
-			out.VerifiedMasked = foldBlock("join-verified-masked", "Copy the command", installLine(offer, "", name))
-			if out.KeyedOK {
-				out.Verified = foldBlock("join-verified", "Copy the command", installLine(offer, tok.Encode(), name))
-			}
-		}
 	}
 	writeFragmentTemplate(w, addWorkerFragments(), "join_created", out)
 }
