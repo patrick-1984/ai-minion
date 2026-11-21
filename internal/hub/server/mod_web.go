@@ -2,13 +2,17 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/web"
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
 // webModuleOrder places the web module after the modules whose services it
@@ -106,9 +110,33 @@ func initWeb(_ context.Context, env *Env, wr *web.Registry) error {
 			return fp.String()
 		})
 	}
+	// The Add worker page shows a one-line installer that is checked against
+	// the digest of install.sh in the signed manifest of this Hub's own release.
+	updateCache := filepath.Join(cfg.DataDir, "update-cache")
+	settings, err := Require[*SettingsService](env)
+	if err != nil {
+		return err
+	}
+	updateSetting := settings.Resolver()
+	releaseInstaller := web.SetInstallerSource(func(ctx context.Context, tag string) (version.InstallerInfo, error) {
+		// With the update check off the Hub contacts neither GitHub nor
+		// Sigstore: the page shows the manual commands.
+		if v, err := updateSetting.Resolve(config.KeyUpdateCheck); err != nil || v.Value == "off" {
+			return version.InstallerInfo{}, errors.New("the update check is off")
+		}
+		src, err := version.NewGitHubSource(releasesAPI, "minion-hub/"+version.Version)
+		if err != nil {
+			return version.InstallerInfo{}, err
+		}
+		up := &version.Updater{Source: src,
+			Verifier: version.SigstoreVerifierFactory(version.TUFTrustedRoot{Dir: updateCache}),
+			Cache:    version.Cache{Dir: updateCache}}
+		return up.VerifiedInstaller(ctx, tag)
+	})
 	releaseMon := web.SetMonitoringLevel(monitoringLevelFunc(complianceMonitor(env)))
 	env.OnStop(func(context.Context) error {
 		releaseMon()
+		releaseInstaller()
 		web.DisconnectAdminOps(caller)
 		releaseURL()
 		releaseFP()

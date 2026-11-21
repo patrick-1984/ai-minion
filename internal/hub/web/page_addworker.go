@@ -33,6 +33,7 @@ type AddWorkerPage struct {
 }
 
 func addWorkerData(r *http.Request, _ OpCaller, u pageUser) (any, error) {
+	warmInstaller()
 	p := AddWorkerPage{MaxName: ops.MaxWorkerNameLen, TTLs: joinTTLChoices(u.Admin), AdminTTL: u.Admin}
 	if fp := currentHubFingerprint(); fp != "" {
 		p.HubWords, p.HubFull = identity.Fingerprint(fp).Words(), fp

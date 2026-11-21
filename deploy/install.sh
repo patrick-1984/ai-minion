@@ -19,9 +19,37 @@
 # Environment (all optional):
 #   MINION_VERSION      the release to install (v0.8.1 or 0.8.1); default: latest
 #   MINION_INSTALL_DIR  where to put minion instead of the default above
+#   MINION_CHECKSUMS_SHA256
+#                       the SHA-256 of the signed checksums.txt of the release
+#                       (the Hub's verified command passes it); a checksums.txt
+#                       with another digest is refused
 #   MINION_RELEASE_BASE, MINION_RELEASE_API
 #                       where archives and the latest release are looked up
 #                       (mirrors, tests)
+#
+# With --join the installer then sets the machine up as a Worker, for the user
+# who runs it (no sudo): it runs the installed binary by its absolute path as
+#
+#     minion worker up --join - --interactive-replace --non-interactive-share <share>
+#
+# with the join token from the Hub's Add worker page on the standard input of
+# that one process: from MINION_JOIN (read once, then removed from the
+# environment) or, without it, asked for at a masked prompt on /dev/tty. The
+# token is in no argument list and in no file. If a Worker is already set up
+# for this user, "minion worker up" shows it and asks on the terminal whether to
+# replace it (default: no, nothing changes and the exit status is 0). Without
+# --join the installer only installs the binary, as before.
+#
+#     --join            install, then join the Hub of the token as a Worker
+#     --name NAME       the Worker's name in the Hub (only with --join)
+#     --share all|none|later
+#                       what the new Worker shares first (default: all; change
+#                       it in the Hub). Only with --join.
+#
+# The Hub's Add worker page offers a command that downloads this script to a
+# private file and checks its SHA-256 against the signed release manifest before
+# running it. The whole script runs from the last line, so a download cut short
+# never runs half of it.
 #
 # Needs: curl, tar, uname, and sha256sum or shasum.
 set -eu
@@ -95,66 +123,148 @@ platform() {
 	printf '%s_%s\n' "$os" "$arch"
 }
 
-command -v curl >/dev/null 2>&1 || die "curl is not installed"
-command -v tar >/dev/null 2>&1 || die "tar is not installed"
+# join_worker runs the installed binary by its absolute path. The token goes in
+# on its standard input (printf is a shell builtin: no argument list, no file);
+# the terminal stays free for the question about an existing Worker.
+join_worker() {
+	rc=0
+	printf 'Joining the Hub as a Worker (it shares %s sessions first; change that in the Hub)\n' "$share"
+	if [ -n "$name" ]; then set -- --name "$name"; else set --; fi
+	printf '%s\n' "$tok" | "$dir/minion" worker up --join - --interactive-replace --non-interactive-share "$share" "$@" || rc=$?
+	tok=
+	[ "$rc" != 0 ] || printf 'install.sh: finished: the Worker is set up (see the summary above).\n'
+	return "$rc"
+}
 
-plat=$(platform)
-ver=${MINION_VERSION:-}
-if [ -z "$ver" ]; then
-	api=${MINION_RELEASE_API:-https://api.github.com/repos/$REPO/releases}
-	ver=$(curl -fsSL "$api/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1) ||
-		die "could not look up the latest release at $api/latest"
-	[ -n "$ver" ] || die "could not read the latest release from $api/latest"
-fi
-case "$ver" in
-v*) ;;
-*) ver=v$ver ;;
-esac
-case "$ver" in
-v[0-9]*.[0-9]*.[0-9]*) ;;
-*) die "invalid MINION_VERSION '$ver': give an exact version such as v0.8.1" ;;
-esac
-
-archive="minion_${ver#v}_${plat}.tar.gz"
-base="${MINION_RELEASE_BASE:-https://github.com/$REPO/releases/download}/$ver"
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-
-printf 'Downloading %s (%s)\n' "$archive" "$ver"
-curl -fsSL -o "$tmp/$archive" "$base/$archive" || die "could not download $base/$archive"
-curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" || die "could not download $base/checksums.txt"
-
-want=$(awk -v n="$archive" '$2 == n || $2 == "*" n {print $1; exit}' "$tmp/checksums.txt")
-[ -n "$want" ] || die "$archive is not listed in checksums.txt of $ver"
-got=$(sha256 "$tmp/$archive")
-[ "$got" = "$want" ] || die "checksum mismatch for $archive: got $got, checksums.txt says $want; nothing was installed"
-
-tar -xzf "$tmp/$archive" -C "$tmp" minion || die "could not unpack minion from $archive"
-install_tmux
-
-dir=${MINION_INSTALL_DIR:-}
-if [ -z "$dir" ]; then
-	if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
-		dir=/usr/local/bin
-	else
-		dir=$HOME/.local/bin
+# read_token sets tok from MINION_JOIN or a masked prompt on the terminal.
+read_token() {
+	tok=${MINION_JOIN:-}
+	unset MINION_JOIN
+	if [ -z "$tok" ]; then
+		( : </dev/tty ) 2>/dev/null || die "--join needs the join token: set MINION_JOIN, or run this in a terminal to be asked for it"
+		printf 'Join token (from the Hub'"'"'s Add worker page; what you type is hidden): ' >/dev/tty
+		old=$(stty -g </dev/tty 2>/dev/null) || old=
+		trap '[ -z "$old" ] || stty "$old" </dev/tty; exit 130' INT TERM
+		stty -echo </dev/tty 2>/dev/null || true
+		IFS= read -r tok </dev/tty || tok=
+		[ -z "$old" ] || stty "$old" </dev/tty 2>/dev/null || true
+		trap - INT TERM
+		printf '\n' >/dev/tty
 	fi
-fi
-mkdir -p "$dir" || die "cannot create $dir"
-# Copy to a unique file next to the target, then rename: a running minion
-# keeps its old file, and two installs at once do not share a staging file.
-new=$(mktemp "$dir/.minion.XXXXXX") || die "cannot write to $dir (run as root, or set MINION_INSTALL_DIR)"
-trap 'rm -rf "$tmp"; rm -f "$new"' EXIT
-cp "$tmp/minion" "$new" || die "cannot write to $dir (run as root, or set MINION_INSTALL_DIR)"
-chmod 0755 "$new" || die "cannot make $new executable"
-mv -f "$new" "$dir/minion" || die "cannot replace $dir/minion"
+	case $tok in
+	mnj1-*) ;;
+	*) die "that is not a join token: it starts with mnj1-. Copy the whole token from the Hub's Add worker page" ;;
+	esac
+}
 
-printf 'Installed %s/minion\n' "$dir"
-case ":${PATH}:" in
-*":$dir:"*) ;;
-*)
-	# shellcheck disable=SC2016 # $PATH is printed literally on purpose
-	printf 'Note: %s is not on your PATH. Add it, for example:\n  export PATH="%s:$PATH"\n' "$dir" "$dir"
-	;;
-esac
-"$dir/minion" version
+main() {
+	[ "${1:-}" = --end ] || die "this script was cut short: download it again"
+	shift
+	join=0
+	share=all
+	name=
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--join) join=1 ;;
+		--share)
+			[ $# -ge 2 ] || die "--share needs all, none or later"
+			share=$2
+			shift
+			;;
+		--share=*) share=${1#--share=} ;;
+		--name)
+			[ $# -ge 2 ] || die "--name needs the Worker's name"
+			name=$2
+			shift
+			;;
+		*) die "unknown option '$1' (supported: --join, --share all|none|later, --name NAME)" ;;
+		esac
+		shift
+	done
+	case $share in
+	all | none | later) ;;
+	*) die "--share must be all, none or later" ;;
+	esac
+	if [ "$join" = 1 ]; then
+		[ "$(id -u)" != 0 ] || die "--join sets the Worker up for the user who runs it: run it without sudo, as that user"
+		read_token
+	fi
+	command -v curl >/dev/null 2>&1 || die "curl is not installed"
+	command -v tar >/dev/null 2>&1 || die "tar is not installed"
+
+	plat=$(platform)
+	ver=${MINION_VERSION:-}
+	if [ -z "$ver" ]; then
+		api=${MINION_RELEASE_API:-https://api.github.com/repos/$REPO/releases}
+		ver=$(curl -fsSL "$api/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1) ||
+			die "could not look up the latest release at $api/latest"
+		[ -n "$ver" ] || die "could not read the latest release from $api/latest"
+	fi
+	case "$ver" in
+	v*) ;;
+	*) ver=v$ver ;;
+	esac
+	case "$ver" in
+	v[0-9]*.[0-9]*.[0-9]*) ;;
+	*) die "invalid MINION_VERSION '$ver': give an exact version such as v0.8.1" ;;
+	esac
+
+	archive="minion_${ver#v}_${plat}.tar.gz"
+	base="${MINION_RELEASE_BASE:-https://github.com/$REPO/releases/download}/$ver"
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' EXIT
+
+	printf 'Downloading %s (%s)\n' "$archive" "$ver"
+	curl -fsSL -o "$tmp/$archive" "$base/$archive" || die "could not download $base/$archive"
+	curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" || die "could not download $base/checksums.txt"
+	# The Hub's verified command passes the SHA-256 of the signed checksums.txt:
+	# a checksums.txt from anywhere else is refused, so the archive it lists is
+	# the signed release's archive.
+	if [ -n "${MINION_CHECKSUMS_SHA256:-}" ]; then
+		[ "$(sha256 "$tmp/checksums.txt")" = "$MINION_CHECKSUMS_SHA256" ] || die "checksums.txt does not match the signed release (expected SHA-256 $MINION_CHECKSUMS_SHA256); nothing was installed"
+	fi
+
+	want=$(awk -v n="$archive" '$2 == n || $2 == "*" n {print $1; exit}' "$tmp/checksums.txt")
+	[ -n "$want" ] || die "$archive is not listed in checksums.txt of $ver"
+	got=$(sha256 "$tmp/$archive")
+	[ "$got" = "$want" ] || die "checksum mismatch for $archive: got $got, checksums.txt says $want; nothing was installed"
+
+	tar -xzf "$tmp/$archive" -C "$tmp" minion || die "could not unpack minion from $archive"
+	install_tmux
+	if [ "$join" = 1 ]; then
+		command -v tmux >/dev/null 2>&1 || die "tmux is needed for a Worker and could not be installed; install tmux and run this again (nothing was joined, the join token was not used)"
+	fi
+
+	dir=${MINION_INSTALL_DIR:-}
+	if [ -z "$dir" ]; then
+		if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
+			dir=/usr/local/bin
+		else
+			dir=$HOME/.local/bin
+		fi
+	fi
+	mkdir -p "$dir" || die "cannot create $dir"
+	# Copy to a unique file next to the target, then rename: a running minion
+	# keeps its old file, and two installs at once do not share a staging file.
+	new=$(mktemp "$dir/.minion.XXXXXX") || die "cannot write to $dir (run as root, or set MINION_INSTALL_DIR)"
+	trap 'rm -rf "$tmp"; rm -f "$new"' EXIT
+	cp "$tmp/minion" "$new" || die "cannot write to $dir (run as root, or set MINION_INSTALL_DIR)"
+	chmod 0755 "$new" || die "cannot make $new executable"
+	mv -f "$new" "$dir/minion" || die "cannot replace $dir/minion"
+
+	printf 'Installed %s/minion\n' "$dir"
+	case ":${PATH}:" in
+	*":$dir:"*) ;;
+	*)
+		# shellcheck disable=SC2016 # $PATH is printed literally on purpose
+		printf 'Note: %s is not on your PATH. Add it, for example:\n  export PATH="%s:$PATH"\n' "$dir" "$dir"
+		;;
+	esac
+	"$dir/minion" version
+
+	if [ "$join" = 1 ]; then
+		join_worker
+	fi
+}
+
+set -- --end "$@"; main "$@"
