@@ -185,7 +185,8 @@ func fixtureAssets(t *testing.T, files map[string]string) string {
 	for _, name := range names {
 		content := files[name]
 		writeFile(t, filepath.Join(dir, name), content, 0o644)
-		if name == "bootstrap.sh" || name == "install.sh" || name == "install.ps1" || name == "release-manifest.json" {
+		switch name {
+		case "bootstrap.sh", "install.sh", "install.ps1", "android.sh", "esp32.sh", "release-manifest.json":
 			writeFile(t, filepath.Join(dir, name+".sigstore.json"), "{}", 0o644)
 			continue
 		}

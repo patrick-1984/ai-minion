@@ -486,6 +486,52 @@ func TestRequireSignedAssets(t *testing.T) {
 	}
 }
 
+func TestPinAndFetchVerifyDeviceInstallerAssets(t *testing.T) {
+	const tag = "v0.17.0-rc.2"
+	const apk = "minion-android-0.17.0-rc.2.apk"
+	cosign := `if [ "$2" = --bundle ] && [ "$(cat "$3")" = invalid ]; then exit 1; fi` + "\n" + cosignStub
+	env, logPath := stubBin(t, map[string]string{"gh": ghStub, "docker": dockerPin, "cosign": cosign})
+	files := fullReleaseFiles()
+	files["release-manifest.json"] = strings.ReplaceAll(files["release-manifest.json"], testTag, tag)
+	files["android.sh"] = "#!/bin/sh\necho android\n"
+	files["esp32.sh"] = "#!/bin/sh\necho esp32\n"
+	files[apk] = "apk-bytes"
+	fixture := fixtureAssets(t, files)
+	env = append(env, "FIXTURE="+fixture, "STUB_DIGEST="+stubDigest)
+	manifest := filepath.Join(t.TempDir(), "assets.manifest")
+	pin := func() result {
+		writeFile(t, manifest, assetManifest(t, fixture), 0o644)
+		return script(t, env, "", "pin.sh", tag, manifest, stubDigest)
+	}
+
+	if r := pin(); r.code != 0 {
+		t.Fatalf("pin.sh: exit %d %s", r.code, r.all())
+	}
+	out := t.TempDir()
+	if r := script(t, env, "", "fetch.sh", tag, out, "*.apk"); r.code != 0 {
+		t.Fatalf("fetch.sh: exit %d %s", r.code, r.all())
+	}
+	for _, name := range []string{"android.sh", "esp32.sh"} {
+		bundle := name + ".sigstore.json"
+		mustContain(t, "signature checks", readLog(t, logPath), "--bundle "+filepath.Join(out, bundle))
+		path := filepath.Join(fixture, bundle)
+		rmFile(t, path)
+		if r := pin(); r.code == 0 || !strings.Contains(r.stderr, "has no cosign bundle "+bundle) {
+			t.Errorf("pin.sh accepted a missing %s: exit %d %s", bundle, r.code, r.all())
+		}
+		writeFile(t, path, "invalid", 0o644)
+		if r := pin(); r.code == 0 || !strings.Contains(r.stderr, "cosign bundle of "+name+" does not verify") {
+			t.Errorf("pin.sh accepted an invalid %s: exit %d %s", bundle, r.code, r.all())
+		}
+		writeFile(t, path, "{}", 0o644)
+	}
+
+	writeFile(t, filepath.Join(fixture, apk), "other-apk-bytes", 0o644)
+	if r := pin(); r.code == 0 || !strings.Contains(r.stderr, apk+" does not match the signed checksums.txt") {
+		t.Errorf("pin.sh accepted a tampered APK: exit %d %s", r.code, r.all())
+	}
+}
+
 // --- the publish gate, simulated -----------------------------------------------
 
 // The all-green job of smoke.yml is the gate that publish.yml needs. Run its
