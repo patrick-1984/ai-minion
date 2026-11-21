@@ -17,6 +17,8 @@
 #   - the signed files carry valid cosign bundles of the release workflow at
 #     refs/tags/TAG and every other asset is listed in the signed checksums.txt,
 #     so a bad signature stops the release while it is still a draft, and
+#   - the signed release-manifest.json names SMOKE_IMAGE@IMAGE_DIGEST as its
+#     image (the manifest attests the tested digest, not another one), and
 #   - SMOKE_IMAGE:TAG still resolves to IMAGE_DIGEST.
 # GH_TOKEN must be able to read the draft; docker must be logged in to the
 # registry; cosign must be installed.
@@ -39,6 +41,15 @@ trap 'rm -rf "$dir"' EXIT
 gh release download "$tag" --repo "$SMOKE_REPO" --dir "$dir" --clobber
 smoke_check_asset_manifest "$dir" "$manifest"
 smoke_verify_all_assets "$dir" "$tag"
+
+# The signed manifest must attest exactly the tested image.
+want_repo=$SMOKE_IMAGE
+# Compared in python on exact values: no whitespace or newline is tolerated.
+python3 -I -c 'import json, sys
+i = json.load(open(sys.argv[1])).get("image") or {}
+sys.exit(0 if (i.get("repository"), i.get("digest")) == (sys.argv[2], sys.argv[3]) else 1)' \
+	"$dir/release-manifest.json" "$want_repo" "$tested" ||
+	smoke_die "release-manifest.json does not name exactly the image '$want_repo@$tested' that the smoke tests tested"
 
 now=$(docker buildx imagetools inspect "$SMOKE_IMAGE:$tag" --format '{{.Manifest.Digest}}')
 [ "$now" = "$tested" ] ||
