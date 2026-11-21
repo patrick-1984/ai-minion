@@ -1,9 +1,11 @@
 package workers
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
@@ -183,21 +186,47 @@ func (h switchHandler) Handle(context.Context, slog.Record) error {
 func (h switchHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h switchHandler) WithGroup(string) slog.Handler      { return h }
 
-// With the local output stalled (its lock held by the traffic writer), the
-// Hub's close still returns: the offline and timeout records are best effort.
+type stalledRecheckStore struct {
+	Store
+	rechecking chan<- struct{}
+	lookups    atomic.Int32
+}
+
+func (s *stalledRecheckStore) TombstoneByPub(ctx context.Context, pub []byte) (store.TombstoneRow, error) {
+	if s.lookups.Add(1) == 2 {
+		// The second read is the post-registration check. Reproduce shutdown
+		// canceling the database lookup while the log output is stalled.
+		close(s.rechecking)
+		<-ctx.Done()
+		return store.TombstoneRow{}, ctx.Err()
+	}
+	return s.Store.TombstoneByPub(ctx, pub)
+}
+
 func TestServiceCloseWithStalledLocalOutput(t *testing.T) {
 	stuck := &atomic.Bool{}
 	rel := make(chan struct{})
 	defer close(rel)
-	h := newTestHub(t, func(o *ServiceOptions) { o.Logger = slog.New(switchHandler{stuck, rel}) })
+	rechecking := make(chan struct{})
+	h := newTestHub(t, func(o *ServiceOptions) {
+		o.Logger = slog.New(switchHandler{stuck, rel})
+		o.Store = &stalledRecheckStore{Store: o.Store, rechecking: rechecking}
+	})
 	_ = connectScripted(t, h, idAlice, "stall-1", nil, ops.OpSessionsList)
+	select {
+	case <-rechecking:
+	case <-time.After(4 * time.Second):
+		t.Fatal("the post-registration check did not start")
+	}
 	stuck.Store(true)
 	done := make(chan struct{})
 	go func() { h.svc.Close(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(4 * time.Second):
-		t.Fatal("Close hung on a stalled log output")
+		var stacks bytes.Buffer
+		_ = pprof.Lookup("goroutine").WriteTo(&stacks, 2)
+		t.Fatalf("Close hung on a stalled log output:\n%s", &stacks)
 	}
 }
 

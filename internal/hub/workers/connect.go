@@ -956,11 +956,13 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 // close the newer, correctly welcomed connection of the same Worker.
 func (h *Handler) recheckAdmitted(ctx context.Context, c *Conn, w store.WorkerRow, welcomed Policy) {
 	_, err := h.cfg.Repository.TombstoneByPub(ctx, []byte(c.res.WorkerPub))
+	// Shutdown can cancel a recheck while the log output is stalled. Stop
+	// waiting for these diagnostics when the connection is canceled.
 	switch {
 	case err == nil:
-		h.log.Info("worker was removed while it connected; the connection is ended", "worker_id", w.ID)
+		logx.BestEffortUntil(ctx, h.log, slog.LevelInfo, "worker was removed while it connected; the connection is ended", "worker_id", w.ID)
 	case !errors.Is(err, store.ErrWorkerNotFound):
-		h.log.Warn("worker connect: the removal check failed; the connection is ended", "worker_id", w.ID, "error", err.Error())
+		logx.BestEffortUntil(ctx, h.log, slog.LevelWarn, "worker connect: the removal check failed; the connection is ended", "worker_id", w.ID, "error", err.Error())
 	default:
 		if w.Pending {
 			// An approval that committed between the read of the row and the
@@ -969,7 +971,7 @@ func (h *Handler) recheckAdmitted(ctx context.Context, c *Conn, w store.WorkerRo
 			// an approval from here on finds it online.
 			cur, rerr := h.cfg.Repository.WorkerByPub(ctx, []byte(c.res.WorkerPub))
 			if rerr != nil || !cur.Pending {
-				h.log.Info("worker was approved while it connected; the connection is ended to start it approved", "worker_id", w.ID)
+				logx.BestEffortUntil(ctx, h.log, slog.LevelInfo, "worker was approved while it connected; the connection is ended to start it approved", "worker_id", w.ID)
 				break
 			}
 		}
@@ -979,9 +981,9 @@ func (h *Handler) recheckAdmitted(ctx context.Context, c *Conn, w store.WorkerRo
 		cur, perr := h.cfg.Policy(ctx, w)
 		switch {
 		case perr != nil:
-			h.log.Warn("worker connect: the policy check failed; the connection is ended", "worker_id", w.ID, "error", perr.Error())
+			logx.BestEffortUntil(ctx, h.log, slog.LevelWarn, "worker connect: the policy check failed; the connection is ended", "worker_id", w.ID, "error", perr.Error())
 		case cur != welcomed:
-			h.log.Info("worker policy changed while it connected; the connection is ended", "worker_id", w.ID)
+			logx.BestEffortUntil(ctx, h.log, slog.LevelInfo, "worker policy changed while it connected; the connection is ended", "worker_id", w.ID)
 		default:
 			return
 		}

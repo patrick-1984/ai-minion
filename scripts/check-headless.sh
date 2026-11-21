@@ -30,5 +30,5 @@ if grep -Eq 'goarch: *arm$|GOARCH: *arm$|goarm|GOARM' .github/workflows/tray.yml
 
 # Positive control: the tray build does link the GUI libraries (the check above
 # would otherwise pass vacuously).
-GOOS=linux GOARCH=amd64 go list -deps ./cmd/minion-tray | grep -q 'fyne.io/systray' || { echo "control failed: tray does not link systray"; fail=1; }
+GOOS=linux GOARCH=amd64 go list -deps ./cmd/minion-tray | grep -F 'fyne.io/systray' >/dev/null || { echo "control failed: tray does not link systray"; fail=1; }
 exit $fail

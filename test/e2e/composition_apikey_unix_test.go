@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -223,8 +225,12 @@ func TestAuthenticatedKeysThroughTheHubAPIReachTheNativeShellPaneOnlyWithOperate
 	}
 	other := k.enrolFor(t, h, otherKey.Public(), "other") // enrolled, never online
 
-	shell := w.srv.NewSession("shellwork") // the default shell
-	time.Sleep(500 * time.Millisecond)
+	// Observe bytes consumed by a real shell, not its terminal rendering.
+	// Readline can redraw pre-prompt input twice even when it was sent once.
+	// The shell remains the pane's current command while its builtin read waits.
+	receipt := filepath.Join(t.TempDir(), "received-input")
+	shell := w.srv.NewSession("shellwork", "sh", "-c", `stty -echo; printf 'shell-ready\n'; IFS= read -r input; printf '%s' "$input" > "$1"; printf 'shell-received\n'; exec sleep 30`, "minion-key-test", receipt)
+	w.srv.WaitFor(shell, "shell-ready", 10*time.Second)
 	onShell := func(text string, force bool) ops.SendTextArgs {
 		return sendTextArgs(id, "shellwork", text, ops.NewUUIDv7(), force)
 	}
@@ -318,9 +324,12 @@ func TestAuthenticatedKeysThroughTheHubAPIReachTheNativeShellPaneOnlyWithOperate
 		forced.Outcome != ops.OutcomeDelivered || !forced.Forced {
 		t.Fatalf("operate key with force: HTTP %d %s", a.status, a.body)
 	}
-	w.srv.WaitFor(shell, "forcemark", 10*time.Second)
-	time.Sleep(300 * time.Millisecond)
-	if n := strings.Count(w.srv.Capture(shell), "forcemark"); n != 1 {
-		t.Fatalf("the pane shows the forced text %d times, want exactly one effect:\n%s", n, w.srv.Capture(shell))
+	// Complete the shell read independently of the API operation being tested.
+	// A denied write or duplicate delivery would be present in this same line.
+	w.srv.SendKeys(shell, "Enter")
+	w.srv.WaitFor(shell, "shell-received", 10*time.Second)
+	got, err := os.ReadFile(receipt)
+	if err != nil || string(got) != "forcemark" {
+		t.Fatalf("shell consumed %q, want exactly one authorized payload: %v", got, err)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"github.com/patrick-1984/ai-minion/internal/proto"
 	"io"
 	"log/slog"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/testutil/hubcert"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -173,15 +173,42 @@ func TestRestartResumesTheSameCodeAndPairingID(t *testing.T) {
 	h := newStubPairHub(t)
 	h.dropBeforeWelcome.Store(1)
 	hp := newHubPairer(t, h.url())
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); _, _ = hp.Run(ctx) }()
+	ctx, cancel := context.WithCancel(t.Context())
+	authenticated := make(chan struct{})
+	h.mu.Lock()
+	h.afterAuth = func() {
+		h.mu.Lock()
+		h.afterAuth = nil
+		h.mu.Unlock()
+		close(authenticated)
+		// Hold the first welcome until the first Worker has been canceled.
+		// Dropping it immediately would let that Worker retry before restart.
+		<-ctx.Done()
+	}
+	h.mu.Unlock()
+	first := &pairRun{done: make(chan struct{})}
+	go func() { defer close(first.done); first.enr, first.err = hp.Run(ctx) }()
+	defer func() {
+		cancel()
+		first.wait(t)
+	}()
 	code := hp.code(t, 1)
 	eventually(t, func() bool { return h.lastID() == code[3:7] })
 	h.claim(code)
-	eventually(t, func() bool { _, ok := recordOf(t, hp.enr); return ok })
+	select {
+	case <-authenticated:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Hub did not receive the first Worker's authenticated signature")
+	}
+	if _, ok := recordOf(t, hp.enr); !ok {
+		t.Fatal("the authenticated Worker did not store a resume record")
+	}
 	cancel() // the Worker process ends
-	<-done
+	first.wait(t)
+	if !errors.Is(first.err, context.Canceled) {
+		t.Fatalf("the first Worker's pairing ended with %v, want cancellation", first.err)
+	}
+	eventually(t, func() bool { return h.dropBeforeWelcome.Load() == 0 })
 
 	hp2 := pairerOn(t, hp.enr, h.url())
 	r := hp2.start(t)
