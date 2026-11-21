@@ -1,4 +1,4 @@
-//go:build e2e && !windows
+//go:build e2e && linux
 
 package e2e
 

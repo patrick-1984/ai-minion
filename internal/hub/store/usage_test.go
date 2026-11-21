@@ -271,3 +271,53 @@ func TestUsagePersistenceHasNoCompleteKey(t *testing.T) {
 		check(data)
 	}
 }
+
+// BenchmarkUsageMixedSessions covers active sessions without writing a row
+// per poll. For the 30-minute trace use -benchtime=360x at five-second ticks.
+func BenchmarkUsageMixedSessions(b *testing.B) {
+	for _, count := range []int{20, 50} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			s, err := Open(b.TempDir())
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer func() { _ = s.Close() }()
+			workers, r, start := usageFixture(b, s, count)
+			var worst time.Duration
+			b.ResetTimer()
+			for tick := 0; tick < b.N; tick++ {
+				at := start.Add(time.Duration(tick) * 5 * time.Second)
+				r.ObservedAt = at.UnixMilli()
+				for i := range r.Sessions {
+					r.Sessions[i].ObservedAt = r.ObservedAt
+					if i%3 == tick%3 {
+						v := int64((tick+1)*100 + i)
+						r.Sessions[i].InputTokens = &v
+					}
+				}
+				begin := time.Now()
+				if err := s.SaveUsage(b.Context(), "w1", "alice", r, at); err != nil {
+					b.Fatal(err)
+				}
+				worst = max(worst, time.Since(begin))
+				if tick%4 == 0 {
+					page, err := s.ReadUsage(b.Context(), workers, "alice", ops.UsageListArgs{Section: "sessions"}, at)
+					if err != nil || len(page.Sessions) != count {
+						b.Fatal("incomplete usage read", err)
+					}
+				}
+			}
+			b.StopTimer()
+			var hours, events int
+			if err := s.db.QueryRow(`SELECT count(*) FROM usage_hours`).Scan(&hours); err != nil {
+				b.Fatal(err)
+			}
+			if err := s.db.QueryRow(`SELECT count(*) FROM usage_events`).Scan(&events); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportMetric(float64(hours), "hourly_rows")
+			b.ReportMetric(float64(events), "host_events")
+			b.ReportMetric(float64(worst.Microseconds())/1000, "worst_write_ms")
+		})
+	}
+}
