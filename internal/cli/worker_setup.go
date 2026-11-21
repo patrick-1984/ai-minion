@@ -397,6 +397,9 @@ func cmdContext(cmd *cobra.Command) context.Context {
 // variables answer questions. For the gate of "worker up" (explicit false) the
 // file counts too, so that a Hub address saved earlier is not asked again.
 func (d workerSetupDeps) runWizard(cmd *cobra.Command, res *config.Resolver, core config.WorkerCore, explicit bool) (setup.Result, error) {
+	if core.Managed.Android {
+		return setup.Result{}, errors.New("the Minion app configures Android Workers. Use the app, or pass --non-interactive-share with piped input")
+	}
 	hub, err := config.ResolveWorkerHub(res)
 	if err != nil {
 		return setup.Result{}, err

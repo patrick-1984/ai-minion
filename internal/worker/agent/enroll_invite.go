@@ -806,26 +806,23 @@ type RecoveredHub struct {
 	Fingerprint string
 }
 
-// RecoverHub returns the Hub of a committed enrollment. A join that was
-// killed between the enrollment commit and the save of the Hub address and
-// fingerprint into the config file leaves an enrolled Worker whose
-// credential-free start would otherwise stay in Solo mode: the next start
-// recovers the address and the checked fingerprint from the enrollment, which
-// is stored together with the pin. ok is false when the Worker is not enrolled
-// or the enrollment recorded no usable address.
-func (e *Enrollments) RecoverHub(ctx context.Context) (RecoveredHub, bool, error) {
+// RecoverHub returns the Hub of a configure-only join that committed its
+// enrollment but was interrupted before saving its settings. Both the marker
+// and the committed, checked Hub must match; an old enrollment alone never
+// reconnects a Worker that was deliberately switched to Solo.
+func (e *Enrollments) RecoverHub(ctx context.Context, res *config.Resolver) (RecoveredHub, bool, error) {
+	server, want, pending := config.PendingJoin(res)
+	if !pending || validateHubURL(server) != nil {
+		return RecoveredHub{}, false, nil
+	}
 	enr, ok, err := e.Load(ctx)
 	if err != nil || !ok {
 		return RecoveredHub{}, false, err
 	}
-	if enr.HubURL == "" || validateHubURL(enr.HubURL) != nil {
+	check := enr.Check()
+	if enr.HubURL != server || (check != store.HubCheckInvite && check != store.HubCheckFingerprint) ||
+		enr.HubCheckAnchor != want || fingerprintOfPub(enr.Pin.Pub).String() != want {
 		return RecoveredHub{}, false, nil
 	}
-	rec := RecoveredHub{URL: enr.HubURL}
-	if c := enr.Check(); (c == store.HubCheckInvite || c == store.HubCheckFingerprint) && enr.HubCheckAnchor != "" {
-		if _, err := identity.ParseFingerprint(enr.HubCheckAnchor); err == nil {
-			rec.Fingerprint = enr.HubCheckAnchor
-		}
-	}
-	return rec, true, nil
+	return RecoveredHub{URL: server, Fingerprint: want}, true, nil
 }

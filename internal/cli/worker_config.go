@@ -330,6 +330,9 @@ func runConfigSet(cmd *cobra.Command, deps workerConfigDeps, key, value string) 
 		}
 	}
 	ce.file.Set(s.Key, value)
+	if s.Key == config.KeyServer {
+		ce.file.ClearPendingJoin()
+	}
 	if err := ce.file.Save(); err != nil {
 		return err
 	}
@@ -352,7 +355,8 @@ func runConfigUnset(cmd *cobra.Command, deps workerConfigDeps, key string) error
 		return err
 	}
 	defer ce.release()
-	if _, set, _ := ce.file.Lookup(s.Key); !set {
+	pendingJoin := s.Key == config.KeyServer && ce.file.ClearPendingJoin()
+	if _, set, _ := ce.file.Lookup(s.Key); !set && !pendingJoin {
 		return writef(ce.out, "%s is not set in %s; nothing to remove.\n", s.Key, ce.file.Path())
 	}
 	ce.file.Delete(s.Key)

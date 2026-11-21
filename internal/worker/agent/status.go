@@ -159,7 +159,7 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 	if s.Private != nil {
 		// The code is in the Pairing field only, never in the legacy field.
 		out.PairingKnown = true
-		if p, ok := s.Private.Current(); ok {
+		if p, ok := s.Private.Current(); ok && !out.Paused {
 			out.Pairing = &p
 		}
 	}

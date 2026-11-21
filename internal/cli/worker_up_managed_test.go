@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -121,18 +122,40 @@ func TestWorkerUpRecoversAnInterruptedJoin(t *testing.T) {
 		keyBefore, _ = os.ReadFile(e.KeyPath())
 		if err := e.Commit(context.Background(), agent.Enrollment{
 			Pin: identity.Pin{Pub: hub.Public()}, WorkerID: "w-1", HubURL: "https://hub.example:8443",
-			HubCheck: store.HubCheckInvite, HubCheckAnchor: testHubFingerprint(),
+			HubCheck: store.HubCheckInvite, HubCheckAnchor: hub.Fingerprint().String(),
 		}); err != nil {
 			return err
 		}
 		return os.ErrDeadlineExceeded // the process died here
 	})
-	text, _ := testJoinToken(t, "https://hub.example:8443")
+	key, err := identity.NewInviteKey(hub.Fingerprint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := identity.NewJoinToken("https://hub.example:8443", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := token.Encode()
 	if _, err := f.runIn(strings.NewReader(text+"\n"), "--configure-only", "--non-interactive-share", "all", "--join", "-"); err == nil {
 		t.Fatal("the interrupted join reported success")
 	}
 	if cfg := readConfig(t, f.stateDir()); cfg["server"] != "" {
 		t.Fatalf("the interrupted run saved the Hub: %v", cfg)
+	}
+
+	sd := testStatusDeps(map[string]string{"MINION_STATE_DIR": f.stateDir()})
+	sd.loadConfig = loadWorkerConfig
+	sd.live = func(string) agent.LiveSource {
+		return fakeLive{ls: agent.LiveStatus{Connector: agent.Status{
+			State: agent.ConnConnected, Welcome: agent.HubWelcome{Pending: true},
+		}, ApprovalKnown: true}}
+	}
+	raw, _, err := runWorkerCmds(t, sd, workerConfigDeps{}, "worker", "status", "--json")
+	var status agent.StatusReport
+	if err != nil || json.Unmarshal([]byte(raw), &status) != nil ||
+		status.Mode != agent.ModeHub || status.HubURL != "https://hub.example:8443" || status.Approval != agent.ApprovalPending {
+		t.Fatalf("recovered status: %s; error %v", raw, err)
 	}
 
 	// The next start: no token, no server setting.
@@ -142,7 +165,7 @@ func TestWorkerUpRecoversAnInterruptedJoin(t *testing.T) {
 		t.Fatalf("recovery run: %v\nstderr: %s", err, f.stderr)
 	}
 	cfg := readConfig(t, f.stateDir())
-	if cfg["server"] != "https://hub.example:8443" || cfg["hub_fingerprint"] != testHubFingerprint() {
+	if cfg["server"] != "https://hub.example:8443" || cfg["hub_fingerprint"] != hub.Fingerprint().String() {
 		t.Errorf("config after recovery = %v", cfg)
 	}
 	if after, _ := os.ReadFile(filepath.Join(f.stateDir(), agent.WorkerKeyFile)); string(after) != string(keyBefore) || len(after) == 0 {
@@ -170,6 +193,7 @@ func TestFillRecoveredHubKeepsWhatIsConfigured(t *testing.T) {
 		t.Error("a fingerprint was added next to a configured Hub")
 	}
 	file.Delete(config.KeyServer)
+	file.SetPendingJoin(rec.URL, rec.Fingerprint)
 	fillRecoveredHub(file, rec)
 	if v, _, _ := file.Lookup(config.KeyServer); v != "https://recovered.example" {
 		t.Errorf("server = %q", v)

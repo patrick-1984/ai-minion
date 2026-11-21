@@ -232,6 +232,11 @@ func (deps workerStatusDeps) report(ctx context.Context, flags config.FlagSource
 			defer func() { _ = st.Close() }()
 			enr = agent.NewEnrollments(st, core.StateDir)
 			in.Enrollment, in.Keys, in.Share = enr, enr, st
+			if rec, ok, err := enr.RecoverHub(ctx, res); err != nil {
+				problems = append(problems, fmt.Sprintf("cannot read the pending join: %v", err))
+			} else if ok {
+				in.HubURL = rec.URL
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		problems = append(problems, fmt.Sprintf("cannot look at the Worker state in %s: %v", core.StateDir, err))

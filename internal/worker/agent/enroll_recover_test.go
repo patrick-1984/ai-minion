@@ -3,9 +3,11 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -29,7 +31,7 @@ func joinCommittedState(t *testing.T, hub *identity.Key, url string) func(string
 	}
 }
 
-func TestRecoverHubFromACommittedEnrollment(t *testing.T) {
+func TestRecoverHubRequiresAnExplicitPendingJoinForTheSameHub(t *testing.T) {
 	hub, _ := identity.GenerateKey()
 	dir := t.TempDir()
 	st, err := store.Open(dir)
@@ -38,56 +40,48 @@ func TestRecoverHubFromACommittedEnrollment(t *testing.T) {
 	}
 	defer func() { _ = st.Close() }()
 	e := NewEnrollments(st, dir)
-	if _, _, err := e.RecoverHub(context.Background()); err != nil {
+	file, err := config.LoadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := e.RecoverHub(context.Background()); ok {
+	res := &config.Resolver{Role: config.ScopeWorker, File: file, LookupEnv: func(string) (string, bool) { return "", false }}
+	url := "https://hub.example:8443"
+	file.SetPendingJoin(url, hub.Fingerprint().String())
+	if _, ok, err := e.RecoverHub(context.Background(), res); ok || err != nil {
 		t.Fatal("recovered a Hub without an enrollment")
 	}
-	joinCommittedState(t, hub, "https://hub.example:8443")(dir, st)
-	rec, ok, err := e.RecoverHub(context.Background())
-	if err != nil || !ok {
-		t.Fatalf("%+v %v %v", rec, ok, err)
+	joinCommittedState(t, hub, url)(dir, st)
+	rec, ok, err := e.RecoverHub(context.Background(), res)
+	if err != nil || !ok || rec.URL != url || rec.Fingerprint != hub.Fingerprint().String() {
+		t.Fatalf("recovery = %+v, %v, %v", rec, ok, err)
 	}
-	if rec.URL != "https://hub.example:8443" || rec.Fingerprint != string(hub.Fingerprint()) {
-		t.Errorf("rec = %+v", rec)
+	file.Set(config.KeyServer, "")
+	if _, ok, err := e.RecoverHub(context.Background(), res); ok || err != nil {
+		t.Fatal("explicit Solo did not suppress recovery")
+	}
+	file.Delete(config.KeyServer)
+	file.SetPendingJoin("https://other.example", hub.Fingerprint().String())
+	if _, ok, err := e.RecoverHub(context.Background(), res); ok || err != nil {
+		t.Fatal("recovered the wrong Hub")
+	}
+	file.ClearPendingJoin()
+	if _, ok, err := e.RecoverHub(context.Background(), res); ok || err != nil {
+		t.Fatal("recovered an old enrollment without a marker")
 	}
 }
 
-func TestRecoverHubIgnoresAnUnusableAddressAndAnUncheckedPin(t *testing.T) {
-	hub, _ := identity.GenerateKey()
-	for name, enr := range map[string]Enrollment{
-		"no address":  {Pin: identity.Pin{Pub: hub.Public()}, WorkerID: "w"},
-		"bad address": {Pin: identity.Pin{Pub: hub.Public()}, WorkerID: "w", HubURL: "ftp://x"},
-	} {
-		dir := t.TempDir()
-		st, _ := store.Open(dir)
-		e := NewEnrollments(st, dir)
-		if _, err := e.LoadOrCreateKey(); err != nil {
+func pendingJoinState(t *testing.T, hub *identity.Key, url string) func(string, *store.Store) {
+	t.Helper()
+	return func(dir string, st *store.Store) {
+		joinCommittedState(t, hub, url)(dir, st)
+		file, err := config.LoadFile(filepath.Join(dir, "config.json"))
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := e.Commit(context.Background(), enr); err != nil {
+		file.SetPendingJoin(url, hub.Fingerprint().String())
+		if err := file.Save(); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok, err := e.RecoverHub(context.Background()); ok || err != nil {
-			t.Errorf("%s: ok=%v err=%v", name, ok, err)
-		}
-		_ = st.Close()
-	}
-	// An enrollment checked by nothing recovers the address, not a fingerprint.
-	dir := t.TempDir()
-	st, _ := store.Open(dir)
-	defer func() { _ = st.Close() }()
-	e := NewEnrollments(st, dir)
-	if _, err := e.LoadOrCreateKey(); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Commit(context.Background(), Enrollment{Pin: identity.Pin{Pub: hub.Public()}, WorkerID: "w", HubURL: "https://h.example"}); err != nil {
-		t.Fatal(err)
-	}
-	rec, ok, _ := e.RecoverHub(context.Background())
-	if !ok || rec.Fingerprint != "" {
-		t.Errorf("rec = %+v ok=%v", rec, ok)
 	}
 }
 
@@ -95,7 +89,7 @@ func TestRecoverHubIgnoresAnUnusableAddressAndAnUncheckedPin(t *testing.T) {
 // enrollment instead of staying in Solo mode, and a configured address wins.
 func TestConnectorRecoversTheHubOfAnInterruptedJoin(t *testing.T) {
 	hub, _ := identity.GenerateKey()
-	c, err := startConnectorRuntime(t, nil, joinCommittedState(t, hub, "https://hub.example:8443"))
+	c, err := startConnectorRuntime(t, nil, pendingJoinState(t, hub, "https://hub.example:8443"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +108,7 @@ func TestConnectorRecoversTheHubOfAnInterruptedJoin(t *testing.T) {
 
 func TestConnectorKeepsAConfiguredHubOverTheRecoveredOne(t *testing.T) {
 	hub, _ := identity.GenerateKey()
-	c, err := startConnectorRuntime(t, map[string]string{"MINION_SERVER": "https://configured.example"}, joinCommittedState(t, hub, "https://hub.example:8443"))
+	c, err := startConnectorRuntime(t, map[string]string{"MINION_SERVER": "https://configured.example"}, pendingJoinState(t, hub, "https://hub.example:8443"))
 	if err != nil {
 		t.Fatal(err)
 	}

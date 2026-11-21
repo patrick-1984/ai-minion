@@ -73,3 +73,15 @@ func skipWindowsPaths(t *testing.T) {
 		t.Skip("Android paths are not absolute paths on Windows")
 	}
 }
+
+func TestManagedHostIgnoresSavedSupervisorOverrides(t *testing.T) {
+	file := MapSource{
+		KeyManagedHost: ManagedHostAndroid,
+		KeyTmuxBinary:  "/tmp/not-a-trusted-binary",
+		KeyTmuxConfig:  "/tmp/not-a-trusted-config",
+	}
+	host, err := ResolveManagedHost(workerResolver(nil, nil, file))
+	if err != nil || host != (ManagedHost{}) {
+		t.Fatalf("saved supervisor settings affected the host: %+v, %v", host, err)
+	}
+}

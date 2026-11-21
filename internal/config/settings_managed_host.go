@@ -87,7 +87,10 @@ func ResolveManagedHost(res *Resolver) (ManagedHost, error) {
 		if !filepath.IsAbs(p) {
 			return m, fmt.Errorf("setting %q (%s): %q is not an absolute path", KeyTmuxBinary, bin.Source, p)
 		}
-		m.TmuxBinary = filepath.Clean(p)
+		m.TmuxBinary, err = managedExecutable(filepath.Clean(p))
+		if err != nil {
+			return m, err
+		}
 	}
 	cfg, err := res.Resolve(KeyTmuxConfig)
 	if err != nil {

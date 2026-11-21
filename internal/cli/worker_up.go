@@ -462,6 +462,19 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		}
 	}()
 
+	joining := configureOnly && cmd.Annotations[joinAppliedAnnotation] != ""
+	if joining {
+		hub, err := config.ResolveWorkerHub(res)
+		if err != nil {
+			return err
+		}
+		if _, err := st.update(func(f *config.ConfigFile) error {
+			f.SetPendingJoin(hub.Server, hub.Fingerprint)
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 	hookSettings := agent.Settings{WorkerCore: core, Resolver: res, Logger: logger, InviteArgvWarned: inviteWarned}
 	if owned && deps.ownerHooks != nil {
 		if err := st.give(); err != nil {
@@ -481,12 +494,15 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// kept, never written over with the older file.
 	// A join that an earlier run left half done (killed between the
 	// enrollment commit and this save) is finished from the enrollment.
-	recovered := recoverJoinedHub(ctx, st)
+	recovered := recoverJoinedHub(ctx, st, res)
 	path, err := st.update(func(file *config.ConfigFile) error {
 		if err := fillUpConfig(file, plain, reg, flags, lookupEnv); err != nil {
 			return err
 		}
 		fillRecoveredHub(file, recovered)
+		if joining {
+			file.ClearPendingJoin()
+		}
 		return nil
 	})
 	if err != nil {
@@ -587,8 +603,8 @@ func refuseSupervisorSettings(res *config.Resolver, reg *config.Registry) error 
 // agent.Enrollments.RecoverHub). It never fails the command: a state that
 // cannot be read gives no recovery. Root working on another user's directory
 // is skipped; the Worker recovers the address itself at its next start.
-func recoverJoinedHub(ctx context.Context, st *upState) *agent.RecoveredHub {
-	if st.root != nil {
+func recoverJoinedHub(ctx context.Context, st *upState, res *config.Resolver) *agent.RecoveredHub {
+	if _, _, pending := config.PendingJoin(res); st.root != nil || !pending {
 		return nil
 	}
 	if _, err := os.Stat(filepath.Join(st.dir, store.DBFile)); err != nil {
@@ -599,7 +615,7 @@ func recoverJoinedHub(ctx context.Context, st *upState) *agent.RecoveredHub {
 		return nil
 	}
 	defer func() { _ = ro.Close() }()
-	rec, ok, err := agent.NewEnrollments(ro, st.dir).RecoverHub(ctx)
+	rec, ok, err := agent.NewEnrollments(ro, st.dir).RecoverHub(ctx, res)
 	if err != nil || !ok {
 		return nil
 	}
@@ -612,7 +628,12 @@ func fillRecoveredHub(file *config.ConfigFile, rec *agent.RecoveredHub) {
 	if rec == nil {
 		return
 	}
-	if v, ok, _ := file.Lookup(config.KeyServer); !ok || v == "" {
+	if _, ok, _ := file.Lookup(config.KeyServer); !ok {
+		res := &config.Resolver{Role: config.ScopeWorker, File: file, LookupEnv: func(string) (string, bool) { return "", false }}
+		if server, fp, ok := config.PendingJoin(res); !ok || server != rec.URL || fp != rec.Fingerprint {
+			return
+		}
+		file.ClearPendingJoin()
 		file.Set(config.KeyServer, rec.URL)
 		if v, ok, _ := file.Lookup(config.KeyHubFingerprint); (!ok || v == "") && rec.Fingerprint != "" {
 			file.Set(config.KeyHubFingerprint, rec.Fingerprint)

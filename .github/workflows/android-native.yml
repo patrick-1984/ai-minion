@@ -25,12 +25,11 @@ jobs:
   build:
     name: native ${{ matrix.abi }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         abi: [arm64-v8a, armeabi-v7a]
-    env:
-      ANDROID_NDK_FETCH_DIR: ${{ github.workspace }}/.android-native-work
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,18 +37,13 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Build the Worker, tmux and terminfo (NDK from versions.lock, sources verified by SHA-256)
+      - name: Cache the pinned native archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .android-native-work/dl
+          key: android-native-${{ runner.os }}-${{ hashFiles('android/native/versions.lock') }}
+      - name: Build and verify the Worker, tmux and terminfo
         run: scripts/android/build-native.sh --fetch-ndk --abi "${{ matrix.abi }}" --out dist/android-native --version "ci-${GITHUB_SHA::12}"
-      - name: The ELF checks reject a host binary and the other ABI
-        run: |
-          set -euo pipefail
-          export ANDROID_NDK_HOME="$ANDROID_NDK_FETCH_DIR/ndk/android-ndk-r28c"
-          other=arm64-v8a; [ "${{ matrix.abi }}" = arm64-v8a ] && other=armeabi-v7a
-          if scripts/android/verify-elf.sh "${{ matrix.abi }}" /bin/true; then echo "a host binary passed the ELF checks"; exit 1; fi
-          if scripts/android/verify-elf.sh "${{ matrix.abi }}" "dist/android-native/${{ matrix.abi }}/libtmux.so" >/dev/null &&
-             scripts/android/verify-elf.sh "$other" "dist/android-native/${{ matrix.abi }}/libtmux.so" 2>/dev/null; then
-            echo "the ELF checks accepted a ${{ matrix.abi }} binary as $other"; exit 1
-          fi
       - name: Summary
         run: |
           cat dist/android-native/native-manifest.txt

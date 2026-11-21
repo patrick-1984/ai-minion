@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/patrick-1984/ai-minion/internal/ops"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -12,6 +11,8 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/identity"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
@@ -208,5 +209,60 @@ func TestSessionCreateOnADownManagedHostIsNotCachedUnknown(t *testing.T) {
 	res := e.mustWrite(ops.OpSessionCreate, args)
 	if res.Outcome == ops.OutcomeUnknown {
 		t.Fatalf("the failure was cached as unknown: %+v", res)
+	}
+}
+
+func TestManagedPairingRequiresTheCodeWithOrWithoutAnExpectedFingerprint(t *testing.T) {
+	skipWindows(t)
+	hub, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pin := range []string{"", hub.Fingerprint().String()} {
+		out, pd, _, _ := startAutoPairRuntimeOpts(t, map[string]string{
+			"MINION_SERVER": "https://hub.example", "MINION_HUB_FINGERPRINT": pin,
+		}, nil, true)
+		eventually(t, func() bool { return pd.nCalls() != 0 })
+		if pd.call(0).AllowAdmit {
+			t.Fatal("the managed Worker accepted code-less admission")
+		}
+		if codeRE.MatchString(out.String()) {
+			t.Fatal("the managed Worker printed a pairing code")
+		}
+	}
+}
+
+func TestPrivatePairingUsesTheRestoredExpiryAndIgnoresAClosedAttempt(t *testing.T) {
+	clk := &fakeClockAt{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	status := NewPairingStatus(clk)
+	p := &Pairer{cfg: PairerConfig{Private: status}, ttl: PairCodeTTL}
+	deadline := clk.now.Add(10 * time.Second)
+	life := &codeLife{
+		code: identity.NewPairingCode(), restored: true, resume: &store.PairResume{ExpiresAt: deadline},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	box := &codeBox{p: p, life: life, ctx: ctx, held: true}
+	life.show(clk.now, p.ttl)
+	box.flush()
+	got, ok := status.Current()
+	if !ok || got.ExpiresAt != deadline.Format(time.RFC3339Nano) {
+		t.Fatal("the displayed deadline differs from the resumed code lifetime")
+	}
+	status.Clear()
+	if err := box.hubHello([]byte{1}, false); err == nil {
+		t.Fatal("a retired attempt accepted a late Hub hello")
+	}
+	box.print()
+	if _, ok := status.Current(); ok {
+		t.Fatal("a late callback republished a retired code")
+	}
+	life2 := &codeLife{code: identity.NewPairingCode()}
+	life2.show(clk.now, p.ttl)
+	paused := &codeBox{p: p, life: life2, ctx: ctx, held: true}
+	cancel()
+	paused.flush()
+	if _, ok := status.Current(); ok {
+		t.Fatal("a paused attempt published a code")
 	}
 }

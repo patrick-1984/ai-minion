@@ -82,6 +82,12 @@ for file in "$@"; do
     bad "built for API $(( 16#$api_hex )), want $ANDROID_API"
   fi
 
+  if [ "$(basename "$file")" = libminion.so ]; then
+    symbols="$("$readelf" --dyn-syms -W "$file")"
+    awk '$7 == "UND" && $8 ~ /^getaddrinfo(@|$)/ { found=1 } END { exit !found }' <<<"$symbols" ||
+      bad "Bionic getaddrinfo is not linked"
+  fi
+
   [ "$fail" = 0 ] && echo "verify-elf: $abi $(basename "$(dirname "$file")")/$(basename "$file"): ok ($got_machine $got_class, interp $got_interp, needs:$(sed -n 's/.*(NEEDED).*Shared library: \[\(.*\)\]/ \1/p' <<<"$dyn" | tr -d '\n'), ${loads} LOAD >= ${MAX_PAGE_SIZE}, API $ANDROID_API)"
 done
 exit "$fail"

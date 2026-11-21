@@ -1061,7 +1061,7 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 	// HubHelloWait after the Worker's hello went out (an older Hub answers
 	// only after the claim), or at the end of an attempt that was held but
 	// ended sooner; whichever comes first, and once per code.
-	box := &codeBox{p: p, life: life, notice: notice}
+	box := &codeBox{p: p, life: life, notice: notice, ctx: ctx}
 	defer box.flush()
 	go func() {
 		// The attempt ends as soon as the enrollment moves, in this process
@@ -1168,11 +1168,11 @@ type codeBox struct {
 	p      *Pairer
 	life   *codeLife
 	notice string
+	ctx    context.Context
 
 	mu      sync.Mutex
-	held    bool   // the Worker's hello went out (OnWaiting)
-	root    []byte // the root of the Hub hello, nil before it
-	admit   bool   // an admission is allowed on this connection
+	closed  bool
+	held    bool // the Worker's hello went out (OnWaiting)
 	helloCh chan struct{}
 }
 
@@ -1206,7 +1206,10 @@ func (b *codeBox) waiting(ctx context.Context) {
 // that presents another root is refused before any CPace message.
 func (b *codeBox) hubHello(root []byte, admit bool) error {
 	b.mu.Lock()
-	b.root, b.admit = bytes.Clone(root), admit
+	defer b.mu.Unlock()
+	if b.closed || b.ctx.Err() != nil {
+		return context.Canceled
+	}
 	if b.helloCh == nil {
 		b.helloCh = make(chan struct{})
 	}
@@ -1215,14 +1218,13 @@ func (b *codeBox) hubHello(root []byte, admit bool) error {
 	default:
 		close(b.helloCh)
 	}
-	b.mu.Unlock()
 	print, err := b.life.acceptRoot(root, admit)
 	if err != nil {
 		return err
 	}
 	b.p.cfg.Private.setHub(root)
 	if print {
-		b.p.showCode(b.life.code, b.notice, root, admit)
+		b.show(root, admit)
 	}
 	return nil
 }
@@ -1231,20 +1233,34 @@ func (b *codeBox) hubHello(root []byte, admit bool) error {
 // printed it yet.
 func (b *codeBox) flush() {
 	b.mu.Lock()
-	held := b.held
-	b.mu.Unlock()
-	if held {
-		b.print()
+	defer b.mu.Unlock()
+	if b.held {
+		b.printLocked()
 	}
+	// A timer already selected on the previous attempt may still be
+	// waiting on this lock. It must not publish after the attempt returns.
+	b.closed = true
 }
 
-// print prints the box without Hub words (no Hub hello arrived in time, or
-// the attempt ended before it).
 func (b *codeBox) print() {
-	if !b.life.markPrinted() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.printLocked()
+}
+
+func (b *codeBox) printLocked() {
+	if b.closed || b.ctx.Err() != nil || !b.life.markPrinted() {
 		return
 	}
-	b.p.showCode(b.life.code, b.notice, nil, false)
+	b.show(nil, false)
+}
+
+func (b *codeBox) show(root []byte, admit bool) {
+	if b.p.cfg.Private != nil {
+		b.p.present(b.life.code, root, b.life.expiry(b.p.ttl))
+		return
+	}
+	b.p.showCode(b.life.code, b.notice, root, admit)
 }
 
 // showCode prints the code on the console and in the log: the one place a
@@ -1259,10 +1275,6 @@ func (b *codeBox) print() {
 // An older Hub answers only after the claim; the line is then left out.
 // admit says that the Hub may admit this connection's pairing request.
 func (p *Pairer) showCode(c identity.PairingCode, notice string, root []byte, admit bool) {
-	if p.cfg.Private != nil {
-		p.present(c, root)
-		return
-	}
 	lines := []string{}
 	if notice != "" {
 		lines = append(lines, notice, "")

@@ -96,8 +96,7 @@ func (s *PairingStatus) Current() (PairingPresentation, bool) {
 }
 
 // present records the code of the Pairer in the private status.
-func (p *Pairer) present(c identity.PairingCode, root []byte) {
-	exp := p.clk.Now().Add(p.ttl)
+func (p *Pairer) present(c identity.PairingCode, root []byte, exp time.Time) {
 	pr := PairingPresentation{Code: c.String(), expires: exp, ExpiresAt: exp.UTC().Format(time.RFC3339Nano)}
 	if p.fpr != "" {
 		pr.WorkerFingerprint, pr.WorkerWords = p.fpr, identity.Fingerprint(p.fpr).Words()
