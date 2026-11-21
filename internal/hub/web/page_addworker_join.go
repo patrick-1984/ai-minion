@@ -216,9 +216,13 @@ type joinResult struct {
 	// keyed commands may be shown at all: a key without a finite lifetime only
 	// gets the masked one.
 	OneLiner, Masked FoldBlock
-	HasInstaller     bool
-	KeyedOK          bool
-	Fold             joinFolds
+	// Verified and VerifiedMasked download the installer first and check its
+	// SHA-256 against the signed manifest (HasVerified).
+	Verified, VerifiedMasked FoldBlock
+	HasInstaller             bool
+	HasVerified              bool
+	KeyedOK                  bool
+	Fold                     joinFolds
 }
 
 // joinFolds are the long commands as foldable blocks.
@@ -286,13 +290,20 @@ func handleAddWorkerJoin(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 		out.JoinCommands = joinCommands(tok, name)
 		out.Fold = foldJoin(out.JoinCommands)
 	}
-	ictx, cancel := context.WithTimeout(r.Context(), installerWait)
-	defer cancel()
-	if offer, ok := installerOffer(ictx); ok {
+	if tag := installerTag(); tag != "" {
 		out.HasInstaller = true
-		out.Masked = foldBlock("join-masked", "Copy the command", installLine(offer, ""))
+		out.Masked = foldBlock("join-masked", "Copy the command", pipeLine(tag, ""))
 		if out.KeyedOK {
-			out.OneLiner = foldBlock("join-oneliner", "Copy the command", installLine(offer, tok.Encode()))
+			out.OneLiner = foldBlock("join-oneliner", "Copy the command", pipeLine(tag, tok.Encode()))
+		}
+		ictx, cancel := context.WithTimeout(r.Context(), installerWait)
+		defer cancel()
+		if offer, ok := installerOffer(ictx); ok {
+			out.HasVerified = true
+			out.VerifiedMasked = foldBlock("join-verified-masked", "Copy the command", installLine(offer, ""))
+			if out.KeyedOK {
+				out.Verified = foldBlock("join-verified", "Copy the command", installLine(offer, tok.Encode()))
+			}
 		}
 	}
 	writeFragmentTemplate(w, addWorkerFragments(), "join_created", out)

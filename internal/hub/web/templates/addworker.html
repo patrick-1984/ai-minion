@@ -4,13 +4,18 @@
   <p><a class="btn" href="/workers/add" data-join-done>Done</a></p>
   <p><strong>Join command{{if .Name}} for "{{.Name}}"{{end}} created.</strong> It works once and expires: {{.Expires}}.</p>
   {{if .HasInstaller}}<div data-join-oneline>
-  {{if .KeyedOK}}<h3>One command: install and join (Linux, macOS, no sudo)</h3>
-  <p class="muted">Downloads the installer of this Hub's release, checks its SHA-256 against the signed release, installs <code>minion</code> into <code>~/.local/bin</code>, joins this Hub and starts the Worker in the background. If a Worker is already set up on the machine, it shows it and asks before replacing it. The token is passed in the environment of the installer, never in an argument list. It stays in your shell history: it works once and expires.</p>
+  {{if .KeyedOK}}<h3>One command (Linux, macOS, no sudo)</h3>
+  <p class="muted">Installs <code>minion</code> from this Hub's release and joins this Hub as a Worker. The token stays in your shell history; it works once and expires.</p>
   {{template "fold" .OneLiner}}
   {{else}}<p class="notice notice-warning" data-join-unlimited>This key does not expire, so no command with the token inside is shown. Use the command without the token below and paste the token at its prompt.</p>
   {{end}}<h3>The same, asking for the token</h3>
-  <p class="muted">Keeps the token out of your shell history: the installer asks for it on the terminal and hides what you type. Copy the join token below, run this, paste it at the prompt.</p>
+  <p class="muted">Keeps the token out of your shell history: the installer asks for it on the terminal (hidden). Copy the join token below first.</p>
   {{template "fold" .Masked}}
+  {{if .HasVerified}}<details data-join-verified><summary>Verified variant (checks the installer's SHA-256 from the signed release first)</summary>
+  <p class="muted">Downloads the installer to a private file and runs it only if its SHA-256 equals the digest in the signed release manifest of this release.</p>
+  {{if .KeyedOK}}{{template "fold" .Verified}}{{end}}
+  {{template "fold" .VerifiedMasked}}
+  </details>{{end}}
   </div>{{else}}<p class="notice notice-info" data-join-manual>This Hub cannot verify the installer of its own release (a development build, or the release could not be checked), so no one-command installer is offered. {{if .KeyedOK}}Use the commands below.{{else}}The key does not expire, so no command with the token inside is shown: copy the token and give it to <code>minion worker up --join -</code> on its standard input, or create a key that expires.{{end}}</p>{{end}}
   <p data-join-checks>What the Worker checks: it connects only to the Hub with fingerprint <span class="fp-words">{{.HubWords}}</span> (<code>{{.HubFull}}</code>) at {{.Server}}, and enrolls with the one-time key in the token; the key works once and expires. On the Hub host, <code>minion hub identity --words</code> shows the same words.</p>
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke the key on the <a href="/invitations">Invitations</a> page and create a new command. The new Worker starts as <strong>pending</strong>: approve it on the Workers page.</p>

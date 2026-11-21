@@ -154,3 +154,16 @@ func installLine(o InstallerOffer, token string) string {
 	b.WriteString(`sh "$f" --join; rm -f "$f"`)
 	return b.String()
 }
+
+// pipeLine is the simple command: the versioned installer of this Hub's
+// release over HTTPS, piped into sh. install.sh runs from its last line, so a
+// cut-short download runs nothing, and it verifies the binary against the
+// release checksums. The token (when given) is in the environment of sh only;
+// without it the installer asks on /dev/tty.
+func pipeLine(tag, token string) string {
+	env := "MINION_VERSION=" + tag + " "
+	if token != "" {
+		env += "MINION_JOIN=" + shellArg(token) + " "
+	}
+	return "curl -fsSL " + shellArg(releaseDownloadBase+tag+"/install.sh") + " | " + env + "sh -s -- --join"
+}

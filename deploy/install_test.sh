@@ -296,6 +296,25 @@ for bad in tampered truncated; do
 	assert_no_file "$bad archive: the join never ran" "$JL.argv"
 done
 
+# The simple one-liner pipes the script into sh: "sh -s -- --join" passes the
+# flag, the token still arrives on stdin of the binary only (stdin of sh is the
+# script), and a pipe cut before the last line runs nothing.
+SCRIPT_ARGS=
+rm -f "$JL".*
+OUT=$(cat "$SCRIPT" | env PATH="$(fake_uname Linux x86_64):$WORK/installed:$PATH" HOME="$WORK/home" MINION_RELEASE_BASE="file://$REL" \
+	MINION_INSTALL_DIR="$WORK/p1" MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" sh -s -- --join 2>&1)
+if [ "$(cat "$JL.stdin" 2>/dev/null)" = "$TOKEN" ] && [ "$(sed -n 3p "$JL.argv")" = "--join" ]; then ok "piped: sh -s -- --join joins, token on stdin of the binary"; else bad "piped join" "$OUT"; fi
+case "$(cat "$JL.argv")$OUT" in *"$TOKEN"*) bad "piped: the token is in argv or output" ;; *) ok "piped: the token is in no argument list and no output" ;; esac
+rm -f "$JL".*
+OUT=$(sed '$d' "$SCRIPT" | env PATH="$(fake_uname Linux x86_64):$WORK/installed:$PATH" HOME="$WORK/home" MINION_RELEASE_BASE="file://$REL" \
+	MINION_INSTALL_DIR="$WORK/p2" MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" sh -s -- --join 2>&1)
+assert_no_file "piped, truncated before the last line: nothing installed" "$WORK/p2/minion"
+assert_no_file "piped, truncated: the join never ran" "$JL.argv"
+head -c 3000 "$SCRIPT" | env PATH="$(fake_uname Linux x86_64):$WORK/installed:$PATH" HOME="$WORK/home" MINION_RELEASE_BASE="file://$REL" \
+	MINION_INSTALL_DIR="$WORK/p3" MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" sh -s -- --join >/dev/null 2>&1
+assert_no_file "piped, cut mid-script: nothing installed" "$WORK/p3/minion"
+SCRIPT_ARGS=--join
+
 # Missing tmux stops a join before anything is installed or used.
 run_install "$WORK/j7" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" PATH="$depbin"
 assert_contains "--join without tmux stops" "$OUT" "tmux is needed for a Worker"

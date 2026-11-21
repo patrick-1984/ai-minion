@@ -53,7 +53,15 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := pres(body)
-	line := p["join-oneliner"]
+	simple := p["join-oneliner"]
+	if want := "curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh | MINION_VERSION=v1.2.3 MINION_JOIN=" + tok.Encode() + " sh -s -- --join"; simple != want {
+		t.Errorf("top command:\n%s\nwant\n%s", simple, want)
+	}
+	if m := p["join-masked"]; m != "curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh | MINION_VERSION=v1.2.3 sh -s -- --join" {
+		t.Errorf("masked: %s", m)
+	}
+	mustHave(t, body, "<details data-join-verified><summary>Verified variant (checks the installer's SHA-256 from the signed release first)")
+	line := p["join-verified"]
 	for _, want := range []string{
 		"curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh -o \"$f\"",
 		`[ -s "$f" ]`, "grep -q '^" + testInstallerDigest + " '",
@@ -66,13 +74,13 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 	if strings.Contains(line, "\n") {
 		t.Errorf("the one-liner is not one line:\n%s", line)
 	}
-	masked := p["join-masked"]
+	masked := p["join-verified-masked"]
 	if !strings.Contains(masked, testInstallerDigest) || !strings.Contains(masked, `sh "$f" --join; rm -f "$f"`) ||
 		strings.Contains(masked, "MINION_JOIN") || strings.Contains(masked, tok.Encode()) || strings.Contains(masked, "\n") {
 		t.Errorf("masked variant:\n%s", masked)
 	}
 	// It comes before the token field and the long variants.
-	for _, later := range []string{`id="join-token"`, `id="join-unix"`, `id="join-docker"`} {
+	for _, later := range []string{`id="join-verified"`, `id="join-token"`, `id="join-unix"`, `id="join-docker"`} {
 		if strings.Index(body, `id="join-oneliner"`) > strings.Index(body, later) {
 			t.Errorf("the one-liner comes after %s", later)
 		}
@@ -91,9 +99,12 @@ func TestAddWorkerWithoutAKnownInstallerShowsTheManualCommands(t *testing.T) {
 	mustHave(t, body, "data-join-manual", `id="join-unix"`, `id="join-docker"`)
 	mustNotHave(t, body, `id="join-oneliner"`, `id="join-masked"`, testInstallerDigest)
 
-	// A release whose installer cannot be verified is treated the same.
+	// A release whose installer digest cannot be verified still gets the
+	// simple commands, without the verified variant.
 	withInstaller(t, "not-a-digest")
-	mustHave(t, joinPost(t, onbUser(t), "1h"), "data-join-manual")
+	b := joinPost(t, onbUser(t), "1h")
+	mustHave(t, b, `id="join-oneliner"`)
+	mustNotHave(t, b, "data-join-verified", `id="join-verified"`)
 }
 
 func TestAddWorkerUnlimitedKeyOnlyGetsTheMaskedCommand(t *testing.T) {
@@ -103,8 +114,8 @@ func TestAddWorkerUnlimitedKeyOnlyGetsTheMaskedCommand(t *testing.T) {
 	withInstaller(t, testInstallerDigest)
 	body := joinPost(t, onbAdmin(t), ops.TTLUnlimited)
 	tok, _ := identity.NewJoinToken("https://hub.example.com:8443", f.key)
-	mustHave(t, body, "data-join-unlimited", `id="join-masked"`, `id="join-token"`)
-	mustNotHave(t, body, `id="join-oneliner"`, `id="join-unix"`, `id="join-system"`, `id="join-docker"`, `id="join-expanded"`, "MINION_JOIN=")
+	mustHave(t, body, "data-join-unlimited", `id="join-masked"`, `id="join-verified-masked"`, `id="join-token"`)
+	mustNotHave(t, body, `id="join-oneliner"`, `id="join-verified"`, `id="join-unix"`, `id="join-system"`, `id="join-docker"`, `id="join-expanded"`, "MINION_JOIN=")
 	// The token appears once: in the field to paste at the prompt.
 	if n := strings.Count(body, tok.Encode()); n != 1 {
 		t.Errorf("the token appears %d times", n)
