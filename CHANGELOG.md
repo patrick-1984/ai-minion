@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.18.0
+
+Release candidate preparation; publication is gated on v0.17.0.
+
 ### Added
 
 - The Hub's Usage menu shows authorized session statistics, native account limits, per-account collectors, historical snapshots and private token buckets. CLI and Hub-connected MCP clients can read the same scoped data. See [Usage and subscription limits](docs/guides/usage.md).
