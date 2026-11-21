@@ -49,6 +49,8 @@ const (
 	FeaturePairAdmit = "pair.admit"
 	// FeatureMasterSessionV1 offers the session-bound master control lane.
 	FeatureMasterSessionV1 = "master.session.v1"
+	// FeatureSendTextAgentOnly protects the resolved pane under the local lock.
+	FeatureSendTextAgentOnly = "send_text.agent_only"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;
