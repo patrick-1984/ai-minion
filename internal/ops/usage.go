@@ -92,6 +92,9 @@ type UsageSession struct {
 }
 
 type UsageWindow struct {
+	Used        *float64 `json:"used"`
+	Limit       *float64 `json:"limit"`
+	Remaining   *float64 `json:"remaining"`
 	Unit        string   `json:"unit,omitempty"`
 	Scope       string   `json:"scope"`  // stable native limit ID/model scope
 	Period      string   `json:"period"` // rolling, fixed, total
@@ -205,17 +208,35 @@ func (r UsageReport) Check(now time.Time) error {
 	}
 	seen := map[string]bool{}
 	for _, s := range r.Sessions {
-		if !usageIDValid(s.ID) || seen[s.ID] || !usageText(s.Name, 256) || s.Name == "" || !usageText(s.Folder, 1024) || !usageText(s.Model, 128) || !usageText(s.Harness, 64) || !usageText(s.Version, 96) || !usageClock(s.TimeSource) || !usageText(s.Provider, 64) || !usageMode(s.AuthMode) || !usageText(s.Source, 64) || s.Source == "" || !usageTime(s.ObservedAt, latest) || s.ObservedAt > r.ObservedAt || s.AccountID != "" && !usageIDValid(s.AccountID) || !s.UsageCounters.valid() {
+		if !usageIDValid(s.ID) ||
+			seen[s.ID] ||
+			!usageText(s.Name, 256) ||
+			s.Name == "" ||
+			!usageText(s.Folder, 1024) ||
+			!usageText(s.Model, 128) ||
+			!usageText(s.Harness, 64) ||
+			!usageText(s.Version, 96) ||
+			!usageClock(s.TimeSource) ||
+			!usageText(s.Provider, 64) ||
+			!usageMode(s.AuthMode) ||
+			!usageText(s.Source, 64) ||
+			s.Source == "" ||
+			!usageTime(s.ObservedAt, latest) ||
+			s.ObservedAt > r.ObservedAt ||
+			s.AccountID != "" && !usageIDValid(s.AccountID) ||
+			!s.valid() {
 			return invalid("sessions", "invalid usage metadata")
 		}
-		if s.StartedAt != nil && !usageTime(*s.StartedAt, s.ObservedAt) || s.StoppedAt != nil && (!usageTime(*s.StoppedAt, s.ObservedAt) || s.StartedAt != nil && *s.StoppedAt < *s.StartedAt) {
+		if s.StartedAt != nil && !usageTime(*s.StartedAt, s.ObservedAt) ||
+			s.StoppedAt != nil && (!usageTime(*s.StoppedAt, s.ObservedAt) ||
+				s.StartedAt != nil && *s.StoppedAt < *s.StartedAt) {
 			return invalid("sessions", "invalid lifecycle timestamps")
 		}
 		if s.NativeID != "" && !usageIDValid(s.NativeID) || len(s.Models) > 32 {
 			return invalid("sessions", "invalid native/model identity")
 		}
 		for _, m := range s.Models {
-			if m.Model == "" || !usageText(m.Model, 128) || !m.UsageCounters.valid() {
+			if m.Model == "" || !usageText(m.Model, 128) || !m.valid() {
 				return invalid("models", "invalid model counters")
 			}
 		}
@@ -223,7 +244,20 @@ func (r UsageReport) Check(now time.Time) error {
 	}
 	for _, a := range r.Accounts {
 		key := "account:" + a.ID + "|" + a.SourceSessionID
-		if !usageIDValid(a.ID) || a.SourceSessionID != "" && !usageIDValid(a.SourceSessionID) || seen[key] || a.Provider == "" || !usageText(a.Provider, 64) || !usageText(a.Plan, 64) || !usageClock(a.TimeSource) || !usageMode(a.AuthMode) || !usageText(a.Label, 96) || a.Source == "" || !usageText(a.Source, 64) || !usageTime(a.ObservedAt, r.ObservedAt) || len(a.Windows) > 32 || a.AuthMode != "subscription" && len(a.Windows) > 0 {
+		if !usageIDValid(a.ID) ||
+			a.SourceSessionID != "" && !usageIDValid(a.SourceSessionID) ||
+			seen[key] ||
+			a.Provider == "" ||
+			!usageText(a.Provider, 64) ||
+			!usageText(a.Plan, 64) ||
+			!usageClock(a.TimeSource) ||
+			!usageMode(a.AuthMode) ||
+			!usageText(a.Label, 96) ||
+			a.Source == "" ||
+			!usageText(a.Source, 64) ||
+			!usageTime(a.ObservedAt, r.ObservedAt) ||
+			len(a.Windows) > 32 ||
+			a.AuthMode != "subscription" && len(a.Windows) > 0 {
 			return invalid("accounts", "invalid account metadata")
 		}
 		seen[key] = true
@@ -233,8 +267,20 @@ func (r UsageReport) Check(now time.Time) error {
 			if w.DurationMS != nil {
 				key += "\x00" + strconv.FormatInt(*w.DurationMS, 10)
 			}
-			if windowKeys[key] || w.Scope == "" || !usageText(w.Scope, 96) || !usageText(w.Unit, 32) || (w.Period != "rolling" && w.Period != "fixed" && w.Period != "total") || !usagePercent(w.UsedPercent) || w.DurationMS != nil && *w.DurationMS <= 0 || w.ResetsAt != nil && *w.ResetsAt <= 0 {
+			if windowKeys[key] ||
+				w.Scope == "" ||
+				!usageText(w.Scope, 96) ||
+				!usageText(w.Unit, 32) ||
+				(w.Period != "rolling" && w.Period != "fixed" && w.Period != "total") ||
+				!usagePercent(w.UsedPercent) ||
+				w.DurationMS != nil && *w.DurationMS <= 0 ||
+				w.ResetsAt != nil && *w.ResetsAt <= 0 {
 				return invalid("windows", "invalid or duplicate usage window")
+			}
+			for _, n := range []*float64{w.Used, w.Limit, w.Remaining} {
+				if n != nil && (*n < 0 || math.IsNaN(*n) || math.IsInf(*n, 0)) {
+					return invalid("windows", "invalid native quantity")
+				}
 			}
 			windowKeys[key] = true
 		}

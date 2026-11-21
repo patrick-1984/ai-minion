@@ -83,7 +83,7 @@ func startController(t *testing.T, ph *shareHub, ownerID, name string, sessions 
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(c.rt) })
 	w := &minionWorker{done: make(chan error, 1)}
-	w.cmd = exec.Command(bin, "worker", "up", "--foreground", "--server", "https://"+ph.addr, "--share-existing", "all",
+	w.cmd = exec.Command(bin, "worker", "up", "--foreground", "--accept-usage", "--server", "https://"+ph.addr, "--share-existing", "all",
 		"--state-dir", state, "--tmux-socket", srv.Socket(), "--name", name)
 	w.cmd.Env = c.env("")
 	w.cmd.Stdout, w.cmd.Stderr = &w.out, &w.out

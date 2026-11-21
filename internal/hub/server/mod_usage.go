@@ -103,6 +103,8 @@ func initUsage(ctx context.Context, env *Env) error {
 		res, err := st.SetUsageCollector(ctx, allowed, a)
 		if errors.Is(err, store.ErrNotFound) {
 			err = api.NewError(proto.CodeNotFound, "account or collector source is unavailable")
+		} else if errors.Is(err, store.ErrUsageNoNativeReader) {
+			err = api.NewError(proto.CodeConflict, err.Error())
 		}
 		return res, err
 	}, api.WithResource(usageUserResource)); err != nil {

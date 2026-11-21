@@ -11,7 +11,10 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
+var ErrUsageNoNativeReader = errors.New("this account has no supported native background query")
+
 func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.UsageAccount) error {
+	nativeRead := a.Source == "codex-account" || a.Source == "codex-app-server"
 	if a.SourceSessionID != "" {
 		a.SourceSessionID = ops.UsageID("hub-session", workerID, a.SourceSessionID)
 	}
@@ -34,15 +37,18 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO usage_accounts(worker_id,account_id,observed_at,body) VALUES(?,?,?,?)
-	 ON CONFLICT(worker_id,account_id) DO UPDATE SET observed_at=excluded.observed_at,body=excluded.body
+	_, err = tx.ExecContext(ctx, `INSERT INTO usage_accounts(worker_id,account_id,observed_at,body,can_poll) VALUES(?,?,?,?,?)
+	 ON CONFLICT(worker_id,account_id) DO UPDATE SET observed_at=excluded.observed_at,body=excluded.body,can_poll=max(usage_accounts.can_poll,excluded.can_poll)
 	 WHERE excluded.observed_at>usage_accounts.observed_at AND
-	  (json_extract(excluded.body,'$.source')<>'native-account' OR json_extract(usage_accounts.body,'$.source')='native-account')`, workerID, a.ID, a.ObservedAt, string(b))
+	  (json_extract(excluded.body,'$.source')<>'native-account' OR json_extract(usage_accounts.body,'$.source')='native-account')`, workerID, a.ID, a.ObservedAt, string(b), nativeRead)
+	if err == nil && nativeRead {
+		_, err = tx.ExecContext(ctx, `UPDATE usage_accounts SET can_poll=1 WHERE worker_id=? AND account_id=? AND can_poll=0`, workerID, a.ID)
+	}
 	if err != nil || a.AuthMode != "subscription" {
 		return err
 	}
 	status := "passive"
-	if a.Provider == "OpenAI" {
+	if nativeRead {
 		status = "waiting"
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_collectors(account_id,status) VALUES(?,?) ON CONFLICT DO NOTHING`, a.ID, status)
@@ -62,7 +68,7 @@ func (s *Store) ClaimUsagePoll(ctx context.Context, workerID, owner string, now 
 		var account string
 		err := tx.QueryRowContext(ctx, `SELECT c.account_id FROM usage_collectors c
 		 JOIN usage_accounts a ON a.account_id=c.account_id AND a.worker_id=? JOIN workers w ON w.id=a.worker_id
-		 WHERE w.owner_id=? AND w.approval='approved' AND c.status<>'passive' AND c.preferred_session=''
+		 WHERE w.owner_id=? AND w.approval='approved' AND a.can_poll=1 AND c.preferred_session=''
 		   AND (c.preferred_worker IS NULL OR c.preferred_worker=w.id) AND c.next_due<=? AND c.lease_until<=?
 		   AND json_extract(a.body,'$.provider')='OpenAI' AND json_extract(a.body,'$.auth_mode')='subscription'
 		 ORDER BY c.requested DESC,c.next_due,c.account_id LIMIT 1`, workerID, owner, now.UnixMilli(), now.UnixMilli()).Scan(&account)
@@ -105,6 +111,11 @@ func (s *Store) CompleteUsagePoll(ctx context.Context, lease UsageLease, a *ops.
 		if err != nil {
 			return err
 		}
+		if status == "account_changed" {
+			if _, err := tx.ExecContext(ctx, `UPDATE usage_accounts SET can_poll=0 WHERE worker_id=? AND account_id=?`, lease.WorkerID, lease.AccountID); err != nil {
+				return err
+			}
+		}
 		var success any
 		delay := 5 * time.Minute
 		if a != nil {
@@ -145,9 +156,16 @@ func (s *Store) SetUsageCollector(ctx context.Context, workers []ops.WorkerInfo,
 		if !allowed {
 			return ErrNotFound
 		}
-		r, err := tx.ExecContext(ctx, `UPDATE usage_collectors SET preferred_worker=nullif(?,''),preferred_session=?,lease_id='',lease_until=0,
-		  status=CASE WHEN ?<>'' OR NOT EXISTS (SELECT 1 FROM usage_accounts a WHERE a.account_id=usage_collectors.account_id AND json_extract(a.body,'$.provider')='OpenAI') THEN 'passive' ELSE 'waiting' END
-		  WHERE account_id=?`, a.WorkerID, a.SessionID, a.SessionID, a.AccountID)
+		var capable bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM usage_accounts WHERE account_id=? AND can_poll=1 AND (?='' OR worker_id=?))`, a.AccountID, a.WorkerID, a.WorkerID).Scan(&capable); err != nil {
+			return err
+		}
+		if a.Start && !capable {
+			return ErrUsageNoNativeReader
+		}
+		r, err := tx.ExecContext(ctx, `UPDATE usage_collectors SET preferred_worker=nullif(?,''),preferred_session=?,lease_id='',lease_until=0,requested=max(requested,?),next_due=CASE WHEN ? AND failures=0 THEN min(next_due,last_probe+300000) ELSE next_due END,
+		  status=CASE WHEN ?<>'' OR NOT EXISTS (SELECT 1 FROM usage_accounts a WHERE a.account_id=usage_collectors.account_id AND a.can_poll=1) THEN 'passive' ELSE 'waiting' END
+		  WHERE account_id=?`, a.WorkerID, a.SessionID, a.Start, a.Start, a.SessionID, a.AccountID)
 		if err != nil {
 			return err
 		}

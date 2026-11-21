@@ -89,6 +89,13 @@ func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, r
 				return err
 			}
 		}
+		for _, h := range report.Inventory {
+			if h.Name == "codex" && (h.AccountStatus == "configured" || h.AccountStatus == "signed_out") {
+				if _, err := tx.ExecContext(ctx, `UPDATE usage_accounts SET can_poll=0 WHERE worker_id=? AND can_poll=1`, workerID); err != nil {
+					return err
+				}
+			}
+		}
 		for _, a := range report.Accounts {
 			if err := saveUsageAccount(ctx, tx, workerID, a); err != nil {
 				return err

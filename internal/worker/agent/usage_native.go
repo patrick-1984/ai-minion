@@ -226,6 +226,7 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 				Model    string   `json:"modelId"`
 				Unit     string   `json:"tokenType"`
 				Fraction *float64 `json:"remainingFraction"`
+				Amount   string   `json:"remainingAmount"`
 				Reset    string   `json:"resetTime"`
 			} `json:"buckets"`
 		}
@@ -240,6 +241,12 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 					continue
 				}
 				w := ops.UsageWindow{Scope: b.Model, Period: "fixed", Unit: b.Unit}
+				if b.Amount != "" {
+					v, err := strconv.ParseFloat(b.Amount, 64)
+					if err == nil && v >= 0 && !math.IsInf(v, 0) {
+						w.Remaining = &v
+					}
+				}
 				if b.Fraction != nil && *b.Fraction >= 0 && *b.Fraction <= 1 {
 					pct := (1 - *b.Fraction) * 100
 					w.UsedPercent = &pct

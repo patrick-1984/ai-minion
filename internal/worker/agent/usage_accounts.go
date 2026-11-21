@@ -279,6 +279,7 @@ func readCodexAccount(p codexStatusPipe, expected string, now time.Time) (ops.Us
 	if !ok {
 		return a, errors.New("account identity unavailable")
 	}
+	a.Source = "codex-account"
 	if expected != "" {
 		if a.ID != expected {
 			return ops.UsageAccount{}, nativeFailure{"account_changed", 0}

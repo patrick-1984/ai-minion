@@ -325,6 +325,10 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 	if err := sd.firstRun(cmd, res, nil, nil); err != nil {
 		return err
 	}
+	accept, _ := cmd.Flags().GetBool("accept-usage")
+	if !accept {
+		return nil
+	}
 	core, err := config.ResolveWorkerCore(res)
 	if err != nil {
 		return err

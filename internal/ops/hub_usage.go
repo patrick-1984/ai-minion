@@ -185,12 +185,16 @@ func init() {
 const OpUsageCollectorSet = "usage_collector_set"
 
 type UsageCollectorSetArgs struct {
+	Start     bool   `json:"start,omitempty"` // queue one native query at first eligible instant
 	AccountID string `json:"account_id"`
 	WorkerID  string `json:"worker_id,omitempty"`  // empty restores automatic election
 	SessionID string `json:"session_id,omitempty"` // passive metric source, never a console target
 }
 
 func (a UsageCollectorSetArgs) Validate() error {
+	if a.Start && a.SessionID != "" {
+		return invalid("start", "select a Worker or automatic election for a native background query")
+	}
 	if !usageIDValid(a.AccountID) || a.SessionID != "" && (!usageIDValid(a.SessionID) || a.WorkerID == "") || !usageText(a.WorkerID, 128) {
 		return invalid("collector", "invalid account, Worker or session")
 	}
@@ -198,6 +202,8 @@ func (a UsageCollectorSetArgs) Validate() error {
 }
 
 type UsageCollector struct {
+	CanStart         bool   `json:"can_start"`
+	Mode             string `json:"mode"` // native_background or passive_events
 	PreferredWorker  string `json:"preferred_worker,omitempty"`
 	PreferredSession string `json:"preferred_session,omitempty"`
 	ActiveWorker     string `json:"active_worker,omitempty"`

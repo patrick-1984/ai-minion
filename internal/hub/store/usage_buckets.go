@@ -17,7 +17,7 @@ func (s *Store) UsageBuckets(ctx context.Context, owner string) ([]ops.UsageBuck
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []ops.UsageBucket{}
 	for rows.Next() {
 		var b ops.UsageBucket

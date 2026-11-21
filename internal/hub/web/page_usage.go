@@ -39,8 +39,8 @@ type usageAccountCard struct {
 }
 
 type usageWindowView struct {
-	Scope, Period, Used, Pace, Reset, Tone string
-	Elapsed, Projected, Unit               string
+	Scope, Period, Used, Pace, Reset, Tone     string
+	Elapsed, Projected, Unit, RemainingPercent string
 }
 
 func (p usagePage) Time(ms *int64) string {
@@ -331,6 +331,12 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 	}
 	for _, w := range a.Windows {
 		view := usageWindowView{Scope: w.Scope, Period: p.Period(w.Period, w.DurationMS), Used: p.Percent(w.UsedPercent), Reset: p.Time(w.ResetsAt), Unit: w.Unit}
+		view.RemainingPercent = "Unknown"
+		if w.UsedPercent != nil {
+			remaining := 100 - *w.UsedPercent
+			view.RemainingPercent = p.Percent(&remaining)
+		}
+
 		switch w.Pace(now) {
 		case "ahead":
 			view.Pace, view.Tone = "Ahead of pace", "warning"
@@ -397,7 +403,7 @@ func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 		}
 		worker, sid, _ := strings.Cut(r.PostFormValue("source"), "|")
 		var res ops.UsageCollector
-		err := c.CallOp(r, ops.OpUsageCollectorSet, ops.UsageCollectorSetArgs{AccountID: r.PostFormValue("account"), WorkerID: worker, SessionID: sid}, &res)
+		err := c.CallOp(r, ops.OpUsageCollectorSet, ops.UsageCollectorSetArgs{AccountID: r.PostFormValue("account"), WorkerID: worker, SessionID: sid, Start: r.PostFormValue("run") == "native"}, &res)
 		if err != nil {
 			writeResultError(w, failureText(err))
 			return

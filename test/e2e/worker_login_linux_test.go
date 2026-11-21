@@ -86,7 +86,7 @@ func TestLinuxLoginWorkerOnboarding(t *testing.T) {
 	defer cancel()
 	// The native Hub command opens the token on descriptor 3 so the
 	// terminal remains available for choosing the sessions to share.
-	join := exec.CommandContext(ctx, "sh", "-c", `MINION_JOIN_FILE=/dev/fd/3 exec "$1" worker up --non-interactive-share all 3<&0 </dev/null`, "sh", bin)
+	join := exec.CommandContext(ctx, "sh", "-c", `MINION_JOIN_FILE=/dev/fd/3 exec "$1" worker up --accept-usage --non-interactive-share all 3<&0 </dev/null`, "sh", bin)
 	join.Env = env
 	join.Stdin = strings.NewReader(token.Encode() + "\n")
 	summary, err := join.CombinedOutput()

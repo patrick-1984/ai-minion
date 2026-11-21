@@ -31,6 +31,7 @@ CREATE INDEX usage_hours_age ON usage_hours(hour);
 CREATE TABLE usage_accounts (
     worker_id TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
     account_id TEXT NOT NULL,
+    can_poll INTEGER NOT NULL DEFAULT 0,
     observed_at INTEGER NOT NULL,
     body TEXT NOT NULL,
     PRIMARY KEY (worker_id, account_id)

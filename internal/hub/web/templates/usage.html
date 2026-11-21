@@ -116,7 +116,7 @@
   </div>
   <p class="muted">{{.Period}}{{if .Unit}} · {{.Unit}}{{end}}</p>
   <dl class="usage-facts">
-    <div><dt>Used</dt><dd>{{.Used}}</dd></div>
+    <div><dt>Used / remaining</dt><dd>{{.Used}} / {{.RemainingPercent}}</dd></div>
     {{if .Elapsed}}<div><dt>Elapsed</dt><dd>{{.Elapsed}}</dd></div>{{end}}
     {{if .Projected}}<div><dt>At current pace</dt><dd>{{.Projected}}</dd></div>{{end}}
     <div><dt>Resets</dt><dd>{{.Reset}}</dd></div>
@@ -188,6 +188,7 @@
             </select>
           </label>
           <button type="submit" class="btn btn-secondary">Save collector</button>
+          {{if $a.Collector.CanStart}}<button type="submit" name="run" value="native" class="btn btn-primary">Start native collector</button><p class="help">The selected Worker opens a status-only Codex process at the next permitted query time.</p>{{else}}<p class="help">This account has no supported background query. Idle limits update when its configured native source reports again.</p>{{end}}
         </form>
         {{end}}
       </details>

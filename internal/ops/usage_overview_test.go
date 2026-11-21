@@ -46,3 +46,36 @@ func TestUsageSummaryDeduplicationAndCoverage(t *testing.T) {
 		t.Fatal("missing percentage")
 	}
 }
+
+func TestUsageSummaryComparableProviderPeriodsAndUnits(t *testing.T) {
+	now := time.Now()
+	d := int64(5 * time.Hour / time.Millisecond)
+	a, b := 20., 60.
+	makeRow := func(provider, scope string, v *float64) UsageAccountRow {
+		return UsageAccountRow{UsageAccount: UsageAccount{ID: UsageID("account", provider), Provider: provider, AuthMode: "subscription", ObservedAt: now.UnixMilli(), Windows: []UsageWindow{{Scope: scope, Period: "rolling", DurationMS: &d, UsedPercent: v}}}}
+	}
+	claude, codex := makeRow("Anthropic", "general", &a), makeRow("OpenAI", "codex.primary", &b)
+	out := SummarizeUsage([]UsageAccountRow{claude, codex, codex}, now)
+	any := false
+	for _, g := range out.Groups {
+		if g.Provider == "All subscriptions" {
+			any = true
+			if g.Known != 2 || g.Unknown != 0 || g.MeanUsedPercent == nil || *g.MeanUsedPercent != 40 {
+				t.Fatalf("pooled comparable: %+v", g)
+			}
+		}
+	}
+	if !any {
+		t.Fatal("missing comparable group")
+	}
+	daily := makeRow("Google", "gemini", &b)
+	w := daily.Windows[0]
+	w.Unit = "requests"
+	other := w
+	other.Unit = "tokens"
+	daily.Windows = []UsageWindow{w, other}
+	g := SummarizeUsage([]UsageAccountRow{daily}, now)
+	if len(g.Groups) != 2 || g.Groups[0].Unknown < 0 || g.Groups[1].Unknown < 0 {
+		t.Fatalf("mixed units: %+v", g)
+	}
+}

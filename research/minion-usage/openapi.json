@@ -147,6 +147,12 @@
       "UsageCollector": {
         "type": "object",
         "properties": {
+          "can_start": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          },
           "preferred_worker": {
             "type": "string"
           },
@@ -173,6 +179,8 @@
           }
         },
         "required": [
+          "can_start",
+          "mode",
           "status",
           "next_due",
           "last_success"
@@ -182,6 +190,9 @@
       "UsageCollectorSetArgs": {
         "type": "object",
         "properties": {
+          "start": {
+            "type": "boolean"
+          },
           "account_id": {
             "type": "string"
           },
@@ -799,6 +810,12 @@
                     "object"
                   ],
                   "properties": {
+                    "can_start": {
+                      "type": "boolean"
+                    },
+                    "mode": {
+                      "type": "string"
+                    },
                     "preferred_worker": {
                       "type": "string"
                     },
@@ -825,6 +842,8 @@
                     }
                   },
                   "required": [
+                    "can_start",
+                    "mode",
                     "status",
                     "next_due",
                     "last_success"
@@ -866,6 +885,24 @@
                   "items": {
                     "type": "object",
                     "properties": {
+                      "used": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "limit": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "remaining": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
                       "unit": {
                         "type": "string"
                       },
@@ -895,6 +932,9 @@
                       }
                     },
                     "required": [
+                      "used",
+                      "limit",
+                      "remaining",
                       "scope",
                       "period",
                       "duration_ms",
@@ -1443,6 +1483,24 @@
                   "items": {
                     "type": "object",
                     "properties": {
+                      "used": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "limit": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "remaining": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
                       "unit": {
                         "type": "string"
                       },
@@ -1472,6 +1530,9 @@
                       }
                     },
                     "required": [
+                      "used",
+                      "limit",
+                      "remaining",
                       "scope",
                       "period",
                       "duration_ms",

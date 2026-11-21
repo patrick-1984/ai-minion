@@ -168,6 +168,7 @@ func TestUsageCollectorDedupAndBackoff(t *testing.T) {
 	ctx := context.Background()
 	workers, r, now := usageFixture(t, s, 1)
 	r.Accounts[0].Provider = "OpenAI"
+	r.Accounts[0].Source = "codex-account"
 	for _, w := range workers {
 		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, r, now); err != nil {
 			t.Fatal(err)

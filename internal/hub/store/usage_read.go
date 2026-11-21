@@ -35,6 +35,11 @@ func usageVisibleJSON(workers []ops.WorkerInfo) (string, error) {
 	return string(b), err
 }
 
+const usageRankedAccounts = `, ranked AS (
+		   SELECT a.*,row_number() OVER (PARTITION BY a.account_id ORDER BY (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,(json_extract(a.body,'$.source')<>'native-account') DESC,a.observed_at DESC,a.worker_id) rn
+		   FROM visible v JOIN usage_accounts a ON a.worker_id=v.id LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
+		 )`
+
 // ReadUsage returns at most limit items. An account visible on multiple
 // Workers is chosen only among authorized observations, newest first.
 // bucketOwner is empty when private organization is outside the caller's rights.
@@ -42,27 +47,6 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 	out := ops.UsageListResult{Version: ops.UsageVersion, AsOf: now.UnixMilli()}
 	if err := args.Validate(); err != nil {
 		return out, err
-	}
-	if args.Section == "overview" {
-		args.Section = "accounts"
-		args.Limit = 200
-		args.After = ""
-		args.SubscriptionOnly = true
-		var all []ops.UsageAccountRow
-		for {
-			page, err := s.ReadUsage(ctx, workers, bucketOwner, args, now)
-			if err != nil {
-				return out, err
-			}
-			all = append(all, page.Accounts...)
-			if page.Next == "" {
-				break
-			}
-			args.After = page.Next
-		}
-		summary := ops.SummarizeUsage(all, now)
-		out.Overview = &summary
-		return out, nil
 	}
 	visible, err := usageVisibleJSON(workers)
 	if err != nil {
@@ -75,6 +59,32 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 	bind := []any{visible, args.WorkerID, args.WorkerID}
 	var q string
 	switch args.Section {
+	case "overview":
+		rows, err := s.db.QueryContext(ctx, usageVisible+usageRankedAccounts+`SELECT a.body FROM ranked a
+		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='provider' AND m.member_id=a.account_id
+		 WHERE rn=1 AND json_extract(a.body,'$.auth_mode')='subscription' AND (?='' OR coalesce(m.bucket_id,'unassigned')=?)`, append(bind, bucketOwner, args.BucketID, args.BucketID)...)
+		if err != nil {
+			return out, err
+		}
+		defer func() { _ = rows.Close() }()
+		var all []ops.UsageAccountRow
+		for rows.Next() {
+			var body string
+			var a ops.UsageAccountRow
+			if err := rows.Scan(&body); err != nil {
+				return out, err
+			}
+			if err := json.Unmarshal([]byte(body), &a.UsageAccount); err != nil {
+				return out, err
+			}
+			all = append(all, a)
+		}
+		if err := rows.Err(); err != nil {
+			return out, err
+		}
+		summary := ops.SummarizeUsage(all, now)
+		out.Overview = &summary
+		return out, nil
 	case "sessions":
 		q = usageVisible + `SELECT s.id,s.worker_id,s.body,s.observed_at,s.ended_at,max(s.observed_at,uw.complete_at),coalesce(m.bucket_id,'')
 		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
@@ -82,11 +92,8 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		 WHERE s.id>? AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY s.id`
 		bind = append(bind, bucketOwner, args.After, args.BucketID, args.BucketID)
 	case "accounts":
-		q = usageVisible + `, ranked AS (
-		   SELECT a.*,row_number() OVER (PARTITION BY a.account_id ORDER BY (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,(json_extract(a.body,'$.source')<>'native-account') DESC,a.observed_at DESC,a.worker_id) rn
-		   FROM visible v JOIN usage_accounts a ON a.worker_id=v.id LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
-		 ) SELECT printf('%07d:%s',coalesce(pref.position,0),a.account_id),a.worker_id,a.body,coalesce(m.bucket_id,''),coalesce(c.status,''),coalesce(pw.id,''),coalesce(aw.id,''),
-		 CASE WHEN pw.id IS NULL THEN '' ELSE c.preferred_session END,nullif(c.next_due,0),c.last_success,coalesce(pref.label,''),coalesce(pref.position,0),
+		q = usageVisible + usageRankedAccounts + `SELECT printf('%07d:%s',coalesce(pref.position,0),a.account_id),a.worker_id,a.body,coalesce(m.bucket_id,''),coalesce(c.status,''),coalesce(pw.id,''),coalesce(aw.id,''),
+		 CASE WHEN pw.id IS NULL THEN '' ELSE c.preferred_session END,nullif(c.next_due,0),c.last_success,EXISTS(SELECT 1 FROM usage_accounts cap JOIN visible cv ON cap.worker_id=cv.id WHERE cap.account_id=a.account_id AND cap.can_poll=1),coalesce(pref.label,''),coalesce(pref.position,0),
 		 (SELECT json_group_array(json_object('worker_id',worker,'session_id',sid,'label',label)) FROM (
 		  SELECT v2.id worker,'' sid,v2.name label FROM visible v2 JOIN usage_accounts u2 ON u2.worker_id=v2.id WHERE u2.account_id=a.account_id
 		  UNION ALL
@@ -121,12 +128,24 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	last := ""
+	size := 0
+page:
 	for i := 0; rows.Next(); i++ {
 		if i == limit {
 			out.Next = last
 			break
+		}
+		previous := last
+		fits := func(row any) bool {
+			b, err := json.Marshal(row)
+			if err != nil || (i > 0 && size+len(b) > 700<<10) {
+				out.Next = previous
+				return false
+			}
+			size += len(b) + 1
+			return true
 		}
 		switch args.Section {
 		case "sessions":
@@ -165,13 +184,16 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 					row.DurationSource = "observed_host_lifetime"
 				}
 			}
+			if !fits(row) {
+				break page
+			}
 			out.Sessions = append(out.Sessions, row)
 		case "accounts":
 			var row ops.UsageAccountRow
 			var body string
 			var collector ops.UsageCollector
 			var sources, privateLabel string
-			if err := rows.Scan(&last, &row.WorkerID, &body, &row.BucketID, &collector.Status, &collector.PreferredWorker, &collector.ActiveWorker, &collector.PreferredSession, &collector.NextDue, &collector.LastSuccess, &privateLabel, &row.Position, &sources); err != nil {
+			if err := rows.Scan(&last, &row.WorkerID, &body, &row.BucketID, &collector.Status, &collector.PreferredWorker, &collector.ActiveWorker, &collector.PreferredSession, &collector.NextDue, &collector.LastSuccess, &collector.CanStart, &privateLabel, &row.Position, &sources); err != nil {
 				return out, err
 			}
 			if err := json.Unmarshal([]byte(body), &row.UsageAccount); err != nil {
@@ -185,7 +207,14 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 				row.Label = privateLabel
 			}
 			if collector.Status != "" {
+				collector.Mode = "passive_events"
+				if collector.CanStart && collector.PreferredSession == "" {
+					collector.Mode = "native_background"
+				}
 				row.Collector = &collector
+			}
+			if !fits(row) {
+				break page
 			}
 			out.Accounts = append(out.Accounts, row)
 		case "events":
@@ -197,6 +226,9 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 			if err := json.Unmarshal([]byte(b), &row.UsageEvent); err != nil {
 				return out, err
 			}
+			if !fits(row) {
+				break page
+			}
 			out.Events = append(out.Events, row)
 		case "history":
 			var row ops.UsageHistoryRow
@@ -206,6 +238,9 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 			}
 			if err := json.Unmarshal([]byte(b), &row.Counters); err != nil {
 				return out, err
+			}
+			if !fits(row) {
+				break page
 			}
 			out.History = append(out.History, row)
 		case "workers":
@@ -234,6 +269,9 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 				}
 			}
 			last = row.ID
+			if !fits(row) {
+				break page
+			}
 			out.Workers = append(out.Workers, row)
 		}
 	}

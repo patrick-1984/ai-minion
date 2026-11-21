@@ -27,7 +27,7 @@ type UsageOverview struct {
 	Groups         []UsageWindowGroup `json:"groups"`
 }
 
-func SummarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
+func summarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 	latest := map[string]UsageAccount{}
 	for _, r := range rows {
 		if prev, ok := latest[r.ID]; !ok || prev.ObservedAt < r.ObservedAt {
@@ -107,5 +107,54 @@ func SummarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 		}
 		return cmp.Compare(*a.DurationMS, *b.DurationMS)
 	})
+	return out
+}
+
+// SummarizeUsage reports provider-specific groups and a cross-provider
+// unweighted account mean only for broad coding allowances with matching
+// periods. Model-specific quotas, absent durations and monetary caps never
+// enter that comparison.
+func SummarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
+	out := summarizeUsage(rows, now)
+	type period struct {
+		kind     string
+		duration int64
+	}
+	comparable := make([]UsageAccountRow, 0, len(rows))
+	providers := map[period]map[string]bool{}
+	for _, row := range rows {
+		provider := row.Provider
+		broad := map[period]UsageWindow{}
+		ambiguous := map[period]bool{}
+		for _, window := range row.Windows {
+			known := provider == "Anthropic" && window.Scope == "general" || provider == "OpenAI" && (window.Scope == "codex.primary" || window.Scope == "codex.secondary")
+			if row.AuthMode != "subscription" || !known || window.DurationMS == nil || window.Unit != "" {
+				continue
+			}
+			k := period{window.Period, *window.DurationMS}
+			if _, seen := broad[k]; seen {
+				ambiguous[k] = true
+			}
+			window.Scope = "General coding allowance"
+			broad[k] = window
+		}
+		row.Provider = "All subscriptions"
+		row.Windows = nil
+		for k, window := range broad {
+			if !ambiguous[k] {
+				row.Windows = append(row.Windows, window)
+				if providers[k] == nil {
+					providers[k] = map[string]bool{}
+				}
+				providers[k][provider] = true
+			}
+		}
+		comparable = append(comparable, row)
+	}
+	for _, row := range summarizeUsage(comparable, now).Groups {
+		if row.DurationMS != nil && len(providers[period{row.Period, *row.DurationMS}]) > 1 {
+			out.Groups = append(out.Groups, row)
+		}
+	}
 	return out
 }
