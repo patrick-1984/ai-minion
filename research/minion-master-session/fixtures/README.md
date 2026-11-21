@@ -29,3 +29,21 @@ MINION_REQUIRE_TMUX=1 go test -race -tags=a77_native \
 ```
 
 The opt-in tests preserve existing workspace tmux and look only at PIDs obtained from their own terminal hosts and local fixture sockets. Cleanup ends these child processes with their pinned descriptors and removes the temporary fixture directory. The mock model never persists model requests, prompt content or profile data. [Claude CLI reference](https://code.claude.com/docs/en/cli-reference), [MCP live updates](https://code.claude.com/docs/en/mcp#dynamic-tool-updates), [Claude environment variables](https://code.claude.com/docs/en/env-vars), [Messages streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), [architecture decision](../ASTRA-DECISION.md).
+
+## Production Hub and Worker verification
+
+The production probe exercises the real `minion master claude` launcher in print-stream mode against the default Hub and two Workers built from the checkout. Two prepared Claude processes and an unprepared sibling share the same isolated profile and project. Only the nominated terminal receives tools. The model endpoint stays synthetic and on loopback.
+
+- A real administrator nominates, revokes and re-nominates through `control_set_bound_master`. The current catalog empties after revoke. Invocations from a held native turn and the older catalog generation fail. The unrelated catalogs and settings stay unchanged.
+- The scoped tools return no targets without consent. With consent they list and inspect the shared agent while refusing the source shortcut and a private destination. The destination records exactly one received prompt after two calls carrying the same request ID. A separate ordinary administrator can still list both Workers.
+- A replacement Hub link recovers the same surviving terminal after it proves the current nomination again. Share loss and Worker replacement retire the preparation. A caller with copied public generation data and a legacy name-only mutation cannot take over the bound role.
+- The companion authenticated protocol client deliberately keeps its issued lease while skipping revocation updates. The real Hub denies it after revoke, after identical re-nomination, on a new authenticated link, and after expiry on a live link. The native failed-rediscovery case above uses a fixture broker. The production probe holds a native turn across the actual revoke, and the companion checks real Hub authority independently of native catalog behavior.
+
+```sh
+MINION_REQUIRE_TMUX=1 go test -race -tags=a77_native \
+  ./research/minion-master-session/fixtures \
+  -run '^(TestClaudeProductionMaster|TestProductionHubRejectsStaleMasterLease)$' \
+  -timeout=2m -count=1 -v
+```
+
+Use Linux with `SO_PEERPIDFD` for the production probe. The companion waits through the real 30-second lease deadline. Its protocol exchanges use generated fixture identities and never log lease values. The Hub listens on a loopback port and the two Worker processes have separate state and runtime directories.

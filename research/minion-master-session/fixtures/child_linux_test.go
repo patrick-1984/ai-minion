@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 type childLaunch struct {
 	Name, Root, Claude, Profile, Project string
 	Input, Output, Stderr, MCPConfig     string
+	Minion, WorkerRuntime                string
 	ModelPort                            int
 	Interactive                          bool
 }
@@ -114,10 +116,17 @@ func execClaude(input string) error {
 	args := []string{
 		cfg.Claude, "--model", "claude-sonnet-4-6", "--tools", "",
 		"--permission-mode", "default",
-		"--setting-sources", "user", "--mcp-config", cfg.MCPConfig, "--allowedTools", masterTool,
+		"--setting-sources", "user",
+	}
+	if cfg.MCPConfig != "" {
+		args = append(args, "--mcp-config", cfg.MCPConfig, "--allowedTools", masterTool)
+	}
+	path := "/usr/bin:/bin"
+	if cfg.Minion != "" {
+		path = filepath.Dir(cfg.Minion) + ":" + path
 	}
 	env := []string{
-		"PATH=/usr/bin:/bin", "NO_COLOR=1", "TMPDIR=" + cfg.Root,
+		"PATH=" + path, "NO_COLOR=1", "TMPDIR=" + cfg.Root,
 		"XDG_CONFIG_HOME=" + cfg.Root, "XDG_CACHE_HOME=" + cfg.Root, "XDG_STATE_HOME=" + cfg.Root,
 		"CLAUDE_CONFIG_DIR=" + cfg.Profile,
 		"ANTHROPIC_BASE_URL=http://127.0.0.1:" + strconv.Itoa(cfg.ModelPort),
@@ -130,6 +139,12 @@ func execClaude(input string) error {
 		args = append(args, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
 			"--verbose", "--max-turns", "4", "--no-session-persistence")
 		env = append(env, "TERM=dumb", "ANTHROPIC_API_KEY="+dummyKey)
+	}
+	if cfg.Minion != "" {
+		args = append([]string{cfg.Minion, "master", "claude", "--"}, args[1:]...)
+		args = append(args, "--allowedTools", "mcp__minion_master__*")
+		env = append(env, "XDG_RUNTIME_DIR="+cfg.WorkerRuntime)
+		return unix.Exec(cfg.Minion, args, env)
 	}
 	return unix.Exec(cfg.Claude, args, env)
 }

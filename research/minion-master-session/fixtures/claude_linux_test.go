@@ -278,6 +278,7 @@ type terminal struct {
 	lastSessionID                string
 	lastInitTools                []string
 	lastToolError                bool
+	lastToolResult               string
 	interactive                  *tmuxtest.Server
 }
 
@@ -345,6 +346,7 @@ func (p *terminal) awaitResult(t *testing.T) {
 		scanner.Buffer(make([]byte, 4096), 4<<20)
 		results := 0
 		var toolError bool
+		var toolResult string
 		for scanner.Scan() {
 			var event struct {
 				Type      string          `json:"type"`
@@ -365,8 +367,21 @@ func (p *terminal) awaitResult(t *testing.T) {
 				p.lastInitTools = event.Tools
 			}
 			if event.Type != "result" {
-				if event.Type == "user" && strings.Contains(string(event.Message), `"is_error":true`) {
-					toolError = true
+				if event.Type == "user" {
+					var message struct {
+						Content []struct {
+							Type    string
+							Content json.RawMessage
+							IsError bool `json:"is_error"`
+						}
+					}
+					if json.Unmarshal(event.Message, &message) == nil {
+						for _, block := range message.Content {
+							if block.Type == "tool_result" {
+								toolError, toolResult = block.IsError, printableFixtureResult(block.Content)
+							}
+						}
+					}
 				}
 				continue
 			}
@@ -378,9 +393,11 @@ func (p *terminal) awaitResult(t *testing.T) {
 				p.lastSessionID = event.SessionID
 				p.results = results
 				p.lastToolError = toolError
+				p.lastToolResult = toolResult
 				return true
 			}
 			toolError = false
+			toolResult = ""
 		}
 		return false
 	}, func() string {
@@ -388,6 +405,14 @@ func (p *terminal) awaitResult(t *testing.T) {
 		err, _ := os.ReadFile(p.stderr)
 		return fmt.Sprintf("stdout %s stderr %s", logTail(out), logTail(err))
 	})
+}
+
+func printableFixtureResult(body json.RawMessage) string {
+	var text string
+	if json.Unmarshal(body, &text) == nil {
+		return text
+	}
+	return string(body)
 }
 
 func (p *terminal) ask(t *testing.T, model *fixtureModel, step string) []string {
@@ -482,13 +507,28 @@ type fixtureModel struct {
 	port     int
 	mu       sync.Mutex
 	catalogs map[string][]string
+	planned  map[string]fixtureTool
+}
+
+type fixtureTool struct {
+	name      string
+	arguments map[string]any
+	entered   chan struct{}
+	proceed   <-chan struct{}
+}
+
+func (m *fixtureModel) plan(marker string, tool fixtureTool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.planned[marker] = tool
 }
 
 func startModel(t *testing.T) *fixtureModel {
 	t.Helper()
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	must(t, err)
-	model := &fixtureModel{port: listener.Addr().(*net.TCPAddr).Port, catalogs: map[string][]string{}}
+	model := &fixtureModel{port: listener.Addr().(*net.TCPAddr).Port,
+		catalogs: map[string][]string{}, planned: map[string]fixtureTool{}}
 	server := &http.Server{Handler: http.HandlerFunc(model.serve), ReadHeaderTimeout: 3 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {
@@ -528,6 +568,7 @@ func (m *fixtureModel) serve(w http.ResponseWriter, r *http.Request) {
 	for i := len(req.Messages) - 1; i >= 0 && marker == ""; i-- {
 		marker = fixtureMarker(req.Messages[i].Content)
 	}
+	var chosen fixtureTool
 	var first bool
 	if strings.HasPrefix(marker, "A77:") {
 		tools := make([]string, 0, len(req.Tools))
@@ -537,6 +578,7 @@ func (m *fixtureModel) serve(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		if _, seen := m.catalogs[marker]; !seen {
 			m.catalogs[marker] = tools
+			chosen = m.planned[marker]
 			first = true
 		}
 		m.mu.Unlock()
@@ -544,9 +586,20 @@ func (m *fixtureModel) serve(w http.ResponseWriter, r *http.Request) {
 	answer := "fixture-ok " + marker
 	block := map[string]any{"type": "text", "text": answer}
 	stop := "end_turn"
-	if first && strings.HasSuffix(marker, "-call") {
+	if first && chosen.name == "" && strings.HasSuffix(marker, "-call") {
+		chosen = fixtureTool{name: masterTool, arguments: map[string]any{}}
+	}
+	if chosen.name != "" {
+		if chosen.entered != nil {
+			close(chosen.entered)
+			select {
+			case <-chosen.proceed:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		id := "toolu_" + strings.NewReplacer(":", "_", "-", "_").Replace(marker)
-		block = map[string]any{"type": "tool_use", "id": id, "name": masterTool, "input": map[string]any{}}
+		block = map[string]any{"type": "tool_use", "id": id, "name": chosen.name, "input": chosen.arguments}
 		stop = "tool_use"
 	}
 	message := map[string]any{
@@ -568,7 +621,12 @@ func (m *fixtureModel) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	send("message_start", map[string]any{"message": message})
 	if stop == "tool_use" {
+		input, _ := json.Marshal(block["input"])
+		block["input"] = map[string]any{}
 		send("content_block_start", map[string]any{"index": 0, "content_block": block})
+		send("content_block_delta", map[string]any{"index": 0, "delta": map[string]any{
+			"type": "input_json_delta", "partial_json": string(input),
+		}})
 	} else {
 		send("content_block_start", map[string]any{"index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
 		send("content_block_delta", map[string]any{"index": 0, "delta": map[string]any{"type": "text_delta", "text": answer}})
