@@ -202,6 +202,8 @@ type SendTextArgs struct {
 	// Enter too. If the paste may have gone out and the Enter did not, the
 	// outcome is partial or unknown, never failed_not_sent. Default false.
 	Submit bool `json:"submit,omitempty"`
+	// AgentOnly is the Hub master adapter's non-forceable destination guard.
+	AgentOnly bool `json:"agent_only,omitempty"`
 }
 
 // Validate checks the request id, the target and the text.
@@ -650,6 +652,7 @@ func init() {
 // the request it routes. Showing it as a flag or a tool argument would suggest
 // a caller can pick it.
 var hiddenMembers = map[string]map[string]bool{
+	OpSendText:    {"agent_only": true},
 	OpWorkerUsage: {"account_id": true, "after_event": true},
 	OpPipeSend:    {"message_id": true},
 	// with_revision is set by the Hub on the share ops it routes: the Worker

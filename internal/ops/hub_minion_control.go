@@ -1,17 +1,22 @@
 package ops
 
-import "reflect"
+import (
+	"reflect"
+
+	"github.com/patrick-1984/ai-minion/internal/proto"
+)
 
 // Names of the Minion control operations (v0.9.0, A17). A session controls
 // sessions on other Workers only when it is a master session on its Worker
 // and the target Worker accepts control from that Worker; every other
 // session is a slave session. All of them are administrator operations.
 const (
-	OpControlList      = "control_list"
-	OpControlSetWorker = "control_set_worker"
-	OpControlSetMaster = "control_set_master"
-	OpControlSetAccept = "control_set_accept"
-	OpControlCheck     = "control_check"
+	OpControlList           = "control_list"
+	OpControlSetWorker      = "control_set_worker"
+	OpControlSetMaster      = "control_set_master"
+	OpControlSetBoundMaster = "control_set_bound_master"
+	OpControlSetAccept      = "control_set_accept"
+	OpControlCheck          = "control_check"
 )
 
 // ControlListArgs are the arguments of control_list (none).
@@ -22,6 +27,25 @@ type ControlMaster struct {
 	SessionName string `json:"session_name"`
 	// Legacy is true for a migrated v0.8 grant, whose old targets still limit it.
 	Legacy bool `json:"legacy,omitempty"`
+}
+
+// ControlBoundMaster is the durable revision of one Worker session name.
+// Inactive revisions protect against delayed mutations, including old creates.
+type ControlBoundMaster struct {
+	SessionName   string `json:"session_name"`
+	IncarnationID string `json:"incarnation_id"`
+	Generation    uint64 `json:"generation"`
+	Master        bool   `json:"master"`
+	Attachment    string `json:"attachment"`
+}
+
+// ControlMasterCandidate is a live candidate with the current revision of
+// its session name. A newly observed name starts at generation zero.
+type ControlMasterCandidate struct {
+	proto.MasterCandidate
+	Generation uint64 `json:"generation"`
+	Master     bool   `json:"master"`
+	Attachment string `json:"attachment"`
 }
 
 // ControlAccept is one Worker a Worker accepts control from.
@@ -46,7 +70,10 @@ type ControlWorker struct {
 	Masters   []ControlMaster `json:"masters"`
 	// CanBeMaster is false for a Worker that cannot originate control calls
 	// (a thin Worker, or one older than 0.8.0).
-	CanBeMaster bool `json:"can_be_master"`
+	CanBeMaster      bool                     `json:"can_be_master"`
+	MasterSessionV1  bool                     `json:"master_session_v1,omitempty"`
+	MasterCandidates []ControlMasterCandidate `json:"master_candidates,omitempty"`
+	BoundMasters     []ControlBoundMaster     `json:"bound_masters,omitempty"`
 }
 
 // ControlListResult lists every Worker's Minion control state.
@@ -68,6 +95,40 @@ type ControlSetMasterArgs struct {
 	WorkerID    string `json:"worker_id"`
 	SessionName string `json:"session_name"`
 	Master      bool   `json:"master"`
+}
+
+// ControlSetBoundMasterArgs changes one session-bound nomination with a
+// precondition. The administrative mutation requires an explicit revision,
+// even for the first nomination at revision zero.
+type ControlSetBoundMasterArgs struct {
+	WriteArgs
+	WorkerID      string  `json:"worker_id"`
+	SessionName   string  `json:"session_name"`
+	IncarnationID string  `json:"incarnation_id"`
+	Master        bool    `json:"master"`
+	IfGeneration  *uint64 `json:"if_generation"`
+}
+
+func (a ControlSetBoundMasterArgs) Validate() error {
+	if err := a.WriteArgs.Validate(); err != nil {
+		return err
+	}
+	if a.Force {
+		return invalid("force", "a bound nomination cannot be forced")
+	}
+	if err := (Target{WorkerID: a.WorkerID, SessionName: a.SessionName}).Validate(); err != nil {
+		return err
+	}
+	if !ValidUUIDv7(a.WorkerID) {
+		return invalid("worker_id", "must be a UUIDv7")
+	}
+	if !proto.ValidMasterIdentity(a.IncarnationID) {
+		return invalid("incarnation_id", "invalid master session identity")
+	}
+	if a.IfGeneration == nil || *a.IfGeneration > proto.MaxMasterGeneration {
+		return invalid("if_generation", "a valid expected nomination revision is required")
+	}
+	return nil
 }
 
 // ControlSetAcceptArgs let the target Worker accept (or stop accepting)
@@ -122,6 +183,9 @@ func init() {
 	Register(Op{Name: OpControlSetMaster, Summary: "Nominate a session as a master session on its Worker, or make it a slave session again (admin only).",
 		Scope: ScopeHub, Actions: manage, Write: true, Guards: []Guard{guardWorkerKnown, guardControlOwner},
 		Args: reflect.TypeFor[ControlSetMasterArgs](), Result: reflect.TypeFor[WriteResult]()})
+	Register(Op{Name: OpControlSetBoundMaster, Summary: "Nominate or revoke a verified terminal incarnation (admin only).",
+		Scope: ScopeHub, Actions: manage, Write: true, Guards: []Guard{guardWorkerKnown, guardControlOwner},
+		Args: reflect.TypeFor[ControlSetBoundMasterArgs](), Result: reflect.TypeFor[WriteResult]()})
 	Register(Op{Name: OpControlSetAccept, Summary: "Let a Worker accept control from another Worker's master sessions (optionally only some sessions), or stop it (admin only).",
 		Scope: ScopeHub, Actions: manage, Write: true, Guards: []Guard{guardWorkerKnown, guardControlOwner},
 		Args: reflect.TypeFor[ControlSetAcceptArgs](), Result: reflect.TypeFor[WriteResult]()})

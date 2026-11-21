@@ -314,7 +314,7 @@ func (s subject) actions(res ResolvedResource) ops.ActionSet {
 		// Worker-bound API key with a scope (AD-12, call_api_key_file) and the
 		// receiver's pipe_accept_from.
 		var held []ops.Action
-		if res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
+		if !s.p.boundMaster && res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
 			held = slices.Clone(workerActions)
 		}
 		// A session-control grant adds what it authorizes on its own.

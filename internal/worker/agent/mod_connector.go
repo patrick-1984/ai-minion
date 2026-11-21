@@ -49,7 +49,7 @@ func (e *Executor) Ops() []string {
 // pipe delivery are code of this executor; the verbatim text is a property of
 // the terminal host and is announced only when the host guarantees it.
 func (e *Executor) Features() []string {
-	out := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextSubmit}
+	out := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextSubmit, proto.FeatureSendTextAgentOnly}
 	if term.IsVerbatim(e.host) {
 		out = append(out, proto.FeatureTextVerbatim)
 	}
@@ -117,6 +117,13 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		hostKind = hostInfo.Kind
 	}
 	su, facts, features := setupSelfUpdate(log, s, ex, host, hostKind)
+	master := masterFeature(env)
+	if master != nil {
+		baseFeatures := features
+		features = func() []string {
+			return proto.NormaliseFeatures(append(baseFeatures(), proto.FeatureMasterSessionV1))
+		}
+	}
 	health, _ := Require[*SessionListHealth](env)
 	// The session host, whether its sessions are hidden (the Hub's
 	// hidden_sessions policy reads it) and the latest listing error (v0.10.0).
@@ -152,6 +159,9 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if master != nil {
+		c.OnLink("master", master.serve)
 	}
 	if err := Provide(env, enr); err != nil {
 		return nil, err

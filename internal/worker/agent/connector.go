@@ -67,6 +67,8 @@ type HubWelcome struct {
 	// HubTLS is what the Hub states about the TLS of this connection
 	// (v0.11.0); nil from an older Hub.
 	HubTLS *HubTLSInfo `json:"hub_tls,omitempty"`
+	// MasterSessionV1 confirms support for the Worker master control lane.
+	MasterSessionV1 bool `json:"master_session_v1,omitempty"`
 	proto.Range
 }
 

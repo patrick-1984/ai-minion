@@ -3,12 +3,11 @@ package server
 import (
 	"context"
 	"fmt"
-	"github.com/patrick-1984/ai-minion/internal/proto"
-
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 func init() { registerMinionControlModule(DefaultRegistry) }
@@ -45,6 +44,13 @@ func initMinionControl(_ context.Context, env *Env) error {
 		for _, o := range svc.Registry().List() {
 			online[o.WorkerID] = o
 		}
+		var bound map[string]workers.MasterWorkerView
+		if master, err := Require[*workers.MasterControl](env); err == nil {
+			bound, err = master.MasterView(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
 		owners := map[string]string{}
 		out := make([]api.ControlWorkerBase, 0, len(rows))
 		for _, w := range rows {
@@ -56,11 +62,20 @@ func initMinionControl(_ context.Context, env *Env) error {
 				owners[w.OwnerID] = name
 			}
 			o, on := online[w.ID]
-			out = append(out, api.ControlWorkerBase{ID: w.ID, Name: w.Name, Owner: name, OwnerID: w.OwnerID, Online: on, CanBeMaster: canBeMaster(o, on)})
+			view := bound[w.ID]
+			out = append(out, api.ControlWorkerBase{ID: w.ID, Name: w.Name, Owner: name, OwnerID: w.OwnerID, Online: on,
+				CanBeMaster: canBeMaster(o, on), MasterSessionV1: o.MasterSessionV1, MasterCandidates: view.Candidates, BoundMasters: view.Bound})
 		}
 		return out, nil
 	}
-	if err := api.RegisterMinionControl(handlers, st, list); err != nil {
+	check := func(ctx context.Context, workerID, session string) ([]ops.ControlChain, error) {
+		master, err := Require[*workers.MasterControl](env)
+		if err != nil {
+			return nil, nil
+		}
+		return master.Controllers(ctx, workerID, session)
+	}
+	if err := api.RegisterMinionControl(handlers, st, list, check); err != nil {
 		return fmt.Errorf("minion_control: %w", err)
 	}
 	return nil

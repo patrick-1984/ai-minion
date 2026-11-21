@@ -298,6 +298,26 @@ func TestSendTextSubmitIsOneRequestOnOnePane(t *testing.T) {
 	}
 }
 
+func TestSendTextAgentOnlyKeepsLegacyBehaviorAndRefusesNonAgents(t *testing.T) {
+	e, ref := submitEnv(t, "application")
+	e.cls.set("application", ops.PaneKindOther, ops.PaneStateStable)
+	for _, kind := range []string{ops.PaneKindOther, ops.PaneKindShell} {
+		e.cls.set("application", kind, ops.PaneStateStable)
+		for _, force := range []bool{false, true} {
+			res, err := e.writeRaw(ops.OpSendText, rawArgs("work", force,
+				map[string]any{"text": "Fixture prompt", "submit": true, "agent_only": true}))
+			if err != nil || res.Outcome != ops.OutcomeFailedNotSent || res.Forceable || len(e.host.eventLog()) != 0 {
+				t.Fatalf("agent-only %s force=%t: result %+v, events %v, err %v", kind, force, res, e.host.eventLog(), err)
+			}
+		}
+	}
+	e.cls.set("application", ops.PaneKindOther, ops.PaneStateStable)
+	e.mustWrite(ops.OpSendText, sendText("work", "Legacy fixture input", false))
+	if got := e.host.eventLog(); len(got) != 1 || got[0] != "paste "+ref.ID {
+		t.Fatalf("legacy path changed: %v", got)
+	}
+}
+
 func TestSendTextWithoutSubmitAddsNoEnter(t *testing.T) {
 	e, ref := submitEnv(t, "claude")
 	e.mustWrite(ops.OpSendText, sendText("work", "first\nsecond", false))

@@ -89,7 +89,7 @@ func (s *Store) PutMasterSession(ctx context.Context, m MasterRow) error {
 		 ON CONFLICT (worker_id, session_name) DO UPDATE SET legacy_targets_json = NULL, created_by = excluded.created_by, created_at = excluded.created_at`,
 		m.WorkerID, m.SessionName, m.CreatedBy, m.CreatedAt)
 	if err != nil {
-		return fmt.Errorf("store: put master session: %w", err)
+		return fmt.Errorf("store: put master session: %w", masterSlotError(err))
 	}
 	return nil
 }
@@ -268,7 +268,7 @@ func (s *Store) PutMasterSessionIfOwner(ctx context.Context, m MasterRow, owner 
 			 ON CONFLICT (worker_id, session_name) DO UPDATE SET legacy_targets_json = excluded.legacy_targets_json, created_by = excluded.created_by, created_at = excluded.created_at`,
 			m.WorkerID, m.SessionName, legacy, m.CreatedBy, m.CreatedAt)
 		if err != nil {
-			return fmt.Errorf("store: put master session: %w", err)
+			return fmt.Errorf("store: put master session: %w", masterSlotError(err))
 		}
 		return nil
 	})
@@ -354,11 +354,19 @@ type controlResource struct {
 // targets. The owner limit and the target's share rule are applied later by
 // authz and the target Worker, as for any grant.
 func (s *Store) controlTargets(ctx context.Context, source, legacy string) ([]controlResource, error) {
+	return controlTargetsFrom(ctx, s.db, source, legacy)
+}
+
+type controlQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func controlTargetsFrom(ctx context.Context, db controlQueryer, source, legacy string) ([]controlResource, error) {
 	type accept struct {
 		target   string
 		sessions *string
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := db.QueryContext(ctx,
 		`SELECT target_worker_id, sessions_json FROM control_accept WHERE source_worker_id = ?1 AND target_worker_id <> ?1
 		 UNION
 		 SELECT worker_id, NULL FROM worker_control WHERE accept_all = 1 AND worker_id <> ?1

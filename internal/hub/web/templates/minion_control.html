@@ -7,7 +7,7 @@
   <div class="details-body">
     <pre class="control-chain">master session (Worker A)  ──►  Worker B accepts control from A (or from all)  ──►  B shares the session  ──►  A's owner may reach B  ──►  control
 slave session (default)     ─✕  nothing beyond its own Worker</pre>
-    <p class="help">A session's name is taken from the terminal it runs in: anyone who can run programs as the Worker's user on that host can claim it. Treat a master session as trust in its whole host and account.</p>
+    <p class="help">A session-bound grant follows one verified attachment. Name-only legacy grants trust the whole Worker account. Both grant types require the destination to accept control and share its session.</p>
   </div>
 </details>
 <div class="settings-tools">
@@ -49,7 +49,7 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
 <script src="/static/minion-control.js" defer></script>
 {{end}}
 
-{{define "control_row"}}<tr id="ctl-{{.WorkerID}}" data-filter="{{.Name}} {{.Owner}}" data-masters="{{len .Masters}}">
+{{define "control_row"}}<tr id="ctl-{{.WorkerID}}" data-filter="{{.Name}} {{.Owner}}" data-masters="{{.MasterCount}}">
   <th scope="row">{{.Name}} <span class="muted">{{.Owner}}</span>{{if .Online}} <span class="badge" data-online="true">online</span>{{else}} <span class="badge muted">offline</span>{{end}}</th>
   <td data-label="User-managed"><form hx-post="/access/control/user-managed" hx-trigger="change" hx-target="closest tr" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if .UserManaged}} checked{{end}}> People and API keys</label></form></td>
   <td data-label="Accepts control from">
@@ -63,9 +63,40 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
     </details>{{end}}
   </td>
   <td data-label="Master sessions">{{$row := .}}
-    {{if .Masters}}<ul class="control-masters">{{range .Masters}}<li><form hx-post="/access/control/master" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="session_name" value="{{.SessionName}}">{{if .Legacy}}<input type="hidden" name="legacy" value="1">{{end}}<label><input type="checkbox" name="value" value="on" checked> {{.SessionName}}</label>{{if .Legacy}} <span class="badge plain" title="Migrated from session control: its old targets still limit it">limited</span>{{end}}</form></li>{{end}}</ul>{{else}}<span class="muted">none (all slave sessions)</span>{{end}}
+    {{if or .MasterSessionV1 .BoundMasters}}
+    {{if .BoundMasters}}<ul class="control-masters">{{range .BoundMasters}}
+      {{if .Master}}<li>
+        <strong>{{.SessionName}}</strong> <span class="badge plain">{{$row.AttachmentStatus .Attachment}}</span>
+        <form hx-post="/access/control/bound-master" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML" class="row">
+          <input type="hidden" name="worker_id" value="{{$row.WorkerID}}">
+          <input type="hidden" name="session_name" value="{{.SessionName}}">
+          <input type="hidden" name="incarnation_id" value="{{.IncarnationID}}">
+          <input type="hidden" name="if_generation" value="{{.Generation}}">
+          <input type="hidden" name="value" value="off">
+          <button type="submit" class="btn btn-secondary">Revoke master access</button>
+        </form>
+      </li>{{end}}
+    {{end}}</ul>{{end}}
+    {{if .MasterCandidates}}<ul class="control-masters">{{range .MasterCandidates}}
+      <li data-filter="{{.SessionName}}">
+        {{if not .Master}}<strong>{{.SessionName}}</strong> <span class="badge plain">{{$row.AttachmentStatus .Attachment}}</span>{{end}}
+        <span class="muted">{{$row.CatalogStatus .CatalogResult}}</span>
+        {{if not .Master}}<form hx-post="/access/control/bound-master" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML" class="row">
+          <input type="hidden" name="worker_id" value="{{$row.WorkerID}}">
+          <input type="hidden" name="session_name" value="{{.SessionName}}">
+          <input type="hidden" name="incarnation_id" value="{{.IncarnationID}}">
+          <input type="hidden" name="if_generation" value="{{.Generation}}">
+          <input type="hidden" name="value" value="on">
+          <button type="submit" class="btn btn-secondary">Nominate this attachment</button>
+        </form>{{end}}
+      </li>
+    {{end}}</ul>{{else if .MasterSessionV1}}
+      <p class="help">No prepared attachment reported. In a shared Linux tmux terminal, use <code>exec minion master claude</code> for a deliberate launch.</p>
+    {{end}}
+    {{end}}
+    {{if .Masters}}<p class="help">Name-only legacy masters</p><ul class="control-masters">{{range .Masters}}<li><form hx-post="/access/control/master" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="session_name" value="{{.SessionName}}">{{if .Legacy}}<input type="hidden" name="legacy" value="1">{{end}}<label><input type="checkbox" name="value" value="on" checked> {{.SessionName}}</label>{{if .Legacy}} <span class="badge plain" title="Migrated from session control: its old targets still limit it">limited</span>{{end}}</form></li>{{end}}</ul>{{else if not .MasterCount}}<span class="muted">none (all slave sessions)</span>{{end}}
     {{if .CanBeMaster}}{{if .Known}}<details class="control-pick">
-      <summary><span class="summary-title">Add a master session</span> <span class="summary-meta">{{len .Known}} available</span></summary>
+      <summary><span class="summary-title">Add a name-only master</span> <span class="summary-meta">{{len .Known}} available</span></summary>
       <div class="details-body">
         <input type="search" class="pick-filter" placeholder="Filter sessions" aria-label="Filter the sessions of {{.Name}}" autocomplete="off" spellcheck="false">
         <ul>{{range .Known}}<li data-filter="{{.}}"><form hx-post="/access/control/master" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="session_name" value="{{.}}"><label><input type="checkbox" name="value" value="on"> {{.}}</label></form></li>{{end}}</ul>
