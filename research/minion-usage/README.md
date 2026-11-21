@@ -47,19 +47,18 @@ A local SQLite benchmark with 50 synthetic active sessions, five-second logical 
 
 ### Registration and upgrade
 
-A new or upgraded Worker starts with usage monitoring pending. Run `minion worker config usage` on the Worker to see exactly what is disclosed, its pinned Hub fingerprint and its owning account. The local command `minion worker config usage --accept` accepts that disclosure for this enrollment. It takes effect on the next collection attempt. Replacing the Hub key, changing owners or resetting enrollment clears the grant. Once accepted, session metadata includes every session visible to the Worker's host; bucket changes and console sharing rules have no effect on the set metered. Legacy Workers without this operation remain visible as unavailable to the Usage collector.
+A new Worker starts with its Hub connection pending local acceptance. A fully enrolled Worker migrated from the previous release retains console compatibility and shows pending usage coverage until local acceptance. Run `minion worker config usage` on the Worker to see exactly what is disclosed, its pinned Hub fingerprint and its owning account. The local command `minion worker config usage --accept` accepts that disclosure for this enrollment. It takes effect on the next collection attempt. Replacing the Hub key, changing owners or resetting enrollment clears the grant. Once accepted, session metadata includes every session visible to the Worker's host; bucket changes and console sharing rules have no effect on the set metered. Legacy Workers without this operation remain visible as unavailable to the Usage collector.
 
 ### Implementation evidence
 
-| Ticket | Current evidence | Remaining acceptance |
+The complete native translation table, registration workflow, credential identity policy, local input contracts and history semantics are in [Native usage sources and registration](native-sources.md). Independent checks are recorded in [verification-sol.md](verification-sol.md).
+
+| Ticket | Implemented evidence | Outstanding verification |
 |---|---|---|
-| U01 | Worker allowlisted version inventory and executable-name recognition | Hub button and native provider/model distinction in running harnesses |
-| U02 | Worker metadata projection, session open/end reconciliation, cumulative hourly snapshots | Folder change, task/subagent lifecycle and native token/cost counters |
-| U03 | Local registration policy v1, owner/pin binding, one-time acceptance, Worker log notice and synthetic privacy tests | Hub notice, accessible enrollment prompts and bounded diagnostics |
-| U04 | Typed auth mode, stable domain-separated fingerprints, native status research | Real native account adapters, recognizable safe display and multi-account association |
-| U05–U06 | Isolated worker metadata collection, bounded concurrency, transient backoff | Account-level scheduler, selection, durable leases, Retry-After and native queries |
-| U07 | Scoped SQL queries, private bucket CRUD/reorder and atomic bulk assignment, isolation tests | Hub editing controls and integration tests |
-| U08–U09 | Native duration/percent/reset model, subscription-only filter, per-account dedup and pace function | Coverage-aware aggregate and visible account/window views |
-| U10 | SQLite migration, replay/ownership/retention tests, measured 50-session workload, cursor-paged HTTP catalog and Hub read-only MCP tools | Machine-readable OpenAPI, public lifecycle/history endpoints and end-to-end client validation |
-| U11 | CPA design 08/09 investigated read-only | Complete |
-| U12 | Isolated branch with requirement trace | Candidate, full regression/visual checks, release and installation evidence |
+| U01 | Worker executable/version scans, current-profile Claude/Codex authentication, OpenCode provider detection, Hub button and CLI inventory | Real installations may lack a safe attributable native source; surface its capabilities. |
+| U02–U03 | Metadata registration and previous-enrollment migration, directory and host enumeration, native lifecycle/status adapters, bounded events, ACL and disclosure tests | Full candidate and visual gates. |
+| U04–U06 | Separate subscription/API identities, optional seeded and default domain-separated fingerprints, native Codex protocol, passive native source selection, five-minute lease/backoff/jitter and event coalescing | Native live personal accounts deliberately excluded from fixtures; capabilities depend on installed harness and explicit producer binding. |
+| U07–U09 | Owner-only buckets, exclusive bulk assignment, personal account labels/order, zero/unknown/stale coverage and per-window pace. Domain reads and act-as denials tested over real HTTPS. | Shared Chrome visual verification. |
+| U10 | Generated OpenAPI, read-only MCP tools, bounded cursor pages/retention, SQLite migration tests and 50-session benchmark | Exact release candidate build/race/cross-platform gates. |
+| U11 | CPA designs 08/09 investigated read-only | Complete. |
+| U12 | Isolated feature commits and acceptance mapping | Prior release gate, review, installable release. |

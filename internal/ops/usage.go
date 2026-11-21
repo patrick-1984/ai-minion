@@ -3,6 +3,7 @@ package ops
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"math"
 	"strconv"
 	"strings"
@@ -62,7 +63,7 @@ type UsageEvent struct {
 
 func (e UsageEvent) Valid() bool {
 	switch e.Kind {
-	case "session_started", "session_stopped", "turn_started", "turn_finished", "task_started", "task_finished", "subagent_started", "subagent_finished", "folder_changed", "model_changed":
+	case "session_observed", "session_end_observed", "session_started", "session_stopped", "turn_started", "turn_finished", "task_started", "task_finished", "subagent_started", "subagent_finished", "folder_changed", "model_changed":
 	default:
 		return false
 	}
@@ -70,8 +71,9 @@ func (e UsageEvent) Valid() bool {
 }
 
 type UsageSession struct {
-	NativeID string       `json:"native_id,omitempty"`
-	Models   []UsageModel `json:"models,omitempty"`
+	TimeSource string       `json:"time_source,omitempty"`
+	NativeID   string       `json:"native_id,omitempty"`
+	Models     []UsageModel `json:"models,omitempty"`
 
 	ID         string `json:"id"` // opaque identity of this session incarnation on this Worker
 	Name       string `json:"name"`
@@ -99,6 +101,8 @@ type UsageWindow struct {
 }
 
 type UsageAccount struct {
+	Plan            string        `json:"plan,omitempty"`
+	TimeSource      string        `json:"time_source,omitempty"`
 	SourceSessionID string        `json:"source_session_id,omitempty"`
 	ID              string        `json:"id"` // derived locally; never a credential
 	Provider        string        `json:"provider"`
@@ -150,6 +154,9 @@ func usageText(s string, max int) bool {
 	return utf8.ValidString(s) && len(s) <= max && strings.IndexFunc(s, unicode.IsControl) < 0
 }
 
+func usageClock(s string) bool {
+	return s == "" || s == "native" || s == "worker_received" || s == "worker_measured"
+}
 func usageMode(s string) bool        { return s == "unknown" || s == "subscription" || s == "api" }
 func usagePercent(v *float64) bool   { return v == nil || (*v >= 0 && *v <= 100) }
 func usageTime(t, latest int64) bool { return t > 0 && t <= latest }
@@ -198,7 +205,7 @@ func (r UsageReport) Check(now time.Time) error {
 	}
 	seen := map[string]bool{}
 	for _, s := range r.Sessions {
-		if !usageIDValid(s.ID) || seen[s.ID] || !usageText(s.Name, 256) || s.Name == "" || !usageText(s.Folder, 1024) || !usageText(s.Model, 128) || !usageText(s.Harness, 64) || !usageText(s.Version, 96) || !usageText(s.Provider, 64) || !usageMode(s.AuthMode) || !usageText(s.Source, 64) || s.Source == "" || !usageTime(s.ObservedAt, latest) || s.ObservedAt > r.ObservedAt || s.AccountID != "" && !usageIDValid(s.AccountID) || !s.UsageCounters.valid() {
+		if !usageIDValid(s.ID) || seen[s.ID] || !usageText(s.Name, 256) || s.Name == "" || !usageText(s.Folder, 1024) || !usageText(s.Model, 128) || !usageText(s.Harness, 64) || !usageText(s.Version, 96) || !usageClock(s.TimeSource) || !usageText(s.Provider, 64) || !usageMode(s.AuthMode) || !usageText(s.Source, 64) || s.Source == "" || !usageTime(s.ObservedAt, latest) || s.ObservedAt > r.ObservedAt || s.AccountID != "" && !usageIDValid(s.AccountID) || !s.UsageCounters.valid() {
 			return invalid("sessions", "invalid usage metadata")
 		}
 		if s.StartedAt != nil && !usageTime(*s.StartedAt, s.ObservedAt) || s.StoppedAt != nil && (!usageTime(*s.StoppedAt, s.ObservedAt) || s.StartedAt != nil && *s.StoppedAt < *s.StartedAt) {
@@ -216,7 +223,7 @@ func (r UsageReport) Check(now time.Time) error {
 	}
 	for _, a := range r.Accounts {
 		key := "account:" + a.ID + "|" + a.SourceSessionID
-		if !usageIDValid(a.ID) || a.SourceSessionID != "" && !usageIDValid(a.SourceSessionID) || seen[key] || a.Provider == "" || !usageText(a.Provider, 64) || !usageMode(a.AuthMode) || !usageText(a.Label, 96) || a.Source == "" || !usageText(a.Source, 64) || !usageTime(a.ObservedAt, r.ObservedAt) || len(a.Windows) > 32 || a.AuthMode != "subscription" && len(a.Windows) > 0 {
+		if !usageIDValid(a.ID) || a.SourceSessionID != "" && !usageIDValid(a.SourceSessionID) || seen[key] || a.Provider == "" || !usageText(a.Provider, 64) || !usageText(a.Plan, 64) || !usageClock(a.TimeSource) || !usageMode(a.AuthMode) || !usageText(a.Label, 96) || a.Source == "" || !usageText(a.Source, 64) || !usageTime(a.ObservedAt, r.ObservedAt) || len(a.Windows) > 32 || a.AuthMode != "subscription" && len(a.Windows) > 0 {
 			return invalid("accounts", "invalid account metadata")
 		}
 		seen[key] = true
@@ -244,6 +251,10 @@ func (r UsageReport) Check(now time.Time) error {
 		if h.Name == "" || !usageText(h.Name, 64) || !usageText(h.Version, 96) || h.Status != "installed" && h.Status != "unavailable" && h.Status != "unsupported" {
 			return invalid("inventory", "invalid harness entry")
 		}
+	}
+	encoded, err := json.Marshal(r)
+	if err != nil || len(encoded) > 768<<10 {
+		return invalid("report", "encoded report exceeds the usage transport limit")
 	}
 	return nil
 }

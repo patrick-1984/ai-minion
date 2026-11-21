@@ -13,6 +13,7 @@ import (
 )
 
 type NativeUsageOptions struct {
+	ObservedAt                                                   time.Time
 	Format, Session, NativeID, Harness, Model, Provider, EventID string
 	Account                                                      *ops.UsageAccount
 }
@@ -186,11 +187,20 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 		return zero, errors.New("expected a session name and at most 256 KiB of JSON")
 	}
 	s := ops.UsageSession{Name: opts.Session, Source: opts.Format, Harness: opts.Harness, Provider: opts.Provider, Model: opts.Model, AuthMode: "unknown", ObservedAt: now.UnixMilli()}
+	s.TimeSource = "worker_received"
+	if !opts.ObservedAt.IsZero() {
+		s.TimeSource = "native"
+		s.ObservedAt = opts.ObservedAt.UnixMilli()
+		if s.ObservedAt <= 0 || opts.ObservedAt.After(now) {
+			return zero, errors.New("invalid native observation time")
+		}
+	}
 	var a *ops.UsageAccount
 	if opts.Account != nil {
 		x := *opts.Account
 		x.Windows = nil
 		x.ObservedAt = s.ObservedAt
+		x.TimeSource = s.TimeSource
 		a = &x
 		s.AccountID = x.ID
 		s.Provider = x.Provider
@@ -216,7 +226,7 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 			} `json:"buckets"`
 		}
 		if a == nil || a.AuthMode != "subscription" || a.Provider != "Google" {
-			return zero, errors.New("Gemini quota needs a Google subscription identity")
+			return zero, errors.New("gemini quota needs a Google subscription identity")
 		}
 		if err = json.Unmarshal(raw, &quota); err == nil && len(quota.Buckets) <= 32 {
 			a.Source = "gemini-quota"
@@ -274,7 +284,7 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 	}
 	s.NativeID = ops.UsageID("native-session", s.Harness, native)
 	s.ID = s.NativeID
-	r := ops.UsageReport{Version: ops.UsageVersion, ObservedAt: s.ObservedAt, Sessions: []ops.UsageSession{s}}
+	r := ops.UsageReport{Version: ops.UsageVersion, ObservedAt: now.UnixMilli(), Sessions: []ops.UsageSession{s}}
 	if a != nil {
 		r.Accounts = []ops.UsageAccount{*a}
 	}

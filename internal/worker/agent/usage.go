@@ -92,6 +92,9 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 		if current == "" || current != grant {
 			return nil, apiErr(proto.CodeForbidden, "", "the usage enrollment changed")
 		}
+		if err := r.Check(time.Now()); err != nil {
+			return nil, apiErr(proto.CodeConflict, "", "usage report exceeds a collection bound")
+		}
 		return r, nil
 	})
 }
@@ -120,7 +123,7 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 			v := s.Created.UnixMilli()
 			started = &v
 		}
-		row := ops.UsageSession{ID: ops.UsageID("host-session", s.Name, s.HostID, s.Created.UTC().Format(time.RFC3339Nano)), Name: s.Name, ObservedAt: at, StartedAt: started, AuthMode: "unknown", Source: "session-host"}
+		row := ops.UsageSession{ID: ops.UsageID("host-session", s.Name, s.HostID, s.Created.UTC().Format(time.RFC3339Nano)), Name: s.Name, ObservedAt: at, StartedAt: started, AuthMode: "unknown", TimeSource: "worker_measured", Source: "session-host"}
 		if pane, ok := s.ActivePane(); ok {
 			row.Folder = pane.Folder
 			name := strings.TrimSuffix(strings.ToLower(filepath.Base(pane.Ref.Command)), ".exe")

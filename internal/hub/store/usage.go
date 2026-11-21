@@ -130,7 +130,7 @@ func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.
 // resume between periodic maintenance runs.
 func (s *Store) TrimUsage(ctx context.Context, now time.Time) error {
 	const batch = 256
-	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_events WHERE (worker_id,seq) IN (SELECT worker_id,seq FROM usage_events WHERE observed_at<? ORDER BY observed_at LIMIT ?)`, now.Add(-7*24*time.Hour).UnixMilli(), batch)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_events WHERE id IN (SELECT id FROM usage_events WHERE observed_at<? ORDER BY observed_at LIMIT ?)`, now.Add(-7*24*time.Hour).UnixMilli(), batch)
 	if err != nil {
 		return err
 	}

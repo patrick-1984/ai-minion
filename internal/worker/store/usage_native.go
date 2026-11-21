@@ -26,7 +26,7 @@ func (s *Store) SaveNativeUsage(ctx context.Context, enrollment Enrollment, r op
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var granted bool
 	if err := tx.QueryRowContext(ctx, `SELECT usage_policy=1 FROM hub_enrollment WHERE id=1 AND worker_id=? AND worker_id<>'' AND owner=? AND owner<>'' AND hub_pub=?`, enrollment.WorkerID, enrollment.Owner, []byte(enrollment.HubPub)).Scan(&granted); err != nil || !granted {
 		return errors.New("accept usage monitoring for this enrollment before recording metrics")
@@ -142,6 +142,15 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		if base.StartedAt == nil || n.ObservedAt < *base.StartedAt || n.ObservedAt > report.ObservedAt {
 			continue
 		}
+		if n.Folder == "" {
+			n.Folder = base.Folder
+		}
+		if n.Harness == "" {
+			n.Harness = base.Harness
+		}
+		if n.Version == "" {
+			n.Version = base.Version
+		}
 		n.ID = base.ID
 		n.StartedAt = base.StartedAt
 		report.Sessions[idx] = n
@@ -162,7 +171,7 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 	if err == nil {
 		err = rows.Err()
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err != nil {
 		return err
 	}
@@ -180,7 +189,7 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 	if err != nil {
 		return err
 	}
-	defer events.Close()
+	defer func() { _ = events.Close() }()
 	for events.Next() {
 		var seq int64
 		var b string

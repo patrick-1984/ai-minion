@@ -133,12 +133,12 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		Key:                    enr.LoadKey,
 		Out:                    s.Out,
 		Enrollment:             enr,
-		UsageConnectionAllowed: st.UsageConnectionAllowed,
-		Policy:                 policy,
-		Dialer:                 d.dialer,
-		Clock:                  d.clock,
-		Session:                transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
-		Logger:                 log,
+		UsageConnectionAllowed: st.UsageConnectionAllowed, UsageConsent: st.UsageConsent,
+		Policy:  policy,
+		Dialer:  d.dialer,
+		Clock:   d.clock,
+		Session: transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
+		Logger:  log,
 	})
 	if err != nil {
 		return nil, err

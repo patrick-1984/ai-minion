@@ -101,7 +101,7 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		   AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY coalesce(pref.position,0),a.account_id`
 		bind = append(bind, bucketOwner, bucketOwner, args.After, args.SubscriptionOnly, args.BucketID, args.BucketID)
 	case "events":
-		q = usageVisible + `, events AS (SELECT e.*,printf('%019d:%s:%019d',e.observed_at,e.worker_id,e.seq) cursor FROM visible v JOIN usage_events e ON e.worker_id=v.id)
+		q = usageVisible + `, events AS (SELECT e.*,printf('%019d:%s:%019d',e.observed_at,e.worker_id,e.id) cursor FROM visible v JOIN usage_events e ON e.worker_id=v.id)
 		  SELECT e.cursor,e.worker_id,e.body FROM events e LEFT JOIN usage_members m ON m.kind='session' AND m.owner_id=? AND m.member_id=e.session_id
 		  WHERE (?='' OR e.cursor<?) AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY cursor DESC`
 		bind = append(bind, bucketOwner, args.After, args.After, args.BucketID, args.BucketID)
@@ -141,10 +141,29 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 				return out, err
 			}
 			row.ObservedAt = sampleAt
+			if ended != nil {
+				row.StopSource = "native"
+				if row.StoppedAt == nil {
+					row.StopSource = "first_absent_scan"
+				}
+			}
 			row.StoppedAt = ended
 			row.LastSeen = sampleAt
 			if ended == nil {
 				row.LastSeen = workerAt
+			}
+			if row.DurationMS != nil {
+				row.DurationSource = "native"
+			} else if row.StartedAt != nil {
+				stop := row.LastSeen
+				if ended != nil {
+					stop = *ended
+				}
+				if stop >= *row.StartedAt {
+					v := stop - *row.StartedAt
+					row.DurationMS = &v
+					row.DurationSource = "observed_host_lifetime"
+				}
 			}
 			out.Sessions = append(out.Sessions, row)
 		case "accounts":
@@ -199,6 +218,9 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 				if err := json.Unmarshal([]byte(inventory.String), &row.Inventory); err != nil {
 					return out, err
 				}
+			}
+			if row.Status == "unavailable" || row.Status == "registration_required" {
+				row.LastIssue = row.Status
 			}
 			for _, w := range workers {
 				if w.ID == row.ID {

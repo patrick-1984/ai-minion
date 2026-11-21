@@ -23,7 +23,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
-type nativeAuthStatus struct{ mode, status string }
+type nativeAuthStatus struct{ mode, status, provider string }
 
 func (n nativeAuthStatus) Error() string { return n.status }
 
@@ -35,14 +35,16 @@ type nativeFailure struct {
 func (e nativeFailure) Error() string { return e.status }
 
 type nativeAccount struct {
-	APIKeySource string `json:"apiKeySource"`
-	APIProvider  string `json:"apiProvider"`
-	Endpoint     string `json:"baseUrl"`
-	AuthMethod   string `json:"authMethod"` // Claude Code
-	Type         string `json:"type"`       // Codex
-	AccountID    string `json:"accountId"`
-	Email        string `json:"email"`
-	OrgID        string `json:"orgId"`
+	Plan             string `json:"planType"`
+	SubscriptionType string `json:"subscriptionType"`
+	APIKeySource     string `json:"apiKeySource"`
+	APIProvider      string `json:"apiProvider"`
+	Endpoint         string `json:"baseUrl"`
+	AuthMethod       string `json:"authMethod"` // Claude Code
+	Type             string `json:"type"`       // Codex
+	AccountID        string `json:"accountId"`
+	Email            string `json:"email"`
+	OrgID            string `json:"orgId"`
 }
 
 type nativeWindow struct {
@@ -69,7 +71,11 @@ func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageA
 		return ops.UsageAccount{}, false
 	}
 	digest := ops.UsageID("subscription", provider, id, n.OrgID)
-	return ops.UsageAccount{ID: digest, Provider: provider, Label: provider + " " + digest[:10], AuthMode: "subscription", Source: "native-account", ObservedAt: at}, true
+	plan := n.Plan
+	if plan == "" {
+		plan = n.SubscriptionType
+	}
+	return ops.UsageAccount{Plan: plan, TimeSource: "worker_measured", ID: digest, Provider: provider, Label: provider + " " + digest[:10], AuthMode: "subscription", Source: "native-account", ObservedAt: at}, true
 }
 
 // APIUsageAccount fingerprints a credential explicitly identified by the local
@@ -113,7 +119,7 @@ func NativeAPIUsageAccount(provider, endpoint, key, hubPublic string, at int64) 
 	seen := map[byte]bool{}
 	for i := 3; i < len(key); i++ {
 		b := key[i]
-		if !(b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '_' || b == '-') {
+		if !apiKeyChar(b) {
 			validFormat = false
 		}
 		seen[b] = true
@@ -260,14 +266,14 @@ func readCodexAccount(p codexStatusPipe, expected string, now time.Time) (ops.Us
 		return ops.UsageAccount{}, err
 	}
 	if who.Account == nil {
-		return ops.UsageAccount{}, nativeAuthStatus{"unknown", "signed_out"}
+		return ops.UsageAccount{}, nativeAuthStatus{"unknown", "signed_out", "OpenAI"}
 	}
 	if who.Account.Type != "chatgpt" {
 		mode := "unknown"
 		if who.Account.Type == "apiKey" || who.Account.Type == "amazonBedrock" {
 			mode = "api"
 		}
-		return ops.UsageAccount{}, nativeAuthStatus{mode, "configured"}
+		return ops.UsageAccount{}, nativeAuthStatus{mode, "configured", map[string]string{"amazonBedrock": "Amazon Bedrock", "apiKey": "OpenAI"}[who.Account.Type]}
 	}
 	a, ok := subscriptionAccount("OpenAI", *who.Account, now.UnixMilli())
 	if !ok {
@@ -308,6 +314,9 @@ func discoverUsageAccounts(ctx context.Context, inventory []ops.UsageHarness, hu
 				var status nativeAuthStatus
 				if errors.As(err, &status) {
 					h.AuthMode, h.AccountStatus = status.mode, status.status
+					if status.provider != "" {
+						h.Providers = []string{status.provider}
+					}
 				}
 			}
 		case "opencode":
@@ -321,45 +330,24 @@ func discoverUsageAccounts(ctx context.Context, inventory []ops.UsageHarness, hu
 			}
 		case "claude":
 			h.Providers = []string{"Anthropic"}
-			cmd, err := nativeCommand(child, "claude", "auth", "status")
-			if err == nil {
-				var raw usageOutput
-				cmd.Stdout = &raw
-				if cmd.Run() == nil {
-					var n nativeAccount
-					if json.NewDecoder(bytes.NewReader(raw)).Decode(&n) == nil {
-						switch n.AuthMethod {
-						case "claude.ai":
-							h.AuthMode = "subscription"
-							h.AccountStatus = "configured"
-						case "api_key", "api_key_helper":
-							h.AuthMode = "api"
-							h.AccountStatus = "configured"
-						case "third_party", "oauth_token":
-							h.AccountStatus = "configured"
-						case "none":
-							h.AccountStatus = "signed_out"
-						}
-						if n.AuthMethod == "api_key" && n.APIKeySource == "ANTHROPIC_API_KEY" {
-							endpoint := n.Endpoint
-							if endpoint == "" {
-								endpoint = os.Getenv("ANTHROPIC_BASE_URL")
-							}
-							if endpoint == "" && n.APIProvider == "firstParty" {
-								endpoint = "https://api.anthropic.com"
-							}
-							if endpoint != "" {
-								if a, err := NativeAPIUsageAccount("Anthropic", endpoint, os.Getenv("ANTHROPIC_API_KEY"), hubPublic, time.Now().UnixMilli()); err == nil {
-									accounts = append(accounts, a)
-								}
-							}
-						}
-						if n.AuthMethod == "claude.ai" {
-							if a, ok := subscriptionAccount("Anthropic", n, time.Now().UnixMilli()); ok {
-								accounts = append(accounts, a)
-							}
-						}
+			if n, ok := readClaudeAuth(child, ""); ok {
+				switch n.AuthMethod {
+				case "claude.ai":
+					h.AuthMode = "subscription"
+					h.AccountStatus = "configured"
+					if a, ok := subscriptionAccount("Anthropic", n, time.Now().UnixMilli()); ok {
+						accounts = append(accounts, a)
 					}
+				case "api_key", "api_key_helper":
+					h.AuthMode = "api"
+					h.AccountStatus = "configured"
+					if a, ok := claudeNativeKey(n, hubPublic); ok {
+						accounts = append(accounts, a)
+					}
+				case "third_party", "oauth_token":
+					h.AccountStatus = "configured"
+				case "none":
+					h.AccountStatus = "signed_out"
 				}
 			}
 		}
@@ -411,4 +399,65 @@ func openCodeAuth(raw []byte) (string, string, []string) {
 		mode = "api"
 	}
 	return mode, "configured", providers
+}
+
+func apiKeyChar(b byte) bool {
+	return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '_' || b == '-'
+}
+
+func readClaudeAuth(ctx context.Context, profileDir string) (nativeAccount, bool) {
+	var n nativeAccount
+	cmd, err := nativeCommand(ctx, "claude", "auth", "status")
+	if err != nil {
+		return n, false
+	}
+	if profileDir != "" {
+		if !filepath.IsAbs(profileDir) {
+			return n, false
+		}
+		cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+profileDir)
+	}
+	var raw usageOutput
+	cmd.Stdout = &raw
+	err = cmd.Run()
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+		return n, false
+	}
+	ok := decodeClaudeStatus(raw, &n)
+	return n, ok
+}
+
+func decodeClaudeStatus(raw []byte, n *nativeAccount) bool {
+	return json.NewDecoder(bytes.NewReader(raw)).Decode(n) == nil
+}
+
+func claudeNativeKey(n nativeAccount, hubPublic string) (ops.UsageAccount, bool) {
+	if hubPublic == "" || n.AuthMethod != "api_key" || n.APIKeySource != "ANTHROPIC_API_KEY" {
+		return ops.UsageAccount{}, false
+	}
+	endpoint := n.Endpoint
+	if endpoint == "" {
+		endpoint = os.Getenv("ANTHROPIC_BASE_URL")
+	}
+	if endpoint == "" && n.APIProvider == "firstParty" {
+		endpoint = "https://api.anthropic.com"
+	}
+	if endpoint == "" {
+		return ops.UsageAccount{}, false
+	}
+	a, err := NativeAPIUsageAccount("Anthropic", endpoint, os.Getenv("ANTHROPIC_API_KEY"), hubPublic, time.Now().UnixMilli())
+	return a, err == nil
+}
+
+// CurrentClaudeSubscription resolves the native login while the local owner
+// is configuring this specific profile. It is never called per turn or hook.
+func CurrentClaudeSubscription(ctx context.Context, profileDir string) (ops.UsageAccount, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	n, ok := readClaudeAuth(ctx, profileDir)
+	if !ok || n.AuthMethod != "claude.ai" {
+		return ops.UsageAccount{}, false
+	}
+	return subscriptionAccount("Anthropic", n, time.Now().UnixMilli())
 }

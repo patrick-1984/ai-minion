@@ -54,3 +54,12 @@ func (s *Store) UsageConnectionAllowed(ctx context.Context, workerID string) (bo
 	}
 	return allowed, err
 }
+
+func (s *Store) UsageConsent(ctx context.Context, workerID string) string {
+	var status string
+	err := s.db.QueryRowContext(ctx, `SELECT CASE WHEN usage_policy=1 THEN 'accepted' WHEN usage_required=0 THEN 'legacy_pending' ELSE 'pending' END FROM hub_enrollment WHERE id=1 AND worker_id=?`, workerID).Scan(&status)
+	if err != nil {
+		return "pending"
+	}
+	return status
+}

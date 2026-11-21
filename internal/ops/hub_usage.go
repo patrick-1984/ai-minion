@@ -47,6 +47,8 @@ func (a UsageListArgs) Validate() error {
 }
 
 type UsageSessionRow struct {
+	DurationSource string `json:"duration_source,omitempty"`
+	StopSource     string `json:"stop_source,omitempty"`
 	UsageSession
 	WorkerID string `json:"worker_id"`
 	LastSeen int64  `json:"last_seen"` // successful full enumeration on this Worker for a live session
@@ -70,6 +72,7 @@ type UsageAccountRow struct {
 }
 
 type UsageWorkerRow struct {
+	LastIssue   string `json:"last_issue,omitempty"`
 	InventoryAt *int64 `json:"inventory_at"`
 	Online      bool   `json:"online"`
 	Status      string `json:"status"` // ready, waiting, offline, unsupported, registration_required, unavailable

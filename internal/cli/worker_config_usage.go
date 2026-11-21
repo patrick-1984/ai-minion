@@ -23,7 +23,7 @@ func newConfigUsageCmd(deps workerConfigDeps) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer st.Close()
+		defer func() { _ = st.Close() }()
 		enrollment, err := st.LoadEnrollment(cmd.Context())
 		if errors.Is(err, store.ErrNotEnrolled) {
 			return fmt.Errorf("enroll this Worker and connect to its Hub before accepting usage monitoring")

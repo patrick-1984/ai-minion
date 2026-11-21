@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -266,6 +267,7 @@ const AlarmHubIdentityChanged = "hub_identity_changed"
 // ConnectorConfig configures a [Connector]. Dialer, Enrollment and Key are
 // required.
 type ConnectorConfig struct {
+	UsageConsent           func(context.Context, string) string
 	UsageConnectionAllowed func(context.Context, string) (bool, error)
 	// HubURL is the configured Hub URL; empty means the Worker runs alone and
 	// the connector stays idle.
@@ -381,6 +383,11 @@ func (c *Connector) facts() transport.WorkerFacts {
 func (c *Connector) factsFor(enr Enrollment) transport.WorkerFacts {
 	f := c.facts()
 	f.HubCheck = enr.Check()
+	if c.cfg.UsageConsent != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		f.UsageConsent = c.cfg.UsageConsent(ctx, enr.WorkerID)
+		cancel()
+	}
 	return f
 }
 
@@ -1006,7 +1013,8 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 				msg = "The Hub requires a newer usage registration policy; update this Worker."
 			}
 			if c.usageShown.CompareAndSwap(false, true) {
-				writeConsoleBox(c.cfg.Out, "MINION WORKER REGISTRATION", ops.UsageDisclosure, msg)
+				lines := strings.SplitAfter(ops.UsageDisclosure, ". ")
+				writeConsoleBox(c.cfg.Out, "MINION WORKER REGISTRATION", append(lines, msg)...)
 			}
 			c.failMsg(msg)
 			return true

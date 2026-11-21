@@ -1,9 +1,16 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -209,5 +216,57 @@ func TestUsageCollectorDedupAndBackoff(t *testing.T) {
 	}
 	if l := claim(workers[1], later.Add(time.Minute)); l.ID != "" {
 		t.Fatal("polled within five minutes")
+	}
+}
+
+func TestUsagePersistenceHasNoCompleteKey(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t)
+	workers, r, now := usageFixture(t, s, 1)
+	rawKey := "sk-synthetic-long-high-entropy-fixture-d3d3607f87f549f3"
+	domainSecret := []byte("synthetic-domain-fingerprint-secret-9af96f87e6c84922")
+	// Construct exactly the typed wire projection emitted by the local
+	// credential adapter. Its complete credential/secret are never fields.
+	h := hmac.New(sha256.New, domainSecret)
+	h.Write([]byte(ops.UsageID("api-key", "test", "https://example.invalid", rawKey)))
+	id := hex.EncodeToString(h.Sum(nil))
+	a := ops.UsageAccount{ID: id, Label: rawKey[:10] + "... / " + id[:10], Provider: "test", AuthMode: "api", Source: "native-api-identity", ObservedAt: r.ObservedAt}
+	r.Accounts = []ops.UsageAccount{a}
+	frame, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(b []byte) {
+		t.Helper()
+		if bytes.Contains(b, []byte(rawKey)) || bytes.Contains(b, domainSecret) {
+			t.Fatal("complete credential or private seed present")
+		}
+	}
+	check(frame)
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadUsage(ctx, workers, "alice", ops.UsageListArgs{Section: "accounts"}, now)
+	if err != nil || len(got.Accounts) != 1 || got.Accounts[0].ID != id {
+		t.Fatalf("missing projected account: %v", err)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(b)
+	if _, err = s.db.Exec(`PRAGMA wal_checkpoint(FULL)`); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(s.Dir(), DBFile+"*"))
+	if err != nil || len(files) == 0 {
+		t.Fatal("missing fixture database files")
+	}
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(data)
 	}
 }

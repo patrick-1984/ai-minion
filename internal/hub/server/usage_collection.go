@@ -121,7 +121,16 @@ func registerUsageCollection(ctx context.Context, env *Env, st *store.Store, r *
 			return
 		}
 		group.Add(1)
-		go func() { defer group.Done(); collector.serve(run, w, sess) }()
+		go func() {
+			defer group.Done()
+			if w.Facts.UsageConsent == "pending" || w.Facts.UsageConsent == "legacy_pending" {
+				_ = st.UsageFailure(run, w.WorkerID, w.OwnerID, "registration_required")
+				if w.Facts.UsageConsent == "pending" {
+					return
+				}
+			}
+			collector.serve(run, w, sess)
+		}()
 	})
 	group.Add(1)
 	go func() {

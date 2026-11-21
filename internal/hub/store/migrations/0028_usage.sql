@@ -95,13 +95,14 @@ BEGIN
 END;
 ALTER TABLE usage_workers ADD COLUMN event_cursor INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE usage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     worker_id TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
-    seq INTEGER NOT NULL,
+    seq INTEGER,
     session_id TEXT NOT NULL,
     observed_at INTEGER NOT NULL,
     body TEXT NOT NULL,
-    PRIMARY KEY(worker_id,seq)
-) WITHOUT ROWID;
+    UNIQUE(worker_id,seq)
+);
 CREATE INDEX usage_events_time ON usage_events(observed_at);
 CREATE TRIGGER usage_events_reassigned AFTER UPDATE OF owner_id ON workers
 WHEN OLD.owner_id<>NEW.owner_id
@@ -120,4 +121,40 @@ CREATE TRIGGER usage_account_prefs_orphan AFTER DELETE ON usage_accounts
 WHEN NOT EXISTS (SELECT 1 FROM usage_accounts WHERE account_id=OLD.account_id)
 BEGIN
     DELETE FROM usage_account_prefs WHERE account_id=OLD.account_id;
+END;
+
+-- The host reports exact start times where available. A vanished session is
+-- an observation at scan time; the native stop hook has its own event.
+CREATE TRIGGER usage_session_observed AFTER INSERT ON usage_sessions
+BEGIN
+    INSERT INTO usage_events(worker_id,session_id,observed_at,body)
+    VALUES(NEW.worker_id,NEW.id,NEW.observed_at,json_object(
+      'id',lower(hex(randomblob(32))),'session_id',NEW.id,
+      'kind','session_observed','source','session-host','observed_at',NEW.observed_at));
+END;
+CREATE TRIGGER usage_session_end_observed AFTER UPDATE OF ended_at ON usage_sessions
+WHEN OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+BEGIN
+    INSERT INTO usage_events(worker_id,session_id,observed_at,body)
+    VALUES(NEW.worker_id,NEW.id,NEW.ended_at,json_object(
+      'id',lower(hex(randomblob(32))),'session_id',NEW.id,
+      'kind','session_end_observed','source','session-host','observed_at',NEW.ended_at));
+END;
+CREATE TRIGGER usage_session_folder_changed AFTER UPDATE OF body ON usage_sessions
+WHEN json_extract(OLD.body,'$.folder') IS NOT json_extract(NEW.body,'$.folder')
+ AND json_extract(NEW.body,'$.folder') IS NOT NULL
+BEGIN
+    INSERT INTO usage_events(worker_id,session_id,observed_at,body)
+    VALUES(NEW.worker_id,NEW.id,NEW.observed_at,json_object(
+      'id',lower(hex(randomblob(32))),'session_id',NEW.id,
+      'kind','folder_changed','source','session-host','observed_at',NEW.observed_at));
+END;
+CREATE TRIGGER usage_session_model_changed AFTER UPDATE OF body ON usage_sessions
+WHEN json_extract(OLD.body,'$.model') IS NOT json_extract(NEW.body,'$.model')
+ AND json_extract(NEW.body,'$.model') IS NOT NULL
+BEGIN
+    INSERT INTO usage_events(worker_id,session_id,observed_at,body)
+    VALUES(NEW.worker_id,NEW.id,NEW.observed_at,json_object(
+      'id',lower(hex(randomblob(32))),'session_id',NEW.id,
+      'kind','model_changed','source','native-model','observed_at',NEW.observed_at));
 END;

@@ -25,7 +25,7 @@ func usageSecretFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("cannot open local usage credential file")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() || runtime.GOOS != "windows" && st.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("use a private regular file for a usage credential")
@@ -39,7 +39,7 @@ func usageSecretFile(path string) ([]byte, error) {
 
 func newUsageRecordCmd(deps workerConfigDeps) *cobra.Command {
 	var opts agent.NativeUsageOptions
-	var accountID, apiKeyFile, secretFile, endpoint string
+	var accountID, profile, apiKeyFile, secretFile, endpoint, observedAt string
 	cmd := &cobra.Command{Use: "record <format>", Short: "Record a native metadata observation supplied on standard input", Long: "Record numeric usage and lifecycle metadata from a configured native status producer. Supported formats are claude-statusline, claude-hook, codex-token-usage, gemini-result, gemini-quota and deepseek-response.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		ce, err := deps.env(cmd)
 		if err != nil {
@@ -50,7 +50,7 @@ func newUsageRecordCmd(deps workerConfigDeps) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		defer st.Close()
+		defer func() { _ = st.Close() }()
 		enrollment, err := st.LoadEnrollment(cmd.Context())
 		if err != nil {
 			return errors.New("usage recording requires an enrolled Worker")
@@ -72,6 +72,19 @@ func newUsageRecordCmd(deps workerConfigDeps) *cobra.Command {
 		}
 		now := time.Now()
 		opts.Format = args[0]
+		if observedAt != "" {
+			t, e := time.Parse(time.RFC3339Nano, observedAt)
+			if e != nil {
+				return errors.New("observed-at must be an RFC3339 timestamp")
+			}
+			opts.ObservedAt = t
+		}
+		if profile != "" {
+			if accountID != "" || len(profile) > 80 || strings.TrimSpace(opts.Provider) == "" {
+				return errors.New("use one named subscription profile and its provider")
+			}
+			accountID = ops.UsageID("operator-subscription-profile", hex.EncodeToString(enrollment.HubPub), opts.Provider, profile)
+		}
 		if apiKeyFile != "" || secretFile != "" || endpoint != "" {
 			if accountID != "" || endpoint == "" {
 				return errors.New("API attribution requires the actual endpoint and no subscription account")
@@ -112,7 +125,11 @@ func newUsageRecordCmd(deps workerConfigDeps) *cobra.Command {
 			if strings.TrimSpace(opts.Provider) == "" {
 				return errors.New("name the provider of this subscription")
 			}
-			opts.Account = &ops.UsageAccount{ID: accountID, Provider: opts.Provider, Label: opts.Provider + " subscription", AuthMode: "subscription", Source: "local-attribution", ObservedAt: now.UnixMilli()}
+			label := opts.Provider + " subscription"
+			if profile != "" {
+				label = profile
+			}
+			opts.Account = &ops.UsageAccount{ID: accountID, Provider: opts.Provider, Label: label, AuthMode: "subscription", Source: "local-attribution", ObservedAt: now.UnixMilli()}
 		}
 		raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), (256<<10)+1))
 		if err != nil {
@@ -131,7 +148,9 @@ func newUsageRecordCmd(deps workerConfigDeps) *cobra.Command {
 	f.StringVar(&opts.Model, "model", "", "Model reported by the producer")
 	f.StringVar(&opts.Harness, "harness", "", "Harness reporting the metric, such as opencode")
 	f.StringVar(&opts.Provider, "provider", "", "Provider reported by the producer")
+	f.StringVar(&observedAt, "observed-at", "", "Original RFC3339 observation time supplied by the native producer")
 	f.StringVar(&opts.EventID, "event-id", "", "Producer's stable event identifier, for idempotent replay")
+	f.StringVar(&profile, "subscription-profile", "", "Explicit subscription profile label, shared across the Workers using that account")
 	f.StringVar(&accountID, "account", "", "Subscription account fingerprint from Usage")
 	f.StringVar(&endpoint, "endpoint", "", "API endpoint used by this producer")
 	f.StringVar(&apiKeyFile, "api-key-file", "", "Private file containing the credential actually used")

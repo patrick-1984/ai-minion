@@ -87,3 +87,25 @@ func TestUsageAPICredentialIdentity(t *testing.T) {
 		t.Fatal("accepted embedded credentials")
 	}
 }
+
+func TestUsageDomainFingerprintAndStoredProjection(t *testing.T) {
+	// Fixed, synthetic provider-shaped values exercise the nonsecret hint
+	// without reading the machine's environment or a real credential file.
+	key := "sk-ant-api03-" + strings.Repeat("0123456789abcdefghijklmnopqrstuv", 3)
+	scope := strings.Repeat("a", 64)
+	a, err := NativeAPIUsageAccount("Anthropic", "https://api.example/v1", key, scope, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := NativeAPIUsageAccount("Anthropic", "https://other.example/v1", key, scope, 1)
+	c, _ := NativeAPIUsageAccount("Anthropic", "https://api.example/v1", key, strings.Repeat("b", 64), 1)
+	if a.ID == c.ID || a.ID == b.ID {
+		t.Fatal("different Hub or endpoint aliased")
+	}
+	if _, err := NativeAPIUsageAccount("Anthropic", "https://api.example", "short", scope, 1); err == nil {
+		t.Fatal("fingerprinted a weak credential with public scope")
+	}
+	if mode, status, providers := openCodeAuth([]byte(`[{"id":"deepseek","connections":[{"type":"env","name":"DEEPSEEK_API_KEY"}]},{"id":"https://example.invalid/private","connections":[{"type":"credential","value":"private"}]}]`)); mode != "api" || status != "configured" || len(providers) != 1 || providers[0] != "DeepSeek" {
+		t.Fatalf("unsafe/incomplete native inventory: %s %s %v", mode, status, providers)
+	}
+}
