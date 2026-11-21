@@ -2,11 +2,11 @@ package web
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,91 +45,94 @@ func TestUpdatesPageDoesNotShowTheOldChannelsAnswer(t *testing.T) {
 	// Neither the old answer nor an update to it is offered meanwhile.
 	mustNotHave(t, body, `(up to date)`, `v0.12.0`, `data-control="hub-update"`, `cp-update-url`)
 	// Check now still works meanwhile: its result target is on the page.
-	mustHave(t, body, `hx-target="#hub-release-facts"`, `id="hub-release-facts"`, `id="list-result"`)
+	mustHave(t, body, `hx-post="/admin/updates/check"`, `id="hub-release-facts"`, `id="list-result"`)
 }
 
-func panelGet(t *testing.T, s http.Handler, q string) *httptest.ResponseRecorder {
-	t.Helper()
-	return get(t, s, pathUpdatesPanel+q, "X-Test-Session", adminHeader)
+func resetWatch() {
+	checkWatch.mu.Lock()
+	checkWatch.since = time.Time{}
+	checkWatch.mu.Unlock()
 }
 
-// While a check runs the release facts poll themselves; when it is done (or
-// the bound is reached) the fragment carries no trigger.
-func TestUpdatesPanelPollsOnlyWhileChecking(t *testing.T) {
-	running := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: true, Refreshed: true}
-	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, running).reply(ops.OpHubUpdateRefresh, running))
+// Check now waits for the check, then redirects to the page (HX-Redirect for
+// htmx, which carries the CSRF header; 303 otherwise).
+func TestUpdatesCheckNowWaitsAndRedirects(t *testing.T) {
+	resetWatch()
+	var polls atomic.Int32
+	f := newFakeOps().
+		reply(ops.OpHubUpdateRefresh, ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: true, Refreshed: true}).
+		on(ops.OpHubUpdateCheck, func(map[string]any) (any, error) {
+			return ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: polls.Add(1) < 2, Refreshed: true}, nil
+		})
+	connect(t, f)
 	s := adminServer(t)
-	page := get(t, s, pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, page, `data-checking`, `hx-get="/admin/updates/panel?n=1&amp;since=0"`, `hx-trigger="load delay:2s"`, `id="hub-live" aria-live="polite"`)
-	// The update form and its result are outside the swapped element.
-	if strings.Index(page, `id="list-result"`) < strings.Index(page, `id="hub-release-facts"`) {
-		t.Error("list-result must come after the facts")
+	rec := post(t, s, pathUpdatesCheck, adminHeader, url.Values{})
+	if rec.Code != 200 || rec.Header().Get("HX-Redirect") != pathAdminUpdates {
+		t.Fatalf("htmx = %d %v", rec.Code, rec.Header())
 	}
-	frag := panelGet(t, s, "?n=5").Body.String()
-	mustHave(t, frag, `data-checking`, `n=6`)
-	mustNotHave(t, frag, `<html`, `data-control=`)
-	mustNotHave(t, panelGet(t, s, "?n=90").Body.String(), `hx-trigger`)
-	mustHave(t, post(t, s, pathAdminUpdates+"/check", adminHeader, url.Values{}).Body.String(), `id="hub-release-facts"`, `hx-trigger="load delay:2s"`, `since=`)
-
-	done := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Latest: "v0.13.0", Newer: true, ReleaseURL: "https://example.invalid/v0.13.0",
-		CheckedChannel: "latest", CheckedAt: "2026-11-18T19:05:00Z"}
-	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, done))
-	rec := panelGet(t, s, "?n=3")
-	mustHave(t, rec.Body.String(), `v0.13.0`, `id="hub-release-facts"`, `id="hub-release-link"`)
-	mustNotHave(t, rec.Body.String(), `hx-trigger="load`, `data-checking`)
-	if rec.Header().Get("HX-Refresh") != "true" {
-		t.Error("a finished check reloads the page once so that the buttons are current")
+	if n := len(f.called(ops.OpHubUpdateCheck)); n < 2 {
+		t.Fatalf("waited for %d polls, want at least 2", n)
+	}
+	req := httptest.NewRequest(http.MethodPost, pathUpdatesCheck, strings.NewReader(""))
+	req.Header.Set("X-Test-Session", adminHeader)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther || rr.Header().Get("Location") != pathAdminUpdates {
+		t.Fatalf("plain = %d %v", rr.Code, rr.Header())
 	}
 }
 
-// A check that finished while the Hub probed Docker (Checking already false,
-// but the answer is older than the press) keeps polling until a newer answer.
-func TestUpdatesPanelKeepsPollingUntilTheAnswerIsNewerThanThePress(t *testing.T) {
-	old := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Latest: "v0.12.0",
-		CheckedChannel: "latest", CheckedAt: "2026-11-18T19:05:00Z"}
-	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, old))
-	s := adminServer(t)
-	since := fmt.Sprint(time.Date(2026, 11, 18, 19, 10, 0, 0, time.UTC).Unix())
-	rec := panelGet(t, s, "?n=1&since="+since)
-	mustHave(t, rec.Body.String(), `hx-trigger="load delay:2s"`, `since=`+since)
-	if rec.Header().Get("HX-Refresh") != "" {
-		t.Error("no reload while the answer is older than the press")
+func TestUpdatesCheckNowCooldownNotice(t *testing.T) {
+	connect(t, newFakeOps().reply(ops.OpHubUpdateRefresh, ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest"}))
+	rec := post(t, adminServer(t), pathUpdatesCheck, adminHeader, url.Values{})
+	fl := flashesOf(rec)
+	if len(fl) != 1 || !strings.Contains(fl[0].Text, "Not checked again") || rec.Header().Get("HX-Redirect") != pathAdminUpdates {
+		t.Fatalf("flashes %+v, headers %v", fl, rec.Header())
 	}
+}
+
+func TestUpdatesCheckNowFailureStaysOnThePage(t *testing.T) {
+	connect(t, newFakeOps().on(ops.OpHubUpdateRefresh, func(map[string]any) (any, error) { return nil, errors.New("boom") }))
+	rec := post(t, adminServer(t), pathUpdatesCheck, adminHeader, url.Values{})
+	mustHave(t, rec.Body.String(), `role="alert"`)
+	if rec.Header().Get("HX-Redirect") != "" {
+		t.Error("an error is shown in place")
+	}
+}
+
+// Only a running check adds the meta refresh, for at most updateWatchMax.
+func TestUpdatesPageRefreshesOnlyWhileChecking(t *testing.T) {
+	resetWatch()
+	defer resetWatch()
+	running := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: true}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, running))
+	s := adminServer(t)
+	body := get(t, s, pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `<meta http-equiv="refresh" content="5">`, `data-checking`, `id="list-result"`)
+	mustNotHave(t, body, `data-check-slow`)
+
+	checkWatch.mu.Lock()
+	checkWatch.since = time.Now().Add(-3 * time.Minute)
+	checkWatch.mu.Unlock()
+	body = get(t, s, pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `data-check-slow`, `press Check now again later`)
+	mustNotHave(t, body, `http-equiv="refresh"`)
+
 	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest",
-		Latest: "v0.13.0", CheckedChannel: "latest", CheckedAt: "2026-11-18T19:10:03Z"}))
-	rec = panelGet(t, s, "?n=2&since="+since)
-	mustNotHave(t, rec.Body.String(), `hx-trigger`)
-	mustHave(t, rec.Body.String(), `v0.13.0`)
-	if rec.Header().Get("HX-Refresh") != "true" {
-		t.Error("done: reload once")
-	}
+		Latest: "v0.13.0", Newer: true, ReleaseURL: "https://example.invalid/v0.13.0", CheckedChannel: "latest", CheckedAt: "2026-11-18T19:05:00Z"}))
+	body = get(t, s, pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `v0.13.0`, `id="hub-release-link"`)
+	mustNotHave(t, body, `http-equiv="refresh"`, `data-checking`, `data-check-slow`)
 }
 
-// A failed poll or a failed Check now keeps the facts element (an alert inside
-// it), never an empty or partial body that would swap the panel away.
-func TestUpdatesPanelErrorsKeepTheElement(t *testing.T) {
-	boom := func(map[string]any) (any, error) { return nil, errors.New("boom") }
-	connect(t, newFakeOps().on(ops.OpHubUpdateCheck, boom).on(ops.OpHubUpdateRefresh, boom))
+func TestUpdatesCheckIsAdminOnlyAndThePanelRouteIsGone(t *testing.T) {
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, ops.HubUpdateCheckResult{}).reply(ops.OpHubUpdateRefresh, ops.HubUpdateCheckResult{}))
 	s := adminServer(t)
-	for name, rec := range map[string]*httptest.ResponseRecorder{
-		"poll":  panelGet(t, s, "?n=2"),
-		"check": post(t, s, pathAdminUpdates+"/check", adminHeader, url.Values{}),
-	} {
-		if rec.Code != 200 {
-			t.Errorf("%s = %d", name, rec.Code)
-		}
-		mustHave(t, rec.Body.String(), `id="hub-release-facts"`, `role="alert"`)
-		mustNotHave(t, rec.Body.String(), `hx-trigger`)
-		if rec.Header().Get("HX-Refresh") != "" {
-			t.Errorf("%s: an error must not reload", name)
-		}
+	if rec := post(t, s, pathUpdatesCheck, userHeader, url.Values{}); rec.Code != http.StatusNotFound {
+		t.Fatalf("check as user = %d, want 404", rec.Code)
 	}
-}
-
-func TestUpdatesPanelIsAdminOnly(t *testing.T) {
-	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, ops.HubUpdateCheckResult{}))
-	s := adminServer(t)
-	if rec := get(t, s, pathUpdatesPanel, "X-Test-Session", userHeader); rec.Code != http.StatusNotFound {
-		t.Fatalf("panel as user = %d, want 404", rec.Code)
+	if rec := get(t, s, pathAdminUpdates+"/panel", "X-Test-Session", adminHeader); rec.Code == 200 {
+		t.Fatalf("the panel route still exists")
 	}
 }

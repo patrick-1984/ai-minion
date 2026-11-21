@@ -6,7 +6,7 @@
 <title>{{if .Title}}{{.Title}} - {{end}}Minion</title>
 {{if .CSRF}}<meta name="csrf-token" content="{{.CSRF}}">
 {{end}}<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="light dark">{{block "head_extra" .}}{{end}}
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <script src="/static/theme.js"></script>
 <link rel="stylesheet" href="/static/minion.css">

@@ -7,7 +7,7 @@ package web
 import (
 	"fmt"
 	"net/http"
-	"strconv"
+	"sync"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -21,53 +21,42 @@ type UpdatesPage struct {
 	Check ops.HubUpdateCheckResult
 	// CheckedAt is Check.CheckedAt for people ("2026-11-18 19:05 UTC").
 	CheckedAt string
-	// PollURL is set while a check runs (or the channel's answer is pending):
-	// the panel then reloads itself from it every 2 seconds. Empty when the
-	// check is done or the bound (updatePollMax polls) is reached.
-	PollURL string
-	// Note is a line under the facts (Check now: why nothing was started).
-	Note string
-	// Error is shown instead of the facts when the state could not be read.
-	Error    string
-	finished bool
+	// Refresh is true while a check still runs (it took longer than the
+	// wait of Check now): the page then reloads itself every 5 seconds.
+	Refresh bool
+	// Slow is true when the check has run for more than updateWatchMax: the
+	// page stops reloading and says so.
+	Slow bool
 }
 
 const (
-	pathUpdatesPanel = pathAdminUpdates + "/panel"
-	// updatePollMax bounds the polling (2 s each): a hung check does not poll forever.
-	updatePollMax = 90
+	pathUpdatesCheck = pathAdminUpdates + "/check"
+	// updateWait bounds how long Check now waits for the answer.
+	updateWait = 20 * time.Second
+	// updateWatchMax bounds how long the page reloads itself for one check.
+	updateWatchMax = 2 * time.Minute
 )
 
-var updatesFragments = fragments("updates.html")
-
-// poll decides whether the release facts poll again. n counts the polls so
-// far; since (unix seconds, 0 when unknown) is when Check now was pressed: the
-// answer counts as new only when it was checked at or after that time, so a
-// check that finished while the Hub probed Docker is not mistaken for done.
-// Done (nothing left to wait for) is remembered in finished.
-func (p *UpdatesPage) poll(n int, since int64) {
-	c := p.Check
-	waiting := c.Checking || (c.CheckedChannel != "" && c.CheckedChannel != c.Channel)
-	if since > 0 {
-		if t, err := time.Parse(time.RFC3339, c.CheckedAt); err != nil || t.Unix() < since {
-			waiting = true
-		}
-	}
-	p.finished = !waiting
-	if waiting && n < updatePollMax {
-		p.PollURL = fmt.Sprintf("%s?n=%d&since=%d", pathUpdatesPanel, n+1, since)
-	}
+// checkWatch remembers since when the page has seen a check run, so that a
+// hung check does not reload the page forever.
+var checkWatch struct {
+	mu    sync.Mutex
+	since time.Time
 }
 
-// writeFacts renders the release facts (the only part that is swapped). An
-// error is a line inside the same element, so the buttons around it stay.
-// When the check is done the page reloads once, so that the buttons that
-// depend on the answer (update, release URL) are current.
-func writeFacts(w http.ResponseWriter, p UpdatesPage, reload bool) {
-	if p.finished && p.Error == "" && reload {
-		w.Header().Set("HX-Refresh", "true")
+// watchChecking reports how long the check has been seen running (zero when
+// none runs).
+func watchChecking(checking bool, now time.Time) time.Duration {
+	checkWatch.mu.Lock()
+	defer checkWatch.mu.Unlock()
+	if !checking {
+		checkWatch.since = time.Time{}
+		return 0
 	}
-	writeFragmentTemplate(w, updatesFragments(), "hub_facts", p)
+	if checkWatch.since.IsZero() {
+		checkWatch.since = now
+	}
+	return now.Sub(checkWatch.since)
 }
 
 func updatesData(r *http.Request, c OpCaller) (any, error) {
@@ -78,47 +67,45 @@ func updatesData(r *http.Request, c OpCaller) (any, error) {
 	if t, err := time.Parse(time.RFC3339, res.Check.CheckedAt); err == nil {
 		res.CheckedAt = t.UTC().Format("2006-01-02 15:04 UTC")
 	}
-	res.poll(0, 0)
+	if res.Check.Checking {
+		res.Slow = watchChecking(true, time.Now()) > updateWatchMax
+		res.Refresh = !res.Slow
+	} else {
+		watchChecking(false, time.Now())
+	}
 	return res, nil
 }
 
-// handleUpdatesPanel serves the release facts (GET), which poll themselves
-// while a check runs.
-func handleUpdatesPanel(w http.ResponseWriter, r *http.Request, c OpCaller) {
-	v, err := updatesData(r, c)
-	if err != nil {
-		writeFacts(w, UpdatesPage{Error: "The update state could not be read: " + failureText(err)}, false)
-		return
-	}
-	res := v.(UpdatesPage)
-	res.PollURL = ""
-	n, _ := strconv.Atoi(r.URL.Query().Get("n"))
-	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
-	res.poll(max(n, 1), since)
-	writeFacts(w, res, true)
-}
-
-// handleUpdateCheckNow asks GitHub now ("Check now") and answers with the
-// release facts, polling until the answer is newer than this press.
+// handleUpdateCheckNow asks GitHub now ("Check now"), waits for the answer
+// (at most updateWait) and sends the browser back to the page, which renders
+// from fresh state. A page still checking after the wait reloads itself.
 func handleUpdateCheckNow(w http.ResponseWriter, r *http.Request, c OpCaller) {
-	pressed := time.Now().Unix()
 	var res ops.HubUpdateCheckResult
 	if err := c.CallOp(r, ops.OpHubUpdateRefresh, ops.HubUpdateRefreshArgs{}, &res); err != nil {
-		writeFacts(w, UpdatesPage{Error: failureText(err)}, false)
+		writeResultError(w, failureText(err))
 		return
-	}
-	page := UpdatesPage{Check: res}
-	if t, err := time.Parse(time.RFC3339, res.CheckedAt); err == nil {
-		page.CheckedAt = t.UTC().Format("2006-01-02 15:04 UTC")
 	}
 	if !res.Refreshed {
-		page.Note = "Not checked again: the last check was less than a minute ago, or the release check is off (update_check). The page shows the last answer."
-		page.poll(0, 0)
-		writeFacts(w, page, false)
+		AddFlash(w, r, FlashInfo, "Not checked again: the last check was less than a minute ago, or the release check is off (update_check). The page shows the last answer.")
+	} else {
+		watchChecking(res.Checking, time.Now())
+		deadline := time.Now().Add(updateWait)
+		for res.Checking && time.Now().Before(deadline) && r.Context().Err() == nil {
+			time.Sleep(200 * time.Millisecond)
+			res = ops.HubUpdateCheckResult{} // omitted false fields must not keep an old true
+			if err := c.CallOp(r, ops.OpHubUpdateCheck, ops.HubUpdateCheckArgs{}, &res); err != nil {
+				break
+			}
+		}
+	}
+	// htmx carries the CSRF header, so it posts; it follows HX-Redirect with
+	// a plain page load. Anything else gets the 303.
+	if r.Header.Get("HX-Request") != "" {
+		w.Header().Set("HX-Redirect", pathAdminUpdates)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
-	page.poll(0, pressed)
-	writeFacts(w, page, true)
+	http.Redirect(w, r, pathAdminUpdates, http.StatusSeeOther)
 }
 
 func handleHubUpdate(w http.ResponseWriter, r *http.Request, c OpCaller) {
@@ -137,7 +124,6 @@ func handleHubUpdate(w http.ResponseWriter, r *http.Request, c OpCaller) {
 func init() {
 	RegisterPage(Page{Pattern: pathAdminUpdates, Title: "Updates", Template: "updates.html", Data: adminPageData(updatesData)})
 	RegisterNav(NavItem{Label: "Updates", Path: pathAdminUpdates, Order: adminNavOrder + 12, Roles: []authz.Role{authz.RoleAdmin}, Group: NavGroupAdmin, Icon: "i-settings"})
-	RegisterRoute(Route{Pattern: "GET " + pathUpdatesPanel, Handler: adminRoute(handleUpdatesPanel)})
 	RegisterRoute(Route{Pattern: "POST " + pathAdminUpdates + "/hub", Handler: adminRoute(handleHubUpdate)})
-	RegisterRoute(Route{Pattern: "POST " + pathAdminUpdates + "/check", Handler: adminRoute(handleUpdateCheckNow)})
+	RegisterRoute(Route{Pattern: "POST " + pathUpdatesCheck, Handler: adminRoute(handleUpdateCheckNow)})
 }
