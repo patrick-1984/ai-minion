@@ -103,7 +103,6 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 		refreshed := u.checker.StartRefresh()
 		res := u.check(ctx)
 		res.Refreshed = refreshed
-		res.Checking = u.checker.Checking()
 		return res, nil
 	}); err != nil {
 		return fmt.Errorf("self-update: %w", err)
@@ -153,6 +152,9 @@ func (u *selfUpdater) check(ctx context.Context) ops.HubUpdateCheckResult {
 	res.Latest, res.Newer, res.ReleaseURL = l.Latest, l.Newer, l.URL
 	res.CheckedChannel, res.CheckError = l.Channel, l.Err
 	res.Checking = u.checker.Checking()
+	if since := u.checker.CheckingSince(); !since.IsZero() {
+		res.CheckingSince = since.UTC().Format(time.RFC3339)
+	}
 	if !l.CheckedAt.IsZero() {
 		res.CheckedAt = l.CheckedAt.UTC().Format(time.RFC3339)
 	}

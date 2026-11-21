@@ -326,3 +326,42 @@ func TestStartRefreshReturnsAtOnce(t *testing.T) {
 		t.Fatalf("a Hub stop was stored as an error: %+v", r)
 	}
 }
+
+type gatedSource struct {
+	fakeSource
+	started, release chan struct{}
+}
+
+func (b *gatedSource) Releases(ctx context.Context) ([]version.Release, error) {
+	close(b.started)
+	<-b.release
+	return b.fakeSource.Releases(ctx)
+}
+
+// A scheduled check (not only Check now) shows as Checking with a start
+// time, and a Check now during it reports "already running".
+func TestEveryFetchSetsCheckingAndItsStartTime(t *testing.T) {
+	src := &gatedSource{fakeSource: fakeSource{rels: rels("v0.11.0", "v0.13.0")}, started: make(chan struct{}), release: make(chan struct{})}
+	c := newChecker(src, "v0.11.0", nil)
+	if c.Checking() || !c.CheckingSince().IsZero() {
+		t.Fatal("idle checker reports a check")
+	}
+	done := make(chan struct{})
+	go func() { c.CheckOnce(context.Background()); close(done) }()
+	<-src.started
+	if !c.Checking() || c.CheckingSince().IsZero() || time.Since(c.CheckingSince()) > time.Minute {
+		t.Fatalf("Checking = %v, since = %v", c.Checking(), c.CheckingSince())
+	}
+	if !c.StartRefresh() {
+		t.Fatal("StartRefresh during a running fetch must report it as running")
+	}
+	close(src.release)
+	<-done
+	deadline := time.Now().Add(2 * time.Second)
+	for c.Checking() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c.Checking() || !c.CheckingSince().IsZero() {
+		t.Fatal("the flag stays set after the fetch")
+	}
+}
