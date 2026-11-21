@@ -137,11 +137,23 @@ func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.
 // resume between periodic maintenance runs.
 func (s *Store) TrimUsage(ctx context.Context, now time.Time) error {
 	const batch = 256
-	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_events WHERE id IN (SELECT id FROM usage_events WHERE observed_at<? ORDER BY observed_at LIMIT ?)`, now.Add(-7*24*time.Hour).UnixMilli(), batch)
-	if err != nil {
-		return err
+	// A busy 50-session installation can finish 600 events per minute.
+	// Give expiration enough throughput while releasing the writer lock
+	// after each batch. Short backlogs finish in one maintenance tick.
+	for range 16 {
+		result, err := s.db.ExecContext(ctx, `DELETE FROM usage_events WHERE id IN (SELECT id FROM usage_events WHERE observed_at<? ORDER BY observed_at LIMIT ?)`, now.Add(-7*24*time.Hour).UnixMilli(), batch)
+		if err != nil {
+			return err
+		}
+		removed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if removed < batch {
+			break
+		}
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM usage_hours WHERE (session_id,hour) IN (SELECT session_id,hour FROM usage_hours WHERE hour<? ORDER BY hour LIMIT ?)`, now.Add(-30*24*time.Hour).UnixMilli()/3600000, batch)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_hours WHERE (session_id,hour) IN (SELECT session_id,hour FROM usage_hours WHERE hour<? ORDER BY hour LIMIT ?)`, now.Add(-30*24*time.Hour).UnixMilli()/3600000, batch)
 	if err != nil {
 		return err
 	}

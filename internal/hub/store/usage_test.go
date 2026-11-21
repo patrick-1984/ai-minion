@@ -321,3 +321,26 @@ func BenchmarkUsageMixedSessions(b *testing.B) {
 		})
 	}
 }
+
+func TestUsageRetentionDrainsBusyMinuteInBoundedBatches(t *testing.T) {
+	s := openTest(t)
+	workers, _, now := usageFixture(t, s, 0)
+	// Two minutes at ten events per second exceed one SQLite batch.
+	old := now.Add(-8 * 24 * time.Hour).UnixMilli()
+	_, err := s.db.Exec(`WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<1200)
+	 INSERT INTO usage_events(worker_id,seq,session_id,observed_at,body) SELECT ?,i,'',?,'{}' FROM n`, workers[0].ID, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.db.Exec(`INSERT INTO usage_events(worker_id,seq,session_id,observed_at,body) VALUES(?,1201,'',?,'{}')`, workers[0].ID, now.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrimUsage(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM usage_events`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("events after retention: %d, %v", n, err)
+	}
+}
