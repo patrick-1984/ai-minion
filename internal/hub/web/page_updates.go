@@ -5,6 +5,7 @@ package web
 // Workers that are older than the Hub.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -21,7 +22,22 @@ type UpdatesPage struct {
 	Check ops.HubUpdateCheckResult
 	// CheckedAt is Check.CheckedAt for people ("2026-11-18 19:05 UTC").
 	CheckedAt string
+	// Refresh is true while a check still runs (it took longer than the
+	// wait of Check now): the page then reloads itself every 5 seconds.
+	Refresh bool
+	// Slow is true when the check has run for more than updateWatchMax: the
+	// page stops reloading and says so.
+	Slow bool
 }
+
+// updateWait bounds the whole Check now request (under the Hub's 15 s shutdown budget).
+var updateWait = 12 * time.Second
+
+const (
+	pathUpdatesCheck = pathAdminUpdates + "/check"
+	// updateWatchMax bounds how long the page reloads itself for one check.
+	updateWatchMax = 2 * time.Minute
+)
 
 func updatesData(r *http.Request, c OpCaller) (any, error) {
 	var res UpdatesPage
@@ -31,21 +47,51 @@ func updatesData(r *http.Request, c OpCaller) (any, error) {
 	if t, err := time.Parse(time.RFC3339, res.Check.CheckedAt); err == nil {
 		res.CheckedAt = t.UTC().Format("2006-01-02 15:04 UTC")
 	}
+	if res.Check.Checking {
+		since, err := time.Parse(time.RFC3339, res.Check.CheckingSince)
+		res.Slow = err == nil && time.Since(since) > updateWatchMax
+		res.Refresh = !res.Slow
+	}
 	return res, nil
 }
 
-// handleUpdateCheckNow asks GitHub now ("Check now").
+// handleUpdateCheckNow asks GitHub now ("Check now"), waits for the answer
+// (at most updateWait) and sends the browser back to the page, which renders
+// from fresh state. A page still checking after the wait reloads itself.
 func handleUpdateCheckNow(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	ctx, cancel := context.WithTimeout(r.Context(), updateWait)
+	defer cancel()
+	r = r.WithContext(ctx)
 	var res ops.HubUpdateCheckResult
 	if err := c.CallOp(r, ops.OpHubUpdateRefresh, ops.HubUpdateRefreshArgs{}, &res); err != nil {
 		writeResultError(w, failureText(err))
 		return
 	}
-	text := "Not checked again: the last check was less than a minute ago, or the release check is off (update_check). The page shows the last answer."
-	if res.Refreshed {
-		text = "Checking GitHub now. Reload this page in a few seconds for the answer."
+	if !res.Refreshed {
+		AddFlash(w, r, FlashInfo, "Not checked again: the last check was less than a minute ago, or the release check is off (update_check). The page shows the last answer.")
+	} else {
+		for res.Checking {
+			select {
+			case <-ctx.Done():
+			case <-time.After(200 * time.Millisecond):
+			}
+			if ctx.Err() != nil {
+				break
+			}
+			res = ops.HubUpdateCheckResult{} // omitted false fields must not keep an old true
+			if err := c.CallOp(r, ops.OpHubUpdateCheck, ops.HubUpdateCheckArgs{}, &res); err != nil {
+				break
+			}
+		}
 	}
-	done(w, r, text, ops.WriteResult{})
+	// htmx carries the CSRF header, so it posts; it follows HX-Redirect with
+	// a plain page load. Anything else gets the 303.
+	if r.Header.Get("HX-Request") != "" {
+		w.Header().Set("HX-Redirect", pathAdminUpdates)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	http.Redirect(w, r, pathAdminUpdates, http.StatusSeeOther)
 }
 
 func handleHubUpdate(w http.ResponseWriter, r *http.Request, c OpCaller) {
@@ -84,6 +130,6 @@ func init() {
 	RegisterPage(Page{Pattern: pathAdminUpdates, Title: "Updates", Template: "updates.html", Data: adminPageData(updatesData)})
 	RegisterNav(NavItem{Label: "Updates", Path: pathAdminUpdates, Order: adminNavOrder + 12, Roles: []authz.Role{authz.RoleAdmin}, Group: NavGroupAdmin, Icon: "i-settings"})
 	RegisterRoute(Route{Pattern: "POST " + pathAdminUpdates + "/hub", Handler: adminRoute(handleHubUpdate)})
-	RegisterRoute(Route{Pattern: "POST " + pathAdminUpdates + "/check", Handler: adminRoute(handleUpdateCheckNow)})
+	RegisterRoute(Route{Pattern: "POST " + pathUpdatesCheck, Handler: adminRoute(handleUpdateCheckNow)})
 	RegisterRoute(Route{Pattern: "POST " + pathAdminUpdates + "/policy", Handler: adminRoute(handleHubUpdatePolicy)})
 }

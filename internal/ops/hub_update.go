@@ -47,6 +47,8 @@ type HubUpdateCheckResult struct {
 	// Checking is true while a check started by hub_update_refresh still runs
 	// (it answers at once; the result shows up here when it is done).
 	Checking bool `json:"checking,omitempty"`
+	// CheckingSince is when that check began (RFC 3339, UTC); empty when none runs.
+	CheckingSince string `json:"checking_since,omitempty"`
 	// SelfUpdate is true when the Hub can replace itself (Docker, opt-in);
 	// Reason says why not otherwise, and Command is what to run instead.
 	SelfUpdate  bool                  `json:"self_update"`
