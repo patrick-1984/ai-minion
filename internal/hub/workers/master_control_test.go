@@ -3,9 +3,11 @@ package workers
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,5 +229,61 @@ func TestMasterRevocationOrdersFinalDispatchAndPreservesAdmittedOutcome(t *testi
 				t.Fatalf("old handle worked after identical re-nomination: %v", err)
 			}
 		})
+	}
+}
+
+func TestMasterFinalAdmissionDoesNotOutliveLeaseWhileStoreWaits(t *testing.T) {
+	r := newMasterRig(t)
+	m := r.master
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	if err := m.db.PutAccept(ctx, store.AcceptRow{TargetWorkerID: r.target.ID, SourceWorkerID: r.source.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	busy, release := make(chan struct{}), make(chan struct{})
+	writer := make(chan error, 1)
+	go func() {
+		writer <- m.db.Tx(ctx, func(*sql.Tx) error {
+			close(busy)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}()
+	select {
+	case <-busy:
+	case <-ctx.Done():
+		t.Fatal("fixture writer did not acquire the SQLite lock")
+	}
+
+	var elapsed atomic.Int64
+	checked := make(chan struct{}, 1)
+	m.now = func() time.Time {
+		current := r.now.Add(time.Duration(elapsed.Load()))
+		select {
+		case checked <- struct{}{}:
+		default:
+		}
+		return current
+	}
+	call := r.call(ops.OpSendText)
+	admitted := make(chan error, 1)
+	go func() { admitted <- m.admitMaster(ctx, call, nil, r.backend.on, "build") }()
+	select {
+	case <-checked:
+	case <-ctx.Done():
+		t.Fatal("the admission precheck was not reached")
+	}
+	elapsed.Store(int64(proto.MasterLeaseTTL + time.Second))
+	close(release)
+	if err := <-writer; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-admitted; !errors.Is(err, errMasterDenied) {
+		t.Fatalf("a request passed final admission after its source lease expired: %v", err)
 	}
 }

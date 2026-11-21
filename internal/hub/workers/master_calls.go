@@ -35,7 +35,12 @@ func (m *MasterControl) masterAuthority(ctx context.Context, c Call) (masterScop
 	if err != nil {
 		return nil, nil, err
 	}
-	grants, err := m.db.BoundMasterTargets(ctx, lease.row, nil)
+	check, cancel := context.WithTimeout(ctx, l.expires.Sub(m.now()))
+	defer cancel()
+	grants, err := m.db.BoundMasterTargets(check, lease.row, nil)
+	if check.Err() != nil {
+		return nil, nil, errMasterDenied
+	}
 	if err != nil {
 		return nil, nil, masterAuthorityError(err)
 	}
@@ -53,6 +58,9 @@ func (m *MasterControl) masterAuthority(ctx context.Context, c Call) (masterScop
 		} else if m.events.masterShare(g.WorkerID, g.SessionName) {
 			names[g.SessionName] = true
 		}
+	}
+	if live, _, err := m.authorizeLocked(c); err != nil || live != l || check.Err() != nil {
+		return nil, nil, errMasterDenied
 	}
 	return out, l, nil
 }
@@ -74,9 +82,7 @@ func (m *MasterControl) admitMaster(ctx context.Context, c Call, p *masterPendin
 	if err != nil {
 		return err
 	}
-	target, ok := m.registry.Get(on.WorkerID)
-	if !ok || on.WorkerID == c.Worker.ID || on.Pending || target.Pending ||
-		target.OwnerID != on.OwnerID || !m.registry.hasLiveLink(on.WorkerID, on.TranscriptHash) {
+	if on.WorkerID == c.Worker.ID || !m.liveMasterDestination(on) {
 		return errMasterDenied
 	}
 	var names []string
@@ -85,13 +91,31 @@ func (m *MasterControl) admitMaster(ctx context.Context, c Call, p *masterPendin
 	} else if m.events.masterShare(on.WorkerID, session) {
 		names = []string{session}
 	}
-	if _, err := m.db.BoundMasterTargets(ctx, lease.row, &store.MasterTarget{WorkerID: on.WorkerID, OwnerID: on.OwnerID, Sessions: names}); err != nil {
+	check, cancel := context.WithTimeout(ctx, l.expires.Sub(m.now()))
+	defer cancel()
+	_, err = m.db.BoundMasterTargets(check, lease.row, &store.MasterTarget{WorkerID: on.WorkerID, OwnerID: on.OwnerID, Sessions: names})
+	if check.Err() != nil {
+		return errMasterDenied
+	}
+	if err != nil {
 		return masterAuthorityError(err)
+	}
+	// A database writer can delay the proof. The source's clock and either
+	// live link can change even while the lane lock is held.
+	if live, _, err := m.authorizeLocked(c); err != nil || live != l || !m.liveMasterDestination(on) ||
+		session != "" && !m.events.masterShare(on.WorkerID, session) || check.Err() != nil {
+		return errMasterDenied
 	}
 	// The DB decision committed; a later revoke does not synthesize an
 	// outcome for this already admitted request.
 	delete(l.pending, p)
 	return nil
+}
+
+func (m *MasterControl) liveMasterDestination(on Online) bool {
+	target, ok := m.registry.Get(on.WorkerID)
+	return ok && !on.Pending && !target.Pending && target.OwnerID == on.OwnerID &&
+		m.registry.hasLiveLink(on.WorkerID, on.TranscriptHash)
 }
 
 func (m *MasterControl) serveMasterCall(ctx context.Context, c Call) {
