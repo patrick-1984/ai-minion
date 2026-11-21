@@ -85,7 +85,7 @@ func (u *usageCollector) serve(ctx context.Context, w workers.Online, sess worke
 			continue
 		}
 		status := "unavailable"
-		if api.ErrorOf(err).Code == proto.CodeForbidden {
+		if api.ErrorOf(err).Code == proto.CodeForbidden || w.Facts.UsageConsent == "pending" {
 			status = "registration_required"
 		}
 		_ = u.db.UsageFailure(ctx, w.WorkerID, w.OwnerID, status)
@@ -125,9 +125,7 @@ func registerUsageCollection(ctx context.Context, env *Env, st *store.Store, r *
 			defer group.Done()
 			if w.Facts.UsageConsent == "pending" || w.Facts.UsageConsent == "legacy_pending" {
 				_ = st.UsageFailure(run, w.WorkerID, w.OwnerID, "registration_required")
-				if w.Facts.UsageConsent == "pending" {
-					return
-				}
+
 			}
 			collector.serve(run, w, sess)
 		}()

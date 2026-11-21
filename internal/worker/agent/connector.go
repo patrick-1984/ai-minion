@@ -267,6 +267,7 @@ const AlarmHubIdentityChanged = "hub_identity_changed"
 // ConnectorConfig configures a [Connector]. Dialer, Enrollment and Key are
 // required.
 type ConnectorConfig struct {
+	ConsumeUsageIntent     func(context.Context, string, string, string, ed25519.PublicKey, int) error
 	UsageConsent           func(context.Context, string) string
 	UsageConnectionAllowed func(context.Context, string) (bool, error)
 	// HubURL is the configured Hub URL; empty means the Worker runs alone and
@@ -1003,6 +1004,13 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		// restriction already in force.
 		c.fail("cannot store the welcome data", err)
 		return true
+	}
+	if c.cfg.ConsumeUsageIntent != nil {
+		if err := c.cfg.ConsumeUsageIntent(ctx, c.cfg.HubURL, w.WorkerID, w.Owner, att.Pin.Pub, w.UsagePolicy); err != nil {
+			_ = att.Session.Close()
+			c.fail("cannot apply local usage enrollment", err)
+			return true
+		}
 	}
 	if w.UsagePolicy > 0 && c.cfg.UsageConnectionAllowed != nil {
 		allowed, checkErr := c.cfg.UsageConnectionAllowed(ctx, w.WorkerID)

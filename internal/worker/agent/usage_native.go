@@ -41,6 +41,9 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 			Current *int64 `json:"total_input_tokens"`
 			Limit   *int64 `json:"context_window_size"`
 		} `json:"context_window"`
+		Cache struct {
+			Writes *int64 `json:"cache_write_tokens"`
+		} `json:"prompt_cache"`
 		Limits struct {
 			Five *claudeUsageWindow `json:"five_hour"`
 			Week *claudeUsageWindow `json:"seven_day"`
@@ -57,6 +60,7 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 	s.DurationMS = n.Cost.Duration
 	s.ContextTokens = n.Context.Current
 	s.ContextLimit = n.Context.Limit
+	s.CacheWriteTokens = n.Cache.Writes
 	if a != nil && a.AuthMode == "subscription" && a.Provider == "Anthropic" {
 		a.Source = "claude-statusline"
 		a.ObservedAt = s.ObservedAt
@@ -162,7 +166,7 @@ func claudeHook(raw []byte, s *ops.UsageSession) (nativeID, kind, eventID string
 	if err = json.Unmarshal(raw, &n); err != nil {
 		return
 	}
-	kind = map[string]string{"SessionStart": "session_started", "SessionEnd": "session_stopped", "UserPromptSubmit": "turn_started", "Stop": "turn_finished", "SubagentStart": "subagent_started", "SubagentStop": "subagent_finished", "TaskCreated": "task_started", "TaskCompleted": "task_finished", "CwdChanged": "folder_changed"}[n.Event]
+	kind = map[string]string{"SessionStart": "session_started", "SessionEnd": "session_stopped", "UserPromptSubmit": "turn_started", "Stop": "turn_finished", "SubagentStart": "subagent_started", "SubagentStop": "subagent_finished", "TaskCreated": "task_started", "TaskCompleted": "task_finished", "CwdChanged": "folder_changed", "PostModelSwitch": "model_changed"}[n.Event]
 	if kind == "" {
 		err = errors.New("unsupported lifecycle hook")
 		return

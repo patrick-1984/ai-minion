@@ -142,6 +142,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		Key:                    enr.LoadKey,
 		Out:                    s.Out,
 		Enrollment:             enr,
+		ConsumeUsageIntent:     st.ConsumeUsageIntent,
 		UsageConnectionAllowed: st.UsageConnectionAllowed, UsageConsent: st.UsageConsent,
 		Policy:  policy,
 		Dialer:  d.dialer,
