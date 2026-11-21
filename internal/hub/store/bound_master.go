@@ -81,7 +81,11 @@ func (s *Store) SetBoundMaster(ctx context.Context, w WorkerRow, a ops.ControlSe
 		return false, err
 	}
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := masterEnrollment(ctx, tx, w.ID, w.OwnerID, w.Pub); err != nil {
+		if a.Master {
+			if _, err := masterEnrollment(ctx, tx, w.ID, w.OwnerID, w.Pub); err != nil {
+				return err
+			}
+		} else if err := masterEnrollmentIdentity(ctx, tx, w); err != nil {
 			return err
 		}
 		var savedWorker, savedActor, savedDecision string
@@ -210,6 +214,17 @@ func (s *Store) BoundMasterTargets(ctx context.Context, binding BoundMasterRow, 
 		return requireMasterShare(ctx, tx, target.WorkerID, allowed)
 	})
 	return out, err
+}
+
+// Withdrawal still requires the same durable Worker identity. It remains
+// available to administrators even if that Worker's owner lost access.
+func masterEnrollmentIdentity(ctx context.Context, tx *sql.Tx, w WorkerRow) error {
+	var same bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM workers WHERE id=? AND owner_id=? AND worker_pub=?)`, w.ID, w.OwnerID, w.Pub).Scan(&same)
+	if err == nil && !same {
+		err = ErrWorkerOwnerChanged
+	}
+	return err
 }
 
 func masterEnrollment(ctx context.Context, tx *sql.Tx, workerID, owner string, pub []byte) (admin bool, err error) {

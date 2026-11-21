@@ -77,9 +77,18 @@ func TestBoundMasterFencesLegacyGenerationAndOwnership(t *testing.T) {
 	if _, err := s.SetBoundMaster(ctx, a, duplicate, "alice", 2, true); !errors.Is(err, ErrMasterRevision) {
 		t.Fatalf("changed input reused the request ID: %v", err)
 	}
+	if _, err := s.DB().ExecContext(ctx, `UPDATE users SET active=0 WHERE id=?`, a.OwnerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.BoundMasterTargets(ctx, first, nil); !errors.Is(err, ErrWorkerOwnerChanged) {
+		t.Fatalf("disabled owner could still use its master grant: %v", err)
+	}
 	revoke := arg("incarnation-one", 1, false)
-	if changed, err := s.SetBoundMaster(ctx, a, revoke, "alice", 2, false); err != nil || !changed {
-		t.Fatalf("offline revocation: change=%t, %v", changed, err)
+	if changed, err := s.SetBoundMaster(ctx, a, revoke, "next", 2, false); err != nil || !changed {
+		t.Fatalf("administrator could not revoke offline authority for a suspended owner: change=%t, %v", changed, err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `UPDATE users SET active=1 WHERE id=?`, a.OwnerID); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := s.BoundMasterTargets(ctx, first, nil); !errors.Is(err, ErrMasterRevision) {
 		t.Fatalf("committed revoke left old authority: %v", err)
