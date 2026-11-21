@@ -876,18 +876,49 @@ func InstallerDigest(rel Release, man Manifest) (string, error) {
 	return sum, nil
 }
 
-// VerifiedInstaller returns the SHA-256 of the install script of the exact
-// release tag. Both signatures of the release are verified exactly as for an
-// install, so the digest is the publisher's: a Hub renders it into the command
-// that checks the downloaded installer before it runs.
-func (u *Updater) VerifiedInstaller(ctx context.Context, tag string) (string, error) {
+// InstallerInfo is what a Hub learns from the verified release of one tag:
+// the SHA-256 of install.sh (from the signed manifest) and of checksums.txt
+// (the file whose signature was verified, so the installer can refuse a
+// checksums.txt that is not the signed one and thereby authenticates the
+// archives it lists).
+type InstallerInfo struct {
+	InstallerSHA256, ChecksumsSHA256 string
+}
+
+// VerifiedInstaller returns the verified digests of the exact release tag.
+// Both signatures of the release are verified exactly as for an install, so
+// the digests are the publisher's.
+func (u *Updater) VerifiedInstaller(ctx context.Context, tag string) (InstallerInfo, error) {
 	v, err := ParseVersion(tag)
 	if err != nil {
-		return "", err
+		return InstallerInfo{}, err
 	}
-	rel, man, err := u.VerifiedRelease(ctx, Selector{Kind: SelectExact, Exact: v})
+	if u.Verifier == nil || u.Source == nil {
+		return InstallerInfo{}, errors.New("update: no source or verifier configured")
+	}
+	releases, err := u.Source.Releases(ctx)
 	if err != nil {
-		return "", err
+		return InstallerInfo{}, withOfflineHint(err)
 	}
-	return InstallerDigest(rel, man)
+	rel, _, err := Selector{Kind: SelectExact, Exact: v}.Resolve(releases)
+	if err != nil {
+		return InstallerInfo{}, err
+	}
+	if err := u.Cache.Prepare(); err != nil {
+		return InstallerInfo{}, err
+	}
+	verifier, err := u.Verifier(ctx, false)
+	if err != nil {
+		return InstallerInfo{}, withOfflineHint(err)
+	}
+	meta, err := u.fetchMetadata(ctx, verifier, rel)
+	if err != nil {
+		return InstallerInfo{}, err
+	}
+	sum, err := InstallerDigest(rel, meta.manifest)
+	if err != nil {
+		return InstallerInfo{}, err
+	}
+	c := sha256.Sum256(meta.checksumsRaw)
+	return InstallerInfo{InstallerSHA256: sum, ChecksumsSHA256: hex.EncodeToString(c[:])}, nil
 }

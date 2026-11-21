@@ -13,20 +13,14 @@ package web
 // to the post: it is never logged, stored by the page or rendered again.
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
-
-// installerWait bounds how long creating a join command waits for the digest
-// of the installer.
-const installerWait = 20 * time.Second
 
 // pathAddWorkerJoin is the post that creates the one-step join command.
 const pathAddWorkerJoin = pathAddWorker + "/join"
@@ -292,17 +286,17 @@ func handleAddWorkerJoin(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 	}
 	if tag := installerTag(); tag != "" {
 		out.HasInstaller = true
-		out.Masked = foldBlock("join-masked", "Copy the command", pipeLine(tag, ""))
+		out.Masked = foldBlock("join-masked", "Copy the command", pipeLine(tag, "", name))
 		if out.KeyedOK {
-			out.OneLiner = foldBlock("join-oneliner", "Copy the command", pipeLine(tag, tok.Encode()))
+			out.OneLiner = foldBlock("join-oneliner", "Copy the command", pipeLine(tag, tok.Encode(), name))
 		}
-		ictx, cancel := context.WithTimeout(r.Context(), installerWait)
-		defer cancel()
-		if offer, ok := installerOffer(ictx); ok {
+		// Whatever the warmer has found; the request never waits for it.
+		warmInstaller()
+		if offer, ok := cachedInstaller(); ok {
 			out.HasVerified = true
-			out.VerifiedMasked = foldBlock("join-verified-masked", "Copy the command", installLine(offer, ""))
+			out.VerifiedMasked = foldBlock("join-verified-masked", "Copy the command", installLine(offer, "", name))
 			if out.KeyedOK {
-				out.Verified = foldBlock("join-verified", "Copy the command", installLine(offer, tok.Encode()))
+				out.Verified = foldBlock("join-verified", "Copy the command", installLine(offer, tok.Encode(), name))
 			}
 		}
 	}

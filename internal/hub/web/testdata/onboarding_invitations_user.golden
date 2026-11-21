@@ -38,7 +38,7 @@
     </div>
     
     <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create the key</span></button>
-    <div id="create-result" aria-live="polite"></div>
+    <div id="create-result"></div>
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
 </section>

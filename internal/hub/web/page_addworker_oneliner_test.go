@@ -12,13 +12,19 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
-const testInstallerDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const (
+	testInstallerDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testChecksumsDigest = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+)
 
 // withInstaller makes this Hub a release v1.2.3 whose signed manifest lists the
 // installer digest sha.
@@ -27,12 +33,23 @@ func withInstaller(t *testing.T, sha string) {
 	old := hubVersion
 	hubVersion = func() string { return "v1.2.3" }
 	t.Cleanup(func() { hubVersion = old })
-	t.Cleanup(SetInstallerSource(func(_ context.Context, tag string) (string, error) {
+	t.Cleanup(SetInstallerSource(func(_ context.Context, tag string) (version.InstallerInfo, error) {
 		if tag != "v1.2.3" {
-			return "", errors.New("unexpected tag " + tag)
+			return version.InstallerInfo{}, errors.New("unexpected tag " + tag)
 		}
-		return sha, nil
+		return version.InstallerInfo{InstallerSHA256: sha, ChecksumsSHA256: testChecksumsDigest}, nil
 	}))
+	warmInstaller()
+	for i := 0; i < 200; i++ {
+		installerMu.Lock()
+		done := installerState.ok || !installerState.failedAt.IsZero()
+		installerMu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the installer lookup did not finish")
 }
 
 func joinPost(t *testing.T, s *Server, ttl string) string {
@@ -47,17 +64,18 @@ func joinPost(t *testing.T, s *Server, ttl string) string {
 func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 	f := newJoinFixture(t)
 	withInstaller(t, testInstallerDigest)
-	body := joinPost(t, onbUser(t), "1h")
+	rec := onbPost(t, onbUser(t), pathAddWorkerJoin, url.Values{"ttl": {"1h"}, "name": {"build-1"}})
+	body := rec.Body.String()
 	tok, err := identity.NewJoinToken("https://hub.example.com:8443", f.key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := pres(body)
 	simple := p["join-oneliner"]
-	if want := "curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh | MINION_VERSION=v1.2.3 MINION_JOIN=" + tok.Encode() + " sh -s -- --join"; simple != want {
+	if want := "curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh | MINION_VERSION=v1.2.3 MINION_JOIN=" + tok.Encode() + " sh -s -- --join --name build-1"; simple != want {
 		t.Errorf("top command:\n%s\nwant\n%s", simple, want)
 	}
-	if m := p["join-masked"]; m != "curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh | MINION_VERSION=v1.2.3 sh -s -- --join" {
+	if m := p["join-masked"]; m != "curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh | MINION_VERSION=v1.2.3 MINION_JOIN= sh -s -- --join --name build-1" {
 		t.Errorf("masked: %s", m)
 	}
 	mustHave(t, body, "<details data-join-verified><summary>Verified variant (checks the installer's SHA-256 from the signed release first)")
@@ -65,7 +83,7 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 	for _, want := range []string{
 		"curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh -o \"$f\"",
 		`[ -s "$f" ]`, "grep -q '^" + testInstallerDigest + " '",
-		"MINION_VERSION=v1.2.3", "MINION_JOIN=" + tok.Encode() + " sh \"$f\" --join; rm -f \"$f\"",
+		"MINION_VERSION=v1.2.3 MINION_CHECKSUMS_SHA256=" + testChecksumsDigest, "MINION_JOIN=" + tok.Encode() + " sh \"$f\" --join --name build-1; s=$?; rm -f \"$f\"; exit $s)",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("one-liner lacks %q:\n%s", want, line)
@@ -75,8 +93,8 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 		t.Errorf("the one-liner is not one line:\n%s", line)
 	}
 	masked := p["join-verified-masked"]
-	if !strings.Contains(masked, testInstallerDigest) || !strings.Contains(masked, `sh "$f" --join; rm -f "$f"`) ||
-		strings.Contains(masked, "MINION_JOIN") || strings.Contains(masked, tok.Encode()) || strings.Contains(masked, "\n") {
+	if !strings.Contains(masked, testInstallerDigest) || !strings.Contains(masked, `MINION_JOIN= sh "$f" --join --name build-1;`) ||
+		strings.Contains(masked, "mnj1") || strings.Contains(masked, tok.Encode()) || strings.Contains(masked, "\n") {
 		t.Errorf("masked variant:\n%s", masked)
 	}
 	// It comes before the token field and the long variants.
@@ -87,6 +105,7 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 	}
 	// No live region around the token.
 	mustNotHave(t, body, `role="status" data-join-created`, `aria-live`)
+	mustHave(t, body, "shares all tmux sessions", "--share none")
 }
 
 func TestAddWorkerWithoutAKnownInstallerShowsTheManualCommands(t *testing.T) {
@@ -94,7 +113,9 @@ func TestAddWorkerWithoutAKnownInstallerShowsTheManualCommands(t *testing.T) {
 	old := hubVersion
 	hubVersion = func() string { return "dev" }
 	t.Cleanup(func() { hubVersion = old })
-	t.Cleanup(SetInstallerSource(func(context.Context, string) (string, error) { return testInstallerDigest, nil }))
+	t.Cleanup(SetInstallerSource(func(context.Context, string) (version.InstallerInfo, error) {
+		return version.InstallerInfo{InstallerSHA256: testInstallerDigest, ChecksumsSHA256: testChecksumsDigest}, nil
+	}))
 	body := joinPost(t, onbUser(t), "1h")
 	mustHave(t, body, "data-join-manual", `id="join-unix"`, `id="join-docker"`)
 	mustNotHave(t, body, `id="join-oneliner"`, `id="join-masked"`, testInstallerDigest)
@@ -115,7 +136,7 @@ func TestAddWorkerUnlimitedKeyOnlyGetsTheMaskedCommand(t *testing.T) {
 	body := joinPost(t, onbAdmin(t), ops.TTLUnlimited)
 	tok, _ := identity.NewJoinToken("https://hub.example.com:8443", f.key)
 	mustHave(t, body, "data-join-unlimited", `id="join-masked"`, `id="join-verified-masked"`, `id="join-token"`)
-	mustNotHave(t, body, `id="join-oneliner"`, `id="join-verified"`, `id="join-unix"`, `id="join-system"`, `id="join-docker"`, `id="join-expanded"`, "MINION_JOIN=")
+	mustNotHave(t, body, `id="join-oneliner"`, `id="join-verified"`, `id="join-unix"`, `id="join-system"`, `id="join-docker"`, `id="join-expanded"`, "MINION_JOIN='", "MINION_JOIN=mnj1")
 	// The token appears once: in the field to paste at the prompt.
 	if n := strings.Count(body, tok.Encode()); n != 1 {
 		t.Errorf("the token appears %d times", n)
@@ -168,7 +189,7 @@ func TestOneLinerVerifiesBeforeRunningAndKeepsTheTokenOutOfArgv(t *testing.T) {
 	tok, _ := identity.NewJoinToken("https://hub.example.com", key)
 	installer := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OUT/argv\"\nprintf '%s\\n' \"$MINION_JOIN\" > \"$OUT/join\"\nprintf '%s\\n' \"$MINION_VERSION\" > \"$OUT/ver\"\n"
 	sum := sha256.Sum256([]byte(installer))
-	offer := offerFor("v1.2.3", hex.EncodeToString(sum[:]))
+	offer := InstallerOffer{Tag: "v1.2.3", URL: releaseDownloadBase + "v1.2.3/install.sh", SHA256: hex.EncodeToString(sum[:]), ChecksumsSHA256: testChecksumsDigest}
 
 	run := func(served string, token string) (out string, ran bool) {
 		bin, dir := t.TempDir(), t.TempDir()
@@ -180,7 +201,7 @@ func TestOneLinerVerifiesBeforeRunningAndKeepsTheTokenOutOfArgv(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(curl), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command("sh", "-c", installLine(offer, token))
+		cmd := exec.Command("sh", "-c", installLine(offer, token, ""))
 		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "OUT="+dir, "SERVED="+src, "TMPDIR="+dir)
 		_ = cmd.Run()
 		_, err := os.Stat(filepath.Join(dir, "argv"))
@@ -205,5 +226,67 @@ func TestOneLinerVerifiesBeforeRunningAndKeepsTheTokenOutOfArgv(t *testing.T) {
 		if _, ran := run(served, tok.Encode()); ran {
 			t.Errorf("%s download was run", name)
 		}
+	}
+}
+
+// A release older than the first one with --join, and a development build,
+// get no one-line command.
+func TestAddWorkerOneLinersNeedAnInstallerThatCanJoin(t *testing.T) {
+	newJoinFixture(t)
+	for _, v := range []string{"v0.16.0", "v0.16.9", "dev", "v0.0.0-20260101-abc"} {
+		old := hubVersion
+		hubVersion = func() string { return v }
+		body := joinPost(t, onbUser(t), "1h")
+		hubVersion = old
+		mustHave(t, body, "data-join-manual")
+		mustNotHave(t, body, `id="join-oneliner"`)
+	}
+	old := hubVersion
+	hubVersion = func() string { return "v0.17.0-rc.1" }
+	t.Cleanup(func() { hubVersion = old })
+	mustHave(t, joinPost(t, onbUser(t), "1h"), `id="join-oneliner"`)
+}
+
+// The request never waits for the lookup, runs at most one at a time, and a
+// failure or a canceled request never erases a good result.
+func TestInstallerLookupIsSingleFlightAndNeverBlocksOrDowngrades(t *testing.T) {
+	newJoinFixture(t)
+	old := hubVersion
+	hubVersion = func() string { return "v1.2.3" }
+	t.Cleanup(func() { hubVersion = old })
+	release := make(chan struct{})
+	var calls atomic.Int32
+	t.Cleanup(SetInstallerSource(func(ctx context.Context, tag string) (version.InstallerInfo, error) {
+		calls.Add(1)
+		<-release
+		return version.InstallerInfo{InstallerSHA256: testInstallerDigest, ChecksumsSHA256: testChecksumsDigest}, nil
+	}))
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		body := joinPost(t, onbUser(t), "1h")
+		mustHave(t, body, `id="join-oneliner"`)
+		mustNotHave(t, body, "data-join-verified")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Error("the page waited for the lookup")
+	}
+	close(release)
+	for i := 0; i < 200 && func() bool { _, ok := cachedInstaller(); return !ok }(); i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("lookups = %d, want 1", n)
+	}
+	mustHave(t, joinPost(t, onbUser(t), "1h"), `id="join-verified"`)
+}
+
+func TestInstallerFailureDoesNotEraseAGoodResult(t *testing.T) {
+	newJoinFixture(t)
+	withInstaller(t, testInstallerDigest)
+	installerMu.Lock()
+	installerState.failedAt = time.Now() // a later failure must not matter
+	installerMu.Unlock()
+	if _, ok := cachedInstaller(); !ok {
+		t.Fatal("a good cached digest was lost")
 	}
 }

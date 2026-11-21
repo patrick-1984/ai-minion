@@ -19,6 +19,10 @@
 # Environment (all optional):
 #   MINION_VERSION      the release to install (v0.8.1 or 0.8.1); default: latest
 #   MINION_INSTALL_DIR  where to put minion instead of the default above
+#   MINION_CHECKSUMS_SHA256
+#                       the SHA-256 of the signed checksums.txt of the release
+#                       (the Hub's verified command passes it); a checksums.txt
+#                       with another digest is refused
 #   MINION_RELEASE_BASE, MINION_RELEASE_API
 #                       where archives and the latest release are looked up
 #                       (mirrors, tests)
@@ -37,6 +41,7 @@
 # --join the installer only installs the binary, as before.
 #
 #     --join            install, then join the Hub of the token as a Worker
+#     --name NAME       the Worker's name in the Hub (only with --join)
 #     --share all|none|later
 #                       what the new Worker shares first (default: all; change
 #                       it in the Hub). Only with --join.
@@ -124,8 +129,10 @@ platform() {
 join_worker() {
 	rc=0
 	printf 'Joining the Hub as a Worker (it shares %s sessions first; change that in the Hub)\n' "$share"
-	printf '%s\n' "$tok" | "$dir/minion" worker up --join - --interactive-replace --non-interactive-share "$share" || rc=$?
+	if [ -n "$name" ]; then set -- --name "$name"; else set --; fi
+	printf '%s\n' "$tok" | "$dir/minion" worker up --join - --interactive-replace --non-interactive-share "$share" "$@" || rc=$?
 	tok=
+	[ "$rc" != 0 ] || printf 'install.sh: finished: the Worker is set up (see the summary above).\n'
 	return "$rc"
 }
 
@@ -151,8 +158,11 @@ read_token() {
 }
 
 main() {
+	[ "${1:-}" = --end ] || die "this script was cut short: download it again"
+	shift
 	join=0
 	share=all
+	name=
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--join) join=1 ;;
@@ -162,7 +172,12 @@ main() {
 			shift
 			;;
 		--share=*) share=${1#--share=} ;;
-		*) die "unknown option '$1' (supported: --join, --share all|none|later)" ;;
+		--name)
+			[ $# -ge 2 ] || die "--name needs the Worker's name"
+			name=$2
+			shift
+			;;
+		*) die "unknown option '$1' (supported: --join, --share all|none|later, --name NAME)" ;;
 		esac
 		shift
 	done
@@ -202,6 +217,12 @@ main() {
 	printf 'Downloading %s (%s)\n' "$archive" "$ver"
 	curl -fsSL -o "$tmp/$archive" "$base/$archive" || die "could not download $base/$archive"
 	curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt" || die "could not download $base/checksums.txt"
+	# The Hub's verified command passes the SHA-256 of the signed checksums.txt:
+	# a checksums.txt from anywhere else is refused, so the archive it lists is
+	# the signed release's archive.
+	if [ -n "${MINION_CHECKSUMS_SHA256:-}" ]; then
+		[ "$(sha256 "$tmp/checksums.txt")" = "$MINION_CHECKSUMS_SHA256" ] || die "checksums.txt does not match the signed release (expected SHA-256 $MINION_CHECKSUMS_SHA256); nothing was installed"
+	fi
 
 	want=$(awk -v n="$archive" '$2 == n || $2 == "*" n {print $1; exit}' "$tmp/checksums.txt")
 	[ -n "$want" ] || die "$archive is not listed in checksums.txt of $ver"
@@ -246,4 +267,4 @@ main() {
 	fi
 }
 
-main "$@"
+set -- --end "$@"; main "$@"

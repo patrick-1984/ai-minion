@@ -296,6 +296,27 @@ for bad in tampered truncated; do
 	assert_no_file "$bad archive: the join never ran" "$JL.argv"
 done
 
+# --name reaches "worker up" as two arguments; the signed checksums digest is enforced.
+rm -f "$JL".*
+SCRIPT_ARGS="--join --name build-1"
+run_install "$WORK/n1" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
+assert_contains "--name is passed to worker up" "$(tr '\n' ' ' <"$JL.argv")" "--non-interactive-share all --name build-1"
+SCRIPT_ARGS=--join
+rm -f "$JL".*
+run_install "$WORK/n2" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_CHECKSUMS_SHA256="$(sha "$REL/v1.6.0/checksums.txt")"
+assert_contains "the signed checksums digest is accepted" "rc=$RC" "rc=0"
+assert_contains "a finished join says so" "$OUT" "install.sh: finished"
+rm -f "$JL".*
+run_install "$WORK/n3" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_CHECKSUMS_SHA256="$(printf 'x' | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)"
+assert_contains "a checksums.txt that is not the signed one is refused" "$OUT" "does not match the signed release"
+assert_no_file "…nothing installed" "$WORK/n3/minion"
+assert_no_file "…and the join never ran" "$JL.argv"
+# A stream cut right after "main" runs nothing.
+rm -f "$JL".*
+sed '$s/.*/main/' "$SCRIPT" | env PATH="$(fake_uname Linux x86_64):$WORK/installed:$PATH" HOME="$WORK/home" MINION_RELEASE_BASE="file://$REL" \
+	MINION_INSTALL_DIR="$WORK/n4" MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" sh -s -- --join >/dev/null 2>&1
+assert_no_file "a stream cut right after main installs nothing" "$WORK/n4/minion"
+
 # The simple one-liner pipes the script into sh: "sh -s -- --join" passes the
 # flag, the token still arrives on stdin of the binary only (stdin of sh is the
 # script), and a pipe cut before the last line runs nothing.
