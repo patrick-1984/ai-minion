@@ -235,7 +235,7 @@ func (r *Resolver) fromChain(s Setting) (res Resolved, found bool, err error) {
 		if r.Panel != nil {
 			second, secondSrc = r.Panel, SourcePanel
 		}
-	} else if r.File != nil {
+	} else if r.File != nil && !s.SupervisorOnly {
 		second, secondSrc = r.File, SourceFile
 	}
 	if second != nil {

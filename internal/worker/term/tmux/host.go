@@ -111,6 +111,10 @@ type Host struct {
 	userProbe bool
 	// oldWarned makes the old-tmux security warning appear once.
 	oldWarned atomic.Bool
+	// managed marks a server that a supervisor owns (the Android app): every
+	// invocation gets -N and -f configFile.
+	managed    bool
+	configFile string
 }
 
 // MinPsmuxMajor and MinPsmuxMinor are the oldest supported psmux (3.4): older
@@ -299,9 +303,14 @@ func (h *Host) runStdin(ctx context.Context, stdin []byte, args ...string) ([]by
 // user hook that one of them triggers) fails has run its first commands, and
 // their output is returned with the error.
 func (h *Host) runKeepOutput(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
-	full := make([]string, 0, len(args)+3)
+	full := make([]string, 0, len(args)+6)
 	if h.socket != "" {
 		full = append(full, "-S", h.socket)
+	}
+	if h.managed {
+		// -N: a command never starts a server; the supervisor owns it.
+		// -f: the fixed configuration, never the user's own files.
+		full = append(full, "-N", "-f", h.configFile)
 	}
 	full = append(full, "-u")
 	full = append(full, args...)
@@ -416,6 +425,21 @@ var notFoundMarkers = []string{
 	"no current target",
 	"(No such file or directory)",
 	"(Connection refused)",
+}
+
+// serverGone reports whether err says that no server answers on the socket
+// (as opposed to a missing session, window or pane of a running server).
+func (h *Host) serverGone(err error) bool {
+	var te *tmuxError
+	if !errors.As(err, &te) {
+		return false
+	}
+	for _, m := range []string{"no server running", "(No such file or directory)", "(Connection refused)", "error connecting to"} {
+		if strings.Contains(te.stderr, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func isNotFound(stderr string) bool {

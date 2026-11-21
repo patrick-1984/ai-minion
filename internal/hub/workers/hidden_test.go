@@ -319,3 +319,34 @@ func TestWorkersListKeepsTheHubCheckOfAnOfflineWorker(t *testing.T) {
 		}
 	}
 }
+
+// An Android managed Worker keeps the tmux wire kind and reports its sessions
+// as hidden: the Hub policy applies. An opted-in normal account (user
+// controlled) creates sessions; hidden_sessions=disabled refuses everybody; a
+// user who did not opt in is refused with the Android text, not the advice of
+// a desktop Worker.
+func TestAndroidManagedWorkerFollowsTheHiddenSessionPolicy(t *testing.T) {
+	f := CleanFacts(transport.WorkerFacts{SessionHost: "tmux", SessionsHidden: true, SessionHostReasonCode: transport.HostReasonAndroidManaged,
+		SessionHostReason: "/data/secret/path"})
+	if f.SessionHost != "tmux" || !f.SessionsHidden || f.SessionHostReason != transport.HostReasonText(transport.HostReasonAndroidManaged) {
+		t.Fatalf("facts = %+v", f)
+	}
+	for _, c := range []struct {
+		hub     string
+		user    bool
+		refused bool
+	}{
+		{config.HiddenSessionsUserControlled, true, false},
+		{config.HiddenSessionsUserControlled, false, true},
+		{config.HiddenSessionsAllowed, false, false},
+		{config.HiddenSessionsDisabled, true, true},
+	} {
+		msg := HiddenSessionRefusal("tv", f, HiddenSessionsPolicy{Hub: c.hub, UserAllows: c.user})
+		if (msg != "") != c.refused {
+			t.Errorf("hub=%s user=%v: refusal %q, want refused=%v", c.hub, c.user, msg, c.refused)
+		}
+		if msg != "" && (!strings.Contains(msg, "Minion Android app") || strings.Contains(msg, "minion worker up --foreground")) {
+			t.Errorf("hub=%s: message %q", c.hub, msg)
+		}
+	}
+}

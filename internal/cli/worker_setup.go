@@ -22,6 +22,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/setup"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
+	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
 )
 
 func init() {
@@ -423,7 +424,11 @@ func (d workerSetupDeps) runWizard(cmd *cobra.Command, res *config.Resolver, cor
 		return setup.Result{}, err
 	}
 	var lister setup.SessionLister
-	if d.sessions != nil {
+	if core.Managed != (config.ManagedHost{}) {
+		if s := tmuxSessions(core.TmuxSocket, tmux.OptionsFor(core.Managed)...); s != nil {
+			lister = s
+		}
+	} else if d.sessions != nil {
 		lister = d.sessions(core.TmuxSocket)
 	} else if s := tmuxSessions(core.TmuxSocket); s != nil {
 		lister = s

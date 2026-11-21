@@ -37,6 +37,10 @@ const sessionProbeTimeout = 5 * time.Second
 type coreDeps struct {
 	openStore func(ctx context.Context, stateDir string) (*store.Store, error)
 	newHost   func(socket string) (term.SessionHost, error)
+	// managedHost builds the tmux host when the managed host spec asks for
+	// a given tmux binary or the Android managed mode; nil means
+	// [newManagedTmuxHost].
+	managedHost func(socket string, m config.ManagedHost) (term.SessionHost, error)
 	// hostSpec turns the settings into the argument of newHost (the tmux
 	// socket; on Windows psmux or ConPTY) and says whether its sessions are
 	// hidden. Nil means the tmux socket, with an unknown host info.
@@ -84,7 +88,16 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 			return nil, fmt.Errorf("choose the terminal host: %w", err)
 		}
 	}
-	host, err := d.newHost(spec)
+	var host term.SessionHost
+	if s.Managed.Android || s.Managed.TmuxBinary != "" {
+		mk := d.managedHost
+		if mk == nil {
+			mk = newManagedTmuxHost
+		}
+		host, err = mk(spec, s.Managed)
+	} else {
+		host, err = d.newHost(spec)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("start the terminal host: %w", err)
 	}
@@ -150,7 +163,7 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 
 	log.Info("worker core started",
 		"name", s.Name, "state_dir", st.Dir(), "tmux_socket", s.TmuxSocket,
-		"session_host", hostInfo.Kind, "sessions_hidden", hostInfo.Hidden, "session_host_reason", hostInfo.localReason(),
+		"session_host", hostInfo.Kind, "managed_host", s.Managed.Android, "tmux_binary", s.Managed.TmuxBinary, "sessions_hidden", hostInfo.Hidden, "session_host_reason", hostInfo.localReason(),
 		"share", string(sel.Mode), "preview_only", s.PreviewOnly, "share_lock", s.ShareLock,
 		"pipe_accept_from", s.PipeAcceptFrom.String(), "call_api_key_file", s.CallAPIKeyFile != "")
 	if !sel.Configured || sel.Mode == store.ShareLater {

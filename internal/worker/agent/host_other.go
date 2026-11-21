@@ -7,6 +7,7 @@ import (
 	"os/user"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 	wsvc "github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
@@ -22,6 +23,11 @@ func newSessionHost(socket string) (term.SessionHost, error) {
 // info says whether its sessions are visible to the person (decideTmuxHost,
 // with the setting sessions_visible).
 func sessionHostSpec(s Settings) (string, SessionHostInfo, error) {
+	if s.Managed.Android {
+		// The app's private server: kept as a tmux host, reported as hidden,
+		// so that the Hub policy for hidden sessions applies.
+		return s.TmuxSocket, newHostInfo(transport.SessionHostTmux, true, transport.HostReasonAndroidManaged, "socket "+s.TmuxSocket), nil
+	}
 	visible := config.SessionsVisibleAuto
 	if s.Resolver != nil {
 		r, err := s.Resolver.Resolve(config.KeySessionsVisible)

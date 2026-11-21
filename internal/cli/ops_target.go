@@ -74,7 +74,13 @@ type ServerConfirmer func(ctx context.Context, session string, worker client.Bac
 // newSessionLister opens the tmux adapter on an absolute socket path. Only the
 // adapter runs tmux (AD-1), and it always passes -S <socket> (AD-13).
 func newSessionLister(socket string) (sessionLister, error) {
-	return tmux.New(socket)
+	// A pane of the managed Android host sees the managed settings in its
+	// environment (MINION_TMUX_BINARY, MINION_MANAGED_HOST, ...).
+	m, err := config.ResolveManagedHost(&config.Resolver{Role: config.ScopeWorker})
+	if err != nil {
+		return nil, err
+	}
+	return tmux.New(socket, tmux.OptionsFor(m)...)
 }
 
 // tmuxSocketFromEnv returns the socket path of $TMUX, which tmux sets to

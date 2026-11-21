@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- **Android Worker, Phase 1 (Go and native binaries).** The Worker runs as a managed host on Android: the settings `tmux_binary` (the absolute tmux executable every tmux call uses: run, status, setup and the local commands), `managed_host` (`android`) and `tmux_config` (the fixed tmux configuration, default `/dev/null`). In the Android mode every tmux call passes `-N` and `-f <fixed config>` (no command starts a server that nobody supervises), the private `tmux_socket` is required, the sessions stay on the `tmux` wire kind with the fixed reason `android_managed` and are reported as hidden (the Hub policy for hidden sessions applies; the refusal message names the Android app), the pairing code is shown only through the owner-checked local status (`pairing`: code, expiry, the Worker words and the Hub words as presented; never on the console or in the log), and binary self-update (`minion update`, the Hub update) is refused. The three settings are given by the supervisor in the environment at every start and are never saved to the config file.
+- **Interrupted join recovery.** A join that was killed between the enrollment commit and the save of the Hub address now finishes: the next `worker up` saves the Hub address and the checked fingerprint from the committed enrollment, and a credential-free `worker run` connects to the Hub of the enrollment instead of staying in Solo mode.
+- `worker up --configure-only --non-interactive-share <choice> --join -` works on a fresh state with pipes only: the first-run gate checks the managed tmux binary, never the one on PATH.
+- **Native build for Android** (`scripts/android/build-native.sh`, `android/native/versions.lock`, the reusable `.github/workflows/android-native.yml` that `ci.yml` calls): the cgo Worker (`CGO_ENABLED=1`, NDK r28c clang, cgo resolver), tmux 3.8 with libevent and ncurses linked in, and a terminfo database, for arm64-v8a and armeabi-v7a at API 29, with sources pinned by SHA-256 and the ELF headers checked (ABI, PIE, `/system/bin/linker(64)`, DT_NEEDED closure of Android system libraries, 16 KiB LOAD alignment).
+
 ### Fixed
 
 - **Administration > Updates:** Check now shows the answer without a manual reload (it waits for the check, up to 20 seconds, then reloads the page; a slower check reloads the page every 5 seconds for at most 2 minutes).

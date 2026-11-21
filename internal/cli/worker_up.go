@@ -16,6 +16,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 func init() {
@@ -365,6 +366,13 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	if err != nil {
 		return err
 	}
+	if !configureOnly {
+		// The installed service cannot receive them: refuse before anything is
+		// enrolled or written (use --configure-only or --foreground).
+		if err := refuseSupervisorSettings(plain, reg); err != nil {
+			return err
+		}
+	}
 	stateDir := defaultState
 	if stateRes.Source != config.SourceDefault {
 		if stateDir, err = filepath.Abs(stateRes.Value); err != nil {
@@ -471,8 +479,15 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// Under the config lock of "worker config set", from the reload to the
 	// save: a change saved meanwhile (allow_new_sessions off, for example) is
 	// kept, never written over with the older file.
+	// A join that an earlier run left half done (killed between the
+	// enrollment commit and this save) is finished from the enrollment.
+	recovered := recoverJoinedHub(ctx, st)
 	path, err := st.update(func(file *config.ConfigFile) error {
-		return fillUpConfig(file, plain, reg, flags, lookupEnv)
+		if err := fillUpConfig(file, plain, reg, flags, lookupEnv); err != nil {
+			return err
+		}
+		fillRecoveredHub(file, recovered)
+		return nil
 	})
 	if err != nil {
 		return err
@@ -552,6 +567,59 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	return nil
 }
 
+// refuseSupervisorSettings stops an installed service from silently losing
+// the settings that only a supervisor gives at every start: the service
+// definition would not carry them, so the daemon would start with another tmux.
+func refuseSupervisorSettings(res *config.Resolver, reg *config.Registry) error {
+	for _, s := range reg.ForScope(config.ScopeWorker) {
+		if !s.SupervisorOnly {
+			continue
+		}
+		if r, err := res.Resolve(s.Key); err == nil && (r.Source == config.SourceFlag || r.Source == config.SourceEnv) {
+			return fmt.Errorf("%s (--%s or %s) is only for a supervisor that gives it at every start, such as the Android app; "+
+				"an installed service would not receive it. Use --configure-only or --foreground, or leave it out", s.Key, s.FlagName(), s.EnvName())
+		}
+	}
+	return nil
+}
+
+// recoverJoinedHub reads the Hub of a committed enrollment (see
+// agent.Enrollments.RecoverHub). It never fails the command: a state that
+// cannot be read gives no recovery. Root working on another user's directory
+// is skipped; the Worker recovers the address itself at its next start.
+func recoverJoinedHub(ctx context.Context, st *upState) *agent.RecoveredHub {
+	if st.root != nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, store.DBFile)); err != nil {
+		return nil
+	}
+	ro, err := store.OpenReadOnlyContext(ctx, st.dir)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = ro.Close() }()
+	rec, ok, err := agent.NewEnrollments(ro, st.dir).RecoverHub(ctx)
+	if err != nil || !ok {
+		return nil
+	}
+	return &rec
+}
+
+// fillRecoveredHub saves the Hub of a committed enrollment where the config
+// file names none: an address or fingerprint that is already set is kept.
+func fillRecoveredHub(file *config.ConfigFile, rec *agent.RecoveredHub) {
+	if rec == nil {
+		return
+	}
+	if v, ok, _ := file.Lookup(config.KeyServer); !ok || v == "" {
+		file.Set(config.KeyServer, rec.URL)
+		if v, ok, _ := file.Lookup(config.KeyHubFingerprint); (!ok || v == "") && rec.Fingerprint != "" {
+			file.Set(config.KeyHubFingerprint, rec.Fingerprint)
+		}
+	}
+}
+
 // firstRunService is the first-run gate of the service path.
 func firstRunService(cmd *cobra.Command, deps workerUpDeps, reg *config.Registry, flags changedFlags, lookupEnv func(string) (string, bool), st *upState, owner *ownerSetup) error {
 	file, err := st.load()
@@ -604,7 +672,11 @@ func withTargetDefaults(lookupEnv func(string) (string, bool), reg *config.Regis
 			inject[s.EnvName()] = stateDir
 		}
 	}
-	if s, ok := reg.Lookup(config.KeyTmuxSocket); ok {
+	managedAndroid := false
+	if m, err := withFile.Resolve(config.KeyManagedHost); err == nil && m.Value == config.ManagedHostAndroid {
+		managedAndroid = true // the private socket is never a default
+	}
+	if s, ok := reg.Lookup(config.KeyTmuxSocket); ok && !managedAndroid {
 		if r, err := withFile.Resolve(s.Key); err == nil && r.Source == config.SourceDefault {
 			if sock, err := pe.TmuxSocket(); err == nil && sock != "" {
 				inject[s.EnvName()] = sock
@@ -785,7 +857,7 @@ func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.R
 	for _, s := range reg.ForScope(config.ScopeWorker) {
 		// Only a value given by flag or environment is saved; a saved
 		// allow_new_sessions is never overwritten otherwise.
-		if s.Secret || s.Key == config.KeyStateDir {
+		if s.Secret || s.Key == config.KeyStateDir || s.SupervisorOnly {
 			continue
 		}
 		_, byFlag, _ := flags.Lookup(s.Key)
