@@ -24,7 +24,8 @@
     <button type="submit" class="btn-secondary" data-control="update-check-now">{{template "icon" "i-refresh"}}<span>Check now</span></button>
   </form>
   {{with .Check}}{{$pending := and .CheckedChannel (ne .CheckedChannel .Channel)}}{{if $pending}}{{else}}{{if .ReleaseURL}}<div><div class="copy-field"><code class="copy-value" id="cp-update-url">{{.ReleaseURL}}</code><button type="button" class="copy-btn" data-copy-target="#cp-update-url" aria-label="Copy the release URL" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
-  {{if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready." class="row-actions">
+  {{if and .Newer .SelfUpdate .Checking}}<p class="muted" data-update-after-check>The update is available after the check.</p>
+  {{else if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready." class="row-actions">
     <button type="submit" class="btn" data-control="hub-update">Update the Hub to {{.Latest}}</button>
   </form>
   {{else if .Newer}}<p class="notice notice-info" role="status" data-hub-manual>The Hub cannot update itself here: {{.Reason}}.</p>

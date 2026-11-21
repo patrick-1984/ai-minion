@@ -5,9 +5,9 @@ package web
 // Workers that are older than the Hub.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -29,35 +29,14 @@ type UpdatesPage struct {
 	Slow bool
 }
 
+// updateWait bounds the whole Check now request (under the Hub's 15 s shutdown budget).
+var updateWait = 12 * time.Second
+
 const (
 	pathUpdatesCheck = pathAdminUpdates + "/check"
-	// updateWait bounds how long Check now waits for the answer.
-	updateWait = 20 * time.Second
 	// updateWatchMax bounds how long the page reloads itself for one check.
 	updateWatchMax = 2 * time.Minute
 )
-
-// checkWatch remembers since when the page has seen a check run, so that a
-// hung check does not reload the page forever.
-var checkWatch struct {
-	mu    sync.Mutex
-	since time.Time
-}
-
-// watchChecking reports how long the check has been seen running (zero when
-// none runs).
-func watchChecking(checking bool, now time.Time) time.Duration {
-	checkWatch.mu.Lock()
-	defer checkWatch.mu.Unlock()
-	if !checking {
-		checkWatch.since = time.Time{}
-		return 0
-	}
-	if checkWatch.since.IsZero() {
-		checkWatch.since = now
-	}
-	return now.Sub(checkWatch.since)
-}
 
 func updatesData(r *http.Request, c OpCaller) (any, error) {
 	var res UpdatesPage
@@ -68,10 +47,9 @@ func updatesData(r *http.Request, c OpCaller) (any, error) {
 		res.CheckedAt = t.UTC().Format("2006-01-02 15:04 UTC")
 	}
 	if res.Check.Checking {
-		res.Slow = watchChecking(true, time.Now()) > updateWatchMax
+		since, err := time.Parse(time.RFC3339, res.Check.CheckingSince)
+		res.Slow = err == nil && time.Since(since) > updateWatchMax
 		res.Refresh = !res.Slow
-	} else {
-		watchChecking(false, time.Now())
 	}
 	return res, nil
 }
@@ -80,6 +58,9 @@ func updatesData(r *http.Request, c OpCaller) (any, error) {
 // (at most updateWait) and sends the browser back to the page, which renders
 // from fresh state. A page still checking after the wait reloads itself.
 func handleUpdateCheckNow(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	ctx, cancel := context.WithTimeout(r.Context(), updateWait)
+	defer cancel()
+	r = r.WithContext(ctx)
 	var res ops.HubUpdateCheckResult
 	if err := c.CallOp(r, ops.OpHubUpdateRefresh, ops.HubUpdateRefreshArgs{}, &res); err != nil {
 		writeResultError(w, failureText(err))
@@ -88,10 +69,14 @@ func handleUpdateCheckNow(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	if !res.Refreshed {
 		AddFlash(w, r, FlashInfo, "Not checked again: the last check was less than a minute ago, or the release check is off (update_check). The page shows the last answer.")
 	} else {
-		watchChecking(res.Checking, time.Now())
-		deadline := time.Now().Add(updateWait)
-		for res.Checking && time.Now().Before(deadline) && r.Context().Err() == nil {
-			time.Sleep(200 * time.Millisecond)
+		for res.Checking {
+			select {
+			case <-ctx.Done():
+			case <-time.After(200 * time.Millisecond):
+			}
+			if ctx.Err() != nil {
+				break
+			}
 			res = ops.HubUpdateCheckResult{} // omitted false fields must not keep an old true
 			if err := c.CallOp(r, ops.OpHubUpdateCheck, ops.HubUpdateCheckArgs{}, &res); err != nil {
 				break

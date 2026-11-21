@@ -48,16 +48,9 @@ func TestUpdatesPageDoesNotShowTheOldChannelsAnswer(t *testing.T) {
 	mustHave(t, body, `hx-post="/admin/updates/check"`, `id="hub-release-facts"`, `id="list-result"`)
 }
 
-func resetWatch() {
-	checkWatch.mu.Lock()
-	checkWatch.since = time.Time{}
-	checkWatch.mu.Unlock()
-}
-
 // Check now waits for the check, then redirects to the page (HX-Redirect for
 // htmx, which carries the CSRF header; 303 otherwise).
 func TestUpdatesCheckNowWaitsAndRedirects(t *testing.T) {
-	resetWatch()
 	var polls atomic.Int32
 	f := newFakeOps().
 		reply(ops.OpHubUpdateRefresh, ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: true, Refreshed: true}).
@@ -103,18 +96,19 @@ func TestUpdatesCheckNowFailureStaysOnThePage(t *testing.T) {
 
 // Only a running check adds the meta refresh, for at most updateWatchMax.
 func TestUpdatesPageRefreshesOnlyWhileChecking(t *testing.T) {
-	resetWatch()
-	defer resetWatch()
-	running := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: true}
+	running := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: true, Newer: true, Latest: "v0.12.0",
+		SelfUpdate: true, CheckingSince: time.Now().UTC().Format(time.RFC3339)}
 	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, running))
 	s := adminServer(t)
 	body := get(t, s, pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, body, `<meta http-equiv="refresh" content="5">`, `data-checking`, `id="list-result"`)
 	mustNotHave(t, body, `data-check-slow`)
+	// An upgrade form is not offered while the page reloads itself.
+	mustHave(t, body, `data-update-after-check`)
+	mustNotHave(t, body, `data-control="hub-update"`)
 
-	checkWatch.mu.Lock()
-	checkWatch.since = time.Now().Add(-3 * time.Minute)
-	checkWatch.mu.Unlock()
+	running.CheckingSince = time.Now().Add(-3 * time.Minute).UTC().Format(time.RFC3339)
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, running))
 	body = get(t, s, pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, body, `data-check-slow`, `press Check now again later`)
 	mustNotHave(t, body, `http-equiv="refresh"`)
@@ -134,5 +128,20 @@ func TestUpdatesCheckIsAdminOnlyAndThePanelRouteIsGone(t *testing.T) {
 	}
 	if rec := get(t, s, pathAdminUpdates+"/panel", "X-Test-Session", adminHeader); rec.Code == 200 {
 		t.Fatalf("the panel route still exists")
+	}
+}
+
+// The whole Check now request is bounded: a check that never ends redirects
+// after updateWait (the page then shows Checking and reloads itself).
+func TestUpdatesCheckNowIsBounded(t *testing.T) {
+	old := updateWait
+	updateWait = 600 * time.Millisecond
+	defer func() { updateWait = old }()
+	forever := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: true, Refreshed: true}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateRefresh, forever).reply(ops.OpHubUpdateCheck, forever))
+	start := time.Now()
+	rec := post(t, adminServer(t), pathUpdatesCheck, adminHeader, url.Values{})
+	if d := time.Since(start); d > 3*time.Second || rec.Header().Get("HX-Redirect") != pathAdminUpdates {
+		t.Fatalf("took %v, headers %v", d, rec.Header())
 	}
 }
