@@ -69,6 +69,24 @@ func TestReleaseWorkflowTriggersAndGate(t *testing.T) {
 	}
 }
 
+func TestReleaseIncludesSameRunSignedAndroidAPK(t *testing.T) {
+	doc := readRepoFile(t, ".github/workflows/release.yml")
+	android := jobBlock(t, doc, "android-apk")
+	mustContain(t, "Android release job", android, "if: github.ref_type == 'tag'", "uses: ./.github/workflows/android-apk.yml", "version: ${{ github.ref_name }}", "MINION_ANDROID_KEYSTORE_BASE64", "MINION_ANDROID_KEYSTORE_PASSWORD")
+	release := jobBlock(t, doc, "release")
+	mustContain(t, "release job", release, "- android-apk", "name: android-apk-signed", "path: android-dist")
+	if strings.Contains(release, "run-id:") || strings.Contains(release, "github-token:") {
+		t.Error("release assets must come from this run, not a different workflow run")
+	}
+	if strings.Index(release, "name: android-apk-signed") > strings.Index(release, "goreleaser release (draft)") {
+		t.Error("APK must enter the asset set before checksums are signed")
+	}
+	config := readRepoFile(t, ".goreleaser.yaml")
+	if strings.Count(config, "glob: android-dist/minion-android-*.apk") != 2 {
+		t.Error("APK must be both checksummed and published")
+	}
+}
+
 // runSteps returns every "run:" step of a workflow as its command text: the
 // value of a single-line "run: cmd", or the dedented lines of a "run: |"
 // block. The workflow files are read as text on purpose (the project has no
@@ -225,7 +243,7 @@ func TestReleaseWorkflowIsPinnedAndNeverPublishes(t *testing.T) {
 func TestReleaseWorkflowAttachesManifestAndBootstrap(t *testing.T) {
 	release := jobBlock(t, readRepoFile(t, ".github/workflows/release.yml"), "release")
 	mustContain(t, "release job", release,
-		"for s in bootstrap.sh install.sh install.ps1; do",
+		"for s in bootstrap.sh install.sh install.ps1 android.sh esp32.sh; do",
 		"if [ -f \"deploy/$s\" ]",
 		"for f in dist/release-manifest.json \"${scripts[@]}\"; do",
 		"scripts/release-manifest.sh --version \"$TAG\"",

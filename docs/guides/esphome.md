@@ -70,3 +70,5 @@ supported commands in the **console** session when you have permission.
 
 Minion and ESPHome run on separate devices in the UART setup. An ESPHome
 external component that exposes sessions from the same chip is future work.
+
+[Back to the README](../../README.md)
