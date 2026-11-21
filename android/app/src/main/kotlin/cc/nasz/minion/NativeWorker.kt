@@ -11,6 +11,7 @@ import java.io.DataOutputStream
 import java.io.File
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 internal class NativeWorker(private val context: Context) {
@@ -24,6 +25,7 @@ internal class NativeWorker(private val context: Context) {
     private val controlSocket = File(run, "minion/worker.sock")
     private val nativeDir = File(context.applicationInfo.nativeLibraryDir)
     private val command = AtomicReference<java.lang.Process>()
+    private val cancellation = AtomicLong()
     private var prepared = false
 
     fun startTmux(): java.lang.Process {
@@ -80,6 +82,7 @@ internal class NativeWorker(private val context: Context) {
     }.getOrNull()
 
     fun cancelCommand() {
+        cancellation.incrementAndGet()
         command.get()?.destroy()
     }
 
@@ -152,11 +155,13 @@ internal class NativeWorker(private val context: Context) {
         capture: Boolean = false,
     ): Result {
         prepare()
+        val generation = cancellation.get()
         val stdout = if (capture) File.createTempFile("status", ".json", run) else null
         try {
             val process = start(binary, args, stdout)
             command.set(process)
             try {
+                if (cancellation.get() != generation) return Result(false)
                 process.outputStream.use { output ->
                     if (token != null) output.write((token + "\n").toByteArray(UTF_8))
                 }

@@ -188,9 +188,9 @@ class MainActivity : Activity() {
         notice.show(value.message)
         hub.show(if (value.hub.isBlank()) "No Hub configured" else "Hub\n${value.hub}")
         if (value.code.isBlank()) {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
             pairing.show("")
             expires.show("")
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         } else {
             window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             pairing.show(value.code)

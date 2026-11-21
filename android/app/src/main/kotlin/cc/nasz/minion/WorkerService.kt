@@ -67,6 +67,7 @@ class WorkerService : Service() {
     private var listener: ((WorkerView) -> Unit)? = null
     private var view = WorkerView()
     private var foreground = false
+    private var requestId = 0L
 
     internal inner class LocalBinder : Binder() {
         fun observe(observer: ((WorkerView) -> Unit)?) {
@@ -92,7 +93,8 @@ class WorkerService : Service() {
             queue.execute {
                 if (wanted || busy) return@execute
                 val ok = runCatching { native.workerCommand("reset", "--yes") &&
-                    native.workerCommand("config", "unset", "hub_fingerprint") }.getOrDefault(false)
+                    native.workerCommand("config", "unset", "hub_fingerprint") &&
+                    native.workerCommand("resume") }.getOrDefault(false)
                 notice = if (ok) "" else "Could not forget the Hub. Try again."
                 report = null
                 nextReport = 0
@@ -132,6 +134,7 @@ class WorkerService : Service() {
     }
 
     private fun launch(server: String?, token: String?, share: String) {
+        ++requestId
         stopping.set(false)
         try {
             startForegroundService(Intent(this, WorkerService::class.java).setAction(UI_START))
@@ -151,9 +154,10 @@ class WorkerService : Service() {
                     val completed = runCatching { native.provision(server, token, share) }.getOrDefault(false)
                     if (stopping.get()) return@safely
                     report = native.report()
-                    val recovered = token != null && report?.optBoolean("paired") == true &&
-                        !report?.optString("hub_url").isNullOrBlank()
-                    if (!completed && !recovered) {
+                    val configured = !report?.optString("hub_url").isNullOrBlank()
+                    val ready = if (token != null) configured && report?.optBoolean("paired") == true
+                        else completed && configured
+                    if (!ready) {
                         decline("Could not set up the Worker. Check the Hub address or join token and try again.")
                         return@safely
                     }
@@ -193,28 +197,24 @@ class WorkerService : Service() {
     }
 
     private fun stopWorker() {
+        val id = ++requestId
         stopping.set(true)
         native.cancelCommand()
         queue.execute {
-            safely {
-                if (preferences.edit().putBoolean("wanted", false).commit()) {
-                    wanted = false
-                    busy = false
-                    notice = ""
-                    restartAt = 0
-                    stopChildren()
-                    nextReport = 0
-                    publish()
-                    main.post { leaveForeground() }
-                } else {
-                    // Never leave a Stop request waiting on disk I/O.
-                    wanted = false
-                    busy = false
-                    stopChildren()
-                    notice = "The Worker stopped. Android could not save the Stop preference."
-                    publish()
-                    main.post { leaveForeground() }
-                }
+            val saved = preferences.edit().putBoolean("wanted", false).commit()
+            wanted = false
+            busy = false
+            restartAt = 0
+            notice = if (saved) "" else "The Worker stopped. Android could not save the Stop preference."
+            try {
+                stopChildren()
+            } catch (_: Exception) {
+                notice = "The Worker could not confirm that all terminal processes stopped."
+            } finally {
+                report?.remove("sessions")
+                nextReport = 0
+                publish()
+                main.post { if (id == requestId) leaveForeground() }
             }
         }
     }
@@ -232,7 +232,7 @@ class WorkerService : Service() {
 
     private fun runCommand(vararg args: String) {
         queue.execute {
-            if (busy || stopping.get()) return@execute
+            if (busy || stopping.get() && wanted) return@execute
             safely {
                 if (!native.workerCommand(*args)) notice = "The Worker could not apply the change. Try again."
                 nextReport = 0
