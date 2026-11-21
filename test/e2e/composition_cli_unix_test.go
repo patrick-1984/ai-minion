@@ -161,15 +161,20 @@ func TestRealCLIEnrollsWithAnInvitationKeyFileThenRestartsFromItsStateWithoutAKe
 	state := t.TempDir()
 
 	w := startMinionWorker(t, h.url(), state, keyFile)
-	eventually(t, "the CLI Worker to enroll and be online", func() bool {
+	// The invitation exchange briefly registers a connection without executor
+	// ops. Wait for the runtime connection that follows the saved enrollment.
+	eventually(t, "the enrolled CLI Worker's runtime connection", func() bool {
 		rows, _ := h.st.ListWorkers(context.Background())
-		return len(rows) == 1 && h.service().Registry().IsOnline(rows[0].ID)
+		if len(rows) != 1 {
+			return false
+		}
+		on, ok := h.service().Registry().Get(rows[0].ID)
+		return ok && on.Announces(ops.OpSessionsList)
 	})
 	rows, _ := h.st.ListWorkers(context.Background())
 	if rows[0].Name != "alice-pi" || rows[0].OwnerID != "alice" || rows[0].Kind != "private" {
 		t.Fatalf("worker row = %+v", rows[0])
 	}
-	// The Hub may see the Worker online a moment before the CLI prints.
 	eventually(t, "the CLI to report the enrollment", func() bool {
 		return strings.Contains(w.out.String(), "enrolled as alice-pi, owner alice")
 	})
