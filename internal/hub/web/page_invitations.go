@@ -623,9 +623,10 @@ type inviteResult struct {
 	// the Done links.
 	All bool
 	InviteCommands
-	Hosted hostedJoin
-	Token  string
-	Fold   inviteFolds
+	Hosted          hostedJoin
+	Token           string
+	UsageDisclosure string
+	Fold            inviteFolds
 }
 
 // inviteFolds are the commands of a new key as foldable blocks.
@@ -657,7 +658,7 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	}
 	out := inviteResult{
 		Name: res.Name, Mode: "one-time", Kind: res.Kind, Expires: formatTime(res.ExpiresAt, "never"),
-		Key: res.Key, InviteCommands: inviteCommands(hubURL(r), res.Key),
+		Key: res.Key, InviteCommands: inviteCommands(hubURL(r), res.Key), UsageDisclosure: ops.UsageDisclosure,
 	}
 	out.Fold = inviteFolds{
 		OneLiner:    foldBlock("invite-oneliner", "Copy the command", out.OneLiner),

@@ -138,6 +138,31 @@ func TestAddWorkerWithoutAKnownInstallerShowsTheManualCommands(t *testing.T) {
 	mustNotHave(t, b, "data-join-verified", `id="join-verified"`)
 }
 
+func TestInvitationShowsUsageDisclosureBeforeInstallerCommands(t *testing.T) {
+	newJoinFixture(t)
+	withInstaller(t, testInstallerDigest)
+	rec := onbPost(t, onbUser(t), pathInvitations, url.Values{"ttl": {"1h"}, "mode": {ops.InvitationOneTime}})
+	if rec.Code != 200 {
+		t.Fatalf("POST invitation: got %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	disclosure := strings.Index(body, `<div class="notice notice-info" data-join-usage>`)
+	hosted := strings.Index(body, `<div data-join-oneline>`)
+	if disclosure < 0 || hosted <= disclosure {
+		t.Fatal("the invitation must show the usage disclosure before its installer commands")
+	}
+	mustHave(t, body[disclosure:hosted], "<code>--accept-usage</code>", "<code>-AcceptUsage</code>",
+		ops.UsageDisclosure, "no permission to read or control terminals")
+
+	commands := pres(body)
+	for _, id := range []string{
+		"join-masked", "join-service-install", "join-root-install", "join-compose-install", "join-verified-masked",
+	} {
+		mustHave(t, commands[id], "--accept-usage")
+	}
+	mustHave(t, commands["join-windows-install"], "-AcceptUsage")
+}
+
 func TestAddWorkerUnlimitedKeyOnlyGetsTheMaskedCommand(t *testing.T) {
 	f := newJoinFixture(t)
 	f.ops.reply(ops.OpInvitationCreate, ops.InvitationCreateResult{ID: onbInviteID, Key: f.key.String(), Name: "n",

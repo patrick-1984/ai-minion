@@ -42,6 +42,7 @@
     <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="invite-key" rows="1" readonly autocomplete="off" spellcheck="false">{{.Key}}</textarea><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
   {{if .Hosted.HasInstaller -}}
+  {{template "join_usage_disclosure" .UsageDisclosure}}
   {{template "hosted_join" .Hosted}}
   <div class="field">
     <label for="invite-join-token">Join token for the installer</label>

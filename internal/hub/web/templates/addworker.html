@@ -3,10 +3,7 @@
   <p class="notice notice-info" data-join-saved><strong>The invitation is saved.</strong> It is listed on the <a href="/invitations">Invitations</a> page until it expires, is used or you revoke it. Leaving this page does not delete it. Only the secret token text cannot be shown again, so copy it first.</p>
   <p><a class="btn" href="/workers/add" data-join-done>Done</a></p>
   <p><strong>Join command{{if .Name}} for "{{.Name}}"{{end}} created.</strong> It works once and expires: {{.Expires}}.</p>
-  <div class="notice notice-info" data-join-usage>
-    <p><strong>Running a command with <code>--accept-usage</code> or <code>-AcceptUsage</code> accepts usage monitoring for this enrollment.</strong> {{.UsageDisclosure}}</p>
-    <p>Accepting adds no permission to read or control terminals. Session sharing and personal bucket choices do not change usage coverage.</p>
-  </div>
+  {{template "join_usage_disclosure" .UsageDisclosure}}
   {{template "hosted_join" .}}
   <p data-join-checks>What the Worker checks: it connects only to the Hub with fingerprint <span class="fp-words">{{.HubWords}}</span> (<code>{{.HubFull}}</code>) at {{.Server}}, and enrolls with the one-time key in the token; the key works once and expires. On the Hub host, <code>minion hub identity --words</code> shows the same words.</p>
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke the key on the <a href="/invitations">Invitations</a> page and create a new command. The new Worker starts as <strong>pending</strong>: approve it on the Workers page.</p>

@@ -1,3 +1,9 @@
+{{define "join_usage_disclosure"}}
+  <div class="notice notice-info" data-join-usage>
+    <p><strong>Running a command with <code>--accept-usage</code> or <code>-AcceptUsage</code> accepts usage monitoring for this enrollment.</strong> {{.}}</p>
+    <p>Accepting adds no permission to read or control terminals. Session sharing and personal bucket choices do not change usage coverage.</p>
+  </div>
+{{end}}
 {{define "hosted_join"}}
   {{if .HasInstaller}}<div data-join-oneline>
   <h2>Run one command</h2>
