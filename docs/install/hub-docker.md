@@ -97,6 +97,8 @@ docker compose -f hub.yaml -f hub.self-update.yaml up -d
 
 Without the socket or with an exact tag the page shows the commands of the previous section instead.
 
+On **TrueNAS** (a custom app), use the host updater instead of the socket: [Hub updater for TrueNAS](hub-truenas-updater.md). It runs as root on the NAS from a Cron Task, snapshots the Hub dataset, pins the signed image digest in the app and rolls back on failure; the Hub gets no credential.
+
 ### Upgrading from 0.6 to 0.7
 
 Protocol 3.0 needs the Hub and all Workers upgraded together, and the upgraded Hub **does not serve any Worker until you have set the passphrase**. Do these steps in this order:

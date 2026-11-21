@@ -13,7 +13,7 @@ Version 0.16.0. License: Apache-2.0.
 
 You need a Hub only if you want the web UI, several users or Workers on several machines.
 
-1. **Run a Hub**: [Hub with Docker](docs/install/hub-docker.md) or [Hub as a binary](docs/install/hub-binary.md). Put it behind TLS you control: [reverse proxy](docs/guides/reverse-proxy.md).
+1. **Run a Hub**: [Hub with Docker](docs/install/hub-docker.md) or [Hub as a binary](docs/install/hub-binary.md); on TrueNAS keep it current with the [host updater](docs/install/hub-truenas-updater.md). Put it behind TLS you control: [reverse proxy](docs/guides/reverse-proxy.md).
 2. **Run a Worker** on each machine that has tmux sessions:
    [Linux and Raspberry Pi](docs/install/worker-linux.md),
    [macOS](docs/install/worker-macos.md),
