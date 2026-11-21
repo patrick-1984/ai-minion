@@ -98,6 +98,10 @@ func (b *masterBroker) serveLocal(parent context.Context, conn *net.UnixConn) {
 		masterLocalReply(conn, localapi.MasterResponse{}, err)
 		return
 	}
+	if request.Type != localapi.TypeMasterLocalRequest {
+		masterLocalReply(conn, localapi.MasterResponse{}, proto.NewError(proto.CodeInvalidArgument, "unexpected local master request"))
+		return
+	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	// Any additional byte or shutdown of this one-request socket abandons the
@@ -122,6 +126,7 @@ func masterLocalReply(conn *net.UnixConn, res localapi.MasterResponse, err error
 		f := refusal.Frame()
 		res = localapi.MasterResponse{Error: &f}
 	}
+	res.Type = localapi.TypeMasterLocalResponse
 	_ = proto.WriteFrame(conn, proto.StreamFrameLimit, res)
 }
 

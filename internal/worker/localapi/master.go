@@ -1,6 +1,7 @@
 package localapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -13,6 +14,9 @@ import (
 )
 
 const (
+	TypeMasterLocalRequest  = "master.local.request"
+	TypeMasterLocalResponse = "master.local.response"
+
 	MasterRegister = "register"
 	MasterStatus   = "status"
 	MasterCatalog  = "catalog"
@@ -22,6 +26,7 @@ const (
 // MasterRequest is used on the dedicated local master socket. It contains no
 // lease handle or claimed PID. The server identifies the peer from the socket.
 type MasterRequest struct {
+	Type       string          `json:"type"`
 	Kind       string          `json:"kind"`
 	Executable string          `json:"executable,omitempty"`
 	Generation uint64          `json:"generation,omitempty"`
@@ -32,6 +37,7 @@ type MasterRequest struct {
 }
 
 type MasterResponse struct {
+	Type       string            `json:"type"`
 	Generation uint64            `json:"generation,omitempty"`
 	Result     json.RawMessage   `json:"result,omitempty"`
 	Error      *proto.ErrorFrame `json:"error,omitempty"`
@@ -53,6 +59,7 @@ func MasterSocketPaths(env config.PathEnv) ([]string, error) {
 // CallMaster sends one request and reads one reply. Once connected it never
 // retries, even if the response to a write cannot be read.
 func CallMaster(ctx context.Context, path string, req MasterRequest) (MasterResponse, error) {
+	req.Type = TypeMasterLocalRequest
 	if err := proto.WriteFrame(io.Discard, proto.MasterFrameLimit, req); err != nil {
 		return MasterResponse{}, err
 	}
@@ -89,8 +96,13 @@ func CallMaster(ctx context.Context, path string, req MasterRequest) (MasterResp
 		return lost(err)
 	}
 	var res MasterResponse
-	if err := json.Unmarshal(body, &res); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&res); err != nil {
 		return lost(err)
+	}
+	if res.Type != TypeMasterLocalResponse {
+		return lost(proto.NewError(proto.CodeInvalidArgument, "unexpected local master response"))
 	}
 	if res.Error != nil {
 		return MasterResponse{}, res.Error.Err()
