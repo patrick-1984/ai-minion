@@ -12,6 +12,10 @@ Released 2026-11-21.
 - The Hub's Usage menu shows authorized session statistics, native account limits, per-account collectors, historical snapshots and private token buckets. CLI and Hub-connected MCP clients can read the same scoped data. See [Usage and subscription limits](docs/guides/usage.md).
 - Metadata-capable Workers disclose collection, including unshared session metadata, at enrollment. The independent console sharing and control rules still apply. Existing enrolled Workers can review the policy before enabling the new reports.
 
+### Fixed
+
+- Syslog reconnects honor backoff after every failed write, including a failed retry.
+
 ## v0.17.0
 
 Released 2026-11-21.
