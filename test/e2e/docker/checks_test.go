@@ -214,7 +214,7 @@ func startWorker(t *testing.T, bin, hubURL, work, keyFile, tmuxSock string) *wor
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lf.Close() })
-	cmd := exec.Command(bin, "worker", "up", "--foreground",
+	cmd := exec.Command(bin, "worker", "up", "--foreground", "--accept-usage",
 		"--server", hubURL, "--invite-key", keyFile, "--share-existing", "all",
 		"--state-dir", filepath.Join(work, "state"), "--tmux-socket", tmuxSock, "--name", "docker-e2e")
 	// A clean environment: no TMUX (the Worker must not adopt a surrounding
