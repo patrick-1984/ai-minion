@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **Administration > Updates:** after "Check now" the Hub panel refreshes itself every 2 seconds while GitHub is being asked (and while a changed channel is still being checked), shows the answer without a manual reload, and stops polling after 3 minutes at most.
+- **Administration > Updates:** after "Check now" the Hub panel refreshes itself every 2 seconds while GitHub is being asked (and while a changed channel is still being checked), shows the answer without a manual reload, and stops polling after a bounded number of checks.
 - The startup summary names the run mode once (it said "background (background (shell login))").
 
 ## v0.16.0

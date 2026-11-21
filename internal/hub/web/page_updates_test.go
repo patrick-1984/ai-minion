@@ -1,9 +1,14 @@
 package web
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
@@ -40,32 +45,85 @@ func TestUpdatesPageDoesNotShowTheOldChannelsAnswer(t *testing.T) {
 	// Neither the old answer nor an update to it is offered meanwhile.
 	mustNotHave(t, body, `(up to date)`, `v0.12.0`, `data-control="hub-update"`, `cp-update-url`)
 	// Check now still works meanwhile: its result target is on the page.
-	mustHave(t, body, `hx-target="#hub-panel"`, `id="hub-panel"`, `id="list-result"`)
+	mustHave(t, body, `hx-target="#hub-release-facts"`, `id="hub-release-facts"`, `id="list-result"`)
 }
 
-// While a check runs the panel polls itself; when it is done (or the bound is
-// reached) the fragment carries no trigger, and Check now swaps the panel.
+func panelGet(t *testing.T, s http.Handler, q string) *httptest.ResponseRecorder {
+	t.Helper()
+	return get(t, s, pathUpdatesPanel+q, "X-Test-Session", adminHeader)
+}
+
+// While a check runs the release facts poll themselves; when it is done (or
+// the bound is reached) the fragment carries no trigger.
 func TestUpdatesPanelPollsOnlyWhileChecking(t *testing.T) {
 	running := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Checking: true, Refreshed: true}
-	f := newFakeOps().reply(ops.OpHubUpdateCheck, running).reply(ops.OpHubUpdateRefresh, running)
-	connect(t, f)
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, running).reply(ops.OpHubUpdateRefresh, running))
 	s := adminServer(t)
 	page := get(t, s, pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, page, `data-checking`, `hx-get="/admin/updates/panel?n=1"`, `hx-trigger="load delay:2s"`, `hx-target="#hub-panel"`)
-	frag := get(t, s, pathUpdatesPanel+"?n=5", "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, frag, `data-checking`, `hx-get="/admin/updates/panel?n=6"`)
-	mustNotHave(t, frag, `<html`)
-	// A hung check stops polling at the bound.
-	mustNotHave(t, get(t, s, pathUpdatesPanel+"?n=90", "X-Test-Session", adminHeader).Body.String(), `hx-trigger`)
-	// Check now answers with the polling panel.
-	mustHave(t, post(t, s, pathAdminUpdates+"/check", adminHeader, url.Values{}).Body.String(), `id="hub-panel"`, `hx-trigger="load delay:2s"`)
+	mustHave(t, page, `data-checking`, `hx-get="/admin/updates/panel?n=1&amp;since=0"`, `hx-trigger="load delay:2s"`, `id="hub-live" aria-live="polite"`)
+	// The update form and its result are outside the swapped element.
+	if strings.Index(page, `id="list-result"`) < strings.Index(page, `id="hub-release-facts"`) {
+		t.Error("list-result must come after the facts")
+	}
+	frag := panelGet(t, s, "?n=5").Body.String()
+	mustHave(t, frag, `data-checking`, `n=6`)
+	mustNotHave(t, frag, `<html`, `data-control=`)
+	mustNotHave(t, panelGet(t, s, "?n=90").Body.String(), `hx-trigger`)
+	mustHave(t, post(t, s, pathAdminUpdates+"/check", adminHeader, url.Values{}).Body.String(), `id="hub-release-facts"`, `hx-trigger="load delay:2s"`, `since=`)
 
-	done := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Latest: "v0.13.0", Newer: true,
+	done := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Latest: "v0.13.0", Newer: true, ReleaseURL: "https://example.invalid/v0.13.0",
 		CheckedChannel: "latest", CheckedAt: "2026-11-18T19:05:00Z"}
-	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, done).reply(ops.OpHubUpdateRefresh, done))
-	frag = get(t, s, pathUpdatesPanel+"?n=3", "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, frag, `v0.13.0`, `id="hub-panel"`)
-	mustNotHave(t, frag, `hx-trigger="load`, `data-checking`)
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, done))
+	rec := panelGet(t, s, "?n=3")
+	mustHave(t, rec.Body.String(), `v0.13.0`, `id="hub-release-facts"`, `id="hub-release-link"`)
+	mustNotHave(t, rec.Body.String(), `hx-trigger="load`, `data-checking`)
+	if rec.Header().Get("HX-Refresh") != "true" {
+		t.Error("a finished check reloads the page once so that the buttons are current")
+	}
+}
+
+// A check that finished while the Hub probed Docker (Checking already false,
+// but the answer is older than the press) keeps polling until a newer answer.
+func TestUpdatesPanelKeepsPollingUntilTheAnswerIsNewerThanThePress(t *testing.T) {
+	old := ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest", Latest: "v0.12.0",
+		CheckedChannel: "latest", CheckedAt: "2026-11-18T19:05:00Z"}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, old))
+	s := adminServer(t)
+	since := fmt.Sprint(time.Date(2026, 11, 18, 19, 10, 0, 0, time.UTC).Unix())
+	rec := panelGet(t, s, "?n=1&since="+since)
+	mustHave(t, rec.Body.String(), `hx-trigger="load delay:2s"`, `since=`+since)
+	if rec.Header().Get("HX-Refresh") != "" {
+		t.Error("no reload while the answer is older than the press")
+	}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, ops.HubUpdateCheckResult{Current: "v0.11.0", Channel: "latest",
+		Latest: "v0.13.0", CheckedChannel: "latest", CheckedAt: "2026-11-18T19:10:03Z"}))
+	rec = panelGet(t, s, "?n=2&since="+since)
+	mustNotHave(t, rec.Body.String(), `hx-trigger`)
+	mustHave(t, rec.Body.String(), `v0.13.0`)
+	if rec.Header().Get("HX-Refresh") != "true" {
+		t.Error("done: reload once")
+	}
+}
+
+// A failed poll or a failed Check now keeps the facts element (an alert inside
+// it), never an empty or partial body that would swap the panel away.
+func TestUpdatesPanelErrorsKeepTheElement(t *testing.T) {
+	boom := func(map[string]any) (any, error) { return nil, errors.New("boom") }
+	connect(t, newFakeOps().on(ops.OpHubUpdateCheck, boom).on(ops.OpHubUpdateRefresh, boom))
+	s := adminServer(t)
+	for name, rec := range map[string]*httptest.ResponseRecorder{
+		"poll":  panelGet(t, s, "?n=2"),
+		"check": post(t, s, pathAdminUpdates+"/check", adminHeader, url.Values{}),
+	} {
+		if rec.Code != 200 {
+			t.Errorf("%s = %d", name, rec.Code)
+		}
+		mustHave(t, rec.Body.String(), `id="hub-release-facts"`, `role="alert"`)
+		mustNotHave(t, rec.Body.String(), `hx-trigger`)
+		if rec.Header().Get("HX-Refresh") != "" {
+			t.Errorf("%s: an error must not reload", name)
+		}
+	}
 }
 
 func TestUpdatesPanelIsAdminOnly(t *testing.T) {

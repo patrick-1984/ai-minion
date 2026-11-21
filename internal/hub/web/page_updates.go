@@ -27,6 +27,9 @@ type UpdatesPage struct {
 	PollURL string
 	// Note is a line under the facts (Check now: why nothing was started).
 	Note string
+	// Error is shown instead of the facts when the state could not be read.
+	Error    string
+	finished bool
 }
 
 const (
@@ -37,13 +40,34 @@ const (
 
 var updatesFragments = fragments("updates.html")
 
-// withPoll sets PollURL while the check is not done; n counts the polls so far.
-func (p *UpdatesPage) withPoll(n int) {
+// poll decides whether the release facts poll again. n counts the polls so
+// far; since (unix seconds, 0 when unknown) is when Check now was pressed: the
+// answer counts as new only when it was checked at or after that time, so a
+// check that finished while the Hub probed Docker is not mistaken for done.
+// Done (nothing left to wait for) is remembered in finished.
+func (p *UpdatesPage) poll(n int, since int64) {
 	c := p.Check
-	pending := c.CheckedChannel != "" && c.CheckedChannel != c.Channel
-	if (c.Checking || pending) && n < updatePollMax {
-		p.PollURL = fmt.Sprintf("%s?n=%d", pathUpdatesPanel, n+1)
+	waiting := c.Checking || (c.CheckedChannel != "" && c.CheckedChannel != c.Channel)
+	if since > 0 {
+		if t, err := time.Parse(time.RFC3339, c.CheckedAt); err != nil || t.Unix() < since {
+			waiting = true
+		}
 	}
+	p.finished = !waiting
+	if waiting && n < updatePollMax {
+		p.PollURL = fmt.Sprintf("%s?n=%d&since=%d", pathUpdatesPanel, n+1, since)
+	}
+}
+
+// writeFacts renders the release facts (the only part that is swapped). An
+// error is a line inside the same element, so the buttons around it stay.
+// When the check is done the page reloads once, so that the buttons that
+// depend on the answer (update, release URL) are current.
+func writeFacts(w http.ResponseWriter, p UpdatesPage, reload bool) {
+	if p.finished && p.Error == "" && reload {
+		w.Header().Set("HX-Refresh", "true")
+	}
+	writeFragmentTemplate(w, updatesFragments(), "hub_facts", p)
 }
 
 func updatesData(r *http.Request, c OpCaller) (any, error) {
@@ -54,29 +78,33 @@ func updatesData(r *http.Request, c OpCaller) (any, error) {
 	if t, err := time.Parse(time.RFC3339, res.Check.CheckedAt); err == nil {
 		res.CheckedAt = t.UTC().Format("2006-01-02 15:04 UTC")
 	}
-	res.withPoll(0)
+	res.poll(0, 0)
 	return res, nil
 }
 
-// handleUpdatesPanel serves the Hub panel (GET), which polls itself while a check runs.
+// handleUpdatesPanel serves the release facts (GET), which poll themselves
+// while a check runs.
 func handleUpdatesPanel(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	v, err := updatesData(r, c)
 	if err != nil {
-		w.WriteHeader(stopPolling)
+		writeFacts(w, UpdatesPage{Error: "The update state could not be read: " + failureText(err)}, false)
 		return
 	}
 	res := v.(UpdatesPage)
 	res.PollURL = ""
 	n, _ := strconv.Atoi(r.URL.Query().Get("n"))
-	res.withPoll(max(n, 1))
-	writeFragmentTemplate(w, updatesFragments(), "hub_panel", res)
+	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+	res.poll(max(n, 1), since)
+	writeFacts(w, res, true)
 }
 
-// handleUpdateCheckNow asks GitHub now ("Check now").
+// handleUpdateCheckNow asks GitHub now ("Check now") and answers with the
+// release facts, polling until the answer is newer than this press.
 func handleUpdateCheckNow(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	pressed := time.Now().Unix()
 	var res ops.HubUpdateCheckResult
 	if err := c.CallOp(r, ops.OpHubUpdateRefresh, ops.HubUpdateRefreshArgs{}, &res); err != nil {
-		writeResultError(w, failureText(err))
+		writeFacts(w, UpdatesPage{Error: failureText(err)}, false)
 		return
 	}
 	page := UpdatesPage{Check: res}
@@ -85,9 +113,12 @@ func handleUpdateCheckNow(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	}
 	if !res.Refreshed {
 		page.Note = "Not checked again: the last check was less than a minute ago, or the release check is off (update_check). The page shows the last answer."
+		page.poll(0, 0)
+		writeFacts(w, page, false)
+		return
 	}
-	page.withPoll(0)
-	writeFragmentTemplate(w, updatesFragments(), "hub_panel", page)
+	page.poll(0, pressed)
+	writeFacts(w, page, true)
 }
 
 func handleHubUpdate(w http.ResponseWriter, r *http.Request, c OpCaller) {

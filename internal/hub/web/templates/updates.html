@@ -7,27 +7,30 @@
 </section>
 {{end}}
 
-{{define "hub_panel"}}
-{{with .Check}}{{$pending := and .CheckedChannel (ne .CheckedChannel .Channel)}}
-<section class="panel" id="hub-panel" aria-labelledby="hub-h"{{if $.PollURL}} data-polling hx-get="{{$.PollURL}}" hx-trigger="load delay:2s" hx-swap="outerHTML"{{end}}>
-  <h2 id="hub-h">Hub</h2>
+{{define "hub_facts"}}{{if .Error}}<div id="hub-release-facts"><p class="form-error" role="alert">{{.Error}}</p></div>{{else}}{{with .Check}}{{$pending := and .CheckedChannel (ne .CheckedChannel .Channel)}}<div id="hub-release-facts"{{if $.PollURL}} data-polling hx-get="{{$.PollURL}}" hx-trigger="load delay:2s" hx-swap="outerHTML"{{end}}>
   <dl class="facts">
     <div><dt>Running</dt><dd data-current>{{.Current}}</dd></div>
     <div><dt>Channel</dt><dd>{{if .Channel}}{{.Channel}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
-    <div><dt>Newest in the channel</dt><dd>{{if .Checking}}<span class="muted" data-checking>checking GitHub now…</span>{{else if $pending}}<span class="muted" data-check-pending>checking the channel {{.Channel}} (the last answer was for {{.CheckedChannel}})</span>{{else if .Latest}}{{if .ReleaseURL}}<a href="{{.ReleaseURL}}" target="_blank" rel="noopener">{{.Latest}}</a>{{else}}{{.Latest}}{{end}}{{if .Newer}} <span class="badge" data-tone="warning">newer</span>{{else}} <span class="muted">(up to date)</span>{{end}}{{else}}<span class="muted">not checked yet</span>{{end}}</dd></div>
+    <div><dt>Newest in the channel</dt><dd>{{if .Checking}}<span class="muted" data-checking>checking GitHub now…</span>{{else if $pending}}<span class="muted" data-check-pending>checking the channel {{.Channel}} (the last answer was for {{.CheckedChannel}})</span>{{else if .Latest}}{{if .ReleaseURL}}<a id="hub-release-link" href="{{.ReleaseURL}}" target="_blank" rel="noopener">{{.Latest}}</a>{{else}}{{.Latest}}{{end}}{{if .Newer}} <span class="badge" data-tone="warning">newer</span>{{else}} <span class="muted">(up to date)</span>{{end}}{{else}}<span class="muted">not checked yet</span>{{end}}</dd></div>
     <div><dt>Checked</dt><dd data-checked-at>{{if .CheckedAt}}<time datetime="{{.CheckedAt}}">{{$.CheckedAt}}</time>{{else}}<span class="muted">not yet</span>{{end}}{{if .CheckError}} <span class="badge" data-tone="danger">failed</span> <span class="muted">{{.CheckError}}</span>{{end}}</dd></div>
   </dl>
-  <div id="list-result" aria-live="polite">{{if $.Note}}<p class="muted" data-check-note>{{$.Note}}</p>{{end}}</div>
-  <form method="post" action="/admin/updates/check" hx-post="/admin/updates/check" hx-target="#hub-panel" hx-swap="outerHTML" hx-disabled-elt="find button" class="row-actions">
+  {{if $.Note}}<p class="muted" data-check-note>{{$.Note}}</p>{{end}}
+</div>{{end}}{{end}}{{end}}
+
+{{define "hub_panel"}}
+<section class="panel" id="hub-panel" aria-labelledby="hub-h">
+  <h2 id="hub-h">Hub</h2>
+  <div id="hub-live" aria-live="polite">{{template "hub_facts" .}}</div>
+  <div id="list-result" aria-live="polite"></div>
+  <form method="post" action="/admin/updates/check" hx-post="/admin/updates/check" hx-target="#hub-release-facts" hx-swap="outerHTML" hx-disabled-elt="find button" class="row-actions">
     <button type="submit" class="btn-secondary" data-control="update-check-now">{{template "icon" "i-refresh"}}<span>Check now</span></button>
   </form>
-  {{if $pending}}{{else}}{{if .ReleaseURL}}<div><div class="copy-field"><code class="copy-value" id="cp-update-url">{{.ReleaseURL}}</code><button type="button" class="copy-btn" data-copy-target="#cp-update-url" aria-label="Copy the release URL" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
+  {{with .Check}}{{$pending := and .CheckedChannel (ne .CheckedChannel .Channel)}}{{if $pending}}{{else}}{{if .ReleaseURL}}<div><div class="copy-field"><code class="copy-value" id="cp-update-url">{{.ReleaseURL}}</code><button type="button" class="copy-btn" data-copy-target="#cp-update-url" aria-label="Copy the release URL" title="Copy">{{template "copy-icons"}}</button></div></div>{{end}}
   {{if and .Newer .SelfUpdate}}<form method="post" action="/admin/updates/hub" hx-post="/admin/updates/hub" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update the Hub from {{.Current}} to {{.Latest}}? The Hub copies its data, restarts in a new container and goes back to {{.Current}} if the new release does not become ready." class="row-actions">
     <button type="submit" class="btn" data-control="hub-update">Update the Hub to {{.Latest}}</button>
   </form>
   {{else if .Newer}}<p class="notice notice-info" role="status" data-hub-manual>The Hub cannot update itself here: {{.Reason}}.</p>
   <div><div class="copy-field"><pre class="copy-value" id="cp-update-instructions">{{.Command}}</pre><button type="button" class="copy-btn" data-copy-target="#cp-update-instructions" aria-label="Copy the update instructions" title="Copy">{{template "copy-icons"}}</button></div></div>
-  {{end}}{{end}}
+  {{end}}{{end}}{{end}}
 </section>
-{{end}}
 {{end}}
