@@ -1,0 +1,117 @@
+# Build without signing credentials. A release tag can call this workflow to
+# sign the exact unsigned artifact in a separate runner.
+name: android-apk
+
+on:
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'scripts/android/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/android-apk.yml'
+  workflow_call:
+    inputs:
+      version:
+        description: Release tag, including v
+        required: true
+        type: string
+    secrets:
+      MINION_ANDROID_KEYSTORE_BASE64:
+        required: true
+      MINION_ANDROID_KEYSTORE_PASSWORD:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify the universal APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ inputs.version || 'v0.0.0-rc.1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17.0.19'
+      - name: Cache the pinned native archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .android-native-work/dl
+          key: android-native-${{ runner.os }}-${{ hashFiles('android/native/versions.lock') }}
+      - name: Install the pinned Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build native binaries and package them
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            test "$VERSION" = "$GITHUB_REF_NAME"
+          fi
+          scripts/android/build-native.sh --fetch-ndk --out "$RUNNER_TEMP/android-native" --version "$VERSION"
+          scripts/android/build-apk.sh "$VERSION" "$RUNNER_TEMP/android-native" \
+            "$RUNNER_TEMP/unsigned/minion-android-${VERSION#v}-unsigned.apk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-apk-unsigned
+          path: ${{ runner.temp }}/unsigned/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign and verify the tagged APK
+    if: github.ref_type == 'tag' && inputs.version == github.ref_name
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/android
+            android/signing-cert.sha256
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17.0.19'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-apk-unsigned
+          path: ${{ runner.temp }}/unsigned
+      - name: Install pinned SDK build tools
+        run: sdkmanager 'build-tools;35.0.0'
+      - name: Sign with the release certificate
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MINION_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.MINION_ANDROID_KEYSTORE_PASSWORD }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$(mktemp -d)"
+          trap 'rm -rf "${work:?}"' EXIT
+          test -n "$KEYSTORE_BASE64" && test -n "$KEYSTORE_PASSWORD"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$work/release.p12"
+          printf '%s\n' "$KEYSTORE_PASSWORD" > "$work/password"
+          unset KEYSTORE_BASE64 KEYSTORE_PASSWORD
+          export MINION_ANDROID_KEYSTORE="$work/release.p12"
+          export MINION_ANDROID_PASSWORD_FILE="$work/password"
+          scripts/android/sign-apk.sh "$RUNNER_TEMP/unsigned/minion-android-${VERSION#v}-unsigned.apk" \
+            "$VERSION" "$RUNNER_TEMP/signed/minion-android-${VERSION#v}.apk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-apk-signed
+          path: ${{ runner.temp }}/signed/*.apk
+          if-no-files-found: error
+          retention-days: 7
