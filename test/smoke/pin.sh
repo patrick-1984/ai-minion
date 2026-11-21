@@ -44,11 +44,12 @@ smoke_verify_all_assets "$dir" "$tag"
 
 # The signed manifest must attest exactly the tested image.
 want_repo=$SMOKE_IMAGE
-got=$(python3 -I -c 'import json,sys
+# Compared in python on exact values: no whitespace or newline is tolerated.
+python3 -I -c 'import json, sys
 i = json.load(open(sys.argv[1])).get("image") or {}
-print(i.get("repository", "") + "@" + i.get("digest", ""))' "$dir/release-manifest.json" 2>/dev/null || true)
-[ "$got" = "$want_repo@$tested" ] ||
-	smoke_die "release-manifest.json names image '$got', the smoke tests tested '$want_repo@$tested'"
+sys.exit(0 if (i.get("repository"), i.get("digest")) == (sys.argv[2], sys.argv[3]) else 1)' \
+	"$dir/release-manifest.json" "$want_repo" "$tested" ||
+	smoke_die "release-manifest.json does not name exactly the image '$want_repo@$tested' that the smoke tests tested"
 
 now=$(docker buildx imagetools inspect "$SMOKE_IMAGE:$tag" --format '{{.Manifest.Digest}}')
 [ "$now" = "$tested" ] ||

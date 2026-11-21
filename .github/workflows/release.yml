@@ -431,15 +431,21 @@ jobs:
           # the newest tag on the commit by version sort, and vX.Y.Z-rc.N sorts
           # after vX.Y.Z when both point at the same commit.
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
-      # The tag is resolved exactly once, here. Everything after this step
-      # (signature check, platform check, release-manifest.json) uses the
-      # digest reference, so a moved tag cannot change what is attested.
-      - name: Resolve the pushed image digest once
+      # The digest comes from what THIS run pushed (goreleaser's
+      # dist/artifacts.json), never from the tag alone: a registry lookup could
+      # return an earlier index of a rebuilt draft. The tag is looked up once,
+      # only to cross-check that digest. Everything after this step uses
+      # IMAGE_REF and never names the image by tag.
+      - name: Resolve the pushed image digest (from this run's goreleaser output)
         id: image
         run: |
           set -euo pipefail
-          digest=$(docker buildx imagetools inspect "ghcr.io/patrick-1984/minion:${TAG}" --format '{{json .Manifest}}' | jq -r .digest)
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no image digest for ${TAG}: $digest" >&2; exit 1; }
+          digest=$(jq -r '[.[] | select((.type // "") | test("Docker|Image"; "i"))
+                           | (.extra.digest // .extra.Digest // ((.name // "") + " " + (.path // "") | capture("@(?<d>sha256:[0-9a-f]{64})").d? // empty))]
+                          | unique | if length == 1 then .[0] else empty end' dist/artifacts.json)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no single image digest in dist/artifacts.json: '$digest'" >&2; exit 1; }
+          registry=$(docker buildx imagetools inspect "ghcr.io/patrick-1984/minion:${TAG}" --format '{{json .Manifest}}' | jq -r .digest)
+          [ "$registry" = "$digest" ] || { echo "registry has ${registry} for ${TAG}, this run pushed ${digest}" >&2; exit 1; }
           echo "ref=ghcr.io/patrick-1984/minion@${digest}" >> "$GITHUB_OUTPUT"
       - name: Verify the signatures just made (checksums and image)
         env:

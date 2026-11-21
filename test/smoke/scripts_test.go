@@ -436,7 +436,7 @@ func TestPinChecksTheCompleteAssetSetAndTheImage(t *testing.T) {
 		m := filepath.Join(t.TempDir(), "assets.manifest")
 		writeFile(t, m, assetManifest(t, dir), 0o644)
 		e := append(append([]string{}, env...), "FIXTURE="+dir)
-		if r := script(t, e, "", "pin.sh", testTag, m, tested); r.code == 0 || !strings.Contains(r.stderr, "release-manifest.json names image") {
+		if r := script(t, e, "", "pin.sh", testTag, m, tested); r.code == 0 || !strings.Contains(r.stderr, "does not name exactly the image") {
 			t.Errorf("manifest with %s passed: exit %d %s", name, r.code, r.stderr)
 		}
 	}
