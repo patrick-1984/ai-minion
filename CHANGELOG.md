@@ -4,7 +4,7 @@
 
 ## v0.18.0
 
-Release candidate preparation; publication is gated on v0.17.0.
+Released 2026-11-21.
 
 ### Added
 
