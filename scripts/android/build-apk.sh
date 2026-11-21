@@ -23,7 +23,7 @@ cp -R "$native/terminfo" "$native/licenses" "$work/assets/"
 cp "$root/LICENSE" "$work/assets/licenses/minion-LICENSE.txt"
 cp "$native/native-manifest.txt" "$work/assets/native-manifest.txt"
 
-"$root/android/gradlew" --no-daemon -p "$root/android" :app:assembleRelease \
+"$root/android/gradlew" --no-daemon --stacktrace -p "$root/android" :app:assembleRelease \
   -PminionVersion="$version" -PminionNativePackage="$work"
 apk="$root/android/app/build/outputs/apk/release/app-release-unsigned.apk"
 "$root/scripts/android/verify-apk.sh" --unsigned "$apk" "$version"

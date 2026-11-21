@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,7 +14,9 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
+	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
@@ -125,32 +128,48 @@ func TestManagedPairingCodeIsPrivate(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !codeRE.MatchString(cur.Code) || cur.WorkerWords == "" || cur.WorkerFingerprint == "" || cur.ExpiresAt == "" || cur.HubVerified {
-		t.Fatalf("presentation = %+v", cur)
+		t.Fatal("private presentation is missing required fields")
 	}
 	if codeRE.MatchString(out.String()) || strings.Contains(out.String(), cur.Code) {
-		t.Errorf("the code reached the console: %q", out.String())
+		t.Error("the code reached the console")
 	}
 	if strings.Contains(logs.String(), cur.Code) || codeRE.MatchString(logs.String()) {
-		t.Errorf("the code reached the log:\n%s", logs.String())
+		t.Error("the code reached the log")
 	}
-	// The status of the local API carries it, in the new field only.
-	src := LiveStatusSource{Private: priv}
-	live, err := src.LiveStatus(context.Background())
+	// Send the same frame as the Android app on the actual owner-only socket.
+	socket := filepath.Join(rt.settings.StateDir, "local.sock")
+	if err := localapi.VerifySocket(socket); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.DialTimeout("unix", socket, 3*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply := NewLiveStatusReply("/state", live)
-	if reply.PendingPairingCode != "" || reply.Pairing == nil || reply.Pairing.Code != cur.Code || !reply.PairingKnown {
-		t.Errorf("reply = %+v", reply)
-	}
-	raw, _ := json.Marshal(reply)
-	back := LiveStatusReply{}
-	if err := json.Unmarshal(raw, &back); err != nil {
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if ls, err := back.LiveStatus(); err != nil || ls.Pairing == nil || ls.Pairing.Code != cur.Code {
-		t.Errorf("round trip: %+v %v", ls.Pairing, err)
+	if err := proto.WriteFrame(conn, proto.StreamFrameLimit,
+		localapi.RequestFrame{Type: proto.TypeOpRequest, Op: OpLocalStatus}); err != nil {
+		t.Fatal(err)
 	}
+	raw, err := proto.ReadFrame(conn, proto.StreamFrameLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frame localapi.ResultFrame
+	if err := json.Unmarshal(raw, &frame); err != nil || frame.Type != proto.TypeOpResult {
+		t.Fatal("expected an op.result from the local socket")
+	}
+	var reply LiveStatusReply
+	if err := json.Unmarshal(frame.Result, &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.PendingPairingCode != "" || reply.Pairing == nil || reply.Pairing.Code != cur.Code ||
+		!reply.PairingKnown || reply.StateDir != rt.settings.StateDir {
+		t.Fatal("local reply did not isolate the pairing code in the private field")
+	}
+
 }
 
 func TestPairingStatusExpiresAndClears(t *testing.T) {
