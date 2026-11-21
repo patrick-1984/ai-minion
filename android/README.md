@@ -21,6 +21,14 @@ authorized to operate this Worker.
    your Hub allows that choice. The device's terminal server is private to the
    app. Its sessions count as hidden, and a Hub administrator can disable them.
 
+The Android app asks you to review and accept usage monitoring when you
+pair or enter a join token. On Hubs that support it, the Hub administrator
+and Worker owner can see usage for every session, including unshared
+sessions. That includes session names, folders, models, timing, token counts
+and usage limits. This grants no access to terminal content or controls.
+On an existing enrollment, **Review usage monitoring** shows the Hub
+fingerprint, registration and owner before you accept locally.
+
 **Pause** disconnects from the Hub and keeps the terminal sessions running.
 **Resume** reconnects. **Stop Worker** disconnects and closes its terminal
 sessions. Closing the screen leaves a running Worker in the background. You

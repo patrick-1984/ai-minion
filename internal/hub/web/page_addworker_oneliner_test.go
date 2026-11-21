@@ -72,12 +72,12 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 	}
 	p := pres(body)
 	for id, parts := range map[string][]string{
-		"join-oneliner":        {"install.sh) && case", "MINION_JOIN=" + tok.Encode(), "sh -s -- --join --name build-1"},
-		"join-masked":          {"MINION_JOIN= sh -s -- --join --name build-1"},
-		"join-service-install": {"--service --name build-1"},
-		"join-root-install":    {"--root --name build-1"},
-		"join-compose-install": {"--compose --name build-1"},
-		"join-windows-install": {"install.ps1", "-Join -Version v1.2.3 -Name build-1"},
+		"join-oneliner":        {"install.sh) && case", "MINION_JOIN=" + tok.Encode(), "sh -s -- --join --name build-1 --accept-usage"},
+		"join-masked":          {"MINION_JOIN= sh -s -- --join --name build-1 --accept-usage"},
+		"join-service-install": {"--service --name build-1 --accept-usage"},
+		"join-root-install":    {"--root --name build-1 --accept-usage"},
+		"join-compose-install": {"--compose --name build-1 --accept-usage"},
+		"join-windows-install": {"install.ps1", "-Join -Version v1.2.3 -Name build-1 -AcceptUsage"},
 	} {
 		for _, part := range parts {
 			if !strings.Contains(p[id], part) || strings.Contains(p[id], "\n") {
@@ -90,7 +90,7 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 	for _, want := range []string{
 		"curl -fsSL https://github.com/patrick-1984/ai-minion/releases/download/v1.2.3/install.sh -o \"$f\"",
 		`[ -s "$f" ]`, "grep -q '^" + testInstallerDigest + " '",
-		"MINION_VERSION=v1.2.3 MINION_CHECKSUMS_SHA256=" + testChecksumsDigest, "MINION_JOIN=" + tok.Encode() + " sh \"$f\" --join --name build-1; s=$?; rm -f \"$f\"; exit $s)",
+		"MINION_VERSION=v1.2.3 MINION_CHECKSUMS_SHA256=" + testChecksumsDigest, "MINION_JOIN=" + tok.Encode() + " sh \"$f\" --join --name build-1 --accept-usage; s=$?; rm -f \"$f\"; exit $s)",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("one-liner lacks %q:\n%s", want, line)
@@ -100,7 +100,7 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 		t.Errorf("the one-liner is not one line:\n%s", line)
 	}
 	masked := p["join-verified-masked"]
-	if !strings.Contains(masked, testInstallerDigest) || !strings.Contains(masked, `MINION_JOIN= sh "$f" --join --name build-1;`) ||
+	if !strings.Contains(masked, testInstallerDigest) || !strings.Contains(masked, `MINION_JOIN= sh "$f" --join --name build-1 --accept-usage;`) ||
 		strings.Contains(masked, "mnj1") || strings.Contains(masked, tok.Encode()) || strings.Contains(masked, "\n") {
 		t.Errorf("masked variant:\n%s", masked)
 	}
@@ -112,7 +112,10 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 	}
 	// No live region around the token.
 	mustNotHave(t, body, `role="status" data-join-created`, `aria-live`)
-	mustHave(t, body, "shares all tmux sessions", "--share none")
+	mustHave(t, body, "shares all tmux sessions", "--share none", "data-join-usage", "including unshared sessions", "session names, folders", "no permission to read or control terminals")
+	if strings.Index(body, "data-join-usage") > strings.Index(body, `id="join-oneliner"`) {
+		t.Fatal("the usage disclosure must appear before commands that accept it")
+	}
 }
 
 func TestAddWorkerWithoutAKnownInstallerShowsTheManualCommands(t *testing.T) {
@@ -225,7 +228,7 @@ func TestOneLinerVerifiesBeforeRunningAndKeepsTheTokenOutOfArgv(t *testing.T) {
 	argv, _ := os.ReadFile(filepath.Join(dir, "argv"))
 	join, _ := os.ReadFile(filepath.Join(dir, "join"))
 	ver, _ := os.ReadFile(filepath.Join(dir, "ver"))
-	if strings.TrimSpace(string(argv)) != "--join" || strings.Contains(string(argv), "mnj1") ||
+	if strings.TrimSpace(string(argv)) != "--join\n--accept-usage" || strings.Contains(string(argv), "mnj1") ||
 		strings.TrimSpace(string(join)) != tok.Encode() || strings.TrimSpace(string(ver)) != "v1.2.3" {
 		t.Errorf("argv %q join %q ver %q", argv, join, ver)
 	}
@@ -251,7 +254,12 @@ func TestAddWorkerOneLinersNeedAnInstallerThatCanJoin(t *testing.T) {
 	old := hubVersion
 	hubVersion = func() string { return "v0.17.0-rc.1" }
 	t.Cleanup(func() { hubVersion = old })
-	mustHave(t, joinPost(t, onbUser(t), "1h"), `id="join-oneliner"`)
+	body := joinPost(t, onbUser(t), "1h")
+	mustHave(t, body, `id="join-oneliner"`)
+	p := pres(body)
+	for _, id := range []string{"join-oneliner", "join-service-install", "join-root-install", "join-compose-install", "join-windows-install", "join-docker", "join-compose-start"} {
+		mustNotHave(t, p[id], "--accept-usage", "-AcceptUsage")
+	}
 }
 
 // The request never waits for the lookup, runs at most one at a time, and a
@@ -307,7 +315,7 @@ func TestSimpleOneLinerNeedsACompleteDownload(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(curl), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	const script = "{ [ \"$MINION_JOIN\" = \"mnj1-test-token\" ] && [ \"$1\" = \"--service\" ] && touch \"$RAN\"; } # minion installer complete"
+	const script = "{ [ \"$MINION_JOIN\" = \"mnj1-test-token\" ] && [ \"$1\" = \"--service\" ] && [ \"$2\" = \"--accept-usage\" ] && touch \"$RAN\"; } # minion installer complete"
 	for _, tt := range []struct {
 		name, served, curlStatus string
 		runs                     bool

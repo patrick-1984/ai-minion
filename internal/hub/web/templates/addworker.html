@@ -3,6 +3,10 @@
   <p class="notice notice-info" data-join-saved><strong>The invitation is saved.</strong> It is listed on the <a href="/invitations">Invitations</a> page until it expires, is used or you revoke it. Leaving this page does not delete it. Only the secret token text cannot be shown again, so copy it first.</p>
   <p><a class="btn" href="/workers/add" data-join-done>Done</a></p>
   <p><strong>Join command{{if .Name}} for "{{.Name}}"{{end}} created.</strong> It works once and expires: {{.Expires}}.</p>
+  <div class="notice notice-info" data-join-usage>
+    <p><strong>Running a command with <code>--accept-usage</code> or <code>-AcceptUsage</code> accepts usage monitoring for this enrollment.</strong> {{.UsageDisclosure}}</p>
+    <p>Accepting adds no permission to read or control terminals. Session sharing and personal bucket choices do not change usage coverage.</p>
+  </div>
   {{template "hosted_join" .}}
   <p data-join-checks>What the Worker checks: it connects only to the Hub with fingerprint <span class="fp-words">{{.HubWords}}</span> (<code>{{.HubFull}}</code>) at {{.Server}}, and enrolls with the one-time key in the token; the key works once and expires. On the Hub host, <code>minion hub identity --words</code> shows the same words.</p>
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke the key on the <a href="/invitations">Invitations</a> page and create a new command. The new Worker starts as <strong>pending</strong>: approve it on the Workers page.</p>
@@ -29,7 +33,7 @@
   <p class="muted">Run this enrollment command once from the same directory.</p>
   {{template "fold" .Fold.ComposeStart}}
   <h3>The same with separate settings</h3>
-  <p class="muted">For a Worker before v0.12.0 (it needs v0.11.0 for <code>--hub-fingerprint</code>) or a script: the parts of the token as separate flags. In a container the same are <code>MINION_SERVER</code>, <code>MINION_HUB_FINGERPRINT</code> and <code>MINION_INVITE_KEY_FILE</code> (a file with the key).</p>
+  <p class="muted">For a Worker before v0.12.0 (it needs v0.11.0 for <code>--hub-fingerprint</code>) or a script: the parts of the token as separate flags. In a container the same are <code>MINION_SERVER</code>, <code>MINION_HUB_FINGERPRINT</code> and <code>MINION_INVITE_KEY_FILE</code> (a file with the key). On a Worker that supports usage monitoring, review and accept it locally with <code>minion worker config usage --accept</code> after entering the enrollment.</p>
   {{template "fold" .Fold.Expanded}}
   </details>{{end}}<p><a class="btn" href="/workers/add" data-join-done>Done</a></p>
 </div>{{end}}
@@ -43,6 +47,10 @@
 </div>{{end}}
 {{define "content"}}
 <div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
+<div class="notice notice-info" data-enrollment-usage>
+  <p><strong>Usage monitoring is part of registration for new Workers that support it.</strong> {{.Data.UsageDisclosure}}</p>
+  <p>Accepting adds no permission to read or control terminals. Session sharing and personal bucket choices do not change usage coverage.</p>
+</div>
 <section class="panel" aria-labelledby="join-one-step" data-join-panel>
   <h2 id="join-one-step">Add a Worker in one step</h2>
   <p class="muted">Creates a one-time invitation key and shows one command with everything the new machine needs: this Hub's address, its full fingerprint and the key. Run it on the machine that should become a Worker.</p>
@@ -77,7 +85,7 @@
 <section class="panel" aria-labelledby="other-devices">
   <h2 id="other-devices">Other devices</h2>
   {{if .Data.Android.Text}}<h3>Android and Android TV (ADB)</h3>
-  <p>Run on a computer with ADB after enabling debugging on the device. Pair from the app after it opens.</p>
+  <p>Run on a computer with ADB after enabling debugging on the device. Review and accept usage monitoring in the app when you pair or use a join token.</p>
   {{template "fold" .Data.Android}}
   {{end}}<p><a href="/workers/esphome">ESP32 and ESPHome setup</a></p>
 </section>
@@ -87,7 +95,7 @@
   <div class="info-pop" id="help-pairing-code" popover><p>The Worker shows a code that you enter here to confirm pairing. The code is valid for 10 minutes.</p></div>
   <p class="muted">Start pairing on the machine that should become a Worker, for example with:</p>
   <div><div class="copy-field"><code class="copy-value" id="cp-worker-pair">minion worker pair</code><button type="button" class="copy-btn" data-copy-target="#cp-worker-pair" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
-  <p class="muted">It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
+  <p class="muted">It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here. On the Worker, review usage monitoring with <code>minion worker config usage</code> and accept this enrollment with <code>minion worker config usage --accept</code>. On Android, review and accept in the app.</p>
   <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="pair-code">Pairing code</label>

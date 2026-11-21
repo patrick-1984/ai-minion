@@ -14,6 +14,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
+internal data class UsageRegistration(
+    val workerId: String,
+    val hubFingerprint: String,
+    val owner: String,
+    val accepted: Boolean,
+    val required: Boolean,
+)
+
 internal class NativeWorker(private val context: Context) {
     private val root = context.noBackupFilesDir
     private val run = File(root, "r")
@@ -38,8 +46,9 @@ internal class NativeWorker(private val context: Context) {
 
     fun startWorker(): java.lang.Process = start("libminion.so", listOf("worker", "run"))
 
-    fun provision(server: String?, token: String?, share: String): Boolean {
+    fun provision(server: String?, token: String?, share: String, acceptUsage: Boolean): Boolean {
         val args = mutableListOf("worker", "up", "--configure-only", "--non-interactive-share", share)
+        if (acceptUsage) args.add("--accept-usage")
         if (token != null) args.addAll(listOf("--join", "-"))
         if (server != null) args.addAll(listOf("--server", server))
         return run("libminion.so", args, token, timeout = 32).success
@@ -52,6 +61,24 @@ internal class NativeWorker(private val context: Context) {
         val result = run("libminion.so", listOf("worker", "status", "--json"), timeout = 4, capture = true)
         return if (result.success && result.output.isNotBlank()) JSONObject(result.output) else null
     }
+
+    fun usageRegistration(): UsageRegistration? {
+        val result = run("libminion.so", listOf("worker", "config", "usage", "--json"), timeout = 4, capture = true)
+        if (!result.success || result.output.isBlank()) return null
+        val json = JSONObject(result.output)
+        val workerId = json.optString("worker_id")
+        val hubFingerprint = json.optString("hub_fingerprint")
+        val owner = json.optString("owner")
+        if (!json.optBoolean("enrolled") || workerId.isBlank() || hubFingerprint.isBlank() || owner.isBlank()) return null
+        return UsageRegistration(workerId, hubFingerprint, owner, json.optBoolean("accepted"), json.optBoolean("required"))
+    }
+
+    fun acceptUsage(registration: UsageRegistration): Boolean = workerCommand(
+        "config", "usage", "--accept",
+        "--expect-worker-id", registration.workerId,
+        "--expect-hub-fingerprint", registration.hubFingerprint,
+        "--expect-owner", registration.owner,
+    )
 
     // Only the app UID can connect to this filesystem socket. Keep the private
     // pairing fields in memory and verify the UID and state directory before use.

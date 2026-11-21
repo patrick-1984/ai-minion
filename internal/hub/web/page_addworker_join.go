@@ -63,7 +63,7 @@ func workerVersion() string {
 
 // joinCommands renders the commands for tok; name is the optional Worker name.
 func joinCommands(tok identity.JoinToken, name string) JoinCommands {
-	const initialShare = " --non-interactive-share all"
+	const initialShare = " --non-interactive-share all --accept-usage"
 	text := tok.Encode()
 	var unixName, psName string
 	if name != "" {
@@ -148,6 +148,8 @@ func dockerRunJoin(token, name string) string {
 	if name != "" {
 		nameArg = " --name " + shellArg(name)
 	}
+	tag := workerVersion()
+	accept := usageInstallerArgs(tag, "--accept-usage")
 	// Set positional parameters inside a subshell so both runs get the same
 	// state, cache, release and image without changing the caller's shell.
 	return downloadBootstrap + `(
@@ -160,10 +162,10 @@ FROM alpine:3.22
 RUN apk add --no-cache tmux
 DOCKERFILE
   ) &&
-  set -- -e MINION_STATE_DIR=/data -e MINION_CACHE_DIR=/cache -e MINION_VERSION=` + workerVersion() + ` \
+  set -- -e MINION_STATE_DIR=/data -e MINION_CACHE_DIR=/cache -e MINION_VERSION=` + tag + ` \
     -v minion-worker-data:/data -v minion-worker-cache:/cache \
     --mount type=bind,source="$PWD/bootstrap.sh",target=/bootstrap.sh,readonly "$image" sh /bootstrap.sh &&
-  docker run --rm -i "$@" worker up --configure-only` + nameArg + ` --non-interactive-share all --join - <<'MINION_CREDENTIAL' &&
+  docker run --rm -i "$@" worker up --configure-only` + nameArg + ` --non-interactive-share all --join -` + accept + ` <<'MINION_CREDENTIAL' &&
 ` + token + `
 MINION_CREDENTIAL
   docker run -d --name minion-worker --restart unless-stopped "$@" worker run &&
@@ -186,7 +188,8 @@ func joinComposeFile(name string) string {
 }
 
 func composeStart(token string) string {
-	return downloadBootstrap + `docker compose run --build --rm -T minion-worker worker up --configure-only --non-interactive-share all --join - <<'MINION_CREDENTIAL' &&
+	accept := usageInstallerArgs(workerVersion(), "--accept-usage")
+	return downloadBootstrap + `docker compose run --build --rm -T minion-worker worker up --configure-only --non-interactive-share all --join -` + accept + ` <<'MINION_CREDENTIAL' &&
 ` + token + `
 MINION_CREDENTIAL
 docker compose up -d &&
@@ -197,12 +200,13 @@ printf '%s\n' 'docker compose logs minion-worker' 'docker compose stop minion-wo
 
 // joinResult is what the join_created fragment renders: the token, once.
 type joinResult struct {
-	Name     string
-	Expires  string
-	Server   string
-	HubWords string
-	HubFull  string
-	Token    string
+	Name            string
+	Expires         string
+	Server          string
+	HubWords        string
+	HubFull         string
+	Token           string
+	UsageDisclosure string
 	JoinCommands
 	hostedJoin
 	Fold joinFolds
@@ -299,7 +303,7 @@ func handleAddWorkerJoin(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 	out := joinResult{
 		Name: res.Name, Expires: formatTime(res.ExpiresAt, "never"), Server: server,
 		HubWords: key.Fingerprint.Words(), HubFull: key.Fingerprint.String(),
-		Token: tok.Encode(),
+		Token: tok.Encode(), UsageDisclosure: ops.UsageDisclosure,
 		// One use is fixed above; a lifetime must be finite for a command
 		// that holds the token (also for an administrator).
 		hostedJoin: hostedJoinCommands(tok.Encode(), name, res.ExpiresAt != nil && ttl != ops.TTLUnlimited),

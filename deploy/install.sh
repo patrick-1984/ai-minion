@@ -45,6 +45,7 @@
 #     --root            install and run the Worker as root on Linux
 #     --compose         create a Docker Compose project in this directory
 #     --replace / --keep  answer the existing Worker question without a prompt
+#     --accept-usage    accept the Hub's usage disclosure for this enrollment
 #     --name NAME       the Worker's name in the Hub (only with --join)
 #     --share all|none|later
 #                       what the new Worker shares first (default: all; change
@@ -169,6 +170,7 @@ volumes:
 EOF
 	ready=1
 	if [ -n "$name" ]; then set -- --name "$name"; else set --; fi
+	if [ "$accept_usage" = 1 ]; then set -- "$@" --accept-usage; fi
 	printf '%s\n' "$tok" | docker compose run --build --rm -T minion-worker worker up --configure-only --join - --share-existing "$share" "$@" ||
 		die "enrollment failed. Inspect the output above and use a new invitation. To discard this project and its data, run docker compose down -v in $project_dir"
 	docker compose up -d || die "the Worker is enrolled. To retry starting it, run docker compose up -d in $project_dir"
@@ -214,6 +216,7 @@ check_join() {
 }
 
 join_worker() {
+	if [ "$accept_usage" = 1 ]; then set -- "$@" --accept-usage; fi
 	printf 'Joining the Hub as a Worker (initial sharing: %s; change it in the Hub)\n' "$share"
 	printf '%s\n' "$tok" | worker_up "$dir/minion" --join-consent "$consent" --share-existing "$share" "$@" || return "$?"
 	tok=
@@ -250,9 +253,11 @@ main() {
 	share=all
 	name=
 	decision=
+	accept_usage=0
 	while [ $# -gt 0 ]; do
 		case $1 in
 		--join) join=1 ;;
+		--accept-usage) accept_usage=1 ;;
 		--service | --root | --compose)
 			[ "$mode" = user ] || die "choose one of --service, --root or --compose"
 			mode=${1#--}
@@ -273,7 +278,7 @@ main() {
 			name=$2
 			shift
 			;;
-		*) die "unknown option '$1' (supported: --join, --service, --root, --compose, --share all|none|later, --name NAME, --replace, --keep)" ;;
+		*) die "unknown option '$1' (supported: --join, --service, --root, --compose, --share all|none|later, --name NAME, --replace, --keep, --accept-usage)" ;;
 		esac
 		shift
 	done
@@ -281,6 +286,13 @@ main() {
 	all | none | later) ;;
 	*) die "--share must be all, none or later" ;;
 	esac
+	if [ "$accept_usage" = 1 ]; then
+		[ "$join" = 1 ] || die "--accept-usage needs an enrollment mode such as --join or --compose"
+		printf '%s\n' "Usage monitoring for this enrollment" \
+			"The Hub administrator and Worker owner can see usage for every session, including unshared sessions." \
+			"Reports may include session names, folders, models, account identifiers, timing, token counts, costs and usage limits." \
+			"This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage." >&2
+	fi
 	if [ "$join" = 1 ]; then
 		case $mode in
 		user) [ "$(id -u)" != 0 ] || die "run --join without sudo, or give --root to run a root Worker" ;;
