@@ -73,8 +73,8 @@ ran on Linux 7.0.0-38 with tmux 3.6. [Linux process descriptors](https://lpc.eve
 The launcher passes an additive MCP configuration to that Claude invocation. An already running unprepared
 Claude session needs a future deliberate launch for attachment. The prepared invocation may show a connected
 Minion server with no tools while inactive. A healthy refresh empties that live catalog after revoke. Earlier
-tool declarations and results can remain in Claude's conversation or model request. Later calls still need
-current Hub authority.
+tool declarations and results can remain in Claude's conversation or model request. The Hub denies later
+calls from a revoked or superseded attachment, including calls to cached tools.
 
 Renaming, moving or replacing the selected terminal or its process ends the attachment. A Worker restart requires
 a fresh launch and nomination. Clearing the Claude conversation can continue in the same attached terminal.

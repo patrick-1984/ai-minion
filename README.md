@@ -174,6 +174,12 @@ docker compose exec hub minion hub identity set-passphrase
 
 ## Guides
 
+Session-bound Master attachments are qualified for Claude Code 2.1.330 in a prepared Linux tmux pane with
+`SO_PEERPIDFD`. An existing unprepared session needs a deliberate launch with `exec minion master claude`.
+A neutral Minion MCP entry or historical tool definitions can remain in Claude after revocation. The Hub
+denies later calls from the revoked attachment even if Claude presents a cached tool. Follow the
+[session-bound setup guide](docs/guides/agents.md#prepare-one-claude-code-terminal).
+
 | Guide | What it covers |
 | --- | --- |
 | [Desktop tray](docs/guides/tray.md) | Optional tray for Windows, Ubuntu desktop and macOS: start, stop, pause, set up the Hub, shared sessions, block new sessions, Hub key words; the menu-to-command table |
