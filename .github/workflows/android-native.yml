@@ -1,0 +1,62 @@
+# Native parts of the Android app (Phase 1): the cgo Worker, tmux 3.8 and the
+# terminfo database, for arm64-v8a and armeabi-v7a, built with the pinned NDK
+# from android/native/versions.lock by scripts/android/build-native.sh.
+#
+# Called by ci.yml on every pull request and push to main (workflow_call), so
+# the release parity test does not need to know it: it creates no run step in
+# ci.yml. It never touches a release.
+#
+# Every binary is checked by scripts/android/verify-elf.sh: ABI, PIE, the
+# interpreter (/system/bin/linker64 or /system/bin/linker), a DT_NEEDED closure
+# of Android system libraries only, and 16 KiB LOAD alignment. The checks are
+# proved on a negative sample as well (a host binary and the other ABI must
+# fail). The binaries are uploaded as artifacts; running them on a device is
+# Phase 3.
+name: android-native
+
+on:
+  workflow_call: # ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: native ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+    env:
+      ANDROID_NDK_FETCH_DIR: ${{ github.workspace }}/.android-native-work
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build the Worker, tmux and terminfo (NDK from versions.lock, sources verified by SHA-256)
+        run: scripts/android/build-native.sh --fetch-ndk --abi "${{ matrix.abi }}" --out dist/android-native --version "ci-${GITHUB_SHA::12}"
+      - name: The ELF checks reject a host binary and the other ABI
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_NDK_FETCH_DIR/ndk/android-ndk-r28c"
+          other=arm64-v8a; [ "${{ matrix.abi }}" = arm64-v8a ] && other=armeabi-v7a
+          if scripts/android/verify-elf.sh "${{ matrix.abi }}" /bin/true; then echo "a host binary passed the ELF checks"; exit 1; fi
+          if scripts/android/verify-elf.sh "${{ matrix.abi }}" "dist/android-native/${{ matrix.abi }}/libtmux.so" >/dev/null &&
+             scripts/android/verify-elf.sh "$other" "dist/android-native/${{ matrix.abi }}/libtmux.so" 2>/dev/null; then
+            echo "the ELF checks accepted a ${{ matrix.abi }} binary as $other"; exit 1
+          fi
+      - name: Summary
+        run: |
+          cat dist/android-native/native-manifest.txt
+          ls -l dist/android-native/${{ matrix.abi }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-native-${{ matrix.abi }}
+          path: dist/android-native
+          if-no-files-found: error
+          retention-days: 14

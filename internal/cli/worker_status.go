@@ -53,7 +53,7 @@ func defaultWorkerStatusDeps() workerStatusDeps {
 		live: func(stateDir string) agent.LiveSource {
 			return localLive{stateDir: stateDir, backend: client.Local()}
 		},
-		sessions: tmuxSessions,
+		sessions: func(socket string) agent.StatusSessions { return tmuxSessions(socket) },
 	}
 }
 
@@ -108,11 +108,11 @@ func sameDir(a, b string) bool {
 // tmuxSessions lists the sessions of the tmux server on socket. It does not
 // start a server. An empty socket (Windows, where ConPTY hosts the sessions
 // inside the Worker) or a missing tmux means "cannot count".
-func tmuxSessions(socket string) agent.StatusSessions {
+func tmuxSessions(socket string, opts ...tmux.Option) agent.StatusSessions {
 	if socket == "" {
 		return nil
 	}
-	h, err := tmux.New(socket)
+	h, err := tmux.New(socket, opts...)
 	if err != nil {
 		return failingSessions{err: err}
 	}
@@ -207,7 +207,14 @@ func (deps workerStatusDeps) report(ctx context.Context, flags config.FlagSource
 		NewSessions: allowNewSessionsText(res, core.StateDir),
 	}
 	if deps.sessions != nil {
-		if s := deps.sessions(core.TmuxSocket); s != nil {
+		var s agent.StatusSessions
+		if core.Managed != (config.ManagedHost{}) {
+			// The managed tmux binary and flags apply here as well.
+			s = tmuxSessions(core.TmuxSocket, tmux.OptionsFor(core.Managed)...)
+		} else {
+			s = deps.sessions(core.TmuxSocket)
+		}
+		if s != nil {
 			in.Sessions = s
 		}
 	}

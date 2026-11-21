@@ -22,6 +22,7 @@ const (
 	HostReasonConPTYService       = "conpty_service"
 	HostReasonConPTYSetting       = "conpty_setting"
 	HostReasonConPTYPsmuxFailed   = "conpty_psmux_failed"
+	HostReasonAndroidManaged      = "android_managed"
 )
 
 // Codes of [WorkerFacts.SessionsListErrorCode].
@@ -47,6 +48,7 @@ var hostReasonTexts = map[string]string{
 	HostReasonConPTYService:       "ConPTY inside the Worker: the Worker runs as a Windows service (LocalSystem); psmux sessions are served by a Worker that runs as you (minion worker up --foreground)",
 	HostReasonConPTYSetting:       "ConPTY inside the Worker: session_host is set to conpty",
 	HostReasonConPTYPsmuxFailed:   "ConPTY inside the Worker: psmux is installed but cannot be used (the Worker log says why)",
+	HostReasonAndroidManaged:      "the private tmux server of the Minion Android app: nobody can attach to it from another terminal",
 }
 
 var listErrorTexts = map[string]string{

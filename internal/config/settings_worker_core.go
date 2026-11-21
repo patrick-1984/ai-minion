@@ -317,6 +317,9 @@ type WorkerCore struct {
 	CallAPIKeyFile string
 	// PipeAcceptFrom is the receiver policy for messages from other Workers.
 	PipeAcceptFrom PipeAcceptFrom
+	// Managed is the managed host spec: the tmux binary every host factory
+	// uses and the Android managed mode.
+	Managed ManagedHost
 }
 
 // ResolveWorkerCore resolves the core Worker settings with res (a Worker
@@ -394,6 +397,12 @@ func ResolveWorkerCore(res *Resolver) (WorkerCore, error) {
 	}
 	if wc.PipeAcceptFrom, err = ParsePipeAcceptFrom(acc.Value); err != nil {
 		return wc, fmt.Errorf("setting %q (%s): %w", KeyPipeAcceptFrom, acc.Source, err)
+	}
+	if wc.Managed, err = ResolveManagedHost(res); err != nil {
+		return wc, err
+	}
+	if wc.Managed.Android && sock.Source == SourceDefault {
+		return wc, fmt.Errorf("setting %q is android: %q must name the private socket of the managed tmux server", KeyManagedHost, KeyTmuxSocket)
 	}
 	return wc, nil
 }

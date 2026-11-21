@@ -14,6 +14,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 )
 
 // versionFlag is the flag that installs one exact version. It is not a setting:
@@ -184,6 +185,13 @@ local cache that matches the selector is installed.`,
 				return err
 			}
 			res.File = file
+		}
+		managed, err := config.ResolveManagedHost(res)
+		if err != nil {
+			return err
+		}
+		if msg := agent.ManagedUpdateBlock(managed); msg != "" {
+			return errors.New(msg)
 		}
 		get := func(key string) (string, error) {
 			r, err := res.Resolve(key)

@@ -393,6 +393,10 @@ type PairerConfig struct {
 	HubHelloWait time.Duration
 	// NoAdmit turns pairing requests off: the Worker pairs only with its code.
 	NoAdmit bool
+	// Private switches the pairer to the private presentation (the Android
+	// managed mode): the code, its expiry and the words go only to this
+	// status, never to Out or the log. Nil: the console box and the log.
+	Private *PairingStatus
 	// Out is the console: the code and the result are printed here. Nil
 	// discards them.
 	Out io.Writer
@@ -659,6 +663,8 @@ var errPairingStateChanged = errors.New("the Worker's enrollment state changed w
 // conditional on that generation, so a paired Worker is never offered a code and
 // an enrollment written meanwhile is never replaced (AD-8).
 func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
+	// A private code never outlives the run: done, cancelled or failed.
+	defer p.cfg.Private.Clear()
 	gen, moved, key, err := p.begin(ctx)
 	if err != nil {
 		return Enrollment{}, err
@@ -1031,6 +1037,7 @@ func (p *Pairer) dropResume(gen uint64, l *codeLife) {
 }
 
 func (p *Pairer) renew(gen uint64, old *codeLife) *codeLife {
+	p.cfg.Private.Clear() // the old code is retired
 	if old.hasRecord() {
 		// The old code is abandoned (it expired, or an attempt exposed it
 		// without authenticating the Hub): its record goes, so that the next
@@ -1213,6 +1220,7 @@ func (b *codeBox) hubHello(root []byte, admit bool) error {
 	if err != nil {
 		return err
 	}
+	b.p.cfg.Private.setHub(root)
 	if print {
 		b.p.showCode(b.life.code, b.notice, root, admit)
 	}
@@ -1251,6 +1259,10 @@ func (b *codeBox) print() {
 // An older Hub answers only after the claim; the line is then left out.
 // admit says that the Hub may admit this connection's pairing request.
 func (p *Pairer) showCode(c identity.PairingCode, notice string, root []byte, admit bool) {
+	if p.cfg.Private != nil {
+		p.present(c, root)
+		return
+	}
 	lines := []string{}
 	if notice != "" {
 		lines = append(lines, notice, "")
