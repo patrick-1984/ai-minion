@@ -66,6 +66,8 @@ type Container struct {
 	IP string
 	// Health is the Docker health status ("" when the image has no health check).
 	Health string
+	// Maintenance is the live container's trial fence, not the stored YAML.
+	Maintenance bool
 }
 
 // Docker is the part of the Docker host CLI the executor uses.

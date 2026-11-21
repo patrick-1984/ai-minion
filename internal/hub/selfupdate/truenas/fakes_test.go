@@ -223,7 +223,7 @@ func (w *world) Containers(ctx context.Context, _ string) ([]Container, error) {
 		return nil, nil
 	}
 	return []Container{{ID: "c1", Service: "minion-hub", ImageID: w.runImg, Running: true,
-		StartedAt: fmt.Sprintf("start-%d", w.starts), IP: "10.0.0.2"}}, nil
+		StartedAt: fmt.Sprintf("start-%d", w.starts), IP: "10.0.0.2", Maintenance: w.readonly}}, nil
 }
 func (w *world) MountSource(context.Context, string, string) (string, error) {
 	return "/mnt/tank/apps/hub", nil

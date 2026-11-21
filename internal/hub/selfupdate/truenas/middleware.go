@@ -12,7 +12,13 @@ import (
 // credential). The request (method and parameters, possibly the whole compose
 // document) arrives on stdin, never in argv; the script text is fixed. Only
 // an exception class name leaves the script on failure.
-const clientScript = `import json, sys
+const clientScript = `import json, sys, os, ctypes, signal
+# Kill the submitter if its updater parent dies (Linux PR_SET_PDEATHSIG).
+# The second check closes the race between the first getppid and prctl.
+parent = os.getppid()
+ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)
+if parent == 1 or os.getppid() != parent:
+    sys.exit(1)
 req = json.load(sys.stdin)
 def jobs(r):
     out = []
@@ -212,7 +218,7 @@ func (m *MidcltClient) JobState(ctx context.Context, id int) (JobState, error) {
 
 // FindJobs implements Middleware.
 func (m *MidcltClient) FindJobs(ctx context.Context, method, app string, since time.Time) ([]JobInfo, error) {
-	rows, err := m.jobs(ctx, [][]any{{"method", "=", method}}, map[string]any{"order_by": []string{"-id"}, "limit": 25})
+	rows, err := m.jobs(ctx, [][]any{{"method", "=", method}}, map[string]any{"order_by": []string{"-id"}})
 	if err != nil {
 		return nil, err
 	}

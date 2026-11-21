@@ -3,6 +3,7 @@ package truenas
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -58,7 +59,7 @@ func (d DockerCLI) Containers(ctx context.Context, project string) ([]Container,
 		return nil, nil
 	}
 	args := append([]string{"inspect", "--format",
-		`{{.Id}}|{{.Image}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Running}}|{{.State.StartedAt}}|{{.HostConfig.NetworkMode}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}`}, ids...)
+		`{{.Id}}|{{.Image}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Running}}|{{.State.StartedAt}}|{{.HostConfig.NetworkMode}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{range .Config.Env}}{{if eq . "MINION_MAINTENANCE=readonly"}}readonly{{end}}{{end}}`}, ids...)
 	out, err = d.Runner.Run(ctx, nil, "docker", args...)
 	if err != nil {
 		return nil, err
@@ -66,17 +67,17 @@ func (d DockerCLI) Containers(ctx context.Context, project string) ([]Container,
 	var cs []Container
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) != 8 {
+		if len(f) != 9 {
 			return nil, fmt.Errorf("docker inspect: unexpected output")
 		}
 		run, _ := strconv.ParseBool(f[3])
 		ip := ""
-		if f[5] == "host" {
-			ip = "127.0.0.1"
-		} else if ips := strings.Fields(f[6]); len(ips) > 0 {
+		// Host networking cannot tie a listener to this container. Refuse it
+		// instead of accepting a different Hub listening on host loopback.
+		if ips := strings.Fields(f[6]); f[5] != "host" && len(ips) > 0 {
 			ip = ips[0]
 		}
-		cs = append(cs, Container{ID: f[0], ImageID: f[1], Service: f[2], Running: run, StartedAt: f[4], IP: ip, Health: f[7]})
+		cs = append(cs, Container{ID: f[0], ImageID: f[1], Service: f[2], Running: run, StartedAt: f[4], IP: ip, Health: f[7], Maintenance: f[8] == "readonly"})
 	}
 	return cs, nil
 }
@@ -122,17 +123,33 @@ func (z ZFSCLI) DatasetAt(ctx context.Context, path string) (DatasetInfo, error)
 	if err != nil {
 		return DatasetInfo{}, err
 	}
-	out, err := z.Runner.Run(ctx, nil, "zfs", "list", "-H", "-t", "filesystem", "-o", "name,mountpoint,guid")
+	out, err := z.Runner.Run(ctx, nil, "findmnt", "--json", "--target", real, "--output", "SOURCE,FSTYPE,TARGET")
 	if err != nil {
 		return DatasetInfo{}, err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		f := strings.Split(line, "\t")
-		if len(f) == 3 && f[1] == real {
-			return DatasetInfo{Name: f[0], GUID: f[2]}, nil
-		}
+	var mounts struct {
+		Filesystems []struct {
+			Source string `json:"source"`
+			FSType string `json:"fstype"`
+			Target string `json:"target"`
+		} `json:"filesystems"`
 	}
-	return DatasetInfo{}, fmt.Errorf("zfs: no dataset is mounted at the data path")
+	if err := json.Unmarshal(out, &mounts); err != nil || len(mounts.Filesystems) != 1 {
+		return DatasetInfo{}, fmt.Errorf("zfs: cannot resolve the effective data filesystem")
+	}
+	m := mounts.Filesystems[0]
+	if m.FSType != "zfs" || m.Target != real || !datasetRE.MatchString(m.Source) {
+		return DatasetInfo{}, fmt.Errorf("zfs: no dedicated dataset is mounted at the data path")
+	}
+	out, err = z.Runner.Run(ctx, nil, "zfs", "get", "-Hp", "-o", "value", "guid", m.Source)
+	if err != nil {
+		return DatasetInfo{}, err
+	}
+	guid := strings.TrimSpace(string(out))
+	if _, err := strconv.ParseUint(guid, 10, 64); err != nil {
+		return DatasetInfo{}, fmt.Errorf("zfs: invalid dataset identity")
+	}
+	return DatasetInfo{Name: m.Source, GUID: guid}, nil
 }
 
 // Snapshot implements ZFS (not recursive).

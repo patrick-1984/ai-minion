@@ -100,9 +100,12 @@ type Attempt struct {
 	// call, so a run killed around the call can find the accepted job.
 	Pending          *PendingJob `json:"pending,omitempty"`
 	CandidateStarted bool        `json:"candidate_started"`
-	Jobs             []JobRef    `json:"jobs,omitempty"`
-	StartedAt        time.Time   `json:"started_at"`
-	UpdatedAt        time.Time   `json:"updated_at"`
+	// KeepCandidate is the durable forward-only decision, written before
+	// enabling writers. After it is true no snapshot rollback is permitted.
+	KeepCandidate bool      `json:"keep_candidate,omitempty"`
+	Jobs          []JobRef  `json:"jobs,omitempty"`
+	StartedAt     time.Time `json:"started_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // PendingJob is the intent to submit one middleware job.
@@ -209,21 +212,13 @@ func (j *Journal) Close() error { return j.root.Close() }
 // checkTrustedAncestors requires every existing directory from / down to dir
 // to be owned by uid and not writable by group or others (sticky allowed).
 func checkTrustedAncestors(dir string, uid int) error {
-	real := dir
-	for {
-		r, err := filepath.EvalSymlinks(real)
-		if err == nil {
-			real = r
-			break
-		}
-		parent := filepath.Dir(real)
-		if parent == real {
-			return fmt.Errorf("journal: cannot resolve %s", dir)
-		}
-		real = parent
-	}
-	for p := real; ; p = filepath.Dir(p) {
+	// Check the original spelling, never a resolved alternate path. No
+	// component may be a symlink, including one in a writable NAS directory.
+	for p := filepath.Clean(dir); ; p = filepath.Dir(p) {
 		fi, err := os.Lstat(p)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("journal: %w", err)
 		}

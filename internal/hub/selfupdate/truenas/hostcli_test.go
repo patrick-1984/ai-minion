@@ -3,8 +3,10 @@ package truenas
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,10 +103,45 @@ func TestZFSCommandsAreNotRecursive(t *testing.T) {
 
 func TestDockerContainersParsing(t *testing.T) {
 	calls := 0
-	r := &seqRunner{outs: []string{"abc\n", "abc|sha256:" + strings.Repeat("1", 64) + "|minion-hub|true|2026-01-01T00:00:00Z|bridge|10.0.0.2 |healthy\n"}, n: &calls}
+	r := &seqRunner{outs: []string{"abc\n", "abc|sha256:" + strings.Repeat("1", 64) + "|minion-hub|true|2026-01-01T00:00:00Z|bridge|10.0.0.2 |healthy|readonly\n"}, n: &calls}
 	cs, err := DockerCLI{Runner: r}.Containers(context.Background(), "ix-app")
 	if err != nil || len(cs) != 1 || !cs[0].Running || cs[0].Service != "minion-hub" {
 		t.Fatalf("%+v %v", cs, err)
+	}
+	if !cs[0].Maintenance || cs[0].IP != "10.0.0.2" {
+		t.Fatalf("lost live trial state: %+v", cs[0])
+	}
+	calls = 0
+	r.outs[1] = strings.Replace(r.outs[1], "|bridge|", "|host|", 1)
+	cs, err = (DockerCLI{Runner: r}).Containers(context.Background(), "ix-app")
+	if err != nil || cs[0].IP != "" {
+		t.Fatalf("host networking supplied an unbound readiness address: %+v %v", cs, err)
+	}
+}
+
+func TestDatasetAtUsesTheMountedFilesystem(t *testing.T) {
+	path := t.TempDir()
+	for _, tc := range []struct {
+		name, source, fs, target string
+		valid                    bool
+	}{
+		{"dedicated", "tank/apps/hub", "zfs", path, true},
+		{"unmounted_property", "tank/apps", "zfs", filepath.Dir(path), false},
+		{"other_filesystem", "tmpfs", "tmpfs", path, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := json.Marshal(map[string]any{"filesystems": []any{map[string]string{"source": tc.source, "fstype": tc.fs, "target": tc.target}}})
+			n := 0
+			r := &seqRunner{outs: []string{string(b), "4242\n"}, n: &n}
+			got, err := (ZFSCLI{Runner: r}).DatasetAt(context.Background(), path)
+			if tc.valid {
+				if err != nil || got.Name != tc.source || got.GUID != "4242" {
+					t.Fatalf("%+v %v", got, err)
+				}
+			} else if err == nil {
+				t.Fatalf("accepted ineffective mount: %+v", got)
+			}
+		})
 	}
 }
 

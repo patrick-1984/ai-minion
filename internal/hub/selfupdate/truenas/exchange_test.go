@@ -120,6 +120,21 @@ func TestJournalRefusesUntrustedAncestors(t *testing.T) {
 	_ = j.Close()
 }
 
+func TestJournalRejectsSymlinkInOriginalAncestry(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "private")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkTrustedAncestors(filepath.Join(link, "future-state"), -1); err == nil {
+		t.Fatal("resolved safe target hid an unsafe original symlink")
+	}
+}
+
 func TestJournalWriteFailsWhenDirectoryCannotBeSynced(t *testing.T) {
 	j, err := OpenJournal(filepath.Join(t.TempDir(), "s"), "ai-minion", -1, nil)
 	if err != nil {

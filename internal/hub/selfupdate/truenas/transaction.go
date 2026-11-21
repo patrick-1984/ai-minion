@@ -101,6 +101,11 @@ func (e *Executor) settleJobs(ctx context.Context, a *Attempt) error {
 		if err != nil {
 			return errPending
 		}
+		if len(infos) == 0 {
+			// A lost reply is not proof that submission never happened. Keep
+			// the intent and refuse destructive recovery until it is settled.
+			return errPending
+		}
 		for _, in := range infos {
 			if !slices.ContainsFunc(a.Jobs, func(j JobRef) bool { return j.ID == in.ID }) {
 				a.Jobs = append(a.Jobs, JobRef{Op: a.Pending.Op, ID: in.ID})
@@ -116,12 +121,12 @@ func (e *Executor) settleJobs(ctx context.Context, a *Attempt) error {
 			continue
 		}
 		s, err := e.jobState(ctx, a.Jobs[i].ID)
-		if err != nil {
+		if err != nil || s == JobUnknown {
 			return errPending
 		}
 		if s.Active() {
 			if err := e.waitJob(ctx, a.Jobs[i].ID, e.Timeouts.Reconcil); err != nil {
-				if s2, err2 := e.jobState(ctx, a.Jobs[i].ID); err2 != nil || s2.Active() {
+				if s2, err2 := e.jobState(ctx, a.Jobs[i].ID); err2 != nil || s2.Active() || s2 == JobUnknown {
 					return errPending
 				}
 			}
@@ -157,6 +162,23 @@ func (e *Executor) stopApp(ctx context.Context, a *Attempt) error {
 			return err
 		}
 	}
+	// The operator may have submitted another start/redeploy while the
+	// updater was interrupted. Do not roll a filesystem under a queued writer.
+	for _, method := range []string{"app.start", "app.update", "app.redeploy"} {
+		c, cancel := e.cc(ctx)
+		jobs, err := e.MW.FindJobs(c, method, a.App, time.Time{})
+		cancel()
+		if err != nil {
+			return errPending
+		}
+		for _, j := range jobs {
+			if j.State.Active() {
+				if err := e.waitJob(ctx, j.ID, e.Timeouts.Reconcil); err != nil {
+					return errPending
+				}
+			}
+		}
+	}
 	return e.waitNoContainers(ctx)
 }
 
@@ -165,6 +187,10 @@ func (e *Executor) stopApp(ctx context.Context, a *Attempt) error {
 // restarts whenever the container is replaced or restarted (id or start time
 // changes) or its Docker health turns unhealthy.
 func (e *Executor) verify(ctx context.Context, a *Attempt, wantImageID string, sustain time.Duration) error {
+	return e.verifyMode(ctx, a, wantImageID, sustain, false)
+}
+
+func (e *Executor) verifyMode(ctx context.Context, a *Attempt, wantImageID string, sustain time.Duration, maintenance bool) error {
 	var okSince time.Time
 	ident := ""
 	return e.poll(ctx, e.Timeouts.Ready, "not_ready", func() (bool, error) {
@@ -172,6 +198,19 @@ func (e *Executor) verify(ctx context.Context, a *Attempt, wantImageID string, s
 		good := false
 		if err == nil {
 			if c := runningOf(cs, e.Cfg.Service); c != nil && c.ImageID == wantImageID && c.Health != "unhealthy" {
+				if c.Maintenance != maintenance {
+					if maintenance && !c.Maintenance {
+						// A writer may already have acknowledged data: never
+						// restore its checkpoint, including after a killed run.
+						a.KeepCandidate = true
+						if err := e.Journal.SaveAttempt(a); err != nil {
+							return false, fail("journal_unwritable", err)
+						}
+						return false, fail("trial_not_fenced", nil)
+					}
+					okSince = time.Time{}
+					return false, nil
+				}
 				if id := c.ID + "@" + c.StartedAt; id != ident {
 					ident, okSince = id, time.Time{}
 				}
@@ -208,16 +247,13 @@ func (e *Executor) docs(a *Attempt) (restore, after, trial Compose, err error) {
 
 // foreign reports a stored document the updater cannot have written: it
 // differs from the saved one in more than the image and the maintenance flag.
-func foreign(cur, restore Compose, service string) bool {
-	img, err := restore.Image(service)
+func (e *Executor) foreign(cur, restore Compose, a *Attempt) bool {
+	_, after, trial, err := e.docs(a)
 	if err != nil {
 		return true
 	}
-	n, err := cur.Normalized(service, img)
-	if err != nil {
-		return true
-	}
-	return n.Hash() != restore.Hash()
+	h := cur.Hash()
+	return h != a.ComposeBeforeHash && h != restore.Hash() && h != after.Hash() && h != trial.Hash()
 }
 
 // checkDataset proves again that the configured dataset is still the one
@@ -269,7 +305,7 @@ func (e *Executor) transact(ctx context.Context, a *Attempt) error {
 	if err != nil {
 		return fail("middleware_unavailable", err)
 	}
-	if foreign(cur, restore, a.Service) {
+	if e.foreign(cur, restore, a) {
 		return fail("compose_drift", nil)
 	}
 	if err := e.phase(a, PhaseUpdating); err != nil {
@@ -278,11 +314,14 @@ func (e *Executor) transact(ctx context.Context, a *Attempt) error {
 	if err := e.runJob(ctx, a, "update", func(c context.Context) (int, error) { return e.MW.Update(c, a.App, trial) }); err != nil {
 		return err
 	}
-	if err := e.checkPin(ctx, a); err != nil {
+	if err := e.checkDocument(ctx, trial.Hash()); err != nil {
 		return err
 	}
 
 	// 4. Start the candidate read-only. From here the data may be migrated.
+	if err := e.checkDataset(ctx, a); err != nil {
+		return err
+	}
 	a.CandidateStarted = true
 	if err := e.phase(a, PhaseStarting); err != nil {
 		return err
@@ -295,18 +334,18 @@ func (e *Executor) transact(ctx context.Context, a *Attempt) error {
 	if err := e.phase(a, PhaseVerifying); err != nil {
 		return err
 	}
-	if err := e.verify(ctx, a, a.CandidateImageID, e.Timeouts.Sustain); err != nil {
+	if err := e.verifyMode(ctx, a, a.CandidateImageID, e.Timeouts.Sustain, true); err != nil {
 		return err
 	}
 	return e.finalize(ctx, a, after)
 }
 
-func (e *Executor) checkPin(ctx context.Context, a *Attempt) error {
+func (e *Executor) checkDocument(ctx context.Context, wantHash string) error {
 	staged, err := e.appConfig(ctx)
 	if err != nil {
 		return fail("middleware_unavailable", err)
 	}
-	if img, _ := staged.Image(a.Service); img != a.CandidateRef {
+	if staged.Hash() != wantHash {
 		return fail("stored_pin_mismatch", nil)
 	}
 	return nil
@@ -315,19 +354,39 @@ func (e *Executor) checkPin(ctx context.Context, a *Attempt) error {
 // finalize lifts the read-only flag (the middleware redeploys the running
 // app with the final document), checks the candidate again and commits.
 func (e *Executor) finalize(ctx context.Context, a *Attempt, after Compose) error {
-	if err := e.phase(a, PhaseFinalizing); err != nil {
-		return err
-	}
 	cur, err := e.appConfig(ctx)
 	if err != nil {
 		return fail("middleware_unavailable", err)
 	}
-	if cur.Env(a.Service, MaintenanceEnv) != "" { // not lifted yet (a killed run may have done it)
+	_, _, trial, err := e.docs(a)
+	if err != nil {
+		return fail("saved_compose_missing", err)
+	}
+	if cur.Hash() != trial.Hash() && cur.Hash() != after.Hash() {
+		return fail("compose_changed_by_admin", nil)
+	}
+	a.KeepCandidate = true
+	if err := e.phase(a, PhaseFinalizing); err != nil {
+		return err
+	}
+	cs, err := e.containers(ctx)
+	if err != nil {
+		return fail("docker_unavailable", err)
+	}
+	c := runningOf(cs, a.Service)
+	if cur.Hash() != after.Hash() || c == nil || c.Maintenance {
 		if err := e.runJob(ctx, a, "finalize_update", func(c context.Context) (int, error) { return e.MW.Update(c, a.App, after) }); err != nil {
 			return err
 		}
 	}
-	if err := e.checkPin(ctx, a); err != nil {
+	if state, err := e.appState(ctx); err != nil {
+		return fail("middleware_unavailable", err)
+	} else if state == AppStopped {
+		if err := e.runJob(ctx, a, "start", func(c context.Context) (int, error) { return e.MW.Start(c, a.App) }); err != nil {
+			return err
+		}
+	}
+	if err := e.checkDocument(ctx, after.Hash()); err != nil {
 		return err
 	}
 	if err := e.verify(ctx, a, a.CandidateImageID, e.Timeouts.Final); err != nil {
@@ -403,6 +462,26 @@ var restoreOrder = []string{PhaseRestoreStop, PhaseRestoreRollback, PhaseRestore
 // when the next tick should continue. It has its own bounded budget and
 // never runs while a middleware job of the attempt may still be active.
 func (e *Executor) restore(ctx context.Context, a *Attempt, reason string) error {
+	if a.KeepCandidate {
+		return errPending
+	}
+	// Inspect live and stopped candidate containers: a previously writable
+	// candidate cannot safely be rolled back merely because it has crashed.
+	if a.CandidateStarted {
+		cs, err := e.containers(ctx)
+		if err != nil {
+			return errPending
+		}
+		for _, c := range cs {
+			if c.Service == a.Service && c.ImageID == a.CandidateImageID && !c.Maintenance {
+				a.KeepCandidate = true
+				if err := e.Journal.SaveAttempt(a); err != nil {
+					return err
+				}
+				return errPending
+			}
+		}
+	}
 	ctx = context.WithoutCancel(ctx)
 	if e.Timeouts.Restore > 0 {
 		var cancel context.CancelFunc
@@ -429,7 +508,7 @@ func (e *Executor) restore(ctx context.Context, a *Attempt, reason string) error
 	if err != nil {
 		return pending(fail("middleware_unavailable", err))
 	}
-	if foreign(cur, restoreDoc, a.Service) {
+	if e.foreign(cur, restoreDoc, a) {
 		return needRecovery("compose_changed_by_admin")
 	}
 	if !restorePhase(a.Phase) {
@@ -453,6 +532,11 @@ func (e *Executor) restore(ctx context.Context, a *Attempt, reason string) error
 			return err
 		}
 		if a.CandidateStarted {
+			// A resumed restore may have been interrupted before rollback and
+			// the operator may since have started the app. Re-prove exclusion.
+			if err := e.stopApp(ctx, a); err != nil {
+				return pending(err)
+			}
 			if err := e.checkDataset(ctx, a); err != nil {
 				return needRecovery("dataset_changed")
 			}
@@ -585,6 +669,16 @@ func (e *Executor) reconcile(ctx context.Context, a *Attempt) error {
 	if err := e.settleJobs(ctx, a); err != nil {
 		return err
 	}
+	if a.KeepCandidate {
+		_, after, _, err := e.docs(a)
+		if err != nil {
+			return errPending
+		}
+		if err := e.finalize(ctx, a, after); err != nil {
+			return errPending
+		}
+		return nil
+	}
 	if err := e.waitStable(ctx); err != nil {
 		return errPending
 	}
@@ -614,7 +708,7 @@ func (e *Executor) reconcile(ctx context.Context, a *Attempt) error {
 			if a.Phase == PhaseFinalizing {
 				sustain = e.Timeouts.Final
 			}
-			if verr := e.verify(ctx, a, a.CandidateImageID, sustain); verr == nil {
+			if verr := e.verifyMode(ctx, a, a.CandidateImageID, sustain, !a.KeepCandidate); verr == nil {
 				if _, after, _, derr := e.docs(a); derr == nil {
 					if ferr := e.finalize(ctx, a, after); ferr == nil {
 						return nil
@@ -695,6 +789,19 @@ func (e *Executor) ResolveRecovery() error {
 	}
 	if a == nil || a.Phase != PhaseRecoveryRequired {
 		return errors.New("no attempt needs recovery")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), e.Timeouts.Restore)
+	defer cancel()
+	if err := e.verify(ctx, a, a.PreviousImageID, e.Timeouts.Final); err != nil {
+		return fail("previous_not_ready", err)
+	}
+	st, err := e.Journal.LoadState()
+	if err != nil {
+		return err
+	}
+	st.LastTag = a.FromTag
+	if err := e.Journal.SaveState(st); err != nil {
+		return err
 	}
 	a.Reason = "resolved_by_operator"
 	a.Phase = PhaseAborted

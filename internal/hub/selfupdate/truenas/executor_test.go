@@ -66,6 +66,60 @@ func TestHappyPath(t *testing.T) {
 	}
 }
 
+func TestWritableCandidateNeverRollsBackAcknowledgedData(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	w.onEffect = func(name string) {
+		if name == "update:"+repo+"@"+candDg {
+			// A Worker reconnects after writers are enabled and its durable
+			// turn is acknowledged. A later readiness failure must not erase it.
+			w.data = "acknowledged-turn"
+			w.candidateBroken = true
+		}
+	}
+	if res := tick(t, e); res.Tick != TickPending {
+		t.Fatalf("expected forward recovery, got %+v", res)
+	}
+	a, _ := e.Journal.LoadAttempt()
+	if !a.KeepCandidate || a.Phase != PhaseFinalizing || w.data != "acknowledged-turn" || strings.Contains(w.effects(), "rollback") {
+		t.Fatalf("lost forward decision or data: %+v, %s, %s", a, w.data, w.effects())
+	}
+	w.candidateBroken = false
+	if res := tick(t, e); res.Tick != TickReconciled || w.data != "acknowledged-turn" {
+		t.Fatalf("did not finish forward: %+v, %s", res, w.data)
+	}
+}
+
+func TestTrialWithoutEnvironmentStillRollsBack(t *testing.T) {
+	w := newWorld()
+	svc, _ := w.compose.service("minion-hub")
+	delete(svc, "environment")
+	w.candidateBroken = true
+	e := newExec(t, w)
+	if res := tick(t, e); res.Tick != TickRolledBack || w.runImg != prevID || w.data != "v1" {
+		t.Fatalf("failed to recognize own injected trial: %+v %s", res, w.effects())
+	}
+}
+
+func TestFinalizationPreservesAdministratorComposeEdit(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	w.onEffect = func(name string) {
+		if name == "start" && w.runImg == candID {
+			svc, _ := w.compose.service("minion-hub")
+			svc["volumes"] = []any{"/operator/new-data:/data"}
+		}
+	}
+	res := tick(t, e)
+	if res.Tick != TickRecoveryRequired || res.Attempt.Reason != "compose_changed_by_admin" {
+		t.Fatalf("operator edit was not preserved: %+v %s", res, w.effects())
+	}
+	svc, _ := w.compose.service("minion-hub")
+	if svc["volumes"] == nil || strings.Contains(w.effects(), "rollback") {
+		t.Fatal("operator document overwritten")
+	}
+}
+
 func TestFailureAfterMigrationRestoresInOrder(t *testing.T) {
 	w := newWorld()
 	w.candidateBroken = true
@@ -122,6 +176,14 @@ func TestRollbackFailureNeedsRecoveryAndKeepsCheckpoint(t *testing.T) {
 	if res := tick(t, e); res.Tick != TickRecoveryRequired || len(w.log) != 0 {
 		t.Fatalf("second tick %+v effects %s", res, w.effects())
 	}
+	// Resolve is allowed only after the operator actually restored the
+	// previous image; acknowledging a still-stopped app must fail.
+	if err := e.ResolveRecovery(); err == nil {
+		t.Fatal("resolved recovery without a verified restored Hub")
+	}
+	w.compose, _ = e.Journal.LoadCompose(a.SavedHash)
+	w.data = "v1"
+	w.boot()
 	if err := e.ResolveRecovery(); err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +256,17 @@ func checkReconciled(t *testing.T, w *world, e *Executor, k, j int) {
 	noViolations(t, w)
 	a, _ := e.Journal.LoadAttempt()
 	if a != nil && !Terminal(a.Phase) {
+		if a.Pending != nil {
+			// A kill before a submission reply can leave no discoverable
+			// job. Do not guess that it was never accepted: the checkpoint
+			// and intent must stay intact with no further destructive work.
+			before := w.effects()
+			res := tick(t, e)
+			if res.Tick != TickPending || w.effects() != before {
+				t.Fatalf("ambiguous submission performed effects: %+v %s", res, w.effects())
+			}
+			return
+		}
 		t.Fatalf("kill %d/%d: attempt still at %s", k, j, a.Phase)
 	}
 	if w.state != AppRunning || !w.running || w.Ready(context.Background(), "https://10.0.0.2:8443/readyz") != nil {

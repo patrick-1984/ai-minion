@@ -126,6 +126,12 @@ func ReadRequest(path string, now time.Time) (*Request, error) {
 			}
 		}
 		if !o.ExpiresAt.After(now) {
+			// Expiry withdraws only the one-shot, not a separately armed
+			// recurring policy stored in the same envelope.
+			if r.Policy != nil {
+				r.Once = nil
+				return &r, errors.New("request_expired")
+			}
 			return nil, errors.New("request_expired")
 		}
 		if o.ExpiresAt.After(now.Add(MaxOnceLifetime)) {
@@ -153,10 +159,48 @@ type Status struct {
 	Window         string         `json:"window"`
 	Channel        string         `json:"channel"`
 	Enabled        bool           `json:"enabled"`
+	AllowHubPolicy bool           `json:"allow_hub_policy"`
 	Quarantined    []string       `json:"quarantined,omitempty"`
 	LastAttempt    *AttemptStatus `json:"last_attempt,omitempty"`
 	RequestError   string         `json:"request_error,omitempty"`
 	RequestHandled string         `json:"request_handled,omitempty"`
+}
+
+// ReadStatus reads the host's bounded, versioned status through its read-only
+// directory mount. It never returns the contents of an invalid file in errors.
+func ReadStatus(path string) (Status, error) {
+	f, err := openNoFollow(path)
+	if err != nil {
+		return Status{}, errors.New("status_unavailable")
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() > MaxRequestSize {
+		return Status{}, errors.New("status_invalid")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxRequestSize+1))
+	if err != nil || len(data) > MaxRequestSize {
+		return Status{}, errors.New("status_invalid")
+	}
+	var s Status
+	if err := json.Unmarshal(data, &s); err != nil || s.Version != StatusVersion || !appRE.MatchString(s.App) || s.UpdatedAt.IsZero() {
+		return Status{}, errors.New("status_invalid")
+	}
+	return s, nil
+}
+
+// WriteRequest replaces the Hub-owned request atomically. Its directory is
+// configured at deployment, never supplied by a browser/API request.
+func WriteRequest(path string, r Request) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return errors.New("request_path_unconfigured")
+	}
+	r.Version = RequestVersion
+	data, err := json.Marshal(r)
+	if err != nil || len(data) > MaxRequestSize {
+		return errors.New("request_invalid")
+	}
+	return writeFileAtomic(path, append(data, '\n'), 0o600)
 }
 
 // AttemptStatus is the public part of an attempt.

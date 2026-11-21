@@ -187,8 +187,11 @@ func (e *Executor) syncLastTag(st State, att *Attempt) State {
 func (e *Executor) publish(res TickResult, st State, att *Attempt, reqErr, handled string) {
 	s := Status{
 		App: e.Cfg.App, UpdatedAt: e.now().UTC(), Tick: res.Tick, Detail: res.Detail,
-		CurrentTag: st.LastTag, Window: e.Cfg.Window, Channel: e.Cfg.Channel, Enabled: e.Cfg.Enabled,
+		CurrentTag: st.LastTag, Window: e.Cfg.Window, Channel: e.Cfg.Channel, Enabled: e.Cfg.Enabled, AllowHubPolicy: e.Cfg.AllowHubPolicy,
 		Quarantined: st.Quarantine, LastAttempt: attemptStatus(att), RequestError: reqErr, RequestHandled: handled,
+	}
+	if req, _ := ReadRequest(e.Cfg.RequestFile, e.now()); req != nil && req.Policy != nil && e.Cfg.AllowHubPolicy {
+		s.Enabled, s.Window, s.Channel = req.Policy.Enabled, req.Policy.Window, req.Policy.Channel
 	}
 	if err := WriteStatus(e.Cfg.StatusFile, s); err != nil {
 		e.logger().Error("status file not written", "error", err.Error())
@@ -208,7 +211,6 @@ func (e *Executor) admit(st State) (admission, *TickResult) {
 	req, rerr := ReadRequest(e.Cfg.RequestFile, now)
 	if rerr != nil {
 		e.lastRequestError = rerr.Error()
-		req = nil
 	}
 	enabled, channel, window := e.Cfg.Enabled, e.Cfg.Channel, e.Cfg.Window
 	if req != nil && req.Policy != nil && e.Cfg.AllowHubPolicy {
@@ -343,6 +345,12 @@ func (e *Executor) attempt(ctx context.Context, st State, adm admission) (TickRe
 		e.consume(&st, once)
 		return TickResult{Tick: TickUpToDate, Detail: baseTag}, nil
 	}
+	// Earlier signed releases do not implement the health-only trial boot.
+	// Merely setting their environment would still admit acknowledged writes.
+	trialSince, _ := version.ParseVersion("v0.17.0")
+	if candVer.Compare(trialSince) < 0 {
+		return refuse("candidate_has_no_trial_fence")
+	}
 	if slices.Contains(st.Quarantine, cand.Digest) {
 		return refuse("candidate_quarantined")
 	}
@@ -446,7 +454,7 @@ func (e *Executor) attempt(ctx context.Context, st State, adm admission) (TickRe
 	// that may stop the app is recorded (pulls and verification take time).
 	adm2, res := e.admit(st)
 	if res != nil || adm2.channel != adm.channel || (adm2.once == nil) != (once == nil) ||
-		(once != nil && adm2.once.ID != once.ID) {
+		(once != nil && *adm2.once != *once) {
 		return refuse("admission_changed")
 	}
 	// The saved document first, then the attempt, then the consumption of the
@@ -468,6 +476,11 @@ func (e *Executor) attempt(ctx context.Context, st State, adm admission) (TickRe
 	terr := e.transact(ctx, a)
 	if terr == nil {
 		return TickResult{Tick: TickUpdated, Detail: cand.Tag, Attempt: a}, nil
+	}
+	if a.KeepCandidate {
+		// Writers may already have acknowledged data. Retry forward on the
+		// next tick; reverting the checkpoint is no longer safe.
+		return TickResult{Tick: TickPending, Detail: a.Phase, Attempt: a}, nil
 	}
 	e.logger().Warn("update failed; restoring", "attempt", a.ID, "code", codeOf(terr))
 	if err := e.restore(ctx, a, codeOf(terr)); err != nil {

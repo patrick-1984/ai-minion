@@ -31,7 +31,7 @@ The Hub reads its settings from the environment (its only flag is -v,
   MINION_PUBLIC_URL       external URL; required when MINION_TLS=off
   MINION_TRUSTED_PROXIES  CIDRs of reverse proxies whose X-Forwarded-* headers are trusted
   MINION_VERBOSE          1 logs at debug level, like -v
-  MINION_MAINTENANCE      readonly rejects every request that could change state (set by the TrueNAS host updater during a trial; not for manual use)
+  MINION_MAINTENANCE      readonly starts only core/database modules and health probes (set by the TrueNAS host updater during a trial; not for manual use)
 
 Without a certificate the Hub generates a self-signed ECDSA P-256 certificate
 in <data dir>/tls on first start and logs its SHA-256 fingerprint. Send SIGHUP
