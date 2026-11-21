@@ -14,6 +14,8 @@ const (
 	// update channel (at most once a minute) and reports like
 	// hub_update_check.
 	OpHubUpdateRefresh = "hub_update_refresh"
+	// OpHubUpdatePolicy arms the owner-installed host updater from an admin browser.
+	OpHubUpdatePolicy = "hub_update_policy"
 )
 
 // HubUpdateCheckArgs are the arguments of hub_update_check (none).
@@ -49,9 +51,37 @@ type HubUpdateCheckResult struct {
 	CheckingSince string `json:"checking_since,omitempty"`
 	// SelfUpdate is true when the Hub can replace itself (Docker, opt-in);
 	// Reason says why not otherwise, and Command is what to run instead.
-	SelfUpdate bool   `json:"self_update"`
-	Reason     string `json:"reason,omitempty"`
-	Command    string `json:"command,omitempty"`
+	SelfUpdate  bool                  `json:"self_update"`
+	Reason      string                `json:"reason,omitempty"`
+	Command     string                `json:"command,omitempty"`
+	HostUpdater *HubHostUpdaterStatus `json:"host_updater,omitempty"`
+}
+
+// HubHostUpdaterStatus is the sanitized state of the owner-installed executor.
+type HubHostUpdaterStatus struct {
+	App            string `json:"app,omitempty"`
+	Available      bool   `json:"available"`
+	Stale          bool   `json:"stale"`
+	AllowHubPolicy bool   `json:"allow_hub_policy"`
+	Enabled        bool   `json:"enabled"`
+	Window         string `json:"window,omitempty"`
+	Channel        string `json:"channel,omitempty"`
+	UpdatedAt      string `json:"updated_at,omitempty"`
+	Tick           string `json:"tick,omitempty"`
+	Detail         string `json:"detail,omitempty"`
+	Attempt        string `json:"attempt,omitempty"`
+	Outcome        string `json:"outcome,omitempty"`
+	RequestError   string `json:"request_error,omitempty"`
+	PendingRequest string `json:"pending_request,omitempty"`
+	PolicyRevision int64  `json:"policy_revision"`
+}
+
+// HubUpdatePolicyArgs writes only policy, never host paths or credentials.
+type HubUpdatePolicyArgs struct {
+	Enabled  bool   `json:"enabled"`
+	Window   string `json:"window"`
+	Channel  string `json:"channel"`
+	Revision int64  `json:"revision"`
 }
 
 // HubUpdateArgs are the arguments of hub_update.
@@ -70,6 +100,9 @@ type HubUpdateResult struct {
 	// Stranded lists the connected Workers whose protocol the new release
 	// does not support (the update is refused unless force).
 	Stranded []string `json:"stranded,omitempty"`
+	// Queued means the host executor will pick up an expiring request; no
+	// restart has happened yet.
+	Queued bool `json:"queued,omitempty"`
 }
 
 func init() {
@@ -90,6 +123,11 @@ func init() {
 	})
 	// hub_update is Mutates: its result is not a WriteResult, and a repeat is
 	// refused while an update runs.
+	Register(Op{
+		Name: OpHubUpdatePolicy, Summary: "Set the owner-installed Hub host updater policy (administrator browser session only).",
+		Scope: ScopeHub, Actions: manage, Mutates: true,
+		Args: reflect.TypeFor[HubUpdatePolicyArgs](), Result: reflect.TypeFor[HubUpdateCheckResult](),
+	})
 	Register(Op{
 		Name:    OpHubUpdate,
 		Summary: "Replace the Hub container with the newest signed release in its update channel (Docker, opt-in; admin only).",
