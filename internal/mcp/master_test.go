@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -13,17 +14,29 @@ import (
 
 func TestMasterToolsFollowCatalogGeneration(t *testing.T) {
 	ctx := t.Context()
-	server := sdk.NewServer(&sdk.Implementation{Name: "master-test", Version: "1"}, &sdk.ServerOptions{HasTools: true})
+	server := newMasterServer("1")
 	serverTransport, clientTransport := sdk.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, serverTransport, nil); err != nil {
 		t.Fatal(err)
 	}
-	client := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, nil)
+	changed := make(chan struct{}, 1)
+	client := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "1"}, &sdk.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *sdk.ToolListChangedRequest) {
+			select {
+			case changed <- struct{}{}:
+			default:
+			}
+		},
+	})
 	conn, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
+	capabilities := conn.InitializeResult().Capabilities
+	if capabilities.Tools == nil || !capabilities.Tools.ListChanged {
+		t.Fatal("the empty catalog did not negotiate live tool updates")
+	}
 	var generationSeen uint64
 	var argumentsSeen ops.SendTextArgs
 	backend := MasterBackend{Call: func(_ context.Context, gen uint64, op, id string, body json.RawMessage) (json.RawMessage, error) {
@@ -57,6 +70,11 @@ func TestMasterToolsFollowCatalogGeneration(t *testing.T) {
 		t.Fatalf("idle tools = %v", got)
 	}
 	cat.refresh(ctx, server, 8, backend)
+	select {
+	case <-changed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the client did not receive a catalog update")
+	}
 	want := []string{"send_text_g8", "session_snapshot_g8", "sessions_list_g8", "workers_list_g8"}
 	if got := tools(); !slices.Equal(got, want) {
 		t.Fatalf("tools = %v, want %v", got, want)

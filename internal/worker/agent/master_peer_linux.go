@@ -23,8 +23,10 @@ func masterPeerSupported() bool {
 	if err != nil {
 		return false
 	}
-	defer unix.Close(pair[0])
-	defer unix.Close(pair[1])
+	defer func() {
+		_ = unix.Close(pair[0])
+		_ = unix.Close(pair[1])
+	}()
 	fd, err := unix.GetsockoptInt(pair[0], unix.SOL_SOCKET, unix.SO_PEERPIDFD)
 	if err != nil {
 		return false

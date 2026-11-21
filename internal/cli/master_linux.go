@@ -82,7 +82,8 @@ func registerMasterLaunch(ctx context.Context, paths []string, executable string
 			return path, nil
 		}
 		var opErr *net.OpError
-		if !errors.Is(err, os.ErrNotExist) && !(errors.As(err, &opErr) && opErr.Op == "dial" && errors.Is(err, unix.ECONNREFUSED)) {
+		dialRefused := errors.As(err, &opErr) && opErr.Op == "dial" && errors.Is(err, unix.ECONNREFUSED)
+		if !errors.Is(err, os.ErrNotExist) && !dialRefused {
 			return "", err
 		}
 	}

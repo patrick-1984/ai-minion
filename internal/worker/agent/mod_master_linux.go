@@ -101,7 +101,7 @@ func (b *masterBroker) run(ctx context.Context, ln net.Listener) {
 		case slots <- struct{}{}:
 			jobs.Go(func() {
 				defer func() { <-slots }()
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				unixConn, ok := conn.(*net.UnixConn)
 				if ok {
 					b.serveLocal(ctx, unixConn)

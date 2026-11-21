@@ -29,6 +29,14 @@ type masterCatalog struct {
 	names      []string
 }
 
+func newMasterServer(version string) *sdk.Server {
+	return sdk.NewServer(&sdk.Implementation{Name: "minion-master", Version: version}, &sdk.ServerOptions{
+		Capabilities: &sdk.ServerCapabilities{
+			Tools: &sdk.ToolCapabilities{ListChanged: true},
+		},
+	})
+}
+
 // ServeMaster starts with an empty MCP catalog and has no generic Minion
 // backend. Native clients can retain previous declarations, so each registered
 // tool closes over its original generation even after they regain access.
@@ -36,7 +44,7 @@ func ServeMaster(ctx context.Context, in io.Reader, out io.Writer, version strin
 	if backend.Generation == nil || backend.Call == nil {
 		return errors.New("the Minion master backend is required")
 	}
-	server := sdk.NewServer(&sdk.Implementation{Name: "minion-master", Version: version}, &sdk.ServerOptions{HasTools: true})
+	server := newMasterServer(version)
 	cat := masterCatalog{}
 	server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
 		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {

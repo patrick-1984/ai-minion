@@ -70,7 +70,7 @@ func CallMaster(ctx context.Context, path string, req MasterRequest) (MasterResp
 	if err != nil {
 		return MasterResponse{}, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	_ = conn.SetDeadline(time.Now().Add(DefaultRequestTimeout))
