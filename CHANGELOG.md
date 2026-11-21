@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Hub updater for TrueNAS (host executor).** `minion hub-updater` (Linux) runs as root on the NAS from a TrueNAS Cron Task and updates a Hub that runs as a custom app: it verifies the release with the signed manifest, pins `repository@digest` through the middleware (the compose document goes over stdin, never argv), stops the app, snapshots the Hub dataset, waits for sustained readiness of the candidate image and, on failure, restores in the order stop, `zfs rollback`, previous compose, start, then quarantines the digest. A journal reconciles a killed run first on every tick, also outside the window. The candidate runs read-only (`MINION_MAINTENANCE=readonly`, new: the Hub answers 503 to anything that could change state) until it has proved itself, and the restore pins the verified previous digest. Administration > Updates displays the host status, saves a browser-admin-only opt-in schedule, and queues an exact expiring update through bounded request/status files. Trial startup serves health probes only; the executor records a durable forward-only decision before normal traffic starts, so later recovery cannot erase acknowledged writes. See [Hub updater for TrueNAS](docs/install/hub-truenas-updater.md).
+
 ### Fixed
 
 - **Administration > Updates:** Check now shows the answer without a manual reload (it waits for the check, up to 20 seconds, then reloads the page; a slower check reloads the page every 5 seconds for at most 2 minutes).

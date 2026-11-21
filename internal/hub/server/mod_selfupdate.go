@@ -41,6 +41,7 @@ type selfUpdater struct {
 	verified func(ctx context.Context, sel version.Selector) (version.Release, version.Manifest, error)
 	online   func() []workers.Online
 	audit    func(ctx context.Context, ev audit.Event)
+	host     *hostUpdater
 }
 
 func initSelfUpdate(_ context.Context, env *Env) error {
@@ -71,6 +72,7 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 	}
 	cache := filepath.Join(cfg.DataDir, "update-cache")
 	u := &selfUpdater{
+		host:    hostUpdaterFromEnv(),
 		dataDir: cfg.DataDir, checker: chk, socket: selfupdate.DefaultSocket,
 		docker: selfupdate.NewDocker(selfupdate.DefaultSocket),
 		setting: func(key string) (string, error) {
@@ -107,6 +109,21 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 	}); err != nil {
 		return fmt.Errorf("self-update: %w", err)
 	}
+	if err := api.HandleTyped(handlers, ops.OpHubUpdatePolicy, func(ctx context.Context, c *api.Call, a ops.HubUpdatePolicyArgs) (ops.HubUpdateCheckResult, error) {
+		if !mayReplaceHub(c) {
+			return ops.HubUpdateCheckResult{}, api.NewError(proto.CodeForbidden, "the host update policy is set by an administrator signed in to the web UI as themselves")
+		}
+		if u.host == nil {
+			return ops.HubUpdateCheckResult{}, api.NewError(proto.CodeConflict, "the owner-installed host updater is not configured")
+		}
+		if err := u.host.policy(a, time.Now()); err != nil {
+			return ops.HubUpdateCheckResult{}, api.NewError(proto.CodeConflict, err.Error())
+		}
+		u.audit(ctx, audit.Event{Actor: c.Identity.Actor, Action: ops.OpHubUpdatePolicy, Outcome: "success"})
+		return u.check(ctx), nil
+	}); err != nil {
+		return err
+	}
 	return api.HandleTyped(handlers, ops.OpHubUpdate, func(ctx context.Context, c *api.Call, a ops.HubUpdateArgs) (ops.HubUpdateResult, error) {
 		// Only an administrator signed in to the web UI as themselves: no API
 		// key, no act-as, no Worker grant.
@@ -117,7 +134,7 @@ func initSelfUpdate(_ context.Context, env *Env) error {
 		res, err := u.update(ctx, a.Force)
 		outcome := "failed"
 		switch {
-		case err == nil && res.Started:
+		case err == nil && (res.Started || res.Queued):
 			outcome = "success"
 		case err == nil:
 			outcome = "refused"
@@ -147,6 +164,9 @@ const manualCommand = "Docker Compose: set MINION_VERSION (or MINION_TAG) in .en
 
 func (u *selfUpdater) check(ctx context.Context) ops.HubUpdateCheckResult {
 	res := ops.HubUpdateCheckResult{Current: version.Version}
+	if u.host != nil {
+		res.HostUpdater = u.host.read(time.Now())
+	}
 	res.Channel, _ = u.setting(config.KeyUpdateChannel)
 	l := u.checker.Latest()
 	res.Latest, res.Newer, res.ReleaseURL = l.Latest, l.Newer, l.URL
@@ -160,6 +180,13 @@ func (u *selfUpdater) check(ctx context.Context) ops.HubUpdateCheckResult {
 	}
 	if mode, err := u.setting(config.KeySelfUpdate); err != nil || mode != "auto" {
 		res.Reason, res.Command = "self_update is off", manualCommand
+		return res
+	}
+	if res.HostUpdater != nil {
+		res.SelfUpdate = res.HostUpdater.Available && !res.HostUpdater.Stale && res.HostUpdater.Tick != "recovery_required" && res.HostUpdater.Tick != "reconcile_pending"
+		if !res.SelfUpdate {
+			res.Reason, res.Command = "the host updater is unavailable, stale or recovering", "Check the owner-installed TrueNAS Cron Task and the host updater status shown below."
+		}
 		return res
 	}
 	dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -218,6 +245,13 @@ func (u *selfUpdater) update(ctx context.Context, force bool) (ops.HubUpdateResu
 	}
 	if len(res.Stranded) > 0 && !force {
 		res.Reason = fmt.Sprintf("%d connected Workers speak a protocol %s does not support; update them first or force", len(res.Stranded), rel.Tag)
+		return res, nil
+	}
+	if u.host != nil {
+		if err := u.host.queue(version.Version, rel.Tag, time.Now()); err != nil {
+			return res, api.NewError(proto.CodeConflict, err.Error())
+		}
+		res.Queued = true
 		return res, nil
 	}
 	dctx, dcancel := context.WithTimeout(ctx, 10*time.Minute)
