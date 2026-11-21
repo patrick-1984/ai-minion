@@ -191,12 +191,11 @@ func (w *Writer) run() {
 	defer close(w.done)
 	defer w.closeConn()
 	var conn net.Conn
+	var retryAt time.Time
 	backoff := w.opts.BackoffMin
-	// pause waits before the next connect; false means the writer stops.
-	pause := func() bool {
-		ok := w.sleep(jitter(backoff))
+	scheduleReconnect := func() {
+		retryAt = time.Now().Add(jitter(backoff))
 		backoff = min(backoff*2, w.opts.BackoffMax)
-		return ok
 	}
 	for {
 		msg, ok := w.next()
@@ -213,13 +212,19 @@ func (w *Writer) run() {
 				return
 			}
 			if conn == nil {
-				c, raw, err := w.connect()
-				if err != nil {
-					w.fail("connect", err)
-					if !pause() {
+				// An idle queue can wait out the deadline without delaying
+				// shutdown or the first message that arrives after it.
+				if delay := time.Until(retryAt); delay > 0 {
+					if !w.sleep(delay) {
 						w.drop(w.stopReason(), 1)
 						return
 					}
+					continue
+				}
+				c, raw, err := w.connect()
+				if err != nil {
+					w.fail("connect", err)
+					scheduleReconnect()
 					continue
 				}
 				if !w.publish(raw) {
@@ -230,20 +235,19 @@ func (w *Writer) run() {
 			}
 			_ = conn.SetWriteDeadline(time.Now().Add(w.opts.WriteTimeout))
 			if _, err := conn.Write(msg); err != nil {
+				if w.runCtx.Err() != nil {
+					w.drop(w.stopReason(), 1)
+					return
+				}
 				w.fail("write", err)
 				w.closeConn()
 				conn = nil
+				scheduleReconnect()
 				if retried {
 					w.drop(DropWriteFailed, 1)
 					break
 				}
 				retried = true
-				// A peer that accepts and then resets costs a backoff,
-				// not a busy reconnect loop.
-				if !pause() {
-					w.drop(w.stopReason(), 1)
-					return
-				}
 				continue
 			}
 			w.sent.Add(1)

@@ -161,6 +161,7 @@ const (
 // facts, except SessionsHidden, which the Hub's hidden_sessions policy reads
 // to refuse a session_create that would make a hidden session.
 type WorkerFacts struct {
+	UsageConsent string `json:"usage_consent,omitempty"` // display-only registration coverage
 	// Build is the release version of the Worker binary ("v0.9.0" or "dev").
 	Build string `json:"build,omitempty"`
 	// OS and Arch are runtime.GOOS and runtime.GOARCH of the Worker.

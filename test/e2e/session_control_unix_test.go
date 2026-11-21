@@ -35,16 +35,22 @@ import (
 // needs: the runtime directory of its control socket and the pane ids of its
 // sessions.
 type controller struct {
-	wid   string
-	rt    string
-	home  string
-	panes map[string]string // session name -> pane id ($TMUX_PANE)
+	stateDir, pathPrefix string
+	wid                  string
+	rt                   string
+	home                 string
+	panes                map[string]string // session name -> pane id ($TMUX_PANE)
 }
 
 // startController enrolls W1 (named name, owned by ownerID) in its state
 // directory as a paired Worker would be, starts the binary on it and waits
 // until the Hub sees it online.
 func startController(t *testing.T, ph *shareHub, ownerID, name string, sessions ...string) *controller {
+	t.Helper()
+	return startControllerWith(t, ph, ownerID, name, "all", "", sessions...)
+}
+
+func startControllerWith(t *testing.T, ph *shareHub, ownerID, name, share, pathPrefix string, sessions ...string) *controller {
 	t.Helper()
 	bin := minionBinary(t)
 	state := t.TempDir()
@@ -63,7 +69,7 @@ func startController(t *testing.T, ph *shareHub, ownerID, name string, sessions 
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	c := &controller{wid: store.NewID(), home: t.TempDir(), panes: map[string]string{}}
+	c := &controller{stateDir: state, pathPrefix: pathPrefix, wid: store.NewID(), home: t.TempDir(), panes: map[string]string{}}
 	if err := ph.st.InsertWorker(context.Background(), nil, store.WorkerRow{ID: c.wid, Pub: key.Public(), Name: name, OwnerID: ownerID,
 		Kind: store.WorkerKindPrivate, CreatedAt: time.Now().UnixMilli()}); err != nil {
 		t.Fatal(err)
@@ -83,7 +89,7 @@ func startController(t *testing.T, ph *shareHub, ownerID, name string, sessions 
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(c.rt) })
 	w := &minionWorker{done: make(chan error, 1)}
-	w.cmd = exec.Command(bin, "worker", "up", "--foreground", "--server", "https://"+ph.addr, "--share-existing", "all",
+	w.cmd = exec.Command(bin, "worker", "up", "--foreground", "--accept-usage", "--server", "https://"+ph.addr, "--share-existing", share,
 		"--state-dir", state, "--tmux-socket", srv.Socket(), "--name", name)
 	w.cmd.Env = c.env("")
 	w.cmd.Stdout, w.cmd.Stderr = &w.out, &w.out
@@ -105,7 +111,11 @@ func startController(t *testing.T, ph *shareHub, ownerID, name string, sessions 
 // env is the environment of a process on W1's host: no Hub URL, no inherited
 // MINION_* or TMUX, and $TMUX_PANE when pane is not empty.
 func (c *controller) env(pane string) []string {
-	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + c.home, "XDG_RUNTIME_DIR=" + c.rt,
+	path := os.Getenv("PATH")
+	if c.pathPrefix != "" {
+		path = c.pathPrefix + string(os.PathListSeparator) + path
+	}
+	env := []string{"PATH=" + path, "HOME=" + c.home, "XDG_RUNTIME_DIR=" + c.rt,
 		"XDG_STATE_HOME=" + filepath.Join(c.home, "state"), "XDG_CONFIG_HOME=" + filepath.Join(c.home, "config")}
 	if pane != "" {
 		env = append(env, "TMUX_PANE="+pane)

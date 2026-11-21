@@ -29,6 +29,7 @@
 
 param(
     [switch]$Join,
+    [switch]$AcceptUsage,
     [string]$Version,
     [string]$Name,
     [ValidateSet('all', 'none', 'later')][string]$Share = 'all'
@@ -39,6 +40,13 @@ param(
     $ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest is slow with a progress bar in 5.1
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $token = $null
+    if ($AcceptUsage) {
+        if (-not $Join) { throw 'install.ps1: -AcceptUsage requires -Join' }
+        Write-Host 'Usage monitoring for this enrollment'
+        Write-Host 'The Hub administrator and Worker owner can see usage for every session, including unshared sessions.'
+        Write-Host 'Reports may include session names, folders, models, account identifiers, timing, token counts, costs and usage limits.'
+        Write-Host 'This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage.'
+    }
     if ($Join) {
         $secret = Read-Host 'Join token from the Hub Add worker page' -AsSecureString
         $buffer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
@@ -146,6 +154,7 @@ param(
 
         & $installed version
         if ($Join) {
+            if ($AcceptUsage) { $workerArgs += '--accept-usage' }
             $token | & $installed @workerArgs --join-consent $consent --share-existing $Share
             $token = $null
             if ($LASTEXITCODE -ne 0) { throw "install.ps1: Worker setup failed (exit $LASTEXITCODE)" }

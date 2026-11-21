@@ -189,6 +189,7 @@ to the mounted file during configuration.`,
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run the Worker in the foreground instead of installing a service")
 	cmd.Flags().BoolVar(&configureOnly, "configure-only", false, "Enroll and save settings for an external supervisor such as Docker, then exit")
 	cmd.MarkFlagsMutuallyExclusive("foreground", "configure-only")
+	cmd.Flags().Bool("accept-usage", false, "Accept session usage monitoring for this Hub enrollment only, including unshared session metadata")
 	cmd.Flags().String("non-interactive-share", "", "Initial sharing choice (all, none or later) for an unattended Worker with no saved choice")
 	cmd.Flags().StringVar(&asUser, "as-user", "", "Install the service for this Unix user (needs root; default: the user that ran sudo)")
 	addSettingFlags(cmd, deps.registry(), config.ScopeWorker)
@@ -321,7 +322,18 @@ func firstRunForeground(cmd *cobra.Command, deps workerUpDeps, reg *config.Regis
 			return err
 		}
 	}
-	return sd.firstRun(cmd, res, nil, nil)
+	if err := sd.firstRun(cmd, res, nil, nil); err != nil {
+		return err
+	}
+	accept, _ := cmd.Flags().GetBool("accept-usage")
+	if !accept {
+		return nil
+	}
+	core, err := config.ResolveWorkerCore(res)
+	if err != nil {
+		return err
+	}
+	return prepareUpUsage(cmd, deps, res, core.StateDir, nil)
 }
 
 // installWorkerService is the service path of "worker up": resolve the
@@ -535,6 +547,9 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		return err
 	}
 	if err := st.give(); err != nil {
+		return err
+	}
+	if err := prepareUpUsage(cmd, deps, res, stateDir, owner); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "Settings saved to %s.\n", path)

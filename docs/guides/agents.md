@@ -42,8 +42,8 @@ If minion is already installed and the Worker is paired, the plugin changes noth
 
 ## The Minion master
 
-A **Minion master** is an agent in a **master session**: a session that its Worker's owner (or an administrator)
-nominated in **Access > Minion control**. Every other session is a **slave session**, the default: it controls
+A **Minion master** is an agent in a **master session** nominated by an administrator in **Access > Minion control**.
+Every other session is a **slave session**, the default: it controls
 nothing beyond its own Worker. A master session reaches a session on another Worker only when that Worker is
 **minion-managed** and **accepts control from** the master's Worker (or from All Workers), the session is shared,
 and the master's owner may reach that Worker. Both sides consent: the master's Worker nominates, the target Worker
@@ -51,9 +51,33 @@ accepts.
 
 - **Nothing is a master by default**, no Worker accepts control by default, and a Worker shares no session until
   its owner chooses. An agent cannot make itself a master.
-- **How to use it:** inside the master session, `minion workers_list`, then `--target <worker-id>:<session>` on the
-  session commands, or the same through `minion mcp --allow-writes`. **Check access** on the Minion control page
-  explains why a session can or cannot be reached. Details: [Minion control](minion-control.md).
+- **Existing name-only grants** use `minion workers_list`, then `--target <worker-id>:<session>` on the session
+  commands, or the same through `minion mcp --allow-writes`. **Check access** on the Minion control page
+  explains why a session can or cannot be reached. [Minion control](minion-control.md)
+
+### Prepare one Claude Code terminal
+
+The session attachment is available with native Claude Code 2.1.330 on Linux tmux. It needs a kernel with
+`SO_PEERPIDFD`, an updated Worker, and an approved Hub that supports session attachments. Upstream Linux added
+this socket option in 6.5. The Worker probes for the option, so a backport can also satisfy the requirement.
+The option pins the actual Unix socket peer even if its numeric process ID is later reused. Native qualification
+ran on Linux 7.0.0-38 with tmux 3.6. [Linux process descriptors](https://lpc.events/event/18/contributions/1691/)
+
+1. Share the tmux session with the Hub. In a shell that is the pane's process, deliberately start Claude with
+   `exec minion master claude`. To pass Claude options, use `exec minion master claude -- <options>`.
+2. In **Access > Minion control**, nominate the prepared terminal session. Target Workers must still accept its
+   Worker and share the sessions you want to reach.
+3. Use the available master tools to list permitted Workers and sessions, inspect a target and send an ordinary
+   prompt to an idle agent. Check the reported outcome before deciding whether to retry a write.
+
+The launcher passes an additive MCP configuration to that Claude invocation. An already running unprepared
+Claude session needs a future deliberate launch for attachment. The prepared invocation may show a connected
+Minion server with no tools while inactive. A healthy refresh empties that live catalog after revoke. Earlier
+tool declarations and results can remain in Claude's conversation or model request. The Hub denies later
+calls from a revoked or superseded attachment, including calls to cached tools.
+
+Renaming, moving or replacing the selected terminal or its process ends the attachment. A Worker restart requires
+a fresh launch and nomination. Clearing the Claude conversation can continue in the same attached terminal.
 
 ```text
                  Hub (grants, sharing, approval: decided by people)

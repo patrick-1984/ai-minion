@@ -1,0 +1,2152 @@
+{
+  "components": {
+    "schemas": {
+      "HubError": {
+        "properties": {
+          "error": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "UsageAccountSetArgs": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "account_id",
+          "label",
+          "position"
+        ],
+        "additionalProperties": false
+      },
+      "UsageBucketListArgs": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "UsageBucketListResult": {
+        "type": "object",
+        "properties": {
+          "buckets": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "position": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "label",
+                "position"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "buckets"
+        ],
+        "additionalProperties": false
+      },
+      "UsageBucketSetArgs": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "bucket_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "position": {
+            "type": "integer"
+          },
+          "members": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "worker_ids": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "all": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "UsageBucketSetResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "updated": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "updated"
+        ],
+        "additionalProperties": false
+      },
+      "UsageCollector": {
+        "type": "object",
+        "properties": {
+          "can_start": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "preferred_worker": {
+            "type": "string"
+          },
+          "preferred_session": {
+            "type": "string"
+          },
+          "active_worker": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "next_due": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "last_success": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          }
+        },
+        "required": [
+          "can_start",
+          "mode",
+          "status",
+          "next_due",
+          "last_success"
+        ],
+        "additionalProperties": false
+      },
+      "UsageCollectorSetArgs": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "boolean"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id"
+        ],
+        "additionalProperties": false
+      },
+      "UsageListArgs": {
+        "type": "object",
+        "properties": {
+          "section": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          },
+          "bucket_id": {
+            "type": "string"
+          },
+          "subscription_only": {
+            "type": "boolean"
+          },
+          "after": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "section"
+        ],
+        "additionalProperties": false
+      },
+      "UsageListResult": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "account_id": {
+                  "type": "string"
+                },
+                "native_id": {
+                  "type": "string"
+                },
+                "seq": {
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "observed_at": {
+                  "type": "integer"
+                },
+                "worker_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "seq",
+                "id",
+                "session_id",
+                "kind",
+                "source",
+                "observed_at",
+                "worker_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "history": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "session_id": {
+                  "type": "string"
+                },
+                "worker_id": {
+                  "type": "string"
+                },
+                "hour": {
+                  "type": "integer"
+                },
+                "observed_at": {
+                  "type": "integer"
+                },
+                "counters": {
+                  "type": "object",
+                  "properties": {
+                    "api_duration_ms": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "lines_added": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "lines_removed": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cache_requests": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cache_misses": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cache_hit_ratio": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "reasoning_tokens": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "context_tokens": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "context_limit": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "estimated_cost_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "input_tokens": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "output_tokens": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cache_read_tokens": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cache_write_tokens": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cost_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "duration_ms": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "tasks": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "subagents": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "api_duration_ms",
+                    "lines_added",
+                    "lines_removed",
+                    "cache_requests",
+                    "cache_misses",
+                    "cache_hit_ratio",
+                    "reasoning_tokens",
+                    "context_tokens",
+                    "context_limit",
+                    "estimated_cost_usd",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_tokens",
+                    "cache_write_tokens",
+                    "cost_usd",
+                    "duration_ms",
+                    "tasks",
+                    "subagents"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "session_id",
+                "worker_id",
+                "hour",
+                "observed_at",
+                "counters"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "overview": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "properties": {
+              "accounts": {
+                "type": "integer"
+              },
+              "without_windows": {
+                "type": "integer"
+              },
+              "groups": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "unit": {
+                      "type": "string"
+                    },
+                    "provider": {
+                      "type": "string"
+                    },
+                    "scope": {
+                      "type": "string"
+                    },
+                    "period": {
+                      "type": "string"
+                    },
+                    "duration_ms": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "mean_used_percent": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "known": {
+                      "type": "integer"
+                    },
+                    "stale": {
+                      "type": "integer"
+                    },
+                    "unknown": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "scope",
+                    "period",
+                    "duration_ms",
+                    "mean_used_percent",
+                    "known",
+                    "stale",
+                    "unknown"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "accounts",
+              "without_windows",
+              "groups"
+            ],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "integer"
+          },
+          "as_of": {
+            "type": "integer"
+          },
+          "sessions": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "duration_source": {
+                  "type": "string"
+                },
+                "stop_source": {
+                  "type": "string"
+                },
+                "gateway_spend": {
+                  "type": [
+                    "null",
+                    "object"
+                  ],
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "observed_at": {
+                      "type": "integer"
+                    },
+                    "period": {
+                      "type": "string"
+                    },
+                    "used_percent": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "resets_at": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "estimated_used_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "limit_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "observed_at",
+                    "used_percent",
+                    "resets_at",
+                    "estimated_used_usd",
+                    "limit_usd"
+                  ],
+                  "additionalProperties": false
+                },
+                "time_source": {
+                  "type": "string"
+                },
+                "native_id": {
+                  "type": "string"
+                },
+                "models": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "model": {
+                        "type": "string"
+                      },
+                      "api_duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "lines_added": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "lines_removed": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_requests": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_misses": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_hit_ratio": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "reasoning_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "context_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "context_limit": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "estimated_cost_usd": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "input_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "output_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_read_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_write_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cost_usd": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "tasks": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "subagents": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "model",
+                      "api_duration_ms",
+                      "lines_added",
+                      "lines_removed",
+                      "cache_requests",
+                      "cache_misses",
+                      "cache_hit_ratio",
+                      "reasoning_tokens",
+                      "context_tokens",
+                      "context_limit",
+                      "estimated_cost_usd",
+                      "input_tokens",
+                      "output_tokens",
+                      "cache_read_tokens",
+                      "cache_write_tokens",
+                      "cost_usd",
+                      "duration_ms",
+                      "tasks",
+                      "subagents"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "folder": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "account_id": {
+                  "type": "string"
+                },
+                "auth_mode": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "stopped_at": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "observed_at": {
+                  "type": "integer"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "api_duration_ms": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "lines_added": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "lines_removed": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_requests": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_misses": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_hit_ratio": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "reasoning_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "context_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "context_limit": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "estimated_cost_usd": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "input_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "output_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_read_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_write_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cost_usd": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "duration_ms": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "tasks": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "subagents": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "worker_id": {
+                  "type": "string"
+                },
+                "last_seen": {
+                  "type": "integer"
+                },
+                "bucket_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "auth_mode",
+                "started_at",
+                "stopped_at",
+                "observed_at",
+                "source",
+                "api_duration_ms",
+                "lines_added",
+                "lines_removed",
+                "cache_requests",
+                "cache_misses",
+                "cache_hit_ratio",
+                "reasoning_tokens",
+                "context_tokens",
+                "context_limit",
+                "estimated_cost_usd",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "cost_usd",
+                "duration_ms",
+                "tasks",
+                "subagents",
+                "worker_id",
+                "last_seen"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "accounts": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "alias": {
+                  "type": "string"
+                },
+                "position": {
+                  "type": "integer"
+                },
+                "sources": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "worker_id": {
+                        "type": "string"
+                      },
+                      "session_id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "worker_id",
+                      "label"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "collector": {
+                  "type": [
+                    "null",
+                    "object"
+                  ],
+                  "properties": {
+                    "can_start": {
+                      "type": "boolean"
+                    },
+                    "mode": {
+                      "type": "string"
+                    },
+                    "preferred_worker": {
+                      "type": "string"
+                    },
+                    "preferred_session": {
+                      "type": "string"
+                    },
+                    "active_worker": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "next_due": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "last_success": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "can_start",
+                    "mode",
+                    "status",
+                    "next_due",
+                    "last_success"
+                  ],
+                  "additionalProperties": false
+                },
+                "endpoint_origin": {
+                  "type": "string"
+                },
+                "key_hint": {
+                  "type": "string"
+                },
+                "plan": {
+                  "type": "string"
+                },
+                "time_source": {
+                  "type": "string"
+                },
+                "source_session_id": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "auth_mode": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "observed_at": {
+                  "type": "integer"
+                },
+                "windows": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "used": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "limit": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "remaining": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "unit": {
+                        "type": "string"
+                      },
+                      "scope": {
+                        "type": "string"
+                      },
+                      "period": {
+                        "type": "string"
+                      },
+                      "duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "resets_at": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "used_percent": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "used",
+                      "limit",
+                      "remaining",
+                      "scope",
+                      "period",
+                      "duration_ms",
+                      "resets_at",
+                      "used_percent"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "worker_id": {
+                  "type": "string"
+                },
+                "bucket_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "position",
+                "id",
+                "provider",
+                "auth_mode",
+                "source",
+                "observed_at",
+                "windows",
+                "worker_id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "workers": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "last_issue": {
+                  "type": "string"
+                },
+                "inventory_at": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "online": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "observed_at": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "inventory": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "auth_mode": {
+                        "type": "string"
+                      },
+                      "providers": {
+                        "type": [
+                          "null",
+                          "array"
+                        ],
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "account_status": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "inventory_at",
+                "online",
+                "status",
+                "id",
+                "name",
+                "observed_at",
+                "inventory"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "next": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "as_of"
+        ],
+        "additionalProperties": false
+      },
+      "UsageReport": {
+        "type": "object",
+        "properties": {
+          "inventory_at": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "events": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "account_id": {
+                  "type": "string"
+                },
+                "native_id": {
+                  "type": "string"
+                },
+                "seq": {
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "observed_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "seq",
+                "id",
+                "session_id",
+                "kind",
+                "source",
+                "observed_at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "probe": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "retry_after_seconds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "integer"
+          },
+          "observed_at": {
+            "type": "integer"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "inventory": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "auth_mode": {
+                  "type": "string"
+                },
+                "providers": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "account_status": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "sessions": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "gateway_spend": {
+                  "type": [
+                    "null",
+                    "object"
+                  ],
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "observed_at": {
+                      "type": "integer"
+                    },
+                    "period": {
+                      "type": "string"
+                    },
+                    "used_percent": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "resets_at": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "estimated_used_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "limit_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "observed_at",
+                    "used_percent",
+                    "resets_at",
+                    "estimated_used_usd",
+                    "limit_usd"
+                  ],
+                  "additionalProperties": false
+                },
+                "time_source": {
+                  "type": "string"
+                },
+                "native_id": {
+                  "type": "string"
+                },
+                "models": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "model": {
+                        "type": "string"
+                      },
+                      "api_duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "lines_added": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "lines_removed": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_requests": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_misses": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_hit_ratio": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "reasoning_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "context_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "context_limit": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "estimated_cost_usd": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "input_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "output_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_read_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cache_write_tokens": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "cost_usd": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "tasks": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "subagents": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "model",
+                      "api_duration_ms",
+                      "lines_added",
+                      "lines_removed",
+                      "cache_requests",
+                      "cache_misses",
+                      "cache_hit_ratio",
+                      "reasoning_tokens",
+                      "context_tokens",
+                      "context_limit",
+                      "estimated_cost_usd",
+                      "input_tokens",
+                      "output_tokens",
+                      "cache_read_tokens",
+                      "cache_write_tokens",
+                      "cost_usd",
+                      "duration_ms",
+                      "tasks",
+                      "subagents"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "folder": {
+                  "type": "string"
+                },
+                "harness": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "account_id": {
+                  "type": "string"
+                },
+                "auth_mode": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "stopped_at": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "observed_at": {
+                  "type": "integer"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "api_duration_ms": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "lines_added": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "lines_removed": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_requests": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_misses": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_hit_ratio": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "reasoning_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "context_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "context_limit": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "estimated_cost_usd": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "input_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "output_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_read_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cache_write_tokens": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "cost_usd": {
+                  "type": [
+                    "null",
+                    "number"
+                  ]
+                },
+                "duration_ms": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "tasks": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "subagents": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "auth_mode",
+                "started_at",
+                "stopped_at",
+                "observed_at",
+                "source",
+                "api_duration_ms",
+                "lines_added",
+                "lines_removed",
+                "cache_requests",
+                "cache_misses",
+                "cache_hit_ratio",
+                "reasoning_tokens",
+                "context_tokens",
+                "context_limit",
+                "estimated_cost_usd",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "cost_usd",
+                "duration_ms",
+                "tasks",
+                "subagents"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "accounts": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "endpoint_origin": {
+                  "type": "string"
+                },
+                "key_hint": {
+                  "type": "string"
+                },
+                "plan": {
+                  "type": "string"
+                },
+                "time_source": {
+                  "type": "string"
+                },
+                "source_session_id": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "auth_mode": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "observed_at": {
+                  "type": "integer"
+                },
+                "windows": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "used": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "limit": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "remaining": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "unit": {
+                        "type": "string"
+                      },
+                      "scope": {
+                        "type": "string"
+                      },
+                      "period": {
+                        "type": "string"
+                      },
+                      "duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "resets_at": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "used_percent": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "used",
+                      "limit",
+                      "remaining",
+                      "scope",
+                      "period",
+                      "duration_ms",
+                      "resets_at",
+                      "used_percent"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "provider",
+                "auth_mode",
+                "source",
+                "observed_at",
+                "windows"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "version",
+          "observed_at",
+          "complete",
+          "sessions"
+        ],
+        "additionalProperties": false
+      },
+      "WorkerUsageArgs": {
+        "type": "object",
+        "properties": {
+          "worker_id": {
+            "type": "string"
+          },
+          "inventory": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "worker_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "All telemetry timestamps use Unix milliseconds UTC. Null counters and limits mean unavailable.",
+    "title": "Minion usage",
+    "version": "1"
+  },
+  "openapi": "3.1.1",
+  "paths": {
+    "/api/v1/ops/usage_account_set": {
+      "post": {
+        "operationId": "usage_account_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsageAccountSetArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAccountSetArgs"
+                }
+              }
+            },
+            "description": "Authorized usage result"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubError"
+                }
+              }
+            },
+            "description": "Hub API error"
+          }
+        },
+        "summary": "Set your private display name and order for a provider account."
+      }
+    },
+    "/api/v1/ops/usage_bucket_list": {
+      "post": {
+        "operationId": "usage_bucket_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsageBucketListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageBucketListResult"
+                }
+              }
+            },
+            "description": "Authorized usage result"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubError"
+                }
+              }
+            },
+            "description": "Hub API error"
+          }
+        },
+        "summary": "List your private usage buckets."
+      }
+    },
+    "/api/v1/ops/usage_bucket_set": {
+      "post": {
+        "operationId": "usage_bucket_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsageBucketSetArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageBucketSetResult"
+                }
+              }
+            },
+            "description": "Authorized usage result"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubError"
+                }
+              }
+            },
+            "description": "Hub API error"
+          }
+        },
+        "summary": "Save, reorder, delete or assign members to your private usage buckets."
+      }
+    },
+    "/api/v1/ops/usage_collector_set": {
+      "post": {
+        "operationId": "usage_collector_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsageCollectorSetArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageCollector"
+                }
+              }
+            },
+            "description": "Authorized usage result"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubError"
+                }
+              }
+            },
+            "description": "Hub API error"
+          }
+        },
+        "summary": "Choose an available Worker or passive session source for this subscription account."
+      }
+    },
+    "/api/v1/ops/usage_list": {
+      "post": {
+        "operationId": "usage_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsageListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageListResult"
+                }
+              }
+            },
+            "description": "Authorized usage result"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubError"
+                }
+              }
+            },
+            "description": "Hub API error"
+          }
+        },
+        "summary": "Read authorized Worker, session or account usage statistics, including metadata for unshared sessions on your Workers."
+      }
+    },
+    "/api/v1/ops/worker_usage": {
+      "post": {
+        "operationId": "worker_usage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerUsageArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageReport"
+                }
+              }
+            },
+            "description": "Authorized usage result"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubError"
+                }
+              }
+            },
+            "description": "Hub API error"
+          }
+        },
+        "summary": "Read registered Worker usage metadata and optionally refresh its installed harness inventory."
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ]
+}

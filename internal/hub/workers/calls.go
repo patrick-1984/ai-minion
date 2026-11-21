@@ -67,10 +67,16 @@ type callRequest struct {
 // and does not read the session itself: the accept loop of the session's
 // [streamHost] gives it the streams.
 type callStreams struct {
-	h    *Handler
-	w    store.WorkerRow
-	sess callSession
-	wg   sync.WaitGroup
+	h      *Handler
+	w      store.WorkerRow
+	sess   callSession
+	master masterConnection
+	wg     sync.WaitGroup
+}
+
+type masterConnection struct {
+	enabled    bool
+	transcript []byte
 }
 
 // callSession is what a call needs of the Worker's session.
@@ -91,7 +97,7 @@ func (c *callStreams) Serve(ctx context.Context, st *transport.Stream, done func
 		if done != nil {
 			defer done()
 		}
-		c.h.serveCall(ctx, c.w, c.sess, st)
+		c.h.serveCall(ctx, c.w, c.sess, st, c.master)
 	}()
 }
 
@@ -105,7 +111,7 @@ func (h *Handler) refuseCall(st *transport.Stream, e *proto.Error) {
 }
 
 // serveCall serves one call stream.
-func (h *Handler) serveCall(ctx context.Context, w store.WorkerRow, sess callSession, st *transport.Stream) {
+func (h *Handler) serveCall(ctx context.Context, w store.WorkerRow, sess callSession, st *transport.Stream, master masterConnection) {
 	_ = st.SetDeadline(time.Now().Add(callTimeout))
 	// An idle call stream must not outlive the session or the Hub: the end of
 	// ctx interrupts a read that waits for the request, and the read of a
@@ -130,6 +136,28 @@ func (h *Handler) serveCall(ctx context.Context, w store.WorkerRow, sess callSes
 	// nothing else. The row is read again, so a refusal is never stale.
 	if err := h.requireApproved(ctx, w); err != nil {
 		h.refuseCall(st, err)
+		return
+	}
+	if rq.Op == proto.OpMasterCallV1 {
+		fn := h.callOp(proto.OpMasterCallV1)
+		if !master.enabled || fn == nil {
+			h.refuseCall(st, proto.NewError(proto.CodeUnsupportedOp, "the link did not negotiate session-bound master calls"))
+			return
+		}
+		var scoped proto.MasterCallRequest
+		if err := proto.DecodeMasterJSON(body, &scoped); err != nil || !ops.ValidUUIDv7(scoped.RequestID) {
+			h.refuseCall(st, proto.NewError(proto.CodeInvalidArgument, "invalid session-bound master call"))
+			return
+		}
+		if err := scoped.Validate(); err != nil {
+			var pe *proto.Error
+			if errors.As(err, &pe) {
+				h.refuseCall(st, pe)
+			}
+			return
+		}
+		_ = st.SetDeadline(time.Time{})
+		fn(ctx, Call{Worker: w, Stream: st, RequestID: scoped.RequestID, Master: &scoped.Args, TranscriptHash: master.transcript})
 		return
 	}
 	if fn := h.callOp(rq.Op); fn != nil {
@@ -180,6 +208,10 @@ type Call struct {
 	// SourceSession is the optional source_session of the op.request: the
 	// calling session on the Worker, not validated yet.
 	SourceSession string
+	// Master and TranscriptHash are populated only by the private authenticated
+	// master operation. Generic Worker, API-key and legacy paths never get them.
+	Master         *proto.MasterCallArgs
+	TranscriptHash []byte
 }
 
 // CallOp serves one op of the call streams. It runs on the goroutine of the

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.18.0
+
+Released 2026-11-21.
+
+### Added
+
+- Prepared Claude Code sessions can receive generation-bound Minion Master tools only while nominated. The first qualified attachment is Claude Code 2.1.330 on Linux tmux with the required kernel peer-lifetime capability. Revocation withdraws the current catalog and denies stale calls at the Hub; historical native declarations can remain. Unprepared running sessions and unqualified harness/platform combinations report their limitation instead of changing shared profiles or restarting coding sessions. See [AI agents](docs/guides/agents.md).
+- The Hub's Usage menu shows authorized session statistics, native account limits, per-account collectors, historical snapshots and private token buckets. CLI and Hub-connected MCP clients can read the same scoped data. See [Usage and subscription limits](docs/guides/usage.md).
+- Metadata-capable Workers disclose collection, including unshared session metadata, at enrollment. The independent console sharing and control rules still apply. Existing enrolled Workers can review the policy before enabling the new reports.
+
+### Fixed
+
+- Syslog reconnects honor backoff after every failed write, including a failed retry.
+
 ## v0.17.0
 
 Released 2026-11-21.

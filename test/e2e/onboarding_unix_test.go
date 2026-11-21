@@ -39,7 +39,7 @@ func TestDockerProvisionThenRunFromState(t *testing.T) {
 			"MINION_STATE_DIR=" + filepath.Join(dir, "state"), "MINION_TMUX_SOCKET=" + filepath.Join(dir, "tmux.sock")}
 		return cmd
 	}
-	up := command("up", "--configure-only", "--non-interactive-share", "later", "--join", "-")
+	up := command("up", "--configure-only", "--non-interactive-share", "later", "--accept-usage", "--join", "-")
 	up.Stdin = strings.NewReader(token.Encode() + "\n")
 	out, err := up.CombinedOutput()
 	if strings.Contains(string(out), token.Encode()) || strings.Contains(string(out), key.String()) {

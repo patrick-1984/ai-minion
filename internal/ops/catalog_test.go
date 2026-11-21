@@ -279,12 +279,15 @@ func TestSelectPanicsOnUnknown(t *testing.T) {
 
 func TestJSONFieldsFollowsEmbedding(t *testing.T) {
 	fields := jsonFields(reflect.TypeFor[SendTextArgs]())
-	for _, want := range []string{"request_id", "force", "target", "text", "submit"} {
+	for _, want := range []string{"request_id", "force", "target", "text", "submit", "agent_only"} {
 		if _, ok := fields[want]; !ok {
 			t.Errorf("field %s missing from %v", want, fields)
 		}
 	}
-	if len(fields) != 5 {
+	if len(fields) != 6 {
 		t.Errorf("fields = %v", fields)
+	}
+	if !HiddenMember(OpSendText, "agent_only") {
+		t.Error("the internal destination guard is visible to generic clients")
 	}
 }

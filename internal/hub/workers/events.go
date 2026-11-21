@@ -1292,3 +1292,34 @@ func (h *EventHub) confirmPendingOnConnect(workerID string) {
 		}
 	}
 }
+
+// masterShare requires current, shared live evidence. A pending restrictive
+// share change fences it immediately, just as for sensitive history.
+func (h *EventHub) masterShare(workerID, name string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ensureSharesLocked()
+	w := h.workers[workerID]
+	if w == nil || !w.online || !w.synced {
+		return false
+	}
+	_, present := w.sessions[name]
+	return present && !h.hiddenLocked(workerID, name, true)
+}
+
+func (h *EventHub) masterSharedNames(workerID string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ensureSharesLocked()
+	w := h.workers[workerID]
+	if w == nil || !w.online || !w.synced {
+		return nil
+	}
+	var names []string
+	for name := range w.sessions {
+		if !h.hiddenLocked(workerID, name, true) {
+			names = append(names, name)
+		}
+	}
+	return names
+}

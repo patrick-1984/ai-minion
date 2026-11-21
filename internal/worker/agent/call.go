@@ -209,6 +209,12 @@ func (c *CallClient) run(ctx context.Context, op string, args any, onElement fun
 	if err != nil {
 		return err
 	}
+	return c.runRequest(ctx, l, req, isWriteOp(op), onElement, onResult)
+}
+
+// runRequest writes a request on exactly the supplied link. The master broker
+// builds its own strict envelope without using the normal credential builder.
+func (c *CallClient) runRequest(ctx context.Context, l *Link, req any, write bool, onElement func(json.RawMessage) error, onResult func(json.RawMessage)) error {
 	// Whatever can be wrong with the frame itself (it does not encode, it is too
 	// large) is found here, before a stream is opened and before a byte is
 	// written: that is the only kind of failure that proves nothing was sent. An
@@ -232,7 +238,6 @@ func (c *CallClient) run(ctx context.Context, op string, args any, onElement fun
 	stop := context.AfterFunc(ctx, st.Reset)
 	defer stop()
 
-	write := isWriteOp(op)
 	_ = st.SetWriteDeadline(time.Now().Add(c.cfg.WriteTimeout))
 	if err := st.WriteFrame(req); err != nil {
 		st.Reset()

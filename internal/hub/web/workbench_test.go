@@ -116,7 +116,7 @@ func TestNavigationGroupsFollowTheRoleAndKeepEveryDestination(t *testing.T) {
 	user := get(t, s, "/account", "X-Test-Session", userHeader).Body.String()
 	admin := get(t, s, "/account", "X-Test-Session", adminHeader).Body.String()
 
-	wantUser := []string{"/", "/workers", "/sessions", "/workers/add", "/invitations", "/api-keys"}
+	wantUser := []string{"/", "/workers", "/sessions", "/usage", "/workers/add", "/invitations", "/api-keys"}
 	if got := navPaths(user); strings.Join(got, ",") != strings.Join(wantUser, ",") {
 		t.Errorf("user navigation = %v, want %v", got, wantUser)
 	}
@@ -128,7 +128,7 @@ func TestNavigationGroupsFollowTheRoleAndKeepEveryDestination(t *testing.T) {
 	mustHave(t, user, `id="nav-workspace"`, `id="nav-access"`, ">Workspace<", ">Access<")
 	mustNotHave(t, user, `id="nav-admin"`, "Administration", "/admin")
 	mustHave(t, admin, `id="nav-admin"`, `<a href="/admin">Administration</a>`)
-	for _, label := range []string{"Control center", "Workers", "Sessions", "Add worker", "Invitations", "API keys"} {
+	for _, label := range []string{"Control center", "Workers", "Sessions", "Usage", "Add worker", "Invitations", "API keys"} {
 		mustHave(t, user, "<span>"+label+"</span>")
 	}
 	// Exactly one entry is the current page, and it follows the path.

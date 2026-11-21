@@ -22,6 +22,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -44,10 +45,12 @@ type Policy struct {
 // proto_max are the Hub's supported protocol range (current minor and N-1
 // minor), which "minion update" checks for overlap (AD-4, A-10).
 type Welcome struct {
-	Type     string `json:"type"`
-	WorkerID string `json:"worker_id"`
-	Name     string `json:"name"`
-	Owner    string `json:"owner"`
+	MasterSessionV1 bool   `json:"master_session_v1,omitempty"`
+	UsagePolicy     int    `json:"usage_policy,omitempty"`
+	Type            string `json:"type"`
+	WorkerID        string `json:"worker_id"`
+	Name            string `json:"name"`
+	Owner           string `json:"owner"`
 	// OwnerID is the stable id of the Worker's owner (protocol 2.0); Owner is
 	// the display name. The Worker uses OwnerID for pipe_accept_from.
 	OwnerID string `json:"owner_id"`
@@ -837,17 +840,25 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	if c.tel != nil {
 		c.tel.Authenticated(w.ID)
 	}
+	usagePolicy := 0
+	if slices.Contains(c.res.Worker.Ops, ops.OpWorkerUsage) {
+		usagePolicy = ops.UsageVersion
+	}
+	masterV1 := !w.Pending && slices.Contains(c.res.Worker.Features, proto.FeatureMasterSessionV1) && h.callOp(proto.OpMasterCallV1) != nil
+	link := masterConnection{enabled: masterV1, transcript: append([]byte(nil), c.res.TranscriptHash[:]...)}
 	if err := c.write(Welcome{
-		Type:     proto.TypeWelcome,
-		WorkerID: w.ID,
-		Name:     w.Name,
-		Owner:    owner,
-		OwnerID:  w.OwnerID,
-		Kind:     w.Kind,
-		Pending:  w.Pending,
-		Policy:   pol,
-		HubTLS:   c.hubTLS,
-		Range:    proto.SupportedRange(h.cfg.Current),
+		MasterSessionV1: masterV1,
+		UsagePolicy:     usagePolicy,
+		Type:            proto.TypeWelcome,
+		WorkerID:        w.ID,
+		Name:            w.Name,
+		Owner:           owner,
+		OwnerID:         w.OwnerID,
+		Kind:            w.Kind,
+		Pending:         w.Pending,
+		Policy:          pol,
+		HubTLS:          c.hubTLS,
+		Range:           proto.SupportedRange(h.cfg.Current),
 	}); err != nil {
 		return fmt.Errorf("send welcome: %w", err)
 	}
@@ -873,7 +884,9 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	// from their Registry.OnAdd hook.
 	host := newHostedSession(sess, adm, h.log)
 	host.tel = h.telemetry.get()
-	host.Handle(transport.KindCall, newCallStreams(h, w, sess))
+	calls := newCallStreams(h, w, sess)
+	calls.master = link
+	host.Handle(transport.KindCall, calls)
 	if h.beforeRegister != nil {
 		h.beforeRegister()
 	}
@@ -900,7 +913,9 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		Facts:    facts,
 		Pending:  w.Pending,
 
-		TranscriptHash: append([]byte(nil), c.res.TranscriptHash[:]...),
+		TranscriptHash:  link.transcript,
+		MasterSessionV1: masterV1,
+		EnrollmentKey:   [32]byte(w.Pub),
 	}, host, c.snap.OpKey, func() bool { return h.cfg.Identity.Admit(c.snap.Generation) })
 	if !admitted {
 		// The activation fence (design 9.6): the Hub identity changed while this

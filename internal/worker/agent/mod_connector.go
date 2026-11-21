@@ -49,7 +49,7 @@ func (e *Executor) Ops() []string {
 // pipe delivery are code of this executor; the verbatim text is a property of
 // the terminal host and is announced only when the host guarantees it.
 func (e *Executor) Features() []string {
-	out := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextSubmit}
+	out := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextSubmit, proto.FeatureSendTextAgentOnly}
 	if term.IsVerbatim(e.host) {
 		out = append(out, proto.FeatureTextVerbatim)
 	}
@@ -117,6 +117,13 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		hostKind = hostInfo.Kind
 	}
 	su, facts, features := setupSelfUpdate(log, s, ex, host, hostKind)
+	master := masterFeature(env)
+	if master != nil {
+		baseFeatures := features
+		features = func() []string {
+			return proto.NormaliseFeatures(append(baseFeatures(), proto.FeatureMasterSessionV1))
+		}
+	}
 	health, _ := Require[*SessionListHealth](env)
 	// The session host, whether its sessions are hidden (the Hub's
 	// hidden_sessions policy reads it) and the latest listing error (v0.10.0).
@@ -133,23 +140,28 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	// The saved pause applies from the first cycle.
 	pause := NewPauseService(s.StateDir, log)
 	c, err := NewConnector(ConnectorConfig{
-		Pause:      pause.Gate(),
-		HubURL:     hub.Server,
-		Name:       s.Name,
-		Ops:        ex.Ops,
-		Features:   features,
-		Facts:      facts,
-		Key:        enr.LoadKey,
-		Out:        s.Out,
-		Enrollment: enr,
-		Policy:     policy,
-		Dialer:     d.dialer,
-		Clock:      d.clock,
-		Session:    transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
-		Logger:     log,
+		Pause:                  pause.Gate(),
+		HubURL:                 hub.Server,
+		Name:                   s.Name,
+		Ops:                    ex.Ops,
+		Features:               features,
+		Facts:                  facts,
+		Key:                    enr.LoadKey,
+		Out:                    s.Out,
+		Enrollment:             enr,
+		ConsumeUsageIntent:     st.ConsumeUsageIntent,
+		UsageConnectionAllowed: st.UsageConnectionAllowed, UsageConsent: st.UsageConsent,
+		Policy:  policy,
+		Dialer:  d.dialer,
+		Clock:   d.clock,
+		Session: transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
+		Logger:  log,
 	})
 	if err != nil {
 		return nil, err
+	}
+	if master != nil {
+		c.OnLink("master", master.serve)
 	}
 	if err := Provide(env, enr); err != nil {
 		return nil, err

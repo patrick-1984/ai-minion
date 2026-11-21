@@ -102,6 +102,9 @@ type Executor struct {
 	// shareMu serialises share_set: it reads the saved selection and writes it
 	// back in one step, so that two calls cannot interleave.
 	shareMu sync.Mutex
+	// masterShareChanged withdraws attachments while shareMu still orders
+	// admission against a committed change. Installed before serving requests.
+	masterShareChanged func(store.ShareSelection)
 	// shareBarrier is the highest Hub sequence number of a share_set (and of a
 	// probe) seen so far, guarded by shareMu: a share_set with an equal or
 	// lower one is refused, so that the Hub can learn the rule in force with the

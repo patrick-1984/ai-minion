@@ -360,8 +360,21 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return e.paneWrite(ctx, rq, op, args.WriteArgs, args.Target, true, inputGuards,
+	guards := inputGuards
+	if args.AgentOnly {
+		args.Force = false
+		guards = func(p *pane) []proto.Code {
+			if !isAgentKind(p.info.Kind) {
+				return nil // the KEEP check below supplies a non-forceable result
+			}
+			return inputGuards(p)
+		}
+	}
+	return e.paneWrite(ctx, rq, op, args.WriteArgs, args.Target, true, guards,
 		func(ctx context.Context, p *pane) (ops.Outcome, proto.Code, error) {
+			if args.AgentOnly && !isAgentKind(p.info.Kind) {
+				return ops.OutcomeFailedNotSent, proto.CodeForbidden, nil
+			}
 			return e.pasteAndSubmit(ctx, p, args.Text, args.Submit)
 		})
 }

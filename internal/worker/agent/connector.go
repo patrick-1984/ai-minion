@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -47,10 +49,11 @@ var errEnrollmentChanged = errors.New("agent: the enrollment changed")
 // HubWelcome is the welcome frame, the Hub's answer to an enrolled Worker
 // (AD-6, AD-12). proto_min and proto_max are the Hub's supported range.
 type HubWelcome struct {
-	Type     string `json:"type"`
-	WorkerID string `json:"worker_id"`
-	Name     string `json:"name"`
-	Owner    string `json:"owner"`
+	UsagePolicy int    `json:"usage_policy,omitempty"`
+	Type        string `json:"type"`
+	WorkerID    string `json:"worker_id"`
+	Name        string `json:"name"`
+	Owner       string `json:"owner"`
 	// OwnerID is the stable id of the Worker's owner (protocol 2.0). The
 	// receiver compares it with the source_worker_owner_id of an origin for
 	// pipe_accept_from=owner-workers; Owner is only the display name.
@@ -64,6 +67,8 @@ type HubWelcome struct {
 	// HubTLS is what the Hub states about the TLS of this connection
 	// (v0.11.0); nil from an older Hub.
 	HubTLS *HubTLSInfo `json:"hub_tls,omitempty"`
+	// MasterSessionV1 confirms support for the Worker master control lane.
+	MasterSessionV1 bool `json:"master_session_v1,omitempty"`
 	proto.Range
 }
 
@@ -264,6 +269,9 @@ const AlarmHubIdentityChanged = "hub_identity_changed"
 // ConnectorConfig configures a [Connector]. Dialer, Enrollment and Key are
 // required.
 type ConnectorConfig struct {
+	ConsumeUsageIntent     func(context.Context, string, string, string, ed25519.PublicKey, int) error
+	UsageConsent           func(context.Context, string) string
+	UsageConnectionAllowed func(context.Context, string) (bool, error)
 	// HubURL is the configured Hub URL; empty means the Worker runs alone and
 	// the connector stays idle.
 	HubURL string
@@ -329,7 +337,8 @@ type ConnectorConfig struct {
 // [EnrollmentRepo] through [Enrollments], [PolicySink]) and a [transport.Clock],
 // so that it is unit-tested without a network and without waiting.
 type Connector struct {
-	cfg ConnectorConfig
+	cfg        ConnectorConfig
+	usageShown atomic.Bool
 	// pendingShown makes the approval box appear once per process, not on
 	// every reconnect.
 	connectedShown atomic.Bool // the connected box is shown once per process (A61)
@@ -377,6 +386,11 @@ func (c *Connector) facts() transport.WorkerFacts {
 func (c *Connector) factsFor(enr Enrollment) transport.WorkerFacts {
 	f := c.facts()
 	f.HubCheck = enr.Check()
+	if c.cfg.UsageConsent != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		f.UsageConsent = c.cfg.UsageConsent(ctx, enr.WorkerID)
+		cancel()
+	}
 	return f
 }
 
@@ -992,6 +1006,30 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		// restriction already in force.
 		c.fail("cannot store the welcome data", err)
 		return true
+	}
+	if c.cfg.ConsumeUsageIntent != nil {
+		if err := c.cfg.ConsumeUsageIntent(ctx, c.cfg.HubURL, w.WorkerID, w.Owner, att.Pin.Pub, w.UsagePolicy); err != nil {
+			_ = att.Session.Close()
+			c.fail("cannot apply local usage enrollment", err)
+			return true
+		}
+	}
+	if w.UsagePolicy > 0 && c.cfg.UsageConnectionAllowed != nil {
+		allowed, checkErr := c.cfg.UsageConnectionAllowed(ctx, w.WorkerID)
+		if checkErr != nil || !allowed || w.UsagePolicy != ops.UsageVersion {
+			_ = att.Session.Close()
+			msg := "Usage registration pending. Run minion worker config usage on this Worker to review the Hub's monitoring policy and accept this enrollment."
+			if w.UsagePolicy != ops.UsageVersion {
+				msg = "The Hub requires a newer usage registration policy; update this Worker."
+			}
+			if c.usageShown.CompareAndSwap(false, true) {
+				lines := strings.SplitAfter(ops.UsageDisclosure, ". ")
+				writeConsoleBox(c.cfg.Out, "MINION WORKER REGISTRATION", append(lines, msg)...)
+			}
+			c.failMsg(msg)
+			return true
+		}
+		c.usageShown.Store(false)
 	}
 	c.bo.Reset()
 

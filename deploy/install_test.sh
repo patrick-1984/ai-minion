@@ -70,7 +70,7 @@ make_release() {
 		if [ "$kind" = join ]; then
 			# "worker up" records its arguments and its standard input.
 			# shellcheck disable=SC2016 # the fake binary expands its own variables
-			printf '#!/bin/sh\nif [ "$1 $2" = "worker up" ]; then\n  if [ "$5" = "--prepare-join" ]; then\n    cat >"$JOINLOG.prepared"\n    if [ -n "${FAKE_DECLINE:-}" ]; then\n      echo "minion: join skipped: existing Worker kept"\n    else\n      echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n    fi\n    exit 0\n  fi\n  printf "%%s\\n" "$@" >"$JOINLOG.argv"\n  cat >"$JOINLOG.stdin"\n  exit "${FAKE_RC:-0}"\nfi\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
+			printf '#!/bin/sh\nif [ "$1 $2" = "worker up" ]; then\n  if [ "$5" = "--prepare-join" ]; then\n    printf "%%s\\n" "$@" >"$JOINLOG.prepare-argv"\n    cat >"$JOINLOG.prepared"\n    if [ -n "${FAKE_DECLINE:-}" ]; then\n      echo "minion: join skipped: existing Worker kept"\n    else\n      echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n    fi\n    exit 0\n  fi\n  printf "%%s\\n" "$@" >"$JOINLOG.argv"\n  cat >"$JOINLOG.stdin"\n  exit "${FAKE_RC:-0}"\nfi\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
 		else
 			printf '#!/bin/sh\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
 		fi
@@ -244,6 +244,30 @@ case "$(cat "$JL.argv")$OUT" in
 esac
 assert_contains "--join ran the installed binary by absolute path" "$OUT" "Installed $WORK/j1/minion"
 
+# Acceptance is explicit, disclosed, and carried only to the actual join.
+SCRIPT_ARGS="--join --accept-usage"
+rm -f "$JL".*
+run_install "$WORK/j-usage" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
+assert_contains "usage acceptance still joins" "rc=$RC" "rc=0"
+assert_contains "usage disclosure covers unshared sessions" "$OUT" "including unshared sessions"
+assert_contains "usage disclosure covers folder, model and token metadata" "$OUT" "session names, folders, models, account identifiers, timing, token counts"
+assert_contains "usage disclosure grants no terminal access" "$OUT" "grants no terminal content or control access"
+if [ "$(grep -xc -- '--accept-usage' "$JL.argv")" = 1 ] &&
+	! grep -Fq -- '--accept-usage' "$JL.prepare-argv"; then
+	ok "only the actual join receives one acceptance flag"
+else
+	bad "only the actual join receives one acceptance flag"
+fi
+case "$(cat "$JL.argv" "$JL.prepare-argv")$OUT" in
+*"$TOKEN"*) bad "usage acceptance does not expose the join token" ;;
+*) ok "usage acceptance does not expose the join token" ;;
+esac
+SCRIPT_ARGS="--accept-usage"
+run_install "$WORK/usage-no-join" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
+assert_contains "usage acceptance alone is refused" "$OUT" "--accept-usage needs an enrollment mode"
+assert_no_file "usage acceptance alone installs nothing" "$WORK/usage-no-join/minion"
+SCRIPT_ARGS="--join --accept-usage"
+
 # A declined staged preflight leaves the prior binary untouched and does not join.
 rm -f "$JL".*
 run_install "$WORK/i1" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" FAKE_DECLINE=1
@@ -376,12 +400,17 @@ chmod +x "$WORK/dockerbin/docker"
 real_docker=$(command -v docker || true)
 compose_out=$(cd "$WORK/compose" && env PATH="$WORK/dockerbin:$(fake_uname Linux x86_64):$WORK/installed:$PATH" \
 	MINION_RELEASE_BASE="file://$REL" MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" DOCKER_LOG="$WORK/docker.log" \
-	sh "$SCRIPT" --compose --name 'OrangePi' --share none 2>&1)
-assert_contains "Compose runs configure-only via stdin" "$(cat "$WORK/docker.log")" "worker up --configure-only --join - --share-existing none --name OrangePi"
+	sh "$SCRIPT" --compose --name 'OrangePi' --share none --accept-usage 2>&1)
+assert_contains "Compose runs configure-only via stdin" "$(cat "$WORK/docker.log")" "worker up --configure-only --join - --share-existing none --name OrangePi --accept-usage"
 assert_contains "Compose starts in the background" "$(cat "$WORK/docker.log")" "compose up -d"
 assert_contains "Compose receives the token on stdin" "$(cat "$WORK/docker.log.stdin")" "$TOKEN"
 assert_contains "Compose prints the project directory" "$compose_out" "minion-worker-orangepi"
 project="$WORK/compose/minion-worker-orangepi"
+if grep -Fq -- '--accept-usage' "$project/compose.yaml"; then
+	bad "Compose keeps acceptance out of the persistent startup"
+else
+	ok "Compose keeps acceptance out of the persistent startup"
+fi
 case "$(cat "$project/compose.yaml" "$WORK/docker.log")$compose_out" in
 *"$TOKEN"*) bad "Compose keeps the token out of files, arguments and output" ;;
 *) ok "Compose keeps the token out of files, arguments and output" ;;

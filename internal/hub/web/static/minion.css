@@ -765,10 +765,12 @@ nav.settings-jump { position: sticky; z-index: 5; top: 8px; margin-bottom: 16px;
 .matrix-wrap { overflow: auto; max-height: 70vh; }
 .control-matrix { border-collapse: collapse; font-size: 13px; width: auto; }
 .control-matrix th, .control-matrix td { border: 1px solid var(--border); padding: 6px 10px; white-space: nowrap; min-width: 6rem; }
+.control-matrix th { white-space: normal; overflow-wrap: anywhere; max-width: 18rem; }
 .control-matrix th.corner { font-weight: 500; color: var(--muted); }
 .control-matrix td input[type="checkbox"] { margin: 0; }
 .control-matrix form { display: inline; }
-.check-form select { min-width: 18rem; max-width: 100%; }
+.check-form > label { min-width: 0; max-width: 100%; flex: 1 1 18rem; }
+.check-form select { min-width: 0; width: 100%; }
 .check-result ul { margin: 4px 0 0; }
 .control-matrix thead th { position: sticky; top: 0; background: var(--surface); }
 .control-matrix tbody th { position: sticky; left: 0; background: var(--surface); text-align: left; }

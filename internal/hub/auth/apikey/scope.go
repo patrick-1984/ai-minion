@@ -78,6 +78,8 @@ func NewScope(grants []Grant, actions []ops.Action) *Scope {
 //   - a chosen session covers exactly that session.
 //
 // A resource the scope does not cover returns nil. The result is a copy.
+func (s *Scope) AllResources() bool { return s != nil && s.everything }
+
 func (s *Scope) Actions(res authz.ResolvedResource) []ops.Action {
 	if !s.covers(res) {
 		return nil

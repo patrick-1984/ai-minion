@@ -7,7 +7,7 @@ Run and steer terminal AI agents (Claude Code, Codex and others) in tmux session
 
 One binary, `minion` (also installed as `mn` by the Linux packages), is the Hub, the Worker, the command line and the MCP server.
 
-Version 0.17.0. License: Apache-2.0.
+Version 0.18.0. License: Apache-2.0.
 
 ## Start here
 
@@ -37,7 +37,7 @@ curl -fsSL https://github.com/patrick-1984/ai-minion/releases/latest/download/in
 
 **Docker (Hub):** see [Quick start: the Hub in Docker](#quick-start-the-hub-in-docker).
 
-The scripts install the latest `minion` (`MINION_VERSION=v0.17.0` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. When the session host is missing, the installer installs tmux with the system package manager on Linux and macOS, or psmux with WinGet on Windows. The install guides below also show the manual install that verifies the signature.
+The scripts install the latest `minion` (`MINION_VERSION=v0.18.0` picks one) after checking it against `checksums.txt` of the release: into `/usr/local/bin` when writable or `~/.local/bin` on Linux and macOS, into `%LOCALAPPDATA%\Programs\minion` (added to your user `PATH`) on Windows. When the session host is missing, the installer installs tmux with the system package manager on Linux and macOS, or psmux with WinGet on Windows. The install guides below also show the manual install that verifies the signature.
 
 A minimal local try-out, no Hub and no install beyond the binary and tmux:
 
@@ -73,7 +73,7 @@ docker run -d --name minion-hub --restart unless-stopped \
   -v "$PWD/admin_password.txt:/run/secrets/minion_admin_password:ro" \
   -e MINION_DATA_DIR=/data \
   -e MINION_ADMIN_PASSWORD_FILE=/run/secrets/minion_admin_password \
-  ghcr.io/patrick-1984/minion:v0.17.0 hub serve
+  ghcr.io/patrick-1984/minion:v0.18.0 hub serve
 
 docker logs minion-hub
 ```
@@ -106,7 +106,7 @@ services:
       - ./hub-data:/data
 
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.17.0}
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.18.0}
     command: ["hub", "serve"]
     restart: unless-stopped
     depends_on:
@@ -130,7 +130,7 @@ services:
 
 ```dotenv
 # Image tag: an exact release, or a channel that follows new releases (0.8, 0, latest).
-MINION_VERSION=v0.17.0
+MINION_VERSION=v0.18.0
 
 # Where the Hub's port is published on the host. 127.0.0.1 keeps it on this machine
 # (for a reverse proxy on the same host); 0.0.0.0 publishes it on every interface.
@@ -174,6 +174,12 @@ docker compose exec hub minion hub identity set-passphrase
 
 ## Guides
 
+Session-bound Master attachments are qualified for Claude Code 2.1.330 in a prepared Linux tmux pane with
+`SO_PEERPIDFD`. An existing unprepared session needs a deliberate launch with `exec minion master claude`.
+A neutral Minion MCP entry or historical tool definitions can remain in Claude after revocation. The Hub
+denies later calls from the revoked attachment even if Claude presents a cached tool. Follow the
+[session-bound setup guide](docs/guides/agents.md#prepare-one-claude-code-terminal).
+
 | Guide | What it covers |
 | --- | --- |
 | [Desktop tray](docs/guides/tray.md) | Optional tray for Windows, Ubuntu desktop and macOS: start, stop, pause, set up the Hub, shared sessions, block new sessions, Hub key words; the menu-to-command table |
@@ -187,6 +193,7 @@ docker compose exec hub minion hub identity set-passphrase
 | [Minion control](docs/guides/minion-control.md) | Master and slave sessions, which Workers accept control from which, user-managed Workers (Access > Minion control, 0.9.0) |
 | [Session control](docs/guides/session-control.md) | Letting one session list, read and type into sessions on other Workers (administrator grants, 0.8.0 or later) |
 | [Hub identity](docs/guides/hub-identity.md) | The sealed root key and its passphrase, certificate re-issue, master-key rotation, `minion hub identity` |
+| [Usage and subscription limits](docs/guides/usage.md) | Harness inventory, session and account telemetry, token buckets, native collectors and enrollment notice |
 | [Log export](docs/guides/observability.md) | Sending the Hub's and the Workers' logs to syslog (RFC 5424, TLS) and OpenTelemetry (OTLP/HTTP), per-sink levels, what is masked |
 | [ESP32 and ESPHome](docs/guides/esphome.md) | Install an ESP32 Worker, bridge an ESPHome device over UART, and consume its console, log and UART sessions |
 | [Control a Worker](docs/guides/worker-control.md) | `minion worker start`, `pause` and `resume`, blocking new sessions (`allow_new_sessions`), the join token from standard input (`up --join -`) |

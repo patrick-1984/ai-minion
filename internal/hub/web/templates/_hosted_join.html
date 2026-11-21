@@ -1,3 +1,9 @@
+{{define "join_usage_disclosure"}}
+  <div class="notice notice-info" data-join-usage>
+    <p><strong>Running a command with <code>--accept-usage</code> or <code>-AcceptUsage</code> accepts usage monitoring for this enrollment.</strong> {{.}}</p>
+    <p>Accepting adds no permission to read or control terminals. Session sharing and personal bucket choices do not change usage coverage.</p>
+  </div>
+{{end}}
 {{define "hosted_join"}}
   {{if .HasInstaller}}<div data-join-oneline>
   <h2>Run one command</h2>
@@ -28,5 +34,5 @@
   {{if .KeyedOK}}{{template "fold" .Verified}}{{end}}
   {{template "fold" .VerifiedMasked}}
   </details>{{end}}
-  </div>{{else}}<p class="notice notice-info" data-join-manual>This Hub does not have a versioned installer for these commands. {{if .KeyedOK}}Use the commands below.{{else}}Copy the token and give it to <code>minion worker up --join -</code> on its standard input.{{end}}</p>{{end}}
+  </div>{{else}}<p class="notice notice-info" data-join-manual>This Hub does not have a versioned installer for these commands. {{if .KeyedOK}}Use the commands below.{{else}}Copy the token and give it to <code>minion worker up --join - --accept-usage</code> on its standard input after reviewing the usage disclosure.{{end}}</p>{{end}}
 {{end}}
