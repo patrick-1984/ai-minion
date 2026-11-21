@@ -126,9 +126,9 @@ func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.
 		return err
 	}
 	const hourMS = int64(time.Hour / time.Millisecond)
-	_, err = tx.ExecContext(ctx, `INSERT INTO usage_hours(session_id,hour,observed_at,counters) VALUES(?,?,?,?)
-		ON CONFLICT(session_id,hour) DO UPDATE SET observed_at=excluded.observed_at,counters=excluded.counters
-		WHERE excluded.observed_at>=usage_hours.observed_at AND excluded.counters<>usage_hours.counters`, row.ID, at/hourMS, at, string(counters))
+	_, err = tx.ExecContext(ctx, `INSERT INTO usage_hours(session_id,hour,observed_at,counters,account_id) VALUES(?,?,?,?,?)
+		ON CONFLICT(session_id,hour) DO UPDATE SET observed_at=excluded.observed_at,counters=excluded.counters,account_id=excluded.account_id
+		WHERE excluded.observed_at>=usage_hours.observed_at AND (excluded.counters<>usage_hours.counters OR excluded.account_id<>usage_hours.account_id)`, row.ID, at/hourMS, at, string(counters), row.AccountID)
 	return err
 }
 

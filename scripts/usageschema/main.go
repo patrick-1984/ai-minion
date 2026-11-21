@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -31,7 +32,16 @@ func main() {
 			panic(name)
 		}
 		for _, t := range []reflect.Type{op.Args, op.Result} {
-			components[t.Name()] = schema(t)
+			x := schema(t)
+			if t == op.Args {
+				for k := range x.Properties {
+					if ops.HiddenMember(name, k) {
+						delete(x.Properties, k)
+						x.Required = slices.DeleteFunc(x.Required, func(v string) bool { return v == k })
+					}
+				}
+			}
+			components[t.Name()] = x
 		}
 		content := func(t reflect.Type) object {
 			return object{"application/json": object{"schema": object{"$ref": "#/components/schemas/" + t.Name()}}}

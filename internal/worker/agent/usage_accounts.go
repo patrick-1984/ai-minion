@@ -62,6 +62,36 @@ type codexLimits struct {
 	ByID   map[string]nativeLimits `json:"rateLimitsByLimitId"`
 }
 
+// A native login label distinguishes personal and work domains without
+// publishing the complete address. A digest suffix also distinguishes two
+// workspaces of the same masked login. If the field is not a simple address,
+// the account keeps its opaque label.
+func nativeLoginLabel(provider, email, digest string) string {
+	user, domain, ok := strings.Cut(strings.TrimSpace(email), "@")
+	fallback := provider + " profile " + digest[:10]
+	if !ok || user == "" || len(domain) > 64 || len(domain) < 3 || !strings.Contains(domain, ".") {
+		return fallback
+	}
+	for _, r := range domain {
+		if r > 127 || !apiKeyChar(byte(r)) && r != '.' || r == '_' {
+			return fallback
+		}
+	}
+	letters := []rune(user)
+	first := letters[0]
+	if !unicode.IsLetter(first) && !unicode.IsDigit(first) {
+		return fallback
+	}
+	mask := string(first) + "***"
+	if len(letters) >= 4 {
+		last := letters[len(letters)-1]
+		if unicode.IsLetter(last) || unicode.IsDigit(last) {
+			mask += string(last)
+		}
+	}
+	return mask + "@" + strings.ToLower(domain) + " / " + digest[:6]
+}
+
 func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageAccount, bool) {
 	id := n.AccountID
 	if id == "" && n.Email != "" {
@@ -75,7 +105,7 @@ func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageA
 	if plan == "" {
 		plan = n.SubscriptionType
 	}
-	return ops.UsageAccount{Plan: plan, TimeSource: "worker_measured", ID: digest, Provider: provider, Label: provider + " " + digest[:10], AuthMode: "subscription", Source: "native-account", ObservedAt: at}, true
+	return ops.UsageAccount{Plan: plan, TimeSource: "worker_measured", ID: digest, Provider: provider, Label: nativeLoginLabel(provider, n.Email, digest), AuthMode: "subscription", Source: "native-account", ObservedAt: at}, true
 }
 
 // APIUsageAccount fingerprints a credential explicitly identified by the local
@@ -83,7 +113,7 @@ func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageA
 // nor an entire key is returned. The prefix is a display hint only.
 func APIUsageAccount(provider, endpoint, key string, domainSecret []byte, at int64) (ops.UsageAccount, error) {
 	u, err := url.Parse(endpoint)
-	if len(domainSecret) < 32 || err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || key == "" || len(key) > 4096 || len(provider) > 64 || provider == "" || strings.IndexFunc(key, unicode.IsControl) >= 0 {
+	if len(domainSecret) < 32 || err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || key == "" || len(key) > 4096 || len(provider) > 64 || provider == "" || strings.IndexFunc(key, unicode.IsControl) >= 0 {
 		return ops.UsageAccount{}, errors.New("invalid API credential metadata")
 	}
 	u.Host = strings.ToLower(u.Host)
@@ -91,7 +121,7 @@ func APIUsageAccount(provider, endpoint, key string, domainSecret []byte, at int
 	h := hmac.New(sha256.New, domainSecret)
 	h.Write([]byte(ops.UsageID("api-key", provider, target, key)))
 	digest := hex.EncodeToString(h.Sum(nil))
-	label := u.Hostname() + " / " + digest[:10]
+	label := "Credential / " + digest[:10]
 	// Keep at least 24 characters of a long, printable ASCII credential
 	// hidden; suppress the complete prefix for short or non-ASCII keys.
 	if len(key) >= 34 && strings.IndexFunc(key, func(c rune) bool { return c <= 32 || c > 126 }) < 0 {

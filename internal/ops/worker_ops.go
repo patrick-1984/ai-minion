@@ -650,7 +650,8 @@ func init() {
 // the request it routes. Showing it as a flag or a tool argument would suggest
 // a caller can pick it.
 var hiddenMembers = map[string]map[string]bool{
-	OpPipeSend: {"message_id": true},
+	OpWorkerUsage: {"account_id": true, "after_event": true},
+	OpPipeSend:    {"message_id": true},
 	// with_revision is set by the Hub on the share ops it routes: the Worker
 	// then adds the revision of its share rule to the answer. A caller that does
 	// not come through the Hub gets the answer as it always was.

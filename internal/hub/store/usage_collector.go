@@ -14,7 +14,7 @@ import (
 var ErrUsageNoNativeReader = errors.New("this account has no supported native background query")
 
 func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.UsageAccount) error {
-	nativeRead := a.Source == "codex-account" || a.Source == "codex-app-server"
+	nativeRead := a.Provider == "OpenAI" && a.AuthMode == "subscription" && (a.Source == "codex-account" || a.Source == "codex-app-server")
 	if a.SourceSessionID != "" {
 		a.SourceSessionID = ops.UsageID("hub-session", workerID, a.SourceSessionID)
 	}
@@ -53,7 +53,7 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_collectors(account_id,status) VALUES(?,?) ON CONFLICT DO NOTHING`, a.ID, status)
 	if err == nil && a.SourceSessionID != "" && a.Source != "native-account" {
-		_, err = tx.ExecContext(ctx, `UPDATE usage_collectors SET active_worker=?,last_success=?,status='passive' WHERE account_id=? AND lease_id='' AND (last_success IS NULL OR last_success<?)`, workerID, a.ObservedAt, a.ID, a.ObservedAt)
+		_, err = tx.ExecContext(ctx, `UPDATE usage_collectors SET active_worker=?,last_success=?,hide_previous_schedule=0,status='passive' WHERE account_id=? AND lease_id='' AND (last_success IS NULL OR last_success<?)`, workerID, a.ObservedAt, a.ID, a.ObservedAt)
 	}
 	return err
 }
@@ -79,7 +79,7 @@ func (s *Store) ClaimUsagePoll(ctx context.Context, workerID, owner string, now 
 			return err
 		}
 		lease = UsageLease{ID: NewID(), AccountID: account, WorkerID: workerID, OwnerID: owner}
-		_, err = tx.ExecContext(ctx, `UPDATE usage_collectors SET active_worker=?,lease_id=?,lease_until=?,next_due=?,last_probe=?,requested=0,status='querying' WHERE account_id=?`, workerID, lease.ID, now.Add(time.Minute).UnixMilli(), now.Add(5*time.Minute).UnixMilli(), now.UnixMilli(), account)
+		_, err = tx.ExecContext(ctx, `UPDATE usage_collectors SET active_worker=?,lease_id=?,lease_until=?,next_due=?,last_probe=?,requested=0,hide_previous_schedule=0,status='querying' WHERE account_id=?`, workerID, lease.ID, now.Add(time.Minute).UnixMilli(), now.Add(5*time.Minute).UnixMilli(), now.UnixMilli(), account)
 		return err
 	})
 	return lease, err
@@ -163,16 +163,33 @@ func (s *Store) SetUsageCollector(ctx context.Context, workers []ops.WorkerInfo,
 		if a.Start && !capable {
 			return ErrUsageNoNativeReader
 		}
-		r, err := tx.ExecContext(ctx, `UPDATE usage_collectors SET preferred_worker=nullif(?,''),preferred_session=?,lease_id='',lease_until=0,requested=max(requested,?),next_due=CASE WHEN ? AND failures=0 THEN min(next_due,last_probe+300000) ELSE next_due END,
-		  status=CASE WHEN ?<>'' OR NOT EXISTS (SELECT 1 FROM usage_accounts a WHERE a.account_id=usage_collectors.account_id AND a.can_poll=1) THEN 'passive' ELSE 'waiting' END
-		  WHERE account_id=?`, a.WorkerID, a.SessionID, a.Start, a.Start, a.SessionID, a.AccountID)
+		r, err := tx.ExecContext(ctx, `WITH target(w,s,start,native,now) AS (VALUES(?,?,?,?,?))
+		 UPDATE usage_collectors SET
+		 preferred_worker=nullif(target.w,''),preferred_session=target.s,
+		 lease_id=CASE WHEN coalesce(preferred_worker,'')=target.w AND preferred_session=target.s THEN lease_id ELSE '' END,
+		 lease_until=CASE WHEN coalesce(preferred_worker,'')=target.w AND preferred_session=target.s THEN lease_until ELSE 0 END,
+		 requested=max(requested,target.start),
+		 next_due=CASE WHEN target.start AND failures=0 AND lease_id='' THEN min(next_due,last_probe+300000) ELSE next_due END,
+		 status=CASE WHEN target.s<>'' OR NOT target.native THEN 'passive'
+		   WHEN coalesce(preferred_worker,'')=target.w AND preferred_session=target.s AND (lease_id<>'' OR (failures>0 AND next_due>target.now)) THEN status
+		   ELSE 'waiting' END
+		 FROM target WHERE account_id=?`, a.WorkerID, a.SessionID, a.Start, capable, time.Now().UnixMilli(), a.AccountID)
 		if err != nil {
 			return err
 		}
 		n, err := r.RowsAffected()
-		if err == nil && n != 1 {
+		if err != nil {
+			return err
+		}
+		if n != 1 {
 			return ErrNotFound
 		}
+		result.CanStart = capable
+		result.Mode = "passive_events"
+		if capable && a.SessionID == "" {
+			result.Mode = "native_background"
+		}
+		err = tx.QueryRowContext(ctx, `SELECT coalesce(active_worker,''),status,CASE WHEN hide_previous_schedule=0 THEN nullif(next_due,0) END,last_success FROM usage_collectors WHERE account_id=?`, a.AccountID).Scan(&result.ActiveWorker, &result.Status, &result.NextDue, &result.LastSuccess)
 		return err
 	})
 	return result, err

@@ -40,6 +40,19 @@ const usageRankedAccounts = `, ranked AS (
 		   FROM visible v JOIN usage_accounts a ON a.worker_id=v.id LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
 		 )`
 
+// A provider bucket selects direct account membership. A session bucket
+// projects only visible sessions onto the corresponding account IDs.
+const usageAccountBucketFilter = `(?='' OR coalesce(m.bucket_id,'unassigned')=?
+ OR EXISTS(SELECT 1 FROM usage_sessions linked JOIN visible sw ON sw.id=linked.worker_id
+ JOIN usage_members sm ON sm.member_id=linked.id AND sm.kind='session' AND sm.owner_id=?
+ WHERE json_extract(linked.body,'$.account_id')=a.account_id AND sm.bucket_id=?))`
+
+// accountExpr is always a static column expression selected by this package.
+func usageSessionBucketFilter(accountExpr string) string {
+	return `(?='' OR coalesce(m.bucket_id,'unassigned')=? OR EXISTS(SELECT 1 FROM usage_members pm
+	 WHERE pm.owner_id=? AND pm.kind='provider' AND pm.member_id=` + accountExpr + ` AND pm.bucket_id=?))`
+}
+
 // ReadUsage returns at most limit items. An account visible on multiple
 // Workers is chosen only among authorized observations, newest first.
 // bucketOwner is empty when private organization is outside the caller's rights.
@@ -62,7 +75,7 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 	case "overview":
 		rows, err := s.db.QueryContext(ctx, usageVisible+usageRankedAccounts+`SELECT a.body FROM ranked a
 		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='provider' AND m.member_id=a.account_id
-		 WHERE rn=1 AND json_extract(a.body,'$.auth_mode')='subscription' AND (?='' OR coalesce(m.bucket_id,'unassigned')=?)`, append(bind, bucketOwner, args.BucketID, args.BucketID)...)
+		 WHERE rn=1 AND json_extract(a.body,'$.auth_mode')='subscription' AND `+usageAccountBucketFilter, append(bind, bucketOwner, args.BucketID, args.BucketID, bucketOwner, args.BucketID)...)
 		if err != nil {
 			return out, err
 		}
@@ -89,11 +102,11 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		q = usageVisible + `SELECT s.id,s.worker_id,s.body,s.observed_at,s.ended_at,max(s.observed_at,uw.complete_at),coalesce(m.bucket_id,'')
 		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
 		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
-		 WHERE s.id>? AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY s.id`
-		bind = append(bind, bucketOwner, args.After, args.BucketID, args.BucketID)
+		 WHERE s.id>? AND ` + usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`) + ` ORDER BY s.id`
+		bind = append(bind, bucketOwner, args.After, args.BucketID, args.BucketID, bucketOwner, args.BucketID)
 	case "accounts":
 		q = usageVisible + usageRankedAccounts + `SELECT printf('%07d:%s',coalesce(pref.position,0),a.account_id),a.worker_id,a.body,coalesce(m.bucket_id,''),coalesce(c.status,''),coalesce(pw.id,''),coalesce(aw.id,''),
-		 CASE WHEN pw.id IS NULL THEN '' ELSE c.preferred_session END,nullif(c.next_due,0),c.last_success,EXISTS(SELECT 1 FROM usage_accounts cap JOIN visible cv ON cap.worker_id=cv.id WHERE cap.account_id=a.account_id AND cap.can_poll=1),coalesce(pref.label,''),coalesce(pref.position,0),
+		 CASE WHEN pw.id IS NULL THEN '' ELSE c.preferred_session END,CASE WHEN c.hide_previous_schedule=0 THEN nullif(c.next_due,0) END,c.last_success,EXISTS(SELECT 1 FROM usage_accounts cap JOIN visible cv ON cap.worker_id=cv.id WHERE cap.account_id=a.account_id AND cap.can_poll=1),coalesce(pref.label,''),coalesce(pref.position,0),
 		 (SELECT json_group_array(json_object('worker_id',worker,'session_id',sid,'label',label)) FROM (
 		  SELECT v2.id worker,'' sid,v2.name label FROM visible v2 JOIN usage_accounts u2 ON u2.worker_id=v2.id WHERE u2.account_id=a.account_id
 		  UNION ALL
@@ -105,19 +118,19 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		 LEFT JOIN usage_account_prefs pref ON pref.account_id=a.account_id AND pref.owner_id=?
 		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='provider' AND m.member_id=a.account_id
 		 WHERE rn=1 AND printf('%07d:%s',coalesce(pref.position,0),a.account_id)>? AND (?=0 OR json_extract(a.body,'$.auth_mode')='subscription')
-		   AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY coalesce(pref.position,0),a.account_id`
-		bind = append(bind, bucketOwner, bucketOwner, args.After, args.SubscriptionOnly, args.BucketID, args.BucketID)
+		   AND ` + usageAccountBucketFilter + ` ORDER BY coalesce(pref.position,0),a.account_id`
+		bind = append(bind, bucketOwner, bucketOwner, args.After, args.SubscriptionOnly, args.BucketID, args.BucketID, bucketOwner, args.BucketID)
 	case "events":
 		q = usageVisible + `, events AS (SELECT e.*,printf('%019d:%s:%019d',e.observed_at,e.worker_id,e.id) cursor FROM visible v JOIN usage_events e ON e.worker_id=v.id)
 		  SELECT e.cursor,e.worker_id,e.body FROM events e LEFT JOIN usage_members m ON m.kind='session' AND m.owner_id=? AND m.member_id=e.session_id
-		  WHERE (?='' OR e.cursor<?) AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY cursor DESC`
-		bind = append(bind, bucketOwner, args.After, args.After, args.BucketID, args.BucketID)
+		  WHERE (?='' OR e.cursor<?) AND ` + usageSessionBucketFilter(`json_extract(e.body,'$.account_id')`) + ` ORDER BY cursor DESC`
+		bind = append(bind, bucketOwner, args.After, args.After, args.BucketID, args.BucketID, bucketOwner, args.BucketID)
 	case "history":
 		q = usageVisible + `, samples AS (SELECT h.*,s.worker_id,printf('%019d:%s',h.hour,h.session_id) cursor FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_hours h ON h.session_id=s.id)
 		  SELECT h.cursor,h.session_id,h.worker_id,h.hour*3600000,h.observed_at,h.counters FROM samples h
 		  LEFT JOIN usage_members m ON m.kind='session' AND m.owner_id=? AND m.member_id=h.session_id
-		  WHERE (?='' OR h.cursor<?) AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY cursor DESC`
-		bind = append(bind, bucketOwner, args.After, args.After, args.BucketID, args.BucketID)
+		  WHERE (?='' OR h.cursor<?) AND ` + usageSessionBucketFilter(`h.account_id`) + ` ORDER BY cursor DESC`
+		bind = append(bind, bucketOwner, args.After, args.After, args.BucketID, args.BucketID, bucketOwner, args.BucketID)
 	case "workers":
 		q = usageVisible + `SELECT v.id,v.name,nullif(u.observed_at,0),u.inventory,coalesce(u.status,'waiting'),u.inventory_at FROM visible v
 		 LEFT JOIN usage_workers u ON u.worker_id=v.id WHERE v.id>? ORDER BY v.id`

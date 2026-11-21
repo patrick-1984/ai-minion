@@ -1566,12 +1566,6 @@
       "WorkerUsageArgs": {
         "type": "object",
         "properties": {
-          "after_event": {
-            "type": "integer"
-          },
-          "account_id": {
-            "type": "string"
-          },
           "worker_id": {
             "type": "string"
           },

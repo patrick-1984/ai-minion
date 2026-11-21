@@ -29,7 +29,7 @@
       <select name="bucket">
         <option value="">All buckets</option>
         <option value="unassigned"{{if eq $p.BucketID "unassigned"}} selected{{end}}>Unassigned</option>
-        {{range $p.Buckets}}{{if eq .Kind $p.Kind}}<option value="{{.ID}}"{{if eq .ID $p.BucketID}} selected{{end}}>{{.Label}}</option>{{end}}{{end}}
+        {{range $p.Buckets}}<option value="{{.ID}}"{{if eq .ID $p.BucketID}} selected{{end}}>{{.Label}} ({{.Kind}})</option>{{end}}
       </select>
     </label>
     {{end}}
@@ -172,8 +172,8 @@
         <summary>Collector · {{$p.CollectorStatus $a.Collector.Status}}</summary>
         <dl class="usage-facts">
           <div><dt>Active Worker</dt><dd>{{$p.WorkerName $a.Collector.ActiveWorker}}</dd></div>
-          <div><dt>Last successful query</dt><dd>{{$p.Time $a.Collector.LastSuccess}}</dd></div>
-          <div><dt>Next eligible query</dt><dd>{{$p.Time $a.Collector.NextDue}}</dd></div>
+          <div><dt>{{if eq $a.Collector.Mode "passive_events"}}Last native observation{{else}}Last successful query{{end}}</dt><dd>{{$p.Time $a.Collector.LastSuccess}}</dd></div>
+          {{if ne $a.Collector.Mode "passive_events"}}<div><dt>Next eligible query</dt><dd>{{$p.Time $a.Collector.NextDue}}</dd></div>{{end}}
         </dl>
         {{if $p.Private}}
         <form class="usage-fields" method="post" action="/usage/collector" hx-post="/usage/collector" hx-target="#usage-result" hx-disabled-elt="find button">

@@ -23,6 +23,7 @@ CREATE INDEX usage_sessions_ended ON usage_sessions(ended_at);
 CREATE TABLE usage_hours (
     session_id TEXT NOT NULL REFERENCES usage_sessions(id) ON DELETE CASCADE,
     hour INTEGER NOT NULL,
+    account_id TEXT NOT NULL DEFAULT '',
     observed_at INTEGER NOT NULL,
     counters TEXT NOT NULL,
     PRIMARY KEY (session_id, hour)
@@ -85,6 +86,7 @@ CREATE TABLE usage_collectors (
     failures INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'waiting',
     last_probe INTEGER NOT NULL DEFAULT 0,
+    hide_previous_schedule INTEGER NOT NULL DEFAULT 0,
     requested INTEGER NOT NULL DEFAULT 0,
     last_success INTEGER
 );
@@ -131,7 +133,7 @@ BEGIN
     INSERT INTO usage_events(worker_id,session_id,observed_at,body)
     VALUES(NEW.worker_id,NEW.id,NEW.observed_at,json_object(
       'id',lower(hex(randomblob(32))),'session_id',NEW.id,
-      'kind','session_observed','source','session-host','observed_at',NEW.observed_at));
+      'account_id',coalesce(json_extract(NEW.body,'$.account_id'),''),'kind','session_observed','source','session-host','observed_at',NEW.observed_at));
 END;
 CREATE TRIGGER usage_session_end_observed AFTER UPDATE OF ended_at ON usage_sessions
 WHEN OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
@@ -139,7 +141,7 @@ BEGIN
     INSERT INTO usage_events(worker_id,session_id,observed_at,body)
     VALUES(NEW.worker_id,NEW.id,NEW.ended_at,json_object(
       'id',lower(hex(randomblob(32))),'session_id',NEW.id,
-      'kind','session_end_observed','source','session-host','observed_at',NEW.ended_at));
+      'account_id',coalesce(json_extract(NEW.body,'$.account_id'),''),'kind','session_end_observed','source','session-host','observed_at',NEW.ended_at));
 END;
 CREATE TRIGGER usage_session_folder_changed AFTER UPDATE OF body ON usage_sessions
 WHEN json_extract(OLD.body,'$.folder') IS NOT json_extract(NEW.body,'$.folder')
@@ -148,7 +150,7 @@ BEGIN
     INSERT INTO usage_events(worker_id,session_id,observed_at,body)
     VALUES(NEW.worker_id,NEW.id,NEW.observed_at,json_object(
       'id',lower(hex(randomblob(32))),'session_id',NEW.id,
-      'kind','folder_changed','source','session-host','observed_at',NEW.observed_at));
+      'account_id',coalesce(json_extract(NEW.body,'$.account_id'),''),'kind','folder_changed','source','session-host','observed_at',NEW.observed_at));
 END;
 CREATE TRIGGER usage_session_model_changed AFTER UPDATE OF body ON usage_sessions
 WHEN json_extract(OLD.body,'$.model') IS NOT json_extract(NEW.body,'$.model')
@@ -157,5 +159,24 @@ BEGIN
     INSERT INTO usage_events(worker_id,session_id,observed_at,body)
     VALUES(NEW.worker_id,NEW.id,NEW.observed_at,json_object(
       'id',lower(hex(randomblob(32))),'session_id',NEW.id,
-      'kind','model_changed','source','native-model','observed_at',NEW.observed_at));
+      'account_id',coalesce(json_extract(NEW.body,'$.account_id'),''),'kind','model_changed','source','native-model','observed_at',NEW.observed_at));
+END;
+
+-- Removing one of several sources cuts the old source's provenance. Keep a
+-- provider cooldown in force internally without disclosing its historical time
+-- to owners who can read only the remaining sources.
+CREATE TRIGGER usage_collector_source_removed AFTER DELETE ON usage_accounts
+BEGIN
+    UPDATE usage_collectors SET active_worker=NULL,lease_id='',lease_until=0,
+      last_success=NULL,hide_previous_schedule=1,
+      status=CASE WHEN EXISTS(SELECT 1 FROM usage_accounts WHERE account_id=OLD.account_id AND can_poll=1) THEN 'waiting' ELSE 'passive' END
+      WHERE account_id=OLD.account_id AND active_worker=OLD.worker_id;
+    UPDATE usage_collectors SET preferred_worker=NULL,preferred_session=''
+      WHERE account_id=OLD.account_id AND preferred_worker=OLD.worker_id;
+END;
+
+-- Run source cleanup before other cascades can null the provenance pointer.
+CREATE TRIGGER usage_worker_accounts_before_delete BEFORE DELETE ON workers
+BEGIN
+    DELETE FROM usage_accounts WHERE worker_id=OLD.id;
 END;
