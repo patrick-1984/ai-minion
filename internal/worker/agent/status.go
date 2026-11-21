@@ -74,6 +74,9 @@ type LiveStatus struct {
 	// Worker of an older version does not send it, and its false then means
 	// "not known", not "approved".
 	ApprovalKnown bool
+	// Pairing is the private presentation (code, expiry, words) of the managed
+	// Android mode; nil otherwise. It is the only place that code is shown there.
+	Pairing *PairingPresentation
 	// PairingKnown is true when the Worker can tell whether a pairing code is
 	// pending. When it is false an empty PendingPairingCode means "not known",
 	// not "none pending".
@@ -120,6 +123,9 @@ type LiveStatusSource struct {
 	LogSinks func() []ops.LogSinkStatus
 	// Pause is the pause of the Hub traffic; nil means the Worker cannot pause.
 	Pause *PauseService
+	// Private is the private pairing presentation of the managed Android
+	// mode; nil in every other mode.
+	Private *PairingStatus
 }
 
 // LiveStatus implements [LiveSource].
@@ -149,6 +155,13 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 	out.ListError = s.Health.LocalText()
 	if s.LogSinks != nil {
 		out.LogSinks = s.LogSinks()
+	}
+	if s.Private != nil {
+		// The code is in the Pairing field only, never in the legacy field.
+		out.PairingKnown = true
+		if p, ok := s.Private.Current(); ok && !out.Paused {
+			out.Pairing = &p
+		}
 	}
 	if s.Pairing != nil {
 		out.PairingKnown = true
@@ -435,7 +448,9 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 	if live != nil {
 		r.PendingPairingCode = live.PendingPairingCode
 		switch {
-		case live.PendingPairingCode != "":
+		case live.PendingPairingCode != "" || live.Pairing != nil:
+			// A private code (the Android app) is not in this report: the
+			// state says pending, the app shows the code.
 			r.PairingState = PairingPending
 		case live.PairingKnown:
 			r.PairingState = PairingNone
@@ -633,6 +648,9 @@ func (r StatusReport) lastErrorText() string {
 func (r StatusReport) pairingText() string {
 	switch r.PairingState {
 	case PairingPending:
+		if r.PendingPairingCode == "" {
+			return "pending (the code is shown privately in the Minion app)"
+		}
 		return r.PendingPairingCode
 	case PairingNone:
 		return "none pending"

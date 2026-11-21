@@ -356,7 +356,7 @@ exit 0
 // complete asset set of a real release.
 func fullReleaseFiles() map[string]string {
 	files := releaseFiles()
-	files["release-manifest.json"] = `{"version":"v0.1.0"}`
+	files["release-manifest.json"] = `{"version":"v0.1.0","image":{"repository":"ghcr.io/patrick-1984/minion","digest":"` + stubDigest + `"}}`
 	files["minion_0.1.0_linux_amd64.tar.gz.sbom.json"] = "sbom-bytes"
 	return files
 }
@@ -424,6 +424,22 @@ func TestPinChecksTheCompleteAssetSetAndTheImage(t *testing.T) {
 	if r := script(t, bad, "", "pin.sh", testTag, manifest, tested); r.code == 0 || !strings.Contains(r.stderr, "does not verify") {
 		t.Errorf("a bad signature passed: exit %d %s", r.code, r.stderr)
 	}
+	// The signed manifest names another image digest (or none) than the tested one.
+	for name, body := range map[string]string{
+		"another digest": `{"image":{"repository":"ghcr.io/patrick-1984/minion","digest":"sha256:` + strings.Repeat("c", 64) + `"}}`,
+		"another repo":   `{"image":{"repository":"ghcr.io/evil/minion","digest":"` + tested + `"}}`,
+		"no image":       `{"version":"v0.1.0"}`,
+	} {
+		files := fullReleaseFiles()
+		files["release-manifest.json"] = body
+		dir := fixtureAssets(t, files)
+		m := filepath.Join(t.TempDir(), "assets.manifest")
+		writeFile(t, m, assetManifest(t, dir), 0o644)
+		e := append(append([]string{}, env...), "FIXTURE="+dir)
+		if r := script(t, e, "", "pin.sh", testTag, m, tested); r.code == 0 || !strings.Contains(r.stderr, "does not name exactly the image") {
+			t.Errorf("manifest with %s passed: exit %d %s", name, r.code, r.stderr)
+		}
+	}
 	// The image tag was pushed again: another digest.
 	moved := append(append([]string{}, env...), "STUB_DIGEST=sha256:"+strings.Repeat("b", 64))
 	if r := script(t, moved, "", "pin.sh", testTag, manifest, tested); r.code == 0 || !strings.Contains(r.stderr, "the image was pushed again") {
@@ -467,6 +483,52 @@ func TestRequireSignedAssets(t *testing.T) {
 		if r := sh(t, nil, "smoke_require_signed_assets "+shQuote(dir)); r.code == 0 {
 			t.Errorf("a release without %s was accepted", name)
 		}
+	}
+}
+
+func TestPinAndFetchVerifyDeviceInstallerAssets(t *testing.T) {
+	const tag = "v0.17.0-rc.2"
+	const apk = "minion-android-0.17.0-rc.2.apk"
+	cosign := `if [ "$2" = --bundle ] && [ "$(cat "$3")" = invalid ]; then exit 1; fi` + "\n" + cosignStub
+	env, logPath := stubBin(t, map[string]string{"gh": ghStub, "docker": dockerPin, "cosign": cosign})
+	files := fullReleaseFiles()
+	files["release-manifest.json"] = strings.ReplaceAll(files["release-manifest.json"], testTag, tag)
+	files["android.sh"] = "#!/bin/sh\necho android\n"
+	files["esp32.sh"] = "#!/bin/sh\necho esp32\n"
+	files[apk] = "apk-bytes"
+	fixture := fixtureAssets(t, files)
+	env = append(env, "FIXTURE="+fixture, "STUB_DIGEST="+stubDigest)
+	manifest := filepath.Join(t.TempDir(), "assets.manifest")
+	pin := func() result {
+		writeFile(t, manifest, assetManifest(t, fixture), 0o644)
+		return script(t, env, "", "pin.sh", tag, manifest, stubDigest)
+	}
+
+	if r := pin(); r.code != 0 {
+		t.Fatalf("pin.sh: exit %d %s", r.code, r.all())
+	}
+	out := t.TempDir()
+	if r := script(t, env, "", "fetch.sh", tag, out, "*.apk"); r.code != 0 {
+		t.Fatalf("fetch.sh: exit %d %s", r.code, r.all())
+	}
+	for _, name := range []string{"android.sh", "esp32.sh"} {
+		bundle := name + ".sigstore.json"
+		mustContain(t, "signature checks", readLog(t, logPath), "--bundle "+filepath.Join(out, bundle))
+		path := filepath.Join(fixture, bundle)
+		rmFile(t, path)
+		if r := pin(); r.code == 0 || !strings.Contains(r.stderr, "has no cosign bundle "+bundle) {
+			t.Errorf("pin.sh accepted a missing %s: exit %d %s", bundle, r.code, r.all())
+		}
+		writeFile(t, path, "invalid", 0o644)
+		if r := pin(); r.code == 0 || !strings.Contains(r.stderr, "cosign bundle of "+name+" does not verify") {
+			t.Errorf("pin.sh accepted an invalid %s: exit %d %s", bundle, r.code, r.all())
+		}
+		writeFile(t, path, "{}", 0o644)
+	}
+
+	writeFile(t, filepath.Join(fixture, apk), "other-apk-bytes", 0o644)
+	if r := pin(); r.code == 0 || !strings.Contains(r.stderr, apk+" does not match the signed checksums.txt") {
+		t.Errorf("pin.sh accepted a tampered APK: exit %d %s", r.code, r.all())
 	}
 }
 

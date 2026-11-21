@@ -368,6 +368,10 @@ func (e *Executor) createSession(ctx context.Context, name, cwd string, argv []s
 			switch {
 			case errors.Is(err, ops.ErrInvalidArgument):
 				return term.Session{}, hostErr("create the session", err)
+			case errors.Is(err, term.ErrHostDown):
+				// The managed host is not running and ran nothing: a plain
+				// failure that a repeat may retry once the supervisor is back.
+				return term.Session{}, hostErr("create the session", err)
 			case nameTaken(err, name):
 				// Another creator took the name since the check, and the
 				// adapter guarantees nothing was started.

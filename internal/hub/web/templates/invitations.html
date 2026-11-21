@@ -26,7 +26,8 @@
     </tbody>
   </table></div>
 </section>{{end}}
-{{define "invitation_key"}}<div class="secret" role="status">
+{{define "invitation_key"}}<div class="secret">
+  <p class="sr-only" role="status">The invitation key was created. It is shown below.</p>
   <p class="notice notice-info" data-invitation-saved><strong>The invitation is saved.</strong> It appears in the list below when you press Done, and stays listed under "Your invitation keys" until it expires, is used up or you revoke it. Leaving this page does not delete it. Only the secret key text cannot be shown again, so copy it first.</p>
   <p><a class="btn" href="/invitations{{if .All}}?all=1{{end}}" data-invitation-done>Done</a></p>
   <p><strong>Invitation key{{if .Name}} "{{.Name}}"{{end}} created.</strong> It is {{.Mode}}, kind {{.Kind}}, {{if .Limit}}allows {{.Limit}}, {{end}}and expires: {{.Expires}}.</p>
@@ -40,14 +41,23 @@
     <label for="invite-key">Invitation key</label>
     <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="invite-key" rows="1" readonly autocomplete="off" spellcheck="false">{{.Key}}</textarea><button type="button" class="copy-btn" data-copy="#invite-key" data-copy-target="#invite-key" aria-label="Copy the key" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   </div>
+  {{if .Hosted.HasInstaller -}}
+  {{template "hosted_join" .Hosted}}
+  <div class="field">
+    <label for="invite-join-token">Join token for the installer</label>
+    <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="invite-join-token" rows="1" readonly autocomplete="off" spellcheck="false">{{.Token}}</textarea><button type="button" class="copy-btn" data-copy-target="#invite-join-token" aria-label="Copy the join token" title="Copy">{{template "copy-icons"}}</button></div></div>
+  </div>
+  {{end -}}
+  <details><summary>All commands and files</summary>
   <h3>Start a Worker with one command</h3>
   <p class="muted">Run this on the machine that should become a Worker. The key is visible in the process list while the command runs; use the file variant below on shared machines.</p>
-  <div><div class="copy-field"><pre class="copy-value" id="invite-oneliner">{{.OneLiner}}</pre><button type="button" class="copy-btn" data-copy="#invite-oneliner" data-copy-target="#invite-oneliner" aria-label="Copy the command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  {{template "fold" .Fold.OneLiner}}
   <h3>Same, with the key in a file</h3>
-  <div><div class="copy-field"><pre class="copy-value" id="invite-file">{{.FileVariant}}</pre><button type="button" class="copy-btn" data-copy="#invite-file" data-copy-target="#invite-file" aria-label="Copy the commands" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  {{template "fold" .Fold.FileVariant}}
   <h3>Docker Compose</h3>
   <p class="muted">A complete Compose project that needs only Docker, <code>bootstrap.sh</code> from the release and the key in a file. The key stays in a secret file; the container reads it through <code>MINION_INVITE_KEY_FILE</code>.</p>
-  <div><div class="copy-field"><pre class="copy-value" id="invite-compose">{{.Compose}}</pre><button type="button" class="copy-btn" data-copy="#invite-compose" data-copy-target="#invite-compose" aria-label="Copy the Compose file" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
+  {{template "fold" .Fold.Compose}}
+  </details>
   <p><a class="btn" href="/invitations{{if .All}}?all=1{{end}}" data-invitation-done>Done</a></p>
 </div>{{end}}
 {{define "content"}}
@@ -91,7 +101,7 @@
       </select>
     </div>{{end}}
     <button type="submit">{{template "icon" "i-plus"}}<span>Create the key</span></button>
-    <div id="create-result" aria-live="polite"></div>
+    <div id="create-result"></div>
   </form>
   <noscript><p class="muted">Creating a key needs JavaScript in this browser.</p></noscript>
 </section>

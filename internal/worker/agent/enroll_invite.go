@@ -798,3 +798,31 @@ func (g pauseGuardDialer) Enroll(ctx context.Context, p InviteParams) (*InviteOu
 // errEnrollPaused ends an enrollment that a pause refused (permanent: the
 // operator resumes and runs the command again with a fresh token).
 var errEnrollPaused = errors.New("the Worker is paused, so nothing was sent to the Hub; run minion worker resume, then enroll again")
+
+// RecoveredHub is the Hub a committed enrollment names: the address it was
+// stored with and the full fingerprint that was checked (empty when none was).
+type RecoveredHub struct {
+	URL         string
+	Fingerprint string
+}
+
+// RecoverHub returns the Hub of a configure-only join that committed its
+// enrollment but was interrupted before saving its settings. Both the marker
+// and the committed, checked Hub must match; an old enrollment alone never
+// reconnects a Worker that was deliberately switched to Solo.
+func (e *Enrollments) RecoverHub(ctx context.Context, res *config.Resolver) (RecoveredHub, bool, error) {
+	server, want, pending := config.PendingJoin(res)
+	if !pending || validateHubURL(server) != nil {
+		return RecoveredHub{}, false, nil
+	}
+	enr, ok, err := e.Load(ctx)
+	if err != nil || !ok {
+		return RecoveredHub{}, false, err
+	}
+	check := enr.Check()
+	if enr.HubURL != server || (check != store.HubCheckInvite && check != store.HubCheckFingerprint) ||
+		enr.HubCheckAnchor != want || fingerprintOfPub(enr.Pin.Pub).String() != want {
+		return RecoveredHub{}, false, nil
+	}
+	return RecoveredHub{URL: server, Fingerprint: want}, true, nil
+}

@@ -166,3 +166,10 @@ jobs:
           echo "$out" | grep -Fx "version: ci"
           echo "$out" | grep -Fx "commit: cafe0123"
           echo "$out" | grep -Fx "built: 2026-01-02T03:04:05Z"
+
+  # The native parts of the Android app: the cgo Worker, tmux 3.8 and terminfo
+  # for both ABIs, with the ELF checks (android-native.yml, Phase 1). It has no
+  # run step here, so release.yml needs no copy of it.
+  android-native:
+    name: android native (cgo Worker, tmux 3.8, terminfo)
+    uses: ./.github/workflows/android-native.yml

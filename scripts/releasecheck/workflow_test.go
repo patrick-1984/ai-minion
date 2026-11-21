@@ -69,6 +69,24 @@ func TestReleaseWorkflowTriggersAndGate(t *testing.T) {
 	}
 }
 
+func TestReleaseIncludesSameRunSignedAndroidAPK(t *testing.T) {
+	doc := readRepoFile(t, ".github/workflows/release.yml")
+	android := jobBlock(t, doc, "android-apk")
+	mustContain(t, "Android release job", android, "if: github.ref_type == 'tag'", "uses: ./.github/workflows/android-apk.yml", "version: ${{ github.ref_name }}", "MINION_ANDROID_KEYSTORE_BASE64", "MINION_ANDROID_KEYSTORE_PASSWORD")
+	release := jobBlock(t, doc, "release")
+	mustContain(t, "release job", release, "- android-apk", "name: android-apk-signed", "path: android-dist")
+	if strings.Contains(release, "run-id:") || strings.Contains(release, "github-token:") {
+		t.Error("release assets must come from this run, not a different workflow run")
+	}
+	if strings.Index(release, "name: android-apk-signed") > strings.Index(release, "goreleaser release (draft)") {
+		t.Error("APK must enter the asset set before checksums are signed")
+	}
+	config := readRepoFile(t, ".goreleaser.yaml")
+	if strings.Count(config, "glob: android-dist/minion-android-*.apk") != 2 {
+		t.Error("APK must be both checksummed and published")
+	}
+}
+
 // runSteps returns every "run:" step of a workflow as its command text: the
 // value of a single-line "run: cmd", or the dedented lines of a "run: |"
 // block. The workflow files are read as text on purpose (the project has no
@@ -225,7 +243,7 @@ func TestReleaseWorkflowIsPinnedAndNeverPublishes(t *testing.T) {
 func TestReleaseWorkflowAttachesManifestAndBootstrap(t *testing.T) {
 	release := jobBlock(t, readRepoFile(t, ".github/workflows/release.yml"), "release")
 	mustContain(t, "release job", release,
-		"for s in bootstrap.sh install.sh install.ps1; do",
+		"for s in bootstrap.sh install.sh install.ps1 android.sh esp32.sh; do",
 		"if [ -f \"deploy/$s\" ]",
 		"for f in dist/release-manifest.json \"${scripts[@]}\"; do",
 		"scripts/release-manifest.sh --version \"$TAG\"",
@@ -237,10 +255,47 @@ func TestReleaseWorkflowAttachesManifestAndBootstrap(t *testing.T) {
 		"--bundle dist/checksums.txt.sigstore.json",
 		"--certificate-identity \"$SIGNER_IDENTITY\"",
 		"https://token.actions.githubusercontent.com",
-		"cosign verify \"ghcr.io/patrick-1984/minion:${TAG}\"",
+		"cosign verify \"$IMAGE_REF\"",
 		"docker buildx imagetools inspect",
 		`"arm/v7"`,
 	)
+	// The image tag is looked up once (the cross-check in the resolving step),
+	// by no other command, and IMAGE_REF is never reassigned.
+	for _, cmd := range []string{"imagetools inspect", "crane digest", "docker manifest inspect", "docker pull", "skopeo"} {
+		want := 0
+		if cmd == "imagetools inspect" {
+			want = 2 // the tag cross-check and the digest-pinned platform check
+		}
+		if n := strings.Count(release, cmd); n != want {
+			t.Errorf("%q must appear %d times in the release job, found %d", cmd, want, n)
+		}
+	}
+	if n := strings.Count(release, "imagetools inspect \"ghcr.io/patrick-1984/minion:"); n != 1 {
+		t.Errorf("the image tag must be looked up exactly once, found %d", n)
+	}
+	if n := regexp.MustCompile(`(?m)^\s*IMAGE_REF=`).FindAllString(release, -1); len(n) != 0 {
+		t.Error("IMAGE_REF must not be assigned in a script")
+	}
+	if n := strings.Count(release, "IMAGE_REF: ${{ steps.image.outputs.ref }}"); n != 3 {
+		t.Errorf("IMAGE_REF must be set from the step output in 3 steps, found %d", n)
+	}
+	mustContain(t, "release job", release, "dist/artifacts.json", `[ "$registry" = "$digest" ]`)
+	mustContain(t, "release job", release,
+		"id: image",
+		`echo "ref=ghcr.io/patrick-1984/minion@${digest}" >> "$GITHUB_OUTPUT"`,
+		"IMAGE_REF: ${{ steps.image.outputs.ref }}",
+		`--image "$IMAGE_REF"`,
+		`imagetools inspect "$IMAGE_REF" --raw`,
+	)
+	resolve := strings.Index(release, "Resolve the pushed image digest")
+	verify := strings.Index(release, "Verify the signatures")
+	if resolve < 0 || verify < resolve {
+		t.Error("the digest must be resolved before the signatures are verified")
+	}
+	// Nothing after the resolving step may name the image by tag.
+	if after := release[verify:]; strings.Contains(after, "minion:${TAG}") || strings.Contains(after, "minion:$TAG") {
+		t.Error("steps after the digest resolution must not use the image tag")
+	}
 	mustContain(t, "release job", release,
 		"SIGNER_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}")
 }

@@ -200,3 +200,46 @@ func TestServiceCloseWithStalledLocalOutput(t *testing.T) {
 		t.Fatal("Close hung on a stalled log output")
 	}
 }
+
+// Reproduce the CI race deterministically: the peer sees registration and
+// shuts down just as the still-running connection handler logs "worker online".
+type onlineStallHandler struct {
+	entered chan struct{}
+	release chan struct{}
+	once    *sync.Once
+}
+
+func (onlineStallHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h onlineStallHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == "worker online" {
+		h.once.Do(func() { close(h.entered) })
+		<-h.release
+	}
+	return nil
+}
+func (h onlineStallHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h onlineStallHandler) WithGroup(string) slog.Handler      { return h }
+
+func TestServiceCloseDuringOnlineLog(t *testing.T) {
+	l := onlineStallHandler{entered: make(chan struct{}), release: make(chan struct{}), once: &sync.Once{}}
+	defer close(l.release)
+	h := newTestHub(t, func(o *ServiceOptions) { o.Logger = slog.New(l) })
+	_ = connectScripted(t, h, idAlice, "online-log-stalled", nil, ops.OpSessionsList)
+	select {
+	case <-l.entered:
+	case <-time.After(time.Second):
+		t.Fatal("online log was not reached")
+	}
+	done := make(chan struct{})
+	go func() { h.svc.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close waited for a stalled online log")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := h.svc.handler.Wait(ctx); err != nil {
+		t.Fatalf("connection handler survived Close: %v", err)
+	}
+}

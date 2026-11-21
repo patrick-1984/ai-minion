@@ -204,6 +204,60 @@ type joinResult struct {
 	HubFull  string
 	Token    string
 	JoinCommands
+	hostedJoin
+	Fold joinFolds
+}
+
+// hostedJoin contains the release installer variants for a newly issued token.
+type hostedJoin struct {
+	OneLiner, Masked, Service, Root, ComposeInstall, WindowsInstall FoldBlock
+	Verified, VerifiedMasked                                        FoldBlock
+	HasInstaller, HasVerified, KeyedOK                              bool
+}
+
+func hostedJoinCommands(token, name string, keyed bool) hostedJoin {
+	out := hostedJoin{KeyedOK: keyed}
+	tag := installerTag()
+	if tag == "" {
+		return out
+	}
+	out.HasInstaller = true
+	out.Masked = foldBlock("join-masked", "Copy the command", pipeLine(tag, "", name))
+	if !keyed {
+		token = ""
+	} else {
+		out.OneLiner = foldBlock("join-oneliner", "Copy the command", pipeLine(tag, token, name))
+	}
+	out.Service = foldBlock("join-service-install", "Copy the command", installerModeLine(tag, token, name, "--service"))
+	out.Root = foldBlock("join-root-install", "Copy the command", installerModeLine(tag, token, name, "--root"))
+	out.ComposeInstall = foldBlock("join-compose-install", "Copy the command", installerModeLine(tag, token, name, "--compose"))
+	out.WindowsInstall = foldBlock("join-windows-install", "Copy the command", windowsInstallerLine(tag, name))
+	warmInstaller()
+	if offer, ok := cachedInstaller(); ok {
+		out.HasVerified = true
+		out.VerifiedMasked = foldBlock("join-verified-masked", "Copy the command", installLine(offer, "", name))
+		if keyed {
+			out.Verified = foldBlock("join-verified", "Copy the command", installLine(offer, token, name))
+		}
+	}
+	return out
+}
+
+// joinFolds are the long commands as foldable blocks.
+type joinFolds struct {
+	Unix, System, Windows, Docker, Compose, ComposeStart, Expanded FoldBlock
+}
+
+func foldJoin(c JoinCommands) joinFolds {
+	return joinFolds{
+		Unix:         foldBlock("join-unix", "Copy the command", c.Unix),
+		System:       foldBlock("join-system", "Copy the commands", c.System),
+		Windows:      foldBlock("join-windows", "Copy the command", c.Windows),
+		Docker:       foldBlock("join-docker", "Copy the commands", c.Docker),
+		Compose:      foldBlock("join-compose", "Copy the Compose file", c.Compose),
+		ComposeStart: foldBlock("join-compose-start", "Copy the enrollment command", c.ComposeStart),
+		Expanded:     foldBlock("join-expanded", "Copy the command", c.Expanded),
+	}
 }
 
 func handleAddWorkerJoin(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
@@ -245,7 +299,14 @@ func handleAddWorkerJoin(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 	out := joinResult{
 		Name: res.Name, Expires: formatTime(res.ExpiresAt, "never"), Server: server,
 		HubWords: key.Fingerprint.Words(), HubFull: key.Fingerprint.String(),
-		Token: tok.Encode(), JoinCommands: joinCommands(tok, name),
+		Token: tok.Encode(),
+		// One use is fixed above; a lifetime must be finite for a command
+		// that holds the token (also for an administrator).
+		hostedJoin: hostedJoinCommands(tok.Encode(), name, res.ExpiresAt != nil && ttl != ops.TTLUnlimited),
+	}
+	if out.KeyedOK {
+		out.JoinCommands = joinCommands(tok, name)
+		out.Fold = foldJoin(out.JoinCommands)
 	}
 	writeFragmentTemplate(w, addWorkerFragments(), "join_created", out)
 }

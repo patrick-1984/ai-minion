@@ -126,6 +126,13 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 	return &Store{db: db, dir: abs, clock: cfg.clock}, nil
 }
 
+// ProtectStateDir sets the Worker's private permissions before its files
+// are copied into an existing directory. On Unix a new mode 0700 directory
+// already has the necessary protection.
+func ProtectStateDir(dir string) error {
+	return protectStateDir(dir)
+}
+
 // Connection setup includes journal_mode(WAL). Against a rollback-journal
 // writer SQLite can reject that lock upgrade immediately, bypassing its busy
 // handler. Retry only BUSY, on a fresh connection (database/sql discards failed

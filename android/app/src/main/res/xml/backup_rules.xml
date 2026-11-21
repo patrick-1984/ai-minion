@@ -1,0 +1,4 @@
+<full-backup-content>
+    <exclude domain="root" path="." />
+    <exclude domain="device_root" path="." />
+</full-backup-content>

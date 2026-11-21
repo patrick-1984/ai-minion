@@ -6,11 +6,11 @@
 #
 # Downloads every asset of release TAG into DIR (GH_TOKEN must be able to read
 # the draft), verifies the cosign bundle of checksums.txt against the release
-# workflow identity, and the bundles of bootstrap.sh, install.sh, install.ps1
-# and release-manifest.json.
+# workflow identity, and the individual bundles of the installer scripts and
+# release-manifest.json.
 # With patterns (shell globs on file names, for example '*_linux_amd64.tar.gz')
-# only the matching assets are downloaded in addition to the signature files;
-# every downloaded archive and package is then checked against checksums.txt.
+# only the matching assets are downloaded in addition to the signed files and
+# their bundles. Each archive, package and APK is checked against checksums.txt.
 #
 # SMOKE_CHECKSUMS_SHA256 (optional, 64 hex digits) pins the draft: the
 # downloaded checksums.txt must have exactly that sha256 (publish.yml records
@@ -34,11 +34,11 @@ command -v cosign >/dev/null 2>&1 || smoke_die "cosign is not installed"
 mkdir -p "$dir"
 args=(--repo "$SMOKE_REPO" --dir "$dir" --clobber
 	--pattern 'checksums.txt' --pattern 'checksums.txt.sigstore.json'
-	--pattern 'bootstrap.sh' --pattern 'bootstrap.sh.sigstore.json'
 	--pattern 'release-manifest.json' --pattern 'release-manifest.json.sigstore.json')
 if [ $# -eq 0 ]; then
 	args=(--repo "$SMOKE_REPO" --dir "$dir" --clobber)
 else
+	for f in "${smoke_signed_scripts[@]}"; do args+=(--pattern "$f" --pattern "$f.sigstore.json"); done
 	for p in "$@"; do args+=(--pattern "$p"); done
 fi
 gh release download "$tag" "${args[@]}"
@@ -47,15 +47,4 @@ gh release download "$tag" "${args[@]}"
 if [ -n "${SMOKE_CHECKSUMS_SHA256:-}" ]; then
 	smoke_check_pinned_checksums "$dir/checksums.txt" "$SMOKE_CHECKSUMS_SHA256"
 fi
-# Everything that is neither a signature file nor a signed-by-itself file nor
-# the checksum list must appear in checksums.txt (archives, packages, SBOMs).
-files=()
-for f in "$dir"/*; do
-	[ -f "$f" ] || continue
-	b=$(basename "$f")
-	case "$b" in
-	checksums.txt | *.sigstore.json | bootstrap.sh | install.sh | install.ps1 | release-manifest.json) continue ;;
-	esac
-	files+=("$b")
-done
-smoke_verify_release_assets "$dir" "$tag" ${files[@]+"${files[@]}"}
+smoke_verify_downloaded_assets "$dir" "$tag"

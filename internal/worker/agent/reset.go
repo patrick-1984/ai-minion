@@ -270,7 +270,7 @@ func clearConfigKeys(f *config.ConfigFile, keys []string) ([]string, error) {
 			removed = append(removed, k)
 		}
 	}
-	if len(removed) == 0 {
+	if hadPendingJoin := f.ClearPendingJoin(); len(removed) == 0 && !hadPendingJoin {
 		return nil, nil
 	}
 	sort.Strings(removed)
