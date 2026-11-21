@@ -60,59 +60,68 @@ func eventuallyUsage(t *testing.T, adm *streamAdmission, what string, cond func(
 	}
 }
 
-// TestStreamsWithoutAKindAreAdmittedBeforeTheyAreClassified is the audit's
-// reproduction with the fix: three real yamux sessions of three Workers, each
-// opening 16 streams that never send their two-byte prefix, against a global
-// pending budget of 4 and a refusal budget of 3. Before the fix all 48 streams
-// were allocated while every admission counter stayed at zero. Now they are
-// counted from the moment yamux accepts them, the budget is never exceeded, the
-// sessions that keep opening streams beyond it are closed, and every unit is
-// given back when they are.
+// TestStreamsWithoutAKindAreAdmittedBeforeTheyAreClassified fills the
+// pending and refusal lanes with real yamux streams that never send their
+// kind prefix. A concurrent burst then checks that the limits hold, the
+// sessions close, and every unit of capacity is released.
 func TestStreamsWithoutAKindAreAdmittedBeforeTheyAreClassified(t *testing.T) {
-	adm := newStreamAdmission(StreamLimits{GlobalPending: 4, WorkerPending: 3, GlobalRefusals: 3, WorkerRefusals: 2, GlobalCalls: 1, GlobalEvents: 1}, transport.ReleaseBound)
+	limits := StreamLimits{GlobalPending: 4, WorkerPending: 3, GlobalRefusals: 3, WorkerRefusals: 2, GlobalCalls: 1, GlobalEvents: 1}
+	adm := newStreamAdmission(limits, transport.ReleaseBound)
 	var sessions []*budgetSession
 	for i := 0; i < 3; i++ {
 		sessions = append(sessions, newBudgetSession(t, adm, "worker-"+string(rune('a'+i)), time.Minute, nil))
 	}
+
+	// Keep both ends of the streams open from the test's side so the first
+	// refusal remains accounted for while we observe it. In the burst the
+	// whole session can close before a sampler ever sees that refusal.
+	openRaw := func(s *budgetSession, n int) {
+		t.Helper()
+		for range n {
+			if _, err := s.peer.OpenRaw(t.Context()); err != nil {
+				t.Fatalf("open a raw stream before exhausting capacity: %v", err)
+			}
+		}
+	}
+	openRaw(sessions[0], limits.WorkerPending+1)
+	eventuallyUsage(t, adm, "one Worker filling its pending lane and holding one refusal", func(u admissionUsage) bool {
+		return u.Pending == limits.WorkerPending && u.Refused == 1
+	})
+	openRaw(sessions[0], 1)
+	openRaw(sessions[1], 2)
+	full := eventuallyUsage(t, adm, "both global lanes to fill", func(u admissionUsage) bool {
+		return u.Pending == limits.GlobalPending && u.Refused == limits.GlobalRefusals
+	})
+
+	sampleCtx, stop := context.WithCancel(t.Context())
+	defer stop()
+	sampled := make(chan struct{})
+	peakPending, peakRefused := full.Pending, full.Refused
+	go func() {
+		defer close(sampled)
+		for {
+			select {
+			case <-sampleCtx.Done():
+				return
+			default:
+			}
+			u := adm.usage()
+			peakPending = max(peakPending, u.Pending)
+			peakRefused = max(peakRefused, u.Refused)
+		}
+	}()
 	var open sync.WaitGroup
 	for _, s := range sessions {
 		open.Add(1)
 		go func() {
 			defer open.Done()
-			for j := 0; j < 16; j++ {
-				if _, err := s.peer.OpenRaw(context.Background()); err != nil {
-					return // the Hub closed the session: it is abusive
+			for range 16 {
+				if _, err := s.peer.OpenRaw(t.Context()); err != nil {
+					return // the Hub closed the session
 				}
 			}
 		}()
 	}
-	// The counters are not zero while raw streams are live, and the budget is a
-	// bound: at no moment do more units sit in the pending and refusal lanes than
-	// the limits allow.
-	stop := make(chan struct{})
-	var peakPending, peakRefused atomic.Int32
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			u := adm.usage()
-			for {
-				p := peakPending.Load()
-				if int32(u.Pending) <= p || peakPending.CompareAndSwap(p, int32(u.Pending)) {
-					break
-				}
-			}
-			for {
-				p := peakRefused.Load()
-				if int32(u.Refused) <= p || peakRefused.CompareAndSwap(p, int32(u.Refused)) {
-					break
-				}
-			}
-		}
-	}()
 	open.Wait()
 	for _, s := range sessions {
 		select {
@@ -121,18 +130,17 @@ func TestStreamsWithoutAKindAreAdmittedBeforeTheyAreClassified(t *testing.T) {
 			t.Fatalf("a session that keeps opening streams beyond its limits stayed open (streams %d)", s.hub.NumStreams())
 		}
 	}
-	close(stop)
-	if p := peakPending.Load(); p < 1 || p > 4 {
-		t.Fatalf("peak pending = %d, want between 1 and the global limit 4: the streams were not counted from the start", p)
-	}
-	if r := peakRefused.Load(); r < 1 || r > 3 {
-		t.Fatalf("peak refused = %d, want between 1 and the global limit 3", r)
+	stop()
+	<-sampled
+	if peakPending > limits.GlobalPending || peakRefused > limits.GlobalRefusals {
+		t.Fatalf("peak pending %d, peak refused %d exceeded limits %d and %d",
+			peakPending, peakRefused, limits.GlobalPending, limits.GlobalRefusals)
 	}
 	// Cancellation releases everything: the sessions are closed, nothing is held.
 	u := eventuallyUsage(t, adm, "every unit to be given back", func(u admissionUsage) bool {
 		return u.Pending == 0 && u.Refused == 0 && u.Calls == 0 && u.Events == 0 && u.Workers == 0
 	})
-	t.Logf("peak pending %d, peak refused %d, final usage %+v", peakPending.Load(), peakRefused.Load(), u)
+	t.Logf("peak pending %d, peak refused %d, final usage %+v", peakPending, peakRefused, u)
 }
 
 // A prefix that is not one drains under the refusal accounting and releases
