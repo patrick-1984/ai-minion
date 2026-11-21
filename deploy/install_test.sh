@@ -19,6 +19,8 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/installed"
 printf '#!/bin/sh\nexit 0\n' >"$WORK/installed/tmux"
 chmod +x "$WORK/installed/tmux"
+printf '#!/bin/sh\necho 1000\n' >"$WORK/installed/id"
+chmod +x "$WORK/installed/id"
 for tool in sudo apt-get dnf yum apk pacman zypper brew; do
 	printf '#!/bin/sh\nexit 99\n' >"$WORK/installed/$tool"
 	chmod +x "$WORK/installed/$tool"
@@ -58,13 +60,20 @@ mkdir -p "$REL" "$API"
 # prints its version and platform.
 make_release() {
 	v=$1
+	kind=${2:-plain}
 	d="$REL/$v"
 	mkdir -p "$d"
 	: >"$d/checksums.txt"
 	for p in linux_amd64 linux_arm64 linux_armv7 darwin_amd64 darwin_arm64; do
 		b="$WORK/build/$v-$p"
 		mkdir -p "$b"
-		printf '#!/bin/sh\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
+		if [ "$kind" = join ]; then
+			# "worker up" records its arguments and its standard input.
+			# shellcheck disable=SC2016 # the fake binary expands its own variables
+			printf '#!/bin/sh\nif [ "$1 $2" = "worker up" ]; then\n  printf "%%s\\n" "$@" >"$JOINLOG.argv"\n  cat >"$JOINLOG.stdin"\n  exit "${FAKE_RC:-0}"\nfi\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
+		else
+			printf '#!/bin/sh\necho "fake-minion %s %s $*"\n' "$v" "$p" >"$b/minion"
+		fi
 		chmod 755 "$b/minion"
 		echo licence >"$b/LICENSE"
 		name="minion_${v#v}_$p.tar.gz"
@@ -74,6 +83,7 @@ make_release() {
 }
 make_release v1.2.0
 make_release v1.3.0
+make_release v1.6.0 join
 printf '{\n  "id": 1,\n  "tag_name": "v1.3.0",\n  "draft": false\n}\n' >"$API/latest"
 
 # fake_uname S M: a directory with a uname that prints S for -s and M for -m.
@@ -91,13 +101,16 @@ fake_uname() {
 run_install() {
 	rd=$1 us=$2 um=$3
 	shift 3
+	# shellcheck disable=SC2086 # SCRIPT_ARGS is split into words on purpose
 	OUT=$(env PATH="$(fake_uname "$us" "$um"):$WORK/installed:$PATH" HOME="$WORK/home" \
 		MINION_RELEASE_BASE="file://$REL" MINION_RELEASE_API="file://$API" \
-		MINION_INSTALL_DIR="$rd" MINION_VERSION= "$@" sh "$SCRIPT" 2>&1)
+		MINION_INSTALL_DIR="$rd" MINION_VERSION= "$@" sh "$SCRIPT" $SCRIPT_ARGS 2>&1)
 	RC=$?
 }
 
 # ---------------------------------------------------------------- the cases
+SCRIPT_ARGS=
+
 run_install "$WORK/i1" Linux x86_64
 assert_contains "latest release, linux amd64: exit 0" "rc=$RC" "rc=0"
 assert_contains "latest release is resolved" "$OUT" "minion_1.3.0_linux_amd64.tar.gz (v1.3.0)"
@@ -206,6 +219,101 @@ run_install "$WORK/i1" Linux x86_64 MINION_VERSION=v1.2.0
 assert_contains "reinstall replaces the binary" "$OUT" "fake-minion v1.2.0 linux_amd64 version"
 left=$(find "$WORK/i1" -name '.minion.*')
 if [ -z "$left" ]; then ok "no staging file is left behind"; else bad "no staging file is left behind" "$left"; fi
+
+# --------------------------------------------------------------------- --join
+TOKEN="mnj1-AAAAAAAA.BBBBBBBB-secret-token-text"
+JL="$WORK/joinlog"
+SCRIPT_ARGS=--join
+rm -f "$JL".*
+run_install "$WORK/j1" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
+assert_contains "--join installs and joins: exit 0" "rc=$RC" "rc=0"
+assert_contains "--join announces the share default" "$OUT" "shares all sessions first"
+want_argv='worker
+up
+--join
+-
+--interactive-replace
+--non-interactive-share
+all'
+if [ "$(cat "$JL.argv" 2>/dev/null)" = "$want_argv" ]; then ok "--join runs: worker up --join - --interactive-replace --non-interactive-share all"; else bad "--join arguments" "$(cat "$JL.argv" 2>/dev/null)"; fi
+if [ "$(cat "$JL.stdin" 2>/dev/null)" = "$TOKEN" ]; then ok "the token arrives on standard input"; else bad "the token arrives on standard input" "$(cat "$JL.stdin" 2>/dev/null)"; fi
+case "$(cat "$JL.argv")$OUT" in
+*"$TOKEN"*) bad "the token is in no argument list and no output" ;;
+*) ok "the token is in no argument list and no output" ;;
+esac
+assert_contains "--join ran the installed binary by absolute path" "$OUT" "Installed $WORK/j1/minion"
+
+rm -f "$JL".*
+SCRIPT_ARGS="--join --share later"
+run_install "$WORK/j2" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
+assert_contains "--share later is passed on" "$(cat "$JL.argv" 2>/dev/null | tr '\n' ' ')" "--non-interactive-share later"
+SCRIPT_ARGS="--join --share everything"
+run_install "$WORK/j2b" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
+assert_contains "a bad --share is refused" "$OUT" "--share must be all, none or later"
+assert_no_file "a bad --share installs nothing" "$WORK/j2b/minion"
+
+SCRIPT_ARGS=--join
+rm -f "$JL".*
+run_install "$WORK/j3" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" FAKE_RC=3
+assert_contains "a failing join keeps its exit status" "rc=$RC" "rc=3"
+
+run_install "$WORK/j4" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="not-a-token" JOINLOG="$JL"
+assert_contains "something that is not a token is refused" "$OUT" "not a join token"
+case "$OUT" in *"not-a-token"*) bad "the refusal repeats the input" ;; *) ok "the refusal does not repeat the input" ;; esac
+assert_no_file "nothing is installed for a bad token" "$WORK/j4/minion"
+
+# Without a token and without a terminal there is nothing to ask on.
+if command -v setsid >/dev/null 2>&1; then
+	OUT=$(env PATH="$(fake_uname Linux x86_64):$WORK/installed:$PATH" HOME="$WORK/home" MINION_RELEASE_BASE="file://$REL" \
+		MINION_INSTALL_DIR="$WORK/j5" MINION_VERSION=v1.6.0 setsid -w sh "$SCRIPT" --join </dev/null 2>&1)
+	assert_contains "no token and no terminal: refused" "$OUT" "needs the join token"
+	assert_no_file "nothing is installed without a token" "$WORK/j5/minion"
+else
+	printf 'skip the no-terminal case (setsid is not installed)\n'
+fi
+
+# root is refused: the Worker is the user's.
+mkdir "$WORK/rootid"
+printf '#!/bin/sh\necho 0\n' >"$WORK/rootid/id"
+chmod +x "$WORK/rootid/id"
+run_install "$WORK/j6" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" PATH="$WORK/rootid:$(fake_uname Linux x86_64):$WORK/installed:$PATH"
+assert_contains "--join as root is refused" "$OUT" "without sudo"
+assert_no_file "nothing is installed as root" "$WORK/j6/minion"
+
+# A tampered or truncated archive is rejected before the binary exists, so the
+# token is never handed over.
+for bad in tampered truncated; do
+	nv=v1.7.$([ "$bad" = tampered ] && echo 0 || echo 1)
+	mkdir -p "$REL/$nv"
+	for f in "$REL"/v1.6.0/*.tar.gz; do cp "$f" "$REL/$nv/$(basename "$f" | sed "s/1\.6\.0/${nv#v}/")"; done
+	sed "s/1\.6\.0/${nv#v}/" "$REL/v1.6.0/checksums.txt" >"$REL/$nv/checksums.txt"
+	a="$REL/$nv/minion_${nv#v}_linux_amd64.tar.gz"
+	if [ "$bad" = tampered ]; then printf 'evil' >>"$a"; else head -c 100 "$a" >"$a.cut" && mv "$a.cut" "$a"; fi
+	rm -f "$JL".*
+	run_install "$WORK/j-$bad" Linux x86_64 MINION_VERSION="$nv" MINION_JOIN="$TOKEN" JOINLOG="$JL"
+	assert_contains "$bad archive refused with --join" "$OUT" "checksum mismatch"
+	assert_no_file "$bad archive: nothing installed" "$WORK/j-$bad/minion"
+	assert_no_file "$bad archive: the join never ran" "$JL.argv"
+done
+
+# Missing tmux stops a join before anything is installed or used.
+run_install "$WORK/j7" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" PATH="$depbin"
+assert_contains "--join without tmux stops" "$OUT" "tmux is needed for a Worker"
+assert_no_file "--join without tmux installs nothing" "$WORK/j7/minion"
+
+# An unknown option is refused; without --join nothing joins.
+SCRIPT_ARGS=--bogus
+run_install "$WORK/j8" Linux x86_64 MINION_VERSION=v1.6.0
+assert_contains "unknown option refused" "$OUT" "unknown option '--bogus'"
+SCRIPT_ARGS=
+rm -f "$JL".*
+run_install "$WORK/j9" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL"
+assert_no_file "without --join nothing joins" "$JL.argv"
+
+# The whole script runs from its last line: a copy cut short runs nothing.
+sed '$d' "$SCRIPT" >"$WORK/cut.sh"
+OUT=$(env HOME="$WORK/home" MINION_RELEASE_BASE="file://$REL" MINION_INSTALL_DIR="$WORK/cut" MINION_VERSION=v1.6.0 sh "$WORK/cut.sh" 2>&1)
+assert_no_file "a script without its last line installs nothing" "$WORK/cut/minion"
 
 if command -v shellcheck >/dev/null 2>&1; then
 	if SC=$(shellcheck -s sh "$SCRIPT" "$0" 2>&1); then ok "shellcheck"; else bad "shellcheck" "$SC"; fi

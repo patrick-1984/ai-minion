@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **One verified command to add a Linux or macOS Worker.** The Add worker result starts with one line that downloads the `install.sh` of the Hub's own release to a private file, requires it to be non-empty, checks its SHA-256 against the digest in the signed release manifest of that exact tag (the Hub verifies the manifest's signature, like `minion update`), and only then runs `install.sh --join`. The join token goes in the environment of the installer, never in an argument list. A second line asks for the token at a masked prompt instead, which keeps it out of your shell history. A development Hub, or a release whose manifest cannot be verified, shows the manual commands instead.
+- **`install.sh --join [--share all|none|later]`** installs the binary (verified as before) and then runs the installed `minion` by absolute path as `worker up --join - --interactive-replace`, with the token on standard input of that one process (from `MINION_JOIN`, or a masked prompt on `/dev/tty`). It needs tmux and refuses to run as root. Without `--join` the installer behaves as before. The script now runs from its last line, so a cut-short download runs nothing.
+- **`minion worker up --join` on a machine that already has a Worker:** with `--interactive-replace` (used by `install.sh`), `--replace` or `--keep` it first looks at the target read-only (enrolled, configured, paused or running), prints the account, state path, name, Hub address and Hub key words, and asks on the terminal "Replace it with <new Hub>? [y/N]". No (the default) changes nothing and exits 0. `--replace` and `--keep` answer for scripts; with neither and without a terminal the command refuses and names them. Replacing is a transaction: the old Worker is stopped and a private copy of its profile is kept, the profile is cleared of all trust settings (pairing, share choice, Hub settings including `hub_fingerprint`, and the pause marker), the join runs, and the copy is deleted only when the new Worker is live (waiting for approval counts). On any failure the old profile is restored and the old Worker started again. Callers that give none of the flags, such as the tray, keep their behaviour.
+
+### Changed
+
+- **Long commands are folded** on Add worker and Invitations: a keyboard-operable disclosure shows the first three lines, with a Copy button that stays visible and copies the whole text. If the browser refuses the clipboard, the disclosure opens and the whole text is selected. Tokens and fingerprints are never cut, and the token-bearing result is no longer a live region (a short status line announces it instead).
+- **A join command with the token inside needs a key that expires.** Add worker keys are one-use; an administrator who picks "Unlimited" now gets only the token and the masked command (no keyed command blocks).
+
 ### Fixed
 
 - The startup summary names the run mode once (it said "background (background (shell login))").

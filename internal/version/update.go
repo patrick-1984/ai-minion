@@ -853,3 +853,41 @@ func newTUFFetcher(ctx context.Context) fetcher.Fetcher {
 	f.SetHTTPClient(ctxDoer{ctx: ctx, client: client})
 	return f
 }
+
+// InstallerAsset is the install script of a release: a release asset of its
+// own, listed with its digest in the signed release manifest.
+const InstallerAsset = "install.sh"
+
+// InstallerDigest returns the lower-case hex SHA-256 that the release manifest
+// of rel (already verified, see [Updater.VerifiedRelease]) records for the
+// install script. A release without the script, or one whose asset list lacks
+// it, has none: the caller then shows the manual steps.
+func InstallerDigest(rel Release, man Manifest) (string, error) {
+	if man.Version != rel.Tag {
+		return "", fmt.Errorf("release manifest describes %q, not the release %q", man.Version, rel.Tag)
+	}
+	sum, ok := man.Digest(InstallerAsset)
+	if !ok {
+		return "", fmt.Errorf("release %s lists no %s in its signed manifest", rel.Tag, InstallerAsset)
+	}
+	if _, ok := rel.Asset(InstallerAsset); !ok {
+		return "", fmt.Errorf("release %s has no %s asset", rel.Tag, InstallerAsset)
+	}
+	return sum, nil
+}
+
+// VerifiedInstaller returns the SHA-256 of the install script of the exact
+// release tag. Both signatures of the release are verified exactly as for an
+// install, so the digest is the publisher's: a Hub renders it into the command
+// that checks the downloaded installer before it runs.
+func (u *Updater) VerifiedInstaller(ctx context.Context, tag string) (string, error) {
+	v, err := ParseVersion(tag)
+	if err != nil {
+		return "", err
+	}
+	rel, man, err := u.VerifiedRelease(ctx, Selector{Kind: SelectExact, Exact: v})
+	if err != nil {
+		return "", err
+	}
+	return InstallerDigest(rel, man)
+}
