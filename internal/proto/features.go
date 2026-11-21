@@ -47,6 +47,8 @@ const (
 	// admitted after comparing the fingerprint words, v0.12.0). The Hub lists
 	// only such Workers under Pairing requests.
 	FeaturePairAdmit = "pair.admit"
+	// FeatureMasterSessionV1 offers the session-bound master control lane.
+	FeatureMasterSessionV1 = "master.session.v1"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;
