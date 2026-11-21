@@ -348,6 +348,16 @@ jobs:
     if: github.ref_type == 'tag'
     uses: ./.github/workflows/tray.yml
 
+  android-apk:
+    name: signed Android Worker APK
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/android-apk.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets:
+      MINION_ANDROID_KEYSTORE_BASE64: ${{ secrets.MINION_ANDROID_KEYSTORE_BASE64 }}
+      MINION_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.MINION_ANDROID_KEYSTORE_PASSWORD }}
+
   # goreleaser runs only when every test job passed on this exact commit.
   release:
     name: goreleaser (draft release)
@@ -363,6 +373,7 @@ jobs:
       - tests-e2e
       - e2e-docker
       - tray
+      - android-apk
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the draft release and upload assets
@@ -392,6 +403,11 @@ jobs:
           pattern: tray-*
           path: tray-dist
           merge-multiple: true
+      - name: Android APK (covered by the signed checksums.txt)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-apk-signed
+          path: android-dist
       - name: Install cosign ${{ env.COSIGN_VERSION }}
         uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
@@ -431,7 +447,25 @@ jobs:
           # the newest tag on the commit by version sort, and vX.Y.Z-rc.N sorts
           # after vX.Y.Z when both point at the same commit.
           GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+      # The digest comes from what THIS run pushed (goreleaser's
+      # dist/artifacts.json), never from the tag alone: a registry lookup could
+      # return an earlier index of a rebuilt draft. The tag is looked up once,
+      # only to cross-check that digest. Everything after this step uses
+      # IMAGE_REF and never names the image by tag.
+      - name: Resolve the pushed image digest (from this run's goreleaser output)
+        id: image
+        run: |
+          set -euo pipefail
+          digest=$(jq -r '[.[] | select((.type // "") | test("Docker|Image"; "i"))
+                           | (.extra.digest // .extra.Digest // ((.name // "") + " " + (.path // "") | capture("@(?<d>sha256:[0-9a-f]{64})").d? // empty))]
+                          | unique | if length == 1 then .[0] else empty end' dist/artifacts.json)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no single image digest in dist/artifacts.json: '$digest'" >&2; exit 1; }
+          registry=$(docker buildx imagetools inspect "ghcr.io/patrick-1984/minion:${TAG}" --format '{{json .Manifest}}' | jq -r .digest)
+          [ "$registry" = "$digest" ] || { echo "registry has ${registry} for ${TAG}, this run pushed ${digest}" >&2; exit 1; }
+          echo "ref=ghcr.io/patrick-1984/minion@${digest}" >> "$GITHUB_OUTPUT"
       - name: Verify the signatures just made (checksums and image)
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
         run: |
           set -euo pipefail
           cosign verify-blob \
@@ -439,38 +473,40 @@ jobs:
             --certificate-identity "$SIGNER_IDENTITY" \
             --certificate-oidc-issuer "$OIDC_ISSUER" \
             dist/checksums.txt
-          cosign verify "ghcr.io/patrick-1984/minion:${TAG}" \
+          cosign verify "$IMAGE_REF" \
             --certificate-identity "$SIGNER_IDENTITY" \
             --certificate-oidc-issuer "$OIDC_ISSUER" >/dev/null
       - name: The pushed image is a full index with linux/arm/v7
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect "ghcr.io/patrick-1984/minion:${TAG}" --raw |
+          docker buildx imagetools inspect "$IMAGE_REF" --raw |
             jq -e '[.manifests[].platform | select(.os == "linux") | .architecture + (if .architecture == "arm" then "/" + .variant else "" end)]
                    | contains(["amd64", "arm64", "arm/v7"])'
       - name: release-manifest.json, bootstrap.sh and the install scripts, signed and attached to the draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
         run: |
           set -euo pipefail
           # The scripts of deploy/ that are release assets of their own: not in
           # checksums.txt, listed in release-manifest.json and signed one by one.
           extras=()
           scripts=()
-          for s in bootstrap.sh install.sh install.ps1; do
+          for s in bootstrap.sh install.sh install.ps1 android.sh esp32.sh; do
             if [ -f "deploy/$s" ]; then
               cp "deploy/$s" "dist/$s"
               extras+=(--extra "dist/$s")
               scripts+=("dist/$s")
             fi
           done
-          # The image of this release, pinned by its index digest, goes into the
-          # signed manifest: a Hub's Docker self-update pulls exactly this.
-          digest=$(docker buildx imagetools inspect "ghcr.io/patrick-1984/minion:${TAG}" --format '{{json .Manifest}}' | jq -r .digest)
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no image digest for ${TAG}: $digest" >&2; exit 1; }
+          # The image of this release, pinned by the index digest resolved once
+          # above, goes into the signed manifest: a Hub's Docker self-update
+          # pulls exactly this.
           scripts/release-manifest.sh --version "$TAG" \
             --protocol-min "$MINION_PROTOCOL_MIN" --protocol-max "$MINION_PROTOCOL_MAX" \
-            --checksums dist/checksums.txt "${extras[@]}" --image "ghcr.io/patrick-1984/minion@${digest}" \
+            --checksums dist/checksums.txt "${extras[@]}" --image "$IMAGE_REF" \
             --output dist/release-manifest.json
           assets=(dist/release-manifest.json)
           for f in dist/release-manifest.json "${scripts[@]}"; do

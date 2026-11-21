@@ -44,6 +44,9 @@ type LiveStatusReply struct {
 	// so that "no code" is not mistaken for "no code pending".
 	PairingKnown       bool   `json:"pairing_known"`
 	PendingPairingCode string `json:"pending_pairing_code,omitempty"`
+	// Pairing is the private pairing presentation of the managed Android mode
+	// (code, expiry, Worker words and the Hub words as presented).
+	Pairing *PairingPresentation `json:"pairing,omitempty"`
 	// RunMode, the session host and the latest listing error (v0.10.0); an
 	// older Worker omits them.
 	RunMode           string `json:"run_mode,omitempty"`
@@ -86,6 +89,7 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		HubPreviewOnly:     live.HubPreviewOnly,
 		PairingKnown:       live.PairingKnown || live.PendingPairingCode != "",
 		PendingPairingCode: live.PendingPairingCode,
+		Pairing:            live.Pairing,
 		RunMode:            live.RunMode,
 		SessionHost:        live.Host.Kind,
 		SessionsHidden:     live.Host.Hidden,
@@ -140,6 +144,7 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		ApprovalKnown:      r.Pending != nil,
 		PairingKnown:       r.PairingKnown,
 		PendingPairingCode: r.PendingPairingCode,
+		Pairing:            r.Pairing,
 		RunMode:            r.RunMode,
 		Host:               SessionHostInfo{Kind: r.SessionHost, Hidden: r.SessionsHidden, Reason: r.SessionHostReason},
 		ListError:          r.SessionsListError,

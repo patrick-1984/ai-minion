@@ -1,0 +1,61 @@
+# Pinned inputs of the native Android build (scripts/android/build-native.sh).
+# Plain KEY=VALUE lines that the shell can source: no command substitution, no
+# expansion except ${ANDROID_API}. Everything that goes into libminion.so and
+# libtmux.so is named here with its SHA-256; changing a line changes the
+# binaries and needs a review. CI (.github/workflows/android-native.yml)
+# refuses a build whose downloads do not match these hashes.
+
+# --- Toolchain --------------------------------------------------------------
+# Android NDK r28c (LTS line is r27; r28 is the first with 16 KiB-aligned
+# executables by default, the script also passes the flag explicitly).
+NDK_VERSION=r28c
+NDK_REVISION=28.2.13676358
+NDK_URL=https://dl.google.com/android/repository/android-ndk-r28c-linux.zip
+NDK_SHA256=dfb20d396df28ca02a8c708314b814a4d961dc9074f9a161932746f815aa552f
+
+# Native API floor (minSdk of the native code). Android 10. Revisit against
+# the API levels of the target devices before the app locks minSdk; the Go
+# version in go.mod decides the lowest level its runtime supports.
+ANDROID_API=29
+
+# ABIs, in build order.
+ABIS="arm64-v8a armeabi-v7a"
+
+# Page size every PT_LOAD segment is aligned to (Android 15+ 16 KiB devices).
+MAX_PAGE_SIZE=16384
+
+# DT_NEEDED closure: only libraries of the Android system. Anything else
+# fails the build (a library that is not in the APK cannot be loaded).
+ALLOWED_NEEDED="libc.so libm.so libdl.so liblog.so"
+
+# --- Sources ----------------------------------------------------------------
+TMUX_VERSION=3.8
+TMUX_URL=https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz
+TMUX_SHA256=e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
+
+LIBEVENT_VERSION=2.1.12-stable
+LIBEVENT_URL=https://github.com/libevent/libevent/releases/download/release-2.1.12-stable/libevent-2.1.12-stable.tar.gz
+LIBEVENT_SHA256=92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb
+
+NCURSES_VERSION=6.5
+NCURSES_URL=https://invisible-mirror.net/archives/ncurses/ncurses-6.5.tar.gz
+NCURSES_MIRROR_URL=https://mirrors.kernel.org/gnu/ncurses/ncurses-6.5.tar.gz
+NCURSES_GNU_URL=https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz
+NCURSES_SHA256=136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6
+
+# Terminal types compiled into the terminfo database that ships next to
+# libtmux.so (the app sets TERMINFO to its private copy).
+TERMINFO_ENTRIES=xterm,xterm-256color,xterm-color,xterm-direct,screen,screen-256color,tmux,tmux-256color,linux,vt100,vt220,ansi,dumb
+# tmux default-terminal compiled in (the entry above must exist).
+TMUX_DEFAULT_TERM=screen-256color
+
+# --- Termux-derived compatibility pieces ------------------------------------
+# Reviewed, none applied (see android/native/patches/README.md): tmux 3.8
+# builds for API 29 with the NDK clang as it is. The Termux recipe is pinned
+# so that the review can be repeated and so that a newly needed patch can be
+# rebased from the same commit.
+TERMUX_COMMIT=0a98a0cc82f220c76b0f543e55d645c78bc79497
+TERMUX_TMUX_BUILD_SH_SHA256=75961662fc28f7c5ce919d7eb16c5ff8d442bec7d29af6a6e450cce3c5a0c4df
+TERMUX_TMUX_COMPAT_SETPROCTITLE_PATCH_SHA256=0c3cbfaa032c63de3156a5b9dd9575261b993d7120b4b043fa41ae910a085530
+TERMUX_TMUX_CONFIGURE_AC_PATCH_SHA256=6ecabc2e27c4ef30b52e4a27febdd6e5dc63e3f71500ea96067e2e23486a12f8
+TERMUX_TMUX_TMUX_H_PATCH_SHA256=daa84fc862adaa2522bac8fb6b9ad017ac6646e8130edc78c8414b18441b8c03

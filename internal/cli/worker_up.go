@@ -16,6 +16,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 func init() {
@@ -60,6 +61,11 @@ type workerUpDeps struct {
 	ownerHooks     func(context.Context, *ownerSetup, agent.Settings, io.Reader, io.Writer) error
 	readStatus     upStatusReader
 	stopForeground func(context.Context, string, *ownerSetup) error
+	// replace holds the seams of the existing-Worker flow (--replace, --keep,
+	// --interactive-replace); requireLive makes a new Worker that does not
+	// come up an error, so that the replacement can be undone.
+	replace     replaceDeps
+	requireLive bool
 }
 
 func (d workerUpDeps) windowsDeps() windowsUpDeps {
@@ -96,6 +102,7 @@ func defaultWorkerUpDeps(stderr io.Writer) workerUpDeps {
 		stopForeground: stopForegroundForService,
 		readStatus:     readUpStatus,
 		ownerHooks:     runOwnerHooks,
+		replace:        defaultReplaceDeps(),
 	}
 }
 
@@ -186,6 +193,7 @@ to the mounted file during configuration.`,
 	cmd.Flags().StringVar(&asUser, "as-user", "", "Install the service for this Unix user (needs root; default: the user that ran sudo)")
 	addSettingFlags(cmd, deps.registry(), config.ScopeWorker)
 	addJoinFlag(cmd, deps.registry())
+	addReplaceFlags(cmd)
 	return cmd
 }
 
@@ -215,6 +223,25 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground, configureOnl
 		_, _ = fmt.Fprintln(w, join.Warning)
 	}
 	det := service.Detect(deps.detectEnv)
+	if replaceRequested(cmd) && !join.Applied {
+		return errors.New("--replace, --keep and --interactive-replace go with --join: they decide what happens to an existing Worker when a join token is used")
+	}
+	joinArg, _ := cmd.Flags().GetString("join")
+	if join.Applied && !foreground && (replaceRequested(cmd) || strings.TrimSpace(joinArg) == "-") {
+		handled, err := runWorkerUpReplace(cmd, deps, det, asUser, configureOnly, replaceRequested(cmd))
+		if handled {
+			if errors.Is(err, errReplaceDeclined) {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), declinedMarker)
+				return nil
+			}
+			return err
+		}
+		if consent, _ := cmd.Flags().GetString("join-consent"); consent != "" {
+			deps.requireLive = true
+		}
+	} else if replaceRequested(cmd) && foreground {
+		return errors.New("--replace, --keep and --interactive-replace do not work with --foreground")
+	}
 	if foreground {
 		// The foreground Worker takes the same flags: a secret given on the
 		// command line is as visible in the process list as for a service (R85).
@@ -365,6 +392,13 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	if err != nil {
 		return err
 	}
+	if !configureOnly {
+		// The installed service cannot receive them: refuse before anything is
+		// enrolled or written (use --configure-only or --foreground).
+		if err := refuseSupervisorSettings(plain, reg); err != nil {
+			return err
+		}
+	}
 	stateDir := defaultState
 	if stateRes.Source != config.SourceDefault {
 		if stateDir, err = filepath.Abs(stateRes.Value); err != nil {
@@ -454,6 +488,19 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		}
 	}()
 
+	joining := configureOnly && cmd.Annotations[joinAppliedAnnotation] != ""
+	if joining {
+		hub, err := config.ResolveWorkerHub(res)
+		if err != nil {
+			return err
+		}
+		if _, err := st.update(func(f *config.ConfigFile) error {
+			f.SetPendingJoin(hub.Server, hub.Fingerprint)
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 	hookSettings := agent.Settings{WorkerCore: core, Resolver: res, Logger: logger, InviteArgvWarned: inviteWarned}
 	if owned && deps.ownerHooks != nil {
 		if err := st.give(); err != nil {
@@ -471,8 +518,18 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// Under the config lock of "worker config set", from the reload to the
 	// save: a change saved meanwhile (allow_new_sessions off, for example) is
 	// kept, never written over with the older file.
+	// A join that an earlier run left half done (killed between the
+	// enrollment commit and this save) is finished from the enrollment.
+	recovered := recoverJoinedHub(ctx, st, res)
 	path, err := st.update(func(file *config.ConfigFile) error {
-		return fillUpConfig(file, plain, reg, flags, lookupEnv)
+		if err := fillUpConfig(file, plain, reg, flags, lookupEnv); err != nil {
+			return err
+		}
+		fillRecoveredHub(file, recovered)
+		if joining {
+			file.ClearPendingJoin()
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -509,7 +566,15 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 		// The Run entry always names the state directory chosen now, so a
 		// MINION_STATE_DIR in the environment of a later logon (or of this
 		// shell) cannot select another profile.
-		return installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out, summary)
+		var summaryErr error
+		err := installWindowsAutostart(ctx, deps.windowsDeps(), binary, stateDir, true, out, func(ctx context.Context) error {
+			summaryErr = summary(ctx)
+			return summaryErr
+		})
+		if err == nil && deps.requireLive && summaryErr != nil {
+			return fmt.Errorf("the new Worker did not come up: %w", summaryErr)
+		}
+		return err
 	}
 	if det.Manager == service.ManagerNone {
 		// Share one deadline between binding the socket and waiting for the
@@ -547,9 +612,70 @@ func installWorkerService(cmd *cobra.Command, deps workerUpDeps, det service.Det
 	// The Worker runs now; a status that cannot be shown is not a failure of
 	// the setup (the one-time invitation is already used).
 	if err := summary(ctx); err != nil {
+		if deps.requireLive {
+			return fmt.Errorf("the new Worker did not come up: %w", err)
+		}
 		_, _ = fmt.Fprintf(stderr, "The Worker was started, but its state could not be shown (%v). Check it with: minion worker status\n", err)
 	}
 	return nil
+}
+
+// refuseSupervisorSettings stops an installed service from silently losing
+// the settings that only a supervisor gives at every start: the service
+// definition would not carry them, so the daemon would start with another tmux.
+func refuseSupervisorSettings(res *config.Resolver, reg *config.Registry) error {
+	for _, s := range reg.ForScope(config.ScopeWorker) {
+		if !s.SupervisorOnly {
+			continue
+		}
+		if r, err := res.Resolve(s.Key); err == nil && (r.Source == config.SourceFlag || r.Source == config.SourceEnv) {
+			return fmt.Errorf("%s (--%s or %s) is only for a supervisor that gives it at every start, such as the Android app; "+
+				"an installed service would not receive it. Use --configure-only or --foreground, or leave it out", s.Key, s.FlagName(), s.EnvName())
+		}
+	}
+	return nil
+}
+
+// recoverJoinedHub reads the Hub of a committed enrollment (see
+// agent.Enrollments.RecoverHub). It never fails the command: a state that
+// cannot be read gives no recovery. Root working on another user's directory
+// is skipped; the Worker recovers the address itself at its next start.
+func recoverJoinedHub(ctx context.Context, st *upState, res *config.Resolver) *agent.RecoveredHub {
+	if _, _, pending := config.PendingJoin(res); st.root != nil || !pending {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(st.dir, store.DBFile)); err != nil {
+		return nil
+	}
+	ro, err := store.OpenReadOnlyContext(ctx, st.dir)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = ro.Close() }()
+	rec, ok, err := agent.NewEnrollments(ro, st.dir).RecoverHub(ctx, res)
+	if err != nil || !ok {
+		return nil
+	}
+	return &rec
+}
+
+// fillRecoveredHub saves the Hub of a committed enrollment where the config
+// file names none: an address or fingerprint that is already set is kept.
+func fillRecoveredHub(file *config.ConfigFile, rec *agent.RecoveredHub) {
+	if rec == nil {
+		return
+	}
+	if _, ok, _ := file.Lookup(config.KeyServer); !ok {
+		res := &config.Resolver{Role: config.ScopeWorker, File: file, LookupEnv: func(string) (string, bool) { return "", false }}
+		if server, fp, ok := config.PendingJoin(res); !ok || server != rec.URL || fp != rec.Fingerprint {
+			return
+		}
+		file.ClearPendingJoin()
+		file.Set(config.KeyServer, rec.URL)
+		if v, ok, _ := file.Lookup(config.KeyHubFingerprint); (!ok || v == "") && rec.Fingerprint != "" {
+			file.Set(config.KeyHubFingerprint, rec.Fingerprint)
+		}
+	}
 }
 
 // firstRunService is the first-run gate of the service path.
@@ -604,7 +730,11 @@ func withTargetDefaults(lookupEnv func(string) (string, bool), reg *config.Regis
 			inject[s.EnvName()] = stateDir
 		}
 	}
-	if s, ok := reg.Lookup(config.KeyTmuxSocket); ok {
+	managedAndroid := false
+	if m, err := withFile.Resolve(config.KeyManagedHost); err == nil && m.Value == config.ManagedHostAndroid {
+		managedAndroid = true // the private socket is never a default
+	}
+	if s, ok := reg.Lookup(config.KeyTmuxSocket); ok && !managedAndroid {
 		if r, err := withFile.Resolve(s.Key); err == nil && r.Source == config.SourceDefault {
 			if sock, err := pe.TmuxSocket(); err == nil && sock != "" {
 				inject[s.EnvName()] = sock
@@ -785,7 +915,7 @@ func fillUpConfig(file *config.ConfigFile, plain *config.Resolver, reg *config.R
 	for _, s := range reg.ForScope(config.ScopeWorker) {
 		// Only a value given by flag or environment is saved; a saved
 		// allow_new_sessions is never overwritten otherwise.
-		if s.Secret || s.Key == config.KeyStateDir {
+		if s.Secret || s.Key == config.KeyStateDir || s.SupervisorOnly {
 			continue
 		}
 		_, byFlag, _ := flags.Lookup(s.Key)

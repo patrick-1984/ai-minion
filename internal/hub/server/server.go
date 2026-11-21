@@ -340,6 +340,19 @@ func (s *Server) ManagementAddr() string {
 func (s *Server) Run(ctx context.Context) error {
 	cfg := s.cfg
 	log := cfg.logger()
+	// A trial must have no background jobs or local control socket: even a
+	// read-only HTTP request can authenticate or refresh external credentials.
+	trial := os.Getenv("MINION_MAINTENANCE") == "readonly"
+	reg := s.reg
+	if trial {
+		reg = NewRegistry()
+		if err := registerCore(reg); err != nil {
+			return err
+		}
+		if err := registerStore(reg); err != nil {
+			return err
+		}
+	}
 
 	if err := CheckDataDir(cfg.DataDir); err != nil {
 		return err
@@ -379,7 +392,7 @@ func (s *Server) Run(ctx context.Context) error {
 	defer clearDefaultNetwork(nw)
 
 	rs := &runState{cfg: cfg, net: nw, health: NewHealth(), mux: http.NewServeMux(), root: &Root{}}
-	srv := newHTTPServerBody(startupGate(rs.health, rs.root), log, http2WriteByteTimeout, s.bodyTimeout)
+	srv := newHTTPServerBody(startupGate(rs.health, maintenanceGate(rs.root)), log, http2WriteByteTimeout, s.bodyTimeout)
 	serveLn := ln
 	if certs != nil {
 		srv.TLSConfig = certs.TLSConfig()
@@ -392,8 +405,8 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() { serveErr <- srv.Serve(serveLn) }()
 
 	var mgmt *managementServer
-	if cfg.ManagementListen != "" {
-		mgmt, err = startManagement(cfg.ManagementListen, startupGate(rs.health, rs.root), log, s.bodyTimeout)
+	if cfg.ManagementListen != "" && !trial {
+		mgmt, err = startManagement(cfg.ManagementListen, startupGate(rs.health, maintenanceGate(rs.root)), log, s.bodyTimeout)
 		if err != nil {
 			_ = srv.Close()
 			return err
@@ -402,7 +415,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.mgmtAddr.Store(&mgmt.addr)
 	}
 
-	kernel := NewKernel(s.reg)
+	kernel := NewKernel(reg)
 	if err := kernel.Start(context.WithValue(ctx, runStateKey{}, rs)); err != nil {
 		_ = srv.Close() // the kernel has already stopped the modules it started
 		return err
@@ -457,6 +470,18 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-t.C:
 	}
 	return runErr
+}
+
+// maintenanceGate rejects all application traffic during a trial. The only
+// routes admitted are the health probes handled by the outer startupGate.
+func maintenanceGate(app http.Handler) http.Handler {
+	if os.Getenv("MINION_MAINTENANCE") != "readonly" {
+		return app
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		writeStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "reason": "maintenance"})
+	})
 }
 
 // startupGate is the root handler. The health endpoints are always served by

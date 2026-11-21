@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
@@ -43,6 +44,17 @@ func updateBlock(exe, remoteUpdate string, getenv func(string) string, _ func(st
 		if err := version.CheckTrustedExecutable(exe); err != nil {
 			return "install minion in a folder that only administrators can change to update it remotely"
 		}
+	}
+	return ""
+}
+
+// ManagedUpdateBlock says why the binary of a managed host is never replaced
+// by an update ("" for an ordinary host). The binary of the Android app is a
+// file of the signed APK: only a new APK replaces it, and a binary swapped in
+// place would not match the signature of the app.
+func ManagedUpdateBlock(m config.ManagedHost) string {
+	if m.Android {
+		return "this is the Minion Android app: install the new APK instead; the binary inside the app is never replaced"
 	}
 	return ""
 }

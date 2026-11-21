@@ -129,6 +129,8 @@ func HiddenSessionRefusal(workerName string, f transport.WorkerFacts, pol Hidden
 			fix = "Run the Worker as yourself instead of as a Windows service: `minion worker up --foreground`, with psmux installed (winget install psmux)"
 		case f.SessionHost == transport.SessionHostConPTY:
 			fix = "Install psmux (winget install psmux) and restart the Worker with `minion worker up --foreground`"
+		case f.SessionHostReasonCode == transport.HostReasonAndroidManaged:
+			fix = "This Worker is the Minion Android app: its sessions live in the app's own tmux server and no other terminal can attach to them"
 		case f.SessionHostReasonCode == transport.HostReasonHiddenSetting || f.SessionHostReasonCode == transport.HostReasonContainerTmux:
 			fix = "Serve your own tmux server: mount your tmux socket into the Worker's container and set sessions_visible to yes (docs/install/worker-docker.md)"
 		case f.SessionHost == transport.SessionHostTmux:

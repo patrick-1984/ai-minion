@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Minion Worker</string>
+    <style name="MinionTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowBackground">#13171B</item>
+        <item name="android:colorAccent">#83E2BA</item>
+        <item name="android:statusBarColor">#13171B</item>
+        <item name="android:navigationBarColor">#13171B</item>
+    </style>
+</resources>

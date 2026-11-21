@@ -351,9 +351,13 @@ func writeFragmentTemplate(w http.ResponseWriter, t *template.Template, name str
 
 // fragments parses one embedded page template file on its own, so that a form
 // route can render a fragment the file defines next to its "content" block.
-func fragments(file string) func() *template.Template {
+func fragments(file string, partials ...string) func() *template.Template {
 	return sync.OnceValue(func() *template.Template {
-		return template.Must(template.ParseFS(templateFiles, "templates/_icons.html", "templates/"+file))
+		files := []string{"templates/_icons.html", "templates/" + file}
+		for _, partial := range partials {
+			files = append(files, "templates/"+partial)
+		}
+		return template.Must(template.ParseFS(templateFiles, files...))
 	})
 }
 

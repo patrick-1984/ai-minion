@@ -22,6 +22,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/setup"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
+	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
 )
 
 func init() {
@@ -396,6 +397,9 @@ func cmdContext(cmd *cobra.Command) context.Context {
 // variables answer questions. For the gate of "worker up" (explicit false) the
 // file counts too, so that a Hub address saved earlier is not asked again.
 func (d workerSetupDeps) runWizard(cmd *cobra.Command, res *config.Resolver, core config.WorkerCore, explicit bool) (setup.Result, error) {
+	if core.Managed.Android {
+		return setup.Result{}, errors.New("the Minion app configures Android Workers. Use the app, or pass --non-interactive-share with piped input")
+	}
 	hub, err := config.ResolveWorkerHub(res)
 	if err != nil {
 		return setup.Result{}, err
@@ -423,7 +427,11 @@ func (d workerSetupDeps) runWizard(cmd *cobra.Command, res *config.Resolver, cor
 		return setup.Result{}, err
 	}
 	var lister setup.SessionLister
-	if d.sessions != nil {
+	if core.Managed != (config.ManagedHost{}) {
+		if s := tmuxSessions(core.TmuxSocket, tmux.OptionsFor(core.Managed)...); s != nil {
+			lister = s
+		}
+	} else if d.sessions != nil {
 		lister = d.sessions(core.TmuxSocket)
 	} else if s := tmuxSessions(core.TmuxSocket); s != nil {
 		lister = s

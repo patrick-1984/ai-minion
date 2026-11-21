@@ -111,6 +111,7 @@ checksum:
   # No match (snapshot, local build) is fine.
   extra_files:
     - glob: tray-dist/minion-tray-*
+    - glob: android-dist/minion-android-*.apk
 
 # checksums.txt is signed with cosign keyless (GitHub OIDC): the bundle
 # checksums.txt.sigstore.json carries the certificate, the signature and the
@@ -179,6 +180,7 @@ docker_signs:
 release:
   extra_files:
     - glob: tray-dist/minion-tray-*
+    - glob: android-dist/minion-android-*.apk
   github:
     owner: patrick-1984
     name: ai-minion

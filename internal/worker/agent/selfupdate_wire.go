@@ -41,6 +41,9 @@ func setupSelfUpdate(log *slog.Logger, s Settings, ex *Executor, host term.Sessi
 		exe = ""
 	}
 	block := updateBlock(exe, resolve(config.KeyRemoteUpdate, "on"), os.Getenv, fileExists)
+	if b := ManagedUpdateBlock(s.Managed); b != "" {
+		block = b
+	}
 	log.Debug("self-update", "exe", exe, "block", block, "under_service_manager", underServiceManager(),
 		"os", runtime.GOOS, "running", version.Version)
 

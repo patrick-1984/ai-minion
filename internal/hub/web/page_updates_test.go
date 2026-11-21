@@ -48,6 +48,25 @@ func TestUpdatesPageDoesNotShowTheOldChannelsAnswer(t *testing.T) {
 	mustHave(t, body, `hx-post="/admin/updates/check"`, `id="hub-release-facts"`, `id="list-result"`)
 }
 
+func TestUpdatesPageHostPolicyAndQueuedResult(t *testing.T) {
+	res := ops.HubUpdateCheckResult{Current: "v0.17.0", Channel: "latest", Latest: "v0.18.0", Newer: true, SelfUpdate: true,
+		HostUpdater: &ops.HubHostUpdaterStatus{App: "scratch-hub", Available: true, AllowHubPolicy: true, Window: "03-05", Channel: "latest", Tick: "disabled", PolicyRevision: 7}}
+	f := newFakeOps().reply(ops.OpHubUpdateCheck, res).reply(ops.OpHubUpdatePolicy, res).reply(ops.OpHubUpdate, ops.HubUpdateResult{From: "v0.17.0", To: "v0.18.0", Queued: true})
+	connect(t, f)
+	s := adminServer(t)
+	body := get(t, s, pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `TrueNAS host updater`, `scratch-hub`, `data-host-policy`, `value="7"`, `Queue update`)
+	rec := post(t, s, pathAdminUpdates+"/policy", adminHeader, url.Values{"enabled": {"on"}, "window": {"22-02"}, "channel": {"0.18"}, "revision": {"7"}})
+	if rec.Code != 303 || len(f.called(ops.OpHubUpdatePolicy)) != 1 {
+		t.Fatalf("policy POST: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = post(t, s, pathAdminUpdates+"/hub", adminHeader, url.Values{})
+	fl := flashesOf(rec)
+	if rec.Header().Get("HX-Refresh") != "true" || len(fl) != 1 || !strings.Contains(fl[0].Text, "queued") || !strings.Contains(fl[0].Text, "No restart has happened yet") {
+		t.Fatalf("queued result was not clearly reported: %v %+v", rec.Header(), fl)
+	}
+}
+
 // Check now waits for the check, then redirects to the page (HX-Redirect for
 // htmx, which carries the CSRF header; 303 otherwise).
 func TestUpdatesCheckNowWaitsAndRedirects(t *testing.T) {

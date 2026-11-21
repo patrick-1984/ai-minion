@@ -623,7 +623,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			pairingTicket.HandshakeFailed(err)
 		}
 		// HubHandshake closed conn and told the Worker what it may know.
-		h.log.Info("worker connect: handshake failed", "client_ip", ip.String(), "code", string(transport.ErrorCode(err)))
+		logx.BestEffort(h.log, slog.LevelInfo, "worker connect: handshake failed", "client_ip", ip.String(), "code", string(transport.ErrorCode(err)))
 		return
 	}
 	handshakeOK = true
@@ -638,7 +638,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = c.Reject(proto.NewError(proto.CodeInvalidArgument, "this Hub does not accept the "+string(res.Worker.Mode)+" mode"))
 	}
 	if err != nil {
-		h.log.Info("worker connect: ended", "client_ip", ip.String(), "error", err.Error())
+		logx.BestEffort(h.log, slog.LevelInfo, "worker connect: ended", "client_ip", ip.String(), "error", err.Error())
 	}
 }
 
@@ -918,7 +918,9 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		adm.detach()
 		return errors.New("workers: the Hub identity changed during the handshake")
 	}
-	h.log.Info("worker online", "worker_id", w.ID, "name", w.Name, "protocol", c.res.Version.String())
+	// Registration is observable by the peer before this line. A local log
+	// sink may stall at that instant; it must not pin the handler through Close.
+	logx.BestEffort(h.log, slog.LevelInfo, "worker online", "worker_id", w.ID, "name", w.Name, "protocol", c.res.Version.String())
 	h.recheckAdmitted(ctx, c, w, pol)
 	if h.afterRecheck != nil {
 		h.afterRecheck()

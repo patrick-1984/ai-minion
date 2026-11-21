@@ -45,3 +45,20 @@ func TestInstallShellHarness(t *testing.T) {
 		t.Fatalf("install_test.sh failed: %v\n%s", err, out)
 	}
 }
+
+// TestDeviceInstallShellHarness verifies asset selection and write boundaries
+// without requiring an Android device or an ESP32.
+func TestDeviceInstallShellHarness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode")
+	}
+	for _, tool := range []string{"sh", "curl", "sha256sum", "python3"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+	out, err := exec.Command("sh", "device_install_test.sh").CombinedOutput()
+	if err != nil {
+		t.Fatalf("device_install_test.sh failed: %v\n%s", err, out)
+	}
+}

@@ -153,6 +153,9 @@ func (f *ConfigFile) Keys() []string {
 func (f *ConfigFile) UnknownKeys(reg *Registry, role Scope) []string {
 	var out []string
 	for _, k := range f.Keys() {
+		if k == pendingJoinKey && role == ScopeWorker {
+			continue
+		}
 		s, ok := reg.Lookup(k)
 		if !ok || !s.Scope.appliesTo(role) {
 			out = append(out, k)

@@ -1,0 +1,7 @@
+# Patches applied to the tmux 3.8 source, in this order, by
+# scripts/android/build-native.sh with `patch -p1 --fuzz=0` (zero fuzz: a
+# hunk that does not apply exactly fails the build). One "<file> <sha256>"
+# per line. The build refuses a *.patch file in this directory that is not
+# listed here, and a listed file whose hash differs.
+#
+# Empty: tmux 3.8 needs no patch for Android API 29 (see README.md).

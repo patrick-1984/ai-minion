@@ -94,13 +94,22 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 			return nil, err
 		}
 	}
+	enr := NewEnrollments(st, s.StateDir)
+	if rec, ok, err := enr.RecoverHub(ctx, s.Resolver); err != nil {
+		return nil, fmt.Errorf("read the enrollment: %w", err)
+	} else if ok {
+		hub.Server = rec.URL
+		if hub.Fingerprint == "" {
+			hub.Fingerprint = rec.Fingerprint
+		}
+		log.Info("recovered the Hub address from the enrollment (the join did not finish saving its settings)", "hub", hubLabel(rec.URL))
+	}
 	// A configured hub_fingerprint that is malformed refuses the start: it is
 	// never read as "absent" (the operator asked for a check).
 	expect, err := ParseHubExpectation(hub.Fingerprint)
 	if err != nil {
 		return nil, err
 	}
-	enr := NewEnrollments(st, s.StateDir)
 	host, _ := Require[term.SessionHost](env)
 	hostInfo, hostErr := Require[*SessionHostInfo](env)
 	hostKind := ""
@@ -145,6 +154,15 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	if err := Provide(env, enr); err != nil {
 		return nil, err
+	}
+	// The managed Android mode shows the pairing code through the private
+	// status of the control socket, never on the console or in the log.
+	var private *PairingStatus
+	if s.Managed.Android {
+		private = NewPairingStatus(d.clock)
+		if err := Provide(env, private); err != nil {
+			return nil, err
+		}
 	}
 	if err := Provide(env, c); err != nil {
 		return nil, err
@@ -225,7 +243,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 			if !ok {
 				continue
 			}
-			d.autoPair(pctx, s, hub.Server, expect, enr, ex)
+			d.autoPair(pctx, s, hub.Server, expect, enr, ex, private)
 			if !end() {
 				return
 			}
@@ -249,7 +267,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 // "minion worker pair", and the connector connects as soon as the pairing is
 // stored. Without it such a Worker only idled as "not enrolled" and showed
 // nothing to type into the Hub.
-func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, expect identity.FingerprintMatcher, enr *Enrollments, ex *Executor) {
+func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, expect identity.FingerprintMatcher, enr *Enrollments, ex *Executor, private *PairingStatus) {
 	if !needsAutoPair(ctx, s, hubURL, enr) {
 		return
 	}
@@ -260,13 +278,17 @@ func (d connectorDeps) autoPair(ctx context.Context, s Settings, hubURL string, 
 	}
 	p, err := NewPairer(PairerConfig{
 		HubURL: hubURL, Name: s.Name, Ops: ex.Ops, Features: ex.Features, ExpectHub: expect,
-		Enrollment: enr, Dialer: dialer, Clock: d.clock, Out: s.Out, Logger: log,
+		Enrollment: enr, Dialer: dialer, Clock: d.clock, Out: s.Out, Logger: log, Private: private, NoAdmit: private != nil,
 	})
 	if err != nil {
 		log.Warn("cannot start pairing", "error", err.Error())
 		return
 	}
-	log.Info("this Worker is not paired: showing a pairing code; enter it in the Hub (Workers > Add worker)")
+	if private != nil {
+		log.Info("this Worker is not paired: the pairing code is in the private status of the app (never in this log)")
+	} else {
+		log.Info("this Worker is not paired: showing a pairing code; enter it in the Hub (Workers > Add worker)")
+	}
 	if expect.IsZero() {
 		// First use without an expectation stays allowed (as before) and is
 		// still reported as hub_check=none ("not verified") in the status and

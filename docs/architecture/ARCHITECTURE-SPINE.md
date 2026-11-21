@@ -82,7 +82,9 @@ The edges in this diagram are the only dependency directions allowed. The rules:
     | kardianos/service | `worker/service` |
     | sigstore-go | `version` |
     | Column encryption | `hub/store` (the `secretbox` file) |
-  - All targets build with `CGO_ENABLED=0`.
+  - The desktop, server and headless archive targets build with `CGO_ENABLED=0`.
+    The sideloadable Android Worker uses the pinned Android NDK and Bionic DNS
+    resolver on both ARM ABIs. Android ARMv7 also requires external linking.
   - Adding a top-level package under `internal/` requires a spine update.
 
 ### AD-2: One operation catalog

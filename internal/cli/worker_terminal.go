@@ -22,6 +22,13 @@ func checkTerminalHost(ctx context.Context, res *config.Resolver, socket string,
 		return checkPsmux(res)
 	}
 	var opts []tmux.Option
+	managed, err := config.ResolveManagedHost(res)
+	if err != nil {
+		return err
+	}
+	if owner == nil {
+		opts = tmux.OptionsFor(managed)
+	}
 	if owner != nil {
 		socket = owner.Socket
 		opts = append(opts, tmux.WithUserProbe(), tmux.WithExec(func(_ context.Context, args []string, _ []byte) ([]byte, []byte, error) {
@@ -32,7 +39,7 @@ func checkTerminalHost(ctx context.Context, res *config.Resolver, socket string,
 			return out.Bytes(), nil, err
 		}))
 	}
-	_, err := tmux.New(socket, opts...)
+	_, err = tmux.New(socket, opts...)
 	return tmuxProblem(err)
 }
 

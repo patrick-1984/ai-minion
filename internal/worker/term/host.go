@@ -19,6 +19,10 @@ var (
 	ErrPaneChanged = errors.New("term: pane changed")
 	// ErrNotFound means the session, window or pane does not exist.
 	ErrNotFound = errors.New("term: not found")
+	// ErrHostDown means the session host is not running and was never asked to
+	// do anything: a supervised (managed) host that has stopped. Nothing was
+	// started, so a create that fails with it is a definite failure.
+	ErrHostDown = errors.New("term: the session host is not running")
 )
 
 // PaneRef identifies one pane at one moment. ID is the stable pane id (a tmux
