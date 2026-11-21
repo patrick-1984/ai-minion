@@ -160,6 +160,9 @@ func (e *Executor) shareSet(ctx context.Context, rq Request) (any, error) {
 		e.shareBarrier = args.OpSeq
 	}
 	saved, err := committer.CommitShareContext(ctx, next)
+	if err == nil && e.masterShareChanged != nil {
+		e.masterShareChanged(saved.ShareSelection)
+	}
 	e.shareMu.Unlock()
 	if err != nil {
 		return nil, internalErr("save the share selection", err)
