@@ -5,4 +5,5 @@
 *.db-wal
 *.db-shm
 /tray-dist/
+/android-dist/
 .android-native-work/

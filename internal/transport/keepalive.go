@@ -28,6 +28,9 @@ type KeepaliveConfig struct {
 	DeadAfter time.Duration
 	// Clock is the time source; nil means SystemClock.
 	Clock Clock
+
+	// pingDone lets same-package tests wait until the monitor can ping again.
+	pingDone chan<- struct{}
 }
 
 // RunKeepalive watches one connection until ctx ends or the peer is dead.
@@ -66,7 +69,15 @@ func RunKeepalive(ctx context.Context, cfg KeepaliveConfig, lastTraffic func() t
 		}
 		if inflight.CompareAndSwap(false, true) {
 			go func() {
-				defer inflight.Store(false)
+				defer func() {
+					inflight.Store(false)
+					if cfg.pingDone != nil {
+						select {
+						case cfg.pingDone <- struct{}{}:
+						case <-ctx.Done():
+						}
+					}
+				}()
 				_ = ping() // a failed ping shows up as silence
 			}()
 		}
