@@ -33,17 +33,17 @@ func TestWindow(t *testing.T) {
 }
 
 func TestConfigValidateAndLoad(t *testing.T) {
-	c := Config{App: "ai-minion", Dataset: "zasob/docker/aiminion/data", ReadinessURL: "http://127.0.0.1:30080/readyz"}.WithDefaults()
+	c := Config{App: "ai-minion", Dataset: "zasob/docker/aiminion/data", StateDir: "/mnt/tank/u/state"}.WithDefaults()
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	for _, bad := range []Config{
-		{App: "Bad App", Dataset: c.Dataset, ReadinessURL: c.ReadinessURL},
-		{App: c.App, Dataset: "/mnt/zasob/data", ReadinessURL: c.ReadinessURL},
-		{App: c.App, Dataset: "pool/../x", ReadinessURL: c.ReadinessURL},
-		{App: c.App, Dataset: "pool", ReadinessURL: c.ReadinessURL},
-		{App: c.App, Dataset: c.Dataset, ReadinessURL: "ftp://x"},
-		{App: c.App, Dataset: c.Dataset, ReadinessURL: c.ReadinessURL, Channel: "v1.2.3"},
+		{App: "Bad App", Dataset: c.Dataset, StateDir: c.StateDir},
+		{App: c.App, Dataset: "/mnt/zasob/data", StateDir: c.StateDir},
+		{App: c.App, Dataset: "pool/../x", StateDir: c.StateDir},
+		{App: c.App, Dataset: "pool", StateDir: c.StateDir},
+		{App: c.App, Dataset: c.Dataset, StateDir: "relative/dir"},
+		{App: c.App, Dataset: c.Dataset, StateDir: c.StateDir, Channel: "v1.2.3"},
 	} {
 		if err := bad.WithDefaults().Validate(); err == nil {
 			t.Errorf("accepted %+v", bad)
@@ -51,7 +51,7 @@ func TestConfigValidateAndLoad(t *testing.T) {
 	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, "c.json")
-	if err := os.WriteFile(p, []byte(`{"app":"ai-minion","dataset":"a/b","readiness_url":"http://h/readyz"}`), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(`{"app":"ai-minion","dataset":"a/b","state_dir":"/x/y"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := LoadConfig(p, os.Getuid()); err != nil || got.App != "ai-minion" {
@@ -77,6 +77,9 @@ func TestConfigValidateAndLoad(t *testing.T) {
 func TestJournalRefusesOpenDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil { // the umask may have narrowed it
 		t.Fatal(err)
 	}
 	if _, err := OpenJournal(dir, "ai-minion", -1, nil); err == nil {

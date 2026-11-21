@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"slices"
 	"strings"
 	"time"
@@ -110,6 +111,44 @@ func (e *Executor) logger() *slog.Logger {
 
 func (e *Executor) project() string { return "ix-" + e.Cfg.App }
 
+// call wrappers: every external call gets its own deadline.
+func (e *Executor) cc(ctx context.Context) (context.Context, context.CancelFunc) {
+	if e.Timeouts.Call <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, e.Timeouts.Call)
+}
+
+func (e *Executor) appState(ctx context.Context) (string, error) {
+	c, cancel := e.cc(ctx)
+	defer cancel()
+	return e.MW.AppState(c, e.Cfg.App)
+}
+
+func (e *Executor) appConfig(ctx context.Context) (Compose, error) {
+	c, cancel := e.cc(ctx)
+	defer cancel()
+	return e.MW.AppConfig(c, e.Cfg.App)
+}
+
+func (e *Executor) containers(ctx context.Context) ([]Container, error) {
+	c, cancel := e.cc(ctx)
+	defer cancel()
+	return e.Docker.Containers(c, e.project())
+}
+
+func (e *Executor) jobState(ctx context.Context, id int) (JobState, error) {
+	c, cancel := e.cc(ctx)
+	defer cancel()
+	return e.MW.JobState(c, id)
+}
+
+func (e *Executor) zfsCall(ctx context.Context, f func(context.Context) error) error {
+	c, cancel := context.WithTimeout(ctx, e.Timeouts.ZFS)
+	defer cancel()
+	return f(c)
+}
+
 // Tick performs one run. The order is fixed: lock, reconcile, request,
 // policy and window, attempt. It writes the status file before returning.
 func (e *Executor) Tick(ctx context.Context) (TickResult, error) {
@@ -126,9 +165,23 @@ func (e *Executor) Tick(ctx context.Context) (TickResult, error) {
 	st, serr := e.Journal.LoadState()
 	if serr == nil {
 		att, _ := e.Journal.LoadAttempt()
+		st = e.syncLastTag(st, att)
 		e.publish(res, st, att, e.lastRequestError, e.lastRequestHandled)
 	}
 	return res, tickErr
+}
+
+// syncLastTag derives the installed tag from the single journal record that
+// says an attempt committed (the commit writes nothing else), and repairs
+// the state when a run died between the two.
+func (e *Executor) syncLastTag(st State, att *Attempt) State {
+	if att != nil && att.Phase == PhaseCommitted && st.LastTag != att.ToTag {
+		st.LastTag = att.ToTag
+		if err := e.Journal.SaveState(st); err != nil {
+			e.logger().Error("state not written", "error", err.Error())
+		}
+	}
+	return st
 }
 
 func (e *Executor) publish(res TickResult, st State, att *Attempt, reqErr, handled string) {
@@ -142,40 +195,15 @@ func (e *Executor) publish(res TickResult, st State, att *Attempt, reqErr, handl
 	}
 }
 
-func (e *Executor) tick(ctx context.Context) (TickResult, error) {
-	e.lastRequestError, e.lastRequestHandled = "", ""
+// admission is the effective permission to start an attempt now.
+type admission struct {
+	channel string
+	once    *Once
+}
 
-	// 1. Reconcile first: outside the window, disabled, Hub down.
-	att, err := e.Journal.LoadAttempt()
-	if err != nil {
-		return TickResult{Tick: TickRefused, Detail: "journal_unreadable"}, err
-	}
-	if att != nil && !Terminal(att.Phase) {
-		if err := e.reconcile(ctx, att); err != nil {
-			if errors.Is(err, errPending) {
-				return TickResult{Tick: TickPending, Detail: att.Phase, Attempt: att}, nil
-			}
-			return TickResult{Tick: TickRecoveryRequired, Detail: codeOf(err), Attempt: att}, err
-		}
-		tick := TickReconciled
-		if att.Phase == PhaseRecoveryRequired {
-			tick = TickRecoveryRequired
-		}
-		return TickResult{Tick: tick, Detail: att.Phase, Attempt: att}, nil
-	}
-	if att != nil && Terminal(att.Phase) {
-		e.sweep(ctx, att)
-	}
-	if att != nil && att.Phase == PhaseRecoveryRequired {
-		return TickResult{Tick: TickRecoveryRequired, Detail: att.Reason, Attempt: att}, nil
-	}
-
-	st, err := e.Journal.LoadState()
-	if err != nil {
-		return TickResult{Tick: TickRefused, Detail: "journal_unreadable"}, err
-	}
-
-	// 2. Request file (untrusted input; problems never stop the reconcile above).
+// admit evaluates the request file, the policy and the window against the
+// current time. It returns a result when no attempt may start.
+func (e *Executor) admit(st State) (admission, *TickResult) {
 	now := e.now()
 	req, rerr := ReadRequest(e.Cfg.RequestFile, now)
 	if rerr != nil {
@@ -187,41 +215,93 @@ func (e *Executor) tick(ctx context.Context) (TickResult, error) {
 		enabled, channel, window = req.Policy.Enabled, req.Policy.Channel, req.Policy.Window
 	}
 	var once *Once
-	if req != nil && req.Once != nil && !slices.Contains(st.Consumed, req.Once.ID) {
-		once = req.Once
-	} else if req != nil && req.Once != nil {
-		e.lastRequestHandled = req.Once.ID
-	}
-
-	// 3. Admission.
-	if once == nil {
-		if !enabled {
-			return TickResult{Tick: TickDisabled}, nil
-		}
-		w, werr := ParseWindow(window)
-		if werr != nil {
-			return TickResult{Tick: TickRefused, Detail: "bad_window"}, nil
-		}
-		if !w.Contains(now) {
-			return TickResult{Tick: TickOutsideWindow}, nil
+	if req != nil && req.Once != nil {
+		if slices.Contains(st.Consumed, req.Once.ID) {
+			e.lastRequestHandled = req.Once.ID
+		} else {
+			once = req.Once
 		}
 	}
+	if once != nil {
+		return admission{channel: channel, once: once}, nil
+	}
+	if !enabled {
+		return admission{}, &TickResult{Tick: TickDisabled}
+	}
+	w, werr := ParseWindow(window)
+	if werr != nil {
+		return admission{}, &TickResult{Tick: TickRefused, Detail: "bad_window"}
+	}
+	if !w.Contains(now) {
+		return admission{}, &TickResult{Tick: TickOutsideWindow}
+	}
+	return admission{channel: channel}, nil
+}
 
-	state, err := e.MW.AppState(ctx, e.Cfg.App)
+func (e *Executor) tick(ctx context.Context) (TickResult, error) {
+	e.lastRequestError, e.lastRequestHandled = "", ""
+
+	att, err := e.Journal.LoadAttempt()
+	if err != nil {
+		return TickResult{Tick: TickRefused, Detail: "journal_unreadable"}, err
+	}
+	st, err := e.Journal.LoadState()
+	if err != nil {
+		return TickResult{Tick: TickRefused, Detail: "journal_unreadable"}, err
+	}
+	st = e.syncLastTag(st, att)
+
+	// 1. Reconcile first: outside the window, disabled, Hub down.
+	if att != nil && !Terminal(att.Phase) {
+		if err := e.reconcile(ctx, att); err != nil {
+			if errors.Is(err, errPending) {
+				return TickResult{Tick: TickPending, Detail: att.Phase, Attempt: att}, nil
+			}
+			return TickResult{Tick: TickRecoveryRequired, Detail: codeOf(err), Attempt: att}, err
+		}
+		tick := TickReconciled
+		if att.Phase == PhaseRecoveryRequired {
+			tick = TickRecoveryRequired
+		}
+		_ = e.syncLastTag(st, att)
+		return TickResult{Tick: tick, Detail: att.Phase, Attempt: att}, nil
+	}
+	if att != nil && Terminal(att.Phase) {
+		e.sweep(ctx, att)
+	}
+	if att != nil && att.Phase == PhaseRecoveryRequired {
+		return TickResult{Tick: TickRecoveryRequired, Detail: att.Reason, Attempt: att}, nil
+	}
+
+	// 2. Request file (untrusted input), policy and window.
+	adm, res := e.admit(st)
+	if res != nil {
+		return *res, nil
+	}
+
+	state, err := e.appState(ctx)
 	if err != nil {
 		return TickResult{Tick: TickRefused, Detail: "middleware_unavailable"}, nil
 	}
 	if state != AppRunning {
 		return TickResult{Tick: TickHubDown, Detail: strings.ToLower(state)}, nil
 	}
-	return e.attempt(ctx, st, channel, once)
+	return e.attempt(ctx, st, adm)
 }
 
 // attempt selects a release and runs the transaction.
-func (e *Executor) attempt(ctx context.Context, st State, channel string, once *Once) (TickResult, error) {
+func (e *Executor) attempt(ctx context.Context, st State, adm admission) (TickResult, error) {
 	refuse := func(code string) (TickResult, error) { return TickResult{Tick: TickRefused, Detail: code}, nil }
+	once := adm.once
 
-	compose, err := e.MW.AppConfig(ctx, e.Cfg.App)
+	custom, err := e.MW.IsCustom(ctx, e.Cfg.App)
+	if err != nil {
+		return refuse("middleware_unavailable")
+	}
+	if !custom {
+		return refuse("not_a_custom_app")
+	}
+	compose, err := e.appConfig(ctx)
 	if err != nil {
 		return refuse("middleware_unavailable")
 	}
@@ -244,7 +324,7 @@ func (e *Executor) attempt(ctx context.Context, st State, channel string, once *
 		return refuse("baseline_unknown")
 	}
 
-	selector := channel
+	selector := adm.channel
 	if once != nil {
 		selector = once.Target
 	}
@@ -267,10 +347,7 @@ func (e *Executor) attempt(ctx context.Context, st State, channel string, once *
 		return refuse("candidate_quarantined")
 	}
 	base, err := e.Releases.Verified(ctx, baseTag)
-	if err != nil {
-		return refuse("baseline_unverified")
-	}
-	if base.Tag != baseTag {
+	if err != nil || base.Tag != baseTag {
 		return refuse("baseline_unverified")
 	}
 	if !rangeContains(cand.Range, base.Range) {
@@ -297,7 +374,7 @@ func (e *Executor) attempt(ctx context.Context, st State, channel string, once *
 	if prevID == candID {
 		return refuse("candidate_equals_previous")
 	}
-	cs, err := e.Docker.Containers(ctx, e.project())
+	cs, err := e.containers(ctx)
 	if err != nil {
 		return refuse("docker_unavailable")
 	}
@@ -305,42 +382,76 @@ func (e *Executor) attempt(ctx context.Context, st State, channel string, once *
 	if run == nil || run.ImageID != prevID {
 		return refuse("running_image_mismatch")
 	}
-	if err := e.Probe.Ready(ctx); err != nil {
+
+	// The configured dataset must be the source of the Hub's data mount.
+	mctx, mcancel := e.cc(ctx)
+	src, err := e.Docker.MountSource(mctx, run.ID, e.Cfg.DataMount)
+	mcancel()
+	if err != nil {
+		return refuse("data_mount_unknown")
+	}
+	var info DatasetInfo
+	if err := e.zfsCall(ctx, func(c context.Context) (err error) { info, err = e.ZFS.DatasetAt(c, src); return }); err != nil {
+		return refuse("dataset_unresolved")
+	}
+	if info.Name != e.Cfg.Dataset || info.GUID == "" {
+		return refuse("dataset_mismatch")
+	}
+
+	scheme, port := "https", "8443"
+	if compose.Env(e.Cfg.Service, "MINION_TLS") == "off" {
+		scheme = "http"
+	}
+	if l := compose.Env(e.Cfg.Service, "MINION_LISTEN"); strings.Contains(l, ":") && !strings.HasSuffix(l, ":") {
+		port = l[strings.LastIndex(l, ":")+1:]
+	}
+	a := &Attempt{
+		ID: NewAttemptID(), App: e.Cfg.App, Service: e.Cfg.Service, Phase: PhasePrepared,
+		FromTag: baseTag, ToTag: cand.Tag, PreviousRef: base.Ref(), CandidateRef: cand.Ref(),
+		CandidateDigest: cand.Digest, PreviousImageID: prevID, CandidateImageID: candID,
+		Dataset: e.Cfg.Dataset, DataPath: src, DatasetGUID: info.GUID,
+		ProbeScheme: scheme, ProbePort: port, ComposeBeforeHash: compose.Hash(),
+		StartedAt: e.now().UTC(),
+	}
+	if err := e.readyNow(ctx, a, run); err != nil {
 		return TickResult{Tick: TickHubDown, Detail: "not_ready"}, nil
 	}
-	zctx, cancel := context.WithTimeout(ctx, e.Timeouts.ZFS)
-	free, err := e.ZFS.Available(zctx, e.Cfg.Dataset)
-	cancel()
-	if err != nil {
+	var free uint64
+	if err := e.zfsCall(ctx, func(c context.Context) (err error) { free, err = e.ZFS.Available(c, e.Cfg.Dataset); return }); err != nil {
 		return refuse("zfs_unavailable")
 	}
 	if free < e.Cfg.MinFreeBytes {
 		return refuse("not_enough_space")
 	}
-	cur, err := e.MW.AppConfig(ctx, e.Cfg.App)
+	cur, err := e.appConfig(ctx)
 	if err != nil || cur.Hash() != compose.Hash() {
 		return refuse("compose_changed")
+	}
+	// The restore document pins the VERIFIED previous digest, never a tag.
+	restoreDoc, err := compose.WithImage(e.Cfg.Service, base.Ref())
+	if err != nil {
+		return refuse("compose_service_missing")
 	}
 	after, err := compose.WithImage(e.Cfg.Service, cand.Ref())
 	if err != nil {
 		return refuse("compose_service_missing")
 	}
-
-	a := &Attempt{
-		ID: NewAttemptID(), App: e.Cfg.App, Service: e.Cfg.Service, Phase: PhasePrepared,
-		FromTag: baseTag, ToTag: cand.Tag, PreviousRef: runningRef, CandidateRef: cand.Ref(),
-		CandidateDigest: cand.Digest, PreviousImageID: prevID, CandidateImageID: candID,
-		Dataset: e.Cfg.Dataset, ComposeBeforeHash: compose.Hash(), ComposeAfterHash: after.Hash(),
-		Snapshot:  snapshotName(cand.Tag, ""),
-		StartedAt: e.now().UTC(),
-	}
+	a.SavedHash, a.ComposeAfterHash = restoreDoc.Hash(), after.Hash()
 	a.Snapshot = snapshotName(cand.Tag, a.ID)
 	if once != nil {
 		a.RequestID = once.ID
 	}
-	// The saved compose first, then the attempt, then the consumption of the
+
+	// Policy and one-shot are checked again immediately before the attempt
+	// that may stop the app is recorded (pulls and verification take time).
+	adm2, res := e.admit(st)
+	if res != nil || adm2.channel != adm.channel || (adm2.once == nil) != (once == nil) ||
+		(once != nil && adm2.once.ID != once.ID) {
+		return refuse("admission_changed")
+	}
+	// The saved document first, then the attempt, then the consumption of the
 	// one-shot request: all durable before the first disruption.
-	if err := e.Journal.SaveCompose(compose); err != nil {
+	if err := e.Journal.SaveCompose(restoreDoc); err != nil {
 		return refuse("journal_unwritable")
 	}
 	if err := e.Journal.SaveAttempt(a); err != nil {
@@ -354,7 +465,7 @@ func (e *Executor) attempt(ctx context.Context, st State, channel string, once *
 		e.lastRequestHandled = once.ID
 	}
 
-	terr := e.transact(ctx, a, after)
+	terr := e.transact(ctx, a)
 	if terr == nil {
 		return TickResult{Tick: TickUpdated, Detail: cand.Tag, Attempt: a}, nil
 	}
@@ -384,6 +495,21 @@ func (e *Executor) pull(ctx context.Context, ref string) error {
 	c, cancel := context.WithTimeout(ctx, e.Timeouts.Pull)
 	defer cancel()
 	return e.Docker.Pull(c, ref)
+}
+
+// readyURL is the /readyz URL of the container itself (never a configured
+// URL that could reach another Hub).
+func readyURL(a *Attempt, c *Container) string {
+	return a.ProbeScheme + "://" + net.JoinHostPort(c.IP, a.ProbePort) + "/readyz"
+}
+
+func (e *Executor) readyNow(ctx context.Context, a *Attempt, c *Container) error {
+	if c.IP == "" {
+		return errors.New("no container address")
+	}
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return e.Probe.Ready(pctx, readyURL(a, c))
 }
 
 func rangeContains(outer, inner version.ProtoRange) bool {

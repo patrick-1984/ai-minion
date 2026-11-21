@@ -36,11 +36,22 @@ const (
 // Implementations must never include configuration values in errors.
 type Middleware interface {
 	AppState(ctx context.Context, app string) (string, error)
+	// IsCustom reports whether the app is a custom (YAML) app.
+	IsCustom(ctx context.Context, app string) (bool, error)
 	AppConfig(ctx context.Context, app string) (Compose, error)
 	Stop(ctx context.Context, app string) (int, error)
 	Start(ctx context.Context, app string) (int, error)
 	Update(ctx context.Context, app string, c Compose) (int, error)
 	JobState(ctx context.Context, id int) (JobState, error)
+	// FindJobs lists recent jobs of a method for an app that started at or
+	// after since (to find a job whose id was lost with a killed run).
+	FindJobs(ctx context.Context, method, app string, since time.Time) ([]JobInfo, error)
+}
+
+// JobInfo is a middleware job found by FindJobs.
+type JobInfo struct {
+	ID    int
+	State JobState
 }
 
 // Container is a container of the app's compose project.
@@ -49,6 +60,12 @@ type Container struct {
 	Service string
 	ImageID string
 	Running bool
+	// StartedAt identifies this run of the container (changes on restart).
+	StartedAt string
+	// IP is the address the host reaches the container on (127.0.0.1 for host networking).
+	IP string
+	// Health is the Docker health status ("" when the image has no health check).
+	Health string
 }
 
 // Docker is the part of the Docker host CLI the executor uses.
@@ -59,12 +76,19 @@ type Docker interface {
 	ImageID(ctx context.Context, ref string) (string, error)
 	// Containers lists every container (any state) of a compose project.
 	Containers(ctx context.Context, project string) ([]Container, error)
+	// MountSource returns the host source path of the bind mount at dest.
+	MountSource(ctx context.Context, containerID, dest string) (string, error)
 }
+
+// DatasetInfo identifies a ZFS filesystem.
+type DatasetInfo struct{ Name, GUID string }
 
 // ZFS is the part of the zfs CLI the executor uses. All calls name one
 // dataset; none is recursive.
 type ZFS interface {
 	Available(ctx context.Context, dataset string) (uint64, error)
+	// DatasetAt returns the filesystem whose mountpoint is exactly path.
+	DatasetAt(ctx context.Context, path string) (DatasetInfo, error)
 	Snapshot(ctx context.Context, dataset, name string) error
 	Hold(ctx context.Context, dataset, name string) error
 	Release(ctx context.Context, dataset, name string) error
@@ -75,9 +99,9 @@ type ZFS interface {
 	Destroy(ctx context.Context, dataset, name string) error
 }
 
-// Prober checks the Hub's readiness (/readyz).
+// Prober asks a readiness URL (the container's own address) for /readyz.
 type Prober interface {
-	Ready(ctx context.Context) error
+	Ready(ctx context.Context, url string) error
 }
 
 // Release is a verified release (signed manifest).
@@ -108,6 +132,10 @@ type Timeouts struct {
 	Poll     time.Duration // polling interval
 	ZFS      time.Duration // one zfs command
 	Reconcil time.Duration // waiting for a job of an interrupted run
+	Call     time.Duration // one docker, zfs or middleware call
+	Restore  time.Duration // whole budget of one restore
+	Deploy   time.Duration // waiting for DEPLOYING to clear once jobs are settled
+	Final    time.Duration // sustained readiness after the read-only trial ends
 }
 
 // DefaultTimeouts are the production bounds.
@@ -116,5 +144,6 @@ func DefaultTimeouts() Timeouts {
 		Pull: 15 * time.Minute, Job: 10 * time.Minute, Stop: 3 * time.Minute,
 		Ready: 5 * time.Minute, Sustain: 60 * time.Second, Poll: 5 * time.Second,
 		ZFS: time.Minute, Reconcil: 10 * time.Minute,
+		Call: 30 * time.Second, Restore: 30 * time.Minute, Deploy: 2 * time.Minute, Final: 20 * time.Second,
 	}
 }

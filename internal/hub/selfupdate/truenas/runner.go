@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Runner runs a host command. stdin may be nil.
@@ -22,6 +23,7 @@ type ExecRunner struct{}
 // Run implements Runner.
 func (ExecRunner) Run(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = 5 * time.Second // a killed child's pipes never hold the run
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}

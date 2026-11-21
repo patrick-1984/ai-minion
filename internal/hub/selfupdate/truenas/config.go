@@ -21,8 +21,8 @@ type Config struct {
 	// Dataset is the ZFS dataset (pool/path, not a mount path) that holds
 	// exactly the Hub data. It is snapshotted and rolled back as a whole.
 	Dataset string `json:"dataset"`
-	// ReadinessURL is the Hub's /readyz URL as seen from the host.
-	ReadinessURL string `json:"readiness_url"`
+	// DataMount is the Hub's data path inside the container (default /data).
+	DataMount string `json:"data_mount"`
 	// Window is the UTC window "HH-HH" in which unattended attempts start.
 	Window string `json:"window"`
 	// Channel is "latest", "X" or "X.Y".
@@ -33,7 +33,9 @@ type Config struct {
 	// AllowHubPolicy lets the policy in the request file (written by the Hub)
 	// replace Enabled, Channel and Window. Off by default.
 	AllowHubPolicy bool `json:"allow_hub_policy"`
-	// StateDir holds the journal and the Sigstore cache (root-owned).
+	// StateDir holds the journal and the Sigstore cache: root-owned, every
+	// ancestor root-owned and closed to group and others, on a persistent
+	// dataset outside the Hub data.
 	StateDir string `json:"state_dir"`
 	// RequestFile is read (bounded, no links) and may be written by the Hub.
 	RequestFile string `json:"request_file"`
@@ -42,9 +44,6 @@ type Config struct {
 	// MinFreeBytes is the free space the dataset must have before an attempt.
 	MinFreeBytes uint64 `json:"min_free_bytes"`
 }
-
-// DefaultStateDir is where the journal lives when the config names none.
-const DefaultStateDir = "/var/lib/minion-hub-updater"
 
 var (
 	appRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
@@ -104,8 +103,8 @@ func (c Config) WithDefaults() Config {
 	if c.Window == "" {
 		c.Window = "03-05"
 	}
-	if c.StateDir == "" {
-		c.StateDir = DefaultStateDir
+	if c.DataMount == "" {
+		c.DataMount = "/data"
 	}
 	if c.MinFreeBytes == 0 {
 		c.MinFreeBytes = 1 << 30
@@ -124,8 +123,8 @@ func (c Config) Validate() error {
 	if !datasetRE.MatchString(c.Dataset) || strings.Contains(c.Dataset, "..") {
 		return errors.New("config: dataset must be a ZFS dataset name like pool/apps/hub-data (not a mount path)")
 	}
-	if !strings.HasPrefix(c.ReadinessURL, "http://") && !strings.HasPrefix(c.ReadinessURL, "https://") {
-		return errors.New("config: readiness_url must be an http(s) URL")
+	if !strings.HasPrefix(c.DataMount, "/") {
+		return errors.New("config: data_mount must be an absolute path inside the container")
 	}
 	if _, err := ParseWindow(c.Window); err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -134,7 +133,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: %w", err)
 	}
 	if !strings.HasPrefix(c.StateDir, "/") {
-		return errors.New("config: state_dir must be an absolute path")
+		return errors.New("config: state_dir must be an absolute path on a persistent dataset (for example /mnt/tank/minion-hub-updater/state)")
 	}
 	for _, p := range []string{c.RequestFile, c.StatusFile} {
 		if p != "" && !strings.HasPrefix(p, "/") {

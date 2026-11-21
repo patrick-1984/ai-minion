@@ -25,14 +25,24 @@ func TestHubUpdaterRefusesNonRoot(t *testing.T) {
 	}
 }
 
+func TestRecoveryRequiredFailsTheCronRun(t *testing.T) {
+	if err := tickFailure(truenas.TickResult{Tick: truenas.TickRecoveryRequired, Detail: "rollback_failed"}); err == nil ||
+		!strings.Contains(err.Error(), "rollback_failed") || strings.Contains(err.Error(), "\n") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := tickFailure(truenas.TickResult{Tick: truenas.TickIdle}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHubUpdaterValidatesConfigAndRuns(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "c.json")
-	if err := os.WriteFile(cfg, []byte(`{"app":"ai-minion","dataset":"tank/hub","readiness_url":"http://127.0.0.1:1/readyz","enabled":false}`), 0o600); err != nil {
+	if err := os.WriteFile(cfg, []byte(`{"app":"ai-minion","dataset":"tank/hub","enabled":false}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	built := false
-	deps := hubUpdaterDeps{euid: func() int { return 0 }, ownerUID: os.Getuid(),
+	deps := hubUpdaterDeps{euid: func() int { return 0 }, ownerUID: -1,
 		build: func(c truenas.Config, j *truenas.Journal, _ *slog.Logger) *truenas.Executor {
 			built = true
 			if c.Window != "03-05" || !c.Enabled {
@@ -42,6 +52,7 @@ func TestHubUpdaterValidatesConfigAndRuns(t *testing.T) {
 		}}
 	cmd := newHubUpdaterCmd(deps)
 	cmd.SetArgs([]string{"--config", cfg, "--state-dir", filepath.Join(dir, "state"), "--enabled", "--clear-quarantine"})
+	_ = os.Chmod(dir, 0o700)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)

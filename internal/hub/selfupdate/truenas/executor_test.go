@@ -33,7 +33,7 @@ func TestHappyPath(t *testing.T) {
 	if res.Tick != TickUpdated {
 		t.Fatalf("tick = %+v", res)
 	}
-	want := "pull,stop,snapshot,hold,update:" + repo + "@" + candDg + ",start,release,destroy"
+	want := "pull,stop,snapshot,hold,update:" + repo + "@" + candDg + "+ro,start,update:" + repo + "@" + candDg + ",release,destroy"
 	if got := w.effects(); got != want {
 		t.Fatalf("effects\n got %s\nwant %s", got, want)
 	}
@@ -49,7 +49,7 @@ func TestHappyPath(t *testing.T) {
 	if a.Phase != PhaseCommitted || st.LastTag != "v0.17.0" {
 		t.Fatalf("attempt %+v state %+v", a, st)
 	}
-	if _, err := e.Journal.LoadCompose(); err == nil {
+	if _, err := e.Journal.LoadCompose(""); err == nil {
 		t.Fatal("saved compose must be dropped after commit")
 	}
 	raw, err := os.ReadFile(e.Cfg.StatusFile)
@@ -74,8 +74,8 @@ func TestFailureAfterMigrationRestoresInOrder(t *testing.T) {
 	if res.Tick != TickRolledBack {
 		t.Fatalf("tick = %+v", res)
 	}
-	want := "pull,stop,snapshot,hold,update:" + repo + "@" + candDg + ",start," +
-		"stop,rollback,update:" + repo + ":v0.16.0,start,release,destroy"
+	want := "pull,stop,snapshot,hold,update:" + repo + "@" + candDg + "+ro,start," +
+		"stop,rollback,update:" + repo + "@" + prevDg + ",start,release,destroy"
 	if got := w.effects(); got != want {
 		t.Fatalf("effects\n got %s\nwant %s", got, want)
 	}
@@ -83,7 +83,8 @@ func TestFailureAfterMigrationRestoresInOrder(t *testing.T) {
 	if w.data != "v1" || w.runImg != prevID {
 		t.Fatalf("data %q image %q", w.data, w.runImg)
 	}
-	if img, _ := w.compose.Image("minion-hub"); img != repo+":v0.16.0" {
+	// The restore pins the verified previous DIGEST, never the mutable tag.
+	if img, _ := w.compose.Image("minion-hub"); img != repo+"@"+prevDg {
 		t.Fatalf("stored image %q", img)
 	}
 	st, _ := e.Journal.LoadState()
@@ -195,17 +196,17 @@ func checkReconciled(t *testing.T, w *world, e *Executor, k, j int) {
 	if a != nil && !Terminal(a.Phase) {
 		t.Fatalf("kill %d/%d: attempt still at %s", k, j, a.Phase)
 	}
-	if w.state != AppRunning || !w.running || w.Ready(context.Background()) != nil {
+	if w.state != AppRunning || !w.running || w.Ready(context.Background(), "https://10.0.0.2:8443/readyz") != nil {
 		t.Fatalf("kill %d/%d: app not healthy: state %s image %s data %s (attempt %+v)", k, j, w.state, w.runImg, w.data, a)
 	}
 	img := w.mustImage()
 	switch w.runImg {
 	case prevID:
-		if w.data != "v1" || img != repo+":v0.16.0" {
+		if w.data != "v1" || (img != repo+":v0.16.0" && img != repo+"@"+prevDg) {
 			t.Fatalf("kill %d/%d: previous image with data %q compose %q", k, j, w.data, img)
 		}
 	case candID:
-		if w.data != "migrated" || img != repo+"@"+candDg || a == nil || a.Phase != PhaseCommitted {
+		if w.data != "migrated" || img != repo+"@"+candDg || a == nil || a.Phase != PhaseCommitted || w.readonly {
 			t.Fatalf("kill %d/%d: candidate state data %q compose %q attempt %+v", k, j, w.data, img, a)
 		}
 	}
@@ -355,6 +356,253 @@ func TestHubDownIsNotTouched(t *testing.T) {
 	w.state, w.running = AppStopped, false
 	e := newExec(t, w)
 	if res := tick(t, e); res.Tick != TickHubDown || len(w.log) != 0 {
+		t.Fatalf("%+v effects %s", res, w.effects())
+	}
+}
+
+func TestRunningTrialIsReadOnlyAndLiftedBeforeCommit(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	sawRO := false
+	w.onEffect = func(name string) {
+		if name == "start" && w.readonly {
+			sawRO = true
+		}
+	}
+	if res := tick(t, e); res.Tick != TickUpdated {
+		t.Fatalf("%+v", res)
+	}
+	if !sawRO || w.readonly || w.compose.Env("minion-hub", MaintenanceEnv) != "" {
+		t.Fatalf("trial readonly=%v, final readonly=%v env=%q", sawRO, w.readonly, w.compose.Env("minion-hub", MaintenanceEnv))
+	}
+}
+
+// H3: a job accepted by the middleware whose id was lost with the run keeps
+// the next ticks pending; nothing is restored underneath it.
+func TestAcceptedJobWithLostIDBlocksRecoveryUntilItEnds(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	w.holdJobs = true
+	w.killAt = 2 // after the stop effect, before its id is recorded
+	if !runKilled(func() { _, _ = e.Tick(context.Background()) }) {
+		t.Fatal("expected a kill")
+	}
+	w.killAt = 0
+	w.now = time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	w.log = nil
+	res := tick(t, e)
+	if res.Tick != TickPending || len(w.log) != 0 {
+		t.Fatalf("tick %+v effects %s", res, w.effects())
+	}
+	a, _ := e.Journal.LoadAttempt()
+	if a.Phase == PhaseAborted || Terminal(a.Phase) {
+		t.Fatalf("attempt ended while a job may run: %s", a.Phase)
+	}
+	w.releaseJobs()
+	w.holdJobs = false
+	for i := 0; i < 3; i++ {
+		tick(t, e)
+	}
+	a, _ = e.Journal.LoadAttempt()
+	if !Terminal(a.Phase) || !w.running || w.runImg != prevID || w.data != "v1" {
+		t.Fatalf("phase %s running %v image %s", a.Phase, w.running, w.runImg)
+	}
+	noViolations(t, w)
+}
+
+// H3: a start job that times out is not raced by an immediate restore.
+func TestJobTimeoutDoesNotRestoreWhileJobRuns(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	e.Timeouts.Job = 30 * time.Second
+	e.Timeouts.Reconcil = 30 * time.Second
+	w.onEffect = func(name string) {
+		if name == "start" {
+			w.holdJobs = true // the job created next (none) ... keep the start job running
+			for _, j := range w.jobs {
+				if j.method == "app.start" {
+					j.state = JobRunning
+				}
+			}
+		}
+	}
+	res := tick(t, e)
+	if res.Tick != TickPending {
+		t.Fatalf("%+v", res)
+	}
+	if strings.Contains(w.effects(), "rollback") {
+		t.Fatalf("restored while the start job runs: %s", w.effects())
+	}
+	w.onEffect, w.holdJobs = nil, false
+	w.releaseJobs()
+	w.candidateBroken = true
+	for i := 0; i < 3; i++ {
+		tick(t, e)
+	}
+	a, _ := e.Journal.LoadAttempt()
+	if a.Phase != PhaseRolledBack || w.data != "v1" {
+		t.Fatalf("phase %s data %s", a.Phase, w.data)
+	}
+}
+
+// H4: DEPLOYING that never clears must not keep recovery pending.
+func TestStuckDeployingStillRollsBack(t *testing.T) {
+	w := newWorld()
+	w.candidateBroken, w.stuckDeploying = true, true
+	e := newExec(t, w)
+	w.onEffect = func(name string) {
+		if name == "start" {
+			panic(killed{}) // the run dies right after starting the candidate
+		}
+	}
+	if !runKilled(func() { _, _ = e.Tick(context.Background()) }) {
+		t.Fatal("expected a kill")
+	}
+	w.onEffect = nil
+	w.now = time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		tick(t, e)
+	}
+	a, _ := e.Journal.LoadAttempt()
+	if a.Phase != PhaseRolledBack || w.runImg != prevID || w.data != "v1" {
+		t.Fatalf("phase %s image %s data %s", a.Phase, w.runImg, w.data)
+	}
+}
+
+// H5: the configured dataset must be the source of the Hub's data mount.
+func TestWrongDatasetIsRefused(t *testing.T) {
+	w := newWorld()
+	w.datasetName = "tank/other"
+	e := newExec(t, w)
+	res := tick(t, e)
+	if res.Tick != TickRefused || res.Detail != "dataset_mismatch" || strings.Contains(w.effects(), "stop") {
+		t.Fatalf("%+v effects %s", res, w.effects())
+	}
+}
+
+// H6: an administrator's edit is preserved, not overwritten.
+func TestAdminEditIsNeverOverwritten(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	admin, _ := w.compose.WithImage("minion-hub", repo+":v0.16.0")
+	admin["x-admin"] = "edit"
+	w.onEffect = func(name string) {
+		if name == "stop" {
+			w.compose = admin
+		}
+	}
+	res := tick(t, e)
+	if res.Tick != TickRecoveryRequired {
+		t.Fatalf("%+v", res)
+	}
+	a, _ := e.Journal.LoadAttempt()
+	if a.Reason != "compose_changed_by_admin" || w.compose["x-admin"] != "edit" {
+		t.Fatalf("reason %s compose %v", a.Reason, w.compose)
+	}
+	if strings.Contains(w.effects(), "update") || strings.Contains(w.effects(), "rollback") {
+		t.Fatalf("mutated: %s", w.effects())
+	}
+}
+
+// H7: the restore refuses a previous image whose id changed.
+func TestRestoreRefusesChangedPreviousImage(t *testing.T) {
+	w := newWorld()
+	w.candidateBroken = true
+	e := newExec(t, w)
+	w.onEffect = func(name string) {
+		if name == "start" {
+			w.images[repo+"@"+prevDg] = "sha256:" + strings.Repeat("7", 64)
+		}
+	}
+	res := tick(t, e)
+	a, _ := e.Journal.LoadAttempt()
+	if res.Tick != TickRecoveryRequired || a.Reason != "previous_image_changed" {
+		t.Fatalf("%+v %+v", res, a)
+	}
+}
+
+// H8: readiness is asked of the container's own address and restarts the
+// sustained timer when the container is replaced.
+func TestSustainedReadinessRestartsOnContainerReplacement(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	calls := 0
+	w.onEffect = nil
+	orig := w.starts
+	e.Probe = probeFunc(func(ctx context.Context, url string) error {
+		calls++
+		if calls == 5 { // the container restarts mid-trial
+			w.starts++
+		}
+		return w.Ready(ctx, url)
+	})
+	t0 := w.now
+	if res := tick(t, e); res.Tick != TickUpdated {
+		t.Fatalf("%+v", res)
+	}
+	if w.starts == orig || w.now.Sub(t0) < 60*time.Second+4*e.Timeouts.Poll {
+		t.Fatalf("timer was not restarted: elapsed %s", w.now.Sub(t0))
+	}
+}
+
+type probeFunc func(context.Context, string) error
+
+func (f probeFunc) Ready(ctx context.Context, url string) error { return f(ctx, url) }
+
+// M10: the installed tag follows from the single commit record.
+func TestLastTagIsRepairedFromTheCommittedAttempt(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	tick(t, e)
+	if err := e.Journal.SaveState(State{}); err != nil { // as if the run died after the commit record
+		t.Fatal(err)
+	}
+	tick(t, e)
+	st, _ := e.Journal.LoadState()
+	if st.LastTag != "v0.17.0" {
+		t.Fatalf("last tag %q", st.LastTag)
+	}
+}
+
+// H13: a stalled docker call cannot hold the run (and the lock) forever.
+func TestStalledDockerCallIsBounded(t *testing.T) {
+	w := newWorld()
+	w.blockContainers = true
+	e := newExec(t, w)
+	e.Timeouts.Call = 50 * time.Millisecond
+	done := make(chan TickResult, 1)
+	go func() { r, _ := e.Tick(context.Background()); done <- r }()
+	select {
+	case r := <-done:
+		if r.Tick != TickRefused {
+			t.Fatalf("%+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a stalled docker call held the run")
+	}
+}
+
+// M14: the window and the one-shot are checked again right before the stop.
+func TestWindowIsRecheckedBeforeDisruption(t *testing.T) {
+	w := newWorld()
+	w.now = time.Date(2026, 11, 22, 4, 55, 0, 0, time.UTC)
+	e := newExec(t, w)
+	w.onVerified = func() { w.now = time.Date(2026, 11, 22, 5, 10, 0, 0, time.UTC) } // slow verification
+	res := tick(t, e)
+	if res.Tick != TickRefused || res.Detail != "admission_changed" || strings.Contains(w.effects(), "stop") {
+		t.Fatalf("%+v effects %s", res, w.effects())
+	}
+}
+
+func TestWithdrawnOneShotIsNotRun(t *testing.T) {
+	w := newWorld()
+	e := newExec(t, w)
+	e.Cfg.Enabled = false
+	exp := w.now.Add(time.Hour).Format(time.RFC3339)
+	writeFile(t, e.Cfg.RequestFile, `{"version":1,"once":{"id":"owner-0003","baseline":"v0.16.0","target":"v0.17.0","expires_at":"`+exp+`"}}`)
+	w.onVerified = func() { _ = os.Remove(e.Cfg.RequestFile) }
+	res := tick(t, e)
+	if res.Tick != TickRefused || res.Detail != "admission_changed" || strings.Contains(w.effects(), "stop") {
 		t.Fatalf("%+v effects %s", res, w.effects())
 	}
 }

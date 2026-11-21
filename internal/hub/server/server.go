@@ -379,7 +379,7 @@ func (s *Server) Run(ctx context.Context) error {
 	defer clearDefaultNetwork(nw)
 
 	rs := &runState{cfg: cfg, net: nw, health: NewHealth(), mux: http.NewServeMux(), root: &Root{}}
-	srv := newHTTPServerBody(startupGate(rs.health, rs.root), log, http2WriteByteTimeout, s.bodyTimeout)
+	srv := newHTTPServerBody(startupGate(rs.health, maintenanceGate(rs.root)), log, http2WriteByteTimeout, s.bodyTimeout)
 	serveLn := ln
 	if certs != nil {
 		srv.TLSConfig = certs.TLSConfig()
@@ -393,7 +393,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	var mgmt *managementServer
 	if cfg.ManagementListen != "" {
-		mgmt, err = startManagement(cfg.ManagementListen, startupGate(rs.health, rs.root), log, s.bodyTimeout)
+		mgmt, err = startManagement(cfg.ManagementListen, startupGate(rs.health, maintenanceGate(rs.root)), log, s.bodyTimeout)
 		if err != nil {
 			_ = srv.Close()
 			return err
@@ -457,6 +457,29 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-t.C:
 	}
 	return runErr
+}
+
+// maintenanceGate makes the Hub read-only while MINION_MAINTENANCE=readonly
+// (set by the TrueNAS host updater for the trial of a new release): requests
+// that could change state (any method but GET, HEAD and OPTIONS) and
+// upgrades to a WebSocket (Worker connections) answer 503 with Retry-After.
+// The health endpoints are served before this gate. Removing the variable
+// (the updater redeploys the app) ends the mode.
+func maintenanceGate(app http.Handler) http.Handler {
+	if os.Getenv("MINION_MAINTENANCE") != "readonly" {
+		return app
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			if r.Header.Get("Upgrade") == "" {
+				app.ServeHTTP(w, r)
+				return
+			}
+		}
+		w.Header().Set("Retry-After", "60")
+		writeStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "reason": "maintenance"})
+	})
 }
 
 // startupGate is the root handler. The health endpoints are always served by

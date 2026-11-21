@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // clientScript runs inside the TrueNAS host's Python with the built-in
@@ -13,11 +14,22 @@ import (
 // an exception class name leaves the script on failure.
 const clientScript = `import json, sys
 req = json.load(sys.stdin)
+def jobs(r):
+    out = []
+    for j in r:
+        a = j.get("arguments") or []
+        st = j.get("time_started")
+        out.append({"id": j.get("id"), "state": j.get("state"), "method": j.get("method"),
+                    "app": a[0] if a and isinstance(a[0], str) else None,
+                    "started": st.timestamp() if hasattr(st, "timestamp") else None})
+    return out
 try:
     from truenas_api_client import Client
     with Client() as c:
         r = c.call(req["method"], *req.get("params", []))
-    sys.stdout.write(json.dumps({"result": r}))
+    if req.get("project") == "jobs":
+        r = jobs(r)
+    sys.stdout.write(json.dumps({"result": r}, default=str))
 except Exception as e:
     sys.stdout.write(json.dumps({"error": e.__class__.__name__}))
 `
@@ -41,7 +53,11 @@ func (e *MiddlewareError) Error() string {
 }
 
 func (m *MidcltClient) call(ctx context.Context, method string, params ...any) (json.RawMessage, error) {
-	req, err := json.Marshal(map[string]any{"method": method, "params": params})
+	return m.callProject(ctx, "", method, params...)
+}
+
+func (m *MidcltClient) callProject(ctx context.Context, project, method string, params ...any) (json.RawMessage, error) {
+	req, err := json.Marshal(map[string]any{"method": method, "params": params, "project": project})
 	if err != nil {
 		return nil, err
 	}
@@ -103,26 +119,37 @@ func (m *MidcltClient) AppState(ctx context.Context, app string) (string, error)
 	return s, nil
 }
 
-// AppConfig implements Middleware: the complete compose document of a custom
-// app (the "custom_compose_config" of app.config).
+// AppConfig implements Middleware: app.config returns the saved compose
+// document of a custom app directly (TrueNAS 24.10 to 25.10). A document
+// wrapped in "custom_compose_config" is accepted too.
 func (m *MidcltClient) AppConfig(ctx context.Context, app string) (Compose, error) {
 	raw, err := m.call(ctx, "app.config", app)
 	if err != nil {
 		return nil, err
 	}
-	var cfg map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &cfg); err != nil {
+	var c Compose
+	if err := json.Unmarshal(raw, &c); err != nil || c == nil {
 		return nil, &MiddlewareError{Method: "app.config", Class: "bad_answer"}
 	}
-	doc, ok := cfg["custom_compose_config"]
-	if !ok {
+	if _, ok := c["services"]; !ok {
+		if inner, ok := c["custom_compose_config"].(map[string]any); ok {
+			c = Compose(inner)
+		}
+	}
+	if _, ok := c["services"]; !ok {
 		return nil, &MiddlewareError{Method: "app.config", Class: "not_a_custom_app"}
 	}
-	var c Compose
-	if err := json.Unmarshal(doc, &c); err != nil || c == nil {
-		return nil, &MiddlewareError{Method: "app.config", Class: "bad_answer"}
-	}
 	return c, nil
+}
+
+// IsCustom implements Middleware.
+func (m *MidcltClient) IsCustom(ctx context.Context, app string) (bool, error) {
+	a, err := m.queryApp(ctx, app)
+	if err != nil {
+		return false, err
+	}
+	custom, _ := a["custom_app"].(bool)
+	return custom, nil
 }
 
 func (m *MidcltClient) submit(ctx context.Context, method string, params ...any) (int, error) {
@@ -152,22 +179,55 @@ func (m *MidcltClient) Update(ctx context.Context, app string, c Compose) (int, 
 	return m.submit(ctx, "app.update", app, map[string]any{"custom_compose_config": map[string]any(c)})
 }
 
+type jobRow struct {
+	ID      int      `json:"id"`
+	State   string   `json:"state"`
+	App     *string  `json:"app"`
+	Started *float64 `json:"started"`
+}
+
+func (m *MidcltClient) jobs(ctx context.Context, filters [][]any, opts map[string]any) ([]jobRow, error) {
+	raw, err := m.callProject(ctx, "jobs", "core.get_jobs", filters, opts)
+	if err != nil {
+		return nil, err
+	}
+	var rows []jobRow
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, &MiddlewareError{Method: "core.get_jobs", Class: "bad_answer"}
+	}
+	return rows, nil
+}
+
 // JobState implements Middleware (core.get_jobs).
 func (m *MidcltClient) JobState(ctx context.Context, id int) (JobState, error) {
-	raw, err := m.call(ctx, "core.get_jobs", [][]any{{"id", "=", id}})
+	rows, err := m.jobs(ctx, [][]any{{"id", "=", id}}, map[string]any{})
 	if err != nil {
 		return "", err
 	}
-	var jobs []struct {
-		State string `json:"state"`
-	}
-	if err := json.Unmarshal(raw, &jobs); err != nil {
-		return "", &MiddlewareError{Method: "core.get_jobs", Class: "bad_answer"}
-	}
-	if len(jobs) == 0 {
+	if len(rows) == 0 {
 		return JobUnknown, nil
 	}
-	return JobState(jobs[0].State), nil
+	return JobState(rows[0].State), nil
+}
+
+// FindJobs implements Middleware.
+func (m *MidcltClient) FindJobs(ctx context.Context, method, app string, since time.Time) ([]JobInfo, error) {
+	rows, err := m.jobs(ctx, [][]any{{"method", "=", method}}, map[string]any{"order_by": []string{"-id"}, "limit": 25})
+	if err != nil {
+		return nil, err
+	}
+	var out []JobInfo
+	for _, r := range rows {
+		if r.App == nil || *r.App != app {
+			continue
+		}
+		// A job with no start time is still waiting: it counts.
+		if r.Started != nil && time.Unix(int64(*r.Started), 0).Before(since.Add(-time.Minute)) {
+			continue
+		}
+		out = append(out, JobInfo{ID: r.ID, State: JobState(r.State)})
+	}
+	return out, nil
 }
 
 var _ Middleware = (*MidcltClient)(nil)

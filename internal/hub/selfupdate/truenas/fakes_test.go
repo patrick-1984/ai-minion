@@ -27,17 +27,26 @@ type killed struct{ at int }
 
 // world is one fake TrueNAS host: middleware, docker, zfs and the Hub.
 type world struct {
-	now     time.Time
-	state   string
-	compose Compose
-	data    string
-	snaps   map[string]string
-	holds   map[string]bool
-	images  map[string]string
-	running bool
-	runImg  string
-	jobs    map[int]JobState
-	nextJob int
+	now             time.Time
+	state           string
+	compose         Compose
+	data            string
+	snaps           map[string]string
+	holds           map[string]bool
+	images          map[string]string
+	running         bool
+	runImg          string
+	jobs            map[int]*fakeJob
+	nextJob         int
+	starts          int
+	readonly        bool
+	holdJobs        bool // new jobs stay RUNNING until released
+	stuckDeploying  bool // a running candidate keeps the app DEPLOYING
+	datasetName     string
+	onEffect        func(name string)
+	onVerified      func()
+	blockContainers bool
+	readyCalls      int
 
 	log        []string
 	violations []string
@@ -54,7 +63,7 @@ func newWorld() *world {
 	w := &world{
 		now:   time.Date(2026, 11, 22, 3, 30, 0, 0, time.UTC),
 		state: AppRunning, data: "v1", running: true, runImg: prevID,
-		snaps: map[string]string{}, holds: map[string]bool{}, jobs: map[int]JobState{}, free: 100 << 30,
+		snaps: map[string]string{}, holds: map[string]bool{}, jobs: map[int]*fakeJob{}, datasetName: "tank/apps/hub", free: 100 << 30,
 		images: map[string]string{
 			repo + ":v0.16.0":   prevID,
 			repo + "@" + prevDg: prevID,
@@ -91,17 +100,52 @@ func (w *world) effect(name string, f func()) {
 	w.log = append(w.log, name)
 	w.point()
 	f()
+	if w.onEffect != nil {
+		w.onEffect(name)
+	}
 	w.point()
 }
 
-func (w *world) newJob() int {
+type fakeJob struct {
+	method string
+	state  JobState
+}
+
+func (w *world) newJob(method string) int {
 	w.nextJob++
-	w.jobs[w.nextJob] = JobSuccess
+	st := JobSuccess
+	if w.holdJobs {
+		st = JobRunning
+	}
+	w.jobs[w.nextJob] = &fakeJob{method: method, state: st}
 	return w.nextJob
 }
 
+func (w *world) releaseJobs() {
+	for _, j := range w.jobs {
+		if j.state == JobRunning {
+			j.state = JobSuccess
+		}
+	}
+}
+
 // Middleware
-func (w *world) AppState(context.Context, string) (string, error) { return w.state, nil }
+func (w *world) AppState(context.Context, string) (string, error) {
+	if w.stuckDeploying && w.running && w.runImg == candID && w.candidateBroken {
+		return AppDeploying, nil
+	}
+	return w.state, nil
+}
+func (w *world) IsCustom(context.Context, string) (bool, error) { return true, nil }
+func (w *world) FindJobs(_ context.Context, method, _ string, _ time.Time) ([]JobInfo, error) {
+	var out []JobInfo
+	for id, j := range w.jobs {
+		if j.method == method {
+			out = append(out, JobInfo{ID: id, State: j.state})
+		}
+	}
+	return out, nil
+}
 func (w *world) AppConfig(context.Context, string) (Compose, error) {
 	c, _ := w.compose.WithImage("minion-hub", w.mustImage())
 	return c, nil
@@ -109,36 +153,55 @@ func (w *world) AppConfig(context.Context, string) (Compose, error) {
 func (w *world) mustImage() string { i, _ := w.compose.Image("minion-hub"); return i }
 func (w *world) Stop(context.Context, string) (int, error) {
 	var id int
-	w.effect("stop", func() { w.state, w.running = AppStopped, false; id = w.newJob() })
+	w.effect("stop", func() { w.state, w.running = AppStopped, false; id = w.newJob("app.stop") })
 	return id, nil
 }
 func (w *world) Start(context.Context, string) (int, error) {
 	var id int
 	w.effect("start", func() {
-		w.state, w.running = AppRunning, true
-		w.runImg = w.images[w.mustImage()]
-		if w.runImg == candID {
-			w.data = "migrated"
-		}
-		id = w.newJob()
+		w.boot()
+		id = w.newJob("app.start")
 	})
 	return id, nil
 }
+func (w *world) boot() {
+	w.state, w.running = AppRunning, true
+	w.starts++
+	w.runImg = w.images[w.mustImage()]
+	w.readonly = w.compose.Env("minion-hub", MaintenanceEnv) == MaintenanceValue
+	if w.runImg == candID {
+		w.data = "migrated"
+	}
+}
+
 func (w *world) Update(_ context.Context, _ string, c Compose) (int, error) {
 	var id int
 	img, _ := c.Image("minion-hub")
-	w.effect("update:"+img, func() {
+	label := "update:" + img
+	if c.Env("minion-hub", MaintenanceEnv) != "" {
+		label += "+ro"
+	}
+	w.effect(label, func() {
+		redeploy := false
 		if w.state != AppStopped {
-			w.violations = append(w.violations, "update while not stopped")
+			// Only lifting the read-only flag of the candidate may touch a running app.
+			if w.compose.Env("minion-hub", MaintenanceEnv) != "" && c.Env("minion-hub", MaintenanceEnv) == "" {
+				redeploy = true
+			} else {
+				w.violations = append(w.violations, "update while not stopped")
+			}
 		}
-		w.compose, _ = c.WithImage("minion-hub", img)
-		id = w.newJob()
+		w.compose = c
+		if redeploy {
+			w.boot()
+		}
+		id = w.newJob("app.update")
 	})
 	return id, nil
 }
 func (w *world) JobState(_ context.Context, id int) (JobState, error) {
-	if s, ok := w.jobs[id]; ok {
-		return s, nil
+	if j, ok := w.jobs[id]; ok {
+		return j.state, nil
 	}
 	return JobUnknown, nil
 }
@@ -151,11 +214,22 @@ func (w *world) ImageID(_ context.Context, ref string) (string, error) {
 	}
 	return "", ErrNoImage
 }
-func (w *world) Containers(context.Context, string) ([]Container, error) {
+func (w *world) Containers(ctx context.Context, _ string) ([]Container, error) {
+	if w.blockContainers {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if !w.running {
 		return nil, nil
 	}
-	return []Container{{ID: "c1", Service: "minion-hub", ImageID: w.runImg, Running: true}}, nil
+	return []Container{{ID: "c1", Service: "minion-hub", ImageID: w.runImg, Running: true,
+		StartedAt: fmt.Sprintf("start-%d", w.starts), IP: "10.0.0.2"}}, nil
+}
+func (w *world) MountSource(context.Context, string, string) (string, error) {
+	return "/mnt/tank/apps/hub", nil
+}
+func (w *world) DatasetAt(context.Context, string) (DatasetInfo, error) {
+	return DatasetInfo{Name: w.datasetName, GUID: "4242"}, nil
 }
 
 // ZFS
@@ -207,7 +281,11 @@ func (w *world) Destroy(_ context.Context, _, n string) error {
 
 // Prober: the Hub is ready when it runs. The candidate image can be broken,
 // and the previous image refuses the migrated database.
-func (w *world) Ready(context.Context) error {
+func (w *world) Ready(_ context.Context, url string) error {
+	if url != "https://10.0.0.2:8443/readyz" {
+		return errors.New("not this container")
+	}
+	w.readyCalls++
 	if !w.running {
 		return errors.New("down")
 	}
@@ -222,6 +300,9 @@ func (w *world) Ready(context.Context) error {
 
 // Releases
 func (w *world) Verified(_ context.Context, sel string) (Release, error) {
+	if w.onVerified != nil {
+		w.onVerified()
+	}
 	r, ok := w.releases[sel]
 	if !ok {
 		return Release{}, fmt.Errorf("no release %s", sel)
@@ -238,9 +319,10 @@ func newExec(t *testing.T, w *world) *Executor {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = j.Close() })
 	return &Executor{
-		Cfg: Config{App: "ai-minion", Service: "minion-hub", Dataset: "tank/apps/hub", ReadinessURL: "http://127.0.0.1:1/readyz",
-			Window: "03-05", Channel: "latest", Enabled: true, MinFreeBytes: 1 << 20,
+		Cfg: Config{App: "ai-minion", Service: "minion-hub", Dataset: "tank/apps/hub",
+			Window: "03-05", Channel: "latest", Enabled: true, MinFreeBytes: 1 << 20, DataMount: "/data",
 			StatusFile: filepath.Join(dir, "out", "status.json"), RequestFile: filepath.Join(dir, "in", "request.json")},
 		MW: w, Docker: w, ZFS: w, Releases: w, Probe: w, Journal: j, Timeouts: DefaultTimeouts(),
 		Now: func() time.Time { return w.now }, Sleep: w.sleep,

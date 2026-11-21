@@ -17,9 +17,6 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
-// defaultHubUpdaterConfig is where the root-owned config file is read.
-const defaultHubUpdaterConfig = "/etc/minion-hub-updater.json"
-
 // hubUpdaterReleasesAPI is the fixed release source of the host executor.
 const hubUpdaterReleasesAPI = "https://api.github.com"
 
@@ -42,7 +39,7 @@ func buildHubUpdater(cfg truenas.Config, j *truenas.Journal, log *slog.Logger) *
 		MW:     &truenas.MidcltClient{Runner: run},
 		Docker: truenas.DockerCLI{Runner: run},
 		ZFS:    truenas.ZFSCLI{Runner: run},
-		Probe:  truenas.HTTPProber{URL: cfg.ReadinessURL},
+		Probe:  truenas.HTTPProber{},
 		Releases: truenas.VersionReleases{NewUpdater: func() (*version.Updater, error) {
 			src, err := version.NewGitHubSource(hubUpdaterReleasesAPI, "minion-hub-updater/"+version.Version)
 			if err != nil {
@@ -61,6 +58,15 @@ func init() {
 	})
 }
 
+// tickFailure turns a tick that needs a person into a failing exit with a
+// one-line, sanitized message, so the TrueNAS Cron Task reports it.
+func tickFailure(res truenas.TickResult) error {
+	if res.Tick == truenas.TickRecoveryRequired {
+		return fmt.Errorf("hub-updater: recovery required (%s): the Hub may be stopped; see docs/install/hub-truenas-updater.md#recovery", res.Detail)
+	}
+	return nil
+}
+
 func newHubUpdaterCmd(deps hubUpdaterDeps) *cobra.Command {
 	var (
 		cfgPath                          string
@@ -75,7 +81,7 @@ func newHubUpdaterCmd(deps hubUpdaterDeps) *cobra.Command {
 		Long: `Runs one tick of the Hub updater on a TrueNAS host. Register it as a TrueNAS
 Cron Task that runs as root every 15 minutes:
 
-  /usr/local/bin/minion hub-updater --config /etc/minion-hub-updater.json
+  /mnt/tank/minion-hub-updater/minion hub-updater --config /mnt/tank/minion-hub-updater/config.json
 
 Every tick first finishes or undoes an unfinished update (also outside the
 update window and when the Hub is down). Inside the window, and only when
@@ -85,20 +91,16 @@ image digest, waits for sustained readiness and restores the snapshot and the
 previous configuration if that fails. See docs/install/hub-truenas-updater.md.
 
 The config file is JSON, owned by root and not writable by others; a flag
-overrides the same setting of the file.`,
+overrides the same setting of the file. Keep the binary, the config and the
+state directory on a persistent dataset (not /usr, /etc or /var/lib).
+The command exits non-zero when an update needs recovery by hand.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if deps.euid() != 0 {
 				return errors.New("hub-updater changes TrueNAS apps and ZFS datasets: run it as root")
 			}
 			base := truenas.Config{}
-			path := cfgPath
-			if path == "" {
-				if _, err := os.Stat(defaultHubUpdaterConfig); err == nil {
-					path = defaultHubUpdaterConfig
-				}
-			}
-			if path != "" {
+			if path := cfgPath; path != "" {
 				c, err := truenas.LoadConfig(path, deps.ownerUID)
 				if err != nil {
 					return err
@@ -114,7 +116,7 @@ overrides the same setting of the file.`,
 			set("app", &base.App, cfg.App)
 			set("service", &base.Service, cfg.Service)
 			set("dataset", &base.Dataset, cfg.Dataset)
-			set("readiness-url", &base.ReadinessURL, cfg.ReadinessURL)
+			set("data-mount", &base.DataMount, cfg.DataMount)
 			set("window", &base.Window, cfg.Window)
 			set("channel", &base.Channel, cfg.Channel)
 			set("state-dir", &base.StateDir, cfg.StateDir)
@@ -131,6 +133,7 @@ overrides the same setting of the file.`,
 			if err != nil {
 				return err
 			}
+			defer func() { _ = j.Close() }()
 			log := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil))
 			ex := deps.build(base, j, log)
 			switch {
@@ -143,18 +146,21 @@ overrides the same setting of the file.`,
 			defer cancel()
 			res, err := ex.Tick(ctx)
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "hub-updater: %s %s\n", res.Tick, res.Detail)
-			return err
+			if err != nil {
+				return err
+			}
+			return tickFailure(res)
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&cfgPath, "config", "", "config file (root-owned JSON; default "+defaultHubUpdaterConfig+" when it exists)")
+	f.StringVar(&cfgPath, "config", "", "config file (root-owned JSON on a persistent dataset); without it every setting comes from flags")
 	f.StringVar(&cfg.App, "app", "", "TrueNAS app name")
 	f.StringVar(&cfg.Service, "service", "", "compose service of the Hub (default minion-hub)")
 	f.StringVar(&cfg.Dataset, "dataset", "", "ZFS dataset that holds exactly the Hub data, like pool/apps/hub-data")
-	f.StringVar(&cfg.ReadinessURL, "readiness-url", "", "Hub /readyz URL as seen from the host")
+	f.StringVar(&cfg.DataMount, "data-mount", "", "Hub data path inside the container (default /data)")
 	f.StringVar(&cfg.Window, "window", "", "UTC update window HH-HH (default 03-05)")
 	f.StringVar(&cfg.Channel, "channel", "", "release channel: latest, X or X.Y (default latest)")
-	f.StringVar(&cfg.StateDir, "state-dir", "", "root-owned journal directory (default "+truenas.DefaultStateDir+")")
+	f.StringVar(&cfg.StateDir, "state-dir", "", "root-owned journal directory on a persistent dataset, outside the Hub data (required)")
 	f.StringVar(&cfg.RequestFile, "request-file", "", "request file the Hub (or the owner) writes")
 	f.StringVar(&cfg.StatusFile, "status-file", "", "status file the executor writes for the Hub")
 	f.BoolVar(&enabled, "enabled", false, "allow unattended updates inside the window")

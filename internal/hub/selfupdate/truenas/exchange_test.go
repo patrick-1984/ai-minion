@@ -94,3 +94,39 @@ func TestStatusIsAtomicAndSanitized(t *testing.T) {
 		t.Fatalf("leftover files: %v", es)
 	}
 }
+
+func TestJournalRefusesUntrustedAncestors(t *testing.T) {
+	uid := os.Getuid()
+	base := t.TempDir()
+	open := filepath.Join(base, "open")
+	if err := os.Mkdir(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenJournal(filepath.Join(open, "state"), "ai-minion", uid, nil); err == nil {
+		t.Fatal("a world-writable ancestor was accepted")
+	}
+	ok := filepath.Join(base, "ok")
+	if err := os.Mkdir(ok, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenJournal(filepath.Join(ok, "state"), "ai-minion", uid, nil)
+	if err != nil {
+		// A parent of the temp dir may legitimately be group-writable on this host.
+		t.Skipf("host ancestors not trusted: %v", err)
+	}
+	_ = j.Close()
+}
+
+func TestJournalWriteFailsWhenDirectoryCannotBeSynced(t *testing.T) {
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "s"), "ai-minion", -1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = j.Close() // every later operation fails instead of reporting a durable intent
+	if err := j.SaveAttempt(&Attempt{ID: "x"}); err == nil {
+		t.Fatal("a journal write on a dead directory handle succeeded")
+	}
+}

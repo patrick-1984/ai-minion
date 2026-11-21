@@ -2,8 +2,10 @@ package truenas
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -56,7 +58,7 @@ func (d DockerCLI) Containers(ctx context.Context, project string) ([]Container,
 		return nil, nil
 	}
 	args := append([]string{"inspect", "--format",
-		`{{.Id}}|{{.Image}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Running}}`}, ids...)
+		`{{.Id}}|{{.Image}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Running}}|{{.State.StartedAt}}|{{.HostConfig.NetworkMode}}|{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}`}, ids...)
 	out, err = d.Runner.Run(ctx, nil, "docker", args...)
 	if err != nil {
 		return nil, err
@@ -64,13 +66,35 @@ func (d DockerCLI) Containers(ctx context.Context, project string) ([]Container,
 	var cs []Container
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) != 4 {
+		if len(f) != 8 {
 			return nil, fmt.Errorf("docker inspect: unexpected output")
 		}
 		run, _ := strconv.ParseBool(f[3])
-		cs = append(cs, Container{ID: f[0], ImageID: f[1], Service: f[2], Running: run})
+		ip := ""
+		if f[5] == "host" {
+			ip = "127.0.0.1"
+		} else if ips := strings.Fields(f[6]); len(ips) > 0 {
+			ip = ips[0]
+		}
+		cs = append(cs, Container{ID: f[0], ImageID: f[1], Service: f[2], Running: run, StartedAt: f[4], IP: ip, Health: f[7]})
 	}
 	return cs, nil
+}
+
+// MountSource implements Docker: the host source of the bind mount at dest.
+func (d DockerCLI) MountSource(ctx context.Context, containerID, dest string) (string, error) {
+	out, err := d.Runner.Run(ctx, nil, "docker", "inspect", "--format",
+		`{{range .Mounts}}{{.Destination}}|{{.Type}}|{{.Source}}{{"\n"}}{{end}}`, containerID)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.SplitN(strings.TrimSpace(line), "|", 3)
+		if len(f) == 3 && f[0] == dest && f[1] == "bind" {
+			return f[2], nil
+		}
+	}
+	return "", fmt.Errorf("docker inspect: no bind mount at %s", dest)
 }
 
 // ZFSCLI implements [ZFS] with the zfs CLI.
@@ -90,6 +114,25 @@ func (z ZFSCLI) Available(ctx context.Context, dataset string) (uint64, error) {
 		return 0, err
 	}
 	return strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+}
+
+// DatasetAt implements ZFS: the filesystem mounted exactly at path.
+func (z ZFSCLI) DatasetAt(ctx context.Context, path string) (DatasetInfo, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return DatasetInfo{}, err
+	}
+	out, err := z.Runner.Run(ctx, nil, "zfs", "list", "-H", "-t", "filesystem", "-o", "name,mountpoint,guid")
+	if err != nil {
+		return DatasetInfo{}, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) == 3 && f[1] == real {
+			return DatasetInfo{Name: f[0], GUID: f[2]}, nil
+		}
+	}
+	return DatasetInfo{}, fmt.Errorf("zfs: no dataset is mounted at the data path")
 }
 
 // Snapshot implements ZFS (not recursive).
@@ -161,22 +204,21 @@ func (z ZFSCLI) Destroy(ctx context.Context, dataset, name string) error {
 }
 
 // HTTPProber implements [Prober]: GET url must answer 200 within 5 s; no
-// redirects are followed.
-type HTTPProber struct {
-	URL    string
-	Client *http.Client
-}
+// redirects are followed. The URL is the container's own address, whose
+// certificate is the Hub's own (often self-signed), so it is not verified.
+type HTTPProber struct{ Client *http.Client }
 
 // Ready implements Prober.
-func (p HTTPProber) Ready(ctx context.Context) error {
+func (p HTTPProber) Ready(ctx context.Context, url string) error {
 	c := p.Client
 	if c == nil {
 		c = &http.Client{
 			Timeout:       5 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			Transport:     &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // local probe of the container itself
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
