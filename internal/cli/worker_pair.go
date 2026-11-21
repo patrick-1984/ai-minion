@@ -193,7 +193,7 @@ func runWorkerPair(cmd *cobra.Command, deps workerPairDeps, opt pairOptions) err
 		return err
 	}
 	if core.Managed.Android {
-		return errors.New("Android pairing is shown by the Minion app. Open the app to set up the Hub connection")
+		return errors.New("the Minion app shows Android pairing codes; open it to set up the Hub connection")
 	}
 	hub, err := config.ResolveWorkerHub(res)
 	if err != nil {
