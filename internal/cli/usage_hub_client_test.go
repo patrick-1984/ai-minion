@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 func TestUsageCLIInventoryAndOverviewUseConfiguredHub(t *testing.T) {
@@ -34,4 +37,52 @@ func TestUsageCLIInventoryAndOverviewUseConfiguredHub(t *testing.T) {
 		requests[1].Body["section"] != "overview" || local.count() != 0 {
 		t.Fatalf("unexpected inventory/overview routing: %d Hub requests, %d local requests", len(requests), local.count())
 	}
+}
+
+func TestUsageCLILocalReviewAndAcceptance(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	hub, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrollment := store.Enrollment{HubPub: hub.Public(), WorkerID: hubWorkerID, Owner: "fixture-owner"}
+	if err := st.SaveEnrollment(ctx, enrollment); err != nil {
+		t.Fatal(err)
+	}
+	checkGrant := func(want bool) {
+		t.Helper()
+		allowed, err := st.UsageConnectionAllowed(ctx, enrollment.WorkerID)
+		if err != nil || allowed != want {
+			t.Fatalf("connection admission = %t, %v, want %t", allowed, err, want)
+		}
+		granted, err := st.UsageRegistration(ctx, enrollment.WorkerID)
+		if err != nil || granted != want {
+			t.Fatalf("monitoring grant = %t, %v, want %t", granted, err, want)
+		}
+	}
+	checkGrant(false)
+	out, _, err := configCmd(t, testConfigDeps(nil), dir, "usage")
+	if err != nil || !strings.Contains(out, ops.UsageDisclosure) || !strings.Contains(out, hub.Fingerprint().String()) ||
+		!strings.Contains(out, enrollment.WorkerID) || !strings.Contains(out, enrollment.Owner) ||
+		!strings.Contains(out, "minion worker config usage --accept") {
+		t.Fatalf("local review: %q, %v", out, err)
+	}
+	checkGrant(false)
+	out, _, err = configCmd(t, testConfigDeps(nil), dir, "usage", "--accept")
+	if err != nil || !strings.Contains(out, "Usage monitoring accepted for this enrollment.") {
+		t.Fatalf("local acceptance: %q, %v", out, err)
+	}
+	checkGrant(true)
+
+	enrollment.Owner = "different-fixture-owner"
+	if err := st.SaveEnrollment(ctx, enrollment); err != nil {
+		t.Fatal(err)
+	}
+	checkGrant(false)
 }
