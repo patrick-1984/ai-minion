@@ -36,6 +36,7 @@ internal data class WorkerView(
     val boot: Boolean = false,
     val code: String = "",
     val expires: String = "",
+    val usage: UsageRegistration? = null,
 )
 
 internal fun workerPreferences(context: Context): SharedPreferences =
@@ -56,6 +57,8 @@ class WorkerService : Service() {
     private var busy = false
     private var notice = ""
     private var report: JSONObject? = null
+    private var usage: UsageRegistration? = null
+    private var nextUsageReport = 0L
     private var restartAt = 0L
     private var nextReport = 0L
     private var backoff = 1L
@@ -74,12 +77,15 @@ class WorkerService : Service() {
         fun observe(observer: ((WorkerView) -> Unit)?) {
             listener = observer
             observer?.invoke(view)
-            if (observer != null) queue.execute { nextReport = 0 }
+            if (observer != null) queue.execute {
+                nextReport = 0
+                nextUsageReport = 0
+            }
         }
 
         fun start() = launch(null, null, "all")
-        fun join(token: String, share: String) = launch(null, token, share)
-        fun pair(server: String, share: String) = launch(server, null, share)
+        fun join(token: String, share: String, acceptUsage: Boolean) = launch(null, token, share, acceptUsage)
+        fun pair(server: String, share: String, acceptUsage: Boolean) = launch(server, null, share, acceptUsage)
         fun stop() = stopWorker()
         fun pause(paused: Boolean) = runCommand(if (paused) "resume" else "pause")
         fun share(share: Boolean) = runCommand("config", "share", if (share) "all" else "none")
@@ -87,6 +93,17 @@ class WorkerService : Service() {
             queue.execute {
                 preferences.edit().putBoolean("boot", boot).commit()
                 publish()
+            }
+        }
+
+        fun acceptUsage(registration: UsageRegistration) {
+            queue.execute {
+                if (busy) return@execute
+                val accepted = runCatching { native.acceptUsage(registration) }.getOrDefault(false)
+                notice = if (accepted) "" else "Could not accept usage monitoring. Review this enrollment and try again."
+                nextReport = 0
+                nextUsageReport = 0
+                tick()
             }
         }
 
@@ -98,7 +115,9 @@ class WorkerService : Service() {
                     native.workerCommand("resume") }.getOrDefault(false)
                 notice = if (ok) "" else "Could not forget the Hub. Try again."
                 report = null
+                usage = null
                 nextReport = 0
+                nextUsageReport = 0
                 publish()
             }
         }
@@ -134,7 +153,7 @@ class WorkerService : Service() {
         return START_STICKY
     }
 
-    private fun launch(server: String?, token: String?, share: String) {
+    private fun launch(server: String?, token: String?, share: String, acceptUsage: Boolean = false) {
         ++requestId
         stopping.set(false)
         try {
@@ -152,7 +171,7 @@ class WorkerService : Service() {
                 publish()
                 if (server != null || token != null) {
                     saveWanted(true)
-                    val completed = runCatching { native.provision(server, token, share) }.getOrDefault(false)
+                    val completed = runCatching { native.provision(server, token, share, acceptUsage) }.getOrDefault(false)
                     if (stopping.get()) return@safely
                     report = native.report()
                     val configured = !report?.optString("hub_url").isNullOrBlank()
@@ -250,6 +269,13 @@ class WorkerService : Service() {
             if (now >= nextReport) {
                 report = native.report()
                 nextReport = now + 4_000
+                if (report?.optBoolean("paired") != true) {
+                    usage = null
+                    nextUsageReport = 0
+                } else if (now >= nextUsageReport) {
+                    usage = runCatching { native.usageRegistration() }.getOrNull()
+                    nextUsageReport = now + 12_000
+                }
             }
             publish()
         }
@@ -327,6 +353,7 @@ class WorkerService : Service() {
             paused -> "Paused"
             r?.optString("alarm") == "hub_identity_changed" -> "Hub identity changed"
             livePairing != null -> "Ready to pair"
+            usage?.let { it.required && !it.accepted } == true -> "Usage acceptance required"
             worker?.isAlive != true -> "Starting"
             connection?.optString("state") == "connected" ->
                 if (r.optString("approval") == "pending") "Awaiting Hub approval" else "Connected"
@@ -346,6 +373,7 @@ class WorkerService : Service() {
             r?.optBoolean("paired") == true, r?.optInt("sessions", -1)?.takeIf { it >= 0 }?.toString().orEmpty(),
             share?.optString("mode") != "none", preferences.getBoolean("boot", false),
             livePairing?.optString("code").orEmpty(), if (livePairing != null) expires else "",
+            usage,
         )
         main.post {
             if (v != view) {

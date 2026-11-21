@@ -20,7 +20,8 @@ import (
 
 // AddWorkerPage is what addworker.html sees as .Data.
 type AddWorkerPage struct {
-	MaxName int
+	MaxName         int
+	UsageDisclosure string
 	// TTLs are the validity choices of "Add a Worker in one step".
 	TTLs []Choice
 	// AdminTTL is true when the choices go beyond one week (an admin).
@@ -35,7 +36,10 @@ type AddWorkerPage struct {
 
 func addWorkerData(r *http.Request, _ OpCaller, u pageUser) (any, error) {
 	warmInstaller()
-	p := AddWorkerPage{MaxName: ops.MaxWorkerNameLen, TTLs: joinTTLChoices(u.Admin), AdminTTL: u.Admin}
+	p := AddWorkerPage{
+		MaxName: ops.MaxWorkerNameLen, TTLs: joinTTLChoices(u.Admin), AdminTTL: u.Admin,
+		UsageDisclosure: ops.UsageDisclosure,
+	}
 	if tag := installerTag(); tag != "" {
 		p.Android = foldBlock("android-install", "Copy the ADB command", androidInstallerLine(tag))
 	}

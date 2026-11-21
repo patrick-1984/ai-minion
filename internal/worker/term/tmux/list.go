@@ -75,17 +75,35 @@ func (h *Host) ListSessions(ctx context.Context) ([]term.Session, error) {
 // listPanes runs one list-panes -a and groups the rows into sessions, in the
 // order tmux reports them.
 func (h *Host) listPanes(ctx context.Context) ([]term.Session, error) {
+	return h.listPaneMetadata(ctx, false)
+}
+
+// ListUsageSessions asks only for terminal host metadata. It substitutes a
+// native session ID and folder for the task and probe options on this call.
+func (h *Host) ListUsageSessions(ctx context.Context) ([]term.Session, error) {
+	rows, err := h.listPaneMetadata(ctx, true)
+	if errors.Is(err, term.ErrNotFound) {
+		return nil, nil
+	}
+	return rows, err
+}
+
+func (h *Host) listPaneMetadata(ctx context.Context, usage bool) ([]term.Session, error) {
 	codec, err := newPaneCodec()
 	if err != nil {
 		return nil, err
 	}
-	out, err := h.run(ctx, "list-panes", "-a", "-F", codec.format())
+	format := codec.format()
+	if usage {
+		format = strings.NewReplacer("#{@minion_task}", "#{session_id}", "#{@minion_probe}", "#{pane_current_path}").Replace(format)
+	}
+	out, err := h.run(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		h.debugList(0, nil, err)
 		return nil, err
 	}
-	sessions, err := codec.parse(string(out))
-	if err != nil || !h.psmux {
+	sessions, err := codec.parseMetadata(string(out), usage)
+	if err != nil || !h.psmux || usage {
 		h.debugList(len(sessions), nil, err)
 		return sessions, err
 	}
@@ -149,6 +167,10 @@ func psmuxPaneTarget(session string, window, index int) string {
 // parse parses the output of list-panes -a -F c.format(). Every row ends with
 // the row terminator and tmux's newline; a newline inside a field value is data.
 func (c paneCodec) parse(out string) ([]term.Session, error) {
+	return c.parseMetadata(out, false)
+}
+
+func (c paneCodec) parseMetadata(out string, usage bool) ([]term.Session, error) {
 	var sessions []term.Session
 	index := map[string]int{}
 	rows := strings.Split(out, c.rs+"\n")
@@ -171,6 +193,12 @@ func (c paneCodec) parse(out string) ([]term.Session, error) {
 			return nil, fmt.Errorf("tmux: list-panes row %d: %w", n+1, err)
 		}
 		name := f[12]
+		task, probe := f[9], f[10]
+		var id, folder string
+		if usage {
+			id, folder = task, probe
+			task, probe = "", ""
+		}
 		i, ok := index[name]
 		if !ok {
 			i = len(sessions)
@@ -180,11 +208,12 @@ func (c paneCodec) parse(out string) ([]term.Session, error) {
 				Created:  time.Unix(created, 0).UTC(),
 				Windows:  windows,
 				Attached: attached > 0,
-				Task:     f[9],
-				Probe:    f[10],
+				Task:     task, HostID: id,
+				Probe: probe,
 			})
 		}
 		sessions[i].Panes = append(sessions[i].Panes, term.Pane{
+			Folder: folder,
 			Ref:    term.PaneRef{ID: f[7], PID: pid, Command: f[11]},
 			Window: winIdx,
 			Index:  paneIdx,

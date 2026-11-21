@@ -69,6 +69,13 @@ func New(cfg Config) (*Server, error) {
 	list := cfg.Ops
 	if list == nil {
 		list = DefaultOps()
+		if _, ok := cfg.Backend.(*client.HubBackend); ok {
+			for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList} {
+				if operation, exists := ops.Default.Lookup(name); exists {
+					list = append(list, operation)
+				}
+			}
+		}
 	}
 	log := cfg.Logger
 	if log == nil {

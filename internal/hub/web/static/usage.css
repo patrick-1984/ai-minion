@@ -1,0 +1,42 @@
+.usage-page { display: grid; gap: 16px; min-width: 0; }
+.usage-page > .page-head { margin-bottom: 0; }
+.usage-page .usage-tabs { flex-wrap: wrap; width: fit-content; margin: 0; }
+.usage-disclosure { display: block; margin: 0; }
+.usage-disclosure summary, .usage-window > summary { cursor: pointer; font-weight: 600; }
+.usage-disclosure p { margin: 8px 0 0; }
+#usage-result:empty { display: none; }
+#usage-subscription-data { display: grid; gap: 20px; }
+#usage-subscription-data > .btn, .usage-page > .btn { justify-self: start; }
+.usage-heading, .usage-fields { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.usage-heading { align-items: baseline; justify-content: space-between; }
+.usage-heading :is(h2, h3, h4) { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.usage-heading .badge { white-space: normal; }
+.usage-fields { align-items: end; }
+.usage-fields .field { margin: 0; min-width: 0; }
+.usage-fields select { max-width: min(21rem, 100%); }
+.usage-fields > :is(label, button) { max-width: 100%; }
+.usage-fields :is(select, input, button) { width: 100%; min-width: 0; overflow-wrap: anywhere; }
+.usage-fields > button { width: auto; }
+.usage-fields + .usage-fields { margin-top: 12px; }
+.usage-cards, .usage-stack { display: grid; gap: 12px; }
+.usage-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 21rem), 1fr)); }
+.usage-cards > .panel, .usage-stack > .panel { min-width: 0; margin: 0; }
+.usage-facts { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr)); gap: 8px 16px; margin: 12px 0; }
+.usage-facts dt { font-size: 12px; }
+.usage-window { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 12px; }
+.usage-window > :is(.usage-facts, form) { margin-top: 10px; }
+.usage-window .usage-facts:last-child { margin-bottom: 0; }
+.usage-window > .muted, .usage-limit > p { margin: 3px 0; }
+.usage-path { overflow-wrap: anywhere; margin: 8px 0; }
+.usage-harnesses { margin: 10px 0; padding: 0; list-style: none; }
+.usage-harnesses li { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 3px 12px; padding: 5px 0; border-top: 1px solid var(--border); }
+.usage-harnesses li :is(span, small) { color: var(--muted); }
+.usage-harnesses li small { flex-basis: 100%; }
+.usage-limit .usage-value { font-size: 1.5rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.usage-value small { font-size: 0.85rem; color: var(--muted); font-weight: 500; }
+.usage-check { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; }
+.usage-assignment { margin-top: 12px; }
+@media (max-width: 560px) {
+  .usage-fields > .field { flex: 1 1 100%; }
+  .usage-fields > button { width: 100%; }
+}

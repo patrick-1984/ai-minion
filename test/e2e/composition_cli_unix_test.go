@@ -111,6 +111,9 @@ func startMinionWorker(t *testing.T, hubURL, stateDir, keyFile string, extraEnv 
 	t.Cleanup(func() { _ = os.RemoveAll(rt) })
 	args := []string{"worker", "up", "--foreground", "--share-existing", "none",
 		"--state-dir", stateDir, "--tmux-socket", filepath.Join(rt, "tmux.sock"), "--name", "pi"}
+	if keyFile != "" || len(extraEnv) > 0 {
+		args = append(args, "--accept-usage")
+	}
 	if hubURL != "" {
 		args = append(args, "--server", hubURL)
 	}

@@ -436,6 +436,10 @@ const maxSessionHostReason = 240
 // Anything else is dropped, never rejected: the facts are for display.
 func CleanFacts(f transport.WorkerFacts) transport.WorkerFacts {
 	var out transport.WorkerFacts
+	switch f.UsageConsent {
+	case "pending", "legacy_pending", "accepted":
+		out.UsageConsent = f.UsageConsent
+	}
 	if buildRE.MatchString(f.Build) {
 		out.Build = f.Build
 	}

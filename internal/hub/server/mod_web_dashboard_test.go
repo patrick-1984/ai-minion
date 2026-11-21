@@ -409,11 +409,16 @@ func TestHubDashboardListsWorkersAndSessionsLive(t *testing.T) {
 // Workers renamed, removed or reassigned while offline produce no event; the
 // periodic reconciliation brings each user's stream up to date, and users never
 // see one another's Workers.
+// The page includes a random BIP39 Hub fingerprint. A plain "laptop"
+// fixture also matches that mnemonic; digits make the full-page leak
+// assertions specific to the synthetic Worker while retaining their scope.
+const dashboardLaptopName = "qa-laptop-73"
+
 func TestHubDashboardCatalogChangesReachEachUsersStream(t *testing.T) {
 	defer web.SetLiveTimers(web.LiveTimers{Debounce: 20 * time.Millisecond, Reconcile: 100 * time.Millisecond})()
 	d := startDashHub(t)
 	alice, bob := d.user("alice"), d.user("bob")
-	laptop := d.enrol("laptop", alice, store.WorkerKindPrivate)
+	laptop := d.enrol(dashboardLaptopName, alice, store.WorkerKindPrivate)
 	buildbox := d.enrol("buildbox", alice, store.WorkerKindInfrastructure)
 	bobbox := d.enrol("bobbox", bob, store.WorkerKindPrivate)
 	aliceH, _ := d.login("alice")
@@ -422,10 +427,10 @@ func TestHubDashboardCatalogChangesReachEachUsersStream(t *testing.T) {
 
 	// Render, per user.
 	ap, bp := d.page("/", aliceH), d.page("/", bobH)
-	mustContain(t, "alice's page", ap, "laptop", "buildbox", `data-kind="infrastructure"`)
+	mustContain(t, "alice's page", ap, dashboardLaptopName, "buildbox", `data-kind="infrastructure"`)
 	mustNotContain(t, "alice's page", ap, "bobbox")
 	mustContain(t, "bob's page", bp, "bobbox")
-	mustNotContain(t, "bob's page", bp, "laptop", "buildbox")
+	mustNotContain(t, "bob's page", bp, dashboardLaptopName, "buildbox")
 	// A plain user asking for "all" gets the same as "mine", without the switch.
 	au := d.page("/?scope=all", aliceH)
 	mustNotContain(t, "alice's all-users page", au, "bobbox", `class="scope"`, `<th scope="col">Owner</th>`)
@@ -433,19 +438,19 @@ func TestHubDashboardCatalogChangesReachEachUsersStream(t *testing.T) {
 	as := d.stream("/live/dashboard", aliceH)
 	bs := d.stream("/live/dashboard", bobH)
 	rs := d.stream("/live/dashboard?scope=all", rootH)
-	as.until("alice initial", all(has("laptop", "buildbox"), hasNot("bobbox")))
-	bs.until("bob initial", all(has("bobbox"), hasNot("laptop", "buildbox")))
+	as.until("alice initial", all(has(dashboardLaptopName, "buildbox"), hasNot("bobbox")))
+	bs.until("bob initial", all(has("bobbox"), hasNot(dashboardLaptopName, "buildbox")))
 	// The owner cell is read in the row of the exact Worker: other rows carry
 	// "alice" and "bob" too.
 	rs.until("admin all users, with each owner in the row of its own Worker", all(
-		has("laptop", "buildbox", "bobbox", `<th scope="col">Owner</th>`),
+		has(dashboardLaptopName, "buildbox", "bobbox", `<th scope="col">Owner</th>`),
 		rowHas(buildbox, `<td data-label="Owner">alice</td>`), rowHas(bobbox, `<td data-label="Owner">bob</td>`)))
 
 	// Rename while offline.
 	if _, err := d.st.RenameWorker(context.Background(), laptop, "workstation"); err != nil {
 		t.Fatal(err)
 	}
-	as.until("rename", all(has("workstation"), hasNot(">laptop<")))
+	as.until("rename", all(has("workstation"), hasNot(">"+dashboardLaptopName+"<")))
 	mustContain(t, "page after the rename", d.page("/", aliceH), "workstation")
 
 	// Reassignment of the infrastructure Worker from alice to bob.
@@ -468,8 +473,8 @@ func TestHubDashboardCatalogChangesReachEachUsersStream(t *testing.T) {
 	as.until("removal", all(hasNot("workstation"), has("No workers connected")))
 	rs.until("removal in all users", hasNot("workstation"))
 	// Bob never saw alice's Worker, not even under its old name.
-	bs.never("bob's stream showed alice's Worker", 300*time.Millisecond, anyOf("laptop", "workstation"))
-	mustNotContain(t, "bob's page", d.page("/", bobH), "laptop", "workstation")
+	bs.never("bob's stream showed alice's Worker", 300*time.Millisecond, anyOf(dashboardLaptopName, "workstation"))
+	mustNotContain(t, "bob's page", d.page("/", bobH), dashboardLaptopName, "workstation")
 }
 
 // An admin who acts as a user gets that user's dashboard, for the page and for
@@ -480,24 +485,24 @@ func TestHubDashboardActAsFiltersRenderAndLiveUpdates(t *testing.T) {
 	d := startDashHub(t)
 	rootUID, alice, bob := d.userID("root"), d.user("alice"), d.user("bob")
 	rw := d.enrol("rootbox", rootUID, store.WorkerKindPrivate)
-	aw := d.enrol("laptop", alice, store.WorkerKindPrivate)
+	aw := d.enrol(dashboardLaptopName, alice, store.WorkerKindPrivate)
 	bw := d.enrol("bobbox", bob, store.WorkerKindPrivate)
 	d.connect(rw, "rootbox", rootUID, "private", map[string]string{"r1": "root-secret"})
-	aliceLink := d.connect(aw, "laptop", alice, "private", map[string]string{"a1": "alice-task"})
+	aliceLink := d.connect(aw, dashboardLaptopName, alice, "private", map[string]string{"a1": "alice-task"})
 	bobLink := d.connect(bw, "bobbox", bob, "private", map[string]string{"b1": "bob-secret"})
 	root, _ := d.login("root")
 
 	// Before: the admin sees everything under "all users", and only their own
 	// under "mine".
 	all0 := d.page("/?scope=all", root)
-	mustContain(t, "admin all users", all0, "rootbox", "laptop", "bobbox", "root-secret", "alice-task", "bob-secret", `<th scope="col">Owner</th>`)
+	mustContain(t, "admin all users", all0, "rootbox", dashboardLaptopName, "bobbox", "root-secret", "alice-task", "bob-secret", `<th scope="col">Owner</th>`)
 	mine0 := d.page("/", root)
 	mustContain(t, "admin mine", mine0, "rootbox", "root-secret", `class="scope"`)
-	mustNotContain(t, "admin mine", mine0, "laptop", "bobbox", "alice-task", "bob-secret")
+	mustNotContain(t, "admin mine", mine0, dashboardLaptopName, "bobbox", "alice-task", "bob-secret")
 
 	// An all-users stream is open when the act-as starts.
 	live := d.stream("/live/dashboard?scope=all", root)
-	live.until("admin all users stream", has("rootbox", "laptop", "bobbox", "bob-secret"))
+	live.until("admin all users stream", has("rootbox", dashboardLaptopName, "bobbox", "bob-secret"))
 
 	code, body, _ := d.hc.do("POST", "/api/v1/ops/act_as_start", map[string]any{
 		"request_id": ops.NewUUIDv7(), "user_id": alice, "duration_minutes": 30}, root)
@@ -508,16 +513,16 @@ func TestHubDashboardActAsFiltersRenderAndLiveUpdates(t *testing.T) {
 	// Render while acting: alice's space, whatever the scope, and no switch.
 	for _, path := range []string{"/", "/?scope=all"} {
 		p := d.page(path, root)
-		mustContain(t, "page "+path+" acting as alice", p, "laptop", "alice-task", "Acting as alice (admin root)")
+		mustContain(t, "page "+path+" acting as alice", p, dashboardLaptopName, "alice-task", "Acting as alice (admin root)")
 		mustNotContain(t, "page "+path+" acting as alice", p, "rootbox", "bobbox", "root-secret", "bob-secret",
 			`class="scope"`, `<th scope="col">Owner</th>`)
 	}
 
 	// Live: the stream that was open as admin catches up as alice, without a
 	// reload, and a stream opened while acting starts as alice.
-	live.until("the open stream drops the other users", all(has("laptop", "alice-task"), hasNot("rootbox", "bobbox", "bob-secret", "root-secret")))
+	live.until("the open stream drops the other users", all(has(dashboardLaptopName, "alice-task"), hasNot("rootbox", "bobbox", "bob-secret", "root-secret")))
 	fresh := d.stream("/live/dashboard?scope=all", root)
-	f := fresh.until("a new stream while acting", has("laptop"))
+	f := fresh.until("a new stream while acting", has(dashboardLaptopName))
 	mustNotContain(t, "stream opened while acting", f, "rootbox", "bobbox", "bob-secret", "root-secret", `<th scope="col">Owner</th>`)
 	// Another user's changes never reach the acting admin's stream; alice's do.
 	bobLink.state("b1", "busy", "bob-secret-2")
@@ -533,9 +538,9 @@ func TestHubDashboardActAsFiltersRenderAndLiveUpdates(t *testing.T) {
 	}
 	after := d.page("/", root)
 	mustContain(t, "page after the exit", after, "rootbox", `class="scope"`)
-	mustNotContain(t, "page after the exit", after, "laptop", "bobbox", "Acting as")
+	mustNotContain(t, "page after the exit", after, dashboardLaptopName, "bobbox", "Acting as")
 	mine := d.stream("/live/dashboard", root)
-	mine.until("own space after the exit", all(has("rootbox"), hasNot("laptop", "bobbox")))
+	mine.until("own space after the exit", all(has("rootbox"), hasNot(dashboardLaptopName, "bobbox")))
 }
 
 // The owner assertion reads the row of one Worker: a fragment in which another

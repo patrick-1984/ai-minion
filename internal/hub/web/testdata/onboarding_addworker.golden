@@ -1,6 +1,10 @@
 <main id="content" tabindex="-1">
 
 <div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
+<div class="notice notice-info" data-enrollment-usage>
+  <p><strong>Usage monitoring is part of registration for new Workers that support it.</strong> Your Hub administrator and Worker owner can see usage statistics for every session on this Worker, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, limits and collection diagnostics. Console sharing and control have separate permissions.</p>
+  <p>Accepting adds no permission to read or control terminals. Session sharing and personal bucket choices do not change usage coverage.</p>
+</div>
 <section class="panel" aria-labelledby="join-one-step" data-join-panel>
   <h2 id="join-one-step">Add a Worker in one step</h2>
   <p class="muted">Creates a one-time invitation key and shows one command with everything the new machine needs: this Hub's address, its full fingerprint and the key. Run it on the machine that should become a Worker.</p>
@@ -38,7 +42,7 @@
   <div class="info-pop" id="help-pairing-code" popover><p>The Worker shows a code that you enter here to confirm pairing. The code is valid for 10 minutes.</p></div>
   <p class="muted">Start pairing on the machine that should become a Worker, for example with:</p>
   <div><div class="copy-field"><code class="copy-value" id="cp-worker-pair">minion worker pair</code><button type="button" class="copy-btn" data-copy-target="#cp-worker-pair" aria-label="Copy the command" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
-  <p class="muted">It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here.</p>
+  <p class="muted">It shows a code like <code>MN-ABCD-EFGH</code>. Enter that code here. On the Worker, review usage monitoring with <code>minion worker config usage</code> and accept this enrollment with <code>minion worker config usage --accept</code>. On Android, review and accept in the app.</p>
   <form method="post" hx-post="/workers/add" hx-target="#pair-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
     <div class="field">
       <label for="pair-code">Pairing code</label>

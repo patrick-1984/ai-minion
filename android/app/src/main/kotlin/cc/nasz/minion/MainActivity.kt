@@ -51,6 +51,7 @@ class MainActivity : Activity() {
     private lateinit var pairing: TextView
     private lateinit var expires: TextView
     private lateinit var sessions: TextView
+    private lateinit var usageStatus: TextView
     private lateinit var share: CheckBox
     private lateinit var boot: CheckBox
     private lateinit var pair: Button
@@ -59,6 +60,7 @@ class MainActivity : Activity() {
     private lateinit var pause: Button
     private lateinit var stop: Button
     private lateinit var forget: Button
+    private lateinit var reviewUsage: Button
 
     private val service = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -137,6 +139,8 @@ class MainActivity : Activity() {
         details.addView(workerWords, row(10))
         sessions = label("", 16f, ink)
         details.addView(sessions, row(8))
+        usageStatus = label("", 16f, ink)
+        details.addView(usageStatus, row(8))
 
         pair = button("Pair with a Hub") { showJoin(byToken = false) }
         token = button("Use a join token") { showJoin(byToken = true) }
@@ -169,6 +173,8 @@ class MainActivity : Activity() {
         }
         page.addView(share, row(12))
         page.addView(boot, row(2))
+        reviewUsage = button("Review usage monitoring") { model.usage?.let(::showUsage) }
+        page.addView(reviewUsage, row(6))
         forget = button("Forget this Hub") {
             AlertDialog.Builder(this)
                 .setTitle("Forget this Hub?")
@@ -204,6 +210,11 @@ class MainActivity : Activity() {
         workerWords.show(if (value.workerWords.isBlank()) "" else "Worker key words\n${value.workerWords}")
         sessions.show(if (value.sessions.isBlank()) "" else "Terminal sessions  ${value.sessions}")
 
+        usageStatus.show(when (value.usage?.accepted) {
+            true -> "Usage monitoring accepted"
+            false -> if (value.usage.required) "Usage monitoring pending local acceptance" else "Usage monitoring acceptance is available"
+            null -> ""
+        })
         val configured = value.hub.isNotBlank()
         pair.visible(!configured && !value.busy)
         token.visible(!configured && !value.busy)
@@ -213,8 +224,9 @@ class MainActivity : Activity() {
         stop.visible(value.wanted || value.busy)
         share.visible(configured && !value.busy)
         boot.visible(configured && !value.busy)
+        reviewUsage.visible(value.usage?.accepted == false && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
-        val controls = listOf(pair, token, start, pause, stop, share, boot, forget)
+        val controls = listOf(pair, token, start, pause, stop, share, boot, reviewUsage, forget)
         for (control in controls) control.isEnabled = worker != null
         if (television && currentFocus == null) {
             controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()
@@ -240,15 +252,26 @@ class MainActivity : Activity() {
             text = "Share this device's terminal sessions with the Hub"
             isChecked = true
         }
+        val disclosure = TextView(this).apply {
+            setText(R.string.usage_enrollment_disclosure)
+            textSize = 16f
+        }
+        val usage = CheckBox(this).apply {
+            setText(R.string.accept_usage_enrollment)
+            isSaveEnabled = false
+            setOnCheckedChangeListener { _, checked -> if (checked) error = null }
+        }
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(12), dp(22), 0)
             addView(input)
+            addView(disclosure, row(12))
+            addView(usage, row(8))
             addView(selection, row(12))
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle(if (byToken) "Join a Hub" else "Pair with a Hub")
-            .setView(form)
+            .setView(ScrollView(this).apply { addView(form) })
             .setNegativeButton("Cancel", null)
             .setPositiveButton(if (byToken) "Join" else "Show pairing code", null)
             .create()
@@ -263,9 +286,15 @@ class MainActivity : Activity() {
                     input.error = if (byToken) "Paste a Minion join token from the Hub." else "Enter a full Hub URL, such as https://hub.example"
                     return@setOnClickListener
                 }
+                if (!usage.isChecked) {
+                    usage.error = getString(R.string.usage_enrollment_required)
+                    usage.requestFocus()
+                    return@setOnClickListener
+                }
                 val target = worker ?: return@setOnClickListener
                 val selectionValue = if (selection.isChecked) "all" else "none"
-                if (byToken) target.join(value, selectionValue) else target.pair(value, selectionValue)
+                if (byToken) target.join(value, selectionValue, usage.isChecked)
+                else target.pair(value, selectionValue, usage.isChecked)
                 input.text.clear()
                 dialog.dismiss()
                 if (!television && Build.VERSION.SDK_INT >= 33 &&
@@ -284,6 +313,19 @@ class MainActivity : Activity() {
         }
         dialog.setOnDismissListener { input.text.clear() }
         dialog.show()
+    }
+
+    private fun showUsage(registration: UsageRegistration) {
+        val message = getString(R.string.usage_enrollment_disclosure) +
+            "\n\nHub fingerprint\n${registration.hubFingerprint}" +
+            "\n\nWorker registration\n${registration.workerId}" +
+            "\n\nOwner\n${registration.owner}"
+        AlertDialog.Builder(this)
+            .setTitle("Usage monitoring")
+            .setMessage(message)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Accept") { _, _ -> worker?.acceptUsage(registration) }
+            .show()
     }
 
     private fun validServer(value: String): Boolean = runCatching {

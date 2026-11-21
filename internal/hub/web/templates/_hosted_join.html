@@ -28,5 +28,5 @@
   {{if .KeyedOK}}{{template "fold" .Verified}}{{end}}
   {{template "fold" .VerifiedMasked}}
   </details>{{end}}
-  </div>{{else}}<p class="notice notice-info" data-join-manual>This Hub does not have a versioned installer for these commands. {{if .KeyedOK}}Use the commands below.{{else}}Copy the token and give it to <code>minion worker up --join -</code> on its standard input.{{end}}</p>{{end}}
+  </div>{{else}}<p class="notice notice-info" data-join-manual>This Hub does not have a versioned installer for these commands. {{if .KeyedOK}}Use the commands below.{{else}}Copy the token and give it to <code>minion worker up --join - --accept-usage</code> on its standard input after reviewing the usage disclosure.{{end}}</p>{{end}}
 {{end}}

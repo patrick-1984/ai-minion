@@ -88,6 +88,22 @@ func installerTag() string {
 	return v.String()
 }
 
+// usageInstallerArgs only selects a flag understood by the packaged Worker
+// and installer. The enrollment handshake decides which policy applies.
+func usageInstallerArgs(tag, flag string) string {
+	const since = "v0.18.0"
+	v, err := version.ParseVersion(tag)
+	if err != nil {
+		return ""
+	}
+	v.Pre = ""
+	min, _ := version.ParseVersion(since)
+	if v.Compare(min) < 0 {
+		return ""
+	}
+	return " " + flag
+}
+
 // cachedInstaller returns the verified installer of this Hub's release if the
 // warmer has found it. It never waits and never does I/O.
 func cachedInstaller() (InstallerOffer, bool) {
@@ -166,7 +182,7 @@ func installLine(o InstallerOffer, token, name string) string {
 	b.WriteString(`(f=$(mktemp "${TMPDIR:-/tmp}/minion-install.XXXXXX") && curl -fsSL ` + shellArg(o.URL) + ` -o "$f" && [ -s "$f" ] && `)
 	b.WriteString(`{ sha256sum "$f" 2>/dev/null || shasum -a 256 "$f"; } | grep -q '^` + o.SHA256 + ` ' && `)
 	b.WriteString("MINION_VERSION=" + o.Tag + " MINION_CHECKSUMS_SHA256=" + o.ChecksumsSHA256 + " " + joinEnv(token))
-	b.WriteString(`sh "$f" --join` + nameArg(name) + `; s=$?; rm -f "$f"; exit $s)`)
+	b.WriteString(`sh "$f" --join` + nameArg(name) + usageInstallerArgs(o.Tag, "--accept-usage") + `; s=$?; rm -f "$f"; exit $s)`)
 	return b.String()
 }
 
@@ -188,7 +204,7 @@ func pipeLine(tag, token, name string) string {
 }
 
 func installerModeLine(tag, token, name, mode string) string {
-	return downloadedInstallerLine(tag, "install.sh", "MINION_VERSION="+tag+" "+joinEnv(token)+"sh -s -- "+mode+nameArg(name))
+	return downloadedInstallerLine(tag, "install.sh", "MINION_VERSION="+tag+" "+joinEnv(token)+"sh -s -- "+mode+nameArg(name)+usageInstallerArgs(tag, "--accept-usage"))
 }
 
 func windowsInstallerLine(tag, name string) string {
@@ -196,7 +212,7 @@ func windowsInstallerLine(tag, name string) string {
 	if name != "" {
 		line += " -Name " + psArg(name)
 	}
-	return line
+	return line + usageInstallerArgs(tag, "-AcceptUsage")
 }
 
 func androidInstallerLine(tag string) string {

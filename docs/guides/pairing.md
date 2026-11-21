@@ -10,6 +10,22 @@ In the Hub open **Workers**, **Add worker**, and use **Add a Worker in one step*
 
 Copy the command for the Worker host. Linux and macOS keep your terminal available to choose what to share. The sudo command also offers `r` to serve root’s sessions. On Windows, run the command in a normal PowerShell window. After startup, compare the Hub and Worker fingerprints in the summary with the Workers page and approve the new Worker. The Worker runs in the background and starts again at boot or login. The native commands use `--non-interactive-share all` on a fresh unattended installation. An existing sharing choice is kept. Without a terminal (Docker, Compose, an unattended install) the Worker therefore shares all sessions; to keep them private, change `all` to `none` or `later` in the command and choose in the Hub. For scripts that provide their own credential on stdin, use `minion worker up --share-existing all --join -` (choose `none` or `later` for a narrower scope).
 
+The current Hub's join commands show the usage disclosure before the commands
+that accept it. Running one with `--accept-usage` (Windows installer
+`-AcceptUsage`) accepts monitoring for that enrollment. The Hub administrator
+and Worker owner can see metadata for shared and unshared sessions, such as
+names, folders, models, timing, token counts and usage limits. This acceptance
+grants no access to terminal content or controls. Sharing and personal
+bucket choices do not narrow usage coverage.
+
+A new Worker on a Hub that requires usage monitoring waits for local
+acceptance if you enroll it without the flag. Run `minion worker config usage`
+on the Worker to review the current enrollment and
+`minion worker config usage --accept` to accept it. Previously enrolled
+Workers keep their console access and can accept from the same command.
+Android displays the disclosure and accepts from the app. An older Hub
+keeps its previous enrollment behavior.
+
 The Docker commands enroll a disposable container through standard input, save the enrolled identity and public Hub settings in the data volume, then launch the Worker under Docker’s restart policy. The Compose file can be kept across restarts. Its separate enrollment command contains the one-time token. Both variants report the running Worker's status. [Approve a new Worker](#approve-a-new-worker).
 
 - `--join` sets `--server`, `--hub-fingerprint` and `--invite-key`. Giving one of them as well, by flag or environment, with a different value (also an empty `--server`, which means Solo) is an error that names both; the same value (the fingerprint also as six words) is accepted. A `hub_fingerprint` or `server` already saved in the Worker's config file is never replaced by a token: a different one stops the command before anything is sent or written (run `minion worker config unset server hub_fingerprint` to move the Worker to another Hub). `worker up` saves the Hub address and fingerprint in the config file for the service; the token and the key are never saved, printed or logged.

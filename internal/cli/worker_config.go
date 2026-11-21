@@ -152,6 +152,7 @@ key (--invite-key), which is meant for one-command setup.`,
 		newConfigSetCmd(deps),
 		newConfigUnsetCmd(deps),
 		newConfigShareCmd(deps),
+		newConfigUsageCmd(deps),
 	)
 	return cmd
 }
