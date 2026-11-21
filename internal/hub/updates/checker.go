@@ -64,11 +64,14 @@ type Checker struct {
 	// 60 unauthenticated calls an hour per address.
 	MinRefresh time.Duration
 
-	mu       sync.RWMutex
-	last     Result
-	runMu    sync.Mutex // one check at a time
-	checking atomic.Bool
-	lastAt   time.Time // when the last check (any trigger) ran
+	mu    sync.RWMutex
+	last  Result
+	runMu sync.Mutex // one check at a time
+	// running counts the fetches in progress or about to start (any trigger);
+	// startedAt is when the current run began (unix nanoseconds, 0 when idle).
+	running   atomic.Int32
+	startedAt atomic.Int64
+	lastAt    time.Time // when the last check (any trigger) ran
 }
 
 // Latest returns the last answer; it never blocks on the network.
@@ -159,16 +162,40 @@ func (c *Checker) StartRefresh() bool {
 	if life == nil {
 		life = context.Background()
 	}
-	c.checking.Store(true)
+	c.begin()
 	go func() {
-		defer c.checking.Store(false)
+		defer c.end()
 		c.fetch(life, true, false)
 	}()
 	return true
 }
 
-// Checking reports whether a check started by StartRefresh still runs.
-func (c *Checker) Checking() bool { return c.checking.Load() }
+// Checking reports whether a check (of any trigger: Check now, the daily
+// check, a channel change) runs.
+func (c *Checker) Checking() bool { return c.running.Load() > 0 }
+
+// CheckingSince is when the current check began; zero when none runs.
+func (c *Checker) CheckingSince() time.Time {
+	if !c.Checking() {
+		return time.Time{}
+	}
+	if n := c.startedAt.Load(); n != 0 {
+		return time.Unix(0, n)
+	}
+	return time.Now()
+}
+
+func (c *Checker) begin() {
+	if c.running.Add(1) == 1 {
+		c.startedAt.Store(time.Now().UnixNano())
+	}
+}
+
+func (c *Checker) end() {
+	if c.running.Add(-1) == 0 {
+		c.startedAt.Store(0)
+	}
+}
 
 // dueLocked reports whether a cooldown-bound check would ask GitHub now; the
 // caller holds runMu.
@@ -230,6 +257,8 @@ func (c *Checker) fetch(ctx context.Context, cooldown, detach bool) bool {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	c.begin()
+	defer c.end()
 	c.lastAt = time.Now()
 	res, err := c.check(ctx, channel)
 	if err != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), context.Canceled) {
