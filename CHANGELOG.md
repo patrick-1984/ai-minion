@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Worker connection shutdown no longer waits for a stalled local log during the online transition or handshake teardown.
+
 - **Administration > Updates:** Check now shows the answer without a manual reload (it waits for the check, up to 20 seconds, then reloads the page; a slower check reloads the page every 5 seconds for at most 2 minutes).
 - The startup summary names the run mode once (it said "background (background (shell login))").
 
