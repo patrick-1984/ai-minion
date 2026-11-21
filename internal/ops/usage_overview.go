@@ -10,6 +10,7 @@ import (
 // percentages across unequal plans or double-counts a Worker reporting the
 // same account. Percentages are an unweighted mean of fresh known accounts.
 type UsageWindowGroup struct {
+	Unit            string   `json:"unit,omitempty"`
 	Provider        string   `json:"provider"`
 	Scope           string   `json:"scope"`
 	Period          string   `json:"period"`
@@ -34,8 +35,8 @@ func SummarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 		}
 	}
 	type key struct {
-		provider, scope, period string
-		duration                int64
+		provider, scope, period, unit string
+		duration                      int64
 	}
 	type group struct {
 		row UsageWindowGroup
@@ -54,13 +55,13 @@ func SummarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 			out.WithoutWindows++
 		}
 		for _, w := range a.Windows {
-			k := key{provider: a.Provider, scope: w.Scope, period: w.Period}
+			k := key{provider: a.Provider, scope: w.Scope, period: w.Period, unit: w.Unit}
 			if w.DurationMS != nil {
 				k.duration = *w.DurationMS
 			}
 			g := groups[k]
 			if g == nil {
-				g = &group{row: UsageWindowGroup{Provider: a.Provider, Scope: w.Scope, Period: w.Period, DurationMS: w.DurationMS}}
+				g = &group{row: UsageWindowGroup{Provider: a.Provider, Scope: w.Scope, Period: w.Period, Unit: w.Unit, DurationMS: w.DurationMS}}
 				groups[k] = g
 			}
 			if w.UsedPercent == nil {
@@ -90,6 +91,9 @@ func SummarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 			return c
 		}
 		if c := cmp.Compare(a.Period, b.Period); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Unit, b.Unit); c != 0 {
 			return c
 		}
 		if a.DurationMS == nil || b.DurationMS == nil {

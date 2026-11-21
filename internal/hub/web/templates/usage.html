@@ -1,62 +1,427 @@
+{{define "head_extra"}}<link rel="stylesheet" href="/static/usage.css">{{end}}
+
 {{define "content"}}
 {{$p := .Data}}
-<div class="page-head"><div><h1>Usage</h1><p class="muted">Session activity, subscription capacity and installed coding tools.</p></div></div>
-<nav class="row" aria-label="Usage views">
-  <a class="btn btn-secondary" href="/usage" {{if eq $p.Section "overview"}}aria-current="page"{{end}}>Subscriptions</a>
-  <a class="btn btn-secondary" href="/usage?view=accounts" {{if eq $p.Section "accounts"}}aria-current="page"{{end}}>Accounts</a>
-  <a class="btn btn-secondary" href="/usage?view=sessions" {{if eq $p.Section "sessions"}}aria-current="page"{{end}}>Sessions</a>
-  <a class="btn btn-secondary" href="/usage?view=workers" {{if eq $p.Section "workers"}}aria-current="page"{{end}}>Workers</a>
-  {{if $p.Private}}<a class="btn btn-secondary" href="/usage?view=buckets" {{if eq $p.Section "buckets"}}aria-current="page"{{end}}>Token buckets</a>{{end}}
-</nav>
-<details class="panel"><summary>Monitoring and access</summary><p>{{$p.Notice}}</p><p>Registration starts on the Worker. Review the disclosure with <code>minion worker config usage</code>.</p></details>
-<div id="usage-result" aria-live="polite"></div>
-{{if and $p.Private (ne $p.Section "buckets") (ne $p.Section "workers")}}
-<form class="filters" method="get" action="/usage"><input type="hidden" name="view" value="{{$p.Section}}">
-  <div class="field"><label for="usage-filter">Token bucket</label><select id="usage-filter" name="bucket"><option value="">All</option><option value="unassigned" {{if eq $p.BucketID "unassigned"}}selected{{end}}>Unassigned</option>{{range $p.Buckets}}{{if eq .Kind $p.Kind}}<option value="{{.ID}}" {{if eq .ID $p.BucketID}}selected{{end}}>{{.Label}}</option>{{end}}{{end}}</select></div>
-  <button type="submit">Filter</button></form>{{end}}
+<div class="usage-page">
+  <div class="page-head">
+    <div><h1>Usage</h1>{{if $p.Admin}}<p>Usage across all registered Workers. Token buckets belong to your account.</p>{{end}}</div>
+  </div>
+  <nav class="scope usage-tabs" aria-label="Usage views">
+    {{range $p.Views}}<a href="{{.URL}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+  </nav>
+  <details class="notice notice-info usage-disclosure" {{if eq $p.Section "workers"}}open{{end}}>
+    <summary>Monitoring and access</summary>
+    <p>{{$p.Notice}}</p>
+    <p>To review enrollment on the Worker, run <code>minion worker config usage</code>.</p>
+  </details>
+  <div id="usage-result" aria-live="polite"></div>
+  {{if ne $p.Section "buckets"}}
+  <form class="usage-fields" method="get" action="/usage">
+    <input type="hidden" name="view" value="{{$p.Section}}">
+    <label class="field">Worker
+      <select name="worker">
+        <option value="">All Workers</option>
+        {{range $p.Workers}}<option value="{{.ID}}"{{if eq .ID $p.WorkerID}} selected{{end}}>{{$p.WorkerName .ID}}</option>{{end}}
+      </select>
+    </label>
+    {{if and $p.Private (ne $p.Section "workers")}}
+    <label class="field">Token bucket
+      <select name="bucket">
+        <option value="">All buckets</option>
+        <option value="unassigned"{{if eq $p.BucketID "unassigned"}} selected{{end}}>Unassigned</option>
+        {{range $p.Buckets}}{{if eq .Kind $p.Kind}}<option value="{{.ID}}"{{if eq .ID $p.BucketID}} selected{{end}}>{{.Label}}</option>{{end}}{{end}}
+      </select>
+    </label>
+    {{end}}
+    <button type="submit" class="btn btn-secondary">Apply filters</button>
+  </form>
+  {{end}}
+  {{if $p.SessionViews}}
+  <nav class="scope usage-tabs" aria-label="Session usage views">
+    {{range $p.SessionViews}}<a href="{{.URL}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
+  </nav>
+  {{end}}
 
-{{if eq $p.Section "overview"}}<section class="panel"><h2>Subscription limits</h2>
-{{with $p.Rows.Overview}}<p>{{.Accounts}} subscription accounts. {{.WithoutWindows}} with no reported windows.</p>
-{{if .Groups}}<p class="muted">Each account has equal weight within its provider and limit. Only fresh observations contribute to the mean.</p>
-<div class="diagnostic-facts">{{range .Groups}}<dl><dt>{{.Provider}} · {{.Scope}}</dt><dd><strong>{{$p.Percent .MeanUsedPercent}}</strong> used</dd><dd>{{$p.Period .Period .DurationMS}}</dd><dd>{{.Known}} known · {{.Stale}} stale · {{.Unknown}} unknown</dd></dl>{{end}}</div>
-{{else}}<p class="muted">No subscription limit observations yet.</p>{{end}}{{end}}</section>{{end}}
+  {{if eq $p.Section "overview"}}
+  <div id="usage-subscription-data" hx-get="{{$p.RefreshURL}}" hx-trigger="every 60s" hx-select="#usage-subscription-data > *" hx-swap="innerHTML" hx-sync="this:drop">
+    {{template "usage_overview" $p}}
+    <section aria-labelledby="subscriptions-h">
+      <h2 id="subscriptions-h">Subscription accounts</h2>
+      <div class="usage-cards">
+        {{range $p.Accounts}}{{template "usage_subscription_card" .}}{{else}}<p class="muted">No subscription accounts match these filters.</p>{{end}}
+      </div>
+    </section>
+    {{if $p.NextURL}}<a class="btn btn-secondary" href="{{$p.NextURL}}">Next page</a>{{end}}
+  </div>
+  {{else if eq $p.Section "accounts"}}
+  {{template "usage_accounts" $p}}
+  {{else if eq $p.Section "workers"}}
+  {{template "usage_workers" $p}}
+  {{else if eq $p.Section "sessions"}}
+  {{template "usage_sessions" $p}}
+  {{else if eq $p.Section "events"}}
+  {{template "usage_events" $p}}
+  {{else if eq $p.Section "history"}}
+  {{template "usage_history" $p}}
+  {{else}}
+  {{template "usage_buckets" $p}}
+  {{end}}
+  {{if and $p.NextURL (ne $p.Section "overview")}}<a class="btn btn-secondary" href="{{$p.NextURL}}">Next page</a>{{end}}
+</div>
+{{end}}
 
-{{if eq $p.Section "workers"}}<section><h2>Worker inventory</h2>
-{{range $p.Rows.Workers}}<article class="panel"><h3>{{.Name}}</h3><p>Last observation: {{$p.Time .ObservedAt}}</p>
-{{if .Inventory}}<ul>{{range .Inventory}}<li><strong>{{.Name}}</strong> {{.Version}} · {{.Status}}</li>{{end}}</ul>{{else}}<p class="muted">No inventory reported.</p>{{end}}
-<form method="post" action="/usage/scan" hx-post="/usage/scan" hx-target="#usage-result" hx-disabled-elt="find button">
-<input type="hidden" name="for_user" value="{{$p.ForUser}}"><input type="hidden" name="worker" value="{{.ID}}"><input type="hidden" name="view" value="workers"><button type="submit" class="btn btn-secondary">Scan installed harnesses</button></form></article>
-{{else}}<p>No approved Workers are available to this account.</p>{{end}}</section>{{end}}
+{{define "usage_overview"}}
+{{$p := .}}
+<section aria-labelledby="aggregate-h">
+  <div class="usage-heading">
+    <h2 id="aggregate-h">Subscription limits</h2>
+    <span class="muted">Checked {{$p.Millis $p.Rows.AsOf}}</span>
+  </div>
+  {{with $p.Rows.Overview}}
+  <p>{{.Accounts}} subscription accounts · {{.WithoutWindows}} with no reported limits</p>
+  {{if .Groups}}
+  <p class="muted">The mean gives each account equal weight. Coverage counts fresh, stale and missing observations for each comparable limit.</p>
+  <div class="usage-cards">
+    {{range .Groups}}
+    <article class="panel usage-limit">
+      <h3>{{.Provider}} · {{.Scope}}</h3>
+      <p class="muted">{{$p.Period .Period .DurationMS}}{{if .Unit}} · {{.Unit}}{{end}}</p>
+      <p class="usage-value">{{if .MeanUsedPercent}}{{$p.Percent .MeanUsedPercent}} <small>mean used</small>{{else}}<small>Mean unavailable</small>{{end}}</p>
+      <p class="muted">{{.Known}} fresh · {{.Stale}} stale · {{.Unknown}} unknown</p>
+    </article>
+    {{end}}
+  </div>
+  {{else}}<p class="muted">No subscription limits reported yet.</p>{{end}}
+  {{end}}
+</section>
+{{end}}
 
-{{if or (eq $p.Section "accounts") (eq $p.Section "sessions")}}
-<form method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
-<input type="hidden" name="for_user" value="{{$p.ForUser}}"><input type="hidden" name="action" value="assign"><input type="hidden" name="view" value="{{$p.Section}}"><input type="hidden" name="kind" value="{{$p.Kind}}">
-{{if eq $p.Section "accounts"}}<h2>Provider accounts</h2>
-{{range $p.Windows}}<article class="panel"><h3>{{if $p.Private}}<input type="checkbox" name="member" value="{{.Account.ID}}" aria-label="Select {{.Account.Provider}} {{.Account.Label}}">{{end}} {{.Account.Provider}} {{.Account.Label}}</h3>
-<p>{{.Account.AuthMode}} · {{.Account.Source}} · {{.Observed}}</p>
-{{range .Windows}}<div class="diagnostic-facts"><dl><dt>{{.Scope}}</dt><dd>{{.Period}}</dd></dl><dl><dt>Used</dt><dd>{{.Used}}</dd></dl><dl><dt>Consumption pace</dt><dd><span class="badge" data-tone="{{.Tone}}">{{.Pace}}</span></dd></dl><dl><dt>Resets</dt><dd>{{.Reset}}</dd></dl></div>{{else}}<p class="muted">No subscription windows reported.</p>{{end}}</article>
-{{else}}<p>No account observations match this view.</p>{{end}}
-{{else}}<h2>Sessions</h2>
-{{range $p.Rows.Sessions}}<article class="panel"><h3>{{if $p.Private}}<input type="checkbox" name="member" value="{{.ID}}" aria-label="Select {{.Name}}">{{end}} {{.Name}}</h3>
-{{if .Folder}}<p class="break">{{.Folder}}</p>{{end}}<p>{{if .Harness}}{{.Harness}} {{.Version}}{{else}}Unknown harness{{end}}{{if .Model}} · {{.Model}}{{end}} · {{.AuthMode}}</p>
-<div class="diagnostic-facts"><dl><dt>Started</dt><dd>{{$p.Time .StartedAt}}</dd></dl><dl><dt>Stopped</dt><dd>{{if .StoppedAt}}{{$p.Time .StoppedAt}}{{else}}No stop observed{{end}}</dd></dl><dl><dt>Input tokens</dt><dd>{{$p.Number .InputTokens}}</dd></dl><dl><dt>Output tokens</dt><dd>{{$p.Number .OutputTokens}}</dd></dl><dl><dt>Cache read / write</dt><dd>{{$p.Number .CacheReadTokens}} / {{$p.Number .CacheWriteTokens}}</dd></dl></div><p class="muted">Source: {{.Source}}</p></article>
-{{else}}<p>No session observations match this view.</p>{{end}}{{end}}
-{{if $p.Private}}<fieldset class="panel"><legend>Assign to bucket</legend>
-<div class="field"><label for="usage-to">Destination</label><select name="bucket" id="usage-to"><option value="">Unassigned</option>{{range $p.Buckets}}{{if eq .Kind $p.Kind}}<option value="{{.ID}}">{{.Label}}</option>{{end}}{{end}}</select></div>
-<label><input type="checkbox" name="all"> Include all accessible {{if eq $p.Kind "session"}}sessions{{else}}provider accounts{{end}} across all pages and buckets</label>
-<div class="field"><label for="usage-worker">Or include every member on a Worker (Worker ID)</label><input name="worker" id="usage-worker"></div>
-<button type="submit" class="btn btn-secondary">Move selected members</button></fieldset>{{end}}</form>{{end}}
+{{define "usage_subscription_card"}}
+<article class="panel usage-account">
+  <div class="usage-heading">
+    <h3>{{.Account.Provider}}{{if .Account.Label}} · {{.Account.Label}}{{end}}</h3>
+    <span class="badge" data-tone="{{if eq .Freshness "Stale"}}warning{{else}}info{{end}}">{{.Freshness}}</span>
+  </div>
+  <p class="muted">{{.Account.Source}} · {{.Observed}}</p>
+  {{template "usage_windows" .}}
+</article>
+{{end}}
 
-{{if eq $p.Section "buckets"}}{{if $p.Private}}<h2>Your token buckets</h2>
-<form class="panel" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
-<input type="hidden" name="for_user" value="{{$p.ForUser}}"><input type="hidden" name="action" value="save"><input type="hidden" name="view" value="buckets">
-<div class="field"><label for="usage-kind">Bucket type</label><select name="kind" id="usage-kind"><option value="session">Session</option><option value="provider">Provider</option></select></div>
-<div class="field"><label for="usage-label">Name</label><input name="label" id="usage-label" maxlength="80" required></div><button type="submit" class="btn">Create bucket</button></form>
-{{range $p.Buckets}}<form class="panel" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
-<input type="hidden" name="for_user" value="{{$p.ForUser}}"><input type="hidden" name="kind" value="{{.Kind}}"><input type="hidden" name="bucket" value="{{.ID}}"><input type="hidden" name="view" value="buckets">
-<h3>{{.Label}}</h3><p class="muted">{{.Kind}} bucket</p><div class="field"><label for="name-{{.ID}}">Name</label><input id="name-{{.ID}}" name="label" value="{{.Label}}" maxlength="80" required></div>
-<div class="field"><label for="order-{{.ID}}">Display order</label><input id="order-{{.ID}}" name="position" type="number" min="0" max="1000000" value="{{.Position}}"></div>
-<button type="submit" name="action" value="save">Save changes</button><button type="submit" name="action" value="delete" class="btn btn-secondary">Remove bucket</button></form>{{end}}
-{{else}}<p>Private buckets are available in your own signed-in account.</p>{{end}}{{end}}
-{{if $p.NextURL}}<a class="btn btn-secondary" href="{{$p.NextURL}}">Next page</a>{{end}}
+{{define "usage_windows"}}
+{{range .Windows}}
+<div class="usage-window">
+  <div class="usage-heading">
+    <h4>{{.Scope}}</h4>
+    <span class="badge" data-tone="{{.Tone}}">{{.Pace}}</span>
+  </div>
+  <p class="muted">{{.Period}}{{if .Unit}} · {{.Unit}}{{end}}</p>
+  <dl class="usage-facts">
+    <div><dt>Used</dt><dd>{{.Used}}</dd></div>
+    {{if .Elapsed}}<div><dt>Elapsed</dt><dd>{{.Elapsed}}</dd></div>{{end}}
+    {{if .Projected}}<div><dt>At current pace</dt><dd>{{.Projected}}</dd></div>{{end}}
+    <div><dt>Resets</dt><dd>{{.Reset}}</dd></div>
+  </dl>
+</div>
+{{else}}<p class="muted">No subscription limits reported.</p>{{end}}
+{{end}}
+
+{{define "usage_accounts"}}
+{{$p := .}}
+<section aria-labelledby="account-list-h">
+  <h2 id="account-list-h">Provider accounts</h2>
+  {{if and $p.Private $p.Accounts}}
+  <p class="muted">Select accounts to move them to a token bucket.</p>
+  {{end}}
+  <div class="usage-cards">
+  {{range $p.Accounts}}
+    {{$card := .}}
+    {{$a := .Account}}
+    <article class="panel usage-account">
+      <div class="usage-heading">
+        <h3>{{$a.Provider}}{{if $a.Label}} · {{$a.Label}}{{end}}</h3>
+        {{if $p.Private}}<label class="usage-check"><input type="checkbox" name="member" value="{{$a.ID}}" form="usage-selected"><span>Select<span class="sr-only"> {{$a.Provider}} {{$a.Label}}</span></span></label>{{end}}
+      </div>
+      <dl class="usage-facts">
+        <div><dt>Access</dt><dd>{{$p.Access $a.AuthMode}}</dd></div>
+        <div><dt>Observation</dt><dd>{{$card.Freshness}} · {{$card.Observed}}</dd></div>
+        <div><dt>Source</dt><dd>{{$p.WorkerName $a.WorkerID}} · {{$a.Source}}</dd></div>
+        {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName $a.BucketID}}</dd></div>{{end}}
+      </dl>
+      {{if $p.Private}}
+      <details class="usage-window">
+        <summary>Display name and order</summary>
+        <form class="usage-fields" method="post" action="/usage/account" hx-post="/usage/account" hx-target="#usage-result" hx-disabled-elt="find button">
+          {{template "usage_form_state" $p}}
+          <input type="hidden" name="account" value="{{$a.ID}}">
+          <label class="field">Display name
+            <input name="label" value="{{$a.Alias}}" maxlength="80" aria-describedby="alias-help-{{$a.ID}}">
+            <span class="help" id="alias-help-{{$a.ID}}">Leave blank to use the reporting source's name.</span>
+          </label>
+          <label class="field">Display order
+            <input name="position" type="number" min="0" max="1000000" value="{{$a.Position}}" aria-describedby="order-help-{{$a.ID}}">
+            <span class="help" id="order-help-{{$a.ID}}">Lower numbers appear first.</span>
+          </label>
+          <button type="submit" class="btn btn-secondary">Save display settings</button>
+        </form>
+      </details>
+      {{end}}
+      {{if eq $a.AuthMode "subscription"}}
+      {{template "usage_windows" $card}}
+      {{if $a.Collector}}
+      <details class="usage-window">
+        <summary>Collector · {{$p.CollectorStatus $a.Collector.Status}}</summary>
+        <dl class="usage-facts">
+          <div><dt>Active Worker</dt><dd>{{$p.WorkerName $a.Collector.ActiveWorker}}</dd></div>
+          <div><dt>Last successful query</dt><dd>{{$p.Time $a.Collector.LastSuccess}}</dd></div>
+          <div><dt>Next eligible query</dt><dd>{{$p.Time $a.Collector.NextDue}}</dd></div>
+        </dl>
+        {{if $p.Private}}
+        <form class="usage-fields" method="post" action="/usage/collector" hx-post="/usage/collector" hx-target="#usage-result" hx-disabled-elt="find button">
+          {{template "usage_form_state" $p}}
+          <input type="hidden" name="account" value="{{$a.ID}}">
+          <label class="field">Preferred source
+            <select name="source">
+              <option value="">Automatic</option>
+              {{range $a.Sources}}
+              <option value="{{.WorkerID}}|{{.SessionID}}"{{if and (eq .WorkerID $a.Collector.PreferredWorker) (eq .SessionID $a.Collector.PreferredSession)}} selected{{end}}>{{.Label}}{{if .SessionID}} (passive session){{else}} (Worker){{end}}</option>
+              {{end}}
+            </select>
+          </label>
+          <button type="submit" class="btn btn-secondary">Save collector</button>
+        </form>
+        {{end}}
+      </details>
+      {{end}}
+      {{end}}
+    </article>
+  {{else}}<p class="muted">No account observations match these filters.</p>{{end}}
+  </div>
+  {{if and $p.Private $p.Accounts}}{{template "usage_assignment" $p}}{{end}}
+</section>
+{{end}}
+
+{{define "usage_workers"}}
+{{$p := .}}
+<section aria-labelledby="worker-usage-h">
+  <h2 id="worker-usage-h">Worker inventory</h2>
+  <div class="usage-cards">
+  {{range $p.Rows.Workers}}
+    <article class="panel">
+      <div class="usage-heading">
+        <h3>{{$p.WorkerName .ID}}</h3>
+        <span class="badge" data-online="{{if .Online}}true{{else}}false{{end}}">{{if .Online}}Online{{else}}Offline{{end}}</span>
+      </div>
+      <dl class="usage-facts">
+        <div><dt>Collection</dt><dd>{{$p.WorkerStatus .Status}}</dd></div>
+        <div><dt>Last collection</dt><dd>{{$p.Time .ObservedAt}}</dd></div>
+        <div><dt>Last harness scan</dt><dd>{{$p.Time .InventoryAt}}</dd></div>
+      </dl>
+      {{if .Inventory}}
+      <ul class="usage-harnesses" aria-label="Discovered harnesses">
+        {{range .Inventory}}
+        <li>
+          <strong>{{$p.Harness .Name}}</strong><span>{{if .Version}}{{.Version}} · {{end}}{{$p.Label .Status}}</span>
+          {{if or .Providers .AuthMode .AccountStatus}}<small>
+            {{- range $i, $provider := .Providers}}{{if $i}}, {{end}}{{$provider}}{{end -}}
+            {{- if .AuthMode}}{{if .Providers}} · {{end}}{{$p.Access .AuthMode}}{{end -}}
+            {{- if .AccountStatus}}{{if or .Providers .AuthMode}} · {{end}}{{$p.Label .AccountStatus}}{{end -}}
+          </small>{{end}}
+        </li>
+        {{end}}
+      </ul>
+      {{else}}<p class="muted">No harness inventory reported.</p>{{end}}
+      {{if and .Online (ne .Status "unsupported") (ne .Status "registration_required")}}
+      <form method="post" action="/usage/scan" hx-post="/usage/scan" hx-target="#usage-result" hx-disabled-elt="find button">
+        {{template "usage_form_state" $p}}
+        <input type="hidden" name="worker" value="{{.ID}}">
+        <button type="submit" class="btn btn-secondary">Scan installed harnesses</button>
+      </form>
+      {{else if eq .Status "registration_required"}}
+      <p class="help">On this Worker, review the disclosure and run <code>minion worker config usage --accept</code> to start collection.</p>
+      {{end}}
+    </article>
+  {{else}}<p class="muted">No approved Workers match these filters.</p>{{end}}
+  </div>
+</section>
+{{end}}
+
+{{define "usage_sessions"}}
+{{$p := .}}
+<section aria-labelledby="session-usage-h">
+  <h2 id="session-usage-h">Session usage</h2>
+  {{if and $p.Private $p.Rows.Sessions}}<p class="muted">Select sessions to move them to a token bucket.</p>{{end}}
+  <div class="usage-stack">
+  {{range $p.Rows.Sessions}}
+    <article class="panel">
+      <div class="usage-heading">
+        <h3>{{.Name}}</h3>
+        {{if $p.Private}}<label class="usage-check"><input type="checkbox" name="member" value="{{.ID}}" form="usage-selected"><span>Select<span class="sr-only"> {{.Name}}</span></span></label>{{end}}
+      </div>
+      {{if .Folder}}<p class="usage-path"><code>{{.Folder}}</code></p>{{end}}
+      <dl class="usage-facts">
+        <div><dt>Worker</dt><dd>{{$p.WorkerName .WorkerID}}</dd></div>
+        <div><dt>Harness</dt><dd>{{$p.Harness .Harness}} {{.Version}}</dd></div>
+        <div><dt>Provider</dt><dd>{{$p.Label .Provider}}</dd></div>
+        <div><dt>Model</dt><dd>{{if .Model}}{{.Model}}{{else}}Unknown{{end}}</dd></div>
+        <div><dt>Access</dt><dd>{{$p.Access .AuthMode}}</dd></div>
+        <div><dt>Started</dt><dd>{{$p.Time .StartedAt}}</dd></div>
+        <div><dt>Stopped</dt><dd>{{if .StoppedAt}}{{$p.Time .StoppedAt}}{{else}}No stop observed{{end}}</dd></div>
+        <div><dt>Last seen</dt><dd>{{$p.Millis .LastSeen}}</dd></div>
+        {{if .AccountID}}<div><dt>Account ID</dt><dd><code>{{.AccountID}}</code></dd></div>{{end}}
+        {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName .BucketID}}</dd></div>{{end}}
+      </dl>
+      {{template "usage_counters" ($p.Counters .UsageCounters)}}
+      {{if .Models}}
+      <details class="usage-window">
+        <summary>Usage by model</summary>
+        {{range .Models}}
+        <h4>{{.Model}}</h4>
+        {{template "usage_counters" ($p.Counters .UsageCounters)}}
+        {{end}}
+      </details>
+      {{end}}
+      <p class="help">Source {{.Source}} · sample {{$p.Millis .ObservedAt}}</p>
+    </article>
+  {{else}}<p class="muted">No session observations match these filters.</p>{{end}}
+  </div>
+  {{if and $p.Private $p.Rows.Sessions}}{{template "usage_assignment" $p}}{{end}}
+</section>
+{{end}}
+
+{{define "usage_counters"}}
+<dl class="usage-facts">
+  {{range .}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}
+</dl>
+{{end}}
+
+{{define "usage_events"}}
+{{$p := .}}
+<section aria-labelledby="usage-events-h">
+  <h2 id="usage-events-h">Session activity</h2>
+  <div class="usage-stack">
+    {{range $p.Rows.Events}}
+    <article class="panel">
+      <div class="usage-heading"><h3>{{$p.Label .Kind}}</h3><span class="muted">{{$p.Millis .ObservedAt}}</span></div>
+      <dl class="usage-facts">
+        <div><dt>Worker</dt><dd>{{$p.WorkerName .WorkerID}}</dd></div>
+        <div><dt>Session ID</dt><dd><code>{{.SessionID}}</code></dd></div>
+        <div><dt>Source</dt><dd>{{.Source}}</dd></div>
+      </dl>
+    </article>
+    {{else}}<p class="muted">No activity observations match these filters.</p>{{end}}
+  </div>
+</section>
+{{end}}
+
+{{define "usage_history"}}
+{{$p := .}}
+<section aria-labelledby="usage-history-h">
+  <h2 id="usage-history-h">Hourly session snapshots</h2>
+  <p class="muted">Each row shows the latest totals for that session in the hour. Use differences between snapshots to compare changes over time.</p>
+  <div class="usage-stack">
+    {{range $p.Rows.History}}
+    <article class="panel">
+      <div class="usage-heading"><h3>{{$p.WorkerName .WorkerID}}</h3><span class="muted">Hour starting {{$p.Millis .Hour}}</span></div>
+      <dl class="usage-facts">
+        <div><dt>Session ID</dt><dd><code>{{.SessionID}}</code></dd></div>
+        <div><dt>Observed</dt><dd>{{$p.Millis .ObservedAt}}</dd></div>
+      </dl>
+      {{template "usage_counters" ($p.Counters .Counters)}}
+    </article>
+    {{else}}<p class="muted">No hourly snapshots match these filters.</p>{{end}}
+  </div>
+</section>
+{{end}}
+
+{{define "usage_form_state"}}
+<input type="hidden" name="for_user" value="{{.ForUser}}">
+<input type="hidden" name="view" value="{{.Section}}">
+<input type="hidden" name="filter_worker" value="{{.WorkerID}}">
+<input type="hidden" name="filter_bucket" value="{{.BucketID}}">
+{{end}}
+
+{{define "usage_destination"}}
+<label class="field">Destination
+  <select name="bucket">
+    <option value="">Unassigned</option>
+    {{range .Buckets}}{{if eq .Kind $.Kind}}<option value="{{.ID}}">{{.Label}}</option>{{end}}{{end}}
+  </select>
+</label>
+{{end}}
+
+{{define "usage_assignment"}}
+<div class="panel usage-assignment">
+  <h3>Move to a token bucket</h3>
+  <form id="usage-selected" class="usage-fields" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
+    {{template "usage_form_state" .}}
+    <input type="hidden" name="action" value="assign">
+    <input type="hidden" name="kind" value="{{.Kind}}">
+    <input type="hidden" name="selection" value="selected">
+    {{template "usage_destination" .}}
+    <button type="submit" class="btn btn-secondary">Move selected rows</button>
+  </form>
+  <details class="usage-window">
+    <summary>Move all from a Worker or across all Workers</summary>
+    <p class="help">These moves apply across every page and bucket, including previously assigned members.</p>
+    <form class="usage-fields" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
+      {{template "usage_form_state" .}}
+      <input type="hidden" name="action" value="assign">
+      <input type="hidden" name="kind" value="{{.Kind}}">
+      <label class="field">Worker
+        <select name="worker" required>
+          <option value="">Choose a Worker</option>
+          {{range .Workers}}<option value="{{.ID}}"{{if eq .ID $.WorkerID}} selected{{end}}>{{$.WorkerName .ID}}</option>{{end}}
+        </select>
+      </label>
+      {{template "usage_destination" .}}
+      <button type="submit" name="selection" value="worker" class="btn btn-secondary">Move all from Worker</button>
+    </form>
+    <form class="usage-fields" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
+      {{template "usage_form_state" .}}
+      <input type="hidden" name="action" value="assign">
+      <input type="hidden" name="kind" value="{{.Kind}}">
+      {{template "usage_destination" .}}
+      <button type="submit" name="selection" value="all" class="btn btn-secondary">Move all across Workers</button>
+    </form>
+  </details>
+</div>
+{{end}}
+
+{{define "usage_buckets"}}
+{{$p := .}}
+<section aria-labelledby="buckets-h">
+  <h2 id="buckets-h">Your token buckets</h2>
+  {{if $p.Private}}
+  <p class="muted">A session or provider account can belong to one of your buckets. Choose rows in Sessions or Accounts to assign them.</p>
+  <form class="panel usage-fields" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
+    {{template "usage_form_state" $p}}
+    <input type="hidden" name="action" value="save">
+    <label class="field">Bucket type
+      <select name="kind"><option value="session">Session</option><option value="provider">Provider</option></select>
+    </label>
+    <label class="field">Name <input name="label" maxlength="80" required></label>
+    <button type="submit" class="btn">Create bucket</button>
+  </form>
+  <div class="usage-cards">
+    {{range $p.Buckets}}
+    <form class="panel" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
+      {{template "usage_form_state" $p}}
+      <input type="hidden" name="kind" value="{{.Kind}}">
+      <input type="hidden" name="bucket" value="{{.ID}}">
+      <div class="usage-heading"><h3>{{.Label}}</h3><span class="badge">{{$p.Label .Kind}}</span></div>
+      <div class="usage-fields">
+        <label class="field">Name <input name="label" value="{{.Label}}" maxlength="80" required></label>
+        <label class="field">Display order <input name="position" type="number" min="0" max="1000000" value="{{.Position}}"></label>
+      </div>
+      <div class="row">
+        <button type="submit" name="action" value="save">Save changes</button>
+        <button type="submit" name="action" value="delete" class="btn btn-secondary" formnovalidate>Remove bucket</button>
+      </div>
+    </form>
+    {{else}}<p class="muted">No token buckets yet.</p>{{end}}
+  </div>
+  {{else}}
+  <p class="muted">Token buckets are available in your own signed-in account.</p>
+  {{end}}
+</section>
 {{end}}

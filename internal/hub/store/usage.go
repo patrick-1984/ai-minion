@@ -35,8 +35,8 @@ func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, r
 			}
 			inventory = string(b)
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO usage_workers(worker_id,observed_at,inventory,complete_at) VALUES(?,?,?,CASE WHEN ? THEN ? ELSE 0 END)
-			ON CONFLICT(worker_id) DO UPDATE SET observed_at=excluded.observed_at,complete_at=max(usage_workers.complete_at,excluded.complete_at),inventory=coalesce(excluded.inventory,usage_workers.inventory)`, workerID, report.ObservedAt, inventory, report.Complete, report.ObservedAt)
+		_, err = tx.ExecContext(ctx, `INSERT INTO usage_workers(worker_id,observed_at,inventory,inventory_at,complete_at) VALUES(?,?,?,?,CASE WHEN ? THEN ? ELSE 0 END)
+			ON CONFLICT(worker_id) DO UPDATE SET inventory_at=coalesce(excluded.inventory_at,usage_workers.inventory_at),status='ready',observed_at=excluded.observed_at,complete_at=max(usage_workers.complete_at,excluded.complete_at),inventory=coalesce(excluded.inventory,usage_workers.inventory)`, workerID, report.ObservedAt, inventory, report.InventoryAt, report.Complete, report.ObservedAt)
 		if err != nil {
 			return err
 		}
@@ -58,14 +58,39 @@ func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, r
 				return err
 			}
 		}
-		for _, a := range report.Accounts {
-			b, err := json.Marshal(a)
+		for _, event := range report.Events {
+			if event.Seq < 1 {
+				return errors.New("usage event missing sequence")
+			}
+			if event.SessionID != "" {
+				event.SessionID = ops.UsageID("hub-session", workerID, event.SessionID)
+			}
+			if event.NativeID != "" {
+				event.NativeID = ops.UsageID("hub-native-session", workerID, event.NativeID)
+			}
+			body, err := json.Marshal(event)
 			if err != nil {
 				return err
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO usage_accounts(worker_id,account_id,observed_at,body) VALUES(?,?,?,?)
-				ON CONFLICT(worker_id,account_id) DO UPDATE SET observed_at=excluded.observed_at,body=excluded.body WHERE excluded.observed_at>usage_accounts.observed_at`, workerID, a.ID, a.ObservedAt, string(b))
+			_, err = tx.ExecContext(ctx, `INSERT INTO usage_events(worker_id,seq,session_id,observed_at,body) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`, workerID, event.Seq, event.SessionID, event.ObservedAt, string(body))
 			if err != nil {
+				return err
+			}
+			if event.AccountID != "" && (event.Kind == "task_finished" || event.Kind == "subagent_finished" || event.Kind == "session_stopped") {
+				_, err = tx.ExecContext(ctx, `UPDATE usage_collectors SET requested=1,
+				 next_due=CASE WHEN failures=0 AND lease_id='' THEN min(next_due,last_probe+300000) ELSE next_due END
+				 WHERE account_id=? AND EXISTS(SELECT 1 FROM usage_accounts WHERE account_id=? AND worker_id=?)`, event.AccountID, event.AccountID, workerID)
+				if err != nil {
+					return err
+				}
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE usage_workers SET event_cursor=max(event_cursor,?) WHERE worker_id=?`, event.Seq, workerID)
+			if err != nil {
+				return err
+			}
+		}
+		for _, a := range report.Accounts {
+			if err := saveUsageAccount(ctx, tx, workerID, a); err != nil {
 				return err
 			}
 		}
@@ -82,7 +107,7 @@ func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_sessions(id,worker_id,observed_at,ended_at,body) VALUES(?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET observed_at=excluded.observed_at,ended_at=excluded.ended_at,body=excluded.body
-		WHERE excluded.observed_at>=usage_sessions.observed_at AND (excluded.body<>usage_sessions.body OR usage_sessions.ended_at IS NOT excluded.ended_at)`, row.ID, workerID, at, row.StoppedAt, string(body))
+		WHERE excluded.observed_at>=coalesce(usage_sessions.ended_at,usage_sessions.observed_at) AND (excluded.body<>usage_sessions.body OR usage_sessions.ended_at IS NOT excluded.ended_at)`, row.ID, workerID, at, row.StoppedAt, string(body))
 	if err != nil {
 		return err
 	}
@@ -105,10 +130,35 @@ func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.
 // resume between periodic maintenance runs.
 func (s *Store) TrimUsage(ctx context.Context, now time.Time) error {
 	const batch = 256
-	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_hours WHERE (session_id,hour) IN (SELECT session_id,hour FROM usage_hours WHERE hour<? ORDER BY hour LIMIT ?)`, now.Add(-30*24*time.Hour).UnixMilli()/3600000, batch)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM usage_events WHERE (worker_id,seq) IN (SELECT worker_id,seq FROM usage_events WHERE observed_at<? ORDER BY observed_at LIMIT ?)`, now.Add(-7*24*time.Hour).UnixMilli(), batch)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM usage_hours WHERE (session_id,hour) IN (SELECT session_id,hour FROM usage_hours WHERE hour<? ORDER BY hour LIMIT ?)`, now.Add(-30*24*time.Hour).UnixMilli()/3600000, batch)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `DELETE FROM usage_sessions WHERE id IN (SELECT id FROM usage_sessions WHERE ended_at<? ORDER BY ended_at LIMIT ?)`, now.Add(-90*24*time.Hour).UnixMilli(), batch)
+	return err
+}
+
+func (s *Store) UsageCursor(ctx context.Context, id string) (int64, error) {
+	var cursor int64
+	err := s.db.QueryRowContext(ctx, `SELECT event_cursor FROM usage_workers WHERE worker_id=?`, id).Scan(&cursor)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return cursor, err
+}
+
+func (s *Store) UsageFailure(ctx context.Context, workerID, owner, status string) error {
+	switch status {
+	case "registration_required", "unavailable":
+	default:
+		return errors.New("invalid Worker usage status")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO usage_workers(worker_id,observed_at,status)
+	 SELECT id,0,? FROM workers WHERE id=? AND owner_id=? AND approval='approved'
+	 ON CONFLICT(worker_id) DO UPDATE SET status=excluded.status WHERE status<>excluded.status`, status, workerID, owner)
 	return err
 }

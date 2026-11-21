@@ -13,8 +13,10 @@ const (
 )
 
 type WorkerUsageArgs struct {
-	WorkerID  string `json:"worker_id"`
-	Inventory bool   `json:"inventory,omitempty"`
+	AfterEvent int64  `json:"after_event,omitempty"`
+	AccountID  string `json:"account_id,omitempty"` // internal account lease only
+	WorkerID   string `json:"worker_id"`
+	Inventory  bool   `json:"inventory,omitempty"`
 }
 
 type UsageListArgs struct {
@@ -27,8 +29,8 @@ type UsageListArgs struct {
 }
 
 func (a UsageListArgs) Validate() error {
-	if a.Section != "sessions" && a.Section != "accounts" && a.Section != "workers" && a.Section != "overview" {
-		return invalid("section", "choose sessions, accounts, workers or overview")
+	if a.Section != "sessions" && a.Section != "accounts" && a.Section != "workers" && a.Section != "overview" && a.Section != "events" && a.Section != "history" {
+		return invalid("section", "choose sessions, accounts, workers, overview, events or history")
 	}
 	if a.Limit < 0 || a.Limit > 200 {
 		return invalid("limit", "choose 1 to 200")
@@ -51,20 +53,48 @@ type UsageSessionRow struct {
 	BucketID string `json:"bucket_id,omitempty"`
 }
 
+type UsageSource struct {
+	WorkerID  string `json:"worker_id"`
+	SessionID string `json:"session_id,omitempty"`
+	Label     string `json:"label"`
+}
+
 type UsageAccountRow struct {
+	Alias     string          `json:"alias,omitempty"`
+	Position  int             `json:"position"`
+	Sources   []UsageSource   `json:"sources,omitempty"`
+	Collector *UsageCollector `json:"collector,omitempty"`
 	UsageAccount
 	WorkerID string `json:"worker_id"` // origin of the most recent authorized observation
 	BucketID string `json:"bucket_id,omitempty"`
 }
 
 type UsageWorkerRow struct {
+	InventoryAt *int64 `json:"inventory_at"`
+	Online      bool   `json:"online"`
+	Status      string `json:"status"` // ready, waiting, offline, unsupported, registration_required, unavailable
+
 	ID         string         `json:"id"`
 	Name       string         `json:"name"`
 	ObservedAt *int64         `json:"observed_at"`
 	Inventory  []UsageHarness `json:"inventory"`
 }
 
+type UsageEventRow struct {
+	UsageEvent
+	WorkerID string `json:"worker_id"`
+}
+type UsageHistoryRow struct {
+	SessionID  string        `json:"session_id"`
+	WorkerID   string        `json:"worker_id"`
+	Hour       int64         `json:"hour"` // UTC hour start, milliseconds
+	ObservedAt int64         `json:"observed_at"`
+	Counters   UsageCounters `json:"counters"` // latest cumulative snapshot of this interval
+}
+
 type UsageListResult struct {
+	Events   []UsageEventRow   `json:"events,omitempty"`
+	History  []UsageHistoryRow `json:"history,omitempty"`
 	Overview *UsageOverview    `json:"overview,omitempty"`
 	Version  int               `json:"version"`
 	AsOf     int64             `json:"as_of"`
@@ -147,4 +177,50 @@ func init() {
 	Register(Op{Name: OpUsageBucketList, Summary: "List your private usage buckets.", Scope: ScopeHub, Actions: read, Args: reflect.TypeFor[UsageBucketListArgs](), Result: reflect.TypeFor[UsageBucketListResult]()})
 	Register(Op{Name: OpUsageBucketSet, Summary: "Save, reorder, delete or assign members to your private usage buckets.", Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, Args: reflect.TypeFor[UsageBucketSetArgs](), Result: reflect.TypeFor[UsageBucketSetResult]()})
 	Register(Op{Name: OpWorkerUsage, Summary: "Read registered Worker usage metadata and optionally refresh its installed harness inventory.", Scope: ScopeWorker, Actions: read, Args: reflect.TypeFor[WorkerUsageArgs](), Result: reflect.TypeFor[UsageReport]()})
+}
+
+const OpUsageCollectorSet = "usage_collector_set"
+
+type UsageCollectorSetArgs struct {
+	AccountID string `json:"account_id"`
+	WorkerID  string `json:"worker_id,omitempty"`  // empty restores automatic election
+	SessionID string `json:"session_id,omitempty"` // passive metric source, never a console target
+}
+
+func (a UsageCollectorSetArgs) Validate() error {
+	if !usageIDValid(a.AccountID) || a.SessionID != "" && (!usageIDValid(a.SessionID) || a.WorkerID == "") || !usageText(a.WorkerID, 128) {
+		return invalid("collector", "invalid account, Worker or session")
+	}
+	return nil
+}
+
+type UsageCollector struct {
+	PreferredWorker  string `json:"preferred_worker,omitempty"`
+	PreferredSession string `json:"preferred_session,omitempty"`
+	ActiveWorker     string `json:"active_worker,omitempty"`
+	Status           string `json:"status"`
+	NextDue          *int64 `json:"next_due"`
+	LastSuccess      *int64 `json:"last_success"`
+}
+
+func init() {
+	Register(Op{Name: OpUsageCollectorSet, Summary: "Choose an available Worker or passive session source for this subscription account.", Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, Args: reflect.TypeFor[UsageCollectorSetArgs](), Result: reflect.TypeFor[UsageCollector]()})
+}
+
+const OpUsageAccountSet = "usage_account_set"
+
+type UsageAccountSetArgs struct {
+	AccountID string `json:"account_id"`
+	Label     string `json:"label"`
+	Position  int    `json:"position"`
+}
+
+func (a UsageAccountSetArgs) Validate() error {
+	if !usageIDValid(a.AccountID) || !usageText(a.Label, 80) || a.Position < 0 || a.Position > 1000000 {
+		return invalid("account", "invalid personal account name, identity or position")
+	}
+	return nil
+}
+func init() {
+	Register(Op{Name: OpUsageAccountSet, Summary: "Set your private display name and order for a provider account.", Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, Args: reflect.TypeFor[UsageAccountSetArgs](), Result: reflect.TypeFor[UsageAccountSetArgs]()})
 }

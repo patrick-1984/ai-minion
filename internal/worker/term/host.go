@@ -52,6 +52,7 @@ func CheckExpect(actual, expect PaneRef) error {
 
 // Pane describes one pane of a session.
 type Pane struct {
+	Folder string // optional native working directory, on a usage-only enumeration
 	Ref    PaneRef
 	Window int  // window index
 	Index  int  // pane index within the window
@@ -61,6 +62,7 @@ type Pane struct {
 // Session describes one session as the host reports it. Kind and state of the
 // panes come from agentdetect and are added by the executor, not by the host.
 type Session struct {
+	HostID   string // native session identifier where available
 	Name     string
 	Created  time.Time
 	Windows  int

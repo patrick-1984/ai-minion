@@ -22,6 +22,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/logx"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
 	"github.com/patrick-1984/ai-minion/internal/transport"
@@ -44,10 +45,11 @@ type Policy struct {
 // proto_max are the Hub's supported protocol range (current minor and N-1
 // minor), which "minion update" checks for overlap (AD-4, A-10).
 type Welcome struct {
-	Type     string `json:"type"`
-	WorkerID string `json:"worker_id"`
-	Name     string `json:"name"`
-	Owner    string `json:"owner"`
+	UsagePolicy int    `json:"usage_policy,omitempty"`
+	Type        string `json:"type"`
+	WorkerID    string `json:"worker_id"`
+	Name        string `json:"name"`
+	Owner       string `json:"owner"`
 	// OwnerID is the stable id of the Worker's owner (protocol 2.0); Owner is
 	// the display name. The Worker uses OwnerID for pipe_accept_from.
 	OwnerID string `json:"owner_id"`
@@ -837,17 +839,22 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	if c.tel != nil {
 		c.tel.Authenticated(w.ID)
 	}
+	usagePolicy := 0
+	if slices.Contains(c.res.Worker.Ops, ops.OpWorkerUsage) {
+		usagePolicy = ops.UsageVersion
+	}
 	if err := c.write(Welcome{
-		Type:     proto.TypeWelcome,
-		WorkerID: w.ID,
-		Name:     w.Name,
-		Owner:    owner,
-		OwnerID:  w.OwnerID,
-		Kind:     w.Kind,
-		Pending:  w.Pending,
-		Policy:   pol,
-		HubTLS:   c.hubTLS,
-		Range:    proto.SupportedRange(h.cfg.Current),
+		UsagePolicy: usagePolicy,
+		Type:        proto.TypeWelcome,
+		WorkerID:    w.ID,
+		Name:        w.Name,
+		Owner:       owner,
+		OwnerID:     w.OwnerID,
+		Kind:        w.Kind,
+		Pending:     w.Pending,
+		Policy:      pol,
+		HubTLS:      c.hubTLS,
+		Range:       proto.SupportedRange(h.cfg.Current),
 	}); err != nil {
 		return fmt.Errorf("send welcome: %w", err)
 	}

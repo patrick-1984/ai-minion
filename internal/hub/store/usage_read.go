@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -82,15 +83,36 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		bind = append(bind, bucketOwner, args.After, args.BucketID, args.BucketID)
 	case "accounts":
 		q = usageVisible + `, ranked AS (
-		   SELECT a.*,row_number() OVER (PARTITION BY a.account_id ORDER BY a.observed_at DESC,a.worker_id) rn
-		   FROM visible v JOIN usage_accounts a ON a.worker_id=v.id WHERE a.account_id>?
-		 ) SELECT a.account_id,a.worker_id,a.body,coalesce(m.bucket_id,'') FROM ranked a
+		   SELECT a.*,row_number() OVER (PARTITION BY a.account_id ORDER BY (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,(json_extract(a.body,'$.source')<>'native-account') DESC,a.observed_at DESC,a.worker_id) rn
+		   FROM visible v JOIN usage_accounts a ON a.worker_id=v.id LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
+		 ) SELECT printf('%07d:%s',coalesce(pref.position,0),a.account_id),a.worker_id,a.body,coalesce(m.bucket_id,''),coalesce(c.status,''),coalesce(pw.id,''),coalesce(aw.id,''),
+		 CASE WHEN pw.id IS NULL THEN '' ELSE c.preferred_session END,nullif(c.next_due,0),c.last_success,coalesce(pref.label,''),coalesce(pref.position,0),
+		 (SELECT json_group_array(json_object('worker_id',worker,'session_id',sid,'label',label)) FROM (
+		  SELECT v2.id worker,'' sid,v2.name label FROM visible v2 JOIN usage_accounts u2 ON u2.worker_id=v2.id WHERE u2.account_id=a.account_id
+		  UNION ALL
+		  SELECT v3.id,s3.id,v3.name || ' / ' || json_extract(s3.body,'$.name') FROM visible v3 JOIN usage_sessions s3 ON s3.worker_id=v3.id
+		  WHERE s3.ended_at IS NULL AND json_extract(s3.body,'$.account_id')=a.account_id ORDER BY label LIMIT 256))
+		 FROM ranked a
+		 LEFT JOIN usage_collectors c ON c.account_id=a.account_id AND (c.active_worker IS NULL OR c.active_worker IN (SELECT id FROM visible))
+		 AND (c.preferred_worker IS NULL OR c.preferred_worker IN (SELECT id FROM visible)) LEFT JOIN visible pw ON c.preferred_worker=pw.id LEFT JOIN visible aw ON c.active_worker=aw.id
+		 LEFT JOIN usage_account_prefs pref ON pref.account_id=a.account_id AND pref.owner_id=?
 		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='provider' AND m.member_id=a.account_id
-		 WHERE rn=1 AND (?=0 OR json_extract(a.body,'$.auth_mode')='subscription')
-		   AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY a.account_id`
-		bind = append(bind, args.After, bucketOwner, args.SubscriptionOnly, args.BucketID, args.BucketID)
+		 WHERE rn=1 AND printf('%07d:%s',coalesce(pref.position,0),a.account_id)>? AND (?=0 OR json_extract(a.body,'$.auth_mode')='subscription')
+		   AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY coalesce(pref.position,0),a.account_id`
+		bind = append(bind, bucketOwner, bucketOwner, args.After, args.SubscriptionOnly, args.BucketID, args.BucketID)
+	case "events":
+		q = usageVisible + `, events AS (SELECT e.*,printf('%019d:%s:%019d',e.observed_at,e.worker_id,e.seq) cursor FROM visible v JOIN usage_events e ON e.worker_id=v.id)
+		  SELECT e.cursor,e.worker_id,e.body FROM events e LEFT JOIN usage_members m ON m.kind='session' AND m.owner_id=? AND m.member_id=e.session_id
+		  WHERE (?='' OR e.cursor<?) AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY cursor DESC`
+		bind = append(bind, bucketOwner, args.After, args.After, args.BucketID, args.BucketID)
+	case "history":
+		q = usageVisible + `, samples AS (SELECT h.*,s.worker_id,printf('%019d:%s',h.hour,h.session_id) cursor FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_hours h ON h.session_id=s.id)
+		  SELECT h.cursor,h.session_id,h.worker_id,h.hour*3600000,h.observed_at,h.counters FROM samples h
+		  LEFT JOIN usage_members m ON m.kind='session' AND m.owner_id=? AND m.member_id=h.session_id
+		  WHERE (?='' OR h.cursor<?) AND (?='' OR coalesce(m.bucket_id,'unassigned')=?) ORDER BY cursor DESC`
+		bind = append(bind, bucketOwner, args.After, args.After, args.BucketID, args.BucketID)
 	case "workers":
-		q = usageVisible + `SELECT v.id,v.name,u.observed_at,u.inventory FROM visible v
+		q = usageVisible + `SELECT v.id,v.name,nullif(u.observed_at,0),u.inventory,coalesce(u.status,'waiting'),u.inventory_at FROM visible v
 		 LEFT JOIN usage_workers u ON u.worker_id=v.id WHERE v.id>? ORDER BY v.id`
 		bind = append(bind, args.After)
 	}
@@ -128,22 +150,65 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		case "accounts":
 			var row ops.UsageAccountRow
 			var body string
-			if err := rows.Scan(&last, &row.WorkerID, &body, &row.BucketID); err != nil {
+			var collector ops.UsageCollector
+			var sources, privateLabel string
+			if err := rows.Scan(&last, &row.WorkerID, &body, &row.BucketID, &collector.Status, &collector.PreferredWorker, &collector.ActiveWorker, &collector.PreferredSession, &collector.NextDue, &collector.LastSuccess, &privateLabel, &row.Position, &sources); err != nil {
 				return out, err
 			}
 			if err := json.Unmarshal([]byte(body), &row.UsageAccount); err != nil {
 				return out, err
 			}
+			if err := json.Unmarshal([]byte(sources), &row.Sources); err != nil {
+				return out, err
+			}
+			if privateLabel != "" {
+				row.Alias = privateLabel
+				row.Label = privateLabel
+			}
+			if collector.Status != "" {
+				row.Collector = &collector
+			}
 			out.Accounts = append(out.Accounts, row)
+		case "events":
+			var row ops.UsageEventRow
+			var b string
+			if err := rows.Scan(&last, &row.WorkerID, &b); err != nil {
+				return out, err
+			}
+			if err := json.Unmarshal([]byte(b), &row.UsageEvent); err != nil {
+				return out, err
+			}
+			out.Events = append(out.Events, row)
+		case "history":
+			var row ops.UsageHistoryRow
+			var b string
+			if err := rows.Scan(&last, &row.SessionID, &row.WorkerID, &row.Hour, &row.ObservedAt, &b); err != nil {
+				return out, err
+			}
+			if err := json.Unmarshal([]byte(b), &row.Counters); err != nil {
+				return out, err
+			}
+			out.History = append(out.History, row)
 		case "workers":
 			var row ops.UsageWorkerRow
 			var inventory sql.NullString
-			if err := rows.Scan(&row.ID, &row.Name, &row.ObservedAt, &inventory); err != nil {
+			if err := rows.Scan(&row.ID, &row.Name, &row.ObservedAt, &inventory, &row.Status, &row.InventoryAt); err != nil {
 				return out, err
 			}
 			if inventory.Valid {
 				if err := json.Unmarshal([]byte(inventory.String), &row.Inventory); err != nil {
 					return out, err
+				}
+			}
+			for _, w := range workers {
+				if w.ID == row.ID {
+					row.Online = w.Online
+					if !w.Online {
+						row.Status = "offline"
+					} else if !slices.Contains(w.Ops, ops.OpWorkerUsage) {
+						row.Status = "unsupported"
+					}
+					break
 				}
 			}
 			last = row.ID

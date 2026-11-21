@@ -94,3 +94,24 @@ func assignUsageMembers(ctx context.Context, tx *sql.Tx, owner string, workers [
 	return tx.ExecContext(ctx, query+`INSERT INTO usage_members(owner_id,kind,member_id,bucket_id)
 	 SELECT ?,?,member_id,? FROM chosen WHERE 1 ON CONFLICT(owner_id,kind,member_id) DO UPDATE SET bucket_id=excluded.bucket_id`, append(bind, owner, args.Kind, args.BucketID)...)
 }
+
+func (s *Store) SetUsageAccount(ctx context.Context, owner string, allowed []ops.WorkerInfo, a ops.UsageAccountSetArgs) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	visible, err := usageVisibleJSON(allowed)
+	if err != nil {
+		return err
+	}
+	r, err := s.db.ExecContext(ctx, usageVisible+`INSERT INTO usage_account_prefs(owner_id,account_id,label,position)
+	SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM usage_accounts a JOIN visible v ON a.worker_id=v.id WHERE a.account_id=?)
+	ON CONFLICT(owner_id,account_id) DO UPDATE SET label=excluded.label,position=excluded.position`, visible, "", "", owner, a.AccountID, strings.TrimSpace(a.Label), a.Position, a.AccountID)
+	if err != nil {
+		return err
+	}
+	count, err := r.RowsAffected()
+	if count == 0 && err == nil {
+		return ErrNotFound
+	}
+	return err
+}

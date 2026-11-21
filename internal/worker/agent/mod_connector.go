@@ -124,20 +124,21 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 	// The saved pause applies from the first cycle.
 	pause := NewPauseService(s.StateDir, log)
 	c, err := NewConnector(ConnectorConfig{
-		Pause:      pause.Gate(),
-		HubURL:     hub.Server,
-		Name:       s.Name,
-		Ops:        ex.Ops,
-		Features:   features,
-		Facts:      facts,
-		Key:        enr.LoadKey,
-		Out:        s.Out,
-		Enrollment: enr,
-		Policy:     policy,
-		Dialer:     d.dialer,
-		Clock:      d.clock,
-		Session:    transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
-		Logger:     log,
+		Pause:                  pause.Gate(),
+		HubURL:                 hub.Server,
+		Name:                   s.Name,
+		Ops:                    ex.Ops,
+		Features:               features,
+		Facts:                  facts,
+		Key:                    enr.LoadKey,
+		Out:                    s.Out,
+		Enrollment:             enr,
+		UsageConnectionAllowed: st.UsageConnectionAllowed,
+		Policy:                 policy,
+		Dialer:                 d.dialer,
+		Clock:                  d.clock,
+		Session:                transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
+		Logger:                 log,
 	})
 	if err != nil {
 		return nil, err

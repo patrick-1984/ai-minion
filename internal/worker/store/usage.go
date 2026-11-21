@@ -31,3 +31,26 @@ func (s *Store) AcceptUsageRegistration(ctx context.Context, key ed25519.PublicK
 	}
 	return err
 }
+
+// UsageGrantID binds caches and an in-flight scan to the accepted Hub, owner
+// and Worker identity. The token is local and never leaves this database API.
+func (s *Store) UsageGrantID(ctx context.Context, workerID string) (string, error) {
+	var token string
+	err := s.db.QueryRowContext(ctx, `SELECT hex(hub_pub)||':'||worker_id||':'||owner FROM hub_enrollment WHERE id=1 AND worker_id=? AND worker_id<>'' AND owner<>'' AND usage_policy=1`, workerID).Scan(&token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return token, err
+}
+
+// UsageConnectionAllowed applies only when the authenticated Hub asks for
+// the metadata registration policy. Previously enrolled Workers retain their
+// original contract while coverage is explicitly marked pending.
+func (s *Store) UsageConnectionAllowed(ctx context.Context, workerID string) (bool, error) {
+	var allowed bool
+	err := s.db.QueryRowContext(ctx, `SELECT usage_required=0 OR usage_policy=1 FROM hub_enrollment WHERE id=1 AND worker_id=? AND worker_id<>''`, workerID).Scan(&allowed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return allowed, err
+}

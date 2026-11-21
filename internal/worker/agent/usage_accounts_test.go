@@ -1,0 +1,89 @@
+package agent
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/ops"
+)
+
+func TestUsageNativeReadOnlyCodexRPC(t *testing.T) {
+	now := time.Now()
+	email := "example@example.invalid"
+	a, _ := subscriptionAccount("OpenAI", nativeAccount{Email: email}, now.UnixMilli())
+	var sent bytes.Buffer
+	reply := strings.Join([]string{
+		`{"id":1,"result":{}}`,
+		`{"id":2,"result":{"account":{"type":"chatgpt","email":"example@example.invalid","privateField":"private fixture"}}}`,
+		`{"id":3,"result":{"rateLimits":{"limitId":"duplicate","primary":{"usedPercent":91}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":1780000000},"secondary":null}}}}`,
+	}, "\n")
+	out, err := readCodexAccount(codexStatusPipe{bufio.NewScanner(strings.NewReader(reply)), json.NewEncoder(&sent)}, a.ID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ID != a.ID || len(out.Windows) != 1 || out.Windows[0].UsedPercent == nil || *out.Windows[0].UsedPercent != 0 {
+		t.Fatalf("native mapping: %+v", out)
+	}
+	var methods []string
+	s := bufio.NewScanner(&sent)
+	for s.Scan() {
+		var m struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(s.Bytes(), &m); err != nil {
+			t.Fatal(err)
+		}
+		methods = append(methods, m.Method)
+		if m.Method == "account/read" && m.Params["refreshToken"] != false {
+			t.Fatal("forced token refresh")
+		}
+	}
+	if strings.Join(methods, ",") != "initialize,initialized,account/read,account/rateLimits/read" {
+		t.Fatal(methods)
+	}
+	b, _ := json.Marshal(out)
+	if bytes.Contains(b, []byte(email)) || bytes.Contains(b, []byte("private fixture")) {
+		t.Fatal("native private data escaped")
+	}
+	sent.Reset()
+	if _, err = readCodexAccount(codexStatusPipe{bufio.NewScanner(strings.NewReader(reply)), json.NewEncoder(&sent)}, ops.UsageID("other"), now); err == nil || strings.Contains(sent.String(), "rateLimits/read") {
+		t.Fatal("account switch queried the wrong account")
+	}
+}
+
+func TestUsageAPICredentialIdentity(t *testing.T) {
+	secret := bytes.Repeat([]byte{9}, 32)
+	key1 := "sameprefix" + strings.Repeat("x", 32)
+	key2 := "sameprefix" + strings.Repeat("y", 32)
+	a, err := APIUsageAccount("DeepSeek", "https://api.example/v1/", key1, secret, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := APIUsageAccount("DeepSeek", "https://API.EXAMPLE/v1", key2, secret, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID == b.ID || !strings.HasPrefix(a.Label, "sameprefix...") || !strings.HasPrefix(b.Label, "sameprefix...") {
+		t.Fatal("prefix collided with identity")
+	}
+	c, _ := APIUsageAccount("DeepSeek", "https://API.EXAMPLE/v1", key1, secret, 1)
+	if c.ID != a.ID {
+		t.Fatal("endpoint canonicalization")
+	}
+	data, _ := json.Marshal(a)
+	if bytes.Contains(data, []byte(key1)) {
+		t.Fatal("credential disclosed")
+	}
+	d, _ := APIUsageAccount("DeepSeek", "https://api.example/v1", "z7short", secret, 1)
+	if strings.Contains(d.Label, "z7short") {
+		t.Fatal("short credential exposed")
+	}
+	if _, err = APIUsageAccount("DeepSeek", "https://u:pw@api.example/v1", key1, secret, 1); err == nil {
+		t.Fatal("accepted embedded credentials")
+	}
+}

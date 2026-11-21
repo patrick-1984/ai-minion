@@ -55,5 +55,6 @@ func newConfigUsageCmd(deps workerConfigDeps) *cobra.Command {
 	}}
 	addNamedSettingFlags(cmd, deps.reg(), config.KeyStateDir)
 	cmd.Flags().BoolVar(&accept, "accept", false, "Accept usage monitoring for the current Hub enrollment")
+	cmd.AddCommand(newUsageRecordCmd(deps))
 	return cmd
 }

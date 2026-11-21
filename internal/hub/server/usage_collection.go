@@ -29,7 +29,11 @@ func (u *usageCollector) sample(ctx context.Context, p authz.Principal, workerID
 	if err != nil {
 		return zero, err
 	}
-	result, err := u.router.Call(ctx, workers.CallRequest{Principal: p, WorkerID: workerID, Op: ops.OpWorkerUsage, Args: ops.WorkerUsageArgs{WorkerID: workerID, Inventory: inventory}})
+	cursor, err := u.db.UsageCursor(ctx, workerID)
+	if err != nil {
+		return zero, err
+	}
+	result, err := u.router.Call(ctx, workers.CallRequest{Principal: p, WorkerID: workerID, Op: ops.OpWorkerUsage, Args: ops.WorkerUsageArgs{WorkerID: workerID, Inventory: inventory, AfterEvent: cursor}})
 	if err != nil {
 		return zero, err
 	}
@@ -54,6 +58,7 @@ func (u *usageCollector) serve(ctx context.Context, w workers.Online, sess worke
 		}
 	}()
 	delay := time.Duration(0)
+	inventory := true
 	for ctx.Err() == nil {
 		timer := time.NewTimer(delay)
 		select {
@@ -67,16 +72,23 @@ func (u *usageCollector) serve(ctx context.Context, w workers.Online, sess worke
 			return
 		case u.slots <- struct{}{}:
 		}
-		probe, stop := context.WithTimeout(ctx, 8*time.Second)
+		probe, stop := context.WithTimeout(ctx, 25*time.Second)
 		// A connection's own Worker identity has read access only to itself.
 		// No synthetic owner or administrator credentials are created.
-		_, err := u.sample(probe, authz.NewWorkerPrincipal(w.WorkerID), w.WorkerID, false)
+		_, err := u.sample(probe, authz.NewWorkerPrincipal(w.WorkerID), w.WorkerID, inventory)
 		stop()
 		<-u.slots
 		if err == nil {
+			inventory = false
+			u.pollAccount(ctx, w)
 			delay = 5 * time.Second
 			continue
 		}
+		status := "unavailable"
+		if api.ErrorOf(err).Code == proto.CodeForbidden {
+			status = "registration_required"
+		}
+		_ = u.db.UsageFailure(ctx, w.WorkerID, w.OwnerID, status)
 		delay = min(5*time.Minute, max(5*time.Second, delay*2)) + time.Duration(rand.IntN(1000))*time.Millisecond
 	}
 }
@@ -91,7 +103,7 @@ func registerUsageCollection(ctx context.Context, env *Env, st *store.Store, r *
 		// Even when a session key can read a single session's resource, the
 		// caller must independently have read on the whole requested Worker.
 		target, ok := c.Resource.(authz.WorkerResource)
-		if !ok || target.ID == "" || target.ID != a.WorkerID {
+		if !ok || target.ID == "" || target.ID != a.WorkerID || a.AccountID != "" {
 			return ops.UsageReport{}, api.NewError(proto.CodeForbidden, "usage inventory requires access to the registered Worker")
 		}
 		return collector.sample(ctx, c.Principal, target.ID, a.Inventory)
@@ -127,4 +139,28 @@ func registerUsageCollection(ctx context.Context, env *Env, st *store.Store, r *
 	}()
 	env.OnStop(func(context.Context) error { mu.Lock(); cancel(); mu.Unlock(); group.Wait(); return nil })
 	return nil
+}
+
+func (u *usageCollector) pollAccount(ctx context.Context, w workers.Online) {
+	lease, err := u.db.ClaimUsagePoll(ctx, w.WorkerID, w.OwnerID, time.Now())
+	if err != nil || lease.ID == "" {
+		return
+	}
+	query, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	res, err := u.router.Call(query, workers.CallRequest{Principal: authz.NewWorkerPrincipal(w.WorkerID), WorkerID: w.WorkerID, Op: ops.OpWorkerUsage, Args: ops.WorkerUsageArgs{WorkerID: w.WorkerID, AccountID: lease.AccountID}})
+	report, ok := res.(ops.UsageReport)
+	status := "unavailable"
+	var retry time.Duration
+	var account *ops.UsageAccount
+	if err == nil && ok && report.Check(time.Now()) == nil && report.Probe != nil {
+		status = report.Probe.Status
+		retry = time.Duration(report.Probe.RetryAfterSeconds) * time.Second
+		if status == "ready" && len(report.Accounts) == 1 && report.Accounts[0].ID == lease.AccountID {
+			account = &report.Accounts[0]
+		} else if status == "ready" {
+			status = "unavailable"
+		}
+	}
+	_ = u.db.CompleteUsagePoll(ctx, lease, account, status, retry, time.Now())
 }

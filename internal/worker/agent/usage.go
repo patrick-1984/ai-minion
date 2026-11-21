@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -17,7 +19,8 @@ import (
 )
 
 type usageRegistration interface {
-	UsageRegistration(context.Context, string) (bool, error)
+	UsageGrantID(context.Context, string) (string, error)
+	NativeUsage(context.Context, *ops.UsageReport, int64) error
 }
 
 // The narrow host interface makes a screen capture or keystroke impossible
@@ -27,6 +30,7 @@ type usageSessionHost interface {
 }
 
 func (e *Executor) registerUsage(reg usageRegistration) {
+	var cache usageInventoryCache
 	e.Handle(ops.OpWorkerUsage, func(ctx context.Context, rq Request) (any, error) {
 		_, a, err := prepare[ops.WorkerUsageArgs](rq)
 		if err != nil {
@@ -35,23 +39,57 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 		if a.WorkerID == "" || a.WorkerID != e.policy.WorkerID() {
 			return nil, apiErr(proto.CodeForbidden, "", "usage requires this registered Worker's id")
 		}
-		allowed, err := reg.UsageRegistration(ctx, a.WorkerID)
+		grant, err := reg.UsageGrantID(ctx, a.WorkerID)
 		if err != nil {
 			return nil, internalErr("read usage registration", err)
 		}
-		if !allowed {
+		if grant == "" {
 			return nil, apiErr(proto.CodeForbidden, "", "usage monitoring awaits local enrollment acceptance; run minion worker config usage on the Worker")
 		}
-		r, err := usageSnapshot(ctx, e.host, a.Inventory)
-		if err != nil {
-			return nil, err
+		var r ops.UsageReport
+		if a.AccountID != "" {
+			if rq.Origin == nil || rq.Origin.Kind != proto.OriginWorker || rq.Origin.SourceWorkerID != a.WorkerID || rq.Origin.Grant {
+				return nil, apiErr(proto.CodeForbidden, "", "only the Hub account collector can request a native limit refresh")
+			}
+			probe, stop := context.WithTimeout(ctx, 8*time.Second)
+			account, queryErr := codexAccount(probe, a.AccountID)
+			stop()
+			r = ops.UsageReport{Version: ops.UsageVersion, ObservedAt: time.Now().UnixMilli(), Probe: &ops.UsageProbe{Status: "ready"}}
+			if queryErr == nil {
+				r.Accounts = []ops.UsageAccount{account}
+			} else {
+				r.Probe.Status = "unavailable"
+				var failure nativeFailure
+				if errors.As(queryErr, &failure) {
+					r.Probe.Status = failure.status
+					r.Probe.RetryAfterSeconds = failure.retryAfter
+				}
+			}
+		} else {
+			r, err = usageSnapshot(ctx, e.host, false)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if a.Inventory && a.AccountID == "" {
+			scan, err := cache.get(ctx, grant)
+			if err != nil {
+				return nil, err
+			}
+			r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, scan.Accounts, scan.InventoryAt
+			r.ObservedAt = time.Now().UnixMilli()
+		}
+		if a.AccountID == "" {
+			if err := reg.NativeUsage(ctx, &r, a.AfterEvent); err != nil {
+				return nil, internalErr("read local usage metadata", err)
+			}
 		}
 		// An owner change or reset while a slow inventory was running cancels it.
-		allowed, err = reg.UsageRegistration(ctx, a.WorkerID)
+		current, err := reg.UsageGrantID(ctx, a.WorkerID)
 		if err != nil {
 			return nil, internalErr("check usage registration", err)
 		}
-		if !allowed {
+		if current == "" || current != grant {
 			return nil, apiErr(proto.CodeForbidden, "", "the usage enrollment changed")
 		}
 		return r, nil
@@ -59,7 +97,13 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 }
 
 func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (ops.UsageReport, error) {
-	sessions, err := host.ListSessions(ctx)
+	list := host.ListSessions
+	if h, ok := host.(interface {
+		ListUsageSessions(context.Context) ([]term.Session, error)
+	}); ok {
+		list = h.ListUsageSessions
+	}
+	sessions, err := list(ctx)
 	if err != nil {
 		return ops.UsageReport{}, apiErr(proto.CodeConflict, "", "session metadata is unavailable")
 	}
@@ -76,8 +120,9 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 			v := s.Created.UnixMilli()
 			started = &v
 		}
-		row := ops.UsageSession{ID: ops.UsageID("host-session", s.Name, s.Created.UTC().Format(time.RFC3339Nano)), Name: s.Name, ObservedAt: at, StartedAt: started, AuthMode: "unknown", Source: "session-host"}
+		row := ops.UsageSession{ID: ops.UsageID("host-session", s.Name, s.HostID, s.Created.UTC().Format(time.RFC3339Nano)), Name: s.Name, ObservedAt: at, StartedAt: started, AuthMode: "unknown", Source: "session-host"}
 		if pane, ok := s.ActivePane(); ok {
+			row.Folder = pane.Folder
 			name := strings.TrimSuffix(strings.ToLower(filepath.Base(pane.Ref.Command)), ".exe")
 			for _, known := range agents {
 				for _, command := range known.Commands {
@@ -91,8 +136,10 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 	}
 	if inventory {
 		r.Inventory = usageInventory(ctx)
+		r.Accounts = discoverUsageAccounts(ctx, r.Inventory, "")
+		r.ObservedAt = time.Now().UnixMilli()
 	}
-	if err := r.Check(now); err != nil {
+	if err := r.Check(time.Now()); err != nil {
 		return ops.UsageReport{}, apiErr(proto.CodeConflict, "", "session metadata could not be represented")
 	}
 	return r, nil
@@ -138,4 +185,52 @@ func (b *usageOutput) Write(p []byte) (int, error) {
 	}
 	*b = append(*b, p...)
 	return len(p), nil
+}
+
+type usageInventoryCache struct {
+	mu      sync.Mutex
+	running chan struct{}
+	grant   string
+	report  ops.UsageReport
+	until   time.Time
+}
+
+func (c *usageInventoryCache) get(ctx context.Context, grant string) (ops.UsageReport, error) {
+	for {
+		c.mu.Lock()
+		if c.grant == grant && time.Now().Before(c.until) {
+			out := c.report
+			out.Inventory = slices.Clone(out.Inventory)
+			out.Accounts = slices.Clone(out.Accounts)
+			c.mu.Unlock()
+			return out, nil
+		}
+		if done := c.running; done != nil {
+			c.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ops.UsageReport{}, ctx.Err()
+			case <-done:
+				continue
+			}
+		}
+		c.running = make(chan struct{})
+		c.mu.Unlock()
+		harnesses := usageInventory(ctx)
+		hubPublic, _, _ := strings.Cut(grant, ":")
+		accounts := discoverUsageAccounts(ctx, harnesses, hubPublic)
+		at := time.Now()
+		ms := at.UnixMilli()
+		out := ops.UsageReport{Inventory: harnesses, Accounts: accounts, InventoryAt: &ms}
+		c.mu.Lock()
+		if ctx.Err() == nil {
+			c.grant, c.until, c.report = grant, at.Add(5*time.Minute), out
+		}
+		close(c.running)
+		c.running = nil
+		c.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return ops.UsageReport{}, err
+		}
+	}
 }

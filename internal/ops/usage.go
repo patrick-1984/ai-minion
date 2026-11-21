@@ -20,9 +20,12 @@ const UsageVersion = 1
 const UsageDisclosure = "Your Hub administrator and Worker owner can see usage statistics for every session on this Worker, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, limits and collection diagnostics. Console sharing and control have separate permissions."
 
 type UsageHarness struct {
-	Name    string `json:"name"`
-	Version string `json:"version,omitempty"`
-	Status  string `json:"status"` // installed, unavailable, unsupported
+	AuthMode      string   `json:"auth_mode,omitempty"`
+	Providers     []string `json:"providers,omitempty"`
+	AccountStatus string   `json:"account_status,omitempty"`
+	Name          string   `json:"name"`
+	Version       string   `json:"version,omitempty"`
+	Status        string   `json:"status"` // installed, unavailable, unsupported
 }
 
 type UsageCounters struct {
@@ -41,7 +44,35 @@ type UsageCounters struct {
 	Subagents        *int64   `json:"subagents"`
 }
 
+type UsageModel struct {
+	Model string `json:"model"`
+	UsageCounters
+}
+
+type UsageEvent struct {
+	AccountID  string `json:"account_id,omitempty"`
+	NativeID   string `json:"native_id,omitempty"`
+	Seq        int64  `json:"seq"`
+	ID         string `json:"id"`
+	SessionID  string `json:"session_id"`
+	Kind       string `json:"kind"`
+	Source     string `json:"source"`
+	ObservedAt int64  `json:"observed_at"`
+}
+
+func (e UsageEvent) Valid() bool {
+	switch e.Kind {
+	case "session_started", "session_stopped", "turn_started", "turn_finished", "task_started", "task_finished", "subagent_started", "subagent_finished", "folder_changed", "model_changed":
+	default:
+		return false
+	}
+	return (e.AccountID == "" || usageIDValid(e.AccountID)) && usageIDValid(e.ID) && (usageIDValid(e.SessionID) || e.SessionID == "" && usageIDValid(e.NativeID)) && usageText(e.Source, 64) && e.Source != "" && e.ObservedAt > 0 && e.Seq >= 0
+}
+
 type UsageSession struct {
+	NativeID string       `json:"native_id,omitempty"`
+	Models   []UsageModel `json:"models,omitempty"`
+
 	ID         string `json:"id"` // opaque identity of this session incarnation on this Worker
 	Name       string `json:"name"`
 	Folder     string `json:"folder,omitempty"`
@@ -59,6 +90,7 @@ type UsageSession struct {
 }
 
 type UsageWindow struct {
+	Unit        string   `json:"unit,omitempty"`
 	Scope       string   `json:"scope"`  // stable native limit ID/model scope
 	Period      string   `json:"period"` // rolling, fixed, total
 	DurationMS  *int64   `json:"duration_ms"`
@@ -67,22 +99,31 @@ type UsageWindow struct {
 }
 
 type UsageAccount struct {
-	ID         string        `json:"id"` // derived locally; never a credential
-	Provider   string        `json:"provider"`
-	Label      string        `json:"label,omitempty"`
-	AuthMode   string        `json:"auth_mode"` // subscription, api, unknown
-	Source     string        `json:"source"`
-	ObservedAt int64         `json:"observed_at"`
-	Windows    []UsageWindow `json:"windows"`
+	SourceSessionID string        `json:"source_session_id,omitempty"`
+	ID              string        `json:"id"` // derived locally; never a credential
+	Provider        string        `json:"provider"`
+	Label           string        `json:"label,omitempty"`
+	AuthMode        string        `json:"auth_mode"` // subscription, api, unknown
+	Source          string        `json:"source"`
+	ObservedAt      int64         `json:"observed_at"`
+	Windows         []UsageWindow `json:"windows"`
+}
+
+type UsageProbe struct {
+	Status            string `json:"status"`
+	RetryAfterSeconds int64  `json:"retry_after_seconds,omitempty"`
 }
 
 type UsageReport struct {
-	Version    int            `json:"version"`
-	ObservedAt int64          `json:"observed_at"`
-	Complete   bool           `json:"complete"` // successful full session enumeration
-	Inventory  []UsageHarness `json:"inventory,omitempty"`
-	Sessions   []UsageSession `json:"sessions"`
-	Accounts   []UsageAccount `json:"accounts,omitempty"`
+	InventoryAt *int64         `json:"inventory_at,omitempty"`
+	Events      []UsageEvent   `json:"events,omitempty"`
+	Probe       *UsageProbe    `json:"probe,omitempty"`
+	Version     int            `json:"version"`
+	ObservedAt  int64          `json:"observed_at"`
+	Complete    bool           `json:"complete"` // successful full session enumeration
+	Inventory   []UsageHarness `json:"inventory,omitempty"`
+	Sessions    []UsageSession `json:"sessions"`
+	Accounts    []UsageAccount `json:"accounts,omitempty"`
 }
 
 // UsageID domain-separates opaque identifiers. Each component is terminated;
@@ -130,9 +171,30 @@ func (c UsageCounters) valid() bool {
 // Check rejects a malformed report as a unit; the domain layer never stores
 // raw wire JSON or diagnostic text from adapters.
 func (r UsageReport) Check(now time.Time) error {
+	if r.Probe != nil {
+		switch r.Probe.Status {
+		case "ready", "unavailable", "rate_limited", "account_changed", "unsupported":
+		default:
+			return invalid("probe", "unknown collector status")
+		}
+		if r.Probe.RetryAfterSeconds < 0 || r.Probe.RetryAfterSeconds > 31536000 {
+			return invalid("probe", "invalid cooldown")
+		}
+	}
 	latest := now.Add(2 * time.Minute).UnixMilli()
+	if r.InventoryAt != nil && !usageTime(*r.InventoryAt, r.ObservedAt) {
+		return invalid("inventory_at", "invalid inventory time")
+	}
 	if r.Version != UsageVersion || !usageTime(r.ObservedAt, latest) || len(r.Sessions) > 256 || len(r.Accounts) > 128 || len(r.Inventory) > 48 {
 		return invalid("report", "unsupported version, timestamp or size")
+	}
+	if len(r.Events) > 128 {
+		return invalid("events", "batch too large")
+	}
+	for _, e := range r.Events {
+		if !e.Valid() || e.ObservedAt > r.ObservedAt {
+			return invalid("events", "invalid event metadata")
+		}
 	}
 	seen := map[string]bool{}
 	for _, s := range r.Sessions {
@@ -142,26 +204,43 @@ func (r UsageReport) Check(now time.Time) error {
 		if s.StartedAt != nil && !usageTime(*s.StartedAt, s.ObservedAt) || s.StoppedAt != nil && (!usageTime(*s.StoppedAt, s.ObservedAt) || s.StartedAt != nil && *s.StoppedAt < *s.StartedAt) {
 			return invalid("sessions", "invalid lifecycle timestamps")
 		}
+		if s.NativeID != "" && !usageIDValid(s.NativeID) || len(s.Models) > 32 {
+			return invalid("sessions", "invalid native/model identity")
+		}
+		for _, m := range s.Models {
+			if m.Model == "" || !usageText(m.Model, 128) || !m.UsageCounters.valid() {
+				return invalid("models", "invalid model counters")
+			}
+		}
 		seen[s.ID] = true
 	}
 	for _, a := range r.Accounts {
-		if !usageIDValid(a.ID) || seen[a.ID] || a.Provider == "" || !usageText(a.Provider, 64) || !usageMode(a.AuthMode) || !usageText(a.Label, 96) || a.Source == "" || !usageText(a.Source, 64) || !usageTime(a.ObservedAt, r.ObservedAt) || len(a.Windows) > 32 || a.AuthMode != "subscription" && len(a.Windows) > 0 {
+		key := "account:" + a.ID + "|" + a.SourceSessionID
+		if !usageIDValid(a.ID) || a.SourceSessionID != "" && !usageIDValid(a.SourceSessionID) || seen[key] || a.Provider == "" || !usageText(a.Provider, 64) || !usageMode(a.AuthMode) || !usageText(a.Label, 96) || a.Source == "" || !usageText(a.Source, 64) || !usageTime(a.ObservedAt, r.ObservedAt) || len(a.Windows) > 32 || a.AuthMode != "subscription" && len(a.Windows) > 0 {
 			return invalid("accounts", "invalid account metadata")
 		}
-		seen[a.ID] = true
+		seen[key] = true
 		windowKeys := map[string]bool{}
 		for _, w := range a.Windows {
-			key := w.Scope + "\x00" + w.Period
+			key := w.Scope + "\x00" + w.Period + "\x00" + w.Unit
 			if w.DurationMS != nil {
 				key += "\x00" + strconv.FormatInt(*w.DurationMS, 10)
 			}
-			if windowKeys[key] || w.Scope == "" || !usageText(w.Scope, 96) || (w.Period != "rolling" && w.Period != "fixed" && w.Period != "total") || !usagePercent(w.UsedPercent) || w.DurationMS != nil && *w.DurationMS <= 0 || w.ResetsAt != nil && *w.ResetsAt <= 0 {
+			if windowKeys[key] || w.Scope == "" || !usageText(w.Scope, 96) || !usageText(w.Unit, 32) || (w.Period != "rolling" && w.Period != "fixed" && w.Period != "total") || !usagePercent(w.UsedPercent) || w.DurationMS != nil && *w.DurationMS <= 0 || w.ResetsAt != nil && *w.ResetsAt <= 0 {
 				return invalid("windows", "invalid or duplicate usage window")
 			}
 			windowKeys[key] = true
 		}
 	}
 	for _, h := range r.Inventory {
+		if len(h.Providers) > 32 || (h.AuthMode != "" && !usageMode(h.AuthMode) && h.AuthMode != "mixed") || !usageText(h.AccountStatus, 32) {
+			return invalid("inventory", "invalid authentication metadata")
+		}
+		for _, p := range h.Providers {
+			if !usageText(p, 64) {
+				return invalid("inventory", "invalid provider name")
+			}
+		}
 		if h.Name == "" || !usageText(h.Name, 64) || !usageText(h.Version, 96) || h.Status != "installed" && h.Status != "unavailable" && h.Status != "unsupported" {
 			return invalid("inventory", "invalid harness entry")
 		}

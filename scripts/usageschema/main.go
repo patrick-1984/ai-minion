@@ -25,7 +25,7 @@ func schema(t reflect.Type) *jsonschema.Schema {
 func main() {
 	paths := object{}
 	components := object{}
-	for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList, ops.OpUsageBucketSet, ops.OpWorkerUsage} {
+	for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList, ops.OpUsageBucketSet, ops.OpUsageAccountSet, ops.OpUsageCollectorSet, ops.OpWorkerUsage} {
 		op, ok := ops.Default.Lookup(name)
 		if !ok {
 			panic(name)

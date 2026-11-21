@@ -24,14 +24,9 @@ func usageBucketOwner(p authz.Principal) string {
 	case authz.KindBrowserSession:
 		return p.UserID
 	case authz.KindAPIKey:
-		if p.Scope != nil && slices.Contains(p.Scope.Actions(authz.ResolvedResource{Kind: authz.ResourceUser, UserID: p.UserID, OwnerID: p.UserID}), ops.ActionRead) {
-			// A chosen-users scope covering the owner may cover unrelated
-			// organization, including members on other users' Workers for an
-			// admin. Keep private organization browser-only for limited keys.
-			probe := store.NewID()
-			if slices.Contains(p.Scope.Actions(authz.ResolvedResource{Kind: authz.ResourceUser, UserID: probe, OwnerID: probe}), ops.ActionRead) {
-				return p.UserID
-			}
+		scope, ok := p.Scope.(interface{ AllResources() bool })
+		if ok && scope.AllResources() && slices.Contains(p.Scope.Actions(authz.ResolvedResource{Kind: authz.ResourceUser, UserID: p.UserID, OwnerID: p.UserID}), ops.ActionRead) {
+			return p.UserID
 		}
 	}
 	return ""
@@ -39,6 +34,20 @@ func usageBucketOwner(p authz.Principal) string {
 
 func usageForbidden() error {
 	return api.NewError(proto.CodeForbidden, "private usage buckets require the owner's own session or full-scope key")
+}
+
+func usageUserResource(p authz.Principal, _ any) (authz.Resource, error) {
+	if p.UserID == "" {
+		return nil, api.NewError(proto.CodeForbidden, "a signed-in usage account is required")
+	}
+	return authz.UserResource{ID: p.UserID}, nil
+}
+
+func usageListResource(p authz.Principal, args any) (authz.Resource, error) {
+	if a, ok := args.(*ops.UsageListArgs); ok && a.WorkerID != "" && p.Kind == authz.KindAPIKey {
+		return authz.WorkerResource{ID: a.WorkerID}, nil
+	}
+	return usageUserResource(p, args)
 }
 
 func initUsage(ctx context.Context, env *Env) error {
@@ -68,7 +77,7 @@ func initUsage(ctx context.Context, env *Env) error {
 			return ops.UsageListResult{}, err
 		}
 		return st.ReadUsage(ctx, allowed, owner, a, time.Now())
-	}); err != nil {
+	}, api.WithResource(usageListResource)); err != nil {
 		return err
 	}
 
@@ -80,6 +89,41 @@ func initUsage(ctx context.Context, env *Env) error {
 		buckets, err := st.UsageBuckets(ctx, owner)
 		return ops.UsageBucketListResult{Buckets: buckets}, err
 	}); err != nil {
+		return err
+	}
+
+	if err := api.HandleTyped(r, ops.OpUsageCollectorSet, func(ctx context.Context, c *api.Call, a ops.UsageCollectorSetArgs) (ops.UsageCollector, error) {
+		if usageBucketOwner(c.Principal) == "" {
+			return ops.UsageCollector{}, usageForbidden()
+		}
+		allowed, err := rt.ListWorkers(ctx, c.Principal, true)
+		if err != nil {
+			return ops.UsageCollector{}, err
+		}
+		res, err := st.SetUsageCollector(ctx, allowed, a)
+		if errors.Is(err, store.ErrNotFound) {
+			err = api.NewError(proto.CodeNotFound, "account or collector source is unavailable")
+		}
+		return res, err
+	}, api.WithResource(usageUserResource)); err != nil {
+		return err
+	}
+
+	if err := api.HandleTyped(r, ops.OpUsageAccountSet, func(ctx context.Context, c *api.Call, a ops.UsageAccountSetArgs) (ops.UsageAccountSetArgs, error) {
+		owner := usageBucketOwner(c.Principal)
+		if owner == "" {
+			return ops.UsageAccountSetArgs{}, usageForbidden()
+		}
+		allowed, err := rt.ListWorkers(ctx, c.Principal, true)
+		if err != nil {
+			return ops.UsageAccountSetArgs{}, err
+		}
+		err = st.SetUsageAccount(ctx, owner, allowed, a)
+		if errors.Is(err, store.ErrNotFound) {
+			err = api.NewError(proto.CodeNotFound, "account not available")
+		}
+		return a, err
+	}, api.WithResource(usageUserResource)); err != nil {
 		return err
 	}
 

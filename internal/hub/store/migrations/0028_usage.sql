@@ -3,6 +3,8 @@ CREATE TABLE usage_workers (
     worker_id TEXT PRIMARY KEY REFERENCES workers(id) ON DELETE CASCADE,
     observed_at INTEGER NOT NULL,
     complete_at INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ready',
+    inventory_at INTEGER,
     inventory TEXT
 );
 -- id identifies a session incarnation across the domain. Only a registered
@@ -69,4 +71,53 @@ CREATE TRIGGER usage_account_removed AFTER DELETE ON usage_accounts
 WHEN NOT EXISTS (SELECT 1 FROM usage_accounts WHERE account_id=OLD.account_id)
 BEGIN
     DELETE FROM usage_members WHERE kind='provider' AND member_id=OLD.account_id;
+END;
+-- One scheduling decision per provider account across all admitted Workers.
+CREATE TABLE usage_collectors (
+    account_id TEXT PRIMARY KEY,
+    preferred_worker TEXT REFERENCES workers(id) ON DELETE SET NULL,
+    preferred_session TEXT NOT NULL DEFAULT '',
+    active_worker TEXT REFERENCES workers(id) ON DELETE SET NULL,
+    lease_id TEXT NOT NULL DEFAULT '',
+    lease_until INTEGER NOT NULL DEFAULT 0,
+    next_due INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'waiting',
+    last_probe INTEGER NOT NULL DEFAULT 0,
+    requested INTEGER NOT NULL DEFAULT 0,
+    last_success INTEGER
+);
+CREATE INDEX usage_collectors_due ON usage_collectors(next_due);
+CREATE TRIGGER usage_collector_orphan AFTER DELETE ON usage_accounts
+WHEN NOT EXISTS (SELECT 1 FROM usage_accounts WHERE account_id=OLD.account_id)
+BEGIN
+    DELETE FROM usage_collectors WHERE account_id=OLD.account_id;
+END;
+ALTER TABLE usage_workers ADD COLUMN event_cursor INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE usage_events (
+    worker_id TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    observed_at INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    PRIMARY KEY(worker_id,seq)
+) WITHOUT ROWID;
+CREATE INDEX usage_events_time ON usage_events(observed_at);
+CREATE TRIGGER usage_events_reassigned AFTER UPDATE OF owner_id ON workers
+WHEN OLD.owner_id<>NEW.owner_id
+BEGIN
+    DELETE FROM usage_events WHERE worker_id=OLD.id;
+END;
+-- Per-viewer account nicknames and order are private, just like buckets.
+CREATE TABLE usage_account_prefs (
+    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY(owner_id,account_id)
+) WITHOUT ROWID;
+CREATE TRIGGER usage_account_prefs_orphan AFTER DELETE ON usage_accounts
+WHEN NOT EXISTS (SELECT 1 FROM usage_accounts WHERE account_id=OLD.account_id)
+BEGIN
+    DELETE FROM usage_account_prefs WHERE account_id=OLD.account_id;
 END;

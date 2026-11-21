@@ -155,3 +155,59 @@ func BenchmarkUsage50Sessions(b *testing.B) {
 		}
 	}
 }
+
+func TestUsageCollectorDedupAndBackoff(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, r, now := usageFixture(t, s, 1)
+	r.Accounts[0].Provider = "OpenAI"
+	for _, w := range workers {
+		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, r, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claim := func(worker ops.WorkerInfo, at time.Time) UsageLease {
+		t.Helper()
+		l, err := s.ClaimUsagePoll(ctx, worker.ID, worker.OwnerID, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	first := claim(workers[0], now)
+	if first.ID == "" || claim(workers[1], now).ID != "" {
+		t.Fatal("duplicated one account on multiple Workers")
+	}
+	if err := s.CompleteUsagePoll(ctx, first, nil, "rate_limited", time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	if l := claim(workers[1], now.Add(59*time.Minute)); l.ID != "" {
+		t.Fatal("ignored Retry-After")
+	}
+	dest := ops.UsageCollectorSetArgs{AccountID: r.Accounts[0].ID, WorkerID: workers[1].ID}
+	if _, err := s.SetUsageCollector(ctx, workers[:1], dest); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("limited owner redirected shared polling: %v", err)
+	}
+	if _, err := s.SetUsageCollector(ctx, workers, dest); err != nil {
+		t.Fatal(err)
+	}
+	later := now.Add(62 * time.Minute)
+	if l := claim(workers[0], later); l.ID != "" {
+		t.Fatal("wrong selected collector")
+	}
+	second := claim(workers[1], later)
+	if second.ID == "" {
+		t.Fatal("no selected collector")
+	}
+	a := r.Accounts[0]
+	a.ObservedAt = later.UnixMilli()
+	if err := s.CompleteUsagePoll(ctx, second, &a, "ready", 0, later); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteUsagePoll(ctx, first, &a, "ready", 0, later); !errors.Is(err, ErrNotFound) {
+		t.Fatal("expired lease accepted")
+	}
+	if l := claim(workers[1], later.Add(time.Minute)); l.ID != "" {
+		t.Fatal("polled within five minutes")
+	}
+}
