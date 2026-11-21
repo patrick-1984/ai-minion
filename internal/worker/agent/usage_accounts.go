@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -93,6 +95,7 @@ func nativeLoginLabel(provider, email, digest string) string {
 }
 
 func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageAccount, bool) {
+	provider = ops.UsageProvider(provider)
 	id := n.AccountID
 	if id == "" && n.Email != "" {
 		id = strings.ToLower(strings.TrimSpace(n.Email))
@@ -112,11 +115,27 @@ func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageA
 // producer as the credential used for the given endpoint. Neither the URL path
 // nor an entire key is returned. The prefix is a display hint only.
 func APIUsageAccount(provider, endpoint, key string, domainSecret []byte, at int64) (ops.UsageAccount, error) {
+	provider = ops.UsageProvider(provider)
 	u, err := url.Parse(endpoint)
 	if len(domainSecret) < 32 || err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || key == "" || len(key) > 4096 || len(provider) > 64 || provider == "" || strings.IndexFunc(key, unicode.IsControl) >= 0 {
 		return ops.UsageAccount{}, errors.New("invalid API credential metadata")
 	}
-	u.Host = strings.ToLower(u.Host)
+	host := strings.ToLower(u.Hostname())
+	if addr, err := netip.ParseAddr(u.Hostname()); err == nil {
+		host = addr.String()
+	}
+	port := u.Port()
+	if u.Scheme == "https" && port == "443" || u.Scheme == "http" && port == "80" {
+		port = ""
+	}
+	switch {
+	case port != "":
+		u.Host = net.JoinHostPort(host, port)
+	case strings.Contains(host, ":"):
+		u.Host = "[" + host + "]"
+	default:
+		u.Host = host
+	}
 	target := strings.TrimRight(u.String(), "/")
 	h := hmac.New(sha256.New, domainSecret)
 	h.Write([]byte(ops.UsageID("api-key", provider, target, key)))
@@ -134,6 +153,7 @@ func APIUsageAccount(provider, endpoint, key string, domainSecret []byte, at int
 // provider format. A public Hub-specific salt prevents cross-Hub correlation.
 // Weak or unknown formats require the optional privately shared domain seed.
 func NativeAPIUsageAccount(provider, endpoint, key, hubPublic string, at int64) (ops.UsageAccount, error) {
+	provider = ops.UsageProvider(provider)
 	if len(hubPublic) < 32 {
 		return ops.UsageAccount{}, errors.New("missing Hub scope")
 	}
@@ -204,7 +224,11 @@ type codexStatusPipe struct {
 }
 
 func (p codexStatusPipe) request(id int, method string, params any, result any) error {
-	if err := p.input.Encode(map[string]any{"method": method, "id": id, "params": params}); err != nil {
+	request := map[string]any{"method": method, "id": id}
+	if params != nil {
+		request["params"] = params
+	}
+	if err := p.input.Encode(request); err != nil {
 		return err
 	}
 	for range 64 {

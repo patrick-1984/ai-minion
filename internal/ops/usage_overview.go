@@ -30,6 +30,7 @@ type UsageOverview struct {
 func summarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 	latest := map[string]UsageAccount{}
 	for _, r := range rows {
+		r.Provider = UsageProvider(r.Provider)
 		if prev, ok := latest[r.ID]; !ok || prev.ObservedAt < r.ObservedAt {
 			latest[r.ID] = r.UsageAccount
 		}
@@ -123,7 +124,7 @@ func SummarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 	comparable := make([]UsageAccountRow, 0, len(rows))
 	providers := map[period]map[string]bool{}
 	for _, row := range rows {
-		provider := row.Provider
+		provider := UsageProvider(row.Provider)
 		broad := map[period]UsageWindow{}
 		ambiguous := map[period]bool{}
 		for _, window := range row.Windows {

@@ -109,3 +109,29 @@ func TestUsageDomainFingerprintAndStoredProjection(t *testing.T) {
 		t.Fatalf("unsafe/incomplete native inventory: %s %s %v", mode, status, providers)
 	}
 }
+
+func TestUsageCanonicalProviderAndEndpointIdentity(t *testing.T) {
+	seed := bytes.Repeat([]byte{0x14}, 32)
+	key := "provider-fixture-key-for-deduplication"
+	id := func(provider, endpoint string) string {
+		t.Helper()
+		a, err := APIUsageAccount(provider, endpoint, key, seed, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a.ID
+	}
+	if id(" OpenAI ", "https://API.EXAMPLE:443/v1/") != id("open ai", "https://api.example/v1") {
+		t.Fatal("provider alias/default TLS port split identity")
+	}
+	if id("DeepSeek", "http://[::1]:80/v1") != id("deepseek-ai", "http://[::1]/v1") {
+		t.Fatal("IPv6/default HTTP port split identity")
+	}
+	base := id("OpenAI", "https://api.example/v1")
+	if id("Anthropic", "https://api.example/v1") == base || id("OpenAI", "https://api.example/V1") == base || id("OpenAI", "https://api.example:8443/v1") == base {
+		t.Fatal("distinct provider, path or port merged")
+	}
+	if id("teamA", "https://api.example/v1") == id("teama", "https://api.example/v1") {
+		t.Fatal("distinct custom namespaces merged")
+	}
+}

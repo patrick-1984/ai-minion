@@ -72,6 +72,7 @@ func newUsageRecordCmd(deps workerConfigDeps) *cobra.Command {
 		}
 		now := time.Now()
 		opts.Format = args[0]
+		opts.Provider = ops.UsageProvider(opts.Provider)
 		if observedAt != "" {
 			t, e := time.Parse(time.RFC3339Nano, observedAt)
 			if e != nil {

@@ -106,6 +106,7 @@ func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, r
 }
 
 func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.UsageSession) error {
+	row.Provider = ops.UsageProvider(row.Provider)
 	at := row.ObservedAt
 	row.ObservedAt = 0 // stored separately; skip a rewrite when only the sample time changed
 	body, err := json.Marshal(row)

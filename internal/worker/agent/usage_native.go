@@ -190,7 +190,7 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 	if len(raw) > 256<<10 || len(bytes.TrimSpace(raw)) == 0 || opts.Session == "" {
 		return zero, errors.New("expected a session name and at most 256 KiB of JSON")
 	}
-	s := ops.UsageSession{Name: opts.Session, Source: opts.Format, Harness: opts.Harness, Provider: opts.Provider, Model: opts.Model, AuthMode: "unknown", ObservedAt: now.UnixMilli()}
+	s := ops.UsageSession{Name: opts.Session, Source: opts.Format, Harness: opts.Harness, Provider: ops.UsageProvider(opts.Provider), Model: opts.Model, AuthMode: "unknown", ObservedAt: now.UnixMilli()}
 	s.TimeSource = "worker_received"
 	if !opts.ObservedAt.IsZero() {
 		s.TimeSource = "native"
@@ -202,6 +202,7 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 	var a *ops.UsageAccount
 	if opts.Account != nil {
 		x := *opts.Account
+		x.Provider = ops.UsageProvider(x.Provider)
 		x.Windows = nil
 		x.ObservedAt = s.ObservedAt
 		x.TimeSource = s.TimeSource

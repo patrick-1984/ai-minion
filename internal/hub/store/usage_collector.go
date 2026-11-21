@@ -14,6 +14,7 @@ import (
 var ErrUsageNoNativeReader = errors.New("this account has no supported native background query")
 
 func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.UsageAccount) error {
+	a.Provider = ops.UsageProvider(a.Provider)
 	nativeRead := a.Provider == "OpenAI" && a.AuthMode == "subscription" && (a.Source == "codex-account" || a.Source == "codex-app-server")
 	if a.SourceSessionID != "" {
 		a.SourceSessionID = ops.UsageID("hub-session", workerID, a.SourceSessionID)

@@ -79,3 +79,17 @@ func TestUsageSummaryComparableProviderPeriodsAndUnits(t *testing.T) {
 		t.Fatalf("mixed units: %+v", g)
 	}
 }
+
+func TestUsageProviderAliasesShareQuotaCohort(t *testing.T) {
+	now := time.Now()
+	pct := 40.
+	d := int64(time.Hour / time.Millisecond)
+	rows := []UsageAccountRow{}
+	for _, name := range []string{"OpenAI", "open ai"} {
+		rows = append(rows, UsageAccountRow{UsageAccount: UsageAccount{ID: UsageID("test", name), Provider: name, AuthMode: "subscription", ObservedAt: now.UnixMilli(), Windows: []UsageWindow{{Scope: "codex.primary", Period: "rolling", DurationMS: &d, UsedPercent: &pct}}}})
+	}
+	o := SummarizeUsage(rows, now)
+	if len(o.Groups) != 1 || o.Groups[0].Provider != "OpenAI" || o.Groups[0].Known != 2 {
+		t.Fatalf("alias cohorts: %+v", o.Groups)
+	}
+}
