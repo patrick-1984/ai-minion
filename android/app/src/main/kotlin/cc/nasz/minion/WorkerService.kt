@@ -61,6 +61,7 @@ class WorkerService : Service() {
     private var backoff = 1L
     private var healthySince = 0L
     private var expectingTmux = false
+    private var tmuxStartedAt = 0L
 
     // The Android main thread owns the private Binder observer.
     private val binder = LocalBinder()
@@ -264,6 +265,7 @@ class WorkerService : Service() {
             if (now < restartAt) return
             tmux = native.startTmux()
             expectingTmux = true
+            tmuxStartedAt = now
             healthySince = 0
             return
         }
@@ -277,7 +279,15 @@ class WorkerService : Service() {
             notice = "The Worker disconnected. Its terminal sessions are still running."
             retry(now)
         }
-        if (now < restartAt || stopping.get() || !native.tmuxReady()) return
+        if (now < restartAt || stopping.get()) return
+        if (!native.tmuxReady()) {
+            if (now - tmuxStartedAt > 15_000) {
+                stopChildren()
+                notice = "The terminal server did not become ready. Retrying."
+                retry(now)
+            }
+            return
+        }
         worker = native.startWorker()
         healthySince = now
         nextReport = 0

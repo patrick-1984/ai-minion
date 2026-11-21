@@ -69,6 +69,13 @@ func startAutoPairRuntimeOpts(t *testing.T, env map[string]string, prepare func(
 	if err := r.Register(ModuleConnector, OrderConnector, connectorDeps{dialer: &scriptDialer{}, pairDialer: pd}.start); err != nil {
 		t.Fatal(err)
 	}
+	if managed {
+		deps := defaultLocalAPIDeps()
+		deps.socketPath = func() (string, error) { return filepath.Join(dir, "local.sock"), nil }
+		if err := r.Register(ModuleLocalAPI, OrderLocalAPI, deps.start); err != nil {
+			t.Fatal(err)
+		}
+	}
 	out := &syncBuf{}
 	logs := &logBuf{}
 	res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }}

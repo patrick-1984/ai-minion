@@ -79,7 +79,6 @@ class MainActivity : Activity() {
         television = getSystemService(UiModeManager::class.java).currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
         setContentView(screen())
         render(model)
-        if (television) pair.requestFocus()
     }
 
     override fun onStart() {
@@ -215,8 +214,10 @@ class MainActivity : Activity() {
         share.visible(configured && !value.busy)
         boot.visible(configured && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
-        for (control in listOf(pair, token, start, pause, stop, share, boot, forget)) {
-            control.isEnabled = worker != null
+        val controls = listOf(pair, token, start, pause, stop, share, boot, forget)
+        for (control in controls) control.isEnabled = worker != null
+        if (television && currentFocus == null) {
+            controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()
         }
         share.isChecked = value.share
         boot.isChecked = value.boot
