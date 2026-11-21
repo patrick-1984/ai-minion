@@ -1,0 +1,157 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/ops"
+)
+
+func usageFixture(t testing.TB, s *Store, n int) ([]ops.WorkerInfo, ops.UsageReport, time.Time) {
+	t.Helper()
+	now := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	a := ops.UsageAccount{ID: ops.UsageID("account", "subscription", "synthetic"), Provider: "example", AuthMode: "subscription", ObservedAt: now.UnixMilli(), Source: "test"}
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true, Accounts: []ops.UsageAccount{a}}
+	for i := range n {
+		count := int64(i)
+		r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("session", fmt.Sprint(i)), Name: fmt.Sprintf("private-%d", i), AuthMode: "subscription", AccountID: a.ID, ObservedAt: r.ObservedAt, Source: "test", UsageCounters: ops.UsageCounters{InputTokens: &count}})
+	}
+	workers := []ops.WorkerInfo{{ID: "w1", OwnerID: "alice"}, {ID: "w2", OwnerID: "bob"}}
+	for i, w := range workers {
+		if err := s.InsertWorker(context.Background(), nil, worker(w.ID, byte(i+1), w.OwnerID, w.ID)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(`INSERT INTO users(id,username,created_at,updated_at) VALUES(?,?,1,1)`, w.OwnerID, w.OwnerID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return workers, r, now
+}
+
+func TestUsageAuthorizationAndPrivateAssignment(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, r, now := usageFixture(t, s, 2)
+	for _, w := range workers {
+		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, r, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(w []ops.WorkerInfo, owner, section, bucket string) ops.UsageListResult {
+		t.Helper()
+		out, err := s.ReadUsage(ctx, w, owner, ops.UsageListArgs{Section: section, BucketID: bucket}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if got := list(workers, "alice", "accounts", ""); len(got.Accounts) != 1 {
+		t.Fatalf("duplicate account rows: %+v", got)
+	}
+	if got := list(workers[:1], "alice", "sessions", ""); len(got.Sessions) != 2 {
+		t.Fatalf("wrong scope: %+v", got)
+	}
+	move := func(args ops.UsageBucketSetArgs) ops.UsageBucketSetResult {
+		t.Helper()
+		res, err := s.SetUsageBucket(ctx, "alice", workers[:1], args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	b := move(ops.UsageBucketSetArgs{Action: "save", Kind: "session", Label: "Work"})
+	c := move(ops.UsageBucketSetArgs{Action: "save", Kind: "session", Label: "Private"})
+	move(ops.UsageBucketSetArgs{Action: "assign", Kind: "session", BucketID: b.ID, All: true})
+	if got := list(workers, "bob", "sessions", b.ID); len(got.Sessions) != 0 {
+		t.Fatal("private buckets crossed owners")
+	}
+	ids := list(workers[:1], "alice", "sessions", b.ID).Sessions
+	if len(ids) != 2 {
+		t.Fatal("bulk selection")
+	}
+	move(ops.UsageBucketSetArgs{Action: "assign", Kind: "session", BucketID: c.ID, Members: []string{ids[0].ID}})
+	if len(list(workers, "alice", "sessions", b.ID).Sessions) != 1 || len(list(workers, "alice", "sessions", c.ID).Sessions) != 1 {
+		t.Fatal("exclusive move")
+	}
+	move(ops.UsageBucketSetArgs{Action: "assign", Kind: "session", Members: []string{ids[0].ID}})
+	if len(list(workers[:1], "alice", "sessions", "unassigned").Sessions) != 1 {
+		t.Fatal("unassigned")
+	}
+	if _, err := s.SetUsageBucket(ctx, "bob", workers, ops.UsageBucketSetArgs{Action: "delete", Kind: "session", BucketID: b.ID}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted another owner's bucket: %v", err)
+	}
+	if _, err := s.db.Exec(`UPDATE workers SET owner_id='bob' WHERE id='w1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveUsage(ctx, "w1", "alice", r, now); !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("stale owner accepted: %v", err)
+	}
+	if got := list(workers[:1], "alice", "sessions", ""); len(got.Sessions) != 0 {
+		t.Fatal("stale authorization")
+	}
+}
+
+func TestUsageReplaysAndIncompleteEnumeration(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, r, now := usageFixture(t, s, 2)
+	save := func(x ops.UsageReport) {
+		t.Helper()
+		if err := s.SaveUsage(ctx, "w1", "alice", x, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() []ops.UsageSessionRow {
+		t.Helper()
+		v, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "sessions"}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v.Sessions
+	}
+	save(r)
+	replay := r
+	r.ObservedAt++
+	r.Complete = false
+	r.Sessions = nil
+	save(r)
+	if row := read()[0]; row.StoppedAt != nil || row.LastSeen != replay.ObservedAt {
+		t.Fatalf("incomplete observation changed liveness: %+v", row)
+	}
+	r.ObservedAt++
+	r.Complete = true
+	save(r)
+	save(replay)
+	if row := read()[0]; row.StoppedAt == nil || *row.StoppedAt != r.ObservedAt {
+		t.Fatalf("replay reopened session: %+v", row)
+	}
+	if err := s.TrimUsage(ctx, now.Add(100*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if len(read()) != 0 {
+		t.Fatal("retention did not remove expired history")
+	}
+}
+
+func BenchmarkUsage50Sessions(b *testing.B) {
+	s, err := Open(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	_, r, now := usageFixture(b, s, 50)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		at := now.Add(time.Duration(i) * 5 * time.Second)
+		r.ObservedAt = at.UnixMilli()
+		for j := range r.Sessions {
+			r.Sessions[j].ObservedAt = r.ObservedAt
+		}
+		if err := s.SaveUsage(context.Background(), "w1", "alice", r, at); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
