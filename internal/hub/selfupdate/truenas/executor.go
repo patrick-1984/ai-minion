@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -390,10 +391,19 @@ func (e *Executor) attempt(ctx context.Context, st State, adm admission) (TickRe
 	if run == nil || run.ImageID != prevID {
 		return refuse("running_image_mismatch")
 	}
+	// Bind the checkpoint to where the running Hub really writes, not just
+	// another valid bind mount named by a stale updater configuration. Require
+	// the same explicit literal in stored Compose so env_file/interpolation
+	// changes cannot redirect the candidate between stop and start.
+	wantDir := filepath.Clean(e.Cfg.DataMount)
+	if !filepath.IsAbs(run.DataDir) || filepath.Clean(run.DataDir) != wantDir ||
+		compose.Env(e.Cfg.Service, "MINION_DATA_DIR") != wantDir {
+		return refuse("hub_data_mount_mismatch")
+	}
 
 	// The configured dataset must be the source of the Hub's data mount.
 	mctx, mcancel := e.cc(ctx)
-	src, err := e.Docker.MountSource(mctx, run.ID, e.Cfg.DataMount)
+	src, err := e.Docker.MountSource(mctx, run.ID, wantDir)
 	mcancel()
 	if err != nil {
 		return refuse("data_mount_unknown")

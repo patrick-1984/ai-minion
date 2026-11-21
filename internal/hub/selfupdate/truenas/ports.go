@@ -68,6 +68,9 @@ type Container struct {
 	Health string
 	// Maintenance is the live container's trial fence, not the stored YAML.
 	Maintenance bool
+	// DataDir is the explicit MINION_DATA_DIR of the live container. Empty
+	// means absent or ambiguous; defaults must not authorize a ZFS rollback.
+	DataDir string
 }
 
 // Docker is the part of the Docker host CLI the executor uses.

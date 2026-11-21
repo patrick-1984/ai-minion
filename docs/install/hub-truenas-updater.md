@@ -32,6 +32,7 @@ The compose document is sent to the middleware through the TrueNAS built-in Pyth
 - A **dedicated ZFS dataset** that holds exactly the Hub data directory (the app's `/data` bind mount) and nothing else. The updater snapshots and rolls back that dataset as a whole.
 - Exclude that dataset from periodic snapshot tasks (or accept `recovery_required` when one runs during an attempt): a plain `zfs rollback` refuses to run when a newer snapshot exists, and the updater never uses `-r`.
 - The Hub image reference in the app's YAML must be the Hub service you name in `service` (default `minion-hub`).
+- Set an explicit literal `MINION_DATA_DIR: /data` in that service's `environment` (or your other absolute data path), and make `data_mount` match it. The updater checks both this stored value and the live container's effective environment before stopping anything. An absent value, interpolation, or mismatch is refused as `hub_data_mount_mismatch`; another valid bind mount must never authorize a checkpoint of the wrong database.
 - The `docker`, `zfs`, `findmnt` and `python3` commands of the TrueNAS host. The Hub needs a dedicated container network namespace; host networking is refused because readiness cannot be tied to that container.
 
 ## Install

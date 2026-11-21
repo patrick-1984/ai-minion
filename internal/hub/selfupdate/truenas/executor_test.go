@@ -90,14 +90,38 @@ func TestWritableCandidateNeverRollsBackAcknowledgedData(t *testing.T) {
 	}
 }
 
-func TestTrialWithoutEnvironmentStillRollsBack(t *testing.T) {
+func TestTrialWithMinimalEnvironmentStillRollsBack(t *testing.T) {
 	w := newWorld()
 	svc, _ := w.compose.service("minion-hub")
-	delete(svc, "environment")
+	// Keep only the explicit data binding required for safe checkpoints.
+	svc["environment"] = map[string]any{"MINION_DATA_DIR": "/data"}
 	w.candidateBroken = true
 	e := newExec(t, w)
 	if res := tick(t, e); res.Tick != TickRolledBack || w.runImg != prevID || w.data != "v1" {
 		t.Fatalf("failed to recognize own injected trial: %+v %s", res, w.effects())
+	}
+}
+
+func TestUpdaterRefusesAValidButWrongDataMount(t *testing.T) {
+	for _, scenario := range []string{"live-other-mount", "missing-explicit-dir", "stored-interpolation"} {
+		t.Run(scenario, func(t *testing.T) {
+			w := newWorld()
+			e := newExec(t, w)
+			svc, _ := w.compose.service("minion-hub")
+			switch scenario {
+			case "live-other-mount":
+				w.dataDirOverride = "/real-data"
+			case "missing-explicit-dir":
+				delete(svc, "environment")
+			case "stored-interpolation":
+				svc["environment"] = map[string]any{"MINION_DATA_DIR": "${DATA_DIR}"}
+				w.dataDirOverride = "/data"
+			}
+			res := tick(t, e)
+			if res.Tick != TickRefused || res.Detail != "hub_data_mount_mismatch" || strings.Contains(w.effects(), "stop") || len(w.snaps) != 0 {
+				t.Fatalf("wrong mount admitted: %+v effects=%s", res, w.effects())
+			}
+		})
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 	"time"
 )
 
@@ -103,12 +104,12 @@ func TestZFSCommandsAreNotRecursive(t *testing.T) {
 
 func TestDockerContainersParsing(t *testing.T) {
 	calls := 0
-	r := &seqRunner{outs: []string{"abc\n", "abc|sha256:" + strings.Repeat("1", 64) + "|minion-hub|true|2026-01-01T00:00:00Z|bridge|10.0.0.2 |healthy|readonly\n"}, n: &calls}
+	r := &seqRunner{outs: []string{"abc\n", "abc|sha256:" + strings.Repeat("1", 64) + "|minion-hub|true|2026-01-01T00:00:00Z|bridge|10.0.0.2 |healthy|readonly|MINION_DATA_DIR=/data\n"}, n: &calls}
 	cs, err := DockerCLI{Runner: r}.Containers(context.Background(), "ix-app")
 	if err != nil || len(cs) != 1 || !cs[0].Running || cs[0].Service != "minion-hub" {
 		t.Fatalf("%+v %v", cs, err)
 	}
-	if !cs[0].Maintenance || cs[0].IP != "10.0.0.2" {
+	if !cs[0].Maintenance || cs[0].IP != "10.0.0.2" || cs[0].DataDir != "/data" {
 		t.Fatalf("lost live trial state: %+v", cs[0])
 	}
 	calls = 0
@@ -116,6 +117,24 @@ func TestDockerContainersParsing(t *testing.T) {
 	cs, err = (DockerCLI{Runner: r}).Containers(context.Background(), "ix-app")
 	if err != nil || cs[0].IP != "" {
 		t.Fatalf("host networking supplied an unbound readiness address: %+v %v", cs, err)
+	}
+}
+
+func TestDockerProjectionDoesNotEmitUnrelatedEnvironment(t *testing.T) {
+	r := &recRunner{out: "abc"}
+	_, _ = (DockerCLI{Runner: r}).Containers(context.Background(), "ix-app")
+	projection := r.calls[1][3]
+	tmpl, err := template.New("docker").Parse(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := map[string]any{"Id": "abc", "Image": "image", "Config": map[string]any{"Labels": map[string]string{"com.docker.compose.service": "hub"}, "Env": []string{"PASSWORD=private-fixture-value", "X=y", "MINION_DATA_DIR=/real-data", "MINION_MAINTENANCE=readonly"}}, "State": map[string]any{"Running": true, "StartedAt": "now", "Health": map[string]string{"Status": "healthy"}}, "HostConfig": map[string]string{"NetworkMode": "bridge"}, "NetworkSettings": map[string]any{"Networks": map[string]any{"net": map[string]string{"IPAddress": "10.0.0.2"}}}}
+	var out bytes.Buffer
+	if err := tmpl.Execute(&out, data); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "private-fixture-value") || strings.Contains(out.String(), "PASSWORD") || !strings.Contains(out.String(), "|readonly|MINION_DATA_DIR=/real-data") {
+		t.Fatalf("unsafe projection: %s", out.String())
 	}
 }
 

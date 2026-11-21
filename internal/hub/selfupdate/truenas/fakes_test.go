@@ -43,6 +43,7 @@ type world struct {
 	holdJobs        bool // new jobs stay RUNNING until released
 	stuckDeploying  bool // a running candidate keeps the app DEPLOYING
 	datasetName     string
+	dataDirOverride string
 	onEffect        func(name string)
 	onVerified      func()
 	blockContainers bool
@@ -70,7 +71,7 @@ func newWorld() *world {
 			repo + "@" + candDg: candID,
 		},
 		compose: Compose{"services": map[string]any{"minion-hub": map[string]any{
-			"image": repo + ":v0.16.0", "environment": map[string]any{"TOKEN": "s3cret-value"}}}},
+			"image": repo + ":v0.16.0", "environment": map[string]any{"TOKEN": "s3cret-value", "MINION_DATA_DIR": "/data"}}}},
 	}
 	w.releases = map[string]Release{
 		"v0.16.0": {Tag: "v0.16.0", Repo: repo, Digest: prevDg, Range: pr("1.0..1.1")},
@@ -222,8 +223,12 @@ func (w *world) Containers(ctx context.Context, _ string) ([]Container, error) {
 	if !w.running {
 		return nil, nil
 	}
+	dataDir := w.compose.Env("minion-hub", "MINION_DATA_DIR")
+	if w.dataDirOverride != "" {
+		dataDir = w.dataDirOverride
+	}
 	return []Container{{ID: "c1", Service: "minion-hub", ImageID: w.runImg, Running: true,
-		StartedAt: fmt.Sprintf("start-%d", w.starts), IP: "10.0.0.2", Maintenance: w.readonly}}, nil
+		StartedAt: fmt.Sprintf("start-%d", w.starts), IP: "10.0.0.2", Maintenance: w.readonly, DataDir: dataDir}}, nil
 }
 func (w *world) MountSource(context.Context, string, string) (string, error) {
 	return "/mnt/tank/apps/hub", nil
