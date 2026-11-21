@@ -225,7 +225,8 @@ func runWorkerUp(cmd *cobra.Command, deps workerUpDeps, foreground, configureOnl
 	if replaceRequested(cmd) && !join.Applied {
 		return errors.New("--replace, --keep and --interactive-replace go with --join: they decide what happens to an existing Worker when a join token is used")
 	}
-	if join.Applied && !foreground {
+	joinArg, _ := cmd.Flags().GetString("join")
+	if join.Applied && !foreground && (replaceRequested(cmd) || strings.TrimSpace(joinArg) == "-") {
 		handled, err := runWorkerUpReplace(cmd, deps, det, asUser, configureOnly, replaceRequested(cmd))
 		if handled {
 			if errors.Is(err, errReplaceDeclined) {

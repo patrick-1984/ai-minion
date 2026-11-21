@@ -409,6 +409,8 @@ func inspectExisting(ctx context.Context, d replaceDeps, account, stateDir strin
 	}
 	if e.HubURL == "" {
 		e.HubURL = "(not saved)"
+	} else {
+		e.HubURL = safeURL(e.HubURL)
 	}
 	if e.HubWords == "" {
 		e.HubWords = "(none saved)"
