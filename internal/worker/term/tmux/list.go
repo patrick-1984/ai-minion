@@ -62,6 +62,11 @@ func (h *Host) ListSessions(ctx context.Context) ([]term.Session, error) {
 	h.tightenSocket()
 	sessions, err := h.listPanes(ctx)
 	if errors.Is(err, term.ErrNotFound) {
+		if h.managed && h.serverGone(err) {
+			// A supervisor owns the server and -N never starts one: a missing
+			// socket is an outage, not a healthy server with no sessions.
+			return nil, fmt.Errorf("tmux: the managed server is not running: %w", term.ErrHostDown)
+		}
 		return nil, nil
 	}
 	return sessions, err

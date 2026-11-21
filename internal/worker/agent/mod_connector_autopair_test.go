@@ -37,6 +37,14 @@ func (s *syncBuf) String() string {
 // pairing dialer and returns the console and the dialer.
 func startAutoPairRuntime(t *testing.T, env map[string]string, prepare func(string, *store.Store)) (*syncBuf, *pairScript) {
 	t.Helper()
+	out, pd, _, _ := startAutoPairRuntimeOpts(t, env, prepare, false)
+	return out, pd
+}
+
+// startAutoPairRuntimeOpts is startAutoPairRuntime with the managed Android
+// mode switchable; it also returns the log and the runtime.
+func startAutoPairRuntimeOpts(t *testing.T, env map[string]string, prepare func(string, *store.Store), managed bool) (*syncBuf, *pairScript, *logBuf, *Runtime) {
+	t.Helper()
 	dir := t.TempDir()
 	if prepare != nil {
 		st, err := store.Open(dir)
@@ -48,9 +56,10 @@ func startAutoPairRuntime(t *testing.T, env map[string]string, prepare func(stri
 	}
 	host := newFakeHost()
 	core := coreDeps{
-		openStore:  func(ctx context.Context, d string) (*store.Store, error) { return store.OpenContext(ctx, d) },
-		newHost:    func(string) (term.SessionHost, error) { return host, nil },
-		classifier: newFakeClassifier(),
+		openStore:   func(ctx context.Context, d string) (*store.Store, error) { return store.OpenContext(ctx, d) },
+		newHost:     func(string) (term.SessionHost, error) { return host, nil },
+		managedHost: func(string, config.ManagedHost) (term.SessionHost, error) { return host, nil },
+		classifier:  newFakeClassifier(),
 	}
 	pd := &pairScript{steps: []pairStep{pairWaitStep(nil)}}
 	r := NewRegistry()
@@ -61,18 +70,23 @@ func startAutoPairRuntime(t *testing.T, env map[string]string, prepare func(stri
 		t.Fatal(err)
 	}
 	out := &syncBuf{}
+	logs := &logBuf{}
 	res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }}
 	rt := NewRuntime(r, Options{})
+	wc := config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w"}
+	if managed {
+		wc.Managed = config.ManagedHost{Android: true, TmuxBinary: "/data/app/lib/libtmux.so"}
+	}
 	if err := rt.Start(context.Background(), Settings{
-		WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w"},
+		WorkerCore: wc,
 		Resolver:   res,
 		Out:        out,
-		Logger:     slog.New(slog.NewTextHandler(&logBuf{}, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Logger:     slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-	return out, pd
+	return out, pd, logs, rt
 }
 
 func TestUnpairedWorkerWithAHubShowsAPairingCodeByItself(t *testing.T) {

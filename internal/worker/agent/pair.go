@@ -393,6 +393,10 @@ type PairerConfig struct {
 	HubHelloWait time.Duration
 	// NoAdmit turns pairing requests off: the Worker pairs only with its code.
 	NoAdmit bool
+	// Private switches the pairer to the private presentation (the Android
+	// managed mode): the code, its expiry and the words go only to this
+	// status, never to Out or the log. Nil: the console box and the log.
+	Private *PairingStatus
 	// Out is the console: the code and the result are printed here. Nil
 	// discards them.
 	Out io.Writer
@@ -659,6 +663,8 @@ var errPairingStateChanged = errors.New("the Worker's enrollment state changed w
 // conditional on that generation, so a paired Worker is never offered a code and
 // an enrollment written meanwhile is never replaced (AD-8).
 func (p *Pairer) Run(ctx context.Context) (Enrollment, error) {
+	// A private code never outlives the run: done, cancelled or failed.
+	defer p.cfg.Private.Clear()
 	gen, moved, key, err := p.begin(ctx)
 	if err != nil {
 		return Enrollment{}, err
@@ -1031,6 +1037,7 @@ func (p *Pairer) dropResume(gen uint64, l *codeLife) {
 }
 
 func (p *Pairer) renew(gen uint64, old *codeLife) *codeLife {
+	p.cfg.Private.Clear() // the old code is retired
 	if old.hasRecord() {
 		// The old code is abandoned (it expired, or an attempt exposed it
 		// without authenticating the Hub): its record goes, so that the next
@@ -1054,7 +1061,7 @@ func (p *Pairer) attempt(ctx context.Context, key *identity.Key, life *codeLife,
 	// HubHelloWait after the Worker's hello went out (an older Hub answers
 	// only after the claim), or at the end of an attempt that was held but
 	// ended sooner; whichever comes first, and once per code.
-	box := &codeBox{p: p, life: life, notice: notice}
+	box := &codeBox{p: p, life: life, notice: notice, ctx: ctx}
 	defer box.flush()
 	go func() {
 		// The attempt ends as soon as the enrollment moves, in this process
@@ -1161,11 +1168,11 @@ type codeBox struct {
 	p      *Pairer
 	life   *codeLife
 	notice string
+	ctx    context.Context
 
 	mu      sync.Mutex
-	held    bool   // the Worker's hello went out (OnWaiting)
-	root    []byte // the root of the Hub hello, nil before it
-	admit   bool   // an admission is allowed on this connection
+	closed  bool
+	held    bool // the Worker's hello went out (OnWaiting)
 	helloCh chan struct{}
 }
 
@@ -1199,7 +1206,10 @@ func (b *codeBox) waiting(ctx context.Context) {
 // that presents another root is refused before any CPace message.
 func (b *codeBox) hubHello(root []byte, admit bool) error {
 	b.mu.Lock()
-	b.root, b.admit = bytes.Clone(root), admit
+	defer b.mu.Unlock()
+	if b.closed || b.ctx.Err() != nil {
+		return context.Canceled
+	}
 	if b.helloCh == nil {
 		b.helloCh = make(chan struct{})
 	}
@@ -1208,13 +1218,13 @@ func (b *codeBox) hubHello(root []byte, admit bool) error {
 	default:
 		close(b.helloCh)
 	}
-	b.mu.Unlock()
 	print, err := b.life.acceptRoot(root, admit)
 	if err != nil {
 		return err
 	}
+	b.p.cfg.Private.setHub(root)
 	if print {
-		b.p.showCode(b.life.code, b.notice, root, admit)
+		b.show(root, admit)
 	}
 	return nil
 }
@@ -1223,20 +1233,34 @@ func (b *codeBox) hubHello(root []byte, admit bool) error {
 // printed it yet.
 func (b *codeBox) flush() {
 	b.mu.Lock()
-	held := b.held
-	b.mu.Unlock()
-	if held {
-		b.print()
+	defer b.mu.Unlock()
+	if b.held {
+		b.printLocked()
 	}
+	// A timer already selected on the previous attempt may still be
+	// waiting on this lock. It must not publish after the attempt returns.
+	b.closed = true
 }
 
-// print prints the box without Hub words (no Hub hello arrived in time, or
-// the attempt ended before it).
 func (b *codeBox) print() {
-	if !b.life.markPrinted() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.printLocked()
+}
+
+func (b *codeBox) printLocked() {
+	if b.closed || b.ctx.Err() != nil || !b.life.markPrinted() {
 		return
 	}
-	b.p.showCode(b.life.code, b.notice, nil, false)
+	b.show(nil, false)
+}
+
+func (b *codeBox) show(root []byte, admit bool) {
+	if b.p.cfg.Private != nil {
+		b.p.present(b.life.code, root, b.life.expiry(b.p.ttl))
+		return
+	}
+	b.p.showCode(b.life.code, b.notice, root, admit)
 }
 
 // showCode prints the code on the console and in the log: the one place a

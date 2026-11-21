@@ -85,6 +85,10 @@ func (h *Host) CreateSession(ctx context.Context, name, cwd string, argv []strin
 	}
 	out, err := h.run(ctx, newSessionArgs(name, cwd, argv, !h.psmux)...)
 	h.tightenSocket() // also after a timeout: the server may have started
+	if err != nil && h.managed && h.serverGone(err) {
+		// -N: tmux refused before it ran anything, so nothing was created.
+		return term.Session{}, fmt.Errorf("tmux: the managed server is not running: %w", term.ErrHostDown)
+	}
 	if err != nil {
 		var te *tmuxError
 		if errors.As(err, &te) && strings.Contains(te.stderr, "duplicate session") {

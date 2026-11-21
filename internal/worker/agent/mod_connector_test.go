@@ -55,9 +55,13 @@ func startConnectorRuntime(t *testing.T, env map[string]string, prepare func(dir
 		t.Fatal(err)
 	}
 	logs := &logBuf{}
-	res := &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }}
+	file, err := config.LoadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := &config.Resolver{Role: config.ScopeWorker, File: file, LookupEnv: func(k string) (string, bool) { v, ok := env[k]; return v, ok }}
 	rt := NewRuntime(r, Options{})
-	err := rt.Start(context.Background(), Settings{
+	err = rt.Start(context.Background(), Settings{
 		WorkerCore: config.WorkerCore{StateDir: dir, TmuxSocket: filepath.Join(dir, "tmux.sock"), Name: "w"},
 		Resolver:   res,
 		Logger:     slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),

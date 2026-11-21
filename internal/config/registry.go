@@ -65,6 +65,13 @@ type Setting struct {
 	DefaultFunc func() (string, error)
 	// Choices, when not empty, lists the only accepted values.
 	Choices []string
+	// SupervisorOnly marks a setting that only a supervising process may give,
+	// by flag or environment, at every start (the Android app). It is never
+	// read from or written to the config file: a saved value would go stale
+	// (the bundled binary moves with an update) and, read from a profile that
+	// another account owns, would let that account choose a program that a
+	// privileged status command runs.
+	SupervisorOnly bool
 	// BlankIsUnset lets a blank value fall through to the next source.
 	BlankIsUnset bool
 

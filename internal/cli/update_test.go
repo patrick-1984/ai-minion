@@ -481,3 +481,31 @@ func TestLoadWorkerConfigReadsTheStateDirectory(t *testing.T) {
 		t.Error("a corrupt config file was accepted")
 	}
 }
+
+// In the managed Android mode the binary is a file of the signed APK: the
+// update command refuses before anything is contacted or replaced.
+func TestUpdateCommandIsBlockedInManagedAndroidMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Android paths are not absolute on Windows")
+	}
+	h := newHarness(t)
+	h.src.addRelease(t, "v1.4.2", "1.0", "1.1", false)
+	h.env["MINION_MANAGED_HOST"] = "android"
+	h.env["MINION_TMUX_BINARY"] = "/data/app/lib/libtmux.so"
+	h.env["MINION_TMUX_SOCKET"] = "/data/run/tmux.sock"
+	out, err := h.run("v1.0.0", "--channel", "1.4")
+	if err == nil || !strings.Contains(err.Error(), "Android app") {
+		t.Fatalf("err = %v, output %q", err, out)
+	}
+	if h.src.listed != 0 {
+		t.Error("the release host was contacted")
+	}
+	if h.installed() != "installed" {
+		t.Errorf("the binary changed: %q", h.installed())
+	}
+	// The same update works on an ordinary host.
+	delete(h.env, "MINION_MANAGED_HOST")
+	if _, err := h.run("v1.0.0", "--channel", "1.4"); err != nil {
+		t.Fatal(err)
+	}
+}
