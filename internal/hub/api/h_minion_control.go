@@ -27,7 +27,10 @@ type ControlWorkerBase struct {
 	OwnerID string
 	Online  bool
 	// CanBeMaster is false for a Worker that cannot originate control calls.
-	CanBeMaster bool
+	CanBeMaster      bool
+	MasterSessionV1  bool
+	MasterCandidates []ops.ControlMasterCandidate
+	BoundMasters     []ops.ControlBoundMaster
 }
 
 // MinionControlStore is what the handlers need; *store.Store implements it.
@@ -46,12 +49,16 @@ type MinionControlStore interface {
 var _ MinionControlStore = (*store.Store)(nil)
 
 // RegisterMinionControl registers the control_* operations (manage: admins).
-func RegisterMinionControl(r *Registry, st MinionControlStore, workers func(context.Context) ([]ControlWorkerBase, error)) error {
+func RegisterMinionControl(r *Registry, st MinionControlStore, workers func(context.Context) ([]ControlWorkerBase, error),
+	bound ...func(context.Context, string, string) ([]ops.ControlChain, error)) error {
 	if st == nil || workers == nil {
 		return errors.New("api: the Minion control handlers need a store and the Workers")
 	}
 	h := controlHandlers{st: st, workers: workers,
 		pinW: newOwnerPins[ops.ControlSetWorkerArgs](), pinM: newOwnerPins[ops.ControlSetMasterArgs](), pinA: newOwnerPins[ops.ControlSetAcceptArgs]()}
+	if len(bound) > 0 {
+		h.bound = bound[0]
+	}
 	// The setters are decided (and audited) on the Worker they change.
 	for _, reg := range []error{
 		HandleTyped(r, ops.OpControlList, h.list),
@@ -70,6 +77,7 @@ func RegisterMinionControl(r *Registry, st MinionControlStore, workers func(cont
 type controlHandlers struct {
 	st      MinionControlStore
 	workers func(context.Context) ([]ControlWorkerBase, error)
+	bound   func(context.Context, string, string) ([]ops.ControlChain, error)
 	// The owners each setter was decided for, captured with the decision
 	// (resource) and checked again in the store's write transaction.
 	pinW *ownerPins[ops.ControlSetWorkerArgs]
@@ -104,6 +112,7 @@ func (h controlHandlers) state(ctx context.Context) ([]ops.ControlWorker, map[st
 		}
 		w := ops.ControlWorker{WorkerID: b.ID, Name: b.Name, Owner: b.Owner, Online: b.Online,
 			UserManaged: c.UserManaged, AcceptAll: c.AcceptAll, CanBeMaster: b.CanBeMaster,
+			MasterSessionV1: b.MasterSessionV1, MasterCandidates: b.MasterCandidates, BoundMasters: b.BoundMasters,
 			Accepts: []ops.ControlAccept{}, Masters: []ops.ControlMaster{}}
 		for _, m := range masters {
 			if m.WorkerID == b.ID {
@@ -138,6 +147,8 @@ func (h controlHandlers) list(ctx context.Context, c *Call, _ ops.ControlListArg
 
 func ownerErr(err error) error {
 	switch {
+	case errors.Is(err, store.ErrBoundMasterSlot):
+		return NewError(proto.CodeConflict, "use the session-bound master action for this session")
 	case errors.Is(err, store.ErrWorkerOwnerChanged):
 		return NewError(proto.CodeConflict, "the Worker changed owner meanwhile; reload and decide again")
 	case errors.Is(err, store.ErrWorkerNotFound):
@@ -334,6 +345,13 @@ func (h controlHandlers) check(ctx context.Context, c *Call, a ops.ControlCheckA
 		if grantCovers(g.TargetsJSON, a.WorkerID, a.SessionName) {
 			res.Controllers = append(res.Controllers, ops.ControlChain{WorkerID: ms.WorkerID, Worker: m[ms.WorkerID].Name, SessionName: ms.SessionName})
 		}
+	}
+	if h.bound != nil {
+		attached, err := h.bound(ctx, a.WorkerID, a.SessionName)
+		if err != nil {
+			return ops.ControlCheckResult{}, err
+		}
+		res.Controllers = append(res.Controllers, attached...)
 	}
 	if len(res.Controllers) == 0 {
 		res.Note = "No master session can control this session: nominate a master session on another Worker and let this Worker accept control from that Worker."

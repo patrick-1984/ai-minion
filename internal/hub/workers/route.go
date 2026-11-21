@@ -533,6 +533,9 @@ type CallRequest struct {
 	Session string
 	// Args is the op's argument struct (a value or a pointer), encoded as is.
 	Args any
+	// admit is the last, private check on a scoped master dispatch, after
+	// opening the exact destination connection and before sending any bytes.
+	admit func(context.Context, Online) error
 }
 
 // Call routes a non-streaming op and returns its result as a value of the
@@ -723,6 +726,7 @@ type call struct {
 	// check, when set, decides on the connection that gets the op (the
 	// hidden-session refusal of session_create).
 	check func(Online) error
+	admit func(context.Context, Online) error
 	// dispatched is set when the Worker's connection took the op (the
 	// stream opened): from then on it counts as an op sent to that Worker.
 	dispatched atomic.Bool
@@ -790,6 +794,7 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		workerID: req.WorkerID,
 		need:     requiredFeatures(op.Name, args),
 		check:    check,
+		admit:    req.admit,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
 			Args: args, Actions: actions, Origin: origin,
@@ -887,7 +892,18 @@ func (e *lostError) Unwrap() error { return e.cause }
 // *lostError, except an error frame of the Worker (a *proto.Error) and an
 // error of onElement.
 func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.RawMessage) error) (json.RawMessage, error) {
-	st, err := rt.backend.OpenOp(ctx, c.workerID, c.frame.Op, c.check, c.need...)
+	check := c.check
+	var destination Online
+	if c.admit != nil {
+		check = func(on Online) error {
+			destination = on
+			if c.check != nil {
+				return c.check(on)
+			}
+			return nil
+		}
+	}
+	st, err := rt.backend.OpenOp(ctx, c.workerID, c.frame.Op, check, c.need...)
 	if err != nil {
 		if pe, ok := err.(*proto.Error); ok && pe == errStaleOwner {
 			// A connection admitted under the previous owner: close it, so
@@ -913,6 +929,12 @@ func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.Raw
 	lost := func(err error) error {
 		st.Reset()
 		return &lostError{cause: err, timeout: errors.Is(ctx.Err(), context.DeadlineExceeded)}
+	}
+	if c.admit != nil {
+		if err := c.admit(ctx, destination); err != nil {
+			st.Reset()
+			return nil, err
+		}
 	}
 	if err := st.WriteFrame(c.frame); err != nil {
 		var pe *proto.Error

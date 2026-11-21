@@ -65,6 +65,8 @@ type Principal struct {
 	// KeyID is the stored id of the API key (KindAPIKey), for the origin of the
 	// requests it makes. It is set by the key service; it grants nothing.
 	KeyID string
+	// boundMaster uses exactly the supplied session grant, including on its own Worker.
+	boundMaster bool
 }
 
 // NewSessionPrincipal returns the principal of a browser session of userID.
@@ -101,6 +103,12 @@ func NewWorkerGrantPrincipal(workerID string, scope Scope) Principal {
 	return Principal{Kind: KindWorker, WorkerID: workerID, Scope: scope}
 }
 
+// NewBoundMasterPrincipal is a Worker acting only under a verified session
+// nomination. It holds no implicit actions outside the supplied grant.
+func NewBoundMasterPrincipal(workerID string, scope Scope) Principal {
+	return Principal{Kind: KindWorker, WorkerID: workerID, Scope: scope, boundMaster: true}
+}
+
 // GrantActions returns the fixed actions of a session-control grant: read,
 // operate and message, never manage. A new slice on every call.
 func GrantActions() []ops.Action {
@@ -127,7 +135,7 @@ func (p Principal) validate() error {
 			return errInvalidPrincipal
 		}
 	case KindWorker:
-		if p.WorkerID == "" {
+		if p.WorkerID == "" || p.boundMaster && p.Scope == nil {
 			return errInvalidPrincipal
 		}
 	default:

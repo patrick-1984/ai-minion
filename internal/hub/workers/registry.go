@@ -64,6 +64,10 @@ type Online struct {
 	// (AD-9), so that it cannot be replayed on another connection. It is not
 	// secret.
 	TranscriptHash []byte
+	// MasterSessionV1 is true only if signed hello and welcome negotiated it.
+	MasterSessionV1 bool
+	// EnrollmentKey is the Worker identity authenticated for this link.
+	EnrollmentKey [32]byte
 }
 
 // Announces reports whether the Worker announced op.
@@ -232,6 +236,23 @@ func (r *Registry) Get(workerID string) (Online, bool) {
 		return Online{}, false
 	}
 	return clone(e.info), true
+}
+
+// hasLiveLink compares the exact authenticated link and checks whether the
+// endpoint has closed even before registry cleanup runs.
+func (r *Registry) hasLiveLink(workerID string, transcript []byte) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.online[workerID]
+	if e == nil || len(transcript) != 32 || !bytes.Equal(e.info.TranscriptHash, transcript) {
+		return false
+	}
+	select {
+	case <-e.sess.Done():
+		return false
+	default:
+		return true
+	}
 }
 
 // IsOnline reports whether the Worker is connected.

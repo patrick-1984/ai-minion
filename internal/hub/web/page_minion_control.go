@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -46,6 +47,48 @@ type ControlRow struct {
 	Error string
 }
 
+func (r ControlRow) MasterCount() int {
+	n := len(r.Masters)
+	for _, m := range r.BoundMasters {
+		if m.Master {
+			n++
+		}
+	}
+	return n
+}
+
+func (r ControlRow) AttachmentStatus(state string) string {
+	switch state {
+	case "active":
+		return "Attached"
+	case "waiting":
+		return "Waiting for attachment"
+	case "offline":
+		return "Offline"
+	case "unsupported":
+		return "Unsupported on this connection"
+	case "retired":
+		return "Previous attachment retired"
+	case "inactive":
+		return "Revoked"
+	default:
+		return "Prepared"
+	}
+}
+
+func (r ControlRow) CatalogStatus(state string) string {
+	switch state {
+	case "active":
+		return "Last catalog served: master tools"
+	case "empty":
+		return "Last catalog served: empty"
+	case "failed":
+		return "Last catalog refresh failed"
+	default:
+		return "Catalog refresh unconfirmed"
+	}
+}
+
 // UndoView is the inverse change of the last click.
 type UndoView struct {
 	Action string
@@ -78,6 +121,12 @@ func controlRows(res ops.ControlListResult, sessions map[string][]string) []Cont
 		masters := map[string]bool{}
 		for _, m := range w.Masters {
 			masters[m.SessionName] = true
+		}
+		for _, m := range w.BoundMasters {
+			masters[m.SessionName] = true
+		}
+		for _, candidate := range w.MasterCandidates {
+			masters[candidate.SessionName] = true
 		}
 		for _, n := range sessions[w.WorkerID] {
 			if !masters[n] {
@@ -119,7 +168,7 @@ func controlData(r *http.Request, c OpCaller) (any, error) {
 	p.Rows = controlRows(res, p.Sessions)
 	for _, row := range p.Rows {
 		p.Targets = append(p.Targets, row)
-		if len(row.Masters) > 0 {
+		if row.MasterCount() > 0 {
 			p.Sources = append(p.Sources, row)
 		}
 	}
@@ -183,6 +232,23 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 			// Re-adding would drop the migrated limit: no one-click undo.
 			undo = nil
 			saved += " Adding it again makes it a master without its old limit."
+		}
+	case "bound-master":
+		row = f.Get("worker_id")
+		generation, err := strconv.ParseUint(f.Get("if_generation"), 10, 64)
+		if err != nil {
+			writeResultError(w, "Reload the session to get its current master nomination.")
+			return
+		}
+		name := f.Get("session_name")
+		op, args = ops.OpControlSetBoundMaster, ops.ControlSetBoundMasterArgs{
+			WriteArgs: wa, WorkerID: row, SessionName: name, IncarnationID: f.Get("incarnation_id"),
+			Master: on, IfGeneration: &generation,
+		}
+		if on {
+			saved = "Nominated " + name + " for this attachment."
+		} else {
+			saved = "Revoked master access for " + name + "."
 		}
 	case "accept":
 		row = f.Get("worker_id")

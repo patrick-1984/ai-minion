@@ -106,7 +106,7 @@ func putLegacyGrant(ctx context.Context, tx *sql.Tx, r SessionControlRow) error 
 		 ON CONFLICT (worker_id, session_name) DO UPDATE SET
 		   legacy_targets_json = excluded.legacy_targets_json, created_by = excluded.created_by, created_at = excluded.created_at`,
 		r.WorkerID, r.SessionName, r.TargetsJSON, r.CreatedBy, r.CreatedAt); err != nil {
-		return fmt.Errorf("store: put master session: %w", err)
+		return fmt.Errorf("store: put master session: %w", masterSlotError(err))
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at)
