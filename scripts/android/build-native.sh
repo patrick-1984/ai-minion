@@ -19,8 +19,8 @@
 #   --out        output directory (default: dist/android-native)
 #   --work       scratch and download directory (default: .android-native-work)
 #   --version    version string injected into the Worker (default: dev)
-#   --fetch-ndk  download the pinned NDK into WORK/ndk when ANDROID_NDK_HOME
-#                is not set
+#   --fetch-ndk  download the pinned NDK into WORK/ndk and use it (otherwise
+#                ANDROID_NDK_HOME must be the pinned revision)
 # Needs: bash, curl, tar, unzip, make, patch, gcc (host tools of ncurses), go.
 set -euo pipefail
 
@@ -68,7 +68,9 @@ fetch() {
 }
 
 # --- NDK ----------------------------------------------------------------------
-if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+# --fetch-ndk always uses the pinned download (CI images preset ANDROID_NDK_HOME
+# with another NDK revision).
+if [ "$fetch_ndk" = 1 ] || [ -z "${ANDROID_NDK_HOME:-}" ]; then
   [ "$fetch_ndk" = 1 ] || die "set ANDROID_NDK_HOME to NDK $NDK_VERSION, or pass --fetch-ndk"
   ndk_dir="$work/ndk"
   if [ ! -f "$ndk_dir/android-ndk-$NDK_VERSION/source.properties" ]; then
