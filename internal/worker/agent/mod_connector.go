@@ -124,6 +124,20 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 			return proto.NormaliseFeatures(append(baseFeatures(), proto.FeatureMasterSessionV1))
 		}
 	}
+	// The read-back feature is announced only while the Worker can publish a
+	// usage document: the receiver is provided by the op server module and gets
+	// its publisher from the presence module, both after this one starts, so it
+	// is looked up on every connection.
+	{
+		baseFeatures := features
+		features = func() []string {
+			out := baseFeatures()
+			if rcv, ok := lookupService[*ReadbackReceiver](env.rt); ok && rcv.Ready() {
+				out = append(append([]string(nil), out...), proto.FeatureUsageReadbackV1)
+			}
+			return proto.NormaliseFeatures(out)
+		}
+	}
 	health, _ := Require[*SessionListHealth](env)
 	// The session host, whether its sessions are hidden (the Hub's
 	// hidden_sessions policy reads it) and the latest listing error (v0.10.0).

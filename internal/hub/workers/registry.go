@@ -68,6 +68,9 @@ type Online struct {
 	MasterSessionV1 bool
 	// EnrollmentKey is the Worker identity authenticated for this link.
 	EnrollmentKey [32]byte
+	// HubRoot is the Hub root public key this connection's handshake
+	// presented, which the Worker pinned. A private read-back frame names it.
+	HubRoot []byte
 }
 
 // Announces reports whether the Worker announced op.
@@ -406,6 +409,7 @@ func (r *Registry) OpenControl(ctx context.Context, workerID string) (*transport
 func clone(o Online) Online {
 	o.Ops = append([]string(nil), o.Ops...)
 	o.TranscriptHash = append([]byte(nil), o.TranscriptHash...)
+	o.HubRoot = append([]byte(nil), o.HubRoot...)
 	return o
 }
 

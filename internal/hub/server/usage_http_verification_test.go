@@ -14,6 +14,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/web"
+	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
@@ -58,6 +59,9 @@ func startUsageHTTPHubAt(t *testing.T, dataDir string) (*dashHub, *fakeKeys) {
 			return err
 		}
 		if d.mgr, err = Require[*session.Manager](env); err != nil {
+			return err
+		}
+		if d.wsv, err = Require[*workers.Service](env); err != nil {
 			return err
 		}
 		n, err := Require[*api.Authenticator](env)

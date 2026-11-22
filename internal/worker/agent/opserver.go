@@ -118,6 +118,9 @@ type OpServerConfig struct {
 	WriteTimeout   time.Duration
 	ExecTimeout    time.Duration
 	RefuseDrain    time.Duration
+	// Readback receives the Hub's private read-back control frame. Nil
+	// refuses it (a Worker that cannot publish a usage document).
+	Readback ReadbackSink
 	// Logger receives operational messages: never terminal content, message
 	// bodies or secrets (AD-20). Nil discards them.
 	Logger *slog.Logger
@@ -194,7 +197,10 @@ func NewOpServer(cfg OpServerConfig) (*OpServer, error) {
 // Serve accepts the op streams of one link until the link ends and returns
 // when every stream of this link is done. It is a [LinkHandler].
 func (s *OpServer) Serve(l *Link) {
-	ctx := l.Context()
+	ctx := withLink(l.Context(), l)
+	if s.cfg.Readback != nil {
+		s.cfg.Readback.LinkAdmitted(l)
+	}
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	for {
@@ -319,6 +325,10 @@ func (s *OpServer) ServeStream(linkCtx context.Context, st OpStream) {
 		s.serveShareProbe(linkCtx, out, body)
 		return
 	}
+	if typ, _ := proto.FrameType(body); typ == proto.TypeReadbackApply {
+		s.serveReadback(linkCtx, out, body)
+		return
+	}
 	rq, held, perr := s.parse(body)
 	if perr != nil {
 		out.fail(perr)
@@ -428,6 +438,39 @@ func (s *OpServer) serveShareProbe(linkCtx context.Context, out *opOutput, body 
 		return
 	}
 	raw, err := json.Marshal(res)
+	if err != nil {
+		out.fail(proto.NewError(proto.CodeInternal, "the operation failed"))
+		return
+	}
+	out.result(raw)
+}
+
+// serveReadback handles the Hub's private read-back control frame: it
+// publishes the usage document if the frame is bound to this very connection
+// and answers with the revision, after the local publication succeeded. It is
+// not an op: it needs no action, passes no executor and is never reached from
+// anything but a Hub-opened op stream of a served link.
+func (s *OpServer) serveReadback(linkCtx context.Context, out *opOutput, body json.RawMessage) {
+	l := linkFrom(linkCtx)
+	if s.cfg.Readback == nil || l == nil {
+		out.fail(proto.NewError(proto.CodeUnsupportedOp, "the Worker does not accept a usage read-back"))
+		return
+	}
+	if s.expired(linkCtx) {
+		out.st.Reset()
+		return
+	}
+	var f proto.ReadbackApply
+	if err := proto.DecodeFrame(body, &f); err != nil {
+		out.fail(errorAsProto(err))
+		return
+	}
+	ack, perr := s.cfg.Readback.Apply(l, f)
+	if perr != nil {
+		out.fail(perr)
+		return
+	}
+	raw, err := json.Marshal(ack)
 	if err != nil {
 		out.fail(proto.NewError(proto.CodeInternal, "the operation failed"))
 		return

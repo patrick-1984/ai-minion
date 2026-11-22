@@ -31,12 +31,20 @@ var presenceLayout = presence.DefaultLayout
 func startPresence(ctx context.Context, env *Env) (StopFunc, error) {
 	s := env.Settings()
 	log := s.logger()
+	rcv, _ := lookupService[*ReadbackReceiver](env.rt)
+	unavailable := func() {
+		if rcv != nil {
+			rcv.SetUnavailable()
+		}
+	}
 	if s.StateDir == "" {
+		unavailable()
 		return nil, nil
 	}
 	layout, err := presenceLayout(s.StateDir)
 	if err != nil {
 		log.Warn("the presence record is not published", "error", err)
+		unavailable()
 		return nil, nil
 	}
 	pub, err := presence.New(presence.Options{
@@ -58,6 +66,7 @@ func startPresence(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	if err != nil {
 		log.Warn("the presence record is not published", "error", err)
+		unavailable()
 		return nil, nil
 	}
 	if err := Provide(env, pub); err != nil {
@@ -66,12 +75,24 @@ func startPresence(ctx context.Context, env *Env) (StopFunc, error) {
 	}
 	// A revoke, a reset or a new identity ends the authority of whatever usage
 	// document was stored: it goes from memory and from disk.
+	if rcv != nil {
+		rcv.SetPublisher(pub)
+	}
 	if enr, ok := lookupService[*Enrollments](env.rt); ok && enr != nil {
 		enr.SetWipeHook(func() {
+			if rcv != nil {
+				rcv.Clear() // also forgets what the document was bound to
+				return
+			}
 			if err := pub.ClearUsage(); err != nil {
 				log.Warn("the stored usage document could not be removed", "error", err)
 			}
 		})
 	}
-	return func(context.Context) error { return pub.Stop() }, nil
+	return func(context.Context) error {
+		if rcv != nil {
+			rcv.SetPublisher(nil)
+		}
+		return pub.Stop()
+	}, nil
 }

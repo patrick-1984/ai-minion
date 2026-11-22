@@ -916,6 +916,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 		TranscriptHash:  link.transcript,
 		MasterSessionV1: masterV1,
 		EnrollmentKey:   [32]byte(w.Pub),
+		HubRoot:         bytes.Clone(c.snap.RootPub),
 	}, host, c.snap.OpKey, func() bool { return h.cfg.Identity.Admit(c.snap.Generation) })
 	if !admitted {
 		// The activation fence (design 9.6): the Hub identity changed while this

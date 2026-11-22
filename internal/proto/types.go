@@ -47,6 +47,13 @@ const (
 	// probe, not an op of the catalog); the Worker answers with an op.result
 	// whose result is an ops.ShareProbe.
 	TypeShareProbe = "share.probe"
+	// TypeReadbackApply is the first frame of an op stream that the Hub opens
+	// to hand a connected Worker the usage document it publishes locally (the
+	// Hub's private read-back control frame, not an op of the catalog); the
+	// Worker answers with an op.result whose result is a ReadbackAck, or an
+	// error frame. Sent only to a Worker that announced
+	// [FeatureUsageReadbackV1].
+	TypeReadbackApply = "readback.apply"
 )
 
 // StreamKind names the kind of a yamux stream. The wire form is a prefix of

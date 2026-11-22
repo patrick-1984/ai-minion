@@ -128,6 +128,13 @@ func initUsage(ctx context.Context, env *Env) error {
 	}
 
 	readback := newUsageReadback(st)
+	// Whatever changes what a Worker publishes wakes the delivery: it is
+	// coalesced there, and the periodic reconciliation covers every change that
+	// does not pass through these operations.
+	invalidate, err := registerReadbackDelivery(ctx, env, st, readback)
+	if err != nil {
+		return err
+	}
 	// The preview is derived from the authenticated caller alone, before any
 	// cache lookup: the caller's own session or full-scope key, never act-as, a
 	// Worker identity or a restricted key. It returns the Hub-wide pair and the
@@ -153,6 +160,7 @@ func initUsage(ctx context.Context, env *Env) error {
 			auth = usageDomainAuthority(ctx, az, c.Principal)
 		}
 		res, err := st.SetUsageNomination(ctx, owner, auth, a)
+		invalidate()
 		return res, usageNominationError(err)
 	}, api.WithResource(usageUserResource)); err != nil {
 		return err
@@ -173,7 +181,9 @@ func initUsage(ctx context.Context, env *Env) error {
 		if owner == "" {
 			return ops.UsagePublicationSetArgs{}, usageForbidden()
 		}
-		return a, st.SetUsagePublication(ctx, owner, a.AllowRepublish)
+		err := st.SetUsagePublication(ctx, owner, a.AllowRepublish)
+		invalidate()
+		return a, err
 	}, api.WithResource(usageUserResource)); err != nil {
 		return err
 	}
@@ -207,6 +217,7 @@ func initUsage(ctx context.Context, env *Env) error {
 			return ops.UsageAccountSetArgs{}, err
 		}
 		err = st.SetUsageAccount(ctx, owner, allowed, a)
+		invalidate()
 		if errors.Is(err, store.ErrNotFound) {
 			err = api.NewError(proto.CodeNotFound, "account not available")
 		}
@@ -225,6 +236,7 @@ func initUsage(ctx context.Context, env *Env) error {
 			return ops.UsageBucketSetResult{}, err
 		}
 		res, err := st.SetUsageBucketAs(ctx, owner, allowed, a, usageDomainAuthority(ctx, az, c.Principal))
+		invalidate()
 		return res, usageNominationError(err)
 	})
 }
