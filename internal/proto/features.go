@@ -51,6 +51,13 @@ const (
 	FeatureMasterSessionV1 = "master.session.v1"
 	// FeatureSendTextAgentOnly protects the resolved pane under the local lock.
 	FeatureSendTextAgentOnly = "send_text.agent_only"
+	// FeatureUsageReadbackV1: the Worker serves the Hub's private read-back
+	// control frame (TypeReadbackApply, see ReadbackApply): it publishes the
+	// verified nominated usage document in its local presence directory and
+	// acknowledges the revision. It is a control frame, not an op: the Worker
+	// announces no op for it and nothing but the Hub's own authenticated
+	// connection can reach it. Announced only when the Worker can publish.
+	FeatureUsageReadbackV1 = "usage_readback_v1"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

@@ -1,0 +1,8 @@
+{"schema":"minion.usage-meters/1","generated_at":1795000000000,"slots":[
+ {"slot":{"scope":"user","kind":"provider","label":"Claude Max"},"headline":"anthropic/general/5h/percent",
+  "omitted_groups":0,"meters":[
+   {"id":"anthropic/general/5h/percent","metric":"anthropic.general.5h","label":"Anthropic general, 5 h","unit":"percent","used_percent":38,"remaining_percent":62,"resets_at":1795003600000,"duration_ms":18000000,"pace":"on_pace","observed_at":1794999900000,"expires_at":1795000800000,"coverage":{"known":2,"stale":0,"unknown":0}},
+   {"id":"google/requests/daily/requests","metric":"google.requests.daily","label":"Gemini requests, day","unit":"requests","used":0,"remaining":120,"observed_at":1794999900000,"expires_at":1795000800000,"coverage":{"known":1,"stale":0,"unknown":1}}]},
+ {"slot":{"scope":"domain","kind":"session","label":"Team builds"},"meters":[
+   {"id":"sessions/tokens/day/tokens","metric":"sessions.tokens.day","label":"Tokens today","unit":"tokens","used":1250000,"observed_at":1794999900000,"expires_at":1795000800000,"coverage":{"known":3,"stale":1,"unknown":0}}]}
+]}

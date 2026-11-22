@@ -279,7 +279,10 @@ func TestWorkerRetireEndsAReplacementConnectionThatRacedTheRemoval(t *testing.T)
 			rechecked <- struct{}{}
 		}
 	}
+	removed := make(chan struct{})
+	var removeOnce sync.Once
 	h.svc.SetRemoveWorker(func(ctx context.Context, id, by string, at int64) error {
+		defer removeOnce.Do(func() { close(removed) })
 		// The enrollment still exists here: the reconnect is admitted, takes
 		// the registry entry of the retiring session and passes the recheck
 		// before the removal commits.
@@ -314,11 +317,17 @@ func TestWorkerRetireEndsAReplacementConnectionThatRacedTheRemoval(t *testing.T)
 			_, _ = st.ReadFrame()
 		}
 	}()
+	// The call may end before the removal hook returns: wait for it.
+	select {
+	case <-removed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the removal did not run")
+	}
 	mu.Lock()
-	res, raceErr := replacement, raceErr
+	res, dialErr := replacement, raceErr
 	mu.Unlock()
-	if raceErr != nil {
-		t.Fatalf("the racing reconnect: %v", raceErr)
+	if dialErr != nil {
+		t.Fatalf("the racing reconnect: %v", dialErr)
 	}
 	if res == nil {
 		t.Fatal("the racing reconnect did not happen")

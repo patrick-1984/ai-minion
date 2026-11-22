@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/version"
 	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
 )
 
@@ -84,7 +84,9 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	health, _ := lookupService[*SessionListHealth](env.rt)
 	pause, _ := lookupService[*PauseService](env.rt)
 	private, _ := lookupService[*PairingStatus](env.rt)
-	live := LiveStatusSource{Private: private, Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health,
+	instance := env.rt.Instance()
+	daemon := &LiveDaemon{Instance: instance, Version: version.Version, StartedAt: env.rt.StartedAt(), PID: os.Getpid()}
+	live := LiveStatusSource{Daemon: daemon, Private: private, Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health,
 		LogSinks: env.Settings().LogSinks, Pause: pause}
 	// The pipe module starts before this one. Without it the pipe ops are
 	// refused here and never reach the executor, whose pipe_send is the
@@ -101,7 +103,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	srv, err := localapi.New(localapi.Config{
 		Executor: localExecutor{
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
-			instance: uuid.NewString(), enrollments: enrollments, pause: pause,
+			instance: instance, enrollments: enrollments, pause: pause,
 		},
 		Logger: log,
 	})

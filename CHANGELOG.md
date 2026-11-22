@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.19.0
+
+### Added
+
+- Presence records: a running Worker publishes a small record (`minion.presence/1`) that other programs can read to see whether it runs for a user or as root, and its version. User Workers write privately (0600); a root Worker writes world-readable files in `/run/minion-presence` (`/var/run/minion-presence` on macOS). See [Read the Worker's status from another program](docs/guides/integrate-local.md).
+- Nominated usage read-back: users nominate a session and a provider token bucket, administrators a Hub-wide pair; the Hub copies the published meters (percent, amounts, `ms` durations, headline, expiry, coverage) to Workers, where programs can draw a progress bar. New statistics appear as new meters. See [Usage and subscription limits](docs/guides/usage.md#show-usage-on-your-workers-nominations) and [security](docs/security.md#the-public-presence-files-of-a-root-worker).
+- A discovery command that reads and verifies the presence records of the account and of root (`minion worker discover [--json] [--usage] [--state-dir DIR]`, JSON schema `minion.worker-discovery/1`, exit codes 0 running, 1 none running, 2 search failed). `minion worker status --json` gains an optional `usage` field. The Hub delivers nominated usage to Workers over a Hub-only control frame (`readback.apply`), acknowledged after local publication, retried with backoff and reconciled every 60 seconds, with a 5 minute lease; it is cleared when a Worker is revoked, reset, replaced or changes owner.
 
 ## v0.18.0
 

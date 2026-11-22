@@ -400,10 +400,49 @@
 
 {{define "usage_buckets"}}
 {{$p := .}}
+{{if $p.Private}}
+{{if $p.Admin}}
+<section aria-labelledby="domain-slots-h" class="usage-domain">
+  <h2 id="domain-slots-h">Shown on all Workers</h2>
+  <p class="muted">Two slots are shared by every administrator. The last change wins. Any administrator can clear a slot.</p>
+  {{if $p.DomainUnavailable}}<p class="notice notice-warn">The Hub-wide slots could not be read right now.</p>{{end}}
+  <div class="usage-cards">
+    {{range $p.DomainSlots}}
+    <article class="panel">
+      <div class="usage-heading"><h3>{{.Title}}</h3><span class="badge">{{if .Held}}Published{{else}}Empty{{end}}</span></div>
+      {{if .Held}}
+      <dl class="usage-facts">
+        <div><dt>Bucket</dt><dd>{{.Slot.Label}}</dd></div>
+        <div><dt>Published by</dt><dd>{{.Slot.PublisherName}}</dd></div>
+        <div><dt>Last changed</dt><dd>{{.Updated}}</dd></div>
+      </dl>
+      <form method="post" action="/usage/nominate" hx-post="/usage/nominate" hx-target="#usage-result" hx-disabled-elt="find button">
+        {{template "usage_form_state" $p}}
+        <input type="hidden" name="action" value="clear"><input type="hidden" name="scope" value="domain"><input type="hidden" name="kind" value="{{.Kind}}"><input type="hidden" name="bucket" value="{{.Slot.BucketID}}">
+        <button type="submit" class="btn btn-secondary">Clear this slot</button>
+      </form>
+      {{else}}<p class="muted">No bucket is shown on all Workers for this kind.</p>{{end}}
+    </article>
+    {{end}}
+  </div>
+</section>
+{{end}}
+<section aria-labelledby="consent-h" class="usage-consent">
+  <h2 id="consent-h">Your publication consent</h2>
+  <p class="muted">This is separate from Worker monitoring. One switch decides whether usage that other people publish may include observations of your own sessions and accounts. It is off unless you turn it on.</p>
+  <p class="muted">When it is on, two kinds of publication can include your observations. First, personal nominations of other people who may view your Workers: they can include your observations in a bucket they show on their own Workers. Second, domain nominations: an administrator can publish a bucket to every approved Worker of this Hub, including Workers of other people, and a one-source bucket can reveal that your usage is the only source. On a Worker that runs as root, every local account on that computer can read the published copy. Turn it off to keep your observations out of other people's buckets and domain buckets; it does not affect the buckets you publish from your own observations.</p>
+  <form class="usage-fields" method="post" action="/usage/publication" hx-post="/usage/publication" hx-target="#usage-result" hx-disabled-elt="find button">
+    {{template "usage_form_state" $p}}
+    <span class="badge" data-tone="{{if $p.AllowRepublish}}warning{{else}}info{{end}}">{{if $p.AllowRepublish}}Allowed{{else}}Not allowed{{end}}</span>
+    {{if $p.AllowRepublish}}<input type="hidden" name="allow_republish" value="no"><button type="submit" class="btn btn-secondary">Stop allowing my usage in other people's published buckets</button>
+    {{else}}<input type="hidden" name="allow_republish" value="yes"><button type="submit" class="btn btn-secondary">Allow my usage in other people's published buckets</button>{{end}}
+  </form>
+</section>
+{{end}}
 <section aria-labelledby="buckets-h">
   <h2 id="buckets-h">Your token buckets</h2>
   {{if $p.Private}}
-  <p class="muted">A session or provider account can belong to one of your buckets. Choose rows in Sessions or Accounts to assign them.</p>
+  <p class="muted">A session or provider account can belong to one of your buckets. Choose rows in Sessions or Accounts to assign them. A bucket can be published as one slot per kind.</p>
   <form class="panel usage-fields" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
     {{template "usage_form_state" $p}}
     <input type="hidden" name="action" value="save">
@@ -414,25 +453,95 @@
     <button type="submit" class="btn">Create bucket</button>
   </form>
   <div class="usage-cards">
-    {{range $p.Buckets}}
-    <form class="panel" method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
+    {{range $p.BucketCards}}
+    {{$b := .Bucket}}
+    <article class="panel">
+    <form method="post" action="/usage/bucket" hx-post="/usage/bucket" hx-target="#usage-result" hx-disabled-elt="find button">
       {{template "usage_form_state" $p}}
-      <input type="hidden" name="kind" value="{{.Kind}}">
-      <input type="hidden" name="bucket" value="{{.ID}}">
-      <div class="usage-heading"><h3>{{.Label}}</h3><span class="badge">{{$p.Label .Kind}}</span></div>
+      <input type="hidden" name="kind" value="{{$b.Kind}}">
+      <input type="hidden" name="bucket" value="{{$b.ID}}">
+      <div class="usage-heading"><h3>{{$b.Label}}</h3><span class="badge">{{.KindLabel}}</span></div>
       <div class="usage-fields">
-        <label class="field">Name <input name="label" value="{{.Label}}" maxlength="80" required></label>
-        <label class="field">Display order <input name="position" type="number" min="0" max="1000000" value="{{.Position}}"></label>
+        <label class="field">Name <input name="label" value="{{$b.Label}}" maxlength="80" required></label>
+        <label class="field">Display order <input name="position" type="number" min="0" max="1000000" value="{{$b.Position}}"></label>
       </div>
       <div class="row">
         <button type="submit" name="action" value="save">Save changes</button>
         <button type="submit" name="action" value="delete" class="btn btn-secondary" formnovalidate>Remove bucket</button>
       </div>
     </form>
+    <div class="usage-window">
+      <h4>Show on my Workers</h4>
+      {{template "usage_nominate" .User}}
+    </div>
+    {{if $p.Admin}}
+    <div class="usage-window">
+      <h4>Show on all Workers</h4>
+      {{template "usage_nominate" .Domain}}
+    </div>
+    {{end}}
+    </article>
     {{else}}<p class="muted">No token buckets yet.</p>{{end}}
   </div>
+  <section aria-labelledby="preview-h" class="usage-preview">
+    <h2 id="preview-h">Worker read-back preview</h2>
+    <p class="muted">This is the document your Workers receive. Meters only: no session names, folders, account labels or member ids.</p>
+    {{template "usage_preview" $p.Preview}}
+  </section>
   {{else}}
   <p class="muted">Token buckets are available in your own signed-in account.</p>
   {{end}}
 </section>
+{{end}}
+
+{{define "usage_nominate"}}
+{{if .Active}}
+<p><span class="badge" data-tone="info">Published</span> This bucket holds the {{.Kind}} slot.</p>
+<form method="post" action="/usage/nominate" hx-post="/usage/nominate" hx-target="#usage-result" hx-disabled-elt="find button">
+  <input type="hidden" name="for_user" value="{{.ForUser}}"><input type="hidden" name="view" value="buckets">
+  <input type="hidden" name="action" value="clear"><input type="hidden" name="scope" value="{{.Scope}}"><input type="hidden" name="kind" value="{{.Kind}}"><input type="hidden" name="bucket" value="{{.BucketID}}">
+  <button type="submit" class="btn btn-secondary">Withdraw</button>
+</form>
+{{else}}
+{{if .Holder}}<p class="help">Publishing replaces {{.Holder}}, which currently holds the {{.Kind}} slot.</p>{{end}}
+<details>
+  <summary>{{if .Holder}}Replace and publish{{else}}Publish{{end}}</summary>
+  <form class="usage-fields" method="post" action="/usage/nominate" hx-post="/usage/nominate" hx-target="#usage-result" hx-disabled-elt="find button">
+    <input type="hidden" name="for_user" value="{{.ForUser}}"><input type="hidden" name="view" value="buckets">
+    <input type="hidden" name="action" value="nominate"><input type="hidden" name="scope" value="{{.Scope}}"><input type="hidden" name="kind" value="{{.Kind}}"><input type="hidden" name="bucket" value="{{.BucketID}}">
+    <p>{{.Confirm}}</p>
+    <label class="usage-check"><input type="checkbox" name="confirm" value="yes" required><span>I understand and want to publish this bucket</span></label>
+    <button type="submit" class="btn">Confirm and publish</button>
+  </form>
+</details>
+{{end}}
+{{end}}
+
+{{define "usage_preview"}}
+{{if .Unavailable}}<p class="notice notice-warn">The preview is not available right now. Reload the page to try again.</p>
+{{else if .Empty}}<p class="muted">Nothing is published to your Workers yet. Publish a bucket above and its meters appear here.</p>
+{{else}}
+<p class="muted">Generated {{.Generated}}</p>
+<div class="usage-cards">
+  {{range .Slots}}
+  <article class="panel">
+    <div class="usage-heading"><h3>{{.Title}}</h3><span class="badge">{{.Scope}}</span></div>
+    {{range .Meters}}
+    <div class="usage-window">
+      <div class="usage-heading"><h4>{{.Label}}{{if .Headline}} <small>(headline)</small>{{end}}</h4><span class="badge" data-tone="{{if eq .Freshness "Fresh"}}info{{else}}warning{{end}}">{{.Freshness}}</span></div>
+      <dl class="usage-facts">
+        <div><dt>Remaining</dt><dd>{{.Remaining}}</dd></div>
+        <div><dt>Used</dt><dd>{{.Used}}</dd></div>
+        <div><dt>Unit</dt><dd>{{.Unit}}</dd></div>
+        <div><dt>Resets</dt><dd>{{.Reset}}</dd></div>
+        <div><dt>Pace</dt><dd>{{.Pace}}</dd></div>
+        <div><dt>Coverage</dt><dd>{{.Coverage}}</dd></div>
+      </dl>
+    </div>
+    {{else}}<p class="muted">No meters in this slot.</p>{{end}}
+    {{if .Omitted}}<p class="help">{{.Omitted}} more limit groups did not fit.</p>{{end}}
+  </article>
+  {{end}}
+</div>
+{{end}}
 {{end}}

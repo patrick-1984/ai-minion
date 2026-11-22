@@ -68,6 +68,9 @@ type Online struct {
 	MasterSessionV1 bool
 	// EnrollmentKey is the Worker identity authenticated for this link.
 	EnrollmentKey [32]byte
+	// HubRoot is the Hub root public key this connection's handshake
+	// presented, which the Worker pinned. A private read-back frame names it.
+	HubRoot []byte
 }
 
 // Announces reports whether the Worker announced op.
@@ -93,6 +96,9 @@ type Registry struct {
 	nextGen uint64
 	now     func() time.Time
 	hooks   []func(Online, OpSession)
+	// readbackGuard is asked once more after a read-back stream is open and
+	// before the document is written (see SendReadback).
+	readbackGuard func(context.Context, Online) error
 }
 
 type entry struct {
@@ -209,6 +215,15 @@ func (r *Registry) SignRevoke(workerID string) (RevokeFrame, bool, error) {
 // was closed. Calls are made in the order of the adds, one Add at a time. It is how a module takes over the inbound streams of a
 // session (Story 5.3: the ev stream) without the connect handler knowing it.
 // fn must not block; it starts its own goroutines.
+// SetReadbackGuard installs the last check of a read-back document: it runs
+// after the stream to the Worker is open (opening can block) and before the
+// document is written. A non-nil error stops the delivery of that document.
+func (r *Registry) SetReadbackGuard(fn func(context.Context, Online) error) {
+	r.mu.Lock()
+	r.readbackGuard = fn
+	r.mu.Unlock()
+}
+
 func (r *Registry) OnAdd(fn func(info Online, sess OpSession)) {
 	if fn == nil {
 		return
@@ -406,6 +421,7 @@ func (r *Registry) OpenControl(ctx context.Context, workerID string) (*transport
 func clone(o Online) Online {
 	o.Ops = append([]string(nil), o.Ops...)
 	o.TranscriptHash = append([]byte(nil), o.TranscriptHash...)
+	o.HubRoot = append([]byte(nil), o.HubRoot...)
 	return o
 }
 

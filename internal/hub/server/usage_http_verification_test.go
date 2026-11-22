@@ -14,10 +14,18 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/web"
+	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
 func startUsageHTTPHub(t *testing.T) (*dashHub, *fakeKeys) {
+	t.Helper()
+	return startUsageHTTPHubAt(t, t.TempDir())
+}
+
+// startUsageHTTPHubAt keeps the data directory, whose TLS certificate real
+// client backends (the MCP tools) pin.
+func startUsageHTTPHubAt(t *testing.T, dataDir string) (*dashHub, *fakeKeys) {
 	t.Helper()
 	t.Setenv("MINION_ADMIN_USERNAME", "root")
 	t.Setenv("MINION_ADMIN_PASSWORD", "usage-integration-pw-1")
@@ -53,6 +61,9 @@ func startUsageHTTPHub(t *testing.T) (*dashHub, *fakeKeys) {
 		if d.mgr, err = Require[*session.Manager](env); err != nil {
 			return err
 		}
+		if d.wsv, err = Require[*workers.Service](env); err != nil {
+			return err
+		}
 		n, err := Require[*api.Authenticator](env)
 		if err != nil {
 			return err
@@ -61,7 +72,7 @@ func startUsageHTTPHub(t *testing.T) (*dashHub, *fakeKeys) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	d.h = startHub(t, &Config{DataDir: t.TempDir()}, r)
+	d.h = startHub(t, &Config{DataDir: dataDir}, r)
 	d.hc = newHubClient(t, d.h, "https")
 	return d, keys
 }

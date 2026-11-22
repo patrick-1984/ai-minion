@@ -108,15 +108,19 @@ type UsageListResult struct {
 }
 
 type UsageBucket struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
-	Label    string `json:"label"`
-	Position int    `json:"position"`
+	ID        string   `json:"id"`
+	Kind      string   `json:"kind"`
+	Label     string   `json:"label"`
+	Position  int      `json:"position"`
+	Nominated []string `json:"nominated,omitempty"` // "user" and/or "domain": where this bucket is published
 }
 
 type UsageBucketListArgs struct{}
 type UsageBucketListResult struct {
 	Buckets []UsageBucket `json:"buckets"`
+	// AllowRepublish is your own setting: whether buckets published by
+	// someone else may include observations of your sessions and accounts.
+	AllowRepublish bool `json:"allow_republish"`
 }
 
 type UsageBucketSetArgs struct {
@@ -232,4 +236,82 @@ func (a UsageAccountSetArgs) Validate() error {
 }
 func init() {
 	Register(Op{Name: OpUsageAccountSet, Summary: "Set your private display name and order for a provider account.", Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, Args: reflect.TypeFor[UsageAccountSetArgs](), Result: reflect.TypeFor[UsageAccountSetArgs]()})
+}
+
+const (
+	OpUsageNominationSet    = "usage_nomination_set"
+	OpUsageNominationList   = "usage_nomination_list"
+	OpUsagePublicationSet   = "usage_publication_set"
+	UsageScopeUser          = "user"
+	UsageScopeDomain        = "domain"
+	UsageNominationNominate = "nominate"
+	UsageNominationClear    = "clear"
+)
+
+// UsageNominationSetArgs publishes one of your own buckets to Workers or
+// withdraws a slot. Scope user shows the bucket on your own Workers; scope
+// domain shows it on every Worker of the Hub and needs the manage permission
+// of an administrator. A domain clear needs no bucket: any such administrator
+// can clear the slot another one filled. A bucket_id on a clear is a
+// precondition: the slot is cleared only while that bucket still holds it.
+type UsageNominationSetArgs struct {
+	Action   string `json:"action"` // nominate or clear
+	Scope    string `json:"scope"`  // user or domain
+	Kind     string `json:"kind"`   // session or provider
+	BucketID string `json:"bucket_id,omitempty"`
+}
+
+func (a UsageNominationSetArgs) Validate() error {
+	if a.Scope != UsageScopeUser && a.Scope != UsageScopeDomain {
+		return invalid("scope", "choose user or domain")
+	}
+	if a.Kind != "session" && a.Kind != "provider" {
+		return invalid("kind", "choose session or provider")
+	}
+	if !usageText(a.BucketID, 128) {
+		return invalid("bucket_id", "invalid id")
+	}
+	switch a.Action {
+	case UsageNominationNominate:
+		if a.BucketID == "" {
+			return invalid("bucket_id", "is required")
+		}
+	case UsageNominationClear:
+	default:
+		return invalid("action", "choose nominate or clear")
+	}
+	return nil
+}
+
+type UsageNominationSetResult struct {
+	Changed bool `json:"changed"`
+	// Replaced is true when a different bucket held the slot before.
+	Replaced bool `json:"replaced,omitempty"`
+}
+
+// UsageDomainSlot is one Hub-wide published slot with who put it there.
+type UsageDomainSlot struct {
+	Kind          string `json:"kind"`
+	BucketID      string `json:"bucket_id"`
+	Label         string `json:"label"`
+	PublisherID   string `json:"publisher_id"`
+	PublisherName string `json:"publisher_name"`
+	UpdatedBy     string `json:"updated_by"`
+	UpdatedAt     int64  `json:"updated_at"`
+}
+
+type UsageNominationListArgs struct{}
+type UsageNominationListResult struct {
+	Domain []UsageDomainSlot `json:"domain"`
+}
+
+// UsagePublicationSetArgs is the source owner's permission, default off.
+type UsagePublicationSetArgs struct {
+	AllowRepublish bool `json:"allow_republish"`
+}
+
+func init() {
+	Register(Op{Name: OpUsageNominationSet, Summary: "Publish one of your usage buckets to your Workers, or to every Worker of the Hub (administrators with manage), or withdraw a slot.", Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, Args: reflect.TypeFor[UsageNominationSetArgs](), Result: reflect.TypeFor[UsageNominationSetResult]()})
+	Register(Op{Name: OpUsageNominationList, Summary: "Administrators: show the Hub-wide published usage slots and who published them.", Scope: ScopeHub, Actions: MustActionSet(ActionManage), Args: reflect.TypeFor[UsageNominationListArgs](), Result: reflect.TypeFor[UsageNominationListResult]()})
+	Register(Op{Name: OpUsagePublicationSet, Summary: "Allow or refuse that buckets published by others include observations of your own sessions and accounts (default refuse).", Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, Args: reflect.TypeFor[UsagePublicationSetArgs](), Result: reflect.TypeFor[UsagePublicationSetArgs]()})
 }

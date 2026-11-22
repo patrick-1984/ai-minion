@@ -1,0 +1,43 @@
+{
+  "version": "v0.1.0",
+  "name": "lab-pi",
+  "mode": "hub",
+  "hub_url": "https://hub.example:8443",
+  "connection": {
+    "state": "connected",
+    "live": true,
+    "connected_since": "2026-11-10T12:30:00.000Z"
+  },
+  "daemon": {
+    "instance": "22222222-2222-4222-8222-222222222222",
+    "version": "v0.19.0",
+    "started_at": "2026-11-10T12:25:00.000Z",
+    "pid": 4242
+  },
+  "hub_fingerprint": "gr2q7gf5lh6pzfdnurnkvputhpqvjjfvbfhbysv7ikdgkbptzf7a",
+  "worker_fingerprint": "ni4ahvpqlgicuhdnv66jxjdssijppsvmbbruzq5oo2zhkkpqhatq",
+  "hub_fingerprint_words": "crucial-position-tower-kingdom-panther-layer",
+  "worker_fingerprint_words": "health-scale-voice-thing-october-bench",
+  "hub_check": "none",
+  "hub_check_text": "not verified: compare with the Hub host (minion hub identity --words), then run minion worker verify-hub \u003cthe 52 characters\u003e",
+  "paired": true,
+  "worker_id": "w1",
+  "approval": "approved",
+  "owner": "alice",
+  "pending_pairing_code": "",
+  "pairing_state": "none",
+  "share": {
+    "mode": "select",
+    "configured": true,
+    "sessions": [
+      "build",
+      "docs"
+    ]
+  },
+  "preview_only": false,
+  "preview_only_hub": false,
+  "paused": false,
+  "new_sessions": "unknown",
+  "tmux_socket": "/run/user/1000/tmux-1000/default",
+  "sessions": 3
+}

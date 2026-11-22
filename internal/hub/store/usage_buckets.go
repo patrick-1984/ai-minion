@@ -26,10 +26,40 @@ func (s *Store) UsageBuckets(ctx context.Context, owner string) ([]ops.UsageBuck
 		}
 		out = append(out, b)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Your own published slots only; the domain summary is a separate op.
+	noms, err := s.db.QueryContext(ctx, `SELECT bucket_id,scope FROM usage_nominations WHERE owner_id=? ORDER BY scope`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = noms.Close() }()
+	flags := map[string][]string{}
+	for noms.Next() {
+		var id, scope string
+		if err := noms.Scan(&id, &scope); err != nil {
+			return nil, err
+		}
+		flags[id] = append(flags[id], scope)
+	}
+	for i := range out {
+		out[i].Nominated = flags[out[i].ID]
+	}
+	return out, noms.Err()
 }
 
 func (s *Store) SetUsageBucket(ctx context.Context, owner string, authorized []ops.WorkerInfo, args ops.UsageBucketSetArgs) (ops.UsageBucketSetResult, error) {
+	return s.SetUsageBucketAs(ctx, owner, authorized, args, BucketAuthority{})
+}
+
+// SetUsageBucketAs is [Store.SetUsageBucket] for a caller who may hold the
+// authority to change a bucket that is currently published to the whole
+// domain. Renaming, deleting or moving members into or out of such a bucket
+// changes what every Worker shows, so it needs the same authority as the
+// nomination itself. A bucket that is nominated may also never end up holding
+// sources whose owners refused republishing.
+func (s *Store) SetUsageBucketAs(ctx context.Context, owner string, authorized []ops.WorkerInfo, args ops.UsageBucketSetArgs, auth BucketAuthority) (ops.UsageBucketSetResult, error) {
 	result := ops.UsageBucketSetResult{ID: args.BucketID}
 	if err := args.Validate(); err != nil {
 		return result, err
@@ -45,8 +75,26 @@ func (s *Store) SetUsageBucket(ctx context.Context, owner string, authorized []o
 				return err
 			}
 		}
+		locked, err := domainBucketAffected(ctx, tx, owner, authorized, args)
+		if err != nil {
+			return err
+		}
+		if locked {
+			if !auth.Domain || auth.Actor == "" {
+				return ErrNominationForbidden
+			}
+			ok, err := activeAdminTx(ctx, tx, auth.Actor)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return ErrNominationForbidden
+			}
+			if err := s.usageAudit(ctx, tx, auditActor(auth.Actor, auth.Credential), "usage.domain_bucket."+args.Action, "domain/"+args.Kind+"/"+args.BucketID); err != nil {
+				return err
+			}
+		}
 		var change sql.Result
-		var err error
 		switch args.Action {
 		case "save":
 			if args.BucketID == "" {
@@ -64,7 +112,21 @@ func (s *Store) SetUsageBucket(ctx context.Context, owner string, authorized []o
 			return err
 		}
 		result.Updated, err = change.RowsAffected()
-		return err
+		if err != nil || args.Action != "assign" || args.BucketID == "" {
+			return err
+		}
+		// Moving members into a published bucket must not smuggle in
+		// sources that their owners did not allow to be republished.
+		u, d, err := nominatedTx(ctx, tx, owner, args.Kind, args.BucketID)
+		if err != nil || !u && !d {
+			return err
+		}
+		if n, err := blockedMembersTx(ctx, tx, owner, args.Kind, args.BucketID, auth.Restrict, auth.Visible); err != nil {
+			return err
+		} else if n > 0 {
+			return &NominationRefusal{Members: n}
+		}
+		return nil
 	})
 	return result, err
 }
@@ -114,4 +176,39 @@ func (s *Store) SetUsageAccount(ctx context.Context, owner string, allowed []ops
 		return ErrNotFound
 	}
 	return err
+}
+
+// domainBucketAffected reports whether the change touches a bucket that is
+// currently published to the whole domain: the bucket itself, or any bucket
+// that holds a member the assignment moves or removes.
+func domainBucketAffected(ctx context.Context, tx *sql.Tx, owner string, workers []ops.WorkerInfo, args ops.UsageBucketSetArgs) (bool, error) {
+	var n int
+	if args.Action != "assign" {
+		if args.BucketID == "" {
+			return false, nil
+		}
+		err := tx.QueryRowContext(ctx, `SELECT count(*) FROM usage_nominations WHERE scope='domain' AND owner_id=? AND kind=? AND bucket_id=?`, owner, args.Kind, args.BucketID).Scan(&n)
+		return n > 0, err
+	}
+	visible, err := usageVisibleJSON(workers)
+	if err != nil {
+		return false, err
+	}
+	members, err := json.Marshal(args.Members)
+	if err != nil {
+		return false, err
+	}
+	selectedWorkers, err := json.Marshal(args.WorkerIDs)
+	if err != nil {
+		return false, err
+	}
+	source := "SELECT s.id member_id,s.worker_id FROM usage_sessions s JOIN visible v ON v.id=s.worker_id"
+	if args.Kind == "provider" {
+		source = "SELECT a.account_id member_id,a.worker_id FROM usage_accounts a JOIN visible v ON v.id=a.worker_id"
+	}
+	query := usageVisible + ", candidates AS (" + source + `), chosen AS (SELECT DISTINCT member_id FROM candidates WHERE ? OR member_id IN (SELECT value FROM json_each(?)) OR worker_id IN (SELECT value FROM json_each(?))) 
+	 SELECT count(*) FROM usage_nominations n WHERE n.scope='domain' AND n.owner_id=? AND n.kind=? AND (n.bucket_id=? OR EXISTS(
+	  SELECT 1 FROM usage_members m WHERE m.owner_id=n.owner_id AND m.kind=n.kind AND m.bucket_id=n.bucket_id AND m.member_id IN (SELECT member_id FROM chosen)))`
+	err = tx.QueryRowContext(ctx, query, visible, "", "", args.All, string(members), string(selectedWorkers), owner, args.Kind, args.BucketID).Scan(&n)
+	return n > 0, err
 }

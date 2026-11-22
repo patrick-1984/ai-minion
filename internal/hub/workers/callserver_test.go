@@ -326,6 +326,10 @@ func TestCallStreamRejectsMalformedRequests(t *testing.T) {
 		{"not an op.request", map[string]any{"type": "op.result"}, proto.CodeInvalidArgument},
 		{"an op the Hub does not serve on call streams", request(ops.OpSendText, map[string]any{}, ""), proto.CodeUnsupportedOp},
 		{"an unknown op", request("no_such_op", map[string]any{}, ""), proto.CodeUnsupportedOp},
+		// The usage read-back frame goes Hub to Worker only: a Worker's own
+		// call can name it as an op and gets nothing.
+		{"the read-back frame type as an op", request(proto.TypeReadbackApply, map[string]any{"revision": 1}, ""), proto.CodeUnsupportedOp},
+		{"a read-back op name", request("worker_readback", map[string]any{"revision": 1}, ""), proto.CodeUnsupportedOp},
 		{"arguments that fail validation", request(ops.OpPipeSend, map[string]any{"request_id": "x", "target": map[string]any{"worker_id": wAlicePi1.ID, "session_name": "s"}, "text": "t"}, ""), proto.CodeInvalidArgument},
 		{"arguments that are not an object", request(ops.OpPipeSend, []int{1}, ""), proto.CodeInvalidArgument},
 		{"a human target for a name nobody has", request(ops.OpPipeRead, map[string]any{"target": "ghost:s"}, ""), proto.CodeTargetNotFound},

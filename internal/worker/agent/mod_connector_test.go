@@ -161,7 +161,10 @@ func TestConnectorModuleConnectsAndAnnouncesTheExecutorOps(t *testing.T) {
 	// The features of the same first hello: the guarded behaviours the
 	// executor has itself, and no verbatim text from a host that does not
 	// guarantee it (the test host does not).
-	wantFeatures := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextAgentOnly, proto.FeatureSendTextSubmit}
+	// usage_readback_v1 is in the first hello too: the receiver exists before
+	// the connector dials, so the Hub's once-per-connection decision to deliver
+	// is not made against a hello that lacks it.
+	wantFeatures := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextAgentOnly, proto.FeatureSendTextSubmit, proto.FeatureUsageReadbackV1}
 	if !slices.Equal(p.Features, wantFeatures) {
 		t.Errorf("hello features = %v, want %v", p.Features, wantFeatures)
 	}

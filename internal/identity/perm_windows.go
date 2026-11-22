@@ -199,13 +199,15 @@ func CheckPrivate(path string) error {
 // by path and the read in which the file can be swapped. Nothing is changed on
 // the file. A missing file is an error that matches os.ErrNotExist. The caller
 // closes the handle.
+// The handle is opened with FILE_SHARE_DELETE, so that a reader never blocks
+// the unlink or replacement of a published file.
 func OpenPrivate(path string) (*os.File, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
 	h, err := windows.CreateFile(name, windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
 		windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}

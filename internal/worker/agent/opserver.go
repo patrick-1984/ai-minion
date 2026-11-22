@@ -103,6 +103,13 @@ type OpStream interface {
 
 var _ OpStream = (*transport.Stream)(nil)
 
+// Revoker verifies and applies a signed live revoke; *Connector implements it.
+type Revoker interface {
+	HandleRevoke(l *Link, raw json.RawMessage, confirm func()) error
+}
+
+var _ Revoker = (*Connector)(nil)
+
 // OpServerConfig configures an [OpServer]. Executor is required.
 type OpServerConfig struct {
 	Executor OpExecutor
@@ -118,6 +125,13 @@ type OpServerConfig struct {
 	WriteTimeout   time.Duration
 	ExecTimeout    time.Duration
 	RefuseDrain    time.Duration
+	// Readback receives the Hub's private read-back control frame. Nil
+	// refuses it (a Worker that cannot publish a usage document).
+	Readback ReadbackSink
+	// Revoker handles the Hub's signed live revoke, the first frame of an op
+	// stream that is not an op.request. Nil refuses it (the next handshake
+	// still delivers the revoke).
+	Revoker Revoker
 	// Logger receives operational messages: never terminal content, message
 	// bodies or secrets (AD-20). Nil discards them.
 	Logger *slog.Logger
@@ -194,7 +208,10 @@ func NewOpServer(cfg OpServerConfig) (*OpServer, error) {
 // Serve accepts the op streams of one link until the link ends and returns
 // when every stream of this link is done. It is a [LinkHandler].
 func (s *OpServer) Serve(l *Link) {
-	ctx := l.Context()
+	ctx := withLink(l.Context(), l)
+	if s.cfg.Readback != nil {
+		s.cfg.Readback.LinkAdmitted(l)
+	}
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	for {
@@ -319,6 +336,14 @@ func (s *OpServer) ServeStream(linkCtx context.Context, st OpStream) {
 		s.serveShareProbe(linkCtx, out, body)
 		return
 	}
+	if IsRevokeFrame(body) {
+		s.serveRevoke(linkCtx, out, body)
+		return
+	}
+	if typ, _ := proto.FrameType(body); typ == proto.TypeReadbackApply {
+		s.serveReadback(linkCtx, out, body)
+		return
+	}
 	rq, held, perr := s.parse(body)
 	if perr != nil {
 		out.fail(perr)
@@ -428,6 +453,62 @@ func (s *OpServer) serveShareProbe(linkCtx context.Context, out *opOutput, body 
 		return
 	}
 	raw, err := json.Marshal(res)
+	if err != nil {
+		out.fail(proto.NewError(proto.CodeInternal, "the operation failed"))
+		return
+	}
+	out.result(raw)
+}
+
+// serveRevoke hands the Hub's signed revoke to the connection-bound
+// verification and wipe of the connector (the same path as the revoke that
+// answers a connect): the enrollment is wiped and the usage document cleared at
+// once, without waiting for a reconnect. Anything that does not verify is
+// refused and nothing is deleted.
+func (s *OpServer) serveRevoke(linkCtx context.Context, out *opOutput, body json.RawMessage) {
+	l := linkFrom(linkCtx)
+	if s.cfg.Revoker == nil || l == nil {
+		out.fail(proto.NewError(proto.CodeUnsupportedOp, "the Worker does not accept a live revoke"))
+		return
+	}
+	answered := false
+	err := s.cfg.Revoker.HandleRevoke(l, body, func() {
+		answered = out.write(RevokeAck()) == nil
+	})
+	switch {
+	case err != nil && !answered:
+		out.fail(proto.NewError(proto.CodeForbidden, "the revoke is not valid for this connection"))
+	default:
+		_ = out.st.Close()
+	}
+}
+
+// serveReadback handles the Hub's private read-back control frame: it
+// publishes the usage document if the frame is bound to this very connection
+// and answers with the revision, after the local publication succeeded. It is
+// not an op: it needs no action, passes no executor and is never reached from
+// anything but a Hub-opened op stream of a served link.
+func (s *OpServer) serveReadback(linkCtx context.Context, out *opOutput, body json.RawMessage) {
+	l := linkFrom(linkCtx)
+	if s.cfg.Readback == nil || l == nil {
+		out.fail(proto.NewError(proto.CodeUnsupportedOp, "the Worker does not accept a usage read-back"))
+		return
+	}
+	if s.expired(linkCtx) {
+		out.st.Reset()
+		return
+	}
+	var f proto.ReadbackApply
+	if err := proto.DecodeFrame(body, &f); err != nil {
+		out.fail(errorAsProto(err))
+		return
+	}
+	ack, perr := s.cfg.Readback.Apply(l, f)
+	if perr != nil {
+		out.fail(perr)
+		return
+	}
+	raw, err := json.Marshal(ack)
 	if err != nil {
 		out.fail(proto.NewError(proto.CodeInternal, "the operation failed"))
 		return

@@ -29,6 +29,10 @@ type usagePage struct {
 	Rows                                                                    ops.UsageListResult
 	Accounts                                                                []usageAccountCard
 	Views, SessionViews                                                     []usageView
+	BucketCards                                                             []usageBucketCard
+	DomainSlots                                                             []usageDomainSlotView
+	DomainUnavailable, AllowRepublish                                       bool
+	Preview                                                                 usagePreview
 }
 
 type usageAccountCard struct {
@@ -272,7 +276,7 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		if err := c.CallOp(r, ops.OpUsageBucketList, ops.UsageBucketListArgs{}, &result); err != nil {
 			return nil, err
 		}
-		p.Buckets = result.Buckets
+		p.Buckets, p.AllowRepublish = result.Buckets, result.AllowRepublish
 	}
 	sessionView := section == "sessions" || section == "events" || section == "history"
 	p.Kind = "provider"
@@ -297,6 +301,21 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		}
 	}
 	if section == "buckets" {
+		if p.Private {
+			var domain ops.UsageNominationListResult
+			if p.Admin {
+				if err := c.CallOp(r, ops.OpUsageNominationList, ops.UsageNominationListArgs{}, &domain); err != nil {
+					p.DomainUnavailable = true
+				}
+			}
+			p.buildBuckets(domain.Domain)
+			var doc ops.UsageMeters
+			if err := c.CallOp(r, ops.OpUsageReadback, ops.UsageReadbackArgs{}, &doc); err != nil {
+				p.Preview.Unavailable = true
+			} else {
+				p.Preview = buildUsagePreview(doc, usagePreviewNow())
+			}
+		}
 		return p, nil
 	}
 	var workers ops.WorkersListResult
@@ -436,6 +455,35 @@ func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 		}
 		var res ops.UsageBucketSetResult
 		if err := c.CallOp(r, ops.OpUsageBucketSet, args, &res); err != nil {
+			writeResultError(w, failureText(err))
+			return
+		}
+	case "nominate":
+		if !usagePrivate(r) {
+			writeResultError(w, "Publishing buckets is available in your own signed-in account.")
+			return
+		}
+		args, err := usageNominationForm(r)
+		if err != nil {
+			writeResultError(w, err.Error())
+			return
+		}
+		if args.Scope == ops.UsageScopeDomain && !u.Admin {
+			writeResultError(w, "Only administrators can publish to every Worker.")
+			return
+		}
+		var res ops.UsageNominationSetResult
+		if err := c.CallOp(r, ops.OpUsageNominationSet, args, &res); err != nil {
+			writeResultError(w, failureText(err))
+			return
+		}
+	case "publication":
+		if !usagePrivate(r) {
+			writeResultError(w, "Publication consent is available in your own signed-in account.")
+			return
+		}
+		args := ops.UsagePublicationSetArgs{AllowRepublish: r.PostFormValue("allow_republish") == "yes"}
+		if err := c.CallOp(r, ops.OpUsagePublicationSet, args, nil); err != nil {
 			writeResultError(w, failureText(err))
 			return
 		}

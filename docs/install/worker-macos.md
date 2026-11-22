@@ -71,6 +71,8 @@ To diagnose a problem, run the Worker with `--debug` (or `MINION_DEBUG=1`). To l
 
 `minion worker start` starts the installed Worker (it never installs anything); `minion worker pause` and `resume` take the Worker off the Hub and back without stopping your sessions; `minion worker config set allow_new_sessions off` blocks new sessions from every origin. `minion worker up --join -` reads the join token from standard input. All of them are described in [Control a Worker from the command line](../guides/worker-control.md).
 
+Other programs on this machine can check that the Worker runs and which version it is: [read the Worker status from another program](../guides/integrate-local.md).
+
 ## Update
 
 ```sh

@@ -557,10 +557,20 @@ func replaceIDPRolesTx(ctx context.Context, tx *sql.Tx, userID string, roles []s
 		return nil, nil, fmt.Errorf("store: read idp roles: %w", err)
 	}
 	_ = rows.Close()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ? AND source = 'idp'`, userID); err != nil {
-		return nil, nil, fmt.Errorf("store: clear idp roles: %w", err)
+	// Change only what differs: dropping and re-adding an unchanged admin
+	// grant would retire the user's domain usage nomination on every sign-in.
+	for _, r := range before {
+		if slices.Contains(roles, r) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ? AND source = 'idp' AND role = ?`, userID, r); err != nil {
+			return nil, nil, fmt.Errorf("store: clear idp roles: %w", err)
+		}
 	}
 	for _, r := range roles {
+		if slices.Contains(before, r) {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO user_roles (user_id, role, source) VALUES (?, ?, 'idp')`, userID, r); err != nil {
 			return nil, nil, fmt.Errorf("store: grant idp role: %w", err)
 		}
