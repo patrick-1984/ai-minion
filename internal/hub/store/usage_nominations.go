@@ -18,6 +18,9 @@ var (
 	// ErrNominationIneligible: the bucket holds observations of other users'
 	// sources whose owners did not allow republishing.
 	ErrNominationIneligible = errors.New("store: bucket holds sources whose owners did not allow republishing")
+	// ErrNominationMoved: a withdrawal named a bucket that no longer holds
+	// the slot (another bucket replaced it); nothing was changed.
+	ErrNominationMoved = errors.New("store: the slot is held by another bucket now")
 )
 
 // NominationRefusal carries the number of members that block a publication.
@@ -67,23 +70,27 @@ func activeAdminTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
 	return n > 0, err
 }
 
-// blockedMembersTx counts the members of a bucket with an observation from a
-// source owned by somebody else who has not allowed republishing. The owner's
-// own sources and consenting owners' sources are publishable.
+// blockedMembersTx counts the members of a bucket that have observations but
+// no publishable one. The owner's own sources and consenting owners' sources
+// (visible to the publisher) are publishable.
 func blockedMembersTx(ctx context.Context, tx *sql.Tx, owner, kind, bucket string, restrict bool, visible []string) (int, error) {
-	source := `SELECT m.member_id,s.worker_id FROM usage_members m JOIN usage_sessions s ON s.id=m.member_id`
+	source := `SELECT m.member_id AS member_id,s.worker_id AS worker_id FROM usage_members m JOIN usage_sessions s ON s.id=m.member_id`
 	if kind == "provider" {
-		source = `SELECT m.member_id,a.worker_id FROM usage_members m JOIN usage_accounts a ON a.account_id=m.member_id`
+		source = `SELECT m.member_id AS member_id,a.worker_id AS worker_id FROM usage_members m JOIN usage_accounts a ON a.account_id=m.member_id`
 	}
 	list, err := json.Marshal(append([]string{}, visible...))
 	if err != nil {
 		return 0, err
 	}
+	// A member blocks only when it has observations and none of them may be
+	// published (the same rule the projection applies): an unpublishable copy
+	// of a subscription never blocks a publishable one.
 	var n int
-	err = tx.QueryRowContext(ctx, `SELECT count(DISTINCT x.member_id) FROM (`+source+` WHERE m.owner_id=?1 AND m.kind=?2 AND m.bucket_id=?3) x
-	 JOIN workers w ON w.id=x.worker_id
-	 WHERE w.owner_id<>?1 AND (NOT coalesce((SELECT c.allow_republish FROM usage_publication_consent c WHERE c.owner_id=w.owner_id),0)
-	  OR (?4=1 AND w.id NOT IN (SELECT value FROM json_each(?5))))`, owner, kind, bucket, restrict, string(list)).Scan(&n)
+	err = tx.QueryRowContext(ctx, `WITH src(member_id,worker_id) AS (`+source+` WHERE m.owner_id=?1 AND m.kind=?2 AND m.bucket_id=?3)
+	 SELECT count(DISTINCT x.member_id) FROM src x JOIN workers w ON w.id=x.worker_id
+	 WHERE NOT EXISTS(SELECT 1 FROM src y JOIN workers wy ON wy.id=y.worker_id WHERE y.member_id=x.member_id
+	  AND (wy.owner_id=?1 OR (coalesce((SELECT c.allow_republish FROM usage_publication_consent c WHERE c.owner_id=wy.owner_id),0)=1
+	   AND (?4=0 OR wy.id IN (SELECT value FROM json_each(?5))))))`, owner, kind, bucket, restrict, string(list)).Scan(&n)
 	return n, err
 }
 
@@ -127,6 +134,22 @@ func (s *Store) SetUsageNomination(ctx context.Context, owner string, auth Bucke
 		}
 		target := a.Scope + "/" + a.Kind
 		if a.Action == ops.UsageNominationClear {
+			// A named bucket is a compare-and-clear precondition: the slot is
+			// cleared only while that bucket still holds it.
+			if a.BucketID != "" {
+				var held string
+				q, args := `SELECT bucket_id FROM usage_nominations WHERE scope='user' AND owner_id=? AND kind=?`, []any{owner, a.Kind}
+				if domain {
+					q, args = `SELECT bucket_id FROM usage_nominations WHERE scope='domain' AND kind=?`, []any{a.Kind}
+				}
+				err := tx.QueryRowContext(ctx, q, args...).Scan(&held)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+				if held != "" && held != a.BucketID {
+					return ErrNominationMoved
+				}
+			}
 			var change sql.Result
 			var err error
 			if domain {

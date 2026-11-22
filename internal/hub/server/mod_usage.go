@@ -57,6 +57,8 @@ func usageNominationError(err error) error {
 		return api.NewError(proto.CodeConflict, fmt.Sprintf("this bucket cannot be published: %d of its members come from other users' sessions or accounts whose owners have not allowed republishing (they can allow it in their own usage settings). Remove those members or ask the owners.", refusal.Members))
 	case errors.Is(err, store.ErrNominationForbidden):
 		return api.NewError(proto.CodeForbidden, "publishing to or changing a bucket published to every Worker needs the manage permission of an active administrator, with your own session or a full-scope key")
+	case errors.Is(err, store.ErrNominationMoved):
+		return api.NewError(proto.CodeConflict, "another bucket holds this slot now; reload the page and try again")
 	case errors.Is(err, store.ErrNotFound):
 		return api.NewError(proto.CodeNotFound, "unknown usage bucket")
 	}
@@ -180,6 +182,7 @@ func initUsage(ctx context.Context, env *Env) error {
 			return ops.UsageNominationSetResult{}, err
 		}
 		auth.Restrict, auth.Visible = true, visible
+		readback.bump()
 		res, err := st.SetUsageNomination(ctx, owner, auth, a)
 		invalidate()
 		return res, usageNominationError(err)
@@ -202,6 +205,7 @@ func initUsage(ctx context.Context, env *Env) error {
 		if owner == "" {
 			return ops.UsagePublicationSetArgs{}, usageForbidden()
 		}
+		readback.bump()
 		err := st.SetUsagePublicationAs(ctx, owner, c.Principal.KeyID, a.AllowRepublish)
 		invalidate()
 		return a, err
@@ -237,6 +241,7 @@ func initUsage(ctx context.Context, env *Env) error {
 		if err != nil {
 			return ops.UsageAccountSetArgs{}, err
 		}
+		readback.bump()
 		err = st.SetUsageAccount(ctx, owner, allowed, a)
 		invalidate()
 		if errors.Is(err, store.ErrNotFound) {
@@ -263,6 +268,7 @@ func initUsage(ctx context.Context, env *Env) error {
 				auth.Visible = append(auth.Visible, w.ID)
 			}
 		}
+		readback.bump()
 		res, err := st.SetUsageBucketAs(ctx, owner, allowed, a, auth)
 		invalidate()
 		return res, usageNominationError(err)

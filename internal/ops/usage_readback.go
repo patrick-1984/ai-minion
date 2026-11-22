@@ -131,8 +131,15 @@ func usageSlug(s string, max int) string {
 	return out
 }
 
-func usageRound(v float64) float64 { return math.Round(v*1e6) / 1e6 }
-func usagePct(v float64) float64   { return math.Round(v*100) / 100 }
+// usageRound rounds to six decimals. A magnitude beyond 1e15 has no decimals
+// left to round (and multiplying it could overflow), so it is returned as is.
+func usageRound(v float64) float64 {
+	if math.Abs(v) > 1e15 {
+		return v
+	}
+	return math.Round(v*1e6) / 1e6
+}
+func usagePct(v float64) float64 { return math.Round(v*100) / 100 }
 
 func usageDurationShort(ms int64) string {
 	switch {
@@ -266,6 +273,9 @@ func usageSumAll(cs []usageContribution, get func(UsageWindow) *float64) *float6
 		}
 		sum += *v
 	}
+	if math.IsInf(sum, 0) || math.IsNaN(sum) {
+		return nil // not representable: the quantity is left out, the meter stays
+	}
 	sum = usageRound(sum)
 	return &sum
 }
@@ -302,6 +312,13 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 		known, aged []usageContribution
 	}
 	groups := map[usageGroupKey]*group{}
+	// One account contributes at most once to a group, whatever spelling its
+	// windows use: the first usable window of the stored observation wins.
+	type contributed struct {
+		account string
+		key     usageGroupKey
+	}
+	seen := map[contributed]bool{}
 	nowMS := now.UnixMilli()
 	for _, a := range latest {
 		if a.AuthMode != "subscription" {
@@ -328,9 +345,10 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 				g = &group{key: k}
 				groups[k] = g
 			}
-			if !usageWindowUsable(w) {
+			if !usageWindowUsable(w) || seen[contributed{a.ID, k}] {
 				continue
 			}
+			seen[contributed{a.ID, k}] = true
 			c := usageContribution{w: w, obs: a.ObservedAt}
 			if nowMS-a.ObservedAt > UsageMeterMaxAge.Milliseconds() || w.ResetsAt != nil && *w.ResetsAt <= nowMS {
 				g.aged = append(g.aged, c)
@@ -412,7 +430,9 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 		token := usageScopeToken(k.provider, k.scope)
 		spanSlug := usageSlug(span, 12)
 		metric := fam + "." + token + "." + spanSlug
-		id := strings.Join([]string{fam, token, usageSlug(k.period, 12), spanSlug, m.Unit}, "/")
+		// The id carries the exact duration (the short form is lossless), so two
+		// durations never share one; only the metric name is truncated.
+		id := strings.Join([]string{fam, token, usageSlug(k.period, 12), usageSlug(span, 24), m.Unit}, "/")
 		if linked {
 			metric = usageLinkedPrefix + metric
 			id = "linked/" + id
@@ -467,7 +487,7 @@ func SessionMeters(sessions []UsageSessionObservation, linked []UsageAccount, no
 			if s.InputTokens == nil || s.OutputTokens == nil {
 				return 0, false, false
 			}
-			return float64(*s.InputTokens + *s.OutputTokens), true, false
+			return float64(*s.InputTokens) + float64(*s.OutputTokens), true, false
 		}},
 		{"sessions.duration", "ms", "Session time (selected sessions)", func(s UsageSession) (float64, bool, bool) {
 			if s.DurationMS == nil {
@@ -523,6 +543,9 @@ func SessionMeters(sessions []UsageSessionObservation, linked []UsageAccount, no
 			clock, observed = ended, slices.Max[[]int64]
 		}
 		obs := observed(clock)
+		if math.IsInf(sum, 0) || math.IsNaN(sum) {
+			continue // not representable: the meter is left out, the others stay
+		}
 		used := usageRound(sum)
 		label := d.label
 		if estimated {

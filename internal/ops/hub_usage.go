@@ -252,7 +252,8 @@ const (
 // withdraws a slot. Scope user shows the bucket on your own Workers; scope
 // domain shows it on every Worker of the Hub and needs the manage permission
 // of an administrator. A domain clear needs no bucket: any such administrator
-// can clear the slot another one filled.
+// can clear the slot another one filled. A bucket_id on a clear is a
+// precondition: the slot is cleared only while that bucket still holds it.
 type UsageNominationSetArgs struct {
 	Action   string `json:"action"` // nominate or clear
 	Scope    string `json:"scope"`  // user or domain
@@ -276,9 +277,6 @@ func (a UsageNominationSetArgs) Validate() error {
 			return invalid("bucket_id", "is required")
 		}
 	case UsageNominationClear:
-		if a.BucketID != "" && a.Scope == UsageScopeDomain {
-			return invalid("bucket_id", "a domain slot is cleared by kind, not by bucket")
-		}
 	default:
 		return invalid("action", "choose nominate or clear")
 	}

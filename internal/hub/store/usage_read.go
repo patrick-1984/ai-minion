@@ -310,22 +310,25 @@ type UsageSlotSpec struct {
 const usageRecipientOwner = `EXISTS(SELECT 1 FROM users ro WHERE ro.id=?1 AND ro.active=1
  AND EXISTS(SELECT 1 FROM user_roles rr WHERE rr.user_id=ro.id))`
 
-// ReadbackRecipientEligible reports whether the Worker may receive the
-// nominated usage document right now and returns its owner: the Worker is
-// approved and its owner is an active account that still holds a grant (user
-// or admin). Delivery calls it before it builds and again before it sends each
-// document, so an offboarded account's Worker stops receiving new meters.
+// ReadbackRecipientEligible returns the Worker's current owner and whether the
+// Worker may receive the nominated usage document right now: it is approved
+// and its owner is an active account that still holds a grant (user or admin).
+// The owner is returned even when the Worker is not eligible, so that delivery
+// can tell "lost eligibility" (send the clear) from "reassigned" (end the
+// connection). An unknown Worker has an empty owner. Delivery calls it before
+// it builds and again before it sends each document.
 func (s *Store) ReadbackRecipientEligible(ctx context.Context, workerID string) (owner string, ok bool, err error) {
-	err = s.db.QueryRowContext(ctx, `SELECT w.owner_id FROM workers w WHERE w.id=?1 AND w.approval='approved'
+	err = s.db.QueryRowContext(ctx, `SELECT w.owner_id, w.approval='approved'
 	 AND EXISTS(SELECT 1 FROM users ro WHERE ro.id=w.owner_id AND ro.active=1
-	  AND EXISTS(SELECT 1 FROM user_roles rr WHERE rr.user_id=ro.id))`, workerID).Scan(&owner)
+	  AND EXISTS(SELECT 1 FROM user_roles rr WHERE rr.user_id=ro.id))
+	 FROM workers w WHERE w.id=?1`, workerID).Scan(&owner, &ok)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, err
 	}
-	return owner, true, nil
+	return owner, ok, nil
 }
 
 // UsageReadbackSlots lists the effective slots for the Workers of owner, the

@@ -115,6 +115,15 @@ func (d *readbackDelivery) invalidate() {
 	d.mu.Unlock()
 }
 
+// generation is the publication-authority revision of the document source (0
+// for a source without one).
+func (d *readbackDelivery) generation() uint64 {
+	if g, ok := d.doc.(interface{ generation() uint64 }); ok {
+		return g.generation()
+	}
+	return 0
+}
+
 func (d *readbackDelivery) wake() <-chan struct{} {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -291,6 +300,7 @@ func (d *readbackDelivery) step(ctx context.Context, w workers.Online, hubKey st
 	if !eligible {
 		return d.withdraw(ctx, w, hubKey, owner, st)
 	}
+	gen := d.generation()
 	raw, hash, err := d.doc.documentBytes(ctx, owner)
 	if err != nil {
 		return err
@@ -308,6 +318,11 @@ func (d *readbackDelivery) step(ctx context.Context, w workers.Online, hubKey st
 	}
 	if !eligible {
 		return d.withdraw(ctx, w, hubKey, owner, st)
+	}
+	if d.generation() != gen {
+		// The publication authority changed while the document was built: it
+		// is not sent. The change's invalidation wakes the loop to build again.
+		return nil
 	}
 	st.cleared = false
 	at := d.now()
@@ -330,6 +345,12 @@ func (d *readbackDelivery) step(ctx context.Context, w workers.Online, hubKey st
 	ack, err := d.send.SendReadback(ctx, w, proto.ReadbackApply{
 		Type: proto.TypeReadbackApply, Revision: st.rev, OwnerID: owner, WorkerID: w.WorkerID, HubKey: hubKey, Doc: st.sentRaw,
 	})
+	if errors.Is(err, workers.ErrReadbackIneligible) {
+		// The recipient lost its entitlement while the stream was opening: the
+		// document was not written; the Worker is told to clear instead.
+		st.sentHash, st.sentRaw, st.acked = "", nil, false
+		return d.withdraw(ctx, w, hubKey, owner, st)
+	}
 	if err != nil {
 		return err
 	}
@@ -345,6 +366,19 @@ func registerReadbackDelivery(ctx context.Context, env *Env, st *store.Store, rb
 		return nil, err
 	}
 	d := newReadbackDelivery(st, rb, svc.Registry(), nil)
+	// The last check before a document is written, after its stream is open.
+	svc.Registry().SetReadbackGuard(func(ctx context.Context, w workers.Online) error {
+		_, eligible, err := d.recheck(ctx, w)
+		switch {
+		case errors.Is(err, errReadbackStale):
+			return workers.ErrReadbackFenced
+		case err != nil:
+			return err
+		case !eligible:
+			return workers.ErrReadbackIneligible
+		}
+		return nil
+	})
 	// The recipient eligibility recheck is the store's (slice A); a store
 	// without it leaves the delivery as before.
 	if e, ok := any(st).(readbackRecipients); ok {
@@ -366,5 +400,5 @@ func registerReadbackDelivery(ctx context.Context, env *Env, st *store.Store, rb
 		}()
 	})
 	env.OnStop(func(context.Context) error { mu.Lock(); cancel(); mu.Unlock(); group.Wait(); return nil })
-	return d.invalidate, nil
+	return func() { rb.bump(); d.invalidate() }, nil
 }

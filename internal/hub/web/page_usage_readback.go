@@ -189,9 +189,6 @@ func usageNominationForm(r interface{ PostFormValue(string) string }) (ops.Usage
 	if a.Action == ops.UsageNominationNominate && r.PostFormValue("confirm") != "yes" {
 		return a, fmt.Errorf("confirm what will be published before publishing")
 	}
-	if a.Action == ops.UsageNominationClear && a.Scope == ops.UsageScopeDomain {
-		a.BucketID = ""
-	}
 	if err := a.Validate(); err != nil {
 		return a, fmt.Errorf("%s", strings.TrimSpace(err.Error()))
 	}
