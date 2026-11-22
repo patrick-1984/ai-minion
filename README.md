@@ -196,6 +196,7 @@ denies later calls from the revoked attachment even if Claude presents a cached 
 | [Usage and subscription limits](docs/guides/usage.md) | Harness inventory, session and account telemetry, token buckets, native collectors and enrollment notice |
 | [Log export](docs/guides/observability.md) | Sending the Hub's and the Workers' logs to syslog (RFC 5424, TLS) and OpenTelemetry (OTLP/HTTP), per-sink levels, what is masked |
 | [ESP32 and ESPHome](docs/guides/esphome.md) | Install an ESP32 Worker, bridge an ESPHome device over UART, and consume its console, log and UART sessions |
+| [Local integration](docs/guides/integrate-local.md) | How other programs on the machine see whether a Worker runs (user or root), its version, and nominated usage meters for a progress bar: paths, modes, schemas, the checks a reader must make, examples |
 | [Control a Worker](docs/guides/worker-control.md) | `minion worker start`, `pause` and `resume`, blocking new sessions (`allow_new_sessions`), the join token from standard input (`up --join -`) |
 | [Troubleshooting](docs/guides/troubleshooting.md) | Verbose logs (`-v`, `MINION_VERBOSE`), `minion worker status --json`, Administration > Diagnostics and `hub_diagnostics` |
 | [Backup and restore](docs/guides/backup-restore.md) | The Hub's data, keys and identity |

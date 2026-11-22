@@ -12,6 +12,8 @@ Commands for the Worker of your own user. Each works on Linux, macOS and Windows
 | `minion worker status [--json]` | Shows `paused` and `new_sessions` (`on`, `off`, or `unknown` when a running Worker cannot confirm it, for example an older one). |
 | `minion worker up --join -` | Reads the join token from the first line of standard input (at most 4096 bytes), so it is in no argument list; `--join <token>`, `MINION_JOIN` and `MINION_JOIN_FILE` still work. The Hub pin and invitation checks are the same. Only the way the token is read changes: sharing behaves as with `--join <token>` (without a terminal on a fresh profile, give `--share-existing` or an initial `--non-interactive-share` choice). The token and the key inside it are never printed, logged or saved. A paused Worker refuses the join (resume first), and an enrollment dial re-reads the pause right before it. `worker up` saves `allow_new_sessions` only when given by flag or environment and never overwrites a saved value otherwise. |
 
+| `minion worker discover [--json]` | Lists the Workers this account can see on the machine (its own and root's) with status `running`, `stale`, `stopped` or `unavailable`, the daemon version and the scope, after verifying every record. TODO(R7): confirm name, flags and output. See [integrate with local programs](integrate-local.md). |
+
 Pairing with a code stays `minion worker pair` or `minion worker join <url>` in a terminal.
 
 Back to the [README](../../README.md).
