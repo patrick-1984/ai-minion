@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -124,15 +125,21 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 			return proto.NormaliseFeatures(append(baseFeatures(), proto.FeatureMasterSessionV1))
 		}
 	}
-	// The read-back feature is announced only while the Worker can publish a
-	// usage document: the receiver is provided by the op server module and gets
-	// its publisher from the presence module, both after this one starts, so it
-	// is looked up on every connection.
+	// The read-back receiver exists before the connector dials, so that the
+	// very first signed hello already carries usage_readback_v1: a Hub decides
+	// once per connection whether to deliver, and a hello without the feature
+	// would withhold every nomination and withdrawal from a healthy first link.
+	// The announcement stands while the Worker can publish; the presence module
+	// attaches the publisher later and withdraws the feature (SetUnavailable)
+	// only if it cannot publish, and a frame in that gap is answered "busy".
+	rcv := NewReadbackReceiver(log, enr.Moved)
+	rcv.SetGuard(enr.WithEnrollmentIfLive)
+	rcv.SetTombstoneDir(s.StateDir)
 	{
 		baseFeatures := features
 		features = func() []string {
 			out := baseFeatures()
-			if rcv, ok := lookupService[*ReadbackReceiver](env.rt); ok && rcv.Ready() {
+			if rcv.Ready() {
 				out = append(append([]string(nil), out...), proto.FeatureUsageReadbackV1)
 			}
 			return proto.NormaliseFeatures(out)
@@ -165,6 +172,9 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		Enrollment:             enr,
 		ConsumeUsageIntent:     st.ConsumeUsageIntent,
 		UsageConnectionAllowed: st.UsageConnectionAllowed, UsageConsent: st.UsageConsent,
+		OnWelcomeStored: func(w HubWelcome, hubPub ed25519.PublicKey) {
+			rcv.WelcomeStored(w.WorkerID, w.OwnerID, hubPub, w.Pending)
+		},
 		Policy:  policy,
 		Dialer:  d.dialer,
 		Clock:   d.clock,
@@ -178,6 +188,9 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		c.OnLink("master", master.serve)
 	}
 	if err := Provide(env, enr); err != nil {
+		return nil, err
+	}
+	if err := Provide(env, rcv); err != nil {
 		return nil, err
 	}
 	// The managed Android mode shows the pairing code through the private

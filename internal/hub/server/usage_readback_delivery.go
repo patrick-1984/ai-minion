@@ -45,6 +45,14 @@ type readbackDirectory interface {
 	WorkerOwner(ctx context.Context, workerID string) (string, error)
 }
 
+// readbackRecipients answers whether a Worker may hold usage data at all:
+// its owner is active with an effective role and the Worker is approved. The
+// store implements it (Store.ReadbackRecipientEligible); a directory without it
+// is treated as always eligible.
+type readbackRecipients interface {
+	ReadbackRecipientEligible(ctx context.Context, workerID string) (bool, error)
+}
+
 // readbackDelivery pushes the nominated usage document to every approved
 // Worker that announced usage_readback_v1, over the private control frame.
 //
@@ -55,7 +63,9 @@ type readbackDirectory interface {
 // turns the delivery into nothing.
 type readbackDelivery struct {
 	dir readbackDirectory
-	doc interface {
+	// elig is the recipient eligibility recheck (nil: always eligible).
+	elig readbackRecipients
+	doc  interface {
 		documentBytes(ctx context.Context, owner string) ([]byte, string, error)
 	}
 	send readbackSender
@@ -142,23 +152,29 @@ func (d *readbackDelivery) serve(ctx context.Context, w workers.Online, sess wor
 		d.log.Warn("usage read-back: the connection has no Hub key to bind to", "worker_id", w.WorkerID)
 		return
 	}
-	var (
-		rev      uint64
-		sentHash string // content hash of the revision rev
-		sentRaw  []byte
-		acked    bool
-		ackedAt  time.Time
-		retry    time.Duration
-	)
+	var st deliveryState
+	var retry time.Duration
 	for ctx.Err() == nil {
 		wait := d.reconcile
 		wakeCh := d.wake()
-		switch err := d.step(ctx, w, hubFP.String(), &rev, &sentHash, &sentRaw, &acked, &ackedAt); {
+		switch err := d.step(ctx, w, hubFP.String(), &st); {
 		case err == nil:
 			retry = 0
-		case errors.Is(err, workers.ErrReadbackFenced), errors.Is(err, store.ErrWorkerNotFound), errors.Is(err, errReadbackStale):
-			// The connection is no longer the Worker's current one (a new
-			// owner, a reconnect, a removal): its replacement has its own loop.
+		case errors.Is(err, errReadbackRetryWait):
+			// An unrelated edit woke the loop while a failed revision waits
+			// for its retry deadline: the deadline stands.
+			wait = max(st.retryAt.Sub(d.now()), time.Millisecond)
+		case errors.Is(err, errReadbackStale):
+			// The store names another owner than the one this connection was
+			// welcomed for (a reassignment that committed while it registered):
+			// end this exact connection, the reconnect is welcomed with the
+			// new owner and gets its own loop.
+			d.log.Info("usage read-back: the connection's owner changed; the connection is ended", "worker_id", w.WorkerID)
+			_ = sess.Close()
+			return
+		case errors.Is(err, workers.ErrReadbackFenced), errors.Is(err, store.ErrWorkerNotFound):
+			// The connection is no longer the Worker's current one (a
+			// reconnect, a removal): its replacement has its own loop.
 			return
 		case proto.CodeOf(err) == proto.CodeUnsupportedOp:
 			// The Worker announced the feature but cannot publish (its
@@ -172,11 +188,12 @@ func (d *readbackDelivery) serve(ctx context.Context, w workers.Online, sess wor
 			retry = 0
 		default:
 			if proto.ReadbackReason(err) == proto.ReadbackStale {
-				acked = false
-				rev++ // continue above whatever the Worker holds
+				st.acked = false
+				st.rev++ // continue above whatever the Worker holds
 			}
 			retry = min(d.retryMax, max(d.retryMin, retry*2))
 			wait = retry + time.Duration(rand.Int64N(int64(retry/4)+1))
+			st.retryAt = d.now().Add(wait)
 			d.log.Debug("usage read-back: delivery failed; it will be retried", "worker_id", w.WorkerID, "error", err.Error())
 		}
 		timer := time.NewTimer(wait)
@@ -191,14 +208,69 @@ func (d *readbackDelivery) serve(ctx context.Context, w workers.Online, sess wor
 	}
 }
 
+// deliveryState is what one connection's loop remembers.
+type deliveryState struct {
+	rev      uint64
+	sentHash string // content hash of the revision rev
+	sentRaw  []byte
+	acked    bool
+	ackedAt  time.Time
+	// retryAt is the earliest time the unacknowledged revision is sent again.
+	retryAt time.Time
+	// cleared: the last frame acknowledged was a withdrawal.
+	cleared bool
+}
+
 // errReadbackStale: the owner of the connection is not the owner the store
 // names now.
 var errReadbackStale = errors.New("the connection's owner is not the Worker's owner any more")
 
+// errReadbackRetryWait: the failed revision's retry deadline has not passed.
+var errReadbackRetryWait = errors.New("the retry of the unacknowledged revision is not due")
+
+// recheck reads the store's owner and the recipient's eligibility.
+func (d *readbackDelivery) recheck(ctx context.Context, w workers.Online) (owner string, eligible bool, err error) {
+	owner, err = d.dir.WorkerOwner(ctx, w.WorkerID)
+	if err != nil {
+		return "", false, err
+	}
+	if owner != w.OwnerID {
+		return "", false, errReadbackStale
+	}
+	if d.elig == nil {
+		return owner, true, nil
+	}
+	eligible, err = d.elig.ReadbackRecipientEligible(ctx, w.WorkerID)
+	return owner, eligible, err
+}
+
+// withdraw tells the Worker to remove what it publishes (once): its recipient
+// lost the entitlement to the data.
+func (d *readbackDelivery) withdraw(ctx context.Context, w workers.Online, hubKey, owner string, st *deliveryState) error {
+	if st.cleared {
+		return nil
+	}
+	if d.now().Before(st.retryAt) {
+		return errReadbackRetryWait
+	}
+	st.rev++
+	st.sentHash, st.sentRaw, st.acked = "", nil, false
+	ack, err := d.send.SendReadback(ctx, w, proto.ReadbackApply{
+		Type: proto.TypeReadbackApply, Revision: st.rev, OwnerID: owner, WorkerID: w.WorkerID, HubKey: hubKey, Clear: true,
+	})
+	if err != nil {
+		if proto.ReadbackReason(err) == proto.ReadbackStale {
+			st.rev++
+		}
+		return err
+	}
+	st.cleared, st.retryAt = ack.Revision == st.rev, time.Time{}
+	return nil
+}
+
 // step runs one evaluation: recheck, build, and send when the content changed,
-// the last send was not acknowledged or the refresh interval passed.
-func (d *readbackDelivery) step(ctx context.Context, w workers.Online, hubKey string,
-	rev *uint64, sentHash *string, sentRaw *[]byte, acked *bool, ackedAt *time.Time) error {
+// the last send was not acknowledged and due, or the refresh interval passed.
+func (d *readbackDelivery) step(ctx context.Context, w workers.Online, hubKey string, st *deliveryState) error {
 	select {
 	case d.slots <- struct{}{}:
 		defer func() { <-d.slots }()
@@ -206,46 +278,59 @@ func (d *readbackDelivery) step(ctx context.Context, w workers.Online, hubKey st
 		return ctx.Err()
 	}
 	// The dispatch recheck: the store's owner, read now, must be the owner of
-	// this connection. The registry checks the connection itself when it opens
-	// the stream.
-	owner, err := d.dir.WorkerOwner(ctx, w.WorkerID)
+	// this connection, and the recipient (owner active, Worker approved) must
+	// still be entitled to usage data. The registry checks the connection
+	// itself when it opens the stream.
+	owner, eligible, err := d.recheck(ctx, w)
 	if err != nil {
 		return err
 	}
-	if owner != w.OwnerID {
-		return errReadbackStale
+	if !eligible {
+		return d.withdraw(ctx, w, hubKey, owner, st)
 	}
 	raw, hash, err := d.doc.documentBytes(ctx, owner)
 	if err != nil {
 		return err
 	}
-	// The document took time to build: read the owner once more right before
-	// the frame is written, so that a reassignment that committed meanwhile
-	// sends nothing built for the previous owner.
-	if now, err := d.dir.WorkerOwner(ctx, w.WorkerID); err != nil {
+	// The document took time to build: read the owner and the eligibility once
+	// more right before the frame is written, so that a reassignment or a
+	// deactivation that committed meanwhile sends nothing built for the
+	// previous state.
+	now, eligible, err := d.recheck(ctx, w)
+	if err != nil {
 		return err
-	} else if now != owner {
+	}
+	if now != owner {
 		return errReadbackStale
 	}
-	now := d.now()
+	if !eligible {
+		return d.withdraw(ctx, w, hubKey, owner, st)
+	}
+	st.cleared = false
+	at := d.now()
 	switch {
-	case *acked && hash == *sentHash && now.Sub(*ackedAt) < d.refresh:
+	case st.acked && hash == st.sentHash && at.Sub(st.ackedAt) < d.refresh:
 		return nil
-	case *sentRaw != nil && !*acked && hash == *sentHash:
+	case st.sentRaw != nil && !st.acked && hash == st.sentHash:
 		// The same content was sent and not acknowledged: send the same
-		// revision with the same bytes again; the Worker takes a repeat.
+		// revision with the same bytes again, but not before its retry
+		// deadline: an unrelated edit must not turn the backoff into a hot
+		// loop. The Worker takes a repeat.
+		if at.Before(st.retryAt) {
+			return errReadbackRetryWait
+		}
 	default:
-		*rev++
-		*sentHash, *sentRaw = hash, raw
-		*acked = false
+		st.rev++
+		st.sentHash, st.sentRaw = hash, raw
+		st.acked = false
 	}
 	ack, err := d.send.SendReadback(ctx, w, proto.ReadbackApply{
-		Type: proto.TypeReadbackApply, Revision: *rev, OwnerID: owner, WorkerID: w.WorkerID, HubKey: hubKey, Doc: *sentRaw,
+		Type: proto.TypeReadbackApply, Revision: st.rev, OwnerID: owner, WorkerID: w.WorkerID, HubKey: hubKey, Doc: st.sentRaw,
 	})
 	if err != nil {
 		return err
 	}
-	*acked, *ackedAt = ack.Revision == *rev, d.now()
+	st.acked, st.ackedAt, st.retryAt = ack.Revision == st.rev, d.now(), time.Time{}
 	return nil
 }
 
@@ -257,6 +342,11 @@ func registerReadbackDelivery(ctx context.Context, env *Env, st *store.Store, rb
 		return nil, err
 	}
 	d := newReadbackDelivery(st, rb, svc.Registry(), nil)
+	// The recipient eligibility recheck is the store's (slice A); a store
+	// without it leaves the delivery as before.
+	if e, ok := any(st).(readbackRecipients); ok {
+		d.elig = e
+	}
 	run, cancel := context.WithCancel(ctx)
 	var mu sync.Mutex
 	var group sync.WaitGroup

@@ -251,6 +251,26 @@ type Status struct {
 	TLSLine string
 }
 
+// Hub link states of [Connector.HubLink].
+const (
+	HubLinkConnected           = "connected"
+	HubLinkRegistrationPending = "registration_pending"
+	HubLinkDisconnected        = "disconnected"
+)
+
+// HubLink is the coarse usability of the Hub connection: connected, waiting
+// for the local usage registration (the Hub answers but the link is closed
+// until the owner accepts it), or disconnected.
+func (c *Connector) HubLink() string {
+	if c.Status().State == ConnConnected {
+		return HubLinkConnected
+	}
+	if c.regPending.Load() {
+		return HubLinkRegistrationPending
+	}
+	return HubLinkDisconnected
+}
+
 // ReasonNotEnrolled is the Status.Reason of an idle connector without an
 // enrollment.
 const ReasonNotEnrolled = "not enrolled"
@@ -272,6 +292,10 @@ type ConnectorConfig struct {
 	ConsumeUsageIntent     func(context.Context, string, string, string, ed25519.PublicKey, int) error
 	UsageConsent           func(context.Context, string) string
 	UsageConnectionAllowed func(context.Context, string) (bool, error)
+	// OnWelcomeStored, when set, is called after an authenticated welcome was
+	// stored and before the usage registration decides whether the link is
+	// served: the read-back receiver drops a document of another owner there.
+	OnWelcomeStored func(w HubWelcome, hubPub ed25519.PublicKey)
 	// HubURL is the configured Hub URL; empty means the Worker runs alone and
 	// the connector stays idle.
 	HubURL string
@@ -339,6 +363,9 @@ type ConnectorConfig struct {
 type Connector struct {
 	cfg        ConnectorConfig
 	usageShown atomic.Bool
+	// regPending is true while the latest welcomed connection was closed by
+	// the usage registration gate (A72).
+	regPending atomic.Bool
 	// pendingShown makes the approval box appear once per process, not on
 	// every reconnect.
 	connectedShown atomic.Bool // the connected box is shown once per process (A61)
@@ -1007,6 +1034,9 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		c.fail("cannot store the welcome data", err)
 		return true
 	}
+	if c.cfg.OnWelcomeStored != nil {
+		c.cfg.OnWelcomeStored(w, att.Pin.Pub)
+	}
 	if c.cfg.ConsumeUsageIntent != nil {
 		if err := c.cfg.ConsumeUsageIntent(ctx, c.cfg.HubURL, w.WorkerID, w.Owner, att.Pin.Pub, w.UsagePolicy); err != nil {
 			_ = att.Session.Close()
@@ -1022,6 +1052,7 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 			if w.UsagePolicy != ops.UsageVersion {
 				msg = "The Hub requires a newer usage registration policy; update this Worker."
 			}
+			c.regPending.Store(true)
 			if c.usageShown.CompareAndSwap(false, true) {
 				lines := strings.SplitAfter(ops.UsageDisclosure, ". ")
 				writeConsoleBox(c.cfg.Out, "MINION WORKER REGISTRATION", append(lines, msg)...)
@@ -1031,6 +1062,7 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 		}
 		c.usageShown.Store(false)
 	}
+	c.regPending.Store(false)
 	c.bo.Reset()
 
 	// The link context does not inherit ctx's cancellation, so that its cause

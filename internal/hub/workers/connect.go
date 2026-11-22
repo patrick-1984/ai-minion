@@ -980,28 +980,35 @@ func (h *Handler) recheckAdmitted(ctx context.Context, c *Conn, w store.WorkerRo
 	case !errors.Is(err, store.ErrWorkerNotFound):
 		logx.BestEffortUntil(ctx, h.log, slog.LevelWarn, "worker connect: the removal check failed; the connection is ended", "worker_id", w.ID, "error", err.Error())
 	default:
-		if w.Pending {
-			// An approval that committed between the read of the row and the
-			// registration found the Worker offline and could not end a
-			// connection that did not exist yet. The Worker is registered now:
-			// an approval from here on finds it online.
-			cur, rerr := h.cfg.Repository.WorkerByPub(ctx, []byte(c.res.WorkerPub))
-			if rerr != nil || !cur.Pending {
-				logx.BestEffortUntil(ctx, h.log, slog.LevelInfo, "worker was approved while it connected; the connection is ended to start it approved", "worker_id", w.ID)
-				break
-			}
-		}
-		if h.cfg.Policy == nil {
-			return
-		}
-		cur, perr := h.cfg.Policy(ctx, w)
+		// The row is read again now that the Worker is registered. An approval
+		// that committed between the read of the row and the registration found
+		// the Worker offline and could not end a connection that did not exist
+		// yet; the same holds for a reassignment: it found no registered
+		// session, so this connection would keep the welcome built for the
+		// previous owner (and the read-back delivery of the new one would never
+		// start). From here on a change finds the Worker online.
+		row, rerr := h.cfg.Repository.WorkerByPub(ctx, []byte(c.res.WorkerPub))
 		switch {
-		case perr != nil:
-			logx.BestEffortUntil(ctx, h.log, slog.LevelWarn, "worker connect: the policy check failed; the connection is ended", "worker_id", w.ID, "error", perr.Error())
-		case cur != welcomed:
-			logx.BestEffortUntil(ctx, h.log, slog.LevelInfo, "worker policy changed while it connected; the connection is ended", "worker_id", w.ID)
+		case rerr != nil && !w.Pending:
+			// The row cannot be read to compare: fail closed.
+			logx.BestEffortUntil(ctx, h.log, slog.LevelWarn, "worker connect: the owner check failed; the connection is ended", "worker_id", w.ID, "error", rerr.Error())
+		case w.Pending && (rerr != nil || !row.Pending):
+			logx.BestEffortUntil(ctx, h.log, slog.LevelInfo, "worker was approved while it connected; the connection is ended to start it approved", "worker_id", w.ID)
+		case rerr == nil && row.OwnerID != w.OwnerID:
+			logx.BestEffortUntil(ctx, h.log, slog.LevelInfo, "worker was reassigned while it connected; the connection is ended to start with its new owner", "worker_id", w.ID)
 		default:
-			return
+			if h.cfg.Policy == nil {
+				return
+			}
+			cur, perr := h.cfg.Policy(ctx, w)
+			switch {
+			case perr != nil:
+				logx.BestEffortUntil(ctx, h.log, slog.LevelWarn, "worker connect: the policy check failed; the connection is ended", "worker_id", w.ID, "error", perr.Error())
+			case cur != welcomed:
+				logx.BestEffortUntil(ctx, h.log, slog.LevelInfo, "worker policy changed while it connected; the connection is ended", "worker_id", w.ID)
+			default:
+				return
+			}
 		}
 	}
 	_ = c.sess.Close()
