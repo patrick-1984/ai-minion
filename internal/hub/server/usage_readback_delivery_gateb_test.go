@@ -19,10 +19,10 @@ type fakeElig struct {
 	err error
 }
 
-func (f *fakeElig) ReadbackRecipientEligible(context.Context, string) (bool, error) {
+func (f *fakeElig) ReadbackRecipientEligible(context.Context, string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.ok, f.err
+	return "alice", f.ok, f.err
 }
 
 func (f *fakeElig) set(ok bool) { f.mu.Lock(); f.ok = ok; f.mu.Unlock() }

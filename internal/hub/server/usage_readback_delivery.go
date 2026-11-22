@@ -50,7 +50,7 @@ type readbackDirectory interface {
 // store implements it (Store.ReadbackRecipientEligible); a directory without it
 // is treated as always eligible.
 type readbackRecipients interface {
-	ReadbackRecipientEligible(ctx context.Context, workerID string) (bool, error)
+	ReadbackRecipientEligible(ctx context.Context, workerID string) (ownerID string, ok bool, err error)
 }
 
 // readbackDelivery pushes the nominated usage document to every approved
@@ -240,7 +240,10 @@ func (d *readbackDelivery) recheck(ctx context.Context, w workers.Online) (owner
 	if d.elig == nil {
 		return owner, true, nil
 	}
-	eligible, err = d.elig.ReadbackRecipientEligible(ctx, w.WorkerID)
+	cur, eligible, err := d.elig.ReadbackRecipientEligible(ctx, w.WorkerID)
+	if err == nil && cur != owner {
+		return "", false, errReadbackStale
+	}
 	return owner, eligible, err
 }
 
