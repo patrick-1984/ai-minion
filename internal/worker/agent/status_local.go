@@ -73,6 +73,24 @@ type LiveStatusReply struct {
 	// AllowNewSessions is on or off as this Worker enforces it now; an older
 	// Worker omits it.
 	AllowNewSessions string `json:"allow_new_sessions,omitempty"`
+	// Daemon identifies the running daemon (instance, version, start time,
+	// optional PID); an older Worker omits it.
+	Daemon *DaemonInfo `json:"daemon,omitempty"`
+}
+
+// DaemonInfo is the wire contract that identifies one running Worker daemon
+// in the reply of [OpLocalStatus] (docs/schemas/local-status-daemon.schema.json).
+// Instance is one random id per daemon process; it equals the top-level
+// instance of the reply. Version is the daemon's own build version, which can
+// differ from the version of the CLI that asks. Every field but Instance may
+// be absent: absent means not known, never zero.
+type DaemonInfo struct {
+	Instance string `json:"instance"`
+	Version  string `json:"version,omitempty"`
+	// StartedAt is when the daemon started, RFC 3339 UTC.
+	StartedAt string `json:"started_at,omitempty"`
+	// PID is the operating system process id; informative only.
+	PID int `json:"pid,omitempty"`
 }
 
 // NewLiveStatusReply builds the reply of [OpLocalStatus] from live.
@@ -100,6 +118,13 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 		TLSLine:            c.TLSLine,
 		HubCheckAware:      true,
 		LogSinks:           live.LogSinks,
+	}
+	if d := live.Daemon; d != nil {
+		w := DaemonInfo{Instance: d.Instance, Version: d.Version, PID: d.PID}
+		if !d.StartedAt.IsZero() {
+			w.StartedAt = d.StartedAt.UTC().Format(time.RFC3339Nano)
+		}
+		r.Daemon = &w
 	}
 	if live.PauseKnown {
 		r.Paused = &live.Paused
@@ -138,7 +163,29 @@ func (r LiveStatusReply) LiveStatus() (LiveStatus, error) {
 		}
 		*f.out = t
 	}
+	var daemon *DaemonInfo
+	switch {
+	case r.Daemon != nil:
+		d := *r.Daemon
+		daemon = &d
+	case r.Instance != "":
+		// A daemon older than this contract knows its instance only.
+		daemon = &DaemonInfo{Instance: r.Instance}
+	}
+	var daemonStart time.Time
+	if daemon != nil && daemon.StartedAt != "" {
+		t, err := time.Parse(time.RFC3339Nano, daemon.StartedAt)
+		if err != nil {
+			return LiveStatus{}, fmt.Errorf("the Worker sent an invalid daemon.started_at: %w", err)
+		}
+		daemonStart = t
+	}
+	var dl *LiveDaemon
+	if daemon != nil {
+		dl = &LiveDaemon{Instance: daemon.Instance, Version: daemon.Version, StartedAt: daemonStart, PID: daemon.PID}
+	}
 	return LiveStatus{
+		Daemon:             dl,
 		Connector:          c,
 		HubPreviewOnly:     r.HubPreviewOnly,
 		ApprovalKnown:      r.Pending != nil,
@@ -163,6 +210,9 @@ func statusOp(ctx context.Context, stateDir, instance string, src LiveSource) (j
 	}
 	reply := NewLiveStatusReply(stateDir, live)
 	reply.Instance = instance
+	if reply.Daemon != nil {
+		reply.Daemon.Instance = instance
+	}
 	b, err := json.Marshal(reply)
 	if err != nil {
 		return nil, internalErr("encode the live status", err)

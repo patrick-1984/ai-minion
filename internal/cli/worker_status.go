@@ -140,7 +140,9 @@ are live data: status asks the running Worker for them over its local socket.
 When no Worker answers (or it cannot tell, as for the pairing code), status
 prints "unknown" for them.
 
---json prints the same facts as JSON. --wait waits up to 30 seconds for the live
+--json prints the same facts as JSON, with a daemon object (instance, version,
+start time, process id) from the running Worker; "version" stays the version of
+this command. --wait waits up to 30 seconds for the live
 connection status and prints a short startup summary.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
