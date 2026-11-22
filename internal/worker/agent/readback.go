@@ -3,10 +3,15 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -23,6 +28,12 @@ type ReadbackSink interface {
 	// of its frames. A document published under another owner, Worker or Hub
 	// key than the link's is removed then.
 	LinkAdmitted(l *Link)
+	// WelcomeStored is called when an authenticated welcome has been stored,
+	// before the usage registration (A72) decides whether the link is served.
+	// A document bound to another owner, Worker or Hub key is removed then, so
+	// that a reassignment is effective even while the registration is pending
+	// and the link is closed before any handler starts.
+	WelcomeStored(workerID, ownerID string, hubPub ed25519.PublicKey, pending bool)
 	// Apply publishes the document of f if every binding of f matches l, and
 	// acknowledges the revision.
 	Apply(l *Link, f proto.ReadbackApply) (proto.ReadbackAck, *proto.Error)
@@ -46,11 +57,48 @@ type readbackBinding struct {
 }
 
 func bindingOfLink(l *Link) (readbackBinding, bool) {
-	fp, err := identity.FingerprintOf(l.pin.Pub)
+	return bindingOf(l.Welcome.WorkerID, l.Welcome.OwnerID, l.pin.Pub)
+}
+
+func bindingOf(workerID, ownerID string, hubPub ed25519.PublicKey) (readbackBinding, bool) {
+	fp, err := identity.FingerprintOf(hubPub)
 	if err != nil {
 		return readbackBinding{}, false
 	}
-	return readbackBinding{worker: l.Welcome.WorkerID, owner: l.Welcome.OwnerID, hubKey: fp.String()}, true
+	return readbackBinding{worker: workerID, owner: ownerID, hubKey: fp.String()}, true
+}
+
+// usageClearTombstone is the file in the state directory that records a usage
+// document that could not be removed (on Windows a reader holding the file
+// open can make the unlink fail). It is retried when the publisher attaches,
+// that is on the next start, and dropped once the file is gone or replaced by
+// a document that was published under a valid fence.
+const usageClearTombstone = "usage-clear.pending"
+
+// Bounded backoff of a failed unlink.
+var usageUnlinkBackoff = []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond, 80 * time.Millisecond, 160 * time.Millisecond}
+
+// guardedUsageSetter is the optional publisher API that runs ok after the
+// document is staged and under the publisher's own lock, immediately before
+// the rename, and does not rename when it reports false.
+type guardedUsageSetter interface {
+	SetUsageIf(raw []byte, ok func() bool) error
+}
+
+// enrollmentGuard runs fn while the enrollment of generation gen is current,
+// with the enrollment lock held, after live reported true.
+type enrollmentGuard func(ctx context.Context, gen uint64, live func() bool, fn func() error) error
+
+// WithEnrollmentIfLive runs fn with the enrollment locks held, only while the
+// enrollment is still generation gen and live reports true. A wipe cannot run
+// meanwhile, and one that ran before is seen as [ErrEnrollmentChanged].
+func (e *Enrollments) WithEnrollmentIfLive(ctx context.Context, gen uint64, live func() bool, fn func() error) error {
+	return e.lockedIf(ctx, gen, func() error {
+		if live != nil && !live() {
+			return errGuardExpired
+		}
+		return fn()
+	})
 }
 
 // ReadbackReceiver publishes the usage document the Hub hands the Worker. Every
@@ -62,6 +110,12 @@ func bindingOfLink(l *Link) (readbackBinding, bool) {
 type ReadbackReceiver struct {
 	log   *slog.Logger
 	moved func(gen uint64) bool
+	guard enrollmentGuard
+	// tombDir is where the unlink tombstone lives ("" none); tmu serializes
+	// its file operations.
+	tombDir string
+	tmu     sync.Mutex
+	sleep   func(time.Duration)
 
 	// epoch counts the clears. Clear runs from the enrollment wipe, which
 	// holds the enrollment lock that Apply takes (through moved) while it
@@ -89,14 +143,61 @@ func NewReadbackReceiver(log *slog.Logger, moved func(gen uint64) bool) *Readbac
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &ReadbackReceiver{log: log, moved: moved}
+	return &ReadbackReceiver{log: log, moved: moved, sleep: time.Sleep}
 }
+
+// SetGuard gives the receiver the enrollment guard its commit runs under.
+func (r *ReadbackReceiver) SetGuard(g func(ctx context.Context, gen uint64, live func() bool, fn func() error) error) {
+	r.guard = g
+}
+
+// SetTombstoneDir sets the state directory in which a failed removal is
+// recorded for retry on the next start.
+func (r *ReadbackReceiver) SetTombstoneDir(dir string) { r.tombDir = dir }
 
 var _ ReadbackSink = (*ReadbackReceiver)(nil)
 
 // SetPublisher gives the receiver the local publisher (nil: none).
 func (r *ReadbackReceiver) SetPublisher(p *presence.Publisher) {
 	r.pubP.Store(p)
+	if p != nil && r.tombstoned() {
+		// A removal that failed (or had no publisher) earlier is done now.
+		_ = r.clearPublished()
+	}
+}
+
+func (r *ReadbackReceiver) tombPath() string {
+	if r.tombDir == "" {
+		return ""
+	}
+	return filepath.Join(r.tombDir, usageClearTombstone)
+}
+
+func (r *ReadbackReceiver) tombstoned() bool {
+	p := r.tombPath()
+	if p == "" {
+		return false
+	}
+	r.tmu.Lock()
+	defer r.tmu.Unlock()
+	_, err := os.Lstat(p)
+	return err == nil
+}
+
+func (r *ReadbackReceiver) setTombstone(on bool) {
+	p := r.tombPath()
+	if p == "" {
+		return
+	}
+	r.tmu.Lock()
+	defer r.tmu.Unlock()
+	if on {
+		if err := identity.WritePrivate(p, []byte("1\n")); err != nil {
+			r.log.Warn("the pending removal of the usage document could not be recorded", "error", err)
+		}
+		return
+	}
+	_ = os.Remove(p)
 }
 
 // SetUnavailable records that no publisher will be attached (the presence
@@ -116,15 +217,32 @@ func (r *ReadbackReceiver) Ready() bool {
 // binding: a revoke, a reset, a new identity or a change of owner.
 func (r *ReadbackReceiver) Clear() {
 	r.epoch.Add(1)
-	r.clearPublished()
+	_ = r.clearPublished()
 }
 
-func (r *ReadbackReceiver) clearPublished() {
-	if p := r.pubP.Load(); p != nil {
-		if err := p.ClearUsage(); err != nil {
-			r.log.Warn("the stored usage document could not be removed", "error", err)
-		}
+// clearPublished removes the document, retrying a failed unlink with a bounded
+// backoff. A removal that still fails (or has no publisher to run on) is
+// recorded as a tombstone and retried when the publisher next attaches.
+func (r *ReadbackReceiver) clearPublished() error {
+	p := r.pubP.Load()
+	if p == nil {
+		r.setTombstone(true)
+		return nil
 	}
+	var err error
+	for i := 0; ; i++ {
+		if err = p.ClearUsage(); err == nil {
+			r.setTombstone(false)
+			return nil
+		}
+		if i >= len(usageUnlinkBackoff) {
+			break
+		}
+		r.sleep(usageUnlinkBackoff[i])
+	}
+	r.log.Warn("the stored usage document could not be removed; the removal is retried on the next start", "error", err)
+	r.setTombstone(true)
+	return err
 }
 
 // syncLocked forgets the state a Clear made obsolete.
@@ -135,10 +253,10 @@ func (r *ReadbackReceiver) syncLocked() {
 }
 
 // clearLocked clears on behalf of the receiver itself (owner change).
-func (r *ReadbackReceiver) clearLocked() {
+func (r *ReadbackReceiver) clearLocked() error {
 	r.epoch.Add(1)
 	r.syncLocked()
-	r.clearPublished()
+	return r.clearPublished()
 }
 
 // LinkAdmitted implements [ReadbackSink].
@@ -150,7 +268,19 @@ func (r *ReadbackReceiver) LinkAdmitted(l *Link) {
 	r.rev, r.have, r.sum = 0, false, [32]byte{}
 	b, ok := bindingOfLink(l)
 	if r.bound != nil && (!ok || *r.bound != b) {
-		r.clearLocked()
+		_ = r.clearLocked()
+	}
+}
+
+// WelcomeStored implements [ReadbackSink].
+func (r *ReadbackReceiver) WelcomeStored(workerID, ownerID string, hubPub ed25519.PublicKey, pending bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.syncLocked()
+	b, ok := bindingOf(workerID, ownerID, hubPub)
+	if r.bound != nil && (pending || !ok || *r.bound != b) {
+		_ = r.clearLocked()
+		r.rev, r.have, r.sum = 0, false, [32]byte{}
 	}
 }
 
@@ -194,7 +324,7 @@ func (r *ReadbackReceiver) Apply(l *Link, f proto.ReadbackApply) (proto.Readback
 		return fenced("the document was built for another owner, Worker or Hub key")
 	}
 	if r.bound != nil && *r.bound != b {
-		r.clearLocked() // defensive: LinkAdmitted does this already
+		_ = r.clearLocked() // defensive: LinkAdmitted does this already
 	}
 	sum := sha256.Sum256(f.Doc)
 	if r.have && f.Revision == r.rev && sum == r.sum {
@@ -204,20 +334,75 @@ func (r *ReadbackReceiver) Apply(l *Link, f proto.ReadbackApply) (proto.Readback
 	if r.have && f.Revision <= r.rev {
 		return proto.ReadbackAck{}, refuse(proto.CodeConflict, proto.ReadbackStale, "the revision is not newer than the one applied")
 	}
+	if f.Clear {
+		// The Hub withdrew the document (the recipient is not entitled to it
+		// any more). Removal needs no fence: it only ever takes access away.
+		if err := r.clearLocked(); err != nil {
+			return proto.ReadbackAck{}, proto.NewError(proto.CodeInternal, "the usage document could not be removed")
+		}
+		r.rev, r.sum, r.have = f.Revision, sum, true
+		return proto.ReadbackAck{Revision: f.Revision}, nil
+	}
+	// The fence, as one predicate: asked right before the document becomes
+	// visible (inside the enrollment lock, and in the publisher right before
+	// the rename), and again after the write.
+	fence := func() bool {
+		return l == r.latest && l.Context().Err() == nil && !l.Expired() && !l.Welcome.Pending &&
+			(r.moved == nil || !r.moved(l.gen))
+	}
+	if r.guard != nil {
+		// The enrollment lock is held by the guard: the moved check above would
+		// take it again, and it is implied by the guard's own generation check.
+		fence = func() bool {
+			return l == r.latest && l.Context().Err() == nil && !l.Expired() && !l.Welcome.Pending
+		}
+	}
 	// Verbatim: the receiver keeps the bytes the Hub signed the link for.
 	ep := r.epoch.Load()
-	if err := pub.SetUsage(bytes.Clone(f.Doc)); err != nil {
+	doc := bytes.Clone(f.Doc)
+	var ended bool
+	write := func() error {
+		if !fence() {
+			ended = true
+			return errReadbackFenceEnded
+		}
+		if g, ok := any(pub).(guardedUsageSetter); ok {
+			return g.SetUsageIf(doc, func() bool {
+				if !fence() {
+					ended = true
+					return false
+				}
+				return true
+			})
+		}
+		return pub.SetUsage(doc)
+	}
+	var err error
+	if r.guard != nil {
+		err = r.guard(l.Context(), l.gen, fence, write)
+	} else {
+		err = write()
+	}
+	switch {
+	case ended, errors.Is(err, ErrEnrollmentChanged), errors.Is(err, errGuardExpired), errors.Is(err, errReadbackFenceEnded),
+		err != nil && l.Context().Err() != nil:
+		return fenced("the enrollment or the connection changed before the document was published")
+	case err != nil:
 		r.log.Warn("the usage document was not published", "error", err)
 		return proto.ReadbackAck{}, proto.NewError(proto.CodeInternal, "the usage document could not be published")
 	}
 	// A wipe that ran while the document was being written advanced the
 	// enrollment generation before it cleared; look again after the write, so
-	// that a document written after that clear is removed here.
-	if r.epoch.Load() != ep || (r.moved != nil && r.moved(l.gen)) {
-		r.clearLocked()
+	// that a document written after that clear is removed here. A certificate
+	// that ended during the write ends the document with it.
+	if r.epoch.Load() != ep || l.Expired() || l.Context().Err() != nil || (r.guard == nil && r.moved != nil && r.moved(l.gen)) {
+		_ = r.clearLocked()
 		return fenced("the enrollment or the connection changed while the document was published")
 	}
+	r.setTombstone(false) // a new document under a valid fence replaces a pending removal
 	r.bound = &b
 	r.rev, r.sum, r.have = f.Revision, sum, true
 	return proto.ReadbackAck{Revision: f.Revision}, nil
 }
+
+var errReadbackFenceEnded = errors.New("agent: the fence ended before the usage document was published")

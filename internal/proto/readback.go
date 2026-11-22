@@ -36,6 +36,11 @@ type ReadbackApply struct {
 	HubKey   string `json:"hub_key"`
 	// Doc is the minion.usage-meters/1 document, at most MaxReadbackDocBytes.
 	Doc json.RawMessage `json:"doc"`
+	// Clear asks the Worker to remove the published document instead of
+	// replacing it: the Hub sends it when the recipient is no longer entitled
+	// to it (its owner was deactivated or lost access, or it is not approved).
+	// A clear carries no Doc; it is bound and ordered like any other frame.
+	Clear bool `json:"clear,omitempty"`
 }
 
 // Check validates the bounds that do not depend on the receiving connection.
@@ -47,6 +52,10 @@ func (f ReadbackApply) Check() *Error {
 		return NewError(CodeInvalidArgument, "the read-back revision must be positive")
 	case f.OwnerID == "" || f.WorkerID == "" || f.HubKey == "":
 		return NewError(CodeInvalidArgument, "the read-back frame lacks its owner, Worker or Hub key binding")
+	case f.Clear && len(f.Doc) != 0:
+		return NewError(CodeInvalidArgument, "a read-back clear carries no document")
+	case f.Clear:
+		return nil
 	case len(f.Doc) == 0 || len(f.Doc) > MaxReadbackDocBytes:
 		return NewError(CodeInvalidArgument, fmt.Sprintf("the read-back document must be 1 to %d bytes", MaxReadbackDocBytes))
 	}

@@ -61,8 +61,14 @@ func (d opServerDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	if enr, ok := lookupService[*Enrollments](env.rt); ok && enr != nil {
 		moved = enr.Moved
 	}
-	rcv := NewReadbackReceiver(log, moved)
-	srv, err := NewOpServer(OpServerConfig{Executor: ex, Policy: policy, Readback: rcv, Logger: log})
+	// The connector module provides the receiver before it dials (so that the
+	// first hello announces the feature); a core without it gets its own.
+	rcv, haveRcv := lookupService[*ReadbackReceiver](env.rt)
+	if !haveRcv || rcv == nil {
+		rcv = NewReadbackReceiver(log, moved)
+		haveRcv = false
+	}
+	srv, err := NewOpServer(OpServerConfig{Executor: ex, Policy: policy, Readback: rcv, Revoker: c, Logger: log})
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +87,10 @@ func (d opServerDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	if err := Provide(env, srv); err != nil {
 		return nil, err
 	}
-	if err := Provide(env, rcv); err != nil {
-		return nil, err
+	if !haveRcv {
+		if err := Provide(env, rcv); err != nil {
+			return nil, err
+		}
 	}
 	if err := Provide(env, pub); err != nil {
 		return nil, err
