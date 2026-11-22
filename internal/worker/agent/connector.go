@@ -256,13 +256,23 @@ const (
 	HubLinkConnected           = "connected"
 	HubLinkRegistrationPending = "registration_pending"
 	HubLinkDisconnected        = "disconnected"
+	HubLinkNone                = "none"
 )
 
 // HubLink is the coarse usability of the Hub connection: connected, waiting
 // for the local usage registration (the Hub answers but the link is closed
-// until the owner accepts it), or disconnected.
+// until the owner accepts it) or for the Hub's approval of the Worker (a
+// welcomed connection that refuses operations), disconnected, or none (Solo:
+// no Hub is configured).
 func (c *Connector) HubLink() string {
-	if c.Status().State == ConnConnected {
+	if c.cfg.HubURL == "" {
+		return HubLinkNone
+	}
+	st := c.Status()
+	if st.State == ConnConnected && st.Welcome.Pending {
+		return HubLinkRegistrationPending
+	}
+	if st.State == ConnConnected {
 		return HubLinkConnected
 	}
 	if c.regPending.Load() {

@@ -238,3 +238,29 @@ func clonePresence(in map[string]any) map[string]any {
 	}
 	return out
 }
+
+// A repeated member name makes the validated value differ from what a reader
+// of the original bytes sees: refused anywhere in the document.
+func TestRepeatedJSONMembersAreRefused(t *testing.T) {
+	good := `{"schema":"minion.usage-meters/1","generated_at":1,"slots":[]}`
+	if err := CheckUsage([]byte(good)); err != nil {
+		t.Fatal(err)
+	}
+	for name, doc := range map[string]string{
+		"top level":            `{"schema":"minion.usage-meters/1","generated_at":1,"slots":[],"generated_at":2}`,
+		"in an object":         `{"schema":"minion.usage-meters/1","generated_at":1,"slots":[{"a":1,"a":2}]}`,
+		"unknown then dropped": `{"schema":"minion.usage-meters/1","generated_at":1,"slots":[],"owner":"x","owner":null}`,
+	} {
+		if err := CheckUsage([]byte(doc)); err == nil || !strings.Contains(err.Error(), "duplicate member") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	rec := `{"schema":"minion.presence/1","state":"running","state":"stopped"}`
+	if _, err := DecodeRecord([]byte(rec)); err == nil || !strings.Contains(err.Error(), "duplicate member") {
+		t.Errorf("record: err = %v", err)
+	}
+	// The same name in sibling objects is fine.
+	if err := rejectDuplicateKeys([]byte(`{"a":[{"x":1},{"x":2}],"b":{"x":1}}`)); err != nil {
+		t.Error(err)
+	}
+}

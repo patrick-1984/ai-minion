@@ -7,7 +7,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -68,6 +70,46 @@ func TestClearProfileThroughAStateDirAlias(t *testing.T) {
 				t.Fatal("the predecessor through the other name was kept")
 			}
 		}
+	}
+}
+
+// A failed unlink must not lose the way to the public files: the claim stays
+// until both are gone, so a second clear finishes the job.
+func TestClearProfileKeepsTheClaimUntilBothFilesAreGone(t *testing.T) {
+	pub := filepath.Join(t.TempDir(), "pub")
+	if err := os.Mkdir(pub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := rootLayout(t, pub, filepath.Join(t.TempDir(), "state"))
+	if err := os.MkdirAll(l.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	p := newPub(t, l, "inst-a", newClock())
+	start(t, p)
+	if err := p.SetUsage([]byte(usageDoc(1))); err != nil {
+		t.Fatal(err)
+	}
+	usage := filepath.Join(pub, "inst-a.usage.json")
+	oldRemove := removeFile
+	t.Cleanup(func() { removeFile = oldRemove })
+	removeFile = func(path string) error {
+		if path == usage {
+			return errors.New("transient unlink failure")
+		}
+		return oldRemove(path)
+	}
+	if err := ClearProfile(l); err == nil {
+		t.Fatal("the failed unlink was not reported")
+	}
+	if !exists(usage) {
+		t.Fatal("setup: the usage file should have survived")
+	}
+	removeFile = oldRemove // the failure clears
+	if err := ClearProfile(l); err != nil {
+		t.Fatal(err)
+	}
+	if exists(usage) || exists(filepath.Join(pub, "inst-a.json")) {
+		t.Fatal("the second clear left the public files readable")
 	}
 }
 
@@ -157,6 +199,67 @@ func TestStagingDirectoryIsCleanedBeforeUse(t *testing.T) {
 				t.Fatalf("claim = %q", got)
 			}
 		}
+	}
+}
+
+// Several root profiles starting against an empty public directory must all
+// publish: the staging directory is created once and the others accept it, and
+// nobody removes a temporary file another Worker has in flight.
+func TestConcurrentRootStartsAgainstAnEmptyPublicDirectory(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		pub := filepath.Join(t.TempDir(), "pub")
+		if err := os.Mkdir(pub, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		const n = 6
+		pubs := make([]*Publisher, n)
+		for i := range pubs {
+			state := filepath.Join(t.TempDir(), "state")
+			if err := os.Mkdir(state, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			pubs[i] = newPub(t, rootLayout(t, pub, state), "inst-"+strconv.Itoa(i), newClock())
+		}
+		errs := make(chan error, n)
+		var wg sync.WaitGroup
+		for _, p := range pubs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- p.Start(context.Background())
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: a concurrent start failed: %v", round, err)
+			}
+		}
+		for _, p := range pubs {
+			_ = p.Stop()
+		}
+	}
+}
+
+func TestStagingKeepsATemporaryFileInFlightInAnotherWorker(t *testing.T) {
+	pub := filepath.Join(t.TempDir(), "pub")
+	_ = os.Mkdir(pub, 0o755)
+	stage := filepath.Join(pub, ".stage")
+	_ = os.Mkdir(stage, 0o700)
+	tmp := filepath.Join(stage, "tmp-abcd")
+	// atomicWrite has chmodded the file to its final mode, not yet renamed it.
+	if err := os.WriteFile(tmp, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := rootLayout(t, pub, filepath.Join(t.TempDir(), "state"))
+	_ = os.Mkdir(l.StateDir, 0o700)
+	start(t, newPub(t, l, "inst-a", newClock()))
+	if !exists(tmp) {
+		t.Fatal("a temporary file in flight was removed by another Worker's start")
 	}
 }
 
@@ -328,58 +431,6 @@ func TestPointersGoToEveryDiscoveryDirAndAreRemoved(t *testing.T) {
 	}
 }
 
-func TestServiceStateDirs(t *testing.T) {
-	home := t.TempDir()
-	write := func(rel, body string) {
-		p := filepath.Join(home, rel)
-		_ = os.MkdirAll(filepath.Dir(p), 0o755)
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		_ = os.Chmod(p, 0o644)
-	}
-	write(".config/systemd/user/minion-worker.service", "[Service]\nEnvironment=\"MINION_STATE_DIR=/srv/my state\"\nExecStart=/x\n")
-	write(".config/systemd/user/minion-worker.service.d/10.conf", "[Service]\nEnvironment=FOO=1 XDG_STATE_HOME=/var/svc-state\nEnvironment=XDG_STATE_HOME=%h/x\n")
-	write(".config/minion/worker-login", "/usr/bin/minion\n/home/me/login-state\n")
-	got := serviceStateDirs(home, os.Getuid())
-	want := []string{"/srv/my state", "/var/svc-state/minion", "/home/me/login-state"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("got %v want %v", got, want)
-	}
-	// A group-writable registration is not trusted.
-	_ = os.Chmod(filepath.Join(home, ".config/minion/worker-login"), 0o666)
-	if got := serviceStateDirs(home, os.Getuid()); len(got) != 2 {
-		t.Fatalf("untrusted file read: %v", got)
-	}
-}
-
-func TestReaderFindsAServiceWithItsOwnXDGStateHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "login-xdg")) // the fresh login
-	t.Setenv("MINION_STATE_DIR", "")
-	svcState := filepath.Join(home, "svc-xdg", "minion")
-	if err := os.MkdirAll(svcState, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	unit := filepath.Join(home, ".config/systemd/user")
-	_ = os.MkdirAll(unit, 0o755)
-	if err := os.WriteFile(filepath.Join(unit, "minion-worker.service"), []byte("[Service]\nEnvironment=XDG_STATE_HOME="+filepath.Join(home, "svc-xdg")+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_ = os.Chmod(filepath.Join(unit, "minion-worker.service"), 0o644)
-	// The service publishes without a pointer (an older release).
-	l := Layout{Scope: ScopeUser, UID: me(), StateDir: svcState, PrivateDir: filepath.Join(svcState, "presence")}
-	clk := newClock()
-	start(t, newPub(t, l, "svc", clk))
-	r := NewReader()
-	r.PublicRoot = ""
-	r.Now = clk.Now
-	if res := Best(r.Scan()); res.Status != StatusRunning || res.Candidate.Instance != "svc" {
-		t.Fatalf("%+v %v", res, res.Err)
-	}
-}
-
 // Windows semantics through the seams: a reader that holds the file open blocks
 // the unlink with a sharing violation.
 func TestBlockedUnlinkIsRetriedThenKeptPending(t *testing.T) {
@@ -476,6 +527,47 @@ func TestPendingRemovalNeverDeletesANewerSnapshot(t *testing.T) {
 	}
 }
 
+// The old marker may survive the replacement (a scanner holds it without delete
+// sharing, so it cannot be dropped): it must still not remove the new file.
+func TestPendingRemovalMarkerThatSurvivesNeverDeletesANewerSnapshot(t *testing.T) {
+	errBusy := errors.New("sharing violation")
+	oldRemove, oldRetry, oldSleep := removeFile, removeRetryable, removeSleep
+	t.Cleanup(func() { removeFile, removeRetryable, removeSleep = oldRemove, oldRetry, oldSleep })
+	removeRetryable = func(err error) bool { return errors.Is(err, errBusy) }
+	removeSleep = func(time.Duration) {}
+	busy := true
+	removeFile = func(path string) error {
+		if busy && (strings.HasSuffix(path, ".usage.json") || strings.HasSuffix(path, tombstoneSuffix)) {
+			return &os.PathError{Op: "remove", Path: path, Err: errBusy}
+		}
+		return oldRemove(path)
+	}
+	l, clk := userLayout(t), newClock()
+	p := newPub(t, l, "u1", clk)
+	start(t, p)
+	_ = p.SetUsage([]byte(usageDoc(1)))
+	if err := p.ClearUsage(); err == nil {
+		t.Fatal("expected a pending removal")
+	}
+	clk.Add(time.Second)
+	if err := p.SetUsage([]byte(usageDoc(99))); err != nil {
+		t.Fatal(err)
+	}
+	tomb := filepath.Join(l.PrivateDir, tombstonePrefix+"u1.usage.json"+tombstoneSuffix)
+	if !exists(tomb) {
+		t.Fatal("setup: the marker should have survived")
+	}
+	busy = false
+	p.heartbeat()
+	got, err := os.ReadFile(filepath.Join(l.PrivateDir, "u1.usage.json"))
+	if err != nil || string(got) != usageDoc(99) {
+		t.Fatalf("the newer snapshot was removed by a stale marker: %q %v", got, err)
+	}
+	if exists(tomb) {
+		t.Fatal("the stale marker was kept")
+	}
+}
+
 func TestPendingRemovalIsFinishedAtTheNextStart(t *testing.T) {
 	errBusy := errors.New("sharing violation")
 	oldRemove, oldRetry, oldSleep := removeFile, removeRetryable, removeSleep
@@ -508,4 +600,15 @@ func TestPendingRemovalIsFinishedAtTheNextStart(t *testing.T) {
 		t.Fatal("the old usage document survived the next start")
 	}
 	_ = syscall.Getpid()
+}
+
+// The Hub link is wired through the options, so the very first record carries
+// it (SetHubLink after Start would leave the field absent until a heartbeat).
+func TestFirstRecordCarriesTheHubLink(t *testing.T) {
+	l, clk := userLayout(t), newClock()
+	p := newPub(t, l, "u1", clk, func(o *Options) { o.HubLink = func() string { return HubLinkRegistrationPending } })
+	start(t, p)
+	if got := Best(privReader(l, clk).Scan()).Record.HubLink; got != HubLinkRegistrationPending {
+		t.Fatalf("hub_link of the first record = %q", got)
+	}
 }

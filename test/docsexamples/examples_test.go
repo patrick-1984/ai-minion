@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -204,10 +205,20 @@ func TestTmuxProgressBar(t *testing.T) {
 	}
 }
 
+// presenceDir is where the guide's Python example looks for the account's
+// records when HOME and XDG_STATE_HOME point into state: the XDG state home on
+// Linux, Application Support on macOS.
+func presenceDir(state string) string {
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(state, "Library", "Application Support", "minion", "presence")
+	}
+	return filepath.Join(state, "minion", "presence")
+}
+
 // WritePresence stores a record like a user Worker does: directory 0700, file 0600.
 func WritePresence(t testing.TB, state string, rec map[string]any) {
 	t.Helper()
-	dir := filepath.Join(state, "minion", "presence")
+	dir := presenceDir(state)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +236,7 @@ func RunPython(t testing.TB, state string) string {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("python3", "-I", py)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(state, "nohome"), "XDG_STATE_HOME=" + state}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + state, "XDG_STATE_HOME=" + state}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("python: %v: %s", err, out)

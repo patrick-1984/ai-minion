@@ -32,6 +32,9 @@ type Options struct {
 	// HubOrigin returns the configured Hub URL (sanitized before publication);
 	// nil or "" publishes none (Solo).
 	HubOrigin func() string
+	// HubLink reports the coarse Hub connection state (the HubLink* values; see
+	// [Publisher.SetHubLink]); set here it is read for the first record too.
+	HubLink func() string
 	// Now, Interval, StaleAfterS and Retention default to the clock, 30 s, 90
 	// and one hour. Tests set them.
 	Now         func() time.Time
@@ -83,7 +86,7 @@ func New(o Options) (*Publisher, error) {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Publisher{o: o, b: backend{o.Layout}}, nil
+	return &Publisher{o: o, b: backend{o.Layout}, hubLink: o.HubLink}, nil
 }
 
 // Instance returns the instance id.
@@ -108,8 +111,8 @@ func (p *Publisher) record(state string, now time.Time) []byte {
 }
 
 // SetHubLink sets the function that reports the coarse Hub connection state
-// the record publishes: connected, registration_pending or disconnected (the
-// HubLink* values). It is read on every publication (start, heartbeat, stop
+// the record publishes: connected, registration_pending, disconnected or none
+// (the HubLink* values; [Options].HubLink sets it before the first record). It is read on every publication (start, heartbeat, stop
 // marker); nil, "" or an unknown value publishes no hub_link. The state carries
 // no owner, credential or error text.
 func (p *Publisher) SetHubLink(f func() string) {
@@ -333,7 +336,9 @@ func ClearProfile(l Layout) error {
 				errs = append(errs, err)
 			}
 		}
-		if b.public() {
+		// The claim is the only way to find the public files again: it goes
+		// only when both are gone, so that a second clear can finish the job.
+		if b.public() && len(errs) == 0 {
 			b.dropClaim()
 		}
 	}

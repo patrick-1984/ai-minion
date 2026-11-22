@@ -356,3 +356,21 @@ func TestOpServerRoutesALiveRevokeToTheWipeAndClearsUsage(t *testing.T) {
 		t.Fatal("the revoked Worker still publishes its usage document")
 	}
 }
+
+// A welcomed connection of a Worker the Hub has not approved refuses
+// operations: it is not a usable Hub link. Solo has no Hub at all.
+func TestHubLinkSaysPendingApprovalAndSolo(t *testing.T) {
+	f := newConnFixture(t)
+	w := okWelcome()
+	w.Pending = true
+	f.dial.script(f.welcomeStep(newFakeSession(), w))
+	f.run()
+	f.waitState(ConnConnected)
+	if got := f.conn.HubLink(); got != HubLinkRegistrationPending {
+		t.Fatalf("hub link while the approval is pending = %q, want registration_pending", got)
+	}
+	solo := newConnFixture(t, func(c *ConnectorConfig) { c.HubURL = "" })
+	if got := solo.conn.HubLink(); got != HubLinkNone {
+		t.Fatalf("hub link of a Solo Worker = %q, want none", got)
+	}
+}

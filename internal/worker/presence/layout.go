@@ -178,11 +178,3 @@ func (l Layout) profileKey() string {
 	}
 	return hashKey("path:" + phys)
 }
-
-// stageOrDir is the directory where files are staged (tests).
-func (l Layout) stageOrDir() string {
-	if l.Scope == ScopeRoot {
-		return filepath.Join(l.PublicRoot, stageDirName)
-	}
-	return l.PrivateDir
-}

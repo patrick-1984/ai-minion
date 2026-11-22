@@ -21,12 +21,6 @@ const (
 
 func init() { RegisterModule(ModulePresence, OrderPresence, startPresence) }
 
-// hubLinkSetter is the optional publisher API that takes the function the
-// record's hub_link field is read from on every publication.
-type hubLinkSetter interface {
-	SetHubLink(func() string)
-}
-
 // presenceLayout is the seam through which tests choose where the module
 // publishes (an injected temporary root).
 var presenceLayout = presence.DefaultLayout
@@ -53,8 +47,17 @@ func startPresence(ctx context.Context, env *Env) (StopFunc, error) {
 		unavailable()
 		return nil, nil
 	}
+	// The coarse usability of the Hub connection (connected, registration
+	// pending, disconnected, none) is wired before the first record is written,
+	// so that a reader of a public record can tell a working Worker from one
+	// that waits for its approval or local usage registration.
+	var hubLink func() string
+	if conn, ok := lookupService[*Connector](env.rt); ok && conn != nil {
+		hubLink = conn.HubLink
+	}
 	pub, err := presence.New(presence.Options{
-		Layout: layout, Instance: env.rt.Instance(), Version: version.Version,
+		HubLink: hubLink,
+		Layout:  layout, Instance: env.rt.Instance(), Version: version.Version,
 		StartedAt: env.rt.StartedAt(), PID: os.Getpid(), Logger: log,
 		HubOrigin: func() string {
 			if s.Resolver == nil {
@@ -74,15 +77,6 @@ func startPresence(ctx context.Context, env *Env) (StopFunc, error) {
 		log.Warn("the presence record is not published", "error", err)
 		unavailable()
 		return nil, nil
-	}
-	// The coarse usability of the Hub connection (connected, registration
-	// pending, disconnected) goes to the publisher through its optional
-	// hub-link setter, so that a reader of a public record can tell a working
-	// Worker from one that waits for its local usage registration.
-	if conn, ok := lookupService[*Connector](env.rt); ok && conn != nil {
-		if hl, ok := any(pub).(hubLinkSetter); ok {
-			hl.SetHubLink(conn.HubLink)
-		}
 	}
 	if err := Provide(env, pub); err != nil {
 		_ = pub.Stop()
