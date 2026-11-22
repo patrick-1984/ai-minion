@@ -85,13 +85,13 @@ func TestRenameWithRetryIsBounded(t *testing.T) {
 		}
 		return nil
 	}
-	if err := renameWithRetry("a", "b"); err != nil || calls != 5 {
+	if err := renameWithRetry("a", "b", nil); err != nil || calls != 5 {
 		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 	// Gives up after a bound.
 	calls = 0
 	renameFile = func(string, string) error { calls++; return errors.New("sharing violation") }
-	if err := renameWithRetry("a", "b"); err == nil || calls != renameAttempts {
+	if err := renameWithRetry("a", "b", nil); err == nil || calls != renameAttempts {
 		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 	if slept > 2*time.Second+5*time.Second { // sanity: well bounded
@@ -100,8 +100,30 @@ func TestRenameWithRetryIsBounded(t *testing.T) {
 	// A non-retryable error returns at once.
 	calls = 0
 	renameRetryable = func(error) bool { return false }
-	if err := renameWithRetry("a", "b"); err == nil || calls != 1 {
+	if err := renameWithRetry("a", "b", nil); err == nil || calls != 1 {
 		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+}
+
+// The authorization is asked before every attempt, not once before the loop: a
+// condition that ends while a reader holds the destination stops the rename.
+func TestRenameRetryRechecksTheGateBeforeEveryAttempt(t *testing.T) {
+	oldRename, oldRetry, oldSleep := renameFile, renameRetryable, renameSleep
+	defer func() { renameFile, renameRetryable, renameSleep = oldRename, oldRetry, oldSleep }()
+	renameSleep = func(time.Duration) {}
+	renameRetryable = func(error) bool { return true }
+	renamed := 0
+	open := true
+	renameFile = func(string, string) error {
+		if renamed++; renamed == 1 {
+			open = false // the Hub link expires while the reader holds the file
+			return errors.New("sharing violation")
+		}
+		return nil // the reader let go
+	}
+	err := renameWithRetry("a", "b", func() bool { return open })
+	if !errors.Is(err, errGateClosed) || renamed != 1 {
+		t.Fatalf("err=%v renames=%d, want the gate to stop the second attempt", err, renamed)
 	}
 }
 

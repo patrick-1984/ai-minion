@@ -103,7 +103,7 @@ func TestGuideExamplesRunAgainstARealWorker(t *testing.T) {
 
 	// Put a document with a headline where the Hub's would be, and draw the bar.
 	now := time.Now().UnixMilli()
-	meters := `{"schema":"minion.usage-meters/1","generated_at":` + itoa(now) + `,"slots":[{"slot":{"scope":"user","kind":"provider","label":"Claude Max"},"headline":"m1","meters":[{"id":"m1","metric":"anthropic.general.5h","label":"5 h","unit":"percent","used_percent":38,"remaining_percent":62,"expires_at":` + itoa(now+600000) + `,"coverage":{"known":1,"stale":0,"unknown":0}}]}]}`
+	meters := `{"schema":"minion.usage-meters/1","generated_at":` + itoa(now) + `,"slots":[{"slot":{"scope":"user","kind":"provider","label":"Claude Max"},"headline":"m1","meters":[{"id":"m1","metric":"anthropic.general.5h","label":"5 h","unit":"percent","used_percent":38,"remaining_percent":62,"observed_at":` + itoa(now-1000) + `,"expires_at":` + itoa(now+600000) + `,"coverage":{"known":1,"stale":0,"unknown":0}}]}]}`
 	if err := os.WriteFile(usageFile, []byte(meters), 0o600); err != nil {
 		t.Fatal(err)
 	}

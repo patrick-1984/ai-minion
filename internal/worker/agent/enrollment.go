@@ -678,8 +678,13 @@ func (e *Enrollments) wipe(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	_ = e.saveHubURL("") // the address belongs to the enrollment that ends here
+	// The row goes first: the cleanup of the published document may wait for a
+	// reader (Windows) for longer than the caller's deadline, and the pairing
+	// must be gone by then. The generation moved already, so nothing new is
+	// published meanwhile.
+	wiped, err := e.repo.WipeEnrollment(ctx)
 	e.clearPublished()
-	return e.repo.WipeEnrollment(ctx)
+	return wiped, err
 }
 
 // Watch returns the current generation of the enrollment and a channel that

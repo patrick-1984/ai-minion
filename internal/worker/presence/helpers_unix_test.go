@@ -2,7 +2,11 @@
 
 package presence
 
-import "github.com/patrick-1984/ai-minion/internal/config"
+import (
+	"path/filepath"
+
+	"github.com/patrick-1984/ai-minion/internal/config"
+)
 
 type pathEnvT = pe
 
@@ -17,4 +21,12 @@ func (p pe) e() config.PathEnv {
 		}
 		return ""
 	}, HomeDir: func() (string, error) { return "/home/x", nil }}
+}
+
+// stageOrDir is the directory where files are staged (tests).
+func (l Layout) stageOrDir() string {
+	if l.Scope == ScopeRoot {
+		return filepath.Join(l.PublicRoot, stageDirName)
+	}
+	return l.PrivateDir
 }

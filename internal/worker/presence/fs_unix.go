@@ -191,8 +191,9 @@ var claimNameRE = regexp.MustCompile(`^profile-[0-9a-f]{16}$`)
 // owned by root with mode 0700 exactly (it may have been writable by others
 // once, and may hold links planted in it) is moved aside whole and replaced by
 // a new one. In a good directory every entry other than a root-owned private
-// claim note (profile-<hex>), or a temporary file of a writer (tmp-*, swept by
-// age later), is removed.
+// claim note (profile-<hex>), or a root-owned temporary file of a writer (tmp-*,
+// of any mode: it may be in flight in another Worker; swept by age later), is
+// removed.
 func freshStage(root, stage string, rootUID int) error {
 	fi, err := os.Lstat(stage)
 	switch {
@@ -208,7 +209,7 @@ func freshStage(root, stage string, rootUID int) error {
 			return err
 		}
 		aside := filepath.Join(root, ".stage-old-"+hex.EncodeToString(rnd[:]))
-		if err := os.Rename(stage, aside); err != nil {
+		if err := os.Rename(stage, aside); err != nil && !isNotExist(err) {
 			return fmt.Errorf("the staging directory %s cannot be trusted and cannot be moved aside: %w", stage, err)
 		}
 		if err := mkStage(stage); err != nil {
@@ -231,10 +232,13 @@ func freshStage(root, stage string, rootUID int) error {
 			continue
 		}
 		eo, _ := fileUID(efi)
-		keep := efi.Mode().IsRegular() && eo == rootUID && efi.Mode().Perm()&0o077 == 0 &&
-			(claimNameRE.MatchString(n) || strings.HasPrefix(n, "tmp-"))
+		// A temporary file may be in flight in another Worker (it is chmodded
+		// before its rename); the directory is root-only, so it exposes nothing
+		// and sweepTemps removes it by age.
+		keep := efi.Mode().IsRegular() && eo == rootUID &&
+			((claimNameRE.MatchString(n) && efi.Mode().Perm()&0o077 == 0) || strings.HasPrefix(n, "tmp-"))
 		if !keep {
-			if err := os.RemoveAll(filepath.Join(stage, n)); err != nil {
+			if err := os.RemoveAll(filepath.Join(stage, n)); err != nil && !isNotExist(err) {
 				return err
 			}
 		}
@@ -242,8 +246,13 @@ func freshStage(root, stage string, rootUID int) error {
 	return nil
 }
 
+// mkStage creates the staging directory. One that another Worker created in
+// the meantime is fine: the caller verifies it.
 func mkStage(stage string) error {
 	if err := os.Mkdir(stage, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
 		return err
 	}
 	return os.Chmod(stage, 0o700) // the umask must not matter
@@ -352,11 +361,7 @@ func atomicWrite(stageDir, destDir, name string, data []byte, mode os.FileMode, 
 		_ = os.Remove(tmp)
 		return err
 	}
-	if gate != nil && !gate() {
-		_ = os.Remove(tmp)
-		return errGateClosed
-	}
-	if err := renameWithRetry(tmp, filepath.Join(destDir, name)); err != nil {
+	if err := renameWithRetry(tmp, filepath.Join(destDir, name), gate); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}

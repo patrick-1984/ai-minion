@@ -356,3 +356,117 @@ func TestOpServerRoutesALiveRevokeToTheWipeAndClearsUsage(t *testing.T) {
 		t.Fatal("the revoked Worker still publishes its usage document")
 	}
 }
+
+// A welcomed connection of a Worker the Hub has not approved refuses
+// operations: it is not a usable Hub link. Solo has no Hub at all.
+func TestHubLinkSaysPendingApprovalAndSolo(t *testing.T) {
+	f := newConnFixture(t)
+	w := okWelcome()
+	w.Pending = true
+	f.dial.script(f.welcomeStep(newFakeSession(), w))
+	f.run()
+	f.waitState(ConnConnected)
+	if got := f.conn.HubLink(); got != HubLinkRegistrationPending {
+		t.Fatalf("hub link while the approval is pending = %q, want registration_pending", got)
+	}
+	solo := newConnFixture(t, func(c *ConnectorConfig) { c.HubURL = "" })
+	if got := solo.conn.HubLink(); got != HubLinkNone {
+		t.Fatalf("hub link of a Solo Worker = %q, want none", got)
+	}
+}
+
+// The pairing row is deleted before the published document is cleaned up: a
+// cleanup that waits for a reader must not run the revoke out of its deadline
+// with the pairing still in place.
+func TestWipeDeletesTheEnrollmentBeforeCleaningThePublishedDocument(t *testing.T) {
+	f := newConnFixture(t)
+	var rowGoneAtCleanup bool
+	f.enr.SetWipeHook(func() {
+		_, err := f.st.LoadEnrollment(context.Background())
+		rowGoneAtCleanup = err != nil
+	})
+	if _, err := f.enr.Wipe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !rowGoneAtCleanup {
+		t.Fatal("the cleanup ran while the enrollment row still existed")
+	}
+}
+
+// Attaching the publisher is serialized with Apply and the pending removal runs
+// before the publisher is visible: a frame cannot write a document that the
+// old removal then deletes.
+func TestReadbackSetPublisherRunsTheOldRemovalBeforeExposingIt(t *testing.T) {
+	e := newRBEnv(t)
+	tomb := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tomb, usageClearTombstone), []byte("1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReadbackReceiver(nil, nil)
+	r.SetTombstoneDir(tomb)
+	r.mu.Lock() // an Apply in progress
+	done := make(chan struct{})
+	go func() { r.SetPublisher(e.pub); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("SetPublisher did not wait for the receiver lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if r.pubP.Load() != nil {
+		t.Fatal("the publisher was exposed while an Apply held the lock")
+	}
+	r.mu.Unlock()
+	<-done
+	if r.pubP.Load() == nil {
+		t.Fatal("the publisher was not attached")
+	}
+	if _, err := os.Stat(filepath.Join(tomb, usageClearTombstone)); err == nil {
+		t.Fatal("the pending removal was not done")
+	}
+}
+
+// A verified Hub pin change withdraws the document of the previous pin even
+// when the new Hub answers not_enrolled (no welcome is stored then).
+func TestPinChangeClearsUsageEvenWhenTheHubAnswersNotEnrolled(t *testing.T) {
+	var cleared atomic.Int32
+	f := newConnFixture(t, func(c *ConnectorConfig) { c.OnHubPinChanged = func() { cleared.Add(1) } })
+	newHub, err := identity.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.dial.script(func(ConnectParams) (*Attempt, error) {
+		return &Attempt{
+			Pin: identity.Pin{Pub: newHub.Public(), Seq: 2}, PinChanged: true, TranscriptHash: randomHash(),
+			Reply: Reply{Type: proto.TypeNotEnrolled}, Session: newFakeSession(),
+		}, nil
+	})
+	f.run()
+	f.waitState(ConnBackoff)
+	if cleared.Load() == 0 {
+		t.Fatal("the pin changed but the previous pin's document was not withdrawn")
+	}
+}
+
+// The registration-pending flag belongs to one enrollment: an external wipe
+// ends it.
+func TestHubLinkForgetsRegistrationPendingAfterAnEnrollmentWipe(t *testing.T) {
+	f := newConnFixture(t)
+	f.conn = f.newConnector(func(c *ConnectorConfig) {
+		c.UsageConnectionAllowed = f.st.UsageConnectionAllowed
+		c.Out = &logBuf{}
+	})
+	w := okWelcome()
+	w.UsagePolicy = ops.UsageVersion
+	f.dial.script(f.welcomeStep(newFakeSession(), w))
+	f.run()
+	f.waitState(ConnBackoff)
+	if f.conn.HubLink() != HubLinkRegistrationPending {
+		t.Fatalf("setup: hub link = %q", f.conn.HubLink())
+	}
+	if _, err := f.enr.Wipe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.conn.HubLink(); got == HubLinkRegistrationPending {
+		t.Fatalf("hub link = %q after the enrollment was wiped", got)
+	}
+}

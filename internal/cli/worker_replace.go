@@ -818,13 +818,20 @@ func replaceTransaction(cmd *cobra.Command, deps workerUpDeps, det service.Detec
 		}
 		// The failed candidate may have received usage from the Hub already; its
 		// public copy must not outlive it.
-		if cerr := rd.clearPublishedFiles(old.StateDir); cerr != nil {
-			_, _ = fmt.Fprintf(stderr, "The published files of the failed new Worker could not be removed (%v); run `minion worker reset` to clear them.\n", cerr)
-		}
+		candidateErr := rd.clearPublishedFiles(old.StateDir)
 		if rerr := restoreTree(original, old.StateDir); rerr != nil {
 			return fmt.Errorf("%w; the old profile could NOT be restored (%v): its copy is in %s, move it back over %s", cause, rerr, original, old.StateDir)
 		}
+		if candidateErr != nil {
+			// The public claim follows the directory's identity, which the
+			// restore changed: finish the candidate's cleanup through the
+			// directory restoreTree set aside, which still has it.
+			candidateErr = rd.clearPublishedFiles(filepath.Join(filepath.Dir(original), "candidate"))
+		}
 		_ = os.RemoveAll(backup)
+		if candidateErr != nil {
+			_, _ = fmt.Fprintf(stderr, "The published files of the failed new Worker could not be removed (%v); they stay readable until they are cleared.\n", candidateErr)
+		}
 		// The restored snapshot carries the old published files; they belong to
 		// the pairing the replacement ended and are not brought back.
 		if cerr := rd.clearPublishedFiles(old.StateDir); cerr != nil {

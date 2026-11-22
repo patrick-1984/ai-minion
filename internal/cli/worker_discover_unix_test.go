@@ -397,6 +397,23 @@ func TestDiscoverSocketFallbackDeduplicatesByInstance(t *testing.T) {
 	}
 }
 
+// The authenticated socket answering for the instance of a stale record means
+// it runs (a reader may be blocking the heartbeat replacement); the record's
+// metadata stays and the Worker is listed once.
+func TestDiscoverLiveSocketOverridesAStaleHeartbeat(t *testing.T) {
+	e := newDiscoverEnv(t)
+	e.write(e.private, "svc.json", 0o600, e.rec("svc", "user", "running", 10*time.Minute, nil))
+	live := fakeLive{ls: agent.LiveStatus{Daemon: &agent.LiveDaemon{Instance: "svc", Version: "v1"}}}
+	doc, _, code := e.run(live, "--json")
+	if code != 0 || len(doc.Workers) != 1 {
+		t.Fatalf("code %d %+v", code, doc)
+	}
+	w := doc.Workers[0]
+	if w.Status != presence.StatusRunning || w.Source != presence.SourcePrivate || w.UpdatedAgeS == nil || *w.UpdatedAgeS < 600 {
+		t.Fatalf("want running with the disk metadata kept: %+v", w)
+	}
+}
+
 func TestDiscoverRejectsATrailingBracketAndMissingStartedAt(t *testing.T) {
 	forUmasks(t, func(t *testing.T) {
 		e := newDiscoverEnv(t)

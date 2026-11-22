@@ -2,6 +2,7 @@ package presence
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,11 +77,14 @@ func (b backend) remove(name string) error {
 		}
 		return err
 	}
-	err = removeWithRetry(filepath.Join(dir, name))
+	path := filepath.Join(dir, name)
+	sig := fileSig(path)
+	err = removeWithRetry(path)
 	if err != nil && !b.public() && errors.Is(err, errStillInUse) {
 		// Still held open (Windows): keep the removal pending so that a later
-		// heartbeat or the next start finishes it.
-		if werr := writePrivate(dir, tombstonePrefix+name+tombstoneSuffix, []byte("x"), b.l.UID, nil); werr != nil {
+		// heartbeat or the next start finishes it. The marker names the exact
+		// file it is for: a newer file at the same path is never removed.
+		if werr := writePrivate(dir, tombstonePrefix+name+tombstoneSuffix, []byte(sig), b.l.UID, nil); werr != nil {
 			return errors.Join(err, werr)
 		}
 	}
@@ -91,6 +95,16 @@ const (
 	tombstonePrefix = "pending-remove-"
 	tombstoneSuffix = ".del"
 )
+
+// fileSig names the current content of path by modification time and size ("" when
+// it cannot be read). A replacement changes it.
+func fileSig(path string) string {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d %d", fi.ModTime().UnixNano(), fi.Size())
+}
 
 // retryPending finishes removals that were held up by a reader. One attempt per
 // file, no waiting.
@@ -113,8 +127,17 @@ func (b backend) retryPending() {
 		}
 		target = strings.TrimSuffix(target, tombstoneSuffix)
 		if _, _, valid := splitName(target); valid {
-			if err := removeFile(filepath.Join(dir, target)); err != nil && !isNotExist(err) {
-				continue
+			path := filepath.Join(dir, target)
+			raw, rerr := readPrivateFile(dir, e.Name(), b.l.UID, 64)
+			// Only the file the marker was written for goes; a newer one at the
+			// same path (the marker could not be dropped then) stays.
+			if rerr != nil {
+				continue // try again later
+			}
+			if string(raw) == fileSig(path) {
+				if err := removeFile(path); err != nil && !isNotExist(err) {
+					continue
+				}
 			}
 		}
 		_ = removeFile(filepath.Join(dir, e.Name()))

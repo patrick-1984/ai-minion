@@ -99,3 +99,36 @@ func TestReplaceClearsRealPublishedFiles(t *testing.T) {
 		t.Fatalf("usage kept: %v", err)
 	}
 }
+
+// When the candidate's published files cannot be removed before the old tree
+// comes back, the cleanup is retried through the directory that was set aside:
+// the claim follows that directory's identity, not the restored one's.
+func TestReplaceRollbackRetriesTheCandidateCleanupAfterTheRestore(t *testing.T) {
+	r := newReplaceRig(t)
+	dir := r.stateDir()
+	var calls []string
+	r.deps.replace.clearPublished = func(d string) error {
+		if _, err := os.Stat(filepath.Join(d, "candidate-marker")); err == nil {
+			calls = append(calls, "candidate:"+filepath.Base(d))
+			if d == dir {
+				return errors.New("transient unlink failure")
+			}
+			return nil
+		}
+		calls = append(calls, "old")
+		return nil
+	}
+	r.hook("enroll", func(agent.Settings) error {
+		if err := os.WriteFile(filepath.Join(dir, "candidate-marker"), []byte("x"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("the invitation was refused")
+	})
+	if _, err := r.run(t, "--replace"); err == nil {
+		t.Fatal("expected a failure")
+	}
+	want := "old,candidate:" + filepath.Base(dir) + ",candidate:candidate,old"
+	if got := strings.Join(calls, ","); got != want {
+		t.Fatalf("clear calls = %s, want %s", got, want)
+	}
+}

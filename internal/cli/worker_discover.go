@@ -132,7 +132,10 @@ func runWorkerDiscover(cmd *cobra.Command, deps workerDiscoverDeps, asJSON, with
 			if ls.Daemon != nil {
 				f.Instance, f.DaemonVersion, f.PID = ls.Daemon.Instance, ls.Daemon.Version, ls.Daemon.PID
 			}
-			if f.Instance == "" || !hasInstance(doc.Workers, f.Instance) {
+			// The authenticated socket answering for an instance that has a record
+			// means it runs, whatever its heartbeat says (the record's metadata
+			// stays); otherwise the socket result is added.
+			if f.Instance == "" || !promoteStale(doc.Workers, f.Instance) {
 				doc.Workers = append([]presence.Found{f}, doc.Workers...)
 				doc.Note = "a running Worker without a presence record answered on its local socket"
 			}
@@ -159,18 +162,21 @@ func runWorkerDiscover(cmd *cobra.Command, deps workerDiscoverDeps, asJSON, with
 	return &exitCodeError{DiscoverNone}
 }
 
-func hasInstance(ws []presence.Found, id string) bool {
-	for _, w := range ws {
-		if w.Instance == id && w.Status != presence.StatusUnavailable {
-			return true
+// promoteStale marks the stale record of instance id as running, because the
+// instance itself just answered on its socket. It reports whether the instance
+// has a record at all.
+func promoteStale(ws []presence.Found, id string) bool {
+	found := false
+	for i := range ws {
+		if ws[i].Instance != id || ws[i].Status == presence.StatusUnavailable {
+			continue
+		}
+		found = true
+		if ws[i].Status == presence.StatusStale {
+			ws[i].Status = presence.StatusRunning
 		}
 	}
-	return false
-}
-
-func discoverFail(cmd *cobra.Command, err error) int {
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "worker discover: %v\n", err)
-	return DiscoverError
+	return found
 }
 
 // stateDir resolves only the explicitly selected state directory (flag, then

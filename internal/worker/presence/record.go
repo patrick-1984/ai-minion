@@ -116,9 +116,12 @@ func (r Record) Validate() error {
 // recordRequired are the fields every record must carry.
 var recordRequired = []string{"schema", "instance", "daemon_version", "started_at", "updated_at", "stale_after_s", "state", "os_scope"}
 
-// decodeStrict decodes exactly one JSON value into v: unknown fields and any
-// data after the value are errors.
+// decodeStrict decodes exactly one JSON value into v: unknown fields, repeated
+// member names and any data after the value are errors.
 func decodeStrict(b []byte, v any) error {
+	if err := rejectDuplicateKeys(b); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {

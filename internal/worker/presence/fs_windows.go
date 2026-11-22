@@ -70,11 +70,7 @@ func writePrivate(dir, name string, data []byte, uid int, gate func() bool) erro
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if gate != nil && !gate() {
-		_ = os.Remove(tmpName)
-		return errGateClosed
-	}
-	if err := renameWithRetry(tmpName, filepath.Join(dir, name)); err != nil {
+	if err := renameWithRetry(tmpName, filepath.Join(dir, name), gate); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}

@@ -24,6 +24,9 @@ func CheckUsage(raw []byte) error {
 	if len(raw) == 0 || len(raw) > MaxUsageSize {
 		return fmt.Errorf("a usage document must be 1 to %d bytes", MaxUsageSize)
 	}
+	if err := rejectDuplicateKeys(raw); err != nil {
+		return fmt.Errorf("the usage document is ambiguous: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var doc any
@@ -48,6 +51,54 @@ func CheckUsage(raw []byte) error {
 		return fmt.Errorf("usage document: %w", err)
 	}
 	return nil
+}
+
+// rejectDuplicateKeys fails when any JSON object in b repeats a member name.
+// The map decoders keep the last value, so the validated value would differ
+// from what a reader of the original bytes sees. Malformed JSON is left to the
+// decoder that follows.
+func rejectDuplicateKeys(b []byte) error {
+	type frame struct {
+		obj     bool
+		wantKey bool
+		keys    map[string]bool
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	var stack []*frame
+	valueDone := func() {
+		if n := len(stack); n > 0 && stack[n-1].obj {
+			stack[n-1].wantKey = true
+		}
+	}
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil
+		}
+		if n := len(stack); n > 0 && stack[n-1].wantKey {
+			if k, ok := tok.(string); ok {
+				if stack[n-1].keys[k] {
+					return fmt.Errorf("duplicate member %q", k)
+				}
+				stack[n-1].keys[k] = true
+				stack[n-1].wantKey = false
+				continue
+			}
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{':
+				stack = append(stack, &frame{obj: true, wantKey: true, keys: map[string]bool{}})
+			case '[':
+				stack = append(stack, &frame{})
+			default:
+				stack = stack[:len(stack)-1]
+				valueDone()
+			}
+			continue
+		}
+		valueDone()
+	}
 }
 
 func checkUsage(raw []byte) error { return CheckUsage(raw) }

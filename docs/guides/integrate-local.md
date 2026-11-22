@@ -65,7 +65,7 @@ The public directories are written by root only. A user can neither plant nor ch
 | `stale_after_s` | how old `updated_at` may be, in seconds (90) |
 | `pid` | the daemon's process id, informative only |
 | `hub_origin` | scheme, host and optional port of the Hub; absent for a Worker without a Hub (Solo) |
-| `hub_link` | optional, the coarse state of the Hub connection: `connected` (usable), `registration_pending` (registration is not finished), `disconnected` (a Hub is configured and not reachable) or `none` (Solo). Absent when the daemon does not say. It never carries an owner, credential or error text |
+| `hub_link` | optional, the coarse state of the Hub connection: `connected` (usable), `registration_pending` (the Hub has not approved the Worker yet, or the local usage registration is not finished), `disconnected` (a Hub is configured and not reachable) or `none` (Solo). Absent when the daemon does not say. It never carries an owner, credential or error text |
 
 The record holds nothing else: no Hub owner, Worker name, key, key words, pairing code, session data or error text.
 
@@ -114,7 +114,7 @@ Rules for consumers:
 - A usage document is accepted only if it matches the whole schema: the Worker checks it before it stores it and the CLI before it prints it, and rejects unknown fields at any level. Do the same with the fields you use.
 - A meter at or after `expires_at` is expired: grey it out or hide it, and never show it as current. The same goes for a document whose slots are all expired, and for a document older than you accept by `generated_at`. The file keeps the last document while the Hub is away.
 - If `coverage.stale` or `coverage.unknown` is not 0, the value covers only part of the accounts: say so.
-- **New statistics appear as new meters** (a new `id`, `metric` and `unit`) or as new optional fields. Render `meters` generically, ignore fields you do not know, and a new statistic needs no change in your program. A breaking change raises the schema version to `/2`; reject a schema you do not know.
+- **New statistics appear as new meters** (a new `id`, `metric` and `unit`) within the existing meter shape and units. Render `meters` generically and a new statistic needs no change in your program. The set of fields in `/1` is fixed: Workers reject unknown fields, so any other change, such as a new field, raises the schema version to `/2`. Reject a schema you do not know.
 - The `headline` can be absent (no fresh comparable percentage); then show no bar.
 - Who sees it: on a root Worker the document is in the public directory and every account on the host can read it, including the Hub owner's own pair. On a user Worker only that user can.
 

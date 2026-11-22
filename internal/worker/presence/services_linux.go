@@ -92,7 +92,9 @@ func envTokens(s string) []string {
 }
 
 func readServiceFile(path string, uid int) string {
-	f, err := os.Open(path)
+	// Non-blocking: a FIFO in this place must not hang discovery before the
+	// handle is checked.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return ""
 	}

@@ -256,19 +256,39 @@ const (
 	HubLinkConnected           = "connected"
 	HubLinkRegistrationPending = "registration_pending"
 	HubLinkDisconnected        = "disconnected"
+	HubLinkNone                = "none"
 )
 
 // HubLink is the coarse usability of the Hub connection: connected, waiting
 // for the local usage registration (the Hub answers but the link is closed
-// until the owner accepts it), or disconnected.
+// until the owner accepts it) or for the Hub's approval of the Worker (a
+// welcomed connection that refuses operations), disconnected, or none (Solo:
+// no Hub is configured).
 func (c *Connector) HubLink() string {
-	if c.Status().State == ConnConnected {
+	if c.cfg.HubURL == "" {
+		return HubLinkNone
+	}
+	st := c.Status()
+	if st.State == ConnConnected && st.Welcome.Pending {
+		return HubLinkRegistrationPending
+	}
+	if st.State == ConnConnected {
 		return HubLinkConnected
 	}
-	if c.regPending.Load() {
+	if c.regPending.Load() && c.regGenIsCurrent() {
 		return HubLinkRegistrationPending
 	}
 	return HubLinkDisconnected
+}
+
+// regGenIsCurrent reports whether the enrollment the pending registration
+// belongs to is still the stored one: a wipe or a new enrollment ends it.
+func (c *Connector) regGenIsCurrent() bool {
+	if c.cfg.Enrollment == nil {
+		return true
+	}
+	cur, _ := c.cfg.Enrollment.Watch()
+	return cur == c.regGen.Load()
 }
 
 // ReasonNotEnrolled is the Status.Reason of an idle connector without an
@@ -296,6 +316,10 @@ type ConnectorConfig struct {
 	// stored and before the usage registration decides whether the link is
 	// served: the read-back receiver drops a document of another owner there.
 	OnWelcomeStored func(w HubWelcome, hubPub ed25519.PublicKey)
+	// OnHubPinChanged, when set, is called after a different verified Hub pin
+	// was committed, before the reply is handled: what was published for the
+	// previous pin is withdrawn.
+	OnHubPinChanged func()
 	// HubURL is the configured Hub URL; empty means the Worker runs alone and
 	// the connector stays idle.
 	HubURL string
@@ -366,6 +390,8 @@ type Connector struct {
 	// regPending is true while the latest welcomed connection was closed by
 	// the usage registration gate (A72).
 	regPending atomic.Bool
+	// regGen is the enrollment generation regPending was set for.
+	regGen atomic.Uint64
 	// pendingShown makes the approval box appear once per process, not on
 	// every reconnect.
 	connectedShown atomic.Bool // the connected box is shown once per process (A61)
@@ -815,6 +841,11 @@ func (c *Connector) attempt(ctx context.Context, gen uint64, enr Enrollment, key
 		}
 		if att.PinChanged {
 			c.log.Info("hub key pin advanced along the transition chain", "chain_position", att.Pin.Seq)
+			// A document bound to the previous pin goes now, whatever the
+			// Hub's reply is (a restored Hub may answer not_enrolled).
+			if c.cfg.OnHubPinChanged != nil {
+				c.cfg.OnHubPinChanged()
+			}
 		}
 	}
 	switch att.Reply.Type {
@@ -1052,6 +1083,7 @@ func (c *Connector) serve(ctx context.Context, gen uint64, att *Attempt) (backof
 			if w.UsagePolicy != ops.UsageVersion {
 				msg = "The Hub requires a newer usage registration policy; update this Worker."
 			}
+			c.regGen.Store(gen)
 			c.regPending.Store(true)
 			if c.usageShown.CompareAndSwap(false, true) {
 				lines := strings.SplitAfter(ops.UsageDisclosure, ". ")

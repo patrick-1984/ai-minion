@@ -293,9 +293,11 @@ func allowNewSessionsText(res *config.Resolver, stateDir string) string {
 // presence directory (the newest instance that has one) or, for a root Worker
 // whose instance is known, from the public directory. Nil when there is none.
 func storedUsage(stateDir, instance string) json.RawMessage {
-	r := presence.NewReader()
-	r.DiscoveryDirs = nil
-	r.PrivateDirs = []string{filepath.Join(stateDir, presence.PrivateDirName)}
+	// Only the selected profile: no scan of the account's service registrations.
+	r := presence.Reader{
+		UID: os.Geteuid(), PublicRoot: presence.PublicRootFor(runtime.GOOS),
+		PrivateDirs: []string{filepath.Join(stateDir, presence.PrivateDirName)},
+	}
 	for _, res := range r.Scan() {
 		if res.Status == presence.StatusUnavailable || res.Candidate.Source != presence.SourcePrivate {
 			continue

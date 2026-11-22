@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,12 +36,25 @@ type ReadbackApply struct {
 	WorkerID string `json:"worker_id"`
 	HubKey   string `json:"hub_key"`
 	// Doc is the minion.usage-meters/1 document, at most MaxReadbackDocBytes.
-	Doc json.RawMessage `json:"doc"`
+	Doc json.RawMessage `json:"doc,omitempty"`
 	// Clear asks the Worker to remove the published document instead of
 	// replacing it: the Hub sends it when the recipient is no longer entitled
 	// to it (its owner was deactivated or lost access, or it is not approved).
 	// A clear carries no Doc; it is bound and ordered like any other frame.
 	Clear bool `json:"clear,omitempty"`
+}
+
+// UnmarshalJSON reads a frame; a JSON null document (what an older Hub wrote for
+// a clear) is no document.
+func (f *ReadbackApply) UnmarshalJSON(b []byte) error {
+	type plain ReadbackApply
+	if err := json.Unmarshal(b, (*plain)(f)); err != nil {
+		return err
+	}
+	if string(bytes.TrimSpace(f.Doc)) == "null" {
+		f.Doc = nil
+	}
+	return nil
 }
 
 // Check validates the bounds that do not depend on the receiving connection.

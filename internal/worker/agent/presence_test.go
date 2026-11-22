@@ -200,3 +200,29 @@ func pdir(l presence.Layout) string {
 	}
 	return l.PrivateDir
 }
+
+// A revoke that runs while the daemon shuts down (after the presence module
+// stopped) still removes the published document.
+func TestRevokeDuringShutdownStillClearsTheUsageFile(t *testing.T) {
+	injectPresence(t, false)
+	state := t.TempDir()
+	rcv := NewReadbackReceiver(nil, nil)
+	rt := presenceRuntime(t, state, func(r *Registry) {
+		_ = r.Register("aa-receiver", 10, func(_ context.Context, env *Env) (StopFunc, error) { return nil, Provide(env, rcv) })
+	})
+	if err := rt.Start(context.Background(), Settings{WorkerCore: config.WorkerCore{StateDir: state}}); err != nil {
+		t.Fatal(err)
+	}
+	pub, _ := Lookup[*presence.Publisher](rt)
+	if err := pub.SetUsage([]byte(`{"schema":"minion.usage-meters/1","generated_at":1,"slots":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rcv.Clear() // the revoke handler's wipe hook
+	l, _ := presenceLayout(state)
+	if _, err := os.Stat(filepath.Join(l.PrivateDir, rt.Instance()+".usage.json")); !os.IsNotExist(err) {
+		t.Fatalf("the usage file survived a revoke during shutdown: %v", err)
+	}
+}

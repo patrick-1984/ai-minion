@@ -60,10 +60,15 @@ const (
 // renameWithRetry renames old over dst. On Windows a reader that holds dst
 // open (without FILE_SHARE_DELETE) makes the rename fail with a sharing
 // violation; the rename is retried, bounded to about one second, while the
-// error is of that kind. On Unix it never retries.
-func renameWithRetry(old, dst string) error {
+// error is of that kind. On Unix it never retries. gate (when not nil) is
+// asked immediately before every attempt, so that a condition that ended while
+// a reader held dst stops the publication ([errGateClosed]).
+func renameWithRetry(old, dst string, gate func() bool) error {
 	var err error
 	for i := 0; i < renameAttempts; i++ {
+		if gate != nil && !gate() {
+			return errGateClosed
+		}
 		if err = renameFile(old, dst); err == nil {
 			return nil
 		}
