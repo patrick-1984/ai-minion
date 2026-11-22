@@ -99,9 +99,10 @@ func startPresence(ctx context.Context, env *Env) (StopFunc, error) {
 		})
 	}
 	return func(context.Context) error {
-		if rcv != nil {
-			rcv.SetPublisher(nil)
-		}
+		// The receiver keeps the (stopped) publisher: a signed revoke still in
+		// flight while the daemon shuts down must be able to remove the document.
+		// A frame that arrives now fails, because a stopped publisher publishes
+		// nothing.
 		return pub.Stop()
 	}, nil
 }

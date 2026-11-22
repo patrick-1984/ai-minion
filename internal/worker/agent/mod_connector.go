@@ -175,11 +175,12 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		OnWelcomeStored: func(w HubWelcome, hubPub ed25519.PublicKey) {
 			rcv.WelcomeStored(w.WorkerID, w.OwnerID, hubPub, w.Pending)
 		},
-		Policy:  policy,
-		Dialer:  d.dialer,
-		Clock:   d.clock,
-		Session: transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
-		Logger:  log,
+		OnHubPinChanged: rcv.Clear,
+		Policy:          policy,
+		Dialer:          d.dialer,
+		Clock:           d.clock,
+		Session:         transport.SessionOptions{Keepalive: transport.KeepaliveConfig{Clock: d.clock}, FrameTap: env.Settings().TrafficTap},
+		Logger:          log,
 	})
 	if err != nil {
 		return nil, err

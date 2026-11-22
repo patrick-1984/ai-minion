@@ -8,9 +8,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -391,5 +393,59 @@ func TestReadbackReadinessBeforeAndWithoutAPublisher(t *testing.T) {
 	late.SetPublisher(e.pub)
 	if !late.Ready() {
 		t.Fatal("not ready with a publisher")
+	}
+}
+
+// The frame as the Hub writes it and the Worker reads it: a clear travels
+// without a document, an old Hub's "doc":null is read as no document, and the
+// Worker removes the file and acknowledges.
+func TestReadbackClearSurvivesTheWire(t *testing.T) {
+	for name, wire := range map[string]func(proto.ReadbackApply) []byte{
+		"hub encoding": func(f proto.ReadbackApply) []byte { b, _ := json.Marshal(f); return b },
+		"doc null": func(f proto.ReadbackApply) []byte {
+			b, _ := json.Marshal(f)
+			return append(b[:len(b)-1], []byte(`,"doc":null}`)...)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newRBEnv(t)
+			l, cancel := e.link("w1", "alice", 1)
+			defer cancel()
+			e.rcv.LinkAdmitted(l)
+			ack, err := e.rcv.Apply(l, e.frame(l, 1, docA))
+			mustAck(t, ack, err, 1)
+			clr := e.frame(l, 2, "")
+			clr.Doc, clr.Clear = nil, true
+			var got proto.ReadbackApply
+			if jerr := json.Unmarshal(wire(clr), &got); jerr != nil {
+				t.Fatal(jerr)
+			}
+			ack, err = e.rcv.Apply(l, got)
+			mustAck(t, ack, err, 2)
+			if e.onDisk() != nil {
+				t.Fatal("the clear left the document")
+			}
+		})
+	}
+	if b, _ := json.Marshal(proto.ReadbackApply{Type: "t", Clear: true}); strings.Contains(string(b), `"doc"`) {
+		t.Fatalf("a clear carries a doc member: %s", b)
+	}
+}
+
+// A closed transport session ends the publication even while the connector has
+// not cancelled the link's context yet.
+func TestReadbackClosedTransportPublishesNothing(t *testing.T) {
+	e := newRBEnv(t)
+	l, cancel := e.link("w1", "alice", 1)
+	defer cancel()
+	sess := newFakeSession()
+	l.Session = sess
+	e.rcv.LinkAdmitted(l)
+	sess.drop(errors.New("transport closed"))
+	if _, err := e.rcv.Apply(l, e.frame(l, 1, docA)); err == nil {
+		t.Fatal("a document was acknowledged on a closed transport")
+	}
+	if e.onDisk() != nil {
+		t.Fatal("a document was published on a closed transport")
 	}
 }

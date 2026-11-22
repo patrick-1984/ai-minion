@@ -159,11 +159,15 @@ var _ ReadbackSink = (*ReadbackReceiver)(nil)
 
 // SetPublisher gives the receiver the local publisher (nil: none).
 func (r *ReadbackReceiver) SetPublisher(p *presence.Publisher) {
-	r.pubP.Store(p)
+	// Under the receiver's lock, and before the publisher is exposed: a frame
+	// cannot write a document that the old removal then deletes.
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if p != nil && r.tombstoned() {
 		// A removal that failed (or had no publisher) earlier is done now.
-		_ = r.clearPublished()
+		_ = r.clearVia(p)
 	}
+	r.pubP.Store(p)
 }
 
 func (r *ReadbackReceiver) tombPath() string {
@@ -223,8 +227,9 @@ func (r *ReadbackReceiver) Clear() {
 // clearPublished removes the document, retrying a failed unlink with a bounded
 // backoff. A removal that still fails (or has no publisher to run on) is
 // recorded as a tombstone and retried when the publisher next attaches.
-func (r *ReadbackReceiver) clearPublished() error {
-	p := r.pubP.Load()
+func (r *ReadbackReceiver) clearPublished() error { return r.clearVia(r.pubP.Load()) }
+
+func (r *ReadbackReceiver) clearVia(p *presence.Publisher) error {
 	if p == nil {
 		r.setTombstone(true)
 		return nil
@@ -309,7 +314,7 @@ func (r *ReadbackReceiver) Apply(l *Link, f proto.ReadbackApply) (proto.Readback
 	switch {
 	case l == nil || l != r.latest:
 		return fenced("the frame is not for the current Hub connection")
-	case l.Context().Err() != nil || l.Expired():
+	case !linkLive(l) || l.Expired():
 		return fenced("the Hub connection has ended")
 	case l.Welcome.Pending:
 		return fenced("the Worker is not approved")
@@ -347,14 +352,14 @@ func (r *ReadbackReceiver) Apply(l *Link, f proto.ReadbackApply) (proto.Readback
 	// visible (inside the enrollment lock, and in the publisher right before
 	// the rename), and again after the write.
 	fence := func() bool {
-		return l == r.latest && l.Context().Err() == nil && !l.Expired() && !l.Welcome.Pending &&
+		return l == r.latest && linkLive(l) && !l.Expired() && !l.Welcome.Pending &&
 			(r.moved == nil || !r.moved(l.gen))
 	}
 	if r.guard != nil {
 		// The enrollment lock is held by the guard: the moved check above would
 		// take it again, and it is implied by the guard's own generation check.
 		fence = func() bool {
-			return l == r.latest && l.Context().Err() == nil && !l.Expired() && !l.Welcome.Pending
+			return l == r.latest && linkLive(l) && !l.Expired() && !l.Welcome.Pending
 		}
 	}
 	// Verbatim: the receiver keeps the bytes the Hub signed the link for.
@@ -385,7 +390,7 @@ func (r *ReadbackReceiver) Apply(l *Link, f proto.ReadbackApply) (proto.Readback
 	}
 	switch {
 	case ended, errors.Is(err, ErrEnrollmentChanged), errors.Is(err, errGuardExpired), errors.Is(err, errReadbackFenceEnded),
-		err != nil && l.Context().Err() != nil:
+		err != nil && !linkLive(l):
 		return fenced("the enrollment or the connection changed before the document was published")
 	case err != nil:
 		r.log.Warn("the usage document was not published", "error", err)
@@ -395,7 +400,7 @@ func (r *ReadbackReceiver) Apply(l *Link, f proto.ReadbackApply) (proto.Readback
 	// enrollment generation before it cleared; look again after the write, so
 	// that a document written after that clear is removed here. A certificate
 	// that ended during the write ends the document with it.
-	if r.epoch.Load() != ep || l.Expired() || l.Context().Err() != nil || (r.guard == nil && r.moved != nil && r.moved(l.gen)) {
+	if r.epoch.Load() != ep || l.Expired() || !linkLive(l) || (r.guard == nil && r.moved != nil && r.moved(l.gen)) {
 		_ = r.clearLocked()
 		return fenced("the enrollment or the connection changed while the document was published")
 	}
@@ -403,6 +408,23 @@ func (r *ReadbackReceiver) Apply(l *Link, f proto.ReadbackApply) (proto.Readback
 	r.bound = &b
 	r.rev, r.sum, r.have = f.Revision, sum, true
 	return proto.ReadbackAck{Revision: f.Revision}, nil
+}
+
+// linkLive reports whether the connection is still up: its context is alive
+// and its transport session is not closed (the connector cancels the context
+// only after it has seen the session end).
+func linkLive(l *Link) bool {
+	if l.Context().Err() != nil {
+		return false
+	}
+	if l.Session != nil {
+		select {
+		case <-l.Session.Done():
+			return false
+		default:
+		}
+	}
+	return true
 }
 
 var errReadbackFenceEnded = errors.New("agent: the fence ended before the usage document was published")
