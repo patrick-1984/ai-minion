@@ -16,6 +16,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/presence"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
@@ -207,6 +208,7 @@ func (deps workerStatusDeps) report(ctx context.Context, flags config.FlagSource
 		Live:        deps.live(core.StateDir),
 		StateDir:    core.StateDir,
 		NewSessions: allowNewSessionsText(res, core.StateDir),
+		Usage:       func(instance string) json.RawMessage { return storedUsage(core.StateDir, instance) },
 	}
 	if deps.sessions != nil {
 		var s agent.StatusSessions
@@ -284,4 +286,34 @@ func allowNewSessionsText(res *config.Resolver, stateDir string) string {
 		return config.AllowNewSessionsOn
 	}
 	return config.AllowNewSessionsOff
+}
+
+// storedUsage returns the usage-meters document stored for the profile in
+// stateDir, read through the verified reader: from the profile's private
+// presence directory (the newest instance that has one) or, for a root Worker
+// whose instance is known, from the public directory. Nil when there is none.
+func storedUsage(stateDir, instance string) json.RawMessage {
+	r := presence.NewReader()
+	r.DiscoveryDirs = nil
+	r.PrivateDirs = []string{filepath.Join(stateDir, presence.PrivateDirName)}
+	for _, res := range r.Scan() {
+		if res.Status == presence.StatusUnavailable || res.Candidate.Source != presence.SourcePrivate {
+			continue
+		}
+		if instance != "" && res.Candidate.Instance != instance {
+			continue
+		}
+		if raw, err := r.ReadUsage(res.Candidate); err == nil {
+			return raw
+		}
+	}
+	if instance != "" && presence.ValidInstance(instance) && r.PublicRoot != "" {
+		c := presence.Candidate{Source: presence.SourcePublic, Dir: r.PublicRoot, Instance: instance}
+		if res := r.Check(c); res.Status != presence.StatusUnavailable {
+			if raw, err := r.ReadUsage(c); err == nil {
+				return raw
+			}
+		}
+	}
+	return nil
 }
