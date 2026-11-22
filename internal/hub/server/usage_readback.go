@@ -5,7 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
@@ -32,9 +35,19 @@ type usageReadback struct {
 	// Workers.
 	access func(ctx context.Context, publisher string) ([]string, error)
 
+	// gen counts changes of publication authority (consent, nominations,
+	// buckets). The operations bump it before and after they write; a document
+	// built across a bump is discarded and built again.
+	gen atomic.Uint64
+
 	mu    sync.Mutex
 	cache map[string]usageReadbackEntry
 }
+
+func (u *usageReadback) bump()              { u.gen.Add(1) }
+func (u *usageReadback) generation() uint64 { return u.gen.Load() }
+
+var errReadbackChanging = errors.New("usage publication is changing; try again")
 
 type usageReadbackEntry struct {
 	key string
@@ -69,17 +82,52 @@ func (u *usageReadback) visibleFor(ctx context.Context, slots []store.UsageSlotS
 	return out, nil
 }
 
-// snapshot reads the slots of owner in one transaction.
+// snapshot reads the slots of owner in one transaction. The publishers'
+// visibility is resolved outside the transaction, so a snapshot that carries
+// data resolves it again afterwards: when a role or an ownership changed
+// meanwhile (a demoted publisher), the snapshot is read again.
 func (u *usageReadback) snapshot(ctx context.Context, owner string, withData bool) ([]store.ReadbackSlot, error) {
-	specs, err := u.st.UsageReadbackSlots(ctx, owner)
-	if err != nil {
-		return nil, err
+	for range 3 {
+		specs, err := u.st.UsageReadbackSlots(ctx, owner)
+		if err != nil {
+			return nil, err
+		}
+		visible, err := u.visibleFor(ctx, specs)
+		if err != nil {
+			return nil, err
+		}
+		slots, err := u.st.UsageReadbackSnapshot(ctx, owner, visible, withData)
+		if err != nil || !withData {
+			return slots, err
+		}
+		again, err := u.visibleFor(ctx, specs)
+		if err != nil {
+			return nil, err
+		}
+		if sameVisible(visible, again) {
+			return slots, nil
+		}
 	}
-	visible, err := u.visibleFor(ctx, specs)
-	if err != nil {
-		return nil, err
+	return nil, errReadbackChanging
+}
+
+func sameVisible(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return u.st.UsageReadbackSnapshot(ctx, owner, visible, withData)
+	for k, x := range a {
+		y, ok := b[k]
+		if !ok || len(x) != len(y) {
+			return false
+		}
+		xs, ys := slices.Clone(x), slices.Clone(y)
+		slices.Sort(xs)
+		slices.Sort(ys)
+		if !slices.Equal(xs, ys) {
+			return false
+		}
+	}
+	return true
 }
 
 func readbackKey(slots []store.ReadbackSlot) string {
@@ -96,15 +144,28 @@ func readbackKey(slots []store.ReadbackSlot) string {
 // authenticated principal's own id (the preview) or the Hub owner of an
 // approved Worker (delivery); callers decide that before they ask.
 func (u *usageReadback) Document(ctx context.Context, owner string) (ops.UsageMeters, string, error) {
+	for range 3 {
+		g := u.generation()
+		doc, hash, err := u.document(ctx, owner)
+		if err != nil || u.generation() == g {
+			return doc, hash, err
+		}
+		// The publication authority changed while the document was built (a
+		// consent withdrawn, a nomination replaced): it may hold data that is
+		// no longer allowed. Build again from the new state.
+	}
+	return ops.UsageMeters{}, "", errReadbackChanging
+}
+
+func (u *usageReadback) document(ctx context.Context, owner string) (ops.UsageMeters, string, error) {
 	cheap, err := u.snapshot(ctx, owner, false)
 	if err != nil {
 		return ops.UsageMeters{}, "", err
 	}
 	key := readbackKey(cheap)
-	now := u.now()
 
 	u.mu.Lock()
-	if e, ok := u.cache[owner]; ok && e.key == key && now.Before(e.until) {
+	if e, ok := u.cache[owner]; ok && e.key == key && u.now().Before(e.until) {
 		u.mu.Unlock()
 		return e.doc, e.hash, nil
 	}
@@ -117,6 +178,9 @@ func (u *usageReadback) Document(ctx context.Context, owner string) (ops.UsageMe
 		return ops.UsageMeters{}, "", err
 	}
 	key = readbackKey(slots)
+	// The clock is read after the data: a meter that reset while the snapshot
+	// was read is not chosen as the headline.
+	now := u.now()
 	doc := ops.UsageMeters{Schema: ops.UsageMetersSchema, GeneratedAt: now.UnixMilli(), Slots: []ops.UsageSlotDoc{}}
 	for _, sl := range slots {
 		var meters []ops.UsageMeter

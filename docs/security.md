@@ -168,7 +168,8 @@ A Worker that runs as root publishes a presence record in `/run/minion-presence`
 - **Threat model:** every local account can read these files and can learn that the Worker exists, its version and the Hub address. No account can write there: the directories are root-owned, writers stage files in a root-only directory and rename them, and readers refuse a link, a non-regular file, a wrong owner or mode and an oversized file.
 - A Worker of a non-root user publishes only in that user's private directory (0700, files 0600); another user cannot see it.
 - The Hub controls only the content of the usage document. The Worker writes the presence fields and accepts a usage document only from its own Hub connection.
-- Consumers must verify what they read; labels are untrusted text. Remove the files by stopping the Worker; a record of a crashed Worker goes stale after 90 seconds.
+- Consumers must verify what they read; labels are untrusted text. A record of a crashed Worker goes stale after 90 seconds.
+- **Stopping a Worker does not remove the usage file.** A normal stop marks the presence record as stopped and leaves `<instance>.usage.json` in place, readable by every local account. To end the publication, withdraw the nomination or the recipient's access while the Worker is online (the Hub then tells the Worker to remove the file), check that `<instance>.usage.json` is gone from the presence directory, and only then stop the Worker. If the Worker is already stopped, delete that instance's `.json` and `.usage.json` files as root.
 
 ## Not covered, or not finished
 

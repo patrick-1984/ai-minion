@@ -32,7 +32,7 @@ func TestUsageBucketsShowNominationControlsAndReplacement(t *testing.T) {
 	connect(t, f)
 	body := mainOf(t, onbGet(t, onbAdmin(t), "/usage?view=buckets").Body.String())
 	mustHave(t, body, "Show on my Workers", "Show on all Workers", "Withdraw", "Publishing replaces Mine, which currently holds the provider slot.",
-		"Publishing replaces Team pool", "Team pool", "Published by", "alice", "Clear this slot", "No bucket is shown on all Workers for this kind.",
+		"Publishing replaces Team pool", "Team pool", "Published by", "alice", "Clear this slot", `name="bucket" value="x"`, "No bucket is shown on all Workers for this kind.",
 		"Your publication consent", "Allowed", "Stop allowing my usage", "separate from Worker monitoring",
 		"every approved Worker of this Hub", "your own Workers", "Every local account on a computer that runs a root Worker can read that Worker&#39;s copy.",
 		"aggregate meters", "Nothing is published to your Workers yet")
@@ -55,7 +55,7 @@ func TestUsageSecondAdminClearsDomainSlot(t *testing.T) {
 		t.Fatalf("redirect %q body %s", r.Header().Get("HX-Redirect"), r.Body.String())
 	}
 	c := f.called(ops.OpUsageNominationSet)
-	if len(c) != 1 || c[0].Args["action"] != "clear" || c[0].Args["scope"] != "domain" || c[0].Args["kind"] != "session" || c[0].Args["bucket_id"] != nil {
+	if len(c) != 1 || c[0].Args["action"] != "clear" || c[0].Args["scope"] != "domain" || c[0].Args["kind"] != "session" || c[0].Args["bucket_id"] != "somebody-elses" {
 		t.Fatalf("calls %+v", c)
 	}
 }
@@ -159,5 +159,5 @@ func TestUsagePreviewJudgesExpiryAtRequestTime(t *testing.T) {
 func TestUsageConsentNamesBothAudiences(t *testing.T) {
 	connect(t, readbackFixtures(nil, false, &ops.UsageMeters{Schema: ops.UsageMetersSchema}, nil))
 	body := mainOf(t, onbGet(t, onbUser(t), "/usage?view=buckets").Body.String())
-	mustHave(t, body, "your own nominations", "domain nominations", "every approved Worker", "every local account", "root")
+	mustHave(t, body, "personal nominations of other people", "domain nominations", "every approved Worker", "every local account", "root")
 }

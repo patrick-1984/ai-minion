@@ -186,3 +186,27 @@ func TestSendReadbackReportsRefusalsLostAnswersAndWrongAcks(t *testing.T) {
 		}
 	})
 }
+
+// The entitlement is checked again once the stream is open: a document is not
+// written when the guard refuses, a clear still is.
+func TestSendReadbackChecksTheGuardAfterTheStreamIsOpen(t *testing.T) {
+	hs, w := newRBPair(t, ackFor)
+	r := NewRegistry()
+	on := rbOnline("w1", "alice", 1)
+	r.Add(on, hs)
+	var asked int
+	r.SetReadbackGuard(func(context.Context, Online) error { asked++; return ErrReadbackIneligible })
+	if _, err := r.SendReadback(context.Background(), on, rbFrame(on, "alice", 1)); !errors.Is(err, ErrReadbackIneligible) {
+		t.Fatalf("err = %v", err)
+	}
+	select {
+	case b := <-w.frames:
+		t.Fatalf("the Worker received a document: %s", b)
+	case <-time.After(100 * time.Millisecond):
+	}
+	clr := rbFrame(on, "alice", 2)
+	clr.Doc, clr.Clear = nil, true
+	if ack, err := r.SendReadback(context.Background(), on, clr); err != nil || ack.Revision != 2 || asked != 1 {
+		t.Fatalf("clear: %+v %v (guard asked %d times)", ack, err, asked)
+	}
+}

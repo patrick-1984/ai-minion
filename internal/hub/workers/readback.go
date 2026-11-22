@@ -21,13 +21,18 @@ const ReadbackTimeout = 10 * time.Second
 // approved: nothing was sent.
 var ErrReadbackFenced = errors.New("workers: the connection the usage read-back was built for is no longer current")
 
+// ErrReadbackIneligible is returned when the recipient lost its entitlement
+// while the stream was opening: the document was not written. The caller sends
+// a clear instead.
+var ErrReadbackIneligible = errors.New("workers: the Worker may not receive usage data any more")
+
 // openReadback opens an op stream on the connection described by w, and only
 // on that connection: under the registry lock it must still be the registered
 // one (same handshake transcript), approved, announce the read-back feature,
 // have the owner the document was built for and not be closing. A Worker that
 // reconnected, was reassigned or went pending between the caller's look and
 // this call gets nothing.
-func (r *Registry) openReadback(ctx context.Context, w Online, owner string) (*transport.Stream, error) {
+func (r *Registry) openReadback(ctx context.Context, w Online, owner string, clear bool) (*transport.Stream, error) {
 	r.mu.Lock()
 	e := r.online[w.WorkerID]
 	var sess OpSession
@@ -42,6 +47,7 @@ func (r *Registry) openReadback(ctx context.Context, w Online, owner string) (*t
 		default:
 		}
 	}
+	guard := r.readbackGuard
 	r.mu.Unlock()
 	if !ok {
 		return nil, ErrReadbackFenced
@@ -49,6 +55,14 @@ func (r *Registry) openReadback(ctx context.Context, w Online, owner string) (*t
 	st, err := sess.OpenOp(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("workers: open the read-back stream: %w", err)
+	}
+	// Opening can block: the entitlement is checked again now, and a document
+	// (not a clear) is written only while it still holds.
+	if guard != nil && !clear {
+		if err := guard(ctx, w); err != nil {
+			st.Reset()
+			return nil, err
+		}
 	}
 	return st, nil
 }
@@ -68,7 +82,7 @@ func (r *Registry) SendReadback(ctx context.Context, w Online, f proto.ReadbackA
 	}
 	ctx, cancel := context.WithTimeout(ctx, ReadbackTimeout)
 	defer cancel()
-	st, err := r.openReadback(ctx, w, f.OwnerID)
+	st, err := r.openReadback(ctx, w, f.OwnerID, f.Clear)
 	if err != nil {
 		return zero, err
 	}

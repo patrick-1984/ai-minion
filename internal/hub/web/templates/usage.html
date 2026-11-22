@@ -418,7 +418,7 @@
       </dl>
       <form method="post" action="/usage/nominate" hx-post="/usage/nominate" hx-target="#usage-result" hx-disabled-elt="find button">
         {{template "usage_form_state" $p}}
-        <input type="hidden" name="action" value="clear"><input type="hidden" name="scope" value="domain"><input type="hidden" name="kind" value="{{.Kind}}">
+        <input type="hidden" name="action" value="clear"><input type="hidden" name="scope" value="domain"><input type="hidden" name="kind" value="{{.Kind}}"><input type="hidden" name="bucket" value="{{.Slot.BucketID}}">
         <button type="submit" class="btn btn-secondary">Clear this slot</button>
       </form>
       {{else}}<p class="muted">No bucket is shown on all Workers for this kind.</p>{{end}}
@@ -430,7 +430,7 @@
 <section aria-labelledby="consent-h" class="usage-consent">
   <h2 id="consent-h">Your publication consent</h2>
   <p class="muted">This is separate from Worker monitoring. One switch decides whether usage that other people publish may include observations of your own sessions and accounts. It is off unless you turn it on.</p>
-  <p class="muted">When it is on, two kinds of publication can include your observations. First, your own nominations: buckets you publish to your own Workers. Second, domain nominations: an administrator can publish a bucket to every approved Worker of this Hub, including Workers of other people, and a one-source bucket can reveal that your usage is the only source. On a Worker that runs as root, every local account on that computer can read the published copy. Turn it off to keep your observations out of other people's buckets and domain buckets; it does not affect what you publish yourself.</p>
+  <p class="muted">When it is on, two kinds of publication can include your observations. First, personal nominations of other people who may view your Workers: they can include your observations in a bucket they show on their own Workers. Second, domain nominations: an administrator can publish a bucket to every approved Worker of this Hub, including Workers of other people, and a one-source bucket can reveal that your usage is the only source. On a Worker that runs as root, every local account on that computer can read the published copy. Turn it off to keep your observations out of other people's buckets and domain buckets; it does not affect the buckets you publish from your own observations.</p>
   <form class="usage-fields" method="post" action="/usage/publication" hx-post="/usage/publication" hx-target="#usage-result" hx-disabled-elt="find button">
     {{template "usage_form_state" $p}}
     <span class="badge" data-tone="{{if $p.AllowRepublish}}warning{{else}}info{{end}}">{{if $p.AllowRepublish}}Allowed{{else}}Not allowed{{end}}</span>
