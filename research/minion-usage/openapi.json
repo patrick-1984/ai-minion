@@ -1257,6 +1257,174 @@
         ],
         "additionalProperties": false
       },
+      "UsageMeters": {
+        "type": "object",
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "integer"
+          },
+          "slots": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "slot": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "kind",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "headline": {
+                  "type": "string"
+                },
+                "omitted_groups": {
+                  "type": "integer"
+                },
+                "meters": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "metric": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "unit": {
+                        "type": "string"
+                      },
+                      "used": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "remaining": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "limit": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "used_percent": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "remaining_percent": {
+                        "type": [
+                          "null",
+                          "number"
+                        ]
+                      },
+                      "resets_at": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "duration_ms": {
+                        "type": [
+                          "null",
+                          "integer"
+                        ]
+                      },
+                      "pace": {
+                        "type": "string"
+                      },
+                      "observed_at": {
+                        "type": "integer"
+                      },
+                      "expires_at": {
+                        "type": "integer"
+                      },
+                      "coverage": {
+                        "type": "object",
+                        "properties": {
+                          "known": {
+                            "type": "integer"
+                          },
+                          "stale": {
+                            "type": "integer"
+                          },
+                          "unknown": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "known",
+                          "stale",
+                          "unknown"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "metric",
+                      "label",
+                      "unit",
+                      "observed_at",
+                      "expires_at",
+                      "coverage"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "slot",
+                "omitted_groups",
+                "meters"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "schema",
+          "generated_at",
+          "slots"
+        ],
+        "additionalProperties": false
+      },
+      "UsageReadbackArgs": {
+        "type": "object",
+        "additionalProperties": false
+      },
       "UsageReport": {
         "type": "object",
         "properties": {
@@ -2116,6 +2284,44 @@
           }
         },
         "summary": "Read authorized Worker, session or account usage statistics, including metadata for unshared sessions on your Workers."
+      }
+    },
+    "/api/v1/ops/usage_readback": {
+      "post": {
+        "operationId": "usage_readback",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsageReadbackArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageMeters"
+                }
+              }
+            },
+            "description": "Authorized usage result"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubError"
+                }
+              }
+            },
+            "description": "Hub API error"
+          }
+        },
+        "summary": "Preview the nominated usage document your Workers receive: the Hub-wide pair and your own pair. Labels are plain untrusted text; no session names, folders, account labels or member ids."
       }
     },
     "/api/v1/ops/worker_usage": {

@@ -70,7 +70,7 @@ func New(cfg Config) (*Server, error) {
 	if list == nil {
 		list = DefaultOps()
 		if _, ok := cfg.Backend.(*client.HubBackend); ok {
-			for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList} {
+			for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList, ops.OpUsageReadback} {
 				if operation, exists := ops.Default.Lookup(name); exists {
 					list = append(list, operation)
 				}

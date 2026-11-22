@@ -351,7 +351,7 @@ func TestMCPEntrypointChoosesTheHubAndAddsReadOnlyUsageTools(t *testing.T) {
 	localDeps, _ := testMCPDeps(map[string]string{}, local, mcp.TrustAll)
 	soloGot, _ := rpc(t, localDeps, nil, listRequest)
 	soloTools := toolNamesOf(t, soloGot[2])
-	if !hubTools[ops.OpUsageList] || !hubTools[ops.OpUsageBucketList] || hubTools[ops.OpUsageBucketSet] || len(hubTools) != len(soloTools)+2 {
+	if !hubTools[ops.OpUsageList] || !hubTools[ops.OpUsageBucketList] || !hubTools[ops.OpUsageReadback] || hubTools[ops.OpUsageBucketSet] || len(hubTools) != len(soloTools)+3 {
 		t.Errorf("tools differ: hub %v, solo %v", hubTools, soloTools)
 	}
 	for name := range soloTools {

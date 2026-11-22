@@ -127,6 +127,22 @@ func initUsage(ctx context.Context, env *Env) error {
 		return err
 	}
 
+	readback := newUsageReadback(st)
+	// The preview is derived from the authenticated caller alone, before any
+	// cache lookup: the caller's own session or full-scope key, never act-as, a
+	// Worker identity or a restricted key. It returns the Hub-wide pair and the
+	// caller's own pair, nobody else's.
+	if err = api.HandleTyped(r, ops.OpUsageReadback, func(ctx context.Context, c *api.Call, _ ops.UsageReadbackArgs) (ops.UsageMeters, error) {
+		owner := usageBucketOwner(c.Principal)
+		if owner == "" {
+			return ops.UsageMeters{}, usageForbidden()
+		}
+		doc, _, err := readback.Document(ctx, owner)
+		return doc, err
+	}, api.WithResource(usageUserResource)); err != nil {
+		return err
+	}
+
 	if err = api.HandleTyped(r, ops.OpUsageNominationSet, func(ctx context.Context, c *api.Call, a ops.UsageNominationSetArgs) (ops.UsageNominationSetResult, error) {
 		owner := usageBucketOwner(c.Principal)
 		if owner == "" {
