@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -36,6 +37,32 @@ func usageForbidden() error {
 	return api.NewError(proto.CodeForbidden, "private usage buckets require the owner's own session or full-scope key")
 }
 
+// usageDomainAuthority is the authority to change what the whole Hub
+// publishes: the principal's own session or full-scope key (never act-as, a
+// Worker identity or a restricted key, which usageBucketOwner refuses) whose
+// owner holds the manage permission right now. The store checks again inside
+// its transaction that the actor is still an active administrator.
+func usageDomainAuthority(ctx context.Context, az *authz.Authorizer, p authz.Principal) store.BucketAuthority {
+	if usageBucketOwner(p) == "" {
+		return store.BucketAuthority{}
+	}
+	err := az.Decide(ctx, p, ops.MustActionSet(ops.ActionManage), authz.UserResource{ID: p.UserID})
+	return store.BucketAuthority{Actor: p.UserID, Domain: err == nil}
+}
+
+func usageNominationError(err error) error {
+	var refusal *store.NominationRefusal
+	switch {
+	case errors.As(err, &refusal):
+		return api.NewError(proto.CodeConflict, fmt.Sprintf("this bucket cannot be published: %d of its members come from other users' sessions or accounts whose owners have not allowed republishing (they can allow it in their own usage settings). Remove those members or ask the owners.", refusal.Members))
+	case errors.Is(err, store.ErrNominationForbidden):
+		return api.NewError(proto.CodeForbidden, "publishing to or changing a bucket published to every Worker needs the manage permission of an active administrator, with your own session or a full-scope key")
+	case errors.Is(err, store.ErrNotFound):
+		return api.NewError(proto.CodeNotFound, "unknown usage bucket")
+	}
+	return err
+}
+
 func usageUserResource(p authz.Principal, _ any) (authz.Resource, error) {
 	if p.UserID == "" {
 		return nil, api.NewError(proto.CodeForbidden, "a signed-in usage account is required")
@@ -63,6 +90,10 @@ func initUsage(ctx context.Context, env *Env) error {
 	if err != nil {
 		return err
 	}
+	az, err := Require[*authz.Authorizer](env)
+	if err != nil {
+		return err
+	}
 
 	if err := registerUsageCollection(ctx, env, st, r, rt); err != nil {
 		return err
@@ -87,8 +118,47 @@ func initUsage(ctx context.Context, env *Env) error {
 			return ops.UsageBucketListResult{}, usageForbidden()
 		}
 		buckets, err := st.UsageBuckets(ctx, owner)
-		return ops.UsageBucketListResult{Buckets: buckets}, err
+		if err != nil {
+			return ops.UsageBucketListResult{}, err
+		}
+		allow, err := st.UsageAllowRepublish(ctx, owner)
+		return ops.UsageBucketListResult{Buckets: buckets, AllowRepublish: allow}, err
 	}); err != nil {
+		return err
+	}
+
+	if err = api.HandleTyped(r, ops.OpUsageNominationSet, func(ctx context.Context, c *api.Call, a ops.UsageNominationSetArgs) (ops.UsageNominationSetResult, error) {
+		owner := usageBucketOwner(c.Principal)
+		if owner == "" {
+			return ops.UsageNominationSetResult{}, usageForbidden()
+		}
+		var auth store.BucketAuthority
+		if a.Scope == ops.UsageScopeDomain {
+			auth = usageDomainAuthority(ctx, az, c.Principal)
+		}
+		res, err := st.SetUsageNomination(ctx, owner, auth, a)
+		return res, usageNominationError(err)
+	}, api.WithResource(usageUserResource)); err != nil {
+		return err
+	}
+
+	if err = api.HandleTyped(r, ops.OpUsageNominationList, func(ctx context.Context, c *api.Call, _ ops.UsageNominationListArgs) (ops.UsageNominationListResult, error) {
+		if !usageDomainAuthority(ctx, az, c.Principal).Domain {
+			return ops.UsageNominationListResult{}, usageNominationError(store.ErrNominationForbidden)
+		}
+		slots, err := st.UsageDomainSlots(ctx)
+		return ops.UsageNominationListResult{Domain: slots}, err
+	}, api.WithResource(usageUserResource)); err != nil {
+		return err
+	}
+
+	if err = api.HandleTyped(r, ops.OpUsagePublicationSet, func(ctx context.Context, c *api.Call, a ops.UsagePublicationSetArgs) (ops.UsagePublicationSetArgs, error) {
+		owner := usageBucketOwner(c.Principal)
+		if owner == "" {
+			return ops.UsagePublicationSetArgs{}, usageForbidden()
+		}
+		return a, st.SetUsagePublication(ctx, owner, a.AllowRepublish)
+	}, api.WithResource(usageUserResource)); err != nil {
 		return err
 	}
 
@@ -138,10 +208,7 @@ func initUsage(ctx context.Context, env *Env) error {
 		if err != nil {
 			return ops.UsageBucketSetResult{}, err
 		}
-		res, err := st.SetUsageBucket(ctx, owner, allowed, a)
-		if errors.Is(err, store.ErrNotFound) {
-			err = api.NewError(proto.CodeNotFound, "unknown usage bucket")
-		}
-		return res, err
+		res, err := st.SetUsageBucketAs(ctx, owner, allowed, a, usageDomainAuthority(ctx, az, c.Principal))
+		return res, usageNominationError(err)
 	})
 }

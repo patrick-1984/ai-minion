@@ -66,6 +66,15 @@
                 },
                 "position": {
                   "type": "integer"
+                },
+                "nominated": {
+                  "type": [
+                    "null",
+                    "array"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
                 }
               },
               "required": [
@@ -76,10 +85,14 @@
               ],
               "additionalProperties": false
             }
+          },
+          "allow_republish": {
+            "type": "boolean"
           }
         },
         "required": [
-          "buckets"
+          "buckets",
+          "allow_republish"
         ],
         "additionalProperties": false
       },
