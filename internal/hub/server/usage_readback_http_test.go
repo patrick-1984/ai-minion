@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -121,8 +123,8 @@ func TestUsageReadbackPreviewHTTPAndMCP(t *testing.T) {
 	}
 	save(rootWorker, rootID, []ops.UsageAccount{shared, claudeRoot, gemini, zero, old},
 		sess(rootWorker, "linked", shared.ID, rip(100), rip(50)),
-		sess(rootWorker, "unlinked", "", rip(7), nil),
-		sess(rootWorker, "ended", "", rip(0), nil))
+		sess(rootWorker, "unlinked", "", rip(7), rip(0)),
+		sess(rootWorker, "ended", "", rip(0), rip(0)))
 	save(bobWorker, bobID, []ops.UsageAccount{shared, claudeBob},
 		sess(bobWorker, "bobs", shared.ID, rip(1000), rip(2000)))
 
@@ -194,19 +196,19 @@ func TestUsageReadbackPreviewHTTPAndMCP(t *testing.T) {
 	// Provider slot: the unweighted mean of two accounts that differ in
 	// capacity; amount-only, known zero, stale.
 	prov := slotOf(t, bobDoc, "domain", "provider")
-	claude := meterOf(t, prov, "anthropic.general.5h")
+	claude := meterOf(t, prov, pubMetric("anthropic", "general", "5h"))
 	if *claude.UsedPercent != 35 || claude.Coverage.Known != 2 || !strings.Contains(claude.Label, "unweighted mean of 2") {
 		t.Fatalf("mean: %+v", claude)
 	}
-	amt := meterOf(t, prov, "google.requests.fixed")
+	amt := meterOf(t, prov, pubMetric("google", "requests", "fixed"))
 	if amt.Unit != "requests" || *amt.Remaining != 120 || amt.RemainingPercent != nil || amt.Used != nil {
 		t.Fatalf("native amount-only window: %+v", amt)
 	}
-	z := meterOf(t, prov, "openai.credits.fixed")
+	z := meterOf(t, prov, pubMetric("openai", "credits", "fixed"))
 	if z.Used == nil || *z.Used != 0 || *z.Remaining != 1000 || *z.RemainingPercent != 100 {
 		t.Fatalf("known zero: %+v", z)
 	}
-	st := meterOf(t, prov, "cursor.general.5h")
+	st := meterOf(t, prov, pubMetric("", "general", "5h"))
 	if st.UsedPercent != nil || st.Coverage.Stale != 1 || st.ExpiresAt > sample+1000 {
 		t.Fatalf("expired meter carries a value: %+v", st)
 	}
@@ -228,14 +230,14 @@ func TestUsageReadbackPreviewHTTPAndMCP(t *testing.T) {
 	if ses.Headline != "" {
 		t.Fatalf("account-wide quota became a session headline: %q", ses.Headline)
 	}
-	q := meterOf(t, ses, "linked.anthropic.general.5h")
+	q := meterOf(t, ses, "linked."+pubMetric("anthropic", "general", "5h"))
 	if *q.UsedPercent != 70 || !strings.HasPrefix(q.Label, "Account-wide:") {
 		t.Fatalf("linked quota: %+v", q)
 	}
 	if bobSes := meterOf(t, slotOf(t, bobDoc, "user", "session"), "sessions.tokens"); *bobSes.Used != 3000 {
 		t.Fatalf("Bob's own session: %+v", bobSes)
 	}
-	if meterOf(t, slotOf(t, bobDoc, "user", "session"), "linked.anthropic.general.5h").Coverage.Known != 1 {
+	if meterOf(t, slotOf(t, bobDoc, "user", "session"), "linked."+pubMetric("anthropic", "general", "5h")).Coverage.Known != 1 {
 		t.Fatal("the shared account is not reported for Bob's session")
 	}
 
@@ -296,7 +298,7 @@ func TestUsageReadbackPreviewHTTPAndMCP(t *testing.T) {
 	}
 	call(bob, ops.OpUsagePublicationSet, ops.UsagePublicationSetArgs{AllowRepublish: false}, http.StatusOK)
 	after := decodeMeters(t, call(bob, ops.OpUsageReadback, ops.UsageReadbackArgs{}, http.StatusOK))
-	if m := meterOf(t, slotOf(t, after, "domain", "provider"), "anthropic.general.5h"); *m.UsedPercent != 40 || m.Coverage.Known != 1 {
+	if m := meterOf(t, slotOf(t, after, "domain", "provider"), pubMetric("anthropic", "general", "5h")); *m.UsedPercent != 40 || m.Coverage.Known != 1 {
 		t.Fatalf("Bob withdrew republishing but his observation still counts: %+v", m)
 	}
 	call(root, ops.OpUsageNominationSet, ops.UsageNominationSetArgs{Action: "clear", Scope: "domain", Kind: "provider"}, http.StatusOK)
@@ -342,7 +344,75 @@ func TestUsageReadbackMoreThanSixteenGroups(t *testing.T) {
 	if len(s.Meters) != 16 || s.OmittedGroups != 4 || s.Headline == "" || s.Meters[0].ID != s.Headline {
 		t.Fatalf("%d meters, omitted %d, headline %q", len(s.Meters), s.OmittedGroups, s.Headline)
 	}
-	if !strings.Contains(s.Headline, "t-scope") || *s.Meters[0].RemainingPercent != 14 {
+	if !strings.Contains(s.Headline, pubToken("Anthropic", "t-scope")) || *s.Meters[0].RemainingPercent != 14 {
 		t.Fatalf("the most exhausted allowance was truncated away: %+v", s.Meters[0])
+	}
+}
+
+// pubToken and pubMetric mirror the public vocabulary of the projection: a
+// fixed family, an opaque digest of the producer's scope, the span.
+func pubToken(provider, scope string) string {
+	h := sha256.Sum256([]byte(provider + "\x00" + scope))
+	return "g" + hex.EncodeToString(h[:6])
+}
+
+func pubMetric(family, scope, span string) string {
+	switch family {
+	case "anthropic":
+		return family + "." + pubToken("Anthropic", scope) + "." + span
+	case "google":
+		return family + "." + pubToken("Google", scope) + "." + span
+	case "openai":
+		return family + "." + pubToken("OpenAI", scope) + "." + span
+	}
+	return "other." + pubToken("Cursor", scope) + "." + span
+}
+
+// A cached document is never served past the expiry of one of its meters: a
+// window that resets must not stay the headline for the rest of the TTL.
+func TestUsageReadbackCacheStopsAtMeterExpiry(t *testing.T) {
+	d, _ := startUsageHTTPHub(t)
+	ctx := context.Background()
+	bobID := d.user("bob")
+	bob, _ := d.login("bob")
+	worker := d.enrol("bob-host", bobID, store.WorkerKindPrivate)
+	now := time.Now()
+	sample := now.UnixMilli()
+	reset := now.Add(10 * time.Second).UnixMilli()
+	five := int64(5 * time.Hour / time.Millisecond)
+	a := ops.UsageAccount{ID: ops.UsageID("account", "soon"), Provider: "Anthropic", AuthMode: "subscription", ObservedAt: sample, Source: "claude-statusline",
+		Windows: []ops.UsageWindow{{Scope: "general", Period: "rolling", DurationMS: &five, ResetsAt: &reset, UsedPercent: rp(40)}}}
+	if err := d.st.SaveUsage(ctx, worker, bobID, ops.UsageReport{Version: ops.UsageVersion, ObservedAt: sample, Complete: true, Accounts: []ops.UsageAccount{a}}, now); err != nil {
+		t.Fatal(err)
+	}
+	call := func(op string, args any) {
+		t.Helper()
+		if code, body, _ := d.hc.do(http.MethodPost, ops.RESTPrefix+op, args, bob); code != http.StatusOK {
+			t.Fatalf("%s: %d %s", op, code, body)
+		}
+	}
+	var res ops.UsageBucketSetResult
+	code, body, _ := d.hc.do(http.MethodPost, ops.RESTPrefix+ops.OpUsageBucketSet, ops.UsageBucketSetArgs{Action: "save", Kind: "provider", Label: "Soon"}, bob)
+	if code != http.StatusOK {
+		t.Fatal(code, body)
+	}
+	_ = json.Unmarshal([]byte(body), &res)
+	call(ops.OpUsageBucketSet, ops.UsageBucketSetArgs{Action: "assign", Kind: "provider", BucketID: res.ID, Members: []string{a.ID}})
+	call(ops.OpUsageNominationSet, ops.UsageNominationSetArgs{Action: "nominate", Scope: "user", Kind: "provider", BucketID: res.ID})
+
+	clock := now
+	u := newUsageReadback(d.st)
+	u.now = func() time.Time { return clock }
+	doc, _, err := u.Document(ctx, bobID)
+	if err != nil || slotOf(t, doc, "user", "provider").Headline == "" {
+		t.Fatalf("fresh headline expected: %+v %v", doc, err)
+	}
+	clock = now.Add(11 * time.Second) // inside the 30 second TTL, after the reset
+	doc, _, err = u.Document(ctx, bobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := slotOf(t, doc, "user", "provider").Headline; h != "" {
+		t.Fatalf("an expired window is still the headline: %q", h)
 	}
 }

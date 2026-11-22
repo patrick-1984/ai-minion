@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"time"
 
@@ -291,22 +292,57 @@ page:
 	return out, rows.Err()
 }
 
+// usageQuerier is the read side shared by the pool and a transaction, so one
+// document can be built from one snapshot.
+type usageQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // UsageSlotSpec is one slot a Worker's owner receives: a nominated bucket and
 // the publisher whose publication rights bound what it may include.
 type UsageSlotSpec struct {
 	Scope, Kind, BucketID, Label, Publisher string
 }
 
+// usageRecipientOwner is the SQL condition that the Worker owner ?1 may
+// receive read-back: an active account that still holds a grant.
+const usageRecipientOwner = `EXISTS(SELECT 1 FROM users ro WHERE ro.id=?1 AND ro.active=1
+ AND EXISTS(SELECT 1 FROM user_roles rr WHERE rr.user_id=ro.id))`
+
+// ReadbackRecipientEligible reports whether the Worker may receive the
+// nominated usage document right now and returns its owner: the Worker is
+// approved and its owner is an active account that still holds a grant (user
+// or admin). Delivery calls it before it builds and again before it sends each
+// document, so an offboarded account's Worker stops receiving new meters.
+func (s *Store) ReadbackRecipientEligible(ctx context.Context, workerID string) (owner string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT w.owner_id FROM workers w WHERE w.id=?1 AND w.approval='approved'
+	 AND EXISTS(SELECT 1 FROM users ro WHERE ro.id=w.owner_id AND ro.active=1
+	  AND EXISTS(SELECT 1 FROM user_roles rr WHERE rr.user_id=ro.id))`, workerID).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return owner, true, nil
+}
+
 // UsageReadbackSlots lists the effective slots for the Workers of owner, the
-// domain pair first, each kind in order session, provider. A domain slot
-// counts only while its publisher is an active administrator; a user slot only
-// while its owner is active.
+// domain pair first, each kind in order session, provider. The recipient must
+// be an active account with a grant. A domain slot counts only while its
+// publisher is an active administrator; a user slot only while its owner is
+// active.
 func (s *Store) UsageReadbackSlots(ctx context.Context, owner string) ([]UsageSlotSpec, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT n.scope,n.kind,n.bucket_id,b.label,n.owner_id
+	return usageReadbackSlots(ctx, s.db, owner)
+}
+
+func usageReadbackSlots(ctx context.Context, q usageQuerier, owner string) ([]UsageSlotSpec, error) {
+	rows, err := q.QueryContext(ctx, `SELECT n.scope,n.kind,n.bucket_id,b.label,n.owner_id
 	 FROM usage_nominations n JOIN usage_buckets b ON b.owner_id=n.owner_id AND b.kind=n.kind AND b.id=n.bucket_id
 	 JOIN users u ON u.id=n.owner_id AND u.active=1
-	 WHERE (n.scope='user' AND n.owner_id=?1)
-	    OR (n.scope='domain' AND EXISTS(SELECT 1 FROM user_roles r WHERE r.user_id=u.id AND r.role='admin'))
+	 WHERE `+usageRecipientOwner+` AND ((n.scope='user' AND n.owner_id=?1)
+	    OR (n.scope='domain' AND EXISTS(SELECT 1 FROM user_roles r WHERE r.user_id=u.id AND r.role='admin')))
 	 ORDER BY CASE n.scope WHEN 'domain' THEN 0 ELSE 1 END, CASE n.kind WHEN 'session' THEN 0 ELSE 1 END`, owner)
 	if err != nil {
 		return nil, err
@@ -325,9 +361,51 @@ func (s *Store) UsageReadbackSlots(ctx context.Context, owner string) ([]UsageSl
 
 // NominatedUsage is the authorized raw material of one slot.
 type NominatedUsage struct {
-	Accounts []ops.UsageAccount            // provider slot: newest observation per account
+	Accounts []ops.UsageAccount            // provider slot: best observation per account
 	Sessions []ops.UsageSessionObservation // session slot
 	Linked   []ops.UsageAccount            // session slot: accounts the sessions are linked to
+}
+
+// ReadbackSlot is one slot with its publishable sources and, when asked for,
+// its raw data, all read from one snapshot.
+type ReadbackSlot struct {
+	UsageSlotSpec
+	Sources []UsagePublishableSource
+	Data    NominatedUsage
+}
+
+// UsageReadbackSnapshot reads the slots of owner, their publishable sources
+// and (withData) the raw observations in ONE transaction, so consent
+// withdrawn between two reads cannot let a later observation into a document
+// built from an earlier answer. visible maps a publisher to the Worker ids the
+// publisher may view now (the ordinary Usage visibility, decided by the
+// caller). A publisher without an entry may publish only the sources of
+// their own Workers. A source owned by somebody else is publishable only when
+// its owner allowed republishing AND the publisher may still view its Worker.
+func (s *Store) UsageReadbackSnapshot(ctx context.Context, owner string, visible map[string][]string, withData bool) ([]ReadbackSlot, error) {
+	var out []ReadbackSlot
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		out = nil
+		specs, err := usageReadbackSlots(ctx, tx, owner)
+		if err != nil {
+			return err
+		}
+		for _, sp := range specs {
+			src, err := usagePublishableSources(ctx, tx, sp.Publisher, sp.Kind, sp.BucketID, true, visible[sp.Publisher])
+			if err != nil {
+				return err
+			}
+			slot := ReadbackSlot{UsageSlotSpec: sp, Sources: src}
+			if withData {
+				if slot.Data, err = readNominatedUsage(ctx, tx, sp.Kind, src); err != nil {
+					return err
+				}
+			}
+			out = append(out, slot)
+		}
+		return nil
+	})
+	return out, err
 }
 
 type usageSourcePair struct {
@@ -340,19 +418,26 @@ func usagePairsJSON(pairs []usageSourcePair) (string, error) {
 	return string(b), err
 }
 
-// readUsageAccounts returns the newest observation of each requested
-// (account, Worker) pair on an approved Worker. Only the listed pairs are read,
-// so what was not authorized for publication cannot influence which
-// observation wins.
-func (s *Store) readUsageAccounts(ctx context.Context, pairs []usageSourcePair) ([]ops.UsageAccount, error) {
+// readUsageAccounts returns the best observation of each requested
+// (account, Worker) pair on an approved Worker. Only the listed pairs are
+// read, so what was not authorized for publication cannot influence which
+// observation wins. Among the listed Workers a row that reports windows beats
+// a discovery-only row, then the collector the owner designated wins, then a
+// non-native observation, then the newest.
+func readUsageAccounts(ctx context.Context, q usageQuerier, pairs []usageSourcePair) ([]ops.UsageAccount, error) {
 	arg, err := usagePairsJSON(pairs)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT a.account_id,a.observed_at,a.body FROM json_each(?) p
+	rows, err := q.QueryContext(ctx, `SELECT a.account_id,a.observed_at,a.body FROM json_each(?) p
 	 JOIN workers w ON w.id=json_extract(p.value,'$.w') AND w.approval='approved'
 	 JOIN usage_accounts a ON a.worker_id=w.id AND a.account_id=json_extract(p.value,'$.m')
-	 ORDER BY a.account_id,a.observed_at DESC,a.worker_id`, arg)
+	 LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
+	 ORDER BY a.account_id,
+	  (json_array_length(a.body,'$.windows')>0) DESC,
+	  (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,
+	  (json_extract(a.body,'$.source')<>'native-account') DESC,
+	  a.observed_at DESC,a.worker_id`, arg)
 	if err != nil {
 		return nil, err
 	}
@@ -382,8 +467,13 @@ func (s *Store) readUsageAccounts(ctx context.Context, pairs []usageSourcePair) 
 // ReadNominatedUsage reads the raw rows of one slot from its publishable
 // sources (UsagePublishableSources, applied before anything is deduplicated
 // or aggregated). A session slot also reads the subscription accounts its
-// sessions are linked to, from the same Workers.
+// sessions are linked to, from the same Workers. Prefer UsageReadbackSnapshot,
+// which reads the sources and the rows in one transaction.
 func (s *Store) ReadNominatedUsage(ctx context.Context, kind string, sources []UsagePublishableSource) (NominatedUsage, error) {
+	return readNominatedUsage(ctx, s.db, kind, sources)
+}
+
+func readNominatedUsage(ctx context.Context, q usageQuerier, kind string, sources []UsagePublishableSource) (NominatedUsage, error) {
 	var out NominatedUsage
 	pairs := make([]usageSourcePair, len(sources))
 	for i, p := range sources {
@@ -391,14 +481,14 @@ func (s *Store) ReadNominatedUsage(ctx context.Context, kind string, sources []U
 	}
 	if kind == "provider" {
 		var err error
-		out.Accounts, err = s.readUsageAccounts(ctx, pairs)
+		out.Accounts, err = readUsageAccounts(ctx, q, pairs)
 		return out, err
 	}
 	arg, err := usagePairsJSON(pairs)
 	if err != nil {
 		return out, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT s.worker_id,s.observed_at,s.ended_at,s.body FROM json_each(?) p
+	rows, err := q.QueryContext(ctx, `SELECT s.worker_id,s.observed_at,s.ended_at,s.body FROM json_each(?) p
 	 JOIN workers w ON w.id=json_extract(p.value,'$.w') AND w.approval='approved'
 	 JOIN usage_sessions s ON s.worker_id=w.id AND s.id=json_extract(p.value,'$.m') ORDER BY s.id`, arg)
 	if err != nil {
@@ -428,7 +518,7 @@ func (s *Store) ReadNominatedUsage(ctx context.Context, kind string, sources []U
 	}
 	_ = rows.Close()
 	if len(links) > 0 {
-		out.Linked, err = s.readUsageAccounts(ctx, links)
+		out.Linked, err = readUsageAccounts(ctx, q, links)
 	}
 	return out, err
 }

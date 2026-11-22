@@ -90,7 +90,7 @@ func (s *Store) SetUsageBucketAs(ctx context.Context, owner string, authorized [
 			if !ok {
 				return ErrNominationForbidden
 			}
-			if err := s.usageAudit(ctx, tx, auth.Actor, "usage.domain_bucket."+args.Action, "domain/"+args.Kind+"/"+args.BucketID); err != nil {
+			if err := s.usageAudit(ctx, tx, auditActor(auth.Actor, auth.Credential), "usage.domain_bucket."+args.Action, "domain/"+args.Kind+"/"+args.BucketID); err != nil {
 				return err
 			}
 		}
@@ -121,7 +121,7 @@ func (s *Store) SetUsageBucketAs(ctx context.Context, owner string, authorized [
 		if err != nil || !u && !d {
 			return err
 		}
-		if n, err := blockedMembersTx(ctx, tx, owner, args.Kind, args.BucketID); err != nil {
+		if n, err := blockedMembersTx(ctx, tx, owner, args.Kind, args.BucketID, auth.Restrict, auth.Visible); err != nil {
 			return err
 		} else if n > 0 {
 			return &NominationRefusal{Members: n}
