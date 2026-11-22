@@ -19,6 +19,11 @@ func platformRenameRetryable(err error) bool {
 		errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }
 
+func fileIdentity(os.FileInfo) string { return "" }
+
+func readClaimFile(string, string, int) ([]byte, error) { return nil, ErrUnsupported }
+func writeClaimFile(string, string, []byte, int) error  { return ErrUnsupported }
+
 // The private directory is created below the user's state directory and
 // inherits its protected DACL; files get their own protected DACL at creation.
 func verifyPrivateDir(dir string, _ int) (string, error) {
@@ -35,13 +40,13 @@ func ensurePrivateDir(dir string, uid int) (string, error) {
 	return verifyPrivateDir(dir, uid)
 }
 
-func verifyPublicDir(string, int) (string, error)     { return "", ErrUnsupported }
-func ensurePublicDirs(Layout) (string, string, error) { return "", "", ErrUnsupported }
-func writePublic(Layout, string, []byte) error        { return ErrUnsupported }
+func verifyPublicDir(string, int) (string, error)           { return "", ErrUnsupported }
+func ensurePublicDirs(Layout) (string, string, error)       { return "", "", ErrUnsupported }
+func writePublic(Layout, string, []byte, func() bool) error { return ErrUnsupported }
 
 func readPublicFile(string, string, int, int64) ([]byte, error) { return nil, ErrUnsupported }
 
-func writePrivate(dir, name string, data []byte, uid int) error {
+func writePrivate(dir, name string, data []byte, uid int, gate func() bool) error {
 	if _, err := verifyPrivateDir(dir, uid); err != nil {
 		return err
 	}
@@ -64,6 +69,10 @@ func writePrivate(dir, name string, data []byte, uid int) error {
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return err
+	}
+	if gate != nil && !gate() {
+		_ = os.Remove(tmpName)
+		return errGateClosed
 	}
 	if err := renameWithRetry(tmpName, filepath.Join(dir, name)); err != nil {
 		_ = os.Remove(tmpName)

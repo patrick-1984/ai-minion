@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/patrick-1984/ai-minion/docs/schemas/presence.schema.json",
   "title": "Worker presence record (minion.presence/1)",
-  "$comment": "The public record one Worker instance publishes for other programs on the same host (R2 writes it). Public by construction: it names the instance, the daemon version, the OS scope and the Hub origin only. The Hub origin is scheme, host and optional port: no user info, path, query or fragment. It never holds the Hub owner, Worker name, keys, words, pairing code, session data or errors. Solo has no hub_origin. Times are UTC unix milliseconds. A reader treats the record as running only when state is running and now - updated_at < stale_after_s.",
+  "$comment": "The public record one Worker instance publishes for other programs on the same host (R2 writes it). Public by construction: it names the instance, the daemon version, the OS scope, the Hub origin and the coarse Hub connection state only. The Hub origin is scheme, host and optional port: no user info, path, query or fragment. It never holds the Hub owner, Worker name, keys, words, pairing code, session data or errors. Solo has no hub_origin. Times are UTC unix milliseconds. A reader treats the record as running only when state is running and now - updated_at < stale_after_s.",
   "type": "object",
   "required": ["schema", "instance", "daemon_version", "started_at", "updated_at", "stale_after_s", "state", "os_scope"],
   "additionalProperties": false,
@@ -21,6 +21,10 @@
       "maxLength": 300,
       "pattern": "^https?://(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?$",
       "description": "Scheme, host and optional port of the Hub; absent in Solo."
+    },
+    "hub_link": {
+      "enum": ["connected", "registration_pending", "disconnected", "none"],
+      "description": "Coarse state of the Hub connection, for a reader that cannot ask the Worker: connected (usable), registration_pending (registration with the Hub is not finished), disconnected (a Hub is configured but not reachable), none (no Hub: Solo). Absent when the daemon does not say. Never holds an owner, credential or error text."
     }
   }
 }

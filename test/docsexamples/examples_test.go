@@ -8,11 +8,14 @@ package docsexamples
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -68,14 +71,18 @@ func fixture(t *testing.T, name string) map[string]any {
 
 // fakeMinion installs a "minion" that prints a discovery document in the shape
 // of "minion worker discover --json [--usage]".
-func fakeMinion(t *testing.T, workers []any) string {
+func fakeMinion(t *testing.T, workers []any) string { return fakeMinionExit(t, workers, 0) }
+
+// fakeMinionExit is fakeMinion that exits with status code (the document is
+// printed only when code is 0 or 1).
+func fakeMinionExit(t *testing.T, workers []any, code int) string {
 	t.Helper()
 	dir := t.TempDir()
 	doc, _ := json.Marshal(map[string]any{"schema": "minion.worker-discovery/1", "workers": workers})
 	if err := os.WriteFile(filepath.Join(dir, "doc.json"), doc, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\n[ \"$1 $2\" = \"worker discover\" ] || exit 64\ncat \"" + filepath.Join(dir, "doc.json") + "\"\n"
+	script := "#!/bin/sh\n[ \"$1 $2\" = \"worker discover\" ] || exit 64\n[ " + strconv.Itoa(code) + " -gt 1 ] || cat \"" + filepath.Join(dir, "doc.json") + "\"\nexit " + strconv.Itoa(code) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "minion"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -84,14 +91,28 @@ func fakeMinion(t *testing.T, workers []any) string {
 
 func runSh(t *testing.T, path, script string) string {
 	t.Helper()
+	out, code := runShStatus(t, path, script)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	return out
+}
+
+// runShStatus runs script and returns its output and exit status.
+func runShStatus(t *testing.T, path, script string) (string, int) {
+	t.Helper()
 	cmd := exec.Command("sh", "-c", script)
 	cmd.Env = []string{"PATH=" + path + ":" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("%v: %s", err, errb.String())
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return strings.TrimSpace(out.String() + errb.String()), ee.ExitCode()
+		}
+		t.Fatal(err)
 	}
-	return strings.TrimSpace(out.String())
+	return strings.TrimSpace(out.String()), 0
 }
 
 func running(t *testing.T) (map[string]any, int64) {
@@ -120,6 +141,14 @@ func TestShellOneLiner(t *testing.T) {
 	if got := runSh(t, fakeMinion(t, []any{stale}), script); got != "minion not running" {
 		t.Fatalf("stale: %q", got)
 	}
+	// "none running" (exit 1) is an answer; a failed search (exit 2) keeps its
+	// status and is not reported as "not running".
+	if got, code := runShStatus(t, fakeMinionExit(t, []any{}, 1), script); code != 0 || got != "minion not running" {
+		t.Fatalf("exit 1: %d %q", code, got)
+	}
+	if got, code := runShStatus(t, fakeMinionExit(t, nil, 2), script); code != 2 || !strings.Contains(got, "search failed") {
+		t.Fatalf("exit 2: %d %q", code, got)
+	}
 }
 
 func TestTmuxProgressBar(t *testing.T) {
@@ -147,6 +176,24 @@ func TestTmuxProgressBar(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "doc.json"), b, 0o600)
 	if got := runSh(t, dir, "minion-bar"); got != "" {
 		t.Fatalf("expired meter drawn: %q", got)
+	}
+	// The first slot's headline is expired, the second slot's is fresh: the bar
+	// shows the second.
+	w, now := running(t)
+	slots := w["usage"].(map[string]any)["slots"].([]any)
+	if len(slots) < 2 {
+		t.Fatal("fixture needs two slots")
+	}
+	for _, m := range slots[0].(map[string]any)["meters"].([]any) {
+		m.(map[string]any)["expires_at"] = float64(now - 1000)
+	}
+	second := slots[1].(map[string]any)
+	m2 := second["meters"].([]any)[0].(map[string]any)
+	second["headline"], m2["remaining_percent"] = m2["id"], float64(40)
+	b, _ = json.Marshal(map[string]any{"schema": "minion.worker-discovery/1", "workers": []any{w}})
+	_ = os.WriteFile(filepath.Join(dir, "doc.json"), b, 0o600)
+	if got := runSh(t, dir, "minion-bar"); got != "Team builds [####------] 40%" {
+		t.Fatalf("second slot not used: %q", got)
 	}
 	w, _ = running(t)
 	w["usage"].(map[string]any)["slots"].([]any)[0].(map[string]any)["slot"].(map[string]any)["label"] = "Evil\x1b[31m"
@@ -210,5 +257,42 @@ func TestPythonReader(t *testing.T) {
 	}
 	if got := RunPython(t, t.TempDir()); got != "unavailable" {
 		t.Fatalf("none: %q", got)
+	}
+}
+
+// A planted FIFO must not hang the scan, and a record with a null or mistyped
+// field must not abort it: the fresh record next to them is still found.
+func TestPythonReaderSurvivesHostileCandidates(t *testing.T) {
+	need(t, "python3")
+	rec := fixture(t, "presence_user_running.json")
+	now := time.Now().UnixMilli()
+	rec["started_at"], rec["updated_at"] = float64(now-60000), float64(now-1000)
+	state := t.TempDir()
+	WritePresence(t, state, rec)
+	dir := filepath.Join(state, "minion", "presence")
+	if err := syscall.Mkfifo(filepath.Join(dir, "fifo.json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i, mod := range []func(map[string]any){
+		func(m map[string]any) { m["updated_at"] = nil },
+		func(m map[string]any) { m["stale_after_s"] = "90" },
+		func(m map[string]any) { m["started_at"] = true },
+		func(m map[string]any) { delete(m, "state") },
+	} {
+		bad := fixture(t, "presence_user_running.json")
+		bad["instance"] = "bad" + strconv.Itoa(i)
+		bad["updated_at"] = float64(now)
+		mod(bad)
+		WritePresence(t, state, bad)
+	}
+	done := make(chan string, 1)
+	go func() { done <- RunPython(t, state) }()
+	select {
+	case got := <-done:
+		if got != "running v0.19.0 (user)" {
+			t.Fatalf("got %q", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the scan hangs on a FIFO")
 	}
 }

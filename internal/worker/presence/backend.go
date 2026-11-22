@@ -1,6 +1,7 @@
 package presence
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,11 +35,15 @@ func (b backend) prepare(now time.Time) error {
 	return nil
 }
 
-func (b backend) write(name string, data []byte) error {
+func (b backend) write(name string, data []byte) error { return b.writeGated(name, data, nil) }
+
+// writeGated stages the file and calls gate (when not nil) immediately before
+// the rename; a false answer abandons the write with errGateClosed.
+func (b backend) writeGated(name string, data []byte, gate func() bool) error {
 	if b.public() {
-		return writePublic(b.l, name, data)
+		return writePublic(b.l, name, data, gate)
 	}
-	return writePrivate(b.l.PrivateDir, name, data, b.l.UID)
+	return writePrivate(b.l.PrivateDir, name, data, b.l.UID, gate)
 }
 
 func (b backend) read(name string, max int64) ([]byte, error) {
@@ -71,10 +76,60 @@ func (b backend) remove(name string) error {
 		}
 		return err
 	}
-	if err := os.Remove(filepath.Join(dir, name)); err != nil && !isNotExist(err) {
-		return err
+	err = removeWithRetry(filepath.Join(dir, name))
+	if err != nil && !b.public() && errors.Is(err, errStillInUse) {
+		// Still held open (Windows): keep the removal pending so that a later
+		// heartbeat or the next start finishes it.
+		if werr := writePrivate(dir, tombstonePrefix+name+tombstoneSuffix, []byte("x"), b.l.UID, nil); werr != nil {
+			return errors.Join(err, werr)
+		}
 	}
-	return nil
+	return err
+}
+
+const (
+	tombstonePrefix = "pending-remove-"
+	tombstoneSuffix = ".del"
+)
+
+// retryPending finishes removals that were held up by a reader. One attempt per
+// file, no waiting.
+func (b backend) retryPending() {
+	if b.public() {
+		return
+	}
+	dir, err := b.physDir()
+	if err != nil {
+		return
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		target, ok := strings.CutPrefix(e.Name(), tombstonePrefix)
+		if !ok || !strings.HasSuffix(target, tombstoneSuffix) {
+			continue
+		}
+		target = strings.TrimSuffix(target, tombstoneSuffix)
+		if _, _, valid := splitName(target); valid {
+			if err := removeFile(filepath.Join(dir, target)); err != nil && !isNotExist(err) {
+				continue
+			}
+		}
+		_ = removeFile(filepath.Join(dir, e.Name()))
+	}
+}
+
+// dropPending forgets a pending removal of name: the file was replaced by a
+// newer snapshot, which the old removal must not delete.
+func (b backend) dropPending(name string) {
+	if b.public() {
+		return
+	}
+	if dir, err := b.physDir(); err == nil {
+		_ = removeFile(filepath.Join(dir, tombstonePrefix+name+tombstoneSuffix))
+	}
 }
 
 func (b backend) exists(name string) bool {
@@ -139,7 +194,7 @@ func (b backend) claimed() string {
 	if !ok {
 		return ""
 	}
-	raw, err := os.ReadFile(p)
+	raw, err := readClaimFile(filepath.Dir(p), filepath.Base(p), b.l.RootUID)
 	if err != nil {
 		return ""
 	}
@@ -155,16 +210,12 @@ func (b backend) setClaim(instance string) error {
 	if !ok {
 		return nil
 	}
-	tmp := p + ".new"
-	if err := os.WriteFile(tmp, []byte(instance), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, p)
+	return writeClaimFile(filepath.Dir(p), filepath.Base(p), []byte(instance), b.l.RootUID)
 }
 
 func (b backend) dropClaim() {
 	if p, ok := b.claimPath(); ok {
-		_ = os.Remove(p)
+		_ = removeFile(p)
 	}
 }
 
