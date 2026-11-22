@@ -23,7 +23,7 @@ A token bucket is private to you. **Nominating** a bucket publishes it: the buck
 - **What Workers receive:** only the deliberately published label and the aggregate meters. Never member ids, session names, folders, account labels, key hints or other users' Worker ids. A meter without a known value has no value: nothing is estimated, and tokens left are never inferred from a percentage or from tokens spent.
 - A preview shows exactly what your Workers receive: the Hub page, the `usage_readback` operation and the Hub-connected MCP tool. It does not need any Worker to be online.
 - Nominating does not need the monitoring consent of a Worker: it is Hub data sent to the Worker, not a report from it.
-- TODO(R5): confirm the delivery wording (acknowledged publication, retry) once the delivery ticket is merged.
+- **Delivery:** the Hub sends the document to a connected Worker as a control frame (`readback.apply`) that only the Hub link carries. The Worker acknowledges it after it has stored the document locally, so the Hub knows what is published. A frame that is not acknowledged is retried with a growing delay, and the Hub reconciles every Worker every 60 seconds, so a Worker that was offline or lost a frame catches up. A delivery is a 5 minute lease: a Worker whose Hub link stays down keeps the last document, which consumers must treat as stale by its `expires_at` and `generated_at`. A document is bound to the Worker's current Hub owner and enrollment: it is cleared when the Worker is revoked, reset or replaced, and when its owner changes. Read it from another program with `minion worker discover --json --usage` or `minion worker status --json` (optional `usage` field).
 
 ## Register a Worker
 

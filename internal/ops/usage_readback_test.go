@@ -425,7 +425,7 @@ func TestUsageLabelIsPlainText(t *testing.T) {
 			t.Errorf("%q: got %q, want %q", in, got, want)
 		}
 	}
-	if got := UsageLabel(strings.Repeat("é", 100), 80); len(got) != 80 || !strings.HasSuffix(got, "é") {
+	if got := UsageLabel(strings.Repeat("\u00e9", 100), 80); len(got) != 80 || !strings.HasSuffix(got, "\u00e9") {
 		t.Errorf("cut on a rune boundary: %d", len(got))
 	}
 }

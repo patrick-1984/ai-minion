@@ -1377,3 +1377,6 @@ details.fold > pre.copy-value { margin: 6px 0 0; padding: 0; border: 0; backgrou
 details.fold > summary:focus-visible { outline-offset: 2px; }
 .copy-field > .copy-value.copy-wrap-text { white-space: normal; overflow-wrap: anywhere; overflow-x: visible; }
 .copy-hint { display: block; margin-top: 4px; font-size: 0.875rem; color: var(--muted); }
+
+/* Usage Buckets view: normal section spacing above the headings (R8). */
+#consent-h, #buckets-h, #preview-h { margin-top: 32px; }

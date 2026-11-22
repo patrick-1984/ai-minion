@@ -14,8 +14,22 @@ Example files are in [docs/schemas/fixtures](../schemas/fixtures).
 Use the command and let it do the verification:
 
 ```sh
-minion worker discover --json    # TODO(R7): confirm the command name and the output shape
+minion worker discover --json                 # one JSON document: {"schema":"minion.worker-discovery/1","workers":[...]}
+minion worker discover --json --usage         # each running Worker also carries its stored usage-meters document
 ```
+
+The command looks at the Workers of this account (including those that use another state directory) and at root's, and verifies every record with the checks [below](#what-a-consumer-must-check). Add `--state-dir DIR` (or set `MINION_STATE_DIR`) to also look at one specific profile.
+
+| Field of each entry in `workers` | Meaning |
+| --- | --- |
+| `instance`, `status`, `source` | the instance, one of `running`, `stale`, `stopped`, `unavailable`, and where the record was found (`private`, `public`, or `socket` for an older daemon that answers on its local socket and has no record) |
+| `daemon_version`, `os_scope`, `pid`, `hub_origin` | as in the presence record (absent when unknown; `hub_origin` is absent for Solo) |
+| `started_at`, `updated_at` | ISO 8601 UTC time, for example `2026-11-22T10:00:00.000Z` |
+| `started_age_s`, `updated_age_s`, `stale_after_s` | seconds since each timestamp, and the staleness limit |
+| `error` | why a record is `unavailable` (a short reason for a person, not for parsing) |
+| `usage` | with `--usage`: the stored `minion.usage-meters/1` document of that Worker, when it has one |
+
+The top level has `schema` (`minion.worker-discovery/1`) and, for an empty or doubtful result, a `note`. Exit status: `0` at least one Worker is running, `1` none is running, `2` the search failed, or none runs and some record could not be trusted (a running Worker may be hidden). `minion worker status --json` answers for one profile and has the same optional `usage` field.
 
 If you cannot run the command (it is not installed, or you are in a language that prefers files), read the files as described below. Never read them with a plain `cat | jq` and trust the answer: see [what a consumer must check](#what-a-consumer-must-check).
 
@@ -124,9 +138,8 @@ These are the rules of the `internal/worker/presence` reader that the CLI uses.
 Use the CLI's discovery output, which has already done the checks above:
 
 ```sh
-# TODO(R7): replace with the final command and field names of the discovery output.
 minion worker discover --json \
-  | jq -r '[.[] | select(.status=="running")][0]
+  | jq -r '[.workers[] | select(.status=="running")][0]
            | if . then "minion \(.daemon_version) running (\(.os_scope))" else "minion not running" end' \
   || echo "minion not installed or not readable"
 ```
@@ -215,10 +228,9 @@ if __name__ == "__main__":
 ```sh
 #!/bin/sh
 # minion-bar: "Claude Max [######----] 62%"; prints nothing when no fresh headline exists.
-# TODO(R7): the CLI form that prints the verified usage document (placeholder below).
 minion worker discover --json --usage 2>/dev/null | jq -r --argjson now "$(date +%s)000" '
-  [ .[] | select(.status=="running") | .usage.slots[]? ] | .[0]
-  | select(. != null and .headline != null) as $s
+  [ .workers[] | select(.status=="running") | .usage.slots[]? | select(.headline != null) ] | .[0]
+  | select(. != null) as $s
   | $s.meters[] | select(.id == $s.headline and .expires_at > $now and .remaining_percent != null)
   | (.remaining_percent / 10 | floor) as $n
   | "\($s.slot.label | gsub("[[:cntrl:]]"; "")) [" + ("#" * $n) + ("-" * (10 - $n)) + "] \(.remaining_percent | floor)%"'
