@@ -887,6 +887,11 @@ func copyTree(src, dst string) error {
 		if err != nil || rel == "." {
 			return err
 		}
+		// The published presence files (record, usage document) are not part of
+		// the profile: the replacement must not keep a copy of owner data.
+		if d.IsDir() && rel == "presence" {
+			return fs.SkipDir
+		}
 		to := filepath.Join(dst, rel)
 		info, err := d.Info()
 		if err != nil {

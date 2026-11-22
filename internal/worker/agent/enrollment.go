@@ -5,12 +5,14 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"github.com/patrick-1984/ai-minion/internal/worker/presence"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -135,6 +137,32 @@ type Enrollments struct {
 	moved chan struct{} // closed (and replaced) when gen changes
 
 	unannounced bool // gen was advanced by this process and moved was not closed yet
+
+	wipeHook atomic.Pointer[func()] // called on an enrollment wipe; see SetWipeHook
+}
+
+// SetWipeHook registers what a running daemon does when the enrollment is
+// wiped (a signed revoke, a reset, a new identity): it clears the stored usage
+// document. Without a hook (the CLI processes) a wipe removes the usage
+// documents of the profile from disk, and leaves the presence record, which a
+// running daemon of that profile owns.
+func (e *Enrollments) SetWipeHook(f func()) {
+	e.wipeHook.Store(&f)
+}
+
+func (e *Enrollments) clearPublished() {
+	var hook func()
+	if p := e.wipeHook.Load(); p != nil {
+		hook = *p
+	}
+	switch {
+	case hook != nil:
+		hook()
+	case e.stateDir != "":
+		if l, err := presenceLayout(e.stateDir); err == nil {
+			_ = presence.ClearUsageFiles(l) // best effort: a wipe must not fail on it
+		}
+	}
 }
 
 // ErrEnrollmentChanged is returned by the conditional writers when the
@@ -650,6 +678,7 @@ func (e *Enrollments) wipe(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	_ = e.saveHubURL("") // the address belongs to the enrollment that ends here
+	e.clearPublished()
 	return e.repo.WipeEnrollment(ctx)
 }
 

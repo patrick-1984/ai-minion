@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -361,6 +363,19 @@ type Runtime struct {
 	// ready is set once Start has started every module: only then may the
 	// crash guard commit an update.
 	ready atomic.Bool
+	// instance is the random id of this daemon run (see [Runtime.Instance]).
+	instance string
+}
+
+// Instance returns the id of this daemon run: one random id per Runtime that
+// the local socket (daemon.instance) and the presence record share.
+func (rt *Runtime) Instance() string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.instance == "" {
+		rt.instance = uuid.NewString()
+	}
+	return rt.instance
 }
 
 // Started reports whether the runtime started every module (Start returned

@@ -10,8 +10,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -86,7 +84,7 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 	health, _ := lookupService[*SessionListHealth](env.rt)
 	pause, _ := lookupService[*PauseService](env.rt)
 	private, _ := lookupService[*PairingStatus](env.rt)
-	instance := uuid.NewString()
+	instance := env.rt.Instance()
 	daemon := &LiveDaemon{Instance: instance, Version: version.Version, StartedAt: env.rt.StartedAt(), PID: os.Getpid()}
 	live := LiveStatusSource{Daemon: daemon, Private: private, Connector: conn, Policy: ex.Policy(), RunMode: workerRunMode(), Host: hostInfo, Health: health,
 		LogSinks: env.Settings().LogSinks, Pause: pause}

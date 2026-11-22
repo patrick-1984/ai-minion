@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
+	"github.com/patrick-1984/ai-minion/internal/worker/presence"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -223,6 +224,14 @@ func ResetWorker(ctx context.Context, o ResetOptions) (ResetReport, error) {
 	cfg, err := config.LoadFile(path)
 	if err != nil {
 		return rep, fmt.Errorf("read the config file: %w", err)
+	}
+	// The published presence record and usage document of this profile go
+	// first: the owner data they carry must not outlive the pairing, whatever
+	// fails later, and a second run finishes the job.
+	if l, err := presenceLayout(o.StateDir); err == nil {
+		if err := presence.ClearProfile(l); err != nil {
+			return rep, fmt.Errorf("remove the published presence files: %w", err)
+		}
 	}
 	// A reset during an update trial: a rollback must not restore the
 	// deleted pairing from the pre-migration database (rollbackTrustHold).
