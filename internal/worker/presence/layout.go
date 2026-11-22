@@ -12,7 +12,10 @@ import (
 )
 
 const (
-	privateDirName   = "presence"
+	privateDirName = "presence"
+	// PrivateDirName is the name of the private presence directory inside a
+	// state directory.
+	PrivateDirName   = privateDirName
 	discoveryDirName = "presence-index"
 	stageDirName     = ".stage"
 	recordSuffix     = ".json"

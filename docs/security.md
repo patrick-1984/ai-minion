@@ -161,6 +161,15 @@ The recipes that keep the proxy out of these steps are in [pairing](guides/pairi
 - While the Hub does not know a Worker's sharing rule it hides that Worker's stored history instead of showing it.
 - Sign-in through an identity provider fails closed: a claim that is missing or matches no configured value gives no role, and no role means no access ([OIDC](guides/oidc.md)).
 
+## The public presence files of a root Worker
+
+A Worker that runs as root publishes a presence record in `/run/minion-presence` (`/var/run/minion-presence` on macOS), owned by root, mode 0755 for the directory and 0644 for the files, so that every program on the host can see that it runs and which version it is ([integrate with local programs](guides/integrate-local.md)). The record holds: the daemon version, the scope, the process id, timestamps, a random instance id and the scheme, host and port of the Hub. If the Hub nominated usage, a second public file holds the nominated labels and aggregate meters, including the Hub owner's personal pair; the Hub UI says so before it publishes. They never hold keys, tokens, pairing codes, key words, the Hub owner or Worker name, session data, folders, member ids or account labels.
+
+- **Threat model:** every local account can read these files and can learn that the Worker exists, its version and the Hub address. No account can write there: the directories are root-owned, writers stage files in a root-only directory and rename them, and readers refuse a link, a non-regular file, a wrong owner or mode and an oversized file.
+- A Worker of a non-root user publishes only in that user's private directory (0700, files 0600); another user cannot see it.
+- The Hub controls only the content of the usage document. The Worker writes the presence fields and accepts a usage document only from its own Hub connection.
+- Consumers must verify what they read; labels are untrusted text. Remove the files by stopping the Worker; a record of a crashed Worker goes stale after 90 seconds.
+
 ## Not covered, or not finished
 
 - The Windows Worker is a **preview**: its sessions end with the Worker process, and a Windows service runs as the LocalSystem account ([Windows preview](install/worker-windows-preview.md)).

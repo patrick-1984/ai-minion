@@ -254,6 +254,10 @@ type StatusInputs struct {
 	// NewSessions is allow_new_sessions (on or off) from the settings: what
 	// the next start enforces, reported when no Worker runs.
 	NewSessions string
+	// Usage returns the usage-meters document stored for the selected
+	// profile (the one a reader verified), or nil. daemonInstance is the
+	// instance of the answering daemon, empty when none answered.
+	Usage func(daemonInstance string) json.RawMessage
 }
 
 // StatusConnection is the connection part of the report.
@@ -305,6 +309,9 @@ type StatusReport struct {
 	// Daemon is the running daemon as it reports itself (instance, version,
 	// start time, optional PID); absent when no daemon answered.
 	Daemon *StatusDaemon `json:"daemon,omitempty"`
+	// Usage is the usage-meters document (minion.usage-meters/1) the Hub
+	// delivered and the Worker stored for this profile; absent when none.
+	Usage json.RawMessage `json:"usage,omitempty"`
 	// HubFingerprint is the pinned Hub key, empty when not paired.
 	HubFingerprint string `json:"hub_fingerprint"`
 	// WorkerFingerprint is the Worker's own key, empty before the key exists.
@@ -463,6 +470,13 @@ func BuildStatus(ctx context.Context, in StatusInputs) StatusReport {
 	r.NewSessions = orDash(in.NewSessions, NewSessionsUnknown)
 	r.Connection = connectionOf(ctx, in, &r, problem)
 	r.PreviewOnly = in.PreviewOnly || r.PreviewOnlyHub
+	if in.Usage != nil {
+		inst := ""
+		if r.Daemon != nil {
+			inst = r.Daemon.Instance
+		}
+		r.Usage = in.Usage(inst)
+	}
 	return r
 }
 

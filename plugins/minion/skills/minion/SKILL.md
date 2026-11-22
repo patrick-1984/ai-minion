@@ -40,6 +40,26 @@ echo "$TMUX_PANE"              # non-empty: you run inside a tmux session (a Min
 - Worker status `not paired` with a Hub URL: it shows a pairing code (step 3).
 - Worker connected to a Hub and paired: use it (step 4); to become a master, step 5.
 
+### Detect a Worker and read its usage meters
+
+`minion worker status` answers for one profile. To find every Worker this account can see (a service with its own
+state directory, root Workers, a stale or stopped one), use discovery. Do not parse files yourself: the command
+checks owner, mode, size, schema and future timestamps for you.
+
+```sh
+minion worker discover --json --usage
+```
+
+Each entry of `workers` has `status` (`running`, `stale`, `stopped`, `unavailable` with `error`), `daemon_version`,
+`os_scope` (`user` or `root`), `started_at`, `updated_at`, `updated_age_s`, `hub_origin` and, with `--usage`, the stored
+usage-meters document (`minion.usage-meters/1`) as `usage`. Exit status: 0 a Worker is running, 1 none is running,
+2 the search failed or a record could not be trusted while nothing runs (a Worker may be hidden). `running` means the
+record was refreshed within `stale_after_s` (90 s): a recent-liveness signal, not proof the Hub link is up (use
+`minion worker status --json`, `connection.live`). An old Worker that publishes no record appears only when it
+answers on the selected profile's socket (`source: socket`). `minion worker status --json` also carries `usage` for the
+selected profile when a document is stored. A meter is grey (unknown) once its `expires_at` has passed; never
+compute "tokens left" from a percentage.
+
 ## 2. Install (only after the human agrees)
 
 ```sh
