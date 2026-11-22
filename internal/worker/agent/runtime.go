@@ -340,11 +340,13 @@ type Runtime struct {
 	reg  *Registry
 	opts Options
 
-	mu       sync.Mutex
-	state    runtimeState
-	settings Settings
-	services map[reflect.Type]service
-	running  []started
+	mu    sync.Mutex
+	state runtimeState
+	// startedAt is when Start began (the daemon start time).
+	startedAt time.Time
+	settings  Settings
+	services  map[reflect.Type]service
+	running   []started
 	// held is the lifecycle lock taken at the very start of Start, before
 	// any hook, so that the update crash guard runs only in the process that
 	// owns the state; the lifecycle module takes it over.
@@ -394,6 +396,7 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 	}
 	rt.state = stateStarted
 	rt.settings = s
+	rt.startedAt = time.Now()
 	rt.mu.Unlock()
 
 	fail := func(err error) error {
@@ -644,4 +647,12 @@ func safely(fn func() error) (err error) {
 		}
 	}()
 	return fn()
+}
+
+// StartedAt is when [Runtime.Start] began; zero before. It is the start time
+// of the daemon in the local live status.
+func (rt *Runtime) StartedAt() time.Time {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.startedAt
 }

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/patrick-1984/ai-minion/docs/schemas/local-status-daemon.schema.json",
+  "title": "Worker daemon identity (minion.local-status.daemon/1)",
+  "$comment": "The daemon{} object of the worker_status reply on the local control socket and of `minion worker status --json`. Local only: it is never sent to the Hub and never published. instance is one random id per daemon process. A daemon older than this contract sends no daemon{}; the CLI then shows the instance of the old reply alone. Absent means not known, never zero. started_at is RFC 3339 UTC (the socket reply keeps fractional seconds, the CLI report uses milliseconds). Top-level version of the CLI report stays the version of the CLI; connection.live stays socket-confirmed.",
+  "type": "object",
+  "required": ["instance"],
+  "additionalProperties": false,
+  "properties": {
+    "instance": {"type": "string", "minLength": 1, "maxLength": 64, "description": "One id per daemon process."},
+    "version": {"type": "string", "minLength": 1, "maxLength": 64, "description": "The daemon's own build version."},
+    "started_at": {"type": "string", "format": "date-time", "description": "When the daemon started."},
+    "pid": {"type": "integer", "minimum": 1, "description": "Operating system process id; informative only."}
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/patrick-1984/ai-minion/docs/schemas/usage-meters.schema.json",
+  "title": "Nominated usage meters (minion.usage-meters/1)",
+  "$comment": "The publication-safe usage document the Hub hands to a Worker (R4 builds it, R5 delivers it, R2 stores it for local readers). It is separate from the presence record. Up to four slots (domain.session, domain.provider, user.session, user.provider). Only deliberately published labels and aggregate meters: never member ids, session names, folders, account labels, key hints or other users' Worker ids. Unknown is an absent field, never 0; an observed zero is 0. Percent is 0 to 100. Times are UTC unix milliseconds. A reader greys a meter out at its expires_at, which is the earliest of the source observation deadline and the allowance reset. A new statistic is a new meter or a new optional field; additions keep the schema version.",
+  "type": "object",
+  "required": ["schema", "generated_at", "slots"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": "minion.usage-meters/1"},
+    "generated_at": {"type": "integer", "minimum": 0, "description": "When the Hub built this document."},
+    "slots": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/slotDoc"}}
+  },
+  "$defs": {
+    "slotDoc": {
+      "type": "object",
+      "required": ["slot", "meters"],
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "type": "object",
+          "required": ["scope", "kind", "label"],
+          "additionalProperties": false,
+          "properties": {
+            "scope": {"enum": ["user", "domain"]},
+            "kind": {"enum": ["session", "provider"]},
+            "label": {"type": "string", "minLength": 1, "maxLength": 80, "description": "The label the nominator published; untrusted text."}
+          }
+        },
+        "headline": {"type": "string", "maxLength": 128, "description": "The id of the meter a progress bar shows: the lowest fresh comparable remaining percentage. Kept through truncation."},
+        "omitted_groups": {"type": "integer", "minimum": 0, "description": "Window groups left out to stay within 16 meters."},
+        "meters": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/meter"}}
+      }
+    },
+    "meter": {
+      "type": "object",
+      "required": ["id", "metric", "label", "unit", "observed_at", "expires_at", "coverage"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Stable identity of the window group, including provider, window and unit."},
+        "metric": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,63}$", "description": "Public metric name, for example anthropic.general.5h."},
+        "label": {"type": "string", "minLength": 1, "maxLength": 80},
+        "unit": {"enum": ["percent", "tokens", "requests", "usd"]},
+        "used": {"type": "number", "minimum": 0, "description": "In unit."},
+        "remaining": {"type": "number", "minimum": 0, "description": "In unit. Never inferred from a percentage or from spent tokens."},
+        "limit": {"type": "number", "minimum": 0, "description": "In unit; only when every known account reports it."},
+        "used_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        "remaining_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        "resets_at": {"type": "integer", "minimum": 0, "description": "Earliest reset among known accounts."},
+        "duration_ms": {"type": "integer", "minimum": 1},
+        "pace": {"enum": ["ahead", "on_pace", "below", "unknown"], "description": "Worst of the accounts; absent or unknown when not known."},
+        "observed_at": {"type": "integer", "minimum": 0, "description": "Oldest source observation behind this meter."},
+        "expires_at": {"type": "integer", "minimum": 0, "description": "After this time the meter is expired and must not be shown as current."},
+        "coverage": {
+          "type": "object",
+          "required": ["known", "stale", "unknown"],
+          "additionalProperties": false,
+          "properties": {
+            "known": {"type": "integer", "minimum": 0},
+            "stale": {"type": "integer", "minimum": 0},
+            "unknown": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    }
+  }
+}

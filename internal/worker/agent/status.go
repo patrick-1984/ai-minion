@@ -97,6 +97,32 @@ type LiveStatus struct {
 	// NewSessions is allow_new_sessions (on or off) as the running Worker
 	// enforces it; empty from an older Worker.
 	NewSessions string
+	// Daemon identifies the running daemon; nil from an older Worker.
+	Daemon *LiveDaemon
+}
+
+// LiveDaemon identifies the running daemon behind a [LiveStatus]. It is the
+// in-process form of [DaemonInfo].
+type LiveDaemon struct {
+	Instance  string
+	Version   string
+	StartedAt time.Time
+	PID       int
+}
+
+// StatusDaemon is the daemon{} object of "minion worker status --json": the
+// running daemon as it reports itself. It is absent when no daemon answered
+// (stopped, or another state directory). The top-level version stays the
+// version of this CLI, and connection.live stays socket-confirmed.
+type StatusDaemon struct {
+	// Instance is one random id per daemon process.
+	Instance string `json:"instance"`
+	// Version is the daemon's own version; absent from an older daemon.
+	Version string `json:"version,omitempty"`
+	// StartedAt is when the daemon started; absent from an older daemon.
+	StartedAt *ops.Timestamp `json:"started_at,omitempty"`
+	// PID is the operating system process id; informative, may be absent.
+	PID int `json:"pid,omitempty"`
 }
 
 // LiveSource answers for a running Worker. It returns [ErrNoLiveWorker] when
@@ -126,6 +152,8 @@ type LiveStatusSource struct {
 	// Private is the private pairing presentation of the managed Android
 	// mode; nil in every other mode.
 	Private *PairingStatus
+	// Daemon identifies this daemon; nil reports none.
+	Daemon *LiveDaemon
 }
 
 // LiveStatus implements [LiveSource].
@@ -143,6 +171,10 @@ func (s LiveStatusSource) LiveStatus(context.Context) (LiveStatus, error) {
 		}
 	}
 	out.RunMode = s.RunMode
+	if s.Daemon != nil {
+		d := *s.Daemon
+		out.Daemon = &d
+	}
 	if s.Pause != nil {
 		out.Paused, out.PauseKnown = s.Pause.Paused(), true
 	}
@@ -270,6 +302,9 @@ type StatusReport struct {
 	Mode       string           `json:"mode"`
 	HubURL     string           `json:"hub_url"`
 	Connection StatusConnection `json:"connection"`
+	// Daemon is the running daemon as it reports itself (instance, version,
+	// start time, optional PID); absent when no daemon answered.
+	Daemon *StatusDaemon `json:"daemon,omitempty"`
 	// HubFingerprint is the pinned Hub key, empty when not paired.
 	HubFingerprint string `json:"hub_fingerprint"`
 	// WorkerFingerprint is the Worker's own key, empty before the key exists.
@@ -461,6 +496,14 @@ func connectionOf(ctx context.Context, in StatusInputs, r *StatusReport, problem
 		}
 		r.NewSessions = orDash(live.NewSessions, NewSessionsUnknown)
 		r.RunMode = live.RunMode
+		if d := live.Daemon; d != nil {
+			sd := &StatusDaemon{Instance: d.Instance, Version: d.Version, PID: d.PID}
+			if !d.StartedAt.IsZero() {
+				t := ops.Timestamp(d.StartedAt.UTC())
+				sd.StartedAt = &t
+			}
+			r.Daemon = sd
+		}
 		r.SessionHost, r.SessionsHidden, r.SessionHostReason = live.Host.Kind, live.Host.Hidden, live.Host.Reason
 		r.SessionsListError = live.ListError
 		r.LogSinks = live.LogSinks
