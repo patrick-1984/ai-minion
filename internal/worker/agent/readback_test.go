@@ -66,8 +66,8 @@ func (e *rbEnv) onDisk() []byte {
 	return b
 }
 
-const docA = `{"schema":"minion.usage-meters/1","generated_at":1,"slots":[],"note":"alice"}`
-const docB = `{"schema":"minion.usage-meters/1","generated_at":2,"slots":[],"note":"bob"}`
+const docA = `{"schema":"minion.usage-meters/1","generated_at":1,"slots":[]}`
+const docB = `{"schema":"minion.usage-meters/1","generated_at":2,"slots":[]}`
 
 func mustAck(t *testing.T, ack proto.ReadbackAck, err *proto.Error, rev uint64) {
 	t.Helper()

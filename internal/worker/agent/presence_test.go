@@ -133,7 +133,7 @@ func TestResetWorkerClearsPresenceAndUsage(t *testing.T) {
 		if err := pub.Start(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if err := pub.SetUsage([]byte(`{"schema":"minion.usage-meters/1"}`)); err != nil {
+		if err := pub.SetUsage([]byte(`{"schema":"minion.usage-meters/1","generated_at":1,"slots":[]}`)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := r.reset(); err != nil {
@@ -165,7 +165,7 @@ func TestEnrollmentWipeClearsUsage(t *testing.T) {
 	}
 	defer func() { _ = pub.Stop() }()
 	put := func() {
-		if err := pub.SetUsage([]byte(`{"schema":"minion.usage-meters/1"}`)); err != nil {
+		if err := pub.SetUsage([]byte(`{"schema":"minion.usage-meters/1","generated_at":1,"slots":[]}`)); err != nil {
 			t.Fatal(err)
 		}
 	}
