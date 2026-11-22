@@ -110,6 +110,8 @@ func TestUsageActAsHidesPublication(t *testing.T) {
 func TestUsagePreviewRendersMetersAndEscapes(t *testing.T) {
 	gen := time.Date(2026, 11, 21, 14, 30, 0, 0, time.UTC)
 	reset := gen.Add(2 * time.Hour).UnixMilli()
+	usagePreviewNow = func() time.Time { return gen }
+	t.Cleanup(func() { usagePreviewNow = time.Now })
 	doc := ops.UsageMeters{Schema: ops.UsageMetersSchema, GeneratedAt: gen.UnixMilli(), Slots: []ops.UsageSlotDoc{{
 		Slot: ops.UsageSlotID{Scope: "user", Kind: "provider", Label: `<script>alert(1)</script>`}, Headline: "m1", OmittedGroups: 2,
 		Meters: []ops.UsageMeter{
@@ -136,4 +138,26 @@ func TestUsagePreviewEmptyAndUnavailable(t *testing.T) {
 		t.Fatalf("status %d", r.Code)
 	}
 	mustHave(t, mainOf(t, r.Body.String()), "The preview is not available right now")
+}
+
+// The Hub caches the projection; a meter whose reset falls inside the cache
+// lifetime must show as expired and not as the headline.
+func TestUsagePreviewJudgesExpiryAtRequestTime(t *testing.T) {
+	gen := time.Date(2026, 11, 21, 14, 30, 0, 0, time.UTC)
+	usagePreviewNow = func() time.Time { return gen.Add(10 * time.Second) }
+	t.Cleanup(func() { usagePreviewNow = time.Now })
+	doc := ops.UsageMeters{Schema: ops.UsageMetersSchema, GeneratedAt: gen.UnixMilli(), Slots: []ops.UsageSlotDoc{{
+		Slot: ops.UsageSlotID{Scope: "user", Kind: "provider", Label: "p"}, Headline: "m1",
+		Meters: []ops.UsageMeter{{ID: "m1", Label: "Resets", Unit: "percent", RemainingPercent: fp(5), ObservedAt: gen.UnixMilli(), ExpiresAt: gen.Add(2 * time.Second).UnixMilli()}},
+	}}}
+	connect(t, readbackFixtures(nil, false, &doc, nil))
+	body := mainOf(t, onbGet(t, onbUser(t), "/usage?view=buckets").Body.String())
+	mustHave(t, body, "Expired")
+	mustNotHave(t, body, "(headline)")
+}
+
+func TestUsageConsentNamesBothAudiences(t *testing.T) {
+	connect(t, readbackFixtures(nil, false, &ops.UsageMeters{Schema: ops.UsageMetersSchema}, nil))
+	body := mainOf(t, onbGet(t, onbUser(t), "/usage?view=buckets").Body.String())
+	mustHave(t, body, "your own nominations", "domain nominations", "every approved Worker", "every local account", "root")
 }

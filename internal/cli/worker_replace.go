@@ -45,6 +45,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
+	"github.com/patrick-1984/ai-minion/internal/worker/presence"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
@@ -78,6 +79,26 @@ type replaceDeps struct {
 	sleep func(time.Duration)
 	// owned reports whether the user controls path (nil: the real check).
 	owned func(path string) bool
+	// clearPublished removes the published presence and usage files of the
+	// profile in stateDir (nil: [presence.ClearProfile] of the default layout).
+	clearPublished func(stateDir string) error
+}
+
+// clearPublishedFiles removes the presence record and the usage document the
+// profile in stateDir published. A root Worker's copy is public, so it must go
+// before the old owner's data can outlive the profile, and again when a failed
+// candidate is rolled back. The public claim is keyed by the physical state
+// directory, so the call must run while that directory is the one that
+// published.
+func (d replaceDeps) clearPublishedFiles(stateDir string) error {
+	if d.clearPublished != nil {
+		return d.clearPublished(stateDir)
+	}
+	l, err := presence.DefaultLayout(stateDir)
+	if err != nil {
+		return err
+	}
+	return presence.ClearProfile(l)
 }
 
 func (d replaceDeps) openTTY() (io.ReadWriteCloser, error) {
@@ -757,6 +778,13 @@ func replaceTransaction(cmd *cobra.Command, deps workerUpDeps, det service.Detec
 		}
 		return "The old Worker is running again."
 	}
+	// The old owner's published usage must not outlive the profile: clear it
+	// while the old directory is still in place (the public claim follows the
+	// directory's identity, which the move below keeps for the copy only).
+	if err := rd.clearPublishedFiles(old.StateDir); err != nil {
+		restart(ctx)
+		return fmt.Errorf("the published presence files of the old Worker could not be removed, nothing was changed: %w", err)
+	}
 	if err := os.Mkdir(backup, 0o700); err != nil {
 		restart(ctx)
 		return fmt.Errorf("could not keep a copy of the old profile: %w", err)
@@ -788,10 +816,20 @@ func replaceTransaction(cmd *cobra.Command, deps workerUpDeps, det service.Detec
 		if !rd.waitState(old.StateDir, false) {
 			return fmt.Errorf("%w; the new Worker could not be stopped, so the old profile was NOT restored: its copy is in %s", cause, original)
 		}
+		// The failed candidate may have received usage from the Hub already; its
+		// public copy must not outlive it.
+		if cerr := rd.clearPublishedFiles(old.StateDir); cerr != nil {
+			_, _ = fmt.Fprintf(stderr, "The published files of the failed new Worker could not be removed (%v); run `minion worker reset` to clear them.\n", cerr)
+		}
 		if rerr := restoreTree(original, old.StateDir); rerr != nil {
 			return fmt.Errorf("%w; the old profile could NOT be restored (%v): its copy is in %s, move it back over %s", cause, rerr, original, old.StateDir)
 		}
 		_ = os.RemoveAll(backup)
+		// The restored snapshot carries the old published files; they belong to
+		// the pairing the replacement ended and are not brought back.
+		if cerr := rd.clearPublishedFiles(old.StateDir); cerr != nil {
+			_, _ = fmt.Fprintf(stderr, "The published files of the old Worker could not be removed (%v); run `minion worker reset` to clear them.\n", cerr)
+		}
 		if rerr := errors.Join(restoreFiles(regSnap), restoreRegistration()); rerr != nil {
 			_, _ = fmt.Fprintf(stderr, "The old service registration could not be restored (%v); run `minion worker up` for the old Hub.\n", rerr)
 		}

@@ -51,6 +51,7 @@ type Publisher struct {
 	started, stopped bool
 	startedAt        time.Time
 	usage            []byte
+	hubLink          func() string
 	cancel           context.CancelFunc
 	done             chan struct{}
 	failing          bool
@@ -97,8 +98,24 @@ func (p *Publisher) record(state string, now time.Time) []byte {
 	if p.o.HubOrigin != nil {
 		r.HubOrigin = SanitizeHubOrigin(p.o.HubOrigin())
 	}
+	if p.hubLink != nil {
+		if v := p.hubLink(); ValidHubLink(v) {
+			r.HubLink = v
+		}
+	}
 	b, _ := json.Marshal(r)
 	return b
+}
+
+// SetHubLink sets the function that reports the coarse Hub connection state
+// the record publishes: connected, registration_pending or disconnected (the
+// HubLink* values). It is read on every publication (start, heartbeat, stop
+// marker); nil, "" or an unknown value publishes no hub_link. The state carries
+// no owner, credential or error text.
+func (p *Publisher) SetHubLink(f func() string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hubLink = f
 }
 
 // Start prepares the directories, cleans the files of the predecessor and of
@@ -121,6 +138,7 @@ func (p *Publisher) Start(ctx context.Context) error {
 	for _, id := range p.b.predecessors(p.o.Instance) {
 		_ = p.b.removeInstance(id)
 	}
+	p.b.retryPending()
 	p.cleanExpired(now)
 	if err := p.b.setClaim(p.o.Instance); err != nil {
 		return fmt.Errorf("presence: claim: %w", err)
@@ -161,6 +179,7 @@ func (p *Publisher) heartbeat() {
 	if !p.started || p.stopped || !p.b.current(p.o.Instance) {
 		return
 	}
+	p.b.retryPending()
 	now := p.o.Now()
 	err := p.b.write(p.o.Instance+recordSuffix, p.record(StateRunning, now))
 	switch {
@@ -197,10 +216,21 @@ func (p *Publisher) Stop() error {
 	return nil
 }
 
-// SetUsage stores the latest verified usage-meters document, in memory and
-// next to the record (0600 private, 0644 public), atomically. The document is
+// SetUsage stores the latest usage-meters document, in memory and next to the
+// record (0600 private, 0644 public), atomically. The document is checked
+// against the whole minion.usage-meters/1 schema first (see [CheckUsage]) and
 // kept verbatim.
-func (p *Publisher) SetUsage(raw []byte) error {
+func (p *Publisher) SetUsage(raw []byte) error { return p.SetUsageIf(raw, nil) }
+
+// ErrUsageSuperseded is returned by [Publisher.SetUsageIf] when the condition
+// was false just before the rename: nothing was published.
+var ErrUsageSuperseded = errors.New("presence: the usage document was superseded")
+
+// SetUsageIf is [Publisher.SetUsage] with a condition: the document is checked
+// and staged, then ok is called under the publisher lock immediately before the
+// rename; when it returns false nothing is published and ErrUsageSuperseded is
+// returned. A nil ok always publishes.
+func (p *Publisher) SetUsageIf(raw []byte, ok func() bool) error {
 	if err := checkUsage(raw); err != nil {
 		return err
 	}
@@ -209,9 +239,13 @@ func (p *Publisher) SetUsage(raw []byte) error {
 	if !p.started || p.stopped || !p.b.current(p.o.Instance) {
 		return ErrNotRunning
 	}
-	if err := p.b.write(p.o.Instance+usageSuffix, raw); err != nil {
+	if err := p.b.writeGated(p.o.Instance+usageSuffix, raw, ok); err != nil {
+		if errors.Is(err, errGateClosed) {
+			return ErrUsageSuperseded
+		}
 		return fmt.Errorf("presence: write the usage document: %w", err)
 	}
+	p.b.dropPending(p.o.Instance + usageSuffix)
 	p.usage = append([]byte(nil), raw...)
 	return nil
 }
@@ -223,7 +257,7 @@ func (p *Publisher) Usage() []byte {
 	return append([]byte(nil), p.usage...)
 }
 
-// ClearUsage removes the usage document from memory and disk. It is called on
+// ClearUsage removes the usage document from memory and disk. On Windows a reader that holds the file open without FILE_SHARE_DELETE is waited for (bounded); a removal still blocked stays pending and is finished by a later heartbeat or the next start. It is called on
 // every change of authority (reset, replacement, revoke, new owner). The
 // memory is cleared even when the file cannot be removed; the error is
 // returned then.

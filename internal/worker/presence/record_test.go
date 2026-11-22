@@ -2,6 +2,7 @@ package presence
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,10 +46,26 @@ func TestDecodeRecordIsStrict(t *testing.T) {
 		"origin path":   strings.Replace(good, `"user"}`, `"user","hub_origin":"https://h.example/p"}`, 1),
 		"stale zero":    strings.Replace(good, `"stale_after_s":90`, `"stale_after_s":0`, 1),
 		"not json":      `x`,
+		// Decoder.More does not see these.
+		"trailing bracket": good + `]`,
+		"trailing brace":   good + `}`,
+		"trailing comma":   good + `,`,
+		"missing started":  strings.Replace(good, `"started_at":1,`, ``, 1),
+		"null started":     strings.Replace(good, `"started_at":1`, `"started_at":null`, 1),
+		"null pid":         strings.Replace(good, `"user"}`, `"user","pid":null}`, 1),
+		"zero pid":         strings.Replace(good, `"user"}`, `"user","pid":0}`, 1),
+		"bad link":         strings.Replace(good, `"user"}`, `"user","hub_link":"up"}`, 1),
+		"empty link":       strings.Replace(good, `"user"}`, `"user","hub_link":""}`, 1),
+		"not an object":    `[` + good + `]`,
 	}
 	for n, b := range bad {
 		if _, err := DecodeRecord([]byte(b)); err == nil {
 			t.Errorf("%s: accepted", n)
+		}
+	}
+	for _, link := range []string{"connected", "registration_pending", "disconnected", "none"} {
+		if r, err := DecodeRecord([]byte(strings.Replace(good, `"user"}`, `"user","hub_link":"`+link+`"}`, 1))); err != nil || r.HubLink != link {
+			t.Errorf("%s: %v", link, err)
 		}
 	}
 }
@@ -88,13 +105,7 @@ func TestRenameWithRetryIsBounded(t *testing.T) {
 	}
 }
 
-func TestCheckUsageEnvelope(t *testing.T) {
-	if err := checkUsage([]byte(`{"schema":"minion.usage-meters/1"}`)); err != nil {
-		t.Fatal(err)
-	}
-	for _, b := range []string{``, `[]`, `{"schema":"x"}`, `{"schema":"minion.usage-meters/1","pad":"` + strings.Repeat("a", MaxUsageSize) + `"}`} {
-		if checkUsage([]byte(b)) == nil {
-			t.Errorf("accepted %.30q", b)
-		}
-	}
+// usageDoc is a minimal valid usage-meters document.
+func usageDoc(generated int) string {
+	return `{"schema":"minion.usage-meters/1","generated_at":` + strconv.Itoa(generated) + `,"slots":[]}`
 }

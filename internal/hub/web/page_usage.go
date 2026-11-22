@@ -313,7 +313,7 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 			if err := c.CallOp(r, ops.OpUsageReadback, ops.UsageReadbackArgs{}, &doc); err != nil {
 				p.Preview.Unavailable = true
 			} else {
-				p.Preview = buildUsagePreview(doc)
+				p.Preview = buildUsagePreview(doc, usagePreviewNow())
 			}
 		}
 		return p, nil

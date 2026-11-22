@@ -16,6 +16,42 @@ var (
 	renameSleep     = time.Sleep
 )
 
+// removeFile, removeRetryable and removeSleep are the seams of
+// [removeWithRetry]; tests replace them.
+var (
+	removeFile      = os.Remove
+	removeRetryable = platformRenameRetryable
+	removeSleep     = time.Sleep
+)
+
+const (
+	removeAttempts = 20
+	removeDelay    = 25 * time.Millisecond
+)
+
+// removeWithRetry unlinks path. A missing file is success. On Windows a reader
+// that holds the file open without FILE_SHARE_DELETE makes the unlink fail with
+// a sharing violation; it is retried with a bounded backoff (about a second).
+// A caller that still gets a retryable error keeps the removal pending.
+func removeWithRetry(path string) error {
+	var err error
+	delay := removeDelay
+	for i := 0; i < removeAttempts; i++ {
+		err = removeFile(path)
+		if err == nil || isNotExist(err) {
+			return nil
+		}
+		if !removeRetryable(err) {
+			return err
+		}
+		removeSleep(delay)
+		if delay < 8*removeDelay {
+			delay *= 2
+		}
+	}
+	return fmt.Errorf("remove %s: %w after %d attempts: %w", path, errStillInUse, removeAttempts, err)
+}
+
 const (
 	renameAttempts = 40
 	renameDelay    = 25 * time.Millisecond
@@ -52,5 +88,11 @@ func readBounded(f io.Reader, max int64) ([]byte, error) {
 }
 
 func isNotExist(err error) bool { return errors.Is(err, os.ErrNotExist) }
+
+// errGateClosed: the caller's condition no longer held just before the rename.
+var errGateClosed = errors.New("write abandoned")
+
+// errStillInUse marks a removal that a reader still blocks.
+var errStillInUse = errors.New("still in use")
 
 var errFuture = errors.New("the record is dated in the future")

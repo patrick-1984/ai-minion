@@ -276,8 +276,15 @@ func TestDefaultLayouts(t *testing.T) {
 	if l.Scope != ScopeUser || l.PrivateDir != "/srv/alice-state/presence" || l.DiscoveryDir != "/home/alice/.local/state/minion/presence-index" {
 		t.Fatalf("relocated: %+v", l)
 	}
+	// A service whose own XDG default differs from the home fallback of a
+	// fresh login gets a pointer in both places.
+	if got := l.discoveryDirs(); len(got) != 2 || got[1] != "/home/x/.local/state/minion/presence-index" {
+		t.Fatalf("discovery dirs %v", got)
+	}
 	l, _ = layoutFor("/home/alice/.local/state/minion", 1001, "linux", env("/home/alice/.local/state").e())
-	if l.DiscoveryDir != "" || l.PrivateDir != "/home/alice/.local/state/minion/presence" {
+	// The profile sits at its own XDG default; a login without XDG_STATE_HOME
+	// looks in the home fallback, so the pointer goes there.
+	if l.DiscoveryDir != "/home/x/.local/state/minion/presence-index" || l.PrivateDir != "/home/alice/.local/state/minion/presence" {
 		t.Fatalf("default: %+v", l)
 	}
 	l, _ = layoutFor(`C:\Users\a\state`, -1, "windows", env("/x").e())
@@ -366,8 +373,14 @@ func TestHostilePaths(t *testing.T) {
 		_ = os.Mkdir(pub, 0o755)
 		elsewhere := t.TempDir()
 		_ = os.Symlink(elsewhere, filepath.Join(pub, ".stage"))
-		if err := newPub(t, rootLayout(t, pub, "/s"), "x", clk).Start(context.Background()); err == nil {
-			t.Fatal("staged through a symlink")
+		// The link is moved aside, never followed.
+		p := newPub(t, rootLayout(t, pub, "/s"), "x", clk)
+		start(t, p)
+		if ents, _ := os.ReadDir(elsewhere); len(ents) != 0 {
+			t.Fatalf("staged through a symlink: %v", ents)
+		}
+		if fi, err := os.Lstat(filepath.Join(pub, ".stage")); err != nil || !fi.IsDir() {
+			t.Fatalf("no fresh staging directory: %v", err)
 		}
 	})
 }
@@ -546,7 +559,7 @@ func TestConcurrentReadersDuringReplacement(t *testing.T) {
 				}
 			}()
 		}
-		doc := []byte(`{"schema":"minion.usage-meters/1","n":0}`)
+		doc := []byte(usageDoc(0))
 		for i := 0; i < 150; i++ {
 			clk.Add(time.Second)
 			p.heartbeat()
@@ -580,7 +593,7 @@ func TestStartupFailureLeavesNothing(t *testing.T) {
 	if err := p.Stop(); err != nil { // a failed start has nothing to stop
 		t.Fatal(err)
 	}
-	if err := p.SetUsage([]byte(`{"schema":"minion.usage-meters/1"}`)); !errors.Is(err, ErrNotRunning) {
+	if err := p.SetUsage([]byte(usageDoc(1))); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("SetUsage on a stopped publisher: %v", err)
 	}
 	// Failure to claim in a root layout: unsupported platform/scope combos fail in New.
@@ -607,7 +620,7 @@ func TestReplacementAndLateStopMarker(t *testing.T) {
 		}
 		a := newPub(t, l, "old-1", clk)
 		start(t, a)
-		if err := a.SetUsage([]byte(`{"schema":"minion.usage-meters/1"}`)); err != nil {
+		if err := a.SetUsage([]byte(usageDoc(1))); err != nil {
 			t.Fatal(err)
 		}
 		b := newPub(t, l, "new-2", clk)
@@ -653,7 +666,7 @@ func TestUsageDocumentStoredAndCleared(t *testing.T) {
 		}
 		p := newPub(t, l, "u1", clk)
 		start(t, p)
-		doc := []byte(`{"schema":"minion.usage-meters/1","as_of":1,"meters":[]}`)
+		doc := []byte(usageDoc(7))
 		if err := p.SetUsage(doc); err != nil {
 			t.Fatal(err)
 		}
@@ -703,7 +716,7 @@ func TestResetClearsEverythingAndNothingResurrects(t *testing.T) {
 		}
 		p := newPub(t, l, "r1", clk)
 		start(t, p)
-		_ = p.SetUsage([]byte(`{"schema":"minion.usage-meters/1"}`))
+		_ = p.SetUsage([]byte(usageDoc(1)))
 		if err := ClearProfile(l); err != nil {
 			t.Fatal(err)
 		}
@@ -719,7 +732,7 @@ func TestResetClearsEverythingAndNothingResurrects(t *testing.T) {
 		if err := p.Stop(); err != nil {
 			t.Fatal(err)
 		}
-		if err := p.SetUsage([]byte(`{"schema":"minion.usage-meters/1"}`)); !errors.Is(err, ErrNotRunning) {
+		if err := p.SetUsage([]byte(usageDoc(1))); !errors.Is(err, ErrNotRunning) {
 			t.Fatalf("SetUsage after reset: %v", err)
 		}
 		for _, res := range r.Scan() {
@@ -748,7 +761,7 @@ func TestExpiredEntriesAreCleaned(t *testing.T) {
 	l := rootLayout(t, pub, "/state/a")
 	old := newPub(t, rootLayout(t, pub, "/state/old"), "crashed", clk)
 	start(t, old)
-	_ = old.SetUsage([]byte(`{"schema":"minion.usage-meters/1"}`))
+	_ = old.SetUsage([]byte(usageDoc(1)))
 	live := newPub(t, rootLayout(t, pub, "/state/live"), "alive", clk)
 	start(t, live)
 	age := func(name string, d time.Duration) {

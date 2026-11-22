@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -50,6 +51,29 @@ type Record struct {
 	OSScope       string `json:"os_scope"`
 	PID           int    `json:"pid,omitempty"`
 	HubOrigin     string `json:"hub_origin,omitempty"`
+	// HubLink is the coarse state of the Hub connection (HubLink* values);
+	// absent when the daemon does not say.
+	HubLink string `json:"hub_link,omitempty"`
+}
+
+// Values of Record.HubLink: connected (a usable Hub connection),
+// registration_pending (registration with the Hub is not finished),
+// disconnected (the Hub is configured but not reachable) and none (no Hub:
+// Solo). No owner, credential or error text is ever published here.
+const (
+	HubLinkConnected           = "connected"
+	HubLinkRegistrationPending = "registration_pending"
+	HubLinkDisconnected        = "disconnected"
+	HubLinkNone                = "none"
+)
+
+// ValidHubLink reports whether s is a value of Record.HubLink.
+func ValidHubLink(s string) bool {
+	switch s {
+	case HubLinkConnected, HubLinkRegistrationPending, HubLinkDisconnected, HubLinkNone:
+		return true
+	}
+	return false
 }
 
 var (
@@ -83,21 +107,57 @@ func (r Record) Validate() error {
 		return errors.New("invalid pid")
 	case r.HubOrigin != "" && (len(r.HubOrigin) > 300 || !originRE.MatchString(r.HubOrigin)):
 		return errors.New("invalid hub_origin")
+	case r.HubLink != "" && !ValidHubLink(r.HubLink):
+		return errors.New("invalid hub_link")
 	}
 	return nil
 }
 
-// DecodeRecord parses and validates one record. Unknown fields are refused,
-// like the schema does (additionalProperties false).
-func DecodeRecord(b []byte) (Record, error) {
-	var r Record
+// recordRequired are the fields every record must carry.
+var recordRequired = []string{"schema", "instance", "daemon_version", "started_at", "updated_at", "stale_after_s", "state", "os_scope"}
+
+// decodeStrict decodes exactly one JSON value into v: unknown fields and any
+// data after the value are errors.
+func decodeStrict(b []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&r); err != nil {
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return errors.New("trailing data after the JSON value")
+	}
+	return nil
+}
+
+// DecodeRecord parses and validates one record. Unknown fields, trailing data,
+// a missing required field and a null value are refused, like the schema does.
+func DecodeRecord(b []byte) (Record, error) {
+	var fields map[string]json.RawMessage
+	if err := decodeStrict(b, &fields); err != nil {
 		return Record{}, fmt.Errorf("not a presence record: %w", err)
 	}
-	if dec.More() {
-		return Record{}, errors.New("not a presence record: trailing data")
+	for k, v := range fields {
+		if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+			return Record{}, fmt.Errorf("not a presence record: %s is null", k)
+		}
+	}
+	for _, k := range recordRequired {
+		if _, ok := fields[k]; !ok {
+			return Record{}, fmt.Errorf("not a presence record: %s is missing", k)
+		}
+	}
+	var r Record
+	if err := decodeStrict(b, &r); err != nil {
+		return Record{}, fmt.Errorf("not a presence record: %w", err)
+	}
+	for k, v := range map[string]string{"hub_origin": r.HubOrigin, "hub_link": r.HubLink} {
+		if _, ok := fields[k]; ok && v == "" {
+			return Record{}, fmt.Errorf("not a valid presence record: %s is empty", k)
+		}
+	}
+	if _, ok := fields["pid"]; ok && r.PID < 1 {
+		return Record{}, errors.New("not a valid presence record: invalid pid")
 	}
 	if err := r.Validate(); err != nil {
 		return Record{}, fmt.Errorf("not a valid presence record: %w", err)
@@ -149,22 +209,3 @@ func SanitizeHubOrigin(raw string) string {
 }
 
 func ms(t time.Time) int64 { return t.UnixMilli() }
-
-// checkUsage verifies the minimal envelope of a usage-meters document: a JSON
-// object of at most [MaxUsageSize] bytes whose schema is minion.usage-meters/1.
-// The full schema check belongs to the code that verified the document.
-func checkUsage(raw []byte) error {
-	if len(raw) == 0 || len(raw) > MaxUsageSize {
-		return fmt.Errorf("a usage document must be 1 to %d bytes", MaxUsageSize)
-	}
-	var head struct {
-		Schema string `json:"schema"`
-	}
-	if err := json.Unmarshal(raw, &head); err != nil {
-		return fmt.Errorf("the usage document is not a JSON object: %w", err)
-	}
-	if head.Schema != UsageSchema {
-		return fmt.Errorf("the usage document schema is %q, want %q", head.Schema, UsageSchema)
-	}
-	return nil
-}

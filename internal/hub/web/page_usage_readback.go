@@ -136,8 +136,12 @@ func usagePaceLabel(pace string) string {
 	}
 }
 
-func buildUsagePreview(doc ops.UsageMeters) usagePreview {
-	gen := time.UnixMilli(doc.GeneratedAt)
+// usagePreviewNow is the clock of the preview; tests replace it. The Hub caches
+// the projection for a while, so expiry is judged at request time, not at the
+// generation time of the document.
+var usagePreviewNow = time.Now
+
+func buildUsagePreview(doc ops.UsageMeters, now time.Time) usagePreview {
 	out := usagePreview{Generated: usagePage{}.Millis(doc.GeneratedAt)}
 	for _, s := range doc.Slots {
 		slot := usagePreviewSlot{Title: usageLabel(s.Slot.Kind) + " · " + s.Slot.Label, Scope: map[string]string{ops.UsageScopeDomain: "Every Worker", ops.UsageScopeUser: "Your Workers"}[s.Slot.Scope], Omitted: s.OmittedGroups}
@@ -145,7 +149,7 @@ func buildUsagePreview(doc ops.UsageMeters) usagePreview {
 			slot.Scope = usageLabel(s.Slot.Scope)
 		}
 		for _, m := range s.Meters {
-			pm := usagePreviewMeter{Label: m.Label, Unit: m.Unit, Headline: m.ID == s.Headline, Pace: usagePaceLabel(m.Pace), Reset: "Unknown"}
+			pm := usagePreviewMeter{Label: m.Label, Unit: m.Unit, Pace: usagePaceLabel(m.Pace), Reset: "Unknown"}
 			pm.Used = usageMeterValue(m.Unit, m.Used)
 			if m.Used == nil && m.UsedPercent != nil {
 				pm.Used = usageMeterValue("percent", m.UsedPercent)
@@ -161,13 +165,16 @@ func buildUsagePreview(doc ops.UsageMeters) usagePreview {
 				pm.Reset = usagePage{}.Millis(*m.ResetsAt)
 			}
 			switch {
-			case m.ExpiresAt != 0 && !gen.Before(time.UnixMilli(m.ExpiresAt)):
+			case m.ExpiresAt != 0 && !now.Before(time.UnixMilli(m.ExpiresAt)):
 				pm.Freshness = "Expired"
-			case gen.Sub(time.UnixMilli(m.ObservedAt)) > ops.UsageMeterMaxAge:
+			case now.Sub(time.UnixMilli(m.ObservedAt)) > ops.UsageMeterMaxAge:
 				pm.Freshness = "Stale"
 			default:
 				pm.Freshness = "Fresh"
 			}
+			// An expired meter is never the headline: its remaining amount is
+			// not current.
+			pm.Headline = m.ID == s.Headline && pm.Freshness == "Fresh"
 			pm.Coverage = fmt.Sprintf("%d fresh · %d stale · %d unknown", m.Coverage.Known, m.Coverage.Stale, m.Coverage.Unknown)
 			slot.Meters = append(slot.Meters, pm)
 		}

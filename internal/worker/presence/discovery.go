@@ -1,7 +1,6 @@
 package presence
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,22 +13,32 @@ type indexEntry struct {
 	Dir    string `json:"dir"`
 }
 
-func (l Layout) indexName() string { return l.profileKey() + recordSuffix }
+func (l Layout) indexName() string { return l.pathKey() + recordSuffix }
 
 // writeDiscovery writes the owner-only pointer from the account's default
 // location to the presence directory of a relocated profile, and drops pointers
 // whose directory is gone. It does nothing for a profile in the default place
 // and for a root layout.
 func writeDiscovery(l Layout) error {
-	if l.Scope != ScopeUser || l.DiscoveryDir == "" {
+	if l.Scope != ScopeUser {
 		return nil
 	}
-	dir, err := ensurePrivateDir(l.DiscoveryDir, l.UID)
+	var errs []error
+	for _, d := range l.discoveryDirs() {
+		if err := writeDiscoveryIn(l, d); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func writeDiscoveryIn(l Layout, d string) error {
+	dir, err := ensurePrivateDir(d, l.UID)
 	if err != nil {
 		return err
 	}
 	b, _ := json.Marshal(indexEntry{Schema: IndexSchema, Dir: l.PrivateDir})
-	if err := writePrivate(dir, l.indexName(), b, l.UID); err != nil {
+	if err := writePrivate(dir, l.indexName(), b, l.UID, nil); err != nil {
 		return err
 	}
 	ents, _ := os.ReadDir(dir)
@@ -47,20 +56,23 @@ func writeDiscovery(l Layout) error {
 }
 
 func removeDiscovery(l Layout) error {
-	if l.Scope != ScopeUser || l.DiscoveryDir == "" {
+	if l.Scope != ScopeUser {
 		return nil
 	}
-	dir, err := verifyPrivateDir(l.DiscoveryDir, l.UID)
-	if err != nil {
-		if isNotExist(err) {
-			return nil
+	var errs []error
+	for _, d := range l.discoveryDirs() {
+		dir, err := verifyPrivateDir(d, l.UID)
+		if err != nil {
+			if !isNotExist(err) {
+				errs = append(errs, err)
+			}
+			continue
 		}
-		return err
+		if err := os.Remove(filepath.Join(dir, l.indexName())); err != nil && !isNotExist(err) {
+			errs = append(errs, err)
+		}
 	}
-	if err := os.Remove(filepath.Join(dir, l.indexName())); err != nil && !isNotExist(err) {
-		return err
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // readIndex reads one pointer entry (private file checks) and returns the
@@ -71,9 +83,7 @@ func readIndex(dir, name string, uid int) (string, error) {
 		return "", err
 	}
 	var e indexEntry
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&e); err != nil {
+	if err := decodeStrict(raw, &e); err != nil {
 		return "", fmt.Errorf("not a presence index entry: %w", err)
 	}
 	if e.Schema != IndexSchema || !filepath.IsAbs(e.Dir) {

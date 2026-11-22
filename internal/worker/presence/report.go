@@ -21,6 +21,7 @@ type Found struct {
 	StaleAfterS   int             `json:"stale_after_s,omitempty"`
 	PID           int             `json:"pid,omitempty"`
 	HubOrigin     string          `json:"hub_origin,omitempty"`
+	HubLink       string          `json:"hub_link,omitempty"`
 	Error         string          `json:"error,omitempty"`
 	Usage         json.RawMessage `json:"usage,omitempty"`
 }
@@ -49,6 +50,7 @@ func (r Reader) describe(res Result, withUsage bool) Found {
 	}
 	rec, now := res.Record, r.now()
 	f.DaemonVersion, f.OSScope, f.StaleAfterS, f.PID, f.HubOrigin = rec.DaemonVersion, rec.OSScope, rec.StaleAfterS, rec.PID, rec.HubOrigin
+	f.HubLink = rec.HubLink
 	f.StartedAt = time.UnixMilli(rec.StartedAt).UTC().Format(foundTime)
 	f.UpdatedAt = time.UnixMilli(rec.UpdatedAt).UTC().Format(foundTime)
 	up := int64(res.Age / time.Second)

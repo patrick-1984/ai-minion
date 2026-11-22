@@ -42,6 +42,10 @@ type Layout struct {
 	// DiscoveryDir holds the owner-only pointer to PrivateDir; empty when the
 	// state directory is the default one (user scope).
 	DiscoveryDir string
+	// MoreDiscoveryDirs are further owner-only pointer directories: the
+	// account's login default, which differs from the service's own default
+	// when the service runs with another XDG_STATE_HOME.
+	MoreDiscoveryDirs []string
 	// PublicRoot is the public presence directory (root scope).
 	PublicRoot string
 }
@@ -77,8 +81,31 @@ func layoutFor(stateDir string, uid int, goos string, env config.PathEnv) (Layou
 	}
 	l := Layout{Scope: ScopeUser, UID: uid, StateDir: abs, PrivateDir: filepath.Join(abs, privateDirName)}
 	env.GOOS = goos
-	if def, err := env.StateDir(); err == nil && filepath.Clean(def) != filepath.Clean(abs) {
-		l.DiscoveryDir = filepath.Join(def, discoveryDirName)
+	// The pointer goes to the service's own default and, on Linux, to the home
+	// fallback a login shell without XDG_STATE_HOME uses. A service with a
+	// private XDG_STATE_HOME would otherwise be invisible from a fresh login.
+	var defaults []string
+	if def, err := env.StateDir(); err == nil {
+		defaults = append(defaults, def)
+	}
+	if goos == "linux" && env.HomeDir != nil {
+		if home, err := env.HomeDir(); err == nil && home != "" {
+			defaults = append(defaults, filepath.Join(home, ".local", "state", "minion"))
+		}
+	}
+	seen := map[string]bool{filepath.Clean(abs): true}
+	for _, def := range defaults {
+		def = filepath.Clean(def)
+		if seen[def] || !filepath.IsAbs(def) {
+			continue
+		}
+		seen[def] = true
+		dir := filepath.Join(def, discoveryDirName)
+		if l.DiscoveryDir == "" {
+			l.DiscoveryDir = dir
+		} else {
+			l.MoreDiscoveryDirs = append(l.MoreDiscoveryDirs, dir)
+		}
 	}
 	return l, nil
 }
@@ -105,7 +132,57 @@ func (l Layout) validate() error {
 	return nil
 }
 
-func (l Layout) profileKey() string {
-	h := sha256.Sum256([]byte(filepath.Clean(l.StateDir)))
+// discoveryDirs lists every pointer directory of the layout.
+func (l Layout) discoveryDirs() []string {
+	var out []string
+	if l.DiscoveryDir != "" {
+		out = append(out, l.DiscoveryDir)
+	}
+	return append(out, l.MoreDiscoveryDirs...)
+}
+
+// canonicalState is the state directory with every link resolved; when it does
+// not exist (yet) the nearest existing parent is resolved and the rest kept.
+func canonicalState(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Clean(dir)
+	}
+	if p, err := filepath.EvalSymlinks(abs); err == nil {
+		return p
+	}
+	if p, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return filepath.Join(p, filepath.Base(abs))
+	}
+	return abs
+}
+
+func hashKey(s string) string {
+	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:8])
+}
+
+// pathKey names the profile by its physical path: the name of the pointer
+// entry.
+func (l Layout) pathKey() string { return hashKey("path:" + canonicalState(l.StateDir)) }
+
+// profileKey names the profile for the public claim: the device and inode of
+// the physical state directory when it exists (so every alias of it, and a
+// move, reach the same claim), the physical path otherwise.
+func (l Layout) profileKey() string {
+	phys := canonicalState(l.StateDir)
+	if fi, err := os.Stat(phys); err == nil {
+		if id := fileIdentity(fi); id != "" {
+			return hashKey("id:" + id)
+		}
+	}
+	return hashKey("path:" + phys)
+}
+
+// stageOrDir is the directory where files are staged (tests).
+func (l Layout) stageOrDir() string {
+	if l.Scope == ScopeRoot {
+		return filepath.Join(l.PublicRoot, stageDirName)
+	}
+	return l.PrivateDir
 }

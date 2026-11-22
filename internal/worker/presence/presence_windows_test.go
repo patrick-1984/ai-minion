@@ -52,7 +52,7 @@ func TestWindowsReplacementWaitsForAReaderThatHoldsTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() { time.Sleep(200 * time.Millisecond); _ = f.Close() }()
-	if err := p.SetUsage([]byte(`{"schema":"minion.usage-meters/1"}`)); err != nil {
+	if err := p.SetUsage([]byte(usageDoc(1))); err != nil {
 		t.Fatal(err)
 	}
 	p.heartbeat()

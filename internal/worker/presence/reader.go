@@ -33,6 +33,11 @@ type Source string
 const (
 	SourcePrivate Source = "private"
 	SourcePublic  Source = "public"
+	// SourceSocket marks a Worker of an older release that answered on its
+	// local socket; SourceConfig marks a problem with the selected profile's
+	// configuration, reported next to the records.
+	SourceSocket Source = "socket"
+	SourceConfig Source = "config"
 )
 
 // Candidate is one presence file found by enumeration, not yet trusted.
@@ -88,6 +93,9 @@ func NewReader(stateDirs ...string) Reader {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
 			add(filepath.Join(home, ".local", "state", "minion"))
 		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		stateDirs = append(stateDirs, serviceStateDirs(home, r.UID)...)
 	}
 	if d := os.Getenv("MINION_STATE_DIR"); filepath.IsAbs(d) {
 		stateDirs = append(stateDirs, d)
