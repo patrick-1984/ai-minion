@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -32,9 +33,25 @@ func (e *NominationRefusal) Is(t error) bool { return t == ErrNominationIneligib
 // their own private buckets. The server derives Domain from the current
 // effective manage permission of the authenticated principal; the store checks
 // again inside the transaction that Actor is still an active administrator.
+//
+// Credential is the id of the API key that made the call (empty for a browser
+// session); it is only recorded in the audit. Restrict makes a publication
+// also require that the publisher may still view the Worker of every foreign
+// source (Visible, decided by the caller with the ordinary Usage rules).
 type BucketAuthority struct {
-	Actor  string
-	Domain bool
+	Actor      string
+	Domain     bool
+	Credential string
+	Restrict   bool
+	Visible    []string
+}
+
+// auditActor is who the audit names: the key that acted, else the account.
+func auditActor(actor, credential string) string {
+	if credential != "" {
+		return "key:" + credential
+	}
+	return actor
 }
 
 func usageNow() int64 { return time.Now().UnixMilli() }
@@ -53,15 +70,20 @@ func activeAdminTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
 // blockedMembersTx counts the members of a bucket with an observation from a
 // source owned by somebody else who has not allowed republishing. The owner's
 // own sources and consenting owners' sources are publishable.
-func blockedMembersTx(ctx context.Context, tx *sql.Tx, owner, kind, bucket string) (int, error) {
+func blockedMembersTx(ctx context.Context, tx *sql.Tx, owner, kind, bucket string, restrict bool, visible []string) (int, error) {
 	source := `SELECT m.member_id,s.worker_id FROM usage_members m JOIN usage_sessions s ON s.id=m.member_id`
 	if kind == "provider" {
 		source = `SELECT m.member_id,a.worker_id FROM usage_members m JOIN usage_accounts a ON a.account_id=m.member_id`
 	}
+	list, err := json.Marshal(append([]string{}, visible...))
+	if err != nil {
+		return 0, err
+	}
 	var n int
-	err := tx.QueryRowContext(ctx, `SELECT count(DISTINCT x.member_id) FROM (`+source+` WHERE m.owner_id=?1 AND m.kind=?2 AND m.bucket_id=?3) x
+	err = tx.QueryRowContext(ctx, `SELECT count(DISTINCT x.member_id) FROM (`+source+` WHERE m.owner_id=?1 AND m.kind=?2 AND m.bucket_id=?3) x
 	 JOIN workers w ON w.id=x.worker_id
-	 WHERE w.owner_id<>?1 AND NOT coalesce((SELECT c.allow_republish FROM usage_publication_consent c WHERE c.owner_id=w.owner_id),0)`, owner, kind, bucket).Scan(&n)
+	 WHERE w.owner_id<>?1 AND (NOT coalesce((SELECT c.allow_republish FROM usage_publication_consent c WHERE c.owner_id=w.owner_id),0)
+	  OR (?4=1 AND w.id NOT IN (SELECT value FROM json_each(?5))))`, owner, kind, bucket, restrict, string(list)).Scan(&n)
 	return n, err
 }
 
@@ -121,7 +143,7 @@ func (s *Store) SetUsageNomination(ctx context.Context, owner string, auth Bucke
 			}
 			res.Changed = n > 0
 			if res.Changed {
-				return s.usageAudit(ctx, tx, actorOr(auth.Actor, owner), "usage.nomination.clear", target)
+				return s.usageAudit(ctx, tx, auditActor(actorOr(auth.Actor, owner), auth.Credential), "usage.nomination.clear", target)
 			}
 			return nil
 		}
@@ -133,7 +155,7 @@ func (s *Store) SetUsageNomination(ctx context.Context, owner string, auth Bucke
 		if err != nil {
 			return err
 		}
-		if n, err := blockedMembersTx(ctx, tx, owner, a.Kind, a.BucketID); err != nil {
+		if n, err := blockedMembersTx(ctx, tx, owner, a.Kind, a.BucketID, auth.Restrict, auth.Visible); err != nil {
 			return err
 		} else if n > 0 {
 			return &NominationRefusal{Members: n}
@@ -159,7 +181,7 @@ func (s *Store) SetUsageNomination(ctx context.Context, owner string, auth Bucke
 		}
 		res.Changed = prev != a.BucketID
 		res.Replaced = prev != "" && prev != a.BucketID
-		return s.usageAudit(ctx, tx, actorOr(auth.Actor, owner), "usage.nomination.set", target+"/"+a.BucketID)
+		return s.usageAudit(ctx, tx, auditActor(actorOr(auth.Actor, owner), auth.Credential), "usage.nomination.set", target+"/"+a.BucketID)
 	})
 	return res, err
 }
@@ -173,6 +195,12 @@ func actorOr(actor, owner string) string {
 
 // SetUsagePublication stores the source owner's republishing permission.
 func (s *Store) SetUsagePublication(ctx context.Context, owner string, allow bool) error {
+	return s.SetUsagePublicationAs(ctx, owner, "", allow)
+}
+
+// SetUsagePublicationAs is [Store.SetUsagePublication] for a call made with
+// the API key credential (empty for a browser session); the audit names it.
+func (s *Store) SetUsagePublicationAs(ctx context.Context, owner, credential string, allow bool) error {
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		v := 0
 		if allow {
@@ -182,7 +210,7 @@ func (s *Store) SetUsagePublication(ctx context.Context, owner string, allow boo
 		 ON CONFLICT(owner_id) DO UPDATE SET allow_republish=excluded.allow_republish,updated_at=excluded.updated_at`, owner, v, usageNow()); err != nil {
 			return err
 		}
-		return s.usageAudit(ctx, tx, owner, "usage.publication.set", fmt.Sprintf("allow=%d", v))
+		return s.usageAudit(ctx, tx, auditActor(owner, credential), "usage.publication.set", fmt.Sprintf("allow=%d", v))
 	})
 }
 
@@ -224,16 +252,30 @@ type UsagePublishableSource struct{ MemberID, WorkerID string }
 // UsagePublishableSources lists the observation sources of a bucket's members
 // that may be republished: the publisher's own and those of owners who allowed
 // it. A projection must use this list BEFORE it deduplicates or aggregates, so
-// a refused owner's observations never influence the published numbers.
+// a refused owner's observations never influence the published numbers. It
+// does not check that the publisher may still view a foreign Worker; the
+// read-back build uses [Store.UsageReadbackSnapshot], which does.
 func (s *Store) UsagePublishableSources(ctx context.Context, publisher, kind, bucket string) ([]UsagePublishableSource, error) {
+	return usagePublishableSources(ctx, s.db, publisher, kind, bucket, false, nil)
+}
+
+// usagePublishableSources is the shared rule. With restrict, a source owned by
+// somebody else also needs its Worker among visible, the Workers the
+// publisher may view now.
+func usagePublishableSources(ctx context.Context, q usageQuerier, publisher, kind, bucket string, restrict bool, visible []string) ([]UsagePublishableSource, error) {
 	source := `SELECT m.member_id,x.worker_id FROM usage_members m JOIN usage_sessions x ON x.id=m.member_id`
 	if kind == "provider" {
 		source = `SELECT m.member_id,x.worker_id FROM usage_members m JOIN usage_accounts x ON x.account_id=m.member_id`
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT y.member_id,y.worker_id FROM (`+source+` WHERE m.owner_id=?1 AND m.kind=?2 AND m.bucket_id=?3) y
+	list, err := json.Marshal(append([]string{}, visible...))
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT DISTINCT y.member_id,y.worker_id FROM (`+source+` WHERE m.owner_id=?1 AND m.kind=?2 AND m.bucket_id=?3) y
 	 JOIN workers w ON w.id=y.worker_id
-	 WHERE w.owner_id=?1 OR coalesce((SELECT c.allow_republish FROM usage_publication_consent c WHERE c.owner_id=w.owner_id),0)=1
-	 ORDER BY y.member_id,y.worker_id`, publisher, kind, bucket)
+	 WHERE w.owner_id=?1 OR (coalesce((SELECT c.allow_republish FROM usage_publication_consent c WHERE c.owner_id=w.owner_id),0)=1
+	  AND (?4=0 OR w.id IN (SELECT value FROM json_each(?5))))
+	 ORDER BY y.member_id,y.worker_id`, publisher, kind, bucket, restrict, string(list))
 	if err != nil {
 		return nil, err
 	}

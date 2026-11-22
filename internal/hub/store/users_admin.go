@@ -271,11 +271,20 @@ func (s *Store) SetLocalRole(ctx context.Context, p SetLocalRoleParams) (effecti
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ? AND source = 'local'`, p.UserID); err != nil {
-			return fmt.Errorf("store: set role: clear local grants: %w", err)
+		// An unchanged grant is left alone: dropping and re-adding an admin
+		// grant would retire the user's Hub-wide usage nomination (a trigger
+		// fires on the temporary loss) although nothing changed.
+		var same, other int
+		if err := tx.QueryRowContext(ctx, `SELECT coalesce(sum(role = ?), 0), coalesce(sum(role <> ?), 0) FROM user_roles WHERE user_id = ? AND source = 'local'`, p.Role, p.Role, p.UserID).Scan(&same, &other); err != nil {
+			return fmt.Errorf("store: set role: read local grants: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO user_roles (user_id, role, source) VALUES (?, ?, 'local')`, p.UserID, p.Role); err != nil {
-			return fmt.Errorf("store: set role: grant: %w", err)
+		if same != 1 || other != 0 {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ? AND source = 'local'`, p.UserID); err != nil {
+				return fmt.Errorf("store: set role: clear local grants: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO user_roles (user_id, role, source) VALUES (?, ?, 'local')`, p.UserID, p.Role); err != nil {
+				return fmt.Errorf("store: set role: grant: %w", err)
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET updated_at = ? WHERE id = ?`, p.NowMS, p.UserID); err != nil {
 			return fmt.Errorf("store: set role: touch user: %w", err)

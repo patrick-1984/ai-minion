@@ -131,11 +131,6 @@ func usageSlug(s string, max int) string {
 	return out
 }
 
-func usageHash8(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:4])
-}
-
 func usageRound(v float64) float64 { return math.Round(v*1e6) / 1e6 }
 func usagePct(v float64) float64   { return math.Round(v*100) / 100 }
 
@@ -151,6 +146,70 @@ func usageDurationShort(ms int64) string {
 		return fmt.Sprintf("%ds", ms/1000)
 	}
 	return fmt.Sprintf("%dms", ms)
+}
+
+// usageFamily maps a provider to the fixed public vocabulary: the slug used
+// in ids and metrics and the display name. Anything the vocabulary does not
+// know is "other": a custom namespace is producer-defined text and never
+// leaves the Hub.
+func usageFamily(provider string) (slug, name string) {
+	switch provider {
+	case "OpenAI":
+		return "openai", "OpenAI"
+	case "Anthropic":
+		return "anthropic", "Anthropic"
+	case "Google":
+		return "google", "Google"
+	case "OpenRouter":
+		return "openrouter", "OpenRouter"
+	case "DeepSeek":
+		return "deepseek", "DeepSeek"
+	case "Amazon Bedrock":
+		return "bedrock", "Amazon Bedrock"
+	case "OpenCode Go":
+		return "opencode-go", "OpenCode Go"
+	case "OpenCode Zen":
+		return "opencode-zen", "OpenCode Zen"
+	}
+	return "other", "Other provider"
+}
+
+// usageScopeToken names the producer-defined limit scope (a model, a
+// deployment, a native limit id) without revealing it: "account" for the
+// provider's default scope, otherwise an opaque stable digest of the complete
+// (provider, scope) pair. Unknown providers always get a digest so two of
+// them never share an id.
+func usageScopeToken(provider, scope string) string {
+	if _, name := usageFamily(provider); scope == "" && name != "Other provider" {
+		return "account"
+	}
+	h := sha256.Sum256([]byte(provider + "\x00" + scope))
+	return "g" + hex.EncodeToString(h[:6])
+}
+
+// usageUnitNative accepts the native spellings of a unit, case-insensitively.
+func usageUnitNative(unit string) string {
+	switch u := strings.ToLower(strings.TrimSpace(unit)); u {
+	case "percent", "%":
+		return "percent"
+	case "token", "tokens":
+		return "tokens"
+	case "request", "requests":
+		return "requests"
+	case "usd":
+		return "usd"
+	default:
+		return u
+	}
+}
+
+// usagePeriod keeps the fixed period vocabulary; anything else is "other".
+func usagePeriod(p string) string {
+	switch p {
+	case "rolling", "fixed", "total":
+		return p
+	}
+	return "other"
 }
 
 func usageUnitPublic(unit string) bool {
@@ -251,10 +310,16 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 		provider := UsageProvider(a.Provider)
 		totals[provider]++
 		for _, w := range a.Windows {
+			w.Unit = usageUnitNative(w.Unit)
 			if w.Unit == "percent" {
 				w.Unit = ""
 			}
-			k := usageGroupKey{provider: provider, scope: w.Scope, period: w.Period, unit: w.Unit}
+			if w.Unit != "" && !usageUnitPublic(w.Unit) && w.UsedPercent != nil {
+				// The amount cannot be expressed, but an independently known
+				// percentage still can.
+				w.Unit, w.Used, w.Limit, w.Remaining = "", nil, nil, nil
+			}
+			k := usageGroupKey{provider: provider, scope: w.Scope, period: usagePeriod(w.Period), unit: w.Unit}
 			if w.DurationMS != nil {
 				k.duration, k.hasDuration = *w.DurationMS, true
 			}
@@ -284,7 +349,6 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 	})
 	var out []UsageMeter
 	unsupported := 0
-	seen := map[string]bool{}
 	for _, k := range keys {
 		g := groups[k]
 		if k.unit != "" && !usageUnitPublic(k.unit) {
@@ -342,27 +406,27 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 		if k.hasDuration {
 			span = usageDurationShort(k.duration)
 		}
-		metric := usageSlug(k.provider, 24) + "." + usageSlug(k.scope, 24) + "." + usageSlug(span, 12)
-		raw := strings.Join([]string{k.provider, k.scope, k.period, k.unit, fmt.Sprint(k.duration, k.hasDuration)}, "\x00")
-		id := strings.Join([]string{usageSlug(k.provider, 24), usageSlug(k.scope, 24), usageSlug(k.period, 12), usageSlug(span, 12), m.Unit}, "/")
+		// Public names only: the provider family, an opaque scope token and
+		// the generic window kind. Never the producer's own spelling.
+		fam, famName := usageFamily(k.provider)
+		token := usageScopeToken(k.provider, k.scope)
+		spanSlug := usageSlug(span, 12)
+		metric := fam + "." + token + "." + spanSlug
+		id := strings.Join([]string{fam, token, usageSlug(k.period, 12), spanSlug, m.Unit}, "/")
 		if linked {
 			metric = usageLinkedPrefix + metric
 			id = "linked/" + id
 		}
-		if len(metric) > 64 {
-			metric = strings.Trim(metric[:64], "-._/")
-		}
-		if seen[id] {
-			id += "~" + usageHash8(raw)
-		}
-		seen[id] = true
 		m.ID, m.Metric = id, metric
 
 		suffix := ""
 		if m.UsedPercent != nil && len(g.known) > 1 {
 			suffix = fmt.Sprintf(" (unweighted mean of %d)", len(g.known))
 		}
-		base := k.provider + " " + k.scope + ", " + span
+		base := famName + " quota, " + span
+		if token != "account" {
+			base += " (limit " + token[1:7] + ")"
+		}
 		if linked {
 			base = "Account-wide: " + base
 		}
@@ -397,17 +461,13 @@ func SessionMeters(sessions []UsageSessionObservation, linked []UsageAccount, no
 		get                 func(UsageSession) (float64, bool, bool)
 	}{
 		{"sessions.tokens", "tokens", "Tokens used (selected sessions)", func(s UsageSession) (float64, bool, bool) {
-			if s.InputTokens == nil && s.OutputTokens == nil {
+			// A total needs every part. A session that reports only one of
+			// them is partial: it counts as unknown for this meter and is
+			// never read as zero.
+			if s.InputTokens == nil || s.OutputTokens == nil {
 				return 0, false, false
 			}
-			var v int64
-			if s.InputTokens != nil {
-				v += *s.InputTokens
-			}
-			if s.OutputTokens != nil {
-				v += *s.OutputTokens
-			}
-			return float64(v), true, false
+			return float64(*s.InputTokens + *s.OutputTokens), true, false
 		}},
 		{"sessions.duration", "ms", "Session time (selected sessions)", func(s UsageSession) (float64, bool, bool) {
 			if s.DurationMS == nil {
@@ -519,8 +579,10 @@ func usageKeepOrder(meters []UsageMeter, headline string, now time.Time) []Usage
 				return 0
 			case usageMeterComparable(m, now):
 				return 1
+			case strings.HasPrefix(m.Metric, usageLinkedPrefix):
+				return 3 // account-wide quota linked to a session goes last
 			}
-			return 2
+			return 2 // measured session consumption and the slot's own quota
 		}
 		if c := cmp.Compare(rank(a), rank(b)); c != 0 {
 			return c

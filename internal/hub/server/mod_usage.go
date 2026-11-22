@@ -47,7 +47,7 @@ func usageDomainAuthority(ctx context.Context, az *authz.Authorizer, p authz.Pri
 		return store.BucketAuthority{}
 	}
 	err := az.Decide(ctx, p, ops.MustActionSet(ops.ActionManage), authz.UserResource{ID: p.UserID})
-	return store.BucketAuthority{Actor: p.UserID, Domain: err == nil}
+	return store.BucketAuthority{Actor: p.UserID, Domain: err == nil, Credential: p.KeyID}
 }
 
 func usageNominationError(err error) error {
@@ -128,6 +128,21 @@ func initUsage(ctx context.Context, env *Env) error {
 	}
 
 	readback := newUsageReadback(st)
+	// What a publisher may include is bounded by what they may view now: the
+	// same Worker visibility as the ordinary Usage views.
+	readback.access = func(ctx context.Context, publisher string) ([]string, error) {
+		ws, err := rt.ListWorkers(ctx, authz.NewSessionPrincipal(publisher), true)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(ws))
+		for _, w := range ws {
+			if !w.Pending {
+				ids = append(ids, w.ID)
+			}
+		}
+		return ids, nil
+	}
 	// Whatever changes what a Worker publishes wakes the delivery: it is
 	// coalesced there, and the periodic reconciliation covers every change that
 	// does not pass through these operations.
@@ -155,10 +170,16 @@ func initUsage(ctx context.Context, env *Env) error {
 		if owner == "" {
 			return ops.UsageNominationSetResult{}, usageForbidden()
 		}
-		var auth store.BucketAuthority
+		auth := store.BucketAuthority{Credential: c.Principal.KeyID}
 		if a.Scope == ops.UsageScopeDomain {
 			auth = usageDomainAuthority(ctx, az, c.Principal)
 		}
+		// Whatever is published must be viewable by the publisher now.
+		visible, err := readback.access(ctx, owner)
+		if err != nil {
+			return ops.UsageNominationSetResult{}, err
+		}
+		auth.Restrict, auth.Visible = true, visible
 		res, err := st.SetUsageNomination(ctx, owner, auth, a)
 		invalidate()
 		return res, usageNominationError(err)
@@ -181,7 +202,7 @@ func initUsage(ctx context.Context, env *Env) error {
 		if owner == "" {
 			return ops.UsagePublicationSetArgs{}, usageForbidden()
 		}
-		err := st.SetUsagePublication(ctx, owner, a.AllowRepublish)
+		err := st.SetUsagePublicationAs(ctx, owner, c.Principal.KeyID, a.AllowRepublish)
 		invalidate()
 		return a, err
 	}, api.WithResource(usageUserResource)); err != nil {
@@ -235,7 +256,14 @@ func initUsage(ctx context.Context, env *Env) error {
 		if err != nil {
 			return ops.UsageBucketSetResult{}, err
 		}
-		res, err := st.SetUsageBucketAs(ctx, owner, allowed, a, usageDomainAuthority(ctx, az, c.Principal))
+		auth := usageDomainAuthority(ctx, az, c.Principal)
+		auth.Credential, auth.Restrict = c.Principal.KeyID, true
+		for _, w := range allowed {
+			if !w.Pending {
+				auth.Visible = append(auth.Visible, w.ID)
+			}
+		}
+		res, err := st.SetUsageBucketAs(ctx, owner, allowed, a, auth)
 		invalidate()
 		return res, usageNominationError(err)
 	})

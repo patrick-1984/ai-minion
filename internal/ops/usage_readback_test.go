@@ -55,6 +55,13 @@ func rbAccount(id, provider string, observed time.Time, ws ...UsageWindow) Usage
 	return UsageAccount{ID: UsageID("account", id), Provider: provider, AuthMode: "subscription", ObservedAt: observed.UnixMilli(), Windows: ws}
 }
 
+// rbMetric is the public metric name of a provider's window: the fixed family,
+// the opaque scope token and the span.
+func rbMetric(provider, scope, span string) string {
+	fam, _ := usageFamily(UsageProvider(provider))
+	return fam + "." + usageScopeToken(UsageProvider(provider), scope) + "." + span
+}
+
 func meterByMetric(ms []UsageMeter, metric string) *UsageMeter {
 	for i := range ms {
 		if ms[i].Metric == metric {
@@ -87,7 +94,7 @@ func TestProviderMetersEachQuantityIndependently(t *testing.T) {
 		if !strings.Contains(m.Label, "unweighted mean of 2") || m.Coverage != (UsageMeterCoverage{Known: 2}) {
 			t.Fatalf("label/coverage: %q %+v", m.Label, m.Coverage)
 		}
-		if *m.ResetsAt != reset || *m.DurationMS != five || m.Metric != "anthropic.general.5h" {
+		if *m.ResetsAt != reset || *m.DurationMS != five || m.Metric != rbMetric("Anthropic", "general", "5h") {
 			t.Fatalf("%+v", m)
 		}
 	})
@@ -263,7 +270,7 @@ func TestSessionMetersMeasuredConsumptionAndSeparateQuota(t *testing.T) {
 		if d := meterByMetric(ms, "sessions.duration"); d == nil || d.Unit != "ms" || *d.Used != 60000 || d.Coverage.Unknown != 1 {
 			t.Fatalf("%+v", d)
 		}
-		q := meterByMetric(ms, "linked.anthropic.general.5h")
+		q := meterByMetric(ms, "linked."+rbMetric("Anthropic", "general", "5h"))
 		if q == nil || *q.UsedPercent != 70 || !strings.HasPrefix(q.Label, "Account-wide:") || q.Coverage.Known != 1 {
 			t.Fatalf("one shared account must appear once: %+v", ms)
 		}
@@ -274,7 +281,7 @@ func TestSessionMetersMeasuredConsumptionAndSeparateQuota(t *testing.T) {
 		validateMeters(t, UsageMeters{Schema: UsageMetersSchema, GeneratedAt: now.UnixMilli(), Slots: []UsageSlotDoc{slot}})
 	})
 	t.Run("unlinked and api-only session still reports consumption, no quota", func(t *testing.T) {
-		ms, _ := SessionMeters([]UsageSessionObservation{sess(ip(0), nil, nil, nil, true, "")}, nil, now)
+		ms, _ := SessionMeters([]UsageSessionObservation{sess(ip(0), ip(0), nil, nil, true, "")}, nil, now)
 		if len(ms) != 1 || ms[0].Metric != "sessions.tokens" || ms[0].Used == nil || *ms[0].Used != 0 {
 			t.Fatalf("known zero lost: %+v", ms)
 		}
@@ -289,9 +296,9 @@ func TestSessionMetersMeasuredConsumptionAndSeparateQuota(t *testing.T) {
 		}
 	})
 	t.Run("an old live session makes the meter stale", func(t *testing.T) {
-		old := sess(ip(5), nil, nil, nil, false, "")
+		old := sess(ip(5), ip(1), nil, nil, false, "")
 		old.ObservedAt = now.Add(-time.Hour).UnixMilli()
-		ms, _ := SessionMeters([]UsageSessionObservation{old, sess(ip(5), nil, nil, nil, false, "")}, nil, now)
+		ms, _ := SessionMeters([]UsageSessionObservation{old, sess(ip(5), ip(1), nil, nil, false, "")}, nil, now)
 		if ms[0].Coverage.Stale != 1 || ms[0].ExpiresAt > now.UnixMilli() {
 			t.Fatalf("%+v", ms[0])
 		}
@@ -427,5 +434,93 @@ func TestUsageLabelIsPlainText(t *testing.T) {
 	}
 	if got := UsageLabel(strings.Repeat("\u00e9", 100), 80); len(got) != 80 || !strings.HasSuffix(got, "\u00e9") {
 		t.Errorf("cut on a rune boundary: %d", len(got))
+	}
+}
+
+func TestReadbackNoProducerIdentifiersInPublicFields(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(time.Hour).UnixMilli()
+	five := int64(5 * time.Hour / time.Millisecond)
+	const sentinel = "Acme-Secret-Project-42"
+	ms, _ := ProviderMeters([]UsageAccount{
+		rbAccount("a", "gemini-"+sentinel, now, UsageWindow{Scope: "models/" + sentinel, Period: "rolling", DurationMS: &five, ResetsAt: &reset, UsedPercent: fp(10)}),
+		rbAccount("b", "Anthropic", now, UsageWindow{Scope: "codex_" + sentinel, Period: "weekly-" + sentinel, UsedPercent: fp(20)}),
+	}, now)
+	if len(ms) != 2 {
+		t.Fatalf("%+v", ms)
+	}
+	for _, m := range ms {
+		for _, f := range []string{m.ID, m.Metric, m.Label} {
+			if strings.Contains(strings.ToLower(f), strings.ToLower("secret")) || strings.Contains(strings.ToLower(f), "acme") || strings.Contains(strings.ToLower(f), "gemini") || strings.Contains(strings.ToLower(f), "codex") {
+				t.Fatalf("producer identifier reached a public field: %q", f)
+			}
+		}
+	}
+	// The same group keeps the same id however the other groups change.
+	one, _ := ProviderMeters([]UsageAccount{rbAccount("b", "Anthropic", now, UsageWindow{Scope: "codex_" + sentinel, Period: "rolling", UsedPercent: fp(20)})}, now)
+	two, _ := ProviderMeters([]UsageAccount{
+		rbAccount("b", "Anthropic", now, UsageWindow{Scope: "codex_" + sentinel, Period: "rolling", UsedPercent: fp(20)}),
+		rbAccount("c", "Anthropic", now, UsageWindow{Scope: "codex_" + sentinel[:3], Period: "rolling", UsedPercent: fp(20)}),
+	}, now)
+	var found bool
+	for _, m := range two {
+		found = found || m.ID == one[0].ID
+	}
+	if !found || len(two) != 2 || two[0].ID == two[1].ID {
+		t.Fatalf("ids depend on the other groups: %+v %+v", one, two)
+	}
+}
+
+func TestReadbackNativeUnitsAndPartialTokens(t *testing.T) {
+	now := time.Now()
+	w := UsageWindow{Scope: "requests", Period: "fixed", Unit: "REQUESTS", Remaining: fp(120)}
+	ms, un := ProviderMeters([]UsageAccount{rbAccount("g", "google", now, w)}, now)
+	if un != 0 || len(ms) != 1 || ms[0].Unit != "requests" || *ms[0].Remaining != 120 {
+		t.Fatalf("native spelling dropped: %+v %d", ms, un)
+	}
+	odd := UsageWindow{Scope: "x", Period: "fixed", Unit: "credits", Remaining: fp(3), UsedPercent: fp(40)}
+	ms, _ = ProviderMeters([]UsageAccount{rbAccount("g", "google", now, odd)}, now)
+	if len(ms) != 1 || ms[0].Unit != "percent" || ms[0].Remaining != nil || *ms[0].UsedPercent != 40 {
+		t.Fatalf("known percentage lost with an unsupported amount unit: %+v", ms)
+	}
+
+	s := UsageSessionObservation{}
+	s.InputTokens, s.ObservedAt = ip(100), now.UnixMilli()
+	full := UsageSessionObservation{}
+	full.InputTokens, full.OutputTokens, full.ObservedAt = ip(1), ip(2), now.UnixMilli()
+	got, _ := SessionMeters([]UsageSessionObservation{s, full}, nil, now)
+	tok := meterByMetric(got, "sessions.tokens")
+	if tok == nil || *tok.Used != 3 || tok.Coverage != (UsageMeterCoverage{Known: 1, Unknown: 1}) {
+		t.Fatalf("a missing counter was read as zero: %+v", tok)
+	}
+	got, _ = SessionMeters([]UsageSessionObservation{s}, nil, now)
+	if len(got) != 0 {
+		t.Fatalf("partial counters published a total: %+v", got)
+	}
+}
+
+func TestReadbackMeasuredSessionOutranksLinkedQuota(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(time.Hour).UnixMilli()
+	var linked []UsageAccount
+	for i := 0; i < 20; i++ {
+		linked = append(linked, rbAccount(fmt.Sprintf("a%d", i), "Anthropic", now, UsageWindow{Scope: fmt.Sprintf("s%d", i), Period: "rolling", ResetsAt: &reset, UsedPercent: fp(50)}))
+	}
+	s := UsageSessionObservation{}
+	s.InputTokens, s.OutputTokens, s.DurationMS, s.ObservedAt = ip(1), ip(2), ip(1000), now.UnixMilli()
+	s.CostUSD = fp(1)
+	ms, _ := SessionMeters([]UsageSessionObservation{s}, linked, now)
+	slot := NewUsageSlot("user", "session", "L", ms, 0, now)
+	for _, metric := range []string{"sessions.tokens", "sessions.duration", "sessions.cost"} {
+		if meterByMetric(slot.Meters, metric) == nil {
+			t.Fatalf("%s was truncated away by linked quota", metric)
+		}
+	}
+	doc := UsageMeters{Schema: UsageMetersSchema, GeneratedAt: now.UnixMilli(), Slots: []UsageSlotDoc{slot}}
+	if err := doc.Fit(2500); err != nil {
+		t.Fatal(err)
+	}
+	if meterByMetric(doc.Slots[0].Meters, "sessions.tokens") == nil {
+		t.Fatal("the byte cap dropped measured consumption before linked quota")
 	}
 }

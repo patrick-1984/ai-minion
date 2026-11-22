@@ -27,20 +27,68 @@ const usageReadbackTTL = 30 * time.Second
 type usageReadback struct {
 	st  *store.Store
 	now func() time.Time
+	// access lists the Worker ids the publisher may view now, by the same
+	// rules as the ordinary Usage views. Nil allows only the publisher's own
+	// Workers.
+	access func(ctx context.Context, publisher string) ([]string, error)
 
 	mu    sync.Mutex
 	cache map[string]usageReadbackEntry
 }
 
 type usageReadbackEntry struct {
-	key  string
-	at   time.Time
-	doc  ops.UsageMeters
-	hash string
+	key string
+	at  time.Time
+	// until is when the entry stops being served: the TTL, or earlier when a
+	// meter of the document expires (a reset must not leave a stale headline).
+	until time.Time
+	doc   ops.UsageMeters
+	hash  string
 }
 
 func newUsageReadback(st *store.Store) *usageReadback {
 	return &usageReadback{st: st, now: time.Now, cache: map[string]usageReadbackEntry{}}
+}
+
+// visibleFor resolves, once per publisher, what the publisher may view.
+func (u *usageReadback) visibleFor(ctx context.Context, slots []store.UsageSlotSpec) (map[string][]string, error) {
+	out := map[string][]string{}
+	if u.access == nil {
+		return out, nil
+	}
+	for _, sp := range slots {
+		if _, ok := out[sp.Publisher]; ok {
+			continue
+		}
+		ids, err := u.access(ctx, sp.Publisher)
+		if err != nil {
+			return nil, err
+		}
+		out[sp.Publisher] = ids
+	}
+	return out, nil
+}
+
+// snapshot reads the slots of owner in one transaction.
+func (u *usageReadback) snapshot(ctx context.Context, owner string, withData bool) ([]store.ReadbackSlot, error) {
+	specs, err := u.st.UsageReadbackSlots(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	visible, err := u.visibleFor(ctx, specs)
+	if err != nil {
+		return nil, err
+	}
+	return u.st.UsageReadbackSnapshot(ctx, owner, visible, withData)
+}
+
+func readbackKey(slots []store.ReadbackSlot) string {
+	h := sha256.New()
+	for _, sl := range slots {
+		b, _ := json.Marshal([]any{sl.UsageSlotSpec, sl.Sources})
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Document returns the document for the Workers of owner and the hash of its
@@ -48,58 +96,60 @@ func newUsageReadback(st *store.Store) *usageReadback {
 // authenticated principal's own id (the preview) or the Hub owner of an
 // approved Worker (delivery); callers decide that before they ask.
 func (u *usageReadback) Document(ctx context.Context, owner string) (ops.UsageMeters, string, error) {
-	specs, err := u.st.UsageReadbackSlots(ctx, owner)
+	cheap, err := u.snapshot(ctx, owner, false)
 	if err != nil {
 		return ops.UsageMeters{}, "", err
 	}
-	sources := make([][]store.UsagePublishableSource, len(specs))
-	h := sha256.New()
-	for i, sp := range specs {
-		if sources[i], err = u.st.UsagePublishableSources(ctx, sp.Publisher, sp.Kind, sp.BucketID); err != nil {
-			return ops.UsageMeters{}, "", err
-		}
-		b, _ := json.Marshal([]any{sp, sources[i]})
-		h.Write(b)
-	}
-	key := hex.EncodeToString(h.Sum(nil))
+	key := readbackKey(cheap)
 	now := u.now()
 
 	u.mu.Lock()
-	if e, ok := u.cache[owner]; ok && e.key == key && now.Sub(e.at) < usageReadbackTTL {
+	if e, ok := u.cache[owner]; ok && e.key == key && now.Before(e.until) {
 		u.mu.Unlock()
 		return e.doc, e.hash, nil
 	}
 	u.mu.Unlock()
 
+	// The sources and the observations come from one snapshot: consent
+	// withdrawn meanwhile cannot let a later observation into the document.
+	slots, err := u.snapshot(ctx, owner, true)
+	if err != nil {
+		return ops.UsageMeters{}, "", err
+	}
+	key = readbackKey(slots)
 	doc := ops.UsageMeters{Schema: ops.UsageMetersSchema, GeneratedAt: now.UnixMilli(), Slots: []ops.UsageSlotDoc{}}
-	for i, sp := range specs {
-		data, err := u.st.ReadNominatedUsage(ctx, sp.Kind, sources[i])
-		if err != nil {
-			return ops.UsageMeters{}, "", err
-		}
+	for _, sl := range slots {
 		var meters []ops.UsageMeter
 		var omitted int
-		if sp.Kind == "provider" {
-			meters, omitted = ops.ProviderMeters(data.Accounts, now)
+		if sl.Kind == "provider" {
+			meters, omitted = ops.ProviderMeters(sl.Data.Accounts, now)
 		} else {
-			meters, omitted = ops.SessionMeters(data.Sessions, data.Linked, now)
+			meters, omitted = ops.SessionMeters(sl.Data.Sessions, sl.Data.Linked, now)
 		}
-		doc.Slots = append(doc.Slots, ops.NewUsageSlot(sp.Scope, sp.Kind, sp.Label, meters, omitted, now))
+		doc.Slots = append(doc.Slots, ops.NewUsageSlot(sl.Scope, sl.Kind, sl.Label, meters, omitted, now))
 	}
 	if err := doc.Fit(ops.UsageMetersMaxBytes); err != nil {
 		return ops.UsageMeters{}, "", err
 	}
 	hash := doc.ContentHash()
+	until := now.Add(usageReadbackTTL)
+	for _, sl := range doc.Slots {
+		for _, m := range sl.Meters {
+			if e := time.UnixMilli(m.ExpiresAt); e.After(now) && e.Before(until) {
+				until = e
+			}
+		}
+	}
 
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if len(u.cache) > 1024 {
 		for k, e := range u.cache {
-			if now.Sub(e.at) >= usageReadbackTTL {
+			if !now.Before(e.until) {
 				delete(u.cache, k)
 			}
 		}
 	}
-	u.cache[owner] = usageReadbackEntry{key: key, at: now, doc: doc, hash: hash}
+	u.cache[owner] = usageReadbackEntry{key: key, at: now, until: until, doc: doc, hash: hash}
 	return doc, hash, nil
 }
