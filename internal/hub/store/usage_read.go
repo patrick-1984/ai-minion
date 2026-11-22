@@ -290,3 +290,145 @@ page:
 	}
 	return out, rows.Err()
 }
+
+// UsageSlotSpec is one slot a Worker's owner receives: a nominated bucket and
+// the publisher whose publication rights bound what it may include.
+type UsageSlotSpec struct {
+	Scope, Kind, BucketID, Label, Publisher string
+}
+
+// UsageReadbackSlots lists the effective slots for the Workers of owner, the
+// domain pair first, each kind in order session, provider. A domain slot
+// counts only while its publisher is an active administrator; a user slot only
+// while its owner is active.
+func (s *Store) UsageReadbackSlots(ctx context.Context, owner string) ([]UsageSlotSpec, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT n.scope,n.kind,n.bucket_id,b.label,n.owner_id
+	 FROM usage_nominations n JOIN usage_buckets b ON b.owner_id=n.owner_id AND b.kind=n.kind AND b.id=n.bucket_id
+	 JOIN users u ON u.id=n.owner_id AND u.active=1
+	 WHERE (n.scope='user' AND n.owner_id=?1)
+	    OR (n.scope='domain' AND EXISTS(SELECT 1 FROM user_roles r WHERE r.user_id=u.id AND r.role='admin'))
+	 ORDER BY CASE n.scope WHEN 'domain' THEN 0 ELSE 1 END, CASE n.kind WHEN 'session' THEN 0 ELSE 1 END`, owner)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []UsageSlotSpec
+	for rows.Next() {
+		var sp UsageSlotSpec
+		if err := rows.Scan(&sp.Scope, &sp.Kind, &sp.BucketID, &sp.Label, &sp.Publisher); err != nil {
+			return nil, err
+		}
+		out = append(out, sp)
+	}
+	return out, rows.Err()
+}
+
+// NominatedUsage is the authorized raw material of one slot.
+type NominatedUsage struct {
+	Accounts []ops.UsageAccount            // provider slot: newest observation per account
+	Sessions []ops.UsageSessionObservation // session slot
+	Linked   []ops.UsageAccount            // session slot: accounts the sessions are linked to
+}
+
+type usageSourcePair struct {
+	M string `json:"m"`
+	W string `json:"w"`
+}
+
+func usagePairsJSON(pairs []usageSourcePair) (string, error) {
+	b, err := json.Marshal(pairs)
+	return string(b), err
+}
+
+// readUsageAccounts returns the newest observation of each requested
+// (account, Worker) pair on an approved Worker. Only the listed pairs are read,
+// so what was not authorized for publication cannot influence which
+// observation wins.
+func (s *Store) readUsageAccounts(ctx context.Context, pairs []usageSourcePair) ([]ops.UsageAccount, error) {
+	arg, err := usagePairsJSON(pairs)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT a.account_id,a.observed_at,a.body FROM json_each(?) p
+	 JOIN workers w ON w.id=json_extract(p.value,'$.w') AND w.approval='approved'
+	 JOIN usage_accounts a ON a.worker_id=w.id AND a.account_id=json_extract(p.value,'$.m')
+	 ORDER BY a.account_id,a.observed_at DESC,a.worker_id`, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ops.UsageAccount
+	last := ""
+	for rows.Next() {
+		var id, body string
+		var observed int64
+		if err := rows.Scan(&id, &observed, &body); err != nil {
+			return nil, err
+		}
+		if id == last {
+			continue
+		}
+		last = id
+		var a ops.UsageAccount
+		if err := json.Unmarshal([]byte(body), &a); err != nil {
+			return nil, err
+		}
+		a.ObservedAt = observed
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ReadNominatedUsage reads the raw rows of one slot from its publishable
+// sources (UsagePublishableSources, applied before anything is deduplicated
+// or aggregated). A session slot also reads the subscription accounts its
+// sessions are linked to, from the same Workers.
+func (s *Store) ReadNominatedUsage(ctx context.Context, kind string, sources []UsagePublishableSource) (NominatedUsage, error) {
+	var out NominatedUsage
+	pairs := make([]usageSourcePair, len(sources))
+	for i, p := range sources {
+		pairs[i] = usageSourcePair{p.MemberID, p.WorkerID}
+	}
+	if kind == "provider" {
+		var err error
+		out.Accounts, err = s.readUsageAccounts(ctx, pairs)
+		return out, err
+	}
+	arg, err := usagePairsJSON(pairs)
+	if err != nil {
+		return out, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT s.worker_id,s.observed_at,s.ended_at,s.body FROM json_each(?) p
+	 JOIN workers w ON w.id=json_extract(p.value,'$.w') AND w.approval='approved'
+	 JOIN usage_sessions s ON s.worker_id=w.id AND s.id=json_extract(p.value,'$.m') ORDER BY s.id`, arg)
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = rows.Close() }()
+	var links []usageSourcePair
+	for rows.Next() {
+		var worker, body string
+		var observed int64
+		var ended *int64
+		if err := rows.Scan(&worker, &observed, &ended, &body); err != nil {
+			return out, err
+		}
+		var o ops.UsageSessionObservation
+		if err := json.Unmarshal([]byte(body), &o.UsageSession); err != nil {
+			return out, err
+		}
+		o.ObservedAt, o.Ended = observed, ended != nil
+		out.Sessions = append(out.Sessions, o)
+		if o.AccountID != "" {
+			links = append(links, usageSourcePair{o.AccountID, worker})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	_ = rows.Close()
+	if len(links) > 0 {
+		out.Linked, err = s.readUsageAccounts(ctx, links)
+	}
+	return out, err
+}

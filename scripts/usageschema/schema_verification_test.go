@@ -50,7 +50,7 @@ func TestUsageOpenAPIReconcilesOperationRefsAndNullableDTOs(t *testing.T) {
 		}
 		return resolved
 	}
-	for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList, ops.OpUsageBucketSet, ops.OpUsageAccountSet, ops.OpUsageCollectorSet, ops.OpWorkerUsage} {
+	for _, name := range []string{ops.OpUsageList, ops.OpUsageBucketList, ops.OpUsageReadback, ops.OpUsageBucketSet, ops.OpUsageAccountSet, ops.OpUsageCollectorSet, ops.OpWorkerUsage} {
 		op, ok := ops.Lookup(name)
 		if !ok {
 			t.Fatalf("operation %q is missing from the actual catalog", name)

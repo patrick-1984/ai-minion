@@ -40,7 +40,7 @@
         "id": {"type": "string", "minLength": 1, "maxLength": 128, "description": "Stable identity of the window group, including provider, window and unit."},
         "metric": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,63}$", "description": "Public metric name, for example anthropic.general.5h."},
         "label": {"type": "string", "minLength": 1, "maxLength": 80},
-        "unit": {"enum": ["percent", "tokens", "requests", "usd"]},
+        "unit": {"enum": ["percent", "tokens", "requests", "usd", "ms"]},
         "used": {"type": "number", "minimum": 0, "description": "In unit."},
         "remaining": {"type": "number", "minimum": 0, "description": "In unit. Never inferred from a percentage or from spent tokens."},
         "limit": {"type": "number", "minimum": 0, "description": "In unit; only when every known account reports it."},
