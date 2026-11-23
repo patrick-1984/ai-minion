@@ -38,6 +38,7 @@ type usagePage struct {
 	// Minion exporter; ExporterInstalled is true when any Worker has it.
 	ExporterMissing   []string
 	ExporterInstalled bool
+	exporterAbsent    map[string]bool
 	// ExporterRestart marks Workers that have a Claude Code session without
 	// token data although the exporter is installed: it started before the
 	// install and needs a restart.
@@ -57,10 +58,14 @@ func (p usagePage) staleWhy(c usageAccountCard) string {
 
 func (p usagePage) ExporterCommand() string { return usageExporterCommand }
 
+// ExporterAbsentOn reports whether the Worker has Claude Code without the
+// Minion exporter, so a session hint names the command only where it helps.
+func (p usagePage) ExporterAbsentOn(workerID string) bool { return p.exporterAbsent[workerID] }
+
 // noteExporters records which Workers lack the Claude exporter, from the
 // harness inventories the Workers reported.
 func (p *usagePage) noteExporters(workers []ops.UsageWorkerRow) {
-	p.ExporterMissing, p.ExporterInstalled = nil, false
+	p.ExporterMissing, p.ExporterInstalled, p.exporterAbsent = nil, false, map[string]bool{}
 	for _, w := range workers {
 		for _, h := range w.Inventory {
 			if h.Name != "claude" || h.Status != "installed" {
@@ -69,6 +74,7 @@ func (p *usagePage) noteExporters(workers []ops.UsageWorkerRow) {
 			switch h.Exporter {
 			case ops.UsageExporterAbsent:
 				p.ExporterMissing = append(p.ExporterMissing, p.WorkerName(w.ID))
+				p.exporterAbsent[w.ID] = true
 			case ops.UsageExporterInstalled:
 				p.ExporterInstalled = true
 			}

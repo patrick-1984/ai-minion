@@ -305,7 +305,7 @@
         {{if .AccountID}}<div><dt>Account ID</dt><dd><code>{{.AccountID}}</code></dd></div>{{end}}
         {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName .BucketID}}</dd></div>{{end}}
       </dl>
-      {{if and (eq .Harness "claude") (not .InputTokens) (not .OutputTokens)}}<p class="help">Tokens, cost and model need the Claude Code exporter: run <code>{{$p.ExporterCommand}}</code> on {{$p.WorkerName .WorkerID}}, then restart the Claude sessions.</p>{{else if and (eq .Harness "codex") (not .InputTokens) (not .OutputTokens)}}<p class="help">Codex session tokens are not collected yet.</p>{{end}}
+      {{if and (eq .Harness "claude") (not .InputTokens) (not .OutputTokens)}}{{if $p.ExporterAbsentOn .WorkerID}}<p class="help">Tokens, cost and model need the Claude Code exporter: run <code>{{$p.ExporterCommand}}</code> on {{$p.WorkerName .WorkerID}}, then restart the Claude sessions.</p>{{else}}<p class="help">Tokens, cost and model appear once this Claude session reports; a session started before the exporter was installed needs a restart.</p>{{end}}{{else if and (eq .Harness "codex") (not .InputTokens) (not .OutputTokens)}}<p class="help">Codex session tokens are not collected yet.</p>{{end}}
       {{template "usage_counters" ($p.Counters .UsageCounters)}}
       {{if .Models}}
       <details class="usage-window">

@@ -287,6 +287,9 @@ func TestUsageExplainsMissingClaudeExporter(t *testing.T) {
 	if body := run(claude("installed"), "workers"); !strings.Contains(body, "Claude exporter: installed") || strings.Contains(body, "needs the Minion status-line exporter") {
 		t.Fatalf("installed state: %s", body)
 	}
+	if body := run(claude("installed"), "sessions"); strings.Contains(body, "Tokens, cost and model need the Claude Code exporter") || !strings.Contains(body, "needs a restart") {
+		t.Fatalf("a session on a Worker that has the exporter still asks for the install command: %s", body)
+	}
 	if body := run(claude("installed"), "accounts"); strings.Contains(body, "No Worker has it yet") {
 		t.Fatal("accounts note shown although a Worker has the exporter")
 	}
