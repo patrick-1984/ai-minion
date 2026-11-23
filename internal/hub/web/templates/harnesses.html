@@ -33,7 +33,7 @@
       <h2 id="harness-check-h">My Workers</h2>
       <form method="post" action="{{$p.ScanURL}}" hx-post="{{$p.ScanURL}}" hx-target="#harness-result" hx-disabled-elt="find button">
         <input type="hidden" name="for_user" value="{{$p.ForUser}}">
-        <button type="submit" class="btn">{{template "icon" "i-refresh"}}<span>Check all my Workers</span></button>
+        <button type="submit" class="btn">{{template "icon" "i-refresh"}}<span class="refresh-idle">Check all my Workers</span><span class="refresh-busy">Refreshing…</span></button>
       </form>
     </div>
     <form class="usage-fields" method="get" action="/harnesses">
@@ -41,18 +41,19 @@
       <label class="usage-check"><input type="checkbox" name="missing" value="1"{{if $p.OnlyMissing}} checked{{end}}> Only Workers missing something</label>
       <button type="submit" class="btn btn-secondary">Apply</button>
     </form>
-    <div id="harness-matrix" hx-get="{{$p.RefreshURL}}" hx-trigger="every 30s" hx-select="#harness-matrix > *" hx-swap="innerHTML" hx-sync="this:drop">
+    <div id="harness-matrix" hx-get="{{$p.RefreshURL}}" hx-trigger="every 30s, harnesses-checked from:body" hx-select="#harness-matrix > *" hx-swap="innerHTML" hx-sync="this:drop">
+    <p class="muted">Last checked {{$p.LastChecked}}</p>
     {{if $p.Rows}}
       {{if not $p.Columns}}<p class="muted">Tick at least one harness above to compare it with your Workers.</p>{{end}}
       <div class="table-wrap"><table class="rtable harness-matrix">
         <caption class="sr-only">Installed harnesses per Worker</caption>
-        <thead><tr><th scope="col">Worker</th>{{range $p.Columns}}<th scope="col">{{.}}</th>{{end}}<th scope="col">Last scan</th></tr></thead>
+        <thead><tr><th scope="col">Worker</th>{{range $p.Columns}}<th scope="col">{{.}}</th>{{end}}<th scope="col">Last checked</th></tr></thead>
         <tbody>
         {{range $p.Rows}}
           <tr>
             <th scope="row" data-label="Worker">{{.Name}}{{if $p.ShowOwner}} <small class="muted">({{.Owner}})</small>{{end}} <span class="badge" data-online="{{if .Online}}true{{else}}false{{end}}">{{if .Online}}Online{{else}}Offline{{end}}</span></th>
             {{range $i, $c := .Cells}}<td data-label="{{index $p.Columns $i}}"><span class="badge" data-tone="{{$c.Tone}}">{{$c.Text}}</span></td>{{end}}
-            <td data-label="Last scan">{{.Scanned}}</td>
+            <td data-label="Last checked">{{.Scanned}}</td>
           </tr>
         {{end}}
         </tbody>

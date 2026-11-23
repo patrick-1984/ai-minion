@@ -2,10 +2,13 @@ package web
 
 import (
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -105,10 +108,12 @@ func (p *usagePage) noteExporters(workers []ops.UsageWorkerRow) {
 
 type usageAccountCard struct {
 	Account   ops.UsageAccountRow
-	Observed  string
+	Observed  template.HTML
 	Freshness string
-	Windows   []usageWindowView
-	StaleWhy  string
+	// RefreshWorker is the Worker whose report the account's Refresh asks for.
+	RefreshWorker string
+	Windows       []usageWindowView
+	StaleWhy      string
 }
 
 type usageWindowView struct {
@@ -126,6 +131,11 @@ func (p usagePage) Time(ms *int64) string {
 }
 
 func (p usagePage) Millis(ms int64) string { return p.Time(&ms) }
+
+// Checked and CheckedMs render a moment of a check as a <time> element.
+func (p usagePage) Checked(ms *int64) template.HTML { return checkedTime(ms, "Never") }
+
+func (p usagePage) CheckedMs(ms int64) template.HTML { return checkedTime(&ms, "Never") }
 
 func (p usagePage) Percent(n *float64) string {
 	if n == nil {
@@ -434,6 +444,7 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 			p.noteExporters(inv.Workers)
 		}
 	}
+	p.RefreshURL = usageURL(section, p.WorkerID, p.BucketID, q.Get("after"))
 	if section == "overview" {
 		var subscriptions ops.UsageListResult
 		args.Section, args.SubscriptionOnly = "accounts", true
@@ -441,7 +452,6 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 			return nil, err
 		}
 		accounts, next = subscriptions.Accounts, subscriptions.Next
-		p.RefreshURL = usageURL(section, args.WorkerID, args.BucketID, args.After)
 	}
 	if next != "" {
 		p.NextURL = usageURL(section, p.WorkerID, p.BucketID, next)
@@ -455,7 +465,10 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 	now := time.UnixMilli(p.Rows.AsOf)
 	stale := now.Sub(time.UnixMilli(a.ObservedAt)) > 15*time.Minute
-	card := usageAccountCard{Account: a, Observed: p.Time(&a.ObservedAt), Freshness: "Fresh"}
+	card := usageAccountCard{Account: a, Observed: p.Checked(&a.ObservedAt), Freshness: "Fresh", RefreshWorker: a.WorkerID}
+	if a.Collector != nil && a.Collector.ActiveWorker != "" {
+		card.RefreshWorker = a.Collector.ActiveWorker
+	}
 	if stale {
 		card.Freshness = "Stale"
 	}
@@ -521,6 +534,9 @@ func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 		view = "overview"
 	}
 	switch r.PathValue("action") {
+	case "refresh":
+		usageRefresh(w, r, c)
+		return
 	case "scan":
 		var report ops.UsageReport
 		if err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: r.PostFormValue("worker"), Inventory: true}, &report); err != nil {
@@ -609,6 +625,77 @@ func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 		return
 	}
 	http.Redirect(w, r, location, http.StatusSeeOther)
+}
+
+// usageRefresh asks Workers for a fresh report: the one named in the form, or
+// every online Worker the person sees (narrowed to the filtered Worker). A
+// Worker refreshed less than refreshEvery ago is not asked again.
+func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	var list ops.WorkersListResult
+	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &list); err != nil {
+		writeResultError(w, failureText(err))
+		return
+	}
+	only := r.PostFormValue("worker")
+	explicit := only != ""
+	if !explicit {
+		only = r.PostFormValue("filter_worker")
+	}
+	var targets []ops.WorkerInfo
+	for _, wk := range list.Workers {
+		if !wk.Pending && (only == "" || wk.ID == only) {
+			targets = append(targets, wk)
+		}
+	}
+	if explicit && len(targets) == 0 {
+		writeResultError(w, "That Worker is not available to refresh.")
+		return
+	}
+	inventory := r.PostFormValue("view") == "workers"
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
+	var failed []string
+	refreshed, recent := 0, 0
+	for _, wk := range targets {
+		if !wk.Online || !slices.Contains(wk.Ops, ops.OpWorkerUsage) {
+			if explicit {
+				failed = append(failed, wk.Name+" is offline or needs an update")
+			}
+			continue
+		}
+		if !workerRefresh.allow(wk.ID) {
+			recent++
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			var report ops.UsageReport
+			err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: wk.ID, Inventory: inventory}, &report)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				failed = append(failed, wk.Name+": "+failureText(err))
+			} else {
+				refreshed++
+			}
+		}()
+	}
+	wg.Wait()
+	w.Header().Set("HX-Trigger", "usage-refreshed")
+	switch {
+	case len(failed) > 0:
+		slices.Sort(failed)
+		writeResultError(w, "Could not refresh "+strings.Join(failed, "; ")+".")
+	case refreshed == 0 && recent > 0:
+		writeResultInfo(w, "Refreshed less than "+strconv.Itoa(int(refreshEvery/time.Second))+" seconds ago. Showing the latest data.")
+	case refreshed == 0:
+		writeResultInfo(w, "No online Worker to refresh.")
+	default:
+		writeResultInfo(w, "Refreshed "+pluralWorkers(refreshed)+".")
+	}
 }
 
 func usageBucketForm(r *http.Request) (ops.UsageBucketSetArgs, error) {
