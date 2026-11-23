@@ -164,3 +164,28 @@ func TestUpdatesCheckNowIsBounded(t *testing.T) {
 		t.Fatalf("took %v, headers %v", d, rec.Header())
 	}
 }
+
+// Without a host updater report the page says automatic Hub updates are not
+// set up and links the guides of the running version; with one, it does not.
+func TestUpdatesPageExplainsMissingAutomaticUpdates(t *testing.T) {
+	res := ops.HubUpdateCheckResult{Current: "v0.19.0", Channel: "latest", CheckedChannel: "latest", Reason: "self_update is off"}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, res))
+	body := get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, "Automatic Hub updates: not set up.", "self_update is off", `blob/v0.19.0/docs/install/hub-docker.md#update"`)
+	mustNotHave(t, body, "let-the-hub-update-itself", "hub-truenas-updater.md", "TrueNAS")
+	res.Current = "dev-abc"
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, res))
+	mustHave(t, get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String(), `blob/main/docs/install/hub-docker.md#update`)
+	// Plain Docker with the self-update overlay: no TrueNAS guidance.
+	res = ops.HubUpdateCheckResult{Current: "v0.19.0", Channel: "latest", CheckedChannel: "latest", SelfUpdate: true}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, res))
+	body = get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustNotHave(t, body, "TrueNAS", "not set up", "hub-truenas-updater.md")
+	mustHave(t, body, "update itself through the Docker socket", "hub-docker.md#update")
+	res.Current = "v0.19.0"
+	res.HostUpdater = &ops.HubHostUpdaterStatus{Available: true, App: "minion"}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, res))
+	body = get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustNotHave(t, body, "not set up")
+	mustHave(t, body, "TrueNAS host updater")
+}

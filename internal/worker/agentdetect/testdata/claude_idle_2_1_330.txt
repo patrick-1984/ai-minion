@@ -1,0 +1,9 @@
+  The rest of the answer is above. Say the word and I will build it.
+● Ran 4 stop hooks
+  ⎿  Stop hook says: Verify job done
+✻ Worked for 18m 39s · done 9:10 AM
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 medium · wb2 · ● context 38%
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents

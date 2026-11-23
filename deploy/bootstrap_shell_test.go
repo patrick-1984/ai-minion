@@ -6,7 +6,9 @@
 package deploy
 
 import (
+	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +62,22 @@ func TestDeviceInstallShellHarness(t *testing.T) {
 	out, err := exec.Command("sh", "device_install_test.sh").CombinedOutput()
 	if err != nil {
 		t.Fatalf("device_install_test.sh failed: %v\n%s", err, out)
+	}
+}
+
+// install.ps1 -Join takes the token from MINION_JOIN (and clears it) before it
+// falls back to the hidden prompt. No PowerShell runs in this test.
+func TestInstallPS1ReadsTheJoinTokenFromTheEnvironment(t *testing.T) {
+	b, err := os.ReadFile("install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	env := strings.Index(s, "$env:MINION_JOIN")
+	clear := strings.Index(s, "Remove-Item Env:MINION_JOIN")
+	prompt := strings.Index(s, "Read-Host")
+	check := strings.Index(s, "'^mnj1-")
+	if env < 0 || clear < env || prompt < clear || check < prompt {
+		t.Fatalf("install.ps1 must read and clear MINION_JOIN, then prompt, then validate (%d %d %d %d)", env, clear, prompt, check)
 	}
 }

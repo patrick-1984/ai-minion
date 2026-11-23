@@ -47,8 +47,8 @@ func TestUsageNativeReadOnlyCodexRPC(t *testing.T) {
 		t.Fatal(methods)
 	}
 	b, _ := json.Marshal(out)
-	if bytes.Contains(b, []byte(email)) || bytes.Contains(b, []byte("private fixture")) {
-		t.Fatal("native private data escaped")
+	if bytes.Contains(b, []byte("private fixture")) || !strings.HasPrefix(out.Label, email+" / ") {
+		t.Fatalf("native private data escaped or the label is not the full address: %q", out.Label)
 	}
 	sent.Reset()
 	if _, err = readCodexAccount(codexStatusPipe{bufio.NewScanner(strings.NewReader(reply)), json.NewEncoder(&sent)}, ops.UsageID("other"), now); err == nil || strings.Contains(sent.String(), "rateLimits/read") {
@@ -146,7 +146,7 @@ func TestOpenRouterOriginAndHintsForDistinctCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 		b, _ := json.Marshal(a)
-		if a.Provider != "OpenRouter" || a.EndpointOrigin != "https://openrouter.ai" || !strings.HasPrefix(a.KeyHint, key[:10]+"... / ") || ids[a.ID] || bytes.Contains(b, []byte(key)) || bytes.Contains(b, []byte("private-proxy-path")) {
+		if a.Provider != "OpenRouter" || a.EndpointOrigin != "" || !strings.HasPrefix(a.KeyHint, key[:10]+"... / ") || ids[a.ID] || bytes.Contains(b, []byte(key)) || bytes.Contains(b, []byte("private-proxy-path")) {
 			t.Fatalf("unsafe or ambiguous API metadata: %s", a.ID)
 		}
 		ids[a.ID] = true
@@ -154,5 +154,63 @@ func TestOpenRouterOriginAndHintsForDistinctCredentials(t *testing.T) {
 	short, err := APIUsageAccount("test", "https://Z7SHORT.example.invalid/private", "z7short", []byte(scope), 1)
 	if err != nil || short.EndpointOrigin != "" || strings.Contains(strings.ToLower(short.KeyHint), "z7short") {
 		t.Fatal("credential in hostname was disclosed")
+	}
+}
+
+func TestNativeLoginLabelIsTheFullAddress(t *testing.T) {
+	digest := ops.UsageID("subscription", "openai", "x")
+	for _, c := range []struct{ email, want string }{
+		{"patrick@Formula5.com", "patrick@formula5.com / " + digest[:6]},
+		{" a.b+c@example.org ", "a.b+c@example.org / " + digest[:6]},
+		{"cac797@formula5.com", "cac797@formula5.com / " + digest[:6]},
+		{"not an address", "openai profile " + digest[:10]},
+		{"a b@example.org", "openai profile " + digest[:10]},
+		{"", "openai profile " + digest[:10]},
+	} {
+		if got := nativeLoginLabel("openai", c.email, digest); got != c.want {
+			t.Errorf("%q: got %q, want %q", c.email, got, c.want)
+		}
+	}
+}
+
+func TestNativeLoginLabelLongAddressStaysWithinTheWireBound(t *testing.T) {
+	digest := ops.UsageID("subscription", "anthropic", "x")
+	user := strings.Repeat("u", 64)
+	long := user + "@" + strings.Repeat("d", 60) + "." + strings.Repeat("e", 60) + ".example.org" // 64+1+~135
+	// Older Hubs accept 96 bytes: a longer login gets the opaque label, never a cut.
+	if got := nativeLoginLabel("anthropic", long, digest); got != "anthropic profile "+digest[:10] {
+		t.Fatalf("label %q (%d bytes)", got, len(got))
+	}
+	short := "user@example.com"
+	if got := nativeLoginLabel("anthropic", short, digest); !strings.HasPrefix(got, short) || len(got) > maxUsageLabel {
+		t.Fatalf("label %q", got)
+	}
+	// An address of exactly 96 bytes is kept whole, without the suffix.
+	exact := strings.Repeat("u", 64) + "@" + strings.Repeat("d", 27) + ".com"
+	if len(exact) != 96 {
+		t.Fatalf("fixture %d", len(exact))
+	}
+	if got := nativeLoginLabel("anthropic", exact, digest); got != exact {
+		t.Fatalf("label %q", got)
+	}
+	if got := nativeLoginLabel("anthropic", exact+"x", digest); got != "anthropic profile "+digest[:10] {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAccessAccountsAreExplicitAggregates(t *testing.T) {
+	a, _ := accessAccount("Anthropic", sessionAccess{"api", accessAPIKey}, 1)
+	b, _ := accessAccount("Anthropic", sessionAccess{"api", accessCustomEndpoint}, 1)
+	if a.ID == b.ID || a.Label != "API keys (not told apart)" || b.Label != "Custom endpoint (not told apart)" {
+		t.Fatalf("%+v %+v", a, b)
+	}
+}
+
+func TestMergeUsageAccountsKeepsSessionAPIAccounts(t *testing.T) {
+	scan := []ops.UsageAccount{{ID: "sub", Label: "a@b.example"}}
+	session := []ops.UsageAccount{{ID: "sub", Label: "dup"}, {ID: "gw", Label: "API keys at gw.example (not told apart)"}}
+	got := mergeUsageAccounts(scan, session)
+	if len(got) != 2 || got[0].Label != "a@b.example" || got[1].ID != "gw" {
+		t.Fatalf("%+v", got)
 	}
 }

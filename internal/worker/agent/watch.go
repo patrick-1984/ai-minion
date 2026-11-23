@@ -271,7 +271,7 @@ func (o *HostObserver) observeOnce(ctx context.Context) (View, store.ShareState,
 				return
 			}
 			r := o.cfg.Classifier.Classify(ctx, agentdetect.Input{Command: ref.Command, PID: ref.PID, Screen: scr})
-			st.Kind, st.State, st.ScreenHash = r.Kind, r.State, ScreenHash(scr)
+			st.Kind, st.State, st.ScreenHash = r.Shown(), r.State, ScreenHash(scr)
 		}(&states[i], p.Ref)
 	}
 	wg.Wait()
@@ -302,6 +302,6 @@ func (v View) Sorted() []SessionState {
 	for _, s := range v {
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b SessionState) int { return ops.NaturalCompare(a.Name, b.Name) })
 	return out
 }

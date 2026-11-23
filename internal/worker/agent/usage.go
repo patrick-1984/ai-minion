@@ -2,14 +2,18 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -76,7 +80,7 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 			if err != nil {
 				return nil, err
 			}
-			r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, scan.Accounts, scan.InventoryAt
+			r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, mergeUsageAccounts(scan.Accounts, r.Accounts), scan.InventoryAt
 			r.ObservedAt = time.Now().UnixMilli()
 		}
 		if a.AccountID == "" {
@@ -92,12 +96,22 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 		if current == "" || current != grant {
 			return nil, apiErr(proto.CodeForbidden, "", "the usage enrollment changed")
 		}
-		if err := r.Check(time.Now()); err != nil {
+		if err := fitUsageReport(&r, time.Now()); err != nil {
 			return nil, apiErr(proto.CodeConflict, "", "usage report exceeds a collection bound")
 		}
 		return r, nil
 	})
 }
+
+// usageDetector classifies the panes of the usage snapshot (tests replace it).
+var usageDetector = agentdetect.New()
+
+// usageProcTimeout bounds the one process-table query of a usage snapshot
+// (tests shorten it).
+var usageProcTimeout = agentdetect.SnapshotTimeout
+
+// usageHarnessProvider names the vendor of a harness that has exactly one.
+var usageHarnessProvider = map[string]string{"claude": "Anthropic", "codex": "OpenAI"}
 
 func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (ops.UsageReport, error) {
 	list := host.ListSessions
@@ -116,7 +130,9 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 	if len(sessions) > 256 {
 		return r, apiErr(proto.CodeConflict, "", "session inventory exceeds the supported batch size")
 	}
-	agents := agentdetect.DefaultAgents()
+	accounts := map[string]ops.UsageAccount{}
+	// One bounded process-table query serves every pane of this snapshot.
+	detector := usageDetector.Snapshot(usageProcTimeout)
 	for _, s := range sessions {
 		var started *int64
 		if !s.Created.IsZero() && !s.Created.After(now) {
@@ -126,26 +142,95 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 		row := ops.UsageSession{ID: ops.UsageID("host-session", s.Name, s.HostID, s.Created.UTC().Format(time.RFC3339Nano)), Name: s.Name, ObservedAt: at, StartedAt: started, AuthMode: "unknown", TimeSource: "worker_measured", Source: "session-host"}
 		if pane, ok := s.ActivePane(); ok {
 			row.Folder = pane.Folder
-			name := strings.TrimSuffix(strings.ToLower(filepath.Base(pane.Ref.Command)), ".exe")
-			for _, known := range agents {
-				for _, command := range known.Commands {
-					if strings.EqualFold(name, command) {
-						row.Harness = known.Name
-					}
+			// The classifier also finds an agent started by a wrapper
+			// (bash -c 'claude ...; exec bash'), where the pane's current
+			// command is the shell. Only the process tree and the command
+			// are read, never the screen.
+			if c, pid := detector.Locate(ctx, agentdetect.Input{Command: pane.Ref.Command, PID: pane.Ref.PID}); c.ShownIsAgent() {
+				row.Harness = c.ShownAgent()
+				row.Provider = usageHarnessProvider[row.Harness]
+				acc := detectSessionAccess(row.Harness, pid)
+				row.AuthMode, row.CustomEndpoint = acc.Mode, acc.Kind == accessCustomEndpoint
+				if a, ok := accessAccount(row.Provider, acc, at); ok {
+					row.AccountID = a.ID
+					accounts[a.ID] = a
 				}
 			}
 		}
 		r.Sessions = append(r.Sessions, row)
 	}
+	for _, a := range accounts {
+		r.Accounts = append(r.Accounts, a)
+	}
+	slices.SortFunc(r.Accounts, func(a, b ops.UsageAccount) int { return strings.Compare(a.ID, b.ID) })
 	if inventory {
 		r.Inventory = usageInventory(ctx)
-		r.Accounts = discoverUsageAccounts(ctx, r.Inventory, "")
+		r.Accounts = mergeUsageAccounts(discoverUsageAccounts(ctx, r.Inventory, ""), r.Accounts)
 		r.ObservedAt = time.Now().UnixMilli()
 	}
-	if err := r.Check(time.Now()); err != nil {
+	if err := fitUsageReport(&r, time.Now()); err != nil {
 		return ops.UsageReport{}, apiErr(proto.CodeConflict, "", "session metadata could not be represented")
 	}
 	return r, nil
+}
+
+// maxUsageAccounts is the wire bound on the accounts of one report.
+const maxUsageAccounts = 128
+
+// fitUsageReport makes the report valid by dropping what is optional: an
+// account that cannot be represented (or beyond the bound) is left out and a
+// bad label is emptied, so that growth or one odd account never invalidates
+// the sessions and the rest of the report. Session-derived accounts (few,
+// grouped by access kind) come before discovered ones when the bound cuts.
+func fitUsageReport(r *ops.UsageReport, now time.Time) error {
+	*r = r.DropBadLabels()
+	kept := make([]ops.UsageAccount, 0, len(r.Accounts))
+	probe := ops.UsageReport{Version: r.Version, ObservedAt: r.ObservedAt}
+	for _, a := range r.Accounts {
+		probe.Accounts = []ops.UsageAccount{a}
+		if probe.Check(now) == nil {
+			kept = append(kept, a)
+		}
+	}
+	slices.SortStableFunc(kept, func(a, b ops.UsageAccount) int {
+		return b2i(b.Source == "session-host") - b2i(a.Source == "session-host")
+	})
+	if len(kept) > maxUsageAccounts {
+		kept = kept[:maxUsageAccounts]
+	}
+	slices.SortStableFunc(kept, func(a, b ops.UsageAccount) int {
+		if a.ID == b.ID {
+			return strings.Compare(a.SourceSessionID, b.SourceSessionID)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	r.Accounts = kept
+	return r.Check(now)
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// mergeUsageAccounts keeps every account of both lists once per identity (id
+// and source session): a discovered account wins over a session-derived one
+// with the same identity, and the session-derived API accounts that no scan
+// knows stay.
+func mergeUsageAccounts(discovered, fromSessions []ops.UsageAccount) []ops.UsageAccount {
+	out := slices.Clone(discovered)
+	seen := map[string]bool{}
+	for _, a := range out {
+		seen[a.ID+"|"+a.SourceSessionID] = true
+	}
+	for _, a := range fromSessions {
+		if !seen[a.ID+"|"+a.SourceSessionID] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 var usageVersionPattern = regexp.MustCompile(`(?:^|[^0-9])v?([0-9]{1,6}\.[0-9]{1,6}(?:\.[0-9]{1,8})?(?:-[0-9A-Za-z.-]{1,24})?)(?:$|[^0-9])`)
@@ -167,12 +252,20 @@ func usageInventory(ctx context.Context) []ops.UsageHarness {
 			var buf usageOutput
 			cmd.Stdout = &buf
 			cmd.Stderr = io.Discard
-			if err := cmd.Run(); err == nil {
+			probeInGroup(cmd)
+			err := cmd.Run()
+			endProbeGroup(cmd)
+			// A helper the harness left running can hold the output open; the
+			// harness itself exited cleanly and its output is complete.
+			if err == nil || errors.Is(err, exec.ErrWaitDelay) {
 				if match := usageVersionPattern.FindStringSubmatch(string(buf)); len(match) > 1 {
 					item.Version = match[1]
 				}
 			}
 			cancel()
+			if name == "claude" {
+				item.Exporter = claudeExporterState()
+			}
 		}
 		out = append(out, item)
 	}
@@ -236,4 +329,150 @@ func (c *usageInventoryCache) get(ctx context.Context, grant string) (ops.UsageR
 			return ops.UsageReport{}, err
 		}
 	}
+}
+
+var claudeExporterIssue atomic.Value // string
+
+// SetClaudeExporterIssue records why the automatic exporter install did not
+// happen ("off", "overridden", "conflict", or "" for none); the harness scan
+// reports it.
+func SetClaudeExporterIssue(state string) { claudeExporterIssue.Store(state) }
+
+// ClaudeManagedSettingsFile is the machine-wide Claude Code settings file that
+// outranks user settings (a variable so that tests can point it elsewhere).
+var ClaudeManagedSettingsFile = claudeManagedSettingsPath()
+
+// ClaudeExporterIssue returns the recorded install outcome (see
+// SetClaudeExporterIssue).
+func ClaudeExporterIssue() string { s, _ := claudeExporterIssue.Load().(string); return s }
+
+func claudeManagedSettingsPath() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "/Library/Application Support/ClaudeCode/managed-settings.json"
+	case "windows":
+		programFiles := os.Getenv("ProgramFiles")
+		if programFiles == "" {
+			programFiles = `C:\Program Files`
+		}
+		return filepath.Join(programFiles, "ClaudeCode", "managed-settings.json")
+	}
+	return "/etc/claude-code/managed-settings.json"
+}
+
+// ClaudeManagedOverrides reports whether the managed settings at path (the
+// file and the drop-in files of the managed-settings.d directory beside it,
+// Claude Code's documented locations on each OS) define a status line or
+// control hooks, which user settings cannot override. It fails closed: a
+// managed file or directory that exists but cannot be read within bounds, is
+// not a regular file or cannot be parsed counts as an override, because its
+// policy is unknown. A pipe in its place never stalls the caller.
+func ClaudeManagedOverrides(path string) bool {
+	files := []string{path}
+	entries, err := os.ReadDir(filepath.Join(filepath.Dir(path), "managed-settings.d"))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return true
+	default:
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".json") && !strings.HasPrefix(e.Name(), ".") && !e.IsDir() {
+				files = append(files, filepath.Join(filepath.Dir(path), "managed-settings.d", e.Name()))
+			}
+		}
+	}
+	for _, f := range files {
+		if _, err := os.Stat(f); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		raw, ok := readProfileFile(f)
+		if !ok {
+			return true
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) != nil {
+			return true
+		}
+		for _, k := range []string{"statusLine", "disableAllHooks", "allowManagedHooksOnly"} {
+			if _, ok := m[k]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ClaudeProfileDirs returns the Claude Code profile directories this Worker
+// knows: the default one and CLAUDE_CONFIG_DIR.
+func ClaudeProfileDirs() []string {
+	var dirs []string
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".claude"))
+	}
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); filepath.IsAbs(d) && !slices.Contains(dirs, d) {
+		dirs = append(dirs, d)
+	}
+	return dirs
+}
+
+// claudeExporterState reports the exporter state of the default Claude profile
+// (CLAUDE_CONFIG_DIR or ~/.claude): installed, absent, overridden (hooks
+// disabled or managed settings win), off or conflict. Only the state leaves
+// the Worker.
+func claudeExporterState() string {
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ops.UsageExporterAbsent
+		}
+		dir = filepath.Join(home, ".claude")
+	}
+	state := claudeExporterStateIn(dir)
+	if state != ops.UsageExporterInstalled {
+		if issue, _ := claudeExporterIssue.Load().(string); issue != "" {
+			return issue
+		}
+	}
+	return state
+}
+func claudeExporterStateIn(dir string) string {
+	raw, ok := readProfileFile(filepath.Join(dir, "settings.json"))
+	if !ok {
+		return ops.UsageExporterAbsent
+	}
+	var s struct {
+		StatusLine struct {
+			Command string `json:"command"`
+		} `json:"statusLine"`
+		DisableAllHooks bool `json:"disableAllHooks"`
+	}
+	if json.Unmarshal(raw, &s) != nil || !strings.Contains(s.StatusLine.Command, "_claude-export") {
+		return ops.UsageExporterAbsent
+	}
+	if s.DisableAllHooks || ClaudeManagedOverrides(ClaudeManagedSettingsFile) {
+		return ops.UsageExporterOverridden
+	}
+	return ops.UsageExporterInstalled
+}
+
+// maxUsageLabel is the longest account label the Worker sends. It is the
+// bound older Hubs (v0.19) accept; a longer login falls back to an opaque
+// label instead of being cut.
+const maxUsageLabel = 96
+
+// accessAccount is the grouping row for sessions that use an API key or a
+// custom endpoint: one per provider and access kind. It holds no key
+// material, no host and no subscription limits.
+func accessAccount(provider string, acc sessionAccess, at int64) (ops.UsageAccount, bool) {
+	if acc.Mode != "api" || provider == "" {
+		return ops.UsageAccount{}, false
+	}
+	// The Worker never reads a key, so keys of one provider cannot be told
+	// apart: the row says so instead of posing as one credential.
+	label, kind := "API keys (not told apart)", accessAPIKey
+	if acc.Kind == accessCustomEndpoint {
+		label, kind = "Custom endpoint (not told apart)", accessCustomEndpoint
+	}
+	return ops.UsageAccount{ID: ops.UsageID("session-access", provider, kind), Provider: provider, Label: label, CustomEndpoint: kind == accessCustomEndpoint, AuthMode: "api", Source: "session-host", ObservedAt: at, TimeSource: "worker_measured"}, true
 }

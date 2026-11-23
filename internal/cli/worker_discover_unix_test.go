@@ -33,6 +33,13 @@ type discoverEnv struct {
 func newDiscoverEnv(t *testing.T) *discoverEnv {
 	t.Helper()
 	root := t.TempDir()
+	// The default state, runtime and config places point into the temp tree, so a
+	// Worker running on this host (its presence record, its socket) never leaks in.
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "xdg-state"))
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(root, "xdg-run"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg-config"))
+	t.Setenv("MINION_STATE_DIR", "")
 	e := &discoverEnv{t: t, state: filepath.Join(root, "state")}
 	e.private = filepath.Join(e.state, "presence")
 	e.index = filepath.Join(e.state, "presence-index")

@@ -51,7 +51,7 @@ func newClaudeUsageExportCmd(lookup func(string) (string, bool)) *cobra.Command 
 						return
 					}
 				}
-				recordClaudeUsage(ctx, *m, mode, claudeUsageSession(ctx, lookup), payload, at)
+				recordClaudeUsage(ctx, *m, mode, claudeUsageSession(ctx, lookup), claudeUsageAccess(lookup, profile), payload, at)
 			})
 		},
 	}
@@ -137,7 +137,31 @@ func claudeUsageSession(ctx context.Context, lookup func(string) (string, bool))
 	return strings.TrimSuffix(string(name), "\n")
 }
 
-func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session string, raw []byte, at time.Time) {
+// claudeUsageAccess is what the exporter itself can verify about the Claude
+// Code session that started it: it inherits that process's environment, so an
+// API key, a token or a custom endpoint set there (or in the profile's
+// settings) is seen first-hand. The profile's subscription is attributed only
+// when none of them is set; without an environment to read, the attribution
+// stays unknown.
+type claudeAccessEvidence int
+
+const (
+	claudeAccessUnverified claudeAccessEvidence = iota
+	claudeAccessSubscription
+	claudeAccessAPI
+)
+
+func claudeUsageAccess(lookup func(string) (string, bool), profile string) claudeAccessEvidence {
+	switch {
+	case lookup == nil:
+		return claudeAccessUnverified
+	case agent.ClaudeAPIAccess(lookup, profile):
+		return claudeAccessAPI
+	}
+	return claudeAccessSubscription
+}
+
+func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, raw []byte, at time.Time) {
 	if session == "" || ctx.Err() != nil {
 		return
 	}
@@ -172,8 +196,11 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 			opts.EventID = event.PromptID
 		}
 	}
-	if m.Account != "" || m.Profile != "" {
+	if (m.Account != "" || m.Profile != "") && access == claudeAccessSubscription {
 		id, label := m.Account, "Anthropic subscription"
+		if m.Label != "" {
+			label = m.Label // the verified login, not a generic name
+		}
 		if m.Profile != "" {
 			id = ops.UsageID("operator-subscription-profile", hex.EncodeToString(enrollment.HubPub), opts.Provider, m.Profile)
 			label = m.Profile
@@ -183,6 +210,12 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 	now := time.Now()
 	r, err := agent.ParseNativeUsage(raw, opts, at)
 	if err == nil {
+		if access == claudeAccessAPI && len(r.Sessions) == 1 {
+			// Verified API access stays API for this native session, also
+			// after the process has ended and the Worker cannot read it.
+			r.Sessions[0].AuthMode = "api"
+			r.Sessions[0].AccountID = ""
+		}
 		_ = st.SaveNativeUsage(ctx, enrollment, r, now)
 	}
 }

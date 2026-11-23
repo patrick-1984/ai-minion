@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.20.0
+
+### Added
+
+- Harnesses page (Workspace → Harnesses): tick the coding harnesses you want (Claude Code, Codex, Gemini CLI, Qwen Code, OpenCode, Aider, Cline), check all your Workers with one click and see which have each one installed or missing.
+- Claude Code usage without manual steps: once usage monitoring is accepted, the Worker adds its status-line exporter to each Claude Code profile (the existing status line keeps working; managed settings are left alone), so session tokens, cost, model and the 5-hour and weekly limits are reported. Turn it off with `usage_claude_exporter=off`; `minion worker config usage integrate claude --remove` restores the previous status line.
+- Sessions on an API key or a custom endpoint are recognised: each session shows its access (subscription, API credential, or custom endpoint with its host; key values are never read), and API and endpoint accounts show token and cost totals.
+
+### Changed
+
+- The Windows join command carries the join token like the Unix commands, and the join token is shown above the commands on Add worker.
+- Account e-mail addresses are shown in full to the Worker owner and Hub administrators.
+- Limits have readable names ("Weekly limit", "5-hour limit") instead of internal identifiers.
+- Session lists use natural order (wb-2 before wb-10).
+- Usage → Workers shows the Claude exporter state per Worker with the exact fix; stale accounts say why.
+- The Updates page explains how to set up automatic Hub updates when no host updater reports.
+
+### Fixed
+
+- Usage detects Claude Code and Codex started through a wrapper shell, idle Claude Code 2.1.330 sessions show Idle, and Claude Code sessions on Windows are classified.
+- `install.sh --service` and `--root` on a host without systemd (for example a container) stop before changing anything and point to "Run as me".
+
 ## v0.19.0
 
 ### Added

@@ -786,6 +786,12 @@
                 "auth_mode": {
                   "type": "string"
                 },
+                "custom_endpoint": {
+                  "type": "boolean"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
                 "started_at": {
                   "type": [
                     "null",
@@ -1039,6 +1045,9 @@
                   ],
                   "additionalProperties": false
                 },
+                "custom_endpoint": {
+                  "type": "boolean"
+                },
                 "endpoint_origin": {
                   "type": "string"
                 },
@@ -1144,6 +1153,49 @@
                 },
                 "bucket_id": {
                   "type": "string"
+                },
+                "totals": {
+                  "type": [
+                    "null",
+                    "object"
+                  ],
+                  "properties": {
+                    "sessions": {
+                      "type": "integer"
+                    },
+                    "input_tokens": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "output_tokens": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    },
+                    "cost_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    },
+                    "estimated_cost_usd": {
+                      "type": [
+                        "null",
+                        "number"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "sessions",
+                    "input_tokens",
+                    "output_tokens",
+                    "cost_usd",
+                    "estimated_cost_usd"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -1215,6 +1267,9 @@
                         }
                       },
                       "account_status": {
+                        "type": "string"
+                      },
+                      "exporter": {
                         "type": "string"
                       },
                       "name": {
@@ -1528,6 +1583,9 @@
                 "account_status": {
                   "type": "string"
                 },
+                "exporter": {
+                  "type": "string"
+                },
                 "name": {
                   "type": "string"
                 },
@@ -1780,6 +1838,12 @@
                 "auth_mode": {
                   "type": "string"
                 },
+                "custom_endpoint": {
+                  "type": "boolean"
+                },
+                "endpoint": {
+                  "type": "string"
+                },
                 "started_at": {
                   "type": [
                     "null",
@@ -1945,6 +2009,9 @@
             "items": {
               "type": "object",
               "properties": {
+                "custom_endpoint": {
+                  "type": "boolean"
+                },
                 "endpoint_origin": {
                   "type": "string"
                 },

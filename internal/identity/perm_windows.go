@@ -393,3 +393,5 @@ func openAppendPrivate(path string) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(h), path), nil
 }
+
+func openNoBlock(path string) (*os.File, error) { return os.Open(path) }

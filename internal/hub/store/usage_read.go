@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -58,6 +60,20 @@ func usageSessionBucketFilter(accountExpr string) string {
 // Workers is chosen only among authorized observations, newest first.
 // bucketOwner is empty when private organization is outside the caller's rights.
 func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketOwner string, args ops.UsageListArgs, now time.Time) (ops.UsageListResult, error) {
+	if args.Section != "sessions" && args.Section != "accounts" {
+		return s.readUsage(ctx, s.db, workers, bucketOwner, args, now)
+	}
+	// Both sections read several statements that must describe one bucket
+	// membership: the sessions' order and rows, an account page and its totals.
+	var out ops.UsageListResult
+	err := s.Tx(ctx, func(tx *sql.Tx) (err error) {
+		out, err = s.readUsage(ctx, tx, workers, bucketOwner, args, now)
+		return err
+	})
+	return out, err
+}
+
+func (s *Store) readUsage(ctx context.Context, db usageQuerier, workers []ops.WorkerInfo, bucketOwner string, args ops.UsageListArgs, now time.Time) (ops.UsageListResult, error) {
 	out := ops.UsageListResult{Version: ops.UsageVersion, AsOf: now.UnixMilli()}
 	if err := args.Validate(); err != nil {
 		return out, err
@@ -72,9 +88,10 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 	}
 	bind := []any{visible, args.WorkerID, args.WorkerID}
 	var q string
+	var sessionCursor map[string]string
 	switch args.Section {
 	case "overview":
-		rows, err := s.db.QueryContext(ctx, usageVisible+usageRankedAccounts+`SELECT a.body FROM ranked a
+		rows, err := db.QueryContext(ctx, usageVisible+usageRankedAccounts+`SELECT a.body FROM ranked a
 		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='provider' AND m.member_id=a.account_id
 		 WHERE rn=1 AND json_extract(a.body,'$.auth_mode')='subscription' AND `+usageAccountBucketFilter, append(bind, bucketOwner, args.BucketID, args.BucketID, bucketOwner, args.BucketID)...)
 		if err != nil {
@@ -100,11 +117,16 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		out.Overview = &summary
 		return out, nil
 	case "sessions":
+		var ids string
+		ids, sessionCursor, err = usageSessionOrder(ctx, db, visible, bind, bucketOwner, args, limit)
+		if err != nil {
+			return out, err
+		}
 		q = usageVisible + `SELECT s.id,s.worker_id,s.body,s.observed_at,s.ended_at,max(s.observed_at,uw.complete_at),coalesce(m.bucket_id,'')
-		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
+		 FROM json_each(?) k JOIN usage_sessions s ON s.id=k.value JOIN visible v ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
 		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
-		 WHERE s.id>? AND ` + usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`) + ` ORDER BY s.id`
-		bind = append(bind, bucketOwner, args.After, args.BucketID, args.BucketID, bucketOwner, args.BucketID)
+		 ORDER BY k.key`
+		bind = append(bind, ids, bucketOwner)
 	case "accounts":
 		q = usageVisible + usageRankedAccounts + `SELECT printf('%07d:%s',coalesce(pref.position,0),a.account_id),a.worker_id,a.body,coalesce(m.bucket_id,''),coalesce(c.status,''),coalesce(pw.id,''),coalesce(aw.id,''),
 		 CASE WHEN pw.id IS NULL THEN '' ELSE c.preferred_session END,CASE WHEN c.hide_previous_schedule=0 THEN nullif(c.next_due,0) END,c.last_success,EXISTS(SELECT 1 FROM usage_accounts cap JOIN visible cv ON cap.worker_id=cv.id WHERE cap.account_id=a.account_id AND cap.can_poll=1),coalesce(pref.label,''),coalesce(pref.position,0),
@@ -138,7 +160,7 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		bind = append(bind, args.After)
 	}
 
-	rows, err := s.db.QueryContext(ctx, q+" LIMIT ?", append(bind, limit+1)...)
+	rows, err := db.QueryContext(ctx, q+" LIMIT ?", append(bind, limit+1)...)
 	if err != nil {
 		return out, err
 	}
@@ -170,9 +192,11 @@ page:
 			if err := rows.Scan(&last, &row.WorkerID, &body, &sampleAt, &ended, &workerAt, &row.BucketID); err != nil {
 				return out, err
 			}
+			last = sessionCursor[last]
 			if err := json.Unmarshal([]byte(body), &row.UsageSession); err != nil {
 				return out, err
 			}
+			row.DropEndpoint()
 			row.ObservedAt = sampleAt
 			if ended != nil {
 				row.StopSource = "native"
@@ -216,6 +240,8 @@ page:
 			if err := json.Unmarshal([]byte(sources), &row.Sources); err != nil {
 				return out, err
 			}
+			// Accounts stored before the redaction may still carry an endpoint origin or a label with its host.
+			row.DropEndpoint()
 			if privateLabel != "" {
 				row.Alias = privateLabel
 				row.Label = privateLabel
@@ -289,7 +315,38 @@ page:
 			out.Workers = append(out.Workers, row)
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	if args.Section == "accounts" {
+		_ = rows.Close()
+		err = addAccountTotals(ctx, db, visible, bucketOwner, args, out.Accounts)
+	}
+	return out, err
+}
+
+// addAccountTotals sums the sessions of every API-key and custom-endpoint
+// account in the page, over the same Worker and bucket predicates that the
+// Sessions view applies. Subscription accounts report limits instead.
+func addAccountTotals(ctx context.Context, q usageQuerier, visible, bucketOwner string, args ops.UsageListArgs, accounts []ops.UsageAccountRow) error {
+	for i := range accounts {
+		a := &accounts[i]
+		if a.AuthMode != "api" {
+			continue
+		}
+		var t ops.UsageAccountTotals
+		err := q.QueryRowContext(ctx, usageVisible+`SELECT count(*),sum(json_extract(s.body,'$.input_tokens')),sum(json_extract(s.body,'$.output_tokens')),
+		  sum(json_extract(s.body,'$.cost_usd')),sum(json_extract(s.body,'$.estimated_cost_usd'))
+		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id
+		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
+		 WHERE json_extract(s.body,'$.account_id')=? AND `+usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`),
+			visible, args.WorkerID, args.WorkerID, bucketOwner, a.ID, args.BucketID, args.BucketID, bucketOwner, args.BucketID).Scan(&t.Sessions, &t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.EstimatedCostUSD)
+		if err != nil {
+			return err
+		}
+		a.Totals = &t
+	}
+	return nil
 }
 
 // usageQuerier is the read side shared by the pool and a transaction, so one
@@ -510,6 +567,7 @@ func readNominatedUsage(ctx context.Context, q usageQuerier, kind string, source
 		if err := json.Unmarshal([]byte(body), &o.UsageSession); err != nil {
 			return out, err
 		}
+		o.DropEndpoint()
 		o.ObservedAt, o.Ended = observed, ended != nil
 		out.Sessions = append(out.Sessions, o)
 		if o.AccountID != "" {
@@ -524,4 +582,82 @@ func readNominatedUsage(ctx context.Context, q usageQuerier, kind string, source
 		out.Linked, err = readUsageAccounts(ctx, q, links)
 	}
 	return out, err
+}
+
+// usageSessionCursor encodes the sort key of the last row of a page, so the
+// next page starts after that key whether or not the row still exists.
+func usageSessionCursor(worker, name, id string) string {
+	b, _ := json.Marshal([3]string{worker, name, id})
+	return "k1:" + base64.RawURLEncoding.EncodeToString(b)
+}
+
+func parseUsageSessionCursor(c string) (k usageSessionKey, err error) {
+	raw, ok := strings.CutPrefix(c, "k1:")
+	if !ok {
+		return k, ops.ErrUsageCursor
+	}
+	b, err := base64.RawURLEncoding.DecodeString(raw)
+	var f [3]string
+	if err != nil || json.Unmarshal(b, &f) != nil {
+		return k, ops.ErrUsageCursor
+	}
+	return usageSessionKey{worker: f[0], name: f[1], id: f[2]}, nil
+}
+
+type usageSessionKey struct{ id, worker, name string }
+
+func compareUsageSessionKey(a, b usageSessionKey) int {
+	if c := strings.Compare(a.worker, b.worker); c != 0 {
+		return c
+	}
+	if c := ops.NaturalCompare(a.name, b.name); c != 0 {
+		return c
+	}
+	return strings.Compare(a.id, b.id)
+}
+
+// usageSessionOrder returns, as a JSON array, the IDs of the page that follows
+// the cursor in one fixed order: Worker name, natural session name, ID. The
+// order is built in Go because SQLite has no natural collation. The cursor
+// holds the full sort key, so a row that disappeared between two requests
+// moves nothing: the page resumes at the first key after it. It returns the
+// cursor of each ID as well.
+func usageSessionOrder(ctx context.Context, q usageQuerier, visible string, bind []any, bucketOwner string, args ops.UsageListArgs, limit int) (string, map[string]string, error) {
+	var after usageSessionKey
+	if args.After != "" {
+		var err error
+		if after, err = parseUsageSessionCursor(args.After); err != nil {
+			return "", nil, err
+		}
+	}
+	rows, err := q.QueryContext(ctx, usageVisible+`SELECT s.id,v.name,coalesce(json_extract(s.body,'$.name'),'')
+	 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
+	 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
+	 WHERE `+usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`), append(slices.Clone(bind), bucketOwner, args.BucketID, args.BucketID, bucketOwner, args.BucketID)...)
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var all []usageSessionKey
+	for rows.Next() {
+		var k usageSessionKey
+		if err := rows.Scan(&k.id, &k.worker, &k.name); err != nil {
+			return "", nil, err
+		}
+		if args.After == "" || compareUsageSessionKey(k, after) > 0 {
+			all = append(all, k)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", nil, err
+	}
+	slices.SortFunc(all, compareUsageSessionKey)
+	ids := []string{}
+	cursors := map[string]string{}
+	for _, k := range all[:min(len(all), limit+1)] {
+		ids = append(ids, k.id)
+		cursors[k.id] = usageSessionCursor(k.worker, k.name, k.id)
+	}
+	b, err := json.Marshal(ids)
+	return string(b), cursors, err
 }

@@ -207,12 +207,24 @@ func installerModeLine(tag, token, name, mode string) string {
 	return downloadedInstallerLine(tag, "install.sh", "MINION_VERSION="+tag+" "+joinEnv(token)+"sh -s -- "+mode+nameArg(name)+usageInstallerArgs(tag, "--accept-usage"))
 }
 
-func windowsInstallerLine(tag, name string) string {
+// windowsInstallerLine is the one-line PowerShell command. With token it sets
+// MINION_JOIN for the installer and removes it afterwards (try/finally), even
+// when the download or the installer fails; without it the installer asks at
+// a hidden prompt, with any inherited MINION_JOIN cleared for that call.
+func windowsInstallerLine(tag, token, name string) string {
 	line := `[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm '` + releaseDownloadBase + tag + `/install.ps1'))) -Join -Version ` + tag
 	if name != "" {
 		line += " -Name " + psArg(name)
 	}
-	return line + usageInstallerArgs(tag, "-AcceptUsage")
+	line += usageInstallerArgs(tag, "-AcceptUsage")
+	if token != "" {
+		// finally runs even when the download or the installer fails.
+		return "try { $env:MINION_JOIN='" + token + "'; " + line + " } finally { Remove-Item Env:MINION_JOIN -ErrorAction SilentlyContinue }"
+	}
+	// The masked command must not consume a MINION_JOIN that the shell
+	// inherited (it would enroll against another invitation and skip the
+	// hidden prompt): clear it for the installer and put it back afterwards.
+	return "$j = $env:MINION_JOIN; try { $env:MINION_JOIN=''; " + line + " } finally { $env:MINION_JOIN = $j }"
 }
 
 func androidInstallerLine(tag string) string {

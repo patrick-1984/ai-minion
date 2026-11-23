@@ -14,6 +14,7 @@ import (
 // expectedOwner fences a report received across reassignment. A replayed or
 // out-of-order report must never close a session that a newer report observed.
 func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, report ops.UsageReport, now time.Time) error {
+	report = report.Sanitize()
 	if err := report.Check(now); err != nil {
 		return err
 	}
@@ -24,8 +25,21 @@ func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, r
 		if errors.Is(err, sql.ErrNoRows) || err == nil && owner != expectedOwner {
 			return ErrWorkerNotFound
 		}
-		if err != nil || report.ObservedAt <= seen {
+		if err != nil {
 			return err
+		}
+		if report.ObservedAt <= seen {
+			// A newer background sample committed first. The session data
+			// of this report is stale, but its inventory may be the newest.
+			if report.Inventory != nil && report.InventoryAt != nil {
+				b, err := json.Marshal(report.Inventory)
+				if err != nil {
+					return err
+				}
+				_, err = tx.ExecContext(ctx, `UPDATE usage_workers SET inventory=?,inventory_at=? WHERE worker_id=? AND coalesce(inventory_at,0)<?`, string(b), *report.InventoryAt, workerID, *report.InventoryAt)
+				return err
+			}
+			return nil
 		}
 		var inventory any
 		if report.Inventory != nil {
@@ -107,6 +121,7 @@ func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, r
 
 func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.UsageSession) error {
 	row.Provider = ops.UsageProvider(row.Provider)
+	row.DropEndpoint()
 	at := row.ObservedAt
 	row.ObservedAt = 0 // stored separately; skip a rewrite when only the sample time changed
 	body, err := json.Marshal(row)

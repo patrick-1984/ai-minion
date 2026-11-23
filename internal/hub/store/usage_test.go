@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -342,5 +343,294 @@ func TestUsageRetentionDrainsBusyMinuteInBoundedBatches(t *testing.T) {
 	var n int
 	if err := s.db.QueryRow(`SELECT count(*) FROM usage_events`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("events after retention: %d, %v", n, err)
+	}
+}
+
+func TestUsageAccountsTotalsSumApiKeySessionsOnly(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	api := ops.UsageAccount{ID: ops.UsageID("account", "api", "k1"), Provider: "Anthropic", AuthMode: "api", ObservedAt: now.UnixMilli(), Source: "test"}
+	sub := ops.UsageAccount{ID: ops.UsageID("account", "subscription", "s1"), Provider: "Anthropic", AuthMode: "subscription", ObservedAt: now.UnixMilli(), Source: "test"}
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true, Accounts: []ops.UsageAccount{api, sub}}
+	for i, in := range []int64{100, 250} {
+		out, cost := in/10, float64(i+1)/2
+		r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("session", "api", fmt.Sprint(i)), Name: "api", AuthMode: "api", AccountID: api.ID, ObservedAt: r.ObservedAt, Source: "test",
+			UsageCounters: ops.UsageCounters{InputTokens: &in, OutputTokens: &out, CostUSD: &cost}})
+	}
+	n := int64(7)
+	r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("session", "sub"), Name: "sub", AuthMode: "subscription", AccountID: sub.ID, ObservedAt: r.ObservedAt, Source: "test", UsageCounters: ops.UsageCounters{InputTokens: &n}})
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now)
+	if err != nil || len(got.Accounts) != 2 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	for _, a := range got.Accounts {
+		switch a.AuthMode {
+		case "subscription":
+			if a.Totals != nil {
+				t.Fatalf("subscription account got totals: %+v", a.Totals)
+			}
+		case "api":
+			tt := a.Totals
+			if tt == nil || tt.Sessions != 2 || tt.InputTokens == nil || *tt.InputTokens != 350 || tt.OutputTokens == nil || *tt.OutputTokens != 35 ||
+				tt.CostUSD == nil || *tt.CostUSD != 1.5 || tt.EstimatedCostUSD != nil {
+				t.Fatalf("totals: %+v", tt)
+			}
+		}
+	}
+	// A Worker outside the caller's scope adds nothing.
+	got, err = s.ReadUsage(ctx, workers[1:], "bob", ops.UsageListArgs{Section: "accounts"}, now)
+	if err != nil || len(got.Accounts) != 0 {
+		t.Fatalf("scope: %+v %v", got, err)
+	}
+}
+
+func TestUsageAccountsTotalsHonourWorkerFilter(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	api := ops.UsageAccount{ID: ops.UsageID("account", "api", "shared"), Provider: "Anthropic", AuthMode: "api", ObservedAt: now.UnixMilli(), Source: "test"}
+	for i, w := range workers[:2] {
+		in := int64(100 * (i + 1))
+		r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true, Accounts: []ops.UsageAccount{api}, Sessions: []ops.UsageSession{{
+			ID: ops.UsageID("session", "shared", fmt.Sprint(i)), Name: "api", AuthMode: "api", AccountID: api.ID, ObservedAt: now.UnixMilli(), Source: "test",
+			UsageCounters: ops.UsageCounters{InputTokens: &in}}}}
+		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, r, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		worker string
+		want   int64
+	}{{"", 300}, {workers[0].ID, 100}, {workers[1].ID, 200}} {
+		got, err := s.ReadUsage(ctx, workers[:2], "alice", ops.UsageListArgs{Section: "accounts", WorkerID: c.worker}, now)
+		if err != nil || len(got.Accounts) != 1 || got.Accounts[0].Totals == nil || got.Accounts[0].Totals.InputTokens == nil || *got.Accounts[0].Totals.InputTokens != c.want {
+			t.Fatalf("worker %q: %+v %v", c.worker, got.Accounts, err)
+		}
+	}
+}
+
+func TestUsageSessionsKeepNaturalOrderAcrossPages(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true}
+	for _, n := range []int{10, 2, 11, 1, 9, 3} {
+		r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("session", "nat", fmt.Sprint(n)), Name: fmt.Sprintf("wb-%d", n), AuthMode: "unknown", ObservedAt: r.ObservedAt, Source: "test"})
+	}
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, now); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	after := ""
+	for range 10 {
+		page, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "sessions", Limit: 2, After: after}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range page.Sessions {
+			names = append(names, row.Name)
+		}
+		if after = page.Next; after == "" {
+			break
+		}
+	}
+	if got := strings.Join(names, ","); got != "wb-1,wb-2,wb-3,wb-9,wb-10,wb-11" {
+		t.Fatalf("order across pages: %s", got)
+	}
+}
+
+func TestUsageAccountKeepsNativeLoginLabelAcrossQuotaSamples(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	const email = "someone.long.address@example.com"
+	id := ops.UsageID("account", "claude-login")
+	save := func(step int, source, label string) {
+		at := now.Add(time.Duration(step) * time.Second)
+		a := ops.UsageAccount{ID: id, Provider: "Anthropic", Label: label, AuthMode: "subscription", ObservedAt: at.UnixMilli(), Source: source}
+		r := ops.UsageReport{Version: 1, ObservedAt: at.UnixMilli(), Complete: true, Accounts: []ops.UsageAccount{a}}
+		if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	label := func(step int) string {
+		got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now.Add(time.Duration(step)*time.Second))
+		if err != nil || len(got.Accounts) != 1 {
+			t.Fatalf("%+v %v", got, err)
+		}
+		return got.Accounts[0].Label
+	}
+	save(1, "native-test", email)
+	save(2, "claude-statusline", "Anthropic subscription")
+	if got := label(2); got != email {
+		t.Fatalf("label after quota sample: %q", got)
+	}
+	save(3, "native-test", email)
+	if got := label(3); got != email {
+		t.Fatalf("label after refresh: %q", got)
+	}
+}
+
+func TestUsageAccountKeepsLoginLabelThroughConsecutiveQuotaSamples(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	const email = "someone.long.address@example.com"
+	id := ops.UsageID("account", "claude-login-2")
+	save := func(step int, source, label string) {
+		at := now.Add(time.Duration(step) * time.Second)
+		a := ops.UsageAccount{ID: id, Provider: "Anthropic", Label: label, AuthMode: "subscription", ObservedAt: at.UnixMilli(), Source: source}
+		if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, ops.UsageReport{Version: 1, ObservedAt: at.UnixMilli(), Accounts: []ops.UsageAccount{a}}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save(1, "native-test", email)
+	for step := 2; step <= 4; step++ {
+		save(step, "claude-statusline", fmt.Sprintf("Anthropic subscription %d", step))
+		got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now.Add(10*time.Second))
+		if err != nil || len(got.Accounts) != 1 || got.Accounts[0].Label != email {
+			t.Fatalf("label after quota sample %d: %+v %v", step, got.Accounts, err)
+		}
+	}
+}
+
+func TestUsageSessionCursorSurvivesADisappearingRowAndDuplicateWorkerNames(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	if _, err := s.db.Exec(`UPDATE workers SET name='shared'`); err != nil {
+		t.Skip("worker names must be unique: ", err)
+	}
+	for _, w := range workers {
+		r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true}
+		for _, n := range []int{1, 2, 3, 10, 11} {
+			r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("session", w.ID, fmt.Sprint(n)), Name: fmt.Sprintf("wb-%d", n), AuthMode: "unknown", ObservedAt: r.ObservedAt, Source: "test"})
+		}
+		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, r, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page := func(after string) ops.UsageListResult {
+		got, err := s.ReadUsage(ctx, workers, "alice", ops.UsageListArgs{Section: "sessions", Limit: 3, After: after}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	var want []string
+	for after := ""; ; {
+		got := page(after)
+		for _, r := range got.Sessions {
+			want = append(want, r.ID)
+		}
+		if after = got.Next; after == "" {
+			break
+		}
+	}
+	if len(want) != 10 {
+		t.Fatalf("rows: %d", len(want))
+	}
+	first := page("")
+	var gotIDs []string
+	for _, r := range first.Sessions {
+		gotIDs = append(gotIDs, r.ID)
+	}
+	// The row that the cursor names is gone before the next request.
+	if _, err := s.db.Exec(`DELETE FROM usage_sessions WHERE id=?`, first.Sessions[len(first.Sessions)-1].ID); err != nil {
+		t.Fatal(err)
+	}
+	for after := first.Next; after != ""; {
+		got := page(after)
+		for _, r := range got.Sessions {
+			gotIDs = append(gotIDs, r.ID)
+		}
+		after = got.Next
+	}
+	if len(gotIDs) != len(want) || fmt.Sprint(gotIDs) != fmt.Sprint(want) {
+		t.Fatalf("pages changed after the cursor row disappeared:\n got %v\nwant %v", gotIDs, want)
+	}
+	if _, err := s.ReadUsage(ctx, workers, "alice", ops.UsageListArgs{Section: "sessions", After: "not-a-cursor"}, now); !errors.Is(err, ops.ErrInvalidArgument) {
+		t.Fatalf("invalid cursor: %v", err)
+	}
+}
+
+func TestUsageInventoryOfAnOlderSampleIsStillRecorded(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	w := workers[0]
+	save := func(observed time.Time, inventoryAt *time.Time, exporter string) {
+		r := ops.UsageReport{Version: 1, ObservedAt: observed.UnixMilli(), Complete: true}
+		if inventoryAt != nil {
+			ms := inventoryAt.UnixMilli()
+			r.InventoryAt = &ms
+			r.Inventory = []ops.UsageHarness{{Name: "claude", Status: "installed", Exporter: exporter}}
+		}
+		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, r, now.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan := now.Add(10 * time.Second)
+	save(now.Add(20*time.Second), nil, "") // background sample commits first
+	save(now.Add(15*time.Second), &scan, "installed")
+	got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "workers"}, now)
+	if err != nil || len(got.Workers) != 1 || got.Workers[0].InventoryAt == nil || *got.Workers[0].InventoryAt != scan.UnixMilli() || len(got.Workers[0].Inventory) != 1 || got.Workers[0].Inventory[0].Exporter != "installed" {
+		t.Fatalf("inventory not recorded: %+v %v", got.Workers, err)
+	}
+}
+
+func TestUsageNeverStoresAnEndpointHostFromAnOlderWorker(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true, Sessions: []ops.UsageSession{{
+		ID: ops.UsageID("session", "gw"), Name: "gw", AuthMode: "api", Endpoint: "cpa.internal.example:8443", ObservedAt: now.UnixMilli(), Source: "test"}}}
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, now); err != nil {
+		t.Fatal(err)
+	}
+	var body string
+	if err := s.db.QueryRow(`SELECT body FROM usage_sessions`).Scan(&body); err != nil || strings.Contains(body, "cpa.internal") {
+		t.Fatalf("host stored: %s %v", body, err)
+	}
+	got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "sessions"}, now)
+	if err != nil || len(got.Sessions) != 1 || !got.Sessions[0].CustomEndpoint || got.Sessions[0].Endpoint != "" {
+		t.Fatalf("%+v %v", got.Sessions, err)
+	}
+}
+
+func TestUsageNeverStoresOrReturnsALegacyAccountEndpoint(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	id := ops.UsageID("account", "gw")
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true,
+		Sessions: []ops.UsageSession{{ID: ops.UsageID("session", "gw"), Name: "gw", AuthMode: "api", AccountID: id, Endpoint: "cpa.internal.example:8443", ObservedAt: now.UnixMilli(), Source: "test"}},
+		Accounts: []ops.UsageAccount{{ID: id, Provider: "Anthropic", Label: "Custom endpoint cpa.internal.example", AuthMode: "api", EndpointOrigin: "https://cpa.internal.example:8443", ObservedAt: now.UnixMilli(), Source: "session-host"}}}
+	clean := r.Sanitize()
+	if r.Accounts[0].EndpointOrigin == "" || r.Sessions[0].Endpoint == "" {
+		t.Fatal("Sanitize modified the original report")
+	}
+	if b, _ := json.Marshal(clean); strings.Contains(string(b), "cpa.internal") {
+		t.Fatalf("sanitized report keeps the host: %s", b)
+	}
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, now); err != nil {
+		t.Fatal(err)
+	}
+	// A row stored by an earlier Hub version still carries the origin.
+	if _, err := s.db.Exec(`UPDATE usage_accounts SET body=json_set(body,'$.endpoint_origin','https://cpa.internal.example:8443','$.label','Custom endpoint cpa.internal.example')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now)
+	if err != nil || len(got.Accounts) != 1 {
+		t.Fatalf("%+v %v", got.Accounts, err)
+	}
+	b, _ := json.Marshal(got.Accounts)
+	a := got.Accounts[0]
+	if strings.Contains(string(b), "cpa.internal") || a.EndpointOrigin != "" || !a.CustomEndpoint || a.Label != "Anthropic custom endpoint (not told apart)" {
+		t.Fatalf("legacy endpoint returned: %s", b)
 	}
 }

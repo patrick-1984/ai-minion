@@ -185,6 +185,17 @@ authorized() {
 	if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n -- "$@"; fi
 }
 
+# need_systemd service: --service installs a systemd unit, so refuse early
+# (before any download or change) where there is none. The refusal names a
+# command that works: --service becomes --join ("Run as me"). --root needs no
+# systemd here: the Worker itself installs its unit, or without systemd starts
+# a root Worker at shell login.
+need_systemd() {
+	[ "$(uname -s)" = Linux ] || die "--service needs Linux with systemd. Use \"Run as me\" instead: run the same command with --join instead of --service."
+	[ -d "${MINION_SYSTEMD_DIR:-/run/systemd/system}" ] && return 0
+	die "This computer does not run systemd (for example a container such as a Coder workspace), so no system service can be installed here. Use \"Run as me\" instead: run the same command with --join instead of --service; it starts the Worker now and again at login."
+}
+
 worker_up() {
 	bin=$1
 	shift
@@ -291,13 +302,15 @@ main() {
 		printf '%s\n' "Usage monitoring for this enrollment" \
 			"The Hub administrator and Worker owner can see usage for every session, including unshared sessions." \
 			"Reports may include session names, folders, models, account identifiers, timing, token counts, costs and usage limits." \
-			"This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage." >&2
+			"This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage." \
+			"How a session signs in is reported as the access kind only (subscription, API key or custom endpoint); no key, URL or host." \
+			"Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off." >&2
 	fi
 	if [ "$join" = 1 ]; then
 		case $mode in
 		user) [ "$(id -u)" != 0 ] || die "run --join without sudo, or give --root to run a root Worker" ;;
 		service)
-			[ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] || die "--service needs Linux with systemd"
+			need_systemd service
 			if [ "$(id -u)" = 0 ]; then target_user=${SUDO_USER:-}; else target_user=$(id -un); fi
 			[ -n "$target_user" ] && [ "$target_user" != root ] || die "run --service from the account the Worker will use, or use --root"
 			;;

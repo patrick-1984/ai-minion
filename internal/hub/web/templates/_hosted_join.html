@@ -7,26 +7,29 @@
 {{define "hosted_join"}}
   {{if .HasInstaller}}<div data-join-oneline>
   <h2>Run one command</h2>
-  {{if .KeyedOK}}<p class="muted">These commands install the Worker from this Hub’s release. The Unix commands include a one-time token that stays in your shell history.</p>
-  {{else}}<p data-join-unlimited class="muted">Copy the join token below and paste it at the installer’s hidden prompt.</p>{{end}}
+  {{if .KeyedOK}}<p class="muted">These commands install the Worker from this Hub’s release. The commands include a one-time token that stays in your shell history.</p>
+  {{else}}<p data-join-unlimited class="muted">Copy the join token and paste it at the installer’s hidden prompt.</p>{{end}}
   <h3>Run as me (Linux or macOS)</h3>
   <p class="muted">Starts a Worker as your account at boot or login and shares all tmux sessions initially. Insert <code>--share none</code> after <code>--join</code> to keep existing tmux sessions private.</p>
   {{if .KeyedOK}}{{template "fold" .OneLiner}}{{else}}{{template "fold" .Masked}}{{end}}
   <h3>System service for me (Linux)</h3>
-  <p class="muted">Uses sudo to install a systemd service that starts at boot and runs as your account.</p>
+  <p class="muted">Uses sudo to install a systemd service that starts at boot and runs as your account. It needs systemd; in a container (a Coder workspace, Docker) there is none, so choose Run as me.</p>
   {{template "fold" .Service}}
   <h3>Run as root (Linux)</h3>
-  <p class="muted">Uses sudo to run the Worker as root and serve root’s tmux sessions.</p>
+  <p class="muted">Uses sudo to run the Worker as root and serve root’s tmux sessions. It needs systemd too; without it, use Run as me, whose command already carries <code>--join</code>.</p>
   {{template "fold" .Root}}
   <h3>Docker Compose</h3>
   <p class="muted">Creates a project in a new subfolder of the current directory and starts a Worker with its own tmux sessions.</p>
   {{template "fold" .ComposeInstall}}
-  <details><summary>Windows PowerShell</summary>
-  <p class="muted">Run in a normal PowerShell window. Copy the join token below, then paste it into the hidden prompt.</p>
-  {{template "fold" .WindowsInstall}}
-  </details>
+  <h3>Windows PowerShell</h3>
+  <p class="muted">Run in a normal PowerShell window.{{if .KeyedOK}} The command carries the one-time token, which stays in your PowerShell history.{{else}} Copy the join token, then paste it into the hidden prompt.{{end}}</p>
+  {{if .KeyedOK}}{{template "fold" .WindowsInstall}}{{else}}{{template "fold" .WindowsMasked}}{{end}}
+  {{if .KeyedOK}}<details><summary>Windows PowerShell without the token in history</summary>
+  <p class="muted">Copy the join token and paste it into the hidden prompt.</p>
+  {{template "fold" .WindowsMasked}}
+  </details>{{end}}
   {{if .KeyedOK}}<details><summary>Linux or macOS without the token in shell history</summary>
-  <p class="muted">Copy the join token below and paste it when the installer prompts.</p>
+  <p class="muted">Copy the join token and paste it when the installer prompts.</p>
   {{template "fold" .Masked}}
   </details>{{end}}
   {{if .HasVerified}}<details data-join-verified><summary>Verified variant (checks the installer's SHA-256 from the signed release first)</summary>

@@ -313,7 +313,7 @@ func (w *workerState) copyLocked() WorkerSessions {
 	for _, s := range w.sessions {
 		ws.Sessions = append(ws.Sessions, s)
 	}
-	sort.Slice(ws.Sessions, func(i, j int) bool { return ws.Sessions[i].Name < ws.Sessions[j].Name })
+	slices.SortFunc(ws.Sessions, func(a, b SessionState) int { return ops.NaturalCompare(a.Name, b.Name) })
 	return ws
 }
 

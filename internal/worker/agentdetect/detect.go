@@ -3,6 +3,7 @@ package agentdetect
 import (
 	"context"
 	"path"
+	"runtime"
 	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -49,6 +50,32 @@ type Result struct {
 	// It is empty for every other state, and also for a dialog whose options
 	// have no addressable key.
 	Choices []Choice
+	// DisplayKind is the kind to show (Hub pages, usage) when it differs from
+	// Kind: an agent was found below the pane's shell on a platform that
+	// cannot tell the foreground process (Windows). Kind stays the strict
+	// value that authorizes input; DisplayKind never does.
+	DisplayKind string
+}
+
+// Shown returns the kind to display: DisplayKind when set, else Kind. Never
+// use it to authorize input.
+func (r Result) Shown() string {
+	if r.DisplayKind != "" {
+		return r.DisplayKind
+	}
+	return r.Kind
+}
+
+// ShownAgent returns the CLI name of the shown kind (see Shown), for display
+// and telemetry only.
+func (r Result) ShownAgent() string {
+	return strings.TrimPrefix(r.Shown(), ops.PaneKindAgentPrefix)
+}
+
+// ShownIsAgent reports whether the shown kind is an agent.
+func (r Result) ShownIsAgent() bool {
+	k := r.Shown()
+	return strings.HasPrefix(k, ops.PaneKindAgentPrefix) && len(k) > len(ops.PaneKindAgentPrefix)
 }
 
 // Agent returns the CLI name when Kind is "agent:<cli>", otherwise "".
@@ -91,6 +118,11 @@ type Proc struct {
 	// code (R, S, D, T, t, Z, ...). Empty means unknown, treated as running.
 	State string
 	Args  []string // argv, or the command line split on whitespace
+	// UnknownForeground marks a process of a platform that cannot tell the
+	// foreground process of a terminal (Windows). Such a process may be a
+	// descendant of the pane, but it never counts as the recipient of the
+	// pane's input.
+	UnknownForeground bool
 }
 
 // Foreground reports whether the process is in the foreground process group
@@ -134,6 +166,11 @@ type ProcessSource interface {
 type Detector struct {
 	agents []Agent
 	procs  ProcessSource
+	// commandHint is true when the host's current-command report is only a
+	// hint (psmux on Windows derives it by a descendant heuristic): a pane
+	// whose command is an agent then stays a shell for input purposes and
+	// shows the agent as DisplayKind.
+	commandHint bool
 }
 
 // Option configures a Detector.
@@ -142,6 +179,10 @@ type Option func(*Detector)
 // WithAgents replaces the table of known agents.
 func WithAgents(agents []Agent) Option { return func(d *Detector) { d.agents = agents } }
 
+// WithCommandHint marks the host's current-command report as a hint that can
+// never authorize input (see Detector).
+func WithCommandHint(hint bool) Option { return func(d *Detector) { d.commandHint = hint } }
+
 // WithProcessSource sets the process table. A nil source disables the
 // process-tree search.
 func WithProcessSource(p ProcessSource) Option { return func(d *Detector) { d.procs = p } }
@@ -149,7 +190,7 @@ func WithProcessSource(p ProcessSource) Option { return func(d *Detector) { d.pr
 // New returns a Detector with DefaultAgents and the process source of the
 // platform (see DefaultProcessSource).
 func New(opts ...Option) *Detector {
-	d := &Detector{agents: DefaultAgents(), procs: DefaultProcessSource()}
+	d := &Detector{agents: DefaultAgents(), procs: DefaultProcessSource(), commandHint: runtime.GOOS == "windows"}
 	for _, o := range opts {
 		o(d)
 	}
@@ -192,33 +233,73 @@ const (
 // "unknown" when the process table is unavailable. For every other kind it
 // is "unknown".
 func (d *Detector) Classify(ctx context.Context, in Input) Result {
+	r, _ := d.locate(ctx, in, false)
+	return r
+}
+
+// Locate is Classify that also returns the pid of the agent process when the
+// pane runs one: the pane's own process when the current command is the agent,
+// else the matching process of the tree. It is zero for any other pane, and
+// also when the agent's own process cannot be verified in the process table
+// (the pane's PID is usually the shell, never the agent's).
+//
+// Locate serves telemetry only (usage metadata): where the platform cannot
+// name the foreground process (Windows), it also accepts an agent below the
+// pane's shell, which Classify never does, so a background agent cannot make
+// the shell look like an agent pane.
+func (d *Detector) Locate(ctx context.Context, in Input) (Result, int) {
+	return d.locate(ctx, in, true)
+}
+
+func (d *Detector) locate(ctx context.Context, in Input, telemetry bool) (Result, int) {
 	cmd := progName(in.Command)
+	var hinted *Agent
 	if a := d.matchProgram(cmd); a != nil {
-		return d.agentResult(a, in.Screen)
+		if !d.commandHint {
+			pid := 0
+			if telemetry {
+				pid = d.agentPID(ctx, in.PID, a)
+			}
+			return d.agentResult(a, in.Screen), pid
+		}
+		// The command is a hint: the strict result is the pane's shell, the
+		// agent is for display and telemetry only.
+		hinted = a
 	}
 
 	var (
 		tree      []Proc
 		haveTable bool
 	)
-	wrapper := cmd == "" || shells[cmd] || isInterpreter(cmd)
+	wrapper := cmd == "" || shells[cmd] || isInterpreter(cmd) || hinted != nil
 	if wrapper && in.PID > 0 && d.procs != nil {
 		if all, err := d.procs.Processes(ctx); err == nil {
 			haveTable = true
 			tree = descendants(all, in.PID)
 		}
 	}
+	unverified := hinted
 	for _, p := range tree {
-		if !p.Running() || !inPaneForeground(tree[0], p) {
+		if !p.Running() {
+			continue
+		}
+		if !inPaneForeground(tree[0], p) && (!telemetry || !p.UnknownForeground) {
+			if p.UnknownForeground && unverified == nil {
+				unverified = d.matchArgs(p.Args)
+			}
 			continue
 		}
 		if a := d.matchArgs(p.Args); a != nil {
-			return d.agentResult(a, in.Screen)
+			pid := 0
+			if telemetry {
+				pid = d.strictPID(tree, a, telemetry)
+			}
+			return d.agentResult(a, in.Screen), pid
 		}
 	}
 
 	switch {
-	case shells[cmd]:
+	case shells[cmd] || hinted != nil:
 		r := Result{Kind: ops.PaneKindShell, State: ops.PaneStateUnknown}
 		if haveTable {
 			r.State = ops.PaneStateStable
@@ -226,12 +307,66 @@ func (d *Detector) Classify(ctx context.Context, in Input) Result {
 				r.State = ops.PaneStateBusy
 			}
 		}
-		return r
+		if unverified != nil {
+			r.DisplayKind = ops.PaneKindAgentPrefix + unverified.Name
+		}
+		return r, 0
 	case cmd == "":
-		return Result{Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown}
+		return Result{Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown}, 0
 	default:
-		return Result{Kind: ops.PaneKindOther, State: ops.PaneStateUnknown}
+		r := Result{Kind: ops.PaneKindOther, State: ops.PaneStateUnknown}
+		if unverified != nil {
+			r.DisplayKind = ops.PaneKindAgentPrefix + unverified.Name
+		}
+		return r, 0
 	}
+}
+
+// agentPID finds the process of agent a in the tree of the pane process root.
+// Zero when none is verified.
+func (d *Detector) agentPID(ctx context.Context, root int, a *Agent) int {
+	if root <= 0 || d.procs == nil {
+		return 0
+	}
+	all, err := d.procs.Processes(ctx)
+	if err != nil {
+		return 0
+	}
+	return d.strictPID(descendants(all, root), a, true)
+}
+
+// strictPID is the pid of the process of agent a itself: one that receives
+// the pane's input (or, for telemetry, whose foreground state the platform
+// cannot tell) and whose program is the agent or an interpreter running its
+// script. A wrapper (a shell with -c, a package runner) that merely carries
+// the agent in its arguments is never returned: its environment is not the
+// agent's. Zero when no such process is found.
+func (d *Detector) strictPID(tree []Proc, a *Agent, telemetry bool) int {
+	for _, p := range tree {
+		if !p.Running() || !inPaneForeground(tree[0], p) && (!telemetry || !p.UnknownForeground) {
+			continue
+		}
+		if m := d.matchStrict(p.Args); m != nil && m.Name == a.Name {
+			return p.PID
+		}
+	}
+	return 0
+}
+
+// matchStrict is matchArgs restricted to the agent's own process: the program
+// is the agent, or an interpreter runs the agent's script.
+func (d *Detector) matchStrict(args []string) *Agent {
+	if len(args) == 0 {
+		return nil
+	}
+	prog := progName(args[0])
+	if a := d.matchProgram(prog); a != nil {
+		return a
+	}
+	if prog == "node" || prog == "nodejs" || prog == "bun" || prog == "deno" || strings.HasPrefix(prog, "python") {
+		return d.matchArgs(args)
+	}
+	return nil
 }
 
 func (d *Detector) agentResult(a *Agent, scr ops.Screen) Result {
@@ -260,6 +395,7 @@ func (d *Detector) matchToken(t string) *Agent {
 	if a := d.matchProgram(progName(scriptName(t))); a != nil {
 		return a
 	}
+	t = strings.ReplaceAll(t, `\`, "/") // Windows paths
 	for i := range d.agents {
 		for _, h := range d.agents[i].ArgHints {
 			if strings.Contains(t, h) {

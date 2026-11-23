@@ -12,15 +12,26 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
-type fakePrefsStore struct{ set map[string]bool }
-
-func (f *fakePrefsStore) UserPrefs(_ context.Context, id string) (store.UserPrefs, error) {
-	return store.UserPrefs{AllowHiddenSessions: f.set[id]}, nil
+type fakePrefsStore struct {
+	set    map[string]bool
+	wanted map[string][]string
 }
 
-func (f *fakePrefsStore) SetAllowHiddenSessions(_ context.Context, id string, allow bool) error {
-	f.set[id] = allow
+func (f *fakePrefsStore) SetUserPrefs(_ context.Context, id string, wanted *[]string, allow *bool) error {
+	if wanted != nil {
+		if f.wanted == nil {
+			f.wanted = map[string][]string{}
+		}
+		f.wanted[id] = *wanted
+	}
+	if allow != nil {
+		f.set[id] = *allow
+	}
 	return nil
+}
+
+func (f *fakePrefsStore) UserPrefs(_ context.Context, id string) (store.UserPrefs, error) {
+	return store.UserPrefs{AllowHiddenSessions: f.set[id], WantedHarnesses: f.wanted[id]}, nil
 }
 
 // managerDecider grants manage to the principals it lists.
@@ -64,5 +75,30 @@ func TestAccountPrefsSetNeedsASessionOrManage(t *testing.T) {
 				t.Errorf("refused call stored %v or returned %v", st.set, err)
 			}
 		})
+	}
+}
+
+// The harness choice is stored on its own, leaves the hidden-sessions opt-in
+// alone, and a malformed name is refused before any store call.
+func TestAccountPrefsSetWantedHarnesses(t *testing.T) {
+	st := &fakePrefsStore{set: map[string]bool{}}
+	h := &accountPrefsHandlers{st: st, dec: managerDecider{}, hub: func() string { return "user-controlled" }, allows: func(_ string, u bool) bool { return u }}
+	c := &Call{Principal: authz.NewSessionPrincipal("alice"), Identity: Identity{Session: &session.Session{}}}
+	names := []string{"claude", "codex"}
+	args := ops.AccountPrefsSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, WantedHarnesses: &names}
+	if _, err := h.set(context.Background(), c, args); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.wanted["alice"]; len(got) != 2 || got[1] != "codex" || len(st.set) != 0 {
+		t.Fatalf("stored %v / %v", got, st.set)
+	}
+	res, err := h.get(context.Background(), c, ops.AccountPrefsArgs{})
+	if err != nil || len(res.WantedHarnesses) != 2 {
+		t.Fatalf("get = %+v, %v", res, err)
+	}
+	bad := []string{"Claude Code"}
+	args.WantedHarnesses = &bad
+	if err := args.Validate(); err == nil {
+		t.Fatal("an invalid harness name was accepted")
 	}
 }

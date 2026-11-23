@@ -159,7 +159,7 @@ func (e *Executor) followDelivery(p *pane, text string, messageID int64, mark te
 		return nil
 	}
 	svc.follow(followRequest{
-		Session: session, Pane: p.ref, Agent: agentName(p.info.Kind),
+		Session: session, Pane: p.ref, Agent: agentName(p.class.Kind),
 		Text: text, Mark: mark, Route: route, MessageID: messageID,
 	})
 	return nil

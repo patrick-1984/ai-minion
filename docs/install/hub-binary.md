@@ -19,7 +19,7 @@ Releases are published on `https://github.com/patrick-1984/ai-minion/releases`. 
 Verify what you downloaded before you run it. The checksum list is signed by the release workflow of this project (keyless signature, recorded in the Sigstore transparency log):
 
 ```sh
-VERSION=0.19.0
+VERSION=0.20.0
 ARCHIVE=minion_${VERSION}_linux_amd64.tar.gz
 BASE=https://github.com/patrick-1984/ai-minion/releases/download/v${VERSION}
 curl -fsSLO "$BASE/$ARCHIVE"
@@ -118,7 +118,7 @@ Set the passphrase as above before the first Worker connects (a Hub started as a
 
 ```sh
 sudo minion update --channel 0.6      # the newest 0.6.x
-sudo minion update --version v0.19.0   # exactly this version
+sudo minion update --version v0.20.0   # exactly this version
 sudo systemctl restart minion-hub
 ```
 

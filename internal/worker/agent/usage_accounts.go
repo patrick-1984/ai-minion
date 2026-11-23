@@ -64,14 +64,15 @@ type codexLimits struct {
 	ByID   map[string]nativeLimits `json:"rateLimitsByLimitId"`
 }
 
-// A native login label distinguishes personal and work domains without
-// publishing the complete address. A digest suffix also distinguishes two
-// workspaces of the same masked login. If the field is not a simple address,
-// the account keeps its opaque label.
+// A native login label is the full account address (it is not a secret; only
+// the Worker owner and Hub administrators see it), with the domain in lower
+// case. A digest suffix tells two workspaces of the same login apart. If the
+// field is not a simple address, the account keeps its opaque label.
 func nativeLoginLabel(provider, email, digest string) string {
-	user, domain, ok := strings.Cut(strings.TrimSpace(email), "@")
+	email = strings.TrimSpace(email)
+	user, domain, ok := strings.Cut(email, "@")
 	fallback := provider + " profile " + digest[:10]
-	if !ok || user == "" || len(domain) > 64 || len(domain) < 3 || !strings.Contains(domain, ".") {
+	if !ok || user == "" || len(user) > 64 || len(email) > maxUsageLabel || len(domain) > 253 || len(domain) < 3 || !strings.Contains(domain, ".") {
 		return fallback
 	}
 	for _, r := range domain {
@@ -79,19 +80,21 @@ func nativeLoginLabel(provider, email, digest string) string {
 			return fallback
 		}
 	}
-	letters := []rune(user)
-	first := letters[0]
-	if !unicode.IsLetter(first) && !unicode.IsDigit(first) {
-		return fallback
-	}
-	mask := string(first) + "***"
-	if len(letters) >= 4 {
-		last := letters[len(letters)-1]
-		if unicode.IsLetter(last) || unicode.IsDigit(last) {
-			mask += string(last)
+	for _, r := range user {
+		if r <= ' ' || r == '@' || r == '/' || r == 127 {
+			return fallback
 		}
 	}
-	return mask + "@" + strings.ToLower(domain) + " / " + digest[:6]
+	label := user + "@" + strings.ToLower(domain)
+	if len(label) > maxUsageLabel {
+		return fallback // older Hubs refuse a longer label; the address is never cut
+	}
+	// The digest suffix tells two workspaces of a login apart; it never
+	// pushes the label past the wire bound and the address is never cut.
+	if suffix := " / " + digest[:6]; len(label)+len(suffix) <= maxUsageLabel {
+		label += suffix
+	}
+	return label
 }
 
 func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageAccount, bool) {
@@ -146,11 +149,7 @@ func APIUsageAccount(provider, endpoint, key string, domainSecret []byte, at int
 	if len(key) >= 34 && strings.IndexFunc(key, func(c rune) bool { return c <= 32 || c > 126 }) < 0 {
 		label = key[:10] + "... / " + digest[:10]
 	}
-	origin := (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
-	if strings.Contains(strings.ToLower(origin), strings.ToLower(key)) {
-		origin = ""
-	}
-	return ops.UsageAccount{EndpointOrigin: origin, KeyHint: label, ID: digest, Provider: provider, Label: label, AuthMode: "api", Source: "native-api-identity", ObservedAt: at}, nil
+	return ops.UsageAccount{KeyHint: label, ID: digest, Provider: provider, Label: label, AuthMode: "api", Source: "native-api-identity", ObservedAt: at}, nil
 }
 
 // NativeAPIUsageAccount uses only keys that fit a known, high-entropy

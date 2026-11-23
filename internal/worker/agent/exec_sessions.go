@@ -89,7 +89,7 @@ func (e *Executor) inspect(ctx context.Context, session string, ref term.PaneRef
 	}
 	p := &pane{ref: ref, screen: scr, info: basicInfo(session, ref), incomplete: incomplete}
 	p.class = e.classify.Classify(ctx, agentdetect.Input{Command: ref.Command, PID: ref.PID, Screen: scr})
-	p.info.Kind, p.info.State = p.class.Kind, p.class.State
+	p.info.Kind, p.info.State, p.info.InputKind = p.class.Shown(), p.class.State, p.class.Kind // Shown is for display; authorization reads p.class.Kind
 	if !incomplete {
 		p.info.DialogDigest = agentdetect.DialogDigest(p.class, scr)
 	}
@@ -204,7 +204,7 @@ func (e *Executor) listShared(ctx context.Context, sel store.ShareState) (any, e
 			// A pane that cannot be read keeps kind and state unknown.
 			if scr, err := e.host.Snapshot(ctx, ref); err == nil {
 				r := e.classify.Classify(ctx, agentdetect.Input{Command: ref.Command, PID: ref.PID, Screen: scr})
-				info.Kind, info.State = r.Kind, r.State
+				info.Kind, info.State, info.InputKind = r.Shown(), r.State, r.Kind
 			}
 		}(&info, p.Ref)
 	}
@@ -339,7 +339,7 @@ func (e *Executor) sessionCreate(ctx context.Context, rq Request) (any, error) {
 				info := basicInfo(sess.Name, p.Ref)
 				info.Window, info.Index = p.Window, p.Index
 				r := e.classify.Classify(ctx, agentdetect.Input{Command: p.Ref.Command, PID: p.Ref.PID})
-				info.Kind, info.State = r.Kind, r.State
+				info.Kind, info.State, info.InputKind = r.Shown(), r.State, r.Kind
 				res.Pane = &info
 			}
 			return res, nil

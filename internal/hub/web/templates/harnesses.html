@@ -1,0 +1,65 @@
+{{define "head_extra"}}<link rel="stylesheet" href="/static/usage.css">{{end}}
+
+{{define "content"}}
+{{$p := .Data}}
+<div class="usage-page">
+  <div class="page-head">
+    <div><h1>Harnesses</h1><p>Tick the coding harnesses you want on your Workers, then check which Workers have them. The scan only reads which harnesses are installed; it does not change any session.</p></div>
+    <div class="page-actions"><a class="btn btn-secondary" href="{{$p.UsageURL}}">Usage by Worker</a></div>
+  </div>
+  {{if $p.CanFilter}}<nav aria-label="Whose Workers" class="scope" id="scope-switch">
+    <a href="{{$p.MineURL}}"{{if eq $p.Scope "mine"}} aria-current="true"{{end}}>Mine</a>
+    <a href="{{$p.AllURL}}"{{if eq $p.Scope "all"}} aria-current="true"{{end}}>All users</a>
+  </nav>{{end}}
+  <div id="harness-result" aria-live="polite"></div>
+  <section class="panel" aria-labelledby="harness-choose-h">
+    <h2 id="harness-choose-h">Harnesses I want</h2>
+    <form class="harness-choose" method="post" action="{{$p.ChooseURL}}" hx-post="{{$p.ChooseURL}}" hx-target="#harness-result" hx-disabled-elt="find button">
+      <input type="hidden" name="for_user" value="{{$p.ForUser}}">
+      <div class="usage-cards">
+      {{range $p.Vendors}}
+        <fieldset class="harness-vendor">
+          <legend>{{.Vendor}}</legend>
+          {{range .Items}}<label class="usage-check"><input type="checkbox" name="harness" value="{{.Key}}"{{if .Checked}} checked{{end}}> {{.Label}}</label>{{end}}
+          {{if .Note}}<p class="help">{{.Note}}</p>{{end}}
+        </fieldset>
+      {{end}}
+      </div>
+      {{if $p.Private}}<button type="submit" class="btn btn-secondary">Save my choice</button>{{else}}<p class="help">The choice is saved in your own signed-in account.</p>{{end}}
+    </form>
+  </section>
+  <section aria-labelledby="harness-check-h">
+    <div class="usage-heading">
+      <h2 id="harness-check-h">My Workers</h2>
+      <form method="post" action="{{$p.ScanURL}}" hx-post="{{$p.ScanURL}}" hx-target="#harness-result" hx-disabled-elt="find button">
+        <input type="hidden" name="for_user" value="{{$p.ForUser}}">
+        <button type="submit" class="btn">{{template "icon" "i-refresh"}}<span>Check all my Workers</span></button>
+      </form>
+    </div>
+    <form class="usage-fields" method="get" action="/harnesses">
+      {{if eq $p.Scope "all"}}<input type="hidden" name="scope" value="all">{{end}}
+      <label class="usage-check"><input type="checkbox" name="missing" value="1"{{if $p.OnlyMissing}} checked{{end}}> Only Workers missing something</label>
+      <button type="submit" class="btn btn-secondary">Apply</button>
+    </form>
+    <div id="harness-matrix" hx-get="{{$p.RefreshURL}}" hx-trigger="every 30s" hx-select="#harness-matrix > *" hx-swap="innerHTML" hx-sync="this:drop">
+    {{if $p.Rows}}
+      {{if not $p.Columns}}<p class="muted">Tick at least one harness above to compare it with your Workers.</p>{{end}}
+      <div class="table-wrap"><table class="rtable harness-matrix">
+        <caption class="sr-only">Installed harnesses per Worker</caption>
+        <thead><tr><th scope="col">Worker</th>{{range $p.Columns}}<th scope="col">{{.}}</th>{{end}}<th scope="col">Last scan</th></tr></thead>
+        <tbody>
+        {{range $p.Rows}}
+          <tr>
+            <th scope="row" data-label="Worker">{{.Name}}{{if $p.ShowOwner}} <small class="muted">({{.Owner}})</small>{{end}} <span class="badge" data-online="{{if .Online}}true{{else}}false{{end}}">{{if .Online}}Online{{else}}Offline{{end}}</span></th>
+            {{range $i, $c := .Cells}}<td data-label="{{index $p.Columns $i}}"><span class="badge" data-tone="{{$c.Tone}}">{{$c.Text}}</span></td>{{end}}
+            <td data-label="Last scan">{{.Scanned}}</td>
+          </tr>
+        {{end}}
+        </tbody>
+      </table></div>
+    {{else if $p.HasWorkers}}<p class="muted">No Worker is missing a harness you chose.</p>
+    {{else}}<p class="muted">You have no approved Workers yet.</p>{{end}}
+    </div>
+  </section>
+</div>
+{{end}}

@@ -15,7 +15,7 @@ import (
 // implements it.
 type AccountPrefsStore interface {
 	UserPrefs(ctx context.Context, userID string) (store.UserPrefs, error)
-	SetAllowHiddenSessions(ctx context.Context, userID string, allow bool) error
+	SetUserPrefs(ctx context.Context, userID string, wanted *[]string, allowHidden *bool) error
 }
 
 var _ AccountPrefsStore = (*store.Store)(nil)
@@ -70,7 +70,7 @@ func (h *accountPrefsHandlers) get(ctx context.Context, c *Call, _ ops.AccountPr
 	hub := h.hub()
 	return ops.AccountPrefsResult{
 		AllowHiddenSessions: p.AllowHiddenSessions, HiddenSessions: hub,
-		HiddenSessionsAllowed: h.allows(hub, p.AllowHiddenSessions),
+		HiddenSessionsAllowed: h.allows(hub, p.AllowHiddenSessions), WantedHarnesses: p.WantedHarnesses,
 	}, nil
 }
 
@@ -105,11 +105,15 @@ func (h *accountPrefsHandlers) set(ctx context.Context, c *Call, args ops.Accoun
 	if err := h.setPrefsAllowed(ctx, c); err != nil {
 		return ops.WriteResult{}, err
 	}
-	if err := h.st.SetAllowHiddenSessions(ctx, c.Principal.UserID, *args.AllowHiddenSessions); err != nil {
+	// One transaction: both fields are saved or neither is.
+	if err := h.st.SetUserPrefs(ctx, c.Principal.UserID, args.WantedHarnesses, args.AllowHiddenSessions); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return ops.WriteResult{}, NewError(proto.CodeNotFound, "the account does not exist")
 		}
 		return ops.WriteResult{}, err
+	}
+	if args.AllowHiddenSessions == nil {
+		return delivered(), nil
 	}
 	res := delivered()
 	if hub := h.hub(); h.allows(hub, true) == h.allows(hub, false) {

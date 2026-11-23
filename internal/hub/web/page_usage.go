@@ -33,6 +33,74 @@ type usagePage struct {
 	DomainSlots                                                             []usageDomainSlotView
 	DomainUnavailable, AllowRepublish                                       bool
 	Preview                                                                 usagePreview
+	// ExporterMissing names the Workers with Claude Code but without the
+	// Minion exporter; ExporterInstalled is true when any Worker has it.
+	ExporterMissing   []string
+	ExporterInstalled bool
+	exporterAbsent    map[string]bool
+	// exporterSeen holds, per Worker with an installed exporter, the time
+	// its inventory reported that state.
+	exporterSeen map[string]int64
+	// ExporterRestart marks Workers that have a Claude Code session that has
+	// never reported and started before the Worker reported the exporter as
+	// installed: that session needs a restart.
+	ExporterRestart map[string]bool
+}
+
+// usageExporterCommand installs the Claude Code usage exporter on a Worker.
+const usageExporterCommand = "minion worker config usage integrate claude"
+
+// StaleReason says why an Anthropic subscription card is stale.
+func (p usagePage) staleWhy(c usageAccountCard) string {
+	if c.Freshness != "Stale" || c.Account.Provider != "Anthropic" || c.Account.AuthMode != "subscription" {
+		return ""
+	}
+	return "No running Claude Code session of this account has reported since " + p.Time(&c.Account.ObservedAt) + "."
+}
+
+func (p usagePage) ExporterCommand() string { return usageExporterCommand }
+
+// ExporterAbsentOn reports whether the Worker has Claude Code without the
+// Minion exporter, so a session hint names the command only where it helps.
+func (p usagePage) ExporterAbsentOn(workerID string) bool { return p.exporterAbsent[workerID] }
+
+// ClaudeSilent reports whether a Claude session has never reported any
+// exporter data (model, context, cost or tokens).
+func (p usagePage) ClaudeSilent(s ops.UsageSessionRow) bool {
+	c := s.UsageCounters
+	return s.Harness == "claude" && s.Model == "" && len(s.Models) == 0 && c.ContextTokens == nil && c.EstimatedCostUSD == nil &&
+		c.InputTokens == nil && c.OutputTokens == nil && c.CostUSD == nil
+}
+
+// NeedsRestart reports whether a running, silent Claude session started
+// before its Worker reported the exporter as installed. A session that
+// reports, or that started later, gets no restart advice.
+func (p usagePage) NeedsRestart(s ops.UsageSessionRow) bool {
+	seen, ok := p.exporterSeen[s.WorkerID]
+	return ok && s.StoppedAt == nil && s.StartedAt != nil && *s.StartedAt < seen && p.ClaudeSilent(s)
+}
+
+// noteExporters records which Workers lack the Claude exporter, from the
+// harness inventories the Workers reported.
+func (p *usagePage) noteExporters(workers []ops.UsageWorkerRow) {
+	p.ExporterMissing, p.ExporterInstalled, p.exporterAbsent, p.exporterSeen = nil, false, map[string]bool{}, map[string]int64{}
+	for _, w := range workers {
+		for _, h := range w.Inventory {
+			if h.Name != "claude" || h.Status != "installed" {
+				continue
+			}
+			switch h.Exporter {
+			case ops.UsageExporterAbsent:
+				p.ExporterMissing = append(p.ExporterMissing, p.WorkerName(w.ID))
+				p.exporterAbsent[w.ID] = true
+			case ops.UsageExporterInstalled:
+				p.ExporterInstalled = true
+				if w.InventoryAt != nil {
+					p.exporterSeen[w.ID] = *w.InventoryAt
+				}
+			}
+		}
+	}
 }
 
 type usageAccountCard struct {
@@ -40,11 +108,12 @@ type usageAccountCard struct {
 	Observed  string
 	Freshness string
 	Windows   []usageWindowView
+	StaleWhy  string
 }
 
 type usageWindowView struct {
-	Scope, Period, Used, Pace, Reset, Tone     string
-	Elapsed, Projected, Unit, RemainingPercent string
+	Title, Scope, Period, Used, Pace, Reset, Tone string
+	Elapsed, Projected, Unit, RemainingPercent    string
 }
 
 func (p usagePage) At(ms int64) string { return p.Time(&ms) }
@@ -101,6 +170,18 @@ func (p usagePage) Period(kind string, ms *int64) string {
 	return fmt.Sprintf("%g minutes · %s", float64(*ms)/60000, label)
 }
 
+// usageWindowTitle names a limit for people: the window ("5-hour limit",
+// "Weekly limit") and, for a model-specific scope, the scope before it. The
+// producer's own ids ("codex.primary") stay in the data, not on screen.
+func usageWindowTitle(w ops.UsageWindow) string {
+	name := ops.UsageLimitName(w.DurationMS, w.Period)
+	switch strings.ToLower(w.Scope) {
+	case "", "general", "primary", "secondary", "codex.primary", "codex.secondary", "codex":
+		return name
+	}
+	return w.Scope + " · " + name
+}
+
 func usageLabel(value string) string {
 	if value == "" {
 		return "Unknown"
@@ -115,7 +196,9 @@ func (p usagePage) Label(value string) string { return usageLabel(value) }
 func (p usagePage) Access(value string) string {
 	switch value {
 	case "api":
-		return "API credential"
+		return "API key"
+	case "subscription":
+		return "Subscription"
 	case "mixed":
 		return "Multiple access methods"
 	default:
@@ -333,6 +416,24 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		return nil, err
 	}
 	accounts, next := p.Rows.Accounts, p.Rows.Next
+	switch section {
+	case "workers":
+		p.noteExporters(p.Rows.Workers)
+		var live ops.UsageListResult
+		if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "sessions", WorkerID: p.WorkerID, Limit: 50}, &live); err == nil {
+			p.ExporterRestart = map[string]bool{}
+			for _, s := range live.Sessions {
+				if p.NeedsRestart(s) {
+					p.ExporterRestart[s.WorkerID] = true
+				}
+			}
+		}
+	case "sessions", "accounts":
+		var inv ops.UsageListResult
+		if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "workers", WorkerID: p.WorkerID, Limit: 50}, &inv); err == nil {
+			p.noteExporters(inv.Workers)
+		}
+	}
 	if section == "overview" {
 		var subscriptions ops.UsageListResult
 		args.Section, args.SubscriptionOnly = "accounts", true
@@ -361,11 +462,12 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 	if a.ObservedAt == 0 {
 		card.Freshness = "Unknown"
 	}
+	card.StaleWhy = p.staleWhy(card)
 	if a.AuthMode != "subscription" {
 		return card
 	}
 	for _, w := range a.Windows {
-		view := usageWindowView{Scope: w.Scope, Period: p.Period(w.Period, w.DurationMS), Used: p.Percent(w.UsedPercent), Reset: p.Time(w.ResetsAt), Unit: w.Unit}
+		view := usageWindowView{Title: usageWindowTitle(w), Scope: w.Scope, Period: p.Period(w.Period, w.DurationMS), Used: p.Percent(w.UsedPercent), Reset: p.Time(w.ResetsAt), Unit: w.Unit}
 		view.RemainingPercent = "Unknown"
 		if w.UsedPercent != nil {
 			remaining := 100 - *w.UsedPercent
@@ -392,6 +494,15 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 				projected := 100 * *w.UsedPercent / elapsed
 				view.Projected = p.Percent(&projected)
 			}
+		}
+		n := 1
+		for _, prev := range card.Windows {
+			if strings.HasPrefix(prev.Title, view.Title) && (prev.Title == view.Title || strings.HasPrefix(prev.Title, view.Title+" (")) {
+				n++
+			}
+		}
+		if n > 1 {
+			view.Title = fmt.Sprintf("%s (%d)", view.Title, n)
 		}
 		card.Windows = append(card.Windows, view)
 	}

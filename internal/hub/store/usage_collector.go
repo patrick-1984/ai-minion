@@ -13,6 +13,13 @@ import (
 
 var ErrUsageNoNativeReader = errors.New("this account has no supported native background query")
 
+// storedUsageAccount is an account body with the login label kept apart from
+// the label of the latest observation. Readers decode it as a plain account.
+type storedUsageAccount struct {
+	ops.UsageAccount
+	LoginLabel string `json:"login_label,omitempty"`
+}
+
 func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.UsageAccount) error {
 	a.Provider = ops.UsageProvider(a.Provider)
 	nativeRead := a.Provider == "OpenAI" && a.AuthMode == "subscription" && (a.Source == "codex-account" || a.Source == "codex-app-server")
@@ -34,7 +41,33 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 		a.Source = "native-account"
 		a.Windows = nil
 	}
-	b, err := json.Marshal(a)
+	// The login identity comes from native discovery and is stored apart
+	// from the quota observations: a quota sample of the same account carries
+	// only a generic label, however many samples follow, and must not replace it.
+	var stored string
+	err = tx.QueryRowContext(ctx, `SELECT body FROM usage_accounts WHERE worker_id=? AND account_id=?`, workerID, a.ID).Scan(&stored)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var old storedUsageAccount
+	login := ""
+	if stored != "" && json.Unmarshal([]byte(stored), &old) == nil {
+		login = old.LoginLabel
+		if login == "" && old.Source == "native-account" {
+			login = old.Label
+		}
+	}
+	if a.Source == "native-account" && a.Label != "" {
+		login = a.Label
+		if stored != "" && old.Source != "native-account" {
+			if _, err := tx.ExecContext(ctx, `UPDATE usage_accounts SET body=json_set(body,'$.label',?,'$.login_label',?) WHERE worker_id=? AND account_id=?`, a.Label, a.Label, workerID, a.ID); err != nil {
+				return err
+			}
+		}
+	} else if a.Source != "native-account" && login != "" {
+		a.Label = login
+	}
+	b, err := json.Marshal(storedUsageAccount{UsageAccount: a, LoginLabel: login})
 	if err != nil {
 		return err
 	}

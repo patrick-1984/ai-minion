@@ -252,6 +252,7 @@ assert_contains "usage acceptance still joins" "rc=$RC" "rc=0"
 assert_contains "usage disclosure covers unshared sessions" "$OUT" "including unshared sessions"
 assert_contains "usage disclosure covers folder, model and token metadata" "$OUT" "session names, folders, models, account identifiers, timing, token counts"
 assert_contains "usage disclosure grants no terminal access" "$OUT" "grants no terminal content or control access"
+assert_contains "usage disclosure names the exporter opt-out" "$OUT" "Turn it off with usage_claude_exporter=off."
 if [ "$(grep -xc -- '--accept-usage' "$JL.argv")" = 1 ] &&
 	! grep -Fq -- '--accept-usage' "$JL.prepare-argv"; then
 	ok "only the actual join receives one acceptance flag"
@@ -289,6 +290,29 @@ SCRIPT_ARGS=--join
 rm -f "$JL".*
 run_install "$WORK/j3" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" FAKE_RC=3
 assert_contains "a failing join keeps its exit status" "rc=$RC" "rc=3"
+
+# A system service needs systemd: without it the refusal says why and names
+# "Run as me", before anything is downloaded or installed.
+SCRIPT_ARGS="--join --service"
+run_install "$WORK/nosd-service" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_SYSTEMD_DIR="$WORK/no-such-systemd"
+assert_contains "--service without systemd says so" "$OUT" "does not run systemd (for example a container such as a Coder workspace)"
+assert_contains "--service without systemd names the working command" "$OUT" "run the same command with --join instead of --service; it starts the Worker now and again at login"
+assert_no_file "--service without systemd installs nothing" "$WORK/nosd-service/minion"
+
+# --root keeps working without systemd: the Worker's own root login fallback
+# serves root's sessions, so the installer must hand over instead of refusing.
+mkdir -p "$WORK/rootid-nosd"
+printf '#!/bin/sh\necho 0\n' >"$WORK/rootid-nosd/id"
+chmod +x "$WORK/rootid-nosd/id"
+SCRIPT_ARGS="--join --root"
+rm -f "$JL".*
+run_install "$WORK/nosd-root" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_SYSTEMD_DIR="$WORK/no-such-systemd" PATH="$WORK/rootid-nosd:$(fake_uname Linux x86_64):$WORK/installed:$PATH"
+case $OUT in
+*"does not run systemd"*) bad "--root without systemd is not refused by the installer" "$OUT" ;;
+*) ok "--root without systemd is not refused by the installer" ;;
+esac
+if grep -Fxq -- 'root' "$JL.argv" 2>/dev/null; then ok "--root without systemd hands over to worker up as root"; else bad "--root without systemd hands over to worker up as root" "$(cat "$JL.argv" 2>/dev/null)"; fi
+SCRIPT_ARGS=--join
 
 run_install "$WORK/j4" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="not-a-token" JOINLOG="$JL"
 assert_contains "something that is not a token is refused" "$OUT" "not a join token"

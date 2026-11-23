@@ -27,6 +27,14 @@
   {{else}}<p class="notice notice-info">The host owner controls the schedule. Set <code>allow_hub_policy: true</code> in the host updater configuration to manage it here.</p>{{end}}
   {{else}}<p class="notice notice-info">The host updater has not reported a readable status. Check the Cron Task and the request/status directory mounts.</p>{{end}}
 </section>
+{{else}}
+<section class="panel" aria-labelledby="auto-update-h" data-auto-update-missing>
+  <h2 id="auto-update-h">Updating the Hub</h2>
+  {{if .Data.Check.SelfUpdate}}<p class="notice notice-info">The Hub can update itself through the Docker socket: use <strong>Update the Hub</strong> when a newer release appears.</p>
+  <p>To update by hand instead, see the <a href="{{.Data.DocsBase}}hub-docker.md#update" target="_blank" rel="noopener">manual update steps</a>.</p>
+  {{else}}<p class="notice notice-info">Automatic Hub updates: not set up.{{with .Data.Check.Reason}} Reason: {{.}}.{{end}}</p>
+  <p>Update by hand with the <a href="{{.Data.DocsBase}}hub-docker.md#update" target="_blank" rel="noopener">manual update steps</a>, or set up self-update or a host updater as described there.</p>{{end}}
+</section>
 {{end}}
 
 <section class="panel" aria-labelledby="workers-h">

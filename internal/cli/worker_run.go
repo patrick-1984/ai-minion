@@ -152,17 +152,42 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		reg = agent.DefaultRegistry
 	}
 	rt := agent.NewRuntime(reg, deps.options)
+	// The exporter installer runs inside the locked runtime (the exporter
+	// module) and is joined before the lock is released. It re-reads the
+	// config file before every pass, so a saved "off" applies at once.
+	policy := func() *config.Resolver {
+		r := *res
+		if deps.loadConfig != nil {
+			file, err := loadConfigFile(&r, deps.loadConfig)
+			if err != nil {
+				return nil // unreadable policy: the installer does nothing
+			}
+			r.File = file
+		}
+		return &r
+	}
+	startExporter := func(ctx context.Context) func() {
+		claudeInstallNotice = func(msg string, args ...any) { logger.Warn(msg, args...) }
+		autoCtx, stopAuto := context.WithCancel(ctx)
+		autoDone := make(chan struct{})
+		go func() {
+			defer close(autoDone)
+			runClaudeAutoInstall(autoCtx, policy, core.StateDir, lookupEnv)
+		}()
+		return func() { stopAuto(); <-autoDone }
+	}
 	err = rt.Run(cmd.Context(), agent.Settings{
 		WorkerCore: core,
 		Resolver:   res,
 		Logger:     logger,
 		LogLive:    live,
 
-		LogSinks:      sinks.Status,
-		StartLogSinks: startSinks,
-		StopLogSinks:  sinks.Shutdown,
-		TrafficTap:    sinks.Tap(),
-		Out:           cmd.OutOrStdout(),
+		LogSinks:        sinks.Status,
+		StartLogSinks:   startSinks,
+		StopLogSinks:    sinks.Shutdown,
+		TrafficTap:      sinks.Tap(),
+		Out:             cmd.OutOrStdout(),
+		StartBackground: startExporter,
 
 		InviteArgvWarned: deps.inviteArgvWarned,
 	})

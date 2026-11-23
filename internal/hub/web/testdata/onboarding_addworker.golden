@@ -2,7 +2,7 @@
 
 <div class="page-head"><div><h1>Add worker</h1><p>A worker is a machine that hosts terminal sessions. Choose how it joins your space.</p></div></div>
 <div class="notice notice-info" data-enrollment-usage>
-  <p><strong>Usage monitoring is part of registration for new Workers that support it.</strong> Your Hub administrator and Worker owner can see usage statistics for every session on this Worker, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, limits and collection diagnostics. Console sharing and control have separate permissions.</p>
+  <p><strong>Usage monitoring is part of registration for new Workers that support it.</strong> Your Hub administrator and Worker owner can see usage statistics for every session on this Worker, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, limits and collection diagnostics. Console sharing and control have separate permissions. How a session signs in is reported as the access kind only (subscription, API key or custom endpoint); no key, URL or host. Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off.</p>
   <p>Accepting adds no permission to read or control terminals. Session sharing and personal bucket choices do not change usage coverage.</p>
 </div>
 <section class="panel" aria-labelledby="join-one-step" data-join-panel>

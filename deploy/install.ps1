@@ -18,6 +18,7 @@
 # docs/install/worker-windows-preview.md.
 #
 # Environment (all optional):
+#   MINION_JOIN         with -Join: the join token (else a hidden prompt asks)
 #   MINION_VERSION      the release to install (v0.8.1 or 0.8.1); default: latest
 #   MINION_INSTALL_DIR  where to put minion.exe instead of the default above
 #   MINION_RELEASE_BASE, MINION_RELEASE_API
@@ -46,12 +47,20 @@ param(
         Write-Host 'The Hub administrator and Worker owner can see usage for every session, including unshared sessions.'
         Write-Host 'Reports may include session names, folders, models, account identifiers, timing, token counts, costs and usage limits.'
         Write-Host 'This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage.'
+        Write-Host 'How a session signs in is reported as the access kind only (subscription, API key or custom endpoint); no key, URL or host.'
+        Write-Host 'Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off.'
     }
     if ($Join) {
-        $secret = Read-Host 'Join token from the Hub Add worker page' -AsSecureString
-        $buffer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
-        try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($buffer) }
-        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($buffer); $secret.Dispose() }
+        if ($env:MINION_JOIN) {
+            # The Hub's command puts the token here; read it once and clear it.
+            $token = $env:MINION_JOIN
+            Remove-Item Env:MINION_JOIN -ErrorAction SilentlyContinue
+        } else {
+            $secret = Read-Host 'Join token from the Hub Add worker page' -AsSecureString
+            $buffer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+            try { $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($buffer) }
+            finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($buffer); $secret.Dispose() }
+        }
         if ($token -notmatch '^mnj1-[A-Za-z0-9_.-]+$') { throw 'install.ps1: paste the full join token from the Hub Add worker page' }
     }
     $repo = 'patrick-1984/ai-minion'
