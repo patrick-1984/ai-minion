@@ -328,7 +328,7 @@ func inputGuards(p *pane) []proto.Code {
 	if p.info.State == ops.PaneStateDialog {
 		hits = append(hits, proto.CodeDialogOpen)
 	}
-	if p.info.State == ops.PaneStateBusy {
+	if p.info.State == ops.PaneStateBusy && !p.class.Background {
 		hits = append(hits, proto.CodeBusy)
 	}
 	return hits

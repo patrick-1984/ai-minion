@@ -24,6 +24,11 @@ type Agent struct {
 	// markers.
 	Idle []*regexp.Regexp
 	Busy []*regexp.Regexp
+	// Background marks background work (shells, tasks, subagents, workflows)
+	// that keeps running while the input prompt is idle. It is read only for
+	// the reported state: an idle prompt with such a marker is shown as busy,
+	// but it still takes input (see Result.Background).
+	Background []*regexp.Regexp
 	// Dialog marks a dialog whose options form a single row below the marker line
 	// and are driven by the arrow keys (opencode: "Allow once   Allow always
 	// Reject"). Choices are parsed from that row, each selected by the arrow
@@ -81,6 +86,20 @@ func DefaultAgents() []Agent {
 				rx(`(?i)esc to interrupt`),
 				// Spinner line "✻ Thinking… (12s · ..." when the hint is hidden.
 				rx(`^\s*[✢✳✶✻✽]\s+\S[^\n]*…\s*\(`),
+			},
+			// Background work of Claude Code 2.1.33x. A bare "← 2 agents"
+			// navigation hint is not listed: it also shows with no work.
+			Background: []*regexp.Regexp{
+				// "✻ Worked for 23s · done 10:50 PM · 1 shell still running"
+				rx(`\b[1-9]\d* shells? still running\b`),
+				// Status bar "· 3 background tasks ·".
+				rx(`\b[1-9]\d* background tasks?\b`),
+				// "✻ Waiting for 1 background agent and 1 dynamic workflow to finish"
+				rx(`^\s*[✢✳✶✻✽]\s+Waiting for\b[^\n]*\bto finish\b`),
+				// Running agent row under "● main".
+				rx(`^\s*◯\s+\S[^\n]*\d+[smh]\b[^\n]*·\s*↓\s*[\d.]+k?\s+tokens`),
+				// Workflow progress row "▱▱▱ 0/1 · 1h02m".
+				rx(`▱+\s+\d+/\d+\s*·`),
 			},
 		},
 		{

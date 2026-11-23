@@ -55,6 +55,10 @@ type Result struct {
 	// cannot tell the foreground process (Windows). Kind stays the strict
 	// value that authorizes input; DisplayKind never does.
 	DisplayKind string
+	// Background is set when State is busy only because background work runs
+	// behind an idle input prompt. The prompt still takes input, so the busy
+	// guard of typed input does not apply to it.
+	Background bool
 }
 
 // Shown returns the kind to display: DisplayKind when set, else Kind. Never
@@ -380,7 +384,16 @@ func ProcessHarness(args []string) string {
 
 func (d *Detector) agentResult(a *Agent, scr ops.Screen) Result {
 	state, choices := screenState(a, scr)
-	return Result{Kind: ops.PaneKindAgentPrefix + a.Name, State: state, Choices: choices}
+	bg := false
+	if state == ops.PaneStateStable && len(a.Background) > 0 {
+		// Only the reported state changes: screenState (turn detection)
+		// keeps seeing the idle prompt.
+		raw, _ := tail(scr.Lines, stateWindow, func(s string) string { return strings.TrimRight(s, " \t") })
+		if matchAny(raw, a.Background) {
+			state, bg = ops.PaneStateBusy, true
+		}
+	}
+	return Result{Kind: ops.PaneKindAgentPrefix + a.Name, State: state, Choices: choices, Background: bg}
 }
 
 // matchProgram returns the agent whose Commands contain the normalised
