@@ -225,8 +225,10 @@ func (u *selfUpdate) handleUpdate(ctx context.Context, rq Request) (any, error) 
 	}
 	select {
 	case msg := <-failed:
-		res.Reason = msg
-		return res, nil
+		if msg != "" { // "" means: installed, the restart follows the answer
+			res.Reason = msg
+			return res, nil
+		}
 	case <-time.After(wait):
 	case <-ctx.Done():
 	}
@@ -311,6 +313,12 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 	}
 	u.setState(ops.UpdateStateRestarting, version.Version, r.Tag, "")
 	u.log.Info("worker updated; restarting", "from", version.Version, "to", r.Tag)
+	if failed != nil { // wake the handler: the answer goes out before the restart
+		select {
+		case failed <- "":
+		default:
+		}
+	}
 	time.Sleep(restartDelay)
 	u.restart()
 }

@@ -75,6 +75,11 @@ func (s *Store) SaveNativeUsage(ctx context.Context, enrollment Enrollment, r op
 	}
 	var account any
 	if len(r.Accounts) > 0 {
+		if row.Source != "claude-hook" {
+			if err := keepClaudeWindows(ctx, tx, row, &r.Accounts[0], now); err != nil {
+				return err
+			}
+		}
 		b, err := json.Marshal(r.Accounts[0])
 		if err != nil {
 			return err
@@ -236,4 +241,53 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		report.Events = append(report.Events, e)
 	}
 	return events.Err()
+}
+
+// keepClaudeWindows carries the account windows of the previous status line of
+// the same native session over a report that no longer has them: Claude Code
+// drops an expired window until it reads a new one. A window whose reset time
+// has passed is kept as reset (nothing used yet, no reset time), never as
+// absent, so a capped account cannot look uncapped.
+func keepClaudeWindows(ctx context.Context, tx *sql.Tx, row ops.UsageSession, a *ops.UsageAccount, now time.Time) error {
+	var previous sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT account FROM usage_native WHERE session_name=? AND native_id=?`, row.Name, row.NativeID).Scan(&previous)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && !previous.Valid {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var old ops.UsageAccount
+	if json.Unmarshal([]byte(previous.String), &old) != nil || old.ID != a.ID || old.Source != "claude-statusline" {
+		return nil
+	}
+	type key struct {
+		scope, period string
+		duration      int64
+	}
+	keyOf := func(w ops.UsageWindow) key {
+		k := key{scope: w.Scope, period: w.Period}
+		if w.DurationMS != nil {
+			k.duration = *w.DurationMS
+		}
+		return k
+	}
+	have := map[key]bool{}
+	for _, w := range a.Windows {
+		have[keyOf(w)] = true
+	}
+	for _, w := range old.Windows {
+		if have[keyOf(w)] || len(a.Windows) >= 32 {
+			continue
+		}
+		if w.ResetsAt != nil && *w.ResetsAt <= now.UnixMilli() {
+			zero := 0.0
+			w.UsedPercent, w.Used, w.Remaining, w.ResetsAt = &zero, nil, nil, nil
+		}
+		a.Windows = append(a.Windows, w)
+	}
+	if len(a.Windows) > 0 {
+		a.Source = "claude-statusline"
+	}
+	return nil
 }

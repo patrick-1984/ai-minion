@@ -224,6 +224,14 @@ fi
 	setLogin(profile, "override@example.com", "team")
 	install()
 	wantBinding(profile, "override@example.com", "team")
+
+	// A switch to a saved Console key drops the subscription binding.
+	mustWrite(t, filepath.Join(profile, "fixture-auth-status.json"), []byte(
+		`{"loggedIn":true,"authMethod":"api_key","apiProvider":"firstParty","email":"override@example.com","orgId":"fixture-org"}`+"\n"))
+	install()
+	if m := readManifest(profile); m.Account != "" || m.Auto || m.Label != "" || m.Plan != "" {
+		t.Fatalf("the old subscription stayed bound: account %q, auto %t", m.Account, m.Auto)
+	}
 }
 
 func TestAutoInstallClaudeExporterDoesNotBindAPIAuthToOAuth(t *testing.T) {

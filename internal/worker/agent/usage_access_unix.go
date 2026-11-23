@@ -47,25 +47,34 @@ func readProcFile(dir *os.File, name string, limit int64) ([]byte, bool) {
 
 // Open environment and argv relative to the UID-checked directory so the
 // access evidence cannot mix two processes when a PID is reused.
-func readProcAccess(pid int, claude bool) ([]byte, string, bool) {
+func readProcAccess(pid int, claude bool) ([]byte, claudeSrc, bool) {
 	dir := openOwnedProc(pid)
 	if dir == nil {
-		return nil, "", false
+		return nil, claudeSrc{}, false
 	}
 	defer func() { _ = dir.Close() }()
 	raw, ok := readProcFile(dir, "environ", processEnvLimit)
-	var settings string
+	var src claudeSrc
 	if ok && claude {
-		settings, _ = procClaudeSettings(dir)
+		src, _ = procClaudeSrc(dir)
 	}
-	return raw, settings, ok
+	return raw, src, ok
 }
 
-func procClaudeSettings(dir *os.File) (string, bool) {
+// procClaudeSrc reads the --settings argument and working directory of the
+// Claude process behind dir. A relative settings file is resolved in that
+// working directory; an inline JSON argument is returned as is (it is only
+// reduced to presence flags by the caller).
+func procClaudeSrc(dir *os.File) (claudeSrc, bool) {
 	raw, ok := readProcFile(dir, "cmdline", 64<<10)
 	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
 	if !ok || agentdetect.ProcessHarness(args) != "claude" {
-		return "", false
+		return claudeSrc{}, false
+	}
+	var src claudeSrc
+	var cwd [4096]byte
+	if n, err := unix.Readlinkat(int(dir.Fd()), "cwd", cwd[:]); err == nil && n < len(cwd) && filepath.IsAbs(string(cwd[:n])) {
+		src.Cwd = string(cwd[:n])
 	}
 	var file string
 	for i := 1; i < len(args); i++ {
@@ -80,28 +89,27 @@ func procClaudeSettings(dir *os.File) (string, bool) {
 			file = args[i]
 		}
 	}
-	if file == "" || strings.HasPrefix(file, "-") || strings.HasPrefix(strings.TrimSpace(file), "{") {
-		return "", true // no file, or an inline settings JSON argument
+	switch {
+	case file == "" || strings.HasPrefix(file, "-"):
+	case strings.HasPrefix(strings.TrimSpace(file), "{"), filepath.IsAbs(file):
+		src.Settings = file
+	case src.Cwd != "":
+		src.Settings = filepath.Join(src.Cwd, file)
 	}
-	if filepath.IsAbs(file) {
-		return file, true
-	}
-	// Resolve a relative flag in the Claude process's own working directory.
-	var cwd [4096]byte
-	n, err := unix.Readlinkat(int(dir.Fd()), "cwd", cwd[:])
-	if err != nil || n == len(cwd) || !filepath.IsAbs(string(cwd[:n])) {
-		return "", true
-	}
-	return filepath.Join(string(cwd[:n]), file), true
+	return src, true
 }
 
-func parentClaudeSettings() string {
-	return claudeAncestorSettings(os.Getppid())
+func parentClaudeSrc() claudeSrc {
+	src := claudeAncestorSrc(os.Getppid())
+	if src.Cwd == "" {
+		src.Cwd, _ = os.Getwd()
+	}
+	return src
 }
 
 // Exporters may be launched through a shell. Look for the closest Claude
 // process in a bounded chain of same-user ancestors.
-func claudeAncestorSettings(pid int) string {
+func claudeAncestorSrc(pid int) claudeSrc {
 	for range 8 {
 		if pid <= 1 {
 			break
@@ -110,10 +118,10 @@ func claudeAncestorSettings(pid int) string {
 		if dir == nil {
 			break
 		}
-		file, claude := procClaudeSettings(dir)
+		src, claude := procClaudeSrc(dir)
 		if claude {
 			_ = dir.Close()
-			return file
+			return src
 		}
 		raw, ok := readProcFile(dir, "stat", 4096)
 		_ = dir.Close()
@@ -128,7 +136,7 @@ func claudeAncestorSettings(pid int) string {
 		}
 		pid, _ = strconv.Atoi(fields[1])
 	}
-	return ""
+	return claudeSrc{}
 }
 
 // openNonBlocking opens a file without waiting for a writer, so that a named

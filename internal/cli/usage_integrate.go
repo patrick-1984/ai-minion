@@ -321,8 +321,11 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		return false, err
 	}
 	explicit := desired.Account != "" || desired.Profile != ""
+	notSubscription := false // a confirmed switch away from the subscription
 	if !explicit && discover != nil {
-		if a, ok := discover(ctx, dir); ok && a.Provider == "Anthropic" && a.AuthMode == "subscription" &&
+		a, ok := discover(ctx, dir)
+		notSubscription = ok && a.AuthMode != "subscription"
+		if ok && a.Provider == "Anthropic" && a.AuthMode == "subscription" &&
 			validateClaudeUsageAttribution(a.ID, "") == nil {
 			desired.Account = a.ID
 			desired.Auto = true
@@ -354,6 +357,8 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 				desired.Label = prior.Label
 				desired.Plan = prior.Plan
 			}
+		case notSubscription && prior.Auto:
+			// The login now uses a key: never keep the old subscription.
 		default: // nothing new was discovered, or the binding is explicit
 			desired.Account, desired.Profile, desired.Plan, desired.Label, desired.Auto = prior.Account, prior.Profile, prior.Plan, prior.Label, prior.Auto
 		}

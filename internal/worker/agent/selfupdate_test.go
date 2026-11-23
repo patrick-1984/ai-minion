@@ -868,3 +868,25 @@ func TestWorkerUpdateLateFailureStaysInTheStatus(t *testing.T) {
 		t.Fatalf("status %+v", st)
 	}
 }
+
+// A fast installer must not restart the Worker before the Hub got its answer:
+// the handler replies as soon as the install succeeded, the restart follows.
+func TestWorkerUpdateAnswersBeforeTheRestartOfAFastInstall(t *testing.T) {
+	withVersion(t, "v0.9.0")
+	inst := &fakeInstaller{res: version.Result{Tag: "v0.9.1"}}
+	u, restarted := newTestUpdate(t, inst)
+	u.earlyWait = 5 * time.Second // the production wait, longer than the restart delay
+	start := time.Now()
+	res, err := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"})
+	if err != nil || !res.Accepted {
+		t.Fatalf("res %+v err %v", res, err)
+	}
+	if time.Since(start) >= restartDelay {
+		t.Fatalf("the answer waited %v, past the restart", time.Since(start))
+	}
+	select {
+	case <-restarted:
+		t.Fatal("restarted before the answer")
+	default:
+	}
+}

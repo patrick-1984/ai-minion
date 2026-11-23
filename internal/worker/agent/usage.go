@@ -70,7 +70,7 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 				}
 			}
 		} else {
-			r, err = usageSnapshot(ctx, e.host, false)
+			r, err = usageSnapshot(ctx, e.host, false, grant)
 			if err != nil {
 				return nil, err
 			}
@@ -113,7 +113,7 @@ var usageProcTimeout = agentdetect.SnapshotTimeout
 // usageHarnessProvider names the vendor of a harness that has exactly one.
 var usageHarnessProvider = map[string]string{"claude": "Anthropic", "codex": "OpenAI"}
 
-func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (ops.UsageReport, error) {
+func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool, salt string) (ops.UsageReport, error) {
 	list := host.ListSessions
 	if h, ok := host.(interface {
 		ListUsageSessions(context.Context) ([]term.Session, error)
@@ -151,7 +151,7 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 				row.Provider = usageHarnessProvider[row.Harness]
 				acc := detectSessionAccess(row.Harness, pid)
 				row.AuthMode, row.CustomEndpoint = acc.Mode, acc.Kind == accessCustomEndpoint
-				if a, ok := accessAccount(row.Provider, acc, at); ok {
+				if a, ok := accessAccount(row.Provider, acc, at, salt); ok {
 					row.AccountID = a.ID
 					accounts[a.ID] = a
 				}
@@ -306,12 +306,19 @@ type usageInventoryCache struct {
 	until      time.Time
 	generation uint64
 	nextForced time.Time
+	commits    uint64 // scans that finished and were kept
 }
 
 func (c *usageInventoryCache) get(ctx context.Context, grant string, fresh bool) (ops.UsageReport, error) {
+	c.mu.Lock()
+	seen := c.commits
+	c.mu.Unlock()
 	for {
 		c.mu.Lock()
 		now := time.Now()
+		if c.commits != seen {
+			fresh = false // a scan finished since this request: it satisfies it
+		}
 		generation := usageInventoryGeneration.Load()
 		force := fresh && !now.Before(c.nextForced)
 		done := c.running
@@ -327,8 +334,8 @@ func (c *usageInventoryCache) get(ctx context.Context, grant string, fresh bool)
 			refreshClaudeExporter(out.Inventory)
 			return out, nil
 		}
-		// A manual request can share a scan already in progress.
-		fresh = false
+		// A manual request can share a scan already in progress; if that scan
+		// is cancelled, the request scans on its own.
 		if done != nil {
 			c.mu.Unlock()
 			select {
@@ -337,9 +344,6 @@ func (c *usageInventoryCache) get(ctx context.Context, grant string, fresh bool)
 			case <-done:
 				continue
 			}
-		}
-		if force {
-			c.nextForced = now.Add(usageForceInterval)
 		}
 		c.running = make(chan struct{})
 		c.mu.Unlock()
@@ -352,6 +356,10 @@ func (c *usageInventoryCache) get(ctx context.Context, grant string, fresh bool)
 		c.mu.Lock()
 		if ctx.Err() == nil {
 			c.grant, c.generation, c.until, c.report = grant, generation, at.Add(5*time.Minute), out
+			c.commits++
+			if force { // a cancelled scan spends no cooldown
+				c.nextForced = at.Add(usageForceInterval)
+			}
 		}
 		close(c.running)
 		c.running = nil
@@ -493,9 +501,10 @@ func claudeExporterStateIn(dir string) string {
 const maxUsageLabel = 96
 
 // accessAccount is the grouping row for sessions that use an API key or a
-// custom endpoint: one per provider and access kind. It holds no key
+// custom endpoint: one per provider and access kind (and per endpoint
+// identity when the Worker could read it). It holds no key
 // material, no host and no subscription limits.
-func accessAccount(provider string, acc sessionAccess, at int64) (ops.UsageAccount, bool) {
+func accessAccount(provider string, acc sessionAccess, at int64, salt string) (ops.UsageAccount, bool) {
 	if acc.Mode != "api" || provider == "" {
 		return ops.UsageAccount{}, false
 	}
@@ -505,5 +514,12 @@ func accessAccount(provider string, acc sessionAccess, at int64) (ops.UsageAccou
 	if acc.Kind == accessCustomEndpoint {
 		label, kind = "Custom endpoint (not told apart)", accessCustomEndpoint
 	}
-	return ops.UsageAccount{ID: ops.UsageID("session-access", provider, kind), Provider: provider, Label: label, CustomEndpoint: kind == accessCustomEndpoint, AuthMode: "api", Source: "session-host", ObservedAt: at, TimeSource: "worker_measured"}, true
+	id := ops.UsageID("session-access", provider, kind)
+	if kind == accessCustomEndpoint && acc.Endpoint != "" {
+		// Gateways differ in quota: tell them apart by a salted identity, never
+		// by the host, and keep the label generic.
+		id = ops.UsageID("session-access", provider, kind, salt, acc.Endpoint)
+		label = "Custom endpoint #" + id[:4]
+	}
+	return ops.UsageAccount{ID: id, Provider: provider, Label: label, CustomEndpoint: kind == accessCustomEndpoint, AuthMode: "api", Source: "session-host", ObservedAt: at, TimeSource: "worker_measured"}, true
 }

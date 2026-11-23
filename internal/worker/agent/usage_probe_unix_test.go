@@ -140,3 +140,24 @@ func TestInventoryProbeLeavesNoBackgroundProcess(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A cancelled forced scan leaves neither a spent cooldown nor stale inventory
+// returned as a fresh result: the retry scans again.
+func TestUsageCancelledForcedScanDoesNotSpendTheCooldown(t *testing.T) {
+	dir := usageInventoryFixture(t)
+	var cache usageInventoryCache
+	writeUsageClaudeVersion(t, dir, "1.2.3")
+	if _, err := cache.get(t.Context(), "grant", false); err != nil {
+		t.Fatal(err)
+	}
+	writeUsageClaudeVersion(t, dir, "1.2.4")
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := cache.get(cancelled, "grant", true); err == nil {
+		t.Fatal("a cancelled scan reported success")
+	}
+	report, err := cache.get(t.Context(), "grant", true)
+	if err != nil || report.Inventory[0].Version != "1.2.4" {
+		t.Fatalf("retry returned %+v, %v; want a new scan", report.Inventory, err)
+	}
+}
