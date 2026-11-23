@@ -13,13 +13,13 @@ import (
 
 func fakeEnv(t *testing.T, home string, envs map[int][]string) {
 	t.Helper()
-	old := processEnv
-	t.Cleanup(func() { processEnv = old })
+	old := processAccess
+	t.Cleanup(func() { processAccess = old })
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	processEnv = func(pid int) ([]string, bool) {
+	processAccess = func(pid int, _ bool) ([]string, string, bool) {
 		e, ok := envs[pid]
-		return filterProcessEnv([]byte(strings.Join(e, "\x00"))), ok
+		return filterProcessEnv([]byte(strings.Join(e, "\x00"))), "", ok
 	}
 }
 
@@ -88,5 +88,51 @@ func TestUsageSnapshotReportsAccessWithoutSecrets(t *testing.T) {
 	}
 	if body := strings.ToLower(string(mustJSON(t, r))); strings.Contains(body, "verysecret") || strings.Contains(body, "/v1") || strings.Contains(body, "cpa.example") {
 		t.Fatalf("secret or path leaked: %s", body)
+	}
+}
+
+func TestUsageSnapshotClaudeSettingsOverrideOAuthCredentials(t *testing.T) {
+	for _, name := range []string{"settings.json", "settings.local.json", "--settings"} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			profile := filepath.Join(home, ".claude")
+			if err := os.Mkdir(profile, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(profile, ".credentials.json"), []byte(`{"claudeAiOauth":{}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(profile, name)
+			args := []string{"claude"}
+			if name == "--settings" {
+				path = filepath.Join(home, "worker-settings.json")
+				args = append(args, "--settings", path)
+			}
+			if err := os.WriteFile(path, []byte(`{"apiKeyHelper":"/bin/key","env":{"ANTHROPIC_BASE_URL":"https://proxy.example/v1"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fakeEnv(t, home, map[int][]string{300: {"PATH=/bin"}})
+			if name == "--settings" {
+				readEnv := processAccess
+				processAccess = func(pid int, claude bool) ([]string, string, bool) {
+					env, _, ok := readEnv(pid, claude)
+					return env, path, ok && claude
+				}
+			}
+			old := usageDetector
+			t.Cleanup(func() { usageDetector = old })
+			usageDetector = agentdetect.New(agentdetect.WithProcessSource(usageProcs{
+				{PID: 100, PPID: 1, PGRP: 100, TPGID: 300, TTY: "pts/1", Args: []string{"-bash"}},
+				{PID: 300, PPID: 100, PGRP: 300, TPGID: 300, TTY: "pts/1", Args: args},
+			}))
+			host := usageHostFixture{[]term.Session{{Name: "work", Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: 100}}}}}}
+			r, err := usageSnapshot(t.Context(), host, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s := r.Sessions[0]; s.AuthMode != "api" || !s.CustomEndpoint {
+				t.Fatalf("Claude access = %q, custom endpoint = %t", s.AuthMode, s.CustomEndpoint)
+			}
+		})
 	}
 }

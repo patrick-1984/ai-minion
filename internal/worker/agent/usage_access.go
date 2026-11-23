@@ -27,10 +27,9 @@ const (
 	accessCustomEndpoint = "custom_endpoint"
 )
 
-// processEnv returns the access-relevant environment of a process, or false
-// when it is not readable or not trustworthy (another user, another
-// platform, vanished pid, a read that stalls). Tests replace it.
-var processEnv = readProcessEnv
+// processAccess returns the access-relevant environment and optional Claude
+// settings path of a verified process. Tests replace it.
+var processAccess = readProcessAccess
 
 // Environment names the Worker looks at. Only the profile directory keeps
 // its value; the endpoint and a secret keep nothing but the fact that they are
@@ -47,32 +46,32 @@ const (
 	processEnvDeadline = 500 * time.Millisecond
 )
 
-// readProcessEnv reads the environment of one process of the same user,
-// within a deadline, and reduces it to the allowlisted entries. The user check
-// and the read use the same open process directory (see readProcEnviron), so a
-// pid that is reused cannot be read as another user's process.
-func readProcessEnv(pid int) ([]string, bool) {
+// readProcessAccess reads one same-user process within a deadline and reduces
+// its environment to the allowlisted entries. The UID, environment and settings
+// argument are read through the same open process directory.
+func readProcessAccess(pid int, claude bool) ([]string, string, bool) {
 	if pid <= 0 {
-		return nil, false
+		return nil, "", false
 	}
 	type result struct {
-		env []string
-		ok  bool
+		env      []string
+		settings string
+		ok       bool
 	}
 	done := make(chan result, 1)
 	go func() {
-		raw, ok := readProcEnviron(pid)
+		raw, settings, ok := readProcAccess(pid, claude)
 		if !ok {
 			done <- result{}
 			return
 		}
-		done <- result{filterProcessEnv(raw), true}
+		done <- result{filterProcessEnv(raw), settings, true}
 	}()
 	select {
 	case r := <-done:
-		return r.env, r.ok
+		return r.env, r.settings, r.ok
 	case <-time.After(processEnvDeadline):
-		return nil, false
+		return nil, "", false
 	}
 }
 
@@ -149,13 +148,13 @@ func endpointKind(raw string, vendorHost string) string {
 // not readable as the same user) the access is unknown: the profile files are
 // never taken as the observed access of a process that could not be read.
 func detectSessionAccess(harness string, pid int) sessionAccess {
-	env, ok := processEnv(pid)
+	env, settings, ok := processAccess(pid, harness == "claude")
 	if !ok {
 		return sessionAccess{Mode: "unknown"}
 	}
 	switch harness {
 	case "claude":
-		return claudeAccess(env)
+		return claudeAccess(env, settings)
 	case "codex":
 		return codexAccess(env)
 	}
@@ -164,9 +163,10 @@ func detectSessionAccess(harness string, pid int) sessionAccess {
 
 // claudeAPIConfig reports whether the environment env and the settings of the
 // profile in dir configure an API key, a token or a key helper (key), and a
-// base URL other than the vendor's (custom). Only the facts are kept.
-func claudeAPIConfig(env []string, dir string) (key, custom bool) {
-	var settings struct {
+// base URL other than the vendor's (custom). Later settings files override
+// earlier fields. Only the classification leaves this function.
+func claudeAPIConfig(env []string, dir, settingsFile string) (key, custom bool) {
+	type claudeSettings struct {
 		Env struct {
 			BaseURL   string        `json:"ANTHROPIC_BASE_URL"`
 			APIKey    secretPresent `json:"ANTHROPIC_API_KEY"`
@@ -174,8 +174,21 @@ func claudeAPIConfig(env []string, dir string) (key, custom bool) {
 		} `json:"env"`
 		APIKeyHelper secretPresent `json:"apiKeyHelper"`
 	}
-	if raw, ok := readProfileFile(filepath.Join(dir, "settings.json")); ok {
-		_ = json.Unmarshal(raw, &settings)
+	var files []string
+	if dir != "" {
+		files = append(files, filepath.Join(dir, "settings.json"), filepath.Join(dir, "settings.local.json"))
+	}
+	if settingsFile != "" {
+		files = append(files, settingsFile)
+	}
+	var settings claudeSettings
+	for _, file := range files {
+		if raw, ok := readProfileFile(file); ok {
+			next := settings
+			if json.Unmarshal(raw, &next) == nil {
+				settings = next
+			}
+		}
 	}
 	// The process environment wins over the settings env block.
 	base := envLookup(env, "ANTHROPIC_BASE_URL")
@@ -198,11 +211,10 @@ func claudeProfileDir(env []string) string {
 	return dir
 }
 
-// ClaudeAPIAccess reports whether the Claude Code process whose environment
-// lookup answers uses an API key, a token or a custom endpoint rather than the
-// profile's login. profile is the profile directory its settings are read from.
-// It reads only the caller's own environment.
-func ClaudeAPIAccess(lookup func(string) (string, bool), profile string) bool {
+// ClaudeExporterAPIConfig classifies the Claude session that spawned an
+// exporter. It uses the inherited environment, profile settings and, when
+// visible on a same-user Claude ancestor, the session's --settings file.
+func ClaudeExporterAPIConfig(lookup func(string) (string, bool), profile string) (key, custom bool) {
 	var env []string
 	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
 		if v, ok := lookup(name); ok && v != "" {
@@ -212,21 +224,22 @@ func ClaudeAPIAccess(lookup func(string) (string, bool), profile string) bool {
 	if v, ok := lookup("ANTHROPIC_BASE_URL"); ok && v != "" {
 		env = append(env, "ANTHROPIC_BASE_URL="+endpointKind(v, "api.anthropic.com"))
 	}
-	key, custom := claudeAPIConfig(env, profile)
-	return key || custom
+	return claudeAPIConfig(env, profile, parentClaudeSettings())
 }
 
-func claudeAccess(env []string) sessionAccess {
+func claudeAccess(env []string, settings string) sessionAccess {
 	dir := claudeProfileDir(env)
-	key, custom := claudeAPIConfig(env, dir)
+	key, custom := claudeAPIConfig(env, dir, settings)
 	switch {
 	case custom:
 		return sessionAccess{Mode: "api", Kind: accessCustomEndpoint}
 	case key:
 		return sessionAccess{Mode: "api", Kind: accessAPIKey}
 	}
-	if info, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil && info.Mode().IsRegular() {
-		return sessionAccess{Mode: "subscription"}
+	if dir != "" {
+		if info, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil && info.Mode().IsRegular() {
+			return sessionAccess{Mode: "subscription"}
+		}
 	}
 	return sessionAccess{Mode: "unknown"}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -52,6 +53,131 @@ func TestAutoInstallClaudeExporterKeepsStatusLineAndIsIdempotent(t *testing.T) {
 	autoInstallClaudeExporter(context.Background(), res, state, func(string) (string, bool) { return "", false })
 	if !bytes.Equal(raw, readClaudeFixture(t, profile, "settings.json")) {
 		t.Fatal("a repeated run changed the settings")
+	}
+}
+
+func TestAutoInstallClaudeExporterBindsAndRefreshesNativeSubscription(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX shell")
+	}
+	home, state, res := autoInstallFixture(t, true, nil)
+	profile := filepath.Join(home, ".claude")
+	if err := os.Mkdir(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alternate := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", alternate)
+	mustWrite(t, filepath.Join(profile, "settings.json"), []byte(`{"statusLine":{"type":"command","command":"my-line"}}`))
+
+	binDir := t.TempDir()
+	// Claude 2.1.331 reads the default login metadata from the home directory.
+	// A CLAUDE_CONFIG_DIR override moves that metadata into the override.
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), []byte(`#!/bin/sh
+[ "$*" = "auth status" ] || exit 2
+dir="${CLAUDE_CONFIG_DIR-$HOME}"
+if [ -n "$dir" ] && IFS= read -r response < "$dir/fixture-auth-status.json"; then
+  printf '%s\n' "$response"
+else
+  printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","email":null,"orgId":null,"subscriptionType":"team"}'
+fi
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	setLogin := func(dir, email, plan string) {
+		t.Helper()
+		mustWrite(t, filepath.Join(dir, "fixture-auth-status.json"), []byte(
+			`{"loggedIn":true,"authMethod":"claude.ai","email":"`+email+`","orgId":"fixture-org","subscriptionType":"`+plan+`"}`+"\n"))
+	}
+	install := func() {
+		t.Helper()
+		if autoInstallClaudeExporter(t.Context(), res, state, os.LookupEnv) || agent.ClaudeExporterIssue() != "" {
+			t.Fatalf("installer issue %q", agent.ClaudeExporterIssue())
+		}
+	}
+	readManifest := func(dir string) *claudeUsageIntegration {
+		t.Helper()
+		m, err := readClaudeUsageManifest(filepath.Join(dir, claudeUsageManifest))
+		if err != nil || m == nil {
+			t.Fatalf("missing manifest: %v", err)
+		}
+		return m
+	}
+	wantBinding := func(dir, email, plan string) {
+		t.Helper()
+		m := readManifest(dir)
+		id := ops.UsageID("subscription", "Anthropic", email, "fixture-org")
+		if !m.Auto || m.Account != id || m.Label != email+" / "+id[:6] || m.Plan != plan {
+			t.Fatalf("wrong native binding: account %q, label %q, plan %q, auto %t", m.Account, m.Label, m.Plan, m.Auto)
+		}
+	}
+
+	setLogin(alternate, "alternate@example.com", "team")
+	install()
+	wantBinding(alternate, "alternate@example.com", "team") // Fresh install in the configured profile.
+	if m := readManifest(profile); m.Account != "" || m.Auto || m.PreviousLine != "my-line" {
+		t.Fatal("expected an installed v0.20.0 manifest without a binding")
+	}
+	settings := readClaudeFixture(t, profile, "settings.json")
+	settingsFile, err := os.Stat(filepath.Join(profile, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, step := range []struct{ email, plan, wantPlan string }{
+		{"first@example.com", "team", "team"}, // Fill the v0.20.0 manifest.
+		{"first@example.com", "max", "max"},   // Same login with a new tier.
+		{"first@example.com", "", "max"},      // No tier reported on this pass.
+		{"switched@example.com", "pro", "pro"},
+	} {
+		setLogin(home, step.email, step.plan)
+		install()
+		wantBinding(profile, step.email, step.wantPlan)
+		wantBinding(alternate, "alternate@example.com", "team")
+		currentFile, err := os.Stat(filepath.Join(profile, "settings.json"))
+		if err != nil || !os.SameFile(settingsFile, currentFile) || !bytes.Equal(settings, readClaudeFixture(t, profile, "settings.json")) {
+			t.Fatalf("account refresh rewrote settings.json: %v", err)
+		}
+	}
+
+	// An override explicitly pointing to the default settings directory
+	// selects different Claude login metadata from a plain default launch.
+	t.Setenv("CLAUDE_CONFIG_DIR", profile)
+	setLogin(profile, "override@example.com", "team")
+	install()
+	wantBinding(profile, "override@example.com", "team")
+}
+
+func TestAutoInstallClaudeExporterDoesNotBindAPIAuthToOAuth(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX shell")
+	}
+	for _, method := range []string{"api_key_helper", "api_key"} {
+		t.Run(method, func(t *testing.T) {
+			home, state, res := autoInstallFixture(t, true, nil)
+			profile := filepath.Join(home, ".claude")
+			if err := os.Mkdir(profile, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			mustWrite(t, filepath.Join(profile, "settings.json"), []byte(`{"apiKeyHelper":"/bin/key","env":{"ANTHROPIC_BASE_URL":"https://proxy.example/v1"}}`))
+			mustWrite(t, filepath.Join(profile, ".credentials.json"), []byte(`{"claudeAiOauth":{}}`))
+			bin := t.TempDir()
+			status := `{"loggedIn":true,"authMethod":"` + method + `","apiProvider":"firstParty","email":"oauth@example.com","orgId":"fixture-org","subscriptionType":"max"}`
+			if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\n[ \"$*\" = 'auth status' ] || exit 2\nprintf '%s\\n' '"+status+"'\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin)
+			if autoInstallClaudeExporter(t.Context(), res, state, os.LookupEnv) || agent.ClaudeExporterIssue() != "" {
+				t.Fatalf("installer issue %q", agent.ClaudeExporterIssue())
+			}
+			m, err := readClaudeUsageManifest(filepath.Join(profile, claudeUsageManifest))
+			if err != nil || m == nil {
+				t.Fatalf("missing manifest: %v", err)
+			}
+			if m.Account != "" || m.Profile != "" || m.Label != "" || m.Plan != "" || m.Auto {
+				t.Fatal("API authentication bound the profile's subscription")
+			}
+		})
 	}
 }
 

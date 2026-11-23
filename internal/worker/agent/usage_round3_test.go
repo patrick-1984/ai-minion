@@ -85,20 +85,20 @@ func TestProcessEnvironmentIsReadThroughTheVerifiedDirectory(t *testing.T) {
 		t.Skip("procfs")
 	}
 	self := os.Getpid()
-	if _, ok := readProcessEnv(self); !ok {
+	if _, _, ok := readProcessAccess(self, false); !ok {
 		t.Fatal("own environment unreadable")
 	}
 	old := workerUID
 	t.Cleanup(func() { workerUID = old })
 	workerUID = func() int { return os.Getuid() + 1 }
-	if _, ok := readProcessEnv(self); ok {
+	if _, _, ok := readProcessAccess(self, false); ok {
 		t.Fatal("another user's process read")
 	}
 	workerUID = old
 	oldRoot := procRoot
 	t.Cleanup(func() { procRoot = oldRoot })
 	procRoot = t.TempDir() // a vanished process: no directory
-	if _, ok := readProcessEnv(self); ok {
+	if _, _, ok := readProcessAccess(self, false); ok {
 		t.Fatal("read without a process directory")
 	}
 }

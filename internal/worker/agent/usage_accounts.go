@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -475,7 +476,20 @@ func readClaudeAuth(ctx context.Context, profileDir string) (nativeAccount, bool
 		if !filepath.IsAbs(profileDir) {
 			return n, false
 		}
-		cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+profileDir)
+		const profileEnv = "CLAUDE_CONFIG_DIR"
+		home, err := os.UserHomeDir()
+		profile := filepath.Clean(profileDir)
+		// Claude reads ~/.claude.json for the default profile. An override
+		// moves that login metadata into the chosen directory, even if it is
+		// ~/.claude. Preserve an override the user already set for this profile.
+		if err == nil && profile == filepath.Join(home, ".claude") && filepath.Clean(os.Getenv(profileEnv)) != profile {
+			cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
+				name, _, _ := strings.Cut(entry, "=")
+				return name == profileEnv || runtime.GOOS == "windows" && strings.EqualFold(name, profileEnv)
+			})
+		} else {
+			cmd.Env = append(os.Environ(), profileEnv+"="+profileDir)
+		}
 	}
 	var raw usageOutput
 	cmd.Stdout = &raw
@@ -510,8 +524,8 @@ func claudeNativeKey(n nativeAccount, hubPublic string) (ops.UsageAccount, bool)
 	return a, err == nil
 }
 
-// CurrentClaudeSubscription resolves the native login while the local owner
-// is configuring this specific profile. It is never called per turn or hook.
+// CurrentClaudeSubscription resolves the native login during manual or
+// automatic setup for this specific profile. It is never called per turn or hook.
 func CurrentClaudeSubscription(ctx context.Context, profileDir string) (ops.UsageAccount, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

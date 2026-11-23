@@ -69,7 +69,7 @@ func (p usagePage) ExporterAbsentOn(workerID string) bool { return p.exporterAbs
 func (p usagePage) ClaudeSilent(s ops.UsageSessionRow) bool {
 	c := s.UsageCounters
 	return s.Harness == "claude" && s.Model == "" && len(s.Models) == 0 && c.ContextTokens == nil && c.EstimatedCostUSD == nil &&
-		c.InputTokens == nil && c.OutputTokens == nil && c.CostUSD == nil
+		c.InputTokens == nil && c.OutputTokens == nil && c.CostUSD == nil && s.LastResponseUsage == nil && len(s.Windows) == 0
 }
 
 // NeedsRestart reports whether a running, silent Claude session started
@@ -104,11 +104,12 @@ func (p *usagePage) noteExporters(workers []ops.UsageWorkerRow) {
 }
 
 type usageAccountCard struct {
-	Account   ops.UsageAccountRow
-	Observed  string
-	Freshness string
-	Windows   []usageWindowView
-	StaleWhy  string
+	Account         ops.UsageAccountRow
+	Observed        string
+	Freshness       string
+	Windows         []usageWindowView
+	StaleWhy        string
+	NoFiveHourLimit bool
 }
 
 type usageWindowView struct {
@@ -446,15 +447,66 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 	if next != "" {
 		p.NextURL = usageURL(section, p.WorkerID, p.BucketID, next)
 	}
+	var missingFiveHours []int
 	for _, a := range accounts {
-		p.Accounts = append(p.Accounts, p.accountCard(a))
+		card := p.accountCard(a)
+		if card.missingFiveHourLimit(p.Rows.AsOf) {
+			missingFiveHours = append(missingFiveHours, len(p.Accounts))
+		}
+		p.Accounts = append(p.Accounts, card)
+	}
+	if len(missingFiveHours) > 0 {
+		overview := p.Rows.Overview
+		if section == "accounts" && overview == nil {
+			// A comparable account may be on a different page of this scope.
+			var limits ops.UsageListResult
+			if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "overview", WorkerID: args.WorkerID, BucketID: args.BucketID}, &limits); err == nil {
+				overview = limits.Overview
+			}
+		}
+		p.noteFiveHourLimits(missingFiveHours, overview)
 	}
 	return p, nil
 }
 
+func usageFiveHourLimit(duration *int64) bool {
+	return duration != nil && *duration == (5*time.Hour).Milliseconds()
+}
+
+func (c usageAccountCard) missingFiveHourLimit(nowMS int64) bool {
+	if c.Freshness != "Fresh" || c.Account.AuthMode != "subscription" {
+		return false
+	}
+	current := false
+	for _, w := range c.Account.Windows {
+		if usageFiveHourLimit(w.DurationMS) {
+			return false
+		}
+		if w.UsedPercent != nil && (w.ResetsAt == nil || *w.ResetsAt > nowMS) {
+			current = true
+		}
+	}
+	return current
+}
+
+func (p *usagePage) noteFiveHourLimits(candidates []int, overview *ops.UsageOverview) {
+	if overview == nil {
+		return
+	}
+	providers := map[string]bool{}
+	for _, group := range overview.Groups {
+		if group.Known > 0 && usageFiveHourLimit(group.DurationMS) {
+			providers[group.Provider] = true
+		}
+	}
+	for _, i := range candidates {
+		p.Accounts[i].NoFiveHourLimit = providers[ops.UsageProvider(p.Accounts[i].Account.Provider)]
+	}
+}
+
 func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 	now := time.UnixMilli(p.Rows.AsOf)
-	stale := now.Sub(time.UnixMilli(a.ObservedAt)) > 15*time.Minute
+	stale := now.Sub(time.UnixMilli(a.ObservedAt)) > ops.UsageMeterMaxAge
 	card := usageAccountCard{Account: a, Observed: p.Time(&a.ObservedAt), Freshness: "Fresh"}
 	if stale {
 		card.Freshness = "Stale"
@@ -463,10 +515,17 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 		card.Freshness = "Unknown"
 	}
 	card.StaleWhy = p.staleWhy(card)
-	if a.AuthMode != "subscription" {
-		return card
+	if a.AuthMode == "subscription" || a.AuthMode == "api" && a.CustomEndpoint {
+		card.Windows = p.WindowViews(a.Windows, a.ObservedAt)
 	}
-	for _, w := range a.Windows {
+	return card
+}
+
+func (p usagePage) WindowViews(windows []ops.UsageWindow, observedAt int64) []usageWindowView {
+	now := time.UnixMilli(p.Rows.AsOf)
+	stale := now.Sub(time.UnixMilli(observedAt)) > ops.UsageMeterMaxAge
+	views := make([]usageWindowView, 0, len(windows))
+	for _, w := range windows {
 		view := usageWindowView{Title: usageWindowTitle(w), Scope: w.Scope, Period: p.Period(w.Period, w.DurationMS), Used: p.Percent(w.UsedPercent), Reset: p.Time(w.ResetsAt), Unit: w.Unit}
 		view.RemainingPercent = "Unknown"
 		if w.UsedPercent != nil {
@@ -496,7 +555,7 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 			}
 		}
 		n := 1
-		for _, prev := range card.Windows {
+		for _, prev := range views {
 			if strings.HasPrefix(prev.Title, view.Title) && (prev.Title == view.Title || strings.HasPrefix(prev.Title, view.Title+" (")) {
 				n++
 			}
@@ -504,9 +563,9 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 		if n > 1 {
 			view.Title = fmt.Sprintf("%s (%d)", view.Title, n)
 		}
-		card.Windows = append(card.Windows, view)
+		views = append(views, view)
 	}
-	return card
+	return views
 }
 
 func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {

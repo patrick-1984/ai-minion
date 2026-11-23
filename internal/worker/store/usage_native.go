@@ -173,7 +173,8 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 			}
 		}
 		if n.AuthMode == "api" && n.AccountID == "" && base.AuthMode == "api" {
-			n.AccountID = base.AccountID // the exporter saw API access; the Worker knows the grouping
+			// Older exporters recorded API access without the endpoint kind.
+			n.AccountID, n.CustomEndpoint = base.AccountID, base.CustomEndpoint
 		}
 		n.ID = base.ID
 		n.StartedAt = base.StartedAt

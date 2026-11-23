@@ -149,13 +149,18 @@ const (
 	claudeAccessUnverified claudeAccessEvidence = iota
 	claudeAccessSubscription
 	claudeAccessAPI
+	claudeAccessCustomEndpoint
 )
 
 func claudeUsageAccess(lookup func(string) (string, bool), profile string) claudeAccessEvidence {
-	switch {
-	case lookup == nil:
+	if lookup == nil {
 		return claudeAccessUnverified
-	case agent.ClaudeAPIAccess(lookup, profile):
+	}
+	key, custom := agent.ClaudeExporterAPIConfig(lookup, profile)
+	switch {
+	case custom:
+		return claudeAccessCustomEndpoint
+	case key:
 		return claudeAccessAPI
 	}
 	return claudeAccessSubscription
@@ -182,7 +187,7 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 		return
 	}
 
-	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic"}
+	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic", CustomEndpoint: access == claudeAccessCustomEndpoint}
 	if mode != "status-line" {
 		var event struct {
 			Name     string `json:"hook_event_name"`

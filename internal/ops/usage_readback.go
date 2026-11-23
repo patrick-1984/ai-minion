@@ -288,7 +288,8 @@ func usageSumAll(cs []usageContribution, get func(UsageWindow) *float64) *float6
 // an unweighted mean (never a capacity-weighted figure) and is not derived
 // from amounts, an amount is summed only when every fresh account reports it
 // in that unit, and nothing is inferred from anything else. Groups whose unit
-// the document cannot express are counted in the second result.
+// the document cannot express are counted in the second result. Fresh account
+// observations contribute to coverage only for windows they report.
 func ProviderMeters(accounts []UsageAccount, now time.Time) ([]UsageMeter, int) {
 	return providerMeters(accounts, now, false)
 }
@@ -306,26 +307,25 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 			latest[a.ID] = a
 		}
 	}
-	totals := map[string]int{}
+	unknownAccounts := map[string]int{}
 	type group struct {
-		key         usageGroupKey
-		known, aged []usageContribution
+		known, aged  []usageContribution
+		freshPresent int
 	}
 	groups := map[usageGroupKey]*group{}
-	// One account contributes at most once to a group, whatever spelling its
-	// windows use: the first usable window of the stored observation wins.
-	type contributed struct {
-		account string
-		key     usageGroupKey
-	}
-	seen := map[contributed]bool{}
 	nowMS := now.UnixMilli()
 	for _, a := range latest {
 		if a.AuthMode != "subscription" {
 			continue
 		}
 		provider := UsageProvider(a.Provider)
-		totals[provider]++
+		stale := nowMS-a.ObservedAt > UsageMeterMaxAge.Milliseconds()
+		if stale || a.Source == "native-account" && len(a.Windows) == 0 {
+			unknownAccounts[provider]++
+		}
+		// Aliases can map several windows to one group. Record group presence
+		// once per account and use its first usable window for the measurement.
+		seen := map[usageGroupKey]bool{}
 		for _, w := range a.Windows {
 			w.Unit = usageUnitNative(w.Unit)
 			if w.Unit == "percent" {
@@ -342,15 +342,20 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 			}
 			g := groups[k]
 			if g == nil {
-				g = &group{key: k}
+				g = &group{}
 				groups[k] = g
 			}
-			if !usageWindowUsable(w) || seen[contributed{a.ID, k}] {
+			previousUsable, present := seen[k]
+			usable := usageWindowUsable(w)
+			seen[k] = previousUsable || usable
+			if !present && !stale {
+				g.freshPresent++
+			}
+			if previousUsable || !usable {
 				continue
 			}
-			seen[contributed{a.ID, k}] = true
 			c := usageContribution{w: w, obs: a.ObservedAt}
-			if nowMS-a.ObservedAt > UsageMeterMaxAge.Milliseconds() || w.ResetsAt != nil && *w.ResetsAt <= nowMS {
+			if stale || w.ResetsAt != nil && *w.ResetsAt <= nowMS {
 				g.aged = append(g.aged, c)
 			} else {
 				c.fresh = true
@@ -418,7 +423,7 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 			m.ObservedAt = min(m.ObservedAt, c.obs)
 			m.ExpiresAt = min(m.ExpiresAt, c.deadline())
 		}
-		m.Coverage = UsageMeterCoverage{Known: len(g.known), Stale: len(g.aged), Unknown: max(0, totals[k.provider]-len(g.known)-len(g.aged))}
+		m.Coverage = UsageMeterCoverage{Known: len(g.known), Stale: len(g.aged), Unknown: unknownAccounts[k.provider] + g.freshPresent - len(g.known) - len(g.aged)}
 
 		span := k.period
 		if k.hasDuration {

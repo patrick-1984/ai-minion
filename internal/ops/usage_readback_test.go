@@ -139,8 +139,8 @@ func TestProviderMetersEachQuantityIndependently(t *testing.T) {
 			t.Fatalf("%+v", ms)
 		}
 		for _, m := range ms {
-			if m.Coverage.Known != 1 || m.Coverage.Unknown != 1 {
-				t.Fatalf("each unit group covers one of two accounts: %+v", m.Coverage)
+			if m.Coverage.Known != 1 || m.Coverage.Unknown != 0 {
+				t.Fatalf("each unit group covers the account that reports it: %+v", m.Coverage)
 			}
 		}
 	})
@@ -158,7 +158,7 @@ func TestProviderMetersEachQuantityIndependently(t *testing.T) {
 			rbAccount("c", "anthropic", now.Add(-time.Hour), pct(90)),
 		}, now)
 		m := ms[0]
-		if m.Coverage != (UsageMeterCoverage{Known: 1, Stale: 1, Unknown: 1}) || *m.UsedPercent != 40 {
+		if m.Coverage != (UsageMeterCoverage{Known: 1, Stale: 1}) || *m.UsedPercent != 40 {
 			t.Fatalf("%+v", m)
 		}
 	})
