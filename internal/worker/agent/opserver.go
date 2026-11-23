@@ -327,7 +327,7 @@ func (s *OpServer) ServeStream(linkCtx context.Context, st OpStream) {
 	}
 	_ = st.SetReadDeadline(time.Time{})
 
-	out := &opOutput{st: st, timeout: s.cfg.WriteTimeout}
+	out := &opOutput{st: st, timeout: s.cfg.WriteTimeout, sent: make(chan struct{})}
 	if typ, _ := proto.FrameType(body); typ == proto.TypeShareProbe {
 		if s.expired(linkCtx) {
 			st.Reset()
@@ -378,6 +378,7 @@ func (s *OpServer) ServeStream(linkCtx context.Context, st OpStream) {
 		defer context.AfterFunc(s.stopCtx, cancel)()
 	}
 	ctx = WithProgress(ctx, out.progress)
+	ctx = context.WithValue(ctx, replySentKey{}, (<-chan struct{})(out.sent))
 
 	// The Hub resets the stream when its caller goes away and sends nothing
 	// after the request, so any read result before the final frame means the
@@ -708,6 +709,10 @@ type opOutput struct {
 	// end, when set, runs before the final frame (ServeStream stops the
 	// stream watcher with it).
 	end func()
+	// sent is closed once the final frame has been written (or has failed
+	// and the stream was reset); a handler can wait on it through
+	// [ReplySent] before an action that ends the process.
+	sent chan struct{}
 
 	mu   sync.Mutex
 	done bool
@@ -747,6 +752,9 @@ func (o *opOutput) finish(v any) {
 		return
 	}
 	o.done = true
+	if o.sent != nil {
+		defer close(o.sent)
+	}
 	if o.end != nil {
 		o.end()
 	}
@@ -763,4 +771,13 @@ func (o *opOutput) finish(v any) {
 		return
 	}
 	_ = o.st.Close()
+}
+
+type replySentKey struct{}
+
+// ReplySent returns a channel that is closed when the answer of the op in ctx
+// has been written to the Hub, or nil when ctx belongs to no op stream.
+func ReplySent(ctx context.Context) <-chan struct{} {
+	c, _ := ctx.Value(replySentKey{}).(<-chan struct{})
+	return c
 }

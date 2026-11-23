@@ -31,7 +31,7 @@ func TestUsageSnapshotTakesOneBoundedProcessQuery(t *testing.T) {
 		sessions = append(sessions, term.Session{Name: string(rune('a' + i)), Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: 100 + i}}}})
 	}
 	start := time.Now()
-	r, err := usageSnapshot(context.Background(), usageHostFixture{sessions}, false, "")
+	r, err := usageSnapshot(context.Background(), usageHostFixture{sessions})
 	if err != nil {
 		t.Fatal(err)
 	}

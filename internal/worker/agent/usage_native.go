@@ -19,16 +19,9 @@ type NativeUsageOptions struct {
 	Format, Session, NativeID, Harness, Model, Provider, EventID string
 	Account                                                      *ops.UsageAccount
 	CustomEndpoint                                               bool
-	// APIKey marks verified API-key access at the vendor's endpoint. Endpoint
-	// is the access identity of a custom endpoint (see sessionAccess) and Salt
-	// the Worker's local grant that salts it.
-	APIKey         bool
-	Endpoint, Salt string
+	// APIKey marks verified API-key access at the vendor's endpoint.
+	APIKey bool
 }
-
-// EndpointIdentity reduces the base URL of a session to the identity an
-// exporter passes in NativeUsageOptions.Endpoint.
-func EndpointIdentity(raw string) string { return endpointHash(raw) }
 
 type claudeUsageWindow struct {
 	Percent *float64 `json:"used_percentage"`
@@ -153,14 +146,17 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 	}
 	s.ContextLimit = n.Context.Limit
 	s.CacheWriteTokens = n.Cache.Writes
-	if a != nil && a.Provider == "Anthropic" && (a.AuthMode == "subscription" || s.CustomEndpoint) {
+	// Limits seen through a custom endpoint belong to that session alone: the
+	// route's quota is not the account's, and no account carries windows of a
+	// route it cannot identify. Only a subscription account carries windows.
+	switch {
+	case a != nil && a.Provider == "Anthropic" && a.AuthMode == "subscription":
 		a.Windows = claudeRateWindows(n.Limits)
 		if len(a.Windows) > 0 {
 			a.Source = "claude-statusline"
 		}
-		if s.CustomEndpoint {
-			s.Windows = a.Windows
-		}
+	case s.CustomEndpoint:
+		s.Windows = claudeRateWindows(n.Limits)
 	}
 	var limit *struct {
 		claudeUsageWindow
@@ -308,9 +304,9 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 	if opts.CustomEndpoint || opts.APIKey {
 		acc := sessionAccess{Mode: "api", Kind: accessAPIKey}
 		if opts.CustomEndpoint {
-			acc = sessionAccess{Mode: "api", Kind: accessCustomEndpoint, Endpoint: opts.Endpoint}
+			acc = sessionAccess{Mode: "api", Kind: accessCustomEndpoint}
 		}
-		if endpoint, ok := accessAccount(s.Provider, acc, s.ObservedAt, opts.Salt); ok {
+		if endpoint, ok := accessAccount(s.Provider, acc, s.ObservedAt); ok {
 			account = &endpoint
 		}
 	}

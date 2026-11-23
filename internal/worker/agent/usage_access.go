@@ -2,8 +2,6 @@ package agent
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/url"
@@ -24,9 +22,6 @@ type sessionAccess struct {
 	// Kind refines "api": accessAPIKey (the vendor's endpoint with a key or
 	// token) or accessCustomEndpoint (any other base URL).
 	Kind string
-	// Endpoint tells custom endpoints apart: a hash of the base URL's host and
-	// port. It stays in this process; only a salted form is ever sent.
-	Endpoint string
 }
 
 const (
@@ -110,11 +105,7 @@ func filterProcessEnv(raw []byte) []string {
 		case slices.Contains(envValueNames, name):
 			out = append(out, kv)
 		case envEndpointNames[name] != "":
-			kind := endpointKind(value, envEndpointNames[name])
-			out = append(out, name+"="+kind)
-			if id := endpointHash(value); kind == "custom" && id != "" {
-				out = append(out, name+"_ID="+id)
-			}
+			out = append(out, name+"="+endpointKind(value, envEndpointNames[name]))
 		case slices.Contains(envPresenceNames, name):
 			out = append(out, name+"=1")
 		}
@@ -171,17 +162,6 @@ func endpointKind(raw string, vendorHost string) string {
 	return "custom"
 }
 
-// endpointHash is a stable, non-secret identity of the host (and port) of a
-// base URL, or "" when it cannot be parsed. It is never sent as is.
-func endpointHash(raw string) string {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(strings.ToLower(u.Host)))
-	return hex.EncodeToString(sum[:16])
-}
-
 // detectSessionAccess classifies the session of harness running as pid.
 // pid is the verified agent process; without it (pid 0, or a process that is
 // not readable as the same user) the access is unknown: the profile files are
@@ -206,7 +186,7 @@ func detectSessionAccess(harness string, pid int) sessionAccess {
 // precedence: user profile, the project's .claude settings, the inline
 // --settings, managed settings; later fields override earlier ones. Only the
 // classification leaves this function.
-func claudeAPIConfig(env []string, dir string, src claudeSrc) (key, custom bool, endpoint string) {
+func claudeAPIConfig(env []string, dir string, src claudeSrc) (key, custom bool) {
 	type claudeSettings struct {
 		Env struct {
 			BaseURL   string        `json:"ANTHROPIC_BASE_URL"`
@@ -219,8 +199,8 @@ func claudeAPIConfig(env []string, dir string, src claudeSrc) (key, custom bool,
 	if dir != "" {
 		files = append(files, filepath.Join(dir, "settings.json"), filepath.Join(dir, "settings.local.json"))
 	}
-	if filepath.IsAbs(src.Cwd) {
-		files = append(files, filepath.Join(src.Cwd, ".claude", "settings.json"), filepath.Join(src.Cwd, ".claude", "settings.local.json"))
+	for _, root := range claudeProjectDirs(src.Cwd) {
+		files = append(files, filepath.Join(root, ".claude", "settings.json"), filepath.Join(root, ".claude", "settings.local.json"))
 	}
 	var settings claudeSettings
 	merge := func(raw []byte) {
@@ -246,14 +226,46 @@ func claudeAPIConfig(env []string, dir string, src claudeSrc) (key, custom bool,
 		read(file)
 	}
 	// The process environment wins over the settings env block.
-	base, endpoint := envLookup(env, "ANTHROPIC_BASE_URL"), envLookup(env, "ANTHROPIC_BASE_URL_ID")
+	base := envLookup(env, "ANTHROPIC_BASE_URL")
 	if base == "" && settings.Env.BaseURL != "" {
 		base = endpointKind(settings.Env.BaseURL, "api.anthropic.com")
-		endpoint = endpointHash(settings.Env.BaseURL)
 	}
 	key = envLookup(env, "ANTHROPIC_API_KEY") != "" || envLookup(env, "ANTHROPIC_AUTH_TOKEN") != "" ||
 		bool(settings.Env.APIKey) || bool(settings.Env.AuthToken) || bool(settings.APIKeyHelper)
-	return key, base == "custom", endpoint
+	return key, base == "custom"
+}
+
+// claudeProjectDirs lists the directories whose .claude settings apply to a
+// Claude process started in cwd, lowest precedence first: the project root
+// (the nearest ancestor with a .git entry, else the nearest with a .claude
+// directory, as Claude Code finds it) and cwd itself when it is a
+// subdirectory. A launch from a subdirectory thus still reads the
+// repository's settings.
+func claudeProjectDirs(cwd string) []string {
+	if !filepath.IsAbs(cwd) {
+		return nil
+	}
+	root := ""
+	for dir := filepath.Clean(cwd); ; {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			root = dir
+			break
+		}
+		if root == "" {
+			if info, err := os.Stat(filepath.Join(dir, ".claude")); err == nil && info.IsDir() {
+				root = dir
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	if root == "" || root == filepath.Clean(cwd) {
+		return []string{filepath.Clean(cwd)}
+	}
+	return []string{root, filepath.Clean(cwd)}
 }
 
 func claudeProfileDir(env []string) string {
@@ -270,7 +282,7 @@ func claudeProfileDir(env []string) string {
 // ClaudeExporterAPIConfig classifies the Claude session that spawned an
 // exporter. It uses the inherited environment, profile settings and, when
 // visible on a same-user Claude ancestor, the session's --settings file.
-func ClaudeExporterAPIConfig(lookup func(string) (string, bool), profile string) (key, custom bool, endpoint string) {
+func ClaudeExporterAPIConfig(lookup func(string) (string, bool), profile string) (key, custom bool) {
 	var env []string
 	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
 		if v, ok := lookup(name); ok && v != "" {
@@ -278,17 +290,17 @@ func ClaudeExporterAPIConfig(lookup func(string) (string, bool), profile string)
 		}
 	}
 	if v, ok := lookup("ANTHROPIC_BASE_URL"); ok && v != "" {
-		env = append(env, "ANTHROPIC_BASE_URL="+endpointKind(v, "api.anthropic.com"), "ANTHROPIC_BASE_URL_ID="+endpointHash(v))
+		env = append(env, "ANTHROPIC_BASE_URL="+endpointKind(v, "api.anthropic.com"))
 	}
 	return claudeAPIConfig(env, profile, parentClaudeSrc())
 }
 
 func claudeAccess(env []string, src claudeSrc) sessionAccess {
 	dir := claudeProfileDir(env)
-	key, custom, endpoint := claudeAPIConfig(env, dir, src)
+	key, custom := claudeAPIConfig(env, dir, src)
 	switch {
 	case custom:
-		return sessionAccess{Mode: "api", Kind: accessCustomEndpoint, Endpoint: endpoint}
+		return sessionAccess{Mode: "api", Kind: accessCustomEndpoint}
 	case key:
 		return sessionAccess{Mode: "api", Kind: accessAPIKey}
 	}
@@ -303,7 +315,7 @@ func claudeAccess(env []string, src claudeSrc) sessionAccess {
 func codexAccess(env []string) sessionAccess {
 	switch {
 	case envLookup(env, "OPENAI_BASE_URL") == "custom":
-		return sessionAccess{Mode: "api", Kind: accessCustomEndpoint, Endpoint: envLookup(env, "OPENAI_BASE_URL_ID")}
+		return sessionAccess{Mode: "api", Kind: accessCustomEndpoint}
 	case envLookup(env, "OPENAI_API_KEY") != "":
 		return sessionAccess{Mode: "api", Kind: accessAPIKey}
 	}

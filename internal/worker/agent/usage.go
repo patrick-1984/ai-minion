@@ -19,6 +19,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
 
@@ -70,18 +71,22 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 				}
 			}
 		} else {
-			r, err = usageSnapshot(ctx, e.host, false, grant)
+			// The inventory is refreshed first and the sessions are listed
+			// after it: a forced refresh then never ends with a session list
+			// that is older than the timestamp it carries.
+			var scan ops.UsageReport
+			if a.Inventory {
+				if scan, err = cache.get(ctx, grant, a.Fresh); err != nil {
+					return nil, err
+				}
+			}
+			r, err = usageSnapshot(ctx, e.host)
 			if err != nil {
 				return nil, err
 			}
-		}
-		if a.Inventory && a.AccountID == "" {
-			scan, err := cache.get(ctx, grant, a.Fresh)
-			if err != nil {
-				return nil, err
+			if a.Inventory {
+				r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, mergeUsageAccounts(scan.Accounts, r.Accounts), scan.InventoryAt
 			}
-			r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, mergeUsageAccounts(scan.Accounts, r.Accounts), scan.InventoryAt
-			r.ObservedAt = scan.ObservedAt
 		}
 		if a.AccountID == "" {
 			if err := reg.NativeUsage(ctx, &r, a.AfterEvent); err != nil {
@@ -113,19 +118,22 @@ var usageProcTimeout = agentdetect.SnapshotTimeout
 // usageHarnessProvider names the vendor of a harness that has exactly one.
 var usageHarnessProvider = map[string]string{"claude": "Anthropic", "codex": "OpenAI"}
 
-func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool, salt string) (ops.UsageReport, error) {
+func usageSnapshot(ctx context.Context, host usageSessionHost) (ops.UsageReport, error) {
 	list := host.ListSessions
 	if h, ok := host.(interface {
 		ListUsageSessions(context.Context) ([]term.Session, error)
 	}); ok {
 		list = h.ListUsageSessions
 	}
+	// The report is stamped before the sessions are listed: a pane opened
+	// while it is built is then absent from an older snapshot, never from a
+	// newer one, so the Hub cannot take a live session for a stopped one.
+	now := time.Now().UTC()
+	at := now.UnixMilli()
 	sessions, err := list(ctx)
 	if err != nil {
 		return ops.UsageReport{}, apiErr(proto.CodeConflict, "", "session metadata is unavailable")
 	}
-	now := time.Now().UTC()
-	at := now.UnixMilli()
 	r := ops.UsageReport{Version: ops.UsageVersion, ObservedAt: at, Complete: true, Sessions: []ops.UsageSession{}}
 	if len(sessions) > 256 {
 		return r, apiErr(proto.CodeConflict, "", "session inventory exceeds the supported batch size")
@@ -151,7 +159,7 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool, s
 				row.Provider = usageHarnessProvider[row.Harness]
 				acc := detectSessionAccess(row.Harness, pid)
 				row.AuthMode, row.CustomEndpoint = acc.Mode, acc.Kind == accessCustomEndpoint
-				if a, ok := accessAccount(row.Provider, acc, at, salt); ok {
+				if a, ok := accessAccount(row.Provider, acc, at); ok {
 					row.AccountID = a.ID
 					accounts[a.ID] = a
 				}
@@ -163,12 +171,6 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool, s
 		r.Accounts = append(r.Accounts, a)
 	}
 	slices.SortFunc(r.Accounts, func(a, b ops.UsageAccount) int { return strings.Compare(a.ID, b.ID) })
-	if inventory {
-		r.Inventory = usageInventory(ctx)
-		r.Accounts = mergeUsageAccounts(discoverUsageAccounts(ctx, r.Inventory, ""), r.Accounts)
-		refreshClaudeExporter(r.Inventory)
-		r.ObservedAt = time.Now().UnixMilli()
-	}
 	if err := fitUsageReport(&r, time.Now()); err != nil {
 		return ops.UsageReport{}, apiErr(proto.CodeConflict, "", "session metadata could not be represented")
 	}
@@ -503,25 +505,11 @@ func claudeExporterStateIn(dir string) string {
 const maxUsageLabel = 96
 
 // accessAccount is the grouping row for sessions that use an API key or a
-// custom endpoint: one per provider and access kind (and per endpoint
-// identity when the Worker could read it). It holds no key
-// material, no host and no subscription limits.
-func accessAccount(provider string, acc sessionAccess, at int64, salt string) (ops.UsageAccount, bool) {
+// custom endpoint: one per provider and access kind (see
+// store.AggregateAPIAccount).
+func accessAccount(provider string, acc sessionAccess, at int64) (ops.UsageAccount, bool) {
 	if acc.Mode != "api" || provider == "" {
 		return ops.UsageAccount{}, false
 	}
-	// The Worker never reads a key, so keys of one provider cannot be told
-	// apart: the row says so instead of posing as one credential.
-	label, kind := "API keys (not told apart)", accessAPIKey
-	if acc.Kind == accessCustomEndpoint {
-		label, kind = "Custom endpoint (not told apart)", accessCustomEndpoint
-	}
-	id := ops.UsageID("session-access", provider, kind)
-	if kind == accessCustomEndpoint && acc.Endpoint != "" {
-		// Gateways differ in quota: tell them apart by a salted identity, never
-		// by the host, and keep the label generic.
-		id = ops.UsageID("session-access", provider, kind, salt, acc.Endpoint)
-		label = "Custom endpoint #" + id[:4]
-	}
-	return ops.UsageAccount{ID: id, Provider: provider, Label: label, CustomEndpoint: kind == accessCustomEndpoint, AuthMode: "api", Source: "session-host", ObservedAt: at, TimeSource: "worker_measured"}, true
+	return store.AggregateAPIAccount(provider, acc.Kind == accessCustomEndpoint, at), true
 }

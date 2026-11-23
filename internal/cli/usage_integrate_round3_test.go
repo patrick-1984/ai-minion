@@ -206,7 +206,7 @@ func TestExporterRecordsAnAPISessionWithoutTheSubscription(t *testing.T) {
 	}
 }
 
-func TestExporterRecordsClaudeProxyLimitsOnTheCustomEndpointAccount(t *testing.T) {
+func TestExporterKeepsClaudeProxyLimitsOnTheSessionOnly(t *testing.T) {
 	st, en := claudeFixtureEnrollment(t, true)
 	ctx := t.Context()
 	grant, err := st.UsageGrantID(ctx, en.WorkerID)
@@ -220,7 +220,7 @@ func TestExporterRecordsClaudeProxyLimitsOnTheCustomEndpointAccount(t *testing.T
 	now := time.Now()
 	status := []byte(`{"session_id":"proxy-fixture","rate_limits":{"seven_day":{"used_percentage":25,"resets_at":1800000000}}}`)
 	access := claudeUsageAccess(mapEnv(nil), profile)
-	recordClaudeUsageAt(ctx, m, "status-line", "proxy-work", access, claudeUsageEndpoint(mapEnv(nil), profile), status, now)
+	recordClaudeUsage(ctx, m, "status-line", "proxy-work", access, status, now)
 	report := ops.UsageReport{ObservedAt: now.Add(time.Minute).UnixMilli(), Sessions: []ops.UsageSession{{
 		ID: ops.UsageID("host-session", "proxy"), Name: "proxy-work", StartedAt: new(now.Add(-time.Minute).UnixMilli()), AuthMode: "subscription",
 	}}}
@@ -238,7 +238,31 @@ func TestExporterRecordsClaudeProxyLimitsOnTheCustomEndpointAccount(t *testing.T
 		t.Fatalf("got %d accounts, want one custom endpoint account", len(report.Accounts))
 	}
 	a := report.Accounts[0]
-	if a.ID != s.AccountID || !strings.HasPrefix(a.Label, "Custom endpoint #") || !a.CustomEndpoint || a.AuthMode != "api" || a.SourceSessionID != s.ID || len(a.Windows) != 1 || a.Windows[0].UsedPercent == nil || *a.Windows[0].UsedPercent != 25 {
+	if a.ID != s.AccountID || a.Label != "Anthropic custom endpoint (not told apart)" || !a.CustomEndpoint || a.AuthMode != "api" || a.SourceSessionID != s.ID || len(a.Windows) != 0 {
 		t.Fatalf("wrong custom endpoint account: %+v", a)
+	}
+}
+
+// A saved Console key leaves no environment trace: an automatically bound
+// subscription is attached only when this very document carries rate limits.
+func TestExporterDoesNotAttachAnOldSubscriptionWithoutEvidence(t *testing.T) {
+	st, en := claudeFixtureEnrollment(t, true)
+	ctx := context.Background()
+	grant, _ := st.UsageGrantID(ctx, en.WorkerID)
+	acct := ops.UsageID("subscription", "old")
+	m := claudeUsageIntegration{StateDir: st.Dir(), Grant: claudeUsageGrant(grant), Account: acct, Auto: true}
+	now := time.Now()
+	recordClaudeUsage(ctx, m, "status-line", "console", claudeAccessSubscription, []byte(`{"session_id":"c1","cost":{"total_cost_usd":1.5}}`), now)
+	recordClaudeUsage(ctx, m, "status-line", "sub", claudeAccessSubscription, []byte(`{"session_id":"c2","rate_limits":{"seven_day":{"used_percentage":5,"resets_at":1800000000}}}`), now)
+	start := now.Add(-time.Minute).UnixMilli()
+	report := ops.UsageReport{ObservedAt: now.Add(time.Minute).UnixMilli(), Sessions: []ops.UsageSession{
+		{ID: ops.UsageID("host-session", "a"), Name: "console", StartedAt: &start},
+		{ID: ops.UsageID("host-session", "b"), Name: "sub", StartedAt: &start},
+	}}
+	if err := st.NativeUsage(ctx, &report, 0); err != nil {
+		t.Fatal(err)
+	}
+	if report.Sessions[0].AccountID != "" || report.Sessions[1].AccountID != acct {
+		t.Fatalf("accounts: %q %q", report.Sessions[0].AccountID, report.Sessions[1].AccountID)
 	}
 }
