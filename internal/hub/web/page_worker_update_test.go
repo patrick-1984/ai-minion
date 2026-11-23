@@ -1,9 +1,11 @@
 package web
 
 import (
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -102,4 +104,93 @@ func TestWorkersRowHasNewSessionAndForgetInline(t *testing.T) {
 		t.Fatalf("New session and Forget are not in one action row:\n%s", body)
 	}
 	mustHave(t, body, `hx-post="/workers/w1/remove"`, `hx-confirm="Forget worker laptop of alice (id w1)?`)
+}
+
+// A failed attempt is shown next to the Update button on the Workers page and
+// on the Worker page.
+func TestUpdateFailureIsShownOnBothPages(t *testing.T) {
+	withHubVersion(t, "v0.9.0")
+	failed := wOld
+	failed.UpdateFailed = "Update to v0.9.0 failed: v0.9.0 is not published on GitHub yet (2026-11-23 10:00 UTC)"
+	d := Dashboard{Admin: true, Workers: []WorkerRow{failed}}
+	s, _ := listServer(t, d, d)
+	for _, path := range []string{"/workers", "/workers/w1"} {
+		body := get(t, s, path, "X-Test-Session", adminHeader).Body.String()
+		mustHave(t, body, `data-update-failed`, `Update to v0.9.0 failed: v0.9.0 is not published on GitHub yet`)
+	}
+	body := get(t, s, "/workers", "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `action="/workers/w1/update"`)
+}
+
+// A release the Hub cannot see publicly gets a disabled button and the reason.
+func TestUpdateIsDisabledForAnUnpublishedRelease(t *testing.T) {
+	withHubVersion(t, "v0.9.0")
+	SetPublishedSource(func(tag string) (bool, bool) { return false, true })
+	t.Cleanup(func() { SetPublishedSource(nil) })
+	d := Dashboard{Admin: true, Workers: []WorkerRow{wOld}}
+	s, _ := listServer(t, d, d)
+	body := get(t, s, "/workers", "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `data-update-unpublished`, `v0.9.0 is not published yet`, `data-control="update" disabled`)
+	mustNotHave(t, body, `action="/workers/w1/update"`)
+	// An unknown state keeps the button.
+	SetPublishedSource(func(string) (bool, bool) { return false, false })
+	body = get(t, s, "/workers", "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `action="/workers/w1/update"`)
+	mustNotHave(t, body, `data-update-unpublished`)
+}
+
+func TestNotPublishedTextFollowsTheSource(t *testing.T) {
+	t.Cleanup(func() { SetPublishedSource(nil) })
+	if notPublishedText("v1.0.0") != "" {
+		t.Error("no source must say nothing")
+	}
+	SetPublishedSource(func(tag string) (bool, bool) { return tag == "v1.0.0", true })
+	if got := notPublishedText("v1.0.1"); got != "v1.0.1 is not published yet" {
+		t.Errorf("unpublished = %q", got)
+	}
+	if got := notPublishedText("v1.0.0"); got != "" {
+		t.Errorf("published = %q", got)
+	}
+}
+
+// The Hub reads the Worker's update status: a failed attempt to the Hub's
+// release shows with its real cause and time; an old Worker's "no matching
+// release" gets the same wording as a new one; other targets and states show
+// nothing.
+func TestUpdateFailureTextFromTheWorkerStatus(t *testing.T) {
+	at := ops.Timestamp(time.Date(2026, 11, 23, 10, 5, 0, 0, time.UTC))
+	status := ops.WorkerUpdateStatus{State: ops.UpdateStateFailed, To: "v0.9.0", Error: `no matching release for "v0.9.0"`, At: &at}
+	f := newFakeOps().on(ops.OpWorkerUpdateStatus, func(map[string]any) (any, error) { return status, nil })
+	r := httptest.NewRequest("GET", "/workers", nil)
+	forgetUpdateFailure("wf")
+	got := updateFailureText(r, f, "wf", "v0.9.0")
+	want := "Update to v0.9.0 failed: v0.9.0 is not published on GitHub yet (the release is still a draft or missing); try again after it is published (2026-11-23 10:05 UTC)"
+	if got != want {
+		t.Fatalf("text = %q\nwant   %q", got, want)
+	}
+	// Reused within the TTL: no second call.
+	updateFailureText(r, f, "wf", "v0.9.0")
+	if n := len(f.called(ops.OpWorkerUpdateStatus)); n != 1 {
+		t.Errorf("status calls = %d, want 1 (cached)", n)
+	}
+	// A failure to another version, or a state that is not failed: nothing.
+	status.To = "v0.8.9"
+	forgetUpdateFailure("wf")
+	if got := updateFailureText(r, f, "wf", "v0.9.0"); got != "" {
+		t.Errorf("other target = %q", got)
+	}
+	status = ops.WorkerUpdateStatus{State: ops.UpdateStateIdle}
+	forgetUpdateFailure("wf")
+	if got := updateFailureText(r, f, "wf", "v0.9.0"); got != "" {
+		t.Errorf("idle = %q", got)
+	}
+}
+
+// A refusal that carries the old wording is reworded in the answer.
+func TestWorkerUpdateRefusalWordsAnUnpublishedRelease(t *testing.T) {
+	withHubVersion(t, "v0.9.0")
+	f := newFakeOps().reply(ops.OpWorkerUpdate, ops.WorkerUpdateResult{Reason: `no matching release for "v0.9.0"`})
+	connect(t, f)
+	rec := post(t, adminServer(t), "/workers/w1/update", adminHeader, url.Values{})
+	mustHave(t, rec.Body.String(), "v0.9.0 is not published on GitHub yet")
 }

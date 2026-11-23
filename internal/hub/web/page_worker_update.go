@@ -11,6 +11,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -50,13 +53,101 @@ func updatable(w ops.WorkerInfo, target string) bool {
 	return w.Online && !w.Pending && proto.HasFeature(w.Features, proto.FeatureSelfUpdate) && workerOutdated(w.Build, target)
 }
 
+// PublishedSource says whether the release tag is published on GitHub as far
+// as the Hub's release check knows: known is false when it has no recent list
+// (the check is off or has not answered), and the Update button then stays on.
+type PublishedSource func(tag string) (published, known bool)
+
+var publishedSource atomic.Pointer[PublishedSource]
+
+// SetPublishedSource installs the release list of the Hub's update check (nil
+// removes it).
+func SetPublishedSource(f PublishedSource) {
+	if f == nil {
+		publishedSource.Store(nil)
+		return
+	}
+	publishedSource.Store(&f)
+}
+
+// notPublishedText is the reason shown instead of an Update button for a
+// release the Hub cannot see publicly; empty when it is published or unknown.
+func notPublishedText(target string) string {
+	if p := publishedSource.Load(); p != nil {
+		if published, known := (*p)(target); known && !published {
+			return target + " is not published yet"
+		}
+	}
+	return ""
+}
+
+// updateStatusTTL is how long a Worker's update status is reused, so that a
+// live page does not ask every outdated Worker on each refresh.
+const updateStatusTTL = 10 * time.Second
+
+type cachedUpdateFailure struct {
+	at   time.Time
+	text string
+}
+
+var (
+	updateFailMu    sync.Mutex
+	updateFailCache = map[string]cachedUpdateFailure{}
+)
+
+// forgetUpdateFailure drops the cached status of a Worker (after a new attempt).
+func forgetUpdateFailure(id string) {
+	updateFailMu.Lock()
+	delete(updateFailCache, id)
+	updateFailMu.Unlock()
+}
+
+// updateFailureText is "Update to vX failed: <reason> (<time>)" when the
+// Worker's last update attempt to target failed, else "". It asks the Worker
+// (worker_update_status, which Workers serve since v0.9.0), at most once per
+// updateStatusTTL; a Worker that cannot answer shows nothing.
+func updateFailureText(r *http.Request, c OpCaller, id, target string) string {
+	updateFailMu.Lock()
+	e, ok := updateFailCache[id]
+	updateFailMu.Unlock()
+	if ok && time.Since(e.at) < updateStatusTTL {
+		return e.text
+	}
+	text := ""
+	var st ops.WorkerUpdateStatus
+	if err := c.CallOp(r, ops.OpWorkerUpdateStatus, ops.WorkerUpdateStatusArgs{WorkerID: id}, &st); err == nil &&
+		st.State == ops.UpdateStateFailed && st.To == target {
+		text = "Update to " + target + " failed: " + friendlyUpdateError(st.Error, target)
+		if st.At != nil {
+			text += " (" + time.Time(*st.At).UTC().Format("2006-01-02 15:04 UTC") + ")"
+		}
+	}
+	updateFailMu.Lock()
+	updateFailCache[id] = cachedUpdateFailure{at: time.Now(), text: text}
+	updateFailMu.Unlock()
+	return text
+}
+
+// friendlyUpdateError words the error of a Worker that still says "no
+// matching release" (before v0.20.1) as what it means.
+func friendlyUpdateError(msg, target string) string {
+	if strings.HasPrefix(msg, "no matching release") {
+		return target + " is not published on GitHub yet (the release is still a draft or missing); try again after it is published"
+	}
+	return msg
+}
+
 func updateOne(r *http.Request, c OpCaller, id string, force bool) (ops.WorkerUpdateResult, error) {
 	target, ok := updateTarget()
 	if !ok {
 		return ops.WorkerUpdateResult{}, fmt.Errorf("this Hub is a development build: there is no release to update Workers to")
 	}
 	var res ops.WorkerUpdateResult
+	forgetUpdateFailure(id)
 	err := c.CallOp(r, ops.OpWorkerUpdate, ops.WorkerUpdateArgs{WorkerID: id, Version: target, Force: force}, &res)
+	if !res.Accepted {
+		res.Reason = friendlyUpdateError(res.Reason, target)
+	}
 	return res, err
 }
 

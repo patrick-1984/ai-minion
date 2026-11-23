@@ -242,6 +242,20 @@ func (r Release) Asset(name string) (Asset, bool) {
 // ErrNoRelease means no release matches the selector.
 var ErrNoRelease = errors.New("no matching release")
 
+// noReleaseError is ErrNoRelease with the real cause. The release list was
+// fetched, so for one exact version it is not published (a draft is not listed
+// publicly, nor is a missing tag).
+type noReleaseError struct{ sel Selector }
+
+func (e noReleaseError) Is(target error) bool { return target == ErrNoRelease }
+
+func (e noReleaseError) Error() string {
+	if e.sel.IsChannel() {
+		return fmt.Sprintf("no published release matches %q", e.sel)
+	}
+	return fmt.Sprintf("%s is not published on GitHub yet (the release is still a draft or missing); try again after it is published", e.sel)
+}
+
 // Resolve returns the newest published release that satisfies the selector.
 // Drafts and releases with an unparsable tag are ignored; a channel also
 // ignores pre-releases, so an -rc never satisfies "1.4", "1" or "latest".
@@ -270,7 +284,7 @@ func (s Selector) Resolve(releases []Release) (Release, SemVer, error) {
 		}
 	}
 	if !found {
-		return Release{}, SemVer{}, fmt.Errorf("%w for %q", ErrNoRelease, s)
+		return Release{}, SemVer{}, noReleaseError{sel: s}
 	}
 	return best, bestVer, nil
 }
