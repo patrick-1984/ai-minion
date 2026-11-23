@@ -15,28 +15,34 @@ import (
 // covers a profile that appears after the start.
 const claudeAutoInstallEvery = 10 * time.Minute
 
+// claudeAutoInstallPending is how often it looks while the Worker is not yet
+// enrolled or usage monitoring is not yet accepted, so a newly joined Worker
+// reports usage within a minute instead of after the first long interval.
+const claudeAutoInstallPending = 30 * time.Second
+
 // autoInstallClaudeExporter installs the Claude Code usage exporter in every
 // Claude profile the Worker knows, once usage monitoring is accepted. It
 // reuses installClaudeUsage, which is idempotent, keeps the previous status
 // line and refuses a setup it cannot keep. A profile under managed settings is
-// never touched. The outcome is reported through the harness scan.
-func autoInstallClaudeExporter(ctx context.Context, res *config.Resolver, stateDir string, lookup func(string) (string, bool)) {
+// never touched. The outcome is reported through the harness scan. It reports
+// pending when a profile waits for enrollment or for the usage consent.
+func autoInstallClaudeExporter(ctx context.Context, res *config.Resolver, stateDir string, lookup func(string) (string, bool)) (pending bool) {
 	if v, err := res.Resolve(config.KeyUsageClaudeExporter); err == nil && v.Value == "off" {
 		agent.SetClaudeExporterIssue(ops.UsageExporterOff)
-		return
+		return false
 	}
 	agent.SetClaudeExporterIssue("")
 	if agent.ClaudeManagedOverrides(agent.ClaudeManagedSettingsFile) {
 		agent.SetClaudeExporterIssue(ops.UsageExporterOverridden)
-		return
+		return false
 	}
 	binary, err := os.Executable()
 	if err != nil {
-		return
+		return false
 	}
 	shell, powerShell, err := claudeUsageShell(lookup)
 	if err != nil {
-		return
+		return false
 	}
 	for _, dir := range agent.ClaudeProfileDirs() {
 		if _, err := os.Stat(dir); err != nil {
@@ -45,24 +51,31 @@ func autoInstallClaudeExporter(ctx context.Context, res *config.Resolver, stateD
 		integration := claudeUsageIntegration{Version: 1, Binary: binary, StateDir: stateDir, Shell: shell, PowerShell: powerShell}
 		_, err := installClaudeUsage(ctx, dir, integration, agent.CurrentClaudeSubscription)
 		switch {
-		case err == nil, errors.Is(err, errClaudeNotEnrolled), errors.Is(err, errClaudeNotAccepted), ctx.Err() != nil:
+		case errors.Is(err, errClaudeNotEnrolled), errors.Is(err, errClaudeNotAccepted):
+			pending = true
+		case err == nil, ctx.Err() != nil:
 		case errors.Is(err, errClaudeHooksDisabled):
 			agent.SetClaudeExporterIssue(ops.UsageExporterOverridden)
 		default:
 			agent.SetClaudeExporterIssue(ops.UsageExporterConflict)
 		}
 	}
+	return pending
 }
 
 // runClaudeAutoInstall runs autoInstallClaudeExporter at the start and then
-// periodically until ctx ends.
+// periodically until ctx ends: every 30 seconds while it waits for the
+// enrollment or the usage consent, then every 10 minutes.
 func runClaudeAutoInstall(ctx context.Context, res *config.Resolver, stateDir string, lookup func(string) (string, bool)) {
 	for {
-		autoInstallClaudeExporter(ctx, res, stateDir, lookup)
+		wait := claudeAutoInstallEvery
+		if autoInstallClaudeExporter(ctx, res, stateDir, lookup) {
+			wait = claudeAutoInstallPending
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(claudeAutoInstallEvery):
+		case <-time.After(wait):
 		}
 	}
 }

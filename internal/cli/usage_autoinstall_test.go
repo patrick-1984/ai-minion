@@ -93,11 +93,15 @@ func TestAutoInstallClaudeExporterRespectsOptOutManagedSettingsConsentAndNoProfi
 	}
 
 	profile, state, res = prep(t, false, nil) // monitoring not accepted
-	autoInstallClaudeExporter(context.Background(), res, state, lookup)
+	if !autoInstallClaudeExporter(context.Background(), res, state, lookup) {
+		t.Fatal("a profile waiting for the usage consent is not reported as pending, so the next try waits the long interval")
+	}
 	unchanged(t, profile)
 
 	_, state, res = autoInstallFixture(t, true, nil) // no Claude profile at all
-	autoInstallClaudeExporter(context.Background(), res, state, lookup)
+	if autoInstallClaudeExporter(context.Background(), res, state, lookup) {
+		t.Fatal("pending without a profile")
+	}
 	if agent.ClaudeExporterIssue() != "" {
 		t.Fatalf("issue without a profile: %q", agent.ClaudeExporterIssue())
 	}
