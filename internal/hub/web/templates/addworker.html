@@ -3,14 +3,14 @@
   <p class="notice notice-info" data-join-saved><strong>The invitation is saved.</strong> It is listed on the <a href="/invitations">Invitations</a> page until it expires, is used or you revoke it. Leaving this page does not delete it. Only the secret token text cannot be shown again, so copy it first.</p>
   <p><a class="btn" href="/workers/add" data-join-done>Done</a></p>
   <p><strong>Join command{{if .Name}} for "{{.Name}}"{{end}} created.</strong> It works once and expires: {{.Expires}}.</p>
-  {{template "join_usage_disclosure" .UsageDisclosure}}
-  {{template "hosted_join" .}}
-  <p data-join-checks>What the Worker checks: it connects only to the Hub with fingerprint <span class="fp-words">{{.HubWords}}</span> (<code>{{.HubFull}}</code>) at {{.Server}}, and enrolls with the one-time key in the token; the key works once and expires. On the Hub host, <code>minion hub identity --words</code> shows the same words.</p>
   <p><strong>Copy it now. It is shown only once and cannot be shown again.</strong> If you lose it, revoke the key on the <a href="/invitations">Invitations</a> page and create a new command. The new Worker starts as <strong>pending</strong>: approve it on the Workers page.</p>
   <div class="field">
     <label for="join-token">Join token</label>
     <div><div class="copy-field copy-field-wide"><textarea class="copy-value copy-wrap" id="join-token" rows="1" readonly autocomplete="off" spellcheck="false">{{.Token}}</textarea><button type="button" class="copy-btn" data-copy="#join-token" data-copy-target="#join-token" aria-label="Copy the token" title="Copy">{{template "copy-icons"}}</button></div></div>
   </div>
+  <p data-join-checks>What the Worker checks: it connects only to the Hub with fingerprint <span class="fp-words">{{.HubWords}}</span> (<code>{{.HubFull}}</code>) at {{.Server}}, and enrolls with the one-time key in the token; the key works once and expires. On the Hub host, <code>minion hub identity --words</code> shows the same words.</p>
+  {{template "join_usage_disclosure" .UsageDisclosure}}
+  {{template "hosted_join" .}}
   {{if .KeyedOK}}<details><summary>All commands and files</summary>
   <h3>Linux or macOS</h3>
   <p class="muted">Run this in the terminal of the user whose sessions the Worker will serve. Choose what to share, then check the fingerprints in the startup summary. The Worker runs in the background and starts again at boot or login. Without a terminal the Worker shares all sessions; to keep them private, change <code>--non-interactive-share all</code> to <code>none</code> or <code>later</code> and choose in the Hub.</p>
@@ -19,7 +19,7 @@
   <p class="muted">Use sudo to install a system service on Linux with systemd. The sharing question lists the sessions of the user who ran sudo. Choose <code>r</code> there to run the Worker as root and serve root’s sessions instead. Without a terminal the Worker shares all sessions (the purpose of a Worker); change <code>--non-interactive-share all</code> to <code>none</code> or <code>later</code> to choose in the Hub instead.</p>
   {{template "fold" .Fold.System}}
   <h3>Windows (PowerShell)</h3>
-  <p class="muted">Run this in a normal PowerShell window. The Worker starts in the background and returns at each logon.</p>
+  <p class="muted">Run this in a normal PowerShell window. The Worker starts in the background and returns at each logon. Like the Linux and macOS commands, it carries the token, which stays in your PowerShell history.</p>
   {{template "fold" .Fold.Windows}}
   <h3>Docker</h3>
   <p class="muted">Downloads <code>bootstrap.sh</code>, enrolls using a temporary container, and starts the enrolled Worker with Docker’s restart policy. The container hosts its own tmux sessions. Without a terminal the Worker shares all sessions (the purpose of a Worker); to keep them private, change <code>--non-interactive-share all</code> to <code>none</code> or <code>later</code> and choose in the Hub. The identity and settings stay in the data volume.</p>

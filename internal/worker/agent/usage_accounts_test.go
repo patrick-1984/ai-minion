@@ -47,8 +47,8 @@ func TestUsageNativeReadOnlyCodexRPC(t *testing.T) {
 		t.Fatal(methods)
 	}
 	b, _ := json.Marshal(out)
-	if bytes.Contains(b, []byte(email)) || bytes.Contains(b, []byte("private fixture")) {
-		t.Fatal("native private data escaped")
+	if bytes.Contains(b, []byte("private fixture")) || !strings.HasPrefix(out.Label, email+" / ") {
+		t.Fatalf("native private data escaped or the label is not the full address: %q", out.Label)
 	}
 	sent.Reset()
 	if _, err = readCodexAccount(codexStatusPipe{bufio.NewScanner(strings.NewReader(reply)), json.NewEncoder(&sent)}, ops.UsageID("other"), now); err == nil || strings.Contains(sent.String(), "rateLimits/read") {
@@ -154,5 +154,21 @@ func TestOpenRouterOriginAndHintsForDistinctCredentials(t *testing.T) {
 	short, err := APIUsageAccount("test", "https://Z7SHORT.example.invalid/private", "z7short", []byte(scope), 1)
 	if err != nil || short.EndpointOrigin != "" || strings.Contains(strings.ToLower(short.KeyHint), "z7short") {
 		t.Fatal("credential in hostname was disclosed")
+	}
+}
+
+func TestNativeLoginLabelIsTheFullAddress(t *testing.T) {
+	digest := ops.UsageID("subscription", "openai", "x")
+	for _, c := range []struct{ email, want string }{
+		{"patrick@Formula5.com", "patrick@formula5.com / " + digest[:6]},
+		{" a.b+c@example.org ", "a.b+c@example.org / " + digest[:6]},
+		{"cac797@formula5.com", "cac797@formula5.com / " + digest[:6]},
+		{"not an address", "openai profile " + digest[:10]},
+		{"a b@example.org", "openai profile " + digest[:10]},
+		{"", "openai profile " + digest[:10]},
+	} {
+		if got := nativeLoginLabel("openai", c.email, digest); got != c.want {
+			t.Errorf("%q: got %q, want %q", c.email, got, c.want)
+		}
 	}
 }

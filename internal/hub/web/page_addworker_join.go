@@ -214,9 +214,9 @@ type joinResult struct {
 
 // hostedJoin contains the release installer variants for a newly issued token.
 type hostedJoin struct {
-	OneLiner, Masked, Service, Root, ComposeInstall, WindowsInstall FoldBlock
-	Verified, VerifiedMasked                                        FoldBlock
-	HasInstaller, HasVerified, KeyedOK                              bool
+	OneLiner, Masked, Service, Root, ComposeInstall, WindowsInstall, WindowsMasked FoldBlock
+	Verified, VerifiedMasked                                                       FoldBlock
+	HasInstaller, HasVerified, KeyedOK                                             bool
 }
 
 func hostedJoinCommands(token, name string, keyed bool) hostedJoin {
@@ -235,7 +235,8 @@ func hostedJoinCommands(token, name string, keyed bool) hostedJoin {
 	out.Service = foldBlock("join-service-install", "Copy the command", installerModeLine(tag, token, name, "--service"))
 	out.Root = foldBlock("join-root-install", "Copy the command", installerModeLine(tag, token, name, "--root"))
 	out.ComposeInstall = foldBlock("join-compose-install", "Copy the command", installerModeLine(tag, token, name, "--compose"))
-	out.WindowsInstall = foldBlock("join-windows-install", "Copy the command", windowsInstallerLine(tag, name))
+	out.WindowsMasked = foldBlock("join-windows-masked", "Copy the command", windowsInstallerLine(tag, "", name))
+	out.WindowsInstall = foldBlock("join-windows-install", "Copy the command", windowsInstallerLine(tag, token, name))
 	warmInstaller()
 	if offer, ok := cachedInstaller(); ok {
 		out.HasVerified = true

@@ -64,12 +64,13 @@ type codexLimits struct {
 	ByID   map[string]nativeLimits `json:"rateLimitsByLimitId"`
 }
 
-// A native login label distinguishes personal and work domains without
-// publishing the complete address. A digest suffix also distinguishes two
-// workspaces of the same masked login. If the field is not a simple address,
-// the account keeps its opaque label.
+// A native login label is the full account address (it is not a secret; only
+// the Worker owner and Hub administrators see it), with the domain in lower
+// case. A digest suffix tells two workspaces of the same login apart. If the
+// field is not a simple address, the account keeps its opaque label.
 func nativeLoginLabel(provider, email, digest string) string {
-	user, domain, ok := strings.Cut(strings.TrimSpace(email), "@")
+	email = strings.TrimSpace(email)
+	user, domain, ok := strings.Cut(email, "@")
 	fallback := provider + " profile " + digest[:10]
 	if !ok || user == "" || len(domain) > 64 || len(domain) < 3 || !strings.Contains(domain, ".") {
 		return fallback
@@ -79,19 +80,12 @@ func nativeLoginLabel(provider, email, digest string) string {
 			return fallback
 		}
 	}
-	letters := []rune(user)
-	first := letters[0]
-	if !unicode.IsLetter(first) && !unicode.IsDigit(first) {
-		return fallback
-	}
-	mask := string(first) + "***"
-	if len(letters) >= 4 {
-		last := letters[len(letters)-1]
-		if unicode.IsLetter(last) || unicode.IsDigit(last) {
-			mask += string(last)
+	for _, r := range user {
+		if r <= ' ' || r == '@' || r == '/' || r == 127 {
+			return fallback
 		}
 	}
-	return mask + "@" + strings.ToLower(domain) + " / " + digest[:6]
+	return user + "@" + strings.ToLower(domain) + " / " + digest[:6]
 }
 
 func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageAccount, bool) {

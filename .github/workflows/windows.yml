@@ -171,6 +171,22 @@ jobs:
       - name: State directory of the test
         shell: bash
         run: echo "MINION_STATE_DIR=$(cygpath -w "$RUNNER_TEMP")\\minion-state" >> "$GITHUB_ENV"
+      - name: install.ps1 -Join reads MINION_JOIN without prompting (Windows PowerShell 5.1 and pwsh)
+        shell: powershell
+        timeout-minutes: 2
+        run: |
+          $probe = @'
+          $env:MINION_JOIN = 'mnj1-bad token!'
+          try { & ([scriptblock]::Create((Get-Content -Raw deploy/install.ps1))) -Join -Version v0.0.0; 'NOERROR' }
+          catch { $msg = $_.Exception.Message }
+          if ($env:MINION_JOIN) { 'NOTCLEARED' }
+          $msg
+          '@
+          foreach ($exe in 'powershell', 'pwsh') {
+            $out = (& $exe -NoProfile -NonInteractive -Command $probe 2>&1) -join "`n"
+            Write-Host "$exe : $out"
+            if ($out -notmatch 'paste the full join token' -or $out -match 'NOERROR|NOTCLEARED') { throw "$exe : install.ps1 did not reject the bad MINION_JOIN as expected" }
+          }
       - name: Build minion.exe (CGO_ENABLED=0, as released) into the user's programs, as install.ps1 does
         shell: bash
         run: |
