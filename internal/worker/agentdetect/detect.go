@@ -384,16 +384,11 @@ func ProcessHarness(args []string) string {
 
 func (d *Detector) agentResult(a *Agent, scr ops.Screen) Result {
 	state, choices := screenState(a, scr)
-	bg := false
-	if state == ops.PaneStateStable && len(a.Background) > 0 {
-		// Only the reported state changes: screenState (turn detection)
-		// keeps seeing the idle prompt.
-		raw, _ := tail(scr.Lines, stateWindow, func(s string) string { return strings.TrimRight(s, " \t") })
-		if matchAny(raw, a.Background) {
-			state, bg = ops.PaneStateBusy, true
-		}
+	background := state == ops.PaneStateStable && a.Name == "claude" && ClaudeBackgroundWork(scr)
+	if background {
+		state = ops.PaneStateBusy
 	}
-	return Result{Kind: ops.PaneKindAgentPrefix + a.Name, State: state, Choices: choices, Background: bg}
+	return Result{Kind: ops.PaneKindAgentPrefix + a.Name, State: state, Choices: choices, Background: background}
 }
 
 // matchProgram returns the agent whose Commands contain the normalised

@@ -632,7 +632,7 @@ func TestHandlerSourceSnapshotMergesWorkersAndSessions(t *testing.T) {
 			{ID: "w1", Name: "laptop", Owner: "alice", Kind: ops.WorkerKindPrivate, Online: true, ProtoVersion: "1.0"},
 			{ID: "w2", Name: "buildbox", Owner: "bob", Kind: ops.WorkerKindInfrastructure},
 		}},
-		sessions: `{"sessions":[{"worker_id":"w1","worker":"laptop","owner":"alice","session":"fix-tests","kind":"agent:claude","state":"busy","task":"t","online":true,"screen_hash":"h"},
+		sessions: `{"sessions":[{"worker_id":"w1","worker":"laptop","owner":"alice","session":"fix-tests","kind":"agent:claude","state":"busy","task":"t","online":true,"screen_hash":"h","state_source":"claude-hooks","state_reason":"1 subagent","last_event":"2026-11-23T23:09:17.000Z"},
 		{"worker_id":"w2","worker":"buildbox","owner":"bob","session":"ci","kind":"shell","state":"idle","online":false}]}`,
 	}
 	src := NewHandlerSource(NewHandlerCaller(api.handler()))
@@ -644,7 +644,8 @@ func TestHandlerSourceSnapshotMergesWorkersAndSessions(t *testing.T) {
 		d.Workers[1].Online || d.Workers[1].Kind != "infrastructure" {
 		t.Errorf("workers = %+v", d.Workers)
 	}
-	if len(d.Sessions) != 2 || d.Sessions[0] != (SessionRow{WorkerID: "w1", Worker: "laptop", Owner: "alice", Name: "fix-tests", Kind: "agent:claude", State: "busy", Task: "t", Online: true}) ||
+	if len(d.Sessions) != 2 || d.Sessions[0] != (SessionRow{WorkerID: "w1", Worker: "laptop", Owner: "alice", Name: "fix-tests", Kind: "agent:claude", State: "busy", Task: "t", Online: true,
+		PaneStateDetail: ops.PaneStateDetail{StateSource: "claude-hooks", StateReason: "1 subagent", LastEvent: ops.Timestamp(time.Date(2026, 11, 23, 23, 9, 17, 0, time.UTC))}}) ||
 		d.Sessions[1].Online || d.Sessions[1].Name != "ci" {
 		t.Errorf("sessions = %+v", d.Sessions)
 	}

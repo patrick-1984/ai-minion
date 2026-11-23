@@ -32,6 +32,7 @@ const (
 
 var claudeUsageEvents = []string{
 	"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted", "CwdChanged", "PostModelSwitch",
+	"StopFailure", "PermissionRequest", "PermissionDenied", "PostToolBatch", "Notification", "Elicitation", "ElicitationResult",
 }
 
 var (
@@ -145,7 +146,7 @@ func newUsageIntegrateCmd(deps workerConfigDeps) *cobra.Command {
 	claude.Flags().BoolVar(&remove, "remove", false, "Remove the integration from the profile and restore its previous status line")
 	claude.Flags().StringVar(&account, "account", "", "Known Anthropic subscription account fingerprint from Minion Usage")
 	claude.Flags().StringVar(&profile, "subscription-profile", "", "Explicit name shared across Workers using the same Anthropic subscription")
-	cmd.AddCommand(claude, newClaudeUsageExportCmd(deps.lookupEnv))
+	cmd.AddCommand(claude, newClaudeUsageExportCmd(deps.lookupEnv), newCodexUsageExportCmd(deps.lookupEnv))
 	return cmd
 }
 

@@ -40,8 +40,8 @@ type SnapshotFrame struct {
 
 // EventFrame is an "event" frame. Seq grows by exactly one per frame on one
 // event stream, so the Hub detects a gap and reopens the stream. Event is one
-// of the Event* names. Kind, State and Task are set for session_added and
-// state_changed (a change of the task is a state_changed), ScreenHash for
+// of the Event* names. Kind, State, state provenance and Task are reported
+// for session_added and state_changed. ScreenHash is reported for
 // session_added and screen_changed; a session_removed names only the session.
 //
 // Task is a pointer so that the wire tells "no task" from "not reported": on
@@ -57,6 +57,7 @@ type EventFrame struct {
 	State      string        `json:"state,omitempty"`
 	Task       *string       `json:"task,omitempty"`
 	ScreenHash string        `json:"screen_hash,omitempty"`
+	ops.PaneStateDetail
 	// Share is the share rule now in force and its revision. It is set on the
 	// first event of a look in which the rule changed (or on a share_changed
 	// event of its own, which names no session, when the look has no other
@@ -73,6 +74,9 @@ const EventShareChanged = "share_changed"
 // eventFrameOf builds the frame of a change.
 func eventFrameOf(seq uint64, at time.Time, c Change) EventFrame {
 	f := EventFrame{Type: proto.TypeEvent, Seq: seq, Time: ops.Timestamp(at), Event: c.Event, Session: c.Session.Name}
+	if c.Event == EventSessionAdded || c.Event == EventStateChanged {
+		f.PaneStateDetail = c.Session.PaneStateDetail
+	}
 	switch c.Event {
 	case EventSessionAdded:
 		task := c.Session.Task

@@ -51,7 +51,12 @@ func newClaudeUsageExportCmd(lookup func(string) (string, bool)) *cobra.Command 
 						return
 					}
 				}
-				recordClaudeUsage(ctx, *m, mode, claudeUsageSession(ctx, lookup), claudeUsageAccess(lookup, profile), payload, at)
+				session, pane, created, pid, birth := harnessPaneProcess(ctx, lookup, m.StateDir, "claude")
+				if session == "" {
+					// Older hosts can still provide the original usage attribution.
+					session = claudeUsageSession(ctx, lookup)
+				}
+				recordBoundClaudeUsage(ctx, *m, mode, session, pane, created, pid, birth, claudeUsageAccess(lookup, profile), payload, at, lookup)
 			})
 		},
 	}
@@ -186,6 +191,14 @@ func claudeShowsSubscription(raw []byte) bool {
 }
 
 func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, raw []byte, at time.Time) {
+	recordClaudeUsageAt(ctx, m, mode, session, access, raw, at)
+}
+
+func recordClaudeUsageAt(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, raw []byte, at time.Time) {
+	recordBoundClaudeUsage(ctx, m, mode, session, "", 0, 0, "", access, raw, at, nil)
+}
+
+func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session, pane string, created int64, pid int, birth string, access claudeAccessEvidence, raw []byte, at time.Time, lookup func(string) (string, bool)) {
 	if session == "" || ctx.Err() != nil {
 		return
 	}
@@ -206,6 +219,13 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 		return
 	}
 
+	if pane != "" && created > 0 && claudeStateEnabled(m.StateDir, lookup) {
+		if event, ok := parseClaudeHarnessEvent(mode, raw, grant, at); ok {
+			event.Session, event.Pane, event.Created = session, pane, created
+			event.ProcessPID, event.ProcessBirth = pid, birth
+			_ = st.RecordHarnessEvent(ctx, grant, event)
+		}
+	}
 	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic", CustomEndpoint: access == claudeAccessCustomEndpoint, APIKey: access == claudeAccessAPI}
 	if mode != "status-line" {
 		var event struct {

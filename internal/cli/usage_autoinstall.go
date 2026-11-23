@@ -11,14 +11,14 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 )
 
-// claudeAutoInstallEvery is how often a running Worker looks again, which also
+// usageAutoInstallEvery is how often a running Worker looks again, which also
 // covers a profile that appears after the start.
-const claudeAutoInstallEvery = 10 * time.Minute
+const usageAutoInstallEvery = 10 * time.Minute
 
-// claudeAutoInstallPending is how often it looks while the Worker is not yet
+// usageAutoInstallPending is how often it looks while the Worker is not yet
 // enrolled or usage monitoring is not yet accepted, so a newly joined Worker
 // reports usage within a minute instead of after the first long interval.
-const claudeAutoInstallPending = 30 * time.Second
+const usageAutoInstallPending = 30 * time.Second
 
 // autoInstallClaudeExporter installs the Claude Code usage exporter in every
 // Claude profile the Worker knows, once usage monitoring is accepted. It
@@ -74,18 +74,21 @@ func autoInstallClaudeExporter(ctx context.Context, res *config.Resolver, stateD
 	return pending
 }
 
-// runClaudeAutoInstall runs autoInstallClaudeExporter at the start and then
+// runUsageAutoInstall runs the native exporters at the start and then
 // periodically until ctx ends: every 30 seconds while it waits for the
 // enrollment or the usage consent, then every 10 minutes.
 //
 // resolver returns the policy resolver and is called before every pass, so
-// that a change of usage_claude_exporter (also "off", saved to remove the
+// that a change of exporter settings (including "off", to disable the
 // integration) applies without a restart.
-func runClaudeAutoInstall(ctx context.Context, resolver func() *config.Resolver, stateDir string, lookup func(string) (string, bool)) {
+func runUsageAutoInstall(ctx context.Context, resolver func() *config.Resolver, stateDir string, lookup func(string) (string, bool)) {
 	for {
-		wait := claudeAutoInstallEvery
-		if autoInstallClaudeExporter(ctx, resolver(), stateDir, lookup) {
-			wait = claudeAutoInstallPending
+		wait := usageAutoInstallEvery
+		res := resolver()
+		claudePending := autoInstallClaudeExporter(ctx, res, stateDir, lookup)
+		codexPending := autoInstallCodexExporter(ctx, res, stateDir, lookup)
+		if claudePending || codexPending {
+			wait = usageAutoInstallPending
 		}
 		select {
 		case <-ctx.Done():

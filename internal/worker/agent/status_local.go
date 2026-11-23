@@ -27,6 +27,9 @@ type LiveStatusReply struct {
 	// StateDir is the state directory of the answering Worker, so that a client
 	// asking about another state directory can tell the answer is not its own.
 	StateDir string `json:"state_dir"`
+	// Effective runtime values for pane binding, on the local socket only.
+	TmuxSocket string `json:"tmux_socket,omitempty"`
+	TmuxBinary string `json:"tmux_binary,omitempty"`
 	// State is idle, connecting, connected or backoff.
 	State          string `json:"state"`
 	Reason         string `json:"reason,omitempty"`
@@ -98,6 +101,8 @@ func NewLiveStatusReply(stateDir string, live LiveStatus) LiveStatusReply {
 	c := live.Connector
 	r := LiveStatusReply{
 		StateDir:           stateDir,
+		TmuxSocket:         live.Host.tmuxSocket,
+		TmuxBinary:         live.Host.tmuxBinary,
 		State:              string(c.State),
 		Reason:             c.Reason,
 		LastError:          c.LastError,

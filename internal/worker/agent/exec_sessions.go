@@ -183,6 +183,7 @@ func (e *Executor) listShared(ctx context.Context, sel store.ShareState) (any, e
 	out := make([]ops.SessionInfo, len(shared))
 	sem := make(chan struct{}, listParallel)
 	var wg sync.WaitGroup
+	reader, _ := e.state.(nativeStateReader)
 	for i, s := range shared {
 		out[i] = ops.SessionInfo{
 			Name: s.Name, Created: ops.Timestamp(s.Created), Windows: s.Windows,
@@ -198,15 +199,18 @@ func (e *Executor) listShared(ctx context.Context, sel store.ShareState) (any, e
 		out[i].Pane = &info
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(info *ops.PaneInfo, ref term.PaneRef) {
+		go func(info *ops.PaneInfo, ref term.PaneRef, session term.Session) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			// A pane that cannot be read keeps kind and state unknown.
+			// Native state can still be read if the pane capture failed.
 			if scr, err := e.host.Snapshot(ctx, ref); err == nil {
 				r := e.classify.Classify(ctx, agentdetect.Input{Command: ref.Command, PID: ref.PID, Screen: scr})
 				info.Kind, info.State, info.InputKind = r.Shown(), r.State, r.Kind
+				reportState(ctx, reader, e.classify, info, scr, session.Created.Unix(), r.Background)
+			} else {
+				reportUnreadablePane(ctx, reader, e.classify, info, session.Created.Unix())
 			}
-		}(&info, p.Ref)
+		}(&info, p.Ref, s)
 	}
 	wg.Wait()
 	return ops.SessionsListResult{Sessions: out}, nil
@@ -222,7 +226,12 @@ func (e *Executor) readTarget(ctx context.Context, t ops.Target) (*pane, error) 
 	if err != nil {
 		return nil, err
 	}
-	return e.inspect(ctx, t.SessionName, ref)
+	p, err := e.inspect(ctx, t.SessionName, ref)
+	if err == nil {
+		reader, _ := e.state.(nativeStateReader)
+		reportState(ctx, reader, e.classify, &p.info, p.screen, p.info.SessionCreated, p.class.Background)
+	}
+	return p, err
 }
 
 func (e *Executor) sessionSnapshot(ctx context.Context, rq Request) (any, error) {

@@ -218,7 +218,8 @@ type SessionRow struct {
 	Name     string
 	Kind     string
 	State    string
-	Task     string
+	ops.PaneStateDetail
+	Task string
 	// Online is false while the session's Worker is offline; the state is the
 	// last one known.
 	Online    bool
@@ -338,6 +339,19 @@ func stateLabel(state string) string {
 		return "Unknown"
 	}
 	return state
+}
+
+// StateSourceLabel describes where the Worker observed the status.
+func (x SessionRow) StateSourceLabel() string {
+	switch x.StateSource {
+	case "claude-hooks":
+		return "Claude Code hooks"
+	case "codex-hooks":
+		return "Codex hooks"
+	case ops.PaneStateSourceScreen:
+		return "Terminal screen"
+	}
+	return x.StateSource
 }
 
 // AttentionItem is one thing that needs a look: a session that waits for an
@@ -1167,8 +1181,9 @@ type sessionsBody struct {
 		Session  string `json:"session"`
 		Kind     string `json:"kind"`
 		State    string `json:"state"`
-		Task     string `json:"task"`
-		Online   bool   `json:"online"`
+		ops.PaneStateDetail
+		Task   string `json:"task"`
+		Online bool   `json:"online"`
 	} `json:"sessions"`
 }
 
@@ -1225,7 +1240,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	for _, x := range sb.Sessions {
 		d.Sessions = append(d.Sessions, SessionRow{
 			WorkerID: x.WorkerID, Worker: x.Worker, Owner: x.Owner, Name: x.Session,
-			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online,
+			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail,
 		})
 	}
 	return d, nil

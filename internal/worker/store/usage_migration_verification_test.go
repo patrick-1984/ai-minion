@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -16,7 +15,7 @@ func TestUsageMigrationGrandfathersExistingEnrollmentAndFencesChanges(t *testing
 		t.Fatal(err)
 	}
 	for _, file := range entries {
-		if file.IsDir() || strings.HasPrefix(file.Name(), "0012_") {
+		if file.IsDir() || file.Name() >= "0012_" {
 			continue
 		}
 		path := migrationsDir + "/" + file.Name()

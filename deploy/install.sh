@@ -304,7 +304,7 @@ main() {
 			"Reports may include session names, folders, models, account identifiers, timing, token counts, costs and usage limits." \
 			"This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage." \
 			"How a session signs in is reported as the access kind only (subscription, API key or custom endpoint); no key, URL or host." \
-			"Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off." >&2
+			"Minion adds a status-line exporter and lifecycle hooks to Claude Code for tokens, cost, limits and session activity. Your existing status line keeps working. Control the integration with usage_claude_exporter=off. Minion adds lifecycle hooks to Codex profiles on Linux, macOS and Android for session activity. Review and trust them in Codex with /hooks. Disable recording with usage_codex_exporter=off. Lifecycle hooks report event types and timing without prompt or response content." >&2
 	fi
 	if [ "$join" = 1 ]; then
 		case $mode in
