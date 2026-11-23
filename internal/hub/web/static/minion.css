@@ -1380,3 +1380,8 @@ details.fold > summary:focus-visible { outline-offset: 2px; }
 
 /* Usage Buckets view: normal section spacing above the headings (R8). */
 #consent-h, #buckets-h, #preview-h { margin-top: 32px; }
+
+/* A91: the Refresh button shows "Refreshing…" while its request runs. */
+.refresh-busy { display: none; }
+.htmx-request .refresh-busy { display: inline; }
+.htmx-request .refresh-idle { display: none; }

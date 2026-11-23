@@ -29,10 +29,13 @@ package web
 import (
 	"bytes"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
@@ -69,6 +72,9 @@ type WorkerView struct {
 	SessionsText string
 	// SessionsURL is the session list narrowed to this Worker, in the same scope.
 	SessionsURL string
+	// Checked is when the Hub read this status; RefreshURL the post of Refresh.
+	Checked    template.HTML
+	RefreshURL string
 }
 
 // WorkerPage is what worker.html sees as .Data.
@@ -132,7 +138,8 @@ func (p WorkerPage) Crumbs() []Crumb {
 // snapshot does not list is Gone.
 func newWorkerView(d Dashboard, all bool, id string, operate bool) WorkerView {
 	v := newDashboardView(d, all)
-	out := WorkerView{ShowOwner: all, OnWorker: true, Notice: d.Notice}
+	now := refreshNow().UnixMilli()
+	out := WorkerView{ShowOwner: all, OnWorker: true, Notice: d.Notice, Checked: checkedTime(&now, "Never"), RefreshURL: WorkerRefreshPath(id)}
 	i := slices.IndexFunc(v.Workers, func(w WorkerRow) bool { return w.ID == id })
 	if i < 0 {
 		out.Gone = true
@@ -250,4 +257,39 @@ func registerWorkerPage(reg *Registry, get func() LiveSource, log *slog.Logger) 
 		return err
 	}
 	return reg.RegisterRoute(Route{Pattern: "GET " + pathLiveWorkerPattern, Handler: workerLiveHandler(get, log)})
+}
+
+// WorkerRefreshPath is the post of the Refresh button of the Worker page.
+func WorkerRefreshPath(id string) string { return "/workers/" + url.PathEscape(id) + "/refresh" }
+
+// handleWorkerRefresh re-reads the Worker's status from the Worker itself (its
+// session list) and answers with the new "Last checked". At most one refresh
+// per Worker per refreshEvery.
+func handleWorkerRefresh(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
+	id := r.PathValue("worker")
+	name := id
+	var list ops.WorkersListResult
+	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &list); err == nil {
+		for _, wk := range list.Workers {
+			if wk.ID == id {
+				name = wk.Name
+			}
+		}
+	}
+	if !workerRefresh.allow(id) {
+		writeResultInfo(w, "Checked less than "+strconv.Itoa(int(refreshEvery/time.Second))+" seconds ago. Showing the latest status.")
+		return
+	}
+	var sessions ops.SessionsListResult
+	err := c.CallOp(r, ops.OpSessionsList, struct {
+		WorkerID string `json:"worker_id"`
+	}{id}, &sessions)
+	if err != nil {
+		writeResultError(w, "Could not refresh "+name+": "+failureText(err)+".")
+		return
+	}
+	now := refreshNow().UnixMilli()
+	w.Header().Set("HX-Retarget", "#worker-checked")
+	w.Header().Set("HX-Reswap", "outerHTML")
+	writeFragment(w, []byte(`<span id="worker-checked">`+string(checkedTime(&now, "Never"))+`</span>`))
 }

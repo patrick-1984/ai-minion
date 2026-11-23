@@ -57,6 +57,10 @@ update (the canonical Worker id) and its own data-control. Neither is derived fr
 {{end}}<section class="panel worker-facts" aria-label="Worker facts">
   <dl class="facts-grid">
     <div><dt>Status</dt><dd>{{if .Worker.Pending}}<span class="badge" data-tone="warning" data-pending="true">pending approval</span>{{if .Worker.Online}} <span class="badge" data-online="true">connected</span>{{end}}{{else if .Worker.Online}}<span class="badge" data-online="true">online</span>{{else}}<span class="badge muted" data-online="false">offline</span>{{end}}</dd></div>
+    <div><dt>Last checked</dt><dd><span id="worker-checked">{{.Checked}}</span>{{if and .Worker.Online (not .Worker.Pending)}}
+      <form method="post" action="{{.RefreshURL}}" hx-post="{{.RefreshURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" class="row-actions" data-key="worker-refresh-{{.Worker.ID}}">
+        <button type="submit" class="btn btn-secondary" data-control="refresh" aria-label="Refresh the status of {{.Worker.Name}}">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button>
+      </form>{{end}}</dd></div>
     <div><dt>Kind</dt><dd><span class="badge plain" data-kind="{{.Worker.Kind}}">{{.Worker.Kind}}</span></dd></div>
     {{if .Worker.Owner}}<div><dt>Owner</dt><dd>{{.Worker.Owner}}</dd></div>
     {{end}}<div><dt>Version</dt><dd>{{if .Worker.Build}}{{.Worker.Build}}{{else}}<span class="muted">-</span>{{end}}{{if .Worker.UpdateTo}} → {{.Worker.UpdateTo}}{{if .Worker.UpdateBlock}} <span class="muted">({{.Worker.UpdateBlock}})</span>{{end}}{{if .Worker.UpdateUnpublished}} <span class="muted" data-update-unpublished>({{.Worker.UpdateUnpublished}})</span>{{end}}{{if .Worker.UpdateFailed}} <span class="field-error" data-update-failed>{{.Worker.UpdateFailed}}</span>{{end}}{{end}}</dd></div><div><dt>Protocol</dt><dd>{{if .Worker.Version}}{{.Worker.Version}}{{else}}<span class="muted">-</span>{{end}}</dd></div>

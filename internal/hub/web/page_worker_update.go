@@ -218,6 +218,7 @@ func handleWorkersUpdateAll(w http.ResponseWriter, r *http.Request, c OpCaller, 
 }
 
 func init() {
+	RegisterRoute(Route{Pattern: "POST /workers/{worker}/refresh", Handler: userRoute(handleWorkerRefresh)})
 	RegisterRoute(Route{Pattern: "POST /workers/{worker}/update", Handler: userRoute(handleWorkerUpdate)})
 	RegisterRoute(Route{Pattern: "POST " + WorkersUpdateAllPath, Handler: userRoute(handleWorkersUpdateAll)})
 }
