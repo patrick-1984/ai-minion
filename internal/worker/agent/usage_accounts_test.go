@@ -146,7 +146,7 @@ func TestOpenRouterOriginAndHintsForDistinctCredentials(t *testing.T) {
 			t.Fatal(err)
 		}
 		b, _ := json.Marshal(a)
-		if a.Provider != "OpenRouter" || a.EndpointOrigin != "https://openrouter.ai" || !strings.HasPrefix(a.KeyHint, key[:10]+"... / ") || ids[a.ID] || bytes.Contains(b, []byte(key)) || bytes.Contains(b, []byte("private-proxy-path")) {
+		if a.Provider != "OpenRouter" || a.EndpointOrigin != "" || !strings.HasPrefix(a.KeyHint, key[:10]+"... / ") || ids[a.ID] || bytes.Contains(b, []byte(key)) || bytes.Contains(b, []byte("private-proxy-path")) {
 			t.Fatalf("unsafe or ambiguous API metadata: %s", a.ID)
 		}
 		ids[a.ID] = true
@@ -177,26 +177,31 @@ func TestNativeLoginLabelLongAddressStaysWithinTheWireBound(t *testing.T) {
 	digest := ops.UsageID("subscription", "anthropic", "x")
 	user := strings.Repeat("u", 64)
 	long := user + "@" + strings.Repeat("d", 60) + "." + strings.Repeat("e", 60) + ".example.org" // 64+1+~135
-	got := nativeLoginLabel("anthropic", long, digest)
-	if !strings.HasPrefix(got, long) || len(got) > maxUsageLabel {
+	// Older Hubs accept 96 bytes: a longer login gets the opaque label, never a cut.
+	if got := nativeLoginLabel("anthropic", long, digest); got != "anthropic profile "+digest[:10] {
 		t.Fatalf("label %q (%d bytes)", got, len(got))
 	}
-	// An address at the 254-byte limit keeps the whole address and drops only the suffix.
-	max := user + "@" + strings.Repeat("d", 63) + "." + strings.Repeat("d", 63) + "." + strings.Repeat("d", 60) + ".com"
-	max = max[:254]
-	if got := nativeLoginLabel("anthropic", max, digest); got != strings.ToLower(max[:65])+strings.ToLower(max[65:]) && got != max {
-		t.Fatalf("got %q", got)
+	short := "user@example.com"
+	if got := nativeLoginLabel("anthropic", short, digest); !strings.HasPrefix(got, short) || len(got) > maxUsageLabel {
+		t.Fatalf("label %q", got)
 	}
-	// Over the limit: the opaque label, never a silent cut of the address.
-	if got := nativeLoginLabel("anthropic", max+"x", digest); got != "anthropic profile "+digest[:10] {
+	// An address of exactly 96 bytes is kept whole, without the suffix.
+	exact := strings.Repeat("u", 64) + "@" + strings.Repeat("d", 27) + ".com"
+	if len(exact) != 96 {
+		t.Fatalf("fixture %d", len(exact))
+	}
+	if got := nativeLoginLabel("anthropic", exact, digest); got != exact {
+		t.Fatalf("label %q", got)
+	}
+	if got := nativeLoginLabel("anthropic", exact+"x", digest); got != "anthropic profile "+digest[:10] {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestAccessAccountsAreExplicitAggregates(t *testing.T) {
-	a, _ := accessAccount(ops.UsageSession{AuthMode: "api", Provider: "Anthropic"}, 1)
-	b, _ := accessAccount(ops.UsageSession{AuthMode: "api", Provider: "Anthropic", Endpoint: "gw.example"}, 1)
-	if a.ID == b.ID || !strings.Contains(a.Label, "not told apart") || !strings.Contains(b.Label, "gw.example") || !strings.Contains(b.Label, "not told apart") {
+	a, _ := accessAccount("Anthropic", sessionAccess{"api", accessAPIKey}, 1)
+	b, _ := accessAccount("Anthropic", sessionAccess{"api", accessCustomEndpoint}, 1)
+	if a.ID == b.ID || a.Label != "API keys (not told apart)" || b.Label != "Custom endpoint (not told apart)" {
 		t.Fatalf("%+v %+v", a, b)
 	}
 }

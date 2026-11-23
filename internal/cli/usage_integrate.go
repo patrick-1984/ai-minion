@@ -54,6 +54,10 @@ func retryOnSettingsChange(op func() (bool, error)) (bool, error) {
 	return changed, err
 }
 
+// errClaudeSettingsConflict means a concurrent writer replaced the settings
+// right after Minion did; the replaced content is kept in a backup file.
+var errClaudeSettingsConflict = errors.New("the Claude Code settings were changed by another program during the save; nothing was restored")
+
 var errClaudeHooksDisabled = errors.New("this Claude Code profile has disabled hooks; the file was left intact")
 
 type claudeUsageIntegration struct {
@@ -68,6 +72,9 @@ type claudeUsageIntegration struct {
 	Plan         string `json:"plan,omitempty"`
 	Label        string `json:"label,omitempty"`
 	Profile      string `json:"subscription_profile,omitempty"`
+	// Auto marks an account discovered from the profile's login, which a later
+	// pass refreshes (first login, account switch); an explicit binding is kept.
+	Auto bool `json:"auto_account,omitempty"`
 }
 
 type claudeUsageHook struct {
@@ -208,8 +215,33 @@ func (m claudeUsageIntegration) args(action, manifest string) []string {
 
 // owns reports whether rule is exactly the hook Minion generates for event.
 func (m claudeUsageIntegration) owns(rule claudeUsageHook, event, matcher, manifest string) bool {
+	want := m.args(event, manifest)
+	n := len(want)
 	return slices.Contains(claudeUsageEvents, event) && matcher == "" && rule.Type == "command" &&
-		rule.Command == m.Binary && slices.Equal(rule.Args, m.args(event, manifest)) && rule.Async == (event != "SessionEnd")
+		rule.Command == m.Binary && len(rule.Args) == n && slices.Equal(rule.Args[:n-1], want[:n-1]) &&
+		sameProfileFile(rule.Args[n-1], manifest) && rule.Async == (event != "SessionEnd")
+}
+
+// sameProfileFile reports whether a and b name the same file by directory
+// identity, so that a profile reached through a symlink or another spelling
+// still matches the exporter that was installed under a different path.
+func sameProfileFile(a, b string) bool {
+	return filepath.Base(a) == filepath.Base(b) && sameDir(filepath.Dir(a), filepath.Dir(b))
+}
+
+// ownsStatus reports whether command is the status line Minion generates for
+// manifest, up to the spelling of the profile directory.
+func (m claudeUsageIntegration) ownsStatus(command, manifest string) bool {
+	if command == m.statusCommand(manifest) {
+		return true
+	}
+	const marker = "@@minion-manifest@@"
+	parts := strings.SplitN(m.statusCommand(marker), marker, 2)
+	if len(parts) != 2 || !strings.HasPrefix(command, parts[0]) || !strings.HasSuffix(command, parts[1]) || len(command) < len(parts[0])+len(parts[1]) {
+		return false
+	}
+	found := command[len(parts[0]) : len(command)-len(parts[1])]
+	return found != "" && !strings.ContainsAny(found, "'\"") && sameProfileFile(found, manifest)
 }
 
 func validClaudeUsageLabel(s string) bool {
@@ -285,10 +317,12 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 	if err != nil {
 		return false, err
 	}
-	if desired.Account == "" && desired.Profile == "" && discover != nil {
+	explicit := desired.Account != "" || desired.Profile != ""
+	if !explicit && discover != nil {
 		if a, ok := discover(ctx, dir); ok && a.Provider == "Anthropic" && a.AuthMode == "subscription" &&
 			validateClaudeUsageAttribution(a.ID, "") == nil {
 			desired.Account = a.ID
+			desired.Auto = true
 			if validClaudeUsageLabel(a.Label) {
 				desired.Label = a.Label
 			}
@@ -297,17 +331,31 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 			}
 		}
 	}
-	var newLabel string
 	if prior != nil {
 		desired.PreviousLine = prior.PreviousLine
-		// Account plan changes are informational; do not rewrite the profile
-		// or treat them as explicit authorization for a different account.
-		desired.Plan = prior.Plan
-		// The login label is informational too; an older manifest gets it
-		// once discovery knows it.
-		newLabel = desired.Label
-		desired.Label = prior.Label
-		if desired != *prior {
+		// The account is re-evaluated on every pass while it was discovered
+		// (or never known): a first login or an account switch updates the
+		// manifest. An explicit binding is never replaced by discovery.
+		refreshable := prior.Auto || prior.Account == "" && prior.Profile == ""
+		switch {
+		case explicit || refreshable && desired.Account != "":
+			if desired.Account == prior.Account {
+				desired.Plan = prior.Plan // plan changes are informational
+				if desired.Label == "" {
+					desired.Label = prior.Label
+				}
+			}
+			if explicit && !refreshable {
+				desired.Label = prior.Label
+				desired.Plan = prior.Plan
+			}
+		default: // nothing new was discovered, or the binding is explicit
+			desired.Account, desired.Profile, desired.Plan, desired.Label, desired.Auto = prior.Account, prior.Profile, prior.Plan, prior.Label, prior.Auto
+		}
+		other, want := desired, *prior
+		other.Account, other.Profile, other.Plan, other.Label, other.Auto = "", "", "", "", false
+		want.Account, want.Profile, want.Plan, want.Label, want.Auto = "", "", "", "", false
+		if other != want || explicit && !refreshable && (desired.Account != prior.Account || desired.Profile != prior.Profile) {
 			return false, errors.New("this Claude Code profile is bound to a different Minion setup; remove its existing integration before rebinding")
 		}
 	}
@@ -321,7 +369,7 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 			return false, errors.New("existing Claude Code status line uses a Minion exporter whose settings cannot be verified")
 		}
 		desired.PreviousLine = oldStatus
-	} else if oldStatus != newStatus && oldStatus != prior.PreviousLine {
+	} else if !prior.ownsStatus(oldStatus, manifest) && oldStatus != prior.PreviousLine {
 		return false, errors.New("the Claude Code status line changed since integration; the file was left intact")
 	}
 
@@ -341,12 +389,11 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		}
 		changed = true
 	}
-	relabel := prior != nil && prior.Label == "" && newLabel != ""
-	if !changed && !relabel {
+	refresh := prior != nil && desired != *prior
+	if !changed && !refresh {
 		return false, nil
 	}
-	if relabel {
-		desired.Label = newLabel
+	if refresh {
 		raw, err := json.Marshal(desired)
 		if err != nil || len(raw)+1 > maxClaudeSettings {
 			return false, errors.New("the Claude Code usage manifest would exceed the supported file size")
@@ -383,15 +430,38 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 			return false, fmt.Errorf("save the Claude Code usage manifest: %w", err)
 		}
 	}
-	if err := identity.WritePrivateIf(path, append(next, '\n'), unchanged); err != nil {
-		if errors.Is(err, errClaudeSettingsChanged) {
-			return false, err
+	if err := saveClaudeSettings(path, append(next, '\n'), unchanged); err != nil {
+		if prior == nil {
+			_ = os.Remove(manifest) // the settings do not reference a manifest that was only staged
 		}
-		// A manifest written first is safe to retry with the same settings.
-		return false, fmt.Errorf("save Claude Code settings: %w", err)
+		return false, err
 	}
 	return true, nil
 }
+
+// saveClaudeSettings replaces the profile's settings.json, keeping an exact
+// copy of the replaced bytes in settings.json.minion-backup. A concurrent
+// writer found afterwards is reported with the backup path, never repaired.
+func saveClaudeSettings(path string, data []byte, unchanged func() error) error {
+	err := identity.WriteReplacing(path, data, unchanged)
+	var conflict *identity.ConflictError
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, identity.ErrChangedDuringWrite):
+		return errClaudeSettingsChanged
+	case errors.As(err, &conflict):
+		claudeInstallNotice("Claude Code settings were changed by another program while Minion saved them; nothing was restored, the replaced content is kept", "backup", conflict.Backup)
+		return fmt.Errorf("%w: a copy of the replaced settings is at %s", errClaudeSettingsConflict, conflict.Backup)
+	case errors.Is(err, errClaudeSettingsChanged):
+		return err
+	}
+	return fmt.Errorf("save Claude Code settings: %w", err)
+}
+
+// claudeInstallNotice reports an event of the automatic installer to the
+// Worker log (set by the Worker; silent otherwise).
+var claudeInstallNotice = func(string, ...any) {}
 
 // removeClaudeUsage undoes installClaudeUsage for one profile: it deletes the
 // Minion hooks, puts the previous status line back and deletes the manifest.
@@ -399,6 +469,11 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 // a partial run, because the settings are saved before the manifest is deleted.
 // A status line that is no longer Minion's own is left as the user set it.
 func removeClaudeUsage(ctx context.Context, dir string) (bool, error) {
+	// A profile reached through a symlink is one directory: work on the real
+	// path so that the manifest and the installed commands are found.
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
 	return retryOnSettingsChange(func() (bool, error) { return removeClaudeUsageOnce(ctx, dir) })
 }
 
@@ -431,7 +506,7 @@ func removeClaudeUsageOnce(ctx context.Context, dir string) (bool, error) {
 			return false, err
 		}
 		status, command, err := claudeUsageStatus(settings["statusLine"])
-		if err == nil && command == prior.statusCommand(manifest) {
+		if err == nil && prior.ownsStatus(command, manifest) {
 			changed = true
 			if prior.PreviousLine != "" {
 				status["command"], err = json.Marshal(prior.PreviousLine)
@@ -461,11 +536,8 @@ func removeClaudeUsageOnce(ctx context.Context, dir string) (bool, error) {
 			if err := unchanged(); err != nil {
 				return false, err
 			}
-			if err := identity.WritePrivateIf(path, append(next, '\n'), unchanged); err != nil {
-				if errors.Is(err, errClaudeSettingsChanged) {
-					return false, err
-				}
-				return false, fmt.Errorf("save Claude Code settings: %w", err)
+			if err := saveClaudeSettings(path, append(next, '\n'), unchanged); err != nil {
+				return false, err
 			}
 		}
 	}
@@ -618,8 +690,9 @@ func claudeUsageFindHook(groups []json.RawMessage, want claudeUsageHook) (bool, 
 			if !slices.Contains(rule.Args, claudeUsageMarker) && !strings.Contains(rule.Command, claudeUsageMarker) {
 				continue
 			}
+			n := len(want.Args)
 			if found || group.Matcher != "" || rule.Command != want.Command || rule.Type != want.Type ||
-				!slices.Equal(rule.Args, want.Args) || rule.Async != want.Async {
+				len(rule.Args) != n || !slices.Equal(rule.Args[:n-1], want.Args[:n-1]) || !sameProfileFile(rule.Args[n-1], want.Args[n-1]) || rule.Async != want.Async {
 				return false, errors.New("a conflicting Minion usage hook already exists in this Claude Code profile")
 			}
 			found = true

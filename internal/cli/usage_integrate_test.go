@@ -246,14 +246,14 @@ func TestUsageIntegrateClaudeExportProjectsOnlyMetadata(t *testing.T) {
 	  "cwd":"/synthetic/folder","prompt":"synthetic private prompt","transcript_path":"/private/transcript"
 	}`)
 	now := time.Now()
-	recordClaudeUsage(ctx, m, "status-line", "unshared-fixture", status, now)
-	recordClaudeUsage(ctx, m, "UserPromptSubmit", "unshared-fixture", promptHook, now)
-	recordClaudeUsage(ctx, m, "UserPromptSubmit", "unshared-fixture", promptHook, now)
-	recordClaudeUsage(ctx, m, "Stop", "unshared-fixture", promptHook, now)
+	recordClaudeUsage(ctx, m, "status-line", "unshared-fixture", claudeAccessSubscription, status, now)
+	recordClaudeUsage(ctx, m, "UserPromptSubmit", "unshared-fixture", claudeAccessSubscription, promptHook, now)
+	recordClaudeUsage(ctx, m, "UserPromptSubmit", "unshared-fixture", claudeAccessSubscription, promptHook, now)
+	recordClaudeUsage(ctx, m, "Stop", "unshared-fixture", claudeAccessSubscription, promptHook, now)
 	subagent := []byte(`{"session_id":"test-session","hook_event_name":"SubagentStop","agent_id":"fixture-agent","last_assistant_message":"synthetic private subagent reply"}`)
-	recordClaudeUsage(ctx, m, "SubagentStop", "unshared-fixture", subagent, now)
+	recordClaudeUsage(ctx, m, "SubagentStop", "unshared-fixture", claudeAccessSubscription, subagent, now)
 	modelSwitch := []byte(`{"session_id":"test-session","hook_event_name":"PostModelSwitch","model":"synthetic-model"}`)
-	recordClaudeUsage(ctx, m, "PostModelSwitch", "unshared-fixture", modelSwitch, now)
+	recordClaudeUsage(ctx, m, "PostModelSwitch", "unshared-fixture", claudeAccessSubscription, modelSwitch, now)
 	start := now.Add(-time.Minute).UnixMilli()
 	report := ops.UsageReport{ObservedAt: now.Add(time.Minute).UnixMilli(), Sessions: []ops.UsageSession{
 		{ID: ops.UsageID("host-session", "test"), Name: "unshared-fixture", StartedAt: &start},
@@ -290,7 +290,7 @@ func TestUsageIntegrateClaudeExportProjectsOnlyMetadata(t *testing.T) {
 	if err := st.AcceptUsageRegistration(ctx, en.HubPub, en.WorkerID, en.Owner); err != nil {
 		t.Fatal(err)
 	}
-	recordClaudeUsage(ctx, m, "status-line", "unshared-fixture", status, time.Now())
+	recordClaudeUsage(ctx, m, "status-line", "unshared-fixture", claudeAccessSubscription, status, time.Now())
 	var count int
 	if err := st.DB().QueryRow("SELECT count(*) FROM usage_native").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("an old binding restored native metrics: %d, %v", count, err)

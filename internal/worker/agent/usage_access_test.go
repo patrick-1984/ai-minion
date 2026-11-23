@@ -17,7 +17,10 @@ func fakeEnv(t *testing.T, home string, envs map[int][]string) {
 	t.Cleanup(func() { processEnv = old })
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	processEnv = func(pid int) ([]string, bool) { e, ok := envs[pid]; return e, ok }
+	processEnv = func(pid int) ([]string, bool) {
+		e, ok := envs[pid]
+		return filterProcessEnv([]byte(strings.Join(e, "\x00"))), ok
+	}
 }
 
 func TestDetectSessionAccess(t *testing.T) {
@@ -38,12 +41,12 @@ func TestDetectSessionAccess(t *testing.T) {
 		pid     int
 		want    sessionAccess
 	}{
-		"claude key":       {"claude", 1, sessionAccess{"api", ""}},
-		"claude endpoint":  {"claude", 2, sessionAccess{"api", "cpa.example:8443"}},
-		"vendor host":      {"claude", 3, sessionAccess{"api", ""}},
+		"claude key":       {"claude", 1, sessionAccess{"api", accessAPIKey}},
+		"claude endpoint":  {"claude", 2, sessionAccess{"api", accessCustomEndpoint}},
+		"vendor host":      {"claude", 3, sessionAccess{"api", accessAPIKey}},
 		"claude no signal": {"claude", 4, sessionAccess{"unknown", ""}},
-		"codex endpoint":   {"codex", 5, sessionAccess{"api", "gw.internal"}},
-		"codex key":        {"codex", 6, sessionAccess{"api", ""}},
+		"codex endpoint":   {"codex", 5, sessionAccess{"api", accessCustomEndpoint}},
+		"codex key":        {"codex", 6, sessionAccess{"api", accessAPIKey}},
 		"unreadable env":   {"claude", 99, sessionAccess{"unknown", ""}},
 		"other harness":    {"gemini", 1, sessionAccess{"unknown", ""}},
 	} {
@@ -61,7 +64,7 @@ func TestDetectSessionAccess(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"env":{"ANTHROPIC_BASE_URL":"https://gw.example/x"},"apiKeyHelper":"/bin/key"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := detectSessionAccess("claude", 4); got != (sessionAccess{"api", "gw.example"}) {
+	if got := detectSessionAccess("claude", 4); got != (sessionAccess{"api", accessCustomEndpoint}) {
 		t.Errorf("settings env: %+v", got)
 	}
 }
@@ -80,10 +83,10 @@ func TestUsageSnapshotReportsAccessWithoutSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := r.Sessions[0]
-	if s.AuthMode != "api" || s.Endpoint != "cpa.example" || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || r.Accounts[0].Label != "API keys at cpa.example (not told apart)" {
+	if s.AuthMode != "api" || s.Endpoint != "" || !s.CustomEndpoint || !r.Accounts[0].CustomEndpoint || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || r.Accounts[0].Label != "Custom endpoint (not told apart)" {
 		t.Fatalf("session %+v accounts %+v", s, r.Accounts)
 	}
-	if body := strings.ToLower(string(mustJSON(t, r))); strings.Contains(body, "verysecret") || strings.Contains(body, "/v1") {
+	if body := strings.ToLower(string(mustJSON(t, r))); strings.Contains(body, "verysecret") || strings.Contains(body, "/v1") || strings.Contains(body, "cpa.example") {
 		t.Fatalf("secret or path leaked: %s", body)
 	}
 }

@@ -86,6 +86,9 @@ func nativeLoginLabel(provider, email, digest string) string {
 		}
 	}
 	label := user + "@" + strings.ToLower(domain)
+	if len(label) > maxUsageLabel {
+		return fallback // older Hubs refuse a longer label; the address is never cut
+	}
 	// The digest suffix tells two workspaces of a login apart; it never
 	// pushes the label past the wire bound and the address is never cut.
 	if suffix := " / " + digest[:6]; len(label)+len(suffix) <= maxUsageLabel {
@@ -146,11 +149,7 @@ func APIUsageAccount(provider, endpoint, key string, domainSecret []byte, at int
 	if len(key) >= 34 && strings.IndexFunc(key, func(c rune) bool { return c <= 32 || c > 126 }) < 0 {
 		label = key[:10] + "... / " + digest[:10]
 	}
-	origin := (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
-	if strings.Contains(strings.ToLower(origin), strings.ToLower(key)) {
-		origin = ""
-	}
-	return ops.UsageAccount{EndpointOrigin: origin, KeyHint: label, ID: digest, Provider: provider, Label: label, AuthMode: "api", Source: "native-api-identity", ObservedAt: at}, nil
+	return ops.UsageAccount{KeyHint: label, ID: digest, Provider: provider, Label: label, AuthMode: "api", Source: "native-api-identity", ObservedAt: at}, nil
 }
 
 // NativeAPIUsageAccount uses only keys that fit a known, high-entropy

@@ -124,11 +124,14 @@ type UsageSession struct {
 	AuthMode  string `json:"auth_mode"`
 	// Endpoint is the host (no scheme, path or credentials) of a custom API
 	// endpoint the session uses; empty for the vendor's own endpoint.
-	Endpoint   string `json:"endpoint,omitempty"`
-	StartedAt  *int64 `json:"started_at"`
-	StoppedAt  *int64 `json:"stopped_at"`
-	ObservedAt int64  `json:"observed_at"`
-	Source     string `json:"source"`
+	Endpoint string `json:"endpoint,omitempty"`
+	// CustomEndpoint is true when the session uses an endpoint other than the
+	// vendor's own; the host is never sent.
+	CustomEndpoint bool   `json:"custom_endpoint,omitempty"`
+	StartedAt      *int64 `json:"started_at"`
+	StoppedAt      *int64 `json:"stopped_at"`
+	ObservedAt     int64  `json:"observed_at"`
+	Source         string `json:"source"`
 	UsageCounters
 }
 
@@ -153,6 +156,7 @@ type UsageAccount struct {
 	ID              string        `json:"id"` // derived locally; never a credential
 	Provider        string        `json:"provider"`
 	Label           string        `json:"label,omitempty"`
+	CustomEndpoint  bool          `json:"custom_endpoint,omitempty"`
 	AuthMode        string        `json:"auth_mode"` // subscription, api, unknown
 	Source          string        `json:"source"`
 	ObservedAt      int64         `json:"observed_at"`

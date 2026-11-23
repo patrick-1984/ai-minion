@@ -167,6 +167,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		return &r
 	}
 	startExporter := func(ctx context.Context) func() {
+		claudeInstallNotice = func(msg string, args ...any) { logger.Warn(msg, args...) }
 		autoCtx, stopAuto := context.WithCancel(ctx)
 		autoDone := make(chan struct{})
 		go func() {

@@ -293,19 +293,25 @@ assert_contains "a failing join keeps its exit status" "rc=$RC" "rc=3"
 
 # A system service needs systemd: without it the refusal says why and names
 # "Run as me", before anything is downloaded or installed.
-for m in service root; do
-	SCRIPT_ARGS="--join --$m"
-	run_install "$WORK/nosd-$m" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_SYSTEMD_DIR="$WORK/no-such-systemd"
-	assert_contains "--$m without systemd says so" "$OUT" "does not run systemd (for example a container such as a Coder workspace)"
-	if [ "$m" = service ]; then
-		assert_contains "--service without systemd names the working command" "$OUT" "run the same command with --join instead of --service; it starts the Worker now and again at login"
-	else
-		assert_contains "--root without systemd says there is no root mode" "$OUT" "a root Worker needs systemd and there is no non-systemd root mode"
-		assert_contains "--root without systemd suggests Run as me" "$OUT" "Use \"Run as me\" from a normal account (the same command with --join, without --root and without sudo)"
-		assert_contains "--root without systemd suggests Docker Compose" "$OUT" "Docker Compose option (--compose)"
-	fi
-	assert_no_file "--$m without systemd installs nothing" "$WORK/nosd-$m/minion"
-done
+SCRIPT_ARGS="--join --service"
+run_install "$WORK/nosd-service" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_SYSTEMD_DIR="$WORK/no-such-systemd"
+assert_contains "--service without systemd says so" "$OUT" "does not run systemd (for example a container such as a Coder workspace)"
+assert_contains "--service without systemd names the working command" "$OUT" "run the same command with --join instead of --service; it starts the Worker now and again at login"
+assert_no_file "--service without systemd installs nothing" "$WORK/nosd-service/minion"
+
+# --root keeps working without systemd: the Worker's own root login fallback
+# serves root's sessions, so the installer must hand over instead of refusing.
+mkdir -p "$WORK/rootid-nosd"
+printf '#!/bin/sh\necho 0\n' >"$WORK/rootid-nosd/id"
+chmod +x "$WORK/rootid-nosd/id"
+SCRIPT_ARGS="--join --root"
+rm -f "$JL".*
+run_install "$WORK/nosd-root" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_SYSTEMD_DIR="$WORK/no-such-systemd" PATH="$WORK/rootid-nosd:$(fake_uname Linux x86_64):$WORK/installed:$PATH"
+case $OUT in
+*"does not run systemd"*) bad "--root without systemd is not refused by the installer" "$OUT" ;;
+*) ok "--root without systemd is not refused by the installer" ;;
+esac
+if grep -Fxq -- 'root' "$JL.argv" 2>/dev/null; then ok "--root without systemd hands over to worker up as root"; else bad "--root without systemd hands over to worker up as root" "$(cat "$JL.argv" 2>/dev/null)"; fi
 SCRIPT_ARGS=--join
 
 run_install "$WORK/j4" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="not-a-token" JOINLOG="$JL"

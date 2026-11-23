@@ -187,6 +187,9 @@ type PaneInfo struct {
 	Command string `json:"command,omitempty"` // current foreground command
 	Kind    string `json:"kind,omitempty"`    // agent:<cli>, shell, other or unknown
 	State   string `json:"state,omitempty"`   // stable, busy, dialog or unknown
+	// InputKind is the strict kind that authorizes input (Kind may be a
+	// display kind only).
+	InputKind string `json:"input_kind,omitempty"`
 
 	// The reviewed metadata. A caller that wants to act on what it saw copies
 	// these into the write precondition (ReviewedDialog for answer). They are
