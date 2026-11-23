@@ -51,6 +51,7 @@ func newTestUpdate(t *testing.T, inst *fakeInstaller) (*selfUpdate, chan struct{
 		restart:      func() { restarted <- struct{}{} },
 		workerID:     func() string { return "w-self" },
 		holdSessions: func(string) {},
+		earlyWait:    100 * time.Millisecond,
 	}
 	return u, restarted
 }
@@ -155,12 +156,11 @@ func TestWorkerUpdateFailureIsReported(t *testing.T) {
 	withVersion(t, "v0.9.0")
 	inst := &fakeInstaller{err: errors.New("signature does not verify")}
 	u, restarted := newTestUpdate(t, inst)
-	if res, _ := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"}); !res.Accepted {
-		t.Fatal("not accepted")
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for u.status().State != ops.UpdateStateFailed && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	// A failure that shows at once is the answer of worker_update itself, so
+	// the Hub shows it (and audits a failure); the status keeps it too.
+	res, _ := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"})
+	if res.Accepted || !strings.Contains(res.Reason, "signature") {
+		t.Fatalf("answer %+v; want a refusal with the real cause", res)
 	}
 	if st := u.status(); st.State != ops.UpdateStateFailed || !strings.Contains(st.Error, "signature") {
 		t.Fatalf("status %+v", st)
@@ -311,6 +311,7 @@ func TestWorkerUpdateHoldsSessionCreation(t *testing.T) {
 	holds = nil
 	mu.Unlock()
 	u.sessionsLost = nil
+	u.earlyWait = time.Nanosecond // the failure then shows in the status, not the answer
 	if res, _ := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"}); !res.Accepted {
 		t.Fatal("not accepted")
 	}
@@ -826,6 +827,7 @@ func TestWorkerUpdateFailureKeepsTheRunningTrial(t *testing.T) {
 	if err := writePending(u.stateDir, trial); err != nil {
 		t.Fatal(err)
 	}
+	u.earlyWait = time.Nanosecond
 	if res, _ := callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.2"}); !res.Accepted {
 		t.Fatal("not accepted")
 	}
@@ -846,5 +848,23 @@ func TestWorkerUpdateFailureKeepsTheRunningTrial(t *testing.T) {
 	cleanStop(u.stateDir, "v0.9.1", 42)
 	if r, _ := readPending(u.stateDir); !r.sameTrial(next) {
 		t.Fatalf("cleanStop changed the guard of the next update: %+v", r)
+	}
+}
+
+// A failure after the early window is not lost: the status keeps the target,
+// the cause and the time for the Hub to read.
+func TestWorkerUpdateLateFailureStaysInTheStatus(t *testing.T) {
+	withVersion(t, "v0.9.0")
+	inst := &fakeInstaller{err: errors.New("v0.9.1 is not published on GitHub yet")}
+	u, _ := newTestUpdate(t, inst)
+	u.earlyWait = time.Nanosecond
+	_, _ = callUpdate(t, u, ops.WorkerUpdateArgs{Version: "v0.9.1"})
+	deadline := time.Now().Add(5 * time.Second)
+	for u.status().State != ops.UpdateStateFailed && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	st := u.status()
+	if st.State != ops.UpdateStateFailed || st.To != "v0.9.1" || !strings.Contains(st.Error, "not published") || st.At == nil {
+		t.Fatalf("status %+v", st)
 	}
 }

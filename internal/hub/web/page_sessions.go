@@ -120,6 +120,11 @@ type WorkerRow struct {
 	UpdateTo    string
 	UpdateURL   string
 	UpdateBlock string
+	// UpdateFailed is "Update to vX failed: reason (time)" after a failed
+	// attempt; UpdateUnpublished is why the Update button is disabled (the
+	// Hub's release is not published on GitHub yet).
+	UpdateFailed      string
+	UpdateUnpublished string
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
@@ -577,6 +582,9 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 		}
 		if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {
 			w.UpdateTo = target
+			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
+				w.UpdateUnpublished = notPublishedText(target)
+			}
 			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
 				w.UpdateURL = WorkerUpdatePath(w.ID)
 				v.UpdatableWorkers++
@@ -1208,6 +1216,11 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,
 			SelfUpdate: proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
 		})
+		if row := &d.Workers[len(d.Workers)-1]; d.Admin && w.Online && !w.Pending && row.SelfUpdate {
+			if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {
+				row.UpdateFailed = updateFailureText(r, s.c, w.ID, target)
+			}
+		}
 	}
 	for _, x := range sb.Sessions {
 		d.Sessions = append(d.Sessions, SessionRow{

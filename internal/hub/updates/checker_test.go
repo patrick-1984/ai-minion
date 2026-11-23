@@ -365,3 +365,21 @@ func TestEveryFetchSetsCheckingAndItsStartTime(t *testing.T) {
 		t.Fatal("the flag stays set after the fetch")
 	}
 }
+
+func TestCheckerPublishedKnowsOnlyFromAFreshList(t *testing.T) {
+	c := &Checker{}
+	if _, known := c.Published("v1.0.0"); known {
+		t.Fatal("known before any list")
+	}
+	c.tags, c.listedAt = map[string]bool{"v1.0.0": true}, time.Now()
+	if p, known := c.Published("v1.0.0"); !p || !known {
+		t.Errorf("listed tag = %v, %v", p, known)
+	}
+	if p, known := c.Published("v1.1.0"); p || !known {
+		t.Errorf("unlisted tag = %v, %v; want unpublished and known", p, known)
+	}
+	c.listedAt = time.Now().Add(-72 * time.Hour)
+	if _, known := c.Published("v1.1.0"); known {
+		t.Error("a stale list must say nothing")
+	}
+}

@@ -2,6 +2,7 @@ package version
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -168,5 +169,24 @@ func TestResolveOrderIndependent(t *testing.T) {
 	rb, _, _ := Latest.Resolve(b)
 	if ra.Tag != "v1.2.0" || rb.Tag != "v1.2.0" {
 		t.Errorf("got %s and %s", ra.Tag, rb.Tag)
+	}
+}
+
+func TestResolveSaysWhyAnExactReleaseIsMissing(t *testing.T) {
+	sel, err := ParseSelector("v0.20.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = sel.Resolve([]Release{{Tag: "v0.19.0"}, {Tag: "v0.20.0", Draft: true}})
+	if !errors.Is(err, ErrNoRelease) {
+		t.Fatalf("err = %v, want ErrNoRelease", err)
+	}
+	want := "v0.20.0 is not published on GitHub yet (the release is still a draft or missing); try again after it is published"
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err, want)
+	}
+	ch, _ := ParseSelector("1.4")
+	if _, _, err := ch.Resolve(nil); err == nil || strings.Contains(err.Error(), "draft") {
+		t.Errorf("channel message = %v", err)
 	}
 }
