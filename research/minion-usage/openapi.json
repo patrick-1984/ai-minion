@@ -786,6 +786,9 @@
                 "auth_mode": {
                   "type": "string"
                 },
+                "custom_endpoint": {
+                  "type": "boolean"
+                },
                 "endpoint": {
                   "type": "string"
                 },
@@ -1041,6 +1044,9 @@
                     "last_success"
                   ],
                   "additionalProperties": false
+                },
+                "custom_endpoint": {
+                  "type": "boolean"
                 },
                 "endpoint_origin": {
                   "type": "string"
@@ -1832,6 +1838,9 @@
                 "auth_mode": {
                   "type": "string"
                 },
+                "custom_endpoint": {
+                  "type": "boolean"
+                },
                 "endpoint": {
                   "type": "string"
                 },
@@ -2000,6 +2009,9 @@
             "items": {
               "type": "object",
               "properties": {
+                "custom_endpoint": {
+                  "type": "boolean"
+                },
                 "endpoint_origin": {
                   "type": "string"
                 },

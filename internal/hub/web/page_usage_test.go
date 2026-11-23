@@ -93,7 +93,7 @@ func TestUsageViewsShowDisclosedFixtures(t *testing.T) {
 		want []string
 	}{
 		{"overview", []string{"47.5%", "Ahead of pace", "40.0%", "118.8%", "No subscription limits reported.", "1 fresh", "Stale", "requests"}},
-		{"accounts", []string{"API credential", "DeepSeek", "Save collector", "passive session", "Next eligible query", "Display name and order", `value="20"`, "Totals · 2 sessions", "$1.5000", "ended in the last 90 days"}},
+		{"accounts", []string{"API key", "DeepSeek", "Save collector", "passive session", "Next eligible query", "Display name and order", `value="20"`, "Totals · 2 sessions", "$1.5000", "ended in the last 90 days"}},
 		{"sessions", []string{"release-validation-on-build-workstation", "8100", "Unknown", "Move selected rows", "Move all from Worker"}},
 		{"workers", []string{"Scan installed harnesses", "Claude Code", "Gemini CLI", "Anthropic · Subscription · Configured", "Last harness scan", "Monitoring acceptance required", `data-online="false">Offline`}},
 		{"buckets", []string{"Release validation", "Your token buckets"}},
@@ -223,7 +223,7 @@ func TestUsageShowsSeparateGatewaySpendAndAPICredentialDetails(t *testing.T) {
 	for _, view := range []struct {
 		path string
 		want []string
-	}{{"accounts", []string{"My work alias", "https://openrouter.ai", "sk-or-v1-0... / 0123456789"}}, {"sessions", []string{"Gateway spending budget", "112.5%", "monthly", "about five minutes"}}} {
+	}{{"accounts", []string{"My work alias", "sk-or-v1-0... / 0123456789"}}, {"sessions", []string{"Gateway spending budget", "112.5%", "monthly", "about five minutes"}}} {
 		res := get(t, srv, "/usage?view="+view.path, "X-Test-Session", userHeader)
 		if res.Code != 200 {
 			t.Fatalf("%s: %d", view.path, res.Code)
@@ -296,23 +296,27 @@ func TestUsageExplainsMissingClaudeExporter(t *testing.T) {
 	}
 }
 
-func TestUsageSessionsShowCustomEndpointAccess(t *testing.T) {
+func TestUsageSessionsShowAccessKindWithoutHost(t *testing.T) {
 	at := time.Now().UnixMilli()
-	row := func(name, endpoint string) ops.UsageSessionRow {
-		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", name), Name: name, Harness: "claude", AuthMode: "api", Endpoint: endpoint, Source: "session-host", ObservedAt: at}}
+	row := func(name string, custom bool) ops.UsageSessionRow {
+		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", name), Name: name, Harness: "claude", AuthMode: "api", CustomEndpoint: custom, Endpoint: "cpa.example", Source: "session-host", ObservedAt: at}}
 	}
-	result := ops.UsageListResult{Version: 1, AsOf: at, Sessions: []ops.UsageSessionRow{row("keyed", ""), row("gateway", "cpa.example")}}
+	result := ops.UsageListResult{Version: 1, AsOf: at, Sessions: []ops.UsageSessionRow{row("keyed", false), row("gateway", true)}}
 	connect(t, usagePageFixtures().reply(ops.OpUsageList, result))
 	res := get(t, adminServer(t), "/usage?view=sessions", "X-Test-Session", userHeader)
-	mustHave(t, mainOf(t, res.Body.String()), "API credential", "Custom endpoint · cpa.example")
+	body := mainOf(t, res.Body.String())
+	mustHave(t, body, "API key", "Custom endpoint")
+	if strings.Contains(body, "cpa.example") || strings.Contains(body, "API credential") {
+		t.Fatalf("an endpoint host is shown:\n%s", body)
+	}
 }
 
-func TestUsageSessionsUseNaturalNameOrder(t *testing.T) {
+func TestUsageSessionsRenderInStoreOrder(t *testing.T) {
 	at := time.Now().UnixMilli()
 	row := func(name string) ops.UsageSessionRow {
 		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", name), Name: name, AuthMode: "unknown", Source: "session-host", ObservedAt: at}}
 	}
-	result := ops.UsageListResult{Version: 1, AsOf: at, Sessions: []ops.UsageSessionRow{row("wb-10"), row("wb-2"), row("wb-1")}}
+	result := ops.UsageListResult{Version: 1, AsOf: at, Sessions: []ops.UsageSessionRow{row("wb-1"), row("wb-2"), row("wb-10")}}
 	connect(t, usagePageFixtures().reply(ops.OpUsageList, result))
 	body := mainOf(t, get(t, adminServer(t), "/usage?view=sessions", "X-Test-Session", userHeader).Body.String())
 	i1, i2, i10 := strings.Index(body, "<h3>wb-1</h3>"), strings.Index(body, "<h3>wb-2</h3>"), strings.Index(body, "<h3>wb-10</h3>")

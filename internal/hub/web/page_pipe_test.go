@@ -123,6 +123,10 @@ func TestConversationSaysWhyItCannotSend(t *testing.T) {
 		{"shell session", func(w *ops.WorkerInfo, f *fakeOps) {
 			f.reply(ops.OpSessionSnapshot, ops.SessionSnapshotResult{Pane: ops.PaneInfo{Session: "minion-1", ID: "%1", Kind: ops.PaneKindShell, State: "stable"}, Screen: hostileScreen()})
 		}, "This is a shell session", ""},
+		// A shell with a background agent is shown as an agent, but the Worker refuses input for it.
+		{"display-only agent kind", func(w *ops.WorkerInfo, f *fakeOps) {
+			f.reply(ops.OpSessionSnapshot, ops.SessionSnapshotResult{Pane: ops.PaneInfo{Session: "minion-1", ID: "%1", Kind: "agent:claude", InputKind: ops.PaneKindShell, State: "stable"}, Screen: hostileScreen()})
+		}, "This is a shell session", ""},
 	} {
 		s, f := pipeOps(t)
 		w := sessionWorker()

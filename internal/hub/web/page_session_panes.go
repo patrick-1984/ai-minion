@@ -34,6 +34,9 @@ type SessionContext struct {
 	Task    string
 	// Kind is the session's kind from its snapshot (for example "agent:claude" or "shell"); empty when unknown.
 	Kind string
+	// InputKind is the strict kind that decides whether input is delivered;
+	// empty when the Worker does not tell it apart from Kind.
+	InputKind string
 	// Ops and Features are what the Worker announced for this connection (empty when offline or not announced).
 	Ops      []string
 	Features []string
@@ -95,7 +98,7 @@ func renderSessionPanes(r *http.Request, t target, page SessionPage) []PaneView 
 	list := slices.Clone(paneList)
 	paneMu.Unlock()
 	sc := SessionContext{Worker: page.Worker, WorkerID: page.WorkerID, Owner: page.Owner, Session: page.Session,
-		Online: page.Online, Operate: t.operate, Task: page.Task, Kind: page.Panel.Kind, Ops: t.worker.Ops, Features: t.worker.Features}
+		Online: page.Online, Operate: t.operate, Task: page.Task, Kind: page.Panel.Kind, InputKind: page.Panel.InputKind, Ops: t.worker.Ops, Features: t.worker.Features}
 	var out []PaneView
 	for _, p := range list {
 		body, err := p.Render(r, sc)

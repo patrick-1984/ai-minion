@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -197,7 +196,9 @@ func (p usagePage) Label(value string) string { return usageLabel(value) }
 func (p usagePage) Access(value string) string {
 	switch value {
 	case "api":
-		return "API credential"
+		return "API key"
+	case "subscription":
+		return "Subscription"
 	case "mixed":
 		return "Multiple access methods"
 	default:
@@ -442,12 +443,6 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		accounts, next = subscriptions.Accounts, subscriptions.Next
 		p.RefreshURL = usageURL(section, args.WorkerID, args.BucketID, args.After)
 	}
-	slices.SortStableFunc(p.Rows.Sessions, func(a, b ops.UsageSessionRow) int {
-		if c := strings.Compare(p.WorkerName(a.WorkerID), p.WorkerName(b.WorkerID)); c != 0 {
-			return c
-		}
-		return ops.NaturalCompare(a.Name, b.Name)
-	})
 	if next != "" {
 		p.NextURL = usageURL(section, p.WorkerID, p.BucketID, next)
 	}

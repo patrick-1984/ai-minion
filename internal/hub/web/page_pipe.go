@@ -102,7 +102,13 @@ func pipeAvailability(s SessionContext) (sendable bool, why string) {
 			return false, "This Worker needs an update before it can use the pipe (it did not announce " + f + "). Nothing can be sent from here."
 		}
 	}
-	if s.Kind == ops.PaneKindShell {
+	// The display kind can be an agent while the Worker still refuses input
+	// (a shell with a background agent): the strict kind decides.
+	kind := s.Kind
+	if s.InputKind != "" {
+		kind = s.InputKind
+	}
+	if kind == ops.PaneKindShell {
 		return false, "This is a shell session, not an agent session. The pipe delivers messages to agent sessions only; use Text to type into a shell."
 	}
 	return true, ""

@@ -270,10 +270,12 @@ var answerChoices = []string{"1", "2", "3", "y", "n"}
 type PanelView struct {
 	Screen ScreenView
 	// Kind, State, Width and Height describe the pane; zero values are not shown.
-	Kind   string
-	State  string
-	Width  int
-	Height int
+	Kind string
+	// InputKind is the strict kind that authorizes input; empty when the Worker does not report it.
+	InputKind string
+	State     string
+	Width     int
+	Height    int
 	// Dialog says that the pane shows a dialog; Answer is the form to answer it
 	// and is nil for a user who cannot operate the session.
 	Dialog bool
@@ -612,7 +614,7 @@ func panelFor(r *http.Request, t target) (PanelView, error) {
 		return PanelView{}, err
 	}
 	now := time.Now().UTC()
-	p := PanelView{Screen: NewScreenView(snap.Screen), Kind: snap.Pane.Kind, State: snap.Pane.State,
+	p := PanelView{Screen: NewScreenView(snap.Screen), Kind: snap.Pane.Kind, InputKind: snap.Pane.InputKind, State: snap.Pane.State,
 		Width: snap.Screen.Width, Height: snap.Screen.Height,
 		Captured: now.Format("15:04:05") + " UTC", CapturedAt: now.Format(time.RFC3339), StateLabel: stateLabel(snap.Pane.State)}
 	if snap.Pane.State == ops.PaneStateDialog {

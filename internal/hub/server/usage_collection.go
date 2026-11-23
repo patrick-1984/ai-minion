@@ -47,6 +47,18 @@ func (u *usageCollector) sample(ctx context.Context, p authz.Principal, workerID
 	return report, nil
 }
 
+// inventoryRefresh is how long a Worker's inventory stays current. The Claude
+// exporter is installed asynchronously after registration, so while it is not
+// installed the Hub asks again soon, and then only now and then for changes.
+func inventoryRefresh(inventory []ops.UsageHarness) time.Duration {
+	for _, h := range inventory {
+		if h.Name == "claude" && h.Status == "installed" && (h.Exporter == ops.UsageExporterAbsent || h.Exporter == "") {
+			return time.Minute
+		}
+	}
+	return 10 * time.Minute
+}
+
 func (u *usageCollector) serve(ctx context.Context, w workers.Online, sess workers.OpSession) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -59,6 +71,7 @@ func (u *usageCollector) serve(ctx context.Context, w workers.Online, sess worke
 	}()
 	delay := time.Duration(0)
 	inventory := true
+	var inventoryDue time.Time
 	for ctx.Err() == nil {
 		timer := time.NewTimer(delay)
 		select {
@@ -75,11 +88,14 @@ func (u *usageCollector) serve(ctx context.Context, w workers.Online, sess worke
 		probe, stop := context.WithTimeout(ctx, 25*time.Second)
 		// A connection's own Worker identity has read access only to itself.
 		// No synthetic owner or administrator credentials are created.
-		_, err := u.sample(probe, authz.NewWorkerPrincipal(w.WorkerID), w.WorkerID, inventory)
+		report, err := u.sample(probe, authz.NewWorkerPrincipal(w.WorkerID), w.WorkerID, inventory)
 		stop()
 		<-u.slots
 		if err == nil {
-			inventory = false
+			if inventory {
+				inventoryDue = time.Now().Add(inventoryRefresh(report.Inventory))
+			}
+			inventory = !time.Now().Before(inventoryDue)
 			u.pollAccount(ctx, w)
 			delay = 5 * time.Second
 			continue
