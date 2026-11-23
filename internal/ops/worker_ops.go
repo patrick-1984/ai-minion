@@ -669,6 +669,9 @@ var hiddenMembers = map[string]map[string]bool{
 // for all ops. This is the one place of those descriptions: the MCP schema and
 // the CLI help both read it.
 var memberDocs = map[string]map[string]string{
+	OpWorkerUsage: {
+		"fresh": "Request a fresh installed harness scan when inventory is requested. The Worker may reuse a recent scan.",
+	},
 	OpSendText: {
 		"text": "The text to type, pasted verbatim. Tab and line feed are allowed; other control characters are refused (use send_keys for keys). No Enter is added unless submit is true.",
 	},

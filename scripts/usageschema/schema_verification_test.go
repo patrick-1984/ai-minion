@@ -99,7 +99,7 @@ func TestUsageOpenAPIReconcilesOperationRefsAndNullableDTOs(t *testing.T) {
 	check("UsageReport", ops.UsageReport{Version: ops.UsageVersion, ObservedAt: 1_800_000_000_000})
 	check("UsageCollectorSetArgs", ops.UsageCollectorSetArgs{AccountID: strings.Repeat("0", 64), Start: true})
 	check("UsageCollector", ops.UsageCollector{Mode: "native_background", CanStart: true})
-	check("WorkerUsageArgs", ops.WorkerUsageArgs{WorkerID: ops.NewUUIDv7(), Inventory: true})
+	check("WorkerUsageArgs", ops.WorkerUsageArgs{WorkerID: ops.NewUUIDv7(), Inventory: true, Fresh: true})
 	workerRequest := use("WorkerUsageArgs")
 	for internal, value := range map[string]any{"account_id": strings.Repeat("1", 64), "after_event": float64(1)} {
 		if err := workerRequest.Validate(map[string]any{"worker_id": ops.NewUUIDv7(), internal: value}); err == nil {
