@@ -1,6 +1,8 @@
 package ops
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -127,5 +129,34 @@ func TestUsageReportRestrictsUpstreamWindowsToCustomEndpointAPI(t *testing.T) {
 	r.Sessions[0].AuthMode = "subscription"
 	if err := r.Check(now); err == nil {
 		t.Fatal("subscription session with upstream windows was accepted")
+	}
+}
+
+// Valid quota detail never stops a whole report: when it alone makes the
+// report too large, the windows are dropped and the sessions are kept.
+func TestUsageSanitizeDropsOversizedQuotaDetailKeepsTheReport(t *testing.T) {
+	now := time.Now()
+	at := now.UnixMilli()
+	var windows []UsageWindow
+	for i := range 32 {
+		windows = append(windows, UsageWindow{Scope: fmt.Sprintf("model-%02d-%s", i, strings.Repeat("x", 60)), Period: "rolling", UsedPercent: new(20.)})
+	}
+	account := UsageAccount{ID: UsageID("big", "account"), Provider: "Anthropic", AuthMode: "api", CustomEndpoint: true, Source: "claude-statusline", ObservedAt: at, Windows: windows}
+	r := UsageReport{Version: UsageVersion, ObservedAt: at, Accounts: []UsageAccount{account}}
+	for i := range 200 {
+		r.Sessions = append(r.Sessions, UsageSession{ID: UsageID("big", fmt.Sprint(i)), Name: fmt.Sprint("s", i), AuthMode: "api", CustomEndpoint: true, Source: "claude-statusline", ObservedAt: at, AccountID: account.ID, Windows: windows})
+	}
+	if err := r.Check(now); err == nil {
+		t.Fatal("the fixture must exceed the transport limit")
+	}
+	got := r.Sanitize()
+	if err := got.Check(now); err != nil {
+		t.Fatalf("sanitized report: %v", err)
+	}
+	if len(got.Sessions) != 200 || len(got.Accounts) != 1 || len(got.Accounts[0].Windows) != 32 || len(got.Sessions[0].Windows) != 0 {
+		t.Fatalf("kept %d sessions, account windows %d, session windows %d", len(got.Sessions), len(got.Accounts[0].Windows), len(got.Sessions[0].Windows))
+	}
+	if len(r.Sessions[0].Windows) != 32 {
+		t.Fatal("Sanitize changed its input")
 	}
 }

@@ -65,3 +65,67 @@ func TestUsageKeepsLastReportedUpstreamQuota(t *testing.T) {
 		t.Fatalf("custom endpoint entered subscription collectors: %d, %v", collectors, err)
 	}
 }
+
+// Two custom endpoints of one provider are two accounts: a card carries the
+// quota of its own account id only, also inside a session bucket.
+func TestUsageQuotaStaysWithItsOwnEndpointAccount(t *testing.T) {
+	s := openTest(t)
+	workers, _, now := usageFixture(t, s, 0)
+	at := now.UnixMilli()
+	idA := ops.UsageID("account", "custom", "Anthropic", "endpoint-a")
+	idB := ops.UsageID("account", "custom", "Anthropic", "endpoint-b")
+	account := func(id string, delay int64, used float64) ops.UsageAccount {
+		return ops.UsageAccount{ID: id, Provider: "Anthropic", AuthMode: "api", CustomEndpoint: true, Source: "claude-statusline", ObservedAt: at + delay,
+			SourceSessionID: ops.UsageID("session", id), Windows: []ops.UsageWindow{{Scope: "short", Period: "rolling", UsedPercent: &used}}}
+	}
+	count := int64(7)
+	sessionA := ops.UsageSession{ID: ops.UsageID("session", "a"), Name: "a", AuthMode: "api", CustomEndpoint: true, AccountID: idA, ObservedAt: at, Source: "claude-statusline", UsageCounters: ops.UsageCounters{InputTokens: &count}}
+	sessionB := sessionA
+	sessionB.ID, sessionB.Name, sessionB.AccountID = ops.UsageID("session", "b"), "b", idB
+	report := ops.UsageReport{Version: ops.UsageVersion, ObservedAt: at + 10000, Complete: true, Sessions: []ops.UsageSession{sessionA, sessionB},
+		Accounts: []ops.UsageAccount{account(idA, 0, 11), account(idB, 5000, 99)}}
+	if err := s.SaveUsage(t.Context(), "w1", "alice", report, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	bucket, err := s.SetUsageBucket(t.Context(), "alice", workers[:1], ops.UsageBucketSetArgs{Action: "save", Kind: "session", Label: "Only A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := s.ReadUsage(t.Context(), workers[:1], "alice", ops.UsageListArgs{Section: "sessions"}, now)
+	if err != nil || len(sessions.Sessions) != 2 {
+		t.Fatalf("sessions: %+v, %v", sessions.Sessions, err)
+	}
+	if _, err := s.SetUsageBucket(t.Context(), "alice", workers[:1], ops.UsageBucketSetArgs{Action: "assign", Kind: "session", BucketID: bucket.ID, Members: []string{sessionOf(sessions.Sessions, "a")}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadUsage(t.Context(), workers[:1], "alice", ops.UsageListArgs{Section: "accounts", BucketID: bucket.ID}, now.Add(time.Minute))
+	if err != nil || len(got.Accounts) != 1 {
+		t.Fatalf("accounts in the bucket: %+v, %v", got.Accounts, err)
+	}
+	a := got.Accounts[0]
+	if a.ID != idA || len(a.Windows) != 1 || *a.Windows[0].UsedPercent != 11 || a.Totals == nil || a.Totals.Sessions != 1 {
+		t.Fatalf("card mixes endpoints: %+v", a)
+	}
+	all, err := s.ReadUsage(t.Context(), workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now.Add(time.Minute))
+	if err != nil || len(all.Accounts) != 2 {
+		t.Fatalf("accounts: %+v, %v", all.Accounts, err)
+	}
+	for _, c := range all.Accounts {
+		want := 11.0
+		if c.ID == idB {
+			want = 99
+		}
+		if *c.Windows[0].UsedPercent != want {
+			t.Errorf("account %s shows %v, want %v", c.ID, *c.Windows[0].UsedPercent, want)
+		}
+	}
+}
+
+func sessionOf(rows []ops.UsageSessionRow, name string) string {
+	for _, r := range rows {
+		if r.Name == name {
+			return r.ID
+		}
+	}
+	return ""
+}

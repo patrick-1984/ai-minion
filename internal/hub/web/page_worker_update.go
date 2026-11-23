@@ -7,6 +7,7 @@ package web
 // shows in the Version column when it reconnects.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -85,9 +86,13 @@ func notPublishedText(target string) string {
 // live page does not ask every outdated Worker on each refresh.
 const updateStatusTTL = 10 * time.Second
 
+// updateStatusTimeout bounds the one question to a Worker about its update.
+const updateStatusTimeout = 3 * time.Second
+
 type cachedUpdateFailure struct {
-	at   time.Time
-	text string
+	at       time.Time
+	text     string
+	inflight bool
 }
 
 var (
@@ -102,29 +107,59 @@ func forgetUpdateFailure(id string) {
 	updateFailMu.Unlock()
 }
 
-// updateFailureText is "Update to vX failed: <reason> (<time>)" when the
-// Worker's last update attempt to target failed, else "". It asks the Worker
-// (worker_update_status, which Workers serve since v0.9.0), at most once per
-// updateStatusTTL; a Worker that cannot answer shows nothing.
+// updateFailureText is "Update to vX failed: <reason> (<time>)" (or "was
+// rolled back") when the Worker's last update attempt to target did not
+// succeed, else "". It never waits for a Worker: it answers from the cache and,
+// when the entry is missing or older than updateStatusTTL, starts one bounded
+// worker_update_status question per Worker in the background. A page that
+// shows the status therefore sees it from its next refresh on, and a Worker
+// that cannot answer shows nothing and delays no page.
 func updateFailureText(r *http.Request, c OpCaller, id, target string) string {
 	updateFailMu.Lock()
-	e, ok := updateFailCache[id]
-	updateFailMu.Unlock()
-	if ok && time.Since(e.at) < updateStatusTTL {
-		return e.text
+	e := updateFailCache[id]
+	ask := !e.inflight && time.Since(e.at) >= updateStatusTTL
+	if ask {
+		e.inflight = true
+		updateFailCache[id] = e
 	}
-	text := ""
-	var st ops.WorkerUpdateStatus
-	if err := c.CallOp(r, ops.OpWorkerUpdateStatus, ops.WorkerUpdateStatusArgs{WorkerID: id}, &st); err == nil &&
-		st.State == ops.UpdateStateFailed && st.To == target {
+	updateFailMu.Unlock()
+	if ask {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), updateStatusTimeout)
+		rr := r.WithContext(ctx)
+		go func() {
+			defer cancel()
+			text := ""
+			var st ops.WorkerUpdateStatus
+			if err := c.CallOp(rr, ops.OpWorkerUpdateStatus, ops.WorkerUpdateStatusArgs{WorkerID: id}, &st); err == nil {
+				text = updateStatusText(st, target)
+			}
+			updateFailMu.Lock()
+			updateFailCache[id] = cachedUpdateFailure{at: time.Now(), text: text}
+			updateFailMu.Unlock()
+		}()
+	}
+	return e.text
+}
+
+// updateStatusText words a failed update to target, or one that the Worker
+// rolled back after the new binary did not start (its From is then the target).
+func updateStatusText(st ops.WorkerUpdateStatus, target string) string {
+	var text string
+	switch {
+	case st.State == ops.UpdateStateFailed && st.To == target:
 		text = "Update to " + target + " failed: " + friendlyUpdateError(st.Error, target)
-		if st.At != nil {
-			text += " (" + time.Time(*st.At).UTC().Format("2006-01-02 15:04 UTC") + ")"
+	case st.State == ops.UpdateStateRolledBack && st.From == target:
+		reason := st.Error
+		if reason == "" {
+			reason = target + " did not start on this Worker"
 		}
+		text = "Update to " + target + " was rolled back to the previous version: " + friendlyUpdateError(reason, target)
+	default:
+		return ""
 	}
-	updateFailMu.Lock()
-	updateFailCache[id] = cachedUpdateFailure{at: time.Now(), text: text}
-	updateFailMu.Unlock()
+	if st.At != nil {
+		text += " (" + time.Time(*st.At).UTC().Format("2006-01-02 15:04 UTC") + ")"
+	}
 	return text
 }
 
@@ -141,6 +176,10 @@ func updateOne(r *http.Request, c OpCaller, id string, force bool) (ops.WorkerUp
 	target, ok := updateTarget()
 	if !ok {
 		return ops.WorkerUpdateResult{}, fmt.Errorf("this Hub is a development build: there is no release to update Workers to")
+	}
+	if reason := notPublishedText(target); reason != "" {
+		// A release the Hub cannot see publicly cannot be downloaded: do not send it.
+		return ops.WorkerUpdateResult{Reason: reason}, nil
 	}
 	var res ops.WorkerUpdateResult
 	forgetUpdateFailure(id)
@@ -169,6 +208,10 @@ func handleWorkersUpdateAll(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	target, ok := updateTarget()
 	if !ok {
 		writeResultError(w, "This Hub is a development build: there is no release to update Workers to.")
+		return
+	}
+	if reason := notPublishedText(target); reason != "" {
+		writeResultError(w, "No Worker was sent the update: "+reason+". Try again after it is published.")
 		return
 	}
 	var list ops.WorkersListResult

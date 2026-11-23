@@ -63,7 +63,7 @@
   {{template "usage_buckets" $p}}
   {{else}}
   <div id="usage-data">
-    <p class="muted">Last checked {{$p.CheckedMs $p.Rows.AsOf}}</p>
+    <p class="muted">Last checked {{$p.Checked $p.LastChecked}}</p>
     {{if eq $p.Section "accounts"}}{{template "usage_accounts" $p}}
     {{else if eq $p.Section "workers"}}{{template "usage_workers" $p}}
     {{else if eq $p.Section "sessions"}}{{template "usage_sessions" $p}}
@@ -81,7 +81,7 @@
 <section aria-labelledby="aggregate-h">
   <div class="usage-heading">
     <h2 id="aggregate-h">Subscription limits</h2>
-    <span class="muted">Last checked {{$p.CheckedMs $p.Rows.AsOf}}</span>
+    <span class="muted">Last checked {{$p.Checked $p.LastChecked}}</span>
   </div>
   {{with $p.Rows.Overview}}
   <p>{{.Accounts}} subscription accounts · {{.WithoutWindows}} with no reported limits</p>
@@ -175,6 +175,7 @@
       <form method="post" action="/usage/refresh" hx-post="/usage/refresh" hx-target="#usage-result" hx-disabled-elt="find button">
         {{template "usage_form_state" $p}}
         <input type="hidden" name="worker" value="{{$card.RefreshWorker}}">
+        {{with $a.Collector}}<input type="hidden" name="account" value="{{$a.ID}}">{{if and .CanStart (eq .Mode "native_background")}}<input type="hidden" name="native" value="1"><input type="hidden" name="source" value="{{.PreferredWorker}}|{{.PreferredSession}}">{{end}}{{end}}
         <button type="submit" class="btn btn-secondary" aria-label="Refresh {{$a.Provider}} {{$a.Label}} from {{$p.WorkerName $card.RefreshWorker}}">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button>
       </form>
       {{end}}

@@ -388,7 +388,7 @@ func (r UsageReport) Check(now time.Time) error {
 		}
 	}
 	encoded, err := json.Marshal(r)
-	if err != nil || len(encoded) > 768<<10 {
+	if err != nil || len(encoded) > UsageReportMaxBytes {
 		return invalid("report", "encoded report exceeds the usage transport limit")
 	}
 	return nil
@@ -452,9 +452,14 @@ func checkUsageWindows(windows []UsageWindow) error {
 // the 256 sessions of a report plus the inventory and native rows.
 const UsageAccountsMax = 512
 
+// UsageReportMaxBytes caps the encoded usage report of one transport message.
+const UsageReportMaxBytes = 768 << 10
+
 // Sanitize returns the report with every optional display field or account
 // that cannot be accepted dropped, so one bad or surplus account never
-// invalidates the session telemetry of the whole report.
+// invalidates the session telemetry of the whole report. A report that is
+// too large only because of quota windows loses those windows (the session
+// copies first, then the account ones) and keeps everything else.
 func (r UsageReport) Sanitize() UsageReport {
 	r = r.DropLegacyEndpoints().DropBadLabels()
 	seen := map[string]bool{}
@@ -470,7 +475,24 @@ func (r UsageReport) Sanitize() UsageReport {
 	if len(kept) != len(r.Accounts) {
 		r.Accounts = kept
 	}
+	if r.tooLarge() {
+		r.Sessions = slices.Clone(r.Sessions)
+		for i := range r.Sessions {
+			r.Sessions[i].Windows = nil
+		}
+	}
+	if r.tooLarge() {
+		r.Accounts = slices.Clone(r.Accounts)
+		for i := range r.Accounts {
+			r.Accounts[i].Windows = nil
+		}
+	}
 	return r
+}
+
+func (r UsageReport) tooLarge() bool {
+	b, err := json.Marshal(r)
+	return err == nil && len(b) > UsageReportMaxBytes
 }
 
 // Pace compares consumed and elapsed percentages only when a reported

@@ -267,14 +267,21 @@ func WorkerRefreshPath(id string) string { return "/workers/" + url.PathEscape(i
 // per Worker per refreshEvery.
 func handleWorkerRefresh(w http.ResponseWriter, r *http.Request, c OpCaller, _ pageUser) {
 	id := r.PathValue("worker")
-	name := id
 	var list ops.WorkersListResult
-	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &list); err == nil {
-		for _, wk := range list.Workers {
-			if wk.ID == id {
-				name = wk.Name
-			}
-		}
+	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &list); err != nil {
+		writeResultError(w, failureText(err))
+		return
+	}
+	i := slices.IndexFunc(list.Workers, func(wk ops.WorkerInfo) bool { return wk.ID == id })
+	if i < 0 {
+		// Only a visible Worker touches the shared limiter or learns of its use.
+		writeResultError(w, "That Worker is not available to refresh.")
+		return
+	}
+	known := list.Workers[i]
+	name := known.Name
+	if name == "" {
+		name = id
 	}
 	if !workerRefresh.allow(id) {
 		writeResultInfo(w, "Checked less than "+strconv.Itoa(int(refreshEvery/time.Second))+" seconds ago. Showing the latest status.")
@@ -286,6 +293,13 @@ func handleWorkerRefresh(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 	}{id}, &sessions)
 	if err != nil {
 		writeResultError(w, "Could not refresh "+name+": "+failureText(err)+".")
+		return
+	}
+	// The page shows the Hub's own copy of the session list. When the Worker
+	// answers but the Hub has no confirmed list, the page is behind: say so
+	// and keep the old "Last checked" instead of claiming a new check.
+	if !known.SessionsSynced || known.SessionsListError != "" {
+		writeResultInfo(w, name+" listed "+countText(len(sessions.Sessions), len(sessions.Sessions), "session", "sessions")+", but the Hub has not received that list yet, so this page may show older rows. Reload in a moment.")
 		return
 	}
 	now := refreshNow().UnixMilli()
