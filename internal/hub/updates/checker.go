@@ -86,13 +86,51 @@ const listFreshness = 48 * time.Hour
 // Published reports whether the release tag is on GitHub as a published
 // release. known is false without a recent list (the check is off or has not
 // answered), when nothing can be said.
+//
+// An unpublished answer older than MinRefresh is still given (the page keeps
+// showing it) but starts a background re-check, at most once a minute, so a
+// release published after a draft-era check is noticed.
 func (c *Checker) Published(tag string) (published, known bool) {
+	published, known, age := c.published(tag)
+	if known && !published && age > c.gap() {
+		c.StartRefresh()
+	}
+	return published, known
+}
+
+func (c *Checker) gap() time.Duration {
+	if c.MinRefresh > 0 {
+		return c.MinRefresh
+	}
+	return time.Minute
+}
+
+func (c *Checker) published(tag string) (published, known bool, age time.Duration) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if len(c.tags) == 0 || time.Since(c.listedAt) > listFreshness {
+	age = time.Since(c.listedAt)
+	if len(c.tags) == 0 || age > listFreshness {
+		return false, false, age
+	}
+	return c.tags[tag], true, age
+}
+
+// PublishedFresh is Published for an action that is about to refuse a
+// release: when the cached answer says "unpublished" and is older than
+// MinRefresh it lists the releases again first (at most once per MinRefresh),
+// and when that cannot confirm the absence it says nothing is known rather
+// than keep refusing on a draft-era answer.
+func (c *Checker) PublishedFresh(ctx context.Context, tag string) (published, known bool) {
+	published, known, age := c.published(tag)
+	if !known || published || age <= c.gap() {
+		return published, known
+	}
+	c.fetch(ctx, true, false)
+	published, known, age = c.published(tag)
+	if known && !published && age > c.gap() {
 		return false, false
 	}
-	return c.tags[tag], true
+	return published, known
 }
 
 // Latest returns the last answer; it never blocks on the network.

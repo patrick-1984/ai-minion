@@ -138,8 +138,7 @@ func (p WorkerPage) Crumbs() []Crumb {
 // snapshot does not list is Gone.
 func newWorkerView(d Dashboard, all bool, id string, operate bool) WorkerView {
 	v := newDashboardView(d, all)
-	now := refreshNow().UnixMilli()
-	out := WorkerView{ShowOwner: all, OnWorker: true, Notice: d.Notice, Checked: checkedTime(&now, "Never"), RefreshURL: WorkerRefreshPath(id)}
+	out := WorkerView{ShowOwner: all, OnWorker: true, Notice: d.Notice, Checked: checkedTime(nil, "Never"), RefreshURL: WorkerRefreshPath(id)}
 	i := slices.IndexFunc(v.Workers, func(w WorkerRow) bool { return w.ID == id })
 	if i < 0 {
 		out.Gone = true
@@ -147,6 +146,11 @@ func newWorkerView(d Dashboard, all bool, id string, operate bool) WorkerView {
 	}
 	out.Worker = v.Workers[i]
 	out.Worker.Sessions = nil
+	if out.Worker.Online && !out.Worker.Pending && out.Worker.SessionsSynced {
+		// The Hub's copy follows the connected Worker's events: current now.
+		now := refreshNow().UnixMilli()
+		out.Checked = checkedTime(&now, "Never")
+	}
 	// The action addresses the Worker by its canonical id (a name is not unique); the route resolves an id like a name.
 	out.Worker.NewURL = NewSessionPath(id)
 	for _, x := range v.Sessions {
@@ -259,6 +263,34 @@ func registerWorkerPage(reg *Registry, get func() LiveSource, log *slog.Logger) 
 	return reg.RegisterRoute(Route{Pattern: "GET " + pathLiveWorkerPattern, Handler: workerLiveHandler(get, log)})
 }
 
+// sameSessionNames reports whether the Hub's copy lists exactly the sessions
+// the Worker just reported. Without a copy to compare it says no.
+func sameSessionNames(r *http.Request, id string, fresh []ops.SessionInfo) bool {
+	src := currentLiveSource()
+	if src == nil {
+		return false
+	}
+	d, err := src.Snapshot(r, true)
+	if err != nil {
+		return false
+	}
+	have := map[string]bool{}
+	for _, x := range d.Sessions {
+		if x.WorkerID == id {
+			have[x.Name] = true
+		}
+	}
+	if len(have) != len(fresh) {
+		return false
+	}
+	for _, x := range fresh {
+		if !have[x.Name] {
+			return false
+		}
+	}
+	return true
+}
+
 // WorkerRefreshPath is the post of the Refresh button of the Worker page.
 func WorkerRefreshPath(id string) string { return "/workers/" + url.PathEscape(id) + "/refresh" }
 
@@ -279,6 +311,10 @@ func handleWorkerRefresh(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 		return
 	}
 	known := list.Workers[i]
+	if !known.Online || known.Pending {
+		writeResultError(w, "That Worker is offline or waiting for approval, so there is nothing to refresh.")
+		return
+	}
 	name := known.Name
 	if name == "" {
 		name = id
@@ -292,6 +328,7 @@ func handleWorkerRefresh(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 		WorkerID string `json:"worker_id"`
 	}{id}, &sessions)
 	if err != nil {
+		workerRefresh.forget(id) // a failed attempt does not use the cooldown
 		writeResultError(w, "Could not refresh "+name+": "+failureText(err)+".")
 		return
 	}
@@ -300,6 +337,12 @@ func handleWorkerRefresh(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 	// and keep the old "Last checked" instead of claiming a new check.
 	if !known.SessionsSynced || known.SessionsListError != "" {
 		writeResultInfo(w, name+" listed "+countText(len(sessions.Sessions), len(sessions.Sessions), "session", "sessions")+", but the Hub has not received that list yet, so this page may show older rows. Reload in a moment.")
+		return
+	}
+	// "Last checked" describes the rows on screen: advance it only when the
+	// Hub's own copy lists the sessions the Worker just reported.
+	if !sameSessionNames(r, id, sessions.Sessions) {
+		writeResultInfo(w, name+" listed "+countText(len(sessions.Sessions), len(sessions.Sessions), "session", "sessions")+", which differs from the rows on this page. The page is behind; reload in a moment.")
 		return
 	}
 	now := refreshNow().UnixMilli()

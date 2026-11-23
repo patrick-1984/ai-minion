@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/version"
@@ -133,7 +136,7 @@ func TestUpdateIsDisabledForAnUnpublishedRelease(t *testing.T) {
 	s, _ := listServer(t, d, d)
 	body := get(t, s, "/workers", "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, body, `data-update-unpublished`, `v0.9.0 is not published yet`, `data-control="update" disabled`)
-	mustNotHave(t, body, `action="/workers/w1/update"`)
+	mustNotHave(t, body, `action="/workers/w1/update"`, `data-update-all`)
 	// An unknown state keeps the button.
 	SetPublishedSource(func(string) (bool, bool) { return false, false })
 	body = get(t, s, "/workers", "X-Test-Session", adminHeader).Body.String()
@@ -264,4 +267,54 @@ func TestWorkerUpdateRefusalWordsAnUnpublishedRelease(t *testing.T) {
 	connect(t, f)
 	rec := post(t, adminServer(t), "/workers/w1/update", adminHeader, url.Values{})
 	mustHave(t, rec.Body.String(), "v0.9.0 is not published on GitHub yet")
+}
+
+// A status is shown only to the person whose own call obtained it: after a
+// demotion the same Worker's cached failure is not lent to the stream.
+func TestUpdateFailureTextIsNotLentToAnotherUser(t *testing.T) {
+	status := ops.WorkerUpdateStatus{State: ops.UpdateStateFailed, To: "v0.9.0", Error: "boom"}
+	allowed := true
+	f := newFakeOps().on(ops.OpWorkerUpdateStatus, func(map[string]any) (any, error) {
+		if !allowed {
+			return nil, errors.New("forbidden")
+		}
+		return status, nil
+	})
+	forgetUpdateFailure("lent")
+	admin := httptest.NewRequest("GET", "/workers", nil)
+	admin = admin.WithContext(session.WithSession(admin.Context(), &session.Session{UserID: "u1", Role: authz.RoleAdmin}))
+	if got := settle(t, admin, f, "lent", "v0.9.0", 1); !strings.Contains(got, "boom") {
+		t.Fatalf("admin text = %q", got)
+	}
+	allowed = false
+	demoted := httptest.NewRequest("GET", "/workers", nil)
+	demoted = demoted.WithContext(session.WithSession(demoted.Context(), &session.Session{UserID: "u2", Role: authz.RoleUser}))
+	if got := updateFailureText(demoted, f, "lent", "v0.9.0"); got != "" {
+		t.Fatalf("another user saw %q", got)
+	}
+}
+
+// Invalidating a status keeps an open question's reservation (no duplicate
+// call) and discards its answer, which may predate the update.
+func TestForgetUpdateFailureKeepsTheInflightReservation(t *testing.T) {
+	release := make(chan struct{})
+	f := newFakeOps().on(ops.OpWorkerUpdateStatus, func(map[string]any) (any, error) {
+		<-release
+		return ops.WorkerUpdateStatus{State: ops.UpdateStateFailed, To: "v0.9.0", Error: "old"}, nil
+	})
+	r := httptest.NewRequest("GET", "/workers", nil)
+	forgetUpdateFailure("inv")
+	updateFailureText(r, f, "inv", "v0.9.0")
+	time.Sleep(30 * time.Millisecond)
+	forgetUpdateFailure("inv")
+	updateFailureText(r, f, "inv", "v0.9.0")
+	time.Sleep(30 * time.Millisecond)
+	if n := len(f.called(ops.OpWorkerUpdateStatus)); n != 1 {
+		t.Fatalf("calls = %d, want 1", n)
+	}
+	close(release)
+	time.Sleep(100 * time.Millisecond)
+	if got := updateFailureText(r, f, "inv", "v0.9.0"); got != "" {
+		t.Errorf("a pre-update answer survived: %q", got)
+	}
 }

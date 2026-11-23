@@ -41,7 +41,6 @@ func usageVisibleJSON(workers []ops.WorkerInfo) (string, error) {
 const usageRankedAccounts = `, ranked AS (
 			   SELECT a.*,row_number() OVER (PARTITION BY a.account_id ORDER BY
 			    (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,
-			    (json_extract(a.body,'$.auth_mode')='api' AND coalesce(json_extract(a.body,'$.custom_endpoint'),0)=1 AND coalesce(json_array_length(a.body,'$.windows'),0)>0) DESC,
 			    (json_extract(a.body,'$.source')<>'native-account') DESC,a.observed_at DESC,a.worker_id) rn
 		   FROM visible v JOIN usage_accounts a ON a.worker_id=v.id LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
 		 )`
@@ -112,6 +111,7 @@ func (s *Store) readUsage(ctx context.Context, db usageQuerier, workers []ops.Wo
 			if err := json.Unmarshal([]byte(body), &a.UsageAccount); err != nil {
 				return out, err
 			}
+			a.Windows = ops.SubscriptionWindows(a.UsageAccount)
 			all = append(all, a)
 		}
 		if err := rows.Err(); err != nil {
@@ -498,7 +498,7 @@ func readUsageAccounts(ctx context.Context, q usageQuerier, pairs []usageSourceP
 	 JOIN usage_accounts a ON a.worker_id=w.id AND a.account_id=json_extract(p.value,'$.m')
 	 LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
 	 ORDER BY a.account_id,
-	  (json_array_length(a.body,'$.windows')>0) DESC,
+	  (json_extract(a.body,'$.auth_mode')='subscription' AND json_array_length(a.body,'$.windows')>0) DESC,
 	  (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,
 	  (json_extract(a.body,'$.source')<>'native-account') DESC,
 	  a.observed_at DESC,a.worker_id`, arg)
@@ -523,6 +523,7 @@ func readUsageAccounts(ctx context.Context, q usageQuerier, pairs []usageSourceP
 			return nil, err
 		}
 		a.ObservedAt = observed
+		a.Windows = ops.SubscriptionWindows(a)
 		out = append(out, a)
 	}
 	return out, rows.Err()

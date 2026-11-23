@@ -564,7 +564,7 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 		card.Freshness = "Unknown"
 	}
 	card.StaleWhy = p.staleWhy(card)
-	if a.AuthMode == "subscription" || a.AuthMode == "api" && a.CustomEndpoint {
+	if a.AuthMode == "subscription" {
 		card.Windows = p.WindowViews(a.Windows, a.ObservedAt)
 	}
 	return card
@@ -633,11 +633,13 @@ func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 		usageRefresh(w, r, c)
 		return
 	case "scan":
-		var report ops.UsageReport
-		if err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: r.PostFormValue("worker"), Inventory: true, Fresh: true}, &report); err != nil {
-			writeResultError(w, failureText(err))
-			return
-		}
+		// The row action is the shared refresh of one Worker: the same
+		// cooldown, and a cached inventory is reported as cached.
+		r.PostForm.Set("view", "workers")
+		usageRefreshThen(w, r, c, func() {
+			usageReload(w, r, usageURL(view, r.PostFormValue("filter_worker"), r.PostFormValue("filter_bucket"), ""))
+		})
+		return
 	case "account":
 		if !usagePrivate(r) {
 			writeResultError(w, "Account names and order are available in your own signed-in account.")
@@ -713,7 +715,10 @@ func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 		http.NotFound(w, r)
 		return
 	}
-	location := usageURL(view, r.PostFormValue("filter_worker"), r.PostFormValue("filter_bucket"), "")
+	usageReload(w, r, usageURL(view, r.PostFormValue("filter_worker"), r.PostFormValue("filter_bucket"), ""))
+}
+
+func usageReload(w http.ResponseWriter, r *http.Request, location string) {
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("HX-Redirect", location)
 		w.WriteHeader(http.StatusOK)
@@ -726,6 +731,12 @@ func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 // every online Worker the person sees (narrowed to the filtered Worker). A
 // Worker refreshed less than refreshEvery ago is not asked again.
 func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
+	usageRefreshThen(w, r, c, nil)
+}
+
+// usageRefreshThen is usageRefresh; when every asked Worker really refreshed it
+// calls done (a page reload) instead of writing the confirmation line.
+func usageRefreshThen(w http.ResponseWriter, r *http.Request, c OpCaller, done func()) {
 	var list ops.WorkersListResult
 	if err := c.CallOp(r, ops.OpWorkersList, ops.WorkersListArgs{All: true}, &list); err != nil {
 		writeResultError(w, failureText(err))
@@ -797,6 +808,7 @@ func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
 			defer mu.Unlock()
 			switch {
 			case err != nil:
+				workerRefresh.forget(wk.ID) // a failed attempt does not use the cooldown
 				failed = append(failed, wk.Name+": "+failureText(err))
 			case inventory && (report.InventoryAt == nil || *report.InventoryAt <= before[wk.ID]):
 				cached++
@@ -817,6 +829,8 @@ func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		writeResultInfo(w, "Refreshed less than "+strconv.Itoa(int(refreshEvery/time.Second))+" seconds ago. Showing the latest data."+quota)
 	case refreshed == 0:
 		writeResultInfo(w, "No online Worker to refresh."+quota)
+	case done != nil && cached == 0:
+		done()
 	default:
 		text := "Refreshed " + pluralWorkers(refreshed) + "."
 		if cached > 0 {
@@ -826,21 +840,61 @@ func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	}
 }
 
-// usageQueueQuota handles the account card's Refresh: it asks the collector
-// for the account's native quota query, which the Hub schedules and rate
-// limits, and says what became of it. Other refreshes return no text.
+// usageQueueQuota handles Refresh's native quota queries. With an account in
+// the form (the account card) it queues that account; on the Subscriptions
+// view it queues every displayed subscription account that can run one. The
+// Hub schedules and rate limits the queries; the collector source is read from
+// the stored settings, never from the page. Other refreshes return no text.
 func usageQueueQuota(r *http.Request, c OpCaller) string {
-	account := r.PostFormValue("account")
-	if account == "" || !usagePrivate(r) {
+	if !usagePrivate(r) {
 		return ""
 	}
-	if r.PostFormValue("native") != "1" {
-		return " This account's quota arrives with the sessions that report it; there is no background query to run."
+	if account := r.PostFormValue("account"); account != "" {
+		return usageQueueAccount(r, c, account)
 	}
-	worker, sid, _ := strings.Cut(r.PostFormValue("source"), "|")
+	if r.PostFormValue("view") != "overview" {
+		return ""
+	}
+	var rows ops.UsageListResult
+	args := ops.UsageListArgs{Section: "accounts", SubscriptionOnly: true, WorkerID: r.PostFormValue("filter_worker"), BucketID: r.PostFormValue("filter_bucket"), Limit: 50}
+	if err := c.CallOp(r, ops.OpUsageList, args, &rows); err != nil {
+		return " The quota queries were not queued: " + failureText(err) + "."
+	}
+	queued, limited := 0, 0
+	var failure string
+	for _, a := range rows.Accounts {
+		if a.Collector == nil || !a.Collector.CanStart || a.Collector.Mode != "native_background" {
+			continue
+		}
+		var res ops.UsageCollector
+		if err := c.CallOp(r, ops.OpUsageCollectorSet, ops.UsageCollectorSetArgs{AccountID: a.ID, KeepSource: true, Start: true}, &res); err != nil {
+			failure = failureText(err)
+			continue
+		}
+		if res.NextDue != nil && *res.NextDue > refreshNow().UnixMilli() {
+			limited++
+		} else {
+			queued++
+		}
+	}
+	switch {
+	case failure != "":
+		return " Some quota queries were not queued: " + failure + "."
+	case queued+limited == 0:
+		return " No displayed account has a background quota query; quota arrives with the sessions that report it."
+	case limited > 0:
+		return " " + strconv.Itoa(queued) + " quota queries queued, " + strconv.Itoa(limited) + " rate-limited."
+	}
+	return " " + strconv.Itoa(queued) + " quota " + map[bool]string{true: "query is", false: "queries are"}[queued == 1] + " queued and run at the next collection round."
+}
+
+func usageQueueAccount(r *http.Request, c OpCaller, account string) string {
 	var res ops.UsageCollector
-	if err := c.CallOp(r, ops.OpUsageCollectorSet, ops.UsageCollectorSetArgs{AccountID: account, WorkerID: worker, SessionID: sid, Start: true}, &res); err != nil {
+	if err := c.CallOp(r, ops.OpUsageCollectorSet, ops.UsageCollectorSetArgs{AccountID: account, KeepSource: true, Start: true}, &res); err != nil {
 		return " The quota query was not queued: " + failureText(err) + "."
+	}
+	if !res.CanStart || res.Mode != "native_background" {
+		return " This account's quota arrives with the sessions that report it; there is no background query to run."
 	}
 	if res.NextDue != nil && *res.NextDue > refreshNow().UnixMilli() {
 		return " The quota query is rate-limited until " + usagePage{}.Time(res.NextDue) + "."

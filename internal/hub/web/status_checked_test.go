@@ -77,12 +77,13 @@ func TestUsageRefreshRateLimitAndErrors(t *testing.T) {
 		t.Fatalf("asked %d Workers, want the 2 online ones", n)
 	}
 	res = onbPost(t, srv, "/usage/refresh", form)
-	if n := len(f.called(ops.OpWorkerUsage)); n != 2 || !strings.Contains(res.Body.String(), "less than 10 seconds ago") {
+	// The failed Worker keeps no cooldown and is asked again; the other waits.
+	if n := len(f.called(ops.OpWorkerUsage)); n != 3 || !strings.Contains(res.Body.String(), "Could not refresh Broken box") {
 		t.Fatalf("limit not applied: %d %s", n, res.Body.String())
 	}
 	now = now.Add(11 * time.Second)
 	onbPost(t, srv, "/usage/refresh", form)
-	if n := len(f.called(ops.OpWorkerUsage)); n != 4 {
+	if n := len(f.called(ops.OpWorkerUsage)); n != 5 {
 		t.Fatalf("after 11 s asked %d", n)
 	}
 }
@@ -106,6 +107,8 @@ func TestWorkerRefreshRoute(t *testing.T) {
 		reply(ops.OpSessionsList, ops.SessionsListResult{})
 	connect(t, f)
 	s := adminServer(t)
+	SetLiveSource(newFakeSource(Dashboard{Workers: []WorkerRow{{ID: "w1", Name: "laptop"}}}, Dashboard{Workers: []WorkerRow{{ID: "w1", Name: "laptop"}}}))
+	t.Cleanup(func() { SetLiveSource(nil) })
 	res := post(t, s, "/workers/w1/refresh", adminHeader, url.Values{})
 	if !strings.Contains(res.Body.String(), `id="worker-checked"`) || len(f.called(ops.OpSessionsList)) != 1 {
 		t.Fatalf("%s", res.Body.String())
@@ -143,8 +146,25 @@ func TestWorkerRefreshHonesty(t *testing.T) {
 	}
 	res = post(t, s, "/workers/w1/refresh", adminHeader, url.Values{})
 	body := res.Body.String()
-	if strings.Contains(body, `id="worker-checked"`) || !strings.Contains(body, "has not received that list") || res.Header().Get("HX-Retarget") != "" {
+	if strings.Contains(body, `id="worker-checked"`) || res.Header().Get("HX-Retarget") != "" {
 		t.Fatalf("unsynced Worker reported as checked: %s", body)
+	}
+	// A Worker that went offline neither consumes the cooldown nor is asked.
+	off := wAliceInfo
+	off.Online = false
+	f.reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{off}})
+	calls := len(f.called(ops.OpSessionsList))
+	post(t, s, "/workers/w1/refresh", adminHeader, url.Values{})
+	if len(f.called(ops.OpSessionsList)) != calls {
+		t.Fatal("an offline Worker was asked")
+	}
+	// A failed call hands the cooldown back.
+	f.reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{wAliceInfo}})
+	f.on(ops.OpSessionsList, func(map[string]any) (any, error) { return nil, errors.New("gone") })
+	now = now.Add(11 * time.Second)
+	post(t, s, "/workers/w1/refresh", adminHeader, url.Values{})
+	if !workerRefresh.allow("w1") {
+		t.Fatal("a failed refresh consumed the cooldown")
 	}
 }
 
@@ -236,7 +256,7 @@ func TestAccountRefreshQueuesTheNativeQuotaQuery(t *testing.T) {
 	form := url.Values{"for_user": {onbUserID}, "view": {"accounts"}, "worker": {"w"}, "account": {account}, "native": {"1"}, "source": {"w|"}}
 	res := onbPost(t, srv, "/usage/refresh", form)
 	calls := f.called(ops.OpUsageCollectorSet)
-	if len(calls) != 1 || calls[0].Args["start"] != true || calls[0].Args["account_id"] != account || calls[0].Args["worker_id"] != "w" || !strings.Contains(res.Body.String(), "quota query is queued") {
+	if len(calls) != 1 || calls[0].Args["start"] != true || calls[0].Args["account_id"] != account || calls[0].Args["keep_source"] != true || calls[0].Args["worker_id"] != nil || !strings.Contains(res.Body.String(), "quota query is queued") {
 		t.Fatalf("collector %v: %s", calls, res.Body.String())
 	}
 	// Rate limited: the collector's next due time is in the future.
@@ -247,11 +267,11 @@ func TestAccountRefreshQueuesTheNativeQuotaQuery(t *testing.T) {
 	if !strings.Contains(res.Body.String(), "rate-limited until") {
 		t.Fatalf("%s", res.Body.String())
 	}
-	// No native query for this account: no collector call, and the text says why.
-	form.Del("native")
+	// No native query for this account: the text says why.
+	f.reply(ops.OpUsageCollectorSet, ops.UsageCollector{Mode: "passive_events"})
 	now = now.Add(11 * time.Second)
 	res = onbPost(t, srv, "/usage/refresh", form)
-	if len(f.called(ops.OpUsageCollectorSet)) != 2 || !strings.Contains(res.Body.String(), "no background query") {
+	if len(f.called(ops.OpUsageCollectorSet)) != 3 || !strings.Contains(res.Body.String(), "no background query") {
 		t.Fatalf("%s", res.Body.String())
 	}
 }
@@ -269,5 +289,33 @@ func TestUsageLastCheckedIsTheDataTimeNotThePageRead(t *testing.T) {
 	p.Rows.Sessions = []ops.UsageSessionRow{{UsageSession: ops.UsageSession{ObservedAt: 3000}, LastSeen: 5000}}
 	if got := p.LastChecked(); got == nil || *got != 5000 {
 		t.Fatalf("LastChecked = %v, want 5000", got)
+	}
+}
+
+// The Subscriptions Refresh queues a native quota query for each displayed
+// account that can run one, from the stored source, and the per-Worker harness
+// scan is the shared refresh (a cached answer is reported as cached).
+func TestSubscriptionsRefreshQueuesQueriesAndScanReportsCached(t *testing.T) {
+	now := time.Unix(3600, 0)
+	withRefreshClock(t, &now)
+	has := []string{ops.OpWorkerUsage}
+	native := ops.UsageAccountRow{UsageAccount: ops.UsageAccount{ID: ops.UsageID("account", "codex"), AuthMode: "subscription"}, Collector: &ops.UsageCollector{CanStart: true, Mode: "native_background"}}
+	passive := ops.UsageAccountRow{UsageAccount: ops.UsageAccount{ID: ops.UsageID("account", "claude"), AuthMode: "subscription"}, Collector: &ops.UsageCollector{Mode: "passive_events"}}
+	f := newFakeOps().
+		reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{{ID: "w", Name: "Box", Online: true, Ops: has}}}).
+		reply(ops.OpWorkerUsage, ops.UsageReport{Version: 1, InventoryAt: new(int64(1000))}).
+		reply(ops.OpUsageCollectorSet, ops.UsageCollector{Mode: "native_background", CanStart: true}).
+		reply(ops.OpUsageList, ops.UsageListResult{Accounts: []ops.UsageAccountRow{native, passive}, Workers: []ops.UsageWorkerRow{{ID: "w", InventoryAt: new(int64(1000))}}})
+	connect(t, f)
+	srv := onbUser(t)
+	res := onbPost(t, srv, "/usage/refresh", url.Values{"for_user": {onbUserID}, "view": {"overview"}})
+	calls := f.called(ops.OpUsageCollectorSet)
+	if len(calls) != 1 || calls[0].Args["account_id"] != native.ID || calls[0].Args["keep_source"] != true || !strings.Contains(res.Body.String(), "1 quota query is queued") {
+		t.Fatalf("%v: %s", calls, res.Body.String())
+	}
+	now = now.Add(11 * time.Second)
+	res = onbPost(t, srv, "/usage/scan", url.Values{"for_user": {onbUserID}, "view": {"workers"}, "worker": {"w"}})
+	if !strings.Contains(res.Body.String(), "cached") {
+		t.Fatalf("a cached scan was not reported: %s", res.Body.String())
 	}
 }

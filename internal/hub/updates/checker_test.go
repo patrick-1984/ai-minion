@@ -383,3 +383,46 @@ func TestCheckerPublishedKnowsOnlyFromAFreshList(t *testing.T) {
 		t.Error("a stale list must say nothing")
 	}
 }
+
+// A release checked while its tag was still a draft stops blocking updates
+// once it is published: the refusing path lists the releases again.
+func TestCheckerPublishedFreshRechecksAnUnpublishedAnswer(t *testing.T) {
+	src := &fakeSource{rels: []version.Release{{Tag: "v1.0.0"}, {Tag: "v1.1.0", Draft: true}}}
+	c := newChecker(src, "v1.0.0", nil)
+	c.CheckOnce(context.Background())
+	if p, known := c.PublishedFresh(context.Background(), "v1.1.0"); p || !known {
+		t.Fatalf("draft = %v, %v", p, known)
+	}
+	if n := src.calls.Load(); n != 1 {
+		t.Fatalf("a recent answer was listed again (%d calls)", n)
+	}
+	src.rels = []version.Release{{Tag: "v1.0.0"}, {Tag: "v1.1.0"}}
+	// Within the minute the cached absence stands.
+	c.mu.Lock()
+	c.listedAt = time.Now().Add(-2 * time.Minute)
+	c.mu.Unlock()
+	c.runMu.Lock()
+	c.lastAt = time.Now().Add(-2 * time.Minute)
+	c.runMu.Unlock()
+	if p, known := c.PublishedFresh(context.Background(), "v1.1.0"); !p || !known {
+		t.Fatalf("after publication = %v, %v", p, known)
+	}
+	// Another refusal right after must not ask GitHub again.
+	src.rels = []version.Release{{Tag: "v1.0.0"}}
+	calls := src.calls.Load()
+	c.PublishedFresh(context.Background(), "v9.9.9")
+	if src.calls.Load() != calls {
+		t.Error("asked GitHub twice within a minute")
+	}
+	// A failed re-check cannot keep an old absence authoritative.
+	src.err = errors.New("offline")
+	c.mu.Lock()
+	c.listedAt = time.Now().Add(-2 * time.Minute)
+	c.mu.Unlock()
+	c.runMu.Lock()
+	c.lastAt = time.Now().Add(-2 * time.Minute)
+	c.runMu.Unlock()
+	if _, known := c.PublishedFresh(context.Background(), "v9.9.9"); known {
+		t.Error("an unconfirmed absence still blocks")
+	}
+}
