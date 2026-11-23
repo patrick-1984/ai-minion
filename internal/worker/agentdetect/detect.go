@@ -192,9 +192,17 @@ const (
 // "unknown" when the process table is unavailable. For every other kind it
 // is "unknown".
 func (d *Detector) Classify(ctx context.Context, in Input) Result {
+	r, _ := d.Locate(ctx, in)
+	return r
+}
+
+// Locate is Classify that also returns the pid of the agent process when the
+// pane runs one: the pane's own process when the current command is the agent,
+// else the matching process of the tree. It is zero for any other pane.
+func (d *Detector) Locate(ctx context.Context, in Input) (Result, int) {
 	cmd := progName(in.Command)
 	if a := d.matchProgram(cmd); a != nil {
-		return d.agentResult(a, in.Screen)
+		return d.agentResult(a, in.Screen), in.PID
 	}
 
 	var (
@@ -213,7 +221,7 @@ func (d *Detector) Classify(ctx context.Context, in Input) Result {
 			continue
 		}
 		if a := d.matchArgs(p.Args); a != nil {
-			return d.agentResult(a, in.Screen)
+			return d.agentResult(a, in.Screen), p.PID
 		}
 	}
 
@@ -226,11 +234,11 @@ func (d *Detector) Classify(ctx context.Context, in Input) Result {
 				r.State = ops.PaneStateBusy
 			}
 		}
-		return r
+		return r, 0
 	case cmd == "":
-		return Result{Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown}
+		return Result{Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown}, 0
 	default:
-		return Result{Kind: ops.PaneKindOther, State: ops.PaneStateUnknown}
+		return Result{Kind: ops.PaneKindOther, State: ops.PaneStateUnknown}, 0
 	}
 }
 
@@ -260,6 +268,7 @@ func (d *Detector) matchToken(t string) *Agent {
 	if a := d.matchProgram(progName(scriptName(t))); a != nil {
 		return a
 	}
+	t = strings.ReplaceAll(t, `\`, "/") // Windows paths
 	for i := range d.agents {
 		for _, h := range d.agents[i].ArgHints {
 			if strings.Contains(t, h) {

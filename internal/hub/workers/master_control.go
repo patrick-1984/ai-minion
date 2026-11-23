@@ -340,7 +340,7 @@ func (m *MasterControl) Controllers(ctx context.Context, workerID, session strin
 		if out[i].Worker != out[j].Worker {
 			return out[i].Worker < out[j].Worker
 		}
-		return out[i].SessionName < out[j].SessionName
+		return ops.NaturalCompare(out[i].SessionName, out[j].SessionName) < 0
 	})
 	return out, nil
 }

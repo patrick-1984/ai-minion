@@ -687,7 +687,7 @@ func distinct(list []string) []string {
 			out = append(out, x)
 		}
 	}
-	slices.Sort(out)
+	slices.SortFunc(out, ops.NaturalCompare)
 	return out
 }
 

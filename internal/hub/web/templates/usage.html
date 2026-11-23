@@ -103,6 +103,7 @@
     <span class="badge" data-tone="{{if eq .Freshness "Stale"}}warning{{else}}info{{end}}">{{.Freshness}}</span>
   </div>
   <p class="muted">{{.Account.Source}} · {{.Observed}}</p>
+  {{with .StaleWhy}}<p class="help">{{.}}</p>{{end}}
   {{template "usage_windows" .}}
 </article>
 {{end}}
@@ -147,6 +148,7 @@
         {{if eq $a.AuthMode "api"}}<div><dt>API endpoint origin</dt><dd>{{if $a.EndpointOrigin}}<code>{{$a.EndpointOrigin}}</code>{{else}}Undisclosed{{end}}</dd></div>
         {{if $a.KeyHint}}<div><dt>Credential hint</dt><dd><code>{{$a.KeyHint}}</code></dd></div>{{end}}{{end}}
         <div><dt>Observation</dt><dd>{{$card.Freshness}} · {{$card.Observed}}</dd></div>
+        {{with $card.StaleWhy}}<div><dt>Why stale</dt><dd>{{.}}</dd></div>{{end}}
         <div><dt>Source</dt><dd>{{$p.WorkerName $a.WorkerID}} · {{$a.Source}}</dd></div>
         {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName $a.BucketID}}</dd></div>{{end}}
       </dl>
@@ -191,7 +193,7 @@
             </select>
           </label>
           <button type="submit" class="btn btn-secondary">Save collector</button>
-          {{if $a.Collector.CanStart}}<button type="submit" name="run" value="native" class="btn btn-primary">Start native collector</button><p class="help">The selected Worker opens a status-only Codex process at the next permitted query time.</p>{{else}}<p class="help">This account has no supported background query. Idle limits update when its configured native source reports again.</p>{{end}}
+          {{if $a.Collector.CanStart}}<button type="submit" name="run" value="native" class="btn btn-primary">Start native collector</button><p class="help">The selected Worker opens a status-only Codex process at the next permitted query time.</p>{{else if eq $a.Provider "Anthropic"}}<p class="help">Claude limits come from running Claude Code sessions that have the Minion exporter.{{if and $p.ExporterMissing (not $p.ExporterInstalled)}} No Worker has it yet. Run <code>{{$p.ExporterCommand}}</code> on {{range $i, $n := $p.ExporterMissing}}{{if $i}}, {{end}}{{$n}}{{end}}, then restart the Claude sessions.{{end}}</p>{{else}}<p class="help">This account has no supported background query. Idle limits update when its configured native source reports again.</p>{{end}}
         </form>
         {{end}}
       </details>
@@ -234,6 +236,17 @@
         {{end}}
       </ul>
       {{else}}<p class="muted">No harness inventory reported.</p>{{end}}
+      {{$w := .}}{{range .Inventory}}{{if and (eq .Name "claude") (eq .Status "installed")}}
+      {{if eq .Exporter "absent"}}
+      <div class="notice notice-info"><p>Claude Code token, cost and limit data needs the Minion status-line exporter on this Worker. Run on {{$p.WorkerName $w.ID}}:</p>
+      <div><div class="copy-field"><code class="copy-value" id="cp-exporter-{{$w.ID}}">{{$p.ExporterCommand}}</code><button type="button" class="copy-btn" data-copy-target="#cp-exporter-{{$w.ID}}" aria-label="Copy the command" title="Copy">{{template "copy-icons"}}</button></div></div>
+      <p>Then restart the Claude sessions.</p></div>
+      {{else if eq .Exporter "installed"}}<p class="help">Claude exporter: installed{{if index $p.ExporterRestart $w.ID}}. Restart running Claude sessions to start reporting.{{end}}</p>
+      {{else if eq .Exporter "overridden"}}<p class="help">Claude exporter: overridden by managed settings or disabled hooks. Claude Code settings on this Worker block it; ask the administrator who manages them to allow the Minion status line and hooks.</p>
+      {{else if eq .Exporter "off"}}<p class="help">Claude exporter: off. The automatic install is turned off on this Worker. To turn it on, run <code>minion worker config set usage_claude_exporter auto</code> and restart the Worker, then the Claude sessions.</p>
+      {{else if eq .Exporter "conflict"}}<p class="help">Claude exporter: conflict. The existing Claude Code status line could not be kept, so the settings were left unchanged. Fix the <code>statusLine</code> entry in the Claude settings, or run <code>{{$p.ExporterCommand}}</code> on {{$p.WorkerName $w.ID}} to see the reason.</p>
+      {{end}}
+      {{end}}{{end}}
       {{if and .Online (ne .Status "unsupported") (ne .Status "registration_required")}}
       <form method="post" action="/usage/scan" hx-post="/usage/scan" hx-target="#usage-result" hx-disabled-elt="find button">
         {{template "usage_form_state" $p}}
@@ -274,13 +287,14 @@
         <div><dt>Harness</dt><dd>{{$p.Harness .Harness}} {{.Version}}</dd></div>
         <div><dt>Provider</dt><dd>{{$p.Label .Provider}}</dd></div>
         <div><dt>Model</dt><dd>{{if .Model}}{{.Model}}{{else}}Unknown{{end}}</dd></div>
-        <div><dt>Access</dt><dd>{{$p.Access .AuthMode}}</dd></div>
+        <div><dt>Access</dt><dd>{{if and (eq .AuthMode "api") .Endpoint}}Custom endpoint · {{.Endpoint}}{{else}}{{$p.Access .AuthMode}}{{end}}</dd></div>
         <div><dt>Started</dt><dd>{{$p.Time .StartedAt}}</dd></div>
         <div><dt>Stopped</dt><dd>{{if .StoppedAt}}{{$p.Time .StoppedAt}}{{else}}No stop observed{{end}}</dd></div>
         <div><dt>Last seen</dt><dd>{{$p.Millis .LastSeen}}</dd></div>
         {{if .AccountID}}<div><dt>Account ID</dt><dd><code>{{.AccountID}}</code></dd></div>{{end}}
         {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName .BucketID}}</dd></div>{{end}}
       </dl>
+      {{if and (eq .Harness "claude") (not .InputTokens) (not .OutputTokens)}}<p class="help">Tokens, cost and model need the Claude Code exporter: run <code>{{$p.ExporterCommand}}</code> on {{$p.WorkerName .WorkerID}}, then restart the Claude sessions.</p>{{else if and (eq .Harness "codex") (not .InputTokens) (not .OutputTokens)}}<p class="help">Codex session tokens are not collected yet.</p>{{end}}
       {{template "usage_counters" ($p.Counters .UsageCounters)}}
       {{if .Models}}
       <details class="usage-window">

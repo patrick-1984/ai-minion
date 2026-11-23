@@ -152,6 +152,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		reg = agent.DefaultRegistry
 	}
 	rt := agent.NewRuntime(reg, deps.options)
+	go runClaudeAutoInstall(cmd.Context(), res, core.StateDir, lookupEnv)
 	err = rt.Run(cmd.Context(), agent.Settings{
 		WorkerCore: core,
 		Resolver:   res,

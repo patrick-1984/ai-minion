@@ -168,7 +168,8 @@ func TestUsageActAsSuppressesPrivateReadsAndWrites(t *testing.T) {
 		t.Fatal("act-as view rendered private organization or controls")
 	}
 	list := f.called(ops.OpUsageList)
-	if len(list) != 1 || list[0].Args["bucket_id"] != nil || len(f.called(ops.OpUsageBucketList)) != 0 {
+	// The second call reads the Worker inventories for the exporter notice.
+	if len(list) != 2 || list[0].Args["bucket_id"] != nil || list[1].Args["bucket_id"] != nil || len(f.called(ops.OpUsageBucketList)) != 0 {
 		t.Fatalf("act-as queried private organization: list calls %+v", list)
 	}
 	for _, action := range []string{"bucket", "collector", "account"} {
@@ -228,4 +229,91 @@ func TestUsageShowsSeparateGatewaySpendAndAPICredentialDetails(t *testing.T) {
 		}
 		mustHave(t, res.Body.String(), view.want...)
 	}
+}
+
+func TestUsageExplainsMissingClaudeExporter(t *testing.T) {
+	at := time.Now().UnixMilli()
+	claude := func(exporter string) []ops.UsageHarness {
+		return []ops.UsageHarness{{Name: "claude", Status: "installed", Exporter: exporter}}
+	}
+	anthropic := ops.UsageAccountRow{UsageAccount: ops.UsageAccount{ID: ops.UsageID("fixture", "a"), Provider: "Anthropic", Label: "Work", AuthMode: "subscription", Source: "claude-statusline", ObservedAt: at},
+		Collector: &ops.UsageCollector{Status: "passive", Mode: "passive_events"}}
+	session := func(h string) ops.UsageSessionRow {
+		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", h), Name: h + "-1", Harness: h, AuthMode: "unknown", Source: "session-host", ObservedAt: at}}
+	}
+	run := func(inv []ops.UsageHarness, view string) string {
+		result := ops.UsageListResult{Version: 1, AsOf: at, Accounts: []ops.UsageAccountRow{anthropic}, Sessions: []ops.UsageSessionRow{session("claude"), session("codex")},
+			Workers: []ops.UsageWorkerRow{{ID: "build", Name: "Build workstation", Online: true, Status: "ready", ObservedAt: &at, InventoryAt: &at, Inventory: inv}}}
+		f := usagePageFixtures().reply(ops.OpUsageList, result)
+		connect(t, f)
+		res := get(t, adminServer(t), "/usage?view="+view, "X-Test-Session", userHeader)
+		if res.Code != 200 {
+			t.Fatalf("%s: %d", view, res.Code)
+		}
+		return mainOf(t, res.Body.String())
+	}
+	const cmd = "minion worker config usage integrate claude"
+	for _, view := range []string{"workers", "accounts", "sessions"} {
+		body := run(claude("absent"), view)
+		mustHave(t, body, cmd)
+		if view == "workers" {
+			mustHave(t, body, "needs the Minion status-line exporter on this Worker. Run on Build workstation:", "Then restart the Claude sessions")
+		}
+		if view == "accounts" {
+			mustHave(t, body, "No Worker has it yet", "Build workstation")
+		}
+		if view == "sessions" {
+			mustHave(t, body, "Tokens, cost and model need the Claude Code exporter", "Codex session tokens are not collected yet")
+		}
+	}
+	if body := run(claude("installed"), "workers"); !strings.Contains(body, "Claude exporter: installed") || strings.Contains(body, "needs the Minion status-line exporter") {
+		t.Fatalf("installed state: %s", body)
+	}
+	if body := run(claude("installed"), "accounts"); strings.Contains(body, "No Worker has it yet") {
+		t.Fatal("accounts note shown although a Worker has the exporter")
+	}
+}
+
+func TestUsageSessionsShowCustomEndpointAccess(t *testing.T) {
+	at := time.Now().UnixMilli()
+	row := func(name, endpoint string) ops.UsageSessionRow {
+		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", name), Name: name, Harness: "claude", AuthMode: "api", Endpoint: endpoint, Source: "session-host", ObservedAt: at}}
+	}
+	result := ops.UsageListResult{Version: 1, AsOf: at, Sessions: []ops.UsageSessionRow{row("keyed", ""), row("gateway", "cpa.example")}}
+	connect(t, usagePageFixtures().reply(ops.OpUsageList, result))
+	res := get(t, adminServer(t), "/usage?view=sessions", "X-Test-Session", userHeader)
+	mustHave(t, mainOf(t, res.Body.String()), "API credential", "Custom endpoint · cpa.example")
+}
+
+func TestUsageSessionsUseNaturalNameOrder(t *testing.T) {
+	at := time.Now().UnixMilli()
+	row := func(name string) ops.UsageSessionRow {
+		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", name), Name: name, AuthMode: "unknown", Source: "session-host", ObservedAt: at}}
+	}
+	result := ops.UsageListResult{Version: 1, AsOf: at, Sessions: []ops.UsageSessionRow{row("wb-10"), row("wb-2"), row("wb-1")}}
+	connect(t, usagePageFixtures().reply(ops.OpUsageList, result))
+	body := mainOf(t, get(t, adminServer(t), "/usage?view=sessions", "X-Test-Session", userHeader).Body.String())
+	i1, i2, i10 := strings.Index(body, "<h3>wb-1</h3>"), strings.Index(body, "<h3>wb-2</h3>"), strings.Index(body, "<h3>wb-10</h3>")
+	if i1 < 0 || i1 >= i2 || i2 >= i10 {
+		t.Fatalf("order %d %d %d", i1, i2, i10)
+	}
+}
+
+func TestUsageShowsEveryClaudeExporterStateRestartAndStaleReason(t *testing.T) {
+	at := time.Now().UnixMilli()
+	old := time.Now().Add(-time.Hour).UnixMilli()
+	stale := ops.UsageAccountRow{UsageAccount: ops.UsageAccount{ID: ops.UsageID("fixture", "s"), Provider: "Anthropic", Label: "Work", AuthMode: "subscription", Source: "claude-statusline", ObservedAt: old}}
+	live := ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", "c"), Name: "c-1", Harness: "claude", AuthMode: "unknown", Source: "session-host", ObservedAt: at}}
+	view := func(exporter, section string) string {
+		inv := []ops.UsageHarness{{Name: "claude", Status: "installed", Exporter: exporter}}
+		result := ops.UsageListResult{Version: 1, AsOf: at, Accounts: []ops.UsageAccountRow{stale}, Sessions: []ops.UsageSessionRow{live},
+			Workers: []ops.UsageWorkerRow{{ID: "build", Name: "Build workstation", Online: true, Status: "ready", ObservedAt: &at, InventoryAt: &at, Inventory: inv}}}
+		connect(t, usagePageFixtures().reply(ops.OpUsageList, result))
+		return mainOf(t, get(t, adminServer(t), "/usage?view="+section, "X-Test-Session", userHeader).Body.String())
+	}
+	mustHave(t, view("installed", "workers"), "Claude exporter: installed. Restart running Claude sessions to start reporting.")
+	mustHave(t, view("overridden", "workers"), "Claude exporter: overridden by managed settings")
+	mustHave(t, view("off", "workers"), "Claude exporter: off", "usage_claude_exporter auto")
+	mustHave(t, view("conflict", "workers"), "Claude exporter: conflict", "could not be kept")
+	mustHave(t, view("installed", "accounts"), "No running Claude Code session of this account has reported since")
 }

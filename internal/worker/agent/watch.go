@@ -302,6 +302,6 @@ func (v View) Sorted() []SessionState {
 	for _, s := range v {
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b SessionState) int { return ops.NaturalCompare(a.Name, b.Name) })
 	return out
 }
