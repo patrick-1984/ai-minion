@@ -17,9 +17,9 @@ func fakeEnv(t *testing.T, home string, envs map[int][]string) {
 	t.Cleanup(func() { processAccess = old })
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	processAccess = func(pid int, _ bool) ([]string, string, bool) {
+	processAccess = func(pid int, _ bool) ([]string, claudeSrc, bool) {
 		e, ok := envs[pid]
-		return filterProcessEnv([]byte(strings.Join(e, "\x00"))), "", ok
+		return filterProcessEnv([]byte(strings.Join(e, "\x00"))), claudeSrc{}, ok
 	}
 }
 
@@ -41,16 +41,16 @@ func TestDetectSessionAccess(t *testing.T) {
 		pid     int
 		want    sessionAccess
 	}{
-		"claude key":       {"claude", 1, sessionAccess{"api", accessAPIKey}},
-		"claude endpoint":  {"claude", 2, sessionAccess{"api", accessCustomEndpoint}},
-		"vendor host":      {"claude", 3, sessionAccess{"api", accessAPIKey}},
-		"claude no signal": {"claude", 4, sessionAccess{"unknown", ""}},
-		"codex endpoint":   {"codex", 5, sessionAccess{"api", accessCustomEndpoint}},
-		"codex key":        {"codex", 6, sessionAccess{"api", accessAPIKey}},
-		"unreadable env":   {"claude", 99, sessionAccess{"unknown", ""}},
-		"other harness":    {"gemini", 1, sessionAccess{"unknown", ""}},
+		"claude key":       {"claude", 1, sessionAccess{Mode: "api", Kind: accessAPIKey}},
+		"claude endpoint":  {"claude", 2, sessionAccess{Mode: "api", Kind: accessCustomEndpoint}},
+		"vendor host":      {"claude", 3, sessionAccess{Mode: "api", Kind: accessAPIKey}},
+		"claude no signal": {"claude", 4, sessionAccess{Mode: "unknown"}},
+		"codex endpoint":   {"codex", 5, sessionAccess{Mode: "api", Kind: accessCustomEndpoint}},
+		"codex key":        {"codex", 6, sessionAccess{Mode: "api", Kind: accessAPIKey}},
+		"unreadable env":   {"claude", 99, sessionAccess{Mode: "unknown"}},
+		"other harness":    {"gemini", 1, sessionAccess{Mode: "unknown"}},
 	} {
-		if got := detectSessionAccess(tc.harness, tc.pid); got != tc.want {
+		if got := kindOnly(detectSessionAccess(tc.harness, tc.pid)); got != tc.want {
 			t.Errorf("%s: got %+v want %+v", name, got, tc.want)
 		}
 	}
@@ -64,7 +64,7 @@ func TestDetectSessionAccess(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"env":{"ANTHROPIC_BASE_URL":"https://gw.example/x"},"apiKeyHelper":"/bin/key"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := detectSessionAccess("claude", 4); got != (sessionAccess{"api", accessCustomEndpoint}) {
+	if got := kindOnly(detectSessionAccess("claude", 4)); got != (sessionAccess{Mode: "api", Kind: accessCustomEndpoint}) {
 		t.Errorf("settings env: %+v", got)
 	}
 }
@@ -78,12 +78,12 @@ func TestUsageSnapshotReportsAccessWithoutSecrets(t *testing.T) {
 		{PID: 300, PPID: 100, PGRP: 300, TPGID: 300, TTY: "pts/1", Args: []string{"claude"}},
 	}))
 	host := usageHostFixture{[]term.Session{{Name: "wb-1", Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: 100}}}}}}
-	r, err := usageSnapshot(context.Background(), host, false)
+	r, err := usageSnapshot(context.Background(), host, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := r.Sessions[0]
-	if s.AuthMode != "api" || s.Endpoint != "" || !s.CustomEndpoint || !r.Accounts[0].CustomEndpoint || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || r.Accounts[0].Label != "Custom endpoint (not told apart)" {
+	if s.AuthMode != "api" || s.Endpoint != "" || !s.CustomEndpoint || !r.Accounts[0].CustomEndpoint || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || !strings.HasPrefix(r.Accounts[0].Label, "Custom endpoint #") {
 		t.Fatalf("session %+v accounts %+v", s, r.Accounts)
 	}
 	if body := strings.ToLower(string(mustJSON(t, r))); strings.Contains(body, "verysecret") || strings.Contains(body, "/v1") || strings.Contains(body, "cpa.example") {
@@ -114,9 +114,9 @@ func TestUsageSnapshotClaudeSettingsOverrideOAuthCredentials(t *testing.T) {
 			fakeEnv(t, home, map[int][]string{300: {"PATH=/bin"}})
 			if name == "--settings" {
 				readEnv := processAccess
-				processAccess = func(pid int, claude bool) ([]string, string, bool) {
+				processAccess = func(pid int, claude bool) ([]string, claudeSrc, bool) {
 					env, _, ok := readEnv(pid, claude)
-					return env, path, ok && claude
+					return env, claudeSrc{Settings: path}, ok && claude
 				}
 			}
 			old := usageDetector
@@ -126,7 +126,7 @@ func TestUsageSnapshotClaudeSettingsOverrideOAuthCredentials(t *testing.T) {
 				{PID: 300, PPID: 100, PGRP: 300, TPGID: 300, TTY: "pts/1", Args: args},
 			}))
 			host := usageHostFixture{[]term.Session{{Name: "work", Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: 100}}}}}}
-			r, err := usageSnapshot(t.Context(), host, false)
+			r, err := usageSnapshot(t.Context(), host, false, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,4 +135,10 @@ func TestUsageSnapshotClaudeSettingsOverrideOAuthCredentials(t *testing.T) {
 			}
 		})
 	}
+}
+
+// kindOnly drops the endpoint identity, which tests of the access kind ignore.
+func kindOnly(a sessionAccess) sessionAccess {
+	a.Endpoint = ""
+	return a
 }

@@ -194,12 +194,14 @@ func TestExporterRecordsAnAPISessionWithoutTheSubscription(t *testing.T) {
 	if err := st.NativeUsage(ctx, &report, 0); err != nil {
 		t.Fatal(err)
 	}
-	if s := report.Sessions[0]; s.AuthMode != "api" || s.AccountID != "" {
-		t.Fatalf("session %+v", s)
+	// The API cost stays in the account total after the process has ended.
+	apiGroup := ops.UsageID("session-access", "Anthropic", "api_key")
+	if s := report.Sessions[0]; s.AuthMode != "api" || s.AccountID != apiGroup || len(report.Accounts) != 1 || report.Accounts[0].ID != apiGroup {
+		t.Fatalf("session %+v accounts %+v", s, report.Accounts)
 	}
 	for _, e := range report.Events {
-		if e.AccountID != "" {
-			t.Fatalf("event carries an account: %+v", e)
+		if e.AccountID != apiGroup {
+			t.Fatalf("event account = %q, want the API group", e.AccountID)
 		}
 	}
 }
@@ -218,7 +220,7 @@ func TestExporterRecordsClaudeProxyLimitsOnTheCustomEndpointAccount(t *testing.T
 	now := time.Now()
 	status := []byte(`{"session_id":"proxy-fixture","rate_limits":{"seven_day":{"used_percentage":25,"resets_at":1800000000}}}`)
 	access := claudeUsageAccess(mapEnv(nil), profile)
-	recordClaudeUsage(ctx, m, "status-line", "proxy-work", access, status, now)
+	recordClaudeUsageAt(ctx, m, "status-line", "proxy-work", access, claudeUsageEndpoint(mapEnv(nil), profile), status, now)
 	report := ops.UsageReport{ObservedAt: now.Add(time.Minute).UnixMilli(), Sessions: []ops.UsageSession{{
 		ID: ops.UsageID("host-session", "proxy"), Name: "proxy-work", StartedAt: new(now.Add(-time.Minute).UnixMilli()), AuthMode: "subscription",
 	}}}
@@ -236,7 +238,7 @@ func TestExporterRecordsClaudeProxyLimitsOnTheCustomEndpointAccount(t *testing.T
 		t.Fatalf("got %d accounts, want one custom endpoint account", len(report.Accounts))
 	}
 	a := report.Accounts[0]
-	if a.ID != s.AccountID || a.Label != "Custom endpoint (not told apart)" || !a.CustomEndpoint || a.AuthMode != "api" || a.SourceSessionID != s.ID || len(a.Windows) != 1 || a.Windows[0].UsedPercent == nil || *a.Windows[0].UsedPercent != 25 {
+	if a.ID != s.AccountID || !strings.HasPrefix(a.Label, "Custom endpoint #") || !a.CustomEndpoint || a.AuthMode != "api" || a.SourceSessionID != s.ID || len(a.Windows) != 1 || a.Windows[0].UsedPercent == nil || *a.Windows[0].UsedPercent != 25 {
 		t.Fatalf("wrong custom endpoint account: %+v", a)
 	}
 }

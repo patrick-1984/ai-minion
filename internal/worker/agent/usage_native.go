@@ -19,7 +19,16 @@ type NativeUsageOptions struct {
 	Format, Session, NativeID, Harness, Model, Provider, EventID string
 	Account                                                      *ops.UsageAccount
 	CustomEndpoint                                               bool
+	// APIKey marks verified API-key access at the vendor's endpoint. Endpoint
+	// is the access identity of a custom endpoint (see sessionAccess) and Salt
+	// the Worker's local grant that salts it.
+	APIKey         bool
+	Endpoint, Salt string
 }
+
+// EndpointIdentity reduces the base URL of a session to the identity an
+// exporter passes in NativeUsageOptions.Endpoint.
+func EndpointIdentity(raw string) string { return endpointHash(raw) }
 
 type claudeUsageWindow struct {
 	Percent *float64 `json:"used_percentage"`
@@ -296,8 +305,12 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 	}
 	var a *ops.UsageAccount
 	account := opts.Account
-	if opts.CustomEndpoint {
-		if endpoint, ok := accessAccount(s.Provider, sessionAccess{Mode: "api", Kind: accessCustomEndpoint}, s.ObservedAt); ok {
+	if opts.CustomEndpoint || opts.APIKey {
+		acc := sessionAccess{Mode: "api", Kind: accessAPIKey}
+		if opts.CustomEndpoint {
+			acc = sessionAccess{Mode: "api", Kind: accessCustomEndpoint, Endpoint: opts.Endpoint}
+		}
+		if endpoint, ok := accessAccount(s.Provider, acc, s.ObservedAt, opts.Salt); ok {
 			account = &endpoint
 		}
 	}

@@ -524,13 +524,22 @@ func claudeNativeKey(n nativeAccount, hubPublic string) (ops.UsageAccount, bool)
 	return a, err == nil
 }
 
-// CurrentClaudeSubscription resolves the native login during manual or
+// CurrentClaudeSubscription resolves the native login (or reports, with an
+// AuthMode other than "subscription", that the profile no longer uses one) during manual or
 // automatic setup for this specific profile. It is never called per turn or hook.
 func CurrentClaudeSubscription(ctx context.Context, profileDir string) (ops.UsageAccount, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	n, ok := readClaudeAuth(ctx, profileDir)
-	if !ok || n.AuthMethod != "claude.ai" {
+	if !ok {
+		return ops.UsageAccount{}, false
+	}
+	if n.AuthMethod != "" && n.AuthMethod != "claude.ai" {
+		// A confirmed change of access (a Console key, a helper): the caller
+		// must drop a subscription it bound earlier, unlike an unavailable probe.
+		return ops.UsageAccount{Provider: "Anthropic", AuthMode: "api"}, true
+	}
+	if n.AuthMethod != "claude.ai" {
 		return ops.UsageAccount{}, false
 	}
 	return subscriptionAccount("Anthropic", n, time.Now().UnixMilli())

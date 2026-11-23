@@ -51,7 +51,7 @@ func newClaudeUsageExportCmd(lookup func(string) (string, bool)) *cobra.Command 
 						return
 					}
 				}
-				recordClaudeUsage(ctx, *m, mode, claudeUsageSession(ctx, lookup), claudeUsageAccess(lookup, profile), payload, at)
+				recordClaudeUsageAt(ctx, *m, mode, claudeUsageSession(ctx, lookup), claudeUsageAccess(lookup, profile), claudeUsageEndpoint(lookup, profile), payload, at)
 			})
 		},
 	}
@@ -156,7 +156,7 @@ func claudeUsageAccess(lookup func(string) (string, bool), profile string) claud
 	if lookup == nil {
 		return claudeAccessUnverified
 	}
-	key, custom := agent.ClaudeExporterAPIConfig(lookup, profile)
+	key, custom, _ := agent.ClaudeExporterAPIConfig(lookup, profile)
 	switch {
 	case custom:
 		return claudeAccessCustomEndpoint
@@ -166,7 +166,24 @@ func claudeUsageAccess(lookup func(string) (string, bool), profile string) claud
 	return claudeAccessSubscription
 }
 
+// claudeUsageEndpoint is the identity of the custom endpoint of the session
+// (a hash of its host, never the host), or "".
+func claudeUsageEndpoint(lookup func(string) (string, bool), profile string) string {
+	if lookup == nil {
+		return ""
+	}
+	_, custom, endpoint := agent.ClaudeExporterAPIConfig(lookup, profile)
+	if !custom {
+		return ""
+	}
+	return endpoint
+}
+
 func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, raw []byte, at time.Time) {
+	recordClaudeUsageAt(ctx, m, mode, session, access, "", raw, at)
+}
+
+func recordClaudeUsageAt(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, endpoint string, raw []byte, at time.Time) {
 	if session == "" || ctx.Err() != nil {
 		return
 	}
@@ -187,7 +204,7 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 		return
 	}
 
-	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic", CustomEndpoint: access == claudeAccessCustomEndpoint}
+	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic", CustomEndpoint: access == claudeAccessCustomEndpoint, APIKey: access == claudeAccessAPI, Endpoint: endpoint, Salt: grant}
 	if mode != "status-line" {
 		var event struct {
 			Name     string `json:"hook_event_name"`
@@ -215,12 +232,6 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 	now := time.Now()
 	r, err := agent.ParseNativeUsage(raw, opts, at)
 	if err == nil {
-		if access == claudeAccessAPI && len(r.Sessions) == 1 {
-			// Verified API access stays API for this native session, also
-			// after the process has ended and the Worker cannot read it.
-			r.Sessions[0].AuthMode = "api"
-			r.Sessions[0].AccountID = ""
-		}
 		_ = st.SaveNativeUsage(ctx, enrollment, r, now)
 	}
 }

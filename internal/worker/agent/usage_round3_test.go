@@ -62,7 +62,7 @@ func TestWrapperShellIsNeverTheProcessWhoseEnvironmentIsRead(t *testing.T) {
 	}
 	usageDetector = agentdetect.New(agentdetect.WithProcessSource(tree))
 	host := usageHostFixture{[]term.Session{{Name: "w", Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: 100}}}}}}
-	r, err := usageSnapshot(context.Background(), host, false)
+	r, err := usageSnapshot(context.Background(), host, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestWrapperShellIsNeverTheProcessWhoseEnvironmentIsRead(t *testing.T) {
 	}
 	// Without the real agent process the access is unknown, not the shell's.
 	usageDetector = agentdetect.New(agentdetect.WithProcessSource(tree[:2]))
-	r, err = usageSnapshot(context.Background(), host, false)
+	r, err = usageSnapshot(context.Background(), host, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}

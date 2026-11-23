@@ -68,7 +68,7 @@ func TestEndpointIsReducedToVendorOrCustom(t *testing.T) {
 	}
 	// The host never survives the environment filter.
 	env := filterProcessEnv([]byte("ANTHROPIC_BASE_URL=https://secret-gw.example/x\x00PATH=/bin"))
-	if len(env) != 1 || env[0] != "ANTHROPIC_BASE_URL=custom" {
+	if len(env) != 2 || env[0] != "ANTHROPIC_BASE_URL=custom" || !strings.HasPrefix(env[1], "ANTHROPIC_BASE_URL_ID=") || strings.Contains(strings.Join(env, " "), "secret") {
 		t.Fatalf("%q", env)
 	}
 }
@@ -119,7 +119,7 @@ func TestSettingsKeysAreOnlyPresenceChecked(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeEnv(t, home, map[int][]string{4: {"PATH=/bin"}})
-	if got := detectSessionAccess("claude", 4); got != (sessionAccess{"api", accessCustomEndpoint}) {
+	if got := kindOnly(detectSessionAccess("claude", 4)); got != (sessionAccess{Mode: "api", Kind: accessCustomEndpoint}) {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -154,26 +154,99 @@ func TestClaudeSettingsArgumentFromVerifiedProcessAndExporterAncestor(t *testing
 	if err := os.Symlink(cwd, filepath.Join(relative, "cwd")); err != nil {
 		t.Fatal(err)
 	}
-	if _, settings, ok := readProcessAccess(2, true); !ok || settings != file {
-		t.Fatalf("Worker settings: %q, process readable: %t", settings, ok)
+	if _, src, ok := readProcessAccess(2, true); !ok || src.Settings != file {
+		t.Fatalf("Worker settings: %q, process readable: %t", src.Settings, ok)
 	}
-	if got := claudeAncestorSettings(3); got != file {
+	if got := claudeAncestorSrc(3).Settings; got != file {
 		t.Fatalf("exporter settings: %q", got)
 	}
-	if got := claudeAncestorSettings(4); got != "" {
+	if got := claudeAncestorSrc(4).Settings; got != "" {
 		t.Fatal("treated prompt arguments or an outer Claude process as settings")
 	}
-	if got := claudeAncestorSettings(5); got != file {
+	if got := claudeAncestorSrc(5).Settings; got != file {
 		t.Fatalf("relative settings from the Claude working directory: %q", got)
 	}
 	if err := os.Remove(filepath.Join(dir, "cmdline")); err != nil {
 		t.Fatal(err)
 	}
-	if got := claudeAncestorSettings(3); got != "" {
+	if got := claudeAncestorSrc(3).Settings; got != "" {
 		t.Fatal("reported a settings argument from an unreadable command line")
 	}
 	workerUID = func() int { return os.Getuid() + 1 }
-	if _, _, ok := readProcessAccess(2, true); ok || claudeAncestorSettings(5) != "" {
+	if _, _, ok := readProcessAccess(2, true); ok || claudeAncestorSrc(5).Settings != "" {
 		t.Fatal("read settings evidence from another user's process")
+	}
+}
+
+func TestClaudeAPIConfigConsidersEverySettingsSource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profile := filepath.Join(home, ".claude")
+	project := t.TempDir()
+	managed := t.TempDir()
+	oldManaged := ClaudeManagedSettingsFile
+	ClaudeManagedSettingsFile = filepath.Join(managed, "managed-settings.json")
+	t.Cleanup(func() { ClaudeManagedSettingsFile = oldManaged })
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, custom, _ := claudeAPIConfig(nil, profile, claudeSrc{Cwd: project})
+	if key || custom {
+		t.Fatalf("no sources: key=%t custom=%t", key, custom)
+	}
+	for name, tc := range map[string]struct {
+		path, body string
+		src        claudeSrc
+		key, cust  bool
+	}{
+		"project local helper": {path: filepath.Join(project, ".claude", "settings.local.json"), body: `{"apiKeyHelper":"/bin/k"}`, key: true},
+		"project endpoint":     {path: filepath.Join(project, ".claude", "settings.json"), body: `{"env":{"ANTHROPIC_BASE_URL":"https://gw.example"}}`, cust: true},
+		"managed token":        {path: filepath.Join(managed, "managed-settings.d", "10.json"), body: `{"env":{"ANTHROPIC_AUTH_TOKEN":"t"}}`, key: true},
+		"inline json":          {src: claudeSrc{Settings: `{"apiKeyHelper":"/bin/k"}`}, key: true},
+	} {
+		if tc.path != "" {
+			write(tc.path, tc.body)
+		}
+		src := tc.src
+		src.Cwd = project
+		key, custom, _ := claudeAPIConfig(nil, profile, src)
+		if key != tc.key || custom != tc.cust {
+			t.Errorf("%s: key=%t custom=%t", name, key, custom)
+		}
+		if tc.path != "" {
+			_ = os.Remove(tc.path)
+		}
+	}
+}
+
+func TestCustomEndpointsAreToldApartWithoutRevealingTheHost(t *testing.T) {
+	env := func(base string) []string {
+		return filterProcessEnv([]byte("ANTHROPIC_BASE_URL=" + base + "\x00"))
+	}
+	a := claudeAccess(env("https://gw-one.example:8443/v1"), claudeSrc{})
+	b := claudeAccess(env("https://gw-two.example/v1"), claudeSrc{})
+	a2 := claudeAccess(env("https://GW-ONE.example:8443/other"), claudeSrc{})
+	if a.Endpoint == "" || a.Endpoint == b.Endpoint || a.Endpoint != a2.Endpoint {
+		t.Fatalf("endpoint identities: %q %q %q", a.Endpoint, b.Endpoint, a2.Endpoint)
+	}
+	ra, _ := accessAccount("Anthropic", a, 1, "salt")
+	rb, _ := accessAccount("Anthropic", b, 1, "salt")
+	rs, _ := accessAccount("Anthropic", a, 1, "other-salt")
+	if ra.ID == rb.ID || ra.ID == rs.ID || ra.Label == rb.Label && ra.ID == rb.ID {
+		t.Fatalf("accounts collide: %+v %+v", ra, rb)
+	}
+	if strings.Contains(ra.Label+ra.ID, "gw-one") || !strings.HasPrefix(ra.Label, "Custom endpoint #") {
+		t.Fatalf("label %q", ra.Label)
+	}
+	// Without an identity the old shared row remains, honestly labelled.
+	n, _ := accessAccount("Anthropic", sessionAccess{Mode: "api", Kind: accessCustomEndpoint}, 1, "salt")
+	if n.Label != "Custom endpoint (not told apart)" {
+		t.Fatalf("label %q", n.Label)
 	}
 }
