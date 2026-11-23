@@ -138,6 +138,42 @@ func (p usagePage) Checked(ms *int64) template.HTML { return checkedTime(ms, "Ne
 
 func (p usagePage) CheckedMs(ms int64) template.HTML { return checkedTime(&ms, "Never") }
 
+// LastChecked is the newest observation of the data on display, not the
+// moment the Hub read its store: a page load never counts as a check. It is
+// nil when the scope has no observation.
+func (p usagePage) LastChecked() *int64 {
+	var newest int64
+	note := func(ms int64) { newest = max(newest, ms) }
+	for _, a := range p.Accounts {
+		note(a.Account.ObservedAt)
+	}
+	for _, a := range p.Rows.Accounts {
+		note(a.ObservedAt)
+	}
+	for _, s := range p.Rows.Sessions {
+		note(s.ObservedAt)
+		note(s.LastSeen)
+	}
+	for _, e := range p.Rows.Events {
+		note(e.ObservedAt)
+	}
+	for _, h := range p.Rows.History {
+		note(h.ObservedAt)
+	}
+	for _, w := range p.Rows.Workers {
+		if w.ObservedAt != nil {
+			note(*w.ObservedAt)
+		}
+		if w.InventoryAt != nil {
+			note(*w.InventoryAt)
+		}
+	}
+	if newest == 0 {
+		return nil
+	}
+	return &newest
+}
+
 func (p usagePage) Percent(n *float64) string {
 	if n == nil {
 		return "Unknown"
@@ -711,11 +747,27 @@ func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		return
 	}
 	inventory := r.PostFormValue("view") == "workers"
+	before := map[string]int64{}
+	if inventory {
+		// A Worker counts as refreshed only when the Hub records an inventory
+		// time newer than the one it had: a cached reply is not a refresh.
+		rows, err := harnessInventory(r, c)
+		if err != nil {
+			writeResultError(w, failureText(err))
+			return
+		}
+		for id, row := range rows {
+			if row.InventoryAt != nil {
+				before[id] = *row.InventoryAt
+			}
+		}
+	}
+	quota := usageQueueQuota(r, c)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
 	var failed []string
-	refreshed, recent := 0, 0
+	refreshed, recent, cached := 0, 0, 0
 	for _, wk := range targets {
 		if !wk.Online || !slices.Contains(wk.Ops, ops.OpWorkerUsage) {
 			if explicit {
@@ -723,21 +775,32 @@ func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
 			}
 			continue
 		}
+		// Take a fan-out slot first: the cooldown starts at dispatch, so a
+		// Worker waiting for a slot cannot lose its reservation meanwhile.
+		select {
+		case sem <- struct{}{}:
+		case <-r.Context().Done():
+			wg.Wait()
+			return
+		}
 		if !workerRefresh.allow(wk.ID) {
+			<-sem
 			recent++
 			continue
 		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
 			var report ops.UsageReport
 			err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: wk.ID, Inventory: inventory, Fresh: inventory}, &report)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
+			switch {
+			case err != nil:
 				failed = append(failed, wk.Name+": "+failureText(err))
-			} else {
+			case inventory && (report.InventoryAt == nil || *report.InventoryAt <= before[wk.ID]):
+				cached++
+			default:
 				refreshed++
 			}
 		}()
@@ -748,13 +811,41 @@ func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	case len(failed) > 0:
 		slices.Sort(failed)
 		writeResultError(w, "Could not refresh "+strings.Join(failed, "; ")+".")
+	case refreshed == 0 && cached > 0:
+		writeResultInfo(w, "The Worker answered with a cached or older scan, so nothing was refreshed ("+pluralWorkers(cached)+"). A Worker that needs an update cannot scan on demand."+quota)
 	case refreshed == 0 && recent > 0:
-		writeResultInfo(w, "Refreshed less than "+strconv.Itoa(int(refreshEvery/time.Second))+" seconds ago. Showing the latest data.")
+		writeResultInfo(w, "Refreshed less than "+strconv.Itoa(int(refreshEvery/time.Second))+" seconds ago. Showing the latest data."+quota)
 	case refreshed == 0:
-		writeResultInfo(w, "No online Worker to refresh.")
+		writeResultInfo(w, "No online Worker to refresh."+quota)
 	default:
-		writeResultInfo(w, "Refreshed "+pluralWorkers(refreshed)+".")
+		text := "Refreshed " + pluralWorkers(refreshed) + "."
+		if cached > 0 {
+			text += " " + pluralWorkers(cached) + " answered with a cached scan."
+		}
+		writeResultInfo(w, text+quota)
 	}
+}
+
+// usageQueueQuota handles the account card's Refresh: it asks the collector
+// for the account's native quota query, which the Hub schedules and rate
+// limits, and says what became of it. Other refreshes return no text.
+func usageQueueQuota(r *http.Request, c OpCaller) string {
+	account := r.PostFormValue("account")
+	if account == "" || !usagePrivate(r) {
+		return ""
+	}
+	if r.PostFormValue("native") != "1" {
+		return " This account's quota arrives with the sessions that report it; there is no background query to run."
+	}
+	worker, sid, _ := strings.Cut(r.PostFormValue("source"), "|")
+	var res ops.UsageCollector
+	if err := c.CallOp(r, ops.OpUsageCollectorSet, ops.UsageCollectorSetArgs{AccountID: account, WorkerID: worker, SessionID: sid, Start: true}, &res); err != nil {
+		return " The quota query was not queued: " + failureText(err) + "."
+	}
+	if res.NextDue != nil && *res.NextDue > refreshNow().UnixMilli() {
+		return " The quota query is rate-limited until " + usagePage{}.Time(res.NextDue) + "."
+	}
+	return " The quota query is queued and runs at the next collection round."
 }
 
 func usageBucketForm(r *http.Request) (ops.UsageBucketSetArgs, error) {

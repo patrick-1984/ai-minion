@@ -110,12 +110,15 @@ func TestUsageWebScansRequestFreshInventoryOnWorkerWire(t *testing.T) {
 	check("periodic inventory", proto.OriginWorker, false)
 	for _, path := range []string{"/usage/scan", "/harnesses/scan"} {
 		code, body, response := formDo(d.hc, http.MethodPost, path, csrf, url.Values{"for_user": {owner}, "worker": {wid}, "view": {"workers"}})
-		if code != http.StatusOK || response.Header.Get("HX-Redirect") == "" && response.Header.Get("HX-Refresh") != "true" {
-			t.Fatalf("%s = %d %s", path, code, body)
+		// Usage reloads the page; Harnesses answers inline with the persisted result.
+		reloads := response.Header.Get("HX-Redirect") != "" || response.Header.Get("HX-Refresh") == "true"
+		inline := response.Header.Get("HX-Trigger") == "harnesses-checked" && strings.Contains(body, "Checked 1 Worker.")
+		if code != http.StatusOK || (path == "/usage/scan") != reloads || (path == "/harnesses/scan") != inline {
+			t.Fatalf("%s = %d %s %v", path, code, body, response.Header)
 		}
 		check(path, proto.OriginUser, true)
 	}
-	if code, body, _ := d.hc.do(http.MethodGet, "/harnesses", nil, nil); code != http.StatusOK || !strings.Contains(body, "Checked 1 Worker.") {
-		t.Errorf("Harnesses did not acknowledge the advanced inventory: %d", code)
+	if code, body, _ := d.hc.do(http.MethodGet, "/harnesses", nil, nil); code != http.StatusOK || strings.Contains(body, "Not checked yet") {
+		t.Errorf("Harnesses did not show the persisted scan time: %d", code)
 	}
 }
