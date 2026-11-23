@@ -49,6 +49,20 @@ type Result struct {
 	// It is empty for every other state, and also for a dialog whose options
 	// have no addressable key.
 	Choices []Choice
+	// DisplayKind is the kind to show (Hub pages, usage) when it differs from
+	// Kind: an agent was found below the pane's shell on a platform that
+	// cannot tell the foreground process (Windows). Kind stays the strict
+	// value that authorizes input; DisplayKind never does.
+	DisplayKind string
+}
+
+// Shown returns the kind to display: DisplayKind when set, else Kind. Never
+// use it to authorize input.
+func (r Result) Shown() string {
+	if r.DisplayKind != "" {
+		return r.DisplayKind
+	}
+	return r.Kind
 }
 
 // Agent returns the CLI name when Kind is "agent:<cli>", otherwise "".
@@ -236,8 +250,15 @@ func (d *Detector) locate(ctx context.Context, in Input, telemetry bool) (Result
 			tree = descendants(all, in.PID)
 		}
 	}
+	var unverified *Agent
 	for _, p := range tree {
-		if !p.Running() || (!inPaneForeground(tree[0], p) && (!telemetry || !p.UnknownForeground)) {
+		if !p.Running() {
+			continue
+		}
+		if !inPaneForeground(tree[0], p) && (!telemetry || !p.UnknownForeground) {
+			if p.UnknownForeground && unverified == nil {
+				unverified = d.matchArgs(p.Args)
+			}
 			continue
 		}
 		if a := d.matchArgs(p.Args); a != nil {
@@ -254,11 +275,18 @@ func (d *Detector) locate(ctx context.Context, in Input, telemetry bool) (Result
 				r.State = ops.PaneStateBusy
 			}
 		}
+		if unverified != nil {
+			r.DisplayKind = ops.PaneKindAgentPrefix + unverified.Name
+		}
 		return r, 0
 	case cmd == "":
 		return Result{Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown}, 0
 	default:
-		return Result{Kind: ops.PaneKindOther, State: ops.PaneStateUnknown}, 0
+		r := Result{Kind: ops.PaneKindOther, State: ops.PaneStateUnknown}
+		if unverified != nil {
+			r.DisplayKind = ops.PaneKindAgentPrefix + unverified.Name
+		}
+		return r, 0
 	}
 }
 

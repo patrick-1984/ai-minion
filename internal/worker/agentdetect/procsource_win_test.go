@@ -26,6 +26,9 @@ func TestParseWinProcsAndClassifyWindowsPanes(t *testing.T) {
 		if r.Kind != ops.PaneKindShell {
 			t.Errorf("%s: a background-capable agent made the shell kind %q", name, r.Kind)
 		}
+		if r.Shown() != ops.PaneKindAgentPrefix+"claude" {
+			t.Errorf("%s: the pane must still be displayed as the agent, got %q", name, r.Shown())
+		}
 		lr, pid := New(WithProcessSource(&fakeProcs{procs: tree})).Locate(context.Background(), in)
 		if lr.Kind != ops.PaneKindAgentPrefix+"claude" || pid == 0 || pid == 100 {
 			t.Errorf("%s: locate %+v pid %d", name, lr, pid)
@@ -33,7 +36,7 @@ func TestParseWinProcsAndClassifyWindowsPanes(t *testing.T) {
 	}
 	// node as the pane's own command, with an unverifiable foreground, is not an input recipient.
 	r := classify(t, Input{Command: "node", PID: 300, Screen: screen(t, "claude_idle")}, &fakeProcs{procs: procs[2:3]})
-	if r.IsAgent() {
+	if r.IsAgent() || r.Shown() != r.Kind && r.Shown() != ops.PaneKindAgentPrefix+"claude" {
 		t.Errorf("node pane authorized: %+v", r)
 	}
 }
