@@ -44,3 +44,8 @@
 .harness-vendor legend { font-weight: 600; padding: 0 4px; }
 .harness-vendor .usage-check { display: flex; }
 .harness-matrix td, .harness-matrix th { vertical-align: middle; }
+.usage-page .scope { margin: 0; }
+.usage-page .usage-fields .usage-check { width: auto; }
+.usage-page .usage-fields input[type="checkbox"], .harness-vendor input[type="checkbox"] { width: auto; flex: none; }
+.harness-choose { display: grid; gap: 16px; }
+.harness-choose > button { justify-self: start; }

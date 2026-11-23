@@ -14,7 +14,7 @@
   <div id="harness-result" aria-live="polite"></div>
   <section class="panel" aria-labelledby="harness-choose-h">
     <h2 id="harness-choose-h">Harnesses I want</h2>
-    <form method="post" action="{{$p.ChooseURL}}" hx-post="{{$p.ChooseURL}}" hx-target="#harness-result" hx-disabled-elt="find button">
+    <form class="harness-choose" method="post" action="{{$p.ChooseURL}}" hx-post="{{$p.ChooseURL}}" hx-target="#harness-result" hx-disabled-elt="find button">
       <input type="hidden" name="for_user" value="{{$p.ForUser}}">
       <div class="usage-cards">
       {{range $p.Vendors}}
