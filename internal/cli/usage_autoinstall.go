@@ -27,7 +27,18 @@ const claudeAutoInstallPending = 30 * time.Second
 // never touched. The outcome is reported through the harness scan. It reports
 // pending when a profile waits for enrollment or for the usage consent.
 func autoInstallClaudeExporter(ctx context.Context, res *config.Resolver, stateDir string, lookup func(string) (string, bool)) (pending bool) {
-	if v, err := res.Resolve(config.KeyUsageClaudeExporter); err == nil && v.Value == "off" {
+	// Fail closed: only a policy that resolved to "auto" allows an edit. An
+	// invalid or unreadable policy does nothing and reports a conflict.
+	if res == nil {
+		agent.SetClaudeExporterIssue(ops.UsageExporterConflict)
+		return false
+	}
+	v, err := res.Resolve(config.KeyUsageClaudeExporter)
+	switch {
+	case err != nil:
+		agent.SetClaudeExporterIssue(ops.UsageExporterConflict)
+		return false
+	case v.Value != "auto":
 		agent.SetClaudeExporterIssue(ops.UsageExporterOff)
 		return false
 	}
@@ -54,7 +65,7 @@ func autoInstallClaudeExporter(ctx context.Context, res *config.Resolver, stateD
 		case errors.Is(err, errClaudeNotEnrolled), errors.Is(err, errClaudeNotAccepted):
 			pending = true
 		case err == nil, ctx.Err() != nil:
-		case errors.Is(err, errClaudeHooksDisabled):
+		case errors.Is(err, errClaudeHooksDisabled), errors.Is(err, errClaudeManaged):
 			agent.SetClaudeExporterIssue(ops.UsageExporterOverridden)
 		default:
 			agent.SetClaudeExporterIssue(ops.UsageExporterConflict)
@@ -66,10 +77,14 @@ func autoInstallClaudeExporter(ctx context.Context, res *config.Resolver, stateD
 // runClaudeAutoInstall runs autoInstallClaudeExporter at the start and then
 // periodically until ctx ends: every 30 seconds while it waits for the
 // enrollment or the usage consent, then every 10 minutes.
-func runClaudeAutoInstall(ctx context.Context, res *config.Resolver, stateDir string, lookup func(string) (string, bool)) {
+//
+// resolver returns the policy resolver and is called before every pass, so
+// that a change of usage_claude_exporter (also "off", saved to remove the
+// integration) applies without a restart.
+func runClaudeAutoInstall(ctx context.Context, resolver func() *config.Resolver, stateDir string, lookup func(string) (string, bool)) {
 	for {
 		wait := claudeAutoInstallEvery
-		if autoInstallClaudeExporter(ctx, res, stateDir, lookup) {
+		if autoInstallClaudeExporter(ctx, resolver(), stateDir, lookup) {
 			wait = claudeAutoInstallPending
 		}
 		select {

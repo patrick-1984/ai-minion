@@ -1578,3 +1578,32 @@ func TestAuthorizationDeniedWriteIsAudited(t *testing.T) {
 		t.Fatal("content in the audit")
 	}
 }
+
+// An agent found below the shell with an unknown foreground (Windows) is shown
+// as the agent but never authorizes input: it is still a shell for the guards
+// and for the message action.
+func TestDisplayOnlyAgentKindNeverAuthorizesInput(t *testing.T) {
+	e := newEnv(t)
+	ref := e.host.addSession("work", "pwsh")
+	e.host.setScreen(ref, "PS> ")
+	e.cls.mu.Lock()
+	e.cls.byCmd["pwsh"] = agentdetect.Result{Kind: ops.PaneKindShell, State: ops.PaneStateStable, DisplayKind: "agent:claude"}
+	e.cls.mu.Unlock()
+
+	p, err := e.ex.inspect(context.Background(), "work", ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.info.Kind != "agent:claude" {
+		t.Fatalf("displayed kind %q, want agent:claude", p.info.Kind)
+	}
+	_, err = e.writeAs(ops.OpSendText, messageOnly, sendText("work", "hi", true))
+	wantAPIError(t, err, "forbidden", "")
+	res, err := e.write(ops.OpSendText, sendText("work", "hi", false))
+	if err != nil || res.Outcome == ops.OutcomeDelivered {
+		t.Fatalf("a shell-like pane took text without confirmation: %+v %v", res, err)
+	}
+	if n := len(e.host.pastes()); n != 0 {
+		t.Fatalf("%d writes reached the pane", n)
+	}
+}

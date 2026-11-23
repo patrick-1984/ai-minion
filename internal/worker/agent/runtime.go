@@ -62,6 +62,13 @@ type Settings struct {
 	// StopLogSinks flushes and stops the remote log sinks within ctx; the
 	// log module calls it last in the stop sequence. Nil: nothing to stop.
 	StopLogSinks func(ctx context.Context) error
+	// StartBackground starts work that edits local files outside the state
+	// directory (the Claude exporter installer). The exporter module calls it
+	// after the lifecycle lock and the core start, so a duplicate Worker
+	// never runs it, and calls the returned stop (which must end and join the
+	// work) before the lock is released or a replacement Worker takes over.
+	// Nil: nothing to start.
+	StartBackground func(ctx context.Context) (stop func())
 	// Out is for human-readable reports, such as the result of enrollment.
 	// Nil discards them.
 	Out io.Writer

@@ -172,3 +172,40 @@ func TestNativeLoginLabelIsTheFullAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeLoginLabelLongAddressStaysWithinTheWireBound(t *testing.T) {
+	digest := ops.UsageID("subscription", "anthropic", "x")
+	user := strings.Repeat("u", 64)
+	long := user + "@" + strings.Repeat("d", 60) + "." + strings.Repeat("e", 60) + ".example.org" // 64+1+~135
+	got := nativeLoginLabel("anthropic", long, digest)
+	if !strings.HasPrefix(got, long) || len(got) > maxUsageLabel {
+		t.Fatalf("label %q (%d bytes)", got, len(got))
+	}
+	// An address at the 254-byte limit keeps the whole address and drops only the suffix.
+	max := user + "@" + strings.Repeat("d", 63) + "." + strings.Repeat("d", 63) + "." + strings.Repeat("d", 60) + ".com"
+	max = max[:254]
+	if got := nativeLoginLabel("anthropic", max, digest); got != strings.ToLower(max[:65])+strings.ToLower(max[65:]) && got != max {
+		t.Fatalf("got %q", got)
+	}
+	// Over the limit: the opaque label, never a silent cut of the address.
+	if got := nativeLoginLabel("anthropic", max+"x", digest); got != "anthropic profile "+digest[:10] {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestAccessAccountsAreExplicitAggregates(t *testing.T) {
+	a, _ := accessAccount(ops.UsageSession{AuthMode: "api", Provider: "Anthropic"}, 1)
+	b, _ := accessAccount(ops.UsageSession{AuthMode: "api", Provider: "Anthropic", Endpoint: "gw.example"}, 1)
+	if a.ID == b.ID || !strings.Contains(a.Label, "not told apart") || !strings.Contains(b.Label, "gw.example") || !strings.Contains(b.Label, "not told apart") {
+		t.Fatalf("%+v %+v", a, b)
+	}
+}
+
+func TestMergeUsageAccountsKeepsSessionAPIAccounts(t *testing.T) {
+	scan := []ops.UsageAccount{{ID: "sub", Label: "a@b.example"}}
+	session := []ops.UsageAccount{{ID: "sub", Label: "dup"}, {ID: "gw", Label: "API keys at gw.example (not told apart)"}}
+	got := mergeUsageAccounts(scan, session)
+	if len(got) != 2 || got[0].Label != "a@b.example" || got[1].ID != "gw" {
+		t.Fatalf("%+v", got)
+	}
+}

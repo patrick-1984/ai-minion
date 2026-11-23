@@ -291,7 +291,7 @@ func (e *Executor) paneRun(ctx context.Context, rq Request, op ops.Op, wa ops.Wr
 		return ops.WriteResult{}, err
 	}
 	// Permission is an API error, decided once the kind is known.
-	if err := authorizeWrite(op.Actions, rq.Actions, p.info.Kind); err != nil {
+	if err := authorizeWrite(op.Actions, rq.Actions, p.class.Kind); err != nil {
 		return ops.WriteResult{}, err
 	}
 
@@ -322,7 +322,7 @@ func (e *Executor) paneRun(ctx context.Context, rq Request, op ops.Op, wa ops.Wr
 // set (R87).
 func inputGuards(p *pane) []proto.Code {
 	var hits []proto.Code
-	if p.info.Kind == ops.PaneKindShell {
+	if p.class.Kind == ops.PaneKindShell {
 		hits = append(hits, proto.CodeShellPane)
 	}
 	if p.info.State == ops.PaneStateDialog {
@@ -364,7 +364,7 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 	if args.AgentOnly {
 		args.Force = false
 		guards = func(p *pane) []proto.Code {
-			if !isAgentKind(p.info.Kind) {
+			if !isAgentKind(p.class.Kind) {
 				return nil // the KEEP check below supplies a non-forceable result
 			}
 			return inputGuards(p)
@@ -372,7 +372,7 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 	}
 	return e.paneWrite(ctx, rq, op, args.WriteArgs, args.Target, true, guards,
 		func(ctx context.Context, p *pane) (ops.Outcome, proto.Code, error) {
-			if args.AgentOnly && !isAgentKind(p.info.Kind) {
+			if args.AgentOnly && !isAgentKind(p.class.Kind) {
 				return ops.OutcomeFailedNotSent, proto.CodeForbidden, nil
 			}
 			return e.pasteAndSubmit(ctx, p, args.Text, args.Submit)

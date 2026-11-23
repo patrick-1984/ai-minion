@@ -80,7 +80,7 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 			if err != nil {
 				return nil, err
 			}
-			r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, scan.Accounts, scan.InventoryAt
+			r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, mergeUsageAccounts(scan.Accounts, r.Accounts), scan.InventoryAt
 			r.ObservedAt = time.Now().UnixMilli()
 		}
 		if a.AccountID == "" {
@@ -159,13 +159,31 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 	slices.SortFunc(r.Accounts, func(a, b ops.UsageAccount) int { return strings.Compare(a.ID, b.ID) })
 	if inventory {
 		r.Inventory = usageInventory(ctx)
-		r.Accounts = append(discoverUsageAccounts(ctx, r.Inventory, ""), r.Accounts...)
+		r.Accounts = mergeUsageAccounts(discoverUsageAccounts(ctx, r.Inventory, ""), r.Accounts)
 		r.ObservedAt = time.Now().UnixMilli()
 	}
 	if err := r.Check(time.Now()); err != nil {
 		return ops.UsageReport{}, apiErr(proto.CodeConflict, "", "session metadata could not be represented")
 	}
 	return r, nil
+}
+
+// mergeUsageAccounts keeps every account of both lists once per identity (id
+// and source session): a discovered account wins over a session-derived one
+// with the same identity, and the session-derived API accounts that no scan
+// knows stay.
+func mergeUsageAccounts(discovered, fromSessions []ops.UsageAccount) []ops.UsageAccount {
+	out := slices.Clone(discovered)
+	seen := map[string]bool{}
+	for _, a := range out {
+		seen[a.ID+"|"+a.SourceSessionID] = true
+	}
+	for _, a := range fromSessions {
+		if !seen[a.ID+"|"+a.SourceSessionID] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 var usageVersionPattern = regexp.MustCompile(`(?:^|[^0-9])v?([0-9]{1,6}\.[0-9]{1,6}(?:\.[0-9]{1,8})?(?:-[0-9A-Za-z.-]{1,24})?)(?:$|[^0-9])`)
@@ -286,20 +304,32 @@ func claudeManagedSettingsPath() string {
 	return "/etc/claude-code/managed-settings.json"
 }
 
-// ClaudeManagedOverrides reports whether the managed settings at path define a
-// status line or control hooks, which user settings cannot override.
+// ClaudeManagedOverrides reports whether the managed settings at path (the
+// file and the drop-in files of the managed-settings.d directory beside it)
+// define a status line or control hooks, which user settings cannot override.
+// It fails closed: a managed file that exists but cannot be read or parsed
+// counts as an override, because its policy is unknown.
 func ClaudeManagedOverrides(path string) bool {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return false
+	files := []string{path}
+	if dropIns, err := filepath.Glob(filepath.Join(filepath.Dir(path), "managed-settings.d", "*.json")); err == nil {
+		files = append(files, dropIns...)
 	}
-	var m map[string]json.RawMessage
-	if json.Unmarshal(raw, &m) != nil {
-		return false
-	}
-	for _, k := range []string{"statusLine", "disableAllHooks", "allowManagedHooksOnly"} {
-		if _, ok := m[k]; ok {
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
 			return true
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(raw, &m) != nil {
+			return true
+		}
+		for _, k := range []string{"statusLine", "disableAllHooks", "allowManagedHooksOnly"} {
+			if _, ok := m[k]; ok {
+				return true
+			}
 		}
 	}
 	return false
@@ -354,11 +384,15 @@ func claudeExporterStateIn(dir string) string {
 	if json.NewDecoder(io.LimitReader(f, 1<<20)).Decode(&s) != nil || !strings.Contains(s.StatusLine.Command, "_claude-export") {
 		return ops.UsageExporterAbsent
 	}
-	if s.DisableAllHooks {
+	if s.DisableAllHooks || ClaudeManagedOverrides(ClaudeManagedSettingsFile) {
 		return ops.UsageExporterOverridden
 	}
 	return ops.UsageExporterInstalled
 }
+
+// maxUsageLabel is the longest account label the Worker sends: a full e-mail
+// address of at most 254 bytes (RFC 5321) and nothing longer.
+const maxUsageLabel = 254
 
 // accessAccount is the grouping row for sessions that use an API key or a
 // custom endpoint: one per provider, access kind and endpoint host. It holds
@@ -367,11 +401,13 @@ func accessAccount(s ops.UsageSession, at int64) (ops.UsageAccount, bool) {
 	if s.AuthMode != "api" || s.Provider == "" {
 		return ops.UsageAccount{}, false
 	}
-	label := "API key"
+	// The Worker never reads a key, so keys of one endpoint cannot be told
+	// apart: the row says so instead of posing as one credential.
+	label := "API keys (default endpoint, not told apart)"
 	if s.Endpoint != "" {
-		label = "Custom endpoint " + s.Endpoint
+		label = "API keys at " + s.Endpoint + " (not told apart)"
 	}
-	if len(label) > 96 {
+	if len(label) > maxUsageLabel {
 		return ops.UsageAccount{}, false
 	}
 	return ops.UsageAccount{ID: ops.UsageID("session-access", s.Provider, s.Endpoint), Provider: s.Provider, Label: label, AuthMode: "api", Source: "session-host", ObservedAt: at, TimeSource: "worker_measured"}, true

@@ -186,10 +186,19 @@ authorized() {
 }
 
 # need_systemd MODE: --service and --root install a systemd unit, so refuse
-# early (before any download or change) where there is none.
+# early (before any download or change) where there is none. The refusal names
+# a command that works: --service becomes --join ("Run as me"); --root has no
+# mode without systemd, because the user mode refuses root.
 need_systemd() {
-	[ "$(uname -s)" = Linux ] || die "--$1 needs Linux with systemd. Use \"Run as me\" instead: run the same command without --$1."
-	[ -d "${MINION_SYSTEMD_DIR:-/run/systemd/system}" ] || die "This computer does not run systemd (for example a container such as a Coder workspace), so no system service can be installed here. Use \"Run as me\" instead: run the same command without --$1; it starts the Worker now and again at login."
+	if [ "$(uname -s)" != Linux ]; then
+		[ "$1" = service ] && die "--service needs Linux with systemd. Use \"Run as me\" instead: run the same command with --join instead of --service."
+		die "--root needs Linux with systemd. There is no root mode without systemd: use \"Run as me\" from a normal account (the same command with --join, without --root and without sudo), or the Docker Compose option (--compose)."
+	fi
+	[ -d "${MINION_SYSTEMD_DIR:-/run/systemd/system}" ] && return 0
+	if [ "$1" = service ]; then
+		die "This computer does not run systemd (for example a container such as a Coder workspace), so no system service can be installed here. Use \"Run as me\" instead: run the same command with --join instead of --service; it starts the Worker now and again at login."
+	fi
+	die "This computer does not run systemd (for example a container such as a Coder workspace), so --root cannot install a root Worker here: a root Worker needs systemd and there is no non-systemd root mode. Use \"Run as me\" from a normal account (the same command with --join, without --root and without sudo), or the Docker Compose option (--compose)."
 }
 
 worker_up() {

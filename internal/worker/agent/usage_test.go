@@ -92,3 +92,53 @@ func TestClaudeExporterState(t *testing.T) {
 		}
 	}
 }
+
+func TestManagedPolicyDropInsAndUnreadablePolicyOverride(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "managed-settings.json")
+	if ClaudeManagedOverrides(file) {
+		t.Fatal("no managed settings must not override")
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "managed-settings.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	drop := filepath.Join(dir, "managed-settings.d", "10-hooks.json")
+	if err := os.WriteFile(drop, []byte(`{"permissions":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if ClaudeManagedOverrides(file) {
+		t.Fatal("a drop-in without hook policy overrides")
+	}
+	if err := os.WriteFile(drop, []byte(`{"allowManagedHooksOnly":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !ClaudeManagedOverrides(file) {
+		t.Fatal("a drop-in with allowManagedHooksOnly is ignored")
+	}
+	if err := os.WriteFile(drop, []byte(`{`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !ClaudeManagedOverrides(file) {
+		t.Fatal("an unparsable managed policy must fail closed")
+	}
+}
+
+func TestClaudeExporterStateReportsAManagedOverrideAfterInstall(t *testing.T) {
+	old := ClaudeManagedSettingsFile
+	t.Cleanup(func() { ClaudeManagedSettingsFile = old })
+	ClaudeManagedSettingsFile = filepath.Join(t.TempDir(), "managed-settings.json")
+	dir := t.TempDir()
+	line := `{"statusLine":{"type":"command","command":"'/bin/minion' '_claude-export' 'status-line' 'm'"}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeExporterStateIn(dir); got != ops.UsageExporterInstalled {
+		t.Fatalf("got %q", got)
+	}
+	if err := os.WriteFile(ClaudeManagedSettingsFile, []byte(`{"disableAllHooks":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeExporterStateIn(dir); got != ops.UsageExporterOverridden {
+		t.Fatalf("installed marker hides a managed override: %q", got)
+	}
+}

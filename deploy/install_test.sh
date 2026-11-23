@@ -297,7 +297,13 @@ for m in service root; do
 	SCRIPT_ARGS="--join --$m"
 	run_install "$WORK/nosd-$m" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_SYSTEMD_DIR="$WORK/no-such-systemd"
 	assert_contains "--$m without systemd says so" "$OUT" "does not run systemd (for example a container such as a Coder workspace)"
-	assert_contains "--$m without systemd names Run as me" "$OUT" "run the same command without --$m; it starts the Worker now and again at login"
+	if [ "$m" = service ]; then
+		assert_contains "--service without systemd names the working command" "$OUT" "run the same command with --join instead of --service; it starts the Worker now and again at login"
+	else
+		assert_contains "--root without systemd says there is no root mode" "$OUT" "a root Worker needs systemd and there is no non-systemd root mode"
+		assert_contains "--root without systemd suggests Run as me" "$OUT" "Use \"Run as me\" from a normal account (the same command with --join, without --root and without sudo)"
+		assert_contains "--root without systemd suggests Docker Compose" "$OUT" "Docker Compose option (--compose)"
+	fi
 	assert_no_file "--$m without systemd installs nothing" "$WORK/nosd-$m/minion"
 done
 SCRIPT_ARGS=--join

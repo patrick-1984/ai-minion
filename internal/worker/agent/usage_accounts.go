@@ -72,7 +72,7 @@ func nativeLoginLabel(provider, email, digest string) string {
 	email = strings.TrimSpace(email)
 	user, domain, ok := strings.Cut(email, "@")
 	fallback := provider + " profile " + digest[:10]
-	if !ok || user == "" || len(domain) > 64 || len(domain) < 3 || !strings.Contains(domain, ".") {
+	if !ok || user == "" || len(user) > 64 || len(email) > maxUsageLabel || len(domain) > 253 || len(domain) < 3 || !strings.Contains(domain, ".") {
 		return fallback
 	}
 	for _, r := range domain {
@@ -85,7 +85,13 @@ func nativeLoginLabel(provider, email, digest string) string {
 			return fallback
 		}
 	}
-	return user + "@" + strings.ToLower(domain) + " / " + digest[:6]
+	label := user + "@" + strings.ToLower(domain)
+	// The digest suffix tells two workspaces of a login apart; it never
+	// pushes the label past the wire bound and the address is never cut.
+	if suffix := " / " + digest[:6]; len(label)+len(suffix) <= maxUsageLabel {
+		label += suffix
+	}
+	return label
 }
 
 func subscriptionAccount(provider string, n nativeAccount, at int64) (ops.UsageAccount, bool) {

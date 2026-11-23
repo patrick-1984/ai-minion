@@ -271,7 +271,7 @@ func (o *HostObserver) observeOnce(ctx context.Context) (View, store.ShareState,
 				return
 			}
 			r := o.cfg.Classifier.Classify(ctx, agentdetect.Input{Command: ref.Command, PID: ref.PID, Screen: scr})
-			st.Kind, st.State, st.ScreenHash = r.Kind, r.State, ScreenHash(scr)
+			st.Kind, st.State, st.ScreenHash = r.Shown(), r.State, ScreenHash(scr)
 		}(&states[i], p.Ref)
 	}
 	wg.Wait()
