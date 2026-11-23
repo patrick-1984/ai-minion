@@ -109,7 +109,7 @@ func TestClaudeStatuslineGolden(t *testing.T) {
 				t.Fatal(err)
 			}
 			if s := r.Sessions[0]; len(r.Accounts) != 1 || s.AccountID == account.ID || s.AccountID != r.Accounts[0].ID || !s.CustomEndpoint || s.AuthMode != "api" ||
-				!reflect.DeepEqual(s.Windows, tc.windows) || !reflect.DeepEqual(r.Accounts[0].Windows, tc.windows) {
+				!reflect.DeepEqual(s.Windows, tc.windows) || len(r.Accounts[0].Windows) != 0 {
 				t.Fatalf("custom endpoint attribution or windows are wrong: %+v", r)
 			}
 		})

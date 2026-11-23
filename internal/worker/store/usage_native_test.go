@@ -181,10 +181,52 @@ func TestNativeUsageKeepsAnExpiredClaudeWindowAsReset(t *testing.T) {
 			gotWeek = &report.Accounts[0].Windows[i]
 		}
 	}
-	if gotFive == nil || gotFive.UsedPercent == nil || *gotFive.UsedPercent != 0 || gotFive.ResetsAt != nil {
+	if gotFive == nil || gotFive.UsedPercent == nil || *gotFive.UsedPercent != 0 || gotFive.ResetsAt == nil || *gotFive.ResetsAt != reset {
 		t.Fatalf("the five-hour window must stay, marked reset: %+v", report.Accounts[0].Windows)
 	}
 	if gotWeek == nil || *gotWeek.UsedPercent != 41 {
 		t.Fatalf("weekly window: %+v", gotWeek)
+	}
+	// A weekly-only report of a second pane on the same account keeps it too,
+	// still with the original reset time.
+	other := ops.UsageID("native", "claude-window-2")
+	row := ops.UsageSession{ID: other, NativeID: other, Name: "tty2", Provider: "Anthropic", AccountID: account, AuthMode: "subscription", Source: "claude-statusline", ObservedAt: now.UnixMilli()}
+	a := ops.UsageAccount{ID: account, Provider: "Anthropic", AuthMode: "subscription", Source: "claude-statusline", ObservedAt: now.UnixMilli(),
+		Windows: []ops.UsageWindow{{Scope: "general", Period: "rolling", DurationMS: &week, UsedPercent: pct(42), ResetsAt: &weekReset}}}
+	if err := s.SaveNativeUsage(ctx, en, ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Sessions: []ops.UsageSession{row}, Accounts: []ops.UsageAccount{a}}, now); err != nil {
+		t.Fatal(err)
+	}
+	report = ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Sessions: []ops.UsageSession{{ID: ops.UsageID("host", "y"), Name: "tty2", StartedAt: &started}}}
+	if err := s.NativeUsage(ctx, &report, 0); err != nil || len(report.Accounts) != 1 || len(report.Accounts[0].Windows) != 2 {
+		t.Fatalf("second pane lost the five-hour window: %v %+v", err, report.Accounts)
+	}
+}
+
+func TestNativeUsageRepairsLegacyAPIRowsAndKeepsTheSessionAccount(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, t.TempDir())
+	now := time.Now()
+	en := Enrollment{HubPub: pubKey(6), WorkerID: "worker", Owner: "test"}
+	if err := s.SaveEnrollment(ctx, en); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AcceptUsageRegistration(ctx, en.HubPub, en.WorkerID, en.Owner); err != nil {
+		t.Fatal(err)
+	}
+	native := ops.UsageID("native", "legacy")
+	cost := 1.5
+	// A v0.20.0 row: verified API access, no account.
+	row := ops.UsageSession{ID: native, NativeID: native, Name: "tty", Provider: "Anthropic", AuthMode: "api", Source: "claude-statusline", ObservedAt: now.UnixMilli(), EstimatedCostUSD: &cost}
+	if err := s.SaveNativeUsage(ctx, en, ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Sessions: []ops.UsageSession{row}}, now); err != nil {
+		t.Fatal(err)
+	}
+	started := now.Add(-time.Hour).UnixMilli()
+	report := ops.UsageReport{Version: 1, ObservedAt: now.Add(time.Minute).UnixMilli(), Sessions: []ops.UsageSession{{ID: ops.UsageID("host", "x"), Name: "tty", StartedAt: &started}}}
+	if err := s.NativeUsage(ctx, &report, 0); err != nil {
+		t.Fatal(err)
+	}
+	want := AggregateAPIAccount("Anthropic", false, 0).ID
+	if got := report.Sessions[0]; got.AccountID != want || len(report.Accounts) != 1 || report.Accounts[0].ID != want {
+		t.Fatalf("legacy row: %+v accounts %+v", got, report.Accounts)
 	}
 }

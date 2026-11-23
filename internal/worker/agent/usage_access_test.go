@@ -50,7 +50,7 @@ func TestDetectSessionAccess(t *testing.T) {
 		"unreadable env":   {"claude", 99, sessionAccess{Mode: "unknown"}},
 		"other harness":    {"gemini", 1, sessionAccess{Mode: "unknown"}},
 	} {
-		if got := kindOnly(detectSessionAccess(tc.harness, tc.pid)); got != tc.want {
+		if got := detectSessionAccess(tc.harness, tc.pid); got != tc.want {
 			t.Errorf("%s: got %+v want %+v", name, got, tc.want)
 		}
 	}
@@ -64,7 +64,7 @@ func TestDetectSessionAccess(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"env":{"ANTHROPIC_BASE_URL":"https://gw.example/x"},"apiKeyHelper":"/bin/key"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := kindOnly(detectSessionAccess("claude", 4)); got != (sessionAccess{Mode: "api", Kind: accessCustomEndpoint}) {
+	if got := detectSessionAccess("claude", 4); got != (sessionAccess{Mode: "api", Kind: accessCustomEndpoint}) {
 		t.Errorf("settings env: %+v", got)
 	}
 }
@@ -78,12 +78,12 @@ func TestUsageSnapshotReportsAccessWithoutSecrets(t *testing.T) {
 		{PID: 300, PPID: 100, PGRP: 300, TPGID: 300, TTY: "pts/1", Args: []string{"claude"}},
 	}))
 	host := usageHostFixture{[]term.Session{{Name: "wb-1", Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: 100}}}}}}
-	r, err := usageSnapshot(context.Background(), host, false, "")
+	r, err := usageSnapshot(context.Background(), host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := r.Sessions[0]
-	if s.AuthMode != "api" || s.Endpoint != "" || !s.CustomEndpoint || !r.Accounts[0].CustomEndpoint || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || !strings.HasPrefix(r.Accounts[0].Label, "Custom endpoint #") {
+	if s.AuthMode != "api" || s.Endpoint != "" || !s.CustomEndpoint || !r.Accounts[0].CustomEndpoint || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || r.Accounts[0].Label != "Anthropic custom endpoint (not told apart)" {
 		t.Fatalf("session %+v accounts %+v", s, r.Accounts)
 	}
 	if body := strings.ToLower(string(mustJSON(t, r))); strings.Contains(body, "verysecret") || strings.Contains(body, "/v1") || strings.Contains(body, "cpa.example") {
@@ -126,7 +126,7 @@ func TestUsageSnapshotClaudeSettingsOverrideOAuthCredentials(t *testing.T) {
 				{PID: 300, PPID: 100, PGRP: 300, TPGID: 300, TTY: "pts/1", Args: args},
 			}))
 			host := usageHostFixture{[]term.Session{{Name: "work", Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: 100}}}}}}
-			r, err := usageSnapshot(t.Context(), host, false, "")
+			r, err := usageSnapshot(t.Context(), host)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,10 +135,4 @@ func TestUsageSnapshotClaudeSettingsOverrideOAuthCredentials(t *testing.T) {
 			}
 		})
 	}
-}
-
-// kindOnly drops the endpoint identity, which tests of the access kind ignore.
-func kindOnly(a sessionAccess) sessionAccess {
-	a.Endpoint = ""
-	return a
 }

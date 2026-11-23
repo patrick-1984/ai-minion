@@ -199,9 +199,9 @@ func TestNativeLoginLabelLongAddressStaysWithinTheWireBound(t *testing.T) {
 }
 
 func TestAccessAccountsAreExplicitAggregates(t *testing.T) {
-	a, _ := accessAccount("Anthropic", sessionAccess{Mode: "api", Kind: accessAPIKey}, 1, "")
-	b, _ := accessAccount("Anthropic", sessionAccess{Mode: "api", Kind: accessCustomEndpoint}, 1, "")
-	if a.ID == b.ID || a.Label != "API keys (not told apart)" || b.Label != "Custom endpoint (not told apart)" {
+	a, _ := accessAccount("Anthropic", sessionAccess{Mode: "api", Kind: accessAPIKey}, 1)
+	b, _ := accessAccount("Anthropic", sessionAccess{Mode: "api", Kind: accessCustomEndpoint}, 1)
+	if a.ID == b.ID || a.Label != "Anthropic API key (not told apart)" || b.Label != "Anthropic custom endpoint (not told apart)" {
 		t.Fatalf("%+v %+v", a, b)
 	}
 }

@@ -68,7 +68,7 @@ func TestEndpointIsReducedToVendorOrCustom(t *testing.T) {
 	}
 	// The host never survives the environment filter.
 	env := filterProcessEnv([]byte("ANTHROPIC_BASE_URL=https://secret-gw.example/x\x00PATH=/bin"))
-	if len(env) != 2 || env[0] != "ANTHROPIC_BASE_URL=custom" || !strings.HasPrefix(env[1], "ANTHROPIC_BASE_URL_ID=") || strings.Contains(strings.Join(env, " "), "secret") {
+	if len(env) != 1 || env[0] != "ANTHROPIC_BASE_URL=custom" {
 		t.Fatalf("%q", env)
 	}
 }
@@ -119,7 +119,7 @@ func TestSettingsKeysAreOnlyPresenceChecked(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeEnv(t, home, map[int][]string{4: {"PATH=/bin"}})
-	if got := kindOnly(detectSessionAccess("claude", 4)); got != (sessionAccess{Mode: "api", Kind: accessCustomEndpoint}) {
+	if got := detectSessionAccess("claude", 4); got != (sessionAccess{Mode: "api", Kind: accessCustomEndpoint}) {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -196,7 +196,7 @@ func TestClaudeAPIConfigConsidersEverySettingsSource(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	key, custom, _ := claudeAPIConfig(nil, profile, claudeSrc{Cwd: project})
+	key, custom := claudeAPIConfig(nil, profile, claudeSrc{Cwd: project})
 	if key || custom {
 		t.Fatalf("no sources: key=%t custom=%t", key, custom)
 	}
@@ -215,7 +215,7 @@ func TestClaudeAPIConfigConsidersEverySettingsSource(t *testing.T) {
 		}
 		src := tc.src
 		src.Cwd = project
-		key, custom, _ := claudeAPIConfig(nil, profile, src)
+		key, custom := claudeAPIConfig(nil, profile, src)
 		if key != tc.key || custom != tc.cust {
 			t.Errorf("%s: key=%t custom=%t", name, key, custom)
 		}
@@ -225,28 +225,32 @@ func TestClaudeAPIConfigConsidersEverySettingsSource(t *testing.T) {
 	}
 }
 
-func TestCustomEndpointsAreToldApartWithoutRevealingTheHost(t *testing.T) {
+func TestCustomEndpointsAreNotToldApart(t *testing.T) {
 	env := func(base string) []string {
 		return filterProcessEnv([]byte("ANTHROPIC_BASE_URL=" + base + "\x00"))
 	}
 	a := claudeAccess(env("https://gw-one.example:8443/v1"), claudeSrc{})
 	b := claudeAccess(env("https://gw-two.example/v1"), claudeSrc{})
-	a2 := claudeAccess(env("https://GW-ONE.example:8443/other"), claudeSrc{})
-	if a.Endpoint == "" || a.Endpoint == b.Endpoint || a.Endpoint != a2.Endpoint {
-		t.Fatalf("endpoint identities: %q %q %q", a.Endpoint, b.Endpoint, a2.Endpoint)
+	ra, _ := accessAccount("Anthropic", a, 1)
+	rb, _ := accessAccount("Anthropic", b, 1)
+	if ra.ID != rb.ID || ra.Label != "Anthropic custom endpoint (not told apart)" || strings.Contains(ra.Label+ra.ID, "gw-") {
+		t.Fatalf("%+v %+v", ra, rb)
 	}
-	ra, _ := accessAccount("Anthropic", a, 1, "salt")
-	rb, _ := accessAccount("Anthropic", b, 1, "salt")
-	rs, _ := accessAccount("Anthropic", a, 1, "other-salt")
-	if ra.ID == rb.ID || ra.ID == rs.ID || ra.Label == rb.Label && ra.ID == rb.ID {
-		t.Fatalf("accounts collide: %+v %+v", ra, rb)
+}
+
+func TestProjectSettingsAreReadFromTheRepositoryRoot(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "pkg", "deep")
+	for _, d := range []string{filepath.Join(root, ".git"), filepath.Join(root, ".claude"), sub} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if strings.Contains(ra.Label+ra.ID, "gw-one") || !strings.HasPrefix(ra.Label, "Custom endpoint #") {
-		t.Fatalf("label %q", ra.Label)
+	if err := os.WriteFile(filepath.Join(root, ".claude", "settings.local.json"), []byte(`{"apiKeyHelper":"/bin/k"}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	// Without an identity the old shared row remains, honestly labelled.
-	n, _ := accessAccount("Anthropic", sessionAccess{Mode: "api", Kind: accessCustomEndpoint}, 1, "salt")
-	if n.Label != "Custom endpoint (not told apart)" {
-		t.Fatalf("label %q", n.Label)
+	key, _ := claudeAPIConfig(nil, t.TempDir(), claudeSrc{Cwd: sub})
+	if !key {
+		t.Fatal("a helper in the repository root is not seen from a subdirectory")
 	}
 }

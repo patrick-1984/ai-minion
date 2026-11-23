@@ -34,6 +34,10 @@ const (
 	// restartDelay lets the answer and the log reach the Hub before the
 	// process restarts.
 	restartDelay = 2 * time.Second
+	// replyBound is the longest the restart waits for the answer to be
+	// written; restartGrace follows a written answer.
+	replyBound   = 10 * time.Second
+	restartGrace = 300 * time.Millisecond
 	// earlyFailWait is how long worker_update waits for a failure that shows
 	// at once (the release is not published, the lookup fails) before it
 	// answers "accepted". A slower failure is read with worker_update_status.
@@ -319,7 +323,17 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 		default:
 		}
 	}
-	time.Sleep(restartDelay)
+	// The answer goes out first: wait for its write (bounded, so a stalled
+	// link cannot hold the update), then keep the short grace for the log.
+	if sent := ReplySent(ctx); sent != nil {
+		select {
+		case <-sent:
+			time.Sleep(restartGrace)
+		case <-time.After(replyBound):
+		}
+	} else {
+		time.Sleep(restartDelay)
+	}
 	u.restart()
 }
 

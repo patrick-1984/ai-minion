@@ -479,16 +479,23 @@ func readClaudeAuth(ctx context.Context, profileDir string) (nativeAccount, bool
 		const profileEnv = "CLAUDE_CONFIG_DIR"
 		home, err := os.UserHomeDir()
 		profile := filepath.Clean(profileDir)
+		// The probe answers for the profile's own login: credentials that only
+		// this Worker's environment carries are not the profile's and must not
+		// turn its subscription into API access.
+		ambient := func(entry string) bool {
+			name, _, _ := strings.Cut(entry, "=")
+			return slices.Contains([]string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"}, name)
+		}
 		// Claude reads ~/.claude.json for the default profile. An override
 		// moves that login metadata into the chosen directory, even if it is
 		// ~/.claude. Preserve an override the user already set for this profile.
 		if err == nil && profile == filepath.Join(home, ".claude") && filepath.Clean(os.Getenv(profileEnv)) != profile {
 			cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
 				name, _, _ := strings.Cut(entry, "=")
-				return name == profileEnv || runtime.GOOS == "windows" && strings.EqualFold(name, profileEnv)
+				return name == profileEnv || runtime.GOOS == "windows" && strings.EqualFold(name, profileEnv) || ambient(entry)
 			})
 		} else {
-			cmd.Env = append(os.Environ(), profileEnv+"="+profileDir)
+			cmd.Env = append(slices.DeleteFunc(os.Environ(), ambient), profileEnv+"="+profileDir)
 		}
 	}
 	var raw usageOutput
