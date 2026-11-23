@@ -151,6 +151,17 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		if n.Version == "" {
 			n.Version = base.Version
 		}
+		if n.AuthMode == "unknown" || n.AuthMode == "" {
+			// The native document names no credential; keep the access kind
+			// the Worker read from the session's own process.
+			n.AuthMode, n.Endpoint = base.AuthMode, base.Endpoint
+			if n.AccountID == "" {
+				n.AccountID = base.AccountID
+			}
+			if n.Provider == "" {
+				n.Provider = base.Provider
+			}
+		}
 		n.ID = base.ID
 		n.StartedAt = base.StartedAt
 		report.Sessions[idx] = n

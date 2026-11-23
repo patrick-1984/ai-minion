@@ -19,8 +19,11 @@ import (
 // often has no ps, and BusyBox ps lacks the job-control columns), ps(1) on
 // macOS and the BSDs.
 func DefaultProcessSource() ProcessSource {
-	if runtime.GOOS == "linux" {
+	switch runtime.GOOS {
+	case "linux":
 		return ProcSource{}
+	case "windows":
+		return WinSource{}
 	}
 	return PSSource{}
 }

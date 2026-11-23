@@ -21,13 +21,25 @@ const UsageVersion = 1
 // UsageDisclosure is shared by Worker registration and the Hub interface.
 const UsageDisclosure = "Your Hub administrator and Worker owner can see usage statistics for every session on this Worker, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, limits and collection diagnostics. Console sharing and control have separate permissions."
 
+// Claude usage exporter states of a Worker's Claude profile.
+const (
+	UsageExporterInstalled  = "installed"
+	UsageExporterAbsent     = "absent"
+	UsageExporterOverridden = "overridden" // hooks disabled or managed settings win
+	UsageExporterOff        = "off"        // the Worker owner turned the automatic install off
+	UsageExporterConflict   = "conflict"   // the existing settings could not be kept
+)
+
 type UsageHarness struct {
 	AuthMode      string   `json:"auth_mode,omitempty"`
 	Providers     []string `json:"providers,omitempty"`
 	AccountStatus string   `json:"account_status,omitempty"`
-	Name          string   `json:"name"`
-	Version       string   `json:"version,omitempty"`
-	Status        string   `json:"status"` // installed, unavailable, unsupported
+	// Exporter is the state of the Claude Code usage exporter in the Worker's
+	// Claude profile: installed, absent or overridden. Only the state, no paths.
+	Exporter string `json:"exporter,omitempty"`
+	Name     string `json:"name"`
+	Version  string `json:"version,omitempty"`
+	Status   string `json:"status"` // installed, unavailable, unsupported
 }
 
 type UsageCounters struct {
@@ -96,15 +108,18 @@ type UsageSession struct {
 	NativeID     string            `json:"native_id,omitempty"`
 	Models       []UsageModel      `json:"models,omitempty"`
 
-	ID         string `json:"id"` // opaque identity of this session incarnation on this Worker
-	Name       string `json:"name"`
-	Folder     string `json:"folder,omitempty"`
-	Harness    string `json:"harness,omitempty"`
-	Version    string `json:"version,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Provider   string `json:"provider,omitempty"`
-	AccountID  string `json:"account_id,omitempty"`
-	AuthMode   string `json:"auth_mode"`
+	ID        string `json:"id"` // opaque identity of this session incarnation on this Worker
+	Name      string `json:"name"`
+	Folder    string `json:"folder,omitempty"`
+	Harness   string `json:"harness,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+	AuthMode  string `json:"auth_mode"`
+	// Endpoint is the host (no scheme, path or credentials) of a custom API
+	// endpoint the session uses; empty for the vendor's own endpoint.
+	Endpoint   string `json:"endpoint,omitempty"`
 	StartedAt  *int64 `json:"started_at"`
 	StoppedAt  *int64 `json:"stopped_at"`
 	ObservedAt int64  `json:"observed_at"`
@@ -245,6 +260,7 @@ func (r UsageReport) Check(now time.Time) error {
 			!usageClock(s.TimeSource) ||
 			!usageText(s.Provider, 64) ||
 			!usageMode(s.AuthMode) ||
+			!UsageEndpointHost(s.Endpoint) ||
 			!usageText(s.Source, 64) ||
 			s.Source == "" ||
 			!usageTime(s.ObservedAt, latest) ||
@@ -327,7 +343,7 @@ func (r UsageReport) Check(now time.Time) error {
 		}
 	}
 	for _, h := range r.Inventory {
-		if len(h.Providers) > 32 || (h.AuthMode != "" && !usageMode(h.AuthMode) && h.AuthMode != "mixed") || !usageText(h.AccountStatus, 32) {
+		if len(h.Providers) > 32 || (h.AuthMode != "" && !usageMode(h.AuthMode) && h.AuthMode != "mixed") || !usageText(h.AccountStatus, 32) || h.Exporter != "" && h.Exporter != UsageExporterInstalled && h.Exporter != UsageExporterAbsent && h.Exporter != UsageExporterOverridden && h.Exporter != UsageExporterOff && h.Exporter != UsageExporterConflict {
 			return invalid("inventory", "invalid authentication metadata")
 		}
 		for _, p := range h.Providers {
@@ -374,6 +390,12 @@ func safeUsageOrigin(value string) bool {
 	}
 	u, err := url.Parse(value)
 	return err == nil && len(value) <= 300 && (u.Scheme == "https" || u.Scheme == "http") && u.Hostname() != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && !u.ForceQuery && !strings.Contains(value, "#")
+}
+
+// UsageEndpointHost accepts an empty value or a bare host name or address,
+// optionally with a port.
+func UsageEndpointHost(h string) bool {
+	return usageText(h, 253) && !strings.ContainsAny(h, "/@?# \t\\")
 }
 
 func validKeyHint(hint, id string) bool {

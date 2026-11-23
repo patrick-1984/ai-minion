@@ -26,6 +26,10 @@ const (
 	// KeyAllowNewSessions is the local block of new sessions created through
 	// Minion: on (default) or off.
 	KeyAllowNewSessions = "allow_new_sessions"
+
+	// KeyUsageClaudeExporter turns the automatic install of the Claude Code
+	// usage exporter on (auto, the default) or off.
+	KeyUsageClaudeExporter = "usage_claude_exporter"
 )
 
 // Values of allow_new_sessions.
@@ -117,6 +121,14 @@ func declareWorkerCore(r *Registry) {
 			"also holds against an on in the environment. A writable shared terminal can still start programs by typing",
 		Default: AllowNewSessionsOn,
 		Choices: []string{AllowNewSessionsOn, AllowNewSessionsOff},
+	})
+	r.Declare(Setting{
+		Key:   KeyUsageClaudeExporter,
+		Scope: ScopeWorker,
+		Help: "Install the Minion status-line exporter in Claude Code settings once usage monitoring is accepted (auto or off). " +
+			"Your existing status line keeps working. off leaves Claude Code settings alone",
+		Default: "auto",
+		Choices: []string{"auto", "off"},
 	})
 }
 

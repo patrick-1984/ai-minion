@@ -34,6 +34,13 @@ var claudeUsageEvents = []string{
 	"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted", "CwdChanged", "PostModelSwitch",
 }
 
+var (
+	errClaudeNotEnrolled = errors.New("enroll the Worker before installing Claude Code usage")
+	errClaudeNotAccepted = errors.New("review and accept monitoring with minion worker config usage --accept before installing the Claude Code integration")
+)
+
+var errClaudeHooksDisabled = errors.New("this Claude Code profile has disabled hooks; the file was left intact")
+
 type claudeUsageIntegration struct {
 	Version      int    `json:"version"`
 	Binary       string `json:"binary"`
@@ -194,11 +201,11 @@ func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageInte
 	defer func() { _ = st.Close() }()
 	enrollment, err := st.LoadEnrollment(ctx)
 	if err != nil {
-		return false, errors.New("enroll the Worker before installing Claude Code usage")
+		return false, errClaudeNotEnrolled
 	}
 	grant, err := st.UsageGrantID(ctx, enrollment.WorkerID)
 	if err != nil || grant == "" {
-		return false, errors.New("review and accept monitoring with minion worker config usage --accept before installing the Claude Code integration")
+		return false, errClaudeNotAccepted
 	}
 	desired.Grant = claudeUsageGrant(grant)
 
@@ -224,7 +231,7 @@ func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageInte
 		}
 	}
 	if bytes.Equal(bytes.TrimSpace(settings["disableAllHooks"]), []byte("true")) {
-		return false, errors.New("this Claude Code profile has disabled hooks; the file was left intact")
+		return false, errClaudeHooksDisabled
 	}
 
 	prior, err := readClaudeUsageManifest(manifest)

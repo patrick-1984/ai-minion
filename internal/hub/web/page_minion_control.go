@@ -10,7 +10,7 @@ package web
 import (
 	"html/template"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -154,7 +154,7 @@ func knownSessions(r *http.Request) map[string][]string {
 		out[s.WorkerID] = append(out[s.WorkerID], s.Name)
 	}
 	for k := range out {
-		sort.Strings(out[k])
+		slices.SortFunc(out[k], ops.NaturalCompare)
 	}
 	return out
 }

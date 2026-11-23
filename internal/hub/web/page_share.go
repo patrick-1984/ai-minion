@@ -70,15 +70,7 @@ func shareNames(mode string, shared, unshared []string) []ShareEntry {
 	for _, n := range unshared {
 		out = append(out, ShareEntry{Name: n})
 	}
-	slices.SortFunc(out, func(a, b ShareEntry) int {
-		switch {
-		case a.Name < b.Name:
-			return -1
-		case a.Name > b.Name:
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(out, func(a, b ShareEntry) int { return ops.NaturalCompare(a.Name, b.Name) })
 	return out
 }
 

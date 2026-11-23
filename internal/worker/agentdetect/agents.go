@@ -70,8 +70,18 @@ func DefaultAgents() []Agent {
 			Idle: []*regexp.Regexp{
 				rx(`(?i)\b(auto-accept edits|plan mode|bypass permissions)\b[^\n]*\bon\b`),
 				rx(`^\s*[│|]\s*[>❯](\s|$)`),
+				// Claude Code 2.1.x: borderless prompt between two rules and
+				// a footer such as "⏵⏵ auto mode on (shift+tab to cycle)".
+				rx(`^\s*❯(\s|$)`),
+				rx(`(?i)\bauto mode\b[^\n]*\bon\b`),
+				rx(`\(shift\+tab to cycle\)`),
+				rx(`·\s*●?\s*context \d+%`),
 			},
-			Busy: []*regexp.Regexp{rx(`(?i)esc to interrupt`)},
+			Busy: []*regexp.Regexp{
+				rx(`(?i)esc to interrupt`),
+				// Spinner line "✻ Thinking… (12s · ..." when the hint is hidden.
+				rx(`^\s*[✢✳✶✻✽]\s+\S[^\n]*…\s*\(`),
+			},
 		},
 		{
 			Name:     "codex",

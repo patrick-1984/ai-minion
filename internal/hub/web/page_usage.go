@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,46 @@ type usagePage struct {
 	DomainSlots                                                             []usageDomainSlotView
 	DomainUnavailable, AllowRepublish                                       bool
 	Preview                                                                 usagePreview
+	// ExporterMissing names the Workers with Claude Code but without the
+	// Minion exporter; ExporterInstalled is true when any Worker has it.
+	ExporterMissing   []string
+	ExporterInstalled bool
+	// ExporterRestart marks Workers that have a Claude Code session without
+	// token data although the exporter is installed: it started before the
+	// install and needs a restart.
+	ExporterRestart map[string]bool
+}
+
+// usageExporterCommand installs the Claude Code usage exporter on a Worker.
+const usageExporterCommand = "minion worker config usage integrate claude"
+
+// StaleReason says why an Anthropic subscription card is stale.
+func (p usagePage) staleWhy(c usageAccountCard) string {
+	if c.Freshness != "Stale" || c.Account.Provider != "Anthropic" || c.Account.AuthMode != "subscription" {
+		return ""
+	}
+	return "No running Claude Code session of this account has reported since " + p.Time(&c.Account.ObservedAt) + "."
+}
+
+func (p usagePage) ExporterCommand() string { return usageExporterCommand }
+
+// noteExporters records which Workers lack the Claude exporter, from the
+// harness inventories the Workers reported.
+func (p *usagePage) noteExporters(workers []ops.UsageWorkerRow) {
+	p.ExporterMissing, p.ExporterInstalled = nil, false
+	for _, w := range workers {
+		for _, h := range w.Inventory {
+			if h.Name != "claude" || h.Status != "installed" {
+				continue
+			}
+			switch h.Exporter {
+			case ops.UsageExporterAbsent:
+				p.ExporterMissing = append(p.ExporterMissing, p.WorkerName(w.ID))
+			case ops.UsageExporterInstalled:
+				p.ExporterInstalled = true
+			}
+		}
+	}
 }
 
 type usageAccountCard struct {
@@ -40,6 +81,7 @@ type usageAccountCard struct {
 	Observed  string
 	Freshness string
 	Windows   []usageWindowView
+	StaleWhy  string
 }
 
 type usageWindowView struct {
@@ -345,6 +387,24 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		return nil, err
 	}
 	accounts, next := p.Rows.Accounts, p.Rows.Next
+	switch section {
+	case "workers":
+		p.noteExporters(p.Rows.Workers)
+		var live ops.UsageListResult
+		if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "sessions", WorkerID: p.WorkerID, Limit: 50}, &live); err == nil {
+			p.ExporterRestart = map[string]bool{}
+			for _, s := range live.Sessions {
+				if s.Harness == "claude" && s.InputTokens == nil && s.OutputTokens == nil && s.StoppedAt == nil {
+					p.ExporterRestart[s.WorkerID] = true
+				}
+			}
+		}
+	case "sessions", "accounts":
+		var inv ops.UsageListResult
+		if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "workers", WorkerID: p.WorkerID, Limit: 50}, &inv); err == nil {
+			p.noteExporters(inv.Workers)
+		}
+	}
 	if section == "overview" {
 		var subscriptions ops.UsageListResult
 		args.Section, args.SubscriptionOnly = "accounts", true
@@ -354,6 +414,12 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		accounts, next = subscriptions.Accounts, subscriptions.Next
 		p.RefreshURL = usageURL(section, args.WorkerID, args.BucketID, args.After)
 	}
+	slices.SortStableFunc(p.Rows.Sessions, func(a, b ops.UsageSessionRow) int {
+		if c := strings.Compare(p.WorkerName(a.WorkerID), p.WorkerName(b.WorkerID)); c != 0 {
+			return c
+		}
+		return ops.NaturalCompare(a.Name, b.Name)
+	})
 	if next != "" {
 		p.NextURL = usageURL(section, p.WorkerID, p.BucketID, next)
 	}
@@ -373,6 +439,7 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 	if a.ObservedAt == 0 {
 		card.Freshness = "Unknown"
 	}
+	card.StaleWhy = p.staleWhy(card)
 	if a.AuthMode != "subscription" {
 		return card
 	}
