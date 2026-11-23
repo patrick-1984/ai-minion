@@ -205,7 +205,12 @@ func usageInventory(ctx context.Context) []ops.UsageHarness {
 			var buf usageOutput
 			cmd.Stdout = &buf
 			cmd.Stderr = io.Discard
-			if err := cmd.Run(); err == nil {
+			probeInGroup(cmd)
+			err := cmd.Run()
+			endProbeGroup(cmd)
+			// A helper the harness left running can hold the output open; the
+			// harness itself exited cleanly and its output is complete.
+			if err == nil || errors.Is(err, exec.ErrWaitDelay) {
 				if match := usageVersionPattern.FindStringSubmatch(string(buf)); len(match) > 1 {
 					item.Version = match[1]
 				}
