@@ -20,3 +20,24 @@ func TestClaude2_1_330ScreensAreIdleAndBusy(t *testing.T) {
 		}
 	}
 }
+
+// Background work behind an idle prompt is reported as busy; the prompt still
+// takes input, and a bare "← 2 agents" hint is not background work.
+func TestClaudeBackgroundWorkIsBusy(t *testing.T) {
+	for name, want := range map[string]string{
+		"claude_bg_shell_2_1_33x":  ops.PaneStateBusy,
+		"claude_bg_agents_2_1_33x": ops.PaneStateBusy,
+		"claude_idle_2_1_330":      ops.PaneStateStable, // ends in "← 2 agents"
+	} {
+		r := classify(t, Input{Command: "claude", Screen: screen(t, name)}, nil)
+		if r.State != want {
+			t.Errorf("%s: state %q, want %q", name, r.State, want)
+		}
+		if r.Background != (want == ops.PaneStateBusy) {
+			t.Errorf("%s: Background %v", name, r.Background)
+		}
+		if r.Kind != "agent:claude" {
+			t.Errorf("%s: kind %q", name, r.Kind)
+		}
+	}
+}
