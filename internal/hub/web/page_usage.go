@@ -43,8 +43,8 @@ type usageAccountCard struct {
 }
 
 type usageWindowView struct {
-	Title, Scope, Period, Used, Pace, Reset, Tone     string
-	Elapsed, Projected, Unit, RemainingPercent string
+	Title, Scope, Period, Used, Pace, Reset, Tone string
+	Elapsed, Projected, Unit, RemainingPercent    string
 }
 
 func (p usagePage) At(ms int64) string { return p.Time(&ms) }

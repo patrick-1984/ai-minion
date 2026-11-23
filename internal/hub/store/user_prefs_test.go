@@ -96,3 +96,40 @@ func TestUserPrefsMigrationUpgradesAnExistingDatabase(t *testing.T) {
 		t.Error("the CHECK constraint accepted allow_hidden_sessions = 2")
 	}
 }
+
+func TestWantedHarnessesDefaultSetAndKeepPrefs(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	p := seedParams("pat")
+	if _, err := s.SeedAdmin(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.UserPrefs(ctx, p.User.ID); got.WantedHarnesses != nil {
+		t.Fatalf("default = %#v, want nil (never chosen)", got.WantedHarnesses)
+	}
+	if err := s.SetAllowHiddenSessions(ctx, p.User.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetWantedHarnesses(ctx, p.User.ID, []string{"claude", "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.UserPrefs(ctx, p.User.ID)
+	if len(got.WantedHarnesses) != 2 || got.WantedHarnesses[0] != "claude" || !got.AllowHiddenSessions {
+		t.Fatalf("after set = %+v", got)
+	}
+	if err := s.SetAllowHiddenSessions(ctx, p.User.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.UserPrefs(ctx, p.User.ID); len(got.WantedHarnesses) != 2 {
+		t.Fatalf("the hidden-sessions write lost the harness choice: %+v", got)
+	}
+	if err := s.SetWantedHarnesses(ctx, p.User.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.UserPrefs(ctx, p.User.ID); got.WantedHarnesses == nil || len(got.WantedHarnesses) != 0 {
+		t.Fatalf("an empty choice = %#v, want empty non-nil", got.WantedHarnesses)
+	}
+	if err := s.SetWantedHarnesses(ctx, NewID(), []string{"claude"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown user = %v", err)
+	}
+}

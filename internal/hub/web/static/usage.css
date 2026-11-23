@@ -40,3 +40,7 @@
   .usage-fields > .field { flex: 1 1 100%; }
   .usage-fields > button { width: 100%; }
 }
+.harness-vendor { border: 1px solid var(--border); border-radius: 8px; margin: 0; padding: 8px 12px; min-width: 0; }
+.harness-vendor legend { font-weight: 600; padding: 0 4px; }
+.harness-vendor .usage-check { display: flex; }
+.harness-matrix td, .harness-matrix th { vertical-align: middle; }
