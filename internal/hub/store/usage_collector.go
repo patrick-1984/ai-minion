@@ -57,6 +57,15 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 			login = old.Label
 		}
 	}
+	// A session can identify a custom endpoint without reporting its quota.
+	// Keep the timestamp and windows from the actual quota observation.
+	var firstUpstreamQuota bool
+	if a.AuthMode == "api" && a.CustomEndpoint && old.AuthMode == "api" && old.CustomEndpoint {
+		if len(a.Windows) == 0 && len(old.Windows) > 0 {
+			return nil
+		}
+		firstUpstreamQuota = len(a.Windows) > 0 && len(old.Windows) == 0
+	}
 	if a.Source == "native-account" && a.Label != "" {
 		login = a.Label
 		if stored != "" && old.Source != "native-account" {
@@ -73,8 +82,8 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_accounts(worker_id,account_id,observed_at,body,can_poll) VALUES(?,?,?,?,?)
 	 ON CONFLICT(worker_id,account_id) DO UPDATE SET observed_at=excluded.observed_at,body=excluded.body,can_poll=max(usage_accounts.can_poll,excluded.can_poll)
-	 WHERE excluded.observed_at>usage_accounts.observed_at AND
-	  (json_extract(excluded.body,'$.source')<>'native-account' OR json_extract(usage_accounts.body,'$.source')='native-account')`, workerID, a.ID, a.ObservedAt, string(b), nativeRead)
+	 WHERE (excluded.observed_at>usage_accounts.observed_at OR ?) AND
+	  (json_extract(excluded.body,'$.source')<>'native-account' OR json_extract(usage_accounts.body,'$.source')='native-account')`, workerID, a.ID, a.ObservedAt, string(b), nativeRead, firstUpstreamQuota)
 	if err == nil && nativeRead {
 		_, err = tx.ExecContext(ctx, `UPDATE usage_accounts SET can_poll=1 WHERE worker_id=? AND account_id=? AND can_poll=0`, workerID, a.ID)
 	}

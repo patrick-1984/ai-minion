@@ -343,7 +343,9 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		switch {
 		case explicit || refreshable && desired.Account != "":
 			if desired.Account == prior.Account {
-				desired.Plan = prior.Plan // plan changes are informational
+				if desired.Plan == "" {
+					desired.Plan = prior.Plan
+				}
 				if desired.Label == "" {
 					desired.Label = prior.Label
 				}

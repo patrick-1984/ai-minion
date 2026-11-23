@@ -86,7 +86,7 @@
   {{with $p.Rows.Overview}}
   <p>{{.Accounts}} subscription accounts · {{.WithoutWindows}} with no reported limits</p>
   {{if .Groups}}
-  <p class="muted">The mean gives each account equal weight. Coverage counts fresh, stale and missing observations for each comparable limit.</p>
+  <p class="muted">The mean gives each account equal weight. Coverage counts fresh, stale and unknown observations for each comparable limit. A fresh report contributes only to the limits it lists.</p>
   <div class="usage-cards">
     {{range .Groups}}
     <article class="panel usage-limit">
@@ -110,12 +110,26 @@
   </div>
   <p class="muted">{{.Account.Source}} · Last checked {{.Observed}}</p>
   {{with .StaleWhy}}<p class="help">{{.}}</p>{{end}}
-  {{template "usage_windows" .}}
+  {{template "usage_subscription_windows" .}}
 </article>
 {{end}}
 
+{{define "usage_subscription_windows"}}
+{{if .NoFiveHourLimit}}<p class="help">No 5-hour limit on this plan</p>{{end}}
+{{if .Windows}}{{template "usage_windows" .Windows}}{{else}}<p class="muted">No subscription limits reported.</p>{{end}}
+{{end}}
+
+{{define "usage_upstream_windows"}}
+{{if .}}
+<section aria-label="Upstream quota">
+  <p class="muted">Upstream quota</p>
+  {{template "usage_windows" .}}
+</section>
+{{end}}
+{{end}}
+
 {{define "usage_windows"}}
-{{range .Windows}}
+{{range .}}
 <div class="usage-window">
   <div class="usage-heading">
     <h4>{{.Title}}</h4>
@@ -129,7 +143,7 @@
     <div><dt>Resets</dt><dd>{{.Reset}}</dd></div>
   </dl>
 </div>
-{{else}}<p class="muted">No subscription limits reported.</p>{{end}}
+{{end}}
 {{end}}
 
 {{define "usage_accounts"}}
@@ -193,7 +207,7 @@
       </details>
       {{end}}
       {{if eq $a.AuthMode "subscription"}}
-      {{template "usage_windows" $card}}
+      {{template "usage_subscription_windows" $card}}
       {{if $a.Collector}}
       <details class="usage-window">
         <summary>Collector · {{$p.CollectorStatus $a.Collector.Status}}</summary>
@@ -220,6 +234,8 @@
         {{end}}
       </details>
       {{end}}
+      {{else if and (eq $a.AuthMode "api") $a.CustomEndpoint}}
+      {{template "usage_upstream_windows" $card.Windows}}
       {{end}}
     </article>
   {{else}}<p class="muted">No account observations match these filters.</p>{{end}}
@@ -319,6 +335,20 @@
       </dl>
       {{if $p.ClaudeSilent .}}{{if $p.ExporterAbsentOn .WorkerID}}<p class="help">Tokens, cost and model need the Claude Code exporter: run <code>{{$p.ExporterCommand}}</code> on {{$p.WorkerName .WorkerID}}, then restart the Claude sessions.</p>{{else if $p.NeedsRestart .}}<p class="help">This Claude session started before the exporter was installed: restart it to start reporting.</p>{{else}}<p class="help">Tokens, cost and model appear once this Claude session reports.</p>{{end}}{{else if and (eq .Harness "codex") (not .InputTokens) (not .OutputTokens)}}<p class="help">Codex session tokens are not collected yet.</p>{{end}}
       {{template "usage_counters" ($p.Counters .UsageCounters)}}
+      {{with .LastResponseUsage}}
+      <details class="usage-window">
+        <summary>Latest response tokens</summary>
+        <dl class="usage-facts">
+          <div><dt>Uncached input</dt><dd>{{$p.Number .InputTokens}}</dd></div>
+          <div><dt>Output</dt><dd>{{$p.Number .OutputTokens}}</dd></div>
+          <div><dt>Cache read</dt><dd>{{$p.Number .CacheReadTokens}}</dd></div>
+          <div><dt>Cache write</dt><dd>{{$p.Number .CacheWriteTokens}}</dd></div>
+        </dl>
+      </details>
+      {{end}}
+      {{if and (eq .AuthMode "api") .CustomEndpoint .Windows}}
+      {{template "usage_upstream_windows" ($p.WindowViews .Windows .ObservedAt)}}
+      {{end}}
       {{if .Models}}
       <details class="usage-window">
         <summary>Usage by model</summary>

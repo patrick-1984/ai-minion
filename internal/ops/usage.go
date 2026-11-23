@@ -111,11 +111,23 @@ type UsageSpendBudget struct {
 	LimitUSD         *float64 `json:"limit_usd"`
 }
 
+// UsageResponseTokens contains token counts for one native API response.
+// InputTokens excludes the cache reads and writes reported separately here.
+type UsageResponseTokens struct {
+	InputTokens      *int64 `json:"input_tokens"`
+	OutputTokens     *int64 `json:"output_tokens"`
+	CacheReadTokens  *int64 `json:"cache_read_tokens"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens"`
+}
+
 type UsageSession struct {
-	GatewaySpend *UsageSpendBudget `json:"gateway_spend,omitempty"`
-	TimeSource   string            `json:"time_source,omitempty"`
-	NativeID     string            `json:"native_id,omitempty"`
-	Models       []UsageModel      `json:"models,omitempty"`
+	GatewaySpend      *UsageSpendBudget    `json:"gateway_spend,omitempty"`
+	LastResponseUsage *UsageResponseTokens `json:"last_response_usage,omitempty"`
+	// Windows are the upstream limits observed by a custom endpoint session.
+	Windows    []UsageWindow `json:"windows,omitempty"`
+	TimeSource string        `json:"time_source,omitempty"`
+	NativeID   string        `json:"native_id,omitempty"`
+	Models     []UsageModel  `json:"models,omitempty"`
 
 	ID        string `json:"id"` // opaque identity of this session incarnation on this Worker
 	Name      string `json:"name"`
@@ -322,6 +334,21 @@ func (r UsageReport) Check(now time.Time) error {
 				}
 			}
 		}
+		if len(s.Windows) > 0 {
+			if s.AuthMode != "api" || !s.CustomEndpoint {
+				return invalid("windows", "session limits require a custom endpoint")
+			}
+			if err := checkUsageWindows(s.Windows); err != nil {
+				return err
+			}
+		}
+		if v := s.LastResponseUsage; v != nil {
+			for _, n := range []*int64{v.InputTokens, v.OutputTokens, v.CacheReadTokens, v.CacheWriteTokens} {
+				if n != nil && *n < 0 {
+					return invalid("last_response_usage", "invalid token count")
+				}
+			}
+		}
 		if s.StartedAt != nil && !usageTime(*s.StartedAt, s.ObservedAt) ||
 			s.StoppedAt != nil && (!usageTime(*s.StoppedAt, s.ObservedAt) ||
 				s.StartedAt != nil && *s.StoppedAt < *s.StartedAt) {
@@ -380,8 +407,7 @@ func (a UsageAccount) check(observedAt int64) error {
 		a.Source == "" ||
 		!usageText(a.Source, 64) ||
 		!usageTime(a.ObservedAt, observedAt) ||
-		len(a.Windows) > 32 ||
-		a.AuthMode != "subscription" && len(a.Windows) > 0 {
+		len(a.Windows) > 0 && a.AuthMode != "subscription" && (a.AuthMode != "api" || !a.CustomEndpoint) {
 		return invalid("accounts", "invalid account metadata")
 	}
 	if a.EndpointOrigin != "" || a.KeyHint != "" {
@@ -389,8 +415,15 @@ func (a UsageAccount) check(observedAt int64) error {
 			return invalid("accounts", "invalid API identity display")
 		}
 	}
+	return checkUsageWindows(a.Windows)
+}
+
+func checkUsageWindows(windows []UsageWindow) error {
+	if len(windows) > 32 {
+		return invalid("windows", "too many usage windows")
+	}
 	windowKeys := map[string]bool{}
-	for _, w := range a.Windows {
+	for _, w := range windows {
 		key := w.Scope + "\x00" + w.Period + "\x00" + w.Unit
 		if w.DurationMS != nil {
 			key += "\x00" + strconv.FormatInt(*w.DurationMS, 10)

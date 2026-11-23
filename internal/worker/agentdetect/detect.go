@@ -369,6 +369,15 @@ func (d *Detector) matchStrict(args []string) *Agent {
 	return nil
 }
 
+// ProcessHarness identifies the harness running in argv itself, excluding
+// wrappers that only mention a harness in their arguments.
+func ProcessHarness(args []string) string {
+	if a := defaultDetector.matchStrict(args); a != nil {
+		return a.Name
+	}
+	return ""
+}
+
 func (d *Detector) agentResult(a *Agent, scr ops.Screen) Result {
 	state, choices := screenState(a, scr)
 	return Result{Kind: ops.PaneKindAgentPrefix + a.Name, State: state, Choices: choices}

@@ -21,7 +21,7 @@ func TestUsageSummaryDeduplicationAndCoverage(t *testing.T) {
 		t.Fatalf("summary: %+v", got)
 	}
 	g := got.Groups[0]
-	if g.Known != 1 || g.Stale != 1 || g.Unknown != 1 || g.MeanUsedPercent == nil || *g.MeanUsedPercent != 50 {
+	if g.Known != 1 || g.Stale != 1 || g.Unknown != 0 || g.MeanUsedPercent == nil || *g.MeanUsedPercent != 50 {
 		t.Fatalf("coverage: %+v", g)
 	}
 	if p := w.Pace(now); p != "on_pace" {

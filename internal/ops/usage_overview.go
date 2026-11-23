@@ -40,18 +40,23 @@ func summarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 		duration                      int64
 	}
 	type group struct {
-		row UsageWindowGroup
-		sum float64
+		row          UsageWindowGroup
+		sum          float64
+		freshPresent int
 	}
 	groups := map[key]*group{}
-	totals := map[string]int{}
+	unknownAccounts := map[string]int{}
+	nowMS := now.UnixMilli()
 	out := UsageOverview{Groups: []UsageWindowGroup{}}
 	for _, a := range latest {
 		if a.AuthMode != "subscription" {
 			continue
 		}
 		out.Accounts++
-		totals[a.Provider]++
+		stale := nowMS-a.ObservedAt > UsageMeterMaxAge.Milliseconds()
+		if stale || a.Source == "native-account" && len(a.Windows) == 0 {
+			unknownAccounts[a.Provider]++
+		}
 		if len(a.Windows) == 0 {
 			out.WithoutWindows++
 		}
@@ -65,10 +70,13 @@ func summarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 				g = &group{row: UsageWindowGroup{Provider: a.Provider, Scope: w.Scope, Period: w.Period, Unit: w.Unit, DurationMS: w.DurationMS}}
 				groups[k] = g
 			}
+			if !stale {
+				g.freshPresent++
+			}
 			if w.UsedPercent == nil {
 				continue
 			}
-			if now.Sub(time.UnixMilli(a.ObservedAt)) > 15*time.Minute || w.ResetsAt != nil && *w.ResetsAt <= now.UnixMilli() {
+			if stale || w.ResetsAt != nil && *w.ResetsAt <= nowMS {
 				g.row.Stale++
 				continue
 			}
@@ -81,7 +89,8 @@ func summarizeUsage(rows []UsageAccountRow, now time.Time) UsageOverview {
 			mean := g.sum / float64(g.row.Known)
 			g.row.MeanUsedPercent = &mean
 		}
-		g.row.Unknown = totals[g.row.Provider] - g.row.Known - g.row.Stale
+		// Discovery and old reports cannot establish which windows apply.
+		g.row.Unknown = unknownAccounts[g.row.Provider] + g.freshPresent - g.row.Known - g.row.Stale
 		out.Groups = append(out.Groups, g.row)
 	}
 	slices.SortFunc(out.Groups, func(a, b UsageWindowGroup) int {
