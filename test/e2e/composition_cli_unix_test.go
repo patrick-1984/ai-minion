@@ -122,7 +122,7 @@ func startMinionWorker(t *testing.T, hubURL, stateDir, keyFile string, extraEnv 
 	}
 	w := &minionWorker{done: make(chan error, 1)}
 	w.cmd = exec.Command(bin, args...)
-	w.cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_RUNTIME_DIR=" + rt,
+	w.cmd.Env = append([]string{"PATH=" + workerPath(t), "HOME=" + home, "XDG_RUNTIME_DIR=" + rt,
 		"XDG_STATE_HOME=" + filepath.Join(home, "state"), "XDG_CONFIG_HOME=" + filepath.Join(home, "config")}, extraEnv...)
 	w.cmd.Stdout, w.cmd.Stderr = &w.out, &w.out
 	if err := w.cmd.Start(); err != nil {

@@ -36,6 +36,7 @@ import (
 // sessions.
 type controller struct {
 	stateDir, pathPrefix string
+	path                 string // the Worker's PATH without host harnesses
 	wid                  string
 	rt                   string
 	home                 string
@@ -69,7 +70,7 @@ func startControllerWith(t *testing.T, ph *shareHub, ownerID, name, share, pathP
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	c := &controller{stateDir: state, pathPrefix: pathPrefix, wid: store.NewID(), home: t.TempDir(), panes: map[string]string{}}
+	c := &controller{stateDir: state, pathPrefix: pathPrefix, path: workerPath(t), wid: store.NewID(), home: t.TempDir(), panes: map[string]string{}}
 	if err := ph.st.InsertWorker(context.Background(), nil, store.WorkerRow{ID: c.wid, Pub: key.Public(), Name: name, OwnerID: ownerID,
 		Kind: store.WorkerKindPrivate, CreatedAt: time.Now().UnixMilli()}); err != nil {
 		t.Fatal(err)
@@ -111,7 +112,7 @@ func startControllerWith(t *testing.T, ph *shareHub, ownerID, name, share, pathP
 // env is the environment of a process on W1's host: no Hub URL, no inherited
 // MINION_* or TMUX, and $TMUX_PANE when pane is not empty.
 func (c *controller) env(pane string) []string {
-	path := os.Getenv("PATH")
+	path := c.path
 	if c.pathPrefix != "" {
 		path = c.pathPrefix + string(os.PathListSeparator) + path
 	}
