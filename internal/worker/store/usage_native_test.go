@@ -63,3 +63,39 @@ func TestNativeUsageRetriesAndGenerationFence(t *testing.T) {
 		t.Fatal("accepted old owner after new registration")
 	}
 }
+
+func TestNativeUsageObservedAPIAccessBeatsTheProfileSubscription(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, t.TempDir())
+	now := time.Now()
+	en := Enrollment{HubPub: pubKey(5), WorkerID: "worker", Owner: "test"}
+	if err := s.SaveEnrollment(ctx, en); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AcceptUsageRegistration(ctx, en.HubPub, en.WorkerID, en.Owner); err != nil {
+		t.Fatal(err)
+	}
+	subID := ops.UsageID("subscription", "profile")
+	id := ops.UsageID("native", "api-session")
+	row := ops.UsageSession{ID: id, NativeID: id, Name: "tty", Provider: "Anthropic", AccountID: subID, AuthMode: "subscription", Source: "claude-statusline", ObservedAt: now.UnixMilli()}
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Sessions: []ops.UsageSession{row},
+		Accounts: []ops.UsageAccount{{ID: subID, Provider: "Anthropic", Label: "me@example.org", AuthMode: "subscription", Source: "claude-statusline", ObservedAt: now.UnixMilli(), TimeSource: "worker_measured"}}}
+	if err := s.SaveNativeUsage(ctx, en, r, now); err != nil {
+		t.Fatal(err)
+	}
+	apiID := ops.UsageID("session-access", "Anthropic", "gw.example")
+	started := now.Add(-time.Hour).UnixMilli()
+	report := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(),
+		Sessions: []ops.UsageSession{{ID: ops.UsageID("host", "x"), Name: "tty", StartedAt: &started, Provider: "Anthropic", AuthMode: "api", Endpoint: "gw.example", AccountID: apiID}},
+		Accounts: []ops.UsageAccount{{ID: apiID, Provider: "Anthropic", AuthMode: "api", Label: "API keys at gw.example (not told apart)"}}}
+	if err := s.NativeUsage(ctx, &report, 0); err != nil {
+		t.Fatal(err)
+	}
+	got := report.Sessions[0]
+	if got.AuthMode != "api" || got.Endpoint != "gw.example" || got.AccountID != apiID {
+		t.Fatalf("session relabelled as the subscription: %+v", got)
+	}
+	if len(report.Accounts) != 1 || report.Accounts[0].ID != apiID {
+		t.Fatalf("subscription account attributed to the API session: %+v", report.Accounts)
+	}
+}

@@ -39,6 +39,21 @@ var (
 	errClaudeNotAccepted = errors.New("review and accept monitoring with minion worker config usage --accept before installing the Claude Code integration")
 )
 
+var (
+	errClaudeSettingsChanged = errors.New("the Claude Code settings changed while they were being edited; nothing was overwritten, run the command again")
+	errClaudeManaged         = errors.New("managed Claude Code settings control hooks or the status line on this machine; the file was left intact")
+)
+
+// retryOnSettingsChange runs op and, when a concurrent save of the settings
+// made it back off, runs it once more on the fresh file.
+func retryOnSettingsChange(op func() (bool, error)) (bool, error) {
+	changed, err := op()
+	if errors.Is(err, errClaudeSettingsChanged) {
+		changed, err = op()
+	}
+	return changed, err
+}
+
 var errClaudeHooksDisabled = errors.New("this Claude Code profile has disabled hooks; the file was left intact")
 
 type claudeUsageIntegration struct {
@@ -51,6 +66,7 @@ type claudeUsageIntegration struct {
 	PreviousLine string `json:"previous_status_line,omitempty"`
 	Account      string `json:"account,omitempty"`
 	Plan         string `json:"plan,omitempty"`
+	Label        string `json:"label,omitempty"`
 	Profile      string `json:"subscription_profile,omitempty"`
 }
 
@@ -190,6 +206,16 @@ func (m claudeUsageIntegration) args(action, manifest string) []string {
 	return []string{"worker", "config", "usage", "integrate", claudeUsageMarker, action, manifest}
 }
 
+// owns reports whether rule is exactly the hook Minion generates for event.
+func (m claudeUsageIntegration) owns(rule claudeUsageHook, event, matcher, manifest string) bool {
+	return slices.Contains(claudeUsageEvents, event) && matcher == "" && rule.Type == "command" &&
+		rule.Command == m.Binary && slices.Equal(rule.Args, m.args(event, manifest)) && rule.Async == (event != "SessionEnd")
+}
+
+func validClaudeUsageLabel(s string) bool {
+	return s != "" && len(s) <= 254 && strings.IndexFunc(s, unicode.IsControl) < 0
+}
+
 func (m claudeUsageIntegration) statusCommand(manifest string) string {
 	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 	prefix := ""
@@ -207,6 +233,14 @@ func (m claudeUsageIntegration) statusCommand(manifest string) string {
 
 func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageIntegration,
 	discover func(context.Context, string) (ops.UsageAccount, bool)) (bool, error) {
+	return retryOnSettingsChange(func() (bool, error) { return installClaudeUsageOnce(ctx, dir, desired, discover) })
+}
+
+func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsageIntegration,
+	discover func(context.Context, string) (ops.UsageAccount, bool)) (bool, error) {
+	if agent.ClaudeManagedOverrides(agent.ClaudeManagedSettingsFile) {
+		return false, errClaudeManaged
+	}
 	st, err := store.OpenContext(ctx, desired.StateDir)
 	if err != nil {
 		return false, err
@@ -255,16 +289,24 @@ func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageInte
 		if a, ok := discover(ctx, dir); ok && a.Provider == "Anthropic" && a.AuthMode == "subscription" &&
 			validateClaudeUsageAttribution(a.ID, "") == nil {
 			desired.Account = a.ID
+			if validClaudeUsageLabel(a.Label) {
+				desired.Label = a.Label
+			}
 			if len(a.Plan) <= 64 && strings.IndexFunc(a.Plan, unicode.IsControl) < 0 {
 				desired.Plan = a.Plan
 			}
 		}
 	}
+	var newLabel string
 	if prior != nil {
 		desired.PreviousLine = prior.PreviousLine
 		// Account plan changes are informational; do not rewrite the profile
 		// or treat them as explicit authorization for a different account.
 		desired.Plan = prior.Plan
+		// The login label is informational too; an older manifest gets it
+		// once discovery knows it.
+		newLabel = desired.Label
+		desired.Label = prior.Label
 		if desired != *prior {
 			return false, errors.New("this Claude Code profile is bound to a different Minion setup; remove its existing integration before rebinding")
 		}
@@ -299,8 +341,22 @@ func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageInte
 		}
 		changed = true
 	}
-	if !changed {
+	relabel := prior != nil && prior.Label == "" && newLabel != ""
+	if !changed && !relabel {
 		return false, nil
+	}
+	if relabel {
+		desired.Label = newLabel
+		raw, err := json.Marshal(desired)
+		if err != nil || len(raw)+1 > maxClaudeSettings {
+			return false, errors.New("the Claude Code usage manifest would exceed the supported file size")
+		}
+		if err := identity.WritePrivate(manifest, append(raw, '\n')); err != nil {
+			return false, fmt.Errorf("save the Claude Code usage manifest: %w", err)
+		}
+		if !changed {
+			return true, nil
+		}
 	}
 	next, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil || len(next)+1 > maxClaudeSettings {
@@ -308,9 +364,15 @@ func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageInte
 	}
 
 	// Check for a non-Minion writer before replacing the profile settings.
-	current, err := readClaudeUsageFile(path, false)
-	if err != nil || !bytes.Equal(current, settingsRaw) {
-		return false, errors.New("run the integration again because the Claude Code settings changed during setup")
+	unchanged := func() error {
+		current, err := readClaudeUsageFile(path, false)
+		if err != nil || !bytes.Equal(current, settingsRaw) {
+			return errClaudeSettingsChanged
+		}
+		return nil
+	}
+	if err := unchanged(); err != nil {
+		return false, err
 	}
 	if prior == nil {
 		raw, err := json.Marshal(desired)
@@ -321,7 +383,10 @@ func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageInte
 			return false, fmt.Errorf("save the Claude Code usage manifest: %w", err)
 		}
 	}
-	if err := identity.WritePrivate(path, append(next, '\n')); err != nil {
+	if err := identity.WritePrivateIf(path, append(next, '\n'), unchanged); err != nil {
+		if errors.Is(err, errClaudeSettingsChanged) {
+			return false, err
+		}
 		// A manifest written first is safe to retry with the same settings.
 		return false, fmt.Errorf("save Claude Code settings: %w", err)
 	}
@@ -334,6 +399,10 @@ func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageInte
 // a partial run, because the settings are saved before the manifest is deleted.
 // A status line that is no longer Minion's own is left as the user set it.
 func removeClaudeUsage(ctx context.Context, dir string) (bool, error) {
+	return retryOnSettingsChange(func() (bool, error) { return removeClaudeUsageOnce(ctx, dir) })
+}
+
+func removeClaudeUsageOnce(ctx context.Context, dir string) (bool, error) {
 	path := filepath.Join(dir, "settings.json")
 	manifest := filepath.Join(dir, claudeUsageManifest)
 	if _, err := os.Lstat(manifest); errors.Is(err, os.ErrNotExist) {
@@ -357,7 +426,7 @@ func removeClaudeUsage(ctx context.Context, dir string) (bool, error) {
 		if err != nil {
 			return false, errors.New("expected a JSON object with unique keys for Claude Code settings")
 		}
-		changed, err := stripClaudeUsageHooks(settings)
+		changed, err := stripClaudeUsageHooks(settings, *prior, manifest)
 		if err != nil {
 			return false, err
 		}
@@ -382,11 +451,20 @@ func removeClaudeUsage(ctx context.Context, dir string) (bool, error) {
 			if err != nil {
 				return false, err
 			}
-			current, err := readClaudeUsageFile(path, false)
-			if err != nil || !bytes.Equal(current, settingsRaw) {
-				return false, errors.New("run the removal again because the Claude Code settings changed during it")
+			unchanged := func() error {
+				current, err := readClaudeUsageFile(path, false)
+				if err != nil || !bytes.Equal(current, settingsRaw) {
+					return errClaudeSettingsChanged
+				}
+				return nil
 			}
-			if err := identity.WritePrivate(path, append(next, '\n')); err != nil {
+			if err := unchanged(); err != nil {
+				return false, err
+			}
+			if err := identity.WritePrivateIf(path, append(next, '\n'), unchanged); err != nil {
+				if errors.Is(err, errClaudeSettingsChanged) {
+					return false, err
+				}
 				return false, fmt.Errorf("save Claude Code settings: %w", err)
 			}
 		}
@@ -397,9 +475,12 @@ func removeClaudeUsage(ctx context.Context, dir string) (bool, error) {
 	return true, nil
 }
 
-// stripClaudeUsageHooks deletes every Minion hook and any group, event or hooks
-// object that this leaves empty. Hooks of other tools are kept untouched.
-func stripClaudeUsageHooks(settings map[string]json.RawMessage) (bool, error) {
+// stripClaudeUsageHooks deletes the hooks Minion generated for this manifest
+// (the exact command, arguments and async flag of each event, in a group
+// without a matcher) and any group, event or hooks object that this leaves
+// empty. Every other hook is kept untouched, also one that mentions the
+// exporter.
+func stripClaudeUsageHooks(settings map[string]json.RawMessage, m claudeUsageIntegration, manifest string) (bool, error) {
 	raw, exists := settings["hooks"]
 	if !exists {
 		return false, nil
@@ -422,9 +503,11 @@ func stripClaudeUsageHooks(settings map[string]json.RawMessage) (bool, error) {
 				return false, errors.New("an existing Claude Code hook group has an unsupported format")
 			}
 			left := make([]json.RawMessage, 0, len(rules))
+			var matcher string
+			_ = json.Unmarshal(group["matcher"], &matcher)
 			for _, r := range rules {
 				var rule claudeUsageHook
-				if json.Unmarshal(r, &rule) == nil && (slices.Contains(rule.Args, claudeUsageMarker) || strings.Contains(rule.Command, claudeUsageMarker)) {
+				if json.Unmarshal(r, &rule) == nil && m.owns(rule, event, matcher, manifest) {
 					eventChanged = true
 					continue
 				}
@@ -613,7 +696,7 @@ func readClaudeUsageManifest(path string) (*claudeUsageIntegration, error) {
 	}
 	var m claudeUsageIntegration
 	if json.Unmarshal(raw, &m) != nil || m.Version != 1 || !filepath.IsAbs(m.Binary) || !filepath.IsAbs(m.StateDir) ||
-		!filepath.IsAbs(m.Shell) || len(m.Grant) != 64 || validateClaudeUsageAttribution(m.Account, m.Profile) != nil {
+		!filepath.IsAbs(m.Shell) || len(m.Grant) != 64 || validateClaudeUsageAttribution(m.Account, m.Profile) != nil || m.Label != "" && !validClaudeUsageLabel(m.Label) {
 		return nil, errors.New("the Claude Code usage manifest is invalid")
 	}
 	return &m, nil

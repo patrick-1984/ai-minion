@@ -12,9 +12,10 @@ import (
 
 // WinSource reads the process table on Windows with one PowerShell query
 // (process id, parent id and command line). Windows has no process groups or
-// controlling terminals, so every process is reported in one foreground group
-// of one terminal: the tree below the pane's shell is the evidence. Without
-// it a pane running claude.exe or node under a shell stayed kind "other".
+// controlling terminals, so the foreground process cannot be told: every
+// process is marked UnknownForeground. The tree below the pane's shell is
+// telemetry evidence only (usage metadata); it never authorizes input, so an
+// agent in the background below PowerShell cannot make its shell writable.
 type WinSource struct{}
 
 const winPSTimeout = 5 * time.Second
@@ -53,7 +54,7 @@ func parseWinProcs(s string) []Proc {
 		if err1 != nil || err2 != nil || pid <= 0 || len(args) == 0 {
 			continue
 		}
-		procs = append(procs, Proc{PID: pid, PPID: ppid, PGRP: 1, TPGID: 1, TTY: "conpty", Args: args})
+		procs = append(procs, Proc{PID: pid, PPID: ppid, UnknownForeground: true, Args: args})
 	}
 	return procs
 }

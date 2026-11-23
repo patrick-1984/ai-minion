@@ -17,7 +17,13 @@ import (
 // it is created with a protected owner-and-SYSTEM-only DACL supplied at
 // creation (createPrivateTemp), so there is no window in which another
 // principal could open a handle under the directory's inherited ACL.
-func WritePrivate(path string, data []byte) error {
+func WritePrivate(path string, data []byte) error { return WritePrivateIf(path, data, nil) }
+
+// WritePrivateIf is WritePrivate that calls check after the new content is
+// staged and synced, immediately before it replaces path. A check error
+// abandons the write and leaves path untouched; it narrows the window in
+// which a concurrent writer of the same file could be overwritten.
+func WritePrivateIf(path string, data []byte, check func() error) error {
 	dir := filepath.Dir(path)
 	tmp, err := createPrivateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -38,6 +44,12 @@ func WritePrivate(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return err
+	}
+	if check != nil {
+		if err := check(); err != nil {
+			_ = os.Remove(tmpName)
+			return err
+		}
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)

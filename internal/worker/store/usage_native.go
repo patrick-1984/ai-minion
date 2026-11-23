@@ -151,6 +151,15 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		if n.Version == "" {
 			n.Version = base.Version
 		}
+		// The access read from the session's own process wins over a profile
+		// default: a session that uses an API key or a custom endpoint is not
+		// the profile's subscription, whatever the status line (which knows
+		// only the profile's login) says. The subscription account of that
+		// observation is dropped with it.
+		conflict := base.AuthMode == "api" && n.AuthMode == "subscription"
+		if conflict {
+			n.AuthMode, n.Endpoint, n.AccountID, n.Provider = base.AuthMode, base.Endpoint, base.AccountID, base.Provider
+		}
 		if n.AuthMode == "unknown" || n.AuthMode == "" {
 			// The native document names no credential; keep the access kind
 			// the Worker read from the session's own process.
@@ -166,7 +175,7 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		n.StartedAt = base.StartedAt
 		report.Sessions[idx] = n
 		known[n.NativeID] = base.ID
-		if account.Valid {
+		if account.Valid && !conflict {
 			var a ops.UsageAccount
 			if err = json.Unmarshal([]byte(account.String), &a); err != nil {
 				break

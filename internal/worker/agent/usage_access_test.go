@@ -80,7 +80,7 @@ func TestUsageSnapshotReportsAccessWithoutSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := r.Sessions[0]
-	if s.AuthMode != "api" || s.Endpoint != "cpa.example" || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || r.Accounts[0].Label != "Custom endpoint cpa.example" {
+	if s.AuthMode != "api" || s.Endpoint != "cpa.example" || s.AccountID == "" || len(r.Accounts) != 1 || r.Accounts[0].ID != s.AccountID || r.Accounts[0].Label != "API keys at cpa.example (not told apart)" {
 		t.Fatalf("session %+v accounts %+v", s, r.Accounts)
 	}
 	if body := strings.ToLower(string(mustJSON(t, r))); strings.Contains(body, "verysecret") || strings.Contains(body, "/v1") {

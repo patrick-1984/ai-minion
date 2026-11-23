@@ -174,6 +174,9 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 	}
 	if m.Account != "" || m.Profile != "" {
 		id, label := m.Account, "Anthropic subscription"
+		if m.Label != "" {
+			label = m.Label // the verified login, not a generic name
+		}
 		if m.Profile != "" {
 			id = ops.UsageID("operator-subscription-profile", hex.EncodeToString(enrollment.HubPub), opts.Provider, m.Profile)
 			label = m.Profile

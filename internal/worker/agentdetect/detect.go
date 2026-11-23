@@ -91,6 +91,11 @@ type Proc struct {
 	// code (R, S, D, T, t, Z, ...). Empty means unknown, treated as running.
 	State string
 	Args  []string // argv, or the command line split on whitespace
+	// UnknownForeground marks a process of a platform that cannot tell the
+	// foreground process of a terminal (Windows). Such a process may be a
+	// descendant of the pane, but it never counts as the recipient of the
+	// pane's input.
+	UnknownForeground bool
 }
 
 // Foreground reports whether the process is in the foreground process group
@@ -192,17 +197,32 @@ const (
 // "unknown" when the process table is unavailable. For every other kind it
 // is "unknown".
 func (d *Detector) Classify(ctx context.Context, in Input) Result {
-	r, _ := d.Locate(ctx, in)
+	r, _ := d.locate(ctx, in, false)
 	return r
 }
 
 // Locate is Classify that also returns the pid of the agent process when the
 // pane runs one: the pane's own process when the current command is the agent,
-// else the matching process of the tree. It is zero for any other pane.
+// else the matching process of the tree. It is zero for any other pane, and
+// also when the agent's own process cannot be verified in the process table
+// (the pane's PID is usually the shell, never the agent's).
+//
+// Locate serves telemetry only (usage metadata): where the platform cannot
+// name the foreground process (Windows), it also accepts an agent below the
+// pane's shell, which Classify never does, so a background agent cannot make
+// the shell look like an agent pane.
 func (d *Detector) Locate(ctx context.Context, in Input) (Result, int) {
+	return d.locate(ctx, in, true)
+}
+
+func (d *Detector) locate(ctx context.Context, in Input, telemetry bool) (Result, int) {
 	cmd := progName(in.Command)
 	if a := d.matchProgram(cmd); a != nil {
-		return d.agentResult(a, in.Screen), in.PID
+		pid := 0
+		if telemetry {
+			pid = d.agentPID(ctx, in.PID, a)
+		}
+		return d.agentResult(a, in.Screen), pid
 	}
 
 	var (
@@ -217,7 +237,7 @@ func (d *Detector) Locate(ctx context.Context, in Input) (Result, int) {
 		}
 	}
 	for _, p := range tree {
-		if !p.Running() || !inPaneForeground(tree[0], p) {
+		if !p.Running() || (!inPaneForeground(tree[0], p) && (!telemetry || !p.UnknownForeground)) {
 			continue
 		}
 		if a := d.matchArgs(p.Args); a != nil {
@@ -240,6 +260,29 @@ func (d *Detector) Locate(ctx context.Context, in Input) (Result, int) {
 	default:
 		return Result{Kind: ops.PaneKindOther, State: ops.PaneStateUnknown}, 0
 	}
+}
+
+// agentPID finds the process of agent a in the tree of the pane process root:
+// the one that receives the pane's input, or (telemetry) one whose foreground
+// state the platform cannot tell. Zero when none is verified.
+func (d *Detector) agentPID(ctx context.Context, root int, a *Agent) int {
+	if root <= 0 || d.procs == nil {
+		return 0
+	}
+	all, err := d.procs.Processes(ctx)
+	if err != nil {
+		return 0
+	}
+	tree := descendants(all, root)
+	for _, p := range tree {
+		if !p.Running() || (!inPaneForeground(tree[0], p) && !p.UnknownForeground) {
+			continue
+		}
+		if m := d.matchArgs(p.Args); m != nil && m.Name == a.Name {
+			return p.PID
+		}
+	}
+	return 0
 }
 
 func (d *Detector) agentResult(a *Agent, scr ops.Screen) Result {
