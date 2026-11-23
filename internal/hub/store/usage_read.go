@@ -289,7 +289,38 @@ page:
 			out.Workers = append(out.Workers, row)
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	if args.Section == "accounts" {
+		_ = rows.Close()
+		err = s.addAccountTotals(ctx, visible, out.Accounts)
+	}
+	return out, err
+}
+
+// addAccountTotals sums the sessions of every API-key and custom-endpoint
+// account in the page, over the same visible Workers and retained sessions that
+// the Sessions view lists. Subscription accounts report limits instead.
+func (s *Store) addAccountTotals(ctx context.Context, visible string, accounts []ops.UsageAccountRow) error {
+	for i := range accounts {
+		a := &accounts[i]
+		if a.AuthMode != "api" {
+			continue
+		}
+		var t ops.UsageAccountTotals
+		err := s.db.QueryRowContext(ctx, `WITH visible AS (SELECT w.id FROM json_each(?) a JOIN workers w
+		 ON w.id=json_extract(a.value,'$.id') AND w.owner_id=json_extract(a.value,'$.owner_id') WHERE w.approval='approved')
+		 SELECT count(*),sum(json_extract(s.body,'$.input_tokens')),sum(json_extract(s.body,'$.output_tokens')),
+		  sum(json_extract(s.body,'$.cost_usd')),sum(json_extract(s.body,'$.estimated_cost_usd'))
+		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id WHERE json_extract(s.body,'$.account_id')=?`,
+			visible, a.ID).Scan(&t.Sessions, &t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.EstimatedCostUSD)
+		if err != nil {
+			return err
+		}
+		a.Totals = &t
+	}
+	return nil
 }
 
 // usageQuerier is the read side shared by the pool and a transaction, so one

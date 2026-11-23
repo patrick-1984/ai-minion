@@ -298,7 +298,8 @@ main() {
 		printf '%s\n' "Usage monitoring for this enrollment" \
 			"The Hub administrator and Worker owner can see usage for every session, including unshared sessions." \
 			"Reports may include session names, folders, models, account identifiers, timing, token counts, costs and usage limits." \
-			"This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage." >&2
+			"This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage." \
+			"Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off." >&2
 	fi
 	if [ "$join" = 1 ]; then
 		case $mode in

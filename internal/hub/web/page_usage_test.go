@@ -18,6 +18,7 @@ func usagePageFixtures() *fakeOps {
 	reset := now.Add(3 * time.Hour).UnixMilli()
 	percent := 47.5
 	tokens := int64(8100)
+	totalCost := 1.5
 	sessionID := ops.UsageID("session", "example")
 	build := ops.WorkerInfo{ID: "build", Name: "Build workstation", Owner: "alice", Online: true}
 	laptop := ops.WorkerInfo{ID: "laptop", Name: "Travel laptop", Owner: "bob"}
@@ -56,7 +57,7 @@ func usagePageFixtures() *fakeOps {
 			}},
 			{WorkerID: build.ID, UsageAccount: ops.UsageAccount{
 				ID: ops.UsageID("account", "api"), Provider: "DeepSeek", Label: "key-prefix\u20263492ba", AuthMode: "api", Source: "native-event", ObservedAt: at,
-			}},
+			}, Totals: &ops.UsageAccountTotals{Sessions: 2, InputTokens: &tokens, CostUSD: &totalCost}},
 		},
 		Events: []ops.UsageEventRow{
 			{WorkerID: build.ID, UsageEvent: ops.UsageEvent{SessionID: sessionID, Kind: "subagent_finished", Source: "fixture", ObservedAt: at}},
@@ -92,7 +93,7 @@ func TestUsageViewsShowDisclosedFixtures(t *testing.T) {
 		want []string
 	}{
 		{"overview", []string{"47.5%", "Ahead of pace", "40.0%", "118.8%", "No subscription limits reported.", "1 fresh", "Stale", "requests"}},
-		{"accounts", []string{"API credential", "DeepSeek", "Save collector", "passive session", "Next eligible query", "Display name and order", `value="20"`}},
+		{"accounts", []string{"API credential", "DeepSeek", "Save collector", "passive session", "Next eligible query", "Display name and order", `value="20"`, "Totals · 2 sessions", "$1.5000", "ended in the last 90 days"}},
 		{"sessions", []string{"release-validation-on-build-workstation", "8100", "Unknown", "Move selected rows", "Move all from Worker"}},
 		{"workers", []string{"Scan installed harnesses", "Claude Code", "Gemini CLI", "Anthropic · Subscription · Configured", "Last harness scan", "Monitoring acceptance required", `data-online="false">Offline`}},
 		{"buckets", []string{"Release validation", "Your token buckets"}},

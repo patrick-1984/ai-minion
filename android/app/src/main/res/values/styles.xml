@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">Minion Worker</string>
-    <string name="usage_enrollment_disclosure">When this Hub supports usage monitoring, its administrator and this Worker’s owner can see usage for every session, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, usage limits and collection diagnostics. This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage.</string>
+    <string name="usage_enrollment_disclosure">When this Hub supports usage monitoring, its administrator and this Worker’s owner can see usage for every session, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, usage limits and collection diagnostics. This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage. Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off.</string>
     <string name="accept_usage_enrollment">I accept usage monitoring for this enrollment</string>
     <string name="usage_enrollment_required">Accept usage monitoring to continue.</string>
     <style name="MinionTheme" parent="android:style/Theme.Material.NoActionBar">

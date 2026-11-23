@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
@@ -370,4 +372,71 @@ func TestUsageIntegrateClaudeGeneratedHookRoutesOnlyToSelectedProfile(t *testing
 	count(0)
 	run(profile)
 	count(1)
+}
+
+func TestUsageIntegrateClaudeRemoveRestoresPreviousStatusLineAndIsIdempotent(t *testing.T) {
+	st, _ := claudeFixtureEnrollment(t, true)
+	deps := testConfigDeps(nil)
+	cases := map[string]string{
+		"previous line": `{"statusLine":{"type":"command","command":"my-line","padding":7},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"keep-stop"}]}],"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"keep-post"}]}]},"autoUpdatesChannel":"latest"}`,
+		"no line":       `{"permissions":{"deny":["Bash(rm *)"]}}`,
+	}
+	for name, settings := range cases {
+		t.Run(name, func(t *testing.T) {
+			target := t.TempDir()
+			path := filepath.Join(target, "settings.json")
+			mustWrite(t, path, []byte(settings))
+			args := []string{"usage", "integrate", "claude", "--claude-config-dir", target}
+			if _, _, err := configCmd(t, deps, st.Dir(), args...); err != nil {
+				t.Fatal(err)
+			}
+			out, _, err := configCmd(t, deps, st.Dir(), append(args, "--remove")...)
+			if err != nil || !strings.Contains(out, "usage_claude_exporter off") {
+				t.Fatalf("remove: %q %v", out, err)
+			}
+			raw := readClaudeFixture(t, target, "settings.json")
+			if bytes.Contains(raw, []byte(claudeUsageMarker)) {
+				t.Fatalf("Minion entries remain: %s", raw)
+			}
+			if _, err := os.Stat(filepath.Join(target, claudeUsageManifest)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("manifest remains: %v", err)
+			}
+			var want, got map[string]any
+			if json.Unmarshal([]byte(settings), &want) != nil || json.Unmarshal(raw, &got) != nil || !reflect.DeepEqual(want, got) {
+				t.Fatalf("settings not restored:\nwant %s\n got %s", settings, raw)
+			}
+			out, _, err = configCmd(t, deps, st.Dir(), append(args, "--remove")...)
+			if err != nil || !strings.Contains(out, "nothing to remove") || !bytes.Equal(raw, readClaudeFixture(t, target, "settings.json")) {
+				t.Fatalf("second remove: %q %v", out, err)
+			}
+		})
+	}
+}
+
+func TestUsageIntegrateClaudeRemoveLeavesAChangedStatusLineAndOptOutStaysRemoved(t *testing.T) {
+	home, state, res := autoInstallFixture(t, true, nil)
+	profile := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(profile, "settings.json"), []byte(`{}`))
+	none := func(string) (string, bool) { return "", false }
+	autoInstallClaudeExporter(context.Background(), res, state, none)
+	raw := readClaudeFixture(t, profile, "settings.json")
+	raw = bytes.Replace(raw, []byte(`"command": "'`), []byte(`"command": "user-changed '`), 1)
+	mustWrite(t, filepath.Join(profile, "settings.json"), raw)
+	if changed, err := removeClaudeUsage(context.Background(), profile); err != nil || !changed {
+		t.Fatalf("remove: %v %v", changed, err)
+	}
+	if got := readClaudeFixture(t, profile, "settings.json"); !bytes.Contains(got, []byte("user-changed")) || bytes.Contains(got, []byte(`"hooks"`)) {
+		t.Fatalf("a changed status line must stay and hooks go: %s", got)
+	}
+	// With the setting off the auto-installer does not add it back.
+	off := &config.Resolver{Role: config.ScopeWorker, LookupEnv: func(k string) (string, bool) {
+		return "off", k == "MINION_USAGE_CLAUDE_EXPORTER"
+	}}
+	autoInstallClaudeExporter(context.Background(), off, state, none)
+	if _, err := os.Stat(filepath.Join(profile, claudeUsageManifest)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("auto-install re-added the integration while off: %v", err)
+	}
 }

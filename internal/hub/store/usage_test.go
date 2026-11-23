@@ -344,3 +344,45 @@ func TestUsageRetentionDrainsBusyMinuteInBoundedBatches(t *testing.T) {
 		t.Fatalf("events after retention: %d, %v", n, err)
 	}
 }
+
+func TestUsageAccountsTotalsSumApiKeySessionsOnly(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	api := ops.UsageAccount{ID: ops.UsageID("account", "api", "k1"), Provider: "Anthropic", AuthMode: "api", ObservedAt: now.UnixMilli(), Source: "test"}
+	sub := ops.UsageAccount{ID: ops.UsageID("account", "subscription", "s1"), Provider: "Anthropic", AuthMode: "subscription", ObservedAt: now.UnixMilli(), Source: "test"}
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true, Accounts: []ops.UsageAccount{api, sub}}
+	for i, in := range []int64{100, 250} {
+		out, cost := in/10, float64(i+1)/2
+		r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("session", "api", fmt.Sprint(i)), Name: "api", AuthMode: "api", AccountID: api.ID, ObservedAt: r.ObservedAt, Source: "test",
+			UsageCounters: ops.UsageCounters{InputTokens: &in, OutputTokens: &out, CostUSD: &cost}})
+	}
+	n := int64(7)
+	r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("session", "sub"), Name: "sub", AuthMode: "subscription", AccountID: sub.ID, ObservedAt: r.ObservedAt, Source: "test", UsageCounters: ops.UsageCounters{InputTokens: &n}})
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now)
+	if err != nil || len(got.Accounts) != 2 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	for _, a := range got.Accounts {
+		switch a.AuthMode {
+		case "subscription":
+			if a.Totals != nil {
+				t.Fatalf("subscription account got totals: %+v", a.Totals)
+			}
+		case "api":
+			tt := a.Totals
+			if tt == nil || tt.Sessions != 2 || tt.InputTokens == nil || *tt.InputTokens != 350 || tt.OutputTokens == nil || *tt.OutputTokens != 35 ||
+				tt.CostUSD == nil || *tt.CostUSD != 1.5 || tt.EstimatedCostUSD != nil {
+				t.Fatalf("totals: %+v", tt)
+			}
+		}
+	}
+	// A Worker outside the caller's scope adds nothing.
+	got, err = s.ReadUsage(ctx, workers[1:], "bob", ops.UsageListArgs{Section: "accounts"}, now)
+	if err != nil || len(got.Accounts) != 0 {
+		t.Fatalf("scope: %+v %v", got, err)
+	}
+}

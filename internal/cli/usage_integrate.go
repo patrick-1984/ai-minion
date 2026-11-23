@@ -64,6 +64,7 @@ type claudeUsageHook struct {
 func newUsageIntegrateCmd(deps workerConfigDeps) *cobra.Command {
 	cmd := &cobra.Command{Use: "integrate", Short: "Install a native usage exporter for a Worker profile"}
 	var profileDir, account, profile string
+	var remove bool
 	claude := &cobra.Command{
 		Use: "claude", Short: "Enable Claude Code status-line and lifecycle usage for one local profile",
 		Args: cobra.NoArgs,
@@ -80,6 +81,17 @@ func newUsageIntegrateCmd(deps workerConfigDeps) *cobra.Command {
 				return err
 			}
 			defer ce.release()
+			if remove {
+				changed, err := removeClaudeUsage(cmd.Context(), target)
+				if err != nil {
+					return err
+				}
+				if !changed {
+					return writef(ce.out, "Claude Code usage integration is not configured in %s; nothing to remove.\n", target)
+				}
+				return writef(ce.out, "Claude Code usage integration is removed from %s and the previous status line is restored. "+
+					"The Worker installs it again while usage_claude_exporter is auto; keep it removed with: minion worker config set usage_claude_exporter off\n", target)
+			}
 			binary, err := os.Executable()
 			if err != nil {
 				return errors.New("the Minion executable path is unavailable")
@@ -104,6 +116,7 @@ func newUsageIntegrateCmd(deps workerConfigDeps) *cobra.Command {
 	}
 	addNamedSettingFlags(claude, deps.reg(), config.KeyStateDir)
 	claude.Flags().StringVar(&profileDir, "claude-config-dir", "", "Claude Code profile directory (defaults to CLAUDE_CONFIG_DIR or ~/.claude)")
+	claude.Flags().BoolVar(&remove, "remove", false, "Remove the integration from the profile and restore its previous status line")
 	claude.Flags().StringVar(&account, "account", "", "Known Anthropic subscription account fingerprint from Minion Usage")
 	claude.Flags().StringVar(&profile, "subscription-profile", "", "Explicit name shared across Workers using the same Anthropic subscription")
 	cmd.AddCommand(claude, newClaudeUsageExportCmd(deps.lookupEnv))
@@ -311,6 +324,139 @@ func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageInte
 	if err := identity.WritePrivate(path, append(next, '\n')); err != nil {
 		// A manifest written first is safe to retry with the same settings.
 		return false, fmt.Errorf("save Claude Code settings: %w", err)
+	}
+	return true, nil
+}
+
+// removeClaudeUsage undoes installClaudeUsage for one profile: it deletes the
+// Minion hooks, puts the previous status line back and deletes the manifest.
+// It is idempotent (no manifest means nothing to do) and safe to repeat after
+// a partial run, because the settings are saved before the manifest is deleted.
+// A status line that is no longer Minion's own is left as the user set it.
+func removeClaudeUsage(ctx context.Context, dir string) (bool, error) {
+	path := filepath.Join(dir, "settings.json")
+	manifest := filepath.Join(dir, claudeUsageManifest)
+	if _, err := os.Lstat(manifest); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	release, err := lockConfigFileContext(ctx, filepath.Join(dir, ".minion-usage.lock"))
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	prior, err := readClaudeUsageManifest(manifest)
+	if err != nil || prior == nil {
+		return false, err
+	}
+	settingsRaw, err := readClaudeUsageFile(path, false)
+	if err != nil {
+		return false, fmt.Errorf("read Claude Code settings: %w", err)
+	}
+	if settingsRaw != nil {
+		settings, err := claudeUsageObject(settingsRaw)
+		if err != nil {
+			return false, errors.New("expected a JSON object with unique keys for Claude Code settings")
+		}
+		changed, err := stripClaudeUsageHooks(settings)
+		if err != nil {
+			return false, err
+		}
+		status, command, err := claudeUsageStatus(settings["statusLine"])
+		if err == nil && command == prior.statusCommand(manifest) {
+			changed = true
+			if prior.PreviousLine != "" {
+				status["command"], err = json.Marshal(prior.PreviousLine)
+				if err != nil {
+					return false, err
+				}
+				settings["statusLine"], err = json.Marshal(status)
+				if err != nil {
+					return false, err
+				}
+			} else {
+				delete(settings, "statusLine")
+			}
+		}
+		if changed {
+			next, err := json.MarshalIndent(settings, "", "  ")
+			if err != nil {
+				return false, err
+			}
+			current, err := readClaudeUsageFile(path, false)
+			if err != nil || !bytes.Equal(current, settingsRaw) {
+				return false, errors.New("run the removal again because the Claude Code settings changed during it")
+			}
+			if err := identity.WritePrivate(path, append(next, '\n')); err != nil {
+				return false, fmt.Errorf("save Claude Code settings: %w", err)
+			}
+		}
+	}
+	if err := os.Remove(manifest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return true, nil
+}
+
+// stripClaudeUsageHooks deletes every Minion hook and any group, event or hooks
+// object that this leaves empty. Hooks of other tools are kept untouched.
+func stripClaudeUsageHooks(settings map[string]json.RawMessage) (bool, error) {
+	raw, exists := settings["hooks"]
+	if !exists {
+		return false, nil
+	}
+	hooks, err := claudeUsageObject(raw)
+	if err != nil {
+		return false, errors.New("expected a JSON object for the Claude Code hooks setting")
+	}
+	changed := false
+	for event, rawGroups := range hooks {
+		var groups []map[string]json.RawMessage
+		if json.Unmarshal(rawGroups, &groups) != nil {
+			return false, fmt.Errorf("expected a list for Claude Code %s hooks", event)
+		}
+		kept := make([]map[string]json.RawMessage, 0, len(groups))
+		eventChanged := false
+		for _, group := range groups {
+			var rules []json.RawMessage
+			if json.Unmarshal(group["hooks"], &rules) != nil {
+				return false, errors.New("an existing Claude Code hook group has an unsupported format")
+			}
+			left := make([]json.RawMessage, 0, len(rules))
+			for _, r := range rules {
+				var rule claudeUsageHook
+				if json.Unmarshal(r, &rule) == nil && (slices.Contains(rule.Args, claudeUsageMarker) || strings.Contains(rule.Command, claudeUsageMarker)) {
+					eventChanged = true
+					continue
+				}
+				left = append(left, r)
+			}
+			switch {
+			case len(left) == len(rules):
+				kept = append(kept, group)
+			case len(left) > 0:
+				if group["hooks"], err = json.Marshal(left); err != nil {
+					return false, err
+				}
+				kept = append(kept, group)
+			}
+		}
+		if !eventChanged {
+			continue
+		}
+		changed = true
+		if len(kept) == 0 {
+			delete(hooks, event)
+		} else if hooks[event], err = json.Marshal(kept); err != nil {
+			return false, err
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if len(hooks) == 0 {
+		delete(settings, "hooks")
+	} else if settings["hooks"], err = json.Marshal(hooks); err != nil {
+		return false, err
 	}
 	return true, nil
 }

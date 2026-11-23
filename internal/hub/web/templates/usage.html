@@ -152,6 +152,16 @@
         <div><dt>Source</dt><dd>{{$p.WorkerName $a.WorkerID}} · {{$a.Source}}</dd></div>
         {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName $a.BucketID}}</dd></div>{{end}}
       </dl>
+      {{with $a.Totals}}
+      <section class="usage-window" data-account-totals><h4>Totals · {{.Sessions}} session{{if ne .Sessions 1}}s{{end}}</h4>
+        <dl class="usage-facts">
+          <div><dt>Input tokens</dt><dd>{{$p.Number .InputTokens}}</dd></div>
+          <div><dt>Output tokens</dt><dd>{{$p.Number .OutputTokens}}</dd></div>
+          <div><dt>Reported cost</dt><dd>{{$p.Dollars .CostUSD}}</dd></div>
+          <div><dt>Estimated cost</dt><dd>{{$p.Dollars .EstimatedCostUSD}}</dd></div>
+        </dl>
+        <p class="help">The sum of this account's sessions on the Sessions tab: running sessions and those that ended in the last 90 days.</p>
+      </section>{{end}}
       {{if $p.Private}}
       <details class="usage-window">
         <summary>Display name and order</summary>

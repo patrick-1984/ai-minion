@@ -18,8 +18,12 @@ import (
 // a session. A missing counter is unknown; a pointer to zero is a known zero.
 const UsageVersion = 1
 
+// UsageExporterNotice discloses the automatic Claude Code exporter install. It is part of
+// UsageDisclosure and mirrored in the installers and the Android strings.
+const UsageExporterNotice = "Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off."
+
 // UsageDisclosure is shared by Worker registration and the Hub interface.
-const UsageDisclosure = "Your Hub administrator and Worker owner can see usage statistics for every session on this Worker, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, limits and collection diagnostics. Console sharing and control have separate permissions."
+const UsageDisclosure = "Your Hub administrator and Worker owner can see usage statistics for every session on this Worker, including unshared sessions. Reports may include session names, folders, harnesses, models, account identifiers, timing, token counts, costs, limits and collection diagnostics. Console sharing and control have separate permissions. " + UsageExporterNotice
 
 // Claude usage exporter states of a Worker's Claude profile.
 const (

@@ -252,6 +252,7 @@ assert_contains "usage acceptance still joins" "rc=$RC" "rc=0"
 assert_contains "usage disclosure covers unshared sessions" "$OUT" "including unshared sessions"
 assert_contains "usage disclosure covers folder, model and token metadata" "$OUT" "session names, folders, models, account identifiers, timing, token counts"
 assert_contains "usage disclosure grants no terminal access" "$OUT" "grants no terminal content or control access"
+assert_contains "usage disclosure names the exporter opt-out" "$OUT" "Turn it off with usage_claude_exporter=off."
 if [ "$(grep -xc -- '--accept-usage' "$JL.argv")" = 1 ] &&
 	! grep -Fq -- '--accept-usage' "$JL.prepare-argv"; then
 	ok "only the actual join receives one acceptance flag"

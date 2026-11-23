@@ -69,6 +69,20 @@ type UsageAccountRow struct {
 	UsageAccount
 	WorkerID string `json:"worker_id"` // origin of the most recent authorized observation
 	BucketID string `json:"bucket_id,omitempty"`
+	// Totals sums the sessions of an API-key or custom-endpoint account (set
+	// for no other kind): the sessions the Sessions view lists, running or
+	// ended within the retention window.
+	Totals *UsageAccountTotals `json:"totals,omitempty"`
+}
+
+// UsageAccountTotals is the sum of one account's sessions. A sum is nil when no
+// session reported that counter, so unknown stays distinct from zero.
+type UsageAccountTotals struct {
+	Sessions         int      `json:"sessions"`
+	InputTokens      *int64   `json:"input_tokens"`
+	OutputTokens     *int64   `json:"output_tokens"`
+	CostUSD          *float64 `json:"cost_usd"`
+	EstimatedCostUSD *float64 `json:"estimated_cost_usd"`
 }
 
 type UsageWorkerRow struct {
