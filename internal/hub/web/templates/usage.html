@@ -143,10 +143,9 @@
         {{if $p.Private}}<label class="usage-check"><input type="checkbox" name="member" value="{{$a.ID}}" form="usage-selected"><span>Select<span class="sr-only"> {{$a.Provider}} {{$a.Label}}</span></span></label>{{end}}
       </div>
       <dl class="usage-facts">
-        <div><dt>Access</dt><dd>{{$p.Access $a.AuthMode}}</dd></div>
+        <div><dt>Access</dt><dd>{{if $a.CustomEndpoint}}Custom endpoint{{else}}{{$p.Access $a.AuthMode}}{{end}}</dd></div>
         {{if $a.Plan}}<div><dt>Native plan</dt><dd>{{$a.Plan}}</dd></div>{{end}}
-        {{if eq $a.AuthMode "api"}}<div><dt>API endpoint origin</dt><dd>{{if $a.EndpointOrigin}}<code>{{$a.EndpointOrigin}}</code>{{else}}Undisclosed{{end}}</dd></div>
-        {{if $a.KeyHint}}<div><dt>Credential hint</dt><dd><code>{{$a.KeyHint}}</code></dd></div>{{end}}{{end}}
+        {{if and (eq $a.AuthMode "api") $a.KeyHint}}<div><dt>Credential hint</dt><dd><code>{{$a.KeyHint}}</code></dd></div>{{end}}
         <div><dt>Observation</dt><dd>{{$card.Freshness}} · {{$card.Observed}}</dd></div>
         {{with $card.StaleWhy}}<div><dt>Why stale</dt><dd>{{.}}</dd></div>{{end}}
         <div><dt>Source</dt><dd>{{$p.WorkerName $a.WorkerID}} · {{$a.Source}}</dd></div>
@@ -298,7 +297,7 @@
         <div><dt>Harness</dt><dd>{{$p.Harness .Harness}} {{.Version}}</dd></div>
         <div><dt>Provider</dt><dd>{{$p.Label .Provider}}</dd></div>
         <div><dt>Model</dt><dd>{{if .Model}}{{.Model}}{{else}}Unknown{{end}}</dd></div>
-        <div><dt>Access</dt><dd>{{if .Endpoint}}Custom endpoint · {{.Endpoint}}{{else}}{{$p.Access .AuthMode}}{{end}}</dd></div>
+        <div><dt>Access</dt><dd>{{if .CustomEndpoint}}Custom endpoint{{else}}{{$p.Access .AuthMode}}{{end}}</dd></div>
         <div><dt>Started</dt><dd>{{$p.Time .StartedAt}}</dd></div>
         <div><dt>Stopped</dt><dd>{{if .StoppedAt}}{{$p.Time .StoppedAt}}{{else}}No stop observed{{end}}</dd></div>
         <div><dt>Last seen</dt><dd>{{$p.Millis .LastSeen}}</dd></div>

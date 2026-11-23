@@ -3,6 +3,7 @@ package web
 import (
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -103,15 +104,33 @@ func TestHarnessesSaveChoiceAndScan(t *testing.T) {
 
 func TestHarnessCheckAllCountsOnlyWorkersWhoseInventoryAdvanced(t *testing.T) {
 	at := time.Date(2026, 11, 21, 14, 30, 0, 0, time.UTC).UnixMilli()
+	newer := at + 1000
+	var mu sync.Mutex
+	stored := map[string]int64{"build": at, "full": at}
 	f := harnessFixtures([]string{"claude"}).on(ops.OpWorkerUsage, func(args map[string]any) (any, error) {
+		mu.Lock()
+		defer mu.Unlock()
 		switch args["worker_id"] {
 		case "build":
-			newer := at + 1000
+			stored["build"] = newer // the Hub recorded this scan
 			return ops.UsageReport{Version: 1, InventoryAt: &newer}, nil
 		case "full":
 			return ops.UsageReport{Version: 1, InventoryAt: &at}, nil // cached
+		case "fresh":
+			// A newer background sample committed first: the Hub discarded
+			// this scan although the reply looks newer.
+			return ops.UsageReport{Version: 1, InventoryAt: &newer}, nil
 		}
 		return ops.UsageReport{Version: 1}, nil // no inventory
+	}).on(ops.OpUsageList, func(map[string]any) (any, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		var rows []ops.UsageWorkerRow
+		for _, id := range []string{"build", "full"} {
+			v := stored[id]
+			rows = append(rows, ops.UsageWorkerRow{ID: id, InventoryAt: &v, Online: true})
+		}
+		return ops.UsageListResult{Workers: rows}, nil
 	})
 	connect(t, f)
 	srv := onbUser(t)

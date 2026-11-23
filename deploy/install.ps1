@@ -47,6 +47,7 @@ param(
         Write-Host 'The Hub administrator and Worker owner can see usage for every session, including unshared sessions.'
         Write-Host 'Reports may include session names, folders, models, account identifiers, timing, token counts, costs and usage limits.'
         Write-Host 'This grants no terminal content or control access. Sharing and bucket choices do not change usage coverage.'
+        Write-Host 'How a session signs in is reported as the access kind only (subscription, API key or custom endpoint); no key, URL or host.'
         Write-Host 'Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off.'
     }
     if ($Join) {

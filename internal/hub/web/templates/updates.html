@@ -29,9 +29,11 @@
 </section>
 {{else}}
 <section class="panel" aria-labelledby="auto-update-h" data-auto-update-missing>
-  <h2 id="auto-update-h">Automatic Hub updates</h2>
-  <p class="notice notice-info">Automatic Hub updates: not set up. The Hub updates itself through a host updater on the NAS (TrueNAS Cron Task).</p>
-  <p>Set it up with the <a href="{{.Data.DocsBase}}hub-truenas-updater.md" target="_blank" rel="noopener">TrueNAS host updater guide</a>. To update by hand instead, see the <a href="{{.Data.DocsBase}}hub-docker.md#update" target="_blank" rel="noopener">manual update steps</a>.</p>
+  <h2 id="auto-update-h">Updating the Hub</h2>
+  {{if .Data.Check.SelfUpdate}}<p class="notice notice-info">The Hub can update itself through the Docker socket: use <strong>Update the Hub</strong> when a newer release appears.</p>
+  <p>To update by hand instead, see the <a href="{{.Data.DocsBase}}hub-docker.md#update" target="_blank" rel="noopener">manual update steps</a>.</p>
+  {{else}}<p class="notice notice-info">Automatic Hub updates: not set up.{{with .Data.Check.Reason}} Reason: {{.}}.{{end}}</p>
+  <p>Update by hand with the <a href="{{.Data.DocsBase}}hub-docker.md#update" target="_blank" rel="noopener">manual update steps</a>, or set up self-update or a host updater as described there.</p>{{end}}
 </section>
 {{end}}
 

@@ -274,13 +274,19 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 			writeResultError(w, failureText(err))
 			return
 		}
-		inv, _ := harnessInventory(r, c)
+		inv, err := harnessInventory(r, c)
+		if err != nil {
+			writeResultError(w, failureText(err))
+			return
+		}
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 4)
-		ok, failed, skipped := 0, 0, 0
-		// A Worker counts as checked only when its inventory time advanced
-		// past the one the Hub already had; a cached reply is not a check.
+		failed, skipped := 0, 0
+		replied := map[string]int64{}
+		// A Worker counts as checked only when the Hub recorded an inventory
+		// time newer than the one it already had: a cached reply or a scan
+		// that the store discarded is not a check.
 		before := func(id string) int64 {
 			if row := inv[id]; row != nil && row.InventoryAt != nil {
 				return *row.InventoryAt
@@ -305,11 +311,26 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 				if err != nil || report.InventoryAt == nil || *report.InventoryAt <= was {
 					failed++
 				} else {
-					ok++
+					replied[wk.ID] = *report.InventoryAt
 				}
 			}()
 		}
 		wg.Wait()
+		ok := 0
+		if len(replied) > 0 {
+			recorded, err := harnessInventory(r, c)
+			if err != nil {
+				writeResultError(w, failureText(err))
+				return
+			}
+			for id, at := range replied {
+				if row := recorded[id]; row != nil && row.InventoryAt != nil && *row.InventoryAt >= at {
+					ok++
+				} else {
+					failed++
+				}
+			}
+		}
 		text := "Checked " + pluralWorkers(ok) + "."
 		if failed > 0 {
 			text += " " + pluralWorkers(failed) + " could not be checked or returned a scan that is not newer (timed out or cached)."

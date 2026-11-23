@@ -35,8 +35,14 @@ func (a UsageListArgs) Validate() error {
 	if a.Limit < 0 || a.Limit > 200 {
 		return invalid("limit", "choose 1 to 200")
 	}
-	for _, s := range []string{a.After, a.WorkerID, a.BucketID} {
+	for _, s := range []string{a.WorkerID, a.BucketID} {
 		if !usageText(s, 128) {
+			return invalid("filter", "invalid filter")
+		}
+	}
+	for _, s := range []string{a.After} {
+		// A session cursor holds a full sort key: Worker name, session name, ID.
+		if !usageText(s, 1280) {
 			return invalid("filter", "invalid filter")
 		}
 	}
@@ -329,3 +335,6 @@ func init() {
 	Register(Op{Name: OpUsageNominationList, Summary: "Administrators: show the Hub-wide published usage slots and who published them.", Scope: ScopeHub, Actions: MustActionSet(ActionManage), Args: reflect.TypeFor[UsageNominationListArgs](), Result: reflect.TypeFor[UsageNominationListResult]()})
 	Register(Op{Name: OpUsagePublicationSet, Summary: "Allow or refuse that buckets published by others include observations of your own sessions and accounts (default refuse).", Scope: ScopeHub, Actions: MustActionSet(ActionOperate), Mutates: true, Args: reflect.TypeFor[UsagePublicationSetArgs](), Result: reflect.TypeFor[UsagePublicationSetArgs]()})
 }
+
+// ErrUsageCursor is the error of a session cursor that this Hub did not issue.
+var ErrUsageCursor = invalid("after", "invalid cursor")
