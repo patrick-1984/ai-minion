@@ -443,17 +443,51 @@ func providerMeters(accounts []UsageAccount, now time.Time, linked bool) ([]Usag
 		if m.UsedPercent != nil && len(g.known) > 1 {
 			suffix = fmt.Sprintf(" (unweighted mean of %d)", len(g.known))
 		}
-		base := famName + " quota, " + span
-		if token != "account" {
-			base += " (limit " + token[1:7] + ")"
-		}
+		base := famName + " " + UsageLimitName(m.DurationMS, k.period)
 		if linked {
 			base = "Account-wide: " + base
 		}
 		m.Label = UsageLabel(base, 80-len(suffix)) + suffix
 		out = append(out, m)
 	}
+	// Two meters with one name (different limit scopes of one provider and
+	// window) get a short counter; ids and metrics stay the machine contract.
+	seenLabel := map[string]int{}
+	for i := range out {
+		seenLabel[out[i].Label]++
+		if n := seenLabel[out[i].Label]; n > 1 {
+			out[i].Label = UsageLabel(out[i].Label, 80-len(fmt.Sprintf(" (%d)", n))) + fmt.Sprintf(" (%d)", n)
+		}
+	}
 	return out, unsupported
+}
+
+// UsageLimitName gives a limit a human name from its window: "5-hour limit",
+// "Daily limit", "Weekly limit", "Monthly limit", else "<duration> limit". A
+// window without a duration falls back to its kind ("Rolling limit").
+func UsageLimitName(durationMS *int64, kind string) string {
+	if durationMS == nil || *durationMS <= 0 {
+		k := strings.NewReplacer("_", " ", "-", " ").Replace(strings.TrimSpace(kind))
+		if k == "" || k == "unknown" {
+			return "Limit"
+		}
+		return strings.ToUpper(k[:1]) + k[1:] + " limit"
+	}
+	const hour, day = int64(3600000), int64(86400000)
+	ms := *durationMS
+	switch {
+	case ms == day:
+		return "Daily limit"
+	case ms == 7*day:
+		return "Weekly limit"
+	case ms >= 28*day && ms <= 31*day && ms%day == 0:
+		return "Monthly limit"
+	case ms%day == 0:
+		return fmt.Sprintf("%d-day limit", ms/day)
+	case ms%hour == 0:
+		return fmt.Sprintf("%d-hour limit", ms/hour)
+	}
+	return usageDurationShort(ms) + " limit"
 }
 
 // UsageSessionObservation is the latest canonical observation of one selected

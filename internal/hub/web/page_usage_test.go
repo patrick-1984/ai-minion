@@ -229,3 +229,20 @@ func TestUsageShowsSeparateGatewaySpendAndAPICredentialDetails(t *testing.T) {
 		mustHave(t, res.Body.String(), view.want...)
 	}
 }
+
+func TestUsageWindowTitleIsHumanReadable(t *testing.T) {
+	week := int64(7 * 24 * 3600000)
+	five := int64(5 * 3600000)
+	for _, c := range []struct {
+		w    ops.UsageWindow
+		want string
+	}{
+		{ops.UsageWindow{Scope: "codex.primary", Period: "rolling", DurationMS: &week}, "Weekly limit"},
+		{ops.UsageWindow{Scope: "codex.secondary", Period: "rolling", DurationMS: &five}, "5-hour limit"},
+		{ops.UsageWindow{Scope: "claude-opus", Period: "rolling", DurationMS: &week}, "claude-opus · Weekly limit"},
+	} {
+		if got := usageWindowTitle(c.w); got != c.want {
+			t.Errorf("%q, want %q", got, c.want)
+		}
+	}
+}
