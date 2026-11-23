@@ -108,6 +108,14 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 	if strings.Contains(p["join-windows-masked"], "MINION_JOIN") {
 		t.Errorf("the token-free Windows command mentions the token variable: %s", p["join-windows-masked"])
 	}
+	// Windows is a visible option after Docker Compose; only the token-free variant is folded.
+	mustHave(t, body, "<h3>Windows PowerShell</h3>", "<summary>Windows PowerShell without the token in history</summary>")
+	mustNotHave(t, body, "<summary>Windows PowerShell</summary>")
+	if !(strings.Index(body, `id="join-compose-install"`) < strings.Index(body, "<h3>Windows PowerShell</h3>") &&
+		strings.Index(body, "<h3>Windows PowerShell</h3>") < strings.Index(body, `id="join-windows-install"`) &&
+		strings.Index(body, `id="join-windows-install"`) < strings.Index(body, "without the token in history</summary>")) {
+		t.Error("Windows PowerShell must follow Docker Compose, with the token-free variant folded after it")
+	}
 	// The key comes first, then the one-liner, then the long variants.
 	for _, later := range []string{`id="join-verified"`, `id="join-unix"`, `id="join-docker"`} {
 		if strings.Index(body, `id="join-oneliner"`) > strings.Index(body, later) {

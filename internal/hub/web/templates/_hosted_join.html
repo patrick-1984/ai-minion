@@ -21,14 +21,13 @@
   <h3>Docker Compose</h3>
   <p class="muted">Creates a project in a new subfolder of the current directory and starts a Worker with its own tmux sessions.</p>
   {{template "fold" .ComposeInstall}}
-  <details><summary>Windows PowerShell</summary>
+  <h3>Windows PowerShell</h3>
   <p class="muted">Run in a normal PowerShell window.{{if .KeyedOK}} The command carries the one-time token, which stays in your PowerShell history.{{else}} Copy the join token, then paste it into the hidden prompt.{{end}}</p>
   {{if .KeyedOK}}{{template "fold" .WindowsInstall}}{{else}}{{template "fold" .WindowsMasked}}{{end}}
   {{if .KeyedOK}}<details><summary>Windows PowerShell without the token in history</summary>
   <p class="muted">Copy the join token and paste it into the hidden prompt.</p>
   {{template "fold" .WindowsMasked}}
   </details>{{end}}
-  </details>
   {{if .KeyedOK}}<details><summary>Linux or macOS without the token in shell history</summary>
   <p class="muted">Copy the join token and paste it when the installer prompts.</p>
   {{template "fold" .Masked}}
