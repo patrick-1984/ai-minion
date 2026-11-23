@@ -152,7 +152,15 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		reg = agent.DefaultRegistry
 	}
 	rt := agent.NewRuntime(reg, deps.options)
-	go runClaudeAutoInstall(cmd.Context(), res, core.StateDir, lookupEnv)
+	// The exporter installer lives exactly as long as this run: it is
+	// cancelled and waited for when the run returns, also on a start failure.
+	autoCtx, stopAuto := context.WithCancel(cmd.Context())
+	autoDone := make(chan struct{})
+	go func() {
+		defer close(autoDone)
+		runClaudeAutoInstall(autoCtx, res, core.StateDir, lookupEnv)
+	}()
+	defer func() { stopAuto(); <-autoDone }()
 	err = rt.Run(cmd.Context(), agent.Settings{
 		WorkerCore: core,
 		Resolver:   res,
