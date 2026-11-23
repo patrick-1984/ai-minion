@@ -96,8 +96,8 @@ func TestHarnessesSaveChoiceAndScan(t *testing.T) {
 		t.Fatalf("expected a scan of the 3 online Workers (not the offline one or the pending one): %+v", scans)
 	}
 	for _, c := range scans {
-		if c.Args["inventory"] != true {
-			t.Errorf("scan without inventory: %+v", c.Args)
+		if c.Args["inventory"] != true || c.Args["fresh"] != true {
+			t.Errorf("scan did not request fresh inventory: %+v", c.Args)
 		}
 	}
 }

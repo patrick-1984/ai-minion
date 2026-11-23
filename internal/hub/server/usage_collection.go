@@ -23,8 +23,9 @@ type usageCollector struct {
 	slots  chan struct{}
 }
 
-func (u *usageCollector) sample(ctx context.Context, p authz.Principal, workerID string, inventory bool) (ops.UsageReport, error) {
+func (u *usageCollector) sample(ctx context.Context, p authz.Principal, args ops.WorkerUsageArgs) (ops.UsageReport, error) {
 	var zero ops.UsageReport
+	workerID := args.WorkerID
 	owner, err := u.db.WorkerOwner(ctx, workerID)
 	if err != nil {
 		return zero, err
@@ -33,7 +34,8 @@ func (u *usageCollector) sample(ctx context.Context, p authz.Principal, workerID
 	if err != nil {
 		return zero, err
 	}
-	result, err := u.router.Call(ctx, workers.CallRequest{Principal: p, WorkerID: workerID, Op: ops.OpWorkerUsage, Args: ops.WorkerUsageArgs{WorkerID: workerID, Inventory: inventory, AfterEvent: cursor}})
+	args.AfterEvent = cursor
+	result, err := u.router.Call(ctx, workers.CallRequest{Principal: p, WorkerID: workerID, Op: ops.OpWorkerUsage, Args: args})
 	if err != nil {
 		return zero, err
 	}
@@ -90,7 +92,7 @@ func (u *usageCollector) serve(ctx context.Context, w workers.Online, sess worke
 		probe, stop := context.WithTimeout(ctx, 25*time.Second)
 		// A connection's own Worker identity has read access only to itself.
 		// No synthetic owner or administrator credentials are created.
-		report, err := u.sample(probe, authz.NewWorkerPrincipal(w.WorkerID), w.WorkerID, inventory)
+		report, err := u.sample(probe, authz.NewWorkerPrincipal(w.WorkerID), ops.WorkerUsageArgs{WorkerID: w.WorkerID, Inventory: inventory})
 		stop()
 		<-u.slots
 		if err == nil {
@@ -124,7 +126,7 @@ func registerUsageCollection(ctx context.Context, env *Env, st *store.Store, r *
 		if !ok || target.ID == "" || target.ID != a.WorkerID || a.AccountID != "" {
 			return ops.UsageReport{}, api.NewError(proto.CodeForbidden, "usage inventory requires access to the registered Worker")
 		}
-		return collector.sample(ctx, c.Principal, target.ID, a.Inventory)
+		return collector.sample(ctx, c.Principal, a)
 	}); err != nil {
 		return err
 	}

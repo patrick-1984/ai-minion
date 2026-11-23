@@ -76,12 +76,12 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 			}
 		}
 		if a.Inventory && a.AccountID == "" {
-			scan, err := cache.get(ctx, grant)
+			scan, err := cache.get(ctx, grant, a.Fresh)
 			if err != nil {
 				return nil, err
 			}
 			r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, mergeUsageAccounts(scan.Accounts, r.Accounts), scan.InventoryAt
-			r.ObservedAt = time.Now().UnixMilli()
+			r.ObservedAt = scan.ObservedAt
 		}
 		if a.AccountID == "" {
 			if err := reg.NativeUsage(ctx, &r, a.AfterEvent); err != nil {
@@ -166,6 +166,7 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 	if inventory {
 		r.Inventory = usageInventory(ctx)
 		r.Accounts = mergeUsageAccounts(discoverUsageAccounts(ctx, r.Inventory, ""), r.Accounts)
+		refreshClaudeExporter(r.Inventory)
 		r.ObservedAt = time.Now().UnixMilli()
 	}
 	if err := fitUsageReport(&r, time.Now()); err != nil {
@@ -263,9 +264,6 @@ func usageInventory(ctx context.Context) []ops.UsageHarness {
 				}
 			}
 			cancel()
-			if name == "claude" {
-				item.Exporter = claudeExporterState()
-			}
 		}
 		out = append(out, item)
 	}
@@ -283,25 +281,55 @@ func (b *usageOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-type usageInventoryCache struct {
-	mu      sync.Mutex
-	running chan struct{}
-	grant   string
-	report  ops.UsageReport
-	until   time.Time
+func refreshClaudeExporter(inventory []ops.UsageHarness) {
+	for i := range inventory {
+		if inventory[i].Name == "claude" && inventory[i].Status == "installed" {
+			inventory[i].Exporter = claudeExporterState()
+			return
+		}
+	}
 }
 
-func (c *usageInventoryCache) get(ctx context.Context, grant string) (ops.UsageReport, error) {
+const usageForceInterval = 10 * time.Second
+
+var usageInventoryGeneration atomic.Uint64
+
+// InvalidateUsageInventory makes the next inventory request rescan after a
+// local profile change. A scan already running belongs to the old generation.
+func InvalidateUsageInventory() { usageInventoryGeneration.Add(1) }
+
+type usageInventoryCache struct {
+	mu         sync.Mutex
+	running    chan struct{}
+	grant      string
+	report     ops.UsageReport
+	until      time.Time
+	generation uint64
+	nextForced time.Time
+}
+
+func (c *usageInventoryCache) get(ctx context.Context, grant string, fresh bool) (ops.UsageReport, error) {
 	for {
 		c.mu.Lock()
-		if c.grant == grant && time.Now().Before(c.until) {
+		now := time.Now()
+		generation := usageInventoryGeneration.Load()
+		force := fresh && !now.Before(c.nextForced)
+		done := c.running
+		valid := c.grant == grant && c.generation == generation && now.Before(c.until)
+		if valid && !force && (!fresh || done == nil) {
 			out := c.report
+			// Order reports by when they saw the cached inventory, before
+			// reading the profile outside the lock.
+			out.ObservedAt = now.UnixMilli()
 			out.Inventory = slices.Clone(out.Inventory)
 			out.Accounts = slices.Clone(out.Accounts)
 			c.mu.Unlock()
+			refreshClaudeExporter(out.Inventory)
 			return out, nil
 		}
-		if done := c.running; done != nil {
+		// A manual request can share a scan already in progress.
+		fresh = false
+		if done != nil {
 			c.mu.Unlock()
 			select {
 			case <-ctx.Done():
@@ -309,6 +337,9 @@ func (c *usageInventoryCache) get(ctx context.Context, grant string) (ops.UsageR
 			case <-done:
 				continue
 			}
+		}
+		if force {
+			c.nextForced = now.Add(usageForceInterval)
 		}
 		c.running = make(chan struct{})
 		c.mu.Unlock()
@@ -320,7 +351,7 @@ func (c *usageInventoryCache) get(ctx context.Context, grant string) (ops.UsageR
 		out := ops.UsageReport{Inventory: harnesses, Accounts: accounts, InventoryAt: &ms}
 		c.mu.Lock()
 		if ctx.Err() == nil {
-			c.grant, c.until, c.report = grant, at.Add(5*time.Minute), out
+			c.grant, c.generation, c.until, c.report = grant, generation, at.Add(5*time.Minute), out
 		}
 		close(c.running)
 		c.running = nil

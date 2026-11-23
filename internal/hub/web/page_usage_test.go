@@ -204,8 +204,8 @@ func TestUsageReadOnlyInventoryAndPassiveCollectorEntryPoints(t *testing.T) {
 	if calls := f.called(ops.OpUsageCollectorSet); len(calls) != 1 || calls[0].Args["worker_id"] != "build" || calls[0].Args["session_id"] != sessionID || calls[0].Args["account_id"] != accountID {
 		t.Fatalf("collector calls: %+v", calls)
 	}
-	if calls := f.called(ops.OpWorkerUsage); len(calls) != 1 || calls[0].Args["worker_id"] != "build" || calls[0].Args["inventory"] != true {
-		t.Fatalf("inventory calls: %+v", calls)
+	if calls := f.called(ops.OpWorkerUsage); len(calls) != 1 || calls[0].Args["worker_id"] != "build" || calls[0].Args["inventory"] != true || calls[0].Args["fresh"] != true {
+		t.Fatalf("expected a fresh inventory request: %+v", calls)
 	}
 }
 

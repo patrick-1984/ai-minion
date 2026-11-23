@@ -44,12 +44,15 @@ var (
 	errClaudeManaged         = errors.New("managed Claude Code settings control hooks or the status line on this machine; the file was left intact")
 )
 
-// retryOnSettingsChange runs op and, when a concurrent save of the settings
-// made it back off, runs it once more on the fresh file.
-func retryOnSettingsChange(op func() (bool, error)) (bool, error) {
+// changeClaudeUsageProfile retries a concurrent settings save once and
+// invalidates the in-process Worker inventory after a profile edit.
+func changeClaudeUsageProfile(op func() (bool, error)) (bool, error) {
 	changed, err := op()
 	if errors.Is(err, errClaudeSettingsChanged) {
 		changed, err = op()
+	}
+	if changed || errors.Is(err, errClaudeSettingsConflict) {
+		agent.InvalidateUsageInventory()
 	}
 	return changed, err
 }
@@ -265,7 +268,7 @@ func (m claudeUsageIntegration) statusCommand(manifest string) string {
 
 func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageIntegration,
 	discover func(context.Context, string) (ops.UsageAccount, bool)) (bool, error) {
-	return retryOnSettingsChange(func() (bool, error) { return installClaudeUsageOnce(ctx, dir, desired, discover) })
+	return changeClaudeUsageProfile(func() (bool, error) { return installClaudeUsageOnce(ctx, dir, desired, discover) })
 }
 
 func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsageIntegration,
@@ -495,7 +498,7 @@ func removeClaudeUsage(ctx context.Context, dir string) (bool, error) {
 	if real, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = real
 	}
-	return retryOnSettingsChange(func() (bool, error) { return removeClaudeUsageOnce(ctx, dir) })
+	return changeClaudeUsageProfile(func() (bool, error) { return removeClaudeUsageOnce(ctx, dir) })
 }
 
 func removeClaudeUsageOnce(ctx context.Context, dir string) (bool, error) {

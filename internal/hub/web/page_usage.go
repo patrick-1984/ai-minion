@@ -523,7 +523,7 @@ func usagePost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	switch r.PathValue("action") {
 	case "scan":
 		var report ops.UsageReport
-		if err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: r.PostFormValue("worker"), Inventory: true}, &report); err != nil {
+		if err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: r.PostFormValue("worker"), Inventory: true, Fresh: true}, &report); err != nil {
 			writeResultError(w, failureText(err))
 			return
 		}

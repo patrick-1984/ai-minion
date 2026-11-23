@@ -2141,6 +2141,9 @@
           },
           "inventory": {
             "type": "boolean"
+          },
+          "fresh": {
+            "type": "boolean"
           }
         },
         "required": [

@@ -17,6 +17,7 @@ type WorkerUsageArgs struct {
 	AccountID  string `json:"account_id,omitempty"` // internal account lease only
 	WorkerID   string `json:"worker_id"`
 	Inventory  bool   `json:"inventory,omitempty"`
+	Fresh      bool   `json:"fresh,omitempty"` // request a cache bypass when Inventory is set
 }
 
 type UsageListArgs struct {
