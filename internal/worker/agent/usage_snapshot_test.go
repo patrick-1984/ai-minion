@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
@@ -46,5 +48,27 @@ func TestUsageSnapshotTakesOneBoundedProcessQuery(t *testing.T) {
 	}
 	if n := src.calls.Load(); n != 1 {
 		t.Fatalf("process queries = %d, want 1", n)
+	}
+}
+
+// A report whose quota detail is too large keeps its sessions: the quota
+// windows are dropped, not the report.
+func TestFitUsageReportDropsOversizedQuotaDetailNotTheReport(t *testing.T) {
+	now := time.Now()
+	at := now.UnixMilli()
+	var windows []ops.UsageWindow
+	for i := range 32 {
+		windows = append(windows, ops.UsageWindow{Scope: fmt.Sprintf("model-%02d-%060d", i, 0), Period: "rolling", UsedPercent: new(20.)})
+	}
+	account := ops.UsageAccount{ID: ops.UsageID("big", "account"), Provider: "Anthropic", AuthMode: "api", CustomEndpoint: true, Source: "claude-statusline", ObservedAt: at, Windows: windows}
+	r := ops.UsageReport{Version: ops.UsageVersion, ObservedAt: at, Accounts: []ops.UsageAccount{account}}
+	for i := range 200 {
+		r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("big", fmt.Sprint(i)), Name: fmt.Sprint("s", i), AuthMode: "api", CustomEndpoint: true, Source: "claude-statusline", ObservedAt: at, AccountID: account.ID, Windows: windows})
+	}
+	if err := fitUsageReport(&r, now); err != nil {
+		t.Fatalf("an oversized but valid report was rejected: %v", err)
+	}
+	if len(r.Sessions) != 200 {
+		t.Fatalf("sessions dropped: %d", len(r.Sessions))
 	}
 }

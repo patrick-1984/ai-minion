@@ -206,6 +206,8 @@ func fitUsageReport(r *ops.UsageReport, now time.Time) error {
 		return strings.Compare(a.ID, b.ID)
 	})
 	r.Accounts = kept
+	// Oversized quota detail is dropped, never the whole report.
+	*r = r.Sanitize()
 	return r.Check(now)
 }
 
