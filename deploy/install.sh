@@ -185,20 +185,15 @@ authorized() {
 	if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n -- "$@"; fi
 }
 
-# need_systemd MODE: --service and --root install a systemd unit, so refuse
-# early (before any download or change) where there is none. The refusal names
-# a command that works: --service becomes --join ("Run as me"); --root has no
-# mode without systemd, because the user mode refuses root.
+# need_systemd service: --service installs a systemd unit, so refuse early
+# (before any download or change) where there is none. The refusal names a
+# command that works: --service becomes --join ("Run as me"). --root needs no
+# systemd here: the Worker itself installs its unit, or without systemd starts
+# a root Worker at shell login.
 need_systemd() {
-	if [ "$(uname -s)" != Linux ]; then
-		[ "$1" = service ] && die "--service needs Linux with systemd. Use \"Run as me\" instead: run the same command with --join instead of --service."
-		die "--root needs Linux with systemd. There is no root mode without systemd: use \"Run as me\" from a normal account (the same command with --join, without --root and without sudo), or the Docker Compose option (--compose)."
-	fi
+	[ "$(uname -s)" = Linux ] || die "--service needs Linux with systemd. Use \"Run as me\" instead: run the same command with --join instead of --service."
 	[ -d "${MINION_SYSTEMD_DIR:-/run/systemd/system}" ] && return 0
-	if [ "$1" = service ]; then
-		die "This computer does not run systemd (for example a container such as a Coder workspace), so no system service can be installed here. Use \"Run as me\" instead: run the same command with --join instead of --service; it starts the Worker now and again at login."
-	fi
-	die "This computer does not run systemd (for example a container such as a Coder workspace), so --root cannot install a root Worker here: a root Worker needs systemd and there is no non-systemd root mode. Use \"Run as me\" from a normal account (the same command with --join, without --root and without sudo), or the Docker Compose option (--compose)."
+	die "This computer does not run systemd (for example a container such as a Coder workspace), so no system service can be installed here. Use \"Run as me\" instead: run the same command with --join instead of --service; it starts the Worker now and again at login."
 }
 
 worker_up() {
@@ -319,7 +314,7 @@ main() {
 			if [ "$(id -u)" = 0 ]; then target_user=${SUDO_USER:-}; else target_user=$(id -un); fi
 			[ -n "$target_user" ] && [ "$target_user" != root ] || die "run --service from the account the Worker will use, or use --root"
 			;;
-		root) need_systemd root ;;
+		root) [ "$(uname -s)" = Linux ] || die "--root needs Linux" ;;
 		esac
 		read_token
 		case $mode in

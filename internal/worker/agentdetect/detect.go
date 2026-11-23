@@ -3,6 +3,7 @@ package agentdetect
 import (
 	"context"
 	"path"
+	"runtime"
 	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -63,6 +64,18 @@ func (r Result) Shown() string {
 		return r.DisplayKind
 	}
 	return r.Kind
+}
+
+// ShownAgent returns the CLI name of the shown kind (see Shown), for display
+// and telemetry only.
+func (r Result) ShownAgent() string {
+	return strings.TrimPrefix(r.Shown(), ops.PaneKindAgentPrefix)
+}
+
+// ShownIsAgent reports whether the shown kind is an agent.
+func (r Result) ShownIsAgent() bool {
+	k := r.Shown()
+	return strings.HasPrefix(k, ops.PaneKindAgentPrefix) && len(k) > len(ops.PaneKindAgentPrefix)
 }
 
 // Agent returns the CLI name when Kind is "agent:<cli>", otherwise "".
@@ -153,6 +166,11 @@ type ProcessSource interface {
 type Detector struct {
 	agents []Agent
 	procs  ProcessSource
+	// commandHint is true when the host's current-command report is only a
+	// hint (psmux on Windows derives it by a descendant heuristic): a pane
+	// whose command is an agent then stays a shell for input purposes and
+	// shows the agent as DisplayKind.
+	commandHint bool
 }
 
 // Option configures a Detector.
@@ -161,6 +179,10 @@ type Option func(*Detector)
 // WithAgents replaces the table of known agents.
 func WithAgents(agents []Agent) Option { return func(d *Detector) { d.agents = agents } }
 
+// WithCommandHint marks the host's current-command report as a hint that can
+// never authorize input (see Detector).
+func WithCommandHint(hint bool) Option { return func(d *Detector) { d.commandHint = hint } }
+
 // WithProcessSource sets the process table. A nil source disables the
 // process-tree search.
 func WithProcessSource(p ProcessSource) Option { return func(d *Detector) { d.procs = p } }
@@ -168,7 +190,7 @@ func WithProcessSource(p ProcessSource) Option { return func(d *Detector) { d.pr
 // New returns a Detector with DefaultAgents and the process source of the
 // platform (see DefaultProcessSource).
 func New(opts ...Option) *Detector {
-	d := &Detector{agents: DefaultAgents(), procs: DefaultProcessSource()}
+	d := &Detector{agents: DefaultAgents(), procs: DefaultProcessSource(), commandHint: runtime.GOOS == "windows"}
 	for _, o := range opts {
 		o(d)
 	}
@@ -231,26 +253,32 @@ func (d *Detector) Locate(ctx context.Context, in Input) (Result, int) {
 
 func (d *Detector) locate(ctx context.Context, in Input, telemetry bool) (Result, int) {
 	cmd := progName(in.Command)
+	var hinted *Agent
 	if a := d.matchProgram(cmd); a != nil {
-		pid := 0
-		if telemetry {
-			pid = d.agentPID(ctx, in.PID, a)
+		if !d.commandHint {
+			pid := 0
+			if telemetry {
+				pid = d.agentPID(ctx, in.PID, a)
+			}
+			return d.agentResult(a, in.Screen), pid
 		}
-		return d.agentResult(a, in.Screen), pid
+		// The command is a hint: the strict result is the pane's shell, the
+		// agent is for display and telemetry only.
+		hinted = a
 	}
 
 	var (
 		tree      []Proc
 		haveTable bool
 	)
-	wrapper := cmd == "" || shells[cmd] || isInterpreter(cmd)
+	wrapper := cmd == "" || shells[cmd] || isInterpreter(cmd) || hinted != nil
 	if wrapper && in.PID > 0 && d.procs != nil {
 		if all, err := d.procs.Processes(ctx); err == nil {
 			haveTable = true
 			tree = descendants(all, in.PID)
 		}
 	}
-	var unverified *Agent
+	unverified := hinted
 	for _, p := range tree {
 		if !p.Running() {
 			continue
@@ -262,12 +290,16 @@ func (d *Detector) locate(ctx context.Context, in Input, telemetry bool) (Result
 			continue
 		}
 		if a := d.matchArgs(p.Args); a != nil {
-			return d.agentResult(a, in.Screen), p.PID
+			pid := 0
+			if telemetry {
+				pid = d.strictPID(tree, a, telemetry)
+			}
+			return d.agentResult(a, in.Screen), pid
 		}
 	}
 
 	switch {
-	case shells[cmd]:
+	case shells[cmd] || hinted != nil:
 		r := Result{Kind: ops.PaneKindShell, State: ops.PaneStateUnknown}
 		if haveTable {
 			r.State = ops.PaneStateStable
@@ -290,9 +322,8 @@ func (d *Detector) locate(ctx context.Context, in Input, telemetry bool) (Result
 	}
 }
 
-// agentPID finds the process of agent a in the tree of the pane process root:
-// the one that receives the pane's input, or (telemetry) one whose foreground
-// state the platform cannot tell. Zero when none is verified.
+// agentPID finds the process of agent a in the tree of the pane process root.
+// Zero when none is verified.
 func (d *Detector) agentPID(ctx context.Context, root int, a *Agent) int {
 	if root <= 0 || d.procs == nil {
 		return 0
@@ -301,16 +332,41 @@ func (d *Detector) agentPID(ctx context.Context, root int, a *Agent) int {
 	if err != nil {
 		return 0
 	}
-	tree := descendants(all, root)
+	return d.strictPID(descendants(all, root), a, true)
+}
+
+// strictPID is the pid of the process of agent a itself: one that receives
+// the pane's input (or, for telemetry, whose foreground state the platform
+// cannot tell) and whose program is the agent or an interpreter running its
+// script. A wrapper (a shell with -c, a package runner) that merely carries
+// the agent in its arguments is never returned: its environment is not the
+// agent's. Zero when no such process is found.
+func (d *Detector) strictPID(tree []Proc, a *Agent, telemetry bool) int {
 	for _, p := range tree {
-		if !p.Running() || (!inPaneForeground(tree[0], p) && !p.UnknownForeground) {
+		if !p.Running() || !inPaneForeground(tree[0], p) && (!telemetry || !p.UnknownForeground) {
 			continue
 		}
-		if m := d.matchArgs(p.Args); m != nil && m.Name == a.Name {
+		if m := d.matchStrict(p.Args); m != nil && m.Name == a.Name {
 			return p.PID
 		}
 	}
 	return 0
+}
+
+// matchStrict is matchArgs restricted to the agent's own process: the program
+// is the agent, or an interpreter runs the agent's script.
+func (d *Detector) matchStrict(args []string) *Agent {
+	if len(args) == 0 {
+		return nil
+	}
+	prog := progName(args[0])
+	if a := d.matchProgram(prog); a != nil {
+		return a
+	}
+	if prog == "node" || prog == "nodejs" || prog == "bun" || prog == "deno" || strings.HasPrefix(prog, "python") {
+		return d.matchArgs(args)
+	}
+	return nil
 }
 
 func (d *Detector) agentResult(a *Agent, scr ops.Screen) Result {

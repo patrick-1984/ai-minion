@@ -3,38 +3,43 @@ package agent
 import (
 	"encoding/json"
 	"io"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
 // sessionAccess is how a harness session authenticates, read from the
 // environment of its own process and from the harness settings files. Only
-// the kind and the endpoint host are kept: no key, token or URL path is ever
-// read into a value that leaves this file.
+// the access kind is kept: no key, token, URL or host is ever read into a
+// value that leaves this file.
 type sessionAccess struct {
-	Mode     string // "subscription", "api" or "unknown"
-	Endpoint string // host of a custom endpoint, empty for the vendor's own
+	Mode string // "subscription", "api" or "unknown"
+	// Kind refines "api": accessAPIKey (the vendor's endpoint with a key or
+	// token) or accessCustomEndpoint (any other base URL).
+	Kind string
 }
+
+const (
+	accessAPIKey         = "api_key"
+	accessCustomEndpoint = "custom_endpoint"
+)
 
 // processEnv returns the access-relevant environment of a process, or false
 // when it is not readable or not trustworthy (another user, another
 // platform, vanished pid, a read that stalls). Tests replace it.
 var processEnv = readProcessEnv
 
-// Environment names the Worker looks at. Only the endpoint and the profile
-// directory keep their value; a secret keeps nothing but the fact that it is
-// set (the entry becomes NAME=1).
+// Environment names the Worker looks at. Only the profile directory keeps
+// its value; the endpoint and a secret keep nothing but the fact that they are
+// set (the entry becomes NAME=1, or NAME=custom for an endpoint that is not
+// the vendor's own).
 var (
-	envValueNames    = []string{"ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "CLAUDE_CONFIG_DIR", "CODEX_HOME"}
+	envValueNames    = []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME"}
 	envPresenceNames = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"}
+	envEndpointNames = map[string]string{"ANTHROPIC_BASE_URL": "api.anthropic.com", "OPENAI_BASE_URL": "api.openai.com"}
 )
 
 const (
@@ -42,10 +47,12 @@ const (
 	processEnvDeadline = 500 * time.Millisecond
 )
 
-// readProcessEnv reads /proc/<pid>/environ of a process of the same user,
-// within a deadline, and reduces it to the allowlisted entries.
+// readProcessEnv reads the environment of one process of the same user,
+// within a deadline, and reduces it to the allowlisted entries. The user check
+// and the read use the same open process directory (see readProcEnviron), so a
+// pid that is reused cannot be read as another user's process.
 func readProcessEnv(pid int) ([]string, bool) {
-	if pid <= 0 || !sameUserProcess(pid) {
+	if pid <= 0 {
 		return nil, false
 	}
 	type result struct {
@@ -54,19 +61,8 @@ func readProcessEnv(pid int) ([]string, bool) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		f, err := openNonBlocking("/proc/" + strconv.Itoa(pid) + "/environ")
-		if err != nil {
-			done <- result{}
-			return
-		}
-		defer func() { _ = f.Close() }()
-		raw, err := io.ReadAll(io.LimitReader(f, processEnvLimit))
-		if err != nil {
-			done <- result{}
-			return
-		}
-		// The process may have ended and its pid been reused while reading.
-		if !sameUserProcess(pid) {
+		raw, ok := readProcEnviron(pid)
+		if !ok {
 			done <- result{}
 			return
 		}
@@ -90,6 +86,8 @@ func filterProcessEnv(raw []byte) []string {
 		case !ok || value == "":
 		case slices.Contains(envValueNames, name):
 			out = append(out, kv)
+		case envEndpointNames[name] != "":
+			out = append(out, name+"="+endpointKind(value, envEndpointNames[name]))
 		case slices.Contains(envPresenceNames, name):
 			out = append(out, name+"=1")
 		}
@@ -135,63 +133,15 @@ func envLookup(env []string, name string) string {
 	return ""
 }
 
-// endpointHost returns the host[:port] of a base URL, or "" for the vendor's
-// own host or an unusable value. It never returns anything that could carry a
-// credential: a URL with user info, a host that is not a plain DNS name or IP
-// address, or a name that looks like a key or token.
-func endpointHost(raw string, vendorHosts ...string) string {
-	raw = strings.TrimSpace(raw)
-	if !strings.Contains(raw, "://") || strings.ContainsAny(raw, "@ \t\\") {
-		return ""
+// endpointKind reduces a base URL to "vendor" (the vendor's own host) or
+// "custom" (anything else, including a value that cannot be parsed). The host
+// itself is never kept.
+func endpointKind(raw string, vendorHost string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err == nil && u.Host != "" && strings.EqualFold(u.Hostname(), vendorHost) && (u.Scheme == "https" || u.Scheme == "http") {
+		return "vendor"
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return ""
-	}
-	host := strings.ToLower(u.Host)
-	for _, v := range vendorHosts {
-		if host == v {
-			return ""
-		}
-	}
-	name := strings.ToLower(u.Hostname())
-	if port := u.Port(); port != "" {
-		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-			return ""
-		}
-	}
-	if len(host) > 253 || !plainHostName(name) || !ops.UsageEndpointHost(host) {
-		return ""
-	}
-	return host
-}
-
-// plainHostName accepts an IP address or a DNS name of valid labels that
-// does not look like a credential (a key prefix or an overlong label).
-func plainHostName(name string) bool {
-	if _, err := netip.ParseAddr(name); err == nil {
-		return true
-	}
-	if name == "" || len(name) > 253 {
-		return false
-	}
-	for _, label := range strings.Split(name, ".") {
-		if label == "" || len(label) > 40 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, p := range []string{"sk-", "sk_", "pk-", "key-", "ghp_", "bearer", "token"} {
-			if strings.HasPrefix(label, p) {
-				return false
-			}
-		}
-		for i := 0; i < len(label); i++ {
-			c := label[i]
-			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
-				return false
-			}
-		}
-	}
-	return true
+	return "custom"
 }
 
 // detectSessionAccess classifies the session of harness running as pid.
@@ -212,17 +162,10 @@ func detectSessionAccess(harness string, pid int) sessionAccess {
 	return sessionAccess{Mode: "unknown"}
 }
 
-func claudeAccess(env []string) sessionAccess {
-	dir := envLookup(env, "CLAUDE_CONFIG_DIR")
-	if dir == "" || !filepath.IsAbs(dir) {
-		dir = ""
-		if home, err := os.UserHomeDir(); err == nil {
-			dir = filepath.Join(home, ".claude")
-		}
-	}
-	// The settings env block and apiKeyHelper count as configuration of the
-	// session; the process environment wins over them. Only the endpoint is
-	// kept; keys are checked for presence and dropped.
+// claudeAPIConfig reports whether the environment env and the settings of the
+// profile in dir configure an API key, a token or a key helper (key), and a
+// base URL other than the vendor's (custom). Only the facts are kept.
+func claudeAPIConfig(env []string, dir string) (key, custom bool) {
 	var settings struct {
 		Env struct {
 			BaseURL   string        `json:"ANTHROPIC_BASE_URL"`
@@ -234,15 +177,53 @@ func claudeAccess(env []string) sessionAccess {
 	if raw, ok := readProfileFile(filepath.Join(dir, "settings.json")); ok {
 		_ = json.Unmarshal(raw, &settings)
 	}
-	baseRaw := envLookup(env, "ANTHROPIC_BASE_URL")
-	if baseRaw == "" {
-		baseRaw = settings.Env.BaseURL
+	// The process environment wins over the settings env block.
+	base := envLookup(env, "ANTHROPIC_BASE_URL")
+	if base == "" && settings.Env.BaseURL != "" {
+		base = endpointKind(settings.Env.BaseURL, "api.anthropic.com")
 	}
-	base := endpointHost(baseRaw, "api.anthropic.com")
-	key := envLookup(env, "ANTHROPIC_API_KEY") != "" || envLookup(env, "ANTHROPIC_AUTH_TOKEN") != "" ||
+	key = envLookup(env, "ANTHROPIC_API_KEY") != "" || envLookup(env, "ANTHROPIC_AUTH_TOKEN") != "" ||
 		bool(settings.Env.APIKey) || bool(settings.Env.AuthToken) || bool(settings.APIKeyHelper)
-	if key || base != "" {
-		return sessionAccess{Mode: "api", Endpoint: base}
+	return key, base == "custom"
+}
+
+func claudeProfileDir(env []string) string {
+	dir := envLookup(env, "CLAUDE_CONFIG_DIR")
+	if dir == "" || !filepath.IsAbs(dir) {
+		dir = ""
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = filepath.Join(home, ".claude")
+		}
+	}
+	return dir
+}
+
+// ClaudeAPIAccess reports whether the Claude Code process whose environment
+// lookup answers uses an API key, a token or a custom endpoint rather than the
+// profile's login. profile is the profile directory its settings are read from.
+// It reads only the caller's own environment.
+func ClaudeAPIAccess(lookup func(string) (string, bool), profile string) bool {
+	var env []string
+	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
+		if v, ok := lookup(name); ok && v != "" {
+			env = append(env, name+"=1")
+		}
+	}
+	if v, ok := lookup("ANTHROPIC_BASE_URL"); ok && v != "" {
+		env = append(env, "ANTHROPIC_BASE_URL="+endpointKind(v, "api.anthropic.com"))
+	}
+	key, custom := claudeAPIConfig(env, profile)
+	return key || custom
+}
+
+func claudeAccess(env []string) sessionAccess {
+	dir := claudeProfileDir(env)
+	key, custom := claudeAPIConfig(env, dir)
+	switch {
+	case custom:
+		return sessionAccess{Mode: "api", Kind: accessCustomEndpoint}
+	case key:
+		return sessionAccess{Mode: "api", Kind: accessAPIKey}
 	}
 	if info, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil && info.Mode().IsRegular() {
 		return sessionAccess{Mode: "subscription"}
@@ -251,9 +232,11 @@ func claudeAccess(env []string) sessionAccess {
 }
 
 func codexAccess(env []string) sessionAccess {
-	base := endpointHost(envLookup(env, "OPENAI_BASE_URL"), "api.openai.com")
-	if envLookup(env, "OPENAI_API_KEY") != "" || base != "" {
-		return sessionAccess{Mode: "api", Endpoint: base}
+	switch {
+	case envLookup(env, "OPENAI_BASE_URL") == "custom":
+		return sessionAccess{Mode: "api", Kind: accessCustomEndpoint}
+	case envLookup(env, "OPENAI_API_KEY") != "":
+		return sessionAccess{Mode: "api", Kind: accessAPIKey}
 	}
 	home := envLookup(env, "CODEX_HOME")
 	if home == "" || !filepath.IsAbs(home) {

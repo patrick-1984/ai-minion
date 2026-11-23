@@ -120,6 +120,7 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		return err
 	}
 	known := map[string]string{}
+	sessionAccount := map[string]string{} // the account each native session finally has
 	accountRows := map[string]ops.UsageAccount{}
 	for _, a := range report.Accounts {
 		accountRows[a.ID+"|"+a.SourceSessionID] = a
@@ -158,12 +159,12 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		// observation is dropped with it.
 		conflict := base.AuthMode == "api" && n.AuthMode == "subscription"
 		if conflict {
-			n.AuthMode, n.Endpoint, n.AccountID, n.Provider = base.AuthMode, base.Endpoint, base.AccountID, base.Provider
+			n.AuthMode, n.AccountID, n.Provider, n.CustomEndpoint = base.AuthMode, base.AccountID, base.Provider, base.CustomEndpoint
 		}
 		if n.AuthMode == "unknown" || n.AuthMode == "" {
 			// The native document names no credential; keep the access kind
 			// the Worker read from the session's own process.
-			n.AuthMode, n.Endpoint = base.AuthMode, base.Endpoint
+			n.AuthMode, n.CustomEndpoint = base.AuthMode, base.CustomEndpoint
 			if n.AccountID == "" {
 				n.AccountID = base.AccountID
 			}
@@ -171,10 +172,14 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 				n.Provider = base.Provider
 			}
 		}
+		if n.AuthMode == "api" && n.AccountID == "" && base.AuthMode == "api" {
+			n.AccountID = base.AccountID // the exporter saw API access; the Worker knows the grouping
+		}
 		n.ID = base.ID
 		n.StartedAt = base.StartedAt
 		report.Sessions[idx] = n
 		known[n.NativeID] = base.ID
+		sessionAccount[n.NativeID] = n.AccountID
 		if account.Valid && !conflict {
 			var a ops.UsageAccount
 			if err = json.Unmarshal([]byte(account.String), &a); err != nil {
@@ -222,6 +227,11 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		}
 		e.Seq = seq
 		e.SessionID = known[e.NativeID]
+		// An event never names an account other than its session's own: a
+		// session corrected to API access must not feed a subscription bucket.
+		if acct, ok := sessionAccount[e.NativeID]; ok && e.AccountID != acct {
+			e.AccountID = acct
+		}
 		report.Events = append(report.Events, e)
 	}
 	return events.Err()

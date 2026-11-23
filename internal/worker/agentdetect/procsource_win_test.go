@@ -72,3 +72,41 @@ func TestLocateReturnsTheAgentProcessNotThePaneShell(t *testing.T) {
 		t.Fatalf("pid %d, want 0", pid)
 	}
 }
+
+func TestLocateNeverReturnsAWrapperShell(t *testing.T) {
+	// A shell that stays alive while it runs one wrapped command matches by
+	// its arguments first; its own environment is not the agent's.
+	tree := []Proc{
+		{PID: 100, PPID: 1, PGRP: 100, TPGID: 300, TTY: "pts/1", Args: []string{"-bash"}},
+		{PID: 200, PPID: 100, PGRP: 300, TPGID: 300, TTY: "pts/1", Args: []string{"bash", "-c", "claude --resume x"}},
+		{PID: 300, PPID: 200, PGRP: 300, TPGID: 300, TTY: "pts/1", Args: []string{"claude", "--resume", "x"}},
+	}
+	d := New(WithProcessSource(&fakeProcs{procs: tree}))
+	for _, cmd := range []string{"bash", "claude"} {
+		r, pid := d.Locate(context.Background(), Input{Command: cmd, PID: 100})
+		if !r.IsAgent() || pid != 300 {
+			t.Errorf("command %q: %+v pid %d, want agent and pid 300", cmd, r, pid)
+		}
+	}
+	// With only the wrapper alive the agent is identified but no pid is given.
+	d = New(WithProcessSource(&fakeProcs{procs: tree[:2]}))
+	if r, pid := d.Locate(context.Background(), Input{Command: "bash", PID: 100}); !r.IsAgent() || pid != 0 {
+		t.Errorf("wrapper only: %+v pid %d, want agent and pid 0", r, pid)
+	}
+}
+
+func TestCommandHintNeverAuthorizesInput(t *testing.T) {
+	// psmux derives the pane command by a heuristic: a recognized agent there
+	// is a display kind; the strict kind stays the shell.
+	tree := []Proc{{PID: 100, PPID: 1, Args: []string{"pwsh"}}, {PID: 200, PPID: 100, UnknownForeground: true, Args: []string{"claude.exe"}}}
+	d := New(WithCommandHint(true), WithProcessSource(&fakeProcs{procs: tree}))
+	r := d.Classify(context.Background(), Input{Command: "claude", PID: 100})
+	if r.Kind != ops.PaneKindShell || r.Shown() != ops.PaneKindAgentPrefix+"claude" {
+		t.Fatalf("got kind %q shown %q", r.Kind, r.Shown())
+	}
+	// Even with no process table the strict kind is not the agent.
+	r = New(WithCommandHint(true), WithProcessSource(nil)).Classify(context.Background(), Input{Command: "claude", PID: 100})
+	if r.Kind != ops.PaneKindShell || r.Shown() != ops.PaneKindAgentPrefix+"claude" {
+		t.Fatalf("no table: kind %q shown %q", r.Kind, r.Shown())
+	}
+}

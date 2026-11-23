@@ -27,7 +27,7 @@ func TestReadProcessEnvKeepsNoSecretAndOnlyOwnProcesses(t *testing.T) {
 	if strings.Contains(joined, "TOPSECRET") || strings.Contains(joined, "leaky") || strings.Contains(joined, "PATH=") {
 		t.Fatalf("secret or unrelated entry kept: %q", env)
 	}
-	if envLookup(env, "ANTHROPIC_API_KEY") != "1" || envLookup(env, "ANTHROPIC_BASE_URL") != "https://gw.example:8443/v1" {
+	if envLookup(env, "ANTHROPIC_API_KEY") != "1" || envLookup(env, "ANTHROPIC_BASE_URL") != "custom" {
 		t.Fatalf("presence/endpoint lost: %q", env)
 	}
 	old := workerUID
@@ -41,26 +41,23 @@ func TestReadProcessEnvKeepsNoSecretAndOnlyOwnProcesses(t *testing.T) {
 	}
 }
 
-func TestEndpointHostRefusesCredentialLookingHosts(t *testing.T) {
-	long := strings.Repeat("a", 64) + ".example"
+func TestEndpointIsReducedToVendorOrCustom(t *testing.T) {
 	for raw, want := range map[string]string{
-		"https://gw.example:8443/v1/x":                     "gw.example:8443",
-		"http://10.0.0.5:4000":                             "10.0.0.5:4000",
-		"https://api.anthropic.com":                        "",
-		"https://sk-ant-api03-ABCDEF.example":              "",
-		"https://user:pass@gw.example":                     "",
-		"https://sk-ant-secret@gw.example":                 "",
-		"https://" + long:                                  "",
-		"https://" + strings.Repeat("a.", 130) + "example": "",
-		"https://gw_example":                               "",
-		"https://-bad.example":                             "",
-		"https://gw.example:99999":                         "",
-		"sk-ant-secret":                                    "",
-		"https://token-abc.example":                        "",
+		"https://api.anthropic.com":        "vendor",
+		"https://API.anthropic.com:443/v1": "vendor",
+		"https://gw.example:8443/v1/x":     "custom",
+		"https://sk-ant-api03-ABCDEF.ex":   "custom",
+		"not a url":                        "custom",
+		"https://user:pass@gw.example":     "custom",
 	} {
-		if got := endpointHost(raw, "api.anthropic.com"); got != want {
+		if got := endpointKind(raw, "api.anthropic.com"); got != want {
 			t.Errorf("%q: got %q want %q", raw, got, want)
 		}
+	}
+	// The host never survives the environment filter.
+	env := filterProcessEnv([]byte("ANTHROPIC_BASE_URL=https://secret-gw.example/x\x00PATH=/bin"))
+	if len(env) != 1 || env[0] != "ANTHROPIC_BASE_URL=custom" {
+		t.Fatalf("%q", env)
 	}
 }
 
@@ -110,7 +107,7 @@ func TestSettingsKeysAreOnlyPresenceChecked(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeEnv(t, home, map[int][]string{4: {"PATH=/bin"}})
-	if got := detectSessionAccess("claude", 4); got != (sessionAccess{"api", ""}) {
+	if got := detectSessionAccess("claude", 4); got != (sessionAccess{"api", accessCustomEndpoint}) {
 		t.Fatalf("got %+v", got)
 	}
 }
