@@ -77,7 +77,8 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 		"join-service-install": {"--service --name build-1 --accept-usage"},
 		"join-root-install":    {"--root --name build-1 --accept-usage"},
 		"join-compose-install": {"--compose --name build-1 --accept-usage"},
-		"join-windows-install": {"install.ps1", "-Join -Version v1.2.3 -Name build-1 -AcceptUsage"},
+		"join-windows-install": {"$env:MINION_JOIN='" + tok.Encode() + "'; [Net.ServicePointManager]", "install.ps1", "-Join -Version v1.2.3 -Name build-1 -AcceptUsage; Remove-Item Env:MINION_JOIN"},
+		"join-windows-masked":  {"install.ps1", "-Join -Version v1.2.3 -Name build-1 -AcceptUsage"},
 	} {
 		for _, part := range parts {
 			if !strings.Contains(p[id], part) || strings.Contains(p[id], "\n") {
@@ -104,15 +105,22 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 		strings.Contains(masked, "mnj1") || strings.Contains(masked, tok.Encode()) || strings.Contains(masked, "\n") {
 		t.Errorf("masked variant:\n%s", masked)
 	}
-	// It comes before the token field and the long variants.
-	for _, later := range []string{`id="join-verified"`, `id="join-token"`, `id="join-unix"`, `id="join-docker"`} {
+	if strings.Contains(p["join-windows-masked"], "MINION_JOIN") {
+		t.Errorf("the token-free Windows command mentions the token variable: %s", p["join-windows-masked"])
+	}
+	// The key comes first, then the one-liner, then the long variants.
+	for _, later := range []string{`id="join-verified"`, `id="join-unix"`, `id="join-docker"`} {
 		if strings.Index(body, `id="join-oneliner"`) > strings.Index(body, later) {
 			t.Errorf("the one-liner comes after %s", later)
 		}
 	}
+	if strings.Index(body, `id="join-token"`) > strings.Index(body, `id="join-oneliner"`) {
+		t.Error("the join token must come above the options")
+	}
 	// No live region around the token.
 	mustNotHave(t, body, `role="status" data-join-created`, `aria-live`)
-	mustHave(t, body, "shares all tmux sessions", "--share none", "data-join-usage", "including unshared sessions", "session names, folders", "no permission to read or control terminals")
+	mustHave(t, body, "It needs systemd; in a container (a Coder workspace, Docker) there is none, so choose Run as me.",
+		"stays in your PowerShell history", "shares all tmux sessions", "--share none", "data-join-usage", "including unshared sessions", "session names, folders", "no permission to read or control terminals")
 	if strings.Index(body, "data-join-usage") > strings.Index(body, `id="join-oneliner"`) {
 		t.Fatal("the usage disclosure must appear before commands that accept it")
 	}
@@ -160,7 +168,7 @@ func TestInvitationShowsUsageDisclosureBeforeInstallerCommands(t *testing.T) {
 	} {
 		mustHave(t, commands[id], "--accept-usage")
 	}
-	mustHave(t, commands["join-windows-install"], "-AcceptUsage")
+	mustHave(t, commands["join-windows-masked"], "-AcceptUsage")
 }
 
 func TestAddWorkerUnlimitedKeyOnlyGetsTheMaskedCommand(t *testing.T) {

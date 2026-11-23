@@ -2,7 +2,7 @@
 
 Back to the [README](../../README.md).
 
-Open **Usage** in the Hub for subscription limits, accounts, session counters, Worker inventory and personal token buckets. A user sees their own registered Workers. Administrators can see domain telemetry. Each person's account labels, ordering and buckets stay private.
+Open **Usage** in the Hub for subscription limits, accounts, session counters, Worker inventory and personal token buckets. A user sees their own registered Workers. Administrators can see domain telemetry. Each person's account labels, ordering and buckets stay private. A subscription account is shown with its full login e-mail address (followed by a short digest that tells two workspaces of the same login apart): the Worker owner and Hub administrators see it unmasked, nobody else does.
 
 **Workers** shows whether a Worker is online, when it reported and which harnesses it can identify. Select **Scan installed harnesses** to check a registered Worker. Some fields depend on a configured native producer; **Unknown** means no usable observation. The Hub does not infer tokens, charges or remaining capacity from a terminal screen.
 

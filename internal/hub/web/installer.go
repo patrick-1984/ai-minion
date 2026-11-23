@@ -207,12 +207,23 @@ func installerModeLine(tag, token, name, mode string) string {
 	return downloadedInstallerLine(tag, "install.sh", "MINION_VERSION="+tag+" "+joinEnv(token)+"sh -s -- "+mode+nameArg(name)+usageInstallerArgs(tag, "--accept-usage"))
 }
 
-func windowsInstallerLine(tag, name string) string {
-	line := `[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm '` + releaseDownloadBase + tag + `/install.ps1'))) -Join -Version ` + tag
+// windowsInstallerLine is the one-line PowerShell command. With token it sets
+// MINION_JOIN for the installer and removes it afterwards, even when the
+// installer fails; without it the installer asks at a hidden prompt.
+func windowsInstallerLine(tag, token, name string) string {
+	var line string
+	if token != "" {
+		line = "$env:MINION_JOIN='" + token + "'; "
+	}
+	line += `[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm '` + releaseDownloadBase + tag + `/install.ps1'))) -Join -Version ` + tag
 	if name != "" {
 		line += " -Name " + psArg(name)
 	}
-	return line + usageInstallerArgs(tag, "-AcceptUsage")
+	line += usageInstallerArgs(tag, "-AcceptUsage")
+	if token != "" {
+		line += "; Remove-Item Env:MINION_JOIN -ErrorAction SilentlyContinue"
+	}
+	return line
 }
 
 func androidInstallerLine(tag string) string {

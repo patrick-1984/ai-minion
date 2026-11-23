@@ -185,6 +185,13 @@ authorized() {
 	if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n -- "$@"; fi
 }
 
+# need_systemd MODE: --service and --root install a systemd unit, so refuse
+# early (before any download or change) where there is none.
+need_systemd() {
+	[ "$(uname -s)" = Linux ] || die "--$1 needs Linux with systemd. Use \"Run as me\" instead: run the same command without --$1."
+	[ -d "${MINION_SYSTEMD_DIR:-/run/systemd/system}" ] || die "This computer does not run systemd (for example a container such as a Coder workspace), so no system service can be installed here. Use \"Run as me\" instead: run the same command without --$1; it starts the Worker now and again at login."
+}
+
 worker_up() {
 	bin=$1
 	shift
@@ -297,11 +304,11 @@ main() {
 		case $mode in
 		user) [ "$(id -u)" != 0 ] || die "run --join without sudo, or give --root to run a root Worker" ;;
 		service)
-			[ "$(uname -s)" = Linux ] && [ -d /run/systemd/system ] || die "--service needs Linux with systemd"
+			need_systemd service
 			if [ "$(id -u)" = 0 ]; then target_user=${SUDO_USER:-}; else target_user=$(id -un); fi
 			[ -n "$target_user" ] && [ "$target_user" != root ] || die "run --service from the account the Worker will use, or use --root"
 			;;
-		root) [ "$(uname -s)" = Linux ] || die "--root needs Linux" ;;
+		root) need_systemd root ;;
 		esac
 		read_token
 		case $mode in

@@ -290,6 +290,17 @@ rm -f "$JL".*
 run_install "$WORK/j3" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" FAKE_RC=3
 assert_contains "a failing join keeps its exit status" "rc=$RC" "rc=3"
 
+# A system service needs systemd: without it the refusal says why and names
+# "Run as me", before anything is downloaded or installed.
+for m in service root; do
+	SCRIPT_ARGS="--join --$m"
+	run_install "$WORK/nosd-$m" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="$TOKEN" JOINLOG="$JL" MINION_SYSTEMD_DIR="$WORK/no-such-systemd"
+	assert_contains "--$m without systemd says so" "$OUT" "does not run systemd (for example a container such as a Coder workspace)"
+	assert_contains "--$m without systemd names Run as me" "$OUT" "run the same command without --$m; it starts the Worker now and again at login"
+	assert_no_file "--$m without systemd installs nothing" "$WORK/nosd-$m/minion"
+done
+SCRIPT_ARGS=--join
+
 run_install "$WORK/j4" Linux x86_64 MINION_VERSION=v1.6.0 MINION_JOIN="not-a-token" JOINLOG="$JL"
 assert_contains "something that is not a token is refused" "$OUT" "not a join token"
 case "$OUT" in *"not-a-token"*) bad "the refusal repeats the input" ;; *) ok "the refusal does not repeat the input" ;; esac

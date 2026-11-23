@@ -524,3 +524,24 @@ func TestReadbackMeasuredSessionOutranksLinkedQuota(t *testing.T) {
 		t.Fatal("the byte cap dropped measured consumption before linked quota")
 	}
 }
+
+// An account label holds the full e-mail for the Worker owner and Hub
+// administrators; the readback document never carries it.
+func TestReadbackNeverCarriesAnAccountLabel(t *testing.T) {
+	now := time.Now()
+	reset := now.Add(time.Hour).UnixMilli()
+	five := int64(5 * time.Hour / time.Millisecond)
+	a := rbAccount("mail", "anthropic", now, UsageWindow{Scope: "general", Period: "rolling", DurationMS: &five, ResetsAt: &reset, UsedPercent: fp(10)})
+	a.Label = "person@example.com / abc123"
+	ms, _ := ProviderMeters([]UsageAccount{a}, now)
+	if len(ms) == 0 {
+		t.Fatal("no meters")
+	}
+	b, err := json.Marshal(ms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "person") || strings.Contains(string(b), "example.com") {
+		t.Fatalf("an account label reached the readback meters: %s", b)
+	}
+}
