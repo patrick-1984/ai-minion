@@ -106,6 +106,10 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 // usageDetector classifies the panes of the usage snapshot (tests replace it).
 var usageDetector = agentdetect.New()
 
+// usageProcTimeout bounds the one process-table query of a usage snapshot
+// (tests shorten it).
+var usageProcTimeout = agentdetect.SnapshotTimeout
+
 // usageHarnessProvider names the vendor of a harness that has exactly one.
 var usageHarnessProvider = map[string]string{"claude": "Anthropic", "codex": "OpenAI"}
 
@@ -127,6 +131,8 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 		return r, apiErr(proto.CodeConflict, "", "session inventory exceeds the supported batch size")
 	}
 	accounts := map[string]ops.UsageAccount{}
+	// One bounded process-table query serves every pane of this snapshot.
+	detector := usageDetector.Snapshot(usageProcTimeout)
 	for _, s := range sessions {
 		var started *int64
 		if !s.Created.IsZero() && !s.Created.After(now) {
@@ -140,7 +146,7 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 			// (bash -c 'claude ...; exec bash'), where the pane's current
 			// command is the shell. Only the process tree and the command
 			// are read, never the screen.
-			if c, pid := usageDetector.Locate(ctx, agentdetect.Input{Command: pane.Ref.Command, PID: pane.Ref.PID}); c.ShownIsAgent() {
+			if c, pid := detector.Locate(ctx, agentdetect.Input{Command: pane.Ref.Command, PID: pane.Ref.PID}); c.ShownIsAgent() {
 				row.Harness = c.ShownAgent()
 				row.Provider = usageHarnessProvider[row.Harness]
 				acc := detectSessionAccess(row.Harness, pid)

@@ -364,8 +364,13 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		return false, err
 	}
 	newStatus := desired.statusCommand(manifest)
+	heal := false
 	if prior == nil {
-		if strings.Contains(oldStatus, claudeUsageMarker) {
+		if strings.Contains(oldStatus, claudeUsageMarker) && desired.ownsStatus(oldStatus, manifest) {
+			// Our status line is installed but its manifest is gone: recreate
+			// the manifest. The line that was replaced originally is unknown.
+			heal = true
+		} else if strings.Contains(oldStatus, claudeUsageMarker) {
 			return false, errors.New("existing Claude Code status line uses a Minion exporter whose settings cannot be verified")
 		}
 		desired.PreviousLine = oldStatus
@@ -390,7 +395,7 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		changed = true
 	}
 	refresh := prior != nil && desired != *prior
-	if !changed && !refresh {
+	if !changed && !refresh && !heal {
 		return false, nil
 	}
 	if refresh {
@@ -404,6 +409,16 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		if !changed {
 			return true, nil
 		}
+	}
+	if heal && !changed {
+		raw, err := json.Marshal(desired)
+		if err != nil || len(raw)+1 > maxClaudeSettings {
+			return false, errors.New("the Claude Code usage manifest would exceed the supported file size")
+		}
+		if err := identity.WritePrivate(manifest, append(raw, '\n')); err != nil {
+			return false, fmt.Errorf("save the Claude Code usage manifest: %w", err)
+		}
+		return true, nil
 	}
 	next, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil || len(next)+1 > maxClaudeSettings {
@@ -431,19 +446,25 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		}
 	}
 	if err := saveClaudeSettings(path, append(next, '\n'), unchanged); err != nil {
-		if prior == nil {
-			_ = os.Remove(manifest) // the settings do not reference a manifest that was only staged
+		// After a post-write conflict our replacement is in the file and its
+		// hooks and status line reference the manifest: keep it. Only a save
+		// that did not commit leaves the staged manifest unreferenced.
+		if prior == nil && !errors.Is(err, errClaudeSettingsConflict) {
+			_ = os.Remove(manifest)
 		}
 		return false, err
 	}
 	return true, nil
 }
 
+// writeClaudeSettingsFile is the replacing write (tests replace it).
+var writeClaudeSettingsFile = identity.WriteReplacing
+
 // saveClaudeSettings replaces the profile's settings.json, keeping an exact
 // copy of the replaced bytes in settings.json.minion-backup. A concurrent
 // writer found afterwards is reported with the backup path, never repaired.
 func saveClaudeSettings(path string, data []byte, unchanged func() error) error {
-	err := identity.WriteReplacing(path, data, unchanged)
+	err := writeClaudeSettingsFile(path, data, unchanged)
 	var conflict *identity.ConflictError
 	switch {
 	case err == nil:
