@@ -100,3 +100,24 @@ func TestHarnessesSaveChoiceAndScan(t *testing.T) {
 		}
 	}
 }
+
+func TestHarnessCheckAllCountsOnlyWorkersWhoseInventoryAdvanced(t *testing.T) {
+	at := time.Date(2026, 11, 21, 14, 30, 0, 0, time.UTC).UnixMilli()
+	f := harnessFixtures([]string{"claude"}).on(ops.OpWorkerUsage, func(args map[string]any) (any, error) {
+		switch args["worker_id"] {
+		case "build":
+			newer := at + 1000
+			return ops.UsageReport{Version: 1, InventoryAt: &newer}, nil
+		case "full":
+			return ops.UsageReport{Version: 1, InventoryAt: &at}, nil // cached
+		}
+		return ops.UsageReport{Version: 1}, nil // no inventory
+	})
+	connect(t, f)
+	srv := onbUser(t)
+	res := onbPost(t, srv, "/harnesses/scan", url.Values{"for_user": {onbUserID}})
+	fl := flashesOf(res)
+	if len(fl) != 1 || !strings.Contains(fl[0].Text, "Checked 1 Worker.") || !strings.Contains(fl[0].Text, "2 Workers could not be checked") {
+		t.Fatalf("flash: %+v", fl)
+	}
+}

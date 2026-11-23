@@ -133,3 +133,31 @@ func TestWantedHarnessesDefaultSetAndKeepPrefs(t *testing.T) {
 		t.Fatalf("unknown user = %v", err)
 	}
 }
+
+func TestSetUserPrefsIsAtomic(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	p := seedParams("pat")
+	if _, err := s.SeedAdmin(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	both := []string{"claude"}
+	if err := s.SetUserPrefs(ctx, p.User.ID, &both, &yes); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.UserPrefs(ctx, p.User.ID); len(got.WantedHarnesses) != 1 || !got.AllowHiddenSessions {
+		t.Fatalf("both fields: %+v", got)
+	}
+	// A rejected second write must roll the first one back.
+	if _, err := s.db.Exec(`CREATE TRIGGER reject_hidden BEFORE UPDATE OF allow_hidden_sessions ON user_prefs WHEN NEW.allow_hidden_sessions = 0 BEGIN SELECT RAISE(ABORT,'no'); END`); err != nil {
+		t.Fatal(err)
+	}
+	no, other := false, []string{"codex"}
+	if err := s.SetUserPrefs(ctx, p.User.ID, &other, &no); err == nil {
+		t.Fatal("expected the failing write to surface")
+	}
+	if got, _ := s.UserPrefs(ctx, p.User.ID); len(got.WantedHarnesses) != 1 || got.WantedHarnesses[0] != "claude" || !got.AllowHiddenSessions {
+		t.Fatalf("half of the request was committed: %+v", got)
+	}
+}

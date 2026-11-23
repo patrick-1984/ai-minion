@@ -426,7 +426,7 @@
           if (!isFinite(right.value)) { return -1; }
           order = left.value - right.value;
         } else {
-          order = left.value.localeCompare(right.value);
+          order = left.value.localeCompare(right.value, undefined, { numeric: true, sensitivity: 'base' });
         }
         return (direction === 'ascending' ? order : -order) || left.index - right.index;
       });

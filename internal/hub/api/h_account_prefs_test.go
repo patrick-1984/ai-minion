@@ -17,21 +17,21 @@ type fakePrefsStore struct {
 	wanted map[string][]string
 }
 
-func (f *fakePrefsStore) SetWantedHarnesses(_ context.Context, id string, names []string) error {
-	if f.wanted == nil {
-		f.wanted = map[string][]string{}
+func (f *fakePrefsStore) SetUserPrefs(_ context.Context, id string, wanted *[]string, allow *bool) error {
+	if wanted != nil {
+		if f.wanted == nil {
+			f.wanted = map[string][]string{}
+		}
+		f.wanted[id] = *wanted
 	}
-	f.wanted[id] = names
+	if allow != nil {
+		f.set[id] = *allow
+	}
 	return nil
 }
 
 func (f *fakePrefsStore) UserPrefs(_ context.Context, id string) (store.UserPrefs, error) {
 	return store.UserPrefs{AllowHiddenSessions: f.set[id], WantedHarnesses: f.wanted[id]}, nil
-}
-
-func (f *fakePrefsStore) SetAllowHiddenSessions(_ context.Context, id string, allow bool) error {
-	f.set[id] = allow
-	return nil
 }
 
 // managerDecider grants manage to the principals it lists.

@@ -77,7 +77,7 @@ func TestAddWorkerShowsTheVerifiedOneLinerAtTheTop(t *testing.T) {
 		"join-service-install": {"--service --name build-1 --accept-usage"},
 		"join-root-install":    {"--root --name build-1 --accept-usage"},
 		"join-compose-install": {"--compose --name build-1 --accept-usage"},
-		"join-windows-install": {"$env:MINION_JOIN='" + tok.Encode() + "'; [Net.ServicePointManager]", "install.ps1", "-Join -Version v1.2.3 -Name build-1 -AcceptUsage; Remove-Item Env:MINION_JOIN"},
+		"join-windows-install": {"try { $env:MINION_JOIN='" + tok.Encode() + "'; [Net.ServicePointManager]", "install.ps1", "-Join -Version v1.2.3 -Name build-1 -AcceptUsage } finally { Remove-Item Env:MINION_JOIN"},
 		"join-windows-masked":  {"install.ps1", "-Join -Version v1.2.3 -Name build-1 -AcceptUsage"},
 	} {
 		for _, part := range parts {

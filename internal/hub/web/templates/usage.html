@@ -298,14 +298,14 @@
         <div><dt>Harness</dt><dd>{{$p.Harness .Harness}} {{.Version}}</dd></div>
         <div><dt>Provider</dt><dd>{{$p.Label .Provider}}</dd></div>
         <div><dt>Model</dt><dd>{{if .Model}}{{.Model}}{{else}}Unknown{{end}}</dd></div>
-        <div><dt>Access</dt><dd>{{if and (eq .AuthMode "api") .Endpoint}}Custom endpoint · {{.Endpoint}}{{else}}{{$p.Access .AuthMode}}{{end}}</dd></div>
+        <div><dt>Access</dt><dd>{{if .Endpoint}}Custom endpoint · {{.Endpoint}}{{else}}{{$p.Access .AuthMode}}{{end}}</dd></div>
         <div><dt>Started</dt><dd>{{$p.Time .StartedAt}}</dd></div>
         <div><dt>Stopped</dt><dd>{{if .StoppedAt}}{{$p.Time .StoppedAt}}{{else}}No stop observed{{end}}</dd></div>
         <div><dt>Last seen</dt><dd>{{$p.Millis .LastSeen}}</dd></div>
         {{if .AccountID}}<div><dt>Account ID</dt><dd><code>{{.AccountID}}</code></dd></div>{{end}}
         {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName .BucketID}}</dd></div>{{end}}
       </dl>
-      {{if and (eq .Harness "claude") (not .InputTokens) (not .OutputTokens)}}{{if $p.ExporterAbsentOn .WorkerID}}<p class="help">Tokens, cost and model need the Claude Code exporter: run <code>{{$p.ExporterCommand}}</code> on {{$p.WorkerName .WorkerID}}, then restart the Claude sessions.</p>{{else}}<p class="help">Tokens, cost and model appear once this Claude session reports; a session started before the exporter was installed needs a restart.</p>{{end}}{{else if and (eq .Harness "codex") (not .InputTokens) (not .OutputTokens)}}<p class="help">Codex session tokens are not collected yet.</p>{{end}}
+      {{if $p.ClaudeSilent .}}{{if $p.ExporterAbsentOn .WorkerID}}<p class="help">Tokens, cost and model need the Claude Code exporter: run <code>{{$p.ExporterCommand}}</code> on {{$p.WorkerName .WorkerID}}, then restart the Claude sessions.</p>{{else if $p.NeedsRestart .}}<p class="help">This Claude session started before the exporter was installed: restart it to start reporting.</p>{{else}}<p class="help">Tokens, cost and model appear once this Claude session reports.</p>{{end}}{{else if and (eq .Harness "codex") (not .InputTokens) (not .OutputTokens)}}<p class="help">Codex session tokens are not collected yet.</p>{{end}}
       {{template "usage_counters" ($p.Counters .UsageCounters)}}
       {{if .Models}}
       <details class="usage-window">

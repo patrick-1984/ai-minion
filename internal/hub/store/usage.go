@@ -14,6 +14,7 @@ import (
 // expectedOwner fences a report received across reassignment. A replayed or
 // out-of-order report must never close a session that a newer report observed.
 func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, report ops.UsageReport, now time.Time) error {
+	report = report.DropBadLabels()
 	if err := report.Check(now); err != nil {
 		return err
 	}

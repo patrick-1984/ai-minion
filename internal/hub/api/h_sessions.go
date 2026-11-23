@@ -176,7 +176,7 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 		case a.WorkerID != b.WorkerID:
 			return a.WorkerID < b.WorkerID
 		}
-		return a.Session < b.Session
+		return ops.NaturalCompare(a.Session, b.Session) < 0
 	})
 	return out, nil
 }

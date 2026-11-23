@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -223,6 +224,23 @@ func (c UsageCounters) valid() bool {
 	return true
 }
 
+// UsageLabelMax bounds an account label: a full e-mail address (254 bytes,
+// RFC 5321) plus a short suffix.
+const UsageLabelMax = 320
+
+// DropBadLabels returns the report with an invalid optional account label
+// emptied, so one bad display field never invalidates the whole report.
+func (r UsageReport) DropBadLabels() UsageReport {
+	accounts := slices.Clone(r.Accounts)
+	for i := range accounts {
+		if !usageText(accounts[i].Label, UsageLabelMax) {
+			accounts[i].Label = ""
+		}
+	}
+	r.Accounts = accounts
+	return r
+}
+
 // Check rejects a malformed report as a unit; the domain layer never stores
 // raw wire JSON or diagnostic text from adapters.
 func (r UsageReport) Check(now time.Time) error {
@@ -308,7 +326,7 @@ func (r UsageReport) Check(now time.Time) error {
 			!usageText(a.Plan, 64) ||
 			!usageClock(a.TimeSource) ||
 			!usageMode(a.AuthMode) ||
-			!usageText(a.Label, 96) ||
+			!usageText(a.Label, UsageLabelMax) ||
 			a.Source == "" ||
 			!usageText(a.Source, 64) ||
 			!usageTime(a.ObservedAt, r.ObservedAt) ||

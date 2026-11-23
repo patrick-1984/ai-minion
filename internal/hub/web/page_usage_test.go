@@ -256,8 +256,9 @@ func TestUsageExplainsMissingClaudeExporter(t *testing.T) {
 	}
 	anthropic := ops.UsageAccountRow{UsageAccount: ops.UsageAccount{ID: ops.UsageID("fixture", "a"), Provider: "Anthropic", Label: "Work", AuthMode: "subscription", Source: "claude-statusline", ObservedAt: at},
 		Collector: &ops.UsageCollector{Status: "passive", Mode: "passive_events"}}
+	started := at - 3600000
 	session := func(h string) ops.UsageSessionRow {
-		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", h), Name: h + "-1", Harness: h, AuthMode: "unknown", Source: "session-host", ObservedAt: at}}
+		return ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", h), Name: h + "-1", Harness: h, AuthMode: "unknown", Source: "session-host", StartedAt: &started, ObservedAt: at}}
 	}
 	run := func(inv []ops.UsageHarness, view string) string {
 		result := ops.UsageListResult{Version: 1, AsOf: at, Accounts: []ops.UsageAccountRow{anthropic}, Sessions: []ops.UsageSessionRow{session("claude"), session("codex")},
@@ -287,7 +288,7 @@ func TestUsageExplainsMissingClaudeExporter(t *testing.T) {
 	if body := run(claude("installed"), "workers"); !strings.Contains(body, "Claude exporter: installed") || strings.Contains(body, "needs the Minion status-line exporter") {
 		t.Fatalf("installed state: %s", body)
 	}
-	if body := run(claude("installed"), "sessions"); strings.Contains(body, "Tokens, cost and model need the Claude Code exporter") || !strings.Contains(body, "needs a restart") {
+	if body := run(claude("installed"), "sessions"); strings.Contains(body, "Tokens, cost and model need the Claude Code exporter") || !strings.Contains(body, "started before the exporter was installed") {
 		t.Fatalf("a session on a Worker that has the exporter still asks for the install command: %s", body)
 	}
 	if body := run(claude("installed"), "accounts"); strings.Contains(body, "No Worker has it yet") {
@@ -324,7 +325,8 @@ func TestUsageShowsEveryClaudeExporterStateRestartAndStaleReason(t *testing.T) {
 	at := time.Now().UnixMilli()
 	old := time.Now().Add(-time.Hour).UnixMilli()
 	stale := ops.UsageAccountRow{UsageAccount: ops.UsageAccount{ID: ops.UsageID("fixture", "s"), Provider: "Anthropic", Label: "Work", AuthMode: "subscription", Source: "claude-statusline", ObservedAt: old}}
-	live := ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", "c"), Name: "c-1", Harness: "claude", AuthMode: "unknown", Source: "session-host", ObservedAt: at}}
+	started := at - 3600000
+	live := ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("fixture", "c"), Name: "c-1", Harness: "claude", AuthMode: "unknown", Source: "session-host", StartedAt: &started, ObservedAt: at}}
 	view := func(exporter, section string) string {
 		inv := []ops.UsageHarness{{Name: "claude", Status: "installed", Exporter: exporter}}
 		result := ops.UsageListResult{Version: 1, AsOf: at, Accounts: []ops.UsageAccountRow{stale}, Sessions: []ops.UsageSessionRow{live},
@@ -337,4 +339,33 @@ func TestUsageShowsEveryClaudeExporterStateRestartAndStaleReason(t *testing.T) {
 	mustHave(t, view("off", "workers"), "Claude exporter: off", "usage_claude_exporter auto")
 	mustHave(t, view("conflict", "workers"), "Claude exporter: conflict", "could not be kept")
 	mustHave(t, view("installed", "accounts"), "No running Claude Code session of this account has reported since")
+}
+
+func TestUsageRestartAdviceOnlyForSilentSessionsStartedBeforeTheExporter(t *testing.T) {
+	at := time.Now().UnixMilli()
+	before, after := at-3600000, at+1000
+	p := usagePage{exporterSeen: map[string]int64{"build": at}}
+	row := func(started *int64, model string) ops.UsageSessionRow {
+		return ops.UsageSessionRow{WorkerID: "build", UsageSession: ops.UsageSession{Harness: "claude", Model: model, StartedAt: started}}
+	}
+	cost := 0.5
+	reported := row(&before, "")
+	reported.EstimatedCostUSD = &cost
+	for name, c := range map[string]struct {
+		s    ops.UsageSessionRow
+		want bool
+	}{
+		"silent and older":          {row(&before, ""), true},
+		"healthy exporter (model)":  {row(&before, "claude-x"), false},
+		"healthy exporter (cost)":   {reported, false},
+		"started after the install": {row(&after, ""), false},
+		"unknown start":             {row(nil, ""), false},
+	} {
+		if got := p.NeedsRestart(c.s); got != c.want {
+			t.Errorf("%s: %v, want %v", name, got, c.want)
+		}
+	}
+	if (usagePage{}).NeedsRestart(row(&before, "")) {
+		t.Error("advice without an installed exporter")
+	}
 }

@@ -208,20 +208,17 @@ func installerModeLine(tag, token, name, mode string) string {
 }
 
 // windowsInstallerLine is the one-line PowerShell command. With token it sets
-// MINION_JOIN for the installer and removes it afterwards, even when the
-// installer fails; without it the installer asks at a hidden prompt.
+// MINION_JOIN for the installer and removes it afterwards (try/finally), even
+// when the download or the installer fails; without it the installer asks at a hidden prompt.
 func windowsInstallerLine(tag, token, name string) string {
-	var line string
-	if token != "" {
-		line = "$env:MINION_JOIN='" + token + "'; "
-	}
-	line += `[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm '` + releaseDownloadBase + tag + `/install.ps1'))) -Join -Version ` + tag
+	line := `[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm '` + releaseDownloadBase + tag + `/install.ps1'))) -Join -Version ` + tag
 	if name != "" {
 		line += " -Name " + psArg(name)
 	}
 	line += usageInstallerArgs(tag, "-AcceptUsage")
 	if token != "" {
-		line += "; Remove-Item Env:MINION_JOIN -ErrorAction SilentlyContinue"
+		// finally runs even when the download or the installer fails.
+		line = "try { $env:MINION_JOIN='" + token + "'; " + line + " } finally { Remove-Item Env:MINION_JOIN -ErrorAction SilentlyContinue }"
 	}
 	return line
 }

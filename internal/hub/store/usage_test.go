@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -384,5 +385,92 @@ func TestUsageAccountsTotalsSumApiKeySessionsOnly(t *testing.T) {
 	got, err = s.ReadUsage(ctx, workers[1:], "bob", ops.UsageListArgs{Section: "accounts"}, now)
 	if err != nil || len(got.Accounts) != 0 {
 		t.Fatalf("scope: %+v %v", got, err)
+	}
+}
+
+func TestUsageAccountsTotalsHonourWorkerFilter(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	api := ops.UsageAccount{ID: ops.UsageID("account", "api", "shared"), Provider: "Anthropic", AuthMode: "api", ObservedAt: now.UnixMilli(), Source: "test"}
+	for i, w := range workers[:2] {
+		in := int64(100 * (i + 1))
+		r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true, Accounts: []ops.UsageAccount{api}, Sessions: []ops.UsageSession{{
+			ID: ops.UsageID("session", "shared", fmt.Sprint(i)), Name: "api", AuthMode: "api", AccountID: api.ID, ObservedAt: now.UnixMilli(), Source: "test",
+			UsageCounters: ops.UsageCounters{InputTokens: &in}}}}
+		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, r, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		worker string
+		want   int64
+	}{{"", 300}, {workers[0].ID, 100}, {workers[1].ID, 200}} {
+		got, err := s.ReadUsage(ctx, workers[:2], "alice", ops.UsageListArgs{Section: "accounts", WorkerID: c.worker}, now)
+		if err != nil || len(got.Accounts) != 1 || got.Accounts[0].Totals == nil || got.Accounts[0].Totals.InputTokens == nil || *got.Accounts[0].Totals.InputTokens != c.want {
+			t.Fatalf("worker %q: %+v %v", c.worker, got.Accounts, err)
+		}
+	}
+}
+
+func TestUsageSessionsKeepNaturalOrderAcrossPages(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true}
+	for _, n := range []int{10, 2, 11, 1, 9, 3} {
+		r.Sessions = append(r.Sessions, ops.UsageSession{ID: ops.UsageID("session", "nat", fmt.Sprint(n)), Name: fmt.Sprintf("wb-%d", n), AuthMode: "unknown", ObservedAt: r.ObservedAt, Source: "test"})
+	}
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, now); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	after := ""
+	for range 10 {
+		page, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "sessions", Limit: 2, After: after}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range page.Sessions {
+			names = append(names, row.Name)
+		}
+		if after = page.Next; after == "" {
+			break
+		}
+	}
+	if got := strings.Join(names, ","); got != "wb-1,wb-2,wb-3,wb-9,wb-10,wb-11" {
+		t.Fatalf("order across pages: %s", got)
+	}
+}
+
+func TestUsageAccountKeepsNativeLoginLabelAcrossQuotaSamples(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	const email = "someone.long.address@example.com"
+	id := ops.UsageID("account", "claude-login")
+	save := func(step int, source, label string) {
+		at := now.Add(time.Duration(step) * time.Second)
+		a := ops.UsageAccount{ID: id, Provider: "Anthropic", Label: label, AuthMode: "subscription", ObservedAt: at.UnixMilli(), Source: source}
+		r := ops.UsageReport{Version: 1, ObservedAt: at.UnixMilli(), Complete: true, Accounts: []ops.UsageAccount{a}}
+		if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	label := func(step int) string {
+		got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now.Add(time.Duration(step)*time.Second))
+		if err != nil || len(got.Accounts) != 1 {
+			t.Fatalf("%+v %v", got, err)
+		}
+		return got.Accounts[0].Label
+	}
+	save(1, "native-test", email)
+	save(2, "claude-statusline", "Anthropic subscription")
+	if got := label(2); got != email {
+		t.Fatalf("label after quota sample: %q", got)
+	}
+	save(3, "native-test", email)
+	if got := label(3); got != email {
+		t.Fatalf("label after refresh: %q", got)
 	}
 }

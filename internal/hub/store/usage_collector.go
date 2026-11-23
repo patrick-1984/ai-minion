@@ -34,6 +34,22 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 		a.Source = "native-account"
 		a.Windows = nil
 	}
+	// The login identity comes from native discovery; a quota sample of the
+	// same account carries only a generic label and must not replace it.
+	var stored string
+	err = tx.QueryRowContext(ctx, `SELECT body FROM usage_accounts WHERE worker_id=? AND account_id=?`, workerID, a.ID).Scan(&stored)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var old ops.UsageAccount
+	if stored != "" && json.Unmarshal([]byte(stored), &old) == nil && old.Source == "native-account" && old.Label != "" && a.Source != "native-account" {
+		a.Label = old.Label
+	}
+	if a.Source == "native-account" && a.Label != "" && stored != "" && old.Source != "native-account" {
+		if _, err := tx.ExecContext(ctx, `UPDATE usage_accounts SET body=json_set(body,'$.label',?) WHERE worker_id=? AND account_id=?`, a.Label, workerID, a.ID); err != nil {
+			return err
+		}
+	}
 	b, err := json.Marshal(a)
 	if err != nil {
 		return err
