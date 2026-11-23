@@ -19,7 +19,18 @@ func TestReadProcessEnvKeepsNoSecretAndOnlyOwnProcesses(t *testing.T) {
 		t.Skip(err)
 	}
 	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
-	env, ok := readProcessEnv(child.Process.Pid)
+	// Start returns once exec has begun; the kernel publishes the new
+	// program's environment a moment later, so wait for it.
+	var (
+		env []string
+		ok  bool
+	)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		env, ok = readProcessEnv(child.Process.Pid)
+		if ok && len(env) > 0 || time.Now().After(deadline) {
+			break
+		}
+	}
 	if !ok {
 		t.Fatal("own environment unreadable")
 	}
