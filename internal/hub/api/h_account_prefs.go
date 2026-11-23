@@ -16,6 +16,7 @@ import (
 type AccountPrefsStore interface {
 	UserPrefs(ctx context.Context, userID string) (store.UserPrefs, error)
 	SetAllowHiddenSessions(ctx context.Context, userID string, allow bool) error
+	SetWantedHarnesses(ctx context.Context, userID string, names []string) error
 }
 
 var _ AccountPrefsStore = (*store.Store)(nil)
@@ -70,7 +71,7 @@ func (h *accountPrefsHandlers) get(ctx context.Context, c *Call, _ ops.AccountPr
 	hub := h.hub()
 	return ops.AccountPrefsResult{
 		AllowHiddenSessions: p.AllowHiddenSessions, HiddenSessions: hub,
-		HiddenSessionsAllowed: h.allows(hub, p.AllowHiddenSessions),
+		HiddenSessionsAllowed: h.allows(hub, p.AllowHiddenSessions), WantedHarnesses: p.WantedHarnesses,
 	}, nil
 }
 
@@ -104,6 +105,17 @@ func (h *accountPrefsHandlers) set(ctx context.Context, c *Call, args ops.Accoun
 	}
 	if err := h.setPrefsAllowed(ctx, c); err != nil {
 		return ops.WriteResult{}, err
+	}
+	if args.WantedHarnesses != nil {
+		if err := h.st.SetWantedHarnesses(ctx, c.Principal.UserID, *args.WantedHarnesses); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return ops.WriteResult{}, NewError(proto.CodeNotFound, "the account does not exist")
+			}
+			return ops.WriteResult{}, err
+		}
+	}
+	if args.AllowHiddenSessions == nil {
+		return delivered(), nil
 	}
 	if err := h.st.SetAllowHiddenSessions(ctx, c.Principal.UserID, *args.AllowHiddenSessions); err != nil {
 		if errors.Is(err, store.ErrNotFound) {

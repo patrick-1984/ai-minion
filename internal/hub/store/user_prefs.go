@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -20,6 +21,9 @@ type UserPrefs struct {
 	// UpdatedAt is when the user last changed a preference (unix
 	// milliseconds); zero for the defaults.
 	UpdatedAt int64
+	// WantedHarnesses are the harness names the user ticked on the Harnesses
+	// page; nil when the user never chose (not the same as an empty choice).
+	WantedHarnesses []string
 }
 
 // UserPrefs returns the preferences of userID, or the defaults when the user
@@ -27,8 +31,9 @@ type UserPrefs struct {
 func (s *Store) UserPrefs(ctx context.Context, userID string) (UserPrefs, error) {
 	var p UserPrefs
 	var allow int
+	var wanted sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT allow_hidden_sessions, updated_at FROM user_prefs WHERE user_id = ?`, userID).Scan(&allow, &p.UpdatedAt)
+		`SELECT allow_hidden_sessions, updated_at, wanted_harnesses FROM user_prefs WHERE user_id = ?`, userID).Scan(&allow, &p.UpdatedAt, &wanted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return UserPrefs{}, nil
 	}
@@ -36,7 +41,36 @@ func (s *Store) UserPrefs(ctx context.Context, userID string) (UserPrefs, error)
 		return UserPrefs{}, fmt.Errorf("store: read user preferences: %w", err)
 	}
 	p.AllowHiddenSessions = allow != 0
+	if wanted.Valid {
+		p.WantedHarnesses = []string{}
+		if wanted.String != "" {
+			p.WantedHarnesses = strings.Split(wanted.String, ",")
+		}
+	}
 	return p, nil
+}
+
+// SetWantedHarnesses stores the harness names of userID (they must not
+// contain a comma; the caller validates the names). It returns [ErrNotFound]
+// when the user does not exist.
+func (s *Store) SetWantedHarnesses(ctx context.Context, userID string, names []string) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		var one int
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, userID).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: read user: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO user_prefs (user_id, wanted_harnesses, updated_at) VALUES (?1, ?2, ?3)
+			 ON CONFLICT (user_id) DO UPDATE SET wanted_harnesses = ?2, updated_at = ?3`,
+			userID, strings.Join(names, ","), time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("store: set wanted harnesses: %w", err)
+		}
+		return nil
+	})
 }
 
 // SetAllowHiddenSessions stores the hidden-sessions preference of userID. It

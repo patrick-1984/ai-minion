@@ -164,3 +164,23 @@ func TestUpdatesCheckNowIsBounded(t *testing.T) {
 		t.Fatalf("took %v, headers %v", d, rec.Header())
 	}
 }
+
+// Without a host updater report the page says automatic Hub updates are not
+// set up and links the guides of the running version; with one, it does not.
+func TestUpdatesPageExplainsMissingAutomaticUpdates(t *testing.T) {
+	res := ops.HubUpdateCheckResult{Current: "v0.19.0", Channel: "latest", CheckedChannel: "latest"}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, res))
+	body := get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, "Automatic Hub updates: not set up. The Hub updates itself through a host updater on the NAS (TrueNAS Cron Task).",
+		`href="https://github.com/patrick-1984/ai-minion/blob/v0.19.0/docs/install/hub-truenas-updater.md"`,
+		`blob/v0.19.0/docs/install/hub-docker.md#let-the-hub-update-itself-opt-in`)
+	res.Current = "dev-abc"
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, res))
+	mustHave(t, get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String(), `blob/main/docs/install/hub-truenas-updater.md`)
+	res.Current = "v0.19.0"
+	res.HostUpdater = &ops.HubHostUpdaterStatus{Available: true, App: "minion"}
+	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, res))
+	body = get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
+	mustNotHave(t, body, "not set up")
+	mustHave(t, body, "TrueNAS host updater")
+}

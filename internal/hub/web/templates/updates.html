@@ -27,6 +27,12 @@
   {{else}}<p class="notice notice-info">The host owner controls the schedule. Set <code>allow_hub_policy: true</code> in the host updater configuration to manage it here.</p>{{end}}
   {{else}}<p class="notice notice-info">The host updater has not reported a readable status. Check the Cron Task and the request/status directory mounts.</p>{{end}}
 </section>
+{{else}}
+<section class="panel" aria-labelledby="auto-update-h" data-auto-update-missing>
+  <h2 id="auto-update-h">Automatic Hub updates</h2>
+  <p class="notice notice-info">Automatic Hub updates: not set up. The Hub updates itself through a host updater on the NAS (TrueNAS Cron Task).</p>
+  <p>Set it up with the <a href="{{.Data.DocsBase}}hub-truenas-updater.md" target="_blank" rel="noopener">TrueNAS host updater guide</a>. On plain Docker, the Hub can instead update itself in its own container: see <a href="{{.Data.DocsBase}}hub-docker.md#let-the-hub-update-itself-opt-in" target="_blank" rel="noopener">Let the Hub update itself</a>.</p>
+</section>
 {{end}}
 
 <section class="panel" aria-labelledby="workers-h">

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -28,6 +29,21 @@ type UpdatesPage struct {
 	// Slow is true when the check has run for more than updateWatchMax: the
 	// page stops reloading and says so.
 	Slow bool
+	// DocsBase is the repository docs of the running version (its release tag;
+	// main for a build that is not a plain release): the guides the panel
+	// "Automatic Hub updates" links to.
+	DocsBase string
+}
+
+var releaseTag = regexp.MustCompile(`^v?(\d+\.\d+\.\d+)$`)
+
+// docsBase is where the install guides of this Hub's version live on GitHub.
+func docsBase(current string) string {
+	ref := "main"
+	if m := releaseTag.FindStringSubmatch(current); m != nil {
+		ref = "v" + m[1]
+	}
+	return "https://github.com/patrick-1984/ai-minion/blob/" + ref + "/docs/install/"
 }
 
 // updateWait bounds the whole Check now request (under the Hub's 15 s shutdown budget).
@@ -44,6 +60,7 @@ func updatesData(r *http.Request, c OpCaller) (any, error) {
 	if err := c.CallOp(r, ops.OpHubUpdateCheck, ops.HubUpdateCheckArgs{}, &res.Check); err != nil {
 		return nil, err
 	}
+	res.DocsBase = docsBase(res.Check.Current)
 	if t, err := time.Parse(time.RFC3339, res.Check.CheckedAt); err == nil {
 		res.CheckedAt = t.UTC().Format("2006-01-02 15:04 UTC")
 	}

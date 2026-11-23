@@ -43,8 +43,8 @@ type usageAccountCard struct {
 }
 
 type usageWindowView struct {
-	Scope, Period, Used, Pace, Reset, Tone     string
-	Elapsed, Projected, Unit, RemainingPercent string
+	Title, Scope, Period, Used, Pace, Reset, Tone string
+	Elapsed, Projected, Unit, RemainingPercent    string
 }
 
 func (p usagePage) At(ms int64) string { return p.Time(&ms) }
@@ -99,6 +99,18 @@ func (p usagePage) Period(kind string, ms *int64) string {
 		return fmt.Sprintf("%g hours · %s", hours, label)
 	}
 	return fmt.Sprintf("%g minutes · %s", float64(*ms)/60000, label)
+}
+
+// usageWindowTitle names a limit for people: the window ("5-hour limit",
+// "Weekly limit") and, for a model-specific scope, the scope before it. The
+// producer's own ids ("codex.primary") stay in the data, not on screen.
+func usageWindowTitle(w ops.UsageWindow) string {
+	name := ops.UsageLimitName(w.DurationMS, w.Period)
+	switch strings.ToLower(w.Scope) {
+	case "", "general", "primary", "secondary", "codex.primary", "codex.secondary", "codex":
+		return name
+	}
+	return w.Scope + " · " + name
 }
 
 func usageLabel(value string) string {
@@ -365,7 +377,7 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 		return card
 	}
 	for _, w := range a.Windows {
-		view := usageWindowView{Scope: w.Scope, Period: p.Period(w.Period, w.DurationMS), Used: p.Percent(w.UsedPercent), Reset: p.Time(w.ResetsAt), Unit: w.Unit}
+		view := usageWindowView{Title: usageWindowTitle(w), Scope: w.Scope, Period: p.Period(w.Period, w.DurationMS), Used: p.Percent(w.UsedPercent), Reset: p.Time(w.ResetsAt), Unit: w.Unit}
 		view.RemainingPercent = "Unknown"
 		if w.UsedPercent != nil {
 			remaining := 100 - *w.UsedPercent
@@ -392,6 +404,15 @@ func (p usagePage) accountCard(a ops.UsageAccountRow) usageAccountCard {
 				projected := 100 * *w.UsedPercent / elapsed
 				view.Projected = p.Percent(&projected)
 			}
+		}
+		n := 1
+		for _, prev := range card.Windows {
+			if strings.HasPrefix(prev.Title, view.Title) && (prev.Title == view.Title || strings.HasPrefix(prev.Title, view.Title+" (")) {
+				n++
+			}
+		}
+		if n > 1 {
+			view.Title = fmt.Sprintf("%s (%d)", view.Title, n)
 		}
 		card.Windows = append(card.Windows, view)
 	}

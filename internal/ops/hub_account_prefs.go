@@ -24,6 +24,9 @@ type AccountPrefsResult struct {
 	HiddenSessions string `json:"hidden_sessions"`
 	// HiddenSessionsAllowed is the effective answer for the caller.
 	HiddenSessionsAllowed bool `json:"hidden_sessions_allowed"`
+	// WantedHarnesses are the coding harnesses (claude, codex, ...) the caller
+	// wants to see on their Workers; null when never chosen.
+	WantedHarnesses []string `json:"wanted_harnesses"`
 }
 
 // AccountPrefsSetArgs are the arguments of account_prefs_set. A preference
@@ -33,6 +36,10 @@ type AccountPrefsSetArgs struct {
 	// AllowHiddenSessions allows (true) or refuses (false) new hidden sessions
 	// for the caller while the Hub setting hidden_sessions is user-controlled.
 	AllowHiddenSessions *bool `json:"allow_hidden_sessions,omitempty"`
+	// WantedHarnesses replaces the caller's harness choice for the Harnesses
+	// page (lower-case names such as claude or codex; an empty list is a
+	// deliberate empty choice).
+	WantedHarnesses *[]string `json:"wanted_harnesses,omitempty"`
 }
 
 // Validate checks the request id and that something is changed.
@@ -40,10 +47,32 @@ func (a AccountPrefsSetArgs) Validate() error {
 	if err := a.WriteArgs.Validate(); err != nil {
 		return err
 	}
-	if a.AllowHiddenSessions == nil {
-		return invalid("allow_hidden_sessions", "is required")
+	if a.AllowHiddenSessions == nil && a.WantedHarnesses == nil {
+		return invalid("allow_hidden_sessions", "or wanted_harnesses is required")
+	}
+	if a.WantedHarnesses != nil {
+		if len(*a.WantedHarnesses) > 32 {
+			return invalid("wanted_harnesses", "at most 32 harnesses")
+		}
+		for _, n := range *a.WantedHarnesses {
+			if !validHarnessName(n) {
+				return invalid("wanted_harnesses", "use lower-case letters, digits and dashes, 1 to 32 characters")
+			}
+		}
 	}
 	return nil
+}
+
+func validHarnessName(n string) bool {
+	if n == "" || len(n) > 32 {
+		return false
+	}
+	for _, c := range n {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 // guardUserExists refuses a change for an account that no longer exists. It
@@ -58,7 +87,7 @@ func init() {
 	// an administrator acting as the user.
 	own := MustActionSet(ActionOperate)
 	Register(Op{
-		Name: OpAccountPrefs, Summary: "Show your own preferences, such as whether you allow new hidden sessions, and the Hub policy they depend on.",
+		Name: OpAccountPrefs, Summary: "Show your own preferences, such as whether you allow new hidden sessions and which harnesses you want to see, and the Hub policy they depend on.",
 		Scope: ScopeHub, Actions: read,
 		Args: reflect.TypeFor[AccountPrefsArgs](), Result: reflect.TypeFor[AccountPrefsResult](),
 	})

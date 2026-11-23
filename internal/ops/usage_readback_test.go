@@ -545,3 +545,39 @@ func TestReadbackNeverCarriesAnAccountLabel(t *testing.T) {
 		t.Fatalf("an account label reached the readback meters: %s", b)
 	}
 }
+
+func TestUsageLimitNameIsHumanAndMetersStayUnique(t *testing.T) {
+	ms := func(h int64) *int64 { v := h * 3600000; return &v }
+	for _, c := range []struct {
+		ms   *int64
+		kind string
+		want string
+	}{
+		{ms(5), "rolling", "5-hour limit"}, {ms(24), "rolling", "Daily limit"}, {ms(168), "rolling", "Weekly limit"},
+		{ms(720), "fixed", "Monthly limit"}, {ms(72), "rolling", "3-day limit"}, {nil, "rolling", "Rolling limit"}, {nil, "", "Limit"},
+	} {
+		if got := UsageLimitName(c.ms, c.kind); got != c.want {
+			t.Errorf("%v %q: %q, want %q", c.ms, c.kind, got, c.want)
+		}
+	}
+	now := time.Now()
+	reset := now.Add(time.Hour).UnixMilli()
+	week := *ms(168)
+	w := func(scope string) UsageWindow {
+		return UsageWindow{Scope: scope, Period: "rolling", DurationMS: &week, ResetsAt: &reset, UsedPercent: fp(10)}
+	}
+	out, _ := ProviderMeters([]UsageAccount{rbAccount("a", "OpenAI", now, w("codex.primary"), w("gpt-x"))}, now)
+	if len(out) != 2 {
+		t.Fatalf("%+v", out)
+	}
+	labels := map[string]bool{}
+	for _, m := range out {
+		labels[m.Label] = true
+		if strings.Contains(m.Label, "limit g") || strings.Contains(m.Label, "codex") {
+			t.Errorf("opaque label %q", m.Label)
+		}
+	}
+	if len(labels) != 2 || !labels["OpenAI Weekly limit"] && !labels["OpenAI Weekly limit (2)"] {
+		t.Fatalf("labels %v", labels)
+	}
+}
