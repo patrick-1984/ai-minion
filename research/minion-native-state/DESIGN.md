@@ -1,0 +1,29 @@
+# Native session state for Minion (A93)
+
+On baseline `f7170899`, both captured Claude Code 2.1.33x panes returned `stable` from `sessions_list`. One had a running shell and three background tasks. The other was waiting for a background agent and a workflow. The input editor was ready in both.
+
+## Signal selection
+
+| Source checked on 2026-11-23 | Decision |
+| --- | --- |
+| Claude Code 2.1.331 | Use the existing consented exporter. UserPromptSubmit, Stop and StopFailure describe foreground turns. PermissionRequest, Notification, elicitation and tool-batch hooks describe waits and progress. SubagentStart/Stop and TaskCreated/Completed carry entity IDs. Since 2.1.145, Stop **and SubagentStop** can carry the complete parent session's `background_tasks` registry, including shells, agents, monitors and workflows. Scheduled crons represent future wakeups. The status line supplies liveness. [Hooks](https://code.claude.com/docs/en/hooks#stop-input) · [Status line](https://code.claude.com/docs/en/statusline) · [Changelog](https://code.claude.com/docs/en/changelog) |
+| Other Claude interfaces | `claude agents --json` supplies foreground status and process identity. Interactive rows omit the detached task inventory. The SDK supplies task notifications to its owning client. Workbench's `wb-states.mjs` reads pane options produced by a separate hook integration and has no freshness contract for Minion. [CLI session listing](https://code.claude.com/docs/en/agent-view#list-sessions-as-json) · [SDK types](https://platform.claude.com/docs/en/agent-sdk/typescript) |
+| Codex CLI 0.171.0 | Use SessionStart, UserPromptSubmit, PreModelRequest, Stop, Interrupt and SessionEnd from a trusted profile. Correlate parent turns by turn ID. A client owning an app-server connection can subscribe to turn lifecycle, thread status and approval flags. A separate app-server process does not follow an existing terminal. Legacy notify only describes turn completion. [Hooks](https://developers.openai.com/codex/hooks/) · [App-server](https://developers.openai.com/codex/app-server/) · [Notify](https://developers.openai.com/codex/config-advanced/) |
+| Other adapters researched | Gemini documents BeforeAgent/AfterAgent and ToolPermission notifications. OpenCode 2.0.29 has a server session/event surface with status, idle and permission events. Both are candidates for later adapters. OpenTelemetry provides operational traces, timing and aggregate usage. Optional, batched telemetry cannot by itself establish current pane state. [Gemini hooks](https://geminicli.com/docs/hooks/reference/) · [OpenCode server](https://opencode.ai/docs/server/) · [Claude telemetry](https://code.claude.com/docs/en/monitoring-usage) |
+
+## Binding and projection
+
+The exporter asks the authenticated local Worker for its effective tmux socket and matches the socket, server PID, pane ID and session creation time. It verifies that the running harness is an ancestor of the hook and owns the pane's foreground process group. The reader rechecks process lifetime and current harness PID. Session renames require fresh evidence under the new name. Platforms without verifiable process identity use the screen fallback.
+
+Worker migration 0013 creates a local SQLite event journal. Each entry carries the pane binding, harness, process birth identity, grant-scoped hashes of native session and entity IDs, a fixed event kind, optional sanitized registry and local receipt time. Grant verification and insertion share one transaction. Reassignment or revocation clears the journal. The exporter discards prompt text, transcript paths, commands, descriptions and cron payloads. The Hub receives only display state, source, a bounded reason, and last lifecycle event time.
+
+* A parent stop ends its turn. A fresh registry replaces runtime facts. An explicit empty array clears them. An absent registry leaves prior facts intact. Planner items have a separate `open task` label. With a known empty registry they can coexist with idle. Without registry coverage they conservatively keep the display busy until completion or expiry.
+* Pending permission or input takes precedence. A tool batch clears its own agent's wait. Otherwise any live foreground turn, shell, subagent or workflow keeps the session busy. Input guards continue to use the immediate pane classification and reviewed dialog.
+* Replay uses receipt order with the database sequence breaking ties. The current SessionStart fences previous harness sessions. Child lifetimes are keyed by ID. Liveness expires after 15 minutes of silence. A heartbeat cannot extend a semantic fact beyond 30 minutes. The reader caps replay at 1,024 events and falls back on overflow. Writes prune old entries after 24 hours.
+* Missing, stale, incomplete or untrusted evidence selects labeled screen fallback. A visible permission dialog retains its reviewed binding, and a positive background footer can cover an omitted native registry. Hitting a payload limit, a missed async hook, or ending a turn through another hook can temporarily leave state incomplete. A subsequent native transition or registry snapshot reconciles it.
+
+## Installation and checks
+
+Installation follows the existing usage-consent loop. The Claude exporter preserves the previous status line. Codex hooks are installed for supported existing profiles, with native review through `/hooks`. The Worker honors `usage_claude_exporter=off` and `usage_codex_exporter=off`. Running sessions need to load the new hooks.
+
+Regression checks cover both owner screens, empty and absent registries, overlapping work and permission waits, expiry, consent changes and process replacement. A private tmux test feeds a Claude Stop payload with a live shell through the exporter and the real Worker, reads snapshot and list, then respawns the pane to verify the old native state disappears.

@@ -30,6 +30,7 @@ const (
 	// KeyUsageClaudeExporter turns the automatic install of the Claude Code
 	// usage exporter on (auto, the default) or off.
 	KeyUsageClaudeExporter = "usage_claude_exporter"
+	KeyUsageCodexExporter  = "usage_codex_exporter"
 )
 
 // Values of allow_new_sessions.
@@ -127,6 +128,13 @@ func declareWorkerCore(r *Registry) {
 		Scope: ScopeWorker,
 		Help: "Install the Minion status-line exporter in Claude Code settings once usage monitoring is accepted (auto or off). " +
 			"Your existing status line keeps working. off leaves Claude Code settings alone",
+		Default: "auto",
+		Choices: []string{"auto", "off"},
+	})
+	r.Declare(Setting{
+		Key:     KeyUsageCodexExporter,
+		Scope:   ScopeWorker,
+		Help:    "Configure local Codex lifecycle hooks once usage monitoring is accepted (auto or off). Review the hooks in Codex with /hooks. off disables Minion's Codex lifecycle recording",
 		Default: "auto",
 		Choices: []string{"auto", "off"},
 	})

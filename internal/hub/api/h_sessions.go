@@ -57,7 +57,8 @@ type SessionInfo struct {
 	Session string `json:"session"`
 	Kind    string `json:"kind"`
 	State   string `json:"state"`
-	Task    string `json:"task"`
+	ops.PaneStateDetail
+	Task string `json:"task"`
 	// Online is true while the session's Worker is connected.
 	Online bool `json:"online"`
 	// ScreenHash identifies the last known screen, never its content.
@@ -163,7 +164,7 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 		out = append(out, SessionInfo{
 			WorkerID: it.rec.ID, Worker: it.rec.Name, OwnerID: it.rec.OwnerID, Owner: owner,
 			Session: it.st.Name, Kind: it.st.Kind, State: it.st.State, Task: it.st.Task,
-			Online: it.on, ScreenHash: it.st.ScreenHash,
+			Online: it.on, ScreenHash: it.st.ScreenHash, PaneStateDetail: it.st.PaneStateDetail,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {

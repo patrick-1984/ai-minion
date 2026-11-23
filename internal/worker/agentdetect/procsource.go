@@ -44,10 +44,7 @@ const maxCmdline = 64 << 10
 
 // Processes implements ProcessSource.
 func (s ProcSource) Processes(ctx context.Context) ([]Proc, error) {
-	root := s.Root
-	if root == "" {
-		root = "/proc"
-	}
+	root := s.root()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -61,24 +58,62 @@ func (s ProcSource) Processes(ctx context.Context) ([]Proc, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		dir := filepath.Join(root, e.Name())
-		stat, err := os.ReadFile(filepath.Join(dir, "stat"))
-		if err != nil {
-			continue
+		if p, ok := procAt(root, pid); ok {
+			procs = append(procs, p)
 		}
-		p, ok := parseProcStat(stat)
-		if !ok {
-			continue
-		}
-		args, err := readCmdline(filepath.Join(dir, "cmdline"))
-		if err != nil {
-			continue
-		}
-		p.PID = pid
-		p.Args = args
-		procs = append(procs, p)
 	}
 	return procs, nil
+}
+
+// Ancestors reads only the potential chain from pid towards stopPID on
+// procfs. Unrelated command lines are never opened.
+func (s ProcSource) Ancestors(ctx context.Context, pid, stopPID int) ([]Proc, error) {
+	root := s.root()
+	var procs []Proc
+	for range 64 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if pid <= 1 {
+			break
+		}
+		p, ok := procAt(root, pid)
+		if !ok {
+			break
+		}
+		procs = append(procs, p)
+		if pid == stopPID {
+			break
+		}
+		pid = p.PPID
+	}
+	return procs, nil
+}
+
+func (s ProcSource) root() string {
+	if s.Root == "" {
+		return "/proc"
+	}
+	return s.Root
+}
+
+func procAt(root string, pid int) (Proc, bool) {
+	dir := filepath.Join(root, strconv.Itoa(pid))
+	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if err != nil {
+		return Proc{}, false
+	}
+	p, ok := parseProcStat(stat)
+	if !ok {
+		return Proc{}, false
+	}
+	args, err := readCmdline(filepath.Join(dir, "cmdline"))
+	if err != nil {
+		return Proc{}, false
+	}
+	p.PID = pid
+	p.Args = args
+	return p, true
 }
 
 func readCmdline(file string) ([]string, error) {

@@ -158,10 +158,13 @@ func (t *Timestamp) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// IsZero reports whether the timestamp is unset.
+func (t Timestamp) IsZero() bool { return t.Time().IsZero() }
+
 // Time returns the value as a time.Time (UTC).
 func (t Timestamp) Time() time.Time { return time.Time(t).UTC() }
 
-// Pane classification vocabulary (AD-12). agentdetect alone reports these.
+// Pane classification vocabulary (AD-12).
 const (
 	// PaneKindShell, PaneKindOther and PaneKindUnknown are the fixed kinds;
 	// agent panes use the prefix PaneKindAgentPrefix followed by the CLI name.
@@ -177,8 +180,21 @@ const (
 	PaneStateUnknown = "unknown"
 )
 
-// PaneInfo describes the resolved pane of a call. The Worker fills it; Kind
-// and State come from agentdetect.
+const (
+	PaneStateSourceScreen     = "screen"
+	PaneStateReasonBackground = "Background work"
+)
+
+// PaneStateDetail is the optional display provenance of a reported pane state.
+// LastEvent is the time of the latest native lifecycle event, when available.
+type PaneStateDetail struct {
+	StateSource string    `json:"state_source,omitempty"`
+	StateReason string    `json:"state_reason,omitempty"`
+	LastEvent   Timestamp `json:"last_event,omitzero"`
+}
+
+// PaneInfo describes the resolved pane of a call. The Worker fills it.
+// Read results may include state observed through native harness events.
 type PaneInfo struct {
 	Session string `json:"session"`           // session name (the target identity, R88)
 	ID      string `json:"id"`                // tmux pane id such as "%3", or the ConPTY pane id
@@ -187,6 +203,7 @@ type PaneInfo struct {
 	Command string `json:"command,omitempty"` // current foreground command
 	Kind    string `json:"kind,omitempty"`    // agent:<cli>, shell, other or unknown
 	State   string `json:"state,omitempty"`   // stable, busy, dialog or unknown
+	PaneStateDetail
 	// InputKind is the strict kind that authorizes input (shell, agent:<cli>,
 	// other or unknown). Kind may be a display-only agent kind that the
 	// Worker still refuses input for (a shell with a background agent). A

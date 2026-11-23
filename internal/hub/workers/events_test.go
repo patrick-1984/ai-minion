@@ -906,3 +906,30 @@ func TestResyncCarriesTheSnapshotNames(t *testing.T) {
 		t.Fatalf("empty snapshot names = %v %v", names, ok)
 	}
 }
+
+func TestFeedPreservesNativeStateDetailsUntilFallback(t *testing.T) {
+	h := NewEventHub(EventHubOptions{})
+	_, f := newFeed(t, h, "w1")
+	const snapshot = `{"type":"events.snapshot","seq":0,"sessions":[{"name":"work","kind":"agent:claude","state":"busy","task":"","screen_hash":"h1","state_source":"claude-hooks","state_reason":"1 shell","last_event":"2026-11-23T23:09:17.000Z"}]}`
+	if err := feedFrame(f, json.RawMessage(snapshot), nil); err != nil {
+		t.Fatal(err)
+	}
+	ws, ok := h.Sessions("w1")
+	if !ok || len(ws.Sessions) != 1 {
+		t.Fatalf("inventory = %+v", ws)
+	}
+	s := ws.Sessions[0]
+	if s.StateSource != "claude-hooks" || s.StateReason != "1 shell" || s.LastEvent.IsZero() {
+		t.Fatalf("native observation = %+v", s)
+	}
+
+	const fallback = `{"type":"event","seq":1,"event":"state_changed","session":"work","kind":"agent:claude","state":"busy","task":"","state_source":"screen","state_reason":"Background work"}`
+	if err := feedFrame(f, json.RawMessage(fallback), nil); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ = h.Sessions("w1")
+	s = ws.Sessions[0]
+	if s.StateSource != "screen" || s.StateReason != "Background work" || !s.LastEvent.IsZero() || s.ScreenHash != "h1" {
+		t.Fatalf("fallback observation = %+v", s)
+	}
+}

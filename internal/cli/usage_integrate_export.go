@@ -51,7 +51,12 @@ func newClaudeUsageExportCmd(lookup func(string) (string, bool)) *cobra.Command 
 						return
 					}
 				}
-				recordClaudeUsageAt(ctx, *m, mode, claudeUsageSession(ctx, lookup), claudeUsageAccess(lookup, profile), claudeUsageEndpoint(lookup, profile), payload, at)
+				session, pane, created, pid, birth := harnessPaneProcess(ctx, lookup, m.StateDir, "claude")
+				if session == "" {
+					// Older hosts can still provide the original usage attribution.
+					session = claudeUsageSession(ctx, lookup)
+				}
+				recordBoundClaudeUsage(ctx, *m, mode, session, pane, created, pid, birth, claudeUsageAccess(lookup, profile), claudeUsageEndpoint(lookup, profile), payload, at, lookup)
 			})
 		},
 	}
@@ -184,6 +189,10 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 }
 
 func recordClaudeUsageAt(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, endpoint string, raw []byte, at time.Time) {
+	recordBoundClaudeUsage(ctx, m, mode, session, "", 0, 0, "", access, endpoint, raw, at, nil)
+}
+
+func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session, pane string, created int64, pid int, birth string, access claudeAccessEvidence, endpoint string, raw []byte, at time.Time, lookup func(string) (string, bool)) {
 	if session == "" || ctx.Err() != nil {
 		return
 	}
@@ -204,6 +213,13 @@ func recordClaudeUsageAt(ctx context.Context, m claudeUsageIntegration, mode, se
 		return
 	}
 
+	if pane != "" && created > 0 && claudeStateEnabled(m.StateDir, lookup) {
+		if event, ok := parseClaudeHarnessEvent(mode, raw, grant, at); ok {
+			event.Session, event.Pane, event.Created = session, pane, created
+			event.ProcessPID, event.ProcessBirth = pid, birth
+			_ = st.RecordHarnessEvent(ctx, grant, event)
+		}
+	}
 	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic", CustomEndpoint: access == claudeAccessCustomEndpoint, APIKey: access == claudeAccessAPI, Endpoint: endpoint, Salt: grant}
 	if mode != "status-line" {
 		var event struct {

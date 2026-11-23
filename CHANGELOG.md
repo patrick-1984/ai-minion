@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Shared sessions report native Claude Code activity, including background shells and subagents, and Codex turn activity. The Worker and Sessions pages show the observation source and last native event time.
+
 ## v0.20.1
 
 ### Fixed

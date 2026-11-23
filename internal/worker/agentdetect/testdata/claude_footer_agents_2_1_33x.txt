@@ -1,0 +1,14 @@
+● Three tasks are open, all running in the background:
+  - Template backport: the port is running.
+  - Documentation close-out: the branch is being prepared.
+  - Deployment: the sync job is live.
+  See the project ledger.
+✻ Waiting for 1 background agent and 1 dynamic workflow to finish
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── backport ─
+❯ hold the dashboard branch
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 medium · wb2 · ● context 68%
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents · ↓ to manage
+  ● main
+  ◯ general-purpose               Inserting status into status.md                                                                                                                                                3m 43s · ↓ 144.1k tokens
+  ◯ backport-w4-w5-templates-re…  ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/1 · 1h03m · ↓ 348.6k tokens

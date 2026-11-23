@@ -172,7 +172,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		autoDone := make(chan struct{})
 		go func() {
 			defer close(autoDone)
-			runClaudeAutoInstall(autoCtx, policy, core.StateDir, lookupEnv)
+			runUsageAutoInstall(autoCtx, policy, core.StateDir, lookupEnv)
 		}()
 		return func() { stopAuto(); <-autoDone }
 	}

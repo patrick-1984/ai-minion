@@ -78,6 +78,7 @@ const (
 	maxSessionsPerWorker = 4096
 	maxSessionNameLen    = 256
 	maxClassLen          = 64
+	maxStateReasonLen    = 192
 	maxScreenHashLen     = 128
 	// DefaultSubscriberBuffer is the queue of one subscription.
 	DefaultSubscriberBuffer = 256
@@ -91,6 +92,7 @@ type SessionState struct {
 	State      string `json:"state"`
 	Task       string `json:"task"`
 	ScreenHash string `json:"screen_hash,omitempty"`
+	ops.PaneStateDetail
 }
 
 // WorkerSessions is the latest known state of one Worker.
@@ -124,6 +126,7 @@ type Event struct {
 	Task       *string       `json:"task,omitempty"`
 	ScreenHash string        `json:"screen_hash,omitempty"`
 	Time       ops.Timestamp `json:"time"`
+	ops.PaneStateDetail
 
 	// snapshot are the session names a worker_resynced event's snapshot
 	// listed (never published): consumers that act on the snapshot use them,
@@ -674,6 +677,7 @@ func (f *Feed) Apply(c Change) error {
 		}
 		w.sessions[s.Name] = s
 		ev.Kind, ev.State, ev.ScreenHash = s.Kind, s.State, s.ScreenHash
+		ev.PaneStateDetail = s.PaneStateDetail
 		task := s.Task
 		ev.Task = &task
 	case EventSessionRemoved:
@@ -688,6 +692,7 @@ func (f *Feed) Apply(c Change) error {
 		cur.ScreenHash = s.ScreenHash
 		w.sessions[s.Name] = cur
 		ev.Kind, ev.State, ev.ScreenHash = cur.Kind, cur.State, cur.ScreenHash
+		ev.PaneStateDetail = cur.PaneStateDetail
 	default:
 		return nil
 	}
@@ -705,6 +710,8 @@ func sanitize(s SessionState) (SessionState, bool) {
 	}
 	s.Kind = cut(s.Kind, maxClassLen)
 	s.State = cut(s.State, maxClassLen)
+	s.StateSource = cut(s.StateSource, maxClassLen)
+	s.StateReason = cut(s.StateReason, maxStateReasonLen)
 	s.Task = cut(s.Task, ops.MaxTaskLen)
 	s.ScreenHash = cut(s.ScreenHash, maxScreenHashLen)
 	return s, true
@@ -740,6 +747,7 @@ type eventWire struct {
 	State      string  `json:"state"`
 	Task       *string `json:"task"`
 	ScreenHash string  `json:"screen_hash"`
+	ops.PaneStateDetail
 	// Share is the rule of a share_changed event.
 	Share *ops.ShareDecl `json:"share"`
 }
@@ -805,7 +813,7 @@ func feedFrame(feed *Feed, body json.RawMessage, other func(string, json.RawMess
 			return err
 		}
 		c := Change{Seq: f.Seq, Event: f.Event, HasTask: f.Task != nil, Share: f.Share,
-			Session: SessionState{Name: f.Session, Kind: f.Kind, State: f.State, ScreenHash: f.ScreenHash}}
+			Session: SessionState{Name: f.Session, Kind: f.Kind, State: f.State, ScreenHash: f.ScreenHash, PaneStateDetail: f.PaneStateDetail}}
 		if f.Task != nil {
 			c.Session.Task = *f.Task
 		}

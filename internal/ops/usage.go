@@ -19,9 +19,9 @@ import (
 // a session. A missing counter is unknown; a pointer to zero is a known zero.
 const UsageVersion = 1
 
-// UsageExporterNotice discloses the automatic Claude Code exporter install. It is part of
+// UsageExporterNotice discloses the automatic native exporter installs. It is part of
 // UsageDisclosure and mirrored in the installers and the Android strings.
-const UsageExporterNotice = "Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off."
+const UsageExporterNotice = "Minion adds a status-line exporter and lifecycle hooks to Claude Code for tokens, cost, limits and session activity. Your existing status line keeps working. Control the integration with usage_claude_exporter=off. Minion adds lifecycle hooks to Codex profiles on Linux, macOS and Android for session activity. Review and trust them in Codex with /hooks. Disable recording with usage_codex_exporter=off. Lifecycle hooks report event types and timing without prompt or response content."
 
 // UsageAccessNotice states what a report says about how a session signs in. It
 // is part of UsageDisclosure and mirrored in the installers and the Android strings.
