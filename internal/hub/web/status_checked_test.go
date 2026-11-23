@@ -126,3 +126,21 @@ func listServerFor(t *testing.T) *Server {
 	s, _ := workerPageServer(t, snapMine, snapAll, wAliceInfo)
 	return s
 }
+
+// A Refresh of the Workers view asks for a fresh harness scan, not the
+// Worker's cached one, so a change on the Worker shows at once.
+func TestUsageRefreshOfWorkersAsksForAFreshInventory(t *testing.T) {
+	now := time.Unix(3000, 0)
+	withRefreshClock(t, &now)
+	has := []string{ops.OpWorkerUsage}
+	f := newFakeOps().
+		reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{{ID: "w", Name: "Box", Online: true, Ops: has}}}).
+		reply(ops.OpWorkerUsage, ops.UsageReport{Version: 1})
+	connect(t, f)
+	srv := onbUser(t)
+	onbPost(t, srv, "/usage/refresh", url.Values{"for_user": {onbUserID}, "view": {"workers"}})
+	calls := f.called(ops.OpWorkerUsage)
+	if len(calls) != 1 || calls[0].Args["inventory"] != true || calls[0].Args["fresh"] != true {
+		t.Fatalf("worker_usage args %v, want inventory and fresh", calls)
+	}
+}

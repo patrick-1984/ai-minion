@@ -673,7 +673,7 @@ func usageRefresh(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		go func() {
 			defer func() { <-sem; wg.Done() }()
 			var report ops.UsageReport
-			err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: wk.ID, Inventory: inventory}, &report)
+			err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: wk.ID, Inventory: inventory, Fresh: inventory}, &report)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
