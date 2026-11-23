@@ -44,18 +44,20 @@ func TestUsageKeepsLastReportedUpstreamQuota(t *testing.T) {
 	}
 	short := ops.UsageWindow{Scope: "short", Period: "rolling", UsedPercent: new(18.0)}
 	weekly := ops.UsageWindow{Scope: "weekly", Period: "rolling", UsedPercent: new(19.0)}
+	// Custom endpoints are not told apart: upstream windows stay on the
+	// session and never attach to the aggregate API account.
 	save(0, "session-host", 2*time.Second)
 	save(0, "claude-statusline", time.Second, short, weekly)
-	read(workers, "w1", time.Second, "short", "weekly")
-	save(0, "session-host", 3*time.Second)
-	save(0, "claude-statusline", 4*time.Second)
-	save(1, "session-host", 5*time.Second)
-	read(workers, "w1", time.Second, "short", "weekly")
-	read(workers[1:], "w2", 5*time.Second)
 	save(1, "claude-statusline", 6*time.Second, weekly)
-	read(workers, "w2", 6*time.Second, "weekly")
-	save(1, "claude-statusline", 4500*time.Millisecond, short, weekly)
-	read(workers, "w2", 6*time.Second, "weekly")
+	got0, err := s.ReadUsage(t.Context(), workers, "alice", ops.UsageListArgs{Section: "accounts"}, now.Add(time.Minute))
+	if err != nil || len(got0.Accounts) != 1 || len(got0.Accounts[0].Windows) != 0 {
+		t.Fatalf("API account carries windows: %+v, %v", got0.Accounts, err)
+	}
+	var stored int
+	if err := s.db.QueryRow(`SELECT count(*) FROM usage_accounts WHERE json_array_length(body,'$.windows')>0`).Scan(&stored); err != nil || stored != 0 {
+		t.Fatalf("stored API windows: %d, %v", stored, err)
+	}
+	_ = read
 	got, err := s.ReadUsage(t.Context(), workers, "alice", ops.UsageListArgs{Section: "overview"}, now.Add(time.Minute))
 	if err != nil || got.Overview == nil || got.Overview.Accounts != 0 {
 		t.Fatalf("custom endpoint entered the subscription overview: %+v, %v", got.Overview, err)
@@ -66,8 +68,8 @@ func TestUsageKeepsLastReportedUpstreamQuota(t *testing.T) {
 	}
 }
 
-// Two custom endpoints of one provider are two accounts: a card carries the
-// quota of its own account id only, also inside a session bucket.
+// A session bucket keeps its own totals, and no account card carries upstream
+// windows of a custom endpoint.
 func TestUsageQuotaStaysWithItsOwnEndpointAccount(t *testing.T) {
 	s := openTest(t)
 	workers, _, now := usageFixture(t, s, 0)
@@ -103,20 +105,16 @@ func TestUsageQuotaStaysWithItsOwnEndpointAccount(t *testing.T) {
 		t.Fatalf("accounts in the bucket: %+v, %v", got.Accounts, err)
 	}
 	a := got.Accounts[0]
-	if a.ID != idA || len(a.Windows) != 1 || *a.Windows[0].UsedPercent != 11 || a.Totals == nil || a.Totals.Sessions != 1 {
-		t.Fatalf("card mixes endpoints: %+v", a)
+	if a.ID != idA || len(a.Windows) != 0 || a.Totals == nil || a.Totals.Sessions != 1 {
+		t.Fatalf("bucket card: %+v", a)
 	}
 	all, err := s.ReadUsage(t.Context(), workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now.Add(time.Minute))
 	if err != nil || len(all.Accounts) != 2 {
 		t.Fatalf("accounts: %+v, %v", all.Accounts, err)
 	}
 	for _, c := range all.Accounts {
-		want := 11.0
-		if c.ID == idB {
-			want = 99
-		}
-		if *c.Windows[0].UsedPercent != want {
-			t.Errorf("account %s shows %v, want %v", c.ID, *c.Windows[0].UsedPercent, want)
+		if len(c.Windows) != 0 {
+			t.Errorf("account %s carries windows %+v", c.ID, c.Windows)
 		}
 	}
 }

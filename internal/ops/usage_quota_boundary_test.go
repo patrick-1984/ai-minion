@@ -153,10 +153,35 @@ func TestUsageSanitizeDropsOversizedQuotaDetailKeepsTheReport(t *testing.T) {
 	if err := got.Check(now); err != nil {
 		t.Fatalf("sanitized report: %v", err)
 	}
-	if len(got.Sessions) != 200 || len(got.Accounts) != 1 || len(got.Accounts[0].Windows) != 32 || len(got.Sessions[0].Windows) != 0 {
+	if len(got.Sessions) != 200 || len(got.Accounts) != 1 || len(got.Accounts[0].Windows) != 0 || len(got.Sessions[0].Windows) != 0 {
 		t.Fatalf("kept %d sessions, account windows %d, session windows %d", len(got.Sessions), len(got.Accounts[0].Windows), len(got.Sessions[0].Windows))
 	}
 	if len(r.Sessions[0].Windows) != 32 {
+		t.Fatal("Sanitize changed its input")
+	}
+}
+
+// The aggregate API-key account never carries quota windows, and trimming an
+// oversized report never touches a subscription's measured limits.
+func TestUsageSanitizeKeepsSubscriptionWindowsAndDropsAPIOnes(t *testing.T) {
+	now := time.Now()
+	at := now.UnixMilli()
+	win := []UsageWindow{{Scope: "general", Period: "rolling", UsedPercent: new(60.)}}
+	var big []UsageWindow
+	for i := range 32 {
+		big = append(big, UsageWindow{Scope: fmt.Sprintf("model-%02d-%s", i, strings.Repeat("x", 60)), Period: "rolling", UsedPercent: new(20.)})
+	}
+	sub := UsageAccount{ID: UsageID("sub"), Provider: "Anthropic", AuthMode: "subscription", Source: "claude-statusline", ObservedAt: at, Windows: win}
+	api := UsageAccount{ID: UsageID("api"), Provider: "Anthropic", AuthMode: "api", CustomEndpoint: true, Source: "claude-statusline", ObservedAt: at, Windows: win}
+	r := UsageReport{Version: UsageVersion, ObservedAt: at, Accounts: []UsageAccount{sub, api}}
+	for i := range 200 {
+		r.Sessions = append(r.Sessions, UsageSession{ID: UsageID("s", fmt.Sprint(i)), Name: fmt.Sprint("s", i), AuthMode: "api", CustomEndpoint: true, Source: "claude-statusline", ObservedAt: at, AccountID: api.ID, Windows: big})
+	}
+	got := r.Sanitize()
+	if len(got.Accounts) != 2 || len(got.Accounts[0].Windows) != 1 || len(got.Accounts[1].Windows) != 0 || len(got.Sessions[0].Windows) != 0 {
+		t.Fatalf("sanitized accounts: %+v", got.Accounts)
+	}
+	if len(r.Accounts[1].Windows) != 1 {
 		t.Fatal("Sanitize changed its input")
 	}
 }

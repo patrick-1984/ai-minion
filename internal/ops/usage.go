@@ -458,13 +458,14 @@ const UsageReportMaxBytes = 768 << 10
 // Sanitize returns the report with every optional display field or account
 // that cannot be accepted dropped, so one bad or surplus account never
 // invalidates the session telemetry of the whole report. A report that is
-// too large only because of quota windows loses those windows (the session
-// copies first, then the account ones) and keeps everything else.
+// too large only because of quota windows loses the session copies of them
+// and keeps everything else; subscription account limits are never trimmed.
 func (r UsageReport) Sanitize() UsageReport {
 	r = r.DropLegacyEndpoints().DropBadLabels()
 	seen := map[string]bool{}
 	kept := make([]UsageAccount, 0, len(r.Accounts))
 	for _, a := range r.Accounts {
+		a.Windows = SubscriptionWindows(a)
 		key := a.ID + "|" + a.SourceSessionID
 		if len(kept) >= UsageAccountsMax || seen[key] || a.check(r.ObservedAt) != nil {
 			continue
@@ -472,22 +473,25 @@ func (r UsageReport) Sanitize() UsageReport {
 		seen[key] = true
 		kept = append(kept, a)
 	}
-	if len(kept) != len(r.Accounts) {
-		r.Accounts = kept
-	}
+	r.Accounts = kept
 	if r.tooLarge() {
 		r.Sessions = slices.Clone(r.Sessions)
 		for i := range r.Sessions {
 			r.Sessions[i].Windows = nil
 		}
 	}
-	if r.tooLarge() {
-		r.Accounts = slices.Clone(r.Accounts)
-		for i := range r.Accounts {
-			r.Accounts[i].Windows = nil
-		}
-	}
 	return r
+}
+
+// SubscriptionWindows returns the account's quota windows only for a
+// subscription. Custom endpoints are not told apart (one aggregate account per
+// provider and kind), so upstream windows seen through one stay on the session
+// and never describe an API-key account.
+func SubscriptionWindows(a UsageAccount) []UsageWindow {
+	if a.AuthMode != "subscription" {
+		return nil
+	}
+	return a.Windows
 }
 
 func (r UsageReport) tooLarge() bool {

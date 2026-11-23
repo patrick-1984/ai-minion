@@ -587,7 +587,10 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 			}
 			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
 				w.UpdateURL = WorkerUpdatePath(w.ID)
-				v.UpdatableWorkers++
+				if w.UpdateUnpublished == "" {
+					// The bulk action would only be refused for a known draft.
+					v.UpdatableWorkers++
+				}
 			}
 		}
 		w.ShowOwner = all

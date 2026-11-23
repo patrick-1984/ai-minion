@@ -42,6 +42,13 @@ func (l *refreshLimiter) allow(id string) bool {
 	return true
 }
 
+// forget gives back the cooldown of an attempt that failed.
+func (l *refreshLimiter) forget(id string) {
+	l.mu.Lock()
+	delete(l.last, id)
+	l.mu.Unlock()
+}
+
 // checkedTime renders a moment as <time>: the page script adds "(N min ago)".
 func checkedTime(ms *int64, none string) template.HTML {
 	if ms == nil || *ms == 0 {

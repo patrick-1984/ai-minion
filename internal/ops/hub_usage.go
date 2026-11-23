@@ -214,9 +214,19 @@ type UsageCollectorSetArgs struct {
 	AccountID string `json:"account_id"`
 	WorkerID  string `json:"worker_id,omitempty"`  // empty restores automatic election
 	SessionID string `json:"session_id,omitempty"` // passive metric source, never a console target
+	// KeepSource queues the query against the source already saved for the
+	// account, read in the same transaction; WorkerID and SessionID are ignored.
+	// A Refresh uses it so a stale page cannot revert the saved collector.
+	KeepSource bool `json:"keep_source,omitempty"`
 }
 
 func (a UsageCollectorSetArgs) Validate() error {
+	if a.KeepSource {
+		if a.WorkerID != "" || a.SessionID != "" || !usageIDValid(a.AccountID) {
+			return invalid("collector", "keep_source takes only an account")
+		}
+		return nil
+	}
 	if a.Start && a.SessionID != "" {
 		return invalid("start", "select a Worker or automatic election for a native background query")
 	}

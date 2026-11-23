@@ -20,7 +20,7 @@ func usagePageFixtures() *fakeOps {
 	tokens := int64(8100)
 	totalCost := 1.5
 	sessionID := ops.UsageID("session", "example")
-	build := ops.WorkerInfo{ID: "build", Name: "Build workstation", Owner: "alice", Online: true}
+	build := ops.WorkerInfo{ID: "build", Name: "Build workstation", Owner: "alice", Online: true, Ops: []string{ops.OpWorkerUsage}}
 	laptop := ops.WorkerInfo{ID: "laptop", Name: "Travel laptop", Owner: "bob"}
 	pending := ops.WorkerInfo{ID: "pending", Name: "New Worker", Owner: "bob", Online: true}
 	account := ops.UsageAccountRow{
@@ -393,11 +393,9 @@ func TestUsageShowsReportedUpstreamQuota(t *testing.T) {
 	}))
 	srv := adminServer(t)
 	accounts := mainOf(t, get(t, srv, "/usage?view=accounts", "X-Test-Session", userHeader).Body.String())
-	mustHave(t, accounts, "Upstream quota", "Weekly limit", "19.0% / 81.0%", "Totals · 1 session", "$0.4200")
-	mustNotHave(t, accounts, "5-hour limit", "No subscription limits reported.")
-	if strings.Count(accounts, "Weekly limit") != 1 {
-		t.Fatal("only the account with a reported window should show it")
-	}
+	// Custom endpoints are one aggregate account: windows stay on the session.
+	mustHave(t, accounts, "Totals · 1 session", "$0.4200")
+	mustNotHave(t, accounts, "5-hour limit", "No subscription limits reported.", "Weekly limit", "19.0% / 81.0%")
 	sessions := mainOf(t, get(t, srv, "/usage?view=sessions", "X-Test-Session", userHeader).Body.String())
 	mustHave(t, sessions, "Upstream quota", "Weekly limit", "19.0% / 81.0%", "Stale window")
 	mustNotHave(t, sessions, "5-hour limit", "No subscription limits reported.")
