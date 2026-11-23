@@ -16,7 +16,7 @@
   <p class="muted">Uses sudo to install a systemd service that starts at boot and runs as your account. It needs systemd; in a container (a Coder workspace, Docker) there is none, so choose Run as me.</p>
   {{template "fold" .Service}}
   <h3>Run as root (Linux)</h3>
-  <p class="muted">Uses sudo to run the Worker as root and serve root’s tmux sessions.</p>
+  <p class="muted">Uses sudo to run the Worker as root and serve root’s tmux sessions. It needs systemd too; without it, use Run as me, whose command already carries <code>--join</code>.</p>
   {{template "fold" .Root}}
   <h3>Docker Compose</h3>
   <p class="muted">Creates a project in a new subfolder of the current directory and starts a Worker with its own tmux sessions.</p>

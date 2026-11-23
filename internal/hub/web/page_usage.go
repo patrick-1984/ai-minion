@@ -39,9 +39,12 @@ type usagePage struct {
 	ExporterMissing   []string
 	ExporterInstalled bool
 	exporterAbsent    map[string]bool
-	// ExporterRestart marks Workers that have a Claude Code session without
-	// token data although the exporter is installed: it started before the
-	// install and needs a restart.
+	// exporterSeen holds, per Worker with an installed exporter, the time
+	// its inventory reported that state.
+	exporterSeen map[string]int64
+	// ExporterRestart marks Workers that have a Claude Code session that has
+	// never reported and started before the Worker reported the exporter as
+	// installed: that session needs a restart.
 	ExporterRestart map[string]bool
 }
 
@@ -62,10 +65,26 @@ func (p usagePage) ExporterCommand() string { return usageExporterCommand }
 // Minion exporter, so a session hint names the command only where it helps.
 func (p usagePage) ExporterAbsentOn(workerID string) bool { return p.exporterAbsent[workerID] }
 
+// ClaudeSilent reports whether a Claude session has never reported any
+// exporter data (model, context, cost or tokens).
+func (p usagePage) ClaudeSilent(s ops.UsageSessionRow) bool {
+	c := s.UsageCounters
+	return s.Harness == "claude" && s.Model == "" && len(s.Models) == 0 && c.ContextTokens == nil && c.EstimatedCostUSD == nil &&
+		c.InputTokens == nil && c.OutputTokens == nil && c.CostUSD == nil
+}
+
+// NeedsRestart reports whether a running, silent Claude session started
+// before its Worker reported the exporter as installed. A session that
+// reports, or that started later, gets no restart advice.
+func (p usagePage) NeedsRestart(s ops.UsageSessionRow) bool {
+	seen, ok := p.exporterSeen[s.WorkerID]
+	return ok && s.StoppedAt == nil && s.StartedAt != nil && *s.StartedAt < seen && p.ClaudeSilent(s)
+}
+
 // noteExporters records which Workers lack the Claude exporter, from the
 // harness inventories the Workers reported.
 func (p *usagePage) noteExporters(workers []ops.UsageWorkerRow) {
-	p.ExporterMissing, p.ExporterInstalled, p.exporterAbsent = nil, false, map[string]bool{}
+	p.ExporterMissing, p.ExporterInstalled, p.exporterAbsent, p.exporterSeen = nil, false, map[string]bool{}, map[string]int64{}
 	for _, w := range workers {
 		for _, h := range w.Inventory {
 			if h.Name != "claude" || h.Status != "installed" {
@@ -77,6 +96,9 @@ func (p *usagePage) noteExporters(workers []ops.UsageWorkerRow) {
 				p.exporterAbsent[w.ID] = true
 			case ops.UsageExporterInstalled:
 				p.ExporterInstalled = true
+				if w.InventoryAt != nil {
+					p.exporterSeen[w.ID] = *w.InventoryAt
+				}
 			}
 		}
 	}
@@ -400,7 +422,7 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "sessions", WorkerID: p.WorkerID, Limit: 50}, &live); err == nil {
 			p.ExporterRestart = map[string]bool{}
 			for _, s := range live.Sessions {
-				if s.Harness == "claude" && s.InputTokens == nil && s.OutputTokens == nil && s.StoppedAt == nil {
+				if p.NeedsRestart(s) {
 					p.ExporterRestart[s.WorkerID] = true
 				}
 			}

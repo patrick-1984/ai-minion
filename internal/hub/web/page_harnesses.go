@@ -279,6 +279,14 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 4)
 		ok, failed, skipped := 0, 0, 0
+		// A Worker counts as checked only when its inventory time advanced
+		// past the one the Hub already had; a cached reply is not a check.
+		before := func(id string) int64 {
+			if row := inv[id]; row != nil && row.InventoryAt != nil {
+				return *row.InventoryAt
+			}
+			return 0
+		}
 		for _, wk := range workers {
 			row := inv[wk.ID]
 			if !wk.Online || !slices.Contains(wk.Ops, ops.OpWorkerUsage) || row != nil && row.Status == "registration_required" {
@@ -287,13 +295,14 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 			}
 			wg.Add(1)
 			sem <- struct{}{}
+			was := before(wk.ID)
 			go func() {
 				defer func() { <-sem; wg.Done() }()
 				var report ops.UsageReport
 				err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: wk.ID, Inventory: true}, &report)
 				mu.Lock()
 				defer mu.Unlock()
-				if err != nil {
+				if err != nil || report.InventoryAt == nil || *report.InventoryAt <= was {
 					failed++
 				} else {
 					ok++
@@ -303,7 +312,7 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 		wg.Wait()
 		text := "Checked " + pluralWorkers(ok) + "."
 		if failed > 0 {
-			text += " " + pluralWorkers(failed) + " could not be checked."
+			text += " " + pluralWorkers(failed) + " could not be checked or returned a scan that is not newer (timed out or cached)."
 		}
 		if skipped > 0 {
 			text += " " + pluralWorkers(skipped) + " skipped (offline, needs an update or has not accepted monitoring)."

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -100,11 +101,15 @@ func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketO
 		out.Overview = &summary
 		return out, nil
 	case "sessions":
+		ids, err := s.usageSessionOrder(ctx, visible, bind, bucketOwner, args, limit)
+		if err != nil {
+			return out, err
+		}
 		q = usageVisible + `SELECT s.id,s.worker_id,s.body,s.observed_at,s.ended_at,max(s.observed_at,uw.complete_at),coalesce(m.bucket_id,'')
-		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
+		 FROM json_each(?) k JOIN usage_sessions s ON s.id=k.value JOIN visible v ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
 		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
-		 WHERE s.id>? AND ` + usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`) + ` ORDER BY s.id`
-		bind = append(bind, bucketOwner, args.After, args.BucketID, args.BucketID, bucketOwner, args.BucketID)
+		 ORDER BY k.key`
+		bind = append(bind, ids, bucketOwner)
 	case "accounts":
 		q = usageVisible + usageRankedAccounts + `SELECT printf('%07d:%s',coalesce(pref.position,0),a.account_id),a.worker_id,a.body,coalesce(m.bucket_id,''),coalesce(c.status,''),coalesce(pw.id,''),coalesce(aw.id,''),
 		 CASE WHEN pw.id IS NULL THEN '' ELSE c.preferred_session END,CASE WHEN c.hide_previous_schedule=0 THEN nullif(c.next_due,0) END,c.last_success,EXISTS(SELECT 1 FROM usage_accounts cap JOIN visible cv ON cap.worker_id=cv.id WHERE cap.account_id=a.account_id AND cap.can_poll=1),coalesce(pref.label,''),coalesce(pref.position,0),
@@ -294,27 +299,27 @@ page:
 	}
 	if args.Section == "accounts" {
 		_ = rows.Close()
-		err = s.addAccountTotals(ctx, visible, out.Accounts)
+		err = s.addAccountTotals(ctx, visible, bucketOwner, args, out.Accounts)
 	}
 	return out, err
 }
 
 // addAccountTotals sums the sessions of every API-key and custom-endpoint
-// account in the page, over the same visible Workers and retained sessions that
-// the Sessions view lists. Subscription accounts report limits instead.
-func (s *Store) addAccountTotals(ctx context.Context, visible string, accounts []ops.UsageAccountRow) error {
+// account in the page, over the same Worker and bucket predicates that the
+// Sessions view applies. Subscription accounts report limits instead.
+func (s *Store) addAccountTotals(ctx context.Context, visible, bucketOwner string, args ops.UsageListArgs, accounts []ops.UsageAccountRow) error {
 	for i := range accounts {
 		a := &accounts[i]
 		if a.AuthMode != "api" {
 			continue
 		}
 		var t ops.UsageAccountTotals
-		err := s.db.QueryRowContext(ctx, `WITH visible AS (SELECT w.id FROM json_each(?) a JOIN workers w
-		 ON w.id=json_extract(a.value,'$.id') AND w.owner_id=json_extract(a.value,'$.owner_id') WHERE w.approval='approved')
-		 SELECT count(*),sum(json_extract(s.body,'$.input_tokens')),sum(json_extract(s.body,'$.output_tokens')),
+		err := s.db.QueryRowContext(ctx, usageVisible+`SELECT count(*),sum(json_extract(s.body,'$.input_tokens')),sum(json_extract(s.body,'$.output_tokens')),
 		  sum(json_extract(s.body,'$.cost_usd')),sum(json_extract(s.body,'$.estimated_cost_usd'))
-		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id WHERE json_extract(s.body,'$.account_id')=?`,
-			visible, a.ID).Scan(&t.Sessions, &t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.EstimatedCostUSD)
+		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id
+		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
+		 WHERE json_extract(s.body,'$.account_id')=? AND `+usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`),
+			visible, args.WorkerID, args.WorkerID, bucketOwner, a.ID, args.BucketID, args.BucketID, bucketOwner, args.BucketID).Scan(&t.Sessions, &t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.EstimatedCostUSD)
 		if err != nil {
 			return err
 		}
@@ -555,4 +560,52 @@ func readNominatedUsage(ctx context.Context, q usageQuerier, kind string, source
 		out.Linked, err = readUsageAccounts(ctx, q, links)
 	}
 	return out, err
+}
+
+// usageSessionOrder returns, as a JSON array, the IDs of the page that follows
+// the cursor in one fixed order: Worker name, natural session name, ID. The
+// order is built in Go because SQLite has no natural collation, so names stay
+// in order across page boundaries.
+func (s *Store) usageSessionOrder(ctx context.Context, visible string, bind []any, bucketOwner string, args ops.UsageListArgs, limit int) (string, error) {
+	rows, err := s.db.QueryContext(ctx, usageVisible+`SELECT s.id,v.name,coalesce(json_extract(s.body,'$.name'),'')
+	 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
+	 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
+	 WHERE `+usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`), append(slices.Clone(bind), bucketOwner, args.BucketID, args.BucketID, bucketOwner, args.BucketID)...)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	type key struct{ id, worker, name string }
+	var all []key
+	for rows.Next() {
+		var k key
+		if err := rows.Scan(&k.id, &k.worker, &k.name); err != nil {
+			return "", err
+		}
+		all = append(all, k)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	slices.SortFunc(all, func(a, b key) int {
+		if c := strings.Compare(a.worker, b.worker); c != 0 {
+			return c
+		}
+		if c := ops.NaturalCompare(a.name, b.name); c != 0 {
+			return c
+		}
+		return strings.Compare(a.id, b.id)
+	})
+	start := 0
+	if args.After != "" {
+		if i := slices.IndexFunc(all, func(k key) bool { return k.id == args.After }); i >= 0 {
+			start = i + 1
+		}
+	}
+	ids := []string{}
+	for _, k := range all[start:min(len(all), start+limit+1)] {
+		ids = append(ids, k.id)
+	}
+	b, err := json.Marshal(ids)
+	return string(b), err
 }

@@ -94,3 +94,37 @@ func (s *Store) SetAllowHiddenSessions(ctx context.Context, userID string, allow
 		return nil
 	})
 }
+
+// SetUserPrefs applies the supplied preferences of userID in one transaction;
+// a nil field is left as it is. It returns [ErrNotFound] when the user does
+// not exist.
+func (s *Store) SetUserPrefs(ctx context.Context, userID string, wanted *[]string, allowHidden *bool) error {
+	return s.Tx(ctx, func(tx *sql.Tx) error {
+		var one int
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, userID).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("store: read user: %w", err)
+		}
+		now := time.Now().UnixMilli()
+		if wanted != nil {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO user_prefs (user_id, wanted_harnesses, updated_at) VALUES (?1, ?2, ?3)
+				 ON CONFLICT (user_id) DO UPDATE SET wanted_harnesses = ?2, updated_at = ?3`,
+				userID, strings.Join(*wanted, ","), now); err != nil {
+				return fmt.Errorf("store: set wanted harnesses: %w", err)
+			}
+		}
+		if allowHidden != nil {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO user_prefs (user_id, allow_hidden_sessions, updated_at) VALUES (?1, ?2, ?3)
+				 ON CONFLICT (user_id) DO UPDATE SET allow_hidden_sessions = ?2, updated_at = ?3`,
+				userID, boolInt(*allowHidden), now); err != nil {
+				return fmt.Errorf("store: set user preferences: %w", err)
+			}
+		}
+		return nil
+	})
+}

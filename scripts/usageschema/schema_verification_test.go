@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -104,5 +105,20 @@ func TestUsageOpenAPIReconcilesOperationRefsAndNullableDTOs(t *testing.T) {
 		if err := workerRequest.Validate(map[string]any{"worker_id": ops.NewUUIDv7(), internal: value}); err == nil {
 			t.Errorf("OpenAPI documents %s as a public WorkerUsageArgs member", internal)
 		}
+	}
+}
+
+// The checked-in OpenAPI document must equal what the generator prints now.
+func TestUsageOpenAPIHasNoDrift(t *testing.T) {
+	want, err := exec.Command("go", "run", ".").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile("../../research/minion-usage/openapi.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatal("research/minion-usage/openapi.json is stale: run `go run ./scripts/usageschema > research/minion-usage/openapi.json`")
 	}
 }

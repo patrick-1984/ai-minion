@@ -173,7 +173,8 @@ func TestUpdatesPageExplainsMissingAutomaticUpdates(t *testing.T) {
 	body := get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, body, "Automatic Hub updates: not set up. The Hub updates itself through a host updater on the NAS (TrueNAS Cron Task).",
 		`href="https://github.com/patrick-1984/ai-minion/blob/v0.19.0/docs/install/hub-truenas-updater.md"`,
-		`blob/v0.19.0/docs/install/hub-docker.md#let-the-hub-update-itself-opt-in`)
+		`blob/v0.19.0/docs/install/hub-docker.md#update"`)
+	mustNotHave(t, body, "let-the-hub-update-itself")
 	res.Current = "dev-abc"
 	connect(t, newFakeOps().reply(ops.OpHubUpdateCheck, res))
 	mustHave(t, get(t, adminServer(t), pathAdminUpdates, "X-Test-Session", adminHeader).Body.String(), `blob/main/docs/install/hub-truenas-updater.md`)
