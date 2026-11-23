@@ -423,7 +423,7 @@ const UsageAccountsMax = 512
 // that cannot be accepted dropped, so one bad or surplus account never
 // invalidates the session telemetry of the whole report.
 func (r UsageReport) Sanitize() UsageReport {
-	r = r.DropBadLabels()
+	r = r.DropLegacyEndpoints().DropBadLabels()
 	seen := map[string]bool{}
 	kept := make([]UsageAccount, 0, len(r.Accounts))
 	for _, a := range r.Accounts {
@@ -485,4 +485,57 @@ func validKeyHint(hint, id string) bool {
 	}
 	value := strings.TrimSuffix(hint, " / "+id[:10])
 	return value == "Credential" || len(value) == 13 && strings.HasSuffix(value, "...") && usageText(value, 13)
+}
+
+// DropEndpoint discards the deprecated endpoint origin of an older Worker. An
+// account that had one still uses a custom endpoint, and a label that embeds
+// the host of that origin (or of any host in also) becomes the generic one.
+func (a *UsageAccount) DropEndpoint(also ...string) {
+	hosts := append([]string(nil), also...)
+	if a.EndpointOrigin != "" {
+		a.CustomEndpoint = true
+		if u, err := url.Parse(a.EndpointOrigin); err == nil {
+			hosts = append(hosts, u.Hostname())
+		}
+		hosts = append(hosts, a.EndpointOrigin)
+	}
+	a.EndpointOrigin = ""
+	if a.Label == "" {
+		return
+	}
+	lower := strings.ToLower(a.Label)
+	for _, h := range hosts {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" && strings.Contains(lower, h) {
+			p := a.Provider
+			if p == "" {
+				p = "Provider"
+			}
+			a.Label = p + " custom endpoint (not told apart)"
+			a.CustomEndpoint = true
+			return
+		}
+	}
+}
+
+// DropLegacyEndpoints returns a copy of the report without the deprecated
+// endpoint hosts and origins of v0.20-dev Workers: the session and account
+// fields are emptied (the access kind is kept) and a label that contains such
+// a host is replaced by a generic one. The receiver is not modified.
+func (r UsageReport) DropLegacyEndpoints() UsageReport {
+	var hosts []string
+	r.Sessions = append([]UsageSession(nil), r.Sessions...)
+	for i := range r.Sessions {
+		if h := r.Sessions[i].Endpoint; h != "" {
+			hosts = append(hosts, h)
+			if u, err := url.Parse("//" + h); err == nil && u.Hostname() != "" {
+				hosts = append(hosts, u.Hostname())
+			}
+		}
+		r.Sessions[i].DropEndpoint()
+	}
+	r.Accounts = append([]UsageAccount(nil), r.Accounts...)
+	for i := range r.Accounts {
+		r.Accounts[i].DropEndpoint(hosts...)
+	}
+	return r
 }

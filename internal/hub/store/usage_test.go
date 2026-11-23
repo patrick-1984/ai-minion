@@ -601,3 +601,36 @@ func TestUsageNeverStoresAnEndpointHostFromAnOlderWorker(t *testing.T) {
 		t.Fatalf("%+v %v", got.Sessions, err)
 	}
 }
+
+func TestUsageNeverStoresOrReturnsALegacyAccountEndpoint(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	id := ops.UsageID("account", "gw")
+	r := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true,
+		Sessions: []ops.UsageSession{{ID: ops.UsageID("session", "gw"), Name: "gw", AuthMode: "api", AccountID: id, Endpoint: "cpa.internal.example:8443", ObservedAt: now.UnixMilli(), Source: "test"}},
+		Accounts: []ops.UsageAccount{{ID: id, Provider: "Anthropic", Label: "Custom endpoint cpa.internal.example", AuthMode: "api", EndpointOrigin: "https://cpa.internal.example:8443", ObservedAt: now.UnixMilli(), Source: "session-host"}}}
+	clean := r.Sanitize()
+	if r.Accounts[0].EndpointOrigin == "" || r.Sessions[0].Endpoint == "" {
+		t.Fatal("Sanitize modified the original report")
+	}
+	if b, _ := json.Marshal(clean); strings.Contains(string(b), "cpa.internal") {
+		t.Fatalf("sanitized report keeps the host: %s", b)
+	}
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, r, now); err != nil {
+		t.Fatal(err)
+	}
+	// A row stored by an earlier Hub version still carries the origin.
+	if _, err := s.db.Exec(`UPDATE usage_accounts SET body=json_set(body,'$.endpoint_origin','https://cpa.internal.example:8443','$.label','Custom endpoint cpa.internal.example')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "accounts"}, now)
+	if err != nil || len(got.Accounts) != 1 {
+		t.Fatalf("%+v %v", got.Accounts, err)
+	}
+	b, _ := json.Marshal(got.Accounts)
+	a := got.Accounts[0]
+	if strings.Contains(string(b), "cpa.internal") || a.EndpointOrigin != "" || !a.CustomEndpoint || a.Label != "Anthropic custom endpoint (not told apart)" {
+		t.Fatalf("legacy endpoint returned: %s", b)
+	}
+}

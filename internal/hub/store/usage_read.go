@@ -240,6 +240,8 @@ page:
 			if err := json.Unmarshal([]byte(sources), &row.Sources); err != nil {
 				return out, err
 			}
+			// Accounts stored before the redaction may still carry an endpoint origin or a label with its host.
+			row.DropEndpoint()
 			if privateLabel != "" {
 				row.Alias = privateLabel
 				row.Label = privateLabel

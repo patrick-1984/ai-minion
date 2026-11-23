@@ -41,6 +41,8 @@ func (u *usageCollector) sample(ctx context.Context, p authz.Principal, workerID
 	if !ok {
 		return zero, errors.New("invalid Worker usage report")
 	}
+	// Return the redacted report: a legacy Worker's endpoint host never leaves the Hub.
+	report = report.Sanitize()
 	if err = u.db.SaveUsage(ctx, workerID, owner, report, time.Now()); err != nil {
 		return zero, err
 	}
