@@ -214,6 +214,9 @@
           },
           "session_id": {
             "type": "string"
+          },
+          "keep_source": {
+            "type": "boolean"
           }
         },
         "required": [

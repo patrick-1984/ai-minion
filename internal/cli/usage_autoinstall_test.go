@@ -17,6 +17,7 @@ import (
 
 func autoInstallFixture(t *testing.T, accept bool, env map[string]string) (home, stateDir string, res *config.Resolver) {
 	t.Helper()
+	agent.SetClaudeExporterIssue("") // process-global; an earlier test may have left one
 	st, _ := claudeFixtureEnrollment(t, accept)
 	home = t.TempDir()
 	t.Setenv("HOME", home)

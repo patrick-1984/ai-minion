@@ -62,6 +62,7 @@ func TestHookPaneLive(t *testing.T) {
 	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { agent.SetClaudeExporterIssue("") })
 	env := map[string]string{
 		"MINION_STATE_DIR": state, "MINION_SHARE_EXISTING": "all", "MINION_TMUX_SOCKET": srv.Socket(),
 		"MINION_USAGE_CLAUDE_EXPORTER": "off", "MINION_USAGE_CODEX_EXPORTER": "off",
