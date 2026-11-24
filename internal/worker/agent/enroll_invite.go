@@ -259,6 +259,7 @@ func (e *InviteEnroller) Enroll(ctx context.Context, invite identity.InviteKey) 
 		WorkerID: out.Welcome.WorkerID,
 		Name:     out.Welcome.Name,
 		Owner:    out.Welcome.Owner,
+		OwnerID:  out.Welcome.OwnerID,
 		Kind:     out.Welcome.Kind,
 		Policy:   out.Welcome.Policy,
 		Ratchet:  out.Ratchet,

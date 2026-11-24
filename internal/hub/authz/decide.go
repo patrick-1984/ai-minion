@@ -146,29 +146,38 @@ var workerActions = []ops.Action{ops.ActionRead, ops.ActionMessage}
 // forbidden when p holds some other action but none that is accepted. A
 // failure of a lookup is returned as is and denies.
 func (a *Authorizer) Decide(ctx context.Context, p Principal, accepted ops.ActionSet, res Resource) error {
+	_, err := a.DecideOwner(ctx, p, accepted, res)
+	return err
+}
+
+// DecideOwner is [Authorizer.Decide] that also returns, when it allows, the
+// owner of res as it was read for this very decision. A caller that shows
+// data bound to the owner it was reported under (a harness session name)
+// compares that owner with this one snapshot, never with a second lookup.
+func (a *Authorizer) DecideOwner(ctx context.Context, p Principal, accepted ops.ActionSet, res Resource) (string, error) {
 	pt := a.ports()
 	sub, ok, err := a.subject(ctx, p, pt)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !ok {
-		return proto.NewError(proto.CodeForbidden, "not allowed")
+		return "", proto.NewError(proto.CodeForbidden, "not allowed")
 	}
 	resolved, err := res.resolve(ctx, pt)
 	if err != nil {
-		return mapLookupErr(err)
+		return "", mapLookupErr(err)
 	}
 	h, err := held(ctx, sub, resolved, pt)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if accepted.Permits(h...) {
-		return nil
+		return resolved.OwnerID, nil
 	}
 	if len(h) == 0 {
-		return proto.NewError(proto.CodeNotFound, "not found")
+		return "", proto.NewError(proto.CodeNotFound, "not found")
 	}
-	return proto.NewError(proto.CodeForbidden, "not allowed")
+	return "", proto.NewError(proto.CodeForbidden, "not allowed")
 }
 
 // Valid reports whether p still has any permission at all (see subject):

@@ -799,6 +799,11 @@ func readClaudeUsageManifest(path string) (*claudeUsageIntegration, error) {
 	if err != nil || raw == nil {
 		return nil, err
 	}
+	return parseClaudeUsageManifest(raw)
+}
+
+// parseClaudeUsageManifest decodes and validates a manifest's content.
+func parseClaudeUsageManifest(raw []byte) (*claudeUsageIntegration, error) {
 	var m claudeUsageIntegration
 	if json.Unmarshal(raw, &m) != nil || m.Version != 1 || !filepath.IsAbs(m.Binary) || !filepath.IsAbs(m.StateDir) ||
 		!filepath.IsAbs(m.Shell) || len(m.Grant) != 64 || validateClaudeUsageAttribution(m.Account, m.Profile) != nil || m.Label != "" && !validClaudeUsageLabel(m.Label) {

@@ -45,7 +45,9 @@ type Enrollment struct {
 	WorkerID string
 	Name     string
 	Owner    string
-	Kind     string
+	// OwnerID is the stable Hub id of the owner (Owner is its display name).
+	OwnerID string
+	Kind    string
 	// Policy is the Hub policy from the last welcome.
 	Policy HubPolicy
 	// HubURL is the address of the Hub that authenticated this enrollment, as
@@ -86,7 +88,7 @@ func (e Enrollment) Check() string {
 // Welcome returns the welcome data stored in e.
 func (e Enrollment) Welcome() store.WelcomeInfo {
 	return store.WelcomeInfo{
-		WorkerID: e.WorkerID, Name: e.Name, Owner: e.Owner, Kind: e.Kind, PreviewOnly: e.Policy.PreviewOnly,
+		WorkerID: e.WorkerID, Name: e.Name, Owner: e.Owner, OwnerID: e.OwnerID, Kind: e.Kind, PreviewOnly: e.Policy.PreviewOnly,
 	}
 }
 
@@ -253,6 +255,7 @@ func (e *Enrollments) Load(ctx context.Context) (enr Enrollment, ok bool, err er
 		WorkerID:   row.WorkerID,
 		Name:       row.Name,
 		Owner:      row.Owner,
+		OwnerID:    row.OwnerID,
 		Kind:       row.Kind,
 		Policy:     HubPolicy{PreviewOnly: row.PreviewOnly},
 		HubCheck:   row.HubCheck,
@@ -436,6 +439,7 @@ func (e *Enrollments) commit(ctx context.Context, enr Enrollment) error {
 		WorkerID:    enr.WorkerID,
 		Name:        enr.Name,
 		Owner:       enr.Owner,
+		OwnerID:     enr.OwnerID,
 		Kind:        enr.Kind,
 		PreviewOnly: enr.Policy.PreviewOnly,
 		MaxSerial:   enr.Ratchet.MaxSerial,
@@ -583,7 +587,7 @@ func (e *Enrollments) ApplyWelcomeIf(ctx context.Context, gen uint64, w HubWelco
 
 func (e *Enrollments) applyWelcome(ctx context.Context, w HubWelcome) error {
 	return e.repo.UpdateWelcome(ctx, store.WelcomeInfo{
-		WorkerID: w.WorkerID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, PreviewOnly: w.Policy.PreviewOnly,
+		WorkerID: w.WorkerID, Name: w.Name, Owner: w.Owner, OwnerID: w.OwnerID, Kind: w.Kind, PreviewOnly: w.Policy.PreviewOnly,
 	})
 }
 

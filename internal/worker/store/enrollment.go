@@ -39,7 +39,10 @@ type Enrollment struct {
 	WorkerID string
 	Name     string
 	Owner    string
-	Kind     string
+	// OwnerID is the stable Hub id of the owner (Owner is its display name);
+	// "" from a Hub that does not send it.
+	OwnerID string
+	Kind    string
 	// PreviewOnly is the Hub-side policy from the last welcome. The Worker
 	// combines it with its local policy, and local restrictions always win.
 	PreviewOnly bool
@@ -103,6 +106,7 @@ type WelcomeInfo struct {
 	WorkerID    string
 	Name        string
 	Owner       string
+	OwnerID     string
 	Kind        string
 	PreviewOnly bool
 }
@@ -133,18 +137,18 @@ func (s *Store) SaveEnrollment(ctx context.Context, e Enrollment) error {
 	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO hub_enrollment
-		   (id, hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, updated_at,
+		   (id, hub_pub, pin_seq, worker_id, worker_name, owner, owner_id, kind, preview_only, enrolled_at, updated_at,
 		    max_serial, cert_sha256, hub_check, hub_check_at, hub_check_anchor, hub_check_lineage)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (id) DO UPDATE SET
 		   hub_pub = excluded.hub_pub, pin_seq = excluded.pin_seq, worker_id = excluded.worker_id,
-		   worker_name = excluded.worker_name, owner = excluded.owner, kind = excluded.kind,
+		   worker_name = excluded.worker_name, owner = excluded.owner, owner_id = excluded.owner_id, kind = excluded.kind,
 		   preview_only = excluded.preview_only, enrolled_at = excluded.enrolled_at,
 		   updated_at = excluded.updated_at, max_serial = excluded.max_serial,
 		   cert_sha256 = excluded.cert_sha256, hub_check = excluded.hub_check,
 		   hub_check_at = excluded.hub_check_at, hub_check_anchor = excluded.hub_check_anchor,
 		   hub_check_lineage = excluded.hub_check_lineage`,
-		[]byte(e.HubPub), int64(e.PinSeq), e.WorkerID, e.Name, e.Owner, e.Kind, boolInt(e.PreviewOnly), now, now,
+		[]byte(e.HubPub), int64(e.PinSeq), e.WorkerID, e.Name, e.Owner, e.OwnerID, e.Kind, boolInt(e.PreviewOnly), now, now,
 		int64(e.MaxSerial), nullBytes(e.CertSHA256), check, checkAt, e.HubCheckAnchor, e.HubCheckLineage)
 	if err != nil {
 		return fmt.Errorf("store: save enrollment: %w", err)
@@ -179,19 +183,26 @@ func (s *Store) HasEnrollment(ctx context.Context) (bool, error) {
 }
 
 // LoadEnrollment returns the stored enrollment, or [ErrNotEnrolled]. On a
-// read-only store of an older release, whose schema has no hub_check columns
-// yet (the migrations of this release did not run), it returns the
-// enrollment without them: a status or a preflight check never needs to
-// migrate.
+// read-only store of an older release, whose schema has no owner_id or
+// hub_check columns yet (the migrations of this release did not run), it
+// returns the enrollment without them: a status or a preflight check never
+// needs to migrate.
 func (s *Store) LoadEnrollment(ctx context.Context) (Enrollment, error) {
-	e, err := s.loadEnrollment(ctx, true)
-	if err != nil && !errors.Is(err, ErrNotEnrolled) && strings.Contains(err.Error(), "no such column") {
-		return s.loadEnrollment(ctx, false)
+	e, err := s.loadEnrollment(ctx, true, true)
+	if noSuchColumn(err) {
+		e, err = s.loadEnrollment(ctx, true, false)
+	}
+	if noSuchColumn(err) {
+		e, err = s.loadEnrollment(ctx, false, false)
 	}
 	return e, err
 }
 
-func (s *Store) loadEnrollment(ctx context.Context, withCheck bool) (Enrollment, error) {
+func noSuchColumn(err error) bool {
+	return err != nil && !errors.Is(err, ErrNotEnrolled) && strings.Contains(err.Error(), "no such column")
+}
+
+func (s *Store) loadEnrollment(ctx context.Context, withCheck, withOwnerID bool) (Enrollment, error) {
 	var (
 		e         Enrollment
 		pub       []byte
@@ -204,6 +215,10 @@ func (s *Store) loadEnrollment(ctx context.Context, withCheck bool) (Enrollment,
 	)
 	cols := `hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, max_serial, cert_sha256`
 	dest := []any{&pub, &seq, &e.WorkerID, &e.Name, &e.Owner, &e.Kind, &preview, &enrolled, &maxSerial, &certHash}
+	if withOwnerID {
+		cols += `, owner_id`
+		dest = append(dest, &e.OwnerID)
+	}
 	if withCheck {
 		cols += `, hub_check, hub_check_at, hub_check_anchor, hub_check_lineage`
 		dest = append(dest, &e.HubCheck, &checkAt, &e.HubCheckAnchor, &e.HubCheckLineage)
@@ -391,9 +406,9 @@ func (s *Store) UpdatePinRatchet(ctx context.Context, pub ed25519.PublicKey, seq
 // owner, kind and Hub policy. [ErrNotEnrolled] when there is no enrollment.
 func (s *Store) UpdateWelcome(ctx context.Context, w WelcomeInfo) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE hub_enrollment SET worker_id = ?, worker_name = ?, owner = ?, kind = ?, preview_only = ?, updated_at = ?
+		`UPDATE hub_enrollment SET worker_id = ?, worker_name = ?, owner = ?, owner_id = ?, kind = ?, preview_only = ?, updated_at = ?
 		 WHERE id = 1`,
-		w.WorkerID, w.Name, w.Owner, w.Kind, boolInt(w.PreviewOnly), s.clock.now().UnixMilli())
+		w.WorkerID, w.Name, w.Owner, w.OwnerID, w.Kind, boolInt(w.PreviewOnly), s.clock.now().UnixMilli())
 	if err != nil {
 		return fmt.Errorf("store: update welcome: %w", err)
 	}

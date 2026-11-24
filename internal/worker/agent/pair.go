@@ -1381,6 +1381,7 @@ func (p *Pairer) finish(ctx context.Context, gen uint64, res PairResult) (Enroll
 		WorkerID: w.WorkerID,
 		Name:     w.Name,
 		Owner:    w.Owner,
+		OwnerID:  w.OwnerID,
 		Kind:     w.Kind,
 		Policy:   w.Policy,
 		HubURL:   p.cfg.HubURL,

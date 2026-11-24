@@ -933,3 +933,90 @@ func TestFeedPreservesNativeStateDetailsUntilFallback(t *testing.T) {
 		t.Fatalf("fallback observation = %+v", s)
 	}
 }
+
+// A96: the harness session name is an optional, sanitized part of the state
+// detail; an older Worker that omits it leaves it empty.
+func TestFeedCarriesSanitizedHarnessName(t *testing.T) {
+	h := NewEventHub(EventHubOptions{})
+	_, f := newFeed(t, h, "w1")
+	long := strings.Repeat("n", 200)
+	snapshot := `{"type":"events.snapshot","seq":0,"sessions":[{"name":"work","kind":"agent:claude","state":"busy","task":"","state_source":"claude-hooks","harness_name":"rel\u001b[31mease\u202e  prep"},{"name":"old","kind":"agent:claude","state":"stable","task":""},{"name":"long","kind":"agent:claude","state":"stable","task":"","harness_name":"` + long + `"}]}`
+	if err := feedFrame(f, json.RawMessage(snapshot), nil); err != nil {
+		t.Fatal(err)
+	}
+	ws, ok := h.Sessions("w1")
+	if !ok || len(ws.Sessions) != 3 {
+		t.Fatalf("inventory = %+v", ws)
+	}
+	got := map[string]string{}
+	for _, s := range ws.Sessions {
+		got[s.Name] = s.HarnessName
+	}
+	if got["work"] != "rel[31mease prep" || got["old"] != "" || got["long"] != long[:ops.MaxHarnessNameRunes] {
+		t.Fatalf("names = %q", got)
+	}
+	const renamed = `{"type":"event","seq":1,"event":"state_changed","session":"old","kind":"agent:claude","state":"busy","task":"","state_source":"claude-hooks","harness_name":"named later"}`
+	if err := feedFrame(f, json.RawMessage(renamed), nil); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ = h.Sessions("w1")
+	for _, s := range ws.Sessions {
+		if s.Name == "old" && s.HarnessName != "named later" {
+			t.Fatalf("renamed session = %+v", s)
+		}
+	}
+}
+
+// A96 review: harness session names are bound to the owner the reporting
+// connection was admitted under (the reader compares it with the owner its read
+// was authorized under, see the api tests): a reconnect under a new owner drops
+// the cached names, a connection whose owner is unknown reports none, and a
+// queued event shows its name only under the owner it was reported under.
+func TestHarnessNamesBoundToOwner(t *testing.T) {
+	h := NewEventHub(EventHubOptions{})
+	sub := h.Subscribe(16)
+	defer sub.Close()
+	l := h.ConnectOwner("w1", "box", "alice")
+	f, err := l.NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := `{"type":"events.snapshot","seq":0,"sessions":[{"name":"work","kind":"agent:claude","state":"busy","task":"t","harness_name":"alice private"}]}`
+	if err := feedFrame(f, json.RawMessage(snapshot), nil); err != nil {
+		t.Fatal(err)
+	}
+	const renamed = `{"type":"event","seq":1,"event":"state_changed","session":"work","kind":"agent:claude","state":"busy","task":"t","harness_name":"alice renamed"}`
+	if err := feedFrame(f, json.RawMessage(renamed), nil); err != nil {
+		t.Fatal(err)
+	}
+	var queued Event
+	for queued.Type != EventStateChanged {
+		queued = recvEv(t, sub)
+	}
+	if queued.NameFor("alice").HarnessName != "alice renamed" || queued.NameFor("bob").HarnessName != "" || queued.NameFor("").HarnessName != "" {
+		t.Fatalf("queued event names: alice %q bob %q", queued.NameFor("alice").HarnessName, queued.NameFor("bob").HarnessName)
+	}
+	l.Disconnect()
+
+	ws, _ := h.Sessions("w1")
+	if ws.OwnerID != "alice" || ws.Sessions[0].HarnessName != "alice renamed" {
+		t.Fatalf("owner's view = %+v", ws)
+	}
+	// The Worker reconnects under its new owner: the names are dropped from
+	// the cache before its snapshot arrives.
+	h.ConnectOwner("w1", "box", "bob")
+	ws, _ = h.Sessions("w1")
+	if ws.OwnerID != "bob" || ws.Sessions[0].HarnessName != "" || ws.Sessions[0].Task != "t" {
+		t.Fatalf("after reconnect under bob = %+v", ws)
+	}
+	// A connection whose owner is unknown shows no names.
+	h2 := NewEventHub(EventHubOptions{})
+	_, f2 := newFeed(t, h2, "w2")
+	if err := feedFrame(f2, json.RawMessage(snapshot), nil); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ = h2.Sessions("w2")
+	if ws.OwnerID != "" {
+		t.Fatalf("an unbound connection has owner %q", ws.OwnerID)
+	}
+}

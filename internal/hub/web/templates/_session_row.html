@@ -35,6 +35,7 @@
 
 {{define "session_row"}}<tr data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="s-{{.WorkerID}}-{{.Name}}" data-row-link="session">
   <th scope="row"><a href="{{.Path}}" data-control="name" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}"><span class="session-worker">{{.Worker}}/</span>{{.Name}}</a></th>
+  <td data-label="Name" class="col-name{{if .HarnessName}}" data-harness-name{{else}} empty"{{end}}>{{.HarnessName}}</td>
   <td data-label="Task"{{if gt (len .Task) 32}} class="cell-clamp" title="{{.Task}}" tabindex="0"{{end}}>{{if .Task}}{{.Task}}{{else}}<span class="muted">No task</span>{{end}}</td>
   {{if not .HideWorker}}<td data-label="Worker"><a href="{{.WorkerURL}}" data-control="worker" data-worker-link>{{.Worker}}</a>{{if not .Online}} <span class="badge muted" data-online="false">offline</span>{{end}}</td>
   {{end}}{{if .ShowOwner}}<td data-label="Owner"{{if gt (len .Owner) 32}} class="cell-clamp" title="{{.Owner}}" tabindex="0"{{end}}>{{.Owner}}</td>

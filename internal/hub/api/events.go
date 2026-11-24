@@ -355,6 +355,14 @@ func (s *eventStream) run(ctx context.Context, sub *workers.Subscription, out *s
 			if !s.visible(rctx, ev) {
 				continue
 			}
+			if ev.HarnessName != "" {
+				// The name belongs to the owner the reporting connection
+				// was admitted under. The cached decision of visible may
+				// predate a reassignment, so a name-bearing event is
+				// authorized again here and shown only when that fresh
+				// decision was taken under the reporting owner.
+				ev = ev.NameFor(s.readOwner(rctx, ev))
+			}
 			if out.send(ev.Type, ev) != nil {
 				s.endRevoked(ctx, rctx, out)
 				return
@@ -609,6 +617,22 @@ func (s *eventStream) canReadWorker(ctx context.Context, p authz.Principal, work
 // then [eventStream.canReadWorker].
 func (s *eventStream) mayReadWorker(ctx context.Context, p authz.Principal, workerID string) bool {
 	return s.passesMine(ctx, p, workerID) && s.canReadWorker(ctx, p, workerID)
+}
+
+// readOwner authorizes the principal's read of ev's session afresh and
+// returns the owner that decision was taken under ("" when denied or failed).
+func (s *eventStream) readOwner(ctx context.Context, ev workers.Event) string {
+	s.mu.Lock()
+	p := s.id.Principal
+	s.mu.Unlock()
+	owner, err := s.h.cfg.Authz.DecideOwner(ctx, p, readOnly, authz.SessionResource{WorkerID: ev.WorkerID, Name: ev.Session})
+	if err != nil {
+		if c := proto.CodeOf(err); c != proto.CodeForbidden && c != proto.CodeNotFound {
+			s.h.cfg.Log.Error("event stream: permission check failed", "error", err.Error())
+		}
+		return ""
+	}
+	return owner
 }
 
 func (s *eventStream) canRead(ctx context.Context, p authz.Principal, res authz.Resource) bool {

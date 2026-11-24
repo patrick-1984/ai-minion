@@ -219,7 +219,10 @@ type SessionRow struct {
 	Kind     string
 	State    string
 	ops.PaneStateDetail
-	Task string
+	// HarnessName is the name the user gave the conversation in the harness
+	// (Claude Code /rename); "" when none is known.
+	HarnessName string
+	Task        string
 	// Online is false while the session's Worker is offline; the state is the
 	// last one known.
 	Online    bool
@@ -251,7 +254,8 @@ type Dashboard struct {
 // optional; an empty filter shows everything the scope allows. The filter only
 // narrows a list the API already limited to what the caller may see.
 type ListFilter struct {
-	// Query matches names, tasks, Worker names and owners, ignoring case.
+	// Query matches names (also the harness session name), tasks, Worker names
+	// and owners, ignoring case.
 	Query string
 	// Status is "online" or "offline" for Workers; a session state or
 	// "worker-offline" for sessions.
@@ -307,7 +311,7 @@ func (f ListFilter) matchWorker(w WorkerRow) bool {
 }
 
 func (f ListFilter) matchSession(x SessionRow) bool {
-	if f.Query != "" && !containsFold(x.Name, f.Query) && !containsFold(x.Task, f.Query) &&
+	if f.Query != "" && !containsFold(x.Name, f.Query) && !containsFold(x.HarnessName, f.Query) && !containsFold(x.Task, f.Query) &&
 		!containsFold(x.Worker, f.Query) && !containsFold(x.Owner, f.Query) {
 		return false
 	}
@@ -1185,8 +1189,9 @@ type sessionsBody struct {
 		Kind     string `json:"kind"`
 		State    string `json:"state"`
 		ops.PaneStateDetail
-		Task   string `json:"task"`
-		Online bool   `json:"online"`
+		HarnessName string `json:"harness_name"`
+		Task        string `json:"task"`
+		Online      bool   `json:"online"`
 	} `json:"sessions"`
 }
 
@@ -1243,7 +1248,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	for _, x := range sb.Sessions {
 		d.Sessions = append(d.Sessions, SessionRow{
 			WorkerID: x.WorkerID, Worker: x.Worker, Owner: x.Owner, Name: x.Session,
-			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail,
+			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail, HarnessName: x.HarnessName,
 		})
 	}
 	return d, nil

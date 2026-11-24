@@ -83,6 +83,10 @@ type SessionState struct {
 	Task       string `json:"task"`
 	ScreenHash string `json:"screen_hash,omitempty"`
 	ops.PaneStateDetail
+	// HarnessName is the name the user gave the conversation in the harness
+	// (Claude Code /rename), sanitized; "" when none is known. It travels on
+	// the state stream to the Hub only, never in an operation result.
+	HarnessName string `json:"harness_name,omitempty"`
 }
 
 // View is the shared sessions at one moment, by session name.
@@ -135,7 +139,7 @@ func Diff(prev, cur View) []Change {
 		case !inCur && inPrev:
 			out = append(out, Change{EventSessionRemoved, SessionState{Name: n}})
 		default:
-			if c.Kind != p.Kind || c.State != p.State || c.Task != p.Task || c.PaneStateDetail != p.PaneStateDetail {
+			if c.Kind != p.Kind || c.State != p.State || c.Task != p.Task || c.PaneStateDetail != p.PaneStateDetail || c.HarnessName != p.HarnessName {
 				out = append(out, Change{EventStateChanged, c})
 			}
 			if c.ScreenHash != p.ScreenHash {
@@ -271,17 +275,19 @@ func (o *HostObserver) observeOnce(ctx context.Context) (View, store.ShareState,
 			info := basicInfo(session.Name, ref)
 			scr, err := o.cfg.Host.Snapshot(ctx, ref)
 			if err != nil {
-				reportUnreadablePane(ctx, o.cfg.nativeState, o.cfg.Classifier, &info, session.Created.Unix())
+				pid := reportUnreadablePane(ctx, o.cfg.nativeState, o.cfg.Classifier, &info, session.Created.Unix())
 				if info.StateSource != "" {
 					st.Kind, st.State, st.PaneStateDetail = info.Kind, info.State, info.PaneStateDetail
+					st.HarnessName = reportedHarnessName(ctx, o.cfg.nativeState, o.cfg.Classifier, info, session.Created.Unix(), pid)
 				}
 				return
 			}
 			r := o.cfg.Classifier.Classify(ctx, agentdetect.Input{Command: ref.Command, PID: ref.PID, Screen: scr})
 			info.Kind, info.State, info.InputKind = r.Shown(), r.State, r.Kind
-			reportState(ctx, o.cfg.nativeState, o.cfg.Classifier, &info, scr, session.Created.Unix(), r.Background)
+			pid := reportState(ctx, o.cfg.nativeState, o.cfg.Classifier, &info, scr, session.Created.Unix(), r.Background)
 			st.Kind, st.State, st.ScreenHash = r.Shown(), info.State, ScreenHash(scr)
 			st.PaneStateDetail = info.PaneStateDetail
+			st.HarnessName = reportedHarnessName(ctx, o.cfg.nativeState, o.cfg.Classifier, info, session.Created.Unix(), pid)
 		}(&states[i], p.Ref, s)
 	}
 	wg.Wait()

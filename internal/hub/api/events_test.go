@@ -1373,3 +1373,181 @@ func TestEventsPipeChangedQueuedBeforeARevocationIsDropped(t *testing.T) {
 		})
 	}
 }
+
+// A96 review: a harness session name is shown only under the owner whose
+// Worker connection reported it. After a reassignment the new owner reads the
+// cached rows of the offline Worker, and a queued event, without the former
+// owner's name; a connection whose owner is unknown shows none.
+func TestHarnessNamesFollowTheReportingOwner(t *testing.T) {
+	r := newEvRig(t, nil)
+	named := ss("a1", "agent:claude", "busy", "t")
+	named.HarnessName = "alice private"
+	l := r.hub.ConnectOwner(wAlice, r.world.names[wAlice], evAlice)
+	f, err := l.NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Snapshot(0, []workers.SessionState{named}); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.sessions("alice", ""); len(got) != 1 || got[0].HarnessName != "alice private" {
+		t.Fatalf("owner's list = %+v", got)
+	}
+	root := r.open("root", "?all=true")
+	root.expect("snapshot")
+
+	// Reassigned to bob while a renamed event is still queued.
+	r.world.set(func() { r.world.owners[wAlice] = evBob })
+	named.HarnessName = "alice renamed"
+	if err := f.Apply(workers.Change{Seq: 1, Event: workers.EventStateChanged, HasTask: true, Session: named}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := decodeEvent(t, root.expect("state_changed")); ev.HarnessName != "" {
+		t.Fatalf("queued event after reassignment carries %q", ev.HarnessName)
+	}
+	l.Disconnect()
+	got := r.sessions("bob", "")
+	if len(got) != 1 || got[0].HarnessName != "" || got[0].Task != "t" {
+		t.Fatalf("new owner's list = %+v", got)
+	}
+
+	// Unknown reporting owner (an unbound connection): no name.
+	r.feed(wBob, workers.SessionState{Name: "b1", Kind: "agent:claude", State: "busy", HarnessName: "unbound"})
+	for _, s := range r.sessions("root", "?all=true") {
+		if s.HarnessName != "" {
+			t.Fatalf("unbound name shown: %+v", s)
+		}
+	}
+}
+
+// racingDirectory commits a change of the world (a reassignment) right after
+// the session list read the Worker directory, before it authorizes the rows.
+type racingDirectory struct {
+	*evWorld
+	after func()
+}
+
+func (d racingDirectory) Workers(ctx context.Context) ([]workers.WorkerRecord, error) {
+	recs, err := d.evWorld.Workers(ctx)
+	d.set(d.after)
+	return recs, err
+}
+
+// A96 review round 2: the title decision uses the owner the row's read was
+// authorized under, not the owner of the directory read before it. A
+// reassignment that commits between the two never shows the former owner's
+// name to the new owner (the same lister builds the stream's snapshot).
+func TestHarnessNameUsesTheAuthorizedOwnerSnapshot(t *testing.T) {
+	r := newEvRig(t, nil)
+	named := ss("a1", "agent:claude", "busy", "t")
+	named.HarnessName = "alice private"
+	l := r.hub.ConnectOwner(wAlice, r.world.names[wAlice], evAlice)
+	f, err := l.NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Snapshot(0, []workers.SessionState{named}); err != nil {
+		t.Fatal(err)
+	}
+	lister := *r.lister
+	lister.Directory = racingDirectory{evWorld: r.world, after: func() { r.world.owners[wAlice] = evBob }}
+	got, err := lister.List(t.Context(), authz.NewSessionPrincipal(evBob), SessionQuery{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row *SessionInfo
+	for i := range got {
+		if got[i].WorkerID == wAlice {
+			row = &got[i]
+		}
+	}
+	if row == nil || row.HarnessName != "" || row.Task != "t" {
+		t.Fatalf("new owner's list after a racing reassignment = %+v", got)
+	}
+
+	// Without the race the owner the name was reported under sees it.
+	r.world.set(func() { r.world.owners[wAlice] = evAlice })
+	if got := r.sessions("alice", ""); len(got) != 1 || got[0].HarnessName != "alice private" {
+		t.Fatalf("owner's list = %+v", got)
+	}
+}
+
+// A96 review round 2: a stream that cached a positive read decision before a
+// reassignment never receives the new owner's name after the Worker
+// reconnected under the new owner: a name-bearing event is authorized afresh,
+// and the name is shown only when that decision was taken under the owner
+// the event was reported under.
+func TestFormerOwnersStreamNeverGetsTheNewOwnersName(t *testing.T) {
+	r := newEvRig(t, nil)
+	const wSentinel = "w-alice-2"
+	r.world.set(func() { r.world.owners[wSentinel], r.world.names[wSentinel] = evAlice, "pi-2" })
+	_, sentinel := r.feed(wSentinel, ss("s1", "shell", "stable", ""))
+	l := r.hub.ConnectOwner(wAlice, r.world.names[wAlice], evAlice)
+	f, err := l.NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Snapshot(0, []workers.SessionState{ss("a1", "agent:claude", "busy", "t")}); err != nil {
+		t.Fatal(err)
+	}
+	alice := r.open("alice", "")
+	alice.expect("snapshot")
+	root := r.open("root", "?all=true")
+	root.expect("snapshot")
+	// Alice's stream caches its positive decision for a1.
+	if err := f.Apply(workers.Change{Seq: 1, Event: workers.EventStateChanged, HasTask: true, Session: ss("a1", "agent:claude", "stable", "t")}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := decodeEvent(t, alice.expect("state_changed")); ev.Session != "a1" {
+		t.Fatalf("alice got %+v", ev)
+	}
+	root.expect("state_changed")
+
+	// Reassigned to bob; the Worker reconnects under bob and reports a name.
+	r.world.set(func() { r.world.owners[wAlice] = evBob })
+	l.Disconnect()
+	l2 := r.hub.ConnectOwner(wAlice, r.world.names[wAlice], evBob)
+	f2, err := l2.NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f2.Snapshot(0, []workers.SessionState{ss("a1", "agent:claude", "stable", "t")}); err != nil {
+		t.Fatal(err)
+	}
+	named := ss("a1", "agent:claude", "busy", "t")
+	named.HarnessName = "bob secret"
+	if err := f2.Apply(workers.Change{Seq: 1, Event: workers.EventStateChanged, HasTask: true, Session: named}); err != nil {
+		t.Fatal(err)
+	}
+	// The sentinel comes after on the same ordered stream: once alice has it,
+	// every earlier event was handled.
+	if err := sentinel.Apply(workers.Change{Seq: 1, Event: workers.EventStateChanged, HasTask: true, Session: ss("s1", "shell", "busy", "")}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		m, ok := alice.next()
+		if !ok {
+			t.Fatal("alice's stream ended")
+		}
+		if strings.Contains(m.data, "bob secret") {
+			t.Fatalf("the former owner's stream got the new owner's name: %+v", m)
+		}
+		if m.event == "state_changed" && decodeEvent(t, m).WorkerID == wSentinel {
+			break
+		}
+	}
+	// The admin, authorized under the owner the name was reported under,
+	// sees it.
+	for {
+		m, ok := root.next()
+		if !ok {
+			t.Fatal("root's stream ended")
+		}
+		if m.event == "state_changed" && decodeEvent(t, m).Session == "a1" {
+			if ev := decodeEvent(t, m); ev.HarnessName != "bob secret" {
+				t.Fatalf("root got %+v", ev)
+			}
+			break
+		}
+	}
+}
