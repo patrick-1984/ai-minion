@@ -252,8 +252,8 @@ func TestCookieAttributes(t *testing.T) {
 	if c.Name != "minion_session" || c.Value != is.Token || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
 		t.Errorf("cookie = %+v", c)
 	}
-	if !c.Expires.Equal(is.ExpiresAt) {
-		t.Errorf("expires %v, want %v", c.Expires, is.ExpiresAt)
+	if !c.Expires.Equal(is.EndsAt) || !is.EndsAt.Equal(is.CreatedAt.Add(LocalMaxAge)) {
+		t.Errorf("expires %v, want the absolute end %v", c.Expires, is.CreatedAt.Add(LocalMaxAge))
 	}
 	if c := Cookie(is, false); c.Secure {
 		t.Error("Secure set when not requested")
@@ -364,4 +364,17 @@ func TestMarkAuthenticatedRaisesOnlyTheNamedSession(t *testing.T) {
 	if _, err := m.MarkAuthenticated(ctx, a.ID, ""); err == nil {
 		t.Error("an empty method was accepted")
 	}
+}
+
+func (m *memStore) ExtendSession(_ context.Context, id string, expiresAt int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for h, s := range m.sessions {
+		if s.ID == id && s.ExpiresAt < expiresAt {
+			s.ExpiresAt = expiresAt
+			m.sessions[h] = s
+			return true, nil
+		}
+	}
+	return false, nil
 }

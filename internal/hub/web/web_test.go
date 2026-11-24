@@ -719,6 +719,26 @@ func TestHTMXLoginRedirectUsesCurrentURL(t *testing.T) {
 	}
 }
 
+// A background request (a timed poll, a stream reconnect) without a session
+// gets a plain 401 and no redirect, so the page the person looks at stays as
+// it is (A99).
+func TestBackgroundRequestWithoutSessionKeepsTheScreen(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterPage(Page{Pattern: "/fragment", Title: "F", Template: "probe.html"}); err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(t, reg)
+	for _, hdr := range [][]string{
+		{"HX-Request", "true", "X-Minion-Background", "1", "HX-Current-URL", "https://hub.example/sessions"},
+		{"Accept", "text/event-stream"},
+	} {
+		rec := get(t, s, "/fragment", hdr...)
+		if rec.Code != http.StatusUnauthorized || rec.Header().Get("HX-Redirect") != "" || rec.Header().Get("Location") != "" {
+			t.Errorf("%v: %d HX-Redirect %q Location %q, want a plain 401", hdr, rec.Code, rec.Header().Get("HX-Redirect"), rec.Header().Get("Location"))
+		}
+	}
+}
+
 // AddFlash takes the Secure attribute of the cookie from the Server that
 // serves the request, so handlers registered by other stories need no value.
 func TestAddFlashSecureFollowsServer(t *testing.T) {

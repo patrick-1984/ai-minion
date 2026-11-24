@@ -118,6 +118,17 @@
     }
   }
 
+  // A GET that htmx sends without a trusted user event (a timed poll, a "load" trigger, a
+  // refresh after a live event, htmx.ajax from a script) is marked as background: it does not
+  // extend the idle lifetime of the session, and a session that ended answers it with a plain
+  // 401 instead of a redirect, so the screen stays as it is.
+  document.addEventListener('htmx:configRequest', function (ev) {
+    var d = ev.detail;
+    if (!d || !d.headers || String(d.verb || '').toLowerCase() !== 'get') { return; }
+    var te = d.triggeringEvent;
+    if (!te || te.isTrusted !== true) { d.headers['X-Minion-Background'] = '1'; }
+  });
+
   document.addEventListener('submit', function (ev) {
     var form = ev.target;
     if (!(form instanceof HTMLFormElement) || !form.dataset.jsonAction) { return; }

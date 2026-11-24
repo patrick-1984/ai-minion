@@ -24,7 +24,8 @@ import (
 const authModuleOrder = 30
 
 func init() {
-	// session_ttl is read on every login, so a panel change applies at once.
+	// session_ttl is read on every login and request, so a panel change
+	// applies at once.
 	DeclareLiveSetting(config.KeySessionTTL)
 	registerAuth(DefaultRegistry)
 }
@@ -119,7 +120,28 @@ func initAuth(ctx context.Context, env *Env) error {
 	if err != nil {
 		return fmt.Errorf("rate limiter: %w", err)
 	}
-	mgr := session.NewManager(st)
+	// A panel value can change at any time and may be invalid: the login
+	// then uses the default lifetime and logs the key and its source.
+	sessionTTL := func(context.Context) (time.Duration, error) {
+		ttl, err := config.ResolveSessionTTL(resolver)
+		if err != nil {
+			return 0, err
+		}
+		if ttl.Fallback {
+			cfg.logger().Error("setting has an invalid value; using the default",
+				"key", config.KeySessionTTL, "source", string(ttl.Source))
+		}
+		return ttl.Value, nil
+	}
+	// session_ttl is the idle lifetime: every request the person makes moves
+	// the end of the session (A99).
+	mgr := session.NewManager(st, session.WithIdleTTL(func(ctx context.Context) (time.Duration, error) {
+		ttl, err := config.ResolveSessionTTL(resolver)
+		if err != nil {
+			return 0, err
+		}
+		return ttl.Value, nil
+	}))
 	mw := &session.Middleware{Manager: mgr, Log: cfg.logger()}
 	for _, p := range []func() error{
 		func() error { return Provide(env, limiter) },
@@ -135,19 +157,7 @@ func initAuth(ctx context.Context, env *Env) error {
 		Auth:     &local.Authenticator{Store: st, Hasher: hasher, Limiter: limiter, Audit: alog, Log: cfg.logger()},
 		Sessions: mgr,
 		Audit:    alog,
-		// A panel value can change at any time and may be invalid: the login
-		// then uses the default lifetime and logs the key and its source.
-		TTL: func(context.Context) (time.Duration, error) {
-			ttl, err := config.ResolveSessionTTL(resolver)
-			if err != nil {
-				return 0, err
-			}
-			if ttl.Fallback {
-				cfg.logger().Error("setting has an invalid value; using the default",
-					"key", config.KeySessionTTL, "source", string(ttl.Source))
-			}
-			return ttl.Value, nil
-		},
+		TTL:      sessionTTL,
 		Secure:   func(*http.Request) bool { return session.CookieSecure(nw.PublicURL()) },
 		ClientIP: func(r *http.Request) netip.Addr { return nw.ClientIP(r) },
 		Log:      cfg.logger(),

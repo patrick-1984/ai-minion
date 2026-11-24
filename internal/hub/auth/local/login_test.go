@@ -476,8 +476,10 @@ func TestLoginIssuesCookieAndCSRFToken(t *testing.T) {
 	if !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
 		t.Errorf("cookie attributes = %+v", c)
 	}
-	if !c.Expires.Equal(f.clock.Now().Add(f.ttl).Truncate(time.Second)) {
-		t.Errorf("cookie expires %v, want now + ttl %v", c.Expires, f.clock.Now().Add(f.ttl))
+	// The cookie lives until the absolute end of a local session; the
+	// server enforces the idle end.
+	if want := f.clock.Now().Add(max(session.LocalMaxAge, f.ttl)).Truncate(time.Second); !c.Expires.Equal(want) {
+		t.Errorf("cookie expires %v, want now + the local max age %v", c.Expires, want)
 	}
 	if !session.ValidCSRF(c.Value, body.CSRFToken) {
 		t.Error("the issued CSRF token is not bound to the cookie")

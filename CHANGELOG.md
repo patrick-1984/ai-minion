@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Browser sessions: `session_ttl` (`MINION_SESSION_TTL`, **Administration > Hub settings**) is now the **idle** lifetime, default **2 hours** (was a fixed 24 hours from the sign-in). Every page load, click, form or htmx action extends the session; timed polls, refreshes after live events and live-stream reconnects do not. A local password session ends 12 hours after the sign-in whatever the activity; an OIDC session 7 days after it. The session cookie now lives until that absolute end (the Hub decides validity).
+- OIDC sessions are no longer sent to the sign-in page when the idle lifetime runs out: on the next request (page refresh, navigation, htmx action, or a poll of a page that is still open) the Hub renews the session silently with the account's stored refresh token, and serves the same page, as long as the identity provider returns fresh claims for the same person, the account is active and the role rules still give it a role. A rejected refresh token, a missing token, a removed provider, no role left or an identity provider unreachable for more than 15 minutes leads to the sign-in page. Each attempt is audited as `session.renew` (`success`, `failed`, `unavailable`); the refresh token never leaves the Hub. A background request of a session that ended and could not be renewed gets a plain 401 instead of a redirect, so the screen stays as it is. See [browser sessions](docs/security.md#browser-sessions).
+
 ## v0.20.4
 
 ### Added

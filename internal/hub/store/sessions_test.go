@@ -144,3 +144,57 @@ func TestExternalIdentityOfNamesTheSubjectAtAProvider(t *testing.T) {
 		t.Errorf("other provider: %v", err)
 	}
 }
+
+// An expired OIDC session stays until OIDCSessionMaxAge after its sign-in, so
+// that the next request can renew it; a local one goes at once (A99).
+func TestPruneKeepsRenewableOIDCSessions(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	p := seedParams("admin")
+	if _, err := s.SeedAdmin(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	maxAge := OIDCSessionMaxAge.Milliseconds()
+	now := maxAge + 1_000_000
+	rows := []SessionRow{
+		{ID: NewID(), TokenHash: "local", UserID: p.User.ID, CredentialVersion: 1, CreatedAt: now - 100, ExpiresAt: now - 1, AuthMethod: "local"},
+		{ID: NewID(), TokenHash: "oidc-young", UserID: p.User.ID, CredentialVersion: 1, CreatedAt: now - 100, ExpiresAt: now - 1, AuthMethod: "oidc:authentik"},
+		{ID: NewID(), TokenHash: "oidc-old", UserID: p.User.ID, CredentialVersion: 1, CreatedAt: now - maxAge, ExpiresAt: now - 1, AuthMethod: "oidc:authentik"},
+	}
+	for _, r := range rows {
+		if err := s.CreateSession(ctx, r, r.CreatedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateSession(ctx, SessionRow{ID: NewID(), TokenHash: "trigger", UserID: p.User.ID, CredentialVersion: 1, CreatedAt: now, ExpiresAt: now + 10}, now); err != nil {
+		t.Fatal(err)
+	}
+	for h, want := range map[string]bool{"local": false, "oidc-young": true, "oidc-old": false} {
+		_, _, err := s.SessionByTokenHash(ctx, h)
+		if got := err == nil; got != want {
+			t.Errorf("%s kept = %v, want %v (%v)", h, got, want, err)
+		}
+	}
+}
+
+func TestExtendSessionOnlyMovesTheEndLater(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	p := seedParams("admin")
+	if _, err := s.SeedAdmin(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	row := SessionRow{ID: NewID(), TokenHash: "h", UserID: p.User.ID, CredentialVersion: 1, CreatedAt: 10, ExpiresAt: 100}
+	if err := s.CreateSession(ctx, row, 10); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ExtendSession(ctx, row.ID, 50); err != nil || ok {
+		t.Fatalf("ExtendSession earlier = %v, %v", ok, err)
+	}
+	if ok, err := s.ExtendSession(ctx, row.ID, 200); err != nil || !ok {
+		t.Fatalf("ExtendSession later = %v, %v", ok, err)
+	}
+	if got, _, _ := s.SessionByTokenHash(ctx, "h"); got.ExpiresAt != 200 {
+		t.Errorf("expires_at = %d, want 200", got.ExpiresAt)
+	}
+}

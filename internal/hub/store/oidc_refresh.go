@@ -103,6 +103,37 @@ ORDER BY e.last_login_at, e.id`)
 	return targets, unreadable, nil
 }
 
+// OIDCRefreshTargetOf returns the refresh target of the user's identity at
+// the provider: the same row as [Store.ListOIDCRefreshTargets] lists, for
+// one account. It returns [ErrNotFound] when the user is inactive, has no
+// identity at the provider or holds no refresh token there. A silent
+// renewal of a browser session uses it.
+func (s *Store) OIDCRefreshTargetOf(ctx context.Context, userID, providerID string) (OIDCRefreshTarget, error) {
+	var (
+		x      OIDCRefreshTarget
+		sealed []byte
+	)
+	err := s.db.QueryRowContext(ctx, `
+SELECT e.id, e.user_id, e.issuer, e.subject, e.provider_id, e.last_login_at, e.refresh_token_enc,
+  EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = e.user_id AND r.role = 'admin' AND r.source = 'idp')
+FROM external_identities e JOIN users u ON u.id = e.user_id
+WHERE e.user_id = ? AND e.provider_id = ? AND u.active = 1 AND e.refresh_token_enc IS NOT NULL AND length(e.refresh_token_enc) > 0
+ORDER BY e.last_login_at DESC, e.id LIMIT 1`, userID, providerID).Scan(
+		&x.IdentityID, &x.UserID, &x.Issuer, &x.Subject, &x.ProviderID, &x.LastLoginAt, &sealed, &x.IdPAdmin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OIDCRefreshTarget{}, ErrNotFound
+	}
+	if err != nil {
+		return OIDCRefreshTarget{}, fmt.Errorf("store: read refresh token: %w", err)
+	}
+	plain, err := s.box.Open(identitiesTable, identitiesTokenCol, x.IdentityID, sealed)
+	if err != nil {
+		return OIDCRefreshTarget{}, fmt.Errorf("store: open refresh token of identity %s: %w", x.IdentityID, err)
+	}
+	x.RefreshToken = string(plain)
+	return x, nil
+}
+
 // OIDCRefreshUpdate is one change of a background refresh. It is applied only
 // while the identity is still the one the refresh started with: the stored
 // token equals ExpectedToken and the sign-in revision equals

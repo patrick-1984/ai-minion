@@ -765,7 +765,7 @@
       window.clearTimeout(timer);
       cb(res, data);
     }
-    window.fetch(url, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual', headers: { Accept: 'application/json' }, signal: ctl ? ctl.signal : undefined }).then(function (r) {
+    window.fetch(url, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual', headers: { Accept: 'application/json', 'X-Minion-Background': '1' }, signal: ctl ? ctl.signal : undefined }).then(function (r) {
       var st = r && typeof r.status === 'number' ? r.status : 0;
       if (r && (r.type === 'opaqueredirect' || st === 401)) { finish('lost'); return; }
       if (st === 403 || st === 404) { finish('refused'); return; }

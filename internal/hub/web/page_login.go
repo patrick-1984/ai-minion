@@ -72,7 +72,11 @@ func (s *Server) gate(roles []authz.Role, exempt bool, next http.Handler) http.H
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, ok := session.FromContext(r.Context())
 		if !ok {
-			if r.Header.Get("HX-Request") != "true" && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			// A background request (a timed poll, a stream reconnect) of a
+			// session that ended must not navigate the page away: it gets a
+			// plain 401 that htmx does not swap, and the screen stays as it
+			// is until the person's next action leads to the sign-in.
+			if session.Background(r) || (r.Header.Get("HX-Request") != "true" && r.Method != http.MethodGet && r.Method != http.MethodHead) {
 				session.WriteError(w, proto.CodeUnauthenticated, "sign in first", nil)
 				return
 			}

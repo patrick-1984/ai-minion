@@ -19,8 +19,11 @@ const (
 	// DefaultAdminUsername is the user name of the seeded admin when
 	// MINION_ADMIN_USERNAME is not set.
 	DefaultAdminUsername = "admin"
-	// DefaultSessionTTL is how long a browser session lives.
-	DefaultSessionTTL = 24 * time.Hour
+	// DefaultSessionTTL is the idle lifetime of a browser session: every
+	// request the person makes (not a background poll) moves the end of the
+	// session to now plus this value. The absolute caps are in the Hub's
+	// session package.
+	DefaultSessionTTL = 2 * time.Hour
 	// MinSessionTTL and MaxSessionTTL bound session_ttl.
 	MinSessionTTL = 5 * time.Minute
 	MaxSessionTTL = 30 * 24 * time.Hour
@@ -49,7 +52,7 @@ func declareHubAuth(r *Registry) {
 	r.Declare(Setting{
 		Key:     KeySessionTTL,
 		Scope:   ScopeHub,
-		Help:    "Lifetime of a browser session as a Go duration such as 24h (5m to 720h)",
+		Help:    "Idle lifetime of a browser session as a Go duration such as 2h (5m to 720h): every page load or click extends the session by this much; background polling does not. A session signed in with OIDC whose idle lifetime ran out is renewed silently with the identity provider on the next request",
 		Default: DefaultSessionTTL.String(),
 	})
 }
@@ -61,7 +64,7 @@ type HubAuth struct {
 	// AdminPassword is the seed password, "" when none is configured. It is a
 	// secret: callers must never log it.
 	AdminPassword string
-	// SessionTTL is the lifetime of a browser session. It is
+	// SessionTTL is the idle lifetime of a browser session. It is
 	// [DefaultSessionTTL] when SessionTTLFallback is set.
 	SessionTTL time.Duration
 	// SessionTTLFallback names the source of an invalid session_ttl value
@@ -139,7 +142,7 @@ func ResolveHubAuth(r *Resolver) (HubAuth, error) {
 func ParseSessionTTL(v string) (time.Duration, error) {
 	d, err := time.ParseDuration(strings.TrimSpace(v))
 	if err != nil {
-		return 0, fmt.Errorf("%q is not a duration such as 24h", v)
+		return 0, fmt.Errorf("%q is not a duration such as 2h", v)
 	}
 	if d < MinSessionTTL || d > MaxSessionTTL {
 		return 0, fmt.Errorf("%s is outside the allowed range %s to %s", d, MinSessionTTL, MaxSessionTTL)

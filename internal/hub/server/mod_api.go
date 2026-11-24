@@ -120,8 +120,14 @@ func initAPI(_ context.Context, env *Env, catalog *ops.Registry) error {
 		}
 	}
 
+	// The session middleware resolves the cookie with the request: activity
+	// extends the session and an expired OIDC session is renewed (A99).
+	var sessions api.SessionResolver = mgr
+	if mw, err := Require[*session.Middleware](env); err == nil {
+		sessions = mw
+	}
 	authn := &api.Authenticator{
-		Sessions: mgr, Limiter: limiter, Audit: alog,
+		Sessions: sessions, Limiter: limiter, Audit: alog,
 		ClientIP: nw.ClientIP, Log: cfg.logger(),
 	}
 	d := &api.Dispatcher{

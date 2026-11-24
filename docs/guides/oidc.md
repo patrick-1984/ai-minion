@@ -65,6 +65,10 @@ When access must end **at once**, or for an account without a refresh token, do 
 
 Test it with your IdP before you depend on it: sign in a test person who is in the user group, remove them from that group at the IdP, wait for the refresh interval (set `MINION_OIDC_REFRESH_INTERVAL=1m` for the test, and restart the Hub), and check that their access ends. If it does not, the IdP did not issue a refresh token for the client: check the client's settings and `offline_access`, and sign in again, because only a sign-in stores a token.
 
+## Staying signed in
+
+A browser session has an idle lifetime (`session_ttl`, default 2 hours; every action extends it). When it runs out for a session that was started with OIDC, the Hub renews it silently on the person's next request with the stored refresh token, as long as the IdP still vouches for them and their roles still give access; the page they are on stays as it is. Without a refresh token (see above) the person signs in again after the idle lifetime. An OIDC session ends 7 days after the sign-in in any case. Details and the failure cases: [browser sessions](../security.md#browser-sessions).
+
 ## Linking to existing accounts
 
 An account made by an IdP sign-in is identified by the pair (issuer, subject), not by name or e-mail address. By default a first sign-in never attaches to an existing local account by e-mail address. An administrator can allow linking by e-mail address for a provider, for chosen domains, with `oidc_link_policy_set` (off by default), and can detach an identity again with `identity_detach`. `admin_link_consent` controls whether an e-mail link into an administrator account is allowed at all; it is off by default.
