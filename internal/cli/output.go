@@ -246,7 +246,10 @@ func renderSessions(w *errWriter, r ops.SessionsListResult) {
 		kind, state, title := "-", "-", "-"
 		if s.Pane != nil {
 			kind, state = dash(oneLine(s.Pane.Kind)), dash(oneLine(s.Pane.State))
-			title = dash(oneLine(s.Pane.HarnessName))
+			// The name comes from the Worker (or a Hub relaying it): it is
+			// sanitized here too, so no bidirectional override or escape
+			// sequence reaches the terminal, whoever produced the result.
+			title = dash(ops.SanitizeHarnessName(s.Pane.HarnessName))
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%d\t%t\t%s\t%s\t%s\t%s\n", oneLine(s.Name), s.Windows, s.Attached, kind, state, title, oneLine(s.Task))
 	}

@@ -31,3 +31,23 @@ func TestRenderSessionsShowsHarnessTitle(t *testing.T) {
 		t.Fatalf("json = %s", raw)
 	}
 }
+
+// A96 review: a routed result (another Worker or a Hub relaying it) is not
+// trusted to be sanitized: the table strips bidirectional overrides and
+// escape sequences from the name before it reaches the terminal.
+func TestRenderSessionsSanitizesRoutedTitle(t *testing.T) {
+	r := ops.SessionsListResult{Sessions: []ops.SessionInfo{
+		{Name: "work", Windows: 1, Pane: &ops.PaneInfo{Kind: "agent:claude", State: "busy", PaneStateDetail: ops.PaneStateDetail{HarnessName: "evil\u202egnp.exe\u2066 \x1b[31mred\u200f"}}},
+	}}
+	var b bytes.Buffer
+	renderSessions(&errWriter{w: &b}, r)
+	out := b.String()
+	for _, bad := range []string{"\u202e", "\u2066", "\u200f", "\x1b"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("table carries %q:\n%q", bad, out)
+		}
+	}
+	if !strings.Contains(out, "evilgnp.exe [31mred") {
+		t.Fatalf("table:\n%q", out)
+	}
+}

@@ -56,7 +56,7 @@ func newClaudeUsageExportCmd(lookup func(string) (string, bool)) *cobra.Command 
 					// Older hosts can still provide the original usage attribution.
 					session = claudeUsageSession(ctx, lookup)
 				}
-				recordBoundClaudeUsage(ctx, *m, mode, session, pane, created, pid, birth, claudeUsageAccess(lookup, profile), payload, at, lookup)
+				recordBoundClaudeUsage(ctx, *m, mode, session, pane, created, pid, birth, claudeUsageAccess(lookup, profile), payload, at, lookup, profile)
 			})
 		},
 	}
@@ -195,10 +195,10 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 }
 
 func recordClaudeUsageAt(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, raw []byte, at time.Time) {
-	recordBoundClaudeUsage(ctx, m, mode, session, "", 0, 0, "", access, raw, at, nil)
+	recordBoundClaudeUsage(ctx, m, mode, session, "", 0, 0, "", access, raw, at, nil, "")
 }
 
-func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session, pane string, created int64, pid int, birth string, access claudeAccessEvidence, raw []byte, at time.Time, lookup func(string) (string, bool)) {
+func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session, pane string, created int64, pid int, birth string, access claudeAccessEvidence, raw []byte, at time.Time, lookup func(string) (string, bool), profile string) {
 	if session == "" || ctx.Err() != nil {
 		return
 	}
@@ -224,7 +224,7 @@ func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode,
 			event.Session, event.Pane, event.Created = session, pane, created
 			event.ProcessPID, event.ProcessBirth = pid, birth
 			if st.RecordHarnessEvent(ctx, grant, event) == nil && mode == "status-line" {
-				recordClaudeTitle(ctx, st, grant, event, raw)
+				recordClaudeTitle(ctx, st, grant, profile, event, raw)
 			}
 		}
 	}

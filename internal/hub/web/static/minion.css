@@ -690,8 +690,9 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
    with labelled fields, like every table on a phone; empty detail fields are left out. Activity wraps, never cut. */
 .session-table td.cell-nowrap { white-space: nowrap; overflow-wrap: normal; }
 .session-table td.col-activity { max-width: 24ch; overflow-wrap: normal; }
-/* The harness session name (Claude Code /rename) wraps like Activity; a long unbroken name may break anywhere. */
-.session-table td.col-name { max-width: 24ch; }
+/* The harness session name (Claude Code /rename) wraps like Activity; a long unbroken name may break anywhere. It never
+   shrinks below 14ch, so a crowded table cannot squeeze it into a tall column of single words. */
+.session-table td.col-name { min-width: 14ch; max-width: 28ch; }
 @media (max-width: 1279px) {
   .session-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .session-table, .session-table tbody, .session-table tr, .session-table th, .session-table td { display: block; }
@@ -703,6 +704,21 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
   .session-table td.empty::before { content: none; }
   .session-table td.cell-nowrap { white-space: normal; }
   .session-table td.col-name.empty, .session-table td.col-activity.empty, .session-table td.col-source.empty, .session-table td.col-last-event.empty { display: none; }
+  .session-table td.col-name { min-width: 0; }
+}
+/* With the Owner column (the All users view) the table has ten columns: it needs about 1600 px, so up to there each
+   session is a card too (the same rules as above, for a table marked has-owner). */
+@media (max-width: 1599px) {
+  .session-table.has-owner thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .session-table.has-owner, .session-table.has-owner tbody, .session-table.has-owner tr, .session-table.has-owner th, .session-table.has-owner td { display: block; }
+  .session-table.has-owner tr { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .session-table.has-owner tbody tr:last-child { border-bottom: 0; }
+  .session-table.has-owner th, .session-table.has-owner td { border: 0; padding: 3px 0; }
+  .session-table.has-owner td.col-activity, .session-table.has-owner td.col-name { min-width: 0; max-width: none; }
+  .session-table.has-owner td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; font-weight: 600; }
+  .session-table.has-owner td.empty::before { content: none; }
+  .session-table.has-owner td.cell-nowrap { white-space: normal; }
+  .session-table.has-owner td.col-name.empty, .session-table.has-owner td.col-activity.empty, .session-table.has-owner td.col-source.empty, .session-table.has-owner td.col-last-event.empty { display: none; }
 }
 .js .session-table tbody tr[data-row-link], .js .worker-table tbody tr[data-row-link] { cursor: pointer; }
 .js .session-table tbody tr[data-row-link] a, .js .worker-table tbody tr[data-row-link] a { cursor: pointer; }

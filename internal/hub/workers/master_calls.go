@@ -236,6 +236,11 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		sessions := make([]ops.SessionInfo, 0, len(out.Sessions))
 		for _, s := range out.Sessions {
 			if fresh[req.WorkerID][s.Name] {
+				if s.Pane != nil && s.Pane.HarnessName != "" {
+					pane := *s.Pane
+					pane.HarnessName = ops.SanitizeHarnessName(pane.HarnessName)
+					s.Pane = &pane
+				}
 				sessions = append(sessions, s)
 			}
 		}

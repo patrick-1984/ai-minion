@@ -132,6 +132,10 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 		if !ok {
 			continue
 		}
+		// Harness session names are shown only under the owner whose
+		// monitoring grant reported them: an offline Worker reassigned since
+		// keeps its cached rows, never the former owner's names.
+		ws = ws.NamesFor(w.OwnerID)
 		if q.Online != nil && ws.Online != *q.Online {
 			continue
 		}

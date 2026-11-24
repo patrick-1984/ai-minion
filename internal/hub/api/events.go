@@ -355,6 +355,15 @@ func (s *eventStream) run(ctx context.Context, sub *workers.Subscription, out *s
 			if !s.visible(rctx, ev) {
 				continue
 			}
+			if ev.HarnessName != "" {
+				// The name belongs to the owner the reporting connection
+				// was admitted under; unknown owner: no name.
+				owner, err := h.cfg.Owners.WorkerOwner(rctx, ev.WorkerID)
+				if err != nil {
+					owner = ""
+				}
+				ev = ev.NameFor(owner)
+			}
 			if out.send(ev.Type, ev) != nil {
 				s.endRevoked(ctx, rctx, out)
 				return

@@ -703,13 +703,16 @@ func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 		}
 	}
 	// From 1280px the Name is a table column: shown even when empty (the column
-	// stays aligned), at most 24ch wide and wrapping, never clipped to one line.
+	// stays aligned), 14ch to 28ch wide and wrapping, never clipped to one line.
 	if d := valueAt(rules, "display", emptyName, table, 1280); d == "none" {
 		t.Error("an empty Name cell is hidden at 1280px, where the table has columns")
 	}
 	for _, w := range []int{1280, 1920} {
-		if mw := valueAt(rules, "max-width", name, table, w); mw != "24ch" {
-			t.Errorf("a Name cell has max-width %q at %dpx, want 24ch", mw, w)
+		if mw := valueAt(rules, "max-width", name, table, w); mw != "28ch" {
+			t.Errorf("a Name cell has max-width %q at %dpx, want 28ch", mw, w)
+		}
+		if mw := valueAt(rules, "min-width", name, table, w); mw != "14ch" {
+			t.Errorf("a Name cell has min-width %q at %dpx, want 14ch (never squeezed)", mw, w)
 		}
 		if ws := valueAt(rules, "white-space", name, table, w); ws == "nowrap" {
 			t.Errorf("a Name cell does not wrap at %dpx", w)
@@ -735,5 +738,39 @@ func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 		if ws := valueAt(rules, "white-space", source, table, w); ws != want {
 			t.Errorf("white-space of a detail cell at %dpx = %q, want %q", w, ws, want)
 		}
+	}
+}
+
+// A96 review: with the Owner column (All users) the table has ten columns and
+// stays a card list up to 1599px, so a crowded table never squeezes the Name;
+// from 1600px it has columns again. Without the Owner column the breakpoint
+// stays at 1280px.
+func TestSessionTableWithOwnerCardsBelow1600(t *testing.T) {
+	rules := loadSheet(t)
+	owner := []cssEl{el("table", "rtable session-table has-owner")}
+	plain := []cssEl{el("table", "rtable session-table")}
+	row, name := el("tr", ""), el("td", "col-name")
+	for _, w := range []int{390, 1279, 1280, 1580, 1599} {
+		if d := valueAt(rules, "display", row, owner, w); d != "block" {
+			t.Errorf("a session row with the Owner column has display %q at %dpx, want block (card)", d, w)
+		}
+		if d := valueAt(rules, "display", el("td", "col-name empty"), owner, w); d != "none" {
+			t.Errorf("an empty Name card field has display %q at %dpx, want none", d, w)
+		}
+		if mw := valueAt(rules, "min-width", name, owner, w); mw != "0" {
+			t.Errorf("a Name card field has min-width %q at %dpx, want 0", mw, w)
+		}
+		if mw := valueAt(rules, "max-width", name, owner, w); mw != "none" {
+			t.Errorf("a Name card field has max-width %q at %dpx, want none", mw, w)
+		}
+	}
+	if d := valueAt(rules, "display", row, owner, 1600); d != "" {
+		t.Errorf("a session row with the Owner column has display %q at 1600px, want table columns", d)
+	}
+	if mw := valueAt(rules, "min-width", name, owner, 1600); mw != "14ch" {
+		t.Errorf("the Name column has min-width %q at 1600px, want 14ch", mw)
+	}
+	if d := valueAt(rules, "display", row, plain, 1580); d != "" {
+		t.Errorf("a session row without the Owner column has display %q at 1580px, want table columns", d)
 	}
 }

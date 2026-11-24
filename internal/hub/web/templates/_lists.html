@@ -6,7 +6,7 @@
     </tbody>
   </table></div>{{end}}
 
-{{define "session_table"}}<div class="table-wrap"><table class="rtable session-table"{{if or .OnWorker (not .Filter.Active)}} data-sortable{{end}}>
+{{define "session_table"}}<div class="table-wrap"><table class="rtable session-table{{if .ShowOwner}} has-owner{{end}}"{{if or .OnWorker (not .Filter.Active)}} data-sortable{{end}}>
     <thead><tr><th scope="col" data-sort="text">Session</th><th scope="col" data-sort="text" class="col-name">Name</th><th scope="col" data-sort="text">Task</th>{{if not .OnWorker}}<th scope="col" data-sort="text">Worker</th>{{end}}{{if .ShowOwner}}<th scope="col">Owner</th>{{end}}<th scope="col" data-sort="text">Kind</th><th scope="col" data-sort="text">State</th><th scope="col" data-sort="text" class="col-activity">Activity</th><th scope="col" data-sort="text" class="col-source">Source</th><th scope="col" data-sort="text" class="col-last-event">Last event</th></tr></thead>
     <tbody>
     {{range .Sessions}}{{template "session_row" .}}

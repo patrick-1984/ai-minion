@@ -109,6 +109,28 @@ type WorkerSessions struct {
 	// Synced is true once the current connection sent its snapshot: Sessions
 	// is then the Worker's own list, not one kept from an earlier connection.
 	Synced bool
+	// OwnerID is the owner the Worker had when its latest connection was
+	// admitted ("" when unknown). The harness session names of Sessions were
+	// reported under that owner's monitoring grant: a reader shows them only
+	// while the Worker still has that owner (see [WorkerSessions.NamesFor]).
+	OwnerID string
+}
+
+// NamesFor returns ws with the harness session names it may show while the
+// Worker's owner is currentOwner: all of them when they were reported under
+// that owner, none when the Worker was reassigned since (the cached rows of an
+// offline Worker) or when the owner they belong to is unknown.
+func (ws WorkerSessions) NamesFor(currentOwner string) WorkerSessions {
+	if ws.OwnerID != "" && ws.OwnerID == currentOwner {
+		return ws
+	}
+	out := ws
+	out.Sessions = make([]SessionState, len(ws.Sessions))
+	for i, s := range ws.Sessions {
+		s.HarnessName = ""
+		out.Sessions[i] = s
+	}
+	return out
 }
 
 // Event is one change published to the subscribers. Session is empty for the
@@ -132,6 +154,19 @@ type Event struct {
 	// listed (never published): consumers that act on the snapshot use them,
 	// not a later state of the Worker.
 	snapshot []string
+	// owner is the Worker's owner when the connection that reported the event
+	// was admitted (never published; see [Event.NameFor]).
+	owner string
+}
+
+// NameFor returns ev without its harness session name unless the event was
+// reported under currentOwner, the Worker's owner now: an event queued before
+// a reassignment never shows the former owner's name to the new one.
+func (ev Event) NameFor(currentOwner string) Event {
+	if ev.HarnessName != "" && (ev.owner == "" || ev.owner != currentOwner) {
+		ev.HarnessName = ""
+	}
+	return ev
 }
 
 // SnapshotNames are the sessions of the snapshot behind a worker_resynced
@@ -193,6 +228,7 @@ type EventHub struct {
 type workerState struct {
 	id       string
 	name     string
+	owner    string // the owner at the latest connect (see WorkerSessions.OwnerID)
 	online   bool
 	gen      uint64 // the connection that owns the state
 	stream   uint64 // the event stream that owns it
@@ -283,7 +319,7 @@ func (h *EventHub) publishLocked(ev Event) {
 }
 
 func (h *EventHub) eventLocked(w *workerState, typ, session string) Event {
-	return Event{Type: typ, WorkerID: w.id, Worker: w.name, Session: session, Time: ops.Timestamp(h.now())}
+	return Event{Type: typ, WorkerID: w.id, Worker: w.name, Session: session, Time: ops.Timestamp(h.now()), owner: w.owner}
 }
 
 // Sessions returns the latest state of one Worker.
@@ -311,7 +347,7 @@ func (h *EventHub) All() []WorkerSessions {
 }
 
 func (w *workerState) copyLocked() WorkerSessions {
-	ws := WorkerSessions{WorkerID: w.id, Name: w.name, Online: w.online, UpdatedAt: w.updated, Synced: w.online && w.synced,
+	ws := WorkerSessions{WorkerID: w.id, Name: w.name, Online: w.online, UpdatedAt: w.updated, Synced: w.online && w.synced, OwnerID: w.owner,
 		Sessions: make([]SessionState, 0, len(w.sessions))}
 	for _, s := range w.sessions {
 		ws.Sessions = append(ws.Sessions, s)
@@ -462,6 +498,14 @@ type Link struct {
 // not blank the session list. The new Link supersedes the previous one of the
 // Worker. worker_online is published.
 func (h *EventHub) Connect(workerID, name string) *Link {
+	return h.ConnectOwner(workerID, name, "")
+}
+
+// ConnectOwner is [EventHub.Connect] for a Worker whose owner is ownerID.
+// The harness session names kept from a connection under another owner (the
+// Worker was reassigned) are dropped at once: they were reported under the
+// former owner's monitoring grant.
+func (h *EventHub) ConnectOwner(workerID, name, ownerID string) *Link {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.nextGen++
@@ -469,6 +513,13 @@ func (h *EventHub) Connect(workerID, name string) *Link {
 	if w == nil {
 		w = &workerState{id: workerID, sessions: map[string]SessionState{}}
 		h.workers[workerID] = w
+	}
+	if w.owner != ownerID {
+		for k, s := range w.sessions {
+			s.HarnessName = ""
+			w.sessions[k] = s
+		}
+		w.owner = ownerID
 	}
 	w.name, w.online, w.gen, w.stream, w.synced = name, true, h.nextGen, 0, false
 	w.probe = nil // the probe of the connection before belongs to a session that is gone
@@ -1075,7 +1126,7 @@ func (is *ingestSession) takeLane(lane string, end context.CancelFunc) (give fun
 const eventLane = "\x00events"
 
 func (in *Ingest) openSession(info Online, sess OpSession) *ingestSession {
-	is := &ingestSession{in: in, info: info, link: in.hub.Connect(info.WorkerID, info.Name)}
+	is := &ingestSession{in: in, info: info, link: in.hub.ConnectOwner(info.WorkerID, info.Name, info.OwnerID)}
 	if sess != nil {
 		// The probe goes over this very session: a Worker that reconnects is
 		// asked on its new connection, never on the old one.

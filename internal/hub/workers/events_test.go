@@ -966,3 +966,65 @@ func TestFeedCarriesSanitizedHarnessName(t *testing.T) {
 		}
 	}
 }
+
+// A96 review: harness session names are bound to the owner the reporting
+// connection was admitted under. The cached rows of an offline Worker that was
+// reassigned keep their state but never show the former owner's names, a
+// reconnect under the new owner drops them, and a name whose owner is unknown
+// is not shown at all; queued events follow the same rule.
+func TestHarnessNamesBoundToOwner(t *testing.T) {
+	h := NewEventHub(EventHubOptions{})
+	sub := h.Subscribe(16)
+	defer sub.Close()
+	l := h.ConnectOwner("w1", "box", "alice")
+	f, err := l.NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := `{"type":"events.snapshot","seq":0,"sessions":[{"name":"work","kind":"agent:claude","state":"busy","task":"t","harness_name":"alice private"}]}`
+	if err := feedFrame(f, json.RawMessage(snapshot), nil); err != nil {
+		t.Fatal(err)
+	}
+	const renamed = `{"type":"event","seq":1,"event":"state_changed","session":"work","kind":"agent:claude","state":"busy","task":"t","harness_name":"alice renamed"}`
+	if err := feedFrame(f, json.RawMessage(renamed), nil); err != nil {
+		t.Fatal(err)
+	}
+	var queued Event
+	for queued.Type != EventStateChanged {
+		queued = recvEv(t, sub)
+	}
+	if queued.NameFor("alice").HarnessName != "alice renamed" || queued.NameFor("bob").HarnessName != "" || queued.NameFor("").HarnessName != "" {
+		t.Fatalf("queued event names: alice %q bob %q", queued.NameFor("alice").HarnessName, queued.NameFor("bob").HarnessName)
+	}
+	l.Disconnect()
+
+	ws, _ := h.Sessions("w1")
+	if ws.OwnerID != "alice" || ws.NamesFor("alice").Sessions[0].HarnessName != "alice renamed" {
+		t.Fatalf("owner's view = %+v", ws)
+	}
+	// Reassigned while offline: the new owner reads the cached row without
+	// the name, and the cached state itself is not changed by reading.
+	if got := ws.NamesFor("bob").Sessions[0]; got.HarnessName != "" || got.Task != "t" {
+		t.Fatalf("new owner's view = %+v", got)
+	}
+	if ws.Sessions[0].HarnessName != "alice renamed" {
+		t.Fatal("NamesFor changed the cached state")
+	}
+	// The Worker reconnects under its new owner: the names are dropped from
+	// the cache before its snapshot arrives.
+	h.ConnectOwner("w1", "box", "bob")
+	ws, _ = h.Sessions("w1")
+	if ws.OwnerID != "bob" || ws.Sessions[0].HarnessName != "" || ws.Sessions[0].Task != "t" {
+		t.Fatalf("after reconnect under bob = %+v", ws)
+	}
+	// A connection whose owner is unknown shows no names.
+	h2 := NewEventHub(EventHubOptions{})
+	_, f2 := newFeed(t, h2, "w2")
+	if err := feedFrame(f2, json.RawMessage(snapshot), nil); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ = h2.Sessions("w2")
+	if ws.NamesFor("alice").Sessions[0].HarnessName != "" {
+		t.Fatal("a name of an unknown owner is shown")
+	}
+}

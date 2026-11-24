@@ -1373,3 +1373,49 @@ func TestEventsPipeChangedQueuedBeforeARevocationIsDropped(t *testing.T) {
 		})
 	}
 }
+
+// A96 review: a harness session name is shown only under the owner whose
+// Worker connection reported it. After a reassignment the new owner reads the
+// cached rows of the offline Worker, and a queued event, without the former
+// owner's name; a connection whose owner is unknown shows none.
+func TestHarnessNamesFollowTheReportingOwner(t *testing.T) {
+	r := newEvRig(t, nil)
+	named := ss("a1", "agent:claude", "busy", "t")
+	named.HarnessName = "alice private"
+	l := r.hub.ConnectOwner(wAlice, r.world.names[wAlice], evAlice)
+	f, err := l.NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Snapshot(0, []workers.SessionState{named}); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.sessions("alice", ""); len(got) != 1 || got[0].HarnessName != "alice private" {
+		t.Fatalf("owner's list = %+v", got)
+	}
+	root := r.open("root", "?all=true")
+	root.expect("snapshot")
+
+	// Reassigned to bob while a renamed event is still queued.
+	r.world.set(func() { r.world.owners[wAlice] = evBob })
+	named.HarnessName = "alice renamed"
+	if err := f.Apply(workers.Change{Seq: 1, Event: workers.EventStateChanged, HasTask: true, Session: named}); err != nil {
+		t.Fatal(err)
+	}
+	if ev := decodeEvent(t, root.expect("state_changed")); ev.HarnessName != "" {
+		t.Fatalf("queued event after reassignment carries %q", ev.HarnessName)
+	}
+	l.Disconnect()
+	got := r.sessions("bob", "")
+	if len(got) != 1 || got[0].HarnessName != "" || got[0].Task != "t" {
+		t.Fatalf("new owner's list = %+v", got)
+	}
+
+	// Unknown reporting owner (an unbound connection): no name.
+	r.feed(wBob, workers.SessionState{Name: "b1", Kind: "agent:claude", State: "busy", PaneStateDetail: ops.PaneStateDetail{HarnessName: "unbound"}})
+	for _, s := range r.sessions("root", "?all=true") {
+		if s.HarnessName != "" {
+			t.Fatalf("unbound name shown: %+v", s)
+		}
+	}
+}
