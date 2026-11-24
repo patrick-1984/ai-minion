@@ -15,6 +15,77 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
+func appendLines(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fakeTitleStore keeps one session's row with the semantics of the Worker
+// store (store.ObserveHarnessTitle and the others; the store tests cover the
+// real one).
+type fakeTitleStore struct {
+	title, verified, checked string
+	scanned                  int64
+	at                       time.Time
+	confirmed                []string
+	marks                    int
+}
+
+func (f *fakeTitleStore) ObserveHarnessTitle(_ context.Context, _ string, e store.HarnessEvent, want string) (store.HarnessTitleObservation, error) {
+	if e.At.Before(f.at) {
+		return store.HarnessTitleObservation{}, nil
+	}
+	f.at, f.title = e.At, ""
+	if want != "" && want == f.verified {
+		f.title = want
+	}
+	return store.HarnessTitleObservation{Verify: want != "" && f.title == "", Checked: f.checked, Scanned: f.scanned}, nil
+}
+
+func (f *fakeTitleStore) ConfirmHarnessTitle(_ context.Context, _ string, e store.HarnessEvent, title string) error {
+	f.confirmed = append(f.confirmed, title)
+	f.verified = title
+	if e.At.Equal(f.at) {
+		f.title = title
+	}
+	return nil
+}
+
+func (f *fakeTitleStore) MarkHarnessTitleChecked(_ context.Context, _ string, e store.HarnessEvent, digest string, scanned int64) error {
+	if e.At.Equal(f.at) || (digest == f.checked && scanned > f.scanned) {
+		f.marks++
+		f.checked, f.scanned = digest, scanned
+	}
+	return nil
+}
+
+func titleStatusLine(name *string, transcript string) []byte {
+	m := map[string]any{"session_id": titleSession, "transcript_path": transcript}
+	if name != nil {
+		m["session_name"] = *name
+	}
+	b, _ := json.Marshal(m)
+	return b
+}
+
+func strp(s string) *string { return &s }
+
+var titleEvent = store.HarnessEvent{Session: "work", Pane: "%1", Created: 1, Harness: "claude", NativeID: strings.Repeat("a", 64)}
+
+// observedAt is titleEvent observed at the n-th tick.
+func observedAt(n int) store.HarnessEvent {
+	e := titleEvent
+	e.At = time.Unix(1_700_000_000, 0).Add(time.Duration(n) * time.Millisecond)
+	return e
+}
+
 // testClaudeManifest is the manifest the title tests' profile holds.
 var testClaudeManifest = claudeUsageIntegration{Version: 1, Binary: "/usr/bin/minion", StateDir: "/state", Grant: strings.Repeat("b", 64), Shell: "/bin/sh"}
 
