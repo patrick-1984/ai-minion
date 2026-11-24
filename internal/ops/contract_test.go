@@ -203,8 +203,8 @@ func TestRefusalNotes(t *testing.T) {
 	if n := (WriteResult{Outcome: OutcomeDelivered}).DisplayNote(); n != "" {
 		t.Errorf("delivered note = %q", n)
 	}
-	busy := WriteResult{Outcome: OutcomeDelivered, Note: BusyNoteClaudeQueued, Warnings: []Warning{WarnSessionBusy}}
-	if busy.DisplayNote() != BusyNoteClaudeQueued || !busy.IsBusySend() || (WriteResult{}).IsBusySend() {
+	busy := WriteResult{Outcome: OutcomeDelivered, Note: BusyNoteTyped, Warnings: []Warning{WarnSessionBusy}}
+	if busy.DisplayNote() != BusyNoteTyped || !busy.IsBusySend() || (WriteResult{}).IsBusySend() {
 		t.Errorf("busy = %+v", busy)
 	}
 	if err := busy.Validate(); err != nil {

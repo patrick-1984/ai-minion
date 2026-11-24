@@ -754,7 +754,7 @@ func TestBusySendShowsAnInfoNotice(t *testing.T) {
 		res     ops.WriteResult
 		summary string
 	}{
-		{ops.WriteResult{Outcome: ops.OutcomeDelivered, Note: ops.BusyNoteClaudeQueued, Warnings: []ops.Warning{ops.WarnSessionBusy}}, BusyDeliveredNotice},
+		{ops.WriteResult{Outcome: ops.OutcomeDelivered, Note: ops.BusyNoteTyped, Warnings: []ops.Warning{ops.WarnSessionBusy}}, BusyDeliveredNotice},
 		{ops.WriteResult{Outcome: ops.OutcomePartial, Reason: "busy", Note: ops.BusyNoteTypedNotSubmitted, Warnings: []ops.Warning{ops.WarnSessionBusy}}, BusyTypedNotice},
 	} {
 		s, f := sessionOps(t)

@@ -463,11 +463,11 @@ func TestWriteResultShowsWarningsAndPaneInHumanOutput(t *testing.T) {
 // A103: text into a busy agent prints the Worker's note; a refusal prints an
 // actionable note, derived for a Worker that sends none.
 func TestWriteResultShowsBusyAndRefusalNotes(t *testing.T) {
-	res := ops.WriteResult{Outcome: ops.OutcomeDelivered, Note: ops.BusyNoteClaudeQueued, Warnings: []ops.Warning{ops.WarnSessionBusy}}
+	res := ops.WriteResult{Outcome: ops.OutcomeDelivered, Note: ops.BusyNoteTyped, Warnings: []ops.Warning{ops.WarnSessionBusy}}
 	raw, _ := json.Marshal(res)
 	b := &fakeOpsBackend{call: answerWith(raw, nil)}
 	code, out, _ := runWith(t, testDeps(b), "", "send_text", "--target", "w", "--text", "x", "--submit")
-	if code != 0 || !strings.Contains(out, "note: "+ops.BusyNoteClaudeQueued+"\n") || strings.Contains(out, "note: note") {
+	if code != 0 || !strings.Contains(out, "note: "+ops.BusyNoteTyped+"\n") || strings.Contains(out, "note: note") {
 		t.Fatalf("exit %d, output:\n%s", code, out)
 	}
 

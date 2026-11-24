@@ -464,8 +464,8 @@ type ResultView struct {
 // The summaries of text sent into an agent busy with a turn (A103); the
 // Worker's note below says what happens next.
 const (
-	BusyDeliveredNotice = "Sent — the session is busy."
-	BusyTypedNotice     = "Typed, not submitted — the session is busy."
+	BusyDeliveredNotice = "Typed — the session is busy."
+	BusyTypedNotice     = "Typed, not submitted — the session is busy; press Enter in the session."
 )
 
 // outcomeSummary is the sentence for an outcome of AD-15.
@@ -503,7 +503,7 @@ func resultOf(label string, res ops.WriteResult, force *ForceForm) ActionResult 
 	}
 	if busy {
 		// Text into an agent busy with a turn (A103) is an information, not
-		// a failure: the note says whether it was queued or only typed.
+		// a failure: the text is typed, never submitted; the note says what next.
 		ar.Kind, ar.Reason = "info", ""
 		ar.Summary = BusyDeliveredNotice
 		if res.Outcome == ops.OutcomePartial {

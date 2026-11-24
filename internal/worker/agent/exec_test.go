@@ -142,9 +142,9 @@ func TestGuardMatrix(t *testing.T) {
 					}
 					switch {
 					case op == ops.OpSendText && c.refusal == proto.CodeBusy && !force:
-						// A103: text into a busy Claude Code is sent as into an
-						// idle one, with the busy note; never a refusal.
-						if res.Outcome != ops.OutcomeDelivered || res.Forced || res.Forceable || sent != 1 || res.Note != ops.BusyNoteClaudeQueued || !hasWarning(res, "session_busy") {
+						// A103: text (without submit) into a busy agent is
+						// typed, with the busy note; never a refusal.
+						if res.Outcome != ops.OutcomeDelivered || res.Forced || res.Forceable || sent != 1 || res.Note != ops.BusyNoteTyped || !hasWarning(res, "session_busy") {
 							t.Fatalf("busy send = %+v, sent %d", res, sent)
 						}
 					case c.refusal != "" && !force:

@@ -291,27 +291,17 @@ func Refused(reason string, pane *PaneInfo, warnings ...Warning) WriteResult {
 }
 
 // Notes and warning of text sent into an agent pane that is busy with a turn
-// (A103). Claude Code queues input typed during a turn and reads it when the
-// turn ends, so the text is sent as into an idle pane. Any other agent may
-// act on an Enter during a turn at once, so the text is typed and the submit
-// key is not pressed (also for Claude text starting with "!", its shell mode).
+// (A103). The text is typed and the submit key is never pressed, for any
+// agent: a permission dialog can open between the last screen check and the
+// key, and an Enter would answer it (approve a Bash command, for example). No
+// screen check can close that gap, so only force=true submits into a busy
+// agent.
 const (
-	// BusyNoteClaudeQueued is the note of text sent into a busy Claude Code.
-	BusyNoteClaudeQueued = "session busy: Claude Code queues the message and reads it when the current turn ends"
 	// BusyNoteTypedNotSubmitted is the note of text typed into a busy agent
 	// whose submit key was not pressed although submit was requested.
-	BusyNoteTypedNotSubmitted = "session busy: the text was typed into the input line but not submitted; press Enter in the session (or send again with force=true and a new request_id) to submit"
+	BusyNoteTypedNotSubmitted = "session busy: the text was typed into the input line but not submitted, so it cannot answer a permission prompt by accident; press Enter in the session to queue or send it (or send again with force=true and a new request_id)"
 	// BusyNoteTyped is the note of text without submit into a busy agent.
 	BusyNoteTyped = "session busy: the text was typed into the input line and not submitted, as requested"
-	// BusyNoteDialogOpened is the note of text sent into a busy Claude Code
-	// whose Enter was held back: a permission dialog opened while the text
-	// was pasted, and the Enter would have answered it.
-	BusyNoteDialogOpened = "typed into the input line, not submitted: a permission dialog opened in the session — answer it there first, then press Enter"
-	// BusyNoteUnchecked is the note of text sent into a busy Claude Code whose
-	// Enter was held back because the session could not be checked for a
-	// dialog after the paste (the screen could not be read completely, or the
-	// pane changed).
-	BusyNoteUnchecked = "typed into the input line, not submitted: the session could not be checked for a permission dialog before Enter — look at it there, then press Enter"
 )
 
 // WarnSessionBusy is the warning of text sent into an agent busy with a turn.

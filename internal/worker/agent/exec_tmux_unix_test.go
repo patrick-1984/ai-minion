@@ -284,9 +284,10 @@ func waitBusy(t *testing.T, ex *Executor, session string) {
 	}
 }
 
-// A103 on a real tmux pane: a busy Claude Code gets the text and its Enter
-// (delivered, the busy note), audited as delivered with reason busy.
-func TestTmuxSendTextToBusyClaudeIsSubmittedWithANote(t *testing.T) {
+// A103 on a real tmux pane: a busy Claude Code gets the text typed and no
+// Enter (partial, reason busy, the note); the line never reaches the program.
+// The audit records it as partial with reason busy.
+func TestTmuxSendTextToBusyClaudeIsTypedNotSubmitted(t *testing.T) {
 	ex, srv := realExecutor(t)
 	claude, screen := fakeBusyAgent(t, "claude", "✻ Thinking… (12s · ↓ 1.2k tokens · esc to interrupt)")
 	target := srv.NewSession("busyclaude", claude, screen)
@@ -294,17 +295,21 @@ func TestTmuxSendTextToBusyClaudeIsSubmittedWithANote(t *testing.T) {
 	waitBusy(t, ex, "busyclaude")
 
 	res := realWrite(t, ex, ops.OpSendText, ops.SendTextArgs{
-		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: ops.Target{SessionName: "busyclaude"}, Text: "queued-by-minion", Submit: true,
+		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: ops.Target{SessionName: "busyclaude"}, Text: "typed-by-minion", Submit: true,
 	})
-	if res.Outcome != ops.OutcomeDelivered || res.Note != ops.BusyNoteClaudeQueued || res.Forced || !hasWarning(res, "session_busy") {
+	if res.Outcome != ops.OutcomePartial || res.Reason != "busy" || res.Note != ops.BusyNoteTypedNotSubmitted || res.Forced || !hasWarning(res, "session_busy") {
 		t.Fatalf("busy send = %+v", res)
 	}
-	srv.WaitFor(target, "got:queued-by-minion", 10*time.Second) // the Enter went too
+	srv.WaitFor(target, "typed-by-minion", 10*time.Second) // typed (echoed by the terminal)
+	time.Sleep(500 * time.Millisecond)
+	if out := srv.Capture(target); strings.Contains(out, "got:") {
+		t.Fatalf("the submit key reached a busy Claude Code:\n%s", out)
+	}
 	rows, err := ex.state.(*store.Store).ListAudit(context.Background(), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Outcome != "delivered" || rows[0].Reason != "busy" {
+	if len(rows) != 1 || rows[0].Outcome != "partial" || rows[0].Reason != "busy" {
 		t.Fatalf("audit = %+v", rows)
 	}
 }
@@ -365,8 +370,9 @@ func (h *dialogAfterPaste) PasteText(ctx context.Context, p term.PaneRef, text s
 }
 
 // A103 critical: a busy Claude Code that opens a Bash permission dialog while
-// the text is pasted gets no Enter (it would approve the command): partial,
-// reason dialog_open, the note; nothing reaches the program.
+// the text is pasted gets no Enter (it would approve the command): no submit
+// key goes into a busy agent at all (partial, reason busy, the note); nothing
+// reaches the program.
 func TestTmuxBusyClaudeDialogAfterPasteGetsNoEnter(t *testing.T) {
 	dir := t.TempDir()
 	screen := filepath.Join(dir, "screen.txt")
@@ -406,7 +412,7 @@ func TestTmuxBusyClaudeDialogAfterPasteGetsNoEnter(t *testing.T) {
 	res := realWrite(t, ex, ops.OpSendText, ops.SendTextArgs{
 		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: ops.Target{SessionName: "dialogclaude"}, Text: "held-by-minion", Submit: true,
 	})
-	if res.Outcome != ops.OutcomePartial || res.Reason != "dialog_open" || res.Note != ops.BusyNoteDialogOpened || !hasWarning(res, "session_busy") {
+	if res.Outcome != ops.OutcomePartial || res.Reason != "busy" || res.Note != ops.BusyNoteTypedNotSubmitted || !hasWarning(res, "session_busy") {
 		t.Fatalf("busy send = %+v", res)
 	}
 	time.Sleep(500 * time.Millisecond)
