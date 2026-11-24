@@ -89,13 +89,21 @@ type UsageAccountRow struct {
 }
 
 // UsageAccountTotals is the sum of one account's sessions. A sum is nil when no
-// session reported that counter, so unknown stays distinct from zero.
+// session reported that counter, so unknown stays distinct from zero. The
+// plain fields are the history: running sessions and those that ended within
+// the retention window (90 days). The Live fields count only the sessions
+// that are still running, so history is never read as current spend.
 type UsageAccountTotals struct {
-	Sessions         int      `json:"sessions"`
-	InputTokens      *int64   `json:"input_tokens"`
-	OutputTokens     *int64   `json:"output_tokens"`
-	CostUSD          *float64 `json:"cost_usd"`
-	EstimatedCostUSD *float64 `json:"estimated_cost_usd"`
+	Sessions             int      `json:"sessions"`
+	InputTokens          *int64   `json:"input_tokens"`
+	OutputTokens         *int64   `json:"output_tokens"`
+	CostUSD              *float64 `json:"cost_usd"`
+	EstimatedCostUSD     *float64 `json:"estimated_cost_usd"`
+	LiveSessions         int      `json:"live_sessions"`
+	LiveInputTokens      *int64   `json:"live_input_tokens"`
+	LiveOutputTokens     *int64   `json:"live_output_tokens"`
+	LiveCostUSD          *float64 `json:"live_cost_usd"`
+	LiveEstimatedCostUSD *float64 `json:"live_estimated_cost_usd"`
 }
 
 type UsageWorkerRow struct {

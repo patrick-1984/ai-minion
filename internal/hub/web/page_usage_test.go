@@ -93,7 +93,7 @@ func TestUsageViewsShowDisclosedFixtures(t *testing.T) {
 		want []string
 	}{
 		{"overview", []string{"47.5%", "Ahead of pace", "40.0%", "118.8%", "No subscription limits reported.", "1 fresh", "Stale", "requests"}},
-		{"accounts", []string{"API key", "DeepSeek", "Save collector", "passive session", "Next eligible query", "Display name and order", `value="20"`, "Totals · 2 sessions", "$1.5000", "ended in the last 90 days"}},
+		{"accounts", []string{"API key", "DeepSeek", "Save collector", "passive session", "Next eligible query", "Display name and order", `value="20"`, "History · last 90 days · 2 sessions", "Running now · 0 sessions", "$1.5000", "ended in the last 90 days"}},
 		{"sessions", []string{"release-validation-on-build-workstation", "8100", "Unknown", "Move selected rows", "Move all from Worker"}},
 		{"workers", []string{"Scan installed harnesses", "Claude Code", "Gemini CLI", "Anthropic · Subscription · Configured", "Last harness scan", "Monitoring acceptance required", `data-online="false">Offline`}},
 		{"buckets", []string{"Release validation", "Your token buckets"}},
@@ -394,7 +394,7 @@ func TestUsageShowsReportedUpstreamQuota(t *testing.T) {
 	srv := adminServer(t)
 	accounts := mainOf(t, get(t, srv, "/usage?view=accounts", "X-Test-Session", userHeader).Body.String())
 	// Custom endpoints are one aggregate account: windows stay on the session.
-	mustHave(t, accounts, "Totals · 1 session", "$0.4200")
+	mustHave(t, accounts, "History · last 90 days · 1 session", "$0.4200")
 	mustNotHave(t, accounts, "5-hour limit", "No subscription limits reported.", "Weekly limit", "19.0% / 81.0%")
 	sessions := mainOf(t, get(t, srv, "/usage?view=sessions", "X-Test-Session", userHeader).Body.String())
 	mustHave(t, sessions, "Upstream quota", "Weekly limit", "19.0% / 81.0%", "Stale window")

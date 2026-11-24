@@ -115,7 +115,7 @@
 {{end}}
 
 {{define "usage_subscription_windows"}}
-{{if .NoFiveHourLimit}}<p class="help">No 5-hour limit on this plan</p>{{end}}
+{{if .NoFiveHourLimit}}<p class="help">No 5-hour limit on this plan</p>{{else if .FiveHourUnknown}}<p class="help">5-hour limit unknown: no recent active session reported it. It appears once an active session of this account reports it.</p>{{end}}
 {{if .Windows}}{{template "usage_windows" .Windows}}{{else}}<p class="muted">No subscription limits reported.</p>{{end}}
 {{end}}
 
@@ -180,14 +180,23 @@
       </form>
       {{end}}
       {{with $a.Totals}}
-      <section class="usage-window" data-account-totals><h4>Totals · {{.Sessions}} session{{if ne .Sessions 1}}s{{end}}</h4>
+      <section class="usage-window" data-account-totals="live"><h4>Running now · {{.LiveSessions}} session{{if ne .LiveSessions 1}}s{{end}}</h4>
+        <dl class="usage-facts">
+          <div><dt>Input tokens</dt><dd>{{$p.Number .LiveInputTokens}}</dd></div>
+          <div><dt>Output tokens</dt><dd>{{$p.Number .LiveOutputTokens}}</dd></div>
+          <div><dt>Reported cost</dt><dd>{{$p.Dollars .LiveCostUSD}}</dd></div>
+          <div><dt>Estimated cost</dt><dd>{{$p.Dollars .LiveEstimatedCostUSD}}</dd></div>
+        </dl>
+        <p class="help">Sessions of this account that are still running, with their totals so far.</p>
+      </section>
+      <section class="usage-window" data-account-totals="history"><h4>History · last 90 days · {{.Sessions}} session{{if ne .Sessions 1}}s{{end}}</h4>
         <dl class="usage-facts">
           <div><dt>Input tokens</dt><dd>{{$p.Number .InputTokens}}</dd></div>
           <div><dt>Output tokens</dt><dd>{{$p.Number .OutputTokens}}</dd></div>
           <div><dt>Reported cost</dt><dd>{{$p.Dollars .CostUSD}}</dd></div>
           <div><dt>Estimated cost</dt><dd>{{$p.Dollars .EstimatedCostUSD}}</dd></div>
         </dl>
-        <p class="help">The sum of this account's sessions on the Sessions tab: running sessions and those that ended in the last 90 days.</p>
+        <p class="help">Includes ended sessions: the running sessions above plus every session of this account that ended in the last 90 days. Not current spend.</p>
       </section>{{end}}
       {{if $p.Private}}
       <details class="usage-window">
@@ -211,7 +220,7 @@
       {{template "usage_subscription_windows" $card}}
       {{if $a.Collector}}
       <details class="usage-window">
-        <summary>Collector · {{$p.CollectorStatus $a.Collector.Status}}</summary>
+        <summary>Collector · {{$p.CollectorSummary $a}}</summary>
         <dl class="usage-facts">
           <div><dt>Active Worker</dt><dd>{{$p.WorkerName $a.Collector.ActiveWorker}}</dd></div>
           <div><dt>{{if eq $a.Collector.Mode "passive_events"}}Last native observation{{else}}Last successful query{{end}}</dt><dd>{{$p.Time $a.Collector.LastSuccess}}</dd></div>

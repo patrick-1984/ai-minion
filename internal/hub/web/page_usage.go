@@ -115,6 +115,9 @@ type usageAccountCard struct {
 	Windows         []usageWindowView
 	StaleWhy        string
 	NoFiveHourLimit bool
+	// FiveHourUnknown: the account shows no 5-hour window, but no recent
+	// active report confirms that its plan has none.
+	FiveHourUnknown bool
 }
 
 type usageWindowView struct {
@@ -400,6 +403,27 @@ func (p usagePage) CollectorStatus(status string) string {
 	}
 }
 
+// CollectorSummary names what the account's collector is doing. A passive
+// collector that received limits within the freshness window is collecting,
+// not waiting: it shows where the limits come from and when they last did.
+func (p usagePage) CollectorSummary(a ops.UsageAccountRow) string {
+	c := a.Collector
+	if c == nil {
+		return ""
+	}
+	if c.Status != "passive" {
+		return p.CollectorStatus(c.Status)
+	}
+	if c.LastSuccess == nil || *c.LastSuccess <= 0 || p.Rows.AsOf-*c.LastSuccess > ops.UsageMeterMaxAge.Milliseconds() {
+		return p.CollectorStatus(c.Status)
+	}
+	source := "native session reports"
+	if ops.UsageProvider(a.Provider) == "Anthropic" {
+		source = "Claude status line"
+	}
+	return "Passive · from " + source + " (last " + p.Time(c.LastSuccess) + ")"
+}
+
 func usageURL(section, worker, bucket, after string) string {
 	q := url.Values{}
 	if section != "overview" {
@@ -535,7 +559,7 @@ func usagePageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 	var missingFiveHours []int
 	for _, a := range accounts {
 		card := p.accountCard(a)
-		if card.missingFiveHourLimit(p.Rows.AsOf) {
+		if missing, _ := card.missingFiveHourLimit(p.Rows.AsOf); missing {
 			missingFiveHours = append(missingFiveHours, len(p.Accounts))
 		}
 		p.Accounts = append(p.Accounts, card)
@@ -558,34 +582,50 @@ func usageFiveHourLimit(duration *int64) bool {
 	return duration != nil && *duration == (5*time.Hour).Milliseconds()
 }
 
-func (c usageAccountCard) missingFiveHourLimit(nowMS int64) bool {
-	if c.Freshness != "Fresh" || c.Account.AuthMode != "subscription" {
-		return false
+// missingFiveHourLimit reports a subscription account that shows limits but
+// no 5-hour window. confirmed means its freshest reports are active ones (the
+// limits changed or the sessions made API calls within the freshness window;
+// Workers and the Hub merge every session's windows, so all of them lack it)
+// and still carry a current window. Otherwise the window is only unknown: an
+// idle session re-sends its last reading, which can lack a 5-hour window that
+// the account has.
+func (c usageAccountCard) missingFiveHourLimit(nowMS int64) (missing, confirmed bool) {
+	if c.Account.AuthMode != "subscription" || len(c.Account.Windows) == 0 {
+		return false, false
 	}
 	current := false
 	for _, w := range c.Account.Windows {
 		if usageFiveHourLimit(w.DurationMS) {
-			return false
+			return false, false
 		}
 		if w.UsedPercent != nil && (w.ResetsAt == nil || *w.ResetsAt > nowMS) {
 			current = true
 		}
 	}
-	return current
+	return true, current && c.Freshness == "Fresh"
 }
 
+// noteFiveHourLimits marks the cards without a 5-hour window of a provider
+// that has 5-hour windows (Anthropic, or another account of the provider
+// shows one): "No 5-hour limit on this plan" only when active reports
+// confirm it, "unknown" otherwise. Plans without a 5-hour limit exist, so
+// absence stays a valid state.
 func (p *usagePage) noteFiveHourLimits(candidates []int, overview *ops.UsageOverview) {
-	if overview == nil {
-		return
-	}
-	providers := map[string]bool{}
-	for _, group := range overview.Groups {
-		if group.Known > 0 && usageFiveHourLimit(group.DurationMS) {
-			providers[group.Provider] = true
+	providers := map[string]bool{"Anthropic": true}
+	if overview != nil {
+		for _, group := range overview.Groups {
+			if group.Known > 0 && usageFiveHourLimit(group.DurationMS) {
+				providers[group.Provider] = true
+			}
 		}
 	}
 	for _, i := range candidates {
-		p.Accounts[i].NoFiveHourLimit = providers[ops.UsageProvider(p.Accounts[i].Account.Provider)]
+		card := &p.Accounts[i]
+		if !providers[ops.UsageProvider(card.Account.Provider)] {
+			continue
+		}
+		_, confirmed := card.missingFiveHourLimit(p.Rows.AsOf)
+		card.NoFiveHourLimit, card.FiveHourUnknown = confirmed, !confirmed
 	}
 }
 

@@ -117,6 +117,10 @@ func (s *Store) readUsage(ctx context.Context, db usageQuerier, workers []ops.Wo
 		if err := rows.Err(); err != nil {
 			return out, err
 		}
+		_ = rows.Close()
+		if err := mergeWorkerLimits(ctx, db, bind, all, now); err != nil {
+			return out, err
+		}
 		summary := ops.SummarizeUsage(all, now)
 		out.Overview = &summary
 		return out, nil
@@ -324,13 +328,65 @@ page:
 	}
 	if args.Section == "accounts" {
 		_ = rows.Close()
+		if err = mergeWorkerLimits(ctx, db, []any{visible, args.WorkerID, args.WorkerID}, out.Accounts, now); err != nil {
+			return out, err
+		}
 		err = addAccountTotals(ctx, db, visible, bucketOwner, args, out.Accounts)
 	}
 	return out, err
 }
 
+// mergeWorkerLimits merges the status-line limits of each subscription
+// account across the visible Workers that report it, per window
+// (ops.MergeUsageWindows), and dates them by the newest of those readings. An
+// account the owner bound to one collector Worker or session takes its limits
+// from that source only. bind is the usageVisible binding.
+func mergeWorkerLimits(ctx context.Context, q usageQuerier, bind []any, accounts []ops.UsageAccountRow, now time.Time) error {
+	for i := range accounts {
+		a := &accounts[i]
+		if a.AuthMode != "subscription" || a.Source != "claude-statusline" {
+			continue
+		}
+		rows, err := q.QueryContext(ctx, usageVisible+`SELECT a.body FROM visible v JOIN usage_accounts a ON a.worker_id=v.id
+		 LEFT JOIN usage_collectors c ON c.account_id=a.account_id
+		 WHERE a.account_id=? AND json_extract(a.body,'$.source')='claude-statusline'
+		  AND (coalesce(c.preferred_worker,'')='' OR a.worker_id=c.preferred_worker
+		   AND (coalesce(c.preferred_session,'')='' OR json_extract(a.body,'$.source_session_id')=c.preferred_session))
+		 ORDER BY a.worker_id LIMIT 64`, append(slices.Clone(bind), a.ID)...)
+		if err != nil {
+			return err
+		}
+		readings := [][]ops.UsageWindow{a.Windows}
+		latest := a.ObservedAt
+		for rows.Next() {
+			var body string
+			if err := rows.Scan(&body); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			var other ops.UsageAccount
+			if json.Unmarshal([]byte(body), &other) != nil || !ops.MergeableUsageAccounts(a.UsageAccount, other) {
+				continue
+			}
+			readings = append(readings, other.Windows)
+			latest = max(latest, other.ObservedAt)
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(readings) > 1 {
+			a.Windows = ops.MergeUsageWindows(now, readings...)
+			a.ObservedAt = latest
+		}
+	}
+	return nil
+}
+
 // addAccountTotals sums the sessions of every API-key and custom-endpoint
-// account in the page, over the same Worker and bucket predicates that the
+// account in the page, once for the running sessions and once for the history
+// (running and ended within retention), over the same Worker and bucket predicates that the
 // Sessions view applies. Subscription accounts report limits instead.
 func addAccountTotals(ctx context.Context, q usageQuerier, visible, bucketOwner string, args ops.UsageListArgs, accounts []ops.UsageAccountRow) error {
 	for i := range accounts {
@@ -340,11 +396,15 @@ func addAccountTotals(ctx context.Context, q usageQuerier, visible, bucketOwner 
 		}
 		var t ops.UsageAccountTotals
 		err := q.QueryRowContext(ctx, usageVisible+`SELECT count(*),sum(json_extract(s.body,'$.input_tokens')),sum(json_extract(s.body,'$.output_tokens')),
-		  sum(json_extract(s.body,'$.cost_usd')),sum(json_extract(s.body,'$.estimated_cost_usd'))
+		  sum(json_extract(s.body,'$.cost_usd')),sum(json_extract(s.body,'$.estimated_cost_usd')),
+		  count(CASE WHEN s.ended_at IS NULL THEN 1 END),
+		  sum(CASE WHEN s.ended_at IS NULL THEN json_extract(s.body,'$.input_tokens') END),sum(CASE WHEN s.ended_at IS NULL THEN json_extract(s.body,'$.output_tokens') END),
+		  sum(CASE WHEN s.ended_at IS NULL THEN json_extract(s.body,'$.cost_usd') END),sum(CASE WHEN s.ended_at IS NULL THEN json_extract(s.body,'$.estimated_cost_usd') END)
 		 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id
 		 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
 		 WHERE json_extract(s.body,'$.account_id')=? AND `+usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`),
-			visible, args.WorkerID, args.WorkerID, bucketOwner, a.ID, args.BucketID, args.BucketID, bucketOwner, args.BucketID).Scan(&t.Sessions, &t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.EstimatedCostUSD)
+			visible, args.WorkerID, args.WorkerID, bucketOwner, a.ID, args.BucketID, args.BucketID, bucketOwner, args.BucketID).Scan(&t.Sessions, &t.InputTokens, &t.OutputTokens, &t.CostUSD, &t.EstimatedCostUSD,
+			&t.LiveSessions, &t.LiveInputTokens, &t.LiveOutputTokens, &t.LiveCostUSD, &t.LiveEstimatedCostUSD)
 		if err != nil {
 			return err
 		}
@@ -487,13 +547,18 @@ func usagePairsJSON(pairs []usageSourcePair) (string, error) {
 // read, so what was not authorized for publication cannot influence which
 // observation wins. Among the listed Workers a row that reports windows beats
 // a discovery-only row, then the collector the owner designated wins, then a
-// non-native observation, then the newest.
+// non-native observation, then the newest. The status-line limits of the other
+// listed rows of the same account (within the designation) merge into it per
+// window, as on the Usage page.
 func readUsageAccounts(ctx context.Context, q usageQuerier, pairs []usageSourcePair) ([]ops.UsageAccount, error) {
 	arg, err := usagePairsJSON(pairs)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT a.account_id,a.observed_at,a.body FROM json_each(?) p
+	rows, err := q.QueryContext(ctx, `SELECT a.account_id,a.observed_at,a.body,
+	  (coalesce(settings.preferred_worker,'')='' OR a.worker_id=settings.preferred_worker
+	   AND (coalesce(settings.preferred_session,'')='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session))
+	 FROM json_each(?) p
 	 JOIN workers w ON w.id=json_extract(p.value,'$.w') AND w.approval='approved'
 	 JOIN usage_accounts a ON a.worker_id=w.id AND a.account_id=json_extract(p.value,'$.m')
 	 LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
@@ -511,18 +576,27 @@ func readUsageAccounts(ctx context.Context, q usageQuerier, pairs []usageSourceP
 	for rows.Next() {
 		var id, body string
 		var observed int64
-		if err := rows.Scan(&id, &observed, &body); err != nil {
+		var eligible bool
+		if err := rows.Scan(&id, &observed, &body, &eligible); err != nil {
 			return nil, err
 		}
-		if id == last {
-			continue
-		}
-		last = id
 		var a ops.UsageAccount
 		if err := json.Unmarshal([]byte(body), &a); err != nil {
 			return nil, err
 		}
 		a.ObservedAt = observed
+		if id == last {
+			// Another listed Worker's status-line reading of the same
+			// account: merge its limits per window (mergeWorkerLimits).
+			best := &out[len(out)-1]
+			if eligible && ops.MergeableUsageAccounts(*best, a) {
+				// The meters judge expiry against their own clock.
+				best.Windows = ops.MergeUsageWindows(time.Time{}, best.Windows, a.Windows)
+				best.ObservedAt = max(best.ObservedAt, a.ObservedAt)
+			}
+			continue
+		}
+		last = id
 		a.Windows = ops.SubscriptionWindows(a)
 		out = append(out, a)
 	}

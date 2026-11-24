@@ -82,6 +82,11 @@ func (s *Store) SaveNativeUsage(ctx context.Context, enrollment Enrollment, r op
 	}
 	var account any
 	if len(r.Accounts) > 0 {
+		if row.Source == "claude-statusline" {
+			if err := keepLimitsTime(ctx, tx, row, &r.Accounts[0]); err != nil {
+				return err
+			}
+		}
 		if row.Source != "claude-hook" {
 			if err := keepClaudeWindows(ctx, tx, &r.Accounts[0], now); err != nil {
 				return err
@@ -132,6 +137,7 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		return err
 	}
 	known := map[string]string{}
+	runs := map[string]int{}              // native run shown for each requested session
 	sessionAccount := map[string]string{} // the account each native session finally has
 	accountRows := map[string]ops.UsageAccount{}
 	for _, a := range report.Accounts {
@@ -207,6 +213,7 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		n.ID = base.ID
 		n.StartedAt = base.StartedAt
 		report.Sessions[idx] = n
+		runs[n.NativeID] = idx
 		known[n.NativeID] = base.ID
 		sessionAccount[n.NativeID] = n.AccountID
 		if account.Valid && !conflict {
@@ -229,6 +236,10 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 	if err != nil {
 		return err
 	}
+	if err := s.markStoppedRuns(ctx, report, runs); err != nil {
+		return err
+	}
+	mergeSessionLimits(accountRows, time.UnixMilli(report.ObservedAt))
 	report.Accounts = report.Accounts[:0]
 	for _, a := range accountRows {
 		report.Accounts = append(report.Accounts, a)
@@ -266,6 +277,84 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 	return events.Err()
 }
 
+// markStoppedRuns ends the Claude run of a session whose SessionEnd hook was
+// observed after its last status line, and that no later SessionStart (a
+// resume) reopened. The pane can outlive the run; the run is still over.
+func (s *Store) markStoppedRuns(ctx context.Context, report *ops.UsageReport, runs map[string]int) error {
+	if len(runs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(runs))
+	for id := range runs {
+		ids = append(ids, id)
+	}
+	filter, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT json_extract(body,'$.native_id') nid,
+	  max(CASE WHEN json_extract(body,'$.kind')='session_stopped' THEN at END),
+	  max(CASE WHEN json_extract(body,'$.kind')='session_started' THEN at END)
+	 FROM usage_native_events WHERE at<=? AND json_extract(body,'$.kind') IN ('session_stopped','session_started')
+	  AND json_extract(body,'$.native_id') IN (SELECT value FROM json_each(?)) GROUP BY nid`, report.ObservedAt, string(filter))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var native string
+		var stopped, started sql.NullInt64
+		if err := rows.Scan(&native, &stopped, &started); err != nil {
+			return err
+		}
+		idx, ok := runs[native]
+		if !ok || !stopped.Valid || started.Valid && started.Int64 > stopped.Int64 {
+			continue
+		}
+		row := &report.Sessions[idx]
+		// A status line drawn well after the stop belongs to a resumed run.
+		if row.StartedAt == nil || stopped.Int64 < *row.StartedAt || row.ObservedAt > stopped.Int64+5000 {
+			continue
+		}
+		at := stopped.Int64
+		row.StoppedAt = &at
+		row.ObservedAt = max(row.ObservedAt, at)
+	}
+	return rows.Err()
+}
+
+// mergeSessionLimits gives every session's row of one subscription account the
+// same limits: each window merged across those sessions (ops.MergeUsageWindows)
+// and the newest limits time among them. Whichever row the Hub keeps, an idle
+// session's old reading cannot replace an active one's.
+func mergeSessionLimits(rows map[string]ops.UsageAccount, now time.Time) {
+	groups := map[string][]string{}
+	for key, a := range rows {
+		if a.AuthMode == "subscription" && a.Source == "claude-statusline" {
+			groups[a.ID+"\x00"+a.Plan] = append(groups[a.ID+"\x00"+a.Plan], key)
+		}
+	}
+	for _, keys := range groups {
+		if len(keys) < 2 {
+			continue
+		}
+		slices.Sort(keys)
+		readings := make([][]ops.UsageWindow, 0, len(keys))
+		var latest int64
+		for _, k := range keys {
+			readings = append(readings, rows[k].Windows)
+			latest = max(latest, rows[k].ObservedAt)
+		}
+		merged := ops.MergeUsageWindows(now, readings...)
+		for _, k := range keys {
+			a := rows[k]
+			a.Windows = slices.Clone(merged)
+			a.ObservedAt = latest
+			rows[k] = a
+		}
+	}
+}
+
 // keepAPIAccount gives a document without access evidence the API account its
 // native session already had.
 func keepAPIAccount(ctx context.Context, tx *sql.Tx, row *ops.UsageSession, r *ops.UsageReport) error {
@@ -292,15 +381,68 @@ func keepAPIAccount(ctx context.Context, tx *sql.Tx, row *ops.UsageSession, r *o
 	return nil
 }
 
-// keepClaudeWindows carries the account windows that the newest status lines
-// of the same verified account (any native session, same plan) reported over a
-// report that no longer has them: Claude Code drops a window until it reads a
-// new one, and a capped account must not look uncapped. A carried window keeps
-// its last value and its reset time. Once that time has passed it reads as
-// reset (0% since the reset, reset time unchanged): it is never a fresh
-// reading stamped with the time of this observation, and a new report that
-// carries the window replaces it.
+// keepLimitsTime dates a status line's account limits by the API response
+// they came from, not by the status-line run. Claude Code re-runs the status
+// line every few seconds in every session, idle ones too, each time with the
+// rate limits of that session's last API response. A run that shows no new
+// API activity of the same native session (the same API time, cost and last
+// response) is a re-send: it keeps the time at which those limits were first
+// seen, so an idle session never looks newer than an active one.
+func keepLimitsTime(ctx context.Context, tx *sql.Tx, row ops.UsageSession, a *ops.UsageAccount) error {
+	var body string
+	var account sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT body,account FROM usage_native WHERE session_name=? AND native_id=?`, row.Name, row.NativeID).Scan(&body, &account)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var old ops.UsageSession
+	var previous ops.UsageAccount
+	if json.Unmarshal([]byte(body), &old) != nil || !account.Valid || json.Unmarshal([]byte(account.String), &previous) != nil {
+		return nil
+	}
+	activity, ok := apiActivity(row)
+	if before, known := apiActivity(old); !ok || !known || activity != before {
+		return nil
+	}
+	if previous.ID != a.ID || previous.Plan != a.Plan || previous.Source != "claude-statusline" || len(a.Windows) == 0 {
+		return nil
+	}
+	if previous.ObservedAt > 0 && previous.ObservedAt < a.ObservedAt {
+		a.ObservedAt = previous.ObservedAt
+	}
+	return nil
+}
+
+// apiActivity is what changes only when a session receives an API response.
+// The wall-clock duration grows while idle and is not part of it.
+func apiActivity(s ops.UsageSession) (string, bool) {
+	if s.APIDurationMS == nil && s.EstimatedCostUSD == nil && s.CostUSD == nil && s.LastResponseUsage == nil {
+		return "", false
+	}
+	b, err := json.Marshal(struct {
+		API      *int64                   `json:"a"`
+		Cost     *float64                 `json:"c"`
+		Reported *float64                 `json:"r"`
+		Last     *ops.UsageResponseTokens `json:"l"`
+	}{s.APIDurationMS, s.EstimatedCostUSD, s.CostUSD, s.LastResponseUsage})
+	return string(b), err == nil
+}
+
+// keepClaudeWindows merges the account windows that the newest status lines
+// of the same verified account (any native session, same plan) reported into
+// this one, per window (ops.MergeUsageWindows): Claude Code drops a window
+// until it reads a new one, an idle session re-sends an old reading, and a
+// capped account must not look uncapped. A carried window keeps its value and
+// its reset time; once that time has passed it reads as reset (0% since the
+// reset, reset time unchanged). It is never a fresh reading stamped with the
+// time of this observation.
 func keepClaudeWindows(ctx context.Context, tx *sql.Tx, a *ops.UsageAccount, now time.Time) error {
+	if a.AuthMode != "subscription" {
+		return nil
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT account FROM usage_native WHERE json_extract(account,'$.id')=? ORDER BY observed_at DESC LIMIT 16`, a.ID)
 	if err != nil {
 		return err
@@ -321,37 +463,16 @@ func keepClaudeWindows(ctx context.Context, tx *sql.Tx, a *ops.UsageAccount, now
 	if err != nil {
 		return err
 	}
-	type key struct {
-		scope, period string
-		duration      int64
-	}
-	keyOf := func(w ops.UsageWindow) key {
-		k := key{scope: w.Scope, period: w.Period}
-		if w.DurationMS != nil {
-			k.duration = *w.DurationMS
-		}
-		return k
-	}
-	have := map[key]bool{}
-	for _, w := range a.Windows {
-		have[keyOf(w)] = true
-	}
+	readings := [][]ops.UsageWindow{a.Windows}
 	for _, text := range previous {
 		var old ops.UsageAccount
 		if json.Unmarshal([]byte(text), &old) != nil || old.ID != a.ID || old.Source != "claude-statusline" || old.Plan != a.Plan {
 			continue // another plan: its limits no longer apply
 		}
-		for _, w := range old.Windows {
-			if have[keyOf(w)] || len(a.Windows) >= 32 {
-				continue
-			}
-			have[keyOf(w)] = true
-			if w.ResetsAt != nil && *w.ResetsAt <= now.UnixMilli() {
-				zero := 0.0
-				w.UsedPercent, w.Used, w.Remaining = &zero, nil, nil
-			}
-			a.Windows = append(a.Windows, w)
-		}
+		readings = append(readings, old.Windows)
+	}
+	if len(readings) > 1 {
+		a.Windows = ops.MergeUsageWindows(now, readings...)
 	}
 	if len(a.Windows) > 0 {
 		a.Source = "claude-statusline"
