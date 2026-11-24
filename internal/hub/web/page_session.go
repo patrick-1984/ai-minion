@@ -928,13 +928,9 @@ func handleSendText(w http.ResponseWriter, r *http.Request, t target) {
 	ff := t.forceForm(t.path()+"/text", fields)
 	args := ops.SendTextArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7(), Force: forced(r)}, Target: t.opTarget(), Text: text, Submit: enter}
 	ar, res, ok := callWrite(r, t, ops.OpSendText, args, "Text", ff)
-	// Text typed, not submitted, into a busy agent (A103) is a known result:
-	// it is in the session's input line, so the box is done with it.
-	typedBusy := ok && res.Outcome == ops.OutcomePartial && res.IsBusySend()
-	if typedBusy {
-		answerResultSignals(w, t, []ActionResult{ar}, resultEvents{sent: true})
-		return
-	}
+	// Text typed, not submitted, into a busy agent (A103) is partial like any
+	// other: the box and the copy below keep the draft, and the notice says
+	// to press Enter in the session (never to send it again).
 	if ok && (res.Outcome == ops.OutcomeUnknown || res.Outcome == ops.OutcomePartial) {
 		// The text stays in the box too; this copy survives an edit of the box.
 		ar.Submitted = truncateRunes(text, maxSubmittedRunes)

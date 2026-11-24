@@ -393,7 +393,7 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 		}
 	}
 	return e.write(ctx, op, args.WriteArgs, args.Target, true, func(ctx context.Context) (ops.WriteResult, error) {
-		note := ""
+		note, multiLine := "", false
 		res, err := e.paneRun(ctx, rq, op, args.WriteArgs, args.Target, true, guards,
 			func(ctx context.Context, p *pane) (ops.Outcome, proto.Code, error) {
 				if args.AgentOnly && !isAgentKind(p.class.Kind) {
@@ -405,6 +405,12 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 				// No submit key into a busy agent (A103): a permission dialog
 				// can open between any screen check and the key, and the
 				// Enter would answer it (approve a Bash command). Type only.
+				if strings.ContainsAny(args.Text, "\r\n") && !e.pasteBracketed(p) {
+					// A line break in an unbracketed paste can submit the
+					// first line: type nothing (A103).
+					multiLine = true
+					return ops.OutcomeFailedNotSent, proto.CodeBusy, nil
+				}
 				outcome, reason, err := e.pasteAndSubmit(ctx, p, args.Text, false)
 				if err != nil || outcome != ops.OutcomeDelivered {
 					return outcome, reason, err
@@ -416,12 +422,30 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 				note = ops.BusyNoteTypedNotSubmitted
 				return ops.OutcomePartial, proto.CodeBusy, nil
 			})
+		if err == nil && multiLine && res.Outcome == ops.OutcomeFailedNotSent {
+			res.Forceable = true
+			res.Note = ops.BusyNoteMultiLineNotTyped
+		}
 		if err == nil && note != "" && (res.Outcome == ops.OutcomeDelivered || res.Outcome == ops.OutcomePartial) {
 			res.Note = note
 			res.Warnings = append(res.Warnings, ops.WarnSessionBusy)
 		}
 		return res, err
 	})
+}
+
+// bracketedAgentKinds are the agents known to enable bracketed paste in their
+// input line, so that a pasted LF stays part of the text and submits nothing.
+var bracketedAgentKinds = []string{ops.PaneKindAgentPrefix + "claude", ops.PaneKindAgentPrefix + "codex"}
+
+// pasteBracketed reports whether a paste into p arrives bracketed: the pane
+// runs an agent known to enable bracketed paste and the host frames the paste
+// in bracketed-paste markers when the program enabled them (the verbatim
+// paste of [term.VerbatimPaster]: tmux paste-buffer -p, the ConPTY markers).
+// Neither adapter can report the mode of the program, so a program outside
+// that list is treated as unbracketed (A103).
+func (e *Executor) pasteBracketed(p *pane) bool {
+	return slices.Contains(bracketedAgentKinds, p.class.Kind) && term.IsVerbatim(e.host)
 }
 
 // paneBusy reports whether the pane is an agent busy with a turn: the
