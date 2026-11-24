@@ -2,21 +2,17 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"io"
-	"log/slog"
 	"os"
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
-	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 )
 
@@ -56,51 +52,14 @@ type workerRunDeps struct {
 	// process-list warning of a literal --invite-key, so that the enrollment
 	// hook does not print a second one.
 	inviteArgvWarned bool
-	// migrateLogin updates the shell login blocks of earlier releases
-	// (migrateLoginStartup) once the Worker started; nil skips it. It
-	// publishes a change only through gate.
-	migrateLogin func(ctx context.Context, stateDir string, gate *loginGate) (loginMigration, error)
 }
 
-// loginMigration is what the update of the shell login blocks of earlier
-// releases did.
-type loginMigration struct {
-	// Changed are the startup files it updated, Backups the copy of each
-	// (same index) that it wrote before.
-	Changed, Backups []string
-	// Skipped says why a file with an earlier block was left as it is, or
-	// what else the user should know about an update.
-	Skipped []string
-	// Pending are the startup files (as named in the home directory) that
-	// still hold a block of an earlier release the update could not replace
-	// safely; Skipped tells the user how to repair each.
-	Pending []string
-}
-
-// errLoginRevoked is the result of a login block update that was about to
-// publish a change after the Worker began to stop.
-var errLoginRevoked = errors.New("the Worker is stopping: the login block update was abandoned")
-
-// loginGate ties the publication of a login block update to the lifecycle
-// of the Worker that runs it: the Worker revokes it in its stop sequence,
-// before it releases the lifecycle lock, and from then on no change is
-// published. Revoke waits for a publication in progress (a few local file
-// operations), so none can complete after it returned. A nil gate only checks
-// the context (the installer).
-type loginGate struct {
-	mu      sync.Mutex
-	revoked bool
-}
-
-// revoke ends the gate; it returns once no publication is in progress.
-func (g *loginGate) revoke() {
-	g.mu.Lock()
-	g.revoked = true
-	g.mu.Unlock()
-}
+// loginOutdatedNotice is the Worker's log line when a startup file still
+// holds a block of an earlier release.
+const loginOutdatedNotice = "Login startup is outdated: run `minion worker up` on this host to remove the 'Done' messages in new shells"
 
 func defaultWorkerRunDeps(stderr io.Writer) workerRunDeps {
-	return workerRunDeps{stderr: stderr, lookupEnv: os.LookupEnv, loadConfig: loadWorkerConfig, migrateLogin: migrateLoginStartup}
+	return workerRunDeps{stderr: stderr, lookupEnv: os.LookupEnv, loadConfig: loadWorkerConfig}
 }
 
 func newWorkerRunCmd(deps workerRunDeps) *cobra.Command {
@@ -221,37 +180,12 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		}()
 		return func() { stopAuto(); <-autoDone }
 	}
-	// An updated Worker fixes the shell login blocks earlier releases wrote:
-	// only once it started (it holds the state's lifecycle lock and answers
-	// on its socket), never in a failed start, and joined before the lock is
-	// released. In the background: it waits for the registration lock, which
-	// "worker start --at-login" holds until this Worker answers.
-	var startLogin func(ctx context.Context) func()
-	if deps.migrateLogin != nil {
-		startLogin = func(ctx context.Context) func() {
-			ctx, cancel := context.WithCancel(ctx)
-			gate := &loginGate{}
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				res, err := deps.migrateLogin(ctx, core.StateDir, gate)
-				// At most one line per startup file and one for the error,
-				// each bounded in time (logx.BestEffort).
-				if err != nil && ctx.Err() == nil && !errors.Is(err, errLoginRevoked) {
-					logx.BestEffort(logger, slog.LevelWarn, "could not update the Worker login startup block", "error", err.Error())
-				}
-				for i, p := range res.Changed {
-					logx.BestEffort(logger, slog.LevelInfo, "updated the Worker login startup block", "file", p, "backup", res.Backups[i])
-				}
-				for _, note := range res.Skipped {
-					logx.BestEffort(logger, slog.LevelWarn, "left a Worker login startup block of an earlier release as it is", "reason", note)
-				}
-			}()
-			// Cancel, then revoke before the join: even when the stop
-			// sequence gives up waiting for the join, nothing is published
-			// once the lifecycle lock is released.
-			return func() { cancel(); gate.revoke(); <-done }
-		}
+	// Login blocks of v0.20.5 and earlier print shell job lines. The Worker
+	// never changes a startup file: it only reports them (log, Hub) so that
+	// the user runs "minion worker up", which replaces them.
+	outdated := outdatedLoginStartup()
+	if len(outdated) > 0 {
+		logger.Info(loginOutdatedNotice, "files", strings.Join(outdated, ", "))
 	}
 	err = rt.Run(cmd.Context(), agent.Settings{
 		WorkerCore: core,
@@ -265,9 +199,9 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		TrafficTap:      sinks.Tap(),
 		Out:             cmd.OutOrStdout(),
 		StartBackground: startExporter,
-		StartAfterReady: startLogin,
 
-		InviteArgvWarned: deps.inviteArgvWarned,
+		InviteArgvWarned:     deps.inviteArgvWarned,
+		LoginStartupOutdated: len(outdated) > 0,
 	})
 	if err != nil && !onlyCanceled(err) {
 		if exe := agent.RestartPending(); exe != "" {

@@ -148,23 +148,30 @@ func installLoginWorker(ctx context.Context, binary, state string, out io.Writer
 }
 
 // installLoginBlocks writes the login block to the startup files profiles of
-// home. Re-running the installer first replaces the blocks of earlier
+// home. Re-running the installer ("minion worker up", which the user runs;
+// nothing else changes a startup file) first replaces the blocks of earlier
 // releases instead of adding a second one. Best effort: a file it cannot
 // update (an unreadable inactive .bash_login, a file with an ACL) is reported
 // with its repair and never stops the install.
 func installLoginBlocks(ctx context.Context, home string, profiles []string, out io.Writer) error {
-	res, err := migrateLoginBlocksLocked(ctx, nil, home)
+	res, err := migrateLoginBlocks(ctx, home)
 	reportLoginMigration(out, res, err)
 	for _, name := range profiles {
 		path := filepath.Join(home, name)
+		// It holds a block of an earlier release that was reported with its
+		// repair: that block still starts the Worker, and the file is not
+		// touched (it never stops the install).
+		if slices.Contains(res.Pending, path) {
+			continue
+		}
 		legacy, err := appendLoginBlock(path)
 		if err != nil {
 			return fmt.Errorf("install Worker login startup in %s: %w", path, err)
 		}
 		// A block of an earlier release left in place still starts the
 		// Worker, but prints job lines: never reported as a clean install.
-		if legacy && !slices.Contains(res.Pending, path) {
-			_, _ = fmt.Fprintf(out, "Warning: %s\n", loginRepair(path, path, "it could not be updated"))
+		if legacy {
+			_, _ = fmt.Fprintf(out, "Warning: %s\n", loginRepair(path, "it could not be updated"))
 		}
 	}
 	return nil
@@ -236,44 +243,36 @@ func readLoginRegistration(reg string) (bin, state string, err error) {
 	return bin, state, nil
 }
 
-// migrateLoginStartup replaces the login blocks of earlier releases with the
-// current one in the startup files of this user. The Worker runs it once it
-// started (Settings.StartAfterReady), so an update fixes existing installs
-// without any user action; it publishes a change only through gate, which
-// the Worker revokes before it releases its lifecycle lock. It does nothing
-// unless the login registration names this Worker's state directory: without
-// a login install, after the user removed the registration to turn shell
-// startup off, and for any other Worker profile of the account (a systemd or
-// foreground Worker) the files stay untouched.
-func migrateLoginStartup(ctx context.Context, stateDir string, gate *loginGate) (loginMigration, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return loginMigration{}, err
-	}
-	reg := loginRegistration(home)
-	if !registeredLoginState(reg, stateDir) {
-		return loginMigration{}, nil
-	}
-	unlock, err := lockConfigFileContext(ctx, reg+".lock")
-	if err != nil {
-		return loginMigration{}, err
-	}
-	defer unlock()
-	if !registeredLoginState(reg, stateDir) || ctx.Err() != nil {
-		return loginMigration{}, ctx.Err()
-	}
-	return migrateLoginBlocksLocked(ctx, gate, home)
+// loginMigration is what "minion worker up" did to the login blocks of
+// earlier releases.
+type loginMigration struct {
+	// Changed are the startup files it updated, Backups the copy of each
+	// (same index) that it kept.
+	Changed, Backups []string
+	// Skipped says why a file with an earlier block was left as it is, with
+	// the repair.
+	Skipped []string
+	// Pending are the startup files that still hold a block of an earlier
+	// release.
+	Pending []string
 }
 
-// registeredLoginState reports whether the login registration reg is valid
-// (readLoginRegistration) and names stateDir as the state directory it
-// starts.
-func registeredLoginState(reg, stateDir string) bool {
-	if stateDir == "" || !filepath.IsAbs(stateDir) {
-		return false
+// outdatedLoginStartup returns the startup files of this user that still
+// hold the login block of an earlier release. It only reads: the Worker
+// (worker run, worker start, a self-update) never changes a startup file;
+// only "minion worker up", which the user runs, replaces the block.
+func outdatedLoginStartup() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
 	}
-	_, state, err := readLoginRegistration(reg)
-	return err == nil && filepath.Clean(state) == filepath.Clean(stateDir)
+	var out []string
+	for _, name := range loginStartupFiles {
+		if p := filepath.Join(home, name); legacyBlockIn(p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // reportLoginMigration tells the installer's user what the update of earlier
@@ -290,31 +289,24 @@ func reportLoginMigration(out io.Writer, res loginMigration, err error) {
 	}
 }
 
-// migrateLoginBlocksLocked updates every startup file in home that holds a
-// block of an earlier release; the caller holds the registration lock. A
-// failure in one file does not stop the others; the end of ctx or of gate
-// stops the update before the next file and before any publication.
-func migrateLoginBlocksLocked(ctx context.Context, gate *loginGate, home string) (loginMigration, error) {
+// migrateLoginBlocks replaces the login blocks of earlier releases in the
+// startup files of home; only "minion worker up" runs it (the caller holds
+// the registration lock). A failure in one file does not stop the others.
+func migrateLoginBlocks(ctx context.Context, home string) (loginMigration, error) {
 	var res loginMigration
 	fd, err := unix.Open(home, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return res, &os.PathError{Op: "open", Path: home, Err: err}
 	}
-	dir := os.NewFile(uintptr(fd), home)
-	defer func() { _ = dir.Close() }()
-	m := loginMigrator{ctx: ctx, gate: gate, res: &res}
+	defer func() { _ = unix.Close(fd) }()
 	var errs []error
 	for _, name := range loginStartupFiles {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			break
 		}
-		path := filepath.Join(home, name)
-		if err := m.file(int(dir.Fd()), home, name, path, false); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", path, err))
-			if errors.Is(err, errLoginRevoked) || ctx.Err() != nil {
-				break
-			}
+		if err := migrateLoginFile(&res, fd, home, name); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", filepath.Join(home, name), err))
 		}
 	}
 	return res, errors.Join(errs...)
@@ -394,66 +386,29 @@ const (
 // errLoginChanged: the startup file is no longer the version the update read.
 var errLoginChanged = errors.New("the file changed")
 
-// loginKeep is a reason to leave a file with an earlier block as it is: its
-// metadata cannot be kept on a replacement.
-type loginKeep struct{ why string }
-
-func (k loginKeep) Error() string { return k.why }
-
-// publish runs fn, the publication of one staged change, unless ctx ended or
-// the gate was revoked.
-func (g *loginGate) publish(ctx context.Context, fn func() error) error {
-	if g != nil {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		if g.revoked {
-			return errLoginRevoked
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return fn()
-}
-
-// loginMigrator updates the startup files of one run of
-// migrateLoginBlocksLocked.
-type loginMigrator struct {
-	ctx  context.Context
-	gate *loginGate
-	res  *loginMigration
-}
-
-// loginRepair is the report of the startup file shown (its name in the home
-// directory) whose earlier block in path (shown, or the target of the link
-// shown) the update left as it is, for why, with the manual repair.
-func loginRepair(shown, path, why string) string {
-	where := shown
-	if path != shown {
-		where = fmt.Sprintf("%s (the target of the symbolic link %s)", path, shown)
-	}
+// loginRepair is the one-line report of the startup file path whose earlier
+// block the update left as it is, for why, with the manual repair.
+func loginRepair(path, why string) string {
 	first, _, _ := strings.Cut(loginBlockBody, "\n")
 	return fmt.Sprintf("%s still holds the login block of an earlier release, which prints shell job lines; it was left as it is because %s. To repair it, delete the lines from %q through %q in %s with an editor, then run \"minion worker up\" again",
-		shown, why, first, "# End Minion Worker login startup", where)
+		path, why, first, "# End Minion Worker login startup", path)
 }
 
-// pending records that shown keeps an earlier block, for why.
-func (m *loginMigrator) pending(shown, path, why string) {
-	m.res.Skipped = append(m.res.Skipped, loginRepair(shown, path, why))
-	m.res.Pending = append(m.res.Pending, shown)
-}
-
-// file updates the startup file name in the directory dirfd (dir) when it
-// holds a block of an earlier release; shown is its name in the home
-// directory, viaLink whether name is the resolved target of a link. A link
-// in the home directory is kept, and its target updated when the path to it
-// is controlled by this user (link). The new version is staged in a new file
-// next to it and renamed over it, so a shell that reads the file sees the
-// old or the new version, never a part. Left as it is, with the repair
-// reported: a file of another user, with other hard links, with an ACL or
-// extended attributes or a group that the new version cannot get.
-func (m *loginMigrator) file(dirfd int, dir, name, shown string, viaLink bool) error {
+// migrateLoginFile replaces the blocks of an earlier release in the startup
+// file name of the directory dirfd (dir). The new version is staged in a new
+// file next to it with the same group and mode and renamed over it, so a
+// shell that reads the file sees the old or the new version, never a part;
+// the displaced version is kept as an owner-only backup. Strict: a symbolic
+// link, a file with extended attributes (an ACL), with other hard links or
+// of another user, or in a directory with a default ACL is left as it is and
+// reported with its repair; so is a file that changed while it was updated.
+func migrateLoginFile(res *loginMigration, dirfd int, dir, name string) error {
 	path := filepath.Join(dir, name)
+	skip := func(why string) error {
+		res.Skipped = append(res.Skipped, loginRepair(path, why))
+		res.Pending = append(res.Pending, path)
+		return nil
+	}
 	var lst unix.Stat_t
 	if err := unix.Fstatat(dirfd, name, &lst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		if errors.Is(err, unix.ENOENT) {
@@ -463,13 +418,10 @@ func (m *loginMigrator) file(dirfd int, dir, name, shown string, viaLink bool) e
 	}
 	switch lst.Mode & unix.S_IFMT {
 	case unix.S_IFLNK:
-		if viaLink {
-			if legacyBlockBehindLink(path) {
-				m.pending(shown, path, "its target changed while it was resolved")
-			}
-			return nil
+		if legacyBlockIn(path) {
+			return skip("it is a symbolic link, which the update does not write through")
 		}
-		return m.link(dir, name, shown)
+		return nil
 	case unix.S_IFREG:
 	default:
 		return nil
@@ -480,7 +432,7 @@ func (m *loginMigrator) file(dirfd int, dir, name, shown string, viaLink bool) e
 	fd, err := unix.Openat(dirfd, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOENT) {
-			return nil // replaced since the check: handled at the next start
+			return skip("it was replaced while it was read")
 		}
 		return err
 	}
@@ -490,193 +442,102 @@ func (m *loginMigrator) file(dirfd int, dir, name, shown string, viaLink bool) e
 	if err := unix.Fstat(fd, &st); err != nil {
 		return err
 	}
-	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Dev != lst.Dev || st.Ino != lst.Ino || st.Size > loginFileMax {
-		return nil // replaced since the check: handled at the next start
+	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Dev != lst.Dev || st.Ino != lst.Ino {
+		return skip("it was replaced while it was read")
 	}
-	b, err := readLoginFile(f)
+	old, err := readLoginFile(f)
 	if err != nil {
 		return err
 	}
-	text, ok := replaceLegacyLoginBlocks(string(b))
+	text, ok := replaceLegacyLoginBlocks(string(old))
 	if !ok {
 		return nil
 	}
 	switch {
 	case int(st.Uid) != os.Geteuid():
-		m.pending(shown, path, "it belongs to another user")
-		return nil
+		return skip("it belongs to another user")
 	case st.Nlink > 1:
-		m.pending(shown, path, "it has other hard links, which a new version would no longer share")
-		return nil
+		return skip("it has other hard links, which a new version would no longer share")
 	}
-	xattrs, err := loginXattrs(fd)
-	if err != nil {
-		m.pending(shown, path, "its extended attributes cannot be read")
-		return nil
+	if x, err := loginXattrs(fd); err != nil {
+		return skip("its extended attributes cannot be read")
+	} else if len(x) > 0 {
+		return skip(fmt.Sprintf("it has extended attributes or an access control list (%s) that a new version would not keep", strings.Join(x, ", ")))
 	}
-	for _, x := range xattrs {
-		if strings.HasPrefix(x, "system.") {
-			m.pending(shown, path, fmt.Sprintf("it has an access control list (%s) that a new version would not keep", x))
-			return nil
-		}
+	if acl, err := loginDefaultACL(dirfd); err != nil || acl {
+		return skip("its directory has a default access control list, which a new version would inherit")
 	}
-	return m.replace(fd, f, &st, b, text, xattrs, dirfd, dir, name, shown)
-}
 
-// replace publishes text as the new version of the startup file name in
-// dirfd (dir), read from fd (st) as old.
-func (m *loginMigrator) replace(fd int, f *os.File, st *unix.Stat_t, old []byte, text string, xattrs []string, dirfd int, dir, name, shown string) error {
-	path := filepath.Join(dir, name)
-	staged, err := stageLoginFile(dirfd, name, text, fd, st, xattrs)
+	staged, err := stageLoginFile(dirfd, name, text, &st)
 	if k := (loginKeep{}); errors.As(err, &k) {
-		m.pending(shown, path, k.why)
-		return nil
+		return skip(k.why)
 	}
 	if err != nil {
 		return fmt.Errorf("stage the new version: %w; the file is left as it is", err)
 	}
-	published := false
+	published, backup := false, ""
 	defer func() {
 		if !published {
 			_ = unix.Unlinkat(dirfd, staged, 0)
+			if backup != "" {
+				_ = unix.Unlinkat(dirfd, backup, 0)
+			}
 		}
 	}()
+	changed := func() error {
+		return skip("it changed while its login block was updated (nothing was written)")
+	}
 	if loginBeforeCommit != nil {
 		loginBeforeCommit(path)
 	}
-	var backup string
-	linked := false
-	err = m.gate.publish(m.ctx, func() error {
-		// The last check: an editor that saved the file in the meantime
-		// wins, and its save is never overwritten.
-		if !sameLoginFile(fd, f, st, old, dirfd, name) {
-			return errLoginChanged
-		}
-		var err error
-		if backup, linked, err = writeLoginBackup(dirfd, name, st, old); err != nil {
-			return err
-		}
-		if loginBeforeRename != nil {
-			loginBeforeRename(path)
-		}
-		var cur unix.Stat_t
-		if err := unix.Fstatat(dirfd, name, &cur, unix.AT_SYMLINK_NOFOLLOW); err != nil || cur.Dev != st.Dev || cur.Ino != st.Ino {
-			_ = unix.Unlinkat(dirfd, backup, 0)
-			return errLoginChanged
-		}
-		if err := unix.Renameat(dirfd, staged, dirfd, name); err != nil {
-			_ = unix.Unlinkat(dirfd, backup, 0)
-			return fmt.Errorf("publish the new version: %w; the file is left as it is", err)
-		}
-		published = true
-		return nil
-	})
-	if errors.Is(err, errLoginChanged) {
-		m.res.Skipped = append(m.res.Skipped, fmt.Sprintf("%s changed while its login block was updated; it is left as it is and updated at the next start", shown))
-		return nil
+	if !sameLoginFile(fd, f, &st, old, dirfd, name, 1) {
+		return changed()
 	}
-	if err != nil {
+	var nlink uint64
+	if backup, nlink, err = writeLoginBackup(dirfd, name, &st, old); errors.Is(err, errLoginChanged) {
+		return changed()
+	} else if err != nil {
 		return err
 	}
+	if loginBeforeRename != nil {
+		loginBeforeRename(path)
+	}
+	// The last check, right before the rename: owner, group, mode, size,
+	// modification time, extended attributes and content are still the ones
+	// read, and the name still is that file.
+	if !sameLoginFile(fd, f, &st, old, dirfd, name, nlink) {
+		return changed()
+	}
+	if err := unix.Renameat(dirfd, staged, dirfd, name); err != nil {
+		return fmt.Errorf("publish the new version: %w; the file is left as it is", err)
+	}
+	published = true
 	backupPath := filepath.Join(dir, backup)
-	m.res.Changed = append(m.res.Changed, path)
-	m.res.Backups = append(m.res.Backups, backupPath)
+	res.Changed = append(res.Changed, path)
+	res.Backups = append(res.Backups, backupPath)
 	if err := unix.Fsync(dirfd); err != nil {
 		return fmt.Errorf("sync %s: %w (the file was updated, the previous version is in %s)", dir, err, backupPath)
-	}
-	// The backup is the displaced inode itself: a save in place in the last
-	// moment is in it, not lost.
-	if b, err := readLoginFile(f); linked && err == nil && string(b) != string(old) {
-		m.res.Skipped = append(m.res.Skipped, fmt.Sprintf("%s was saved while its login block was updated; that save is in %s", shown, backupPath))
 	}
 	return nil
 }
 
-// link updates the target of the symbolic link name in dir (shown in the
-// home directory) and keeps the link. Only a target whose every directory is
-// controlled by this user (or root) is updated, through descriptors opened
-// without following links; otherwise a block of an earlier release behind
-// the link is reported with its repair.
-func (m *loginMigrator) link(dir, name, shown string) error {
-	path := filepath.Join(dir, name)
-	target, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		if legacyBlockBehindLink(path) {
-			m.pending(shown, path, "its target cannot be resolved")
-		}
-		return nil
-	}
-	pfd, why := openOwnedDir(filepath.Dir(target))
-	if why != "" {
-		if legacyBlockBehindLink(path) {
-			m.pending(shown, target, why)
-		}
-		return nil
-	}
-	defer func() { _ = unix.Close(pfd) }()
-	return m.file(pfd, filepath.Dir(target), filepath.Base(target), shown, true)
-}
+// loginKeep is a reason to leave a file with an earlier block as it is: its
+// metadata cannot be kept on a replacement.
+type loginKeep struct{ why string }
 
-// openOwnedDir opens the absolute directory dir, one component at a time
-// without following links, and returns its descriptor when no other user
-// can change the path: each directory belongs to this user or root and only
-// its owner can write it, or it is sticky (such as /tmp) and the entry in it
-// belongs to this user. Otherwise it returns why not.
-func openOwnedDir(dir string) (int, string) {
-	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return -1, "its directory cannot be opened"
-	}
-	euid := os.Geteuid()
-	shared := false
-	cur := "/"
-	check := func() string {
-		var st unix.Stat_t
-		if err := unix.Fstat(fd, &st); err != nil {
-			return fmt.Sprintf("%s cannot be checked", cur)
-		}
-		switch {
-		case shared && int(st.Uid) != euid:
-			return fmt.Sprintf("%s is in a shared directory and belongs to another user", cur)
-		case int(st.Uid) != euid && st.Uid != 0:
-			return fmt.Sprintf("%s belongs to another user", cur)
-		case st.Mode&0o022 != 0 && st.Mode&unix.S_ISVTX == 0:
-			return fmt.Sprintf("other users can change %s", cur)
-		}
-		shared = st.Mode&0o022 != 0
-		return ""
-	}
-	if why := check(); why != "" {
-		_ = unix.Close(fd)
-		return -1, why
-	}
-	for _, c := range strings.Split(filepath.Clean(dir), "/") {
-		if c == "" {
-			continue
-		}
-		cur = filepath.Join(cur, c)
-		nfd, err := unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		_ = unix.Close(fd)
-		if err != nil {
-			return -1, fmt.Sprintf("%s cannot be opened without following a link", cur)
-		}
-		fd = nfd
-		if why := check(); why != "" {
-			_ = unix.Close(fd)
-			return -1, why
-		}
-	}
-	// In a shared directory the file itself must belong to this user:
-	// loginMigrator.file only updates such a file.
-	return fd, ""
-}
+func (k loginKeep) Error() string { return k.why }
 
 // sameLoginFile reports whether the startup file name in dirfd still is the
-// version read from fd: the same inode at that name, with one link, the same
-// size, modification time and content old.
-func sameLoginFile(fd int, f *os.File, st *unix.Stat_t, old []byte, dirfd int, name string) bool {
+// version read from fd (st, content old): the same inode at that name with
+// nlink links, the same owner, group, mode, size and modification time, no
+// extended attributes and the same content.
+func sameLoginFile(fd int, f *os.File, st *unix.Stat_t, old []byte, dirfd int, name string, nlink uint64) bool {
 	var now, cur unix.Stat_t
-	if unix.Fstat(fd, &now) != nil || now.Size != st.Size || now.Mtim != st.Mtim || now.Nlink != 1 {
+	if unix.Fstat(fd, &now) != nil || now.Uid != st.Uid || now.Gid != st.Gid || now.Mode != st.Mode ||
+		now.Size != st.Size || now.Mtim != st.Mtim || uint64(now.Nlink) != nlink {
+		return false
+	}
+	if x, err := loginXattrs(fd); err != nil || len(x) > 0 {
 		return false
 	}
 	again, err := readLoginFile(f)
@@ -687,28 +548,41 @@ func sameLoginFile(fd int, f *os.File, st *unix.Stat_t, old []byte, dirfd int, n
 }
 
 // loginBeforeCommit, when set by a test, runs after the new version is
-// staged and before the last check (an editor saving the file at that
-// moment); loginBeforeRename runs after the backup, right before the rename.
+// staged and before the first check (an editor saving the file at that
+// moment); loginBeforeRename runs after the backup, right before the last
+// check and the rename.
 var loginBeforeCommit, loginBeforeRename func(path string)
 
+// loginListxattr is flistxattr(2) (a variable so a test can make an
+// attribute disappear between the size query and the read).
+var loginListxattr = unix.Flistxattr
+
 // loginXattrs lists the extended attributes of the file fd (a variable so a
-// test can show an ACL where the file system has none).
+// test can show an ACL where the file system has none). Errors are handled
+// before the buffer is sliced: an attribute that disappears in between never
+// panics.
 var loginXattrs = func(fd int) ([]string, error) {
-	for {
-		n, err := unix.Flistxattr(fd, nil)
-		if errors.Is(err, unix.ENOTSUP) || err == nil && n == 0 {
+	for range 10 {
+		n, err := loginListxattr(fd, nil)
+		if errors.Is(err, unix.ENOTSUP) {
 			return nil, nil
 		}
 		if err != nil {
 			return nil, err
 		}
+		if n <= 0 {
+			return nil, nil
+		}
 		buf := make([]byte, n)
-		n, err = unix.Flistxattr(fd, buf)
+		n, err = loginListxattr(fd, buf)
 		if errors.Is(err, unix.ERANGE) {
-			continue
+			continue // grew in between
 		}
 		if err != nil {
 			return nil, err
+		}
+		if n < 0 || n > len(buf) {
+			return nil, fmt.Errorf("flistxattr returned %d bytes for a %d-byte buffer", n, len(buf))
 		}
 		var names []string
 		for _, x := range strings.Split(string(buf[:n]), "\x00") {
@@ -718,29 +592,26 @@ var loginXattrs = func(fd int) ([]string, error) {
 		}
 		return names, nil
 	}
+	return nil, errors.New("the extended attributes keep changing")
 }
 
-// getLoginXattr returns the value of the extended attribute x of fd.
-func getLoginXattr(fd int, x string) ([]byte, error) {
-	for {
-		n, err := unix.Fgetxattr(fd, x, nil)
-		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, n)
-		n, err = unix.Fgetxattr(fd, x, buf)
-		if errors.Is(err, unix.ERANGE) {
-			continue
-		}
-		return buf[:n], err
+// loginDefaultACL reports whether the directory dirfd has a default ACL,
+// which a new file in it would inherit (a variable for tests).
+var loginDefaultACL = func(dirfd int) (bool, error) {
+	n, err := unix.Fgetxattr(dirfd, "system.posix_acl_default", nil)
+	switch {
+	case errors.Is(err, unix.ENODATA) || errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP):
+		return false, nil
+	case err != nil:
+		return false, err
 	}
+	return n > 0, nil
 }
 
 // stageLoginFile writes text to a new file next to the startup file name in
-// dirfd (read from fd, st) with its owner, group, mode and extended
-// attributes, synced with the directory, and returns its name. A loginKeep
-// error says which of them it cannot get.
-func stageLoginFile(dirfd int, name, text string, fd int, st *unix.Stat_t, xattrs []string) (string, error) {
+// dirfd (st) with its group and mode, synced with the directory, and returns
+// its name. A loginKeep error says which of them it cannot get.
+func stageLoginFile(dirfd int, name, text string, st *unix.Stat_t) (string, error) {
 	for i := 0; i < 100; i++ {
 		sn := fmt.Sprintf("%s%s.%d.%d", name, loginStagedSuffix, os.Getpid(), i)
 		tfd, err := unix.Openat(dirfd, sn, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
@@ -768,16 +639,15 @@ func stageLoginFile(dirfd int, name, text string, fd int, st *unix.Stat_t, xattr
 			if err := unix.Fchmod(tfd, st.Mode&0o7777); err != nil {
 				return err
 			}
-			for _, x := range xattrs {
-				v, err := getLoginXattr(fd, x)
-				if err != nil {
-					return loginKeep{fmt.Sprintf("its extended attribute %s cannot be read", x)}
-				}
-				if unix.Fsetxattr(tfd, x, v, 0) != nil {
-					if have, err := getLoginXattr(tfd, x); err != nil || string(have) != string(v) {
-						return loginKeep{fmt.Sprintf("a new version cannot get its extended attribute %s", x)}
-					}
-				}
+			if err := unix.Fstat(tfd, &cst); err != nil {
+				return err
+			}
+			if cst.Mode != st.Mode || cst.Gid != st.Gid {
+				return loginKeep{"a new version cannot get its group and mode"}
+			}
+			// Nothing inherited: the original has no extended attributes.
+			if x, err := loginXattrs(tfd); err != nil || len(x) > 0 {
+				return loginKeep{"a new version would get extended attributes the file does not have"}
 			}
 			return t.Sync()
 		}()
@@ -805,9 +675,9 @@ func readLoginFile(f *os.File) ([]byte, error) {
 	return b, err
 }
 
-// legacyBlockBehindLink reports whether the regular file a symbolic link
-// points to holds a block of an earlier release. It only reads.
-func legacyBlockBehindLink(path string) bool {
+// legacyBlockIn reports whether the regular file at path (a symbolic link
+// is followed) holds a block of an earlier release. It only reads.
+func legacyBlockIn(path string) bool {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return false
@@ -828,11 +698,11 @@ func legacyBlockBehindLink(path string) bool {
 // old) that the update displaces, next to it: name.minion-backup, or with a
 // numeric suffix when that exists (an earlier backup is never overwritten).
 // The backup is owner-only (0600): for a file with mode 0600 it is a hard
-// link to the displaced inode itself (linked), so even a save in place
-// right before the rename is kept; any other file gets a 0600 copy of old,
-// as its own mode would give its group or others access to the backup. The
-// caller checked that the file has no ACL. It returns the backup's name.
-func writeLoginBackup(dirfd int, name string, st *unix.Stat_t, old []byte) (string, bool, error) {
+// link to the displaced inode itself, so even a save in place right before
+// the rename is kept (nlink is then 2); any other file gets a 0600 copy of
+// old, as its own mode would give its group or others access to the backup.
+// It returns the backup's name and the link count the file has now.
+func writeLoginBackup(dirfd int, name string, st *unix.Stat_t, old []byte) (string, uint64, error) {
 	for i := 0; i < 100; i++ {
 		bn := name + loginBackupSuffix
 		if i > 0 {
@@ -847,9 +717,9 @@ func writeLoginBackup(dirfd int, name string, st *unix.Stat_t, old []byte) (stri
 				var bst unix.Stat_t
 				if err := unix.Fstatat(dirfd, bn, &bst, unix.AT_SYMLINK_NOFOLLOW); err != nil || bst.Dev != st.Dev || bst.Ino != st.Ino {
 					_ = unix.Unlinkat(dirfd, bn, 0)
-					return "", false, errLoginChanged
+					return "", 0, errLoginChanged
 				}
-				return bn, true, nil
+				return bn, 2, nil
 			}
 			// No hard links on this file system: a copy.
 		}
@@ -858,7 +728,7 @@ func writeLoginBackup(dirfd int, name string, st *unix.Stat_t, old []byte) (stri
 			continue
 		}
 		if err != nil {
-			return "", false, fmt.Errorf("write the backup copy: %w; the file is left as it is", err)
+			return "", 0, fmt.Errorf("write the backup copy: %w; the file is left as it is", err)
 		}
 		f := os.NewFile(uintptr(fd), bn)
 		_, err = f.Write(old)
@@ -873,11 +743,11 @@ func writeLoginBackup(dirfd int, name string, st *unix.Stat_t, old []byte) (stri
 		}
 		if err != nil {
 			_ = unix.Unlinkat(dirfd, bn, 0)
-			return "", false, fmt.Errorf("write the backup copy: %w; the file is left as it is", err)
+			return "", 0, fmt.Errorf("write the backup copy: %w; the file is left as it is", err)
 		}
-		return bn, false, nil
+		return bn, 1, nil
 	}
-	return "", false, fmt.Errorf("too many backup copies of %s%s", name, loginBackupSuffix)
+	return "", 0, fmt.Errorf("too many backup copies of %s%s", name, loginBackupSuffix)
 }
 
 func startLoginWorker(ctx context.Context) (bool, error) {

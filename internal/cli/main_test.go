@@ -9,8 +9,8 @@ import (
 
 // TestMain runs the tests of this package with a private HOME, so that no
 // test can change the startup files, the login registration, the Claude
-// settings or the Worker state of the account that runs them (a Worker that
-// a test starts updates the shell login blocks of the HOME it sees). The Go
+// settings or the Worker state of the account that runs them (the installer
+// that a test runs writes the shell login blocks of the HOME it sees). The Go
 // tool keeps its caches and settings, for tests that build a binary.
 func TestMain(m *testing.M) {
 	os.Exit(runWithPrivateHome(m))

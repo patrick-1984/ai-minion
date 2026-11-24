@@ -69,13 +69,11 @@ type Settings struct {
 	// work) before the lock is released or a replacement Worker takes over.
 	// Nil: nothing to start.
 	StartBackground func(ctx context.Context) (stop func())
-	// StartAfterReady starts work that may run only in a Worker that started
-	// (the shell login block update): Start calls it once every module
-	// started, never for a failed or interrupted start, and the stop
-	// sequence calls the returned stop (which must end and join the work)
-	// before any module stops, so before the lifecycle lock is released. It
-	// must only start the work and return. Nil: nothing to start.
-	StartAfterReady func(ctx context.Context) (stop func())
+	// LoginStartupOutdated is true when a shell startup file of the Worker's
+	// user still holds the login block of v0.20.5 or earlier (it prints shell
+	// job lines); the hello reports it so the Hub shows the repair
+	// ("minion worker up" on the host). The Worker never changes the file.
+	LoginStartupOutdated bool
 	// Out is for human-readable reports, such as the result of enrollment.
 	// Nil discards them.
 	Out io.Writer
@@ -379,8 +377,6 @@ type Runtime struct {
 	ready atomic.Bool
 	// instance is the random id of this daemon run (see [Runtime.Instance]).
 	instance string
-	// afterReady stops the work of Settings.StartAfterReady.
-	afterReady func()
 }
 
 // Instance returns the id of this daemon run: one random id per Runtime that
@@ -491,15 +487,6 @@ func (rt *Runtime) Start(ctx context.Context, s Settings) error {
 		s.logger().Debug("worker module started", "module", m.name)
 	}
 	rt.ready.Store(true)
-	if s.StartAfterReady != nil {
-		// Under the lock: a concurrent Stop either finds the work and
-		// joins it, or comes first and the work never starts.
-		rt.mu.Lock()
-		defer rt.mu.Unlock()
-		if rt.state == stateStarted {
-			rt.afterReady = s.StartAfterReady(ctx)
-		}
-	}
 	return nil
 }
 
@@ -565,8 +552,6 @@ func (rt *Runtime) stopAll(ctx context.Context, clean bool) error {
 	rt.held = nil
 	running := rt.running
 	rt.running = nil
-	afterReady := rt.afterReady
-	rt.afterReady = nil
 	log := rt.settings.logger()
 	rt.mu.Unlock()
 
@@ -590,11 +575,6 @@ func (rt *Runtime) stopAll(ctx context.Context, clean bool) error {
 			rt.markCleanStop()
 		}
 		marked = true
-	}
-	if afterReady != nil {
-		if err := stopWithin(modCtx, hardCtx, func(context.Context) error { afterReady(); return nil }); err != nil {
-			errs = append(errs, fmt.Errorf("agent: the work started after the start failed to stop: %w", err))
-		}
 	}
 	for i := len(running) - 1; i >= 0; i-- {
 		r := running[i]

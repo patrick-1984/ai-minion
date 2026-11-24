@@ -12,12 +12,11 @@ func installLoginWorker(context.Context, string, string, io.Writer) error {
 	return errors.New("shell login startup is supported on Linux; use minion worker up --foreground")
 }
 
-func migrateLoginStartup(context.Context, string, *loginGate) (loginMigration, error) {
-	return loginMigration{}, nil
-}
-
 func startLoginWorker(context.Context) (bool, error) { return false, errNotInstalled }
 
 func markLoginStopped() error { return nil }
 func clearLoginStopped()      {}
 func loginStopped() bool      { return false }
+
+// outdatedLoginStartup: shell login startup is Linux only.
+func outdatedLoginStartup() []string { return nil }

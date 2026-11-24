@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,8 +16,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 )
 
 // legacyLoginBlock is the block v0.20.5 and earlier appended, byte for byte.
@@ -200,7 +197,8 @@ env | grep -q '^minion_worker_login_started=' || { echo "allexport did not expor
 	}
 }
 
-// migrateHome is a private HOME with a login registration that names state.
+// migrateHome is a private HOME (also for os.UserHomeDir) with a login
+// registration.
 func migrateHome(t *testing.T) (home, state string) {
 	t.Helper()
 	home = t.TempDir()
@@ -254,132 +252,331 @@ func otherGroup() int {
 	return -1
 }
 
-// noStaged fails when the update left a staged copy in dir.
-func noStaged(t *testing.T, dir string) {
+// noLeftovers fails when the update left a staged copy or a backup in dir.
+func noLeftovers(t *testing.T, dir string, backups bool) {
 	t.Helper()
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
-		if strings.Contains(e.Name(), loginStagedSuffix) {
+		if strings.Contains(e.Name(), loginStagedSuffix) || backups && strings.Contains(e.Name(), loginBackupSuffix) {
 			t.Fatalf("left %s", e.Name())
 		}
 	}
 }
 
-func TestMigrateLoginStartupReplacesAtomicallyWithABackup(t *testing.T) {
-	home, state := migrateHome(t)
-	before := "# user\nalias ll='ls -l'\n"
-	after := "export EDITOR=vi\n# after\n"
-	orig := before + legacyLoginBlock + after
-	writeHomeFile(t, home, ".bashrc", orig, 0o640)
-	bashrc := filepath.Join(home, ".bashrc")
-	gid := os.Getegid()
-	if g := otherGroup(); g >= 0 {
-		if err := os.Chown(bashrc, -1, g); err == nil {
-			gid = g
-		}
-	}
-	// An earlier backup is never overwritten.
-	writeHomeFile(t, home, ".bashrc.minion-backup", "older backup\n", 0o600)
-	before1 := statT(t, bashrc)
+// fileSnapshot is the bytes and inode of a file, to prove it was not touched.
+type fileSnapshot struct {
+	data  string
+	ino   uint64
+	mtime syscall.Timespec
+}
 
-	// Without a login registration nothing changes; nor for another Worker
-	// profile of the account (systemd, foreground).
-	if err := os.Rename(loginRegistration(home), loginRegistration(home)+".off"); err != nil {
-		t.Fatal(err)
-	}
-	if res, err := migrateLoginStartup(context.Background(), state, nil); err != nil || len(res.Changed) != 0 {
-		t.Fatalf("without registration: %+v, %v", res, err)
-	}
-	if err := os.Rename(loginRegistration(home)+".off", loginRegistration(home)); err != nil {
-		t.Fatal(err)
-	}
-	if res, err := migrateLoginStartup(context.Background(), filepath.Join(home, "other"), nil); err != nil || len(res.Changed) != 0 {
-		t.Fatalf("other profile: %+v, %v", res, err)
-	}
-	if readHomeFile(t, home, ".bashrc") != orig {
-		t.Fatal("changed without a matching registration")
-	}
-
-	res, err := migrateLoginStartup(context.Background(), state, &loginGate{})
+func snapshot(t *testing.T, p string) fileSnapshot {
+	t.Helper()
+	b, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Changed) != 1 || res.Changed[0] != bashrc || res.Backups[0] != bashrc+".minion-backup.1" || len(res.Skipped)+len(res.Pending) != 0 {
-		t.Fatalf("result %+v", res)
-	}
-	if got := readHomeFile(t, home, ".bashrc"); got != before+loginBlock+after {
-		t.Fatalf(".bashrc:\n%s", got)
-	}
-	// A new file with the owner, group and mode of the original.
-	now := statT(t, bashrc)
-	if now.Ino == before1.Ino || now.Mode != before1.Mode || int(now.Gid) != gid || now.Uid != before1.Uid || now.Nlink != 1 {
-		t.Fatalf("metadata changed: before %+v, after %+v", before1, now)
-	}
-	if readHomeFile(t, home, ".bashrc.minion-backup") != "older backup\n" {
-		t.Fatal("an earlier backup was overwritten")
-	}
-	if readHomeFile(t, home, ".bashrc.minion-backup.1") != orig {
-		t.Fatal("the backup does not hold the original bytes")
-	}
-	// The original gives its group access: the backup is an owner-only copy.
-	if bk := statT(t, bashrc+".minion-backup.1"); bk.Mode&0o7777 != 0o600 || bk.Ino == before1.Ino {
-		t.Fatalf("backup mode %o (want an owner-only copy)", bk.Mode&0o7777)
-	}
-	noStaged(t, home)
+	st := statT(t, p)
+	return fileSnapshot{string(b), st.Ino, st.Mtim}
+}
 
-	// Idempotent: the next start changes nothing and writes no backup, and
-	// the installer does not append a second block.
-	if res, err := migrateLoginStartup(context.Background(), state, nil); err != nil || len(res.Changed)+len(res.Skipped) != 0 {
-		t.Fatalf("second run: %+v, %v", res, err)
-	}
-	if _, err := os.Stat(bashrc + ".minion-backup.2"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("a second backup was written")
-	}
-	if legacy, err := appendLoginBlock(bashrc); err != nil || legacy {
-		t.Fatal(legacy, err)
-	}
-	if got := readHomeFile(t, home, ".bashrc"); got != before+loginBlock+after {
-		t.Fatalf("installer added a block:\n%s", got)
+// "worker up" replaces the exact block of an earlier release in a plain file
+// atomically: a new inode with the group and mode of the original, and an
+// owner-only backup of the displaced version.
+func TestWorkerUpMigratesAPlainFileAtomicallyWithABackup(t *testing.T) {
+	for _, mode := range []os.FileMode{0o644, 0o600, 0o640} {
+		t.Run(fmt.Sprintf("%04o", mode), func(t *testing.T) {
+			home, _ := migrateHome(t)
+			before := "# user\nalias ll='ls -l'\n"
+			after := "export EDITOR=vi\n# after\n"
+			orig := before + legacyLoginBlock + after
+			writeHomeFile(t, home, ".bashrc", orig, mode)
+			bashrc := filepath.Join(home, ".bashrc")
+			gid := os.Getegid()
+			if g := otherGroup(); g >= 0 && mode == 0o640 {
+				if err := os.Chown(bashrc, -1, g); err == nil {
+					gid = g
+				}
+			}
+			// An earlier backup is never overwritten.
+			writeHomeFile(t, home, ".bashrc.minion-backup", "older backup\n", 0o600)
+			st0 := statT(t, bashrc)
+
+			var out bytes.Buffer
+			if err := installLoginBlocks(context.Background(), home, []string{".profile", ".bashrc"}, &out); err != nil {
+				t.Fatal(err)
+			}
+			backup := bashrc + ".minion-backup.1"
+			if !strings.Contains(out.String(), "Updated the Worker login startup block in "+bashrc+" (the previous file is in "+backup+").") || strings.Contains(out.String(), "Warning") {
+				t.Fatalf("report:\n%s", out.String())
+			}
+			if got := readHomeFile(t, home, ".bashrc"); got != before+loginBlock+after {
+				t.Fatalf(".bashrc:\n%s", got)
+			}
+			now := statT(t, bashrc)
+			if now.Ino == st0.Ino || now.Mode != st0.Mode || int(now.Gid) != gid || now.Uid != st0.Uid || now.Nlink != 1 {
+				t.Fatalf("metadata: before %+v, after %+v", st0, now)
+			}
+			if readHomeFile(t, home, ".bashrc.minion-backup") != "older backup\n" {
+				t.Fatal("an earlier backup was overwritten")
+			}
+			if readHomeFile(t, home, ".bashrc.minion-backup.1") != orig {
+				t.Fatal("the backup does not hold the original bytes")
+			}
+			bk := statT(t, backup)
+			if bk.Mode&0o7777 != 0o600 || bk.Nlink != 1 {
+				t.Fatalf("backup mode %o, %d links", bk.Mode&0o7777, bk.Nlink)
+			}
+			// A 0600 file keeps its displaced inode as the backup.
+			if mode == 0o600 && bk.Ino != st0.Ino {
+				t.Fatal("the 0600 backup is not the displaced inode")
+			}
+			if readHomeFile(t, home, ".profile") != loginBlock {
+				t.Fatal(".profile did not get the block")
+			}
+			noLeftovers(t, home, false)
+
+			// Idempotent: no second backup, no second block.
+			out.Reset()
+			if err := installLoginBlocks(context.Background(), home, []string{".profile", ".bashrc"}, &out); err != nil || out.Len() != 0 {
+				t.Fatalf("second run: %v\n%s", err, out.String())
+			}
+			if _, err := os.Stat(bashrc + ".minion-backup.2"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("a second backup was written")
+			}
+			if got := readHomeFile(t, home, ".bashrc"); got != before+loginBlock+after {
+				t.Fatalf("second run:\n%s", got)
+			}
+		})
 	}
 }
 
-// A 0600 file keeps its displaced inode as the backup (a hard link): a save
-// in place right before the rename is in the backup, never lost.
-func TestMigrateLoginStartupBackupIsTheDisplacedVersion(t *testing.T) {
-	home, state := migrateHome(t)
-	orig := "#\n" + legacyLoginBlock
-	writeHomeFile(t, home, ".profile", orig, 0o600)
-	path := filepath.Join(home, ".profile")
-	ino := statT(t, path).Ino
-	late := "# saved by the editor at the last moment\n" + legacyLoginBlock
-	loginBeforeRename = func(p string) {
-		if p == path {
-			if err := os.WriteFile(p, []byte(late), 0o600); err != nil {
+// A file the update cannot replace safely is left as it is, byte for byte
+// and inode, with a one-line repair; "worker up" still succeeds.
+func TestWorkerUpSkipsFilesItCannotReplaceSafely(t *testing.T) {
+	cases := map[string]func(t *testing.T, home, path string){
+		"symlink": func(t *testing.T, home, path string) {
+			target := filepath.Join(home, "dotfiles-profile")
+			if err := os.Rename(path, target); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"hard link": func(t *testing.T, home, path string) {
+			if err := os.Link(path, filepath.Join(home, "dotfiles-profile")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		// No setfacl on every test host: the ACL is shown by the listing of
+		// the extended attributes, as the file system would report it.
+		"acl": func(t *testing.T, home, path string) {
+			old := loginXattrs
+			loginXattrs = func(int) ([]string, error) { return []string{"system.posix_acl_access"}, nil }
+			t.Cleanup(func() { loginXattrs = old })
+		},
+		"user xattr": func(t *testing.T, home, path string) {
+			if err := unix.Setxattr(path, "user.minion.test", []byte("1"), 0); err != nil {
+				t.Skipf("no user xattrs here: %v", err)
+			}
+		},
+		"default acl on the directory": func(t *testing.T, home, path string) {
+			old := loginDefaultACL
+			loginDefaultACL = func(int) (bool, error) { return true, nil }
+			t.Cleanup(func() { loginDefaultACL = old })
+		},
+		"xattrs unreadable": func(t *testing.T, home, path string) {
+			old := loginXattrs
+			loginXattrs = func(int) ([]string, error) { return nil, unix.EIO }
+			t.Cleanup(func() { loginXattrs = old })
+		},
+	}
+	if os.Geteuid() == 0 {
+		cases["another user"] = func(t *testing.T, home, path string) {
+			if err := os.Chown(path, 65534, 65534); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := exec.LookPath("setfacl"); err == nil {
+		cases["acl (setfacl)"] = func(t *testing.T, home, path string) {
+			if out, err := exec.Command("setfacl", "-m", "u:65534:r", path).CombinedOutput(); err != nil {
+				t.Skipf("setfacl: %v: %s", err, out)
+			}
+		}
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			home, _ := migrateHome(t)
+			orig := "#\n" + legacyLoginBlock
+			writeHomeFile(t, home, ".profile", orig, 0o644)
+			path := filepath.Join(home, ".profile")
+			setup(t, home, path)
+			snap := snapshot(t, path)
+			res, err := migrateLoginBlocks(context.Background(), home)
+			if err != nil || len(res.Changed) != 0 || len(res.Skipped) != 1 || len(res.Pending) != 1 || res.Pending[0] != path {
+				t.Fatalf("%+v, %v", res, err)
+			}
+			if strings.Contains(res.Skipped[0], "\n") || !strings.Contains(res.Skipped[0], "To repair it, delete the lines from \"# Minion Worker login startup\" through \"# End Minion Worker login startup\" in "+path) {
+				t.Fatalf("no one-line repair: %s", res.Skipped[0])
+			}
+			if snapshot(t, path) != snap {
+				t.Fatal("the file was changed")
+			}
+			noLeftovers(t, home, true)
+			// "worker up" reports it once and still installs the others.
+			var out bytes.Buffer
+			if err := installLoginBlocks(context.Background(), home, []string{".profile", ".bashrc"}, &out); err != nil {
+				t.Fatal(err)
+			}
+			if n := strings.Count(out.String(), "Warning: "+path+" still holds the login block of an earlier release"); n != 1 {
+				t.Fatalf("reported %d times:\n%s", n, out.String())
+			}
+			if snapshot(t, path) != snap {
+				t.Fatal("worker up changed the file")
+			}
+			if readHomeFile(t, home, ".bashrc") != loginBlock {
+				t.Fatal("the other profile did not get the block")
+			}
+		})
+	}
+}
+
+// A file that changes between the read and the rename is left with the
+// change: owner, group, mode, size, mtime or content; nothing partial and
+// no backup is left behind.
+func TestWorkerUpSkipsAConcurrentChange(t *testing.T) {
+	changes := map[string]func(t *testing.T, path string){
+		"in place": func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("# saved by the editor\n"+legacyLoginBlock), 0o644); err != nil {
+				t.Error(err)
+			}
+		},
+		"same size": func(t *testing.T, path string) {
+			b, _ := os.ReadFile(path)
+			b[0] = 'X'
+			f, err := os.OpenFile(path, os.O_WRONLY, 0)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = f.WriteAt(b, 0)
+			_ = f.Close()
+		},
+		"renamed over": func(t *testing.T, path string) {
+			tmp := path + ".swp"
+			if err := os.WriteFile(tmp, []byte("# saved by the editor\n"+legacyLoginBlock), 0o644); err != nil {
+				t.Error(err)
+			}
+			if err := os.Rename(tmp, path); err != nil {
+				t.Error(err)
+			}
+		},
+		"mode": func(t *testing.T, path string) {
+			if err := os.Chmod(path, 0o600); err != nil {
+				t.Error(err)
+			}
+		},
+		"mtime": func(t *testing.T, path string) {
+			at := time.Now().Add(-time.Hour)
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Error(err)
+			}
+		},
+		"xattr": func(t *testing.T, path string) {
+			if err := unix.Setxattr(path, "user.minion.test", []byte("1"), 0); err != nil {
+				t.Skipf("no user xattrs here: %v", err)
+			}
+		},
+	}
+	if g := otherGroup(); g >= 0 {
+		changes["group"] = func(t *testing.T, path string) {
+			if err := os.Chown(path, -1, g); err != nil {
 				t.Error(err)
 			}
 		}
 	}
-	t.Cleanup(func() { loginBeforeRename = nil })
-	res, err := migrateLoginStartup(context.Background(), state, &loginGate{})
-	if err != nil || len(res.Changed) != 1 || len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "that save is in "+path+loginBackupSuffix) {
+	for _, hook := range []string{"before the check", "before the rename"} {
+		for name, change := range changes {
+			t.Run(hook+"/"+name, func(t *testing.T) {
+				home, _ := migrateHome(t)
+				writeHomeFile(t, home, ".bashrc", "#\n"+legacyLoginBlock, 0o644)
+				path := filepath.Join(home, ".bashrc")
+				var snap fileSnapshot
+				fn := func(p string) {
+					if p == path {
+						change(t, p)
+						snap = snapshot(t, p)
+					}
+				}
+				hp := &loginBeforeCommit
+				if hook == "before the rename" {
+					hp = &loginBeforeRename
+				}
+				*hp = fn
+				t.Cleanup(func() { *hp = nil })
+				res, err := migrateLoginBlocks(context.Background(), home)
+				if err != nil || len(res.Changed) != 0 || len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "it changed while its login block was updated") {
+					t.Fatalf("%+v, %v", res, err)
+				}
+				if snapshot(t, path) != snap {
+					t.Fatal("the concurrent change was overwritten")
+				}
+				noLeftovers(t, home, true)
+			})
+		}
+	}
+}
+
+// An extended attribute that disappears between the size query and the read
+// (ENODATA, size -1) is an error, never a panic, and the file is skipped.
+func TestLoginXattrsSurviveADisappearingAttribute(t *testing.T) {
+	old := loginListxattr
+	t.Cleanup(func() { loginListxattr = old })
+	calls := 0
+	loginListxattr = func(fd int, dest []byte) (int, error) {
+		calls++
+		if dest == nil {
+			return 16, nil
+		}
+		return -1, unix.ENODATA
+	}
+	if _, err := loginXattrs(0); !errors.Is(err, unix.ENODATA) {
+		t.Fatalf("err = %v", err)
+	}
+	// A bogus length is an error too.
+	loginListxattr = func(fd int, dest []byte) (int, error) {
+		if dest == nil {
+			return 4, nil
+		}
+		return 99, nil
+	}
+	if _, err := loginXattrs(0); err == nil {
+		t.Fatal("a length beyond the buffer was accepted")
+	}
+	// In the migration: skipped with the repair.
+	loginListxattr = func(fd int, dest []byte) (int, error) {
+		if dest == nil {
+			return 16, nil
+		}
+		return -1, unix.ENODATA
+	}
+	home, _ := migrateHome(t)
+	writeHomeFile(t, home, ".profile", legacyLoginBlock, 0o644)
+	snap := snapshot(t, filepath.Join(home, ".profile"))
+	res, err := migrateLoginBlocks(context.Background(), home)
+	if err != nil || len(res.Pending) != 1 || !strings.Contains(res.Skipped[0], "extended attributes cannot be read") {
 		t.Fatalf("%+v, %v", res, err)
 	}
-	if readHomeFile(t, home, ".profile") != "#\n"+loginBlock {
-		t.Fatal("not updated")
+	if snapshot(t, filepath.Join(home, ".profile")) != snap {
+		t.Fatal("changed")
 	}
-	bk := statT(t, path+loginBackupSuffix)
-	if bk.Ino != ino || bk.Mode&0o7777 != 0o600 || bk.Nlink != 1 {
-		t.Fatalf("backup %+v: want the displaced inode %d, mode 0600", bk, ino)
-	}
-	if readHomeFile(t, home, ".profile"+loginBackupSuffix) != late {
-		t.Fatal("the backup does not hold the displaced version")
-	}
-	noStaged(t, home)
 }
 
 // A shell that reads the file while it is updated sees the old or the new
 // version, never a part of one.
-func TestMigrateLoginStartupDashNeverSeesAPartialFile(t *testing.T) {
+func TestWorkerUpMigrationDashNeverSeesAPartialFile(t *testing.T) {
 	dash, err := exec.LookPath("dash")
 	if err != nil {
 		t.Skip("dash is not installed")
@@ -419,14 +616,13 @@ func TestMigrateLoginStartupDashNeverSeesAPartialFile(t *testing.T) {
 	}()
 	deadline := time.Now().Add(3 * time.Second)
 	for i := 0; time.Now().Before(deadline) || i < 20; i++ {
-		// The legacy version is put in place atomically too.
 		if err := os.WriteFile(stage, []byte(legacy), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Rename(stage, path); err != nil {
 			t.Fatal(err)
 		}
-		res, err := migrateLoginBlocksLocked(context.Background(), nil, home)
+		res, err := migrateLoginBlocks(context.Background(), home)
 		if err != nil || len(res.Changed) != 1 {
 			t.Fatalf("%+v, %v", res, err)
 		}
@@ -451,8 +647,8 @@ func TestMigrateLoginStartupDashNeverSeesAPartialFile(t *testing.T) {
 	}
 }
 
-func TestMigrateLoginStartupChangesOnlyTheExactBlock(t *testing.T) {
-	home, state := migrateHome(t)
+func TestWorkerUpMigrationChangesOnlyTheExactBlock(t *testing.T) {
+	home, _ := migrateHome(t)
 	body := legacyLoginBlockBodies[0]
 	cases := map[string]string{
 		// A note after the end marker: not the complete marker line.
@@ -469,7 +665,7 @@ func TestMigrateLoginStartupChangesOnlyTheExactBlock(t *testing.T) {
 	// Two exact copies are both updated; nothing is removed.
 	two := "a\n" + legacyLoginBlock + "b\n" + legacyLoginBlock
 	writeHomeFile(t, home, ".bashrc", two, 0o600)
-	res, err := migrateLoginStartup(context.Background(), state, nil)
+	res, err := migrateLoginBlocks(context.Background(), home)
 	if err != nil || len(res.Changed) != 1 {
 		t.Fatalf("%+v, %v", res, err)
 	}
@@ -486,253 +682,24 @@ func TestMigrateLoginStartupChangesOnlyTheExactBlock(t *testing.T) {
 	}
 }
 
-// Files whose metadata a new version cannot keep are left as they are, with
-// a repair the user can follow.
-func TestMigrateLoginStartupSkipsFilesItCannotReplaceSafely(t *testing.T) {
-	cases := map[string]func(t *testing.T, home, path string){
-		"hard link": func(t *testing.T, home, path string) {
-			if err := os.Link(path, filepath.Join(home, "dotfiles-profile")); err != nil {
-				t.Fatal(err)
-			}
-		},
-		// No setfacl on every test host: the ACL is shown by the listing of
-		// the extended attributes, as the file system would report it.
-		"acl": func(t *testing.T, home, path string) {
-			old := loginXattrs
-			loginXattrs = func(int) ([]string, error) { return []string{"system.posix_acl_access"}, nil }
-			t.Cleanup(func() { loginXattrs = old })
-		},
-	}
-	if _, err := exec.LookPath("setfacl"); err == nil {
-		cases["acl (setfacl)"] = func(t *testing.T, home, path string) {
-			if out, err := exec.Command("setfacl", "-m", "u:65534:r", path).CombinedOutput(); err != nil {
-				t.Skipf("setfacl: %v: %s", err, out)
-			}
-		}
-	}
-	for name, setup := range cases {
-		t.Run(name, func(t *testing.T) {
-			home, state := migrateHome(t)
-			orig := "#\n" + legacyLoginBlock
-			writeHomeFile(t, home, ".profile", orig, 0o640)
-			path := filepath.Join(home, ".profile")
-			setup(t, home, path)
-			ino := statT(t, path).Ino
-			res, err := migrateLoginStartup(context.Background(), state, nil)
-			if err != nil || len(res.Changed) != 0 || len(res.Skipped) != 1 || len(res.Pending) != 1 || res.Pending[0] != path {
-				t.Fatalf("%+v, %v", res, err)
-			}
-			if !strings.Contains(res.Skipped[0], "To repair it, delete the lines from \"# Minion Worker login startup\" through \"# End Minion Worker login startup\" in "+path) {
-				t.Fatalf("no repair: %s", res.Skipped[0])
-			}
-			if readHomeFile(t, home, ".profile") != orig || statT(t, path).Ino != ino {
-				t.Fatal("the file was changed")
-			}
-			if _, err := os.Stat(path + loginBackupSuffix); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("a backup was written")
-			}
-			noStaged(t, home)
-		})
-	}
-}
-
-// A symbolic link is kept and the target it points to updated, when only
-// this user controls the path to it.
-func TestMigrateLoginStartupUpdatesTheTargetOfALink(t *testing.T) {
-	home, state := migrateHome(t)
-	target := filepath.Join(home, "dotfiles", "profile")
-	writeHomeFile(t, home, "dotfiles/profile", "#\n"+legacyLoginBlock, 0o644)
-	link := filepath.Join(home, ".profile")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	// A link to a file without a block is not worth a note.
-	writeHomeFile(t, home, "dotfiles/bashrc", "# plain\n", 0o644)
-	if err := os.Symlink(filepath.Join(home, "dotfiles", "bashrc"), filepath.Join(home, ".bashrc")); err != nil {
-		t.Fatal(err)
-	}
-	res, err := migrateLoginStartup(context.Background(), state, &loginGate{})
-	if err != nil || len(res.Changed) != 1 || res.Changed[0] != target || res.Backups[0] != target+loginBackupSuffix || len(res.Skipped) != 0 {
-		t.Fatalf("%+v, %v", res, err)
-	}
-	if readHomeFile(t, home, "dotfiles/profile") != "#\n"+loginBlock {
-		t.Fatal("the link target was not updated")
-	}
-	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("the link was replaced")
-	}
-	if got, _ := os.Readlink(link); got != target {
-		t.Fatalf("the link points to %s", got)
-	}
-	if st := statT(t, target); st.Mode&0o7777 != 0o644 {
-		t.Fatalf("target mode %o", st.Mode&0o7777)
-	}
-	if st := statT(t, target+loginBackupSuffix); st.Mode&0o7777 != 0o600 || readHomeFile(t, home, "dotfiles/profile"+loginBackupSuffix) != "#\n"+legacyLoginBlock {
-		t.Fatal("the backup is not an owner-only copy of the original")
-	}
-	noStaged(t, filepath.Join(home, "dotfiles"))
-	if readHomeFile(t, home, "dotfiles/bashrc") != "# plain\n" {
-		t.Fatal("a target without a block was changed")
-	}
-}
-
-// A link whose target others can change is not written through: the update
-// and "worker up" report it with the repair instead of treating the old
-// block as installed.
-func TestUnmigratableLinkIsReportedByWorkerUp(t *testing.T) {
+// The update is best effort: a file it cannot read is reported and the
+// others are still updated; "worker up" does not stop.
+func TestWorkerUpMigrationContinuesPastAFailure(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("root's installer refuses links")
+		t.Skip("root reads a file without permissions")
 	}
-	home, state := migrateHome(t)
-	shared := filepath.Join(home, "shared")
-	if err := os.MkdirAll(shared, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(shared, 0o777); err != nil { // writable by others, not sticky
-		t.Fatal(err)
-	}
-	target := filepath.Join(shared, "profile")
-	writeHomeFile(t, home, "shared/profile", legacyLoginBlock, 0o600)
-	link := filepath.Join(home, ".profile")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	res, err := migrateLoginStartup(context.Background(), state, nil)
-	if err != nil || len(res.Changed) != 0 || len(res.Pending) != 1 || res.Pending[0] != link || !strings.Contains(res.Skipped[0], "other users can change "+shared) || !strings.Contains(res.Skipped[0], "in "+target+" (the target of the symbolic link "+link+")") {
+	home, _ := migrateHome(t)
+	writeHomeFile(t, home, ".bash_login", legacyLoginBlock, 0o000)
+	writeHomeFile(t, home, ".bashrc", legacyLoginBlock, 0o600)
+	res, err := migrateLoginBlocks(context.Background(), home)
+	if err == nil || !strings.Contains(err.Error(), ".bash_login") || len(res.Changed) != 1 || res.Changed[0] != filepath.Join(home, ".bashrc") {
 		t.Fatalf("%+v, %v", res, err)
 	}
 	var out bytes.Buffer
-	if err := installLoginBlocks(context.Background(), home, []string{".profile", ".bashrc"}, &out); err != nil {
-		t.Fatal(err)
+	reportLoginMigration(&out, res, err)
+	if !strings.Contains(out.String(), "Updated the Worker login startup block in "+filepath.Join(home, ".bashrc")) || !strings.Contains(out.String(), "Warning: could not update") {
+		t.Fatalf("report:\n%s", out.String())
 	}
-	if n := strings.Count(out.String(), "Warning: "+link+" still holds the login block of an earlier release"); n != 1 {
-		t.Fatalf("worker up reported it %d times:\n%s", n, out.String())
-	}
-	if readHomeFile(t, home, "shared/profile") != legacyLoginBlock {
-		t.Fatal("the target was changed")
-	}
-	if readHomeFile(t, home, ".bashrc") != loginBlock {
-		t.Fatal("the other profile did not get the block")
-	}
-	// A legacy block left for another reason (here a hard link) is reported
-	// by worker up as well.
-	_ = os.Remove(link)
-	writeHomeFile(t, home, ".profile", legacyLoginBlock, 0o600)
-	if err := os.Link(filepath.Join(home, ".profile"), filepath.Join(home, "profile-link")); err != nil {
-		t.Fatal(err)
-	}
-	out.Reset()
-	if err := installLoginBlocks(context.Background(), home, []string{".profile"}, &out); err != nil {
-		t.Fatal(err)
-	}
-	if n := strings.Count(out.String(), "Warning: "+filepath.Join(home, ".profile")+" still holds"); n != 1 {
-		t.Fatalf("worker up reported it %d times:\n%s", n, out.String())
-	}
-}
-
-// An editor that saves the file while the update runs wins: its save is kept,
-// and no backup or staged copy is left behind.
-func TestMigrateLoginStartupSkipsAConcurrentChange(t *testing.T) {
-	for name, save := range map[string]func(t *testing.T, path string){
-		"in place": func(t *testing.T, path string) {
-			if err := os.WriteFile(path, []byte("# saved by the editor\n"+legacyLoginBlock), 0o600); err != nil {
-				t.Error(err)
-			}
-		},
-		"same size": func(t *testing.T, path string) {
-			b, _ := os.ReadFile(path)
-			b[0] = 'X'
-			f, err := os.OpenFile(path, os.O_WRONLY, 0)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			_, _ = f.WriteAt(b, 0)
-			_ = f.Close()
-		},
-		"renamed over": func(t *testing.T, path string) {
-			tmp := path + ".swp"
-			if err := os.WriteFile(tmp, []byte("# saved by the editor\n"+legacyLoginBlock), 0o600); err != nil {
-				t.Error(err)
-			}
-			if err := os.Rename(tmp, path); err != nil {
-				t.Error(err)
-			}
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			home, state := migrateHome(t)
-			writeHomeFile(t, home, ".bashrc", "#\n"+legacyLoginBlock, 0o600)
-			path := filepath.Join(home, ".bashrc")
-			var saved string
-			loginBeforeCommit = func(p string) {
-				if p == path {
-					save(t, p)
-					saved = readHomeFile(t, home, ".bashrc")
-				}
-			}
-			t.Cleanup(func() { loginBeforeCommit = nil })
-			res, err := migrateLoginStartup(context.Background(), state, &loginGate{})
-			if err != nil || len(res.Changed) != 0 || len(res.Skipped) != 1 {
-				t.Fatalf("%+v, %v", res, err)
-			}
-			if got := readHomeFile(t, home, ".bashrc"); got != saved {
-				t.Fatalf("the editor's save was overwritten:\n%s", got)
-			}
-			if _, err := os.Stat(path + loginBackupSuffix); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("a backup was left behind")
-			}
-			noStaged(t, home)
-		})
-	}
-}
-
-// Nothing is published once the Worker's lifecycle ended: neither after the
-// gate was revoked nor after the context ended, and the update stops before
-// the next file.
-func TestMigrateLoginStartupPublishesNothingAfterTheLifecycle(t *testing.T) {
-	t.Run("revoked", func(t *testing.T) {
-		home, state := migrateHome(t)
-		writeHomeFile(t, home, ".profile", legacyLoginBlock, 0o600)
-		writeHomeFile(t, home, ".bashrc", legacyLoginBlock, 0o600)
-		gate := &loginGate{}
-		path := filepath.Join(home, ".profile")
-		loginBeforeCommit = func(p string) {
-			if p == path {
-				gate.revoke()
-			}
-		}
-		t.Cleanup(func() { loginBeforeCommit = nil })
-		res, err := migrateLoginStartup(context.Background(), state, gate)
-		if !errors.Is(err, errLoginRevoked) || len(res.Changed) != 0 {
-			t.Fatalf("%+v, %v", res, err)
-		}
-		if readHomeFile(t, home, ".profile") != legacyLoginBlock || readHomeFile(t, home, ".bashrc") != legacyLoginBlock {
-			t.Fatal("published after the revocation")
-		}
-		noStaged(t, home)
-	})
-	t.Run("cancelled", func(t *testing.T) {
-		home, state := migrateHome(t)
-		writeHomeFile(t, home, ".profile", legacyLoginBlock, 0o600)
-		writeHomeFile(t, home, ".bashrc", legacyLoginBlock, 0o600)
-		ctx, cancel := context.WithCancel(context.Background())
-		path := filepath.Join(home, ".profile")
-		loginBeforeCommit = func(p string) {
-			if p == path {
-				cancel()
-			}
-		}
-		t.Cleanup(func() { loginBeforeCommit = nil; cancel() })
-		res, err := migrateLoginStartup(ctx, state, &loginGate{})
-		if !errors.Is(err, context.Canceled) || len(res.Changed) != 0 {
-			t.Fatalf("%+v, %v", res, err)
-		}
-		if readHomeFile(t, home, ".profile") != legacyLoginBlock || readHomeFile(t, home, ".bashrc") != legacyLoginBlock {
-			t.Fatal("published after the cancellation")
-		}
-		noStaged(t, home)
-	})
 }
 
 func TestLoginRegistrationIsReadOnlyWhenPrivateAndValid(t *testing.T) {
@@ -765,119 +732,78 @@ func TestLoginRegistrationIsReadOnlyWhenPrivateAndValid(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_ = os.Remove(reg)
 			setup(t)
-			done := make(chan bool, 1)
-			go func() { done <- registeredLoginState(reg, state) }()
+			done := make(chan error, 1)
+			go func() { _, _, err := readLoginRegistration(reg); done <- err }()
 			select {
-			case ok := <-done:
-				if ok {
+			case err := <-done:
+				if err == nil {
 					t.Fatal("accepted")
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("blocked")
 			}
-			if _, _, err := readLoginRegistration(reg); err == nil {
-				t.Fatal("readLoginRegistration accepted it")
-			}
 		})
 	}
 	_ = os.Remove(reg)
 	writeHomeFile(t, home, "worker-login", valid, 0o600)
-	if !registeredLoginState(reg, state) || !registeredLoginState(reg, state+"/") || registeredLoginState(reg, "/srv/other") {
-		t.Fatal("a valid registration is not matched")
+	if _, s, err := readLoginRegistration(reg); err != nil || s != state {
+		t.Fatalf("a valid registration: %q, %v", s, err)
 	}
 }
 
-// The installer's update of earlier blocks is best effort: a file it cannot
-// read is reported and the others are still updated.
-func TestMigrateLoginBlocksLockedContinuesPastAFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a file without permissions")
+// The Worker never changes a startup file: with legacy blocks in place,
+// "worker run" leaves every file as it was (bytes, inode, mtime), writes no
+// backup, logs the notice once and reports it to the Hub.
+func TestWorkerRunNeverChangesStartupFiles(t *testing.T) {
+	home, state := migrateHome(t)
+	writeHomeFile(t, home, ".bashrc", "#\n"+legacyLoginBlock, 0o644)
+	writeHomeFile(t, home, ".profile", legacyLoginBlock, 0o600)
+	target := filepath.Join(home, "dotfiles", "zprofile")
+	writeHomeFile(t, home, "dotfiles/zprofile", legacyLoginBlock, 0o644)
+	if err := os.Symlink(target, filepath.Join(home, ".zprofile")); err != nil {
+		t.Fatal(err)
 	}
-	home, _ := migrateHome(t)
-	writeHomeFile(t, home, ".bash_login", legacyLoginBlock, 0o000)
-	writeHomeFile(t, home, ".bashrc", legacyLoginBlock, 0o600)
-	res, err := migrateLoginBlocksLocked(context.Background(), nil, home)
-	if err == nil || !strings.Contains(err.Error(), ".bash_login") || len(res.Changed) != 1 || res.Changed[0] != filepath.Join(home, ".bashrc") {
-		t.Fatalf("%+v, %v", res, err)
+	files := []string{filepath.Join(home, ".bashrc"), filepath.Join(home, ".profile"), target}
+	snaps := map[string]fileSnapshot{}
+	for _, p := range files {
+		snaps[p] = snapshot(t, p)
 	}
-	var out bytes.Buffer
-	reportLoginMigration(&out, res, err)
-	if !strings.Contains(out.String(), "Updated the Worker login startup block in "+filepath.Join(home, ".bashrc")) || !strings.Contains(out.String(), "Warning: could not update") {
-		t.Fatalf("report:\n%s", out.String())
+	deps, p := probeOnlyDeps(t, map[string]string{"MINION_STATE_DIR": state})
+	logs := &bytes.Buffer{}
+	deps.stderr = logs
+	cancel, wait := startWorker(t, deps, p)
+	if !p.seen().LoginStartupOutdated {
+		t.Fatal("the outdated login startup is not reported")
 	}
-}
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	if err := wait(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if snapshot(t, f) != snaps[f] {
+			t.Fatalf("worker run changed %s", f)
+		}
+	}
+	noLeftovers(t, home, true)
+	noLeftovers(t, filepath.Join(home, "dotfiles"), true)
+	if n := strings.Count(logs.String(), "Login startup is outdated"); n != 1 {
+		t.Fatalf("notice logged %d times:\n%s", n, logs.String())
+	}
 
-// The Worker updates the blocks only once it started, and joins the update
-// before it returns; a failed start changes nothing.
-func TestWorkerRunMigratesLoginBlocksOnlyAfterAStart(t *testing.T) {
-	t.Run("failed start", func(t *testing.T) {
-		home, state := migrateHome(t)
-		writeHomeFile(t, home, ".bashrc", legacyLoginBlock, 0o600)
-		reg := agent.NewRegistry()
-		if err := reg.Register("broken", agent.OrderCore, func(context.Context, *agent.Env) (agent.StopFunc, error) {
-			return nil, errors.New("the control socket is in use")
-		}); err != nil {
+	// Without a legacy block nothing is reported.
+	for _, f := range files {
+		if err := os.WriteFile(f, []byte(loginBlock), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		called := false
-		deps := workerRunDeps{stderr: &bytes.Buffer{}, lookupEnv: envFrom(map[string]string{"MINION_STATE_DIR": state}), loadConfig: loadWorkerConfig, registry: reg,
-			migrateLogin: func(ctx context.Context, dir string, gate *loginGate) (loginMigration, error) {
-				called = true
-				return migrateLoginStartup(ctx, dir, gate)
-			}}
-		root := workerRoot(deps)
-		root.SetArgs([]string{"worker", "run"})
-		root.SetOut(io.Discard)
-		root.SetErr(io.Discard)
-		if err := root.ExecuteContext(context.Background()); err == nil {
-			t.Fatal("expected the start to fail")
-		}
-		time.Sleep(200 * time.Millisecond)
-		if called || readHomeFile(t, home, ".bashrc") != legacyLoginBlock {
-			t.Fatal("a failed start updated the login blocks")
-		}
-	})
-	t.Run("started", func(t *testing.T) {
-		home, state := migrateHome(t)
-		writeHomeFile(t, home, ".bashrc", legacyLoginBlock, 0o600)
-		deps, p := probeOnlyDeps(t, map[string]string{"MINION_STATE_DIR": state})
-		migrated := make(chan struct{})
-		var ended bool
-		var held *loginGate
-		deps.migrateLogin = func(ctx context.Context, dir string, gate *loginGate) (loginMigration, error) {
-			held = gate
-			res, err := migrateLoginStartup(ctx, dir, gate)
-			close(migrated)
-			<-ctx.Done() // still running when the Worker stops
-			ended = true
-			return res, err
-		}
-		cancel, wait := startWorker(t, deps, p)
-		select {
-		case <-migrated:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the started Worker did not update the login blocks")
-		}
-		if readHomeFile(t, home, ".bashrc") != loginBlock {
-			t.Fatal("not updated")
-		}
-		cancel()
-		if err := wait(); err != nil {
-			t.Fatal(err)
-		}
-		if !ended {
-			t.Fatal("the update was not joined before the Worker returned")
-		}
-		// An update that outlives the Worker (one that ignores its context)
-		// cannot publish: the gate was revoked before the lifecycle lock
-		// was released.
-		writeHomeFile(t, home, ".bashrc", legacyLoginBlock, 0o600)
-		if _, err := migrateLoginStartup(context.Background(), state, held); !errors.Is(err, errLoginRevoked) {
-			t.Fatalf("after the Worker stopped: %v", err)
-		}
-		if readHomeFile(t, home, ".bashrc") != legacyLoginBlock {
-			t.Fatal("published after the Worker released its lifecycle lock")
-		}
-		noStaged(t, home)
-	})
+	}
+	deps, p = probeOnlyDeps(t, map[string]string{"MINION_STATE_DIR": state})
+	cancel, wait = startWorker(t, deps, p)
+	if p.seen().LoginStartupOutdated {
+		t.Fatal("reported without a legacy block")
+	}
+	cancel()
+	if err := wait(); err != nil {
+		t.Fatal(err)
+	}
 }
