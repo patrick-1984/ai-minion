@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.20.5
+
 ### Changed
 
 - Hub settings `listen` (`MINION_LISTEN`) and `management_listen` (`MINION_MANAGEMENT_LISTEN`) take a plain port number: `8443` means every interface (the default is now shown as `8443` instead of `:8443`), and a plain `management_listen` port such as `8444` means `127.0.0.1:8444`. A plain port is digits only. The forms `:8443` and `host:port` keep working exactly as before, including the values v0.20.4 accepted such as `127.0.0.1:+9443` or a long zero-padded port: an upgraded Hub never refuses to start on a value v0.20.4 started with. The TrueNAS updater and the self-update readiness probe read the port the Hub binds from every form.
