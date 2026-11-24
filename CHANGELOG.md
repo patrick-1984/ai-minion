@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- Sessions and Worker pages: the session table shows the state details in their own columns instead of stacking them in the State cell: **State** (the badge), **Activity** (for example `2 shells` or `1 shell, 1 subagent`), **Source** (`Claude Code hooks`, `Codex hooks`, `Terminal screen`) and **Last event** (time and how long ago). The new columns sort (Last event to the millisecond). Cells stay on one line on wide screens and wrap below 1280 px, so the table fits without scrolling sideways; on a phone each row stacks its fields and leaves out empty detail cells (an empty-list message stays visible).
+- Sessions and Worker pages: the session table shows the state details in their own columns instead of stacking them in the State cell: **State** (the badge), **Activity** (for example `2 shells` or `1 shell, 1 subagent`), **Source** (`Claude Code hooks`, `Codex hooks`, `Terminal screen`) and **Last event** (time and how long ago). The new columns sort (Last event to the millisecond). From 1280 px each session is one line; below that, where the table would not fit beside the menu, each session stacks as a card with labelled fields and leaves out empty details (an empty-list message stays visible).
 
 ## v0.20.2
 
