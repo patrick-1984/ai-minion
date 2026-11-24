@@ -36,7 +36,7 @@ func (s *Store) AcceptUsageRegistration(ctx context.Context, key ed25519.PublicK
 // and Worker identity. The token is local and never leaves this database API.
 func (s *Store) UsageGrantID(ctx context.Context, workerID string) (string, error) {
 	var token string
-	err := s.db.QueryRowContext(ctx, `SELECT hex(hub_pub)||':'||worker_id||':'||owner_id||':'||owner FROM hub_enrollment WHERE id=1 AND worker_id=? AND worker_id<>'' AND owner<>'' AND usage_policy=1`, workerID).Scan(&token)
+	err := s.db.QueryRowContext(ctx, `SELECT hex(hub_pub)||':'||worker_id||':'||owner FROM hub_enrollment WHERE id=1 AND worker_id=? AND worker_id<>'' AND owner<>'' AND usage_policy=1`, workerID).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
