@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -533,5 +534,199 @@ func TestLogUsesOnlyThePortAndPropagatesErrors(t *testing.T) {
 	}
 	if _, err := l.List(ctx, audit.Filter{}); err == nil {
 		t.Error("List swallowed the storage error")
+	}
+}
+
+func TestRecordLogsInfoAndWarnWithRequestID(t *testing.T) {
+	s := openStore(t)
+	var buf lockedBuf
+	lg := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	l := audit.New(s, audit.WithLogger(lg))
+	ctx := audit.WithRequestID(context.Background(), "req-1")
+	if err := l.Record(ctx, audit.Event{Actor: "u1", ActingAs: "u2", Action: "settings.set", Target: "log_level", Outcome: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record(ctx, audit.Event{Actor: "anonymous", Action: "login", Target: "alice", Outcome: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record(ctx, audit.Event{Actor: "", Action: "x", Outcome: "success"}); err == nil {
+		t.Fatal("invalid event accepted")
+	}
+	flush(t, l)
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("log lines = %d: %s", len(lines), buf.String())
+	}
+	var a, b map[string]any
+	_ = json.Unmarshal([]byte(lines[0]), &a)
+	_ = json.Unmarshal([]byte(lines[1]), &b)
+	if a["level"] != "INFO" || a["actor"] != "u1" || a["acting_as"] != "u2" || a["target"] != "log_level" || a["request_id"] != "req-1" || a["action"] != "settings.set" {
+		t.Errorf("info record = %v", a)
+	}
+	if b["level"] != "WARN" || b["outcome"] != "failed" {
+		t.Errorf("warn record = %v", b)
+	}
+}
+
+func TestBadOutcome(t *testing.T) {
+	for o, want := range map[string]bool{"success": false, "ok": false, "changed": false, "delivered": false, "denied": true, "failed": true, "rate_limited": true, "refused": true, "unknown": true} {
+		if audit.BadOutcome(o) != want {
+			t.Errorf("BadOutcome(%q) != %v", o, want)
+		}
+	}
+}
+
+func TestListOpAddsNamesAndTrackerNotesRecords(t *testing.T) {
+	s := openStore(t)
+	l := audit.New(s, audit.WithNamer(func(_ context.Context, id string) string {
+		if id == "user-1" {
+			return "alice"
+		}
+		return ""
+	}))
+	ctx, tr := audit.WithTracker(context.Background())
+	if tr.Recorded() {
+		t.Fatal("tracker set before a record")
+	}
+	if err := l.Record(ctx, good("settings.set")); err != nil {
+		t.Fatal(err)
+	}
+	if !tr.Recorded() {
+		t.Error("tracker did not note the record")
+	}
+	res, err := l.ListOp(context.Background(), ops.AuditListArgs{})
+	if err != nil || len(res.Events) != 1 {
+		t.Fatalf("%v %v", res, err)
+	}
+	if e := res.Events[0]; e.ActorName != "alice" || e.TargetName != "" {
+		t.Errorf("names = %+v", e)
+	}
+}
+
+// A transactional event reaches the log sinks and the tracker only after its
+// transaction commits; a rollback leaves neither, so the dispatcher records
+// the failure instead (review finding: rolled-back settings change exported
+// as success).
+func TestRecordTxExportsOnlyAfterCommit(t *testing.T) {
+	s := openStore(t)
+	var buf lockedBuf
+	l := audit.New(s, audit.WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))))
+	ctx, tr := audit.WithTracker(context.Background())
+	boom := errors.New("boom")
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := l.RecordTx(ctx, tx, good("settings.set")); err != nil {
+			return err
+		}
+		flush(t, l)
+		if buf.Len() != 0 || tr.Recorded() {
+			t.Error("event exported before the commit")
+		}
+		return boom // the setting write fails: the whole change rolls back
+	})
+	if !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	flush(t, l)
+	if buf.Len() != 0 || tr.Recorded() {
+		t.Fatalf("rolled-back event exported: tracker=%v log=%q", tr.Recorded(), buf.String())
+	}
+	if err := s.Tx(ctx, func(tx *sql.Tx) error { return l.RecordTx(ctx, tx, good("settings.set")) }); err != nil {
+		t.Fatal(err)
+	}
+	flush(t, l)
+	if n := strings.Count(buf.String(), `"msg":"audit"`); n != 1 || !tr.Recorded() {
+		t.Errorf("committed event: exports = %d, tracker = %v", n, tr.Recorded())
+	}
+}
+
+// A row a store domain method writes directly (API key creation) is exported
+// once, after its commit, and noted by the tracker.
+func TestDirectStoreAuditRowsAreExportedOnce(t *testing.T) {
+	s := openStore(t)
+	var buf lockedBuf
+	l := audit.New(s, audit.WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))))
+	ctx, tr := audit.WithTracker(context.Background())
+	if err := s.RecordAudit(ctx, store.AuditRow{ID: store.NewID(), TS: 1, Actor: "u1", Action: "apikey.create", Target: "k1", Outcome: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	flush(t, l)
+	if n := strings.Count(buf.String(), `"action":"apikey.create"`); n != 1 || !tr.Recorded() {
+		t.Errorf("exports = %d, tracker = %v: %s", n, tr.Recorded(), buf.String())
+	}
+}
+
+// lockedBuf is a log output that the export goroutine writes while the test
+// reads it.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (w *lockedBuf) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *lockedBuf) String() string { w.mu.Lock(); defer w.mu.Unlock(); return w.b.String() }
+
+func (w *lockedBuf) Len() int { w.mu.Lock(); defer w.mu.Unlock(); return w.b.Len() }
+
+func flush(t *testing.T, l *audit.Log) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := l.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stallWriter blocks every write until release is closed.
+type stallWriter struct {
+	release chan struct{}
+	lockedBuf
+}
+
+func (w *stallWriter) Write(p []byte) (int, error) {
+	<-w.release
+	return w.lockedBuf.Write(p)
+}
+
+// A stalled log output never holds up the transaction that committed an
+// audit row: the tracker is noted at once, the record waits in a bounded
+// queue, and what does not fit is dropped and counted, never blocked on.
+func TestStalledLogOutputDoesNotBlockCommits(t *testing.T) {
+	s := openStore(t)
+	w := &stallWriter{release: make(chan struct{})}
+	l := audit.New(s, audit.WithLogger(slog.New(slog.NewJSONHandler(w, nil))), audit.WithExportQueue(4))
+	done := make(chan struct{})
+	var recorded bool
+	go func() {
+		defer close(done)
+		ctx, tr := audit.WithTracker(context.Background())
+		for range 20 {
+			if err := l.Record(ctx, good("settings.set")); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+		recorded = tr.Recorded()
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		close(w.release)
+		t.Fatal("recording blocked on a stalled log output")
+	}
+	if !recorded {
+		t.Error("tracker not noted")
+	}
+	if l.Dropped() == 0 {
+		t.Error("no record dropped while the output stalled")
+	}
+	close(w.release)
+	flush(t, l)
+	if !strings.Contains(w.String(), "audit log records dropped") {
+		t.Error("the drops were not reported once the output resumed")
 	}
 }

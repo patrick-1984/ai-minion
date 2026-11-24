@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/resource"
 )
@@ -47,7 +48,7 @@ func NewResource(ctx context.Context, p Process) (*resource.Resource, error) {
 	if p.InstanceID != "" {
 		attrs = append(attrs, attribute.String("service.instance.id", p.InstanceID))
 	}
-	if h, err := os.Hostname(); err == nil && h != "" {
+	if h := logx.LogHostname(); h != "" {
 		attrs = append(attrs, attribute.String("host.name", valid(h)))
 	}
 	if p.WorkerID != "" {

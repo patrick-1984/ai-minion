@@ -551,6 +551,9 @@ func TestWelcomeStoresDataAppliesPolicyAndLogsWithoutSecrets(t *testing.T) {
 	if !f.policy.PreviewOnly() || !f.policy.HubPreviewOnly() {
 		t.Fatal("the Hub policy was not applied")
 	}
+	// The connected state is published before the "connected to hub" record
+	// is written; wait for the record instead of racing it.
+	eventually(t, func() bool { return strings.Contains(f.logs.String(), "connected to hub") })
 	logs := f.logs.String()
 	if !strings.Contains(logs, "connected to hub") || !strings.Contains(logs, "w-1") || !strings.Contains(logs, "alice") {
 		t.Fatalf("logs = %s", logs)

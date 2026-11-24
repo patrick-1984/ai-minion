@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v0.20.2
+
+### Fixed
+
+- Hub logs: every audit event (sign-ins and failures, settings, invitations, API keys, Worker approval, role changes, session control) is also a structured log record at INFO, or WARN for a denial or failure, with actor, target, outcome and request id; the syslog and OpenTelemetry sinks at level info now carry them. Responses carry `X-Request-Id`.
+- Audit: one row per change (the dispatcher no longer adds a second row for an operation that audits itself), and the audit page shows user and Worker names next to the ids.
+- A write that someone makes on a Hub-connected Worker's own session through the local socket (for example `minion send_text`) is reported to the Hub audit as `local.<op>` (actor `worker:<id>/local`, only a resolved session, known outcomes and reason codes, a per-Worker budget; a cached duplicate is not reported again; a v0.20.1 Hub gets no report), and the session's Details show harness, model and usage when known.
+- Diagnostics shows the log sinks' last success, last error and drop reasons, and says which `MINION_TRUSTED_PROXIES` value fixes a wrong client IP behind a proxy. `MINION_LOG_HOSTNAME` sets the host name of exported logs.
+- Usage: an estimated cost of zero without any token count shows Unknown, a duration says whether the harness reported it or the Hub observed it, and a missing Codex model says why.
+- Usage: a Claude subscription account no longer flips between an idle session's old reading and an active session's current one (for example weekly 4% without a 5-hour window, then 20% with 5-hour 3%). Idle sessions re-send their last limits every few seconds; such a re-send keeps the time the limits were first seen, and the Worker, the Hub and the read-back merge each window across sessions and Workers (the later reset wins, then the higher used share). The card says **No 5-hour window reported** only when recent active reports lack it (it does not claim a plan property: a capped plan reports the window again once one is open); otherwise the 5-hour limit shows as unknown.
+- Usage: API-key and custom-endpoint account totals are split into **Running now** and **History · last 90 days** (which includes ended sessions), so history is not read as current spend. A Claude run that ends inside an open tmux session (`SessionEnd`) is shown as stopped, and a re-sent report never reopens an ended session unless it has the same start time.
+- Usage: a passive collector with recent limits shows **Passive · from Claude status line** and the time of the last sample instead of **Waiting for native observations**.
+- Master CLI: `workers_list` reports `not_listed`, and the help of Hub-only operations and `sessions_list` says how to reach another Worker.
 - Shared sessions report native Claude Code activity, including background shells and subagents, and Codex turn activity. The Worker and Sessions pages show the observation source and last native event time.
 
 ## v0.20.1

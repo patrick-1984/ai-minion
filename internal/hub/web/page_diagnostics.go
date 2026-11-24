@@ -9,6 +9,8 @@ package web
 
 import (
 	"net/http"
+	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +55,21 @@ func sinkText(st ops.LogSinkStatus) string {
 	b.WriteString(" (configuration " + strconv.FormatUint(st.Generation, 10) + ")")
 	if st.SessionContent != "" {
 		b.WriteString("; compliance monitoring: " + st.SessionContent)
+	}
+	if dropped > 0 {
+		reasons := make([]string, 0, len(st.Dropped))
+		for k, n := range st.Dropped {
+			if n > 0 {
+				reasons = append(reasons, k+" "+strconv.FormatUint(n, 10))
+			}
+		}
+		sort.Strings(reasons)
+		b.WriteString("; dropped by reason: " + strings.Join(reasons, ", "))
+	}
+	if st.LastSuccess != nil {
+		b.WriteString("; last success: " + formatTime(st.LastSuccess, ""))
+	} else if st.Enabled {
+		b.WriteString("; last success: never")
 	}
 	if st.LastError != "" {
 		b.WriteString("; last error: " + st.LastError)
@@ -102,7 +119,33 @@ func diagnosticsData(r *http.Request, c OpCaller) (any, error) {
 		{"Effective scheme", q.Scheme},
 		{"Effective HTTPS", yesNo(q.EffectiveHTTPS)},
 	}
+	if hint := trustedProxyHint(q); hint != "" {
+		page.Request = append(page.Request, DiagnosticsFact{"How to fix the client IP", hint})
+	}
 	return page, nil
+}
+
+// trustedProxyHint explains the remedy when the request carries forwarding
+// headers from a peer the Hub does not trust: the proxy reaches the Hub from
+// that address (behind Docker NAT often a bridge address, not the proxy's own
+// LAN address), so MINION_TRUSTED_PROXIES must name it. The Hub never trusts
+// an address on its own.
+func trustedProxyHint(q ops.HubDiagnosticsRequest) string {
+	if q.PeerTrustedProxy || len(q.ForwardedHeaders) == 0 {
+		return ""
+	}
+	peer, err := netip.ParseAddr(q.PeerAddress)
+	if err != nil {
+		return ""
+	}
+	exact := peer.String() + "/32"
+	if peer.Is6() && !peer.Is4In6() {
+		exact = peer.String() + "/128"
+	}
+	return "The request carries forwarding headers, but the peer " + q.PeerAddress + " is not a trusted proxy, so the real client address is not used. " +
+		"If that peer is your reverse proxy, add exactly that address to MINION_TRUSTED_PROXIES (setting trusted_proxies): " + exact + ". " +
+		"Behind Docker NAT this can be a bridge gateway that other containers or hosts also come through: then every client that reaches the Hub through it " +
+		"could set these headers, so first make sure only your proxy can reach the Hub's port (publish it on 127.0.0.1 or firewall it). Never trust a whole network."
 }
 
 func orText(v, empty string) string {

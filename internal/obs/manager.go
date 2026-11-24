@@ -124,7 +124,7 @@ func (m *Manager) applySyslog(c config.SyslogConfig) error {
 	if c.Enabled {
 		level, err = logx.ParseLevel(c.Level)
 		if err == nil {
-			host, _ := os.Hostname()
+			host := logx.LogHostname()
 			f := &syslog.Formatter{Hostname: host, AppName: m.proc.Service, ProcID: strconv.Itoa(os.Getpid()), MaxBytes: c.MaxBytes}
 			opts := syslog.Options{Network: c.Network, Addr: c.Addr,
 				Diag: func(class string, err error) { m.diag.Report(SinkSyslog, class, err) }}

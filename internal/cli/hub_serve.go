@@ -30,6 +30,7 @@ The Hub reads its settings from the environment (its only flag is -v,
   MINION_TLS_KEY_FILE     private key for MINION_TLS_CERT_FILE (both or neither)
   MINION_PUBLIC_URL       external URL; required when MINION_TLS=off
   MINION_TRUSTED_PROXIES  CIDRs of reverse proxies whose X-Forwarded-* headers are trusted
+  MINION_LOG_HOSTNAME     host name of exported logs (syslog HOSTNAME, OTEL host.name); default: the OS host name (a container id in Docker)
   MINION_VERBOSE          1 logs at debug level, like -v
   MINION_MAINTENANCE      readonly starts only core/database modules and health probes (set by the TrueNAS host updater during a trial; not for manual use)
 

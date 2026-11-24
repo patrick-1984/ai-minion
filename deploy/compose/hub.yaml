@@ -16,7 +16,7 @@
 #   sudo mkdir -p ./hub-data && sudo chown 65532:65532 ./hub-data
 # before "docker compose up"; do that instead if you prefer to run no root container).
 #
-# MINION_VERSION selects the image tag: an exact version (v0.20.1), which is the
+# MINION_VERSION selects the image tag: an exact version (v0.20.2), which is the
 # default here, or a channel tag such as 0.8 or latest.
 #
 # The Hub speaks HTTPS on 8443 with a certificate it generates on first start
@@ -35,7 +35,7 @@ services:
       - ./hub-data:/data
 
   hub:
-    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.20.1}
+    image: ghcr.io/patrick-1984/minion:${MINION_VERSION:-v0.20.2}
     command: ["hub", "serve"]
     restart: unless-stopped
     depends_on:
@@ -45,8 +45,8 @@ services:
       MINION_DATA_DIR: /data
       MINION_ADMIN_PASSWORD: ${MINION_ADMIN_PASSWORD:-}
       # Behind a reverse proxy that ends TLS, uncomment these three (see
-      # docs/guides/reverse-proxy.md). The trusted proxy is the exact address or
-      # network of the proxy, never 0.0.0.0/0.
+      # docs/guides/reverse-proxy.md). The trusted proxy is the exact address of
+      # the proxy, never a shared network or 0.0.0.0/0.
       # MINION_TLS: "off"
       # MINION_PUBLIC_URL: https://hub.example.com
       # MINION_TRUSTED_PROXIES: 172.18.0.2/32

@@ -197,8 +197,9 @@ type InvitationInfo struct {
 	MaxUses   *int       `json:"max_uses"`
 	Revoked   bool       `json:"revoked"`
 	RevokedAt *Timestamp `json:"revoked_at"`
-	// Status is active, expired, exhausted or revoked (checked in that
-	// order of precedence: revoked first).
+	// Status is active, expired, exhausted or revoked (checked in the order
+	// revoked, exhausted, expired: a used-up key whose time also ran out is
+	// exhausted).
 	Status string `json:"status"`
 	// Source is "infra_file" for the row of the Hub-wide key file
 	// (MINION_INFRA_INVITE_KEY_FILE) and omitted for a key made by a user.

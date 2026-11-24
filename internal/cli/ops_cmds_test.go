@@ -1240,3 +1240,14 @@ func TestForeignWorkerTargetIsDelegatedToTheLocalWorker(t *testing.T) {
 
 // noLock is the probe lock of tests that run one probe at a time.
 func noLock(context.Context, string) (func(), error) { return func() {}, nil }
+
+func TestLongHelpExplainsHubOnlyOpsAndSessionsListTarget(t *testing.T) {
+	op, _ := ops.Lookup(ops.OpControlCheck)
+	if h := longHelp(op); !strings.Contains(h, "forwards only workers_list") {
+		t.Errorf("control_check help: %s", h)
+	}
+	sl, _ := ops.Lookup(ops.OpSessionsList)
+	if h := longHelp(sl); !strings.Contains(h, "--hub-worker ID") {
+		t.Errorf("sessions_list help: %s", h)
+	}
+}

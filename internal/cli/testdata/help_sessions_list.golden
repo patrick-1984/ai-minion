@@ -1,6 +1,6 @@
 List the sessions the Worker shares.
 
-This is a Worker operation. It runs on the local Worker through its control socket, or through the Hub when one is configured (MINION_HUB_URL and MINION_API_KEY_FILE, --hub-url); a configured Hub is never replaced by the local Worker.
+This is a Worker operation. It lists the sessions of the local Worker. To list the sessions of another Worker use --hub-worker ID (MINION_HUB_WORKER) with that Worker's id (see workers_list); there is no --target for it.
 Accepted actions: read.
 
 Usage:

@@ -5,8 +5,11 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -135,11 +138,178 @@ func WithClock(c store.Clock) Option { return func(l *Log) { l.clock = c } }
 // WithIDFunc sets the identifier generator (default: [store.NewID]).
 func WithIDFunc(f func() string) Option { return func(l *Log) { l.newID = f } }
 
+// WithLogger makes every recorded event also a structured log record: INFO,
+// or WARN when the outcome is a denial or a failure. The record carries the
+// actor, the acting-as user, the action, the target, the outcome and the
+// request id of the context, never more than the audit row itself.
+func WithLogger(lg *slog.Logger) Option { return func(l *Log) { l.logger = lg } }
+
+// WithExportQueue sets how many log records may wait for the log output
+// (default 4096).
+func WithExportQueue(n int) Option { return func(l *Log) { l.queueSize = n } }
+
+// WithNamer makes [Log.ListOp] add the name of an actor, acting-as user or
+// target: namer returns the name for an id, or "" when it knows none.
+func WithNamer(namer func(ctx context.Context, id string) string) Option {
+	return func(l *Log) { l.namer = namer }
+}
+
 // Log writes and reads audit events. It is safe for concurrent use.
 type Log struct {
-	repo  Repository
-	clock store.Clock
-	newID func() string
+	repo   Repository
+	clock  store.Clock
+	newID  func() string
+	logger *slog.Logger
+	namer  func(ctx context.Context, id string) string
+	// observed is true when the repository reports committed rows itself.
+	observed bool
+
+	// The log records are written by one goroutine from a bounded queue, so
+	// a stalled log output never holds up the transaction that committed
+	// the row (and the caller waiting for it); a full queue drops records
+	// and counts them. The rows themselves are always in the database.
+	exportOnce sync.Once
+	export     chan func()
+	queueSize  int
+	dropped    atomic.Uint64
+}
+
+// exportQueue bounds the log records waiting for a slow log output.
+const exportQueue = 4096
+
+type auditObservable interface {
+	SetAuditObserver(obs store.AuditObserver)
+}
+
+type requestIDKey struct{}
+
+// WithRequestID returns a context that carries the id of the request, so that
+// the log record of an audit event can be tied to the request that caused it.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+// RequestID returns the id set by [WithRequestID], or "".
+func RequestID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}
+
+// BadOutcome reports whether an audit outcome is a denial or a failure, which
+// the log carries at WARN.
+func BadOutcome(outcome string) bool {
+	o := strings.ToLower(outcome)
+	for _, w := range []string{"denied", "fail", "refus", "rate_limited", "unknown", "error", "invalid", "inactive", "unauthor", "forbidden", "reject", "expired", "mismatch", "locked", "partial", "bad_", "wrong"} {
+		if strings.Contains(o, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// Tracker notes whether an event was recorded under a context made by
+// [WithTracker]. The REST dispatcher uses it to write its own audit row only
+// for a handler that wrote none, so one change leaves one row.
+type Tracker struct{ n atomic.Int32 }
+
+// Recorded reports whether an event was recorded under the tracked context.
+func (t *Tracker) Recorded() bool { return t.n.Load() > 0 }
+
+type trackerKey struct{}
+
+// WithTracker returns a context whose recorded events are noted by the
+// returned Tracker.
+func WithTracker(ctx context.Context) (context.Context, *Tracker) {
+	t := &Tracker{}
+	return context.WithValue(ctx, trackerKey{}, t), t
+}
+
+// observe is told about every committed audit row: it notes the row on the
+// tracker of ctx at once and queues the log record (see [Log.enqueue]). It runs only after the row's
+// transaction committed, so a rolled-back change exports nothing and leaves
+// the dispatcher free to record the failure.
+func (l *Log) observe(ctx context.Context, row store.AuditRow) {
+	if t, ok := ctx.Value(trackerKey{}).(*Tracker); ok {
+		t.n.Add(1)
+	}
+	l.emit(ctx, Event{Actor: row.Actor, ActingAs: row.ActingAs, Action: row.Action, Target: row.Target, Outcome: row.Outcome})
+}
+
+func (l *Log) emit(ctx context.Context, ev Event) {
+	if l.logger == nil {
+		return
+	}
+	level := slog.LevelInfo
+	if BadOutcome(ev.Outcome) {
+		level = slog.LevelWarn
+	}
+	attrs := []any{"actor", ev.Actor, "action", ev.Action, "target", ev.Target, "outcome", ev.Outcome}
+	if ev.ActingAs != "" {
+		attrs = append(attrs, "acting_as", ev.ActingAs)
+	}
+	if id := RequestID(ctx); id != "" {
+		attrs = append(attrs, "request_id", id)
+	}
+	ctx = context.WithoutCancel(ctx)
+	l.enqueue(func() { l.logger.Log(ctx, level, "audit", attrs...) })
+}
+
+// enqueue hands fn to the export goroutine without blocking; a full queue
+// drops it.
+func (l *Log) enqueue(fn func()) {
+	l.startExport()
+	select {
+	case l.export <- fn:
+	default:
+		l.dropped.Add(1)
+	}
+}
+
+func (l *Log) startExport() {
+	l.exportOnce.Do(func() {
+		n := l.queueSize
+		if n <= 0 {
+			n = exportQueue
+		}
+		l.export = make(chan func(), n)
+		go l.exportLoop()
+	})
+}
+
+func (l *Log) exportLoop() {
+	var reported uint64
+	for fn := range l.export {
+		if n := l.dropped.Load(); n > reported {
+			reported = n
+			l.logger.Warn("audit log records dropped: the log output is too slow; the audit trail in the database is complete", "dropped_total", n)
+		}
+		fn()
+	}
+}
+
+// Dropped is the number of audit log records dropped because the log output
+// could not keep up. The audit rows are not affected.
+func (l *Log) Dropped() uint64 { return l.dropped.Load() }
+
+// Flush waits until the log records of the events recorded so far are
+// written, or ctx ends.
+func (l *Log) Flush(ctx context.Context) error {
+	if l.logger == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	l.startExport()
+	select {
+	case l.export <- func() { close(done) }:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // New returns a Log on repo.
@@ -150,6 +320,13 @@ func New(repo Repository, opts ...Option) *Log {
 	}
 	if l.clock == nil {
 		l.clock = time.Now
+	}
+	// A store that reports its committed audit rows (the Hub store) sends
+	// every row, including those its domain methods write directly (API keys,
+	// Worker approval, invitations), through observe: one export per row.
+	if o, ok := repo.(auditObservable); ok {
+		o.SetAuditObserver(l.observe)
+		l.observed = true
 	}
 	return l
 }
@@ -174,7 +351,7 @@ func (l *Log) record(ctx context.Context, ex store.Execer, ev Event) error {
 	if err := ev.Validate(); err != nil {
 		return err
 	}
-	return l.repo.InsertAudit(ctx, ex, store.AuditRow{
+	row := store.AuditRow{
 		ID:       l.newID(),
 		TS:       store.UnixMS(l.clock()),
 		Actor:    ev.Actor,
@@ -182,7 +359,14 @@ func (l *Log) record(ctx context.Context, ex store.Execer, ev Event) error {
 		Action:   ev.Action,
 		Target:   ev.Target,
 		Outcome:  ev.Outcome,
-	})
+	}
+	if err := l.repo.InsertAudit(ctx, ex, row); err != nil {
+		return err
+	}
+	if !l.observed {
+		store.AfterCommit(ex, func() { l.observe(ctx, row) })
+	}
+	return nil
 }
 
 // List returns one page of events, newest first.
@@ -261,10 +445,23 @@ func (l *Log) ListOp(ctx context.Context, args ops.AuditListArgs) (ops.AuditList
 		return ops.AuditListResult{}, err
 	}
 	res := ops.AuditListResult{Events: make([]ops.AuditEvent, len(page.Events)), NextCursor: page.NextCursor}
+	names := map[string]string{}
+	name := func(id string) string {
+		if l.namer == nil || id == "" {
+			return ""
+		}
+		if n, ok := names[id]; ok {
+			return n
+		}
+		n := l.namer(ctx, id)
+		names[id] = n
+		return n
+	}
 	for i, e := range page.Events {
 		res.Events[i] = ops.AuditEvent{
 			ID: e.ID, TS: ops.Timestamp(e.Time),
 			Actor: e.Actor, ActingAs: e.ActingAs, Action: e.Action, Target: e.Target, Outcome: e.Outcome,
+			ActorName: name(e.Actor), ActingAsName: name(e.ActingAs), TargetName: name(e.Target),
 		}
 	}
 	return res, nil

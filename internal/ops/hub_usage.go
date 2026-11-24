@@ -27,6 +27,9 @@ type UsageListArgs struct {
 	SubscriptionOnly bool   `json:"subscription_only,omitempty"`
 	After            string `json:"after,omitempty"`
 	Limit            int    `json:"limit,omitempty"`
+	// LiveSession narrows the sessions section to the live (not ended) rows
+	// of the session with this name on WorkerID, which it requires.
+	LiveSession string `json:"live_session,omitempty"`
 }
 
 func (a UsageListArgs) Validate() error {
@@ -46,6 +49,9 @@ func (a UsageListArgs) Validate() error {
 		if !usageText(s, 1280) {
 			return invalid("filter", "invalid filter")
 		}
+	}
+	if a.LiveSession != "" && (a.Section != "sessions" || a.WorkerID == "" || !ValidSessionName(a.LiveSession)) {
+		return invalid("live_session", "needs the sessions section, a worker_id and a valid session name")
 	}
 	if a.SubscriptionOnly && a.Section != "accounts" || a.BucketID != "" && a.Section == "workers" {
 		return invalid("filter", "filter does not apply to this section")
@@ -83,13 +89,21 @@ type UsageAccountRow struct {
 }
 
 // UsageAccountTotals is the sum of one account's sessions. A sum is nil when no
-// session reported that counter, so unknown stays distinct from zero.
+// session reported that counter, so unknown stays distinct from zero. The
+// plain fields are the history: running sessions and those that ended within
+// the retention window (90 days). The Live fields count only the sessions
+// that are still running, so history is never read as current spend.
 type UsageAccountTotals struct {
-	Sessions         int      `json:"sessions"`
-	InputTokens      *int64   `json:"input_tokens"`
-	OutputTokens     *int64   `json:"output_tokens"`
-	CostUSD          *float64 `json:"cost_usd"`
-	EstimatedCostUSD *float64 `json:"estimated_cost_usd"`
+	Sessions             int      `json:"sessions"`
+	InputTokens          *int64   `json:"input_tokens"`
+	OutputTokens         *int64   `json:"output_tokens"`
+	CostUSD              *float64 `json:"cost_usd"`
+	EstimatedCostUSD     *float64 `json:"estimated_cost_usd"`
+	LiveSessions         int      `json:"live_sessions"`
+	LiveInputTokens      *int64   `json:"live_input_tokens"`
+	LiveOutputTokens     *int64   `json:"live_output_tokens"`
+	LiveCostUSD          *float64 `json:"live_cost_usd"`
+	LiveEstimatedCostUSD *float64 `json:"live_estimated_cost_usd"`
 }
 
 type UsageWorkerRow struct {

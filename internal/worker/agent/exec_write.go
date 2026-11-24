@@ -232,6 +232,9 @@ func (e *Executor) record(ctx context.Context, op string, wa ops.WriteArgs, t op
 	if aerr := e.state.AppendAudit(bctx, rec); aerr != nil {
 		e.log.Warn("cannot write the local audit", "op", op, "err", aerr)
 	}
+	if rec.Origin == "local" {
+		e.reportLocalWrite(op, wa, res, err)
+	}
 }
 
 // guardFunc lists the FORCE guards that fire for a pane, as reason codes in

@@ -276,6 +276,9 @@ type PanelView struct {
 	State     string
 	Width     int
 	Height    int
+	// SessionCreated is the generation of the session (its creation time in
+	// Unix seconds) from the snapshot; zero when the Worker does not report it.
+	SessionCreated int64
 	// Dialog says that the pane shows a dialog; Answer is the form to answer it
 	// and is nil for a user who cannot operate the session.
 	Dialog bool
@@ -614,7 +617,7 @@ func panelFor(r *http.Request, t target) (PanelView, error) {
 		return PanelView{}, err
 	}
 	now := time.Now().UTC()
-	p := PanelView{Screen: NewScreenView(snap.Screen), Kind: snap.Pane.Kind, InputKind: snap.Pane.InputKind, State: snap.Pane.State,
+	p := PanelView{Screen: NewScreenView(snap.Screen), Kind: snap.Pane.Kind, InputKind: snap.Pane.InputKind, State: snap.Pane.State, SessionCreated: snap.Pane.SessionCreated,
 		Width: snap.Screen.Width, Height: snap.Screen.Height,
 		Captured: now.Format("15:04:05") + " UTC", CapturedAt: now.Format(time.RFC3339), StateLabel: stateLabel(snap.Pane.State)}
 	if snap.Pane.State == ops.PaneStateDialog {

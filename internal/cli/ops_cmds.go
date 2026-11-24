@@ -147,7 +147,12 @@ func newOpCmd(op ops.Op, deps opsDeps) (*cobra.Command, error) {
 			return runOp(cmd, deps, op, fields, hasTarget)
 		},
 	}
-	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return &usageError{err} })
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		if op.Name == ops.OpSessionsList && strings.Contains(err.Error(), "--target") {
+			err = fmt.Errorf("%w; sessions_list has no --target: to list the sessions of another Worker use --hub-worker ID (see workers_list for the ids)", err)
+		}
+		return &usageError{err}
+	})
 	bindFlags(cmd.Flags(), op.Name, fields)
 	cmd.Flags().Bool(flagJSON, false, "print the result as JSON (one line; one line per element for a stream)")
 	addHubFlags(cmd.Flags())
@@ -169,9 +174,11 @@ func longHelp(op ops.Op) string {
 	b.WriteString("\n\n")
 	switch {
 	case op.Name == ops.OpWorkersList:
-		b.WriteString("This is a Hub operation. Without a Hub configured (MINION_HUB_URL and MINION_API_KEY_FILE) the local Worker forwards it to its Hub, which answers a session with a session-control grant.\n")
+		b.WriteString("This is a Hub operation. Without a Hub configured (MINION_HUB_URL and MINION_API_KEY_FILE) the local Worker forwards it to its Hub, which answers a session with a session-control grant. A master session sees only the Workers whose \"Accepts control from\" setting names it; not_listed counts those the Hub shows it but that grant it no control now, never the Workers that grant it nothing.\n")
 	case op.Scope == ops.ScopeHub:
-		b.WriteString("This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket.\n")
+		b.WriteString("This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket. A Worker forwards only workers_list to its Hub, never this operation.\n")
+	case op.Name == ops.OpSessionsList:
+		b.WriteString("This is a Worker operation. It lists the sessions of the local Worker. To list the sessions of another Worker use --hub-worker ID (MINION_HUB_WORKER) with that Worker's id (see workers_list); there is no --target for it.\n")
 	default:
 		b.WriteString("This is a Worker operation. It runs on the local Worker through its control socket, or through the Hub when one is configured (MINION_HUB_URL and MINION_API_KEY_FILE, --hub-url); a configured Hub is never replaced by the local Worker.\n")
 	}
@@ -388,7 +395,7 @@ func pickBackend(cmd *cobra.Command, deps opsDeps, op ops.Op) (b client.Backend,
 		hubWorker = cfg.Worker
 	}
 	if op.Scope == ops.ScopeHub && op.Name != ops.OpWorkersList {
-		return nil, false, fmt.Errorf("%s is a Hub operation and no Hub is configured: set MINION_HUB_URL and MINION_API_KEY_FILE", op.Name)
+		return nil, false, fmt.Errorf("%s is a Hub operation and no Hub is configured: set MINION_HUB_URL and MINION_API_KEY_FILE (a Worker forwards only workers_list for its sessions, never an administration or usage operation: the Worker holds no right to them)", op.Name)
 	}
 	lb := deps.local()
 	if deps.hubSettings != nil {

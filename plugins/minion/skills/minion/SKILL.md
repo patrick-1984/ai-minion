@@ -146,6 +146,14 @@ minion send_text --target <worker-id>:<session> --text 'git pull' --submit
 Name other Workers by id. A target that does not accept control from your Worker answers `not_found`; a session
 that is not a master session gets `forbidden`. **Check access** on that page explains any refusal.
 
+`minion workers_list` lists every Worker the Hub lets your session read, which can include your own Worker, and its
+result has no `not_listed` field: try a target to learn whether it accepts control. Only the scoped master call of a
+nominated master session (not this CLI command) lists just the Workers that accept control from it and reports
+`not_listed`, the number of Workers the Hub shows you that grant you no control right now; a Worker whose policy
+grants you nothing is neither listed nor counted there. `sessions_list` has no
+`--target`: use `--hub-worker <worker-id>`. The administration operations (`control_check`, `hub_diagnostics`,
+`usage_list`) are not forwarded by a Worker: they need a Hub key (section 7), because a session holds no right to them.
+
 ## 6. MCP tools
 
 ```sh

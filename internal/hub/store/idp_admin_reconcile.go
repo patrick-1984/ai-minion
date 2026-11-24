@@ -32,7 +32,8 @@ func (s *Store) refreshTokenUsable(ctx context.Context, q interface {
 // removes the source-idp admin grant of every account that has no identity
 // with a usable refresh token (see refreshTokenUsable), because such a grant
 // can never be re-checked by the background refresh. Each suspension is
-// audited (role.suspend, actor system). Local grants, keys and Workers stay.
+// audited (role.suspend, actor system) and exported to the log sinks once the
+// audit log is set up. Local grants, keys and Workers stay.
 // It returns the number of suspended accounts.
 func (s *Store) suspendUnusableIdPAdmins(ctx context.Context) (int, error) {
 	n := 0
@@ -95,8 +96,9 @@ func (s *Store) suspendUnusableIdPAdmins(ctx context.Context) (int, error) {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ? AND source = 'idp' AND role = 'admin'`, uid); err != nil {
 				return fmt.Errorf("store: suspend idp admin: %w", err)
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events (id, ts, actor, acting_as, action, target, outcome) VALUES (?, ?, 'system', '', 'role.suspend', ?, 'changed')`,
-				NewID(), time.Now().UnixMilli(), uid); err != nil {
+			// Through InsertAudit: the row reaches the log sinks after the
+			// commit, once the audit log observes the store (before serving).
+			if err := s.InsertAudit(ctx, tx, AuditRow{ID: NewID(), TS: time.Now().UnixMilli(), Actor: "system", Action: "role.suspend", Target: uid, Outcome: "changed"}); err != nil {
 				return fmt.Errorf("store: audit idp admin suspension: %w", err)
 			}
 			var stillAdmin int

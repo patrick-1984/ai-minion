@@ -19,7 +19,7 @@ Releases are published on `https://github.com/patrick-1984/ai-minion/releases`. 
 Verify what you downloaded before you run it. The checksum list is signed by the release workflow of this project (keyless signature, recorded in the Sigstore transparency log):
 
 ```sh
-VERSION=0.20.1
+VERSION=0.20.2
 ARCHIVE=minion_${VERSION}_linux_amd64.tar.gz
 BASE=https://github.com/patrick-1984/ai-minion/releases/download/v${VERSION}
 curl -fsSLO "$BASE/$ARCHIVE"
@@ -61,6 +61,7 @@ The Hub has no command-line flags. It reads its settings from the environment (e
 | `MINION_TLS_CERT_FILE`, `MINION_TLS_KEY_FILE` | A certificate and key to use instead of the generated one (both or neither). `SIGHUP` reloads them. The key must be a plain file (or a link to one in a directory only the Hub user or root can write) owned by the Hub user with mode 0600 or 0400; the Hub refuses a key that group or others can access and never changes it. |
 | `MINION_PUBLIC_URL` | The external URL, for example `https://hub.example.com`. |
 | `MINION_TRUSTED_PROXIES` | Comma-separated addresses or CIDRs of the reverse proxies whose `X-Forwarded-*` headers are trusted. |
+| `MINION_LOG_HOSTNAME` | The host name of exported logs (the syslog HOSTNAME and the OTEL `host.name`). Default: the operating system's host name, which in a container is the container id; set it, for example to `minion-hub`, to query by host. |
 | `MINION_MANAGEMENT_LISTEN` | Optional loopback `host:port` (for example `127.0.0.1:8444`) that serves plain HTTP for the [Hub identity](../guides/hub-identity.md#the-https-rule) operations. Never point a reverse proxy at it. |
 | `MINION_ADMIN_USERNAME`, `MINION_ADMIN_PASSWORD_FILE` | The first administrator (used only while the user table is empty). `MINION_ADMIN_PASSWORD` also works, but a file keeps the password out of the process environment. |
 | `MINION_HIDDEN_SESSIONS` | Whether new sessions may be **hidden** from the person who creates them (they could not see or join them from their own terminal: Windows ConPTY sessions inside the Worker, or a tmux server that is not their default one). `user-controlled` (default: each user allows them in **Account > Sessions**, off until they do), `allowed` (for everybody) or `disabled` (refused for everybody). Applies without a restart; also in **Administration > Hub settings**. |
@@ -118,7 +119,7 @@ Set the passphrase as above before the first Worker connects (a Hub started as a
 
 ```sh
 sudo minion update --channel 0.6      # the newest 0.6.x
-sudo minion update --version v0.20.1   # exactly this version
+sudo minion update --version v0.20.2   # exactly this version
 sudo systemctl restart minion-hub
 ```
 

@@ -421,7 +421,7 @@ func TestInvitationsEndToEndThroughTheDispatcher(t *testing.T) {
 		}
 	}
 	for want, n := range map[string]int{
-		"invitation.create/success": 2, "invitation.revoke/success": 2, "invitation_revoke/success": 2, "invitation_revoke/failed": 1,
+		"invitation.create/success": 2, "invitation.revoke/success": 2, "invitation_revoke/success": 0, "invitation_revoke/failed": 1,
 	} {
 		if actions[want] != n {
 			t.Errorf("audit %s = %d, want %d (all: %v)", want, actions[want], n, actions)

@@ -181,12 +181,15 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 			return nil, err
 		}
 		out := make([]ops.WorkerInfo, 0, len(list))
+		notListed := 0
 		for _, w := range list {
 			if len(fresh[w.ID]) != 0 && !w.Pending {
 				out = append(out, w)
+			} else if !w.Pending {
+				notListed++
 			}
 		}
-		return ops.WorkersListResult{Workers: out}, nil
+		return ops.WorkersListResult{Workers: out, NotListed: notListed}, nil
 	}
 
 	req, err := masterRoute(c.RequestID, op, raw)

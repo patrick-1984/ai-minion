@@ -409,3 +409,14 @@ func TestInvitationCapsApplyToNonAdminsOnly(t *testing.T) {
 		t.Errorf("admin max_uses 500: %+v err=%v", lim, err)
 	}
 }
+
+func TestInvitationInfoUsedUpKeyStaysExhaustedAfterItsTime(t *testing.T) {
+	r := store.InvitationRow{ID: "i", MaxUses: 1, Uses: 1, ExpiresAt: 1000}
+	if got := invitationInfo(r, 5000).Status; got != ops.InvitationExhausted {
+		t.Errorf("status = %q", got)
+	}
+	r.Uses = 0
+	if got := invitationInfo(r, 5000).Status; got != ops.InvitationExpired {
+		t.Errorf("unused status = %q", got)
+	}
+}

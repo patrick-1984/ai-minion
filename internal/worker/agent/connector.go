@@ -69,6 +69,9 @@ type HubWelcome struct {
 	HubTLS *HubTLSInfo `json:"hub_tls,omitempty"`
 	// MasterSessionV1 confirms support for the Worker master control lane.
 	MasterSessionV1 bool `json:"master_session_v1,omitempty"`
+	// LocalAuditV1 says that the Hub records local-write reports
+	// (proto.OpLocalAuditV1); false from a v0.20.1 or older Hub.
+	LocalAuditV1 bool `json:"local_audit_v1,omitempty"`
 	proto.Range
 }
 

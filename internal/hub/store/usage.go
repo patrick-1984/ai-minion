@@ -111,7 +111,7 @@ func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, r
 			}
 		}
 		for _, a := range report.Accounts {
-			if err := saveUsageAccount(ctx, tx, workerID, a); err != nil {
+			if err := saveUsageAccount(ctx, tx, workerID, a, now); err != nil {
 				return err
 			}
 		}
@@ -119,6 +119,9 @@ func (s *Store) SaveUsage(ctx context.Context, workerID, expectedOwner string, r
 	})
 }
 
+// saveUsageSession never reopens (or rewrites) an ended row unless the report
+// proves it is the same host session (the same start time): a replayed or
+// reused ID cannot revive an ended session.
 func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.UsageSession) error {
 	row.Provider = ops.UsageProvider(row.Provider)
 	row.DropEndpoint()
@@ -130,7 +133,9 @@ func saveUsageSession(ctx context.Context, tx *sql.Tx, workerID string, row ops.
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_sessions(id,worker_id,observed_at,ended_at,body) VALUES(?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET observed_at=excluded.observed_at,ended_at=excluded.ended_at,body=excluded.body
-		WHERE excluded.observed_at>=coalesce(usage_sessions.ended_at,usage_sessions.observed_at) AND (excluded.body<>usage_sessions.body OR usage_sessions.ended_at IS NOT excluded.ended_at)`, row.ID, workerID, at, row.StoppedAt, string(body))
+		WHERE excluded.observed_at>=coalesce(usage_sessions.ended_at,usage_sessions.observed_at) AND (excluded.body<>usage_sessions.body OR usage_sessions.ended_at IS NOT excluded.ended_at)
+		 AND NOT (usage_sessions.ended_at IS NOT NULL AND excluded.ended_at IS NULL
+		  AND coalesce(json_extract(excluded.body,'$.started_at')=json_extract(usage_sessions.body,'$.started_at'),0)=0)`, row.ID, workerID, at, row.StoppedAt, string(body))
 	if err != nil {
 		return err
 	}

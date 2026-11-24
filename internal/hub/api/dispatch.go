@@ -178,6 +178,10 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		d.refused(w, op.Name, "resource", id.Principal.Kind, err)
 		return
 	}
+	// A handler that records its own, more precise audit event (settings,
+	// invitations, Worker approval) leaves the dispatcher no row to add.
+	tctx, tracker := audit.WithTracker(r.Context())
+	r = r.WithContext(tctx)
 	call = &Call{Op: op, Args: args, Principal: id.Principal, Identity: id, Resource: res, IP: id.IP, Request: r}
 
 	if err := d.Authz.Decide(r.Context(), id.Principal, op.Actions, res); err != nil {
@@ -186,6 +190,12 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 			d.logger().Error("authorisation failed", "op", op.Name, "error", err)
 		}
 		d.audit(r.Context(), call, AuditOutcomeDenied)
+		if e.Code == proto.CodeForbidden && e.Message == "not allowed" && id.Principal.Kind == authz.KindAPIKey {
+			// The accepted actions are public catalog data: name them. The
+			// key's effective actions are its configured ones limited by its
+			// owner's current role, so either can be the cause.
+			e = NewError(proto.CodeForbidden, "not allowed: "+op.Name+" needs one of the actions ("+op.Actions.String()+") in this API key's effective permissions, which are the key's actions limited by its owner's current role and its resources; check them in the Hub")
+		}
 		d.refused(w, op.Name, "authorize", id.Principal.Kind, e)
 		return
 	}
@@ -203,14 +213,18 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		if e.Code == proto.CodeInternal {
 			d.logger().Error("operation failed", "op", op.Name, "error", err)
 		}
-		d.audit(r.Context(), call, auditOutcomeError)
-		d.logger().Debug("api request done", "op", op.Name, "principal_kind", string(id.Principal.Kind),
+		if !tracker.Recorded() {
+			d.audit(r.Context(), call, auditOutcomeError)
+		}
+		d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
 			"outcome", string(e.Code), "duration", time.Since(start).String())
 		WriteError(w, e)
 		return
 	}
-	d.audit(r.Context(), call, outcomeOf(result))
-	d.logger().Debug("api request done", "op", op.Name, "principal_kind", string(id.Principal.Kind),
+	if !tracker.Recorded() {
+		d.audit(r.Context(), call, outcomeOf(result))
+	}
+	d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
 		"outcome", "ok", "duration", time.Since(start).String())
 	if result == nil {
 		result = struct{}{}

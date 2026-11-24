@@ -20,7 +20,7 @@ type storedUsageAccount struct {
 	LoginLabel string `json:"login_label,omitempty"`
 }
 
-func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.UsageAccount) error {
+func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.UsageAccount, now time.Time) error {
 	a.Provider = ops.UsageProvider(a.Provider)
 	a.Windows = ops.SubscriptionWindows(a)
 	nativeRead := a.Provider == "OpenAI" && a.AuthMode == "subscription" && (a.Source == "codex-account" || a.Source == "codex-app-server")
@@ -68,6 +68,15 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 	} else if a.Source != "native-account" && login != "" {
 		a.Label = login
 	}
+	// Status-line limits merge per window with the stored reading of this
+	// Worker (the later reset wins, then the higher percentage) instead of
+	// the latest write replacing it: sessions re-send old readings.
+	merged := false
+	if stored != "" && ops.MergeableUsageAccounts(old.UsageAccount, a) {
+		a.Windows = ops.MergeUsageWindows(now, a.Windows, old.Windows)
+		a.ObservedAt = max(a.ObservedAt, old.ObservedAt)
+		merged = true
+	}
 	b, err := json.Marshal(storedUsageAccount{UsageAccount: a, LoginLabel: login})
 	if err != nil {
 		return err
@@ -75,7 +84,7 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_accounts(worker_id,account_id,observed_at,body,can_poll) VALUES(?,?,?,?,?)
 	 ON CONFLICT(worker_id,account_id) DO UPDATE SET observed_at=excluded.observed_at,body=excluded.body,can_poll=max(usage_accounts.can_poll,excluded.can_poll)
 	 WHERE (excluded.observed_at>usage_accounts.observed_at OR ?) AND
-	  (json_extract(excluded.body,'$.source')<>'native-account' OR json_extract(usage_accounts.body,'$.source')='native-account')`, workerID, a.ID, a.ObservedAt, string(b), nativeRead, false)
+	  (json_extract(excluded.body,'$.source')<>'native-account' OR json_extract(usage_accounts.body,'$.source')='native-account')`, workerID, a.ID, a.ObservedAt, string(b), nativeRead, merged)
 	if err == nil && nativeRead {
 		_, err = tx.ExecContext(ctx, `UPDATE usage_accounts SET can_poll=1 WHERE worker_id=? AND account_id=? AND can_poll=0`, workerID, a.ID)
 	}
@@ -154,7 +163,7 @@ func (s *Store) CompleteUsagePoll(ctx context.Context, lease UsageLease, a *ops.
 		var success any
 		delay := 5 * time.Minute
 		if a != nil {
-			if err = saveUsageAccount(ctx, tx, lease.WorkerID, *a); err != nil {
+			if err = saveUsageAccount(ctx, tx, lease.WorkerID, *a, now); err != nil {
 				return err
 			}
 			success = a.ObservedAt

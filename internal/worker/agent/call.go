@@ -101,6 +101,25 @@ func (c *CallClient) Connected() bool {
 	return c.cur != nil
 }
 
+// Welcome returns the welcome of the current Hub connection; false when
+// there is none.
+func (c *CallClient) Welcome() (HubWelcome, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cur == nil || c.cur.Context().Err() != nil {
+		return HubWelcome{}, false
+	}
+	return c.cur.Welcome, true
+}
+
+type noCallKey struct{}
+
+// withoutCallKey marks a call that speaks as the Worker identity of the
+// connection only: no API key is read or sent (the Worker's own reports).
+func withoutCallKey(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noCallKey{}, true)
+}
+
 func (c *CallClient) link() (*Link, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -335,7 +354,9 @@ func (c *CallClient) request(ctx context.Context, op string, args any) (callFram
 		body = b
 	}
 	f := callFrame{Type: proto.TypeOpRequest, Op: op, RequestID: ops.NewUUIDv7(), Args: body, SourceSession: sourceSession(ctx)}
-	if c.cfg.Key != nil {
+	if skip, _ := ctx.Value(noCallKey{}).(bool); skip {
+		f.SourceSession = ""
+	} else if c.cfg.Key != nil {
 		k, err := c.cfg.Key()
 		if err != nil {
 			// The error of a key source can quote a path, never the key.
