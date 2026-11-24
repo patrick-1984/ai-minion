@@ -46,3 +46,14 @@ func TestCleanFactsKeepsAKnownHubCheckOnly(t *testing.T) {
 		}
 	}
 }
+
+// The outdated login startup of a Worker host (v0.20.6) is kept for the
+// Worker page.
+func TestCleanFactsKeepsTheOutdatedLoginStartup(t *testing.T) {
+	if !CleanFacts(transport.WorkerFacts{LoginStartupOutdated: true}).LoginStartupOutdated {
+		t.Fatal("dropped")
+	}
+	if CleanFacts(transport.WorkerFacts{}).LoginStartupOutdated {
+		t.Fatal("invented")
+	}
+}

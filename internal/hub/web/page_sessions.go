@@ -142,6 +142,10 @@ type WorkerRow struct {
 	// connected. The Worker page uses both to explain an empty list.
 	SessionsSynced    bool
 	SessionsListError string
+	// LoginStartupOutdated is true when the connected Worker reported a
+	// login block of v0.20.5 or earlier in a startup file of its host: the
+	// Worker page shows the repair.
+	LoginStartupOutdated bool
 	// ShowOwner is set when the owner column is shown ("all users").
 	ShowOwner bool
 	// SessionCount, SessionsURL and NewURL are filled by [newDashboardView]:
@@ -1237,7 +1241,8 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 			SessionHost: w.SessionHost, SessionsHidden: w.SessionsHidden, SessionHostReason: w.SessionHostReason,
 			NewSessionRefused: w.NewSessionRefused,
 			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,
-			SelfUpdate: proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
+			LoginStartupOutdated: w.LoginStartupOutdated,
+			SelfUpdate:           proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
 		})
 		if row := &d.Workers[len(d.Workers)-1]; d.Admin && w.Online && !w.Pending && row.SelfUpdate {
 			if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {

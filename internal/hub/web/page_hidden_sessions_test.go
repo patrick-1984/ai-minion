@@ -160,3 +160,21 @@ func TestWorkerPageExplainsAnEmptySessionList(t *testing.T) {
 		})
 	}
 }
+
+// A Worker whose host still has the login block of v0.20.5 or earlier shows
+// the one-line repair on its page.
+func TestWorkerPageShowsAnOutdatedLoginStartup(t *testing.T) {
+	const notice = "Login startup is outdated — run <code>minion worker up</code> on this host to remove the 'Done' messages in new shells."
+	for _, outdated := range []bool{true, false} {
+		v := newWorkerView(Dashboard{Workers: []WorkerRow{{ID: "w1", Name: "a", Online: true, LoginStartupOutdated: outdated}}}, false, "w1", true)
+		out, err := renderWorkerFragment(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outdated {
+			mustHave(t, out, "data-login-startup-outdated", notice)
+		} else {
+			mustNotHave(t, out, "data-login-startup-outdated")
+		}
+	}
+}

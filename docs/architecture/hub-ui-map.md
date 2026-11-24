@@ -236,6 +236,7 @@ Auth/REST endpoints used by the UI JS (outside `W/`, served by other modules): `
 - `div#results.stack[data-live-list][sse-connect=/live/workers/{id}]` renders `worker_results`:
   - `Gone` => empty state "This worker is no longer in your list" (+ text).
   - Else `p.result-count[data-summary]`, `.Notice`, `section.worker-facts` `dl.facts-grid`: Status, Kind, Owner (if set), Version (build, "-> UpdateTo", `(UpdateBlock)`), Protocol, Sessions (session host text/`data-session-host`), Worker id `<code>`.
+  - If the Worker reported `login_startup_outdated` (v0.20.6): `p.notice-warning[data-login-startup-outdated]` "Login startup is outdated — run `minion worker up` on this host to remove the 'Done' messages in new shells."
   - Pending: warning banner (`data-pending-banner`), `worker_pending_facts`, `worker_approval_buttons` (Approve / Remove, see 2.5).
   - `.Worker.RepairURL` (worker never connected): form `action=RepairURL` hx-confirm "Re-issue pairing for worker N? For 10 minutes ..." button "Re-issue pairing" `data-control=repair-pairing`, `data-key=worker-repair-<id>`.
   - `.Operate` (owner or admin): "New session" form (`NewURL`, `data-control=new-session`, `data-key=worker-actions-<id>`) or disabled variant with `NewSessionRefused` help (`data-hidden-refused`).

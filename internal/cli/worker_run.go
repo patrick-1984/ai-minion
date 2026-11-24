@@ -54,6 +54,10 @@ type workerRunDeps struct {
 	inviteArgvWarned bool
 }
 
+// loginOutdatedNotice is the Worker's log line when a startup file still
+// holds a block of an earlier release.
+const loginOutdatedNotice = "Login startup is outdated: run `minion worker up` on this host to remove the 'Done' messages in new shells"
+
 func defaultWorkerRunDeps(stderr io.Writer) workerRunDeps {
 	return workerRunDeps{stderr: stderr, lookupEnv: os.LookupEnv, loadConfig: loadWorkerConfig}
 }
@@ -176,6 +180,13 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		}()
 		return func() { stopAuto(); <-autoDone }
 	}
+	// Login blocks of v0.20.5 and earlier print shell job lines. The Worker
+	// never changes a startup file: it only reports them (log, Hub) so that
+	// the user runs "minion worker up", which replaces them.
+	outdated := outdatedLoginStartup()
+	if len(outdated) > 0 {
+		logger.Info(loginOutdatedNotice, "files", strings.Join(outdated, ", "))
+	}
 	err = rt.Run(cmd.Context(), agent.Settings{
 		WorkerCore: core,
 		Resolver:   res,
@@ -189,7 +200,8 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		Out:             cmd.OutOrStdout(),
 		StartBackground: startExporter,
 
-		InviteArgvWarned: deps.inviteArgvWarned,
+		InviteArgvWarned:     deps.inviteArgvWarned,
+		LoginStartupOutdated: len(outdated) > 0,
 	})
 	if err != nil && !onlyCanceled(err) {
 		if exe := agent.RestartPending(); exe != "" {

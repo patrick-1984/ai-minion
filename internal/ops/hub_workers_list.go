@@ -88,6 +88,11 @@ type WorkerInfo struct {
 	// DebugRemote is true when the connected Worker allows remote debug
 	// (worker_debug, worker_logs; allow_debug_remote on the Worker).
 	DebugRemote bool `json:"debug_remote,omitempty"`
+	// LoginStartupOutdated is true when the connected Worker reported that a
+	// shell startup file on its host still holds the login block of v0.20.5
+	// or earlier (it prints "Done" job lines in new shells); "minion worker
+	// up" on that host replaces it.
+	LoginStartupOutdated bool `json:"login_startup_outdated,omitempty"`
 	// Pending is true while the Worker waits for approval by its owner or an
 	// admin (F-02): it may be connected, but the Hub routes no operation to it.
 	Pending bool `json:"pending,omitempty"`

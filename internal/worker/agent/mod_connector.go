@@ -154,6 +154,7 @@ func (d connectorDeps) start(ctx context.Context, env *Env) (StopFunc, error) {
 		f := base()
 		hostInfo.applyTo(&f)
 		applyListHealth(&f, health)
+		f.LoginStartupOutdated = s.LoginStartupOutdated
 		return f
 	}
 	dbg := setupDebugRemote(log, s, ex)

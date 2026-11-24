@@ -17,3 +17,6 @@ func startLoginWorker(context.Context) (bool, error) { return false, errNotInsta
 func markLoginStopped() error { return nil }
 func clearLoginStopped()      {}
 func loginStopped() bool      { return false }
+
+// outdatedLoginStartup: shell login startup is Linux only.
+func outdatedLoginStartup() []string { return nil }
