@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -33,10 +34,14 @@ func TestUsageProjectionDropsTaskTextAndCommandArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"PRIVATE", "791", "command", "screen", "transcript", "prompt"} {
+	for _, field := range []string{"PRIVATE", "command", "screen", "transcript", "prompt"} {
 		if strings.Contains(string(body), field) {
 			t.Fatalf("extra field/content: %s", field)
 		}
+	}
+	// The pane PID must not appear as a value; a timestamp may contain the same digits.
+	if regexp.MustCompile(`[^0-9]791[^0-9]`).MatchString(string(body)) {
+		t.Fatalf("the pane PID leaked: %s", body)
 	}
 }
 
