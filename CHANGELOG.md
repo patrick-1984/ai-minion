@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.20.2
+
 ### Fixed
 
 - Hub logs: every audit event (sign-ins and failures, settings, invitations, API keys, Worker approval, role changes, session control) is also a structured log record at INFO, or WARN for a denial or failure, with actor, target, outcome and request id; the syslog and OpenTelemetry sinks at level info now carry them. Responses carry `X-Request-Id`.
@@ -13,7 +15,6 @@
 - Usage: API-key and custom-endpoint account totals are split into **Running now** and **History · last 90 days** (which includes ended sessions), so history is not read as current spend. A Claude run that ends inside an open tmux session (`SessionEnd`) is shown as stopped, and a re-sent report never reopens an ended session unless it has the same start time.
 - Usage: a passive collector with recent limits shows **Passive · from Claude status line** and the time of the last sample instead of **Waiting for native observations**.
 - Master CLI: `workers_list` reports `not_listed`, and the help of Hub-only operations and `sessions_list` says how to reach another Worker.
-
 - Shared sessions report native Claude Code activity, including background shells and subagents, and Codex turn activity. The Worker and Sessions pages show the observation source and last native event time.
 
 ## v0.20.1
