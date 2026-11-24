@@ -108,7 +108,7 @@ func TestWorkerDetailShowsTheWorkerAndOnlyItsSessionsFromTheAuthorisedSnapshot(t
 	for _, th := range find(doc, func(n *html.Node) bool { return n.Data == "th" && attr(n, "scope") == "col" }) {
 		heads = append(heads, text(th))
 	}
-	if strings.Join(heads, ",") != "Session,Task,Kind,State" {
+	if strings.Join(heads, ",") != "Session,Task,Kind,State,Activity,Source,Last event" {
 		t.Errorf("session table headings = %v", heads)
 	}
 	mustNotHave(t, body, "buildbox", "/s/buildbox/ci", `>Actions<`)
@@ -285,9 +285,9 @@ func TestSessionRowsAreRealTableRowsWithOneSessionLinkAndOneWorkerLinkAndNoActio
 		for _, th := range find(tables[0], func(n *html.Node) bool { return n.Data == "th" && attr(n, "scope") == "col" }) {
 			heads = append(heads, text(th))
 		}
-		want := "Session,Task,Worker,Kind,State"
+		want := "Session,Task,Worker,Kind,State,Activity,Source,Last event"
 		if strings.Contains(path, "scope=all") {
-			want = "Session,Task,Worker,Owner,Kind,State"
+			want = "Session,Task,Worker,Owner,Kind,State,Activity,Source,Last event"
 		}
 		if strings.Join(heads, ",") != want {
 			t.Errorf("%s: headings %v, want %s (no Actions column)", path, heads, want)
@@ -321,13 +321,13 @@ func TestSessionRowsAreRealTableRowsWithOneSessionLinkAndOneWorkerLinkAndNoActio
 		// The Worker link and the session link go to different places: the Worker link is never the pane.
 		mustNotHave(t, body, `data-worker-link data-inspect`, `data-inspect data-worker-link`)
 	}
-	// The empty and the no-match states keep their colspans with the five (six) columns.
+	// The empty and the no-match states keep their colspans with the eight (nine) columns.
 	empty := Dashboard{Workers: []WorkerRow{wPrivate}}
 	s2, _ := workerPageServer(t, empty, empty, wAliceInfo)
 	_, home := page(t, s2, "/", "alice:user")
-	mustHave(t, home, `<td colspan="5" class="empty">No sessions yet.`)
+	mustHave(t, home, `<td colspan="8" class="empty">No sessions yet.`)
 	_, home = page(t, s2, "/?scope=all", "root:admin")
-	mustHave(t, home, `<td colspan="6" class="empty">No sessions yet.`)
+	mustHave(t, home, `<td colspan="9" class="empty">No sessions yet.`)
 }
 
 func TestWorkerRowsLinkTheirNameAndKeepTheirLegitimateControls(t *testing.T) {
