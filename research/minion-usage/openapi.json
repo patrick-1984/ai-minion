@@ -244,6 +244,9 @@
           },
           "limit": {
             "type": "integer"
+          },
+          "live_session": {
+            "type": "string"
           }
         },
         "required": [
