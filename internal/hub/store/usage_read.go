@@ -638,7 +638,7 @@ func usageSessionOrder(ctx context.Context, q usageQuerier, visible string, bind
 	rows, err := q.QueryContext(ctx, usageVisible+`SELECT s.id,v.name,coalesce(json_extract(s.body,'$.name'),'')
 	 FROM visible v JOIN usage_sessions s ON s.worker_id=v.id JOIN usage_workers uw ON uw.worker_id=s.worker_id
 	 LEFT JOIN usage_members m ON m.owner_id=? AND m.kind='session' AND m.member_id=s.id
-	 WHERE `+usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`), append(slices.Clone(bind), bucketOwner, args.BucketID, args.BucketID, bucketOwner, args.BucketID)...)
+	 WHERE (?='' OR (s.ended_at IS NULL AND json_extract(s.body,'$.name')=?)) AND `+usageSessionBucketFilter(`json_extract(s.body,'$.account_id')`), append(slices.Clone(bind), bucketOwner, args.LiveSession, args.LiveSession, args.BucketID, args.BucketID, bucketOwner, args.BucketID)...)
 	if err != nil {
 		return "", nil, err
 	}

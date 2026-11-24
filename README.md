@@ -146,7 +146,7 @@ MINION_ADMIN_PASSWORD='choose-a-strong-password'
 
 # Behind a reverse proxy that ends TLS (docs/guides/reverse-proxy.md), set all three and
 # keep MINION_BIND=127.0.0.1: never publish a plain-HTTP Hub on a network interface.
-# The trusted proxy is the exact address or network of the proxy, never 0.0.0.0/0.
+# The trusted proxy is the exact address of the proxy, never a shared network or 0.0.0.0/0.
 # MINION_TLS=off
 # MINION_PUBLIC_URL=https://hub.example.com
 # MINION_TRUSTED_PROXIES=172.18.0.2/32

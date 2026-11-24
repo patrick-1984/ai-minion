@@ -21,6 +21,10 @@ type LocalAuditArgs struct {
 	Reason string `json:"reason,omitempty"`
 	// RequestID is the request id of the write (UUIDv7); may be empty.
 	RequestID string `json:"request_id,omitempty"`
+	// ReportID identifies this report (UUIDv7): the Worker makes a new one
+	// for each write it ran, so the Hub drops a repeated delivery of the same
+	// report but never a later write that reuses a request id.
+	ReportID string `json:"report_id"`
 	// SourceSession is not sent and is ignored by the Hub: the calling
 	// session of a local request is not verified, so it is never an audit
 	// actor. Kept so that the field stays reserved.

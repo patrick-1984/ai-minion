@@ -396,6 +396,7 @@ func TestCreateGrantLimitsOverREST(t *testing.T) {
 	}
 	// The row the store wrote reaches the log sinks once, and the dispatcher
 	// adds no second row for the same creation.
+	flushAudit(t, ah.audit)
 	exported := 0
 	for _, line := range strings.Split(ah.h.logs.String(), "\n") {
 		if strings.Contains(line, "msg=audit ") && strings.Contains(line, "action="+apikey.AuditActionCreate+" ") && strings.Contains(line, "target="+info.ID) {
@@ -433,5 +434,15 @@ func TestFailedKeysAreAuditedWithoutTheTokenAndRateLimited(t *testing.T) {
 		if strings.Contains(e.Actor+e.Target+e.Outcome, bad[3:]) || e.Outcome != "failed" {
 			t.Errorf("audit row = %+v", e)
 		}
+	}
+}
+
+// flushAudit waits until the audit log records queued so far are written.
+func flushAudit(t *testing.T, l *audit.Log) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := l.Flush(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

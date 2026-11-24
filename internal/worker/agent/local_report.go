@@ -36,8 +36,12 @@ type LocalWrite struct {
 	Outcome   string
 	Reason    string
 	RequestID string
-	// Session is the session the executor resolved; empty when it resolved
-	// none (a refusal before resolution, an error).
+	// ReportID is new for each write the executor ran: the Hub drops a
+	// repeated delivery of one report by it.
+	ReportID string
+	// Session is the session the executor resolved to an existing pane;
+	// empty when it resolved none (a refusal before resolution, an error, a
+	// creation whose result is unknown).
 	Session string
 }
 
@@ -56,7 +60,7 @@ func (e *Executor) reportLocalWrite(op string, wa ops.WriteArgs, res ops.WriteRe
 	if h == nil {
 		return
 	}
-	lw := LocalWrite{Op: op, Outcome: string(res.Outcome)}
+	lw := LocalWrite{Op: op, Outcome: string(res.Outcome), ReportID: ops.NewUUIDv7()}
 	if ops.ValidUUIDv7(wa.RequestID) {
 		lw.RequestID = wa.RequestID
 	}
@@ -74,7 +78,10 @@ func (e *Executor) reportLocalWrite(op string, wa ops.WriteArgs, res ops.WriteRe
 		if lw.Outcome == "" {
 			lw.Outcome = string(ops.OutcomeUnknown)
 		}
-		if res.Pane != nil && ops.ValidSessionName(res.Pane.Session) {
+		// Only a session resolved to an existing pane (one with a pane id)
+		// is named. An ambiguous creation carries the requested name without
+		// any pane: what the caller typed is never reported.
+		if res.Pane != nil && res.Pane.ID != "" && ops.ValidSessionName(res.Pane.Session) {
 			lw.Session = res.Pane.Session
 		}
 	}
@@ -146,7 +153,7 @@ func (r *localReporter) run() {
 		}
 		ctx, cancel := context.WithTimeout(withoutCallKey(context.Background()), localReportTimeout)
 		err := cc.Do(ctx, proto.OpLocalAuditV1, proto.LocalAuditArgs{
-			Op: lw.Op, Session: lw.Session, Outcome: lw.Outcome, Reason: lw.Reason, RequestID: lw.RequestID,
+			Op: lw.Op, Session: lw.Session, Outcome: lw.Outcome, Reason: lw.Reason, RequestID: lw.RequestID, ReportID: lw.ReportID,
 		}, nil)
 		cancel()
 		if err != nil {

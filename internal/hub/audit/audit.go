@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -143,6 +144,10 @@ func WithIDFunc(f func() string) Option { return func(l *Log) { l.newID = f } }
 // request id of the context, never more than the audit row itself.
 func WithLogger(lg *slog.Logger) Option { return func(l *Log) { l.logger = lg } }
 
+// WithExportQueue sets how many log records may wait for the log output
+// (default 4096).
+func WithExportQueue(n int) Option { return func(l *Log) { l.queueSize = n } }
+
 // WithNamer makes [Log.ListOp] add the name of an actor, acting-as user or
 // target: namer returns the name for an id, or "" when it knows none.
 func WithNamer(namer func(ctx context.Context, id string) string) Option {
@@ -158,7 +163,19 @@ type Log struct {
 	namer  func(ctx context.Context, id string) string
 	// observed is true when the repository reports committed rows itself.
 	observed bool
+
+	// The log records are written by one goroutine from a bounded queue, so
+	// a stalled log output never holds up the transaction that committed
+	// the row (and the caller waiting for it); a full queue drops records
+	// and counts them. The rows themselves are always in the database.
+	exportOnce sync.Once
+	export     chan func()
+	queueSize  int
+	dropped    atomic.Uint64
 }
+
+// exportQueue bounds the log records waiting for a slow log output.
+const exportQueue = 4096
 
 type auditObservable interface {
 	SetAuditObserver(obs store.AuditObserver)
@@ -208,7 +225,7 @@ func WithTracker(ctx context.Context) (context.Context, *Tracker) {
 }
 
 // observe is told about every committed audit row: it notes the row on the
-// tracker of ctx and writes the log record. It runs only after the row's
+// tracker of ctx at once and queues the log record (see [Log.enqueue]). It runs only after the row's
 // transaction committed, so a rolled-back change exports nothing and leaves
 // the dispatcher free to record the failure.
 func (l *Log) observe(ctx context.Context, row store.AuditRow) {
@@ -233,7 +250,66 @@ func (l *Log) emit(ctx context.Context, ev Event) {
 	if id := RequestID(ctx); id != "" {
 		attrs = append(attrs, "request_id", id)
 	}
-	l.logger.Log(ctx, level, "audit", attrs...)
+	ctx = context.WithoutCancel(ctx)
+	l.enqueue(func() { l.logger.Log(ctx, level, "audit", attrs...) })
+}
+
+// enqueue hands fn to the export goroutine without blocking; a full queue
+// drops it.
+func (l *Log) enqueue(fn func()) {
+	l.startExport()
+	select {
+	case l.export <- fn:
+	default:
+		l.dropped.Add(1)
+	}
+}
+
+func (l *Log) startExport() {
+	l.exportOnce.Do(func() {
+		n := l.queueSize
+		if n <= 0 {
+			n = exportQueue
+		}
+		l.export = make(chan func(), n)
+		go l.exportLoop()
+	})
+}
+
+func (l *Log) exportLoop() {
+	var reported uint64
+	for fn := range l.export {
+		if n := l.dropped.Load(); n > reported {
+			reported = n
+			l.logger.Warn("audit log records dropped: the log output is too slow; the audit trail in the database is complete", "dropped_total", n)
+		}
+		fn()
+	}
+}
+
+// Dropped is the number of audit log records dropped because the log output
+// could not keep up. The audit rows are not affected.
+func (l *Log) Dropped() uint64 { return l.dropped.Load() }
+
+// Flush waits until the log records of the events recorded so far are
+// written, or ctx ends.
+func (l *Log) Flush(ctx context.Context) error {
+	if l.logger == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	l.startExport()
+	select {
+	case l.export <- func() { close(done) }:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // New returns a Log on repo.

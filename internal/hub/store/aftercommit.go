@@ -56,10 +56,39 @@ type AuditObserver func(ctx context.Context, row AuditRow)
 // [Store.InsertAudit] or any domain method, after its transaction commits.
 // The audit log uses it to export each row to the log sinks exactly once and
 // to tell the REST dispatcher that the handler wrote its own row.
+//
+// The first observer also sees the rows committed before it was set, the
+// ones the start-up reconciliation of [Open] writes (role.suspend), so that
+// they reach the log sinks before the Hub serves.
 func (s *Store) SetAuditObserver(obs AuditObserver) {
 	if obs == nil {
 		s.auditObs.Store(nil)
 		return
 	}
+	s.earlyMu.Lock()
 	s.auditObs.Store(&obs)
+	early := s.early
+	s.early = nil
+	s.earlyMu.Unlock()
+	for _, row := range early {
+		obs(context.Background(), row)
+	}
+}
+
+// maxEarlyAudit bounds the rows held for the first observer.
+const maxEarlyAudit = 256
+
+// holdEarlyAudit keeps a committed row that no observer saw, for the first
+// one; when an observer was set meanwhile, it sees the row now.
+func (s *Store) holdEarlyAudit(ctx context.Context, row AuditRow) {
+	s.earlyMu.Lock()
+	if obs := s.auditObs.Load(); obs != nil {
+		s.earlyMu.Unlock()
+		(*obs)(ctx, row)
+		return
+	}
+	if len(s.early) < maxEarlyAudit {
+		s.early = append(s.early, row)
+	}
+	s.earlyMu.Unlock()
 }

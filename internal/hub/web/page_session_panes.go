@@ -130,28 +130,38 @@ type detailsData struct {
 	UsageNote string
 }
 
-// usageDetailPages bounds the usage pages read to find the live session.
-const usageDetailPages = 10
-
 // sessionUsageFacts lists what the usage report says about the live run of
 // the session, the one named session that started at created (the identity
 // sessions_list gives; a reused name is another run): the harness and its
 // version, the model, how it is paid for, the last report and the token
 // totals when known. An ended row or one of an earlier run never matches. A
 // value the report does not carry is left out (never shown as zero).
+//
+// The run identity the snapshot and the usage row share is the name and the
+// creation second, which a session recreated within the same second also
+// has. A row is therefore taken only when the Worker last listed it live
+// after that second ended: by then a session of that name created in that
+// second and still alive can only be the current one (an earlier one of that
+// second was already gone, and a complete listing without it ended its
+// row). More than one such row is ambiguous and shows nothing.
 func sessionUsageFacts(rows []ops.UsageSessionRow, session string, created time.Time) []DiagnosticsFact {
 	if created.IsZero() {
 		return nil
 	}
+	settled := (created.Unix() + 1) * 1000
 	var best *ops.UsageSessionRow
 	for i := range rows {
 		r := &rows[i]
 		if r.Name != session || r.StoppedAt != nil || r.StartedAt == nil || *r.StartedAt/1000 != created.Unix() {
 			continue
 		}
-		if best == nil || r.ObservedAt > best.ObservedAt {
-			best = r
+		if r.LastSeen < settled {
+			continue
 		}
+		if best != nil {
+			return nil
+		}
+		best = r
 	}
 	if best == nil {
 		return nil
@@ -188,9 +198,9 @@ func sessionUsageFacts(rows []ops.UsageSessionRow, session string, created time.
 }
 
 // liveSessionUsage finds the usage of the live run of the session: the run
-// its snapshot names (the session generation), then its row in every page of
-// the Worker's usage sessions. Without a live match it says usage is
-// unavailable.
+// its snapshot names (the session generation), looked up directly among the
+// live usage rows of that session on the Worker. Without one certain match it
+// says usage is unavailable.
 func liveSessionUsage(r *http.Request, c OpCaller, s SessionContext) ([]DiagnosticsFact, string) {
 	const unavailable = "Unavailable: no usage report for the current run of this session"
 	if !s.Online {
@@ -199,20 +209,12 @@ func liveSessionUsage(r *http.Request, c OpCaller, s SessionContext) ([]Diagnost
 	if s.SessionCreated <= 0 {
 		return nil, unavailable
 	}
-	created := time.Unix(s.SessionCreated, 0)
-	after := ""
-	for range usageDetailPages {
-		var res ops.UsageListResult
-		if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "sessions", WorkerID: s.WorkerID, Limit: 200, After: after}, &res); err != nil {
-			return nil, unavailable
-		}
-		if f := sessionUsageFacts(res.Sessions, s.Session, created); f != nil {
-			return f, ""
-		}
-		if res.Next == "" {
-			break
-		}
-		after = res.Next
+	var res ops.UsageListResult
+	if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "sessions", WorkerID: s.WorkerID, LiveSession: s.Session, Limit: 200}, &res); err != nil || res.Next != "" {
+		return nil, unavailable
+	}
+	if f := sessionUsageFacts(res.Sessions, s.Session, time.Unix(s.SessionCreated, 0)); f != nil {
+		return f, ""
 	}
 	return nil, unavailable
 }

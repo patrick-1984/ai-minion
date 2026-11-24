@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/hubid/hubidtest"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
@@ -123,7 +124,15 @@ func TestProductionStartupCreatesAnInvitationAndEnrollsAWorker(t *testing.T) {
 
 	data := hubstore.Dir(t)
 	rootPub := hubidtest.Provision(t, data)
-	h := startHub(t, &Config{DataDir: data}, DefaultRegistry)
+	reg := DefaultRegistry.Clone()
+	var auditLog *audit.Log
+	if err := reg.Register("auditprobe", auditModuleOrder+1, func(_ context.Context, env *Env) (err error) {
+		auditLog, err = Require[*audit.Log](env)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := startHub(t, &Config{DataDir: data}, reg)
 	logs := h.logs
 	hubFpr, err := identity.FingerprintOf(rootPub)
 	if err != nil {
@@ -240,6 +249,7 @@ func TestProductionStartupCreatesAnInvitationAndEnrollsAWorker(t *testing.T) {
 		if rows != want {
 			t.Errorf("%s audit rows = %d, want %d: %s", action, rows, want, body)
 		}
+		flushAudit(t, auditLog)
 		exported := 0
 		for _, line := range strings.Split(logs.String(), "\n") {
 			if strings.Contains(line, "msg=audit ") && strings.Contains(line, " action="+action+" ") && !strings.Contains(line, "outcome=failed") {

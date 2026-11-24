@@ -56,6 +56,8 @@ func (s *Store) InsertAudit(ctx context.Context, ex Execer, row AuditRow) error 
 	}
 	if obs := s.auditObs.Load(); obs != nil {
 		AfterCommit(ex, func() { (*obs)(ctx, row) })
+	} else {
+		AfterCommit(ex, func() { s.holdEarlyAudit(ctx, row) })
 	}
 	return nil
 }

@@ -27,6 +27,9 @@ type UsageListArgs struct {
 	SubscriptionOnly bool   `json:"subscription_only,omitempty"`
 	After            string `json:"after,omitempty"`
 	Limit            int    `json:"limit,omitempty"`
+	// LiveSession narrows the sessions section to the live (not ended) rows
+	// of the session with this name on WorkerID, which it requires.
+	LiveSession string `json:"live_session,omitempty"`
 }
 
 func (a UsageListArgs) Validate() error {
@@ -46,6 +49,9 @@ func (a UsageListArgs) Validate() error {
 		if !usageText(s, 1280) {
 			return invalid("filter", "invalid filter")
 		}
+	}
+	if a.LiveSession != "" && (a.Section != "sessions" || a.WorkerID == "" || !ValidSessionName(a.LiveSession)) {
+		return invalid("live_session", "needs the sessions section, a worker_id and a valid session name")
 	}
 	if a.SubscriptionOnly && a.Section != "accounts" || a.BucketID != "" && a.Section == "workers" {
 		return invalid("filter", "filter does not apply to this section")

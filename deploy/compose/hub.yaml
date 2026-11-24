@@ -45,8 +45,8 @@ services:
       MINION_DATA_DIR: /data
       MINION_ADMIN_PASSWORD: ${MINION_ADMIN_PASSWORD:-}
       # Behind a reverse proxy that ends TLS, uncomment these three (see
-      # docs/guides/reverse-proxy.md). The trusted proxy is the exact address or
-      # network of the proxy, never 0.0.0.0/0.
+      # docs/guides/reverse-proxy.md). The trusted proxy is the exact address of
+      # the proxy, never a shared network or 0.0.0.0/0.
       # MINION_TLS: "off"
       # MINION_PUBLIC_URL: https://hub.example.com
       # MINION_TRUSTED_PROXIES: 172.18.0.2/32

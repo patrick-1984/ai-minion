@@ -668,3 +668,42 @@ func TestUsageCollectorKeepSourcePreservesTheSavedChoice(t *testing.T) {
 		t.Fatal("keep_source accepted a Worker")
 	}
 }
+
+// Session Details looks up the live rows of one session directly: ended rows
+// of the same name, other names and other Workers never come back, however
+// many rows sort ahead of it.
+func TestUsageLiveSessionFilter(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	old := ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Complete: true}
+	for i := range 250 {
+		old.Sessions = append(old.Sessions, ops.UsageSession{ID: ops.UsageID("session", "f", fmt.Sprint(i)), Name: "aa-" + fmt.Sprint(i), AuthMode: "unknown", ObservedAt: old.ObservedAt, Source: "test"})
+	}
+	old.Sessions = append(old.Sessions, ops.UsageSession{ID: ops.UsageID("session", "mt-old"), Name: "mt", AuthMode: "unknown", ObservedAt: old.ObservedAt, Source: "test"})
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, old, now); err != nil {
+		t.Fatal(err)
+	}
+	at := now.Add(time.Minute)
+	cur := ops.UsageReport{Version: 1, ObservedAt: at.UnixMilli(), Complete: true, Sessions: []ops.UsageSession{
+		{ID: ops.UsageID("session", "mt-new"), Name: "mt", Model: "new", AuthMode: "unknown", ObservedAt: at.UnixMilli(), Source: "test"}}}
+	if err := s.SaveUsage(ctx, workers[0].ID, workers[0].OwnerID, cur, at); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadUsage(ctx, workers[:1], "alice", ops.UsageListArgs{Section: "sessions", WorkerID: "w1", LiveSession: "mt", Limit: 200}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sessions) != 1 || got.Sessions[0].Model != "new" || got.Sessions[0].StoppedAt != nil || got.Next != "" {
+		t.Fatalf("live session rows = %+v next=%q", got.Sessions, got.Next)
+	}
+	for _, bad := range []ops.UsageListArgs{
+		{Section: "sessions", LiveSession: "mt"},
+		{Section: "accounts", WorkerID: "w1", LiveSession: "mt"},
+		{Section: "sessions", WorkerID: "w1", LiveSession: "bad name\n"},
+	} {
+		if _, err := s.ReadUsage(ctx, workers[:1], "alice", bad, at); !errors.Is(err, ops.ErrInvalidArgument) {
+			t.Errorf("%+v: err = %v", bad, err)
+		}
+	}
+}

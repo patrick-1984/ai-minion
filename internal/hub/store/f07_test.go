@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -410,6 +411,24 @@ func TestStartupSuspendsIdPAdminsWithUnusableTokens(t *testing.T) {
 	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action = 'role.suspend' AND target IN ('ud', 'ue')`).Scan(&n); err != nil || n != 2 {
 		t.Errorf("audit events = %d, %v; want 2", n, err)
 	}
+	// The suspensions written while the store opened reach the first audit
+	// observer (the audit log, set up before the Hub serves), once each.
+	var mu sync.Mutex
+	seen := map[string]int{}
+	s.SetAuditObserver(func(_ context.Context, row AuditRow) {
+		mu.Lock()
+		defer mu.Unlock()
+		if row.Action == "role.suspend" && row.Actor == "system" {
+			seen[row.Target]++
+		}
+	})
+	s.SetAuditObserver(func(context.Context, AuditRow) { t.Error("held rows seen twice") })
+	s.SetAuditObserver(nil)
+	mu.Lock()
+	if len(seen) != 2 || seen["ud"] != 1 || seen["ue"] != 1 {
+		t.Errorf("exported suspensions = %v, want ud and ue once", seen)
+	}
+	mu.Unlock()
 	// A sign-in without a new token does not restore admin on a damaged token.
 	res, err := s.SyncOIDCLogin(ctx, OIDCSyncParams{Issuer: "i", Subject: "damaged", Roles: []string{"admin", "user"}, NowMS: 50})
 	if err != nil || !res.AdminWithheld || res.User.Role != "user" {

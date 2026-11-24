@@ -1,6 +1,8 @@
 package web
 
 import (
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +51,7 @@ func TestSessionUsageFacts(t *testing.T) {
 	rows := []ops.UsageSessionRow{{UsageSession: ops.UsageSession{Name: "other", Harness: "codex", StartedAt: &start}},
 		// An earlier run under the same name, newer report: never shown.
 		{UsageSession: ops.UsageSession{Name: "mt", Harness: "codex", Model: "old-model", StartedAt: &earlier, ObservedAt: 1800000000000}},
-		{UsageSession: ops.UsageSession{Name: "mt", Harness: "claude", Version: "2.1.3", Model: "haiku", AuthMode: "api_key", ObservedAt: 1700000000000, StartedAt: &start,
+		{LastSeen: 1700000001000, UsageSession: ops.UsageSession{Name: "mt", Harness: "claude", Version: "2.1.3", Model: "haiku", AuthMode: "api_key", ObservedAt: 1700000000000, StartedAt: &start,
 			UsageCounters: ops.UsageCounters{InputTokens: &in}}}}
 	got := sessionUsageFacts(rows, "mt", created)
 	text := ""
@@ -69,6 +71,19 @@ func TestSessionUsageFacts(t *testing.T) {
 	}
 	if sessionUsageFacts(rows, "mt", time.Time{}) != nil {
 		t.Error("facts without a live identity")
+	}
+	// Last listed within its creation second: it may be an earlier run
+	// recreated in that same second, so nothing is shown.
+	rows[2].LastSeen = 1700000000999
+	if sessionUsageFacts(rows, "mt", created) != nil {
+		t.Error("facts of a row last listed within the creation second")
+	}
+	rows[2].LastSeen = 1700000001000
+	// Two live rows of that second: ambiguous, nothing is shown.
+	twin := rows[2]
+	twin.Model = "other-run"
+	if sessionUsageFacts(append(slices.Clone(rows), twin), "mt", created) != nil {
+		t.Error("facts from an ambiguous match")
 	}
 	// The live run ended: its row is not the live one.
 	rows[2].StoppedAt = &stopped
@@ -101,5 +116,26 @@ func TestSessionCountersHonestZeroCostAndDurationSource(t *testing.T) {
 	}
 	if m := p.ModelText(ops.UsageSessionRow{UsageSession: ops.UsageSession{Harness: "codex"}}); !strings.Contains(m, "Codex") {
 		t.Errorf("model text %q", m)
+	}
+}
+
+// Details reads the live rows of the one session directly, in one call.
+func TestLiveSessionUsageLooksUpTheSessionDirectly(t *testing.T) {
+	start := int64(1700000000000)
+	row := ops.UsageSessionRow{WorkerID: "w1", LastSeen: start + 5000, UsageSession: ops.UsageSession{Name: "mt", Harness: "claude", StartedAt: &start}}
+	f := newFakeOps().reply(ops.OpUsageList, ops.UsageListResult{Sessions: []ops.UsageSessionRow{row}})
+	r := httptest.NewRequest("GET", "/", nil)
+	facts, note := liveSessionUsage(r, f, SessionContext{Online: true, WorkerID: "w1", Session: "mt", SessionCreated: 1700000000})
+	if note != "" || len(facts) == 0 {
+		t.Fatalf("facts=%v note=%q", facts, note)
+	}
+	calls := f.called(ops.OpUsageList)
+	if len(calls) != 1 || calls[0].Args["live_session"] != "mt" || calls[0].Args["worker_id"] != "w1" || calls[0].Args["section"] != "sessions" {
+		t.Fatalf("calls = %+v", calls)
+	}
+	// A page that does not hold every live row is not trusted.
+	f = newFakeOps().reply(ops.OpUsageList, ops.UsageListResult{Sessions: []ops.UsageSessionRow{row}, Next: "x"})
+	if facts, note := liveSessionUsage(r, f, SessionContext{Online: true, WorkerID: "w1", Session: "mt", SessionCreated: 1700000000}); facts != nil || note == "" {
+		t.Fatalf("partial page: facts=%v note=%q", facts, note)
 	}
 }
