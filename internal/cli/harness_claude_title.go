@@ -7,13 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
-	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -26,32 +23,44 @@ const (
 	// record: longer lines (prompts, tool results, API requests) are skipped
 	// without being decoded or kept.
 	maxClaudeTitleLine = 64 << 10
-	// maxClaudeCmdline bounds the process arguments read for --name.
-	maxClaudeCmdline = 256 << 10
+	// claudeTitleCommitTime is the part of the callback's budget kept for
+	// recording how far the search got: the search stops that much earlier.
+	claudeTitleCommitTime = 250 * time.Millisecond
+	// claudeTitleScanTime bounds a search when the callback has no deadline.
+	claudeTitleScanTime = 500 * time.Millisecond
 )
 
 // claudeTitleStore is the part of the Worker store the session name needs.
 type claudeTitleStore interface {
-	StoredHarnessTitle(ctx context.Context, session, pane, harness string, created int64, native string) (store.HarnessTitleCheck, error)
-	RecordHarnessTitle(ctx context.Context, grant string, e store.HarnessEvent, title string) error
+	ObserveHarnessTitle(ctx context.Context, grant string, e store.HarnessEvent, want string) (store.HarnessTitleObservation, error)
+	ConfirmHarnessTitle(ctx context.Context, grant string, e store.HarnessEvent, title string) error
 	MarkHarnessTitleChecked(ctx context.Context, grant string, e store.HarnessEvent, digest string, scanned int64) error
+}
+
+// claudeProfile is the Claude profile directory of the exporter's manifest
+// and the manifest read from it; the transcript is opened only beneath that
+// directory, and only while it still holds that manifest.
+type claudeProfile struct {
+	dir      string
+	manifest *claudeUsageIntegration
 }
 
 // recordClaudeTitle keeps the name the user gave the conversation. The status
 // line's session_name is not enough: it falls back to a title generated from
 // the prompts, and an unnamed /branch or a prompt hook writes a custom title
 // derived from submitted text, none of them marked as such. So a name is kept
-// only on positive evidence that the user typed it:
+// only on positive evidence that the user typed it: the transcript holds the
+// record of the user's own /rename <name> command (a local_command system
+// entry whose argument is the name). Otherwise the session shows no name.
+// Only those records are decoded; the transcript path and every other line
+// are discarded. Absent session_name means no name.
 //
-//   - the claude process was started with --name <name> (or -n), or
-//   - the transcript holds the record of the user's own /rename <name> command
-//     (a local_command system entry whose argument is the name).
-//
-// Otherwise the session shows no name. Only those records are decoded; the
-// transcript path, the arguments and every other line are discarded. The
-// transcript is opened only beneath the verified Claude profile directory.
-// Absent session_name means no name.
-func recordClaudeTitle(ctx context.Context, st claudeTitleStore, grant, profile string, e store.HarnessEvent, raw []byte) {
+// Every observation advances the session's observation fence first (see
+// store.ObserveHarnessTitle): a name that is not the one confirmed last is not
+// shown until this callback confirms it, and the confirmation is shown only
+// while no newer observation was recorded. The search stops early enough to
+// record how far it got within the callback's budget.
+func recordClaudeTitle(ctx context.Context, st claudeTitleStore, grant string, profile claudeProfile, e store.HarnessEvent, raw []byte) {
 	var n struct {
 		Session    string  `json:"session_id"`
 		Name       *string `json:"session_name"`
@@ -60,28 +69,17 @@ func recordClaudeTitle(ctx context.Context, st claudeTitleStore, grant, profile 
 	if json.Unmarshal(raw, &n) != nil || n.Session == "" {
 		return
 	}
-	kept, err := st.StoredHarnessTitle(ctx, e.Session, e.Pane, e.Harness, e.Created, e.NativeID)
-	if err != nil {
-		return
-	}
 	want := ""
 	if n.Name != nil {
 		want = ops.SanitizeHarnessName(*n.Name)
 	}
-	if want == kept.Title {
-		return
-	}
-	if want == "" {
-		_ = st.RecordHarnessTitle(ctx, grant, e, "")
-		return
-	}
-	if claudeStartedWithName(e.ProcessPID, e.ProcessBirth, want) {
-		_ = st.RecordHarnessTitle(ctx, grant, e, want)
+	obs, err := st.ObserveHarnessTitle(ctx, grant, e, want)
+	if err != nil || !obs.Verify {
 		return
 	}
 	f, id, err := openClaudeTranscript(profile, n.Transcript, n.Session)
 	if err != nil {
-		return // not readable now: nothing is recorded, the next redraw tries again
+		return // not readable now: no name is shown, the next redraw tries again
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
@@ -92,19 +90,31 @@ func recordClaudeTitle(ctx context.Context, st claudeTitleStore, grant, profile 
 	// the same file is searched again only in what the file gained since.
 	digest := ops.UsageID("claude-title-check", grant, n.Session, want, id)
 	from := int64(0)
-	if kept.Checked == digest && kept.Scanned <= info.Size() {
-		from = kept.Scanned
+	if obs.Checked == digest && obs.Scanned <= info.Size() {
+		from = obs.Scanned
 		if from == info.Size() {
 			return // nothing new since the last search
 		}
 	}
-	found, scanned, err := claudeRenamed(ctx, f, from, info.Size(), n.Session, want)
+	scanCtx, cancel := claudeTitleScanContext(ctx)
+	found, scanned, err := claudeRenamed(scanCtx, f, from, info.Size(), n.Session, want)
+	cancel()
 	switch {
 	case found:
-		_ = st.RecordHarnessTitle(ctx, grant, e, want)
+		_ = st.ConfirmHarnessTitle(ctx, grant, e, want)
 	case err == nil || scanned > from:
 		_ = st.MarkHarnessTitleChecked(ctx, grant, e, digest, scanned)
 	}
+}
+
+// claudeTitleScanContext is the budget of one transcript search: it ends
+// [claudeTitleCommitTime] before ctx does, so the search's progress can still
+// be recorded under ctx.
+func claudeTitleScanContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if d, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(ctx, d.Add(-claudeTitleCommitTime))
+	}
+	return context.WithTimeout(ctx, claudeTitleScanTime)
 }
 
 // claudeRenamed searches the transcript f from offset from up to size (at
@@ -186,43 +196,4 @@ func claudeRenameRecord(line []byte, session string) string {
 		return ""
 	}
 	return ops.SanitizeHarnessName(args)
-}
-
-// claudeStartedWithName reports whether the claude process pid (still the one
-// born at birth) was started with --name want or -n want.
-func claudeStartedWithName(pid int, birth, want string) bool {
-	if pid <= 0 || birth == "" || agentdetect.ProcessBirth(pid) != birth {
-		return false
-	}
-	f, err := os.Open(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
-	if err != nil {
-		return false
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, maxClaudeCmdline))
-	_ = f.Close()
-	if err != nil || agentdetect.ProcessBirth(pid) != birth {
-		return false
-	}
-	return claudeNameArg(strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")) == want
-}
-
-// claudeNameArg returns the sanitized value of the last --name / -n option of
-// a claude argv ("" for none). Options end at "--".
-func claudeNameArg(argv []string) string {
-	name := ""
-	for i := 1; i < len(argv); i++ {
-		a := argv[i]
-		switch {
-		case a == "--":
-			return name
-		case a == "--name" || a == "-n":
-			if i+1 < len(argv) {
-				i++
-				name = ops.SanitizeHarnessName(argv[i])
-			}
-		case strings.HasPrefix(a, "--name="):
-			name = ops.SanitizeHarnessName(strings.TrimPrefix(a, "--name="))
-		}
-	}
-	return name
 }

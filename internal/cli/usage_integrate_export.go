@@ -219,12 +219,15 @@ func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode,
 		return
 	}
 
+	// The session name is recorded last, after the usage sample: its
+	// transcript search may use what is left of the callback's budget.
+	var titled *store.HarnessEvent
 	if pane != "" && created > 0 && claudeStateEnabled(m.StateDir, lookup) {
 		if event, ok := parseClaudeHarnessEvent(mode, raw, grant, at); ok {
 			event.Session, event.Pane, event.Created = session, pane, created
 			event.ProcessPID, event.ProcessBirth = pid, birth
 			if st.RecordHarnessEvent(ctx, grant, event) == nil && mode == "status-line" {
-				recordClaudeTitle(ctx, st, grant, profile, event, raw)
+				titled = &event
 			}
 		}
 	}
@@ -265,5 +268,8 @@ func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode,
 	r, err := agent.ParseNativeUsage(raw, opts, at)
 	if err == nil {
 		_ = st.SaveNativeUsage(ctx, enrollment, r, now)
+	}
+	if titled != nil {
+		recordClaudeTitle(ctx, st, grant, claudeProfile{dir: profile, manifest: &m}, *titled, raw)
 	}
 }

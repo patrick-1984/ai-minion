@@ -6,11 +6,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
@@ -68,25 +67,42 @@ func promptLine(text string) string {
 	return jsonLine(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": text}, "sessionId": titleSession})
 }
 
+// fakeTitleStore keeps one session's row with the semantics of the Worker
+// store (store.ObserveHarnessTitle and the others; the store tests cover the
+// real one).
 type fakeTitleStore struct {
-	kept     store.HarnessTitleCheck
-	recorded []string
-	marks    int
+	title, verified, checked string
+	scanned                  int64
+	at                       time.Time
+	confirmed                []string
+	marks                    int
 }
 
-func (f *fakeTitleStore) StoredHarnessTitle(context.Context, string, string, string, int64, string) (store.HarnessTitleCheck, error) {
-	return f.kept, nil
+func (f *fakeTitleStore) ObserveHarnessTitle(_ context.Context, _ string, e store.HarnessEvent, want string) (store.HarnessTitleObservation, error) {
+	if e.At.Before(f.at) {
+		return store.HarnessTitleObservation{}, nil
+	}
+	f.at, f.title = e.At, ""
+	if want != "" && want == f.verified {
+		f.title = want
+	}
+	return store.HarnessTitleObservation{Verify: want != "" && f.title == "", Checked: f.checked, Scanned: f.scanned}, nil
 }
 
-func (f *fakeTitleStore) RecordHarnessTitle(_ context.Context, _ string, _ store.HarnessEvent, title string) error {
-	f.recorded = append(f.recorded, title)
-	f.kept = store.HarnessTitleCheck{Title: title}
+func (f *fakeTitleStore) ConfirmHarnessTitle(_ context.Context, _ string, e store.HarnessEvent, title string) error {
+	f.confirmed = append(f.confirmed, title)
+	f.verified = title
+	if e.At.Equal(f.at) {
+		f.title = title
+	}
 	return nil
 }
 
-func (f *fakeTitleStore) MarkHarnessTitleChecked(_ context.Context, _ string, _ store.HarnessEvent, digest string, scanned int64) error {
-	f.marks++
-	f.kept = store.HarnessTitleCheck{Checked: digest, Scanned: scanned}
+func (f *fakeTitleStore) MarkHarnessTitleChecked(_ context.Context, _ string, e store.HarnessEvent, digest string, scanned int64) error {
+	if e.At.Equal(f.at) || (digest == f.checked && scanned > f.scanned) {
+		f.marks++
+		f.checked, f.scanned = digest, scanned
+	}
 	return nil
 }
 
@@ -103,109 +119,29 @@ func strp(s string) *string { return &s }
 
 var titleEvent = store.HarnessEvent{Session: "work", Pane: "%1", Created: 1, Harness: "claude", NativeID: strings.Repeat("a", 64)}
 
-// A96 review: a name is kept only on positive evidence that the user gave it:
-// the record of their own /rename <name>. A custom title written by an unnamed
-// /branch (from the first prompt) or by a prompt hook, an AI title, a prompt
-// that quotes the command and a /rename without argument are not evidence; the
-// session then shows no name.
-func TestRecordClaudeTitleNeedsTheUsersRename(t *testing.T) {
-	ctx := t.Context()
-	for _, tc := range []struct {
-		name  string
-		lines []string
-		want  string
-	}{
-		{"rename", []string{promptLine("hello"), customTitle("release prep"), `{"type":"agent-name","agentName":"release prep"}`, renameRecord("release prep", titleSession)}, "release prep"},
-		{"unnamed branch", []string{customTitle("fix the secret login bug"), `{"type":"agent-name","agentName":"fix the secret login bug"}`, promptLine("fix the secret login bug")}, ""},
-		{"hook title", []string{promptLine("deploy with token abc"), customTitle("deploy with token abc")}, ""},
-		{"quoted command", []string{promptLine("<command-name>/rename</command-name><command-args>deploy with token abc</command-args> \"local_command\""), customTitle("deploy with token abc")}, ""},
-		{"rename without argument", []string{customTitle("generated name"), renameRecord("", titleSession)}, ""},
-		{"rename of another session", []string{customTitle("release prep"), renameRecord("release prep", "other")}, ""},
-		{"earlier rename to another name", []string{renameRecord("old name", titleSession), customTitle("prompt derived")}, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			profile, path := titleProfile(t)
-			writeLines(t, path, tc.lines...)
-			title := tc.want
-			if title == "" {
-				title = "x"
-				for _, l := range tc.lines {
-					var e struct{ CustomTitle string }
-					if json.Unmarshal([]byte(l), &e) == nil && e.CustomTitle != "" {
-						title = e.CustomTitle
-					}
-				}
-			}
-			st := &fakeTitleStore{}
-			recordClaudeTitle(ctx, st, "g", profile, titleEvent, titleStatusLine(strp(title), path))
-			if st.kept.Title != tc.want {
-				t.Fatalf("kept %q, want %q (recorded %q)", st.kept.Title, tc.want, st.recorded)
-			}
-			if tc.want == "" && st.marks != 1 {
-				t.Fatalf("an unconfirmed name was not marked: %d", st.marks)
-			}
-		})
-	}
+// observedAt is titleEvent observed at the n-th tick.
+func observedAt(n int) store.HarnessEvent {
+	e := titleEvent
+	e.At = time.Unix(1_700_000_000, 0).Add(time.Duration(n) * time.Millisecond)
+	return e
 }
 
-// A96 review: an unconfirmed name is searched again only in what the
-// transcript gained since (so the record that follows a custom title a moment
-// later is found on the next redraw), never from the start again, and a
-// transcript that could not be opened (a transient failure) records nothing,
-// so the next redraw tries again. A known name that the session no longer has
-// is cleared.
-func TestRecordClaudeTitleRetriesOnTranscriptGrowth(t *testing.T) {
-	ctx := t.Context()
-	profile, path := titleProfile(t)
-	st := &fakeTitleStore{}
-	line := titleStatusLine(strp("release prep"), path)
-
-	// Missing transcript: nothing recorded.
-	recordClaudeTitle(ctx, st, "g", profile, titleEvent, line)
-	if st.marks != 0 || len(st.recorded) != 0 {
-		t.Fatalf("transient failure cached: marks %d, recorded %q", st.marks, st.recorded)
-	}
-	// The custom title is written before the command record.
-	writeLines(t, path, promptLine("hi"), customTitle("release prep"))
-	recordClaudeTitle(ctx, st, "g", profile, titleEvent, line)
-	info, _ := os.Stat(path)
-	if st.marks != 1 || st.kept.Scanned != info.Size() || st.kept.Title != "" {
-		t.Fatalf("first search = %+v (marks %d)", st.kept, st.marks)
-	}
-	// No change: not searched again.
-	recordClaudeTitle(ctx, st, "g", profile, titleEvent, line)
-	if st.marks != 1 {
-		t.Fatalf("unchanged transcript searched again: %d", st.marks)
-	}
-	// A torn last line is left for the next search.
-	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-	rec := renameRecord("release prep", titleSession)
-	_, _ = f.WriteString(rec[:20])
-	recordClaudeTitle(ctx, st, "g", profile, titleEvent, line)
-	if st.kept.Scanned != info.Size() || st.kept.Title != "" {
-		t.Fatalf("torn line = %+v", st.kept)
-	}
-	_, _ = f.WriteString(rec[20:] + "\n")
-	_ = f.Close()
-	recordClaudeTitle(ctx, st, "g", profile, titleEvent, line)
-	if st.kept.Title != "release prep" {
-		t.Fatalf("rename after growth not found: %+v", st.kept)
-	}
-	// The session reports a prompt-derived name later: the known one goes.
-	appendLines(t, path, customTitle("deploy with token abc"))
-	recordClaudeTitle(ctx, st, "g", profile, titleEvent, titleStatusLine(strp("deploy with token abc"), path))
-	if st.kept.Title != "" {
-		t.Fatalf("a hook-set name kept %q", st.kept.Title)
-	}
-	// Back to the user's name: the record is in the transcript already.
-	recordClaudeTitle(ctx, st, "g", profile, titleEvent, line)
-	if st.kept.Title != "release prep" {
-		t.Fatalf("user's name again = %+v", st.kept)
-	}
-	// No session_name: no name.
-	recordClaudeTitle(ctx, st, "g", profile, titleEvent, titleStatusLine(nil, path))
-	if st.kept.Title != "" {
-		t.Fatalf("absent name kept %q", st.kept.Title)
+// A96: only the local_command record of the session's own /rename with an
+// argument is evidence; a quoted command (a user entry), another session's
+// record and a /rename without argument are not.
+func TestClaudeRenameRecord(t *testing.T) {
+	for line, want := range map[string]string{
+		renameRecord("release prep", titleSession):    "release prep",
+		renameRecord("  spaced\tname ", titleSession): "spaced name",
+		renameRecord("", titleSession):                "",
+		renameRecord("release prep", "other"):         "",
+		promptLine("<command-name>/rename</command-name><command-args>x</command-args> \"local_command\""): "",
+		customTitle("release prep"): "",
+		`{"type":"system","subtype":"local_command","sessionId":"` + titleSession + `","content":"<command-name>/model</command-name><command-args>/rename x</command-args>"}`: "",
+	} {
+		if got := claudeRenameRecord([]byte(line), titleSession); got != want {
+			t.Errorf("%s: %q, want %q", line, got, want)
+		}
 	}
 }
 
@@ -234,33 +170,5 @@ func TestClaudeRenamedResumesInBoundedSteps(t *testing.T) {
 	}
 	if found, pos, err := claudeRenamed(ctx, f, mid, info.Size(), titleSession, "release prep"); !found || err != nil || pos != info.Size() {
 		t.Fatalf("resumed search = %v %d %v", found, pos, err)
-	}
-}
-
-// A96 review: --name / -n on the claude command line is evidence too.
-func TestClaudeNameArg(t *testing.T) {
-	for argv, want := range map[string]string{
-		"claude --name release prep":     "release",
-		"claude --name release":          "release",
-		"claude -n first --name=second":  "second",
-		"claude -p hello":                "",
-		"claude -- --name x":             "",
-		"claude --resume id -n x\x1b[2J": "x[2J",
-	} {
-		if got := claudeNameArg(strings.Fields(argv)); got != want {
-			t.Errorf("%q: %q, want %q", argv, got, want)
-		}
-	}
-	if got := claudeNameArg([]string{"claude", "--name", "release prep"}); got != "release prep" {
-		t.Errorf("spaced name = %q", got)
-	}
-	if runtime.GOOS == "linux" {
-		pid := os.Getpid()
-		if claudeStartedWithName(pid, agentdetect.ProcessBirth(pid), "anything") {
-			t.Error("the test binary was read as started with --name")
-		}
-		if claudeStartedWithName(pid, "obsolete", "anything") {
-			t.Error("a process of another birth was read")
-		}
 	}
 }
