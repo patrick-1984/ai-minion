@@ -336,6 +336,32 @@ func TestTmuxSendTextToBusyCodexIsTypedNotSubmitted(t *testing.T) {
 	}
 }
 
+// A103 on a real tmux pane: a busy agent that is not known to enable
+// bracketed paste (here a line-oriented program detected as opencode) gets
+// nothing of a multi-line text: tmux brackets a paste only for a program that
+// enabled it, so the LF would submit the first line. failed_not_sent, reason
+// busy, forceable, with the note; no line reaches the program.
+func TestTmuxBusyMultiLineIntoUnbracketedAgentIsNotTyped(t *testing.T) {
+	ex, srv := realExecutor(t)
+	prog, screen := fakeBusyAgent(t, "opencode", "⠋ Working  esc to interrupt")
+	target := srv.NewSession("busyoc", prog, screen)
+	srv.WaitFor(target, "esc to interrupt", 10*time.Second)
+	waitBusy(t, ex, "busyoc")
+
+	for _, submit := range []bool{true, false} {
+		res := realWrite(t, ex, ops.OpSendText, ops.SendTextArgs{
+			WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: ops.Target{SessionName: "busyoc"}, Text: "line-one\nline-two", Submit: submit,
+		})
+		if res.Outcome != ops.OutcomeFailedNotSent || res.Reason != "busy" || !res.Forceable || res.Note != ops.BusyNoteMultiLineNotTyped {
+			t.Fatalf("submit=%v: busy multi-line send = %+v", submit, res)
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	if out := srv.Capture(target); strings.Contains(out, "line-one") || strings.Contains(out, "got:") {
+		t.Fatalf("a multi-line text reached a busy unbracketed program:\n%s", out)
+	}
+}
+
 // dialogAfterPaste is a real tmux host that, after each paste, makes the fake
 // agent draw its permission dialog (SIGUSR1) and waits until the dialog is on
 // the screen: Claude Code opening a Bash permission prompt during the paste.

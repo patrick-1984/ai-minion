@@ -299,7 +299,12 @@ func Refused(reason string, pane *PaneInfo, warnings ...Warning) WriteResult {
 const (
 	// BusyNoteTypedNotSubmitted is the note of text typed into a busy agent
 	// whose submit key was not pressed although submit was requested.
-	BusyNoteTypedNotSubmitted = "session busy: the text was typed into the input line but not submitted, so it cannot answer a permission prompt by accident; press Enter in the session to queue or send it (or send again with force=true and a new request_id)"
+	BusyNoteTypedNotSubmitted = "session busy: the text was typed into the input line but not submitted, so it cannot answer a permission prompt by accident; when the session is ready, check the input line there and press Enter (do not send it again — it would be typed twice)"
+	// BusyNoteMultiLineNotTyped is the note of a multi-line text that was not
+	// typed into a busy pane whose paste is not known to be bracketed: a
+	// line-oriented program could submit it line by line. The result is
+	// failed_not_sent, reason busy, forceable.
+	BusyNoteMultiLineNotTyped = "session busy: multi-line text was not typed, because this program could submit it line by line; send it when the session is idle (or with force=true and a new request_id)"
 	// BusyNoteTyped is the note of text without submit into a busy agent.
 	BusyNoteTyped = "session busy: the text was typed into the input line and not submitted, as requested"
 )

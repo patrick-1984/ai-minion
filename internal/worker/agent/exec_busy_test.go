@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 
@@ -22,6 +23,7 @@ func busySubmit(session, text string) ops.SendTextArgs {
 func TestBusyClaudeIsTypedOnlyWithoutEnter(t *testing.T) {
 	for _, text := range []string{"hello", " 　look at this", "a ! b", "!ls", "  !x", "\t\n!y", "　 "} {
 		e := newEnv(t)
+		e.host.verbatim = true // the bracketed paste of tmux and ConPTY
 		e.host.addSession("work", "claude")
 		e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
 		res := e.mustWrite(ops.OpSendText, busySubmit("work", text))
@@ -70,6 +72,82 @@ func TestBusyWithoutSubmitIsDeliveredTyped(t *testing.T) {
 	res := e.mustWrite(ops.OpSendText, sendText("work", "draft", false))
 	if res.Outcome != ops.OutcomeDelivered || res.Note != ops.BusyNoteTyped || !hasWarning(res, "session_busy") || len(e.host.keys()) != 0 || len(e.host.pastes()) != 1 {
 		t.Fatalf("result = %+v, keys %v", res, e.host.keys())
+	}
+}
+
+// A multi-line text into a busy pane is typed only when the paste arrives
+// bracketed: the agent is one known to enable bracketed paste (Claude Code,
+// Codex) and the host frames the paste. Otherwise a line-oriented program
+// could submit the first line, so nothing is typed: failed_not_sent, reason
+// busy, forceable, with the note.
+func TestBusyMultiLineIsTypedOnlyWhenBracketed(t *testing.T) {
+	for _, tc := range []struct {
+		kind     string
+		verbatim bool
+		submit   bool
+		typed    bool
+	}{
+		{"agent:claude", true, true, true},
+		{"agent:codex", true, false, true},
+		{"agent:claude", false, true, false},
+		{"agent:codex", false, false, false},
+		{"agent:gemini", true, true, false},
+		{"agent:aider", true, false, false},
+		{"agent:opencode", true, true, false},
+		{ops.PaneKindUnknown, true, true, false},
+		{ops.PaneKindOther, true, false, false},
+	} {
+		what := fmt.Sprintf("%s verbatim=%v submit=%v", tc.kind, tc.verbatim, tc.submit)
+		e := newEnv(t)
+		e.host.verbatim = tc.verbatim
+		e.host.addSession("work", "prog")
+		e.cls.set("prog", tc.kind, ops.PaneStateBusy)
+		a := sendText("work", "line one\nline two", false)
+		a.Submit = tc.submit
+		res := e.mustWrite(ops.OpSendText, a)
+		if err := res.Validate(); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if k := e.host.keys(); len(k) != 0 {
+			t.Fatalf("%s: keys = %+v", what, k)
+		}
+		p := e.host.pastes()
+		if !tc.typed {
+			if res.Outcome != ops.OutcomeFailedNotSent || res.Reason != "busy" || !res.Forceable || res.Forced ||
+				res.Note != ops.BusyNoteMultiLineNotTyped || len(p) != 0 {
+				t.Fatalf("%s: result = %+v, pastes %+v", what, res, p)
+			}
+			continue
+		}
+		if len(p) != 1 || !p[0].Bracketed || p[0].Text != "line one\nline two" {
+			t.Fatalf("%s: pastes = %+v, want one bracketed", what, p)
+		}
+		want := ops.OutcomeDelivered
+		if tc.submit {
+			want = ops.OutcomePartial
+		}
+		if res.Outcome != want || !hasWarning(res, "session_busy") {
+			t.Fatalf("%s: result = %+v", what, res)
+		}
+	}
+}
+
+// A single-line text and a forced or idle multi-line text are not affected.
+func TestBusyMultiLineRuleIsNarrow(t *testing.T) {
+	e := newEnv(t)
+	e.host.addSession("work", "prog")
+	e.cls.set("prog", "agent:gemini", ops.PaneStateBusy)
+	if res := e.mustWrite(ops.OpSendText, busySubmit("work", "one line")); res.Outcome != ops.OutcomePartial || len(e.host.pastes()) != 1 {
+		t.Fatalf("single line = %+v", res)
+	}
+	a := busySubmit("work", "a\nb")
+	a.Force = true
+	if res := e.mustWrite(ops.OpSendText, a); res.Outcome != ops.OutcomeDelivered || !res.Forced || len(e.host.pastes()) != 2 {
+		t.Fatalf("forced = %+v", res)
+	}
+	e.cls.set("prog", "agent:gemini", ops.PaneStateStable)
+	if res := e.mustWrite(ops.OpSendText, busySubmit("work", "c\nd")); res.Outcome != ops.OutcomeDelivered || len(e.host.pastes()) != 3 {
+		t.Fatalf("idle = %+v", res)
 	}
 }
 
