@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"errors"
 	"sync"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
+	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
 
 // A103: send_text into an agent busy with a turn, without force.
@@ -171,5 +174,149 @@ func TestBusySendReportsDeliveredBusy(t *testing.T) {
 	rows := e.audit()
 	if len(rows) != 1 || rows[0].Outcome != "delivered" || rows[0].Reason != "busy" {
 		t.Fatalf("audit = %+v", rows)
+	}
+}
+
+// claudeBashDialog is the screen of a Claude Code Bash permission dialog.
+var claudeBashDialog = []string{
+	"╭───────────────────────────────────────────────────────────────────╮",
+	"│ Bash command                                                      │",
+	"│                                                                   │",
+	"│   rm -rf build/                                                   │",
+	"│   Remove the build directory                                      │",
+	"│                                                                   │",
+	"│ Do you want to proceed?                                           │",
+	"│ ❯ 1. Yes                                                          │",
+	"│   2. Yes, and don't ask again for rm commands in /home/user/proj  │",
+	"│   3. No, and tell Claude what to do differently (esc)             │",
+	"╰───────────────────────────────────────────────────────────────────╯",
+}
+
+// claudeBusyScreen is the screen of a Claude Code turn in progress.
+var claudeBusyScreen = []string{
+	"> Refactor the parser",
+	"",
+	"● I'll start by reading the parser module.",
+	"",
+	"✻ Thinking… (12s · ↑ 1.2k tokens · esc to interrupt)",
+	"",
+	"╭───────────────────────────────────────────────────────────────────────╮",
+	"│ >                                                                     │",
+	"╰───────────────────────────────────────────────────────────────────────╯",
+	"  ? for shortcuts",
+}
+
+// wantHeldBack checks a busy Claude send whose Enter was held back after the
+// paste: the text went out once, no key at all, partial with the reason.
+func wantHeldBack(t *testing.T, e *env, res ops.WriteResult, reason, note string) {
+	t.Helper()
+	if res.Outcome != ops.OutcomePartial || res.Reason != reason || res.Forced || res.Forceable {
+		t.Fatalf("result = %+v, want partial %s", res, reason)
+	}
+	if res.Note != note || !hasWarning(res, "session_busy") {
+		t.Fatalf("note %q, warnings %+v", res.Note, res.Warnings)
+	}
+	if p := e.host.pastes(); len(p) != 1 {
+		t.Fatalf("pastes = %+v, want one", p)
+	}
+	if k := e.host.keys(); len(k) != 0 {
+		t.Fatalf("keys = %+v, want none: the Enter would answer the dialog", k)
+	}
+	if err := res.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A Bash permission dialog that opens while the text is pasted into a busy
+// Claude Code must not get the Enter: it would approve the command. The real
+// classifier reads the fresh screen.
+func TestBusyClaudeDialogAfterPasteGetsNoEnter(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.Classifier = agentdetect.New() })
+	ref := e.host.addSession("work", "claude")
+	e.host.setScreen(ref, claudeBusyScreen...)
+	e.host.onPaste = func() { e.host.setScreen(ref, claudeBashDialog...) }
+	res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
+	wantHeldBack(t, e, res, "dialog_open", ops.BusyNoteDialogOpened)
+}
+
+// The same with the classifier switching to the dialog state after the paste.
+func TestBusyClaudeDialogStateAfterPasteGetsNoEnter(t *testing.T) {
+	e := newEnv(t)
+	e.host.addSession("work", "claude")
+	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
+	e.host.onPaste = func() { e.cls.set("claude", "agent:claude", ops.PaneStateDialog) }
+	res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
+	wantHeldBack(t, e, res, "dialog_open", ops.BusyNoteDialogOpened)
+}
+
+// A screen that cannot be read (completely) after the paste holds the Enter
+// back: nobody can tell whether a dialog opened.
+func TestBusyClaudeSnapshotErrorAfterPasteGetsNoEnter(t *testing.T) {
+	for _, serr := range []error{term.ErrIncomplete, errors.New("tmux: broken pipe")} {
+		e := newEnv(t, func(c *Config) { c.Classifier = agentdetect.New() })
+		ref := e.host.addSession("work", "claude")
+		e.host.setScreen(ref, claudeBusyScreen...)
+		e.host.onPaste = func() { e.host.mu.Lock(); e.host.snapshotErr = serr; e.host.mu.Unlock() }
+		res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
+		wantHeldBack(t, e, res, "view_incomplete", ops.BusyNoteUnchecked)
+	}
+}
+
+// A pane that changed or vanished during the paste gets no Enter.
+func TestBusyClaudePaneChangedAfterPasteGetsNoEnter(t *testing.T) {
+	e := newEnv(t)
+	ref := e.host.addSession("work", "claude")
+	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
+	e.host.onPaste = func() { e.host.mutatePane(ref.ID, func(p *term.Pane) { p.Ref.PID++ }) }
+	res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
+	wantHeldBack(t, e, res, "pane_changed", ops.BusyNoteUnchecked)
+
+	e = newEnv(t)
+	e.host.addSession("work", "claude")
+	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
+	e.host.onPaste = func() { e.host.mu.Lock(); e.host.sessions = nil; e.host.mu.Unlock() }
+	res = e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
+	wantHeldBack(t, e, res, "target_not_found", ops.BusyNoteUnchecked)
+}
+
+// A busy Claude Code whose screen still shows the running turn after the
+// paste gets its Enter, read by the real classifier.
+func TestBusyClaudeStillBusyAfterPasteGetsEnter(t *testing.T) {
+	e := newEnv(t, func(c *Config) { c.Classifier = agentdetect.New() })
+	ref := e.host.addSession("work", "claude")
+	e.host.setScreen(ref, claudeBusyScreen...)
+	res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
+	if res.Outcome != ops.OutcomeDelivered || res.Note != ops.BusyNoteClaudeQueued || !hasWarning(res, "session_busy") {
+		t.Fatalf("result = %+v", res)
+	}
+	if got := e.host.eventLog(); len(got) != 2 || got[0] != "paste "+ref.ID || got[1] != "keys "+ref.ID+" Enter" {
+		t.Fatalf("events = %v", got)
+	}
+}
+
+// The idle and the forced paths are unchanged: no second look at the screen
+// between the paste and the Enter.
+func TestIdleAndForcedSendTakeNoSecondSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		force bool
+	}{{ops.PaneStateStable, false}, {ops.PaneStateBusy, true}} {
+		e := newEnv(t)
+		e.host.addSession("work", "claude")
+		e.cls.set("claude", "agent:claude", tc.state)
+		// Even a dialog after the paste is not looked for on these paths.
+		e.host.onPaste = func() { e.cls.set("claude", "agent:claude", ops.PaneStateDialog) }
+		a := busySubmit("work", "go")
+		a.Force = tc.force
+		res := e.mustWrite(ops.OpSendText, a)
+		if res.Outcome != ops.OutcomeDelivered || res.Note != "" || len(e.host.keys()) != 1 {
+			t.Fatalf("%+v: result = %+v, keys %v", tc, res, e.host.keys())
+		}
+		e.host.mu.Lock()
+		n := e.host.snapshots
+		e.host.mu.Unlock()
+		if n != 1 {
+			t.Fatalf("%+v: snapshots = %d, want 1", tc, n)
+		}
 	}
 }
