@@ -672,3 +672,32 @@ func splitCombinators(sel string) []string {
 	flush(len(sel))
 	return out
 }
+
+// A96: on a phone the empty state-detail cells are hidden, but a full-width
+// empty-list cell (also class "empty") stays visible; the Source column is
+// shown at every width, and the detail cells wrap below 1280px.
+func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
+	rules := loadSheet(t)
+	table := []cssEl{el("table", "rtable session-table")}
+	emptyList := el("td", "empty")
+	emptyDetail := el("td", "col-source cell-nowrap empty")
+	source := el("td", "col-source cell-nowrap muted")
+	for _, w := range []int{320, 390, 639} {
+		if d := valueAt(rules, "display", emptyList, table, w); d == "none" {
+			t.Errorf("the empty-list cell is hidden at %dpx", w)
+		}
+		if d := valueAt(rules, "display", emptyDetail, table, w); d != "none" {
+			t.Errorf("an empty detail cell has display %q at %dpx, want none", d, w)
+		}
+	}
+	for _, w := range []int{390, 768, 1024, 1279, 1280, 1920} {
+		if d := valueAt(rules, "display", source, table, w); d == "none" {
+			t.Errorf("the Source cell is hidden at %dpx", w)
+		}
+	}
+	for w, want := range map[int]string{768: "normal", 1024: "normal", 1279: "normal", 1280: "nowrap"} {
+		if ws := valueAt(rules, "white-space", source, table, w); ws != want {
+			t.Errorf("white-space of a detail cell at %dpx = %q, want %q", w, ws, want)
+		}
+	}
+}

@@ -40,9 +40,9 @@
   {{end}}{{if .ShowOwner}}<td data-label="Owner"{{if gt (len .Owner) 32}} class="cell-clamp" title="{{.Owner}}" tabindex="0"{{end}}>{{.Owner}}</td>
   {{end}}<td data-label="Kind">{{.Kind}}</td>
   <td data-label="State" class="cell-nowrap"><span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></td>
-  <td data-label="Activity" class="col-activity{{if .StateReason}} cell-clamp" title="{{.StateReason}}"{{if gt (len .StateReason) 24}} tabindex="0"{{end}} data-state-reason{{else}} empty"{{end}}>{{.StateReason}}</td>
+  <td data-label="Activity" class="col-activity{{if .StateReason}}" data-state-reason{{else}} empty"{{end}}>{{.StateReason}}</td>
   <td data-label="Source" class="col-source cell-nowrap{{if .StateSource}} muted" data-state-source="{{.StateSource}}"{{else}} empty"{{end}}>{{.StateSourceLabel}}</td>
-  <td data-label="Last event" class="col-last-event cell-nowrap{{if .LastEvent.IsZero}} empty"{{else}} muted" data-sort-value="{{.LastEvent.Time.UTC.Format "2006-01-02T15:04:05Z"}}"{{end}}>{{if not .LastEvent.IsZero}}<time datetime="{{.LastEvent.Time.Format "2006-01-02T15:04:05Z07:00"}}">{{.LastEvent.Time.UTC.Format "15:04:05 UTC"}}</time>{{end}}</td>
+  <td data-label="Last event" class="col-last-event cell-nowrap{{if .LastEvent.IsZero}} empty"{{else}} muted" data-sort-value="{{.LastEvent.Time.UTC.Format "2006-01-02T15:04:05.000Z"}}"{{end}}>{{if not .LastEvent.IsZero}}<time datetime="{{.LastEvent.Time.Format "2006-01-02T15:04:05Z07:00"}}">{{.LastEvent.Time.UTC.Format "15:04:05 UTC"}}</time>{{end}}</td>
 </tr>{{end}}
 
 {{/* What the person who approves a new Worker compares: its key fingerprint, the host name it announced and the address it enrolled from. */}}

@@ -139,11 +139,11 @@ func TestSessionRowStateDetailColumns(t *testing.T) {
 	mustHave(t, body,
 		`<th scope="col" data-sort="text">State</th><th scope="col" data-sort="text" class="col-activity">Activity</th><th scope="col" data-sort="text" class="col-source">Source</th><th scope="col" data-sort="text" class="col-last-event">Last event</th>`,
 		`<td data-label="State" class="cell-nowrap"><span class="badge" data-state="busy">Working</span></td>`,
-		`<td data-label="Activity" class="col-activity cell-clamp" title="1 shell, 1 subagent" data-state-reason>1 shell, 1 subagent</td>`,
+		`<td data-label="Activity" class="col-activity" data-state-reason>1 shell, 1 subagent</td>`,
 		`<td data-label="Source" class="col-source cell-nowrap muted" data-state-source="claude-hooks">Claude Code hooks</td>`,
-		`<td data-label="Last event" class="col-last-event cell-nowrap muted" data-sort-value="2026-11-23T05:53:21Z"><time datetime="2026-11-23T05:53:21Z">05:53:21 UTC</time></td>`,
-		// A long reason is clamped to one line; the full text is in the tooltip and opens on focus.
-		`<td data-label="Activity" class="col-activity cell-clamp" title="3 shells, 2 subagents, 1 workflow, 1 open task" tabindex="0" data-state-reason>`,
+		`<td data-label="Last event" class="col-last-event cell-nowrap muted" data-sort-value="2026-11-23T05:53:21.000Z"><time datetime="2026-11-23T05:53:21Z">05:53:21 UTC</time></td>`,
+		// A long reason wraps and stays readable without focus (a live refresh keeps no focus on it).
+		`<td data-label="Activity" class="col-activity" data-state-reason>3 shells, 2 subagents, 1 workflow, 1 open task</td>`,
 		`<td data-label="Source" class="col-source cell-nowrap muted" data-state-source="screen">Terminal screen</td>`,
 		`<td data-label="Activity" class="col-activity empty"></td>`,
 		`<td data-label="Source" class="col-source cell-nowrap empty"></td>`,
