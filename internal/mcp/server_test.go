@@ -553,7 +553,7 @@ func TestBusyWriteResultsCarryTheWorkersNote(t *testing.T) {
 		result  ops.WriteResult
 		isError bool
 	}{
-		{ops.WriteResult{Outcome: ops.OutcomeDelivered, Note: ops.BusyNoteClaudeQueued, Warnings: []ops.Warning{ops.WarnSessionBusy}}, false},
+		{ops.WriteResult{Outcome: ops.OutcomeDelivered, Note: ops.BusyNoteTyped, Warnings: []ops.Warning{ops.WarnSessionBusy}}, false},
 		{ops.WriteResult{Outcome: ops.OutcomePartial, Reason: "busy", Note: ops.BusyNoteTypedNotSubmitted, Warnings: []ops.Warning{ops.WarnSessionBusy}}, true},
 	} {
 		fb := newFake()

@@ -4,7 +4,7 @@ This is a Worker operation. It runs on the local Worker through its control sock
 Accepted actions: operate.
 
 This is a write. The result reports the outcome, the reason, whether the refusal is forceable, any warnings and a note (for a refusal: why, and how to send anyway).
-Into an agent busy with a turn (without --force): Claude Code queues the text, so it is sent with Enter as usual (delivered, with a note); any other agent, or Claude text starting with "!", gets the text typed and not submitted (partial, reason busy).
+Into an agent busy with a turn (without --force), Claude Code included: the text is typed and not submitted, so an Enter cannot answer a permission prompt that opens meanwhile (partial, reason busy, with a note).
 Exit status: 0 delivered, 3 failed_not_sent, 4 partial or unknown, 1 error, 2 usage.
 A FORCE refusal is repeated with --force only when you pass it.
 A Worker that is older than this command and lacks the safeguard this request relies on refuses it before anything is sent (exit 1, not an outcome); update and restart the Worker.

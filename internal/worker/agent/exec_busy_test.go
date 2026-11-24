@@ -1,13 +1,11 @@
 package agent
 
 import (
-	"errors"
 	"sync"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
-	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
 
 // A103: send_text into an agent busy with a turn, without force.
@@ -18,38 +16,19 @@ func busySubmit(session, text string) ops.SendTextArgs {
 	return a
 }
 
-// Claude Code queues input typed during a turn: the text and its Enter go
-// out exactly as into an idle pane, with the busy note and warning.
-func TestBusyClaudeSendIsDeliveredWithEnterAndNote(t *testing.T) {
-	for _, text := range []string{"hello", " 　look at this", "a ! b"} {
+// A busy Claude Code gets the text typed, never the submit key: a permission
+// dialog could open between any screen check and the Enter, and the Enter
+// would answer it. Shell-mode text ("!") is no different.
+func TestBusyClaudeIsTypedOnlyWithoutEnter(t *testing.T) {
+	for _, text := range []string{"hello", " 　look at this", "a ! b", "!ls", "  !x", "\t\n!y", "　 "} {
 		e := newEnv(t)
 		e.host.addSession("work", "claude")
 		e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
 		res := e.mustWrite(ops.OpSendText, busySubmit("work", text))
-		if res.Outcome != ops.OutcomeDelivered || res.Reason != "" || res.Forced || res.Forceable {
-			t.Fatalf("%q: result = %+v", text, res)
-		}
-		if res.Note != ops.BusyNoteClaudeQueued || !hasWarning(res, "session_busy") {
-			t.Fatalf("%q: note %q, warnings %+v", text, res.Note, res.Warnings)
-		}
-		if p := e.host.pastes(); len(p) != 1 || p[0].Text != text {
+		wantTypedOnly(t, e, res, "claude "+text)
+		if p := e.host.pastes(); p[0].Text != text {
 			t.Fatalf("%q: pastes = %+v", text, p)
 		}
-		if k := e.host.keys(); len(k) != 1 || len(k[0]) != 1 || k[0][0] != "Enter" {
-			t.Fatalf("%q: keys = %+v, want one Enter", text, k)
-		}
-	}
-}
-
-// Claude text starting with "!" (after any white space, Unicode included)
-// switches Claude Code to shell mode: it is typed and not submitted.
-func TestBusyClaudeBangIsTypedOnly(t *testing.T) {
-	for _, text := range []string{"!ls", "  !x", "  !rm", "\t\n!y"} {
-		e := newEnv(t)
-		e.host.addSession("work", "claude")
-		e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
-		res := e.mustWrite(ops.OpSendText, busySubmit("work", text))
-		wantTypedOnly(t, e, res, text)
 	}
 }
 
@@ -113,25 +92,6 @@ func TestBusyForcedIsUnchanged(t *testing.T) {
 	}
 }
 
-// Text of white space only (Unicode included) or empty must not panic.
-func TestBusyWhitespaceOnlyTextDoesNotPanic(t *testing.T) {
-	for _, text := range []string{"", " ", "　", "  \t"} {
-		if busyQueues("agent:claude", text) != true {
-			t.Errorf("%q: a blank text is not a shell-mode text", text)
-		}
-		if busyQueues("agent:codex", text) {
-			t.Errorf("%q: codex never queues", text)
-		}
-	}
-	e := newEnv(t)
-	e.host.addSession("work", "claude")
-	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
-	res := e.mustWrite(ops.OpSendText, busySubmit("work", "　 "))
-	if res.Outcome != ops.OutcomeDelivered || res.Note != ops.BusyNoteClaudeQueued {
-		t.Fatalf("result = %+v", res)
-	}
-}
-
 // send_keys into a busy agent still refuses (forceable), now with a note;
 // other refusals carry their notes too.
 func TestRefusalsCarryNotes(t *testing.T) {
@@ -165,7 +125,7 @@ func TestBusySendReportsDeliveredBusy(t *testing.T) {
 	var mu sync.Mutex
 	var got []LocalWrite
 	e.ex.OnLocalWrite(func(lw LocalWrite) { mu.Lock(); got = append(got, lw); mu.Unlock() })
-	e.mustWrite(ops.OpSendText, busySubmit("work", "x"))
+	e.mustWrite(ops.OpSendText, sendText("work", "x", false))
 	mu.Lock()
 	defer mu.Unlock()
 	if len(got) != 1 || got[0].Outcome != "delivered" || got[0].Reason != "busy" {
@@ -206,91 +166,24 @@ var claudeBusyScreen = []string{
 	"  ? for shortcuts",
 }
 
-// wantHeldBack checks a busy Claude send whose Enter was held back after the
-// paste: the text went out once, no key at all, partial with the reason.
-func wantHeldBack(t *testing.T, e *env, res ops.WriteResult, reason, note string) {
-	t.Helper()
-	if res.Outcome != ops.OutcomePartial || res.Reason != reason || res.Forced || res.Forceable {
-		t.Fatalf("result = %+v, want partial %s", res, reason)
-	}
-	if res.Note != note || !hasWarning(res, "session_busy") {
-		t.Fatalf("note %q, warnings %+v", res.Note, res.Warnings)
-	}
-	if p := e.host.pastes(); len(p) != 1 {
-		t.Fatalf("pastes = %+v, want one", p)
-	}
-	if k := e.host.keys(); len(k) != 0 {
-		t.Fatalf("keys = %+v, want none: the Enter would answer the dialog", k)
-	}
-	if err := res.Validate(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // A Bash permission dialog that opens while the text is pasted into a busy
-// Claude Code must not get the Enter: it would approve the command. The real
-// classifier reads the fresh screen.
+// Claude Code never gets an Enter (it would approve the command): no key goes
+// out on the busy path at all, and the screen is not read a second time.
 func TestBusyClaudeDialogAfterPasteGetsNoEnter(t *testing.T) {
 	e := newEnv(t, func(c *Config) { c.Classifier = agentdetect.New() })
 	ref := e.host.addSession("work", "claude")
 	e.host.setScreen(ref, claudeBusyScreen...)
 	e.host.onPaste = func() { e.host.setScreen(ref, claudeBashDialog...) }
 	res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
-	wantHeldBack(t, e, res, "dialog_open", ops.BusyNoteDialogOpened)
-}
-
-// The same with the classifier switching to the dialog state after the paste.
-func TestBusyClaudeDialogStateAfterPasteGetsNoEnter(t *testing.T) {
-	e := newEnv(t)
-	e.host.addSession("work", "claude")
-	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
-	e.host.onPaste = func() { e.cls.set("claude", "agent:claude", ops.PaneStateDialog) }
-	res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
-	wantHeldBack(t, e, res, "dialog_open", ops.BusyNoteDialogOpened)
-}
-
-// A screen that cannot be read (completely) after the paste holds the Enter
-// back: nobody can tell whether a dialog opened.
-func TestBusyClaudeSnapshotErrorAfterPasteGetsNoEnter(t *testing.T) {
-	for _, serr := range []error{term.ErrIncomplete, errors.New("tmux: broken pipe")} {
-		e := newEnv(t, func(c *Config) { c.Classifier = agentdetect.New() })
-		ref := e.host.addSession("work", "claude")
-		e.host.setScreen(ref, claudeBusyScreen...)
-		e.host.onPaste = func() { e.host.mu.Lock(); e.host.snapshotErr = serr; e.host.mu.Unlock() }
-		res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
-		wantHeldBack(t, e, res, "view_incomplete", ops.BusyNoteUnchecked)
+	wantTypedOnly(t, e, res, "claude dialog")
+	if got := e.host.eventLog(); len(got) != 1 || got[0] != "paste "+ref.ID {
+		t.Fatalf("events = %v, want the paste only", got)
 	}
-}
-
-// A pane that changed or vanished during the paste gets no Enter.
-func TestBusyClaudePaneChangedAfterPasteGetsNoEnter(t *testing.T) {
-	e := newEnv(t)
-	ref := e.host.addSession("work", "claude")
-	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
-	e.host.onPaste = func() { e.host.mutatePane(ref.ID, func(p *term.Pane) { p.Ref.PID++ }) }
-	res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
-	wantHeldBack(t, e, res, "pane_changed", ops.BusyNoteUnchecked)
-
-	e = newEnv(t)
-	e.host.addSession("work", "claude")
-	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
-	e.host.onPaste = func() { e.host.mu.Lock(); e.host.sessions = nil; e.host.mu.Unlock() }
-	res = e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
-	wantHeldBack(t, e, res, "target_not_found", ops.BusyNoteUnchecked)
-}
-
-// A busy Claude Code whose screen still shows the running turn after the
-// paste gets its Enter, read by the real classifier.
-func TestBusyClaudeStillBusyAfterPasteGetsEnter(t *testing.T) {
-	e := newEnv(t, func(c *Config) { c.Classifier = agentdetect.New() })
-	ref := e.host.addSession("work", "claude")
-	e.host.setScreen(ref, claudeBusyScreen...)
-	res := e.mustWrite(ops.OpSendText, busySubmit("work", "next step"))
-	if res.Outcome != ops.OutcomeDelivered || res.Note != ops.BusyNoteClaudeQueued || !hasWarning(res, "session_busy") {
-		t.Fatalf("result = %+v", res)
-	}
-	if got := e.host.eventLog(); len(got) != 2 || got[0] != "paste "+ref.ID || got[1] != "keys "+ref.ID+" Enter" {
-		t.Fatalf("events = %v", got)
+	e.host.mu.Lock()
+	n := e.host.snapshots
+	e.host.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("snapshots = %d, want 1", n)
 	}
 }
 

@@ -306,7 +306,7 @@
           "type": "string"
         },
         "submit": {
-          "description": "Optional. Set true to press Enter after the text in the same request, on the same pane. If the text went out and the Enter did not, the outcome is partial or unknown, never failed_not_sent. Default false. Into an agent busy with a turn (without force): Claude Code queues the text, so it is sent with Enter as usual (delivered, note and warning session_busy); any other agent, or Claude text starting with \"!\", gets the text typed and NOT submitted (outcome partial, reason busy, a note says how to submit).",
+          "description": "Optional. Set true to press Enter after the text in the same request, on the same pane. If the text went out and the Enter did not, the outcome is partial or unknown, never failed_not_sent. Default false. Into an agent busy with a turn (without force), Claude Code included: the text is typed and NOT submitted, so an Enter cannot answer a permission prompt that opens meanwhile (outcome partial, reason busy, warning session_busy, a note says how to submit).",
           "type": "boolean"
         },
         "target": {
