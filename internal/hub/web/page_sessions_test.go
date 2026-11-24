@@ -122,6 +122,36 @@ func TestDashboardUserListsWorkersAndSessions(t *testing.T) {
 	}
 }
 
+// A96: the state details sit in their own single-line columns (State badge,
+// Activity, Source, Last event), and a session without them gets empty cells
+// that the phone layout hides.
+func TestSessionRowStateDetailColumns(t *testing.T) {
+	detailed := sAgent
+	detailed.PaneStateDetail = ops.PaneStateDetail{StateSource: "claude-hooks", StateReason: "1 shell, 1 subagent",
+		LastEvent: ops.Timestamp(time.Date(2026, 11, 23, 5, 53, 21, 0, time.UTC))}
+	long := sAgent
+	long.Name = "long"
+	long.PaneStateDetail = ops.PaneStateDetail{StateSource: ops.PaneStateSourceScreen, StateReason: "3 shells, 2 subagents, 1 workflow, 1 open task"}
+	plain := sAgent
+	plain.Name = "plain"
+	src := newFakeSource(Dashboard{Workers: []WorkerRow{wPrivate}, Sessions: []SessionRow{detailed, long, plain}}, Dashboard{})
+	_, body := page(t, dashboardServer(t, src), "/sessions", "alice:user")
+	mustHave(t, body,
+		`<th scope="col" data-sort="text">State</th><th scope="col" data-sort="text" class="col-activity">Activity</th><th scope="col" data-sort="text" class="col-source">Source</th><th scope="col" data-sort="text" class="col-last-event">Last event</th>`,
+		`<td data-label="State" class="cell-nowrap"><span class="badge" data-state="busy">Working</span></td>`,
+		`<td data-label="Activity" class="col-activity cell-clamp" title="1 shell, 1 subagent" data-state-reason>1 shell, 1 subagent</td>`,
+		`<td data-label="Source" class="col-source cell-nowrap muted" data-state-source="claude-hooks">Claude Code hooks</td>`,
+		`<td data-label="Last event" class="col-last-event cell-nowrap muted" data-sort-value="2026-11-23T05:53:21Z"><time datetime="2026-11-23T05:53:21Z">05:53:21 UTC</time></td>`,
+		// A long reason is clamped to one line; the full text is in the tooltip and opens on focus.
+		`<td data-label="Activity" class="col-activity cell-clamp" title="3 shells, 2 subagents, 1 workflow, 1 open task" tabindex="0" data-state-reason>`,
+		`<td data-label="Source" class="col-source cell-nowrap muted" data-state-source="screen">Terminal screen</td>`,
+		`<td data-label="Activity" class="col-activity empty"></td>`,
+		`<td data-label="Source" class="col-source cell-nowrap empty"></td>`,
+		`<td data-label="Last event" class="col-last-event cell-nowrap empty"></td>`)
+	// The details no longer stack inside the State cell.
+	mustNotHave(t, body, `<div data-state-reason>`, `>Last event <time`)
+}
+
 // R48: a user cannot widen the list, whatever the query says.
 func TestDashboardUserCannotAskForAll(t *testing.T) {
 	src := newFakeSource(Dashboard{Workers: []WorkerRow{wPrivate}}, Dashboard{Workers: []WorkerRow{wPrivate, wInfra}})
