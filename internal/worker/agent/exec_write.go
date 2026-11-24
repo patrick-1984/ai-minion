@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -113,6 +115,10 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 		}
 		return res, err
 	}
+	if res.Outcome == ops.OutcomeFailedNotSent && res.Note == "" {
+		// Every refusal says what stopped it and how to send anyway.
+		res.Note = ops.RefusalNote(res.Reason, res.Forceable)
+	}
 	if verr := res.Validate(); verr != nil {
 		// A bug in the executor, not a caller error; the input may have gone,
 		// so the unfinished record stays and a duplicate answers unknown.
@@ -209,6 +215,11 @@ func (e *Executor) lockFailure(err error, info *ops.PaneInfo) (ops.WriteResult, 
 // id, time, and never content (AD-20).
 func (e *Executor) record(ctx context.Context, op string, wa ops.WriteArgs, t ops.Target, res ops.WriteResult, err error) {
 	rec := store.AuditRecord{Op: op, Outcome: string(res.Outcome), Reason: res.Reason, Forced: res.Forced, RequestID: wa.RequestID, Origin: auditOrigin(ctx)}
+	if rec.Reason == "" && res.IsBusySend() {
+		// Text delivered into a busy agent (A103): a success, recorded with
+		// reason busy so that it can be told from a send into an idle one.
+		rec.Reason = proto.CodeBusy.String()
+	}
 	switch {
 	case t.SessionName != "":
 		rec.Target = t.String()
@@ -373,13 +384,64 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 			return inputGuards(p)
 		}
 	}
-	return e.paneWrite(ctx, rq, op, args.WriteArgs, args.Target, true, guards,
-		func(ctx context.Context, p *pane) (ops.Outcome, proto.Code, error) {
-			if args.AgentOnly && !isAgentKind(p.class.Kind) {
-				return ops.OutcomeFailedNotSent, proto.CodeForbidden, nil
-			}
-			return e.pasteAndSubmit(ctx, p, args.Text, args.Submit)
-		})
+	if !args.Force {
+		// A busy agent does not refuse text (A103): the send step below
+		// decides what is safe. force=true keeps the FORCE guard, so a
+		// forced send is reported as forced exactly as before.
+		base := guards
+		guards = func(p *pane) []proto.Code {
+			return slices.DeleteFunc(base(p), func(c proto.Code) bool { return c == proto.CodeBusy })
+		}
+	}
+	return e.write(ctx, op, args.WriteArgs, args.Target, true, func(ctx context.Context) (ops.WriteResult, error) {
+		note := ""
+		res, err := e.paneRun(ctx, rq, op, args.WriteArgs, args.Target, true, guards,
+			func(ctx context.Context, p *pane) (ops.Outcome, proto.Code, error) {
+				if args.AgentOnly && !isAgentKind(p.class.Kind) {
+					return ops.OutcomeFailedNotSent, proto.CodeForbidden, nil
+				}
+				if args.Force || !paneBusy(p) {
+					return e.pasteAndSubmit(ctx, p, args.Text, args.Submit)
+				}
+				if busyQueues(p.class.Kind, args.Text) {
+					note = ops.BusyNoteClaudeQueued
+					return e.pasteAndSubmit(ctx, p, args.Text, args.Submit)
+				}
+				// The submit key could act on the running turn: type only.
+				outcome, reason, err := e.pasteAndSubmit(ctx, p, args.Text, false)
+				if err != nil || outcome != ops.OutcomeDelivered {
+					return outcome, reason, err
+				}
+				if !args.Submit {
+					note = ops.BusyNoteTyped
+					return outcome, reason, nil
+				}
+				note = ops.BusyNoteTypedNotSubmitted
+				return ops.OutcomePartial, proto.CodeBusy, nil
+			})
+		if err == nil && note != "" && (res.Outcome == ops.OutcomeDelivered || res.Outcome == ops.OutcomePartial) {
+			res.Note = note
+			res.Warnings = append(res.Warnings, ops.WarnSessionBusy)
+		}
+		return res, err
+	})
+}
+
+// paneBusy reports whether the pane is an agent busy with a turn: the
+// condition of the busy FORCE guard in [inputGuards].
+func paneBusy(p *pane) bool {
+	return p.info.State == ops.PaneStateBusy && !p.class.Background
+}
+
+// busyQueues reports whether text can be submitted into an agent of this kind
+// while it is busy with a turn: Claude Code queues it and reads it when the
+// turn ends. Text starting with "!" (after leading white space) switches
+// Claude Code to its shell mode and is not queued as a message.
+func busyQueues(kind, text string) bool {
+	if kind != ops.PaneKindAgentPrefix+"claude" {
+		return false
+	}
+	return !strings.HasPrefix(strings.TrimLeftFunc(text, unicode.IsSpace), "!")
 }
 
 // pasteAndSubmit pastes the text into the classified pane and, when submit is

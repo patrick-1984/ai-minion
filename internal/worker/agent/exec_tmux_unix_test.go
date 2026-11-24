@@ -229,3 +229,90 @@ func TestTmuxSendTextSubmitPressesEnter(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// fakeBusyAgent writes a script with the agent's command name that draws a
+// screen of a running turn and then echoes each line it reads as
+// "got:<line>": the line shows only if the submit key reached it.
+func fakeBusyAgent(t *testing.T, name, busyLine string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	screen := filepath.Join(dir, "screen.txt")
+	if err := os.WriteFile(screen, []byte("● Reading the files.\n"+busyLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, name)
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat \"$1\"\nwhile read -r line; do printf 'got:%s\\n' \"$line\"; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return script, screen
+}
+
+// waitBusy polls snapshots until the pane reads busy.
+func waitBusy(t *testing.T, ex *Executor, session string) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"target": map[string]any{"session_name": session}})
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		raw, err := ex.Execute(context.Background(), Request{Op: ops.OpSessionSnapshot, Actions: []ops.Action{ops.ActionRead}, Args: b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r ops.SessionSnapshotResult
+		if err := json.Unmarshal(raw, &r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Pane.State == ops.PaneStateBusy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pane never read busy: %+v", r.Pane)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A103 on a real tmux pane: a busy Claude Code gets the text and its Enter
+// (delivered, the busy note), audited as delivered with reason busy.
+func TestTmuxSendTextToBusyClaudeIsSubmittedWithANote(t *testing.T) {
+	ex, srv := realExecutor(t)
+	claude, screen := fakeBusyAgent(t, "claude", "✻ Thinking… (12s · ↓ 1.2k tokens · esc to interrupt)")
+	target := srv.NewSession("busyclaude", claude, screen)
+	srv.WaitFor(target, "esc to interrupt", 10*time.Second)
+	waitBusy(t, ex, "busyclaude")
+
+	res := realWrite(t, ex, ops.OpSendText, ops.SendTextArgs{
+		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: ops.Target{SessionName: "busyclaude"}, Text: "queued-by-minion", Submit: true,
+	})
+	if res.Outcome != ops.OutcomeDelivered || res.Note != ops.BusyNoteClaudeQueued || res.Forced || !hasWarning(res, "session_busy") {
+		t.Fatalf("busy send = %+v", res)
+	}
+	srv.WaitFor(target, "got:queued-by-minion", 10*time.Second) // the Enter went too
+	rows, err := ex.state.(*store.Store).ListAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Outcome != "delivered" || rows[0].Reason != "busy" {
+		t.Fatalf("audit = %+v", rows)
+	}
+}
+
+// A busy Codex gets the text typed and no Enter: partial, reason busy, the
+// note; the line never reaches the program.
+func TestTmuxSendTextToBusyCodexIsTypedNotSubmitted(t *testing.T) {
+	ex, srv := realExecutor(t)
+	codex, screen := fakeBusyAgent(t, "codex", "• Working (5s • esc to interrupt)")
+	target := srv.NewSession("busycodex", codex, screen)
+	srv.WaitFor(target, "Working", 10*time.Second)
+	waitBusy(t, ex, "busycodex")
+
+	res := realWrite(t, ex, ops.OpSendText, ops.SendTextArgs{
+		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: ops.Target{SessionName: "busycodex"}, Text: "typed-by-minion", Submit: true,
+	})
+	if res.Outcome != ops.OutcomePartial || res.Reason != "busy" || res.Note != ops.BusyNoteTypedNotSubmitted || !hasWarning(res, "session_busy") {
+		t.Fatalf("busy send = %+v", res)
+	}
+	srv.WaitFor(target, "typed-by-minion", 10*time.Second) // typed (echoed by the terminal)
+	time.Sleep(500 * time.Millisecond)
+	if strings.Contains(srv.Capture(target), "got:typed-by-minion") {
+		t.Fatalf("the submit key reached a busy Codex:\n%s", srv.Capture(target))
+	}
+}

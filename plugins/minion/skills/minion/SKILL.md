@@ -112,6 +112,13 @@ is shared only when the Worker shares all sessions; otherwise ask the human to s
 Sharing) before you read or type. Typing into a pane that runs a plain shell is refused as `shell_pane` (forceable,
 see the rules): `minion send_text --target build --text 'make test' --submit --force` once reviewed and asked for.
 
+Every refusal carries a `note`: what stopped it, why, and how to send anyway. Text sent with `--submit` to an
+agent that is busy with a turn is never refused: Claude Code queues it and reads it when the turn ends (outcome
+`delivered`, warning `session_busy`, a note says so); any other agent, or Claude text starting with `!`, gets the
+text typed but not submitted (outcome `partial`, reason `busy`): press Enter in the session once the turn ended,
+or send again with `--force` and a new request id. Do not send the same text again blindly. Keys (`send_keys`) to a
+busy agent are still refused as `busy` (forceable).
+
 To answer a dialog a pane shows (a permission prompt, a menu), read it first and pass the reviewed pane back, so
 the answer reaches only that dialog:
 

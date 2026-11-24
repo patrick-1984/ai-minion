@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- `send_text` to an agent that is busy with a turn is no longer refused (without `force`). Claude Code queues input typed during a turn, so the text (and its Enter with `submit`) goes out exactly as into an idle session: outcome `delivered`, warning `session_busy` and the note "session busy: Claude Code queues the message and reads it when the current turn ends". Any other agent (Codex, Gemini, Qwen, Aider, OpenCode, an unknown agent), and Claude text that starts with `!` (Claude Code's shell mode), gets the text typed into the input line and the submit key is **not** pressed: outcome `partial`, reason `busy`, and a note says to press Enter in the session (or send again with `force=true` and a new request id). `force=true` behaves as in v0.20.5. `send_keys` to a busy agent is still refused as `busy` (forceable). The Worker audit records such a send as `delivered` (or `partial`) with reason `busy`; a delivered one is not a failure.
+- Every refusal of a write carries a `note`: what stopped it, why, and how to send anyway (for example force=true with a new request id). The CLI prints it (`note:`), MCP results include it (derived for a Worker older than this release), and the Hub's session page shows it under the result; text sent into a busy agent is shown there as an information notice, not as a failure.
+
 ## v0.20.5
 
 ### Changed

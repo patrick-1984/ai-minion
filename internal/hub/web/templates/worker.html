@@ -25,7 +25,7 @@
   <h2 id="unasked-h">Sending</h2>
   <label><input type="checkbox" id="unasked-worker"> Send without asking, in all sessions of this Worker</label>
   <p class="help" id="unasked-worker-status" role="status" aria-live="polite"></p>
-  <p class="help">Text, keys and the task go out at once, without the "Send anyway" confirmation for a shell, an open dialog or a busy agent. A dialog answer is still checked. Kept in this browser. Each session page has the same switch for that session.</p>
+  <p class="help">Text, keys and the task go out at once, without the "Send anyway" confirmation for a shell, an open dialog or a busy agent (text to a busy agent is then submitted at once; without it, Claude Code queues the text and any other agent gets it typed, not submitted). A dialog answer is still checked. Kept in this browser. Each session page has the same switch for that session.</p>
 </section>
 {{end}}{{if .Data.DebugURL}}<section class="panel" aria-labelledby="debug-h" id="debug-section">
   <h2 id="debug-h">Debug</h2>

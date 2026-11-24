@@ -503,6 +503,7 @@ body.embed .key-surface .help { display: none; }
 .result-danger { border-left-color: var(--danger); background: var(--danger-subtle); }
 .result[data-unknown] { border-left-color: var(--muted); background: var(--surface-subtle); }
 .result-meta { color: var(--muted); font-size: 12px; margin: 0; }
+.result-note { margin: 4px 0 0; font-size: 13px; }
 .result-title { font-weight: 650; margin: 0; }
 .result p { margin: 0; }
 .result form { margin: 0; }
