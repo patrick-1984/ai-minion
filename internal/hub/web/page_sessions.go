@@ -1281,6 +1281,7 @@ func (c *HandlerCaller) internalGet(ctx context.Context, r *http.Request, target
 		return nil, fmt.Errorf("web: build the request of %s: %w", target, err)
 	}
 	req.Header.Set("Accept", "application/json")
+	markBackground(r, req)
 	if sess, ok := session.FromContext(r.Context()); ok {
 		req.Header.Set(session.CSRFHeader, sess.CSRFToken)
 	}

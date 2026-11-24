@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -45,9 +46,31 @@ const (
 // means every interface ([ListenAddr] turns it into ":8443").
 const DefaultListen = "8443"
 
-// isPort reports whether v is a plain port number (digits only).
+// ParsePort parses a port number as the Hub's listener validation and every
+// probe of the listen port read it: digits only (no sign, no space), leading
+// zeros allowed as the Go listener allows them (":0009443" binds 9443), and a
+// value from 0 to 65535.
+func ParsePort(v string) (int, bool) {
+	if v == "" || len(v) > 16 {
+		return 0, false
+	}
+	n := 0
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+		if n > 65535 {
+			return 0, false
+		}
+	}
+	return n, true
+}
+
+// isPort reports whether v has the form of a plain port number (digits only);
+// [ParsePort] checks the range.
 func isPort(v string) bool {
-	if v == "" || len(v) > 5 {
+	if v == "" || len(v) > 16 {
 		return false
 	}
 	for _, c := range v {
@@ -82,11 +105,14 @@ func ManagementListenAddr(v string) string {
 }
 
 // ListenPort returns the port of a listen setting in any of its forms
-// ("8443", ":8443", "host:8443"), or def when it names none.
+// ("8443", ":8443", "host:8443", a padded ":0009443"), as the listener binds
+// it ("9443"), or def when it names none.
 func ListenPort(v, def string) string {
 	a := ListenAddr(v)
-	if i := strings.LastIndex(a, ":"); i >= 0 && isPort(a[i+1:]) {
-		return a[i+1:]
+	if i := strings.LastIndex(a, ":"); i >= 0 {
+		if p, ok := ParsePort(a[i+1:]); ok && p > 0 {
+			return strconv.Itoa(p)
+		}
 	}
 	return def
 }

@@ -109,6 +109,18 @@ ORDER BY e.last_login_at, e.id`)
 // identity at the provider or holds no refresh token there. A silent
 // renewal of a browser session uses it.
 func (s *Store) OIDCRefreshTargetOf(ctx context.Context, userID, providerID string) (OIDCRefreshTarget, error) {
+	return s.oidcRefreshTarget(ctx, `e.user_id = ? AND e.provider_id = ?`, userID, providerID)
+}
+
+// OIDCRefreshTargetByIdentity returns the refresh target of the external
+// identity with the given id as it is stored now, or [ErrNotFound] when the
+// user is inactive or the identity holds no refresh token any more. A refresh
+// reads it again right before it uses the token, under the per-identity lock.
+func (s *Store) OIDCRefreshTargetByIdentity(ctx context.Context, identityID string) (OIDCRefreshTarget, error) {
+	return s.oidcRefreshTarget(ctx, `e.id = ?`, identityID)
+}
+
+func (s *Store) oidcRefreshTarget(ctx context.Context, where string, args ...any) (OIDCRefreshTarget, error) {
 	var (
 		x      OIDCRefreshTarget
 		sealed []byte
@@ -117,8 +129,8 @@ func (s *Store) OIDCRefreshTargetOf(ctx context.Context, userID, providerID stri
 SELECT e.id, e.user_id, e.issuer, e.subject, e.provider_id, e.last_login_at, e.refresh_token_enc,
   EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = e.user_id AND r.role = 'admin' AND r.source = 'idp')
 FROM external_identities e JOIN users u ON u.id = e.user_id
-WHERE e.user_id = ? AND e.provider_id = ? AND u.active = 1 AND e.refresh_token_enc IS NOT NULL AND length(e.refresh_token_enc) > 0
-ORDER BY e.last_login_at DESC, e.id LIMIT 1`, userID, providerID).Scan(
+WHERE `+where+` AND u.active = 1 AND e.refresh_token_enc IS NOT NULL AND length(e.refresh_token_enc) > 0
+ORDER BY e.last_login_at DESC, e.id LIMIT 1`, args...).Scan(
 		&x.IdentityID, &x.UserID, &x.Issuer, &x.Subject, &x.ProviderID, &x.LastLoginAt, &sealed, &x.IdPAdmin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OIDCRefreshTarget{}, ErrNotFound

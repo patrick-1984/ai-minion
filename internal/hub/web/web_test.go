@@ -61,6 +61,9 @@ func (fakeSessions) Wrap(next http.Handler) http.Handler {
 				}
 			}
 			r = r.WithContext(session.WithSession(r.Context(), s))
+		} else if r.Header.Get("X-Test-Idle") != "" {
+			// A background request of a session whose idle lifetime ran out.
+			r = r.WithContext(session.WithIdle(r.Context()))
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -736,6 +739,26 @@ func TestBackgroundRequestWithoutSessionKeepsTheScreen(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized || rec.Header().Get("HX-Redirect") != "" || rec.Header().Get("Location") != "" {
 			t.Errorf("%v: %d HX-Redirect %q Location %q, want a plain 401", hdr, rec.Code, rec.Header().Get("HX-Redirect"), rec.Header().Get("Location"))
 		}
+	}
+}
+
+// A background request of a session whose idle lifetime ran out gets the
+// quiet idle 401: no redirect, and the marker that lets the page pause
+// instead of clearing what it holds (A99).
+func TestIdleSessionGetsTheQuietIdle401(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterPage(Page{Pattern: "/fragment", Title: "F", Template: "probe.html"}); err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(t, reg)
+	rec := get(t, s, "/fragment", "X-Test-Idle", "1", "X-Minion-Background", "1", "HX-Request", "true")
+	if rec.Code != http.StatusUnauthorized || rec.Header().Get(session.IdleHeader) != "idle" || rec.Header().Get("HX-Redirect") != "" ||
+		!strings.Contains(rec.Body.String(), session.IdleReason) {
+		t.Errorf("idle background request = %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	// Without a session at all it stays the plain 401.
+	if rec := get(t, s, "/fragment", "X-Minion-Background", "1"); rec.Header().Get(session.IdleHeader) != "" {
+		t.Errorf("a request without a session was marked idle")
 	}
 }
 

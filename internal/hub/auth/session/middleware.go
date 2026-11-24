@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -30,16 +31,89 @@ func WithSession(ctx context.Context, s *Session) context.Context {
 
 // BackgroundHeader marks a request that the page sends on its own (a timed
 // poll, a refresh after a live event), not because the person did something.
-// Such a request does not extend the idle lifetime of the session, and a
-// session that ended (and could not be renewed) gets a plain 401 without a
-// redirect, so the screen stays as it is.
+// Such a request never extends the idle lifetime of the session and never
+// renews it with the identity provider, and a session whose idle lifetime
+// ran out answers it with a quiet 401 without a redirect (see [Idle]), so the
+// screen stays as it is.
 const BackgroundHeader = "X-Minion-Background"
 
+// IdleHeader is set to "idle" on the quiet 401 that a background request of a
+// session whose idle lifetime ran out gets: the page pauses (keeps what it
+// holds) instead of treating it as a sign-out. The API error carries the same
+// as details.reason [IdleReason].
+const IdleHeader = "X-Minion-Session"
+
+// IdleReason is the details.reason of the API error for a background request
+// of a session whose idle lifetime ran out.
+const IdleReason = "session_idle"
+
+type backgroundKey struct{}
+
+type idleKey struct{}
+
+// AsBackground returns ctx marked so that a request carrying it is
+// [Background]. Recurring authorization checks of a stream use it: they are
+// not the person acting.
+func AsBackground(ctx context.Context) context.Context {
+	return context.WithValue(ctx, backgroundKey{}, true)
+}
+
 // Background reports whether r is a background request: it carries
-// [BackgroundHeader] "1", or it opens an event stream (a live page
-// reconnecting its stream is not the person acting).
+// [BackgroundHeader] "1", it opens an event stream (a live page reconnecting
+// its stream is not the person acting), or its context was marked with
+// [AsBackground].
 func Background(r *http.Request) bool {
+	if v, _ := r.Context().Value(backgroundKey{}).(bool); v {
+		return true
+	}
 	return r.Header.Get(BackgroundHeader) == "1" || strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+}
+
+// WithIdle returns ctx marked as [Idle]. [Middleware.Wrap] uses it; tests of
+// handlers behind the middleware use it too.
+func WithIdle(ctx context.Context) context.Context {
+	return context.WithValue(ctx, idleKey{}, true)
+}
+
+// Idle reports whether the request context records that the request carried
+// the cookie of a session whose idle lifetime ran out, and was not allowed to
+// renew it because it is [Background]. [Middleware.Wrap] sets it.
+func Idle(ctx context.Context) bool {
+	v, _ := ctx.Value(idleKey{}).(bool)
+	return v
+}
+
+// CrossOrigin reports whether a browser says that another origin caused r:
+// Sec-Fetch-Site is "cross-site" or "same-site" (a sibling origin), or, from a
+// browser that sends no Sec-Fetch-Site, an Origin header that does not name
+// the request's own host. Sec-Fetch-Site "same-origin" and "none" (the person
+// typed the address, used a bookmark or reloaded) are not cross-origin. A
+// request without either header (curl, other programs) is not either.
+func CrossOrigin(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return false
+	case "":
+	default:
+		return true
+	}
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return false
+	}
+	u, err := url.Parse(o)
+	if err != nil || u.Host == "" {
+		return true // "null" and other opaque origins
+	}
+	return !strings.EqualFold(u.Host, r.Host)
+}
+
+// Foreground reports whether r counts as the person's own activity: it is not
+// [Background] and not [CrossOrigin]. Only a foreground request extends the
+// idle lifetime of a session or renews an OIDC session with the identity
+// provider.
+func Foreground(r *http.Request) bool {
+	return !Background(r) && !CrossOrigin(r)
 }
 
 // RenewOutcome is the answer of a [Renewer].
@@ -71,7 +145,8 @@ const renewRetry = 30 * time.Second
 
 // renewTimeout bounds one renewal, whatever the request's own context does:
 // a refresh that the provider answered must still be stored when the browser
-// went away.
+// went away. The renewer stores a rotated token with its own bounded context
+// even after this ran out.
 const renewTimeout = 30 * time.Second
 
 // Middleware authenticates browser sessions and enforces CSRF protection.
@@ -167,15 +242,17 @@ func safeMethod(m string) bool {
 //  2. resolves the cookie and attaches the [Session] to the request context
 //     when it is valid. A request without a valid session goes on anonymously;
 //     use [Middleware.Require] to refuse it;
-//  3. records activity: a request that is not [Background] moves the idle end
-//     of the session ([Manager.Touch]);
+//  3. records activity: a [Foreground] request moves the idle end of the
+//     session ([Manager.Touch]); a background or cross-origin one never does;
 //  4. renews an OIDC session whose idle lifetime ran out, when [Middleware.Renew]
-//     is set (a [Background] request too: the renewal is a check with the
-//     identity provider, not activity): the identity provider is
-//     asked with the stored refresh token, and when it vouches for the user
-//     the session goes on with the same cookie and the request is served as
-//     if it had never expired. An unreachable provider is tolerated for
-//     [RenewGrace] after the idle end; a refusal signs the session out.
+//     is set and the request is [Foreground]: the identity provider is asked
+//     with the stored refresh token, and when it vouches for the user the
+//     session goes on with the same cookie and the request is served as if it
+//     had never expired. Only a transient failure (the provider or its keys
+//     could not be reached) is tolerated, for [RenewGrace] after the idle end;
+//     a refusal signs the session out. A background request goes on
+//     anonymously with [Idle] set in its context: it gets a quiet 401; a
+//     cross-origin one goes on anonymously.
 //
 // A store failure answers internal, never "anonymous".
 func (mw *Middleware) Wrap(next http.Handler) http.Handler {
@@ -190,9 +267,14 @@ func (mw *Middleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		s, err := mw.ResolveRequest(r, c.Value)
+		var expired *ExpiredError
 		switch {
 		case err == nil:
 			r = r.WithContext(WithSession(r.Context(), s))
+		case errors.As(err, &expired):
+			// anonymous, idle: a background request of a session whose idle
+			// lifetime ran out
+			r = r.WithContext(WithIdle(r.Context()))
 		case errors.Is(err, ErrNoSession):
 			// anonymous
 		default:
@@ -211,18 +293,21 @@ func (mw *Middleware) Resolve(ctx context.Context, token string) (*Session, erro
 }
 
 // ResolveRequest resolves the session cookie value token of the request r as
-// [Middleware.Wrap] does: a request that is not [Background] records activity
-// ([Manager.Touch]), and an expired OIDC session is renewed when
+// [Middleware.Wrap] does: a [Foreground] request records activity
+// ([Manager.Touch]), and renews an expired OIDC session when
 // [Middleware.Renew] is set. It returns [ErrNoSession] when the request has no
-// valid session, and any other error when the store fails. The REST API's
-// cookie authentication uses it, so that a form posting JSON behaves as a
-// page does.
+// valid session; for a [Background] request that carries a session whose
+// idle lifetime ran out the error is an *[ExpiredError] (which matches
+// ErrNoSession), so that the caller can answer with the quiet idle 401. Any
+// other error is a store failure. The REST API's cookie authentication uses
+// it, so that a form posting JSON behaves as a page does.
 func (mw *Middleware) ResolveRequest(r *http.Request, token string) (*Session, error) {
+	fg := Foreground(r)
 	s, err := mw.Manager.Resolve(r.Context(), token)
 	var expired *ExpiredError
 	switch {
 	case err == nil:
-		if !Background(r) {
+		if fg {
 			if terr := mw.Manager.Touch(r.Context(), s); terr != nil {
 				// The request is still valid; the next one tries again.
 				mw.logger().Warn("session activity not recorded", "error", terr)
@@ -230,7 +315,17 @@ func (mw *Middleware) ResolveRequest(r *http.Request, token string) (*Session, e
 		}
 		return s, nil
 	case errors.As(err, &expired):
-		if rs := mw.renew(r, token, expired); rs != nil {
+		if !fg {
+			// Background polls, streams and cross-origin requests never
+			// renew: only the person's own next request does. A background
+			// request learns that the session is idle (a quiet 401 that
+			// keeps the screen); a cross-origin one is simply signed out.
+			if Background(r) {
+				return nil, expired
+			}
+			return nil, ErrNoSession
+		}
+		if rs := mw.renew(r, token); rs != nil {
 			return rs, nil
 		}
 		return nil, ErrNoSession
@@ -239,43 +334,65 @@ func (mw *Middleware) ResolveRequest(r *http.Request, token string) (*Session, e
 	}
 }
 
-// renew tries to renew the expired session of r. It returns the session to
-// serve the request with, or nil for "signed out".
-func (mw *Middleware) renew(r *http.Request, token string, exp *ExpiredError) *Session {
-	// A background request renews too: the renewal is itself a check with the
-	// identity provider, and refusing it would clear what the page holds (the
-	// inspector drops its kept frames on a lost sign-in, a live list stops).
-	// It never extends a valid session (see Wrap).
-	if mw.Renew == nil || !strings.HasPrefix(exp.Session.AuthMethod, AuthMethodOIDCPrefix) {
+// renew tries to renew the expired session of the foreground request r. It
+// returns the session to serve the request with, or nil for "signed out".
+func (mw *Middleware) renew(r *http.Request, token string) *Session {
+	if mw.Renew == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), renewTimeout)
+	defer cancel()
+	// Read the session again under the lock: another request of the same
+	// browser may have renewed it meanwhile.
+	s, err := mw.Manager.Resolve(ctx, token)
+	var exp *ExpiredError
+	switch {
+	case err == nil:
+		return s
+	case errors.As(err, &exp):
+	default:
+		return nil // gone, or a store failure: signed out
+	}
+	if !strings.HasPrefix(exp.Session.AuthMethod, AuthMethodOIDCPrefix) {
 		return nil
 	}
 	id := exp.Session.ID
 	unlock := mw.lockRenew(id)
 	defer unlock()
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), renewTimeout)
-	defer cancel()
-
-	// Another request of the same browser may have renewed it meanwhile.
-	s, err := mw.Manager.Resolve(ctx, token)
-	var again *ExpiredError
+	s, err = mw.Manager.Resolve(ctx, token)
 	switch {
 	case err == nil:
 		return s
-	case errors.As(err, &again):
-		exp = again
+	case errors.As(err, &exp):
 	default:
-		return nil // gone, or a store failure: signed out
+		return nil
 	}
 
-	now := mw.Manager.Now()
 	outcome := RenewUnavailable
-	if !now.Before(mw.backoffUntil(id)) {
+	if !mw.Manager.Now().Before(mw.backoffUntil(id)) {
 		outcome = mw.Renew.RenewSession(ctx, &exp.Session)
+	}
+	// The provider call may have taken a while: the session, the account and
+	// its credentials are read again, and the deadlines are judged with the
+	// clock of now. A password reset, a deactivation or a sign-out during the
+	// call is seen here.
+	cur, err := mw.Manager.Resolve(ctx, token)
+	var again *ExpiredError
+	switch {
+	case err == nil:
+		mw.setBackoff(id, time.Time{})
+		return cur // renewed meanwhile (or by this call, below it is stored)
+	case errors.As(err, &again):
+	default:
+		if !errors.Is(err, ErrNoSession) {
+			mw.logger().Error("session lookup after a renewal failed", "session", id, "error", err)
+		}
+		return nil
 	}
 	switch outcome {
 	case RenewOK:
 		mw.setBackoff(id, time.Time{})
-		if err := mw.Manager.Renewed(ctx, &exp.Session); err != nil {
+		if err := mw.Manager.Renewed(ctx, &again.Session); err != nil {
 			mw.logger().Error("session renewal could not be stored", "session", id, "error", err)
 			return nil
 		}
@@ -285,12 +402,13 @@ func (mw *Middleware) renew(r *http.Request, token string, exp *ExpiredError) *S
 		}
 		return s
 	case RenewUnavailable:
-		if now.Before(exp.Session.ExpiresAt.Add(RenewGrace)) {
+		now := mw.Manager.Now()
+		if now.Before(again.Session.ExpiresAt.Add(RenewGrace)) && now.Before(again.Session.EndsAt) {
 			if !now.Before(mw.backoffUntil(id)) {
 				mw.setBackoff(id, now.Add(renewRetry))
 			}
 			mw.logger().Warn("identity provider unreachable; the expired session is served within the grace", "session", id)
-			return &exp.Session
+			return &again.Session
 		}
 		mw.setBackoff(id, time.Time{})
 		return nil

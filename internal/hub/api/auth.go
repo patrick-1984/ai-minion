@@ -227,8 +227,14 @@ func (a *Authenticator) cookie(r *http.Request) (Identity, error) {
 	} else {
 		s, err = a.Sessions.Resolve(r.Context(), c.Value)
 	}
+	var idle *session.ExpiredError
 	switch {
 	case err == nil:
+	case errors.As(err, &idle):
+		// A background request of a session whose idle lifetime ran out: the
+		// page pauses instead of signing out (only a foreground request renews).
+		return Identity{}, unauthenticated("the session is idle; the next action of the person continues it").
+			WithDetails(map[string]any{"reason": session.IdleReason})
 	case errors.Is(err, session.ErrNoSession):
 		return Identity{}, unauthenticated("sign in first")
 	default:

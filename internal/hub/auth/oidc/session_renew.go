@@ -4,7 +4,8 @@ package oidc
 //
 // A browser session that was started with OIDC ends its idle lifetime like
 // any other (the session_ttl setting, default 2 h). Instead of sending the
-// person to the sign-in page, the session middleware then asks
+// person to the sign-in page, the session middleware then asks, on the
+// person's next foreground request (never a poll or a stream),
 // [Refresher.RenewSession]: the Hub runs the refresh-token grant with the
 // refresh token it already stores for the account (the same encrypted token
 // the background role refresh uses, see refresh.go), re-evaluates the roles
@@ -24,7 +25,6 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
-	"github.com/patrick-1984/ai-minion/internal/logx"
 )
 
 // Audit vocabulary of the silent session renewal (AD-20). The actor is the
@@ -59,10 +59,7 @@ func (s *SQLStore) RefreshTargetOf(ctx context.Context, userID, providerID strin
 	if err != nil {
 		return Target{}, false, err
 	}
-	return Target{
-		IdentityID: x.IdentityID, UserID: x.UserID, Issuer: x.Issuer, Subject: x.Subject, ProviderID: x.ProviderID,
-		LastLoginAt: x.LastLoginAt, RefreshToken: logx.Secret(x.RefreshToken), IdPAdmin: x.IdPAdmin,
-	}, true, nil
+	return targetOf(x), true, nil
 }
 
 // RenewSession implements [session.Renewer]: it asks the identity provider
@@ -71,13 +68,21 @@ func (s *SQLStore) RefreshTargetOf(ctx context.Context, userID, providerID strin
 //   - [session.RenewOK]: the refresh returned fresh claims for the same
 //     identity, the configured rules still give the account an IdP role, and
 //     the result was stored (rotated token, roles).
-//   - [session.RenewUnavailable]: the provider or its discovery could not be
-//     reached, or answered something that proves nothing either way. Nothing
-//     changes; a rotated token is still kept.
+//   - [session.RenewUnavailable]: a transient failure: the provider, its
+//     discovery or its signing keys could not be reached, it timed out or
+//     answered with a server error. Nothing changes; a rotated token is still
+//     kept.
 //   - [session.RenewFailed]: everything else, among them a rejected refresh
-//     token (the IdP roles are suspended as by the background refresh), no
-//     stored token, a provider that is gone, disabled or has another issuer,
-//     and an account that no rule gives a role any more.
+//     token (the IdP roles are suspended as by the background refresh), an
+//     ID token that was checked and is not valid (expired, wrong audience,
+//     bad signature, another subject) or missing, no stored token, a provider
+//     that is gone, disabled or has another issuer, and an account that no
+//     rule gives a role any more.
+//
+// The refresh token is read, exchanged and the result stored under the lock
+// of the external identity that the scheduled refresh takes too, so two
+// browser sessions of the same account and the scheduled pass never send the
+// same (single-use) token twice.
 //
 // Each attempt leaves one audit row.
 func (r *Refresher) RenewSession(ctx context.Context, s *session.Session) session.RenewOutcome {
@@ -127,15 +132,24 @@ func (r *Refresher) renewSession(ctx context.Context, s *session.Session) (sessi
 	if !found {
 		return session.RenewFailed, "provider unknown or disabled"
 	}
-	// Two attempts: a background refresh or a sign-in may change the stored
-	// token between the read and the write, and then the update is dropped;
-	// the second attempt uses the token that is stored now.
+	first, ok, err := targets.RefreshTargetOf(ctx, s.UserID, providerID)
+	if err != nil {
+		return session.RenewUnavailable, "read the refresh token"
+	}
+	if !ok {
+		return session.RenewFailed, "no refresh token stored"
+	}
+	unlock := r.lockIdentity(first.IdentityID)
+	defer unlock()
+	// Two attempts: a sign-in may change the stored token between the read
+	// and the write (it does not take the lock), and then the update is
+	// dropped; the second attempt uses the token that is stored now.
 	for range 2 {
-		t, ok, err := targets.RefreshTargetOf(ctx, s.UserID, providerID)
+		t, ok, err := r.reread(ctx, first)
 		if err != nil {
 			return session.RenewUnavailable, "read the refresh token"
 		}
-		if !ok {
+		if !ok || t.UserID != s.UserID {
 			return session.RenewFailed, "no refresh token stored"
 		}
 		if t.Issuer != cfg.Issuer {
@@ -146,26 +160,33 @@ func (r *Refresher) renewSession(ctx context.Context, s *session.Session) (sessi
 			return session.RenewUnavailable, "discovery"
 		}
 		res, err := p.Refresh(ctx, t.RefreshToken, Identity{Issuer: t.Issuer, Subject: t.Subject})
+		// What the exchange returned is stored on a context of its own: a
+		// rotated token must not be lost because the renewal's deadline ran
+		// out while the ID token was being checked.
+		pctx, cancel := persistContext(ctx)
 		switch {
 		case errors.Is(err, ErrRefreshRejected):
-			out, aerr := r.Store.Apply(ctx, Update{Target: t, Suspend: true, OnApplied: r.auditSuspend})
+			out, aerr := r.Store.Apply(pctx, Update{Target: t, Suspend: true, OnApplied: r.auditSuspend})
+			cancel()
 			if aerr == nil && !out.Applied {
 				continue // the token changed meanwhile: ask again with the new one
 			}
 			return session.RenewFailed, "refresh token rejected"
 		case err != nil:
 			if res.RotatedToken != "" {
-				if out, aerr := r.Store.Apply(ctx, Update{Target: t, NewToken: res.RotatedToken}); aerr != nil || !out.Applied {
+				if out, aerr := r.Store.Apply(pctx, Update{Target: t, NewToken: res.RotatedToken}); aerr != nil || !out.Applied {
 					r.logger().Warn("oidc: session renewal: rotated token not stored", "account", t)
 				}
 			}
-			if errors.Is(err, ErrNoFreshClaims) || errors.Is(err, ErrIdentityMismatch) {
-				return session.RenewFailed, "no usable fresh claims"
+			cancel()
+			if errors.Is(err, ErrNoFreshClaims) || errors.Is(err, ErrIdentityMismatch) || errors.Is(err, ErrInvalidIDToken) {
+				return session.RenewFailed, "no valid fresh claims"
 			}
 			return session.RenewUnavailable, "refresh failed"
 		}
 		roles := cfg.Rules().Evaluate(res.Identity.Claims)
-		out, err := r.Store.Apply(ctx, Update{Target: t, ReplaceRoles: true, Roles: roles, NewToken: res.RotatedToken, OnApplied: r.auditRoleChange})
+		out, err := r.Store.Apply(pctx, Update{Target: t, ReplaceRoles: true, Roles: roles, NewToken: res.RotatedToken, OnApplied: r.auditRoleChange})
+		cancel()
 		if err != nil {
 			return session.RenewUnavailable, "store the result"
 		}

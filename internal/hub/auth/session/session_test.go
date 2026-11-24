@@ -378,3 +378,16 @@ func (m *memStore) ExtendSession(_ context.Context, id string, expiresAt int64) 
 	}
 	return false, nil
 }
+
+func (m *memStore) ShrinkSession(_ context.Context, id string, expiresAt int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for h, s := range m.sessions {
+		if s.ID == id && s.ExpiresAt > expiresAt {
+			s.ExpiresAt = expiresAt
+			m.sessions[h] = s
+			return true, nil
+		}
+	}
+	return false, nil
+}

@@ -198,3 +198,25 @@ func TestExtendSessionOnlyMovesTheEndLater(t *testing.T) {
 		t.Errorf("expires_at = %d, want 200", got.ExpiresAt)
 	}
 }
+
+func TestShrinkSessionOnlyMovesTheEndEarlier(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	p := seedParams("admin")
+	if _, err := s.SeedAdmin(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	row := SessionRow{ID: NewID(), TokenHash: "h", UserID: p.User.ID, CredentialVersion: 1, CreatedAt: 10, ExpiresAt: 100}
+	if err := s.CreateSession(ctx, row, 10); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ShrinkSession(ctx, row.ID, 200); err != nil || ok {
+		t.Fatalf("ShrinkSession later = %v, %v", ok, err)
+	}
+	if ok, err := s.ShrinkSession(ctx, row.ID, 50); err != nil || !ok {
+		t.Fatalf("ShrinkSession earlier = %v, %v", ok, err)
+	}
+	if got, _, _ := s.SessionByTokenHash(ctx, "h"); got.ExpiresAt != 50 {
+		t.Errorf("expires_at = %d, want 50", got.ExpiresAt)
+	}
+}

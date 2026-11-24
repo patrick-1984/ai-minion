@@ -67,7 +67,7 @@ Test it with your IdP before you depend on it: sign in a test person who is in t
 
 ## Staying signed in
 
-A browser session has an idle lifetime (`session_ttl`, default 2 hours; every action extends it). When it runs out for a session that was started with OIDC, the Hub renews it silently on the person's next request with the stored refresh token, as long as the IdP still vouches for them and their roles still give access; the page they are on stays as it is. Without a refresh token (see above) the person signs in again after the idle lifetime. An OIDC session ends 7 days after the sign-in in any case. Details and the failure cases: [browser sessions](../security.md#browser-sessions).
+A browser session has an idle lifetime (`session_ttl`, default 2 hours; every action of the person extends it, background polling does not). When it runs out for a session that was started with OIDC, the Hub renews it silently on the person's next page load, click or form with the stored refresh token, as long as the IdP still vouches for them and their roles still give access; the page they are on stays as it is. Without a refresh token (see above) the person signs in again after the idle lifetime. An OIDC session ends 7 days after the sign-in in any case. Details and the failure cases: [browser sessions](../security.md#browser-sessions).
 
 ## Linking to existing accounts
 

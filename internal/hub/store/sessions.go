@@ -102,6 +102,23 @@ func (s *Store) ExtendSession(ctx context.Context, sessionID string, expiresAt i
 	return n > 0, nil
 }
 
+// ShrinkSession moves the end of the session with the given id earlier, to
+// expiresAt (unix milliseconds). It only ever moves the end earlier: a value
+// at or after the stored one changes nothing. It reports whether the row
+// changed. The session layer uses it to clamp the idle end of a session that
+// was issued with a longer lifetime than the one that applies now.
+func (s *Store) ShrinkSession(ctx context.Context, sessionID string, expiresAt int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at = ? WHERE id = ? AND expires_at > ?`, expiresAt, sessionID, expiresAt)
+	if err != nil {
+		return false, fmt.Errorf("store: shrink session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: shrink session: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SetSessionAuth records a verified authentication on the session with the
 // given id: auth_at and auth_method. It reports whether the session exists.
 // Only the server calls it, after its own credential check.

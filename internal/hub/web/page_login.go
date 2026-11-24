@@ -76,6 +76,14 @@ func (s *Server) gate(roles []authz.Role, exempt bool, next http.Handler) http.H
 			// session that ended must not navigate the page away: it gets a
 			// plain 401 that htmx does not swap, and the screen stays as it
 			// is until the person's next action leads to the sign-in.
+			if session.Idle(r.Context()) {
+				// The idle lifetime ran out and this request may not renew it:
+				// the page pauses and keeps what it holds; the person's next
+				// action continues (or renews) the session.
+				w.Header().Set(session.IdleHeader, "idle")
+				session.WriteError(w, proto.CodeUnauthenticated, "the session is idle", map[string]any{"reason": session.IdleReason})
+				return
+			}
 			if session.Background(r) || (r.Header.Get("HX-Request") != "true" && r.Method != http.MethodGet && r.Method != http.MethodHead) {
 				session.WriteError(w, proto.CodeUnauthenticated, "sign in first", nil)
 				return

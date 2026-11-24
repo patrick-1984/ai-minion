@@ -144,7 +144,11 @@ function load(o) {
     querySelector(sel) { return sel === '[data-answer-form]' ? p.dom.answerForm || null : sel === 'dialog[open]' ? p.dom.dialogOpen || null : null; },
     createElement: (tag) => node('', tag),
     createTextNode: (t) => { const n = node('', '#text'); n.textContent = t; return n; },
+    docL: {},
+    addEventListener(n, f) { (this.docL[n] = this.docL[n] || []).push(f); },
+    removeEventListener(n, f) { this.docL[n] = (this.docL[n] || []).filter((x) => x !== f); },
   };
+  p.fireDoc = (n, e) => { (document.docL[n] || []).slice().forEach((f) => f(Object.assign({ type: n }, e))); };
   p.document = document;
   p.els = els;
   p.gated = gated;
@@ -891,6 +895,41 @@ scenario('a read from before the suspension, or from an earlier resume, can neve
   q.waiters[0].res(OK);
   await settleMicro();
   if (q.control('state').conn !== 'suspended') fail('a late read changed a hidden view');
+});
+
+// A99: the stream's access_lost for a session whose idle lifetime ran out pauses the view instead of reloading it: the
+// screen and the draft stay, the writes are off, and the next key or click makes one foreground read of the screen
+// (no background marker) that continues the session and reconnects. A refused read then reloads as before.
+scenario('an idle session pauses the view and keeps the draft; the next action continues it', async () => {
+  const idle = { error: { code: 'unauthenticated', message: 'idle', details: { reason: 'session_idle' } } };
+  const p = withFetch({ manual: true });
+  p.es.onopen();
+  p.box.value = 'my draft';
+  const first = p.es;
+  first.l.access_lost(p.ev(idle));
+  await settleMicro();
+  if (!first.closed || p.reloads !== 0) fail('the idle access_lost reloaded or kept the stream: ' + p.reloads);
+  if (!p.gated.every((b) => b.disabled)) fail('the writes stayed on while the session is paused');
+  if (p.els.conn.textContent !== 'Session paused' || !/click or refresh to continue/.test(p.els['conn-note'].textContent)) fail('not told: ' + p.els.conn.textContent + ' / ' + p.els['conn-note'].textContent);
+  if (p.box.value !== 'my draft') fail('the draft was touched');
+  p.fireDoc('keydown', { key: 'a' });
+  p.fireDoc('pointerdown', {});
+  eq(p.waiters.length, 1, 'one foreground read per pause');
+  const w = p.waiters[0];
+  if (w.u !== SCREEN || (w.opt.headers && w.opt.headers['X-Minion-Background'])) fail('the read after the action is not a foreground read of the screen: ' + JSON.stringify(w));
+  w.res(OK);
+  await settleMicro();
+  if (p.sources.length !== 2 || p.sources[1].closed) fail('the stream did not reconnect');
+  p.sources[1].onopen();
+  if (p.gated.some((b) => b.disabled)) fail('the writes did not come back after the session continued');
+  // The read is refused: the sign-in is really gone, and the view reloads as for any lost access.
+  const q = withFetch({ manual: true });
+  q.es.onopen();
+  q.es.l.access_lost(q.ev(idle));
+  q.fireDoc('pointerdown', {});
+  q.waiters[0].res(status(401));
+  await settleMicro();
+  if (q.reloads !== 1) fail('a refused read after the pause did not reload: ' + q.reloads);
 });
 
 scenario('a resume read that fails keeps the writes off: refused access reloads, a server error asks again', async () => {

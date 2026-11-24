@@ -187,6 +187,7 @@ function listPage(o) {
     querySelector: (s) => html.querySelector(s), querySelectorAll: (s) => html.querySelectorAll(s),
     createElement: (t) => el(t),
     addEventListener(n, f) { (doc.l[n] = doc.l[n] || []).push(f); },
+    removeEventListener(n, f) { doc.l[n] = (doc.l[n] || []).filter((x) => x !== f); },
   };
   body.addEventListener = (n, f) => { (body.l[n] = body.l[n] || []).push(f); };
   const sent = { fetch: 0, xhr: 0, ajax: 0 };
@@ -1997,6 +1998,38 @@ scenario('frame: a page that is not framed does nothing', () => {
   const f = framePage({ top: true });
   eq(f.parentPosts.length, 0, 'messages from a top-level page');
   if ((f.win.l.message || []).length) fail('a top-level page listens to messages');
+});
+
+// A99: the quiet 401 of a background check when the session's idle lifetime ran out is not a sign-out. Nothing kept is
+// cleared (drafts stay), nothing kept is shown, a short note says how to continue, and the person's next key or click
+// makes ONE foreground read (no background marker), which continues the session; then the frames come back.
+scenario('an idle session pauses the inspector: drafts are kept and the next action continues it', async () => {
+  const p = listPage();
+  const A = open(p, 'w1', 'minion-1', 'pi-1', { dirty: true }).f;
+  toParent(p, A, msg('state', 'w1', 'minion-1', state({ dirty: true })));
+  const B = open(p, 'w1', 'minion-2').f;
+  p.tick(30000);
+  const g = principalReads(p)[0];
+  eq(g.opt.headers['X-Minion-Background'], '1', 'the periodic check is a background read');
+  g.res({ status: 401, ok: false, type: 'basic', headers: { get: (h) => (h === 'X-Minion-Session' ? 'idle' : null) } });
+  await flush();
+  if (!A.parentNode || !B.parentNode) fail('the idle 401 cleared a kept frame');
+  if (!p.host.hasAttribute('data-frame-dirty')) fail('the draft is no longer reported');
+  if (!p.framesHost.children.every((f) => f.hidden)) fail('a kept frame is shown while the session is paused');
+  if (p.alertBox.hidden || !/Session paused/.test(p.alertBox.textContent) || /signed out|cleared/.test(p.alertBox.textContent)) fail('not told it is paused: ' + p.alertBox.textContent);
+  if (p.win.location.reloads) fail('the page reloaded');
+  p.fireDoc('keydown', keydown('a'));
+  const fg = principalReads(p)[1];
+  if (!fg) fail('the action made no read');
+  if (fg.opt.headers['X-Minion-Background']) fail('the read after the action is marked background');
+  p.fireDoc('keydown', keydown('b'));
+  eq(principalReads(p).length, 2, 'one read per pause');
+  respond(fg, 200);
+  await flush();
+  const again = principalReads(p)[2];
+  if (again) { respond(again, 200); await flush(); }
+  if (!A.parentNode || !B.parentNode) fail('a kept frame went after the session continued');
+  if (/Session paused/.test(p.alertBox.textContent) && !p.alertBox.hidden) fail('the note stayed: ' + p.alertBox.textContent);
 });
 
 // ---- run ------------------------------------------------------------------------------------------

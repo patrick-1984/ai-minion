@@ -452,3 +452,33 @@ func TestAuthenticatorBehindTheDispatcher(t *testing.T) {
 		t.Errorf("%d %s calls=%+v", w.Code, w.Body, r.decide.calls)
 	}
 }
+
+// idleResolver answers like the session middleware for a session whose idle
+// lifetime ran out: a background request gets the ExpiredError.
+type idleResolver struct{ fakeSessions }
+
+func (f *idleResolver) ResolveRequest(r *http.Request, _ string) (*session.Session, error) {
+	if session.Background(r) {
+		return nil, &session.ExpiredError{}
+	}
+	return nil, session.ErrNoSession
+}
+
+// A background request of an idle session is unauthenticated with the reason
+// session_idle, so a page (and a stream's access_lost) can pause instead of
+// signing out; a foreground one is the ordinary "sign in first".
+func TestIdleSessionIsUnauthenticatedWithTheIdleReason(t *testing.T) {
+	r := newAuthRig(t)
+	r.a.Sessions = &idleResolver{}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
+	req.AddCookie(&http.Cookie{Name: session.CookieName, Value: "tok"})
+	_, err := r.a.Authenticate(req.WithContext(session.AsBackground(req.Context())))
+	e := ErrorOf(err)
+	if e.Code != proto.CodeUnauthenticated || e.Details["reason"] != session.IdleReason {
+		t.Errorf("background = %+v, want unauthenticated with reason %s", e, session.IdleReason)
+	}
+	_, err = r.a.Authenticate(req)
+	if e := ErrorOf(err); e.Code != proto.CodeUnauthenticated || e.Details["reason"] != nil {
+		t.Errorf("foreground = %+v, want the plain unauthenticated", e)
+	}
+}

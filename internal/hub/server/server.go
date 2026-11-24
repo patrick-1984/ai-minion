@@ -13,7 +13,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -128,7 +127,7 @@ func NewConfig(hs config.HubServer, logger *slog.Logger) (*Config, error) {
 	cfg.Listen = config.ListenAddr(raw) // a plain port means every interface
 	if _, port, err := net.SplitHostPort(cfg.Listen); err != nil {
 		return nil, fmt.Errorf("MINION_LISTEN %q is not a valid listen setting; use a port such as 8443, or host:port such as 127.0.0.1:8443", raw)
-	} else if p, err := strconv.Atoi(port); err != nil || p < 0 || p > 65535 {
+	} else if _, ok := config.ParsePort(port); !ok {
 		return nil, fmt.Errorf("MINION_LISTEN %q has an invalid port", raw)
 	}
 	var err error

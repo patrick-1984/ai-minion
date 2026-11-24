@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -179,23 +180,86 @@ func TestActivityExtendsTheIdleLifetimeButBackgroundDoesNot(t *testing.T) {
 	}
 }
 
-// A background request of an expired OIDC session renews it (the renewal
-// is a check with the IdP and keeps the screen), but a background request of
-// a valid session does not extend it.
-func TestBackgroundRequestRenewsAnExpiredSession(t *testing.T) {
+// A background request (a poll, a stream) of an expired OIDC session never
+// renews it and never extends it: it gets a quiet 401, and only the person's
+// next foreground request renews.
+func TestBackgroundRequestNeverRenews(t *testing.T) {
 	g := newRenewRig(t)
 	g.advance(90 * time.Minute)
-	if rec := g.do(req{bg: true, hx: true}); !served(rec) {
-		t.Fatalf("background request after the idle end = %d", rec.Code)
+	before, _ := g.expiresAt()
+	for _, q := range []req{{bg: true, hx: true}, {sse: true}, {bg: true, method: http.MethodPost}} {
+		if rec := g.do(q); served(rec) {
+			t.Fatalf("background request %+v after the idle end was served", q)
+		}
 	}
-	if g.rs.hitCount() != 1 || g.renewAudits(OutcomeSuccess) != 1 {
-		t.Errorf("hits %d, audits %+v", g.rs.hitCount(), g.aud.all())
+	if g.rs.hitCount() != 0 || g.renewAudits(OutcomeSuccess)+g.renewAudits(OutcomeFailed)+g.renewAudits(OutcomeRenewUnavailable) != 0 {
+		t.Errorf("a background request asked the IdP: hits %d, audits %+v", g.rs.hitCount(), g.aud.all())
 	}
-	end, _ := g.expiresAt()
+	if end, ok := g.expiresAt(); !ok || !end.Equal(before) {
+		t.Errorf("a background request changed the session: %v -> %v (row %v)", before, end, ok)
+	}
+	if rec := g.do(req{}); !served(rec) || g.rs.hitCount() != 1 {
+		t.Fatalf("the next page load = %d, hits %d; want it renewed", rec.Code, g.rs.hitCount())
+	}
+}
+
+// A background request of a session whose idle lifetime ran out is marked
+// idle in its context (the page answers it with the quiet idle 401), and the
+// REST API learns the same from ResolveRequest.
+func TestBackgroundRequestOfAnIdleSessionIsMarkedIdle(t *testing.T) {
+	g := newRenewRig(t)
+	g.advance(90 * time.Minute)
+	var idle bool
+	h := g.mw.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { idle = session.Idle(r.Context()) }))
+	r := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	r.AddCookie(&http.Cookie{Name: session.CookieName, Value: g.token})
+	r.Header.Set(session.BackgroundHeader, "1")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	if !idle {
+		t.Error("the background request was not marked idle")
+	}
+	_, err := g.mw.ResolveRequest(r, g.token)
+	var exp *session.ExpiredError
+	if !errors.As(err, &exp) {
+		t.Errorf("ResolveRequest = %v, want an ExpiredError", err)
+	}
+}
+
+// A request that another origin caused neither extends a session nor renews
+// an expired one; the person's own same-origin request does both.
+func TestCrossOriginRequestNeitherExtendsNorRenews(t *testing.T) {
+	g := newRenewRig(t)
+	start, _ := g.expiresAt()
 	g.advance(30 * time.Minute)
-	g.do(req{sse: true})
-	if e2, _ := g.expiresAt(); !e2.Equal(end) {
-		t.Errorf("a stream reconnect extended the session: %v -> %v", end, e2)
+	cross := func(site, origin string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+		r.AddCookie(&http.Cookie{Name: session.CookieName, Value: g.token})
+		if site != "" {
+			r.Header.Set("Sec-Fetch-Site", site)
+		}
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		g.h.ServeHTTP(rec, r)
+		return rec
+	}
+	for _, c := range [][2]string{{"cross-site", ""}, {"same-site", ""}, {"", "https://sibling.example.com"}} {
+		cross(c[0], c[1])
+		if end, _ := g.expiresAt(); !end.Equal(start) {
+			t.Fatalf("a %v request moved the end: %v -> %v", c, start, end)
+		}
+	}
+	cross("same-origin", "")
+	if end, _ := g.expiresAt(); !end.After(start) {
+		t.Fatal("a same-origin request did not extend the session")
+	}
+	g.advance(2 * time.Hour)
+	if rec := cross("cross-site", ""); served(rec) || g.rs.hitCount() != 0 {
+		t.Fatalf("a cross-site request of an expired session = %d, hits %d", rec.Code, g.rs.hitCount())
+	}
+	if rec := cross("none", ""); !served(rec) || g.rs.hitCount() != 1 {
+		t.Fatalf("a typed address = %d, hits %d; want it renewed", rec.Code, g.rs.hitCount())
 	}
 }
 
@@ -343,5 +407,125 @@ func TestResolveRequestRenewsForTheRESTAPI(t *testing.T) {
 	}
 	if g.renewAudits(OutcomeSuccess) != 1 {
 		t.Errorf("audit rows: %+v", g.aud.all())
+	}
+}
+
+// The scheduled refresh and the renewals of two browser sessions of the same
+// account share one lock per identity: with a provider whose refresh tokens
+// are single use, no token is ever sent twice and the account is never
+// suspended.
+func TestTwoBrowserSessionsShareTheSingleUseToken(t *testing.T) {
+	g := newRenewRig(t)
+	g.rs.set(func(r *refreshIdP) { r.singleUse = true; r.delay = 30 * time.Millisecond })
+	u, err := g.st.UserByID(context.Background(), g.userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := g.mgr.Resolve(context.Background(), g.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := g.mgr.CreateAuth(context.Background(), u, time.Hour, session.Auth{At: g.now(), Method: first.AuthMethod})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.advance(90 * time.Minute)
+	doWith := func(token string) bool {
+		r := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+		r.AddCookie(&http.Cookie{Name: session.CookieName, Value: token})
+		rec := httptest.NewRecorder()
+		g.h.ServeHTTP(rec, r)
+		return served(rec)
+	}
+	var wg sync.WaitGroup
+	results := make([]bool, 6)
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tok := g.token
+			if i%2 == 1 {
+				tok = second.Token
+			}
+			results[i] = doWith(tok)
+		}()
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); g.run() }()
+	wg.Wait()
+	for i, ok := range results {
+		if !ok {
+			t.Errorf("request %d was not served", i)
+		}
+	}
+	g.rs.mu.Lock()
+	rejected, issued, accept := g.rs.rejected, g.rs.issued, g.rs.accept
+	g.rs.mu.Unlock()
+	if rejected != 0 {
+		t.Errorf("%d refreshes sent a token that was already used", rejected)
+	}
+	if issued < 2 {
+		t.Errorf("issued %d tokens, want both sessions and the pass to refresh", issued)
+	}
+	if got := g.storedToken(); got != accept {
+		t.Errorf("stored token %q, want the last issued %q", got, accept)
+	}
+	if g.auditHas(AuditActionRoleSuspend, OutcomeSuccess) {
+		t.Error("the account was suspended")
+	}
+}
+
+// An ID token that the provider issued but that fails the check (here: the
+// wrong audience) ends the session: it is not an outage.
+func TestInvalidIDTokenSignsOutWithoutGrace(t *testing.T) {
+	g := newRenewRig(t)
+	g.rs.set(func(r *refreshIdP) { r.mode = "badaud" })
+	g.advance(time.Hour + time.Minute)
+	if rec := g.do(req{}); served(rec) {
+		t.Fatal("served with an invalid ID token")
+	}
+	if g.renewAudits(OutcomeFailed) != 1 || g.renewAudits(OutcomeRenewUnavailable) != 0 {
+		t.Errorf("audit rows: %+v", g.aud.all())
+	}
+	if _, ok := g.expiresAt(); ok {
+		t.Error("the session row is still there")
+	}
+}
+
+// The token exchange succeeds and rotates the token, then the signing keys
+// cannot be fetched before the renewal's deadline: nothing is decided (an
+// outage), but the rotated token is stored although that deadline is over.
+func TestRotatedTokenIsKeptWhenTheKeysTimeOut(t *testing.T) {
+	g := newRenewRig(t)
+	g.rs.set(func(r *refreshIdP) { r.rotate = "rt-2" })
+	g.idp.set(func(f *fakeIdP) { f.jwksDelay = 2 * time.Second })
+	g.advance(90 * time.Minute)
+	_, err := g.mgr.Resolve(context.Background(), g.token)
+	var exp *session.ExpiredError
+	if !errors.As(err, &exp) {
+		t.Fatalf("Resolve = %v, want expired", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+	if out := g.r.RenewSession(ctx, &exp.Session); out != session.RenewUnavailable {
+		t.Errorf("outcome = %v, want unavailable", out)
+	}
+	if got := g.storedToken(); got != "rt-2" {
+		t.Errorf("stored token = %q, want the rotated one", got)
+	}
+}
+
+// The account's password is reset while the identity provider does not
+// answer: the grace does not serve the session that the reset ended.
+func TestGraceIsJudgedAfterTheProviderCall(t *testing.T) {
+	g := newRenewRig(t)
+	g.advance(time.Hour + time.Minute)
+	g.rs.set(func(r *refreshIdP) { r.mode = "down"; r.delay = 300 * time.Millisecond })
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = g.st.DB().Exec(`UPDATE users SET credential_version = credential_version + 1 WHERE id = ?`, g.userID)
+	}()
+	if rec := g.do(req{}); served(rec) {
+		t.Fatal("the grace served a session whose credentials changed during the provider call")
 	}
 }

@@ -24,7 +24,10 @@ const (
 	// session to now plus this value. The absolute caps are in the Hub's
 	// session package.
 	DefaultSessionTTL = 2 * time.Hour
-	// MinSessionTTL and MaxSessionTTL bound session_ttl.
+	// MinSessionTTL and MaxSessionTTL bound session_ttl. The Hub's session
+	// layer clamps the idle lifetime to 12 h (its local absolute cap): a value
+	// up to MaxSessionTTL stays accepted so that a configuration of an older
+	// release still starts, and acts as 12 h.
 	MinSessionTTL = 5 * time.Minute
 	MaxSessionTTL = 30 * 24 * time.Hour
 )
@@ -52,7 +55,7 @@ func declareHubAuth(r *Registry) {
 	r.Declare(Setting{
 		Key:     KeySessionTTL,
 		Scope:   ScopeHub,
-		Help:    "Idle lifetime of a browser session as a Go duration such as 2h (5m to 720h): every page load or click extends the session by this much; background polling does not. A session signed in with OIDC whose idle lifetime ran out is renewed silently with the identity provider on the next request",
+		Help:    "Idle lifetime of a browser session as a Go duration such as 2h (5m to 720h; a value above 12h acts as 12h): every page load or click on the Hub's own pages extends the session by this much; background polling, live streams and requests from other sites do not. A session signed in with OIDC whose idle lifetime ran out is renewed silently with the identity provider on the person's next page load or click. Whatever the activity, a password session ends 12h and an OIDC session 7 days after sign-in",
 		Default: DefaultSessionTTL.String(),
 	})
 }

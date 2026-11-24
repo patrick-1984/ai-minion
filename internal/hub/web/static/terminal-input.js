@@ -249,8 +249,9 @@
 
   // ---- connection state (what the page shows; it never writes) --------------
 
-  var TEXT = { connecting: 'Connecting', live: 'Live', paused: 'Paused', reconnecting: 'Reconnecting', offline: 'Offline', suspended: 'Suspended', resuming: 'Refreshing' };
+  var TEXT = { connecting: 'Connecting', live: 'Live', paused: 'Paused', reconnecting: 'Reconnecting', offline: 'Offline', suspended: 'Suspended', resuming: 'Refreshing', idle: 'Session paused' };
   var NOTE = {
+    idle: 'Session paused \u2014 click or refresh to continue. Sending is unavailable until then. Text you typed is kept.',
     suspended: 'Updates are suspended while this view is hidden. They resume with a fresh read when you return. Text you typed is kept.',
     resuming: 'Refreshing the screen after the view was hidden. Sending is unavailable until the screen is current. Text you typed is kept.',
     paused: 'Paused. The screen is frozen at the last capture and sending is unavailable. The session itself keeps running. Resume to see the current screen.',
@@ -261,12 +262,13 @@
     live: 'Live. Updates and sending are available.',
     paused: 'Paused. Sending is unavailable until you resume.',
     reconnecting: 'Reconnecting. Sending is unavailable.',
-    offline: 'Live updates stopped. Sending is unavailable.'
+    offline: 'Live updates stopped. Sending is unavailable.',
+    idle: 'Session paused. Click or press a key to continue.'
   };
   var announced = '';
 
   function shown() { return paused ? 'paused' : suspended ? 'suspended' : resuming ? 'resuming' : stream; }
-  function writesAllowed() { return !paused && !suspended && !resuming && stream !== 'reconnecting' && stream !== 'offline'; }
+  function writesAllowed() { return !paused && !suspended && !resuming && stream !== 'reconnecting' && stream !== 'offline' && stream !== 'idle'; }
 
   function ageText() {
     var secs = Math.max(0, Math.round((Date.now() - lastUpdate) / 1000));
@@ -1091,7 +1093,40 @@
     // reconnect) covers the events that were missed. On a page rendered while the
     // Worker was offline this also notices that it is back.
     es.addEventListener('snapshot', function () { setStream('live'); schedule(); signal('events'); });
-    es.addEventListener('access_lost', function () { mineStream.close(); reload(true); });
+    es.addEventListener('access_lost', function (ev) {
+      mineStream.close();
+      var d = parse(ev);
+      if (d && d.error && d.error.details && d.error.details.reason === 'session_idle') { sessionIdle(mineStream); return; }
+      reload(true);
+    });
+  }
+
+  // sessionIdle is the stream's answer when the session's idle lifetime ran out (a background
+  // re-check never continues a session): nothing is reloaded or cleared, the screen and every
+  // draft stay, sending is off, and the person's next click or key makes one foreground read of
+  // the screen, which continues the session (an OIDC session is renewed silently) and reconnects.
+  // A read that is refused then means the sign-in is really gone, and the page reloads as before.
+  var idleWake = null;
+  function sessionIdle(from) {
+    if (from && es === from) { es = null; }
+    setStream('idle');
+    if (idleWake || typeof document.addEventListener !== 'function') { return; }
+    idleWake = function () {
+      document.removeEventListener('pointerdown', idleWake, true);
+      document.removeEventListener('keydown', idleWake, true);
+      idleWake = null;
+      if (typeof window.fetch !== 'function') { reload(false); return; }
+      window.fetch(screenURL, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual' }).then(function (r) {
+        var st = r && typeof r.status === 'number' ? r.status : 0;
+        if ((r && r.type === 'opaqueredirect') || st === 401 || st === 403 || st === 404) { reload(true); return; }
+        if (stream !== 'idle') { return; }
+        stream = 'connecting';
+        render(true);
+        if (!suspended) { connect(); schedule(); }
+      }, function () { sessionIdle(null); });
+    };
+    document.addEventListener('pointerdown', idleWake, true);
+    document.addEventListener('keydown', idleWake, true);
   }
 
   // ---- composer: Enter sends once, Shift+Enter is a line break ------------------

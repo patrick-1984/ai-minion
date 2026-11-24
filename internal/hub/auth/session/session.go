@@ -34,10 +34,11 @@ const (
 )
 
 // Lifetimes of a session. The idle lifetime is the session_ttl setting
-// (default 2 h): a request the person makes moves the end of the session to
-// now plus that value ([Manager.Touch]). The absolute caps below bound a
-// session whatever the activity; a cap shorter than the idle lifetime is
-// raised to it.
+// (default 2 h, at most [MaxIdle]): a foreground request the person makes
+// moves the end of the session to now plus that value ([Manager.Touch]). The
+// absolute caps below are fixed and independent of the idle setting: they
+// bound a session whatever the activity, and every idle end (the first one
+// and every later one) is clamped to them.
 const (
 	// LocalMaxAge is the absolute lifetime of a session that was not started
 	// with OIDC (a local password): after it the person signs in again.
@@ -52,6 +53,9 @@ const (
 	// served while the identity provider cannot be reached (a network error,
 	// a timeout, a 5xx). A clear refusal ends the session at once.
 	RenewGrace = 15 * time.Minute
+	// MaxIdle is the longest idle lifetime: a session_ttl above it acts as
+	// MaxIdle (an idle lifetime longer than the local cap means nothing).
+	MaxIdle = LocalMaxAge
 	// touchStep is the least move of the end that [Manager.Touch] writes, so
 	// that a burst of requests writes once.
 	touchStep = time.Minute
@@ -192,11 +196,11 @@ func WithIdleTTL(f func(ctx context.Context) (time.Duration, error)) Option {
 	return func(m *Manager) { m.idle = f }
 }
 
-// IdleTTL returns the idle lifetime of a session now. A source that fails
-// gives [config.DefaultSessionTTL].
+// IdleTTL returns the idle lifetime of a session now, at most [MaxIdle]. A
+// source that fails gives [config.DefaultSessionTTL].
 func (m *Manager) IdleTTL(ctx context.Context) time.Duration {
 	if m.idle == nil {
-		return config.DefaultSessionTTL
+		return min(config.DefaultSessionTTL, MaxIdle)
 	}
 	now := m.now()
 	m.idleMu.Lock()
@@ -208,17 +212,18 @@ func (m *Manager) IdleTTL(ctx context.Context) time.Duration {
 	if err != nil || d <= 0 {
 		d = config.DefaultSessionTTL
 	}
+	d = min(d, MaxIdle)
 	m.idleVal, m.idleUntil = d, now.Add(idleCacheFor)
 	return d
 }
 
 // maxAge returns the absolute lifetime of a session with the given auth
-// method and idle lifetime.
-func maxAge(method string, idle time.Duration) time.Duration {
+// method. It does not depend on the idle setting.
+func maxAge(method string) time.Duration {
 	if strings.HasPrefix(method, AuthMethodOIDCPrefix) {
-		return max(OIDCMaxAge, idle)
+		return OIDCMaxAge
 	}
-	return max(LocalMaxAge, idle)
+	return LocalMaxAge
 }
 
 // NewManager returns a Manager on st.
@@ -296,6 +301,8 @@ func (m *Manager) CreateAuth(ctx context.Context, user store.UserRow, ttl time.D
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	hash, _ := HashToken(token)
 	now := m.now()
+	// The first idle end is clamped to the absolute cap, like every later one.
+	ttl = min(ttl, maxAge(auth.Method))
 	row := store.SessionRow{
 		ID:                m.newID(),
 		TokenHash:         hash,
@@ -314,10 +321,10 @@ func (m *Manager) CreateAuth(ctx context.Context, user store.UserRow, ttl time.D
 	if err := m.store.CreateSession(ctx, row, row.CreatedAt); err != nil {
 		return Issued{}, err
 	}
-	return Issued{Session: toSession(row, user, token, ttl), Token: token}, nil
+	return Issued{Session: toSession(row, user, token), Token: token}, nil
 }
 
-func toSession(row store.SessionRow, u store.UserRow, token string, idle time.Duration) Session {
+func toSession(row store.SessionRow, u store.UserRow, token string) Session {
 	created := store.FromUnixMS(row.CreatedAt)
 	s := Session{
 		ID:                 row.ID,
@@ -328,7 +335,7 @@ func toSession(row store.SessionRow, u store.UserRow, token string, idle time.Du
 		MustChangePassword: u.MustChangePassword,
 		ExpiresAt:          store.FromUnixMS(row.ExpiresAt),
 		CreatedAt:          created,
-		EndsAt:             created.Add(maxAge(row.AuthMethod, idle)),
+		EndsAt:             created.Add(maxAge(row.AuthMethod)),
 		CSRFToken:          CSRFToken(token),
 		AuthMethod:         row.AuthMethod,
 	}
@@ -357,9 +364,20 @@ func (m *Manager) Resolve(ctx context.Context, token string) (*Session, error) {
 		return nil, ErrNoSession
 	}
 	now := m.now()
-	s := toSession(row, user, token, m.IdleTTL(ctx))
+	s := toSession(row, user, token)
 	if !now.Before(s.EndsAt) {
 		return nil, ErrNoSession
+	}
+	// The idle end is never further away than the idle lifetime of now, nor
+	// past the absolute end: a session issued with a longer lifetime (a
+	// v0.20.4 row with its fixed 24 h, or one issued before an operator
+	// lowered session_ttl) is clamped on its first use, and the clamp is
+	// stored so that it holds from then on.
+	if limit := earliest(now.Add(m.IdleTTL(ctx)), s.EndsAt); s.ExpiresAt.After(limit) {
+		if err := m.shrink(ctx, s.ID, limit); err != nil {
+			return nil, err
+		}
+		s.ExpiresAt = limit
 	}
 	expired := !now.Before(s.ExpiresAt)
 	if err := m.attachActAs(ctx, &s, row, user); err != nil {
@@ -391,6 +409,37 @@ func (e *ExpiredError) Is(target error) bool { return target == ErrNoSession }
 // [Manager.Renewed]; *store.Store offers it.
 type ExtendStore interface {
 	ExtendSession(ctx context.Context, sessionID string, expiresAt int64) (bool, error)
+}
+
+// ShrinkStore is the optional persistence port that moves the idle end of a
+// session earlier (see [Manager.Resolve]); *store.Store offers it.
+type ShrinkStore interface {
+	ShrinkSession(ctx context.Context, sessionID string, expiresAt int64) (bool, error)
+}
+
+var (
+	_ ExtendStore = (*store.Store)(nil)
+	_ ShrinkStore = (*store.Store)(nil)
+)
+
+func earliest(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+// shrink stores an earlier idle end; a store without [ShrinkStore] keeps
+// only the in-memory clamp.
+func (m *Manager) shrink(ctx context.Context, id string, end time.Time) error {
+	ss, ok := m.store.(ShrinkStore)
+	if !ok {
+		return nil
+	}
+	if _, err := ss.ShrinkSession(ctx, id, store.UnixMS(end)); err != nil {
+		return fmt.Errorf("session: clamp the idle end: %w", err)
+	}
+	return nil
 }
 
 // Touch records activity on s: the idle end moves to now plus the idle

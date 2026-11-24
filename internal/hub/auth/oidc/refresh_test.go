@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -103,12 +104,17 @@ type refreshIdP struct {
 	idp *fakeIdP
 
 	mu     sync.Mutex
-	mode   string // ok, reject, reject5xx, invalid_client, down, noid, wrongsub, slow
+	mode   string // ok, reject, reject5xx, invalid_client, down, noid, wrongsub, badaud, slow
 	accept string // the refresh token the endpoint accepts
 	rotate string // when not empty, "ok" answers with this new refresh token
-	delay  time.Duration
-	hits   int
-	seen   []string
+	// singleUse makes every accepted token single use: the answer carries a
+	// new token, which is the only one accepted from then on.
+	singleUse bool
+	issued    int
+	delay     time.Duration
+	hits      int
+	seen      []string
+	rejected  int
 }
 
 func newRefreshIdP(t *testing.T, idp *fakeIdP, accept string) *refreshIdP {
@@ -136,7 +142,19 @@ func (r *refreshIdP) serve(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	r.hits++
 	mode, accept, rotate, delay := r.mode, r.accept, r.rotate, r.delay
-	r.seen = append(r.seen, req.PostForm.Get("refresh_token"))
+	sent := req.PostForm.Get("refresh_token")
+	r.seen = append(r.seen, sent)
+	if r.singleUse && mode == "ok" {
+		if sent == r.accept {
+			r.issued++
+			r.accept = fmt.Sprintf("rt-su-%d", r.issued)
+			rotate = r.accept
+			accept = sent
+		} else {
+			r.rejected++
+			accept = "\x00 none"
+		}
+	}
 	r.mu.Unlock()
 	time.Sleep(delay)
 
@@ -171,6 +189,10 @@ func (r *refreshIdP) serve(w http.ResponseWriter, req *http.Request) {
 			sub := f.subject
 			if mode == "wrongsub" {
 				sub = "somebody-else"
+			}
+			if mode == "badaud" {
+				resp["id_token"] = f.signWith(f.key, map[string]any{"iss": f.Issuer(), "aud": "another-client"}, "", sub, f.claims)
+				return
 			}
 			resp["id_token"] = f.signIDToken("", sub, f.claims)
 		})

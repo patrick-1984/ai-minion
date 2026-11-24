@@ -57,6 +57,8 @@ type fakeIdP struct {
 	tokenDelay time.Duration
 	// DiscoveryDelay delays the discovery document.
 	discoveryDelay time.Duration
+	// JWKSDelay delays the key set.
+	jwksDelay time.Duration
 	// FailToken makes the token endpoint answer 500.
 	failToken bool
 	// TokenURL, when not empty, replaces the token endpoint of the discovery
@@ -209,6 +211,10 @@ func (f *fakeIdP) token(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeIdP) jwks(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	d := f.jwksDelay
+	f.mu.Unlock()
+	time.Sleep(d)
 	writeJSON(w, map[string]any{"keys": []map[string]string{{
 		"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "k1",
 		"n": b64(f.key.N.Bytes()), "e": b64(big.NewInt(int64(f.key.E)).Bytes()),

@@ -107,7 +107,8 @@ func TestResolveHubServerCertPathsFromPanelAndEnvPrecedence(t *testing.T) {
 }
 
 func TestListenPortOfEveryForm(t *testing.T) {
-	for in, want := range map[string]string{"9443": "9443", ":9443": "9443", "0.0.0.0:9443": "9443", "[::]:9443": "9443", "": "8443", "host:": "8443", "garbage": "8443"} {
+	for in, want := range map[string]string{"9443": "9443", ":9443": "9443", "0.0.0.0:9443": "9443", "[::]:9443": "9443", "": "8443", "host:": "8443", "garbage": "8443",
+		":0009443": "9443", "0009443": "9443", "host:+9443": "8443", ":70000": "8443", ":0": "8443"} {
 		if got := ListenPort(in, "8443"); got != want {
 			t.Errorf("ListenPort(%q) = %q, want %q", in, got, want)
 		}
