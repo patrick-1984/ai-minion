@@ -968,10 +968,10 @@ func TestFeedCarriesSanitizedHarnessName(t *testing.T) {
 }
 
 // A96 review: harness session names are bound to the owner the reporting
-// connection was admitted under. The cached rows of an offline Worker that was
-// reassigned keep their state but never show the former owner's names, a
-// reconnect under the new owner drops them, and a name whose owner is unknown
-// is not shown at all; queued events follow the same rule.
+// connection was admitted under (the reader compares it with the owner its read
+// was authorized under, see the api tests): a reconnect under a new owner drops
+// the cached names, a connection whose owner is unknown reports none, and a
+// queued event shows its name only under the owner it was reported under.
 func TestHarnessNamesBoundToOwner(t *testing.T) {
 	h := NewEventHub(EventHubOptions{})
 	sub := h.Subscribe(16)
@@ -999,16 +999,8 @@ func TestHarnessNamesBoundToOwner(t *testing.T) {
 	l.Disconnect()
 
 	ws, _ := h.Sessions("w1")
-	if ws.OwnerID != "alice" || ws.NamesFor("alice").Sessions[0].HarnessName != "alice renamed" {
+	if ws.OwnerID != "alice" || ws.Sessions[0].HarnessName != "alice renamed" {
 		t.Fatalf("owner's view = %+v", ws)
-	}
-	// Reassigned while offline: the new owner reads the cached row without
-	// the name, and the cached state itself is not changed by reading.
-	if got := ws.NamesFor("bob").Sessions[0]; got.HarnessName != "" || got.Task != "t" {
-		t.Fatalf("new owner's view = %+v", got)
-	}
-	if ws.Sessions[0].HarnessName != "alice renamed" {
-		t.Fatal("NamesFor changed the cached state")
 	}
 	// The Worker reconnects under its new owner: the names are dropped from
 	// the cache before its snapshot arrives.
@@ -1024,7 +1016,7 @@ func TestHarnessNamesBoundToOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws, _ = h2.Sessions("w2")
-	if ws.NamesFor("alice").Sessions[0].HarnessName != "" {
-		t.Fatal("a name of an unknown owner is shown")
+	if ws.OwnerID != "" {
+		t.Fatalf("an unbound connection has owner %q", ws.OwnerID)
 	}
 }

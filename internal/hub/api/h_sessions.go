@@ -58,7 +58,10 @@ type SessionInfo struct {
 	Kind    string `json:"kind"`
 	State   string `json:"state"`
 	ops.PaneStateDetail
-	Task string `json:"task"`
+	// HarnessName is the name the user gave the conversation in the harness
+	// (Claude Code /rename), shown only under the owner it was reported under.
+	HarnessName string `json:"harness_name,omitempty"`
+	Task        string `json:"task"`
 	// Online is true while the session's Worker is connected.
 	Online bool `json:"online"`
 	// ScreenHash identifies the last known screen, never its content.
@@ -106,6 +109,9 @@ type sessionItem struct {
 	rec workers.WorkerRecord
 	st  workers.SessionState
 	on  bool
+	// reported is the owner the Worker connection that reported st was
+	// admitted under ("" when unknown).
+	reported string
 }
 
 // List returns the sessions p may read, ordered by Worker name, owner, Worker
@@ -132,10 +138,6 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 		if !ok {
 			continue
 		}
-		// Harness session names are shown only under the owner whose
-		// monitoring grant reported them: an offline Worker reassigned since
-		// keeps its cached rows, never the former owner's names.
-		ws = ws.NamesFor(w.OwnerID)
 		if q.Online != nil && ws.Online != *q.Online {
 			continue
 		}
@@ -143,18 +145,27 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 			if !matchClass(q.Kind, s.Kind, true) || !matchClass(q.State, s.State, false) {
 				continue
 			}
-			items = append(items, sessionItem{rec: w, st: s, on: ws.Online})
+			items = append(items, sessionItem{rec: w, st: s, on: ws.Online, reported: ws.OwnerID})
 		}
 	}
-	items, err = authz.Filter(ctx, l.Authz, p, items, func(it sessionItem) authz.Resource {
+	allowed, err := authz.FilterOwned(ctx, l.Authz, p, items, func(it sessionItem) authz.Resource {
 		return authz.SessionResource{WorkerID: it.rec.ID, Name: it.st.Name}
 	})
 	if err != nil {
 		return nil, err
 	}
 	owners := map[string]string{}
-	out := make([]SessionInfo, 0, len(items))
-	for _, it := range items {
+	out := make([]SessionInfo, 0, len(allowed))
+	for _, a := range allowed {
+		it := a.Item
+		// A harness session name is shown only under the owner it was
+		// reported under, and that owner is compared with the very owner
+		// the read was authorized under: a reassignment that commits while
+		// the list is built never shows the former owner's name to the new
+		// one (nor an offline Worker's cached name after a reassignment).
+		if it.reported == "" || it.reported != a.OwnerID {
+			it.st.HarnessName = ""
+		}
 		owner, ok := owners[it.rec.OwnerID]
 		if !ok {
 			owner = it.rec.OwnerID
@@ -168,7 +179,7 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 		out = append(out, SessionInfo{
 			WorkerID: it.rec.ID, Worker: it.rec.Name, OwnerID: it.rec.OwnerID, Owner: owner,
 			Session: it.st.Name, Kind: it.st.Kind, State: it.st.State, Task: it.st.Task,
-			Online: it.on, ScreenHash: it.st.ScreenHash, PaneStateDetail: it.st.PaneStateDetail,
+			Online: it.on, ScreenHash: it.st.ScreenHash, PaneStateDetail: it.st.PaneStateDetail, HarnessName: it.st.HarnessName,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {

@@ -16,7 +16,29 @@ import (
 // read from the store for this call only; a failing lookup returns an
 // error and no items.
 func Filter[T any](ctx context.Context, a *Authorizer, p Principal, items []T, resource func(T) Resource) ([]T, error) {
-	out := make([]T, 0, len(items))
+	owned, err := FilterOwned(ctx, a, p, items, resource)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, len(owned))
+	for i, o := range owned {
+		out[i] = o.Item
+	}
+	return out, nil
+}
+
+// Owned is an item [FilterOwned] kept, with the owner of its resource as it
+// was read for the decision that kept it.
+type Owned[T any] struct {
+	Item    T
+	OwnerID string
+}
+
+// FilterOwned is [Filter] that also returns, for each item kept, the owner
+// its read was authorized under. A caller that shows data bound to the owner
+// it was reported under compares that owner with this one snapshot.
+func FilterOwned[T any](ctx context.Context, a *Authorizer, p Principal, items []T, resource func(T) Resource) ([]Owned[T], error) {
+	out := make([]Owned[T], 0, len(items))
 	pt := a.ports()
 	pt.workers = newMemoWorkers(pt.workers)
 	sub, ok, err := a.subject(ctx, p, pt)
@@ -37,7 +59,7 @@ func Filter[T any](ctx context.Context, a *Authorizer, p Principal, items []T, r
 			return nil, err
 		}
 		if read.Permits(h...) {
-			out = append(out, it)
+			out = append(out, Owned[T]{Item: it, OwnerID: resolved.OwnerID})
 		}
 	}
 	return out, nil

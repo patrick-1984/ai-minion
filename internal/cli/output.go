@@ -239,19 +239,13 @@ func renderSessions(w *errWriter, r ops.SessionsListResult) {
 		return
 	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	// TITLE is the name the user gave the harness conversation (Claude Code
-	// /rename); NAME is the tmux session.
-	_, _ = fmt.Fprintln(tw, "NAME\tWINDOWS\tATTACHED\tKIND\tSTATE\tTITLE\tTASK")
+	_, _ = fmt.Fprintln(tw, "NAME\tWINDOWS\tATTACHED\tKIND\tSTATE\tTASK")
 	for _, s := range r.Sessions {
-		kind, state, title := "-", "-", "-"
+		kind, state := "-", "-"
 		if s.Pane != nil {
 			kind, state = dash(oneLine(s.Pane.Kind)), dash(oneLine(s.Pane.State))
-			// The name comes from the Worker (or a Hub relaying it): it is
-			// sanitized here too, so no bidirectional override or escape
-			// sequence reaches the terminal, whoever produced the result.
-			title = dash(ops.SanitizeHarnessName(s.Pane.HarnessName))
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%d\t%t\t%s\t%s\t%s\t%s\n", oneLine(s.Name), s.Windows, s.Attached, kind, state, title, oneLine(s.Task))
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%t\t%s\t%s\t%s\n", oneLine(s.Name), s.Windows, s.Attached, kind, state, oneLine(s.Task))
 	}
 	if err := tw.Flush(); err != nil && w.err == nil {
 		w.err = err

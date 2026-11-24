@@ -93,6 +93,10 @@ type SessionState struct {
 	Task       string `json:"task"`
 	ScreenHash string `json:"screen_hash,omitempty"`
 	ops.PaneStateDetail
+	// HarnessName is the name the user gave the conversation in the harness
+	// (Claude Code /rename), sanitized; reported on the Worker's state stream
+	// only, and shown only under the owner it was reported under.
+	HarnessName string `json:"harness_name,omitempty"`
 }
 
 // WorkerSessions is the latest known state of one Worker.
@@ -112,25 +116,8 @@ type WorkerSessions struct {
 	// OwnerID is the owner the Worker had when its latest connection was
 	// admitted ("" when unknown). The harness session names of Sessions were
 	// reported under that owner's monitoring grant: a reader shows them only
-	// while the Worker still has that owner (see [WorkerSessions.NamesFor]).
+	// when its read was authorized under that same owner.
 	OwnerID string
-}
-
-// NamesFor returns ws with the harness session names it may show while the
-// Worker's owner is currentOwner: all of them when they were reported under
-// that owner, none when the Worker was reassigned since (the cached rows of an
-// offline Worker) or when the owner they belong to is unknown.
-func (ws WorkerSessions) NamesFor(currentOwner string) WorkerSessions {
-	if ws.OwnerID != "" && ws.OwnerID == currentOwner {
-		return ws
-	}
-	out := ws
-	out.Sessions = make([]SessionState, len(ws.Sessions))
-	for i, s := range ws.Sessions {
-		s.HarnessName = ""
-		out.Sessions[i] = s
-	}
-	return out
 }
 
 // Event is one change published to the subscribers. Session is empty for the
@@ -149,6 +136,7 @@ type Event struct {
 	ScreenHash string        `json:"screen_hash,omitempty"`
 	Time       ops.Timestamp `json:"time"`
 	ops.PaneStateDetail
+	HarnessName string `json:"harness_name,omitempty"`
 
 	// snapshot are the session names a worker_resynced event's snapshot
 	// listed (never published): consumers that act on the snapshot use them,
@@ -160,10 +148,12 @@ type Event struct {
 }
 
 // NameFor returns ev without its harness session name unless the event was
-// reported under currentOwner, the Worker's owner now: an event queued before
-// a reassignment never shows the former owner's name to the new one.
-func (ev Event) NameFor(currentOwner string) Event {
-	if ev.HarnessName != "" && (ev.owner == "" || ev.owner != currentOwner) {
+// reported under authorizedOwner, the owner the subscriber's read of the
+// session was authorized under (one snapshot, see authz.DecideOwner): an event
+// queued before a reassignment never shows the former owner's name to the new
+// one, nor the new owner's name to a stream authorized under the former one.
+func (ev Event) NameFor(authorizedOwner string) Event {
+	if ev.HarnessName != "" && (ev.owner == "" || ev.owner != authorizedOwner) {
 		ev.HarnessName = ""
 	}
 	return ev
@@ -728,7 +718,7 @@ func (f *Feed) Apply(c Change) error {
 		}
 		w.sessions[s.Name] = s
 		ev.Kind, ev.State, ev.ScreenHash = s.Kind, s.State, s.ScreenHash
-		ev.PaneStateDetail = s.PaneStateDetail
+		ev.PaneStateDetail, ev.HarnessName = s.PaneStateDetail, s.HarnessName
 		task := s.Task
 		ev.Task = &task
 	case EventSessionRemoved:
@@ -743,7 +733,7 @@ func (f *Feed) Apply(c Change) error {
 		cur.ScreenHash = s.ScreenHash
 		w.sessions[s.Name] = cur
 		ev.Kind, ev.State, ev.ScreenHash = cur.Kind, cur.State, cur.ScreenHash
-		ev.PaneStateDetail = cur.PaneStateDetail
+		ev.PaneStateDetail, ev.HarnessName = cur.PaneStateDetail, cur.HarnessName
 	default:
 		return nil
 	}
@@ -800,6 +790,7 @@ type eventWire struct {
 	Task       *string `json:"task"`
 	ScreenHash string  `json:"screen_hash"`
 	ops.PaneStateDetail
+	HarnessName string `json:"harness_name"`
 	// Share is the rule of a share_changed event.
 	Share *ops.ShareDecl `json:"share"`
 }
@@ -865,7 +856,7 @@ func feedFrame(feed *Feed, body json.RawMessage, other func(string, json.RawMess
 			return err
 		}
 		c := Change{Seq: f.Seq, Event: f.Event, HasTask: f.Task != nil, Share: f.Share,
-			Session: SessionState{Name: f.Session, Kind: f.Kind, State: f.State, ScreenHash: f.ScreenHash, PaneStateDetail: f.PaneStateDetail}}
+			Session: SessionState{Name: f.Session, Kind: f.Kind, State: f.State, ScreenHash: f.ScreenHash, PaneStateDetail: f.PaneStateDetail, HarnessName: f.HarnessName}}
 		if f.Task != nil {
 			c.Session.Task = *f.Task
 		}

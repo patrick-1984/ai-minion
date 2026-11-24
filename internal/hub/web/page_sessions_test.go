@@ -702,7 +702,7 @@ func TestHandlerSourceSnapshotMergesWorkersAndSessions(t *testing.T) {
 		t.Errorf("workers = %+v", d.Workers)
 	}
 	if len(d.Sessions) != 2 || d.Sessions[0] != (SessionRow{WorkerID: "w1", Worker: "laptop", Owner: "alice", Name: "fix-tests", Kind: "agent:claude", State: "busy", Task: "t", Online: true,
-		PaneStateDetail: ops.PaneStateDetail{StateSource: "claude-hooks", StateReason: "1 subagent", LastEvent: ops.Timestamp(time.Date(2026, 11, 23, 23, 9, 17, 0, time.UTC)), HarnessName: "Release prep"}}) ||
+		PaneStateDetail: ops.PaneStateDetail{StateSource: "claude-hooks", StateReason: "1 subagent", LastEvent: ops.Timestamp(time.Date(2026, 11, 23, 23, 9, 17, 0, time.UTC))}, HarnessName: "Release prep"}) ||
 		d.Sessions[1].Online || d.Sessions[1].Name != "ci" {
 		t.Errorf("sessions = %+v", d.Sessions)
 	}

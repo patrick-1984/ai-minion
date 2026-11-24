@@ -58,6 +58,7 @@ type EventFrame struct {
 	Task       *string       `json:"task,omitempty"`
 	ScreenHash string        `json:"screen_hash,omitempty"`
 	ops.PaneStateDetail
+	HarnessName string `json:"harness_name,omitempty"`
 	// Share is the share rule now in force and its revision. It is set on the
 	// first event of a look in which the rule changed (or on a share_changed
 	// event of its own, which names no session, when the look has no other
@@ -75,7 +76,7 @@ const EventShareChanged = "share_changed"
 func eventFrameOf(seq uint64, at time.Time, c Change) EventFrame {
 	f := EventFrame{Type: proto.TypeEvent, Seq: seq, Time: ops.Timestamp(at), Event: c.Event, Session: c.Session.Name}
 	if c.Event == EventSessionAdded || c.Event == EventStateChanged {
-		f.PaneStateDetail = c.Session.PaneStateDetail
+		f.PaneStateDetail, f.HarnessName = c.Session.PaneStateDetail, c.Session.HarnessName
 	}
 	switch c.Event {
 	case EventSessionAdded:

@@ -5,8 +5,10 @@ import (
 	"unicode"
 )
 
-// MaxHarnessNameRunes bounds a harness session name (see
-// [PaneStateDetail.HarnessName]).
+// MaxHarnessNameRunes bounds a harness session name: the name the user gave
+// the conversation inside the harness (Claude Code /rename), which a Worker
+// reports to its Hub on the session state stream only (never in operation
+// results).
 const MaxHarnessNameRunes = 80
 
 // SanitizeHarnessName makes a harness session name safe to keep and display:

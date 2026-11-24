@@ -219,7 +219,10 @@ type SessionRow struct {
 	Kind     string
 	State    string
 	ops.PaneStateDetail
-	Task string
+	// HarnessName is the name the user gave the conversation in the harness
+	// (Claude Code /rename); "" when none is known.
+	HarnessName string
+	Task        string
 	// Online is false while the session's Worker is offline; the state is the
 	// last one known.
 	Online    bool
@@ -1186,8 +1189,9 @@ type sessionsBody struct {
 		Kind     string `json:"kind"`
 		State    string `json:"state"`
 		ops.PaneStateDetail
-		Task   string `json:"task"`
-		Online bool   `json:"online"`
+		HarnessName string `json:"harness_name"`
+		Task        string `json:"task"`
+		Online      bool   `json:"online"`
 	} `json:"sessions"`
 }
 
@@ -1244,7 +1248,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	for _, x := range sb.Sessions {
 		d.Sessions = append(d.Sessions, SessionRow{
 			WorkerID: x.WorkerID, Worker: x.Worker, Owner: x.Owner, Name: x.Session,
-			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail,
+			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail, HarnessName: x.HarnessName,
 		})
 	}
 	return d, nil

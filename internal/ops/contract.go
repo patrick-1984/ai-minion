@@ -187,14 +187,10 @@ const (
 
 // PaneStateDetail is the optional display provenance of a reported pane state.
 // LastEvent is the time of the latest native lifecycle event, when available.
-// HarnessName is the name the user gave the conversation inside the harness
-// (Claude Code /rename or --name), sanitized by [SanitizeHarnessName]; it is
-// empty when none is known. Older Workers and Hubs omit or ignore it.
 type PaneStateDetail struct {
 	StateSource string    `json:"state_source,omitempty"`
 	StateReason string    `json:"state_reason,omitempty"`
 	LastEvent   Timestamp `json:"last_event,omitzero"`
-	HarnessName string    `json:"harness_name,omitempty"`
 }
 
 // PaneInfo describes the resolved pane of a call. The Worker fills it.
