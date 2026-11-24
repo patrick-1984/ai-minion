@@ -23,7 +23,7 @@
 </section>
 <section aria-labelledby="sessions-h">
   <div class="section-head"><h2 id="sessions-h">Sessions</h2><a href="/sessions">All sessions</a></div>
-  {{if .Sessions}}{{template "session_table" .}}{{else}}<div class="table-wrap"><table class="rtable session-table{{if .ShowOwner}} has-owner{{end}}">
+  {{if .Sessions}}{{template "session_table" .}}{{else}}<div class="table-wrap session-table-wrap"><table class="rtable session-table{{if .ShowOwner}} has-owner{{end}}">
     <thead><tr><th scope="col">Session</th><th scope="col" class="col-name">Name</th><th scope="col">Task</th><th scope="col">Worker</th>{{if .ShowOwner}}<th scope="col">Owner</th>{{end}}<th scope="col">Kind</th><th scope="col">State</th><th scope="col" class="col-activity">Activity</th><th scope="col" class="col-source">Source</th><th scope="col" class="col-last-event">Last event</th></tr></thead>
     <tbody><tr><td colspan="{{if .ShowOwner}}10{{else}}9{{end}}" class="empty">No sessions yet. A connected worker can host a new session.</td></tr></tbody>
   </table></div>{{end}}

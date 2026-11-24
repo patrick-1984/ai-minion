@@ -8,7 +8,8 @@ package web
 // stood beside the permanent rail), and a later rule put the narrow session pane
 // back into the normal flow below the page. It handles what minion.css uses:
 // type, class, id and attribute selectors, :not(), :where(), :root, descendant
-// and child combinators, @media (min-width / max-width), !important. A selector
+// and child combinators, @media (min-width / max-width), @container (min-width /
+// max-width) against a given container width, !important. A selector
 // with another pseudo-class or a pseudo-element (:hover, :disabled, ::before)
 // describes a state or a part, not the element at rest, and never matches here.
 // It is not a browser: layout, inheritance and the real pages stay with the
@@ -47,18 +48,23 @@ type cssRule struct {
 	sel        string
 	decls      []cssDecl
 	minW, maxW int // media bounds; maxW 0 means none
-	order      int
+	// cMinW, cMaxW are @container bounds (0 means none). The evaluator does not
+	// find the container itself: the caller says how wide the element's query
+	// container is (valueIn), or valueAt takes it to be as wide as the window.
+	cMinW, cMaxW int
+	order        int
 }
 
 var cssComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
 
-// parseCSS reads the rules of a style sheet, with @media (min-width|max-width) blocks one level deep.
+// parseCSS reads the rules of a style sheet, with @media and @container (min-width|max-width) blocks.
 func parseCSS(t *testing.T, src string) []cssRule {
 	t.Helper()
 	src = cssComment.ReplaceAllString(src, "")
 	var rules []cssRule
-	var walk func(s string, minW, maxW int)
-	walk = func(s string, minW, maxW int) {
+	type bounds struct{ minW, maxW, cMinW, cMaxW int }
+	var walk func(s string, b bounds)
+	walk = func(s string, b bounds) {
 		for {
 			s = strings.TrimSpace(s)
 			if s == "" {
@@ -80,16 +86,23 @@ func parseCSS(t *testing.T, src string) []cssRule {
 			}
 			body := s[open+1 : end-1]
 			s = s[end:]
-			if strings.HasPrefix(head, "@media") {
-				mn, mx := minW, maxW
-				if m := regexp.MustCompile(`^@media\s*\(\s*(min|max)-width:\s*(\d+)px\s*\)\s*$`).FindStringSubmatch(head); m != nil {
-					v, _ := strconv.Atoi(m[2])
-					if m[1] == "min" {
-						mn = v
-					} else {
-						mx = v
+			if strings.HasPrefix(head, "@media") || strings.HasPrefix(head, "@container") {
+				if m := regexp.MustCompile(`^@(media|container)\s*\(\s*(min|max)-width:\s*(\d+)px\s*\)\s*$`).FindStringSubmatch(head); m != nil {
+					v, _ := strconv.Atoi(m[3])
+					nb := b
+					switch m[1] + m[2] {
+					case "mediamin":
+						nb.minW = v
+					case "mediamax":
+						nb.maxW = v
+					case "containermin":
+						nb.cMinW = v
+					case "containermax":
+						nb.cMaxW = v
 					}
-					walk(body, mn, mx)
+					walk(body, nb)
+				} else if strings.HasPrefix(head, "@container") {
+					t.Fatalf("the cascade evaluator does not understand %q", head)
 				} // another media query (colour scheme, motion, print) is not a width and is skipped
 				continue
 			}
@@ -108,11 +121,11 @@ func parseCSS(t *testing.T, src string) []cssRule {
 				decls = append(decls, cssDecl{strings.TrimSpace(k), v, imp})
 			}
 			for _, sel := range splitTop(head, ',') {
-				rules = append(rules, cssRule{sel: strings.TrimSpace(sel), decls: decls, minW: minW, maxW: maxW, order: len(rules)})
+				rules = append(rules, cssRule{sel: strings.TrimSpace(sel), decls: decls, minW: b.minW, maxW: b.maxW, cMinW: b.cMinW, cMaxW: b.cMaxW, order: len(rules)})
 			}
 		}
 	}
-	walk(src, 0, 0)
+	walk(src, bounds{})
 	return rules
 }
 
@@ -315,7 +328,13 @@ func matchSelector(sel string, e cssEl, ancestors []cssEl) (bool, spec) {
 }
 
 // valueAt returns the value of prop for e at a window width of w px, as the cascade decides it ("" when no rule sets it).
+// A rule inside @container is taken to see a container as wide as the window; valueIn gives the container its own width.
 func valueAt(rules []cssRule, prop string, e cssEl, ancestors []cssEl, w int) string {
+	return valueIn(rules, prop, e, ancestors, w, w)
+}
+
+// valueIn is valueAt with a window width of w px and a query container (of the rules inside @container) of cw px.
+func valueIn(rules []cssRule, prop string, e cssEl, ancestors []cssEl, w, cw int) string {
 	type win struct {
 		imp   bool
 		sp    int
@@ -325,6 +344,9 @@ func valueAt(rules []cssRule, prop string, e cssEl, ancestors []cssEl, w int) st
 	var best *win
 	for _, r := range rules {
 		if (r.minW != 0 && w < r.minW) || (r.maxW != 0 && w > r.maxW) {
+			continue
+		}
+		if (r.cMinW != 0 && cw < r.cMinW) || (r.cMaxW != 0 && cw > r.cMaxW) {
 			continue
 		}
 		ok, sp := matchSelector(r.sel, e, ancestors)
@@ -398,6 +420,34 @@ input[type="number"] { border: 0; }
 		if got := valueAt(rules, c.prop, c.e, c.anc, c.w); got != c.want {
 			t.Errorf("%s of %+v at %dpx = %q, want %q", c.prop, c.e, c.w, got, c.want)
 		}
+	}
+}
+
+// @container rules see the container width given to valueIn, not the window,
+// and keep the cascade order and media bounds of the sheet around them.
+func TestCascadeEvaluatorContainerQueries(t *testing.T) {
+	rules := parseCSS(t, `
+.t { display: table; }
+@container (max-width: 799px) { .t { display: block; } }
+@media (max-width: 499px) { @container (min-width: 300px) { .t { display: grid; } } }
+`)
+	for _, c := range []struct {
+		w, cw int
+		want  string
+	}{
+		{1600, 800, "table"}, // a wide container in a wide window
+		{1600, 799, "block"}, // a narrow container in a wide window (beside a panel)
+		{799, 799, "block"},
+		{499, 400, "grid"},  // both bounds hold
+		{499, 299, "block"}, // the container is below the inner min-width
+		{500, 400, "block"}, // the window is outside the media bound
+	} {
+		if got := valueIn(rules, "display", el("div", "t"), nil, c.w, c.cw); got != c.want {
+			t.Errorf("display at window %dpx, container %dpx = %q, want %q", c.w, c.cw, got, c.want)
+		}
+	}
+	if got := valueAt(rules, "display", el("div", "t"), nil, 700); got != "block" {
+		t.Errorf("valueAt takes the container as wide as the window: got %q at 700px", got)
 	}
 }
 
@@ -673,52 +723,87 @@ func splitCombinators(sel string) []string {
 	return out
 }
 
-// A96: below 1280px the session table stacks as cards: empty state-detail
-// cells are hidden, but a full-width empty-list cell (also class "empty")
-// stays visible; Source is shown at every width; details wrap below 1280px.
-// The harness Name cell follows the same rules and wraps like Activity.
+// A96: the session table stacks as cards when its own box (the container
+// .session-table-wrap, not the window) is below 1240px: the rail and the inspector
+// panel take from the window, so a viewport breakpoint let the nine-column table
+// overflow. In the cards empty state-detail cells are hidden, but a full-width
+// empty-list cell (also class "empty") stays visible; Source is shown at every
+// width; details wrap. The harness Name cell follows the same rules and wraps like
+// Activity. The column header (with its sort buttons) is out of sight and out of
+// the Tab order in the cards.
 func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 	rules := loadSheet(t)
-	table := []cssEl{el("table", "rtable session-table")}
+	table := []cssEl{el("table", "rtable session-table"), el("div", "table-wrap session-table-wrap")}
 	emptyList := el("td", "empty")
 	emptyDetail := el("td", "col-source cell-nowrap empty")
 	source := el("td", "col-source cell-nowrap muted")
 	name := el("td", "col-name")
 	emptyName := el("td", "col-name empty")
-	for _, w := range []int{320, 390, 639, 768, 1024, 1279} {
-		if d := valueAt(rules, "display", emptyList, table, w); d == "none" {
-			t.Errorf("the empty-list cell is hidden at %dpx", w)
+	thead := el("thead", "")
+	// window width, container width: the phone, the drawer-rail tablet, a 1440px desktop
+	// beside the rail (1127px of table, the review measurement) and a wide window with
+	// the inspector open.
+	cards := [][2]int{{320, 288}, {390, 358}, {639, 607}, {768, 736}, {1024, 990}, {1279, 960}, {1440, 1127}, {1920, 1160}, {2050, 1161}, {1600, 1239}}
+	for _, c := range cards {
+		w, cw := c[0], c[1]
+		if d := valueIn(rules, "display", emptyList, table, w, cw); d == "none" {
+			t.Errorf("the empty-list cell is hidden at %dpx (container %dpx)", w, cw)
 		}
-		if d := valueAt(rules, "display", emptyDetail, table, w); d != "none" {
-			t.Errorf("an empty detail cell has display %q at %dpx, want none", d, w)
+		if d := valueIn(rules, "display", emptyDetail, table, w, cw); d != "none" {
+			t.Errorf("an empty detail cell has display %q at %dpx (container %dpx), want none", d, w, cw)
 		}
-		if d := valueAt(rules, "display", emptyName, table, w); d != "none" {
-			t.Errorf("an empty Name cell has display %q at %dpx, want none", d, w)
+		if d := valueIn(rules, "display", emptyName, table, w, cw); d != "none" {
+			t.Errorf("an empty Name cell has display %q at %dpx (container %dpx), want none", d, w, cw)
 		}
-		if d := valueAt(rules, "display", name, table, w); d != "block" {
-			t.Errorf("a Name cell has display %q at %dpx, want block (a card field)", d, w)
+		if d := valueIn(rules, "display", name, table, w, cw); d != "block" {
+			t.Errorf("a Name cell has display %q at %dpx (container %dpx), want block (a card field)", d, w, cw)
 		}
-		if mw := valueAt(rules, "max-width", name, table, w); mw != "none" {
-			t.Errorf("a Name cell has max-width %q at %dpx, want none in the card layout", mw, w)
+		if mw := valueIn(rules, "max-width", name, table, w, cw); mw != "none" {
+			t.Errorf("a Name cell has max-width %q at %dpx (container %dpx), want none in the card layout", mw, w, cw)
+		}
+		if d := valueIn(rules, "display", el("tr", ""), table, w, cw); d != "block" {
+			t.Errorf("a session row has display %q at %dpx (container %dpx), want block (card)", d, w, cw)
+		}
+		if ws := valueIn(rules, "white-space", source, table, w, cw); ws != "normal" {
+			t.Errorf("white-space of a detail cell at %dpx (container %dpx) = %q, want normal", w, cw, ws)
+		}
+		// The clipped header must not hold the focus: hidden, its sort buttons leave the Tab order.
+		// (A phone shows its own sort bar: that rule needs :has(), which this evaluator never matches.)
+		if v := valueIn(rules, "visibility", thead, table, w, cw); v != "hidden" {
+			t.Errorf("the column header has visibility %q at %dpx (container %dpx), want hidden in the cards", v, w, cw)
 		}
 	}
-	// From 1280px the Name is a table column: shown even when empty (the column
-	// stays aligned), 14ch to 28ch wide and wrapping, never clipped to one line.
-	if d := valueAt(rules, "display", emptyName, table, 1280); d == "none" {
-		t.Error("an empty Name cell is hidden at 1280px, where the table has columns")
-	}
-	for _, w := range []int{1280, 1920} {
-		if mw := valueAt(rules, "max-width", name, table, w); mw != "28ch" {
-			t.Errorf("a Name cell has max-width %q at %dpx, want 28ch", mw, w)
+	// From a 1240px container the Name is a table column: shown even when empty (the
+	// column stays aligned), 14ch to 28ch wide and wrapping, never clipped to one line;
+	// the header is visible and its sort buttons reachable.
+	for _, c := range [][2]int{{1560, 1240}, {1920, 1600}, {2560, 2200}} {
+		w, cw := c[0], c[1]
+		if d := valueIn(rules, "display", el("tr", ""), table, w, cw); d != "" {
+			t.Errorf("a session row has display %q at %dpx (container %dpx), want table columns", d, w, cw)
 		}
-		if mw := valueAt(rules, "min-width", name, table, w); mw != "14ch" {
-			t.Errorf("a Name cell has min-width %q at %dpx, want 14ch (never squeezed)", mw, w)
+		if v := valueIn(rules, "visibility", thead, table, w, cw); v == "hidden" {
+			t.Errorf("the column header is hidden at %dpx (container %dpx)", w, cw)
 		}
-		if ws := valueAt(rules, "white-space", name, table, w); ws == "nowrap" {
-			t.Errorf("a Name cell does not wrap at %dpx", w)
+		if d := valueIn(rules, "display", emptyName, table, w, cw); d == "none" {
+			t.Errorf("an empty Name cell is hidden at container %dpx, where the table has columns", cw)
 		}
-		if ov := valueAt(rules, "overflow", name, table, w); ov == "hidden" {
-			t.Errorf("a Name cell is clipped at %dpx", w)
+		if d := valueIn(rules, "display", emptyDetail, table, w, cw); d == "none" {
+			t.Errorf("an empty detail cell is hidden at container %dpx, where the table has columns", cw)
+		}
+		if mw := valueIn(rules, "max-width", name, table, w, cw); mw != "28ch" {
+			t.Errorf("a Name cell has max-width %q at container %dpx, want 28ch", mw, cw)
+		}
+		if mw := valueIn(rules, "min-width", name, table, w, cw); mw != "14ch" {
+			t.Errorf("a Name cell has min-width %q at container %dpx, want 14ch (never squeezed)", mw, cw)
+		}
+		if ws := valueIn(rules, "white-space", name, table, w, cw); ws == "nowrap" {
+			t.Errorf("a Name cell does not wrap at container %dpx", cw)
+		}
+		if ov := valueIn(rules, "overflow", name, table, w, cw); ov == "hidden" {
+			t.Errorf("a Name cell is clipped at container %dpx", cw)
+		}
+		if ws := valueIn(rules, "white-space", source, table, w, cw); ws != "nowrap" {
+			t.Errorf("white-space of a detail cell at container %dpx = %q, want nowrap", cw, ws)
 		}
 	}
 	for _, w := range []int{390, 768, 1024, 1279, 1280, 1920} {
@@ -726,51 +811,81 @@ func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 			t.Errorf("the Source cell is hidden at %dpx", w)
 		}
 	}
-	for w, want := range map[int]string{768: "block", 1024: "block", 1279: "block", 1280: ""} {
-		if d := valueAt(rules, "display", el("tr", ""), table, w); d != want {
-			t.Errorf("display of a session row at %dpx = %q, want %q (cards below 1280px)", w, d, want)
-		}
-	}
-	if d := valueAt(rules, "display", emptyDetail, table, 1280); d == "none" {
-		t.Error("an empty detail cell is hidden at 1280px, where the table has columns")
-	}
-	for w, want := range map[int]string{768: "normal", 1024: "normal", 1279: "normal", 1280: "nowrap"} {
-		if ws := valueAt(rules, "white-space", source, table, w); ws != want {
-			t.Errorf("white-space of a detail cell at %dpx = %q, want %q", w, ws, want)
-		}
-	}
 }
 
 // A96 review: with the Owner column (All users) the table has ten columns and
-// stays a card list up to 1599px, so a crowded table never squeezes the Name;
-// from 1600px it has columns again. Without the Owner column the breakpoint
-// stays at 1280px.
-func TestSessionTableWithOwnerCardsBelow1600(t *testing.T) {
+// needs about 1220px, so it stays a card list below a 1320px container; from
+// there it has columns again. Without the Owner column the bound stays at 1240px.
+func TestSessionTableWithOwnerCardsBelow1320(t *testing.T) {
 	rules := loadSheet(t)
-	owner := []cssEl{el("table", "rtable session-table has-owner")}
-	plain := []cssEl{el("table", "rtable session-table")}
-	row, name := el("tr", ""), el("td", "col-name")
-	for _, w := range []int{390, 1279, 1280, 1580, 1599} {
-		if d := valueAt(rules, "display", row, owner, w); d != "block" {
-			t.Errorf("a session row with the Owner column has display %q at %dpx, want block (card)", d, w)
+	wrap := el("div", "table-wrap session-table-wrap")
+	owner := []cssEl{el("table", "rtable session-table has-owner"), wrap}
+	plain := []cssEl{el("table", "rtable session-table"), wrap}
+	row, name, thead := el("tr", ""), el("td", "col-name"), el("thead", "")
+	for _, cw := range []int{358, 1127, 1161, 1239, 1240, 1300, 1319} {
+		w := cw + 400
+		if d := valueIn(rules, "display", row, owner, w, cw); d != "block" {
+			t.Errorf("a session row with the Owner column has display %q at container %dpx, want block (card)", d, cw)
 		}
-		if d := valueAt(rules, "display", el("td", "col-name empty"), owner, w); d != "none" {
-			t.Errorf("an empty Name card field has display %q at %dpx, want none", d, w)
+		if v := valueIn(rules, "visibility", thead, owner, w, cw); v != "hidden" {
+			t.Errorf("the column header with the Owner column has visibility %q at container %dpx, want hidden", v, cw)
 		}
-		if mw := valueAt(rules, "min-width", name, owner, w); mw != "0" {
-			t.Errorf("a Name card field has min-width %q at %dpx, want 0", mw, w)
+		if d := valueIn(rules, "display", el("td", "col-name empty"), owner, w, cw); d != "none" {
+			t.Errorf("an empty Name card field has display %q at container %dpx, want none", d, cw)
 		}
-		if mw := valueAt(rules, "max-width", name, owner, w); mw != "none" {
-			t.Errorf("a Name card field has max-width %q at %dpx, want none", mw, w)
+		if mw := valueIn(rules, "min-width", name, owner, w, cw); mw != "0" {
+			t.Errorf("a Name card field has min-width %q at container %dpx, want 0", mw, cw)
+		}
+		if mw := valueIn(rules, "max-width", name, owner, w, cw); mw != "none" {
+			t.Errorf("a Name card field has max-width %q at container %dpx, want none", mw, cw)
 		}
 	}
-	if d := valueAt(rules, "display", row, owner, 1600); d != "" {
-		t.Errorf("a session row with the Owner column has display %q at 1600px, want table columns", d)
+	if d := valueIn(rules, "display", row, owner, 1720, 1320); d != "" {
+		t.Errorf("a session row with the Owner column has display %q at container 1320px, want table columns", d)
 	}
-	if mw := valueAt(rules, "min-width", name, owner, 1600); mw != "14ch" {
-		t.Errorf("the Name column has min-width %q at 1600px, want 14ch", mw)
+	if v := valueIn(rules, "visibility", thead, owner, 1720, 1320); v == "hidden" {
+		t.Errorf("the column header with the Owner column is hidden at container 1320px")
 	}
-	if d := valueAt(rules, "display", row, plain, 1580); d != "" {
-		t.Errorf("a session row without the Owner column has display %q at 1580px, want table columns", d)
+	if mw := valueIn(rules, "min-width", name, owner, 1720, 1320); mw != "14ch" {
+		t.Errorf("the Name column has min-width %q at container 1320px, want 14ch", mw)
+	}
+	if d := valueIn(rules, "display", row, plain, 1700, 1300); d != "" {
+		t.Errorf("a session row without the Owner column has display %q at container 1300px, want table columns", d)
+	}
+}
+
+// The session table's cards follow its own box: the wrapper of every session
+// table is the query container, and no window breakpoint of the session table is
+// left (it could not know about the rail or the inspector panel).
+func TestSessionTableCardsFollowTheirContainer(t *testing.T) {
+	rules := loadSheet(t)
+	wrap := el("div", "table-wrap session-table-wrap")
+	if got := valueAt(rules, "container-type", wrap, nil, 1440); got != "inline-size" {
+		t.Errorf("container-type of the session table wrapper = %q, want inline-size", got)
+	}
+	if got := valueAt(rules, "container-type", el("div", "table-wrap"), nil, 1440); got != "" {
+		t.Errorf("every table wrapper is a size container (%q): only the session table's should be", got)
+	}
+	if got := valueAt(rules, "display", wrap, nil, 1440); got != "" {
+		t.Errorf("the session table wrapper has display %q: it must stay a full-width block (a size container does not size from its content)", got)
+	}
+	for _, r := range rules {
+		if strings.Contains(r.sel, "session-table") && (r.minW != 0 || r.maxW != 0) && r.cMaxW == 0 && r.cMinW == 0 {
+			for _, d := range r.decls {
+				if d.prop == "display" || d.prop == "visibility" || d.prop == "position" {
+					t.Errorf("%q sets %s in a window media query (%d-%d px): the session table layout follows its container", r.sel, d.prop, r.minW, r.maxW)
+				}
+			}
+		}
+	}
+	for _, name := range []string{"_lists.html", "sessions.html"} {
+		b, err := os.ReadFile(filepath.Join("templates", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		if n, wrapped := strings.Count(src, `<table class="rtable session-table`), strings.Count(src, `<div class="table-wrap session-table-wrap"><table class="rtable session-table`); n != wrapped {
+			t.Errorf("%s: %d session tables, %d inside a session-table-wrap", name, n, wrapped)
+		}
 	}
 }
