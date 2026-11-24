@@ -689,9 +689,9 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
    The room is the width of the table's own box (a container query on .session-table-wrap), not the window: the rail, the
    inspector panel and the Owner column all take from it. Nine columns need about 1160 px, so below 1240 px each session
    stacks as a card with labelled fields, like every table on a phone; empty detail fields are left out. Activity wraps,
-   never cut. In the cards the column header is hidden from sight, from the Tab order and from screen readers (its sort
-   buttons would otherwise take the focus into a clipped box); sorting is a table-layout control (a phone keeps its own
-   sort bar, see the max-width: 639px rules). */
+   never cut. In the cards the column header leaves the table layout: on a sortable table with the script (it turns the
+   headers into .th-sort buttons) it becomes the same keyboard-reachable sort bar a phone shows (see the max-width: 639px
+   rules), at every window width; otherwise it is hidden from sight, from the Tab order and from screen readers. */
 .session-table-wrap { container-type: inline-size; }
 .session-table td.cell-nowrap { white-space: nowrap; overflow-wrap: normal; }
 .session-table td.col-activity { max-width: 24ch; overflow-wrap: normal; }
@@ -710,6 +710,10 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
   .session-table td.cell-nowrap { white-space: normal; }
   .session-table td.col-name.empty, .session-table td.col-activity.empty, .session-table td.col-source.empty, .session-table td.col-last-event.empty { display: none; }
   .session-table td.col-name { min-width: 0; }
+  .js .session-table[data-sortable] thead { position: sticky; top: 0; z-index: 2; display: block; width: auto; height: auto; overflow: visible; clip: auto; visibility: visible; }
+  .js .session-table[data-sortable] thead tr { display: flex; gap: 0 12px; flex-wrap: wrap; padding: 4px 12px; background: var(--surface-subtle); border-bottom: 1px solid var(--border); }
+  .js .session-table[data-sortable] thead th:not([data-sort]) { display: none; }
+  .js .session-table[data-sortable] thead th[data-sort] { position: static; height: auto; padding: 0; background: none; box-shadow: none; }
 }
 /* With the Owner column (the All users view) the table has ten columns and needs about 1220 px: below 1320 px of
    container it is a card list too (the same rules as above, for a table marked has-owner). */
@@ -724,6 +728,10 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
   .session-table.has-owner td.empty::before { content: none; }
   .session-table.has-owner td.cell-nowrap { white-space: normal; }
   .session-table.has-owner td.col-name.empty, .session-table.has-owner td.col-activity.empty, .session-table.has-owner td.col-source.empty, .session-table.has-owner td.col-last-event.empty { display: none; }
+  .js .session-table.has-owner[data-sortable] thead { position: sticky; top: 0; z-index: 2; display: block; width: auto; height: auto; overflow: visible; clip: auto; visibility: visible; }
+  .js .session-table.has-owner[data-sortable] thead tr { display: flex; gap: 0 12px; flex-wrap: wrap; padding: 4px 12px; background: var(--surface-subtle); border-bottom: 1px solid var(--border); }
+  .js .session-table.has-owner[data-sortable] thead th:not([data-sort]) { display: none; }
+  .js .session-table.has-owner[data-sortable] thead th[data-sort] { position: static; height: auto; padding: 0; background: none; box-shadow: none; }
 }
 .js .session-table tbody tr[data-row-link], .js .worker-table tbody tr[data-row-link] { cursor: pointer; }
 .js .session-table tbody tr[data-row-link] a, .js .worker-table tbody tr[data-row-link] a { cursor: pointer; }

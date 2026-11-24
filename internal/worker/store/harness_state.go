@@ -77,7 +77,7 @@ func (s *Store) RecordHarnessEvent(ctx context.Context, grant string, e HarnessE
 	// Fence changes of ownership or monitoring consent inside the writer transaction.
 	change, err := tx.ExecContext(ctx, `INSERT INTO harness_events(session,pane,created,pid,birth,harness,native,kind,entity,registry,at)
  SELECT ?,?,?,?,?,?,?,?,?,?,? FROM hub_enrollment WHERE id=1 AND usage_policy=1 AND worker_id<>'' AND owner<>''
- AND hex(hub_pub)||':'||worker_id||':'||owner=?`, e.Session, e.Pane, e.Created, e.ProcessPID, e.ProcessBirth, e.Harness, e.NativeID, e.Kind, e.Entity, string(registry), e.At.UnixNano(), grant)
+ AND hex(hub_pub)||':'||worker_id||':'||owner_id||':'||owner=?`, e.Session, e.Pane, e.Created, e.ProcessPID, e.ProcessBirth, e.Harness, e.NativeID, e.Kind, e.Entity, string(registry), e.At.UnixNano(), grant)
 	if err != nil {
 		return err
 	}

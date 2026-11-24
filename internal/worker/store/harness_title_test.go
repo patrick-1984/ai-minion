@@ -359,3 +359,62 @@ func TestHarnessTitleOfAnEndedConversation(t *testing.T) {
 		t.Fatalf("the resumed conversation shows %q", got)
 	}
 }
+
+// A96 review round 4: two accounts can share one sanitized display name. A
+// reassignment between them keeps the display name but changes the owner id:
+// the stored names are dropped and the old monitoring grant no longer writes.
+func TestHarnessTitlePurgedOnOwnerIDChangeWithSameDisplayName(t *testing.T) {
+	ctx := t.Context()
+	s := openStore(t, t.TempDir())
+	en := Enrollment{HubPub: pubKey(1), WorkerID: "work", Owner: "Pat", OwnerID: "01900000-0000-7000-8000-000000000001"}
+	if err := s.SaveEnrollment(ctx, en); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AcceptUsageRegistration(ctx, en.HubPub, en.WorkerID, en.Owner); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := s.UsageGrantID(ctx, en.WorkerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := titleEventAt(time.Now().Add(-time.Minute), "one", 0)
+	if e.ProcessBirth == "" {
+		t.Skip("process lifetime unavailable on this platform")
+	}
+	if err := s.RecordHarnessEvent(ctx, grant, e); err != nil {
+		t.Fatal(err)
+	}
+	nameTitle(t, s, grant, e, "release prep")
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := s.db.QueryRow("SELECT count(*) FROM harness_titles").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	// The same owner welcomed again keeps the name.
+	same := WelcomeInfo{WorkerID: en.WorkerID, Name: "box", Owner: en.Owner, OwnerID: en.OwnerID}
+	if err := s.UpdateWelcome(ctx, same); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("a repeated welcome of the same owner left %d names", n)
+	}
+	// Another account with the same display name.
+	other := same
+	other.OwnerID = "01900000-0000-7000-8000-000000000002"
+	if err := s.UpdateWelcome(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 0 {
+		t.Fatalf("reassignment to another account with the same display name left %d names", n)
+	}
+	e.At = e.At.Add(time.Millisecond)
+	if _, err := s.ObserveHarnessTitle(ctx, grant, e, "release prep"); err == nil {
+		t.Fatal("the previous owner's monitoring grant still writes names")
+	}
+	if now, err := s.UsageGrantID(ctx, en.WorkerID); err != nil || now == grant {
+		t.Fatalf("grant not bound to the owner id: %q, %v", now, err)
+	}
+}

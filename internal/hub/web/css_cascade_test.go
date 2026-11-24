@@ -729,8 +729,9 @@ func splitCombinators(sel string) []string {
 // overflow. In the cards empty state-detail cells are hidden, but a full-width
 // empty-list cell (also class "empty") stays visible; Source is shown at every
 // width; details wrap. The harness Name cell follows the same rules and wraps like
-// Activity. The column header (with its sort buttons) is out of sight and out of
-// the Tab order in the cards.
+// Activity. In the cards the column header of a sortable table (with the script
+// that makes its sort buttons) is the sort bar, at every window width; any other
+// header is out of sight and out of the Tab order.
 func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 	rules := loadSheet(t)
 	table := []cssEl{el("table", "rtable session-table"), el("div", "table-wrap session-table-wrap")}
@@ -740,6 +741,8 @@ func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 	name := el("td", "col-name")
 	emptyName := el("td", "col-name empty")
 	thead := el("thead", "")
+	sortableNoJS := []cssEl{el("table", "rtable session-table", "data-sortable", ""), el("div", "table-wrap session-table-wrap")}
+	sortable := append(append([]cssEl{}, sortableNoJS...), scripted...)
 	// window width, container width: the phone, the drawer-rail tablet, a 1440px desktop
 	// beside the rail (1127px of table, the review measurement) and a wide window with
 	// the inspector open.
@@ -767,11 +770,15 @@ func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 		if ws := valueIn(rules, "white-space", source, table, w, cw); ws != "normal" {
 			t.Errorf("white-space of a detail cell at %dpx (container %dpx) = %q, want normal", w, cw, ws)
 		}
-		// The clipped header must not hold the focus: hidden, its sort buttons leave the Tab order.
-		// (A phone shows its own sort bar: that rule needs :has(), which this evaluator never matches.)
+		// Without sort buttons the clipped header must not hold the focus: hidden, it leaves the Tab order.
 		if v := valueIn(rules, "visibility", thead, table, w, cw); v != "hidden" {
 			t.Errorf("the column header has visibility %q at %dpx (container %dpx), want hidden in the cards", v, w, cw)
 		}
+		if v := valueIn(rules, "visibility", thead, sortableNoJS, w, cw); v != "hidden" {
+			t.Errorf("the header of a sortable table without the script has visibility %q at %dpx (container %dpx), want hidden", v, w, cw)
+		}
+		// A sortable table keeps sorting in the cards: its header is the sort bar.
+		checkSortBar(t, rules, sortable, w, cw)
 	}
 	// From a 1240px container the Name is a table column: shown even when empty (the
 	// column stays aligned), 14ch to 28ch wide and wrapping, never clipped to one line;
@@ -783,6 +790,9 @@ func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 		}
 		if v := valueIn(rules, "visibility", thead, table, w, cw); v == "hidden" {
 			t.Errorf("the column header is hidden at %dpx (container %dpx)", w, cw)
+		}
+		if d := valueIn(rules, "display", el("tr", ""), append([]cssEl{el("thead", "")}, sortable...), w, cw); d == "flex" {
+			t.Errorf("the header row of a sortable table is a sort bar at container %dpx, where the table has columns", cw)
 		}
 		if d := valueIn(rules, "display", emptyName, table, w, cw); d == "none" {
 			t.Errorf("an empty Name cell is hidden at container %dpx, where the table has columns", cw)
@@ -813,6 +823,35 @@ func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 	}
 }
 
+// checkSortBar: in the card layout the header of a sortable session table (ancestors:
+// the table, its wrapper, the scripted html) is a visible, wrapping bar of the sort
+// buttons, as a phone shows it: only the sortable headers stay, and it is not
+// clipped, so the buttons are in the Tab order with their focus ring.
+func checkSortBar(t *testing.T, rules []cssRule, table []cssEl, w, cw int) {
+	t.Helper()
+	thead := el("thead", "")
+	inHead := append([]cssEl{thead}, table...)
+	row := append([]cssEl{el("tr", "")}, inHead...)
+	if v := valueIn(rules, "visibility", thead, table, w, cw); v != "visible" {
+		t.Errorf("the sort bar has visibility %q at %dpx (container %dpx), want visible", v, w, cw)
+	}
+	if c := valueIn(rules, "clip", thead, table, w, cw); c != "auto" {
+		t.Errorf("the sort bar is clipped (%q) at %dpx (container %dpx)", c, w, cw)
+	}
+	if p := valueIn(rules, "position", thead, table, w, cw); p == "absolute" {
+		t.Errorf("the sort bar is position:absolute at %dpx (container %dpx)", w, cw)
+	}
+	if d := valueIn(rules, "display", el("tr", ""), inHead, w, cw); d != "flex" {
+		t.Errorf("the sort bar row has display %q at %dpx (container %dpx), want flex", d, w, cw)
+	}
+	if d := valueIn(rules, "display", el("th", "", "data-sort", "text"), row, w, cw); d == "none" {
+		t.Errorf("a sort header is hidden in the sort bar at %dpx (container %dpx)", w, cw)
+	}
+	if d := valueIn(rules, "display", el("th", ""), row, w, cw); d != "none" {
+		t.Errorf("a header without sorting has display %q in the sort bar at %dpx (container %dpx), want none", d, w, cw)
+	}
+}
+
 // A96 review: with the Owner column (All users) the table has ten columns and
 // needs about 1220px, so it stays a card list below a 1320px container; from
 // there it has columns again. Without the Owner column the bound stays at 1240px.
@@ -822,6 +861,7 @@ func TestSessionTableWithOwnerCardsBelow1320(t *testing.T) {
 	owner := []cssEl{el("table", "rtable session-table has-owner"), wrap}
 	plain := []cssEl{el("table", "rtable session-table"), wrap}
 	row, name, thead := el("tr", ""), el("td", "col-name"), el("thead", "")
+	ownerSortable := append([]cssEl{el("table", "rtable session-table has-owner", "data-sortable", ""), wrap}, scripted...)
 	for _, cw := range []int{358, 1127, 1161, 1239, 1240, 1300, 1319} {
 		w := cw + 400
 		if d := valueIn(rules, "display", row, owner, w, cw); d != "block" {
@@ -830,6 +870,7 @@ func TestSessionTableWithOwnerCardsBelow1320(t *testing.T) {
 		if v := valueIn(rules, "visibility", thead, owner, w, cw); v != "hidden" {
 			t.Errorf("the column header with the Owner column has visibility %q at container %dpx, want hidden", v, cw)
 		}
+		checkSortBar(t, rules, ownerSortable, w, cw)
 		if d := valueIn(rules, "display", el("td", "col-name empty"), owner, w, cw); d != "none" {
 			t.Errorf("an empty Name card field has display %q at container %dpx, want none", d, cw)
 		}

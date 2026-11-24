@@ -10,6 +10,11 @@
 -- at is the observation time of the latest status line: every observation
 -- advances it, and a confirmation is shown only while its observation is
 -- still the latest (an older callback that finishes last changes nothing).
+-- owner_id is the stable Hub id of the owner from the latest welcome (owner
+-- is only its display name, and two accounts can share one): the monitoring
+-- grant and the purge below are bound to it, so a reassignment to another
+-- account with the same display name still drops every stored name.
+ALTER TABLE hub_enrollment ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';
 CREATE TABLE harness_titles (
     session TEXT NOT NULL, pane TEXT NOT NULL, created INTEGER NOT NULL,
     harness TEXT NOT NULL, native TEXT NOT NULL,
@@ -17,6 +22,6 @@ CREATE TABLE harness_titles (
     PRIMARY KEY(session,pane,created,harness,native)
 );
 CREATE TRIGGER harness_titles_reset AFTER DELETE ON hub_enrollment BEGIN DELETE FROM harness_titles; END;
-CREATE TRIGGER harness_titles_revoke AFTER UPDATE OF hub_pub,worker_id,owner,usage_policy ON hub_enrollment
-WHEN OLD.hub_pub<>NEW.hub_pub OR OLD.worker_id<>NEW.worker_id OR OLD.owner<>NEW.owner OR NEW.usage_policy<>1
+CREATE TRIGGER harness_titles_revoke AFTER UPDATE OF hub_pub,worker_id,owner,owner_id,usage_policy ON hub_enrollment
+WHEN OLD.hub_pub<>NEW.hub_pub OR OLD.worker_id<>NEW.worker_id OR OLD.owner_id<>NEW.owner_id OR OLD.owner<>NEW.owner OR NEW.usage_policy<>1
 BEGIN DELETE FROM harness_titles; END;

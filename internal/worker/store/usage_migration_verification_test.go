@@ -37,7 +37,10 @@ func TestUsageMigrationGrandfathersExistingEnrollmentAndFencesChanges(t *testing
 			dir := t.TempDir()
 			prior := Enrollment{HubPub: pubKey(1), WorkerID: state.workerID, Owner: state.owner}
 			old := openStore(t, dir, WithMigrations(legacy, migrationsDir))
-			if err := old.SaveEnrollment(ctx, prior); err != nil {
+			// The schema before 0012 (and before owner_id): the row as that
+			// release stored it.
+			if _, err := old.db.ExecContext(ctx, `INSERT INTO hub_enrollment (id, hub_pub, pin_seq, worker_id, worker_name, owner, kind, preview_only, enrolled_at, updated_at)
+ VALUES (1, ?, 0, ?, '', ?, '', 0, 1, 1)`, []byte(prior.HubPub), prior.WorkerID, prior.Owner); err != nil {
 				t.Fatal(err)
 			}
 			if err := old.Close(); err != nil {

@@ -114,7 +114,7 @@ func (s *Store) harnessTitleTx(ctx context.Context, grant string, e HarnessEvent
 	defer func() { _ = tx.Rollback() }()
 	var granted bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM hub_enrollment WHERE id=1 AND usage_policy=1 AND worker_id<>'' AND owner<>''
- AND hex(hub_pub)||':'||worker_id||':'||owner=?)`, grant).Scan(&granted); err != nil {
+ AND hex(hub_pub)||':'||worker_id||':'||owner_id||':'||owner=?)`, grant).Scan(&granted); err != nil {
 		return err
 	}
 	if !granted {
