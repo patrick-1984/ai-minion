@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Sessions and Worker pages: a **Name** column shows the name you gave a Claude Code conversation with `/rename` or `--name` (sortable, searchable). The Worker's Claude exporter confirms the status line's session name against the latest custom-title entry at the end of the transcript (at most 256 KiB read, nothing else of the transcript is kept), so an AI-generated title is never shown. `sessions_list` reports it as the optional `pane.harness_name` and the CLI table as TITLE. Codex thread names are not shown: Codex stores automatic titles in the same place. A long name wraps; in the card layout below 1280 px an empty Name is left out. Needs an updated Worker; older Workers show an empty Name.
+
 ## v0.20.3
 
 ### Fixed

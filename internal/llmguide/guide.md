@@ -103,6 +103,9 @@ minion set_task --target build --task 'run the tests' # a short label the Hub sh
 
 `--target` is `[worker-id:]session[:window.pane]`; without it, the current tmux session.
 
+In `sessions_list`, the `pane` of a session may carry `harness_name`: the name the user gave the conversation in the
+harness (Claude Code `/rename` or `--name`). It is a label only, absent when none is known; target sessions by `name`.
+
 Sharing decides what you can reach, locally too: a session that is not shared answers `not_shared`. A new session
 is shared only when the Worker shares all sessions; otherwise ask the human to share it (Hub: the Worker's page,
 Sharing) before you read or type. Typing into a pane that runs a plain shell is refused as `shell_pane` (forceable,

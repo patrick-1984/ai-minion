@@ -152,6 +152,33 @@ func TestSessionRowStateDetailColumns(t *testing.T) {
 	mustNotHave(t, body, `<div data-state-reason>`, `>Last event <time`)
 }
 
+// A96: the name the user gave the harness session has its own sortable column;
+// a session without one (an older Worker, another harness) has an empty cell,
+// and the search finds a session by that name.
+func TestSessionRowHarnessNameColumn(t *testing.T) {
+	named := sAgent
+	named.HarnessName = "release <notes> & fixes"
+	long := sAgent
+	long.Name = "long"
+	long.HarnessName = "a name that is longer than the width of the column"
+	plain := sAgent
+	plain.Name = "plain"
+	src := newFakeSource(Dashboard{Workers: []WorkerRow{wPrivate}, Sessions: []SessionRow{named, long, plain}}, Dashboard{})
+	s := dashboardServer(t, src)
+	_, body := page(t, s, "/sessions", "alice:user")
+	mustHave(t, body,
+		`<th scope="col" data-sort="text">Session</th><th scope="col" data-sort="text" class="col-name">Name</th><th scope="col" data-sort="text">Task</th>`,
+		`<td data-label="Name" class="col-name" data-harness-name>release &lt;notes&gt; &amp; fixes</td>`,
+		`<td data-label="Name" class="col-name" data-harness-name>a name that is longer than the width of the column</td>`,
+		`<td data-label="Name" class="col-name empty"></td>`)
+	// The Name cell wraps like Activity: no clamp and no tabindex, so a live
+	// refresh of the row cannot take the keyboard focus away.
+	mustNotHave(t, body, `class="col-name cell-clamp`, `title="a name that is longer`)
+	_, body = page(t, s, "/sessions?q=RELEASE+%3Cnotes", "alice:user")
+	mustHave(t, body, `data-session="fix-tests"`)
+	mustNotHave(t, body, `data-session="plain"`, `data-session="long"`)
+}
+
 // R48: a user cannot widen the list, whatever the query says.
 func TestDashboardUserCannotAskForAll(t *testing.T) {
 	src := newFakeSource(Dashboard{Workers: []WorkerRow{wPrivate}}, Dashboard{Workers: []WorkerRow{wPrivate, wInfra}})
@@ -662,7 +689,7 @@ func TestHandlerSourceSnapshotMergesWorkersAndSessions(t *testing.T) {
 			{ID: "w1", Name: "laptop", Owner: "alice", Kind: ops.WorkerKindPrivate, Online: true, ProtoVersion: "1.0"},
 			{ID: "w2", Name: "buildbox", Owner: "bob", Kind: ops.WorkerKindInfrastructure},
 		}},
-		sessions: `{"sessions":[{"worker_id":"w1","worker":"laptop","owner":"alice","session":"fix-tests","kind":"agent:claude","state":"busy","task":"t","online":true,"screen_hash":"h","state_source":"claude-hooks","state_reason":"1 subagent","last_event":"2026-11-23T23:09:17.000Z"},
+		sessions: `{"sessions":[{"worker_id":"w1","worker":"laptop","owner":"alice","session":"fix-tests","kind":"agent:claude","state":"busy","task":"t","online":true,"screen_hash":"h","state_source":"claude-hooks","state_reason":"1 subagent","last_event":"2026-11-23T23:09:17.000Z","harness_name":"Release prep"},
 		{"worker_id":"w2","worker":"buildbox","owner":"bob","session":"ci","kind":"shell","state":"idle","online":false}]}`,
 	}
 	src := NewHandlerSource(NewHandlerCaller(api.handler()))
@@ -675,7 +702,7 @@ func TestHandlerSourceSnapshotMergesWorkersAndSessions(t *testing.T) {
 		t.Errorf("workers = %+v", d.Workers)
 	}
 	if len(d.Sessions) != 2 || d.Sessions[0] != (SessionRow{WorkerID: "w1", Worker: "laptop", Owner: "alice", Name: "fix-tests", Kind: "agent:claude", State: "busy", Task: "t", Online: true,
-		PaneStateDetail: ops.PaneStateDetail{StateSource: "claude-hooks", StateReason: "1 subagent", LastEvent: ops.Timestamp(time.Date(2026, 11, 23, 23, 9, 17, 0, time.UTC))}}) ||
+		PaneStateDetail: ops.PaneStateDetail{StateSource: "claude-hooks", StateReason: "1 subagent", LastEvent: ops.Timestamp(time.Date(2026, 11, 23, 23, 9, 17, 0, time.UTC)), HarnessName: "Release prep"}}) ||
 		d.Sessions[1].Online || d.Sessions[1].Name != "ci" {
 		t.Errorf("sessions = %+v", d.Sessions)
 	}

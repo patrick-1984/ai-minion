@@ -712,6 +712,7 @@ func sanitize(s SessionState) (SessionState, bool) {
 	s.State = cut(s.State, maxClassLen)
 	s.StateSource = cut(s.StateSource, maxClassLen)
 	s.StateReason = cut(s.StateReason, maxStateReasonLen)
+	s.HarnessName = ops.SanitizeHarnessName(s.HarnessName)
 	s.Task = cut(s.Task, ops.MaxTaskLen)
 	s.ScreenHash = cut(s.ScreenHash, maxScreenHashLen)
 	return s, true

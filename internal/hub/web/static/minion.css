@@ -686,21 +686,23 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
 .session-table tbody tr, .worker-table tbody tr { min-height: 0; }
 .session-table td, .session-table th[scope="row"] { overflow-wrap: anywhere; }
 /* A96: the state details sit in their own single-line columns (State, Activity, Source, Last event) from 1280 px.
-   Below that the content area (beside the rail) is too narrow for eight columns, so each session stacks as a card
+   Below that the content area (beside the rail) is too narrow for nine columns, so each session stacks as a card
    with labelled fields, like every table on a phone; empty detail fields are left out. Activity wraps, never cut. */
 .session-table td.cell-nowrap { white-space: nowrap; overflow-wrap: normal; }
 .session-table td.col-activity { max-width: 24ch; overflow-wrap: normal; }
+/* The harness session name (Claude Code /rename) wraps like Activity; a long unbroken name may break anywhere. */
+.session-table td.col-name { max-width: 24ch; }
 @media (max-width: 1279px) {
   .session-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .session-table, .session-table tbody, .session-table tr, .session-table th, .session-table td { display: block; }
   .session-table tr { padding: 10px 12px; border-bottom: 1px solid var(--border); }
   .session-table tbody tr:last-child { border-bottom: 0; }
   .session-table th, .session-table td { border: 0; padding: 3px 0; }
-  .session-table td.col-activity { max-width: none; }
+  .session-table td.col-activity, .session-table td.col-name { max-width: none; }
   .session-table td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; font-weight: 600; }
   .session-table td.empty::before { content: none; }
   .session-table td.cell-nowrap { white-space: normal; }
-  .session-table td.col-activity.empty, .session-table td.col-source.empty, .session-table td.col-last-event.empty { display: none; }
+  .session-table td.col-name.empty, .session-table td.col-activity.empty, .session-table td.col-source.empty, .session-table td.col-last-event.empty { display: none; }
 }
 .js .session-table tbody tr[data-row-link], .js .worker-table tbody tr[data-row-link] { cursor: pointer; }
 .js .session-table tbody tr[data-row-link] a, .js .worker-table tbody tr[data-row-link] a { cursor: pointer; }

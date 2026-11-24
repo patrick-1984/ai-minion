@@ -251,7 +251,8 @@ type Dashboard struct {
 // optional; an empty filter shows everything the scope allows. The filter only
 // narrows a list the API already limited to what the caller may see.
 type ListFilter struct {
-	// Query matches names, tasks, Worker names and owners, ignoring case.
+	// Query matches names (also the harness session name), tasks, Worker names
+	// and owners, ignoring case.
 	Query string
 	// Status is "online" or "offline" for Workers; a session state or
 	// "worker-offline" for sessions.
@@ -307,7 +308,7 @@ func (f ListFilter) matchWorker(w WorkerRow) bool {
 }
 
 func (f ListFilter) matchSession(x SessionRow) bool {
-	if f.Query != "" && !containsFold(x.Name, f.Query) && !containsFold(x.Task, f.Query) &&
+	if f.Query != "" && !containsFold(x.Name, f.Query) && !containsFold(x.HarnessName, f.Query) && !containsFold(x.Task, f.Query) &&
 		!containsFold(x.Worker, f.Query) && !containsFold(x.Owner, f.Query) {
 		return false
 	}

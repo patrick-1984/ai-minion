@@ -676,18 +676,46 @@ func splitCombinators(sel string) []string {
 // A96: below 1280px the session table stacks as cards: empty state-detail
 // cells are hidden, but a full-width empty-list cell (also class "empty")
 // stays visible; Source is shown at every width; details wrap below 1280px.
+// The harness Name cell follows the same rules and wraps like Activity.
 func TestSessionTableDetailCellsAcrossWidths(t *testing.T) {
 	rules := loadSheet(t)
 	table := []cssEl{el("table", "rtable session-table")}
 	emptyList := el("td", "empty")
 	emptyDetail := el("td", "col-source cell-nowrap empty")
 	source := el("td", "col-source cell-nowrap muted")
+	name := el("td", "col-name")
+	emptyName := el("td", "col-name empty")
 	for _, w := range []int{320, 390, 639, 768, 1024, 1279} {
 		if d := valueAt(rules, "display", emptyList, table, w); d == "none" {
 			t.Errorf("the empty-list cell is hidden at %dpx", w)
 		}
 		if d := valueAt(rules, "display", emptyDetail, table, w); d != "none" {
 			t.Errorf("an empty detail cell has display %q at %dpx, want none", d, w)
+		}
+		if d := valueAt(rules, "display", emptyName, table, w); d != "none" {
+			t.Errorf("an empty Name cell has display %q at %dpx, want none", d, w)
+		}
+		if d := valueAt(rules, "display", name, table, w); d != "block" {
+			t.Errorf("a Name cell has display %q at %dpx, want block (a card field)", d, w)
+		}
+		if mw := valueAt(rules, "max-width", name, table, w); mw != "none" {
+			t.Errorf("a Name cell has max-width %q at %dpx, want none in the card layout", mw, w)
+		}
+	}
+	// From 1280px the Name is a table column: shown even when empty (the column
+	// stays aligned), at most 24ch wide and wrapping, never clipped to one line.
+	if d := valueAt(rules, "display", emptyName, table, 1280); d == "none" {
+		t.Error("an empty Name cell is hidden at 1280px, where the table has columns")
+	}
+	for _, w := range []int{1280, 1920} {
+		if mw := valueAt(rules, "max-width", name, table, w); mw != "24ch" {
+			t.Errorf("a Name cell has max-width %q at %dpx, want 24ch", mw, w)
+		}
+		if ws := valueAt(rules, "white-space", name, table, w); ws == "nowrap" {
+			t.Errorf("a Name cell does not wrap at %dpx", w)
+		}
+		if ov := valueAt(rules, "overflow", name, table, w); ov == "hidden" {
+			t.Errorf("a Name cell is clipped at %dpx", w)
 		}
 	}
 	for _, w := range []int{390, 768, 1024, 1279, 1280, 1920} {

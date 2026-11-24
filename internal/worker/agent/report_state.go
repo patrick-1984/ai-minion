@@ -14,6 +14,12 @@ type nativeStateReader interface {
 	NativeHarnessState(ctx context.Context, session, pane, harness string, created int64, now time.Time) (store.HarnessState, bool, error)
 }
 
+// harnessTitleReader supplies the name the user gave the harness session
+// (store.Store implements it; a reader without it reports no name).
+type harnessTitleReader interface {
+	HarnessTitle(ctx context.Context, session, pane, harness string, created int64, now time.Time) (string, int, error)
+}
+
 type harnessLocator interface {
 	Locate(context.Context, agentdetect.Input) (agentdetect.Result, int)
 }
@@ -43,10 +49,12 @@ func reportState(ctx context.Context, reader nativeStateReader, classifier Class
 			if pid == native.ProcessPID && result.Kind == info.InputKind && readCtx.Err() == nil {
 				applyNativeState(info, native)
 				cancel()
+				reportHarnessName(ctx, reader, locator, info, harness, created, pid)
 				return
 			}
 		}
 		cancel()
+		reportHarnessName(ctx, reader, locator, info, harness, created, 0)
 	}
 	if background {
 		info.State = ops.PaneStateBusy
@@ -74,6 +82,34 @@ func reportUnreadablePane(ctx context.Context, reader nativeStateReader, classif
 	}
 	info.Kind, info.InputKind = result.Kind, result.Kind
 	applyNativeState(info, native)
+	reportHarnessName(ctx, reader, locator, info, harness, created, pid)
+}
+
+// reportHarnessName adds the name the user gave the harness session, also when
+// the state itself comes from the screen. The name belongs to the process that
+// last reported in this pane generation; pid is that of the pane's harness when
+// the caller already located it (0: locate it here).
+func reportHarnessName(ctx context.Context, reader nativeStateReader, locator harnessLocator, info *ops.PaneInfo, harness string, created int64, pid int) {
+	titles, ok := reader.(harnessTitleReader)
+	if !ok {
+		return
+	}
+	readCtx, cancel := context.WithTimeout(ctx, nativeStateTimeout)
+	defer cancel()
+	title, owner, err := titles.HarnessTitle(readCtx, info.Session, info.ID, harness, created, time.Now())
+	if err != nil || title == "" || owner <= 0 {
+		return
+	}
+	if pid == 0 {
+		var result agentdetect.Result
+		result, pid = locator.Locate(readCtx, agentdetect.Input{Command: info.Command, PID: info.PID})
+		if result.Kind != ops.PaneKindAgentPrefix+harness {
+			return
+		}
+	}
+	if pid == owner && readCtx.Err() == nil {
+		info.HarnessName = ops.SanitizeHarnessName(title)
+	}
 }
 
 func applyNativeState(info *ops.PaneInfo, native store.HarnessState) {

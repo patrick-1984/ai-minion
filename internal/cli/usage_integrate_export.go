@@ -223,7 +223,9 @@ func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode,
 		if event, ok := parseClaudeHarnessEvent(mode, raw, grant, at); ok {
 			event.Session, event.Pane, event.Created = session, pane, created
 			event.ProcessPID, event.ProcessBirth = pid, birth
-			_ = st.RecordHarnessEvent(ctx, grant, event)
+			if st.RecordHarnessEvent(ctx, grant, event) == nil && mode == "status-line" {
+				recordClaudeTitle(ctx, st, grant, event, raw)
+			}
 		}
 	}
 	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic", CustomEndpoint: access == claudeAccessCustomEndpoint, APIKey: access == claudeAccessAPI}

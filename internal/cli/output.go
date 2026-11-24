@@ -239,13 +239,16 @@ func renderSessions(w *errWriter, r ops.SessionsListResult) {
 		return
 	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tWINDOWS\tATTACHED\tKIND\tSTATE\tTASK")
+	// TITLE is the name the user gave the harness conversation (Claude Code
+	// /rename); NAME is the tmux session.
+	_, _ = fmt.Fprintln(tw, "NAME\tWINDOWS\tATTACHED\tKIND\tSTATE\tTITLE\tTASK")
 	for _, s := range r.Sessions {
-		kind, state := "-", "-"
+		kind, state, title := "-", "-", "-"
 		if s.Pane != nil {
 			kind, state = dash(oneLine(s.Pane.Kind)), dash(oneLine(s.Pane.State))
+			title = dash(oneLine(s.Pane.HarnessName))
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%d\t%t\t%s\t%s\t%s\n", oneLine(s.Name), s.Windows, s.Attached, kind, state, oneLine(s.Task))
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%t\t%s\t%s\t%s\t%s\n", oneLine(s.Name), s.Windows, s.Attached, kind, state, title, oneLine(s.Task))
 	}
 	if err := tw.Flush(); err != nil && w.err == nil {
 		w.err = err

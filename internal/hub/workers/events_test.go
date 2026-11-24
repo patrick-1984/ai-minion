@@ -933,3 +933,36 @@ func TestFeedPreservesNativeStateDetailsUntilFallback(t *testing.T) {
 		t.Fatalf("fallback observation = %+v", s)
 	}
 }
+
+// A96: the harness session name is an optional, sanitized part of the state
+// detail; an older Worker that omits it leaves it empty.
+func TestFeedCarriesSanitizedHarnessName(t *testing.T) {
+	h := NewEventHub(EventHubOptions{})
+	_, f := newFeed(t, h, "w1")
+	long := strings.Repeat("n", 200)
+	snapshot := `{"type":"events.snapshot","seq":0,"sessions":[{"name":"work","kind":"agent:claude","state":"busy","task":"","state_source":"claude-hooks","harness_name":"rel\u001b[31mease\u202e  prep"},{"name":"old","kind":"agent:claude","state":"stable","task":""},{"name":"long","kind":"agent:claude","state":"stable","task":"","harness_name":"` + long + `"}]}`
+	if err := feedFrame(f, json.RawMessage(snapshot), nil); err != nil {
+		t.Fatal(err)
+	}
+	ws, ok := h.Sessions("w1")
+	if !ok || len(ws.Sessions) != 3 {
+		t.Fatalf("inventory = %+v", ws)
+	}
+	got := map[string]string{}
+	for _, s := range ws.Sessions {
+		got[s.Name] = s.HarnessName
+	}
+	if got["work"] != "rel[31mease prep" || got["old"] != "" || got["long"] != long[:ops.MaxHarnessNameRunes] {
+		t.Fatalf("names = %q", got)
+	}
+	const renamed = `{"type":"event","seq":1,"event":"state_changed","session":"old","kind":"agent:claude","state":"busy","task":"","state_source":"claude-hooks","harness_name":"named later"}`
+	if err := feedFrame(f, json.RawMessage(renamed), nil); err != nil {
+		t.Fatal(err)
+	}
+	ws, _ = h.Sessions("w1")
+	for _, s := range ws.Sessions {
+		if s.Name == "old" && s.HarnessName != "named later" {
+			t.Fatalf("renamed session = %+v", s)
+		}
+	}
+}
