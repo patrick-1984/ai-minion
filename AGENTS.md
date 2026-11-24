@@ -11,6 +11,15 @@ Any change that affects what a person sees (templates, CSS, client scripts, the 
 - Check that nothing a person needs is cut, hidden, overlapped or misaligned, and that the page does not scroll sideways. Values that people compare by eye (fingerprints, key words, codes) must always be shown in full.
 - Measurements in tests are not a substitute for looking at the result. Report what you looked at, at which sizes.
 
+## Ship Hub-only fixes on the fast path
+
+When a change touches only the Hub (web UI templates, CSS, client scripts, Hub-only page handlers, and their docs), deliver it quickly:
+
+- Do not rebuild or update the Workers. Workers on the previous release keep working with the new Hub; update only the Hub.
+- Skip the heavy gate run (race tests with tmux and end-to-end tags, cross builds, the install test, lint-negative, vulnerability scan). Run the tests of the changed Hub packages (for example `go test ./internal/hub/web/...`) and `make lint`, plus the visual review above.
+- A change counts as Hub-only only if it touches nothing under `internal/worker/`, the Worker protocol, exporters, the CLI or installers. Split a mixed change: ship the Hub-only part on this fast path and the Worker part as its own release with the full gates.
+- CI on the pull request still runs in full; the fast path saves the local gate run and the Worker rollout, not the review.
+
 ## Software feedback loop
 
 At the start of a repository task, read any saved software lessons for this project. Use the private local
