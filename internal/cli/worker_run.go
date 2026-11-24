@@ -2,17 +2,21 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/patrick-1984/ai-minion/internal/worker/service"
 	"io"
+	"log/slog"
 	"os"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 )
 
@@ -53,8 +57,9 @@ type workerRunDeps struct {
 	// hook does not print a second one.
 	inviteArgvWarned bool
 	// migrateLogin updates the shell login blocks of earlier releases
-	// (migrateLoginStartup) once the Worker started; nil skips it.
-	migrateLogin func(ctx context.Context, stateDir string) (loginMigration, error)
+	// (migrateLoginStartup) once the Worker started; nil skips it. It
+	// publishes a change only through gate.
+	migrateLogin func(ctx context.Context, stateDir string, gate *loginGate) (loginMigration, error)
 }
 
 // loginMigration is what the update of the shell login blocks of earlier
@@ -63,8 +68,35 @@ type loginMigration struct {
 	// Changed are the startup files it updated, Backups the copy of each
 	// (same index) that it wrote before.
 	Changed, Backups []string
-	// Skipped says why a file with an earlier block was left as it is.
+	// Skipped says why a file with an earlier block was left as it is, or
+	// what else the user should know about an update.
 	Skipped []string
+	// Pending are the startup files (as named in the home directory) that
+	// still hold a block of an earlier release the update could not replace
+	// safely; Skipped tells the user how to repair each.
+	Pending []string
+}
+
+// errLoginRevoked is the result of a login block update that was about to
+// publish a change after the Worker began to stop.
+var errLoginRevoked = errors.New("the Worker is stopping: the login block update was abandoned")
+
+// loginGate ties the publication of a login block update to the lifecycle
+// of the Worker that runs it: the Worker revokes it in its stop sequence,
+// before it releases the lifecycle lock, and from then on no change is
+// published. Revoke waits for a publication in progress (a few local file
+// operations), so none can complete after it returned. A nil gate only checks
+// the context (the installer).
+type loginGate struct {
+	mu      sync.Mutex
+	revoked bool
+}
+
+// revoke ends the gate; it returns once no publication is in progress.
+func (g *loginGate) revoke() {
+	g.mu.Lock()
+	g.revoked = true
+	g.mu.Unlock()
 }
 
 func defaultWorkerRunDeps(stderr io.Writer) workerRunDeps {
@@ -198,21 +230,27 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	if deps.migrateLogin != nil {
 		startLogin = func(ctx context.Context) func() {
 			ctx, cancel := context.WithCancel(ctx)
+			gate := &loginGate{}
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				res, err := deps.migrateLogin(ctx, core.StateDir)
-				if err != nil && ctx.Err() == nil {
-					logger.Warn("could not update the Worker login startup block", "error", err.Error())
+				res, err := deps.migrateLogin(ctx, core.StateDir, gate)
+				// At most one line per startup file and one for the error,
+				// each bounded in time (logx.BestEffort).
+				if err != nil && ctx.Err() == nil && !errors.Is(err, errLoginRevoked) {
+					logx.BestEffort(logger, slog.LevelWarn, "could not update the Worker login startup block", "error", err.Error())
 				}
 				for i, p := range res.Changed {
-					logger.Info("updated the Worker login startup block", "file", p, "backup", res.Backups[i])
+					logx.BestEffort(logger, slog.LevelInfo, "updated the Worker login startup block", "file", p, "backup", res.Backups[i])
 				}
 				for _, note := range res.Skipped {
-					logger.Warn("left a Worker login startup block of an earlier release as it is", "reason", note)
+					logx.BestEffort(logger, slog.LevelWarn, "left a Worker login startup block of an earlier release as it is", "reason", note)
 				}
 			}()
-			return func() { cancel(); <-done }
+			// Cancel, then revoke before the join: even when the stop
+			// sequence gives up waiting for the join, nothing is published
+			// once the lifecycle lock is released.
+			return func() { cancel(); gate.revoke(); <-done }
 		}
 	}
 	err = rt.Run(cmd.Context(), agent.Settings{
