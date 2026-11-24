@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 
 	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/identity"
@@ -26,16 +28,17 @@ import (
 //
 // The start runs in the background of a subshell, "( cmd & )": the
 // interactive shell gets no job, so bash, zsh and dash print no "[1]" or
-// "Done" notice. The shell variable (not exported, so a tmux server or a new
-// terminal started from this shell still checks the Worker) makes a second
-// copy of the block in the same shell, such as .profile sourcing .bashrc, do
-// nothing. "worker start --at-login" itself is idempotent under the
-// registration lock.
+// "Done" notice. The guard holds the PID of the shell that ran the block, so
+// a second copy of the block in the same shell, such as .profile sourcing
+// .bashrc, does nothing, while any other shell (a child shell, a tmux pane, a
+// new terminal) has another PID and checks the Worker, even when the value
+// was exported to it (set -a). "worker start --at-login" itself is idempotent
+// under the registration lock.
 const loginBlock = "\n" + loginBlockBody + "\n"
 
 const loginBlockBody = `# Minion Worker login startup
-if [ -z "${minion_worker_login_started-}" ] && [ -r "$HOME/.config/minion/worker-login" ]; then
-    minion_worker_login_started=1
+if [ "${minion_worker_login_started-}" != "$$" ] && [ -r "$HOME/.config/minion/worker-login" ]; then
+    minion_worker_login_started=$$
     ( (IFS= read -r minion_bin && exec "$minion_bin" worker start --at-login </dev/null) < "$HOME/.config/minion/worker-login" >/dev/null 2>&1 & )
 fi
 # End Minion Worker login startup`
@@ -117,10 +120,11 @@ func installLoginWorker(ctx context.Context, binary, state string, out io.Writer
 		profiles = append(profiles, ".zprofile")
 	}
 	// Re-running the installer replaces the blocks of earlier releases
-	// instead of adding a second one.
-	if _, err := migrateLoginBlocksLocked(home); err != nil {
-		return fmt.Errorf("update the Worker login startup: %w", err)
-	}
+	// instead of adding a second one. Best effort: a file it cannot update
+	// (an unreadable inactive .bash_login, a symbolic link) is reported and
+	// never stops the install.
+	res, err := migrateLoginBlocksLocked(home)
+	reportLoginMigration(out, res, err)
 	for _, name := range profiles {
 		if err := appendLoginBlock(filepath.Join(home, name)); err != nil {
 			return fmt.Errorf("install Worker login startup in %s: %w", filepath.Join(home, name), err)
@@ -176,175 +180,348 @@ func appendLoginBlock(path string) error {
 	if err != nil {
 		return err
 	}
-	if strings.Contains(string(b), loginBlockBody) {
+	// A block of an earlier release that could not be updated (see
+	// reportLoginMigration) still starts the Worker: a second block would
+	// only start it twice.
+	if hasLoginBlock(string(b)) {
 		return nil
 	}
 	_, err = io.WriteString(f, loginBlock)
 	return err
 }
 
+// loginRegistrationMax bounds the login registration: two paths.
+const loginRegistrationMax = 2*syscall.PathMax + 2
+
+// readLoginRegistration reads the login registration reg: a private regular
+// file of this user (no symbolic link, FIFO, foreign owner or group or other
+// access), at most loginRegistrationMax bytes, holding the absolute
+// executable and the absolute state directory on one line each.
+func readLoginRegistration(reg string) (bin, state string, err error) {
+	f, err := identity.OpenPrivate(reg)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, loginRegistrationMax+1))
+	if err != nil {
+		return "", "", err
+	}
+	bin, state, ok := strings.Cut(strings.TrimSuffix(string(b), "\n"), "\n")
+	if len(b) > loginRegistrationMax || !ok || !filepath.IsAbs(bin) || !filepath.IsAbs(state) || strings.ContainsAny(bin, "\r") || strings.ContainsAny(state, "\r\n") {
+		return "", "", fmt.Errorf("invalid Worker login entry %s; repair it with minion worker up", reg)
+	}
+	return bin, state, nil
+}
+
 // migrateLoginStartup replaces the login blocks of earlier releases with the
-// current one in the startup files of this user. The Worker calls it at every
-// start, so an update fixes existing installs without any user action. It
-// does nothing unless the login registration names this Worker's state
-// directory: without a login install, after the user removed the
-// registration to turn shell startup off, and for any other Worker profile of
-// the account (a systemd or foreground Worker) the files stay untouched. It
-// returns the files it changed.
-func migrateLoginStartup(ctx context.Context, stateDir string) ([]string, error) {
+// current one in the startup files of this user. The Worker runs it once it
+// started (Settings.StartAfterReady), so an update fixes existing installs
+// without any user action. It does nothing unless the login registration
+// names this Worker's state directory: without a login install, after the
+// user removed the registration to turn shell startup off, and for any other
+// Worker profile of the account (a systemd or foreground Worker) the files
+// stay untouched.
+func migrateLoginStartup(ctx context.Context, stateDir string) (loginMigration, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, err
+		return loginMigration{}, err
 	}
 	reg := loginRegistration(home)
 	if !registeredLoginState(reg, stateDir) {
-		return nil, nil
+		return loginMigration{}, nil
 	}
 	unlock, err := lockConfigFileContext(ctx, reg+".lock")
 	if err != nil {
-		return nil, err
+		return loginMigration{}, err
 	}
 	defer unlock()
-	if !registeredLoginState(reg, stateDir) {
-		return nil, nil
+	if !registeredLoginState(reg, stateDir) || ctx.Err() != nil {
+		return loginMigration{}, ctx.Err()
 	}
 	return migrateLoginBlocksLocked(home)
 }
 
-// registeredLoginState reports whether the login registration reg names
-// stateDir as the state directory it starts.
+// registeredLoginState reports whether the login registration reg is valid
+// (readLoginRegistration) and names stateDir as the state directory it
+// starts.
 func registeredLoginState(reg, stateDir string) bool {
 	if stateDir == "" || !filepath.IsAbs(stateDir) {
 		return false
 	}
-	b, err := os.ReadFile(reg)
-	if err != nil || len(b) > 2*syscall.PathMax+2 {
-		return false
-	}
-	_, state, ok := strings.Cut(strings.TrimSuffix(string(b), "\n"), "\n")
-	return ok && filepath.IsAbs(state) && filepath.Clean(state) == filepath.Clean(stateDir)
+	_, state, err := readLoginRegistration(reg)
+	return err == nil && filepath.Clean(state) == filepath.Clean(stateDir)
 }
 
-// migrateLoginBlocksLocked rewrites every startup file in home that holds a
-// legacy block; the caller holds the registration lock.
-func migrateLoginBlocksLocked(home string) ([]string, error) {
-	var changed []string
+// reportLoginMigration tells the installer's user what the update of earlier
+// login blocks did; it never fails the install.
+func reportLoginMigration(out io.Writer, res loginMigration, err error) {
+	for i, p := range res.Changed {
+		_, _ = fmt.Fprintf(out, "Updated the Worker login startup block in %s (the previous file is in %s).\n", p, res.Backups[i])
+	}
+	for _, note := range res.Skipped {
+		_, _ = fmt.Fprintf(out, "Warning: %s\n", note)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "Warning: could not update an earlier Worker login startup block: %v\n", err)
+	}
+}
+
+// migrateLoginBlocksLocked updates every startup file in home that holds a
+// block of an earlier release; the caller holds the registration lock. A
+// failure in one file does not stop the others.
+func migrateLoginBlocksLocked(home string) (loginMigration, error) {
+	var res loginMigration
+	fd, err := unix.Open(home, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return res, &os.PathError{Op: "open", Path: home, Err: err}
+	}
+	dir := os.NewFile(uintptr(fd), home)
+	defer func() { _ = dir.Close() }()
 	var errs []error
 	for _, name := range loginStartupFiles {
-		path := filepath.Join(home, name)
-		ok, err := migrateLoginFile(path)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", path, err))
-		} else if ok {
-			changed = append(changed, path)
+		if err := migrateLoginFile(int(dir.Fd()), home, name, &res); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", filepath.Join(home, name), err))
 		}
 	}
-	return changed, errors.Join(errs...)
+	return res, errors.Join(errs...)
 }
 
-// replaceLegacyLoginBlocks returns text with the first legacy block replaced
-// by the current one and any further copy (legacy or current) removed with
-// the line break before it; changed is false when text has no legacy block.
-func replaceLegacyLoginBlocks(text string) (string, bool) {
-	found := false
-	for _, old := range legacyLoginBlockBodies {
-		if strings.Contains(text, old) {
-			found = true
-			text = strings.ReplaceAll(text, old, loginBlockBody)
-		}
-	}
-	if !found {
-		return text, false
-	}
-	first := strings.Index(text, loginBlockBody) + len(loginBlockBody)
-	rest := text[first:]
-	for {
-		i := strings.Index(rest, loginBlockBody)
-		if i < 0 {
+// loginBlockAt returns the offsets of the copies of body in text that are
+// whole lines: each starts at the beginning of a line and ends at the end of
+// one, so its first and last lines are the complete marker lines.
+func loginBlockAt(text, body string) []int {
+	var at []int
+	for i := 0; i <= len(text); {
+		j := strings.Index(text[i:], body)
+		if j < 0 {
 			break
 		}
-		start := i
-		if start > 0 && rest[start-1] == '\n' {
-			start--
+		start, end := i+j, i+j+len(body)
+		if (start == 0 || text[start-1] == '\n') && (end == len(text) || text[end] == '\n') {
+			at = append(at, start)
+			i = end
+		} else {
+			i = start + 1
 		}
-		end := i + len(loginBlockBody)
-		rest = rest[:start] + rest[end:]
 	}
-	return text[:first] + rest, true
+	return at
 }
 
-// migrateLoginFile rewrites one startup file when it holds a legacy block.
-// Only the managed block changes; the rest of the file, its mode and (for a
-// symbolic link, as dotfile managers create) the link stay as they are. The
-// new content replaces the file atomically, and only if the file did not
-// change while it was prepared.
-func migrateLoginFile(path string) (bool, error) {
-	target := path
-	li, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, err
+// hasLoginBlock reports whether text holds a managed login block, current or
+// of an earlier release, as whole lines.
+func hasLoginBlock(text string) bool {
+	if len(loginBlockAt(text, loginBlockBody)) > 0 {
+		return true
 	}
-	if li.Mode()&os.ModeSymlink != 0 {
-		if os.Geteuid() == 0 {
-			return false, nil // root never follows links in its startup files
-		}
-		if target, err = filepath.EvalSymlinks(path); err != nil {
-			return false, nil // a dangling link holds no block
+	for _, old := range legacyLoginBlockBodies {
+		if len(loginBlockAt(text, old)) > 0 {
+			return true
 		}
 	}
-	info, err := os.Stat(target)
-	if err != nil {
-		return false, err
-	}
-	st, _ := info.Sys().(*syscall.Stat_t)
-	if !info.Mode().IsRegular() || st == nil || int(st.Uid) != os.Geteuid() || info.Size() > 4<<20 {
-		return false, nil // not a startup file this account owns: leave it
-	}
-	b, err := os.ReadFile(target)
-	if err != nil {
-		return false, err
-	}
-	text, changed := replaceLegacyLoginBlocks(string(b))
-	if !changed {
-		return false, nil
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".minion-*")
-	if err != nil {
-		return false, err
-	}
-	tmpName := tmp.Name()
-	fail := func(err error) (bool, error) {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return false, err
-	}
-	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
-		return fail(err)
-	}
-	if _, err := tmp.WriteString(text); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return false, err
-	}
-	if again, err := os.ReadFile(target); err != nil || string(again) != string(b) {
-		_ = os.Remove(tmpName)
-		if err == nil {
-			err = errors.New("the file changed while its login block was updated; it is updated at the next start")
+	return false
+}
+
+// replaceLegacyLoginBlocks returns text with every block of an earlier release
+// (byte for byte the text it wrote, between complete marker lines) replaced
+// by the current block; everything else, other copies included, stays as it
+// is. changed is false when text has no such block.
+func replaceLegacyLoginBlocks(text string) (string, bool) {
+	changed := false
+	for _, old := range legacyLoginBlockBodies {
+		at := loginBlockAt(text, old)
+		if len(at) == 0 {
+			continue
 		}
-		return false, err
+		changed = true
+		var b strings.Builder
+		prev := 0
+		for _, i := range at {
+			b.WriteString(text[prev:i])
+			b.WriteString(loginBlockBody)
+			prev = i + len(old)
+		}
+		b.WriteString(text[prev:])
+		text = b.String()
 	}
-	if err := os.Rename(tmpName, target); err != nil {
-		_ = os.Remove(tmpName)
-		return false, err
+	return text, changed
+}
+
+// loginFileMax bounds the startup files that the update reads.
+const loginFileMax = 4 << 20
+
+// loginBackupSuffix names the copy of a startup file that the update writes
+// next to it before changing it.
+const loginBackupSuffix = ".minion-backup"
+
+// migrateLoginFile updates the startup file name in the directory dirfd (home)
+// when it holds a block of an earlier release. Only a regular file of this
+// user is changed, never through a symbolic link: a link is reported and left
+// as it is. The original bytes go to a backup copy next to the file first.
+// The file is then changed in place, on the same inode, so its owner, group,
+// mode, ACLs and hard links stay as they are; only if it still is the file
+// that was read (same inode, size, modification time and content) right
+// before the write. Otherwise it is left as it is and reported.
+func migrateLoginFile(dirfd int, home, name string, res *loginMigration) error {
+	path := filepath.Join(home, name)
+	var lst unix.Stat_t
+	if err := unix.Fstatat(dirfd, name, &lst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
 	}
-	return true, nil
+	switch lst.Mode & unix.S_IFMT {
+	case unix.S_IFLNK:
+		if legacyBlockBehindLink(path) {
+			res.Skipped = append(res.Skipped, fmt.Sprintf("%s is a symbolic link and still holds the login block of an earlier release (it prints shell job lines); the update does not write through links, so replace that block in the target by hand", path))
+		}
+		return nil
+	case unix.S_IFREG:
+	default:
+		return nil
+	}
+	if int(lst.Uid) != os.Geteuid() || lst.Size > loginFileMax {
+		return nil // not a startup file this account owns: leave it
+	}
+	fd, err := unix.Openat(dirfd, name, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOENT) {
+			return nil // replaced since the check: handled at the next start
+		}
+		return err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer func() { _ = f.Close() }()
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG || int(st.Uid) != os.Geteuid() || st.Dev != lst.Dev || st.Ino != lst.Ino || st.Size > loginFileMax {
+		return nil // replaced since the check: handled at the next start
+	}
+	b, err := readLoginFile(f)
+	if err != nil {
+		return err
+	}
+	text, ok := replaceLegacyLoginBlocks(string(b))
+	if !ok {
+		return nil
+	}
+	backup, err := writeLoginBackup(dirfd, name, b, &st)
+	if err != nil {
+		return fmt.Errorf("write the backup copy: %w; the file is left as it is", err)
+	}
+	backupPath := filepath.Join(home, backup)
+	if loginBeforeCommit != nil {
+		loginBeforeCommit(path)
+	}
+	// The last check, right before the write: an editor that saved the
+	// file in the meantime wins, and its save is never overwritten.
+	var now, cur unix.Stat_t
+	if err := unix.Fstat(fd, &now); err != nil {
+		return err
+	}
+	again, err := readLoginFile(f)
+	curErr := unix.Fstatat(dirfd, name, &cur, unix.AT_SYMLINK_NOFOLLOW)
+	if err != nil || curErr != nil || now.Size != st.Size || now.Mtim != st.Mtim || cur.Dev != st.Dev || cur.Ino != st.Ino || string(again) != string(b) {
+		_ = unix.Unlinkat(dirfd, backup, 0)
+		res.Skipped = append(res.Skipped, fmt.Sprintf("%s changed while its login block was updated; it is left as it is and updated at the next start", path))
+		return nil
+	}
+	if _, err := f.WriteAt([]byte(text), 0); err != nil {
+		return fmt.Errorf("update the login block: %w; the previous file is in %s", err, backupPath)
+	}
+	if err := f.Truncate(int64(len(text))); err != nil {
+		return fmt.Errorf("update the login block: %w; the previous file is in %s", err, backupPath)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("update the login block: %w; the previous file is in %s", err, backupPath)
+	}
+	res.Changed = append(res.Changed, path)
+	res.Backups = append(res.Backups, backupPath)
+	return nil
+}
+
+// loginBeforeCommit, when set by a test, runs between the backup and the last
+// check of migrateLoginFile (an editor saving the file at that moment).
+var loginBeforeCommit func(path string)
+
+// readLoginFile reads all of f from its start, at most loginFileMax bytes.
+func readLoginFile(f *os.File) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(io.NewSectionReader(f, 0, loginFileMax+1), loginFileMax+1))
+	if err == nil && len(b) > loginFileMax {
+		err = errors.New("the file is too large")
+	}
+	return b, err
+}
+
+// legacyBlockBehindLink reports whether the regular file a symbolic link
+// points to holds a block of an earlier release. It only reads.
+func legacyBlockBehindLink(path string) bool {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() || fi.Size() > loginFileMax {
+		return false
+	}
+	b, err := readLoginFile(f)
+	if err != nil {
+		return false
+	}
+	_, ok := replaceLegacyLoginBlocks(string(b))
+	return ok
+}
+
+// writeLoginBackup writes b, the content of the startup file name (st), to a
+// new file next to it: name.minion-backup, or with a numeric suffix when that
+// exists (an earlier backup is never overwritten). The copy gets the mode of
+// the original when it can get its group too, otherwise only the owner's
+// permissions, so it never gives anyone access the original did not. It
+// returns the name of the copy.
+func writeLoginBackup(dirfd int, name string, b []byte, st *unix.Stat_t) (string, error) {
+	for i := 0; i < 100; i++ {
+		bn := name + loginBackupSuffix
+		if i > 0 {
+			bn += "." + strconv.Itoa(i)
+		}
+		fd, err := unix.Openat(dirfd, bn, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		f := os.NewFile(uintptr(fd), bn)
+		err = func() error {
+			if _, err := f.Write(b); err != nil {
+				return err
+			}
+			perm := st.Mode & 0o777
+			var cst unix.Stat_t
+			if err := unix.Fstat(fd, &cst); err != nil {
+				return err
+			}
+			if cst.Gid != st.Gid && unix.Fchown(fd, -1, int(st.Gid)) != nil {
+				perm &= 0o700
+			}
+			if err := unix.Fchmod(fd, perm); err != nil {
+				return err
+			}
+			return f.Sync()
+		}()
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			_ = unix.Unlinkat(dirfd, bn, 0)
+			return "", err
+		}
+		return bn, nil
+	}
+	return "", fmt.Errorf("too many backup copies of %s%s in the home directory", name, loginBackupSuffix)
 }
 
 func startLoginWorker(ctx context.Context) (bool, error) {
@@ -361,18 +538,9 @@ func startLoginWorker(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	defer unlock()
-	f, err := identity.OpenPrivate(reg)
+	bin, state, err := readLoginRegistration(reg)
 	if err != nil {
 		return false, err
-	}
-	defer func() { _ = f.Close() }()
-	b, err := io.ReadAll(io.LimitReader(f, 2*syscall.PathMax+2))
-	if err != nil {
-		return false, err
-	}
-	bin, state, ok := strings.Cut(strings.TrimSuffix(string(b), "\n"), "\n")
-	if !ok || !filepath.IsAbs(bin) || !filepath.IsAbs(state) || strings.ContainsAny(state, "\r\n") {
-		return false, fmt.Errorf("invalid Worker login entry %s; repair it with minion worker up", reg)
 	}
 	if os.Geteuid() == 0 {
 		if err := checkRootExecutable(bin); err != nil {

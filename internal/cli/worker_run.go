@@ -53,8 +53,18 @@ type workerRunDeps struct {
 	// hook does not print a second one.
 	inviteArgvWarned bool
 	// migrateLogin updates the shell login blocks of earlier releases
-	// (migrateLoginStartup); nil skips it.
-	migrateLogin func(ctx context.Context, stateDir string) ([]string, error)
+	// (migrateLoginStartup) once the Worker started; nil skips it.
+	migrateLogin func(ctx context.Context, stateDir string) (loginMigration, error)
+}
+
+// loginMigration is what the update of the shell login blocks of earlier
+// releases did.
+type loginMigration struct {
+	// Changed are the startup files it updated, Backups the copy of each
+	// (same index) that it wrote before.
+	Changed, Backups []string
+	// Skipped says why a file with an earlier block was left as it is.
+	Skipped []string
 }
 
 func defaultWorkerRunDeps(stderr io.Writer) workerRunDeps {
@@ -142,20 +152,6 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	if err != nil {
 		return err
 	}
-	// An updated Worker fixes the shell login blocks earlier releases wrote.
-	// In the background: "worker start --at-login" holds the registration
-	// lock until this Worker answers on its socket.
-	if deps.migrateLogin != nil {
-		go func() {
-			changed, err := deps.migrateLogin(cmd.Context(), core.StateDir)
-			if err != nil && cmd.Context().Err() == nil {
-				logger.Warn("could not update the Worker login startup block", "error", err.Error())
-			}
-			if len(changed) > 0 {
-				logger.Info("updated the Worker login startup block", "files", strings.Join(changed, ", "))
-			}
-		}()
-	}
 	sinks, startSinks := newWorkerSinks(res, live, logger, core.StateDir)
 	// Stopped by the log sinks module, last in the stop sequence; this is
 	// the fallback when the Worker never got that far.
@@ -193,6 +189,32 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		}()
 		return func() { stopAuto(); <-autoDone }
 	}
+	// An updated Worker fixes the shell login blocks earlier releases wrote:
+	// only once it started (it holds the state's lifecycle lock and answers
+	// on its socket), never in a failed start, and joined before the lock is
+	// released. In the background: it waits for the registration lock, which
+	// "worker start --at-login" holds until this Worker answers.
+	var startLogin func(ctx context.Context) func()
+	if deps.migrateLogin != nil {
+		startLogin = func(ctx context.Context) func() {
+			ctx, cancel := context.WithCancel(ctx)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				res, err := deps.migrateLogin(ctx, core.StateDir)
+				if err != nil && ctx.Err() == nil {
+					logger.Warn("could not update the Worker login startup block", "error", err.Error())
+				}
+				for i, p := range res.Changed {
+					logger.Info("updated the Worker login startup block", "file", p, "backup", res.Backups[i])
+				}
+				for _, note := range res.Skipped {
+					logger.Warn("left a Worker login startup block of an earlier release as it is", "reason", note)
+				}
+			}()
+			return func() { cancel(); <-done }
+		}
+	}
 	err = rt.Run(cmd.Context(), agent.Settings{
 		WorkerCore: core,
 		Resolver:   res,
@@ -205,6 +227,7 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 		TrafficTap:      sinks.Tap(),
 		Out:             cmd.OutOrStdout(),
 		StartBackground: startExporter,
+		StartAfterReady: startLogin,
 
 		InviteArgvWarned: deps.inviteArgvWarned,
 	})
