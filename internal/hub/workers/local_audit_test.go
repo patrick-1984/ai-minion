@@ -249,3 +249,15 @@ func TestLocalAuditLogsTheIDOfEachWrite(t *testing.T) {
 }
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// A103: text delivered into a busy agent is reported delivered with reason
+// busy; the Hub records it and it is not a failure (not logged at WARN).
+func TestLocalAuditDeliveredBusyIsNotAFailure(t *testing.T) {
+	ev, err := localAuditEvent(ops.NewUUIDv7(), proto.LocalAuditArgs{Op: ops.OpSendText, Session: "mt-claude", Outcome: "delivered", Reason: "busy", ReportID: ops.NewUUIDv7()})
+	if err != nil || ev.Outcome != "delivered:busy" {
+		t.Fatalf("event %+v, err %v", ev, err)
+	}
+	if audit.BadOutcome(ev.Outcome) {
+		t.Fatal("delivered:busy counts as a failure")
+	}
+}

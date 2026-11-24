@@ -135,6 +135,31 @@ func (p *pane) buffers() string { return strings.TrimSpace(p.r.tmux("list-buffer
 
 func hexOf(s string) string { return hex.EncodeToString([]byte(s)) }
 
+// PasteText (the plain paste of send_text) brackets a multi-line text only
+// for a program that enabled bracketed paste: the bytes of a program without
+// it are the bare text, LF included, so a line-oriented program would submit
+// its first line. The Worker relies on this to type a multi-line text into a
+// busy pane only for agents known to enable it (A103).
+func TestPasteTextBracketsOnlyWhenTheProgramEnabledIt(t *testing.T) {
+	msg := "line one\nline two"
+	t.Run("unbracketed", func(t *testing.T) {
+		r := newRig(t)
+		p := r.agent(fakeagent.ModeDump)
+		if err := r.h.PasteText(context.Background(), p.ref, msg, p.ref); err != nil {
+			t.Fatal(err)
+		}
+		p.waitLog(func(l string) bool { return l == hexOf(msg) })
+	})
+	t.Run("bracketed", func(t *testing.T) {
+		r := newRig(t)
+		p := r.agent(fakeagent.ModeDumpBP)
+		if err := r.h.PasteText(context.Background(), p.ref, msg, p.ref); err != nil {
+			t.Fatal(err)
+		}
+		p.waitLog(func(l string) bool { return l == "1b5b3230307e"+hexOf(msg)+"1b5b3230317e" })
+	})
+}
+
 // F7: the message arrives byte for byte at a raw receiver, wrapped exactly
 // when the receiver enabled bracketed paste, and a message that cannot be
 // delivered verbatim is refused with nothing pasted and no buffer left. Runs

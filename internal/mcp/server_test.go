@@ -539,6 +539,32 @@ func TestRefusedWriteIsAnErrorResultWithTheFullContract(t *testing.T) {
 	if err := json.Unmarshal(structured(t, res), &out); err != nil || !out.Forceable || out.Reason != "shell_pane" {
 		t.Fatalf("structured = %s (%v)", structured(t, res), err)
 	}
+	// A Worker older than 0.20.6 sends no note: the model gets the refusal
+	// note all the same.
+	if out.Note != ops.RefusalNote("shell_pane", true) || !strings.Contains(text(res), "force=true") {
+		t.Fatalf("note = %q, text %q", out.Note, text(res))
+	}
+}
+
+// A103: text into a busy agent is a success with the Worker's note; a typed,
+// not submitted text is not a success and carries its note.
+func TestBusyWriteResultsCarryTheWorkersNote(t *testing.T) {
+	for _, c := range []struct {
+		result  ops.WriteResult
+		isError bool
+	}{
+		{ops.WriteResult{Outcome: ops.OutcomeDelivered, Note: ops.BusyNoteTyped, Warnings: []ops.Warning{ops.WarnSessionBusy}}, false},
+		{ops.WriteResult{Outcome: ops.OutcomePartial, Reason: "busy", Note: ops.BusyNoteTypedNotSubmitted, Warnings: []ops.Warning{ops.WarnSessionBusy}}, true},
+	} {
+		fb := newFake()
+		fb.results[ops.OpSendText], _ = json.Marshal(c.result)
+		cs := connect(t, Config{Backend: fb, AllowWrites: true})
+		res := callTool(t, cs, ops.OpSendText, map[string]any{"target": map[string]any{"session_name": "work"}, "text": "x", "submit": true})
+		var out ops.WriteResult
+		if err := json.Unmarshal(structured(t, res), &out); err != nil || out.Note != c.result.Note || res.IsError != c.isError {
+			t.Fatalf("structured = %s, isError %v (%v)", structured(t, res), res.IsError, err)
+		}
+	}
 }
 
 func TestInvalidArgumentsNeverReachTheBackend(t *testing.T) {

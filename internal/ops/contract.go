@@ -242,6 +242,12 @@ type WriteResult struct {
 	Forced    bool      `json:"forced"`    // force=true was given and overrode a FORCE guard
 	Warnings  []Warning `json:"warnings"`  // always an array, never null
 	Pane      *PaneInfo `json:"pane"`      // the resolved pane, null when none was resolved
+	// Note is one short English sentence for the person or model that made
+	// the call: for a refusal what stopped it, why and how to send anyway; for
+	// input into a busy agent what was done. It never holds terminal content.
+	// Omitted when there is nothing to say (a Worker older than 0.20.6 never
+	// sets it; clients use [WriteResult.DisplayNote]).
+	Note string `json:"note,omitempty"`
 }
 
 // MarshalJSON writes warnings as an empty array instead of null.
@@ -281,7 +287,96 @@ func (r WriteResult) Validate() error {
 // Refused builds the result of a FORCE-class refusal: nothing was sent, and
 // the caller may repeat the call with force=true.
 func Refused(reason string, pane *PaneInfo, warnings ...Warning) WriteResult {
-	return WriteResult{Outcome: OutcomeFailedNotSent, Reason: reason, Forceable: true, Warnings: warnings, Pane: pane}
+	return WriteResult{Outcome: OutcomeFailedNotSent, Reason: reason, Forceable: true, Warnings: warnings, Pane: pane, Note: RefusalNote(reason, true)}
+}
+
+// Notes and warning of text sent into an agent pane that is busy with a turn
+// (A103). The text is typed and the submit key is never pressed, for any
+// agent: a permission dialog can open between the last screen check and the
+// key, and an Enter would answer it (approve a Bash command, for example). No
+// screen check can close that gap, so only force=true submits into a busy
+// agent.
+const (
+	// BusyNoteTypedNotSubmitted is the note of text typed into a busy agent
+	// whose submit key was not pressed although submit was requested.
+	BusyNoteTypedNotSubmitted = "session busy: the text was typed into the input line but not submitted, so it cannot answer a permission prompt by accident; when the session is ready, check the input line there and press Enter (do not send it again — it would be typed twice)"
+	// BusyNoteMultiLineNotTyped is the note of a multi-line text that was not
+	// typed into a busy pane whose paste is not known to be bracketed: a
+	// line-oriented program could submit it line by line. The result is
+	// failed_not_sent, reason busy, forceable.
+	BusyNoteMultiLineNotTyped = "session busy: multi-line text was not typed, because this program could submit it line by line; send it when the session is idle (or with force=true and a new request_id)"
+	// BusyNoteTyped is the note of text without submit into a busy agent.
+	BusyNoteTyped = "session busy: the text was typed into the input line and not submitted, as requested"
+)
+
+// WarnSessionBusy is the warning of text sent into an agent busy with a turn.
+// It never blocks.
+var WarnSessionBusy = Warning{
+	Code:    "session_busy",
+	Message: "the session was busy with a turn when the text was sent",
+}
+
+// IsBusySend reports whether the result is of text sent into a busy agent: it
+// carries the session_busy warning. The audit records it with reason busy; a
+// delivered one is not a failure.
+func (r WriteResult) IsBusySend() bool {
+	for _, w := range r.Warnings {
+		if w.Code == WarnSessionBusy.Code {
+			return true
+		}
+	}
+	return false
+}
+
+// DisplayNote is the note to show for the result: the Worker's own, or, for a
+// refusal of a Worker that sends none, the refusal note of its reason.
+func (r WriteResult) DisplayNote() string {
+	if r.Note != "" || r.Outcome != OutcomeFailedNotSent {
+		return r.Note
+	}
+	return RefusalNote(r.Reason, r.Forceable)
+}
+
+// forceRetry is how to send anyway after a forceable refusal.
+const forceRetry = "To send anyway, repeat the call with force=true and a NEW request_id (CLI: --force)."
+
+// RefusalNote is the actionable sentence of a write that was not sent: what
+// stopped it, why, and how to override it or what to do instead. forceable
+// says whether force=true overrides the refusal.
+func RefusalNote(reason string, forceable bool) string {
+	var what string
+	switch reason {
+	case "shell_pane":
+		what = "not sent: the pane runs a plain shell, so the text would run as a command"
+	case "dialog_open":
+		what = "not sent: a dialog (for example a permission prompt) is open and the input would answer it; review it with session_snapshot and use answer"
+	case "busy":
+		if forceable {
+			what = "not sent: the agent is busy with a turn and the input could act on the running turn at once; wait for the turn to end and send again"
+		} else {
+			what = "not sent: the pane is busy with another write or a pipe message waiting for its reply; wait and send again"
+		}
+	case "pane_changed":
+		what = "not sent: the pane changed since it was resolved (another process or session); take a new snapshot and send again"
+	case "dialog_changed":
+		what = "not sent: the dialog changed since it was reviewed; take a new snapshot, review it and answer again"
+	case "no_dialog":
+		what = "not sent: no dialog is open in the pane; take a new snapshot"
+	case "view_incomplete":
+		what = "not sent: the screen could not be read completely; take a new snapshot and try again"
+	case "target_not_found":
+		what = "not sent: the session or pane was not found; list the sessions and check the target"
+	case "forbidden":
+		what = "not sent: this caller may not send to that destination"
+	case "":
+		what = "not sent"
+	default:
+		what = "not sent (" + reason + ")"
+	}
+	if forceable {
+		return what + ". Nothing reached the pane. " + forceRetry
+	}
+	return what + ". Nothing reached the pane; force does not override this."
 }
 
 // WriteArgs is embedded in the arguments of every write op. Its JSON fields

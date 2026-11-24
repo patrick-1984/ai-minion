@@ -3,6 +3,7 @@ package ops
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -178,5 +179,35 @@ func TestTimestampJSON(t *testing.T) {
 		if err := json.Unmarshal([]byte(bad), &back); err == nil {
 			t.Errorf("accepted %s", bad)
 		}
+	}
+}
+
+// Every refusal carries an actionable note: what, why and how to override.
+func TestRefusalNotes(t *testing.T) {
+	if r := Refused("shell_pane", nil); r.Note != RefusalNote("shell_pane", true) || !strings.Contains(r.Note, "force=true") || !strings.Contains(r.Note, "NEW request_id") {
+		t.Fatalf("Refused note = %q", r.Note)
+	}
+	for _, reason := range []string{"shell_pane", "dialog_open", "busy", "pane_changed", "dialog_changed", "no_dialog", "view_incomplete", "target_not_found", "forbidden", "", "something_new"} {
+		for _, forceable := range []bool{true, false} {
+			n := RefusalNote(reason, forceable)
+			if !strings.HasPrefix(n, "not sent") || strings.Contains(n, "force=true") != forceable {
+				t.Errorf("%q forceable=%v: %q", reason, forceable, n)
+			}
+		}
+	}
+	// An older Worker sends no note: DisplayNote derives it for a refusal
+	// only, and keeps a Worker's own note.
+	if n := (WriteResult{Outcome: OutcomeFailedNotSent, Reason: "busy", Forceable: true}).DisplayNote(); n != RefusalNote("busy", true) {
+		t.Errorf("derived note = %q", n)
+	}
+	if n := (WriteResult{Outcome: OutcomeDelivered}).DisplayNote(); n != "" {
+		t.Errorf("delivered note = %q", n)
+	}
+	busy := WriteResult{Outcome: OutcomeDelivered, Note: BusyNoteTyped, Warnings: []Warning{WarnSessionBusy}}
+	if busy.DisplayNote() != BusyNoteTyped || !busy.IsBusySend() || (WriteResult{}).IsBusySend() {
+		t.Errorf("busy = %+v", busy)
+	}
+	if err := busy.Validate(); err != nil {
+		t.Error(err)
 	}
 }

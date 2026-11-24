@@ -188,6 +188,11 @@ func renderWrite(w *errWriter, r ops.WriteResult) {
 		}
 		_, _ = fmt.Fprintln(w)
 	}
+	// The note says what happened to input into a busy agent and, for a
+	// refusal, why and how to send anyway (derived for an older Worker).
+	if note := r.DisplayNote(); note != "" {
+		_, _ = fmt.Fprintf(w, "note: %s\n", oneLine(note))
+	}
 	if r.Forceable {
 		_, _ = fmt.Fprintln(w, "hint: repeat the command with --force to override this refusal")
 	}
@@ -197,7 +202,7 @@ func renderWrite(w *errWriter, r ops.WriteResult) {
 // may carry more (the Hub's user_create returns the new account and its
 // temporary password next to them); renderExtras prints those.
 var writeResultMembers = map[string]bool{
-	"outcome": true, "reason": true, "forceable": true, "forced": true, "warnings": true, "pane": true,
+	"outcome": true, "reason": true, "forceable": true, "forced": true, "warnings": true, "pane": true, "note": true,
 }
 
 // renderExtras prints the members of a write result that are not part of the

@@ -141,8 +141,14 @@ func TestGuardMatrix(t *testing.T) {
 						t.Fatalf("warnings = %+v, want readiness_unknown=%v", res.Warnings, c.warnReadines)
 					}
 					switch {
+					case op == ops.OpSendText && c.refusal == proto.CodeBusy && !force:
+						// A103: text (without submit) into a busy agent is
+						// typed, with the busy note; never a refusal.
+						if res.Outcome != ops.OutcomeDelivered || res.Forced || res.Forceable || sent != 1 || res.Note != ops.BusyNoteTyped || !hasWarning(res, "session_busy") {
+							t.Fatalf("busy send = %+v, sent %d", res, sent)
+						}
 					case c.refusal != "" && !force:
-						if res.Outcome != ops.OutcomeFailedNotSent || res.Reason != string(c.refusal) || !res.Forceable || res.Forced || sent != 0 {
+						if res.Outcome != ops.OutcomeFailedNotSent || res.Reason != string(c.refusal) || !res.Forceable || res.Forced || sent != 0 || res.Note != ops.RefusalNote(string(c.refusal), true) {
 							t.Fatalf("refusal = %+v, sent %d", res, sent)
 						}
 					case c.refusal != "":
@@ -173,7 +179,7 @@ func hasWarning(r ops.WriteResult, code string) bool {
 func TestForcedRetryNeedsANewRequest(t *testing.T) {
 	e := newEnv(t)
 	e.host.addSession("work", "claude")
-	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
+	e.cls.set("claude", "agent:claude", ops.PaneStateDialog)
 
 	refused := sendText("work", "go", false)
 	if res := e.mustWrite(ops.OpSendText, refused); !res.Forceable {
@@ -319,7 +325,7 @@ func TestDuplicateRequestIDReturnsTheCachedResult(t *testing.T) {
 func TestDuplicateRequestIDAnswersCachedRefusalToo(t *testing.T) {
 	e := newEnv(t)
 	e.host.addSession("work", "claude")
-	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
+	e.cls.set("claude", "agent:claude", ops.PaneStateDialog)
 	args := sendText("work", "x", false)
 	first := e.mustWrite(ops.OpSendText, args)
 	e.cls.set("claude", "agent:claude", ops.PaneStateStable) // now it would be delivered
@@ -986,8 +992,10 @@ func TestEveryWriteWritesOneAuditRowWithoutContent(t *testing.T) {
 	e.host.addSession("work", "claude")
 	e.cls.set("claude", "agent:claude", ops.PaneStateBusy)
 
-	refused := sendText("work", secretText, false)
-	e.mustWrite(ops.OpSendText, refused)
+	busySend := sendText("work", secretText, false)
+	e.mustWrite(ops.OpSendText, busySend)
+	refused := sendKeys("work", false, "Enter")
+	e.mustWrite(ops.OpSendKeys, refused)
 	forced := sendText("work", secretText, true)
 	e.mustWrite(ops.OpSendText, forced)
 	keys := sendKeys("work", true, "Enter")
@@ -1001,7 +1009,7 @@ func TestEveryWriteWritesOneAuditRowWithoutContent(t *testing.T) {
 	_, _ = e.write(ops.OpSendText, sendText("work", secretText, false))
 
 	rows := e.audit()
-	if len(rows) != 7 {
+	if len(rows) != 8 {
 		t.Fatalf("audit rows = %d: %+v", len(rows), rows)
 	}
 	byReq := map[string]store.AuditRecord{}
@@ -1019,7 +1027,8 @@ func TestEveryWriteWritesOneAuditRowWithoutContent(t *testing.T) {
 		reason  string
 		forced  bool
 	}{
-		{refused.RequestID, "send_text", ":work", "failed_not_sent", "busy", false},
+		{busySend.RequestID, "send_text", ":work", "delivered", "busy", false}, // A103: a success
+		{refused.RequestID, "send_keys", ":work", "failed_not_sent", "busy", false},
 		{forced.RequestID, "send_text", ":work", "delivered", "", true},
 		{keys.RequestID, "send_keys", ":work", "delivered", "", true},
 		{task.RequestID, "set_task", ":work", "delivered", "", false},

@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -743,6 +744,46 @@ func TestPartialSubmitIsShownAndNeverOffersAResend(t *testing.T) {
 			t.Error("a key was sent after a partial submit")
 		}
 	}
+}
+
+// A103: text into a busy agent shows the Worker's note as an info notice,
+// never a refusal or a "send anyway". Text typed, not submitted, is partial:
+// the draft is kept (the recoverable copy and the partial signal), never
+// the completed-send event.
+func TestBusySendShowsAnInfoNotice(t *testing.T) {
+	for _, tc := range []struct {
+		res     ops.WriteResult
+		summary string
+		partial bool
+	}{
+		{ops.WriteResult{Outcome: ops.OutcomeDelivered, Note: ops.BusyNoteTyped, Warnings: []ops.Warning{ops.WarnSessionBusy}}, BusyDeliveredNotice, false},
+		{ops.WriteResult{Outcome: ops.OutcomePartial, Reason: "busy", Note: ops.BusyNoteTypedNotSubmitted, Warnings: []ops.Warning{ops.WarnSessionBusy}}, BusyTypedNotice, true},
+	} {
+		s, f := sessionOps(t)
+		f.reply(ops.OpSendText, tc.res)
+		rec := post(t, s, "/s/pi-1/minion-1/text", sessUser, url.Values{"text": {"draft-text-1"}, "enter": {"1"}})
+		body := rec.Body.String()
+		mustHave(t, body, "result-info", tc.summary, `class="result-note"`, html.EscapeString(tc.res.Note))
+		mustNotHave(t, body, "Send anyway", `name="force"`, "result-warning", "result-danger", "Warning:")
+		trig := rec.Header().Get("HX-Trigger")
+		if tc.partial {
+			mustHave(t, body, "draft-text-1")
+			mustHave(t, trig, `"minion-input-unknown":{"outcome":"partial","reason":"busy"}`)
+			mustNotHave(t, trig, "minion-input-sent")
+			mustNotHave(t, tc.res.Note, "force", "send again with")
+		} else {
+			mustHave(t, trig, "minion-input-sent")
+			mustNotHave(t, trig, "minion-input-unknown")
+		}
+	}
+}
+
+// A refusal shows its actionable note, also for a Worker that sends none.
+func TestRefusalShowsItsNote(t *testing.T) {
+	s, f := sessionOps(t)
+	f.reply(ops.OpSendText, ops.WriteResult{Outcome: ops.OutcomeFailedNotSent, Reason: "dialog_open", Forceable: true})
+	rec := post(t, s, "/s/pi-1/minion-1/text", sessUser, url.Values{"text": {"ls"}, "enter": {"1"}})
+	mustHave(t, rec.Body.String(), `class="result-note"`, html.EscapeString(ops.RefusalNote("dialog_open", true)), "Send anyway")
 }
 
 func TestSendTextRefusedDoesNotSendEnterAndClearsNothing(t *testing.T) {

@@ -199,7 +199,7 @@ func (c *caller) shape(ctx context.Context, t tool, args any, out json.RawMessag
 		}
 		// The result tells the model which request id was sent, so that a
 		// retry after an unknown outcome can reuse it (AD-15).
-		res := okResult(withRequestID(out, requestID))
+		res := okResult(withNote(withRequestID(out, requestID), r))
 		// A write that did not deliver is not a success for the model, but the
 		// structured content still carries the full contract (AD-15).
 		res.IsError = r.Outcome != ops.OutcomeDelivered
@@ -271,6 +271,26 @@ func withRequestID(out json.RawMessage, requestID string) json.RawMessage {
 	}
 	id, _ := json.Marshal(requestID)
 	members["request_id"] = id
+	b, err := json.Marshal(members)
+	if err != nil {
+		return out
+	}
+	return b
+}
+
+// withNote adds the refusal note to the result of a Worker older than 0.20.6,
+// which sends none, so the model always learns why a write was refused and how
+// to send anyway. A result that has a note or is not an object is unchanged.
+func withNote(out json.RawMessage, r ops.WriteResult) json.RawMessage {
+	note := r.DisplayNote()
+	if r.Note != "" || note == "" {
+		return out
+	}
+	var members map[string]json.RawMessage
+	if json.Unmarshal(out, &members) != nil || members == nil {
+		return out
+	}
+	members["note"], _ = json.Marshal(note)
 	b, err := json.Marshal(members)
 	if err != nil {
 		return out

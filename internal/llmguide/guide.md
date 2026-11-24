@@ -108,6 +108,16 @@ is shared only when the Worker shares all sessions; otherwise ask the human to s
 Sharing) before you read or type. Typing into a pane that runs a plain shell is refused as `shell_pane` (forceable,
 see the rules): `minion send_text --target build --text 'make test' --submit --force` once reviewed and asked for.
 
+Every refusal carries a `note`: what stopped it, why, and how to send anyway. Text sent with `--submit` to an
+agent that is busy with a turn (Claude Code included) is never submitted: the text is typed into the input line
+and Enter is not pressed, because a permission prompt can open at any moment and an Enter would answer it (outcome
+`partial`, reason `busy`, warning `session_busy`, a note says so). When the session is ready, check its input line
+and press Enter there (Claude Code then queues it). Do not send the same text again: it would be typed twice. A
+multi-line text is typed into a busy pane only for Claude Code and Codex, which take a paste as one block; into any
+other busy program it is not typed at all (outcome `failed_not_sent`, reason `busy`, forceable), because the program
+could submit it line by line: send it when the session is idle. Keys (`send_keys`) to a busy agent are still
+refused as `busy` (forceable).
+
 To answer a dialog a pane shows (a permission prompt, a menu), read it first and pass the reviewed pane back, so
 the answer reaches only that dialog:
 

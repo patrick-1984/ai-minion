@@ -29,7 +29,12 @@ func newFakeClock() *fakeClock {
 func (c *fakeClock) Now() time.Time          { return time.UnixMilli(c.ms.Load()).UTC() }
 func (c *fakeClock) Advance(d time.Duration) { c.ms.Add(d.Milliseconds()) }
 
-type pasteCall struct{ Pane, Text string }
+// pasteCall is one paste. Bracketed is set when the fake host frames its
+// pastes in bracketed-paste markers (verbatim, see fakeHost.verbatim).
+type pasteCall struct {
+	Pane, Text string
+	Bracketed  bool
+}
 
 // fakeHost is a term.SessionHost over an in-memory list of sessions.
 type fakeHost struct {
@@ -45,6 +50,10 @@ type fakeHost struct {
 	// events is the order of every delivery: "paste <pane>" and
 	// "keys <pane> <key,key>". Tests of a paste followed by Enter read it.
 	events []string
+
+	// verbatim makes the fake a term.VerbatimPaster whose pastes are
+	// bracketed (tmux paste-buffer -p into a program that enabled it).
+	verbatim bool
 
 	pasteErr  error
 	keysErr   error
@@ -74,6 +83,13 @@ type fakeHost struct {
 	createArgv []string
 	// closes counts the Close calls (the host owns resources, like ConPTY).
 	closes int
+}
+
+// VerbatimPaste makes the fake host a term.VerbatimPaster when verbatim is set.
+func (h *fakeHost) VerbatimPaste() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.verbatim
 }
 
 // Close makes the fake host an io.Closer.
@@ -187,7 +203,7 @@ func (h *fakeHost) PasteText(_ context.Context, p term.PaneRef, text string, exp
 	h.mu.Lock()
 	hook, err := h.onPaste, h.pasteErr
 	if err == nil {
-		h.pasted = append(h.pasted, pasteCall{Pane: p.ID, Text: text})
+		h.pasted = append(h.pasted, pasteCall{Pane: p.ID, Text: text, Bracketed: h.verbatim})
 		h.events = append(h.events, "paste "+p.ID)
 	}
 	h.mu.Unlock()

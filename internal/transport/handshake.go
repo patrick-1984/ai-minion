@@ -199,6 +199,10 @@ type WorkerFacts struct {
 	// administrators to switch debug logging on and read its recent log
 	// (allow_debug_remote, v0.10.0).
 	DebugRemote bool `json:"debug_remote,omitempty"`
+	// LoginStartupOutdated is true when a shell startup file of the Worker's
+	// user still holds the login block of v0.20.5 or earlier, which prints
+	// shell job lines (v0.20.6); "minion worker up" on the host replaces it.
+	LoginStartupOutdated bool `json:"login_startup_outdated,omitempty"`
 }
 
 // HubHello is the Hub's reply. Chain is present in connect mode only.

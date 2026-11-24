@@ -69,6 +69,11 @@ type Settings struct {
 	// work) before the lock is released or a replacement Worker takes over.
 	// Nil: nothing to start.
 	StartBackground func(ctx context.Context) (stop func())
+	// LoginStartupOutdated is true when a shell startup file of the Worker's
+	// user still holds the login block of v0.20.5 or earlier (it prints shell
+	// job lines); the hello reports it so the Hub shows the repair
+	// ("minion worker up" on the host). The Worker never changes the file.
+	LoginStartupOutdated bool
 	// Out is for human-readable reports, such as the result of enrollment.
 	// Nil discards them.
 	Out io.Writer

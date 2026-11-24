@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -113,6 +114,10 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 		}
 		return res, err
 	}
+	if res.Outcome == ops.OutcomeFailedNotSent && res.Note == "" {
+		// Every refusal says what stopped it and how to send anyway.
+		res.Note = ops.RefusalNote(res.Reason, res.Forceable)
+	}
 	if verr := res.Validate(); verr != nil {
 		// A bug in the executor, not a caller error; the input may have gone,
 		// so the unfinished record stays and a duplicate answers unknown.
@@ -209,6 +214,11 @@ func (e *Executor) lockFailure(err error, info *ops.PaneInfo) (ops.WriteResult, 
 // id, time, and never content (AD-20).
 func (e *Executor) record(ctx context.Context, op string, wa ops.WriteArgs, t ops.Target, res ops.WriteResult, err error) {
 	rec := store.AuditRecord{Op: op, Outcome: string(res.Outcome), Reason: res.Reason, Forced: res.Forced, RequestID: wa.RequestID, Origin: auditOrigin(ctx)}
+	if rec.Reason == "" && res.IsBusySend() {
+		// Text delivered into a busy agent (A103): a success, recorded with
+		// reason busy so that it can be told from a send into an idle one.
+		rec.Reason = proto.CodeBusy.String()
+	}
 	switch {
 	case t.SessionName != "":
 		rec.Target = t.String()
@@ -373,13 +383,75 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 			return inputGuards(p)
 		}
 	}
-	return e.paneWrite(ctx, rq, op, args.WriteArgs, args.Target, true, guards,
-		func(ctx context.Context, p *pane) (ops.Outcome, proto.Code, error) {
-			if args.AgentOnly && !isAgentKind(p.class.Kind) {
-				return ops.OutcomeFailedNotSent, proto.CodeForbidden, nil
-			}
-			return e.pasteAndSubmit(ctx, p, args.Text, args.Submit)
-		})
+	if !args.Force {
+		// A busy agent does not refuse text (A103): the send step below
+		// decides what is safe. force=true keeps the FORCE guard, so a
+		// forced send is reported as forced exactly as before.
+		base := guards
+		guards = func(p *pane) []proto.Code {
+			return slices.DeleteFunc(base(p), func(c proto.Code) bool { return c == proto.CodeBusy })
+		}
+	}
+	return e.write(ctx, op, args.WriteArgs, args.Target, true, func(ctx context.Context) (ops.WriteResult, error) {
+		note, multiLine := "", false
+		res, err := e.paneRun(ctx, rq, op, args.WriteArgs, args.Target, true, guards,
+			func(ctx context.Context, p *pane) (ops.Outcome, proto.Code, error) {
+				if args.AgentOnly && !isAgentKind(p.class.Kind) {
+					return ops.OutcomeFailedNotSent, proto.CodeForbidden, nil
+				}
+				if args.Force || !paneBusy(p) {
+					return e.pasteAndSubmit(ctx, p, args.Text, args.Submit)
+				}
+				// No submit key into a busy agent (A103): a permission dialog
+				// can open between any screen check and the key, and the
+				// Enter would answer it (approve a Bash command). Type only.
+				if strings.ContainsAny(args.Text, "\r\n") && !e.pasteBracketed(p) {
+					// A line break in an unbracketed paste can submit the
+					// first line: type nothing (A103).
+					multiLine = true
+					return ops.OutcomeFailedNotSent, proto.CodeBusy, nil
+				}
+				outcome, reason, err := e.pasteAndSubmit(ctx, p, args.Text, false)
+				if err != nil || outcome != ops.OutcomeDelivered {
+					return outcome, reason, err
+				}
+				if !args.Submit {
+					note = ops.BusyNoteTyped
+					return outcome, reason, nil
+				}
+				note = ops.BusyNoteTypedNotSubmitted
+				return ops.OutcomePartial, proto.CodeBusy, nil
+			})
+		if err == nil && multiLine && res.Outcome == ops.OutcomeFailedNotSent {
+			res.Forceable = true
+			res.Note = ops.BusyNoteMultiLineNotTyped
+		}
+		if err == nil && note != "" && (res.Outcome == ops.OutcomeDelivered || res.Outcome == ops.OutcomePartial) {
+			res.Note = note
+			res.Warnings = append(res.Warnings, ops.WarnSessionBusy)
+		}
+		return res, err
+	})
+}
+
+// bracketedAgentKinds are the agents known to enable bracketed paste in their
+// input line, so that a pasted LF stays part of the text and submits nothing.
+var bracketedAgentKinds = []string{ops.PaneKindAgentPrefix + "claude", ops.PaneKindAgentPrefix + "codex"}
+
+// pasteBracketed reports whether a paste into p arrives bracketed: the pane
+// runs an agent known to enable bracketed paste and the host frames the paste
+// in bracketed-paste markers when the program enabled them (the verbatim
+// paste of [term.VerbatimPaster]: tmux paste-buffer -p, the ConPTY markers).
+// Neither adapter can report the mode of the program, so a program outside
+// that list is treated as unbracketed (A103).
+func (e *Executor) pasteBracketed(p *pane) bool {
+	return slices.Contains(bracketedAgentKinds, p.class.Kind) && term.IsVerbatim(e.host)
+}
+
+// paneBusy reports whether the pane is an agent busy with a turn: the
+// condition of the busy FORCE guard in [inputGuards].
+func paneBusy(p *pane) bool {
+	return p.info.State == ops.PaneStateBusy && !p.class.Background
 }
 
 // pasteAndSubmit pastes the text into the classified pane and, when submit is
@@ -432,6 +504,13 @@ func (e *Executor) pasteSubmit(ctx context.Context, p *pane, what string, submit
 	if !submit {
 		return ops.OutcomeDelivered, "", nil
 	}
+	return e.pressEnter(ctx, p, what)
+}
+
+// pressEnter is the Enter of [Executor.pasteSubmit] after a paste that went
+// out: checked against the pane's identity, and never failed_not_sent, because
+// the text is in the pane already.
+func (e *Executor) pressEnter(ctx context.Context, p *pane, what string) (ops.Outcome, proto.Code, error) {
 	sent, err := e.host.SendKeys(ctx, p.ref, []string{"Enter"}, p.ref)
 	if err == nil && sent >= 1 {
 		return ops.OutcomeDelivered, "", nil
