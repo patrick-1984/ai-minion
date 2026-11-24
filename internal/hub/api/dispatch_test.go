@@ -776,3 +776,21 @@ func TestStreamRevocationInterruptsABlockedWrite(t *testing.T) {
 		t.Fatal("the revoked stream is still blocked in a write")
 	}
 }
+
+func TestForbiddenAPIKeyNamesTheMissingActions(t *testing.T) {
+	r := newRig(t)
+	r.authn.id = Identity{Principal: authz.NewSessionPrincipal("user-1"), Actor: "key:k1", Via: ViaAPIKey}
+	r.authn.id.Principal.Kind = authz.KindAPIKey
+	r.decide.fn = func(decideCall) error { return proto.NewError(proto.CodeForbidden, "not allowed") }
+	mustHandle(t, r.reg, opPing, func(context.Context, *Call) (any, error) { return struct{}{}, nil })
+	w := r.do("POST", "/api/v1/ops/ping_read", `{}`)
+	if errCode(t, w) != proto.CodeForbidden || !strings.Contains(w.Body.String(), "API key needs one of the actions") {
+		t.Errorf("%d %s", w.Code, w.Body)
+	}
+	// A session gets the plain message.
+	r.authn.id = testIdentity
+	w = r.do("POST", "/api/v1/ops/ping_read", `{}`)
+	if strings.Contains(w.Body.String(), "API key") {
+		t.Errorf("session answer names a key: %s", w.Body)
+	}
+}

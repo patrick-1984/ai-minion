@@ -101,3 +101,7 @@ minion hub_diagnostics --json
 ```
 
 If the peer is your proxy but "trusted proxy" says no, add its address to `MINION_TRUSTED_PROXIES` ([reverse proxy](reverse-proxy.md)).
+
+## Hub logs and the audit trail
+
+Every audit event is also written to the Hub's log: INFO for a success, WARN for a denial or a failure, with `actor`, `acting_as`, `action`, `target`, `outcome` and `request_id` (the same id as the `X-Request-Id` header of the response). Nothing else is added: no message text, key or terminal content. These records reach the syslog and OpenTelemetry sinks at level `info` and above. A write that someone makes on a Hub-connected Worker's own session through the local socket (the CLI, a master session or MCP on the Worker host) is reported to the Hub and audited as `local.<operation>` with the actor `worker:<id>/local` (or `worker:<id>/session:<name>` when the calling terminal is a session of that Worker); a Worker that is not connected, or an older Hub, does not report it. Set `MINION_LOG_HOSTNAME` to give exported logs a stable host name (in a container the default is the container id). The syslog message starts with the UTF-8 byte order mark that RFC 5424 requires.

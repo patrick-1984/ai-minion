@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -139,5 +140,17 @@ func TestHubDiagnosticsOnTheRealHub(t *testing.T) {
 	}
 	if res.StartedAt.Time().IsZero() || res.UptimeSeconds < 0 {
 		t.Errorf("started_at/uptime = %s", r.body)
+	}
+}
+
+func TestRequestIDMiddlewareSetsHeaderAndContext(t *testing.T) {
+	var got string
+	h := requestIDMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = audit.RequestID(r.Context()) }))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Request-Id", "client-chosen")
+	h.ServeHTTP(rec, req)
+	if got == "" || got == "client-chosen" || rec.Header().Get("X-Request-Id") != got {
+		t.Errorf("ctx id %q, header %q", got, rec.Header().Get("X-Request-Id"))
 	}
 }

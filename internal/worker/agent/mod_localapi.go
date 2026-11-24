@@ -220,6 +220,7 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		return raw, nil
 	}
 	raw, err := l.ex.Execute(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args})
+	l.reportLocalWrite(ctx, rq.Op, rq.Args, raw, err, rq.Pane)
 	if err != nil {
 		return nil, l.protoError(rq.Op, err)
 	}

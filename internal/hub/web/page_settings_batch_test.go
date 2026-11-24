@@ -114,5 +114,5 @@ func TestDiagnosticsShowsTheSinks(t *testing.T) {
 	f := newFakeOps().reply(ops.OpHubDiagnostics, d)
 	connect(t, f)
 	body := get(t, adminServer(t), pathAdminDiagnostics, "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, body, "<dt>Log export (syslog)</dt><dd>tls://logs.example:6514 at warn and above; sent 9, queued 0, dropped 0 (configuration 1)</dd>")
+	mustHave(t, body, "<dt>Log export (syslog)</dt><dd>tls://logs.example:6514 at warn and above; sent 9, queued 0, dropped 0 (configuration 1); last success: never</dd>")
 }

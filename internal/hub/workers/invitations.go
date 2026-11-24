@@ -321,10 +321,12 @@ func invitationInfo(r store.InvitationRow, nowMS int64) ops.InvitationInfo {
 	switch {
 	case r.Revoked:
 		info.Status = ops.InvitationRevoked
+	case r.MaxUses != 0 && r.Uses >= r.MaxUses:
+		// A key that was used up stays "exhausted" after its time ran out:
+		// it did its job and did not lapse unused.
+		info.Status = ops.InvitationExhausted
 	case r.ExpiresAt != 0 && r.ExpiresAt <= nowMS:
 		info.Status = ops.InvitationExpired
-	case r.MaxUses != 0 && r.Uses >= r.MaxUses:
-		info.Status = ops.InvitationExhausted
 	default:
 		info.Status = ops.InvitationActive
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
+	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/obs"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -43,6 +44,9 @@ func registerRequestLogModule(r *Registry) {
 		}
 		root, err := Require[*Root](env)
 		if err != nil {
+			return err
+		}
+		if err := root.Wrap(requestIDMiddleware); err != nil {
 			return err
 		}
 		return root.Wrap(requestDebugLog(nw, cfg.logger()))
@@ -142,6 +146,18 @@ func (n *Network) Diagnose(r *http.Request) ops.HubDiagnosticsRequest {
 	return out
 }
 
+// requestIDMiddleware gives every request an id (header X-Request-Id of the
+// answer and the request context), so an audit log record and the request log
+// lines of one call can be tied together. An id sent by the client is never
+// taken over.
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := ops.NewUUIDv7()
+		w.Header().Set("X-Request-Id", id)
+		next.ServeHTTP(w, r.WithContext(audit.WithRequestID(r.Context(), id)))
+	})
+}
+
 // requestDebugLog writes, at debug level only, one line per request with the
 // scheme decision: peer, trusted-proxy match, resolved client address, the
 // names of the forwarding headers seen, the forwarded protocol, the effective
@@ -156,7 +172,7 @@ func requestDebugLog(nw *Network, log *slog.Logger) func(http.Handler) http.Hand
 				for _, h := range d.ForwardedHeaders {
 					names = append(names, h.Name)
 				}
-				log.Debug("http request", "method", r.Method, "path", r.URL.Path,
+				log.Debug("http request", "request_id", audit.RequestID(r.Context()), "method", r.Method, "path", r.URL.Path,
 					"peer", d.PeerAddress, "peer_trusted_proxy", d.PeerTrustedProxy, "client_ip", d.ClientIP,
 					"forwarded_headers", strings.Join(names, ","), "forwarded_proto", r.Header.Get("X-Forwarded-Proto"),
 					"scheme", d.Scheme, "effective_https", d.EffectiveHTTPS)

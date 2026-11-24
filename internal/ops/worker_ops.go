@@ -672,6 +672,12 @@ var memberDocs = map[string]map[string]string{
 	OpWorkerUsage: {
 		"fresh": "Request a fresh installed harness scan when inventory is requested. The Worker may reuse a recent scan.",
 	},
+	OpUsageList: {
+		"section": "What to list: sessions, accounts, workers, overview, events or history.",
+	},
+	OpWorkersList: {
+		"all": "Only for an administrator: list every Worker of the Hub instead of only your own. For any other caller, and for a session-scoped master, it changes nothing: the list is the Workers you own that you may read (and, for a master session, control).",
+	},
 	OpSendText: {
 		"text": "The text to type, pasted verbatim. Tab and line feed are allowed; other control characters are refused (use send_keys for keys). No Enter is added unless submit is true.",
 	},

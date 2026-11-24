@@ -5,6 +5,8 @@
   {{if .Kind}}<dt>Worker kind</dt><dd>{{.Kind}}</dd>{{end}}
   <dt>Your access</dt><dd>{{if .Operate}}You can view this session and send input to it.{{else}}You can view this session. You don't have permission to send input.{{end}}</dd>
   {{if .Task}}<dt>Task</dt><dd>{{.Task}}</dd>{{end}}
+  {{range .Usage}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>
+  {{end}}
 </dl>
 <details>
   <summary>Technical details</summary>

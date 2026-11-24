@@ -136,7 +136,7 @@ func TestHarnessCheckAllCountsOnlyWorkersWhoseInventoryAdvanced(t *testing.T) {
 	srv := onbUser(t)
 	res := onbPost(t, srv, "/harnesses/scan", url.Values{"for_user": {onbUserID}})
 	body := res.Body.String()
-	if !strings.Contains(body, "Checked 1 Worker.") || !strings.Contains(body, "2 Workers could not be checked") || res.Header().Get("HX-Trigger") != "harnesses-checked" || res.Header().Get("HX-Refresh") != "" {
+	if !strings.Contains(body, "Checked 1 Worker.") || !strings.Contains(body, "2 Workers could not be checked") || !strings.Contains(body, "the Worker sent no newer scan") || res.Header().Get("HX-Trigger") != "harnesses-checked" || res.Header().Get("HX-Refresh") != "" {
 		t.Fatalf("answer: %s %v", body, res.Header())
 	}
 }

@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -135,11 +137,86 @@ func WithClock(c store.Clock) Option { return func(l *Log) { l.clock = c } }
 // WithIDFunc sets the identifier generator (default: [store.NewID]).
 func WithIDFunc(f func() string) Option { return func(l *Log) { l.newID = f } }
 
+// WithLogger makes every recorded event also a structured log record: INFO,
+// or WARN when the outcome is a denial or a failure. The record carries the
+// actor, the acting-as user, the action, the target, the outcome and the
+// request id of the context, never more than the audit row itself.
+func WithLogger(lg *slog.Logger) Option { return func(l *Log) { l.logger = lg } }
+
+// WithNamer makes [Log.ListOp] add the name of an actor, acting-as user or
+// target: namer returns the name for an id, or "" when it knows none.
+func WithNamer(namer func(ctx context.Context, id string) string) Option {
+	return func(l *Log) { l.namer = namer }
+}
+
 // Log writes and reads audit events. It is safe for concurrent use.
 type Log struct {
-	repo  Repository
-	clock store.Clock
-	newID func() string
+	repo   Repository
+	clock  store.Clock
+	newID  func() string
+	logger *slog.Logger
+	namer  func(ctx context.Context, id string) string
+}
+
+type requestIDKey struct{}
+
+// WithRequestID returns a context that carries the id of the request, so that
+// the log record of an audit event can be tied to the request that caused it.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+// RequestID returns the id set by [WithRequestID], or "".
+func RequestID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}
+
+// BadOutcome reports whether an audit outcome is a denial or a failure, which
+// the log carries at WARN.
+func BadOutcome(outcome string) bool {
+	o := strings.ToLower(outcome)
+	for _, w := range []string{"denied", "fail", "refus", "rate_limited", "unknown", "error", "invalid", "inactive", "unauthor", "forbidden", "reject", "expired", "mismatch", "locked", "partial", "bad_", "wrong"} {
+		if strings.Contains(o, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// Tracker notes whether an event was recorded under a context made by
+// [WithTracker]. The REST dispatcher uses it to write its own audit row only
+// for a handler that wrote none, so one change leaves one row.
+type Tracker struct{ n atomic.Int32 }
+
+// Recorded reports whether an event was recorded under the tracked context.
+func (t *Tracker) Recorded() bool { return t.n.Load() > 0 }
+
+type trackerKey struct{}
+
+// WithTracker returns a context whose recorded events are noted by the
+// returned Tracker.
+func WithTracker(ctx context.Context) (context.Context, *Tracker) {
+	t := &Tracker{}
+	return context.WithValue(ctx, trackerKey{}, t), t
+}
+
+func (l *Log) emit(ctx context.Context, ev Event) {
+	if l.logger == nil {
+		return
+	}
+	level := slog.LevelInfo
+	if BadOutcome(ev.Outcome) {
+		level = slog.LevelWarn
+	}
+	attrs := []any{"actor", ev.Actor, "action", ev.Action, "target", ev.Target, "outcome", ev.Outcome}
+	if ev.ActingAs != "" {
+		attrs = append(attrs, "acting_as", ev.ActingAs)
+	}
+	if id := RequestID(ctx); id != "" {
+		attrs = append(attrs, "request_id", id)
+	}
+	l.logger.Log(ctx, level, "audit", attrs...)
 }
 
 // New returns a Log on repo.
@@ -174,7 +251,7 @@ func (l *Log) record(ctx context.Context, ex store.Execer, ev Event) error {
 	if err := ev.Validate(); err != nil {
 		return err
 	}
-	return l.repo.InsertAudit(ctx, ex, store.AuditRow{
+	err := l.repo.InsertAudit(ctx, ex, store.AuditRow{
 		ID:       l.newID(),
 		TS:       store.UnixMS(l.clock()),
 		Actor:    ev.Actor,
@@ -183,6 +260,13 @@ func (l *Log) record(ctx context.Context, ex store.Execer, ev Event) error {
 		Target:   ev.Target,
 		Outcome:  ev.Outcome,
 	})
+	if err == nil {
+		if t, ok := ctx.Value(trackerKey{}).(*Tracker); ok {
+			t.n.Add(1)
+		}
+		l.emit(ctx, ev)
+	}
+	return err
 }
 
 // List returns one page of events, newest first.
@@ -261,10 +345,23 @@ func (l *Log) ListOp(ctx context.Context, args ops.AuditListArgs) (ops.AuditList
 		return ops.AuditListResult{}, err
 	}
 	res := ops.AuditListResult{Events: make([]ops.AuditEvent, len(page.Events)), NextCursor: page.NextCursor}
+	names := map[string]string{}
+	name := func(id string) string {
+		if l.namer == nil || id == "" {
+			return ""
+		}
+		if n, ok := names[id]; ok {
+			return n
+		}
+		n := l.namer(ctx, id)
+		names[id] = n
+		return n
+	}
 	for i, e := range page.Events {
 		res.Events[i] = ops.AuditEvent{
 			ID: e.ID, TS: ops.Timestamp(e.Time),
 			Actor: e.Actor, ActingAs: e.ActingAs, Action: e.Action, Target: e.Target, Outcome: e.Outcome,
+			ActorName: name(e.Actor), ActingAsName: name(e.ActingAs), TargetName: name(e.Target),
 		}
 	}
 	return res, nil

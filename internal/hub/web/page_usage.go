@@ -302,6 +302,45 @@ func (p usagePage) Counters(c ops.UsageCounters) []usageFact {
 	return facts
 }
 
+// SessionCounters is [usagePage.Counters] for a session row, with the two
+// values that mislead when read without their source made honest: an
+// estimated cost of zero next to unknown tokens is Unknown (a harness that has
+// counted nothing has not measured zero), and the duration says whether the
+// harness reported it (it can include earlier runs of a resumed conversation)
+// or the Hub observed it from the first sighting to the last.
+func (p usagePage) SessionCounters(s ops.UsageSessionRow) []usageFact {
+	facts := p.Counters(s.UsageCounters)
+	c := s.UsageCounters
+	tokensUnknown := c.InputTokens == nil && c.OutputTokens == nil && c.CacheReadTokens == nil && c.CacheWriteTokens == nil
+	for i := range facts {
+		switch facts[i].Label {
+		case "Estimated cost":
+			if c.EstimatedCostUSD != nil && *c.EstimatedCostUSD == 0 && tokensUnknown {
+				facts[i].Value = "Unknown"
+			}
+		case "Duration":
+			switch s.DurationSource {
+			case "native":
+				facts[i].Label = "Duration (reported by the harness, may include earlier runs)"
+			case "observed_host_lifetime":
+				facts[i].Label = "Running time (observed by the Hub)"
+			}
+		}
+	}
+	return facts
+}
+
+// ModelText is the model of a session, or why it is unknown.
+func (p usagePage) ModelText(s ops.UsageSessionRow) string {
+	switch {
+	case s.Model != "":
+		return s.Model
+	case s.Harness == "codex":
+		return "Unknown (Codex does not report its model yet)"
+	}
+	return "Unknown"
+}
+
 func (p usagePage) WorkerName(id string) string {
 	for _, w := range p.Workers {
 		if w.ID != id {

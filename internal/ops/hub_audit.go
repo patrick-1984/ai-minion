@@ -76,6 +76,11 @@ type AuditEvent struct {
 	Action   string    `json:"action"`
 	Target   string    `json:"target,omitempty"`
 	Outcome  string    `json:"outcome"`
+	// ActorName, ActingAsName and TargetName are the names the Hub knows for
+	// the ids above (a user name or a Worker name); empty when it knows none.
+	ActorName    string `json:"actor_name,omitempty"`
+	ActingAsName string `json:"acting_as_name,omitempty"`
+	TargetName   string `json:"target_name,omitempty"`
 }
 
 // AuditListResult is the result of audit_list: events newest first. NextCursor

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -533,5 +534,70 @@ func TestLogUsesOnlyThePortAndPropagatesErrors(t *testing.T) {
 	}
 	if _, err := l.List(ctx, audit.Filter{}); err == nil {
 		t.Error("List swallowed the storage error")
+	}
+}
+
+func TestRecordLogsInfoAndWarnWithRequestID(t *testing.T) {
+	s := openStore(t)
+	var buf strings.Builder
+	lg := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	l := audit.New(s, audit.WithLogger(lg))
+	ctx := audit.WithRequestID(context.Background(), "req-1")
+	if err := l.Record(ctx, audit.Event{Actor: "u1", ActingAs: "u2", Action: "settings.set", Target: "log_level", Outcome: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record(ctx, audit.Event{Actor: "anonymous", Action: "login", Target: "alice", Outcome: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record(ctx, audit.Event{Actor: "", Action: "x", Outcome: "success"}); err == nil {
+		t.Fatal("invalid event accepted")
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("log lines = %d: %s", len(lines), buf.String())
+	}
+	var a, b map[string]any
+	_ = json.Unmarshal([]byte(lines[0]), &a)
+	_ = json.Unmarshal([]byte(lines[1]), &b)
+	if a["level"] != "INFO" || a["actor"] != "u1" || a["acting_as"] != "u2" || a["target"] != "log_level" || a["request_id"] != "req-1" || a["action"] != "settings.set" {
+		t.Errorf("info record = %v", a)
+	}
+	if b["level"] != "WARN" || b["outcome"] != "failed" {
+		t.Errorf("warn record = %v", b)
+	}
+}
+
+func TestBadOutcome(t *testing.T) {
+	for o, want := range map[string]bool{"success": false, "ok": false, "changed": false, "delivered": false, "denied": true, "failed": true, "rate_limited": true, "refused": true, "unknown": true} {
+		if audit.BadOutcome(o) != want {
+			t.Errorf("BadOutcome(%q) != %v", o, want)
+		}
+	}
+}
+
+func TestListOpAddsNamesAndTrackerNotesRecords(t *testing.T) {
+	s := openStore(t)
+	l := audit.New(s, audit.WithNamer(func(_ context.Context, id string) string {
+		if id == "user-1" {
+			return "alice"
+		}
+		return ""
+	}))
+	ctx, tr := audit.WithTracker(context.Background())
+	if tr.Recorded() {
+		t.Fatal("tracker set before a record")
+	}
+	if err := l.Record(ctx, good("settings.set")); err != nil {
+		t.Fatal(err)
+	}
+	if !tr.Recorded() {
+		t.Error("tracker did not note the record")
+	}
+	res, err := l.ListOp(context.Background(), ops.AuditListArgs{})
+	if err != nil || len(res.Events) != 1 {
+		t.Fatalf("%v %v", res, err)
+	}
+	if e := res.Events[0]; e.ActorName != "alice" || e.TargetName != "" {
+		t.Errorf("names = %+v", e)
 	}
 }

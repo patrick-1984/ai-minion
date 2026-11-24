@@ -1,6 +1,6 @@
 Set or unset a Hub setting in the panel unless the environment sets it; changes sets several at once, all or nothing.
 
-This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket.
+This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket. A Worker forwards only workers_list to its Hub, never this operation.
 Accepted actions: manage.
 
 This is a write. The result reports the outcome, the reason, whether the refusal is forceable and any warnings.

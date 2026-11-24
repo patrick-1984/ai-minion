@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -291,6 +292,7 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 4)
 		failed, skipped := 0, 0
+		var reasons []string // "<Worker>: <why>", one per Worker that failed
 		replied := map[string]int64{}
 		// A Worker counts as checked only when the Hub recorded an inventory
 		// time newer than the one it already had: a cached reply or a scan
@@ -316,8 +318,12 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 				err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: wk.ID, Inventory: true, Fresh: true}, &report)
 				mu.Lock()
 				defer mu.Unlock()
-				if err != nil || report.InventoryAt == nil || *report.InventoryAt <= was {
+				if err != nil {
 					failed++
+					reasons = append(reasons, wk.Name+": "+failureText(err))
+				} else if report.InventoryAt == nil || *report.InventoryAt <= was {
+					failed++
+					reasons = append(reasons, wk.Name+": the Worker sent no newer scan (cached or timed out)")
 				} else {
 					replied[wk.ID] = *report.InventoryAt
 				}
@@ -342,6 +348,10 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 		text := "Checked " + pluralWorkers(ok) + "."
 		if failed > 0 {
 			text += " " + pluralWorkers(failed) + " could not be checked or returned a scan that is not newer (timed out or cached)."
+			if len(reasons) > 0 {
+				slices.Sort(reasons)
+				text += " " + strings.Join(reasons, "; ") + "."
+			}
 		}
 		if skipped > 0 {
 			text += " " + pluralWorkers(skipped) + " skipped (offline, needs an update or has not accepted monitoring)."

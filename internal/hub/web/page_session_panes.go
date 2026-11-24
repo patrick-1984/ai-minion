@@ -18,7 +18,11 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
+	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
 // SessionContext is what a pane may know about the session it is drawn for.
@@ -115,6 +119,58 @@ type detailsData struct {
 	SessionContext
 	Kind    string
 	Version string
+	// Usage holds what the Hub knows about the harness of the session (from
+	// the Worker's usage report); empty when it knows nothing.
+	Usage []DiagnosticsFact
+}
+
+// sessionUsageFacts lists what the usage report says about the session: the
+// harness and its version, the model, how it is paid for, the last report and
+// the token totals when known. A value the report does not carry is left out
+// (never shown as zero).
+func sessionUsageFacts(rows []ops.UsageSessionRow, session string) []DiagnosticsFact {
+	var best *ops.UsageSessionRow
+	for i := range rows {
+		r := &rows[i]
+		if r.Name != session {
+			continue
+		}
+		if best == nil || r.ObservedAt > best.ObservedAt {
+			best = r
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	var out []DiagnosticsFact
+	add := func(l, v string) {
+		if v != "" {
+			out = append(out, DiagnosticsFact{l, v})
+		}
+	}
+	h := best.Harness
+	if best.Version != "" && h != "" {
+		h += " " + best.Version
+	}
+	add("Harness", h)
+	add("Model", best.Model)
+	add("Access", best.AuthMode)
+	if best.ObservedAt > 0 {
+		ts := ops.Timestamp(time.UnixMilli(best.ObservedAt))
+		add("Usage last reported", formatTime(&ts, ""))
+	}
+	num := func(l string, v *int64) {
+		if v != nil {
+			add(l, strconv.FormatInt(*v, 10))
+		}
+	}
+	num("Input tokens", best.InputTokens)
+	num("Output tokens", best.OutputTokens)
+	num("Context tokens", best.ContextTokens)
+	if best.CostUSD != nil {
+		add("Reported cost", "$"+strconv.FormatFloat(*best.CostUSD, 'f', 4, 64))
+	}
+	return out
 }
 
 func renderDetails(r *http.Request, s SessionContext) (template.HTML, error) {
@@ -122,6 +178,10 @@ func renderDetails(r *http.Request, s SessionContext) (template.HTML, error) {
 	if c, err := sessionCaller(); err == nil {
 		if w, _, _, err := resolveWorker(r, c); err == nil {
 			d.Kind, d.Version = w.Kind, w.ProtoVersion
+		}
+		var res ops.UsageListResult
+		if err := c.CallOp(r, ops.OpUsageList, ops.UsageListArgs{Section: "sessions", WorkerID: s.WorkerID, Limit: 200}, &res); err == nil {
+			d.Usage = sessionUsageFacts(res.Sessions, s.Session)
 		}
 	}
 	var buf bytes.Buffer
