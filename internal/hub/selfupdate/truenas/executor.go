@@ -422,6 +422,11 @@ func (e *Executor) attempt(ctx context.Context, st State, adm admission) (TickRe
 		scheme = "http"
 	}
 	port = config.ListenPort(compose.Env(e.Cfg.Service, "MINION_LISTEN"), port)
+	if port == config.EphemeralPort {
+		// An ephemeral port (MINION_LISTEN with port 0) cannot be probed, and
+		// the default port may answer for another service: no update.
+		return refuse("listen_port_ephemeral")
+	}
 	a := &Attempt{
 		ID: NewAttemptID(), App: e.Cfg.App, Service: e.Cfg.Service, Phase: PhasePrepared,
 		FromTag: baseTag, ToTag: cand.Tag, PreviousRef: base.Ref(), CandidateRef: cand.Ref(),

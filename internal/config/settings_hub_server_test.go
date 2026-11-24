@@ -108,9 +108,11 @@ func TestResolveHubServerCertPathsFromPanelAndEnvPrecedence(t *testing.T) {
 
 func TestListenPortOfEveryForm(t *testing.T) {
 	for in, want := range map[string]string{"9443": "9443", ":9443": "9443", "0.0.0.0:9443": "9443", "[::]:9443": "9443", "": "8443", "host:": "8443", "garbage": "8443",
-		":0009443": "9443", "0009443": "9443", ":70000": "8443", ":0": "8443",
+		":0009443": "9443", "0009443": "9443", ":70000": "8443",
+		// An explicit port 0 binds an ephemeral port: never the default (round 4).
+		":0": "0", "0": "0", "000": "0", "[::1]:0": "0",
 		// host:port values an older Hub accepted bind as the Go listener reads them.
-		"host:+9443": "9443", "127.0.0.1:00000000000000000009443": "9443", "127.0.0.1:-0": "8443",
+		"host:+9443": "9443", "127.0.0.1:00000000000000000009443": "9443", "127.0.0.1:-0": "0",
 		// A bare port is digits only.
 		"+9443": "8443", "00000000000000000009443": "8443"} {
 		if got := ListenPort(in, "8443"); got != want {

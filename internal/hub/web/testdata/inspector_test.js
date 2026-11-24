@@ -154,6 +154,7 @@ function listPage(o) {
   const timers = [];
   let now = 0;
   const html = el('html');
+  if (o.csrf) html.appendChild(el('meta', { name: 'csrf-token', content: o.csrf }));
   const body = el('body');
   html.appendChild(body);
   // The shell's skip link is a sibling of the layout, outside every data-modal-inert subtree, as in layout.html (it is
@@ -886,8 +887,9 @@ const alice = (p) => p.guards.length;
 
 // A99 (round 3): a sign-in that is not there any more (an expired or absent cookie: a 401 without the idle marker) is not
 // a verified switch of the principal. Nothing is destroyed without the person: every kept frame and draft stays, hidden,
-// rows open nothing, the links are plain links, and the person's next click asks once (a quiet read) and reloads the page.
-scenario('a lost sign-in found by the page pauses: every kept frame and draft stays hidden, and the next click reloads', async () => {
+// rows open nothing, the links are plain links, no other click is taken over (Sign out must sign out, round 4), and the
+// note's Continue button asks once (a quiet read) and reloads the page.
+scenario('a lost sign-in found by the page pauses: every kept frame and draft stays hidden, and Continue reloads', async () => {
   const p = listPage();
   const A = open(p, 'w1', 'minion-1', 'pi-1', { dirty: true }).f;
   const B = open(p, 'w1', 'minion-2', 'pi-1').f;
@@ -907,12 +909,19 @@ scenario('a lost sign-in found by the page pauses: every kept frame and draft st
   p.fireDoc('click', e);
   if (e.defaultPrevented || p.framesHost.children.length !== 2) fail('while paused the link must open the full page (and its sign-in), not another frame');
   if (p.win.location.reloads) fail('a link click reloaded the page');
-  // A click elsewhere asks once, quietly, and reloads: that page load signs in again.
-  const c = click(p.body);
-  p.fireDoc('click', c);
+  // A click elsewhere (the sidebar's Sign out button) is not taken over: it does what it does.
+  const signOut = el('button', { type: 'submit' });
+  p.body.appendChild(signOut);
+  const so = click(signOut);
+  p.fireDoc('click', so);
+  if (so.defaultPrevented || principalReads(p).length !== 1 || p.win.location.reloads) fail('a click on Sign out was taken over by the pause');
+  // The note's Continue button asks once, quietly, and reloads: that page load signs in again.
+  const btn = p.alertBox.querySelector('[data-session-continue]');
+  if (!btn || btn.textContent !== 'Continue') fail('no Continue button in the note: ' + p.alertBox.textContent);
+  const c = btn.fire('click', { preventDefault() { this.defaultPrevented = true; } });
   const again = principalReads(p)[1];
-  if (!again || again.opt.headers['X-Minion-Background'] !== '1') fail('the click made no quiet read');
-  if (!c.defaultPrevented) fail('the click acted on the paused page');
+  if (!again || again.opt.headers['X-Minion-Background'] !== '1') fail('Continue made no quiet read');
+  if (!c.defaultPrevented) fail('Continue acted as something else');
   respond(again, 401);
   await flush();
   eq(p.win.location.reloads, 1, 'the page reloads');
@@ -2019,10 +2028,10 @@ scenario('frame: a page that is not framed does nothing', () => {
 });
 
 // A99: the quiet 401 of a background check when the session's idle lifetime ran out is not a sign-out. Nothing kept is
-// cleared (drafts stay), nothing kept is shown, a short note says how to continue. The person's next click makes ONE
+// cleared (drafts stay), nothing kept is shown, a short note says how to continue. Its Continue button makes ONE
 // quiet read: the same principal again (another tab signed in meanwhile) shows the frames again without a reload; no
 // sign-in reloads the page; another principal clears them.
-scenario('an idle session pauses the inspector: drafts are kept and the next click continues it', async () => {
+scenario('an idle session pauses the inspector: drafts are kept and Continue continues it', async () => {
   const idle401 = { status: 401, ok: false, type: 'basic', headers: { get: (h) => (h === 'X-Minion-Session' ? 'idle' : null) } };
   for (const outcome of ['same', 'none', 'other']) {
     const p = listPage();
@@ -2042,9 +2051,13 @@ scenario('an idle session pauses the inspector: drafts are kept and the next cli
     eq(principalReads(p).length, 1, 'a key does not continue');
     if (p.win.location.reloads) fail('the page reloaded on its own');
     p.fireDoc('click', click(p.body));
+    eq(principalReads(p).length, 1, 'a click elsewhere does not continue');
+    const btn = p.alertBox.querySelector('[data-session-continue]');
+    if (!btn) fail('no Continue button');
+    btn.fire('click', {});
     const r = principalReads(p)[1];
-    if (!r || r.opt.headers['X-Minion-Background'] !== '1') fail('the read after the click is not one quiet read');
-    p.fireDoc('click', click(p.body));
+    if (!r || r.opt.headers['X-Minion-Background'] !== '1') fail('the read after Continue is not one quiet read');
+    btn.fire('click', {});
     eq(principalReads(p).length, 2, 'one read per pause');
     if (outcome === 'same') {
       respond(r, 200);
@@ -2066,6 +2079,31 @@ scenario('an idle session pauses the inspector: drafts are kept and the next cli
       if (A.parentNode || B.parentNode) fail('another principal kept the frames');
     }
   }
+});
+
+// A99 round 4: a silent sign-in in another tab renews the cookie of the SAME principal. The context (user, role, act-as)
+// is unchanged, so nothing kept is cleared; the CSRF token this page presents is not the current one any more (the
+// server answers csrf: false), so the kept frames stay concealed with their drafts and nothing of them is shown.
+scenario('a renewed sign-in of the same principal keeps the drafts, concealed, and never clears them', async () => {
+  const p = listPage({ csrf: 'tok-old' });
+  const A = open(p, 'w1', 'minion-1', 'pi-1', { dirty: true }).f;
+  toParent(p, A, msg('state', 'w1', 'minion-1', state({ dirty: true })));
+  p.tick(30000);
+  const g = principalReads(p)[0];
+  eq(g.opt.headers['X-Minion-CSRF'], 'tok-old', 'the check presents the page token');
+  g.res({ status: 200, ok: true, type: 'basic', json: () => Promise.resolve({ context: CTX, csrf: false }) });
+  await flush();
+  if (!A.parentNode) fail('a renewal of the same principal cleared a kept frame');
+  if (!p.host.hasAttribute('data-frame-dirty')) fail('the draft is no longer reported');
+  if (!p.framesHost.children.every((f) => f.hidden)) fail('a kept frame is shown with an out-of-date token');
+  if (!/renewed in another tab/.test(p.alertBox.textContent)) fail('not told: ' + p.alertBox.textContent);
+  // The next check still finds the old token: still concealed, still kept.
+  p.tick(30000);
+  const g2 = principalReads(p)[1];
+  if (!g2) fail('the check stopped');
+  g2.res({ status: 200, ok: true, type: 'basic', json: () => Promise.resolve({ context: CTX, csrf: false }) });
+  await flush();
+  if (!A.parentNode || !p.framesHost.children.every((f) => f.hidden)) fail('the renewal was taken for a confirmation');
 });
 
 // ---- run ------------------------------------------------------------------------------------------

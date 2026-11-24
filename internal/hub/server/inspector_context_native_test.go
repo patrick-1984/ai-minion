@@ -22,6 +22,7 @@ type ctxAnswer struct {
 	WorkerID string `json:"worker_id"`
 	Session  string `json:"session"`
 	Online   *bool  `json:"online"`
+	CSRF     *bool  `json:"csrf"`
 }
 
 func TestInspectorContextWithRealSessionCookies(t *testing.T) {
@@ -56,13 +57,34 @@ func TestInspectorContextWithRealSessionCookies(t *testing.T) {
 	}
 	cA1, cA2, cB, cRoot := principal(alice1), principal(alice2), principal(bob), principal(root)
 
-	// One login is one context, however often it asks; every other principal or login is another.
-	if again := principal(alice1); again != cA1 {
-		t.Errorf("one login, two contexts: %q and %q", cA1, again)
+	// One principal is one context, however often it asks and through whichever login (a renewal, such as
+	// a silent sign-in in another tab, must not clear what a page holds); every other principal is another.
+	if again := principal(alice1); again != cA1 || cA2 != cA1 {
+		t.Errorf("one principal, several contexts: %q, %q and %q", cA1, again, cA2)
 	}
-	distinct := map[string]string{cA1: "alice login 1", cA2: "alice login 2", cB: "bob", cRoot: "root"}
-	if len(distinct) != 4 {
-		t.Errorf("two principals or logins share a context: %v", distinct)
+	distinct := map[string]string{cA1: "alice", cB: "bob", cRoot: "root"}
+	if len(distinct) != 3 {
+		t.Errorf("two principals share a context: %v", distinct)
+	}
+	// What a renewal does change is the CSRF token: both routes say whether the token the page
+	// presents is the one of the current cookie, so the page keeps its frames concealed until it is.
+	ctxPathCSRF := "/s/" + wid + "/minion-1/context"
+	for _, p := range []string{"/inspector/principal", ctxPathCSRF} {
+		for _, tc := range []struct {
+			hdr  map[string]string
+			want *bool
+		}{
+			{map[string]string{"Cookie": alice1["Cookie"], "X-Minion-CSRF": csrfA1}, ptrBool(true)},
+			{map[string]string{"Cookie": alice2["Cookie"], "X-Minion-CSRF": csrfA1}, ptrBool(false)},
+			{map[string]string{"Cookie": alice2["Cookie"]}, nil},
+		} {
+			code, body := read(p, tc.hdr)
+			var a ctxAnswer
+			_ = json.Unmarshal([]byte(body), &a)
+			if code != 200 || a.Context != cA1 || (a.CSRF == nil) != (tc.want == nil) || (a.CSRF != nil && *a.CSRF != *tc.want) {
+				t.Errorf("%s with %v = %d %s, want csrf %v", p, tc.hdr, code, body, tc.want)
+			}
+		}
 	}
 
 	// The page the inspector lives on carries the context of ITS request, the same value the principal route gives.
@@ -77,7 +99,7 @@ func TestInspectorContextWithRealSessionCookies(t *testing.T) {
 		t.Errorf("a page and the principal route disagree: %q/%q, %q/%q", page(alice1), cA1, page(bob), cB)
 	}
 
-	// The resource check of Alice's session: Alice may read it, as login 1 and as login 2; the context in the answer is the one of THAT login.
+	// The resource check of Alice's session: Alice may read it, as login 1 and as login 2; the context in the answer is Alice's.
 	ctxPath := "/s/" + wid + "/minion-1/context"
 	for who, c := range map[string]struct {
 		hdr map[string]string
@@ -138,3 +160,5 @@ func TestInspectorContextWithRealSessionCookies(t *testing.T) {
 		t.Error("the page contains the session cookie")
 	}
 }
+
+func ptrBool(b bool) *bool { return &b }

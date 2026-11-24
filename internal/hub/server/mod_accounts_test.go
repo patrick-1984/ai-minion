@@ -587,3 +587,41 @@ func TestStoredNarrowManageKeyCannotAdministerAccounts(t *testing.T) {
 		t.Errorf("everything key user_deactivate = %d %s", r.code, r.body)
 	}
 }
+
+// A JSON form of the pages (the change-password form posts to the REST
+// operation, forms.js) learns that the session's idle lifetime ran out from the
+// same X-Minion-Session: idle marker the pages' quiet 401 carries, so it pauses
+// the page instead of reporting a failure (A99 round 4).
+func TestIdleSessionOnARESTFormIsMarkedIdle(t *testing.T) {
+	ah := startAccountsHub(t)
+	ctx := context.Background()
+	root, err := ah.st.UserByIdentifier(ctx, "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := "expired-local-session-cookie-value-00000000"
+	hash, ok := session.HashToken(tok)
+	if !ok {
+		t.Fatal("test bug: not a session token")
+	}
+	now := time.Now()
+	if err := ah.st.CreateSession(ctx, store.SessionRow{
+		ID: "s-idle", TokenHash: hash, UserID: root.ID, CredentialVersion: root.CredentialVersion,
+		CreatedAt: store.UnixMS(now.Add(-3 * time.Hour)), ExpiresAt: store.UnixMS(now.Add(-time.Hour)), AuthMethod: session.AuthMethodLocal,
+	}, store.UnixMS(now)); err != nil {
+		t.Fatal(err)
+	}
+	hc := newHubClient(t, ah.h, "https")
+	code, body, resp := hc.do("POST", "/api/v1/ops/"+ops.OpPasswordChange,
+		map[string]any{"old_password": "root-integration-pw-1", "new_password": "another-password-456", "request_id": ops.NewUUIDv7()},
+		map[string]string{"Cookie": session.CookieName + "=" + tok, session.CSRFHeader: session.CSRFToken(tok)})
+	if code != 401 || resp.Header.Get(session.IdleHeader) != "idle" || !strings.Contains(body, session.IdleReason) {
+		t.Errorf("password_change with an idle session = %d %q %s, want 401 with the idle marker", code, resp.Header.Get(session.IdleHeader), body)
+	}
+	// Any other failure to authenticate carries no idle marker.
+	code, _, resp = hc.do("POST", "/api/v1/ops/"+ops.OpPasswordChange, map[string]any{"old_password": "x", "new_password": "y"},
+		map[string]string{"Cookie": session.CookieName + "=not-a-session"})
+	if (code != 401 && code != 403) || resp.Header.Get(session.IdleHeader) != "" {
+		t.Errorf("password_change without a session = %d %q, want no idle marker", code, resp.Header.Get(session.IdleHeader))
+	}
+}

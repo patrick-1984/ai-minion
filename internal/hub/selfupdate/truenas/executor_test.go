@@ -720,6 +720,27 @@ func TestReadinessProbesTheConfiguredListenPort(t *testing.T) {
 	}
 }
 
+// An explicit listen port 0 binds an ephemeral port: the updater cannot probe
+// it and never probes the default port in its place, so it declines before it
+// changes anything (round 4). An absent MINION_LISTEN still means 8443.
+func TestEphemeralListenPortIsRefused(t *testing.T) {
+	for _, v := range []any{float64(0), "0", ":0", "0.0.0.0:0"} {
+		w := newWorld()
+		svc, _ := w.compose.service("minion-hub")
+		svc["environment"].(map[string]any)["MINION_LISTEN"] = v
+		e := newExec(t, w)
+		if res := tick(t, e); res.Tick != TickRefused || res.Detail != "listen_port_ephemeral" || strings.Contains(w.effects(), "stop") {
+			t.Fatalf("MINION_LISTEN %#v: tick = %+v (%s)", v, res, w.effects())
+		}
+	}
+	w := newWorld()
+	svc, _ := w.compose.service("minion-hub")
+	delete(svc["environment"].(map[string]any), "MINION_LISTEN")
+	if res := tick(t, newExec(t, w)); res.Tick != TickUpdated {
+		t.Fatalf("no MINION_LISTEN: tick = %+v (%s)", res, w.effects())
+	}
+}
+
 func TestComposeEnvReadsNumbers(t *testing.T) {
 	c := Compose{"services": map[string]any{"hub": map[string]any{"environment": map[string]any{
 		"A": float64(9443), "B": "x", "C": 1.5, "D": true, "E": nil}}}}

@@ -834,6 +834,19 @@ func TestPollRoute(t *testing.T) {
 		{http.MethodGet, "/harnesses", nil, false},
 		{http.MethodGet, "/s/w1/main", nil, false},
 		{http.MethodPost, "/s/w1/main/text", nil, false},
+		// The terminal pages of sessions named like a polled route are page loads (round 4).
+		{http.MethodGet, "/s/w1/screen", nil, false},
+		{http.MethodGet, "/s/w1/context", nil, false},
+		{http.MethodGet, "/s/w1/turns", nil, false},
+		// ...and their own polls are polls.
+		{http.MethodGet, "/s/w1/screen/screen", nil, true},
+		{http.MethodGet, "/s/w1/context/context", nil, true},
+		{http.MethodGet, "/s/w1/screen/pipe/turns", nil, true},
+		// Escaped segments are kept: a session named "a/screen" is one segment.
+		{http.MethodGet, "/s/w1/a%2Fscreen", nil, false},
+		{http.MethodGet, "/s/w1/a%2Fscreen/screen", nil, true},
+		{http.MethodGet, "/s/w1/main/x/screen", nil, false},
+		{http.MethodGet, "/s//main/screen", nil, false},
 	} {
 		r := httptest.NewRequest(tc.method, tc.path, nil)
 		for i := 0; i+1 < len(tc.hdr); i += 2 {

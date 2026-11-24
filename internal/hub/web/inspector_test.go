@@ -351,7 +351,10 @@ func TestInspectorScriptsNeverWriteStoreOrBuildMarkup(t *testing.T) {
 			t.Errorf("the bounded read lacks %s: %s", want, call[1])
 		}
 	}
-	for _, bad := range []string{"method", "body:", "POST", "PUT", "DELETE", "X-Minion-CSRF", "document.cookie", "sessionID", "csrf"} {
+	// The page's CSRF token is presented on the two reads (round 4) only so that the server can say
+	// whether it is still the current one (a renewed cookie of the same principal has a new token):
+	// the reads stay GETs without a body or a method, and nothing here writes.
+	for _, bad := range []string{"method", "body:", "POST", "PUT", "DELETE", "document.cookie", "sessionID"} {
 		// Whole words only: the tag name INPUT of the row-click exclusions is not the verb PUT.
 		if regexp.MustCompile(`(^|[^A-Za-z0-9_])` + regexp.QuoteMeta(bad) + `($|[^A-Za-z0-9_])`).MatchString(code) {
 			t.Errorf("inspector.js mentions %q: its only requests are plain GETs of the two context routes", bad)

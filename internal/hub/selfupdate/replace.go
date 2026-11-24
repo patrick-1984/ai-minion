@@ -66,6 +66,12 @@ func Replace(ctx context.Context, d *Docker, p ReplaceParams) (err error) {
 	if dataDir == "" {
 		return errors.New("the Hub container sets no MINION_DATA_DIR; refusing to update without a known data directory")
 	}
+	// The new Hub's readiness is probed on its listen port: a Hub that binds
+	// an ephemeral port (MINION_LISTEN with port 0) cannot be probed, and the
+	// default port may belong to another service, so it is not updated.
+	if listen := envValue(old.Env(), "MINION_LISTEN"); config.ListenPort(listen, "8443") == config.EphemeralPort {
+		return fmt.Errorf("the Hub listens on an ephemeral port (MINION_LISTEN=%s), so the updated Hub's readiness cannot be checked; set a fixed port to update in place; nothing was changed", listen)
+	}
 	name := strings.TrimPrefix(old.Name, "/")
 	newImageID, err := d.ImageID(ctx, p.ImageRef)
 	if err != nil {
@@ -313,6 +319,9 @@ func readyz(ctx context.Context, c Container) bool {
 	}
 	env := c.Env()
 	port := config.ListenPort(envValue(env, "MINION_LISTEN"), "8443")
+	if port == config.EphemeralPort {
+		return false // never probe some other port in its place (Replace refuses this before the stop)
+	}
 	scheme := "https"
 	if envValue(env, "MINION_TLS") == "off" {
 		scheme = "http"

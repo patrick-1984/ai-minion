@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -105,6 +106,11 @@ func WriteError(w http.ResponseWriter, err error) {
 	}
 	if e.challenge {
 		h.Set("WWW-Authenticate", `Bearer realm="minion"`)
+	}
+	if e.Code == proto.CodeUnauthenticated && e.Details["reason"] == session.IdleReason {
+		// The same marker the pages' quiet idle 401 carries: a page (a JSON
+		// form, the inspector) pauses on it instead of reporting an error.
+		h.Set(session.IdleHeader, "idle")
 	}
 	w.WriteHeader(proto.HTTPStatus(e.Code))
 	_, _ = w.Write(append(Envelope(e), '\n'))

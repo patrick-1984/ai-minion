@@ -7,6 +7,7 @@ const src = fs.readFileSync(process.argv[2], 'utf8');
 
 function el(tag) {
   return { tagName: tag, children: [], attrs: {}, hidden: false, textContent: '', className: '', id: '',
+    l: {}, addEventListener(n, f) { (this.l[n] = this.l[n] || []).push(f); },
     setAttribute(k, v) { this.attrs[k] = v; }, appendChild(c) { this.children.push(c); return c; } };
 }
 const area = el('div'); area.id = 'flash-area';
@@ -42,8 +43,9 @@ setTimeout(() => {
 }, 20);
 
 // A99: the quiet 401 of a session whose idle lifetime ran out is not an error of the form: the page says it is
-// paused and reloads on the next click (that page load signs in again). An htmx request gets the same.
-function idleRun() {
+// paused and its Continue button reloads it (that page load signs in again); no other click is taken over (Sign out
+// must sign out). An htmx request gets the same. bodyOnly: the 401 carries the API's details.reason without the header.
+function idleRun(bodyOnly) {
   const fail = (m) => { console.error('FAIL: ' + m); process.exit(1); };
   const area2 = el('div'); area2.id = 'flash-area';
   const button2 = el('button');
@@ -60,8 +62,8 @@ function idleRun() {
   };
   let reloads = 0;
   const win2 = { location: { assign() { fail('navigated'); }, reload() { reloads++; } } };
-  const idleResp = async () => ({ ok: false, status: 401, headers: { get: (h) => (h === 'X-Minion-Session' ? 'idle' : null) },
-    json: async () => ({ error: { message: 'the session is idle; reload the page to continue' } }) });
+  const idleResp = async () => ({ ok: false, status: 401, headers: { get: (h) => (!bodyOnly && h === 'X-Minion-Session' ? 'idle' : null) },
+    json: async () => ({ error: { code: 'unauthenticated', message: 'the session is idle; reload the page to continue', details: { reason: 'session_idle' } } }) });
   new Function('document', 'window', 'HTMLFormElement', 'FormData', 'fetch', src)(doc2, win2, HTMLFormElement, FormData, idleResp);
   l.submit[0]({ target: form2, preventDefault() {} });
   setTimeout(() => {
@@ -75,7 +77,12 @@ function idleRun() {
     if (area2.children.filter((c) => c.attrs['data-session-paused'] !== undefined).length !== 1) fail('a second note');
     let prevented = false;
     (l.click || []).slice().forEach((f) => f({ preventDefault() { prevented = true; }, stopPropagation() {} }));
-    if (reloads !== 1 || !prevented) fail('the click did not reload: ' + reloads);
+    if (reloads || prevented) fail('a click elsewhere (Sign out) was taken over by the pause');
+    const go = note.children.find((c) => c.attrs['data-session-continue'] !== undefined);
+    if (!go || go.textContent !== 'Continue') fail('no Continue button: ' + JSON.stringify(note.children));
+    (go.l.click || []).forEach((f) => f({}));
+    if (reloads !== 1) fail('Continue did not reload: ' + reloads);
+    if (!bodyOnly) { idleRun(true); return; }
     console.log('ok');
   }, 20);
 }

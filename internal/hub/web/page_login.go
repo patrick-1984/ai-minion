@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
@@ -141,15 +142,33 @@ func PollRoute(r *http.Request) bool {
 		return false
 	}
 	p := r.URL.Path
-	switch {
-	case p == pathInspectorPrincipal, p == "/workers/pairing-requests":
-		return true
-	case strings.HasPrefix(p, "/s/") && (strings.HasSuffix(p, "/screen") || strings.HasSuffix(p, "/context") || strings.HasSuffix(p, pathPipeTurns)):
+	if p == pathInspectorPrincipal || p == "/workers/pairing-requests" || sessionPollRoute(r.URL.EscapedPath()) {
 		return true
 	}
 	if r.Header.Get("HX-Request") == "true" {
 		switch r.Header.Get("HX-Trigger") {
 		case "harness-matrix", "usage-subscription-data", "pairing-requests":
+			return true
+		}
+	}
+	return false
+}
+
+// sessionPollSuffixes are the polled routes below a session page
+// (/s/{worker}/{session}/...), as path segments.
+var sessionPollSuffixes = [][]string{{"screen"}, {"context"}, strings.Split(strings.TrimPrefix(pathPipeTurns, "/"), "/")}
+
+// sessionPollRoute reports whether the escaped path p has the exact shape of a
+// polled route below a session page. It is matched by segments of the escaped
+// path, as the router does: the terminal page of a session that is itself named
+// "screen" or "context" (/s/w1/screen) is a page load, not a poll.
+func sessionPollRoute(p string) bool {
+	seg := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	if len(seg) < 4 || seg[0] != "s" || seg[1] == "" || seg[2] == "" {
+		return false
+	}
+	for _, suf := range sessionPollSuffixes {
+		if len(seg) == 3+len(suf) && slices.Equal(seg[3:], suf) {
 			return true
 		}
 	}

@@ -100,7 +100,7 @@
       });
       var data = null;
       try { data = await resp.json(); } catch (e) { data = null; }
-      if (resp.status === 401 && resp.headers && typeof resp.headers.get === 'function' && resp.headers.get('X-Minion-Session') === 'idle' && !inView(form)) {
+      if (resp.status === 401 && idleAnswer(resp, data) && !inView(form)) {
         setBusy(form, false);
         sessionPaused();
         return;
@@ -135,18 +135,19 @@
   });
 
   // A session whose idle lifetime ran out answers every request that is not a page load with a
-  // quiet 401 marked X-Minion-Session: idle. The page is not changed (what it shows and what was
-  // typed stay); it says so, and the person's next click reloads it: that page load signs in again
-  // (silently with the identity provider, or on the sign-in page) and comes back here. A live
-  // session view and the inspector (inside an element with data-context) pause on their own.
+  // quiet 401 marked X-Minion-Session: idle (an API error also carries details.reason
+  // session_idle). The page is not changed (what it shows and what was typed stay); it says so,
+  // and its Continue button reloads it: that page load signs in again (silently with the
+  // identity provider, or on the sign-in page) and comes back here. Every other control keeps
+  // working as it is (Sign out signs out). A live session view and the inspector (inside an
+  // element with data-context) pause on their own.
   var pausedNote = null;
   function inView(el) {
     return !!(el && typeof el.closest === 'function' && el.closest('[data-context]'));
   }
-  function resumeClick(ev) {
-    document.removeEventListener('click', resumeClick, true);
-    if (ev && typeof ev.preventDefault === 'function') { ev.preventDefault(); ev.stopPropagation(); }
-    window.location.reload();
+  function idleAnswer(resp, data) {
+    if (resp.headers && typeof resp.headers.get === 'function' && resp.headers.get('X-Minion-Session') === 'idle') { return true; }
+    return !!(data && data.error && data.error.details && data.error.details.reason === 'session_idle');
   }
   function sessionPaused() {
     if (pausedNote) { return; }
@@ -155,9 +156,15 @@
     pausedNote.className = 'flash flash-info';
     pausedNote.setAttribute('role', 'status');
     pausedNote.setAttribute('data-session-paused', '');
-    pausedNote.textContent = 'Session paused \u2014 click or refresh to continue.';
+    pausedNote.textContent = 'Session paused. ';
+    var go = document.createElement('button');
+    go.setAttribute('type', 'button');
+    go.className = 'btn btn-secondary';
+    go.setAttribute('data-session-continue', '');
+    go.textContent = 'Continue';
+    go.addEventListener('click', function () { window.location.reload(); });
+    pausedNote.appendChild(go);
     if (area) { area.appendChild(pausedNote); }
-    document.addEventListener('click', resumeClick, true);
   }
   document.addEventListener('htmx:responseError', function (ev) {
     var d = ev.detail || {};

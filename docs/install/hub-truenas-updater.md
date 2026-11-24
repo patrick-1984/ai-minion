@@ -82,7 +82,7 @@ JSON
 | `request_file`, `status_file` | The exchange with the Hub, below. Optional. |
 | `min_free_bytes` | Free space the dataset needs before an attempt (default 1 GiB). |
 
-The Hub is probed at the container's own address and port (from `MINION_LISTEN` and `MINION_TLS` in the app's YAML, default `https` on 8443), never through a published port or a proxy, so another Hub cannot answer for it.
+The Hub is probed at the container's own address and port (from `MINION_LISTEN` and `MINION_TLS` in the app's YAML, default `https` on 8443 when `MINION_LISTEN` is not set), never through a published port or a proxy, so another Hub cannot answer for it. A Hub set to listen on port 0 (an ephemeral port) cannot be probed and is not updated (`listen_port_ephemeral`).
 
 Try it by hand first (nothing changes while `enabled` is `false` and no request exists):
 

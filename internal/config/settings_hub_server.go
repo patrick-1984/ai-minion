@@ -122,18 +122,25 @@ func ManagementListenAddr(v string) string {
 // ListenPort returns the port of a listen setting in any of its forms
 // ("8443", ":8443", "host:8443", a padded ":0009443" or a signed
 // "host:+9443" of an older Hub), as the listener binds it ("9443"), or def
-// when it names none.
+// when it names none (the setting is absent or not a port). An explicit port
+// 0 is returned as "0": the listener binds an ephemeral port, which is not
+// the default one, and a caller that must reach the Hub has to say so
+// ([EphemeralPort]) instead of probing the default port.
 func ListenPort(v, def string) string {
 	v = strings.TrimSpace(v)
 	p, ok := ParsePort(v)
 	if !ok {
 		p, ok = HostPortPort(v)
 	}
-	if ok && p > 0 {
+	if ok {
 		return strconv.Itoa(p)
 	}
 	return def
 }
+
+// EphemeralPort is what [ListenPort] returns for a listen setting that binds
+// an ephemeral port (port 0).
+const EphemeralPort = "0"
 
 func init() { declareHubServer(Default) }
 
