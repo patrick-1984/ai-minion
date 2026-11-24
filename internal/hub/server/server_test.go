@@ -293,6 +293,29 @@ func copyFile(t *testing.T, from, to string) {
 
 // ---- configuration matrix --------------------------------------------------
 
+// A listen setting is a plain port (canonical) or, as before, ":port" or
+// "host:port"; a plain management port is loopback (A100).
+func TestListenSettingForms(t *testing.T) {
+	for in, want := range map[string]string{"8443": ":8443", " 9443 ": ":9443", ":8443": ":8443", "127.0.0.1:8443": "127.0.0.1:8443", "[::1]:8443": "[::1]:8443", "": ":8443"} {
+		cfg, err := NewConfig(config.HubServer{DataDir: "/data", Listen: in, TLS: config.TLSAuto}, nil)
+		if err != nil || cfg.Listen != want {
+			t.Errorf("listen %q = %q, %v, want %q", in, cfg.Listen, err, want)
+		}
+	}
+	for in, want := range map[string]string{"8444": "127.0.0.1:8444", "127.0.0.1:8444": "127.0.0.1:8444", "[::1]:8444": "[::1]:8444"} {
+		cfg, err := NewConfig(config.HubServer{DataDir: "/data", Listen: "8443", TLS: config.TLSAuto, ManagementListen: in}, nil)
+		if err != nil || cfg.ManagementListen != want {
+			t.Errorf("management_listen %q = %q, %v, want %q", in, cfg.ManagementListen, err, want)
+		}
+	}
+	if _, err := NewConfig(config.HubServer{DataDir: "/data", Listen: "8443", TLS: config.TLSAuto, ManagementListen: "8443"}, nil); err == nil {
+		t.Error("a plain management port equal to the main port was accepted")
+	}
+	if _, err := NewConfig(config.HubServer{DataDir: "/data", Listen: "8443", TLS: config.TLSAuto, ManagementListen: ":8444"}, nil); err == nil {
+		t.Error("a management listener on every interface was accepted")
+	}
+}
+
 func TestNewConfigMatrix(t *testing.T) {
 	base := config.HubServer{DataDir: "/data", Listen: ":8443", TLS: config.TLSAuto}
 	with := func(f func(*config.HubServer)) config.HubServer { h := base; f(&h); return h }
@@ -312,7 +335,9 @@ func TestNewConfigMatrix(t *testing.T) {
 		{"cert without key", with(func(h *config.HubServer) { h.CertFile = "c" }), "both"},
 		{"bad public URL", with(func(h *config.HubServer) { h.PublicURL = "hub.example.com" }), "MINION_PUBLIC_URL"},
 		{"bad proxies", with(func(h *config.HubServer) { h.TrustedProxies = "10.0.0.0/8, nonsense" }), "MINION_TRUSTED_PROXIES"},
-		{"bad listen", with(func(h *config.HubServer) { h.Listen = "8443" }), "MINION_LISTEN"},
+		{"bad listen", with(func(h *config.HubServer) { h.Listen = "hub.example" }), "MINION_LISTEN"},
+		{"plain port listens everywhere", with(func(h *config.HubServer) { h.Listen = "9443" }), ""},
+		{"bad plain port", with(func(h *config.HubServer) { h.Listen = "99999" }), "invalid port"},
 		{"bad port", with(func(h *config.HubServer) { h.Listen = ":99999" }), "invalid port"},
 		{"empty listen falls back", with(func(h *config.HubServer) { h.Listen = "" }), ""},
 	}
@@ -349,7 +374,7 @@ func TestResolveHubServerDefaultsAndEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hs.Listen != ":8443" || hs.TLS != config.TLSAuto || hs.CertFile != "/c.pem" || hs.KeyFile != "/k.pem" || hs.TrustedProxies != "10.0.0.0/8" {
+	if hs.Listen != "8443" || hs.TLS != config.TLSAuto || hs.CertFile != "/c.pem" || hs.KeyFile != "/k.pem" || hs.TrustedProxies != "10.0.0.0/8" {
 		t.Fatalf("resolved %+v", hs)
 	}
 }

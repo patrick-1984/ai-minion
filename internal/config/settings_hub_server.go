@@ -41,8 +41,55 @@ const (
 	TLSOff = "off"
 )
 
-// DefaultListen is the default listen address of the Hub.
-const DefaultListen = ":8443"
+// DefaultListen is the default listen setting of the Hub: a plain port, which
+// means every interface ([ListenAddr] turns it into ":8443").
+const DefaultListen = "8443"
+
+// isPort reports whether v is a plain port number (digits only).
+func isPort(v string) bool {
+	if v == "" || len(v) > 5 {
+		return false
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// ListenAddr turns a listen setting into a Go listen address. A plain port
+// number such as "8443" (the canonical form) means every interface, ":8443";
+// the older forms ":8443" and "host:port" are kept as they are.
+func ListenAddr(v string) string {
+	v = strings.TrimSpace(v)
+	if isPort(v) {
+		return ":" + v
+	}
+	return v
+}
+
+// ManagementListenAddr turns a management_listen setting into a listen
+// address. A plain port number such as "8444" means the loopback address
+// "127.0.0.1:8444" (the management listener must be loopback); a
+// "host:port" value is kept as it is.
+func ManagementListenAddr(v string) string {
+	v = strings.TrimSpace(v)
+	if isPort(v) {
+		return "127.0.0.1:" + v
+	}
+	return v
+}
+
+// ListenPort returns the port of a listen setting in any of its forms
+// ("8443", ":8443", "host:8443"), or def when it names none.
+func ListenPort(v, def string) string {
+	a := ListenAddr(v)
+	if i := strings.LastIndex(a, ":"); i >= 0 && isPort(a[i+1:]) {
+		return a[i+1:]
+	}
+	return def
+}
 
 func init() { declareHubServer(Default) }
 
@@ -51,7 +98,7 @@ func declareHubServer(r *Registry) {
 	r.Declare(Setting{
 		Key:     KeyListen,
 		Scope:   ScopeHub,
-		Help:    "Address the Hub listens on, as host:port",
+		Help:    "Port the Hub listens on, for example 8443 (every interface); host:port such as 127.0.0.1:8443 limits it to one address",
 		Default: DefaultListen,
 	})
 	r.Declare(Setting{
@@ -74,7 +121,7 @@ func declareHubServer(r *Registry) {
 	r.Declare(Setting{
 		Key:   KeyManagementListen,
 		Scope: ScopeHub,
-		Help:  "Optional management listener, a loopback host:port such as 127.0.0.1:8444, served as plain HTTP. It is the only place where a passphrase is accepted without HTTPS; never point a reverse proxy at it",
+		Help:  "Optional management listener: a port such as 8444 (on 127.0.0.1) or a loopback host:port, served as plain HTTP. It is the only place where a passphrase is accepted without HTTPS; never point a reverse proxy at it",
 	})
 }
 

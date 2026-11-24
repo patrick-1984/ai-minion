@@ -17,14 +17,14 @@ func init() {
 		hub := hubCommand(root)
 		hub.AddCommand(&cobra.Command{
 			Use:   "serve",
-			Short: "Run the Minion Hub (HTTPS on :8443 by default)",
+			Short: "Run the Minion Hub (HTTPS on port 8443 by default)",
 			Long: `Run the Minion Hub: the HTTP API, the web UI and the Worker channel.
 
 The Hub reads its settings from the environment (its only flag is -v,
 --verbose, which logs at debug level unless MINION_LOG_LEVEL is set):
 
   MINION_DATA_DIR         data directory (database, keys, certificate); must be writable
-  MINION_LISTEN           listen address, default :8443
+  MINION_LISTEN           port, default 8443 (every interface); host:port limits it to one address
   MINION_TLS              auto (default) or off
   MINION_TLS_CERT_FILE    certificate to use instead of the generated self-signed one
   MINION_TLS_KEY_FILE     private key for MINION_TLS_CERT_FILE (both or neither)

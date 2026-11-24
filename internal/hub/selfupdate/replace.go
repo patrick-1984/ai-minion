@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/patrick-1984/ai-minion/internal/config"
 )
 
 // Labels and names of the self-update.
@@ -310,11 +312,7 @@ func readyz(ctx context.Context, c Container) bool {
 		host = "127.0.0.1"
 	}
 	env := c.Env()
-	listen := envValue(env, "MINION_LISTEN")
-	port := "8443"
-	if i := strings.LastIndex(listen, ":"); i >= 0 && listen[i+1:] != "" {
-		port = listen[i+1:]
-	}
+	port := config.ListenPort(envValue(env, "MINION_LISTEN"), "8443")
 	scheme := "https"
 	if envValue(env, "MINION_TLS") == "off" {
 		scheme = "http"

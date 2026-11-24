@@ -39,7 +39,7 @@ func TestResolveHubServerDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HubServer{DataDir: "/data", Listen: ":8443", TLS: TLSAuto}
+	want := HubServer{DataDir: "/data", Listen: "8443", TLS: TLSAuto}
 	if hs != want {
 		t.Fatalf("got %+v, want %+v", hs, want)
 	}
@@ -103,5 +103,16 @@ func TestResolveHubServerCertPathsFromPanelAndEnvPrecedence(t *testing.T) {
 	r.Panel = MapSource{KeyTLSKeyFile: "/panel/k.pem"}
 	if _, err := ResolveHubServer(r); err == nil || !strings.Contains(err.Error(), "both") {
 		t.Errorf("panel with only a key: %v", err)
+	}
+}
+
+func TestListenPortOfEveryForm(t *testing.T) {
+	for in, want := range map[string]string{"9443": "9443", ":9443": "9443", "0.0.0.0:9443": "9443", "[::]:9443": "9443", "": "8443", "host:": "8443", "garbage": "8443"} {
+		if got := ListenPort(in, "8443"); got != want {
+			t.Errorf("ListenPort(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if DefaultListen != "8443" {
+		t.Errorf("DefaultListen = %q, want the plain port 8443", DefaultListen)
 	}
 }

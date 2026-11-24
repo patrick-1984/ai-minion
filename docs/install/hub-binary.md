@@ -56,13 +56,13 @@ The Hub has no command-line flags. It reads its settings from the environment (e
 | Variable | Meaning |
 | --- | --- |
 | `MINION_DATA_DIR` | Data directory: database, keys, certificate. Must be writable by the user that runs the Hub. The default is the user's data directory (`~/.local/share/minion` on Linux). |
-| `MINION_LISTEN` | Listen address, default `:8443`. |
+| `MINION_LISTEN` | Port the Hub listens on, default `8443` (every interface). `host:port` (for example `127.0.0.1:8443`) limits it to one address; the older form `:8443` still works. |
 | `MINION_TLS` | `auto` (default: HTTPS with a generated self-signed certificate) or `off` (plain HTTP behind a proxy; needs `MINION_PUBLIC_URL`). |
 | `MINION_TLS_CERT_FILE`, `MINION_TLS_KEY_FILE` | A certificate and key to use instead of the generated one (both or neither). `SIGHUP` reloads them. The key must be a plain file (or a link to one in a directory only the Hub user or root can write) owned by the Hub user with mode 0600 or 0400; the Hub refuses a key that group or others can access and never changes it. |
 | `MINION_PUBLIC_URL` | The external URL, for example `https://hub.example.com`. |
 | `MINION_TRUSTED_PROXIES` | Comma-separated addresses or CIDRs of the reverse proxies whose `X-Forwarded-*` headers are trusted. |
 | `MINION_LOG_HOSTNAME` | The host name of exported logs (the syslog HOSTNAME and the OTEL `host.name`). Default: the operating system's host name, which in a container is the container id; set it, for example to `minion-hub`, to query by host. |
-| `MINION_MANAGEMENT_LISTEN` | Optional loopback `host:port` (for example `127.0.0.1:8444`) that serves plain HTTP for the [Hub identity](../guides/hub-identity.md#the-https-rule) operations. Never point a reverse proxy at it. |
+| `MINION_MANAGEMENT_LISTEN` | Optional port (for example `8444`, which means `127.0.0.1:8444`) or loopback `host:port` that serves plain HTTP for the [Hub identity](../guides/hub-identity.md#the-https-rule) operations. Never point a reverse proxy at it. |
 | `MINION_ADMIN_USERNAME`, `MINION_ADMIN_PASSWORD_FILE` | The first administrator (used only while the user table is empty). `MINION_ADMIN_PASSWORD` also works, but a file keeps the password out of the process environment. |
 | `MINION_SESSION_TTL` | Idle lifetime of a browser session, default `2h` (5m to 720h). Every page load or click extends it; background polling does not. A local sign-in ends after 12 hours whatever the activity; an OIDC session is renewed silently with the identity provider ([browser sessions](../security.md#browser-sessions)). Applies without a restart; also in **Administration > Hub settings** (`session_ttl`). |
 | `MINION_HIDDEN_SESSIONS` | Whether new sessions may be **hidden** from the person who creates them (they could not see or join them from their own terminal: Windows ConPTY sessions inside the Worker, or a tmux server that is not their default one). `user-controlled` (default: each user allows them in **Account > Sessions**, off until they do), `allowed` (for everybody) or `disabled` (refused for everybody). Applies without a restart; also in **Administration > Hub settings**. |
