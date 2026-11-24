@@ -156,6 +156,12 @@ type Log struct {
 	newID  func() string
 	logger *slog.Logger
 	namer  func(ctx context.Context, id string) string
+	// observed is true when the repository reports committed rows itself.
+	observed bool
+}
+
+type auditObservable interface {
+	SetAuditObserver(obs store.AuditObserver)
 }
 
 type requestIDKey struct{}
@@ -201,6 +207,17 @@ func WithTracker(ctx context.Context) (context.Context, *Tracker) {
 	return context.WithValue(ctx, trackerKey{}, t), t
 }
 
+// observe is told about every committed audit row: it notes the row on the
+// tracker of ctx and writes the log record. It runs only after the row's
+// transaction committed, so a rolled-back change exports nothing and leaves
+// the dispatcher free to record the failure.
+func (l *Log) observe(ctx context.Context, row store.AuditRow) {
+	if t, ok := ctx.Value(trackerKey{}).(*Tracker); ok {
+		t.n.Add(1)
+	}
+	l.emit(ctx, Event{Actor: row.Actor, ActingAs: row.ActingAs, Action: row.Action, Target: row.Target, Outcome: row.Outcome})
+}
+
 func (l *Log) emit(ctx context.Context, ev Event) {
 	if l.logger == nil {
 		return
@@ -228,6 +245,13 @@ func New(repo Repository, opts ...Option) *Log {
 	if l.clock == nil {
 		l.clock = time.Now
 	}
+	// A store that reports its committed audit rows (the Hub store) sends
+	// every row, including those its domain methods write directly (API keys,
+	// Worker approval, invitations), through observe: one export per row.
+	if o, ok := repo.(auditObservable); ok {
+		o.SetAuditObserver(l.observe)
+		l.observed = true
+	}
 	return l
 }
 
@@ -251,7 +275,7 @@ func (l *Log) record(ctx context.Context, ex store.Execer, ev Event) error {
 	if err := ev.Validate(); err != nil {
 		return err
 	}
-	err := l.repo.InsertAudit(ctx, ex, store.AuditRow{
+	row := store.AuditRow{
 		ID:       l.newID(),
 		TS:       store.UnixMS(l.clock()),
 		Actor:    ev.Actor,
@@ -259,14 +283,14 @@ func (l *Log) record(ctx context.Context, ex store.Execer, ev Event) error {
 		Action:   ev.Action,
 		Target:   ev.Target,
 		Outcome:  ev.Outcome,
-	})
-	if err == nil {
-		if t, ok := ctx.Value(trackerKey{}).(*Tracker); ok {
-			t.n.Add(1)
-		}
-		l.emit(ctx, ev)
 	}
-	return err
+	if err := l.repo.InsertAudit(ctx, ex, row); err != nil {
+		return err
+	}
+	if !l.observed {
+		store.AfterCommit(ex, func() { l.observe(ctx, row) })
+	}
+	return nil
 }
 
 // List returns one page of events, newest first.

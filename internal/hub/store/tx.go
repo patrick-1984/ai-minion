@@ -19,6 +19,11 @@ func Tx(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) (err error) 
 	if err != nil {
 		return fmt.Errorf("store: begin transaction: %w", err)
 	}
+	beginHooks(tx)
+	committed := false
+	// Hooks registered with AfterCommit run only after a commit; a rollback
+	// (error, panic, Goexit) drops them.
+	defer func() { endHooks(tx, committed) }()
 	// Unconditional rollback: it does nothing after Commit, and it releases the
 	// write lock when fn ends through runtime.Goexit (t.Fatal, t.FailNow),
 	// where recover() below returns nil.
@@ -38,6 +43,7 @@ func Tx(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx) error) (err error) 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit transaction: %w", err)
 	}
+	committed = true
 	return nil
 }
 

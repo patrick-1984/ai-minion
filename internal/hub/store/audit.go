@@ -54,6 +54,9 @@ func (s *Store) InsertAudit(ctx context.Context, ex Execer, row AuditRow) error 
 	if err != nil {
 		return fmt.Errorf("store: insert audit event: %w", err)
 	}
+	if obs := s.auditObs.Load(); obs != nil {
+		AfterCommit(ex, func() { (*obs)(ctx, row) })
+	}
 	return nil
 }
 

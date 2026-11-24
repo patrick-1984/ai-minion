@@ -394,6 +394,22 @@ func TestCreateGrantLimitsOverREST(t *testing.T) {
 	if !created {
 		t.Error("no apikey.create audit row")
 	}
+	// The row the store wrote reaches the log sinks once, and the dispatcher
+	// adds no second row for the same creation.
+	exported := 0
+	for _, line := range strings.Split(ah.h.logs.String(), "\n") {
+		if strings.Contains(line, "msg=audit ") && strings.Contains(line, "action="+apikey.AuditActionCreate+" ") && strings.Contains(line, "target="+info.ID) {
+			exported++
+		}
+	}
+	if exported != 1 {
+		t.Errorf("apikey.create exported %d times, want 1", exported)
+	}
+	for _, e := range events {
+		if e.Action == ops.OpAPIKeyCreate && e.Outcome != "denied" {
+			t.Errorf("duplicate dispatcher row: %+v", e)
+		}
+	}
 	// Every refused grant left a denied row (AD-20); the six forbidden
 	// requests above each produced one, and the past expiry is a typing error.
 	if denied != 6 {

@@ -601,3 +601,51 @@ func TestListOpAddsNamesAndTrackerNotesRecords(t *testing.T) {
 		t.Errorf("names = %+v", e)
 	}
 }
+
+// A transactional event reaches the log sinks and the tracker only after its
+// transaction commits; a rollback leaves neither, so the dispatcher records
+// the failure instead (review finding: rolled-back settings change exported
+// as success).
+func TestRecordTxExportsOnlyAfterCommit(t *testing.T) {
+	s := openStore(t)
+	var buf strings.Builder
+	l := audit.New(s, audit.WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))))
+	ctx, tr := audit.WithTracker(context.Background())
+	boom := errors.New("boom")
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := l.RecordTx(ctx, tx, good("settings.set")); err != nil {
+			return err
+		}
+		if buf.Len() != 0 || tr.Recorded() {
+			t.Error("event exported before the commit")
+		}
+		return boom // the setting write fails: the whole change rolls back
+	})
+	if !errors.Is(err, boom) {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 || tr.Recorded() {
+		t.Fatalf("rolled-back event exported: tracker=%v log=%q", tr.Recorded(), buf.String())
+	}
+	if err := s.Tx(ctx, func(tx *sql.Tx) error { return l.RecordTx(ctx, tx, good("settings.set")) }); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(buf.String(), `"msg":"audit"`); n != 1 || !tr.Recorded() {
+		t.Errorf("committed event: exports = %d, tracker = %v", n, tr.Recorded())
+	}
+}
+
+// A row a store domain method writes directly (API key creation) is exported
+// once, after its commit, and noted by the tracker.
+func TestDirectStoreAuditRowsAreExportedOnce(t *testing.T) {
+	s := openStore(t)
+	var buf strings.Builder
+	_ = audit.New(s, audit.WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))))
+	ctx, tr := audit.WithTracker(context.Background())
+	if err := s.RecordAudit(ctx, store.AuditRow{ID: store.NewID(), TS: 1, Actor: "u1", Action: "apikey.create", Target: "k1", Outcome: "success"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(buf.String(), `"action":"apikey.create"`); n != 1 || !tr.Recorded() {
+		t.Errorf("exports = %d, tracker = %v: %s", n, tr.Recorded(), buf.String())
+	}
+}

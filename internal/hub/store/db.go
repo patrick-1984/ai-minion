@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 
 	_ "modernc.org/sqlite" // the SQLite driver; only the store packages import it (AD-1)
 )
@@ -30,6 +31,8 @@ type Store struct {
 	db  *sql.DB
 	box *SecretBox
 	dir string
+	// auditObs sees every committed audit row (SetAuditObserver).
+	auditObs atomic.Pointer[AuditObserver]
 }
 
 // Option changes how [Open] works. The defaults are what the Hub uses.

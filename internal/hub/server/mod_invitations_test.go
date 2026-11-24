@@ -124,6 +124,7 @@ func TestProductionStartupCreatesAnInvitationAndEnrollsAWorker(t *testing.T) {
 	data := hubstore.Dir(t)
 	rootPub := hubidtest.Provision(t, data)
 	h := startHub(t, &Config{DataDir: data}, DefaultRegistry)
+	logs := h.logs
 	hubFpr, err := identity.FingerprintOf(rootPub)
 	if err != nil {
 		t.Fatal(err)
@@ -216,6 +217,38 @@ func TestProductionStartupCreatesAnInvitationAndEnrollsAWorker(t *testing.T) {
 		ops.WorkerApproveArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, WorkerID: first.ID, Fingerprint: first.Fingerprint}, hdr)
 	if code != 200 {
 		t.Fatalf("worker_approve = %d %s", code, body)
+	}
+	// One approval leaves one audit row (the store's worker.approve, no
+	// second worker_approve row from the dispatcher) and one exported record.
+	// The refused attempt above left its own failed row; it is not counted.
+	for _, action := range []string{workers.AuditWorkerApprove, ops.OpWorkerApprove} {
+		code, body, _ = hc.do("POST", "/api/v1/ops/audit_list", ops.AuditListArgs{Action: action}, hdr)
+		var al ops.AuditListResult
+		if code != 200 || json.Unmarshal([]byte(body), &al) != nil {
+			t.Fatalf("audit_list = %d %s", code, body)
+		}
+		want := 0
+		if action == workers.AuditWorkerApprove {
+			want = 1
+		}
+		rows := 0
+		for _, e := range al.Events {
+			if e.Outcome != "failed" {
+				rows++
+			}
+		}
+		if rows != want {
+			t.Errorf("%s audit rows = %d, want %d: %s", action, rows, want, body)
+		}
+		exported := 0
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "msg=audit ") && strings.Contains(line, " action="+action+" ") && !strings.Contains(line, "outcome=failed") {
+				exported++
+			}
+		}
+		if exported != want {
+			t.Errorf("%s exported %d times, want %d", action, exported, want)
+		}
 	}
 	code, body, _ = hc.do("POST", "/api/v1/ops/workers_list", ops.WorkersListArgs{All: true}, hdr)
 	wl = ops.WorkersListResult{}
