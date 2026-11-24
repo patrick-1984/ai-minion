@@ -52,10 +52,13 @@ type workerRunDeps struct {
 	// process-list warning of a literal --invite-key, so that the enrollment
 	// hook does not print a second one.
 	inviteArgvWarned bool
+	// migrateLogin updates the shell login blocks of earlier releases
+	// (migrateLoginStartup); nil skips it.
+	migrateLogin func(ctx context.Context, stateDir string) ([]string, error)
 }
 
 func defaultWorkerRunDeps(stderr io.Writer) workerRunDeps {
-	return workerRunDeps{stderr: stderr, lookupEnv: os.LookupEnv, loadConfig: loadWorkerConfig}
+	return workerRunDeps{stderr: stderr, lookupEnv: os.LookupEnv, loadConfig: loadWorkerConfig, migrateLogin: migrateLoginStartup}
 }
 
 func newWorkerRunCmd(deps workerRunDeps) *cobra.Command {
@@ -138,6 +141,20 @@ func runWorkerRun(cmd *cobra.Command, deps workerRunDeps) error {
 	core, err := config.ResolveWorkerCore(res)
 	if err != nil {
 		return err
+	}
+	// An updated Worker fixes the shell login blocks earlier releases wrote.
+	// In the background: "worker start --at-login" holds the registration
+	// lock until this Worker answers on its socket.
+	if deps.migrateLogin != nil {
+		go func() {
+			changed, err := deps.migrateLogin(cmd.Context(), core.StateDir)
+			if err != nil && cmd.Context().Err() == nil {
+				logger.Warn("could not update the Worker login startup block", "error", err.Error())
+			}
+			if len(changed) > 0 {
+				logger.Info("updated the Worker login startup block", "files", strings.Join(changed, ", "))
+			}
+		}()
 	}
 	sinks, startSinks := newWorkerSinks(res, live, logger, core.StateDir)
 	// Stopped by the log sinks module, last in the stop sequence; this is

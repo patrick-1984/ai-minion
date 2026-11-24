@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Linux Worker started at shell login (installs without systemd): interactive shells no longer print `[1]`, `[2]` and `Done ( IFS= read -r minion_bin && exec "$minion_bin" worker start --at-login ... )` job lines. The login block now starts the Worker in the background of a subshell, which creates no job in bash, zsh or dash, and a shell variable makes the block run once per shell when `~/.profile` sources `~/.bashrc`. Existing installs are fixed without any action: the updated Worker rewrites the block that v0.20.5 and earlier wrote in `~/.profile`, `~/.bashrc`, `~/.bash_profile`, `~/.bash_login` and `~/.zprofile` when it starts (only the Worker that the login registration names, only that exact block; the rest of the file, its mode and a symbolic link stay as they are; the file is replaced atomically). Running `minion worker up` again replaces an old block instead of adding a second one.
+
 ## v0.20.5
 
 ### Changed

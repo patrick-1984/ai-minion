@@ -23,13 +23,34 @@ import (
 
 // The first line of the registration is the absolute executable, the second
 // its state directory. Read paths as data so spaces and shell syntax are inert.
-const loginBlock = `
-# Minion Worker login startup
+//
+// The start runs in the background of a subshell, "( cmd & )": the
+// interactive shell gets no job, so bash, zsh and dash print no "[1]" or
+// "Done" notice. The shell variable (not exported, so a tmux server or a new
+// terminal started from this shell still checks the Worker) makes a second
+// copy of the block in the same shell, such as .profile sourcing .bashrc, do
+// nothing. "worker start --at-login" itself is idempotent under the
+// registration lock.
+const loginBlock = "\n" + loginBlockBody + "\n"
+
+const loginBlockBody = `# Minion Worker login startup
+if [ -z "${minion_worker_login_started-}" ] && [ -r "$HOME/.config/minion/worker-login" ]; then
+    minion_worker_login_started=1
+    ( (IFS= read -r minion_bin && exec "$minion_bin" worker start --at-login </dev/null) < "$HOME/.config/minion/worker-login" >/dev/null 2>&1 & )
+fi
+# End Minion Worker login startup`
+
+// legacyLoginBlockBodies are the managed blocks earlier releases wrote (up to
+// v0.20.5). They are replaced by loginBlockBody, byte for byte, and only
+// them: a block the user edited is left alone.
+var legacyLoginBlockBodies = []string{`# Minion Worker login startup
 if [ -r "$HOME/.config/minion/worker-login" ]; then
     (IFS= read -r minion_bin && exec "$minion_bin" worker start --at-login </dev/null) < "$HOME/.config/minion/worker-login" >/dev/null 2>&1 &
 fi
-# End Minion Worker login startup
-`
+# End Minion Worker login startup`}
+
+// loginStartupFiles are the shell startup files the login block can be in.
+var loginStartupFiles = []string{".profile", ".bashrc", ".bash_profile", ".bash_login", ".zprofile"}
 
 func init() {
 	Register(func(root *cobra.Command) {
@@ -95,6 +116,11 @@ func installLoginWorker(ctx context.Context, binary, state string, out io.Writer
 	if _, err := os.Stat(filepath.Join(home, ".zshrc")); filepath.Base(os.Getenv("SHELL")) == "zsh" || err == nil {
 		profiles = append(profiles, ".zprofile")
 	}
+	// Re-running the installer replaces the blocks of earlier releases
+	// instead of adding a second one.
+	if _, err := migrateLoginBlocksLocked(home); err != nil {
+		return fmt.Errorf("update the Worker login startup: %w", err)
+	}
 	for _, name := range profiles {
 		if err := appendLoginBlock(filepath.Join(home, name)); err != nil {
 			return fmt.Errorf("install Worker login startup in %s: %w", filepath.Join(home, name), err)
@@ -150,11 +176,175 @@ func appendLoginBlock(path string) error {
 	if err != nil {
 		return err
 	}
-	if strings.Contains(string(b), loginBlock) {
+	if strings.Contains(string(b), loginBlockBody) {
 		return nil
 	}
 	_, err = io.WriteString(f, loginBlock)
 	return err
+}
+
+// migrateLoginStartup replaces the login blocks of earlier releases with the
+// current one in the startup files of this user. The Worker calls it at every
+// start, so an update fixes existing installs without any user action. It
+// does nothing unless the login registration names this Worker's state
+// directory: without a login install, after the user removed the
+// registration to turn shell startup off, and for any other Worker profile of
+// the account (a systemd or foreground Worker) the files stay untouched. It
+// returns the files it changed.
+func migrateLoginStartup(ctx context.Context, stateDir string) ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	reg := loginRegistration(home)
+	if !registeredLoginState(reg, stateDir) {
+		return nil, nil
+	}
+	unlock, err := lockConfigFileContext(ctx, reg+".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if !registeredLoginState(reg, stateDir) {
+		return nil, nil
+	}
+	return migrateLoginBlocksLocked(home)
+}
+
+// registeredLoginState reports whether the login registration reg names
+// stateDir as the state directory it starts.
+func registeredLoginState(reg, stateDir string) bool {
+	if stateDir == "" || !filepath.IsAbs(stateDir) {
+		return false
+	}
+	b, err := os.ReadFile(reg)
+	if err != nil || len(b) > 2*syscall.PathMax+2 {
+		return false
+	}
+	_, state, ok := strings.Cut(strings.TrimSuffix(string(b), "\n"), "\n")
+	return ok && filepath.IsAbs(state) && filepath.Clean(state) == filepath.Clean(stateDir)
+}
+
+// migrateLoginBlocksLocked rewrites every startup file in home that holds a
+// legacy block; the caller holds the registration lock.
+func migrateLoginBlocksLocked(home string) ([]string, error) {
+	var changed []string
+	var errs []error
+	for _, name := range loginStartupFiles {
+		path := filepath.Join(home, name)
+		ok, err := migrateLoginFile(path)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+		} else if ok {
+			changed = append(changed, path)
+		}
+	}
+	return changed, errors.Join(errs...)
+}
+
+// replaceLegacyLoginBlocks returns text with the first legacy block replaced
+// by the current one and any further copy (legacy or current) removed with
+// the line break before it; changed is false when text has no legacy block.
+func replaceLegacyLoginBlocks(text string) (string, bool) {
+	found := false
+	for _, old := range legacyLoginBlockBodies {
+		if strings.Contains(text, old) {
+			found = true
+			text = strings.ReplaceAll(text, old, loginBlockBody)
+		}
+	}
+	if !found {
+		return text, false
+	}
+	first := strings.Index(text, loginBlockBody) + len(loginBlockBody)
+	rest := text[first:]
+	for {
+		i := strings.Index(rest, loginBlockBody)
+		if i < 0 {
+			break
+		}
+		start := i
+		if start > 0 && rest[start-1] == '\n' {
+			start--
+		}
+		end := i + len(loginBlockBody)
+		rest = rest[:start] + rest[end:]
+	}
+	return text[:first] + rest, true
+}
+
+// migrateLoginFile rewrites one startup file when it holds a legacy block.
+// Only the managed block changes; the rest of the file, its mode and (for a
+// symbolic link, as dotfile managers create) the link stay as they are. The
+// new content replaces the file atomically, and only if the file did not
+// change while it was prepared.
+func migrateLoginFile(path string) (bool, error) {
+	target := path
+	li, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if li.Mode()&os.ModeSymlink != 0 {
+		if os.Geteuid() == 0 {
+			return false, nil // root never follows links in its startup files
+		}
+		if target, err = filepath.EvalSymlinks(path); err != nil {
+			return false, nil // a dangling link holds no block
+		}
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return false, err
+	}
+	st, _ := info.Sys().(*syscall.Stat_t)
+	if !info.Mode().IsRegular() || st == nil || int(st.Uid) != os.Geteuid() || info.Size() > 4<<20 {
+		return false, nil // not a startup file this account owns: leave it
+	}
+	b, err := os.ReadFile(target)
+	if err != nil {
+		return false, err
+	}
+	text, changed := replaceLegacyLoginBlocks(string(b))
+	if !changed {
+		return false, nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".minion-*")
+	if err != nil {
+		return false, err
+	}
+	tmpName := tmp.Name()
+	fail := func(err error) (bool, error) {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return false, err
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		return fail(err)
+	}
+	if _, err := tmp.WriteString(text); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return false, err
+	}
+	if again, err := os.ReadFile(target); err != nil || string(again) != string(b) {
+		_ = os.Remove(tmpName)
+		if err == nil {
+			err = errors.New("the file changed while its login block was updated; it is updated at the next start")
+		}
+		return false, err
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		_ = os.Remove(tmpName)
+		return false, err
+	}
+	return true, nil
 }
 
 func startLoginWorker(ctx context.Context) (bool, error) {
