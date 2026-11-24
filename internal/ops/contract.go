@@ -303,6 +303,15 @@ const (
 	BusyNoteTypedNotSubmitted = "session busy: the text was typed into the input line but not submitted; press Enter in the session (or send again with force=true and a new request_id) to submit"
 	// BusyNoteTyped is the note of text without submit into a busy agent.
 	BusyNoteTyped = "session busy: the text was typed into the input line and not submitted, as requested"
+	// BusyNoteDialogOpened is the note of text sent into a busy Claude Code
+	// whose Enter was held back: a permission dialog opened while the text
+	// was pasted, and the Enter would have answered it.
+	BusyNoteDialogOpened = "typed into the input line, not submitted: a permission dialog opened in the session — answer it there first, then press Enter"
+	// BusyNoteUnchecked is the note of text sent into a busy Claude Code whose
+	// Enter was held back because the session could not be checked for a
+	// dialog after the paste (the screen could not be read completely, or the
+	// pane changed).
+	BusyNoteUnchecked = "typed into the input line, not submitted: the session could not be checked for a permission dialog before Enter — look at it there, then press Enter"
 )
 
 // WarnSessionBusy is the warning of text sent into an agent busy with a turn.

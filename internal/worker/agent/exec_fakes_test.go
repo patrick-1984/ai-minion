@@ -53,6 +53,8 @@ type fakeHost struct {
 
 	// onSnapshot runs at the start of Snapshot, outside the lock.
 	onSnapshot func()
+	// snapshotErr is returned by Snapshot (with the stored screen).
+	snapshotErr error
 	// onPaste runs inside PasteText, before it returns; tests block here.
 	onPaste func()
 	// resolveHook may replace the answer of ResolvePane.
@@ -174,7 +176,7 @@ func (h *fakeHost) Snapshot(_ context.Context, p term.PaneRef) (ops.Screen, erro
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.snapshots++
-	return h.screens[p.ID], nil
+	return h.screens[p.ID], h.snapshotErr
 }
 
 func (h *fakeHost) Capture(_ context.Context, p term.PaneRef, lines int) (ops.Screen, error) {

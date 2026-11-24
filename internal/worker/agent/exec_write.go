@@ -405,7 +405,23 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 				}
 				if busyQueues(p.class.Kind, args.Text) {
 					note = ops.BusyNoteClaudeQueued
-					return e.pasteAndSubmit(ctx, p, args.Text, args.Submit)
+					if !args.Submit {
+						return e.pasteAndSubmit(ctx, p, args.Text, false)
+					}
+					outcome, reason, err := e.pasteAndSubmit(ctx, p, args.Text, false)
+					if err != nil || outcome != ops.OutcomeDelivered {
+						return outcome, reason, err
+					}
+					// Claude Code may have opened a permission dialog
+					// during the paste: an Enter would answer it.
+					if code, ok := e.clearToSubmit(ctx, p, args.Target); !ok {
+						note = ops.BusyNoteUnchecked
+						if code == proto.CodeDialogOpen {
+							note = ops.BusyNoteDialogOpened
+						}
+						return ops.OutcomePartial, code, nil
+					}
+					return e.pressEnter(ctx, p, "text")
 				}
 				// The submit key could act on the running turn: type only.
 				outcome, reason, err := e.pasteAndSubmit(ctx, p, args.Text, false)
@@ -425,6 +441,35 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 		}
 		return res, err
 	})
+}
+
+// clearToSubmit re-checks a busy Claude Code pane after the paste and before
+// its Enter (A103): the pane must still be the one resolved, its whole screen
+// must be readable, and the existing classification of that fresh screen must
+// show no dialog. A dialog that opened during the paste would take the Enter
+// as its answer (a Bash permission prompt would approve the command). It
+// returns the reason when the Enter must not be pressed.
+func (e *Executor) clearToSubmit(ctx context.Context, p *pane, t ops.Target) (proto.Code, bool) {
+	ref, err := e.host.ResolvePane(ctx, t)
+	if errors.Is(err, term.ErrNotFound) {
+		return proto.CodeTargetNotFound, false
+	}
+	if err != nil || !ref.Same(p.ref) {
+		return proto.CodePaneChanged, false
+	}
+	scr, err := e.host.Snapshot(ctx, p.ref)
+	if err != nil {
+		e.log.Warn("could not read the busy pane before Enter", "err", err)
+		return proto.CodeViewIncomplete, false
+	}
+	r := e.classify.Classify(ctx, agentdetect.Input{Command: ref.Command, PID: ref.PID, Screen: scr})
+	if r.State == ops.PaneStateDialog {
+		return proto.CodeDialogOpen, false
+	}
+	if r.Kind != p.class.Kind {
+		return proto.CodePaneChanged, false
+	}
+	return "", true
 }
 
 // paneBusy reports whether the pane is an agent busy with a turn: the
@@ -494,6 +539,13 @@ func (e *Executor) pasteSubmit(ctx context.Context, p *pane, what string, submit
 	if !submit {
 		return ops.OutcomeDelivered, "", nil
 	}
+	return e.pressEnter(ctx, p, what)
+}
+
+// pressEnter is the Enter of [Executor.pasteSubmit] after a paste that went
+// out: checked against the pane's identity, and never failed_not_sent, because
+// the text is in the pane already.
+func (e *Executor) pressEnter(ctx context.Context, p *pane, what string) (ops.Outcome, proto.Code, error) {
 	sent, err := e.host.SendKeys(ctx, p.ref, []string{"Enter"}, p.ref)
 	if err == nil && sent >= 1 {
 		return ops.OutcomeDelivered, "", nil

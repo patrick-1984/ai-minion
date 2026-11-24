@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/testutil/tmuxtest"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
+	"github.com/patrick-1984/ai-minion/internal/worker/term"
 	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
 )
 
@@ -22,10 +25,21 @@ import (
 // the real classifier and a real store.
 func realExecutor(t *testing.T) (*Executor, *tmuxtest.Server) {
 	t.Helper()
+	return realExecutorWith(t, nil)
+}
+
+// realExecutorWith is realExecutor whose host is wrapped by wrap (when set).
+func realExecutorWith(t *testing.T, wrap func(*tmuxtest.Server, term.SessionHost) term.SessionHost) (*Executor, *tmuxtest.Server) {
+	t.Helper()
 	srv := tmuxtest.New(t)
-	host, err := tmux.New(srv.Socket())
+	var host term.SessionHost
+	th, err := tmux.New(srv.Socket())
 	if err != nil {
 		t.Fatal(err)
+	}
+	host = th
+	if wrap != nil {
+		host = wrap(srv, th)
 	}
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -314,5 +328,89 @@ func TestTmuxSendTextToBusyCodexIsTypedNotSubmitted(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if strings.Contains(srv.Capture(target), "got:typed-by-minion") {
 		t.Fatalf("the submit key reached a busy Codex:\n%s", srv.Capture(target))
+	}
+}
+
+// dialogAfterPaste is a real tmux host that, after each paste, makes the fake
+// agent draw its permission dialog (SIGUSR1) and waits until the dialog is on
+// the screen: Claude Code opening a Bash permission prompt during the paste.
+type dialogAfterPaste struct {
+	term.SessionHost
+	t       *testing.T
+	srv     *tmuxtest.Server
+	target  string
+	pidFile string
+}
+
+func (h *dialogAfterPaste) PasteText(ctx context.Context, p term.PaneRef, text string, expect term.PaneRef) error {
+	if err := h.SessionHost.PasteText(ctx, p, text, expect); err != nil {
+		return err
+	}
+	b, err := os.ReadFile(h.pidFile)
+	if err != nil {
+		h.t.Error(err)
+		return nil
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		h.t.Error(err)
+		return nil
+	}
+	if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
+		h.t.Error(err)
+		return nil
+	}
+	h.srv.WaitFor(h.target, "Do you want to proceed?", 10*time.Second)
+	return nil
+}
+
+// A103 critical: a busy Claude Code that opens a Bash permission dialog while
+// the text is pasted gets no Enter (it would approve the command): partial,
+// reason dialog_open, the note; nothing reaches the program.
+func TestTmuxBusyClaudeDialogAfterPasteGetsNoEnter(t *testing.T) {
+	dir := t.TempDir()
+	screen := filepath.Join(dir, "screen.txt")
+	if err := os.WriteFile(screen, []byte("● Reading the files.\n✻ Thinking… (12s · ↓ 1.2k tokens · esc to interrupt)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dialog, err := os.ReadFile(filepath.Join("..", "agentdetect", "testdata", "claude_dialog.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialogFile := filepath.Join(dir, "dialog.txt")
+	if err := os.WriteFile(dialogFile, dialog, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(dir, "pid")
+	claude := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\n" +
+		"echo $$ > \"$3\"\n" +
+		"trap 'printf \"\\033[H\\033[2J\"; cat \"$2\"' USR1\n" +
+		"cat \"$1\"\n" +
+		"while :; do\n" +
+		"  if read -r line; then printf 'got:%s\\n' \"$line\"; else sleep 0.1; fi\n" + // a trapped signal ends read
+		"done\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var wrapped *dialogAfterPaste
+	ex, srv := realExecutorWith(t, func(srv *tmuxtest.Server, h term.SessionHost) term.SessionHost {
+		wrapped = &dialogAfterPaste{SessionHost: h, t: t, srv: srv, pidFile: pidFile}
+		return wrapped
+	})
+	target := srv.NewSession("dialogclaude", claude, screen, dialogFile, pidFile)
+	wrapped.target = target
+	srv.WaitFor(target, "esc to interrupt", 10*time.Second)
+	waitBusy(t, ex, "dialogclaude")
+
+	res := realWrite(t, ex, ops.OpSendText, ops.SendTextArgs{
+		WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: ops.Target{SessionName: "dialogclaude"}, Text: "held-by-minion", Submit: true,
+	})
+	if res.Outcome != ops.OutcomePartial || res.Reason != "dialog_open" || res.Note != ops.BusyNoteDialogOpened || !hasWarning(res, "session_busy") {
+		t.Fatalf("busy send = %+v", res)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if out := srv.Capture(target); strings.Contains(out, "got:") {
+		t.Fatalf("the Enter reached the dialog:\n%s", out)
 	}
 }
