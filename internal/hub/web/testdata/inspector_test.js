@@ -884,8 +884,10 @@ const principalReads = (p) => p.guards.filter((g) => g.url === '/inspector/princ
 const contextReads = (p) => p.guards.filter((g) => /\/context$/.test(g.url));
 const alice = (p) => p.guards.length;
 
-// Review finding 4 of round 1, now on the principal: a lost sign-in clears EVERY kept frame at once.
-scenario('a lost sign-in found by the page clears EVERY kept frame at once and the links become plain links', async () => {
+// A99 (round 3): a sign-in that is not there any more (an expired or absent cookie: a 401 without the idle marker) is not
+// a verified switch of the principal. Nothing is destroyed without the person: every kept frame and draft stays, hidden,
+// rows open nothing, the links are plain links, and the person's next click asks once (a quiet read) and reloads the page.
+scenario('a lost sign-in found by the page pauses: every kept frame and draft stays hidden, and the next click reloads', async () => {
   const p = listPage();
   const A = open(p, 'w1', 'minion-1', 'pi-1', { dirty: true }).f;
   const B = open(p, 'w1', 'minion-2', 'pi-1').f;
@@ -897,12 +899,24 @@ scenario('a lost sign-in found by the page clears EVERY kept frame at once and t
   eq([g.url, g.opt.credentials, g.opt.cache, g.opt.redirect, g.opt.method, g.opt.body], ['/inspector/principal', 'same-origin', 'no-store', 'manual', undefined, undefined], 'a plain credentialed GET, no body, no redirect followed');
   respond(g, 401);
   await flush();
-  if (A.parentNode || B.parentNode || p.framesHost.children.length) fail('a kept frame survived the loss of the sign-in');
-  if (!p.host.hidden || p.host.hasAttribute('data-frame-dirty')) fail('the pane stayed open or the page still claims to hold input');
-  if (p.alertBox.hidden || !/signed out|ended/.test(p.alertBox.textContent) || !/cleared/.test(p.alertBox.textContent)) fail('the person is not told: ' + p.alertBox.textContent);
+  if (!A.parentNode || !B.parentNode || p.framesHost.children.length !== 2) fail('a kept frame was destroyed without the person');
+  if (!p.host.hasAttribute('data-frame-dirty')) fail('the draft is no longer reported');
+  if (!p.framesHost.children.every((f) => f.hidden)) fail('a kept frame is shown without a sign-in');
+  if (p.alertBox.hidden || !/Session paused/.test(p.alertBox.textContent) || /cleared/.test(p.alertBox.textContent)) fail('the person is not told: ' + p.alertBox.textContent);
   const e = click(p.rows['w1/minion-2'].name);
   p.fireDoc('click', e);
-  if (e.defaultPrevented || p.framesHost.children.length) fail('after the sign-in was lost the link must open the full page (and its sign-in), not another frame');
+  if (e.defaultPrevented || p.framesHost.children.length !== 2) fail('while paused the link must open the full page (and its sign-in), not another frame');
+  if (p.win.location.reloads) fail('a link click reloaded the page');
+  // A click elsewhere asks once, quietly, and reloads: that page load signs in again.
+  const c = click(p.body);
+  p.fireDoc('click', c);
+  const again = principalReads(p)[1];
+  if (!again || again.opt.headers['X-Minion-Background'] !== '1') fail('the click made no quiet read');
+  if (!c.defaultPrevented) fail('the click acted on the paused page');
+  respond(again, 401);
+  await flush();
+  eq(p.win.location.reloads, 1, 'the page reloads');
+  if (!A.parentNode || !B.parentNode) fail('a kept frame was destroyed before the reload');
 });
 
 // Review finding 2: Alice parks a frame with a draft, ANOTHER tab signs in as Bob (same cookie), and Alice's old page asks.
@@ -943,7 +957,7 @@ scenario('another sign-in in another tab (another user, a new login, another act
   if (C.parentNode || D.parentNode || q.alertBox.hidden) fail('a frame rendered for another identity was kept');
 });
 
-scenario('a redirect to sign-in is a lost sign-in; a refusal, a server error or silence proves nothing about it', async () => {
+scenario('a redirect to sign-in pauses like a lost sign-in; a refusal, a server error or silence proves nothing about it', async () => {
   const mk = async (resp) => {
     const p = listPage();
     open(p, 'w1', 'minion-1'); open(p, 'w1', 'minion-2');
@@ -954,7 +968,7 @@ scenario('a redirect to sign-in is a lost sign-in; a refusal, a server error or 
     return p;
   };
   let p = await mk({ status: 0, type: 'opaqueredirect' });
-  if (p.framesHost.children.length) fail('an opaque redirect (to sign-in) did not clear the frames');
+  if (p.framesHost.children.length !== 2 || !p.framesHost.children.every((f) => f.hidden) || !/Session paused/.test(p.alertBox.textContent)) fail('an opaque redirect (to sign-in) did not pause the page with the frames kept');
   for (const r of [{ status: 403 }, { status: 404 }, { status: 500 }, { status: 502 }]) {
     p = await mk(r);
     if (p.framesHost.children.length !== 2 || /signed out|Another sign-in/.test(p.alertBox.textContent)) fail('status ' + r.status + ' was taken for a lost sign-in');
@@ -989,7 +1003,7 @@ scenario('an ordinary refusal of one session removes that frame only; the princi
   await flush();
   if (C.parentNode || !D.parentNode) fail('a refused clean kept session must go alone');
   if (!/not available to you any more/.test(q.alertBox.textContent)) fail('not told: ' + q.alertBox.textContent);
-  // Same failure with the sign-in gone: everything goes.
+  // Same failure with the sign-in gone: nothing is destroyed without the person (A99), everything is hidden and paused.
   const r = listPage();
   const E = open(r, 'w1', 'minion-1', 'pi-1', { dirty: true }).f;
   const F = open(r, 'w1', 'minion-2').f;
@@ -998,7 +1012,7 @@ scenario('an ordinary refusal of one session removes that frame only; the princi
   await flush();
   respond(principalReads(r)[0], 401);
   await flush();
-  if (E.parentNode || F.parentNode) fail('a lost sign-in left a kept frame behind');
+  if (!E.parentNode || !E.hidden || !/Session paused/.test(r.alertBox.textContent)) fail('a lost sign-in destroyed or showed the kept draft: ' + r.alertBox.textContent);
 });
 
 // Supervisor 8, N2: a 404 of ONE session is what Bob's cookie gets for Alice's session. It is also what an ordinary removal
@@ -1577,7 +1591,11 @@ scenario('a quiet row click acts once after the double-click time; a drag select
   x.guards[0].res({ status: 401, ok: false, type: 'basic' });
   await flush();
   x.tick(DBL + 1);
-  if (x.framesHost.children.length) fail('a waiting row opened after the sign-in was lost');
+  if (!x.framesHost.children.every((f) => f.hidden) || !/Session paused/.test(x.alertBox.textContent)) fail('a frame is shown after the sign-in was lost');
+  const n = x.framesHost.children.length;
+  x.fireDoc('click', click(x.addRow('w1', 'minion-4', 'pi-1').task));
+  x.tick(DBL + 1);
+  if (x.framesHost.children.length !== n) fail('a row opened a frame after the sign-in was lost');
 });
 
 scenario('a slow valid double click (420 and 500 ms between the clicks) selects a word and opens nothing; native anchors and touch stay immediate', () => {
@@ -1709,7 +1727,7 @@ scenario('after the sign-in was lost a row does nothing and the links are plain 
   await flush();
   p.fireDoc('click', click(row.task));
   p.tick(DBL);
-  if (p.framesHost.children.length || !p.host.hidden) fail('a row opened a frame after the sign-in was lost');
+  if (p.framesHost.children.length !== 1 || frameOf(p, 'minion-1')) fail('a row opened a frame after the sign-in was lost');
   const e = click(row.name);
   p.fireDoc('click', e);
   if (e.defaultPrevented) fail('the link must be a plain link after the sign-in was lost');
@@ -2001,35 +2019,53 @@ scenario('frame: a page that is not framed does nothing', () => {
 });
 
 // A99: the quiet 401 of a background check when the session's idle lifetime ran out is not a sign-out. Nothing kept is
-// cleared (drafts stay), nothing kept is shown, a short note says how to continue, and the person's next key or click
-// makes ONE foreground read (no background marker), which continues the session; then the frames come back.
-scenario('an idle session pauses the inspector: drafts are kept and the next action continues it', async () => {
-  const p = listPage();
-  const A = open(p, 'w1', 'minion-1', 'pi-1', { dirty: true }).f;
-  toParent(p, A, msg('state', 'w1', 'minion-1', state({ dirty: true })));
-  const B = open(p, 'w1', 'minion-2').f;
-  p.tick(30000);
-  const g = principalReads(p)[0];
-  eq(g.opt.headers['X-Minion-Background'], '1', 'the periodic check is a background read');
-  g.res({ status: 401, ok: false, type: 'basic', headers: { get: (h) => (h === 'X-Minion-Session' ? 'idle' : null) } });
-  await flush();
-  if (!A.parentNode || !B.parentNode) fail('the idle 401 cleared a kept frame');
-  if (!p.host.hasAttribute('data-frame-dirty')) fail('the draft is no longer reported');
-  if (!p.framesHost.children.every((f) => f.hidden)) fail('a kept frame is shown while the session is paused');
-  if (p.alertBox.hidden || !/Session paused/.test(p.alertBox.textContent) || /signed out|cleared/.test(p.alertBox.textContent)) fail('not told it is paused: ' + p.alertBox.textContent);
-  if (p.win.location.reloads) fail('the page reloaded');
-  p.fireDoc('keydown', keydown('a'));
-  const fg = principalReads(p)[1];
-  if (!fg) fail('the action made no read');
-  if (fg.opt.headers['X-Minion-Background']) fail('the read after the action is marked background');
-  p.fireDoc('keydown', keydown('b'));
-  eq(principalReads(p).length, 2, 'one read per pause');
-  respond(fg, 200);
-  await flush();
-  const again = principalReads(p)[2];
-  if (again) { respond(again, 200); await flush(); }
-  if (!A.parentNode || !B.parentNode) fail('a kept frame went after the session continued');
-  if (/Session paused/.test(p.alertBox.textContent) && !p.alertBox.hidden) fail('the note stayed: ' + p.alertBox.textContent);
+// cleared (drafts stay), nothing kept is shown, a short note says how to continue. The person's next click makes ONE
+// quiet read: the same principal again (another tab signed in meanwhile) shows the frames again without a reload; no
+// sign-in reloads the page; another principal clears them.
+scenario('an idle session pauses the inspector: drafts are kept and the next click continues it', async () => {
+  const idle401 = { status: 401, ok: false, type: 'basic', headers: { get: (h) => (h === 'X-Minion-Session' ? 'idle' : null) } };
+  for (const outcome of ['same', 'none', 'other']) {
+    const p = listPage();
+    const A = open(p, 'w1', 'minion-1', 'pi-1', { dirty: true }).f;
+    toParent(p, A, msg('state', 'w1', 'minion-1', state({ dirty: true })));
+    const B = open(p, 'w1', 'minion-2').f;
+    p.tick(30000);
+    const g = principalReads(p)[0];
+    eq(g.opt.headers['X-Minion-Background'], '1', 'the periodic check is a background read');
+    g.res(idle401);
+    await flush();
+    if (!A.parentNode || !B.parentNode) fail('the idle 401 cleared a kept frame');
+    if (!p.host.hasAttribute('data-frame-dirty')) fail('the draft is no longer reported');
+    if (!p.framesHost.children.every((f) => f.hidden)) fail('a kept frame is shown while the session is paused');
+    if (p.alertBox.hidden || !/Session paused/.test(p.alertBox.textContent) || /signed out|cleared/.test(p.alertBox.textContent)) fail('not told it is paused: ' + p.alertBox.textContent);
+    p.fireDoc('keydown', keydown('a'));
+    eq(principalReads(p).length, 1, 'a key does not continue');
+    if (p.win.location.reloads) fail('the page reloaded on its own');
+    p.fireDoc('click', click(p.body));
+    const r = principalReads(p)[1];
+    if (!r || r.opt.headers['X-Minion-Background'] !== '1') fail('the read after the click is not one quiet read');
+    p.fireDoc('click', click(p.body));
+    eq(principalReads(p).length, 2, 'one read per pause');
+    if (outcome === 'same') {
+      respond(r, 200);
+      await flush();
+      const more = p.guards.slice(2);
+      for (const m of more) { respond(m, 200); }
+      await flush();
+      if (!A.parentNode || !B.parentNode) fail('a kept frame went after the session continued');
+      if (/Session paused/.test(p.alertBox.textContent) && !p.alertBox.hidden) fail('the note stayed: ' + p.alertBox.textContent);
+      eq(p.win.location.reloads, 0, 'no reload when the same principal is back');
+    } else if (outcome === 'none') {
+      r.res(idle401);
+      await flush();
+      eq(p.win.location.reloads, 1, 'no sign-in: the page reloads (and signs in again)');
+      if (!A.parentNode) fail('the draft was destroyed before the reload');
+    } else {
+      respond(r, 200, 'basic', 'ctx-bob-0002');
+      await flush();
+      if (A.parentNode || B.parentNode) fail('another principal kept the frames');
+    }
+  }
 });
 
 // ---- run ------------------------------------------------------------------------------------------

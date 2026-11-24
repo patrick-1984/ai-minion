@@ -124,10 +124,12 @@ func NewConfig(hs config.HubServer, logger *slog.Logger) (*Config, error) {
 		cfg.Listen = config.DefaultListen
 	}
 	raw := cfg.Listen
-	cfg.Listen = config.ListenAddr(raw) // a plain port means every interface
-	if _, port, err := net.SplitHostPort(cfg.Listen); err != nil {
+	// A plain port means every interface; a host:port value is checked as an
+	// older Hub checked it, so every value it started with still starts.
+	cfg.Listen = config.ListenAddr(raw)
+	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		return nil, fmt.Errorf("MINION_LISTEN %q is not a valid listen setting; use a port such as 8443, or host:port such as 127.0.0.1:8443", raw)
-	} else if _, ok := config.ParsePort(port); !ok {
+	} else if _, ok := config.HostPortPort(cfg.Listen); !ok {
 		return nil, fmt.Errorf("MINION_LISTEN %q has an invalid port", raw)
 	}
 	var err error

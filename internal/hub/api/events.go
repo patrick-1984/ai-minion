@@ -413,7 +413,7 @@ func (s *eventStream) reauthLoop(ctx context.Context, cancel context.CancelCause
 // or a selected Worker that the principal can no longer read is an error.
 func (s *eventStream) recheck(ctx context.Context) error {
 	// The re-check is not the person acting: it never extends the idle
-	// lifetime of a session nor renews it.
+	// lifetime of a session.
 	id, err := s.h.cfg.Auth.Authenticate(s.r.WithContext(session.AsBackground(ctx)))
 	if err != nil {
 		return err

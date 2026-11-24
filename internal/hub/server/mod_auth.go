@@ -15,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
+	"github.com/patrick-1984/ai-minion/internal/hub/web"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/ratelimit"
 )
@@ -142,7 +143,10 @@ func initAuth(ctx context.Context, env *Env) error {
 		}
 		return ttl.Value, nil
 	}))
-	mw := &session.Middleware{Manager: mgr, Log: cfg.logger()}
+	// A request counts as the person's activity only with affirmative
+	// evidence: Fetch Metadata, or the Hub's own origin in Origin/Referer; a
+	// page's own polls never do (A99).
+	mw := &session.Middleware{Manager: mgr, Log: cfg.logger(), Origin: nw.BaseURL, Polls: web.PollRoute}
 	for _, p := range []func() error{
 		func() error { return Provide(env, limiter) },
 		func() error { return Provide(env, mgr) },

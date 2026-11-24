@@ -708,7 +708,7 @@ func TestWithdrawnOneShotIsNotRun(t *testing.T) {
 // from app.config as a JSON number, and an older padded form such as
 // ":0009443" binds 9443: the updater probes the port the Hub listens on.
 func TestReadinessProbesTheConfiguredListenPort(t *testing.T) {
-	for _, v := range []any{float64(9443), "9443", ":0009443", "0.0.0.0:9443"} {
+	for _, v := range []any{float64(9443), "9443", ":0009443", "0.0.0.0:9443", "127.0.0.1:+9443", "0.0.0.0:00000000000000000009443"} {
 		w := newWorld()
 		w.readyPort = "9443"
 		svc, _ := w.compose.service("minion-hub")

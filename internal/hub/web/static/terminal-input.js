@@ -249,9 +249,10 @@
 
   // ---- connection state (what the page shows; it never writes) --------------
 
-  var TEXT = { connecting: 'Connecting', live: 'Live', paused: 'Paused', reconnecting: 'Reconnecting', offline: 'Offline', suspended: 'Suspended', resuming: 'Refreshing', idle: 'Session paused' };
+  var TEXT = { connecting: 'Connecting', live: 'Live', paused: 'Paused', reconnecting: 'Reconnecting', offline: 'Offline', suspended: 'Suspended', resuming: 'Refreshing', idle: 'Session paused', stale: 'Out of date' };
   var NOTE = {
-    idle: 'Session paused \u2014 click or refresh to continue. Sending is unavailable until then. Text you typed is kept.',
+    idle: 'Session paused \u2014 click or refresh to continue. Sending is unavailable until then. Text you typed is kept until you continue.',
+    stale: 'The Worker or this session changed while you were away. Click to reload the page. Sending is unavailable until then.',
     suspended: 'Updates are suspended while this view is hidden. They resume with a fresh read when you return. Text you typed is kept.',
     resuming: 'Refreshing the screen after the view was hidden. Sending is unavailable until the screen is current. Text you typed is kept.',
     paused: 'Paused. The screen is frozen at the last capture and sending is unavailable. The session itself keeps running. Resume to see the current screen.',
@@ -263,12 +264,13 @@
     paused: 'Paused. Sending is unavailable until you resume.',
     reconnecting: 'Reconnecting. Sending is unavailable.',
     offline: 'Live updates stopped. Sending is unavailable.',
-    idle: 'Session paused. Click or press a key to continue.'
+    idle: 'Session paused. Click to continue.',
+    stale: 'The page is out of date. Click to reload it.'
   };
   var announced = '';
 
   function shown() { return paused ? 'paused' : suspended ? 'suspended' : resuming ? 'resuming' : stream; }
-  function writesAllowed() { return !paused && !suspended && !resuming && stream !== 'reconnecting' && stream !== 'offline' && stream !== 'idle'; }
+  function writesAllowed() { return !paused && !suspended && !resuming && stream !== 'reconnecting' && stream !== 'offline' && stream !== 'idle' && stream !== 'stale'; }
 
   function ageText() {
     var secs = Math.max(0, Math.round((Date.now() - lastUpdate) / 1000));
@@ -1023,7 +1025,9 @@
     var d = ev.detail || {};
     var path = d.pathInfo && d.pathInfo.requestPath;
     var status = d.xhr && d.xhr.status;
-    if (typeof path === 'string' && path.indexOf(screenURL) === 0 && (status === 503 || status === 404 || status === 403)) { reload(status !== 503); }
+    if (typeof path !== 'string' || path.indexOf(screenURL) !== 0) { return; }
+    if (status === 401) { sessionIdle(); return; }
+    if (status === 503 || status === 404 || status === 403) { pageReload(status !== 503); }
   });
 
   function parse(ev) {
@@ -1078,7 +1082,7 @@
     // The Worker went on- or offline, or the session is gone: the page
     // (controls, notice) is built from scratch.
     ['worker_online', 'worker_offline', 'session_removed'].forEach(function (name) {
-      es.addEventListener(name, function (ev) { if (mine(ev)) { reload(); } });
+      es.addEventListener(name, function (ev) { if (mine(ev)) { pageReload(false); } });
     });
     es.addEventListener('worker_resynced', function (ev) { if (mine(ev)) { schedule(); signal('events'); } });
     // A message or a reply of this session's pipe conversation was committed (metadata only: the event names the Worker and the
@@ -1093,40 +1097,86 @@
     // reconnect) covers the events that were missed. On a page rendered while the
     // Worker was offline this also notices that it is back.
     es.addEventListener('snapshot', function () { setStream('live'); schedule(); signal('events'); });
+    // Access lost because the sign-in is not there (an idle session, an absent or ended cookie: the
+    // error is unauthenticated) pauses the view and keeps the draft; a refusal of a signed-in
+    // person (forbidden: a revoked share, a lost role) ends the view as before.
     es.addEventListener('access_lost', function (ev) {
       mineStream.close();
+      if (es === mineStream) { es = null; }
       var d = parse(ev);
-      if (d && d.error && d.error.details && d.error.details.reason === 'session_idle') { sessionIdle(mineStream); return; }
+      if (d && d.error && d.error.code === 'unauthenticated') { sessionIdle(); return; }
       reload(true);
     });
   }
 
-  // sessionIdle is the stream's answer when the session's idle lifetime ran out (a background
-  // re-check never continues a session): nothing is reloaded or cleared, the screen and every
-  // draft stay, sending is off, and the person's next click or key makes one foreground read of
-  // the screen, which continues the session (an OIDC session is renewed silently) and reconnects.
-  // A read that is refused then means the sign-in is really gone, and the page reloads as before.
+  // The person's last click or key. A reload that the page would make on its own (a Worker went on-
+  // or offline, the session went) is a page load, which counts as the person's activity on the Hub:
+  // it extends the session. So it is made at once only while the person is using the page; else
+  // the view says it is out of date and reloads on the person's next click.
+  var lastAct = Date.now();
+  var ACTIVE_MS = 60000;
+  if (typeof document.addEventListener === 'function') {
+    document.addEventListener('pointerdown', function () { lastAct = Date.now(); }, true);
+    document.addEventListener('keydown', function () { lastAct = Date.now(); }, true);
+  }
+  var staleWake = null;
+  function pageReload(force) {
+    if (stream === 'idle' || stream === 'stale') { return; } // paused: it stays paused until the person acts
+    var hidden = typeof document.visibilityState === 'string' && document.visibilityState === 'hidden';
+    if (!hidden && Date.now() - lastAct < ACTIVE_MS) { reload(force); return; }
+    if (es) { es.close(); es = null; }
+    setStream('stale');
+    if (staleWake || typeof document.addEventListener !== 'function') { return; }
+    staleWake = function () {
+      document.removeEventListener('click', staleWake, true);
+      staleWake = null;
+      stream = 'offline';
+      reload(force);
+    };
+    document.addEventListener('click', staleWake, true);
+  }
+
+  // sessionIdle pauses the view when the sign-in is not there any more (the session's idle
+  // lifetime ran out, or the cookie is absent): nothing is reloaded or cleared, the screen and every
+  // draft stay, sending is off, and nothing the page does on its own continues the session. The
+  // person's next click asks, quietly, who this request is now: the same principal the view was
+  // rendered for (another tab signed in again meanwhile) resumes the view with a fresh read before
+  // sending comes back; no sign-in reloads the page, and that page load signs in again (silently
+  // with the identity provider, or on the sign-in page); another principal ends the view as any
+  // lost access does. Anything that proves nothing keeps the view paused. A view inside the
+  // inspector does not reload itself: the inspector decides for the whole page.
   var idleWake = null;
-  function sessionIdle(from) {
-    if (from && es === from) { es = null; }
+  var viewCtx = view.getAttribute('data-context') || '';
+  var embedded = view.getAttribute('data-embed') === 'true';
+  function sessionIdle() {
+    if (es) { es.close(); es = null; }
     setStream('idle');
     if (idleWake || typeof document.addEventListener !== 'function') { return; }
     idleWake = function () {
-      document.removeEventListener('pointerdown', idleWake, true);
-      document.removeEventListener('keydown', idleWake, true);
+      document.removeEventListener('click', idleWake, true);
       idleWake = null;
-      if (typeof window.fetch !== 'function') { reload(false); return; }
-      window.fetch(screenURL, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual' }).then(function (r) {
-        var st = r && typeof r.status === 'number' ? r.status : 0;
-        if ((r && r.type === 'opaqueredirect') || st === 401 || st === 403 || st === 404) { reload(true); return; }
+      var again = function () { sessionIdle(); };
+      if (typeof window.fetch !== 'function') { if (!embedded) { window.location.reload(); } else { again(); } return; }
+      window.fetch('/inspector/principal', { credentials: 'same-origin', cache: 'no-store', redirect: 'manual', headers: { Accept: 'application/json', 'X-Minion-Background': '1' } }).then(function (r) {
         if (stream !== 'idle') { return; }
-        stream = 'connecting';
-        render(true);
-        if (!suspended) { connect(); schedule(); }
-      }, function () { sessionIdle(null); });
+        var st = r && typeof r.status === 'number' ? r.status : 0;
+        if ((r && r.type === 'opaqueredirect') || st === 401) { if (!embedded) { window.location.reload(); } else { again(); } return; }
+        if (!r || !r.ok || typeof r.json !== 'function') { again(); return; }
+        r.json().then(function (j) {
+          if (stream !== 'idle') { return; }
+          if (!j || viewCtx === '' || j.context !== viewCtx) { reload(true); return; }
+          // The same principal: the writes come back only after the fresh read of the screen.
+          stream = 'connecting';
+          if (suspended) { render(true); return; }
+          resuming = true;
+          readGen++;
+          render(true);
+          connect();
+          freshRead(readGen);
+        }, again);
+      }, again);
     };
-    document.addEventListener('pointerdown', idleWake, true);
-    document.addEventListener('keydown', idleWake, true);
+    document.addEventListener('click', idleWake, true);
   }
 
   // ---- composer: Enter sends once, Shift+Enter is a line break ------------------
@@ -1307,8 +1357,8 @@
     window.fetch(screenURL, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual' }).then(function (r) {
       if (gen !== readGen || suspended || !resuming) { return; }
       var st = r && typeof r.status === 'number' ? r.status : 0;
-      if (r && r.type === 'opaqueredirect') { reload(true); return; }
-      if (st === 401 || st === 403 || st === 404) { reload(true); return; }
+      if ((r && r.type === 'opaqueredirect') || st === 401) { resuming = false; sessionIdle(); return; }
+      if (st === 403 || st === 404) { reload(true); return; }
       if (st === 503) {
         if (!online) { resuming = false; render(false); } else { reload(false); }
         return;

@@ -57,10 +57,11 @@ type fakeIdP struct {
 	tokenDelay time.Duration
 	// DiscoveryDelay delays the discovery document.
 	discoveryDelay time.Duration
-	// JWKSDelay delays the key set.
-	jwksDelay time.Duration
 	// FailToken makes the token endpoint answer 500.
 	failToken bool
+	// NoBrowserSession makes a prompt=none authorization answer
+	// login_required: the person has no session at the IdP.
+	noBrowserSession bool
 	// TokenURL, when not empty, replaces the token endpoint of the discovery
 	// document.
 	tokenURL string
@@ -142,6 +143,18 @@ func (f *fakeIdP) authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad authorization request", http.StatusBadRequest)
 		return
 	}
+	f.mu.Lock()
+	noSession := f.noBrowserSession
+	f.mu.Unlock()
+	if q.Get("prompt") == "none" && noSession {
+		u, _ := url.Parse(q.Get("redirect_uri"))
+		v := u.Query()
+		v.Set("error", "login_required")
+		v.Set("state", q.Get("state"))
+		u.RawQuery = v.Encode()
+		http.Redirect(w, r, u.String(), http.StatusFound)
+		return
+	}
 	code := randomHex()
 	f.mu.Lock()
 	f.codes[code] = authRequest{nonce: q.Get("nonce"), challenge: q.Get("code_challenge"), redirectURI: q.Get("redirect_uri")}
@@ -211,10 +224,6 @@ func (f *fakeIdP) token(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeIdP) jwks(w http.ResponseWriter, _ *http.Request) {
-	f.mu.Lock()
-	d := f.jwksDelay
-	f.mu.Unlock()
-	time.Sleep(d)
 	writeJSON(w, map[string]any{"keys": []map[string]string{{
 		"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "k1",
 		"n": b64(f.key.N.Bytes()), "e": b64(big.NewInt(int64(f.key.E)).Bytes()),

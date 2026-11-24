@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -308,5 +310,81 @@ func TestOIDCSettingsAreLive(t *testing.T) {
 		if !IsLiveSetting(key) {
 			t.Errorf("%s is not live", key)
 		}
+	}
+}
+
+// Through the composed Hub (A99): a session whose idle lifetime ran out is
+// never served again. A page load the person makes on the Hub's own pages
+// goes to the silent re-authentication with its provider (prompt=none) and
+// back to the same page; a page load from another site or without evidence
+// gets the sign-in page; htmx and polls get the quiet idle 401.
+func TestExpiredOIDCSessionThroughTheHub(t *testing.T) {
+	oidcEnv(t, nil)
+	var st *store.Store
+	h := startHub(t, &Config{DataDir: hubstore.Dir(t)}, oidcRegistry(t, sessionPage(t), nil, &st))
+	root, err := st.UserByIdentifier(context.Background(), "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := "expired-oidc-session-cookie-value-000000000"
+	hash, _ := session.HashToken(tok)
+	now := time.Now()
+	if err := st.CreateSession(context.Background(), store.SessionRow{
+		ID: "s-expired", TokenHash: hash, UserID: root.ID, CredentialVersion: root.CredentialVersion,
+		CreatedAt: store.UnixMS(now.Add(-3 * time.Hour)), ExpiresAt: store.UnixMS(now.Add(-time.Hour)), AuthMethod: "oidc:default",
+	}, store.UnixMS(now)); err != nil {
+		t.Fatal(err)
+	}
+	base := "https://" + h.srv.Addr()
+	c := &http.Client{
+		Timeout:       10 * time.Second,
+		Transport:     &http.Transport{DisableKeepAlives: true, TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // self-signed test Hub
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	send := func(path string, hdr map[string]string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, base+path, nil)
+		req.AddCookie(&http.Cookie{Name: session.CookieName, Value: tok})
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp
+	}
+	page := "/sessions?filter=a%2Fb"
+	for _, tc := range []struct {
+		name string
+		hdr  map[string]string
+		code int
+		loc  string
+	}{
+		{"page load", map[string]string{"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate"},
+			http.StatusSeeOther, "/auth/oidc/default/login?silent=1&next=" + url.QueryEscape(page)},
+		{"typed address", map[string]string{"Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1", "Sec-Fetch-Dest": "document"},
+			http.StatusSeeOther, "/auth/oidc/default/login?silent=1&next=" + url.QueryEscape(page)},
+		{"old browser with the Hub's Referer", map[string]string{"Accept": "text/html", "Referer": base + "/workers"},
+			http.StatusSeeOther, "/auth/oidc/default/login?silent=1&next=" + url.QueryEscape(page)},
+		{"page load from another site", map[string]string{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "document"},
+			http.StatusSeeOther, "/login?next=" + url.QueryEscape(page)},
+		{"old browser without evidence", map[string]string{"Accept": "text/html"},
+			http.StatusSeeOther, "/login?next=" + url.QueryEscape(page)},
+		{"htmx click", map[string]string{"Sec-Fetch-Site": "same-origin", "HX-Request": "true"}, http.StatusUnauthorized, ""},
+		{"poll", map[string]string{"Sec-Fetch-Site": "same-origin", session.BackgroundHeader: "1"}, http.StatusUnauthorized, ""},
+	} {
+		resp := send(page, tc.hdr)
+		if resp.StatusCode != tc.code || resp.Header.Get("Location") != tc.loc {
+			t.Errorf("%s: %d %q, want %d %q", tc.name, resp.StatusCode, resp.Header.Get("Location"), tc.code, tc.loc)
+		}
+		if tc.code == http.StatusUnauthorized && resp.Header.Get(session.IdleHeader) != "idle" {
+			t.Errorf("%s: no idle marker", tc.name)
+		}
+	}
+	// None of it served or extended the expired session.
+	if _, err := session.NewManager(st).Resolve(context.Background(), tok); err == nil {
+		t.Error("the expired session resolves again")
 	}
 }

@@ -405,6 +405,108 @@ func TestUnsafeNextBecomesRoot(t *testing.T) {
 	}
 }
 
+// ---- silent sign-in (prompt=none, A99) ------------------------------------------
+
+// A page load of an expired session starts a silent sign-in: the same
+// authorization request as a sign-in (PKCE, state, nonce) plus prompt=none.
+// When the IdP's browser session is valid the callback signs in through the
+// ordinary path (a new session with a new cookie, the role rules applied) and
+// returns to the same page.
+func TestSilentSignInReturnsToTheSamePageWithANewSession(t *testing.T) {
+	h := newTestHub(t, nil)
+	h.groups("minion-users")
+	first := h.signIn()
+	old, ok := h.sessionOf(first)
+	if !ok {
+		t.Fatal("no first session")
+	}
+	h.groups("minion-admins") // the IdP changed the groups meanwhile
+
+	cb, authorize := h.begin(LoginPath("default") + "?silent=1&next=" + url.QueryEscape("/s/w1/main?x=1"))
+	q, _ := url.Parse(authorize)
+	if p := q.Query().Get("prompt"); p != "none" {
+		t.Errorf("prompt = %q, want none", p)
+	}
+	if q.Query().Get("code_challenge_method") != "S256" || q.Query().Get("nonce") == "" || q.Query().Get("state") == "" {
+		t.Errorf("the silent authorization request is not a full one: %s", authorize)
+	}
+	r := h.get(h.client, cb)
+	if r.status != http.StatusSeeOther || r.location != "/s/w1/main?x=1" {
+		t.Fatalf("callback = %d %q %s", r.status, r.location, r.body)
+	}
+	s, ok := h.sessionOf(r)
+	if !ok || s.ID == old.ID || r.cookie(session.CookieName).Value == first.cookie(session.CookieName).Value {
+		t.Fatalf("no new session: %+v", s)
+	}
+	if s.UserID != old.UserID || s.Role != "admin" {
+		t.Errorf("new session user %s role %s, want %s with the fresh role admin", s.UserID, s.Role, old.UserID)
+	}
+	if !h.aud.has(AuditActionLogin, OutcomeSuccess) {
+		t.Error("the silent sign-in left no login row")
+	}
+	// A sign-in the person starts never asks for prompt=none.
+	_, authorize = h.begin(LoginPath("default"))
+	if q, _ := url.Parse(authorize); q.Query().Has("prompt") {
+		t.Errorf("an ordinary sign-in sent prompt: %s", authorize)
+	}
+}
+
+// When the IdP cannot sign the person in without interaction
+// (login_required and every other error) the browser gets the Hub's sign-in
+// page with the same return path, not an error page, and no session.
+func TestSilentSignInThatTheIdPRefusesShowsTheSignInPage(t *testing.T) {
+	h := newTestHub(t, nil)
+	h.groups("minion-users")
+	h.idp.set(func(f *fakeIdP) { f.noBrowserSession = true })
+	start := h.get(h.client, h.srv.URL+LoginPath("default")+"?silent=1&next="+url.QueryEscape("/s/w1/main?x=1"))
+	authz := h.get(h.idpCl, start.location)
+	if u, _ := url.Parse(authz.location); u.Query().Get("error") != "login_required" {
+		t.Fatalf("the IdP did not refuse: %s", authz.location)
+	}
+	r := h.get(h.client, authz.location)
+	if r.status != http.StatusSeeOther || r.location != "/login?next="+url.QueryEscape("/s/w1/main?x=1") {
+		t.Fatalf("refused silent sign-in = %d %q %s", r.status, r.location, r.body)
+	}
+	if c := r.cookie(session.CookieName); c != nil && c.Value != "" {
+		t.Error("a refused silent sign-in set a session")
+	}
+	if h.countUsers() != 0 {
+		t.Error("an account was created")
+	}
+	// Any other error of a silent sign-in leads there too.
+	cb, _ := h.begin(LoginPath("default") + "?silent=1&next=%2Fworkers")
+	u, _ := url.Parse(cb)
+	r = h.get(h.client, h.srv.URL+CallbackPath+"?error=consent_required&state="+url.QueryEscape(u.Query().Get("state")))
+	if r.status != http.StatusSeeOther || r.location != "/login?next=%2Fworkers" {
+		t.Errorf("consent_required = %d %q", r.status, r.location)
+	}
+	// The same error for a sign-in the person started stays the error page.
+	cb, _ = h.begin(LoginPath("default"))
+	u, _ = url.Parse(cb)
+	if r := h.get(h.client, h.srv.URL+CallbackPath+"?error=login_required&state="+url.QueryEscape(u.Query().Get("state"))); r.status != http.StatusBadGateway {
+		t.Errorf("non-silent login_required = %d", r.status)
+	}
+}
+
+// The return path of a silent sign-in is checked like any other: it never
+// sends the browser to another site, whatever the IdP answers.
+func TestSilentSignInReturnPathStaysOnTheHub(t *testing.T) {
+	for _, next := range []string{"//evil.example/x", "https://evil.example/", "/\\evil.example", "javascript:alert(1)"} {
+		h := newTestHub(t, nil)
+		h.groups("minion-users")
+		cb, _ := h.begin(LoginPath("default") + "?silent=1&next=" + url.QueryEscape(next))
+		if r := h.get(h.client, cb); r.location != "/" {
+			t.Errorf("%q: success redirect = %q", next, r.location)
+		}
+		h.idp.set(func(f *fakeIdP) { f.noBrowserSession = true })
+		start := h.get(h.client, h.srv.URL+LoginPath("default")+"?silent=1&next="+url.QueryEscape(next))
+		authz := h.get(h.idpCl, start.location)
+		if r := h.get(h.client, authz.location); r.location != "/login" {
+			t.Errorf("%q: refusal redirect = %q", next, r.location)
+		}
+	}
+}
+
 // ---- role rules -----------------------------------------------------------------
 
 func TestNoMatchingRuleMeansNoAccess(t *testing.T) {

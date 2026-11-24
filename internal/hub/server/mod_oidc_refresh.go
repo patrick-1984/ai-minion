@@ -9,7 +9,6 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/oidc"
-	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 )
 
@@ -68,11 +67,6 @@ func initOIDCRefresh(_ context.Context, env *Env, tune func(*oidc.Refresher)) er
 	}
 	if tune != nil {
 		tune(ref)
-	}
-	// An OIDC session whose idle lifetime ran out is renewed silently with
-	// the stored refresh token on the person's next request (A99).
-	if mw, err := Require[*session.Middleware](env); err == nil {
-		mw.Renew = ref
 	}
 	// A promotion to IdP admin at sign-in wakes the refresher (F-07).
 	if svc, err := Require[*oidc.Service](env); err == nil {

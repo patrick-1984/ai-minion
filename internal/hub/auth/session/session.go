@@ -44,15 +44,12 @@ const (
 	// with OIDC (a local password): after it the person signs in again.
 	LocalMaxAge = 12 * time.Hour
 	// OIDCMaxAge is the absolute lifetime of a session started with OIDC.
-	// Until then a session whose idle lifetime ran out is renewed silently
-	// with the identity provider's refresh token on the next request the
-	// person makes; the IdP's own refresh token lifetime and revocation still
-	// apply on every renewal.
+	// After its idle end the session is not renewed: the person's next page
+	// load re-authenticates silently with the identity provider (prompt=none,
+	// a new session) while the provider's own browser session is valid; the
+	// expired row is kept until OIDCMaxAge after the sign-in so that the Hub
+	// knows which provider to ask.
 	OIDCMaxAge = store.OIDCSessionMaxAge
-	// RenewGrace is how long after its idle end an OIDC session is still
-	// served while the identity provider cannot be reached (a network error,
-	// a timeout, a 5xx). A clear refusal ends the session at once.
-	RenewGrace = 15 * time.Minute
 	// MaxIdle is the longest idle lifetime: a session_ttl above it acts as
 	// MaxIdle (an idle lifetime longer than the local cap means nothing).
 	MaxIdle = LocalMaxAge
@@ -301,8 +298,9 @@ func (m *Manager) CreateAuth(ctx context.Context, user store.UserRow, ttl time.D
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	hash, _ := HashToken(token)
 	now := m.now()
-	// The first idle end is clamped to the absolute cap, like every later one.
-	ttl = min(ttl, maxAge(auth.Method))
+	// The first idle end is clamped like every later one: to the longest idle
+	// lifetime and to the absolute cap.
+	ttl = min(ttl, MaxIdle, maxAge(auth.Method))
 	row := store.SessionRow{
 		ID:                m.newID(),
 		TokenHash:         hash,
@@ -393,9 +391,8 @@ func (m *Manager) Resolve(ctx context.Context, token string) (*Session, error) {
 // lifetime ran out while everything else about it is still valid (the
 // account is active, has a role and kept its credentials, and the absolute
 // end is ahead). It matches [ErrNoSession] with errors.Is, so a caller that
-// does not renew sessions treats it as "signed out". Session is the expired
-// session; it must not be used to serve a request unless the session was
-// renewed (or, for an unreachable identity provider, within [RenewGrace]).
+// does not look further treats it as "signed out". Session is the expired
+// session; it must never be used to serve a request (nothing renews it).
 type ExpiredError struct {
 	Session Session
 }
@@ -405,8 +402,8 @@ func (e *ExpiredError) Error() string { return "session: the session expired" }
 // Is makes an ExpiredError match [ErrNoSession].
 func (e *ExpiredError) Is(target error) bool { return target == ErrNoSession }
 
-// ExtendStore is the optional persistence port of [Manager.Touch] and
-// [Manager.Renewed]; *store.Store offers it.
+// ExtendStore is the optional persistence port of [Manager.Touch];
+// *store.Store offers it.
 type ExtendStore interface {
 	ExtendSession(ctx context.Context, sessionID string, expiresAt int64) (bool, error)
 }
@@ -447,19 +444,10 @@ func (m *Manager) shrink(ctx context.Context, id string, end time.Time) error {
 // by at least a minute, so a burst of requests costs one write. A store
 // without [ExtendStore] makes it a no-op.
 func (m *Manager) Touch(ctx context.Context, s *Session) error {
-	return m.extend(ctx, s, false)
+	return m.extend(ctx, s)
 }
 
-// Renewed moves the idle end of an expired session to now plus the idle
-// lifetime after the identity provider vouched for its user again. The
-// cookie value stays the same: the browser may have other requests of the
-// same session in flight, and the renewal changes neither the user nor the
-// privilege of the session.
-func (m *Manager) Renewed(ctx context.Context, s *Session) error {
-	return m.extend(ctx, s, true)
-}
-
-func (m *Manager) extend(ctx context.Context, s *Session, force bool) error {
+func (m *Manager) extend(ctx context.Context, s *Session) error {
 	es, ok := m.store.(ExtendStore)
 	if !ok || s == nil {
 		return nil
@@ -468,7 +456,7 @@ func (m *Manager) extend(ctx context.Context, s *Session, force bool) error {
 	if !s.EndsAt.IsZero() && end.After(s.EndsAt) {
 		end = s.EndsAt
 	}
-	if !force && end.Sub(s.ExpiresAt) < touchStep {
+	if end.Sub(s.ExpiresAt) < touchStep {
 		return nil
 	}
 	if !end.After(s.ExpiresAt) {
@@ -499,7 +487,8 @@ func (m *Manager) Revoke(ctx context.Context, token string) error {
 // Cookie returns the session cookie for a freshly issued session. It lives
 // until the absolute end of the session, not its idle end: the server decides
 // whether the session is still valid, and an OIDC session must still reach
-// the server after its idle end to be renewed.
+// the server after its idle end, so that the Hub can tell that it expired
+// (and, for OIDC, re-authenticate silently) instead of a plain sign-out.
 func Cookie(is Issued, secure bool) *http.Cookie {
 	exp := is.EndsAt
 	if exp.IsZero() {

@@ -469,7 +469,7 @@ func (d *Dispatcher) audit(ctx context.Context, c *Call, outcome string) {
 // with the refreshed principal. The identity must still be the same caller.
 func (d *Dispatcher) recheck(ctx context.Context, r *http.Request, c *Call) error {
 	// The re-check is not the person acting: it never extends the idle
-	// lifetime of a session nor renews it.
+	// lifetime of a session.
 	id, err := d.Auth.Authenticate(r.WithContext(session.AsBackground(ctx)))
 	if err != nil {
 		return err

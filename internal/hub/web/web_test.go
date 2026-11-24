@@ -61,9 +61,14 @@ func (fakeSessions) Wrap(next http.Handler) http.Handler {
 				}
 			}
 			r = r.WithContext(session.WithSession(r.Context(), s))
-		} else if r.Header.Get("X-Test-Idle") != "" {
-			// A background request of a session whose idle lifetime ran out.
-			r = r.WithContext(session.WithIdle(r.Context()))
+		} else if m := r.Header.Get("X-Test-Idle"); m != "" {
+			// A session whose idle lifetime ran out; "reauth-<id>" marks a
+			// foreground page load of an OIDC session of provider <id>.
+			idle := session.IdleSession{Method: session.AuthMethodLocal}
+			if p, ok := strings.CutPrefix(m, "reauth-"); ok {
+				idle = session.IdleSession{Method: session.AuthMethodOIDCPrefix + p, Reauth: p}
+			}
+			r = r.WithContext(session.WithIdle(r.Context(), idle))
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -742,23 +747,101 @@ func TestBackgroundRequestWithoutSessionKeepsTheScreen(t *testing.T) {
 	}
 }
 
-// A background request of a session whose idle lifetime ran out gets the
-// quiet idle 401: no redirect, and the marker that lets the page pause
-// instead of clearing what it holds (A99).
+// A request of a session whose idle lifetime ran out that is not a page load
+// (htmx, a poll, a fetch) gets the quiet idle 401: no redirect, and the
+// marker that lets the page pause instead of clearing what it holds (A99).
 func TestIdleSessionGetsTheQuietIdle401(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.RegisterPage(Page{Pattern: "/fragment", Title: "F", Template: "probe.html"}); err != nil {
 		t.Fatal(err)
 	}
 	s := newServer(t, reg)
-	rec := get(t, s, "/fragment", "X-Test-Idle", "1", "X-Minion-Background", "1", "HX-Request", "true")
-	if rec.Code != http.StatusUnauthorized || rec.Header().Get(session.IdleHeader) != "idle" || rec.Header().Get("HX-Redirect") != "" ||
-		!strings.Contains(rec.Body.String(), session.IdleReason) {
-		t.Errorf("idle background request = %d %v %s", rec.Code, rec.Header(), rec.Body)
+	for _, hdr := range [][]string{
+		{"X-Test-Idle", "1", "X-Minion-Background", "1", "HX-Request", "true"},
+		{"X-Test-Idle", "reauth-corp", "HX-Request", "true"},
+		{"X-Test-Idle", "1", "Sec-Fetch-Dest", "empty"},
+	} {
+		rec := get(t, s, "/fragment", hdr...)
+		if rec.Code != http.StatusUnauthorized || rec.Header().Get(session.IdleHeader) != "idle" || rec.Header().Get("HX-Redirect") != "" ||
+			rec.Header().Get("Location") != "" || !strings.Contains(rec.Body.String(), session.IdleReason) {
+			t.Errorf("%v: idle request = %d %v %s", hdr, rec.Code, rec.Header(), rec.Body)
+		}
 	}
 	// Without a session at all it stays the plain 401.
 	if rec := get(t, s, "/fragment", "X-Minion-Background", "1"); rec.Header().Get(session.IdleHeader) != "" {
 		t.Errorf("a request without a session was marked idle")
+	}
+}
+
+// A page load of an expired OIDC session goes to a silent sign-in with its
+// provider (prompt=none) that returns to the same page; an expired local
+// session, a provider that is not registered or a page load that may not
+// re-authenticate (from another site) gets the sign-in page with the return
+// path (A99).
+func TestIdlePageLoadReauthenticatesSilentlyOrSignsIn(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterPage(Page{Pattern: "/fragment", Title: "F", Template: "probe.html"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterLoginProvider(LoginProvider{ID: "corp", Label: "Corp", Path: "/auth/oidc/corp/login"}); err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(t, reg)
+	for _, tc := range []struct {
+		idle, want string
+	}{
+		{"reauth-corp", "/auth/oidc/corp/login?silent=1&next=" + url.QueryEscape("/fragment?a=1&b=%2F")},
+		{"1", "/login?next=" + url.QueryEscape("/fragment?a=1&b=%2F")},
+		{"reauth-gone", "/login?next=" + url.QueryEscape("/fragment?a=1&b=%2F")},
+	} {
+		rec := get(t, s, "/fragment?a=1&b=%2F", "X-Test-Idle", tc.idle, "Sec-Fetch-Dest", "document")
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.want {
+			t.Errorf("%s: %d Location %q, want %q", tc.idle, rec.Code, rec.Header().Get("Location"), tc.want)
+		}
+	}
+}
+
+// The sign-in buttons of the login page carry the return path.
+func TestLoginPageProviderButtonsKeepTheReturnPath(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.RegisterLoginProvider(LoginProvider{ID: "corp", Label: "Corp", Path: "/auth/oidc/corp/login"}); err != nil {
+		t.Fatal(err)
+	}
+	s := newServer(t, reg)
+	body := get(t, s, "/login?next="+url.QueryEscape("/s/w1/a b?x=1")).Body.String()
+	if !strings.Contains(body, `href="/auth/oidc/corp/login?next=%2fs%2fw1%2fa%20b%3fx%3d1"`) {
+		t.Errorf("provider button without the return path: %s", body)
+	}
+	if body := get(t, s, "/login").Body.String(); !strings.Contains(body, `href="/auth/oidc/corp/login"`) {
+		t.Errorf("provider button of a plain sign-in: %s", body)
+	}
+}
+
+// Routes that pages poll on their own are background, also for pages loaded
+// before they marked their polls.
+func TestPollRoute(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		hdr          []string
+		poll         bool
+	}{
+		{http.MethodGet, "/inspector/principal", nil, true},
+		{http.MethodGet, "/s/w1/main/screen", nil, true},
+		{http.MethodGet, "/s/w1/main/context", nil, true},
+		{http.MethodGet, "/s/w1/main/pipe/turns", nil, true},
+		{http.MethodGet, "/workers/pairing-requests", nil, true},
+		{http.MethodGet, "/harnesses", []string{"HX-Request", "true", "HX-Trigger", "harness-matrix"}, true},
+		{http.MethodGet, "/harnesses", nil, false},
+		{http.MethodGet, "/s/w1/main", nil, false},
+		{http.MethodPost, "/s/w1/main/text", nil, false},
+	} {
+		r := httptest.NewRequest(tc.method, tc.path, nil)
+		for i := 0; i+1 < len(tc.hdr); i += 2 {
+			r.Header.Set(tc.hdr[i], tc.hdr[i+1])
+		}
+		if got := PollRoute(r); got != tc.poll {
+			t.Errorf("%s %s %v: PollRoute = %v, want %v", tc.method, tc.path, tc.hdr, got, tc.poll)
+		}
 	}
 }
 

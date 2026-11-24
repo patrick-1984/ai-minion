@@ -58,8 +58,7 @@ var _ SessionResolver = (*session.Manager)(nil)
 
 // RequestSessionResolver is the optional port of a [SessionResolver] that
 // judges the cookie together with its request: it records the person's
-// activity and renews an expired OIDC session silently. *session.Middleware
-// implements it.
+// activity. *session.Middleware implements it.
 type RequestSessionResolver interface {
 	ResolveRequest(r *http.Request, token string) (*session.Session, error)
 }
@@ -231,9 +230,9 @@ func (a *Authenticator) cookie(r *http.Request) (Identity, error) {
 	switch {
 	case err == nil:
 	case errors.As(err, &idle):
-		// A background request of a session whose idle lifetime ran out: the
-		// page pauses instead of signing out (only a foreground request renews).
-		return Identity{}, unauthenticated("the session is idle; the next action of the person continues it").
+		// A session whose idle lifetime ran out: the page pauses instead of
+		// signing out; the person's next page load signs in again.
+		return Identity{}, unauthenticated("the session is idle; reload the page to continue").
 			WithDetails(map[string]any{"reason": session.IdleReason})
 	case errors.Is(err, session.ErrNoSession):
 		return Identity{}, unauthenticated("sign in first")

@@ -91,9 +91,9 @@
   var GUARD_MS = 8000;
   var DBL_MS = 520; // a quiet row waits this long for a second click of a double click (slow system settings run to 500 ms)
   var RETRY_MS = 10000;
-  // The quiet 401 of a background check when the session's idle lifetime ran out: nothing is
-  // cleared, the kept frames stay (hidden, with their drafts), and the person's next click or key
-  // makes a foreground request that continues (or renews) the session.
+  // A check that finds no sign-in (the session's idle lifetime ran out, or the cookie is absent):
+  // nothing is cleared, the kept frames stay (hidden, with their drafts), and the person's next
+  // click reloads the page, which signs in again.
   var IDLE_TEXT = 'Session paused \u2014 click or refresh to continue.';
   var CONCEAL_TEXT = 'Your sign-in could not be confirmed, so the sessions kept here are not shown. What you typed and any request on its way are kept. The check is repeated; you can also open the session in full.';
   var PATH_RE = /^\/s\/[^\/?#]+\/[^\/?#]+$/;
@@ -252,14 +252,14 @@
     var immediate = ev.pointerType === 'touch' || ev.pointerType === 'pen';
     var kind = row.getAttribute('data-row-link');
     if (kind === 'session') {
-      if (lost) { return; }
+      if (lost || idle) { return; }
       afterDoubleClickTime(row, function (r) {
-        if (lost) { return null; }
+        if (lost || idle) { return null; }
         var a = r.querySelector('a[data-inspect]');
         var info = a ? infoOf(a) : null;
         if (!info) { return null; }
         var from = openerOf(a);
-        return { id: info.key, act: function () { if (!lost) { choose(info, from); } } };
+        return { id: info.key, act: function () { if (!lost && !idle) { choose(info, from); } } };
       }, immediate);
     } else if (kind === 'worker') {
       afterDoubleClickTime(row, function (r) {
@@ -273,7 +273,7 @@
     cancelRow();
     if (ev.defaultPrevented) { return; }
     if (ev.target && ev.target.closest && !ev.target.closest('a[data-inspect]')) { rowClick(ev); return; }
-    if (lost) { return; }
+    if (lost || idle) { return; } // a plain link: the page load signs in again
     if (ev.button !== undefined && ev.button !== 0) { return; }
     if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) { return; }
     var a = ev.target && ev.target.closest ? ev.target.closest('a[data-inspect]') : null;
@@ -490,8 +490,8 @@
       checkFrame(rec, function (r) {
         if (token !== seq || frames.indexOf(rec) < 0) { return; }
         if (r === 'ok') { unconceal(); say('', ''); show(rec, true); return; }
-        if (r === 'lost' || r === 'switched') { authLost(r); return; }
-        if (r === 'idle') { paused(); return; }
+        if (r === 'switched') { authLost(r); return; }
+        if (r === 'idle' || r === 'lost') { paused(); return; }
         if (r === 'refused') { refusedFrame(rec); return; }
         say('warning', 'Your sign-in could not be confirmed just now, so ' + rec.label + ' was not shown. What you typed there is kept. Try again, or open it in full.');
         armAuth(RETRY_MS);
@@ -756,12 +756,11 @@
 
   // fetchJSON is a bounded READ: a credentialed GET with the real cookie, no body, redirects
   // not followed, aborted after GUARD_MS (a request that hangs cannot stop the checks). It
-  // answers 'ok' (with the JSON), 'idle' (the quiet 401 of a session whose idle lifetime ran out:
-  // a background read never continues a session), 'lost' (any other 401 or a redirect to
-  // sign-in), 'refused' (403 or 404: this resource, not the sign-in), or 'unknown' (a network
-  // error, a 5xx, a timeout, an unreadable answer: it proves nothing either way). A read is a
-  // background read unless fg is set: only the person's own action (see wakeOnAction) is not.
-  function fetchJSON(url, cb, fg) {
+  // answers 'ok' (with the JSON), 'idle' (the quiet 401 of a session whose idle lifetime ran out),
+  // 'lost' (any other 401 or a redirect to sign-in), 'refused' (403 or 404: this resource, not the
+  // sign-in), or 'unknown' (a network error, a 5xx, a timeout, an unreadable answer: it proves
+  // nothing either way). Every read is a background read: it never continues a session.
+  function fetchJSON(url, cb) {
     if (typeof window.fetch !== 'function') { cb('unknown'); return; }
     var ctl = typeof window.AbortController === 'function' ? new window.AbortController() : null;
     var done = false;
@@ -772,8 +771,7 @@
       window.clearTimeout(timer);
       cb(res, data);
     }
-    var headers = { Accept: 'application/json' };
-    if (!fg) { headers['X-Minion-Background'] = '1'; }
+    var headers = { Accept: 'application/json', 'X-Minion-Background': '1' };
     window.fetch(url, { credentials: 'same-origin', cache: 'no-store', redirect: 'manual', headers: headers, signal: ctl ? ctl.signal : undefined }).then(function (r) {
       var st = r && typeof r.status === 'number' ? r.status : 0;
       if (st === 401 && r.headers && typeof r.headers.get === 'function' && r.headers.get('X-Minion-Session') === 'idle') { finish('idle'); return; }
@@ -790,47 +788,54 @@
   // another sign-in (another user, another act-as target, a new login of the same user) has
   // taken the cookie since, whatever that person may read: an empty 200 list proves nothing
   // about who the requester is, this does. The context is not a credential and grants nothing.
-  function checkPrincipal(cb, fg) {
+  function checkPrincipal(cb) {
     fetchJSON('/inspector/principal', function (r, j) {
       if (r !== 'ok') { cb(r === 'refused' ? 'unknown' : r); return; }
       cb(pageCtx !== '' && j && j.context === pageCtx ? 'ok' : 'switched');
-    }, fg);
+    });
   }
 
-  // paused is the answer to 'idle': like an unconfirmed sign-in the kept frames are hidden and
-  // nothing is sent (their drafts and requests on their way stay as they are), with a short
-  // note instead of the warning; the periodic check goes on, and the person's next click or key
-  // continues the session at once (wakeOnAction).
+  // paused is the answer to 'idle' and 'lost' (no sign-in): only a verified other principal
+  // ('switched') clears what is kept. Like an unconfirmed sign-in the kept frames are hidden and
+  // nothing is sent (their drafts and requests on their way stay as they are), with a short note
+  // instead of the warning; the periodic check goes on (it shows them again when the same principal
+  // is back, for example after another tab signed in again). The person's next click asks once who
+  // this request is: still no sign-in reloads the page (that page load signs in again, silently
+  // with the identity provider or on the sign-in page), the same principal shows the frames again,
+  // another one clears them, anything else keeps the pause.
   function paused() {
     if (lost) { return; }
+    idle = true;
     conceal();
     if (!host.hidden) { setStatus('info', IDLE_TEXT); }
     say('info', IDLE_TEXT);
-    wakeOnAction();
+    idleClickOnce();
     armAuth(AUTH_MS);
   }
 
-  var waking = false;
-  function wakeOnAction() {
-    if (waking || typeof document.addEventListener !== 'function') { return; }
-    waking = true;
-    var wake = function () {
-      if (typeof document.removeEventListener === 'function') {
-        document.removeEventListener('pointerdown', wake, true);
-        document.removeEventListener('keydown', wake, true);
-      }
-      if (!waking) { return; }
-      waking = false;
-      // A foreground read: the person acted, so the session goes on (an OIDC session is renewed
-      // silently); then the ordinary check decides what is shown again.
-      checkPrincipal(function () {
+  var idle = false; // paused for want of a sign-in: rows open nothing, inspect links are plain links
+  var idleClick = null;
+  function stopIdleClick() {
+    if (idleClick && typeof document.removeEventListener === 'function') { document.removeEventListener('click', idleClick, true); }
+    idleClick = null;
+  }
+  function idleClickOnce() {
+    if (idleClick || typeof document.addEventListener !== 'function') { return; }
+    idleClick = function (ev) {
+      // A link goes where it leads: that page load signs in again.
+      if (ev && ev.target && ev.target.closest && ev.target.closest('a[href]')) { return; }
+      stopIdleClick();
+      if (ev && typeof ev.preventDefault === 'function') { ev.preventDefault(); }
+      checkPrincipal(function (r) {
         if (lost) { return; }
+        if (r === 'idle' || r === 'lost') { window.location.reload(); return; }
+        if (r === 'switched') { authLost(r); return; }
+        if (r !== 'ok') { idleClickOnce(); return; }
         if (authTimer !== null) { window.clearTimeout(authTimer); authTimer = null; }
         monitor();
-      }, true);
+      });
     };
-    document.addEventListener('pointerdown', wake, true);
-    document.addEventListener('keydown', wake, true);
+    document.addEventListener('click', idleClick, true);
   }
 
   // checkFrame is the resource check before a kept frame is shown: the same context, and the
@@ -886,6 +891,8 @@
   function unconceal() {
     if (!concealed) { return; }
     concealed = false;
+    idle = false;
+    stopIdleClick();
     frames.forEach(applyVisibility);
     if (status && (/sign-in could not be confirmed/.test(status.textContent) || status.textContent === IDLE_TEXT)) { if (active && !active.ready) { setStatus('info', 'Loading the session…'); } else { hideStatus(); } }
     say('', '');
@@ -899,8 +906,8 @@
     if (!frames.length || lost) { return; }
     checkPrincipal(function (r) {
       if (lost) { return; }
-      if (r === 'lost' || r === 'switched') { authLost(r); return; }
-      if (r === 'idle') { paused(); return; }
+      if (r === 'switched') { authLost(r); return; }
+      if (r === 'idle' || r === 'lost') { paused(); return; }
       if (r === 'ok') {
         if (!concealed || !active) { unconceal(); armAuth(AUTH_MS); return; }
         // The frame that was concealed is not shown again on the strength of who is signed in alone:
@@ -909,8 +916,8 @@
         checkFrame(rec, function (rr) {
           if (lost) { return; }
           if (rr === 'ok') { unconceal(); armAuth(AUTH_MS); return; }
-          if (rr === 'lost' || rr === 'switched') { authLost(rr); return; }
-          if (rr === 'idle') { paused(); return; }
+          if (rr === 'switched') { authLost(rr); return; }
+          if (rr === 'idle' || rr === 'lost') { paused(); return; }
           if (rr === 'refused') { refusedFrame(rec); unconceal(); armAuth(AUTH_MS); return; } // it stays hidden until the check of who is signed in answers
           armAuth(RETRY_MS); // still unconfirmed: stays concealed
         });
@@ -938,7 +945,7 @@
   // ordinary, a changed or lost sign-in is for every kept frame.
   function recheck() {
     if (lost) { return; }
-    checkPrincipal(function (r) { if (r === 'lost' || r === 'switched') { authLost(r); } else if (r === 'idle') { paused(); } });
+    checkPrincipal(function (r) { if (r === 'switched') { authLost(r); } else if (r === 'idle' || r === 'lost') { paused(); } });
   }
 
   // refusedFrame is the answer to a refusal (403, 404) of ONE session. A refusal does not say
@@ -959,8 +966,8 @@
     checkPrincipal(function (r) {
       verifying--;
       if (lost) { return; }
-      if (r === 'lost' || r === 'switched') { authLost(r); return; }
-      if (r === 'idle') { paused(); return; }
+      if (r === 'switched') { authLost(r); return; }
+      if (r === 'idle' || r === 'lost') { paused(); return; }
       if (r !== 'ok') {
         // Who is asking could not be confirmed: fail closed like every other unconfirmed identity.
         conceal();

@@ -388,8 +388,8 @@ func TestStreamErrorBeforeAndAfterTheFirstElement(t *testing.T) {
 }
 
 // The periodic re-check of a stream is not the person acting: it is a
-// background request, so it neither extends a session's idle lifetime nor
-// renews it (A99); the request that opened the stream is judged as it came.
+// background request, so it never extends a session's idle lifetime (A99);
+// the request that opened the stream is judged as it came.
 func TestStreamRecheckIsABackgroundRequest(t *testing.T) {
 	r := newRig(t)
 	r.d.ReauthInterval = 5 * time.Millisecond

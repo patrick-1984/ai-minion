@@ -114,7 +114,7 @@ var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwa
 // markBackground carries the background status of the incoming request r
 // over to the in-process request req: the API call that a live page makes on
 // behalf of a poll or a stream (whose own Accept header is replaced) must not
-// count as the person's activity, nor renew the session. A request of the
+// count as the person's activity. A request of the
 // person stays foreground.
 func markBackground(r, req *http.Request) {
 	if session.Background(r) {

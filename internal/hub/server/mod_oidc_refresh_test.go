@@ -11,7 +11,6 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/oidc"
-	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/web"
 )
@@ -177,27 +176,5 @@ func TestOIDCRefreshIntervalIsAPanelSettingThatAppliesAtOnce(t *testing.T) {
 	}
 	if d, err := oidc.IntervalFromResolver(svc.Resolver())(ctx); err != nil || d != 3*time.Hour {
 		t.Errorf("interval = %v, %v; want 3h from the environment", d, err)
-	}
-}
-
-// The OIDC refresher is the renewer of the session middleware, so an OIDC
-// session whose idle lifetime ran out is renewed silently (A99).
-func TestOIDCRefresherRenewsExpiredSessions(t *testing.T) {
-	t.Setenv("MINION_ADMIN_PASSWORD", "integration-password-1")
-	r := refreshRegistry(t, &refreshClock{})
-	var mw *session.Middleware
-	if err := r.Register("renew-probe", oidcRefreshModuleOrder+1, func(_ context.Context, env *Env) error {
-		var err error
-		mw, err = Require[*session.Middleware](env)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	startHub(t, &Config{DataDir: hubstore.Dir(t)}, r)
-	if mw == nil || mw.Renew == nil {
-		t.Fatal("the session middleware has no renewer")
-	}
-	if _, ok := mw.Renew.(*oidc.Refresher); !ok {
-		t.Errorf("renewer = %T, want the OIDC refresher", mw.Renew)
 	}
 }

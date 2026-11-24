@@ -139,20 +139,7 @@ var (
 	// ErrIdentityMismatch means the refreshed ID token names another subject
 	// than the account the token was stored for.
 	ErrIdentityMismatch = errors.New("oidc: the refreshed ID token names another identity")
-	// ErrIDTokenUnchecked means the refreshed ID token could not be checked
-	// because the provider's signing keys could not be fetched in time (a
-	// network failure or a timeout): nothing was learned about the token.
-	// A token that was checked and failed is [ErrInvalidIDToken] instead.
-	ErrIDTokenUnchecked = errors.New("oidc: the refreshed ID token could not be checked")
 )
-
-// keyFetchFailed reports whether a verification error of go-oidc is a failure
-// to fetch the signing keys. go-oidc formats that error with %v, so only its
-// text tells ("fetching keys ..."); everything else it reports is a property
-// of the token.
-func keyFetchFailed(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "fetching keys")
-}
 
 // RefreshResult is what the refresh-token grant returned.
 type RefreshResult struct {
@@ -199,9 +186,6 @@ func (p *Provider) Refresh(ctx context.Context, refreshToken logx.Secret, want I
 	}
 	idt, err := p.verifier.Verify(ctx, raw)
 	if err != nil {
-		if ctx.Err() != nil || keyFetchFailed(err) {
-			return res, fmt.Errorf("%w: %w", ErrIDTokenUnchecked, err)
-		}
 		return res, fmt.Errorf("%w: %w", ErrInvalidIDToken, err)
 	}
 	if idt.Issuer != want.Issuer || idt.Subject != want.Subject {
@@ -383,93 +367,6 @@ type Refresher struct {
 	mu    sync.Mutex
 	cache map[string]cachedProvider
 	wake  chan struct{}
-	// idLocks serialises every use of the refresh token of one external
-	// identity: the scheduled pass and every silent session renewal read the
-	// stored token, exchange it and store the result under the same lock, so
-	// a single-use token is never sent twice (see [Refresher.lockIdentity]).
-	idLocks map[string]*identityLock
-}
-
-type identityLock struct {
-	mu   sync.Mutex
-	refs int
-}
-
-// lockIdentity takes the refresh lock of the external identity id and
-// returns its release.
-func (r *Refresher) lockIdentity(id string) func() {
-	r.mu.Lock()
-	if r.idLocks == nil {
-		r.idLocks = map[string]*identityLock{}
-	}
-	l := r.idLocks[id]
-	if l == nil {
-		l = &identityLock{}
-		r.idLocks[id] = l
-	}
-	l.refs++
-	r.mu.Unlock()
-	l.mu.Lock()
-	return func() {
-		l.mu.Unlock()
-		r.mu.Lock()
-		l.refs--
-		if l.refs == 0 {
-			delete(r.idLocks, id)
-		}
-		r.mu.Unlock()
-	}
-}
-
-// persistTimeout bounds the store write that follows a token exchange. It
-// runs on its own context: a token the provider rotated must be stored even
-// when the caller's deadline ran out meanwhile (the predecessor may be dead).
-const persistTimeout = 10 * time.Second
-
-func persistContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
-}
-
-// TargetReader is the optional port of a [RefreshStore] that reads the
-// refresh target of one external identity as it is stored now; [SQLStore]
-// offers it. A refresh reads the token again under the identity's lock right
-// before it sends it.
-type TargetReader interface {
-	// RefreshTargetByIdentity returns the target, and false when the user is
-	// inactive or the identity holds no refresh token any more.
-	RefreshTargetByIdentity(ctx context.Context, identityID string) (Target, bool, error)
-}
-
-var _ TargetReader = (*SQLStore)(nil)
-
-// RefreshTargetByIdentity implements [TargetReader].
-func (s *SQLStore) RefreshTargetByIdentity(ctx context.Context, identityID string) (Target, bool, error) {
-	x, err := s.Store.OIDCRefreshTargetByIdentity(ctx, identityID)
-	if errors.Is(err, store.ErrNotFound) {
-		return Target{}, false, nil
-	}
-	if err != nil {
-		return Target{}, false, err
-	}
-	return targetOf(x), true, nil
-}
-
-func targetOf(x store.OIDCRefreshTarget) Target {
-	return Target{
-		IdentityID: x.IdentityID, UserID: x.UserID, Issuer: x.Issuer, Subject: x.Subject, ProviderID: x.ProviderID,
-		LastLoginAt: x.LastLoginAt, RefreshToken: logx.Secret(x.RefreshToken), IdPAdmin: x.IdPAdmin,
-	}
-}
-
-// reread returns t as it is stored now (under the identity's lock), and
-// false when it holds no token any more. A store without [TargetReader]
-// gives t back unchanged.
-func (r *Refresher) reread(ctx context.Context, t Target) (Target, bool, error) {
-	tr, ok := r.Store.(TargetReader)
-	if !ok {
-		return t, true, nil
-	}
-	return tr.RefreshTargetByIdentity(ctx, t.IdentityID)
 }
 
 func (r *Refresher) wakeChan() chan struct{} {
@@ -690,43 +587,24 @@ func (r *Refresher) provider(ctx context.Context, cfg Config) (*Provider, error)
 // cached, discovered provider and serves only the network call; its own
 // configuration is as old as the last discovery and its fingerprint leaves the
 // role rules out, so it must not decide the roles.
-//
-// The token is read again under the identity's lock right before it is sent,
-// and the result is stored under the same lock: a silent session renewal of
-// the same account waits, and then uses the token stored now.
 func (r *Refresher) refreshOne(ctx context.Context, p *Provider, cfg Config, t Target, sum *RunSummary) {
-	unlock := r.lockIdentity(t.IdentityID)
-	defer unlock()
-	cur, ok, err := r.reread(ctx, t)
-	switch {
-	case err != nil:
-		r.logger().Error("oidc refresh: could not read the refresh token again, roles unchanged", "account", t, "error", err)
-		sum.Unchanged++
-		return
-	case !ok || cur.Issuer != t.Issuer || cur.ProviderID != t.ProviderID:
-		sum.Unchanged++ // signed out, suspended or changed meanwhile: nothing to do now
-		return
-	}
-	t = cur
 	res, err := p.Refresh(ctx, t.RefreshToken, Identity{Issuer: t.Issuer, Subject: t.Subject})
-	pctx, cancel := persistContext(ctx)
-	defer cancel()
 	switch {
 	case errors.Is(err, ErrRefreshRejected):
-		r.apply(pctx, t, Update{Target: t, Suspend: true, OnApplied: r.auditSuspend}, sum, true)
+		r.apply(ctx, t, Update{Target: t, Suspend: true, OnApplied: r.auditSuspend}, sum, true)
 		return
 	case err != nil:
 		// Nothing was learned. A rotated token must still be kept: the IdP
 		// may have invalidated the one that is stored.
 		r.logger().Warn("oidc refresh: no fresh claims, roles unchanged", "account", t, "error", err)
 		if res.RotatedToken != "" {
-			r.apply(pctx, t, Update{Target: t, NewToken: res.RotatedToken}, sum, false)
+			r.apply(ctx, t, Update{Target: t, NewToken: res.RotatedToken}, sum, false)
 		}
 		sum.Unchanged++
 		return
 	}
 	roles := cfg.Rules().Evaluate(res.Identity.Claims)
-	r.apply(pctx, t, Update{Target: t, ReplaceRoles: true, Roles: roles, NewToken: res.RotatedToken, OnApplied: r.auditRoleChange}, sum, false)
+	r.apply(ctx, t, Update{Target: t, ReplaceRoles: true, Roles: roles, NewToken: res.RotatedToken, OnApplied: r.auditRoleChange}, sum, false)
 }
 
 // apply runs u and updates the summary. suspend marks a suspension.

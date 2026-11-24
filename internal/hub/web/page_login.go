@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -72,18 +73,27 @@ func (s *Server) gate(roles []authz.Role, exempt bool, next http.Handler) http.H
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, ok := session.FromContext(r.Context())
 		if !ok {
+			if idle, ok := session.Idle(r.Context()); ok {
+				// The idle lifetime of the session ran out. A top-level page
+				// load signs in again: silently with the identity provider
+				// (prompt=none) for an OIDC session when the person made the
+				// request, else on the sign-in page. Anything else (htmx, a
+				// poll, a stream, a fetch) gets a quiet 401 that pauses the
+				// page and keeps what it holds.
+				if !session.Navigation(r) {
+					w.Header().Set(session.IdleHeader, "idle")
+					session.WriteError(w, proto.CodeUnauthenticated, "the session is idle; reload the page to continue", map[string]any{"reason": session.IdleReason})
+					return
+				}
+				if target := s.reauthTarget(r, idle.Reauth); target != "" {
+					w.Header().Set("Cache-Control", "no-store")
+					http.Redirect(w, r, target, http.StatusSeeOther)
+					return
+				}
+			}
 			// A background request (a timed poll, a stream reconnect) of a
 			// session that ended must not navigate the page away: it gets a
-			// plain 401 that htmx does not swap, and the screen stays as it
-			// is until the person's next action leads to the sign-in.
-			if session.Idle(r.Context()) {
-				// The idle lifetime ran out and this request may not renew it:
-				// the page pauses and keeps what it holds; the person's next
-				// action continues (or renews) the session.
-				w.Header().Set(session.IdleHeader, "idle")
-				session.WriteError(w, proto.CodeUnauthenticated, "the session is idle", map[string]any{"reason": session.IdleReason})
-				return
-			}
+			// plain 401 that htmx does not swap.
 			if session.Background(r) || (r.Header.Get("HX-Request") != "true" && r.Method != http.MethodGet && r.Method != http.MethodHead) {
 				session.WriteError(w, proto.CodeUnauthenticated, "sign in first", nil)
 				return
@@ -101,6 +111,49 @@ func (s *Server) gate(roles []authz.Role, exempt bool, next http.Handler) http.H
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// reauthTarget returns the start of a silent re-authentication with the
+// registered sign-in method providerID (prompt=none) that returns to the page
+// of r, or "" when there is none to start.
+func (s *Server) reauthTarget(r *http.Request, providerID string) string {
+	if providerID == "" || r.Method != http.MethodGet {
+		return ""
+	}
+	next := r.URL.RequestURI()
+	if !sameOriginPath(next) {
+		next = "/"
+	}
+	for _, p := range s.snap.providers {
+		if p.ID == providerID && sameOriginPath(p.Path) && !strings.Contains(p.Path, "?") {
+			return p.Path + "?silent=1&next=" + url.QueryEscape(next)
+		}
+	}
+	return ""
+}
+
+// PollRoute reports whether r is a request that a page sends on its own (a
+// timed poll or a check), also from a page loaded before the version that
+// marks such requests with [session.BackgroundHeader]: it must never count as
+// the person's activity. The server gives it to [session.Middleware.Polls].
+func PollRoute(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	p := r.URL.Path
+	switch {
+	case p == pathInspectorPrincipal, p == "/workers/pairing-requests":
+		return true
+	case strings.HasPrefix(p, "/s/") && (strings.HasSuffix(p, "/screen") || strings.HasSuffix(p, "/context") || strings.HasSuffix(p, pathPipeTurns)):
+		return true
+	}
+	if r.Header.Get("HX-Request") == "true" {
+		switch r.Header.Get("HX-Trigger") {
+		case "harness-matrix", "usage-subscription-data", "pairing-requests":
+			return true
+		}
+	}
+	return false
 }
 
 // handleLogin serves GET /login. A signed-in browser goes on to where it was

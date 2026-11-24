@@ -13,18 +13,9 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 )
 
-// countingRenewer answers every renewal with out and counts the calls.
-type countingRenewer struct {
-	out   RenewOutcome
-	calls atomic.Int32
-}
-
-func (c *countingRenewer) RenewSession(context.Context, *Session) RenewOutcome {
-	c.calls.Add(1)
-	return c.out
-}
-
-func idleRig(t *testing.T, method string, ren Renewer) (*Manager, *fakeClock, http.Handler, Issued) {
+// idleRig serves a handler behind the middleware that answers 200 with a
+// session, and 401 without one; the last request's [Idle] record is in *seen.
+func idleRig(t *testing.T, method string) (*Manager, *fakeClock, http.Handler, Issued, *IdleSession) {
 	t.Helper()
 	ms := newMemStore(alice)
 	clk := &fakeClock{t: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)}
@@ -33,20 +24,46 @@ func idleRig(t *testing.T, method string, ren Renewer) (*Manager, *fakeClock, ht
 	if err != nil {
 		t.Fatal(err)
 	}
-	mw := &Middleware{Manager: m, Renew: ren}
+	seen := &IdleSession{}
+	mw := &Middleware{Manager: m, Origin: func(*http.Request) string { return "https://hub.example" }}
 	h := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = IdleSession{}
+		if v, ok := Idle(r.Context()); ok {
+			*seen = v
+			seen.Method = "idle:" + v.Method
+		}
 		if _, ok := FromContext(r.Context()); !ok {
 			w.WriteHeader(http.StatusUnauthorized)
 		}
 	}))
-	return m, clk, h, is
+	return m, clk, h, is, seen
 }
 
-func get(h http.Handler, token string, background bool) int {
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
+// kinds of request of the tests
+const (
+	fgNav   = iota // the person loads a page (Fetch Metadata same-origin, document)
+	fgFetch        // the person clicks a button (htmx, same-origin)
+	bgPoll         // a poll of the page (background header)
+	xsNav          // a page load from another site
+)
+
+func send(h http.Handler, token string, kind int) int {
+	r := httptest.NewRequest(http.MethodGet, "https://hub.example/sessions", nil)
 	r.AddCookie(&http.Cookie{Name: CookieName, Value: token})
-	if background {
+	switch kind {
+	case fgNav:
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		r.Header.Set("Sec-Fetch-Dest", "document")
+	case fgFetch:
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
+		r.Header.Set("Sec-Fetch-Dest", "empty")
+		r.Header.Set("HX-Request", "true")
+	case bgPoll:
+		r.Header.Set("Sec-Fetch-Site", "same-origin")
 		r.Header.Set(BackgroundHeader, "1")
+	case xsNav:
+		r.Header.Set("Sec-Fetch-Site", "cross-site")
+		r.Header.Set("Sec-Fetch-Dest", "document")
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, r)
@@ -61,77 +78,104 @@ func TestDefaultIdleLifetimeIsTwoHours(t *testing.T) {
 }
 
 func TestLocalSessionSlidesWithActivityAndEndsWhenIdle(t *testing.T) {
-	ren := &countingRenewer{out: RenewOK}
-	_, clk, h, is := idleRig(t, AuthMethodLocal, ren)
+	_, clk, h, is, seen := idleRig(t, AuthMethodLocal)
 	// Active every 90 minutes: the session lives on past the first 2 h.
-	for range 4 {
+	for i := range 4 {
 		clk.Add(90 * time.Minute)
-		if code := get(h, is.Token, false); code != http.StatusOK {
+		if code := send(h, is.Token, []int{fgNav, fgFetch}[i%2]); code != http.StatusOK {
 			t.Fatalf("active session at %v = %d", clk.Now(), code)
 		}
 	}
-	// Background polls alone do not keep it alive.
-	clk.Add(90 * time.Minute)
-	get(h, is.Token, true)
-	clk.Add(31 * time.Minute)
-	if code := get(h, is.Token, false); code != http.StatusUnauthorized {
+	// Background polls and page loads from other sites do not keep it alive.
+	clk.Add(60 * time.Minute)
+	send(h, is.Token, bgPoll)
+	send(h, is.Token, xsNav)
+	clk.Add(61 * time.Minute)
+	if code := send(h, is.Token, fgNav); code != http.StatusUnauthorized {
 		t.Fatalf("idle local session = %d, want signed out", code)
 	}
-	if ren.calls.Load() != 0 {
-		t.Errorf("a local session asked the renewer %d times", ren.calls.Load())
+	// It is marked idle, and a local session is never re-authenticated
+	// silently: the page load leads to the sign-in page.
+	if *seen != (IdleSession{Method: "idle:" + AuthMethodLocal}) {
+		t.Errorf("idle record = %+v", *seen)
 	}
 }
 
 func TestLocalSessionEndsAtItsAbsoluteEnd(t *testing.T) {
-	_, clk, h, is := idleRig(t, AuthMethodLocal, nil)
+	_, clk, h, is, seen := idleRig(t, AuthMethodLocal)
 	for clk.Now().Before(is.CreatedAt.Add(LocalMaxAge - time.Hour)) {
 		clk.Add(time.Hour)
-		if code := get(h, is.Token, false); code != http.StatusOK {
+		if code := send(h, is.Token, fgNav); code != http.StatusOK {
 			t.Fatalf("active session at %v = %d", clk.Now(), code)
 		}
 	}
 	clk.Add(time.Hour)
-	if code := get(h, is.Token, false); code != http.StatusUnauthorized {
+	if code := send(h, is.Token, fgNav); code != http.StatusUnauthorized {
 		t.Fatalf("local session past %v = %d, want signed out", LocalMaxAge, code)
+	}
+	if seen.Method != "" {
+		t.Errorf("a session past its absolute end is marked idle: %+v", *seen)
 	}
 }
 
-func TestExpiredOIDCSessionOutcomes(t *testing.T) {
+// An expired OIDC session is never renewed: nothing serves the request with
+// it. Only a foreground top-level page load is marked for the silent
+// re-authentication with its provider; htmx, polls and page loads from other
+// sites are not.
+func TestExpiredOIDCSessionIsMarkedForSilentReauthOnlyOnAForegroundPageLoad(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		out  RenewOutcome
-		want int
+		name   string
+		kind   int
+		reauth string
 	}{
-		{"renewed", RenewOK, http.StatusOK},
-		{"refused", RenewFailed, http.StatusUnauthorized},
-		{"unreachable within the grace", RenewUnavailable, http.StatusOK},
+		{"page load", fgNav, "authentik"},
+		{"htmx click", fgFetch, ""},
+		{"poll", bgPoll, ""},
+		{"page load from another site", xsNav, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ren := &countingRenewer{out: tc.out}
-			m, clk, h, is := idleRig(t, "oidc:authentik", ren)
+			m, clk, h, is, seen := idleRig(t, "oidc:authentik")
 			clk.Add(2*time.Hour + time.Minute)
-			if code := get(h, is.Token, false); code != tc.want {
-				t.Fatalf("page load = %d, want %d", code, tc.want)
+			if code := send(h, is.Token, tc.kind); code != http.StatusUnauthorized {
+				t.Fatalf("expired session served: %d", code)
 			}
-			_, err := m.Resolve(context.Background(), is.Token)
-			switch tc.out {
-			case RenewOK:
-				if err != nil {
-					t.Errorf("renewed session does not resolve: %v", err)
-				}
-			case RenewFailed:
-				if _, ok := err.(*ExpiredError); ok || err == nil {
-					t.Errorf("refused session still exists: %v", err)
-				}
+			if want := (IdleSession{Method: "idle:oidc:authentik", Reauth: tc.reauth}); *seen != want {
+				t.Errorf("idle record = %+v, want %+v", *seen, want)
+			}
+			// Still expired: no request renewed it.
+			if _, err := m.Resolve(context.Background(), is.Token); err == nil {
+				t.Error("the expired session resolves again")
 			}
 		})
 	}
 }
 
 func TestCookieOfAnOIDCSessionOutlivesTheIdleEnd(t *testing.T) {
-	_, _, _, is := idleRig(t, "oidc:authentik", nil)
+	_, _, _, is, _ := idleRig(t, "oidc:authentik")
 	if c := Cookie(is, true); !c.Expires.Equal(is.CreatedAt.Add(OIDCMaxAge)) {
 		t.Fatalf("cookie expires %v, want %v", c.Expires, is.CreatedAt.Add(OIDCMaxAge))
+	}
+}
+
+// The first idle end is clamped to the longest idle lifetime too, not only
+// to the cap: a session_ttl of 24 h issues an OIDC session that is idle after
+// 12 h even when it is first used after that.
+func TestFirstIdleEndIsClampedToMaxIdle(t *testing.T) {
+	for _, method := range []string{AuthMethodLocal, "oidc:authentik"} {
+		ms := newMemStore(alice)
+		clk := &fakeClock{t: time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)}
+		m := NewManager(ms, WithClock(clk.Now), WithIdleTTL(func(context.Context) (time.Duration, error) { return 24 * time.Hour, nil }))
+		is, err := m.CreateAuth(context.Background(), alice, 24*time.Hour, Auth{At: clk.Now(), Method: method})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := is.CreatedAt.Add(MaxIdle); !is.ExpiresAt.Equal(want) {
+			t.Errorf("%s: first idle end %v, want sign-in + %v", method, is.ExpiresAt.Sub(is.CreatedAt), MaxIdle)
+		}
+		clk.Add(13 * time.Hour)
+		if _, err := m.Resolve(context.Background(), is.Token); err == nil {
+			t.Errorf("%s: first use after 13 h is still valid", method)
+		}
 	}
 }
 
@@ -175,7 +219,9 @@ func TestAbsoluteCapsAreIndependentOfTheIdleSetting(t *testing.T) {
 		// Activity until the cap never moves the idle end past it.
 		mw := &Middleware{Manager: m}
 		for clk.Now().Before(is.EndsAt) {
-			s, err := mw.ResolveRequest(httptest.NewRequest(http.MethodGet, "/", nil), is.Token)
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+			s, err := mw.ResolveRequest(r, is.Token)
 			if err != nil {
 				break
 			}
@@ -246,34 +292,95 @@ func TestOldAndLongerIdleEndsAreClampedOnUse(t *testing.T) {
 	}
 }
 
-func TestForegroundAndCrossOrigin(t *testing.T) {
+// A request extends the session only with affirmative evidence that the
+// person made it on the Hub's own pages.
+func TestForegroundNeedsAffirmativeEvidence(t *testing.T) {
+	const own = "https://hub.example:8443"
+	mw := &Middleware{
+		Origin: func(*http.Request) string { return own },
+		Polls:  func(r *http.Request) bool { return r.URL.Path == "/poll" },
+	}
 	for _, tc := range []struct {
 		name string
+		path string
 		hdr  map[string]string
 		ctx  bool
 		fg   bool
 	}{
-		{"plain (curl)", nil, false, true},
-		{"same-origin", map[string]string{"Sec-Fetch-Site": "same-origin"}, false, true},
-		{"typed address", map[string]string{"Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1"}, false, true},
-		{"same-site sibling", map[string]string{"Sec-Fetch-Site": "same-site"}, false, false},
-		{"cross-site", map[string]string{"Sec-Fetch-Site": "cross-site"}, false, false},
-		{"foreign Origin", map[string]string{"Origin": "https://evil.example"}, false, false},
-		{"own Origin", map[string]string{"Origin": "http://example.com"}, false, true},
-		{"null Origin", map[string]string{"Origin": "null"}, false, false},
-		{"background header", map[string]string{BackgroundHeader: "1"}, false, false},
-		{"event stream", map[string]string{"Accept": "text/event-stream"}, false, false},
-		{"background context", nil, true, false},
+		{"no headers (curl, an old browser)", "/", nil, false, false},
+		{"same-origin", "/", map[string]string{"Sec-Fetch-Site": "same-origin"}, false, true},
+		{"typed address", "/", map[string]string{"Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1"}, false, true},
+		{"none without a user gesture", "/", map[string]string{"Sec-Fetch-Site": "none"}, false, false},
+		{"same-site sibling", "/", map[string]string{"Sec-Fetch-Site": "same-site"}, false, false},
+		{"cross-site", "/", map[string]string{"Sec-Fetch-Site": "cross-site"}, false, false},
+		{"cross-site with our Origin", "/", map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": own}, false, false},
+		{"own Origin", "/", map[string]string{"Origin": own}, false, true},
+		{"own Origin, other case and default-less", "/", map[string]string{"Origin": "HTTPS://Hub.Example:8443"}, false, true},
+		{"own host over http", "/", map[string]string{"Origin": "http://hub.example:8443"}, false, false},
+		{"own host on another port", "/", map[string]string{"Origin": "https://hub.example"}, false, false},
+		{"foreign Origin", "/", map[string]string{"Origin": "https://evil.example"}, false, false},
+		{"null Origin", "/", map[string]string{"Origin": "null"}, false, false},
+		{"foreign Origin with our Referer", "/", map[string]string{"Origin": "https://evil.example", "Referer": own + "/x"}, false, false},
+		{"own Referer", "/", map[string]string{"Referer": own + "/sessions?x=1"}, false, true},
+		{"foreign Referer", "/", map[string]string{"Referer": "https://evil.example/" + own}, false, false},
+		{"background header", "/", map[string]string{"Sec-Fetch-Site": "same-origin", BackgroundHeader: "1"}, false, false},
+		{"event stream", "/", map[string]string{"Sec-Fetch-Site": "same-origin", "Accept": "text/event-stream"}, false, false},
+		{"background context", "/", map[string]string{"Sec-Fetch-Site": "same-origin"}, true, false},
+		{"a polled route of an old page", "/poll", map[string]string{"Sec-Fetch-Site": "same-origin"}, false, false},
 	} {
-		r := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		r := httptest.NewRequest(http.MethodGet, "https://hub.example:8443"+tc.path, nil)
 		for k, v := range tc.hdr {
 			r.Header.Set(k, v)
 		}
 		if tc.ctx {
 			r = r.WithContext(AsBackground(r.Context()))
 		}
-		if got := Foreground(r); got != tc.fg {
+		if got := mw.Foreground(r); got != tc.fg {
 			t.Errorf("%s: Foreground = %v, want %v", tc.name, got, tc.fg)
 		}
+	}
+	// Without a trusted origin only Fetch Metadata counts.
+	r := httptest.NewRequest(http.MethodGet, "https://hub.example/", nil)
+	r.Header.Set("Origin", "https://hub.example")
+	if (&Middleware{}).Foreground(r) {
+		t.Error("Origin counted without a trusted origin")
+	}
+}
+
+func TestNavigation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		hdr    map[string]string
+		nav    bool
+	}{
+		{"document", http.MethodGet, map[string]string{"Sec-Fetch-Dest": "document"}, true},
+		{"iframe", http.MethodGet, map[string]string{"Sec-Fetch-Dest": "iframe"}, false},
+		{"fetch", http.MethodGet, map[string]string{"Sec-Fetch-Dest": "empty"}, false},
+		{"htmx", http.MethodGet, map[string]string{"Sec-Fetch-Dest": "document", "HX-Request": "true"}, false},
+		{"background", http.MethodGet, map[string]string{"Sec-Fetch-Dest": "document", BackgroundHeader: "1"}, false},
+		{"post", http.MethodPost, map[string]string{"Sec-Fetch-Dest": "document"}, false},
+		{"old browser page", http.MethodGet, map[string]string{"Accept": "text/html,*/*"}, true},
+		{"old browser json", http.MethodGet, map[string]string{"Accept": "application/json"}, false},
+	} {
+		r := httptest.NewRequest(tc.method, "/", nil)
+		for k, v := range tc.hdr {
+			r.Header.Set(k, v)
+		}
+		if got := Navigation(r); got != tc.nav {
+			t.Errorf("%s: Navigation = %v, want %v", tc.name, got, tc.nav)
+		}
+	}
+}
+
+// Wrap marks a polled route as background for the handlers behind it.
+func TestWrapMarksPolledRoutesAsBackground(t *testing.T) {
+	mw := &Middleware{Manager: NewManager(newMemStore(alice)), Polls: func(r *http.Request) bool { return r.URL.Path == "/poll" }}
+	var bg []bool
+	h := mw.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { bg = append(bg, Background(r)) }))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/poll", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/page", nil))
+	if len(bg) != 2 || !bg[0] || bg[1] {
+		t.Errorf("background = %v, want [true false]", bg)
 	}
 }

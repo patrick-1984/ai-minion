@@ -108,9 +108,23 @@ func TestResolveHubServerCertPathsFromPanelAndEnvPrecedence(t *testing.T) {
 
 func TestListenPortOfEveryForm(t *testing.T) {
 	for in, want := range map[string]string{"9443": "9443", ":9443": "9443", "0.0.0.0:9443": "9443", "[::]:9443": "9443", "": "8443", "host:": "8443", "garbage": "8443",
-		":0009443": "9443", "0009443": "9443", "host:+9443": "8443", ":70000": "8443", ":0": "8443"} {
+		":0009443": "9443", "0009443": "9443", ":70000": "8443", ":0": "8443",
+		// host:port values an older Hub accepted bind as the Go listener reads them.
+		"host:+9443": "9443", "127.0.0.1:00000000000000000009443": "9443", "127.0.0.1:-0": "8443",
+		// A bare port is digits only.
+		"+9443": "8443", "00000000000000000009443": "8443"} {
 		if got := ListenPort(in, "8443"); got != want {
 			t.Errorf("ListenPort(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]int{"127.0.0.1:+9443": 9443, "127.0.0.1:00000000000000000009443": 9443, ":8443": 8443, "[::1]:0": 0} {
+		if got, ok := HostPortPort(in); !ok || got != want {
+			t.Errorf("HostPortPort(%q) = %d, %v, want %d", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"127.0.0.1:https", "127.0.0.1:70000", "127.0.0.1:-1", "8443", "127.0.0.1: 8443"} {
+		if _, ok := HostPortPort(in); ok {
+			t.Errorf("HostPortPort(%q) accepted", in)
 		}
 	}
 	if DefaultListen != "8443" {

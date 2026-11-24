@@ -15,7 +15,7 @@
   </form>
   {{if .Data.Providers}}
   <div class="providers" role="group" aria-label="Other sign-in methods">
-    {{range .Data.Providers}}<a class="btn btn-secondary" href="{{.Path}}">{{template "icon" "i-login"}}<span>Sign in with {{.Label}}</span></a>
+    {{range .Data.Providers}}<a class="btn btn-secondary" href="{{.Path}}{{if ne $.Data.Next "/"}}?next={{$.Data.Next}}{{end}}">{{template "icon" "i-login"}}<span>Sign in with {{.Label}}</span></a>
     {{end}}
   </div>
   {{end}}

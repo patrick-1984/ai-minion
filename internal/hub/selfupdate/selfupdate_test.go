@@ -410,3 +410,35 @@ func TestCopyDirNeedsTheDatabase(t *testing.T) {
 		t.Fatal("the copy created the absent source")
 	}
 }
+
+// The Docker self-update probes /readyz on the port the new Hub listens on,
+// also for the listen forms an older Hub accepted (A100): a plain port, a
+// padded or signed host:port.
+func TestReadyzProbesTheListenPortOfEveryForm(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	for _, listen := range []string{port, ":" + port, "127.0.0.1:+" + port, "0.0.0.0:00000000000000000" + port} {
+		var c Container
+		c.HostConfig = map[string]json.RawMessage{"NetworkMode": json.RawMessage(`"host"`)}
+		env, _ := json.Marshal([]string{"MINION_TLS=off", "MINION_LISTEN=" + listen})
+		c.Config = map[string]json.RawMessage{"Env": env}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ok := readyz(ctx, c)
+		cancel()
+		if !ok {
+			t.Errorf("MINION_LISTEN=%s: the probe missed the Hub on port %s", listen, port)
+		}
+	}
+}

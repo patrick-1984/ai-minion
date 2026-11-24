@@ -12,6 +12,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/testutil/hubstore"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -308,11 +309,42 @@ func TestListenSettingForms(t *testing.T) {
 			t.Errorf("management_listen %q = %q, %v, want %q", in, cfg.ManagementListen, err, want)
 		}
 	}
+	// host:port values that v0.20.4 accepted (a sign, a long zero-padded port)
+	// still start, unchanged: the Go listener binds them as before.
+	for _, in := range []string{"127.0.0.1:+9443", "127.0.0.1:00000000000000000009443", ":+9443"} {
+		cfg, err := NewConfig(config.HubServer{DataDir: "/data", Listen: in, TLS: config.TLSAuto}, nil)
+		if err != nil || cfg.Listen != in {
+			t.Errorf("legacy listen %q = %v, %v; want it accepted as it is", in, cfg, err)
+		}
+	}
+	for _, in := range []string{"+9443", "127.0.0.1:https", "127.0.0.1:70000"} {
+		if _, err := NewConfig(config.HubServer{DataDir: "/data", Listen: in, TLS: config.TLSAuto}, nil); err == nil {
+			t.Errorf("listen %q accepted", in)
+		}
+	}
 	if _, err := NewConfig(config.HubServer{DataDir: "/data", Listen: "8443", TLS: config.TLSAuto, ManagementListen: "8443"}, nil); err == nil {
 		t.Error("a plain management port equal to the main port was accepted")
 	}
 	if _, err := NewConfig(config.HubServer{DataDir: "/data", Listen: "8443", TLS: config.TLSAuto, ManagementListen: ":8444"}, nil); err == nil {
 		t.Error("a management listener on every interface was accepted")
+	}
+}
+
+// A Hub configured with a legacy host:port form starts and listens on the
+// port the Go listener reads from it (A100: never refuse what v0.20.4 started
+// with).
+func TestLegacyListenFormsStart(t *testing.T) {
+	for _, in := range []string{"127.0.0.1:+0", "127.0.0.1:00000000000000000000"} {
+		cfg, err := NewConfig(config.HubServer{DataDir: hubstore.Dir(t), Listen: in, TLS: config.TLSAuto}, nil)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		h := startHub(t, cfg, registryWith(t, false, nil))
+		host, port, err := net.SplitHostPort(h.srv.Addr())
+		if err != nil || host != "127.0.0.1" || port == "0" {
+			t.Errorf("%q: listening on %q", in, h.srv.Addr())
+		}
+		h.stop(t)
 	}
 }
 

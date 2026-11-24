@@ -100,6 +100,11 @@
       });
       var data = null;
       try { data = await resp.json(); } catch (e) { data = null; }
+      if (resp.status === 401 && resp.headers && typeof resp.headers.get === 'function' && resp.headers.get('X-Minion-Session') === 'idle' && !inView(form)) {
+        setBusy(form, false);
+        sessionPaused();
+        return;
+      }
       if (!resp.ok) {
         var msg = data && data.error && data.error.message ? data.error.message : 'The request failed (' + resp.status + ').';
         showError(form, msg);
@@ -127,6 +132,39 @@
     if (!d || !d.headers || String(d.verb || '').toLowerCase() !== 'get') { return; }
     var te = d.triggeringEvent;
     if (!te || te.isTrusted !== true) { d.headers['X-Minion-Background'] = '1'; }
+  });
+
+  // A session whose idle lifetime ran out answers every request that is not a page load with a
+  // quiet 401 marked X-Minion-Session: idle. The page is not changed (what it shows and what was
+  // typed stay); it says so, and the person's next click reloads it: that page load signs in again
+  // (silently with the identity provider, or on the sign-in page) and comes back here. A live
+  // session view and the inspector (inside an element with data-context) pause on their own.
+  var pausedNote = null;
+  function inView(el) {
+    return !!(el && typeof el.closest === 'function' && el.closest('[data-context]'));
+  }
+  function resumeClick(ev) {
+    document.removeEventListener('click', resumeClick, true);
+    if (ev && typeof ev.preventDefault === 'function') { ev.preventDefault(); ev.stopPropagation(); }
+    window.location.reload();
+  }
+  function sessionPaused() {
+    if (pausedNote) { return; }
+    var area = document.getElementById('flash-area');
+    pausedNote = document.createElement('div');
+    pausedNote.className = 'flash flash-info';
+    pausedNote.setAttribute('role', 'status');
+    pausedNote.setAttribute('data-session-paused', '');
+    pausedNote.textContent = 'Session paused \u2014 click or refresh to continue.';
+    if (area) { area.appendChild(pausedNote); }
+    document.addEventListener('click', resumeClick, true);
+  }
+  document.addEventListener('htmx:responseError', function (ev) {
+    var d = ev.detail || {};
+    var xhr = d.xhr;
+    if (!xhr || xhr.status !== 401 || typeof xhr.getResponseHeader !== 'function' || xhr.getResponseHeader('X-Minion-Session') !== 'idle') { return; }
+    if (inView(d.elt)) { return; }
+    sessionPaused();
   });
 
   document.addEventListener('submit', function (ev) {

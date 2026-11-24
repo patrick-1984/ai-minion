@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-// OIDCSessionMaxAge is how long after its sign-in a browser session that was
-// started with OIDC may still be renewed silently with the identity provider
-// once its idle lifetime ran out. Until then its row is kept after it expired,
-// so that the next request can renew it; a local session's row goes as soon
-// as it expired.
+// OIDCSessionMaxAge is the absolute lifetime of a browser session that was
+// started with OIDC. Until then its row is kept after its idle lifetime ran
+// out, so that the next page load knows the session expired and which
+// identity provider to ask for a silent re-authentication (the row itself is
+// never used again); a local session's row goes as soon as it expired.
 const OIDCSessionMaxAge = 7 * 24 * time.Hour
 
 // SessionRow is one row of the sessions table. TokenHash is the hex SHA-256
@@ -32,7 +32,7 @@ type SessionRow struct {
 }
 
 // CreateSession stores a new session and, in the same transaction, deletes
-// the sessions that expired before nowMS and can no longer be renewed (every
+// the sessions that expired before nowMS and are no longer needed (every
 // local one; an OIDC one older than [OIDCSessionMaxAge]), so the table does
 // not grow without bound.
 func (s *Store) CreateSession(ctx context.Context, row SessionRow, nowMS int64) error {

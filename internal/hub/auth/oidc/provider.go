@@ -322,6 +322,15 @@ func (p *Provider) AuthCodeURL(redirectURL, state, nonce, codeVerifier string) s
 		oauth2.S256ChallengeOption(codeVerifier), gooidc.Nonce(nonce))
 }
 
+// AuthCodeURLSilent is [Provider.AuthCodeURL] for a silent sign-in: it asks
+// the IdP to answer without any interaction with the person (prompt=none),
+// which succeeds only while the IdP's own browser session is valid.
+func (p *Provider) AuthCodeURLSilent(redirectURL, state, nonce, codeVerifier string) string {
+	return p.oauth(redirectURL).AuthCodeURL(state,
+		oauth2.S256ChallengeOption(codeVerifier), gooidc.Nonce(nonce),
+		oauth2.SetAuthURLParam("prompt", "none"))
+}
+
 // AuthCodeURLReauth is [Provider.AuthCodeURL] for a re-authentication: it asks
 // the IdP to authenticate the user again (max_age=0, prompt=login). Whether
 // the IdP did is judged by the auth_time claim, never by this request.

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -46,19 +47,15 @@ const (
 // means every interface ([ListenAddr] turns it into ":8443").
 const DefaultListen = "8443"
 
-// ParsePort parses a port number as the Hub's listener validation and every
-// probe of the listen port read it: digits only (no sign, no space), leading
-// zeros allowed as the Go listener allows them (":0009443" binds 9443), and a
-// value from 0 to 65535.
+// ParsePort parses a plain port number, the canonical form of a listen
+// setting: digits only (no sign, no space, at most 16 of them), leading zeros
+// allowed as the Go listener allows them, and a value from 0 to 65535.
 func ParsePort(v string) (int, bool) {
-	if v == "" || len(v) > 16 {
+	if !isPort(v) {
 		return 0, false
 	}
 	n := 0
 	for _, c := range v {
-		if c < '0' || c > '9' {
-			return 0, false
-		}
 		n = n*10 + int(c-'0')
 		if n > 65535 {
 			return 0, false
@@ -79,6 +76,24 @@ func isPort(v string) bool {
 		}
 	}
 	return true
+}
+
+// HostPortPort returns the port of a host:port listen address as the Hub
+// accepted it before plain ports (v0.20.4 and earlier) and as the Go listener
+// binds it: the port after the last colon read as a decimal number, an
+// optional sign and any number of leading zeros included ("127.0.0.1:+9443"
+// and "127.0.0.1:0009443" bind 9443), from 0 to 65535. Every value an older
+// Hub started with keeps working.
+func HostPortPort(addr string) (int, bool) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, false
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 0 || p > 65535 {
+		return 0, false
+	}
+	return p, true
 }
 
 // ListenAddr turns a listen setting into a Go listen address. A plain port
@@ -105,14 +120,17 @@ func ManagementListenAddr(v string) string {
 }
 
 // ListenPort returns the port of a listen setting in any of its forms
-// ("8443", ":8443", "host:8443", a padded ":0009443"), as the listener binds
-// it ("9443"), or def when it names none.
+// ("8443", ":8443", "host:8443", a padded ":0009443" or a signed
+// "host:+9443" of an older Hub), as the listener binds it ("9443"), or def
+// when it names none.
 func ListenPort(v, def string) string {
-	a := ListenAddr(v)
-	if i := strings.LastIndex(a, ":"); i >= 0 {
-		if p, ok := ParsePort(a[i+1:]); ok && p > 0 {
-			return strconv.Itoa(p)
-		}
+	v = strings.TrimSpace(v)
+	p, ok := ParsePort(v)
+	if !ok {
+		p, ok = HostPortPort(v)
+	}
+	if ok && p > 0 {
+		return strconv.Itoa(p)
 	}
 	return def
 }
