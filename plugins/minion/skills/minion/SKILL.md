@@ -147,7 +147,8 @@ Name other Workers by id. A target that does not accept control from your Worker
 that is not a master session gets `forbidden`. **Check access** on that page explains any refusal.
 
 `workers_list` from a master session lists only the Workers that accept control from it; the result field
-`not_listed` counts the Workers you may see in the Hub but that are left out for that reason. `sessions_list` has no
+`not_listed` counts only the Workers the Hub shows you that grant you no control right now; a Worker whose policy
+grants you nothing is neither listed nor counted. `sessions_list` has no
 `--target`: use `--hub-worker <worker-id>`. The administration operations (`control_check`, `hub_diagnostics`,
 `usage_list`) are not forwarded by a Worker: they need a Hub key (section 7), because a session holds no right to them.
 

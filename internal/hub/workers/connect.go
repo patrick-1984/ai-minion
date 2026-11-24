@@ -45,12 +45,16 @@ type Policy struct {
 // proto_max are the Hub's supported protocol range (current minor and N-1
 // minor), which "minion update" checks for overlap (AD-4, A-10).
 type Welcome struct {
-	MasterSessionV1 bool   `json:"master_session_v1,omitempty"`
-	UsagePolicy     int    `json:"usage_policy,omitempty"`
-	Type            string `json:"type"`
-	WorkerID        string `json:"worker_id"`
-	Name            string `json:"name"`
-	Owner           string `json:"owner"`
+	MasterSessionV1 bool `json:"master_session_v1,omitempty"`
+	// LocalAuditV1 tells the Worker that this Hub records its local-write
+	// reports (proto.OpLocalAuditV1); an older Hub omits it and the Worker
+	// does not report.
+	LocalAuditV1 bool   `json:"local_audit_v1,omitempty"`
+	UsagePolicy  int    `json:"usage_policy,omitempty"`
+	Type         string `json:"type"`
+	WorkerID     string `json:"worker_id"`
+	Name         string `json:"name"`
+	Owner        string `json:"owner"`
 	// OwnerID is the stable id of the Worker's owner (protocol 2.0); Owner is
 	// the display name. The Worker uses OwnerID for pipe_accept_from.
 	OwnerID string `json:"owner_id"`
@@ -848,6 +852,7 @@ func (c *Conn) Welcome(ctx context.Context, w store.WorkerRow) error {
 	link := masterConnection{enabled: masterV1, transcript: append([]byte(nil), c.res.TranscriptHash[:]...)}
 	if err := c.write(Welcome{
 		MasterSessionV1: masterV1,
+		LocalAuditV1:    !w.Pending && h.callOp(proto.OpLocalAuditV1) != nil,
 		UsagePolicy:     usagePolicy,
 		Type:            proto.TypeWelcome,
 		WorkerID:        w.ID,

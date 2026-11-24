@@ -116,10 +116,11 @@ type WorkerInfo struct {
 // then owner, then id.
 type WorkersListResult struct {
 	Workers []WorkerInfo `json:"workers"`
-	// NotListed counts the Workers the caller may see in the Hub but that are
-	// left out of this list because the calling master session has no control
-	// authority over them (the Worker's "Accepts control from" setting names
-	// no master). Zero for every other caller.
+	// NotListed counts the Workers the Hub shows the calling master session
+	// but leaves out of this list because it holds no control authority over
+	// them right now. A Worker whose policy grants the master nothing is
+	// neither listed nor counted, so zero does not mean every Worker of the
+	// Hub is listed. Zero for every other caller.
 	NotListed int `json:"not_listed,omitempty"`
 }
 

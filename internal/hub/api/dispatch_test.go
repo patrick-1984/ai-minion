@@ -784,7 +784,7 @@ func TestForbiddenAPIKeyNamesTheMissingActions(t *testing.T) {
 	r.decide.fn = func(decideCall) error { return proto.NewError(proto.CodeForbidden, "not allowed") }
 	mustHandle(t, r.reg, opPing, func(context.Context, *Call) (any, error) { return struct{}{}, nil })
 	w := r.do("POST", "/api/v1/ops/ping_read", `{}`)
-	if errCode(t, w) != proto.CodeForbidden || !strings.Contains(w.Body.String(), "API key needs one of the actions") {
+	if errCode(t, w) != proto.CodeForbidden || !strings.Contains(w.Body.String(), "in this API key's effective permissions") {
 		t.Errorf("%d %s", w.Code, w.Body)
 	}
 	// A session gets the plain message.

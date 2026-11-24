@@ -138,13 +138,14 @@ func trustedProxyHint(q ops.HubDiagnosticsRequest) string {
 	if err != nil {
 		return ""
 	}
-	msg := "The request carries forwarding headers, but the peer " + q.PeerAddress + " is not a trusted proxy, so the real client address is not used. " +
-		"If that peer is your reverse proxy, add it to MINION_TRUSTED_PROXIES (setting trusted_proxies), exactly " + q.PeerAddress
-	if peer.Is4() && (peer.IsPrivate()) && !peer.IsLoopback() {
-		p, _ := peer.Prefix(24)
-		msg += " or, when the proxy runs in a container network, that network as a CIDR such as " + p.String()
+	exact := peer.String() + "/32"
+	if peer.Is6() && !peer.Is4In6() {
+		exact = peer.String() + "/128"
 	}
-	return msg + ". Do not trust a wider range than your proxy needs."
+	return "The request carries forwarding headers, but the peer " + q.PeerAddress + " is not a trusted proxy, so the real client address is not used. " +
+		"If that peer is your reverse proxy, add exactly that address to MINION_TRUSTED_PROXIES (setting trusted_proxies): " + exact + ". " +
+		"Behind Docker NAT this can be a bridge gateway that other containers or hosts also come through: then every client that reaches the Hub through it " +
+		"could set these headers, so first make sure only your proxy can reach the Hub's port (publish it on 127.0.0.1 or firewall it). Never trust a whole network."
 }
 
 func orText(v, empty string) string {

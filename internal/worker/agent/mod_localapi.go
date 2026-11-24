@@ -100,6 +100,8 @@ func (d localAPIDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		}
 		return nil
 	}
+	// F06: the executor reports the local writes it runs to the Hub.
+	ex.OnLocalWrite(newLocalReporter(calls, log).Enqueue)
 	srv, err := localapi.New(localapi.Config{
 		Executor: localExecutor{
 			ex: ex, log: log, live: live, stateDir: env.Settings().StateDir, pipe: pipeSvc, calls: calls, stop: env.RequestStop,
@@ -220,7 +222,6 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		return raw, nil
 	}
 	raw, err := l.ex.Execute(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args})
-	l.reportLocalWrite(ctx, rq.Op, rq.Args, raw, err, rq.Pane)
 	if err != nil {
 		return nil, l.protoError(rq.Op, err)
 	}

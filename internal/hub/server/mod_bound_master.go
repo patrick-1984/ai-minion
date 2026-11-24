@@ -50,7 +50,11 @@ func initBoundMaster(_ context.Context, env *Env) error {
 	if err := master.Bind(ingest, service); err != nil {
 		return err
 	}
-	if err := workers.NewLocalAudit(log).Bind(service); err != nil {
+	la := workers.NewLocalAudit(log)
+	if cfg, err := Require[*Config](env); err == nil {
+		la.WithLogger(cfg.logger())
+	}
+	if err := la.Bind(service); err != nil {
 		return err
 	}
 	if err := api.RegisterBoundMaster(h, st, master.SetBoundMaster); err != nil {

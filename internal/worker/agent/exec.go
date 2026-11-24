@@ -129,6 +129,10 @@ type Executor struct {
 	// (see write).
 	memMu sync.Mutex
 	mem   map[string]memEntry
+
+	// localWrites is told about every write of a local caller that this
+	// executor really ran (see [Executor.OnLocalWrite]); nil when unset.
+	localWrites atomic.Pointer[func(LocalWrite)]
 }
 
 // NewExecutor builds an executor with the release-1 session and write ops

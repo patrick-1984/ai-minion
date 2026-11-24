@@ -174,7 +174,7 @@ func longHelp(op ops.Op) string {
 	b.WriteString("\n\n")
 	switch {
 	case op.Name == ops.OpWorkersList:
-		b.WriteString("This is a Hub operation. Without a Hub configured (MINION_HUB_URL and MINION_API_KEY_FILE) the local Worker forwards it to its Hub, which answers a session with a session-control grant.\n")
+		b.WriteString("This is a Hub operation. Without a Hub configured (MINION_HUB_URL and MINION_API_KEY_FILE) the local Worker forwards it to its Hub, which answers a session with a session-control grant. A master session sees only the Workers whose \"Accepts control from\" setting names it; not_listed counts those the Hub shows it but that grant it no control now, never the Workers that grant it nothing.\n")
 	case op.Scope == ops.ScopeHub:
 		b.WriteString("This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket. A Worker forwards only workers_list to its Hub, never this operation.\n")
 	case op.Name == ops.OpSessionsList:

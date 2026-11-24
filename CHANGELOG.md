@@ -6,7 +6,7 @@
 
 - Hub logs: every audit event (sign-ins and failures, settings, invitations, API keys, Worker approval, role changes, session control) is also a structured log record at INFO, or WARN for a denial or failure, with actor, target, outcome and request id; the syslog and OpenTelemetry sinks at level info now carry them. Responses carry `X-Request-Id`.
 - Audit: one row per change (the dispatcher no longer adds a second row for an operation that audits itself), and the audit page shows user and Worker names next to the ids.
-- A write that someone makes on a Hub-connected Worker's own session through the local socket (for example `minion send_text`) is reported to the Hub audit as `local.<op>`, and the session's Details show harness, model and usage when known.
+- A write that someone makes on a Hub-connected Worker's own session through the local socket (for example `minion send_text`) is reported to the Hub audit as `local.<op>` (actor `worker:<id>/local`, only a resolved session, known outcomes and reason codes, a per-Worker budget; a cached duplicate is not reported again; a v0.20.1 Hub gets no report), and the session's Details show harness, model and usage when known.
 - Diagnostics shows the log sinks' last success, last error and drop reasons, and says which `MINION_TRUSTED_PROXIES` value fixes a wrong client IP behind a proxy. `MINION_LOG_HOSTNAME` sets the host name of exported logs.
 - Usage: an estimated cost of zero without any token count shows Unknown, a duration says whether the harness reported it or the Hub observed it, and a missing Codex model says why.
 - Master CLI: `workers_list` reports `not_listed`, and the help of Hub-only operations and `sessions_list` says how to reach another Worker.

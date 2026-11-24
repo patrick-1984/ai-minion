@@ -25,10 +25,13 @@ func TestSinkTextShowsLastSuccessErrorAndDropReasons(t *testing.T) {
 func TestTrustedProxyHint(t *testing.T) {
 	q := ops.HubDiagnosticsRequest{PeerAddress: "10.0.2.9", ForwardedHeaders: []ops.HubDiagnosticsHeader{{Name: "X-Forwarded-For", Value: "10.3.3.11"}}}
 	h := trustedProxyHint(q)
-	for _, w := range []string{"10.0.2.9", "10.0.2.0/24", "MINION_TRUSTED_PROXIES"} {
+	for _, w := range []string{"10.0.2.9/32", "MINION_TRUSTED_PROXIES", "only your proxy can reach"} {
 		if !strings.Contains(h, w) {
 			t.Errorf("missing %q in %q", w, h)
 		}
+	}
+	if strings.Contains(h, "/24") {
+		t.Errorf("hint suggests a guessed network: %q", h)
 	}
 	q.PeerTrustedProxy = true
 	if trustedProxyHint(q) != "" {
@@ -41,10 +44,14 @@ func TestTrustedProxyHint(t *testing.T) {
 
 func TestSessionUsageFacts(t *testing.T) {
 	in := int64(12)
-	rows := []ops.UsageSessionRow{{UsageSession: ops.UsageSession{Name: "other", Harness: "codex"}},
-		{UsageSession: ops.UsageSession{Name: "mt", Harness: "claude", Version: "2.1.3", Model: "haiku", AuthMode: "api_key", ObservedAt: 1700000000000,
+	created := time.Unix(1700000000, 0)
+	start, earlier, stopped := created.UnixMilli(), created.Add(-time.Hour).UnixMilli(), int64(1700000500000)
+	rows := []ops.UsageSessionRow{{UsageSession: ops.UsageSession{Name: "other", Harness: "codex", StartedAt: &start}},
+		// An earlier run under the same name, newer report: never shown.
+		{UsageSession: ops.UsageSession{Name: "mt", Harness: "codex", Model: "old-model", StartedAt: &earlier, ObservedAt: 1800000000000}},
+		{UsageSession: ops.UsageSession{Name: "mt", Harness: "claude", Version: "2.1.3", Model: "haiku", AuthMode: "api_key", ObservedAt: 1700000000000, StartedAt: &start,
 			UsageCounters: ops.UsageCounters{InputTokens: &in}}}}
-	got := sessionUsageFacts(rows, "mt")
+	got := sessionUsageFacts(rows, "mt", created)
 	text := ""
 	for _, f := range got {
 		text += f.Label + "=" + f.Value + ";"
@@ -54,11 +61,19 @@ func TestSessionUsageFacts(t *testing.T) {
 			t.Errorf("missing %q in %s", w, text)
 		}
 	}
-	if strings.Contains(text, "Output tokens") || strings.Contains(text, "cost") {
-		t.Errorf("unknown values shown: %s", text)
+	if strings.Contains(text, "Output tokens") || strings.Contains(text, "cost") || strings.Contains(text, "old-model") {
+		t.Errorf("unknown or stale values shown: %s", text)
 	}
-	if sessionUsageFacts(rows, "none") != nil {
+	if sessionUsageFacts(rows, "none", created) != nil {
 		t.Error("facts for an unknown session")
+	}
+	if sessionUsageFacts(rows, "mt", time.Time{}) != nil {
+		t.Error("facts without a live identity")
+	}
+	// The live run ended: its row is not the live one.
+	rows[2].StoppedAt = &stopped
+	if sessionUsageFacts(rows, "mt", created) != nil {
+		t.Error("facts of an ended run")
 	}
 }
 

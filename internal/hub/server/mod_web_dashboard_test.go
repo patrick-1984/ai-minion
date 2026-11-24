@@ -33,6 +33,7 @@ type dashHub struct {
 	st  *store.Store
 	mgr *session.Manager
 	wsv *workers.Service
+	evh *workers.EventHub
 }
 
 func startDashHub(t *testing.T) *dashHub { return startDashHubAt(t, t.TempDir()) }
@@ -71,6 +72,9 @@ func startDashHubAt(t *testing.T, dataDir string) *dashHub {
 			return err
 		}
 		if d.mgr, err = Require[*session.Manager](env); err != nil {
+			return err
+		}
+		if d.evh, err = Require[*workers.EventHub](env); err != nil {
 			return err
 		}
 		d.wsv, err = Require[*workers.Service](env)
@@ -165,6 +169,13 @@ func (d *dashHub) connect(wid, name, ownerID, kind string, sessions map[string]s
 	if err := ev.WriteFrame(map[string]any{"type": proto.TypeEventsSnap, "seq": 0, "sessions": snap}); err != nil {
 		d.t.Fatal(err)
 	}
+	// The Hub applies the snapshot asynchronously: wait until it did, so a
+	// page read right after connect sees the sessions (a first-snapshot race
+	// made the Worker page test flaky).
+	waitFor(d.t, "the first snapshot of "+name, func() bool {
+		s, ok := d.evh.Sessions(wid)
+		return ok && s.Synced && len(s.Sessions) == len(sessions)
+	})
 	return &workerLink{t: d.t, ev: ev, id: wid}
 }
 
