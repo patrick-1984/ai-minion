@@ -62,7 +62,7 @@ func TestWrapperShellIsNeverTheProcessWhoseEnvironmentIsRead(t *testing.T) {
 	}
 	usageDetector = agentdetect.New(agentdetect.WithProcessSource(tree))
 	host := usageHostFixture{[]term.Session{{Name: "w", Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: 100}}}}}}
-	r, err := usageSnapshot(context.Background(), host, false)
+	r, err := usageSnapshot(context.Background(), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestWrapperShellIsNeverTheProcessWhoseEnvironmentIsRead(t *testing.T) {
 	}
 	// Without the real agent process the access is unknown, not the shell's.
 	usageDetector = agentdetect.New(agentdetect.WithProcessSource(tree[:2]))
-	r, err = usageSnapshot(context.Background(), host, false)
+	r, err = usageSnapshot(context.Background(), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,20 +85,20 @@ func TestProcessEnvironmentIsReadThroughTheVerifiedDirectory(t *testing.T) {
 		t.Skip("procfs")
 	}
 	self := os.Getpid()
-	if _, ok := readProcessEnv(self); !ok {
+	if _, _, ok := readProcessAccess(self, false); !ok {
 		t.Fatal("own environment unreadable")
 	}
 	old := workerUID
 	t.Cleanup(func() { workerUID = old })
 	workerUID = func() int { return os.Getuid() + 1 }
-	if _, ok := readProcessEnv(self); ok {
+	if _, _, ok := readProcessAccess(self, false); ok {
 		t.Fatal("another user's process read")
 	}
 	workerUID = old
 	oldRoot := procRoot
 	t.Cleanup(func() { procRoot = oldRoot })
 	procRoot = t.TempDir() // a vanished process: no directory
-	if _, ok := readProcessEnv(self); ok {
+	if _, _, ok := readProcessAccess(self, false); ok {
 		t.Fatal("read without a process directory")
 	}
 }

@@ -51,7 +51,12 @@ func newClaudeUsageExportCmd(lookup func(string) (string, bool)) *cobra.Command 
 						return
 					}
 				}
-				recordClaudeUsage(ctx, *m, mode, claudeUsageSession(ctx, lookup), claudeUsageAccess(lookup, profile), payload, at)
+				session, pane, created, pid, birth := harnessPaneProcess(ctx, lookup, m.StateDir, "claude")
+				if session == "" {
+					// Older hosts can still provide the original usage attribution.
+					session = claudeUsageSession(ctx, lookup)
+				}
+				recordBoundClaudeUsage(ctx, *m, mode, session, pane, created, pid, birth, claudeUsageAccess(lookup, profile), payload, at, lookup)
 			})
 		},
 	}
@@ -149,19 +154,51 @@ const (
 	claudeAccessUnverified claudeAccessEvidence = iota
 	claudeAccessSubscription
 	claudeAccessAPI
+	claudeAccessCustomEndpoint
 )
 
 func claudeUsageAccess(lookup func(string) (string, bool), profile string) claudeAccessEvidence {
-	switch {
-	case lookup == nil:
+	if lookup == nil {
 		return claudeAccessUnverified
-	case agent.ClaudeAPIAccess(lookup, profile):
+	}
+	key, custom := agent.ClaudeExporterAPIConfig(lookup, profile)
+	switch {
+	case custom:
+		return claudeAccessCustomEndpoint
+	case key:
 		return claudeAccessAPI
 	}
 	return claudeAccessSubscription
 }
 
+// claudeShowsSubscription reports whether a status line document carries
+// subscription rate limits: only a Claude.ai login gets them, so they are the
+// evidence of this very call that the session runs on the subscription (a
+// Console key saved through /login sets no environment variable or helper).
+func claudeShowsSubscription(raw []byte) bool {
+	var doc struct {
+		Limits map[string]json.RawMessage `json:"rate_limits"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return false
+	}
+	for name := range doc.Limits {
+		if name != "spend_limit" {
+			return true
+		}
+	}
+	return false
+}
+
 func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, raw []byte, at time.Time) {
+	recordClaudeUsageAt(ctx, m, mode, session, access, raw, at)
+}
+
+func recordClaudeUsageAt(ctx context.Context, m claudeUsageIntegration, mode, session string, access claudeAccessEvidence, raw []byte, at time.Time) {
+	recordBoundClaudeUsage(ctx, m, mode, session, "", 0, 0, "", access, raw, at, nil)
+}
+
+func recordBoundClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, session, pane string, created int64, pid int, birth string, access claudeAccessEvidence, raw []byte, at time.Time, lookup func(string) (string, bool)) {
 	if session == "" || ctx.Err() != nil {
 		return
 	}
@@ -182,7 +219,14 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 		return
 	}
 
-	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic"}
+	if pane != "" && created > 0 && claudeStateEnabled(m.StateDir, lookup) {
+		if event, ok := parseClaudeHarnessEvent(mode, raw, grant, at); ok {
+			event.Session, event.Pane, event.Created = session, pane, created
+			event.ProcessPID, event.ProcessBirth = pid, birth
+			_ = st.RecordHarnessEvent(ctx, grant, event)
+		}
+	}
+	opts := agent.NativeUsageOptions{Format: "claude-statusline", Session: session, Provider: "Anthropic", CustomEndpoint: access == claudeAccessCustomEndpoint, APIKey: access == claudeAccessAPI}
 	if mode != "status-line" {
 		var event struct {
 			Name     string `json:"hook_event_name"`
@@ -195,6 +239,14 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 		if mode == "UserPromptSubmit" || mode == "Stop" {
 			opts.EventID = event.PromptID
 		}
+	}
+	// A subscription the installer discovered earlier is attached only when
+	// this call shows it (rate limits). A saved Console key leaves no other
+	// trace, so without the evidence the session stays unattributed instead of
+	// landing on an old subscription. An account the owner bound explicitly
+	// stays theirs.
+	if access == claudeAccessSubscription && m.Auto && !claudeShowsSubscription(raw) {
+		access = claudeAccessUnverified
 	}
 	if (m.Account != "" || m.Profile != "") && access == claudeAccessSubscription {
 		id, label := m.Account, "Anthropic subscription"
@@ -210,12 +262,6 @@ func recordClaudeUsage(ctx context.Context, m claudeUsageIntegration, mode, sess
 	now := time.Now()
 	r, err := agent.ParseNativeUsage(raw, opts, at)
 	if err == nil {
-		if access == claudeAccessAPI && len(r.Sessions) == 1 {
-			// Verified API access stays API for this native session, also
-			// after the process has ended and the Worker cannot read it.
-			r.Sessions[0].AuthMode = "api"
-			r.Sessions[0].AccountID = ""
-		}
 		_ = st.SaveNativeUsage(ctx, enrollment, r, now)
 	}
 }

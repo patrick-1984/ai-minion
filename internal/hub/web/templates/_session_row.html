@@ -14,10 +14,11 @@
         <a class="worker-session-more" href="{{.SessionsURL}}" data-control="sessions-all">All {{.SessionCount}} sessions</a>{{end}}
       </div>
     </details>{{end}}</td>
-  <td data-label="Version">{{if .Build}}<span data-build="{{.Build}}">{{.Build}}</span>{{else if .Version}}<span class="muted" title="An older Worker reports only its protocol">protocol {{.Version}}</span>{{else}}<span class="muted">-</span>{{end}}{{if .UpdateTo}} <span class="update-to">→ {{.UpdateTo}}</span>{{if .UpdateURL}}
+  <td data-label="Version">{{if .Build}}<span data-build="{{.Build}}">{{.Build}}</span>{{else if .Version}}<span class="muted" title="An older Worker reports only its protocol">protocol {{.Version}}</span>{{else}}<span class="muted">-</span>{{end}}{{if .UpdateTo}} <span class="update-to">→ {{.UpdateTo}}</span>{{if and .UpdateURL .UpdateUnpublished}}
+    <button type="button" class="btn btn-secondary" data-control="update" disabled aria-label="Update {{.Name}} to {{.UpdateTo}} (not available: {{.UpdateUnpublished}})">Update</button> <span class="muted" data-update-unpublished>({{.UpdateUnpublished}})</span>{{else if .UpdateURL}}
     <form method="post" action="{{.UpdateURL}}" hx-post="{{.UpdateURL}}" hx-target="#list-result" hx-swap="innerHTML" hx-disabled-elt="find button" hx-confirm="Update {{.Name}} from {{.Build}} to {{.UpdateTo}}? The Worker installs the signed release and restarts; tmux sessions keep running." class="row-actions">
       <button type="submit" class="btn btn-secondary" data-control="update" aria-label="Update {{.Name}} to {{.UpdateTo}}">Update</button>
-    </form>{{else if .UpdateBlock}} <span class="muted" data-update-block>({{.UpdateBlock}})</span>{{end}}{{end}}</td>
+    </form>{{else if .UpdateBlock}} <span class="muted" data-update-block>({{.UpdateBlock}})</span>{{end}}{{if .UpdateFailed}} <span class="field-error" data-update-failed>{{.UpdateFailed}}</span>{{end}}{{end}}</td>
   <td data-label="Actions">{{if .Pending}}{{template "worker_approval_buttons" .}}{{else}}<div class="action-row">{{if .Online}}{{if .NewSessionRefused}}<div class="row-actions" data-hidden-refused>
     <button type="button" class="btn btn-secondary" data-control="new-session" disabled aria-describedby="nsr-{{.ID}}">New session<span class="sr-only"> on {{.Name}} (not available)</span></button>
     <details class="note-more" data-keep-open="nsr-{{.ID}}">
@@ -38,7 +39,11 @@
   {{if not .HideWorker}}<td data-label="Worker"><a href="{{.WorkerURL}}" data-control="worker" data-worker-link>{{.Worker}}</a>{{if not .Online}} <span class="badge muted" data-online="false">offline</span>{{end}}</td>
   {{end}}{{if .ShowOwner}}<td data-label="Owner"{{if gt (len .Owner) 32}} class="cell-clamp" title="{{.Owner}}" tabindex="0"{{end}}>{{.Owner}}</td>
   {{end}}<td data-label="Kind">{{.Kind}}</td>
-  <td data-label="State"><span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></td>
+  <td data-label="State"><span class="badge" data-state="{{.State}}">{{.StateLabel}}</span>
+    {{if .StateReason}}<div data-state-reason>{{.StateReason}}</div>{{end}}
+    {{if .StateSource}}<div class="muted" data-state-source="{{.StateSource}}">{{.StateSourceLabel}}</div>{{end}}
+    {{if not .LastEvent.IsZero}}<div class="muted">Last event <time datetime="{{.LastEvent.Time.Format "2006-01-02T15:04:05Z07:00"}}">{{.LastEvent.Time.Format "15:04:05 UTC"}}</time></div>{{end}}
+  </td>
 </tr>{{end}}
 
 {{/* What the person who approves a new Worker compares: its key fingerprint, the host name it announced and the address it enrolled from. */}}

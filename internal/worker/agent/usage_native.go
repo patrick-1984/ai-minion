@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -16,11 +18,63 @@ type NativeUsageOptions struct {
 	ObservedAt                                                   time.Time
 	Format, Session, NativeID, Harness, Model, Provider, EventID string
 	Account                                                      *ops.UsageAccount
+	CustomEndpoint                                               bool
+	// APIKey marks verified API-key access at the vendor's endpoint.
+	APIKey bool
 }
 
 type claudeUsageWindow struct {
 	Percent *float64 `json:"used_percentage"`
 	Reset   *int64   `json:"resets_at"`
+}
+
+func claudeResetMillis(seconds *int64) *int64 {
+	if seconds == nil || *seconds <= 0 || *seconds >= 253402300800 {
+		return nil
+	}
+	return new(*seconds * 1000)
+}
+
+func claudeRateWindows(limits map[string]json.RawMessage) []ops.UsageWindow {
+	var windows []ops.UsageWindow
+	for _, key := range slices.Sorted(maps.Keys(limits)) {
+		if key == "" || key == "spend_limit" || ops.UsageLabel(key, 96) != key {
+			continue
+		}
+		var native claudeUsageWindow
+		if json.Unmarshal(limits[key], &native) != nil {
+			continue
+		}
+		w := ops.UsageWindow{Scope: key, Period: "rolling", ResetsAt: claudeResetMillis(native.Reset)}
+		if native.Percent != nil && *native.Percent >= 0 && *native.Percent <= 100 {
+			w.UsedPercent = native.Percent
+		}
+		if w.UsedPercent == nil && w.ResetsAt == nil {
+			continue
+		}
+		switch key {
+		case "five_hour":
+			w.Scope, w.DurationMS = "general", new((5 * time.Hour).Milliseconds())
+		case "seven_day":
+			w.Scope, w.DurationMS = "general", new((7 * 24 * time.Hour).Milliseconds())
+		}
+		windows = append(windows, w)
+		if len(windows) == 32 { // UsageReport's per-account window limit
+			break
+		}
+	}
+	return windows
+}
+
+func totalClaudeContextInput(input, cacheRead, cacheWrite *int64) *int64 {
+	var total int64
+	for _, n := range []*int64{input, cacheRead, cacheWrite} {
+		if n == nil || *n < 0 || *n > math.MaxInt64-total {
+			return nil
+		}
+		total += *n
+	}
+	return &total
 }
 
 func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, error) {
@@ -41,8 +95,15 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 			Duration  *int64   `json:"total_duration_ms"`
 		} `json:"cost"`
 		Context struct {
-			Current *int64 `json:"total_input_tokens"`
+			Input   *int64 `json:"total_input_tokens"`
+			Output  *int64 `json:"total_output_tokens"`
 			Limit   *int64 `json:"context_window_size"`
+			Current struct {
+				Input      *int64 `json:"input_tokens"`
+				Output     *int64 `json:"output_tokens"`
+				CacheWrite *int64 `json:"cache_creation_input_tokens"`
+				CacheRead  *int64 `json:"cache_read_input_tokens"`
+			} `json:"current_usage"`
 		} `json:"context_window"`
 		Cache struct {
 			Requests *int64   `json:"requests"`
@@ -50,17 +111,7 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 			HitRatio *float64 `json:"hit_ratio"`
 			Writes   *int64   `json:"cache_write_tokens"`
 		} `json:"prompt_cache"`
-		Limits struct {
-			Spend *struct {
-				Percent  *float64 `json:"used_percentage"`
-				ResetsAt *int64   `json:"resets_at"`
-				Used     *float64 `json:"used_usd"`
-				Limit    *float64 `json:"limit_usd"`
-				Period   string   `json:"period"`
-			} `json:"spend_limit"`
-			Five *claudeUsageWindow `json:"five_hour"`
-			Week *claudeUsageWindow `json:"seven_day"`
-		} `json:"rate_limits"`
+		Limits map[string]json.RawMessage `json:"rate_limits"`
 	}
 	if err := json.Unmarshal(raw, &n); err != nil {
 		return "", err
@@ -77,41 +128,53 @@ func claudeUsage(raw []byte, s *ops.UsageSession, a *ops.UsageAccount) (string, 
 	s.CacheHitRatio = n.Cache.HitRatio
 	s.EstimatedCostUSD = n.Cost.Estimated
 	s.DurationMS = n.Cost.Duration
-	s.ContextTokens = n.Context.Current
+	// Context counts describe the latest API response. Keep them out of the
+	// session totals that the Hub sums across sessions and snapshots.
+	current := n.Context.Current
+	s.ContextTokens = n.Context.Input
+	if s.ContextTokens == nil {
+		s.ContextTokens = totalClaudeContextInput(current.Input, current.CacheRead, current.CacheWrite)
+	}
+	output := n.Context.Output
+	if output == nil {
+		output = current.Output
+	}
+	if current.Input != nil || output != nil || current.CacheRead != nil || current.CacheWrite != nil {
+		s.LastResponseUsage = &ops.UsageResponseTokens{
+			InputTokens: current.Input, OutputTokens: output, CacheReadTokens: current.CacheRead, CacheWriteTokens: current.CacheWrite,
+		}
+	}
 	s.ContextLimit = n.Context.Limit
 	s.CacheWriteTokens = n.Cache.Writes
-	if limit := n.Limits.Spend; limit != nil {
-		b := &ops.UsageSpendBudget{Source: "claude-statusline", ObservedAt: s.ObservedAt, UsedPercent: limit.Percent, EstimatedUsedUSD: limit.Used, LimitUSD: limit.Limit}
+	// Limits seen through a custom endpoint belong to that session alone: the
+	// route's quota is not the account's, and no account carries windows of a
+	// route it cannot identify. Only a subscription account carries windows.
+	switch {
+	case a != nil && a.Provider == "Anthropic" && a.AuthMode == "subscription":
+		a.Windows = claudeRateWindows(n.Limits)
+		if len(a.Windows) > 0 {
+			a.Source = "claude-statusline"
+		}
+	case s.CustomEndpoint:
+		s.Windows = claudeRateWindows(n.Limits)
+	}
+	var limit *struct {
+		claudeUsageWindow
+		Used   *float64 `json:"used_usd"`
+		Limit  *float64 `json:"limit_usd"`
+		Period string   `json:"period"`
+	}
+	if raw, ok := n.Limits["spend_limit"]; ok && json.Unmarshal(raw, &limit) == nil && limit != nil {
+		b := &ops.UsageSpendBudget{Source: "claude-statusline", ObservedAt: s.ObservedAt, UsedPercent: limit.Percent, ResetsAt: claudeResetMillis(limit.Reset), EstimatedUsedUSD: limit.Used, LimitUSD: limit.Limit}
 		switch limit.Period {
 		case "daily", "weekly", "monthly":
 			b.Period = limit.Period
 		}
-		if limit.ResetsAt != nil && *limit.ResetsAt > 0 && *limit.ResetsAt < 253402300800 {
-			v := *limit.ResetsAt * 1000
-			b.ResetsAt = &v
-		}
 		s.GatewaySpend = b
-		if n.Limits.Five == nil && n.Limits.Week == nil && a != nil && a.AuthMode == "subscription" {
+		if a != nil && a.AuthMode == "subscription" && len(a.Windows) == 0 {
 			s.AccountID = ""
 			s.Provider = ""
 			s.AuthMode = "unknown"
-			return n.Session, nil
-		}
-	}
-	if a != nil && a.AuthMode == "subscription" && a.Provider == "Anthropic" {
-		a.Source = "claude-statusline"
-		a.ObservedAt = s.ObservedAt
-		for i, window := range []*claudeUsageWindow{n.Limits.Five, n.Limits.Week} {
-			if window == nil {
-				continue
-			}
-			duration := []int64{5 * 3600000, 7 * 86400000}[i]
-			w := ops.UsageWindow{Scope: "general", Period: "rolling", DurationMS: &duration, UsedPercent: window.Percent}
-			if window.Reset != nil && *window.Reset > 0 && *window.Reset < 253402300800 {
-				x := *window.Reset * 1000
-				w.ResetsAt = &x
-			}
-			a.Windows = append(a.Windows, w)
 		}
 	}
 	return n.Session, nil
@@ -237,8 +300,18 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 		}
 	}
 	var a *ops.UsageAccount
-	if opts.Account != nil {
-		x := *opts.Account
+	account := opts.Account
+	if opts.CustomEndpoint || opts.APIKey {
+		acc := sessionAccess{Mode: "api", Kind: accessAPIKey}
+		if opts.CustomEndpoint {
+			acc = sessionAccess{Mode: "api", Kind: accessCustomEndpoint}
+		}
+		if endpoint, ok := accessAccount(s.Provider, acc, s.ObservedAt); ok {
+			account = &endpoint
+		}
+	}
+	if account != nil {
+		x := *account
 		x.Provider = ops.UsageProvider(x.Provider)
 		x.Windows = nil
 		x.ObservedAt = s.ObservedAt
@@ -247,6 +320,7 @@ func ParseNativeUsage(raw []byte, opts NativeUsageOptions, now time.Time) (ops.U
 		s.AccountID = x.ID
 		s.Provider = x.Provider
 		s.AuthMode = x.AuthMode
+		s.CustomEndpoint = x.CustomEndpoint
 	}
 	native := opts.NativeID
 	var kind, eventID string

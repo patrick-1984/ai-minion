@@ -39,7 +39,7 @@ func TestHarnessesMatrixStates(t *testing.T) {
 	body := mainOf(t, onbGet(t, srv, "/harnesses").Body.String())
 	mustHave(t, body, "Harnesses I want", "Anthropic", "Claude Code", "Google", "Alibaba", "Open source", "OpenCode",
 		"DeepSeek has no official CLI", "Check all my Workers", "Installed v2.1.80", "Installed v0.126.0", "Missing",
-		"Unknown (offline, not scanned)", "Unknown (not scanned)", "Nov 21, 2026 14:30 UTC", `hx-trigger="every 30s"`, `href="/usage?view=workers"`)
+		"Unknown (offline, not scanned)", "Unknown (not scanned)", "Nov 21, 2026 14:30 UTC", `hx-trigger="every 30s, harnesses-checked from:body"`, "Last checked", `href="/usage?view=workers"`)
 	mustHave(t, body, `name="harness" value="claude" checked`, `name="harness" value="codex" checked`)
 	mustNotHave(t, body, `value="gemini" checked`, "Pending", `id="scope-switch"`)
 	// Only Workers missing something.
@@ -88,7 +88,7 @@ func TestHarnessesSaveChoiceAndScan(t *testing.T) {
 		t.Errorf("a stale form was accepted: %s", res.Body.String())
 	}
 	res = onbPost(t, srv, "/harnesses/scan", url.Values{"for_user": {onbUserID}})
-	if res.Header().Get("HX-Refresh") != "true" {
+	if res.Header().Get("HX-Trigger") != "harnesses-checked" || res.Header().Get("HX-Refresh") != "" {
 		t.Fatalf("scan = %d %s", res.Code, res.Body.String())
 	}
 	scans := f.called(ops.OpWorkerUsage)
@@ -96,8 +96,8 @@ func TestHarnessesSaveChoiceAndScan(t *testing.T) {
 		t.Fatalf("expected a scan of the 3 online Workers (not the offline one or the pending one): %+v", scans)
 	}
 	for _, c := range scans {
-		if c.Args["inventory"] != true {
-			t.Errorf("scan without inventory: %+v", c.Args)
+		if c.Args["inventory"] != true || c.Args["fresh"] != true {
+			t.Errorf("scan did not request fresh inventory: %+v", c.Args)
 		}
 	}
 }
@@ -135,8 +135,8 @@ func TestHarnessCheckAllCountsOnlyWorkersWhoseInventoryAdvanced(t *testing.T) {
 	connect(t, f)
 	srv := onbUser(t)
 	res := onbPost(t, srv, "/harnesses/scan", url.Values{"for_user": {onbUserID}})
-	fl := flashesOf(res)
-	if len(fl) != 1 || !strings.Contains(fl[0].Text, "Checked 1 Worker.") || !strings.Contains(fl[0].Text, "2 Workers could not be checked") {
-		t.Fatalf("flash: %+v", fl)
+	body := res.Body.String()
+	if !strings.Contains(body, "Checked 1 Worker.") || !strings.Contains(body, "2 Workers could not be checked") || res.Header().Get("HX-Trigger") != "harnesses-checked" || res.Header().Get("HX-Refresh") != "" {
+		t.Fatalf("answer: %s %v", body, res.Header())
 	}
 }

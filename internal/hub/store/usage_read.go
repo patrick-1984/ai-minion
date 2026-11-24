@@ -39,7 +39,9 @@ func usageVisibleJSON(workers []ops.WorkerInfo) (string, error) {
 }
 
 const usageRankedAccounts = `, ranked AS (
-		   SELECT a.*,row_number() OVER (PARTITION BY a.account_id ORDER BY (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,(json_extract(a.body,'$.source')<>'native-account') DESC,a.observed_at DESC,a.worker_id) rn
+			   SELECT a.*,row_number() OVER (PARTITION BY a.account_id ORDER BY
+			    (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,
+			    (json_extract(a.body,'$.source')<>'native-account') DESC,a.observed_at DESC,a.worker_id) rn
 		   FROM visible v JOIN usage_accounts a ON a.worker_id=v.id LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
 		 )`
 
@@ -57,7 +59,8 @@ func usageSessionBucketFilter(accountExpr string) string {
 }
 
 // ReadUsage returns at most limit items. An account visible on multiple
-// Workers is chosen only among authorized observations, newest first.
+// Workers is chosen only among authorized observations, preferring quota
+// reports over discovery and the newest among comparable observations.
 // bucketOwner is empty when private organization is outside the caller's rights.
 func (s *Store) ReadUsage(ctx context.Context, workers []ops.WorkerInfo, bucketOwner string, args ops.UsageListArgs, now time.Time) (ops.UsageListResult, error) {
 	if args.Section != "sessions" && args.Section != "accounts" {
@@ -108,6 +111,7 @@ func (s *Store) readUsage(ctx context.Context, db usageQuerier, workers []ops.Wo
 			if err := json.Unmarshal([]byte(body), &a.UsageAccount); err != nil {
 				return out, err
 			}
+			a.Windows = ops.SubscriptionWindows(a.UsageAccount)
 			all = append(all, a)
 		}
 		if err := rows.Err(); err != nil {
@@ -494,7 +498,7 @@ func readUsageAccounts(ctx context.Context, q usageQuerier, pairs []usageSourceP
 	 JOIN usage_accounts a ON a.worker_id=w.id AND a.account_id=json_extract(p.value,'$.m')
 	 LEFT JOIN usage_collectors settings ON settings.account_id=a.account_id
 	 ORDER BY a.account_id,
-	  (json_array_length(a.body,'$.windows')>0) DESC,
+	  (json_extract(a.body,'$.auth_mode')='subscription' AND json_array_length(a.body,'$.windows')>0) DESC,
 	  (a.worker_id=settings.preferred_worker AND (settings.preferred_session='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session)) DESC,
 	  (json_extract(a.body,'$.source')<>'native-account') DESC,
 	  a.observed_at DESC,a.worker_id`, arg)
@@ -519,6 +523,7 @@ func readUsageAccounts(ctx context.Context, q usageQuerier, pairs []usageSourceP
 			return nil, err
 		}
 		a.ObservedAt = observed
+		a.Windows = ops.SubscriptionWindows(a)
 		out = append(out, a)
 	}
 	return out, rows.Err()

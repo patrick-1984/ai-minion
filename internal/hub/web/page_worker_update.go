@@ -7,10 +7,14 @@ package web
 // shows in the Version column when it reconnects.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -50,13 +54,201 @@ func updatable(w ops.WorkerInfo, target string) bool {
 	return w.Online && !w.Pending && proto.HasFeature(w.Features, proto.FeatureSelfUpdate) && workerOutdated(w.Build, target)
 }
 
+// PublishedSource says whether the release tag is published on GitHub as far
+// as the Hub's release check knows: known is false when it has no recent list
+// (the check is off or has not answered), and the Update button then stays on.
+type PublishedSource func(tag string) (published, known bool)
+
+var publishedSource atomic.Pointer[PublishedSource]
+
+// PublishedRecheck is PublishedSource for an action about to refuse a release:
+// it may list the releases again before it answers "not published".
+type PublishedRecheck func(ctx context.Context, tag string) (published, known bool)
+
+var publishedRecheck atomic.Pointer[PublishedRecheck]
+
+// SetPublishedRecheck installs the on-demand check (nil removes it).
+func SetPublishedRecheck(f PublishedRecheck) {
+	if f == nil {
+		publishedRecheck.Store(nil)
+		return
+	}
+	publishedRecheck.Store(&f)
+}
+
+// notPublishedFresh is notPublishedText for the update POSTs: a release that
+// was a draft at the last check is looked up again before it blocks an update.
+func notPublishedFresh(ctx context.Context, target string) string {
+	if p := publishedRecheck.Load(); p != nil {
+		if published, known := (*p)(ctx, target); known && !published {
+			return target + " is not published yet"
+		}
+		return ""
+	}
+	return notPublishedText(target)
+}
+
+// SetPublishedSource installs the release list of the Hub's update check (nil
+// removes it).
+func SetPublishedSource(f PublishedSource) {
+	if f == nil {
+		publishedSource.Store(nil)
+		return
+	}
+	publishedSource.Store(&f)
+}
+
+// notPublishedText is the reason shown instead of an Update button for a
+// release the Hub cannot see publicly; empty when it is published or unknown.
+func notPublishedText(target string) string {
+	if p := publishedSource.Load(); p != nil {
+		if published, known := (*p)(target); known && !published {
+			return target + " is not published yet"
+		}
+	}
+	return ""
+}
+
+// updateStatusTTL is how long a Worker's update status is reused, so that a
+// live page does not ask every outdated Worker on each refresh.
+const updateStatusTTL = 10 * time.Second
+
+// updateStatusTimeout bounds the one question to a Worker about its update.
+const updateStatusTimeout = 3 * time.Second
+
+type cachedUpdateFailure struct {
+	at       time.Time
+	text     string
+	inflight bool
+	// user is who asked: a status is shown only to the person whose own call
+	// obtained it, so a role change cannot keep (or lend) access to it.
+	user string
+	// epoch counts invalidations; a status fetched before one is discarded.
+	epoch int
+}
+
+var (
+	updateFailMu    sync.Mutex
+	updateFailCache = map[string]cachedUpdateFailure{}
+)
+
+// forgetUpdateFailure invalidates the cached status of a Worker (after an
+// accepted update). A question already on its way keeps its reservation, so
+// invalidating cannot start a duplicate, but its answer is discarded.
+func forgetUpdateFailure(id string) {
+	updateFailMu.Lock()
+	defer updateFailMu.Unlock()
+	e, ok := updateFailCache[id]
+	if !ok {
+		return
+	}
+	if !e.inflight {
+		delete(updateFailCache, id)
+		return
+	}
+	e.epoch++
+	e.text, e.at = "", time.Time{}
+	updateFailCache[id] = e
+}
+
+// updateFailureText is "Update to vX failed: <reason> (<time>)" (or "was
+// rolled back") when the Worker's last update attempt to target did not
+// succeed, else "". It never waits for a Worker: it answers from the cache and,
+// when the entry is missing or older than updateStatusTTL, starts one bounded
+// worker_update_status question per Worker in the background. A page that
+// shows the status therefore sees it from its next refresh on, and a Worker
+// that cannot answer shows nothing and delays no page.
+func updateFailureText(r *http.Request, c OpCaller, id, target string) string {
+	user, _, _ := requestUser(r)
+	updateFailMu.Lock()
+	e := updateFailCache[id]
+	if e.user != user && !e.inflight {
+		e = cachedUpdateFailure{epoch: e.epoch}
+	}
+	text := e.text
+	if e.user != user {
+		text = "" // another person's answer is not shown
+	}
+	ask := !e.inflight && time.Since(e.at) >= updateStatusTTL
+	if ask {
+		e.inflight, e.user, text = true, user, ""
+		updateFailCache[id] = e
+	}
+	epoch := e.epoch
+	updateFailMu.Unlock()
+	if ask {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), updateStatusTimeout)
+		rr := r.WithContext(ctx)
+		go func() {
+			defer cancel()
+			got := ""
+			var st ops.WorkerUpdateStatus
+			if err := c.CallOp(rr, ops.OpWorkerUpdateStatus, ops.WorkerUpdateStatusArgs{WorkerID: id}, &st); err == nil {
+				got = updateStatusText(st, target)
+			}
+			updateFailMu.Lock()
+			cur := updateFailCache[id]
+			if cur.epoch != epoch {
+				// Invalidated meanwhile: the answer may predate the update.
+				updateFailCache[id] = cachedUpdateFailure{user: user, epoch: cur.epoch}
+			} else {
+				updateFailCache[id] = cachedUpdateFailure{at: time.Now(), text: got, user: user, epoch: epoch}
+			}
+			updateFailMu.Unlock()
+		}()
+	}
+	return text
+}
+
+// updateStatusText words a failed update to target, or one that the Worker
+// rolled back after the new binary did not start (its From is then the target).
+func updateStatusText(st ops.WorkerUpdateStatus, target string) string {
+	var text string
+	switch {
+	case st.State == ops.UpdateStateFailed && st.To == target:
+		text = "Update to " + target + " failed: " + friendlyUpdateError(st.Error, target)
+	case st.State == ops.UpdateStateRolledBack && st.From == target:
+		reason := st.Error
+		if reason == "" {
+			reason = target + " did not start on this Worker"
+		}
+		text = "Update to " + target + " was rolled back to the previous version: " + friendlyUpdateError(reason, target)
+	default:
+		return ""
+	}
+	if st.At != nil {
+		text += " (" + time.Time(*st.At).UTC().Format("2006-01-02 15:04 UTC") + ")"
+	}
+	return text
+}
+
+// friendlyUpdateError words the error of a Worker that still says "no
+// matching release" (before v0.20.1) as what it means.
+func friendlyUpdateError(msg, target string) string {
+	if strings.HasPrefix(msg, "no matching release") {
+		return target + " is not published on GitHub yet (the release is still a draft or missing); try again after it is published"
+	}
+	return msg
+}
+
 func updateOne(r *http.Request, c OpCaller, id string, force bool) (ops.WorkerUpdateResult, error) {
 	target, ok := updateTarget()
 	if !ok {
 		return ops.WorkerUpdateResult{}, fmt.Errorf("this Hub is a development build: there is no release to update Workers to")
 	}
+	if reason := notPublishedFresh(r.Context(), target); reason != "" {
+		// A release the Hub cannot see publicly cannot be downloaded: do not send it.
+		return ops.WorkerUpdateResult{Reason: reason}, nil
+	}
 	var res ops.WorkerUpdateResult
 	err := c.CallOp(r, ops.OpWorkerUpdate, ops.WorkerUpdateArgs{WorkerID: id, Version: target, Force: force}, &res)
+	if err == nil && res.Accepted {
+		// Only an update the Hub accepted makes the old status obsolete.
+		forgetUpdateFailure(id)
+	}
+	if !res.Accepted {
+		res.Reason = friendlyUpdateError(res.Reason, target)
+	}
 	return res, err
 }
 
@@ -78,6 +270,10 @@ func handleWorkersUpdateAll(w http.ResponseWriter, r *http.Request, c OpCaller, 
 	target, ok := updateTarget()
 	if !ok {
 		writeResultError(w, "This Hub is a development build: there is no release to update Workers to.")
+		return
+	}
+	if reason := notPublishedFresh(r.Context(), target); reason != "" {
+		writeResultError(w, "No Worker was sent the update: "+reason+". Try again after it is published.")
 		return
 	}
 	var list ops.WorkersListResult
@@ -127,6 +323,7 @@ func handleWorkersUpdateAll(w http.ResponseWriter, r *http.Request, c OpCaller, 
 }
 
 func init() {
+	RegisterRoute(Route{Pattern: "POST /workers/{worker}/refresh", Handler: userRoute(handleWorkerRefresh)})
 	RegisterRoute(Route{Pattern: "POST /workers/{worker}/update", Handler: userRoute(handleWorkerUpdate)})
 	RegisterRoute(Route{Pattern: "POST " + WorkersUpdateAllPath, Handler: userRoute(handleWorkersUpdateAll)})
 }

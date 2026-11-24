@@ -69,12 +69,24 @@ func (s *Store) SaveNativeUsage(ctx context.Context, enrollment Enrollment, r op
 			row.ReasoningTokens = combine(row.ReasoningTokens, old.ReasoningTokens)
 		}
 	}
+	if len(r.Accounts) == 0 && row.Source != "claude-hook" && (row.AuthMode == "unknown" || row.AuthMode == "") {
+		// A session that was seen on an API key keeps that account when a later
+		// document of it carries no access evidence.
+		if err := keepAPIAccount(ctx, tx, &row, &r); err != nil {
+			return err
+		}
+	}
 	body, err := json.Marshal(row)
 	if err != nil {
 		return err
 	}
 	var account any
 	if len(r.Accounts) > 0 {
+		if row.Source != "claude-hook" {
+			if err := keepClaudeWindows(ctx, tx, &r.Accounts[0], now); err != nil {
+				return err
+			}
+		}
 		b, err := json.Marshal(r.Accounts[0])
 		if err != nil {
 			return err
@@ -173,7 +185,24 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 			}
 		}
 		if n.AuthMode == "api" && n.AccountID == "" && base.AuthMode == "api" {
-			n.AccountID = base.AccountID // the exporter saw API access; the Worker knows the grouping
+			// Older exporters recorded API access without the endpoint kind.
+			n.AccountID, n.CustomEndpoint = base.AccountID, base.CustomEndpoint
+		}
+		if n.AuthMode == "api" && n.AccountID == "" {
+			// Rows saved by v0.20.0 name no account: group them in the
+			// aggregate API account of their provider, so the totals stay.
+			provider := n.Provider
+			if provider == "" {
+				provider = base.Provider
+			}
+			if provider != "" {
+				legacy := AggregateAPIAccount(provider, n.CustomEndpoint, n.ObservedAt)
+				legacy.SourceSessionID = base.ID
+				n.AccountID, n.Provider = legacy.ID, provider
+				if _, ok := accountRows[legacy.ID+"|"+base.ID]; !ok && !account.Valid {
+					accountRows[legacy.ID+"|"+base.ID] = legacy
+				}
+			}
 		}
 		n.ID = base.ID
 		n.StartedAt = base.StartedAt
@@ -235,4 +264,97 @@ func (s *Store) NativeUsage(ctx context.Context, report *ops.UsageReport, after 
 		report.Events = append(report.Events, e)
 	}
 	return events.Err()
+}
+
+// keepAPIAccount gives a document without access evidence the API account its
+// native session already had.
+func keepAPIAccount(ctx context.Context, tx *sql.Tx, row *ops.UsageSession, r *ops.UsageReport) error {
+	var body string
+	var account sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT body,account FROM usage_native WHERE session_name=? AND native_id=?`, row.Name, row.NativeID).Scan(&body, &account)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var old ops.UsageSession
+	if json.Unmarshal([]byte(body), &old) != nil || old.AuthMode != "api" || old.AccountID == "" || !account.Valid {
+		return nil
+	}
+	var a ops.UsageAccount
+	if json.Unmarshal([]byte(account.String), &a) != nil || a.ID != old.AccountID {
+		return nil
+	}
+	row.AuthMode, row.AccountID, row.Provider, row.CustomEndpoint = old.AuthMode, old.AccountID, old.Provider, old.CustomEndpoint
+	a.ObservedAt, a.TimeSource = row.ObservedAt, row.TimeSource
+	r.Accounts = []ops.UsageAccount{a}
+	return nil
+}
+
+// keepClaudeWindows carries the account windows that the newest status lines
+// of the same verified account (any native session, same plan) reported over a
+// report that no longer has them: Claude Code drops a window until it reads a
+// new one, and a capped account must not look uncapped. A carried window keeps
+// its last value and its reset time. Once that time has passed it reads as
+// reset (0% since the reset, reset time unchanged): it is never a fresh
+// reading stamped with the time of this observation, and a new report that
+// carries the window replaces it.
+func keepClaudeWindows(ctx context.Context, tx *sql.Tx, a *ops.UsageAccount, now time.Time) error {
+	rows, err := tx.QueryContext(ctx, `SELECT account FROM usage_native WHERE json_extract(account,'$.id')=? ORDER BY observed_at DESC LIMIT 16`, a.ID)
+	if err != nil {
+		return err
+	}
+	var previous []string
+	for rows.Next() {
+		var body sql.NullString
+		if err := rows.Scan(&body); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if body.Valid {
+			previous = append(previous, body.String)
+		}
+	}
+	err = rows.Err()
+	_ = rows.Close()
+	if err != nil {
+		return err
+	}
+	type key struct {
+		scope, period string
+		duration      int64
+	}
+	keyOf := func(w ops.UsageWindow) key {
+		k := key{scope: w.Scope, period: w.Period}
+		if w.DurationMS != nil {
+			k.duration = *w.DurationMS
+		}
+		return k
+	}
+	have := map[key]bool{}
+	for _, w := range a.Windows {
+		have[keyOf(w)] = true
+	}
+	for _, text := range previous {
+		var old ops.UsageAccount
+		if json.Unmarshal([]byte(text), &old) != nil || old.ID != a.ID || old.Source != "claude-statusline" || old.Plan != a.Plan {
+			continue // another plan: its limits no longer apply
+		}
+		for _, w := range old.Windows {
+			if have[keyOf(w)] || len(a.Windows) >= 32 {
+				continue
+			}
+			have[keyOf(w)] = true
+			if w.ResetsAt != nil && *w.ResetsAt <= now.UnixMilli() {
+				zero := 0.0
+				w.UsedPercent, w.Used, w.Remaining = &zero, nil, nil
+			}
+			a.Windows = append(a.Windows, w)
+		}
+	}
+	if len(a.Windows) > 0 {
+		a.Source = "claude-statusline"
+	}
+	return nil
 }

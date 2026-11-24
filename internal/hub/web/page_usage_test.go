@@ -20,7 +20,7 @@ func usagePageFixtures() *fakeOps {
 	tokens := int64(8100)
 	totalCost := 1.5
 	sessionID := ops.UsageID("session", "example")
-	build := ops.WorkerInfo{ID: "build", Name: "Build workstation", Owner: "alice", Online: true}
+	build := ops.WorkerInfo{ID: "build", Name: "Build workstation", Owner: "alice", Online: true, Ops: []string{ops.OpWorkerUsage}}
 	laptop := ops.WorkerInfo{ID: "laptop", Name: "Travel laptop", Owner: "bob"}
 	pending := ops.WorkerInfo{ID: "pending", Name: "New Worker", Owner: "bob", Online: true}
 	account := ops.UsageAccountRow{
@@ -204,8 +204,8 @@ func TestUsageReadOnlyInventoryAndPassiveCollectorEntryPoints(t *testing.T) {
 	if calls := f.called(ops.OpUsageCollectorSet); len(calls) != 1 || calls[0].Args["worker_id"] != "build" || calls[0].Args["session_id"] != sessionID || calls[0].Args["account_id"] != accountID {
 		t.Fatalf("collector calls: %+v", calls)
 	}
-	if calls := f.called(ops.OpWorkerUsage); len(calls) != 1 || calls[0].Args["worker_id"] != "build" || calls[0].Args["inventory"] != true {
-		t.Fatalf("inventory calls: %+v", calls)
+	if calls := f.called(ops.OpWorkerUsage); len(calls) != 1 || calls[0].Args["worker_id"] != "build" || calls[0].Args["inventory"] != true || calls[0].Args["fresh"] != true {
+		t.Fatalf("expected a fresh inventory request: %+v", calls)
 	}
 }
 
@@ -245,6 +245,62 @@ func TestUsageWindowTitleIsHumanReadable(t *testing.T) {
 	} {
 		if got := usageWindowTitle(c.w); got != c.want {
 			t.Errorf("%q, want %q", got, c.want)
+		}
+	}
+}
+
+func TestUsageShowsAbsentFiveHourLimitOnlyWithFreshProviderEvidence(t *testing.T) {
+	now := time.Date(2026, 11, 21, 14, 30, 0, 0, time.UTC)
+	at := now.UnixMilli()
+	week := (7 * 24 * time.Hour).Milliseconds()
+	five := (5 * time.Hour).Milliseconds()
+	reset := now.Add(4 * time.Hour).UnixMilli()
+	zero := 0.
+	weekly := ops.UsageWindow{Scope: "general", Period: "rolling", DurationMS: &week, ResetsAt: &reset, UsedPercent: &zero}
+	short := weekly
+	short.DurationMS = &five
+	unknown := short
+	unknown.UsedPercent = nil
+	row := func(label, provider string, at int64, windows ...ops.UsageWindow) ops.UsageAccountRow {
+		return ops.UsageAccountRow{UsageAccount: ops.UsageAccount{ID: ops.UsageID("account", label), Provider: provider, Label: label,
+			AuthMode: "subscription", Source: "claude-statusline", ObservedAt: at, Windows: windows}}
+	}
+	page := []ops.UsageAccountRow{
+		row("Weekly only", "Anthropic", at, weekly),
+		row("Stale weekly", "Anthropic", now.Add(-time.Hour).UnixMilli(), weekly),
+		row("Undiscovered limits", "Anthropic", at),
+		row("Known five-hour window", "Anthropic", at, weekly, unknown),
+		row("Other provider", "OpenAI", at, weekly),
+	}
+	peer := row("Account on another page", "anthropic", at, weekly, short)
+	overview := ops.SummarizeUsage(append(append([]ops.UsageAccountRow(nil), page...), peer), now)
+	f := usagePageFixtures().on(ops.OpUsageList, func(args map[string]any) (any, error) {
+		if args["section"] == "overview" {
+			return ops.UsageListResult{AsOf: at, Overview: &overview}, nil
+		}
+		return ops.UsageListResult{AsOf: at, Accounts: page}, nil
+	})
+	connect(t, f)
+	srv := adminServer(t)
+	const note = "No 5-hour limit on this plan"
+	for _, view := range []string{"overview", "accounts"} {
+		res := get(t, srv, "/usage?view="+view+"&worker=build&bucket=b&after=previous-account", "X-Test-Session", userHeader)
+		if res.Code != 200 {
+			t.Fatalf("%s: %d", view, res.Code)
+		}
+		body := mainOf(t, res.Body.String())
+		if strings.Count(body, note) != 1 {
+			t.Fatalf("%s: want one plan note, got %d", view, strings.Count(body, note))
+		}
+		_, rest, ok := strings.Cut(body, "Anthropic · Weekly only")
+		card, _, _ := strings.Cut(rest, "</article>")
+		if !ok || !strings.Contains(card, note) || !strings.Contains(card, "<h4>Weekly limit</h4>") || strings.Contains(card, "<h4>5-hour limit</h4>") {
+			t.Fatalf("%s: weekly-only card should show the weekly limit and plan note: %s", view, card)
+		}
+	}
+	for _, call := range f.called(ops.OpUsageList) {
+		if call.Args["section"] == "overview" && (call.Args["worker_id"] != "build" || call.Args["bucket_id"] != "b") {
+			t.Fatalf("five-hour peer lookup escaped its filters: %+v", call.Args)
 		}
 	}
 }
@@ -311,6 +367,45 @@ func TestUsageSessionsShowAccessKindWithoutHost(t *testing.T) {
 	}
 }
 
+func TestUsageShowsReportedUpstreamQuota(t *testing.T) {
+	now := time.Date(2026, 11, 21, 14, 30, 0, 0, time.UTC)
+	at := now.UnixMilli()
+	weekly := ops.UsageWindow{Scope: "general", Period: "rolling", DurationMS: new((7 * 24 * time.Hour).Milliseconds()),
+		UsedPercent: new(19.0), ResetsAt: new(now.Add(4 * time.Hour).UnixMilli())}
+	account := ops.UsageAccount{ID: ops.UsageID("fixture", "gateway"), Provider: "Anthropic", Label: "Gateway", AuthMode: "api", CustomEndpoint: true,
+		Source: "claude-statusline", ObservedAt: at, Windows: []ops.UsageWindow{weekly}}
+	unreported := account
+	unreported.ID, unreported.Label, unreported.Windows = ops.UsageID("fixture", "unreported"), "No sample", nil
+	result := ops.UsageListResult{Version: 1, AsOf: at, Accounts: []ops.UsageAccountRow{
+		{UsageAccount: account, WorkerID: "build", Totals: &ops.UsageAccountTotals{Sessions: 1, EstimatedCostUSD: new(0.42)}},
+		{UsageAccount: unreported, WorkerID: "build"},
+	}, Sessions: []ops.UsageSessionRow{
+		{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("session", "has-quota"), Name: "Reported gateway", Harness: "claude",
+			AuthMode: "api", CustomEndpoint: true, Source: "claude-statusline", ObservedAt: now.Add(-time.Hour).UnixMilli(), Windows: []ops.UsageWindow{weekly}}},
+		{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{ID: ops.UsageID("session", "no-quota"), Name: "Unreported gateway", Harness: "claude",
+			AuthMode: "api", CustomEndpoint: true, Source: "session-host", ObservedAt: at}},
+	}}
+	connect(t, usagePageFixtures().on(ops.OpUsageList, func(args map[string]any) (any, error) {
+		if args["subscription_only"] == true {
+			return ops.UsageListResult{Version: 1, AsOf: at}, nil
+		}
+		return result, nil
+	}))
+	srv := adminServer(t)
+	accounts := mainOf(t, get(t, srv, "/usage?view=accounts", "X-Test-Session", userHeader).Body.String())
+	// Custom endpoints are one aggregate account: windows stay on the session.
+	mustHave(t, accounts, "Totals · 1 session", "$0.4200")
+	mustNotHave(t, accounts, "5-hour limit", "No subscription limits reported.", "Weekly limit", "19.0% / 81.0%")
+	sessions := mainOf(t, get(t, srv, "/usage?view=sessions", "X-Test-Session", userHeader).Body.String())
+	mustHave(t, sessions, "Upstream quota", "Weekly limit", "19.0% / 81.0%", "Stale window")
+	mustNotHave(t, sessions, "5-hour limit", "No subscription limits reported.")
+	if strings.Count(sessions, "Weekly limit") != 1 {
+		t.Fatal("only the session with a reported window should show it")
+	}
+	main := mainOf(t, get(t, srv, "/usage?view=overview", "X-Test-Session", userHeader).Body.String())
+	mustNotHave(t, main, "Upstream quota", "Weekly limit", "Gateway")
+}
+
 func TestUsageSessionsRenderInStoreOrder(t *testing.T) {
 	at := time.Now().UnixMilli()
 	row := func(name string) ops.UsageSessionRow {
@@ -323,6 +418,23 @@ func TestUsageSessionsRenderInStoreOrder(t *testing.T) {
 	if i1 < 0 || i1 >= i2 || i2 >= i10 {
 		t.Fatalf("order %d %d %d", i1, i2, i10)
 	}
+}
+
+func TestUsageShowsLatestResponseTokensSeparately(t *testing.T) {
+	at := time.Now().UnixMilli()
+	row := ops.UsageSessionRow{WorkerID: "build", LastSeen: at, UsageSession: ops.UsageSession{
+		ID: ops.UsageID("session", "claude-response"), Name: "Claude response", Harness: "claude", AuthMode: "api", Source: "claude-statusline", ObservedAt: at,
+		UsageCounters: ops.UsageCounters{CacheWriteTokens: new(int64(49167))},
+		LastResponseUsage: &ops.UsageResponseTokens{
+			InputTokens: new(int64(4)), OutputTokens: new(int64(215)), CacheReadTokens: new(int64(33617)), CacheWriteTokens: new(int64(23308)),
+		},
+	}}
+	connect(t, usagePageFixtures().reply(ops.OpUsageList, ops.UsageListResult{Version: 1, AsOf: at, Sessions: []ops.UsageSessionRow{row}}))
+	body := mainOf(t, get(t, adminServer(t), "/usage?view=sessions", "X-Test-Session", userHeader).Body.String())
+	mustHave(t, body, "<dt>Input tokens</dt><dd>Unknown</dd>", "<dt>Cache read / write</dt><dd>Unknown / 49167</dd>",
+		"<summary>Latest response tokens</summary>", "<dt>Uncached input</dt><dd>4</dd>", "<dt>Output</dt><dd>215</dd>",
+		"<dt>Cache read</dt><dd>33617</dd>", "<dt>Cache write</dt><dd>23308</dd>")
+	mustNotHave(t, body, "Tokens, cost and model appear once this Claude session reports.")
 }
 
 func TestUsageShowsEveryClaudeExporterStateRestartAndStaleReason(t *testing.T) {

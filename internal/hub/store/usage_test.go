@@ -634,3 +634,37 @@ func TestUsageNeverStoresOrReturnsALegacyAccountEndpoint(t *testing.T) {
 		t.Fatalf("legacy endpoint returned: %s", b)
 	}
 }
+
+// A Refresh queues its query against the saved collector source, read in the
+// same transaction: a page that still shows the old source cannot revert it.
+func TestUsageCollectorKeepSourcePreservesTheSavedChoice(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, r, now := usageFixture(t, s, 1)
+	r.Accounts[0].Provider = "OpenAI"
+	r.Accounts[0].Source = "codex-account"
+	for _, w := range workers {
+		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, r, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := r.Accounts[0].ID
+	if _, err := s.SetUsageCollector(ctx, workers, ops.UsageCollectorSetArgs{AccountID: id, WorkerID: workers[1].ID}); err != nil {
+		t.Fatal(err)
+	}
+	// A stale card would have resubmitted the first Worker.
+	res, err := s.SetUsageCollector(ctx, workers, ops.UsageCollectorSetArgs{AccountID: id, KeepSource: true, Start: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PreferredWorker != workers[1].ID || !res.CanStart {
+		t.Fatalf("kept source = %+v", res)
+	}
+	var pref string
+	if err := s.db.QueryRow(`SELECT coalesce(preferred_worker,'') FROM usage_collectors WHERE account_id=?`, id).Scan(&pref); err != nil || pref != workers[1].ID {
+		t.Fatalf("stored preference = %q, %v", pref, err)
+	}
+	if _, err := s.SetUsageCollector(ctx, workers, ops.UsageCollectorSetArgs{AccountID: id, KeepSource: true, WorkerID: "x"}); err == nil {
+		t.Fatal("keep_source accepted a Worker")
+	}
+}

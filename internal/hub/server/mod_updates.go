@@ -68,6 +68,8 @@ func initUpdates(_ context.Context, env *Env) error {
 		}
 		return r.Latest, r.URL, r.Newer
 	})
+	web.SetPublishedSource(chk.Published)
+	web.SetPublishedRecheck(chk.PublishedFresh)
 	runCtx, cancel := context.WithCancel(context.Background())
 	chk.Life = runCtx
 	done := make(chan struct{})
@@ -83,6 +85,8 @@ func initUpdates(_ context.Context, env *Env) error {
 	env.OnStop(func(ctx context.Context) error {
 		cancel()
 		web.SetUpdateSource(nil)
+		web.SetPublishedSource(nil)
+		web.SetPublishedRecheck(nil)
 		if !started.Load() {
 			return nil
 		}

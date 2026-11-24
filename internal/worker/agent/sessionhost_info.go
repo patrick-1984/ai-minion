@@ -41,6 +41,9 @@ type SessionHostInfo struct {
 	// Detail is what only the Worker's own log and local status show: a
 	// socket path, a user name, the error of psmux. Never sent to the Hub.
 	Detail string
+	// The effective tmux target is exposed only on the local control socket.
+	tmuxSocket string
+	tmuxBinary string
 }
 
 // newHostInfo is the info of a host with a reason code and a local detail.

@@ -22,6 +22,7 @@ type storedUsageAccount struct {
 
 func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.UsageAccount) error {
 	a.Provider = ops.UsageProvider(a.Provider)
+	a.Windows = ops.SubscriptionWindows(a)
 	nativeRead := a.Provider == "OpenAI" && a.AuthMode == "subscription" && (a.Source == "codex-account" || a.Source == "codex-app-server")
 	if a.SourceSessionID != "" {
 		a.SourceSessionID = ops.UsageID("hub-session", workerID, a.SourceSessionID)
@@ -73,8 +74,8 @@ func saveUsageAccount(ctx context.Context, tx *sql.Tx, workerID string, a ops.Us
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_accounts(worker_id,account_id,observed_at,body,can_poll) VALUES(?,?,?,?,?)
 	 ON CONFLICT(worker_id,account_id) DO UPDATE SET observed_at=excluded.observed_at,body=excluded.body,can_poll=max(usage_accounts.can_poll,excluded.can_poll)
-	 WHERE excluded.observed_at>usage_accounts.observed_at AND
-	  (json_extract(excluded.body,'$.source')<>'native-account' OR json_extract(usage_accounts.body,'$.source')='native-account')`, workerID, a.ID, a.ObservedAt, string(b), nativeRead)
+	 WHERE (excluded.observed_at>usage_accounts.observed_at OR ?) AND
+	  (json_extract(excluded.body,'$.source')<>'native-account' OR json_extract(usage_accounts.body,'$.source')='native-account')`, workerID, a.ID, a.ObservedAt, string(b), nativeRead, false)
 	if err == nil && nativeRead {
 		_, err = tx.ExecContext(ctx, `UPDATE usage_accounts SET can_poll=1 WHERE worker_id=? AND account_id=? AND can_poll=0`, workerID, a.ID)
 	}
@@ -176,8 +177,24 @@ func (s *Store) SetUsageCollector(ctx context.Context, workers []ops.WorkerInfo,
 	if err != nil {
 		return ops.UsageCollector{}, err
 	}
-	result := ops.UsageCollector{PreferredWorker: a.WorkerID, PreferredSession: a.SessionID}
+	var result ops.UsageCollector
 	err = s.Tx(ctx, func(tx *sql.Tx) error {
+		if a.KeepSource {
+			// Read-modify-write: the saved source, not the one a page showed.
+			var w string
+			err := tx.QueryRowContext(ctx, `SELECT coalesce(preferred_worker,''),preferred_session FROM usage_collectors WHERE account_id=?`, a.AccountID).Scan(&w, &a.SessionID)
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			a.WorkerID = w
+			if a.SessionID != "" {
+				a.Start = false
+			}
+		}
+		result = ops.UsageCollector{PreferredWorker: a.WorkerID, PreferredSession: a.SessionID}
 		// Every source of a shared credential must be in this caller's
 		// authorized Worker set to alter its domain-wide polling schedule.
 		var allowed bool
@@ -193,6 +210,9 @@ func (s *Store) SetUsageCollector(ctx context.Context, workers []ops.WorkerInfo,
 		var capable bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM usage_accounts WHERE account_id=? AND can_poll=1 AND (?='' OR worker_id=?))`, a.AccountID, a.WorkerID, a.WorkerID).Scan(&capable); err != nil {
 			return err
+		}
+		if a.KeepSource && !capable {
+			a.Start = false
 		}
 		if a.Start && !capable {
 			return ErrUsageNoNativeReader

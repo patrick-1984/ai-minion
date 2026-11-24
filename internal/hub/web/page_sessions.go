@@ -120,6 +120,11 @@ type WorkerRow struct {
 	UpdateTo    string
 	UpdateURL   string
 	UpdateBlock string
+	// UpdateFailed is "Update to vX failed: reason (time)" after a failed
+	// attempt; UpdateUnpublished is why the Update button is disabled (the
+	// Hub's release is not published on GitHub yet).
+	UpdateFailed      string
+	UpdateUnpublished string
 	// Version is the protocol version of the current connection; empty while
 	// the Worker is offline.
 	Version string
@@ -213,7 +218,8 @@ type SessionRow struct {
 	Name     string
 	Kind     string
 	State    string
-	Task     string
+	ops.PaneStateDetail
+	Task string
 	// Online is false while the session's Worker is offline; the state is the
 	// last one known.
 	Online    bool
@@ -333,6 +339,19 @@ func stateLabel(state string) string {
 		return "Unknown"
 	}
 	return state
+}
+
+// StateSourceLabel describes where the Worker observed the status.
+func (x SessionRow) StateSourceLabel() string {
+	switch x.StateSource {
+	case "claude-hooks":
+		return "Claude Code hooks"
+	case "codex-hooks":
+		return "Codex hooks"
+	case ops.PaneStateSourceScreen:
+		return "Terminal screen"
+	}
+	return x.StateSource
 }
 
 // AttentionItem is one thing that needs a look: a session that waits for an
@@ -578,8 +597,14 @@ func newFilteredView(d Dashboard, all bool, f ListFilter) DashboardView {
 		if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {
 			w.UpdateTo = target
 			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
+				w.UpdateUnpublished = notPublishedText(target)
+			}
+			if d.Admin && w.Online && !w.Pending && w.SelfUpdate {
 				w.UpdateURL = WorkerUpdatePath(w.ID)
-				v.UpdatableWorkers++
+				if w.UpdateUnpublished == "" {
+					// The bulk action would only be refused for a known draft.
+					v.UpdatableWorkers++
+				}
 			}
 		}
 		w.ShowOwner = all
@@ -1159,8 +1184,9 @@ type sessionsBody struct {
 		Session  string `json:"session"`
 		Kind     string `json:"kind"`
 		State    string `json:"state"`
-		Task     string `json:"task"`
-		Online   bool   `json:"online"`
+		ops.PaneStateDetail
+		Task   string `json:"task"`
+		Online bool   `json:"online"`
 	} `json:"sessions"`
 }
 
@@ -1208,11 +1234,16 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 			SessionsSynced:    w.SessionsSynced, SessionsListError: w.SessionsListError,
 			SelfUpdate: proto.HasFeature(w.Features, proto.FeatureSelfUpdate),
 		})
+		if row := &d.Workers[len(d.Workers)-1]; d.Admin && w.Online && !w.Pending && row.SelfUpdate {
+			if target, ok := updateTarget(); ok && workerOutdated(w.Build, target) {
+				row.UpdateFailed = updateFailureText(r, s.c, w.ID, target)
+			}
+		}
 	}
 	for _, x := range sb.Sessions {
 		d.Sessions = append(d.Sessions, SessionRow{
 			WorkerID: x.WorkerID, Worker: x.Worker, Owner: x.Owner, Name: x.Session,
-			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online,
+			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail,
 		})
 	}
 	return d, nil

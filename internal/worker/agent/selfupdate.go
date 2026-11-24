@@ -34,6 +34,14 @@ const (
 	// restartDelay lets the answer and the log reach the Hub before the
 	// process restarts.
 	restartDelay = 2 * time.Second
+	// replyBound is the longest the restart waits for the answer to be
+	// written; restartGrace follows a written answer.
+	replyBound   = 10 * time.Second
+	restartGrace = 300 * time.Millisecond
+	// earlyFailWait is how long worker_update waits for a failure that shows
+	// at once (the release is not published, the lookup fails) before it
+	// answers "accepted". A slower failure is read with worker_update_status.
+	earlyFailWait = 5 * time.Second
 	// updateCommitAfter is how long a new binary must run with a live Hub
 	// connection before the update counts as good and the guard is cleared.
 	updateCommitAfter = 5 * time.Minute
@@ -93,6 +101,8 @@ type selfUpdate struct {
 	// restart (Executor.SetSessionCreateHold).
 	holdSessions func(reason string)
 	now          func() time.Time
+	// earlyWait overrides earlyFailWait (tests); zero means earlyFailWait.
+	earlyWait time.Duration
 
 	busy atomic.Bool
 	mu   sync.Mutex
@@ -211,7 +221,21 @@ func (u *selfUpdate) handleUpdate(ctx context.Context, rq Request) (any, error) 
 		}
 	}
 	u.setState(ops.UpdateStateDownloading, version.Version, args.Version, "")
-	go u.run(context.WithoutCancel(ctx), args.Version, hub)
+	failed := make(chan string, 1)
+	go u.run(context.WithoutCancel(ctx), args.Version, hub, failed)
+	wait := u.earlyWait
+	if wait == 0 {
+		wait = earlyFailWait
+	}
+	select {
+	case msg := <-failed:
+		if msg != "" { // "" means: installed, the restart follows the answer
+			res.Reason = msg
+			return res, nil
+		}
+	case <-time.After(wait):
+	case <-ctx.Done():
+	}
 	res.Accepted = true
 	return res, nil
 }
@@ -226,7 +250,7 @@ func (u *selfUpdate) release() {
 
 // run installs the release and restarts. The crash guard is written before
 // anything is replaced; without it nothing is installed.
-func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRange) {
+func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRange, failed chan<- string) {
 	ctx, cancel := context.WithTimeout(ctx, selfUpdateTimeout)
 	defer cancel()
 	// The guard of this run, and the one it replaces (the trial of the
@@ -251,6 +275,12 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 		u.log.Warn("worker update failed", "to", tag, "error", msg)
 		u.setState(ops.UpdateStateFailed, version.Version, tag, msg)
 		u.release()
+		if failed != nil {
+			select {
+			case failed <- proto.SafeText(msg, 500):
+			default:
+			}
+		}
 	}
 	u.log.Debug("worker update: preparing the installer", "to", tag, "exe", u.exe)
 	inst, err := u.installer()
@@ -287,7 +317,23 @@ func (u *selfUpdate) run(ctx context.Context, tag string, hub *version.ProtoRang
 	}
 	u.setState(ops.UpdateStateRestarting, version.Version, r.Tag, "")
 	u.log.Info("worker updated; restarting", "from", version.Version, "to", r.Tag)
-	time.Sleep(restartDelay)
+	if failed != nil { // wake the handler: the answer goes out before the restart
+		select {
+		case failed <- "":
+		default:
+		}
+	}
+	// The answer goes out first: wait for its write (bounded, so a stalled
+	// link cannot hold the update), then keep the short grace for the log.
+	if sent := ReplySent(ctx); sent != nil {
+		select {
+		case <-sent:
+			time.Sleep(restartGrace)
+		case <-time.After(replyBound):
+		}
+	} else {
+		time.Sleep(restartDelay)
+	}
 	u.restart()
 }
 

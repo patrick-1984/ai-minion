@@ -1,0 +1,14 @@
+  Ran 2 shell commands
+● The watchdog found nothing stuck and no rate limit. Trial 100 of 100 is computing (GPU 96% busy, log updated 4 minutes ago), and Heretic estimates under 5 minutes left. The last completed trial scored
+  15/100 refusals on keywords and 8/100 on the classifier, at KL 0.062.
+  ⎿  Stop says: lessons: 37 failure events logged; newer than LESSONS.md - add a lesson entry (what happened, cause, fix, research link).
+● Ran 7 stop hooks
+  ⎿  Stop hook says: Verify job done (background task finished). Open: continue. Else: 1-2 lines, no list (Delivery rules, ~/.claude/CLAUDE.md).
+● The 12B's last trial is finishing, and the host queue then starts the post-search chain and the three-way E4B comparison. The monitors report each step to me.
+  ⎿  Stop says: lessons: 37 failure events logged; newer than LESSONS.md - add a lesson entry (what happened, cause, fix, research link).
+✻ Worked for 23s · done 10:50 PM · 1 shell still running
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── models ─
+❯ continue, deliver
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 medium · wb-8 · ● context 72%
+  ⏵⏵ auto mode on · 3 background tasks · ← 2 agents · ↓ to manage

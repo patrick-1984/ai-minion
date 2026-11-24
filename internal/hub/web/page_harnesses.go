@@ -11,6 +11,7 @@ package web
 // official CLI, so the page only says how to use it.
 
 import (
+	"html/template"
 	"net/http"
 	"net/url"
 	"slices"
@@ -69,7 +70,7 @@ type harnessCell struct {
 type harnessRow struct {
 	ID, Name, Owner string
 	Online          bool
-	Scanned         string
+	Scanned         template.HTML
 	Cells           []harnessCell
 	Missing         bool
 }
@@ -82,6 +83,8 @@ type harnessPage struct {
 	Columns                                                                    []string
 	Rows                                                                       []harnessRow
 	Total                                                                      int
+	// LastChecked is the newest scan of the listed Workers.
+	LastChecked template.HTML
 }
 
 func harnessQuery(all, missing bool) string {
@@ -223,11 +226,15 @@ func harnessesPageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		return nil, err
 	}
 	p.Total = len(workers)
+	var newest *int64
 	for _, w := range workers {
-		row := harnessRow{ID: w.ID, Name: w.Name, Owner: w.Owner, Online: w.Online, Scanned: "Not scanned"}
+		row := harnessRow{ID: w.ID, Name: w.Name, Owner: w.Owner, Online: w.Online, Scanned: checkedTime(nil, "Not scanned")}
 		ur := inv[w.ID]
 		if ur != nil && ur.InventoryAt != nil {
-			row.Scanned = usagePage{}.Time(ur.InventoryAt)
+			row.Scanned = checkedTime(ur.InventoryAt, "Not scanned")
+			if newest == nil || *ur.InventoryAt > *newest {
+				newest = ur.InventoryAt
+			}
 		}
 		for _, k := range cols {
 			cell := harnessCellFor(w, ur, k)
@@ -240,6 +247,7 @@ func harnessesPageData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 		p.Rows = append(p.Rows, row)
 	}
 	p.HasWorkers = p.Total > 0
+	p.LastChecked = checkedTime(newest, "Not checked yet")
 	return p, nil
 }
 
@@ -305,7 +313,7 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 			go func() {
 				defer func() { <-sem; wg.Done() }()
 				var report ops.UsageReport
-				err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: wk.ID, Inventory: true}, &report)
+				err := c.CallOp(r, ops.OpWorkerUsage, ops.WorkerUsageArgs{WorkerID: wk.ID, Inventory: true, Fresh: true}, &report)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil || report.InventoryAt == nil || *report.InventoryAt <= was {
@@ -338,7 +346,8 @@ func harnessesPost(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUse
 		if skipped > 0 {
 			text += " " + pluralWorkers(skipped) + " skipped (offline, needs an update or has not accepted monitoring)."
 		}
-		done(w, r, text, ops.WriteResult{})
+		w.Header().Set("HX-Trigger", "harnesses-checked")
+		writeResultInfo(w, text)
 	default:
 		http.NotFound(w, r)
 	}

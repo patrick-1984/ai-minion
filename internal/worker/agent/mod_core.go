@@ -11,6 +11,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
 	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
@@ -88,6 +89,9 @@ func (d coreDeps) start(ctx context.Context, env *Env) (_ StopFunc, err error) {
 		if spec, hostInfo, err = d.hostSpec(s); err != nil {
 			return nil, fmt.Errorf("choose the terminal host: %w", err)
 		}
+	}
+	if hostInfo.Kind == transport.SessionHostTmux {
+		hostInfo.tmuxSocket, hostInfo.tmuxBinary = spec, s.Managed.TmuxBinary
 	}
 	var host term.SessionHost
 	if s.Managed.Android || s.Managed.TmuxBinary != "" {

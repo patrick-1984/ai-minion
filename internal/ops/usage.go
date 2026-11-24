@@ -19,9 +19,9 @@ import (
 // a session. A missing counter is unknown; a pointer to zero is a known zero.
 const UsageVersion = 1
 
-// UsageExporterNotice discloses the automatic Claude Code exporter install. It is part of
+// UsageExporterNotice discloses the automatic native exporter installs. It is part of
 // UsageDisclosure and mirrored in the installers and the Android strings.
-const UsageExporterNotice = "Minion adds its status-line exporter to Claude Code settings so token, cost and limit data are reported; your existing status line keeps working. Turn it off with usage_claude_exporter=off."
+const UsageExporterNotice = "Minion adds a status-line exporter and lifecycle hooks to Claude Code for tokens, cost, limits and session activity. Your existing status line keeps working. Control the integration with usage_claude_exporter=off. Minion adds lifecycle hooks to Codex profiles on Linux, macOS and Android for session activity. Review and trust them in Codex with /hooks. Disable recording with usage_codex_exporter=off. Lifecycle hooks report event types and timing without prompt or response content."
 
 // UsageAccessNotice states what a report says about how a session signs in. It
 // is part of UsageDisclosure and mirrored in the installers and the Android strings.
@@ -111,11 +111,23 @@ type UsageSpendBudget struct {
 	LimitUSD         *float64 `json:"limit_usd"`
 }
 
+// UsageResponseTokens contains token counts for one native API response.
+// InputTokens excludes the cache reads and writes reported separately here.
+type UsageResponseTokens struct {
+	InputTokens      *int64 `json:"input_tokens"`
+	OutputTokens     *int64 `json:"output_tokens"`
+	CacheReadTokens  *int64 `json:"cache_read_tokens"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens"`
+}
+
 type UsageSession struct {
-	GatewaySpend *UsageSpendBudget `json:"gateway_spend,omitempty"`
-	TimeSource   string            `json:"time_source,omitempty"`
-	NativeID     string            `json:"native_id,omitempty"`
-	Models       []UsageModel      `json:"models,omitempty"`
+	GatewaySpend      *UsageSpendBudget    `json:"gateway_spend,omitempty"`
+	LastResponseUsage *UsageResponseTokens `json:"last_response_usage,omitempty"`
+	// Windows are the upstream limits observed by a custom endpoint session.
+	Windows    []UsageWindow `json:"windows,omitempty"`
+	TimeSource string        `json:"time_source,omitempty"`
+	NativeID   string        `json:"native_id,omitempty"`
+	Models     []UsageModel  `json:"models,omitempty"`
 
 	ID        string `json:"id"` // opaque identity of this session incarnation on this Worker
 	Name      string `json:"name"`
@@ -322,6 +334,21 @@ func (r UsageReport) Check(now time.Time) error {
 				}
 			}
 		}
+		if len(s.Windows) > 0 {
+			if s.AuthMode != "api" || !s.CustomEndpoint {
+				return invalid("windows", "session limits require a custom endpoint")
+			}
+			if err := checkUsageWindows(s.Windows); err != nil {
+				return err
+			}
+		}
+		if v := s.LastResponseUsage; v != nil {
+			for _, n := range []*int64{v.InputTokens, v.OutputTokens, v.CacheReadTokens, v.CacheWriteTokens} {
+				if n != nil && *n < 0 {
+					return invalid("last_response_usage", "invalid token count")
+				}
+			}
+		}
 		if s.StartedAt != nil && !usageTime(*s.StartedAt, s.ObservedAt) ||
 			s.StoppedAt != nil && (!usageTime(*s.StoppedAt, s.ObservedAt) ||
 				s.StartedAt != nil && *s.StoppedAt < *s.StartedAt) {
@@ -361,7 +388,7 @@ func (r UsageReport) Check(now time.Time) error {
 		}
 	}
 	encoded, err := json.Marshal(r)
-	if err != nil || len(encoded) > 768<<10 {
+	if err != nil || len(encoded) > UsageReportMaxBytes {
 		return invalid("report", "encoded report exceeds the usage transport limit")
 	}
 	return nil
@@ -380,8 +407,7 @@ func (a UsageAccount) check(observedAt int64) error {
 		a.Source == "" ||
 		!usageText(a.Source, 64) ||
 		!usageTime(a.ObservedAt, observedAt) ||
-		len(a.Windows) > 32 ||
-		a.AuthMode != "subscription" && len(a.Windows) > 0 {
+		len(a.Windows) > 0 && a.AuthMode != "subscription" && (a.AuthMode != "api" || !a.CustomEndpoint) {
 		return invalid("accounts", "invalid account metadata")
 	}
 	if a.EndpointOrigin != "" || a.KeyHint != "" {
@@ -389,8 +415,15 @@ func (a UsageAccount) check(observedAt int64) error {
 			return invalid("accounts", "invalid API identity display")
 		}
 	}
+	return checkUsageWindows(a.Windows)
+}
+
+func checkUsageWindows(windows []UsageWindow) error {
+	if len(windows) > 32 {
+		return invalid("windows", "too many usage windows")
+	}
 	windowKeys := map[string]bool{}
-	for _, w := range a.Windows {
+	for _, w := range windows {
 		key := w.Scope + "\x00" + w.Period + "\x00" + w.Unit
 		if w.DurationMS != nil {
 			key += "\x00" + strconv.FormatInt(*w.DurationMS, 10)
@@ -419,14 +452,20 @@ func (a UsageAccount) check(observedAt int64) error {
 // the 256 sessions of a report plus the inventory and native rows.
 const UsageAccountsMax = 512
 
+// UsageReportMaxBytes caps the encoded usage report of one transport message.
+const UsageReportMaxBytes = 768 << 10
+
 // Sanitize returns the report with every optional display field or account
 // that cannot be accepted dropped, so one bad or surplus account never
-// invalidates the session telemetry of the whole report.
+// invalidates the session telemetry of the whole report. A report that is
+// too large only because of quota windows loses the session copies of them
+// and keeps everything else; subscription account limits are never trimmed.
 func (r UsageReport) Sanitize() UsageReport {
 	r = r.DropLegacyEndpoints().DropBadLabels()
 	seen := map[string]bool{}
 	kept := make([]UsageAccount, 0, len(r.Accounts))
 	for _, a := range r.Accounts {
+		a.Windows = SubscriptionWindows(a)
 		key := a.ID + "|" + a.SourceSessionID
 		if len(kept) >= UsageAccountsMax || seen[key] || a.check(r.ObservedAt) != nil {
 			continue
@@ -434,10 +473,30 @@ func (r UsageReport) Sanitize() UsageReport {
 		seen[key] = true
 		kept = append(kept, a)
 	}
-	if len(kept) != len(r.Accounts) {
-		r.Accounts = kept
+	r.Accounts = kept
+	if r.tooLarge() {
+		r.Sessions = slices.Clone(r.Sessions)
+		for i := range r.Sessions {
+			r.Sessions[i].Windows = nil
+		}
 	}
 	return r
+}
+
+// SubscriptionWindows returns the account's quota windows only for a
+// subscription. Custom endpoints are not told apart (one aggregate account per
+// provider and kind), so upstream windows seen through one stay on the session
+// and never describe an API-key account.
+func SubscriptionWindows(a UsageAccount) []UsageWindow {
+	if a.AuthMode != "subscription" {
+		return nil
+	}
+	return a.Windows
+}
+
+func (r UsageReport) tooLarge() bool {
+	b, err := json.Marshal(r)
+	return err == nil && len(b) > UsageReportMaxBytes
 }
 
 // Pace compares consumed and elapsed percentages only when a reported

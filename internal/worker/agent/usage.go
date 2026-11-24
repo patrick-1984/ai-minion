@@ -19,6 +19,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/worker/agentdetect"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 	"github.com/patrick-1984/ai-minion/internal/worker/term"
 )
 
@@ -70,18 +71,22 @@ func (e *Executor) registerUsage(reg usageRegistration) {
 				}
 			}
 		} else {
-			r, err = usageSnapshot(ctx, e.host, false)
+			// The inventory is refreshed first and the sessions are listed
+			// after it: a forced refresh then never ends with a session list
+			// that is older than the timestamp it carries.
+			var scan ops.UsageReport
+			if a.Inventory {
+				if scan, err = cache.get(ctx, grant, a.Fresh); err != nil {
+					return nil, err
+				}
+			}
+			r, err = usageSnapshot(ctx, e.host)
 			if err != nil {
 				return nil, err
 			}
-		}
-		if a.Inventory && a.AccountID == "" {
-			scan, err := cache.get(ctx, grant)
-			if err != nil {
-				return nil, err
+			if a.Inventory {
+				r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, mergeUsageAccounts(scan.Accounts, r.Accounts), scan.InventoryAt
 			}
-			r.Inventory, r.Accounts, r.InventoryAt = scan.Inventory, mergeUsageAccounts(scan.Accounts, r.Accounts), scan.InventoryAt
-			r.ObservedAt = time.Now().UnixMilli()
 		}
 		if a.AccountID == "" {
 			if err := reg.NativeUsage(ctx, &r, a.AfterEvent); err != nil {
@@ -113,19 +118,22 @@ var usageProcTimeout = agentdetect.SnapshotTimeout
 // usageHarnessProvider names the vendor of a harness that has exactly one.
 var usageHarnessProvider = map[string]string{"claude": "Anthropic", "codex": "OpenAI"}
 
-func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (ops.UsageReport, error) {
+func usageSnapshot(ctx context.Context, host usageSessionHost) (ops.UsageReport, error) {
 	list := host.ListSessions
 	if h, ok := host.(interface {
 		ListUsageSessions(context.Context) ([]term.Session, error)
 	}); ok {
 		list = h.ListUsageSessions
 	}
+	// The report is stamped before the sessions are listed: a pane opened
+	// while it is built is then absent from an older snapshot, never from a
+	// newer one, so the Hub cannot take a live session for a stopped one.
+	now := time.Now().UTC()
+	at := now.UnixMilli()
 	sessions, err := list(ctx)
 	if err != nil {
 		return ops.UsageReport{}, apiErr(proto.CodeConflict, "", "session metadata is unavailable")
 	}
-	now := time.Now().UTC()
-	at := now.UnixMilli()
 	r := ops.UsageReport{Version: ops.UsageVersion, ObservedAt: at, Complete: true, Sessions: []ops.UsageSession{}}
 	if len(sessions) > 256 {
 		return r, apiErr(proto.CodeConflict, "", "session inventory exceeds the supported batch size")
@@ -163,11 +171,6 @@ func usageSnapshot(ctx context.Context, host usageSessionHost, inventory bool) (
 		r.Accounts = append(r.Accounts, a)
 	}
 	slices.SortFunc(r.Accounts, func(a, b ops.UsageAccount) int { return strings.Compare(a.ID, b.ID) })
-	if inventory {
-		r.Inventory = usageInventory(ctx)
-		r.Accounts = mergeUsageAccounts(discoverUsageAccounts(ctx, r.Inventory, ""), r.Accounts)
-		r.ObservedAt = time.Now().UnixMilli()
-	}
 	if err := fitUsageReport(&r, time.Now()); err != nil {
 		return ops.UsageReport{}, apiErr(proto.CodeConflict, "", "session metadata could not be represented")
 	}
@@ -205,6 +208,8 @@ func fitUsageReport(r *ops.UsageReport, now time.Time) error {
 		return strings.Compare(a.ID, b.ID)
 	})
 	r.Accounts = kept
+	// Oversized quota detail is dropped, never the whole report.
+	*r = r.Sanitize()
 	return r.Check(now)
 }
 
@@ -263,9 +268,6 @@ func usageInventory(ctx context.Context) []ops.UsageHarness {
 				}
 			}
 			cancel()
-			if name == "claude" {
-				item.Exporter = claudeExporterState()
-			}
 		}
 		out = append(out, item)
 	}
@@ -283,25 +285,62 @@ func (b *usageOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-type usageInventoryCache struct {
-	mu      sync.Mutex
-	running chan struct{}
-	grant   string
-	report  ops.UsageReport
-	until   time.Time
+func refreshClaudeExporter(inventory []ops.UsageHarness) {
+	for i := range inventory {
+		if inventory[i].Name == "claude" && inventory[i].Status == "installed" {
+			inventory[i].Exporter = claudeExporterState()
+			return
+		}
+	}
 }
 
-func (c *usageInventoryCache) get(ctx context.Context, grant string) (ops.UsageReport, error) {
+const usageForceInterval = 10 * time.Second
+
+var usageInventoryGeneration atomic.Uint64
+
+// InvalidateUsageInventory makes the next inventory request rescan after a
+// local profile change. A scan already running belongs to the old generation.
+func InvalidateUsageInventory() { usageInventoryGeneration.Add(1) }
+
+type usageInventoryCache struct {
+	mu         sync.Mutex
+	running    chan struct{}
+	grant      string
+	report     ops.UsageReport
+	until      time.Time
+	generation uint64
+	nextForced time.Time
+	commits    uint64 // scans that finished and were kept
+}
+
+func (c *usageInventoryCache) get(ctx context.Context, grant string, fresh bool) (ops.UsageReport, error) {
+	c.mu.Lock()
+	seen := c.commits
+	c.mu.Unlock()
 	for {
 		c.mu.Lock()
-		if c.grant == grant && time.Now().Before(c.until) {
+		now := time.Now()
+		if c.commits != seen {
+			fresh = false // a scan finished since this request: it satisfies it
+		}
+		generation := usageInventoryGeneration.Load()
+		force := fresh && !now.Before(c.nextForced)
+		done := c.running
+		valid := c.grant == grant && c.generation == generation && now.Before(c.until)
+		if valid && !force && (!fresh || done == nil) {
 			out := c.report
+			// Order reports by when they saw the cached inventory, before
+			// reading the profile outside the lock.
+			out.ObservedAt = now.UnixMilli()
 			out.Inventory = slices.Clone(out.Inventory)
 			out.Accounts = slices.Clone(out.Accounts)
 			c.mu.Unlock()
+			refreshClaudeExporter(out.Inventory)
 			return out, nil
 		}
-		if done := c.running; done != nil {
+		// A manual request can share a scan already in progress; if that scan
+		// is cancelled, the request scans on its own.
+		if done != nil {
 			c.mu.Unlock()
 			select {
 			case <-ctx.Done():
@@ -320,7 +359,11 @@ func (c *usageInventoryCache) get(ctx context.Context, grant string) (ops.UsageR
 		out := ops.UsageReport{Inventory: harnesses, Accounts: accounts, InventoryAt: &ms}
 		c.mu.Lock()
 		if ctx.Err() == nil {
-			c.grant, c.until, c.report = grant, at.Add(5*time.Minute), out
+			c.grant, c.generation, c.until, c.report = grant, generation, at.Add(5*time.Minute), out
+			c.commits++
+			if force { // a cancelled scan spends no cooldown
+				c.nextForced = at.Add(usageForceInterval)
+			}
 		}
 		close(c.running)
 		c.running = nil
@@ -462,17 +505,11 @@ func claudeExporterStateIn(dir string) string {
 const maxUsageLabel = 96
 
 // accessAccount is the grouping row for sessions that use an API key or a
-// custom endpoint: one per provider and access kind. It holds no key
-// material, no host and no subscription limits.
+// custom endpoint: one per provider and access kind (see
+// store.AggregateAPIAccount).
 func accessAccount(provider string, acc sessionAccess, at int64) (ops.UsageAccount, bool) {
 	if acc.Mode != "api" || provider == "" {
 		return ops.UsageAccount{}, false
 	}
-	// The Worker never reads a key, so keys of one provider cannot be told
-	// apart: the row says so instead of posing as one credential.
-	label, kind := "API keys (not told apart)", accessAPIKey
-	if acc.Kind == accessCustomEndpoint {
-		label, kind = "Custom endpoint (not told apart)", accessCustomEndpoint
-	}
-	return ops.UsageAccount{ID: ops.UsageID("session-access", provider, kind), Provider: provider, Label: label, CustomEndpoint: kind == accessCustomEndpoint, AuthMode: "api", Source: "session-host", ObservedAt: at, TimeSource: "worker_measured"}, true
+	return store.AggregateAPIAccount(provider, acc.Kind == accessCustomEndpoint, at), true
 }

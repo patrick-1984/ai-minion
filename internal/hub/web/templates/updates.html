@@ -51,7 +51,7 @@
     <div><dt>Running</dt><dd data-current>{{.Current}}</dd></div>
     <div><dt>Channel</dt><dd>{{if .Channel}}{{.Channel}}{{else}}<span class="muted">-</span>{{end}}</dd></div>
     <div><dt>Newest in the channel</dt><dd>{{if .Checking}}<span class="muted" data-checking>checking GitHub now…</span>{{else if $pending}}<span class="muted" data-check-pending>checking the channel {{.Channel}} (the last answer was for {{.CheckedChannel}})</span>{{else if .Latest}}{{if .ReleaseURL}}<a id="hub-release-link" href="{{.ReleaseURL}}" target="_blank" rel="noopener">{{.Latest}}</a>{{else}}{{.Latest}}{{end}}{{if .Newer}} <span class="badge" data-tone="warning">newer</span>{{else}} <span class="muted">(up to date)</span>{{end}}{{else}}<span class="muted">not checked yet</span>{{end}}</dd></div>
-    <div><dt>Checked</dt><dd data-checked-at>{{if .CheckedAt}}<time datetime="{{.CheckedAt}}">{{$.CheckedAt}}</time>{{else}}<span class="muted">not yet</span>{{end}}{{if .CheckError}} <span class="badge" data-tone="danger">failed</span> <span class="muted">{{.CheckError}}</span>{{end}}</dd></div>
+    <div><dt>Last checked</dt><dd data-checked-at>{{if .CheckedAt}}<time datetime="{{.CheckedAt}}">{{$.CheckedAt}}</time>{{else}}<span class="muted">not yet</span>{{end}}{{if .CheckError}} <span class="badge" data-tone="danger">failed</span> <span class="muted">{{.CheckError}}</span>{{end}}</dd></div>
   </dl>
   {{if $.Slow}}<p class="muted" data-check-slow>The check takes long; press Check now again later.</p>{{end}}
 </div>{{end}}

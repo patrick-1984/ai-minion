@@ -5,6 +5,12 @@
 <div class="usage-page">
   <div class="page-head">
     <div><h1>Usage</h1>{{if $p.Admin}}<p>Usage across all registered Workers. Token buckets belong to your account.</p>{{end}}</div>
+    {{if ne $p.Section "buckets"}}<div class="page-actions">
+      <form method="post" action="/usage/refresh" hx-post="/usage/refresh" hx-target="#usage-result" hx-disabled-elt="find button">
+        {{template "usage_form_state" $p}}
+        <button type="submit" class="btn btn-secondary">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button>
+      </form>
+    </div>{{end}}
   </div>
   <nav class="scope usage-tabs" aria-label="Usage views">
     {{range $p.Views}}<a href="{{.URL}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end}}
@@ -43,7 +49,7 @@
   {{end}}
 
   {{if eq $p.Section "overview"}}
-  <div id="usage-subscription-data" hx-get="{{$p.RefreshURL}}" hx-trigger="every 60s" hx-select="#usage-subscription-data > *" hx-swap="innerHTML" hx-sync="this:drop">
+  <div id="usage-subscription-data" hx-get="{{$p.RefreshURL}}" hx-trigger="every 60s, usage-refreshed from:body" hx-select="#usage-subscription-data > *" hx-swap="innerHTML" hx-sync="this:drop">
     {{template "usage_overview" $p}}
     <section aria-labelledby="subscriptions-h">
       <h2 id="subscriptions-h">Subscription accounts</h2>
@@ -53,18 +59,18 @@
     </section>
     {{if $p.NextURL}}<a class="btn btn-secondary" href="{{$p.NextURL}}">Next page</a>{{end}}
   </div>
-  {{else if eq $p.Section "accounts"}}
-  {{template "usage_accounts" $p}}
-  {{else if eq $p.Section "workers"}}
-  {{template "usage_workers" $p}}
-  {{else if eq $p.Section "sessions"}}
-  {{template "usage_sessions" $p}}
-  {{else if eq $p.Section "events"}}
-  {{template "usage_events" $p}}
-  {{else if eq $p.Section "history"}}
-  {{template "usage_history" $p}}
-  {{else}}
+  {{else if eq $p.Section "buckets"}}
   {{template "usage_buckets" $p}}
+  {{else}}
+  <div id="usage-data">
+    <p class="muted">Last checked {{$p.Checked $p.LastChecked}}</p>
+    {{if eq $p.Section "accounts"}}{{template "usage_accounts" $p}}
+    {{else if eq $p.Section "workers"}}{{template "usage_workers" $p}}
+    {{else if eq $p.Section "sessions"}}{{template "usage_sessions" $p}}
+    {{else if eq $p.Section "events"}}{{template "usage_events" $p}}
+    {{else}}{{template "usage_history" $p}}{{end}}
+  </div>
+  <div hidden hx-get="{{$p.RefreshURL}}" hx-trigger="usage-refreshed from:body" hx-target="#usage-data" hx-select="#usage-data > *" hx-swap="innerHTML" hx-sync="this:drop"></div>
   {{end}}
   {{if and $p.NextURL (ne $p.Section "overview")}}<a class="btn btn-secondary" href="{{$p.NextURL}}">Next page</a>{{end}}
 </div>
@@ -75,12 +81,12 @@
 <section aria-labelledby="aggregate-h">
   <div class="usage-heading">
     <h2 id="aggregate-h">Subscription limits</h2>
-    <span class="muted">Checked {{$p.Millis $p.Rows.AsOf}}</span>
+    <span class="muted">Last checked {{$p.Checked $p.LastChecked}}</span>
   </div>
   {{with $p.Rows.Overview}}
   <p>{{.Accounts}} subscription accounts · {{.WithoutWindows}} with no reported limits</p>
   {{if .Groups}}
-  <p class="muted">The mean gives each account equal weight. Coverage counts fresh, stale and missing observations for each comparable limit.</p>
+  <p class="muted">The mean gives each account equal weight. Coverage counts fresh, stale and unknown observations for each comparable limit. A fresh report contributes only to the limits it lists.</p>
   <div class="usage-cards">
     {{range .Groups}}
     <article class="panel usage-limit">
@@ -102,14 +108,28 @@
     <h3>{{.Account.Provider}}{{if .Account.Label}} · {{.Account.Label}}{{end}}</h3>
     <span class="badge" data-tone="{{if eq .Freshness "Stale"}}warning{{else}}info{{end}}">{{.Freshness}}</span>
   </div>
-  <p class="muted">{{.Account.Source}} · {{.Observed}}</p>
+  <p class="muted">{{.Account.Source}} · Last checked {{.Observed}}</p>
   {{with .StaleWhy}}<p class="help">{{.}}</p>{{end}}
-  {{template "usage_windows" .}}
+  {{template "usage_subscription_windows" .}}
 </article>
 {{end}}
 
+{{define "usage_subscription_windows"}}
+{{if .NoFiveHourLimit}}<p class="help">No 5-hour limit on this plan</p>{{end}}
+{{if .Windows}}{{template "usage_windows" .Windows}}{{else}}<p class="muted">No subscription limits reported.</p>{{end}}
+{{end}}
+
+{{define "usage_upstream_windows"}}
+{{if .}}
+<section aria-label="Upstream quota">
+  <p class="muted">Upstream quota</p>
+  {{template "usage_windows" .}}
+</section>
+{{end}}
+{{end}}
+
 {{define "usage_windows"}}
-{{range .Windows}}
+{{range .}}
 <div class="usage-window">
   <div class="usage-heading">
     <h4>{{.Title}}</h4>
@@ -123,7 +143,7 @@
     <div><dt>Resets</dt><dd>{{.Reset}}</dd></div>
   </dl>
 </div>
-{{else}}<p class="muted">No subscription limits reported.</p>{{end}}
+{{end}}
 {{end}}
 
 {{define "usage_accounts"}}
@@ -146,11 +166,19 @@
         <div><dt>Access</dt><dd>{{if $a.CustomEndpoint}}Custom endpoint{{else}}{{$p.Access $a.AuthMode}}{{end}}</dd></div>
         {{if $a.Plan}}<div><dt>Native plan</dt><dd>{{$a.Plan}}</dd></div>{{end}}
         {{if and (eq $a.AuthMode "api") $a.KeyHint}}<div><dt>Credential hint</dt><dd><code>{{$a.KeyHint}}</code></dd></div>{{end}}
-        <div><dt>Observation</dt><dd>{{$card.Freshness}} · {{$card.Observed}}</dd></div>
+        <div><dt>Last checked</dt><dd>{{$card.Freshness}} · {{$card.Observed}}</dd></div>
         {{with $card.StaleWhy}}<div><dt>Why stale</dt><dd>{{.}}</dd></div>{{end}}
         <div><dt>Source</dt><dd>{{$p.WorkerName $a.WorkerID}} · {{$a.Source}}</dd></div>
         {{if $p.Private}}<div><dt>Token bucket</dt><dd>{{$p.BucketName $a.BucketID}}</dd></div>{{end}}
       </dl>
+      {{if $card.RefreshWorker}}
+      <form method="post" action="/usage/refresh" hx-post="/usage/refresh" hx-target="#usage-result" hx-disabled-elt="find button">
+        {{template "usage_form_state" $p}}
+        <input type="hidden" name="worker" value="{{$card.RefreshWorker}}">
+        {{with $a.Collector}}<input type="hidden" name="account" value="{{$a.ID}}">{{if and .CanStart (eq .Mode "native_background")}}<input type="hidden" name="native" value="1"><input type="hidden" name="source" value="{{.PreferredWorker}}|{{.PreferredSession}}">{{end}}{{end}}
+        <button type="submit" class="btn btn-secondary" aria-label="Refresh {{$a.Provider}} {{$a.Label}} from {{$p.WorkerName $card.RefreshWorker}}">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button>
+      </form>
+      {{end}}
       {{with $a.Totals}}
       <section class="usage-window" data-account-totals><h4>Totals · {{.Sessions}} session{{if ne .Sessions 1}}s{{end}}</h4>
         <dl class="usage-facts">
@@ -180,7 +208,7 @@
       </details>
       {{end}}
       {{if eq $a.AuthMode "subscription"}}
-      {{template "usage_windows" $card}}
+      {{template "usage_subscription_windows" $card}}
       {{if $a.Collector}}
       <details class="usage-window">
         <summary>Collector · {{$p.CollectorStatus $a.Collector.Status}}</summary>
@@ -207,6 +235,8 @@
         {{end}}
       </details>
       {{end}}
+      {{else if and (eq $a.AuthMode "api") $a.CustomEndpoint}}
+      {{template "usage_upstream_windows" $card.Windows}}
       {{end}}
     </article>
   {{else}}<p class="muted">No account observations match these filters.</p>{{end}}
@@ -229,7 +259,7 @@
       </div>
       <dl class="usage-facts">
         <div><dt>Collection</dt><dd>{{$p.WorkerStatus .Status}}</dd></div>
-        <div><dt>Last collection</dt><dd>{{$p.Time .ObservedAt}}</dd></div>
+        <div><dt>Last checked</dt><dd>{{$p.Checked .ObservedAt}}</dd></div>
         <div><dt>Last harness scan</dt><dd>{{$p.Time .InventoryAt}}</dd></div>
       </dl>
       {{if .Inventory}}
@@ -306,6 +336,20 @@
       </dl>
       {{if $p.ClaudeSilent .}}{{if $p.ExporterAbsentOn .WorkerID}}<p class="help">Tokens, cost and model need the Claude Code exporter: run <code>{{$p.ExporterCommand}}</code> on {{$p.WorkerName .WorkerID}}, then restart the Claude sessions.</p>{{else if $p.NeedsRestart .}}<p class="help">This Claude session started before the exporter was installed: restart it to start reporting.</p>{{else}}<p class="help">Tokens, cost and model appear once this Claude session reports.</p>{{end}}{{else if and (eq .Harness "codex") (not .InputTokens) (not .OutputTokens)}}<p class="help">Codex session tokens are not collected yet.</p>{{end}}
       {{template "usage_counters" ($p.Counters .UsageCounters)}}
+      {{with .LastResponseUsage}}
+      <details class="usage-window">
+        <summary>Latest response tokens</summary>
+        <dl class="usage-facts">
+          <div><dt>Uncached input</dt><dd>{{$p.Number .InputTokens}}</dd></div>
+          <div><dt>Output</dt><dd>{{$p.Number .OutputTokens}}</dd></div>
+          <div><dt>Cache read</dt><dd>{{$p.Number .CacheReadTokens}}</dd></div>
+          <div><dt>Cache write</dt><dd>{{$p.Number .CacheWriteTokens}}</dd></div>
+        </dl>
+      </details>
+      {{end}}
+      {{if and (eq .AuthMode "api") .CustomEndpoint .Windows}}
+      {{template "usage_upstream_windows" ($p.WindowViews .Windows .ObservedAt)}}
+      {{end}}
       {{if .Models}}
       <details class="usage-window">
         <summary>Usage by model</summary>

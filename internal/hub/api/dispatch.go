@@ -403,8 +403,23 @@ func outcomeOf(result any) string {
 		if r != nil {
 			return writeOutcome(*r)
 		}
+	case ops.WorkerUpdateResult:
+		return updateOutcome(r)
+	case *ops.WorkerUpdateResult:
+		if r != nil {
+			return updateOutcome(*r)
+		}
 	}
 	return AuditOutcomeSuccess
+}
+
+// updateOutcome is "failed" when the Worker did not start the update (or it
+// failed at once), so the audit never records a success for it.
+func updateOutcome(r ops.WorkerUpdateResult) string {
+	if r.Accepted {
+		return AuditOutcomeSuccess
+	}
+	return auditOutcomeError
 }
 
 func writeOutcome(r ops.WriteResult) string {

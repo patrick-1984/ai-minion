@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Shared sessions report native Claude Code activity, including background shells and subagents, and Codex turn activity. The Worker and Sessions pages show the observation source and last native event time.
+
+## v0.20.1
+
+### Fixed
+
+- Claude Code usage: the Worker now reads the whole status line — tokens, cost and the account's limit windows. A plan without a 5-hour limit shows only the windows it has.
+- Sessions on an API key, an API key helper or a custom endpoint, set in the environment or in the profile's settings, are shown as **Custom endpoint** or **API key**. Their limits stay with that access; they are never attributed to a subscription login. The subscription account is bound automatically, also for Workers set up by v0.20.0.
+- A Worker update that cannot run, for example because the release is not published yet, shows the reason on the Workers page. The audit records it as failed. **Update** is disabled while the Hub's release is not published.
+- The Claude exporter state is current on every report, and a manual scan or Refresh bypasses the Worker's cached harness scan.
+
+### Added
+
+- **Last checked** and a **Refresh** button on the Usage views, the account cards, the Harnesses page, the Worker page and Updates. A refresh asks the Worker for fresh data, at most once every 10 seconds per Worker.
+
 ## v0.20.0
 
 ### Added

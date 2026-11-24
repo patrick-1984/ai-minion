@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -475,7 +476,27 @@ func readClaudeAuth(ctx context.Context, profileDir string) (nativeAccount, bool
 		if !filepath.IsAbs(profileDir) {
 			return n, false
 		}
-		cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+profileDir)
+		const profileEnv = "CLAUDE_CONFIG_DIR"
+		home, err := os.UserHomeDir()
+		profile := filepath.Clean(profileDir)
+		// The probe answers for the profile's own login: credentials that only
+		// this Worker's environment carries are not the profile's and must not
+		// turn its subscription into API access.
+		ambient := func(entry string) bool {
+			name, _, _ := strings.Cut(entry, "=")
+			return slices.Contains([]string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"}, name)
+		}
+		// Claude reads ~/.claude.json for the default profile. An override
+		// moves that login metadata into the chosen directory, even if it is
+		// ~/.claude. Preserve an override the user already set for this profile.
+		if err == nil && profile == filepath.Join(home, ".claude") && filepath.Clean(os.Getenv(profileEnv)) != profile {
+			cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
+				name, _, _ := strings.Cut(entry, "=")
+				return name == profileEnv || runtime.GOOS == "windows" && strings.EqualFold(name, profileEnv) || ambient(entry)
+			})
+		} else {
+			cmd.Env = append(slices.DeleteFunc(os.Environ(), ambient), profileEnv+"="+profileDir)
+		}
 	}
 	var raw usageOutput
 	cmd.Stdout = &raw
@@ -510,13 +531,22 @@ func claudeNativeKey(n nativeAccount, hubPublic string) (ops.UsageAccount, bool)
 	return a, err == nil
 }
 
-// CurrentClaudeSubscription resolves the native login while the local owner
-// is configuring this specific profile. It is never called per turn or hook.
+// CurrentClaudeSubscription resolves the native login (or reports, with an
+// AuthMode other than "subscription", that the profile no longer uses one) during manual or
+// automatic setup for this specific profile. It is never called per turn or hook.
 func CurrentClaudeSubscription(ctx context.Context, profileDir string) (ops.UsageAccount, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	n, ok := readClaudeAuth(ctx, profileDir)
-	if !ok || n.AuthMethod != "claude.ai" {
+	if !ok {
+		return ops.UsageAccount{}, false
+	}
+	if n.AuthMethod != "" && n.AuthMethod != "claude.ai" {
+		// A confirmed change of access (a Console key, a helper): the caller
+		// must drop a subscription it bound earlier, unlike an unavailable probe.
+		return ops.UsageAccount{Provider: "Anthropic", AuthMode: "api"}, true
+	}
+	if n.AuthMethod != "claude.ai" {
 		return ops.UsageAccount{}, false
 	}
 	return subscriptionAccount("Anthropic", n, time.Now().UnixMilli())

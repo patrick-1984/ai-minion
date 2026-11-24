@@ -82,6 +82,7 @@ type SessionState struct {
 	State      string `json:"state"`
 	Task       string `json:"task"`
 	ScreenHash string `json:"screen_hash,omitempty"`
+	ops.PaneStateDetail
 }
 
 // View is the shared sessions at one moment, by session name.
@@ -111,8 +112,8 @@ type Change struct {
 // Diff returns what changed from prev to cur, ordered by session name. A
 // session that is only in cur is added, one that is only in prev is removed
 // (the Change then carries just the name). For a session in both, a change of
-// kind, state or task is state_changed and, independently, a change of the screen
-// hash is screen_changed.
+// kind, state, state provenance or task is state_changed. A change of the
+// screen hash is independently screen_changed.
 func Diff(prev, cur View) []Change {
 	names := make([]string, 0, len(prev)+len(cur))
 	for n := range cur {
@@ -134,7 +135,7 @@ func Diff(prev, cur View) []Change {
 		case !inCur && inPrev:
 			out = append(out, Change{EventSessionRemoved, SessionState{Name: n}})
 		default:
-			if c.Kind != p.Kind || c.State != p.State || c.Task != p.Task {
+			if c.Kind != p.Kind || c.State != p.State || c.Task != p.Task || c.PaneStateDetail != p.PaneStateDetail {
 				out = append(out, Change{EventStateChanged, c})
 			}
 			if c.ScreenHash != p.ScreenHash {
@@ -161,9 +162,10 @@ func ScreenHash(s ops.Screen) string {
 // HostObserverConfig configures a [HostObserver]. All fields but Logger are
 // required.
 type HostObserverConfig struct {
-	Host       term.SessionHost
-	Classifier Classifier
-	Policy     *Policy
+	Host        term.SessionHost
+	Classifier  Classifier
+	Policy      *Policy
+	nativeState nativeStateReader
 	// Logger receives a debug line when the share filter's result changes
 	// (counts only); nil writes nothing.
 	Logger *slog.Logger
@@ -263,16 +265,24 @@ func (o *HostObserver) observeOnce(ctx context.Context) (View, store.ShareState,
 		}
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(st *SessionState, ref term.PaneRef) {
+		go func(st *SessionState, ref term.PaneRef, session term.Session) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			info := basicInfo(session.Name, ref)
 			scr, err := o.cfg.Host.Snapshot(ctx, ref)
 			if err != nil {
+				reportUnreadablePane(ctx, o.cfg.nativeState, o.cfg.Classifier, &info, session.Created.Unix())
+				if info.StateSource != "" {
+					st.Kind, st.State, st.PaneStateDetail = info.Kind, info.State, info.PaneStateDetail
+				}
 				return
 			}
 			r := o.cfg.Classifier.Classify(ctx, agentdetect.Input{Command: ref.Command, PID: ref.PID, Screen: scr})
-			st.Kind, st.State, st.ScreenHash = r.Shown(), r.State, ScreenHash(scr)
-		}(&states[i], p.Ref)
+			info.Kind, info.State, info.InputKind = r.Shown(), r.State, r.Kind
+			reportState(ctx, o.cfg.nativeState, o.cfg.Classifier, &info, scr, session.Created.Unix(), r.Background)
+			st.Kind, st.State, st.ScreenHash = r.Shown(), info.State, ScreenHash(scr)
+			st.PaneStateDetail = info.PaneStateDetail
+		}(&states[i], p.Ref, s)
 	}
 	wg.Wait()
 	if err := ctx.Err(); err != nil {

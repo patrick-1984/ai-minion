@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -27,10 +29,26 @@ const (
 	accessCustomEndpoint = "custom_endpoint"
 )
 
-// processEnv returns the access-relevant environment of a process, or false
-// when it is not readable or not trustworthy (another user, another
-// platform, vanished pid, a read that stalls). Tests replace it.
-var processEnv = readProcessEnv
+// claudeSrc locates the settings of a Claude process beyond the profile: its
+// --settings argument (a file path or an inline JSON text) and its working
+// directory (the project whose .claude/settings*.json apply).
+type claudeSrc struct {
+	Settings string
+	Cwd      string
+}
+
+// processAccess returns the access-relevant environment and optional Claude
+// settings path of a verified process. Tests replace it.
+var processAccess = readProcessAccess
+
+// managedSettingsFiles lists the machine-wide managed settings file and its
+// drop-ins, in the order Claude Code merges them.
+func managedSettingsFiles() []string {
+	file := ClaudeManagedSettingsFile
+	drop, _ := filepath.Glob(filepath.Join(filepath.Dir(file), "managed-settings.d", "*.json"))
+	sort.Strings(drop)
+	return append([]string{file}, drop...)
+}
 
 // Environment names the Worker looks at. Only the profile directory keeps
 // its value; the endpoint and a secret keep nothing but the fact that they are
@@ -47,32 +65,32 @@ const (
 	processEnvDeadline = 500 * time.Millisecond
 )
 
-// readProcessEnv reads the environment of one process of the same user,
-// within a deadline, and reduces it to the allowlisted entries. The user check
-// and the read use the same open process directory (see readProcEnviron), so a
-// pid that is reused cannot be read as another user's process.
-func readProcessEnv(pid int) ([]string, bool) {
+// readProcessAccess reads one same-user process within a deadline and reduces
+// its environment to the allowlisted entries. The UID, environment and settings
+// argument are read through the same open process directory.
+func readProcessAccess(pid int, claude bool) ([]string, claudeSrc, bool) {
 	if pid <= 0 {
-		return nil, false
+		return nil, claudeSrc{}, false
 	}
 	type result struct {
 		env []string
+		src claudeSrc
 		ok  bool
 	}
 	done := make(chan result, 1)
 	go func() {
-		raw, ok := readProcEnviron(pid)
+		raw, src, ok := readProcAccess(pid, claude)
 		if !ok {
 			done <- result{}
 			return
 		}
-		done <- result{filterProcessEnv(raw), true}
+		done <- result{filterProcessEnv(raw), src, true}
 	}()
 	select {
 	case r := <-done:
-		return r.env, r.ok
+		return r.env, r.src, r.ok
 	case <-time.After(processEnvDeadline):
-		return nil, false
+		return nil, claudeSrc{}, false
 	}
 }
 
@@ -149,13 +167,13 @@ func endpointKind(raw string, vendorHost string) string {
 // not readable as the same user) the access is unknown: the profile files are
 // never taken as the observed access of a process that could not be read.
 func detectSessionAccess(harness string, pid int) sessionAccess {
-	env, ok := processEnv(pid)
+	env, src, ok := processAccess(pid, harness == "claude")
 	if !ok {
 		return sessionAccess{Mode: "unknown"}
 	}
 	switch harness {
 	case "claude":
-		return claudeAccess(env)
+		return claudeAccess(env, src)
 	case "codex":
 		return codexAccess(env)
 	}
@@ -164,9 +182,12 @@ func detectSessionAccess(harness string, pid int) sessionAccess {
 
 // claudeAPIConfig reports whether the environment env and the settings of the
 // profile in dir configure an API key, a token or a key helper (key), and a
-// base URL other than the vendor's (custom). Only the facts are kept.
-func claudeAPIConfig(env []string, dir string) (key, custom bool) {
-	var settings struct {
+// base URL other than the vendor's (custom). Sources, lowest to highest
+// precedence: user profile, the project's .claude settings, the inline
+// --settings, managed settings; later fields override earlier ones. Only the
+// classification leaves this function.
+func claudeAPIConfig(env []string, dir string, src claudeSrc) (key, custom bool) {
+	type claudeSettings struct {
 		Env struct {
 			BaseURL   string        `json:"ANTHROPIC_BASE_URL"`
 			APIKey    secretPresent `json:"ANTHROPIC_API_KEY"`
@@ -174,8 +195,35 @@ func claudeAPIConfig(env []string, dir string) (key, custom bool) {
 		} `json:"env"`
 		APIKeyHelper secretPresent `json:"apiKeyHelper"`
 	}
-	if raw, ok := readProfileFile(filepath.Join(dir, "settings.json")); ok {
-		_ = json.Unmarshal(raw, &settings)
+	var files []string
+	if dir != "" {
+		files = append(files, filepath.Join(dir, "settings.json"), filepath.Join(dir, "settings.local.json"))
+	}
+	for _, root := range claudeProjectDirs(src.Cwd) {
+		files = append(files, filepath.Join(root, ".claude", "settings.json"), filepath.Join(root, ".claude", "settings.local.json"))
+	}
+	var settings claudeSettings
+	merge := func(raw []byte) {
+		next := settings
+		if json.Unmarshal(raw, &next) == nil {
+			settings = next
+		}
+	}
+	read := func(file string) {
+		if raw, ok := readProfileFile(file); ok {
+			merge(raw)
+		}
+	}
+	for _, file := range files {
+		read(file)
+	}
+	if inline := strings.TrimSpace(src.Settings); strings.HasPrefix(inline, "{") {
+		merge(bytes.TrimSpace([]byte(inline)))
+	} else if inline != "" {
+		read(inline)
+	}
+	for _, file := range managedSettingsFiles() {
+		read(file)
 	}
 	// The process environment wins over the settings env block.
 	base := envLookup(env, "ANTHROPIC_BASE_URL")
@@ -185,6 +233,39 @@ func claudeAPIConfig(env []string, dir string) (key, custom bool) {
 	key = envLookup(env, "ANTHROPIC_API_KEY") != "" || envLookup(env, "ANTHROPIC_AUTH_TOKEN") != "" ||
 		bool(settings.Env.APIKey) || bool(settings.Env.AuthToken) || bool(settings.APIKeyHelper)
 	return key, base == "custom"
+}
+
+// claudeProjectDirs lists the directories whose .claude settings apply to a
+// Claude process started in cwd, lowest precedence first: the project root
+// (the nearest ancestor with a .git entry, else the nearest with a .claude
+// directory, as Claude Code finds it) and cwd itself when it is a
+// subdirectory. A launch from a subdirectory thus still reads the
+// repository's settings.
+func claudeProjectDirs(cwd string) []string {
+	if !filepath.IsAbs(cwd) {
+		return nil
+	}
+	root := ""
+	for dir := filepath.Clean(cwd); ; {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			root = dir
+			break
+		}
+		if root == "" {
+			if info, err := os.Stat(filepath.Join(dir, ".claude")); err == nil && info.IsDir() {
+				root = dir
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	if root == "" || root == filepath.Clean(cwd) {
+		return []string{filepath.Clean(cwd)}
+	}
+	return []string{root, filepath.Clean(cwd)}
 }
 
 func claudeProfileDir(env []string) string {
@@ -198,11 +279,10 @@ func claudeProfileDir(env []string) string {
 	return dir
 }
 
-// ClaudeAPIAccess reports whether the Claude Code process whose environment
-// lookup answers uses an API key, a token or a custom endpoint rather than the
-// profile's login. profile is the profile directory its settings are read from.
-// It reads only the caller's own environment.
-func ClaudeAPIAccess(lookup func(string) (string, bool), profile string) bool {
+// ClaudeExporterAPIConfig classifies the Claude session that spawned an
+// exporter. It uses the inherited environment, profile settings and, when
+// visible on a same-user Claude ancestor, the session's --settings file.
+func ClaudeExporterAPIConfig(lookup func(string) (string, bool), profile string) (key, custom bool) {
 	var env []string
 	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
 		if v, ok := lookup(name); ok && v != "" {
@@ -212,21 +292,22 @@ func ClaudeAPIAccess(lookup func(string) (string, bool), profile string) bool {
 	if v, ok := lookup("ANTHROPIC_BASE_URL"); ok && v != "" {
 		env = append(env, "ANTHROPIC_BASE_URL="+endpointKind(v, "api.anthropic.com"))
 	}
-	key, custom := claudeAPIConfig(env, profile)
-	return key || custom
+	return claudeAPIConfig(env, profile, parentClaudeSrc())
 }
 
-func claudeAccess(env []string) sessionAccess {
+func claudeAccess(env []string, src claudeSrc) sessionAccess {
 	dir := claudeProfileDir(env)
-	key, custom := claudeAPIConfig(env, dir)
+	key, custom := claudeAPIConfig(env, dir, src)
 	switch {
 	case custom:
 		return sessionAccess{Mode: "api", Kind: accessCustomEndpoint}
 	case key:
 		return sessionAccess{Mode: "api", Kind: accessAPIKey}
 	}
-	if info, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil && info.Mode().IsRegular() {
-		return sessionAccess{Mode: "subscription"}
+	if dir != "" {
+		if info, err := os.Stat(filepath.Join(dir, ".credentials.json")); err == nil && info.Mode().IsRegular() {
+			return sessionAccess{Mode: "subscription"}
+		}
 	}
 	return sessionAccess{Mode: "unknown"}
 }

@@ -32,6 +32,7 @@ const (
 
 var claudeUsageEvents = []string{
 	"SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "TaskCreated", "TaskCompleted", "CwdChanged", "PostModelSwitch",
+	"StopFailure", "PermissionRequest", "PermissionDenied", "PostToolBatch", "Notification", "Elicitation", "ElicitationResult",
 }
 
 var (
@@ -44,12 +45,15 @@ var (
 	errClaudeManaged         = errors.New("managed Claude Code settings control hooks or the status line on this machine; the file was left intact")
 )
 
-// retryOnSettingsChange runs op and, when a concurrent save of the settings
-// made it back off, runs it once more on the fresh file.
-func retryOnSettingsChange(op func() (bool, error)) (bool, error) {
+// changeClaudeUsageProfile retries a concurrent settings save once and
+// invalidates the in-process Worker inventory after a profile edit.
+func changeClaudeUsageProfile(op func() (bool, error)) (bool, error) {
 	changed, err := op()
 	if errors.Is(err, errClaudeSettingsChanged) {
 		changed, err = op()
+	}
+	if changed || errors.Is(err, errClaudeSettingsConflict) {
+		agent.InvalidateUsageInventory()
 	}
 	return changed, err
 }
@@ -142,7 +146,7 @@ func newUsageIntegrateCmd(deps workerConfigDeps) *cobra.Command {
 	claude.Flags().BoolVar(&remove, "remove", false, "Remove the integration from the profile and restore its previous status line")
 	claude.Flags().StringVar(&account, "account", "", "Known Anthropic subscription account fingerprint from Minion Usage")
 	claude.Flags().StringVar(&profile, "subscription-profile", "", "Explicit name shared across Workers using the same Anthropic subscription")
-	cmd.AddCommand(claude, newClaudeUsageExportCmd(deps.lookupEnv))
+	cmd.AddCommand(claude, newClaudeUsageExportCmd(deps.lookupEnv), newCodexUsageExportCmd(deps.lookupEnv))
 	return cmd
 }
 
@@ -265,7 +269,7 @@ func (m claudeUsageIntegration) statusCommand(manifest string) string {
 
 func installClaudeUsage(ctx context.Context, dir string, desired claudeUsageIntegration,
 	discover func(context.Context, string) (ops.UsageAccount, bool)) (bool, error) {
-	return retryOnSettingsChange(func() (bool, error) { return installClaudeUsageOnce(ctx, dir, desired, discover) })
+	return changeClaudeUsageProfile(func() (bool, error) { return installClaudeUsageOnce(ctx, dir, desired, discover) })
 }
 
 func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsageIntegration,
@@ -318,8 +322,11 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		return false, err
 	}
 	explicit := desired.Account != "" || desired.Profile != ""
+	notSubscription := false // a confirmed switch away from the subscription
 	if !explicit && discover != nil {
-		if a, ok := discover(ctx, dir); ok && a.Provider == "Anthropic" && a.AuthMode == "subscription" &&
+		a, ok := discover(ctx, dir)
+		notSubscription = ok && a.AuthMode != "subscription"
+		if ok && a.Provider == "Anthropic" && a.AuthMode == "subscription" &&
 			validateClaudeUsageAttribution(a.ID, "") == nil {
 			desired.Account = a.ID
 			desired.Auto = true
@@ -340,7 +347,9 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 		switch {
 		case explicit || refreshable && desired.Account != "":
 			if desired.Account == prior.Account {
-				desired.Plan = prior.Plan // plan changes are informational
+				if desired.Plan == "" {
+					desired.Plan = prior.Plan
+				}
 				if desired.Label == "" {
 					desired.Label = prior.Label
 				}
@@ -349,6 +358,8 @@ func installClaudeUsageOnce(ctx context.Context, dir string, desired claudeUsage
 				desired.Label = prior.Label
 				desired.Plan = prior.Plan
 			}
+		case notSubscription && prior.Auto:
+			// The login now uses a key: never keep the old subscription.
 		default: // nothing new was discovered, or the binding is explicit
 			desired.Account, desired.Profile, desired.Plan, desired.Label, desired.Auto = prior.Account, prior.Profile, prior.Plan, prior.Label, prior.Auto
 		}
@@ -495,7 +506,7 @@ func removeClaudeUsage(ctx context.Context, dir string) (bool, error) {
 	if real, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = real
 	}
-	return retryOnSettingsChange(func() (bool, error) { return removeClaudeUsageOnce(ctx, dir) })
+	return changeClaudeUsageProfile(func() (bool, error) { return removeClaudeUsageOnce(ctx, dir) })
 }
 
 func removeClaudeUsageOnce(ctx context.Context, dir string) (bool, error) {

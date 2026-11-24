@@ -22,7 +22,7 @@ func (h usageHostFixture) ListSessions(context.Context) ([]term.Session, error) 
 
 func TestUsageProjectionDropsTaskTextAndCommandArguments(t *testing.T) {
 	host := usageHostFixture{[]term.Session{{Name: "private-build", Task: "PRIVATE sample task payload", Created: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Panes: []term.Pane{{Active: true, Ref: term.PaneRef{Command: "codex -- PRIVATE invocation", PID: 791}}}}}}
-	r, err := usageSnapshot(context.Background(), host, false)
+	r, err := usageSnapshot(context.Background(), host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestUsageSnapshotFindsWrappedAgentInProcessTree(t *testing.T) {
 		return []term.Pane{{Active: true, Ref: term.PaneRef{Command: "bash", PID: pid}}}
 	}
 	host := usageHostFixture{[]term.Session{{Name: "wb-1", Panes: pane(100)}, {Name: "plain", Panes: pane(400)}}}
-	r, err := usageSnapshot(context.Background(), host, false)
+	r, err := usageSnapshot(context.Background(), host)
 	if err != nil {
 		t.Fatal(err)
 	}
