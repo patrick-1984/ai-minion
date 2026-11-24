@@ -282,7 +282,7 @@ func TestUsageShowsAbsentFiveHourLimitOnlyWithFreshProviderEvidence(t *testing.T
 	})
 	connect(t, f)
 	srv := adminServer(t)
-	const note = "No 5-hour limit on this plan"
+	const note = "No 5-hour window reported"
 	for _, view := range []string{"overview", "accounts"} {
 		res := get(t, srv, "/usage?view="+view+"&worker=build&bucket=b&after=previous-account", "X-Test-Session", userHeader)
 		if res.Code != 200 {

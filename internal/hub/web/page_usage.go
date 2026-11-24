@@ -607,7 +607,7 @@ func (c usageAccountCard) missingFiveHourLimit(nowMS int64) (missing, confirmed 
 
 // noteFiveHourLimits marks the cards without a 5-hour window of a provider
 // that has 5-hour windows (Anthropic, or another account of the provider
-// shows one): "No 5-hour limit on this plan" only when active reports
+// shows one): "No 5-hour window reported" only when active reports
 // confirm it, "unknown" otherwise. Plans without a 5-hour limit exist, so
 // absence stays a valid state.
 func (p *usagePage) noteFiveHourLimits(candidates []int, overview *ops.UsageOverview) {

@@ -42,11 +42,11 @@ func TestUsageFiveHourAbsenceUnknownAndPassiveCollector(t *testing.T) {
 	for _, view := range []string{"overview", "accounts"} {
 		body := mainOf(t, get(t, srv, "/usage?view="+view, "X-Test-Session", userHeader).Body.String())
 		active := usageCardOf(t, body, "Anthropic · Active twenty-x")
-		mustHave(t, active, "No 5-hour limit on this plan")
+		mustHave(t, active, "No 5-hour window reported")
 		mustNotHave(t, active, "5-hour limit unknown")
 		idle := usageCardOf(t, body, "Anthropic · Idle only")
 		mustHave(t, idle, "5-hour limit unknown")
-		mustNotHave(t, idle, "No 5-hour limit on this plan")
+		mustNotHave(t, idle, "No 5-hour window reported")
 		if view == "accounts" {
 			mustHave(t, active, "Collector · Passive · from Claude status line (last ")
 			mustNotHave(t, active, "Waiting for native observations")

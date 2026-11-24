@@ -555,9 +555,11 @@ func readUsageAccounts(ctx context.Context, q usageQuerier, pairs []usageSourceP
 	if err != nil {
 		return nil, err
 	}
+	// A discovery-only row has no source_session_id; coalesce keeps the
+	// eligibility a plain 0/1 so such a row is ineligible instead of NULL.
 	rows, err := q.QueryContext(ctx, `SELECT a.account_id,a.observed_at,a.body,
-	  (coalesce(settings.preferred_worker,'')='' OR a.worker_id=settings.preferred_worker
-	   AND (coalesce(settings.preferred_session,'')='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session))
+	  coalesce(coalesce(settings.preferred_worker,'')='' OR a.worker_id=settings.preferred_worker
+	   AND (coalesce(settings.preferred_session,'')='' OR json_extract(a.body,'$.source_session_id')=settings.preferred_session),0)
 	 FROM json_each(?) p
 	 JOIN workers w ON w.id=json_extract(p.value,'$.w') AND w.approval='approved'
 	 JOIN usage_accounts a ON a.worker_id=w.id AND a.account_id=json_extract(p.value,'$.m')

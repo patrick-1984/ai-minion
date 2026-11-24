@@ -184,3 +184,31 @@ func TestUsageResaveRevivesAnEndedSessionOnlyWithTheSameStart(t *testing.T) {
 		t.Fatal("a reported native stop must end the session")
 	}
 }
+
+// A collector session chosen before it reports limits: the discovery-only row
+// has no source_session_id, which must make it ineligible for the window
+// merge, not abort the readback.
+func TestReadUsageAccountsWithASessionCollectorBeforeItReports(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	workers, _, now := usageFixture(t, s, 0)
+	id := ops.UsageID("account", "subscription", "formula")
+	discovery := ops.UsageAccount{ID: id, Provider: "Anthropic", AuthMode: "subscription", Source: "claude-statusline", ObservedAt: now.UnixMilli()}
+	limits := discovery
+	limits.Windows = []ops.UsageWindow{limitWindow(7*24*time.Hour, 20, now.Add(5*24*time.Hour))}
+	for i, a := range []ops.UsageAccount{limits, discovery} {
+		w := workers[i]
+		if err := s.SaveUsage(ctx, w.ID, w.OwnerID, ops.UsageReport{Version: 1, ObservedAt: now.UnixMilli(), Accounts: []ops.UsageAccount{a}}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(`INSERT INTO usage_collectors(account_id,status,preferred_worker,preferred_session) VALUES(?,?,?,?)
+	  ON CONFLICT(account_id) DO UPDATE SET preferred_worker=excluded.preferred_worker,preferred_session=excluded.preferred_session`,
+		id, "passive", workers[1].ID, "wb-1"); err != nil {
+		t.Fatal(err)
+	}
+	accounts, err := readUsageAccounts(ctx, s.db, []usageSourcePair{{id, workers[0].ID}, {id, workers[1].ID}})
+	if err != nil || len(accounts) != 1 || len(accounts[0].Windows) != 1 {
+		t.Fatalf("%+v %v", accounts, err)
+	}
+}

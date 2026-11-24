@@ -115,7 +115,7 @@
 {{end}}
 
 {{define "usage_subscription_windows"}}
-{{if .NoFiveHourLimit}}<p class="help">No 5-hour limit on this plan</p>{{else if .FiveHourUnknown}}<p class="help">5-hour limit unknown: no recent active session reported it. It appears once an active session of this account reports it.</p>{{end}}
+{{if .NoFiveHourLimit}}<p class="help">No 5-hour window reported: recent active sessions of this account report only the windows shown. Plans without a 5-hour limit report none; a capped plan reports it again once a 5-hour window is open.</p>{{else if .FiveHourUnknown}}<p class="help">5-hour limit unknown: no recent active session reported it. It appears once an active session of this account reports it.</p>{{end}}
 {{if .Windows}}{{template "usage_windows" .Windows}}{{else}}<p class="muted">No subscription limits reported.</p>{{end}}
 {{end}}
 
