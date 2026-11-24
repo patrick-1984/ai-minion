@@ -114,10 +114,11 @@ func TestInspectorContextWithRealSessionCookies(t *testing.T) {
 		t.Errorf("Bob's sessions read = %d %s (the empty 200 the old guard took for \"still Alice\")", code, body)
 	}
 
-	// Signed out (a cookie that names no session): the sign-in page, never a context.
+	// Signed out (a cookie that names no session): never a context. These
+	// are routes the page polls on its own (A99): a plain 401, no redirect.
 	for _, p := range []string{"/inspector/principal", ctxPath} {
 		code, body, resp := hc.do("GET", p, nil, map[string]string{"Cookie": "minion_session=not-a-session"})
-		if resp.Request.URL.Path != "/login" || strings.Contains(body, cA1) || code == 0 {
+		if code != 401 || resp.Request.URL.Path != p || strings.Contains(body, cA1) {
 			t.Errorf("signed out %s ended at %s (%d)", p, resp.Request.URL.Path, code)
 		}
 	}
