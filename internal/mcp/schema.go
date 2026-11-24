@@ -16,7 +16,7 @@ import (
 // false, and worker_id is empty on the local socket (Solo).
 var optionalOnMCP = map[string]string{
 	"request_id": "Optional. A UUIDv7 that makes a retry of this write safe; the server generates one when it is omitted. The id that was used is returned as request_id in the result and in every error of a write. After an unknown outcome, retry with that same request_id, never with a new one.",
-	"force":      "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+	"force":      "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field and the note of the result), with a new request_id. Never overrides KEEP guards.",
 }
 
 // fieldDocs gives the top-level argument members that the Go declarations do
@@ -24,7 +24,7 @@ var optionalOnMCP = map[string]string{
 // already has a description keeps it.
 var fieldDocs = map[string]string{
 	"text":          "The text to send, pasted verbatim. Tab and line feed are allowed; other control characters are refused (use send_keys for keys).",
-	"submit":        "Optional. Set true to press Enter after the text in the same request, on the same pane. If the text went out and the Enter did not, the outcome is partial or unknown, never failed_not_sent. Default false.",
+	"submit":        "Optional. Set true to press Enter after the text in the same request, on the same pane. If the text went out and the Enter did not, the outcome is partial or unknown, never failed_not_sent. Default false. Into an agent busy with a turn (without force): Claude Code queues the text, so it is sent with Enter as usual (delivered, note and warning session_busy); any other agent, or Claude text starting with \"!\", gets the text typed and NOT submitted (outcome partial, reason busy, a note says how to submit).",
 	"expect":        "The pane and dialog you reviewed, copied from the pane object of the session_snapshot or session_capture result: pane_id (its id), pid, command, session_created and dialog_digest. The answer is only sent to that dialog; if it changed the result is failed_not_sent with pane_changed or dialog_changed, which force never overrides. Take a new snapshot, review the dialog and answer again.",
 	"keys":          "tmux key names such as Enter, Escape, Up or C-c, or single printable characters. Free text belongs in send_text.",
 	"task":          "The task text; an empty string clears the task.",

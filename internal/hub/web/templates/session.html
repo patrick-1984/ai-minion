@@ -24,7 +24,8 @@
 
 {{define "result"}}{{range .Results}}<div class="result result-{{.Kind}}" role="status">
   <p class="result-title"><strong>{{.Label}}:</strong> {{.Summary}}{{if .Reason}} <code>{{.Reason}}</code>{{end}}</p>
-  {{range .Warnings}}<span class="session-warning">Warning: {{.}}</span>
+  {{if .Note}}<p class="result-note">{{.Note}}</p>
+  {{end}}{{range .Warnings}}<span class="session-warning">Warning: {{.}}</span>
   {{end}}{{if .Submitted}}<details><summary>The text that was submitted</summary><pre>{{.Submitted}}</pre></details>
   {{end}}{{with .Force}}<form method="post" action="{{.Action}}" hx-post="{{.Action}}" hx-target="#session-result" hx-swap="innerHTML" hx-disabled-elt="find button" data-write data-force data-target="{{.Target}}" class="force-inline">
     {{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
@@ -62,7 +63,7 @@
       {{if .Data.Owner}}<li>Owner <strong>{{.Data.Owner}}</strong></li>{{end}}
       <li>Access <strong>{{if .Data.Operate}}You can send input{{else}}View only{{end}}</strong></li>
       {{if .Data.Operate}}<li data-unasked hidden><label title="Send text, keys and the task at once, also to a shell, an open dialog or a busy agent (kept in this browser)"><input type="checkbox" id="unasked-session"> Send without asking</label> <button type="button" class="info-btn" popovertarget="help-send-unasked" aria-label="About sending without asking">{{template "icon" "i-info"}}</button> <span class="muted" id="unasked-note"></span>
-        <div class="info-pop" id="help-send-unasked" popover><p>Text, keys and task messages skip the confirmation for a shell, an open dialog or a busy agent. The Hub still checks dialog answers.</p></div></li>{{end}}
+        <div class="info-pop" id="help-send-unasked" popover><p>Text, keys and task messages skip the confirmation for a shell, an open dialog or a busy agent. The Hub still checks dialog answers. Without it, text to a busy agent is never refused: Claude Code queues it, any other agent gets it typed and not submitted. With it, text to a busy agent is submitted at once.</p></div></li>{{end}}
     </ul>
   </header>
   {{if .Data.Monitoring}}<p class="notice notice-warning" role="status" data-monitoring="{{.Data.Monitoring}}">Compliance monitoring is on ({{.Data.Monitoring}}): what passes through this Hub for sessions is sent to its administrator's log collector. Text typed in a local terminal is not.</p>{{end}}

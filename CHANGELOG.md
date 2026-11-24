@@ -2,9 +2,16 @@
 
 ## Unreleased
 
+## v0.20.6
+
 ### Fixed
 
 - Linux Worker started at shell login (installs without systemd): interactive shells no longer print `[1]`, `[2]` and `Done ( IFS= read -r minion_bin && exec "$minion_bin" worker start --at-login ... )` job lines. The login block now starts the Worker in the background of a subshell, which creates no job in bash, zsh or dash. A guard holding the shell's PID makes the block run once per shell when `~/.profile` sources `~/.bashrc`, while every other shell (a child shell, a tmux pane, also with `set -a`) still checks the Worker. New installs get the new block. Existing installs: the Worker never changes a startup file (not `worker run`, `worker start` or a self-update). When a startup file still holds the block of v0.20.5 or earlier, the Worker logs it once at start and the Hub's Worker page shows "Login startup is outdated — run `minion worker up` on this host to remove the 'Done' messages in new shells". `minion worker up` replaces that exact block (byte for byte between its complete marker lines) in `~/.profile`, `~/.bashrc`, `~/.bash_profile`, `~/.bash_login` and `~/.zprofile`: it writes the new version to a new file with the same group and mode, syncs it and renames it over the original, and keeps the displaced version as `<file>.minion-backup` (`.minion-backup.1` and so on; mode 0600). It leaves a file as it is and prints a one-line repair (delete the old block between the marker lines, run `minion worker up` again) when the file is a symbolic link, has extended attributes or an ACL, has other hard links, belongs to another user, is in a directory with a default ACL, or changed (owner, group, mode, size, modification time or content) while it was updated. Such a file never stops `minion worker up`, and it no longer adds a second block.
+
+### Changed
+
+- `send_text` to an agent that is busy with a turn is no longer refused (without `force`). Claude Code queues input typed during a turn, so the text (and its Enter with `submit`) goes out exactly as into an idle session: outcome `delivered`, warning `session_busy` and the note "session busy: Claude Code queues the message and reads it when the current turn ends". Any other agent (Codex, Gemini, Qwen, Aider, OpenCode, an unknown agent), and Claude text that starts with `!` (Claude Code's shell mode), gets the text typed into the input line and the submit key is **not** pressed: outcome `partial`, reason `busy`, and a note says to press Enter in the session (or send again with `force=true` and a new request id). `force=true` behaves as in v0.20.5. `send_keys` to a busy agent is still refused as `busy` (forceable). The Worker audit records such a send as `delivered` (or `partial`) with reason `busy`; a delivered one is not a failure.
+- Every refusal of a write carries a `note`: what stopped it, why, and how to send anyway (for example force=true with a new request id). The CLI prints it (`note:`), MCP results include it (derived for a Worker older than this release), and the Hub's session page shows it under the result; text sent into a busy agent is shown there as an information notice, not as a failure.
 
 ## v0.20.5
 

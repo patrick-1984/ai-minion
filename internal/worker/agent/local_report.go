@@ -75,6 +75,9 @@ func (e *Executor) reportLocalWrite(op string, wa ops.WriteArgs, res ops.WriteRe
 		}
 	default:
 		lw.Reason = res.Reason
+		if lw.Reason == "" && res.IsBusySend() {
+			lw.Reason = string(proto.CodeBusy) // delivered into a busy agent: success
+		}
 		if lw.Outcome == "" {
 			lw.Outcome = string(ops.OutcomeUnknown)
 		}

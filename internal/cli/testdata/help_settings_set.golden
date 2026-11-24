@@ -3,7 +3,7 @@ Set or unset a Hub setting in the panel unless the environment sets it; changes 
 This is a Hub operation: it needs a Hub (MINION_HUB_URL and MINION_API_KEY_FILE) and is not served by the local control socket. A Worker forwards only workers_list to its Hub, never this operation.
 Accepted actions: manage.
 
-This is a write. The result reports the outcome, the reason, whether the refusal is forceable and any warnings.
+This is a write. The result reports the outcome, the reason, whether the refusal is forceable, any warnings and a note (for a refusal: why, and how to send anyway).
 Exit status: 0 delivered, 3 failed_not_sent, 4 partial or unknown, 1 error, 2 usage.
 A FORCE refusal is repeated with --force only when you pass it.
 

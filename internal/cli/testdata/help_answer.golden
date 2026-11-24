@@ -3,7 +3,7 @@ Answer the dialog a session pane shows.
 This is a Worker operation. It runs on the local Worker through its control socket, or through the Hub when one is configured (MINION_HUB_URL and MINION_API_KEY_FILE, --hub-url); a configured Hub is never replaced by the local Worker.
 Accepted actions: operate.
 
-This is a write. The result reports the outcome, the reason, whether the refusal is forceable and any warnings.
+This is a write. The result reports the outcome, the reason, whether the refusal is forceable, any warnings and a note (for a refusal: why, and how to send anyway).
 Exit status: 0 delivered, 3 failed_not_sent, 4 partial or unknown, 1 error, 2 usage.
 A FORCE refusal is repeated with --force only when you pass it.
 A Worker that is older than this command and lacks the safeguard this request relies on refuses it before anything is sent (exit 1, not an outcome); update and restart the Worker.

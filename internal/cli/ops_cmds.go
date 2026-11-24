@@ -185,7 +185,10 @@ func longHelp(op ops.Op) string {
 	fmt.Fprintf(&b, "Accepted actions: %s.\n", op.Actions)
 	switch {
 	case op.Write:
-		b.WriteString("\nThis is a write. The result reports the outcome, the reason, whether the refusal is forceable and any warnings.\n")
+		b.WriteString("\nThis is a write. The result reports the outcome, the reason, whether the refusal is forceable, any warnings and a note (for a refusal: why, and how to send anyway).\n")
+		if op.Name == ops.OpSendText {
+			b.WriteString("Into an agent busy with a turn (without --force): Claude Code queues the text, so it is sent with Enter as usual (delivered, with a note); any other agent, or Claude text starting with \"!\", gets the text typed and not submitted (partial, reason busy).\n")
+		}
 		b.WriteString("Exit status: 0 delivered, 3 failed_not_sent, 4 partial or unknown, 1 error, 2 usage.\n")
 		b.WriteString("A FORCE refusal is repeated with --force only when you pass it.\n")
 		if guardedOp(op) {

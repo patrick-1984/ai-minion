@@ -43,7 +43,7 @@
           "type": "object"
         },
         "force": {
-          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field and the note of the result), with a new request_id. Never overrides KEEP guards.",
           "type": "boolean"
         },
         "request_id": {
@@ -141,7 +141,7 @@
       "additionalProperties": false,
       "properties": {
         "force": {
-          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field and the note of the result), with a new request_id. Never overrides KEEP guards.",
           "type": "boolean"
         },
         "request_id": {
@@ -242,7 +242,7 @@
       "additionalProperties": false,
       "properties": {
         "force": {
-          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field and the note of the result), with a new request_id. Never overrides KEEP guards.",
           "type": "boolean"
         },
         "keys": {
@@ -298,7 +298,7 @@
       "additionalProperties": false,
       "properties": {
         "force": {
-          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field and the note of the result), with a new request_id. Never overrides KEEP guards.",
           "type": "boolean"
         },
         "request_id": {
@@ -306,7 +306,7 @@
           "type": "string"
         },
         "submit": {
-          "description": "Optional. Set true to press Enter after the text in the same request, on the same pane. If the text went out and the Enter did not, the outcome is partial or unknown, never failed_not_sent. Default false.",
+          "description": "Optional. Set true to press Enter after the text in the same request, on the same pane. If the text went out and the Enter did not, the outcome is partial or unknown, never failed_not_sent. Default false. Into an agent busy with a turn (without force): Claude Code queues the text, so it is sent with Enter as usual (delivered, note and warning session_busy); any other agent, or Claude text starting with \"!\", gets the text typed and NOT submitted (outcome partial, reason busy, a note says how to submit).",
           "type": "boolean"
         },
         "target": {
@@ -410,7 +410,7 @@
           "type": "string"
         },
         "force": {
-          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field and the note of the result), with a new request_id. Never overrides KEEP guards.",
           "type": "boolean"
         },
         "name": {
@@ -491,7 +491,7 @@
       "additionalProperties": false,
       "properties": {
         "force": {
-          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field of the result). Never overrides KEEP guards.",
+          "description": "Optional. Set true to override a FORCE guard that refused the previous attempt (see the forceable field and the note of the result), with a new request_id. Never overrides KEEP guards.",
           "type": "boolean"
         },
         "request_id": {

@@ -441,7 +441,11 @@ type ActionResult struct {
 	// Reason is the reason code of a refusal or failure; empty when none.
 	Reason   string
 	Warnings []string
-	Force    *ForceForm
+	// Note is the Worker's sentence about the result: for a refusal why
+	// nothing was sent and how to send anyway, for text into a busy agent
+	// what was done. Empty when none.
+	Note  string
+	Force *ForceForm
 	// Target is the session the call was for ("minion-1 on pi-1") and At the
 	// time the Hub answered ("15:04:05 UTC"), so a result never gets read as the
 	// result of another session or an earlier attempt.
@@ -456,6 +460,13 @@ type ActionResult struct {
 type ResultView struct {
 	Results []ActionResult
 }
+
+// The summaries of text sent into an agent busy with a turn (A103); the
+// Worker's note below says what happens next.
+const (
+	BusyDeliveredNotice = "Sent — the session is busy."
+	BusyTypedNotice     = "Typed, not submitted — the session is busy."
+)
 
 // outcomeSummary is the sentence for an outcome of AD-15.
 func outcomeSummary(res ops.WriteResult) (kind, summary string) {
@@ -482,9 +493,22 @@ func outcomeSummary(res ops.WriteResult) (kind, summary string) {
 // "send anyway" button would post; it is used only for a forceable refusal.
 func resultOf(label string, res ops.WriteResult, force *ForceForm) ActionResult {
 	kind, summary := outcomeSummary(res)
-	ar := ActionResult{Label: label, Kind: kind, Summary: summary, Reason: res.Reason}
+	ar := ActionResult{Label: label, Kind: kind, Summary: summary, Reason: res.Reason, Note: res.DisplayNote()}
+	busy := res.IsBusySend() && res.Note != ""
 	for _, w := range res.Warnings {
+		if busy && w.Code == ops.WarnSessionBusy.Code {
+			continue // the note says it
+		}
 		ar.Warnings = append(ar.Warnings, w.Message)
+	}
+	if busy {
+		// Text into an agent busy with a turn (A103) is an information, not
+		// a failure: the note says whether it was queued or only typed.
+		ar.Kind, ar.Reason = "info", ""
+		ar.Summary = BusyDeliveredNotice
+		if res.Outcome == ops.OutcomePartial {
+			ar.Summary = BusyTypedNotice
+		}
 	}
 	if len(ar.Warnings) > 0 && ar.Kind == "info" {
 		ar.Kind = "warning"
@@ -904,6 +928,13 @@ func handleSendText(w http.ResponseWriter, r *http.Request, t target) {
 	ff := t.forceForm(t.path()+"/text", fields)
 	args := ops.SendTextArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7(), Force: forced(r)}, Target: t.opTarget(), Text: text, Submit: enter}
 	ar, res, ok := callWrite(r, t, ops.OpSendText, args, "Text", ff)
+	// Text typed, not submitted, into a busy agent (A103) is a known result:
+	// it is in the session's input line, so the box is done with it.
+	typedBusy := ok && res.Outcome == ops.OutcomePartial && res.IsBusySend()
+	if typedBusy {
+		answerResultSignals(w, t, []ActionResult{ar}, resultEvents{sent: true})
+		return
+	}
 	if ok && (res.Outcome == ops.OutcomeUnknown || res.Outcome == ops.OutcomePartial) {
 		// The text stays in the box too; this copy survives an edit of the box.
 		ar.Submitted = truncateRunes(text, maxSubmittedRunes)
