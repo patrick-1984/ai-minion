@@ -59,6 +59,9 @@ type fakeIdP struct {
 	discoveryDelay time.Duration
 	// FailToken makes the token endpoint answer 500.
 	failToken bool
+	// NoBrowserSession makes a prompt=none authorization answer
+	// login_required: the person has no session at the IdP.
+	noBrowserSession bool
 	// TokenURL, when not empty, replaces the token endpoint of the discovery
 	// document.
 	tokenURL string
@@ -138,6 +141,18 @@ func (f *fakeIdP) authorize(w http.ResponseWriter, r *http.Request) {
 		q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" ||
 		q.Get("state") == "" || q.Get("nonce") == "" || q.Get("redirect_uri") == "" {
 		http.Error(w, "bad authorization request", http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	noSession := f.noBrowserSession
+	f.mu.Unlock()
+	if q.Get("prompt") == "none" && noSession {
+		u, _ := url.Parse(q.Get("redirect_uri"))
+		v := u.Query()
+		v.Set("error", "login_required")
+		v.Set("state", q.Get("state"))
+		u.RawQuery = v.Encode()
+		http.Redirect(w, r, u.String(), http.StatusFound)
 		return
 	}
 	code := randomHex()

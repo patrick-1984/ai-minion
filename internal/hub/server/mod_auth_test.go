@@ -401,8 +401,17 @@ func TestAuthModuleSessionTTLSettingApplies(t *testing.T) {
 	_, _, resp := hc.do("POST", "/auth/login", map[string]string{"username": "admin", "password": "ttl-password-12345"}, nil)
 	for _, x := range resp.Cookies() {
 		if x.Name == session.CookieName {
-			if d := time.Until(x.Expires); d < 85*time.Minute || d > 91*time.Minute {
-				t.Errorf("cookie lifetime %v, want about 90m", d)
+			// session_ttl is the idle lifetime: the session's idle end. The
+			// cookie lives until the absolute end of a local session.
+			s, err := svc.mgr.Resolve(context.Background(), x.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d := time.Until(s.ExpiresAt); d < 85*time.Minute || d > 91*time.Minute {
+				t.Errorf("idle lifetime %v, want about 90m", d)
+			}
+			if d := time.Until(x.Expires); d < session.LocalMaxAge-5*time.Minute || d > session.LocalMaxAge+time.Minute {
+				t.Errorf("cookie lifetime %v, want about %v", d, session.LocalMaxAge)
 			}
 			return
 		}
@@ -447,7 +456,7 @@ func TestAuthModuleInvalidPanelSessionTTLNeitherBlocksLoginNorStart(t *testing.T
 		t.Fatalf("the panel refused the value: %v", err)
 	}
 
-	checkLogin := func(h *running) {
+	checkLogin := func(h *running, mgr *session.Manager) {
 		t.Helper()
 		hc := newHubClient(t, h, "https")
 		code, body, resp := hc.do("POST", "/auth/login", map[string]string{"username": "admin", "password": "panel-ttl-password-1"}, nil)
@@ -456,15 +465,19 @@ func TestAuthModuleInvalidPanelSessionTTLNeitherBlocksLoginNorStart(t *testing.T
 		}
 		for _, c := range resp.Cookies() {
 			if c.Name == session.CookieName {
-				if d := time.Until(c.Expires); d < 23*time.Hour+55*time.Minute || d > 24*time.Hour+time.Minute {
-					t.Errorf("cookie lifetime %v, want the default %v", d, config.DefaultSessionTTL)
+				s, err := mgr.Resolve(context.Background(), c.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if d := time.Until(s.ExpiresAt); d < config.DefaultSessionTTL-5*time.Minute || d > config.DefaultSessionTTL+time.Minute {
+					t.Errorf("idle lifetime %v, want the default %v", d, config.DefaultSessionTTL)
 				}
 				return
 			}
 		}
 		t.Fatal("no session cookie")
 	}
-	checkLogin(h1)
+	checkLogin(h1, svc.mgr)
 	logs := h1.logs.String()
 	if !strings.Contains(logs, "key=session_ttl") || !strings.Contains(logs, "source=panel") || !strings.Contains(logs, "level=ERROR") {
 		t.Errorf("no ERROR log naming the key and the source:\n%s", logs)
@@ -477,7 +490,7 @@ func TestAuthModuleInvalidPanelSessionTTLNeitherBlocksLoginNorStart(t *testing.T
 	// The next start on the same data directory works too.
 	var svc2 authServices
 	h2 := startHub(t, &Config{DataDir: dir}, authRegistry(t, &svc2))
-	checkLogin(h2)
+	checkLogin(h2, svc2.mgr)
 	if !strings.Contains(h2.logs.String(), "source=panel") {
 		t.Errorf("the restart did not log the fallback:\n%s", h2.logs)
 	}

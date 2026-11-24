@@ -42,6 +42,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -411,7 +412,9 @@ func (s *eventStream) reauthLoop(ctx context.Context, cancel context.CancelCause
 // the cached decisions. A changed credential, a lost subject, a failed check
 // or a selected Worker that the principal can no longer read is an error.
 func (s *eventStream) recheck(ctx context.Context) error {
-	id, err := s.h.cfg.Auth.Authenticate(s.r.WithContext(ctx))
+	// The re-check is not the person acting: it never extends the idle
+	// lifetime of a session.
+	id, err := s.h.cfg.Auth.Authenticate(s.r.WithContext(session.AsBackground(ctx)))
 	if err != nil {
 		return err
 	}

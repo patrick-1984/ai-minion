@@ -13,7 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -120,13 +120,17 @@ func NewConfig(hs config.HubServer, logger *slog.Logger) (*Config, error) {
 		TLSOff:  hs.TLS == config.TLSOff,
 		Logger:  logger,
 	}
-	if cfg.Listen == "" {
+	if strings.TrimSpace(cfg.Listen) == "" {
 		cfg.Listen = config.DefaultListen
 	}
-	if _, port, err := net.SplitHostPort(cfg.Listen); err != nil {
-		return nil, fmt.Errorf("MINION_LISTEN %q is not a valid address; use host:port such as :8443", cfg.Listen)
-	} else if p, err := strconv.Atoi(port); err != nil || p < 0 || p > 65535 {
-		return nil, fmt.Errorf("MINION_LISTEN %q has an invalid port", cfg.Listen)
+	raw := cfg.Listen
+	// A plain port means every interface; a host:port value is checked as an
+	// older Hub checked it, so every value it started with still starts.
+	cfg.Listen = config.ListenAddr(raw)
+	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
+		return nil, fmt.Errorf("MINION_LISTEN %q is not a valid listen setting; use a port such as 8443, or host:port such as 127.0.0.1:8443", raw)
+	} else if _, ok := config.HostPortPort(cfg.Listen); !ok {
+		return nil, fmt.Errorf("MINION_LISTEN %q has an invalid port", raw)
 	}
 	var err error
 	if cfg.PublicURL, err = NormalizePublicURL(hs.PublicURL); err != nil {
@@ -136,10 +140,11 @@ func NewConfig(hs config.HubServer, logger *slog.Logger) (*Config, error) {
 		return nil, err
 	}
 	if hs.ManagementListen != "" {
-		if err := checkManagementListen(hs.ManagementListen, cfg.Listen); err != nil {
+		addr := config.ManagementListenAddr(hs.ManagementListen) // a plain port means 127.0.0.1
+		if err := checkManagementListen(addr, cfg.Listen); err != nil {
 			return nil, err
 		}
-		cfg.ManagementListen = hs.ManagementListen
+		cfg.ManagementListen = addr
 	}
 	if cfg.TLSOff {
 		if cfg.PublicURL == "" {

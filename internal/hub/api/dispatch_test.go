@@ -387,6 +387,33 @@ func TestStreamErrorBeforeAndAfterTheFirstElement(t *testing.T) {
 	}
 }
 
+// The periodic re-check of a stream is not the person acting: it is a
+// background request, so it never extends a session's idle lifetime (A99);
+// the request that opened the stream is judged as it came.
+func TestStreamRecheckIsABackgroundRequest(t *testing.T) {
+	r := newRig(t)
+	r.d.ReauthInterval = 5 * time.Millisecond
+	_ = r.reg.HandleStream(opTick, func(ctx context.Context, _ *Call, emit func(any) error) error {
+		if err := emit(tickResult{N: 1}); err != nil {
+			return err
+		}
+		for r.authn.calls() < 4 && ctx.Err() == nil {
+			time.Sleep(5 * time.Millisecond)
+		}
+		return nil
+	})
+	r.do("GET", "/api/v1/ops/tick_stream", "")
+	bg := r.authn.backgrounds()
+	if len(bg) < 3 || bg[0] {
+		t.Fatalf("backgrounds = %v, want a foreground request and background re-checks", bg)
+	}
+	for i, b := range bg[1:] {
+		if !b {
+			t.Errorf("re-check %d was not a background request", i+1)
+		}
+	}
+}
+
 func TestStreamReauthorisesAndStopsWhenPermissionIsGone(t *testing.T) {
 	r := newRig(t)
 	r.d.ReauthInterval = 10 * time.Millisecond

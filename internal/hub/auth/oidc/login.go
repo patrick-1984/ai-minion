@@ -38,6 +38,13 @@ const (
 	// BindingCookie is the cookie that ties a callback to the browser that
 	// started the sign-in.
 	BindingCookie = "minion_oidc"
+	// silentBinding starts the binding cookie value of a silent sign-in
+	// (prompt=none, see [Service.Start]). The stored hash covers it, so the
+	// callback learns from the verified binding, not from the URL, that the
+	// sign-in was silent.
+	silentBinding = "s."
+	// loginPage is the Hub's sign-in page.
+	loginPage = "/login"
 )
 
 // LoginPath returns the path that starts a sign-in with the provider.
@@ -264,9 +271,18 @@ func (s *Service) redirectURL(r *http.Request) string {
 // (state, nonce, PKCE verifier and the hash of a binding cookie) and sends the
 // browser to the IdP. An IdP that cannot be reached ends in an error page;
 // nothing else changes.
+//
+// With silent=1 the IdP is asked not to interact with the person
+// (prompt=none): the Hub sends a page load of an expired session here (A99).
+// When the IdP's own browser session is valid it answers at once and the
+// callback signs in as any sign-in does; any error answer leads to the
+// Hub's sign-in page with the same return path instead of an error page.
+// Everything else (state, nonce, PKCE, the binding, the return path check)
+// is the same as for a sign-in the person starts.
 func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("provider")
 	ctx := r.Context()
+	silent := r.URL.Query().Get("silent") == "1"
 	if ok, wait := s.allow(r); !ok {
 		s.record(ctx, anonymousActor, "oidc:"+id, OutcomeRateLimited)
 		w.Header().Set("Retry-After", fmt.Sprint(int(wait/time.Second)+1))
@@ -296,6 +312,9 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "random values", id, err)
 		return
 	}
+	if silent {
+		binding = silentBinding + binding
+	}
 	verifier := oauth2.GenerateVerifier()
 	now := s.now()
 	err = s.Store.CreateOIDCLoginTx(ctx, store.OIDCLoginTx{
@@ -314,7 +333,11 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 		Secure: s.Secure(r), SameSite: http.SameSiteLaxMode,
 	})
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, prov.AuthCodeURL(s.redirectURL(r), state, nonce, verifier), http.StatusFound)
+	target := prov.AuthCodeURL(s.redirectURL(r), state, nonce, verifier)
+	if silent {
+		target = prov.AuthCodeURLSilent(s.redirectURL(r), state, nonce, verifier)
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // Callback handles GET /auth/oidc/callback.
@@ -370,6 +393,14 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 	if e := q.Get("error"); e != "" {
 		// The text of the IdP's error is not shown or logged: it is chosen by
 		// the sender of the URL.
+		if strings.HasPrefix(c.Value, silentBinding) {
+			// A silent sign-in that the IdP could not complete without the
+			// person (login_required, interaction_required, consent_required
+			// or any other error): the ordinary sign-in page, which returns
+			// to the same page. Nothing was signed in, nothing is audited.
+			s.toLoginPage(w, r, tx.NextPath)
+			return
+		}
 		s.record(ctx, anonymousActor, target, OutcomeFailed)
 		s.errorPage(w, r, http.StatusBadGateway, "Sign-in refused", "The identity provider did not sign you in. Try again, or ask your administrator.")
 		return
@@ -484,6 +515,16 @@ func (s *Service) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, session.Cookie(issued, s.Secure(r)))
 	http.Redirect(w, r, safeNext(tx.NextPath), http.StatusSeeOther)
+}
+
+// toLoginPage sends the browser to the Hub's sign-in page, which returns to
+// next (a path on this Hub) after the sign-in.
+func (s *Service) toLoginPage(w http.ResponseWriter, r *http.Request, next string) {
+	target := loginPage
+	if next = safeNext(next); next != "/" {
+		target += "?next=" + url.QueryEscape(next)
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // safeNext returns next when it is a path on this Hub, and "/" otherwise. A

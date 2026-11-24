@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
+	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -467,7 +468,9 @@ func (d *Dispatcher) audit(ctx context.Context, c *Call, outcome string) {
 // recheck authenticates the stream's request again and decides the call anew
 // with the refreshed principal. The identity must still be the same caller.
 func (d *Dispatcher) recheck(ctx context.Context, r *http.Request, c *Call) error {
-	id, err := d.Auth.Authenticate(r.WithContext(ctx))
+	// The re-check is not the person acting: it never extends the idle
+	// lifetime of a session.
+	id, err := d.Auth.Authenticate(r.WithContext(session.AsBackground(ctx)))
 	if err != nil {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/version"
 )
 
@@ -420,8 +421,11 @@ func (e *Executor) attempt(ctx context.Context, st State, adm admission) (TickRe
 	if compose.Env(e.Cfg.Service, "MINION_TLS") == "off" {
 		scheme = "http"
 	}
-	if l := compose.Env(e.Cfg.Service, "MINION_LISTEN"); strings.Contains(l, ":") && !strings.HasSuffix(l, ":") {
-		port = l[strings.LastIndex(l, ":")+1:]
+	port = config.ListenPort(compose.Env(e.Cfg.Service, "MINION_LISTEN"), port)
+	if port == config.EphemeralPort {
+		// An ephemeral port (MINION_LISTEN with port 0) cannot be probed, and
+		// the default port may answer for another service: no update.
+		return refuse("listen_port_ephemeral")
 	}
 	a := &Attempt{
 		ID: NewAttemptID(), App: e.Cfg.App, Service: e.Cfg.Service, Phase: PhasePrepared,

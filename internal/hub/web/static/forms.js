@@ -100,6 +100,11 @@
       });
       var data = null;
       try { data = await resp.json(); } catch (e) { data = null; }
+      if (resp.status === 401 && idleAnswer(resp, data) && !inView(form)) {
+        setBusy(form, false);
+        sessionPaused();
+        return;
+      }
       if (!resp.ok) {
         var msg = data && data.error && data.error.message ? data.error.message : 'The request failed (' + resp.status + ').';
         showError(form, msg);
@@ -117,6 +122,57 @@
       setBusy(form, false);
     }
   }
+
+  // A GET that htmx sends without a trusted user event (a timed poll, a "load" trigger, a
+  // refresh after a live event, htmx.ajax from a script) is marked as background: it does not
+  // extend the idle lifetime of the session, and a session that ended answers it with a plain
+  // 401 instead of a redirect, so the screen stays as it is.
+  document.addEventListener('htmx:configRequest', function (ev) {
+    var d = ev.detail;
+    if (!d || !d.headers || String(d.verb || '').toLowerCase() !== 'get') { return; }
+    var te = d.triggeringEvent;
+    if (!te || te.isTrusted !== true) { d.headers['X-Minion-Background'] = '1'; }
+  });
+
+  // A session whose idle lifetime ran out answers every request that is not a page load with a
+  // quiet 401 marked X-Minion-Session: idle (an API error also carries details.reason
+  // session_idle). The page is not changed (what it shows and what was typed stay); it says so,
+  // and its Continue button reloads it: that page load signs in again (silently with the
+  // identity provider, or on the sign-in page) and comes back here. Every other control keeps
+  // working as it is (Sign out signs out). A live session view and the inspector (inside an
+  // element with data-context) pause on their own.
+  var pausedNote = null;
+  function inView(el) {
+    return !!(el && typeof el.closest === 'function' && el.closest('[data-context]'));
+  }
+  function idleAnswer(resp, data) {
+    if (resp.headers && typeof resp.headers.get === 'function' && resp.headers.get('X-Minion-Session') === 'idle') { return true; }
+    return !!(data && data.error && data.error.details && data.error.details.reason === 'session_idle');
+  }
+  function sessionPaused() {
+    if (pausedNote) { return; }
+    var area = document.getElementById('flash-area');
+    pausedNote = document.createElement('div');
+    pausedNote.className = 'flash flash-info';
+    pausedNote.setAttribute('role', 'status');
+    pausedNote.setAttribute('data-session-paused', '');
+    pausedNote.textContent = 'Session paused. ';
+    var go = document.createElement('button');
+    go.setAttribute('type', 'button');
+    go.className = 'btn btn-secondary';
+    go.setAttribute('data-session-continue', '');
+    go.textContent = 'Continue';
+    go.addEventListener('click', function () { window.location.reload(); });
+    pausedNote.appendChild(go);
+    if (area) { area.appendChild(pausedNote); }
+  }
+  document.addEventListener('htmx:responseError', function (ev) {
+    var d = ev.detail || {};
+    var xhr = d.xhr;
+    if (!xhr || xhr.status !== 401 || typeof xhr.getResponseHeader !== 'function' || xhr.getResponseHeader('X-Minion-Session') !== 'idle') { return; }
+    if (inView(d.elt)) { return; }
+    sessionPaused();
+  });
 
   document.addEventListener('submit', function (ev) {
     var form = ev.target;

@@ -56,6 +56,18 @@ type SessionResolver interface {
 
 var _ SessionResolver = (*session.Manager)(nil)
 
+// RequestSessionResolver is the optional port of a [SessionResolver] that
+// judges the cookie together with its request: it records the person's
+// activity. *session.Middleware implements it.
+type RequestSessionResolver interface {
+	ResolveRequest(r *http.Request, token string) (*session.Session, error)
+}
+
+var (
+	_ SessionResolver        = (*session.Middleware)(nil)
+	_ RequestSessionResolver = (*session.Middleware)(nil)
+)
+
 // Limiter is the part of the shared rate limiter that the API uses;
 // *ratelimit.Limiter implements it.
 type Limiter interface {
@@ -208,9 +220,20 @@ func (a *Authenticator) cookie(r *http.Request) (Identity, error) {
 	if !safeMethod(r.Method) && !session.ValidCSRF(c.Value, r.Header.Get(session.CSRFHeader)) {
 		return Identity{}, NewError(proto.CodeForbidden, "missing or invalid "+session.CSRFHeader+" header")
 	}
-	s, err := a.Sessions.Resolve(r.Context(), c.Value)
+	var s *session.Session
+	if rs, ok := a.Sessions.(RequestSessionResolver); ok {
+		s, err = rs.ResolveRequest(r, c.Value)
+	} else {
+		s, err = a.Sessions.Resolve(r.Context(), c.Value)
+	}
+	var idle *session.ExpiredError
 	switch {
 	case err == nil:
+	case errors.As(err, &idle):
+		// A session whose idle lifetime ran out: the page pauses instead of
+		// signing out; the person's next page load signs in again.
+		return Identity{}, unauthenticated("the session is idle; reload the page to continue").
+			WithDetails(map[string]any{"reason": session.IdleReason})
 	case errors.Is(err, session.ErrNoSession):
 		return Identity{}, unauthenticated("sign in first")
 	default:

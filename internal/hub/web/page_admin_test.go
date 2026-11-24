@@ -1093,6 +1093,47 @@ func TestHandlerCallerForwardsTheSessionAndDecodes(t *testing.T) {
 	}
 }
 
+// The in-process API call of a background request (a poll, a live stream,
+// whose own Accept header is replaced) stays background, so it neither
+// extends nor renews the session; a request of the person stays foreground.
+func TestHandlerCallerKeepsTheBackgroundStatus(t *testing.T) {
+	var got []*http.Request
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r)
+		_, _ = io.WriteString(w, `{}`)
+	})
+	mk := func(hdr ...string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+		for i := 0; i+1 < len(hdr); i += 2 {
+			req.Header.Set(hdr[i], hdr[i+1])
+		}
+		return req.WithContext(session.WithSession(req.Context(), &session.Session{Username: "alice", Role: authz.RoleAdmin, CSRFToken: "c"}))
+	}
+	c := NewHandlerCaller(h)
+	for _, tc := range []struct {
+		req *http.Request
+		bg  bool
+	}{
+		{mk(), false},
+		{mk("X-Minion-Background", "1"), true},
+		{mk("Accept", "text/event-stream"), true},
+	} {
+		got = nil
+		if err := c.CallOp(tc.req, "x", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		r, err := c.internalGet(tc.req.Context(), tc.req, "/api/v1/sessions")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, in := range []*http.Request{got[0], r} {
+			if session.Background(in) != tc.bg || (in.Header.Get(session.BackgroundHeader) == "1") != tc.bg {
+				t.Errorf("%v: inner request background = %v, want %v", tc.req.Header, session.Background(in), tc.bg)
+			}
+		}
+	}
+}
+
 func TestHandlerCallerDecodesTheErrorEnvelope(t *testing.T) {
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

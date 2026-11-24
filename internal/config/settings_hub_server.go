@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 )
 
@@ -41,8 +43,104 @@ const (
 	TLSOff = "off"
 )
 
-// DefaultListen is the default listen address of the Hub.
-const DefaultListen = ":8443"
+// DefaultListen is the default listen setting of the Hub: a plain port, which
+// means every interface ([ListenAddr] turns it into ":8443").
+const DefaultListen = "8443"
+
+// ParsePort parses a plain port number, the canonical form of a listen
+// setting: digits only (no sign, no space, at most 16 of them), leading zeros
+// allowed as the Go listener allows them, and a value from 0 to 65535.
+func ParsePort(v string) (int, bool) {
+	if !isPort(v) {
+		return 0, false
+	}
+	n := 0
+	for _, c := range v {
+		n = n*10 + int(c-'0')
+		if n > 65535 {
+			return 0, false
+		}
+	}
+	return n, true
+}
+
+// isPort reports whether v has the form of a plain port number (digits only);
+// [ParsePort] checks the range.
+func isPort(v string) bool {
+	if v == "" || len(v) > 16 {
+		return false
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// HostPortPort returns the port of a host:port listen address as the Hub
+// accepted it before plain ports (v0.20.4 and earlier) and as the Go listener
+// binds it: the port after the last colon read as a decimal number, an
+// optional sign and any number of leading zeros included ("127.0.0.1:+9443"
+// and "127.0.0.1:0009443" bind 9443), from 0 to 65535. Every value an older
+// Hub started with keeps working.
+func HostPortPort(addr string) (int, bool) {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, false
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 0 || p > 65535 {
+		return 0, false
+	}
+	return p, true
+}
+
+// ListenAddr turns a listen setting into a Go listen address. A plain port
+// number such as "8443" (the canonical form) means every interface, ":8443";
+// the older forms ":8443" and "host:port" are kept as they are.
+func ListenAddr(v string) string {
+	v = strings.TrimSpace(v)
+	if isPort(v) {
+		return ":" + v
+	}
+	return v
+}
+
+// ManagementListenAddr turns a management_listen setting into a listen
+// address. A plain port number such as "8444" means the loopback address
+// "127.0.0.1:8444" (the management listener must be loopback); a
+// "host:port" value is kept as it is.
+func ManagementListenAddr(v string) string {
+	v = strings.TrimSpace(v)
+	if isPort(v) {
+		return "127.0.0.1:" + v
+	}
+	return v
+}
+
+// ListenPort returns the port of a listen setting in any of its forms
+// ("8443", ":8443", "host:8443", a padded ":0009443" or a signed
+// "host:+9443" of an older Hub), as the listener binds it ("9443"), or def
+// when it names none (the setting is absent or not a port). An explicit port
+// 0 is returned as "0": the listener binds an ephemeral port, which is not
+// the default one, and a caller that must reach the Hub has to say so
+// ([EphemeralPort]) instead of probing the default port.
+func ListenPort(v, def string) string {
+	v = strings.TrimSpace(v)
+	p, ok := ParsePort(v)
+	if !ok {
+		p, ok = HostPortPort(v)
+	}
+	if ok {
+		return strconv.Itoa(p)
+	}
+	return def
+}
+
+// EphemeralPort is what [ListenPort] returns for a listen setting that binds
+// an ephemeral port (port 0).
+const EphemeralPort = "0"
 
 func init() { declareHubServer(Default) }
 
@@ -51,7 +149,7 @@ func declareHubServer(r *Registry) {
 	r.Declare(Setting{
 		Key:     KeyListen,
 		Scope:   ScopeHub,
-		Help:    "Address the Hub listens on, as host:port",
+		Help:    "Port the Hub listens on, for example 8443 (every interface); host:port such as 127.0.0.1:8443 limits it to one address",
 		Default: DefaultListen,
 	})
 	r.Declare(Setting{
@@ -74,7 +172,7 @@ func declareHubServer(r *Registry) {
 	r.Declare(Setting{
 		Key:   KeyManagementListen,
 		Scope: ScopeHub,
-		Help:  "Optional management listener, a loopback host:port such as 127.0.0.1:8444, served as plain HTTP. It is the only place where a passphrase is accepted without HTTPS; never point a reverse proxy at it",
+		Help:  "Optional management listener: a port such as 8444 (on 127.0.0.1) or a loopback host:port, served as plain HTTP. It is the only place where a passphrase is accepted without HTTPS; never point a reverse proxy at it",
 	})
 }
 

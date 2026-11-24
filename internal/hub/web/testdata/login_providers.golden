@@ -42,8 +42,8 @@
   </form>
   
   <div class="providers" role="group" aria-label="Other sign-in methods">
-    <a class="btn btn-secondary" href="/auth/demo/start"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-login"/></svg><span>Sign in with Demo</span></a>
-    <a class="btn btn-secondary" href="/auth/oidc/start"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-login"/></svg><span>Sign in with Authentik SSO</span></a>
+    <a class="btn btn-secondary" href="/auth/demo/start?next=%2fsessions"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-login"/></svg><span>Sign in with Demo</span></a>
+    <a class="btn btn-secondary" href="/auth/oidc/start?next=%2fsessions"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-login"/></svg><span>Sign in with Authentik SSO</span></a>
     
   </div>
   

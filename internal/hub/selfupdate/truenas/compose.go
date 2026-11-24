@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -83,8 +85,25 @@ func (c Compose) Env(service, key string) string {
 	}
 	switch env := svc["environment"].(type) {
 	case map[string]any:
-		v, _ := env[key].(string)
-		return v
+		// An unquoted value (MINION_LISTEN: 9443) arrives as a number.
+		switch v := env[key].(type) {
+		case string:
+			return v
+		case float64:
+			if v == math.Trunc(v) && math.Abs(v) < 1e15 {
+				return strconv.FormatInt(int64(v), 10)
+			}
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		case int:
+			return strconv.Itoa(v)
+		case int64:
+			return strconv.FormatInt(v, 10)
+		case json.Number:
+			return v.String()
+		case bool:
+			return strconv.FormatBool(v)
+		}
+		return ""
 	case []any:
 		for _, e := range env {
 			if kv, ok := e.(string); ok && strings.HasPrefix(kv, key+"=") {

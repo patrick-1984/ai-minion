@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
+	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
@@ -122,13 +123,21 @@ type fakeAuthn struct {
 	id  Identity
 	err error
 	n   int
+	bg  []bool // session.Background of every request
 }
 
-func (f *fakeAuthn) Authenticate(*http.Request) (Identity, error) {
+func (f *fakeAuthn) Authenticate(r *http.Request) (Identity, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.n++
+	f.bg = append(f.bg, session.Background(r))
 	return f.id, f.err
+}
+
+func (f *fakeAuthn) backgrounds() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.bg...)
 }
 
 // setErr changes the answer for later calls, also while a stream runs.

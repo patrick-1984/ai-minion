@@ -22,6 +22,7 @@ type fakeEngine struct {
 	created  map[string]any
 	running  map[string]bool
 	names    map[string]string // id -> name
+	env      []string          // more environment of the containers
 	declared bool              // the old container declares an anonymous volume mount
 	label    string            // the channel label of the old container
 	noMount  bool              // the data directory is in the container's own layer
@@ -65,7 +66,7 @@ func (f *fakeEngine) handler(w http.ResponseWriter, r *http.Request) {
 		}
 		c := map[string]any{
 			"Id": id, "Name": "/" + f.names[id],
-			"Config": map[string]any{"Image": img, "Env": []string{"MINION_DATA_DIR=" + f.dataDir, "MINION_TLS=off"},
+			"Config": map[string]any{"Image": img, "Env": append([]string{"MINION_DATA_DIR=" + f.dataDir, "MINION_TLS=off"}, f.env...),
 				"Labels": labels},
 			"HostConfig":      hostConfig(f.declared, f.tmpfs, f.dataDir),
 			"Mounts":          mounts,
@@ -377,6 +378,38 @@ func TestReplaceRefusesBeforeStoppingWithoutTheDatabase(t *testing.T) {
 	}
 }
 
+// A Hub that listens on an ephemeral port (port 0) cannot be probed for
+// readiness, and the default port may answer for another service: the helper
+// refuses before it stops the Hub (round 4). The probe never tries 8443 instead.
+func TestReplaceRefusesAnEphemeralListenPortBeforeStopping(t *testing.T) {
+	for _, listen := range []string{"0", ":0", "127.0.0.1:0"} {
+		f := newEngine(t)
+		f.env = []string{"MINION_LISTEN=" + listen}
+		d := startEngine(t, f)
+		err := Replace(context.Background(), d, params(f, true))
+		if err == nil || !strings.Contains(err.Error(), "ephemeral port") {
+			t.Fatalf("MINION_LISTEN=%s: err = %v", listen, err)
+		}
+		f.mu.Lock()
+		for _, c := range f.calls {
+			if strings.HasSuffix(c, "/stop") {
+				t.Errorf("MINION_LISTEN=%s: the Hub was stopped: %v", listen, f.calls)
+			}
+		}
+		if !f.running["old"] || f.created != nil {
+			t.Errorf("MINION_LISTEN=%s: old running=%v created=%v", listen, f.running["old"], f.created != nil)
+		}
+		f.mu.Unlock()
+		var c Container
+		c.HostConfig = map[string]json.RawMessage{"NetworkMode": json.RawMessage(`"host"`)}
+		env, _ := json.Marshal([]string{"MINION_LISTEN=" + listen})
+		c.Config = map[string]json.RawMessage{"Env": env}
+		if readyz(context.Background(), c) {
+			t.Errorf("MINION_LISTEN=%s: the probe answered ready", listen)
+		}
+	}
+}
+
 // A link in the data directory (it may be the database) is not copied
 // silently: the backup fails, nothing is restored, the old Hub runs again.
 func TestReplaceRefusesLinksInTheDataDirectory(t *testing.T) {
@@ -408,5 +441,37 @@ func TestCopyDirNeedsTheDatabase(t *testing.T) {
 	}
 	if _, err := os.Stat(src); err == nil {
 		t.Fatal("the copy created the absent source")
+	}
+}
+
+// The Docker self-update probes /readyz on the port the new Hub listens on,
+// also for the listen forms an older Hub accepted (A100): a plain port, a
+// padded or signed host:port.
+func TestReadyzProbesTheListenPortOfEveryForm(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	for _, listen := range []string{port, ":" + port, "127.0.0.1:+" + port, "0.0.0.0:00000000000000000" + port} {
+		var c Container
+		c.HostConfig = map[string]json.RawMessage{"NetworkMode": json.RawMessage(`"host"`)}
+		env, _ := json.Marshal([]string{"MINION_TLS=off", "MINION_LISTEN=" + listen})
+		c.Config = map[string]json.RawMessage{"Env": env}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ok := readyz(ctx, c)
+		cancel()
+		if !ok {
+			t.Errorf("MINION_LISTEN=%s: the probe missed the Hub on port %s", listen, port)
+		}
 	}
 }

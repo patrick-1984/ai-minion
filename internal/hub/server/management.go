@@ -34,7 +34,7 @@ func onManagementListener(r *http.Request) bool {
 func checkManagementListen(addr, main string) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("MINION_MANAGEMENT_LISTEN %q is not a valid address; use a loopback host:port such as 127.0.0.1:8444", addr)
+		return fmt.Errorf("MINION_MANAGEMENT_LISTEN %q is not a valid address; use a port such as 8444 (on 127.0.0.1) or a loopback host:port", addr)
 	}
 	if p, err := strconv.Atoi(port); err != nil || p < 0 || p > 65535 {
 		return fmt.Errorf("MINION_MANAGEMENT_LISTEN %q has an invalid port", addr)

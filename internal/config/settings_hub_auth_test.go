@@ -31,9 +31,20 @@ func TestResolveHubAuthDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HubAuth{AdminUsername: "admin", SessionTTL: 24 * time.Hour}
+	want := HubAuth{AdminUsername: "admin", SessionTTL: 2 * time.Hour}
 	if ha != want {
 		t.Fatalf("got %+v, want %+v", ha, want)
+	}
+}
+
+// TestSessionTTLDefaultIsTwoHours pins the default idle lifetime (A99).
+func TestSessionTTLDefaultIsTwoHours(t *testing.T) {
+	if DefaultSessionTTL != 2*time.Hour {
+		t.Fatalf("DefaultSessionTTL = %v, want 2h", DefaultSessionTTL)
+	}
+	s, ok := Default.Lookup(KeySessionTTL)
+	if !ok || s.Default != "2h0m0s" {
+		t.Fatalf("declared default = %q (%v), want 2h0m0s", s.Default, ok)
 	}
 }
 

@@ -39,7 +39,7 @@ func TestResolveHubServerDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HubServer{DataDir: "/data", Listen: ":8443", TLS: TLSAuto}
+	want := HubServer{DataDir: "/data", Listen: "8443", TLS: TLSAuto}
 	if hs != want {
 		t.Fatalf("got %+v, want %+v", hs, want)
 	}
@@ -103,5 +103,33 @@ func TestResolveHubServerCertPathsFromPanelAndEnvPrecedence(t *testing.T) {
 	r.Panel = MapSource{KeyTLSKeyFile: "/panel/k.pem"}
 	if _, err := ResolveHubServer(r); err == nil || !strings.Contains(err.Error(), "both") {
 		t.Errorf("panel with only a key: %v", err)
+	}
+}
+
+func TestListenPortOfEveryForm(t *testing.T) {
+	for in, want := range map[string]string{"9443": "9443", ":9443": "9443", "0.0.0.0:9443": "9443", "[::]:9443": "9443", "": "8443", "host:": "8443", "garbage": "8443",
+		":0009443": "9443", "0009443": "9443", ":70000": "8443",
+		// An explicit port 0 binds an ephemeral port: never the default (round 4).
+		":0": "0", "0": "0", "000": "0", "[::1]:0": "0",
+		// host:port values an older Hub accepted bind as the Go listener reads them.
+		"host:+9443": "9443", "127.0.0.1:00000000000000000009443": "9443", "127.0.0.1:-0": "0",
+		// A bare port is digits only.
+		"+9443": "8443", "00000000000000000009443": "8443"} {
+		if got := ListenPort(in, "8443"); got != want {
+			t.Errorf("ListenPort(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]int{"127.0.0.1:+9443": 9443, "127.0.0.1:00000000000000000009443": 9443, ":8443": 8443, "[::1]:0": 0} {
+		if got, ok := HostPortPort(in); !ok || got != want {
+			t.Errorf("HostPortPort(%q) = %d, %v, want %d", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"127.0.0.1:https", "127.0.0.1:70000", "127.0.0.1:-1", "8443", "127.0.0.1: 8443"} {
+		if _, ok := HostPortPort(in); ok {
+			t.Errorf("HostPortPort(%q) accepted", in)
+		}
+	}
+	if DefaultListen != "8443" {
+		t.Errorf("DefaultListen = %q, want the plain port 8443", DefaultListen)
 	}
 }

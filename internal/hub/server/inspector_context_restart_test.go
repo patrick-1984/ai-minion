@@ -148,21 +148,25 @@ func TestInspectorContextRestartChild(t *testing.T) {
 				t.Errorf("%s: the page and the principal route disagree", who)
 			}
 		}
-		// Every login, user and act-as setting is still told apart after the restart.
+		// Every user and act-as setting is still told apart after the restart; the two logins of
+		// alice are one principal (a renewal must not clear what a page holds).
+		if f.Principal["alice1"] != f.Principal["alice2"] {
+			t.Error("two logins of alice have different contexts")
+		}
 		seen := map[string]string{}
 		for who, c := range f.Principal {
+			if who == "alice2" {
+				continue
+			}
 			if prev, dup := seen[c]; dup {
 				t.Errorf("%s and %s share a context", who, prev)
 			}
 			seen[c] = who
 		}
-		// A login made AFTER the restart is another login: another context.
+		// A login of alice made AFTER the restart is the same principal: the same context.
 		fresh, _ := d.login("alice")
-		cFresh := d.principalContextOf(fresh)
-		for who, c := range f.Principal {
-			if c == cFresh {
-				t.Errorf("a new login of alice after the restart has the context of %s", who)
-			}
+		if cFresh := d.principalContextOf(fresh); cFresh != f.Principal["alice1"] {
+			t.Error("a new login of alice after the restart has another context")
 		}
 
 		// The resource check of Alice's session. The Worker has not reconnected yet and a Hub that just started has

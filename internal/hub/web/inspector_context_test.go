@@ -41,9 +41,14 @@ func TestPrincipalContextBindsUserLoginAndActAsAndLeaksNothing(t *testing.T) {
 	}
 	others := map[string]*session.Session{
 		"another user":                 {ID: "sess-AAAA", UserID: "u-bob", Username: "bob", Role: authz.RoleUser},
-		"the same user, a new login":   {ID: "sess-BBBB", UserID: "u-alice", Username: "alice", Role: authz.RoleUser},
+		"the same user, another role":  {ID: "sess-AAAA", UserID: "u-alice", Username: "alice", Role: authz.RoleAdmin},
 		"the same login acting as bob": {ID: "sess-AAAA", UserID: "u-alice", Username: "alice", Role: authz.RoleUser, ActAs: &session.ActAs{TargetID: "u-bob"}},
 		"acting as someone else":       {ID: "sess-AAAA", UserID: "u-alice", Username: "alice", Role: authz.RoleUser, ActAs: &session.ActAs{TargetID: "u-carol"}},
+	}
+	// A renewal of the same principal (a new browser session row, as a silent sign-in in another tab
+	// makes) keeps the context: the page must not clear what it holds for it (A99).
+	if c := principalContext(ctxRequest(&session.Session{ID: "sess-BBBB", UserID: "u-alice", Username: "alice", Role: authz.RoleUser})); c != c0 {
+		t.Errorf("a renewal of the same principal changed the context: %q and %q", c0, c)
 	}
 	seen := map[string]string{c0: "alice"}
 	for what, sess := range others {

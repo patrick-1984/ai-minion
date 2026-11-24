@@ -111,6 +111,18 @@ func NewHandlerCaller(h http.Handler) *HandlerCaller { return &HandlerCaller{h: 
 // the scheme in the Hub's trusted-proxy rules.
 var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Real-Ip", "Forwarded", "Origin", "Sec-Fetch-Site"}
 
+// markBackground carries the background status of the incoming request r
+// over to the in-process request req: the API call that a live page makes on
+// behalf of a poll or a stream (whose own Accept header is replaced) must not
+// count as the person's activity. A request of the
+// person stays foreground.
+func markBackground(r, req *http.Request) {
+	if session.Background(r) {
+		req.Header.Set(session.BackgroundHeader, "1")
+		*req = *req.WithContext(session.AsBackground(req.Context()))
+	}
+}
+
 // maxOpResponseBytes bounds the answer of one operation.
 const maxOpResponseBytes = 8 << 20
 
@@ -133,6 +145,7 @@ func (c *HandlerCaller) CallOp(r *http.Request, op string, args, result any) err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	markBackground(r, req)
 	req.Header.Set(session.CSRFHeader, sess.CSRFToken)
 	if v := r.Header.Get("Cookie"); v != "" {
 		req.Header.Set("Cookie", v)

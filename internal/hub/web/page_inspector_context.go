@@ -12,15 +12,21 @@ package web
 //
 // The context is a public, opaque value the SERVER derives from the principal
 // the existing session layer authenticated for this very request: the user, the
-// act-as target and the browser session. It is an HMAC under a key only the Hub has, so it contains no session id, token or CSRF value, cannot
+// act-as target and the role (the effective principal, not the browser session
+// row: a renewal of the same principal, such as a silent sign-in in another tab
+// after the idle lifetime ran out, keeps it, so the page does not clear what it
+// holds). A renewal does change the cookie and with it the CSRF token the page
+// and its frames were rendered with; both routes therefore also answer whether
+// the token the page presents (X-Minion-CSRF) is the one of the current cookie,
+// and the page keeps its frames concealed while it is not. It is an HMAC under a key only the Hub has, so it contains no session id, token or CSRF value, cannot
 // be reversed, and is not a credential: nothing in the Hub accepts it, it grants
 // no read or write, and it is compared by the page, never trusted by the server.
 // A client that claims one learns nothing and gains nothing. After a restart of
 // the Hub the value is the SAME for an unchanged login: the key is derived from the
 // Hub's persisted data key (a purpose of its own, the data key itself is never used or
-// exposed) and every other input (browser session row, user, act-as target) is persisted
+// exposed) and every other input (user, act-as target, role) is persisted
 // too. A restart therefore keeps what the page holds (drafts, requests on their way,
-// unknown deliveries), while another user, a new login or another act-as setting still
+// unknown deliveries), while another user, another role or another act-as setting still
 // changes it, and a Hub that cannot give a key does not start (there is no random key).
 //
 // Two narrow, read-only routes answer with it, behind the same session layer, the
@@ -40,6 +46,7 @@ package web
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -58,9 +65,9 @@ type contextKeyKey struct{}
 
 // principalContext returns the public context of the principal of r, or "" when
 // nobody is signed in (or this request carries no context key, which fails closed).
-// Two requests have the same context exactly when they are made by the same browser
-// session as the same user with the same act-as target, whichever process of the Hub
-// answers them: every input is persisted, and so is the key.
+// Two requests have the same context exactly when they are made as the same user with
+// the same role and the same act-as target, whichever browser session and whichever
+// process of the Hub answers them: every input is persisted, and so is the key.
 func principalContext(r *http.Request) string {
 	key, _ := r.Context().Value(contextKeyKey{}).([]byte)
 	if len(key) < MinContextKey {
@@ -75,16 +82,31 @@ func principalContext(r *http.Request) string {
 		actAs = sess.ActAs.TargetID
 	}
 	m := hmac.New(sha256.New, key)
-	for _, part := range []string{"minion-inspector-context-v1", sess.ID, sess.UserID, actAs} {
+	for _, part := range []string{"minion-inspector-context-v2", sess.UserID, string(sess.Role), actAs} {
 		m.Write([]byte(part))
 		m.Write([]byte{0})
 	}
 	return hex.EncodeToString(m.Sum(nil))[:32]
 }
 
+// csrfCurrent reports whether r presents a CSRF token (X-Minion-CSRF) and whether
+// it is the token of the session that authenticated r; nil when none is presented.
+func csrfCurrent(r *http.Request) *bool {
+	got := r.Header.Get(session.CSRFHeader)
+	if got == "" {
+		return nil
+	}
+	sess, ok := session.FromContext(r.Context())
+	ok = ok && sess != nil && sess.CSRFToken != "" && subtle.ConstantTimeCompare([]byte(sess.CSRFToken), []byte(got)) == 1
+	return &ok
+}
+
 // contextAnswer is the body of both routes. Nothing in it is secret or a credential.
 type contextAnswer struct {
-	Context  string `json:"context"`
+	Context string `json:"context"`
+	// CSRF answers whether the token the page presented is the current one (absent
+	// when it presented none).
+	CSRF     *bool  `json:"csrf,omitempty"`
 	WorkerID string `json:"worker_id,omitempty"`
 	Session  string `json:"session,omitempty"`
 	Online   *bool  `json:"online,omitempty"`
@@ -104,7 +126,7 @@ func handlePrincipal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not signed in", http.StatusUnauthorized)
 		return
 	}
-	writeContext(w, contextAnswer{Context: c})
+	writeContext(w, contextAnswer{Context: c, CSRF: csrfCurrent(r)})
 }
 
 // handleSessionContext is the resource check: may this request read this session now? The
@@ -142,7 +164,7 @@ func handleSessionContext(w http.ResponseWriter, r *http.Request, t target) {
 		return
 	}
 	online := t.worker.Online
-	writeContext(w, contextAnswer{Context: principalContext(r), WorkerID: t.worker.ID, Session: t.session, Online: &online})
+	writeContext(w, contextAnswer{Context: principalContext(r), CSRF: csrfCurrent(r), WorkerID: t.worker.ID, Session: t.session, Online: &online})
 }
 
 func init() {

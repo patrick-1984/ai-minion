@@ -89,7 +89,8 @@ func TestHubServeRejectsInvalidSettings(t *testing.T) {
 		"tls value":     {"MINION_TLS": "maybe"},
 		"half a pair":   {"MINION_TLS_CERT_FILE": "/c.pem"},
 		"proxy list":    {"MINION_TRUSTED_PROXIES": "nope"},
-		"listen format": {"MINION_LISTEN": "8443"},
+		"listen format": {"MINION_LISTEN": "hub.example"},
+		"listen port":   {"MINION_LISTEN": "99999"},
 		"public url":    {"MINION_PUBLIC_URL": "hub"},
 	} {
 		t.Run(name, func(t *testing.T) {

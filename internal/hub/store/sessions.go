@@ -5,7 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
+
+// OIDCSessionMaxAge is the absolute lifetime of a browser session that was
+// started with OIDC. Until then its row is kept after its idle lifetime ran
+// out, so that the next page load knows the session expired and which
+// identity provider to ask for a silent re-authentication (the row itself is
+// never used again); a local session's row goes as soon as it expired.
+const OIDCSessionMaxAge = 7 * 24 * time.Hour
 
 // SessionRow is one row of the sessions table. TokenHash is the hex SHA-256
 // of the cookie value; the cookie itself is never stored.
@@ -24,11 +32,13 @@ type SessionRow struct {
 }
 
 // CreateSession stores a new session and, in the same transaction, deletes
-// the sessions that expired before nowMS, so the table does not grow without
-// bound.
+// the sessions that expired before nowMS and are no longer needed (every
+// local one; an OIDC one older than [OIDCSessionMaxAge]), so the table does
+// not grow without bound.
 func (s *Store) CreateSession(ctx context.Context, row SessionRow, nowMS int64) error {
 	return s.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, nowMS); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ? AND (auth_method NOT LIKE 'oidc:%' OR created_at <= ?)`,
+			nowMS, nowMS-OIDCSessionMaxAge.Milliseconds()); err != nil {
 			return fmt.Errorf("store: prune sessions: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -73,6 +83,38 @@ func (s *Store) DeleteSession(ctx context.Context, tokenHash string) (bool, erro
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("store: delete session: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ExtendSession moves the end of the session with the given id to expiresAt
+// (unix milliseconds). It only ever moves the end later: a value at or before
+// the stored one changes nothing. It reports whether the row changed.
+func (s *Store) ExtendSession(ctx context.Context, sessionID string, expiresAt int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at = ? WHERE id = ? AND expires_at < ?`, expiresAt, sessionID, expiresAt)
+	if err != nil {
+		return false, fmt.Errorf("store: extend session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: extend session: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ShrinkSession moves the end of the session with the given id earlier, to
+// expiresAt (unix milliseconds). It only ever moves the end earlier: a value
+// at or after the stored one changes nothing. It reports whether the row
+// changed. The session layer uses it to clamp the idle end of a session that
+// was issued with a longer lifetime than the one that applies now.
+func (s *Store) ShrinkSession(ctx context.Context, sessionID string, expiresAt int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at = ? WHERE id = ? AND expires_at > ?`, expiresAt, sessionID, expiresAt)
+	if err != nil {
+		return false, fmt.Errorf("store: shrink session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store: shrink session: %w", err)
 	}
 	return n > 0, nil
 }

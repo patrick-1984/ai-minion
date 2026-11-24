@@ -452,3 +452,38 @@ func TestAuthenticatorBehindTheDispatcher(t *testing.T) {
 		t.Errorf("%d %s calls=%+v", w.Code, w.Body, r.decide.calls)
 	}
 }
+
+// idleResolver answers like the session middleware for a session whose idle
+// lifetime ran out when idle is set, and for no session otherwise.
+type idleResolver struct {
+	fakeSessions
+	idle bool
+}
+
+func (f *idleResolver) ResolveRequest(*http.Request, string) (*session.Session, error) {
+	if f.idle {
+		return nil, &session.ExpiredError{}
+	}
+	return nil, session.ErrNoSession
+}
+
+// A request of an idle session is unauthenticated with the reason
+// session_idle, so a page (and a stream's access_lost) can pause instead of
+// signing out; a request without a session is the ordinary "sign in first".
+func TestIdleSessionIsUnauthenticatedWithTheIdleReason(t *testing.T) {
+	r := newAuthRig(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
+	req.AddCookie(&http.Cookie{Name: session.CookieName, Value: "tok"})
+	r.a.Sessions = &idleResolver{idle: true}
+	for _, q := range []*http.Request{req, req.WithContext(session.AsBackground(req.Context()))} {
+		_, err := r.a.Authenticate(q)
+		if e := ErrorOf(err); e.Code != proto.CodeUnauthenticated || e.Details["reason"] != session.IdleReason {
+			t.Errorf("idle = %+v, want unauthenticated with reason %s", e, session.IdleReason)
+		}
+	}
+	r.a.Sessions = &idleResolver{}
+	_, err := r.a.Authenticate(req)
+	if e := ErrorOf(err); e.Code != proto.CodeUnauthenticated || e.Details["reason"] != nil {
+		t.Errorf("no session = %+v, want the plain unauthenticated", e)
+	}
+}

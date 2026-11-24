@@ -47,7 +47,8 @@ const PIPE = '/s/pi-1/minion-1/pipe';
 function load(o) {
   o = o || {};
   const attrs = { 'data-screen-url': SCREEN, 'data-events-url': '/api/v1/events?all=true&worker=w1',
-    'data-worker-id': 'w1', 'data-session': 'minion-1', 'data-target': 'minion-1 on pi-1', 'data-online': o.online === false ? 'false' : 'true' };
+    'data-worker-id': 'w1', 'data-session': 'minion-1', 'data-target': 'minion-1 on pi-1', 'data-online': o.online === false ? 'false' : 'true',
+    'data-context': 'ctx-1', 'data-embed': o.embed ? 'true' : null };
   const view = { getAttribute: (k) => attrs[k] };
   const screen = { scrollTop: 0, scrollLeft: 0 };
   const box = { id: 'send-text', value: '', focus() { this.focused = true; } };
@@ -144,7 +145,11 @@ function load(o) {
     querySelector(sel) { return sel === '[data-answer-form]' ? p.dom.answerForm || null : sel === 'dialog[open]' ? p.dom.dialogOpen || null : null; },
     createElement: (tag) => node('', tag),
     createTextNode: (t) => { const n = node('', '#text'); n.textContent = t; return n; },
+    docL: {},
+    addEventListener(n, f) { (this.docL[n] = this.docL[n] || []).push(f); },
+    removeEventListener(n, f) { this.docL[n] = (this.docL[n] || []).filter((x) => x !== f); },
   };
+  p.fireDoc = (n, e) => { (document.docL[n] || []).slice().forEach((f) => f(Object.assign({ type: n }, e))); };
   p.document = document;
   p.els = els;
   p.gated = gated;
@@ -893,8 +898,105 @@ scenario('a read from before the suspension, or from an earlier resume, can neve
   if (q.control('state').conn !== 'suspended') fail('a late read changed a hidden view');
 });
 
+// A99: the stream's access_lost for a missing sign-in (an idle session, an absent cookie: unauthenticated) pauses the view
+// instead of reloading it: the screen and the draft stay, the writes are off, and a key does nothing. The next click makes
+// ONE quiet read of who this request is. The same principal (another tab signed in again) resumes without a reload, and
+// the writes come back only after the fresh read of the screen; still no sign-in reloads the page (which signs in again);
+// another principal ends the view; anything else keeps the pause. A view inside the inspector never reloads itself.
+scenario('a missing sign-in pauses the view and keeps the draft; the next click continues it', async () => {
+  const ctxOf = (c) => ({ status: 200, ok: true, type: 'basic', json: () => Promise.resolve({ context: c }), text: () => Promise.resolve('') });
+  const idle = { error: { code: 'unauthenticated', message: 'idle', details: { reason: 'session_idle' } } };
+  const plain = { error: { code: 'unauthenticated', message: 'sign in first', details: {} } };
+  const p = withFetch({ manual: true });
+  p.es.onopen();
+  p.box.value = 'my draft';
+  const first = p.es;
+  first.l.access_lost(p.ev(idle));
+  await settleMicro();
+  if (!first.closed || p.reloads !== 0) fail('the idle access_lost reloaded or kept the stream: ' + p.reloads);
+  if (!p.gated.every((b) => b.disabled)) fail('the writes stayed on while the session is paused');
+  if (p.els.conn.textContent !== 'Session paused' || !/click or refresh to continue/.test(p.els['conn-note'].textContent)) fail('not told: ' + p.els.conn.textContent + ' / ' + p.els['conn-note'].textContent);
+  if (p.box.value !== 'my draft') fail('the draft was touched');
+  p.fireDoc('keydown', { key: 'a' });
+  eq(p.waiters.length, 0, 'a key does not continue');
+  p.fireDoc('click', {});
+  p.fireDoc('click', {});
+  eq(p.waiters.length, 1, 'one read per pause');
+  const w = p.waiters[0];
+  if (w.u !== '/inspector/principal' || !w.opt.headers || w.opt.headers['X-Minion-Background'] !== '1') fail('the read after the click is not a quiet read of the principal: ' + JSON.stringify(w));
+  w.res(ctxOf('ctx-1'));
+  await settleMicro();
+  if (p.sources.length !== 2 || p.sources[1].closed) fail('the stream did not reconnect');
+  p.sources[1].onopen();
+  if (!p.gated.every((b) => b.disabled)) fail('the writes came back before the fresh read of the screen');
+  eq(p.waiters.length, 2, 'the fresh read of the screen');
+  eq(p.waiters[1].u, SCREEN, 'the fresh read is the screen route');
+  p.waiters[1].res(OK);
+  await settleMicro();
+  if (p.gated.some((b) => b.disabled)) fail('the writes did not come back after the same principal and a fresh read');
+  if (p.box.value !== 'my draft' || p.reloads !== 0) fail('the draft went or the page reloaded');
+  // Still no sign-in (a plain 401 of an absent cookie paused it): the page reloads on the click.
+  const q = withFetch({ manual: true });
+  q.es.onopen();
+  q.es.l.access_lost(q.ev(plain));
+  await settleMicro();
+  if (q.reloads !== 0) fail('a plain unauthenticated access_lost reloaded at once');
+  q.fireDoc('click', {});
+  q.waiters[0].res(status(401));
+  await settleMicro();
+  if (q.reloads !== 1) fail('still no sign-in after the click did not reload: ' + q.reloads);
+  // Another principal (an act-as that ended, another account): the view ends, writes stay off.
+  const r = withFetch({ manual: true });
+  r.es.onopen();
+  r.es.l.access_lost(r.ev(idle));
+  r.fireDoc('click', {});
+  r.waiters[0].res(ctxOf('ctx-admin'));
+  await settleMicro();
+  if (r.reloads !== 1 || !r.gated.every((b) => b.disabled)) fail('another principal did not end the view: ' + r.reloads);
+  // A server error proves nothing: still paused, writes off, the next click asks again.
+  const e = withFetch({ manual: true });
+  e.es.onopen();
+  e.es.l.access_lost(e.ev(idle));
+  e.fireDoc('click', {});
+  e.waiters[0].res(status(503));
+  await settleMicro();
+  if (e.reloads !== 0 || !e.gated.every((b) => b.disabled) || e.els.conn.textContent !== 'Session paused') fail('a 503 resumed or reloaded');
+  e.fireDoc('click', {});
+  eq(e.waiters.length, 2, 'the next click asks again');
+  // Inside the inspector the view never reloads itself.
+  const f = withFetch({ manual: true, embed: true });
+  f.es.onopen();
+  f.es.l.access_lost(f.ev(idle));
+  f.fireDoc('click', {});
+  f.waiters[0].res(status(401));
+  await settleMicro();
+  if (f.reloads !== 0 || !f.gated.every((b) => b.disabled)) fail('an embedded view reloaded itself');
+  // A 401 of the panel's own read pauses too.
+  const g = withFetch({ manual: true });
+  g.es.onopen();
+  g.dispatch('htmx:responseError', { detail: { pathInfo: { requestPath: SCREEN }, xhr: { status: 401 } } });
+  if (g.reloads !== 0 || g.els.conn.textContent !== 'Session paused' || !g.gated.every((b) => b.disabled)) fail('a 401 of the screen read did not pause: ' + g.els.conn.textContent);
+});
+
+// A page load counts as the person's activity (it extends the session): a Worker event while nobody uses the page does
+// not reload it at once; the view says it is out of date, keeps the writes off and reloads on the next click.
+scenario('a Worker event while the person is away waits for their click before it reloads', async () => {
+  const p = withFetch({ manual: true });
+  p.es.onopen();
+  const realNow = Date.now;
+  Date.now = () => realNow() + 120000;
+  try {
+    p.es.l.worker_offline(p.ev({ type: 'worker_offline', worker_id: 'w1', worker: 'pi-1' }));
+    p.es.l.session_removed(p.ev({ type: 'session_removed', worker_id: 'w1', session: 'minion-1' }));
+    if (p.reloads !== 0) fail('a Worker event reloaded an unattended page: ' + p.reloads);
+    if (p.els.conn.textContent !== 'Out of date' || !p.gated.every((b) => b.disabled)) fail('not shown as out of date: ' + p.els.conn.textContent);
+    p.fireDoc('click', {});
+    eq(p.reloads, 1, 'the click reloads');
+  } finally { Date.now = realNow; }
+});
+
 scenario('a resume read that fails keeps the writes off: refused access reloads, a server error asks again', async () => {
-  const cases = [[401, 1], [403, 1], [404, 1]];
+  const cases = [[401, 0], [403, 1], [404, 1]];
   for (const [code, reloads] of cases) {
     const p = withFetch({ manual: true });
     p.control('suspend'); p.control('resume');
@@ -906,7 +1008,7 @@ scenario('a resume read that fails keeps the writes off: refused access reloads,
   p.control('suspend'); p.control('resume');
   p.waiters[0].res({ status: 0, ok: false, type: 'opaqueredirect' });
   await settleMicro();
-  if (p.reloads !== 1 || !p.gated.every((b) => b.disabled)) fail('a redirect to sign-in must reload (the sign-in page then ends this view) and keep writes off');
+  if (p.reloads !== 0 || !p.gated.every((b) => b.disabled) || p.els.conn.textContent !== 'Session paused') fail('a redirect to sign-in must pause the view (A99) and keep writes off');
   p = withFetch({ manual: true });
   p.control('suspend'); p.control('resume');
   p.waiters[0].res(status(502));

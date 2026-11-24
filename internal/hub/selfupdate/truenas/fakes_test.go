@@ -58,6 +58,8 @@ type world struct {
 	rollbackFails   bool
 	free            uint64
 	releases        map[string]Release
+	// readyPort is the port the Hub answers on; "" means 8443.
+	readyPort string
 }
 
 func newWorld() *world {
@@ -287,7 +289,11 @@ func (w *world) Destroy(_ context.Context, _, n string) error {
 // Prober: the Hub is ready when it runs. The candidate image can be broken,
 // and the previous image refuses the migrated database.
 func (w *world) Ready(_ context.Context, url string) error {
-	if url != "https://10.0.0.2:8443/readyz" {
+	port := w.readyPort
+	if port == "" {
+		port = "8443"
+	}
+	if url != "https://10.0.0.2:"+port+"/readyz" {
 		return errors.New("not this container")
 	}
 	w.readyCalls++

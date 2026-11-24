@@ -15,8 +15,10 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 )
@@ -29,6 +31,31 @@ const (
 	CSRFHeader = "X-Minion-CSRF"
 	// TokenBytes is the size of the random cookie value before encoding.
 	TokenBytes = 32
+)
+
+// Lifetimes of a session. The idle lifetime is the session_ttl setting
+// (default 2 h, at most [MaxIdle]): a foreground request the person makes
+// moves the end of the session to now plus that value ([Manager.Touch]). The
+// absolute caps below are fixed and independent of the idle setting: they
+// bound a session whatever the activity, and every idle end (the first one
+// and every later one) is clamped to them.
+const (
+	// LocalMaxAge is the absolute lifetime of a session that was not started
+	// with OIDC (a local password): after it the person signs in again.
+	LocalMaxAge = 12 * time.Hour
+	// OIDCMaxAge is the absolute lifetime of a session started with OIDC.
+	// After its idle end the session is not renewed: the person's next page
+	// load re-authenticates silently with the identity provider (prompt=none,
+	// a new session) while the provider's own browser session is valid; the
+	// expired row is kept until OIDCMaxAge after the sign-in so that the Hub
+	// knows which provider to ask.
+	OIDCMaxAge = store.OIDCSessionMaxAge
+	// MaxIdle is the longest idle lifetime: a session_ttl above it acts as
+	// MaxIdle (an idle lifetime longer than the local cap means nothing).
+	MaxIdle = LocalMaxAge
+	// touchStep is the least move of the end that [Manager.Touch] writes, so
+	// that a burst of requests writes once.
+	touchStep = time.Minute
 )
 
 // csrfLabel separates the CSRF derivation from every other use of the token.
@@ -60,7 +87,15 @@ type Session struct {
 	// inside the insert transaction (F-07).
 	CredentialVersion  int64
 	MustChangePassword bool
-	ExpiresAt          time.Time
+	// ExpiresAt is the idle end of the session: the person's next request
+	// before it moves it to now plus the idle lifetime.
+	ExpiresAt time.Time
+	// CreatedAt is when the session was issued (the sign-in).
+	CreatedAt time.Time
+	// EndsAt is the absolute end of the session: [LocalMaxAge] or
+	// [OIDCMaxAge] after CreatedAt. Nothing renews a session past it. The
+	// cookie lives until then.
+	EndsAt time.Time
 	// CSRFToken is the token the browser must send in X-Minion-CSRF.
 	CSRFToken string
 	// AuthAt is when the server last checked a credential for this session
@@ -131,7 +166,17 @@ type Manager struct {
 	// actAs is the act-as port. It is nil when the store does not offer one,
 	// and then no session acts as another user.
 	actAs ActAsStore
+	// idle returns the idle lifetime; nil means [config.DefaultSessionTTL].
+	idle func(ctx context.Context) (time.Duration, error)
+	// idleMu guards the cached idle lifetime: every request needs it, and a
+	// panel change may take [idleCacheFor] to apply.
+	idleMu    sync.Mutex
+	idleVal   time.Duration
+	idleUntil time.Time
 }
+
+// idleCacheFor is how long [Manager.IdleTTL] keeps a resolved value.
+const idleCacheFor = 10 * time.Second
 
 // Option changes how [NewManager] builds a Manager. They exist for tests.
 type Option func(*Manager)
@@ -141,6 +186,42 @@ func WithClock(now func() time.Time) Option { return func(m *Manager) { m.now = 
 
 // WithRandom sets the source of cookie values.
 func WithRandom(r io.Reader) Option { return func(m *Manager) { m.rand = r } }
+
+// WithIdleTTL sets the source of the idle lifetime (the session_ttl setting,
+// resolved on every use so that a panel change applies at once).
+func WithIdleTTL(f func(ctx context.Context) (time.Duration, error)) Option {
+	return func(m *Manager) { m.idle = f }
+}
+
+// IdleTTL returns the idle lifetime of a session now, at most [MaxIdle]. A
+// source that fails gives [config.DefaultSessionTTL].
+func (m *Manager) IdleTTL(ctx context.Context) time.Duration {
+	if m.idle == nil {
+		return min(config.DefaultSessionTTL, MaxIdle)
+	}
+	now := m.now()
+	m.idleMu.Lock()
+	defer m.idleMu.Unlock()
+	if m.idleVal > 0 && now.Before(m.idleUntil) && !now.Before(m.idleUntil.Add(-idleCacheFor)) {
+		return m.idleVal
+	}
+	d, err := m.idle(ctx)
+	if err != nil || d <= 0 {
+		d = config.DefaultSessionTTL
+	}
+	d = min(d, MaxIdle)
+	m.idleVal, m.idleUntil = d, now.Add(idleCacheFor)
+	return d
+}
+
+// maxAge returns the absolute lifetime of a session with the given auth
+// method. It does not depend on the idle setting.
+func maxAge(method string) time.Duration {
+	if strings.HasPrefix(method, AuthMethodOIDCPrefix) {
+		return OIDCMaxAge
+	}
+	return LocalMaxAge
+}
 
 // NewManager returns a Manager on st.
 func NewManager(st Store, opts ...Option) *Manager {
@@ -217,6 +298,9 @@ func (m *Manager) CreateAuth(ctx context.Context, user store.UserRow, ttl time.D
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	hash, _ := HashToken(token)
 	now := m.now()
+	// The first idle end is clamped like every later one: to the longest idle
+	// lifetime and to the absolute cap.
+	ttl = min(ttl, MaxIdle, maxAge(auth.Method))
 	row := store.SessionRow{
 		ID:                m.newID(),
 		TokenHash:         hash,
@@ -239,6 +323,7 @@ func (m *Manager) CreateAuth(ctx context.Context, user store.UserRow, ttl time.D
 }
 
 func toSession(row store.SessionRow, u store.UserRow, token string) Session {
+	created := store.FromUnixMS(row.CreatedAt)
 	s := Session{
 		ID:                 row.ID,
 		UserID:             u.ID,
@@ -247,6 +332,8 @@ func toSession(row store.SessionRow, u store.UserRow, token string) Session {
 		CredentialVersion:  u.CredentialVersion,
 		MustChangePassword: u.MustChangePassword,
 		ExpiresAt:          store.FromUnixMS(row.ExpiresAt),
+		CreatedAt:          created,
+		EndsAt:             created.Add(maxAge(row.AuthMethod)),
 		CSRFToken:          CSRFToken(token),
 		AuthMethod:         row.AuthMethod,
 	}
@@ -271,14 +358,115 @@ func (m *Manager) Resolve(ctx context.Context, token string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !m.now().Before(store.FromUnixMS(row.ExpiresAt)) || !user.Active || user.Role == "" || row.CredentialVersion != user.CredentialVersion {
+	if !user.Active || user.Role == "" || row.CredentialVersion != user.CredentialVersion {
 		return nil, ErrNoSession
 	}
+	now := m.now()
 	s := toSession(row, user, token)
+	if !now.Before(s.EndsAt) {
+		return nil, ErrNoSession
+	}
+	// The idle end is never further away than the idle lifetime of now, nor
+	// past the absolute end: a session issued with a longer lifetime (a
+	// v0.20.4 row with its fixed 24 h, or one issued before an operator
+	// lowered session_ttl) is clamped on its first use, and the clamp is
+	// stored so that it holds from then on.
+	if limit := earliest(now.Add(m.IdleTTL(ctx)), s.EndsAt); s.ExpiresAt.After(limit) {
+		if err := m.shrink(ctx, s.ID, limit); err != nil {
+			return nil, err
+		}
+		s.ExpiresAt = limit
+	}
+	expired := !now.Before(s.ExpiresAt)
 	if err := m.attachActAs(ctx, &s, row, user); err != nil {
 		return nil, err
 	}
+	if expired {
+		return nil, &ExpiredError{Session: s}
+	}
 	return &s, nil
+}
+
+// ExpiredError is the error of [Manager.Resolve] for a session whose idle
+// lifetime ran out while everything else about it is still valid (the
+// account is active, has a role and kept its credentials, and the absolute
+// end is ahead). It matches [ErrNoSession] with errors.Is, so a caller that
+// does not look further treats it as "signed out". Session is the expired
+// session; it must never be used to serve a request (nothing renews it).
+type ExpiredError struct {
+	Session Session
+}
+
+func (e *ExpiredError) Error() string { return "session: the session expired" }
+
+// Is makes an ExpiredError match [ErrNoSession].
+func (e *ExpiredError) Is(target error) bool { return target == ErrNoSession }
+
+// ExtendStore is the optional persistence port of [Manager.Touch];
+// *store.Store offers it.
+type ExtendStore interface {
+	ExtendSession(ctx context.Context, sessionID string, expiresAt int64) (bool, error)
+}
+
+// ShrinkStore is the optional persistence port that moves the idle end of a
+// session earlier (see [Manager.Resolve]); *store.Store offers it.
+type ShrinkStore interface {
+	ShrinkSession(ctx context.Context, sessionID string, expiresAt int64) (bool, error)
+}
+
+var (
+	_ ExtendStore = (*store.Store)(nil)
+	_ ShrinkStore = (*store.Store)(nil)
+)
+
+func earliest(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+// shrink stores an earlier idle end; a store without [ShrinkStore] keeps
+// only the in-memory clamp.
+func (m *Manager) shrink(ctx context.Context, id string, end time.Time) error {
+	ss, ok := m.store.(ShrinkStore)
+	if !ok {
+		return nil
+	}
+	if _, err := ss.ShrinkSession(ctx, id, store.UnixMS(end)); err != nil {
+		return fmt.Errorf("session: clamp the idle end: %w", err)
+	}
+	return nil
+}
+
+// Touch records activity on s: the idle end moves to now plus the idle
+// lifetime, never past the absolute end. It writes only when the end moves
+// by at least a minute, so a burst of requests costs one write. A store
+// without [ExtendStore] makes it a no-op.
+func (m *Manager) Touch(ctx context.Context, s *Session) error {
+	return m.extend(ctx, s)
+}
+
+func (m *Manager) extend(ctx context.Context, s *Session) error {
+	es, ok := m.store.(ExtendStore)
+	if !ok || s == nil {
+		return nil
+	}
+	end := m.now().Add(m.IdleTTL(ctx))
+	if !s.EndsAt.IsZero() && end.After(s.EndsAt) {
+		end = s.EndsAt
+	}
+	if end.Sub(s.ExpiresAt) < touchStep {
+		return nil
+	}
+	if !end.After(s.ExpiresAt) {
+		return nil
+	}
+	if _, err := es.ExtendSession(ctx, s.ID, store.UnixMS(end)); err != nil {
+		return fmt.Errorf("session: extend: %w", err)
+	}
+	s.ExpiresAt = end
+	return nil
 }
 
 // Revoke deletes the session named by token. A token that names no session is
@@ -296,13 +484,21 @@ func (m *Manager) Revoke(ctx context.Context, token string) error {
 	return nil
 }
 
-// Cookie returns the session cookie for a freshly issued session.
+// Cookie returns the session cookie for a freshly issued session. It lives
+// until the absolute end of the session, not its idle end: the server decides
+// whether the session is still valid, and an OIDC session must still reach
+// the server after its idle end, so that the Hub can tell that it expired
+// (and, for OIDC, re-authenticate silently) instead of a plain sign-out.
 func Cookie(is Issued, secure bool) *http.Cookie {
+	exp := is.EndsAt
+	if exp.IsZero() {
+		exp = is.ExpiresAt
+	}
 	return &http.Cookie{
 		Name:     CookieName,
 		Value:    is.Token,
 		Path:     "/",
-		Expires:  is.ExpiresAt,
+		Expires:  exp,
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
