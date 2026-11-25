@@ -1456,6 +1456,10 @@ details.fold > summary:focus-visible { outline-offset: 2px; }
 .access-box { container-type: inline-size; }
 .access-scroll { overflow: auto; max-height: 75vh; border: 1px solid var(--border); border-radius: 6px; }
 .access-scroll:focus-visible { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }
+/* A matrix scroll box is the containing block of its cells' hidden words (.sr-only is position: absolute). A plain
+   cell is not positioned, so without this the words escape the box, keep their place in the wide table and widen
+   the whole page (D1 /access at 1920, D6 /access/control at 390): only the box may scroll sideways. */
+.access-scroll, .matrix-wrap { position: relative; }
 .access-matrix { border-collapse: separate; border-spacing: 0; white-space: nowrap; }
 .access-matrix :is(th, td) { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: center; }
 .access-matrix td { font-family: var(--font-mono); }

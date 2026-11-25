@@ -346,3 +346,22 @@ func TestAccessMatrixStylesWrapNames(t *testing.T) {
 		t.Error("the matrix block of minion.css cuts a name")
 	}
 }
+
+// The page never scrolls sideways (D1): the matrix box is the containing block
+// of the hidden words (.sr-only, position: absolute) in its plain cells, so
+// they stay inside the box that scrolls instead of widening the page.
+func TestAccessMatrixScrollsOnlyInsideItsBox(t *testing.T) {
+	rules := loadSheet(t)
+	box := el("div", "access-scroll", "tabindex", "0", "role", "region")
+	for _, w := range []int{1920, 1024} {
+		if got := valueIn(rules, "position", box, []cssEl{el("div", "access-box")}, w, w-300); got != "relative" {
+			t.Errorf("position of .access-scroll at %d px = %q, want relative", w, got)
+		}
+		if got := valueIn(rules, "overflow", box, []cssEl{el("div", "access-box")}, w, w-300); got != "auto" {
+			t.Errorf("overflow of .access-scroll at %d px = %q, want auto", w, got)
+		}
+	}
+	if got := valueAt(rules, "position", el("span", "sr-only"), []cssEl{box, el("table", "access-matrix"), el("td", "access-ok")}, 1920); got != "absolute" {
+		t.Errorf("position of .sr-only = %q: the containing-block rule above assumes absolute", got)
+	}
+}

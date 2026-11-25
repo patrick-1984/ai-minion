@@ -334,3 +334,18 @@ func TestAcceptUndoRestoresExactlyOrIsNotOffered(t *testing.T) {
 	_, body = postAccept(t, controlFixture(), "wT", "")
 	mustNotHave(t, body, ">Undo</button>")
 }
+
+// The control page fits a phone (D6): the matrix box, not the page, holds the
+// hidden words of the badges in its cells.
+func TestMinionControlMatrixScrollsOnlyInsideItsBox(t *testing.T) {
+	rules := loadSheet(t)
+	wrap := el("div", "matrix-wrap")
+	for _, w := range []int{390, 1440} {
+		if got := valueAt(rules, "position", wrap, nil, w); got != "relative" {
+			t.Errorf("position of .matrix-wrap at %d px = %q, want relative", w, got)
+		}
+		if got := valueAt(rules, "overflow", wrap, nil, w); got != "auto" {
+			t.Errorf("overflow of .matrix-wrap at %d px = %q, want auto", w, got)
+		}
+	}
+}
