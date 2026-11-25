@@ -186,8 +186,8 @@ func (g *apiGen) operation(op Op, method string, errRefs map[string]any) map[str
 		// Members the Hub sets itself; a caller must not send them.
 		o["x-minion-hidden-members"] = hidden
 	}
-	switch {
-	case method == "GET":
+	switch method {
+	case "GET":
 		o["operationId"] = op.Name + "_get"
 		// A GET request with the session cookie needs no CSRF header.
 		o["security"] = []any{map[string]any{"bearerApiKey": []any{}}, map[string]any{"sessionCookie": []any{}}}

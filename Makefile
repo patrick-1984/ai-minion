@@ -110,3 +110,5 @@ clean: ## Remove build output
 
 openapi: ## Write docs/api/openapi.json, the API description generated from the operation catalog (ops.OpenAPI)
 	go run ./scripts/openapi docs/api/openapi.json
+
+.PHONY: openapi
