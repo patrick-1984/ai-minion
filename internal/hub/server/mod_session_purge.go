@@ -106,6 +106,13 @@ func (p *sessionPurger) follow(ctx context.Context, sub *workers.Subscription) {
 func (p *sessionPurger) handle(ctx context.Context, ev workers.Event) {
 	switch ev.Type {
 	case workers.EventSessionRemoved:
+		// Grants first, with their audit rows (cause session_gone); the
+		// purge below then finds none of them left.
+		if n, err := p.st.EndGoneSessionGrants(ctx, ev.WorkerID, []string{ev.Session}, asOf(ev)); err != nil {
+			p.log.Error("end the grants of a gone session", "worker_id", ev.WorkerID, "error", err)
+		} else if n > 0 {
+			p.log.Info("a gone session lost its grants", "worker_id", ev.WorkerID, "session", ev.Session, "grants", n)
+		}
 		if n, err := p.st.PurgeGoneSessions(ctx, ev.WorkerID, []string{ev.Session}, asOf(ev)); err != nil {
 			p.log.Error("purge the control settings of a gone session", "worker_id", ev.WorkerID, "error", err)
 		} else if n > 0 {
@@ -151,6 +158,11 @@ func (p *sessionPurger) resynced(ctx context.Context, workerID string) {
 func asOf(ev workers.Event) int64 { return ev.Time.Time().UnixMilli() }
 
 func (p *sessionPurger) purgeNotIn(ctx context.Context, workerID string, live []string, at int64) {
+	if n, err := p.st.EndSessionGrantsNotIn(ctx, workerID, live, at); err != nil {
+		p.log.Error("end the grants of gone sessions", "worker_id", workerID, "error", err)
+	} else if n > 0 {
+		p.log.Info("gone sessions lost their grants", "worker_id", workerID, "grants", n)
+	}
 	if n, err := p.st.PurgeSessionsNotIn(ctx, workerID, live, at); err != nil {
 		p.log.Error("purge the control settings of gone sessions", "worker_id", workerID, "error", err)
 	} else if n > 0 {

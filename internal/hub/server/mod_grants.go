@@ -81,7 +81,7 @@ func initGrants(_ context.Context, env *Env) error {
 	started := false
 	env.OnStart(func(context.Context) error {
 		started = true
-		go func() { defer close(done); sweepExpiredGrants(run, st, grantSweepEvery) }()
+		go func() { defer close(done); sweepExpiredGrants(run, auditedExpiredGrants{st}, grantSweepEvery) }()
 		return nil
 	})
 	env.OnStop(func(stop context.Context) error {
