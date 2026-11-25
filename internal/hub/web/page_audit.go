@@ -1,7 +1,7 @@
 package web
 
 // Administration pages, part 4: the audit log (Story 6.8, AD-20). Events
-// are listed newest first, with filters (actor, action, time range) and
+// are listed newest first, with filters (actor, action, grant, time range) and
 // cursor paging. The page only reads: audit_list is the one operation, and no
 // event can be changed here.
 
@@ -24,6 +24,8 @@ var auditLimits = []int{25, 50, 100, 200}
 type AuditFilter struct {
 	Actor  string
 	Action string
+	// Grant is a session grant id: only the events of that grant.
+	Grant string
 	// From and To are dates ("2026-11-09") or RFC 3339 times, in UTC. From is
 	// inclusive; a date in To includes that whole day.
 	From  string
@@ -77,7 +79,8 @@ const errBadTime = auditError("Enter dates as 2026-11-09 or as an RFC 3339 time 
 func auditArgs(q url.Values) (ops.AuditListArgs, AuditFilter, error) {
 	f := AuditFilter{
 		Actor: strings.TrimSpace(q.Get("actor")), Action: strings.TrimSpace(q.Get("action")),
-		From: strings.TrimSpace(q.Get("from")), To: strings.TrimSpace(q.Get("to")),
+		Grant: strings.TrimSpace(q.Get("grant")),
+		From:  strings.TrimSpace(q.Get("from")), To: strings.TrimSpace(q.Get("to")),
 		Limit: ops.DefaultAuditListLimit,
 	}
 	if v := q.Get("limit"); v != "" {
@@ -87,7 +90,7 @@ func auditArgs(q url.Values) (ops.AuditListArgs, AuditFilter, error) {
 		}
 		f.Limit = n
 	}
-	args := ops.AuditListArgs{Actor: f.Actor, Action: f.Action, Cursor: strings.TrimSpace(q.Get("cursor")), Limit: f.Limit}
+	args := ops.AuditListArgs{Actor: f.Actor, Action: f.Action, GrantID: f.Grant, Cursor: strings.TrimSpace(q.Get("cursor")), Limit: f.Limit}
 	var err error
 	if args.From, err = parseAuditTime(f.From, false); err != nil {
 		return args, f, err
@@ -101,7 +104,7 @@ func auditArgs(q url.Values) (ops.AuditListArgs, AuditFilter, error) {
 // auditLink builds a link to the audit page with the filter and a cursor.
 func auditLink(f AuditFilter, cursor string) string {
 	q := url.Values{}
-	for k, v := range map[string]string{"actor": f.Actor, "action": f.Action, "from": f.From, "to": f.To, "cursor": cursor} {
+	for k, v := range map[string]string{"actor": f.Actor, "action": f.Action, "grant": f.Grant, "from": f.From, "to": f.To, "cursor": cursor} {
 		if v != "" {
 			q.Set(k, v)
 		}

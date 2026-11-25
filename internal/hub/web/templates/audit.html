@@ -10,6 +10,10 @@
     <input type="text" id="f-action" name="action" value="{{.Data.Filter.Action}}" autocomplete="off" spellcheck="false" maxlength="256">
   </div>
   <div class="field">
+    <label for="f-grant">Grant (id of a session grant)</label>
+    <input type="text" id="f-grant" name="grant" value="{{.Data.Filter.Grant}}" autocomplete="off" spellcheck="false" maxlength="64">
+  </div>
+  <div class="field">
     <label for="f-from">From (date or time, UTC)</label>
     {{$dateFrom := and (not .Data.Error) (or (eq .Data.Filter.From "") (eq (len .Data.Filter.From) 10))}}
     <input type="{{if $dateFrom}}date{{else}}text{{end}}" id="f-from" name="from" value="{{.Data.Filter.From}}" autocomplete="off" placeholder="e.g. 2026-11-01">
