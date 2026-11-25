@@ -1,32 +1,46 @@
+{{define "head_extra"}}<link rel="stylesheet" href="/static/access-matrix2.css">{{end}}
+
 {{define "content"}}
+{{$p := .Data}}
 <div class="page-head access-wide"><div><h1>Who reaches what</h1>
 <p>Which sessions can control sessions on other Workers right now, and which layer blocks a pair that was accepted. This page changes nothing.</p></div></div>
 <nav class="access-nav" aria-label="Access views"><a href="/access" aria-current="page">Who reaches what</a><a href="/access/grants">Grants</a><a href="/access/why">Why?</a></nav>
-<section class="panel" aria-labelledby="access-matrix-h" id="access-matrix" hx-get="/access" hx-select="#access-matrix" hx-swap="outerHTML">
+<p id="access-status" role="status" class="access-status"></p>
+<section class="panel" aria-labelledby="access-matrix-h" id="access-matrix">
   <div class="matrix-head"><h2 id="access-matrix-h">Matrix</h2>
-  <div class="matrix-tools"><span class="matrix-asof">As of {{.Data.AsOf}}</span>
-    <button type="button" class="btn btn-secondary" data-control="refresh" hx-get="/access" hx-target="#access-matrix" hx-disabled-elt="this" aria-label="Refresh the matrix">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button>
-    <button type="button" class="btn btn-secondary" data-access="print">Print</button></div></div>
-  {{if .Data.Empty}}<p class="muted">No session reaches another Worker yet. Master sessions and the Workers that accept them are set in <a href="/access/control">Minion control</a>.</p>{{else}}
-  <div class="settings-tools access-tools">
-    <label class="settings-filter"><span class="sr-only">Filter source sessions or Workers</span><input type="search" id="access-filter" placeholder="Filter source sessions or Workers" autocomplete="off" spellcheck="false"></label>
-  </div>
-  <p class="access-legend"><span class="sr-only">Legend: </span><span><b>V</b> View</span> <span><b>M</b> Message</span> <span><b>C</b> Control</span> <span><b>★</b> via master</span> <span><b>⊘</b> blocked</span> <span><b>·</b> none</span> <span><b>◇</b> Claimed</span> <span><b>◆</b> Verified</span></p>
+  <div class="matrix-tools"><span class="matrix-asof">As of {{$p.AsOf}}<span class="access-stale-note" hidden> (older than 5 minutes)</span></span>
+    <button type="button" id="access-refresh" class="btn btn-secondary" data-control="refresh" hx-get="{{$p.Self}}" hx-target="#access-matrix" hx-select="#access-matrix" hx-swap="outerHTML" hx-disabled-elt="this" aria-label="Refresh the matrix">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button>
+    <button type="button" class="btn btn-secondary" data-access="print">Print</button>{{if not $p.Empty}}
+    <a class="btn btn-secondary" href="{{$p.CSV}}" download="access.csv">CSV</a>{{end}}</div></div>
+  {{if $p.Empty}}<p class="muted">No session reaches another Worker yet. Master sessions and the Workers that accept them are set in <a href="/access/control">Minion control</a>.</p>{{else}}
+  <form id="access-form" method="get" action="/access" class="settings-tools access-tools access-form">
+    <label class="settings-filter"><span class="sr-only">Filter rows by session or Worker</span><input type="search" id="access-filter" name="q" value="{{$p.Q}}" placeholder="Filter rows by session or Worker" autocomplete="off" spellcheck="false"></label>
+    <label class="access-field">Owner <select name="owner"><option value="">all</option>{{range $p.Owners}}<option value="{{.}}"{{if eq . $p.Owner}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+    <label class="access-field"><input type="checkbox" name="access" value="1"{{if $p.OnlyAccess}} checked{{end}}> Only rows with access</label>
+    <fieldset class="access-dir"><legend class="sr-only">Direction</legend>
+      <label class="access-field"><input type="radio" name="dir" value="who"{{if not $p.Swap}} checked{{end}}> who → what</label>
+      <label class="access-field"><input type="radio" name="dir" value="what"{{if $p.Swap}} checked{{end}}> what ← who</label></fieldset>
+    {{range $p.GroupState}}<input type="hidden" name="g" value="{{.}}">{{end}}
+    <button type="submit" class="btn btn-secondary access-apply">Apply</button>
+  </form>
+  <p class="access-legend"><span class="sr-only">Legend: </span><span><b>V</b> View</span> <span><b>M</b> Message</span> <span><b>C</b> Control</span> <span><b>★</b> via master</span> <span><b>⊘</b> blocked</span> <span><b>·</b> none</span> <span><b>◇</b> Claimed</span> <span><b>◆</b> Verified</span> <span><b>3/6</b> collapsed Worker: sessions in effect</span></p>
+  {{if $p.NoRows}}<p class="muted access-norows">No row matches the filters. <a href="/access">Show every row</a></p>{{else}}
   <div class="access-box">
-  <div class="access-scroll" tabindex="0" role="region" aria-label="Who reaches what: sources in rows, targets in columns"><table class="access-matrix">
+  <div class="access-scroll" tabindex="0" role="region" aria-label="Who reaches what: {{if $p.Swap}}targets in rows, sources in columns{{else}}sources in rows, targets in columns{{end}}"><table class="access-matrix">
     <thead>
-      <tr><th scope="col" rowspan="2" class="corner">Source ↓ &nbsp;·&nbsp; Target →</th>{{range .Data.Columns}}<th scope="colgroup" colspan="{{len .Sessions}}" class="access-tw">{{.Worker}} <span class="muted matrix-owner">{{.Owner}}</span>{{if not .Online}} <span class="muted">(offline)</span>{{end}}</th>{{end}}</tr>
-      <tr>{{range .Data.Columns}}{{range $i, $s := .Sessions}}<th scope="col" class="access-ts{{if eq $i 0}} access-first{{end}}">{{$s}}</th>{{end}}{{end}}</tr>
+      <tr><th scope="col" rowspan="2" class="corner">{{if $p.Swap}}Target ↓ &nbsp;·&nbsp; Source →{{else}}Source ↓ &nbsp;·&nbsp; Target →{{end}}</th>{{range $p.Columns}}<th scope="colgroup" colspan="{{.Span}}" class="access-tw"><button type="submit" form="access-form" name="g" value="{{.Toggle}}" class="access-toggle" aria-expanded="{{.Open}}" aria-label="{{if .Open}}Collapse{{else}}Expand{{end}} {{.Worker}}">{{if .Open}}▾{{else}}▸{{end}}</button> <span class="access-name">{{.Worker}}</span> <span class="muted matrix-owner">{{.Owner}}</span>{{if not .Online}} <span class="muted">(offline)</span>{{end}}</th>{{end}}</tr>
+      <tr>{{range $p.Columns}}{{if .Open}}{{range $i, $s := .Sessions}}<th scope="col" class="access-ts{{if eq $i 0}} access-first{{end}}"><span class="access-name">{{$s.Session}}</span>{{if $s.Source}} {{if eq $s.Proof "verified"}}◆<span class="sr-only"> Verified</span>{{else}}◇<span class="sr-only"> Claimed</span>{{end}}{{end}}</th>{{end}}{{else}}<th scope="col" class="access-ts access-first access-agg">({{len .Sessions}})<span class="sr-only"> sessions of {{.Worker}}, collapsed</span></th>{{end}}{{end}}</tr>
     </thead>
-    {{range .Data.Groups}}<tbody>
-      <tr class="access-group"><th scope="rowgroup" colspan="1">{{.Worker}} <span class="muted matrix-owner">{{.Owner}}</span></th><td colspan="{{len (index .Rows 0).Cells}}"></td></tr>
-      {{$g := .}}{{range .Rows}}<tr data-filter="{{.Session}} {{$g.Worker}} {{$g.Owner}}"><th scope="row">{{.Session}} {{if eq .Proof "verified"}}<span class="badge plain access-proof">◆ Verified</span>{{else}}<span class="badge plain access-proof">◇ Claimed</span>{{end}}{{if .Master}} <span class="muted">master</span>{{end}}</th>
-        {{range .Cells}}{{if eq .Kind "ok"}}<td class="access-ok" title="{{.Title}}">{{if .Href}}<a href="{{.Href}}">{{end}}{{.Glyph}}<span class="sr-only"> {{.Spoken}}</span>{{if .Href}}</a>{{end}}</td>{{else if eq .Kind "blocked"}}<td class="access-blocked" title="Blocked: {{.Reason}}">{{if .Href}}<a href="{{.Href}}">{{end}}⊘<span class="sr-only"> blocked: {{.Reason}}</span>{{if .Href}}</a>{{end}}</td>{{else if eq .Kind "same"}}<td class="muted" title="same Worker: sessions of one Worker can already reach each other">=<span class="sr-only"> same Worker</span></td>{{else}}<td class="muted">·<span class="sr-only"> none</span></td>{{end}}{{end}}
+    {{range $p.Groups}}<tbody>
+      <tr class="access-group"><th scope="rowgroup" colspan="1"><span class="access-name">{{.Worker}}</span> <span class="muted matrix-owner">{{.Owner}}</span></th><td colspan="{{.Span}}"></td></tr>
+      {{range .Rows}}<tr data-filter="{{.Filter}}"><th scope="row"><span class="access-name">{{.Session}}</span>{{if .Source}} {{if eq .Proof "verified"}}<span class="badge plain access-proof">◆ Verified</span>{{else}}<span class="badge plain access-proof">◇ Claimed</span>{{end}}{{if .Master}} <span class="muted">master</span>{{end}}{{end}}</th>
+        {{range .Cells}}{{if eq .Kind "ok"}}<td data-pair="{{.Key}}" data-state="{{.State}}" class="access-ok" title="{{.Title}}">{{if .Href}}<a href="{{.Href}}">{{end}}{{.Glyph}}<span class="sr-only"> {{.Spoken}}</span>{{if .Href}}</a>{{end}}</td>{{else if eq .Kind "blocked"}}<td data-pair="{{.Key}}" data-state="{{.State}}" class="access-blocked" title="Blocked: {{.Reason}}">{{if .Href}}<a href="{{.Href}}">{{end}}⊘<span class="sr-only"> blocked: {{.Reason}}</span>{{if .Href}}</a>{{end}}</td>{{else if eq .Kind "agg"}}<td data-agg="{{.Key}}" data-state="{{.State}}" class="access-agg{{if .Reason}} access-ok{{else}} muted{{end}}" title="{{.Title}}">{{.Glyph}}<span class="sr-only"> {{.Spoken}}</span></td>{{else if eq .Kind "same"}}<td class="muted" title="same Worker: sessions of one Worker can already reach each other">=<span class="sr-only"> same Worker</span></td>{{else}}<td data-pair="{{.Key}}" data-state="none" class="muted">·<span class="sr-only"> none</span></td>{{end}}{{end}}
       </tr>{{end}}
     </tbody>{{end}}
   </table></div>
-  <ul class="access-list">{{range .Data.Groups}}{{$g := .}}{{range .Rows}}<li data-filter="{{.Session}} {{$g.Worker}} {{$g.Owner}}"><strong>{{.Session}}</strong> on {{$g.Worker}} <span class="muted">{{$g.Owner}}</span> {{if eq .Proof "verified"}}◆ Verified{{else}}◇ Claimed{{end}}{{if .Master}} master{{end}}<br>{{if .Reach}}reaches: {{.Reach}}{{else}}reaches: nothing now{{end}}</li>{{end}}{{end}}</ul>
-  </div>{{end}}
+  <ul class="access-list">{{range $p.List}}<li data-filter="{{.Filter}}"><strong class="access-name">{{.Session}}</strong> on <span class="access-name">{{.Worker}}</span> <span class="muted">{{.Owner}}</span> {{if eq .Proof "verified"}}◆ Verified{{else}}◇ Claimed{{end}}{{if .Master}} master{{end}}
+    {{if .Pairs}}<ul class="access-pairs">{{range .Pairs}}<li data-pair="{{.Key}}" data-state="{{.State}}">{{if .Href}}<a href="{{.Href}}">{{end}}{{.Source}} → {{.Target}}: {{if .Reason}}blocked, {{.Reason}}{{else}}{{.Level}}{{end}}{{if .Href}}</a>{{end}} <span class="muted">{{.Via}}{{if .Reason}}, granted {{.Granted}}{{end}}</span></li>{{end}}</ul>{{else}}<p class="muted access-pairs">reaches nothing now</p>{{end}}</li>{{end}}</ul>
+  </div>{{end}}{{end}}
   <p class="help">Sessions on the same Worker are not governed here: every session of a Worker can already reach the others on that host.</p>
 </section>
 <script src="/static/access.js" defer></script>

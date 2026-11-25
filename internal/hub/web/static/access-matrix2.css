@@ -1,0 +1,43 @@
+/* Access matrix, second layer: the toolbar form, collapsible Worker groups,
+   the long list of pairs, the marks after a Refresh and names that wrap.
+   The page links this file BEFORE minion.css, so every rule that changes a
+   rule of minion.css carries the id of the section to win the cascade. */
+
+/* toolbar: a plain GET form */
+#access-matrix .access-form { justify-content: flex-start; gap: 8px 20px; }
+.access-field { display: inline-flex; align-items: center; gap: 6px; }
+.access-dir { display: inline-flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
+
+/* the live region above the matrix: no height while it is empty */
+.access-status { margin: 0 0 8px; color: var(--muted); font-size: 0.875rem; }
+.access-status:empty { display: none; }
+
+/* "As of" older than five minutes: the warning tone and a note in words */
+.matrix-tools .matrix-asof.access-stale { color: var(--warning); font-weight: 600; }
+
+/* a Worker group on the column axis: the button that opens or collapses it */
+.access-toggle { min-width: 24px; min-height: 24px; padding: 0 4px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--surface); color: inherit; font: inherit; line-height: 1; cursor: pointer; }
+.access-toggle:hover { background: var(--surface-subtle); }
+.access-toggle:focus-visible { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }
+#access-matrix .access-matrix .access-agg { font-family: var(--font-mono); }
+
+/* names are never cut: a name keeps its line up to 28 characters and wraps
+   after that, at any character if it must; nothing is hidden or shortened */
+.access-name { display: inline-block; width: max-content; max-width: 28ch; white-space: normal; overflow-wrap: anywhere;
+  vertical-align: top; text-align: left; }
+#access-matrix .access-matrix :is(th, td) { overflow: visible; text-overflow: clip; }
+#access-matrix .access-list .access-name { display: inline; width: auto; max-width: none; }
+
+/* a cell that changed with the last Refresh: a frame and a dot, not colour alone */
+#access-matrix .access-changed { outline: 2px solid var(--warning); outline-offset: -2px; }
+#access-matrix .access-changed::after { content: " \2022"; color: var(--warning); }
+
+/* the long form under 700 px of container width: every pair, by source */
+#access-matrix .access-list li { overflow-wrap: anywhere; }
+.access-pairs { margin: 4px 0 0; padding: 0 0 0 16px; list-style: none; }
+#access-matrix .access-pairs li { padding: 4px 0; border-bottom: 0; }
+
+@media print {
+  .access-status, .access-toggle { display: none; }
+}
