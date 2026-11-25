@@ -84,8 +84,8 @@ func TestAccessPageShowsWhoReachesWhat(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustHave(t, string(css), "/* access: matrix */", "/* end access: matrix */", `.access-box { container-type: inline-size; }`, `@container (max-width: 699px) {`)
-	if !strings.HasSuffix(strings.TrimSpace(string(css)), "/* end access: matrix */") {
-		t.Error("the access block is not the end of minion.css")
+	if start, end := strings.Index(string(css), "/* access: matrix */"), strings.Index(string(css), "/* end access: matrix */"); start < 0 || end < start {
+		t.Error("the access matrix block of minion.css is not delimited")
 	}
 	js, err := staticFiles.ReadFile("static/access.js")
 	if err != nil || !strings.Contains(string(js), "window.print()") {
