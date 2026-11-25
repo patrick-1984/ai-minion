@@ -336,7 +336,7 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 			return none, nil, NewError(proto.CodeInvalidArgument, "the source and the target of a grant cannot be changed")
 		}
 		ownsBoth := src.OwnerID == p.UserID && tgt.OwnerID == p.UserID
-		if !admin && !(cur.Authority == store.GrantAuthorityOwner && ownsBoth) {
+		if !admin && (cur.Authority != store.GrantAuthorityOwner || !ownsBoth) {
 			return none, nil, NewError(proto.CodeForbidden, "not allowed")
 		}
 		if cur.SuspendedAt != nil {
