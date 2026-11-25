@@ -1,6 +1,8 @@
 package web
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,15 +35,17 @@ func TestAccessGrantsPageListsGrantsForEveryUser(t *testing.T) {
 	mustHave(t, body, `<div class="page-head access-wide">`, `<h1>Access</h1>`, `class="rtable grant-table"`,
 		`<tr id="grant-g1" data-filter=`, `<strong>wb-4</strong> @ work&lt;b&gt;`, `<strong>wb-3</strong> @ coder`,
 		"Claimed: this session is named by its Worker. Any program running as that Worker's OS user can use this grant.",
-		`>Verified</span>`, "all shared sessions of anna-laptop", `<span class="badge" data-tone="positive">In effect</span>`,
-		`<span class="badge" data-tone="danger">Suspended: needs an administrator</span>`,
+		`>Verified</span>`, "all shared sessions of anna-laptop", `<span class="badge" data-tone="info">Active</span>`,
+		`<span class="badge" data-tone="danger">Suspended</span>`, `<th scope="col">State</th><th scope="col">In effect</th>`,
 		`alice <span class="muted">owner</span>`, `root <span class="muted">administrator</span>`, `<td data-label="Until">no end</td>`,
 		`<tr id="grant-g2" data-filter="ci work&lt;b&gt; alice  anna-laptop anna control root" data-between="1" data-off="1">`,
-		`hx-post="/access/grants/set-level" hx-target="closest tr" hx-swap="outerHTML" hx-sync="closest tr:replace" hx-disabled-elt="find button"`,
+		`hx-post="/access/grants/set-level" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button"`,
+		`id="grant-g1-level"`, `id="grant-g1-save"`, `id="grant-g1-revoke"`, `id="grant-g2-approve"`, `<div id="grant-status" class="grant-page-status" aria-live="polite"></div>`,
+		`<link rel="stylesheet" href="/static/access-grants.css">`,
 		`name="if_revision" value="7"`, `<option value="message">Message</option>`,
 		`hx-post="/access/grants/approve"`, `hx-post="/access/grants/revoke"`,
-		`<tbody id="grant-rows" hx-get="/access/grants" hx-select="#grant-rows" hx-swap="outerHTML" hx-trigger="grants-changed from:body">`,
-		`<dialog id="grant-dialog"`, `<details class="panel grant-add" id="grant-add">`, `id="grant-only-between"`, `id="grant-only-off"`,
+		`<tbody id="grant-rows" hx-get="/access/grants" hx-select="#grant-rows" hx-swap="outerHTML" hx-trigger="grants-changed from:body" hx-sync="#grant-panel:queue last">`,
+		`<dialog id="grant-dialog"`, `<details class="panel grant-add" id="grant-add" hidden>`, `id="grant-only-between"`, `id="grant-only-off"`,
 		`<script src="/static/access-grants.js" defer></script>`, `href="/access/grants"`)
 	mustNotHave(t, body, "work<b>", "hx-trigger=\"change\"")
 
@@ -86,7 +90,7 @@ func TestAccessGrantRevokeSendsTheRevisionAndAnswersTheRow(t *testing.T) {
 	if !strings.HasPrefix(body, `<tr id="grant-g1"`) {
 		t.Fatalf("the answer is not the row: %s", body)
 	}
-	mustHave(t, body, `<p class="grant-status" role="status">Revoked</p>`)
+	mustHave(t, body, `class="grant-status" role="status">Revoked</p>`)
 
 	// No longer listed: a row that says so takes its place.
 	f = newFakeOps().reply(ops.OpGrantList, ops.GrantListResult{}).reply(ops.OpGrantRevoke, ops.WriteResult{Outcome: ops.OutcomeDelivered})
@@ -100,7 +104,7 @@ func TestAccessGrantSetLevelCallsGrantSetAndShowsAConflictInTheRow(t *testing.T)
 	f := newFakeOps().reply(ops.OpGrantList, grantFixture()).reply(ops.OpGrantSet, ops.GrantSetResult{Outcome: ops.OutcomeDelivered})
 	connect(t, f)
 	form := url.Values{"id": {"g1"}, "if_revision": {"3"}, "level": {"control"}, "source_worker_id": {"wA"}, "source_session": {"wb-4"},
-		"target_worker_id": {"wB"}, "target_session": {"wb-3"}}
+		"target_worker_id": {"wB"}, "target_session": {"wb-3"}, "confirm": {"1"}}
 	rec := post(t, adminServer(t), pathAccessGrants+"/set-level", userHeader, form)
 	calls := f.called(ops.OpGrantSet)
 	if len(calls) != 1 || calls[0].Args["id"] != "g1" || calls[0].Args["if_revision"] != float64(3) || calls[0].Args["level"] != "control" ||
@@ -118,7 +122,7 @@ func TestAccessGrantSetLevelCallsGrantSetAndShowsAConflictInTheRow(t *testing.T)
 	})
 	connect(t, f)
 	body := post(t, adminServer(t), pathAccessGrants+"/set-level", userHeader, form).Body.String()
-	mustHave(t, body, `<tr id="grant-g1"`, `<p class="grant-status grant-error" role="alert">Changed by someone else. This is the current state.</p>`,
+	mustHave(t, body, `<tr id="grant-g1"`, `class="grant-status grant-error" role="alert">Changed by someone else. This is the current state.</p>`,
 		`hx-post="/access/grants/revoke"`)
 	mustNotHave(t, body, `role="status">Saved`)
 
@@ -150,7 +154,7 @@ func TestAccessGrantAddPostsGrantSetWithTheChosenMembers(t *testing.T) {
 	// The dialog lists the live sessions; a user starts only from an own Worker.
 	admin := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, admin, `<option value="w1|fix-tests" data-worker="w1">fix-tests @ laptop</option>`,
-		`<option value="">every shared session of this Worker</option>`, `<input type="radio" name="level" value="message">`,
+		`<input type="radio" name="level" id="grant-add-level-message" value="message">`,
 		`name="until" value="30"`, `hx-post="/access/grants/add" hx-target="#grant-add-result"`)
 	user := get(t, s, pathAccessGrants, "X-Test-Session", userHeader).Body.String()
 	_, sources, _ := strings.Cut(user, `name="source_worker_id"`)
@@ -159,8 +163,29 @@ func TestAccessGrantAddPostsGrantSetWithTheChosenMembers(t *testing.T) {
 	mustNotHave(t, sources, `value="w1"`)
 
 	before := time.Now().UTC()
-	rec := post(t, s, pathAccessGrants+"/add", adminHeader, url.Values{"source_worker_id": {"w1"}, "source_session": {"w1|fix-tests"},
-		"target_worker_id": {"w2"}, "target_session": {""}, "level": {"control"}, "until": {"7"}, "note": {" for the build "}})
+	add := url.Values{"source_worker_id": {"w1"}, "source_session": {"w1|fix-tests"},
+		"target_worker_id": {"w2"}, "target_scope": {"all"}, "target_session": {""}, "level": {"control"}, "until": {"7"}, "note": {" for the build "}}
+	// Control on every shared session of another owner: the first post only asks.
+	rec := post(t, s, pathAccessGrants+"/add", adminHeader, add)
+	if len(f.called(ops.OpGrantSet)) != 0 || rec.Header().Get("HX-Trigger") != "" {
+		t.Fatalf("an unconfirmed broad grant was sent: %s", rec.Body)
+	}
+	mustHave(t, rec.Body.String(), "fix-tests on laptop (alice) will get Control: it can see, send prompts to and type into every session that buildbox (bob) shares, now and later, for 7 days.",
+		`<input type="hidden" name="confirm" value="1">`, `id="grant-add-confirm-button">Confirm and add</button>`)
+	_, key, _ := strings.Cut(rec.Body.String(), `name="confirm_for" value="`)
+	key, _, _ = strings.Cut(key, `"`)
+	// A confirmation of other values does not count.
+	other := url.Values{"confirm": {"1"}, "confirm_for": {key}}
+	for k, v := range add {
+		other[k] = v
+	}
+	other.Set("source_session", "w1|other")
+	if post(t, s, pathAccessGrants+"/add", adminHeader, other); len(f.called(ops.OpGrantSet)) != 0 {
+		t.Fatal("a confirmation was accepted for changed values")
+	}
+	add.Set("confirm", "1")
+	add.Set("confirm_for", key)
+	rec = post(t, s, pathAccessGrants+"/add", adminHeader, add)
 	calls := f.called(ops.OpGrantSet)
 	if len(calls) != 1 {
 		t.Fatalf("calls = %+v (%s)", calls, rec.Body)
@@ -185,15 +210,232 @@ func TestAccessGrantAddPostsGrantSetWithTheChosenMembers(t *testing.T) {
 	})
 	connect(t, f)
 	rec = post(t, s, pathAccessGrants+"/add", userHeader, url.Values{"source_worker_id": {"w2"}, "source_session": {"w2|ci"},
-		"target_worker_id": {"w1"}, "target_session": {"w1|fix-tests"}, "level": {"view"}})
+		"target_worker_id": {"w1"}, "target_scope": {"one"}, "target_session": {"w1|fix-tests"}, "level": {"view"}, "confirm": {"1"},
+		"confirm_for": {grantConfirmKeyForTest("w2", "ci", "w1", "one", "fix-tests", "view", "")}})
 	mustHave(t, rec.Body.String(), `<p class="form-error" role="alert">you do not own that Worker</p>`)
 	if rec.Header().Get("HX-Trigger") != "" {
 		t.Error("a refused grant reloads the list")
 	}
 	rec = post(t, s, pathAccessGrants+"/add", userHeader, url.Values{"source_worker_id": {"w2"}, "source_session": {"w1|fix-tests"},
-		"target_worker_id": {"w1"}, "level": {"view"}})
+		"target_worker_id": {"w1"}, "target_scope": {"all"}, "level": {"view"}})
 	mustHave(t, rec.Body.String(), "The source session is not on the chosen source Worker.")
 	if len(f.called(ops.OpGrantSet)) != 1 {
 		t.Error("a mismatched session reached the Hub")
+	}
+}
+
+func grantConfirmKeyForTest(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+// The target is never chosen for the user: no preselected wildcard on the
+// page, and the server refuses an Add without the explicit choice.
+func TestAccessGrantAddNeedsAnExplicitTargetChoice(t *testing.T) {
+	f := newFakeOps().reply(ops.OpGrantList, grantFixture()).reply(ops.OpGrantSet, ops.GrantSetResult{Outcome: ops.OutcomeDelivered})
+	connect(t, f)
+	wDesk := WorkerRow{ID: "w3", Name: "desk", Owner: "alice", Kind: ops.WorkerKindPrivate, Online: true}
+	sDesk := SessionRow{WorkerID: "w3", Worker: "desk", Owner: "alice", Name: "notes", Kind: "shell", Online: true}
+	d := Dashboard{Workers: []WorkerRow{wPrivate, wInfra, wDesk}, Sessions: []SessionRow{sAgent, sShell, sDesk}}
+	s, _ := listServer(t, d, d)
+	page := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
+	_, target, _ := strings.Cut(page, `name="target_worker_id"`)
+	target, _, _ = strings.Cut(target, `grant-levels`)
+	mustHave(t, target, `<input type="radio" name="target_scope" id="grant-add-scope-one" value="one" required> One session`,
+		`<input type="radio" name="target_scope" id="grant-add-scope-all" value="all" required> Every shared session of this Worker`,
+		`<select name="target_session" id="grant-add-target-session">
+      <option value="">Choose a session</option>`)
+	mustNotHave(t, target, "checked", `<option value="">every shared session`, " selected")
+	// No native post: the session check wants a header a plain form cannot send.
+	mustHave(t, page, `<noscript><p class="muted">Adding or changing a grant needs scripts`, `<form id="grant-add-form" class="grant-form" hx-post="/access/grants/add"`)
+	mustNotHave(t, page, `method="post"`, `action="/access/grants/add"`)
+
+	base := url.Values{"source_worker_id": {"w1"}, "source_session": {"w1|fix-tests"}, "target_worker_id": {"w3"}, "level": {"view"}}
+	rec := post(t, s, pathAccessGrants+"/add", adminHeader, base)
+	mustHave(t, rec.Body.String(), "Choose the target: one session, or every shared session of the target Worker.")
+	base.Set("target_scope", "one")
+	rec = post(t, s, pathAccessGrants+"/add", adminHeader, base)
+	mustHave(t, rec.Body.String(), "Choose the target session.")
+	base.Set("target_scope", "every")
+	post(t, s, pathAccessGrants+"/add", adminHeader, base)
+	if n := len(f.called(ops.OpGrantSet)); n != 0 {
+		t.Fatalf("an Add without an explicit target reached the Hub %d times", n)
+	}
+
+	// View for one session of the same owner needs no second step.
+	base.Set("target_scope", "one")
+	base.Set("target_session", "w3|notes")
+	rec = post(t, s, pathAccessGrants+"/add", adminHeader, base)
+	calls := f.called(ops.OpGrantSet)
+	if len(calls) != 1 || calls[0].Args["target_session"] != "notes" || rec.Header().Get("HX-Trigger") != "grants-changed" {
+		t.Fatalf("calls = %+v (%s)", calls, rec.Body)
+	}
+	// Message for one session of the same owner: none either. Control, a
+	// wildcard and another owner each ask first.
+	for _, c := range []struct {
+		level, worker, scope, session string
+		confirm                       bool
+	}{
+		{"message", "w3", "one", "w3|notes", false},
+		{"control", "w3", "one", "w3|notes", true},
+		{"view", "w3", "all", "", true},
+		{"view", "w2", "one", "w2|ci", true},
+	} {
+		before := len(f.called(ops.OpGrantSet))
+		rec = post(t, s, pathAccessGrants+"/add", adminHeader, url.Values{"source_worker_id": {"w1"}, "source_session": {"w1|fix-tests"},
+			"target_worker_id": {c.worker}, "target_scope": {c.scope}, "target_session": {c.session}, "level": {c.level}})
+		asked := strings.Contains(rec.Body.String(), `id="grant-add-confirm"`)
+		if sent := len(f.called(ops.OpGrantSet)) > before; asked != c.confirm || sent == c.confirm {
+			t.Errorf("%+v: asked %v, sent %v", c, asked, sent)
+		}
+	}
+}
+
+func TestAccessGrantSetLevelAsksBeforeItWidens(t *testing.T) {
+	f := newFakeOps().reply(ops.OpGrantList, grantFixture()).reply(ops.OpGrantSet, ops.GrantSetResult{Outcome: ops.OutcomeDelivered})
+	connect(t, f)
+	s := adminServer(t)
+	rec := post(t, s, pathAccessGrants+"/set-level", userHeader, url.Values{"id": {"g1"}, "if_revision": {"3"}, "level": {"control"}})
+	if len(f.called(ops.OpGrantSet)) != 0 {
+		t.Fatal("Control was set without the second step")
+	}
+	mustHave(t, rec.Body.String(), `<tr id="grant-g1"`,
+		"wb-4 on work&lt;b&gt; (alice) will get Control: it can see, send prompts to and type into the session wb-3 on coder (alice), with no end.",
+		`<input type="hidden" name="level" value="control"><input type="hidden" name="confirm" value="1">`, `id="grant-g1-confirm">Confirm</button>`,
+		`hx-post="/access/grants/show"`, `id="grant-g1-cancel">Cancel</button>`)
+	mustNotHave(t, rec.Body.String(), `id="grant-g1-save"`)
+	// Cancel answers the row and writes nothing.
+	rec = post(t, s, pathAccessGrants+"/show", userHeader, url.Values{"id": {"g1"}})
+	mustHave(t, rec.Body.String(), `<tr id="grant-g1"`, `id="grant-g1-save"`)
+	// Message for one session of the same owner needs no second step; the
+	// change is built from the listed grant, not from the form.
+	post(t, s, pathAccessGrants+"/set-level", userHeader, url.Values{"id": {"g1"}, "if_revision": {"3"}, "level": {"message"}, "target_session": {"evil"}})
+	calls := f.called(ops.OpGrantSet)
+	if len(calls) != 1 || calls[0].Args["level"] != "message" || calls[0].Args["target_session"] != "wb-3" || calls[0].Args["source_worker_id"] != "wA" {
+		t.Fatalf("calls = %+v", calls)
+	}
+	// A stale revision is a conflict before anything is sent.
+	rec = post(t, s, pathAccessGrants+"/set-level", userHeader, url.Values{"id": {"g1"}, "if_revision": {"2"}, "level": {"view"}})
+	mustHave(t, rec.Body.String(), grantConflictText)
+	if len(f.called(ops.OpGrantSet)) != 1 {
+		t.Error("a stale row was sent")
+	}
+}
+
+func TestAccessGrantRowActionsNeedTheGrantAndItsRevision(t *testing.T) {
+	f := newFakeOps().reply(ops.OpGrantList, grantFixture()).reply(ops.OpGrantSet, ops.GrantSetResult{}).
+		reply(ops.OpGrantRevoke, ops.WriteResult{}).reply(ops.OpGrantApprove, ops.GrantSetResult{})
+	connect(t, f)
+	s := adminServer(t)
+	for _, c := range []struct {
+		action string
+		form   url.Values
+	}{
+		{"revoke", url.Values{"id": {"g1"}}},
+		{"revoke", url.Values{"id": {"g1"}, "if_revision": {"abc"}}},
+		{"revoke", url.Values{"id": {"g1"}, "if_revision": {"0"}}},
+		{"revoke", url.Values{"if_revision": {"3"}}},
+		{"approve", url.Values{"id": {"g2"}, "if_revision": {"-1"}}},
+		{"set-level", url.Values{"if_revision": {"3"}, "level": {"view"}, "confirm": {"1"}}},
+		{"set-level", url.Values{"id": {"g1"}, "level": {"view"}, "confirm": {"1"}}},
+	} {
+		rec := post(t, s, pathAccessGrants+"/"+c.action, adminHeader, c.form)
+		if rec.Header().Get("HX-Retarget") != "#grant-status" || rec.Header().Get("HX-Reswap") != "innerHTML" || strings.Contains(rec.Body.String(), "<tr") {
+			t.Errorf("%s %v: the answer would replace the row: %v %s", c.action, c.form, rec.Header(), rec.Body)
+		}
+		mustHave(t, rec.Body.String(), "Nothing was changed", "data-grant-reload")
+	}
+	if n := len(f.called(ops.OpGrantSet)) + len(f.called(ops.OpGrantRevoke)) + len(f.called(ops.OpGrantApprove)); n != 0 {
+		t.Fatalf("%d writes without a grant id or revision", n)
+	}
+}
+
+func TestAccessGrantFailedReadbackKeepsTheRow(t *testing.T) {
+	f := newFakeOps().reply(ops.OpGrantRevoke, ops.WriteResult{Outcome: ops.OutcomeDelivered}).on(ops.OpGrantList, func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 503, Code: "unavailable", Message: "the Hub is busy"}
+	})
+	connect(t, f)
+	rec := post(t, adminServer(t), pathAccessGrants+"/revoke", userHeader, url.Values{"id": {"g1"}, "if_revision": {"3"}})
+	if rec.Code != 200 || rec.Header().Get("HX-Retarget") != "#grant-status" || rec.Header().Get("HX-Trigger") != `{"grant-unconfirmed":{"id":"g1"}}` {
+		t.Fatalf("answer = %d %v", rec.Code, rec.Header())
+	}
+	mustHave(t, rec.Body.String(), "The change was sent, but the list could not be read after it", "Reload the list")
+	mustNotHave(t, rec.Body.String(), "<tr")
+	js := get(t, adminServer(t), "/static/access-grants.js").Body.String()
+	mustHave(t, js, `"grant-unconfirmed"`, "data-unconfirmed", "htmx:afterSwap", "restoreFocus()", "focusin", `t.id === "grant-rows"`)
+}
+
+func TestAccessGrantInEffectComesFromTheMatrix(t *testing.T) {
+	list := grantFixture()
+	list.Grants[1].Suspended, list.Grants[1].State = false, ops.GrantStateActive
+	matrix := ops.AccessMatrixResult{
+		Sources: []ops.AccessSource{{WorkerID: "wA", Session: "wb-4"}, {WorkerID: "wA", Session: "ci"}},
+		Targets: []ops.AccessTarget{{WorkerID: "wB", Session: "wb-3"}, {WorkerID: "wC", Session: "a"}, {WorkerID: "wC", Session: "b"}},
+		Cells: []ops.AccessCell{
+			{Source: 0, Target: 0, Granted: "view", Via: "g1", BlockedBy: ops.AccessBlockedNotShared},
+			{Source: 1, Target: 1, Granted: "control", InEffect: "control", Via: "g2"},
+			{Source: 1, Target: 2, Granted: "control", Via: "g2", BlockedBy: ops.AccessBlockedWorkerOffline},
+			{Source: 9, Target: 0, Via: "g1", InEffect: "control"},
+		},
+	}
+	f := newFakeOps().reply(ops.OpGrantList, list).reply(ops.OpAccessMatrix, matrix)
+	connect(t, f)
+	body := get(t, adminServer(t), pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
+	g1, g2, _ := strings.Cut(body, `<tr id="grant-g2"`)
+	// Active is the stored state; the matrix says that g1 does not work.
+	mustHave(t, g1, `data-tone="info">Active</span>`, `<td data-label="In effect"><span class="chip grant-blocked" title="Blocked by: the session is not shared">Blocked: the session is not shared</span></td>`)
+	mustHave(t, g2, `<td data-label="In effect">Control on 1 of 2 sessions</td>`)
+
+	// Without the matrix nothing claims an effect; a suspended grant is blocked anyway.
+	connect(t, newFakeOps().reply(ops.OpGrantList, grantFixture()))
+	body = get(t, adminServer(t), pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
+	g1, g2, _ = strings.Cut(body, `<tr id="grant-g2"`)
+	mustHave(t, g1, `data-tone="info">Active</span>`, `title="The Hub could not say whether this grant works now.">unknown</span>`)
+	mustHave(t, g2, `Blocked: the grant is suspended`)
+	mustNotHave(t, body, ">In effect</span>")
+}
+
+func TestAccessGrantConflictsKeepTheirOwnWords(t *testing.T) {
+	refuse := func(msg string) func(map[string]any) (any, error) {
+		return func(map[string]any) (any, error) { return nil, &OpError{Status: 409, Code: "conflict", Message: msg} }
+	}
+	f := newFakeOps().reply(ops.OpGrantList, grantFixture()).on(ops.OpGrantApprove, refuse("both Workers must be approved")).
+		on(ops.OpGrantRevoke, refuse("the grant was changed meanwhile; reload and decide again")).
+		on(ops.OpGrantSet, refuse("a grant for this source and target exists already"))
+	connect(t, f)
+	d := Dashboard{Workers: []WorkerRow{wPrivate, wInfra}, Sessions: []SessionRow{sAgent, sShell}}
+	s, _ := listServer(t, d, d)
+	body := post(t, s, pathAccessGrants+"/approve", adminHeader, url.Values{"id": {"g2"}, "if_revision": {"7"}}).Body.String()
+	mustHave(t, body, `<tr id="grant-g2"`, `role="alert">both Workers must be approved</p>`)
+	mustNotHave(t, body, grantConflictText)
+	body = post(t, s, pathAccessGrants+"/revoke", adminHeader, url.Values{"id": {"g1"}, "if_revision": {"3"}}).Body.String()
+	mustHave(t, body, `<tr id="grant-g1"`, grantConflictText)
+	// Add has no revision: a duplicate is named as one.
+	body = post(t, s, pathAccessGrants+"/add", adminHeader, url.Values{"source_worker_id": {"w1"}, "source_session": {"w1|fix-tests"},
+		"target_worker_id": {"w2"}, "target_scope": {"one"}, "target_session": {"w2|ci"}, "level": {"view"}, "confirm": {"1"},
+		"confirm_for": {grantConfirmKeyForTest("w1", "fix-tests", "w2", "one", "ci", "view", "")}}).Body.String()
+	mustHave(t, body, "a grant for this source and target exists already")
+	mustNotHave(t, body, grantConflictText)
+}
+
+func TestAccessGrantMaskedRowOffersOnlyRevoke(t *testing.T) {
+	list := grantFixture()
+	list.Grants[1].TargetSession, list.Grants[1].TargetMasked = "a session of anna", true
+	list.Grants[1].Suspended, list.Grants[1].State = false, ops.GrantStateActive
+	f := newFakeOps().reply(ops.OpGrantList, list).reply(ops.OpGrantSet, ops.GrantSetResult{}).reply(ops.OpGrantRevoke, ops.WriteResult{})
+	connect(t, f)
+	s := adminServer(t)
+	body := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
+	_, g2, _ := strings.Cut(body, `<tr id="grant-g2"`)
+	mustHave(t, g2, `<strong>a session of anna</strong> @ anna-laptop`, `hx-post="/access/grants/revoke"`, `id="grant-g2-revoke"`, "only Revoke")
+	mustNotHave(t, g2, "/access/grants/set-level", "/access/grants/approve", `id="grant-g2-level"`)
+	rec := post(t, s, pathAccessGrants+"/set-level", adminHeader, url.Values{"id": {"g2"}, "if_revision": {"7"}, "level": {"view"}, "confirm": {"1"}})
+	mustHave(t, rec.Body.String(), `<tr id="grant-g2"`, "it can only be revoked")
+	if len(f.called(ops.OpGrantSet)) != 0 {
+		t.Error("a masked grant was changed")
+	}
+	post(t, s, pathAccessGrants+"/revoke", adminHeader, url.Values{"id": {"g2"}, "if_revision": {"7"}})
+	if len(f.called(ops.OpGrantRevoke)) != 1 {
+		t.Error("a masked grant could not be revoked")
 	}
 }
