@@ -1,5 +1,5 @@
 {{define "content"}}
-<div class="page-head"><div><h1>Minion control <button type="button" class="info-btn" popovertarget="help-master-session" aria-label="About master sessions">{{template "icon" "i-info"}}</button></h1>
+<div class="page-head access-wide"><div><h1>Minion control <button type="button" class="info-btn" popovertarget="help-master-session" aria-label="About master sessions">{{template "icon" "i-info"}}</button></h1>
 <p>Which sessions may control sessions on other Workers. A <strong>master session</strong> controls a session on another Worker only when that Worker <strong>accepts control from</strong> the master's Worker (or from all Workers) and shares the session. Every other session is a <strong>slave session</strong>: by default all of them. <strong>User-managed</strong> Workers are also controlled by people and API keys, as before. Every click is saved at once.</p>
 <div class="info-pop" id="help-master-session" popover><p>A Worker has no master sessions until an administrator nominates one. The Hub also checks that the master Worker's owner may reach the target Worker.</p></div></div></div>
 <details class="panel control-how">
@@ -17,17 +17,19 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
 <p id="control-status" class="muted" role="status" aria-live="polite"></p>
 <section class="panel" aria-labelledby="ctl-workers-h">
   <h2 id="ctl-workers-h">Workers</h2>
-  {{if .Data.Rows}}<div class="table-wrap"><table class="rtable control-table">
+  {{if .Data.Rows}}<div class="table-wrap table-wrap-full"><table class="rtable control-table">
     <thead><tr><th scope="col">Worker</th><th scope="col">User-managed</th><th scope="col">Accepts control from</th><th scope="col">Master sessions</th></tr></thead>
     <tbody>{{range .Data.Rows}}{{template "control_row" .}}{{end}}</tbody>
   </table></div>{{else}}<p class="muted">There is no Worker yet.</p>{{end}}
 </section>
 <section class="panel" aria-labelledby="ctl-matrix-h" id="ctl-matrix" hx-get="/access/control" hx-select="#ctl-matrix" hx-swap="outerHTML" hx-trigger="control-changed from:body">
-  <h2 id="ctl-matrix-h">Matrix</h2>
+  <div class="matrix-head"><h2 id="ctl-matrix-h">Matrix</h2>
+  <div class="matrix-tools"><span class="matrix-asof">As of {{.Data.AsOf}}</span>
+    <button type="button" class="btn btn-secondary" data-control="refresh" hx-get="/access/control" hx-target="#ctl-matrix" hx-disabled-elt="this" aria-label="Refresh the matrix">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button></div></div>
   {{if .Data.Sources}}<p class="help">One row per Worker that has master sessions. A tick in a column means that Worker lets the row's master sessions control its shared sessions. Click to change.</p>
   <div class="matrix-wrap"><table class="control-matrix">
-    <thead><tr><th scope="col" class="corner">Masters on ↓ &nbsp;·&nbsp; may control →</th>{{range .Data.Targets}}<th scope="col" data-filter="{{.Name}} {{.Owner}}">{{.Name}}</th>{{end}}</tr></thead>
-    <tbody>{{range $src := .Data.Sources}}<tr data-filter="{{$src.Name}} {{$src.Owner}}"><th scope="row">{{$src.Name}}</th>
+    <thead><tr><th scope="col" class="corner">Masters on ↓ &nbsp;·&nbsp; may control →</th>{{range .Data.Targets}}<th scope="col" data-filter="{{.Name}} {{.Owner}}">{{.Name}} <span class="muted matrix-owner">{{.Owner}}</span></th>{{end}}</tr></thead>
+    <tbody>{{range $src := .Data.Sources}}<tr data-filter="{{$src.Name}} {{$src.Owner}}"><th scope="row">{{$src.Name}} <span class="muted matrix-owner">{{$src.Owner}}</span></th>
       {{range $t := $.Data.Targets}}<td>{{if eq $t.WorkerID $src.WorkerID}}<span class="muted" title="its own Worker" aria-label="its own Worker">·</span>{{else if $t.AcceptAll}}<span class="badge plain" title="{{$t.Name}} accepts all Workers">all</span>{{else}}<form hx-post="/access/control/accept" hx-trigger="change" hx-target="#ctl-{{$t.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$t.WorkerID}}"><input type="hidden" name="source_worker_id" value="{{$src.WorkerID}}"><input type="checkbox" name="value" value="on"{{if index $t.Accepted $src.WorkerID}} checked{{end}} aria-label="{{$t.Name}} accepts control from {{$src.Name}}"></form>{{end}}</td>{{end}}
     </tr>{{end}}</tbody>
   </table></div>{{else}}<p class="muted">No master session yet: nominate one in the Workers list above.</p>{{end}}

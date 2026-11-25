@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -31,6 +32,8 @@ type ControlPage struct {
 	// Sessions are the known session names per Worker, for the master picker.
 	Sessions map[string][]string
 	Check    *ControlCheckView
+	// AsOf is the moment the Hub rendered this state (the Matrix header).
+	AsOf template.HTML
 }
 
 // ControlRow is one Worker of the editor.
@@ -164,7 +167,8 @@ func controlData(r *http.Request, c OpCaller) (any, error) {
 	if err := c.CallOp(r, ops.OpControlList, ops.ControlListArgs{}, &res); err != nil {
 		return nil, err
 	}
-	p := ControlPage{Sessions: knownSessions(r)}
+	now := time.Now().UnixMilli()
+	p := ControlPage{Sessions: knownSessions(r), AsOf: checkedTime(&now, "")}
 	p.Rows = controlRows(res, p.Sessions)
 	for _, row := range p.Rows {
 		p.Targets = append(p.Targets, row)

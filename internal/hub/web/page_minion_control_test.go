@@ -37,7 +37,18 @@ func TestMinionControlPageShowsTheModelAndIsForAdminsOnly(t *testing.T) {
 		`value="on" checked aria-label="ci accepts control from boss-box"`,
 		// a thin Worker cannot be a master
 		"cannot be a master (thin Worker or older than 0.8.0)",
-		`<script src="/static/minion-control.js" defer></script>`)
+		`<script src="/static/minion-control.js" defer></script>`,
+		// the page uses the window, shows every Worker row, and the matrix names the owner
+		`class="page-head access-wide"`, `class="table-wrap table-wrap-full"`,
+		`<th scope="row">boss-box <span class="muted matrix-owner">root</span></th>`,
+		`As of <time datetime="`, `hx-get="/access/control" hx-target="#ctl-matrix" hx-disabled-elt="this"`,
+		`<span class="refresh-idle">Refresh</span>`)
+	css, err := staticFiles.ReadFile("static/minion.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustHave(t, string(css), `main:has(> .access-wide) { max-width: none; }`, `.table-wrap.table-wrap-full { max-height: none; }`,
+		`main:has(> .access-wide) input[type="checkbox"] { width: 24px; height: 24px;`)
 }
 
 // One click is one call; the answer is the row as the Hub has it now, with

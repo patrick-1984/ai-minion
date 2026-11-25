@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Access > Minion control uses the whole window, shows every Worker row without an inner scroll box, names the owner in the matrix, and has a Refresh button, an "As of" time and a print layout.
+
 ## v0.20.6
 
 ### Fixed
