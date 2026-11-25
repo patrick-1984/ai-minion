@@ -27,41 +27,115 @@ func (s masterScope) Actions(r authz.ResolvedResource) []ops.Action {
 	return nil
 }
 
+// masterAuth is one snapshot of what a lease may reach. scope is the reach of
+// the nomination (nil for a lease that stands only on verified grants),
+// direct the verified session grants of the incarnation with their digest
+// key, and reach what results may show: scope and the shared targets of the
+// grants that are usable now.
+type masterAuth struct {
+	session string
+	scope   masterScope
+	direct  []store.SessionGrantRow
+	key     string
+	reach   masterScope
+}
+
+// principal builds the caller of a master call. Without verified grants it is
+// the bound master principal as before. With them it is the session principal
+// that carries the grants; the nomination scope is its legacy part only when
+// the incarnation is also a master.
+func (a masterAuth) principal(workerID string) authz.Principal {
+	if len(a.direct) == 0 {
+		return authz.NewBoundMasterPrincipal(workerID, a.scope)
+	}
+	var legacy authz.Scope
+	if a.scope != nil {
+		legacy = a.scope
+	}
+	return authz.NewWorkerSessionPrincipal(workerID, a.session, legacy, directGrantsOf(a.direct))
+}
+
+func (s masterScope) add(workerID, name string) {
+	names := s[workerID]
+	if names == nil {
+		names = map[string]bool{}
+		s[workerID] = names
+	}
+	names[name] = true
+}
+
+func grantCaller(lease masterLease) store.VerifiedGrantCaller {
+	return store.VerifiedGrantCaller{WorkerID: lease.row.WorkerID, OwnerID: lease.row.OwnerID, WorkerPub: lease.row.WorkerPub,
+		SessionName: lease.row.SessionName, IncarnationID: lease.row.IncarnationID}
+}
+
 // masterAuthority is used before any routing and before returning reads.
 // It does not authorize the final dispatch of a Worker operation.
-func (m *MasterControl) masterAuthority(ctx context.Context, c Call) (masterScope, *masterLane, error) {
+func (m *MasterControl) masterAuthority(ctx context.Context, c Call) (masterAuth, *masterLane, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l, lease, err := m.authorizeLocked(c)
 	if err != nil {
-		return nil, nil, err
+		return masterAuth{}, nil, err
 	}
 	check, cancel := context.WithTimeout(ctx, l.expires.Sub(m.now()))
 	defer cancel()
-	grants, err := m.db.BoundMasterTargets(check, lease.row, nil)
+	out := masterAuth{session: lease.row.SessionName, reach: masterScope{}}
+	if lease.master {
+		grants, err := m.db.BoundMasterTargets(check, lease.row, nil)
+		if check.Err() != nil {
+			return masterAuth{}, nil, errMasterDenied
+		}
+		if err != nil {
+			return masterAuth{}, nil, masterAuthorityError(err)
+		}
+		out.scope = masterScope{}
+		for _, g := range grants {
+			if out.scope[g.WorkerID] == nil {
+				out.scope[g.WorkerID] = map[string]bool{}
+			}
+			if g.Kind == ops.KeyResourceWorker {
+				for _, name := range m.events.masterSharedNames(g.WorkerID) {
+					out.scope.add(g.WorkerID, name)
+					out.reach.add(g.WorkerID, name)
+				}
+			} else if m.events.masterShare(g.WorkerID, g.SessionName) {
+				out.scope.add(g.WorkerID, g.SessionName)
+				out.reach.add(g.WorkerID, g.SessionName)
+			}
+		}
+	}
+	// The verified session grants of this incarnation, read for every call.
+	now := m.now()
+	direct, err := m.db.VerifiedSessionGrants(check, grantCaller(lease), nil, now.UnixMilli())
 	if check.Err() != nil {
-		return nil, nil, errMasterDenied
+		return masterAuth{}, nil, errMasterDenied
 	}
 	if err != nil {
-		return nil, nil, masterAuthorityError(err)
+		return masterAuth{}, nil, masterAuthorityError(err)
 	}
-	out := masterScope{}
-	for _, g := range grants {
-		names := out[g.WorkerID]
-		if names == nil {
-			names = map[string]bool{}
-			out[g.WorkerID] = names
+	if !lease.master && len(direct) == 0 {
+		// The last verified grant is gone (revoked or unbound): the lease
+		// ends now, not at the next report.
+		m.pushLocked(l)
+		return masterAuth{}, nil, errMasterDenied
+	}
+	out.direct, out.key = direct, directDigest(direct)
+	for _, g := range direct {
+		if g.SuspendedAt != nil || g.ExpiresAt != nil && !now.Before(time.UnixMilli(*g.ExpiresAt)) ||
+			g.SourceOwnerID != l.info.OwnerID || g.TargetWorkerID == c.Worker.ID {
+			continue
 		}
-		if g.Kind == ops.KeyResourceWorker {
-			for _, name := range m.events.masterSharedNames(g.WorkerID) {
-				names[name] = true
+		if g.TargetSession == "" {
+			for _, name := range m.events.masterSharedNames(g.TargetWorkerID) {
+				out.reach.add(g.TargetWorkerID, name)
 			}
-		} else if m.events.masterShare(g.WorkerID, g.SessionName) {
-			names[g.SessionName] = true
+		} else if m.events.masterShare(g.TargetWorkerID, g.TargetSession) {
+			out.reach.add(g.TargetWorkerID, g.TargetSession)
 		}
 	}
 	if live, _, err := m.authorizeLocked(c); err != nil || live != l || check.Err() != nil {
-		return nil, nil, errMasterDenied
+		return masterAuth{}, nil, errMasterDenied
 	}
 	return out, l, nil
 }
@@ -76,7 +150,13 @@ func masterAuthorityError(err error) error {
 	return err
 }
 
-func (m *MasterControl) admitMaster(ctx context.Context, c Call, p *masterPending, on Online, session string) error {
+// admitMaster is the final fence before a dispatch. auth is the snapshot the
+// principal of the call was built from: a lease that stands on a nomination
+// is admitted by the nomination as before; when the nomination does not cover
+// the destination (or there is none) the verified grants are read again in
+// one store transaction and must be the ones of auth, with a usable one that
+// covers a shared destination session.
+func (m *MasterControl) admitMaster(ctx context.Context, c Call, p *masterPending, on Online, session string, auth masterAuth) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	l, lease, err := m.authorizeLocked(c)
@@ -94,9 +174,24 @@ func (m *MasterControl) admitMaster(ctx context.Context, c Call, p *masterPendin
 	}
 	check, cancel := context.WithTimeout(ctx, l.expires.Sub(m.now()))
 	defer cancel()
-	_, err = m.db.BoundMasterTargets(check, lease.row, &store.MasterTarget{WorkerID: on.WorkerID, OwnerID: on.OwnerID, Sessions: names})
-	if check.Err() != nil {
-		return errMasterDenied
+	target := &store.MasterTarget{WorkerID: on.WorkerID, OwnerID: on.OwnerID, Sessions: names}
+	err = store.ErrMasterCandidate
+	if lease.master {
+		_, err = m.db.BoundMasterTargets(check, lease.row, target)
+		if check.Err() != nil {
+			return errMasterDenied
+		}
+	}
+	if errors.Is(err, store.ErrMasterCandidate) && len(auth.direct) != 0 {
+		// Not reached by a nomination: the verified grants decide.
+		var direct []store.SessionGrantRow
+		direct, err = m.db.VerifiedSessionGrants(check, grantCaller(lease), target, m.now().UnixMilli())
+		if check.Err() != nil {
+			return errMasterDenied
+		}
+		if err == nil && directDigest(direct) != auth.key {
+			return errMasterDenied
+		}
 	}
 	if err != nil {
 		return masterAuthorityError(err)
@@ -162,11 +257,11 @@ func (m *MasterControl) serveMasterCall(ctx context.Context, c Call) {
 }
 
 func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) {
-	scope, l, err := m.masterAuthority(ctx, c)
+	auth, l, err := m.masterAuthority(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	principal := authz.NewBoundMasterPrincipal(c.Worker.ID, scope)
+	principal := auth.principal(c.Worker.ID)
 	op, raw := c.Master.Operation, c.Master.Arguments
 	if op == ops.OpWorkersList {
 		var args ops.WorkersListArgs
@@ -184,7 +279,7 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		out := make([]ops.WorkerInfo, 0, len(list))
 		notListed := 0
 		for _, w := range list {
-			if len(fresh[w.ID]) != 0 && !w.Pending {
+			if len(fresh.reach[w.ID]) != 0 && !w.Pending {
 				out = append(out, w)
 			} else if !w.Pending {
 				notListed++
@@ -196,6 +291,11 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 	req, err := masterRoute(c.RequestID, op, raw)
 	if err != nil {
 		return nil, err
+	}
+	if len(auth.direct) != 0 && req.WorkerID == c.Worker.ID {
+		// The session principal of a verified grant holds the own-Worker
+		// rule of a Worker identity; this path never serves the own Worker.
+		return nil, errMasterDenied
 	}
 	req.Principal = principal
 	qctx, cancel := context.WithCancel(ctx)
@@ -214,7 +314,9 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		delete(l.pending, pending)
 		m.mu.Unlock()
 	}()
-	req.admit = func(ctx context.Context, on Online) error { return m.admitMaster(ctx, c, pending, on, req.Session) }
+	req.admit = func(ctx context.Context, on Online) error {
+		return m.admitMaster(ctx, c, pending, on, req.Session, auth)
+	}
 	result, err := m.router.Call(qctx, req)
 	if op == ops.OpSendText {
 		m.recordMasterWrite(ctx, c.Worker.ID, lease.row.SessionName, req, result, err)
@@ -237,13 +339,13 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		}
 		sessions := make([]ops.SessionInfo, 0, len(out.Sessions))
 		for _, s := range out.Sessions {
-			if fresh[req.WorkerID][s.Name] {
+			if fresh.reach[req.WorkerID][s.Name] {
 				sessions = append(sessions, s)
 			}
 		}
 		return ops.SessionsListResult{Sessions: sessions}, nil
 	}
-	if !fresh[req.WorkerID][req.Session] {
+	if !fresh.reach[req.WorkerID][req.Session] {
 		return nil, errMasterDenied
 	}
 	return result, nil
