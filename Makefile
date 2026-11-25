@@ -107,3 +107,6 @@ snapshot: ## goreleaser snapshot build (the pipeline is added by Story 9.1)
 
 clean: ## Remove build output
 	rm -rf bin dist
+
+openapi: ## Write docs/api/openapi.json, the API description generated from the operation catalog (ops.OpenAPI)
+	go run ./scripts/openapi docs/api/openapi.json
