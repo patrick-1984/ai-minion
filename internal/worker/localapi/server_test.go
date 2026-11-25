@@ -666,3 +666,28 @@ func TestQualifiedOpRoundTrips(t *testing.T) {
 		}
 	}
 }
+
+// TestTheRequestFrameCarriesThePaneAndItsTmuxServer: the optional members pane
+// and tmux_socket reach the executor as they were sent; a frame of a client
+// that predates tmux_socket has the pane alone, and a frame without them
+// leaves both empty.
+func TestTheRequestFrameCarriesThePaneAndItsTmuxServer(t *testing.T) {
+	for body, want := range map[string]Request{
+		`{"type":"op.request","op":"workers_list","pane":"%3","tmux_socket":"/tmp/tmux-1000/default"}`: {Pane: "%3", TmuxSocket: "/tmp/tmux-1000/default"},
+		`{"type":"op.request","op":"workers_list","pane":"%3"}`:                                        {Pane: "%3"},
+		`{"type":"op.request","op":"workers_list"}`:                                                    {},
+	} {
+		got, perr := parseRequest([]byte(body))
+		if perr != nil {
+			t.Fatalf("%s: %v", body, perr)
+		}
+		if got.Op != "workers_list" || got.Pane != want.Pane || got.TmuxSocket != want.TmuxSocket {
+			t.Errorf("%s: pane %q and socket %q, want %q and %q", body, got.Pane, got.TmuxSocket, want.Pane, want.TmuxSocket)
+		}
+	}
+	// The members are optional on the wire: a request without them has none.
+	b, err := json.Marshal(RequestFrame{Type: proto.TypeOpRequest, Op: "workers_list"})
+	if err != nil || strings.Contains(string(b), "pane") || strings.Contains(string(b), "tmux_socket") {
+		t.Errorf("an empty pane or socket is on the wire: %s (%v)", b, err)
+	}
+}

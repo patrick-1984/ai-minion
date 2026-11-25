@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -158,5 +162,168 @@ func TestTheLocalSocketHasTheForwardFeature(t *testing.T) {
 	}
 	if string(h.requestAt(0)["op"]) != `"session_snapshot"` {
 		t.Fatalf("the Hub got %v", h.requestAt(0))
+	}
+}
+
+// socketHost is the fake host as a tmux server on one socket (the port
+// tmuxServerHost of the tmux host); psmux marks it as psmux.
+type socketHost struct {
+	*fakeHost
+	socket string
+	psmux  bool
+}
+
+func (h socketHost) Socket() string { return h.socket }
+func (h socketHost) Psmux() bool    { return h.psmux }
+
+// onSocket makes the fake host of newEnv a tmux server on socket.
+func onSocket(socket string) func(*Config) {
+	return func(c *Config) { c.Host = socketHost{fakeHost: c.Host.(*fakeHost), socket: socket} }
+}
+
+// touch creates an empty file at path, for a socket path that exists.
+func touch(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A-02: a pane id is only meaningful on one tmux server. The caller's socket
+// ($TMUX) must be the one of the server this Worker serves.
+
+func TestSourceSessionMapsAPaneOfTheSameTmuxServer(t *testing.T) {
+	dir := t.TempDir()
+	own := touch(t, filepath.Join(dir, "default"))
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(own, link); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	e := newEnv(t, onSocket(own))
+	ref := e.host.addSession("boss", "claude")
+	for name, socket := range map[string]string{
+		"the same path":           own,
+		"the same path, unclean":  filepath.Join(dir, "x", "..", "default") + string(filepath.Separator),
+		"another path, same file": link,
+	} {
+		if got := e.ex.sourceSession(context.Background(), ref.ID, socket); got != "boss" {
+			t.Errorf("%s: sourceSession(%s, %s) = %q, want boss", name, ref.ID, socket, got)
+		}
+	}
+	// A server whose socket file is gone (not started yet) still is itself.
+	gone := newEnv(t, onSocket(filepath.Join(dir, "gone")))
+	ref = gone.host.addSession("boss", "claude")
+	if got := gone.ex.sourceSession(context.Background(), ref.ID, filepath.Join(dir, "gone")); got != "boss" {
+		t.Errorf("the same path without a file: %q, want boss", got)
+	}
+}
+
+func TestSourceSessionOfAPaneOnAnotherTmuxServerIsNone(t *testing.T) {
+	dir := t.TempDir()
+	own := touch(t, filepath.Join(dir, "default"))
+	other := touch(t, filepath.Join(dir, "other"))
+	e := newEnv(t, onSocket(own))
+	ref := e.host.addSession("boss", "claude") // the other server has this pane id too
+	for name, socket := range map[string]string{
+		"another server":          other,
+		"a server that is gone":   filepath.Join(dir, "gone"),
+		"a relative path":         "default",
+		"a path that is too long": "/" + strings.Repeat("a", maxTmuxSocketPath),
+	} {
+		if got := e.ex.sourceSession(context.Background(), ref.ID, socket); got != "" {
+			t.Errorf("%s: sourceSession(%s, %s) = %q, want none", name, ref.ID, socket, got)
+		}
+	}
+	// The Worker's own socket file is gone and the caller names another path.
+	gone := newEnv(t, onSocket(filepath.Join(dir, "gone")))
+	ref = gone.host.addSession("boss", "claude")
+	if got := gone.ex.sourceSession(context.Background(), ref.ID, other); got != "" {
+		t.Errorf("a Worker whose socket is gone mapped a pane of another server to %q", got)
+	}
+}
+
+func TestSourceSessionOnAHostThatIsNotATmuxServerIsNone(t *testing.T) {
+	plain := newEnv(t) // the fake host has no socket (as ConPTY)
+	ref := plain.host.addSession("boss", "claude")
+	if got := plain.ex.sourceSession(context.Background(), ref.ID, "/tmp/tmux-1000/default"); got != "" {
+		t.Errorf("a host without a tmux server mapped the pane to %q", got)
+	}
+	unnamed := newEnv(t, onSocket("")) // a tmux host that names no socket
+	ref = unnamed.host.addSession("boss", "claude")
+	if got := unnamed.ex.sourceSession(context.Background(), ref.ID, "/tmp/tmux-1000/default"); got != "" {
+		t.Errorf("a host that names no socket mapped the pane to %q", got)
+	}
+	// psmux has one server per session and no socket to compare: unchanged.
+	psmux := newEnv(t, func(c *Config) { c.Host = socketHost{fakeHost: c.Host.(*fakeHost), psmux: true} })
+	ref = psmux.host.addSession("boss", "claude")
+	if got := psmux.ex.sourceSession(context.Background(), ref.ID, "/tmp/tmux-1000/default"); got != "boss" {
+		t.Errorf("psmux: sourceSession = %q, want boss", got)
+	}
+}
+
+// TestSourceSessionOfAnOlderClientIsUnchangedAndCounted: a client that sends
+// no tmux_socket is mapped as before, on any host, and the debug log counts it.
+func TestSourceSessionOfAnOlderClientIsUnchangedAndCounted(t *testing.T) {
+	var buf bytes.Buffer
+	log := func(c *Config) {
+		c.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	}
+	before := panesWithoutServer.Load()
+	for name, e := range map[string]*env{
+		"a host without a socket": newEnv(t, log),
+		"a tmux server":           newEnv(t, log, onSocket(filepath.Join(t.TempDir(), "default"))),
+	} {
+		ref := e.host.addSession("boss", "claude")
+		if got := e.ex.sourceSession(context.Background(), ref.ID, ""); got != "boss" {
+			t.Errorf("%s: sourceSession(%s) = %q, want boss", name, ref.ID, got)
+		}
+		if got := e.ex.sourceSession(context.Background(), "%999", ""); got != "" {
+			t.Errorf("%s: an unknown pane gave %q", name, got)
+		}
+		if got := e.ex.sourceSession(context.Background(), "", ""); got != "" {
+			t.Errorf("%s: no pane gave %q", name, got)
+		}
+	}
+	// Two hosts, two requests with a pane each; a request without a pane is
+	// not counted.
+	if n := panesWithoutServer.Load() - before; n < 4 {
+		t.Errorf("counted %d requests without a tmux server, want at least 4", n)
+	}
+	if got := strings.Count(buf.String(), "predates tmux_socket"); got != 4 {
+		t.Errorf("%d debug lines, want 4:\n%s", got, buf.String())
+	}
+}
+
+// TestForwardNamesNoSourceSessionForAPaneOfAnotherTmuxServer: the whole path
+// from the local request to the call frame. The pane id exists on this
+// Worker's server too (session boss), and still boss is not named.
+func TestForwardNamesNoSourceSessionForAPaneOfAnotherTmuxServer(t *testing.T) {
+	dir := t.TempDir()
+	own := touch(t, filepath.Join(dir, "default"))
+	other := touch(t, filepath.Join(dir, "other"))
+	h := startCallHub(t, func(st *transport.Stream, _ map[string]json.RawMessage) {
+		reply(st, map[string]any{"type": proto.TypeOpResult, "result": ops.WorkersListResult{}})
+	})
+	c := NewCallClient(CallConfig{})
+	t.Cleanup(h.link(c))
+	e := newEnv(t, onSocket(own))
+	l := localExecutor{ex: e.ex, log: discardLogger(), calls: func() PipeCaller { return c }}
+	ref := e.host.addSession("boss", "claude")
+
+	rq := localapiRequest(ops.OpWorkersList, nil)
+	rq.Pane, rq.TmuxSocket = ref.ID, other
+	if _, err := l.Execute(context.Background(), rq, func(json.RawMessage) {}); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := h.requestAt(0)["source_session"]; ok {
+		t.Fatalf("the Hub got source_session %s for a pane of another tmux server", v)
+	}
+	rq.TmuxSocket = own
+	if _, err := l.Execute(context.Background(), rq, func(json.RawMessage) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(h.requestAt(1)["source_session"]); got != `"boss"` {
+		t.Fatalf("the same server: source_session = %s, want boss", got)
 	}
 }
