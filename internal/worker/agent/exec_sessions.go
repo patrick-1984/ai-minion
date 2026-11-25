@@ -187,7 +187,7 @@ func (e *Executor) listShared(ctx context.Context, sel store.ShareState) (any, e
 	for i, s := range shared {
 		out[i] = ops.SessionInfo{
 			Name: s.Name, Created: ops.Timestamp(s.Created), Windows: s.Windows,
-			Attached: s.Attached, Task: s.Task, Probe: s.Probe,
+			Attached: s.Attached, Task: s.Task, Probe: s.Probe, InstanceID: s.Instance,
 		}
 		p, ok := s.ActivePane()
 		if !ok {

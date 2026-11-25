@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"path/filepath"
@@ -261,5 +262,53 @@ func TestExecutorFeaturesFollowTheHost(t *testing.T) {
 	}
 	if !slices.IsSorted(got) {
 		t.Errorf("features are not sorted: %v", got)
+	}
+}
+
+// instanceHost is a host that says whether it attests session instance ids.
+type instanceHost struct {
+	*fakeHost
+	reports bool
+}
+
+func (h instanceHost) ReportsInstances() bool { return h.reports }
+
+// TestExecutorAnnouncesSessionInstancesOnlyForAnAbleHost: the feature is in
+// the hello only while the host computes instance ids, and sessions_list then
+// carries the id of every session the host identified.
+func TestExecutorAnnouncesSessionInstancesOnlyForAnAbleHost(t *testing.T) {
+	e := newEnv(t)
+	if slices.Contains(e.ex.Features(), proto.FeatureSessionInstanceV1) {
+		t.Fatalf("a host without the port announces instances: %v", e.ex.Features())
+	}
+	e.ex.host = instanceHost{e.host, false}
+	if slices.Contains(e.ex.Features(), proto.FeatureSessionInstanceV1) {
+		t.Fatalf("a host that cannot compute instances announces them: %v", e.ex.Features())
+	}
+	e.ex.host = instanceHost{e.host, true}
+	got := e.ex.Features()
+	if !slices.Contains(got, proto.FeatureSessionInstanceV1) || !slices.IsSorted(got) {
+		t.Fatalf("features = %v", got)
+	}
+
+	const id = "t1-4b783ddf62f0f4f6e2f4d2dee3612612"
+	e.host.addSession("known", "bash")
+	e.host.addSession("unknown", "bash")
+	e.host.mu.Lock()
+	e.host.sessions[0].Instance = id
+	e.host.mu.Unlock()
+	raw, err := e.call(ops.OpSessionsList, allActions, ops.SessionsListArgs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res ops.SessionsListResult
+	if err := json.Unmarshal(raw, &res); err != nil || len(res.Sessions) != 2 {
+		t.Fatalf("sessions_list = %s, %v", raw, err)
+	}
+	if res.Sessions[0].Name != "known" || res.Sessions[0].InstanceID != id || res.Sessions[1].InstanceID != "" {
+		t.Errorf("sessions = %+v", res.Sessions)
+	}
+	if n := strings.Count(string(raw), "instance_id"); n != 1 {
+		t.Errorf("instance_id appears %d times in %s, want once (omitted when the host cannot tell)", n, raw)
 	}
 }
