@@ -18,8 +18,10 @@ const (
 // nomination. A direct grant will name its grant id there.
 const AccessViaMaster = "master"
 
-// Levels of AccessCell.Granted and InEffect. A master session holds only
-// control; a direct grant holds any of the three.
+// Levels of AccessCell.Granted and InEffect. A name-only master session holds
+// control; a session-bound (verified) master holds message, because its
+// catalog is sessions_list, session_snapshot and a submitted prompt to an
+// agent pane; a direct grant holds any of the three.
 const (
 	AccessLevelView    = "view"
 	AccessLevelMessage = "message"
@@ -60,6 +62,15 @@ const (
 	AccessBlockedWorkerPending = "worker_pending"
 	AccessBlockedNotShared     = "not_shared"
 	AccessBlockedWorkerOffline = "worker_offline"
+	// AccessBlockedOwnerInactive: the owner of the source Worker is not an
+	// active account, so the Hub refuses every call of that Worker.
+	AccessBlockedOwnerInactive = "owner_inactive"
+	// AccessBlockedSourceIncarnation: the grant is bound to one incarnation
+	// of the source session; the call path does not read such grants yet.
+	AccessBlockedSourceIncarnation = "source_incarnation"
+	// AccessBlockedMasterNotAttached: a session-bound master whose terminal
+	// holds no lease for the nominated incarnation now.
+	AccessBlockedMasterNotAttached = "master_not_attached"
 	// AccessBlockedPreviewOnlyUnknown is reserved: the Hub does not know a
 	// Worker's preview-only policy yet.
 	AccessBlockedPreviewOnlyUnknown = "preview_only_unknown"
@@ -125,12 +136,38 @@ type AccessExplainArgs struct {
 	TargetSession  string `json:"target_session"`
 }
 
-// AccessCheck is one layer of the answer.
+// AccessCheck is one layer of the answer. Code is the stable reason of the
+// state (one of the AccessCode* values or, for a failing layer, the
+// AccessBlocked* value the matrix names); Text says the same for a person.
+// Fix, when set, is a relative URL of the page where the failing layer can be
+// changed.
 type AccessCheck struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
+	Code  string `json:"code"`
 	Text  string `json:"text"`
+	Fix   string `json:"fix,omitempty"`
 }
+
+// Values of AccessCheck.Code that are not an AccessBlocked* value.
+const (
+	AccessCodeCallerClaimed  = "caller_claimed"
+	AccessCodeCallerVerified = "caller_verified"
+	AccessCodeGrant          = "grant"
+	AccessCodeMaster         = "master"
+	AccessCodeNoGrant        = "no_grant"
+	AccessCodeSameWorker     = "same_worker"
+	AccessCodeNoSuchSession  = "no_such_session"
+	AccessCodeAuthorityOK    = "authority_ok"
+	AccessCodeTimeOK         = "time_ok"
+	AccessCodeShared         = "shared"
+	AccessCodeWorkersOK      = "workers_ok"
+	// AccessCodeMessageAsView: the workers check passes, but the target
+	// Worker does not announce prompts to agent panes only, so a Message
+	// level works as View.
+	AccessCodeMessageAsView = "message_as_view"
+	AccessCodeSkipped       = "skipped"
+)
 
 // AccessExplainResult is the answer for one pair: what works now, through
 // which grant ("master" or a grant id), and every layer in order. After the

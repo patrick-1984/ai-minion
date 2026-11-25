@@ -15,7 +15,7 @@ import (
 // A:boss (name-only master) and B:lead (name-only master).
 func accessFixture(admin, alice, bob string) AccessFacts {
 	all := ops.ShareDecl{Rule: ops.ShareRule{Mode: ops.ShareModeAll}}
-	return AccessFacts{
+	f := AccessFacts{
 		Workers: []AccessWorker{
 			{ID: "A", Name: "a-admin", Owner: "root", OwnerID: admin, OwnerAdmin: true, Online: true, Sessions: []string{"boss"}},
 			{ID: "B", Name: "b-alice", Owner: "alice", OwnerID: alice, Online: true, Sessions: []string{"lead", "b1"}},
@@ -33,6 +33,10 @@ func accessFixture(admin, alice, bob string) AccessFacts {
 		Shares: map[string]ops.ShareDecl{"A": all, "B": all, "D": all, "E": all,
 			"C": {Rule: ops.ShareRule{Mode: ops.ShareModeSelect, Names: []string{"c1", "c3"}}}},
 	}
+	for i := range f.Workers {
+		f.Workers[i].OwnerActive, f.Workers[i].AgentOnly = true, true
+	}
+	return f
 }
 
 func accessCells(res ops.AccessMatrixResult) map[string]string {
@@ -43,7 +47,11 @@ func accessCells(res ops.AccessMatrixResult) map[string]string {
 		if c.BlockedBy != "" {
 			v = "blocked:" + c.BlockedBy
 		}
-		if c.Granted != ops.AccessLevelControl || c.Via != ops.AccessViaMaster {
+		granted := ops.AccessLevelControl
+		if s.Proof == ops.AccessProofVerified {
+			granted = ops.AccessLevelMessage // the catalog of a session-bound master
+		}
+		if c.Granted != granted || c.Via != ops.AccessViaMaster {
 			v += " BAD"
 		}
 		out[s.WorkerID+":"+s.Session+">"+t.WorkerID+":"+t.Session] = v
@@ -84,7 +92,12 @@ func TestAccessMatrixPendingBoundAndFilter(t *testing.T) {
 	f := accessFixture("u-admin", "u-alice", "u-bob")
 	f.Workers[2].Pending = true
 	f.Masters = f.Masters[:1]
-	f.Bound = []store.BoundMasterRow{{WorkerID: "B", SessionName: "lead", Active: true}, {WorkerID: "B", SessionName: "old"}}
+	f.Bound = []store.BoundMasterRow{{WorkerID: "B", OwnerID: "u-alice", SessionName: "lead", Active: true}, {WorkerID: "B", SessionName: "old"}}
+	// Without a lease for the nominated incarnation a bound master reaches nothing.
+	if got := accessCells(AccessMatrix(f, "u-admin", true, "")); got["B:lead>C:c3"] != "blocked:master_not_attached" {
+		t.Errorf("a bound master without a lease: %v", got)
+	}
+	f.Attached = map[[2]string]bool{{"B", "lead"}: true}
 	res := AccessMatrix(f, "u-admin", true, "")
 	got := accessCells(res)
 	if got["A:boss>C:c1"] != "blocked:worker_pending" || got["B:lead>C:c3"] != "blocked:worker_pending" {
@@ -177,8 +190,9 @@ func grantFixture() AccessFacts {
 	f.Admins = map[string]bool{"u-admin": true}
 	f.Workers[0].Sessions = []string{"boss", "helper"}
 	admin := func(id, sw, ss, tw, ts string, level int) store.SessionGrantRow {
+		owner := map[string]string{"A": "u-admin", "B": "u-alice", "C": "u-alice", "D": "u-bob", "E": "u-bob"}
 		return store.SessionGrantRow{ID: id, SourceWorkerID: sw, SourceSession: ss, TargetWorkerID: tw, TargetSession: ts, Level: level,
-			Authority: store.GrantAuthorityAdmin, GrantedBy: "u-admin"}
+			Authority: store.GrantAuthorityAdmin, GrantedBy: "u-admin", SourceOwnerID: owner[sw], TargetOwnerID: owner[tw]}
 	}
 	exp, sus, gone := admin("g-exp", "E", "e1", "B", "b1", 3), admin("g-sus", "E", "e1", "B", "lead", 3), admin("g-gone", "E", "e1", "C", "c1", 3)
 	exp.ExpiresAt, sus.SuspendedAt, gone.GrantedBy = &past, &at, "u-former"
@@ -269,6 +283,11 @@ func TestAccessExplainAgreesWithTheMatrix(t *testing.T) {
 						t.Errorf("%+v: last check %+v", a, ch)
 					}
 				}
+				for _, ch := range ex.Checks {
+					if ch.Code == "" || ch.Fix != "" && (ch.State != ops.AccessCheckFail || !strings.HasPrefix(ch.Fix, "/")) {
+						t.Errorf("%+v: check without a code or with a fix it must not have: %+v", a, ch)
+					}
+				}
 				if len(ex.Checks) != 7 || fails > 1 || (fails == 0) != (ex.InEffect != "") || skipped && fails == 0 {
 					t.Errorf("%+v: in effect %q with checks %+v", a, ex.InEffect, ex.Checks)
 				}
@@ -278,6 +297,9 @@ func TestAccessExplainAgreesWithTheMatrix(t *testing.T) {
 	ex, _ := AccessExplain(f, "u-admin", true, ops.AccessExplainArgs{SourceWorkerID: "E", SourceSession: "e1", TargetWorkerID: "B", TargetSession: "b1"})
 	if ex.Checks[3].ID != ops.AccessCheckTime || ex.Checks[3].Text != "the grant has expired" || ex.Checks[4].State != ops.AccessCheckSkip {
 		t.Errorf("an expired grant: %+v", ex.Checks)
+	}
+	if ex.Checks[3].Code != ops.AccessBlockedExpired || ex.Checks[3].Fix != "/access/grants" || ex.Checks[4].Code != ops.AccessCodeSkipped {
+		t.Errorf("codes of an expired grant: %+v", ex.Checks)
 	}
 	if _, ok := AccessExplain(f, "u-bob", false, ops.AccessExplainArgs{SourceWorkerID: "B", SourceSession: "b1", TargetWorkerID: "C", TargetSession: "c1"}); ok {
 		t.Error("bob is told about a pair between alice's Workers")
