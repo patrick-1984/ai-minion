@@ -11,6 +11,10 @@
     <input type="text" id="f-action" name="action" value="settings.set" autocomplete="off" spellcheck="false" maxlength="256">
   </div>
   <div class="field">
+    <label for="f-grant">Grant (id of a session grant)</label>
+    <input type="text" id="f-grant" name="grant" value="" autocomplete="off" spellcheck="false" maxlength="64">
+  </div>
+  <div class="field">
     <label for="f-from">From (date or time, UTC)</label>
     
     <input type="date" id="f-from" name="from" value="" autocomplete="off" placeholder="e.g. 2026-11-01">
