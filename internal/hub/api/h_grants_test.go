@@ -49,11 +49,14 @@ func newGrantStackWith(t *testing.T, tweak func(*GrantWorker)) *kindStack {
 		}
 		return out, nil
 	}
-	if err := RegisterGrants(handlers, k.st, list, k.az, k.audit); err != nil {
+	// The real audit log over the store, as on the Hub: it sees the rows the
+	// store writes inside a grant transaction, so the dispatcher adds none.
+	lg := audit.New(k.st)
+	if err := RegisterGrants(handlers, k.st, list, k.az, lg); err != nil {
 		t.Fatal(err)
 	}
 	k.mux = http.NewServeMux()
-	d := &Dispatcher{Catalog: cat, Handlers: handlers, Auth: k.authn, Authz: k.az, Audit: k.audit, Log: testLogger(&strings.Builder{})}
+	d := &Dispatcher{Catalog: cat, Handlers: handlers, Auth: k.authn, Authz: k.az, Audit: lg, Log: testLogger(&strings.Builder{})}
 	if _, err := NewRouter(d, k.mux); err != nil {
 		t.Fatal(err)
 	}
@@ -132,14 +135,8 @@ func TestGrantOwnerCreatesBetweenOwnWorkersAndOthersSeeNothing(t *testing.T) {
 		t.Fatalf("an administrator lists %+v", l)
 	}
 	// grant_set is audited by the handler, refusals included.
-	var set int
-	for _, ev := range k.audit.all() {
-		if ev.Action == AuditActionGrantCreate || ev.Action == AuditActionGrantUpdate {
-			set++
-		}
-	}
-	if set != 5 {
-		t.Fatalf("grant_set audit events = %d, want 5: %+v", set, k.audit.all())
+	if set := len(k.grantEvents(AuditActionGrantCreate)) + len(k.grantEvents(AuditActionGrantUpdate)); set != 5 {
+		t.Fatalf("grant_set audit events = %d, want 5", set)
 	}
 }
 
@@ -184,7 +181,7 @@ func TestGrantApproveAfterTheGrantorWasDemoted(t *testing.T) {
 	}
 	a, b := k.worker(k.u1, "a", store.WorkerKindPrivate), k.worker(k.u2, "b", store.WorkerKindPrivate)
 	g, err := k.st.PutSessionGrant(ctx, store.SessionGrantRow{SourceWorkerID: a.ID, SourceSession: "agent", TargetWorkerID: b.ID,
-		Level: 1, Authority: store.GrantAuthorityAdmin, GrantedBy: admin2.ID, SourceOwnerID: k.u1, TargetOwnerID: k.u2}, 0)
+		Level: 1, Authority: store.GrantAuthorityAdmin, SourceOwnerID: k.u1, TargetOwnerID: k.u2}, 0, store.GrantWrite{ActorID: admin2.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,36 +204,55 @@ func TestGrantApproveAfterTheGrantorWasDemoted(t *testing.T) {
 	}
 }
 
-// grantEvents returns the audit events of one action.
+// grantEvents returns the stored audit events of one action, oldest first.
 func (k *kindStack) grantEvents(action string) []audit.Event {
+	k.t.Helper()
+	rows, err := k.st.DB().QueryContext(context.Background(),
+		`SELECT actor, acting_as, action, target, outcome, source, grant_id, detail FROM audit_events WHERE action = ? ORDER BY rowid`, action)
+	if err != nil {
+		k.t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
 	var out []audit.Event
-	for _, ev := range k.audit.all() {
-		if ev.Action == action {
-			out = append(out, ev)
+	for rows.Next() {
+		var ev audit.Event
+		if err := rows.Scan(&ev.Actor, &ev.ActingAs, &ev.Action, &ev.Target, &ev.Outcome, &ev.Source, &ev.GrantID, &ev.Detail); err != nil {
+			k.t.Fatal(err)
 		}
+		out = append(out, ev)
 	}
 	return out
 }
 
 // An administrator grants between two Workers of ONE other user: the
-// authority is admin. The audit rows carry target, source, grant id and a
-// detail without names; the grantor revokes it.
+// authority is owner (D4), so the owner can edit it and it does not hang on
+// the administrator's role. The audit rows carry target, source, grant id and
+// a detail without names; the grantor revokes it.
 func TestGrantAdministratorBetweenWorkersOfOneOtherUserAndTheAudit(t *testing.T) {
 	k := newGrantStack(t)
 	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
 	k.as(k.admin)
 	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
-	if g.Authority != ops.GrantAuthorityAdmin || g.GrantedBy != k.admin {
+	if g.Authority != ops.GrantAuthorityOwner || g.GrantedBy != k.admin {
 		t.Fatalf("grant = %+v", g)
 	}
 	evs := k.grantEvents(AuditActionGrantCreate)
 	if len(evs) != 1 || evs[0].Target != a2.ID+":build" || evs[0].Source != a1.ID+":agent" || evs[0].GrantID != g.ID ||
-		evs[0].Detail != "level=view authority=admin expires=none" || evs[0].Outcome != AuditOutcomeSuccess {
+		evs[0].Detail != "level=view authority=owner expires=none" || evs[0].Outcome != AuditOutcomeSuccess || evs[0].Actor == "" {
 		t.Fatalf("create audit = %+v", evs)
 	}
+	// The owner edits the grant an administrator made for them, and it is
+	// not suspended when that administrator loses the role.
+	k.as(k.u1)
 	up := grantArgs(a1, a2, ops.GrantLevelControl)
 	up["id"], up["if_revision"] = g.ID, g.Revision
 	g2 := k.setGrant(up)
+	if _, err := k.st.DB().ExecContext(context.Background(), `DELETE FROM user_roles WHERE user_id = ? AND role = 'admin'`, k.admin); err != nil {
+		t.Fatal(err)
+	}
+	if cur, err := k.st.SessionGrant(context.Background(), g.ID); err != nil || cur.SuspendedAt != nil || cur.Revision != g2.Revision {
+		t.Fatalf("after the administrator's demotion: %+v (%v)", cur, err)
+	}
 	evs = k.grantEvents(AuditActionGrantUpdate)
 	if want := "level_old=view level_new=control rev=" + strconv.FormatUint(g2.Revision, 10); len(evs) != 1 || evs[0].Detail != want || evs[0].GrantID != g.ID {
 		t.Fatalf("update audit = %+v, want detail %q", evs, want)
@@ -248,13 +264,22 @@ func TestGrantAdministratorBetweenWorkersOfOneOtherUserAndTheAudit(t *testing.T)
 	if evs = k.grantEvents(AuditActionGrantUpdate); len(evs) != 2 || evs[1].Outcome != "failed" || evs[1].Detail != "level_old=control level_new=control" {
 		t.Fatalf("refused update audit = %+v", evs)
 	}
-	// Revoke by granted_by; the dispatcher's row names the grant.
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
-		t.Fatalf("revoke by the grantor = %d %s", code, body)
+	// A revoke at an old revision leaves the grant and is audited as failed.
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); kindErrCode(t, body) != proto.CodeConflict {
+		t.Fatalf("revoke at an old revision = %d %s", code, body)
+	}
+	if _, err := k.st.SessionGrant(context.Background(), g.ID); err != nil {
+		t.Fatalf("after the stale revoke: %v", err)
+	}
+	// Revoke with the revision; exactly one more row, written with the delete.
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g2.Revision}); code != http.StatusOK {
+		t.Fatalf("revoke = %d %s", code, body)
 	}
 	evs = k.grantEvents(ops.OpGrantRevoke)
-	if len(evs) != 1 || evs[0].GrantID != g.ID || evs[0].Source != a1.ID+":agent" || evs[0].Detail != "level=control authority=admin" {
-		t.Fatalf("revoke audit = %+v", evs)
+	want := "level=control authority=owner rev=" + strconv.FormatUint(g2.Revision, 10)
+	if len(evs) != 2 || evs[0].Outcome == AuditOutcomeSuccess || evs[0].GrantID != g.ID || evs[1].Outcome != AuditOutcomeSuccess ||
+		evs[1].GrantID != g.ID || evs[1].Source != a1.ID+":agent" || evs[1].Target != a2.ID+":build" || evs[1].Detail != want {
+		t.Fatalf("revoke audit = %+v, want detail %q", evs, want)
 	}
 }
 
@@ -292,5 +317,161 @@ func TestGrantUnapprovedWorkerIsRefused(t *testing.T) {
 	}
 	if rows, _ := k.st.ListSessionGrants(context.Background(), store.SessionGrantFilter{}); len(rows) != 0 {
 		t.Fatalf("stored %+v", rows)
+	}
+}
+
+// The administrator loses the role between the handler's check and the store
+// write (the authorizer of this stack keeps saying administrator): the store
+// reads the role in its own transaction and nothing commits.
+func TestGrantDemotedAdministratorCommitsNothing(t *testing.T) {
+	k := newGrantStack(t)
+	ctx := context.Background()
+	a, b := k.worker(k.u1, "a", store.WorkerKindPrivate), k.worker(k.u2, "b", store.WorkerKindPrivate)
+	k.as(k.admin)
+	g := k.setGrant(grantArgs(a, b, ops.GrantLevelView))
+	if _, err := k.st.DB().ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ? AND role = 'admin'`, k.admin); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := k.st.SessionGrant(ctx, g.ID)
+	if err != nil || cur.SuspendedAt == nil {
+		t.Fatalf("after the demotion: %+v (%v)", cur, err)
+	}
+	if code, body := k.call(ops.OpGrantSet, grantArgs(b, a, ops.GrantLevelControl)); code != http.StatusForbidden {
+		t.Fatalf("create by a demoted administrator = %d %s", code, body)
+	}
+	if code, body := k.call(ops.OpGrantApprove, map[string]any{"id": g.ID, "if_revision": cur.Revision}); code != http.StatusForbidden {
+		t.Fatalf("approve by a demoted administrator = %d %s", code, body)
+	}
+	rows, _ := k.st.ListSessionGrants(ctx, store.SessionGrantFilter{})
+	if len(rows) != 1 || rows[0].Revision != cur.Revision || rows[0].SuspendedAt == nil || rows[0].Level != 1 {
+		t.Fatalf("stored = %+v", rows)
+	}
+	// The refusals are audited as denied; no success row was written.
+	if evs := k.grantEvents(AuditActionGrantApprove); len(evs) != 1 || evs[0].Outcome != AuditOutcomeDenied || evs[0].GrantID != g.ID {
+		t.Fatalf("approve audit = %+v", evs)
+	}
+	if evs := k.grantEvents(AuditActionGrantCreate); len(evs) != 2 || evs[1].Outcome != AuditOutcomeDenied {
+		t.Fatalf("create audit = %+v", evs)
+	}
+	// The former grantor, who owns neither Worker, still withdraws the grant.
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+		t.Fatalf("revoke by the demoted grantor = %d %s", code, body)
+	}
+	if _, err := k.st.SessionGrant(ctx, g.ID); err == nil {
+		t.Fatal("the grant is still stored")
+	}
+}
+
+// grantKeyScope is an API key scope with read and operate on some Workers.
+type grantKeyScope map[string]bool
+
+func (s grantKeyScope) Actions(res authz.ResolvedResource) []ops.Action {
+	if res.Kind == authz.ResourceWorker && s[res.WorkerID] {
+		return []ops.Action{ops.ActionRead, ops.ActionOperate}
+	}
+	return nil
+}
+
+// Revoke (D4): an API key limited to the target Worker and the owner of the
+// source may revoke; a user who owns neither Worker and did not decide the
+// grant may not, and neither may a key of the grantor without the Workers.
+func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
+	k := newGrantStack(t)
+	ctx := context.Background()
+	a, b := k.worker(k.u1, "a", store.WorkerKindPrivate), k.worker(k.u2, "b", store.WorkerKindPrivate)
+	c := k.worker(k.u2, "c", store.WorkerKindPrivate)
+	k.as(k.admin)
+	g := k.setGrant(grantArgs(a, b, ops.GrantLevelView))
+	key := func(user string, scope authz.Scope) {
+		k.authn.mu.Lock()
+		k.authn.id = Identity{Principal: authz.NewAPIKeyPrincipal(user, scope, ""), Actor: "key:k1", Via: ViaAPIKey}
+		k.authn.mu.Unlock()
+	}
+	// A key of the administrator limited to another Worker is refused.
+	key(k.admin, grantKeyScope{c.ID: true})
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+		t.Fatalf("revoke by a key of another Worker = %d %s", code, body)
+	}
+	if _, err := k.st.SessionGrant(ctx, g.ID); err != nil {
+		t.Fatalf("the grant is gone: %v", err)
+	}
+	// The same key limited to the target Worker alone revokes.
+	key(k.admin, grantKeyScope{b.ID: true})
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+		t.Fatalf("revoke by a key of the target Worker = %d %s", code, body)
+	}
+	// The owner of the source revokes a grant on another owner's Worker.
+	k.as(k.admin)
+	g = k.setGrant(grantArgs(a, b, ops.GrantLevelView))
+	k.as(k.u1)
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+		t.Fatalf("revoke by the source's owner = %d %s", code, body)
+	}
+	// A user who owns neither Worker of a grant is refused.
+	k.as(k.admin)
+	g = k.setGrant(grantArgs(b, c, ops.GrantLevelView)) // both bob's
+	k.as(k.u1)
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+		t.Fatalf("revoke by a stranger = %d %s", code, body)
+	}
+	if _, err := k.st.SessionGrant(ctx, g.ID); err != nil {
+		t.Fatalf("the grant is gone: %v", err)
+	}
+	// The person who decided the grant withdraws it although they own
+	// neither Worker and are no administrator; their API key does not.
+	if _, err := k.st.DB().ExecContext(ctx, `UPDATE session_grant SET granted_by = ? WHERE id = ?`, k.u1, g.ID); err != nil {
+		t.Fatal(err)
+	}
+	key(k.u1, grantKeyScope{})
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+		t.Fatalf("revoke by a key of the grantor = %d %s", code, body)
+	}
+	k.as(k.u1)
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+		t.Fatalf("revoke by the grantor = %d %s", code, body)
+	}
+	if _, err := k.st.SessionGrant(ctx, g.ID); err == nil {
+		t.Fatal("the grant is still stored")
+	}
+	evs := k.grantEvents(ops.OpGrantRevoke)
+	if last := evs[len(evs)-1]; last.Outcome != AuditOutcomeSuccess || last.Actor != k.u1 || last.GrantID != g.ID || last.Target != c.ID+":build" {
+		t.Fatalf("revoke audit = %+v", evs)
+	}
+}
+
+// grant_list masks, for a viewer who is no administrator, the session name on
+// the side they do not own; the id, the Workers and the level stay.
+func TestGrantListMasksTheOtherOwnersSessionName(t *testing.T) {
+	k := newGrantStackWith(t, func(w *GrantWorker) { w.Owner = "owner-" + w.Name })
+	a, b := k.worker(k.u1, "a", store.WorkerKindPrivate), k.worker(k.u2, "b", store.WorkerKindPrivate)
+	k.as(k.admin)
+	g := k.setGrant(grantArgs(a, b, ops.GrantLevelControl))
+	whole := grantArgs(b, a, ops.GrantLevelView)
+	whole["target_session"] = ""
+	k.setGrant(whole)
+	if l := k.listGrants(); len(l) != 2 || l[0].SourceSession != "agent" || l[0].TargetSession != "build" || l[0].SourceMasked || l[0].TargetMasked {
+		t.Fatalf("an administrator lists %+v", l)
+	}
+	k.as(k.u1) // owns a, the source of the first grant
+	l := k.listGrants()
+	if len(l) != 2 || l[0].ID != g.ID || l[0].SourceSession != "agent" || l[0].SourceMasked ||
+		l[0].TargetSession != "a session of owner-b" || !l[0].TargetMasked || l[0].Level != ops.GrantLevelControl ||
+		l[0].TargetWorkerID != b.ID || l[0].TargetWorkerName != "b" {
+		t.Fatalf("the source's owner lists %+v", l)
+	}
+	// The whole-Worker target names no session; its source is bob's.
+	if l[1].SourceSession != "a session of owner-b" || !l[1].SourceMasked || l[1].TargetSession != "" || l[1].TargetMasked {
+		t.Fatalf("the target's owner lists %+v", l[1])
+	}
+	k.as(k.u2) // owns b
+	l = k.listGrants()
+	if len(l) != 2 || l[0].SourceSession != "a session of owner-a" || !l[0].SourceMasked || l[0].TargetSession != "build" || l[0].TargetMasked ||
+		l[1].SourceSession != "agent" || l[1].SourceMasked {
+		t.Fatalf("the target's owner lists %+v", l)
+	}
+	for _, gr := range l {
+		if strings.Contains(gr.SourceSession+gr.TargetSession, "agent") && gr.SourceMasked {
+			t.Fatalf("a masked row carries the name: %+v", gr)
+		}
 	}
 }

@@ -175,3 +175,19 @@ func TestGrantListArgsAndResult(t *testing.T) {
 		t.Errorf("empty list = %s, %v", b, err)
 	}
 }
+
+// The masked members appear only on a masked row.
+func TestGrantMaskedMembersAreOmittedWhenFalse(t *testing.T) {
+	plain, err := json.Marshal(Grant{ID: "g", SourceSession: "agent", TargetSession: "build"})
+	if err != nil || strings.Contains(string(plain), "masked") {
+		t.Fatalf("plain grant = %s (%v)", plain, err)
+	}
+	masked, err := json.Marshal(Grant{ID: "g", SourceSession: "a session of bob", SourceMasked: true, TargetSession: "build", TargetMasked: true})
+	if err != nil || !strings.Contains(string(masked), `"source_masked":true`) || !strings.Contains(string(masked), `"target_masked":true`) {
+		t.Fatalf("masked grant = %s (%v)", masked, err)
+	}
+	var back Grant
+	if err := json.Unmarshal(masked, &back); err != nil || !back.SourceMasked || !back.TargetMasked {
+		t.Fatalf("round trip = %+v (%v)", back, err)
+	}
+}

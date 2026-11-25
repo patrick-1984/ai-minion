@@ -101,6 +101,11 @@ type Grant struct {
 	TargetOwner      string `json:"target_owner,omitempty"`
 	// State is "active", "expired" or "suspended".
 	State string `json:"state,omitempty"`
+	// SourceMasked and TargetMasked are true when the reader may not see the
+	// session name on that side (a Worker of another owner): SourceSession or
+	// TargetSession then holds the text "a session of <owner>", not a name.
+	SourceMasked bool `json:"source_masked,omitempty"`
+	TargetMasked bool `json:"target_masked,omitempty"`
 }
 
 // GrantListArgs are the arguments of grant_list. WorkerID limits the list to

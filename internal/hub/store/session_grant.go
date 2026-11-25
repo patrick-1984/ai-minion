@@ -23,7 +23,73 @@ var (
 	ErrGrantExists = errors.New("store: session grant exists")
 	// ErrGrantInvalid reports a row the table refuses (same Worker, level).
 	ErrGrantInvalid = errors.New("store: session grant invalid")
+	// ErrGrantAuthority reports a write whose acting user does not hold, at
+	// the moment of the write, the authority the change needs (D4).
+	ErrGrantAuthority = errors.New("store: session grant authority lost")
 )
+
+// GrantWrite names who writes a grant and the audit row of the write. The
+// store judges both inside the transaction that writes, so a role lost after
+// the caller's own check cannot commit a change, and no change commits
+// without its audit row.
+type GrantWrite struct {
+	// ActorID is the acting user. [Store.PutSessionGrant] and
+	// [Store.ApproveSessionGrant] read its role and active state again in the
+	// writing transaction; an empty id is refused there.
+	ActorID string
+	// Audit builds the audit row of the change: old is the stored grant before
+	// it (nil for a create), now the grant as stored (for a revoke the deleted
+	// grant). An error refuses the change. A nil Audit writes no row. An empty
+	// ID and a zero TS are filled in.
+	Audit func(old *SessionGrantRow, now SessionGrantRow) (AuditRow, error)
+}
+
+// audit writes the audit row of a change inside tx.
+func (w GrantWrite) audit(ctx context.Context, s *Store, tx *sql.Tx, old *SessionGrantRow, now SessionGrantRow) error {
+	if w.Audit == nil {
+		return nil
+	}
+	row, err := w.Audit(old, now)
+	if err != nil {
+		return err
+	}
+	if row.ID == "" {
+		row.ID = NewID()
+	}
+	if row.TS == 0 {
+		row.TS = time.Now().UnixMilli()
+	}
+	return s.InsertAudit(ctx, tx, row)
+}
+
+// grantActorMay checks inside the writing transaction that actorID may decide
+// g now (D4): an active administrator always; otherwise, unless adminOnly, the
+// active owner of both Workers of an owner grant. The caller has pinned the
+// owners of g to the current ones.
+func grantActorMay(ctx context.Context, tx *sql.Tx, actorID string, g SessionGrantRow, adminOnly bool) error {
+	if actorID == "" {
+		return ErrGrantAuthority
+	}
+	var active, admin int
+	err := tx.QueryRowContext(ctx, `SELECT u.active,
+		EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id AND r.role = 'admin')
+		FROM users u WHERE u.id = ?`, actorID).Scan(&active, &admin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrGrantAuthority
+	}
+	if err != nil {
+		return fmt.Errorf("store: session grant authority: %w", err)
+	}
+	switch {
+	case active == 0:
+		return ErrGrantAuthority
+	case admin != 0:
+		return nil
+	case adminOnly || g.Authority != GrantAuthorityOwner || g.SourceOwnerID != actorID || g.TargetOwnerID != actorID:
+		return ErrGrantAuthority
+	}
+	return nil
+}
 
 // Grant authorities.
 const (
@@ -125,10 +191,13 @@ func pinGrantOwners(ctx context.Context, tx *sql.Tx, g SessionGrantRow) error {
 
 // PutSessionGrant creates the grant (ifRevision 0, no row with that id) or
 // changes level, expiry and note of the stored one when its revision is
-// ifRevision. Both Workers' owners and approvals are checked in the same
-// transaction. It returns the row as stored. An empty ID gets a new one; a
-// zero UpdatedAt is now.
-func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevision uint64) (SessionGrantRow, error) {
+// ifRevision. Both Workers' owners and approvals, and the authority of the
+// acting user w.ActorID (an active administrator, or the active owner of both
+// Workers of an owner grant), are checked in the same transaction, which also
+// writes the audit row of w. A new grant names w.ActorID as granted_by. It
+// returns the row as stored. An empty ID gets a new one; a zero UpdatedAt is
+// now. An update leaves created_at, the purge fence, as it is.
+func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevision uint64, w GrantWrite) (SessionGrantRow, error) {
 	if row.ID == "" {
 		row.ID = NewID()
 	}
@@ -139,6 +208,7 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 	var out SessionGrantRow
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		cur, err := sessionGrantByID(ctx, tx, row.ID)
+		var old *SessionGrantRow
 		switch {
 		case errors.Is(err, ErrNotFound):
 			if ifRevision != 0 {
@@ -148,6 +218,10 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 				return fmt.Errorf("%w: source and target on the same Worker", ErrGrantInvalid)
 			}
 			if err := pinGrantOwners(ctx, tx, row); err != nil {
+				return err
+			}
+			row.GrantedBy = w.ActorID
+			if err := grantActorMay(ctx, tx, w.ActorID, row, false); err != nil {
 				return err
 			}
 			created := row.CreatedAt
@@ -179,6 +253,10 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 			if err := pinGrantOwners(ctx, tx, cur); err != nil {
 				return err
 			}
+			if err := grantActorMay(ctx, tx, w.ActorID, cur, false); err != nil {
+				return err
+			}
+			old = &cur
 			if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET level = ?, expires_at = ?, note = ?,
 				revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
 				row.Level, nullInt64(row.ExpiresAt), row.Note, now, row.ID, int64(ifRevision)); err != nil {
@@ -188,10 +266,15 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 				return fmt.Errorf("store: update session grant: %w", err)
 			}
 		}
-		out, err = sessionGrantByID(ctx, tx, row.ID)
-		return err
+		if out, err = sessionGrantByID(ctx, tx, row.ID); err != nil {
+			return err
+		}
+		return w.audit(ctx, s, tx, old, out)
 	})
-	return out, err
+	if err != nil {
+		return SessionGrantRow{}, err
+	}
+	return out, nil
 }
 
 func nullInt64(p *int64) any {
@@ -211,10 +294,41 @@ func (s *Store) DeleteSessionGrant(ctx context.Context, id string) (bool, error)
 	return n > 0, nil
 }
 
-// ApproveSessionGrant lifts a suspension: approverUserID becomes granted_by
-// and the revision goes up. The caller has checked that the approver may
-// stand behind the grant.
-func (s *Store) ApproveSessionGrant(ctx context.Context, id, approverUserID string, ifRevision uint64) (SessionGrantRow, error) {
+// RevokeSessionGrant deletes one grant and writes the audit row of w in the
+// same transaction. A non-zero ifRevision must be the stored revision, which
+// the DELETE itself checks: a grant changed meanwhile stays and the answer is
+// [ErrGrantRevision]. A missing grant is [ErrNotFound]. It returns the deleted
+// row. Revoking only narrows, so the acting user's role is not read here.
+func (s *Store) RevokeSessionGrant(ctx context.Context, id string, ifRevision uint64, w GrantWrite) (SessionGrantRow, error) {
+	var out SessionGrantRow
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		cur, err := sessionGrantByID(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if ifRevision != 0 && cur.Revision != ifRevision {
+			return ErrGrantRevision
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND revision = ?`, id, int64(cur.Revision))
+		if err != nil {
+			return fmt.Errorf("store: revoke session grant: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrGrantRevision
+		}
+		out = cur
+		return w.audit(ctx, s, tx, &cur, cur)
+	})
+	if err != nil {
+		return SessionGrantRow{}, err
+	}
+	return out, nil
+}
+
+// ApproveSessionGrant lifts a suspension: w.ActorID becomes granted_by and
+// the revision goes up. That user must be an active administrator, which is
+// read in the same transaction; the audit row of w commits with the change.
+func (s *Store) ApproveSessionGrant(ctx context.Context, id string, ifRevision uint64, w GrantWrite) (SessionGrantRow, error) {
 	var out SessionGrantRow
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		cur, err := sessionGrantByID(ctx, tx, id)
@@ -227,15 +341,23 @@ func (s *Store) ApproveSessionGrant(ctx context.Context, id, approverUserID stri
 		if err := pinGrantOwners(ctx, tx, cur); err != nil {
 			return err
 		}
+		if err := grantActorMay(ctx, tx, w.ActorID, cur, true); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET suspended_at = NULL, suspend_cause = '', granted_by = ?,
 			revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
-			approverUserID, time.Now().UnixMilli(), id, int64(ifRevision)); err != nil {
+			w.ActorID, time.Now().UnixMilli(), id, int64(ifRevision)); err != nil {
 			return fmt.Errorf("store: approve session grant: %w", err)
 		}
-		out, err = sessionGrantByID(ctx, tx, id)
-		return err
+		if out, err = sessionGrantByID(ctx, tx, id); err != nil {
+			return err
+		}
+		return w.audit(ctx, s, tx, &cur, out)
 	})
-	return out, err
+	if err != nil {
+		return SessionGrantRow{}, err
+	}
+	return out, nil
 }
 
 // SessionGrant returns one grant or [ErrNotFound].
@@ -283,8 +405,11 @@ func (s *Store) SessionGrantsFor(ctx context.Context, sourceWorkerID, sourceSess
 }
 
 // PurgeSessionGrants deletes the grants that name a gone session of workerID
-// as source or target and were last saved strictly before asOf. A grant on
-// the whole target Worker (target_session ”) names no session and stays.
+// as source or target and were created strictly before asOf. The fence is
+// created_at, the moment the named sessions were bound: a later edit of
+// level, expiry or note, or an approval, does not move it, so an edited grant
+// cannot outlive the session it was made for. A grant on the whole target
+// Worker (target_session ”) names no session and stays.
 func (s *Store) PurgeSessionGrants(ctx context.Context, workerID string, goneNames []string, asOf int64) (int64, error) {
 	if workerID == "" || len(goneNames) == 0 {
 		return 0, nil
@@ -304,7 +429,7 @@ func (s *Store) PurgeSessionGrants(ctx context.Context, workerID string, goneNam
 
 func purgeSessionGrants(ctx context.Context, tx *sql.Tx, workerID string, gone func(string) bool, asOf int64) (int64, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id, source_worker_id, source_session, target_worker_id, target_session
-		FROM session_grant WHERE (source_worker_id = ? OR target_worker_id = ?) AND updated_at < ?`, workerID, workerID, asOf)
+		FROM session_grant WHERE (source_worker_id = ? OR target_worker_id = ?) AND created_at < ?`, workerID, workerID, asOf)
 	if err != nil {
 		return 0, fmt.Errorf("store: purge session grants: %w", err)
 	}
@@ -325,7 +450,7 @@ func purgeSessionGrants(ctx context.Context, tx *sql.Tx, workerID string, gone f
 	}
 	var total int64
 	for _, id := range drop {
-		res, err := tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND updated_at < ?`, id, asOf)
+		res, err := tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND created_at < ?`, id, asOf)
 		if err != nil {
 			return total, fmt.Errorf("store: purge session grant: %w", err)
 		}
