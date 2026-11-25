@@ -736,6 +736,13 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
   .js .session-table.has-owner[data-sortable] thead th:not([data-sort]) { display: none; }
   .js .session-table.has-owner[data-sortable] thead th[data-sort] { position: static; height: auto; padding: 0; background: none; box-shadow: none; }
 }
+/* In the cards a long Task or Owner has the whole line: it wraps instead of ending in an ellipsis (D9). */
+@container (max-width: 1239px) {
+  .session-table td.cell-clamp { max-width: none; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+}
+@container (max-width: 1319px) {
+  .session-table.has-owner td.cell-clamp { max-width: none; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+}
 .js .session-table tbody tr[data-row-link], .js .worker-table tbody tr[data-row-link] { cursor: pointer; }
 .js .session-table tbody tr[data-row-link] a, .js .worker-table tbody tr[data-row-link] a { cursor: pointer; }
 .worker-facts { display: grid; gap: 14px; margin-bottom: 20px; }
