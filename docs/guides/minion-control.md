@@ -2,13 +2,15 @@
 
 Back to the [README](../../README.md).
 
-Minion control decides which sessions may control sessions on **other** Workers. It replaces Administration > Session control (0.8) and keeps its grants (see [Upgrade](#upgrade-from-session-control)).
+**Start with [Access: who reaches what](access.md).** It describes the whole model: direct grants from one session to another (View, Message, Control), master sessions, who may decide, and the pages **Access** (the matrix), **Grants** and **Why?**. This page describes the master-session part and its screen, which work as before.
+
+Minion control decides which **master sessions** may control sessions on **other** Workers. It is the broad form of access: a master session reaches whole Workers at level Control. One session that needs one target, or less than Control, gets a grant instead ([Access](access.md)). Minion control replaced Administration > Session control (0.8) and keeps its grants (see [Upgrade](#upgrade-from-session-control)).
 
 ## The model
 
-- **User-managed** (default on for every Worker): people and API keys control the Worker's sessions through the web UI, the CLI and MCP, as always, within their own permissions. Turn it off and people and API keys can no longer read or type into that Worker's sessions; only master sessions of accepted Workers can. Its owner and administrators still manage the Worker (sharing, updates, removal).
-- **Master session**: a session nominated on its Worker as one that may control sessions on other Workers. **None by default.**
-- **Slave session**: every other session, the default. It controls nothing beyond its own Worker.
+- **User-managed** (default on for every Worker): people and API keys control the Worker's sessions through the web UI, the CLI and MCP, as always, within their own permissions. Turn it off and people and API keys can no longer read or type into that Worker's sessions; only master sessions of accepted Workers and sessions that hold a grant can. Its owner and administrators still manage the Worker (sharing, updates, removal).
+- **Master session**: a session an administrator nominated on its Worker as one that may control sessions on other Workers. **None by default.** It is either **session-bound** (one prepared Claude Code terminal that the Hub verifies, see [AI agents](agents.md#prepare-one-claude-code-terminal)) or **name-only** (the page says "name-only legacy": the session name is taken on trust).
+- **Slave session**: every other session, the default. It reaches nothing beyond its own Worker unless it holds a grant ([Access](access.md)).
 - **Accepts control from**: the Workers (or **All Workers**) whose master sessions a Worker accepts. **Nobody by default.** A Worker that accepts at least one Worker is *minion-managed*.
 
 A master session **M** on Worker **A** controls session **T** on Worker **B** only when all of these hold (the **chain of trust**, checked by the Hub on every call):
@@ -29,14 +31,14 @@ A session is known to the Hub by its name, and a name can come back as another t
 
 ## The screen: Access > Minion control (administrators)
 
-- **Workers**: one row per Worker. **User-managed** is a checkbox. **Accepts control from** has **All Workers** and a filterable list of the other Workers. **Master sessions** lists the nominations; **Add a master session** offers the session names the Hub sees on that Worker and a field for any name. Thin Workers and Workers older than 0.8.0 cannot be masters.
-- **Matrix**: rows are the Workers that have master sessions, columns all Workers; a tick means "the column accepts control from the row". Use it for an overview of many Workers; the filter at the top narrows rows.
-- **Who can control this session?**: pick a Worker and a session name to see the master sessions that reach it, or why none does.
+- **Workers**: one row per Worker. **User-managed** is a checkbox. **Accepts control from** has **All Workers** and a filterable list of the other Workers. **Master sessions** lists the session-bound masters (with **Revoke master access**) and the name-only legacy masters; **Add a name-only master** offers the session names the Hub sees on that Worker and a field for any name. An acceptance that is limited to some sessions, or that allows nothing, is shown as such and not as a plain tick. Thin Workers and Workers older than 0.8.0 cannot be masters.
+- **Matrix**: rows are the Workers that have master sessions, columns all Workers; a tick means "the column accepts control from the row". Use it for an overview of many Workers; the filter at the top narrows rows. The page has **Refresh**, an "As of" time and a print layout. The session-by-session view, with grants and with the layer that blocks a pair, is **Access** (`/access`, every signed-in user).
+- **Who can control this session?**: pick a Worker and a session name to see the master sessions that reach it, or why none does. It does not know grants: for those use **Access > Why?**.
 - Every change is recorded in the audit log with the changed Worker; a change that was decided before the Worker was removed or given to another owner is refused.
 
 Every click is saved at once and answered with the row as the Hub now has it, with **Undo**. If the answer is lost, the page reloads what was saved instead of guessing.
 
-The same is available as administrator operations: `control_list`, `control_set_worker`, `control_set_master`, `control_set_accept`, `control_check` (REST, `minion`, MCP).
+The same is available as administrator operations: `control_list`, `control_set_worker`, `control_set_master`, `control_set_bound_master`, `control_set_accept`, `control_check` (REST, `minion`, MCP). `control_set_master` with `master=false` refuses a session-bound master instead of revoking nothing: use **Revoke master access** or `control_set_bound_master`.
 
 ## Use it from a master session
 
@@ -44,7 +46,7 @@ Exactly as before ([Session control](session-control.md#use-it-from-the-controll
 
 ## What it does not check
 
-The session name is taken from the terminal the request comes from: anyone who can run programs as the Worker's user on that host can claim to be the master session. Treat a master session as trust in its whole **host and account**, and keep untrusted work on other Workers or accounts. The other limits of [session control](session-control.md#what-a-grant-does-not-check) apply too.
+For a name-only master the session name is taken from the terminal the request comes from: anyone who can run programs as the Worker's user on that host can claim to be the master session. Treat such a master session as trust in its whole **host and account**, and keep untrusted work on other Workers or accounts. The other limits of [session control](session-control.md#what-a-grant-does-not-check) apply too.
 
 ## Upgrade from session control
 
