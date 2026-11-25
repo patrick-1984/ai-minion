@@ -107,6 +107,10 @@ const (
 	AuditActionGrantCreate  = "grant.create"
 	AuditActionGrantUpdate  = "grant.update"
 	AuditActionGrantApprove = "grant.approve"
+	// AuditActionGrantRevoke is the action of every audit row of grant_revoke:
+	// the row the store writes with the delete and the dispatcher's row of a
+	// refusal. The operation keeps its name.
+	AuditActionGrantRevoke = "grant.revoke"
 )
 
 // grantAuditOutcome maps a handler error to the audit outcome: a refusal
@@ -288,6 +292,8 @@ func grantStoreErr(err error) error {
 		return NewError(proto.CodeConflict, "the Worker changed owner")
 	case errors.Is(err, store.ErrGrantInvalid):
 		return NewError(proto.CodeInvalidArgument, "the grant is not valid")
+	case errors.Is(err, store.ErrGrantNotSuspended):
+		return NewError(proto.CodeConflict, "this grant is not suspended")
 	case errors.Is(err, store.ErrGrantAuthority):
 		return NewError(proto.CodeForbidden, "not allowed")
 	case errors.Is(err, store.ErrNotFound):
@@ -374,6 +380,12 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		var ts ops.Timestamp
 		if err := ts.UnmarshalJSON([]byte(`"` + a.ExpiresAt + `"`)); err != nil {
 			return none, nil, NewError(proto.CodeInvalidArgument, "expires_at must be RFC 3339 UTC with milliseconds")
+		}
+		// An end in the past would store a grant that never allows
+		// anything, on a create and on an update alike.
+		if !ts.Time().After(h.now()) {
+			return none, nil, &Error{Code: proto.CodeInvalidArgument, Message: "expires_at must be in the future",
+				Details: map[string]any{"field": "expires_at"}}
 		}
 		ms := ts.Time().UnixMilli()
 		exp = &ms
@@ -473,7 +485,7 @@ func (h grantHandlers) revoke(ctx context.Context, c *Call, a ops.GrantRevokeArg
 			return store.AuditRow{}, NewError(proto.CodeForbidden, "not allowed")
 		}
 		// The row commits with the delete; the dispatcher then adds none.
-		return grantAuditRow(c, audit.Event{Action: ops.OpGrantRevoke, GrantID: g.ID,
+		return grantAuditRow(c, audit.Event{Action: AuditActionGrantRevoke, GrantID: g.ID,
 			Source: grantAuditSource(g.SourceWorkerID, g.SourceSession), Target: grantAuditTarget(g.TargetWorkerID, g.TargetSession),
 			Detail: "level=" + grantAuditLevel(g.Level) + " authority=" + g.Authority + " rev=" + strconv.FormatUint(g.Revision, 10)})
 	}}

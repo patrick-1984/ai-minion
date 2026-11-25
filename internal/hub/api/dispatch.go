@@ -735,6 +735,15 @@ func writeOutcome(r ops.WriteResult) string {
 // included. The Hub ops that mutate (Mutates) audit themselves.
 func auditedMutation(op ops.Op) bool { return op.Mutates && op.Scope == ops.ScopeWorker }
 
+// auditAction is the action of the audit row the dispatcher writes for op:
+// the operation name, except where the design names the action otherwise.
+func auditAction(op ops.Op) string {
+	if op.Name == ops.OpGrantRevoke {
+		return AuditActionGrantRevoke
+	}
+	return op.Name
+}
+
 // audit records a write operation. A failing audit write never changes the
 // answer, but it is logged and never silent.
 func (d *Dispatcher) audit(ctx context.Context, c *Call, outcome string) {
@@ -743,7 +752,7 @@ func (d *Dispatcher) audit(ctx context.Context, c *Call, outcome string) {
 	}
 	ev := audit.Event{
 		Actor: c.Identity.Actor, ActingAs: c.Identity.ActingAs,
-		Action: c.Op.Name, Target: ResourceLabel(c.Resource), Outcome: outcome,
+		Action: auditAction(c.Op), Target: ResourceLabel(c.Resource), Outcome: outcome,
 		Source: c.AuditSource, Detail: c.AuditDetail, GrantID: c.AuditGrantID,
 	}
 	if err := d.Audit.Record(context.WithoutCancel(ctx), ev); err != nil {

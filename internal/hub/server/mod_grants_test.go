@@ -186,7 +186,7 @@ func TestSessionGrantsOnTheRealHub(t *testing.T) {
 		}
 		seen[action]++
 	}
-	if seen["grant.create"] != 2 || seen[ops.OpGrantRevoke] != 1 || seen["grant.approve"] != 1 {
+	if seen["grant.create"] != 2 || seen["grant.revoke"] != 1 || seen["grant.approve"] != 1 {
 		t.Fatalf("grant audit rows = %v", seen)
 	}
 }

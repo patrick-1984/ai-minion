@@ -139,7 +139,9 @@ func TestDemoHub(t *testing.T) {
 		srcSession, tgtSess  string
 		level, expires, note string
 	}
-	past := time.Now().Add(-36 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+	// grant_set refuses an end in the past: the grant is created with an end
+	// to come and expired in the store below.
+	past := time.Now().Add(36 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
 	future := time.Now().Add(14 * 24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
 	grants := []g{
 		{ph.asAdmin, w1, w2, "review-grants-store", "feat-session-grants-authz", ops.GrantLevelView, "", "reviewer reads the implementer"},

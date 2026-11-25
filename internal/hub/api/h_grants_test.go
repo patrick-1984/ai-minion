@@ -202,6 +202,52 @@ func TestGrantApproveAfterTheGrantorWasDemoted(t *testing.T) {
 	if code != http.StatusOK || json.Unmarshal([]byte(body), &res) != nil || res.Grant.Suspended || res.Grant.GrantedBy != k.admin {
 		t.Fatalf("approve = %d %s", code, body)
 	}
+	// The grant is not suspended any more: a second approval is a conflict,
+	// changes nothing (revision, updated_at) and is audited as failed.
+	code, body = k.call(ops.OpGrantApprove, map[string]any{"id": g.ID, "if_revision": res.Grant.Revision})
+	if code != http.StatusConflict || kindErrCode(t, body) != proto.CodeConflict || !strings.Contains(body, "this grant is not suspended") {
+		t.Fatalf("approve of a grant that is not suspended = %d %s", code, body)
+	}
+	if row, err := k.st.SessionGrant(ctx, g.ID); err != nil || row.GrantedBy != k.admin || row.Revision != res.Grant.Revision ||
+		row.UpdatedAt != res.Grant.UpdatedAt.Time().UnixMilli() {
+		t.Fatalf("after the refused approval = %+v, %v", row, err)
+	}
+	evs := k.grantEvents(AuditActionGrantApprove)
+	if len(evs) != 2 || evs[0].Outcome != AuditOutcomeSuccess || evs[1].Outcome != "failed" || evs[1].GrantID != g.ID {
+		t.Fatalf("approve audit = %+v", evs)
+	}
+}
+
+// An end in the past is refused on a create and on an update: nothing is
+// stored or changed.
+func TestGrantSetRefusesAnExpiryInThePast(t *testing.T) {
+	k := newGrantStack(t)
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	k.as(k.u1)
+	stamp := func(d time.Duration) string { return time.Now().Add(d).UTC().Format("2006-01-02T15:04:05.000Z") }
+	refused := func(what string, code int, body string) {
+		t.Helper()
+		if code != http.StatusBadRequest || kindErrCode(t, body) != proto.CodeInvalidArgument || !strings.Contains(body, "expires_at") {
+			t.Fatalf("%s = %d %s, want invalid_argument naming expires_at", what, code, body)
+		}
+	}
+	args := grantArgs(a1, a2, ops.GrantLevelView)
+	args["expires_at"] = stamp(-time.Minute)
+	code, body := k.call(ops.OpGrantSet, args)
+	refused("create with a past expiry", code, body)
+	if rows, _ := k.st.ListSessionGrants(context.Background(), store.SessionGrantFilter{}); len(rows) != 0 {
+		t.Fatalf("stored %+v", rows)
+	}
+	// An end to come is accepted; changing it to the past is refused.
+	args["expires_at"] = stamp(time.Hour)
+	g := k.setGrant(args)
+	args["id"], args["if_revision"], args["expires_at"] = g.ID, g.Revision, stamp(-time.Hour)
+	code, body = k.call(ops.OpGrantSet, args)
+	refused("update to a past expiry", code, body)
+	row, err := k.st.SessionGrant(context.Background(), g.ID)
+	if err != nil || row.Revision != g.Revision || row.ExpiresAt == nil || *row.ExpiresAt <= time.Now().UnixMilli() {
+		t.Fatalf("after the refused update = %+v, %v", row, err)
+	}
 }
 
 // grantEvents returns the stored audit events of one action, oldest first.
@@ -275,7 +321,7 @@ func TestGrantAdministratorBetweenWorkersOfOneOtherUserAndTheAudit(t *testing.T)
 	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g2.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke = %d %s", code, body)
 	}
-	evs = k.grantEvents(ops.OpGrantRevoke)
+	evs = k.grantEvents(AuditActionGrantRevoke)
 	want := "level=control authority=owner rev=" + strconv.FormatUint(g2.Revision, 10)
 	if len(evs) != 2 || evs[0].Outcome == AuditOutcomeSuccess || evs[0].GrantID != g.ID || evs[1].Outcome != AuditOutcomeSuccess ||
 		evs[1].GrantID != g.ID || evs[1].Source != a1.ID+":agent" || evs[1].Target != a2.ID+":build" || evs[1].Detail != want {
@@ -433,7 +479,7 @@ func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
 	if _, err := k.st.SessionGrant(ctx, g.ID); err == nil {
 		t.Fatal("the grant is still stored")
 	}
-	evs := k.grantEvents(ops.OpGrantRevoke)
+	evs := k.grantEvents(AuditActionGrantRevoke)
 	if last := evs[len(evs)-1]; last.Outcome != AuditOutcomeSuccess || last.Actor != k.u1 || last.GrantID != g.ID || last.Target != c.ID+":build" {
 		t.Fatalf("revoke audit = %+v", evs)
 	}

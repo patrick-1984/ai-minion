@@ -373,14 +373,14 @@ func TestSessionGrantRevokeRevisionAndAudit(t *testing.T) {
 	var seenOld *SessionGrantRow
 	ok := GrantWrite{ActorID: "alice", Audit: func(old *SessionGrantRow, now SessionGrantRow) (AuditRow, error) {
 		seenOld = old
-		return AuditRow{Actor: "alice", Action: "grant_revoke", Outcome: "success", GrantID: now.ID}, nil
+		return AuditRow{Actor: "alice", Action: "grant.revoke", Outcome: "success", GrantID: now.ID}, nil
 	}}
 	gone, err := f.s.RevokeSessionGrant(ctx, g.ID, 2, ok)
 	if err != nil || gone.ID != g.ID || seenOld == nil || seenOld.Revision != 2 {
 		t.Fatalf("revoke = %+v, %v (old %+v)", gone, err, seenOld)
 	}
 	limit := 10
-	rows, err := f.s.ListAudit(ctx, AuditQuery{Action: "grant_revoke", Limit: limit})
+	rows, err := f.s.ListAudit(ctx, AuditQuery{Action: "grant.revoke", Limit: limit})
 	if err != nil || len(rows) != 1 || rows[0].GrantID != g.ID || rows[0].ID == "" || rows[0].TS == 0 {
 		t.Fatalf("audit rows = %+v, %v", rows, err)
 	}
@@ -399,7 +399,17 @@ func TestSessionGrantEditDoesNotMoveThePurgeFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	adm := f.put(t, f.adminGrant("gone"))
-	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, 1, GrantWrite{ActorID: f.admin}); err != nil {
+	// Only a suspended grant can be approved: the grantor loses the role and
+	// gets it back, which leaves the grant suspended at revision 2.
+	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, 1, GrantWrite{ActorID: f.admin}); !errors.Is(err, ErrGrantNotSuspended) {
+		t.Fatalf("approve of a grant that is not suspended: %v", err)
+	}
+	if cur, _ := f.s.SessionGrant(ctx, adm.ID); cur.Revision != 1 || cur.GrantedBy != f.admin || len(grantAudit(t, f.s, adm.ID)) != 0 {
+		t.Fatalf("the refused approval changed the grant: %+v", cur)
+	}
+	f.exec(t, `UPDATE user_roles SET role='user' WHERE user_id='root'`)
+	f.exec(t, `UPDATE user_roles SET role='admin' WHERE user_id='root'`)
+	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, 2, GrantWrite{ActorID: f.admin}); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := f.s.PurgeSessionGrants(ctx, f.a.ID, []string{"gone"}, 300); err != nil || n != 2 {

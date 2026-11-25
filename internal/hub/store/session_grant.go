@@ -26,6 +26,9 @@ var (
 	// ErrGrantAuthority reports a write whose acting user does not hold, at
 	// the moment of the write, the authority the change needs (D4).
 	ErrGrantAuthority = errors.New("store: session grant authority lost")
+	// ErrGrantNotSuspended reports an approval of a grant that is not
+	// suspended: there is nothing to lift.
+	ErrGrantNotSuspended = errors.New("store: session grant not suspended")
 )
 
 // GrantWrite names who writes a grant and the audit row of the write. The
@@ -329,6 +332,7 @@ func (s *Store) RevokeSessionGrant(ctx context.Context, id string, ifRevision ui
 // ApproveSessionGrant lifts a suspension: w.ActorID becomes granted_by and
 // the revision goes up. That user must be an active administrator, which is
 // read in the same transaction; the audit row of w commits with the change.
+// A grant that is not suspended is left as it is: [ErrGrantNotSuspended].
 func (s *Store) ApproveSessionGrant(ctx context.Context, id string, ifRevision uint64, w GrantWrite) (SessionGrantRow, error) {
 	var out SessionGrantRow
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
@@ -344,6 +348,10 @@ func (s *Store) ApproveSessionGrant(ctx context.Context, id string, ifRevision u
 		}
 		if err := grantActorMay(ctx, tx, w.ActorID, cur, true); err != nil {
 			return err
+		}
+		// Said only to an administrator, after the authority check.
+		if cur.SuspendedAt == nil {
+			return ErrGrantNotSuspended
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET suspended_at = NULL, suspend_cause = '', granted_by = ?,
 			revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
