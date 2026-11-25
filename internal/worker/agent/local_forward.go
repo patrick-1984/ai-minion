@@ -20,6 +20,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -50,8 +53,10 @@ func forwardsToHub(op string, args json.RawMessage, self string) bool {
 }
 
 // forwardSessionControl sends the local request rq to the Hub with the calling
-// session of rq.Pane as its source_session.
-func (l localExecutor) forwardSessionControl(ctx context.Context, rq Request, pane string) (json.RawMessage, error) {
+// session as its source_session: the session of the pane id pane, which the
+// caller says is of the tmux server on socket ("" from a client that does not
+// send it).
+func (l localExecutor) forwardSessionControl(ctx context.Context, rq Request, pane, socket string) (json.RawMessage, error) {
 	op, ok := ops.Lookup(rq.Op)
 	if !ok {
 		return nil, apiErr(proto.CodeUnsupportedOp, "", "the Worker does not implement this operation")
@@ -66,14 +71,99 @@ func (l localExecutor) forwardSessionControl(ctx context.Context, rq Request, pa
 	if c, ok := cc.(interface{ Connected() bool }); cc == nil || (ok && !c.Connected()) {
 		return nil, apiErr(proto.CodeWorkerOffline, "", "the request names another Worker, which only the Hub can reach, and this Worker is not connected to a Hub")
 	}
-	ctx = WithSourceSession(ctx, l.ex.sessionOfPane(ctx, pane))
+	ctx = WithSourceSession(ctx, l.ex.sourceSession(ctx, pane, socket))
 	return forwardCall(ctx, cc, op, rq.Args)
+}
+
+// tmuxServerHost is the optional port of a terminal host that serves one tmux
+// server: Socket is the absolute path of the socket of that server, or "" when
+// the host has no single server to name. The tmux host implements it.
+type tmuxServerHost interface {
+	Socket() string
+}
+
+// maxTmuxSocketPath bounds the socket path a caller may send.
+const maxTmuxSocketPath = 4096
+
+// panesWithoutServer counts, for this process, the forwarded requests whose
+// pane id came without the tmux server it is of (a client that predates the
+// tmux_socket member of the request). The debug log carries the count.
+var panesWithoutServer atomic.Int64
+
+// sourceSession returns the calling session of a local request: the session of
+// this Worker's terminal host that holds the pane id pane, when the caller's
+// tmux server (socket, from its $TMUX) is the one this Worker serves. It
+// returns "" when the caller is on another server, when the host of this
+// Worker is not a tmux server and so cannot be the caller's, and in every case
+// [Executor.sessionOfPane] names none.
+//
+// An empty socket comes from a client that predates the member: its pane is
+// mapped as before, and the debug log counts it.
+func (e *Executor) sourceSession(ctx context.Context, pane, socket string) string {
+	if pane == "" {
+		return ""
+	}
+	if socket == "" {
+		e.log.Debug("the calling session is taken from a pane id that came without its tmux server (the client predates tmux_socket)",
+			"pane", pane, "count", panesWithoutServer.Add(1))
+		return e.sessionOfPane(ctx, pane)
+	}
+	if !e.servesTmuxServer(socket) {
+		e.log.Debug("no calling session: the pane of the caller is not on the tmux server this Worker serves",
+			"pane", pane, "caller_socket", socket[:min(len(socket), 200)])
+		return ""
+	}
+	return e.sessionOfPane(ctx, pane)
+}
+
+// servesTmuxServer reports whether the terminal host of this Worker is the
+// tmux server whose socket is socket. A host that is not a tmux server, or
+// that names no socket, serves none.
+//
+// psmux (Windows) is the exception: it has one server per session and no
+// socket that names them all, so there is nothing to compare; its panes are
+// mapped as before (sessionOfPane refuses a pane id that two sessions hold).
+func (e *Executor) servesTmuxServer(socket string) bool {
+	h, ok := e.host.(tmuxServerHost)
+	if !ok {
+		return false
+	}
+	if p, ok := e.host.(interface{ Psmux() bool }); ok && p.Psmux() {
+		return true
+	}
+	own := h.Socket()
+	return own != "" && sameSocketPath(own, socket)
+}
+
+// sameSocketPath reports whether the caller's socket path other names the
+// socket at own: the same absolute path, or another path of the same file
+// (tmux resolves the directory of its default socket, so /tmp/tmux-1000/default
+// and /private/tmp/tmux-1000/default are one server). A path that cannot be
+// read is not the same.
+func sameSocketPath(own, other string) bool {
+	if len(other) > maxTmuxSocketPath || !filepath.IsAbs(other) {
+		return false
+	}
+	if filepath.Clean(other) == filepath.Clean(own) {
+		return true
+	}
+	a, err := os.Stat(own)
+	if err != nil {
+		return false
+	}
+	b, err := os.Stat(other)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(a, b)
 }
 
 // sessionOfPane returns the name of the session of this Worker's terminal host
 // that holds the pane id pane, or "" when there is none, the host cannot be
 // listed, or more than one session has that pane id (psmux numbers panes per
-// session, v0.9.2): the caller's session is never guessed.
+// session, v0.9.2): among the sessions of this host the caller's session is
+// never guessed. It does not know which server the pane id is of;
+// [Executor.sourceSession] checks that first.
 func (e *Executor) sessionOfPane(ctx context.Context, pane string) string {
 	if pane == "" {
 		return ""
