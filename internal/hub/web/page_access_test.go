@@ -60,8 +60,10 @@ func TestAccessPageShowsWhoReachesWhat(t *testing.T) {
 		`<th scope="row">boss <span class="badge plain access-proof">◇ Claimed</span> <span class="muted">master</span></th>`,
 		`<th scope="row">lead <span class="badge plain access-proof">◆ Verified</span> <span class="muted">master</span></th>`,
 		// glyphs
-		`title="Control of b1 on ci, via master">C★<span class="sr-only"> control via master</span></td>`,
-		`<td class="access-blocked" title="Blocked: the session is not shared">⊘<span class="sr-only"> blocked: the session is not shared</span></td>`,
+		`<td class="access-ok" title="Control of b1 on ci, via master"><a href="/access/why?source=wA%7Cboss&amp;target=wB%7Cb1">C★<span class="sr-only"> control via master</span></a></td>`,
+		`<td class="access-blocked" title="Blocked: the session is not shared"><a href="/access/why?source=wA%7Cboss&amp;target=wB%7C%3Ci%3Ex%3C%2Fi%3E">⊘<span class="sr-only"> blocked: the session is not shared</span></a></td>`,
+		`<b>V</b> View`, `<b>M</b> Message`,
+		`<a href="/access" aria-current="page">Who reaches what</a><a href="/access/grants">Grants</a><a href="/access/why">Why?</a></nav>`,
 		`<td class="muted">·<span class="sr-only"> none</span></td>`,
 		`title="same Worker: sessions of one Worker can already reach each other">=`,
 		// the list form for a narrow container
@@ -101,4 +103,84 @@ func TestAccessPageEmptyState(t *testing.T) {
 	if strings.Contains(body, `class="access-matrix"`) {
 		t.Error("an empty matrix renders a table")
 	}
+}
+
+// Grant cells show the level without a star; a cell whose session name is
+// hidden (another owner's session) is not a link.
+func TestAccessPageGrantCells(t *testing.T) {
+	m := accessFixture()
+	m.Sources = append(m.Sources, ops.AccessSource{WorkerID: "wC", WorkerName: "lab", Owner: "root", Session: "helper", Proof: ops.AccessProofClaimed},
+		ops.AccessSource{WorkerID: "wD", WorkerName: "far", Owner: "bob", Session: "a session of bob", Proof: ops.AccessProofClaimed, Masked: true})
+	m.Cells = append(m.Cells,
+		ops.AccessCell{Source: 2, Target: 0, Granted: "view", InEffect: "view", Via: "g1"},
+		ops.AccessCell{Source: 2, Target: 1, Granted: "message", InEffect: "message", Via: "g2"},
+		ops.AccessCell{Source: 2, Target: 2, Granted: "control", InEffect: "control", Via: "g3"},
+		ops.AccessCell{Source: 3, Target: 0, Granted: "control", Via: "g4", BlockedBy: ops.AccessBlockedExpired},
+		ops.AccessCell{Source: 3, Target: 1, Granted: "view", InEffect: "view", Via: "g5"})
+	connect(t, newFakeOps().reply(ops.OpAccessMatrix, m))
+	body := get(t, adminServer(t), pathAccess, "X-Test-Session", userHeader).Body.String()
+	mustHave(t, body,
+		`<td class="access-ok" title="View of b1 on ci, by a grant"><a href="/access/why?source=wC%7Chelper&amp;target=wB%7Cb1">V<span class="sr-only"> view by a grant</span></a></td>`,
+		`<a href="/access/why?source=wC%7Chelper&amp;target=wB%7Cb2">M<span class="sr-only"> message by a grant</span></a>`,
+		`target=wB%7C%3Ci%3Ex%3C%2Fi%3E">C<span class="sr-only"> control by a grant</span></a>`,
+		`<th scope="row">helper <span class="badge plain access-proof">◇ Claimed</span></th>`,
+		// the hidden source: glyphs without a link
+		`<td class="access-blocked" title="Blocked: the grant has expired">⊘<span class="sr-only"> blocked: the grant has expired</span></td>`,
+		`<td class="access-ok" title="View of b2 on ci, by a grant">V<span class="sr-only"> view by a grant</span></td>`)
+	if strings.Count(body, "C★") != 3 || strings.Contains(body, "wD%7C") {
+		t.Errorf("stars: %d, want 3; no link may name the hidden session", strings.Count(body, "C★"))
+	}
+}
+
+func TestAccessWhyPage(t *testing.T) {
+	explain := ops.AccessExplainResult{
+		Source: ops.AccessSource{WorkerID: "wA", WorkerName: "boss-box", Owner: "root", Session: "boss", Proof: ops.AccessProofClaimed, Master: true},
+		Target: ops.AccessTarget{WorkerID: "wB", WorkerName: "ci", Owner: "al", Online: true, Session: "<i>x</i>"},
+		Via:    "master",
+		Checks: []ops.AccessCheck{
+			{ID: ops.AccessCheckCaller, State: ops.AccessCheckPass, Text: "the source session is named by its Worker (Claimed)"},
+			{ID: ops.AccessCheckGrant, State: ops.AccessCheckPass, Text: "master reach gives Control"},
+			{ID: ops.AccessCheckAuthority, State: ops.AccessCheckPass, Text: "ok"},
+			{ID: ops.AccessCheckTime, State: ops.AccessCheckPass, Text: "ok"},
+			{ID: ops.AccessCheckSharing, State: ops.AccessCheckFail, Text: "the session is not shared by its Worker"},
+			{ID: ops.AccessCheckWorkers, State: ops.AccessCheckSkip, Text: "not evaluated: an earlier check failed"},
+			{ID: ops.AccessCheckPreviewOnly, State: ops.AccessCheckUnknown, Text: "the target Worker decides this and does not report it"},
+		},
+	}
+	f := newFakeOps().reply(ops.OpAccessMatrix, accessFixture()).reply(ops.OpAccessExplain, explain)
+	connect(t, f)
+	s := adminServer(t)
+	// Without a pair: the form only.
+	body := get(t, s, pathAccessWhy, "X-Test-Session", userHeader).Body.String()
+	mustHave(t, body, `<title>Access`, `<h1>Why?</h1>`,
+		`<a href="/access">Who reaches what</a><a href="/access/grants">Grants</a><a href="/access/why" aria-current="page">Why?</a></nav>`,
+		`<form method="get" action="/access/why"`, `<select name="source" required>`, `<select name="target" required>`,
+		`<optgroup label="boss-box"><option value="wA|boss">boss</option></optgroup>`,
+		`<option value="wB|&lt;i&gt;x&lt;/i&gt;">&lt;i&gt;x&lt;/i&gt;</option>`, `<button type="submit" class="btn">Check</button>`)
+	if strings.Contains(body, "access-why-checks") || strings.Contains(body, "onchange") {
+		t.Error("the page answers (or submits by itself) before a pair is chosen")
+	}
+	rec := get(t, s, pathAccessWhy+"?source=wA%7Cboss&target=wB%7C%3Ci%3Ex%3C%2Fi%3E", "X-Test-Session", userHeader)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET why = %d", rec.Code)
+	}
+	body = rec.Body.String()
+	mustHave(t, body, `<option value="wA|boss" selected>boss</option>`, `<option value="wB|&lt;i&gt;x&lt;/i&gt;" selected>`,
+		`<strong>boss on boss-box cannot reach &lt;i&gt;x&lt;/i&gt; on ci: the session is not shared by its Worker.</strong>`,
+		`<ol class="access-why-checks"><li class="access-why-pass"><span class="access-why-mark">✔ pass</span> <span class="access-why-id">caller</span>`,
+		`<li class="access-why-fail"><span class="access-why-mark">✘ fail</span> <span class="access-why-id">sharing</span> <span class="access-why-text">the session is not shared by its Worker</span></li>`,
+		`<span class="access-why-mark">– not evaluated</span> <span class="access-why-id">workers</span>`,
+		`<span class="access-why-mark">? unknown</span> <span class="access-why-id">preview_only</span> <span class="access-why-text">the target Worker decides this and does not report it</span>`)
+	if strings.Contains(body, "<i>x</i>") {
+		t.Error("a name is not escaped")
+	}
+	if strings.Count(body, `href="/access/why"`) != 1 {
+		t.Error("the why page has a navigation entry of its own")
+	}
+	explain.InEffect = ops.AccessLevelControl
+	if got := accessWhySummary(explain); got != "boss on boss-box can type into <i>x</i> on ci." {
+		t.Errorf("summary = %q", got)
+	}
+	css, _ := staticFiles.ReadFile("static/minion.css")
+	mustHave(t, string(css), "/* access: why */", "/* end access: why */")
 }

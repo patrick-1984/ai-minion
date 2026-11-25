@@ -1510,3 +1510,15 @@ main:has(> .access-wide) { max-width: none; }
 .access-nav a[aria-current="page"] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
 @media print { .access-nav { display: none; } }
 /* end access: view switch */
+
+/* access: why */
+.access-ok a, .access-blocked a { display: block; color: inherit; text-decoration: none; }
+.access-ok a:hover, .access-blocked a:hover, .access-ok a:focus-visible, .access-blocked a:focus-visible { text-decoration: underline; }
+.access-why-form { align-items: flex-end; }
+.access-why-summary { margin: 16px 0 8px; }
+.access-why-checks { margin: 0; padding-left: 24px; display: grid; gap: 6px; }
+.access-why-mark { display: inline-block; min-width: 9.5em; font-weight: 600; }
+.access-why-id { display: inline-block; min-width: 7em; color: var(--muted); }
+.access-why-fail .access-why-mark { color: var(--danger, inherit); }
+.access-why-skip, .access-why-unknown { color: var(--muted); }
+/* end access: why */

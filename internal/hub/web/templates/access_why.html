@@ -1,0 +1,18 @@
+{{define "content"}}
+<div class="page-head access-wide"><div><h1>Why?</h1>
+<p>Pick a source session and a target session on another Worker to see every check between them, in order. This page changes nothing.</p></div></div>
+<nav class="access-nav" aria-label="Access views"><a href="/access">Who reaches what</a><a href="/access/grants">Grants</a><a href="/access/why" aria-current="page">Why?</a></nav>
+<section class="panel" aria-labelledby="access-why-h">
+  <h2 id="access-why-h">Check a pair</h2>
+  {{if .Data.Workers}}<form method="get" action="/access/why" class="toolbar access-why-form">
+    <label class="field grow"><span class="label">Source session</span><select name="source" required>
+      <option value="">Choose a session</option>{{$sel := .Data.Source}}{{range .Data.Workers}}<optgroup label="{{.Worker}}">{{range .Sessions}}<option value="{{.Value}}"{{if eq .Value $sel}} selected{{end}}>{{.Session}}</option>{{end}}</optgroup>{{end}}</select></label>
+    <label class="field grow"><span class="label">Target session</span><select name="target" required>
+      <option value="">Choose a session</option>{{$sel := .Data.Target}}{{range .Data.Workers}}<optgroup label="{{.Worker}}">{{range .Sessions}}<option value="{{.Value}}"{{if eq .Value $sel}} selected{{end}}>{{.Session}}</option>{{end}}</optgroup>{{end}}</select></label>
+    <button type="submit" class="btn">Check</button>
+  </form>{{else}}<p class="muted">No session reaches another Worker yet, so there is no pair to check. Grants are set under <a href="/access/grants">Grants</a>.</p>{{end}}
+  {{if .Data.Error}}<p class="access-why-summary" role="status">{{.Data.Error}}</p>{{else if .Data.Asked}}
+  <p class="access-why-summary" role="status"><strong>{{.Data.Summary}}</strong></p>
+  <ol class="access-why-checks">{{range .Data.Checks}}<li class="access-why-{{.State}}"><span class="access-why-mark">{{.Mark}}</span> <span class="access-why-id">{{.ID}}</span> <span class="access-why-text">{{.Text}}</span></li>{{end}}</ol>{{end}}
+</section>
+{{end}}

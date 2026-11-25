@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-head access-wide"><div><h1>Who reaches what</h1>
 <p>Which sessions can control sessions on other Workers right now, and which layer blocks a pair that was accepted. This page changes nothing.</p></div></div>
-<nav class="access-nav" aria-label="Access views"><a href="/access" aria-current="page">Who reaches what</a><a href="/access/grants">Grants</a></nav>
+<nav class="access-nav" aria-label="Access views"><a href="/access" aria-current="page">Who reaches what</a><a href="/access/grants">Grants</a><a href="/access/why">Why?</a></nav>
 <section class="panel" aria-labelledby="access-matrix-h" id="access-matrix" hx-get="/access" hx-select="#access-matrix" hx-swap="outerHTML">
   <div class="matrix-head"><h2 id="access-matrix-h">Matrix</h2>
   <div class="matrix-tools"><span class="matrix-asof">As of {{.Data.AsOf}}</span>
@@ -11,7 +11,7 @@
   <div class="settings-tools access-tools">
     <label class="settings-filter"><span class="sr-only">Filter source sessions or Workers</span><input type="search" id="access-filter" placeholder="Filter source sessions or Workers" autocomplete="off" spellcheck="false"></label>
   </div>
-  <p class="access-legend"><span class="sr-only">Legend: </span><span><b>C</b> Control</span> <span><b>★</b> via master</span> <span><b>⊘</b> blocked</span> <span><b>·</b> none</span> <span><b>◇</b> Claimed</span> <span><b>◆</b> Verified</span></p>
+  <p class="access-legend"><span class="sr-only">Legend: </span><span><b>V</b> View</span> <span><b>M</b> Message</span> <span><b>C</b> Control</span> <span><b>★</b> via master</span> <span><b>⊘</b> blocked</span> <span><b>·</b> none</span> <span><b>◇</b> Claimed</span> <span><b>◆</b> Verified</span></p>
   <div class="access-box">
   <div class="access-scroll" tabindex="0" role="region" aria-label="Who reaches what: sources in rows, targets in columns"><table class="access-matrix">
     <thead>
@@ -21,7 +21,7 @@
     {{range .Data.Groups}}<tbody>
       <tr class="access-group"><th scope="rowgroup" colspan="1">{{.Worker}} <span class="muted matrix-owner">{{.Owner}}</span></th><td colspan="{{len (index .Rows 0).Cells}}"></td></tr>
       {{$g := .}}{{range .Rows}}<tr data-filter="{{.Session}} {{$g.Worker}} {{$g.Owner}}"><th scope="row">{{.Session}} {{if eq .Proof "verified"}}<span class="badge plain access-proof">◆ Verified</span>{{else}}<span class="badge plain access-proof">◇ Claimed</span>{{end}}{{if .Master}} <span class="muted">master</span>{{end}}</th>
-        {{range .Cells}}{{if eq .Kind "ok"}}<td class="access-ok" title="Control of {{.Target}}, via master">C★<span class="sr-only"> control via master</span></td>{{else if eq .Kind "blocked"}}<td class="access-blocked" title="Blocked: {{.Reason}}">⊘<span class="sr-only"> blocked: {{.Reason}}</span></td>{{else if eq .Kind "same"}}<td class="muted" title="same Worker: sessions of one Worker can already reach each other">=<span class="sr-only"> same Worker</span></td>{{else}}<td class="muted">·<span class="sr-only"> none</span></td>{{end}}{{end}}
+        {{range .Cells}}{{if eq .Kind "ok"}}<td class="access-ok" title="{{.Title}}">{{if .Href}}<a href="{{.Href}}">{{end}}{{.Glyph}}<span class="sr-only"> {{.Spoken}}</span>{{if .Href}}</a>{{end}}</td>{{else if eq .Kind "blocked"}}<td class="access-blocked" title="Blocked: {{.Reason}}">{{if .Href}}<a href="{{.Href}}">{{end}}⊘<span class="sr-only"> blocked: {{.Reason}}</span>{{if .Href}}</a>{{end}}</td>{{else if eq .Kind "same"}}<td class="muted" title="same Worker: sessions of one Worker can already reach each other">=<span class="sr-only"> same Worker</span></td>{{else}}<td class="muted">·<span class="sr-only"> none</span></td>{{end}}{{end}}
       </tr>{{end}}
     </tbody>{{end}}
   </table></div>
