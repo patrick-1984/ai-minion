@@ -15,7 +15,7 @@ import (
 func init() { registerGrantBindModule(DefaultRegistry) }
 
 func registerGrantBindModule(r *Registry) {
-	if err := r.Register("grant_bind", sessionControlModuleOrder+5, initGrantBind); err != nil {
+	if err := r.Register("grant_bind", eventsModuleOrder+2, initGrantBind); err != nil {
 		panic(err)
 	}
 }
