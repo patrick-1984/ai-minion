@@ -23,7 +23,7 @@ func (r *masterRig) verifiedGrant(t *testing.T, incarnation string) store.Sessio
 	if err != nil {
 		t.Fatal(err)
 	}
-	if g, err = r.master.db.BindSessionGrant(ctx, g.ID, incarnation, g.Revision); err != nil {
+	if g, err = r.master.db.BindSessionGrant(ctx, g.ID, incarnation, g.Revision, store.GrantWrite{ActorID: "owner"}); err != nil {
 		t.Fatal(err)
 	}
 	r.master.RefreshLeases(r.source.ID)

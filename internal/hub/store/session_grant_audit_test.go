@@ -91,10 +91,12 @@ func TestGrantSuspendedByTriggersIsAudited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Only an active administrator may approve (read in the approving
+	// transaction): alice gets the role first.
+	f.exec(t, `INSERT INTO user_roles(user_id,role,source) VALUES('alice','admin','local')`)
 	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, g.Revision, GrantWrite{ActorID: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	f.exec(t, `INSERT INTO user_roles(user_id,role,source) VALUES('alice','admin','local')`)
 	f.exec(t, `UPDATE users SET active=0 WHERE id='alice'`)
 	rows := grantAudit(t, f.s, adm.ID)
 	if len(rows) != 2 {

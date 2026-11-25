@@ -16,9 +16,13 @@ import (
 
 // BindSessionGrant sets source_incarnation of the grant: an incarnation id
 // makes it Verified, "" makes it Claimed again. The revision is checked, both
-// Workers' owners are pinned and the revision goes up. A second grant for the
-// same source (with that incarnation) and target returns [ErrGrantExists].
-func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, ifRevision uint64) (SessionGrantRow, error) {
+// Workers' owners are pinned and the revision goes up. The acting user
+// w.ActorID must be, in the same transaction, an active administrator or the
+// active owner of both Workers, else [ErrGrantAuthority]; the audit row of w
+// (old = the grant before, now = the grant as stored) commits with the
+// change. A second grant for the same source (with that incarnation) and
+// target returns [ErrGrantExists].
+func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, ifRevision uint64, w GrantWrite) (SessionGrantRow, error) {
 	var out SessionGrantRow
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		cur, err := sessionGrantByID(ctx, tx, id)
@@ -31,6 +35,13 @@ func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, if
 		if err := pinGrantOwners(ctx, tx, cur); err != nil {
 			return err
 		}
+		// Whoever owns both Workers may bind, whatever authority stands
+		// behind the grant: binding changes the proof of the source only.
+		may := cur
+		may.Authority = GrantAuthorityOwner
+		if err := grantActorMay(ctx, tx, w.ActorID, may, false); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET source_incarnation = ?, revision = revision + 1,
 			updated_at = ? WHERE id = ? AND revision = ?`, incarnation, time.Now().UnixMilli(), id, int64(ifRevision)); err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -38,10 +49,15 @@ func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, if
 			}
 			return fmt.Errorf("store: bind session grant: %w", err)
 		}
-		out, err = sessionGrantByID(ctx, tx, id)
-		return err
+		if out, err = sessionGrantByID(ctx, tx, id); err != nil {
+			return err
+		}
+		return w.audit(ctx, s, tx, &cur, out)
 	})
-	return out, err
+	if err != nil {
+		return SessionGrantRow{}, err
+	}
+	return out, nil
 }
 
 // VerifiedGrantSource is one terminal incarnation of a source session that

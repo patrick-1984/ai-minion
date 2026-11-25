@@ -33,9 +33,10 @@ var (
 // the caller's own check cannot commit a change, and no change commits
 // without its audit row.
 type GrantWrite struct {
-	// ActorID is the acting user. [Store.PutSessionGrant] and
-	// [Store.ApproveSessionGrant] read its role and active state again in the
-	// writing transaction; an empty id is refused there.
+	// ActorID is the acting user. [Store.PutSessionGrant],
+	// [Store.ApproveSessionGrant] and [Store.BindSessionGrant] read its role
+	// and active state again in the writing transaction; an empty id is
+	// refused there.
 	ActorID string
 	// Audit builds the audit row of the change: old is the stored grant before
 	// it (nil for a create), now the grant as stored (for a revoke the deleted

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -48,11 +49,14 @@ func newGrantBindStack(t *testing.T, lane GrantBindLane) *kindStack {
 		}
 		return out, nil
 	}
-	if err := RegisterGrantBind(handlers, k.st, lane, list, k.az, k.audit); err != nil {
+	// The real audit log over the store, as on the Hub: a bind that commits
+	// writes its audit row in the store transaction, a refusal through the log.
+	lg := audit.New(k.st)
+	if err := RegisterGrantBind(handlers, k.st, lane, list, k.az, lg); err != nil {
 		t.Fatal(err)
 	}
 	k.mux = http.NewServeMux()
-	d := &Dispatcher{Catalog: cat, Handlers: handlers, Auth: k.authn, Authz: k.az, Audit: k.audit, Log: testLogger(&strings.Builder{})}
+	d := &Dispatcher{Catalog: cat, Handlers: handlers, Auth: k.authn, Authz: k.az, Audit: lg, Log: testLogger(&strings.Builder{})}
 	if _, err := NewRouter(d, k.mux); err != nil {
 		t.Fatal(err)
 	}
@@ -111,5 +115,67 @@ func TestGrantBindAndUnbindWithConflicts(t *testing.T) {
 	}
 	if n := len(k.grantEvents(AuditActionGrantBind)); n < 2 {
 		t.Fatalf("grant.bind audit events = %d", n)
+	}
+	// Each change that committed has exactly one stored row, written with it:
+	// the action, the grant, its source and target, and a detail without names.
+	success := func(action string) []audit.Event {
+		var out []audit.Event
+		for _, ev := range k.grantEvents(action) {
+			if ev.Outcome == AuditOutcomeSuccess {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	for _, want := range []audit.Event{
+		{Action: AuditActionGrantBind, Detail: "bind=true level=control rev=2"},
+		{Action: AuditActionGrantUnbind, Detail: "bind=false level=control rev=3"},
+	} {
+		evs := success(want.Action)
+		if len(evs) != 1 || evs[0].GrantID != g.ID || evs[0].Source != a1.ID+":agent" || evs[0].Target != a2.ID+":build" ||
+			evs[0].Detail != want.Detail || evs[0].Actor == "" {
+			t.Fatalf("%s success rows = %+v", want.Action, evs)
+		}
+	}
+	// The refusals are recorded too, never as a success: no terminal and the
+	// stale revision for the bind, the stale revision for the unbind.
+	if n := len(k.grantEvents(AuditActionGrantBind)); n != 3 {
+		t.Fatalf("grant.bind rows = %d, want 3: %+v", n, k.grantEvents(AuditActionGrantBind))
+	}
+	if n := len(k.grantEvents(AuditActionGrantUnbind)); n != 2 {
+		t.Fatalf("grant.unbind rows = %d, want 2: %+v", n, k.grantEvents(AuditActionGrantUnbind))
+	}
+}
+
+// A user who lost the Workers between the handler's check and the write
+// commits no bind and no success row (the store reads the authority again).
+func TestGrantBindAuthorityIsReadInTheWritingTransaction(t *testing.T) {
+	lane := &fakeBindLane{live: map[string]string{"agent": "inc-1"}}
+	k := newGrantBindStack(t, lane)
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	if _, err := k.st.DB().ExecContext(t.Context(), `UPDATE workers SET approval='approved'`); err != nil {
+		t.Fatal(err)
+	}
+	g, err := k.st.PutSessionGrant(t.Context(), store.SessionGrantRow{SourceWorkerID: a1.ID, SourceSession: "agent",
+		TargetWorkerID: a2.ID, TargetSession: "build", Level: 1, Authority: store.GrantAuthorityOwner, GrantedBy: k.u1,
+		SourceOwnerID: k.u1, TargetOwnerID: k.u1}, 0, store.GrantWrite{ActorID: k.u1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.st.DB().ExecContext(t.Context(), `UPDATE users SET active=0 WHERE id=?`, k.u1); err != nil {
+		t.Fatal(err)
+	}
+	_, err = k.st.BindSessionGrant(t.Context(), g.ID, "inc-1", g.Revision, store.GrantWrite{ActorID: k.u1,
+		Audit: func(_ *store.SessionGrantRow, now store.SessionGrantRow) (store.AuditRow, error) {
+			return store.AuditRow{Actor: "user:u1", Action: AuditActionGrantBind, Target: "grant", Outcome: AuditOutcomeSuccess, GrantID: now.ID}, nil
+		}})
+	if ErrorOf(grantStoreErr(err)).Code != proto.CodeForbidden {
+		t.Fatalf("bind by a deactivated owner = %v", err)
+	}
+	if row, _ := k.st.SessionGrant(t.Context(), g.ID); row.SourceIncarnation != "" || row.Revision != g.Revision {
+		t.Fatalf("the refused bind changed the grant: %+v", row)
+	}
+	if n := len(k.grantEvents(AuditActionGrantBind)); n != 0 {
+		t.Fatalf("the refused bind left %d audit rows", n)
 	}
 }

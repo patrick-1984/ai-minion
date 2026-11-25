@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -40,11 +41,15 @@ func newStrictStack(t *testing.T) *kindStack {
 		}
 		return out, nil
 	}
-	if err := RegisterGrants(handlers, k.st, list, k.az, k.audit); err != nil {
+	// The real audit log over the store, as on the Hub: the audit row of a
+	// grant change commits in the store with the change, a refusal is
+	// recorded through the log, and both are read from audit_events.
+	lg := audit.New(k.st)
+	if err := RegisterGrants(handlers, k.st, list, k.az, lg); err != nil {
 		t.Fatal(err)
 	}
 	k.mux = http.NewServeMux()
-	d := &Dispatcher{Catalog: cat, Handlers: handlers, Auth: k.authn, Authz: k.az, Audit: k.audit, Requests: k.st,
+	d := &Dispatcher{Catalog: cat, Handlers: handlers, Auth: k.authn, Authz: k.az, Audit: lg, Requests: k.st,
 		Log: testLogger(&strings.Builder{})}
 	if _, err := NewRouter(d, k.mux); err != nil {
 		t.Fatal(err)
@@ -76,12 +81,18 @@ func (k *kindStack) get(op, query string) (int, string) {
 	return rec.Code, rec.Body.String()
 }
 
+// auditCount is the number of stored audit rows of one action.
 func (k *kindStack) auditCount(action string) int {
-	n := 0
-	for _, ev := range k.audit.all() {
-		if ev.Action == action {
-			n++
-		}
+	k.t.Helper()
+	return len(k.grantEvents(action))
+}
+
+// auditTotal is the number of stored audit rows.
+func (k *kindStack) auditTotal() int {
+	k.t.Helper()
+	var n int
+	if err := k.st.DB().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM audit_events`).Scan(&n); err != nil {
+		k.t.Fatal(err)
 	}
 	return n
 }
@@ -106,7 +117,7 @@ func TestRepeatedGrantSetRunsOnceAndAnswersTheSameBody(t *testing.T) {
 		t.Fatalf("grants after the repeat = %+v, want one", l)
 	}
 	if n := k.auditCount(AuditActionGrantCreate); n != 1 {
-		t.Fatalf("grant create audit rows = %d, want 1: %+v", n, k.audit.all())
+		t.Fatalf("grant create audit rows = %d, want 1: %+v", n, k.grantEvents(AuditActionGrantCreate))
 	}
 
 	// A new request_id is a new request: the pair exists, so it conflicts,
@@ -173,20 +184,20 @@ func TestRepeatedGrantRevokeIsAuditedOnce(t *testing.T) {
 	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
 	k.as(k.u1)
 	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
-	before := len(k.audit.all())
+	before := k.auditTotal()
 	args := map[string]any{"request_id": ops.NewUUIDv7(), "id": g.ID}
 	code1, body1 := k.call(ops.OpGrantRevoke, args)
 	if code1 != http.StatusOK {
 		t.Fatalf("grant_revoke = %d %s", code1, body1)
 	}
-	rows := len(k.audit.all())
+	rows := k.auditTotal()
 	if rows == before {
 		t.Fatal("grant_revoke wrote no audit row")
 	}
 	if code2, body2 := k.call(ops.OpGrantRevoke, args); code2 != code1 || body2 != body1 {
 		t.Fatalf("the repeat answers %d %s, want %d %s", code2, body2, code1, body1)
 	}
-	if n := len(k.audit.all()); n != rows {
+	if n := k.auditTotal(); n != rows {
 		t.Fatalf("the repeat added audit rows: %d, want %d", n, rows)
 	}
 }
