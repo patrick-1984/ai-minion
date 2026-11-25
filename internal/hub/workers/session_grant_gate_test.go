@@ -188,6 +188,30 @@ func TestSessionGrantPromptPathNeedsAGrantOnTheTarget(t *testing.T) {
 // it; a refused write names none.
 func TestSessionGrantWriteAuditNamesTheGrant(t *testing.T) {
 	r := newSCRig(t)
+	// The call server notes the grants behind an allowed call as used.
+	useStore := &fakeGrantUseStore{}
+	use := NewGrantUse(useStore)
+	r.cs.cfg.GrantUse = use
+	used := func(what string, want map[string]int64) {
+		t.Helper()
+		if err := use.Flush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]int64{}
+		for _, c := range useStore.snapshot() {
+			for id, n := range c.n {
+				got[id] += n
+			}
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s: grant uses = %v, want %v", what, got, want)
+		}
+		for id, n := range want {
+			if got[id] != n {
+				t.Fatalf("%s: grant uses = %v, want %v", what, got, want)
+			}
+		}
+	}
 	r.grants.setDirect(wAlicePi1.ID, "agent", aliceGrant(authz.LevelControl))
 	frames, _ := r.call(t, wAlicePi1.ID, scRequest(ops.OpSendText, scArgs(ops.OpSendText, grantedBuild), "", "agent"),
 		ops.WriteResult{Outcome: ops.OutcomeDelivered})
@@ -197,6 +221,16 @@ func TestSessionGrantWriteAuditNamesTheGrant(t *testing.T) {
 	if len(evs) != 1 || evs[0].Action != ops.OpSendText || evs[0].GrantID != "g-1" ||
 		evs[0].Source != wAlicePi1.ID+":agent" || evs[0].Outcome != "success" {
 		t.Fatalf("audit = %+v, want one send_text event with grant g-1", evs)
+	}
+	used("an allowed write", map[string]int64{"g-1": 1})
+	// A read that the grant allows is a use too (it has no audit event).
+	frames, _ = r.call(t, wAlicePi1.ID, scRequest(ops.OpSessionSnapshot, scArgs(ops.OpSessionSnapshot, grantedBuild), "", "agent"),
+		ops.SessionSnapshotResult{})
+	var snap ops.SessionSnapshotResult
+	resultOf(t, frames, &snap)
+	used("an allowed read", map[string]int64{"g-1": 2})
+	if evs = r.audit.all(); len(evs) != 1 {
+		t.Fatalf("a read was audited: %+v", evs)
 	}
 
 	r.grants.setDirect(wAlicePi1.ID, "agent", aliceGrant(authz.LevelView))
@@ -208,6 +242,8 @@ func TestSessionGrantWriteAuditNamesTheGrant(t *testing.T) {
 	if evs = r.audit.all(); len(evs) != 2 || evs[1].GrantID != "" || evs[1].Outcome != "denied" {
 		t.Fatalf("audit of the refusal = %+v", evs)
 	}
+	// A refused call uses no grant.
+	used("a refused write", map[string]int64{"g-1": 2})
 }
 
 // failingKeys authenticates until it is told to fail.

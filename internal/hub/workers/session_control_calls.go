@@ -40,8 +40,9 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 	for _, name := range SessionControlOps {
 		if err := cs.HandleGrantOnly(name, func(ctx context.Context, c *CallContext, emit func(any) error) (any, error) {
 			req := CallRequest{Principal: c.Principal, Op: c.Op.Name, Args: c.Args, admit: c.admit}
-			if c.Op.ChangesState() && len(c.Principal.DirectGrants()) > 0 {
-				// The audit event of the write names the grants behind it.
+			if len(c.Principal.DirectGrants()) > 0 {
+				// The grants behind the call: named by the audit event of a
+				// write, and counted as used when the call is answered.
 				req.granted = func(ids []string) { c.grantIDs = ids }
 			}
 			if t, ok := targetOfArgs(c.Args); ok {

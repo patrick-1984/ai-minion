@@ -47,8 +47,40 @@ func (pw *pipeWorker) callFrom(t *testing.T, source, op string, args map[string]
 // when that administrator is demoted the grant is suspended and gives nothing
 // until another administrator approves it.
 func TestSessionGrantsOnTheRealHub(t *testing.T) {
-	ph := startPipeHub(t, nil, nil)
+	// A module before the pipe module stops after it and before the store
+	// closes: its hook reads what the stopping Hub wrote of the grant usage.
+	var (
+		probe      *store.Store
+		usedAtStop map[string]store.SessionGrantUse
+		probeErr   error
+		probeGrant string
+	)
+	ph := startPipeHub(t, nil, func(r *Registry) {
+		if err := r.Register("grant_use_probe", pipeModuleOrder-1, func(_ context.Context, e *Env) error {
+			var err error
+			if probe, err = Require[*store.Store](e); err != nil {
+				return err
+			}
+			e.OnStop(func(ctx context.Context) error {
+				usedAtStop, probeErr = probe.SessionGrantUsage(ctx, probeGrant)
+				return nil
+			})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 	ctx := context.Background()
+	usage := func(what, id string, want int64) {
+		t.Helper()
+		if err := ph.use.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+		u, err := ph.st.SessionGrantUsage(ctx, id)
+		if err != nil || u[id].UseCount != want || (want > 0) != (u[id].LastUsedAt != nil) {
+			t.Fatalf("%s: usage of the grant = %+v (%v), want %d uses", what, u[id], err, want)
+		}
+	}
 	user := func(name, role string) (store.UserRow, map[string]string) {
 		t.Helper()
 		u := store.UserRow{ID: store.NewID(), Username: name, PasswordHash: "x", CredentialVersion: 1, CreatedAt: 1, UpdatedAt: 1}
@@ -122,9 +154,14 @@ func TestSessionGrantsOnTheRealHub(t *testing.T) {
 	if code != 200 || g.ID == "" || g.Authority != ops.GrantAuthorityOwner {
 		t.Fatalf("grant_set by the owner = %d %s", code, body)
 	}
+	usage("before the first call", g.ID, 0)
 	reads("owner grant", a2)
 	refused("another session of the target", a2, "other")
 	refused("another Worker", b, "minion-1")
+	// The allowed call counts as one use of the grant, the refused ones as none.
+	usage("one allowed call and two refused", g.ID, 1)
+	reads("owner grant, again", a2)
+	usage("two allowed calls", g.ID, 2)
 
 	// An API key cannot call grant_set (SessionOnly).
 	code, body = op(ph.asAdmin, "apikey_create", map[string]any{"name": "k", "resources": workerGrant(a2.id), "actions": []string{"read", "operate"}})
@@ -188,6 +225,16 @@ func TestSessionGrantsOnTheRealHub(t *testing.T) {
 	}
 	if seen["grant.create"] != 2 || seen["grant.revoke"] != 1 || seen["grant.approve"] != 1 {
 		t.Fatalf("grant audit rows = %v", seen)
+	}
+	_ = rows.Close()
+
+	// The Hub stops: the uses that were noted and not yet written (the
+	// administrator's grant allowed two calls, the refused one none) reach
+	// the store before it closes.
+	probeGrant = g.ID
+	ph.h.stop(t)
+	if probeErr != nil || usedAtStop[g.ID].UseCount != 2 || usedAtStop[g.ID].LastUsedAt == nil {
+		t.Fatalf("usage written at shutdown = %+v (%v), want 2 uses", usedAtStop[g.ID], probeErr)
 	}
 }
 

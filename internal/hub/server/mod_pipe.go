@@ -57,7 +57,8 @@ func init() {
 func registerPipeModule(r *Registry) {
 	err := r.Register("pipe", pipeModuleOrder, initPipe,
 		DeclaresService[*workers.Pipe](),
-		DeclaresService[*workers.CallServer]())
+		DeclaresService[*workers.CallServer](),
+		DeclaresService[*workers.GrantUse]())
 	if err != nil {
 		panic(err)
 	}
@@ -151,6 +152,10 @@ func initPipe(ctx context.Context, env *Env) error {
 	if err := api.RegisterPipeOps(handlers, p); err != nil {
 		return fmt.Errorf("pipe: %w", err)
 	}
+	// The usage of session grants (use count, last use): the call server notes
+	// the grants behind an allowed call in memory, the recorder writes them to
+	// the store once a minute and once more when the Hub stops.
+	grantUse := workers.NewGrantUse(st)
 	// Worker call streams: the ops join the call loop of the connect handler.
 	cs := workers.NewCallServer(workers.CallServerConfig{
 		Telemetry: svc.Telemetry,
@@ -160,6 +165,7 @@ func initPipe(ctx context.Context, env *Env) error {
 		Authz:     az,
 		Auditor:   alog,
 		Grants:    st,
+		GrantUse:  grantUse,
 		Logger:    log,
 	})
 	if err := p.RegisterCalls(cs); err != nil {
@@ -184,6 +190,18 @@ func initPipe(ctx context.Context, env *Env) error {
 		started bool
 		done    = make(chan struct{})
 	)
+	env.OnStart(func(context.Context) error {
+		grantUse.Start()
+		return nil
+	})
+	// Registered after the store's own hook, so it runs before the store
+	// closes: the uses noted since the last flush are written.
+	env.OnStop(func(ctx context.Context) error {
+		if err := grantUse.Close(ctx); err != nil {
+			return fmt.Errorf("the grant usage was not written: %w", err)
+		}
+		return nil
+	})
 	env.OnStart(func(context.Context) error {
 		mu.Lock()
 		started = true
@@ -210,6 +228,9 @@ func initPipe(ctx context.Context, env *Env) error {
 		}
 	})
 	if err := Provide(env, p); err != nil {
+		return err
+	}
+	if err := Provide(env, grantUse); err != nil {
 		return err
 	}
 	return Provide(env, cs)

@@ -163,7 +163,8 @@ type CallContext struct {
 	// Router runs it on the opened connection, before it writes the request.
 	admit func(context.Context, Online) error
 	// grantIDs are the direct grants that authorized the routed request, as
-	// the Router read them at its decision; for the audit event of a write.
+	// the Router read them at its decision; for the audit event of a write
+	// and for the usage of the grants.
 	grantIDs []string
 }
 
@@ -196,6 +197,10 @@ type CallServerConfig struct {
 	Auditor Auditor
 	// Grants reads session-control grants. Nil means no session has one.
 	Grants GrantStore
+	// GrantUse is told the direct grants that authorized a brokered call
+	// that was allowed and answered (usage count and last use of a grant).
+	// Nil records nothing.
+	GrantUse *GrantUse
 	// Now is the clock that judges the expiry of direct grants at the
 	// dispatch fence and at the re-check of a running call. The default is
 	// time.Now.
@@ -515,6 +520,12 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	var withdrawn *proto.Error
 	if err != nil && errors.As(cause, &withdrawn) {
 		err = withdrawn // the credential was withdrawn while the call ran
+	}
+	if err == nil && len(c.grantIDs) > 0 {
+		// An allowed brokered call that was answered: each direct grant that
+		// authorized it was used once. Noted in memory only, never a store
+		// write on the call path.
+		s.cfg.GrantUse.Used(c.grantIDs...)
 	}
 	if op.ChangesState() {
 		ev := audit.Event{Actor: actor, Action: op.Name, Target: callTarget(args), Outcome: writeAuditOutcome(res, err)}
