@@ -47,12 +47,16 @@ func (e *Executor) Ops() []string {
 // sorted. The Worker announces them in its signed hello (spine AM-13), so that
 // the Hub does not hand a request that relies on a safeguard to a Worker
 // without it. The answer binding, the atomic submit and the message id of a
-// pipe delivery are code of this executor; the verbatim text is a property of
-// the terminal host and is announced only when the host guarantees it.
+// pipe delivery are code of this executor; the verbatim text and the session
+// instance ids are properties of the terminal host and are announced only
+// when the host guarantees them.
 func (e *Executor) Features() []string {
 	out := []string{proto.FeatureAnswerReviewed, proto.FeaturePipeCausal, proto.FeatureSendTextSubmit, proto.FeatureSendTextAgentOnly}
 	if term.IsVerbatim(e.host) {
 		out = append(out, proto.FeatureTextVerbatim)
+	}
+	if term.ReportsInstances(e.host) {
+		out = append(out, proto.FeatureSessionInstanceV1)
 	}
 	return proto.NormaliseFeatures(out)
 }

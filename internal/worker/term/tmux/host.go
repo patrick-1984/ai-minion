@@ -115,6 +115,13 @@ type Host struct {
 	// invocation gets -N and -f configFile.
 	managed    bool
 	configFile string
+	// boot caches the boot id of this machine once it was read; readBoot is
+	// the reader (tests replace it, nil means readBootID). instanceGap is set
+	// while the latest listing had a session without an instance id: the
+	// server does not print the identity fields (instance.go).
+	boot        atomic.Pointer[string]
+	readBoot    func() string
+	instanceGap atomic.Bool
 }
 
 // MinPsmuxMajor and MinPsmuxMinor are the oldest supported psmux (3.4): older

@@ -22,12 +22,24 @@ import (
 // separator and a row terminator that each contain a 128-bit random nonce,
 // generated per call: content written before the call cannot contain them, so
 // it can neither split nor forge a row, and every value stays lossless.
+//
+// #{pid}, #{start_time} and #{session_id} are the identity of the server and
+// of the session on it: the material of term.Session.Instance (instance.go).
 const paneFormatFields = "#{session_created}%[1]s#{session_attached}%[1]s#{session_windows}%[1]s" +
 	"#{window_index}%[1]s#{window_active}%[1]s#{pane_index}%[1]s#{pane_active}%[1]s" +
 	"#{pane_id}%[1]s#{pane_pid}%[1]s" +
-	"#{@minion_task}%[1]s#{@minion_probe}%[1]s#{pane_current_command}%[1]s#{session_name}%[2]s"
+	"#{@minion_task}%[1]s#{@minion_probe}%[1]s#{pane_current_command}%[1]s" +
+	"#{pid}%[1]s#{start_time}%[1]s#{session_id}%[1]s#{session_name}%[2]s"
 
-const paneFields = 13
+const paneFields = 16
+
+// The positions of the identity fields and of the name in a row.
+const (
+	paneFieldServerPID = 12
+	paneFieldStartTime = 13
+	paneFieldSessionID = 14
+	paneFieldName      = 15
+)
 
 // paneCodec holds the delimiters of one list-panes invocation.
 type paneCodec struct {
@@ -94,6 +106,17 @@ func (h *Host) listPaneMetadata(ctx context.Context, usage bool) ([]term.Session
 		return nil, err
 	}
 	format := codec.format()
+	bootID := ""
+	if h.psmux {
+		// psmux is not asked for the identity fields: what it prints for them
+		// is not measured (K1), so its sessions carry no instance id and it
+		// sees no format variable it did not see before. The three fields stay
+		// in the row, empty. This runs before the usage substitution, which
+		// asks for #{session_id} in another field on purpose.
+		format = psmuxNoIdentity.Replace(format)
+	} else {
+		bootID = h.bootID()
+	}
 	if usage {
 		format = strings.NewReplacer("#{@minion_task}", "#{session_id}", "#{@minion_probe}", "#{pane_current_path}").Replace(format)
 	}
@@ -102,7 +125,10 @@ func (h *Host) listPaneMetadata(ctx context.Context, usage bool) ([]term.Session
 		h.debugList(0, nil, err)
 		return nil, err
 	}
-	sessions, err := codec.parseMetadata(string(out), usage)
+	sessions, err := codec.parseMetadata(string(out), usage, bootID)
+	if err == nil && !h.psmux {
+		h.noteInstances(sessions)
+	}
 	if err != nil || !h.psmux || usage {
 		h.debugList(len(sessions), nil, err)
 		return sessions, err
@@ -167,10 +193,13 @@ func psmuxPaneTarget(session string, window, index int) string {
 // parse parses the output of list-panes -a -F c.format(). Every row ends with
 // the row terminator and tmux's newline; a newline inside a field value is data.
 func (c paneCodec) parse(out string) ([]term.Session, error) {
-	return c.parseMetadata(out, false)
+	return c.parseMetadata(out, false, "")
 }
 
-func (c paneCodec) parseMetadata(out string, usage bool) ([]term.Session, error) {
+// parseMetadata parses the rows. bootID is the boot id of this machine, the
+// part of a session's instance id that tmux does not print; with an empty
+// bootID no session gets an instance id.
+func (c paneCodec) parseMetadata(out string, usage bool, bootID string) ([]term.Session, error) {
 	var sessions []term.Session
 	index := map[string]int{}
 	rows := strings.Split(out, c.rs+"\n")
@@ -192,7 +221,7 @@ func (c paneCodec) parseMetadata(out string, usage bool) ([]term.Session, error)
 		if err := errors.Join(e1, e2, e3, e4, e5, e6); err != nil {
 			return nil, fmt.Errorf("tmux: list-panes row %d: %w", n+1, err)
 		}
-		name := f[12]
+		name := f[paneFieldName]
 		task, probe := f[9], f[10]
 		var id, folder string
 		if usage {
@@ -210,6 +239,9 @@ func (c paneCodec) parseMetadata(out string, usage bool) ([]term.Session, error)
 				Attached: attached > 0,
 				Task:     task, HostID: id,
 				Probe: probe,
+				// One value per session: every row of a session carries the
+				// same server and session identity.
+				Instance: instanceID(bootID, f[paneFieldServerPID], f[paneFieldStartTime], f[paneFieldSessionID]),
 			})
 		}
 		sessions[i].Panes = append(sessions[i].Panes, term.Pane{

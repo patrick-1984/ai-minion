@@ -431,3 +431,37 @@ func TestRequiredFeaturesAreOneRuleForTheHubAndTheLocalClients(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionInfoInstanceIDIsOptional: instance_id is an additive member of a
+// sessions_list row. A session without one has no such member (the row of a
+// Worker that predates it), and a reader that predates it ignores it.
+func TestSessionInfoInstanceIDIsOptional(t *testing.T) {
+	const id = "t1-4b783ddf62f0f4f6e2f4d2dee3612612"
+	with, err := json.Marshal(SessionsListResult{Sessions: []SessionInfo{{Name: "build", InstanceID: id}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(with), `"instance_id":"`+id+`"`) {
+		t.Errorf("row with an instance = %s", with)
+	}
+	without, err := json.Marshal(SessionsListResult{Sessions: []SessionInfo{{Name: "build"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(without), "instance_id") {
+		t.Errorf("row without an instance = %s", without)
+	}
+	var back SessionsListResult
+	if err := json.Unmarshal(with, &back); err != nil || len(back.Sessions) != 1 || back.Sessions[0].InstanceID != id {
+		t.Errorf("round trip = %+v, %v", back, err)
+	}
+	// What a Hub that predates the member does: it decodes the row without it.
+	var old struct {
+		Sessions []struct {
+			Name string `json:"name"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(with, &old); err != nil || len(old.Sessions) != 1 || old.Sessions[0].Name != "build" {
+		t.Errorf("a reader without the member = %+v, %v", old, err)
+	}
+}
