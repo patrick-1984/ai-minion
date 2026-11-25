@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md).
 
-Minion lets people, scripts and models read and type into terminal sessions on other machines. That is the product, and it defines what you are trusting. This page states the boundaries as they are in release 0.7.1, including what has not been reviewed yet.
+Minion lets people, scripts and models read and type into terminal sessions on other machines. That is the product, and it defines what you are trusting. This page states the boundaries of the release it ships with, including what has not been reviewed yet. Where a rule came with a later release, the text names that release.
 
 ## Who sees what
 
@@ -10,7 +10,7 @@ Minion lets people, scripts and models read and type into terminal sessions on o
 - **A proxy that ends TLS for the web UI is trusted with all of it.** It sees every page and every event the browser sees. Run it yourself. To keep a proxy out of the content, let it pass the encrypted stream through and give the Hub a certificate of its own ([reverse proxy](guides/reverse-proxy.md)).
 - **A session that is not shared is listed by name only**, to its owner and the administrators, so that they can choose to share it. The Hub never shows its content, state, task or history. The Worker enforces this itself, whatever the Hub or a caller asks for. When you stop sharing a session, the Hub stops serving what it stored of it; the stored history is hidden, not erased, and shows again if you share the session again.
 - **The Worker's own user decides what is reachable.** A Worker runs as one Unix user (or Windows account) and can do to that user's tmux sessions everything the user can. A Worker in a container that mounts the host user's tmux socket has the same reach ([Docker Worker](install/worker-docker.md#the-trust-boundary)).
-- **Roles:** an administrator may do everything, including manage users, Workers and settings; the owner of a Worker may read, operate and message on it; nobody else has any access. An API key never has more than its owner has, and is further limited to the resources and actions it was created with.
+- **Roles:** an administrator may do everything, including manage users, Workers and settings; the owner of a Worker may read, operate and message on it; nobody else has any access. The one exception is a session on another Worker that was given access as described under [Access between sessions](#access-between-sessions). An API key never has more than its owner has, and is further limited to the resources and actions it was created with.
 
 ## Enrollment is not authorization: new Workers wait for approval
 
@@ -28,7 +28,67 @@ What this protects, and what it does not:
 - It does **not** protect against a compromised Hub or a malicious administrator. The Hub supplies the origin, and a Hub or an administrator can already create sessions and act as users. Trust the Hub as described above.
 - Anything that runs as the Worker's own user can read that Worker's call key file and its local configuration (it can also change `pipe_accept_from` there). Run agents of different trust levels as different users or in different containers.
 
-**Session control is the exception an administrator creates.** An administrator can grant one session of one Worker the right to list, read and type into chosen Workers and sessions, or into **All** that the Worker's owner may reach ([session control](guides/session-control.md)). There is no grant until an administrator creates one. A target accepts such requests without consulting its `pipe_accept_from`; an unshared session and a preview-only Worker still refuse. The controller session is named by the controller Worker and is not verified further, so any process of the Worker's user on that host can act as it: treat a grant as a grant to the whole host, and a grant with **All** as reach over the whole fleet the owner may reach. Grant it only to a host you trust as much as the targets, and remove grants you no longer need.
+A session reaches another Worker without a call key only through the access that a person gave it in the Hub. That is the next section.
+
+## Access between sessions
+
+By default no session reaches a session on another Worker. Sessions of one Worker always reach each other through that Worker's local socket; no setting in the Hub separates them, and the Hub refuses a grant whose source and target are the same Worker, because it would promise a boundary that does not exist.
+
+There are two ways to give a session access to another Worker, and both are decided by people in the Hub, never by the session itself:
+
+- **A master session** ([Minion control](guides/minion-control.md), administrators only, 0.9.0). An administrator nominates a session of Worker A as a master session, and Worker B accepts control from Worker A, or from all Workers, optionally limited to some of its sessions. Both default to none. A master session has full control of what it reaches. A Worker that is not user-managed refuses its sessions to people and API keys (REST, the live lists, MCP); master sessions are not affected.
+- **A grant** (**Access > Grants**). A grant says: this one named session of Worker A may reach that one session of Worker B, or every shared session of Worker B (future ones included), at one level. The source is always one named session, never a wildcard. With no grant in the Hub, nothing changes for anyone.
+
+The stored grants of release 0.8 ("session control") can no longer be created: `session_control_set` with targets is refused, and a grant migrated from 0.8 only narrows a master session to its old targets ([session control](guides/session-control.md)).
+
+### Levels
+
+A grant has one of three levels. Each level includes the one before it. There are no deny rows.
+
+| Level | What the source session may do on the target |
+| --- | --- |
+| View | List the Workers and sessions it reaches, and read those sessions. Its session list of the target Worker holds only the sessions it may read. |
+| Message | View, and send a prompt to an agent. The Hub turns every `send_text` of such a caller into a submitted prompt for an agent pane only and refuses `force`; a target Worker that does not announce the feature `send_text.agent_only` gets no such request at all. |
+| Control | Message, and type into any pane (`send_text`, `send_keys`), set the task and answer a dialog. |
+
+No level allows creating sessions, changing what a Worker shares, or anything an administrator does. `force` never overrides a missing permission.
+
+### Who decides, and what stands behind a grant
+
+| Case | Who may create or widen it | Authority | It counts while |
+| --- | --- | --- | --- |
+| Both Workers have the same owner | that owner, or an administrator | `owner` | both Workers still have that owner |
+| The Workers have different owners | an administrator only | `admin` | the administrator who decided is still an active administrator |
+
+- Creating a grant, changing its level, expiry or note, and approving it need a **browser session** of a person. No API key, no Worker and no session can do it, so an agent cannot give itself or another agent access. An administrator who acts as another user is not an administrator for this purpose.
+- **Revoking** only narrows. The owner of either Worker and every administrator may revoke, also with an API key that has `operate` on one of the two Workers.
+- **Suspension.** When the administrator behind an `admin` grant loses the role or is deactivated, the grant is suspended in the same database transaction. It does not come back when the role comes back: an administrator approves it again and is from then on the person behind it. A suspended grant gives nothing and cannot be changed until it is approved.
+- **End of life.** A grant is deleted when a session it names ends, is renamed or stops being shared, when one of its Workers is removed, and when one of its Workers changes owner. An expired grant gives nothing from the moment it expires; it stays listed as expired and is deleted 30 days later.
+
+### What Claimed and Verified prove
+
+- **Claimed** is every grant today, and every master session nominated by name. The source is a session **name that its Worker reports**; nothing verifies it further. Any program that runs as that Worker's user on that host can say that it is that session. Treat a grant to a Claimed source, and a name-only master session, as access for the **whole host and account** of the source Worker, and give it only to a host you trust as much as the target.
+- **Verified** is a session-bound master (0.18.0, [prepare one terminal](guides/agents.md#prepare-one-claude-code-terminal)). The Worker pins one terminal process (Linux, tmux, a kernel with peer pidfd support, 6.5 or later) and the Hub issues a lease of 30 seconds for that one incarnation; the calls carry the lease, not a name. It is limited to listing Workers and sessions, reading a snapshot and sending a prompt. Grants do not have a Verified source yet; the column for it exists and is not written.
+
+Verified proves which terminal process calls. It does not prove what the agent in that terminal was told to do.
+
+### What the Hub decides and what the target Worker enforces
+
+- **The Hub decides every call.** It reads the grants of the calling Worker and session from its database on each call and keeps no positive cache. A grant counts only if it covers the target, is not suspended, has not expired, the source Worker still has the owner recorded in the grant, and, for an `admin` grant, the person behind it is an active administrator now. A running call is checked again within 30 seconds and once more right before a request is passed on; a grant that was revoked, changed, suspended or expired ends it. When the Hub cannot read the grants, the call is refused.
+- **The target Worker enforces its own rules whatever the Hub says:** a session that is not shared is refused, and a preview-only Worker refuses every write. The target does not consult `pipe_accept_from` for a request the Hub marks as granted (`origin.grant`).
+- **The target Worker does not learn which session called.** The origin it receives names the source Worker and its owner and says that a grant applies; the source session and the grant are known to the Hub only, and are in the Hub's audit.
+
+**Audit.** Every creation, change, approval and revocation of a grant is an audit event with the grant, its source session, level and authority. A write that a session makes on another Worker names the calling session, and a refused one is recorded as `denied`. Audit details are a fixed list of `key=value` facts; they never contain screen content or typed text.
+
+**Seeing it.** **Access** shows who reaches what as a table of source sessions and targets, and **Why?** explains one pair check by check. Both are read-only and show access, never content. A person who owns only one end of a pair sees the other end without its session name.
+
+### What is not protected
+
+- A **Claimed** source is not an identity (see above). Run agents of different trust levels as different users or in different containers, on different Workers.
+- A **compromised Hub or a malicious administrator** is not stopped by any of this: the Hub makes the decision and supplies the origin.
+- **Message is not harmless.** A prompt to an agent can make that agent run commands with its rights ([next section](#a-message-can-make-an-agent-run-commands)).
+- A grant on **all shared sessions** of a Worker follows that Worker's sharing: a session shared later is reachable at once.
+- Revocation is not instant for a call that is already running: it ends within 30 seconds.
 
 ## A message can make an agent run commands
 
@@ -166,8 +226,6 @@ The recipes that keep the proxy out of these steps are in [pairing](guides/pairi
 - **Checksum-pinned (an exact version plus `MINION_SHA256`):** it checks only that the archive has the SHA-256 you supplied. It does not fetch or verify the checksums file, the signature or the transparency-log entry, so the signature guarantees above do **not** apply to this mode. Take the checksum from a source you trust independently of the download (for example the signed `checksums.txt` that you verified yourself), because the installer trusts it completely.
 
  There is no database downgrade: an older Hub refuses a database a newer one changed. `minion update` has a check that refuses a release whose protocol range does not overlap the Hub's, but in this release the source of the connected Hub's range is not wired in production: **without the explicit flag `--hub-proto-range MIN..MAX` (for example `--hub-proto-range 3.0..3.0`) the updater performs no protocol check and installs the release**. An older Worker therefore does not protect itself; follow the upgrade order yourself (Hub first, see [Upgrading from 0.6](#upgrading-from-06)). Release 0.7 (0.7.0 and later) speaks wire protocol **3.0** only (the signed release manifest carries the range `3.0..3.0`): there is no fallback to 2.x, a 0.7 Hub and a Worker of 0.6 or earlier cannot connect (a 2.0 Worker is answered `proto_incompatible` and retries until it is upgraded), and mixed 0.6 and 0.7 installations are not supported, so upgrade the Hub and all Workers from 0.6 together. 0.7.x Hubs and Workers interoperate.
-
-**Minion control (0.9.0).** A session reaches sessions on other Workers only as a nominated master session, and only on Workers that accept control from its Worker (both default to none); the Hub checks the chain on every call. A master session is trusted per host and account (its name is claimed by the terminal it runs in). A Worker that is not user-managed refuses people and API keys its sessions (REST, the live lists, MCP); master sessions are not affected.
 
 **Updates from the Hub (0.9.0).** An administrator can update Workers to the Hub's release (`worker_update`) and, with the opt-in Docker overlay, the Hub itself (`hub_update`). In both cases the binary or image comes only from a release signed by this project's release workflow (the Hub pulls the image by the digest in the signed release manifest); a downgrade is refused, the Worker checks the protocol range of the Hub that asked, and a Worker refuses with `remote_update off`. A compromised Hub can therefore move Workers only to another signed release, not run code of its own on them. The Docker socket that the Hub's self-update needs is root-equivalent on that host: mount it only where you trust the Hub as much as root. The daily release check contacts only `api.github.com` (`update_check off` contacts nothing).
 

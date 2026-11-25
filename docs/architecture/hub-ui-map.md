@@ -1,7 +1,7 @@
 # Minion Hub web UI: capability map (checklist for redesign verification)
 
-Source: commit 308dafa (v0.12.0). Web UI root: `internal/hub/web/` (abbreviated `W/` below; templates `W/templates/`, JS `W/static/`).
-Descriptive only. Line numbers refer to the files at that commit. "L" = line in the named template.
+Source: commit 308dafa (v0.12.0); the access pages (`/access`, `/access/grants`, `/access/why`, `/access/control`: nav row, rows 17 to 17c, the two POST rows, sections 2.17 to 2.17c, 3.15, 3.15a, the JS rows and their appendix entries) were rewritten at commit 53a708cf (v0.20.6 plus the branch `integration/access-h1`). Web UI root: `internal/hub/web/` (abbreviated `W/` below; templates `W/templates/`, JS `W/static/`).
+Descriptive only. Line numbers refer to the files at the commit of their section; everything outside the access pages is still the v0.12.0 state and has not been re-read. "L" = line in the named template.
 
 How the UI is wired (applies to every page):
 - Pages and routes self-register in `init()` of `W/page_*.go` via `RegisterPage` / `RegisterRoute` / `RegisterNav` / `RegisterBanner` / `RegisterLoginProvider` (`W/web.go:194-207`). `Server.buildRoutes` (`W/web.go:534-558`) mounts `GET /login`, `GET /account/password`, every page (behind `gate`), every route (behind `gate`), a default `GET /{$}` home (`W/layout.html` default "content") only if no page claims it, and a catch-all 404 (`handleNotFound`, `W/page_login.go:123`).
@@ -56,7 +56,8 @@ Group heading labels: Workspace / Access / Administration (`layout.go:99-103`). 
 | Access | 590 | Add worker | `/workers/add` | i-plus | all | - | `page_addworker.go:147` |
 | Access | 600 | Invitations | `/invitations` | i-invite | all | - | `page_invitations.go:659` |
 | Access | 610 | API keys | `/api-keys` | i-key | all | - | `page_apikeys.go:380` |
-| Access | 620 | Minion control | `/access/control` | i-sessions | admin | - | `page_minion_control.go:251` |
+| Access | 615 | Access | `/access` | i-sessions | all | - | `page_access.go:281` |
+| Access | 620 | Minion control | `/access/control` | i-sessions | admin | - | `page_minion_control.go:442` |
 | Administration | 800 | Users | `/admin/users` | i-users | admin | - | `page_users.go:612` |
 | Administration | 810 | Hub settings | `/admin/settings` | i-settings | admin | - | `page_settings.go:189` |
 | Administration | 812 | Updates | `/admin/updates` | i-settings | admin | - | `page_updates.go:45` |
@@ -66,7 +67,7 @@ Group heading labels: Workspace / Access / Administration (`layout.go:99-103`). 
 | Administration | 830 | Audit | `/admin/audit` | i-audit | admin | - | `page_audit.go:147` |
 
 Pages with NO nav entry (reachable only by link or URL):
-- `/account` (via identity link in rail footer and layout), `/account/password` (via Account page button and forced redirect), `/admin` (via "Administration" heading, admin only), `/workers/{worker}`, `/s/{worker}/{session}`, `/admin/users/{id}`, `/admin/session-control` (admin; no link from any template or admin overview card; only its own page links to `/access/control`; found via `grep session-control templates`).
+- `/account` (via identity link in rail footer and layout), `/account/password` (via Account page button and forced redirect), `/admin` (via "Administration" heading, admin only), `/workers/{worker}`, `/s/{worker}/{session}`, `/admin/users/{id}`, `/access/grants` and `/access/why` (all users; reached by the `nav.access-nav` links "Who reaches what", "Grants", "Why?" on the three access pages), `/admin/session-control` (admin; no link from any template or admin overview card; only its own page links to `/access/control`; found via `grep session-control templates`).
 - Admin overview cards (`/admin`, `page_account.go:136-145`): Users, Hub settings, Identity & sign-in, Hub identity, Minion control (`/access/control`), Updates, Diagnostics, Audit (8 cards; Session control is not among them).
 
 ### 1.6 Login page providers (anonymous)
@@ -108,7 +109,10 @@ GET pages (22):
 | 14 | `/admin/settings` | `settingsData` (`page_settings.go:188`) | settings.html | admin |
 | 15 | `/admin/oidc` | `oidcData` (`page_oidc.go:158`) | oidc.html | admin |
 | 16 | `/admin/identity` | `identityData` (`page_identity.go:220`) | identity.html | admin |
-| 17 | `/access/control` | `controlData` (`page_minion_control.go:250`); `?check=<workerID>\|<session>` | minion_control.html | admin |
+| 17 | `/access/control` | `controlData` (`page_minion_control.go:237`); `?check=<workerID>\|<session>` | minion_control.html | admin |
+| 17a | `/access` | `accessData` (`page_access.go:163`), op `access_matrix` | access.html | all (`userPageData`) |
+| 17b | `/access/grants` | `grantsData` (`page_access_grants.go:204`), op `grant_list` | access_grants.html (+ `_grant_row.html`) | all (`userPageData`) |
+| 17c | `/access/why` | `accessWhyData` (`page_access.go:230`); `?source=<workerID>\|<session>&target=<workerID>\|<session>`; ops `access_matrix`, `access_explain` | access_why.html | all (`userPageData`) |
 | 18 | `/admin/updates` | `updatesData` (`page_updates.go:44`) | updates.html | admin |
 | 19 | `/admin/diagnostics` | `diagnosticsData` (`page_diagnostics.go:87`) | diagnostics.html | admin |
 | 20 | `/admin/audit` | `auditData` (`page_audit.go:146`) | audit.html | admin |
@@ -173,7 +177,8 @@ POST routes behind `gate` (36). "Result" = what answers the htmx call. U = any s
 | `/admin/oidc/providers/{id}/roles` | `handleOIDCRoles` (`:127`) | A | `role_rule_set` | result |
 | `/admin/oidc/providers/{id}/delete` | `handleOIDCDelete` (`:116`) | A | `oidc_provider_set` (delete) | result |
 | `/admin/updates/hub` | `handleHubUpdate` (`page_updates.go:46`) | A | `hub_update` | "Updating the Hub from X to Y. It restarts within a minute; reload this page then. ..." / "The Hub was not updated: R." |
-| `/access/control/{action}` (user-managed, accept-all, master, accept) | `handleControlChange` (`page_minion_control.go:252`) | A | `control_set_worker` / `control_set_master` / `control_set_accept` | re-rendered `control_row` + HX-Trigger `control-changed`; unknown action 404 |
+| `/access/control/{action}` (user-managed, accept-all, master, bound-master, accept) | `handleControlChange` (`page_minion_control.go:275`, registered `:443`) | A | `control_set_worker` / `control_set_master` / `control_set_bound_master` / `control_set_accept` | re-rendered `control_row` + HX-Trigger `control-changed`; unknown action 404 |
+| `/access/grants/{action}` (set-level, revoke, approve, add) | `handleGrantChange` (`page_access_grants.go:234`, registered `:340`); `add` goes to `handleGrantAdd` (`:296`) | U | `grant_set` (set-level, add) / `grant_revoke` / `grant_approve` (button only for an administrator on a suspended row); then `grant_list` to re-render | row actions: re-rendered `grant_row` with a status line ("Saved"; a gone grant as `tr.grant-gone` "Revoked"; HTTP 409: "Changed by someone else. This is the current state."); `add`: result in `#grant-add-result` + HX-Trigger `grants-changed` |
 | `/admin/session-control` | `handleSessionControlSet` (`page_sessioncontrol.go:230`) | A | `session_control_set` | result |
 | `/admin/session-control/remove` | `handleSessionControlRemove` (`:231`) | A | `session_control_set` (remove) | result |
 
@@ -293,6 +298,17 @@ h1 "Identity & sign-in". If `InsecureTLS`: `div#insecure-tls-warning` notice-dan
 
 ### 2.17 `/access/control` Minion control (minion_control.html; block `control_row`)
 Page text explains master/slave sessions; `details.control-how` "How it works". Tools: `input#control-filter` ("Filter Workers"), checkbox `#control-only-masters`; `p#control-status`. Panel "Workers" table (`control-table`): per Worker row `tr#ctl-<id>[data-filter][data-masters]`: name/owner/online badge; User-managed form (`hx-post=/access/control/user-managed hx-trigger=change hx-target="closest tr" hx-swap=outerHTML`; hidden `worker_id`; checkbox `value=on` "People and API keys"); "Accepts control from": form `/access/control/accept-all` (checkbox "All Workers"); if not AcceptAll `details.control-pick` ("N chosen") with `input.pick-filter` and per other Worker form `/access/control/accept` (hidden `worker_id`, `source_worker_id`; checkbox); Master sessions: list of master forms `/access/control/master` (hidden `worker_id`, `session_name`, optional `legacy=1` with "limited" badge; checked checkbox) or "none (all slave sessions)"; `CanBeMaster`: `details` "Add a master session (N sessions)" with filter and checkbox forms, or help texts (offline / none to nominate); else "cannot be a master (thin Worker or older than 0.8.0)"; `.Error` form-error; `.Saved` "Saved: ..." with Undo form (`hx-post=/access/control/{Action}` hidden fields, button "Undo" `btn-link`). Panel "Matrix" `#ctl-matrix[hx-get=/access/control hx-select=#ctl-matrix hx-swap=outerHTML hx-trigger="control-changed from:body"]`: table (rows = master-hosting Workers, columns = target Workers) with per cell: "." (own Worker), badge "all" (target accepts all), or form `/access/control/accept` checkbox `name=value`; empty "No master session yet: nominate one in the Workers list above." Panel "Who can control this session?": `form[method=get action=/access/control][data-autosubmit]` select `name=check` (value `<workerID>|<session>`, grouped by Worker), noscript "Check" button; result `div.check-result` listing controllers and `Result.Note`; empty "No shared session is online: nothing to check." Script `minion-control.js`.
+
+Since v0.18.0 the Worker row also carries the session-bound masters (`control_list` member `BoundMasters`, `page_minion_control.go:123`, `:200`): two forms `hx-post=/access/control/bound-master hx-target=#ctl-<id> hx-swap=outerHTML` (minion_control.html L73: an existing bound master with its state `active` / `waiting` / `offline` / `unsupported` / `retired` / `inactive`; L87: nominate a candidate that is not yet a master), handled by the action `bound-master` -> `control_set_bound_master` (`page_minion_control.go:313-321`). Removing a name-only master that an active bound master holds is refused by the operation (conflict); the page shows the refusal in the row.
+
+### 2.17a `/access` Access: who reaches what (access.html; script `access.js`)
+`div.page-head.access-wide` h1 "Who reaches what"; `nav.access-nav` (Who reaches what / Grants / Why?). `section#access-matrix[hx-get=/access hx-select=#access-matrix hx-swap=outerHTML]`: h2 "Matrix", "As of <time>", button `[data-control=refresh][hx-get=/access hx-target=#access-matrix]`, button `[data-access=print]`. Empty state: "No session reaches another Worker yet. ..." with a link to `/access/control`. Otherwise `input#access-filter`, legend (V View, M Message, C Control, star = via master, blocked, none, Claimed / Verified), `table.access-matrix` inside `div.access-scroll`: column groups per target Worker (owner, offline mark) with one column per target session; one `tbody` per source Worker, one `tr[data-filter]` per source session with the proof badge (Verified for a bound master, else Claimed); cells `td.access-ok` (glyph, link to `/access/why?...` unless masked), `td.access-blocked`, or none. The list `ul.access-list` (one line per source session with what it reaches) is the narrow-screen form of the same data. Help line: sessions on the same Worker are not governed here. Read-only: the page calls only `access_matrix`.
+
+### 2.17b `/access/grants` Grants (access_grants.html; blocks `content`, `grant_add_form`; partial `_grant_row.html` block `grant_row`; script `access-grants.js`)
+h1 "Access", text on the three levels; `nav.access-nav`. Toolbar `div.grant-tools`: `input#grant-filter`, checkboxes `#grant-only-between` ("Between users"), `#grant-only-off` ("Suspended or expired"), button `[data-grant-add]` (hidden until the script runs). `details#grant-add` holds the Add form (`form#grant-add-form[hx-post=/access/grants/add hx-target=#grant-add-result]`: source Worker and session, target Worker and session or all shared sessions, level, until, note); the script moves it into `dialog#grant-dialog`. `section#grant-panel`: `table.rtable.grant-table` with columns Source, Target, Granted, State, Decided by, Until, Actions; `tbody#grant-rows[hx-get=/access/grants hx-select=#grant-rows hx-trigger="grants-changed from:body"]`; `p#grant-none` "No grant matches the filter."; empty state `div#grant-list.empty-state`. Row `tr#grant-<id>` (`grant_row`): source session @ Worker (owner), target session or "all shared sessions of <Worker>", level, state badge, `granted_by` with the authority, until, and the forms `hx-post=/access/grants/set-level`, `/approve` (only `.IsSuspended` and `.Admin`), `/revoke`, each `hx-target="closest tr" hx-swap=outerHTML hx-sync="closest tr:replace"`. Sources offered to a non-administrator are their own Workers; targets are the Workers of their session list.
+
+### 2.17c `/access/why` Why? (access_why.html; no script)
+h1 "Why?", "This page changes nothing."; `nav.access-nav`. `form[method=get action=/access/why].access-why-form`: selects `source` and `target` (option values `<workerID>|<session>`, grouped by Worker, filled from the `access_matrix` sources and targets plus the pair asked for), button "Check". With both chosen the page calls `access_explain` and shows a summary line and the checks in order (caller, grant, authority, time, sharing, workers), each with its state mark and text; links to `/access` and `/access/grants`. No navigation entry.
 
 ### 2.18 `/admin/session-control` (sessioncontrol.html) (no nav entry)
 Notice linking to `/access/control` ("Session control is now Access > Minion control ..."). Form `#sc-form hx-post=/admin/session-control hx-target=#create-result`: `worker` select (required), `session` text with `datalist#sc-sessions` (required, max 128), radios `name=targets` values `all` / `selected` (`#sc-mode-all`, `#sc-mode-selected`), fieldset `#sc-targets` checkboxes `name=target` values `worker:<id>` and `session:<id>:<name>`, note, "Save the grant". Grants table (Controller session, Targets, Created, Actions) with Remove form (`hx-post=/admin/session-control/remove`, hidden `worker`, `session`, hx-confirm "Remove this grant? The controller session loses access on its next call.", `span#remove-<i>`); empty row "There are no grants. No session can control other Workers."
@@ -434,6 +450,14 @@ Add provider (`POST /admin/oidc/providers`, `id` + fields), edit (same endpoint,
 ### 3.15 Minion control (A)
 All edits are single checkbox changes (`hx-trigger=change`) -> `POST /access/control/{user-managed|accept-all|master|accept}` returning the re-rendered row; "Saved: ..." with Undo; matrix refreshes on `control-changed`; "Who can control this session?" is a GET with `check=<worker>|<session>`. Legacy session-control grants: `/admin/session-control` (orphan page, A): `POST /admin/session-control`, `POST /admin/session-control/remove`.
 
+Session-bound masters (v0.18.0): a button form per candidate or bound master -> `POST /access/control/bound-master` (`control_set_bound_master`), answer and refresh as the other actions.
+
+### 3.15a Access: matrix, grants, why (U; the operations decide)
+1. Read: nav "Access" -> `/access` (matrix, Refresh re-reads `access_matrix`, Print); a cell link or the tab "Why?" -> `/access/why?source=..&target=..` (`access_explain`).
+2. Add a grant: `/access/grants`, "Add grant" (dialog, or the `details` block without scripts) -> `POST /access/grants/add` -> `grant_set`; the server refuses a session whose Worker differs from the chosen Worker; "7" / "30" days become an `expires_at`; success sets `HX-Trigger: grants-changed` and the list reloads.
+3. Change a level: row select + button -> `POST /access/grants/set-level` (`grant_set` with `id` + `if_revision`). Revoke: `POST /access/grants/revoke` (`grant_revoke`). Approve a suspended grant (administrator): `POST /access/grants/approve` (`grant_approve`); a non-administrator gets 404 from the web layer.
+4. Every row action re-renders the row from a fresh `grant_list`; a revision conflict (409) shows the current row with "Changed by someone else. This is the current state."
+
 ### 3.16 Diagnostics (A)
 Read-only `/admin/diagnostics` (reverse-proxy check). No actions.
 
@@ -468,6 +492,8 @@ Embedded by `//go:embed static/*.js static/*.css static/*.svg` (`web.go:30`), se
 | `share-bulk.js` | `/workers/{id}` | Share panel All/None buttons; any session checkbox change syncs radio `mode` (select/none); reveals bulk wrap after swaps | `[data-share-bulk]`, `[data-share-bulk-wrap]`, `input[name=name]`, `input[name=mode]`, event `htmx:afterSwap` |
 | `settings-filter.js` | `/admin/settings` | Live filter rows by key/env/help; hides empty sections; status line | `#settings-filter`, `#settings-filter-status`, `#settings-sections section`, `li[data-filter]` |
 | `minion-control.js` | `/access/control` | Filter Workers/matrix, "only Workers with master sessions", picker filters, auto-submit of the check select, reload on lost answer (sendError/timeout/5xx) | `#control-filter`, `#control-only-masters`, `#control-status`, `.control-table`, `.control-matrix`, `tr[data-filter][data-masters]`, `.pick-filter`, `li[data-filter]`, `form[data-autosubmit] select`, `.check-result` |
+| `access.js` (11 lines) | `/access` | Print button (`window.print`), filter of the source rows and of the narrow list | `[data-access=print]`, `#access-filter`, `#access-matrix [data-filter]` |
+| `access-grants.js` (81 lines) | `/access/grants` | Client-side filter (text, "Between users", "Suspended or expired"), moves the Add form into the dialog and opens it, closes it on `grants-changed`, limits the session selects to the chosen Worker | `#grant-filter`, `#grant-only-between`, `#grant-only-off`, `[data-grant-add]`, `[data-grant-cancel]`, `[data-grant-worker]`, `[data-filter]`, `#grant-dialog`, `#grant-add-form` |
 | `identity.js` | `/admin/identity` | Reauth (local/OIDC), JSON identity ops, clears secrets, passphrase code-point counter, proxy confirm, lock countdown, fresh-sign-in timer | `form[data-reauth=local|oidc]`, `form[data-identity-op]`, `[data-confirm-proxy]`, `[data-count-passphrase]`, `[data-passphrase-count]`, `#id-result`, `#id-lock` (`data-until`), `#id-lock-left`, `#id-fresh` (`data-until`), `[data-form-error]`; posts `/auth/reauth`, `/auth/reauth/oidc`, `/api/v1/ops/<op>` |
 | `/onboarding.js` (route) | `/workers/add`, `/api-keys`, `/invitations` | Delegated click handler for copy buttons: selects text, `navigator.clipboard.writeText`, button text "Copied" / "Press Ctrl+C to copy" | `[data-copy="#id"]`, optional `data-label` |
 
@@ -548,6 +574,55 @@ Extracted mechanically from `W/templates/*.html` (regex over: `action`, `hx-get/
 - L47: data-control="approve"
 - L49: action="{{.RemoveURL}}"; hx-post="{{.RemoveURL}}"; hx-target="#list-result"; hx-swap="innerHTML"; hx-disabled-elt="find button"; hx-confirm="Remove worker {{.Name}} ({{if .FingerprintWords}}{{.FingerprintWords}}..."
 - L50: data-control="remove"
+
+### _grant_row.html (10 lines with action attributes)
+
+- L10: hx-post="/access/grants/set-level"; hx-target="closest tr"; hx-swap="outerHTML"; hx-sync="closest tr:replace"; hx-disabled-elt="find button"
+- L11: name="id"; name="if_revision"
+- L12: name="source_worker_id"; name="source_session"
+- L13: name="target_worker_id"; name="target_session"
+- L14: name="expires_at"; name="note"
+- L16: name="level"
+- L23: hx-post="/access/grants/approve"; hx-target="closest tr"; hx-swap="outerHTML"; hx-sync="closest tr:replace"; hx-disabled-elt="find button"
+- L24: name="id"; name="if_revision"
+- L27: hx-post="/access/grants/revoke"; hx-target="closest tr"; hx-swap="outerHTML"; hx-sync="closest tr:replace"; hx-disabled-elt="find button"
+- L28: name="id"; name="if_revision"
+
+### access.html (6 lines with action attributes)
+
+- L4: href="/access"; href="/access/grants"; href="/access/why"
+- L5: hx-get="/access"; hx-select="#access-matrix"; hx-swap="outerHTML"
+- L8: hx-get="/access"; hx-target="#access-matrix"; hx-disabled-elt="this"
+- L10: href="/access/control"
+- L24: href="{{.Href}}"; href="{{.Href}}"
+- L32: src="/static/access.js"
+
+### access_grants.html (16 lines with action attributes)
+
+- L4: href="/access"; href="/access/grants"; href="/access/why"
+- L20: hx-get="/access/grants"; hx-select="#grant-rows"; hx-swap="outerHTML"; hx-trigger="grants-changed from:body"
+- L22: hx-get="/access/grants"; hx-select="#grant-panel"; hx-target="#grant-panel"; hx-swap="outerHTML"; hx-trigger="grants-changed from:body"
+- L27: src="/static/access-grants.js"
+- L30: action="/access/grants/add"; hx-post="/access/grants/add"; hx-target="#grant-add-result"; hx-swap="innerHTML"; hx-disabled-elt="find button[type=submit]"
+- L33: name="source_worker_id"
+- L37: name="source_session"
+- L43: name="target_worker_id"
+- L47: name="target_session"
+- L54: name="level"
+- L55: name="level"
+- L56: name="level"
+- L61: name="until"
+- L62: name="until"
+- L63: name="until"
+- L66: name="note"
+
+### access_why.html (5 lines with action attributes)
+
+- L4: href="/access"; href="/access/grants"; href="/access/why"
+- L7: action="/access/why"
+- L8: name="source"
+- L10: name="target"
+- L13: href="/access/grants"
 
 ### account.html (6 lines with action attributes)
 
@@ -707,19 +782,32 @@ Extracted mechanically from `W/templates/*.html` (regex over: `action`, `hx-get/
 - L12: name="password"
 - L18: href="{{.Path}}"
 
-### minion_control.html (11 lines with action attributes)
+### minion_control.html (24 lines with action attributes)
 
-- L21: hx-get="/access/control"; hx-select="#ctl-matrix"; hx-swap="outerHTML"; hx-trigger="control-changed from:body"
-- L27: hx-post="/access/control/accept"; hx-trigger="change"; hx-target="#ctl-{{$t.WorkerID}}"; hx-swap="outerHTML"; name="worker_id"; name="source_worker_id"; name="value"
-- L34: action="/access/control"; data-autosubmit
-- L35: name="check"
-- L45: src="/static/minion-control.js"
-- L50: hx-post="/access/control/user-managed"; hx-trigger="change"; hx-target="closest tr"; hx-swap="outerHTML"; name="worker_id"; name="value"
-- L52: hx-post="/access/control/accept-all"; hx-trigger="change"; hx-target="closest tr"; hx-swap="outerHTML"; name="worker_id"; name="value"
-- L55: hx-post="/access/control/accept"; hx-trigger="change"; hx-target="#ctl-{{$row.WorkerID}}"; hx-swap="outerHTML"; name="worker_id"; name="source_worker_id"; name="value"
-- L59: hx-post="/access/control/master"; hx-trigger="change"; hx-target="#ctl-{{$row.WorkerID}}"; hx-swap="outerHTML"; name="worker_id"; name="session_name"; name="legacy"; name="value"
-- L62: hx-post="/access/control/master"; hx-trigger="change"; hx-target="#ctl-{{$row.WorkerID}}"; hx-swap="outerHTML"; name="worker_id"; name="session_name"; name="value"
-- L65: hx-post="/access/control/{{.Action}}"; hx-target="#ctl-{{index .Fields "; hx-swap="outerHTML"; name="{{$k}}"
+- L25: hx-get="/access/control"; hx-select="#ctl-matrix"; hx-swap="outerHTML"; hx-trigger="control-changed from:body"
+- L28: hx-get="/access/control"; hx-target="#ctl-matrix"; hx-disabled-elt="this"
+- L33: hx-post="/access/control/accept"; hx-trigger="change"; hx-target="#ctl-{{$t.WorkerID}}"; hx-swap="outerHTML"; name="worker_id"; name="source_worker_id"; name="value"
+- L40: action="/access/control"; data-autosubmit
+- L41: name="check"
+- L51: src="/static/minion-control.js"
+- L56: hx-post="/access/control/user-managed"; hx-trigger="change"; hx-target="closest tr"; hx-swap="outerHTML"; name="worker_id"; name="value"
+- L58: hx-post="/access/control/accept-all"; hx-trigger="change"; hx-target="closest tr"; hx-swap="outerHTML"; name="worker_id"; name="value"
+- L64: hx-post="/access/control/accept"; hx-trigger="change"; hx-target="#ctl-{{$row.WorkerID}}"; hx-swap="outerHTML"; name="worker_id"; name="source_worker_id"; name="value"
+- L73: hx-post="/access/control/bound-master"; hx-target="#ctl-{{$row.WorkerID}}"; hx-swap="outerHTML"
+- L74: name="worker_id"
+- L75: name="session_name"
+- L76: name="incarnation_id"
+- L77: name="if_generation"
+- L78: name="value"
+- L87: hx-post="/access/control/bound-master"; hx-target="#ctl-{{$row.WorkerID}}"; hx-swap="outerHTML"
+- L88: name="worker_id"
+- L89: name="session_name"
+- L90: name="incarnation_id"
+- L91: name="if_generation"
+- L92: name="value"
+- L100: hx-post="/access/control/master"; hx-trigger="change"; hx-target="#ctl-{{$row.WorkerID}}"; hx-swap="outerHTML"; name="worker_id"; name="session_name"; name="legacy"; name="value"
+- L105: hx-post="/access/control/master"; hx-trigger="change"; hx-target="#ctl-{{$row.WorkerID}}"; hx-swap="outerHTML"; name="worker_id"; name="session_name"; name="value"
+- L110: hx-post="/access/control/{{.Action}}"; hx-target="#ctl-{{index .Fields "; hx-swap="outerHTML"; name="{{$k}}"
 
 ### oidc.html (17 lines with action attributes)
 
@@ -889,6 +977,7 @@ Extracted mechanically from `W/templates/*.html` (regex over: `action`, `hx-get/
 
 
 ## Appendix B. Counts (for sanity checks)
+- The counts below are the v0.12.0 state. Added since, by the access pages only: 3 GET pages (`/access`, `/access/grants`, `/access/why`), 1 POST route (`/access/grants/{action}`), 1 nav item (Access), 4 template files (`access.html`, `access_grants.html`, `access_why.html`, `_grant_row.html`), 2 static JS files (`access.js`, `access-grants.js`). Other pages added since v0.12.0 are not counted here.
 - Registered GET pages: 22 (20 via `RegisterPage` + `/login` + `/account/password`); non-page GET routes: 12 (+ `/static/*`).
 - POST routes behind the gate: 36 (table in 2.1). Plus auth/REST endpoints used by JS: `/auth/login`, `/auth/logout`, `/auth/reauth`, `/auth/reauth/oidc`, `/api/v1/ops/*`, `/api/v1/events`.
 - Nav items: 14 (3 Workspace, 4 Access, 7 Administration); banners: 2 sources; login providers: dynamic.
