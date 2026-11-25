@@ -60,9 +60,14 @@ package workers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,6 +125,9 @@ var _ PrincipalChecker = (*authz.Authorizer)(nil)
 // implements it.
 type GrantStore interface {
 	SessionControl(ctx context.Context, workerID, sessionName string) (store.SessionControlRow, error)
+	// SessionGrantsFor returns the direct session grants of the session
+	// (identified by name), expired and suspended ones included.
+	SessionGrantsFor(ctx context.Context, workerID, sessionName string) ([]store.SessionGrantRow, error)
 }
 
 var _ GrantStore = (*store.Store)(nil)
@@ -555,6 +563,26 @@ func (s *CallServer) authenticate(ctx context.Context, workerID, key, source str
 		s.log.Error("workers: cannot read a session-control grant", "worker_id", workerID, "error", err.Error())
 		return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
 	}
+	direct, err := s.lookupDirect(ctx, workerID, source)
+	if err != nil {
+		s.log.Error("workers: cannot read the session grants", "worker_id", workerID, "error", err.Error())
+		return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
+	}
+	if len(direct) > 0 {
+		// Direct session grants: the session principal carries them beside
+		// the session-control grant (nil scope when it has none).
+		var legacy authz.Scope
+		if grant != "" {
+			var targets []ops.KeyResource
+			if err := json.Unmarshal([]byte(grant), &targets); err != nil {
+				s.log.Error("workers: a session-control grant cannot be read", "worker_id", workerID, "error", err.Error())
+				return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
+			}
+			legacy = apikey.NewScope(targets, authz.GrantActions())
+		}
+		return authz.NewWorkerSessionPrincipal(workerID, source, legacy, directGrantsOf(direct)), actor,
+			grant + directDigest(direct), nil
+	}
 	if grant != "" {
 		var targets []ops.KeyResource
 		if err := json.Unmarshal([]byte(grant), &targets); err != nil {
@@ -600,6 +628,68 @@ func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (
 		return "", err
 	}
 	return row.TargetsJSON, nil
+}
+
+// lookupDirect returns the direct session grants of the session source on the
+// Worker (by name), nil when it has none.
+func (s *CallServer) lookupDirect(ctx context.Context, workerID, source string) ([]store.SessionGrantRow, error) {
+	if source == "" || s.cfg.Grants == nil {
+		return nil, nil
+	}
+	return s.cfg.Grants.SessionGrantsFor(ctx, workerID, source)
+}
+
+// grantKey is the value the re-check of a running call compares: the stored
+// targets of the session-control grant, followed by a digest of the direct
+// grants when the session has any. Without direct grants it is exactly the
+// stored targets.
+func (s *CallServer) grantKey(ctx context.Context, workerID, source string) (string, error) {
+	grant, err := s.lookupGrant(ctx, workerID, source)
+	if err != nil {
+		return "", err
+	}
+	direct, err := s.lookupDirect(ctx, workerID, source)
+	if err != nil {
+		return "", err
+	}
+	return grant + directDigest(direct), nil
+}
+
+// directDigest identifies the state of direct grant rows: it changes when a
+// row is added, removed, written (revision), suspended or given another
+// expiry. It is "" for no rows and never valid JSON otherwise.
+func directDigest(rows []store.SessionGrantRow) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(rows))
+	for _, g := range rows {
+		exp := int64(0)
+		if g.ExpiresAt != nil {
+			exp = *g.ExpiresAt
+		}
+		parts = append(parts, fmt.Sprintf("%s/%d/%t/%d", g.ID, g.Revision, g.SuspendedAt != nil, exp))
+	}
+	slices.Sort(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return "#direct:" + hex.EncodeToString(sum[:])
+}
+
+// directGrantsOf maps stored session grants to what the decision judges.
+func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
+	out := make([]authz.DirectGrant, 0, len(rows))
+	for _, g := range rows {
+		d := authz.DirectGrant{
+			ID: g.ID, TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: g.Level,
+			Authority: g.Authority, GrantedBy: g.GrantedBy, SourceOwnerID: g.SourceOwnerID, TargetOwnerID: g.TargetOwnerID,
+			Suspended: g.SuspendedAt != nil,
+		}
+		if g.ExpiresAt != nil {
+			d.ExpiresAt = time.UnixMilli(*g.ExpiresAt)
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // reauthenticate withdraws a running call when its key stops authenticating
@@ -648,7 +738,7 @@ func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.Cance
 			}
 		}
 		if grant != "" {
-			if cur, err := s.lookupGrant(ctx, pr.WorkerID, source); err == nil && cur != grant {
+			if cur, err := s.grantKey(ctx, pr.WorkerID, source); err == nil && cur != grant {
 				cancel(proto.NewError(proto.CodeForbidden, "the session-control grant was removed or changed"))
 				return
 			}
@@ -690,7 +780,7 @@ func (s *CallServer) decodeArgs(ctx context.Context, pr authz.Principal, workerI
 			// A grant reaches beyond the owner's own Workers (an admin-owned
 			// controller with targets of other owners): resolve among every
 			// Worker the grant may read.
-			tgt, err := s.cfg.Resolver.Resolve(ctx, rp, human, pr.Scope != nil && pr.Kind == authz.KindWorker)
+			tgt, err := s.cfg.Resolver.Resolve(ctx, rp, human, (pr.Scope != nil || len(pr.DirectGrants()) > 0) && pr.Kind == authz.KindWorker)
 			if err != nil {
 				return nil, "", err
 			}

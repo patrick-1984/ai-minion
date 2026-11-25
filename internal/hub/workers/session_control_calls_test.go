@@ -18,6 +18,24 @@ import (
 type fakeGrants struct {
 	mu   sync.Mutex
 	rows map[[2]string]string // (worker, session) -> targets JSON
+	// direct are the session grants by (source worker, source session).
+	direct map[[2]string][]store.SessionGrantRow
+}
+
+func (g *fakeGrants) SessionGrantsFor(_ context.Context, workerID, session string) ([]store.SessionGrantRow, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]store.SessionGrantRow(nil), g.direct[[2]string{workerID, session}]...), nil
+}
+
+// setDirect replaces the direct grants of a source session.
+func (g *fakeGrants) setDirect(workerID, session string, rows ...store.SessionGrantRow) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.direct == nil {
+		g.direct = map[[2]string][]store.SessionGrantRow{}
+	}
+	g.direct[[2]string{workerID, session}] = rows
 }
 
 func (g *fakeGrants) SessionControl(_ context.Context, workerID, session string) (store.SessionControlRow, error) {
