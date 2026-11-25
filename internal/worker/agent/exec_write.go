@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -52,6 +55,11 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 		}
 	}()
 
+	// A Hub request for another Worker is refused before anything else, and
+	// leaves its audit row through the deferred record.
+	if err = e.requireTargetWorker(ctx, t.WorkerID); err != nil {
+		return res, err
+	}
 	if err = e.checkPolicy(ctx, t, checkShared); err != nil {
 		return res, err
 	}
@@ -83,8 +91,15 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 			return res, internalErr("read the result cache", gerr)
 		}
 	}
+	// The request as the cache knows it: what it does, who sent it and a digest
+	// of what it carries. A request id answers only the request it was first
+	// used for, by the caller who used it (audit F13).
+	next := store.ResultRecord{
+		RequestID: wa.RequestID, Op: op.Name, Session: t.SessionName, Force: wa.Force,
+		Caller: writeCaller(ctx), PayloadHash: writePayloadHash(ctx),
+	}
 	if hit {
-		if rec.Op != op.Name || rec.Session != t.SessionName || rec.Force != wa.Force {
+		if !rec.SameRequest(next) {
 			return res, apiErr(proto.CodeConflict, "", "this request_id was already used for a different request")
 		}
 		if jerr := json.Unmarshal(rec.Result, &res); jerr != nil {
@@ -98,7 +113,8 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 	// result cannot be stored afterwards, a duplicate finds this record and
 	// answers unknown instead of sending again (AD-15). Without the record the
 	// request does not run.
-	rec = store.ResultRecord{RequestID: wa.RequestID, Op: op.Name, Session: t.SessionName, Force: wa.Force, Result: []byte(unfinishedResult)}
+	rec = next
+	rec.Result = []byte(unfinishedResult)
 	if perr := e.state.PutResult(ctx, rec); perr != nil {
 		return res, internalErr("record the request", perr)
 	}
@@ -162,6 +178,46 @@ func (e *Executor) checkPolicy(ctx context.Context, t ops.Target, checkShared bo
 		}
 	}
 	return nil
+}
+
+// localCaller is the caller of a write that came through a local entry point
+// (the local socket, the CLI, MCP on this host): the entry point is the origin.
+const localCaller = "local"
+
+// writeCaller names who sent a write, for the result cache: the identity
+// members of the Hub-derived origin, or [localCaller]. The members hold no
+// space (proto.Origin.Validate), so the text is unambiguous. It is the caller
+// as far as the origin tells it: two sessions of one source Worker, or two
+// grants of one user, are the same caller here.
+func writeCaller(ctx context.Context) string {
+	o := hubOrigin(ctx)
+	if o == nil {
+		return localCaller
+	}
+	return string(o.Kind) + " user=" + o.UserID + " actor=" + o.ActorID + " key=" + o.KeyID + " worker=" + o.SourceWorkerID
+}
+
+// writePayloadHash is the SHA-256 digest of the arguments of the write in
+// their canonical JSON form (object members sorted, no insignificant space,
+// numbers as written), so that the same request encoded twice has one digest.
+// Arguments that are not JSON are digested as they are. It is "" when the
+// entry point did not pass the arguments on (see [withWritePayload]); the
+// payload is then not compared. Only the digest is stored, never the text.
+func writePayloadHash(ctx context.Context) string {
+	raw, ok := ctx.Value(payloadCtxKey{}).(json.RawMessage)
+	if !ok {
+		return ""
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err == nil && !dec.More() {
+		if b, merr := json.Marshal(v); merr == nil {
+			raw = b
+		}
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // unfinishedResult is the result a duplicate gets for a request that was
