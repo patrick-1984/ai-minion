@@ -1,0 +1,19 @@
+/* Access, "Why?": the layered explainer (DESIGN 11.4). Tokens of minion.css only. */
+.access-why-form select { width: 100%; max-width: 100%; min-width: 0; }
+.access-why-answer { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); min-width: 0; }
+.access-why-question { margin: 0 0 8px; overflow-wrap: anywhere; }
+.access-why-question:focus { outline: none; }
+.access-why-question:focus-visible { outline: 2px solid var(--muted); outline-offset: 4px; }
+.access-why-answer .access-why-summary { margin: 0 0 8px; overflow-wrap: anywhere; }
+.access-why-blocked { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; }
+.access-why-checks li { padding: 4px 8px; border-left: 3px solid transparent; overflow-wrap: anywhere; }
+.access-why-checks li.access-why-blocking { border-left-color: var(--danger); background: var(--danger-subtle); }
+.access-why-first { display: inline-block; font-weight: 600; color: var(--danger); }
+.access-why-first::before { content: "\2190\00a0"; }
+.access-why-fix { display: inline-block; margin-left: 8px; font-weight: 600; text-decoration: underline; }
+.access-why-fix::before { content: "\2192\00a0"; }
+@media (max-width: 640px) {
+  .access-why-checks { padding-left: 16px; }
+  .access-why-mark, .access-why-id { min-width: 0; margin-right: 8px; }
+  .access-why-text { display: block; }
+}
