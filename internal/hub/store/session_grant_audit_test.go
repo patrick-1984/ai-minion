@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"sort"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -109,8 +110,8 @@ func TestGrantSuspendedByTriggersIsAudited(t *testing.T) {
 		}
 		causes = append(causes, r.Detail)
 	}
-	if !(causes[0] == "cause=grantor_inactive" && causes[1] == "cause=grantor_not_admin") &&
-		!(causes[1] == "cause=grantor_inactive" && causes[0] == "cause=grantor_not_admin") {
+	sort.Strings(causes)
+	if causes[0] != "cause=grantor_inactive" || causes[1] != "cause=grantor_not_admin" {
 		t.Fatalf("causes = %v", causes)
 	}
 }

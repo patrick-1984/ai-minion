@@ -304,7 +304,7 @@ func planControlConversion(ctx context.Context, tx *sql.Tx) (ControlConversion, 
 	if err != nil {
 		return plan, err
 	}
-	type nomination struct{ worker, session, incarnation, legacy string }
+	type nomination struct{ worker, session, legacy string }
 	var named []nomination
 	for rows.Next() {
 		var n nomination

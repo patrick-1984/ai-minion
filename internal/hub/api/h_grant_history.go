@@ -132,7 +132,7 @@ func (h grantHistoryHandlers) history(ctx context.Context, c *Call, a ops.GrantH
 	if err != nil {
 		return ops.GrantHistoryResult{}, err
 	}
-	out := ops.GrantHistoryResult{Events: res.Events, NextCursor: res.NextCursor}
+	out := ops.GrantHistoryResult(res)
 	admin, err := h.g.isAdmin(ctx, c.Principal)
 	if err != nil {
 		return ops.GrantHistoryResult{}, err
