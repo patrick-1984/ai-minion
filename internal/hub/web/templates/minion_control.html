@@ -26,9 +26,9 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
   <h2 id="ctl-matrix-h">Matrix</h2>
   {{if .Data.Sources}}<p class="help">One row per Worker that has master sessions. A tick in a column means that Worker lets the row's master sessions control its shared sessions. Click to change.</p>
   <div class="matrix-wrap"><table class="control-matrix">
-    <thead><tr><th scope="col" class="corner">Masters on ↓ &nbsp;·&nbsp; may control →</th>{{range .Data.Targets}}<th scope="col" data-filter="{{.Name}} {{.Owner}}">{{.Name}}</th>{{end}}</tr></thead>
-    <tbody>{{range $src := .Data.Sources}}<tr data-filter="{{$src.Name}} {{$src.Owner}}"><th scope="row">{{$src.Name}}</th>
-      {{range $t := $.Data.Targets}}<td>{{if eq $t.WorkerID $src.WorkerID}}<span class="muted" title="its own Worker" aria-label="its own Worker">·</span>{{else if $t.AcceptAll}}<span class="badge plain" title="{{$t.Name}} accepts all Workers">all</span>{{else}}<form hx-post="/access/control/accept" hx-trigger="change" hx-target="#ctl-{{$t.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$t.WorkerID}}"><input type="hidden" name="source_worker_id" value="{{$src.WorkerID}}"><input type="checkbox" name="value" value="on"{{if index $t.Accepted $src.WorkerID}} checked{{end}} aria-label="{{$t.Name}} accepts control from {{$src.Name}}"></form>{{end}}</td>{{end}}
+    <thead><tr><th scope="col" class="corner">Masters on ↓ &nbsp;·&nbsp; may control →</th>{{range .Data.Targets}}<th scope="col" data-filter="{{.Name}} {{.Owner}}">{{.Name}} <span class="muted matrix-owner">{{.Owner}}</span></th>{{end}}</tr></thead>
+    <tbody>{{range $src := .Data.Sources}}<tr data-filter="{{$src.Name}} {{$src.Owner}}"><th scope="row">{{$src.Name}} <span class="muted matrix-owner">{{$src.Owner}}</span></th>
+      {{range $t := $.Data.Targets}}<td>{{if eq $t.WorkerID $src.WorkerID}}<span class="muted" title="its own Worker" aria-label="its own Worker">·</span>{{else if $t.AcceptAll}}{{with $t.Badge $src.WorkerID $src.Name}}{{template "accept_badge" .}}{{else}}<span class="badge plain" title="{{$t.Name}} accepts all Workers">all</span>{{end}}{{else}}<form hx-post="/access/control/accept" hx-trigger="change" hx-target="#ctl-{{$t.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$t.WorkerID}}"><input type="hidden" name="source_worker_id" value="{{$src.WorkerID}}"><input type="checkbox" name="value" value="on"{{if index $t.Accepted $src.WorkerID}} checked{{end}} aria-label="{{$t.Name}} accepts control from {{$src.Name}}">{{with $t.Badge $src.WorkerID $src.Name}} {{template "accept_badge" .}}{{end}}</form>{{end}}</td>{{end}}
     </tr>{{end}}</tbody>
   </table></div>{{else}}<p class="muted">No master session yet: nominate one in the Workers list above.</p>{{end}}
 </section>
@@ -54,11 +54,12 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
   <td data-label="User-managed"><form hx-post="/access/control/user-managed" hx-trigger="change" hx-target="closest tr" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if .UserManaged}} checked{{end}}> People and API keys</label></form></td>
   <td data-label="Accepts control from">
     <form hx-post="/access/control/accept-all" hx-trigger="change" hx-target="closest tr" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if .AcceptAll}} checked{{end}}> All Workers</label></form>
+    {{if .AcceptAll}}{{with .Exceptions}}<p class="help">Except: {{range .}}{{.Source}} {{template "accept_badge" .}} {{end}}</p>{{end}}{{end}}
     {{if not .AcceptAll}}{{$row := .}}<details class="control-pick">
-      <summary><span class="summary-title">Choose Workers</span> <span class="summary-meta">{{len .Accepts}} selected</span></summary>
+      <summary><span class="summary-title">Choose Workers</span> <span class="summary-meta">{{len .Accepted}} selected</span></summary>
       <div class="details-body">
         <input type="search" class="pick-filter" placeholder="Filter" aria-label="Filter the Workers">
-        <ul>{{range .Others}}<li data-filter="{{.Name}} {{.Owner}}"><form hx-post="/access/control/accept" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="source_worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if index $row.Accepted .WorkerID}} checked{{end}}> {{.Name}} <span class="muted">{{.Owner}}</span></label></form></li>{{end}}</ul>
+        <ul>{{range .Others}}<li data-filter="{{.Name}} {{.Owner}}"><form hx-post="/access/control/accept" hx-trigger="change" hx-target="#ctl-{{$row.WorkerID}}" hx-swap="outerHTML"><input type="hidden" name="worker_id" value="{{$row.WorkerID}}"><input type="hidden" name="source_worker_id" value="{{.WorkerID}}"><label><input type="checkbox" name="value" value="on"{{if index $row.Accepted .WorkerID}} checked{{end}}> {{.Name}} <span class="muted">{{.Owner}}</span></label>{{with $row.Badge .WorkerID .Name}} {{template "accept_badge" .}}{{end}}</form></li>{{end}}</ul>
       </div>
     </details>{{end}}
   </td>
@@ -103,6 +104,9 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
       </div>
     </details>{{else}}<p class="muted">{{if .Online}}{{if .Masters}}No other shared session to nominate.{{else}}No shared session on this Worker: share sessions on its Worker page to pick one.{{end}}{{else}}Offline: its sessions show when it connects.{{end}}</p>{{end}}{{else}}<span class="muted">cannot be a master (thin Worker or older than 0.8.0)</span>{{end}}
     {{if .Error}}<p class="form-error" role="alert">{{.Error}}</p>{{end}}
+    {{if .Note}}<p class="control-saved" role="status">{{.Note}}</p>{{end}}
     {{if .Saved}}<p class="control-saved" role="status">Saved: {{.Saved}}{{with .Undo}} <form hx-post="/access/control/{{.Action}}" hx-target="#ctl-{{index .Fields "worker_id"}}" hx-swap="outerHTML" class="undo">{{range $k, $v := .Fields}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}<button type="submit" class="btn-link">Undo</button></form>{{end}}</p>{{end}}
   </td>
 </tr>{{end}}
+
+{{define "accept_badge"}}<span class="badge" data-tone="{{.Tone}}" title="{{.Label}}"><span aria-hidden="true">{{.Text}}</span><span class="sr-only">{{.Label}}</span></span>{{end}}

@@ -142,3 +142,131 @@ func TestRemovingAnEmptyAcceptanceHasNoUndo(t *testing.T) {
 	rec := post(t, adminServer(t), pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}})
 	mustNotHave(t, rec.Body.String(), ">Undo</button>")
 }
+
+// acceptStatesFixture: ci accepts two sessions from boss-box, esp32 has an
+// explicit-nothing row for boss-box.
+func acceptStatesFixture() ops.ControlListResult {
+	fx := controlFixture()
+	two, none := []string{"ci", "ci-2"}, []string{}
+	fx.Workers[1].Accepts = []ops.ControlAccept{{SourceWorkerID: "wA", Sessions: &two}}
+	fx.Workers[2].Accepts = []ops.ControlAccept{{SourceWorkerID: "wA", Sessions: &none}}
+	return fx
+}
+
+const (
+	limitedBadge = `<span class="badge" data-tone="warning" title="ci accepts only 2 sessions from boss-box"><span aria-hidden="true">limited (2)</span><span class="sr-only">ci accepts only 2 sessions from boss-box</span></span>`
+	blockedBadge = `<span class="badge" data-tone="danger" title="esp32 accepts nothing from boss-box"><span aria-hidden="true">blocked</span><span class="sr-only">esp32 accepts nothing from boss-box</span></span>`
+)
+
+// A limited acceptance and an explicit-nothing one are not a plain tick: the
+// picker and the matrix mark them, and the explicit-nothing one is not ticked.
+func TestMinionControlShowsLimitedAndBlockedAcceptances(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, acceptStatesFixture())
+	connect(t, f)
+	body := get(t, adminServer(t), pathMinionControl, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body,
+		// picker
+		`value="on" checked> boss-box <span class="muted">root</span></label> `+limitedBadge,
+		`value="on"> boss-box <span class="muted">root</span></label> `+blockedBadge,
+		// matrix
+		`value="on" checked aria-label="ci accepts control from boss-box"> `+limitedBadge,
+		`value="on" aria-label="esp32 accepts control from boss-box"> `+blockedBadge)
+	mustNotHave(t, body, `checked aria-label="esp32 accepts control from boss-box"`)
+	start := strings.Index(body, `id="ctl-wT"`)
+	mustHave(t, body[start:start+strings.Index(body[start:], "</tr>")], "0 selected")
+
+	// "All Workers" on: the matrix shows the mark instead of "all", and the
+	// row names the exceptions (its picker is hidden).
+	fx := acceptStatesFixture()
+	fx.Workers[0].AcceptAll, fx.Workers[1].AcceptAll, fx.Workers[2].AcceptAll = true, true, true
+	fx.Workers[1].Masters = []ops.ControlMaster{{SessionName: "m"}}
+	f = newFakeOps().reply(ops.OpControlList, fx)
+	connect(t, f)
+	body = get(t, adminServer(t), pathMinionControl, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `<td>`+limitedBadge+`</td>`, `<td>`+blockedBadge+`</td>`,
+		`Except: boss-box `+limitedBadge, `Except: boss-box `+blockedBadge,
+		// no row at all: still the plain "all"
+		`<span class="badge plain" title="boss-box accepts all Workers">all</span>`,
+		`<span class="badge plain" title="esp32 accepts all Workers">all</span>`)
+	if n := strings.Count(body, `accepts all Workers">all</span>`); n != 2 {
+		t.Errorf("plain all cells = %d, want 2 (boss-box and esp32 from ci)", n)
+	}
+}
+
+func postAccept(t *testing.T, fx ops.ControlListResult, target, value string) (*fakeOps, string) {
+	t.Helper()
+	f := newFakeOps().reply(ops.OpControlList, fx).reply(ops.OpControlSetAccept, ops.WriteResult{Outcome: ops.OutcomeDelivered})
+	connect(t, f)
+	form := url.Values{"worker_id": {target}, "source_worker_id": {"wA"}}
+	if value != "" {
+		form.Set("value", value)
+	}
+	rec := post(t, adminServer(t), pathMinionControl+"/accept", adminHeader, form)
+	if rec.Code != 200 {
+		t.Fatalf("POST = %d %s", rec.Code, rec.Body)
+	}
+	return f, rec.Body.String()
+}
+
+// A tick on a limited acceptance never widens it: the stored list goes back
+// unchanged and the row says where to change it.
+func TestTickOnALimitedAcceptanceKeepsItsList(t *testing.T) {
+	f, body := postAccept(t, acceptStatesFixture(), "wB", "on")
+	calls := f.called(ops.OpControlSetAccept)
+	if len(calls) != 1 || calls[0].Args["accept"] != true {
+		t.Fatalf("calls = %+v", calls)
+	}
+	got, _ := json.Marshal(calls[0].Args["sessions"])
+	if string(got) != `["ci","ci-2"]` {
+		t.Fatalf("sessions = %s, want the stored list", got)
+	}
+	mustHave(t, body, `id="ctl-wB"`, "This acceptance is limited to 2 sessions. Change the list with the operation control_set_accept.", limitedBadge)
+	mustNotHave(t, body, ">Undo</button>", "Saved:")
+}
+
+// A tick on an explicit-nothing row grants the whole Worker and says so. Undo
+// only where a revoke writes the explicit-nothing row back (accept_all on).
+func TestTickOnABlockedAcceptanceGrantsTheWholeWorker(t *testing.T) {
+	f, body := postAccept(t, acceptStatesFixture(), "wT", "on")
+	calls := f.called(ops.OpControlSetAccept)
+	if len(calls) != 1 || calls[0].Args["accept"] != true {
+		t.Fatalf("calls = %+v", calls)
+	}
+	if _, has := calls[0].Args["sessions"]; has {
+		t.Fatalf("a whole-Worker grant carries no list: %+v", calls[0].Args)
+	}
+	mustHave(t, body, "esp32 now accepts every shared session from boss-box.", "No Undo")
+	mustNotHave(t, body, ">Undo</button>")
+
+	fx := acceptStatesFixture()
+	fx.Workers[2].AcceptAll = true
+	_, body = postAccept(t, fx, "wT", "on")
+	mustHave(t, body, "esp32 now accepts every shared session from boss-box.", ">Undo</button>", `name="value" value="off"`)
+}
+
+// Undo is offered only where the inverse click restores the stored state.
+func TestAcceptUndoRestoresExactlyOrIsNotOffered(t *testing.T) {
+	// no row -> accepted: the untick deletes the row again.
+	f, body := postAccept(t, controlFixture(), "wT", "on")
+	if _, has := f.called(ops.OpControlSetAccept)[0].Args["sessions"]; has {
+		t.Fatal("a plain tick carries no list")
+	}
+	mustHave(t, body, "Accepts control from that Worker.", ">Undo</button>", `name="value" value="off"`)
+	// no row on a Worker that accepts all: the untick would block the source.
+	fx := controlFixture()
+	fx.Workers[2].AcceptAll = true
+	_, body = postAccept(t, fx, "wT", "on")
+	mustHave(t, body, "No Undo: it would block that Worker.")
+	mustNotHave(t, body, ">Undo</button>")
+	// whole Worker -> removed: the tick accepts the whole Worker again.
+	_, body = postAccept(t, controlFixture(), "wB", "")
+	mustHave(t, body, "No longer accepts control from that Worker.", ">Undo</button>", `name="value" value="on"`)
+	// limited -> removed, blocked -> removed, nothing -> removed: no Undo.
+	for target, want := range map[string]string{"wB": "so there is no Undo", "wT": "No Undo: it accepted nothing from it before."} {
+		_, body = postAccept(t, acceptStatesFixture(), target, "")
+		mustHave(t, body, want)
+		mustNotHave(t, body, ">Undo</button>")
+	}
+	_, body = postAccept(t, controlFixture(), "wT", "")
+	mustNotHave(t, body, ">Undo</button>")
+}
