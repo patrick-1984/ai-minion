@@ -1466,6 +1466,7 @@ details.fold > summary:focus-visible { outline-offset: 2px; }
 .access-matrix thead th.corner { z-index: 3; }
 .access-matrix :is(.access-tw, .access-first, .access-group td) { border-left: 1px solid var(--border); }
 .access-matrix .access-group th { font-weight: 600; }
+.access-matrix .access-group :is(th, td) { background: var(--surface-subtle); border-top: 1px solid var(--border); }
 .access-matrix .access-ok { font-weight: 600; }
 .access-matrix .access-blocked { color: var(--muted); }
 .access-proof { font-weight: 400; }
