@@ -1,0 +1,15 @@
+/* access: grants, second step and row states (tokens of minion.css only) */
+.grant-page-status:empty { display: none; }
+.grant-page-status { margin: 0 0 12px; }
+.grant-page-status .btn { margin-left: 8px; }
+.grant-blocked { background: var(--warning-subtle); color: var(--warning); cursor: help; }
+.grant-confirm { display: grid; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-left: 3px solid var(--warning); background: var(--surface-subtle); }
+.grant-confirm-text { margin: 0; font-weight: 600; }
+.grant-confirm .help { margin: 0; }
+.grant-confirm .btn { justify-self: start; }
+.grant-table tr[data-unconfirmed] td { background: var(--surface-subtle); }
+.grant-table tr[data-unconfirmed] .grant-actions { opacity: 0.6; }
+.grant-table tbody[aria-busy="true"] { opacity: 0.6; }
+.grant-form .choice { display: flex; gap: 8px; align-items: baseline; font-weight: 400; }
+.grant-table td[data-label="In effect"] .chip { margin-left: 0; }
+/* end access: grants, second step and row states */

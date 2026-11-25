@@ -9,6 +9,9 @@ package web
 // Design: docs/minion-session-grants/DESIGN.md 11.3 and 11.5.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"html/template"
 	"net/http"
@@ -27,6 +30,10 @@ const pathAccessGrants = "/access/grants"
 const grantsChangedEvent = "grants-changed"
 
 const grantConflictText = "Changed by someone else. This is the current state."
+
+// grantUnconfirmedEvent tells the page that the row of one grant may no
+// longer show what the Hub has: its controls stay off until the list reloads.
+const grantUnconfirmedEvent = "grant-unconfirmed"
 
 // GrantsPage is what access_grants.html sees as .Data.
 type GrantsPage struct {
@@ -53,6 +60,51 @@ type GrantRow struct {
 	Gone  bool
 	Saved string
 	Error string
+	// Effect is what the access matrix says about the pair of this grant.
+	Effect GrantEffect
+	// Confirm is the sentence of the second step of a change that widens
+	// access; ConfirmLevel is the level it would set.
+	Confirm      string
+	ConfirmLevel string
+}
+
+// GrantEffect is the result of a grant as the access matrix has it: the
+// stored state of a grant alone never says that it works.
+type GrantEffect struct {
+	// Known is false when the matrix could not be read or has no such pair.
+	Known bool
+	// Level is the level that works now; empty while a layer blocks it.
+	Level string
+	// BlockedBy is the first failing layer (ops.AccessBlocked...).
+	BlockedBy string
+	// Reached of Covered target sessions work now (a wildcard grant covers
+	// several).
+	Reached, Covered int
+}
+
+// EffectLabel is the level in effect, with the count for a wildcard grant
+// that reaches only some of the sessions it covers.
+func (g GrantRow) EffectLabel() string {
+	l := grantLevelLabel(g.Effect.Level)
+	if g.Effect.Covered > 1 {
+		return l + " on " + strconv.Itoa(g.Effect.Reached) + " of " + strconv.Itoa(g.Effect.Covered) + " sessions"
+	}
+	return l
+}
+
+// BlockedText names the blocking layer for people.
+func (g GrantRow) BlockedText() string { return accessBlockText(g.Effect.BlockedBy) }
+
+// Masked is true when the grant names a session the viewer may not see: the
+// row shows the name as the Hub gives it and offers nothing but Revoke.
+func (g GrantRow) Masked() bool { return g.SourceMasked || g.TargetMasked }
+
+// TargetText is the target of the grant in words.
+func (g GrantRow) TargetText() string {
+	if g.TargetSession == "" {
+		return "all shared sessions of " + g.TargetWorker()
+	}
+	return g.TargetSession
 }
 
 func (g GrantRow) SourceWorker() string {
@@ -83,14 +135,16 @@ func (g GrantRow) StateKey() string {
 	return ops.GrantStateActive
 }
 
+// StateLabel is the stored state of the grant. "Active" is not "works now":
+// the column "In effect" says that, from the access matrix.
 func (g GrantRow) StateLabel() string {
 	switch g.StateKey() {
 	case ops.GrantStateSuspended:
-		return "Suspended: needs an administrator"
+		return "Suspended"
 	case ops.GrantStateExpired:
 		return "Expired"
 	}
-	return "In effect"
+	return "Active"
 }
 
 func (g GrantRow) StateTone() string {
@@ -100,7 +154,7 @@ func (g GrantRow) StateTone() string {
 	case ops.GrantStateExpired:
 		return "warning"
 	}
-	return "positive"
+	return "info"
 }
 
 func (g GrantRow) IsSuspended() bool { return g.StateKey() == ops.GrantStateSuspended }
@@ -161,14 +215,75 @@ var grantTemplates = sync.OnceValue(func() *template.Template {
 	return template.Must(template.ParseFS(templateFiles, "templates/access_grants.html", "templates/_grant_row.html"))
 })
 
+// grantEffect looks the pair of a grant up in the access matrix. m is nil
+// when the matrix could not be read. A suspended or expired grant is blocked
+// whatever the matrix says; an active one is "unknown" without a cell.
+func grantEffect(g GrantRow, m *ops.AccessMatrixResult) GrantEffect {
+	var e GrantEffect
+	if m != nil {
+		for _, c := range m.Cells {
+			if c.Source < 0 || c.Source >= len(m.Sources) || c.Target < 0 || c.Target >= len(m.Targets) {
+				continue
+			}
+			s, t := m.Sources[c.Source], m.Targets[c.Target]
+			pair := s.WorkerID == g.SourceWorkerID && s.Session == g.SourceSession && t.WorkerID == g.TargetWorkerID &&
+				(g.TargetSession == "" || t.Session == g.TargetSession)
+			if c.Via != g.ID && (!pair || c.Via == ops.AccessViaMaster) {
+				continue
+			}
+			e.Known = true
+			e.Covered++
+			if c.InEffect != "" {
+				e.Reached++
+				if ra, _ := ops.GrantLevelRank(c.InEffect); e.Level == "" || ra > grantRank(e.Level) {
+					e.Level = c.InEffect
+				}
+			} else if e.BlockedBy == "" {
+				e.BlockedBy = c.BlockedBy
+			}
+		}
+	}
+	if e.Level != "" {
+		e.BlockedBy = ""
+		return e
+	}
+	if !e.Known || e.BlockedBy == "" {
+		switch g.StateKey() {
+		case ops.GrantStateSuspended:
+			return GrantEffect{Known: true, BlockedBy: ops.AccessBlockedSuspended}
+		case ops.GrantStateExpired:
+			return GrantEffect{Known: true, BlockedBy: ops.AccessBlockedExpired}
+		}
+		// Nothing says that it works, and nothing names a blocking layer.
+		return GrantEffect{}
+	}
+	return e
+}
+
+func grantRank(level string) int {
+	r, _ := ops.GrantLevelRank(level)
+	return r
+}
+
 func grantRows(r *http.Request, c OpCaller, admin bool) ([]GrantRow, error) {
 	var res ops.GrantListResult
 	if err := c.CallOp(r, ops.OpGrantList, ops.GrantListArgs{}, &res); err != nil {
 		return nil, err
 	}
+	// The matrix is the read model of "works now". Without it the rows say
+	// "unknown" rather than claim an effect from the stored state.
+	var matrix *ops.AccessMatrixResult
+	if len(res.Grants) > 0 {
+		var m ops.AccessMatrixResult
+		if err := c.CallOp(r, ops.OpAccessMatrix, ops.AccessMatrixArgs{}, &m); err == nil {
+			matrix = &m
+		}
+	}
 	rows := make([]GrantRow, 0, len(res.Grants))
 	for _, g := range res.Grants {
-		rows = append(rows, GrantRow{Grant: g, Admin: admin})
+		row := GrantRow{Grant: g, Admin: admin}
+		row.Effect = grantEffect(row, matrix)
+		rows = append(rows, row)
 	}
 	return rows, nil
 }
@@ -211,9 +326,15 @@ func grantsData(r *http.Request, c OpCaller, u pageUser) (any, error) {
 	return p, nil
 }
 
-func grantFailure(err error) string {
+// grantFailure is the sentence for a refused change. Only a revision conflict
+// of a row is "changed by someone else"; every other refusal (a duplicate, a
+// Worker waiting for approval, a suspended grant) keeps the words of the
+// operation. The operations answer all of them with the code "conflict", so
+// the revision conflict is told apart by its field or its message.
+func grantFailure(err error, row bool) string {
 	var oe *OpError
-	if errors.As(err, &oe) && oe.Status == http.StatusConflict {
+	if row && errors.As(err, &oe) && (oe.Status == http.StatusConflict || oe.Code == "conflict") &&
+		(oe.Field == "if_revision" || strings.Contains(oe.Message, "changed meanwhile") || strings.Contains(oe.Message, "revision")) {
 		return grantConflictText
 	}
 	return failureText(err)
@@ -228,30 +349,137 @@ func splitSession(v string) (worker, session string) {
 	return "", v
 }
 
+// grantWidens reports whether a grant needs the explicit second step of
+// DESIGN.md 11.3: Control, a wildcard target, or two owners (also when an
+// owner is not known). View and Message for one session of one owner need none.
+func grantWidens(level, targetSession, sourceOwner, targetOwner string) bool {
+	return level == ops.GrantLevelControl || targetSession == "" || sourceOwner == "" || targetOwner == "" || sourceOwner != targetOwner
+}
+
+// grantSentence names source, target and level of a change in one sentence.
+func grantSentence(sourceSession, sourceWorker, sourceOwner, targetSession, targetWorker, targetOwner, level, until string) string {
+	who := func(worker, owner string) string {
+		if owner == "" {
+			return worker
+		}
+		return worker + " (" + owner + ")"
+	}
+	can := "see"
+	switch level {
+	case ops.GrantLevelMessage:
+		can = "see and send prompts to"
+	case ops.GrantLevelControl:
+		can = "see, send prompts to and type into"
+	}
+	target := "the session " + targetSession + " on " + who(targetWorker, targetOwner)
+	if targetSession == "" {
+		target = "every session that " + who(targetWorker, targetOwner) + " shares, now and later"
+	}
+	return sourceSession + " on " + who(sourceWorker, sourceOwner) + " will get " + grantLevelLabel(level) + ": it can " + can + " " + target + ", " + until + "."
+}
+
+// writeGrantNote answers a row action without replacing the row: the text
+// goes to the status region of the page. unconfirmed marks the row as possibly
+// stale (a change was sent and the list could not be read back).
+func writeGrantNote(w http.ResponseWriter, id, text string, unconfirmed bool) {
+	h := w.Header()
+	h.Set("HX-Retarget", "#grant-status")
+	h.Set("HX-Reswap", "innerHTML")
+	if unconfirmed {
+		if b, err := json.Marshal(map[string]any{grantUnconfirmedEvent: map[string]string{"id": id}}); err == nil {
+			h.Set("HX-Trigger", string(b))
+		}
+	}
+	writeFragmentTemplate(w, grantTemplates(), "grant_note", text)
+}
+
+func findGrantRow(rows []GrantRow, id string) (GrantRow, bool) {
+	for _, g := range rows {
+		if g.ID == id {
+			return g, true
+		}
+	}
+	return GrantRow{}, false
+}
+
 // handleGrantChange applies one action. A row action answers the row as the
 // Hub has it now; "add" answers a status line for the dialog and asks the
 // list to reload.
 func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	f := r.PostForm
 	action := r.PathValue("action")
-	if action == "add" {
-		handleGrantAdd(w, r, c)
+	switch action {
+	case "add":
+		handleGrantAdd(w, r, c, u)
+		return
+	case "set-level", "revoke", "approve", "show":
+	default:
+		http.NotFound(w, r)
 		return
 	}
-	id := f.Get("id")
-	// An unreadable revision is sent as absent: the operation refuses it.
-	rev, _ := strconv.ParseUint(f.Get("if_revision"), 10, 64)
+	if action == "approve" && !u.Admin {
+		http.NotFound(w, r)
+		return
+	}
+	// Every row action names its grant and, to write, the revision it saw.
+	// Without them nothing is sent: grant_set would create a grant and
+	// grant_revoke would delete whatever is there.
+	id := strings.TrimSpace(f.Get("id"))
+	if id == "" {
+		writeGrantNote(w, "", "Nothing was changed: the row did not name its grant. Reload the list.", false)
+		return
+	}
+	rev, revErr := strconv.ParseUint(f.Get("if_revision"), 10, 64)
+	if action != "show" && (revErr != nil || rev == 0) {
+		writeGrantNote(w, id, "Nothing was changed: the row did not say which version of the grant it shows. Reload the list.", false)
+		return
+	}
 	var (
 		callErr error
 		saved   = "Saved"
 	)
 	switch action {
+	case "show":
+		saved = ""
 	case "set-level":
+		level := f.Get("level")
+		if _, ok := ops.GrantLevelRank(level); !ok {
+			writeGrantNote(w, id, "Nothing was changed: choose a level.", false)
+			return
+		}
+		// The change is built from the grant as the Hub lists it, not from
+		// what the form carried.
+		rows, err := grantRows(r, c, u.Admin)
+		if err != nil {
+			writeGrantNote(w, id, "Nothing was changed: "+failureText(err), false)
+			return
+		}
+		cur, ok := findGrantRow(rows, id)
+		switch {
+		case !ok:
+			writeFragmentTemplate(w, grantTemplates(), "grant_row", GrantRow{Grant: ops.Grant{ID: id}, Gone: true, Error: "Nothing was changed."})
+			return
+		case cur.Masked():
+			cur.Error = "This grant names a session you may not see: it can only be revoked."
+		case cur.Revision != rev:
+			cur.Error = grantConflictText
+		case f.Get("confirm") != "1" && grantRank(level) > grantRank(cur.Level) && grantWidens(level, cur.TargetSession, cur.SourceOwner, cur.TargetOwner):
+			until := "with no end"
+			if cur.ExpiresAt != nil && !cur.ExpiresAt.IsZero() {
+				until = "until " + cur.UntilText()
+			}
+			cur.Confirm = grantSentence(cur.SourceSession, cur.SourceWorker(), cur.SourceOwner, cur.TargetSession, cur.TargetWorker(), cur.TargetOwner, level, until)
+			cur.ConfirmLevel = level
+		}
+		if cur.Error != "" || cur.Confirm != "" {
+			writeFragmentTemplate(w, grantTemplates(), "grant_row", cur)
+			return
+		}
 		a := ops.GrantSetArgs{
-			WriteArgs: newWriteArgs(), ID: id, IfRevision: rev, Level: f.Get("level"),
-			SourceWorkerID: f.Get("source_worker_id"), SourceSession: f.Get("source_session"),
-			TargetWorkerID: f.Get("target_worker_id"), TargetSession: f.Get("target_session"),
-			ExpiresAt: f.Get("expires_at"), Note: f.Get("note"),
+			WriteArgs: newWriteArgs(), ID: id, IfRevision: rev, Level: level,
+			SourceWorkerID: cur.SourceWorkerID, SourceSession: cur.SourceSession,
+			TargetWorkerID: cur.TargetWorkerID, TargetSession: cur.TargetSession,
+			ExpiresAt: cur.ExpiresAtValue(), Note: cur.Note,
 		}
 		var res ops.GrantSetResult
 		callErr = c.CallOp(r, ops.OpGrantSet, a, &res)
@@ -260,40 +488,48 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 		callErr = c.CallOp(r, ops.OpGrantRevoke, ops.GrantRevokeArgs{WriteArgs: newWriteArgs(), ID: id, IfRevision: rev}, &res)
 		saved = "Revoked"
 	case "approve":
-		if !u.Admin {
-			http.NotFound(w, r)
-			return
-		}
 		var res ops.GrantSetResult
 		callErr = c.CallOp(r, ops.OpGrantApprove, ops.GrantApproveArgs{WriteArgs: newWriteArgs(), ID: id, IfRevision: rev}, &res)
 		saved = "Approved"
-	default:
-		http.NotFound(w, r)
-		return
 	}
-	// Answer with the row as the Hub has it now, whatever happened.
-	row := GrantRow{Grant: ops.Grant{ID: id}, Admin: u.Admin, Gone: true}
+	// Answer with the row as the Hub has it now, whatever happened. When the
+	// list cannot be read the row stays on the page, marked as unconfirmed.
 	rows, err := grantRows(r, c, u.Admin)
 	if err != nil {
-		writeResultError(w, failureText(err))
+		switch {
+		case action == "show":
+			writeGrantNote(w, id, "The list could not be read: "+failureText(err), false)
+		case callErr != nil:
+			writeGrantNote(w, id, "The change was refused ("+grantFailure(callErr, true)+") and the list could not be read after it. Reload the list before you change this grant again.", true)
+		default:
+			writeGrantNote(w, id, "The change was sent, but the list could not be read after it: the row may show the old state. Reload the list before you change this grant again.", true)
+		}
 		return
 	}
-	for _, g := range rows {
-		if g.ID == id {
-			row = g
-			break
-		}
+	row, ok := findGrantRow(rows, id)
+	if !ok {
+		row = GrantRow{Grant: ops.Grant{ID: id}, Admin: u.Admin, Gone: true}
 	}
 	if callErr != nil {
-		row.Error = grantFailure(callErr)
+		row.Error = grantFailure(callErr, true)
 	} else {
 		row.Saved = saved
 	}
 	writeFragmentTemplate(w, grantTemplates(), "grant_row", row)
 }
 
-// handleGrantAdd creates one grant from the Add dialog.
-func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller) {
+// grantAddConfirm is the second step of the Add dialog.
+type grantAddConfirm struct {
+	Sentence string
+	// For binds the confirmation to the values it was shown for: a form that
+	// changed afterwards is asked again.
+	For string
+}
+
+// handleGrantAdd creates one grant from the Add dialog. The target is never
+// chosen for the user: target_scope says "one" session or "all" shared
+// sessions, and without it nothing is sent.
+func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	f := r.PostForm
 	a := ops.GrantSetArgs{
 		WriteArgs: newWriteArgs(), SourceWorkerID: f.Get("source_worker_id"), TargetWorkerID: f.Get("target_worker_id"),
@@ -301,6 +537,11 @@ func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	}
 	sw, ss := splitSession(f.Get("source_session"))
 	tw, ts := splitSession(f.Get("target_session"))
+	scope := f.Get("target_scope")
+	if scope == "all" {
+		tw, ts = "", ""
+	}
+	_, levelOK := ops.GrantLevelRank(a.Level)
 	switch {
 	case a.SourceWorkerID == "" || ss == "":
 		writeResultError(w, "Choose the source Worker and its session.")
@@ -308,31 +549,63 @@ func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	case a.TargetWorkerID == "":
 		writeResultError(w, "Choose the target Worker.")
 		return
+	case scope != "one" && scope != "all":
+		writeResultError(w, "Choose the target: one session, or every shared session of the target Worker.")
+		return
+	case scope == "one" && ts == "":
+		writeResultError(w, "Choose the target session.")
+		return
 	case sw != "" && sw != a.SourceWorkerID:
 		writeResultError(w, "The source session is not on the chosen source Worker.")
 		return
 	case tw != "" && tw != a.TargetWorkerID:
 		writeResultError(w, "The target session is not on the chosen target Worker.")
 		return
+	case !levelOK:
+		writeResultError(w, "Choose a level.")
+		return
 	}
 	a.SourceSession, a.TargetSession = ss, ts
-	switch f.Get("until") {
+	until, untilText := f.Get("until"), "with no end"
+	switch until {
 	case "7", "30":
-		days, _ := strconv.Atoi(f.Get("until"))
+		days, _ := strconv.Atoi(until)
 		a.ExpiresAt = time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour).Format("2006-01-02T15:04:05.000Z")
+		untilText = "for " + until + " days"
+	default:
+		until = ""
+	}
+	// The second step: a grant that widens access is named in one sentence
+	// and sent only when the same values come back confirmed.
+	sources, targets := grantWorkers(r, u)
+	src, tgt := grantWorkerOption(sources, a.SourceWorkerID), grantWorkerOption(targets, a.TargetWorkerID)
+	if grantWidens(a.Level, ts, src.Owner, tgt.Owner) {
+		sum := sha256.Sum256([]byte(strings.Join([]string{a.SourceWorkerID, ss, a.TargetWorkerID, scope, ts, a.Level, until}, "\x00")))
+		key := hex.EncodeToString(sum[:])
+		if f.Get("confirm") != "1" || f.Get("confirm_for") != key {
+			writeFragmentTemplate(w, grantTemplates(), "grant_add_confirm", grantAddConfirm{
+				Sentence: grantSentence(ss, src.Name, src.Owner, ts, tgt.Name, tgt.Owner, a.Level, untilText), For: key})
+			return
+		}
 	}
 	var res ops.GrantSetResult
 	if err := c.CallOp(r, ops.OpGrantSet, a, &res); err != nil {
-		writeResultError(w, grantFailure(err))
-		return
-	}
-	if r.Header.Get("HX-Request") == "" {
-		// Without scripts the form is a plain post: back to the list.
-		http.Redirect(w, r, pathAccessGrants, http.StatusSeeOther)
+		writeResultError(w, grantFailure(err, false))
 		return
 	}
 	w.Header().Set("HX-Trigger", grantsChangedEvent)
 	writeFragment(w, []byte(`<p class="grant-status" role="status">Saved</p>`))
+}
+
+// grantWorkerOption finds a Worker of the dialog; an unknown one keeps its id
+// as the name and has no owner (which asks for the confirmation).
+func grantWorkerOption(list []GrantWorkerOption, id string) GrantWorkerOption {
+	for _, o := range list {
+		if o.ID == id {
+			return o
+		}
+	}
+	return GrantWorkerOption{ID: id, Name: id}
 }
 
 func init() {
