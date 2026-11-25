@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,7 +39,8 @@ type rawObject map[string]json.RawMessage
 
 // readObject reads a request body into a rawObject. An empty body is the
 // empty object, which suits operations without arguments; JSON null too. Any
-// member is kept: unknown fields are ignored later (AD-4, additive rule).
+// member is kept: unknown fields are ignored later (AD-4, additive rule), or
+// refused by a strict operation (ops.StrictArgs).
 func readObject(body io.Reader) (rawObject, error) {
 	if body == nil {
 		return rawObject{}, nil
@@ -168,6 +171,108 @@ func exactMembers(t reflect.Type, o rawObject) rawObject {
 		}
 	}
 	return out
+}
+
+// unknownMemberReason is details.reason of the refusal of a strict operation.
+const unknownMemberReason = "unknown_member"
+
+// errUnknownMember is the answer of a strict operation (ops.StrictArgs) to a
+// member it does not declare. The message holds no caller content; the name
+// is in details.field when it is a plain member name (letters, digits, "_",
+// "-" and the dots of a path, at most 64 bytes), so that nothing else is
+// echoed back.
+func errUnknownMember(name string) *Error {
+	e := NewError(proto.CodeInvalidArgument, "is not an argument of this operation, which refuses members it does not declare")
+	e.Details = map[string]any{"reason": unknownMemberReason}
+	if plainMemberName(name) {
+		e.Details["field"] = name
+	}
+	return e
+}
+
+func plainMemberName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// unknownMember returns the dotted path of a member of o that the argument
+// type t does not declare by its exact name, and whether there is one. It is
+// the strict counterpart of exactMembers and follows the same rules: nested
+// objects and the elements of arrays are checked, types that decode
+// themselves are left alone. Of several unknown members the first in name
+// order is returned, so the answer does not depend on map order.
+func unknownMember(t reflect.Type, o rawObject) (string, bool) {
+	t = derefType(t)
+	if t.Kind() != reflect.Struct || decodesItself(t) {
+		return "", false
+	}
+	names := make([]string, 0, len(o))
+	for name := range o {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ft, ok := memberType(t, name)
+		if !ok {
+			return name, true
+		}
+		if sub, ok := unknownInRaw(ft, o[name]); ok {
+			return name + "." + sub, true
+		}
+	}
+	return "", false
+}
+
+// unknownInRaw applies unknownMember to the JSON value raw of type t. A value
+// of another shape than t has no members to check: the decoder reports it.
+func unknownInRaw(t reflect.Type, raw json.RawMessage) (string, bool) {
+	t = derefType(t)
+	switch {
+	case decodesItself(t):
+	case t.Kind() == reflect.Struct:
+		var in rawObject
+		if err := json.Unmarshal(raw, &in); err == nil && in != nil {
+			return unknownMember(t, in)
+		}
+	case t.Kind() == reflect.Slice && t.Elem().Kind() != reflect.Uint8, t.Kind() == reflect.Array:
+		var in []json.RawMessage
+		if err := json.Unmarshal(raw, &in); err == nil {
+			for _, v := range in {
+				if sub, ok := unknownInRaw(t.Elem(), v); ok {
+					return sub, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// unknownValue returns a query name of vals that is no member (or dotted
+// path to a member) of the argument type t and is not one of the allowed
+// routing names, and whether there is one; the first in name order.
+func unknownValue(t reflect.Type, vals url.Values, allowed ...string) (string, bool) {
+	names := make([]string, 0, len(vals))
+	for name := range vals {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if slices.Contains(allowed, name) {
+			continue
+		}
+		if _, ok := fieldTypeAt(t, strings.Split(name, ".")); !ok {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 func derefType(t reflect.Type) reflect.Type {
