@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hub: storage for session grants (table `session_grant`, migration 0032, store functions, session purge). Nothing reads it yet.
+
 ## v0.20.6
 
 ### Fixed
