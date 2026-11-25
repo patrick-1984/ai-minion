@@ -181,8 +181,9 @@ func TestResultCacheKeepsCallerAndPayloadHash(t *testing.T) {
 	}
 }
 
-// A row of a Worker that did not store the caller and the payload yet has ”
-// in both columns (the defaults of migration 0015) and compares as before.
+// A row of a Worker that did not store the caller and the payload yet has
+// the empty string in both columns (the defaults of migration 0015) and
+// compares as before.
 func TestResultRowFromBeforeTheCallerColumnsComparesAsBefore(t *testing.T) {
 	ctx := context.Background()
 	clk := newFakeClock()
