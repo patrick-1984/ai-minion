@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
@@ -201,7 +202,8 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 	defer cancel()
 	pending := &masterPending{incarnation: c.Master.IncarnationID, cancel: cancel}
 	m.mu.Lock()
-	if live, _, err := m.authorizeLocked(c); err != nil || live != l {
+	live, lease, err := m.authorizeLocked(c)
+	if err != nil || live != l {
 		m.mu.Unlock()
 		return nil, errMasterDenied
 	}
@@ -215,7 +217,7 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 	req.admit = func(ctx context.Context, on Online) error { return m.admitMaster(ctx, c, pending, on, req.Session) }
 	result, err := m.router.Call(qctx, req)
 	if op == ops.OpSendText {
-		m.recordMasterWrite(ctx, c.Worker.ID, req, result, err)
+		m.recordMasterWrite(ctx, c.Worker.ID, lease.row.SessionName, req, result, err)
 		if errors.Is(err, context.Canceled) {
 			return nil, errMasterDenied
 		}
@@ -291,14 +293,22 @@ func masterRoute(requestID, op string, raw json.RawMessage) (CallRequest, error)
 	return r, nil
 }
 
-func (m *MasterControl) recordMasterWrite(ctx context.Context, workerID string, req CallRequest, result any, err error) {
+// recordMasterWrite audits a bound master's write; session is the session
+// name of the lease row the call ran under.
+func (m *MasterControl) recordMasterWrite(ctx context.Context, workerID, session string, req CallRequest, result any, err error) {
 	if m.auditor == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), masterIOTimeout)
 	defer cancel()
-	_ = m.auditor.Record(ctx, audit.Event{
+	ev := audit.Event{
 		Actor: "worker:" + workerID, Action: req.Op, Target: req.WorkerID + ":" + req.Session,
-		Outcome: writeAuditOutcome(result, err),
-	})
+		Outcome: writeAuditOutcome(result, err), Detail: "proof=bound",
+	}
+	if session != "" {
+		ev.Source = workerID + ":" + session
+	}
+	if aerr := m.auditor.Record(ctx, ev); aerr != nil {
+		slog.Default().Error("workers: audit write failed", "action", req.Op, "error", aerr.Error())
+	}
 }

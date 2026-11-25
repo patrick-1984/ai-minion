@@ -491,7 +491,11 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 		err = withdrawn // the credential was withdrawn while the call ran
 	}
 	if op.ChangesState() {
-		s.auditCall(ctx, actor, op.Name, callTarget(args), writeAuditOutcome(res, err))
+		ev := audit.Event{Actor: actor, Action: op.Name, Target: callTarget(args), Outcome: writeAuditOutcome(res, err)}
+		if req.SourceSession != "" {
+			ev.Source = workerID + ":" + req.SourceSession
+		}
+		s.auditEvent(ctx, ev)
 	}
 	if errors.Is(cause, errCallerGone) {
 		outcome = "caller_gone"
@@ -744,6 +748,10 @@ func targetOfArgs(args any) (ops.Target, bool) {
 
 func writeAuditOutcome(res any, err error) string {
 	if err != nil {
+		// A refusal is not a failure: the call was not allowed.
+		if c := proto.CodeOf(err); c == proto.CodeForbidden || c == proto.CodeNotFound {
+			return "denied"
+		}
 		return "failed"
 	}
 	if wr, ok := res.(ops.WriteResult); ok && wr.Outcome != ops.OutcomeDelivered {
@@ -761,11 +769,15 @@ func denialOutcome(err error) string {
 }
 
 func (s *CallServer) auditCall(ctx context.Context, actor, action, target, outcome string) {
+	s.auditEvent(ctx, audit.Event{Actor: actor, Action: action, Target: target, Outcome: outcome})
+}
+
+func (s *CallServer) auditEvent(ctx context.Context, ev audit.Event) {
 	if s.cfg.Auditor == nil {
 		return
 	}
-	if err := s.cfg.Auditor.Record(context.WithoutCancel(ctx), audit.Event{Actor: actor, Action: action, Target: target, Outcome: outcome}); err != nil {
-		s.log.Error("workers: audit write failed", "action", action, "error", err.Error())
+	if err := s.cfg.Auditor.Record(context.WithoutCancel(ctx), ev); err != nil {
+		s.log.Error("workers: audit write failed", "action", ev.Action, "error", err.Error())
 	}
 }
 

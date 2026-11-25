@@ -5,6 +5,7 @@
 ### Fixed
 
 - Minion control: withdrawing "accepts control from" for one Worker on a Worker that accepts control from all Workers no longer widens that source to every shared session (the Hub keeps a row that allows nothing); `control_set_master` and `session_control_set` refuse to revoke a session-bound master by name instead of answering delivered and revoking nothing; `control_check` reports a store error instead of leaving the master out.
+- Audit: events carry a source session, a grant id and a k=v detail (migration 0033); Minion control changes record what was set, brokered writes name the calling session, and a refused brokered write is recorded as `denied` instead of `failed`.
 
 ## v0.20.6
 

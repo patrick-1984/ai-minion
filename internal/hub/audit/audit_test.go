@@ -730,3 +730,42 @@ func TestStalledLogOutputDoesNotBlockCommits(t *testing.T) {
 		t.Error("the drops were not reported once the output resumed")
 	}
 }
+
+func TestRecordStoresSourceGrantAndDetail(t *testing.T) {
+	s := openStore(t)
+	l := audit.New(s)
+	ev := audit.Event{Actor: "worker:w1", Action: "send_text", Target: "w2:build", Outcome: "success",
+		Source: "w1:boss", GrantID: "g-1", Detail: "proof=name accept=true"}
+	if err := l.Record(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	page, err := l.List(context.Background(), audit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].Event != ev {
+		t.Fatalf("events = %+v, want %+v", page.Events, ev)
+	}
+}
+
+func TestDetailGrammarIsClosed(t *testing.T) {
+	for _, ok := range []string{"", "a=b", "source_worker=0197-x accept=true sessions=all", "n=3"} {
+		if !audit.ValidDetail(ok) {
+			t.Errorf("ValidDetail(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{"free text", "a=b  c=d", " a=b", "a=b ", "A=b", "a1=b", "a=", "=b", "a=b=c",
+		"a=\"x\"", "a=b\tc=d", "a=b\nc=d", "k=" + strings.Repeat("x", audit.MaxFieldLen)} {
+		if audit.ValidDetail(bad) {
+			t.Errorf("ValidDetail(%q) = true", bad)
+		}
+		ev := audit.Event{Actor: "a", Action: "x", Outcome: "success", Detail: bad}
+		if err := ev.Validate(); !errors.Is(err, audit.ErrInvalid) {
+			t.Errorf("Validate with detail %q = %v, want ErrInvalid", bad, err)
+		}
+	}
+	long := audit.Event{Actor: "a", Action: "x", Outcome: "success", Source: strings.Repeat("s", audit.MaxFieldLen+1)}
+	if err := long.Validate(); !errors.Is(err, audit.ErrInvalid) {
+		t.Errorf("oversize source = %v, want ErrInvalid", err)
+	}
+}

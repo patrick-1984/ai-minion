@@ -459,6 +459,7 @@ func (d *Dispatcher) audit(ctx context.Context, c *Call, outcome string) {
 	ev := audit.Event{
 		Actor: c.Identity.Actor, ActingAs: c.Identity.ActingAs,
 		Action: c.Op.Name, Target: ResourceLabel(c.Resource), Outcome: outcome,
+		Source: c.AuditSource, Detail: c.AuditDetail,
 	}
 	if err := d.Audit.Record(context.WithoutCancel(ctx), ev); err != nil {
 		d.logger().Error("audit write failed", "action", c.Op.Name, "error", err)

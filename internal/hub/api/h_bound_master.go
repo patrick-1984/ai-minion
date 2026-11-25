@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"strconv"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
@@ -43,6 +44,10 @@ func RegisterBoundMaster(r *Registry, st *store.Store, change func(context.Conte
 		if w.OwnerID != fields[0] || hex.EncodeToString(w.Pub) != fields[1] {
 			return ops.WriteResult{}, ownerErr(store.ErrWorkerOwnerChanged)
 		}
+		if ops.ValidSessionName(a.SessionName) {
+			c.AuditSource = a.WorkerID + ":" + a.SessionName
+		}
+		c.AuditDetail = "session_set=" + strconv.FormatBool(a.Master) + " proof=bound"
 		if _, err := change(ctx, w, a, c.Identity.Actor); err != nil {
 			if errors.Is(err, store.ErrMasterCandidate) || errors.Is(err, store.ErrMasterRevision) {
 				return ops.WriteResult{}, NewError(proto.CodeConflict, err.Error())
