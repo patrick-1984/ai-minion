@@ -534,6 +534,12 @@ type CallRequest struct {
 	Session string
 	// Args is the op's argument struct (a value or a pointer), encoded as is.
 	Args any
+	// PromptOnly routes a send_text of a caller that holds message but not
+	// operate on the session (a Message grant): the decision accepts message
+	// too, and the Worker gets operate for this one agent-only, submitted,
+	// unforced send. The caller (the name-only call handler) builds those
+	// arguments; any other op or shape is an internal error.
+	PromptOnly bool
 	// admit is the last, private check on a scoped master dispatch, after
 	// opening the exact destination connection and before sending any bytes.
 	admit func(context.Context, Online) error
@@ -746,6 +752,37 @@ func (rt *Router) CanReadSession(ctx context.Context, p authz.Principal, workerI
 	return false, err
 }
 
+// HoldsMessageOnly reports whether p holds message but not operate on the
+// session now: the holder of a Message grant, whose send_text is a prompt.
+func (rt *Router) HoldsMessageOnly(ctx context.Context, p authz.Principal, workerID, session string) (bool, error) {
+	held, err := rt.az.EffectiveActions(ctx, p, authz.SessionResource{WorkerID: workerID, Name: session})
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(held, ops.ActionMessage) && !slices.Contains(held, ops.ActionOperate), nil
+}
+
+// promptOnlyRequest reports whether req is the one shape PromptOnly allows:
+// send_text on a session, agent-only, submitted and not forced.
+func promptOnlyRequest(op string, req CallRequest) bool {
+	if op != ops.OpSendText || req.Session == "" {
+		return false
+	}
+	var a ops.SendTextArgs
+	switch v := req.Args.(type) {
+	case ops.SendTextArgs:
+		a = v
+	case *ops.SendTextArgs:
+		if v == nil {
+			return false
+		}
+		a = *v
+	default:
+		return false
+	}
+	return a.AgentOnly && a.Submit && !a.Force
+}
+
 // prepare validates the request, decides it and computes the request frame.
 // Nothing has been sent yet when it returns an error.
 func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool) (*call, error) {
@@ -763,7 +800,14 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.Session != "" {
 		res = authz.SessionResource{WorkerID: req.WorkerID, Name: req.Session}
 	}
-	if err := rt.az.Decide(ctx, req.Principal, op.Actions, res); err != nil {
+	accepted := op.Actions
+	if req.PromptOnly {
+		if !promptOnlyRequest(op.Name, req) {
+			return nil, proto.NewError(proto.CodeInternal, "a prompt-only request must be an agent-only, submitted send_text")
+		}
+		accepted = ops.MustActionSet(ops.ActionOperate, ops.ActionMessage)
+	}
+	if err := rt.az.Decide(ctx, req.Principal, accepted, res); err != nil {
 		return nil, err
 	}
 	if err := rt.checkUserManaged(ctx, req.Principal, op.Name, req.WorkerID); err != nil {
@@ -782,6 +826,25 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if err != nil {
 		return nil, err
 	}
+	if req.PromptOnly {
+		// The Worker executes send_text under operate; the agent-only guard
+		// of the arguments keeps the send a prompt to an agent pane.
+		if !slices.Contains(actions, ops.ActionOperate) {
+			if actions, err = ops.NewActionSet(append(slices.Clone(actions), ops.ActionOperate)...); err != nil {
+				return nil, proto.NewError(proto.CodeInternal, "")
+			}
+		}
+		inner := check
+		check = func(on Online) error {
+			if !on.HasFeature(proto.FeatureSendTextAgentOnly) {
+				return proto.NewError(proto.CodeUnsupportedOp, "the Worker does not support prompts to agent panes only; update it")
+			}
+			if inner != nil {
+				return inner(on)
+			}
+			return nil
+		}
+	}
 	args, err := json.Marshal(req.Args)
 	if err != nil {
 		return nil, proto.NewError(proto.CodeInvalidArgument, "the arguments cannot be encoded")
@@ -789,7 +852,7 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.Args == nil || (reflect.ValueOf(req.Args).Kind() == reflect.Pointer && reflect.ValueOf(req.Args).IsNil()) {
 		args = []byte("{}")
 	}
-	origin, err := rt.originOf(ctx, req.Principal, op.Actions, res)
+	origin, err := rt.originOf(ctx, req.Principal, accepted, res)
 	if err != nil {
 		return nil, err
 	}

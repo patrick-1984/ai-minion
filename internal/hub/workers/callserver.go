@@ -159,6 +159,9 @@ type CallContext struct {
 	// before decoding (a UUIDv7, or ""): it names the Worker of an op whose
 	// arguments name none (sessions_list), as the worker_id of a REST request.
 	RequestWorkerID string
+	// admit is the dispatch fence of a call that a grant authorized: the
+	// Router runs it on the opened connection, before it writes the request.
+	admit func(context.Context, Online) error
 }
 
 // CallFunc executes one operation of a call stream. A streaming operation
@@ -453,6 +456,10 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	c := &CallContext{WorkerID: workerID, Principal: pr, Actor: actor, Op: op, Args: args,
 		SourceSession: req.SourceSession, RequestWorkerID: reqWorker}
 
+	if grant != "" {
+		c.admit = s.admitGrant(workerID, req.SourceSession, grant)
+	}
+
 	cctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	// The request is complete: any further byte or the end of the stream
@@ -696,6 +703,24 @@ func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
 	return out
 }
 
+// admitGrant is the dispatch fence of a call authorized by the grants of the
+// session source: it reads them again, as authenticate did, and refuses when
+// they are not the ones (key grant) the call was authorized with. A failing
+// store refuses too.
+func (s *CallServer) admitGrant(workerID, source, grant string) func(context.Context, Online) error {
+	return func(ctx context.Context, _ Online) error {
+		cur, err := s.grantKey(ctx, workerID, source)
+		if err != nil {
+			s.log.Error("workers: cannot re-read the grants before a dispatch", "worker_id", workerID, "error", err.Error())
+			return proto.NewError(proto.CodeInternal, "")
+		}
+		if cur != grant {
+			return proto.NewError(proto.CodeForbidden, "the grant was removed or changed")
+		}
+		return nil
+	}
+}
+
 // reauthenticate withdraws a running call when its key stops authenticating
 // (revoked, expired, owner deactivated, AD-11). A failing store is not a
 // reason to end the call.
@@ -724,28 +749,46 @@ func (s *CallServer) reauthenticate(ctx context.Context, cancel context.CancelCa
 // stops being valid: the Worker was removed, or its owner was deactivated or
 // holds no grant any more (F-07). A call authorized by the session-control
 // grant of the session source (stored targets grant) also ends when that
-// grant was removed or changed. A failing store is not a reason to end the
-// call.
+// grant was removed or changed. One failing re-check (a store error) is
+// passed over; the second in a row ends the call.
 func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.CancelCauseFunc, pr authz.Principal, source, grant string) {
 	t := time.NewTicker(s.cfg.ReauthInterval)
 	defer t.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+		failed := false
 		if s.cfg.Authz != nil {
-			if ok, err := s.cfg.Authz.Valid(ctx, pr); err == nil && !ok {
+			ok, err := s.cfg.Authz.Valid(ctx, pr)
+			if err == nil && !ok {
 				cancel(proto.NewError(proto.CodeForbidden, "not allowed"))
 				return
 			}
+			failed = err != nil
 		}
 		if grant != "" {
-			if cur, err := s.grantKey(ctx, pr.WorkerID, source); err == nil && cur != grant {
+			cur, err := s.grantKey(ctx, pr.WorkerID, source)
+			if err == nil && cur != grant {
 				cancel(proto.NewError(proto.CodeForbidden, "the session-control grant was removed or changed"))
 				return
 			}
+			failed = failed || err != nil
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !failed {
+			failures = 0
+			continue
+		}
+		if failures++; failures >= 2 {
+			s.log.Error("workers: a running call could not be re-checked twice in a row and ends", "worker_id", pr.WorkerID)
+			cancel(proto.NewError(proto.CodeForbidden, "the permission of the call could not be re-checked"))
+			return
 		}
 	}
 }

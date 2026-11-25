@@ -234,9 +234,6 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs) (
 		return none, nil, NewError(proto.CodeForbidden, "not allowed")
 	}
 	level, _ := ops.GrantLevelRank(a.Level)
-	if a.Level == ops.GrantLevelMessage {
-		return none, nil, NewError(proto.CodeInvalidArgument, "level message is not available yet")
-	}
 	ws, err := h.byID(ctx)
 	if err != nil {
 		return none, nil, err

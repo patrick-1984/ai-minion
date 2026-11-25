@@ -92,9 +92,10 @@ func TestGrantOwnerCreatesBetweenOwnWorkersAndOthersSeeNothing(t *testing.T) {
 	if l := k.listGrants(); len(l) != 1 || l[0].ID != g.ID || l[0].SourceWorkerName != "a1" {
 		t.Fatalf("owner lists %+v", l)
 	}
-	// level message is not available yet; a second grant of the pair conflicts.
-	if code, body := k.call(ops.OpGrantSet, grantArgs(a2, a1, ops.GrantLevelMessage)); kindErrCode(t, body) != proto.CodeInvalidArgument {
-		t.Fatalf("message level = %d %s", code, body)
+	// The level message is granted like the others; a second grant of the
+	// pair conflicts.
+	if m := k.setGrant(grantArgs(a2, a1, ops.GrantLevelMessage)); m.Level != ops.GrantLevelMessage || m.State != ops.GrantStateActive {
+		t.Fatalf("message level = %+v", m)
 	}
 	if code, body := k.call(ops.OpGrantSet, grantArgs(a1, a2, ops.GrantLevelControl)); kindErrCode(t, body) != proto.CodeConflict {
 		t.Fatalf("duplicate = %d %s", code, body)
@@ -116,7 +117,7 @@ func TestGrantOwnerCreatesBetweenOwnWorkersAndOthersSeeNothing(t *testing.T) {
 		t.Fatalf("a non-owner lists %+v", l)
 	}
 	k.as(k.admin)
-	if l := k.listGrants(); len(l) != 1 {
+	if l := k.listGrants(); len(l) != 2 {
 		t.Fatalf("an administrator lists %+v", l)
 	}
 	// grant_set is audited by the handler, refusals included.

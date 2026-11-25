@@ -20,11 +20,22 @@ type fakeGrants struct {
 	rows map[[2]string]string // (worker, session) -> targets JSON
 	// direct are the session grants by (source worker, source session).
 	direct map[[2]string][]store.SessionGrantRow
+	// directErr, when set, fails every read of the direct grants.
+	directErr error
+}
+
+func (g *fakeGrants) failDirect(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.directErr = err
 }
 
 func (g *fakeGrants) SessionGrantsFor(_ context.Context, workerID, session string) ([]store.SessionGrantRow, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.directErr != nil {
+		return nil, g.directErr
+	}
 	return append([]store.SessionGrantRow(nil), g.direct[[2]string{workerID, session}]...), nil
 }
 

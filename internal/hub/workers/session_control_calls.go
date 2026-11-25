@@ -39,7 +39,7 @@ var _ SessionControlRouter = (*Router)(nil)
 func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error {
 	for _, name := range SessionControlOps {
 		if err := cs.HandleGrantOnly(name, func(ctx context.Context, c *CallContext, emit func(any) error) (any, error) {
-			req := CallRequest{Principal: c.Principal, Op: c.Op.Name, Args: c.Args}
+			req := CallRequest{Principal: c.Principal, Op: c.Op.Name, Args: c.Args, admit: c.admit}
 			if t, ok := targetOfArgs(c.Args); ok {
 				req.WorkerID, req.Session = t.WorkerID, t.SessionName
 			} else {
@@ -47,6 +47,11 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 			}
 			if c.Op.Stream {
 				return nil, rt.Stream(ctx, req, emit)
+			}
+			if c.Op.Name == ops.OpSendText {
+				if err := promptOnly(ctx, rt, c, &req); err != nil {
+					return nil, err
+				}
 			}
 			res, err := rt.Call(ctx, req)
 			if err != nil || c.Op.Name != ops.OpSessionsList || len(c.Principal.DirectGrants()) == 0 {
@@ -68,6 +73,43 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 		}
 		return ops.WorkersListResult{Workers: list}, nil
 	})
+}
+
+// MessageJudge says whether a principal holds message but not operate on one
+// session; *Router implements it.
+type MessageJudge interface {
+	HoldsMessageOnly(ctx context.Context, p authz.Principal, workerID, session string) (bool, error)
+}
+
+var _ MessageJudge = (*Router)(nil)
+
+// promptOnly turns the send_text of a caller whose direct grant on the target
+// session is a Message grant (message without operate) into a prompt: to an
+// agent pane only, submitted, never forced. Every other caller is left as it
+// is, and so is a router that cannot judge (its decision then refuses).
+func promptOnly(ctx context.Context, rt SessionControlRouter, c *CallContext, req *CallRequest) error {
+	mj, ok := rt.(MessageJudge)
+	if !ok || len(c.Principal.DirectGrants()) == 0 || req.Session == "" {
+		return nil
+	}
+	only, err := mj.HoldsMessageOnly(ctx, c.Principal, req.WorkerID, req.Session)
+	if err != nil || !only {
+		return err
+	}
+	a, ok := c.Args.(*ops.SendTextArgs)
+	if !ok || a == nil {
+		return proto.NewError(proto.CodeInternal, "unreadable send_text arguments")
+	}
+	if a.Force {
+		return proto.NewError(proto.CodeForbidden, "a Message grant sends prompts only")
+	}
+	if !a.Submit {
+		return proto.NewError(proto.CodeInvalidArgument, "a Message grant sends submitted prompts only: set submit")
+	}
+	prompt := *a
+	prompt.AgentOnly = true
+	req.Args, req.PromptOnly = prompt, true
+	return nil
 }
 
 // SessionReader says whether a principal may read one session; *Router
