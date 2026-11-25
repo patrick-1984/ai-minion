@@ -260,7 +260,7 @@ func TestAccessWhySelectsListTheLiveSessionsTheCallerSees(t *testing.T) {
 // Names with quotes, ampersands, angle brackets and the "|" delimiter go from
 // the select through the query string to the operation and back unchanged.
 func TestAccessWhyNamesRoundTripThroughTheSelectsAndTheQuery(t *testing.T) {
-	names := []string{`a"b`, `it's`, `r&d`, `a&amp;b`, `<script>alert(1)</script>`, `left|right`, `|lead`, `tail|`, `a b+c%7Cd`, `x=1&target=wB|y#z`, "café ☃"}
+	names := []string{`a"b`, `it's`, `r&d`, `a&amp;b`, `<script>alert(1)</script>`, `left|right`, `|lead`, `tail|`, `a b+c%7Cd`, `x=1&target=wB|y#z`, "caf\u00e9 \u2603"}
 	d := Dashboard{Workers: []WorkerRow{{ID: "wA", Name: `box "one" <&>`, Owner: "root"}, {ID: "wB", Name: "box|two", Owner: "root"}}}
 	for _, n := range names {
 		d.Sessions = append(d.Sessions, SessionRow{WorkerID: "wA", Name: n}, SessionRow{WorkerID: "wB", Name: n})
