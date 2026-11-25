@@ -1,0 +1,32 @@
+{{define "content"}}
+<div class="page-head access-wide"><div><h1>Who reaches what</h1>
+<p>Which sessions can control sessions on other Workers right now, and which layer blocks a pair that was accepted. This page changes nothing.</p></div></div>
+<section class="panel" aria-labelledby="access-matrix-h" id="access-matrix" hx-get="/access" hx-select="#access-matrix" hx-swap="outerHTML">
+  <div class="matrix-head"><h2 id="access-matrix-h">Matrix</h2>
+  <div class="matrix-tools"><span class="matrix-asof">As of {{.Data.AsOf}}</span>
+    <button type="button" class="btn btn-secondary" data-control="refresh" hx-get="/access" hx-target="#access-matrix" hx-disabled-elt="this" aria-label="Refresh the matrix">{{template "icon" "i-refresh"}}<span class="refresh-idle">Refresh</span><span class="refresh-busy">Refreshing…</span></button>
+    <button type="button" class="btn btn-secondary" data-access="print">Print</button></div></div>
+  {{if .Data.Empty}}<p class="muted">No session reaches another Worker yet. Master sessions and the Workers that accept them are set in <a href="/access/control">Minion control</a>.</p>{{else}}
+  <div class="settings-tools access-tools">
+    <label class="settings-filter"><span class="sr-only">Filter source sessions or Workers</span><input type="search" id="access-filter" placeholder="Filter source sessions or Workers" autocomplete="off" spellcheck="false"></label>
+  </div>
+  <p class="access-legend"><span class="sr-only">Legend: </span><span><b>C</b> Control</span> <span><b>★</b> via master</span> <span><b>⊘</b> blocked</span> <span><b>·</b> none</span> <span><b>◇</b> Claimed</span> <span><b>◆</b> Verified</span></p>
+  <div class="access-box">
+  <div class="access-scroll" tabindex="0" role="region" aria-label="Who reaches what: sources in rows, targets in columns"><table class="access-matrix">
+    <thead>
+      <tr><th scope="col" rowspan="2" class="corner">Source ↓ &nbsp;·&nbsp; Target →</th>{{range .Data.Columns}}<th scope="colgroup" colspan="{{len .Sessions}}" class="access-tw">{{.Worker}} <span class="muted matrix-owner">{{.Owner}}</span>{{if not .Online}} <span class="muted">(offline)</span>{{end}}</th>{{end}}</tr>
+      <tr>{{range .Data.Columns}}{{range $i, $s := .Sessions}}<th scope="col" class="access-ts{{if eq $i 0}} access-first{{end}}">{{$s}}</th>{{end}}{{end}}</tr>
+    </thead>
+    {{range .Data.Groups}}<tbody>
+      <tr class="access-group"><th scope="rowgroup" colspan="1">{{.Worker}} <span class="muted matrix-owner">{{.Owner}}</span></th><td colspan="{{len (index .Rows 0).Cells}}"></td></tr>
+      {{$g := .}}{{range .Rows}}<tr data-filter="{{.Session}} {{$g.Worker}} {{$g.Owner}}"><th scope="row">{{.Session}} {{if eq .Proof "verified"}}<span class="badge plain access-proof">◆ Verified</span>{{else}}<span class="badge plain access-proof">◇ Claimed</span>{{end}}{{if .Master}} <span class="muted">master</span>{{end}}</th>
+        {{range .Cells}}{{if eq .Kind "ok"}}<td class="access-ok" title="Control of {{.Target}}, via master">C★<span class="sr-only"> control via master</span></td>{{else if eq .Kind "blocked"}}<td class="access-blocked" title="Blocked: {{.Reason}}">⊘<span class="sr-only"> blocked: {{.Reason}}</span></td>{{else if eq .Kind "same"}}<td class="muted" title="same Worker: sessions of one Worker can already reach each other">=<span class="sr-only"> same Worker</span></td>{{else}}<td class="muted">·<span class="sr-only"> none</span></td>{{end}}{{end}}
+      </tr>{{end}}
+    </tbody>{{end}}
+  </table></div>
+  <ul class="access-list">{{range .Data.Groups}}{{$g := .}}{{range .Rows}}<li data-filter="{{.Session}} {{$g.Worker}} {{$g.Owner}}"><strong>{{.Session}}</strong> on {{$g.Worker}} <span class="muted">{{$g.Owner}}</span> {{if eq .Proof "verified"}}◆ Verified{{else}}◇ Claimed{{end}}{{if .Master}} master{{end}}<br>{{if .Reach}}reaches: {{.Reach}}{{else}}reaches: nothing now{{end}}</li>{{end}}{{end}}</ul>
+  </div>{{end}}
+  <p class="help">Sessions on the same Worker are not governed here: every session of a Worker can already reach the others on that host.</p>
+</section>
+<script src="/static/access.js" defer></script>
+{{end}}
