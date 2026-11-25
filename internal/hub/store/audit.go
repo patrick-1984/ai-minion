@@ -23,6 +23,12 @@ type AuditRow struct {
 	Action   string
 	Target   string
 	Outcome  string
+	// Source is the session a brokered call came from ("<worker_id>:<session>")
+	// or the session a control change names; GrantID the grant that allowed
+	// the call; Detail a closed list of k=v pairs. All may be empty.
+	Source  string
+	GrantID string
+	Detail  string
 }
 
 // AuditPos is a position in the newest-first order: the (ts, id) of a row.
@@ -49,8 +55,8 @@ func (s *Store) InsertAudit(ctx context.Context, ex Execer, row AuditRow) error 
 		ex = s.db
 	}
 	_, err := ex.ExecContext(ctx,
-		`INSERT INTO audit_events (id, ts, actor, acting_as, action, target, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		row.ID, row.TS, row.Actor, row.ActingAs, row.Action, row.Target, row.Outcome)
+		`INSERT INTO audit_events (id, ts, actor, acting_as, action, target, outcome, source, grant_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.ID, row.TS, row.Actor, row.ActingAs, row.Action, row.Target, row.Outcome, row.Source, row.GrantID, row.Detail)
 	if err != nil {
 		return fmt.Errorf("store: insert audit event: %w", err)
 	}
@@ -77,7 +83,7 @@ func (s *Store) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRow, error)
 	var out []AuditRow
 	for rows.Next() {
 		var r AuditRow
-		if err := rows.Scan(&r.ID, &r.TS, &r.Actor, &r.ActingAs, &r.Action, &r.Target, &r.Outcome); err != nil {
+		if err := rows.Scan(&r.ID, &r.TS, &r.Actor, &r.ActingAs, &r.Action, &r.Target, &r.Outcome, &r.Source, &r.GrantID, &r.Detail); err != nil {
 			return nil, fmt.Errorf("store: list audit events: %w", err)
 		}
 		out = append(out, r)
@@ -116,7 +122,7 @@ func auditSelect(q AuditQuery) (string, []any) {
 		where = append(where, "(ts, id) < (?, ?)")
 		args = append(args, q.After.TS, q.After.ID)
 	}
-	query := `SELECT id, ts, actor, acting_as, action, target, outcome FROM audit_events`
+	query := `SELECT id, ts, actor, acting_as, action, target, outcome, source, grant_id, detail FROM audit_events`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}

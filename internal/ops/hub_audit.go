@@ -76,6 +76,12 @@ type AuditEvent struct {
 	Action   string    `json:"action"`
 	Target   string    `json:"target,omitempty"`
 	Outcome  string    `json:"outcome"`
+	// Source is the session a brokered call came from or a control change
+	// names ("<worker_id>:<session>"), GrantID the grant that allowed the
+	// call, Detail a list of k=v pairs. Each is empty when not recorded.
+	Source  string `json:"source,omitempty"`
+	GrantID string `json:"grant_id,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 	// ActorName, ActingAsName and TargetName are the names the Hub knows for
 	// the ids above (a user name or a Worker name); empty when it knows none.
 	ActorName    string `json:"actor_name,omitempty"`
