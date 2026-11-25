@@ -13,6 +13,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // SessionControlOps are the Worker ops a session-control grant reaches on call
@@ -47,7 +48,13 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 			if c.Op.Stream {
 				return nil, rt.Stream(ctx, req, emit)
 			}
-			return rt.Call(ctx, req)
+			res, err := rt.Call(ctx, req)
+			if err != nil || c.Op.Name != ops.OpSessionsList || len(c.Principal.DirectGrants()) == 0 {
+				return res, err
+			}
+			// A direct grant of one session lets its holder list the target
+			// Worker: the listing is cut down to the sessions it may read.
+			return filterSessionsList(ctx, rt, c.Principal, req.WorkerID, res)
 		}); err != nil {
 			return err
 		}
@@ -61,4 +68,33 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 		}
 		return ops.WorkersListResult{Workers: list}, nil
 	})
+}
+
+// SessionReader says whether a principal may read one session; *Router
+// implements it.
+type SessionReader interface {
+	CanReadSession(ctx context.Context, p authz.Principal, workerID, session string) (bool, error)
+}
+
+// filterSessionsList keeps the sessions of a sessions_list result that p may
+// read. A router that cannot judge single sessions, or a result that is not
+// a session listing, answers nothing (fail closed).
+func filterSessionsList(ctx context.Context, rt SessionControlRouter, p authz.Principal, workerID string, res any) (any, error) {
+	sr, ok := rt.(SessionReader)
+	out, isList := res.(ops.SessionsListResult)
+	if !ok || !isList {
+		return nil, proto.NewError(proto.CodeInternal, "unreadable session listing")
+	}
+	sessions := make([]ops.SessionInfo, 0, len(out.Sessions))
+	for _, s := range out.Sessions {
+		allowed, err := sr.CanReadSession(ctx, p, workerID, s.Name)
+		if err != nil {
+			return nil, err
+		}
+		if allowed {
+			sessions = append(sessions, s)
+		}
+	}
+	out.Sessions = sessions
+	return out, nil
 }

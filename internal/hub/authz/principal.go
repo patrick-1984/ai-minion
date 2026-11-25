@@ -67,6 +67,9 @@ type Principal struct {
 	KeyID string
 	// boundMaster uses exactly the supplied session grant, including on its own Worker.
 	boundMaster bool
+	// direct is the calling session and its direct grants (KindWorker, see
+	// [NewWorkerSessionPrincipal]); nil for every other principal.
+	direct *directGrants
 }
 
 // NewSessionPrincipal returns the principal of a browser session of userID.

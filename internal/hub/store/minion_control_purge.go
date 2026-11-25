@@ -125,6 +125,12 @@ func (s *Store) purgeSessions(ctx context.Context, workerID string, gone func(st
 		}
 		n, err := purgeLegacyTargets(ctx, tx, workerID, gone, asOf)
 		total += n
+		if err != nil {
+			return err
+		}
+		// Direct grants that name a gone session, under the same fence.
+		n, err = purgeSessionGrants(ctx, tx, workerID, gone, asOf)
+		total += n
 		return err
 	})
 	return total, err

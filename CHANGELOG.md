@@ -7,6 +7,11 @@
 - Minion control: withdrawing "accepts control from" for one Worker on a Worker that accepts control from all Workers no longer widens that source to every shared session (the Hub keeps a row that allows nothing); `control_set_master` and `session_control_set` refuse to revoke a session-bound master by name instead of answering delivered and revoking nothing; `control_check` reports a store error instead of leaving the master out.
 - Audit: events carry a source session, a grant id and a k=v detail (migration 0033); Minion control changes record what was set, brokered writes name the calling session, and a refused brokered write is recorded as `denied` instead of `failed`.
 - Access > Minion control uses the whole window, shows every Worker row without an inner scroll box, names the owner in the matrix, and has a Refresh button, an "As of" time and a print layout.
+- Hub: storage for session grants (table `session_grant`, migration 0032, store functions, session purge). Nothing reads it yet.
+- Hub (internal, no behaviour change yet): `authz` can judge direct session grants (view, message, control) carried by a Worker session principal; nothing creates such grants in this step.
+### Added
+
+- Operation catalog: `grant_list`, `grant_set`, `grant_revoke` and `grant_approve` (session grants) are declared with their argument and result types. They have no Hub handler yet and answer `unsupported_op`.
 
 ## v0.20.6
 

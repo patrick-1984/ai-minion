@@ -733,6 +733,19 @@ type call struct {
 	dispatched atomic.Bool
 }
 
+// CanReadSession reports whether p may read the session of the Worker now.
+// A refusal is false, only a failing lookup is an error.
+func (rt *Router) CanReadSession(ctx context.Context, p authz.Principal, workerID, session string) (bool, error) {
+	err := rt.az.Decide(ctx, p, ops.MustActionSet(ops.ActionRead), authz.SessionResource{WorkerID: workerID, Name: session})
+	if err == nil {
+		return true, nil
+	}
+	if c := proto.CodeOf(err); c == proto.CodeForbidden || c == proto.CodeNotFound {
+		return false, nil
+	}
+	return false, err
+}
+
 // prepare validates the request, decides it and computes the request frame.
 // Nothing has been sent yet when it returns an error.
 func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool) (*call, error) {
