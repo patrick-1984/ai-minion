@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +20,13 @@ import (
 // newSessionControlStack is the kind stack with only the session-control
 // operations registered over the real store and authorizer.
 func newSessionControlStack(t *testing.T) *kindStack {
+	t.Helper()
+	return newControlStack(t, func(st *store.Store) MinionControlStore { return st })
+}
+
+// newControlStack is newSessionControlStack with the store of the Minion
+// control handlers wrapped (a test injects a failing read there).
+func newControlStack(t *testing.T, wrap func(*store.Store) MinionControlStore) *kindStack {
 	t.Helper()
 	k := newKindStack(t)
 	cat := ops.NewRegistry()
@@ -43,7 +52,7 @@ func newSessionControlStack(t *testing.T) *kindStack {
 		}
 		return out, nil
 	}
-	if err := RegisterMinionControl(handlers, k.st, list); err != nil {
+	if err := RegisterMinionControl(handlers, wrap(k.st), list); err != nil {
 		t.Fatal(err)
 	}
 	k.mux = http.NewServeMux()
@@ -312,5 +321,83 @@ func TestNameOnlyRevokeRefusesABoundMaster(t *testing.T) {
 		if code, body := k.call(ops.OpControlSetMaster, map[string]any{"worker_id": a.ID, "session_name": name, "master": false}); code != http.StatusOK {
 			t.Errorf("revoke of %s = %d %s", name, code, body)
 		}
+	}
+}
+
+// failingGrantStore fails the read of a master session's computed grant.
+type failingGrantStore struct{ *store.Store }
+
+func (failingGrantStore) SessionControl(context.Context, string, string) (store.SessionControlRow, error) {
+	return store.SessionControlRow{}, errors.New("the database is gone")
+}
+
+// control_check answers an error when the Hub cannot read a grant: skipping
+// the master would say "nobody can control this session" while one can.
+func TestControlCheckReportsAStoreError(t *testing.T) {
+	k := newControlStack(t, func(st *store.Store) MinionControlStore { return failingGrantStore{st} })
+	w1 := k.worker(k.u1, "w1", store.WorkerKindPrivate)
+	if err := k.st.PutMasterSession(context.Background(), store.MasterRow{WorkerID: w1.ID, SessionName: "boss", CreatedBy: k.admin}); err != nil {
+		t.Fatal(err)
+	}
+	k.as(k.admin)
+	code, body := k.call(ops.OpControlCheck, map[string]any{"worker_id": w1.ID, "session_name": "ci"})
+	if code < 500 || strings.Contains(body, "No master session can control") {
+		t.Fatalf("check with a failing store = %d %s; want an error, not an empty answer", code, body)
+	}
+}
+
+// The setters refuse a change made on a view someone else changed meanwhile
+// (if_state, if_master, if_user_managed, if_accept_all) and store nothing.
+func TestControlSettersRefuseAStaleView(t *testing.T) {
+	k := newSessionControlStack(t)
+	a := k.worker(k.u1, "a", store.WorkerKindPrivate)
+	b := k.worker(k.u1, "b", store.WorkerKindPrivate)
+	ctx := context.Background()
+	k.as(k.admin)
+	accept := func(on bool, seen string) (int, string) {
+		return k.call(ops.OpControlSetAccept, map[string]any{"worker_id": b.ID, "source_worker_id": a.ID, "accept": on, "if_state": seen})
+	}
+	if code, body := accept(true, "absent"); code != http.StatusOK {
+		t.Fatalf("tick on no entry = %d %s", code, body)
+	}
+	// Another administrator limits the acceptance.
+	if err := k.st.PutAccept(ctx, store.AcceptRow{TargetWorkerID: b.ID, SourceWorkerID: a.ID, Sessions: []string{"ci"}, CreatedBy: k.admin}); err != nil {
+		t.Fatal(err)
+	}
+	for _, on := range []bool{true, false} {
+		for _, seen := range []string{"absent", "all", "none"} {
+			if code, body := accept(on, seen); code != http.StatusConflict || !strings.Contains(body, "changed by someone else") {
+				t.Errorf("accept=%t seen %s on a limited entry = %d %s; want conflict", on, seen, code, body)
+			}
+		}
+	}
+	if code, body := accept(true, "maybe"); code != http.StatusBadRequest {
+		t.Errorf("unknown if_state = %d %s", code, body)
+	}
+	rows, err := k.st.ListAccepts(ctx)
+	if err != nil || len(rows) != 1 || len(rows[0].Sessions) != 1 || rows[0].Sessions[0] != "ci" {
+		t.Fatalf("acceptance after the refused changes = %+v, %v; want the limit of the other administrator", rows, err)
+	}
+	if code, body := accept(false, "limited"); code != http.StatusOK {
+		t.Errorf("untick on the seen state = %d %s", code, body)
+	}
+	// A nomination and the Worker switches.
+	master := func(on, seen bool) int {
+		code, _ := k.call(ops.OpControlSetMaster, map[string]any{"worker_id": a.ID, "session_name": "boss", "master": on, "if_master": seen})
+		return code
+	}
+	if got := []int{master(false, true), master(true, false), master(true, false), master(false, false), master(false, true)}; !slices.Equal(got,
+		[]int{http.StatusConflict, http.StatusOK, http.StatusConflict, http.StatusConflict, http.StatusOK}) {
+		t.Errorf("control_set_master with if_master = %v", got)
+	}
+	sw := func(args map[string]any) int {
+		args["worker_id"] = b.ID
+		code, _ := k.call(ops.OpControlSetWorker, args)
+		return code
+	}
+	if got := []int{sw(map[string]any{"accept_all": true, "if_accept_all": true}), sw(map[string]any{"accept_all": true, "if_accept_all": false}),
+		sw(map[string]any{"user_managed": false, "if_user_managed": false}), sw(map[string]any{"user_managed": false, "if_user_managed": true})}; !slices.Equal(got,
+		[]int{http.StatusConflict, http.StatusOK, http.StatusConflict, http.StatusOK}) {
+		t.Errorf("control_set_worker with what was seen = %v", got)
 	}
 }
