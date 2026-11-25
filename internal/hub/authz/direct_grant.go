@@ -47,11 +47,16 @@ type DirectGrant struct {
 	// SourceOwnerID and TargetOwnerID are the owners of the two Workers at
 	// decision time. Both must still be the owners at every call.
 	SourceOwnerID, TargetOwnerID string
-	// ExpiresAt ends the grant; the zero value means it does not expire.
-	ExpiresAt time.Time
+	// ExpiresAt ends the grant: it is valid while the clock is before it. Nil
+	// means the grant does not expire. A stored expiry is always a pointer,
+	// also when it is the zero time (year one), which is long past.
+	ExpiresAt *time.Time
 	// Suspended is set when the authority behind the grant was lost.
 	Suspended bool
 }
+
+// ExpiryAt returns the ExpiresAt of a grant that ends at t.
+func ExpiryAt(t time.Time) *time.Time { return &t }
 
 // LevelActions returns the actions of a direct-grant level: 1 read; 2 read and
 // message; 3 read, message and operate. Any other level has no actions. A new
@@ -119,7 +124,7 @@ func (s subject) directUsable(g DirectGrant) bool {
 	if LevelActions(g.Level) == nil || g.Suspended || g.SourceOwnerID == "" || g.SourceOwnerID != s.ownerID {
 		return false
 	}
-	return g.ExpiresAt.IsZero() || s.now.Before(g.ExpiresAt)
+	return g.ExpiresAt == nil || s.now.Before(*g.ExpiresAt)
 }
 
 // liveAdmins reads, once per grantor, whether the user behind each usable

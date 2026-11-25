@@ -40,6 +40,10 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 	for _, name := range SessionControlOps {
 		if err := cs.HandleGrantOnly(name, func(ctx context.Context, c *CallContext, emit func(any) error) (any, error) {
 			req := CallRequest{Principal: c.Principal, Op: c.Op.Name, Args: c.Args, admit: c.admit}
+			if c.Op.ChangesState() && len(c.Principal.DirectGrants()) > 0 {
+				// The audit event of the write names the grants behind it.
+				req.granted = func(ids []string) { c.grantIDs = ids }
+			}
 			if t, ok := targetOfArgs(c.Args); ok {
 				req.WorkerID, req.Session = t.WorkerID, t.SessionName
 			} else {
@@ -75,8 +79,8 @@ func RegisterSessionControlCalls(cs *CallServer, rt SessionControlRouter) error 
 	})
 }
 
-// MessageJudge says whether a principal holds message but not operate on one
-// session; *Router implements it.
+// MessageJudge says whether a direct grant gives a principal message on one
+// session while it holds no operate there; *Router implements it.
 type MessageJudge interface {
 	HoldsMessageOnly(ctx context.Context, p authz.Principal, workerID, session string) (bool, error)
 }
@@ -85,8 +89,10 @@ var _ MessageJudge = (*Router)(nil)
 
 // promptOnly turns the send_text of a caller whose direct grant on the target
 // session is a Message grant (message without operate) into a prompt: to an
-// agent pane only, submitted, never forced. Every other caller is left as it
-// is, and so is a router that cannot judge (its decision then refuses).
+// agent pane only, never forced, and always submitted: the Hub sets submit
+// itself (D3), so a prompt is never left typed and unsent because the caller
+// omitted the flag. Every other caller is left as it is, and so is a router
+// that cannot judge (its decision then refuses).
 func promptOnly(ctx context.Context, rt SessionControlRouter, c *CallContext, req *CallRequest) error {
 	mj, ok := rt.(MessageJudge)
 	if !ok || len(c.Principal.DirectGrants()) == 0 || req.Session == "" {
@@ -103,11 +109,8 @@ func promptOnly(ctx context.Context, rt SessionControlRouter, c *CallContext, re
 	if a.Force {
 		return proto.NewError(proto.CodeForbidden, "a Message grant sends prompts only")
 	}
-	if !a.Submit {
-		return proto.NewError(proto.CodeInvalidArgument, "a Message grant sends submitted prompts only: set submit")
-	}
 	prompt := *a
-	prompt.AgentOnly = true
+	prompt.AgentOnly, prompt.Submit = true, true
 	req.Args, req.PromptOnly = prompt, true
 	return nil
 }

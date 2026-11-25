@@ -130,16 +130,16 @@ func TestSessionGrantRecheckKeyFollowsTheDirectRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, key, err := cs.authenticate(ctx, wRootLab.ID, "", "boss"); err != nil || key != legacy {
+	if _, _, key, err := cs.authenticate(ctx, wRootLab.ID, "", "boss", ops.OpSendText); err != nil || key != legacy {
 		t.Fatalf("without direct rows: key %q, want the stored targets %q (%v)", key, legacy, err)
 	}
 	row := aliceGrant(authz.LevelView)
 	g.setDirect(wRootLab.ID, "boss", row)
-	pr, _, k1, err := cs.authenticate(ctx, wRootLab.ID, "", "boss")
+	pr, _, k1, err := cs.authenticate(ctx, wRootLab.ID, "", "boss", ops.OpSendText)
 	if err != nil || k1 == legacy || pr.SessionName() != "boss" || len(pr.DirectGrants()) != 1 || pr.Scope == nil {
 		t.Fatalf("with a direct row: key %q principal %+v (%v)", k1, pr, err)
 	}
-	if cur, _ := cs.grantKey(ctx, wRootLab.ID, "boss"); cur != k1 {
+	if cur, _ := cs.grantKey(ctx, wRootLab.ID, "boss", true); cur != k1 {
 		t.Fatalf("unchanged rows: %q != %q", cur, k1)
 	}
 	seen := map[string]bool{k1: true}
@@ -153,7 +153,7 @@ func TestSessionGrantRecheckKeyFollowsTheDirectRows(t *testing.T) {
 		c := row
 		change(&c)
 		g.setDirect(wRootLab.ID, "boss", c)
-		cur, err := cs.grantKey(ctx, wRootLab.ID, "boss")
+		cur, err := cs.grantKey(ctx, wRootLab.ID, "boss", true)
 		if err != nil || seen[cur] {
 			t.Errorf("%s: the key did not change (%v)", name, err)
 		}
@@ -161,7 +161,7 @@ func TestSessionGrantRecheckKeyFollowsTheDirectRows(t *testing.T) {
 	}
 	// A session with direct grants only passes as a grant holder.
 	g.setDirect(wAlicePi1.ID, "agent", row)
-	if pr, _, key, err := cs.authenticate(ctx, wAlicePi1.ID, "", "agent"); err != nil || key == "" || pr.Scope != nil {
+	if pr, _, key, err := cs.authenticate(ctx, wAlicePi1.ID, "", "agent", ops.OpSendText); err != nil || key == "" || pr.Scope != nil {
 		t.Fatalf("direct only: key %q scope %v (%v)", key, pr.Scope, err)
 	}
 }

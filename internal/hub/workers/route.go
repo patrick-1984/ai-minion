@@ -543,6 +543,10 @@ type CallRequest struct {
 	// admit is the last, private check on a scoped master dispatch, after
 	// opening the exact destination connection and before sending any bytes.
 	admit func(context.Context, Online) error
+	// granted, when set, is told the direct grants that by themselves
+	// authorize the request (authz.Authorizer.GrantIDs), once the decision
+	// allowed it and before anything is sent; for the audit of the caller.
+	granted func(ids []string)
 }
 
 // Call routes a non-streaming op and returns its result as a value of the
@@ -753,13 +757,21 @@ func (rt *Router) CanReadSession(ctx context.Context, p authz.Principal, workerI
 }
 
 // HoldsMessageOnly reports whether p holds message but not operate on the
-// session now: the holder of a Message grant, whose send_text is a prompt.
+// session now, and holds that message by a direct grant: the holder of a
+// Message grant, whose send_text is a prompt. The message a Worker identity
+// holds on the sessions of its own Worker does not count (D3: a prompt is
+// what a Message grant gives, on its target only).
 func (rt *Router) HoldsMessageOnly(ctx context.Context, p authz.Principal, workerID, session string) (bool, error) {
-	held, err := rt.az.EffectiveActions(ctx, p, authz.SessionResource{WorkerID: workerID, Name: session})
+	res := authz.SessionResource{WorkerID: workerID, Name: session}
+	held, err := rt.az.EffectiveActions(ctx, p, res)
 	if err != nil {
 		return false, err
 	}
-	return slices.Contains(held, ops.ActionMessage) && !slices.Contains(held, ops.ActionOperate), nil
+	if !slices.Contains(held, ops.ActionMessage) || slices.Contains(held, ops.ActionOperate) {
+		return false, nil
+	}
+	ids, err := rt.az.GrantIDs(ctx, p, ops.MustActionSet(ops.ActionMessage), res)
+	return len(ids) > 0, err
 }
 
 // promptOnlyRequest reports whether req is the one shape PromptOnly allows:
@@ -855,6 +867,13 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	origin, err := rt.originOf(ctx, req.Principal, accepted, res)
 	if err != nil {
 		return nil, err
+	}
+	if req.granted != nil {
+		ids, err := rt.az.GrantIDs(ctx, req.Principal, accepted, res)
+		if err != nil {
+			return nil, err
+		}
+		req.granted(ids)
 	}
 	id := ops.NewUUIDv7()
 	if op.Write {

@@ -318,7 +318,7 @@ func TestSessionControlRecheckEndsARunningCall(t *testing.T) {
 			g := &fakeGrants{}
 			g.set(t, wRootLab.ID, "boss", gAlicePi2)
 			cs := NewCallServer(CallServerConfig{Grants: g, ReauthInterval: 5 * time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
-			_, _, grant, err := cs.authenticate(context.Background(), wRootLab.ID, "", "boss")
+			_, _, grant, err := cs.authenticate(context.Background(), wRootLab.ID, "", "boss", ops.OpSendText)
 			if err != nil || grant == "" {
 				t.Fatalf("grant %q %v", grant, err)
 			}
@@ -327,7 +327,7 @@ func TestSessionControlRecheckEndsARunningCall(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				cs.reauthorizeWorker(ctx, cancel, authz.NewWorkerPrincipal(wRootLab.ID), "boss", grant)
+				cs.reauthorizeWorker(ctx, cancel, authz.NewWorkerPrincipal(wRootLab.ID), "boss", grant, true)
 			}()
 			time.Sleep(20 * time.Millisecond)
 			if ctx.Err() != nil {

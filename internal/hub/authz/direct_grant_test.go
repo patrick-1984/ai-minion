@@ -79,8 +79,8 @@ func TestDirectGrantDecisions(t *testing.T) {
 		ids  []string // GrantIDs for read|message|operate
 	}
 	expired, live, suspended := ownerGrant("g", "W2", "x", 3), ownerGrant("g", "W2", "x", 3), ownerGrant("g", "W2", "x", 3)
-	expired.ExpiresAt = dgNow
-	live.ExpiresAt = dgNow.Add(time.Second)
+	expired.ExpiresAt = authz.ExpiryAt(dgNow)
+	live.ExpiresAt = authz.ExpiryAt(dgNow.Add(time.Second))
 	suspended.Suspended = true
 	foreignSource := ownerGrant("g", "W2", "x", 3)
 	foreignSource.SourceOwnerID, foreignSource.TargetOwnerID = "bob", "bob"
@@ -400,5 +400,28 @@ func TestDirectGrantGrantorLookup(t *testing.T) {
 	_ = a.Decide(ctx, authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{off}), set(ops.ActionRead), sess("W3", "build"))
 	if l.count["admin"] != 0 {
 		t.Errorf("suspended grant: %d grantor lookups", l.count["admin"])
+	}
+}
+
+// A stored expiry of the zero time (year one) is an expiry that is long past,
+// not "no expiry": the grant gives nothing. Only a nil ExpiresAt never ends.
+func TestDirectGrantYearOneExpiryIsExpired(t *testing.T) {
+	ctx := context.Background()
+	a := dgAuthz(grantStore())
+	yearOne := ownerGrant("g", "W2", "x", 3)
+	yearOne.ExpiresAt = authz.ExpiryAt(time.UnixMilli(time.Time{}.UnixMilli()))
+	if !yearOne.ExpiresAt.IsZero() {
+		t.Fatal("the test expiry is not the zero time")
+	}
+	p := authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{yearOne})
+	if got, err := a.EffectiveActions(ctx, p, sess("W2", "x")); err != nil || len(got) != 0 {
+		t.Fatalf("year-one expiry: actions %v %v, want none", got, err)
+	}
+	if ids, err := a.GrantIDs(ctx, p, set(ops.ActionRead), sess("W2", "x")); err != nil || len(ids) != 0 {
+		t.Fatalf("year-one expiry: grant ids %v %v, want none", ids, err)
+	}
+	p = authz.NewWorkerSessionPrincipal("A1", "main", nil, []authz.DirectGrant{ownerGrant("g", "W2", "x", 3)})
+	if got, err := a.EffectiveActions(ctx, p, sess("W2", "x")); err != nil || len(got) != 3 {
+		t.Fatalf("no expiry: actions %v %v, want read, message and operate", got, err)
 	}
 }

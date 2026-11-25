@@ -29,8 +29,8 @@ func (r *scRig) targetOnline(features ...string) {
 }
 
 // A Message grant sends send_text as a prompt only: agent-only and submitted,
-// with operate for the Worker; force and an unsubmitted text are refused, and
-// so are send_keys, set_task and answer. Nothing refused reaches a Worker.
+// with operate for the Worker; force is refused, and so are send_keys,
+// set_task and answer. Nothing refused reaches a Worker.
 func TestSessionGrantMessageSendsPromptsOnly(t *testing.T) {
 	r := newSCRig(t)
 	r.targetOnline(proto.FeatureSendTextAgentOnly)
@@ -58,11 +58,6 @@ func TestSessionGrantMessageSendsPromptsOnly(t *testing.T) {
 	frames, _ = r.call(t, wAlicePi1.ID, scRequest(ops.OpSendText, forced, "", "agent"), ops.WriteResult{Outcome: ops.OutcomeDelivered})
 	if c := errCodeOf(t, frames); c != proto.CodeForbidden {
 		t.Fatalf("forced prompt: %q, want forbidden", c)
-	}
-	frames, _ = r.call(t, wAlicePi1.ID, scRequest(ops.OpSendText, scArgs(ops.OpSendText, grantedBuild), "", "agent"),
-		ops.WriteResult{Outcome: ops.OutcomeDelivered})
-	if c := errCodeOf(t, frames); c != proto.CodeInvalidArgument {
-		t.Fatalf("unsubmitted text: %q, want invalid_argument", c)
 	}
 	for _, op := range []string{ops.OpSendKeys, ops.OpSetTask, ops.OpAnswer} {
 		args := scArgs(op, grantedBuild)
@@ -169,11 +164,11 @@ func TestSessionGrantAdmitComparesTheGrantKey(t *testing.T) {
 	g.setDirect(wAlicePi1.ID, "agent", aliceGrant(authz.LevelView))
 	cs := NewCallServer(CallServerConfig{Grants: g, Logger: slog.New(slog.DiscardHandler)})
 	ctx := context.Background()
-	_, _, key, err := cs.authenticate(ctx, wAlicePi1.ID, "", "agent")
+	_, _, key, err := cs.authenticate(ctx, wAlicePi1.ID, "", "agent", ops.OpSendText)
 	if err != nil || key == "" {
 		t.Fatalf("key %q %v", key, err)
 	}
-	admit := cs.admitGrant(wAlicePi1.ID, "agent", key)
+	admit := cs.admitGrant(wAlicePi1.ID, "agent", key, true)
 	if err := admit(ctx, Online{}); err != nil {
 		t.Fatalf("unchanged grant: %v", err)
 	}
@@ -196,7 +191,7 @@ func TestSessionGrantTwoFailedRechecksEndARunningCall(t *testing.T) {
 	g := &fakeGrants{}
 	g.setDirect(wAlicePi1.ID, "agent", aliceGrant(authz.LevelView))
 	cs := NewCallServer(CallServerConfig{Grants: g, ReauthInterval: 5 * time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
-	pr, _, key, err := cs.authenticate(context.Background(), wAlicePi1.ID, "", "agent")
+	pr, _, key, err := cs.authenticate(context.Background(), wAlicePi1.ID, "", "agent", ops.OpSendText)
 	if err != nil || key == "" {
 		t.Fatalf("key %q %v", key, err)
 	}
@@ -205,7 +200,7 @@ func TestSessionGrantTwoFailedRechecksEndARunningCall(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		cs.reauthorizeWorker(ctx, cancel, pr, "agent", key)
+		cs.reauthorizeWorker(ctx, cancel, pr, "agent", key, true)
 	}()
 	time.Sleep(20 * time.Millisecond)
 	if ctx.Err() != nil {
