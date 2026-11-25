@@ -223,7 +223,7 @@ func TestAccessPageCollapsesWorkerGroups(t *testing.T) {
 	// 40 session columns start open, 41 start collapsed; one group opens by its button.
 	connect(t, newFakeOps().reply(ops.OpAccessMatrix, accessWide(20)))
 	body = get(t, adminServer(t), pathAccess, "X-Test-Session", userHeader).Body.String()
-	if strings.Count(body, `aria-expanded="true"`) != 2 || strings.Contains(body, `aria-expanded="false"`) {
+	if strings.Count(body, `class="access-toggle" aria-expanded="true"`) != 2 || strings.Contains(body, `class="access-toggle" aria-expanded="false"`) {
 		t.Error("40 session columns: every group must start open")
 	}
 	m := accessWide(20)
@@ -231,12 +231,12 @@ func TestAccessPageCollapsesWorkerGroups(t *testing.T) {
 	connect(t, newFakeOps().reply(ops.OpAccessMatrix, m))
 	s = adminServer(t)
 	body = get(t, s, pathAccess, "X-Test-Session", userHeader).Body.String()
-	if strings.Count(body, `aria-expanded="false"`) != 2 || strings.Contains(body, `aria-expanded="true"`) {
+	if strings.Count(body, `class="access-toggle" aria-expanded="false"`) != 2 || strings.Contains(body, `class="access-toggle" aria-expanded="true"`) {
 		t.Error("41 session columns: every group must start collapsed")
 	}
 	mustHave(t, body, `title="20 of 20 sessions on name-wB in effect">20/20<`, `title="0 of 21 sessions on name-wC in effect">0/21<`)
 	body = get(t, s, pathAccess+"?g=o:wB", "X-Test-Session", userHeader).Body.String()
-	if strings.Count(body, `aria-expanded="true"`) != 1 || strings.Count(body, `aria-expanded="false"`) != 1 || strings.Count(body, "C★") != 20 {
+	if strings.Count(body, `class="access-toggle" aria-expanded="true"`) != 1 || strings.Count(body, `class="access-toggle" aria-expanded="false"`) != 1 || strings.Count(body, "C★") != 20 {
 		t.Error("one opened group: its 20 cells are shown, the other stays collapsed")
 	}
 }
