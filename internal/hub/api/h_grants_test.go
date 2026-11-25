@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -15,7 +18,11 @@ import (
 
 // newGrantStack is the kind stack with only the grant operations registered
 // over the real store and authorizer.
-func newGrantStack(t *testing.T) *kindStack {
+func newGrantStack(t *testing.T) *kindStack { return newGrantStackWith(t, nil) }
+
+// newGrantStackWith is newGrantStack; tweak may change what the handlers know
+// of a Worker (approval, thin).
+func newGrantStackWith(t *testing.T, tweak func(*GrantWorker)) *kindStack {
 	t.Helper()
 	k := newKindStack(t)
 	cat := ops.NewRegistry()
@@ -34,7 +41,11 @@ func newGrantStack(t *testing.T) *kindStack {
 		}
 		out := make([]GrantWorker, 0, len(rows))
 		for _, w := range rows {
-			out = append(out, GrantWorker{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Approved: true, CanBeSource: true})
+			gw := GrantWorker{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Approved: true, CanBeSource: true}
+			if tweak != nil {
+				tweak(&gw)
+			}
+			out = append(out, gw)
 		}
 		return out, nil
 	}
@@ -122,7 +133,7 @@ func TestGrantOwnerCreatesBetweenOwnWorkersAndOthersSeeNothing(t *testing.T) {
 	// grant_set is audited by the handler, refusals included.
 	var set int
 	for _, ev := range k.audit.all() {
-		if ev.Action == ops.OpGrantSet {
+		if ev.Action == AuditActionGrantCreate || ev.Action == AuditActionGrantUpdate {
 			set++
 		}
 	}
@@ -192,5 +203,93 @@ func TestGrantApproveAfterTheGrantorWasDemoted(t *testing.T) {
 	var res ops.GrantSetResult
 	if code != http.StatusOK || json.Unmarshal([]byte(body), &res) != nil || res.Grant.Suspended || res.Grant.GrantedBy != k.admin {
 		t.Fatalf("approve = %d %s", code, body)
+	}
+}
+
+// grantEvents returns the audit events of one action.
+func (k *kindStack) grantEvents(action string) []audit.Event {
+	var out []audit.Event
+	for _, ev := range k.audit.all() {
+		if ev.Action == action {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// An administrator grants between two Workers of ONE other user: the
+// authority is admin. The audit rows carry target, source, grant id and a
+// detail without names; the grantor revokes it.
+func TestGrantAdministratorBetweenWorkersOfOneOtherUserAndTheAudit(t *testing.T) {
+	k := newGrantStack(t)
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	k.as(k.admin)
+	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
+	if g.Authority != ops.GrantAuthorityAdmin || g.GrantedBy != k.admin {
+		t.Fatalf("grant = %+v", g)
+	}
+	evs := k.grantEvents(AuditActionGrantCreate)
+	if len(evs) != 1 || evs[0].Target != a2.ID+":build" || evs[0].Source != a1.ID+":agent" || evs[0].GrantID != g.ID ||
+		evs[0].Detail != "level=view authority=admin expires=none" || evs[0].Outcome != AuditOutcomeSuccess {
+		t.Fatalf("create audit = %+v", evs)
+	}
+	up := grantArgs(a1, a2, ops.GrantLevelControl)
+	up["id"], up["if_revision"] = g.ID, g.Revision
+	g2 := k.setGrant(up)
+	evs = k.grantEvents(AuditActionGrantUpdate)
+	if want := "level_old=view level_new=control rev=" + strconv.FormatUint(g2.Revision, 10); len(evs) != 1 || evs[0].Detail != want || evs[0].GrantID != g.ID {
+		t.Fatalf("update audit = %+v, want detail %q", evs, want)
+	}
+	// A refused update (stale revision) is audited as failed.
+	if code, body := k.call(ops.OpGrantSet, up); kindErrCode(t, body) != proto.CodeConflict {
+		t.Fatalf("stale update = %d %s", code, body)
+	}
+	if evs = k.grantEvents(AuditActionGrantUpdate); len(evs) != 2 || evs[1].Outcome != "failed" || evs[1].Detail != "level_old=control level_new=control" {
+		t.Fatalf("refused update audit = %+v", evs)
+	}
+	// Revoke by granted_by; the dispatcher's row names the grant.
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+		t.Fatalf("revoke by the grantor = %d %s", code, body)
+	}
+	evs = k.grantEvents(ops.OpGrantRevoke)
+	if len(evs) != 1 || evs[0].GrantID != g.ID || evs[0].Source != a1.ID+":agent" || evs[0].Detail != "level=control authority=admin" {
+		t.Fatalf("revoke audit = %+v", evs)
+	}
+}
+
+// grant_set is SessionOnly: the dispatcher refuses an act-as session before
+// the handler runs, for the acted user's own Workers and between users alike
+// (even when the actor is an administrator). Nothing is stored.
+func TestGrantActAsIsRefusedBySessionOnly(t *testing.T) {
+	k := newGrantStack(t)
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	b := k.worker(k.u2, "b", store.WorkerKindPrivate)
+	k.authn.mu.Lock()
+	k.authn.id = Identity{Principal: authz.NewActAsPrincipal(k.admin, k.u1, time.Now().Add(time.Hour)), Actor: k.admin, ActingAs: k.u1, Via: ViaSession}
+	k.authn.mu.Unlock()
+	for _, args := range []map[string]any{grantArgs(a1, a2, ops.GrantLevelView), grantArgs(a1, b, ops.GrantLevelView)} {
+		if code, body := k.call(ops.OpGrantSet, args); code != http.StatusForbidden {
+			t.Fatalf("act-as grant_set = %d %s, want forbidden", code, body)
+		}
+	}
+	if rows, _ := k.st.ListSessionGrants(context.Background(), store.SessionGrantFilter{}); len(rows) != 0 {
+		t.Fatalf("stored %+v", rows)
+	}
+}
+
+// A Worker that waits for approval cannot be the source or the target.
+func TestGrantUnapprovedWorkerIsRefused(t *testing.T) {
+	var pending string
+	k := newGrantStackWith(t, func(w *GrantWorker) { w.Approved = w.ID != pending })
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	pending = a2.ID
+	k.as(k.u1)
+	for _, args := range []map[string]any{grantArgs(a1, a2, ops.GrantLevelView), grantArgs(a2, a1, ops.GrantLevelView)} {
+		if code, body := k.call(ops.OpGrantSet, args); kindErrCode(t, body) != proto.CodeConflict {
+			t.Fatalf("grant with an unapproved Worker = %d %s, want conflict", code, body)
+		}
+	}
+	if rows, _ := k.st.ListSessionGrants(context.Background(), store.SessionGrantFilter{}); len(rows) != 0 {
+		t.Fatalf("stored %+v", rows)
 	}
 }
