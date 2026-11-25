@@ -81,7 +81,7 @@ func TestGrantSetArgsValidate(t *testing.T) {
 		{"control", func(a *GrantSetArgs) { a.Level = GrantLevelControl }, ""},
 		{"change", func(a *GrantSetArgs) { a.ID, a.IfRevision = id, 3 }, ""},
 		{"expiry", func(a *GrantSetArgs) { a.ExpiresAt = "2027-01-02T03:04:05.000Z" }, ""},
-		{"longest note", func(a *GrantSetArgs) { a.Note = strings.Repeat("ä", MaxGrantNote) }, ""},
+		{"longest note", func(a *GrantSetArgs) { a.Note = strings.Repeat("\u00e4", MaxGrantNote) }, ""},
 		{"no request id", func(a *GrantSetArgs) { a.RequestID = "" }, "request_id"},
 		{"force", func(a *GrantSetArgs) { a.Force = true }, "force"},
 		{"bad id", func(a *GrantSetArgs) { a.ID, a.IfRevision = "x", 1 }, "id"},
@@ -99,7 +99,7 @@ func TestGrantSetArgsValidate(t *testing.T) {
 		{"unknown level", func(a *GrantSetArgs) { a.Level = "manage" }, "level"},
 		{"expiry without milliseconds", func(a *GrantSetArgs) { a.ExpiresAt = "2027-01-02T03:04:05Z" }, "expires_at"},
 		{"expiry not a time", func(a *GrantSetArgs) { a.ExpiresAt = "tomorrow" }, "expires_at"},
-		{"note too long", func(a *GrantSetArgs) { a.Note = strings.Repeat("ä", MaxGrantNote+1) }, "note"},
+		{"note too long", func(a *GrantSetArgs) { a.Note = strings.Repeat("\u00e4", MaxGrantNote+1) }, "note"},
 		{"note not utf-8", func(a *GrantSetArgs) { a.Note = "\xff" }, "note"},
 	}
 	for _, tc := range tests {
