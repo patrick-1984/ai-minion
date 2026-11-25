@@ -417,6 +417,26 @@ func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
 	if _, err := k.st.SessionGrant(ctx, g.ID); err != nil {
 		t.Fatalf("the grant is gone: %v", err)
 	}
+	// The person who decided the grant withdraws it although they own
+	// neither Worker and are no administrator; their API key does not.
+	if _, err := k.st.DB().ExecContext(ctx, `UPDATE session_grant SET granted_by = ? WHERE id = ?`, k.u1, g.ID); err != nil {
+		t.Fatal(err)
+	}
+	key(k.u1, grantKeyScope{})
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+		t.Fatalf("revoke by a key of the grantor = %d %s", code, body)
+	}
+	k.as(k.u1)
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+		t.Fatalf("revoke by the grantor = %d %s", code, body)
+	}
+	if _, err := k.st.SessionGrant(ctx, g.ID); err == nil {
+		t.Fatal("the grant is still stored")
+	}
+	evs := k.grantEvents(ops.OpGrantRevoke)
+	if last := evs[len(evs)-1]; last.Outcome != AuditOutcomeSuccess || last.Actor != k.u1 || last.GrantID != g.ID || last.Target != c.ID+":build" {
+		t.Fatalf("revoke audit = %+v", evs)
+	}
 }
 
 // grant_list masks, for a viewer who is no administrator, the session name on
