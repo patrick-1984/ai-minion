@@ -7,9 +7,9 @@
   <h2 id="access-why-h">Check a pair</h2>
   {{if .Data.Workers}}<form method="get" action="/access/why" class="toolbar access-why-form">
     <label class="field grow"><span class="label">Source session</span><select name="source" required>
-      <option value="">Choose a session</option>{{$sel := .Data.Source}}{{range .Data.Workers}}<optgroup label="{{.Label}}">{{range .Sessions}}<option value="{{.Value}}"{{if eq .Value $sel}} selected{{end}}>{{.Session}}</option>{{end}}</optgroup>{{end}}</select></label>
+      <option value="">Choose a session</option>{{$sel := .Data.Source}}{{range $w := .Data.Workers}}<optgroup label="{{.Label}}">{{range .Sessions}}<option value="{{.Value}}"{{if eq .Value $sel}} selected{{end}}>{{.Session}} @ {{$w.Label}}</option>{{end}}</optgroup>{{end}}</select></label>
     <label class="field grow"><span class="label">Target session</span><select name="target" required>
-      <option value="">Choose a session</option>{{$sel := .Data.Target}}{{range .Data.Workers}}<optgroup label="{{.Label}}">{{range .Sessions}}<option value="{{.Value}}"{{if eq .Value $sel}} selected{{end}}>{{.Session}}</option>{{end}}</optgroup>{{end}}</select></label>
+      <option value="">Choose a session</option>{{$sel := .Data.Target}}{{range $w := .Data.Workers}}<optgroup label="{{.Label}}">{{range .Sessions}}<option value="{{.Value}}"{{if eq .Value $sel}} selected{{end}}>{{.Session}} @ {{$w.Label}}</option>{{end}}</optgroup>{{end}}</select></label>
     <button type="submit" class="btn">Check</button>
   </form>{{else}}<p class="muted">There is no session to pick yet: no Worker you may see has a live session, and no session reaches another Worker. Grants are set under <a href="/access/grants">Grants</a>.</p>{{end}}
   {{if .Data.Neutral}}<div class="access-why-answer" data-answer="none">

@@ -40,8 +40,8 @@ func TestAccessWhyPage(t *testing.T) {
 	mustHave(t, body, `<title>Access`, `<h1>Why?</h1>`, `<link rel="stylesheet" href="/static/access-why.css">`,
 		`<a href="/access">Who reaches what</a><a href="/access/grants">Grants</a><a href="/access/why" aria-current="page">Why?</a></nav>`,
 		`<form method="get" action="/access/why"`, `<select name="source" required>`, `<select name="target" required>`,
-		`<optgroup label="boss-box"><option value="wA|boss">boss</option></optgroup>`,
-		`<option value="wB|&lt;i&gt;x&lt;/i&gt;">&lt;i&gt;x&lt;/i&gt;</option>`, `<button type="submit" class="btn">Check</button>`)
+		`<optgroup label="boss-box"><option value="wA|boss">boss @ boss-box</option></optgroup>`,
+		`<option value="wB|&lt;i&gt;x&lt;/i&gt;">&lt;i&gt;x&lt;/i&gt; @ ci</option>`, `<button type="submit" class="btn">Check</button>`)
 	mustNotHave(t, body, "access-why-checks", "access-why-answer", "onchange", "autofocus")
 	if len(f.called(ops.OpAccessExplain)) != 0 {
 		t.Error("the page asks for an explanation before a pair is chosen")
@@ -54,7 +54,7 @@ func TestAccessWhyPage(t *testing.T) {
 		t.Fatalf("GET why = %d", rec.Code)
 	}
 	body = rec.Body.String()
-	mustHave(t, body, `<option value="wA|boss" selected>boss</option>`, `<option value="wB|&lt;i&gt;x&lt;/i&gt;" selected>`,
+	mustHave(t, body, `<option value="wA|boss" selected>boss @ boss-box</option>`, `<option value="wB|&lt;i&gt;x&lt;/i&gt;" selected>`,
 		`<div class="access-why-answer" data-answer="blocked">`,
 		`<h3 id="access-why-answer" class="access-why-question" tabindex="-1" autofocus>Why can boss on boss-box not reach &lt;i&gt;x&lt;/i&gt; on ci?</h3>`,
 		`<p class="access-why-summary" role="status"><strong>boss on boss-box cannot reach &lt;i&gt;x&lt;/i&gt; on ci: the session is not shared by its Worker.</strong></p>`,
@@ -192,7 +192,8 @@ func whySelect(t *testing.T, body, name string) (values []string, selected strin
 		if v == "" {
 			continue
 		}
-		if html.UnescapeString(m[3]) != v[strings.IndexByte(v, '|')+1:] {
+		// The label is the session name, then " @ " and the Worker label.
+		if session := v[strings.IndexByte(v, '|')+1:]; !strings.HasPrefix(html.UnescapeString(m[3]), session+" @ ") {
 			t.Errorf("option %q is labelled %q", v, html.UnescapeString(m[3]))
 		}
 		values = append(values, v)
@@ -222,7 +223,7 @@ func TestAccessWhySelectsListTheLiveSessionsTheCallerSees(t *testing.T) {
 			t.Errorf("a user's %s select = %q", name, got)
 		}
 	}
-	mustHave(t, body, `<optgroup label="buildbox"><option value="w2|ci">ci</option></optgroup>`)
+	mustHave(t, body, `<optgroup label="buildbox"><option value="w2|ci">ci @ buildbox</option></optgroup>`)
 	mustNotHave(t, body, "fix-tests", "laptop", "There is no session to pick yet")
 
 	body = get(t, s, pathAccessWhy, "X-Test-Session", adminHeader).Body.String()

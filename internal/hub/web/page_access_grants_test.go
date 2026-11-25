@@ -461,7 +461,7 @@ func TestAccessGrantsMaskedRowsForAPlainUser(t *testing.T) {
 	_, g9, _ := strings.Cut(body, `<tr id="grant-g9"`)
 	g9, _, _ = strings.Cut(g9, "</tr>")
 	mustHave(t, g9, `<em class="grant-masked">a session of patryk</em> @ patryk-work`, `<strong>notes</strong> @ marta-x1`,
-		`<span class="muted grant-user-id" title="User id: the name is not known to you">u-patryk</span> <span class="muted">owner</span>`,
+		`<span class="muted grant-user-id">another user</span> <span class="muted">owner</span>`,
 		"only Revoke", `id="grant-g9-revoke"`)
 	mustNotHave(t, g9, `id="grant-g9-level"`, "/access/grants/approve", "History", "/admin/audit")
 	_, g8, _ := strings.Cut(body, `<tr id="grant-g8"`)

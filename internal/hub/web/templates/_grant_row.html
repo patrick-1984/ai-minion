@@ -5,7 +5,7 @@
   <td data-label="Granted" class="grant-level-cell">{{.LevelLabel}}</td>
   <td data-label="State"><span class="badge" data-tone="{{.StateTone}}">{{.StateLabel}}</span></td>
   <td data-label="In effect">{{if not .Effect.Known}}<span class="muted" title="The Hub could not say whether this grant works now.">unknown</span>{{else if .Effect.Level}}{{.EffectLabel}}{{else}}<span class="chip grant-blocked" title="Blocked by: {{.BlockedText}}">Blocked: {{.BlockedText}}</span>{{end}}</td>
-  <td data-label="Decided by">{{if .DecidedBy}}{{.DecidedBy}}{{else}}<span class="muted grant-user-id" title="User id: the name is not known to you">{{.GrantedBy}}</span>{{end}} <span class="muted">{{.AuthorityLabel}}</span></td>
+  <td data-label="Decided by">{{if .DecidedBy}}{{.DecidedBy}}{{else}}<span class="muted grant-user-id">another user</span>{{end}} <span class="muted">{{.AuthorityLabel}}</span></td>
   <td data-label="Until">{{.UntilText}}</td>
   <td data-label="Actions" class="grant-actions">{{if .Confirm}}<div class="grant-confirm" role="group" aria-labelledby="grant-{{.ID}}-confirm-text">
     <p id="grant-{{.ID}}-confirm-text" class="grant-confirm-text" tabindex="-1">{{.Confirm}}</p>
