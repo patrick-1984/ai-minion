@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hub (internal, no behaviour change yet): `authz` can judge direct session grants (view, message, control) carried by a Worker session principal; nothing creates such grants in this step.
+
 ## v0.20.6
 
 ### Fixed
