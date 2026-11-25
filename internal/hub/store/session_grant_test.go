@@ -58,7 +58,7 @@ func (f grantFixture) adminGrant(session string) SessionGrantRow {
 
 func (f grantFixture) put(t *testing.T, g SessionGrantRow) SessionGrantRow {
 	t.Helper()
-	out, err := f.s.PutSessionGrant(context.Background(), g, 0)
+	out, err := f.s.PutSessionGrant(context.Background(), g, 0, GrantWrite{ActorID: g.GrantedBy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,18 +74,18 @@ func TestSessionGrantCRUDAndRevision(t *testing.T) {
 	}
 	exp := int64(5000)
 	upd := SessionGrantRow{ID: g.ID, Level: 2, ExpiresAt: &exp, Note: "n", UpdatedAt: 200}
-	if _, err := f.s.PutSessionGrant(ctx, upd, 7); !errors.Is(err, ErrGrantRevision) {
+	if _, err := f.s.PutSessionGrant(ctx, upd, 7, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantRevision) {
 		t.Fatalf("stale revision: %v", err)
 	}
-	if _, err := f.s.PutSessionGrant(ctx, upd, 0); !errors.Is(err, ErrGrantRevision) {
+	if _, err := f.s.PutSessionGrant(ctx, upd, 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantRevision) {
 		t.Fatalf("create over an existing id: %v", err)
 	}
-	g2, err := f.s.PutSessionGrant(ctx, upd, 1)
+	g2, err := f.s.PutSessionGrant(ctx, upd, 1, GrantWrite{ActorID: "alice"})
 	if err != nil || g2.Revision != 2 || g2.Level != 2 || g2.ExpiresAt == nil || *g2.ExpiresAt != 5000 || g2.Note != "n" ||
 		g2.UpdatedAt != 200 || g2.SourceSession != "boss" || g2.GrantedBy != "alice" {
 		t.Fatalf("updated = %+v, %v", g2, err)
 	}
-	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: ops.NewUUIDv7(), Level: 1}, 1); !errors.Is(err, ErrNotFound) {
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: ops.NewUUIDv7(), Level: 1}, 1, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("update of a missing grant: %v", err)
 	}
 	f.put(t, f.adminGrant("boss"))
@@ -122,12 +122,12 @@ func TestSessionGrantRefusals(t *testing.T) {
 	f := newGrantFixture(t)
 	ctx := t.Context()
 	f.put(t, f.ownerGrant("boss"))
-	if _, err := f.s.PutSessionGrant(ctx, f.ownerGrant("boss"), 0); !errors.Is(err, ErrGrantExists) {
+	if _, err := f.s.PutSessionGrant(ctx, f.ownerGrant("boss"), 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantExists) {
 		t.Fatalf("second grant for the same pair: %v", err)
 	}
 	same := f.ownerGrant("x")
 	same.TargetWorkerID = f.a.ID
-	if _, err := f.s.PutSessionGrant(ctx, same, 0); !errors.Is(err, ErrGrantInvalid) {
+	if _, err := f.s.PutSessionGrant(ctx, same, 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantInvalid) {
 		t.Fatalf("same Worker: %v", err)
 	}
 	// The table refuses it too, whatever the store checks.
@@ -143,21 +143,21 @@ func TestSessionGrantRefusals(t *testing.T) {
 	}
 	cross := f.adminGrant("x")
 	cross.Authority = GrantAuthorityOwner
-	if _, err := f.s.PutSessionGrant(ctx, cross, 0); !errors.Is(err, ErrGrantOwners) {
+	if _, err := f.s.PutSessionGrant(ctx, cross, 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantOwners) {
 		t.Fatalf("owner grant across two owners: %v", err)
 	}
 	stale := f.adminGrant("x")
 	stale.TargetOwnerID = "alice"
-	if _, err := f.s.PutSessionGrant(ctx, stale, 0); !errors.Is(err, ErrGrantOwners) {
+	if _, err := f.s.PutSessionGrant(ctx, stale, 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantOwners) {
 		t.Fatalf("owner not as decided: %v", err)
 	}
 	bad := f.ownerGrant("lvl")
 	bad.Level = 4
-	if _, err := f.s.PutSessionGrant(ctx, bad, 0); !errors.Is(err, ErrGrantInvalid) {
+	if _, err := f.s.PutSessionGrant(ctx, bad, 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantInvalid) {
 		t.Fatalf("level 4: %v", err)
 	}
 	f.exec(t, `UPDATE workers SET approval='pending' WHERE id=?`, f.c.ID)
-	if _, err := f.s.PutSessionGrant(ctx, f.adminGrant("x"), 0); !errors.Is(err, ErrGrantOwners) {
+	if _, err := f.s.PutSessionGrant(ctx, f.adminGrant("x"), 0, GrantWrite{ActorID: f.admin}); !errors.Is(err, ErrGrantOwners) {
 		t.Fatalf("unapproved Worker: %v", err)
 	}
 }
@@ -203,14 +203,19 @@ func TestSessionGrantSuspension(t *testing.T) {
 	if o, _ := f.s.SessionGrant(ctx, own.ID); o.SuspendedAt != nil {
 		t.Fatalf("owner grant suspended: %+v", o)
 	}
-	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, "alice", 1); !errors.Is(err, ErrGrantRevision) {
+	// Only an active administrator approves; the store reads the role itself.
+	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, 2, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("approve by a plain user: %v", err)
+	}
+	f.exec(t, `INSERT INTO user_roles(user_id,role,source) VALUES('alice','admin','local')`)
+	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, 1, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantRevision) {
 		t.Fatalf("approve with a stale revision: %v", err)
 	}
-	g, err = f.s.ApproveSessionGrant(ctx, adm.ID, "alice", 2)
+	g, err = f.s.ApproveSessionGrant(ctx, adm.ID, 2, GrantWrite{ActorID: "alice"})
 	if err != nil || g.SuspendedAt != nil || g.SuspendCause != "" || g.GrantedBy != "alice" || g.Revision != 3 {
 		t.Fatalf("approved = %+v, %v", g, err)
 	}
-	if _, err := f.s.ApproveSessionGrant(ctx, "missing", "alice", 1); !errors.Is(err, ErrNotFound) {
+	if _, err := f.s.ApproveSessionGrant(ctx, "missing", 1, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("approve a missing grant: %v", err)
 	}
 
@@ -222,6 +227,7 @@ func TestSessionGrantSuspension(t *testing.T) {
 	}
 	off := f.adminGrant("off")
 	off.GrantedBy = "bob"
+	f.exec(t, `INSERT INTO user_roles(user_id,role,source) VALUES('bob','admin','local')`)
 	offRow := f.put(t, off)
 	f.exec(t, `UPDATE users SET active=0 WHERE id='bob'`)
 	g, _ = f.s.SessionGrant(ctx, offRow.ID)
@@ -275,7 +281,7 @@ func TestSessionGrantPurgeAndExpiry(t *testing.T) {
 	}
 
 	exp := int64(1000)
-	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: whole.ID, Level: 1, ExpiresAt: &exp}, 1); err != nil {
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: whole.ID, Level: 1, ExpiresAt: &exp}, 1, GrantWrite{ActorID: "alice"}); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := f.s.DeleteExpiredSessionGrants(ctx, 1000); err != nil || n != 0 {
@@ -286,5 +292,127 @@ func TestSessionGrantPurgeAndExpiry(t *testing.T) {
 	}
 	if rows, _ := f.s.ListSessionGrants(ctx, SessionGrantFilter{}); len(rows) != 1 || rows[0].ID != lateRow.ID {
 		t.Fatalf("left = %+v", rows)
+	}
+}
+
+// The acting user's authority is read in the writing transaction: a demoted
+// or deactivated administrator, a plain user between two owners and a user
+// who does not own both Workers of an owner grant commit nothing.
+func TestSessionGrantWriteNeedsAuthorityInTheTransaction(t *testing.T) {
+	f := newGrantFixture(t)
+	ctx := t.Context()
+	adm := f.put(t, f.adminGrant("boss"))
+	own := f.put(t, f.ownerGrant("boss"))
+	for _, actor := range []string{"", "nobody", "alice", "bob"} {
+		if _, err := f.s.PutSessionGrant(ctx, f.adminGrant("x"), 0, GrantWrite{ActorID: actor}); !errors.Is(err, ErrGrantAuthority) {
+			t.Fatalf("create of an admin grant by %q: %v", actor, err)
+		}
+	}
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: own.ID, Level: 3}, 1, GrantWrite{ActorID: "bob"}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("update of an owner grant by another user: %v", err)
+	}
+	// An administrator creates an owner grant for the owner; it names the
+	// administrator as granted_by whatever the row says.
+	forAlice := f.ownerGrant("for-alice")
+	g, err := f.s.PutSessionGrant(ctx, forAlice, 0, GrantWrite{ActorID: f.admin})
+	if err != nil || g.Authority != GrantAuthorityOwner || g.GrantedBy != f.admin {
+		t.Fatalf("owner grant by an administrator = %+v, %v", g, err)
+	}
+	// The demotion commits before the write: nothing changes.
+	f.exec(t, `DELETE FROM user_roles WHERE user_id='root' AND role='admin'`)
+	cur, _ := f.s.SessionGrant(ctx, adm.ID)
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: adm.ID, Level: 1}, cur.Revision, GrantWrite{ActorID: f.admin}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("update by a demoted administrator: %v", err)
+	}
+	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, cur.Revision, GrantWrite{ActorID: f.admin}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("approve by a demoted administrator: %v", err)
+	}
+	if _, err := f.s.PutSessionGrant(ctx, f.adminGrant("y"), 0, GrantWrite{ActorID: f.admin}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("create by a demoted administrator: %v", err)
+	}
+	if after, _ := f.s.SessionGrant(ctx, adm.ID); after.Revision != cur.Revision || after.Level != 3 || after.SuspendedAt == nil {
+		t.Fatalf("after the refused writes = %+v", after)
+	}
+	// An inactive owner cannot edit an own grant.
+	f.exec(t, `UPDATE users SET active=0 WHERE id='alice'`)
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: own.ID, Level: 3}, 1, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("update by an inactive owner: %v", err)
+	}
+}
+
+// A revoke with a stale revision leaves the grant; the audit row commits with
+// the change and a failing audit row takes the change back.
+func TestSessionGrantRevokeRevisionAndAudit(t *testing.T) {
+	f := newGrantFixture(t)
+	ctx := t.Context()
+	g := f.put(t, f.ownerGrant("boss"))
+	g2, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: g.ID, Level: 2}, 1, GrantWrite{ActorID: "alice"})
+	if err != nil || g2.Revision != 2 {
+		t.Fatalf("update = %+v, %v", g2, err)
+	}
+	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, 1, GrantWrite{}); !errors.Is(err, ErrGrantRevision) {
+		t.Fatalf("revoke at an old revision: %v", err)
+	}
+	if _, err := f.s.SessionGrant(ctx, g.ID); err != nil {
+		t.Fatalf("the grant is gone after a stale revoke: %v", err)
+	}
+	boom := errors.New("no audit")
+	fail := GrantWrite{ActorID: "alice", Audit: func(*SessionGrantRow, SessionGrantRow) (AuditRow, error) { return AuditRow{}, boom }}
+	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, 2, fail); !errors.Is(err, boom) {
+		t.Fatalf("revoke with a failing audit: %v", err)
+	}
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: g.ID, Level: 3}, 2, fail); !errors.Is(err, boom) {
+		t.Fatalf("update with a failing audit: %v", err)
+	}
+	if _, err := f.s.PutSessionGrant(ctx, f.ownerGrant("other"), 0, fail); !errors.Is(err, boom) {
+		t.Fatalf("create with a failing audit: %v", err)
+	}
+	if rows, _ := f.s.ListSessionGrants(ctx, SessionGrantFilter{}); len(rows) != 1 || rows[0].Revision != 2 || rows[0].Level != 2 {
+		t.Fatalf("after the failed audits = %+v", rows)
+	}
+	var seenOld *SessionGrantRow
+	ok := GrantWrite{ActorID: "alice", Audit: func(old *SessionGrantRow, now SessionGrantRow) (AuditRow, error) {
+		seenOld = old
+		return AuditRow{Actor: "alice", Action: "grant_revoke", Outcome: "success", GrantID: now.ID}, nil
+	}}
+	gone, err := f.s.RevokeSessionGrant(ctx, g.ID, 2, ok)
+	if err != nil || gone.ID != g.ID || seenOld == nil || seenOld.Revision != 2 {
+		t.Fatalf("revoke = %+v, %v (old %+v)", gone, err, seenOld)
+	}
+	limit := 10
+	rows, err := f.s.ListAudit(ctx, AuditQuery{Action: "grant_revoke", Limit: limit})
+	if err != nil || len(rows) != 1 || rows[0].GrantID != g.ID || rows[0].ID == "" || rows[0].TS == 0 {
+		t.Fatalf("audit rows = %+v, %v", rows, err)
+	}
+	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, 0, GrantWrite{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second revoke: %v", err)
+	}
+}
+
+// An edit or an approval does not move the purge fence: a grant saved again
+// after the Hub saw its session end is purged all the same.
+func TestSessionGrantEditDoesNotMoveThePurgeFence(t *testing.T) {
+	f := newGrantFixture(t)
+	ctx := t.Context()
+	g := f.put(t, f.ownerGrant("gone")) // created at 100
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: g.ID, Level: 1, Note: "kept?", UpdatedAt: 900}, 1, GrantWrite{ActorID: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	adm := f.put(t, f.adminGrant("gone"))
+	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, 1, GrantWrite{ActorID: f.admin}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := f.s.PurgeSessionGrants(ctx, f.a.ID, []string{"gone"}, 300); err != nil || n != 2 {
+		t.Fatalf("purge after an edit and an approval: %d, %v", n, err)
+	}
+	// A grant created after the evidence stays.
+	late := f.ownerGrant("gone")
+	late.UpdatedAt = 500
+	lateRow := f.put(t, late)
+	if n, err := f.s.PurgeSessionGrants(ctx, f.a.ID, []string{"gone"}, 300); err != nil || n != 0 {
+		t.Fatalf("purge of a later grant: %d, %v", n, err)
+	}
+	if _, err := f.s.SessionGrant(ctx, lateRow.ID); err != nil {
+		t.Fatal(err)
 	}
 }
