@@ -151,3 +151,80 @@ func TestReplaceResultKeepsCreationTimeAndDeleteResultRemoves(t *testing.T) {
 		t.Fatal("empty request id accepted")
 	}
 }
+
+func TestResultCacheKeepsCallerAndPayloadHash(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, t.TempDir())
+	rec := ResultRecord{RequestID: "r1", Op: "send_text", Session: "work", Caller: "user user=a actor= key= worker=", PayloadHash: "abc", Result: []byte("1")}
+	if err := s.PutResult(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetResult(ctx, "r1")
+	if err != nil || !ok || got.Caller != rec.Caller || got.PayloadHash != "abc" {
+		t.Fatalf("after put: %+v, %v, %v", got, ok, err)
+	}
+	// The completed result keeps who sent the request and what it carried.
+	rec.Result = []byte("2")
+	if err := s.ReplaceResult(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err = s.GetResult(ctx, "r1")
+	if err != nil || !ok || got.Caller != rec.Caller || got.PayloadHash != "abc" || string(got.Result) != "2" {
+		t.Fatalf("after replace: %+v, %v, %v", got, ok, err)
+	}
+	// A replace that inserts (the id was pruned meanwhile) stores them too.
+	if err := s.ReplaceResult(ctx, ResultRecord{RequestID: "r2", Op: "x", Caller: "local", PayloadHash: "def", Result: []byte("3")}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, _ := s.GetResult(ctx, "r2"); !ok || got.Caller != "local" || got.PayloadHash != "def" {
+		t.Fatalf("inserted by replace: %+v, %v", got, ok)
+	}
+}
+
+// A row of a Worker that did not store the caller and the payload yet has ”
+// in both columns (the defaults of migration 0015) and compares as before.
+func TestResultRowFromBeforeTheCallerColumnsComparesAsBefore(t *testing.T) {
+	ctx := context.Background()
+	clk := newFakeClock()
+	s := openStore(t, t.TempDir(), WithClock(clk.Now))
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at) VALUES ('old', 'send_text', 'work', 0, '{}', ?)`,
+		clk.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	old, ok, err := s.GetResult(ctx, "old")
+	if err != nil || !ok || old.Caller != "" || old.PayloadHash != "" {
+		t.Fatalf("old row: %+v, %v, %v", old, ok, err)
+	}
+	next := ResultRecord{Op: "send_text", Session: "work", Caller: "local", PayloadHash: "abc"}
+	if !old.SameRequest(next) {
+		t.Fatal("an old row must answer a request with the same op, session and force")
+	}
+	next.Force = true
+	if old.SameRequest(next) {
+		t.Fatal("an old row must still tell another force apart")
+	}
+}
+
+func TestResultSameRequest(t *testing.T) {
+	base := ResultRecord{Op: "send_text", Session: "work", Caller: "local", PayloadHash: "abc"}
+	for _, tc := range []struct {
+		name string
+		mut  func(*ResultRecord)
+		want bool
+	}{
+		{"identical", func(*ResultRecord) {}, true},
+		{"other op", func(r *ResultRecord) { r.Op = "send_keys" }, false},
+		{"other session", func(r *ResultRecord) { r.Session = "other" }, false},
+		{"other force", func(r *ResultRecord) { r.Force = true }, false},
+		{"other caller", func(r *ResultRecord) { r.Caller = "user user=b actor= key= worker=" }, false},
+		{"other payload", func(r *ResultRecord) { r.PayloadHash = "def" }, false},
+		{"request without a payload digest", func(r *ResultRecord) { r.PayloadHash = "" }, true},
+	} {
+		next := base
+		tc.mut(&next)
+		if got := base.SameRequest(next); got != tc.want {
+			t.Errorf("%s: SameRequest = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
