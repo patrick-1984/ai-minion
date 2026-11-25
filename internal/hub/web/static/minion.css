@@ -1490,6 +1490,10 @@ main:has(> .access-wide) { max-width: none; }
 .grant-tools { align-items: center; }
 .grant-tools .check { display: inline-flex; align-items: center; gap: 8px; }
 .grant-table td { vertical-align: top; }
+.grant-table td[data-label="Until"] { white-space: nowrap; }
+.grant-actions .row-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.grant-actions form { flex: none; }
+.grant-actions button { white-space: nowrap; }
 .grant-table .chip { margin-left: 4px; cursor: help; }
 .grant-claimed { background: var(--warning-subtle); color: var(--warning); }
 .grant-actions form { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }

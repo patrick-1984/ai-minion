@@ -38,7 +38,7 @@ func TestAccessGrantsPageListsGrantsForEveryUser(t *testing.T) {
 		`alice <span class="muted">owner</span>`, `root <span class="muted">administrator</span>`, `<td data-label="Until">no end</td>`,
 		`<tr id="grant-g2" data-filter="ci work&lt;b&gt; alice  anna-laptop anna control root" data-between="1" data-off="1">`,
 		`hx-post="/access/grants/set-level" hx-target="closest tr" hx-swap="outerHTML" hx-sync="closest tr:replace" hx-disabled-elt="find button"`,
-		`name="if_revision" value="7"`, `<option value="message" disabled title="available soon">Message (available soon)</option>`,
+		`name="if_revision" value="7"`, `<option value="message">Message</option>`,
 		`hx-post="/access/grants/approve"`, `hx-post="/access/grants/revoke"`,
 		`<tbody id="grant-rows" hx-get="/access/grants" hx-select="#grant-rows" hx-swap="outerHTML" hx-trigger="grants-changed from:body">`,
 		`<dialog id="grant-dialog"`, `<details class="panel grant-add" id="grant-add">`, `id="grant-only-between"`, `id="grant-only-off"`,
@@ -150,8 +150,8 @@ func TestAccessGrantAddPostsGrantSetWithTheChosenMembers(t *testing.T) {
 	// The dialog lists the live sessions; a user starts only from an own Worker.
 	admin := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
 	mustHave(t, admin, `<option value="w1|fix-tests" data-worker="w1">fix-tests @ laptop</option>`,
-		`<option value="">every shared session of this Worker</option>`, `<input type="radio" name="level" value="message" disabled>`,
-		"available soon", `name="until" value="30"`, `hx-post="/access/grants/add" hx-target="#grant-add-result"`)
+		`<option value="">every shared session of this Worker</option>`, `<input type="radio" name="level" value="message">`,
+		`name="until" value="30"`, `hx-post="/access/grants/add" hx-target="#grant-add-result"`)
 	user := get(t, s, pathAccessGrants, "X-Test-Session", userHeader).Body.String()
 	_, sources, _ := strings.Cut(user, `name="source_worker_id"`)
 	sources, _, _ = strings.Cut(sources, `name="target_worker_id"`)
