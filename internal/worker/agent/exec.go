@@ -236,7 +236,9 @@ type originCtxKey struct{}
 
 // auditOrigin is the text of the origin column of the local audit: the JSON
 // origin of a Hub request, or "local" when the caller came through a local
-// entry point.
+// entry point. The JSON is the whole origin as this Worker knows it, so it
+// keeps the attribution members (source_session, source_proof, grant_id): the
+// audit is the only place where the Worker uses them.
 func auditOrigin(ctx context.Context) string {
 	if o, ok := ctx.Value(originCtxKey{}).(*proto.Origin); ok && o != nil {
 		if b, err := json.Marshal(o); err == nil {
