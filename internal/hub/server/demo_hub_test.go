@@ -2,8 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -24,8 +29,9 @@ import (
 //	MINION_DEMO_ADDR=127.0.0.1:18790 MINION_DEMO_STOP=/tmp/demo-hub.stop \
 //	  go test ./internal/hub/server/ -run TestDemoHub -count=1 -timeout 30m
 //
-// It serves the composed default Hub over the self-signed test TLS on that
-// address, seeds two users, four Workers, 26 sessions, two master sessions with
+// The composed default Hub runs with its self-signed test TLS on a free port;
+// MINION_DEMO_ADDR serves it over plain HTTP through a small reverse proxy (a
+// browser needs no certificate exception on the loopback address). It seeds two users, four Workers, 26 sessions, two master sessions with
 // acceptances and eight grants, writes the URL, the credentials and the seeded
 // identifiers to <MINION_DEMO_STOP>.info (and to standard error), and blocks
 // until the file MINION_DEMO_STOP exists.
@@ -58,7 +64,8 @@ func TestDemoHub(t *testing.T) {
 		t.Fatal("MINION_DEMO_ADDR must be on 127.0.0.1")
 	}
 	ctx := context.Background()
-	ph := startDemoHub(t, addr)
+	ph := startDemoHub(t, "127.0.0.1:0")
+	demoPlainProxy(t, addr, ph.h.srv.Addr())
 
 	// The plain user, with a real password so that a browser can sign in.
 	hash, err := local.NewHasher().Hash(ctx, demoUserPass)
@@ -168,7 +175,7 @@ func TestDemoHub(t *testing.T) {
 	}
 
 	info := map[string]any{
-		"url":   "https://" + ph.h.srv.Addr(),
+		"url":   "http://" + addr,
 		"admin": map[string]string{"username": demoAdminName, "password": demoAdminPass},
 		"user":  map[string]string{"username": demoUserName, "password": demoUserPass},
 		"workers": []map[string]any{
@@ -180,7 +187,7 @@ func TestDemoHub(t *testing.T) {
 		"seed_notes": notes,
 	}
 	b, _ := json.MarshalIndent(info, "", "  ")
-	fmt.Fprintf(os.Stderr, "demo Hub (self-signed TLS): %s\n", b)
+	fmt.Fprintf(os.Stderr, "demo Hub: %s\n", b)
 	if err := os.WriteFile(stop+".info", b, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -267,4 +274,39 @@ func demoDeclare(t *testing.T, ph *pipeHub, pw *pipeWorker, names []string) {
 		s, ok := ph.events.Sessions(pw.id)
 		return ok && s.Synced && len(s.Sessions) == len(names) && !ph.events.Fenced(pw.id, names[0])
 	})
+}
+
+// demoPlainProxy serves the TLS Hub at hub over plain HTTP on addr. The Host
+// stays; Origin and Referer are rewritten to the https origin the Hub sees, so
+// its same-origin check holds.
+func demoPlainProxy(t *testing.T, addr, hub string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := &url.URL{Scheme: "https", Host: hub}
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.Out.Host = pr.In.Host
+			for _, h := range []string{"Origin", "Referer"} {
+				if v := pr.In.Header.Get(h); strings.HasPrefix(v, "http://"+pr.In.Host) {
+					pr.Out.Header.Set(h, "https://"+strings.TrimPrefix(v, "http://"))
+				}
+			}
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del("Strict-Transport-Security")
+			if loc := resp.Header.Get("Location"); strings.HasPrefix(loc, "https://"+addr) {
+				resp.Header.Set("Location", "http://"+strings.TrimPrefix(loc, "https://"))
+			}
+			return nil
+		},
+		FlushInterval: -1,
+		Transport:     &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // the self-signed test Hub on the loopback address
+	}
+	srv := &http.Server{Handler: rp, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
 }
