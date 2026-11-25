@@ -214,6 +214,7 @@ func (e *Executor) Execute(ctx context.Context, rq Request) (json.RawMessage, er
 	if rq.Origin != nil {
 		ctx = context.WithValue(ctx, originCtxKey{}, rq.Origin)
 	}
+	ctx = withWritePayload(ctx, rq.Args)
 	e.mu.RLock()
 	h := e.handlers[rq.Op]
 	e.mu.RUnlock()
@@ -247,6 +248,23 @@ func auditOrigin(ctx context.Context) string {
 		return "malformed"
 	}
 	return "local"
+}
+
+// hubOrigin returns the origin of a Hub request, or nil for a local caller.
+func hubOrigin(ctx context.Context) *proto.Origin {
+	o, _ := ctx.Value(originCtxKey{}).(*proto.Origin)
+	return o
+}
+
+// payloadCtxKey carries the raw arguments of a request to the write frame.
+type payloadCtxKey struct{}
+
+// withWritePayload makes the arguments of a request known to [Executor.write],
+// which stores a digest of them with the request id. [Executor.Execute] calls
+// it for every op; an entry point that runs a write handler without Execute
+// (the Solo pipe) calls it itself.
+func withWritePayload(ctx context.Context, args json.RawMessage) context.Context {
+	return context.WithValue(ctx, payloadCtxKey{}, args)
 }
 
 // lookupOp returns the catalog entry of a Worker op.

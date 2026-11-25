@@ -21,10 +21,40 @@ type ResultRecord struct {
 	Op      string
 	Session string
 	Force   bool
+	// Caller names who sent the request: "local" for a caller on this host,
+	// otherwise the identity members of the Hub-derived origin (kind, user,
+	// acting admin, API key, source Worker). PayloadHash is a SHA-256 digest of
+	// the canonical arguments of the request, never the arguments themselves.
+	// Both are empty in a row written before they existed (migration 0015);
+	// see [ResultRecord.SameRequest].
+	Caller      string
+	PayloadHash string
 	// Result is the JSON of the WriteResult. It never holds terminal content.
 	Result []byte
 	// CreatedAt is set by [Store.PutResult] and returned by [Store.GetResult].
 	CreatedAt time.Time
+}
+
+// SameRequest reports whether next, the request that arrives now, is the
+// request this stored record belongs to: the same op, session and force, the
+// same caller and the same payload. A reused request id that fails it is a
+// conflict and must never be answered from the cache (audit F13): the cached
+// outcome belongs to another caller or to other input.
+//
+// Caller and payload are compared only when both records have them. A row
+// written before migration 0015 has neither and compares as it always did, by
+// op, session and force alone.
+func (r ResultRecord) SameRequest(next ResultRecord) bool {
+	if r.Op != next.Op || r.Session != next.Session || r.Force != next.Force {
+		return false
+	}
+	if r.Caller != "" && next.Caller != "" && r.Caller != next.Caller {
+		return false
+	}
+	if r.PayloadHash != "" && next.PayloadHash != "" && r.PayloadHash != next.PayloadHash {
+		return false
+	}
+	return true
 }
 
 // PutResult stores the result of a write under its request id. The first
@@ -45,9 +75,9 @@ func (s *Store) PutResult(ctx context.Context, rec ResultRecord) error {
 		return fmt.Errorf("store: put result: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO NOTHING`,
-		rec.RequestID, rec.Op, rec.Session, boolInt(rec.Force), string(rec.Result), now.UnixMilli()); err != nil {
+		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at, caller, payload_hash)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (request_id) DO NOTHING`,
+		rec.RequestID, rec.Op, rec.Session, boolInt(rec.Force), string(rec.Result), now.UnixMilli(), rec.Caller, rec.PayloadHash); err != nil {
 		return fmt.Errorf("store: put result: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -75,11 +105,12 @@ func (s *Store) ReplaceResult(ctx context.Context, rec ResultRecord) error {
 		return fmt.Errorf("store: replace result: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO op_results (request_id, op, session_name, force, result, created_at, caller, payload_hash)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (request_id) DO UPDATE SET
-		   op = excluded.op, session_name = excluded.session_name, force = excluded.force, result = excluded.result`,
-		rec.RequestID, rec.Op, rec.Session, boolInt(rec.Force), string(rec.Result), now.UnixMilli()); err != nil {
+		   op = excluded.op, session_name = excluded.session_name, force = excluded.force, result = excluded.result,
+		   caller = excluded.caller, payload_hash = excluded.payload_hash`,
+		rec.RequestID, rec.Op, rec.Session, boolInt(rec.Force), string(rec.Result), now.UnixMilli(), rec.Caller, rec.PayloadHash); err != nil {
 		return fmt.Errorf("store: replace result: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -108,10 +139,10 @@ func (s *Store) GetResult(ctx context.Context, requestID string) (ResultRecord, 
 		created int64
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT request_id, op, session_name, force, result, created_at
+		`SELECT request_id, op, session_name, force, result, created_at, caller, payload_hash
 		 FROM op_results WHERE request_id = ? AND created_at > ?`,
 		requestID, s.clock.now().Add(-ResultTTL).UnixMilli()).
-		Scan(&rec.RequestID, &rec.Op, &rec.Session, &force, &result, &created)
+		Scan(&rec.RequestID, &rec.Op, &rec.Session, &force, &result, &created, &rec.Caller, &rec.PayloadHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ResultRecord{}, false, nil
 	}

@@ -317,6 +317,7 @@ func (s *PipeService) soloSend(ctx context.Context, rq Request) (any, error) {
 		return nil, err
 	}
 	peer := soloPeer(args.Target.SessionName)
+	ctx = withWritePayload(ctx, rq.Args) // this entry does not pass through Execute
 	return e.write(ctx, op, args.WriteArgs, args.Target, true, func(ctx context.Context) (ops.WriteResult, error) {
 		msg, err := s.broker.Send(ctx, peer, args.Text)
 		if err != nil {
