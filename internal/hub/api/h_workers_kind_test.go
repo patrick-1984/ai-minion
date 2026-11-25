@@ -171,7 +171,13 @@ func (k *kindStack) call(op string, args map[string]any) (int, string) {
 	return rec.Code, rec.Body.String()
 }
 
-func opNeedsRequestID(op string) bool { return op != ops.OpTrustList }
+// A strict read (ops.StrictArgs) refuses a request_id it does not declare.
+func opNeedsRequestID(name string) bool {
+	if op, ok := ops.Lookup(name); ok && ops.StrictArgs(name) && !op.Write && !op.Mutates {
+		return false
+	}
+	return name != ops.OpTrustList
+}
 
 func kindErrCode(t *testing.T, body string) proto.Code {
 	t.Helper()
