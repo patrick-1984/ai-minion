@@ -612,6 +612,8 @@ h1:focus, main:focus { outline: none; }
 .inspect-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
 .inspect-main { min-width: 0; }
 main:has(> .inspect-layout) { max-width: 96rem; }
+/* Access > Minion control uses the whole window (the gutters stay): its tables grow with the number of Workers. */
+main:has(> .access-wide) { max-width: none; }
 .inspector { display: flex; flex-direction: column; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
 .inspector[hidden] { display: none; }
 .inspector-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
@@ -812,6 +814,14 @@ nav.settings-jump { position: sticky; z-index: 5; top: 8px; margin-bottom: 16px;
 .control-saved { font-size: 12px; margin: 4px 0 0; }
 .control-saved form.undo { display: inline; }
 .matrix-wrap { overflow: auto; max-height: 70vh; }
+.matrix-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.matrix-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.matrix-asof { color: var(--muted); font-size: 12px; }
+.matrix-owner { display: block; font-weight: 400; font-size: 12px; }
+/* One checkbox size on the page, itself a 24px target (WCAG 2.5.8) at every width. */
+main:has(> .access-wide) input[type="checkbox"] { width: 24px; height: 24px; flex-shrink: 0; vertical-align: middle; }
+/* The Workers table shows every row: the page scrolls, not an inner box. */
+.table-wrap.table-wrap-full { max-height: none; }
 .control-matrix { border-collapse: collapse; font-size: 13px; width: auto; }
 .control-matrix th, .control-matrix td { border: 1px solid var(--border); padding: 6px 10px; white-space: nowrap; min-width: 6rem; }
 .control-matrix th { white-space: normal; overflow-wrap: anywhere; max-width: 18rem; }
@@ -821,8 +831,9 @@ nav.settings-jump { position: sticky; z-index: 5; top: 8px; margin-bottom: 16px;
 .check-form > label { min-width: 0; max-width: 100%; flex: 1 1 18rem; }
 .check-form select { min-width: 0; width: 100%; }
 .check-result ul { margin: 4px 0 0; }
-.control-matrix thead th { position: sticky; top: 0; background: var(--surface); }
-.control-matrix tbody th { position: sticky; left: 0; background: var(--surface); text-align: left; }
+.control-matrix thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); box-shadow: inset 0 -1px 0 var(--border); }
+.control-matrix tbody th { position: sticky; left: 0; z-index: 1; background: var(--surface); text-align: left; box-shadow: inset -1px 0 0 var(--border); }
+.control-matrix thead th.corner { left: 0; z-index: 3; text-align: left; box-shadow: inset -1px -1px 0 var(--border); }
 .check-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 
 /* Session names carry their Worker (A20): "worker/session". */
@@ -1241,7 +1252,6 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--input-bor
   .check { min-height: 44px; align-items: flex-start; padding-block: 10px; }
   .check input { top: 12px; }
   input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; flex-shrink: 0; }
-  .control-matrix td input[type="checkbox"] { width: 44px; height: 44px; }
   .topbar { gap: 8px; }
   .top-tools { gap: 8px; }
   .crumbs { font-size: 11px; overflow-wrap: anywhere; }
@@ -1434,3 +1444,9 @@ details.fold > summary:focus-visible { outline-offset: 2px; }
 .refresh-busy { display: none; }
 .htmx-request .refresh-busy { display: inline; }
 .htmx-request .refresh-idle { display: none; }
+/* Access > Minion control on paper: no tools, no scroll boxes, the matrix as a plain table. */
+@media print {
+  main:has(> .access-wide) :is(.settings-tools, .matrix-tools, .info-btn) { display: none; }
+  .matrix-wrap, .table-wrap.table-wrap-full, .control-pick ul, .control-masters { max-height: none; overflow: visible; }
+  .control-matrix :is(thead th, tbody th, thead th.corner) { position: static; box-shadow: none; }
+}
