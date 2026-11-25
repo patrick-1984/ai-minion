@@ -8,6 +8,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
@@ -100,23 +101,63 @@ func (h grantHandlers) isAdmin(ctx context.Context, p authz.Principal) (bool, er
 	return false, err
 }
 
+// Audit actions of the grant handlers.
+const (
+	AuditActionGrantCreate  = "grant.create"
+	AuditActionGrantUpdate  = "grant.update"
+	AuditActionGrantApprove = "grant.approve"
+)
+
+// grantAuditOutcome maps a handler error to the audit outcome: a refusal
+// (forbidden, not_found) is "denied", any other error "failed".
+func grantAuditOutcome(err error) string {
+	if err == nil {
+		return AuditOutcomeSuccess
+	}
+	if c := ErrorOf(err).Code; c == proto.CodeForbidden || c == proto.CodeNotFound {
+		return AuditOutcomeDenied
+	}
+	return auditOutcomeError
+}
+
+// grantAuditSource is the audit Source of a grant, grantAuditTarget its
+// Target ("*" for every shared session of the target Worker).
+func grantAuditSource(workerID, session string) string {
+	if workerID == "" {
+		return ""
+	}
+	return workerID + ":" + session
+}
+
+func grantAuditTarget(workerID, session string) string {
+	if workerID == "" {
+		return "grant"
+	}
+	if session == "" {
+		session = "*"
+	}
+	return workerID + ":" + session
+}
+
+// grantAuditLevel is the level name of a stored rank for an audit detail.
+func grantAuditLevel(rank int) string {
+	if n, ok := ops.GrantLevelName(rank); ok {
+		return n
+	}
+	return "unknown"
+}
+
 // record writes the audit event of a grant_set or grant_approve, also for a
-// refusal. id is "" while no grant is known.
-func (h grantHandlers) record(ctx context.Context, c *Call, action, id string, err error) {
+// refusal. The detail holds only levels, flags and numbers, never a name.
+func (h grantHandlers) record(ctx context.Context, c *Call, ev audit.Event, err error) {
 	if h.au == nil {
 		return
 	}
-	outcome := "success"
-	if err != nil {
-		outcome = string(ErrorOf(err).Code)
+	ev.Actor, ev.ActingAs, ev.Outcome = c.Identity.Actor, c.Identity.ActingAs, grantAuditOutcome(err)
+	if !audit.ValidDetail(ev.Detail) {
+		ev.Detail = ""
 	}
-	target := "grant:" + id
-	if id == "" {
-		target = "grant:new"
-	}
-	_ = h.au.Record(context.WithoutCancel(ctx), audit.Event{
-		Actor: c.Identity.Actor, ActingAs: c.Identity.ActingAs, Action: action, Target: target, Outcome: outcome,
-	})
+	_ = h.au.Record(context.WithoutCancel(ctx), ev)
 }
 
 func (h grantHandlers) info(g store.SessionGrantRow, ws map[string]GrantWorker) ops.Grant {
@@ -215,19 +256,43 @@ func grantStoreErr(err error) error {
 }
 
 func (h grantHandlers) set(ctx context.Context, c *Call, a ops.GrantSetArgs) (ops.GrantSetResult, error) {
-	g, ws, err := h.doSet(ctx, c, a)
-	id := a.ID
-	if err == nil {
-		id = g.ID
+	var old *store.SessionGrantRow
+	g, ws, err := h.doSet(ctx, c, a, &old)
+	ev := audit.Event{Action: AuditActionGrantCreate, GrantID: a.ID,
+		Source: grantAuditSource(a.SourceWorkerID, a.SourceSession), Target: grantAuditTarget(a.TargetWorkerID, a.TargetSession)}
+	newLevel := "unknown"
+	if _, ok := ops.GrantLevelRank(a.Level); ok {
+		newLevel = a.Level
 	}
-	h.record(ctx, c, ops.OpGrantSet, id, err)
+	switch {
+	case a.ID != "":
+		ev.Action = AuditActionGrantUpdate
+		ev.Detail = "level_new=" + newLevel
+		if old != nil {
+			ev.Detail = "level_old=" + grantAuditLevel(old.Level) + " " + ev.Detail
+		}
+		if err == nil {
+			ev.Detail += " rev=" + strconv.FormatUint(g.Revision, 10)
+		}
+	case err == nil:
+		ev.GrantID = g.ID
+		ev.Detail = "level=" + newLevel + " authority=" + g.Authority + " expires=none"
+		if g.ExpiresAt != nil {
+			ev.Detail = "level=" + newLevel + " authority=" + g.Authority + " expires=" + strconv.FormatInt(*g.ExpiresAt, 10)
+		}
+	default:
+		ev.Detail = "level=" + newLevel
+	}
+	h.record(ctx, c, ev, err)
 	if err != nil {
 		return ops.GrantSetResult{}, err
 	}
 	return ops.GrantSetResult{Outcome: ops.OutcomeDelivered, Grant: h.info(g, ws)}, nil
 }
 
-func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs) (store.SessionGrantRow, map[string]GrantWorker, error) {
+// doSet decides and stores a grant_set. For an update *old receives the
+// stored grant as soon as it is read (for the audit).
+func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, old **store.SessionGrantRow) (store.SessionGrantRow, map[string]GrantWorker, error) {
 	var none store.SessionGrantRow
 	p := c.Principal
 	if p.UserID == "" {
@@ -264,6 +329,8 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs) (
 		if err != nil {
 			return none, nil, grantStoreErr(err)
 		}
+		before := cur
+		*old = &before
 		if cur.SourceWorkerID != a.SourceWorkerID || cur.SourceSession != a.SourceSession ||
 			cur.TargetWorkerID != a.TargetWorkerID || cur.TargetSession != a.TargetSession {
 			return none, nil, NewError(proto.CodeInvalidArgument, "the source and the target of a grant cannot be changed")
@@ -322,11 +389,15 @@ func (h grantHandlers) revokeResource(p authz.Principal, args any) (authz.Resour
 	return authz.WorkerResource{ID: g.SourceWorkerID}, nil
 }
 
-func (h grantHandlers) revoke(ctx context.Context, _ *Call, a ops.GrantRevokeArgs) (ops.WriteResult, error) {
+func (h grantHandlers) revoke(ctx context.Context, c *Call, a ops.GrantRevokeArgs) (ops.WriteResult, error) {
 	g, err := h.st.SessionGrant(ctx, a.ID)
 	if err != nil {
 		return ops.WriteResult{}, grantStoreErr(err)
 	}
+	// The dispatcher audits grant_revoke; the row names the grant.
+	c.AuditGrantID = g.ID
+	c.AuditSource = grantAuditSource(g.SourceWorkerID, g.SourceSession)
+	c.AuditDetail = "level=" + grantAuditLevel(g.Level) + " authority=" + g.Authority
 	if a.IfRevision != 0 && a.IfRevision != g.Revision {
 		return ops.WriteResult{}, grantStoreErr(store.ErrGrantRevision)
 	}
@@ -341,26 +412,35 @@ func (h grantHandlers) revoke(ctx context.Context, _ *Call, a ops.GrantRevokeArg
 }
 
 func (h grantHandlers) approve(ctx context.Context, c *Call, a ops.GrantApproveArgs) (ops.GrantSetResult, error) {
-	res, err := h.doApprove(ctx, c, a)
-	h.record(ctx, c, ops.OpGrantApprove, a.ID, err)
+	res, g, err := h.doApprove(ctx, c, a)
+	if err != nil {
+		// Name the grant in the audit of a refusal too, when it exists.
+		g, _ = h.st.SessionGrant(ctx, a.ID)
+	}
+	ev := audit.Event{Action: AuditActionGrantApprove, GrantID: a.ID,
+		Source: grantAuditSource(g.SourceWorkerID, g.SourceSession), Target: grantAuditTarget(g.TargetWorkerID, g.TargetSession)}
+	if g.ID != "" {
+		ev.Detail = "level=" + grantAuditLevel(g.Level) + " authority=" + g.Authority + " rev=" + strconv.FormatUint(g.Revision, 10)
+	}
+	h.record(ctx, c, ev, err)
 	return res, err
 }
 
-func (h grantHandlers) doApprove(ctx context.Context, c *Call, a ops.GrantApproveArgs) (ops.GrantSetResult, error) {
+func (h grantHandlers) doApprove(ctx context.Context, c *Call, a ops.GrantApproveArgs) (ops.GrantSetResult, store.SessionGrantRow, error) {
 	admin, err := h.isAdmin(ctx, c.Principal)
 	if err != nil {
-		return ops.GrantSetResult{}, err
+		return ops.GrantSetResult{}, store.SessionGrantRow{}, err
 	}
 	if !admin {
-		return ops.GrantSetResult{}, NewError(proto.CodeForbidden, "not allowed")
+		return ops.GrantSetResult{}, store.SessionGrantRow{}, NewError(proto.CodeForbidden, "not allowed")
 	}
 	g, err := h.st.ApproveSessionGrant(ctx, a.ID, c.Principal.UserID, a.IfRevision)
 	if err != nil {
-		return ops.GrantSetResult{}, grantStoreErr(err)
+		return ops.GrantSetResult{}, store.SessionGrantRow{}, grantStoreErr(err)
 	}
 	ws, err := h.byID(ctx)
 	if err != nil {
-		return ops.GrantSetResult{}, err
+		return ops.GrantSetResult{}, store.SessionGrantRow{}, err
 	}
-	return ops.GrantSetResult{Outcome: ops.OutcomeDelivered, Grant: h.info(g, ws)}, nil
+	return ops.GrantSetResult{Outcome: ops.OutcomeDelivered, Grant: h.info(g, ws)}, g, nil
 }

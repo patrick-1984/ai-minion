@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/api"
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
@@ -73,5 +74,54 @@ func initGrants(_ context.Context, env *Env) error {
 	if err := api.RegisterGrants(handlers, st, list, az, alog); err != nil {
 		return fmt.Errorf("grants: %w", err)
 	}
+	// The expiry sweep: once at start and then once a day, grants that
+	// expired more than grantExpiredKeep ago are deleted.
+	run, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	started := false
+	env.OnStart(func(context.Context) error {
+		started = true
+		go func() { defer close(done); sweepExpiredGrants(run, st, grantSweepEvery) }()
+		return nil
+	})
+	env.OnStop(func(stop context.Context) error {
+		cancel()
+		if !started {
+			return nil
+		}
+		select {
+		case <-done:
+		case <-stop.Done():
+		}
+		return nil
+	})
 	return nil
+}
+
+const (
+	// grantExpiredKeep is how long an expired grant stays listed (as
+	// expired) before the sweep deletes it.
+	grantExpiredKeep = 30 * 24 * time.Hour
+	grantSweepEvery  = 24 * time.Hour
+)
+
+// expiredGrantStore is what the sweep needs of the store.
+type expiredGrantStore interface {
+	DeleteExpiredSessionGrants(ctx context.Context, before int64) (int64, error)
+}
+
+// sweepExpiredGrants deletes the long-expired grants now and then every
+// interval until ctx ends.
+func sweepExpiredGrants(ctx context.Context, st expiredGrantStore, every time.Duration) {
+	_, _ = st.DeleteExpiredSessionGrants(ctx, time.Now().Add(-grantExpiredKeep).UnixMilli())
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			_, _ = st.DeleteExpiredSessionGrants(ctx, now.Add(-grantExpiredKeep).UnixMilli())
+		}
+	}
 }
