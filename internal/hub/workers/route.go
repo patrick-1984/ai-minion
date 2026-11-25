@@ -931,6 +931,9 @@ func (rt *Router) originOf(ctx context.Context, p authz.Principal, accepted ops.
 			return proto.Origin{}, err
 		}
 		o = proto.Origin{Kind: proto.OriginWorker, Grant: granted}
+		if err := rt.originAttribution(ctx, &o, p, accepted, res); err != nil {
+			return proto.Origin{}, err
+		}
 		sourceID = p.WorkerID
 	}
 	if sourceID != "" {
