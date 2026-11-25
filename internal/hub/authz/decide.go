@@ -217,24 +217,35 @@ func (a *Authorizer) EffectiveActions(ctx context.Context, p Principal, res Reso
 // access and for a resource that does not exist; only a failure of a lookup is
 // an error. The Hub calls it after [Authorizer.Decide] allowed the operation,
 // to mark the request's origin as granted (origin.grant). It reads the current
-// state again, like Decide.
+// state again, like Decide. A direct grant (see [NewWorkerSessionPrincipal])
+// that permits one of the accepted actions counts the same way.
 func (a *Authorizer) GrantedByScope(ctx context.Context, p Principal, accepted ops.ActionSet, res Resource) (bool, error) {
-	if p.Kind != KindWorker || p.Scope == nil {
+	if p.Kind != KindWorker || p.Scope == nil && len(p.directList()) == 0 {
 		return false, nil
 	}
+	sub, resolved, ok, err := a.grantSubject(ctx, p, res)
+	if err != nil || !ok {
+		return false, err
+	}
+	return accepted.Permits(append(sub.grantActions(resolved), sub.directActions(resolved)...)...), nil
+}
+
+// grantSubject reads the subject of p and resolves res for a question about
+// grants. ok is false when p has no access or res does not exist.
+func (a *Authorizer) grantSubject(ctx context.Context, p Principal, res Resource) (subject, ResolvedResource, bool, error) {
 	pt := a.ports()
 	sub, ok, err := a.subject(ctx, p, pt)
 	if err != nil || !ok {
-		return false, err
+		return subject{}, ResolvedResource{}, false, err
 	}
 	resolved, err := res.resolve(ctx, pt)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return false, nil
+			return subject{}, ResolvedResource{}, false, nil
 		}
-		return false, fmt.Errorf("authz: resolve resource: %w", err)
+		return subject{}, ResolvedResource{}, false, fmt.Errorf("authz: resolve resource: %w", err)
 	}
-	return accepted.Permits(sub.grantActions(resolved)...), nil
+	return sub, resolved, true, nil
 }
 
 func mapLookupErr(err error) error {
@@ -252,6 +263,11 @@ type subject struct {
 	role Role
 	// ownerID is the owner of a Worker identity (KindWorker only).
 	ownerID string
+	// now is the time of the decision, for the expiry of direct grants.
+	now time.Time
+	// admins tells, per grantor of an admin-authority direct grant, whether
+	// that user is an active administrator now (read once per decision).
+	admins map[string]bool
 }
 
 // subject reads the current state behind p. ok is false when p has no
@@ -299,7 +315,11 @@ func (a *Authorizer) workerSubject(ctx context.Context, p Principal, pt ports) (
 	if err != nil || !found || !u.Active || (u.Role != RoleUser && u.Role != RoleAdmin) {
 		return subject{}, false, err
 	}
-	return subject{p: p, role: u.Role, ownerID: owner}, true, nil
+	sub := subject{p: p, role: u.Role, ownerID: owner, now: a.now()}
+	if sub.admins, err = sub.liveAdmins(ctx, pt); err != nil {
+		return subject{}, false, err
+	}
+	return sub, true, nil
 }
 
 func user(ctx context.Context, pt ports, id string) (UserState, bool, error) {
@@ -326,8 +346,10 @@ func (s subject) actions(res ResolvedResource) ops.ActionSet {
 		if !s.p.boundMaster && res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
 			held = slices.Clone(workerActions)
 		}
-		// A session-control grant adds what it authorizes on its own.
-		return canonical(append(held, s.grantActions(res)...))
+		// A session-control grant adds what it authorizes on its own, and so
+		// does every direct grant that covers res and is valid now.
+		held = append(held, s.grantActions(res)...)
+		return canonical(append(held, s.directActions(res)...))
 	}
 	base := s.base(res, s.p.UserID)
 	if s.p.Kind != KindAPIKey {
