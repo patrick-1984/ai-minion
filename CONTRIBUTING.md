@@ -37,6 +37,7 @@ English.
 | `make e2e` | End-to-end tests (build tag `e2e`, `test/e2e`), run with `-race`. The container checks of Story 9.6 (the Hub image and a native Worker, direct and behind a reverse proxy) run through `test/e2e/docker/run.sh`, which needs docker and ko; CI runs both in `e2e.yml`. |
 | `make snapshot` | goreleaser snapshot build. It does nothing until Story 9.1 adds `.goreleaser.yaml`. |
 | `make clean` | Removes `bin/` and `dist/`. |
+| `make openapi` | Writes `docs/api/openapi.json`, the OpenAPI 3.1 description that `ops.OpenAPI` generates from the operation catalog (the document the Hub serves at `GET /api/v1/ops`). Run it after `go test ./internal/ops -run OpenAPI -update` when an operation or one of its types changed. |
 
 A story is done when `make lint test-race vuln cross` is green.
 
