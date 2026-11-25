@@ -123,7 +123,7 @@ minion send_text --target <worker-id>:reviewer --text 'Please review the open br
 
 1. Sign in as an administrator and open **Access > Grants > Add grant**.
 2. Choose the source session on one user's Worker and the target on the other user's Worker.
-3. Choose **Control** and an expiry. Prefer a date over "no end" for access between users from a Claimed source.
+3. Choose **Control** and under **Until** prefer 7 days or 30 days over "no end": the source is Claimed, so the grant is in fact for the whole account of the source Worker.
 4. **Add grant**.
 
 The grant has the authority `admin` and names you as the person who decided. The owner of either Worker sees it under **Grants** and can revoke it.
