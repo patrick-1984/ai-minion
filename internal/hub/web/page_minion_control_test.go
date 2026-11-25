@@ -219,19 +219,72 @@ func postAccept(t *testing.T, fx ops.ControlListResult, target, value string) (*
 	return f, rec.Body.String()
 }
 
-// A tick on a limited acceptance never widens it: the stored list goes back
-// unchanged and the row says where to change it.
+// A tick on a limited acceptance never widens it and writes nothing (a list
+// read a moment ago may already be stale): the row says where to change it.
 func TestTickOnALimitedAcceptanceKeepsItsList(t *testing.T) {
 	f, body := postAccept(t, acceptStatesFixture(), "wB", "on")
-	calls := f.called(ops.OpControlSetAccept)
-	if len(calls) != 1 || calls[0].Args["accept"] != true {
-		t.Fatalf("calls = %+v", calls)
-	}
-	got, _ := json.Marshal(calls[0].Args["sessions"])
-	if string(got) != `["ci","ci-2"]` {
-		t.Fatalf("sessions = %s, want the stored list", got)
+	if calls := f.called(ops.OpControlSetAccept); len(calls) != 0 {
+		t.Fatalf("calls = %+v, want no write", calls)
 	}
 	mustHave(t, body, `id="ctl-wB"`, "This acceptance is limited to 2 sessions. Change the list with the operation control_set_accept.", limitedBadge)
+	mustNotHave(t, body, ">Undo</button>", "Saved:")
+}
+
+// Every form sends back what the page showed, and the click carries it as the
+// precondition of the write; Undo states what the change left stored.
+func TestControlClicksCarryWhatThePageShowed(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, acceptStatesFixture())
+	connect(t, f)
+	body := get(t, adminServer(t), pathMinionControl, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `name="if_state" value="limited"`, `name="if_state" value="none"`, `name="if_state" value="absent"`,
+		`name="if_value" value="on"`, `name="if_value" value="off"`, `name="if_master" value="on"`)
+
+	ok := ops.WriteResult{Outcome: ops.OutcomeDelivered}
+	f = newFakeOps().reply(ops.OpControlList, controlFixture()).reply(ops.OpControlSetAccept, ok).reply(ops.OpControlSetMaster, ok).reply(ops.OpControlSetWorker, ok)
+	connect(t, f)
+	s := adminServer(t)
+	rec := post(t, s, pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wT"}, "source_worker_id": {"wA"}, "value": {"on"}, "if_state": {"absent"}})
+	if c := f.called(ops.OpControlSetAccept); len(c) != 1 || c[0].Args["if_state"] != "absent" {
+		t.Fatalf("accept calls = %+v", c)
+	}
+	mustHave(t, rec.Body.String(), ">Undo</button>", `name="if_state" value="all"`)
+	// A form without the member (a page from before the update) is checked
+	// against what the Hub had when the click arrived.
+	post(t, s, pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}})
+	if c := f.called(ops.OpControlSetAccept); len(c) != 2 || c[1].Args["if_state"] != "all" {
+		t.Fatalf("accept calls = %+v", c)
+	}
+	rec = post(t, s, pathMinionControl+"/master", adminHeader, url.Values{"worker_id": {"wA"}, "session_name": {"boss"}, "if_master": {"on"}})
+	if c := f.called(ops.OpControlSetMaster); len(c) != 1 || c[0].Args["if_master"] != true || c[0].Args["master"] != false {
+		t.Fatalf("master calls = %+v", c)
+	}
+	mustHave(t, rec.Body.String(), ">Undo</button>", `name="if_master" value="off"`)
+	rec = post(t, s, pathMinionControl+"/accept-all", adminHeader, url.Values{"worker_id": {"wB"}, "value": {"on"}, "if_value": {"off"}})
+	if c := f.called(ops.OpControlSetWorker); len(c) != 1 || c[0].Args["if_accept_all"] != false || c[0].Args["accept_all"] != true {
+		t.Fatalf("worker calls = %+v", c)
+	}
+	mustHave(t, rec.Body.String(), ">Undo</button>", `name="if_value" value="on"`)
+}
+
+// A click on a state another administrator changed is refused by the Hub: the
+// row shows the conflict and what the Hub has now, without an Undo.
+func TestAcceptConflictShowsTheHubsRow(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, acceptStatesFixture()).on(ops.OpControlSetAccept, func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 409, Code: "conflict", Message: "changed by someone else meanwhile; nothing was saved"}
+	})
+	connect(t, f)
+	// The page showed no entry for ci; meanwhile it was limited to two sessions.
+	rec := post(t, adminServer(t), pathMinionControl+"/accept", adminHeader,
+		url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "value": {"on"}, "if_state": {"absent"}})
+	calls := f.called(ops.OpControlSetAccept)
+	if len(calls) != 1 || calls[0].Args["if_state"] != "absent" {
+		t.Fatalf("calls = %+v, want the Hub to decide on the state the page showed", calls)
+	}
+	if _, has := calls[0].Args["sessions"]; has {
+		t.Fatalf("a stale list was sent: %+v", calls[0].Args)
+	}
+	body := rec.Body.String()
+	mustHave(t, body, `id="ctl-wB"`, `role="alert">changed by someone else meanwhile`, limitedBadge, `name="if_state" value="limited"`)
 	mustNotHave(t, body, ">Undo</button>", "Saved:")
 }
 

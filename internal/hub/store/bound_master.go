@@ -51,8 +51,16 @@ func scanBoundMaster(q rowScanner) (BoundMasterRow, error) {
 // master nomination. Such a nomination is not in master_session, so the
 // name-only revoke cannot withdraw it.
 func (s *Store) BoundMasterActive(ctx context.Context, workerID, session string) (bool, error) {
+	return boundMasterActive(ctx, s.db, workerID, session)
+}
+
+// boundMasterActive is [Store.BoundMasterActive] on q: inside a transaction it
+// fences a name-only revoke against a concurrent conversion.
+func boundMasterActive(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, workerID, session string) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bound_master_session WHERE worker_id=? AND session_name=? AND active=1`,
+	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM bound_master_session WHERE worker_id=? AND session_name=? AND active=1`,
 		workerID, session).Scan(&n)
 	return n > 0, err
 }
