@@ -79,16 +79,22 @@ func initMinionControl(_ context.Context, env *Env) error {
 	if err := api.RegisterMinionControl(handlers, st, list, check); err != nil {
 		return fmt.Errorf("minion_control: %w", err)
 	}
+	accessAdmin := func(ctx context.Context, userID string) (bool, error) {
+		u, err := st.UserByID(ctx, userID)
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return err == nil && u.Active && u.Role == "admin", err
+	}
+	loadAccess := func(ctx context.Context) (api.AccessFacts, error) { return accessFacts(ctx, env, st, svc) }
 	if catalogHas(ops.Default, ops.OpAccessMatrix) {
-		if err := api.RegisterAccessMatrix(handlers, func(ctx context.Context) (api.AccessFacts, error) { return accessFacts(ctx, env, st, svc) },
-			func(ctx context.Context, userID string) (bool, error) {
-				u, err := st.UserByID(ctx, userID)
-				if errors.Is(err, store.ErrNotFound) {
-					return false, nil
-				}
-				return err == nil && u.Active && u.Role == "admin", err
-			}); err != nil {
+		if err := api.RegisterAccessMatrix(handlers, loadAccess, accessAdmin); err != nil {
 			return fmt.Errorf("access_matrix: %w", err)
+		}
+	}
+	if catalogHas(ops.Default, ops.OpAccessExplain) {
+		if err := api.RegisterAccessExplain(handlers, loadAccess, accessAdmin); err != nil {
+			return fmt.Errorf("access_explain: %w", err)
 		}
 	}
 	return nil
@@ -116,6 +122,19 @@ func accessFacts(ctx context.Context, env *Env, st *store.Store, svc *workers.Se
 	}
 	if f.Bound, err = st.ListBoundMasters(ctx, ""); err != nil {
 		return f, err
+	}
+	if f.Grants, err = st.ListSessionGrants(ctx, store.SessionGrantFilter{}); err != nil {
+		return f, err
+	}
+	users, err := st.ListUsers(ctx)
+	if err != nil {
+		return f, err
+	}
+	f.Admins = map[string]bool{}
+	for _, u := range users {
+		if u.Active && u.Role == "admin" {
+			f.Admins[u.ID] = true
+		}
 	}
 	online := map[string]bool{}
 	for _, o := range svc.Registry().List() {
