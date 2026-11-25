@@ -190,8 +190,9 @@ denies later calls from the revoked attachment even if Claude presents a cached 
 | [API keys and MCP](docs/guides/api-keys-and-mcp.md) | Scoped API keys, the CLI against a Hub, the read-only MCP server |
 | [The pipe](docs/guides/pipe.md) | Sending a message to an agent and reading its replies |
 | [AI agents](docs/guides/agents.md) | `minion llm-help`, the Claude Code and Codex plugin (`/plugin marketplace add patrick-1984/ai-minion`), the Minion master |
-| [Minion control](docs/guides/minion-control.md) | Master and slave sessions, which Workers accept control from which, user-managed Workers (Access > Minion control, 0.9.0) |
-| [Session control](docs/guides/session-control.md) | Letting one session list, read and type into sessions on other Workers (administrator grants, 0.8.0 or later) |
+| [Access: who reaches what](docs/guides/access.md) | Start here for access between Workers: grants from one session to another (View, Message, Control), who may decide, Claimed and Verified sessions, the Access pages (matrix, Grants, Why?), revoking, why a call is refused |
+| [Minion control](docs/guides/minion-control.md) | Master sessions (the broad form of access), which Workers accept control from which, user-managed Workers (Access > Minion control, 0.9.0) |
+| [Session control](docs/guides/session-control.md) | The calls a session with access makes to list, read and type into sessions on other Workers, and the 0.8.0 operations `session_control_list` and `session_control_set` |
 | [Hub identity](docs/guides/hub-identity.md) | The sealed root key and its passphrase, certificate re-issue, master-key rotation, `minion hub identity` |
 | [Usage and subscription limits](docs/guides/usage.md) | Harness inventory, session and account telemetry, token buckets, native collectors and enrollment notice |
 | [Log export](docs/guides/observability.md) | Sending the Hub's and the Workers' logs to syslog (RFC 5424, TLS) and OpenTelemetry (OTLP/HTTP), per-sink levels, what is masked |
