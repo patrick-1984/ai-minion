@@ -47,6 +47,16 @@ func scanBoundMaster(q rowScanner) (BoundMasterRow, error) {
 	return r, err
 }
 
+// BoundMasterActive reports whether the session holds an active session-bound
+// master nomination. Such a nomination is not in master_session, so the
+// name-only revoke cannot withdraw it.
+func (s *Store) BoundMasterActive(ctx context.Context, workerID, session string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM bound_master_session WHERE worker_id=? AND session_name=? AND active=1`,
+		workerID, session).Scan(&n)
+	return n > 0, err
+}
+
 func (s *Store) ListBoundMasters(ctx context.Context, workerID string) ([]BoundMasterRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+boundMasterColumns+` FROM bound_master_session
 	 WHERE (?='' OR worker_id=?) ORDER BY worker_id,session_name`, workerID, workerID)

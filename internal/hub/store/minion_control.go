@@ -311,6 +311,44 @@ func (s *Store) DeleteAcceptIfOwners(ctx context.Context, target, source, target
 	return n > 0, err
 }
 
+// RevokeAcceptIfOwners withdraws what target accepts from source, while both
+// Workers still have the owners the change was decided for. A target that
+// accepts control from all Workers keeps an explicit row that allows nothing
+// (sessions_json = '[]'): deleting the row there would let the source fall
+// back to accept_all and reach every shared session. Without accept_all the
+// row is deleted. It reports whether a row was deleted or changed.
+func (s *Store) RevokeAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwner, sourceOwner string) (bool, error) {
+	if a.TargetWorkerID == "" || a.SourceWorkerID == "" || a.TargetWorkerID == a.SourceWorkerID {
+		return false, errors.New("store: an acceptance needs two different Workers")
+	}
+	var n int64
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := checkOwners(ctx, tx, map[string]string{a.TargetWorkerID: targetOwner, a.SourceWorkerID: sourceOwner}); err != nil {
+			return err
+		}
+		var all bool
+		err := tx.QueryRowContext(ctx, `SELECT accept_all FROM worker_control WHERE worker_id = ?`, a.TargetWorkerID).Scan(&all)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: revoke acceptance: %w", err)
+		}
+		var res sql.Result
+		if all {
+			res, err = tx.ExecContext(ctx,
+				`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at) VALUES (?, ?, '[]', ?, ?)
+				 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by, created_at = excluded.created_at`,
+				a.TargetWorkerID, a.SourceWorkerID, a.CreatedBy, a.CreatedAt)
+		} else {
+			res, err = tx.ExecContext(ctx, `DELETE FROM control_accept WHERE target_worker_id = ? AND source_worker_id = ?`, a.TargetWorkerID, a.SourceWorkerID)
+		}
+		if err != nil {
+			return fmt.Errorf("store: revoke acceptance: %w", err)
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n > 0, err
+}
+
 // PutAcceptIfOwners is [Store.PutAccept] while both Workers still have the
 // owners the change was decided for.
 func (s *Store) PutAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwner, sourceOwner string) error {

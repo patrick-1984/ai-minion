@@ -6,6 +6,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"math"
 	"testing"
@@ -382,6 +383,72 @@ func TestPurgeNeverFallsBackToAcceptAll(t *testing.T) {
 	}
 	if g, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("grant after the purge = %+v, %v; want nothing", g, err)
+	}
+}
+
+// Revoking a source on a Worker that accepts all must not delete the row: the
+// source would fall back to accept_all and reach every shared session.
+func TestRevokeAcceptNeverFallsBackToAcceptAll(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	// The owner fence needs real Workers.
+	oA, oB := "alice", "bob"
+	for _, w := range []WorkerRow{worker("wA", 4, oA, "a"), worker("wB", 5, oB, "b")} {
+		if err := s.InsertWorker(ctx, nil, w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all := true
+	if err := s.SetWorkerControl(ctx, "wB", nil, &all); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAccept(ctx, AcceptRow{TargetWorkerID: "wB", SourceWorkerID: "wA", Sessions: []string{"ci"}, CreatedBy: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutMasterSession(ctx, MasterRow{WorkerID: "wA", SessionName: "boss", CreatedBy: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionControl(ctx, "wA", "boss"); err != nil {
+		t.Fatalf("before: %v", err)
+	}
+	revoke := AcceptRow{TargetWorkerID: "wB", SourceWorkerID: "wA", CreatedBy: "u", CreatedAt: 5}
+	if ok, err := s.RevokeAcceptIfOwners(ctx, revoke, oB, oA); err != nil || !ok {
+		t.Fatalf("revoke = %t, %v", ok, err)
+	}
+	if g, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("grant after the revoke = %+v, %v; want nothing", g, err)
+	}
+	var sess sql.NullString
+	if err := s.DB().QueryRowContext(ctx, `SELECT sessions_json FROM control_accept WHERE target_worker_id='wB' AND source_worker_id='wA'`).Scan(&sess); err != nil || sess.String != "[]" {
+		t.Fatalf("row after the revoke = %+v, %v; want []", sess, err)
+	}
+	// A source without a row is blocked the same way.
+	if _, err := s.DeleteAccept(ctx, "wB", "wA"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevokeAcceptIfOwners(ctx, revoke, oB, oA); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("grant after the revoke without a row = %+v, %v; want nothing", g, err)
+	}
+	// Without accept_all the row is deleted as before.
+	off := false
+	if err := s.SetWorkerControl(ctx, "wB", nil, &off); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutAccept(ctx, AcceptRow{TargetWorkerID: "wB", SourceWorkerID: "wA", Sessions: []string{"ci"}, CreatedBy: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.RevokeAcceptIfOwners(ctx, revoke, oB, oA); err != nil || !ok {
+		t.Fatalf("revoke without accept_all = %t, %v", ok, err)
+	}
+	var n int
+	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM control_accept WHERE target_worker_id='wB' AND source_worker_id='wA'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rows after the revoke = %d, %v; want 0", n, err)
+	}
+	if ok, err := s.RevokeAcceptIfOwners(ctx, revoke, "someone-else", oA); !errors.Is(err, ErrWorkerOwnerChanged) || ok {
+		t.Fatalf("revoke for another owner = %t, %v", ok, err)
 	}
 }
 

@@ -38,6 +38,8 @@ type MinionControlStore interface {
 	ListMasterSessions(ctx context.Context) ([]store.MasterRow, error)
 	PutMasterSessionIfOwner(ctx context.Context, m store.MasterRow, owner string) error
 	DeleteMasterSessionIfOwner(ctx context.Context, workerID, session, owner string) (bool, error)
+	BoundMasterActive(ctx context.Context, workerID, session string) (bool, error)
+	RevokeAcceptIfOwners(ctx context.Context, a store.AcceptRow, targetOwner, sourceOwner string) (bool, error)
 	ListAccepts(ctx context.Context) ([]store.AcceptRow, error)
 	PutAcceptIfOwners(ctx context.Context, a store.AcceptRow, targetOwner, sourceOwner string) error
 	DeleteAcceptIfOwners(ctx context.Context, target, source, targetOwner, sourceOwner string) (bool, error)
@@ -215,7 +217,15 @@ func (h controlHandlers) setMaster(ctx context.Context, c *Call, a ops.ControlSe
 		err = h.st.PutMasterSessionIfOwner(ctx, store.MasterRow{WorkerID: a.WorkerID, SessionName: a.SessionName,
 			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()}, owners[0])
 	} else {
-		_, err = h.st.DeleteMasterSessionIfOwner(ctx, a.WorkerID, a.SessionName, owners[0])
+		// A session-bound master is not in master_session: deleting there
+		// would answer delivered and revoke nothing.
+		var bound bool
+		if bound, err = h.st.BoundMasterActive(ctx, a.WorkerID, a.SessionName); err == nil && bound {
+			err = store.ErrBoundMasterSlot
+		}
+		if err == nil {
+			_, err = h.st.DeleteMasterSessionIfOwner(ctx, a.WorkerID, a.SessionName, owners[0])
+		}
 	}
 	if err != nil {
 		return ops.WriteResult{}, ownerErr(err)
@@ -258,7 +268,10 @@ func (h controlHandlers) setAccept(ctx context.Context, c *Call, a ops.ControlSe
 			Sessions: sessions, CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()},
 			owners[0], owners[1])
 	} else {
-		_, err = h.st.DeleteAcceptIfOwners(ctx, a.WorkerID, a.SourceWorkerID, owners[0], owners[1])
+		// Not a plain delete: on a Worker that accepts all, a missing row
+		// would widen the source to every shared session.
+		_, err = h.st.RevokeAcceptIfOwners(ctx, store.AcceptRow{TargetWorkerID: a.WorkerID, SourceWorkerID: a.SourceWorkerID,
+			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()}, owners[0], owners[1])
 	}
 	if err != nil {
 		return ops.WriteResult{}, ownerErr(err)
@@ -339,8 +352,11 @@ func (h controlHandlers) check(ctx context.Context, c *Call, a ops.ControlCheckA
 		// The computed grant decides, as at call time: it leaves out the
 		// master's own Worker except for a migrated v0.8 grant that had it.
 		g, err := h.st.SessionControl(ctx, ms.WorkerID, ms.SessionName)
-		if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			continue
+		}
+		if err != nil {
+			return ops.ControlCheckResult{}, err
 		}
 		if grantCovers(g.TargetsJSON, a.WorkerID, a.SessionName) {
 			res.Controllers = append(res.Controllers, ops.ControlChain{WorkerID: ms.WorkerID, Worker: m[ms.WorkerID].Name, SessionName: ms.SessionName})
