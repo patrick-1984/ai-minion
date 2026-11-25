@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Operation catalog: `grant_list`, `grant_set`, `grant_revoke` and `grant_approve` (session grants) are declared with their argument and result types. They have no Hub handler yet and answer `unsupported_op`.
+
 ## v0.20.6
 
 ### Fixed
