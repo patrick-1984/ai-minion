@@ -174,5 +174,13 @@
       if (e.target.name !== "note") { clearResult(); }
     });
     syncSessions();
+    // ?source=<worker>|<session> preselected the source: the form opens.
+    if (form.hasAttribute("data-grant-open")) {
+      if (modal) {
+        dialog.showModal();
+      } else if (fallback) {
+        fallback.open = true;
+      }
+    }
   }
 }());

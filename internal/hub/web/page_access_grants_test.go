@@ -15,16 +15,17 @@ import (
 func grantFixture() ops.GrantListResult {
 	return ops.GrantListResult{Grants: []ops.Grant{
 		{ID: "g1", SourceWorkerID: "wA", SourceSession: "wb-4", SourceProof: ops.GrantProofClaimed, TargetWorkerID: "wB",
-			TargetSession: "wb-3", Level: ops.GrantLevelView, Authority: ops.GrantAuthorityOwner, GrantedBy: "alice", Revision: 3,
+			TargetSession: "wb-3", Level: ops.GrantLevelView, Authority: ops.GrantAuthorityOwner, GrantedBy: "u-alice", Revision: 3,
 			SourceWorkerName: "work<b>", TargetWorkerName: "coder", SourceOwner: "alice", TargetOwner: "alice", State: ops.GrantStateActive},
 		{ID: "g2", SourceWorkerID: "wA", SourceSession: "ci", SourceProof: ops.GrantProofVerified, TargetWorkerID: "wC",
-			Level: ops.GrantLevelControl, Authority: ops.GrantAuthorityAdmin, GrantedBy: "root", Revision: 7, Suspended: true,
+			Level: ops.GrantLevelControl, Authority: ops.GrantAuthorityAdmin, GrantedBy: "u-root", Revision: 7, Suspended: true,
 			SourceWorkerName: "work<b>", TargetWorkerName: "anna-laptop", SourceOwner: "alice", TargetOwner: "anna", State: ops.GrantStateSuspended},
 	}}
 }
 
 func TestAccessGrantsPageListsGrantsForEveryUser(t *testing.T) {
-	f := newFakeOps().reply(ops.OpGrantList, grantFixture())
+	f := newFakeOps().reply(ops.OpGrantList, grantFixture()).
+		reply(ops.OpUsersList, ops.UsersListResult{Users: []ops.UserInfo{{ID: "u-root", Username: "root"}}})
 	connect(t, f)
 	s := adminServer(t)
 	admin := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader)
@@ -427,7 +428,7 @@ func TestAccessGrantMaskedRowOffersOnlyRevoke(t *testing.T) {
 	s := adminServer(t)
 	body := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
 	_, g2, _ := strings.Cut(body, `<tr id="grant-g2"`)
-	mustHave(t, g2, `<strong>a session of anna</strong> @ anna-laptop`, `hx-post="/access/grants/revoke"`, `id="grant-g2-revoke"`, "only Revoke")
+	mustHave(t, g2, `<em class="grant-masked">a session of anna</em> @ anna-laptop`, `hx-post="/access/grants/revoke"`, `id="grant-g2-revoke"`, "only Revoke")
 	mustNotHave(t, g2, "/access/grants/set-level", "/access/grants/approve", `id="grant-g2-level"`)
 	rec := post(t, s, pathAccessGrants+"/set-level", adminHeader, url.Values{"id": {"g2"}, "if_revision": {"7"}, "level": {"view"}, "confirm": {"1"}})
 	mustHave(t, rec.Body.String(), `<tr id="grant-g2"`, "it can only be revoked")
@@ -438,4 +439,97 @@ func TestAccessGrantMaskedRowOffersOnlyRevoke(t *testing.T) {
 	if len(f.called(ops.OpGrantRevoke)) != 1 {
 		t.Error("a masked grant could not be revoked")
 	}
+}
+
+// D0: a plain user sees the masked text of grant_list for a session of another
+// owner, never a name; the decider of another user stays an id (a user cannot
+// list users), and neither Approve nor the audit History is offered.
+func TestAccessGrantsMaskedRowsForAPlainUser(t *testing.T) {
+	list := ops.GrantListResult{Grants: []ops.Grant{
+		{ID: "g9", SourceWorkerID: "wP", SourceSession: "a session of patryk", SourceMasked: true, SourceProof: ops.GrantProofClaimed,
+			TargetWorkerID: "wM", TargetSession: "notes", Level: ops.GrantLevelMessage, Authority: ops.GrantAuthorityOwner,
+			GrantedBy: "u-patryk", Revision: 2, SourceWorkerName: "patryk-work", TargetWorkerName: "marta-x1",
+			SourceOwner: "patryk", TargetOwner: "bob", State: ops.GrantStateActive},
+		{ID: "g8", SourceWorkerID: "wM", SourceSession: "notes", SourceProof: ops.GrantProofClaimed,
+			TargetWorkerID: "wP", TargetSession: "a session of patryk", TargetMasked: true, Level: ops.GrantLevelView,
+			Authority: ops.GrantAuthorityOwner, GrantedBy: "u-bob", Revision: 1, SourceWorkerName: "marta-x1",
+			TargetWorkerName: "patryk-work", SourceOwner: "bob", TargetOwner: "patryk", State: ops.GrantStateActive},
+	}}
+	f := newFakeOps().reply(ops.OpGrantList, list).reply(ops.OpUsersList, ops.UsersListResult{Users: []ops.UserInfo{{ID: "u-patryk", Username: "patryk"}}})
+	connect(t, f)
+	body := get(t, adminServer(t), pathAccessGrants, "X-Test-Session", userHeader).Body.String()
+	_, g9, _ := strings.Cut(body, `<tr id="grant-g9"`)
+	g9, _, _ = strings.Cut(g9, "</tr>")
+	mustHave(t, g9, `<em class="grant-masked">a session of patryk</em> @ patryk-work`, `<strong>notes</strong> @ marta-x1`,
+		`<span class="muted grant-user-id" title="User id: the name is not known to you">u-patryk</span> <span class="muted">owner</span>`,
+		"only Revoke", `id="grant-g9-revoke"`)
+	mustNotHave(t, g9, `id="grant-g9-level"`, "/access/grants/approve", "History", "/admin/audit")
+	_, g8, _ := strings.Cut(body, `<tr id="grant-g8"`)
+	g8, _, _ = strings.Cut(g8, "</tr>")
+	mustHave(t, g8, `<strong>notes</strong> @ marta-x1`, `<em class="grant-masked">a session of patryk</em> @ patryk-work`,
+		`<td data-label="Decided by">bob <span class="muted">owner</span></td>`)
+	if n := len(f.called(ops.OpUsersList)); n != 0 {
+		t.Errorf("a plain user's page asked users_list %d times", n)
+	}
+}
+
+// D4: an administrator sees the name of the decider from users_list.
+func TestAccessGrantsDecidedByShowsTheUserName(t *testing.T) {
+	list := grantFixture()
+	list.Grants[1].GrantedBy = "u-patryk"
+	f := newFakeOps().reply(ops.OpGrantList, list).reply(ops.OpUsersList, ops.UsersListResult{Users: []ops.UserInfo{{ID: "u-patryk", Username: "patryk"}}})
+	connect(t, f)
+	body := get(t, adminServer(t), pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `<td data-label="Decided by">alice <span class="muted">owner</span></td>`,
+		`<td data-label="Decided by">patryk <span class="muted">administrator</span></td>`, `<td data-label="Granted" class="grant-level-cell">Control</td>`)
+	mustNotHave(t, body, ">u-patryk<")
+}
+
+// (e) ?worker= limits the list through grant_list and says so; ?source=
+// preselects a live source session and opens the Add form.
+func TestAccessGrantsWorkerFilterAndSourcePreset(t *testing.T) {
+	f := newFakeOps().reply(ops.OpGrantList, grantFixture())
+	connect(t, f)
+	d := Dashboard{Workers: []WorkerRow{wPrivate, wInfra}, Sessions: []SessionRow{sAgent, sShell}}
+	s, _ := listServer(t, d, d)
+
+	body := get(t, s, pathAccessGrants+"?worker=w1", "X-Test-Session", adminHeader).Body.String()
+	calls := f.called(ops.OpGrantList)
+	if len(calls) == 0 || calls[len(calls)-1].Args["worker_id"] != "w1" {
+		t.Fatalf("grant_list calls = %+v", calls)
+	}
+	mustHave(t, body, `Showing grants of <strong>laptop</strong> - <a href="/access/grants">show all</a>`,
+		`<tbody id="grant-rows" hx-get="/access/grants?worker=w1"`)
+	mustNotHave(t, body, "data-grant-open")
+
+	// Without the filter: no line, the list reloads all.
+	body = get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
+	mustNotHave(t, body, "Showing grants of")
+	mustHave(t, body, `<tbody id="grant-rows" hx-get="/access/grants" hx-select`)
+	if calls := f.called(ops.OpGrantList); calls[len(calls)-1].Args["worker_id"] != nil {
+		t.Errorf("worker_id sent without a filter: %+v", calls[len(calls)-1].Args)
+	}
+
+	body = get(t, s, pathAccessGrants+"?source="+url.QueryEscape("w1|fix-tests"), "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `<form id="grant-add-form" class="grant-form" data-grant-open`, `<option value="w1" selected>laptop (alice)</option>`,
+		`<option value="w1|fix-tests" data-worker="w1" selected>fix-tests @ laptop</option>`)
+	// A user may not start from a Worker of another owner: nothing is preselected.
+	body = get(t, s, pathAccessGrants+"?source="+url.QueryEscape("w1|fix-tests"), "X-Test-Session", userHeader).Body.String()
+	_, form, _ := strings.Cut(body, `id="grant-add-form"`)
+	form, _, _ = strings.Cut(form, "</form>")
+	mustNotHave(t, form, "data-grant-open", " selected>")
+	// An unknown session is not preselected either.
+	body = get(t, s, pathAccessGrants+"?source="+url.QueryEscape("w1|nope"), "X-Test-Session", adminHeader).Body.String()
+	mustNotHave(t, body, "data-grant-open")
+}
+
+// (f) every row links to its audit history, for administrators only.
+func TestAccessGrantsHistoryLinkForAdministrators(t *testing.T) {
+	connect(t, newFakeOps().reply(ops.OpGrantList, grantFixture()))
+	s := adminServer(t)
+	admin := get(t, s, pathAccessGrants, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, admin, `<a href="/admin/audit?grant=g1" class="grant-history" id="grant-g1-history">History</a>`,
+		`<a href="/admin/audit?grant=g2" class="grant-history" id="grant-g2-history">History</a>`)
+	user := get(t, s, pathAccessGrants, "X-Test-Session", userHeader).Body.String()
+	mustNotHave(t, user, "/admin/audit", "grant-history")
 }

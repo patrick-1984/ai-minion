@@ -15,6 +15,7 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -43,7 +44,25 @@ type GrantsPage struct {
 	// non-administrator); Targets are every Worker the caller sees.
 	Sources []GrantWorkerOption
 	Targets []GrantWorkerOption
+	// Worker limits the list to the grants that touch one Worker (?worker=);
+	// WorkerName names it for the "Showing grants of" line.
+	Worker, WorkerName string
+	// SourceWorker and SourceSession preselect the source of the Add form
+	// (?source=<worker id>|<session>); the form then opens by itself.
+	SourceWorker, SourceSession string
 }
+
+// ListURL is the address the list reloads itself from: it keeps the Worker
+// filter of the page.
+func (p GrantsPage) ListURL() string {
+	if p.Worker == "" {
+		return pathAccessGrants
+	}
+	return pathAccessGrants + "?worker=" + url.QueryEscape(p.Worker)
+}
+
+// OpenAdd is true when the page was asked to open the Add form with a source.
+func (p GrantsPage) OpenAdd() bool { return p.SourceWorker != "" && p.SourceSession != "" }
 
 // GrantWorkerOption is one Worker of the Add dialog with its live sessions.
 type GrantWorkerOption struct {
@@ -54,8 +73,12 @@ type GrantWorkerOption struct {
 // GrantRow is one grant of the table.
 type GrantRow struct {
 	ops.Grant
-	// Admin is true when the viewer is an administrator: Approve is offered.
+	// Admin is true when the viewer is an administrator: Approve and the
+	// History link are offered.
 	Admin bool
+	// DecidedBy is the name of the user in GrantedBy; empty when the viewer
+	// cannot know it (the id is shown then).
+	DecidedBy string
 	// Gone is true when the grant is no longer listed (after a revoke).
 	Gone  bool
 	Saved string
@@ -196,8 +219,15 @@ func (g GrantRow) ExpiresAtValue() string {
 
 // FilterText is what the filter box searches.
 func (g GrantRow) FilterText() string {
-	return strings.Join([]string{g.SourceSession, g.SourceWorker(), g.SourceOwner, g.TargetSession, g.TargetWorker(), g.TargetOwner, g.Level, g.GrantedBy}, " ")
+	by := g.DecidedBy
+	if by == "" {
+		by = g.GrantedBy
+	}
+	return strings.Join([]string{g.SourceSession, g.SourceWorker(), g.SourceOwner, g.TargetSession, g.TargetWorker(), g.TargetOwner, g.Level, by}, " ")
 }
+
+// HistoryURL is the audit log of this grant (administrators only).
+func (g GrantRow) HistoryURL() string { return pathAdminAudit + "?grant=" + url.QueryEscape(g.ID) }
 
 func grantLevelLabel(level string) string {
 	switch level {
@@ -265,9 +295,36 @@ func grantRank(level string) int {
 	return r
 }
 
-func grantRows(r *http.Request, c OpCaller, admin bool) ([]GrantRow, error) {
+// grantUserNames maps the user ids of granted_by to names: the viewer's own,
+// and for an administrator every user of users_list. A user who is no
+// administrator cannot list users, so another decider keeps the id.
+func grantUserNames(r *http.Request, c OpCaller, u pageUser, grants []ops.Grant) map[string]string {
+	names := map[string]string{}
+	if u.ID != "" && u.Username != "" {
+		names[u.ID] = u.Username
+	}
+	if !u.Admin {
+		return names
+	}
+	for _, g := range grants {
+		if _, ok := names[g.GrantedBy]; g.GrantedBy != "" && !ok {
+			var res ops.UsersListResult
+			if err := c.CallOp(r, ops.OpUsersList, ops.UsersListArgs{}, &res); err == nil {
+				for _, x := range res.Users {
+					names[x.ID] = x.Username
+				}
+			}
+			break
+		}
+	}
+	return names
+}
+
+// grantRows lists the grants as rows; workerID limits them to one Worker.
+func grantRows(r *http.Request, c OpCaller, u pageUser, workerID string) ([]GrantRow, error) {
+	admin := u.Admin
 	var res ops.GrantListResult
-	if err := c.CallOp(r, ops.OpGrantList, ops.GrantListArgs{}, &res); err != nil {
+	if err := c.CallOp(r, ops.OpGrantList, ops.GrantListArgs{WorkerID: workerID}, &res); err != nil {
 		return nil, err
 	}
 	// The matrix is the read model of "works now". Without it the rows say
@@ -279,9 +336,10 @@ func grantRows(r *http.Request, c OpCaller, admin bool) ([]GrantRow, error) {
 			matrix = &m
 		}
 	}
+	names := grantUserNames(r, c, u, res.Grants)
 	rows := make([]GrantRow, 0, len(res.Grants))
 	for _, g := range res.Grants {
-		row := GrantRow{Grant: g, Admin: admin}
+		row := GrantRow{Grant: g, Admin: admin, DecidedBy: names[g.GrantedBy]}
 		row.Effect = grantEffect(row, matrix)
 		rows = append(rows, row)
 	}
@@ -317,13 +375,54 @@ func grantWorkers(r *http.Request, u pageUser) (sources, targets []GrantWorkerOp
 }
 
 func grantsData(r *http.Request, c OpCaller, u pageUser) (any, error) {
-	rows, err := grantRows(r, c, u.Admin)
+	p := GrantsPage{Admin: u.Admin}
+	p.Sources, p.Targets = grantWorkers(r, u)
+	q := r.URL.Query()
+	// ?worker=<id>: a Worker the page knows, or a well-formed id (the
+	// operation decides what it lists); anything else shows every grant.
+	if w := strings.TrimSpace(q.Get("worker")); w != "" {
+		if o, ok := findGrantWorker(p.Targets, w); ok {
+			p.Worker, p.WorkerName = w, o.Name
+		} else if ops.ValidUUIDv7(w) {
+			p.Worker = w
+		}
+	}
+	rows, err := grantRows(r, c, u, p.Worker)
 	if err != nil {
 		return nil, err
 	}
-	p := GrantsPage{Rows: rows, Admin: u.Admin}
-	p.Sources, p.Targets = grantWorkers(r, u)
+	p.Rows = rows
+	if p.Worker != "" && p.WorkerName == "" {
+		p.WorkerName = p.Worker
+		for _, g := range rows {
+			switch {
+			case g.SourceWorkerID == p.Worker && g.SourceWorkerName != "":
+				p.WorkerName = g.SourceWorkerName
+			case g.TargetWorkerID == p.Worker && g.TargetWorkerName != "":
+				p.WorkerName = g.TargetWorkerName
+			default:
+				continue
+			}
+			break
+		}
+	}
+	// ?source=<worker id>|<session>: only a live session the viewer may
+	// start a grant from is preselected.
+	if sw, ss := splitSession(q.Get("source")); sw != "" && ss != "" {
+		if o, ok := findGrantWorker(p.Sources, sw); ok && slices.Contains(o.Sessions, ss) {
+			p.SourceWorker, p.SourceSession = sw, ss
+		}
+	}
 	return p, nil
+}
+
+func findGrantWorker(list []GrantWorkerOption, id string) (GrantWorkerOption, bool) {
+	for _, o := range list {
+		if o.ID == id {
+			return o, true
+		}
+	}
+	return GrantWorkerOption{}, false
 }
 
 // grantFailure is the sentence for a refused change. Only a revision conflict
@@ -449,7 +548,7 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 		}
 		// The change is built from the grant as the Hub lists it, not from
 		// what the form carried.
-		rows, err := grantRows(r, c, u.Admin)
+		rows, err := grantRows(r, c, u, "")
 		if err != nil {
 			writeGrantNote(w, id, "Nothing was changed: "+failureText(err), false)
 			return
@@ -494,7 +593,7 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 	}
 	// Answer with the row as the Hub has it now, whatever happened. When the
 	// list cannot be read the row stays on the page, marked as unconfirmed.
-	rows, err := grantRows(r, c, u.Admin)
+	rows, err := grantRows(r, c, u, "")
 	if err != nil {
 		switch {
 		case action == "show":
@@ -600,10 +699,8 @@ func handleGrantAdd(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUs
 // grantWorkerOption finds a Worker of the dialog; an unknown one keeps its id
 // as the name and has no owner (which asks for the confirmation).
 func grantWorkerOption(list []GrantWorkerOption, id string) GrantWorkerOption {
-	for _, o := range list {
-		if o.ID == id {
-			return o
-		}
+	if o, ok := findGrantWorker(list, id); ok {
+		return o
 	}
 	return GrantWorkerOption{ID: id, Name: id}
 }

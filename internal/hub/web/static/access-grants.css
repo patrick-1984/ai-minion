@@ -10,6 +10,32 @@
 .grant-table tr[data-unconfirmed] td { background: var(--surface-subtle); }
 .grant-table tr[data-unconfirmed] .grant-actions { opacity: 0.6; }
 .grant-table tbody[aria-busy="true"] { opacity: 0.6; }
-.grant-form .choice { display: flex; gap: 8px; align-items: baseline; font-weight: 400; }
+.grant-form .choice { display: flex; gap: 8px; font-weight: 400; }
 .grant-table td[data-label="In effect"] .chip { margin-left: 0; }
+.grant-masked { color: var(--muted); }
+.grant-scope { margin: 0 0 12px; }
+.grant-history { display: inline-flex; align-items: center; min-height: 24px; white-space: nowrap; }
+/* the level name never breaks ("Messag/e") */
+.grant-table td.grant-level-cell { white-space: nowrap; }
+/* wide: the names keep their room, State takes only its badge, the actions stay on one line */
+@media (min-width: 1100px) {
+  .grant-table td.grant-member { min-width: 14rem; overflow-wrap: anywhere; }
+  .grant-table td[data-label="State"] { width: 1%; white-space: nowrap; }
+  .grant-table td.grant-actions { white-space: nowrap; }
+  .grant-actions .row-actions, .grant-actions .row-actions form { flex-wrap: nowrap; }
+}
+/* below 1100 px the eight columns do not fit: one card per grant, as on a phone */
+@media (max-width: 1099px) {
+  .grant-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .grant-table, .grant-table tbody, .grant-table tr, .grant-table td { display: block; }
+  .grant-table tr { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .grant-table tbody tr:last-child { border-bottom: 0; }
+  .grant-table td { border: 0; padding: 3px 0; overflow-wrap: anywhere; }
+  .grant-table td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; font-weight: 600; }
+}
+/* Add dialog: radios and their labels at least 24 px high */
+.grant-form input[type="radio"] { width: 24px; height: 24px; margin: 0; flex: none; }
+.grant-form .choice { min-height: 24px; align-items: center; }
+.grant-form .grant-level { min-height: 24px; align-items: flex-start; }
+.grant-form .grant-level > span { padding-top: 2px; }
 /* end access: grants, second step and row states */

@@ -1,11 +1,11 @@
 {{define "grant_row"}}{{if .Gone}}<tr id="grant-{{.ID}}" class="grant-gone"><td colspan="8">{{if .Error}}<span id="grant-{{.ID}}-status" tabindex="-1" class="grant-status grant-error" role="alert">{{.Error}}</span> <span class="muted">This grant is no longer listed.</span>{{else}}<span id="grant-{{.ID}}-status" tabindex="-1" class="grant-status" role="status">{{.Saved}}</span> <span class="muted">This grant no longer gives access.</span>{{end}}</td></tr>{{else}}<tr id="grant-{{.ID}}" data-filter="{{.FilterText}}"{{if .Between}} data-between="1"{{end}}{{if .Off}} data-off="1"{{end}}>
-  <td data-label="Source"><strong>{{.SourceSession}}</strong> @ {{.SourceWorker}}{{if .SourceOwner}} <span class="muted">{{.SourceOwner}}</span>{{end}}
+  <td data-label="Source" class="grant-member">{{if .SourceMasked}}<em class="grant-masked">{{.SourceSession}}</em>{{else}}<strong>{{.SourceSession}}</strong>{{end}} @ {{.SourceWorker}}{{if .SourceOwner}} <span class="muted">{{.SourceOwner}}</span>{{end}}
     {{if .Verified}}<span class="chip" title="Verified: this session proved its identity to the Hub.">Verified</span>{{else}}<span class="chip grant-claimed" title="Claimed: this session is named by its Worker. Any program running as that Worker's OS user can use this grant.">Claimed</span>{{end}}</td>
-  <td data-label="Target">{{if .TargetSession}}<strong>{{.TargetSession}}</strong> @ {{.TargetWorker}}{{else}}all shared sessions of {{.TargetWorker}}{{end}}{{if .TargetOwner}} <span class="muted">{{.TargetOwner}}</span>{{end}}</td>
-  <td data-label="Granted">{{.LevelLabel}}</td>
+  <td data-label="Target" class="grant-member">{{if .TargetMasked}}<em class="grant-masked">{{.TargetSession}}</em> @ {{.TargetWorker}}{{else if .TargetSession}}<strong>{{.TargetSession}}</strong> @ {{.TargetWorker}}{{else}}all shared sessions of {{.TargetWorker}}{{end}}{{if .TargetOwner}} <span class="muted">{{.TargetOwner}}</span>{{end}}</td>
+  <td data-label="Granted" class="grant-level-cell">{{.LevelLabel}}</td>
   <td data-label="State"><span class="badge" data-tone="{{.StateTone}}">{{.StateLabel}}</span></td>
   <td data-label="In effect">{{if not .Effect.Known}}<span class="muted" title="The Hub could not say whether this grant works now.">unknown</span>{{else if .Effect.Level}}{{.EffectLabel}}{{else}}<span class="chip grant-blocked" title="Blocked by: {{.BlockedText}}">Blocked: {{.BlockedText}}</span>{{end}}</td>
-  <td data-label="Decided by">{{.GrantedBy}} <span class="muted">{{.AuthorityLabel}}</span></td>
+  <td data-label="Decided by">{{if .DecidedBy}}{{.DecidedBy}}{{else}}<span class="muted grant-user-id" title="User id: the name is not known to you">{{.GrantedBy}}</span>{{end}} <span class="muted">{{.AuthorityLabel}}</span></td>
   <td data-label="Until">{{.UntilText}}</td>
   <td data-label="Actions" class="grant-actions">{{if .Confirm}}<div class="grant-confirm" role="group" aria-labelledby="grant-{{.ID}}-confirm-text">
     <p id="grant-{{.ID}}-confirm-text" class="grant-confirm-text" tabindex="-1">{{.Confirm}}</p>
@@ -36,7 +36,8 @@
     <form hx-post="/access/grants/revoke" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
       <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
       <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-revoke">Revoke</button>
-    </form></div>{{end}}
+    </form>{{if .Admin}}
+    <a href="{{.HistoryURL}}" class="grant-history" id="grant-{{.ID}}-history">History</a>{{end}}</div>{{end}}
     {{if .Error}}<p id="grant-{{.ID}}-status" tabindex="-1" class="grant-status grant-error" role="alert">{{.Error}}</p>{{else if .Saved}}<p id="grant-{{.ID}}-status" tabindex="-1" class="grant-status" role="status">{{.Saved}}</p>{{end}}</td>
 </tr>{{end}}{{end}}
 
