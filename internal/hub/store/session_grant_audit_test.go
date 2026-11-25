@@ -91,7 +91,7 @@ func TestGrantSuspendedByTriggersIsAudited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, "alice", g.Revision); err != nil {
+	if _, err := f.s.ApproveSessionGrant(ctx, adm.ID, g.Revision, GrantWrite{ActorID: "alice"}); err != nil {
 		t.Fatal(err)
 	}
 	f.exec(t, `INSERT INTO user_roles(user_id,role,source) VALUES('alice','admin','local')`)

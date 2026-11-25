@@ -85,18 +85,18 @@ func opUnsupported(err error) bool {
 	return errors.As(err, &oe) && oe.Code == "unsupported_op"
 }
 
-func accessPair(workerID, session string) string { return workerID + "|" + session }
+func panelPair(workerID, session string) string { return workerID + "|" + session }
 
 func accessPairWhy(sourceWorker, sourceSession, targetWorker, targetSession string) string {
-	return pathAccessWhy + "?" + url.Values{"source": {accessPair(sourceWorker, sourceSession)}, "target": {accessPair(targetWorker, targetSession)}}.Encode()
+	return pathAccessWhy + "?" + url.Values{"source": {panelPair(sourceWorker, sourceSession)}, "target": {panelPair(targetWorker, targetSession)}}.Encode()
 }
 
 func accessGrantsOf(workerID string) string {
 	return pathAccessGrants + "?" + url.Values{"worker": {workerID}}.Encode()
 }
 
-// accessCellState is the state of a pair the matrix knows.
-func accessCellState(c ops.AccessCell) (state, tone string) {
+// panelCellState is the state of a pair the matrix knows.
+func panelCellState(c ops.AccessCell) (state, tone string) {
 	if c.InEffect != "" {
 		return "In effect", "positive"
 	}
@@ -113,7 +113,7 @@ func accessGrantState(g ops.Grant, cell *ops.AccessCell) (state, tone string) {
 		return "Expired", "info"
 	}
 	if cell != nil {
-		return accessCellState(*cell)
+		return panelCellState(*cell)
 	}
 	return "Active", "positive"
 }
@@ -123,7 +123,7 @@ func accessGrantState(g ops.Grant, cell *ops.AccessCell) (state, tone string) {
 func sessionAccessView(r *http.Request, c OpCaller, s SessionContext) (v SessionAccessView, ok bool) {
 	v = SessionAccessView{Session: s.Session, Worker: s.Worker, GrantsURL: accessGrantsOf(s.WorkerID)}
 	if s.Operate {
-		v.AddURL = pathAccessGrants + "?" + url.Values{"source": {accessPair(s.WorkerID, s.Session)}}.Encode() + "#grant-add"
+		v.AddURL = pathAccessGrants + "?" + url.Values{"source": {panelPair(s.WorkerID, s.Session)}}.Encode() + "#grant-add"
 	}
 	var grants ops.GrantListResult
 	gerr := c.CallOp(r, ops.OpGrantList, ops.GrantListArgs{WorkerID: s.WorkerID}, &grants)
@@ -182,7 +182,7 @@ func sessionAccessView(r *http.Request, c OpCaller, s SessionContext) (v Session
 		}
 		src, tg := m.Sources[cell.Source], m.Targets[cell.Target]
 		row := AccessPanelRow{Level: accessLevelLabel(cell.Granted), Via: accessRowMaster, GrantsURL: accessGrantsOf(s.WorkerID), WhyURL: accessWhyHref(src, tg)}
-		row.State, row.Tone = accessCellState(cell)
+		row.State, row.Tone = panelCellState(cell)
 		if !src.Masked && src.WorkerID == s.WorkerID && src.Session == s.Session {
 			row.Session, row.Masked, row.Worker, row.Owner = tg.Session, tg.Masked, cmp.Or(tg.WorkerName, tg.WorkerID), tg.Owner
 			v.Reach = append(v.Reach, row)

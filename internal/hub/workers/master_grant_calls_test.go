@@ -19,7 +19,7 @@ func (r *masterRig) verifiedGrant(t *testing.T, incarnation string) store.Sessio
 	}
 	g, err := r.master.db.PutSessionGrant(ctx, store.SessionGrantRow{SourceWorkerID: r.source.ID, SourceSession: "prepared",
 		TargetWorkerID: r.target.ID, TargetSession: "build", Level: 2, Authority: store.GrantAuthorityOwner, GrantedBy: "owner",
-		SourceOwnerID: "owner", TargetOwnerID: "owner"}, 0)
+		SourceOwnerID: "owner", TargetOwnerID: "owner"}, 0, store.GrantWrite{ActorID: "owner"})
 	if err != nil {
 		t.Fatal(err)
 	}

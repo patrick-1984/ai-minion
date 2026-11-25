@@ -59,7 +59,7 @@ func (f *accessFleet) grant(source, session, target, name string, level int, by 
 	if by == f.own[source] && by == f.own[target] {
 		g.Authority = store.GrantAuthorityOwner
 	}
-	out, err := f.st.PutSessionGrant(f.t.Context(), g, 0)
+	out, err := f.st.PutSessionGrant(f.t.Context(), g, 0, store.GrantWrite{ActorID: by})
 	if err != nil {
 		f.t.Fatalf("grant %s:%s > %s:%s: %v", source, session, target, name, err)
 	}
@@ -223,7 +223,7 @@ func (f *accessFleet) principal(worker, session string) authz.Principal {
 			Authority: g.Authority, GrantedBy: g.GrantedBy, SourceOwnerID: g.SourceOwnerID, TargetOwnerID: g.TargetOwnerID,
 			Suspended: g.SuspendedAt != nil}
 		if g.ExpiresAt != nil {
-			d.ExpiresAt = time.UnixMilli(*g.ExpiresAt)
+			d.ExpiresAt = authz.ExpiryAt(time.UnixMilli(*g.ExpiresAt))
 		}
 		direct = append(direct, d)
 	}

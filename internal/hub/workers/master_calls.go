@@ -120,7 +120,7 @@ func (m *MasterControl) masterAuthority(ctx context.Context, c Call) (masterAuth
 		m.pushLocked(l)
 		return masterAuth{}, nil, errMasterDenied
 	}
-	out.direct, out.key = direct, directDigest(direct)
+	out.direct, out.key = direct, directDigest(direct, m.now())
 	for _, g := range direct {
 		if g.SuspendedAt != nil || g.ExpiresAt != nil && !now.Before(time.UnixMilli(*g.ExpiresAt)) ||
 			g.SourceOwnerID != l.info.OwnerID || g.TargetWorkerID == c.Worker.ID {
@@ -189,7 +189,7 @@ func (m *MasterControl) admitMaster(ctx context.Context, c Call, p *masterPendin
 		if check.Err() != nil {
 			return errMasterDenied
 		}
-		if err == nil && directDigest(direct) != auth.key {
+		if err == nil && directDigest(direct, m.now()) != auth.key {
 			return errMasterDenied
 		}
 	}
