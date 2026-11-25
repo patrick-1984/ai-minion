@@ -144,17 +144,146 @@ func TestAccessMatrixOpShowsAUserOnlyTheirOwnWorkers(t *testing.T) {
 	if res := ask(k.admin); len(res.Sources) != 2 || len(res.Cells) != 8 {
 		t.Errorf("an administrator sees %d sources, %d cells; want 2 and 8", len(res.Sources), len(res.Cells))
 	}
-	res := ask(k.u1) // alice: her master B:lead and her Worker C only
-	got := accessCells(res)
-	if len(res.Sources) != 1 || res.Sources[0].WorkerID != "B" || len(got) != 3 || got["B:lead>C:c1"] != "control" {
-		t.Errorf("alice sees sources %+v cells %v", res.Sources, got)
+	// alice: every pair with one of her Workers at either end; a session of
+	// another owner has no name.
+	res := ask(k.u1)
+	if len(res.Sources) != 2 || len(res.Cells) != 7 {
+		t.Errorf("alice sees sources %+v, %d cells; want 2 and 7", res.Sources, len(res.Cells))
 	}
-	for _, tg := range res.Targets {
-		if tg.Owner != "alice" {
-			t.Errorf("alice sees a target of %s", tg.Owner)
+	for _, s := range res.Sources {
+		if (s.WorkerID == "A") != s.Masked || s.WorkerID == "A" && s.Session != "a session of root" {
+			t.Errorf("alice sees source %+v", s)
 		}
 	}
-	if res := ask(k.u2); len(res.Sources) != 0 || len(res.Cells) != 0 || res.Sources == nil {
+	for _, tg := range res.Targets {
+		if (tg.Owner != "alice") != tg.Masked || tg.Masked && tg.Session != "a session of bob" {
+			t.Errorf("alice sees target %+v", tg)
+		}
+	}
+	if res := ask(k.u2); len(res.Sources) != 2 || len(res.Cells) != 3 || !res.Sources[0].Masked || !res.Sources[1].Masked {
 		t.Errorf("bob sees %+v", res)
+	}
+}
+
+// grantFixture adds direct grants to accessFixture: g-view (owner grant
+// B:b1 > C, whole Worker), g-msg (admin grant A:helper > E:e1), g-exp
+// (expired), g-sus (suspended), g-gone (granted by a former administrator),
+// g-own (owner grant across owners) and g-lead (View for the master B:lead
+// on C:c1, which the master reach outranks).
+func grantFixture() AccessFacts {
+	f := accessFixture("u-admin", "u-alice", "u-bob")
+	past, at := int64(500), int64(900)
+	f.Now = 1000
+	f.Admins = map[string]bool{"u-admin": true}
+	f.Workers[0].Sessions = []string{"boss", "helper"}
+	admin := func(id, sw, ss, tw, ts string, level int) store.SessionGrantRow {
+		return store.SessionGrantRow{ID: id, SourceWorkerID: sw, SourceSession: ss, TargetWorkerID: tw, TargetSession: ts, Level: level,
+			Authority: store.GrantAuthorityAdmin, GrantedBy: "u-admin"}
+	}
+	exp, sus, gone := admin("g-exp", "E", "e1", "B", "b1", 3), admin("g-sus", "E", "e1", "B", "lead", 3), admin("g-gone", "E", "e1", "C", "c1", 3)
+	exp.ExpiresAt, sus.SuspendedAt, gone.GrantedBy = &past, &at, "u-former"
+	owner := store.SessionGrantRow{ID: "g-view", SourceWorkerID: "B", SourceSession: "b1", TargetWorkerID: "C", Level: 1,
+		Authority: store.GrantAuthorityOwner, GrantedBy: "u-alice", SourceOwnerID: "u-alice", TargetOwnerID: "u-alice"}
+	cross := owner
+	cross.ID, cross.TargetWorkerID, cross.TargetSession, cross.Level = "g-own", "E", "e1", 3
+	lead := owner
+	lead.ID, lead.SourceSession, lead.TargetSession = "g-lead", "lead", "c1"
+	f.Grants = []store.SessionGrantRow{owner, admin("g-msg", "A", "helper", "E", "e1", 2), exp, sus, gone, cross, lead,
+		admin("g-off", "A", "helper", "D", "", 3)}
+	return f
+}
+
+func TestAccessMatrixDirectGrants(t *testing.T) {
+	res := AccessMatrix(grantFixture(), "u-admin", true, "")
+	got := map[string]string{}
+	for _, c := range res.Cells {
+		s, tg := res.Sources[c.Source], res.Targets[c.Target]
+		got[s.WorkerID+":"+s.Session+">"+tg.WorkerID+":"+tg.Session] = c.Granted + "/" + c.InEffect + "/" + c.Via + "/" + c.BlockedBy
+	}
+	want := map[string]string{
+		"B:b1>C:c1":     "view/view/g-view/",
+		"B:b1>C:c2":     "view//g-view/not_shared",
+		"B:b1>C:c3":     "view/view/g-view/",
+		"A:helper>E:e1": "message/message/g-msg/",
+		"A:helper>D:d1": "control//g-off/worker_offline",
+		"E:e1>B:b1":     "control//g-exp/expired",
+		"E:e1>B:lead":   "control//g-sus/suspended",
+		"E:e1>C:c1":     "control//g-gone/authority",
+		"B:b1>E:e1":     "control//g-own/authority",
+		"B:lead>C:c1":   "control/control/master/", // the master outranks g-lead
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+	for _, s := range res.Sources {
+		if s.Proof != ops.AccessProofClaimed || s.Master != (s.Session == "boss" || s.Session == "lead") {
+			t.Errorf("source %+v", s)
+		}
+	}
+	// bob owns E and D: he sees the pairs that touch them, the other side's
+	// session without its name.
+	for _, s := range AccessMatrix(grantFixture(), "u-bob", false, "").Sources {
+		if s.Owner != "bob" && (!s.Masked || strings.Contains(s.Session, "helper") || strings.Contains(s.Session, "b1")) {
+			t.Errorf("bob sees source %+v", s)
+		}
+	}
+}
+
+// The matrix and the explainer are one evaluator: for every source and every
+// live session of every Worker they agree, also where there is no cell.
+func TestAccessExplainAgreesWithTheMatrix(t *testing.T) {
+	f := grantFixture()
+	res := AccessMatrix(f, "u-admin", true, "")
+	cells := map[[4]string]ops.AccessCell{}
+	for _, c := range res.Cells {
+		s, tg := res.Sources[c.Source], res.Targets[c.Target]
+		cells[[4]string{s.WorkerID, s.Session, tg.WorkerID, tg.Session}] = c
+	}
+	if len(cells) < 15 {
+		t.Fatalf("the fixture has %d cells", len(cells))
+	}
+	for _, s := range res.Sources {
+		for _, w := range f.Workers {
+			for _, name := range w.Sessions {
+				a := ops.AccessExplainArgs{SourceWorkerID: s.WorkerID, SourceSession: s.Session, TargetWorkerID: w.ID, TargetSession: name}
+				ex, ok := AccessExplain(f, "u-admin", true, a)
+				c := cells[[4]string{s.WorkerID, s.Session, w.ID, name}]
+				if !ok || ex.InEffect != c.InEffect || ex.Via != c.Via {
+					t.Errorf("%+v: explain %q via %q, matrix %q via %q", a, ex.InEffect, ex.Via, c.InEffect, c.Via)
+				}
+				fails, skipped := 0, false
+				for i, ch := range ex.Checks {
+					switch ch.State {
+					case ops.AccessCheckFail:
+						fails++
+					case ops.AccessCheckSkip:
+						skipped = true
+					case ops.AccessCheckPass:
+						if fails > 0 {
+							t.Errorf("%+v: check %s passes after a fail", a, ch.ID)
+						}
+					}
+					if i == len(ex.Checks)-1 && (ch.ID != ops.AccessCheckPreviewOnly || ch.State != ops.AccessCheckUnknown) {
+						t.Errorf("%+v: last check %+v", a, ch)
+					}
+				}
+				if len(ex.Checks) != 7 || fails > 1 || (fails == 0) != (ex.InEffect != "") || skipped && fails == 0 {
+					t.Errorf("%+v: in effect %q with checks %+v", a, ex.InEffect, ex.Checks)
+				}
+			}
+		}
+	}
+	ex, _ := AccessExplain(f, "u-admin", true, ops.AccessExplainArgs{SourceWorkerID: "E", SourceSession: "e1", TargetWorkerID: "B", TargetSession: "b1"})
+	if ex.Checks[3].ID != ops.AccessCheckTime || ex.Checks[3].Text != "the grant has expired" || ex.Checks[4].State != ops.AccessCheckSkip {
+		t.Errorf("an expired grant: %+v", ex.Checks)
+	}
+	if _, ok := AccessExplain(f, "u-bob", false, ops.AccessExplainArgs{SourceWorkerID: "B", SourceSession: "b1", TargetWorkerID: "C", TargetSession: "c1"}); ok {
+		t.Error("bob is told about a pair between alice's Workers")
+	}
+	ex, ok := AccessExplain(f, "u-bob", false, ops.AccessExplainArgs{SourceWorkerID: "A", SourceSession: "helper", TargetWorkerID: "E", TargetSession: "e1"})
+	if !ok || ex.InEffect != ops.AccessLevelMessage || !ex.Source.Masked || ex.Source.Session != "a session of root" || ex.Target.Session != "e1" {
+		t.Errorf("bob asks about his own target: %+v", ex)
 	}
 }
