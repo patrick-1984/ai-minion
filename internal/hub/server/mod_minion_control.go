@@ -101,70 +101,41 @@ func initMinionControl(_ context.Context, env *Env) error {
 }
 
 // accessFacts reads what the access matrix is computed from: the durable
-// rows (plain reads, never a write transaction) and the live session lists.
+// rows in one read-only transaction (one commit, never the write lock) and
+// the live state: who is connected, the sessions the Hub lists, and which
+// session-bound masters hold a lease now.
 func accessFacts(ctx context.Context, env *Env, st *store.Store, svc *workers.Service) (api.AccessFacts, error) {
-	var f api.AccessFacts
-	rows, err := st.ListWorkers(ctx)
+	snap, err := st.AccessSnapshot(ctx)
 	if err != nil {
-		return f, err
+		return api.AccessFacts{}, err
 	}
-	if f.Masters, err = st.ListMasterSessions(ctx); err != nil {
-		return f, err
-	}
-	if f.Accepts, err = st.ListAccepts(ctx); err != nil {
-		return f, err
-	}
-	if f.Control, err = st.ListWorkerControl(ctx); err != nil {
-		return f, err
-	}
-	if f.Shares, err = st.LoadWorkerShares(ctx); err != nil {
-		return f, err
-	}
-	if f.Bound, err = st.ListBoundMasters(ctx, ""); err != nil {
-		return f, err
-	}
-	if f.Grants, err = st.ListSessionGrants(ctx, store.SessionGrantFilter{}); err != nil {
-		return f, err
-	}
-	users, err := st.ListUsers(ctx)
-	if err != nil {
-		return f, err
-	}
-	f.Admins = map[string]bool{}
-	for _, u := range users {
-		if u.Active && u.Role == "admin" {
-			f.Admins[u.ID] = true
-		}
-	}
-	online := map[string]bool{}
+	live := api.AccessLive{Online: map[string]bool{}, AgentOnly: map[string]bool{}, Sessions: map[string][]string{},
+		Attached: map[[2]string]bool{}}
 	for _, o := range svc.Registry().List() {
-		online[o.WorkerID] = true
+		live.Online[o.WorkerID] = true
+		live.AgentOnly[o.WorkerID] = o.HasFeature(proto.FeatureSendTextAgentOnly)
 	}
-	live := map[string][]string{}
 	if hub, err := Require[*workers.EventHub](env); err == nil {
 		for _, ws := range hub.All() {
 			for _, s := range ws.Sessions {
-				live[ws.WorkerID] = append(live[ws.WorkerID], s.Name)
+				live.Sessions[ws.WorkerID] = append(live.Sessions[ws.WorkerID], s.Name)
 			}
 		}
 	}
-	type owner struct {
-		name  string
-		admin bool
-	}
-	owners := map[string]owner{}
-	for _, w := range rows {
-		o, ok := owners[w.OwnerID]
-		if !ok {
-			if u, err := st.UserByID(ctx, w.OwnerID); err == nil {
-				o = owner{u.Username, u.Active && u.Role == "admin"}
-			}
-			owners[w.OwnerID] = o
+	if master, err := Require[*workers.MasterControl](env); err == nil {
+		view, err := master.MasterView(ctx)
+		if err != nil {
+			return api.AccessFacts{}, err
 		}
-		f.Workers = append(f.Workers, api.AccessWorker{ID: w.ID, Name: w.Name, Owner: o.name, OwnerID: w.OwnerID, OwnerAdmin: o.admin,
-			Pending: w.Pending, Online: online[w.ID], Sessions: live[w.ID]})
+		for id, v := range view {
+			for _, b := range v.Bound {
+				if b.Master && b.Attachment == "active" {
+					live.Attached[[2]string{id, b.SessionName}] = true
+				}
+			}
+		}
 	}
-	return f, nil
+	return api.AccessFactsFrom(snap, live), nil
 }
 
 // canBeMaster tells whether a Worker can run master sessions: a full Worker

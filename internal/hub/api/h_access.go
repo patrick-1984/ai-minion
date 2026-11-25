@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"slices"
 	"sort"
 	"time"
@@ -22,10 +23,15 @@ import (
 // AccessWorker is what the matrix knows of one Worker.
 type AccessWorker struct {
 	ID, Name, Owner, OwnerID string
-	// OwnerAdmin: the owner is an active administrator.
-	OwnerAdmin bool
-	Pending    bool
-	Online     bool
+	// OwnerAdmin: the owner is an active administrator. OwnerActive: the
+	// owner is an active account with a role; the Hub refuses every call of
+	// a Worker whose owner is not.
+	OwnerAdmin, OwnerActive bool
+	Pending                 bool
+	Online                  bool
+	// AgentOnly: the connected Worker announces send_text.agent_only, which
+	// a Message level needs to deliver its prompt.
+	AgentOnly bool
 	// Sessions are the live session names the Hub lists for the Worker.
 	Sessions []string
 }
@@ -38,12 +44,46 @@ type AccessFacts struct {
 	Accepts []store.AcceptRow
 	Control map[string]store.WorkerControlRow
 	Shares  map[string]ops.ShareDecl
+	// Pending are the dispatched, unsettled share restrictions: a session one
+	// of them excludes is not shared (store requireMasterShare).
+	Pending []store.PendingShare
 	// Grants are the direct session grants (every row, also suspended and
 	// expired ones); Admins the ids of the active administrators.
 	Grants []store.SessionGrantRow
 	Admins map[string]bool
+	// Attached tells, per (Worker, session) of a session-bound master,
+	// whether its terminal holds a lease for the nominated incarnation now.
+	// A missing entry is "not attached": the broker would refuse.
+	Attached map[[2]string]bool
 	// Now (Unix milliseconds) decides expiry; 0 means the current time.
 	Now int64
+}
+
+// AccessLive is the part of the facts that is not in the store, by Worker id
+// (Attached: by Worker id and session name).
+type AccessLive struct {
+	Online    map[string]bool
+	AgentOnly map[string]bool
+	Sessions  map[string][]string
+	Attached  map[[2]string]bool
+}
+
+// AccessFactsFrom joins one store snapshot with the live state.
+func AccessFactsFrom(s store.AccessSnapshot, live AccessLive) AccessFacts {
+	f := AccessFacts{Masters: s.Masters, Bound: s.Bound, Accepts: s.Accepts, Control: s.Control, Shares: s.Shares,
+		Pending: s.Pending, Grants: s.Grants, Admins: map[string]bool{}, Attached: live.Attached}
+	for id, u := range s.Users {
+		if u.Admin {
+			f.Admins[id] = true
+		}
+	}
+	for _, w := range s.Workers {
+		u := s.Users[w.OwnerID]
+		f.Workers = append(f.Workers, AccessWorker{ID: w.ID, Name: w.Name, Owner: u.Username, OwnerID: w.OwnerID,
+			OwnerAdmin: u.Admin, OwnerActive: u.Active, Pending: w.Pending, Online: live.Online[w.ID],
+			AgentOnly: live.AgentOnly[w.ID], Sessions: live.Sessions[w.ID]})
+	}
+	return f
 }
 
 // RegisterAccessMatrix registers access_matrix. It is decided on the caller's
@@ -129,7 +169,9 @@ func RegisterAccessExplain(r *Registry, facts func(context.Context) (AccessFacts
 
 type accessMaster struct {
 	worker, session, proof string
-	limit                  func(worker, session string) bool
+	// owner is the owner a session-bound nomination was decided under.
+	owner string
+	limit func(worker, session string) bool
 }
 
 // accessEval is one set of facts prepared for the matrix and the explainer.
@@ -152,6 +194,22 @@ type accessVerdict struct {
 	Blocked  string // the first failing layer, in the matrix order
 	// The layers one by one ("" = passes), for the explainer.
 	Authority, Time, Sharing, Pending, Offline string
+	// SharingWorker and PendingWorker name the Worker a failing layer is on.
+	SharingWorker, PendingWorker string
+	// Limited: a Message level that works as View, because the target Worker
+	// cannot deliver a prompt to an agent pane only.
+	Limited bool
+	// grant is the row behind a grant verdict.
+	grant *store.SessionGrantRow
+}
+
+// authorized is the level the Hub's decision (authz) gives, before the layers
+// of the Workers.
+func (v accessVerdict) authorized() string {
+	if !v.Covered || v.Authority != "" || v.Time != "" {
+		return ""
+	}
+	return v.Granted
 }
 
 func newAccessEval(f AccessFacts) *accessEval {
@@ -172,18 +230,19 @@ func newAccessEval(f AccessFacts) *accessEval {
 	// rows (claimed). A bound row replaces the name-only row of its name.
 	for _, b := range f.Bound {
 		if b.Active {
-			e.masters[[2]string{b.WorkerID, b.SessionName}] = accessMaster{b.WorkerID, b.SessionName, ops.AccessProofVerified, legacyLimit(b.LegacyTargetsJSON)}
+			e.masters[[2]string{b.WorkerID, b.SessionName}] = accessMaster{b.WorkerID, b.SessionName, ops.AccessProofVerified, b.OwnerID, legacyLimit(b.LegacyTargetsJSON)}
 		}
 	}
 	for _, m := range f.Masters {
 		if _, ok := e.masters[[2]string{m.WorkerID, m.SessionName}]; !ok {
-			e.masters[[2]string{m.WorkerID, m.SessionName}] = accessMaster{m.WorkerID, m.SessionName, ops.AccessProofClaimed, legacyLimit(m.LegacyTargetsJSON)}
+			e.masters[[2]string{m.WorkerID, m.SessionName}] = accessMaster{m.WorkerID, m.SessionName, ops.AccessProofClaimed, "", legacyLimit(m.LegacyTargetsJSON)}
 		}
 	}
-	// Direct grants. A grant bound to one incarnation of the source is not
-	// read by the call path yet (store.SessionGrantsFor), so it is no reach.
+	// Direct grants, also the ones bound to one incarnation of the source:
+	// the call path does not read those (store.SessionGrantsFor), so they
+	// are shown and never in effect.
 	for _, g := range f.Grants {
-		if g.SourceIncarnation == "" && g.SourceWorkerID != g.TargetWorkerID {
+		if g.SourceWorkerID != g.TargetWorkerID {
 			k := [2]string{g.SourceWorkerID, g.SourceSession}
 			e.grants[k] = append(e.grants[k], g)
 		}
@@ -191,9 +250,19 @@ func newAccessEval(f AccessFacts) *accessEval {
 	return e
 }
 
+// shared tells whether the stored share rule of worker includes session and
+// no pending restriction excludes it.
 func (e *accessEval) shared(worker, session string) bool {
 	d, ok := e.f.Shares[worker]
-	return ok && d.Rule.Includes(session)
+	if !ok || !d.Rule.Includes(session) {
+		return false
+	}
+	for _, p := range e.f.Pending {
+		if p.WorkerID == worker && !p.Rule.Includes(session) {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *accessEval) accepted(source, target, session string) bool {
@@ -237,15 +306,22 @@ func accessRank(level string) int {
 
 // workerLayers fills the layers both kinds of reach share.
 func (e *accessEval) workerLayers(v *accessVerdict, src, t AccessWorker, session, name string, sourceShare bool) {
-	if src.Pending || t.Pending {
-		v.Pending = ops.AccessBlockedWorkerPending
+	switch {
+	case src.Pending:
+		v.Pending, v.PendingWorker = ops.AccessBlockedWorkerPending, src.ID
+	case t.Pending:
+		v.Pending, v.PendingWorker = ops.AccessBlockedWorkerPending, t.ID
 	}
-	if !e.shared(t.ID, name) || sourceShare && !e.shared(src.ID, session) {
-		v.Sharing = ops.AccessBlockedNotShared
+	switch {
+	case !e.shared(t.ID, name):
+		v.Sharing, v.SharingWorker = ops.AccessBlockedNotShared, t.ID
+	case sourceShare && !e.shared(src.ID, session):
+		v.Sharing, v.SharingWorker = ops.AccessBlockedNotShared, src.ID
 	}
 	if !t.Online || !src.Online {
 		v.Offline = ops.AccessBlockedWorkerOffline
 	}
+	v.Limited = v.Granted == ops.AccessLevelMessage && !t.AgentOnly
 }
 
 // settle names the first failing layer in the matrix order.
@@ -258,37 +334,62 @@ func (v *accessVerdict) settle(order ...string) {
 		}
 	}
 	v.InEffect = v.Granted
+	if v.Limited {
+		v.InEffect = ops.AccessLevelView
+	}
 }
 
+// masterVerdict judges master reach as the call path does. A name-only master
+// is decided by authz on its computed targets: the owner of the source Worker
+// must be an active account and an administrator or the owner of the target.
+// A session-bound master is served by the master catalog (list, snapshot and
+// a prompt to an agent pane: the Message level) and only while its terminal
+// holds a lease for the nominated incarnation.
 func (e *accessEval) masterVerdict(m accessMaster, src, t AccessWorker, name string) accessVerdict {
 	v := accessVerdict{Via: ops.AccessViaMaster, Granted: ops.AccessLevelControl}
-	if !src.OwnerAdmin && src.OwnerID != t.OwnerID {
-		v.Authority = ops.AccessBlockedOwnerRule
+	verified := m.proof == ops.AccessProofVerified
+	if verified {
+		v.Granted = ops.AccessLevelMessage
 	}
-	e.workerLayers(&v, src, t, m.session, name, m.proof == ops.AccessProofVerified)
+	switch {
+	case !src.OwnerActive:
+		v.Authority = ops.AccessBlockedOwnerInactive
+	case !src.OwnerAdmin && src.OwnerID != t.OwnerID:
+		v.Authority = ops.AccessBlockedOwnerRule
+	case verified && m.owner != src.OwnerID:
+		v.Authority = ops.AccessBlockedAuthority
+	case verified && !e.f.Attached[[2]string{src.ID, m.session}]:
+		v.Authority = ops.AccessBlockedMasterNotAttached
+	}
+	e.workerLayers(&v, src, t, m.session, name, verified)
 	v.settle(v.Authority, v.Pending, v.Sharing, v.Offline)
 	return v
 }
 
+// grantVerdict judges a direct grant as authz does (directUsable and
+// directFor): the owner of the source Worker is an active account, both
+// Workers still have the owners of decision time, and the authority stands.
 func (e *accessEval) grantVerdict(g store.SessionGrantRow, src, t AccessWorker, name string) accessVerdict {
-	v := accessVerdict{Via: g.ID, Granted: accessGrantLevel(g.Level)}
+	v := accessVerdict{Via: g.ID, Granted: accessGrantLevel(g.Level), grant: &g}
 	switch {
 	case g.SuspendedAt != nil:
 		v.Time = ops.AccessBlockedSuspended
 	case g.ExpiresAt != nil && *g.ExpiresAt <= e.now:
 		v.Time = ops.AccessBlockedExpired
 	}
-	switch g.Authority {
-	case store.GrantAuthorityAdmin:
+	switch {
+	case g.SourceIncarnation != "":
+		v.Authority = ops.AccessBlockedSourceIncarnation
+	case !src.OwnerActive:
+		v.Authority = ops.AccessBlockedOwnerInactive
+	case v.Granted == "" || g.SourceOwnerID == "" || t.OwnerID == "" || g.SourceOwnerID != src.OwnerID || g.TargetOwnerID != t.OwnerID:
+		v.Authority = ops.AccessBlockedAuthority
+	case g.Authority == store.GrantAuthorityAdmin:
 		if !e.f.Admins[g.GrantedBy] {
 			v.Authority = ops.AccessBlockedAuthority
 		}
-	default:
-		// An owner grant holds while both Workers still share the owner it
-		// was written for.
-		if src.OwnerID != t.OwnerID || g.SourceOwnerID != src.OwnerID || g.TargetOwnerID != t.OwnerID {
-			v.Authority = ops.AccessBlockedAuthority
-		}
+	case g.Authority != store.GrantAuthorityOwner || g.SourceOwnerID != g.TargetOwnerID:
+		v.Authority = ops.AccessBlockedAuthority
 	}
 	e.workerLayers(&v, src, t, g.SourceSession, name, false)
 	v.settle(v.Time, v.Authority, v.Pending, v.Sharing, v.Offline)
@@ -297,12 +398,22 @@ func (e *accessEval) grantVerdict(g store.SessionGrantRow, src, t AccessWorker, 
 
 // pair is the one evaluator: the best reach session on src has to the live
 // session name on t. A master reach and a grant may both cover the pair; the
-// higher level in effect wins and, on a tie, the master.
+// higher level in effect wins, then the higher level the Hub would authorize
+// and, on a tie, the master.
 func (e *accessEval) pair(src AccessWorker, session string, t AccessWorker, name string) accessVerdict {
 	var best accessVerdict
 	// Never the same Worker: its sessions reach each other anyway.
 	if src.ID == t.ID || !slices.Contains(t.Sessions, name) {
 		return best
+	}
+	better := func(v accessVerdict) bool {
+		if !best.Covered {
+			return true
+		}
+		if d := accessRank(v.InEffect) - accessRank(best.InEffect); d != 0 {
+			return d > 0
+		}
+		return accessRank(v.authorized()) > accessRank(best.authorized())
 	}
 	if m, ok := e.masters[[2]string{src.ID, session}]; ok && e.accepted(src.ID, t.ID, name) && m.limit(t.ID, name) {
 		best = e.masterVerdict(m, src, t, name)
@@ -311,7 +422,7 @@ func (e *accessEval) pair(src AccessWorker, session string, t AccessWorker, name
 		if g.TargetWorkerID != t.ID || g.TargetSession != "" && g.TargetSession != name {
 			continue
 		}
-		if v := e.grantVerdict(g, src, t, name); !best.Covered || accessRank(v.InEffect) > accessRank(best.InEffect) {
+		if v := e.grantVerdict(g, src, t, name); better(v) {
 			best = v
 		}
 	}
@@ -436,14 +547,64 @@ func accessLevelWord(level string) string {
 	return "nothing"
 }
 
+// The pages a failing layer is changed on (relative URLs of the Hub).
+const (
+	accessFixGrants  = "/access/grants"
+	accessFixControl = "/access/control"
+)
+
+func accessFixWorker(id string) string { return "/workers/" + url.PathEscape(id) }
+
+// accessAuthority is the authority check of a covered pair: the stable code,
+// the sentence and the page where it is changed.
+func accessAuthority(e *accessEval, v accessVerdict) (code, text, fix string) {
+	master := v.Via == ops.AccessViaMaster
+	fix = accessFixGrants
+	if master {
+		fix = accessFixControl
+	}
+	switch v.Authority {
+	case "":
+		switch {
+		case master:
+			return ops.AccessCodeAuthorityOK, "the owner of the source Worker may reach this Worker", ""
+		case v.grant != nil && v.grant.Authority == store.GrantAuthorityAdmin:
+			return ops.AccessCodeAuthorityOK, "an active administrator decided this grant", ""
+		}
+		return ops.AccessCodeAuthorityOK, "both Workers still belong to the owner who decided this grant", ""
+	case ops.AccessBlockedOwnerInactive:
+		return v.Authority, "the owner of the source Worker is not an active account", ""
+	case ops.AccessBlockedOwnerRule:
+		return v.Authority, "the owner of the source Worker is neither an administrator nor the owner of the target Worker", fix
+	case ops.AccessBlockedMasterNotAttached:
+		return v.Authority, "the terminal this master session was nominated on is not attached now", fix
+	case ops.AccessBlockedSourceIncarnation:
+		return v.Authority, "the grant is bound to one incarnation of the source session, which the Hub cannot check yet", fix
+	}
+	if master {
+		return v.Authority, "the source Worker changed its owner since this master session was nominated", fix
+	}
+	if g := v.grant; g != nil && g.Authority == store.GrantAuthorityAdmin && !e.f.Admins[g.GrantedBy] {
+		return v.Authority, "the administrator who decided this grant is no longer an active administrator", fix
+	}
+	return v.Authority, "a Worker changed its owner since this grant was decided", fix
+}
+
 // AccessExplain answers one pair from the same evaluator as the matrix. It
-// is false when a Worker is unknown or the viewer owns neither end.
+// is false when a Worker is unknown or the viewer owns neither end, and also
+// when the viewer does not own both ends and nothing covers the pair: a
+// session of another owner is then answered the same whether it exists or
+// not, and whether or not it is a master.
 func AccessExplain(f AccessFacts, viewer string, all bool, a ops.AccessExplainArgs) (ops.AccessExplainResult, bool) {
 	e := newAccessEval(f)
 	src, ok := e.workers[a.SourceWorkerID]
 	t, ok2 := e.workers[a.TargetWorkerID]
 	own := func(w AccessWorker) bool { return all || viewer != "" && w.OwnerID == viewer }
 	if !ok || !ok2 || !own(src) && !own(t) {
+		return ops.AccessExplainResult{}, false
+	}
+	v := e.pair(src, a.SourceSession, t, a.TargetSession)
+	if !v.Covered && (!own(src) || !own(t)) {
 		return ops.AccessExplainResult{}, false
 	}
 	_, master := e.masters[[2]string{src.ID, a.SourceSession}]
@@ -458,80 +619,81 @@ func AccessExplain(f AccessFacts, viewer string, all bool, a ops.AccessExplainAr
 	if !own(t) {
 		res.Target.Session, res.Target.Masked = accessMask(t.Owner), true
 	}
-	v := e.pair(src, a.SourceSession, t, a.TargetSession)
 	res.InEffect, res.Via = v.InEffect, v.Via
 
 	failed := false
-	add := func(id string, fail bool, pass, failText string) {
-		c := ops.AccessCheck{ID: id, State: ops.AccessCheckPass, Text: pass}
+	// add appends one check: pass with its code and text, or fail with the
+	// failing code, text and fix; after the first failure the rest are skipped.
+	add := func(id string, fail bool, code, text, fix string) {
+		c := ops.AccessCheck{ID: id, State: ops.AccessCheckPass, Code: code, Text: text}
 		switch {
 		case failed:
-			c.State, c.Text = ops.AccessCheckSkip, "not evaluated: an earlier check failed"
+			c.State, c.Code, c.Text = ops.AccessCheckSkip, ops.AccessCodeSkipped, "not evaluated: an earlier check failed"
 		case fail:
-			c.State, c.Text = ops.AccessCheckFail, failText
+			c.State, c.Fix = ops.AccessCheckFail, fix
 			failed = true
 		}
 		res.Checks = append(res.Checks, c)
 	}
-	caller := "the source session is named by its Worker (Claimed)"
 	if proof == ops.AccessProofVerified {
-		caller = "the source session is a kernel-proven terminal (Verified)"
+		add(ops.AccessCheckCaller, false, ops.AccessCodeCallerVerified, "the source session is a kernel-proven terminal (Verified)", "")
+	} else {
+		add(ops.AccessCheckCaller, false, ops.AccessCodeCallerClaimed, "the source session is named by its Worker (Claimed)", "")
 	}
-	add(ops.AccessCheckCaller, false, caller, "")
-	by := "grant " + v.Via + " gives " + accessLevelWord(v.Granted)
-	if v.Via == ops.AccessViaMaster {
-		by = "master reach gives Control: the target Worker accepts this master session"
-	}
-	none := "no grant and no master reach covers this pair"
 	switch {
+	case v.Covered && v.Via == ops.AccessViaMaster:
+		add(ops.AccessCheckGrant, false, ops.AccessCodeMaster,
+			"master reach gives "+accessLevelWord(v.Granted)+": the target Worker accepts this master session", "")
+	case v.Covered:
+		add(ops.AccessCheckGrant, false, ops.AccessCodeGrant, "grant "+v.Via+" gives "+accessLevelWord(v.Granted), "")
 	case src.ID == t.ID:
-		none += ": sessions of one Worker reach each other without a grant"
+		add(ops.AccessCheckGrant, true, ops.AccessCodeSameWorker,
+			"no grant and no master reach covers this pair: sessions of one Worker reach each other without a grant", "")
 	case !slices.Contains(t.Sessions, a.TargetSession):
-		none += ": the target Worker does not list a session of that name now"
+		add(ops.AccessCheckGrant, true, ops.AccessCodeNoSuchSession,
+			"no grant and no master reach covers this pair: the target Worker does not list a session of that name now", "")
+	default:
+		add(ops.AccessCheckGrant, true, ops.AccessCodeNoGrant, "no grant and no master reach covers this pair", accessFixGrants)
 	}
-	add(ops.AccessCheckGrant, !v.Covered, by, none)
-	authority, authorityFail := "an active administrator decided this grant", "the administrator who decided this grant is no longer an active administrator"
-	if v.Via == ops.AccessViaMaster {
-		authority, authorityFail = "the owner of the source Worker may reach this Worker", "the owner of the source Worker is neither an administrator nor the owner of the target Worker"
-	} else if v.Authority == "" && !f.Admins[grantBy(e, src.ID, a.SourceSession, v.Via)] {
-		authority = "both Workers still belong to the owner who decided this grant"
-	} else if v.Authority != "" && src.OwnerID != t.OwnerID && grantAuthority(e, src.ID, a.SourceSession, v.Via) != store.GrantAuthorityAdmin {
-		authorityFail = "the two Workers no longer belong to the owner who decided this grant"
-	} else if v.Authority != "" && grantAuthority(e, src.ID, a.SourceSession, v.Via) != store.GrantAuthorityAdmin {
-		authorityFail = "a Worker changed its owner since this grant was decided"
+	code, text, fix := accessAuthority(e, v)
+	add(ops.AccessCheckAuthority, v.Authority != "", code, text, fix)
+	switch v.Time {
+	case ops.AccessBlockedExpired:
+		add(ops.AccessCheckTime, true, v.Time, "the grant has expired", accessFixGrants)
+	case ops.AccessBlockedSuspended:
+		add(ops.AccessCheckTime, true, v.Time, "the grant is suspended until an administrator approves it again", accessFixGrants)
+	default:
+		add(ops.AccessCheckTime, false, ops.AccessCodeTimeOK, "not expired and not suspended", "")
 	}
-	add(ops.AccessCheckAuthority, v.Authority != "", authority, authorityFail)
-	timeFail := "the grant is suspended until an administrator approves it again"
-	if v.Time == ops.AccessBlockedExpired {
-		timeFail = "the grant has expired"
-	}
-	add(ops.AccessCheckTime, v.Time != "", "not expired and not suspended", timeFail)
-	add(ops.AccessCheckSharing, v.Sharing != "", "the target Worker shares the session", "the session is not shared by its Worker")
-	workersFail := "a Worker is waiting for approval"
-	if v.Pending == "" {
-		workersFail = "a Worker is offline"
-	}
-	add(ops.AccessCheckWorkers, v.Pending != "" || v.Offline != "", "both Workers are approved and connected", workersFail)
-	res.Checks = append(res.Checks, ops.AccessCheck{ID: ops.AccessCheckPreviewOnly, State: ops.AccessCheckUnknown,
-		Text: "the target Worker decides this and does not report it"})
-	return res, true
-}
-
-func grantOf(e *accessEval, worker, session, id string) store.SessionGrantRow {
-	for _, g := range e.grants[[2]string{worker, session}] {
-		if g.ID == id {
-			return g
+	// A link to a Worker only for a viewer who may open it.
+	workerFix := func(id string) string {
+		if w, ok := e.workers[id]; ok && own(w) {
+			return accessFixWorker(id)
 		}
+		return ""
 	}
-	return store.SessionGrantRow{}
-}
-
-func grantBy(e *accessEval, worker, session, id string) string {
-	return grantOf(e, worker, session, id).GrantedBy
-}
-
-func grantAuthority(e *accessEval, worker, session, id string) string {
-	return grantOf(e, worker, session, id).Authority
+	switch {
+	case v.Sharing == "":
+		add(ops.AccessCheckSharing, false, ops.AccessCodeShared, "the target Worker shares the session", "")
+	case v.SharingWorker == src.ID:
+		add(ops.AccessCheckSharing, true, v.Sharing, "the master session is not shared by its Worker", workerFix(src.ID))
+	default:
+		add(ops.AccessCheckSharing, true, v.Sharing, "the session is not shared by its Worker", workerFix(t.ID))
+	}
+	switch {
+	case v.Pending != "":
+		add(ops.AccessCheckWorkers, true, v.Pending, "a Worker is waiting for approval", workerFix(v.PendingWorker))
+	case v.Offline != "":
+		add(ops.AccessCheckWorkers, true, v.Offline, "a Worker is offline", "")
+	case v.Limited:
+		add(ops.AccessCheckWorkers, false, ops.AccessCodeMessageAsView,
+			"both Workers are approved and connected; the target Worker cannot take a prompt for agent panes only, so Message works as View until it is updated", "")
+	default:
+		add(ops.AccessCheckWorkers, false, ops.AccessCodeWorkersOK, "both Workers are approved and connected", "")
+	}
+	res.Checks = append(res.Checks, ops.AccessCheck{ID: ops.AccessCheckPreviewOnly, State: ops.AccessCheckUnknown,
+		Code: ops.AccessBlockedPreviewOnlyUnknown, Text: "the target Worker decides this and does not report it"})
+	return res, true
 }
 
 // legacyLimit is the extra limit of a migrated v0.8 grant: nothing it did not
