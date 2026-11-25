@@ -1450,3 +1450,35 @@ details.fold > summary:focus-visible { outline-offset: 2px; }
   .matrix-wrap, .table-wrap.table-wrap-full, .control-pick ul, .control-masters { max-height: none; overflow: visible; }
   .control-matrix :is(thead th, tbody th, thead th.corner) { position: static; box-shadow: none; }
 }
+/* access: matrix */
+.access-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0; color: var(--muted); font-size: 0.875rem; }
+.access-legend b { color: var(--text); font-family: var(--font-mono); }
+.access-box { container-type: inline-size; }
+.access-scroll { overflow: auto; max-height: 75vh; border: 1px solid var(--border); border-radius: 6px; }
+.access-scroll:focus-visible { outline: 2px solid var(--focus, currentColor); outline-offset: 2px; }
+.access-matrix { border-collapse: separate; border-spacing: 0; white-space: nowrap; }
+.access-matrix :is(th, td) { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: center; }
+.access-matrix td { font-family: var(--font-mono); }
+.access-matrix thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+.access-matrix thead tr + tr th { top: 33px; }
+.access-matrix tbody th, .access-matrix thead th.corner { position: sticky; left: 0; z-index: 1; background: var(--surface);
+  text-align: left; box-shadow: inset -1px 0 0 var(--border); }
+.access-matrix thead th.corner { z-index: 3; }
+.access-matrix :is(.access-tw, .access-first, .access-group td) { border-left: 1px solid var(--border); }
+.access-matrix .access-group th { font-weight: 600; }
+.access-matrix .access-ok { font-weight: 600; }
+.access-matrix .access-blocked { color: var(--muted); }
+.access-proof { font-weight: 400; }
+.access-list { display: none; margin: 0; padding: 0; list-style: none; }
+.access-list li { padding: 8px 0; border-bottom: 1px solid var(--border); }
+@container (max-width: 699px) {
+  .access-scroll { display: none; }
+  .access-list { display: block; }
+}
+@media print {
+  .rail, .access-tools { display: none; }
+  .access-scroll { display: block; max-height: none; overflow: visible; border: 0; }
+  .access-list { display: none; }
+  .access-matrix :is(thead th, tbody th, thead th.corner) { position: static; box-shadow: none; }
+}
+/* end access: matrix */
