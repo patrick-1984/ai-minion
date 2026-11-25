@@ -19,8 +19,9 @@ type SessionControlStore interface {
 	ListSessionControl(ctx context.Context) ([]store.SessionControlRow, error)
 	WorkerOwner(ctx context.Context, workerID string) (string, error)
 	PutSessionControlIfOwner(ctx context.Context, r store.SessionControlRow, expectedOwnerID string) error
+	// DeleteSessionControl refuses an active session-bound master with
+	// store.ErrBoundMasterSlot, in the transaction of the delete.
 	DeleteSessionControl(ctx context.Context, workerID, sessionName string) (bool, error)
-	BoundMasterActive(ctx context.Context, workerID, session string) (bool, error)
 }
 
 var _ SessionControlStore = (*store.Store)(nil)
@@ -120,16 +121,11 @@ func (h sessionControlHandlers) set(ctx context.Context, c *Call, a ops.SessionC
 		return ops.WriteResult{}, NewError(proto.CodeConflict, "session_control_set is replaced by Minion control: use control_set_master and control_set_accept (Access > Minion control)")
 	}
 	if len(a.Targets) == 0 {
-		bound, err := h.st.BoundMasterActive(ctx, a.WorkerID, a.SessionName)
-		if err != nil {
-			return ops.WriteResult{}, err
-		}
-		if bound {
-			// Not in master_session: the delete below would revoke nothing.
-			return ops.WriteResult{}, ownerErr(store.ErrBoundMasterSlot)
-		}
+		// A session-bound master is not in master_session: the store refuses
+		// (ErrBoundMasterSlot) in the transaction of the delete, so a
+		// conversion in flight is never answered with "delivered".
 		if _, err := h.st.DeleteSessionControl(ctx, a.WorkerID, a.SessionName); err != nil {
-			return ops.WriteResult{}, err
+			return ops.WriteResult{}, ownerErr(err)
 		}
 		return delivered(), nil
 	}

@@ -87,6 +87,11 @@ type ControlSetWorkerArgs struct {
 	WorkerID    string `json:"worker_id"`
 	UserManaged *bool  `json:"user_managed,omitempty"`
 	AcceptAll   *bool  `json:"accept_all,omitempty"`
+	// IfUserManaged and IfAcceptAll state the values the caller saw (optional
+	// preconditions): the change answers conflict when a stored switch is no
+	// longer that, because someone else changed it.
+	IfUserManaged *bool `json:"if_user_managed,omitempty"`
+	IfAcceptAll   *bool `json:"if_accept_all,omitempty"`
 }
 
 // ControlSetMasterArgs nominate (master true) or end a master session.
@@ -95,6 +100,9 @@ type ControlSetMasterArgs struct {
 	WorkerID    string `json:"worker_id"`
 	SessionName string `json:"session_name"`
 	Master      bool   `json:"master"`
+	// IfMaster states whether the caller saw the session as a name-only
+	// master (an optional precondition): conflict when it is no longer so.
+	IfMaster *bool `json:"if_master,omitempty"`
 }
 
 // ControlSetBoundMasterArgs changes one session-bound nomination with a
@@ -141,7 +149,20 @@ type ControlSetAcceptArgs struct {
 	// Sessions limits the acceptance to these sessions of the target; absent
 	// (null) means all its shared sessions. An empty list is refused.
 	Sessions *[]string `json:"sessions,omitempty"`
+	// IfState states what the caller saw stored for this pair (an optional
+	// precondition): "absent" (no entry), "all", "limited" or "none" (an
+	// entry that allows nothing). The change answers conflict when the stored
+	// acceptance is in another state, because someone else changed it.
+	IfState string `json:"if_state,omitempty"`
 }
+
+// The values of ControlSetAcceptArgs.IfState.
+const (
+	ControlAcceptAbsent  = "absent"
+	ControlAcceptAll     = "all"
+	ControlAcceptLimited = "limited"
+	ControlAcceptNone    = "none"
+)
 
 // ControlCheckArgs ask who may control one session.
 type ControlCheckArgs struct {
