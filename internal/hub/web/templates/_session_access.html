@@ -1,0 +1,41 @@
+{{define "access_panel_row"}}<li class="access-row">
+  <span class="access-row-who">{{if .AllSessions}}all shared sessions{{else if .Masked}}<span class="muted">{{.Session}}</span>{{else}}<strong>{{.Session}}</strong>{{end}} @ {{.Worker}}{{if and .Owner (not .Masked)}} <span class="muted">{{.Owner}}</span>{{end}}</span>
+  <span class="access-row-marks"><span class="badge plain">{{.Level}}</span> <span class="badge" data-tone="{{.Tone}}">{{.State}}</span> <span class="muted">via {{.Via}}</span></span>
+  <span class="access-row-links">{{if .WhyURL}}<a href="{{.WhyURL}}" aria-label="Why: {{.Session}} on {{.Worker}}">Why?</a> {{end}}<a href="{{.GrantsURL}}" aria-label="Grants: {{if .AllSessions}}all shared sessions{{else}}{{.Session}}{{end}} on {{.Worker}}">Grants</a></span>
+</li>{{end}}
+
+{{define "session_access"}}<link rel="stylesheet" href="/static/access-panels.css">
+<div class="access-pane">
+  {{range .Notes}}<p class="muted" role="status">{{.}}</p>
+  {{end}}<h3 id="access-reach-h">Can reach</h3>
+  {{if .Reach}}<ul class="access-rows" aria-labelledby="access-reach-h">
+  {{range .Reach}}{{template "access_panel_row" .}}
+  {{end}}</ul>{{else}}<p class="muted">This session can reach no other session.</p>{{end}}
+  <h3 id="access-reached-h">Reachable by</h3>
+  {{if .ReachedBy}}<ul class="access-rows" aria-labelledby="access-reached-h">
+  {{range .ReachedBy}}{{template "access_panel_row" .}}
+  {{end}}</ul>{{else}}<p class="muted">No other session can reach this session.</p>{{end}}
+  <p class="access-pane-actions">{{if .AddURL}}<a class="btn btn-secondary" href="{{.AddURL}}">Add grant</a> {{end}}<a href="{{.GrantsURL}}">All grants of this Worker</a></p>
+</div>{{end}}
+
+{{define "worker_accept_entry"}}<li>{{.Name}}{{if .Mark}} <span class="badge" data-tone="{{.Tone}}">{{.Mark}}</span><span class="sr-only"> {{.Label}}</span>{{end}}</li>{{end}}
+
+{{define "worker_access_panel"}}<div class="access-worker">
+  {{if .Admin}}<div class="access-worker-part">
+    <h3>Accepts master sessions from</h3>
+    {{if .AcceptNote}}<p class="muted">{{.AcceptNote}}</p>
+    {{else}}{{if .AcceptAll}}<p>All Workers</p>
+    {{else if .Accepts}}<ul class="access-accepts">{{range .Accepts}}{{template "worker_accept_entry" .}}{{end}}</ul>
+    {{else}}<p>Nobody</p>
+    {{end}}{{if .Exceptions}}<p class="muted" id="access-except-{{.WorkerID}}">Except:</p>
+    <ul class="access-accepts" aria-labelledby="access-except-{{.WorkerID}}">{{range .Exceptions}}{{template "worker_accept_entry" .}}{{end}}</ul>
+    {{end}}{{end}}<p><a href="{{.ControlURL}}" aria-label="Change what {{.Worker}} accepts">Change</a></p>
+  </div>
+  {{end}}<div class="access-worker-part">
+    <h3>Grants</h3>
+    {{if .GrantNote}}<p class="muted">{{.GrantNote}}</p>
+    {{else if .Grants}}<p>{{.GrantSentence}} <span class="muted">({{.GrantsFrom}} from its sessions, {{.GrantsTo}} to its sessions)</span>.</p>
+    {{else}}<p class="muted">{{.GrantSentence}}</p>
+    {{end}}<p><a href="{{.GrantsURL}}">{{if .Grants}}Show the grants{{else}}Grants{{end}}</a></p>
+  </div>
+</div>{{end}}
