@@ -194,6 +194,10 @@ func TestSessionControlGrantedSessionReachesItsTargetsOnly(t *testing.T) {
 		evs[0].Actor != "worker:"+wRootLab.ID || evs[0].Outcome != "success" {
 		t.Fatalf("audit = %+v", evs)
 	}
+	// The row names the calling session, not only its Worker.
+	if evs[0].Source != wRootLab.ID+":boss" {
+		t.Fatalf("audit source = %q, want %q", evs[0].Source, wRootLab.ID+":boss")
+	}
 
 	// Out of scope: another session of bob's pi-1, bob's box, alice's pi-1.
 	opens := r.be.openCount()

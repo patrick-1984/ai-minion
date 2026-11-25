@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -127,6 +128,23 @@ func TestControlAcceptKeepsItsSessionLimit(t *testing.T) {
 	}
 	if code, body := k.call(ops.OpControlSetAccept, map[string]any{"worker_id": b.ID, "source_worker_id": a.ID, "accept": true, "sessions": []string{"ci"}}); code != http.StatusOK {
 		t.Fatalf("limited accept = %d %s", code, body)
+	}
+	// The audit row says what was set: the source Worker and the reach, and
+	// the master row names its session in the source, never in the detail.
+	var accept, master audit.Event
+	for _, ev := range k.audit.all() {
+		switch {
+		case ev.Action == ops.OpControlSetAccept && ev.Outcome == AuditOutcomeSuccess:
+			accept = ev
+		case ev.Action == ops.OpControlSetMaster:
+			master = ev
+		}
+	}
+	if want := "source_worker=" + a.ID + " accept=true sessions=limited"; accept.Detail != want || accept.Target != b.ID {
+		t.Fatalf("accept audit = %+v, want detail %q", accept, want)
+	}
+	if master.Source != a.ID+":boss" || master.Detail != "session_set=true" {
+		t.Fatalf("master audit = %+v", master)
 	}
 	g := k.grants()
 	if len(g) != 1 || len(g[0].Targets) != 1 || g[0].Targets[0].Kind != ops.KeyResourceSession || g[0].Targets[0].SessionName != "ci" {

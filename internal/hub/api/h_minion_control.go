@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -185,6 +186,7 @@ func (h controlHandlers) setWorker(ctx context.Context, c *Call, a ops.ControlSe
 	if err != nil {
 		return ops.WriteResult{}, err
 	}
+	c.AuditDetail = workerControlDetail(a)
 	if err := h.st.SetWorkerControlIfOwner(ctx, a.WorkerID, owners[0], a.UserManaged, a.AcceptAll); err != nil {
 		return ops.WriteResult{}, ownerErr(err)
 	}
@@ -199,6 +201,9 @@ func (h controlHandlers) setMaster(ctx context.Context, c *Call, a ops.ControlSe
 	if a.SessionName == "" || !ops.ValidSessionName(a.SessionName) {
 		return ops.WriteResult{}, NewError(proto.CodeInvalidArgument, "session_name is not a valid session name")
 	}
+	// The session name goes in the source, never in the detail.
+	c.AuditSource = a.WorkerID + ":" + a.SessionName
+	c.AuditDetail = "session_set=" + strconv.FormatBool(a.Master)
 	var owners []string
 	if p, ok := c.Args.(*ops.ControlSetMasterArgs); ok {
 		owners, err = pinned(h.pinM.take(p))
@@ -243,6 +248,7 @@ func (h controlHandlers) setAccept(ctx context.Context, c *Call, a ops.ControlSe
 		}
 		sessions = append([]string{}, *a.Sessions...)
 	}
+	c.AuditDetail = acceptDetail(a)
 	var owners []string
 	if p, ok := c.Args.(*ops.ControlSetAcceptArgs); ok {
 		owners, err = pinned(h.pinA.take(p))
@@ -381,4 +387,31 @@ func grantCovers(targetsJSON, worker, session string) bool {
 		}
 	}
 	return false
+}
+
+// acceptDetail is the audit detail of control_set_accept: the source Worker
+// and how far the acceptance reaches, never a session name.
+func acceptDetail(a ops.ControlSetAcceptArgs) string {
+	reach := "none"
+	switch {
+	case !a.Accept:
+	case a.Sessions == nil:
+		reach = "all"
+	default:
+		reach = "limited"
+	}
+	return "source_worker=" + a.SourceWorkerID + " accept=" + strconv.FormatBool(a.Accept) + " sessions=" + reach
+}
+
+// workerControlDetail is the audit detail of control_set_worker: the
+// switches the call set.
+func workerControlDetail(a ops.ControlSetWorkerArgs) string {
+	var parts []string
+	if a.UserManaged != nil {
+		parts = append(parts, "user_managed="+strconv.FormatBool(*a.UserManaged))
+	}
+	if a.AcceptAll != nil {
+		parts = append(parts, "accept_all="+strconv.FormatBool(*a.AcceptAll))
+	}
+	return strings.Join(parts, " ")
 }

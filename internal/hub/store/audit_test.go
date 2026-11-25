@@ -38,3 +38,27 @@ func TestAuditCursorQueryUsesTheIndexRange(t *testing.T) {
 		}
 	}
 }
+
+func TestAuditRoundTripsSourceGrantAndDetail(t *testing.T) {
+	s, err := openCached(t, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	old := AuditRow{ID: "id-1", TS: 1, Actor: "a", Action: "x", Outcome: "success"}
+	full := AuditRow{ID: "id-2", TS: 2, Actor: "worker:w1", Action: "send_text", Target: "w2:build", Outcome: "denied",
+		Source: "w1:boss", GrantID: "g-1", Detail: "proof=name"}
+	for _, r := range []AuditRow{old, full} {
+		if err := s.InsertAudit(ctx, nil, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.ListAudit(ctx, AuditQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0] != full || rows[1] != old {
+		t.Fatalf("rows = %+v", rows)
+	}
+}

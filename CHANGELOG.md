@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Audit: events carry a source session, a grant id and a k=v detail (migration 0033); Minion control changes record what was set, brokered writes name the calling session, and a refused brokered write is recorded as `denied` instead of `failed`.
+
 ## v0.20.6
 
 ### Fixed
