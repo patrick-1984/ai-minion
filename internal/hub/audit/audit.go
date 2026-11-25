@@ -155,12 +155,14 @@ type Entry struct {
 
 // Filter selects events for [Log.List]. The zero value selects everything.
 type Filter struct {
-	Actor  string    // exact match; empty matches any
-	Action string    // exact match; empty matches any
-	From   time.Time // events at or after From; zero means no lower bound
-	To     time.Time // events before To; zero means no upper bound
-	Cursor string    // NextCursor of the previous page; empty starts at the newest
-	Limit  int       // 0 means [ops.DefaultAuditListLimit]
+	Actor  string // exact match; empty matches any
+	Action string // exact match; empty matches any
+	// GrantID keeps only the events of this grant; empty matches any.
+	GrantID string
+	From    time.Time // events at or after From; zero means no lower bound
+	To      time.Time // events before To; zero means no upper bound
+	Cursor  string    // NextCursor of the previous page; empty starts at the newest
+	Limit   int       // 0 means [ops.DefaultAuditListLimit]
 }
 
 // Page is one page of events, newest first. NextCursor is empty on the last
@@ -438,12 +440,12 @@ func (l *Log) List(ctx context.Context, f Filter) (Page, error) {
 	if limit < 0 || limit > ops.MaxAuditListLimit {
 		return Page{}, &FieldError{"limit", fmt.Sprintf("must be between 0 and %d", ops.MaxAuditListLimit)}
 	}
-	for _, v := range []struct{ name, v string }{{"actor", f.Actor}, {"action", f.Action}} {
+	for _, v := range []struct{ name, v string }{{"actor", f.Actor}, {"action", f.Action}, {"grant_id", f.GrantID}} {
 		if utf8.RuneCountInString(v.v) > MaxFieldLen || !utf8.ValidString(v.v) {
 			return Page{}, &FieldError{v.name, fmt.Sprintf("must be valid UTF-8 of at most %d characters", MaxFieldLen)}
 		}
 	}
-	q := store.AuditQuery{Actor: f.Actor, Action: f.Action, Limit: limit + 1}
+	q := store.AuditQuery{Actor: f.Actor, Action: f.Action, GrantID: f.GrantID, Limit: limit + 1}
 	if !f.From.IsZero() {
 		ms := store.UnixMS(f.From)
 		q.From = &ms
@@ -494,7 +496,7 @@ func (l *Log) ListOp(ctx context.Context, args ops.AuditListArgs) (ops.AuditList
 	if err := args.Validate(); err != nil {
 		return ops.AuditListResult{}, err
 	}
-	f := Filter{Actor: args.Actor, Action: args.Action, Cursor: args.Cursor, Limit: args.Limit}
+	f := Filter{Actor: args.Actor, Action: args.Action, GrantID: args.GrantID, Cursor: args.Cursor, Limit: args.Limit}
 	if args.From != nil {
 		f.From = args.From.Time()
 	}

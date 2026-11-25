@@ -42,10 +42,12 @@ type AuditPos struct {
 type AuditQuery struct {
 	Actor  string
 	Action string
-	From   *int64    // include rows with ts >= From (unix ms)
-	To     *int64    // include rows with ts < To (unix ms)
-	After  *AuditPos // only rows strictly older than this position
-	Limit  int       // maximum rows; must be positive
+	// GrantID keeps only the rows of this grant (exact match).
+	GrantID string
+	From    *int64    // include rows with ts >= From (unix ms)
+	To      *int64    // include rows with ts < To (unix ms)
+	After   *AuditPos // only rows strictly older than this position
+	Limit   int       // maximum rows; must be positive
 }
 
 // InsertAudit writes one audit row. ex is the caller's open transaction, or
@@ -107,6 +109,11 @@ func auditSelect(q AuditQuery) (string, []any) {
 	if q.Action != "" {
 		where = append(where, "action = ?")
 		args = append(args, q.Action)
+	}
+	if q.GrantID != "" {
+		// Served by the partial index audit_events_grant_ts (0033).
+		where = append(where, "grant_id = ? AND grant_id <> ''")
+		args = append(args, q.GrantID)
 	}
 	if q.From != nil {
 		where = append(where, "ts >= ?")
