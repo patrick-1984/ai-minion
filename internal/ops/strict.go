@@ -26,6 +26,8 @@ var strictOps = map[string]struct{}{
 	OpGrantApprove:  {},
 	OpAccessMatrix:  {},
 	OpAccessExplain: {},
+	OpGrantBind:     {},
+	OpGrantHistory:  {},
 }
 
 // StrictArgs reports whether the operation name refuses unknown argument

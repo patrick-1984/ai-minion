@@ -68,7 +68,7 @@ func TestGrantBindAndUnbindWithConflicts(t *testing.T) {
 	}
 	g, err := k.st.PutSessionGrant(t.Context(), store.SessionGrantRow{SourceWorkerID: a1.ID, SourceSession: "agent",
 		TargetWorkerID: a2.ID, TargetSession: "build", Level: 3, Authority: store.GrantAuthorityOwner, GrantedBy: k.u1,
-		SourceOwnerID: k.u1, TargetOwnerID: k.u1}, 0)
+		SourceOwnerID: k.u1, TargetOwnerID: k.u1}, 0, store.GrantWrite{ActorID: k.u1})
 	if err != nil {
 		t.Fatal(err)
 	}
