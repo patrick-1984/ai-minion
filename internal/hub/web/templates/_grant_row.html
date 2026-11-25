@@ -1,0 +1,32 @@
+{{define "grant_row"}}{{if .Gone}}<tr id="grant-{{.ID}}" class="grant-gone"><td colspan="7">{{if .Error}}<span class="grant-status grant-error" role="alert">{{.Error}}</span> <span class="muted">This grant is no longer listed.</span>{{else}}<span class="grant-status" role="status">{{.Saved}}</span> <span class="muted">This grant no longer gives access.</span>{{end}}</td></tr>{{else}}<tr id="grant-{{.ID}}" data-filter="{{.FilterText}}"{{if .Between}} data-between="1"{{end}}{{if .Off}} data-off="1"{{end}}>
+  <td data-label="Source"><strong>{{.SourceSession}}</strong> @ {{.SourceWorker}}{{if .SourceOwner}} <span class="muted">{{.SourceOwner}}</span>{{end}}
+    {{if .Verified}}<span class="chip" title="Verified: this session proved its identity to the Hub.">Verified</span>{{else}}<span class="chip grant-claimed" title="Claimed: this session is named by its Worker. Any program running as that Worker's OS user can use this grant.">Claimed</span>{{end}}</td>
+  <td data-label="Target">{{if .TargetSession}}<strong>{{.TargetSession}}</strong> @ {{.TargetWorker}}{{else}}all shared sessions of {{.TargetWorker}}{{end}}{{if .TargetOwner}} <span class="muted">{{.TargetOwner}}</span>{{end}}</td>
+  <td data-label="Granted">{{.LevelLabel}}</td>
+  <td data-label="State"><span class="badge" data-tone="{{.StateTone}}">{{.StateLabel}}</span></td>
+  <td data-label="Decided by">{{.GrantedBy}} <span class="muted">{{.AuthorityLabel}}</span></td>
+  <td data-label="Until">{{.UntilText}}</td>
+  <td data-label="Actions" class="grant-actions"><div class="row-actions">
+    <form hx-post="/access/grants/set-level" hx-target="closest tr" hx-swap="outerHTML" hx-sync="closest tr:replace" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
+      <input type="hidden" name="source_worker_id" value="{{.SourceWorkerID}}"><input type="hidden" name="source_session" value="{{.SourceSession}}">
+      <input type="hidden" name="target_worker_id" value="{{.TargetWorkerID}}"><input type="hidden" name="target_session" value="{{.TargetSession}}">
+      <input type="hidden" name="expires_at" value="{{.ExpiresAtValue}}"><input type="hidden" name="note" value="{{.Note}}">
+      <label><span class="sr-only">Change level of {{.SourceSession}} to {{if .TargetSession}}{{.TargetSession}}{{else}}all shared sessions of {{.TargetWorker}}{{end}}</span>
+        <select name="level">
+          <option value="view"{{if eq .Level "view"}} selected{{end}}>View</option>
+          <option value="message" disabled title="available soon"{{if eq .Level "message"}} selected{{end}}>Message (available soon)</option>
+          <option value="control"{{if eq .Level "control"}} selected{{end}}>Control</option>
+        </select></label>
+      <button type="submit" class="btn btn-secondary">Save</button>
+    </form>
+    {{if and .IsSuspended .Admin}}<form hx-post="/access/grants/approve" hx-target="closest tr" hx-swap="outerHTML" hx-sync="closest tr:replace" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
+      <button type="submit" class="btn btn-secondary">Approve</button>
+    </form>{{end}}
+    <form hx-post="/access/grants/revoke" hx-target="closest tr" hx-swap="outerHTML" hx-sync="closest tr:replace" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
+      <button type="submit" class="btn btn-secondary">Revoke</button>
+    </form></div>
+    {{if .Error}}<p class="grant-status grant-error" role="alert">{{.Error}}</p>{{else if .Saved}}<p class="grant-status" role="status">{{.Saved}}</p>{{end}}</td>
+</tr>{{end}}{{end}}
