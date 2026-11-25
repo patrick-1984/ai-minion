@@ -1482,3 +1482,31 @@ details.fold > summary:focus-visible { outline-offset: 2px; }
   .access-matrix :is(thead th, tbody th, thead th.corner) { position: static; box-shadow: none; }
 }
 /* end access: matrix */
+
+
+/* access: grants */
+main:has(> .access-wide) { max-width: none; }
+.grant-tools { align-items: center; }
+.grant-tools .check { display: inline-flex; align-items: center; gap: 8px; }
+.grant-table td { vertical-align: top; }
+.grant-table .chip { margin-left: 4px; cursor: help; }
+.grant-claimed { background: var(--warning-subtle); color: var(--warning); }
+.grant-actions form { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.grant-status { margin: 6px 0 0; font-size: 12px; color: var(--positive); font-weight: 600; }
+.grant-status.grant-error { color: var(--danger); }
+.grant-gone td { background: var(--surface-subtle); }
+.grant-dialog { width: 100%; max-width: 40rem; }
+.grant-form fieldset.field { gap: 8px; }
+.grant-form select, .grant-form input[type="text"] { width: 100%; max-width: none; }
+.grant-level { display: flex; gap: 8px; align-items: baseline; font-weight: 400; }
+.grant-level-off { color: var(--muted); }
+.grant-warning { color: var(--warning); }
+/* end access: grants */
+
+/* access: view switch (one navigation entry, two pages) */
+.access-nav { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--border); }
+.access-nav a { display: inline-flex; align-items: center; min-height: var(--control-h); padding: 0 14px; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.access-nav a:hover { color: var(--text); background: var(--hover); }
+.access-nav a[aria-current="page"] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+@media print { .access-nav { display: none; } }
+/* end access: view switch */

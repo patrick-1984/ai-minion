@@ -1,0 +1,71 @@
+{{define "content"}}
+<div class="page-head access-wide"><div><h1>Access</h1>
+<p>Which session may reach which session on another Worker, and how far. <strong>View</strong> sees the screen; <strong>Control</strong> also types into it. A grant only works while the target Worker shares the session.</p></div></div>
+<nav class="access-nav" aria-label="Access views"><a href="/access">Who reaches what</a><a href="/access/grants" aria-current="page">Grants</a></nav>
+<div class="toolbar grant-tools">
+  <label class="field grow"><span class="label">Filter</span><input type="search" id="grant-filter" placeholder="Session, Worker or owner" autocomplete="off" spellcheck="false"></label>
+  <label class="check"><input type="checkbox" id="grant-only-between"> Between users</label>
+  <label class="check"><input type="checkbox" id="grant-only-off"> Suspended or expired</label>
+  <button type="button" class="btn" data-grant-add hidden>{{template "icon" "i-plus"}} Add grant</button>
+</div>
+<details class="panel grant-add" id="grant-add">
+  <summary><span class="summary-title">Add grant</span></summary>
+  <div class="details-body">{{template "grant_add_form" .Data}}</div>
+</details>
+<dialog id="grant-dialog" class="grant-dialog" aria-labelledby="grant-dialog-h"><h2 id="grant-dialog-h">Add grant</h2></dialog>
+<section class="panel" id="grant-panel" aria-labelledby="grants-h">
+  <h2 id="grants-h">Grants</h2>
+  {{if .Data.Rows}}<div class="table-wrap table-wrap-full" id="grant-list"><table class="rtable grant-table">
+    <thead><tr><th scope="col">Source</th><th scope="col">Target</th><th scope="col">Granted</th><th scope="col">State</th><th scope="col">Decided by</th><th scope="col">Until</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+    <tbody id="grant-rows" hx-get="/access/grants" hx-select="#grant-rows" hx-swap="outerHTML" hx-trigger="grants-changed from:body">{{range .Data.Rows}}{{template "grant_row" .}}{{end}}</tbody>
+  </table></div>
+  <p class="muted" id="grant-none" hidden>No grant matches the filter.</p>{{else}}<div class="empty-state" id="grant-list" hx-get="/access/grants" hx-select="#grant-panel" hx-target="#grant-panel" hx-swap="outerHTML" hx-trigger="grants-changed from:body">
+    <p>There is no grant yet: no session reaches a session on another Worker.</p>
+    <p><button type="button" class="btn" data-grant-add hidden>Add grant</button></p>
+  </div>{{end}}
+</section>
+<script src="/static/access-grants.js" defer></script>
+{{end}}
+
+{{define "grant_add_form"}}<form id="grant-add-form" class="grant-form" method="post" action="/access/grants/add" hx-post="/access/grants/add" hx-target="#grant-add-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+  {{if and .Sources .Targets}}
+  <fieldset class="field"><legend>1 Source</legend>
+    <label>Worker <select name="source_worker_id" required data-grant-worker="source_session">
+      <option value="">Choose a Worker</option>
+      {{range .Sources}}<option value="{{.ID}}">{{.Name}}{{if .Owner}} ({{.Owner}}){{end}}</option>{{end}}
+    </select></label>
+    <label>Session <select name="source_session" required>
+      <option value="">Choose a session</option>
+      {{range .Sources}}{{$w := .}}{{range .Sessions}}<option value="{{$w.ID}}|{{.}}" data-worker="{{$w.ID}}">{{.}} @ {{$w.Name}}</option>{{end}}{{end}}
+    </select></label>
+  </fieldset>
+  <fieldset class="field"><legend>2 Target</legend>
+    <label>Worker <select name="target_worker_id" required data-grant-worker="target_session">
+      <option value="">Choose a Worker</option>
+      {{range .Targets}}<option value="{{.ID}}">{{.Name}}{{if .Owner}} ({{.Owner}}){{end}}</option>{{end}}
+    </select></label>
+    <label>Session <select name="target_session">
+      <option value="">every shared session of this Worker</option>
+      {{range .Targets}}{{$w := .}}{{range .Sessions}}<option value="{{$w.ID}}|{{.}}" data-worker="{{$w.ID}}">{{.}} @ {{$w.Name}}</option>{{end}}{{end}}
+    </select></label>
+    <p class="help">"Every shared session" includes sessions that Worker shares later.</p>
+  </fieldset>
+  <fieldset class="field grant-levels"><legend>3 Level</legend>
+    <label class="grant-level"><input type="radio" name="level" value="view" checked> <span><strong>View</strong> See the screen.</span></label>
+    <label class="grant-level grant-level-off"><input type="radio" name="level" value="message" disabled> <span><strong>Message</strong> Also send prompts to AI agents there. The agent decides what to do with a prompt. <em>available soon</em></span></label>
+    <label class="grant-level"><input type="radio" name="level" value="control"> <span><strong>Control</strong> Also type into any pane, send keys and answer dialogs.</span></label>
+    <p class="help grant-warning">Control lets the source session type into the target. With "every shared session" it reaches every session that Worker shares, now and later.</p>
+  </fieldset>
+  <fieldset class="field"><legend>4 Until</legend>
+    <div class="row">
+      <label class="choice"><input type="radio" name="until" value="" checked> no end</label>
+      <label class="choice"><input type="radio" name="until" value="7"> 7 days</label>
+      <label class="choice"><input type="radio" name="until" value="30"> 30 days</label>
+    </div>
+  </fieldset>
+  <label class="field"><span class="label">Note</span><input type="text" name="note" maxlength="200" autocomplete="off"></label>
+  <div id="grant-add-result" aria-live="polite"></div>
+  <div class="form-actions"><button type="button" class="btn btn-secondary" data-grant-cancel hidden>Cancel</button><button type="submit" class="btn">Add grant</button></div>
+  {{else}}<p class="muted">No Worker with a shared session is online: there is nothing to grant from or to yet.</p>
+  <div class="form-actions"><button type="button" class="btn btn-secondary" data-grant-cancel hidden>Close</button></div>{{end}}
+</form>{{end}}

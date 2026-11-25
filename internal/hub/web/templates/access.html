@@ -1,6 +1,7 @@
 {{define "content"}}
 <div class="page-head access-wide"><div><h1>Who reaches what</h1>
 <p>Which sessions can control sessions on other Workers right now, and which layer blocks a pair that was accepted. This page changes nothing.</p></div></div>
+<nav class="access-nav" aria-label="Access views"><a href="/access" aria-current="page">Who reaches what</a><a href="/access/grants">Grants</a></nav>
 <section class="panel" aria-labelledby="access-matrix-h" id="access-matrix" hx-get="/access" hx-select="#access-matrix" hx-swap="outerHTML">
   <div class="matrix-head"><h2 id="access-matrix-h">Matrix</h2>
   <div class="matrix-tools"><span class="matrix-asof">As of {{.Data.AsOf}}</span>

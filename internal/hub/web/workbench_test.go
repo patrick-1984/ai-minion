@@ -80,7 +80,7 @@ func TestNoPageUsesInlineStylesOrAThirdPartyOrigin(t *testing.T) {
 	s, _ := listServer(t, Dashboard{Workers: []WorkerRow{wPrivate}, Sessions: []SessionRow{sAgent}}, Dashboard{})
 	external := regexp.MustCompile(`(?i)(src|href|action|srcset)\s*=\s*["']?(https?:)?//`)
 	for _, p := range []string{"/", "/workers", "/sessions", "/account", "/admin", "/admin/users", "/admin/settings", "/admin/oidc", "/admin/audit",
-		"/invitations", "/api-keys", "/access", "/workers/add", "/account/password", "/s/pi-1/minion-1", "/nope"} {
+		"/invitations", "/api-keys", "/access", "/access/grants", "/workers/add", "/account/password", "/s/pi-1/minion-1", "/nope"} {
 		rec := get(t, s, p, "X-Test-Session", "alice:admin")
 		body := rec.Body.String()
 		if strings.Contains(body, " style=") || strings.Contains(body, "<style") {
