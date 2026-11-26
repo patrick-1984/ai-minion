@@ -491,7 +491,10 @@ func TestConfine(t *testing.T) {
 	floor := NewFloor(FloorConfig{Home: h.home, StateDir: h.state})
 	for _, mode := range testModes(t) {
 		t.Run(mode.String(), func(t *testing.T) {
-			opts := RootOptions{Mode: mode, Floor: floor, Confine: files, ConfineLabel: "Minion files"}
+			// The configured Confine path may go through a system symlink.
+			alias := filepath.Join(tempDir(t), "alias")
+			mustSymlink(t, h.home, alias)
+			opts := RootOptions{Mode: mode, Floor: floor, Confine: filepath.Join(alias, "Minion files"), ConfineLabel: "Minion files"}
 			for _, c := range []struct{ pane, display string }{
 				{h.home, "Minion files"},
 				{h.app, "Minion files"},

@@ -376,14 +376,14 @@ func buildRoot(fd int, mode ResolveMode, opts RootOptions) (*Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.display = displayRoot(r.id, anc, names, opts)
+	r.display = displayRoot(r.id, anc, names, mode, opts)
 	return r, nil
 }
 
 // displayRoot builds the display root from the ancestry: relative to the
 // Confine folder or home when one of them is the root or an ancestor, else
 // the absolute path from the names. It is never used to open anything.
-func displayRoot(id Identity, anc []Identity, names []string, opts RootOptions) string {
+func displayRoot(id Identity, anc []Identity, names []string, mode ResolveMode, opts RootOptions) string {
 	label := func(base string, below []string) string {
 		if len(below) == 0 {
 			return base
@@ -414,7 +414,7 @@ func displayRoot(id Identity, anc []Identity, names []string, opts RootOptions) 
 		return 0, false
 	}
 	if opts.Confine != "" {
-		if i, ok := find(confineIdentity(opts.Confine)); ok && i <= len(names) {
+		if i, ok := find(confineIdentity(opts.Confine, mode)); ok && i <= len(names) {
 			l := opts.ConfineLabel
 			if l == "" {
 				l = filepath.Base(opts.Confine)
@@ -433,10 +433,10 @@ func displayRoot(id Identity, anc []Identity, names []string, opts RootOptions) 
 	return label("", names)
 }
 
-// confineIdentity returns the identity of the Confine folder opened without
-// following symlinks, or the zero Identity.
-func confineIdentity(p string) Identity {
-	fd, err := openAbsNoSymlinks(p, effectiveMode(ResolveDefault))
+// confineIdentity returns the identity of the Confine folder, or the zero
+// Identity.
+func confineIdentity(p string, mode ResolveMode) Identity {
+	fd, err := openConfine(p, mode)
 	if err != nil {
 		return Identity{}
 	}
@@ -448,13 +448,25 @@ func confineIdentity(p string) Identity {
 	return identityOfStat(&st)
 }
 
+// openConfine opens the Confine folder. Its path comes from the app's own
+// configuration (Android: noBackupFilesDir, whose system part may be a
+// symlink such as /data/user/0 -> /data/data), so it is made canonical first;
+// the canonical path is then opened without following any symlink.
+func openConfine(p string, mode ResolveMode) (int, error) {
+	canon, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return -1, rootUnknown("the confined folder cannot be found", err)
+	}
+	return openAbsNoSymlinks(canon, mode)
+}
+
 // applyConfine keeps the pane root fd when it is the Confine folder or below
 // it, and otherwise closes it and opens Confine itself.
 func applyConfine(fd int, mode ResolveMode, opts RootOptions) (int, error) {
 	if opts.Confine == "" {
 		return fd, nil
 	}
-	cfd, err := openAbsNoSymlinks(opts.Confine, mode)
+	cfd, err := openConfine(opts.Confine, mode)
 	if err != nil {
 		_ = unix.Close(fd)
 		return -1, rootUnknown("the confined folder cannot be opened", err)
