@@ -459,7 +459,7 @@ func (s *CallServer) serveCall(ctx context.Context, op string, c Call) {
 		return
 	}
 	defer s.release(c.Worker.ID)
-	s.serveRequest(ctx, c.Worker.ID, st, callRequest{Type: proto.TypeOpRequest, Op: op, RequestID: c.RequestID, Args: c.Args, APIKey: c.APIKey, SourceSession: c.SourceSession})
+	s.serveRequest(ctx, c.Worker.ID, st, callRequest{Type: proto.TypeOpRequest, Op: op, RequestID: c.RequestID, Args: c.Args, APIKey: c.APIKey, SourceSession: c.SourceSession, ClientRule: c.ClientRule})
 }
 
 // serveRequest serves a call stream whose op.request was read.
@@ -590,6 +590,9 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 		// session-control grant or the own-Worker rule did, and when the
 		// write was refused before the Router decided it).
 		ev.GrantID = strings.Join(c.grantIDs, ",")
+		// The standing allow rule the client named: a label it chose, so it
+		// is recorded as given (a valid id only) and decides nothing.
+		ev.Detail = proto.ClientRuleDetail(req.ClientRule)
 		s.auditEvent(ctx, ev)
 	}
 	if errors.Is(cause, errCallerGone) {

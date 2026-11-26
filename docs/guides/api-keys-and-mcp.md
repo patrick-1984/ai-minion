@@ -123,6 +123,8 @@ claude mcp add minion-rw -- minion mcp --allow-writes
 
 Think before you do. A tool that can type into a session can make that session's agent run commands, and a model that can type into sessions can be talked into doing it by anything it reads. Terminal screens are sanitised on the Worker before they reach the model, but their meaning is still the session's. Prefer a Hub key with only the actions and the Workers the model needs, over writes on a Worker that serves all your sessions. See [security](../security.md).
 
+The narrower way for Claude Code is a standing allow rule (`minion claude allow`): the write tools then exist only for the Workers and sessions you name, Claude Code runs them without a prompt, and the Hub audit names the rule. See [Using Minion from Claude Code without per-command prompts](claude-code-standing-allow.md).
+
 ### Sharing through MCP
 
 `share_get` and `share_set` name the Worker that runs them in `worker_id`, which is required. Through a Hub (the normal case) use the id that `workers_list` prints. Against a local Worker the id has to be that Worker's own id; **an id of another Worker is refused** and changes nothing, and nothing is ever redirected to the local Worker. A model with `--allow-writes` can change what the Hub may see of a Worker, including making all of its sessions visible, so grant `share_set` as carefully as typing. A Worker can forbid it for everyone: start it with `--share-lock` ([pairing and sharing](pairing.md#choosing-what-the-hub-sees)).

@@ -171,9 +171,29 @@ type callFrame struct {
 	Args          json.RawMessage `json:"args"`
 	APIKey        string          `json:"api_key,omitempty"`
 	SourceSession string          `json:"source_session,omitempty"`
+	// ClientRule is the client rule of the local request this call forwards
+	// ([WithClientRule]): an audit label for the Hub, never authorization.
+	ClientRule string `json:"client_rule,omitempty"`
 }
 
 type sourceSessionKey struct{}
+
+type clientRuleKey struct{}
+
+// WithClientRule returns a context whose calls name id as their client_rule
+// (proto.ClientRuleHeader). An id that is not a valid client rule names none.
+func WithClientRule(ctx context.Context, id string) context.Context {
+	if !proto.ValidClientRule(id) {
+		return ctx
+	}
+	return context.WithValue(ctx, clientRuleKey{}, id)
+}
+
+// clientRule returns the id of [WithClientRule], or "".
+func clientRule(ctx context.Context) string {
+	id, _ := ctx.Value(clientRuleKey{}).(string)
+	return id
+}
 
 // WithSourceSession returns a context whose calls ([CallClient.Do],
 // [CallClient.Stream]) name session as their source_session. An empty session
@@ -353,7 +373,7 @@ func (c *CallClient) request(ctx context.Context, op string, args any) (callFram
 		}
 		body = b
 	}
-	f := callFrame{Type: proto.TypeOpRequest, Op: op, RequestID: ops.NewUUIDv7(), Args: body, SourceSession: sourceSession(ctx)}
+	f := callFrame{Type: proto.TypeOpRequest, Op: op, RequestID: ops.NewUUIDv7(), Args: body, SourceSession: sourceSession(ctx), ClientRule: clientRule(ctx)}
 	if skip, _ := ctx.Value(noCallKey{}).(bool); skip {
 		f.SourceSession = ""
 	} else if c.cfg.Key != nil {

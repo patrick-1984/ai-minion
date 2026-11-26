@@ -850,6 +850,12 @@ func (d *Dispatcher) audit(ctx context.Context, c *Call, outcome string) {
 		Action: auditAction(c.Op), Target: ResourceLabel(c.Resource), Outcome: outcome,
 		Source: c.AuditSource, Detail: c.AuditDetail, GrantID: c.AuditGrantID,
 	}
+	if c.Op.Write && c.Request != nil {
+		// The standing allow rule a client named for this write
+		// (proto.ClientRuleHeader): an unverified label for the audit trail,
+		// recorded when it is a valid id and never read by a decision.
+		ev.Detail = proto.AppendDetail(ev.Detail, proto.ClientRuleDetail(c.Request.Header.Get(proto.ClientRuleHeader)))
+	}
 	if err := d.Audit.Record(context.WithoutCancel(ctx), ev); err != nil {
 		d.logger().Error("audit write failed", "action", c.Op.Name, "error", err)
 	}

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `minion claude allow | status | revoke`: an owner-approved, standing permission for Claude Code to use the Minion MCP tools on chosen Workers and sessions without a prompt per call. `allow` shows exactly what it adds, asks on the terminal (`--yes` for scripts), refuses to run inside Claude Code, and writes only the user settings (`~/.claude/settings.json`, with a backup) and the Minion allowlist (`~/.config/minion/claude-allow.json`). Guide: docs/guides/claude-code-standing-allow.md.
+- `minion mcp` enforces the allowlist: while it exists, a write to a target outside every rule is refused before it is sent ("not in a standing Minion allow rule; ask the owner or use the CLI"); the file is read on every write call, so a revoke applies at once. An allowlist with write ops exposes the write tools without `--allow-writes`. Without an allowlist nothing changes.
+- Audit: a write sent under a standing rule carries the rule id (`client_rule` in the local and call frames, the `Minion-Client-Rule` header on REST); the Hub records it in the audit detail as `client_rule=<id>`. It is an unverified label and never an authorization input; older Workers and Hubs ignore it.
+
 ## v0.22.0
 
 ### Added
