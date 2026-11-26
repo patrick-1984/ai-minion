@@ -281,7 +281,10 @@ func handleAddWorkerJoin(w http.ResponseWriter, r *http.Request, c OpCaller, _ p
 			"Set MINION_PUBLIC_URL on the Hub (for example https://hub.example.com:8443) and try again.")
 		return
 	}
-	args := ops.InvitationCreateArgs{Mode: ops.InvitationOneTime, TTL: ttl, Name: name}
+	// The one name is the key's label and the Worker's name: the Hub stores
+	// it for the Worker whatever name the Worker announces (a Worker given
+	// only the token, like the Android app, announces its own).
+	args := ops.InvitationCreateArgs{Mode: ops.InvitationOneTime, TTL: ttl, Name: name, WorkerName: name}
 	var res ops.InvitationCreateResult
 	if err := c.CallOp(r, ops.OpInvitationCreate, args, &res); err != nil {
 		writeResultError(w, failureText(err))

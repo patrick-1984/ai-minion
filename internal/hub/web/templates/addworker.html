@@ -55,7 +55,7 @@
     <div class="field">
       <label for="join-name">Name (optional)</label>
       <input type="text" id="join-name" name="name" autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxName}}" aria-describedby="join-name-help">
-      <span id="join-name-help" class="muted">The Worker's name and the name of the key in the list. Without a name, the Worker announces its host name.</span>
+      <span id="join-name-help" class="muted">The Worker's name and the name of the key in the list. The Hub gives the Worker this name even when it is set up with the token alone (the Android app). Without a name, the Worker announces its host name.</span>
     </div>
     <div class="field">
       <label for="join-ttl">Valid for{{if not .Data.AdminTTL}} (at most 1 week){{end}}</label>

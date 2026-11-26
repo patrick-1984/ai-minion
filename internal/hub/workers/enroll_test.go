@@ -807,3 +807,32 @@ func TestKeyOfADeactivatedCreatorIsRefused(t *testing.T) {
 	// A retry by the Worker that is already enrolled still gets its record.
 	h.enroll(key, "pi", secretFrame(secret)).welcome(t)
 }
+
+// A Worker that enrolls with a key that names the Worker gets that name in
+// welcome and in the Hub, whatever name it announces (an older Worker or the
+// Android app given only the key); the list of keys shows the name.
+func TestEnrollTakesTheWorkerNameOfTheInvitation(t *testing.T) {
+	h := newEnrollHub(t, nil)
+	inv := h.create("owner-1", false, ops.InvitationCreateArgs{Mode: ops.InvitationOneTime, TTL: ops.TTL1h, Name: "for the phone", WorkerName: "phone"})
+	if inv.WorkerName != "phone" {
+		t.Fatalf("create result = %+v", inv)
+	}
+	key := newKey(t)
+	w := h.enroll(key, "localhost", secretFrame(secretOf(t, inv.Key))).welcome(t)
+	if w.Name != "owner-1-phone" {
+		t.Fatalf("welcome name = %q, want owner-1-phone", w.Name)
+	}
+	row, err := h.st.WorkerByPub(context.Background(), key.Public())
+	if err != nil || row.Name != "owner-1-phone" {
+		t.Fatalf("stored worker = %+v, %v", row, err)
+	}
+	list, err := h.inv.List(context.Background(), InvitationCaller{UserID: "owner-1", Actor: "owner-1"}, false)
+	if err != nil || len(list.Invitations) != 1 || list.Invitations[0].WorkerName != "phone" {
+		t.Fatalf("list = %+v, %v", list, err)
+	}
+	// An invalid Worker name is refused when the key is made.
+	if _, err := h.inv.Create(context.Background(), InvitationCaller{UserID: "owner-1", Actor: "owner-1"},
+		ops.InvitationCreateArgs{Mode: ops.InvitationOneTime, TTL: ops.TTL1h, WorkerName: "has space"}); err == nil {
+		t.Error("an invalid worker_name was accepted")
+	}
+}

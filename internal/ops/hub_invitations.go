@@ -102,6 +102,13 @@ type InvitationCreateArgs struct {
 	TTL string `json:"ttl"`
 	// Name is a label for the list; optional.
 	Name string `json:"name,omitempty"`
+	// WorkerName is the name of the Worker that enrolls with the key; optional.
+	// The Hub stores it for the new Worker whatever name the Worker announces
+	// (a Worker given only the key announces its own name). It follows the
+	// rules of a Worker name (at most 64 bytes, no ':', whitespace or control
+	// characters) and gets the owner prefix like every Worker name; a second
+	// Worker of a reusable key gets the suffix -2, -3 and so on.
+	WorkerName string `json:"worker_name,omitempty"`
 	// Kind is private (the default) or infrastructure (admin only).
 	Kind string `json:"kind,omitempty"`
 	// MaxUses limits a reusable key to that many enrollments. A non-admin gets
@@ -132,6 +139,9 @@ func (a InvitationCreateArgs) Validate() error {
 	if !validInvitationName(a.Name) {
 		return invalid("name", "must be valid UTF-8 of at most %d characters without control characters", MaxInvitationNameLen)
 	}
+	if a.WorkerName != "" && !validWorkerName(a.WorkerName) {
+		return invalid("worker_name", "must be 1 to %d bytes without ':', whitespace or control characters", maxWorkerNameLen)
+	}
 	if k := a.EffectiveKind(); k != KindPrivate && k != KindInfrastructure {
 		return invalid("kind", "must be %s or %s", KindPrivate, KindInfrastructure)
 	}
@@ -160,14 +170,17 @@ func validInvitationName(s string) bool {
 // complete invitation key mnk_<hub fingerprint>.<secret>; it is shown only
 // here and cannot be read again. The Hub stores only the hash of its secret.
 type InvitationCreateResult struct {
-	ID        string     `json:"id"`
-	Key       string     `json:"key"`
-	Name      string     `json:"name"`
-	Mode      string     `json:"mode"`
-	Kind      string     `json:"kind"`
-	TTL       string     `json:"ttl"`
-	CreatedAt Timestamp  `json:"created_at"`
-	ExpiresAt *Timestamp `json:"expires_at"` // null for ttl unlimited
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Name string `json:"name"`
+	// WorkerName is the name the enrolled Worker gets; omitted when the
+	// Worker keeps its own.
+	WorkerName string     `json:"worker_name,omitempty"`
+	Mode       string     `json:"mode"`
+	Kind       string     `json:"kind"`
+	TTL        string     `json:"ttl"`
+	CreatedAt  Timestamp  `json:"created_at"`
+	ExpiresAt  *Timestamp `json:"expires_at"` // null for ttl unlimited
 	// MaxUses is the use limit of the new key: 1 for a one-time key, null
 	// for an admin's reusable key without a limit.
 	MaxUses *int `json:"max_uses"`
@@ -183,14 +196,17 @@ type InvitationListArgs struct {
 // InvitationInfo describes one invitation key. It never carries the secret or
 // its hash.
 type InvitationInfo struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Mode      string     `json:"mode"`
-	Kind      string     `json:"kind"`
-	TTL       string     `json:"ttl"`
-	CreatorID string     `json:"creator_id"`
-	CreatedAt Timestamp  `json:"created_at"`
-	ExpiresAt *Timestamp `json:"expires_at"` // null for ttl unlimited
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// WorkerName is the name a Worker enrolled with the key gets; omitted
+	// when the Worker keeps its own.
+	WorkerName string     `json:"worker_name,omitempty"`
+	Mode       string     `json:"mode"`
+	Kind       string     `json:"kind"`
+	TTL        string     `json:"ttl"`
+	CreatorID  string     `json:"creator_id"`
+	CreatedAt  Timestamp  `json:"created_at"`
+	ExpiresAt  *Timestamp `json:"expires_at"` // null for ttl unlimited
 	// Uses is the use counter; MaxUses is 1 for a one-time key and null for
 	// a reusable one.
 	Uses      int        `json:"uses"`

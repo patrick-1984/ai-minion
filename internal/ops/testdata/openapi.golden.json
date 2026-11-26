@@ -2418,6 +2418,9 @@
           },
           "ttl": {
             "type": "string"
+          },
+          "worker_name": {
+            "type": "string"
           }
         },
         "required": [
@@ -2455,6 +2458,9 @@
             "type": "string"
           },
           "ttl": {
+            "type": "string"
+          },
+          "worker_name": {
             "type": "string"
           }
         },
@@ -2518,6 +2524,9 @@
           },
           "uses": {
             "type": "integer"
+          },
+          "worker_name": {
+            "type": "string"
           }
         },
         "required": [

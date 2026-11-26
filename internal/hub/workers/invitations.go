@@ -185,7 +185,7 @@ func (s *Invitations) Create(ctx context.Context, caller InvitationCaller, a ops
 		now := s.now()
 		row = store.InvitationRow{
 			ID: store.NewID(), SecretHash: hash[:], Name: a.Name, Mode: a.Mode, Kind: kind, TTL: a.TTL,
-			CreatorID: caller.UserID, CreatedAt: store.UnixMS(now),
+			CreatorID: caller.UserID, CreatedAt: store.UnixMS(now), WorkerName: a.WorkerName,
 		}
 		if d, _ := ops.InvitationTTLDuration(a.TTL); d > 0 {
 			row.ExpiresAt = store.UnixMS(now.Add(d))
@@ -204,7 +204,7 @@ func (s *Invitations) Create(ctx context.Context, caller InvitationCaller, a ops
 	}
 	s.record(ctx, caller, AuditInvitationCreate, row.ID, auditSuccess)
 	res := ops.InvitationCreateResult{
-		ID: row.ID, Key: key.String(), Name: row.Name, Mode: row.Mode, Kind: row.Kind, TTL: row.TTL, MaxUses: maxUsesPtr(row.MaxUses),
+		ID: row.ID, Key: key.String(), Name: row.Name, WorkerName: row.WorkerName, Mode: row.Mode, Kind: row.Kind, TTL: row.TTL, MaxUses: maxUsesPtr(row.MaxUses),
 		CreatedAt: ops.Timestamp(store.FromUnixMS(row.CreatedAt)),
 	}
 	res.ExpiresAt = optTimestamp(row.ExpiresAt)
@@ -307,7 +307,7 @@ func (s *Invitations) record(ctx context.Context, c InvitationCaller, action, ta
 
 func invitationInfo(r store.InvitationRow, nowMS int64) ops.InvitationInfo {
 	info := ops.InvitationInfo{
-		ID: r.ID, Name: r.Name, Mode: r.Mode, Kind: r.Kind, TTL: r.TTL, CreatorID: r.CreatorID,
+		ID: r.ID, Name: r.Name, WorkerName: r.WorkerName, Mode: r.Mode, Kind: r.Kind, TTL: r.TTL, CreatorID: r.CreatorID,
 		CreatedAt: ops.Timestamp(store.FromUnixMS(r.CreatedAt)), ExpiresAt: optTimestamp(r.ExpiresAt),
 		Uses: r.Uses, Revoked: r.Revoked, RevokedAt: optTimestamp(r.RevokedAt), Notice: r.Notice,
 	}
