@@ -213,6 +213,53 @@ type EventHub struct {
 	sharesLoadErr error
 	lastSeq       uint64
 	log           *slog.Logger
+
+	// removed is when the Hub observed each (Worker, session name) go away
+	// (a session_removed, or a snapshot that no longer lists a session it
+	// listed), for the dispatch fence of name-only grants
+	// ([EventHub.RemovedAt]); kept for removalFenceTTL.
+	removed     map[sessionKey]int64
+	removedSwep time.Time
+}
+
+// removalFenceTTL is how long the Hub remembers an observed session removal.
+// The session purge deletes the grants made before it well within that time;
+// until then the record keeps those grants from reaching a replacement that
+// took the name.
+const removalFenceTTL = 15 * time.Minute
+
+type sessionKey struct{ worker, session string }
+
+// noteRemovedLocked records that the session was observed gone at ev's time.
+func (h *EventHub) noteRemovedLocked(workerID, session string, at ops.Timestamp) {
+	if h.removed == nil {
+		h.removed = map[sessionKey]int64{}
+	}
+	ms := at.Time().UnixMilli()
+	if k := (sessionKey{workerID, session}); ms > h.removed[k] {
+		h.removed[k] = ms
+	}
+	if now := h.now(); now.Sub(h.removedSwep) >= time.Minute {
+		h.removedSwep = now
+		for k, t := range h.removed {
+			if now.Sub(time.UnixMilli(t)) > removalFenceTTL {
+				delete(h.removed, k)
+			}
+		}
+	}
+}
+
+// RemovedAt returns when the Hub last observed the session of the Worker go
+// away (unix ms), within the last removalFenceTTL; ok is false when it
+// observed no removal in that time.
+func (h *EventHub) RemovedAt(workerID, session string) (int64, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	t, ok := h.removed[sessionKey{workerID, session}]
+	if !ok || h.now().Sub(time.UnixMilli(t)) > removalFenceTTL {
+		return 0, false
+	}
+	return t, true
 }
 
 type workerState struct {
@@ -299,6 +346,9 @@ func (h *EventHub) dropLocked(s *Subscription, err error) {
 
 // publishLocked sends ev to every subscription without blocking.
 func (h *EventHub) publishLocked(ev Event) {
+	if ev.Type == EventSessionRemoved && ev.Session != "" {
+		h.noteRemovedLocked(ev.WorkerID, ev.Session, ev.Time)
+	}
 	for s := range h.subs {
 		select {
 		case s.ch <- ev:
@@ -618,10 +668,15 @@ func (f *Feed) SnapshotShare(seq uint64, sessions []SessionState, share *ops.Sha
 			delete(next, n)
 		}
 	}
+	ev := h.eventLocked(w, EventWorkerResynced, "")
+	for n := range w.sessions {
+		if _, kept := next[n]; !kept {
+			h.noteRemovedLocked(f.id, n, ev.Time) // gone in this snapshot
+		}
+	}
 	w.sessions = next // atomic: readers hold the same lock
 	w.updated, w.synced = h.now(), true
 	f.started, f.seq = true, 0
-	ev := h.eventLocked(w, EventWorkerResynced, "")
 	ev.snapshot = make([]string, 0, len(next))
 	for n := range next {
 		ev.snapshot = append(ev.snapshot, n)

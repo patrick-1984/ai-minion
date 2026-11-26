@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
@@ -298,6 +299,16 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		return nil, errMasterDenied
 	}
 	req.Principal = principal
+	if op == ops.OpSendText && len(auth.direct) != 0 {
+		// The bound prompt was validated as agent-only, submitted and
+		// unforced: a terminal that holds message but not operate on the
+		// target by a verified Message grant sends it as a prompt (D3).
+		only, err := m.router.HoldsMessageOnly(ctx, principal, req.WorkerID, req.Session)
+		if err != nil {
+			return nil, err
+		}
+		req.PromptOnly = only
+	}
 	qctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	pending := &masterPending{incarnation: c.Master.IncarnationID, cancel: cancel}
@@ -317,7 +328,18 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 	req.admit = func(ctx context.Context, on Online) error {
 		return m.admitMaster(ctx, c, pending, on, req.Session, auth)
 	}
+	var withdrawn atomic.Bool
+	if op != ops.OpSendText && len(auth.direct) != 0 {
+		// An admitted read leaves the pending set: a verified grant that
+		// stops authorizing it ends it within the re-check interval (D5),
+		// not when a stalled target answers.
+		stop := m.recheckRead(qctx, c, req, func() { withdrawn.Store(true); cancel() })
+		defer stop()
+	}
 	result, err := m.router.Call(qctx, req)
+	if withdrawn.Load() {
+		return nil, errMasterDenied
+	}
 	if op == ops.OpSendText {
 		m.recordMasterWrite(ctx, c.Worker.ID, lease.row.SessionName, req, result, err)
 		if errors.Is(err, context.Canceled) {
@@ -349,6 +371,59 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		return nil, errMasterDenied
 	}
 	return result, nil
+}
+
+// masterReadRecheck is how often a running verified read is re-checked; D5
+// ends a call within 30 s of the change that withdraws it.
+const masterReadRecheck = DefaultReauthInterval
+
+// recheckRead re-checks the authority behind a running read every interval
+// of the MasterControl (masterReadRecheck by default) and calls withdraw when
+// the lease or the grants no longer reach the destination of req. One failing
+// re-check (a store error) is passed over; the second in a row withdraws the
+// call. The returned stop ends the re-checks and waits for them.
+func (m *MasterControl) recheckRead(ctx context.Context, c Call, req CallRequest, withdraw func()) (stop func()) {
+	every := m.readRecheck
+	if every <= 0 {
+		every = masterReadRecheck
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		failures := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			fresh, _, err := m.masterAuthority(ctx, c)
+			if ctx.Err() != nil {
+				return
+			}
+			reached := err == nil && (req.Session == "" && len(fresh.reach[req.WorkerID]) != 0 ||
+				req.Session != "" && fresh.reach[req.WorkerID][req.Session])
+			if reached {
+				failures = 0
+				continue
+			}
+			if err == nil || errors.Is(err, errMasterDenied) {
+				withdraw()
+				return
+			}
+			if failures++; failures >= 2 {
+				withdraw()
+				return
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func masterRoute(requestID, op string, raw json.RawMessage) (CallRequest, error) {

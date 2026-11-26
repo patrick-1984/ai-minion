@@ -132,6 +132,14 @@ type GrantStore interface {
 
 var _ GrantStore = (*store.Store)(nil)
 
+// SessionRemovals reports when the Hub last observed a session go away (unix
+// ms); *EventHub implements it.
+type SessionRemovals interface {
+	RemovedAt(workerID, session string) (int64, bool)
+}
+
+var _ SessionRemovals = (*EventHub)(nil)
+
 // TargetResolver resolves the human form of a target; *Router implements it.
 type TargetResolver interface {
 	Resolve(ctx context.Context, p authz.Principal, target string, all bool) (ops.Target, error)
@@ -197,6 +205,12 @@ type CallServerConfig struct {
 	Auditor Auditor
 	// Grants reads session-control grants. Nil means no session has one.
 	Grants GrantStore
+	// Removals tells when the Hub observed a session go away (*EventHub
+	// implements it): a name-only grant created before the observed removal
+	// of the session it names as source or target is left out of every
+	// decision and dispatch fence until the session purge deletes it, so it
+	// never reaches a new terminal that took the name. Nil fences nothing.
+	Removals SessionRemovals
 	// GrantUse is told the direct grants that authorized a brokered call
 	// that was allowed and answered (usage count and last use of a grant).
 	// Nil records nothing.
@@ -681,12 +695,35 @@ func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (
 }
 
 // lookupDirect returns the direct session grants of the session source on the
-// Worker (by name), nil when it has none.
+// Worker (by name), nil when it has none. A grant created before the Hub
+// observed the removal of a session it names (the source, or a named target)
+// is left out: the purge of that removal deletes it, and until then it must
+// not reach a terminal that took the name since.
 func (s *CallServer) lookupDirect(ctx context.Context, workerID, source string) ([]store.SessionGrantRow, error) {
 	if source == "" || s.cfg.Grants == nil {
 		return nil, nil
 	}
-	return s.cfg.Grants.SessionGrantsFor(ctx, workerID, source)
+	rows, err := s.cfg.Grants.SessionGrantsFor(ctx, workerID, source)
+	if err != nil || s.cfg.Removals == nil {
+		return rows, err
+	}
+	var kept []store.SessionGrantRow
+	for _, g := range rows {
+		if s.removedSince(g.SourceWorkerID, g.SourceSession, g.CreatedAt) ||
+			g.TargetSession != "" && s.removedSince(g.TargetWorkerID, g.TargetSession, g.CreatedAt) {
+			continue
+		}
+		kept = append(kept, g)
+	}
+	return kept, nil
+}
+
+// removedSince reports whether the Hub observed the named session go away
+// after created (unix ms), as the purge judges it: a grant created strictly
+// before the removal is purged by it.
+func (s *CallServer) removedSince(workerID, session string, created int64) bool {
+	at, ok := s.cfg.Removals.RemovedAt(workerID, session)
+	return ok && created < at
 }
 
 // grantKey is the value the re-check of a running call compares: the stored

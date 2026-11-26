@@ -2,6 +2,8 @@ package workers
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -133,5 +135,87 @@ func TestMasterWithVerifiedGrantKeepsBothAuthorities(t *testing.T) {
 	// The nomination reaches nothing (no accept): the grant admits.
 	if err := m.admitMaster(ctx, r.call(ops.OpSessionSnapshot), &masterPending{}, r.backend.on, "build", auth); err != nil {
 		t.Fatalf("final fence = %v", err)
+	}
+}
+
+// endNomination leaves the rig's terminal a candidate whose only authority is
+// what verified grants give it.
+func (r *masterRig) endNomination(t *testing.T) {
+	t.Helper()
+	gen := r.lane.leases["first"].binding.Generation
+	if _, err := r.master.SetBoundMaster(t.Context(), r.source, r.change(gen, false), "owner"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifiedMessageGrantSendsARoutedPrompt(t *testing.T) {
+	r := newMasterRig(t)
+	m := r.master
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	r.endNomination(t)
+	r.verifiedGrant(t, "first") // Message: read and message, no operate
+	r.backend.on.Features = []string{proto.FeatureSendTextAgentOnly}
+	close(r.backend.goOn)
+	close(r.stream.release)
+
+	c := r.call(ops.OpSendText)
+	c.Master.Arguments, _ = json.Marshal(ops.SendTextArgs{WriteArgs: ops.WriteArgs{RequestID: c.RequestID},
+		Target: ops.Target{WorkerID: r.target.ID, SessionName: "build"}, Text: "Run the tests", Submit: true})
+	out, err := m.runMasterCall(ctx, c)
+	if w, ok := out.(ops.WriteResult); err != nil || !ok || w.Outcome != ops.OutcomeDelivered {
+		t.Fatalf("a prompt under a verified Message grant = %+v, %v", out, err)
+	}
+	request := r.stream.request(t)
+	var args ops.SendTextArgs
+	if err := json.Unmarshal(request.Args, &args); err != nil || !args.AgentOnly || !args.Submit || args.Force ||
+		request.RequestID != c.RequestID {
+		t.Fatalf("the routed prompt lost its guard: %+v, %+v", request, args)
+	}
+}
+
+func TestVerifiedReadEndsWhenItsGrantIsRevokedWhileTheTargetStalls(t *testing.T) {
+	r := newMasterRig(t)
+	m := r.master
+	m.readRecheck = 20 * time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	r.endNomination(t)
+	g := r.verifiedGrant(t, "first")
+	stalled := newFakeStream()
+	stalled.hang = true // the target never answers
+	r.backend.stream = stalled
+	close(r.backend.goOn)
+
+	c := r.call(ops.OpSessionSnapshot)
+	c.Master.Arguments, _ = json.Marshal(ops.SessionSnapshotArgs{Target: ops.Target{WorkerID: r.target.ID, SessionName: "build"}})
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.runMasterCall(ctx, c)
+		done <- err
+	}()
+	select {
+	case <-r.backend.opened:
+	case err := <-done:
+		t.Fatalf("the read ended before its dispatch: %v", err)
+	case <-ctx.Done():
+		t.Fatal("the read was not dispatched")
+	}
+	// Admitted and waiting: several re-checks pass while the grant stands.
+	select {
+	case err := <-done:
+		t.Fatalf("an authorized read was withdrawn: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := m.db.DeleteSessionGrant(ctx, g.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, errMasterDenied) || !stalled.wasReset() {
+			t.Fatalf("revoked read ended with %v, reset=%v", err, stalled.wasReset())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("an admitted read outlived the revoke of its only grant")
 	}
 }

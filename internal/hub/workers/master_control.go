@@ -25,6 +25,9 @@ type MasterControl struct {
 	router   *Router
 	auditor  *audit.Log
 	now      func() time.Time
+	// readRecheck is the re-check interval of a running verified read;
+	// zero means masterReadRecheck.
+	readRecheck time.Duration
 
 	mu    sync.Mutex
 	lanes map[string]*masterLane

@@ -42,7 +42,9 @@ type AuditPos struct {
 type AuditQuery struct {
 	Actor  string
 	Action string
-	// GrantID keeps only the rows of this grant (exact match).
+	// GrantID keeps only the rows of this grant: rows whose grant_id is this
+	// id, or names it as one complete member of a comma-separated list (a
+	// brokered write that several overlapping grants authorized together).
 	GrantID string
 	From    *int64    // include rows with ts >= From (unix ms)
 	To      *int64    // include rows with ts < To (unix ms)
@@ -111,8 +113,11 @@ func auditSelect(q AuditQuery) (string, []any) {
 		args = append(args, q.Action)
 	}
 	if q.GrantID != "" {
-		// Served by the partial index audit_events_grant_ts (0033).
-		where = append(where, "grant_id = ? AND grant_id <> ''")
+		// One complete id among the comma-separated ids of the row (a
+		// write that overlapping grants authorized names each of them), never
+		// a part of an id. The partial index audit_events_grant_ts (0033)
+		// still bounds the scan to rows that name a grant.
+		where = append(where, "grant_id <> '' AND instr(',' || grant_id || ',', ',' || ? || ',') > 0")
 		args = append(args, q.GrantID)
 	}
 	if q.From != nil {

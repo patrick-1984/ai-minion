@@ -914,3 +914,116 @@ func TestCallStreamLostReplyIsNotASuccess(t *testing.T) {
 		t.Fatalf("served %q", rec.served)
 	}
 }
+
+// A name-only grant made before the Hub observed the removal of a session it
+// names does not reach the terminal that took the name afterwards, while the
+// session purge has not run yet (its consumer is paused: nothing deletes the
+// grant here). A grant made after the removal does, and a removal observed
+// between the decision and the dispatch refuses the dispatch.
+func TestObservedRemovalFencesOlderNameOnlyGrantsBeforeThePurge(t *testing.T) {
+	var clock sync.Mutex
+	nowMS := int64(10_000)
+	setNow := func(ms int64) { clock.Lock(); nowMS = ms; clock.Unlock() }
+	hub := NewEventHub(EventHubOptions{Now: func() time.Time { clock.Lock(); defer clock.Unlock(); return time.UnixMilli(nowMS) }})
+	feeds := map[string]*Feed{}
+	for id, name := range map[string]string{wAlicePi1.ID: "agent", wAlicePi2.ID: "build"} {
+		f, err := hub.Connect(id, id).NewFeed()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Snapshot(0, []SessionState{{Name: name, Kind: "agent:claude"}}); err != nil {
+			t.Fatal(err)
+		}
+		feeds[id] = f
+	}
+	r := newSCRig(t)
+	r.cs.cfg.Removals = hub
+	old := aliceGrant(authz.LevelControl)
+	old.CreatedAt = 9_000
+	r.grants.setDirect(wAlicePi1.ID, "agent", old)
+	send := func() ([]json.RawMessage, *fakeStream) {
+		return r.call(t, wAlicePi1.ID, scRequest(ops.OpSendText, scArgs(ops.OpSendText, grantedBuild), "", "agent"),
+			ops.WriteResult{Outcome: ops.OutcomeDelivered})
+	}
+	frames, _ := send()
+	var wr ops.WriteResult
+	resultOf(t, frames, &wr)
+
+	// The target terminal closes and a new one takes its name.
+	setNow(11_000)
+	if err := feeds[wAlicePi2.ID].Apply(Change{Seq: 1, Event: EventSessionRemoved, Session: SessionState{Name: "build"}}); err != nil {
+		t.Fatal(err)
+	}
+	setNow(12_000)
+	if err := feeds[wAlicePi2.ID].Apply(Change{Seq: 2, Event: EventSessionAdded, Session: SessionState{Name: "build", Kind: "agent:claude"}}); err != nil {
+		t.Fatal(err)
+	}
+	opens := r.be.openCount()
+	frames, _ = send()
+	if c := errCodeOf(t, frames); c != proto.CodeForbidden {
+		t.Fatalf("the replacement was reached by a grant made for the closed terminal: %q", c)
+	}
+	if r.be.openCount() != opens {
+		t.Fatal("a fenced grant reached a Worker")
+	}
+
+	// A grant made after the removal names the new terminal.
+	fresh := aliceGrant(authz.LevelControl)
+	fresh.ID, fresh.CreatedAt = "g-2", 11_500
+	r.grants.setDirect(wAlicePi1.ID, "agent", old, fresh)
+	frames, _ = send()
+	resultOf(t, frames, &wr)
+	if all := r.audit.all(); len(all) == 0 || all[len(all)-1].GrantID != "g-2" {
+		t.Fatalf("the write was not authorized by the fresh grant alone: %+v", all)
+	}
+
+	// The source session is observed gone after the decision: the dispatch
+	// fence refuses and nothing reaches the target.
+	r.be.beforeOpen = func(*fakeBackend) {
+		setNow(13_000)
+		if err := feeds[wAlicePi1.ID].Apply(Change{Seq: 1, Event: EventSessionRemoved, Session: SessionState{Name: "agent"}}); err != nil {
+			t.Error(err)
+		}
+	}
+	frames, sent := send()
+	if c := errCodeOf(t, frames); c != proto.CodeForbidden {
+		t.Fatalf("a dispatch after the source was observed gone: %q", c)
+	}
+	sent.mu.Lock()
+	defer sent.mu.Unlock()
+	if len(sent.written) != 0 {
+		t.Fatalf("%d frames reached the Worker", len(sent.written))
+	}
+}
+
+// A snapshot that no longer lists a session is an observed removal too, and
+// the record ends after removalFenceTTL.
+func TestEventHubRemovedAtFollowsSnapshotsAndExpires(t *testing.T) {
+	now := time.UnixMilli(50_000)
+	hub := NewEventHub(EventHubOptions{Now: func() time.Time { return now }})
+	f, err := hub.Connect("w", "w").NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Snapshot(0, []SessionState{{Name: "a"}, {Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hub.RemovedAt("w", "a"); ok {
+		t.Fatal("a listed session counts as removed")
+	}
+	f, _ = hub.Connect("w", "w").NewFeed()
+	now = now.Add(time.Second)
+	if err := f.Snapshot(0, []SessionState{{Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := hub.RemovedAt("w", "a"); !ok || at != now.UnixMilli() {
+		t.Fatalf("removed at %d, %v", at, ok)
+	}
+	if _, ok := hub.RemovedAt("w", "b"); ok {
+		t.Fatal("a session the snapshot lists counts as removed")
+	}
+	now = now.Add(removalFenceTTL + time.Second)
+	if _, ok := hub.RemovedAt("w", "a"); ok {
+		t.Fatal("the removal record outlived its time bound")
+	}
+}

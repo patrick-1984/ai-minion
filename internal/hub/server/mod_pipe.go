@@ -165,6 +165,7 @@ func initPipe(ctx context.Context, env *Env) error {
 		Authz:     az,
 		Auditor:   alog,
 		Grants:    st,
+		Removals:  events,
 		GrantUse:  grantUse,
 		Logger:    log,
 	})
