@@ -1062,7 +1062,7 @@ func routedTargetWorker(op string, args []byte, workerID string) string {
 var userControlOps = map[string]bool{
 	ops.OpSessionsList: true, ops.OpSessionSnapshot: true, ops.OpSessionCapture: true,
 	ops.OpSendText: true, ops.OpSendKeys: true, ops.OpSetTask: true, ops.OpAnswer: true,
-	ops.OpSessionCreate: true, ops.OpPipeSend: true,
+	ops.OpSessionCreate: true, ops.OpPipeSend: true, ops.OpSessionKeepSet: true,
 }
 
 // checkUserManaged refuses a person or an API key on the sessions of a Worker

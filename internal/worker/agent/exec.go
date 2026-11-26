@@ -134,6 +134,10 @@ type Executor struct {
 	memMu sync.Mutex
 	mem   map[string]memEntry
 
+	// keep is the keep list (session_keep_set); nil until the keep module
+	// attaches it.
+	keep atomic.Pointer[KeepService]
+
 	// localWrites is told about every write of a local caller that this
 	// executor really ran (see [Executor.OnLocalWrite]); nil when unset.
 	localWrites atomic.Pointer[func(LocalWrite)]

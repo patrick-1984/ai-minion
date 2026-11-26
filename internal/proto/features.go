@@ -77,6 +77,13 @@ const (
 	// still resolves a target by its name and refuses nothing for an instance.
 	// Announced only for a host that computes the ids.
 	FeatureSessionInstanceIDListV1 = "session.instance_id.list.v1"
+	// FeatureSessionKeepV1: the Worker serves session_keep_set, reports keep
+	// on the session rows of sessions_list (absent then means "not kept"),
+	// saves the layout of each kept session and recreates a missing kept
+	// session when it starts again. Announced only for a terminal host that
+	// can save and rebuild a session layout (tmux, also the Android managed
+	// tmux; not psmux or ConPTY on Windows).
+	FeatureSessionKeepV1 = "session.keep.v1"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

@@ -106,8 +106,13 @@ type SessionInfo struct {
 	// caller. Additive field: a Worker that predates it never reports it, and
 	// a Worker that announces proto.FeatureSessionInstanceIDListV1 leaves it out for
 	// a session whose identity its host could not read.
-	InstanceID string    `json:"instance_id,omitempty"`
-	Pane       *PaneInfo `json:"pane"` // the active pane, null when none
+	InstanceID string `json:"instance_id,omitempty"`
+	// Keep is true when the Worker keeps the session across restarts (see
+	// OpSessionKeepSet). Additive field: absent means not kept, or a Worker
+	// that predates it (one that serves it announces
+	// proto.FeatureSessionKeepV1).
+	Keep bool      `json:"keep,omitempty"`
+	Pane *PaneInfo `json:"pane"` // the active pane, null when none
 }
 
 // SessionsListResult is the result of sessions_list. Sessions the Worker does

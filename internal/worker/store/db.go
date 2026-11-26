@@ -127,6 +127,10 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureKeptSessions(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db, dir: abs, clock: cfg.clock}, nil
 }
 

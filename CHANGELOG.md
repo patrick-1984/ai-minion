@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Kept sessions** (Worker part). A session can be marked as kept with the new Worker operation `session_keep_set` (`target`, `keep`: true or false; a write with `request_id`, needs `operate` on the session like `set_task`, audited locally, refused for people and API keys on a Worker that is not user-managed). The Worker remembers kept sessions in its own database (table `kept_sessions`, created outside the numbered migrations like `op_result_callers`, so a self-update rollback keeps it and an older binary ignores it) and saves the layout of each one every minute and within 15 seconds of a change: windows, pane splits (`#{window_layout}`), each pane's folder, and the agent tool in each pane (Claude Code or Codex) with its conversation id, found the way the workspace `wb-tmux-state` does (Claude Code's session registry by pid and process start, a `--resume` argument, the Codex rollout file the process has open). No screen content, keys or environment values are saved.
+- When the Worker starts (after a reboot, a service restart, or on Android after the app service started its tmux again, also on boot with **Start Minion automatically when this device turns on**), every kept session that does not exist is recreated detached with its windows, splits and folders (a folder that is gone falls back to the home folder), and each tool resumes its conversation: `claude --resume <id>` (or `claude --continue` when the id is unknown), `codex resume <id>` (or `codex resume --last`), then a login shell; other panes start the shell. An existing session with a kept name is never killed or changed. Restores are in the local audit (`session_restore`) and reach the Hub as ordinary `session_added` events.
+- The keep flag follows a rename of the same terminal session (by its instance id). A kept session that ends while the Worker runs keeps its flag and is recreated only at the next Worker start; `keep=false` forgets it (also when the session is gone).
+- `sessions_list` reports `"keep": true` on kept sessions; Workers that serve the operation announce the feature `session.keep.v1` (tmux hosts including the Android managed tmux; not psmux or ConPTY on Windows). Older Workers answer `unsupported_op`. Needs a Worker update; the Hub UI checkbox follows separately.
+
 ## v0.23.0
 
 ### Added

@@ -60,6 +60,9 @@ func (e *Executor) Features() []string {
 	if term.ReportsInstances(e.host) {
 		out = append(out, proto.FeatureSessionInstanceIDListV1)
 	}
+	if e.keepService() != nil {
+		out = append(out, proto.FeatureSessionKeepV1)
+	}
 	return proto.NormaliseFeatures(out)
 }
 

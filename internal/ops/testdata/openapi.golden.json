@@ -3498,6 +3498,9 @@
           "instance_id": {
             "type": "string"
           },
+          "keep": {
+            "type": "boolean"
+          },
           "name": {
             "type": "string"
           },
@@ -3519,6 +3522,29 @@
           "created",
           "name",
           "windows"
+        ],
+        "type": "object"
+      },
+      "SessionKeepSetArgs": {
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "keep": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          }
+        },
+        "required": [
+          "force",
+          "keep",
+          "request_id",
+          "target"
         ],
         "type": "object"
       },
@@ -13172,6 +13198,91 @@
           {
             "class": "KEEP",
             "name": "session_name_free",
+            "reads": "session.name"
+          }
+        ],
+        "x-minion-mutates": false,
+        "x-minion-scope": "worker",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-write": true
+      }
+    },
+    "/api/v1/ops/session_keep_set": {
+      "post": {
+        "operationId": "session_keep_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionKeepSetArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WriteResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Keep a session across Worker restarts (keep=true) or forget it (keep=false).",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [
+          {
+            "class": "KEEP",
+            "name": "session_exists",
             "reads": "session.name"
           }
         ],
