@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.21.0
+
 ### Added
 
 - **Session grants.** One session may reach a session on another Worker (or every shared session of that Worker, future ones included) at a level: **View** (`workers_list`, `sessions_list`, `session_snapshot`, `session_capture`), **Message** (also `send_text` as a submitted prompt to an AI agent pane: the Hub makes the send agent-only, requires `submit`, refuses `force`, and answers `unsupported_op` when the target Worker does not announce the agent-only send) or **Control** (also `send_text` to any pane, `send_keys`, `set_task`, `answer`). The owner of both Workers decides between their own Workers, an administrator between users. Creating, changing and approving a grant need a signed-in browser session: an API key, a Worker, a session and an act-as session are refused. A grant between two sessions of one Worker is refused. Master sessions and "accepts control from" work as before, and with no grants the Hub decides as v0.20.6 did. Hub-only: no Worker update is needed (migration 0032, table `session_grant`).
