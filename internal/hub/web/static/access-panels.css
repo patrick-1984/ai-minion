@@ -1,0 +1,17 @@
+/* The read-only Access panels: the view "Access" of the session page and the
+   panel "Access" of the Worker page. Tokens of minion.css only. */
+
+.access-pane h3, .access-worker h3 { margin: 16px 0 8px; font-size: 13px; color: var(--muted); }
+.access-pane h3:first-of-type, .access-worker-part:first-child h3 { margin-top: 0; }
+
+.access-rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.access-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; }
+.access-row + .access-row { border-top: 1px solid var(--border); }
+.access-row-who { overflow-wrap: anywhere; }
+.access-row-marks, .access-row-links { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.access-pane-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 16px 0 0; }
+
+.access-worker { display: grid; gap: 16px 32px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); }
+.access-worker p { margin: 0 0 8px; }
+.access-accepts { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.access-accepts li { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }

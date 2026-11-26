@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,15 +37,15 @@ type ControlWorkerBase struct {
 // MinionControlStore is what the handlers need; *store.Store implements it.
 type MinionControlStore interface {
 	ListMasterSessions(ctx context.Context) ([]store.MasterRow, error)
-	PutMasterSessionIfOwner(ctx context.Context, m store.MasterRow, owner string) error
-	DeleteMasterSessionIfOwner(ctx context.Context, workerID, session, owner string) (bool, error)
-	BoundMasterActive(ctx context.Context, workerID, session string) (bool, error)
-	RevokeAcceptIfOwners(ctx context.Context, a store.AcceptRow, targetOwner, sourceOwner string) (bool, error)
+	// The setters check the owners the change was decided for and what the
+	// caller saw (its optional precondition) in the transaction of the write.
+	PutMasterSessionIfSeen(ctx context.Context, m store.MasterRow, owner string, ifMaster *bool) error
+	DeleteMasterSessionIfSeen(ctx context.Context, workerID, session, owner string, ifMaster *bool) (bool, error)
+	RevokeAcceptIfState(ctx context.Context, a store.AcceptRow, targetOwner, sourceOwner, ifState string) (bool, error)
 	ListAccepts(ctx context.Context) ([]store.AcceptRow, error)
-	PutAcceptIfOwners(ctx context.Context, a store.AcceptRow, targetOwner, sourceOwner string) error
-	DeleteAcceptIfOwners(ctx context.Context, target, source, targetOwner, sourceOwner string) (bool, error)
+	PutAcceptIfState(ctx context.Context, a store.AcceptRow, targetOwner, sourceOwner, ifState string) error
 	ListWorkerControl(ctx context.Context) (map[string]store.WorkerControlRow, error)
-	SetWorkerControlIfOwner(ctx context.Context, workerID, owner string, userManaged, acceptAll *bool) error
+	SetWorkerControlIfSeen(ctx context.Context, workerID, owner string, userManaged, acceptAll, ifUserManaged, ifAcceptAll *bool) error
 	SessionControl(ctx context.Context, workerID, sessionName string) (store.SessionControlRow, error)
 }
 
@@ -151,6 +152,8 @@ func ownerErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrBoundMasterSlot):
 		return NewError(proto.CodeConflict, "use the session-bound master action for this session")
+	case errors.Is(err, store.ErrControlChanged):
+		return NewError(proto.CodeConflict, "changed by someone else meanwhile; nothing was saved, decide again on what the Hub has now")
 	case errors.Is(err, store.ErrWorkerOwnerChanged):
 		return NewError(proto.CodeConflict, "the Worker changed owner meanwhile; reload and decide again")
 	case errors.Is(err, store.ErrWorkerNotFound):
@@ -187,7 +190,8 @@ func (h controlHandlers) setWorker(ctx context.Context, c *Call, a ops.ControlSe
 	if err != nil {
 		return ops.WriteResult{}, err
 	}
-	if err := h.st.SetWorkerControlIfOwner(ctx, a.WorkerID, owners[0], a.UserManaged, a.AcceptAll); err != nil {
+	c.AuditDetail = workerControlDetail(a)
+	if err := h.st.SetWorkerControlIfSeen(ctx, a.WorkerID, owners[0], a.UserManaged, a.AcceptAll, a.IfUserManaged, a.IfAcceptAll); err != nil {
 		return ops.WriteResult{}, ownerErr(err)
 	}
 	return delivered(), nil
@@ -201,6 +205,9 @@ func (h controlHandlers) setMaster(ctx context.Context, c *Call, a ops.ControlSe
 	if a.SessionName == "" || !ops.ValidSessionName(a.SessionName) {
 		return ops.WriteResult{}, NewError(proto.CodeInvalidArgument, "session_name is not a valid session name")
 	}
+	// The session name goes in the source, never in the detail.
+	c.AuditSource = a.WorkerID + ":" + a.SessionName
+	c.AuditDetail = "session_set=" + strconv.FormatBool(a.Master)
 	var owners []string
 	if p, ok := c.Args.(*ops.ControlSetMasterArgs); ok {
 		owners, err = pinned(h.pinM.take(p))
@@ -214,18 +221,13 @@ func (h controlHandlers) setMaster(ctx context.Context, c *Call, a ops.ControlSe
 		if !m[a.WorkerID].CanBeMaster {
 			return ops.WriteResult{}, NewError(proto.CodeConflict, "this Worker cannot control others (a thin Worker or one older than 0.8.0)")
 		}
-		err = h.st.PutMasterSessionIfOwner(ctx, store.MasterRow{WorkerID: a.WorkerID, SessionName: a.SessionName,
-			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()}, owners[0])
+		err = h.st.PutMasterSessionIfSeen(ctx, store.MasterRow{WorkerID: a.WorkerID, SessionName: a.SessionName,
+			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()}, owners[0], a.IfMaster)
 	} else {
 		// A session-bound master is not in master_session: deleting there
-		// would answer delivered and revoke nothing.
-		var bound bool
-		if bound, err = h.st.BoundMasterActive(ctx, a.WorkerID, a.SessionName); err == nil && bound {
-			err = store.ErrBoundMasterSlot
-		}
-		if err == nil {
-			_, err = h.st.DeleteMasterSessionIfOwner(ctx, a.WorkerID, a.SessionName, owners[0])
-		}
+		// would answer delivered and revoke nothing. The store refuses it
+		// (ErrBoundMasterSlot) in the transaction of the delete.
+		_, err = h.st.DeleteMasterSessionIfSeen(ctx, a.WorkerID, a.SessionName, owners[0], a.IfMaster)
 	}
 	if err != nil {
 		return ops.WriteResult{}, ownerErr(err)
@@ -253,6 +255,10 @@ func (h controlHandlers) setAccept(ctx context.Context, c *Call, a ops.ControlSe
 		}
 		sessions = append([]string{}, *a.Sessions...)
 	}
+	if a.IfState != "" && !store.ValidAcceptState(a.IfState) {
+		return ops.WriteResult{}, NewError(proto.CodeInvalidArgument, "if_state is one of absent, all, limited, none")
+	}
+	c.AuditDetail = acceptDetail(a)
 	var owners []string
 	if p, ok := c.Args.(*ops.ControlSetAcceptArgs); ok {
 		owners, err = pinned(h.pinA.take(p))
@@ -264,14 +270,14 @@ func (h controlHandlers) setAccept(ctx context.Context, c *Call, a ops.ControlSe
 	}
 	_ = m
 	if a.Accept {
-		err = h.st.PutAcceptIfOwners(ctx, store.AcceptRow{TargetWorkerID: a.WorkerID, SourceWorkerID: a.SourceWorkerID,
+		err = h.st.PutAcceptIfState(ctx, store.AcceptRow{TargetWorkerID: a.WorkerID, SourceWorkerID: a.SourceWorkerID,
 			Sessions: sessions, CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()},
-			owners[0], owners[1])
+			owners[0], owners[1], a.IfState)
 	} else {
 		// Not a plain delete: on a Worker that accepts all, a missing row
 		// would widen the source to every shared session.
-		_, err = h.st.RevokeAcceptIfOwners(ctx, store.AcceptRow{TargetWorkerID: a.WorkerID, SourceWorkerID: a.SourceWorkerID,
-			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()}, owners[0], owners[1])
+		_, err = h.st.RevokeAcceptIfState(ctx, store.AcceptRow{TargetWorkerID: a.WorkerID, SourceWorkerID: a.SourceWorkerID,
+			CreatedBy: c.Identity.Actor, CreatedAt: time.Now().UnixMilli()}, owners[0], owners[1], a.IfState)
 	}
 	if err != nil {
 		return ops.WriteResult{}, ownerErr(err)
@@ -397,4 +403,31 @@ func grantCovers(targetsJSON, worker, session string) bool {
 		}
 	}
 	return false
+}
+
+// acceptDetail is the audit detail of control_set_accept: the source Worker
+// and how far the acceptance reaches, never a session name.
+func acceptDetail(a ops.ControlSetAcceptArgs) string {
+	reach := "none"
+	switch {
+	case !a.Accept:
+	case a.Sessions == nil:
+		reach = "all"
+	default:
+		reach = "limited"
+	}
+	return "source_worker=" + a.SourceWorkerID + " accept=" + strconv.FormatBool(a.Accept) + " sessions=" + reach
+}
+
+// workerControlDetail is the audit detail of control_set_worker: the
+// switches the call set.
+func workerControlDetail(a ops.ControlSetWorkerArgs) string {
+	var parts []string
+	if a.UserManaged != nil {
+		parts = append(parts, "user_managed="+strconv.FormatBool(*a.UserManaged))
+	}
+	if a.AcceptAll != nil {
+		parts = append(parts, "accept_all="+strconv.FormatBool(*a.AcceptAll))
+	}
+	return strings.Join(parts, " ")
 }

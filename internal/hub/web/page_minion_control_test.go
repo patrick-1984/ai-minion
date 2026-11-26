@@ -37,7 +37,18 @@ func TestMinionControlPageShowsTheModelAndIsForAdminsOnly(t *testing.T) {
 		`value="on" checked aria-label="ci accepts control from boss-box"`,
 		// a thin Worker cannot be a master
 		"cannot be a master (thin Worker or older than 0.8.0)",
-		`<script src="/static/minion-control.js" defer></script>`)
+		`<script src="/static/minion-control.js" defer></script>`,
+		// the page uses the window, shows every Worker row, and the matrix names the owner
+		`class="page-head access-wide"`, `class="table-wrap table-wrap-full"`,
+		`<th scope="row">boss-box <span class="muted matrix-owner">root</span></th>`,
+		`As of <time datetime="`, `hx-get="/access/control" hx-target="#ctl-matrix" hx-disabled-elt="this"`,
+		`<span class="refresh-idle">Refresh</span>`)
+	css, err := staticFiles.ReadFile("static/minion.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustHave(t, string(css), `main:has(> .access-wide) { max-width: none; }`, `.table-wrap.table-wrap-full { max-height: none; }`,
+		`main:has(> .access-wide) input[type="checkbox"] { width: 24px; height: 24px;`)
 }
 
 // One click is one call; the answer is the row as the Hub has it now, with
@@ -111,18 +122,6 @@ func TestMinionControlOffersOnlyKnownSessionsAndOneCheckChoice(t *testing.T) {
 	if len(calls) != 1 || calls[0].Args["worker_id"] != "wB" || calls[0].Args["session_name"] != "ci-1" {
 		t.Fatalf("check calls = %+v", calls)
 	}
-}
-
-// A check the Hub cannot answer is shown as failed, never as "no master
-// session", and the chosen session stays selected.
-func TestMinionControlShowsAFailedCheck(t *testing.T) {
-	f := newFakeOps().reply(ops.OpControlList, controlFixture()).on(ops.OpControlCheck, func(map[string]any) (any, error) {
-		return nil, &OpError{Status: 500, Code: "internal", Message: "store unavailable"}
-	})
-	connect(t, f)
-	body := get(t, adminServer(t), pathMinionControl+"?check=wB%7Cci-1", "X-Test-Session", adminHeader).Body.String()
-	mustHave(t, body, "the check failed, so it is not known who can control this session")
-	mustNotHave(t, body, "no master session.")
 }
 
 // When every shared session is already a master, the picker says so instead
@@ -220,15 +219,72 @@ func postAccept(t *testing.T, fx ops.ControlListResult, target, value string) (*
 	return f, rec.Body.String()
 }
 
-// A tick on a limited acceptance never widens it and writes nothing (writing
-// the list read a moment ago could undo a revoke made in between); the row
-// says where to change it.
+// A tick on a limited acceptance never widens it and writes nothing (a list
+// read a moment ago may already be stale): the row says where to change it.
 func TestTickOnALimitedAcceptanceKeepsItsList(t *testing.T) {
 	f, body := postAccept(t, acceptStatesFixture(), "wB", "on")
 	if calls := f.called(ops.OpControlSetAccept); len(calls) != 0 {
-		t.Fatalf("a tick on a limited acceptance wrote %+v", calls)
+		t.Fatalf("calls = %+v, want no write", calls)
 	}
-	mustHave(t, body, `id="ctl-wB"`, "This acceptance is limited to 2 sessions. Nothing was changed. Change the list with the operation control_set_accept.", limitedBadge)
+	mustHave(t, body, `id="ctl-wB"`, "This acceptance is limited to 2 sessions. Change the list with the operation control_set_accept.", limitedBadge)
+	mustNotHave(t, body, ">Undo</button>", "Saved:")
+}
+
+// Every form sends back what the page showed, and the click carries it as the
+// precondition of the write; Undo states what the change left stored.
+func TestControlClicksCarryWhatThePageShowed(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, acceptStatesFixture())
+	connect(t, f)
+	body := get(t, adminServer(t), pathMinionControl, "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, `name="if_state" value="limited"`, `name="if_state" value="none"`, `name="if_state" value="absent"`,
+		`name="if_value" value="on"`, `name="if_value" value="off"`, `name="if_master" value="on"`)
+
+	ok := ops.WriteResult{Outcome: ops.OutcomeDelivered}
+	f = newFakeOps().reply(ops.OpControlList, controlFixture()).reply(ops.OpControlSetAccept, ok).reply(ops.OpControlSetMaster, ok).reply(ops.OpControlSetWorker, ok)
+	connect(t, f)
+	s := adminServer(t)
+	rec := post(t, s, pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wT"}, "source_worker_id": {"wA"}, "value": {"on"}, "if_state": {"absent"}})
+	if c := f.called(ops.OpControlSetAccept); len(c) != 1 || c[0].Args["if_state"] != "absent" {
+		t.Fatalf("accept calls = %+v", c)
+	}
+	mustHave(t, rec.Body.String(), ">Undo</button>", `name="if_state" value="all"`)
+	// A form without the member (a page from before the update) is checked
+	// against what the Hub had when the click arrived.
+	post(t, s, pathMinionControl+"/accept", adminHeader, url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}})
+	if c := f.called(ops.OpControlSetAccept); len(c) != 2 || c[1].Args["if_state"] != "all" {
+		t.Fatalf("accept calls = %+v", c)
+	}
+	rec = post(t, s, pathMinionControl+"/master", adminHeader, url.Values{"worker_id": {"wA"}, "session_name": {"boss"}, "if_master": {"on"}})
+	if c := f.called(ops.OpControlSetMaster); len(c) != 1 || c[0].Args["if_master"] != true || c[0].Args["master"] != false {
+		t.Fatalf("master calls = %+v", c)
+	}
+	mustHave(t, rec.Body.String(), ">Undo</button>", `name="if_master" value="off"`)
+	rec = post(t, s, pathMinionControl+"/accept-all", adminHeader, url.Values{"worker_id": {"wB"}, "value": {"on"}, "if_value": {"off"}})
+	if c := f.called(ops.OpControlSetWorker); len(c) != 1 || c[0].Args["if_accept_all"] != false || c[0].Args["accept_all"] != true {
+		t.Fatalf("worker calls = %+v", c)
+	}
+	mustHave(t, rec.Body.String(), ">Undo</button>", `name="if_value" value="on"`)
+}
+
+// A click on a state another administrator changed is refused by the Hub: the
+// row shows the conflict and what the Hub has now, without an Undo.
+func TestAcceptConflictShowsTheHubsRow(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, acceptStatesFixture()).on(ops.OpControlSetAccept, func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 409, Code: "conflict", Message: "changed by someone else meanwhile; nothing was saved"}
+	})
+	connect(t, f)
+	// The page showed no entry for ci; meanwhile it was limited to two sessions.
+	rec := post(t, adminServer(t), pathMinionControl+"/accept", adminHeader,
+		url.Values{"worker_id": {"wB"}, "source_worker_id": {"wA"}, "value": {"on"}, "if_state": {"absent"}})
+	calls := f.called(ops.OpControlSetAccept)
+	if len(calls) != 1 || calls[0].Args["if_state"] != "absent" {
+		t.Fatalf("calls = %+v, want the Hub to decide on the state the page showed", calls)
+	}
+	if _, has := calls[0].Args["sessions"]; has {
+		t.Fatalf("a stale list was sent: %+v", calls[0].Args)
+	}
+	body := rec.Body.String()
+	mustHave(t, body, `id="ctl-wB"`, `role="alert">changed by someone else meanwhile`, limitedBadge, `name="if_state" value="limited"`)
 	mustNotHave(t, body, ">Undo</button>", "Saved:")
 }
 
@@ -277,4 +333,31 @@ func TestAcceptUndoRestoresExactlyOrIsNotOffered(t *testing.T) {
 	}
 	_, body = postAccept(t, controlFixture(), "wT", "")
 	mustNotHave(t, body, ">Undo</button>")
+}
+
+// The control page fits a phone (D6): the matrix box, not the page, holds the
+// hidden words of the badges in its cells.
+func TestMinionControlMatrixScrollsOnlyInsideItsBox(t *testing.T) {
+	rules := loadSheet(t)
+	wrap := el("div", "matrix-wrap")
+	for _, w := range []int{390, 1440} {
+		if got := valueAt(rules, "position", wrap, nil, w); got != "relative" {
+			t.Errorf("position of .matrix-wrap at %d px = %q, want relative", w, got)
+		}
+		if got := valueAt(rules, "overflow", wrap, nil, w); got != "auto" {
+			t.Errorf("overflow of .matrix-wrap at %d px = %q, want auto", w, got)
+		}
+	}
+}
+
+// A check the Hub cannot answer is shown as failed, never as "no master
+// session".
+func TestMinionControlShowsAFailedCheck(t *testing.T) {
+	f := newFakeOps().reply(ops.OpControlList, controlFixture()).on(ops.OpControlCheck, func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 500, Code: "internal", Message: "store unavailable"}
+	})
+	connect(t, f)
+	body := get(t, adminServer(t), pathMinionControl+"?check=wB%7Cci-1", "X-Test-Session", adminHeader).Body.String()
+	mustHave(t, body, "the check failed, so it is not known who can control this session")
+	mustNotHave(t, body, "no master session.")
 }

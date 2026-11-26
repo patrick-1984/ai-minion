@@ -25,6 +25,12 @@ type MasterControl struct {
 	router   *Router
 	auditor  *audit.Log
 	now      func() time.Time
+	// readRecheck is the re-check interval of a running verified read;
+	// zero means masterReadRecheck.
+	readRecheck time.Duration
+	// grantUse is told the verified grants behind an answered call (nil:
+	// nothing is recorded); see SetGrantUse.
+	grantUse *GrantUse
 
 	mu    sync.Mutex
 	lanes map[string]*masterLane
@@ -33,7 +39,15 @@ type MasterControl struct {
 type masterLease struct {
 	binding proto.MasterBinding
 	row     store.BoundMasterRow
+	// master is true for a lease that stands on an active nomination. A lease
+	// with master false stands only on the verified session grants of that
+	// incarnation; its row is not a stored nomination.
+	master bool
 }
+
+// grantLeaseGeneration is the generation of a lease that stands only on
+// verified session grants (it has no nomination and so no stored generation).
+const grantLeaseGeneration = 1
 
 type masterLane struct {
 	info    Online
@@ -56,6 +70,11 @@ func NewMasterControl(db *store.Store, registry *Registry, events *EventHub, rou
 	return &MasterControl{db: db, registry: registry, events: events, router: router, auditor: auditor,
 		now: time.Now, lanes: map[string]*masterLane{}}
 }
+
+// SetGrantUse makes the MasterControl tell u the verified session grants that
+// authorized an answered call (usage count and last use), as the call server
+// does for Claimed grants. Call it before the Hub serves calls.
+func (m *MasterControl) SetGrantUse(u *GrantUse) { m.grantUse = u }
 
 func (m *MasterControl) Bind(ingest *Ingest, service *Service) error {
 	if !ingest.OnStream(proto.TypeMasterOpen, m.serveLane) ||
@@ -180,14 +199,15 @@ func (m *MasterControl) pushLocked(l *masterLane) {
 					continue
 				}
 				lease := l.leases[row.IncarnationID]
-				if lease.binding.Generation != row.Generation {
+				if !lease.master || lease.binding.Generation != row.Generation {
 					lease = masterLease{binding: proto.MasterBinding{
 						IncarnationID: row.IncarnationID, Generation: row.Generation, LeaseID: ops.NewUUIDv7(),
-					}, row: row}
+					}, row: row, master: true}
 				}
 				next[row.IncarnationID] = lease
 				state.Active = append(state.Active, lease.binding)
 			}
+			m.grantLeasesLocked(l, next, &state)
 		}
 	}
 	for pending := range l.pending {
@@ -202,6 +222,75 @@ func (m *MasterControl) pushLocked(l *masterLane) {
 	default:
 	}
 	l.updates <- state
+}
+
+// grantLeasesLocked adds a lease for every reported candidate that is not a
+// nominated master but whose (Worker, session, incarnation) holds at least one
+// verified session grant. The store checks the owner and the enrollment key
+// of the lane, eligible the report and the share, as for a nomination.
+func (m *MasterControl) grantLeasesLocked(l *masterLane, next map[string]masterLease, state *proto.MasterState) {
+	ctx, cancel := context.WithTimeout(l.ctx, masterIOTimeout)
+	sources, err := m.db.VerifiedGrantSources(ctx, l.info.WorkerID, l.info.OwnerID, l.info.EnrollmentKey[:])
+	cancel()
+	if err != nil {
+		return
+	}
+	for _, src := range sources {
+		if _, held := next[src.IncarnationID]; held || !m.eligible(l, src.SessionName, src.IncarnationID) {
+			continue
+		}
+		lease := l.leases[src.IncarnationID]
+		if lease.master || lease.binding.LeaseID == "" || lease.row.SessionName != src.SessionName {
+			lease = masterLease{binding: proto.MasterBinding{
+				IncarnationID: src.IncarnationID, Generation: grantLeaseGeneration, LeaseID: ops.NewUUIDv7(),
+			}, row: store.BoundMasterRow{
+				WorkerID: l.info.WorkerID, SessionName: src.SessionName, IncarnationID: src.IncarnationID,
+				OwnerID: l.info.OwnerID, WorkerPub: bytes.Clone(l.info.EnrollmentKey[:]), Generation: grantLeaseGeneration,
+			}}
+		}
+		next[src.IncarnationID] = lease
+		state.Active = append(state.Active, lease.binding)
+	}
+}
+
+// PreparedIncarnation returns the incarnation id that the Worker's master
+// lane reports right now for the session: the kernel-proven terminal a grant
+// can be bound to. ok is false when the Worker has no live lane, is not
+// enrolled as stored, or the session is not a prepared shared terminal (or is
+// reported with more than one incarnation).
+func (m *MasterControl) PreparedIncarnation(ctx context.Context, workerID, session string) (incarnation string, ok bool) {
+	w, err := m.db.WorkerByID(ctx, workerID)
+	if err != nil {
+		return "", false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.lanes[workerID]
+	if l == nil || l.ctx.Err() != nil || !m.currentLink(l.info) || !m.now().Before(l.expires) ||
+		l.info.OwnerID != w.OwnerID || !bytes.Equal(l.info.EnrollmentKey[:], w.Pub) {
+		return "", false
+	}
+	for _, c := range l.report.Candidates {
+		if c.SessionName != session || !m.eligible(l, c.SessionName, c.IncarnationID) {
+			continue
+		}
+		if incarnation != "" && incarnation != c.IncarnationID {
+			return "", false
+		}
+		incarnation = c.IncarnationID
+	}
+	return incarnation, incarnation != ""
+}
+
+// RefreshLeases recomputes the leases of the Worker's lane now, after its
+// verified session grants changed (bound, unbound, revoked). Without it the
+// next report of the Worker does the same within its interval.
+func (m *MasterControl) RefreshLeases(workerID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if l := m.lanes[workerID]; l != nil && l.ctx.Err() == nil {
+		m.pushLocked(l)
+	}
 }
 
 // eligible uses the present ordinary share feed. The database transaction
@@ -287,6 +376,34 @@ func (m *MasterControl) MasterView(ctx context.Context) (map[string]MasterWorker
 	return out, nil
 }
 
+// LiveLease names a terminal incarnation that holds a master lease now. It
+// carries no lease id or generation.
+type LiveLease struct {
+	WorkerID, SessionName, IncarnationID string
+}
+
+// LiveLeases lists the leases that authorizeLocked would accept right now:
+// the leases of every live, unexpired lane on the current link whose
+// incarnation is still an eligible candidate. An eligible candidate without a
+// lease (a share snapshot that arrived before the next report) is not listed.
+func (m *MasterControl) LiveLeases() []LiveLease {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []LiveLease
+	for id, l := range m.lanes {
+		if l.ctx.Err() != nil || !m.currentLink(l.info) || !m.now().Before(l.expires) {
+			continue
+		}
+		for inc, lease := range l.leases {
+			if lease.binding.LeaseID == "" || !m.eligible(l, lease.row.SessionName, inc) {
+				continue
+			}
+			out = append(out, LiveLease{WorkerID: id, SessionName: lease.row.SessionName, IncarnationID: inc})
+		}
+	}
+	return out
+}
+
 type MasterWorkerView struct {
 	Candidates []ops.ControlMasterCandidate
 	Bound      []ops.ControlBoundMaster
@@ -324,7 +441,8 @@ func (m *MasterControl) Controllers(ctx context.Context, workerID, session strin
 			continue
 		}
 		for _, lease := range l.leases {
-			if l.info.WorkerID == workerID || !m.eligible(l, lease.row.SessionName, lease.row.IncarnationID) {
+			// A lease that stands only on verified grants is no nomination.
+			if !lease.master || l.info.WorkerID == workerID || !m.eligible(l, lease.row.SessionName, lease.row.IncarnationID) {
 				continue
 			}
 			if _, err := m.db.BoundMasterTargets(ctx, lease.row, &store.MasterTarget{WorkerID: workerID, OwnerID: on.OwnerID, Sessions: []string{session}}); err != nil {

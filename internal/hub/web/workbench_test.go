@@ -74,12 +74,13 @@ func TestNoPageUsesInlineStylesOrAThirdPartyOrigin(t *testing.T) {
 	f := newFakeOps().
 		reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{sessionWorker()}}).
 		reply(ops.OpSessionSnapshot, ops.SessionSnapshotResult{Pane: dialogPane(), Screen: hostileScreen()}).
-		reply(ops.OpSessionsList, ops.SessionsListResult{})
+		reply(ops.OpSessionsList, ops.SessionsListResult{}).
+		reply(ops.OpAccessMatrix, accessFixture())
 	connect(t, f)
 	s, _ := listServer(t, Dashboard{Workers: []WorkerRow{wPrivate}, Sessions: []SessionRow{sAgent}}, Dashboard{})
 	external := regexp.MustCompile(`(?i)(src|href|action|srcset)\s*=\s*["']?(https?:)?//`)
 	for _, p := range []string{"/", "/workers", "/sessions", "/account", "/admin", "/admin/users", "/admin/settings", "/admin/oidc", "/admin/audit",
-		"/invitations", "/api-keys", "/workers/add", "/account/password", "/s/pi-1/minion-1", "/nope"} {
+		"/invitations", "/api-keys", "/access", "/access/grants", "/workers/add", "/account/password", "/s/pi-1/minion-1", "/nope"} {
 		rec := get(t, s, p, "X-Test-Session", "alice:admin")
 		body := rec.Body.String()
 		if strings.Contains(body, " style=") || strings.Contains(body, "<style") {
@@ -116,7 +117,7 @@ func TestNavigationGroupsFollowTheRoleAndKeepEveryDestination(t *testing.T) {
 	user := get(t, s, "/account", "X-Test-Session", userHeader).Body.String()
 	admin := get(t, s, "/account", "X-Test-Session", adminHeader).Body.String()
 
-	wantUser := []string{"/", "/workers", "/sessions", "/usage", "/harnesses", "/workers/add", "/invitations", "/api-keys"}
+	wantUser := []string{"/", "/workers", "/sessions", "/usage", "/harnesses", "/workers/add", "/invitations", "/api-keys", "/access"}
 	if got := navPaths(user); strings.Join(got, ",") != strings.Join(wantUser, ",") {
 		t.Errorf("user navigation = %v, want %v", got, wantUser)
 	}

@@ -182,10 +182,13 @@ func (a *Authorizer) DecideOwner(ctx context.Context, p Principal, accepted ops.
 
 // Valid reports whether p still has any permission at all (see subject):
 // its account is active and holds a grant, its act-as session is live, its
-// Worker exists and its owner has access. It reads the current state.
+// Worker exists and its owner has access. It reads the current state. A
+// Worker identity whose owner is active but holds no effective role is not
+// valid here, also when its direct grants still decide single calls: a
+// running call does not say which rule admitted it, so it ends (fail closed).
 func (a *Authorizer) Valid(ctx context.Context, p Principal) (bool, error) {
-	_, ok, err := a.subject(ctx, p, a.ports())
-	return ok, err
+	sub, ok, err := a.subject(ctx, p, a.ports())
+	return ok && (sub.p.Kind != KindWorker || sub.role != ""), err
 }
 
 // EffectiveActions returns the actions p currently holds on res, sorted. It is
@@ -217,24 +220,35 @@ func (a *Authorizer) EffectiveActions(ctx context.Context, p Principal, res Reso
 // access and for a resource that does not exist; only a failure of a lookup is
 // an error. The Hub calls it after [Authorizer.Decide] allowed the operation,
 // to mark the request's origin as granted (origin.grant). It reads the current
-// state again, like Decide.
+// state again, like Decide. A direct grant (see [NewWorkerSessionPrincipal])
+// that permits one of the accepted actions counts the same way.
 func (a *Authorizer) GrantedByScope(ctx context.Context, p Principal, accepted ops.ActionSet, res Resource) (bool, error) {
-	if p.Kind != KindWorker || p.Scope == nil {
+	if p.Kind != KindWorker || p.Scope == nil && len(p.directList()) == 0 {
 		return false, nil
 	}
+	sub, resolved, ok, err := a.grantSubject(ctx, p, res)
+	if err != nil || !ok {
+		return false, err
+	}
+	return accepted.Permits(append(sub.grantActions(resolved), sub.directActions(resolved)...)...), nil
+}
+
+// grantSubject reads the subject of p and resolves res for a question about
+// grants. ok is false when p has no access or res does not exist.
+func (a *Authorizer) grantSubject(ctx context.Context, p Principal, res Resource) (subject, ResolvedResource, bool, error) {
 	pt := a.ports()
 	sub, ok, err := a.subject(ctx, p, pt)
 	if err != nil || !ok {
-		return false, err
+		return subject{}, ResolvedResource{}, false, err
 	}
 	resolved, err := res.resolve(ctx, pt)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return false, nil
+			return subject{}, ResolvedResource{}, false, nil
 		}
-		return false, fmt.Errorf("authz: resolve resource: %w", err)
+		return subject{}, ResolvedResource{}, false, fmt.Errorf("authz: resolve resource: %w", err)
 	}
-	return accepted.Permits(sub.grantActions(resolved)...), nil
+	return sub, resolved, true, nil
 }
 
 func mapLookupErr(err error) error {
@@ -252,6 +266,11 @@ type subject struct {
 	role Role
 	// ownerID is the owner of a Worker identity (KindWorker only).
 	ownerID string
+	// now is the time of the decision, for the expiry of direct grants.
+	now time.Time
+	// admins tells, per grantor of an admin-authority direct grant, whether
+	// that user is an active administrator now (read once per decision).
+	admins map[string]bool
 }
 
 // subject reads the current state behind p. ok is false when p has no
@@ -284,9 +303,12 @@ func (a *Authorizer) subject(ctx context.Context, p Principal, pt ports) (sub su
 
 // workerSubject resolves a Worker identity: the Worker must exist and its
 // owner must be an active user. The subject keeps the owner's role: the
-// own-Worker rule ignores it, and a session-control grant (Principal.Scope)
-// is intersected with the owner's base permission, exactly as for an API key
-// of that owner.
+// own-Worker rule and a session-control grant (Principal.Scope, intersected
+// with the owner's base permission, exactly as for an API key of that owner)
+// need an effective role of the owner. A direct grant does not (D4): the
+// authority behind it is judged per grant, so an active owner without a role
+// still has a subject when the principal carries direct grants, and then
+// holds only what those grants authorize.
 func (a *Authorizer) workerSubject(ctx context.Context, p Principal, pt ports) (subject, bool, error) {
 	owner, err := pt.workers.WorkerOwner(ctx, p.WorkerID)
 	if errors.Is(err, ErrNotFound) {
@@ -296,10 +318,21 @@ func (a *Authorizer) workerSubject(ctx context.Context, p Principal, pt ports) (
 		return subject{}, false, fmt.Errorf("authz: look up worker owner: %w", err)
 	}
 	u, found, err := user(ctx, pt, owner)
-	if err != nil || !found || !u.Active || (u.Role != RoleUser && u.Role != RoleAdmin) {
+	if err != nil || !found || !u.Active {
 		return subject{}, false, err
 	}
-	return subject{p: p, role: u.Role, ownerID: owner}, true, nil
+	role := u.Role
+	if !u.hasAccess() {
+		if len(p.directList()) == 0 {
+			return subject{}, false, nil
+		}
+		role = ""
+	}
+	sub := subject{p: p, role: role, ownerID: owner, now: a.now()}
+	if sub.admins, err = sub.liveAdmins(ctx, pt); err != nil {
+		return subject{}, false, err
+	}
+	return sub, true, nil
 }
 
 func user(ctx context.Context, pt ports, id string) (UserState, bool, error) {
@@ -323,11 +356,13 @@ func (s subject) actions(res ResolvedResource) ops.ActionSet {
 		// Worker-bound API key with a scope (AD-12, call_api_key_file) and the
 		// receiver's pipe_accept_from.
 		var held []ops.Action
-		if !s.p.boundMaster && res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
+		if !s.p.boundMaster && s.role != "" && res.Kind != ResourceUser && res.WorkerID == s.p.WorkerID && res.OwnerID == s.ownerID {
 			held = slices.Clone(workerActions)
 		}
-		// A session-control grant adds what it authorizes on its own.
-		return canonical(append(held, s.grantActions(res)...))
+		// A session-control grant adds what it authorizes on its own, and so
+		// does every direct grant that covers res and is valid now.
+		held = append(held, s.grantActions(res)...)
+		return canonical(append(held, s.directActions(res)...))
 	}
 	base := s.base(res, s.p.UserID)
 	if s.p.Kind != KindAPIKey {

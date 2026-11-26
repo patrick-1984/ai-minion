@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +19,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -48,6 +52,15 @@ type Authn interface {
 
 var _ Authn = (*Authenticator)(nil)
 
+// RequestStore keeps the answers of request ids for the de-duplication of
+// Hub-scope writes; *store.Store implements it.
+type RequestStore interface {
+	GetOpRequest(ctx context.Context, requestID string, now int64) (store.OpRequestRow, bool, error)
+	PutOpRequest(ctx context.Context, r store.OpRequestRow) (bool, error)
+}
+
+var _ RequestStore = (*store.Store)(nil)
+
 // Audit vocabulary of write operations (AD-20). The action is the operation
 // name and the target is a resource id; no event holds arguments or content.
 const (
@@ -72,6 +85,11 @@ type Dispatcher struct {
 	Authz Decider
 	// Audit records every write operation. Nil disables it.
 	Audit Auditor
+	// Requests de-duplicates the Hub-scope writes of the strict operations
+	// (ops.StrictArgs) by their request_id: a repeated request is answered
+	// from the stored result and the handler does not run again. Nil
+	// disables it: every request runs.
+	Requests RequestStore
 	// Log receives internal failures; nil means slog.Default.
 	Log *slog.Logger
 	// ReauthInterval is the credential and permission re-check period of
@@ -83,6 +101,9 @@ type Dispatcher struct {
 	// StreamWriteTimeout bounds each write of a streaming response; zero
 	// means DefaultStreamWriteTimeout.
 	StreamWriteTimeout time.Duration
+
+	// inFlight orders the requests that carry the same request_id.
+	inFlight requestLocks
 }
 
 func (d *Dispatcher) logger() *slog.Logger {
@@ -157,9 +178,10 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		return
 	}
 
-	if op.SessionOnly && (id.Via != ViaSession || id.Principal.Kind != authz.KindBrowserSession) {
+	if op.SessionOnly && !sessionOnlyAllows(op, id) {
 		// Only a browser session acting as itself may run these (the Hub
-		// identity operations); an API key and an act-as session may not.
+		// identity operations); an API key may not, and an act-as session only
+		// where sessionOnlyActAs says so.
 		d.refused(w, op.Name, "session_only", id.Principal.Kind, NewError(proto.CodeForbidden, "this operation is available only to a signed-in browser session"))
 		return
 	}
@@ -168,6 +190,43 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	if err != nil {
 		d.refused(w, op.Name, "arguments", id.Principal.Kind, err)
 		return
+	}
+	// A repeated request of a de-duplicated write gets the answer it was
+	// given then, and nothing runs again. The caller is authenticated as the
+	// one that was authorised for exactly this request, but that authority
+	// may be gone since: a stored answer that carries data (a grant with its
+	// session names) is given only after the same decision as a new request
+	// allows it now. Only the data-free acknowledgement is answered at once,
+	// before the resource is derived (a repeated revoke names a grant that is
+	// gone). An answer given here adds no audit row.
+	dedup, deduped := d.dedupKeyOf(op, ent, args, id)
+	reused := false
+	var replay *storedAnswer
+	if deduped {
+		// Two requests with one id run one after the other, so the second
+		// finds the answer of the first instead of running beside it.
+		unlock := d.inFlight.lock(dedup.id)
+		defer unlock()
+		answer, state, err := d.recall(r.Context(), op, dedup)
+		if err != nil {
+			// Fail closed: the Hub cannot tell whether the request ran.
+			d.logger().Error("request de-duplication failed", "op", op.Name, "error", err)
+			d.refused(w, op.Name, "request_id", id.Principal.Kind, internalError())
+			return
+		}
+		switch state {
+		case requestRepeated:
+			if !dataFreeAnswer(answer) {
+				replay = &answer
+				break
+			}
+			writeStored(w, answer)
+			d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
+				"outcome", "replayed", "duration", time.Since(start).String())
+			return
+		case requestReused:
+			reused = true
+		}
 	}
 	var res authz.Resource
 	if ent.resource != nil {
@@ -201,13 +260,35 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		return
 	}
 
+	if replay != nil {
+		writeStored(w, *replay)
+		d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
+			"outcome", "replayed", "duration", time.Since(start).String())
+		return
+	}
+
+	if reused {
+		// The id belongs to another request (another operation, caller or
+		// arguments): nothing runs. It is said only now, to a caller that
+		// may run the operation, so that an id cannot be probed.
+		d.audit(r.Context(), call, auditOutcomeError)
+		d.refused(w, op.Name, "request_id", id.Principal.Kind, errRequestIDReused())
+		return
+	}
+
 	pending = op.Write || auditedMutation(op)
 	if ent.stream != nil {
 		d.serveStream(w, r, call, ent.stream)
 		pending = false
 		return
 	}
-	result, err := ent.handler(r.Context(), call)
+	hctx := r.Context()
+	if deduped {
+		// A handler that writes in a store transaction can commit the answer
+		// of the request_id with its change (requestReceipt).
+		hctx = context.WithValue(hctx, receiptKey{}, receiptRequest{op: op.Name, key: dedup})
+	}
+	result, err := ent.handler(hctx, call)
 	pending = false
 	if err != nil {
 		e := ErrorOf(err)
@@ -216,6 +297,9 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		}
 		if !tracker.Recorded() {
 			d.audit(r.Context(), call, auditOutcomeError)
+		}
+		if deduped && definiteRefusal(e) {
+			d.remember(r.Context(), op, dedup, proto.HTTPStatus(e.Code), Envelope(e))
 		}
 		d.logger().Debug("api request done", "request_id", audit.RequestID(r.Context()), "op", op.Name, "principal_kind", string(id.Principal.Kind),
 			"outcome", string(e.Code), "duration", time.Since(start).String())
@@ -230,8 +314,252 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	if result == nil {
 		result = struct{}{}
 	}
+	if deduped {
+		if b, err := json.Marshal(result); err == nil && definiteResult(b) {
+			d.remember(r.Context(), op, dedup, http.StatusOK, b)
+		}
+	}
 	if err := WriteJSON(w, http.StatusOK, result); err != nil {
 		d.logger().Error("operation result cannot be encoded", "op", op.Name, "error", err)
+	}
+}
+
+// sessionOnlyActAs names the SessionOnly operations that an administrator
+// acting as a user may run in a browser session. grant_set: D4 lets an
+// administrator acting as a user create owner grants for that user only; the
+// handler refuses every other grant (the acted user must own both Workers),
+// and the audit row names the administrator as the actor.
+var sessionOnlyActAs = map[string]bool{ops.OpGrantSet: true}
+
+// sessionOnlyAllows reports whether id may run the SessionOnly operation op:
+// a browser session acting as itself, or an act-as browser session for an
+// operation in sessionOnlyActAs. An API key never may.
+func sessionOnlyAllows(op ops.Op, id Identity) bool {
+	if id.Via != ViaSession {
+		return false
+	}
+	switch id.Principal.Kind {
+	case authz.KindBrowserSession:
+		return true
+	case authz.KindActAs:
+		return sessionOnlyActAs[op.Name]
+	}
+	return false
+}
+
+// dedupKey identifies one request for the de-duplication: the id the caller
+// chose, who asked and the hash of what was asked.
+type dedupKey struct {
+	id, actor, argsHash string
+}
+
+// errRequestIDReused answers a request_id that was used for another request
+// (another operation, caller or arguments) in the retention time.
+func errRequestIDReused() *Error {
+	return NewError(proto.CodeConflict, "this request_id was already used for a different request").
+		WithDetails(map[string]any{"field": "request_id", "reason": "request_id_reused"})
+}
+
+// dedupKeyOf reports whether the call is de-duplicated, and by which key:
+// a strict operation (ops.StrictArgs) of the Hub scope that is a Write or
+// Mutates, that does not stream and whose arguments carry a request_id. The
+// hash covers the decoded arguments, so the order and spacing of the body do
+// not make two requests differ; a strict operation has no undecoded members.
+func (d *Dispatcher) dedupKeyOf(op ops.Op, ent entry, args any, id Identity) (dedupKey, bool) {
+	if d.Requests == nil || ent.stream != nil || op.Scope != ops.ScopeHub || (!op.Write && !op.Mutates) || !ops.StrictArgs(op.Name) {
+		return dedupKey{}, false
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return dedupKey{}, false
+	}
+	var head struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(b, &head); err != nil || head.RequestID == "" {
+		return dedupKey{}, false
+	}
+	actor := id.Actor
+	if id.ActingAs != "" {
+		actor += " as " + id.ActingAs
+	}
+	sum := sha256.Sum256(b)
+	return dedupKey{id: head.RequestID, actor: actor, argsHash: hex.EncodeToString(sum[:])}, true
+}
+
+// receiptKey is the context key of the de-duplicated request a handler runs
+// for; receiptRequest its value.
+type receiptKey struct{}
+
+type receiptRequest struct {
+	op  string
+	key dedupKey
+}
+
+// requestReceipt is the stored answer of the de-duplicated request of ctx
+// when the handler answers it with result: the row the dispatcher would store
+// after the handler returned, for a handler that writes it in the transaction
+// of its change, so that the change and its answer commit together. It is nil
+// when the request is not de-duplicated or the result is not kept (see
+// definiteResult). The dispatcher still stores its own row afterwards; the
+// first one written stays.
+func requestReceipt(ctx context.Context, result any) (*store.OpRequestRow, error) {
+	req, ok := ctx.Value(receiptKey{}).(receiptRequest)
+	if !ok {
+		return nil, nil
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("api: the answer of a request_id cannot be encoded: %w", err)
+	}
+	if !definiteResult(b) {
+		return nil, nil
+	}
+	ans, err := json.Marshal(storedAnswer{Status: http.StatusOK, Body: b})
+	if err != nil {
+		return nil, fmt.Errorf("api: the answer of a request_id cannot be encoded: %w", err)
+	}
+	return &store.OpRequestRow{RequestID: req.key.id, Op: req.op, Actor: req.key.actor, ArgsSHA256: req.key.argsHash,
+		ResultJSON: string(ans), CreatedAt: time.Now().UnixMilli()}, nil
+}
+
+// storedAnswer is what the de-duplication keeps of an answer: the HTTP status
+// and the body, a result or an error envelope.
+type storedAnswer struct {
+	Status int             `json:"status"`
+	Body   json.RawMessage `json:"body"`
+}
+
+// What the store knows of a request_id.
+const (
+	requestNew      = iota // not seen in the retention time: the request runs
+	requestRepeated        // the same request: answered from the stored answer
+	requestReused          // the id of another request: a conflict
+)
+
+// recall looks the request_id of k up: the stored answer when the request is
+// a repeat (same operation, caller and arguments), or that the id was used
+// for another request.
+func (d *Dispatcher) recall(ctx context.Context, op ops.Op, k dedupKey) (storedAnswer, int, error) {
+	row, found, err := d.Requests.GetOpRequest(ctx, k.id, time.Now().UnixMilli())
+	if err != nil {
+		return storedAnswer{}, requestNew, err
+	}
+	if !found {
+		return storedAnswer{}, requestNew, nil
+	}
+	if row.Op != op.Name || row.Actor != k.actor || row.ArgsSHA256 != k.argsHash {
+		return storedAnswer{}, requestReused, nil
+	}
+	var a storedAnswer
+	if err := json.Unmarshal([]byte(row.ResultJSON), &a); err != nil {
+		return storedAnswer{}, requestNew, fmt.Errorf("api: the stored answer of a request_id cannot be read: %w", err)
+	}
+	if a.Status == 0 || len(a.Body) == 0 {
+		return storedAnswer{}, requestNew, errors.New("api: the stored answer of a request_id is incomplete")
+	}
+	return a, requestRepeated, nil
+}
+
+// dataFreeAnswer reports whether a stored answer is the bare acknowledgement
+// of a write (outcome delivered, nothing else), which tells a repeat of the
+// request nothing it did not know. Every other stored answer, an error
+// envelope included, is given again only to a caller the same decision as a
+// new request allows now.
+func dataFreeAnswer(a storedAnswer) bool {
+	var ack ops.WriteResult
+	dec := json.NewDecoder(bytes.NewReader(a.Body))
+	dec.DisallowUnknownFields()
+	return a.Status == http.StatusOK && dec.Decode(&ack) == nil && ack.Outcome == ops.OutcomeDelivered && ack.Reason == "" &&
+		len(ack.Warnings) == 0 && ack.Pane == nil && ack.Note == ""
+}
+
+// writeStored writes a stored answer as WriteJSON and WriteError wrote it.
+func writeStored(w http.ResponseWriter, a storedAnswer) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(a.Status)
+	_, _ = w.Write(append(a.Body, '\n'))
+}
+
+// remember stores the answer of a de-duplicated request. A failure never
+// changes the answer of the request that ran, but it is logged: a repeat of
+// it would run again. The write does not end with the request, because a
+// caller that is gone is the one that will ask again.
+func (d *Dispatcher) remember(ctx context.Context, op ops.Op, k dedupKey, status int, body []byte) {
+	b, err := json.Marshal(storedAnswer{Status: status, Body: body})
+	if err == nil {
+		_, err = d.Requests.PutOpRequest(context.WithoutCancel(ctx), store.OpRequestRow{
+			RequestID: k.id, Op: op.Name, Actor: k.actor, ArgsSHA256: k.argsHash,
+			ResultJSON: string(b), CreatedAt: time.Now().UnixMilli(),
+		})
+	}
+	if err != nil {
+		d.logger().Error("the answer of a request_id was not stored", "op", op.Name, "error", err)
+	}
+}
+
+// definiteRefusal reports whether an error answer is kept for its
+// request_id: a refusal that says the request did not and will not run as it
+// is. An internal error, a rate limit and everything about the caller's
+// sign-in (a fresh sign-in is asked for, then the same request is sent
+// again) are not kept, so the repeat runs.
+func definiteRefusal(e *Error) bool {
+	if e.RetryAfter > 0 {
+		return false
+	}
+	switch e.Code {
+	case proto.CodeConflict, proto.CodeNotFound, proto.CodeTargetNotFound, proto.CodeForbidden, proto.CodeInvalidArgument:
+		return true
+	}
+	return false
+}
+
+// definiteResult reports whether a result is kept for its request_id: every
+// result but one that states the outcome "unknown", which a repeat settles.
+func definiteResult(body []byte) bool {
+	var head struct {
+		Outcome ops.Outcome `json:"outcome"`
+	}
+	return json.Unmarshal(body, &head) != nil || head.Outcome != ops.OutcomeUnknown
+}
+
+// requestLocks is one lock per request_id in flight; the zero value is
+// ready. The Hub is one process over one database, so a lock in memory
+// orders every request that can carry the same id.
+type requestLocks struct {
+	mu sync.Mutex
+	m  map[string]*requestLock
+}
+
+type requestLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lock waits for the lock of id and returns the function that releases it.
+func (l *requestLocks) lock(id string) (unlock func()) {
+	l.mu.Lock()
+	if l.m == nil {
+		l.m = make(map[string]*requestLock)
+	}
+	e := l.m[id]
+	if e == nil {
+		e = &requestLock{}
+		l.m[id] = e
+	}
+	e.refs++
+	l.mu.Unlock()
+	e.mu.Lock()
+	return func() {
+		e.mu.Unlock()
+		l.mu.Lock()
+		if e.refs--; e.refs == 0 {
+			delete(l.m, id)
+		}
+		l.mu.Unlock()
 	}
 }
 
@@ -275,6 +603,9 @@ func argsFromQuery(method string) bool {
 // it, whether or not the argument struct declares the member.
 func (d *Dispatcher) decode(w http.ResponseWriter, r *http.Request, op ops.Op, rt route, p authz.Principal) (any, string, error) {
 	var obj rawObject
+	// A strict operation refuses a member it does not declare; every other
+	// operation ignores it, as before.
+	strict := ops.StrictArgs(op.Name)
 	if argsFromQuery(r.Method) {
 		// The arguments are the query string; a body is not part of the
 		// request. It is still read (and dropped) under the deadline, so a
@@ -286,6 +617,11 @@ func (d *Dispatcher) decode(w http.ResponseWriter, r *http.Request, op ops.Op, r
 		query := r.URL.Query()
 		if d.Handlers.targetResolver() != nil && op.Scope == ops.ScopeWorker {
 			query = humanTargetsFromQuery(op, query, obj)
+		}
+		if strict {
+			if name, unknown := unknownValue(op.Args, query, routingMembers(op)...); unknown {
+				return nil, "", errUnknownMember(name)
+			}
 		}
 		if err := obj.addValues(op.Args, query); err != nil {
 			return nil, "", err
@@ -327,9 +663,23 @@ func (d *Dispatcher) decode(w http.ResponseWriter, r *http.Request, op ops.Op, r
 	// An internal member (ops.HiddenMember, such as pipe_send's message_id) is
 	// no argument of the public API: like any unknown member it is ignored, so
 	// a caller cannot set what only the Hub sets.
+	// A strict operation refuses it instead, like any member it does not
+	// declare.
+	hidden := ""
 	for name := range obj {
 		if ops.HiddenMember(op.Name, name) {
+			if hidden == "" || name < hidden {
+				hidden = name
+			}
 			delete(obj, name)
+		}
+	}
+	if strict {
+		if hidden != "" {
+			return nil, "", errUnknownMember(hidden)
+		}
+		if name, unknown := unknownMember(op.Args, withoutMembers(obj, routingMembers(op))); unknown {
+			return nil, "", errUnknownMember(name)
 		}
 	}
 	args := op.NewArgs()
@@ -342,6 +692,36 @@ func (d *Dispatcher) decode(w http.ResponseWriter, r *http.Request, op ops.Op, r
 		}
 	}
 	return args, requestWorker, nil
+}
+
+// routingMembers are the request members of an operation that are no
+// arguments but name where it runs: the worker_id and the "all" flag of a
+// human target of a ScopeWorker operation. A strict operation accepts them
+// although its argument type need not declare them.
+func routingMembers(op ops.Op) []string {
+	if op.Scope == ops.ScopeWorker {
+		return []string{"worker_id", "all"}
+	}
+	return nil
+}
+
+// withoutMembers returns o without the named members; o itself when it has
+// none of them.
+func withoutMembers(o rawObject, names []string) rawObject {
+	out := o
+	for _, name := range names {
+		if _, ok := out[name]; !ok {
+			continue
+		}
+		if len(out) == len(o) {
+			out = make(rawObject, len(o))
+			for k, v := range o {
+				out[k] = v
+			}
+		}
+		delete(out, name)
+	}
+	return out
 }
 
 func (d *Dispatcher) bodyTimeout() time.Duration {
@@ -450,6 +830,15 @@ func writeOutcome(r ops.WriteResult) string {
 // included. The Hub ops that mutate (Mutates) audit themselves.
 func auditedMutation(op ops.Op) bool { return op.Mutates && op.Scope == ops.ScopeWorker }
 
+// auditAction is the action of the audit row the dispatcher writes for op:
+// the operation name, except where the design names the action otherwise.
+func auditAction(op ops.Op) string {
+	if op.Name == ops.OpGrantRevoke {
+		return AuditActionGrantRevoke
+	}
+	return op.Name
+}
+
 // audit records a write operation. A failing audit write never changes the
 // answer, but it is logged and never silent.
 func (d *Dispatcher) audit(ctx context.Context, c *Call, outcome string) {
@@ -458,7 +847,8 @@ func (d *Dispatcher) audit(ctx context.Context, c *Call, outcome string) {
 	}
 	ev := audit.Event{
 		Actor: c.Identity.Actor, ActingAs: c.Identity.ActingAs,
-		Action: c.Op.Name, Target: ResourceLabel(c.Resource), Outcome: outcome,
+		Action: auditAction(c.Op), Target: ResourceLabel(c.Resource), Outcome: outcome,
+		Source: c.AuditSource, Detail: c.AuditDetail, GrantID: c.AuditGrantID,
 	}
 	if err := d.Audit.Record(context.WithoutCancel(ctx), ev); err != nil {
 		d.logger().Error("audit write failed", "action", c.Op.Name, "error", err)

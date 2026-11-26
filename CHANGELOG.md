@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## v0.21.0
+
+### Added
+
+- **Session grants.** One session may reach a session on another Worker (or every shared session of that Worker, future ones included) at a level: **View** (`workers_list`, `sessions_list`, `session_snapshot`, `session_capture`), **Message** (also `send_text` as a submitted prompt to an AI agent pane: the Hub makes the send agent-only, requires `submit`, refuses `force`, and answers `unsupported_op` when the target Worker does not announce the agent-only send) or **Control** (also `send_text` to any pane, `send_keys`, `set_task`, `answer`). The owner of both Workers decides between their own Workers, an administrator between users. Creating, changing and approving a grant need a signed-in browser session: an API key, a Worker, a session and an act-as session are refused. A grant between two sessions of one Worker is refused. Master sessions and "accepts control from" work as before, and with no grants the Hub decides as v0.20.6 did. Hub-only: no Worker update is needed (migration 0032, table `session_grant`).
+- Operations `grant_list` (an owner sees the grants that touch their Workers, an administrator all), `grant_set` (create, or change level, expiry and note with `id` and `if_revision`), `grant_revoke` (the owner of a Worker it touches, an administrator, an API key with `operate` on one of the Workers) and `grant_approve` (administrator). A change made for an outdated revision answers `conflict`.
+- A grant ends by itself: grants that name a session are deleted when the session ends, is renamed or stops being shared; every grant of a Worker is deleted when the Worker is removed or changes owner. A grant that an administrator decided is **suspended** when that administrator loses the role or is deactivated, stays suspended when the role comes back, and works again only after an administrator approves it. An expired grant stops working at once and is deleted 30 days later. The Hub reads the grants on every call; a running call is checked again within 30 seconds and ends when its grant was revoked, changed, suspended or has expired.
+- **Access** (`/access`, every signed-in user): the matrix "Who reaches what" shows which session reaches which session on another Worker right now, through a master session or a grant, the level in effect, the layer that blocks a pair (suspended, expired, authority, owner rule, Worker pending, not shared, Worker offline), and whether the source is Claimed (a name its Worker reports) or Verified. It has Refresh, an "As of" time, a filter, a print layout and a list form on narrow screens, and changes nothing. A user who is not an administrator sees the pairs with one of their Workers at either end; a session of another owner appears as "a session of <owner>". The same as the operation `access_matrix`.
+- **Access > Grants** (`/access/grants`): the list of grants with source, target, level, state, who decided and until when; add a grant (source, target or every shared session, level, no end / 7 days / 30 days, note), change its level, revoke it, and approve a suspended one (administrators).
+- **Access > Why?** (`/access/why`) and the operation `access_explain`: for one source and one target, every check in order (caller, grant, authority, time, sharing, Workers, preview-only) as pass, fail, not evaluated or unknown. Matrix cells link to it.
+- Audit: grant changes are recorded as `grant.create`, `grant.update`, `grant.approve` and `grant_revoke` with the target, the source session, the grant id and a k=v detail, refusals included.
+- Guide [Access: who reaches what](docs/guides/access.md).
+
+### Changed
+
+- Audit: events carry a source session, a grant id and a k=v detail (migration 0033). Minion control changes record what was set, brokered writes name the calling session, and a refused brokered write is recorded as `denied` instead of `failed`.
+- A session that holds direct grants gets a `sessions_list` answer cut to the sessions it may read.
+- Calls that a session makes through a grant or as a name-only master are decided once more just before the request is written to the target Worker ("the grant was removed or changed"), and a running call ends after two failed re-checks in a row instead of continuing.
+- Access > Minion control uses the whole window, shows every Worker row without an inner scroll box, names the owner in the matrix, and has a Refresh button, an "As of" time and a print layout.
+- The guides [Minion control](docs/guides/minion-control.md) and [Session control](docs/guides/session-control.md) point to the new guide; statements that no longer hold (creating a 0.8.0 grant in the web UI, "Add a master session") are corrected.
+
 ## v0.20.7
 
 ### Fixed
@@ -9,6 +30,7 @@
 - Minion control: a name-only revoke (`control_set_master` with `master=false`, `session_control_set` without targets) of a session that holds an active session-bound master is refused with a conflict instead of answering delivered and revoking nothing; the check runs in the same transaction as the delete.
 - Access > Minion control: an acceptance limited to some sessions shows "limited (n)" and an acceptance that allows nothing shows "blocked" (also on a Worker that accepts all Workers); a tick on a limited row keeps its list instead of widening it to every session; a failed "Who can control this session?" check says so instead of showing "no master session".
 - Minion control: withdrawing "accepts control from" for one Worker on a Worker that accepts control from all Workers no longer widens that source to every shared session (the Hub keeps a row that allows nothing); `control_set_master` and `session_control_set` refuse to revoke a session-bound master by name instead of answering delivered and revoking nothing; `control_check` reports a store error instead of leaving the master out.
+- Access > Minion control no longer shows a plain tick for an acceptance that is limited to some sessions (badge "limited (n)") or that allows nothing (not ticked, badge "blocked"); ticking a limited acceptance no longer replaces its limit.
 
 ## v0.20.6
 

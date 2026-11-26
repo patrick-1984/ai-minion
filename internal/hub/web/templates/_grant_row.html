@@ -1,0 +1,51 @@
+{{define "grant_row"}}{{if .Gone}}<tr id="grant-{{.ID}}" class="grant-gone"><td colspan="8">{{if .Error}}<span id="grant-{{.ID}}-status" tabindex="-1" class="grant-status grant-error" role="alert">{{.Error}}</span> <span class="muted">This grant is no longer listed.</span>{{else}}<span id="grant-{{.ID}}-status" tabindex="-1" class="grant-status" role="status">{{.Saved}}</span> <span class="muted">This grant no longer gives access.</span>{{end}}</td></tr>{{else}}<tr id="grant-{{.ID}}" data-filter="{{.FilterText}}"{{if .Between}} data-between="1"{{end}}{{if .Off}} data-off="1"{{end}}>
+  <td data-label="Source" class="grant-member">{{if .SourceMasked}}<em class="grant-masked">{{.SourceSession}}</em>{{else}}<strong>{{.SourceSession}}</strong>{{end}} @ {{.SourceWorker}}{{if .SourceOwner}} <span class="muted">{{.SourceOwner}}</span>{{end}}
+    {{if .Verified}}<span class="chip" title="Verified: this session proved its identity to the Hub.">Verified</span>{{else}}<span class="chip grant-claimed" title="Claimed: this session is named by its Worker. Any program running as that Worker's OS user can use this grant.">Claimed</span>{{end}}</td>
+  <td data-label="Target" class="grant-member">{{if .TargetMasked}}<em class="grant-masked">{{.TargetSession}}</em> @ {{.TargetWorker}}{{else if .TargetSession}}<strong>{{.TargetSession}}</strong> @ {{.TargetWorker}}{{else}}all shared sessions of {{.TargetWorker}}{{end}}{{if .TargetOwner}} <span class="muted">{{.TargetOwner}}</span>{{end}}</td>
+  <td data-label="Granted" class="grant-level-cell">{{.LevelLabel}}</td>
+  <td data-label="State"><span class="badge" data-tone="{{.StateTone}}">{{.StateLabel}}</span></td>
+  <td data-label="In effect">{{if not .Effect.Known}}<span class="muted" title="The Hub could not say whether this grant works now.">unknown</span>{{else if .Effect.Level}}{{.EffectLabel}}{{else}}<span class="chip grant-blocked" title="Blocked by: {{.BlockedText}}">Blocked: {{.BlockedText}}</span>{{end}}</td>
+  <td data-label="Decided by">{{if .DecidedBy}}{{.DecidedBy}}{{else}}<span class="muted grant-user-id">another user</span>{{end}} <span class="muted">{{.AuthorityLabel}}</span></td>
+  <td data-label="Until">{{.UntilText}}</td>
+  <td data-label="Actions" class="grant-actions">{{if .Confirm}}<div class="grant-confirm" role="group" aria-labelledby="grant-{{.ID}}-confirm-text">
+    <p id="grant-{{.ID}}-confirm-text" class="grant-confirm-text" tabindex="-1">{{.Confirm}}</p>
+    <div class="row-actions">
+    <form hx-post="/access/grants/set-level" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
+      <input type="hidden" name="level" value="{{.ConfirmLevel}}"><input type="hidden" name="confirm" value="1">
+      <button type="submit" class="btn" id="grant-{{.ID}}-confirm">Confirm</button>
+    </form>
+    <form hx-post="/access/grants/show" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-cancel">Cancel</button>
+    </form></div></div>{{else}}<div class="row-actions">
+    {{if .Masked}}<span class="muted">Names a session you may not see: only Revoke.</span>{{else}}{{if .CanEdit}}<form hx-post="/access/grants/set-level" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
+      <label for="grant-{{.ID}}-level" class="sr-only">Change level of {{.SourceSession}} to {{.TargetText}}</label>
+      <select name="level" id="grant-{{.ID}}-level">
+          <option value="view"{{if eq .Level "view"}} selected{{end}}>View</option>
+          <option value="message"{{if eq .Level "message"}} selected{{end}}>Message</option>
+          <option value="control"{{if eq .Level "control"}} selected{{end}}>Control</option>
+        </select>
+      <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-save">Save</button>
+    </form>{{end}}
+    {{if and .IsSuspended .Admin}}<form hx-post="/access/grants/approve" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
+      <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-approve">Approve</button>
+    </form>{{end}}{{end}}
+    {{if .CanRevoke}}<form hx-post="/access/grants/revoke" hx-target="closest tr" hx-swap="outerHTML" hx-sync="#grant-panel:queue all" hx-disabled-elt="find button">
+      <input type="hidden" name="id" value="{{.ID}}"><input type="hidden" name="if_revision" value="{{.Revision}}">
+      <button type="submit" class="btn btn-secondary" id="grant-{{.ID}}-revoke">Revoke</button>
+    </form>{{end}}{{if .Admin}}
+    <a href="{{.HistoryURL}}" class="grant-history" id="grant-{{.ID}}-history">History</a>{{end}}</div>{{end}}
+    {{if .Error}}<p id="grant-{{.ID}}-status" tabindex="-1" class="grant-status grant-error" role="alert">{{.Error}}</p>{{else if .Saved}}<p id="grant-{{.ID}}-status" tabindex="-1" class="grant-status" role="status">{{.Saved}}</p>{{end}}</td>
+</tr>{{end}}{{end}}
+
+{{define "grant_note"}}<p class="form-error" role="alert">{{.}} <button type="button" class="btn btn-secondary" data-grant-reload>Reload the list</button></p>{{end}}
+
+{{define "grant_add_confirm"}}<div class="grant-confirm" id="grant-add-confirm">
+  <p class="grant-confirm-text" id="grant-add-confirm-text">{{.Sentence}}</p>
+  <input type="hidden" name="confirm" value="1"><input type="hidden" name="confirm_for" value="{{.For}}">
+  <p class="help">Nothing is saved yet. Press "Confirm and add" to save this grant; a change of the form asks again.</p>
+  <button type="submit" class="btn" id="grant-add-confirm-button">Confirm and add</button>
+</div>{{end}}

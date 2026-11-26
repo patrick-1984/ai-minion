@@ -18,6 +18,35 @@ import (
 type fakeGrants struct {
 	mu   sync.Mutex
 	rows map[[2]string]string // (worker, session) -> targets JSON
+	// direct are the session grants by (source worker, source session).
+	direct map[[2]string][]store.SessionGrantRow
+	// directErr, when set, fails every read of the direct grants.
+	directErr error
+}
+
+func (g *fakeGrants) failDirect(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.directErr = err
+}
+
+func (g *fakeGrants) SessionGrantsFor(_ context.Context, workerID, session string) ([]store.SessionGrantRow, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.directErr != nil {
+		return nil, g.directErr
+	}
+	return append([]store.SessionGrantRow(nil), g.direct[[2]string{workerID, session}]...), nil
+}
+
+// setDirect replaces the direct grants of a source session.
+func (g *fakeGrants) setDirect(workerID, session string, rows ...store.SessionGrantRow) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.direct == nil {
+		g.direct = map[[2]string][]store.SessionGrantRow{}
+	}
+	g.direct[[2]string{workerID, session}] = rows
 }
 
 func (g *fakeGrants) SessionControl(_ context.Context, workerID, session string) (store.SessionControlRow, error) {
@@ -194,6 +223,10 @@ func TestSessionControlGrantedSessionReachesItsTargetsOnly(t *testing.T) {
 		evs[0].Actor != "worker:"+wRootLab.ID || evs[0].Outcome != "success" {
 		t.Fatalf("audit = %+v", evs)
 	}
+	// The row names the calling session, not only its Worker.
+	if evs[0].Source != wRootLab.ID+":boss" {
+		t.Fatalf("audit source = %q, want %q", evs[0].Source, wRootLab.ID+":boss")
+	}
 
 	// Out of scope: another session of bob's pi-1, bob's box, alice's pi-1.
 	opens := r.be.openCount()
@@ -285,7 +318,7 @@ func TestSessionControlRecheckEndsARunningCall(t *testing.T) {
 			g := &fakeGrants{}
 			g.set(t, wRootLab.ID, "boss", gAlicePi2)
 			cs := NewCallServer(CallServerConfig{Grants: g, ReauthInterval: 5 * time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
-			_, _, grant, err := cs.authenticate(context.Background(), wRootLab.ID, "", "boss")
+			_, _, grant, err := cs.authenticate(context.Background(), wRootLab.ID, "", "boss", ops.OpSendText)
 			if err != nil || grant == "" {
 				t.Fatalf("grant %q %v", grant, err)
 			}
@@ -294,7 +327,7 @@ func TestSessionControlRecheckEndsARunningCall(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				cs.reauthorizeWorker(ctx, cancel, authz.NewWorkerPrincipal(wRootLab.ID), "boss", grant)
+				cs.reauthorizeWorker(ctx, cancel, authz.NewWorkerPrincipal(wRootLab.ID), "boss", grant, true)
 			}()
 			time.Sleep(20 * time.Millisecond)
 			if ctx.Err() != nil {

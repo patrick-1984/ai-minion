@@ -1,3 +1,4 @@
+{{define "head_extra"}}<link rel="stylesheet" href="/static/access-panels.css">{{end}}
 {{define "content"}}
 <div class="inspect-layout" id="inspect-layout">
 <div class="inspect-main" data-modal-inert>
@@ -20,6 +21,10 @@
 {{if .Data.ShareURL}}<section class="panel" aria-labelledby="share-h" id="share-section">
   <h2 id="share-h">Sharing</h2>
   <div id="share-panel" hx-get="{{.Data.ShareURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the sharing choice...</p></div>
+</section>
+{{end}}{{if .Data.AccessURL}}<section class="panel" aria-labelledby="access-h" id="access-section">
+  <h2 id="access-h">Access</h2>
+  <div id="access-panel" hx-get="{{.Data.AccessURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the access summary...</p></div>
 </section>
 {{end}}{{if .Data.ShareURL}}<section class="panel" aria-labelledby="unasked-h" data-unasked-worker="{{.Data.Worker.ID}}" hidden>
   <h2 id="unasked-h">Sending</h2>

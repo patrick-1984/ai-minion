@@ -914,3 +914,154 @@ func TestCallStreamLostReplyIsNotASuccess(t *testing.T) {
 		t.Fatalf("served %q", rec.served)
 	}
 }
+
+// A name-only grant made before the Hub first observed the session it names
+// does not reach it: a terminal that took the name after the grant's session
+// was removed is another terminal, while the grant exists (the session purge
+// is paused: nothing deletes the grant here), however long that is. A grant
+// made after the new terminal was first seen does, and a removal observed
+// between the decision and the dispatch refuses the dispatch.
+func TestObservedRemovalFencesOlderNameOnlyGrantsBeforeThePurge(t *testing.T) {
+	var clock sync.Mutex
+	nowMS := int64(10_000)
+	setNow := func(ms int64) { clock.Lock(); nowMS = ms; clock.Unlock() }
+	hub := NewEventHub(EventHubOptions{Now: func() time.Time { clock.Lock(); defer clock.Unlock(); return time.UnixMilli(nowMS) }})
+	feeds := map[string]*Feed{}
+	for id, name := range map[string]string{wAlicePi1.ID: "agent", wAlicePi2.ID: "build"} {
+		f, err := hub.Connect(id, id).NewFeed()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Snapshot(0, []SessionState{{Name: name, Kind: "agent:claude"}}); err != nil {
+			t.Fatal(err)
+		}
+		feeds[id] = f
+	}
+	r := newSCRig(t)
+	r.cs.cfg.Sessions = hub
+	old := aliceGrant(authz.LevelControl)
+	old.CreatedAt = 9_000
+	r.grants.setDirect(wAlicePi1.ID, "agent", old)
+	send := func() ([]json.RawMessage, *fakeStream) {
+		return r.call(t, wAlicePi1.ID, scRequest(ops.OpSendText, scArgs(ops.OpSendText, grantedBuild), "", "agent"),
+			ops.WriteResult{Outcome: ops.OutcomeDelivered})
+	}
+	frames, _ := send()
+	var wr ops.WriteResult
+	resultOf(t, frames, &wr)
+
+	// The target terminal closes and a new one takes its name.
+	setNow(11_000)
+	if err := feeds[wAlicePi2.ID].Apply(Change{Seq: 1, Event: EventSessionRemoved, Session: SessionState{Name: "build"}}); err != nil {
+		t.Fatal(err)
+	}
+	setNow(12_000)
+	if err := feeds[wAlicePi2.ID].Apply(Change{Seq: 2, Event: EventSessionAdded, Session: SessionState{Name: "build", Kind: "agent:claude"}}); err != nil {
+		t.Fatal(err)
+	}
+	opens := r.be.openCount()
+	frames, _ = send()
+	if c := errCodeOf(t, frames); c != proto.CodeForbidden {
+		t.Fatalf("the replacement was reached by a grant made for the closed terminal: %q", c)
+	}
+	if r.be.openCount() != opens {
+		t.Fatal("a fenced grant reached a Worker")
+	}
+
+	// The fence does not lift with time: an hour later the old grant still
+	// does not reach the replacement.
+	setNow(12_000 + time.Hour.Milliseconds())
+	frames, _ = send()
+	if c := errCodeOf(t, frames); c != proto.CodeForbidden {
+		t.Fatalf("the fence lifted with time: %q", c)
+	}
+	setNow(12_000)
+
+	// A grant made after the new terminal was first seen names it.
+	fresh := aliceGrant(authz.LevelControl)
+	fresh.ID, fresh.CreatedAt = "g-2", 12_500
+	r.grants.setDirect(wAlicePi1.ID, "agent", old, fresh)
+	frames, _ = send()
+	resultOf(t, frames, &wr)
+	if all := r.audit.all(); len(all) == 0 || all[len(all)-1].GrantID != "g-2" {
+		t.Fatalf("the write was not authorized by the fresh grant alone: %+v", all)
+	}
+
+	// The source session is observed gone after the decision: the dispatch
+	// fence refuses and nothing reaches the target.
+	r.be.beforeOpen = func(*fakeBackend) {
+		setNow(13_000)
+		if err := feeds[wAlicePi1.ID].Apply(Change{Seq: 1, Event: EventSessionRemoved, Session: SessionState{Name: "agent"}}); err != nil {
+			t.Error(err)
+		}
+	}
+	frames, sent := send()
+	if c := errCodeOf(t, frames); c != proto.CodeForbidden {
+		t.Fatalf("a dispatch after the source was observed gone: %q", c)
+	}
+	sent.mu.Lock()
+	defer sent.mu.Unlock()
+	if len(sent.written) != 0 {
+		t.Fatalf("%d frames reached the Worker", len(sent.written))
+	}
+}
+
+// The first-seen time of a session: 0 for the first snapshot of this process,
+// kept across a later snapshot that still lists it, new for a name that came
+// back after a snapshot, a session_removed or an unsharing answer, and unknown
+// for a name the Hub does not list. It never lifts with time.
+func TestEventHubFirstSeenFollowsTheLiveSessions(t *testing.T) {
+	now := time.UnixMilli(50_000)
+	hub := NewEventHub(EventHubOptions{Now: func() time.Time { return now }})
+	f, err := hub.Connect("w", "w").NewFeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Snapshot(0, []SessionState{{Name: "a"}, {Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := hub.FirstSeen("w", "a"); !ok || at != 0 {
+		t.Fatalf("first snapshot: %d, %v", at, ok)
+	}
+	f, _ = hub.Connect("w", "w").NewFeed()
+	now = now.Add(time.Second)
+	if err := f.Snapshot(0, []SessionState{{Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := hub.FirstSeen("w", "a"); ok {
+		t.Fatal("a session the snapshot no longer lists has a first-seen time")
+	}
+	if at, ok := hub.FirstSeen("w", "b"); !ok || at != 0 {
+		t.Fatalf("a session listed throughout lost its first-seen time: %d, %v", at, ok)
+	}
+	f, _ = hub.Connect("w", "w").NewFeed()
+	now = now.Add(time.Second)
+	if err := f.Snapshot(0, []SessionState{{Name: "a"}, {Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := hub.FirstSeen("w", "a"); !ok || at != now.UnixMilli() {
+		t.Fatalf("a name that came back in a snapshot: %d, %v", at, ok)
+	}
+	now = now.Add(time.Second)
+	if err := f.Apply(Change{Seq: 1, Event: EventSessionRemoved, Session: SessionState{Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if err := f.Apply(Change{Seq: 2, Event: EventSessionAdded, Session: SessionState{Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := hub.FirstSeen("w", "b"); !ok || at != now.UnixMilli() {
+		t.Fatalf("a name that came back after session_removed: %d, %v", at, ok)
+	}
+	hub.ApplyShare("w", []string{"a"})
+	if _, ok := hub.FirstSeen("w", "a"); ok {
+		t.Fatal("an unshared session has a first-seen time")
+	}
+	now = now.Add(time.Hour)
+	if at, ok := hub.FirstSeen("w", "b"); !ok || at != now.Add(-time.Hour).UnixMilli() {
+		t.Fatalf("the first-seen time changed with time: %d, %v", at, ok)
+	}
+	if _, ok := hub.FirstSeen("other", "b"); ok {
+		t.Fatal("an unknown Worker has a first-seen time")
+	}
+}

@@ -29,6 +29,8 @@ type AuditListArgs struct {
 	Actor string `json:"actor,omitempty"`
 	// Action keeps only events with this action (exact match).
 	Action string `json:"action,omitempty"`
+	// GrantID keeps only the events of this grant (exact match).
+	GrantID string `json:"grant_id,omitempty"`
 	// From keeps events at or after this time.
 	From *Timestamp `json:"from,omitempty"`
 	// To keeps events before this time.
@@ -42,10 +44,13 @@ type AuditListArgs struct {
 
 // Validate checks the filters, the time range, the cursor and the limit.
 func (a AuditListArgs) Validate() error {
-	for _, f := range []struct{ name, v string }{{"actor", a.Actor}, {"action", a.Action}} {
+	for _, f := range []struct{ name, v string }{{"actor", a.Actor}, {"action", a.Action}, {"grant_id", a.GrantID}} {
 		if utf8.RuneCountInString(f.v) > MaxAuditFieldLen || !utf8.ValidString(f.v) {
 			return invalid(f.name, "must be valid UTF-8 of at most %d characters", MaxAuditFieldLen)
 		}
+	}
+	if strings.ContainsAny(a.GrantID, " \t\r\n") {
+		return invalid("grant_id", "must not contain whitespace")
 	}
 	if a.From != nil && a.To != nil && !a.From.Time().Before(a.To.Time()) {
 		return invalid("to", "must be after from")
@@ -76,6 +81,12 @@ type AuditEvent struct {
 	Action   string    `json:"action"`
 	Target   string    `json:"target,omitempty"`
 	Outcome  string    `json:"outcome"`
+	// Source is the session a brokered call came from or a control change
+	// names ("<worker_id>:<session>"), GrantID the grant that allowed the
+	// call, Detail a list of k=v pairs. Each is empty when not recorded.
+	Source  string `json:"source,omitempty"`
+	GrantID string `json:"grant_id,omitempty"`
+	Detail  string `json:"detail,omitempty"`
 	// ActorName, ActingAsName and TargetName are the names the Hub knows for
 	// the ids above (a user name or a Worker name); empty when it knows none.
 	ActorName    string `json:"actor_name,omitempty"`

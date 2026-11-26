@@ -1,0 +1,23 @@
+{{define "head_extra"}}<link rel="stylesheet" href="/static/access-why.css">{{end}}
+{{define "content"}}
+<div class="page-head access-wide"><div><h1>Why?</h1>
+<p>Pick a source session and a target session on another Worker to see every check between them, in order. This page changes nothing.</p></div></div>
+<nav class="access-nav" aria-label="Access views"><a href="/access">Who reaches what</a><a href="/access/grants">Grants</a><a href="/access/why" aria-current="page">Why?</a></nav>
+<section class="panel" aria-labelledby="access-why-h">
+  <h2 id="access-why-h">Check a pair</h2>
+  {{if .Data.Workers}}<form method="get" action="/access/why" class="toolbar access-why-form">
+    <label class="field grow"><span class="label">Source session</span><select name="source" required>
+      <option value="">Choose a session</option>{{$sel := .Data.Source}}{{range $w := .Data.Workers}}<optgroup label="{{.Label}}">{{range .Sessions}}<option value="{{.Value}}"{{if eq .Value $sel}} selected{{end}}>{{.Session}} @ {{$w.Label}}</option>{{end}}</optgroup>{{end}}</select></label>
+    <label class="field grow"><span class="label">Target session</span><select name="target" required>
+      <option value="">Choose a session</option>{{$sel := .Data.Target}}{{range $w := .Data.Workers}}<optgroup label="{{.Label}}">{{range .Sessions}}<option value="{{.Value}}"{{if eq .Value $sel}} selected{{end}}>{{.Session}} @ {{$w.Label}}</option>{{end}}</optgroup>{{end}}</select></label>
+    <button type="submit" class="btn">Check</button>
+  </form>{{else}}<p class="muted">There is no session to pick yet: no Worker you may see has a live session, and no session reaches another Worker. Grants are set under <a href="/access/grants">Grants</a>.</p>{{end}}
+  {{if .Data.Neutral}}<div class="access-why-answer" data-answer="none">
+  <h3 id="access-why-answer" class="access-why-question" tabindex="-1" autofocus>No explanation</h3>
+  <p class="access-why-summary" role="status">{{.Data.Neutral}}</p></div>{{else if .Data.Asked}}<div class="access-why-answer" data-answer="{{if .Data.Reaches}}reaches{{else}}blocked{{end}}">
+  <h3 id="access-why-answer" class="access-why-question" tabindex="-1" autofocus>{{.Data.Question}}</h3>
+  <p class="access-why-summary" role="status"><strong>{{.Data.Summary}}</strong></p>
+  {{with .Data.Blocked}}<p class="access-why-blocked"><span class="badge" data-tone="danger">Blocked by</span> <span>{{.Label}}: {{.Text}}</span></p>{{end}}
+  <ol class="access-why-checks">{{range .Data.Checks}}<li class="access-why-{{.StateClass}}{{if .Blocking}} access-why-blocking{{end}}" data-check="{{.ID}}" data-state="{{.StateClass}}"{{if .Code}} data-code="{{.Code}}"{{end}}><span class="access-why-mark">{{.Mark}}</span> <span class="access-why-id">{{.Label}}</span> <span class="access-why-text">{{.Text}}</span>{{if .Blocking}} <span class="access-why-first">Blocked by this check</span>{{end}}{{if .FixHref}} <a class="access-why-fix" href="{{.FixHref}}">{{.FixLabel}}</a>{{end}}</li>{{end}}</ol></div>{{end}}
+</section>
+{{end}}

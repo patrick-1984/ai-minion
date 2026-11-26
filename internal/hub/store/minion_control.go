@@ -94,38 +94,36 @@ func (s *Store) PutMasterSession(ctx context.Context, m MasterRow) error {
 	return nil
 }
 
-// DeleteMasterSession ends a nomination and reports whether it existed. A
-// slot held by an active session-bound master is refused with
-// [ErrBoundMasterSlot] in the same transaction: that master is not in
-// master_session, so the delete would revoke nothing.
+// DeleteMasterSession ends a name-only nomination and reports whether it
+// existed. It refuses with [ErrBoundMasterSlot] while the session holds an
+// active session-bound nomination: that one is not in master_session, so the
+// delete would revoke nothing. The check and the delete are one transaction,
+// so a conversion to a bound master cannot slip in between.
 func (s *Store) DeleteMasterSession(ctx context.Context, workerID, session string) (bool, error) {
-	var n int64
-	err := s.Tx(ctx, func(tx *sql.Tx) error {
-		if err := refuseBoundSlot(ctx, tx, workerID, session); err != nil {
-			return err
-		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
-		if err != nil {
-			return fmt.Errorf("store: delete master session: %w", err)
-		}
-		n, err = res.RowsAffected()
+	var existed bool
+	err := s.Tx(ctx, func(tx *sql.Tx) (err error) {
+		existed, err = deleteMasterSession(ctx, tx, workerID, session)
 		return err
 	})
-	return n > 0, err
+	return existed && err == nil, err
 }
 
-// refuseBoundSlot answers [ErrBoundMasterSlot] when the session holds an
-// active session-bound master nomination, read in the caller's transaction.
-func refuseBoundSlot(ctx context.Context, tx *sql.Tx, workerID, session string) error {
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM bound_master_session WHERE worker_id=? AND session_name=? AND active=1`,
-		workerID, session).Scan(&n); err != nil {
-		return fmt.Errorf("store: read the bound master slot: %w", err)
+// deleteMasterSession is the fenced delete of a name-only nomination inside
+// tx: the active-bound refusal first, then the delete.
+func deleteMasterSession(ctx context.Context, tx *sql.Tx, workerID, session string) (bool, error) {
+	bound, err := boundMasterActive(ctx, tx, workerID, session)
+	if err != nil {
+		return false, fmt.Errorf("store: delete master session: %w", err)
 	}
-	if n > 0 {
-		return ErrBoundMasterSlot
+	if bound {
+		return false, ErrBoundMasterSlot
 	}
-	return nil
+	res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
+	if err != nil {
+		return false, fmt.Errorf("store: delete master session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // ListAccepts returns every acceptance, ordered by target and source.
@@ -265,22 +263,88 @@ func checkOwners(ctx context.Context, tx *sql.Tx, owners map[string]string) erro
 	return nil
 }
 
+// ErrControlChanged is returned by a change that states what its caller saw
+// when the stored state is no longer that: someone else changed it meanwhile.
+var ErrControlChanged = errors.New("changed by someone else")
+
+// The stored acceptance of one (target, source) pair, as a precondition.
+const (
+	AcceptStateAbsent  = "absent"  // no row
+	AcceptStateAll     = "all"     // a row without a session list
+	AcceptStateLimited = "limited" // a row with some sessions
+	AcceptStateNone    = "none"    // a row with an empty list
+)
+
+// ValidAcceptState reports whether state names a stored acceptance.
+func ValidAcceptState(state string) bool {
+	switch state {
+	case AcceptStateAbsent, AcceptStateAll, AcceptStateLimited, AcceptStateNone:
+		return true
+	}
+	return false
+}
+
 // SetWorkerControlIfOwner is [Store.SetWorkerControl] while the Worker still
 // has owner.
 func (s *Store) SetWorkerControlIfOwner(ctx context.Context, workerID, owner string, userManaged, acceptAll *bool) error {
+	return s.SetWorkerControlIfSeen(ctx, workerID, owner, userManaged, acceptAll, nil, nil)
+}
+
+// SetWorkerControlIfSeen is [Store.SetWorkerControlIfOwner] with what the
+// caller saw: a non-nil ifUserManaged or ifAcceptAll must be the stored value
+// (the default for a Worker without a row), checked in the same transaction;
+// otherwise it answers [ErrControlChanged] and stores nothing.
+func (s *Store) SetWorkerControlIfSeen(ctx context.Context, workerID, owner string, userManaged, acceptAll, ifUserManaged, ifAcceptAll *bool) error {
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		if err := checkOwners(ctx, tx, map[string]string{workerID: owner}); err != nil {
 			return err
+		}
+		if ifUserManaged != nil || ifAcceptAll != nil {
+			um, all := 1, 0
+			err := tx.QueryRowContext(ctx, `SELECT user_managed, accept_all FROM worker_control WHERE worker_id = ?`, workerID).Scan(&um, &all)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("store: read worker control: %w", err)
+			}
+			if ifUserManaged != nil && *ifUserManaged != (um == 1) || ifAcceptAll != nil && *ifAcceptAll != (all == 1) {
+				return ErrControlChanged
+			}
 		}
 		return setWorkerControl(ctx, tx, workerID, userManaged, acceptAll)
 	})
 }
 
+// masterSeen checks, inside tx, that the name-only nomination is as the caller
+// saw it (nil: no precondition).
+func masterSeen(ctx context.Context, tx *sql.Tx, workerID, session string, ifMaster *bool) error {
+	if ifMaster == nil {
+		return nil
+	}
+	var is bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM master_session WHERE worker_id = ? AND session_name = ?)`,
+		workerID, session).Scan(&is); err != nil {
+		return fmt.Errorf("store: read master session: %w", err)
+	}
+	if is != *ifMaster {
+		return ErrControlChanged
+	}
+	return nil
+}
+
 // PutMasterSessionIfOwner is [Store.PutMasterSession] while the Worker still
-// has owner. It keeps a migrated legacy limit unless clearLegacy.
+// has owner. It stores the legacy limit of m (none: the nomination has none).
 func (s *Store) PutMasterSessionIfOwner(ctx context.Context, m MasterRow, owner string) error {
+	return s.PutMasterSessionIfSeen(ctx, m, owner, nil)
+}
+
+// PutMasterSessionIfSeen is [Store.PutMasterSessionIfOwner] with what the
+// caller saw: a non-nil ifMaster must say whether the session is a name-only
+// master now, else [ErrControlChanged].
+func (s *Store) PutMasterSessionIfSeen(ctx context.Context, m MasterRow, owner string, ifMaster *bool) error {
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		if err := checkOwners(ctx, tx, map[string]string{m.WorkerID: owner}); err != nil {
+			return err
+		}
+		if err := masterSeen(ctx, tx, m.WorkerID, m.SessionName, ifMaster); err != nil {
 			return err
 		}
 		var legacy any
@@ -302,22 +366,67 @@ func (s *Store) PutMasterSessionIfOwner(ctx context.Context, m MasterRow, owner 
 // Worker still has owner: a removal decided for an earlier owner never
 // deletes what was set up for the new one.
 func (s *Store) DeleteMasterSessionIfOwner(ctx context.Context, workerID, session, owner string) (bool, error) {
-	var n int64
+	return s.DeleteMasterSessionIfSeen(ctx, workerID, session, owner, nil)
+}
+
+// DeleteMasterSessionIfSeen is [Store.DeleteMasterSessionIfOwner] with what
+// the caller saw (see [Store.PutMasterSessionIfSeen]). The owner check, the
+// active-bound refusal ([ErrBoundMasterSlot]), the precondition and the delete
+// are one transaction.
+func (s *Store) DeleteMasterSessionIfSeen(ctx context.Context, workerID, session, owner string, ifMaster *bool) (bool, error) {
+	var existed bool
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		if err := checkOwners(ctx, tx, map[string]string{workerID: owner}); err != nil {
 			return err
 		}
-		if err := refuseBoundSlot(ctx, tx, workerID, session); err != nil {
-			return err
-		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM master_session WHERE worker_id = ? AND session_name = ?`, workerID, session)
+		// The bound refusal comes first: it names the action that works.
+		bound, err := boundMasterActive(ctx, tx, workerID, session)
 		if err != nil {
 			return fmt.Errorf("store: delete master session: %w", err)
 		}
-		n, err = res.RowsAffected()
+		if bound {
+			return ErrBoundMasterSlot
+		}
+		if err := masterSeen(ctx, tx, workerID, session, ifMaster); err != nil {
+			return err
+		}
+		existed, err = deleteMasterSession(ctx, tx, workerID, session)
 		return err
 	})
-	return n > 0, err
+	return existed && err == nil, err
+}
+
+// acceptSeen checks, inside tx, that what target has stored for source is the
+// state the caller saw ("": no precondition).
+func acceptSeen(ctx context.Context, tx *sql.Tx, target, source, ifState string) error {
+	if ifState == "" {
+		return nil
+	}
+	if !ValidAcceptState(ifState) {
+		return errors.New("store: unknown acceptance state " + ifState)
+	}
+	var sess sql.NullString
+	state := AcceptStateAll
+	err := tx.QueryRowContext(ctx, `SELECT sessions_json FROM control_accept WHERE target_worker_id = ? AND source_worker_id = ?`,
+		target, source).Scan(&sess)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		state = AcceptStateAbsent
+	case err != nil:
+		return fmt.Errorf("store: read acceptance: %w", err)
+	case sess.Valid:
+		// As ListAccepts reads it: an unreadable list allows nothing.
+		var names []string
+		_ = json.Unmarshal([]byte(sess.String), &names)
+		state = AcceptStateLimited
+		if len(names) == 0 {
+			state = AcceptStateNone
+		}
+	}
+	if state != ifState {
+		return ErrControlChanged
+	}
+	return nil
 }
 
 // DeleteAcceptIfOwners is [Store.DeleteAccept] while both Workers still have
@@ -345,12 +454,22 @@ func (s *Store) DeleteAcceptIfOwners(ctx context.Context, target, source, target
 // back to accept_all and reach every shared session. Without accept_all the
 // row is deleted. It reports whether a row was deleted or changed.
 func (s *Store) RevokeAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwner, sourceOwner string) (bool, error) {
+	return s.RevokeAcceptIfState(ctx, a, targetOwner, sourceOwner, "")
+}
+
+// RevokeAcceptIfState is [Store.RevokeAcceptIfOwners] with what the caller
+// saw: a non-empty ifState (an AcceptState* value) must be the stored state,
+// checked in the same transaction, else [ErrControlChanged].
+func (s *Store) RevokeAcceptIfState(ctx context.Context, a AcceptRow, targetOwner, sourceOwner, ifState string) (bool, error) {
 	if a.TargetWorkerID == "" || a.SourceWorkerID == "" || a.TargetWorkerID == a.SourceWorkerID {
 		return false, errors.New("store: an acceptance needs two different Workers")
 	}
 	var n int64
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		if err := checkOwners(ctx, tx, map[string]string{a.TargetWorkerID: targetOwner, a.SourceWorkerID: sourceOwner}); err != nil {
+			return err
+		}
+		if err := acceptSeen(ctx, tx, a.TargetWorkerID, a.SourceWorkerID, ifState); err != nil {
 			return err
 		}
 		var all bool
@@ -383,6 +502,14 @@ func (s *Store) RevokeAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwn
 // PutAcceptIfOwners is [Store.PutAccept] while both Workers still have the
 // owners the change was decided for.
 func (s *Store) PutAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwner, sourceOwner string) error {
+	return s.PutAcceptIfState(ctx, a, targetOwner, sourceOwner, "")
+}
+
+// PutAcceptIfState is [Store.PutAcceptIfOwners] with what the caller saw: a
+// non-empty ifState (an AcceptState* value) must be the stored state, checked
+// in the same transaction, else [ErrControlChanged]. An acceptance that
+// another administrator narrowed or blocked meanwhile is never put back.
+func (s *Store) PutAcceptIfState(ctx context.Context, a AcceptRow, targetOwner, sourceOwner, ifState string) error {
 	if a.TargetWorkerID == "" || a.SourceWorkerID == "" || a.TargetWorkerID == a.SourceWorkerID {
 		return errors.New("store: an acceptance needs two different Workers")
 	}
@@ -396,6 +523,9 @@ func (s *Store) PutAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwner,
 	}
 	return s.Tx(ctx, func(tx *sql.Tx) error {
 		if err := checkOwners(ctx, tx, map[string]string{a.TargetWorkerID: targetOwner, a.SourceWorkerID: sourceOwner}); err != nil {
+			return err
+		}
+		if err := acceptSeen(ctx, tx, a.TargetWorkerID, a.SourceWorkerID, ifState); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx,

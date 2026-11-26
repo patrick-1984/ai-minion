@@ -32,6 +32,13 @@ type Call struct {
 	Identity Identity
 	// Resource is the resource the decision was made on.
 	Resource authz.Resource
+	// AuditSource and AuditDetail are set by a handler to add the source
+	// session and a k=v detail (see audit.ValidDetail) to the audit row the
+	// dispatcher writes for the call. Never a session name in AuditDetail.
+	AuditSource, AuditDetail string
+	// AuditGrantID is set by a handler to name the session grant the call
+	// acted on in that audit row.
+	AuditGrantID string
 	// IP is the client address as the Hub sees it.
 	IP netip.Addr
 	// Request is the HTTP request being served. Handlers read the transport

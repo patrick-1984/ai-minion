@@ -17,6 +17,21 @@ Without a choice of lifetime the key lives 90 days.
 
 Give a program the least it needs: a monitoring script needs `read`; an agent that only has to talk to other agents needs `message`; typing into sessions or changing sharing needs `operate`.
 
+### Keys, session grants and the control operations
+
+A key's scope and a **session grant** are different things. A key says what its *holder* may do through the Hub API. A grant says that one *session* may reach a session on another Worker at a level (View, Message, Control), with no key at all ([AI agents](agents.md#grants-one-session-reaches-another)). The three levels are not key actions and cannot be put into a key.
+
+| Operation | With an API key | Notes |
+|---|---|---|
+| `grant_set` (create a grant, or change its level, expiry or note) | never | Needs a person signed in at a browser. Every key, whatever its actions, is answered `forbidden` "this operation is available only to a signed-in browser session". A program that holds a key cannot enlarge the reach of any session. |
+| `grant_approve` (lift a suspension) | never | An administrator at a browser, for the same reason. |
+| `grant_list` | yes, with `operate` | Decided on the key owner's user: an owner's key lists the grants that touch that owner's Workers, an administrator's key lists all. |
+| `grant_revoke` | yes, with `operate` | Decided on the grant's source Worker, or on its target Worker when the key's owner owns only the target. Revoking only narrows access, so a key may do it; it takes effect at once. Pass `if_revision` to revoke only the grant you looked at. |
+| `access_matrix`, `access_explain` | yes, with `read` | Who reaches what, and why one pair is allowed or blocked. An administrator sees every Worker, others their own. |
+| `control_list`, `control_set_worker`, `control_set_master`, `control_set_bound_master`, `control_set_accept`, `control_check` | only with `manage` | Master sessions and "accepts control from" are administration ([Minion control](minion-control.md)): an administrator's key on an `everything` resource. |
+
+None of these is forwarded by a Worker: a session, with or without a grant, cannot call them from its Worker. An agent in a session learns what it reaches from `workers_list` and `sessions_list`.
+
 ## Let a Worker call other Workers
 
 A Worker, and the local `minion` commands and local MCP server on its host, reach their own Worker with no key. To pipe to a session on **another** Worker (`pipe_send`, `pipe_read`, `pipe_wait` with a target there), the sending Worker needs a **call key**: an ordinary API key that you create in the browser **bound to that Worker**, with a scope naming only the target Workers or sessions and the actions you accept (`message` to send, `read` to read replies). The key owner's own permissions still bound it.

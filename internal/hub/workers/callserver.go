@@ -60,9 +60,14 @@ package workers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,9 +125,54 @@ var _ PrincipalChecker = (*authz.Authorizer)(nil)
 // implements it.
 type GrantStore interface {
 	SessionControl(ctx context.Context, workerID, sessionName string) (store.SessionControlRow, error)
+	// SessionGrantsFor returns the direct session grants of the session
+	// (identified by name), expired and suspended ones included.
+	SessionGrantsFor(ctx context.Context, workerID, sessionName string) ([]store.SessionGrantRow, error)
 }
 
 var _ GrantStore = (*store.Store)(nil)
+
+// SessionGenerations reports when the Hub first observed a session it lists
+// now (unix ms, 0 when it was listed before the Hub could observe it; ok false
+// when it does not list it); *EventHub implements it.
+type SessionGenerations interface {
+	FirstSeen(workerID, session string) (int64, bool)
+}
+
+var _ SessionGenerations = (*EventHub)(nil)
+
+// sameSessions reports whether the sessions that grant g names by name are
+// still the terminals it was made for: each must be listed by the Hub now and
+// have been first observed no later than the grant was created. A session
+// that went away and came back under the name, or one the Hub does not list
+// (unknown first-seen time), is another terminal, for as long as the grant
+// exists: the fence does not lift with time or a reconnect. A wildcard target
+// (every shared session) names none. source is false for a Verified source,
+// which the incarnation identifies, not the name. A nil seen fences nothing.
+func sameSessions(seen SessionGenerations, g store.SessionGrantRow, source bool) bool {
+	if seen == nil {
+		return true
+	}
+	same := func(workerID, session string) bool {
+		at, ok := seen.FirstSeen(workerID, session)
+		return ok && at <= g.CreatedAt
+	}
+	if source && !same(g.SourceWorkerID, g.SourceSession) {
+		return false
+	}
+	return g.TargetSession == "" || same(g.TargetWorkerID, g.TargetSession)
+}
+
+// sameSessionGrants keeps the rows that pass [sameSessions].
+func sameSessionGrants(seen SessionGenerations, rows []store.SessionGrantRow, source bool) []store.SessionGrantRow {
+	var kept []store.SessionGrantRow
+	for _, g := range rows {
+		if sameSessions(seen, g, source) {
+			kept = append(kept, g)
+		}
+	}
+	return kept
+}
 
 // TargetResolver resolves the human form of a target; *Router implements it.
 type TargetResolver interface {
@@ -151,6 +201,13 @@ type CallContext struct {
 	// before decoding (a UUIDv7, or ""): it names the Worker of an op whose
 	// arguments name none (sessions_list), as the worker_id of a REST request.
 	RequestWorkerID string
+	// admit is the dispatch fence of a call that a grant authorized: the
+	// Router runs it on the opened connection, before it writes the request.
+	admit func(context.Context, Online) (authz.Principal, error)
+	// grantIDs are the direct grants that authorized the routed request, as
+	// the Router read them at its final admission; for the audit event of a write
+	// and for the usage of the grants.
+	grantIDs []string
 }
 
 // CallFunc executes one operation of a call stream. A streaming operation
@@ -182,6 +239,21 @@ type CallServerConfig struct {
 	Auditor Auditor
 	// Grants reads session-control grants. Nil means no session has one.
 	Grants GrantStore
+	// Sessions tells when the Hub first observed a session (*EventHub
+	// implements it): a direct grant whose named source or target session
+	// was first observed after the grant was created, or is not listed, is
+	// left out of every decision, dispatch fence and re-check (see
+	// sameSessions), so it never reaches a new terminal that took the name.
+	// Nil fences nothing.
+	Sessions SessionGenerations
+	// GrantUse is told the direct grants that authorized a brokered call
+	// that was allowed and answered (usage count and last use of a grant).
+	// Nil records nothing.
+	GrantUse *GrantUse
+	// Now is the clock that judges the expiry of direct grants at the
+	// dispatch fence and at the re-check of a running call. The default is
+	// time.Now.
+	Now func() time.Time
 	// RequestTimeout, ReauthInterval and MaxCalls default to the constants
 	// of this file.
 	RequestTimeout time.Duration
@@ -219,6 +291,9 @@ func NewCallServer(cfg CallServerConfig) *CallServer {
 	}
 	if cfg.MaxCalls <= 0 {
 		cfg.MaxCalls = DefaultMaxCalls
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -419,7 +494,8 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	}
 
 	key := req.APIKey
-	pr, actor, grant, err := s.authenticate(ctx, workerID, key, req.SourceSession)
+	pr, actor, grant, err := s.authenticate(ctx, workerID, key, req.SourceSession, req.Op)
+	direct := directGrantOps[req.Op]
 	switch {
 	case grant != "":
 		credential = "session_control_grant"
@@ -445,6 +521,10 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	c := &CallContext{WorkerID: workerID, Principal: pr, Actor: actor, Op: op, Args: args,
 		SourceSession: req.SourceSession, RequestWorkerID: reqWorker}
 
+	if grant != "" {
+		c.admit = s.admitGrant(workerID, key, req.SourceSession, req.Op, grant)
+	}
+
 	cctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	// The request is complete: any further byte or the end of the stream
@@ -464,11 +544,11 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	}()
 	switch {
 	case grant != "":
-		go s.reauthorizeWorker(cctx, cancel, pr, req.SourceSession, grant)
+		go s.reauthorizeWorker(cctx, cancel, pr, req.SourceSession, grant, direct)
 	case key != "":
 		go s.reauthenticate(cctx, cancel, workerID, key)
 	case s.cfg.Authz != nil:
-		go s.reauthorizeWorker(cctx, cancel, pr, "", "")
+		go s.reauthorizeWorker(cctx, cancel, pr, "", "", false)
 	}
 
 	var res any
@@ -490,8 +570,22 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 	if err != nil && errors.As(cause, &withdrawn) {
 		err = withdrawn // the credential was withdrawn while the call ran
 	}
+	if err == nil && len(c.grantIDs) > 0 {
+		// An allowed brokered call that was answered: each direct grant that
+		// authorized it was used once. Noted in memory only, never a store
+		// write on the call path.
+		s.cfg.GrantUse.Used(c.grantIDs...)
+	}
 	if op.ChangesState() {
-		s.auditCall(ctx, actor, op.Name, callTarget(args), writeAuditOutcome(res, err))
+		ev := audit.Event{Actor: actor, Action: op.Name, Target: callTarget(args), Outcome: writeAuditOutcome(res, err)}
+		if req.SourceSession != "" {
+			ev.Source = workerID + ":" + req.SourceSession
+		}
+		// The direct grants that authorized the write (empty when the
+		// session-control grant or the own-Worker rule did, and when the
+		// write was refused before the Router decided it).
+		ev.GrantID = strings.Join(c.grantIDs, ",")
+		s.auditEvent(ctx, ev)
 	}
 	if errors.Is(cause, errCallerGone) {
 		outcome = "caller_gone"
@@ -545,15 +639,48 @@ func errorFrameOf(err error, log *slog.Logger) proto.ErrorFrame {
 	return proto.NewError(proto.CodeInternal, "").Frame()
 }
 
-// authenticate decides who a call stream speaks for. A session-control grant
-// of the source session wins over the key; grant is then the stored targets of
-// the grant (for the re-check), else "". The returned actor is set even on
-// failure, for the audit row.
-func (s *CallServer) authenticate(ctx context.Context, workerID, key, source string) (pr authz.Principal, actor, grant string, err error) {
+// directGrantOps are the operations a direct session grant reaches on call
+// streams (D3), whatever its level: the level decides, through the actions it
+// gives, which of them a holder is served. For every other op the call stream
+// serves (pipe_send, pipe_read, pipe_wait and any op added later) the direct
+// grants are not read at all: the caller is who it was without them.
+var directGrantOps = map[string]bool{
+	ops.OpWorkersList: true, ops.OpSessionsList: true, ops.OpSessionSnapshot: true, ops.OpSessionCapture: true,
+	ops.OpSendText: true, ops.OpSendKeys: true, ops.OpSetTask: true, ops.OpAnswer: true,
+}
+
+// authenticate decides who a call stream speaks for on the operation op. A
+// session-control grant of the source session wins over the key; grant is
+// then the stored targets of the grant (for the re-check), else "". Direct
+// session grants count only for the operations of directGrantOps. The
+// returned actor is set even on failure, for the audit row.
+func (s *CallServer) authenticate(ctx context.Context, workerID, key, source, op string) (pr authz.Principal, actor, grant string, err error) {
 	actor = "worker:" + workerID
 	if grant, err = s.lookupGrant(ctx, workerID, source); err != nil {
 		s.log.Error("workers: cannot read a session-control grant", "worker_id", workerID, "error", err.Error())
 		return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
+	}
+	var direct []store.SessionGrantRow
+	if directGrantOps[op] {
+		if direct, err = s.lookupDirect(ctx, workerID, source); err != nil {
+			s.log.Error("workers: cannot read the session grants", "worker_id", workerID, "error", err.Error())
+			return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
+		}
+	}
+	if len(direct) > 0 {
+		// Direct session grants: the session principal carries them beside
+		// the session-control grant (nil scope when it has none).
+		var legacy authz.Scope
+		if grant != "" {
+			var targets []ops.KeyResource
+			if err := json.Unmarshal([]byte(grant), &targets); err != nil {
+				s.log.Error("workers: a session-control grant cannot be read", "worker_id", workerID, "error", err.Error())
+				return authz.Principal{}, actor, "", proto.NewError(proto.CodeInternal, "")
+			}
+			legacy = apikey.NewScope(targets, authz.GrantActions())
+		}
+		return authz.NewWorkerSessionPrincipal(workerID, source, legacy, directGrantsOf(direct)), actor,
+			grant + directDigest(direct, s.cfg.Now()), nil
 	}
 	if grant != "" {
 		var targets []ops.KeyResource
@@ -602,12 +729,108 @@ func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (
 	return row.TargetsJSON, nil
 }
 
+// lookupDirect returns the direct session grants of the session source on the
+// Worker (by name), nil when it has none. A grant whose named sessions are not
+// the terminals it was made for (sameSessions) is left out.
+func (s *CallServer) lookupDirect(ctx context.Context, workerID, source string) ([]store.SessionGrantRow, error) {
+	if source == "" || s.cfg.Grants == nil {
+		return nil, nil
+	}
+	rows, err := s.cfg.Grants.SessionGrantsFor(ctx, workerID, source)
+	if err != nil || s.cfg.Sessions == nil {
+		return rows, err
+	}
+	return sameSessionGrants(s.cfg.Sessions, rows, true), nil
+}
+
+// grantKey is the value the re-check of a running call compares: the stored
+// targets of the session-control grant, followed by a digest of the direct
+// grants when the session has any and direct is set (the op is one a direct
+// grant reaches, as in authenticate). Without direct grants it is exactly the
+// stored targets. The digest is taken at the clock of the server, so the key
+// of a grant changes at the instant it expires.
+func (s *CallServer) grantKey(ctx context.Context, workerID, source string, direct bool) (string, error) {
+	grant, err := s.lookupGrant(ctx, workerID, source)
+	if err != nil || !direct {
+		return grant, err
+	}
+	rows, err := s.lookupDirect(ctx, workerID, source)
+	if err != nil {
+		return "", err
+	}
+	return grant + directDigest(rows, s.cfg.Now()), nil
+}
+
+// directDigest identifies the state of direct grant rows at the time now: it
+// changes when a row is added, removed, written (revision), suspended or given
+// another expiry, and when the clock passes the expiry of a row (a grant is
+// valid while now is before expires_at, as authz judges it). It is "" for no
+// rows and never valid JSON otherwise.
+func directDigest(rows []store.SessionGrantRow, now time.Time) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(rows))
+	for _, g := range rows {
+		// "none" keeps a grant without expiry apart from every stored
+		// expiry, the zero value included.
+		exp := "none"
+		if g.ExpiresAt != nil {
+			exp = fmt.Sprintf("%d/%t", *g.ExpiresAt, now.UnixMilli() >= *g.ExpiresAt)
+		}
+		parts = append(parts, fmt.Sprintf("%s/%d/%t/%s", g.ID, g.Revision, g.SuspendedAt != nil, exp))
+	}
+	slices.Sort(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return "#direct:" + hex.EncodeToString(sum[:])
+}
+
+// directGrantsOf maps stored session grants to what the decision judges.
+func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
+	out := make([]authz.DirectGrant, 0, len(rows))
+	for _, g := range rows {
+		d := authz.DirectGrant{
+			ID: g.ID, TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: g.Level,
+			Authority: g.Authority, GrantedBy: g.GrantedBy, SourceOwnerID: g.SourceOwnerID, TargetOwnerID: g.TargetOwnerID,
+			Suspended: g.SuspendedAt != nil,
+		}
+		if g.ExpiresAt != nil {
+			// A stored expiry always ends the grant, the zero time included.
+			d.ExpiresAt = authz.ExpiryAt(time.UnixMilli(*g.ExpiresAt))
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// admitGrant is the dispatch fence of a call authorized by the grants of the
+// session source: it authenticates the call again, as serveRequest did, and
+// refuses when the grants are not the ones (key grant) the call was
+// authorized with, or when one of them expired since (the key is taken at the
+// clock of the server). A failing store refuses too. It returns the principal
+// built from what it read, which the Router decides the request on again
+// before it writes it (an owner deactivated since, a withdrawn action).
+func (s *CallServer) admitGrant(workerID, key, source, op, grant string) func(context.Context, Online) (authz.Principal, error) {
+	return func(ctx context.Context, _ Online) (authz.Principal, error) {
+		pr, _, cur, err := s.authenticate(ctx, workerID, key, source, op)
+		if err != nil {
+			return authz.Principal{}, err
+		}
+		if cur != grant {
+			return authz.Principal{}, proto.NewError(proto.CodeForbidden, "the grant was removed, changed or expired")
+		}
+		return pr, nil
+	}
+}
+
 // reauthenticate withdraws a running call when its key stops authenticating
-// (revoked, expired, owner deactivated, AD-11). A failing store is not a
-// reason to end the call.
+// (revoked, expired, owner deactivated, AD-11). One failing re-check (a store
+// error) is passed over; the second in a row ends the call, as in
+// reauthorizeWorker.
 func (s *CallServer) reauthenticate(ctx context.Context, cancel context.CancelCauseFunc, workerID, key string) {
 	t := time.NewTicker(s.cfg.ReauthInterval)
 	defer t.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -622,6 +845,17 @@ func (s *CallServer) reauthenticate(ctx context.Context, cancel context.CancelCa
 		case errors.Is(err, apikey.ErrWrongWorker):
 			cancel(proto.NewError(proto.CodeForbidden, "the API key is not bound to this Worker"))
 			return
+		case err == nil:
+			failures = 0
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if failures++; failures >= 2 {
+			s.log.Error("workers: the key of a running call could not be re-checked twice in a row and the call ends", "worker_id", workerID)
+			cancel(proto.NewError(proto.CodeForbidden, "the permission of the call could not be re-checked"))
+			return
 		}
 	}
 }
@@ -630,28 +864,49 @@ func (s *CallServer) reauthenticate(ctx context.Context, cancel context.CancelCa
 // stops being valid: the Worker was removed, or its owner was deactivated or
 // holds no grant any more (F-07). A call authorized by the session-control
 // grant of the session source (stored targets grant) also ends when that
-// grant was removed or changed. A failing store is not a reason to end the
-// call.
-func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.CancelCauseFunc, pr authz.Principal, source, grant string) {
+// grant was removed or changed, or when a direct grant of the session expired
+// (direct is as for grantKey). One failing re-check (a store error) is
+// passed over and the second in a row ends the call, except for a call that
+// direct grants authorized: it ends at once (fail closed, D5 bounds the end
+// of a withdrawn grant to 30 s).
+func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.CancelCauseFunc, pr authz.Principal, source, grant string, direct bool) {
 	t := time.NewTicker(s.cfg.ReauthInterval)
 	defer t.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
+		failed := false
 		if s.cfg.Authz != nil {
-			if ok, err := s.cfg.Authz.Valid(ctx, pr); err == nil && !ok {
+			ok, err := s.cfg.Authz.Valid(ctx, pr)
+			if err == nil && !ok {
 				cancel(proto.NewError(proto.CodeForbidden, "not allowed"))
 				return
 			}
+			failed = err != nil
 		}
 		if grant != "" {
-			if cur, err := s.lookupGrant(ctx, pr.WorkerID, source); err == nil && cur != grant {
-				cancel(proto.NewError(proto.CodeForbidden, "the session-control grant was removed or changed"))
+			cur, err := s.grantKey(ctx, pr.WorkerID, source, direct)
+			if err == nil && cur != grant {
+				cancel(proto.NewError(proto.CodeForbidden, "the session-control grant was removed, changed or expired"))
 				return
 			}
+			failed = failed || err != nil
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !failed {
+			failures = 0
+			continue
+		}
+		if failures++; failures >= 2 || len(pr.DirectGrants()) > 0 {
+			s.log.Error("workers: a running call could not be re-checked and ends", "worker_id", pr.WorkerID)
+			cancel(proto.NewError(proto.CodeForbidden, "the permission of the call could not be re-checked"))
+			return
 		}
 	}
 }
@@ -690,7 +945,7 @@ func (s *CallServer) decodeArgs(ctx context.Context, pr authz.Principal, workerI
 			// A grant reaches beyond the owner's own Workers (an admin-owned
 			// controller with targets of other owners): resolve among every
 			// Worker the grant may read.
-			tgt, err := s.cfg.Resolver.Resolve(ctx, rp, human, pr.Scope != nil && pr.Kind == authz.KindWorker)
+			tgt, err := s.cfg.Resolver.Resolve(ctx, rp, human, (pr.Scope != nil || len(pr.DirectGrants()) > 0) && pr.Kind == authz.KindWorker)
 			if err != nil {
 				return nil, "", err
 			}
@@ -744,6 +999,10 @@ func targetOfArgs(args any) (ops.Target, bool) {
 
 func writeAuditOutcome(res any, err error) string {
 	if err != nil {
+		// A refusal is not a failure: the call was not allowed.
+		if c := proto.CodeOf(err); c == proto.CodeForbidden || c == proto.CodeNotFound {
+			return "denied"
+		}
 		return "failed"
 	}
 	if wr, ok := res.(ops.WriteResult); ok && wr.Outcome != ops.OutcomeDelivered {
@@ -761,11 +1020,15 @@ func denialOutcome(err error) string {
 }
 
 func (s *CallServer) auditCall(ctx context.Context, actor, action, target, outcome string) {
+	s.auditEvent(ctx, audit.Event{Actor: actor, Action: action, Target: target, Outcome: outcome})
+}
+
+func (s *CallServer) auditEvent(ctx context.Context, ev audit.Event) {
 	if s.cfg.Auditor == nil {
 		return
 	}
-	if err := s.cfg.Auditor.Record(context.WithoutCancel(ctx), audit.Event{Actor: actor, Action: action, Target: target, Outcome: outcome}); err != nil {
-		s.log.Error("workers: audit write failed", "action", action, "error", err.Error())
+	if err := s.cfg.Auditor.Record(context.WithoutCancel(ctx), ev); err != nil {
+		s.log.Error("workers: audit write failed", "action", ev.Action, "error", err.Error())
 	}
 }
 

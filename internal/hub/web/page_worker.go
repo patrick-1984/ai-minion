@@ -90,6 +90,8 @@ type WorkerPage struct {
 	// ShareURL is the share panel of the Worker (Story 4.15); empty when this person
 	// may not operate the Worker, so the page offers nothing the API would refuse.
 	ShareURL string
+	// AccessURL is the read-only Access panel of the Worker; set with ShareURL.
+	AccessURL string
 	// DebugURL is the Debug panel of the Worker (v0.10.0); empty when this
 	// person may not operate the Worker.
 	DebugURL string
@@ -227,6 +229,7 @@ func workerData(get func() LiveSource) func(*http.Request) (any, error) {
 		}
 		if operate {
 			p.ShareURL = SharePath(id)
+			p.AccessURL = WorkerAccessPath(id)
 			p.DebugURL = DebugPath(id)
 		}
 		if all {

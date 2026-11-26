@@ -57,7 +57,9 @@ func TestUserPrefsMigrationUpgradesAnExistingDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".sql") || e.Name() >= "0026" {
+		// 0033 (audit columns) is kept: the seed below writes an audit row
+		// with the current code, and 0033 does not touch user_prefs.
+		if !strings.HasSuffix(e.Name(), ".sql") || (e.Name() >= "0026" && !strings.HasPrefix(e.Name(), "0033_")) {
 			continue
 		}
 		b, err := fs.ReadFile(hubMigrations, migrationsDir+"/"+e.Name())

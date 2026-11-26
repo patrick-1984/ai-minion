@@ -215,6 +215,25 @@ type EventHub struct {
 	log           *slog.Logger
 }
 
+// FirstSeen returns when the Hub first observed the session of the Worker in
+// its live session cache (unix ms), the generation of the name: a session
+// that went away (a session_removed, a snapshot that no longer lists it, an
+// answer that unshares it) and came back under the same name has a later
+// one. It is 0 for a session listed by the first snapshot this Hub process
+// got from the Worker (the Hub cannot know since when it exists). ok is false
+// when the Hub does not list the session now. A name-only grant created
+// before the time reaches another terminal than the one it was made for.
+func (h *EventHub) FirstSeen(workerID, session string) (int64, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	w := h.workers[workerID]
+	if w == nil {
+		return 0, false
+	}
+	at, ok := w.firstSeen[session]
+	return at, ok
+}
+
 type workerState struct {
 	id       string
 	name     string
@@ -223,6 +242,11 @@ type workerState struct {
 	gen      uint64 // the connection that owns the state
 	stream   uint64 // the event stream that owns it
 	sessions map[string]SessionState
+	// firstSeen is, for every session of sessions, when the Hub first
+	// observed it (unix ms, see [EventHub.FirstSeen]).
+	firstSeen map[string]int64
+	// observed is set by the first snapshot of the Worker in this process.
+	observed bool
 	updated  time.Time
 	synced   bool // the current connection sent its snapshot
 	// probe asks this connection for the share rule it has now (see
@@ -421,6 +445,7 @@ func (h *EventHub) applyShareNamesLocked(workerID string, unshared []string) {
 	sort.Strings(names)
 	for _, n := range names {
 		delete(w.sessions, n)
+		delete(w.firstSeen, n)
 		h.publishLocked(h.eventLocked(w, EventSessionRemoved, n))
 	}
 	if len(names) > 0 {
@@ -618,10 +643,24 @@ func (f *Feed) SnapshotShare(seq uint64, sessions []SessionState, share *ops.Sha
 			delete(next, n)
 		}
 	}
-	w.sessions = next // atomic: readers hold the same lock
+	ev := h.eventLocked(w, EventWorkerResynced, "")
+	// A session the Hub listed keeps its first-seen time; one it did not is
+	// first seen now, except in the first snapshot of this process.
+	seen := make(map[string]int64, len(next))
+	for n := range next {
+		at, kept := w.firstSeen[n]
+		switch {
+		case kept:
+		case w.observed:
+			at = ev.Time.Time().UnixMilli()
+		default:
+			at = 0
+		}
+		seen[n] = at
+	}
+	w.sessions, w.firstSeen, w.observed = next, seen, true // atomic: readers hold the same lock
 	w.updated, w.synced = h.now(), true
 	f.started, f.seq = true, 0
-	ev := h.eventLocked(w, EventWorkerResynced, "")
 	ev.snapshot = make([]string, 0, len(next))
 	for n := range next {
 		ev.snapshot = append(ev.snapshot, n)
@@ -717,6 +756,12 @@ func (f *Feed) Apply(c Change) error {
 			return nil
 		}
 		w.sessions[s.Name] = s
+		if !known {
+			if w.firstSeen == nil {
+				w.firstSeen = map[string]int64{}
+			}
+			w.firstSeen[s.Name] = ev.Time.Time().UnixMilli()
+		}
 		ev.Kind, ev.State, ev.ScreenHash = s.Kind, s.State, s.ScreenHash
 		ev.PaneStateDetail, ev.HarnessName = s.PaneStateDetail, s.HarnessName
 		task := s.Task
@@ -726,6 +771,7 @@ func (f *Feed) Apply(c Change) error {
 			return nil
 		}
 		delete(w.sessions, s.Name)
+		delete(w.firstSeen, s.Name)
 	case EventScreenChanged:
 		if !known || cur.ScreenHash == s.ScreenHash {
 			return nil

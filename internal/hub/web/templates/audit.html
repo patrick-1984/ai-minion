@@ -10,6 +10,10 @@
     <input type="text" id="f-action" name="action" value="{{.Data.Filter.Action}}" autocomplete="off" spellcheck="false" maxlength="256">
   </div>
   <div class="field">
+    <label for="f-grant">Grant (id of a session grant)</label>
+    <input type="text" id="f-grant" name="grant" value="{{.Data.Filter.Grant}}" autocomplete="off" spellcheck="false" maxlength="64">
+  </div>
+  <div class="field">
     <label for="f-from">From (date or time, UTC)</label>
     {{$dateFrom := and (not .Data.Error) (or (eq .Data.Filter.From "") (eq (len .Data.Filter.From) 10))}}
     <input type="{{if $dateFrom}}date{{else}}text{{end}}" id="f-from" name="from" value="{{.Data.Filter.From}}" autocomplete="off" placeholder="e.g. 2026-11-01">
@@ -35,7 +39,7 @@
 <p class="muted">Sorting applies to the rows on this page.</p>
 <div class="table-wrap"><table data-sortable>
   <caption class="muted">Initially newest first. Times are UTC. Events never contain secrets or terminal content.</caption>
-  <thead><tr><th scope="col" data-sort="text">Time</th><th scope="col" data-sort="text">Actor</th><th scope="col" data-sort="text">Acting as</th><th scope="col" data-sort="text">Action</th><th scope="col" data-sort="text">Target</th><th scope="col" data-sort="text">Outcome</th></tr></thead>
+  <thead><tr><th scope="col" data-sort="text">Time</th><th scope="col" data-sort="text">Actor</th><th scope="col" data-sort="text">Acting as</th><th scope="col" data-sort="text">Action</th><th scope="col" data-sort="text">Target</th><th scope="col" data-sort="text">Outcome</th><th scope="col" data-sort="text">Detail</th></tr></thead>
   <tbody>
   {{range .Data.Events}}<tr>
     <td><time datetime="{{.TS.Time.Format "2006-01-02T15:04:05.000Z07:00"}}">{{.TS.Time.Format "2006-01-02 15:04:05"}}</time></td>
@@ -44,8 +48,9 @@
     <td class="cell-clamp" title="{{.Action}}" tabindex="0">{{.Action}}</td>
     <td class="cell-clamp" title="{{.Target}}" tabindex="0">{{if .TargetName}}{{.TargetName}}{{else if .Target}}{{.Target}}{{else}}<span class="muted">-</span>{{end}}</td>
     <td>{{.Outcome}}</td>
+    <td class="cell-clamp" title="{{.Source}} {{.Detail}}" tabindex="0">{{if or .Source .Detail}}{{if .Source}}{{.Source}}{{end}}{{if and .Source .Detail}} {{end}}{{.Detail}}{{else}}<span class="muted">-</span>{{end}}</td>
   </tr>
-  {{else}}<tr><td colspan="6" class="muted">{{if .Data.Error}}No events are listed.{{else}}No events match.{{end}} <a href="/admin/audit">Clear filters</a>.</td></tr>
+  {{else}}<tr><td colspan="7" class="muted">{{if .Data.Error}}No events are listed.{{else}}No events match.{{end}} <a href="/admin/audit">Clear filters</a>.</td></tr>
   {{end}}
   </tbody>
 </table></div>

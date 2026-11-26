@@ -133,6 +133,10 @@ func initAPI(_ context.Context, env *Env, catalog *ops.Registry) error {
 	d := &api.Dispatcher{
 		Catalog: catalog, Handlers: handlers, Auth: authn, Authz: az, Audit: alog, Log: cfg.logger(),
 	}
+	// Request de-duplication of the strict Hub-scope writes (grant_*).
+	if st, err := Require[*store.Store](env); err == nil {
+		d.Requests = st
+	}
 	router, err := api.NewRouter(d, mux)
 	if err != nil {
 		return err

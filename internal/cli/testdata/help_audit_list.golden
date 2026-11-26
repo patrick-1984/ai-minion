@@ -11,6 +11,7 @@ Flags:
       --actor string                   actor; "-" reads it from standard input
       --cursor string                  cursor; "-" reads it from standard input
       --from timestamp                 from as an RFC 3339 timestamp
+      --grant-id string                grant id; "-" reads it from standard input
   -h, --help                           help for audit_list
       --hub-ca-file string             PEM file with the private CA of the Hub's certificate (env MINION_HUB_CA)
       --hub-insecure string[="true"]   skip the verification of the Hub's certificate for this client only (warns) (env MINION_HUB_INSECURE)

@@ -60,6 +60,7 @@ type pipeHub struct {
 	wsv      *workers.Service
 	settings *SettingsService
 	pipe     *workers.Pipe
+	use      *workers.GrantUse
 	events   *workers.EventHub
 	admin    store.UserRow
 	mgr      *session.Manager
@@ -94,6 +95,9 @@ func startPipeHub(t *testing.T, env map[string]string, before func(r *Registry))
 			return err
 		}
 		if ph.events, err = Require[*workers.EventHub](e); err != nil {
+			return err
+		}
+		if ph.use, err = Require[*workers.GrantUse](e); err != nil {
 			return err
 		}
 		mgr, err = Require[*session.Manager](e)

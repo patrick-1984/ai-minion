@@ -54,6 +54,14 @@ type Event struct {
 	Target string
 	// Outcome is how it ended, for example "success", "denied" or "failed".
 	Outcome string
+	// Source is the session a brokered call came from, or the session a
+	// control change names, as "<worker_id>:<session>"; may be empty.
+	Source string
+	// GrantID is the id of the grant that allowed the call; may be empty.
+	GrantID string
+	// Detail is a closed list of space-separated k=v pairs (see
+	// [ValidDetail]): flags, counts and identifiers, never a name or content.
+	Detail string
 }
 
 // Validate checks every field: required fields are non-empty, and no field is
@@ -70,12 +78,51 @@ func (e Event) Validate() error {
 		{"action", e.Action, true},
 		{"target", e.Target, false},
 		{"outcome", e.Outcome, true},
+		{"source", e.Source, false},
+		{"grant_id", e.GrantID, false},
+		{"detail", e.Detail, false},
 	} {
 		if err := checkField(f.name, f.v, f.required); err != nil {
 			return err
 		}
 	}
+	if strings.ContainsAny(e.GrantID, " \t") {
+		return &FieldError{"grant_id", "is not an identifier"}
+	}
+	if !ValidDetail(e.Detail) {
+		return &FieldError{"detail", "must be space-separated key=value pairs (keys a-z and _, values without spaces)"}
+	}
 	return nil
+}
+
+// ValidDetail reports whether s is empty or a list of key=value pairs
+// separated by one space each: a key is one or more of a-z and "_", a value
+// is non-empty printable text without a space, "=" or a quote. The grammar is
+// closed so that a detail carries flags and identifiers, never content.
+func ValidDetail(s string) bool {
+	if s == "" {
+		return true
+	}
+	if utf8.RuneCountInString(s) > MaxFieldLen {
+		return false
+	}
+	for _, pair := range strings.Split(s, " ") {
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok || k == "" || v == "" {
+			return false
+		}
+		for _, r := range k {
+			if r != '_' && (r < 'a' || r > 'z') {
+				return false
+			}
+		}
+		for _, r := range v {
+			if r == '=' || r == '"' || r == '\'' || unicode.IsSpace(r) || !unicode.IsPrint(r) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func checkField(name, v string, required bool) error {
@@ -108,12 +155,14 @@ type Entry struct {
 
 // Filter selects events for [Log.List]. The zero value selects everything.
 type Filter struct {
-	Actor  string    // exact match; empty matches any
-	Action string    // exact match; empty matches any
-	From   time.Time // events at or after From; zero means no lower bound
-	To     time.Time // events before To; zero means no upper bound
-	Cursor string    // NextCursor of the previous page; empty starts at the newest
-	Limit  int       // 0 means [ops.DefaultAuditListLimit]
+	Actor  string // exact match; empty matches any
+	Action string // exact match; empty matches any
+	// GrantID keeps only the events of this grant; empty matches any.
+	GrantID string
+	From    time.Time // events at or after From; zero means no lower bound
+	To      time.Time // events before To; zero means no upper bound
+	Cursor  string    // NextCursor of the previous page; empty starts at the newest
+	Limit   int       // 0 means [ops.DefaultAuditListLimit]
 }
 
 // Page is one page of events, newest first. NextCursor is empty on the last
@@ -232,7 +281,8 @@ func (l *Log) observe(ctx context.Context, row store.AuditRow) {
 	if t, ok := ctx.Value(trackerKey{}).(*Tracker); ok {
 		t.n.Add(1)
 	}
-	l.emit(ctx, Event{Actor: row.Actor, ActingAs: row.ActingAs, Action: row.Action, Target: row.Target, Outcome: row.Outcome})
+	l.emit(ctx, Event{Actor: row.Actor, ActingAs: row.ActingAs, Action: row.Action, Target: row.Target, Outcome: row.Outcome,
+		Source: row.Source, GrantID: row.GrantID, Detail: row.Detail})
 }
 
 func (l *Log) emit(ctx context.Context, ev Event) {
@@ -246,6 +296,15 @@ func (l *Log) emit(ctx context.Context, ev Event) {
 	attrs := []any{"actor", ev.Actor, "action", ev.Action, "target", ev.Target, "outcome", ev.Outcome}
 	if ev.ActingAs != "" {
 		attrs = append(attrs, "acting_as", ev.ActingAs)
+	}
+	if ev.Source != "" {
+		attrs = append(attrs, "source", ev.Source)
+	}
+	if ev.GrantID != "" {
+		attrs = append(attrs, "grant_id", ev.GrantID)
+	}
+	if ev.Detail != "" {
+		attrs = append(attrs, "detail", ev.Detail)
 	}
 	if id := RequestID(ctx); id != "" {
 		attrs = append(attrs, "request_id", id)
@@ -359,6 +418,9 @@ func (l *Log) record(ctx context.Context, ex store.Execer, ev Event) error {
 		Action:   ev.Action,
 		Target:   ev.Target,
 		Outcome:  ev.Outcome,
+		Source:   ev.Source,
+		GrantID:  ev.GrantID,
+		Detail:   ev.Detail,
 	}
 	if err := l.repo.InsertAudit(ctx, ex, row); err != nil {
 		return err
@@ -378,12 +440,12 @@ func (l *Log) List(ctx context.Context, f Filter) (Page, error) {
 	if limit < 0 || limit > ops.MaxAuditListLimit {
 		return Page{}, &FieldError{"limit", fmt.Sprintf("must be between 0 and %d", ops.MaxAuditListLimit)}
 	}
-	for _, v := range []struct{ name, v string }{{"actor", f.Actor}, {"action", f.Action}} {
+	for _, v := range []struct{ name, v string }{{"actor", f.Actor}, {"action", f.Action}, {"grant_id", f.GrantID}} {
 		if utf8.RuneCountInString(v.v) > MaxFieldLen || !utf8.ValidString(v.v) {
 			return Page{}, &FieldError{v.name, fmt.Sprintf("must be valid UTF-8 of at most %d characters", MaxFieldLen)}
 		}
 	}
-	q := store.AuditQuery{Actor: f.Actor, Action: f.Action, Limit: limit + 1}
+	q := store.AuditQuery{Actor: f.Actor, Action: f.Action, GrantID: f.GrantID, Limit: limit + 1}
 	if !f.From.IsZero() {
 		ms := store.UnixMS(f.From)
 		q.From = &ms
@@ -420,6 +482,7 @@ func (l *Log) List(ctx context.Context, f Filter) (Page, error) {
 			Time: store.FromUnixMS(r.TS),
 			Event: Event{
 				Actor: r.Actor, ActingAs: r.ActingAs, Action: r.Action, Target: r.Target, Outcome: r.Outcome,
+				Source: r.Source, GrantID: r.GrantID, Detail: r.Detail,
 			},
 		}
 	}
@@ -433,7 +496,7 @@ func (l *Log) ListOp(ctx context.Context, args ops.AuditListArgs) (ops.AuditList
 	if err := args.Validate(); err != nil {
 		return ops.AuditListResult{}, err
 	}
-	f := Filter{Actor: args.Actor, Action: args.Action, Cursor: args.Cursor, Limit: args.Limit}
+	f := Filter{Actor: args.Actor, Action: args.Action, GrantID: args.GrantID, Cursor: args.Cursor, Limit: args.Limit}
 	if args.From != nil {
 		f.From = args.From.Time()
 	}
@@ -461,6 +524,7 @@ func (l *Log) ListOp(ctx context.Context, args ops.AuditListArgs) (ops.AuditList
 		res.Events[i] = ops.AuditEvent{
 			ID: e.ID, TS: ops.Timestamp(e.Time),
 			Actor: e.Actor, ActingAs: e.ActingAs, Action: e.Action, Target: e.Target, Outcome: e.Outcome,
+			Source: e.Source, GrantID: e.GrantID, Detail: e.Detail,
 			ActorName: name(e.Actor), ActingAsName: name(e.ActingAs), TargetName: name(e.Target),
 		}
 	}

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
@@ -31,6 +32,8 @@ type ControlPage struct {
 	// Sessions are the known session names per Worker, for the master picker.
 	Sessions map[string][]string
 	Check    *ControlCheckView
+	// AsOf is the moment the Hub rendered this state (the Matrix header).
+	AsOf template.HTML
 }
 
 // ControlRow is one Worker of the editor.
@@ -85,6 +88,38 @@ func sessionCount(n int) string {
 		return "1 session"
 	}
 	return strconv.Itoa(n) + " sessions"
+}
+
+// Seen is the stored acceptance from the source Worker as this row renders it,
+// in the words of control_set_accept's if_state. Every accept form sends it
+// back, so the Hub refuses a click made on a state someone else changed.
+func (r ControlRow) Seen(sourceID string) string {
+	if k := r.States[sourceID].Kind; k != "" {
+		return k
+	}
+	return ops.ControlAcceptAbsent
+}
+
+// OnOff is a switch as its forms send it back (if_value).
+func (ControlRow) OnOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
+}
+
+// seenSwitch reads what a form says the page showed for a switch: nil when
+// the form does not say.
+func seenSwitch(v string) *bool {
+	switch v {
+	case "on":
+		t := true
+		return &t
+	case "off":
+		f := false
+		return &f
+	}
+	return nil
 }
 
 // Badge is the mark of a limited or explicit-nothing acceptance from the
@@ -239,7 +274,8 @@ func controlData(r *http.Request, c OpCaller) (any, error) {
 	if err := c.CallOp(r, ops.OpControlList, ops.ControlListArgs{}, &res); err != nil {
 		return nil, err
 	}
-	p := ControlPage{Sessions: knownSessions(r)}
+	now := time.Now().UnixMilli()
+	p := ControlPage{Sessions: knownSessions(r), AsOf: checkedTime(&now, "")}
 	p.Rows = controlRows(res, p.Sessions)
 	for _, row := range p.Rows {
 		p.Targets = append(p.Targets, row)
@@ -283,10 +319,8 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		undo  *UndoView
 		saved string
 		note  string
-		// skip, when set, means the click writes nothing; the row is
-		// answered with skip as a note (skipIsNote) or as an error.
-		skip       string
-		skipIsNote bool
+		// rowErr is a refusal of the page itself (nothing was sent).
+		rowErr string
 	)
 	on := f.Get("value") == "on"
 	wa := newWriteArgs()
@@ -295,21 +329,26 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	case "user-managed", "accept-all":
 		row = f.Get("worker_id")
 		a := ops.ControlSetWorkerArgs{WriteArgs: wa, WorkerID: row}
+		// if_value is the switch as the page showed it: the Hub refuses the
+		// change when someone else flipped it meanwhile.
 		if action == "user-managed" {
-			a.UserManaged = &on
+			a.UserManaged, a.IfUserManaged = &on, seenSwitch(f.Get("if_value"))
 			saved = map[bool]string{true: "People and API keys control this Worker.", false: "Only master sessions control this Worker now."}[on]
 		} else {
-			a.AcceptAll = &on
+			a.AcceptAll, a.IfAcceptAll = &on, seenSwitch(f.Get("if_value"))
 			saved = map[bool]string{true: "Accepts control from all Workers.", false: "No longer accepts control from all Workers."}[on]
 		}
 		op, args = ops.OpControlSetWorker, a
-		undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "value": flip}}
+		undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "value": flip, "if_value": map[bool]string{true: "on", false: "off"}[on]}}
 	case "master":
 		row = f.Get("worker_id")
 		name := f.Get("session_name")
-		op, args = ops.OpControlSetMaster, ops.ControlSetMasterArgs{WriteArgs: wa, WorkerID: row, SessionName: name, Master: on}
+		// if_master is whether the page showed the session as a master.
+		op, args = ops.OpControlSetMaster, ops.ControlSetMasterArgs{WriteArgs: wa, WorkerID: row, SessionName: name, Master: on,
+			IfMaster: seenSwitch(f.Get("if_master"))}
 		saved = map[bool]string{true: name + " is a master session.", false: name + " is a slave session again."}[on]
-		undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "session_name": name, "value": flip}}
+		undo = &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "session_name": name, "value": flip,
+			"if_master": map[bool]string{true: "on", false: "off"}[on]}}
 		if !on && f.Get("legacy") == "1" {
 			// Re-adding would drop the migrated limit: no one-click undo.
 			undo = nil
@@ -337,47 +376,71 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		src := f.Get("source_worker_id")
 		a := ops.ControlSetAcceptArgs{WriteArgs: wa, WorkerID: row, SourceWorkerID: src, Accept: on}
 		before, known := storedAccept(r, c, row, src)
-		// Undo is offered only where the inverse click restores exactly what
-		// was stored before.
-		inverse := &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "value": flip}}
 		kind := before.View.Kind
+		// The precondition of the write: what the page showed when the box
+		// was clicked (if_state). A form that does not say falls back to what
+		// the Hub has stored now, so the read above and the write below are
+		// never two unrelated steps.
+		seen := f.Get("if_state")
+		if seen == "" && known {
+			seen = ops.ControlAcceptAbsent
+			if kind != "" {
+				seen = kind
+			}
+		}
+		a.IfState = seen
+		// Undo is offered only where the inverse click restores exactly what
+		// was stored before; it states what this change leaves stored.
+		inverse := func(after string) *UndoView {
+			return &UndoView{Action: action, Fields: map[string]string{"worker_id": row, "source_worker_id": src, "value": flip, "if_state": after}}
+		}
+		revoked := ops.ControlAcceptAbsent
+		if before.AcceptAll {
+			revoked = ops.ControlAcceptNone // a revoke there keeps a row that allows nothing
+		}
+		readOnly := false
 		switch {
 		case on && !known:
-			// A tick without a list could widen a limited acceptance: write
-			// nothing and answer the row as the Hub has it, with the reason.
-			skip = "The Hub could not say what this Worker accepts now, so nothing was changed. Try again."
-		case on && kind == acceptKindLimited:
-			// Never widen silently, and never write the list read a moment
-			// ago (a revoke in between would be undone): change nothing.
-			skip, skipIsNote = "This acceptance is limited to "+sessionCount(len(before.View.Sessions))+
-				". Nothing was changed. Change the list with the operation control_set_accept.", true
+			// A tick without a list would widen a limited acceptance: nothing
+			// is written, and the row is read back with the reason.
+			readOnly = true
+			rowErr = "Nothing was changed: the Hub could not say what this Worker accepts now. Try again."
+		case on && kind == acceptKindLimited && seen == acceptKindLimited:
+			// Never widen silently, and never write a list back: another
+			// administrator may have changed it since it was read.
+			readOnly = true
+			note = "This acceptance is limited to " + sessionCount(len(before.View.Sessions)) + ". Change the list with the operation control_set_accept."
 		case on && kind == acceptKindNone:
 			saved = before.Target + " now accepts every shared session from " + before.Source + "."
 			if before.AcceptAll {
-				undo = inverse // a revoke on a Worker that accepts all blocks again
+				undo = inverse(ops.ControlAcceptAll) // a revoke on a Worker that accepts all blocks again
 			} else {
 				saved += " No Undo: it cannot block that Worker again."
 			}
 		case on && kind == acceptKindAll:
 			saved = "Accepts control from that Worker, as before."
 		case on:
+			// No row, or a row the page did not show (the Hub refuses that).
 			saved = "Accepts control from that Worker."
 			if before.AcceptAll {
 				saved += " No Undo: it would block that Worker."
 			} else {
-				undo = inverse
+				undo = inverse(ops.ControlAcceptAll)
 			}
 		case !known:
 			saved = "No longer accepts control from that Worker. No Undo: the Hub could not say what it accepted before."
 		case kind == acceptKindAll:
 			saved = "No longer accepts control from that Worker."
-			undo = inverse
+			undo = inverse(revoked)
 		case kind == acceptKindLimited:
 			saved = "No longer accepts control from that Worker. It was limited to some sessions; adding it again accepts all shared sessions, so there is no Undo."
 		default:
 			// Nothing was allowed before (a blocked entry or none): a tick
 			// would accept the whole Worker.
 			saved = "No longer accepts control from that Worker. No Undo: it accepted nothing from it before."
+		}
+		if readOnly {
+			break // nothing to save: the row is answered as the Hub has it
 		}
 		op, args = ops.OpControlSetAccept, a
 	default:
@@ -386,30 +449,28 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	}
 	var res ops.WriteResult
 	var callErr error
-	if skip == "" {
+	if op != "" {
 		callErr = c.CallOp(r, op, args, &res)
+	}
+	// Answer with the row as the Hub has it now, whatever happened.
+	var list ops.ControlListResult
+	if err := c.CallOp(r, ops.OpControlList, ops.ControlListArgs{}, &list); err != nil {
+		writeControlReload(w, op != "", callErr, err)
+		return
 	}
 	// The matrix and other rows read the same rows: ask the page to refresh
 	// them from the Hub (minion-control.js).
 	w.Header().Set("HX-Trigger", "control-changed")
-	// Answer with the row as the Hub has it now, whatever happened.
-	var list ops.ControlListResult
-	if err := c.CallOp(r, ops.OpControlList, ops.ControlListArgs{}, &list); err != nil {
-		writeResultError(w, failureText(err))
-		return
-	}
 	rows := controlRows(list, knownSessions(r))
 	for _, cr := range rows {
 		if cr.WorkerID != row {
 			continue
 		}
 		switch {
-		case skip != "" && skipIsNote:
-			cr.Note = skip
-		case skip != "":
-			cr.Error = skip
 		case callErr != nil:
 			cr.Error = failureText(callErr)
+		case rowErr != "":
+			cr.Error = rowErr
 		default:
 			cr.Saved, cr.Undo, cr.Note = saved, undo, note
 		}
@@ -417,6 +478,32 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		return
 	}
 	writeResultError(w, "The Worker is gone.")
+}
+
+// controlReloadEvent asks the page to reload itself from the Hub
+// (minion-control.js): the row and its checkbox may no longer show what the
+// Hub has.
+const controlReloadEvent = "control-reload"
+
+// writeControlReload answers a click whose row could not be read back: the
+// row stays as it is, the text goes to the status region of the page and the
+// page reloads what the Hub has.
+func writeControlReload(w http.ResponseWriter, sent bool, callErr, readErr error) {
+	why := strings.TrimRight(failureText(readErr), ". ") + ". Reloading what the Hub has saved."
+	var text string
+	switch {
+	case callErr != nil:
+		text = "The change was refused (" + strings.TrimRight(failureText(callErr), ". ") + ") and the Workers could not be read after it: " + why
+	case sent:
+		text = "The change was sent, but the Workers could not be read after it: " + why
+	default:
+		text = "Nothing was changed, and the Workers could not be read: " + why
+	}
+	h := w.Header()
+	h.Set("HX-Retarget", "#control-status")
+	h.Set("HX-Reswap", "innerHTML")
+	h.Set("HX-Trigger", controlReloadEvent)
+	writeFragment(w, []byte(template.HTMLEscapeString(text)))
 }
 
 // acceptBefore is what the target has stored for the source before a click.
