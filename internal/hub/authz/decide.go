@@ -137,7 +137,7 @@ var allActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessa
 // admin only, so the owner does not hold it. The owner holds both file
 // transfer actions on their own resources (subject to the user-managed
 // switch in held). An API key gets a file action only when its stored
-// actions name it (scope ∩ base), so a key from before v0.24 has none.
+// actions name it (scope and base intersected), so a key from before v0.24 has none.
 var ownerActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage,
 	ops.ActionFileRead, ops.ActionFileWrite}
 

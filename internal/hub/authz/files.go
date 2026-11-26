@@ -16,7 +16,7 @@ import (
 //
 //   - by an administrator on every resource and by the owner on their own
 //     resources (allActions, ownerActions), subject to the user-managed switch;
-//   - by an API key only when its stored actions name them (scope ∩ base): a
+//   - by an API key only when its stored actions name them (scope and base intersected): a
 //     resource scope of "everything" implies no action, and a key stored
 //     before v0.24 names none;
 //   - never by a Worker identity through the own-Worker rule, a
@@ -122,7 +122,7 @@ func (s subject) directFileFor(g DirectGrant, res ResolvedResource) []ops.Action
 // acceptFileFor is what the file flags of acceptance row a authorize on res:
 // only for a principal with verified file authority, only on a session of
 // another Worker that the row covers, and only as far as the master scope
-// (the owner's base permission ∩ Scope, grantActions) reaches the session.
+// (the owner's base permission intersected with Scope, grantActions) reaches the session.
 func (s subject) acceptFileFor(a FileAcceptance, res ResolvedResource) []ops.Action {
 	if s.p.Kind != KindWorker || s.p.files == nil || !a.FilesPull && !a.FilesPush {
 		return nil
