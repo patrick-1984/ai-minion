@@ -220,19 +220,15 @@ func postAccept(t *testing.T, fx ops.ControlListResult, target, value string) (*
 	return f, rec.Body.String()
 }
 
-// A tick on a limited acceptance never widens it: the stored list goes back
-// unchanged and the row says where to change it.
+// A tick on a limited acceptance never widens it and writes nothing (writing
+// the list read a moment ago could undo a revoke made in between); the row
+// says where to change it.
 func TestTickOnALimitedAcceptanceKeepsItsList(t *testing.T) {
 	f, body := postAccept(t, acceptStatesFixture(), "wB", "on")
-	calls := f.called(ops.OpControlSetAccept)
-	if len(calls) != 1 || calls[0].Args["accept"] != true {
-		t.Fatalf("calls = %+v", calls)
+	if calls := f.called(ops.OpControlSetAccept); len(calls) != 0 {
+		t.Fatalf("a tick on a limited acceptance wrote %+v", calls)
 	}
-	got, _ := json.Marshal(calls[0].Args["sessions"])
-	if string(got) != `["ci","ci-2"]` {
-		t.Fatalf("sessions = %s, want the stored list", got)
-	}
-	mustHave(t, body, `id="ctl-wB"`, "This acceptance is limited to 2 sessions. Change the list with the operation control_set_accept.", limitedBadge)
+	mustHave(t, body, `id="ctl-wB"`, "This acceptance is limited to 2 sessions. Nothing was changed. Change the list with the operation control_set_accept.", limitedBadge)
 	mustNotHave(t, body, ">Undo</button>", "Saved:")
 }
 

@@ -447,6 +447,22 @@ func TestRevokeAcceptNeverFallsBackToAcceptAll(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM control_accept WHERE target_worker_id='wB' AND source_worker_id='wA'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("rows after the revoke = %d, %v; want 0", n, err)
 	}
+	// A repeated revoke without accept_all keeps an explicit block, so that
+	// accepting all Workers again does not open that source.
+	block := AcceptRow{TargetWorkerID: "wB", SourceWorkerID: "wA", Sessions: []string{}, CreatedBy: "u"}
+	if err := s.PutAccept(ctx, block); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevokeAcceptIfOwners(ctx, revoke, oB, oA); err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	if err := s.SetWorkerControl(ctx, "wB", nil, &on); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("grant after a repeated revoke and accept_all = %+v, %v; want nothing", g, err)
+	}
 	if ok, err := s.RevokeAcceptIfOwners(ctx, revoke, "someone-else", oA); !errors.Is(err, ErrWorkerOwnerChanged) || ok {
 		t.Fatalf("revoke for another owner = %t, %v", ok, err)
 	}

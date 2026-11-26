@@ -365,7 +365,11 @@ func (s *Store) RevokeAcceptIfOwners(ctx context.Context, a AcceptRow, targetOwn
 				 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by, created_at = excluded.created_at`,
 				a.TargetWorkerID, a.SourceWorkerID, a.CreatedBy, a.CreatedAt)
 		} else {
-			res, err = tx.ExecContext(ctx, `DELETE FROM control_accept WHERE target_worker_id = ? AND source_worker_id = ?`, a.TargetWorkerID, a.SourceWorkerID)
+			// An explicit block ('[]') stays: it allows nothing already, and
+			// deleting it would let the source reach everything as soon as
+			// the target accepts all Workers again.
+			res, err = tx.ExecContext(ctx, `DELETE FROM control_accept WHERE target_worker_id = ? AND source_worker_id = ?
+				AND (sessions_json IS NULL OR sessions_json <> '[]')`, a.TargetWorkerID, a.SourceWorkerID)
 		}
 		if err != nil {
 			return fmt.Errorf("store: revoke acceptance: %w", err)

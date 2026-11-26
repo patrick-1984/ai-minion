@@ -120,7 +120,7 @@ Set the passphrase as above before the first Worker connects (a Hub started as a
 
 ```sh
 sudo minion update --channel 0.6      # the newest 0.6.x
-sudo minion update --version v0.20.6   # exactly this version
+sudo minion update --version v0.20.7   # exactly this version
 sudo systemctl restart minion-hub
 ```
 

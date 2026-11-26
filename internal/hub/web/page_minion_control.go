@@ -283,6 +283,10 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		undo  *UndoView
 		saved string
 		note  string
+		// skip, when set, means the click writes nothing; the row is
+		// answered with skip as a note (skipIsNote) or as an error.
+		skip       string
+		skipIsNote bool
 	)
 	on := f.Get("value") == "on"
 	wa := newWriteArgs()
@@ -339,14 +343,14 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		kind := before.View.Kind
 		switch {
 		case on && !known:
-			// A tick without a list would widen a limited acceptance.
-			writeResultError(w, "The Hub could not say what this Worker accepts now. Reload the page and try again.")
-			return
+			// A tick without a list could widen a limited acceptance: write
+			// nothing and answer the row as the Hub has it, with the reason.
+			skip = "The Hub could not say what this Worker accepts now, so nothing was changed. Try again."
 		case on && kind == acceptKindLimited:
-			// Never widen silently: send the stored list back unchanged.
-			list := slices.Clone(before.View.Sessions)
-			a.Sessions = &list
-			note = "This acceptance is limited to " + sessionCount(len(list)) + ". Change the list with the operation control_set_accept."
+			// Never widen silently, and never write the list read a moment
+			// ago (a revoke in between would be undone): change nothing.
+			skip, skipIsNote = "This acceptance is limited to "+sessionCount(len(before.View.Sessions))+
+				". Nothing was changed. Change the list with the operation control_set_accept.", true
 		case on && kind == acceptKindNone:
 			saved = before.Target + " now accepts every shared session from " + before.Source + "."
 			if before.AcceptAll {
@@ -381,7 +385,10 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		return
 	}
 	var res ops.WriteResult
-	callErr := c.CallOp(r, op, args, &res)
+	var callErr error
+	if skip == "" {
+		callErr = c.CallOp(r, op, args, &res)
+	}
 	// The matrix and other rows read the same rows: ask the page to refresh
 	// them from the Hub (minion-control.js).
 	w.Header().Set("HX-Trigger", "control-changed")
@@ -396,9 +403,14 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		if cr.WorkerID != row {
 			continue
 		}
-		if callErr != nil {
+		switch {
+		case skip != "" && skipIsNote:
+			cr.Note = skip
+		case skip != "":
+			cr.Error = skip
+		case callErr != nil:
 			cr.Error = failureText(callErr)
-		} else {
+		default:
 			cr.Saved, cr.Undo, cr.Note = saved, undo, note
 		}
 		writeFragmentTemplate(w, controlTemplates(), "control_row", cr)
