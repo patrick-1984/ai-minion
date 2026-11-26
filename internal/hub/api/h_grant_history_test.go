@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/audit"
+	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
@@ -121,4 +123,79 @@ func TestGrantHistoryForOwnerAndAdministrator(t *testing.T) {
 		t.Fatalf("bad id = %d", code)
 	}
 	_ = b1
+}
+
+// operateOnlyOn is an API key scope with read and operate on one Worker.
+type operateOnlyOn string
+
+func (s operateOnlyOn) Actions(res authz.ResolvedResource) []ops.Action {
+	if res.WorkerID == string(s) {
+		return []ops.Action{ops.ActionRead, ops.ActionOperate}
+	}
+	return nil
+}
+
+// sessionsOf returns the Source and Target of every event of the history.
+func sessionsOf(evs []ops.AuditEvent) string {
+	var b strings.Builder
+	for _, e := range evs {
+		b.WriteString(e.Source + " -> " + e.Target + "\n")
+	}
+	return b.String()
+}
+
+// grant_history masks, as grant_list does, the session name on the side of a
+// grant whose Worker the caller may not operate: the other owner's Worker,
+// and a Worker outside an API key's scope. Also for an ended grant.
+func TestGrantHistoryMasksSessionsOutsideTheCallersVisibility(t *testing.T) {
+	k := newGrantHistoryStack(t)
+	ctx := t.Context()
+	a, a2 := k.worker(k.u1, "a", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	b := k.worker(k.u2, "b", store.WorkerKindPrivate)
+	if _, err := k.st.DB().ExecContext(ctx, `UPDATE workers SET approval='approved'`); err != nil {
+		t.Fatal(err)
+	}
+	k.as(k.admin)
+	cross := k.setGrant(grantArgs(a, b, ops.GrantLevelView)) // a:agent -> b:build
+	k.as(k.u1)
+	own := k.setGrant(grantArgs(a, a2, ops.GrantLevelView)) // a:agent -> a2:build
+
+	check := func(who, id, wantSrc, wantTgt string) {
+		t.Helper()
+		code, evs := k.grantHistory(id)
+		if code != http.StatusOK || len(evs) == 0 {
+			t.Fatalf("%s: history = %d %+v", who, code, evs)
+		}
+		for _, e := range evs {
+			if e.Source != wantSrc || e.Target != wantTgt {
+				t.Fatalf("%s: events =\n%s want %s -> %s", who, sessionsOf(evs), wantSrc, wantTgt)
+			}
+		}
+	}
+	masked := func(w store.WorkerRow) string { return w.ID + ":a session of another user" }
+	for round := 0; round < 2; round++ {
+		k.as(k.admin)
+		check("administrator", cross.ID, a.ID+":agent", b.ID+":build")
+		k.as(k.u1) // owns the source
+		check("source owner", cross.ID, a.ID+":agent", masked(b))
+		k.as(k.u2) // owns the target
+		check("target owner", cross.ID, masked(a), b.ID+":build")
+		// A key of u1 scoped to Worker a: a2's session is hidden.
+		k.authn.mu.Lock()
+		k.authn.id = Identity{Principal: authz.NewAPIKeyPrincipal(k.u1, operateOnlyOn(a.ID), ""), Actor: "key:k1", Via: ViaAPIKey, IP: netip.MustParseAddr("192.0.2.7")}
+		k.authn.mu.Unlock()
+		check("key scoped to a", own.ID, a.ID+":agent", masked(a2))
+		check("key scoped to a, cross", cross.ID, a.ID+":agent", masked(b))
+		if round == 0 {
+			// The source session is gone: both grants end; the history of an
+			// ended grant is masked the same way.
+			if n, err := k.st.EndGoneSessionGrants(ctx, a.ID, []string{"agent"}, 1<<60); err != nil || n != 2 {
+				t.Fatalf("end = %d, %v", n, err)
+			}
+		}
+	}
+	k.as(k.u2)
+	if code, evs := k.grantHistory(own.ID); code == http.StatusOK {
+		t.Fatalf("another user reads the history: %+v", evs)
+	}
 }
