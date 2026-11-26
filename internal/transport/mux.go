@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/yamux"
+
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // Session limits.
@@ -28,6 +30,19 @@ const (
 	streamOpenTimeout  = 30 * time.Second
 	streamCloseTimeout = 30 * time.Second
 	writeTimeout       = 10 * time.Second
+
+	// MaxStreamWindow is the largest receive window of a stream (yamux
+	// MaxStreamWindowSize, both roles; BRD NFR-2). yamux v0.1.2 starts every
+	// stream at 256 KiB and raises it to this value once the reader has
+	// consumed data, so a stream holds at most this much unread data. It is
+	// a session setting (yamux has no per-stream window), but only a stream
+	// whose peer sends faster than it is read ever buffers that much: frame
+	// streams (op, ca, ev) carry frames of at most proto.StreamFrameLimit and
+	// are read as they come, and every fx write is cut into
+	// proto.LegChunkBytes frames and paced (fxconn.go, pacer.go), so the
+	// larger window does not turn into larger frames in front of a terminal
+	// frame on the shared send path.
+	MaxStreamWindow = 4 << 20
 )
 
 // StreamBudget is a budget that several sessions share (the Hub's global and
@@ -60,8 +75,18 @@ type SessionOptions struct {
 	// stream; zero means DefaultKindTimeout.
 	KindTimeout time.Duration
 	// FrameTap, when set, observes every frame of every stream of the
-	// session that has a kind (op, ca, ev), in both directions.
+	// session that has a kind (op, ca, ev), in both directions. Data legs
+	// (fx) carry no frames and are never tapped.
 	FrameTap FrameTap
+	// Files enables data legs (stream kind fx): set it only when both ends
+	// of this connection announced proto.FeatureFilesV1 (the Worker in its
+	// hello, the Hub in its welcome). Without it the session neither opens
+	// nor accepts fx streams: an inbound one is reset like an unknown kind
+	// and the session goes on, which is also what an older peer does.
+	Files bool
+	// Pacer tunes the bulk pacer of the data legs; the zero value is the
+	// production setup (see [PacerConfig]).
+	Pacer PacerConfig
 }
 
 // SessionTapper is a FrameTap that keeps state per session: NewSession asks
@@ -95,6 +120,12 @@ type Session struct {
 	held    map[uint64]func()
 	heldSeq uint64
 	ended   bool
+
+	// legs counts the active data legs (fx streams, both directions) against
+	// proto.MaxActiveLegsPerConn; pacer paces their writes. Both exist only
+	// with SessionOptions.Files.
+	legs  chan struct{}
+	pacer *Pacer
 }
 
 // NewSession starts yamux over conn as the given role and starts the accept
@@ -118,6 +149,7 @@ func NewSession(conn net.Conn, role Role, opts SessionOptions) (*Session, error)
 	cfg.StreamOpenTimeout = streamOpenTimeout
 	cfg.StreamCloseTimeout = streamCloseTimeout
 	cfg.ConnectionWriteTimeout = writeTimeout
+	cfg.MaxStreamWindowSize = MaxStreamWindow
 
 	var (
 		ys  *yamux.Session
@@ -144,6 +176,10 @@ func NewSession(conn net.Conn, role Role, opts SessionOptions) (*Session, error)
 		done:     make(chan struct{}),
 		held:     map[uint64]func(){},
 	}
+	if opts.Files {
+		s.legs = make(chan struct{}, proto.MaxActiveLegsPerConn)
+		s.pacer = newPacer(opts.Pacer, ys.Ping, s.done)
+	}
 	go s.acceptLoop()
 	go s.watch()
 	return s, nil
@@ -151,6 +187,23 @@ func NewSession(conn net.Conn, role Role, opts SessionOptions) (*Session, error)
 
 // Role returns the role of this end.
 func (s *Session) Role() Role { return s.role }
+
+// Files reports whether data legs (fx) are enabled on this session.
+func (s *Session) Files() bool { return s.opts.Files }
+
+// Pacer returns the bulk pacer of the session's data legs, nil without
+// SessionOptions.Files.
+func (s *Session) Pacer() *Pacer { return s.pacer }
+
+// takeLeg takes a data-leg slot; ok is false when all are in use.
+func (s *Session) takeLeg() (release func(), ok bool) {
+	select {
+	case s.legs <- struct{}{}:
+		return func() { <-s.legs }, true
+	default:
+		return nil, false
+	}
+}
 
 // Done is closed when the session has ended.
 func (s *Session) Done() <-chan struct{} { return s.done }
@@ -198,10 +251,15 @@ func (s *Session) shutdown(cause error) {
 
 // OpenStream opens a stream of the given kind and writes its two-byte prefix
 // first. A role may open only its own kinds: op for the Hub, call and ev for
-// the Worker; anything else is ErrWrongSide and nothing is opened.
+// the Worker, fx for both; anything else is ErrWrongSide and nothing is
+// opened. fx needs SessionOptions.Files (else ErrFilesNotNegotiated) and a
+// free data-leg slot (else ErrTooManyLegs); see [Session.OpenLeg].
 func (s *Session) OpenStream(ctx context.Context, kind Kind) (*Stream, error) {
-	if _, ok := ParseKind(kind.Prefix()); !ok || kind.Opener() != s.role {
+	if _, ok := ParseKind(kind.Prefix()); !ok || !kind.OpenableBy(s.role) {
 		return nil, ErrWrongSide
+	}
+	if kind == KindFiles && !s.opts.Files {
+		return nil, ErrFilesNotNegotiated
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -210,6 +268,13 @@ func (s *Session) OpenStream(ctx context.Context, kind Kind) (*Stream, error) {
 	case <-s.done:
 		return nil, s.err
 	default:
+	}
+	var leg func()
+	if kind == KindFiles {
+		var ok bool
+		if leg, ok = s.takeLeg(); !ok {
+			return nil, ErrTooManyLegs
+		}
 	}
 	// yamux blocks in OpenStream (SYN backlog) and in the write of the prefix
 	// (a stalled connection) with only its own timeouts, so the open runs in
@@ -222,6 +287,11 @@ func (s *Session) OpenStream(ctx context.Context, kind Kind) (*Stream, error) {
 	ch := make(chan result, 1)
 	go func() {
 		st, err := s.openStream(ctx, kind)
+		if st != nil && leg != nil {
+			st.leg, st.pacer = leg, s.pacer
+		} else if leg != nil {
+			leg()
+		}
 		ch <- result{st, err}
 	}()
 	select {
@@ -255,7 +325,16 @@ func (s *Session) openStream(ctx context.Context, kind Kind) (*Stream, error) {
 		resetStream(ys)
 		return nil, s.wrapErr(err)
 	}
-	return &Stream{ys: ys, kind: kind, tap: s.opts.FrameTap}, nil
+	return &Stream{ys: ys, kind: kind, tap: s.tapFor(kind)}, nil
+}
+
+// tapFor returns the frame tap of a stream of kind k: data legs carry no
+// frames and are never tapped.
+func (s *Session) tapFor(k Kind) FrameTap {
+	if k == KindFiles {
+		return nil
+	}
+	return s.opts.FrameTap
 }
 
 // OpenRaw opens a stream and writes nothing to it, not even the kind prefix. No
@@ -289,6 +368,18 @@ func (s *Session) OpenCall(ctx context.Context) (*Stream, error) {
 // OpenEvents opens the event stream (Worker only).
 func (s *Session) OpenEvents(ctx context.Context) (*Stream, error) {
 	return s.OpenStream(ctx, KindEvents)
+}
+
+// OpenLeg opens a data leg (kind fx, either role) and returns it as a
+// net.Conn for one HTTP/1.1 exchange ([NewLegTransport]). It fails with
+// ErrFilesNotNegotiated without files.v1 and with ErrTooManyLegs when
+// proto.MaxActiveLegsPerConn legs are active.
+func (s *Session) OpenLeg(ctx context.Context) (*LegConn, error) {
+	st, err := s.OpenStream(ctx, KindFiles)
+	if err != nil {
+		return nil, err
+	}
+	return NewLegConn(st), nil
 }
 
 // Accept returns the next inbound stream whose kind prefix was valid and
@@ -415,7 +506,14 @@ func (s *Session) classify(ys *yamux.Stream, release func()) {
 	if s.role == RoleHub {
 		peer = RoleWorker
 	}
-	kind, err := readKind(ys, peer)
+	kind, err := readKind(ys, peer, s.opts.Files)
+	var leg func()
+	if err == nil && kind == KindFiles {
+		var ok bool
+		if leg, ok = s.takeLeg(); !ok {
+			err = ErrTooManyLegs
+		}
+	}
 	if err != nil {
 		s.reject(ys)
 		if release != nil {
@@ -424,10 +522,15 @@ func (s *Session) classify(ys *yamux.Stream, release func()) {
 		return
 	}
 	_ = ys.SetReadDeadline(time.Time{})
+	st := &Stream{ys: ys, kind: kind, pre: release, tap: s.tapFor(kind)}
+	if leg != nil {
+		st.leg, st.pacer = leg, s.pacer
+	}
 	select {
-	case s.accepted <- &Stream{ys: ys, kind: kind, pre: release, tap: s.opts.FrameTap}:
+	case s.accepted <- st:
 	case <-s.done:
 		resetStream(ys)
+		st.endLeg()
 		if release != nil {
 			release()
 		}
