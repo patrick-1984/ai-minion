@@ -123,6 +123,14 @@ func initRoute(ctx context.Context, env *Env) error {
 			return fmt.Errorf("route: %w", err)
 		}
 	}
+	// Kept sessions (v0.24.0): session_keep_set is a session write routed
+	// like set_task (the dispatcher decides operate on the named session; a
+	// Worker that does not serve it answers unsupported_op).
+	for _, name := range ops.KeepWorkerOpNames {
+		if err := api.RegisterWorkerOp(handlers, name, rt); err != nil {
+			return fmt.Errorf("route: %w", err)
+		}
+	}
 	// The caller's own preferences (account_prefs, account_prefs_set), next to
 	// the hidden-sessions policy they feed.
 	allows := func(hub string, user bool) bool {

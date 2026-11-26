@@ -73,7 +73,7 @@ func (d opServerDeps) start(_ context.Context, env *Env) (StopFunc, error) {
 		return nil, err
 	}
 	reader, _ := ex.state.(nativeStateReader)
-	obs, err := NewHostObserver(HostObserverConfig{Host: host, Classifier: ex.classify, Policy: policy, Logger: log, nativeState: reader})
+	obs, err := NewHostObserver(HostObserverConfig{Host: host, Classifier: ex.classify, Policy: policy, Logger: log, nativeState: reader, Kept: ex.keptForState()})
 	if err != nil {
 		return nil, err
 	}

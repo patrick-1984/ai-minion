@@ -70,6 +70,9 @@ type SessionInfo struct {
 	Online bool `json:"online"`
 	// ScreenHash identifies the last known screen, never its content.
 	ScreenHash string `json:"screen_hash,omitempty"`
+	// Keep is true when the Worker keeps the session across its restarts
+	// (session_keep_set); absent when it does not or cannot say.
+	Keep bool `json:"keep,omitempty"`
 }
 
 // SessionsResult is the body of GET /api/v1/sessions.
@@ -190,6 +193,7 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 			WorkerID: it.rec.ID, Worker: it.rec.Name, OwnerID: it.rec.OwnerID, Owner: owner,
 			Session: it.st.Name, Kind: it.st.Kind, State: it.st.State, Task: it.st.Task,
 			Online: it.on, ScreenHash: it.st.ScreenHash, PaneStateDetail: it.st.PaneStateDetail, HarnessName: it.st.HarnessName,
+			Keep: it.st.Keep,
 		})
 		iids = append(iids, it.st.InstanceID)
 	}

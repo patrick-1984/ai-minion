@@ -467,6 +467,9 @@ td .action-row { margin-block: 0; }
 .action-row > .row-actions { margin: 0; }
 td .action-row { flex-wrap: nowrap; }
 td .action-row .btn { white-space: nowrap; }
+/* The keep checkbox of a session (session_keep_set): a one-control form inside a cell, a list item or the facts. */
+.keep-form { display: inline; margin: 0; }
+.keep-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .autoscroll-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; cursor: pointer; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
 .tabs [role="tab"] { background: transparent; color: var(--muted); border: 0; border-bottom: 3px solid transparent; border-radius: var(--r-sm) var(--r-sm) 0 0;
@@ -711,7 +714,7 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
   .session-table td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; font-weight: 600; }
   .session-table td.empty::before { content: none; }
   .session-table td.cell-nowrap { white-space: normal; }
-  .session-table td.col-name.empty, .session-table td.col-activity.empty, .session-table td.col-source.empty, .session-table td.col-last-event.empty { display: none; }
+  .session-table td.col-name.empty, .session-table td.col-activity.empty, .session-table td.col-source.empty, .session-table td.col-last-event.empty, .session-table td.col-keep.empty { display: none; }
   .session-table td.col-name { min-width: 0; }
   .js .session-table[data-sortable] thead { position: sticky; top: 0; z-index: 2; display: block; width: auto; height: auto; overflow: visible; clip: auto; visibility: visible; }
   .js .session-table[data-sortable] thead tr { display: flex; gap: 0 12px; flex-wrap: wrap; padding: 4px 12px; background: var(--surface-subtle); border-bottom: 1px solid var(--border); }
@@ -730,7 +733,7 @@ body.embed #session-unknown, body.embed #session-result { max-height: 8rem; over
   .session-table.has-owner td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; font-weight: 600; }
   .session-table.has-owner td.empty::before { content: none; }
   .session-table.has-owner td.cell-nowrap { white-space: normal; }
-  .session-table.has-owner td.col-name.empty, .session-table.has-owner td.col-activity.empty, .session-table.has-owner td.col-source.empty, .session-table.has-owner td.col-last-event.empty { display: none; }
+  .session-table.has-owner td.col-name.empty, .session-table.has-owner td.col-activity.empty, .session-table.has-owner td.col-source.empty, .session-table.has-owner td.col-last-event.empty, .session-table.has-owner td.col-keep.empty { display: none; }
   .js .session-table.has-owner[data-sortable] thead { position: sticky; top: 0; z-index: 2; display: block; width: auto; height: auto; overflow: visible; clip: auto; visibility: visible; }
   .js .session-table.has-owner[data-sortable] thead tr { display: flex; gap: 0 12px; flex-wrap: wrap; padding: 4px 12px; background: var(--surface-subtle); border-bottom: 1px solid var(--border); }
   .js .session-table.has-owner[data-sortable] thead th:not([data-sort]) { display: none; }

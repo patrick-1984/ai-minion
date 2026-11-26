@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -50,6 +51,27 @@ func (e *Executor) keptNames(ctx context.Context) map[string]bool {
 		return nil
 	}
 	return names
+}
+
+// keptForState returns the keep lookup of the state stream: the keep list of
+// each look, and the last list read when a read fails (so that a failing read
+// neither flips the flags the Hub shows nor logs on every poll).
+func (e *Executor) keptForState() func(ctx context.Context) map[string]bool {
+	var mu sync.Mutex
+	var last map[string]bool
+	return func(ctx context.Context) map[string]bool {
+		k := e.keepService()
+		if k == nil {
+			return nil
+		}
+		names, err := k.Kept(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		if err == nil {
+			last = names
+		}
+		return last
+	}
 }
 
 // sessionKeepSet adds the target session to the keep list (keep=true: the

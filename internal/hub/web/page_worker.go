@@ -63,6 +63,8 @@ type WorkerView struct {
 	ShowOwner bool
 	// OnWorker tells the session table that every row is of this Worker.
 	OnWorker bool
+	// ShowKeep adds the Keep column to the session table (see [DashboardView]).
+	ShowKeep bool
 	// Operate is whether this person may operate the Worker (the New session button).
 	Operate bool
 	// Gone is set when the Worker is not in the snapshot (it left the list while the page
@@ -167,7 +169,11 @@ func newWorkerView(d Dashboard, all bool, id string, operate bool) WorkerView {
 		if x.WorkerID == id {
 			x.HideWorker = true
 			out.Sessions = append(out.Sessions, x)
+			out.ShowKeep = out.ShowKeep || x.CanKeep || x.Keep
 		}
+	}
+	for i := range out.Sessions {
+		out.Sessions[i].ShowKeep = out.ShowKeep
 	}
 	out.Operate = operate && out.Worker.Online && !out.Worker.Pending
 	if !operate {

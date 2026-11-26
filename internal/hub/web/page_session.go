@@ -50,6 +50,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +61,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/hub/auth/session"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
 	"github.com/patrick-1984/ai-minion/internal/ops"
+	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
 // Paths of the session view. The patterns use net/http wildcards; the helpers
@@ -87,6 +89,12 @@ const (
 // Worker's name (or its id); both parts are escaped.
 func SessionPath(worker, session string) string {
 	return "/s/" + url.PathEscape(worker) + "/" + url.PathEscape(session)
+}
+
+// SessionKeepPath returns the path of the form that marks a session as kept
+// across Worker restarts, or not (POST, keep=1 or keep=0).
+func SessionKeepPath(worker, session string) string {
+	return SessionPath(worker, session) + "/keep"
 }
 
 // NewSessionPath returns the path that creates a session on a Worker (POST).
@@ -384,7 +392,12 @@ type SessionPage struct {
 	Session  string
 	Online   bool
 	Task     string
-	Notice   string
+	// Keep is true when the Worker keeps the session across its restarts;
+	// KeepURL is the form that changes it, "" when the Worker cannot keep
+	// sessions or the person may not change it.
+	Keep    bool
+	KeepURL string
+	Notice  string
 	// Monitoring is the compliance monitoring level while it is on ("" when off).
 	Monitoring string
 	Operate    bool
@@ -664,22 +677,23 @@ func panelFor(r *http.Request, t target) (PanelView, error) {
 	return p, nil
 }
 
-// sessionTask reads the task of the session from sessions_list; it is a
-// convenience, so a failure shows an empty field.
-func sessionTask(r *http.Request, t target) string {
+// sessionListed reads the task and the keep flag of the session from
+// sessions_list; it is a convenience, so a failure shows an empty task and
+// the session as not kept.
+func sessionListed(r *http.Request, t target) (task string, keep bool) {
 	var res ops.SessionsListResult
 	args := struct {
 		WorkerID string `json:"worker_id"`
 	}{t.worker.ID}
 	if err := t.c.CallOp(r, ops.OpSessionsList, args, &res); err != nil {
-		return ""
+		return "", false
 	}
 	for _, s := range res.Sessions {
 		if s.Name == t.session {
-			return s.Task
+			return s.Task, s.Keep
 		}
 	}
-	return ""
+	return "", false
 }
 
 func sessionData(r *http.Request) (any, error) {
@@ -726,7 +740,10 @@ func sessionData(r *http.Request) (any, error) {
 	page.Panel = panel
 	page.Operate = t.operate
 	if t.operate {
-		page.Task = sessionTask(r, t)
+		page.Task, page.Keep = sessionListed(r, t)
+		if proto.HasFeature(t.worker.Features, proto.FeatureSessionKeepV1) {
+			page.KeepURL = SessionKeepPath(t.ref, t.session)
+		}
 	}
 	page.Panes = renderSessionPanes(r, t, page)
 	page.Conversation = conversationOf(page.Panes)
@@ -879,16 +896,7 @@ func answerResultSignals(w http.ResponseWriter, t target, results []ActionResult
 		trigger += `,"minion-input-unknown":` + string(detail)
 	}
 	w.Header().Set("HX-Trigger", trigger+"}")
-	now := time.Now().UTC().Format("15:04:05") + " UTC"
-	for i := range results {
-		if results[i].Target == "" {
-			results[i].Target = t.label()
-		}
-		if results[i].At == "" {
-			results[i].At = now
-		}
-	}
-	renderFragment(w, "result", ResultView{Results: results})
+	renderResults(w, t, results...)
 }
 
 // label names the session of a request for a result: "minion-1 on pi-1".
@@ -983,6 +991,48 @@ func handleSetTask(w http.ResponseWriter, r *http.Request, t target) {
 	answerResultSignals(w, t, []ActionResult{ar}, resultEvents{taskSaved: ok && res.Outcome == ops.OutcomeDelivered}.withOutcome(ok, res))
 }
 
+// keepLabel names the keep action in a result.
+const keepLabel = "Keep after restart"
+
+// handleSessionKeep marks the session as kept across Worker restarts (keep=1)
+// or forgets it (keep=0). The form always posts keep=0 and, while its box is
+// checked, also keep=1: a post without keep is no request at all.
+func handleSessionKeep(w http.ResponseWriter, r *http.Request, t target) {
+	vals, ok := r.PostForm["keep"]
+	if !ok || len(vals) == 0 {
+		renderResults(w, t, ActionResult{Label: keepLabel, Kind: "danger", Summary: "The form did not say whether to keep the session. Nothing was changed."})
+		return
+	}
+	keep := slices.Contains(vals, "1")
+	args := ops.SessionKeepSetArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: t.opTarget(), Keep: keep}
+	ar, res, ok := callWrite(r, t, ops.OpSessionKeepSet, args, keepLabel, nil)
+	if ok && res.Outcome == ops.OutcomeDelivered {
+		ar.Summary = "No longer kept. The Worker forgot this session and does not recreate it when it starts again."
+		if keep {
+			ar.Summary = "Kept. " + keepHelp
+		}
+	}
+	renderResults(w, t, ar)
+}
+
+// keepHelp says what keeping a session does (the tooltip of the checkbox).
+const keepHelp = "Minion recreates this session with its folders and resumes its Claude/Codex conversation when the Worker starts again."
+
+// renderResults renders the results of a form, each named by its session and
+// time; it sends no events of its own (see [answerResultSignals]).
+func renderResults(w http.ResponseWriter, t target, results ...ActionResult) {
+	now := time.Now().UTC().Format("15:04:05") + " UTC"
+	for i := range results {
+		if results[i].Target == "" {
+			results[i].Target = t.label()
+		}
+		if results[i].At == "" {
+			results[i].At = now
+		}
+	}
+	renderFragment(w, "result", ResultView{Results: results})
+}
+
 func handleAnswer(w http.ResponseWriter, r *http.Request, t target) {
 	// A quick-answer button posts "choice"; the answer box posts "choice_text".
 	choice := strings.TrimSpace(r.PostFormValue("choice"))
@@ -1069,6 +1119,7 @@ func init() {
 		{"POST " + pathSessionPattern + "/text", handleSendText},
 		{"POST " + pathSessionPattern + "/keys", handleSendKey},
 		{"POST " + pathSessionPattern + "/task", handleSetTask},
+		{"POST " + pathSessionPattern + "/keep", handleSessionKeep},
 		{"POST " + pathSessionPattern + "/answer", handleAnswer},
 		{"POST " + pathNewSessionPattern, handleNewSession},
 	} {

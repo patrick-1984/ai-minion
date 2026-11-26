@@ -21,6 +21,7 @@
 </form>
 {{if .Data.Filter.Worker}}<p class="filters-active"><span class="chip">Worker: {{if .Data.WorkerName}}{{.Data.WorkerName}}{{else}}selected{{end}}</span></p>{{end}}
 <p class="sr-only" id="list-announce" role="status" aria-live="polite"></p>
+<div id="list-result" aria-live="polite"></div>
 <div id="results" data-live-list sse-connect="{{.Data.LiveURL}}" sse-swap="dashboard" hx-swap="innerHTML">{{template "sessions_results" .Data}}</div>
 </div>
 {{template "inspector" .Data.Context}}

@@ -8,7 +8,7 @@
       <summary data-control="sessions-toggle">Show sessions<span class="sr-only"> on {{.Name}}</span></summary>
       <div class="details-body">
         <ul class="worker-session-list" aria-label="Sessions on {{.Name}}">
-          {{range .Sessions}}<li data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="ws-{{.WorkerID}}-{{.Name}}">{{if .Code}}<code class="session-code" data-session-code="{{.Code}}">{{.Code}}</code> {{end}}<a href="{{.Path}}" data-control="session:{{.Name}}" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}" aria-label="Open session {{.Name}} on {{.Worker}}">{{.Name}}</a> <span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></li>
+          {{range .Sessions}}<li data-worker="{{.WorkerID}}" data-session="{{.Name}}" data-key="ws-{{.WorkerID}}-{{.Name}}">{{if .Code}}<code class="session-code" data-session-code="{{.Code}}">{{.Code}}</code> {{end}}<a href="{{.Path}}" data-control="session:{{.Name}}" data-inspect data-inspect-label="{{.Name}} on {{.Worker}}" aria-label="Open session {{.Name}} on {{.Worker}}">{{.Name}}</a> <span class="badge" data-state="{{.State}}">{{.StateLabel}}</span>{{if or .CanKeep .Keep}} {{template "keep_toggle" .}}{{end}}</li>
           {{end}}
         </ul>{{if gt .SessionCount (len .Sessions)}}
         <a class="worker-session-more" href="{{.SessionsURL}}" data-control="sessions-all">All {{.SessionCount}} sessions</a>{{end}}
@@ -41,10 +41,19 @@
   {{end}}{{if .ShowOwner}}<td data-label="Owner"{{if gt (len .Owner) 32}} class="cell-clamp" title="{{.Owner}}" tabindex="0"{{end}}>{{.Owner}}</td>
   {{end}}<td data-label="Kind">{{.Kind}}</td>
   <td data-label="State" class="cell-nowrap"><span class="badge" data-state="{{.State}}">{{.StateLabel}}</span></td>
-  <td data-label="Activity" class="col-activity{{if .StateReason}}" data-state-reason{{else}} empty"{{end}}>{{.StateReason}}</td>
+  {{if .ShowKeep}}<td data-label="Keep" class="col-keep cell-nowrap{{if not (or .KeepURL .Keep)}} empty{{end}}" data-sort-value="{{if .Keep}}1{{else}}0{{end}}">{{template "keep_toggle" .}}</td>
+  {{end}}  <td data-label="Activity" class="col-activity{{if .StateReason}}" data-state-reason{{else}} empty"{{end}}>{{.StateReason}}</td>
   <td data-label="Source" class="col-source cell-nowrap{{if .StateSource}} muted" data-state-source="{{.StateSource}}"{{else}} empty"{{end}}>{{.StateSourceLabel}}</td>
   <td data-label="Last event" class="col-last-event cell-nowrap{{if .LastEvent.IsZero}} empty"{{else}} muted" data-sort-value="{{.LastEvent.Time.UTC.Format "2006-01-02T15:04:05.000Z"}}"{{end}}>{{if not .LastEvent.IsZero}}<time datetime="{{.LastEvent.Time.Format "2006-01-02T15:04:05Z07:00"}}">{{.LastEvent.Time.UTC.Format "15:04:05 UTC"}}</time>{{end}}</td>
 </tr>{{end}}
+
+{{/* The keep checkbox of a session in a list (session_keep_set): checked while the Worker keeps the session across its
+restarts. The form posts keep=0 and, while checked, keep=1; it is offered only when the Worker announces session.keep.v1
+and the person may change the flag. Without that, a kept session shows "kept". */}}
+{{define "keep_toggle"}}{{if .KeepURL}}<form method="post" action="{{.KeepURL}}" hx-post="{{.KeepURL}}" hx-trigger="change" hx-target="#list-result" hx-swap="innerHTML" class="keep-form" data-key="keep-{{.WorkerID}}-{{.Name}}">
+    <input type="hidden" name="keep" value="0">
+    <label class="keep-toggle" title="Minion recreates this session with its folders and resumes its Claude/Codex conversation when the Worker starts again"><input type="checkbox" name="keep" value="1" data-control="keep"{{if .Keep}} checked{{end}} aria-label="Keep {{.Name}} on {{.Worker}} after restart"> <span>Keep</span></label>
+  </form>{{else if .Keep}}<span class="badge plain" data-kept title="Minion recreates this session with its folders and resumes its Claude/Codex conversation when the Worker starts again">kept</span>{{end}}{{end}}
 
 {{/* What the person who approves a new Worker compares: its key fingerprint, the host name it announced and the address it enrolled from. */}}
 {{define "worker_pending_facts"}}<dl class="pending-facts">

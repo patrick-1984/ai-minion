@@ -114,7 +114,7 @@ func (w *sessionWorker) serve(ws *transport.Session) {
 				default:
 					reply(ops.WriteResult{Outcome: ops.OutcomeDelivered})
 				}
-			default: // send_keys, set_task
+			default: // send_keys, set_task, session_keep_set
 				reply(ops.WriteResult{Outcome: ops.OutcomeDelivered})
 			}
 		}()
@@ -244,7 +244,7 @@ func startSessionPageHubWith(t *testing.T, features []string) *sessionPageHub {
 	t.Cleanup(func() { _ = ws.Close() })
 	wsv.Registry().Add(workers.Online{
 		WorkerID: sp.wid, Name: "lab", OwnerID: admin.ID, Kind: "private", Version: proto.Version{Major: 1},
-		Ops:      []string{ops.OpSessionSnapshot, ops.OpSessionsList, ops.OpSendText, ops.OpSendKeys, ops.OpSetTask, ops.OpAnswer, ops.OpSessionCreate},
+		Ops:      []string{ops.OpSessionSnapshot, ops.OpSessionsList, ops.OpSendText, ops.OpSendKeys, ops.OpSetTask, ops.OpAnswer, ops.OpSessionCreate, ops.OpSessionKeepSet},
 		Features: features,
 	}, hs)
 	go sp.wk.serve(ws)

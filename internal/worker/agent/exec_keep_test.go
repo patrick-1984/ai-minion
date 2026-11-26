@@ -107,3 +107,41 @@ func TestSessionKeepSetKeepsListsAndForgets(t *testing.T) {
 		t.Fatalf("%d audit rows of session_keep_set", n)
 	}
 }
+
+// failingKeep is a keep list whose reads fail after the first one.
+type failingKeep struct {
+	fakeKeep
+	reads int
+}
+
+func (f *failingKeep) Kept(ctx context.Context) (map[string]bool, error) {
+	f.reads++
+	if f.reads > 1 {
+		return nil, context.DeadlineExceeded
+	}
+	return f.fakeKeep.Kept(ctx)
+}
+
+// The state stream reports the keep flag of each look; a failing read keeps
+// the last list, so the flags the Hub shows do not flip.
+func TestHostObserverReportsTheKeepFlag(t *testing.T) {
+	e := newEnv(t)
+	e.host.addSession("work", "claude")
+	e.host.addSession("other", "claude")
+	obs, err := NewHostObserver(HostObserverConfig{Host: e.host, Classifier: e.cls, Policy: e.policy, Kept: e.ex.keptForState()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := obs.Observe(context.Background())
+	if err != nil || v["work"].Keep || v["other"].Keep {
+		t.Fatalf("without a keep list: %+v, %v", v, err)
+	}
+	k := &failingKeep{fakeKeep: fakeKeep{names: map[string]string{"work": ""}}}
+	e.ex.AttachKeep(k)
+	for i := range 2 {
+		v, err = obs.Observe(context.Background())
+		if err != nil || !v["work"].Keep || v["other"].Keep {
+			t.Fatalf("look %d: %+v, %v", i, v, err)
+		}
+	}
+}
