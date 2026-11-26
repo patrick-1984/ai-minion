@@ -38,9 +38,12 @@
 //   - mux.go: Session, the yamux client (Worker) or server (Hub) over the
 //     Channel, with ConnectWorker and AcceptWorker running dial, handshake
 //     and session in one call.
-//   - streams.go: the two-byte stream kind prefix op, ca (the call kind) and
-//     ev (A-7), Stream with frame helpers (uint32 length, at most 1 MiB), and
-//     the reset of streams with an unknown kind or a kind from the wrong side.
+//   - streams.go: the two-byte stream kind prefix op, ca (the call kind), ev
+//     (A-7) and fx (data legs, files.v1), Stream with frame helpers (uint32
+//     length, at most 1 MiB), and the reset of streams with an unknown kind,
+//     a kind from the wrong side or fx without files.v1.
+//   - fxconn.go: a data leg as net.Conn, its one-shot HTTP/1.1 server and
+//     client transport; pacer.go: the bulk pacer of the data legs.
 //   - keepalive.go: a ping every 30 s and a dead connection after
 //     2 min without traffic, on an injectable Clock.
 //   - backoff.go: reconnect delays growing to a 60 s cap with jitter, never
