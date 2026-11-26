@@ -240,6 +240,8 @@ type SessionRow struct {
 	// HideWorker is set on the Worker's own page, where the Worker column would
 	// repeat the heading.
 	HideWorker bool
+	// Code is the short session code ("5-667"), "" while the Hub reports none.
+	Code string
 }
 
 // Dashboard is the data of the home page as a [LiveSource] returns it.
@@ -1196,6 +1198,8 @@ type sessionsBody struct {
 		HarnessName string `json:"harness_name"`
 		Task        string `json:"task"`
 		Online      bool   `json:"online"`
+		// Code is the short session code, when the Hub reports one.
+		Code string `json:"code"`
 	} `json:"sessions"`
 }
 
@@ -1254,6 +1258,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 		d.Sessions = append(d.Sessions, SessionRow{
 			WorkerID: x.WorkerID, Worker: x.Worker, Owner: x.Owner, Name: x.Session,
 			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail, HarnessName: x.HarnessName,
+			Code: x.Code,
 		})
 	}
 	return d, nil

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- The full session page has a breadcrumb in the top bar: Control center / Workers / Worker / session, every part a link. The Worker and the session part open a quick switcher (filter as you type, arrow keys, Enter, Escape) with the Worker's sessions and your other Workers, from the same live lists the Workers and sessions pages show. A session code, when the Hub reports one, is shown before the name.
+
 ## v0.22.0
 
 ### Added
