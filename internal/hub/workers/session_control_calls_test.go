@@ -201,9 +201,12 @@ func TestSessionControlGrantedSessionReachesItsTargetsOnly(t *testing.T) {
 	resultOf(t, frames, &snap)
 	req := sent.request(t)
 	want := proto.Origin{Kind: proto.OriginWorker, SourceWorkerID: wRootLab.ID, SourceWorkerFP: wRootLab.Fingerprint,
-		SourceWorkerOwnerID: idRoot, Grant: true}
+		SourceWorkerOwnerID: idRoot, Grant: true, SourceSession: "boss", SourceProof: proto.OriginProofClaimed}
 	if req.Origin != want {
 		t.Fatalf("origin = %+v, want %+v", req.Origin, want)
+	}
+	if req.TargetWorkerID != wAlicePi2.ID {
+		t.Fatalf("target_worker_id = %q, want the routed Worker", req.TargetWorkerID)
 	}
 
 	// send_text on bob's pi-1:build, by the human form: resolved among all
