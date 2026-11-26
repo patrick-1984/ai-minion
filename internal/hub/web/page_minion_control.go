@@ -319,6 +319,8 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		undo  *UndoView
 		saved string
 		note  string
+		// rowErr is a refusal of the page itself (nothing was sent).
+		rowErr string
 	)
 	on := f.Get("value") == "on"
 	wa := newWriteArgs()
@@ -399,9 +401,10 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 		readOnly := false
 		switch {
 		case on && !known:
-			// A tick without a list would widen a limited acceptance.
-			writeResultError(w, "The Hub could not say what this Worker accepts now. Reload the page and try again.")
-			return
+			// A tick without a list would widen a limited acceptance: nothing
+			// is written, and the row is read back with the reason.
+			readOnly = true
+			rowErr = "Nothing was changed: the Hub could not say what this Worker accepts now. Try again."
 		case on && kind == acceptKindLimited && seen == acceptKindLimited:
 			// Never widen silently, and never write a list back: another
 			// administrator may have changed it since it was read.
@@ -449,29 +452,58 @@ func handleControlChange(w http.ResponseWriter, r *http.Request, c OpCaller) {
 	if op != "" {
 		callErr = c.CallOp(r, op, args, &res)
 	}
-	// The matrix and other rows read the same rows: ask the page to refresh
-	// them from the Hub (minion-control.js).
-	w.Header().Set("HX-Trigger", "control-changed")
 	// Answer with the row as the Hub has it now, whatever happened.
 	var list ops.ControlListResult
 	if err := c.CallOp(r, ops.OpControlList, ops.ControlListArgs{}, &list); err != nil {
-		writeResultError(w, failureText(err))
+		writeControlReload(w, op != "", callErr, err)
 		return
 	}
+	// The matrix and other rows read the same rows: ask the page to refresh
+	// them from the Hub (minion-control.js).
+	w.Header().Set("HX-Trigger", "control-changed")
 	rows := controlRows(list, knownSessions(r))
 	for _, cr := range rows {
 		if cr.WorkerID != row {
 			continue
 		}
-		if callErr != nil {
+		switch {
+		case callErr != nil:
 			cr.Error = failureText(callErr)
-		} else {
+		case rowErr != "":
+			cr.Error = rowErr
+		default:
 			cr.Saved, cr.Undo, cr.Note = saved, undo, note
 		}
 		writeFragmentTemplate(w, controlTemplates(), "control_row", cr)
 		return
 	}
 	writeResultError(w, "The Worker is gone.")
+}
+
+// controlReloadEvent asks the page to reload itself from the Hub
+// (minion-control.js): the row and its checkbox may no longer show what the
+// Hub has.
+const controlReloadEvent = "control-reload"
+
+// writeControlReload answers a click whose row could not be read back: the
+// row stays as it is, the text goes to the status region of the page and the
+// page reloads what the Hub has.
+func writeControlReload(w http.ResponseWriter, sent bool, callErr, readErr error) {
+	why := strings.TrimRight(failureText(readErr), ". ") + ". Reloading what the Hub has saved."
+	var text string
+	switch {
+	case callErr != nil:
+		text = "The change was refused (" + strings.TrimRight(failureText(callErr), ". ") + ") and the Workers could not be read after it: " + why
+	case sent:
+		text = "The change was sent, but the Workers could not be read after it: " + why
+	default:
+		text = "Nothing was changed, and the Workers could not be read: " + why
+	}
+	h := w.Header()
+	h.Set("HX-Retarget", "#control-status")
+	h.Set("HX-Reswap", "innerHTML")
+	h.Set("HX-Trigger", controlReloadEvent)
+	writeFragment(w, []byte(template.HTMLEscapeString(text)))
 }
 
 // acceptBefore is what the target has stored for the source before a click.

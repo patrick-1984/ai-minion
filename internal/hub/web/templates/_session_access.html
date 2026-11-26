@@ -1,6 +1,6 @@
 {{define "access_panel_row"}}<li class="access-row">
   <span class="access-row-who">{{if .AllSessions}}all shared sessions{{else if .Masked}}<span class="muted">{{.Session}}</span>{{else}}<strong>{{.Session}}</strong>{{end}} @ {{.Worker}}{{if and .Owner (not .Masked)}} <span class="muted">{{.Owner}}</span>{{end}}</span>
-  <span class="access-row-marks"><span class="badge plain">{{.Level}}</span> <span class="badge" data-tone="{{.Tone}}">{{.State}}</span> <span class="muted">via {{.Via}}</span></span>
+  <span class="access-row-marks"><span class="badge plain">{{if .Effective}}Granted: {{end}}{{.Level}}</span> <span class="badge" data-tone="{{.Tone}}">{{.State}}</span> <span class="muted">via {{.Via}}</span></span>
   <span class="access-row-links">{{if .WhyURL}}<a href="{{.WhyURL}}" aria-label="Why: {{.Session}} on {{.Worker}}">Why?</a> {{end}}<a href="{{.GrantsURL}}" aria-label="Grants: {{if .AllSessions}}all shared sessions{{else}}{{.Session}}{{end}} on {{.Worker}}">Grants</a></span>
 </li>{{end}}
 

@@ -101,7 +101,8 @@ func TestAccessPageEmptyState(t *testing.T) {
 	f := newFakeOps().reply(ops.OpAccessMatrix, ops.AccessMatrixResult{Sources: []ops.AccessSource{}, Targets: []ops.AccessTarget{}, Cells: []ops.AccessCell{}})
 	connect(t, f)
 	body := get(t, adminServer(t), pathAccess, "X-Test-Session", userHeader).Body.String()
-	mustHave(t, body, `No session reaches another Worker yet.`, `<a href="/access/control">Minion control</a>`, `<span class="refresh-idle">Refresh</span>`)
+	mustHave(t, body, `No session reaches another Worker yet.`, `set in Minion control, by an administrator.`, `<span class="refresh-idle">Refresh</span>`)
+	mustNotHave(t, body, `href="/access/control"`)
 	if strings.Contains(body, `class="access-matrix"`) {
 		t.Error("an empty matrix renders a table")
 	}
