@@ -444,8 +444,9 @@ func (m *MasterControl) recheckRead(ctx context.Context, c Call, req CallRequest
 			case <-t.C:
 			}
 			fresh, _, err := m.masterAuthority(ctx, c)
-			if err == nil && !(req.Session == "" && len(fresh.reach[req.WorkerID]) != 0 ||
-				req.Session != "" && fresh.reach[req.WorkerID][req.Session]) {
+			reached := req.Session == "" && len(fresh.reach[req.WorkerID]) != 0 ||
+				req.Session != "" && fresh.reach[req.WorkerID][req.Session]
+			if err == nil && !reached {
 				err = errMasterDenied
 			}
 			if err == nil {
