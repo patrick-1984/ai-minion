@@ -447,10 +447,7 @@ func runClaudeAllow(ctx context.Context, cmd *cobra.Command, deps claudeDeps, re
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	release, err := lockConfigFileContext(ctx, filepath.Join(dir, ".minion-claude-allow.lock"))
+	release, err := lockClaudeAllow(ctx, dir, listPath)
 	if err != nil {
 		return err
 	}
@@ -495,7 +492,7 @@ func runClaudeAllow(ctx context.Context, cmd *cobra.Command, deps claudeDeps, re
 	for _, w := range warnings {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
 	}
-	_, _ = fmt.Fprintln(out, "Claude Code then runs these Minion tools without asking; minion mcp refuses a write to any other target.")
+	_, _ = fmt.Fprintln(out, "Claude Code then runs these Minion tools without asking; minion mcp refuses these tools on any other target (sessions_list and workers_list name none).")
 	if !req.yes {
 		if deps.interactive == nil || !deps.interactive(deps.stdin, out) {
 			return errors.New("nothing was written: confirm on a terminal, or give --yes")
@@ -527,6 +524,33 @@ func runClaudeAllow(ctx context.Context, cmd *cobra.Command, deps claudeDeps, re
 	return nil
 }
 
+// lockClaudeAllow takes the locks of a change of the allowlist at listPath and
+// the settings of the Claude Code profile dir: first the lock next to the
+// allowlist, which every profile shares (the allowlist is one file for all of
+// them), then the lock of the profile, which an older minion takes alone.
+// The returned function releases both.
+func lockClaudeAllow(ctx context.Context, dir, listPath string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(listPath), 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	releaseList, err := lockConfigFileContext(ctx, claudeallow.LockPath(listPath))
+	if err != nil {
+		return nil, err
+	}
+	releaseProfile, err := lockConfigFileContext(ctx, filepath.Join(dir, ".minion-claude-allow.lock"))
+	if err != nil {
+		releaseList()
+		return nil, err
+	}
+	return func() {
+		releaseProfile()
+		releaseList()
+	}, nil
+}
+
 func writeClaudeAllowlist(path string, list *claudeallow.File) error {
 	if len(list.Rules) == 0 {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -556,10 +580,7 @@ func runClaudeRevoke(ctx context.Context, out io.Writer, deps claudeDeps, profil
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	release, err := lockConfigFileContext(ctx, filepath.Join(dir, ".minion-claude-allow.lock"))
+	release, err := lockClaudeAllow(ctx, dir, listPath)
 	if err != nil {
 		return err
 	}
@@ -730,7 +751,7 @@ func printClaudeStatus(out io.Writer, st *claudeStatus) error {
 	_, _ = fmt.Fprintf(out, "Minion allowlist: %s\n", st.Allowlist)
 	_, _ = fmt.Fprintf(out, "Claude Code settings: %s\n", st.Settings)
 	if st.Error != "" {
-		_, _ = fmt.Fprintf(out, "The allowlist cannot be read (%s): minion mcp refuses every write until it is fixed or removed.\n", st.Error)
+		_, _ = fmt.Fprintf(out, "The allowlist cannot be read (%s): minion mcp refuses every write, and every read with a target, until it is fixed or removed.\n", st.Error)
 	}
 	if len(st.Rules) == 0 {
 		_, _ = fmt.Fprintln(out, "No standing allow rule: minion mcp behaves as without minion claude allow.")

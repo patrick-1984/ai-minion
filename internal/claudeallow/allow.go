@@ -5,9 +5,9 @@
 // a rule such as mcp__minion__send_text cannot be limited to one Worker or
 // session. The target limit is therefore kept here, in a file of the owner
 // (the allowlist, [DefaultPath]), and enforced by "minion mcp": when the file
-// exists, a write tool call whose target is outside every rule is refused
-// before anything is sent. The server reads the file on every write call, so a
-// revoke takes effect at the next call.
+// exists, a write tool call (and a read tool call that a rule names) whose
+// target is outside every rule is refused before anything is sent. The server
+// reads the file on every such call, so a revoke takes effect at the next call.
 //
 // The allowlist never widens what Minion itself allows: the Hub and the
 // Worker decide every call exactly as before (authz.Decide, session grants,
@@ -72,9 +72,20 @@ type Target struct {
 	Sessions []string `json:"sessions,omitempty"`
 }
 
-// DefaultPath returns the path of the allowlist file:
-// $XDG_CONFIG_HOME/minion/claude-allow.json, or the platform's user
-// configuration directory (os.UserConfigDir) when XDG_CONFIG_HOME is unset.
+// LockName is the base name of the lock file next to the allowlist: every
+// change of the allowlist ("minion claude allow" and "revoke", from any Claude
+// Code profile) holds it.
+const LockName = ".claude-allow.lock"
+
+// LockPath returns the lock file of the allowlist at path.
+func LockPath(path string) string {
+	return filepath.Join(filepath.Dir(path), LockName)
+}
+
+// DefaultPath returns the path of the allowlist file: minion/claude-allow.json
+// in the user configuration directory of the platform (os.UserConfigDir):
+// $XDG_CONFIG_HOME or ~/.config on Linux, ~/Library/Application Support on
+// macOS, %AppData% on Windows.
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -223,6 +234,19 @@ func (f *File) GrantsWrites() bool {
 			if op, ok := ops.Lookup(name); ok && op.ChangesState() {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// Names reports whether any rule allows op.
+func (f *File) Names(op string) bool {
+	if f == nil {
+		return false
+	}
+	for _, r := range f.Rules {
+		if slices.Contains(r.Ops, op) {
+			return true
 		}
 	}
 	return false

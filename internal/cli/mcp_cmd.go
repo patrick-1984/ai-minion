@@ -1,10 +1,15 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -12,7 +17,9 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/client"
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/mcp"
+	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/version"
+	"github.com/patrick-1984/ai-minion/internal/worker/agent"
 )
 
 // allowWritesFlag is the short flag of the mcp_allow_writes setting.
@@ -75,9 +82,11 @@ MCP is read-only: only the listing, snapshot, capture and pipe read tools exist.
 The write tools (session_create, send_text, send_keys, set_task, answer,
 pipe_send) appear only with --allow-writes or MINION_MCP_ALLOW_WRITES=true,
 or when the owner approved a standing allow rule with write ops ("minion
-claude allow"). While such an allowlist exists, a write to a Worker or session
-outside every rule is refused before it is sent; the allowlist is read on every
-write call, so "minion claude revoke" applies at once. Register the server
+claude allow"). While such an allowlist exists, a write (or a read tool that a
+rule names) to a Worker or session outside every rule is refused before it is
+sent; the allowlist is read on every such call, so "minion claude revoke"
+applies at once, and write tools that exist only for those rules refuse every
+write once the last rule is revoked. Register the server
 under the name "minion" so that its Claude Code tools are mcp__minion__<op>.
 Terminal screens are sanitised by the Worker before they reach the model.
 
@@ -138,15 +147,12 @@ func runMCP(cmd *cobra.Command, deps mcpDeps) error {
 	if err != nil {
 		return err
 	}
-	gate, err := mcpGate(cmd, deps)
+	gate, err := mcpGate(cmd, deps, backend)
 	if err != nil {
 		return err
 	}
-	if !allow && gate.Active() {
-		// The owner approved standing rules with write ops ("minion claude
-		// allow"): the write tools exist, and the gate limits them to the
-		// targets of those rules.
-		allow = true
+	allow, gate = mcpWrites(allow, gate)
+	if gate.Required {
 		logger.Info("minion mcp exposes write tools for the standing allow rules of minion claude allow")
 	}
 	srv, err := mcp.New(mcp.Config{
@@ -169,10 +175,26 @@ func runMCP(cmd *cobra.Command, deps mcpDeps) error {
 	return nil
 }
 
+// mcpWrites decides whether the write tools exist: with --allow-writes, or
+// when the owner approved standing rules with write ops ("minion claude
+// allow"); the gate limits the latter to the targets of those rules. Write
+// tools that exist only for those rules make the gate Required: once the last
+// rule is revoked, it refuses every write.
+func mcpWrites(allow bool, gate claudeallow.Gate) (bool, claudeallow.Gate) {
+	if !allow && gate.Active() {
+		gate.Required = true
+		return true, gate
+	}
+	return allow, gate
+}
+
 // mcpGate returns the gate of the standing allow rules: the allowlist of
-// "minion claude allow", read on every call, with the --hub-worker of the
-// server as the Worker of a target that names none.
-func mcpGate(cmd *cobra.Command, deps mcpDeps) (claudeallow.Gate, error) {
+// "minion claude allow", read on every call. A target that names no Worker is
+// judged as backend runs it: with a Hub, on the --hub-worker of the server
+// (the Hub backend names it in the request); on the local control socket, on
+// the local Worker, whatever --hub-worker says, so the gate asks that Worker
+// for its id.
+func mcpGate(cmd *cobra.Command, deps mcpDeps, backend client.Backend) (claudeallow.Gate, error) {
 	path := deps.allowlist
 	if path == "" {
 		p, err := claudeallow.DefaultPath()
@@ -185,7 +207,42 @@ func mcpGate(cmd *cobra.Command, deps mcpDeps) (claudeallow.Gate, error) {
 	if err != nil {
 		return claudeallow.Gate{}, fmt.Errorf("configure the Hub backend: %w", err)
 	}
-	return claudeallow.Gate{Path: path, DefaultWorker: cfg.Worker}, nil
+	if cfg.Configured() {
+		return claudeallow.Gate{Path: path, DefaultWorker: cfg.Worker}, nil
+	}
+	return claudeallow.Gate{Path: path, LocalWorker: localWorkerID(backend)}, nil
+}
+
+// localWorkerID returns a function that asks the local Worker behind b for its
+// id (the id its Hub gave it), once: the first answer with an id is kept for
+// the life of the server; a failure is asked again at the next call.
+func localWorkerID(b client.Backend) func() (string, error) {
+	var (
+		mu sync.Mutex
+		id string
+	)
+	return func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if id != "" {
+			return id, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		raw, err := b.Call(ctx, agent.OpLocalStatus, nil)
+		if err != nil {
+			return "", err
+		}
+		var reply agent.LiveStatusReply
+		if err := json.Unmarshal(raw, &reply); err != nil {
+			return "", err
+		}
+		if !ops.ValidUUIDv7(reply.WorkerID) {
+			return "", errors.New("the local Worker has no Worker id")
+		}
+		id = reply.WorkerID
+		return id, nil
+	}
 }
 
 // selectMCPBackend chooses the backend of the tools: a configured Hub (MINION_HUB_URL, MINION_API_KEY_FILE, --hub-url and the
