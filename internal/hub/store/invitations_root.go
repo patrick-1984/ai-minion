@@ -35,9 +35,7 @@ func (s *Store) InsertInvitationForRoot(ctx context.Context, r InvitationRow, ro
 			maxUses = r.MaxUses
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO invitation_keys (id, secret_hash, name, mode, kind, ttl, creator_id, created_at, expires_at, max_uses)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			r.ID, r.SecretHash, r.Name, r.Mode, r.Kind, r.TTL, r.CreatorID, r.CreatedAt, expires, maxUses); err != nil {
+			insertInvitationSQL(r), insertInvitationArgs(r, expires, maxUses)...); err != nil {
 			return fmt.Errorf("store: insert invitation key: %w", err)
 		}
 		return nil

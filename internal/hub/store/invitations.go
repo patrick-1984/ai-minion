@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+
+	"github.com/patrick-1984/ai-minion/internal/ops"
 )
 
 // Invitation modes and TTL labels as stored (AD-7). The workers package owns
@@ -60,10 +62,13 @@ type InvitationRow struct {
 	Source string
 	// Notice is the owner-visible text a migration left on a key it limited.
 	Notice string
+	// WorkerName is the name a Worker enrolled with this key gets, whatever
+	// name it announces; empty leaves the Worker its own name.
+	WorkerName string
 }
 
 const invitationColumns = `id, secret_hash, name, mode, kind, ttl, creator_id, created_at,
-    COALESCE(expires_at, 0), uses, COALESCE(max_uses, 0), revoked, COALESCE(revoked_at, 0), source, notice`
+    COALESCE(expires_at, 0), uses, COALESCE(max_uses, 0), revoked, COALESCE(revoked_at, 0), source, notice, worker_name`
 
 func scanInvitation(row interface{ Scan(...any) error }) (InvitationRow, error) {
 	var (
@@ -71,7 +76,7 @@ func scanInvitation(row interface{ Scan(...any) error }) (InvitationRow, error) 
 		revoked int
 	)
 	err := row.Scan(&r.ID, &r.SecretHash, &r.Name, &r.Mode, &r.Kind, &r.TTL, &r.CreatorID, &r.CreatedAt,
-		&r.ExpiresAt, &r.Uses, &r.MaxUses, &revoked, &r.RevokedAt, &r.Source, &r.Notice)
+		&r.ExpiresAt, &r.Uses, &r.MaxUses, &revoked, &r.RevokedAt, &r.Source, &r.Notice, &r.WorkerName)
 	r.Revoked = revoked != 0
 	return r, err
 }
@@ -97,15 +102,34 @@ func (s *Store) InsertInvitation(ctx context.Context, r InvitationRow) error {
 		maxUses = r.MaxUses
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO invitation_keys (id, secret_hash, name, mode, kind, ttl, creator_id, created_at, expires_at, max_uses)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.SecretHash, r.Name, r.Mode, r.Kind, r.TTL, r.CreatorID, r.CreatedAt, expires, maxUses)
+		insertInvitationSQL(r), insertInvitationArgs(r, expires, maxUses)...)
 	// Source and Notice are not inserted: a key made through this method is a
 	// user key (the column default); the key file has [Store.EnsureInfraKey].
 	if err != nil {
 		return fmt.Errorf("store: insert invitation key: %w", err)
 	}
 	return nil
+}
+
+// insertInvitationSQL is the INSERT of a new invitation key. worker_name
+// (0037) is named only when the key has one, so the statement also works on
+// a database of an older schema (the upgrade tests seed one with this code).
+func insertInvitationSQL(r InvitationRow) string {
+	if r.WorkerName == "" {
+		return `INSERT INTO invitation_keys (id, secret_hash, name, mode, kind, ttl, creator_id, created_at, expires_at, max_uses)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	}
+	return `INSERT INTO invitation_keys (id, secret_hash, name, mode, kind, ttl, creator_id, created_at, expires_at, max_uses, worker_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+}
+
+// insertInvitationArgs are the arguments of [insertInvitationSQL].
+func insertInvitationArgs(r InvitationRow, expires, maxUses any) []any {
+	args := []any{r.ID, r.SecretHash, r.Name, r.Mode, r.Kind, r.TTL, r.CreatorID, r.CreatedAt, expires, maxUses}
+	if r.WorkerName != "" {
+		args = append(args, r.WorkerName)
+	}
+	return args
 }
 
 // InvitationByID returns the invitation key with the given id, or
@@ -188,7 +212,8 @@ type EnrollParams struct {
 	// Pub is the raw public key of the enrolling Worker.
 	Pub []byte
 	// Name is the Worker's wanted name, already cleaned; a collision within
-	// the owner's space gets the suffix -2, -3, and so on.
+	// the owner's space gets the suffix -2, -3, and so on. The Worker name of
+	// the invitation key, when it has a valid one, takes its place.
 	Name string
 	// WorkerID is the UUIDv7 of the new Worker row.
 	WorkerID string
@@ -275,7 +300,7 @@ func (s *Store) EnrollWithInvitation(ctx context.Context, p EnrollParams) (Enrol
 			return ErrInvitationExhausted
 		}
 		w, err := s.insertWorkerNamed(ctx, tx, WorkerRow{
-			ID: p.WorkerID, Pub: p.Pub, Name: p.Name, OwnerID: owner, Kind: inv.Kind, CreatedAt: p.Now,
+			ID: p.WorkerID, Pub: p.Pub, Name: enrollName(inv, p.Name), OwnerID: owner, Kind: inv.Kind, CreatedAt: p.Now,
 			Pending: true, EnrollAddr: p.Addr,
 		})
 		if err != nil {
@@ -289,6 +314,18 @@ func (s *Store) EnrollWithInvitation(ctx context.Context, p EnrollParams) (Enrol
 		return EnrollResult{InvitationID: res.InvitationID}, err
 	}
 	return res, nil
+}
+
+// enrollName is the name a new Worker asks for: the Worker name of the
+// invitation key when it has a valid one (the person who made the key chose
+// it), otherwise the name the Worker announced. Old Workers and clients that
+// were given only the key (the Android app) announce their own name, so the
+// Hub decides here, not the Worker.
+func enrollName(inv InvitationRow, announced string) string {
+	if inv.WorkerName != "" && ops.ValidWorkerName(inv.WorkerName) {
+		return inv.WorkerName
+	}
+	return announced
 }
 
 // EnsureInfraKey records the Hub-wide key file (MINION_INFRA_INVITE_KEY_FILE)

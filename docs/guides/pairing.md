@@ -121,7 +121,8 @@ An invitation key lets a machine enroll itself, for example from a script or a C
 - **mode**: `one_time` (enrolls exactly one Worker) or `reusable` (any number, until it expires or is revoked);
 - **lifetime**: 1h, 4h, 8h, 24h, 1w, 1m or unlimited (expiry stops new enrollments only; a Worker that has enrolled is never affected). Only an administrator can create a key that is valid longer than **1 week**;
 - **uses** (reusable keys): the number of Workers the key may enroll. A user's reusable key needs a limit: **10** when none is given, **100** at most. An administrator's reusable key without a limit stays unlimited (`--max-uses` on `invitation_create`);
-- **kind**: `private` (the Worker belongs to the user who creates the key) or `infrastructure` (a shared Worker; administrators only).
+- **kind**: `private` (the Worker belongs to the user who creates the key) or `infrastructure` (a shared Worker; administrators only);
+- **Worker name** (optional, `--worker-name` on `invitation_create`): the name the enrolled Worker gets, whatever name it announces, so a Worker set up with the key alone (the Android app, an older Worker) is still named as you chose. It gets your owner prefix; a reusable key names the next Workers `-2`, `-3` and so on. Without it the Worker keeps the name it announces. The name of **Add a Worker in one step** is the Worker name too.
 
 The key, like `mnk_<fingerprint>.<secret>`, is shown **once**, with the commands to start the Worker. Since 0.12.0 every command pins the Hub: `--hub-fingerprint <52 characters>` on the command line and `MINION_HUB_FINGERPRINT` in the Compose project. The same from the command line: `minion invitation_create --mode one_time --ttl 24h` against the Hub ([API keys and MCP](api-keys-and-mcp.md)). Revoke a key on the same page, or with `invitation_revoke`.
 
@@ -212,4 +213,5 @@ Ways to choose (any of them; the last change wins):
 
 - **Workers** in the Hub lists the Worker with its owner, kind and whether it is online, or pending approval. `minion worker status` shows the same from the Worker's side: the connection state, the Hub fingerprint (words and full), the Hub check, the TLS path, the Worker fingerprint and the share choice ([troubleshooting](troubleshooting.md#worker-status-as-json)).
 - To end a pairing, remove the Worker in the Hub: it becomes a tombstone, its trust and bound API keys are deleted, and the Worker is told to wipe its pairing. From the machine's side, `minion worker reset` (the Hub is not told: remove the Worker in the Hub as well).
-- Hub administrators can rename, reassign and restrict Workers (to preview only, which refuses every write to a session while it is on).
+- Rename a Worker on its page in the Hub (**Name**, or `worker_rename`): its owner renames their own Workers, an administrator any Worker. The name keeps the owner prefix and is unique among the owner's Workers; links, grants, keys and sharing name the Worker by its id and keep working. A connected Worker reconnects and `minion worker status` shows the new name.
+- Hub administrators can reassign and restrict Workers (to preview only, which refuses every write to a session while it is on).

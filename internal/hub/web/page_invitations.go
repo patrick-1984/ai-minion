@@ -314,6 +314,8 @@ type InvitationsPage struct {
 	// key; MaxUsesLimit is 0 for an admin (no upper limit besides the Hub's).
 	MaxUsesDefault int
 	MaxUsesLimit   int
+	// MaxWorkerName bounds the Worker name field.
+	MaxWorkerName int
 	// Notices are the texts the upgrade left on keys it limited (F-02), so the
 	// owner learns why a key now expires or runs out.
 	Notices []InvitationNotice
@@ -327,15 +329,18 @@ type InvitationNotice struct {
 
 // InvitationRow is one invitation key as the list shows it. It has no secret.
 type InvitationRow struct {
-	ID        string
-	Name      string
-	Mode      string
-	Kind      string
-	Uses      string
-	Expires   string
-	ExpiresAt string
-	Status    string
-	CreatorID string
+	ID   string
+	Name string
+	// WorkerName is the name a Worker enrolled with the key gets; empty when
+	// the Worker keeps its own.
+	WorkerName string
+	Mode       string
+	Kind       string
+	Uses       string
+	Expires    string
+	ExpiresAt  string
+	Status     string
+	CreatorID  string
 	// CanRevoke is true for a key that can still enroll Workers.
 	CanRevoke bool
 	// Notice is the text the upgrade to 0.6 left on the key.
@@ -368,7 +373,7 @@ func invitationTTLChoices(admin bool) []Choice {
 
 func invitationRow(i ops.InvitationInfo) InvitationRow {
 	row := InvitationRow{
-		ID: i.ID, Name: i.Name, Kind: i.Kind, Status: i.Status, CreatorID: i.CreatorID,
+		ID: i.ID, Name: i.Name, WorkerName: i.WorkerName, Kind: i.Kind, Status: i.Status, CreatorID: i.CreatorID,
 		Expires: formatTime(i.ExpiresAt, "never"), ExpiresAt: isoTime(i.ExpiresAt),
 		CanRevoke: i.Status == ops.InvitationActive, Notice: i.Notice,
 	}
@@ -401,7 +406,7 @@ func invitationsPage(r *http.Request, c OpCaller, u pageUser, all bool) (Invitat
 		return InvitationsPage{}, err
 	}
 	page := InvitationsPage{Modes: invitationModes, TTLs: invitationTTLChoices(u.Admin), Admin: u.Admin, All: all,
-		MaxUsesDefault: ops.DefaultReusableMaxUses}
+		MaxUsesDefault: ops.DefaultReusableMaxUses, MaxWorkerName: ops.MaxWorkerNameLen}
 	if !u.Admin {
 		page.MaxUsesLimit = ops.MaxReusableUsesNonAdmin
 	}
@@ -610,10 +615,12 @@ func composeProject(head []string, env [][2]string, inviteFile bool, minionVersi
 
 // inviteResult is what the invitation_key fragment renders: the new key, once.
 type inviteResult struct {
-	Name    string
-	Mode    string
-	Kind    string
-	Expires string
+	Name string
+	// WorkerName is the name the enrolled Worker gets ("" for its own).
+	WorkerName string
+	Mode       string
+	Kind       string
+	Expires    string
 	// Limit is "N enrollments" for a key with a use limit.
 	Limit string
 	Key   string
@@ -638,10 +645,15 @@ var invitationFragments = fragments("invitations.html", "_hosted_join.html")
 
 func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, u pageUser) {
 	args := ops.InvitationCreateArgs{
-		Mode: r.PostFormValue("mode"),
-		TTL:  r.PostFormValue("ttl"),
-		Name: strings.TrimSpace(r.PostFormValue("name")),
-		Kind: r.PostFormValue("kind"),
+		Mode:       r.PostFormValue("mode"),
+		TTL:        r.PostFormValue("ttl"),
+		Name:       strings.TrimSpace(r.PostFormValue("name")),
+		WorkerName: strings.TrimSpace(r.PostFormValue("worker_name")),
+		Kind:       r.PostFormValue("kind"),
+	}
+	if args.WorkerName != "" && !ops.ValidWorkerName(args.WorkerName) {
+		writeResultError(w, "The Worker name can have at most "+strconv.Itoa(ops.MaxWorkerNameLen)+" characters, without spaces or colons.")
+		return
 	}
 	if v := strings.TrimSpace(r.PostFormValue("max_uses")); v != "" && args.Mode == ops.InvitationReusable {
 		n, err := strconv.Atoi(v)
@@ -657,7 +669,7 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 		return
 	}
 	out := inviteResult{
-		Name: res.Name, Mode: "one-time", Kind: res.Kind, Expires: formatTime(res.ExpiresAt, "never"),
+		Name: res.Name, WorkerName: res.WorkerName, Mode: "one-time", Kind: res.Kind, Expires: formatTime(res.ExpiresAt, "never"),
 		Key: res.Key, InviteCommands: inviteCommands(hubURL(r), res.Key), UsageDisclosure: ops.UsageDisclosure,
 	}
 	out.Fold = inviteFolds{
@@ -670,7 +682,11 @@ func handleInvitationCreate(w http.ResponseWriter, r *http.Request, c OpCaller, 
 		if installerTag() != "" {
 			if tok, err := identity.NewJoinToken(hubURL(r), k); err == nil {
 				out.Token = tok.Encode()
-				out.Hosted = hostedJoinCommands(out.Token, res.Name, false)
+				name := res.Name
+				if res.WorkerName != "" {
+					name = res.WorkerName
+				}
+				out.Hosted = hostedJoinCommands(out.Token, name, false)
 			}
 		}
 	}

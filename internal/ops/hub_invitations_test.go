@@ -66,13 +66,16 @@ func TestInvitationCreateValidate(t *testing.T) {
 		t.Errorf("default kind = %q", ok.EffectiveKind())
 	}
 	bad := map[string]InvitationCreateArgs{
-		"mode":        {Mode: "once", TTL: TTL1h},
-		"empty mode":  {TTL: TTL1h},
-		"ttl":         {Mode: InvitationReusable, TTL: "30m"},
-		"kind":        {Mode: InvitationReusable, TTL: TTL1h, Kind: "public"},
-		"control":     {Mode: InvitationReusable, TTL: TTL1h, Name: "a\nb"},
-		"long":        {Mode: InvitationReusable, TTL: TTL1h, Name: strings.Repeat("\u00e9", MaxInvitationNameLen+1)},
-		"invalid utf": {Mode: InvitationReusable, TTL: TTL1h, Name: "\xff"},
+		"mode":              {Mode: "once", TTL: TTL1h},
+		"empty mode":        {TTL: TTL1h},
+		"ttl":               {Mode: InvitationReusable, TTL: "30m"},
+		"kind":              {Mode: InvitationReusable, TTL: TTL1h, Kind: "public"},
+		"control":           {Mode: InvitationReusable, TTL: TTL1h, Name: "a\nb"},
+		"long":              {Mode: InvitationReusable, TTL: TTL1h, Name: strings.Repeat("\u00e9", MaxInvitationNameLen+1)},
+		"invalid utf":       {Mode: InvitationReusable, TTL: TTL1h, Name: "\xff"},
+		"worker name space": {Mode: InvitationOneTime, TTL: TTL1h, WorkerName: "my phone"},
+		"worker name colon": {Mode: InvitationOneTime, TTL: TTL1h, WorkerName: "a:b"},
+		"worker name long":  {Mode: InvitationOneTime, TTL: TTL1h, WorkerName: strings.Repeat("x", 65)},
 	}
 	for name, a := range bad {
 		err := a.Validate()
@@ -83,6 +86,15 @@ func TestInvitationCreateValidate(t *testing.T) {
 	}
 	if err := (InvitationCreateArgs{Mode: InvitationReusable, TTL: TTLUnlimited, Kind: KindInfrastructure, Name: strings.Repeat("\u00e9", MaxInvitationNameLen)}).Validate(); err != nil {
 		t.Errorf("a valid infrastructure key: %v", err)
+	}
+	if err := (InvitationCreateArgs{Mode: InvitationOneTime, TTL: TTL1h, Name: "free text label", WorkerName: strings.Repeat("x", 64)}).Validate(); err != nil {
+		t.Errorf("a valid worker name: %v", err)
+	}
+	// An old client sends no worker_name, and the member is left out of a
+	// result without one.
+	raw, _ := json.Marshal(InvitationInfo{ID: "i"})
+	if strings.Contains(string(raw), "worker_name") {
+		t.Errorf("empty worker name is encoded: %s", raw)
 	}
 }
 

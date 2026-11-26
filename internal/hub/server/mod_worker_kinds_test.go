@@ -200,6 +200,13 @@ func TestProductionStartupServesWorkerKindsTrustAndRestriction(t *testing.T) {
 	if code, body := call(ops.OpWorkerRename, map[string]any{"worker_id": id, "name": "edge-renamed"}); code != 200 {
 		t.Fatalf("worker_rename = %d %s", code, body)
 	}
+	if w := connectWorker(t, h.srv.Addr(), wk, rootPub, "edge-1"); w.WorkerID != id || w.Name != "root-edge-renamed" {
+		t.Errorf("welcome after the rename = %+v, want the same id and root-edge-renamed", w)
+	}
+	// audit_list shows the rename, by Worker id.
+	if code, body := call(ops.OpAuditList, map[string]any{"action": "worker.rename"}); code != 200 || !strings.Contains(body, `"target":"`+id+`"`) {
+		t.Errorf("audit_list = %d %s", code, body)
+	}
 
 	// trust_set and trust_list.
 	if code, body := call(ops.OpTrustSet, map[string]any{"worker_id": id}); code != 200 {
