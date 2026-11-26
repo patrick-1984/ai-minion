@@ -238,7 +238,10 @@ func exchange(conn net.Conn, op string, args json.RawMessage, onProgress func(js
 	req := localapi.RequestFrame{Type: proto.TypeOpRequest, Op: op, Args: args, Pane: sourcePane()}
 	if req.Pane != "" {
 		// Only with a pane: the socket says which server the pane id is of.
+		// Without one the client says so, so that the Worker does not take it
+		// for a client that predates the member and map the pane anyway.
 		req.TmuxSocket = sourceTmuxSocket()
+		req.TmuxSocketUnknown = req.TmuxSocket == ""
 	}
 	if err := proto.WriteFrame(conn, proto.StreamFrameLimit, req); err != nil {
 		var pe *proto.Error
