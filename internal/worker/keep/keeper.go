@@ -63,6 +63,14 @@ type Config struct {
 	Home string
 	// ProcRoot is the process table, "" for /proc.
 	ProcRoot string
+	// Shared reports whether the share rule shares the named session now; a
+	// restore pass skips a kept name that is not shared (its row stays). nil
+	// shares every session.
+	Shared func(ctx context.Context, name string) (bool, error)
+	// PreviewOnly reports whether the Worker is preview-only: a restore pass
+	// then recreates nothing and stays due until the Worker is writable
+	// again. nil means never.
+	PreviewOnly func() bool
 	// WorkerID names this Worker in the audit target; nil or "" leaves it out.
 	WorkerID func() string
 	Logger   *slog.Logger
@@ -88,7 +96,13 @@ type Keeper struct {
 	lastSig  map[string]string
 	lastSave map[string]time.Time
 	quiet    map[string]time.Time
+	// previewLogged is set once a due restore pass was held back by
+	// preview-only, so that it is logged once.
+	previewLogged bool
 }
+
+// errPreviewOnly holds back a restore pass on a preview-only Worker.
+var errPreviewOnly = errors.New("keep: the Worker is preview-only; no kept session is restored")
 
 // New returns a keeper.
 func New(c Config) (*Keeper, error) {
@@ -157,14 +171,25 @@ func (k *Keeper) Tick(ctx context.Context) bool {
 	server, _ := k.c.Layouts.ServerID(ctx)
 	due := !k.restored || k.c.Managed && server != "" && k.server != "" && server != k.server
 	if due {
-		if _, err := k.restoreLocked(ctx); errors.Is(err, term.ErrHostDown) {
+		_, err := k.restoreLocked(ctx)
+		switch {
+		case errors.Is(err, errPreviewOnly):
+			// Still due: the pass runs once the Worker is writable again.
+			// Saving reads only, so it goes on.
+			if !k.previewLogged {
+				k.previewLogged = true
+				k.log.Info("keep: the Worker is preview-only; the kept sessions are restored once it is writable again")
+			}
+		case errors.Is(err, term.ErrHostDown):
 			return false
-		} else if err != nil {
+		case err != nil:
 			k.log.Warn("keep: restore pass failed", "error", err.Error())
 			return false
+		default:
+			k.restored = true
+			k.previewLogged = false
+			server, _ = k.c.Layouts.ServerID(ctx)
 		}
-		k.restored = true
-		server, _ = k.c.Layouts.ServerID(ctx)
 	}
 	if server != "" {
 		k.server = server
@@ -338,8 +363,13 @@ func (k *Keeper) Restore(ctx context.Context) ([]string, error) {
 // restoreLocked recreates every kept session that does not exist and has a
 // saved layout. An existing session of that name is never touched. Each
 // recreated session is audited; one that fails does not stop the others.
-// ErrHostDown (the managed server is not up yet) stops the pass.
+// ErrHostDown (the managed server is not up yet) stops the pass. A kept name
+// the share rule does not share now is skipped and keeps its row; on a
+// preview-only Worker nothing is recreated (errPreviewOnly).
 func (k *Keeper) restoreLocked(ctx context.Context) ([]string, error) {
+	if k.c.PreviewOnly != nil && k.c.PreviewOnly() {
+		return nil, errPreviewOnly
+	}
 	kept, err := k.c.Store.KeptSessions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read the keep list: %w", err)
@@ -366,6 +396,17 @@ func (k *Keeper) restoreLocked(ctx context.Context) ([]string, error) {
 		if exists[r.Name] || r.Layout == "" {
 			continue
 		}
+		if k.c.Shared != nil {
+			shared, err := k.c.Shared(ctx, r.Name)
+			if err != nil {
+				k.log.Warn("keep: cannot read the share rule; a kept session is not restored", "session", r.Name, "error", err.Error())
+				continue
+			}
+			if !shared {
+				k.log.Info("keep: a kept session is not shared now and is not restored", "session", r.Name)
+				continue
+			}
+		}
 		var l term.SessionLayout
 		if err := json.Unmarshal([]byte(r.Layout), &l); err != nil {
 			k.audit(ctx, r.Name, "failed_not_sent", "invalid_layout")
@@ -382,6 +423,11 @@ func (k *Keeper) restoreLocked(ctx context.Context) ([]string, error) {
 		case err != nil:
 			k.log.Warn("keep: cannot restore a kept session", "session", r.Name, "error", err.Error())
 			k.audit(ctx, r.Name, "failed_not_sent", "restore_failed")
+			// A rebuild that failed part way may have left a session with
+			// fewer panes: the save pass must not put that over the good
+			// saved layout right away.
+			k.quiet[r.Name] = k.c.Now().Add(restoreQuiet)
+			delete(k.lastSig, r.Name)
 			continue
 		}
 		k.log.Info("keep: restored a kept session", "session", r.Name)

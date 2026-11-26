@@ -15,8 +15,9 @@ import (
 
 // ErrSessionExists is returned by CreateSession when a session of that name
 // already exists. The Worker never reuses a name, and never touches the
-// session that has it.
-var ErrSessionExists = errors.New("tmux: a session with that name already exists")
+// session that has it. It is [term.ErrSessionExists], so that a caller of
+// RebuildSession (the keeper) tells a taken name apart from a failure.
+var ErrSessionExists = term.ErrSessionExists
 
 // creator is the session-creation half of term.SessionHost.
 type creator interface {

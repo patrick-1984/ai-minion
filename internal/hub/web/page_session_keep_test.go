@@ -29,7 +29,8 @@ func TestSessionPageKeepCheckboxOnlyWithTheFeature(t *testing.T) {
 	f.reply(ops.OpWorkersList, ops.WorkersListResult{Workers: []ops.WorkerInfo{keepWorker()}})
 	body = sessGet(t, s, "/s/pi-1/minion-1", sessUser).Body.String()
 	mustHave(t, body, `hx-post="/s/pi-1/minion-1/keep"`, `hx-trigger="change"`, `<input type="hidden" name="keep" value="0">`,
-		`<input type="checkbox" name="keep" value="1" id="keep-session"> Keep after restart`,
+		`<input type="hidden" name="view" value="session">`,
+		`<input type="checkbox" name="keep" value="1" class="keep-box `+keepBoxClass(sessWorkerID, "minion-1")+`" id="keep-session"> Keep after restart`,
 		`title="Minion recreates this session with its folders and resumes its Claude/Codex conversation when the Worker starts again"`)
 
 	f.reply(ops.OpSessionsList, ops.SessionsListResult{Sessions: []ops.SessionInfo{{Name: "minion-1", Keep: true}}})
@@ -177,4 +178,42 @@ func TestSessionListKeepColumn(t *testing.T) {
 	}
 	mustHave(t, html, `data-kept`)
 	mustNotHave(t, html, `name="keep"`)
+}
+
+// After a refusal the answer sets the checkbox back to the state the Worker
+// has (an out-of-band swap of every box of the session), on the session page
+// and on a list; a delivered change sets the requested state.
+func TestSessionKeepAnswerCarriesTheRealState(t *testing.T) {
+	s, f := sessionOps(t)
+	class := keepBoxClass(sessWorkerID, "minion-1")
+	oob := `hx-swap-oob="outerHTML:.` + class + `"`
+	refuse := func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 403, Code: "forbidden", Message: "the session is not shared"}
+	}
+
+	// Session page: the click wanted keep, the Worker refused and does not keep it.
+	f.on(ops.OpSessionKeepSet, refuse)
+	f.reply(ops.OpSessionsList, ops.SessionsListResult{Sessions: []ops.SessionInfo{{Name: "minion-1", Keep: false}}})
+	body := post(t, s, "/s/pi-1/minion-1/keep", sessUser, url.Values{"view": {"session"}, "keep": {"0", "1"}}).Body.String()
+	mustHave(t, body, "result-danger", `<input type="checkbox" name="keep" value="1" class="keep-box `+class+`" id="keep-session" `+oob+`>`)
+	mustNotHave(t, body, " checked", `data-control="keep"`)
+
+	// A list: the click wanted to forget, the Worker refused and still keeps it.
+	f.reply(ops.OpSessionsList, ops.SessionsListResult{Sessions: []ops.SessionInfo{{Name: "minion-1", Keep: true}}})
+	body = post(t, s, "/s/pi-1/minion-1/keep", sessUser, url.Values{"keep": {"0"}}).Body.String()
+	mustHave(t, body, "result-danger", `class="keep-box `+class+`" data-control="keep" checked aria-label="Keep minion-1 on pi-1 after restart" `+oob+`>`)
+	mustNotHave(t, body, `id="keep-session"`)
+
+	// The state cannot be read: the box goes back to the state before the click.
+	f.on(ops.OpSessionsList, func(map[string]any) (any, error) {
+		return nil, &OpError{Status: 504, Code: "timeout", Message: "the Worker did not answer"}
+	})
+	body = post(t, s, "/s/pi-1/minion-1/keep", sessUser, url.Values{"keep": {"0", "1"}}).Body.String()
+	mustHave(t, body, "result-danger", oob)
+	mustNotHave(t, body, " checked")
+
+	// Delivered: the requested state.
+	f.reply(ops.OpSessionKeepSet, delivered)
+	body = post(t, s, "/s/pi-1/minion-1/keep", sessUser, url.Values{"keep": {"0", "1"}}).Body.String()
+	mustHave(t, body, "Kept.", `data-control="keep" checked`, oob)
 }

@@ -45,7 +45,18 @@ var warnReadiness = ops.Warning{
 // every outcome, a refusal too: a caller that wants to repeat a refused write
 // with force=true makes a new request.
 func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops.Target, checkShared bool,
+	run func(ctx context.Context) (ops.WriteResult, error)) (ops.WriteResult, error) {
+	return e.writeChecked(ctx, op, wa, t, func(ctx context.Context) error { return e.checkPolicy(ctx, t, checkShared) }, run)
+}
+
+// writeChecked is [Executor.write] with its own local policy check (nil:
+// none), for a write the share rule and preview-only do not hold back
+// (session_keep_set keep=false: a kept name can always be forgotten).
+func (e *Executor) writeChecked(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops.Target, policy func(ctx context.Context) error,
 	run func(ctx context.Context) (ops.WriteResult, error)) (_ ops.WriteResult, err error) {
+	if policy == nil {
+		policy = func(context.Context) error { return nil }
+	}
 
 	var res ops.WriteResult
 	cached := false
@@ -60,7 +71,7 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 	if err = e.requireTargetWorker(ctx, t.WorkerID); err != nil {
 		return res, err
 	}
-	if err = e.checkPolicy(ctx, t, checkShared); err != nil {
+	if err = policy(ctx); err != nil {
 		return res, err
 	}
 
@@ -79,7 +90,7 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 	defer unlock()
 
 	// The policy may have changed while the request waited for its lock.
-	if err = e.checkPolicy(ctx, t, checkShared); err != nil {
+	if err = policy(ctx); err != nil {
 		return res, err
 	}
 

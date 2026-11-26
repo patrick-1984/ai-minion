@@ -9,6 +9,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/worker/store"
 )
 
 type fakeKeep struct {
@@ -144,4 +145,41 @@ func TestHostObserverReportsTheKeepFlag(t *testing.T) {
 			t.Fatalf("look %d: %+v, %v", i, v, err)
 		}
 	}
+}
+
+// A kept session that is no longer shared, or on a Worker that became
+// preview-only, can still be forgotten; keeping it again is refused.
+func TestSessionKeepSetForgetsUnsharedAndOnPreviewOnly(t *testing.T) {
+	e := newEnv(t)
+	k := &fakeKeep{names: map[string]string{}}
+	e.ex.AttachKeep(k)
+	e.host.addSession("work", "bash")
+	e.host.addSession("other", "bash")
+	e.mustWrite(ops.OpSessionKeepSet, keepArgs("work", true))
+	e.mustWrite(ops.OpSessionKeepSet, keepArgs("other", true))
+
+	if err := e.st.SaveShare(store.ShareSelection{Mode: store.ShareNone}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.write(ops.OpSessionKeepSet, keepArgs("work", true))
+	wantAPIError(t, err, "forbidden", "preview_only")
+	if res := e.mustWrite(ops.OpSessionKeepSet, keepArgs("work", false)); res.Outcome != ops.OutcomeDelivered {
+		t.Fatalf("unkeep of an unshared session = %+v", res)
+	}
+	if _, ok := k.names["work"]; ok {
+		t.Fatal("an unshared session could not be forgotten")
+	}
+
+	e.policy.SetPreviewOnly(true)
+	_, err = e.write(ops.OpSessionKeepSet, keepArgs("other", true))
+	wantAPIError(t, err, "forbidden", "preview_only")
+	if res := e.mustWrite(ops.OpSessionKeepSet, keepArgs("other", false)); res.Outcome != ops.OutcomeDelivered {
+		t.Fatalf("unkeep on a preview-only Worker = %+v", res)
+	}
+	if len(k.names) != 0 {
+		t.Fatalf("still kept: %v", k.names)
+	}
+	// Operate is still required.
+	_, err = e.writeAs(ops.OpSessionKeepSet, []ops.Action{ops.ActionRead}, keepArgs("other", false))
+	wantAPIError(t, err, "forbidden", "")
 }

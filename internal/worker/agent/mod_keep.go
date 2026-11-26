@@ -58,6 +58,7 @@ func startKeep(ctx context.Context, env *Env) (StopFunc, error) {
 	k, err := keep.New(keep.Config{
 		Host: host, Layouts: layouts, Store: st, Managed: managed, Home: home,
 		ProcRoot: keepProcRoot, WorkerID: ex.policy.WorkerID, Logger: log,
+		Shared: ex.policy.Shared, PreviewOnly: ex.policy.PreviewOnly,
 	})
 	if err != nil {
 		return nil, err

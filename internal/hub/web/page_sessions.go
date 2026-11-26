@@ -1487,3 +1487,8 @@ func readLine(br *bufio.Reader) (line string, long bool, err error) {
 		return strings.TrimRight(string(sb), "\r\n"), false, nil
 	}
 }
+
+// KeepBox is the keep checkbox of the row.
+func (x SessionRow) KeepBox() KeepBox {
+	return KeepBox{Class: keepBoxClass(x.WorkerID, x.Name), Name: x.Name, Worker: x.Worker, Keep: x.Keep}
+}

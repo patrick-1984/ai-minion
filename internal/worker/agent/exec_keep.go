@@ -75,8 +75,9 @@ func (e *Executor) keptForState() func(ctx context.Context) map[string]bool {
 }
 
 // sessionKeepSet adds the target session to the keep list (keep=true: the
-// session must exist and be shared) or removes it (keep=false: also for a
-// session that is gone, so a kept name can always be forgotten).
+// session must exist and be shared, on a Worker that is not preview-only) or
+// removes it (keep=false: also for a session that is gone or not shared, and
+// on a preview-only Worker, so a kept name can always be forgotten).
 func (e *Executor) sessionKeepSet(ctx context.Context, rq Request) (any, error) {
 	op, args, err := prepareWrite(e, ctx, rq, func(a ops.SessionKeepSetArgs) (ops.WriteArgs, ops.Target) { return a.WriteArgs, a.Target })
 	if err != nil {
@@ -87,9 +88,18 @@ func (e *Executor) sessionKeepSet(ctx context.Context, rq Request) (any, error) 
 		return nil, apiErr(proto.CodeUnsupportedOp, "", "the Worker does not implement this operation")
 	}
 	name := args.Target.SessionName
-	return e.write(ctx, op, args.WriteArgs, args.Target, true, func(ctx context.Context) (ops.WriteResult, error) {
-		if err := e.checkPolicy(ctx, args.Target, true); err != nil {
-			return ops.WriteResult{}, err
+	// Forgetting needs no share and no write access to the session: a kept
+	// name that is no longer shared, or on a Worker that became preview-only,
+	// can still be forgotten (else the keeper would keep restoring it).
+	var policy func(ctx context.Context) error
+	if args.Keep {
+		policy = func(ctx context.Context) error { return e.checkPolicy(ctx, args.Target, true) }
+	}
+	return e.writeChecked(ctx, op, args.WriteArgs, args.Target, policy, func(ctx context.Context) (ops.WriteResult, error) {
+		if policy != nil {
+			if err := policy(ctx); err != nil {
+				return ops.WriteResult{}, err
+			}
 		}
 		if !args.Keep {
 			if err := k.Unkeep(ctx, name); err != nil {
