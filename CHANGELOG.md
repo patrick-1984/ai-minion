@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Android app: optional **Hub address override** in **Pair with a Hub** and **Use a join token** for networks whose DNS cannot resolve the Hub (for example `minion.example` at `10.3.3.6`). Only the dial address changes; TLS SNI, the certificate name check and the HTTP Host stay the hostname. Saved in the app and passed to the Worker on every start (`MINION_HUB_DIAL_ADDRESS`), shown on the status screen, cleared with **Clear Hub address override** or **Forget this Hub**. Android only: other builds ignore the variable.
+
 ## v0.22.0
 
 ### Added
@@ -13,7 +17,6 @@
 
 - A local caller on another tmux server of the same user is no longer taken for the Worker's session that has the same pane id: the client sends its tmux server socket with the pane, and the Worker names no source session unless both socket paths resolve to the same socket file. A client that cannot tell its tmux server (`$TMUX` missing or malformed) says so, and gets no source session either (psmux keeps the mapping it had). An older client is handled as before.
 - The Worker refuses a session operation from the Hub whose target names another Worker, and a repeated `request_id` from another caller or with another payload answers a conflict instead of the cached result of the first request.
-
 
 ## v0.21.0
 

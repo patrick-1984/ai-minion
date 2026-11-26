@@ -1,5 +1,6 @@
 # Build without signing credentials. A release tag can call this workflow to
-# sign the exact unsigned artifact in a separate runner.
+# sign the exact unsigned artifact in a separate runner. The tag is vX.Y.Z or
+# vX.Y.Z-rc.N (release.yml) or android-vX.Y.Z (android-release.yml, APK only).
 name: android-apk
 
 on:
@@ -58,7 +59,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
-            test "$VERSION" = "$GITHUB_REF_NAME"
+            # vX.Y.Z from release.yml, or android-vX.Y.Z from android-release.yml.
+            test "$VERSION" = "$GITHUB_REF_NAME" || test "android-$VERSION" = "$GITHUB_REF_NAME"
           fi
           scripts/android/build-native.sh --fetch-ndk --out "$RUNNER_TEMP/android-native" --version "$VERSION"
           scripts/android/build-apk.sh "$VERSION" "$RUNNER_TEMP/android-native" \
@@ -72,7 +74,7 @@ jobs:
 
   sign:
     name: Sign and verify the tagged APK
-    if: github.ref_type == 'tag' && inputs.version == github.ref_name
+    if: github.ref_type == 'tag' && (inputs.version == github.ref_name || format('android-{0}', inputs.version) == github.ref_name)
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

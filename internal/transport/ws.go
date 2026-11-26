@@ -17,6 +17,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/patrick-1984/ai-minion/internal/hubdial"
 	"github.com/patrick-1984/ai-minion/internal/logx"
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
@@ -70,7 +71,8 @@ func ConnectURL(hubURL string) (string, error) {
 // HTTPS calls only.
 func dialClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy:       http.ProxyFromEnvironment,
+		DialContext: hubdial.Dial(nil), // the Android Hub address override; nil elsewhere
 		TLSClientConfig: &tls.Config{
 			MinVersion:         tls.VersionTLS12,
 			InsecureSkipVerify: true, //nolint:gosec // trust comes from the AD-6 handshake (A-15)

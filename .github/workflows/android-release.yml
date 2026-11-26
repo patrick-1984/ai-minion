@@ -1,0 +1,158 @@
+# Android-only release: a tag android-vX.Y.Z builds, signs and publishes ONLY
+# the Android Worker APK, for an app fix that must not wait for (or cause) a
+# full release. Actions are pinned to commit SHAs (the comment gives the tag).
+#
+# The tag android-vX.Y.Z builds the APK version X.Y.Z (versionName X.Y.Z, the
+# same version code as a full vX.Y.Z would have) through android-apk.yml, the
+# same build and signing job the full release uses. It publishes a GitHub
+# release "android-vX.Y.Z" with exactly three assets:
+#
+#   minion-android-X.Y.Z.apk      the signed universal APK
+#   checksums.txt                 "<sha256>  minion-android-X.Y.Z.apk"
+#   checksums.txt.sigstore.json   keyless cosign bundle of checksums.txt, identity
+#                                 .github/workflows/android-release.yml@refs/tags/android-vX.Y.Z
+#
+# It never touches the v* release flow (release.yml, publish.yml, the
+# container images, the channel tags, release-manifest.json) or "latest":
+# the release is created with --latest=false, so releases/latest (install.sh,
+# bootstrap.sh, deploy/android.sh without --version) keeps the last full
+# release. "android-vX.Y.Z" is not a vX.Y.Z version, so "minion update", the
+# Worker self-update and the Hub release check skip it.
+#
+# Pick X.Y.Z above the newest full release and below the next one (for
+# example android-v0.21.1 after v0.21.0 when v0.22.0 is next): the APK then
+# installs as an upgrade, and the next full release upgrades it again. Do not
+# tag a full vX.Y.Z with the same X.Y.Z later: two different APKs would carry
+# the same version code.
+name: android-release
+
+on:
+  push:
+    tags:
+      - "android-v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  COSIGN_VERSION: v3.1.4
+
+jobs:
+  version:
+    name: APK version from the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: The tag must be android-vX.Y.Z
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "$TAG" | grep -Eq '^android-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          echo "version=${TAG#android-}" >> "$GITHUB_OUTPUT"
+
+  # The Go Worker inside the APK is tested on this exact commit first, with
+  # the commands of ci.yml's vet and race test jobs.
+  tests:
+    name: go vet (host and android) and go test -race -tags tmux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install tmux from the distribution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+          tmux -V
+      - name: go vet (host, and the android build of the Worker; android-apk.yml compiles both ABIs)
+        run: |
+          set -euo pipefail
+          go vet ./...
+          # Every package of this module that the Worker in the APK links.
+          GOOS=android GOARCH=arm64 go vet $(GOOS=android GOARCH=arm64 go list -deps -f '{{if .Module}}{{if .Module.Main}}{{.ImportPath}}{{end}}{{end}}' ./cmd/minion)
+      - name: go test -race -tags tmux ./...
+        run: make test-race TAGS=tmux
+
+  android-apk:
+    name: signed Android Worker APK
+    needs: [version, tests]
+    uses: ./.github/workflows/android-apk.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+    secrets:
+      MINION_ANDROID_KEYSTORE_BASE64: ${{ secrets.MINION_ANDROID_KEYSTORE_BASE64 }}
+      MINION_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.MINION_ANDROID_KEYSTORE_PASSWORD }}
+
+  release:
+    name: publish the APK-only release
+    needs: [version, android-apk]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # keyless cosign signature (GitHub OIDC)
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.version.outputs.version }}
+      SIGNER_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/android-release.yml@${{ github.ref }}
+      OIDC_ISSUER: https://token.actions.githubusercontent.com
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-apk-signed
+          path: android-dist
+      - name: Install cosign ${{ env.COSIGN_VERSION }}
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+      - name: Exactly the APK, its checksums.txt and the signature bundle
+        run: |
+          set -euo pipefail
+          apk="minion-android-${VERSION#v}.apk"
+          [ "$(ls android-dist)" = "$apk" ] || { echo "expected only $apk in android-dist" >&2; ls -l android-dist >&2; exit 1; }
+          mkdir dist
+          cp "android-dist/$apk" "dist/$apk"
+          (cd dist && sha256sum "$apk" > checksums.txt && cat checksums.txt)
+          cosign sign-blob --yes --bundle dist/checksums.txt.sigstore.json dist/checksums.txt
+          cosign verify-blob \
+            --bundle dist/checksums.txt.sigstore.json \
+            --certificate-identity "$SIGNER_IDENTITY" \
+            --certificate-oidc-issuer "$OIDC_ISSUER" \
+            dist/checksums.txt
+      - name: The release must not exist yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq ".[] | select(.tag_name == \"${TAG}\") | .id" > "$RUNNER_TEMP/existing"
+          if [ -s "$RUNNER_TEMP/existing" ]; then
+            echo "release ${TAG} already exists; delete it (and the tag) to rebuild, or tag the next version" >&2
+            exit 1
+          fi
+      - name: Create the release (a draft first, published once every asset is attached; never latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk="minion-android-${VERSION#v}.apk"
+          notes="Android Worker app only: minion-android-${VERSION#v}.apk (version ${VERSION#v}).
+          No Hub, Worker binary, container image or install script is part of this release.
+          Verify: cosign verify-blob --bundle checksums.txt.sigstore.json --certificate-identity ${SIGNER_IDENTITY} --certificate-oidc-issuer ${OIDC_ISSUER} checksums.txt && sha256sum -c checksums.txt"
+          gh release create "$TAG" "dist/$apk" dist/checksums.txt dist/checksums.txt.sigstore.json \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --latest=false \
+            --title "Minion Android app ${VERSION#v} ($TAG)" --notes "$notes"
+          names=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort | join(" ")')
+          [ "$names" = "checksums.txt checksums.txt.sigstore.json $apk" ] || { echo "unexpected assets: $names" >&2; exit 1; }
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
