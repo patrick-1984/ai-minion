@@ -73,6 +73,9 @@ func (s *Store) SetAuditObserver(obs AuditObserver) {
 	for _, row := range early {
 		obs(context.Background(), row)
 	}
+	// The rows SQL wrote meanwhile (grant triggers fired by the start-up
+	// reconciliation or by an older run that ended before it forwarded them).
+	s.forwardSQLAudit()
 }
 
 // maxEarlyAudit bounds the rows held for the first observer.

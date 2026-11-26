@@ -38,6 +38,11 @@ type Store struct {
 	// start-up reconciliation runs inside Open), for the first observer.
 	earlyMu sync.Mutex
 	early   []AuditRow
+	// auditExport is true when audit_events has the exported column (0036);
+	// fwdMu and fwdAgain serialize the forwarding of the rows SQL wrote.
+	auditExport bool
+	fwdMu       sync.Mutex
+	fwdAgain    atomic.Bool
 }
 
 // Option changes how [Open] works. The defaults are what the Hub uses.
@@ -144,6 +149,10 @@ func OpenContext(ctx context.Context, dir string, opts ...Option) (*Store, error
 		return nil, fmt.Errorf("store: migrate database: %w", err)
 	}
 	st := &Store{db: db, box: box, dir: abs}
+	if st.auditExport, err = auditExportColumn(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := st.normalizeWorkerNames(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: worker names: %w", err)

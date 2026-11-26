@@ -6,7 +6,8 @@ package store
 // ago leaves one audit row "grant.end" (actor "system"), written in the
 // transaction that deletes it. The causes that SQL decides (a Worker changes
 // owner or is removed, the authority behind an admin grant is lost) are
-// recorded by the triggers of migration 0034 in the same form.
+// recorded by the triggers of migration 0034 in the same form; those rows reach
+// the audit observer and the log sinks through [Store.forwardSQLAudit].
 
 import (
 	"context"
