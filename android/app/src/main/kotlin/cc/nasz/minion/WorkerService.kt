@@ -37,6 +37,7 @@ internal data class WorkerView(
     val code: String = "",
     val expires: String = "",
     val usage: UsageRegistration? = null,
+    val dialOverride: String = "",
 )
 
 internal fun workerPreferences(context: Context): SharedPreferences =
@@ -84,8 +85,11 @@ class WorkerService : Service() {
         }
 
         fun start() = launch(null, null, "all")
-        fun join(token: String, share: String, acceptUsage: Boolean) = launch(null, token, share, acceptUsage)
-        fun pair(server: String, share: String, acceptUsage: Boolean) = launch(server, null, share, acceptUsage)
+        // dialOverride is "hostname=address", or "" for none; it replaces the saved one.
+        fun join(token: String, share: String, acceptUsage: Boolean, dialOverride: String) =
+            launch(null, token, share, acceptUsage, dialOverride)
+        fun pair(server: String, share: String, acceptUsage: Boolean, dialOverride: String) =
+            launch(server, null, share, acceptUsage, dialOverride)
         fun stop() = stopWorker()
         fun pause(paused: Boolean) = runCommand(if (paused) "resume" else "pause")
         fun share(share: Boolean) = runCommand("config", "share", if (share) "all" else "none")
@@ -107,12 +111,25 @@ class WorkerService : Service() {
             }
         }
 
+        // Takes effect on the next start; only offered while the Worker is stopped.
+        fun clearDialOverride() {
+            queue.execute {
+                if (wanted || busy) return@execute
+                if (!preferences.edit().remove(HubDialOverride.PREFERENCE).commit()) {
+                    notice = "Android could not save the change. Try again."
+                }
+                publish()
+            }
+        }
+
         fun forget() {
             queue.execute {
                 if (wanted || busy) return@execute
                 val ok = runCatching { native.workerCommand("reset", "--yes") &&
                     native.workerCommand("config", "unset", "hub_fingerprint") &&
                     native.workerCommand("resume") }.getOrDefault(false)
+                // The override belongs to the forgotten Hub's hostname.
+                if (ok) preferences.edit().remove(HubDialOverride.PREFERENCE).commit()
                 notice = if (ok) "" else "Could not forget the Hub. Try again."
                 report = null
                 usage = null
@@ -153,7 +170,9 @@ class WorkerService : Service() {
         return START_STICKY
     }
 
-    private fun launch(server: String?, token: String?, share: String, acceptUsage: Boolean = false) {
+    private fun launch(
+        server: String?, token: String?, share: String, acceptUsage: Boolean = false, dialOverride: String? = null,
+    ) {
         ++requestId
         stopping.set(false)
         try {
@@ -170,6 +189,11 @@ class WorkerService : Service() {
                 notice = ""
                 publish()
                 if (server != null || token != null) {
+                    // Saved before provisioning: the join and the pairing dial already use it.
+                    val edit = preferences.edit()
+                    if (dialOverride.isNullOrBlank()) edit.remove(HubDialOverride.PREFERENCE)
+                    else edit.putString(HubDialOverride.PREFERENCE, dialOverride)
+                    check(edit.commit())
                     saveWanted(true)
                     val completed = runCatching { native.provision(server, token, share, acceptUsage) }.getOrDefault(false)
                     if (stopping.get()) return@safely
@@ -373,7 +397,7 @@ class WorkerService : Service() {
             r?.optBoolean("paired") == true, r?.optInt("sessions", -1)?.takeIf { it >= 0 }?.toString().orEmpty(),
             share?.optString("mode") != "none", preferences.getBoolean("boot", false),
             livePairing?.optString("code").orEmpty(), if (livePairing != null) expires else "",
-            usage,
+            usage, preferences.getString(HubDialOverride.PREFERENCE, null).orEmpty(),
         )
         main.post {
             if (v != view) {

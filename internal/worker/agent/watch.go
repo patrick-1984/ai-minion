@@ -87,6 +87,11 @@ type SessionState struct {
 	// (Claude Code /rename), sanitized; "" when none is known. It travels on
 	// the state stream to the Hub only, never in an operation result.
 	HarnessName string `json:"harness_name,omitempty"`
+	// InstanceID is the host-attested identity of the terminal session behind
+	// the name (term.Session.Instance, the same value sessions_list reports as
+	// instance_id), "" when the host reports none (psmux, an old tmux). A Hub
+	// that predates it ignores it.
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // View is the shared sessions at one moment, by session name.
@@ -115,9 +120,14 @@ type Change struct {
 
 // Diff returns what changed from prev to cur, ordered by session name. A
 // session that is only in cur is added, one that is only in prev is removed
-// (the Change then carries just the name). For a session in both, a change of
-// kind, state, state provenance or task is state_changed. A change of the
-// screen hash is independently screen_changed.
+// (the Change then carries just the name). A session in both whose instance
+// changed (both known and different: the name was killed and created again
+// between two looks, also by a restart of the tmux server) is another
+// terminal: it is removed and added, so that the Hub never carries what was
+// set up for the old terminal over to the new one. For a session in both, a
+// change of kind, state, state provenance, task or of an instance that becomes
+// known or unknown is state_changed. A change
+// of the screen hash is independently screen_changed.
 func Diff(prev, cur View) []Change {
 	names := make([]string, 0, len(prev)+len(cur))
 	for n := range cur {
@@ -138,8 +148,11 @@ func Diff(prev, cur View) []Change {
 			out = append(out, Change{EventSessionAdded, c})
 		case !inCur && inPrev:
 			out = append(out, Change{EventSessionRemoved, SessionState{Name: n}})
+		case ReplacedInstance(p.InstanceID, c.InstanceID):
+			out = append(out, Change{EventSessionRemoved, SessionState{Name: n}}, Change{EventSessionAdded, c})
 		default:
-			if c.Kind != p.Kind || c.State != p.State || c.Task != p.Task || c.PaneStateDetail != p.PaneStateDetail || c.HarnessName != p.HarnessName {
+			if c.Kind != p.Kind || c.State != p.State || c.Task != p.Task || c.PaneStateDetail != p.PaneStateDetail || c.HarnessName != p.HarnessName ||
+				c.InstanceID != p.InstanceID {
 				out = append(out, Change{EventStateChanged, c})
 			}
 			if c.ScreenHash != p.ScreenHash {
@@ -148,6 +161,14 @@ func Diff(prev, cur View) []Change {
 		}
 	}
 	return out
+}
+
+// ReplacedInstance reports whether two instance ids of one session name are
+// two terminals: both are known and they differ. An unknown id ("", a host
+// that reports none) never makes a replacement, so a host that stops or starts
+// reporting ids does not end the permissions of its sessions.
+func ReplacedInstance(prev, cur string) bool {
+	return prev != "" && cur != "" && prev != cur
 }
 
 // ScreenHash is the hash of a sanitised screen: the text lines, the style
@@ -262,7 +283,7 @@ func (o *HostObserver) observeOnce(ctx context.Context) (View, store.ShareState,
 	sem := make(chan struct{}, listParallel)
 	var wg sync.WaitGroup
 	for i, s := range shared {
-		states[i] = SessionState{Name: s.Name, Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown, Task: s.Task}
+		states[i] = SessionState{Name: s.Name, Kind: ops.PaneKindUnknown, State: ops.PaneStateUnknown, Task: s.Task, InstanceID: s.Instance}
 		p, ok := s.ActivePane()
 		if !ok {
 			continue

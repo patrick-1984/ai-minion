@@ -569,6 +569,9 @@
           "blocked_by": {
             "type": "string"
           },
+          "command_shell": {
+            "type": "boolean"
+          },
           "granted": {
             "type": "string"
           },
@@ -1480,6 +1483,9 @@
           "authority": {
             "type": "string"
           },
+          "command_shell": {
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -1701,6 +1707,9 @@
       },
       "GrantSetArgs": {
         "properties": {
+          "command_shell": {
+            "type": "boolean"
+          },
           "expires_at": {
             "type": "string"
           },
@@ -2418,6 +2427,9 @@
           },
           "ttl": {
             "type": "string"
+          },
+          "worker_name": {
+            "type": "string"
           }
         },
         "required": [
@@ -2455,6 +2467,9 @@
             "type": "string"
           },
           "ttl": {
+            "type": "string"
+          },
+          "worker_name": {
             "type": "string"
           }
         },
@@ -2518,6 +2533,9 @@
           },
           "uses": {
             "type": "integer"
+          },
+          "worker_name": {
+            "type": "string"
           }
         },
         "required": [
@@ -3469,6 +3487,9 @@
         "properties": {
           "attached": {
             "type": "boolean"
+          },
+          "code": {
+            "type": "string"
           },
           "created": {
             "format": "date-time",
@@ -5682,8 +5703,34 @@
         ],
         "type": "object"
       },
+      "WorkerHiddenSessionsSetArgs": {
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "hidden_sessions": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "worker_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "force",
+          "hidden_sessions",
+          "request_id",
+          "worker_id"
+        ],
+        "type": "object"
+      },
       "WorkerInfo": {
         "properties": {
+          "allow_hidden_sessions": {
+            "type": "boolean"
+          },
           "arch": {
             "type": "string"
           },
@@ -5736,6 +5783,9 @@
           },
           "new_session_refused": {
             "type": "string"
+          },
+          "number": {
+            "type": "integer"
           },
           "online": {
             "type": "boolean"
@@ -9149,7 +9199,7 @@
             "sessionCookie": []
           }
         ],
-        "summary": "Create a session grant, or change the level, expiry or note of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
+        "summary": "Create a session grant, or change the level, expiry, note or command shell flag of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
         "x-minion-actions": [
           "operate"
         ],
@@ -16135,6 +16185,91 @@
         "x-minion-session-only": false,
         "x-minion-stream": false,
         "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/worker_hidden_sessions_set": {
+      "post": {
+        "operationId": "worker_hidden_sessions_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkerHiddenSessionsSetArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WriteResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "Allow or refuse new hidden sessions on one Worker, or return it to each caller's account preference (the owner on their own Workers, an administrator on any Worker).",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [
+          {
+            "class": "KEEP",
+            "name": "worker_known",
+            "reads": "worker.id"
+          }
+        ],
+        "x-minion-mutates": false,
+        "x-minion-scope": "hub",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-write": true
       }
     },
     "/api/v1/ops/worker_logs": {

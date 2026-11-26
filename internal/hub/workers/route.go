@@ -244,28 +244,38 @@ type RouterConfig struct {
 	// setting hidden_sessions and the caller's own preference, v0.10.0).
 	// Nil means hidden sessions are never refused.
 	HiddenSessions HiddenSessionsPolicyFunc
+	// WorkerHiddenSessions reads each Worker's own hidden-sessions choice
+	// (v0.23.0), which wins over the caller's preference while the Hub
+	// setting is user-controlled. Nil: no Worker has a choice of its own.
+	WorkerHiddenSessions WorkerHiddenSessionsSource
 	// Monitor records the calls routed to Workers for compliance monitoring;
 	// nil: none.
 	Monitor *compliance.Monitor
 	// ContentManaged tells whether the content of a Worker's sessions may be
 	// recorded; it must say no for a Worker it does not know. Nil: UserManaged.
 	ContentManaged func(ctx context.Context, workerID string) (bool, error)
+	// Codes gives out and resolves the short session codes ("5-667"); nil:
+	// no codes, and a code is no target.
+	Codes *SessionCodes
 }
 
 // Router routes catalog Worker ops to the Workers that run them.
 type Router struct {
-	backend    Backend
-	dir        Directory
-	az         *authz.Authorizer
-	catalog    *ops.Registry
-	ownerName  func(ctx context.Context, ownerID string) string
-	timeout    time.Duration
-	log        *slog.Logger
-	userMgd    func(ctx context.Context, workerID string) (bool, error)
-	hidden     HiddenSessionsPolicyFunc
-	mon        *compliance.Monitor
-	contentMgd func(ctx context.Context, workerID string) (bool, error)
-	telemetry  func() Telemetry
+	backend   Backend
+	dir       Directory
+	az        *authz.Authorizer
+	catalog   *ops.Registry
+	ownerName func(ctx context.Context, ownerID string) string
+	timeout   time.Duration
+	log       *slog.Logger
+	userMgd   func(ctx context.Context, workerID string) (bool, error)
+	hidden    HiddenSessionsPolicyFunc
+	// workerHidden reads the Workers' own hidden-sessions choices.
+	workerHidden WorkerHiddenSessionsSource
+	mon          *compliance.Monitor
+	contentMgd   func(ctx context.Context, workerID string) (bool, error)
+	telemetry    func() Telemetry
+	codes        *SessionCodes
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
 	synced atomic.Pointer[func(workerID string) bool]
@@ -288,9 +298,10 @@ func NewRouter(c RouterConfig) (*Router, error) {
 	}
 	rt := &Router{
 		telemetry: c.Telemetry,
-		userMgd:   c.UserManaged, hidden: c.HiddenSessions, mon: c.Monitor, contentMgd: c.ContentManaged,
+		userMgd:   c.UserManaged, hidden: c.HiddenSessions, workerHidden: c.WorkerHiddenSessions, mon: c.Monitor, contentMgd: c.ContentManaged,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
+		codes: c.Codes,
 	}
 	if rt.catalog == nil {
 		rt.catalog = ops.Default
@@ -364,19 +375,32 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 		}
 		return policy
 	}
+	// The Workers' own choices, read once. A failed read shows no choice and
+	// judges the hidden Workers as disabled (fail closed, as the policy).
+	var choices map[string]bool
+	choicesFailed := false
+	if rt.workerHidden != nil {
+		if choices, err = rt.workerHidden.ListWorkerHiddenSessions(ctx); err != nil {
+			choices, choicesFailed = nil, true
+		}
+	}
 	out := make([]ops.WorkerInfo, 0, len(recs))
+	numbers := rt.codes.WorkerNumbers(ctx)
 	for _, w := range recs {
 		owner, ok := owners[w.OwnerID]
 		if !ok {
 			owner = rt.ownerLabel(ctx, w.OwnerID)
 			owners[w.OwnerID] = owner
 		}
-		info := ops.WorkerInfo{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Owner: owner, Kind: w.Kind,
+		info := ops.WorkerInfo{ID: w.ID, Number: numbers[w.ID], Name: w.Name, OwnerID: w.OwnerID, Owner: owner, Kind: w.Kind,
 			Pending: w.Pending, Fingerprint: w.Fingerprint, FingerprintWords: identity.Fingerprint(w.Fingerprint).Words(),
 			EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected, HubCheck: w.HubCheck}
 		if !w.CreatedAt.IsZero() {
 			at := ops.Timestamp(w.CreatedAt)
 			info.EnrolledAt = &at
+		}
+		if v, ok := choices[w.ID]; ok {
+			info.AllowHiddenSessions = &v
 		}
 		if on, ok := rt.backend.Get(w.ID); ok {
 			at := ops.Timestamp(on.ConnectedAt)
@@ -390,7 +414,14 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			}
 			if newSessionsHost(on.Facts) != hostVisible {
 				if pol := policyFor(); pol != nil {
-					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, *pol)
+					wp := *pol
+					switch {
+					case choicesFailed:
+						wp.Hub = config.HiddenSessionsDisabled
+					case wp.Hub == config.HiddenSessionsUserControlled:
+						wp.Worker = info.AllowHiddenSessions
+					}
+					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, wp)
 				}
 			}
 			info.DebugRemote = on.Facts.DebugRemote
@@ -429,7 +460,26 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 // target_not_found, which is also what a foreign Worker looks like: the
 // answer never says whether someone else's Worker exists. Whether the session
 // exists is for the Worker to say.
+//
+// A session code ("5-667", "#5-667", "5-667:0.1"; see ops.ParseSessionCode)
+// is read as the Worker and the current name of the session it was given to,
+// and then resolved like that name: the same visibility and the same answer.
+// A code that names no session is target_not_found like a session the
+// principal cannot see.
 func (rt *Router) Resolve(ctx context.Context, p authz.Principal, target string, all bool) (ops.Target, error) {
+	if code, pane, ok := ops.ParseSessionCode(target); ok && rt.codes != nil {
+		workerID, name, found, err := rt.codes.lookup(ctx, code)
+		if err != nil {
+			return ops.Target{}, err
+		}
+		if !found {
+			return ops.Target{}, errNoVisibleWorker()
+		}
+		target = workerID + ":" + name
+		if pane != "" {
+			target += ":" + pane
+		}
+	}
 	ht, qualified, err := parseTarget(target)
 	if err != nil {
 		return ops.Target{}, err
@@ -464,7 +514,7 @@ func (rt *Router) Resolve(ctx context.Context, p authz.Principal, target string,
 	}
 	switch len(matches) {
 	case 0:
-		return ops.Target{}, proto.NewError(proto.CodeTargetNotFound, "no Worker of that name is visible to you")
+		return ops.Target{}, errNoVisibleWorker()
 	case 1:
 		return ht.Resolve(matches[0].ID), nil
 	}
@@ -479,6 +529,13 @@ func (rt *Router) Resolve(ctx context.Context, p authz.Principal, target string,
 		Message: fmt.Sprintf("several Workers match %q; write owner/worker-name:session-name", qualified.literal),
 		Details: details,
 	}
+}
+
+// errNoVisibleWorker is the answer to a target whose Worker the principal
+// cannot see, also to a session code that names nothing: the same answer, so
+// that a code says nothing about a session the principal cannot see.
+func errNoVisibleWorker() error {
+	return proto.NewError(proto.CodeTargetNotFound, "no Worker of that name is visible to you")
 }
 
 // targetForms is how the Worker part of a human target can be read.
@@ -561,6 +618,11 @@ type CallRequest struct {
 	// (a verified bound master lease, or a session named on a call stream);
 	// it only attributes the request in its origin.
 	source originSource
+	// commandShell, when set, is told the command shell grant (A116) that let
+	// the origin carry shell_ok, "" for none, each time the request is decided
+	// (before the dispatch and at the final admission); for the audit of the
+	// caller.
+	commandShell func(grantID string)
 }
 
 // Call routes a non-streaming op and returns its result as a value of the
@@ -647,6 +709,9 @@ func (rt *Router) call(ctx context.Context, req CallRequest, out **call) (any, e
 			return unknownWrite(), nil
 		}
 		return nil, proto.NewError(proto.CodeInternal, "the Worker sent a result the Hub cannot read")
+	}
+	if lr, ok := res.(ops.SessionsListResult); ok {
+		rt.codes.Annotate(ctx, req.WorkerID, lr.Sessions)
 	}
 	if wr, ok := res.(ops.WriteResult); ok && wr.Validate() != nil {
 		rt.log.Warn("workers: write answered with an invalid result", "op", c.op.Name,
@@ -757,6 +822,11 @@ type call struct {
 	accepted ops.ActionSet
 	res      authz.Resource
 	granted  func(ids []string)
+	// shell is set for a request that may carry shell_ok (shellCandidate);
+	// the final admission decides it again. report is
+	// CallRequest.commandShell.
+	shell  bool
+	report func(grantID string)
 	// dispatched is set when the Worker's connection took the op (the
 	// stream opened): from then on it counts as an op sent to that Worker.
 	dispatched atomic.Bool
@@ -925,6 +995,12 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.granted != nil {
 		req.granted(grantIDs)
 	}
+	shell := shellCandidate(op.Name, req)
+	if shell {
+		if err := rt.decideShell(ctx, &origin, req.Principal, res, req.commandShell); err != nil {
+			return nil, err
+		}
+	}
 	id := ops.NewUUIDv7()
 	if op.Write {
 		var w struct {
@@ -944,6 +1020,8 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		accepted: accepted,
 		res:      res,
 		granted:  req.granted,
+		shell:    shell,
+		report:   req.commandShell,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
 			Args: args, Actions: actions, Origin: origin, TargetWorkerID: routedTargetWorker(op.Name, args, req.WorkerID),
@@ -1076,6 +1154,13 @@ func (rt *Router) admit(ctx context.Context, c *call, destination Online) error 
 		// The origin names the grant this final admission found, not a
 		// grant of the earlier decision.
 		rt.originGrant(&c.frame.Origin, p, ids)
+	}
+	if c.shell {
+		// A command shell grant revoked or changed since the first decision
+		// no longer lets the request skip the shell_pane guard (A116).
+		if err := rt.decideShell(ctx, &c.frame.Origin, p, c.res, c.report); err != nil {
+			return err
+		}
 	}
 	return nil
 }

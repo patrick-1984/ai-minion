@@ -135,6 +135,11 @@ type RequestFrame struct {
 	TmuxSocket        string          `json:"tmux_socket,omitempty"`
 	TmuxServerPID     int64           `json:"tmux_server_pid,omitempty"`
 	TmuxSocketUnknown bool            `json:"tmux_socket_unknown,omitempty"`
+	// ClientRule is the optional id of the standing allow rule under which
+	// the client sent the request (proto.ClientRuleHeader): an audit label
+	// that the Worker passes on to the Hub with a forwarded call and never
+	// decides by. A Worker that predates it ignores it.
+	ClientRule string `json:"client_rule,omitempty"`
 }
 
 // ProgressFrame is the `op.progress` frame: one element of a streaming op.
@@ -172,6 +177,8 @@ type Request struct {
 	// TmuxSocketUnknown is [RequestFrame].TmuxSocketUnknown: the caller sent a
 	// pane and could not tell which tmux server it is of.
 	TmuxSocketUnknown bool
+	// ClientRule is [RequestFrame].ClientRule when it is a valid id, or "".
+	ClientRule string
 }
 
 // Executor runs one op. progress sends one `op.progress` element to the
@@ -448,7 +455,7 @@ func parseRequest(body []byte) (Request, *proto.Error) {
 		return Request{}, proto.NewError(proto.CodeInvalidArgument, "op.request needs an op name")
 	}
 	return Request{Op: f.Op, Actions: FullActions(), Args: f.Args, Pane: f.Pane, TmuxSocket: f.TmuxSocket,
-		TmuxServerPID: f.TmuxServerPID, TmuxSocketUnknown: f.TmuxSocketUnknown}, nil
+		TmuxServerPID: f.TmuxServerPID, TmuxSocketUnknown: f.TmuxSocketUnknown, ClientRule: clientRule(f.ClientRule)}, nil
 }
 
 // protoErrorer is implemented by errors that know their wire form.
@@ -554,4 +561,13 @@ func SplitOp(wire string) (op string, need []string) {
 		return wire, nil
 	}
 	return op, strings.Split(rest, "+")
+}
+
+// clientRule keeps a valid client rule id and drops anything else: the member
+// is a label, so a bad value never refuses the request.
+func clientRule(id string) string {
+	if proto.ValidClientRule(id) {
+		return id
+	}
+	return ""
 }

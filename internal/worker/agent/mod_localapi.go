@@ -197,6 +197,9 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 		return raw, l.protoError(rq.Op, err)
 	}
 	ctx = WithProgress(ctx, progress)
+	// The client rule labels a call this Worker sends on to the Hub, for the
+	// Hub's audit; nothing here decides by it.
+	ctx = WithClientRule(ctx, rq.ClientRule)
 	if forwardsToHub(rq.Op, rq.Args, l.ex.policy.WorkerID()) {
 		if l.pause != nil && l.pause.Paused() {
 			return nil, l.protoError(rq.Op, pauseRefusal())

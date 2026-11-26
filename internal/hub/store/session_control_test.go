@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -35,8 +36,10 @@ func TestSessionControlCRUD(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The session target carries the time it was named.
+	a.SessionTargets = []ControlSessionTarget{{WorkerID: "w3", SessionName: "build", NamedAt: 10}}
 	rows, err := s.ListSessionControl(ctx)
-	if err != nil || len(rows) != 2 || rows[0] != b || rows[1] != a {
+	if err != nil || len(rows) != 2 || !reflect.DeepEqual(rows[0], b) || !reflect.DeepEqual(rows[1], a) {
 		t.Fatalf("rows = %+v err=%v", rows, err)
 	}
 	if ok, err := s.DeleteSessionControl(ctx, "w1", "boss"); err != nil || !ok {
@@ -45,7 +48,7 @@ func TestSessionControlCRUD(t *testing.T) {
 	if ok, _ := s.DeleteSessionControl(ctx, "w1", "boss"); ok {
 		t.Error("a second delete reported a row")
 	}
-	if rows, _ := s.ListSessionControl(ctx); len(rows) != 1 || rows[0] != b {
+	if rows, _ := s.ListSessionControl(ctx); len(rows) != 1 || !reflect.DeepEqual(rows[0], b) {
 		t.Errorf("rows after delete = %+v", rows)
 	}
 	if err := s.PutSessionControl(ctx, SessionControlRow{WorkerID: "w1", SessionName: "x"}); err == nil {

@@ -60,6 +60,10 @@ type callRequest struct {
 	Args          json.RawMessage `json:"args"`
 	APIKey        string          `json:"api_key,omitempty"`
 	SourceSession string          `json:"source_session,omitempty"`
+	// ClientRule is the optional client_rule of the request: the id of the
+	// standing allow rule under which the client sent it (proto.ClientRuleHeader).
+	// An unverified label for the audit event of a write; it never authorizes.
+	ClientRule string `json:"client_rule,omitempty"`
 }
 
 // callStreams is the [StreamHandler] of the call streams (KindCall) of one
@@ -166,7 +170,7 @@ func (h *Handler) serveCall(ctx context.Context, w store.WorkerRow, sess callSes
 		// its own write deadlines, its timeout and ctx, which ends with the
 		// session and, with the AfterFunc above, resets the stream.
 		_ = st.SetDeadline(time.Time{})
-		fn(ctx, Call{Worker: w, Stream: st, Args: rq.Args, RequestID: rq.RequestID, APIKey: rq.APIKey, SourceSession: rq.SourceSession})
+		fn(ctx, Call{Worker: w, Stream: st, Args: rq.Args, RequestID: rq.RequestID, APIKey: rq.APIKey, SourceSession: rq.SourceSession, ClientRule: rq.ClientRule})
 		return
 	}
 	h.refuseCall(st, proto.NewError(proto.CodeUnsupportedOp, "the Hub does not serve this operation on a call stream"))
@@ -208,6 +212,9 @@ type Call struct {
 	// SourceSession is the optional source_session of the op.request: the
 	// calling session on the Worker, not validated yet.
 	SourceSession string
+	// ClientRule is the optional client_rule of the op.request, not validated
+	// yet: an audit label only, never an input of a decision.
+	ClientRule string
 	// Master and TranscriptHash are populated only by the private authenticated
 	// master operation. Generic Worker, API-key and legacy paths never get them.
 	Master         *proto.MasterCallArgs

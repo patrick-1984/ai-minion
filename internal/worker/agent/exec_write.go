@@ -457,6 +457,25 @@ func inputGuards(p *pane) []proto.Code {
 	return hits
 }
 
+// hubShellOK reports whether rq is a Hub request whose origin says that a
+// command shell grant (A116) authorized this typed input into this session:
+// the Hub sets shell_ok only then (the origin's Validate, run by the op
+// server, ties it to a grant). Only the op server sets rq.Origin, from the
+// op.request frame of the Hub connection; a local caller (the local socket,
+// MCP on this host) never has one. No attribution member is read here.
+func hubShellOK(rq Request) bool {
+	return rq.Origin != nil && rq.Origin.ShellOK && rq.Origin.Grant
+}
+
+// skipShellGuard returns guards without the shell_pane guard, and only that
+// one: a changed pane, an open dialog, a busy agent, sharing and the message
+// versus operate check stay as they are.
+func skipShellGuard(guards guardFunc) guardFunc {
+	return func(p *pane) []proto.Code {
+		return slices.DeleteFunc(guards(p), func(c proto.Code) bool { return c == proto.CodeShellPane })
+	}
+}
+
 // failureOf maps an error of the host's write to an outcome and a reason.
 // sent is the number of keys that went out before it. A pane change and a
 // vanished pane are KEEP failures; once anything was sent the outcome is
@@ -484,6 +503,11 @@ func (e *Executor) sendText(ctx context.Context, rq Request) (any, error) {
 		return nil, err
 	}
 	guards := inputGuards
+	if hubShellOK(rq) {
+		// A command shell of the calling master: typing there is a normal
+		// write, not a forced one (A116).
+		guards = skipShellGuard(guards)
+	}
 	if args.AgentOnly {
 		args.Force = false
 		guards = func(p *pane) []proto.Code {
@@ -641,7 +665,11 @@ func (e *Executor) sendKeys(ctx context.Context, rq Request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return e.paneWrite(ctx, rq, op, args.WriteArgs, args.Target, true, inputGuards,
+	guards := inputGuards
+	if hubShellOK(rq) {
+		guards = skipShellGuard(guards) // a command shell (A116)
+	}
+	return e.paneWrite(ctx, rq, op, args.WriteArgs, args.Target, true, guards,
 		func(ctx context.Context, p *pane) (ops.Outcome, proto.Code, error) {
 			return e.sendKeyList(ctx, p, args.Keys)
 		})

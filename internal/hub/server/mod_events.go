@@ -65,7 +65,7 @@ func initEvents(ctx context.Context, env *Env) error {
 	// The hub keeps every Worker's share rule in the Hub database: what it may
 	// show of a session it stored (the pipe history) follows the rule the Worker
 	// declared, across reconnects and restarts, and is hidden while it is unknown.
-	hub := workers.NewEventHub(workers.EventHubOptions{Share: st, Logger: cfg.logger()})
+	hub := workers.NewEventHub(workers.EventHubOptions{Share: st, Instances: st, Logger: cfg.logger()})
 	ing, err := workers.NewIngest(workers.IngestOptions{Hub: hub, Logger: cfg.logger()})
 	if err != nil {
 		return fmt.Errorf("events: %w", err)
@@ -79,7 +79,9 @@ func initEvents(ctx context.Context, env *Env) error {
 		})
 	}
 
+	codes := &workers.SessionCodes{Store: st, Log: cfg.logger()}
 	lister := &api.SessionLister{
+		Codes:       codes.Sightings,
 		UserManaged: userManaged(st),
 		Directory:   workers.StoreDirectory{Store: st},
 		State:       hub,

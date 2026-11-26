@@ -82,6 +82,10 @@ type SessionsListArgs struct{}
 
 // SessionInfo describes one session in a listing.
 type SessionInfo struct {
+	// Code is the session's short code on the Hub ("5-667", see
+	// SessionCode), set by the Hub on a listing it routes; a Worker never
+	// sets it. A target may name the session by it through the Hub.
+	Code     string    `json:"code,omitempty"`
 	Name     string    `json:"name"`
 	Created  Timestamp `json:"created"`
 	Windows  int       `json:"windows"`

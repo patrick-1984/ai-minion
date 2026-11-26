@@ -706,6 +706,16 @@ func TestHubDefaultWorkerIsAddedOnlyWhereTheArgumentsNameNone(t *testing.T) {
 	if got := call(ops.OpSessionSnapshot, map[string]any{"target": "lab:s"}); got["target"] != "lab:s" || got["worker_id"] != nil {
 		t.Errorf("a human-form target was changed: %v", got)
 	}
+	// A session code is the Hub's to resolve: it names its Worker itself.
+	for _, code := range []string{"5-667", "#5-667", "s5-667"} {
+		got := call(ops.OpSendText, map[string]any{"target": map[string]any{"session_name": code}, "text": "x"})
+		if _, has := tgt(got)["worker_id"]; has || tgt(got)["session_name"] != code {
+			t.Errorf("a session code target got the default Worker: %v", got)
+		}
+	}
+	if got := call(ops.OpSendText, map[string]any{"target": map[string]any{"session_name": "5-667", "pane": "0.1"}, "text": "x"}); tgt(got)["worker_id"] != nil {
+		t.Errorf("a session code target with a pane got the default Worker: %v", got)
+	}
 	if got := call(ops.OpWorkersList, nil); got["worker_id"] != nil {
 		t.Errorf("a Hub op got a worker_id: %v", got)
 	}

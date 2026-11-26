@@ -18,7 +18,19 @@
 {{end}}<p class="sr-only" id="list-announce" role="status" aria-live="polite"></p>
 <div id="list-result" aria-live="polite"></div>
 <div id="results" class="stack" data-live-list sse-connect="{{.Data.LiveURL}}" sse-swap="dashboard" hx-swap="innerHTML">{{template "worker_results" .Data.WorkerView}}</div>
-{{if .Data.ShareURL}}<section class="panel" aria-labelledby="share-h" id="share-section">
+{{if .Data.RenameURL}}<section class="panel" aria-labelledby="rename-h" id="rename-section" data-worker-rename>
+  <h2 id="rename-h">Name</h2>
+  <form method="post" action="{{.Data.RenameURL}}" hx-post="{{.Data.RenameURL}}" hx-target="#rename-result" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]">
+    <div class="field">
+      <label for="worker-rename-name">New name</label>
+      <input type="text" id="worker-rename-name" name="name" value="{{.Data.Worker.Name}}" required autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxName}}" aria-describedby="worker-rename-help">
+      <span id="worker-rename-help" class="field-hint">No spaces or colons. The name keeps the owner prefix and must differ from the owner's other Workers. Sessions, grants and keys stay: they name the Worker by its id. A connected Worker reconnects to learn the new name.</span>
+    </div>
+    <button type="submit" data-control="rename">Rename</button>
+    <div id="rename-result" aria-live="polite"></div>
+  </form>
+</section>
+{{end}}{{if .Data.ShareURL}}<section class="panel" aria-labelledby="share-h" id="share-section">
   <h2 id="share-h">Sharing</h2>
   <div id="share-panel" hx-get="{{.Data.ShareURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the sharing choice...</p></div>
 </section>
@@ -31,6 +43,10 @@
   <label><input type="checkbox" id="unasked-worker"> Send without asking, in all sessions of this Worker</label>
   <p class="help" id="unasked-worker-status" role="status" aria-live="polite"></p>
   <p class="help">Text, keys and the task go out at once, without the "Send anyway" confirmation for a shell, an open dialog or a busy agent (text to a busy agent is then submitted at once; without it, the text is typed, not submitted). A dialog answer is still checked. Kept in this browser. Each session page has the same switch for that session.</p>
+</section>
+{{end}}{{if .Data.HiddenURL}}<section class="panel" aria-labelledby="hidden-h" id="hidden-section">
+  <h2 id="hidden-h">Hidden sessions</h2>
+  <div id="hidden-panel" hx-get="{{.Data.HiddenURL}}" hx-trigger="load" hx-swap="innerHTML" aria-live="polite"><p class="muted">Loading the hidden-sessions choice...</p></div>
 </section>
 {{end}}{{if .Data.DebugURL}}<section class="panel" aria-labelledby="debug-h" id="debug-section">
   <h2 id="debug-h">Debug</h2>

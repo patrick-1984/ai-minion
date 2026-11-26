@@ -16,6 +16,7 @@ package workers
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
@@ -24,18 +25,24 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/transport"
 )
 
-// HiddenSessionsPolicy is the policy that applies to one caller.
+// HiddenSessionsPolicy is the policy that applies to one caller on one
+// Worker.
 type HiddenSessionsPolicy struct {
 	// Hub is the Hub setting hidden_sessions (config.HiddenSessions*).
 	Hub string
-	// UserAllows is the caller's own preference (the API key owner's for a
-	// key); false when there is no user, such as a Worker identity.
+	// UserAllows is the caller's own account-wide preference (the API key
+	// owner's for a key); false when there is no user, such as a Worker
+	// identity. It is the default for a Worker without a choice of its own.
 	UserAllows bool
+	// Worker is the Worker's own choice (v0.23.0, set by its owner or an
+	// administrator); nil when it has none and UserAllows decides.
+	Worker *bool
 }
 
 // Allows reports whether the caller may create a hidden session: allowed
 // always, disabled never, user-controlled (and any other value, which the
-// policy function never passes) by the user's own choice.
+// policy function never passes) by the Worker's own choice, or without one by
+// the user's account-wide preference.
 func (p HiddenSessionsPolicy) Allows() bool {
 	switch p.Hub {
 	case config.HiddenSessionsAllowed:
@@ -43,11 +50,24 @@ func (p HiddenSessionsPolicy) Allows() bool {
 	case config.HiddenSessionsDisabled:
 		return false
 	}
+	if p.Worker != nil {
+		return *p.Worker
+	}
 	return p.UserAllows
 }
 
-// HiddenSessionsPolicyFunc returns the policy for a principal.
+// HiddenSessionsPolicyFunc returns the policy for a principal, without the
+// Worker's own choice (see [WorkerHiddenSessionsSource]).
 type HiddenSessionsPolicyFunc func(ctx context.Context, p authz.Principal) (HiddenSessionsPolicy, error)
+
+// WorkerHiddenSessionsSource reads the Workers' own hidden-sessions choices
+// (v0.23.0); *store.Store implements it.
+type WorkerHiddenSessionsSource interface {
+	// WorkerHiddenSessions is one Worker's choice, nil without one.
+	WorkerHiddenSessions(ctx context.Context, workerID string) (*bool, error)
+	// ListWorkerHiddenSessions is the choice of every Worker that has one.
+	ListWorkerHiddenSessions(ctx context.Context) (map[string]bool, error)
+}
 
 // hostVisibility is what the Hub knows about where a Worker's new sessions
 // would live.
@@ -140,10 +160,13 @@ func HiddenSessionRefusal(workerName string, f transport.WorkerFacts, pol Hidden
 		}
 		msg = "New sessions on " + workerName + " would be hidden (" + reason + "). " + fix
 	}
-	if pol.Hub == config.HiddenSessionsDisabled {
+	switch {
+	case pol.Hub == config.HiddenSessionsDisabled:
 		return msg + ". Hidden sessions are disabled on this Hub for everybody (Hub setting hidden_sessions)."
+	case pol.Worker != nil:
+		return msg + ". Hidden sessions are refused on this Worker (its owner or an administrator can allow them on its Worker page, Hidden sessions)."
 	}
-	return msg + ", or allow hidden sessions in your settings (Account > Sessions)."
+	return msg + ", or allow hidden sessions on this Worker (its Worker page, Hidden sessions) or for all your Workers in your settings (Account > Sessions)."
 }
 
 // hiddenSessionCheck returns the check of a session_create that refuses a
@@ -159,6 +182,11 @@ func (rt *Router) hiddenSessionCheck(ctx context.Context, p authz.Principal, op,
 	pol, err := rt.hidden(ctx, p)
 	if err != nil {
 		return nil, err
+	}
+	if pol.Hub == config.HiddenSessionsUserControlled && rt.workerHidden != nil {
+		if pol.Worker, err = rt.workerHidden.WorkerHiddenSessions(ctx, workerID); err != nil {
+			return nil, fmt.Errorf("workers: read the hidden-sessions choice of the Worker: %w", err)
+		}
 	}
 	if pol.Allows() {
 		return nil, nil

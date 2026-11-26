@@ -72,7 +72,7 @@ func TestHubWorkerDetailWithRealSessionCookies(t *testing.T) {
 	mustContain(t, "alice's session list", sessions, `<a href="/workers/`+wid+`" data-control="worker" data-worker-link>lab</a>`, `data-row-link="session"`)
 	mustNotContain(t, "alice's session list", sessions, `data-control="open"`, `<th scope="col">Actions</th>`)
 	_, workers := read("/workers", alice)
-	mustContain(t, "alice's worker list", workers, `<th scope="row"><a href="/workers/`+wid+`" data-control="name" data-worker-link>lab</a></th>`, `data-row-link="worker"`)
+	mustContain(t, "alice's worker list", workers, `<th scope="row" data-sort-value="lab"><code class="session-code" data-worker-number="1" title="Worker number: the first part of its session codes">1</code> <a href="/workers/`+wid+`" data-control="name" data-worker-link>lab</a></th>`, `data-row-link="worker"`)
 	_, rootAll := read("/sessions?scope=all", root)
 	mustContain(t, "root's All users list", rootAll, `<a href="/workers/`+wid+`?scope=all" data-control="worker" data-worker-link>lab</a>`)
 

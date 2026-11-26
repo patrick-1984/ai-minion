@@ -161,6 +161,23 @@
   </div>
   <noscript><p class="muted">Typing and live updates need JavaScript in this browser.</p></noscript>
 </div>
+{{if not .Embed}}{{with .Data.Switch}}{{/* The quick switcher of the breadcrumb (the Worker and the session crumb open it). A
+     native popover: it opens, closes on Escape and returns the focus without the script; session-ui.js adds the filter
+     and the arrow keys. Every entry is a plain link. */}}<div class="info-pop crumb-switch" id="{{.ID}}" popover data-crumb-switch>
+  <input type="search" class="crumb-switch-filter" aria-label="Filter sessions and Workers" placeholder="Filter sessions and Workers" autocomplete="off" spellcheck="false" hidden>
+  <p class="crumb-switch-h" id="{{.ID}}-s">Sessions on {{.Worker}}</p>
+  <ul class="crumb-switch-list" aria-labelledby="{{.ID}}-s">
+    {{range .Sessions}}<li><a href="{{.Path}}" data-filter="{{.Code}} {{.Label}}"{{if .Current}} aria-current="page"{{end}}>{{if .Code}}<code class="crumb-code">{{.Code}}</code> {{end}}<span class="crumb-switch-name">{{.Label}}</span>{{with .Meta}}<span class="crumb-switch-meta">{{.}}</span>{{end}}</a></li>
+    {{end}}
+  </ul>
+  {{if .Workers}}<p class="crumb-switch-h" id="{{.ID}}-w">Workers</p>
+  <ul class="crumb-switch-list" aria-labelledby="{{.ID}}-w">
+    {{range .Workers}}<li><a href="{{.Path}}" data-filter="{{.Label}}"{{if .Current}} aria-current="true"{{end}}><span class="crumb-switch-name">{{.Label}}</span>{{with .Meta}}<span class="crumb-switch-meta">{{.}}</span>{{end}}</a></li>
+    {{end}}
+  </ul>{{end}}
+  <p class="crumb-switch-empty" role="status" hidden>No session or Worker matches.</p>
+</div>
+{{end}}{{end}}
 <script src="/static/terminal-input.js" defer></script>
 <script src="/static/session-ui.js" defer></script>
 <script src="/static/send-unasked.js" defer></script>

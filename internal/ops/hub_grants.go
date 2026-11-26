@@ -93,6 +93,12 @@ type Grant struct {
 	Suspended    bool       `json:"suspended"`
 	SuspendCause string     `json:"suspend_cause,omitempty"`
 	Note         string     `json:"note,omitempty"`
+	// CommandShell is true when the owner marked the target session as a
+	// command shell of the source session (A116): a send_text or send_keys of
+	// the source to that session is then a normal write that the shell_pane
+	// guard does not refuse, without force. Only on a Control grant that names
+	// one target session.
+	CommandShell bool `json:"command_shell,omitempty"`
 
 	// Display members, filled by the handler.
 	SourceWorkerName string `json:"source_worker_name,omitempty"`
@@ -136,8 +142,8 @@ func (r GrantListResult) MarshalJSON() ([]byte, error) {
 	return json.Marshal(plain(r))
 }
 
-// GrantSetArgs create a grant (ID empty) or change the level, expiry and note
-// of an existing one (ID with IfRevision).
+// GrantSetArgs create a grant (ID empty) or change the level, expiry, note
+// and command shell flag of an existing one (ID with IfRevision).
 type GrantSetArgs struct {
 	WriteArgs
 	ID             string `json:"id,omitempty"`
@@ -152,6 +158,11 @@ type GrantSetArgs struct {
 	Note      string `json:"note,omitempty"`
 	// IfRevision is the revision the change was decided for; required with ID.
 	IfRevision uint64 `json:"if_revision,omitempty"`
+	// CommandShell marks the target session as a command shell of the source
+	// session (A116, see Grant.CommandShell). Absent keeps the stored flag on
+	// a change (none on a create); a level below control clears it. true needs
+	// level control and a target session.
+	CommandShell *bool `json:"command_shell,omitempty"`
 }
 
 // Validate checks the shape of a grant. Whether the caller may decide it is
@@ -198,6 +209,14 @@ func (a GrantSetArgs) Validate() error {
 	}
 	if !utf8.ValidString(a.Note) || utf8.RuneCountInString(a.Note) > MaxGrantNote {
 		return invalid("note", "must be valid text of at most %d characters", MaxGrantNote)
+	}
+	if a.CommandShell != nil && *a.CommandShell {
+		if a.Level != GrantLevelControl {
+			return invalid("command_shell", "a command shell needs level control")
+		}
+		if a.TargetSession == "" {
+			return invalid("command_shell", "a command shell names one target session")
+		}
 	}
 	return nil
 }
@@ -266,7 +285,7 @@ func init() {
 	// grant_set and grant_approve are SessionOnly, which the catalog allows
 	// only on a Mutates op: they return the grant, not a WriteResult, declare
 	// no guards, and their handlers audit them.
-	Register(Op{Name: OpGrantSet, Summary: "Create a session grant, or change the level, expiry or note of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
+	Register(Op{Name: OpGrantSet, Summary: "Create a session grant, or change the level, expiry, note or command shell flag of an existing one (owner of the Workers or administrator). Browser session with a fresh sign-in only.",
 		Scope: ScopeHub, Actions: operate, Mutates: true, SessionOnly: true,
 		Args: reflect.TypeFor[GrantSetArgs](), Result: reflect.TypeFor[GrantSetResult]()})
 	Register(Op{Name: OpGrantRevoke, Summary: "Revoke a session grant (owner of a Worker it touches or administrator).",

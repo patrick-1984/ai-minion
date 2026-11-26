@@ -489,7 +489,7 @@ function sessionPage(o) {
     'session-controls': dock, 'task-text': task, 'task-state': taskState, 'site-rail': o.rail || null };
   tabs.forEach((t, i) => { ids[t.id] = t; ids['dock-' + ['text', 'keys', 'task'][i]] = panels[i]; });
   const p = load('session-ui.js', { ids, media: o.media, store: o.store, selectors: {},
-    query: (sel) => (sel === 'dialog[open]' ? (o.dialogOpen ? node({ tag: 'dialog' }) : null) : null) });
+    query: (sel) => (sel === 'dialog[open]' ? (o.dialogOpen ? node({ tag: 'dialog' }) : null) : sel === '[data-crumb-switch]' ? (o.switcher || null) : null) });
   return Object.assign(p, { tabs, panels, tablist, toggle, pane, grid, close, dock, view, task, taskState, paneScrim, paneLink, paneLast, draft });
 }
 
@@ -763,6 +763,66 @@ scenario('a dialog option and a typed answer exclude each other', () => {
   radios[0].checked = true;
   p.fire('input', ev('input', { target: box }));
   if (!radios[0].checked) fail('an empty answer box cleared the chosen option');
+});
+
+// switcherPage is the quick switcher of the breadcrumb: a filter, two lists of
+// links (sessions, Workers) with their headings and the "no match" line.
+function switcherPage() {
+  const filter = node({ tag: 'input', hidden: true });
+  const empty = node({ hidden: true });
+  const mk = (filterText, href) => { const a = node({ tag: 'a', attrs: { href, 'data-filter': filterText } }); a.href = 'https://hub.example.com' + href; const li = node({ tag: 'li', children: [a] }); a.parentNode = li; return a; };
+  const sessions = [mk('5-667 minion-1', '/s/pi-1/minion-1'), mk(' build', '/s/pi-1/build')];
+  const workers = [mk('pi-1', '/workers/w1'), mk('lab', '/workers/w2')];
+  const list = (links, head) => { const l = node({ tag: 'ul' }); l.previousElementSibling = head; l.querySelector = (sel) => (sel === 'li:not([hidden])' ? (links.map((x) => x.parentNode).find((li) => !li.hidden) || null) : null); return l; };
+  const heads = [node({ className: 'crumb-switch-h' }), node({ className: 'crumb-switch-h' })];
+  const lists = [list(sessions, heads[0]), list(workers, heads[1])];
+  const links = sessions.concat(workers);
+  const sw = node({ q: { '.crumb-switch-filter': [filter], '.crumb-switch-empty': [empty], 'a[href]': links, '.crumb-switch-list': lists } });
+  sw.hidePopover = () => { sw.closed = (sw.closed || 0) + 1; };
+  return { sw, filter, empty, links, lists, heads };
+}
+
+scenario('the breadcrumb switcher filters and follows the keyboard', () => {
+  const s = switcherPage();
+  const p = sessionPage({ switcher: s.sw });
+  p.win.location.assign = (u) => { p.win.assigned = u; };
+  if (s.filter.hidden) fail('the filter was not shown');
+  // Opening focuses the empty filter.
+  s.filter.value = 'old';
+  s.sw.dispatchEvent(ev('toggle', { newState: 'open' }));
+  if (s.filter.value !== '' || p.doc.activeElement !== s.filter) fail('opening did not reset and focus the filter');
+  // Typing narrows both lists (code and name), hides an empty group and its heading.
+  s.filter.value = '5-6';
+  s.filter.dispatchEvent(ev('input'));
+  const shown = () => s.links.filter((a) => !a.parentNode.hidden);
+  if (shown().length !== 1 || shown()[0] !== s.links[0] || !s.lists[1].hidden || !s.heads[1].hidden || s.lists[0].hidden || !s.empty.hidden) fail('the filter by code did not narrow the lists');
+  s.filter.value = 'nothing-matches';
+  s.filter.dispatchEvent(ev('input'));
+  if (shown().length !== 0 || s.empty.hidden) fail('no match did not say so');
+  s.filter.value = '';
+  s.filter.dispatchEvent(ev('input'));
+  if (shown().length !== 4 || !s.empty.hidden) fail('clearing the filter did not show every entry');
+  // Down from the filter goes to the first link, Down and Up move, End and Home jump, Up from the first returns to the filter.
+  const key = (k, target) => { const e = ev('keydown', { key: k, target: target || p.doc.activeElement }); s.sw.dispatchEvent(e); return e; };
+  let e = key('ArrowDown');
+  if (!e.defaultPrevented || p.doc.activeElement !== s.links[0]) fail('ArrowDown did not reach the first link');
+  key('ArrowDown');
+  if (p.doc.activeElement !== s.links[1]) fail('ArrowDown did not move on');
+  key('End');
+  if (p.doc.activeElement !== s.links[3]) fail('End did not reach the last link');
+  key('ArrowUp');
+  if (p.doc.activeElement !== s.links[2]) fail('ArrowUp did not move back');
+  key('Home');
+  key('ArrowUp');
+  if (p.doc.activeElement !== s.filter) fail('ArrowUp from the first link did not return to the filter');
+  // Enter in the filter opens the first match; Escape closes the switcher.
+  s.filter.value = 'lab';
+  s.filter.dispatchEvent(ev('input'));
+  key('Enter', s.filter);
+  if (p.win.assigned !== 'https://hub.example.com/workers/w2') fail('Enter did not open the first match: ' + p.win.assigned);
+  e = key('Escape');
+  if (s.sw.closed !== 1 || !e.defaultPrevented) fail('Escape did not close the switcher');
+  if (p.win.sent) fail('the switcher sent a request');
 });
 
 for (const [name, fn] of scenarios) {

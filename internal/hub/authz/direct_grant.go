@@ -53,6 +53,9 @@ type DirectGrant struct {
 	ExpiresAt *time.Time
 	// Suspended is set when the authority behind the grant was lost.
 	Suspended bool
+	// CommandShell marks TargetSession as a command shell of the calling
+	// session (A116). It grants nothing: see [Authorizer.CommandShellGrant].
+	CommandShell bool
 }
 
 // ExpiryAt returns the ExpiresAt of a grant that ends at t.
@@ -219,4 +222,34 @@ func (a *Authorizer) GrantIDs(ctx context.Context, p Principal, accepted ops.Act
 		}
 	}
 	return ids, nil
+}
+
+// CommandShellGrant returns the id of the direct grant of p that marks the
+// session res as a command shell of the calling session (A116) and by itself
+// authorizes operate there now: a Control grant whose CommandShell is set and
+// whose TargetSession is exactly that session (never a whole-Worker grant),
+// valid as [Authorizer.Decide] judges it (owners, authority, expiry,
+// suspension). It is "" for every other principal and resource, and when no
+// such grant applies; only a failure of a lookup is an error. It authorizes
+// nothing: the Hub calls it after Decide allowed a typed-input request, to
+// tell the target Worker that the shell_pane guard does not apply. It reads
+// the current state again, like Decide.
+func (a *Authorizer) CommandShellGrant(ctx context.Context, p Principal, res Resource) (string, error) {
+	sr, ok := res.(SessionResource)
+	if !ok || sr.Name == "" || !slices.ContainsFunc(p.directList(), func(g DirectGrant) bool { return g.CommandShell }) {
+		return "", nil
+	}
+	sub, resolved, ok, err := a.grantSubject(ctx, p, res)
+	if err != nil || !ok || resolved.Kind != ResourceSession {
+		return "", err
+	}
+	for _, g := range p.directList() {
+		if !g.CommandShell || g.Level != LevelControl || g.TargetSession == "" || g.TargetSession != resolved.SessionName {
+			continue
+		}
+		if slices.Contains(sub.directFor(g, resolved), ops.ActionOperate) {
+			return g.ID, nil
+		}
+	}
+	return "", nil
 }

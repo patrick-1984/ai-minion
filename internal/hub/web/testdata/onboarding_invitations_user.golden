@@ -36,6 +36,11 @@
       <label for="inv-name">Name (optional, to recognise the key in the list)</label>
       <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64" placeholder="e.g. lab worker setup">
     </div>
+    <div class="field">
+      <label for="inv-worker-name">Worker name (optional)</label>
+      <input type="text" id="inv-worker-name" name="worker_name" autocomplete="off" spellcheck="false" maxlength="64" aria-describedby="inv-worker-name-help" placeholder="e.g. jordan-phone">
+      <span id="inv-worker-name-help" class="field-hint">The Hub gives this name to the Worker that enrolls with the key, whatever name the Worker announces (also when only the key is entered, as in the Android app). No spaces or colons. Without it, the Worker keeps the name it announces.</span>
+    </div>
     
     <button type="submit"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-plus"/></svg><span>Create the key</span></button>
     <div id="create-result"></div>

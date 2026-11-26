@@ -68,6 +68,8 @@ func (p GrantsPage) OpenAdd() bool { return p.SourceWorker != "" && p.SourceSess
 type GrantWorkerOption struct {
 	ID, Name, Owner string
 	Sessions        []string
+	// Codes are the session codes ("5-667") of Sessions, by name.
+	Codes map[string]string
 }
 
 // GrantRow is one grant of the table.
@@ -145,6 +147,17 @@ func (g GrantRow) CanRevoke() bool {
 		return true
 	}
 	return g.ViewerID != "" && g.GrantedBy == g.ViewerID
+}
+
+// CanBeShell is true for a grant whose target may be marked as a command
+// shell of its source (A116): Control on one named session.
+func (g GrantRow) CanBeShell() bool {
+	return g.Level == ops.GrantLevelControl && g.TargetSession != "" && !g.TargetMasked
+}
+
+// ShellText explains a command shell mark on the row.
+func (g GrantRow) ShellText() string {
+	return "Command shell: typing here from " + g.SourceSession + " is allowed without force. Every other check still applies."
 }
 
 // Masked is true when the grant names a session the viewer may not see: the
@@ -385,13 +398,20 @@ func grantWorkers(r *http.Request, u pageUser) (sources, targets []GrantWorkerOp
 		return nil, nil
 	}
 	sessions := map[string][]string{}
+	codes := map[string]map[string]string{}
 	for _, s := range d.Sessions {
 		sessions[s.WorkerID] = append(sessions[s.WorkerID], s.Name)
+		if s.Code != "" {
+			if codes[s.WorkerID] == nil {
+				codes[s.WorkerID] = map[string]string{}
+			}
+			codes[s.WorkerID][s.Name] = s.Code
+		}
 	}
 	for _, w := range d.Workers {
 		names := sessions[w.ID]
 		slices.SortFunc(names, ops.NaturalCompare)
-		o := GrantWorkerOption{ID: w.ID, Name: w.Name, Owner: w.Owner, Sessions: names}
+		o := GrantWorkerOption{ID: w.ID, Name: w.Name, Owner: w.Owner, Sessions: names, Codes: codes[w.ID]}
 		targets = append(targets, o)
 		if u.Admin || w.Owner == u.Username {
 			sources = append(sources, o)
@@ -537,7 +557,7 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 	case "add":
 		handleGrantAdd(w, r, c, u)
 		return
-	case "set-level", "revoke", "approve", "show":
+	case "set-level", "set-shell", "revoke", "approve", "show":
 	default:
 		http.NotFound(w, r)
 		return
@@ -607,6 +627,41 @@ func handleGrantChange(w http.ResponseWriter, r *http.Request, c OpCaller, u pag
 			SourceWorkerID: cur.SourceWorkerID, SourceSession: cur.SourceSession,
 			TargetWorkerID: cur.TargetWorkerID, TargetSession: cur.TargetSession,
 			ExpiresAt: cur.ExpiresAtValue(), Note: cur.Note,
+		}
+		var res ops.GrantSetResult
+		callErr = c.CallOp(r, ops.OpGrantSet, a, &res)
+	case "set-shell":
+		// A116: mark or unmark the target session as a command shell of the
+		// source session. Built from the grant as the Hub lists it.
+		on := f.Get("command_shell") == "1"
+		rows, err := grantRows(r, c, u, "")
+		if err != nil {
+			writeGrantNote(w, id, "Nothing was changed: "+failureText(err), false)
+			return
+		}
+		cur, ok := findGrantRow(rows, id)
+		switch {
+		case !ok:
+			writeFragmentTemplate(w, grantTemplates(), "grant_row", GrantRow{Grant: ops.Grant{ID: id}, Gone: true, Error: "Nothing was changed."})
+			return
+		case cur.Masked():
+			cur.Error = "This grant names a session you may not see: it can only be revoked."
+		case !cur.CanEdit():
+			cur.Error = "Nothing was changed: only an administrator, or the owner of both Workers of a grant an owner decided, can change it."
+		case cur.Revision != rev:
+			cur.Error = grantConflictText
+		case on && !cur.CanBeShell():
+			cur.Error = "Nothing was changed: only a Control grant on one named session can mark a command shell."
+		}
+		if cur.Error != "" {
+			writeFragmentTemplate(w, grantTemplates(), "grant_row", cur)
+			return
+		}
+		a := ops.GrantSetArgs{
+			WriteArgs: newWriteArgs(), ID: id, IfRevision: rev, Level: cur.Level,
+			SourceWorkerID: cur.SourceWorkerID, SourceSession: cur.SourceSession,
+			TargetWorkerID: cur.TargetWorkerID, TargetSession: cur.TargetSession,
+			ExpiresAt: cur.ExpiresAtValue(), Note: cur.Note, CommandShell: &on,
 		}
 		var res ops.GrantSetResult
 		callErr = c.CallOp(r, ops.OpGrantSet, a, &res)

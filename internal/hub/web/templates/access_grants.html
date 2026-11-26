@@ -42,7 +42,7 @@
     </select></label>
     <label>Session <select name="source_session" id="grant-add-source-session" required>
       <option value="">Choose a session</option>
-      {{range .Sources}}{{$w := .}}{{range .Sessions}}<option value="{{$w.ID}}|{{.}}" data-worker="{{$w.ID}}"{{if and (eq $w.ID $.SourceWorker) (eq . $.SourceSession)}} selected{{end}}>{{.}} @ {{$w.Name}}</option>{{end}}{{end}}
+      {{range .Sources}}{{$w := .}}{{range .Sessions}}<option value="{{$w.ID}}|{{.}}" data-worker="{{$w.ID}}"{{if and (eq $w.ID $.SourceWorker) (eq . $.SourceSession)}} selected{{end}}>{{with index $w.Codes .}}{{.}} · {{end}}{{.}} @ {{$w.Name}}</option>{{end}}{{end}}
     </select></label>
   </fieldset>
   <fieldset class="field"><legend>2 Target</legend>
@@ -53,7 +53,7 @@
     <label class="choice"><input type="radio" name="target_scope" id="grant-add-scope-one" value="one" required> One session</label>
     <label>Session <select name="target_session" id="grant-add-target-session">
       <option value="">Choose a session</option>
-      {{range .Targets}}{{$w := .}}{{range .Sessions}}<option value="{{$w.ID}}|{{.}}" data-worker="{{$w.ID}}">{{.}} @ {{$w.Name}}</option>{{end}}{{end}}
+      {{range .Targets}}{{$w := .}}{{range .Sessions}}<option value="{{$w.ID}}|{{.}}" data-worker="{{$w.ID}}">{{with index $w.Codes .}}{{.}} · {{end}}{{.}} @ {{$w.Name}}</option>{{end}}{{end}}
     </select></label>
     <label class="choice"><input type="radio" name="target_scope" id="grant-add-scope-all" value="all" required> Every shared session of this Worker</label>
     <p class="help">"Every shared session" includes sessions that Worker shares later. Nothing is chosen for you: after a change of the Worker, choose again.</p>

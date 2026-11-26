@@ -137,6 +137,7 @@ GET fragments / streams / scripts (12; not full pages):
 | `/s/{worker}/{session}/pipe/turns` | `handlePipeTurns` (`page_pipe.go:301`) | conversation turns fragment |
 | `/w/{worker}/share` | `handleShareGet` (`page_share.go:139`) | share panel fragment |
 | `/w/{worker}/debug` | `handleDebugGet` (`page_worker_debug.go:228`) | debug panel fragment |
+| `/w/{worker}/hidden-sessions` | `handleWorkerHiddenGet` (`page_worker_hidden.go`) | hidden-sessions panel fragment (v0.23.0) |
 | `/static/*` | `newStaticHandler` (`web.go:574`) | embedded static assets (ETag, no-cache) |
 
 POST routes behind `gate` (36). "Result" = what answers the htmx call. U = any signed-in user (`userRoute`; the Hub op enforces ownership/admin), A = admin only (`adminRoute`, 404 otherwise), S = `sessionRoute` (resolves worker+session, view/operate rules).
@@ -165,6 +166,7 @@ POST routes behind `gate` (36). "Result" = what answers the htmx call. U = any s
 | `/w/{worker}/sessions` | `handleNewSession` (`page_session.go:957`) | S | `session_create` | HX-Redirect (or redirect 303) to the new session; or warning result |
 | `/w/{worker}/share` | `handleShareSet` (`page_share.go:143`) | S | `share_set` | share panel fragment |
 | `/w/{worker}/debug` | `handleDebugSet` (`page_worker_debug.go:184`) | S | `worker_debug` / `worker_logs` | debug panel fragment |
+| `/w/{worker}/hidden-sessions` | `handleWorkerHiddenSet` (`page_worker_hidden.go`) | S | `worker_hidden_sessions_set` | hidden-sessions panel fragment; refused without a call unless owner or admin |
 | `/admin/users` | `handleUserCreate` (`page_users.go:532`) | A | `user_create` | `user_secret` fragment (temporary password) |
 | `/admin/users/{id}/reset-password` | `handleUserReset` (`:553`) | A | `user_reset_password` | `user_secret` fragment |
 | `/admin/users/{id}/role` | `handleUserRole` (`:567`) | A | `user_set_role` | done() flash + reload |
@@ -248,6 +250,7 @@ Auth/REST endpoints used by the UI JS (outside `W/`, served by other modules): `
   - `RemoveURL` and not pending: `details.forget-worker[data-keep-open]` "Forget this Worker" with form `action=RemoveURL` hx-confirm "Forget worker N? It must be paired again to connect to this Hub." button "Forget (remove) this Worker" `data-control=forget` btn-danger.
   - Section "Sessions": link "In the session list" (`data-control=session-list`) when sessions exist; `session_table` (without Worker column, `OnWorker`) or empty state `[data-sessions-empty=<reason>]` with reason text variants: failed (session list error + "minion worker status"), waiting, none, offline, plus "Choose New session to start one." when `Operate`.
 - Only when `.Data.ShareURL` (= Operate): `section#share-section` with `div#share-panel[hx-get=/w/{id}/share][hx-trigger=load]` ("Loading the sharing choice...") -> fragment `share_panel` (2.8a); `section[data-unasked-worker=<id>] hidden` "Sending" with checkbox `#unasked-worker` "Send without asking, in all sessions of this Worker" + `#unasked-worker-status` (revealed by send-unasked.js).
+- Only when `.Data.HiddenURL` (= Operate: owner or admin, any Worker): `section#hidden-section` "Hidden sessions" with `div#hidden-panel[hx-get=/w/{id}/hidden-sessions][hx-trigger=load]` -> fragment `worker_hidden_panel` (worker_hidden.html): radio `hidden_sessions` allow / refuse / default ("Each person's account setting", with the caller's own default), Save `data-control=hidden-save`; `[data-hidden-hub-note]` when the Hub setting hidden_sessions is allowed or disabled.
 - Only when `.Data.DebugURL` (= Operate): `section#debug-section` with `div#debug-panel[hx-get=/w/{id}/debug][hx-trigger=load]` ("Loading the debug state...") -> fragment `debug_panel` (2.8b).
 - Scripts: live-list.js, inspector.js, share-bulk.js, send-unasked.js; inspector included.
 

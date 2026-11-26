@@ -5,7 +5,7 @@
     <thead><tr><th scope="col" data-sort="text">Name</th><th scope="col" data-sort="text">Use</th><th scope="col" data-sort="text">Kind</th><th scope="col">Uses</th><th scope="col" data-sort="text">Expires</th><th scope="col" data-sort="text">State</th>{{if .All}}<th scope="col" data-sort="text">Created by</th>{{end}}<th scope="col"><span class="muted">Actions</span></th></tr></thead>
     <tbody>
     {{range .Invitations}}<tr>
-      <th scope="row">{{if gt (len .Name) 32}}<span class="cell-clamp" title="{{.Name}}" tabindex="0">{{.Name}}</span>{{else}}{{.Name}}{{end}}{{if .Notice}}
+      <th scope="row">{{if gt (len .Name) 32}}<span class="cell-clamp" title="{{.Name}}" tabindex="0">{{.Name}}</span>{{else}}{{.Name}}{{end}}{{if .WorkerName}}<span class="muted" data-invitation-worker-name> (Worker: {{.WorkerName}})</span>{{end}}{{if .Notice}}
         <details class="note-more">
           <summary><span class="summary-title">Why was this key limited?</span> <span class="summary-meta">Upgrade</span></summary>
           <div class="details-body"><p class="muted" data-invitation-notice>{{.Notice}}</p></div>
@@ -31,7 +31,8 @@
   <p class="notice notice-info" data-invitation-saved><strong>The invitation is saved.</strong> It appears in the list below when you press Done, and stays listed under "Your invitation keys" until it expires, is used up or you revoke it. Leaving this page does not delete it. Only the secret key text cannot be shown again, so copy it first.</p>
   <p><a class="btn" href="/invitations{{if .All}}?all=1{{end}}" data-invitation-done>Done</a></p>
   <p><strong>Invitation key{{if .Name}} "{{.Name}}"{{end}} created.</strong> It is {{.Mode}}, kind {{.Kind}}, {{if .Limit}}allows {{.Limit}}, {{end}}and expires: {{.Expires}}.</p>
-  <p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>{{if .HubWords}}
+  {{if .WorkerName}}<p data-invitation-worker-name>A Worker that enrolls with this key is named <strong>{{.WorkerName}}</strong> (with your owner prefix){{if eq .Mode "reusable"}}; the next ones get -2, -3 and so on{{end}}, whatever name it announces.</p>
+  {{end}}<p>A Worker that enrolls with this key waits for your approval (Workers page) before it receives any operation.</p>{{if .HubWords}}
   <div data-hub-words><p>This key is bound to Hub fingerprint:</p>
   <div><div class="copy-field"><code class="copy-value" id="cp-invite-hub-words"><span class="fp-words">{{.HubWords}}</span></code><button type="button" class="copy-btn" data-copy-target="#cp-invite-hub-words" aria-label="Copy the Hub fingerprint words" title="Copy"><svg class="icon copy-icon" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg><svg class="icon copy-check" aria-hidden="true" focusable="false" hidden><use href="#i-check"/></svg></button></div></div>
   <p>A Worker that enrolls with it accepts only that Hub and prints these words. On the Hub host, this command shows the same words:</p>
@@ -93,6 +94,11 @@
     <div class="field">
       <label for="inv-name">Name (optional, to recognise the key in the list)</label>
       <input type="text" id="inv-name" name="name" autocomplete="off" maxlength="64" placeholder="e.g. lab worker setup">
+    </div>
+    <div class="field">
+      <label for="inv-worker-name">Worker name (optional)</label>
+      <input type="text" id="inv-worker-name" name="worker_name" autocomplete="off" spellcheck="false" maxlength="{{.Data.MaxWorkerName}}" aria-describedby="inv-worker-name-help" placeholder="e.g. jordan-phone">
+      <span id="inv-worker-name-help" class="field-hint">The Hub gives this name to the Worker that enrolls with the key, whatever name the Worker announces (also when only the key is entered, as in the Android app). No spaces or colons. Without it, the Worker keeps the name it announces.</span>
     </div>
     {{if .Data.Admin}}<div class="field">
       <label for="inv-kind">Kind</label>

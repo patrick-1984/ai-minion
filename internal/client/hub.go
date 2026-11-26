@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/config"
+	"github.com/patrick-1984/ai-minion/internal/hubdial"
 	"github.com/patrick-1984/ai-minion/internal/identity"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -289,7 +290,7 @@ func NewHub(cfg HubConfig, opts ...HubOption) (*HubBackend, error) {
 	}
 	tr := &http.Transport{
 		Proxy:                  http.ProxyFromEnvironment,
-		DialContext:            (&net.Dialer{Timeout: hubDialTimeout, KeepAlive: hubKeepAlive}).DialContext,
+		DialContext:            hubdial.Dial((&net.Dialer{Timeout: hubDialTimeout, KeepAlive: hubKeepAlive}).DialContext),
 		TLSClientConfig:        tlsCfg,
 		TLSHandshakeTimeout:    hubTLSTimeout,
 		ForceAttemptHTTP2:      true,
@@ -420,6 +421,9 @@ func (b *HubBackend) run(ctx context.Context, op string, args any, onProgress fu
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, application/x-ndjson")
 	req.Header.Set("User-Agent", b.userAgent)
+	if rule := ClientRule(ctx); rule != "" {
+		req.Header.Set(proto.ClientRuleHeader, rule)
+	}
 
 	resp, err := b.hc.Do(req)
 	if err != nil {
@@ -482,7 +486,8 @@ func (b *HubBackend) requestBody(op ops.Op, known bool, raw json.RawMessage) ([]
 // withWorker names the default Worker where the arguments name none: as the
 // worker_id of a call without a target, or in a structured target that has no
 // Worker part. A Worker the caller named is never replaced, and a target in
-// the human form is left to the Hub, which resolves it in the caller's space.
+// the human form or a session code without a Worker ({"session_name":"5-667"})
+// is left to the Hub, which resolves it in the caller's space.
 func withWorker(members map[string]json.RawMessage, worker string) {
 	id, _ := json.Marshal(worker)
 	t, ok := members["target"]
@@ -500,6 +505,12 @@ func withWorker(members map[string]json.RawMessage, worker string) {
 		var s string
 		if json.Unmarshal(cur, &s) != nil || s != "" {
 			return
+		}
+	}
+	var typed ops.Target
+	if json.Unmarshal(t, &typed) == nil {
+		if _, isCode := ops.SessionCodeTarget(typed); isCode {
+			return // a session code: the Hub resolves it to its Worker
 		}
 	}
 	target["worker_id"] = id

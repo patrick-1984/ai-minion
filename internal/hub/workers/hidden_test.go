@@ -63,7 +63,7 @@ func TestHiddenSessionPolicyTable(t *testing.T) {
 						if !strings.Contains(msg, "disabled on this Hub") || strings.Contains(msg, "Account > Sessions") {
 							t.Errorf("a disabled Hub must not send the user to their settings: %q", msg)
 						}
-					} else if !strings.Contains(msg, "allow hidden sessions in your settings (Account > Sessions)") {
+					} else if !strings.Contains(msg, "allow hidden sessions on this Worker") || !strings.Contains(msg, "in your settings (Account > Sessions)") {
 						t.Errorf("refusal %q does not name the user setting", msg)
 					}
 				})

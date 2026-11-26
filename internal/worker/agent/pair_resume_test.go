@@ -230,6 +230,22 @@ func TestRestartResumesTheSameCodeAndPairingID(t *testing.T) {
 func TestResumeAnsweredByAHubWithAnotherRootIsRefusedBeforeSigWorkerAndTheRecordStays(t *testing.T) {
 	h := newStubPairHub(t)
 	h.dropBeforeWelcome.Store(1)
+	// An impostor that learned the code (CPace would pass) answers the resume
+	// with a certificate of its own root. The Hub hello goes out when the
+	// connection starts (v0.12.0), so the swap must happen before the Worker's
+	// next connection: the stub swaps inside the first authenticated
+	// connection, before it drops it without a welcome. (Swapping from the test
+	// after the drop races the Worker's 5 ms reconnect, and
+	// CloseClientConnections cannot drop a connection that already answered
+	// with the real root: httptest forgets hijacked WebSocket connections.)
+	imposter := hubcert.New(t)
+	h.mu.Lock()
+	h.afterAuth = func() {
+		h.mu.Lock()
+		h.hub, h.afterAuth = imposter, nil
+		h.mu.Unlock()
+	}
+	h.mu.Unlock()
 	hp := newHubPairer(t, h.url())
 	r := hp.start(t)
 	code := hp.code(t, 1)
@@ -240,17 +256,9 @@ func TestResumeAnsweredByAHubWithAnotherRootIsRefusedBeforeSigWorkerAndTheRecord
 		eventually(t, func() bool { var ok bool; out, ok = recordOf(t, hp.enr); return ok })
 		return out
 	}()
-	// An impostor that learned the code (CPace would pass) answers the resume
-	// with a certificate of its own root.
-	imposter := hubcert.New(t)
-	h.mu.Lock()
-	h.hub = imposter
-	srv := h.srv
-	h.mu.Unlock()
-	// The Hub hello goes out when the connection starts (v0.12.0): a
-	// connection that is already waiting answered with the real root, so it is
-	// dropped and the Worker's next one meets the impostor.
-	srv.CloseClientConnections()
+	if !bytes.Equal(rec.RootPub, h.key.Public()) {
+		t.Fatal("the record does not hold the real root")
+	}
 	welcomed := h.welcomed.Load()
 	eventually(t, func() bool { return strings.Contains(hp.logs.String(), "different identity") })
 	time.Sleep(50 * time.Millisecond)
@@ -297,17 +305,26 @@ func TestResumeWithAHigherSerialUnderTheSameRootIsAcceptedAndALowerOneRefused(t 
 			h.mu.Lock()
 			h.hub = hubcert.New(t, hubcert.WithSerial(5))
 			h.key = h.hub.Root
-			h.mu.Unlock()
 			h.dropBeforeWelcome.Store(1)
+			// Same root, new operational key. The Hub hello goes out when the
+			// connection starts, so the re-issued Hub must be in place before the
+			// Worker reconnects: the stub swaps inside the first authenticated
+			// connection, before it drops it. (Re-issuing from the test after the
+			// record appeared raced the Worker's 5 ms reconnect, which then met
+			// the old certificate.)
+			next := h.hub.Next(t, tc.serial) // issued here: no t.Fatal on the Hub's goroutine
+			h.afterAuth = func() {
+				h.mu.Lock()
+				h.hub, h.afterAuth = next, nil
+				h.mu.Unlock()
+			}
+			h.mu.Unlock()
 			hp := newHubPairer(t, h.url())
 			r := hp.start(t)
 			code := hp.code(t, 1)
 			eventually(t, func() bool { return h.lastID() == code[3:7] })
 			h.claim(code)
 			eventually(t, func() bool { _, ok := recordOf(t, hp.enr); return ok })
-			h.mu.Lock()
-			h.hub.Reissue(t, tc.serial) // same root, new operational key
-			h.mu.Unlock()
 			eventually(t, func() bool { return h.idCount() >= 2 })
 			h.claim(code)
 			if tc.ok {

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/hub/authz"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"github.com/patrick-1984/ai-minion/internal/hub/workers"
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
@@ -47,6 +48,9 @@ var _ LiveState = (*workers.EventHub)(nil)
 // SessionInfo is one entry of the aggregated list and of the snapshot that
 // opens an event stream.
 type SessionInfo struct {
+	// Code is the session's short code ("5-667", ops.SessionCode); absent
+	// when the Hub could not give one.
+	Code     string `json:"code,omitempty"`
 	WorkerID string `json:"worker_id"`
 	// Worker is the Worker's name.
 	Worker  string `json:"worker"`
@@ -103,6 +107,11 @@ type SessionLister struct {
 	// control, v0.9.0); a Worker that is not user-managed is left out. Nil
 	// means always.
 	UserManaged func(ctx context.Context, workerID string) (bool, error)
+	// Codes returns the session codes of the given sessions of a Worker, by
+	// name (workers.SessionCodes.Sightings): each sighting carries the
+	// instance id the event hub holds, so the codes agree with the ones of a
+	// routed sessions_list. Nil: no codes.
+	Codes func(ctx context.Context, workerID string, seen []store.SessionSighting) map[string]string
 }
 
 type sessionItem struct {
@@ -156,6 +165,7 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 	}
 	owners := map[string]string{}
 	out := make([]SessionInfo, 0, len(allowed))
+	iids := make([]string, 0, len(allowed)) // aligned with out, never published
 	for _, a := range allowed {
 		it := a.Item
 		// A harness session name is shown only under the owner it was
@@ -181,7 +191,9 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 			Session: it.st.Name, Kind: it.st.Kind, State: it.st.State, Task: it.st.Task,
 			Online: it.on, ScreenHash: it.st.ScreenHash, PaneStateDetail: it.st.PaneStateDetail, HarnessName: it.st.HarnessName,
 		})
+		iids = append(iids, it.st.InstanceID)
 	}
+	l.addCodes(ctx, out, iids)
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
 		switch {
@@ -195,6 +207,34 @@ func (l *SessionLister) List(ctx context.Context, p authz.Principal, q SessionQu
 		return ops.NaturalCompare(a.Session, b.Session) < 0
 	})
 	return out, nil
+}
+
+// addCodes sets the session codes of list, one lookup per Worker. Only the
+// sessions the principal may read are looked up. iids holds the instance id
+// of every session of list ("" when its Worker reports none).
+func (l *SessionLister) addCodes(ctx context.Context, list []SessionInfo, iids []string) {
+	if l.Codes == nil || len(list) == 0 {
+		return
+	}
+	seen := map[string][]store.SessionSighting{}
+	var order []string
+	for i, s := range list {
+		if _, ok := seen[s.WorkerID]; !ok {
+			order = append(order, s.WorkerID)
+		}
+		sg := store.SessionSighting{Name: s.Session}
+		if i < len(iids) {
+			sg.InstanceID = iids[i]
+		}
+		seen[s.WorkerID] = append(seen[s.WorkerID], sg)
+	}
+	codes := make(map[string]map[string]string, len(order))
+	for _, id := range order {
+		codes[id] = l.Codes(ctx, id, seen[id])
+	}
+	for i := range list {
+		list[i].Code = codes[list[i].WorkerID][list[i].Session]
+	}
 }
 
 // matchClass reports whether got matches want; an empty want matches all. For

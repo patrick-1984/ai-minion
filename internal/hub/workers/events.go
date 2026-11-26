@@ -80,6 +80,7 @@ const (
 	maxClassLen          = 64
 	maxStateReasonLen    = 192
 	maxScreenHashLen     = 128
+	maxInstanceIDLen     = 128
 	// DefaultSubscriberBuffer is the queue of one subscription.
 	DefaultSubscriberBuffer = 256
 )
@@ -97,6 +98,11 @@ type SessionState struct {
 	// (Claude Code /rename), sanitized; reported on the Worker's state stream
 	// only, and shown only under the owner it was reported under.
 	HarnessName string `json:"harness_name,omitempty"`
+	// InstanceID is the host-attested identity of the terminal behind the name
+	// (the instance_id of sessions_list), "" from a Worker or host that reports
+	// none. It is the Hub's own evidence for the first-seen fence and is never
+	// published on the event feed.
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // WorkerSessions is the latest known state of one Worker.
@@ -185,8 +191,27 @@ type EventHubOptions struct {
 	// treats a Worker that declared none as sharing what it lists, which is for
 	// tests and for hubs that do not store history.
 	Share ShareStore
+	// Instances keeps the last instance of every session name durably, so a
+	// name recreated while the Hub was down is still a new terminal after a
+	// restart (see [EventHub.FirstSeen]). Nil keeps them in memory only.
+	Instances InstanceStore
 	// Logger receives operational messages; nil discards them.
 	Logger *slog.Logger
+}
+
+// InstanceStore keeps the last reported instance of every session name of a
+// Worker (0041_session_instance.sql); *store.Store implements it.
+type InstanceStore interface {
+	LoadSessionInstances(ctx context.Context, workerID string) (map[string]string, error)
+	SaveSessionInstances(ctx context.Context, workerID string, instances map[string]string) error
+}
+
+// ReplacedInstance reports whether two instances of one session name are two
+// terminals: both are known and they differ. An unknown instance (a Worker or
+// host that reports none) never makes a replacement: the name alone is the
+// evidence then, as before instances were reported.
+func ReplacedInstance(last, cur string) bool {
+	return last != "" && cur != "" && last != cur
 }
 
 // EventHub keeps the latest state of every Worker and fans events out to
@@ -208,6 +233,7 @@ type EventHub struct {
 	// The authoritative share rule of every Worker, durable when shareStore is
 	// set (events_share.go).
 	shareStore    ShareStore
+	instStore     InstanceStore
 	shares        map[string]*shareState
 	sharesLoaded  bool
 	sharesLoadErr error
@@ -219,9 +245,16 @@ type EventHub struct {
 // its live session cache (unix ms), the generation of the name: a session
 // that went away (a session_removed, a snapshot that no longer lists it, an
 // answer that unshares it) and came back under the same name has a later
-// one. It is 0 for a session listed by the first snapshot this Hub process
-// got from the Worker (the Hub cannot know since when it exists). ok is false
-// when the Hub does not list the session now. A name-only grant created
+// one, and so has a name whose instance (the terminal's host-attested
+// identity) differs from the last one the Hub knows for it: a session killed
+// and created again under its name, also while the Worker was offline or the
+// Hub was down (the last instances are stored, see [EventHubOptions.Instances]).
+// It is 0 for a session listed by the first snapshot this Hub process got from
+// the Worker when the Hub cannot tell since when it exists: its instance is
+// the stored one, or no instance is known (a Worker or host that reports
+// none, or a name the Hub never stored an instance for), the name-only rule
+// of earlier versions. ok is false when the Hub does not list the session
+// now. A name-only grant created
 // before the time reaches another terminal than the one it was made for.
 func (h *EventHub) FirstSeen(workerID, session string) (int64, bool) {
 	h.mu.Lock()
@@ -247,8 +280,17 @@ type workerState struct {
 	firstSeen map[string]int64
 	// observed is set by the first snapshot of the Worker in this process.
 	observed bool
-	updated  time.Time
-	synced   bool // the current connection sent its snapshot
+	// instances is the last known instance of every session name the Worker
+	// reported with one, also of names it no longer lists (loaded from the
+	// instance store on the first snapshot of this process).
+	instances map[string]string
+	// instLoaded is set once instances was loaded.
+	instLoaded bool
+	// instTouched is when the instances of the listed names were last all
+	// written to the instance store (see [instanceTouchEvery]).
+	instTouched time.Time
+	updated     time.Time
+	synced      bool // the current connection sent its snapshot
 	// probe asks this connection for the share rule it has now (see
 	// [Link.SetShareProbe]); nil when the connection has no such port.
 	probe shareProber
@@ -265,7 +307,7 @@ func NewEventHub(o EventHubOptions) *EventHub {
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &EventHub{now: now, workers: map[string]*workerState{}, subs: map[*Subscription]struct{}{}, fenced: map[string]map[string]bool{},
-		shareStore: o.Share, shares: map[string]*shareState{}, log: log}
+		shareStore: o.Share, instStore: o.Instances, shares: map[string]*shareState{}, log: log}
 }
 
 // Subscription is a stream of events for one consumer.
@@ -644,21 +686,30 @@ func (f *Feed) SnapshotShare(seq uint64, sessions []SessionState, share *ops.Sha
 		}
 	}
 	ev := h.eventLocked(w, EventWorkerResynced, "")
-	// A session the Hub listed keeps its first-seen time; one it did not is
-	// first seen now, except in the first snapshot of this process.
+	h.loadInstancesLocked(w)
+	// A session the Hub listed keeps its first-seen time, unless its instance
+	// changed (another terminal took the name while the stream was down); one
+	// it did not list is first seen now, except in the first snapshot of this
+	// process when its instance is not known to differ.
 	seen := make(map[string]int64, len(next))
-	for n := range next {
+	changed := map[string]string{}
+	for n, s := range next {
 		at, kept := w.firstSeen[n]
+		replaced := ReplacedInstance(w.instances[n], s.InstanceID)
 		switch {
-		case kept:
-		case w.observed:
+		case kept && !replaced:
+		case w.observed || replaced:
 			at = ev.Time.Time().UnixMilli()
 		default:
 			at = 0
 		}
 		seen[n] = at
+		if s.InstanceID != "" && w.instances[n] != s.InstanceID {
+			changed[n] = s.InstanceID
+		}
 	}
 	w.sessions, w.firstSeen, w.observed = next, seen, true // atomic: readers hold the same lock
+	h.rememberInstancesLocked(w, changed)
 	w.updated, w.synced = h.now(), true
 	f.started, f.seq = true, 0
 	ev.snapshot = make([]string, 0, len(next))
@@ -721,6 +772,10 @@ func (f *Feed) Apply(c Change) error {
 	}
 	cur, known := w.sessions[s.Name]
 	ev := h.eventLocked(w, c.Event, s.Name)
+	// A known name reported with another instance is another terminal (a
+	// Worker that predates the instance-aware diff sends no removal for it).
+	replaced := known && (c.Event == EventSessionAdded || c.Event == EventStateChanged) &&
+		ReplacedInstance(cur.InstanceID, s.InstanceID)
 	if pending, fenced := h.fenced[f.id][s.Name]; fenced {
 		switch {
 		case c.Event == EventSessionRemoved:
@@ -756,11 +811,14 @@ func (f *Feed) Apply(c Change) error {
 			return nil
 		}
 		w.sessions[s.Name] = s
-		if !known {
+		if !known || replaced {
 			if w.firstSeen == nil {
 				w.firstSeen = map[string]int64{}
 			}
 			w.firstSeen[s.Name] = ev.Time.Time().UnixMilli()
+		}
+		if s.InstanceID != "" && w.instances[s.Name] != s.InstanceID {
+			h.rememberInstancesLocked(w, map[string]string{s.Name: s.InstanceID})
 		}
 		ev.Kind, ev.State, ev.ScreenHash = s.Kind, s.State, s.ScreenHash
 		ev.PaneStateDetail, ev.HarnessName = s.PaneStateDetail, s.HarnessName
@@ -788,6 +846,101 @@ func (f *Feed) Apply(c Change) error {
 	return nil
 }
 
+// instanceSaveTimeout bounds one read or write of the instance store.
+const instanceSaveTimeout = 5 * time.Second
+
+// loadInstancesLocked reads the stored last instances of the Worker once per
+// process. A failed read keeps what is in memory (nothing after a restart):
+// the name-only rule applies until a later snapshot reads them.
+func (h *EventHub) loadInstancesLocked(w *workerState) {
+	if w.instLoaded {
+		return
+	}
+	if w.instances == nil {
+		w.instances = map[string]string{}
+	}
+	if h.instStore == nil {
+		w.instLoaded = true
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), instanceSaveTimeout)
+	defer cancel()
+	stored, err := h.instStore.LoadSessionInstances(ctx, w.id)
+	if err != nil {
+		h.log.Warn("workers: the stored session instances could not be read", "worker_id", w.id, "error", err.Error())
+		return
+	}
+	for n, id := range stored {
+		if _, ok := w.instances[n]; !ok {
+			w.instances[n] = id
+		}
+	}
+	w.instLoaded = true
+}
+
+// instanceTouchEvery is how often the stored instances of all the names a
+// Worker lists now are written again, with a new seen_at, along with a
+// change: the store's bound ([store.MaxSessionInstancesPerWorker]) then drops
+// the names that are gone first, never a long-lived session that is still
+// listed.
+const instanceTouchEvery = time.Hour
+
+// rememberInstancesLocked records new last instances of session names, in
+// memory and in the instance store. At most every [instanceTouchEvery] the
+// write also covers the names listed now (a snapshot writes then even when
+// nothing changed). A failed write is logged: after a restart those names
+// fall back to the name-only rule.
+func (h *EventHub) rememberInstancesLocked(w *workerState, changed map[string]string) {
+	at := h.now()
+	touch := h.instStore != nil && (w.instTouched.IsZero() || at.Sub(w.instTouched) >= instanceTouchEvery)
+	if len(changed) == 0 && !touch {
+		return
+	}
+	if w.instances == nil {
+		w.instances = map[string]string{}
+	}
+	for n, id := range changed {
+		w.instances[n] = id
+	}
+	if len(w.instances) > 2*maxSessionsPerWorker {
+		// Bounded like the store: forget the names that are not listed now.
+		for n := range w.instances {
+			if _, ok := w.sessions[n]; !ok {
+				if _, now := changed[n]; !now {
+					delete(w.instances, n)
+				}
+			}
+		}
+	}
+	if h.instStore == nil {
+		return
+	}
+	save := changed
+	if touch {
+		save = make(map[string]string, len(w.sessions)+len(changed))
+		for n, s := range w.sessions {
+			if s.InstanceID != "" {
+				save[n] = s.InstanceID
+			}
+		}
+		for n, id := range changed {
+			save[n] = id
+		}
+	}
+	if len(save) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), instanceSaveTimeout)
+	defer cancel()
+	if err := h.instStore.SaveSessionInstances(ctx, w.id, save); err != nil {
+		h.log.Warn("workers: the session instances could not be stored", "worker_id", w.id, "error", err.Error())
+		return
+	}
+	if touch {
+		w.instTouched = at
+	}
+}
+
 // sanitize makes a reported session safe to keep: valid UTF-8, bounded
 // lengths. A session without a usable name is dropped.
 func sanitize(s SessionState) (SessionState, bool) {
@@ -802,6 +955,9 @@ func sanitize(s SessionState) (SessionState, bool) {
 	s.HarnessName = ops.SanitizeHarnessName(s.HarnessName)
 	s.Task = cut(s.Task, ops.MaxTaskLen)
 	s.ScreenHash = cut(s.ScreenHash, maxScreenHashLen)
+	if s.InstanceID = strings.ToValidUTF8(s.InstanceID, ""); len(s.InstanceID) > maxInstanceIDLen {
+		s.InstanceID = "" // not an instance any Worker makes: no evidence
+	}
 	return s, true
 }
 
@@ -837,6 +993,7 @@ type eventWire struct {
 	ScreenHash string  `json:"screen_hash"`
 	ops.PaneStateDetail
 	HarnessName string `json:"harness_name"`
+	InstanceID  string `json:"instance_id"`
 	// Share is the rule of a share_changed event.
 	Share *ops.ShareDecl `json:"share"`
 }
@@ -902,7 +1059,8 @@ func feedFrame(feed *Feed, body json.RawMessage, other func(string, json.RawMess
 			return err
 		}
 		c := Change{Seq: f.Seq, Event: f.Event, HasTask: f.Task != nil, Share: f.Share,
-			Session: SessionState{Name: f.Session, Kind: f.Kind, State: f.State, ScreenHash: f.ScreenHash, PaneStateDetail: f.PaneStateDetail, HarnessName: f.HarnessName}}
+			Session: SessionState{Name: f.Session, Kind: f.Kind, State: f.State, ScreenHash: f.ScreenHash, PaneStateDetail: f.PaneStateDetail, HarnessName: f.HarnessName,
+				InstanceID: f.InstanceID}}
 		if f.Task != nil {
 			c.Session.Task = *f.Task
 		}

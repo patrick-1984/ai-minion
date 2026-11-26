@@ -208,6 +208,10 @@ type CallContext struct {
 	// the Router read them at its final admission; for the audit event of a write
 	// and for the usage of the grants.
 	grantIDs []string
+	// commandShell is the command shell grant (A116) that let the routed
+	// request skip the shell_pane guard, as the Router decided it last; "" for
+	// none. The audit event of the write names it.
+	commandShell string
 }
 
 // source is the calling session of the call as its admission knows it: the
@@ -459,7 +463,7 @@ func (s *CallServer) serveCall(ctx context.Context, op string, c Call) {
 		return
 	}
 	defer s.release(c.Worker.ID)
-	s.serveRequest(ctx, c.Worker.ID, st, callRequest{Type: proto.TypeOpRequest, Op: op, RequestID: c.RequestID, Args: c.Args, APIKey: c.APIKey, SourceSession: c.SourceSession})
+	s.serveRequest(ctx, c.Worker.ID, st, callRequest{Type: proto.TypeOpRequest, Op: op, RequestID: c.RequestID, Args: c.Args, APIKey: c.APIKey, SourceSession: c.SourceSession, ClientRule: c.ClientRule})
 }
 
 // serveRequest serves a call stream whose op.request was read.
@@ -590,6 +594,16 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 		// session-control grant or the own-Worker rule did, and when the
 		// write was refused before the Router decided it).
 		ev.GrantID = strings.Join(c.grantIDs, ",")
+		// The standing allow rule the client named: a label it chose, so it
+		// is recorded as given (a valid id only) and decides nothing.
+		ev.Detail = proto.ClientRuleDetail(req.ClientRule)
+		if c.commandShell != "" {
+			// A116: the write was a normal write into a command shell.
+			ev.Detail = proto.AppendDetail(ev.Detail, "command_shell="+c.commandShell)
+			if ev.GrantID == "" {
+				ev.GrantID = c.commandShell
+			}
+		}
 		s.auditEvent(ctx, ev)
 	}
 	if errors.Is(cause, errCallerGone) {
@@ -719,7 +733,12 @@ func (s *CallServer) authenticate(ctx context.Context, workerID, key, source, op
 }
 
 // lookupGrant returns the stored targets of the session-control grant of the
-// session source on the Worker, or "" when it has none.
+// session source on the Worker, or "" when it has none. The name-only (Claimed)
+// nomination is fenced like a direct grant (sameSessions): the source must be
+// listed now and first seen no later than it was nominated, else it is
+// another terminal under the name and has no grant, also before the session
+// purge has deleted the nomination. A session target of a session-limited
+// acceptance first seen after it was accepted (or not listed) is left out.
 func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (string, error) {
 	if source == "" || s.cfg.Grants == nil {
 		return "", nil
@@ -731,7 +750,17 @@ func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (
 	case err != nil:
 		return "", err
 	}
-	return row.TargetsJSON, nil
+	seen := s.cfg.Sessions
+	if seen == nil {
+		return row.TargetsJSON, nil
+	}
+	if at, ok := seen.FirstSeen(workerID, source); !ok || at > row.CreatedAt {
+		return "", nil
+	}
+	return row.TargetsJSONWithout(func(t store.ControlSessionTarget) bool {
+		at, ok := seen.FirstSeen(t.WorkerID, t.SessionName)
+		return !ok || at > t.NamedAt
+	}), nil
 }
 
 // lookupDirect returns the direct session grants of the session source on the
@@ -797,7 +826,7 @@ func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
 		d := authz.DirectGrant{
 			ID: g.ID, TargetWorkerID: g.TargetWorkerID, TargetSession: g.TargetSession, Level: g.Level,
 			Authority: g.Authority, GrantedBy: g.GrantedBy, SourceOwnerID: g.SourceOwnerID, TargetOwnerID: g.TargetOwnerID,
-			Suspended: g.SuspendedAt != nil,
+			Suspended: g.SuspendedAt != nil, CommandShell: g.CommandShell,
 		}
 		if g.ExpiresAt != nil {
 			// A stored expiry always ends the grant, the zero time included.

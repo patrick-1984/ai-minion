@@ -79,6 +79,7 @@ var errStopStream = errors.New("mcp: stream complete")
 type caller struct {
 	backend client.Backend
 	trust   Trust
+	gate    Gate
 	log     *slog.Logger
 	// serving is the context of the running server. The SDK detaches request
 	// contexts from it, so the handler joins them again: shutting the server
@@ -111,6 +112,14 @@ func (c *caller) call(ctx context.Context, t tool, raw json.RawMessage) *sdk.Cal
 	body, args, requestID, err := prepareArgs(t, raw)
 	if err != nil {
 		return errorResult(err, "")
+	}
+	if c.gate != nil {
+		rule, err := c.gate.Check(t.op, body)
+		if err != nil {
+			// Refused before anything was sent.
+			return errorResult(err, "")
+		}
+		ctx = client.WithClientRule(ctx, rule)
 	}
 	switch {
 	case t.op.Stream:

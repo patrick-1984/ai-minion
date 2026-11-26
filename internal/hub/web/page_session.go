@@ -410,12 +410,19 @@ type SessionPage struct {
 	Conversation template.HTML
 	// HasConversation: the conversation view is registered and rendered, so its script is loaded.
 	HasConversation bool
+	// WorkersURL, WorkerURL and SelfURL are the links of the breadcrumb: the
+	// Workers list, the Worker's page and this session view.
+	WorkersURL, WorkerURL, SelfURL string
+	// Code is the short code of the session ("" when it has none).
+	Code string
+	// Switch is the quick switcher of the breadcrumb; nil in the compact
+	// (embedded) view and when the live lists are not available.
+	Switch *SessionSwitch
 }
 
-// Crumbs implements [Crumbed]: a session lives below the session list.
-func (p SessionPage) Crumbs() []Crumb {
-	return []Crumb{{Label: "Control center", Path: "/"}, {Label: "Sessions", Path: pathSessions}, {Label: p.Session}}
-}
+// Crumbs implements [Crumbed]: a session lives below its Worker, which lives
+// below the Workers list (see page_session_crumbs.go).
+func (p SessionPage) Crumbs() []Crumb { return crumbsOfSession(p) }
 
 // FormField is a hidden field of the force form.
 type FormField struct {
@@ -687,6 +694,14 @@ func sessionData(r *http.Request) (any, error) {
 		TextURL:   t.path() + "/text", KeysURL: t.path() + "/keys", TaskURL: t.path() + "/task",
 		NewURL: NewSessionPath(t.ref), Context: principalContext(r), NewRefused: t.worker.NewSessionRefused,
 		Monitoring: MonitoringLevel(),
+	}
+	if uid, admin, ok := requestUser(r); ok {
+		foreign := admin && t.worker.OwnerID != uid
+		page.WorkersURL, page.WorkerURL = scopedLink(pathWorkers, foreign), WorkerPath(t.worker.ID, foreign)
+	}
+	page.SelfURL = t.path()
+	if r.Method != http.MethodGet || r.URL.Query().Get(embedFlag) != "1" { // not the compact (embedded) view
+		page.Switch, page.Code = sessionSwitchOf(r, t)
 	}
 	if !t.worker.Online {
 		page.Notice = "This Worker is offline. The screen and the controls come back when it reconnects."

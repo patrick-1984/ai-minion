@@ -33,6 +33,10 @@ type WorkersListArgs struct {
 type WorkerInfo struct {
 	// ID is the Worker's UUIDv7, the canonical form of a target (AD-18).
 	ID string `json:"id"`
+	// Number is the Worker's number on this Hub, the first part of its
+	// session codes ("5" of "5-667"): given once, never given again. Additive
+	// field: absent when unknown.
+	Number int64 `json:"number,omitempty"`
 	// Name is the Worker's name, unique per owner (AD-17).
 	Name string `json:"name"`
 	// OwnerID is the owning user's id.
@@ -78,6 +82,12 @@ type WorkerInfo struct {
 	// refused for the caller because the new session would be hidden and the
 	// hidden_sessions policy does not allow it: the message, with the fix.
 	NewSessionRefused string `json:"new_session_refused,omitempty"`
+	// AllowHiddenSessions is the Worker's own hidden-sessions choice
+	// (v0.23.0, worker_hidden_sessions_set): true allows new hidden sessions
+	// on it, false refuses them; absent when the Worker has no choice of its
+	// own and each caller's account-wide preference decides. The Hub setting
+	// hidden_sessions (allowed, disabled) still overrides it.
+	AllowHiddenSessions *bool `json:"allow_hidden_sessions,omitempty"`
 	// SessionsSynced is true once the connected Worker sent its first session
 	// list on this connection: before that an empty list means "not known
 	// yet", not "no sessions".

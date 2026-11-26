@@ -10,6 +10,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -23,6 +24,52 @@ type SessionControlRow struct {
 	TargetsJSON string
 	CreatedBy   string
 	CreatedAt   int64 // unix milliseconds
+	// SessionTargets are the targets of TargetsJSON that name one session,
+	// each with the time it was named (the acceptance that lists it, or the
+	// nomination for the limit of a migrated grant). The call path fences
+	// them like the target of a direct grant: a session first seen after it
+	// was named is another terminal.
+	SessionTargets []ControlSessionTarget
+}
+
+// ControlSessionTarget is one session target of a session-control grant.
+type ControlSessionTarget struct {
+	WorkerID    string
+	SessionName string
+	NamedAt     int64 // unix milliseconds
+}
+
+// TargetsJSONWithout returns TargetsJSON without the session targets that
+// drop reports, and "" when no target is left. A row without session targets
+// is returned unchanged.
+func (r SessionControlRow) TargetsJSONWithout(drop func(ControlSessionTarget) bool) string {
+	if len(r.SessionTargets) == 0 {
+		return r.TargetsJSON
+	}
+	gone := map[[2]string]bool{}
+	for _, t := range r.SessionTargets {
+		if drop(t) {
+			gone[[2]string{t.WorkerID, t.SessionName}] = true
+		}
+	}
+	if len(gone) == 0 {
+		return r.TargetsJSON
+	}
+	var all []controlResource
+	if err := json.Unmarshal([]byte(r.TargetsJSON), &all); err != nil {
+		return "" // an unreadable list allows nothing
+	}
+	kept := all[:0]
+	for _, c := range all {
+		if c.Kind == "session" && gone[[2]string{c.WorkerID, c.SessionName}] {
+			continue
+		}
+		kept = append(kept, c)
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return targetsJSON(kept)
 }
 
 // ListSessionControl returns the computed grant of every master session that
@@ -61,8 +108,69 @@ func (s *Store) SessionControl(ctx context.Context, workerID, sessionName string
 	if len(targets) == 0 {
 		return SessionControlRow{}, ErrNotFound
 	}
+	named, err := s.sessionTargetsNamed(ctx, workerID, targets, m.CreatedAt)
+	if err != nil {
+		return SessionControlRow{}, err
+	}
 	return SessionControlRow{WorkerID: workerID, SessionName: sessionName, TargetsJSON: targetsJSON(targets),
-		CreatedBy: m.CreatedBy, CreatedAt: m.CreatedAt}, nil
+		CreatedBy: m.CreatedBy, CreatedAt: m.CreatedAt, SessionTargets: named}, nil
+}
+
+// sessionTargetsNamed returns the session targets of source with the time
+// each was named: the creation of the acceptance that lists it, else (the
+// limit of a migrated grant) nominated, the creation of the nomination.
+func (s *Store) sessionTargetsNamed(ctx context.Context, source string, targets []controlResource, nominated int64) ([]ControlSessionTarget, error) {
+	var out []ControlSessionTarget
+	accepts := map[string]struct {
+		names map[string]bool
+		at    int64
+	}{}
+	loaded := false
+	for _, t := range targets {
+		if t.Kind != "session" {
+			continue
+		}
+		if !loaded {
+			loaded = true
+			rows, err := s.db.QueryContext(ctx, `SELECT target_worker_id, sessions_json, created_at FROM control_accept WHERE source_worker_id = ?`, source)
+			if err != nil {
+				return nil, fmt.Errorf("store: read acceptances: %w", err)
+			}
+			for rows.Next() {
+				var (
+					target string
+					sess   sql.NullString
+					at     int64
+				)
+				if err := rows.Scan(&target, &sess, &at); err != nil {
+					_ = rows.Close()
+					return nil, fmt.Errorf("store: read acceptances: %w", err)
+				}
+				var names []string
+				if sess.Valid {
+					_ = json.Unmarshal([]byte(sess.String), &names)
+				}
+				set := map[string]bool{}
+				for _, n := range names {
+					set[n] = true
+				}
+				accepts[target] = struct {
+					names map[string]bool
+					at    int64
+				}{set, at}
+			}
+			_ = rows.Close()
+			if err := rows.Err(); err != nil {
+				return nil, fmt.Errorf("store: read acceptances: %w", err)
+			}
+		}
+		at := nominated
+		if a, ok := accepts[t.WorkerID]; ok && a.names[t.SessionName] {
+			at = a.at
+		}
+		out = append(out, ControlSessionTarget{WorkerID: t.WorkerID, SessionName: t.SessionName, NamedAt: at})
+	}
+	return out, nil
 }
 
 // PutSessionControl is the v0.8 grant written in the new model: the session
@@ -148,6 +256,8 @@ func (s *Store) DeleteSessionControlOfWorker(ctx context.Context, ex Execer, wor
 		`DELETE FROM worker_control WHERE worker_id = ?1`,
 		`DELETE FROM control_accept WHERE target_worker_id = ?1 OR source_worker_id = ?1`,
 		`DELETE FROM session_control WHERE worker_id = ?1`,
+		// The Worker's own hidden-sessions choice was the old owner's (v0.23.0).
+		`DELETE FROM worker_hidden_sessions WHERE worker_id = ?1`,
 	} {
 		res, err := ex.ExecContext(ctx, q, workerID)
 		if err != nil {

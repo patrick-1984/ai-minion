@@ -19,7 +19,7 @@ Releases are published on `https://github.com/patrick-1984/ai-minion/releases`. 
 Verify what you downloaded before you run it. The checksum list is signed by the release workflow of this project (keyless signature, recorded in the Sigstore transparency log):
 
 ```sh
-VERSION=0.22.0
+VERSION=0.23.0
 ARCHIVE=minion_${VERSION}_linux_amd64.tar.gz
 BASE=https://github.com/patrick-1984/ai-minion/releases/download/v${VERSION}
 curl -fsSLO "$BASE/$ARCHIVE"
@@ -65,7 +65,7 @@ The Hub has no command-line flags. It reads its settings from the environment (e
 | `MINION_MANAGEMENT_LISTEN` | Optional port (for example `8444`, which means `127.0.0.1:8444`) or loopback `host:port` that serves plain HTTP for the [Hub identity](../guides/hub-identity.md#the-https-rule) operations. Never point a reverse proxy at it. |
 | `MINION_ADMIN_USERNAME`, `MINION_ADMIN_PASSWORD_FILE` | The first administrator (used only while the user table is empty). `MINION_ADMIN_PASSWORD` also works, but a file keeps the password out of the process environment. |
 | `MINION_SESSION_TTL` | Idle lifetime of a browser session, default `2h` (5m to 720h). Every page load or click extends it; background polling does not. A local sign-in ends after 12 hours whatever the activity; an expired OIDC session signs in again silently with the identity provider on the next page load ([browser sessions](../security.md#browser-sessions)). Applies without a restart; also in **Administration > Hub settings** (`session_ttl`). |
-| `MINION_HIDDEN_SESSIONS` | Whether new sessions may be **hidden** from the person who creates them (they could not see or join them from their own terminal: Windows ConPTY sessions inside the Worker, or a tmux server that is not their default one). `user-controlled` (default: each user allows them in **Account > Sessions**, off until they do), `allowed` (for everybody) or `disabled` (refused for everybody). Applies without a restart; also in **Administration > Hub settings**. |
+| `MINION_HIDDEN_SESSIONS` | Whether new sessions may be **hidden** from the person who creates them (they could not see or join them from their own terminal: Windows ConPTY sessions inside the Worker, or a tmux server that is not their default one). `user-controlled` (default: each Worker's owner or an administrator allows or refuses them on the Worker's page, **Hidden sessions**; a Worker without its own choice follows each user's **Account > Sessions** setting, off until they turn it on), `allowed` (for everybody) or `disabled` (refused for everybody). Applies without a restart; also in **Administration > Hub settings**. |
 
 A first start, from a shell:
 
@@ -120,7 +120,7 @@ Set the passphrase as above before the first Worker connects (a Hub started as a
 
 ```sh
 sudo minion update --channel 0.6      # the newest 0.6.x
-sudo minion update --version v0.22.0   # exactly this version
+sudo minion update --version v0.23.0   # exactly this version
 sudo systemctl restart minion-hub
 ```
 

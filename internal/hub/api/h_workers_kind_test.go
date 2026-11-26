@@ -296,6 +296,15 @@ func TestWorkerRenameConflictAndOwnership(t *testing.T) {
 	if got, _ := k.st.WorkerByID(context.Background(), a.ID); got.Name != "alice-lab" {
 		t.Errorf("name = %q", got.Name)
 	}
+	// An admin renames any Worker, also another user's private one; the name
+	// keeps that owner's prefix.
+	k.as(k.admin)
+	if code, body := k.call(ops.OpWorkerRename, map[string]any{"worker_id": a.ID, "name": "phone"}); code != 200 {
+		t.Fatalf("admin rename: %d %s", code, body)
+	}
+	if got, _ := k.st.WorkerByID(context.Background(), a.ID); got.Name != "alice-phone" || got.OwnerID != k.u1 {
+		t.Errorf("after the admin rename = %+v", got)
+	}
 }
 
 func TestTrustSetAndListThroughTheDispatcher(t *testing.T) {
