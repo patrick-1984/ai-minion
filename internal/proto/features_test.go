@@ -20,3 +20,19 @@ func TestSessionInstanceFeatureIsAnnounceable(t *testing.T) {
 		t.Error("HasFeature does not follow the list")
 	}
 }
+
+// TestSessionInstanceIDListFeatureIsAnnounceable: the listing-only feature is
+// a name of its own, distinct from the reserved full instance contract, and
+// passes the filter of the signed hello.
+func TestSessionInstanceIDListFeatureIsAnnounceable(t *testing.T) {
+	if FeatureSessionInstanceIDListV1 != "session.instance_id.list.v1" {
+		t.Fatalf("FeatureSessionInstanceIDListV1 = %q: the name is wire format", FeatureSessionInstanceIDListV1)
+	}
+	got := NormaliseFeatures([]string{FeatureSessionInstanceIDListV1})
+	if !slices.Equal(got, []string{FeatureSessionInstanceIDListV1}) {
+		t.Fatalf("NormaliseFeatures = %v", got)
+	}
+	if HasFeature(got, FeatureSessionInstanceV1) {
+		t.Fatal("the listing feature must not read as the full instance contract")
+	}
+}

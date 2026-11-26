@@ -163,7 +163,7 @@ func IsVerbatim(host SessionHost) bool {
 
 // InstanceReporter is an optional port of a SessionHost. A host that
 // implements it and returns true fills Session.Instance for the sessions it
-// lists. The Worker announces the feature proto.FeatureSessionInstanceV1 only
+// lists. The Worker announces the feature proto.FeatureSessionInstanceIDListV1 only
 // for such a host, so the Hub can tell "this Worker predates instance ids"
 // from "this host could not tell for this session" (an empty id of a Worker
 // that announced the feature, which fails closed).

@@ -58,19 +58,25 @@ const (
 	// announces no op for it and nothing but the Hub's own authenticated
 	// connection can reach it. Announced only when the Worker can publish.
 	FeatureUsageReadbackV1 = "usage_readback_v1"
-	// FeatureSessionInstanceV1: the Worker's terminal host attests an instance
-	// id for the sessions it reports, and sessions_list carries it as
-	// instance_id on every session row: the identity of the terminal session
-	// behind a name, which survives a rename and a Worker restart and is new
-	// when the name is created again. With the feature announced, a row without
-	// instance_id means "the host could not tell for this session" and must be
-	// treated as unverifiable; without the feature it means "this Worker
-	// predates instance ids". Announced only for a host that computes the ids.
-	// The session events and the refusal of a target that names another
-	// instance are the second half of the same feature and are not part of the
-	// Worker yet: no Hub code may rely on them, and no Worker may be released
-	// with this feature before they exist.
+	// FeatureSessionInstanceV1 is reserved for the whole instance contract:
+	// instance ids in sessions_list, instance-aware session events, and the
+	// refusal of a target that names another instance than the session behind
+	// its name. The events and the refusal are not part of the Worker yet, so
+	// no Worker announces it (a client relying on the refusal would otherwise
+	// reach a replacement session under the same name) and no Hub code may
+	// rely on it. The listing alone is [FeatureSessionInstanceIDListV1].
 	FeatureSessionInstanceV1 = "session.instance.v1"
+	// FeatureSessionInstanceIDListV1: the Worker's terminal host attests an
+	// instance id for the sessions it reports, and sessions_list carries it as
+	// instance_id on a session row: the identity of the terminal session behind
+	// a name, which survives a rename and a Worker restart and is new when the
+	// name is created again. With the feature announced, a row without
+	// instance_id means "the host could not tell for this session" and must be
+	// treated as unverifiable; without it, it means "this Worker predates
+	// instance ids or its host computes none". It is metadata only: the Worker
+	// still resolves a target by its name and refuses nothing for an instance.
+	// Announced only for a host that computes the ids.
+	FeatureSessionInstanceIDListV1 = "session.instance_id.list.v1"
 )
 
 // Limits of an announced feature list. The hello is at most 64 KiB already;

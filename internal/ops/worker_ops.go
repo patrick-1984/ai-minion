@@ -100,7 +100,7 @@ type SessionInfo struct {
 	// digits for tmux (a hash, see the Worker's tmux adapter); other hosts get
 	// their own prefix. It identifies a terminal and proves nothing about a
 	// caller. Additive field: a Worker that predates it never reports it, and
-	// a Worker that announces proto.FeatureSessionInstanceV1 leaves it out for
+	// a Worker that announces proto.FeatureSessionInstanceIDListV1 leaves it out for
 	// a session whose identity its host could not read.
 	InstanceID string    `json:"instance_id,omitempty"`
 	Pane       *PaneInfo `json:"pane"` // the active pane, null when none

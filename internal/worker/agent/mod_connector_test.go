@@ -273,22 +273,27 @@ type instanceHost struct {
 
 func (h instanceHost) ReportsInstances() bool { return h.reports }
 
-// TestExecutorAnnouncesSessionInstancesOnlyForAnAbleHost: the feature is in
-// the hello only while the host computes instance ids, and sessions_list then
-// carries the id of every session the host identified.
+// TestExecutorAnnouncesSessionInstancesOnlyForAnAbleHost: the listing feature
+// is in the hello only while the host computes instance ids, and sessions_list
+// then carries the id of every session the host identified. The full instance
+// contract (session.instance.v1: events and the refusal of another instance)
+// is never announced, since the Worker still resolves a target by name.
 func TestExecutorAnnouncesSessionInstancesOnlyForAnAbleHost(t *testing.T) {
 	e := newEnv(t)
-	if slices.Contains(e.ex.Features(), proto.FeatureSessionInstanceV1) {
+	if slices.Contains(e.ex.Features(), proto.FeatureSessionInstanceIDListV1) {
 		t.Fatalf("a host without the port announces instances: %v", e.ex.Features())
 	}
 	e.ex.host = instanceHost{e.host, false}
-	if slices.Contains(e.ex.Features(), proto.FeatureSessionInstanceV1) {
+	if slices.Contains(e.ex.Features(), proto.FeatureSessionInstanceIDListV1) {
 		t.Fatalf("a host that cannot compute instances announces them: %v", e.ex.Features())
 	}
 	e.ex.host = instanceHost{e.host, true}
 	got := e.ex.Features()
-	if !slices.Contains(got, proto.FeatureSessionInstanceV1) || !slices.IsSorted(got) {
+	if !slices.Contains(got, proto.FeatureSessionInstanceIDListV1) || !slices.IsSorted(got) {
 		t.Fatalf("features = %v", got)
+	}
+	if slices.Contains(got, proto.FeatureSessionInstanceV1) {
+		t.Fatalf("the Worker announces the instance refusal it does not enforce: %v", got)
 	}
 
 	const id = "t1-4b783ddf62f0f4f6e2f4d2dee3612612"
