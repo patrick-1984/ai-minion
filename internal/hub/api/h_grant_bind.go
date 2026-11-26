@@ -138,23 +138,27 @@ func (h grantBindHandler) doBind(ctx context.Context, c *Call, a ops.GrantBindAr
 			return ops.GrantSetResult{}, NewError(proto.CodeConflict, "this session is not a prepared terminal right now")
 		}
 	}
-	out := ops.GrantSetResult{Outcome: ops.OutcomeDelivered}
-	g := cur
-	if cur.SourceIncarnation != incarnation {
-		// The store reads the caller's authority again in the transaction
-		// that writes, and writes the audit row there.
-		write := store.GrantWrite{ActorID: p.UserID, Audit: func(_ *store.SessionGrantRow, now store.SessionGrantRow) (store.AuditRow, error) {
-			return grantAuditRow(c, grantBindEvent(now.ID, a.Binds(), now))
-		}}
-		if g, err = h.st.BindSessionGrant(ctx, a.ID, incarnation, a.IfRevision, write); err != nil {
-			return ops.GrantSetResult{}, grantStoreErr(err)
+	note := func(g store.SessionGrantRow) string {
+		if g.SourceIncarnation != "" {
+			return ops.GrantBindNote
 		}
-		// The lease of the terminal starts or ends now.
-		h.lane.RefreshLeases(g.SourceWorkerID)
+		return ""
 	}
-	if g.SourceIncarnation != "" {
-		out.Note = ops.GrantBindNote
+	if cur.SourceIncarnation == incarnation {
+		// Nothing to change: the answer is the grant as it is.
+		return h.grantResult(cur, ws, note), nil
 	}
-	out.Grant = h.info(g, ws)
-	return out, nil
+	// The store reads the caller's authority again in the transaction that
+	// writes, and writes the audit row and the answer there.
+	var out ops.GrantSetResult
+	write := store.GrantWrite{ActorID: p.UserID, Audit: func(_ *store.SessionGrantRow, now store.SessionGrantRow) (store.AuditRow, error) {
+		return grantAuditRow(c, grantBindEvent(now.ID, a.Binds(), now))
+	}, Receipt: h.grantResultReceipt(ctx, ws, &out, note)}
+	g, err := h.st.BindSessionGrant(ctx, a.ID, incarnation, a.IfRevision, write)
+	if err != nil {
+		return ops.GrantSetResult{}, grantStoreErr(err)
+	}
+	// The lease of the terminal starts or ends now.
+	h.lane.RefreshLeases(g.SourceWorkerID)
+	return h.keptResult(out, g, ws, note), nil
 }

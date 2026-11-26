@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 )
@@ -464,5 +465,39 @@ func TestSessionGrantWriteNeedsAnEffectiveRole(t *testing.T) {
 	f.exec(t, `DELETE FROM user_roles WHERE user_id = 'root'`)
 	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: g.ID, Level: 3}, g.Revision, asAdmin); !errors.Is(err, ErrGrantAuthority) {
 		t.Fatalf("widen through a former administrator: %v", err)
+	}
+}
+
+// The request receipt of a grant write commits in the transaction of the
+// change: it is stored with it, and a failing receipt takes the change back.
+func TestSessionGrantReceiptCommitsWithTheChange(t *testing.T) {
+	f := newGrantFixture(t)
+	ctx := t.Context()
+	receipt := func(id string) func(SessionGrantRow) (*OpRequestRow, error) {
+		return func(now SessionGrantRow) (*OpRequestRow, error) {
+			return &OpRequestRow{RequestID: id, Op: "grant_x", Actor: "alice", ArgsSHA256: "h", ResultJSON: `{"id":"` + now.ID + `"}`}, nil
+		}
+	}
+	g, err := f.s.PutSessionGrant(ctx, f.ownerGrant("boss"), 0, GrantWrite{ActorID: "alice", Receipt: receipt("r1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := f.s.GetOpRequest(ctx, "r1", time.Now().UnixMilli())
+	if err != nil || !ok || row.ResultJSON != `{"id":"`+g.ID+`"}` || row.CreatedAt == 0 {
+		t.Fatalf("receipt = %+v %v %v", row, ok, err)
+	}
+	boom := errors.New("no receipt")
+	fail := GrantWrite{ActorID: "alice", Receipt: func(SessionGrantRow) (*OpRequestRow, error) { return nil, boom }}
+	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, g.Revision, fail); !errors.Is(err, boom) {
+		t.Fatalf("revoke with a failing receipt: %v", err)
+	}
+	if _, err := f.s.SessionGrant(ctx, g.ID); err != nil {
+		t.Fatalf("the grant is gone after a failed receipt: %v", err)
+	}
+	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, g.Revision, GrantWrite{ActorID: "alice", Receipt: receipt("r2")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := f.s.GetOpRequest(ctx, "r2", time.Now().UnixMilli()); err != nil || !ok {
+		t.Fatalf("revoke receipt: %v %v", ok, err)
 	}
 }

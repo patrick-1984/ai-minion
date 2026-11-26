@@ -304,13 +304,42 @@ func grantStoreErr(err error) error {
 
 func (h grantHandlers) set(ctx context.Context, c *Call, a ops.GrantSetArgs) (ops.GrantSetResult, error) {
 	var old *store.SessionGrantRow
-	g, ws, err := h.doSet(ctx, c, a, &old)
+	res, err := h.doSet(ctx, c, a, &old)
 	if err != nil {
 		// The store wrote nothing: the refusal is audited by itself.
 		h.record(ctx, c, grantSetEvent(a, old, nil), err)
 		return ops.GrantSetResult{}, err
 	}
-	return ops.GrantSetResult{Outcome: ops.OutcomeDelivered, Grant: h.info(g, ws)}, nil
+	return res, nil
+}
+
+// grantResultReceipt returns the Receipt of a grant write that answers with
+// the grant as stored: the result is built in the writing transaction, from
+// what was read before it, into *res, and its request receipt commits with
+// the change.
+func (h grantHandlers) grantResultReceipt(ctx context.Context, ws map[string]GrantWorker, res *ops.GrantSetResult, note func(store.SessionGrantRow) string) func(store.SessionGrantRow) (*store.OpRequestRow, error) {
+	return func(now store.SessionGrantRow) (*store.OpRequestRow, error) {
+		*res = h.grantResult(now, ws, note)
+		return requestReceipt(ctx, *res)
+	}
+}
+
+// grantResult is the answer of a grant write that committed g.
+func (h grantHandlers) grantResult(g store.SessionGrantRow, ws map[string]GrantWorker, note func(store.SessionGrantRow) string) ops.GrantSetResult {
+	res := ops.GrantSetResult{Outcome: ops.OutcomeDelivered, Grant: h.info(g, ws)}
+	if note != nil {
+		res.Note = note(g)
+	}
+	return res
+}
+
+// keptResult is res when the store built it in the writing transaction, and
+// otherwise (a store that called no Receipt) the answer built from g.
+func (h grantHandlers) keptResult(res ops.GrantSetResult, g store.SessionGrantRow, ws map[string]GrantWorker, note func(store.SessionGrantRow) string) ops.GrantSetResult {
+	if res.Grant.ID != "" {
+		return res
+	}
+	return h.grantResult(g, ws, note)
 }
 
 // grantSetEvent is the audit event of a grant_set: old is the stored grant
@@ -345,36 +374,39 @@ func grantSetEvent(a ops.GrantSetArgs, old, now *store.SessionGrantRow) audit.Ev
 	return ev
 }
 
-// doSet decides and stores a grant_set. For an update *old receives the
-// stored grant as soon as it is read (for the audit).
-func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, old **store.SessionGrantRow) (store.SessionGrantRow, map[string]GrantWorker, error) {
-	var none store.SessionGrantRow
+// doSet decides and stores a grant_set and returns its result, which is built
+// in the writing transaction. For an update *old receives the stored grant as
+// soon as it is read (for the audit).
+func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, old **store.SessionGrantRow) (ops.GrantSetResult, error) {
+	var none ops.GrantSetResult
 	p := c.Principal
 	if p.UserID == "" {
-		return none, nil, NewError(proto.CodeForbidden, "not allowed")
+		return none, NewError(proto.CodeForbidden, "not allowed")
 	}
 	level, _ := ops.GrantLevelRank(a.Level)
 	ws, err := h.byID(ctx)
 	if err != nil {
-		return none, nil, err
+		return none, err
 	}
 	src, okS := ws[a.SourceWorkerID]
 	tgt, okT := ws[a.TargetWorkerID]
 	if !okS || !okT {
-		return none, nil, NewError(proto.CodeNotFound, "no such Worker")
+		return none, NewError(proto.CodeNotFound, "no such Worker")
 	}
 	if !src.Approved || !tgt.Approved {
-		return none, nil, NewError(proto.CodeConflict, "both Workers must be approved")
+		return none, NewError(proto.CodeConflict, "both Workers must be approved")
 	}
 	admin, err := h.isAdmin(ctx, p)
 	if err != nil {
-		return none, nil, err
+		return none, err
 	}
 	// The store reads the caller's role and active state again in the
-	// transaction that writes, and writes the audit row there.
+	// transaction that writes, and writes the audit row and the answer of the
+	// request there; the answer is built from what was read before.
+	var res ops.GrantSetResult
 	write := store.GrantWrite{ActorID: p.UserID, Audit: func(o *store.SessionGrantRow, now store.SessionGrantRow) (store.AuditRow, error) {
 		return grantAuditRow(c, grantSetEvent(a, o, &now))
-	}}
+	}, Receipt: h.grantResultReceipt(ctx, ws, &res, nil)}
 	if p.Kind == authz.KindActAs {
 		// An administrator acting as p.UserID (D4): the grant is decided with
 		// that user's authority, and the administrator must still be one when
@@ -385,12 +417,12 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 	if a.ExpiresAt != "" {
 		var ts ops.Timestamp
 		if err := ts.UnmarshalJSON([]byte(`"` + a.ExpiresAt + `"`)); err != nil {
-			return none, nil, NewError(proto.CodeInvalidArgument, "expires_at must be RFC 3339 UTC with milliseconds")
+			return none, NewError(proto.CodeInvalidArgument, "expires_at must be RFC 3339 UTC with milliseconds")
 		}
 		// An end in the past would store a grant that never allows
 		// anything, on a create and on an update alike.
 		if !ts.Time().After(h.now()) {
-			return none, nil, &Error{Code: proto.CodeInvalidArgument, Message: "expires_at must be in the future",
+			return none, &Error{Code: proto.CodeInvalidArgument, Message: "expires_at must be in the future",
 				Details: map[string]any{"field": "expires_at"}}
 		}
 		ms := ts.Time().UnixMilli()
@@ -399,27 +431,30 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 	if a.ID != "" {
 		cur, err := h.st.SessionGrant(ctx, a.ID)
 		if err != nil {
-			return none, nil, grantStoreErr(err)
+			return none, grantStoreErr(err)
 		}
 		before := cur
 		*old = &before
 		if cur.SourceWorkerID != a.SourceWorkerID || cur.SourceSession != a.SourceSession ||
 			cur.TargetWorkerID != a.TargetWorkerID || cur.TargetSession != a.TargetSession {
-			return none, nil, NewError(proto.CodeInvalidArgument, "the source and the target of a grant cannot be changed")
+			return none, NewError(proto.CodeInvalidArgument, "the source and the target of a grant cannot be changed")
 		}
 		ownsBoth := src.OwnerID == p.UserID && tgt.OwnerID == p.UserID
 		if !admin && (cur.Authority != store.GrantAuthorityOwner || !ownsBoth) {
-			return none, nil, NewError(proto.CodeForbidden, "not allowed")
+			return none, NewError(proto.CodeForbidden, "not allowed")
 		}
 		if cur.SuspendedAt != nil {
-			return none, nil, NewError(proto.CodeConflict, "the grant is suspended; an administrator must approve it first")
+			return none, NewError(proto.CodeConflict, "the grant is suspended; an administrator must approve it first")
 		}
 		cur.Level, cur.ExpiresAt, cur.Note, cur.UpdatedAt = level, exp, a.Note, 0
-		out, err := h.st.PutSessionGrant(ctx, cur, a.IfRevision, write)
-		return out, ws, grantStoreErr(err)
+		g, err := h.st.PutSessionGrant(ctx, cur, a.IfRevision, write)
+		if err != nil {
+			return none, grantStoreErr(err)
+		}
+		return h.keptResult(res, g, ws, nil), nil
 	}
 	if !src.CanBeSource {
-		return none, nil, NewError(proto.CodeConflict, "this Worker cannot reach others (a thin Worker)")
+		return none, NewError(proto.CodeConflict, "this Worker cannot reach others (a thin Worker)")
 	}
 	// D4: the authority behind the grant. Two Workers of one owner take an
 	// owner grant, also when an administrator decides it for that owner: it
@@ -431,16 +466,19 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		authority = store.GrantAuthorityOwner
 	case admin:
 	case src.OwnerID != tgt.OwnerID:
-		return none, nil, NewError(proto.CodeForbidden, "only an administrator can grant between Workers of different owners")
+		return none, NewError(proto.CodeForbidden, "only an administrator can grant between Workers of different owners")
 	default:
-		return none, nil, NewError(proto.CodeForbidden, "not allowed")
+		return none, NewError(proto.CodeForbidden, "not allowed")
 	}
-	out, err := h.st.PutSessionGrant(ctx, store.SessionGrantRow{
+	g, err := h.st.PutSessionGrant(ctx, store.SessionGrantRow{
 		SourceWorkerID: a.SourceWorkerID, SourceSession: a.SourceSession, TargetWorkerID: a.TargetWorkerID,
 		TargetSession: a.TargetSession, Level: level, Authority: authority, GrantedBy: p.UserID,
 		SourceOwnerID: src.OwnerID, TargetOwnerID: tgt.OwnerID, Note: a.Note, ExpiresAt: exp,
 	}, 0, write)
-	return out, ws, grantStoreErr(err)
+	if err != nil {
+		return none, grantStoreErr(err)
+	}
+	return h.keptResult(res, g, ws, nil), nil
 }
 
 // revokeResource decides grant_revoke (D4: it only narrows). The decision
@@ -494,6 +532,10 @@ func (h grantHandlers) revoke(ctx context.Context, c *Call, a ops.GrantRevokeArg
 		return grantAuditRow(c, audit.Event{Action: AuditActionGrantRevoke, GrantID: g.ID,
 			Source: grantAuditSource(g.SourceWorkerID, g.SourceSession), Target: grantAuditTarget(g.TargetWorkerID, g.TargetSession),
 			Detail: "level=" + grantAuditLevel(g.Level) + " authority=" + g.Authority + " rev=" + strconv.FormatUint(g.Revision, 10)})
+	}, Receipt: func(store.SessionGrantRow) (*store.OpRequestRow, error) {
+		// The answer commits with the delete: a repeat after a stop at the
+		// commit is answered delivered, not not_found.
+		return requestReceipt(ctx, delivered())
 	}}
 	// The dispatcher audits a refusal; its row names the grant.
 	c.AuditGrantID = a.ID
@@ -534,18 +576,21 @@ func (h grantHandlers) doApprove(ctx context.Context, c *Call, a ops.GrantApprov
 	if !admin {
 		return ops.GrantSetResult{}, NewError(proto.CodeForbidden, "not allowed")
 	}
-	// The store reads the administrator role again in the transaction that
-	// lifts the suspension, and writes the audit row there.
-	write := store.GrantWrite{ActorID: c.Principal.UserID, Audit: func(_ *store.SessionGrantRow, now store.SessionGrantRow) (store.AuditRow, error) {
-		return grantAuditRow(c, grantApproveEvent(now.ID, now))
-	}}
-	g, err := h.st.ApproveSessionGrant(ctx, a.ID, a.IfRevision, write)
-	if err != nil {
-		return ops.GrantSetResult{}, grantStoreErr(err)
-	}
+	// What the answer shows is read before the change: once the suspension
+	// is lifted, the answer commits with it and nothing can fail after.
 	ws, err := h.byID(ctx)
 	if err != nil {
 		return ops.GrantSetResult{}, err
 	}
-	return ops.GrantSetResult{Outcome: ops.OutcomeDelivered, Grant: h.info(g, ws)}, nil
+	// The store reads the administrator role again in the transaction that
+	// lifts the suspension, and writes the audit row and the answer there.
+	var res ops.GrantSetResult
+	write := store.GrantWrite{ActorID: c.Principal.UserID, Audit: func(_ *store.SessionGrantRow, now store.SessionGrantRow) (store.AuditRow, error) {
+		return grantAuditRow(c, grantApproveEvent(now.ID, now))
+	}, Receipt: h.grantResultReceipt(ctx, ws, &res, nil)}
+	g, err := h.st.ApproveSessionGrant(ctx, a.ID, a.IfRevision, write)
+	if err != nil {
+		return ops.GrantSetResult{}, grantStoreErr(err)
+	}
+	return h.keptResult(res, g, ws, nil), nil
 }

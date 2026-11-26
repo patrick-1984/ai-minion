@@ -51,24 +51,44 @@ type GrantWrite struct {
 	// grant). An error refuses the change. A nil Audit writes no row. An empty
 	// ID and a zero TS are filled in.
 	Audit func(old *SessionGrantRow, now SessionGrantRow) (AuditRow, error)
+	// Receipt builds the stored answer of the request_id of the change from
+	// the grant as stored (for a revoke the deleted grant); it is written in
+	// the transaction of the change, so that a repeat of a request that
+	// committed finds its answer even when the Hub stopped right after the
+	// commit. A nil Receipt, or a nil row, stores none; an error refuses the
+	// change.
+	Receipt func(now SessionGrantRow) (*OpRequestRow, error)
 }
 
-// audit writes the audit row of a change inside tx.
+// audit writes the audit row and the request receipt of a change inside tx.
 func (w GrantWrite) audit(ctx context.Context, s *Store, tx *sql.Tx, old *SessionGrantRow, now SessionGrantRow) error {
-	if w.Audit == nil {
+	if w.Audit != nil {
+		row, err := w.Audit(old, now)
+		if err != nil {
+			return err
+		}
+		if row.ID == "" {
+			row.ID = NewID()
+		}
+		if row.TS == 0 {
+			row.TS = time.Now().UnixMilli()
+		}
+		if err := s.InsertAudit(ctx, tx, row); err != nil {
+			return err
+		}
+	}
+	if w.Receipt == nil {
 		return nil
 	}
-	row, err := w.Audit(old, now)
-	if err != nil {
+	r, err := w.Receipt(now)
+	if err != nil || r == nil {
 		return err
 	}
-	if row.ID == "" {
-		row.ID = NewID()
+	if r.CreatedAt == 0 {
+		r.CreatedAt = time.Now().UnixMilli()
 	}
-	if row.TS == 0 {
-		row.TS = time.Now().UnixMilli()
-	}
-	return s.InsertAudit(ctx, tx, row)
+	_, err = putOpRequestTx(ctx, tx, *r)
+	return err
 }
 
 // grantUserRole reads, inside tx, whether userID is active, holds any
