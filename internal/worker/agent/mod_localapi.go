@@ -202,7 +202,7 @@ func (l localExecutor) Execute(ctx context.Context, rq localapi.Request, progres
 			return nil, l.protoError(rq.Op, pauseRefusal())
 		}
 		// The target is on another Worker: only the Hub reaches it.
-		raw, err := l.forwardSessionControl(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, rq.Pane)
+		raw, err := l.forwardSessionControl(ctx, Request{Op: rq.Op, Actions: rq.Actions, Args: rq.Args}, rq.Pane, rq.TmuxSocket)
 		if err != nil {
 			return nil, l.protoError(rq.Op, err)
 		}

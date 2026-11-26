@@ -511,11 +511,11 @@ func TestPipeSendRequestIDIsAnsweredFromTheCacheWithoutASecondWrite(t *testing.T
 	other := args
 	other.Text = "different"
 	_, err = p.hubSend(allActions, other)
-	if err != nil { // same id, same op and session: the cache answers
-		t.Fatalf("same id with other text: %v", err)
-	}
+	// The same id with other text is another request (audit F13): a conflict,
+	// never the first outcome, and nothing is written.
+	wantAPIError(t, err, "conflict", "")
 	if len(p.host.pastes()) != 1 {
-		t.Fatal("the cache must answer a repeated request id whatever its text")
+		t.Fatal("a repeated request id with other text must not write")
 	}
 }
 

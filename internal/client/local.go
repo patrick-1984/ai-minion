@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -186,9 +187,59 @@ func sourcePane() string {
 	return ""
 }
 
+// maxTmuxSocketPath bounds the socket path taken from $TMUX: no real socket
+// path is longer (a unix socket address holds about a hundred bytes).
+const maxTmuxSocketPath = 4096
+
+// sourceTmuxSocket returns the socket path of the tmux server the pane of
+// [sourcePane] belongs to, from $TMUX, else "". A pane id is only meaningful
+// on that one server (every server numbers its panes from %0), so the socket
+// travels next to the pane and the Worker maps the pane to a session only
+// when it serves that very server.
+func sourceTmuxSocket() string { return tmuxSocketOf(os.Getenv("TMUX")) }
+
+// tmuxSocketOf returns the socket path in a $TMUX value, which tmux sets to
+// "<socket>,<server pid>,<session index>". It is read from the right, because
+// a socket path may itself contain a comma. Anything that is not of that form
+// with an absolute path gives "".
+func tmuxSocketOf(v string) string {
+	rest, index, ok := cutLast(v, ',')
+	if !ok || !allDigits(index) {
+		return ""
+	}
+	socket, pid, ok := cutLast(rest, ',')
+	if !ok || !allDigits(pid) || len(socket) > maxTmuxSocketPath || !filepath.IsAbs(socket) || strings.ContainsRune(socket, 0) {
+		return ""
+	}
+	return socket
+}
+
+// cutLast cuts s around the last sep.
+func cutLast(s string, sep byte) (before, after string, found bool) {
+	i := strings.LastIndexByte(s, sep)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+1:], true
+}
+
+// allDigits reports whether s is a non-empty run of ASCII digits.
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
 // exchange runs one request on conn.
 func exchange(conn net.Conn, op string, args json.RawMessage, onProgress func(json.RawMessage) error) (json.RawMessage, error) {
 	req := localapi.RequestFrame{Type: proto.TypeOpRequest, Op: op, Args: args, Pane: sourcePane()}
+	if req.Pane != "" {
+		// Only with a pane: the socket says which server the pane id is of.
+		req.TmuxSocket = sourceTmuxSocket()
+	}
 	if err := proto.WriteFrame(conn, proto.StreamFrameLimit, req); err != nil {
 		var pe *proto.Error
 		if errors.As(err, &pe) {

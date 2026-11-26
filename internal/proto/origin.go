@@ -28,6 +28,16 @@ const (
 // MaxOriginFieldLen bounds every string member of an origin.
 const MaxOriginFieldLen = 128
 
+// The values of Origin.SourceProof: how the Hub knows the calling session.
+const (
+	// OriginProofClaimed means the calling Worker named the session; the Hub
+	// did not verify which of its sessions made the call.
+	OriginProofClaimed = "claimed"
+	// OriginProofVerified means the Hub verified the calling session (a bound
+	// master incarnation).
+	OriginProofVerified = "verified"
+)
+
 // Origin is the structured, server-derived provenance of an op request. The
 // zero value is invalid.
 type Origin struct {
@@ -53,6 +63,16 @@ type Origin struct {
 	// without its pipe_accept_from policy, as it accepts a user. It needs a
 	// worker origin with a source Worker.
 	Grant bool `json:"grant,omitempty"`
+	// SourceSession, SourceProof and GrantID attribute the call: the calling
+	// session on the source Worker, how the Hub knows it (OriginProofClaimed or
+	// OriginProofVerified) and the id of the Hub grant that authorized this op
+	// on this target (UUIDv7 text). All are optional and need a worker origin
+	// with a source Worker. They attribute and never authorize: a Worker
+	// records them in its local audit and no Worker decision reads them. A
+	// Worker that does not know them ignores them.
+	SourceSession string `json:"source_session,omitempty"`
+	SourceProof   string `json:"source_proof,omitempty"`
+	GrantID       string `json:"grant_id,omitempty"`
 }
 
 // FromWorker reports whether the origin names a source Worker.
@@ -63,7 +83,9 @@ func (o Origin) FromWorker() bool { return o.SourceWorkerID != "" }
 // the error says what is wrong and never echoes a value.
 func (o Origin) Validate() error {
 	bad := func(msg string) error { return NewError(CodePipeOriginRefused, "malformed origin: "+msg) }
-	for _, v := range []string{o.UserID, o.ActorID, o.KeyID, o.KeyBoundWorkerID, o.SourceWorkerID, o.SourceWorkerFP, o.SourceWorkerOwnerID} {
+	// SourceSession is not in this list: a session name may hold inner spaces
+	// and has its own rule below.
+	for _, v := range []string{o.UserID, o.ActorID, o.KeyID, o.KeyBoundWorkerID, o.SourceWorkerID, o.SourceWorkerFP, o.SourceWorkerOwnerID, o.SourceProof, o.GrantID} {
 		if len(v) > MaxOriginFieldLen || strings.ContainsAny(v, "\x00\r\n\t ") {
 			return bad("a member is too long or holds a control character")
 		}
@@ -74,6 +96,27 @@ func (o Origin) Validate() error {
 	}
 	if o.Grant && (o.Kind != OriginWorker || !src) {
 		return bad("a grant needs a worker origin with the source Worker")
+	}
+	if (o.SourceSession != "" || o.SourceProof != "" || o.GrantID != "") && (o.Kind != OriginWorker || !src) {
+		return bad("the source session, its proof and the grant id need a worker origin with the source Worker")
+	}
+	if o.SourceSession != "" && !ValidMasterSessionName(o.SourceSession) {
+		return bad("source_session is not a session name")
+	}
+	switch o.SourceProof {
+	case "":
+		if o.SourceSession != "" {
+			return bad("source_session and source_proof must be set together")
+		}
+	case OriginProofClaimed, OriginProofVerified:
+		if o.SourceSession == "" {
+			return bad("source_session and source_proof must be set together")
+		}
+	default:
+		return bad("unknown source_proof")
+	}
+	if o.GrantID != "" && (!o.Grant || !validOriginUUIDv7(o.GrantID)) {
+		return bad("grant_id needs grant and must be a UUIDv7")
 	}
 	switch o.Kind {
 	case OriginUser:
@@ -104,4 +147,27 @@ func (o Origin) Validate() error {
 		return bad("unknown kind")
 	}
 	return nil
+}
+
+// validOriginUUIDv7 reports whether s is a canonical lowercase UUID text with
+// version 7 and the RFC 9562 variant. It is the rule of ops.ValidUUIDv7, which
+// this package cannot import (ops imports proto); a test keeps them equal.
+func validOriginUUIDv7(s string) bool {
+	if len(s) != 36 || s[14] != '7' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				return false
+			}
+		}
+	}
+	return strings.IndexByte("89ab", s[19]) >= 0
 }

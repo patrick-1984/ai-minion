@@ -214,6 +214,7 @@ func (e *Executor) Execute(ctx context.Context, rq Request) (json.RawMessage, er
 	if rq.Origin != nil {
 		ctx = context.WithValue(ctx, originCtxKey{}, rq.Origin)
 	}
+	ctx = withWritePayload(ctx, rq.Args)
 	e.mu.RLock()
 	h := e.handlers[rq.Op]
 	e.mu.RUnlock()
@@ -236,7 +237,9 @@ type originCtxKey struct{}
 
 // auditOrigin is the text of the origin column of the local audit: the JSON
 // origin of a Hub request, or "local" when the caller came through a local
-// entry point.
+// entry point. The JSON is the whole origin as this Worker knows it, so it
+// keeps the attribution members (source_session, source_proof, grant_id): the
+// audit is the only place where the Worker uses them.
 func auditOrigin(ctx context.Context) string {
 	if o, ok := ctx.Value(originCtxKey{}).(*proto.Origin); ok && o != nil {
 		if b, err := json.Marshal(o); err == nil {
@@ -245,6 +248,23 @@ func auditOrigin(ctx context.Context) string {
 		return "malformed"
 	}
 	return "local"
+}
+
+// hubOrigin returns the origin of a Hub request, or nil for a local caller.
+func hubOrigin(ctx context.Context) *proto.Origin {
+	o, _ := ctx.Value(originCtxKey{}).(*proto.Origin)
+	return o
+}
+
+// payloadCtxKey carries the raw arguments of a request to the write frame.
+type payloadCtxKey struct{}
+
+// withWritePayload makes the arguments of a request known to [Executor.write],
+// which stores a digest of them with the request id. [Executor.Execute] calls
+// it for every op; an entry point that runs a write handler without Execute
+// (the Solo pipe) calls it itself.
+func withWritePayload(ctx context.Context, args json.RawMessage) context.Context {
+	return context.WithValue(ctx, payloadCtxKey{}, args)
 }
 
 // lookupOp returns the catalog entry of a Worker op.

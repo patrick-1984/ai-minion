@@ -76,7 +76,13 @@ type Session struct {
 	// is a dedicated identity marker for the server check of the CLI (see
 	// ops.SessionInfo.Probe) and never holds user text.
 	Probe string
-	Panes []Pane
+	// Instance is the host-attested identity of this terminal session, "" when
+	// the host cannot tell. It stays the same when the session is renamed and
+	// when the Worker restarts, and it is another value when a name is created
+	// again or the host's server is another one. It identifies a terminal; it
+	// proves nothing about a caller. Form: see ops.SessionInfo.InstanceID.
+	Instance string
+	Panes    []Pane
 }
 
 // ActivePane returns the active pane of the session.
@@ -153,6 +159,22 @@ type VerbatimPaster interface {
 func IsVerbatim(host SessionHost) bool {
 	v, ok := host.(VerbatimPaster)
 	return ok && v.VerbatimPaste()
+}
+
+// InstanceReporter is an optional port of a SessionHost. A host that
+// implements it and returns true fills Session.Instance for the sessions it
+// lists. The Worker announces the feature proto.FeatureSessionInstanceV1 only
+// for such a host, so the Hub can tell "this Worker predates instance ids"
+// from "this host could not tell for this session" (an empty id of a Worker
+// that announced the feature, which fails closed).
+type InstanceReporter interface {
+	ReportsInstances() bool
+}
+
+// ReportsInstances reports whether host fills Session.Instance.
+func ReportsInstances(host SessionHost) bool {
+	r, ok := host.(InstanceReporter)
+	return ok && r.ReportsInstances()
 }
 
 // MaxPasteBytes is the largest text a host's PasteText accepts. It bounds the
