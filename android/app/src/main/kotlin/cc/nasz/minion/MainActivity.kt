@@ -278,7 +278,8 @@ class MainActivity : Activity() {
         }
         val overrideHelp = TextView(this).apply {
             text = "Advanced: Hub address override (optional)\n" +
-                "Use only when this network's DNS cannot find the Hub. Enter the Hub's IP address, such as 10.3.3.6. " +
+                "Use only when this network's DNS cannot find the Hub. Enter the Hub's IP address, such as 10.3.3.6; " +
+                "the name comes from the Hub URL or the join token. " +
                 "TLS still checks the Hub's certificate name."
             textSize = 16f
         }
@@ -321,11 +322,11 @@ class MainActivity : Activity() {
                     input.error = if (byToken) "Paste a Minion join token from the Hub." else "Enter a full Hub URL, such as https://hub.example"
                     return@setOnClickListener
                 }
-                val wanted = overrideInput.text.toString().trim()
-                var dialOverride = ""
-                if (wanted.isNotEmpty()) {
+                val overrideText = overrideInput.text.toString().trim()
+                var dialValue = ""
+                if (overrideText.isNotEmpty()) {
                     val host = if (byToken) HubDialOverride.hostOfToken(value) else HubDialOverride.hostOfServer(value)
-                    val address = HubDialOverride.address(wanted)
+                    val address = HubDialOverride.address(overrideText)
                     if (host == null) {
                         overrideInput.error = "The Hub address has no hostname to override. Leave this field empty."
                         overrideInput.requestFocus()
@@ -336,7 +337,7 @@ class MainActivity : Activity() {
                         overrideInput.requestFocus()
                         return@setOnClickListener
                     }
-                    dialOverride = "$host=$address"
+                    dialValue = "$host=$address"
                 }
                 if (!usage.isChecked) {
                     usage.error = getString(R.string.usage_enrollment_required)
@@ -345,8 +346,8 @@ class MainActivity : Activity() {
                 }
                 val target = worker ?: return@setOnClickListener
                 val selectionValue = if (selection.isChecked) "all" else "none"
-                if (byToken) target.join(value, selectionValue, usage.isChecked, dialOverride)
-                else target.pair(value, selectionValue, usage.isChecked, dialOverride)
+                if (byToken) target.join(value, selectionValue, usage.isChecked, dialValue)
+                else target.pair(value, selectionValue, usage.isChecked, dialValue)
                 input.text.clear()
                 dialog.dismiss()
                 if (!television && Build.VERSION.SDK_INT >= 33 &&
