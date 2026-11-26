@@ -12,6 +12,13 @@ require(major <= 209 && minor <= 99 && patch <= 99 && (parts[4].isEmpty() || rc 
     "The Minion version does not fit the Android version code"
 }
 val nativePackage = providers.gradleProperty("minionNativePackage").map(::file)
+// Spike K0 (on-device adb): off by default. Only debug builds get it; a release build with it on fails.
+val adbSpike = providers.gradleProperty("minionAdbSpike").map { it == "true" }.getOrElse(false)
+if (adbSpike) {
+    require(gradle.startParameter.taskNames.none { it.contains("Release", ignoreCase = true) }) {
+        "-PminionAdbSpike=true is for debug builds only"
+    }
+}
 
 android {
     namespace = "cc.nasz.minion"
@@ -39,6 +46,23 @@ android {
         }
     }
 
+    if (adbSpike) {
+        ndkVersion = "28.2.13676358"
+        buildTypes.named("debug") { applicationIdSuffix = ".adbspike" }
+        sourceSets.named("debug") {
+            kotlin.srcDir("src/adbSpike/kotlin")
+            manifest.srcFile("src/adbSpike/AndroidManifest.xml")
+        }
+        sourceSets.named("test") { kotlin.srcDir("src/adbSpikeTest/kotlin") }
+        externalNativeBuild.cmake {
+            path = file("src/adbSpike/cpp/CMakeLists.txt")
+            version = "3.31.6"
+        }
+        testOptions.unitTests.all { test ->
+            providers.gradleProperty("minionSpake2HostLib").orNull?.let { test.systemProperty("minion.spake2.lib", it) }
+        }
+    }
+
     packaging.jniLibs {
         // Package Manager extracts the PIEs into APK-owned nativeLibraryDir.
         // These are already stripped and still contain Go build information.
@@ -51,4 +75,15 @@ kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
+}
+
+dependencies {
+    if (adbSpike) {
+        testImplementation("junit:junit:4.13.2")
+    }
+}
+
+// Belt and braces: the spike's native library never goes into a release APK.
+androidComponents.onVariants(androidComponents.selector().withBuildType("release")) { variant ->
+    variant.packaging.jniLibs.excludes.add("**/libminion_spake2.so")
 }
