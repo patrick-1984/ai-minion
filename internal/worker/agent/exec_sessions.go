@@ -118,17 +118,29 @@ func (e *Executor) requireShared(ctx context.Context, session string) error {
 // the same name. The refusal is the one of the share operations
 // ([Executor.requireSelf]): forbidden, and nothing is read or written.
 //
-// named is the worker_id of the request; a request that names none is served
+// named is the worker_id of the request's arguments. The Hub also names, in
+// the op.request frame and outside the arguments, the Worker it authorized
+// and routed the request to (target_worker_id, [routedWorker]); the arguments
+// of sessions_list and session_create usually name none. Each that is named
+// must be this Worker; a request that names neither (an older Hub) is served
 // as before. So is a local caller (no Hub origin): the local entry point
 // forwards what names another Worker to the Hub before it gets here. A Worker
 // that has no Hub id cannot compare and serves the request as before; a Hub
 // request reaches only a Worker that the Hub's welcome gave its id.
 func (e *Executor) requireTargetWorker(ctx context.Context, named string) error {
-	if named == "" || hubOrigin(ctx) == nil {
+	routed := routedWorker(ctx)
+	if named == "" && routed == "" || hubOrigin(ctx) == nil {
 		return nil
 	}
-	if self := e.policy.WorkerID(); self != "" && named != self {
+	self := e.policy.WorkerID()
+	if self == "" {
+		return nil
+	}
+	if named != "" && named != self {
 		return apiErr(proto.CodeForbidden, "", "worker_id names another Worker; a Worker only reads and writes its own sessions")
+	}
+	if routed != "" && routed != self {
+		return apiErr(proto.CodeForbidden, "", "the Hub routed a request for another Worker here; a Worker only reads and writes its own sessions")
 	}
 	return nil
 }

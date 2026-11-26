@@ -330,6 +330,9 @@ func (m *MasterControl) runMasterCall(ctx context.Context, c Call) (any, error) 
 		return nil, errMasterDenied
 	}
 	req.Principal = principal
+	// The session of the bound lease: the Hub verified the incarnation that
+	// holds it, whether a nomination or verified grants authorize the call.
+	req.source = verifiedSource(auth.session)
 	if op == ops.OpSendText && len(auth.direct) != 0 {
 		// The bound prompt was validated as agent-only, submitted and
 		// unforced: a terminal that holds message but not operate on the

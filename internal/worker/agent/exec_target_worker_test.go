@@ -233,3 +233,75 @@ func TestCachedRowWithoutCallerAndPayloadComparesAsBefore(t *testing.T) {
 	_, err = e.callFrom(userOrigin("user-b"), ops.OpSendText, forced)
 	wantAPIError(t, err, "conflict", "")
 }
+
+// routedFrame is an op.request in the shape the Hub's Router sends it: the
+// arguments as the typed operation encodes them (sessions_list and
+// session_create name no Worker there) and, outside them, the Worker the Hub
+// authorized and routed the request to (target_worker_id, review r1). An
+// empty routed leaves the member out, as an older Hub does.
+func routedFrame(t *testing.T, op, routed string) map[string]any {
+	t.Helper()
+	id := ops.NewUUIDv7()
+	var args any = ops.SessionsListArgs{}
+	if op == ops.OpSessionCreate {
+		args = ops.SessionCreateArgs{WriteArgs: ops.WriteArgs{RequestID: id}, Name: "fresh"}
+	}
+	f := map[string]any{"type": proto.TypeOpRequest, "op": op, "request_id": id, "args": args,
+		"actions": hubActions, "origin": userOrigin("user-a")}
+	if routed != "" {
+		f["target_worker_id"] = routed
+	}
+	return f
+}
+
+func TestRoutedDestinationOfTheFrameIsChecked(t *testing.T) {
+	for _, tc := range []struct {
+		name, routed string
+		served       bool
+	}{
+		{"routed to another Worker", otherWorker, false},
+		{"routed to this Worker", selfWorker, true},
+		{"an older Hub names no destination", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := newOriginEnv(t, "none")
+			for _, op := range []string{ops.OpSessionsList, ops.OpSessionCreate} {
+				st := newFakeOpStream(t, routedFrame(t, op, tc.routed))
+				o.srv.ServeStream(context.Background(), st)
+				types := st.types(t)
+				last := types[len(types)-1]
+				if tc.served && last != proto.TypeOpResult {
+					t.Fatalf("%s: %v, %+v; want it served", op, types, st.errorFrame(t))
+				}
+				if !tc.served && (last != proto.TypeError || st.errorFrame(t).Code != proto.CodeForbidden) {
+					t.Fatalf("%s: %v; want forbidden", op, types)
+				}
+			}
+			sessions, _ := o.host.ListSessions(context.Background())
+			if want := map[bool]int{true: 2, false: 1}[tc.served]; len(sessions) != want {
+				t.Fatalf("sessions = %d, want %d", len(sessions), want)
+			}
+		})
+	}
+}
+
+// Arguments that name this Worker do not lift a frame that routes the request
+// elsewhere, and a frame that names this Worker does not lift arguments that
+// name another one.
+func TestRoutedDestinationAndArgumentsAreBothChecked(t *testing.T) {
+	o := newOriginEnv(t, "none")
+	for _, tc := range []struct{ named, routed string }{{selfWorker, otherWorker}, {otherWorker, selfWorker}} {
+		f := routedFrame(t, ops.OpSessionsList, tc.routed)
+		f["args"] = map[string]any{"worker_id": tc.named}
+		st := newFakeOpStream(t, f)
+		o.srv.ServeStream(context.Background(), st)
+		if fr := st.errorFrame(t); fr.Code != proto.CodeForbidden {
+			t.Fatalf("named %s, routed %s: %+v; want forbidden", tc.named, tc.routed, fr)
+		}
+	}
+	// A local caller never carries a destination of the Hub.
+	if _, err := o.ex.Execute(context.Background(), Request{Op: ops.OpSessionsList, Actions: hubActions, Args: []byte(`{}`),
+		TargetWorkerID: otherWorker}); err != nil {
+		t.Fatalf("a local caller is checked as a Hub request: %v", err)
+	}
+}
