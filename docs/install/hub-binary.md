@@ -19,7 +19,7 @@ Releases are published on `https://github.com/patrick-1984/ai-minion/releases`. 
 Verify what you downloaded before you run it. The checksum list is signed by the release workflow of this project (keyless signature, recorded in the Sigstore transparency log):
 
 ```sh
-VERSION=0.20.6
+VERSION=0.20.7
 ARCHIVE=minion_${VERSION}_linux_amd64.tar.gz
 BASE=https://github.com/patrick-1984/ai-minion/releases/download/v${VERSION}
 curl -fsSLO "$BASE/$ARCHIVE"
