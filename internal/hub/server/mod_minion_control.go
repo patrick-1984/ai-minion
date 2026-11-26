@@ -104,8 +104,9 @@ func initMinionControl(_ context.Context, env *Env) error {
 // rows in one read-only transaction (one commit, never the write lock) and
 // the live state: who is connected, the sessions the Hub lists, which
 // session-bound masters hold a lease now, and which terminal incarnations
-// (Worker, session, incarnation) are live eligible candidates of a master
-// lane, so a verified grant bound to one of them holds a lease.
+// (Worker, session, incarnation) hold a live master lease, so a verified
+// grant bound to one of them is in effect exactly when authorization would
+// accept its lease.
 func accessFacts(ctx context.Context, env *Env, st *store.Store, svc *workers.Service) (api.AccessFacts, error) {
 	snap, err := st.AccessSnapshot(ctx)
 	if err != nil {
@@ -135,10 +136,11 @@ func accessFacts(ctx context.Context, env *Env, st *store.Store, svc *workers.Se
 					live.Attached[[2]string{id, b.SessionName}] = true
 				}
 			}
-			// MasterView lists only the eligible candidates of a live lane.
-			for _, c := range v.Candidates {
-				live.Leases[[3]string{id, c.SessionName, c.IncarnationID}] = true
-			}
+		}
+		// The leases themselves, never the candidates: an eligible candidate
+		// has no lease until the next report or refresh issues one.
+		for _, l := range master.LiveLeases() {
+			live.Leases[[3]string{l.WorkerID, l.SessionName, l.IncarnationID}] = true
 		}
 	}
 	return api.AccessFactsFrom(snap, live), nil

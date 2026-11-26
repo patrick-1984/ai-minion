@@ -376,6 +376,34 @@ func (m *MasterControl) MasterView(ctx context.Context) (map[string]MasterWorker
 	return out, nil
 }
 
+// LiveLease names a terminal incarnation that holds a master lease now. It
+// carries no lease id or generation.
+type LiveLease struct {
+	WorkerID, SessionName, IncarnationID string
+}
+
+// LiveLeases lists the leases that authorizeLocked would accept right now:
+// the leases of every live, unexpired lane on the current link whose
+// incarnation is still an eligible candidate. An eligible candidate without a
+// lease (a share snapshot that arrived before the next report) is not listed.
+func (m *MasterControl) LiveLeases() []LiveLease {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []LiveLease
+	for id, l := range m.lanes {
+		if l.ctx.Err() != nil || !m.currentLink(l.info) || !m.now().Before(l.expires) {
+			continue
+		}
+		for inc, lease := range l.leases {
+			if lease.binding.LeaseID == "" || !m.eligible(l, lease.row.SessionName, inc) {
+				continue
+			}
+			out = append(out, LiveLease{WorkerID: id, SessionName: lease.row.SessionName, IncarnationID: inc})
+		}
+	}
+	return out
+}
+
 type MasterWorkerView struct {
 	Candidates []ops.ControlMasterCandidate
 	Bound      []ops.ControlBoundMaster

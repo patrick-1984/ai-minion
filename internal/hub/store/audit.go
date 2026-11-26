@@ -58,8 +58,13 @@ func (s *Store) InsertAudit(ctx context.Context, ex Execer, row AuditRow) error 
 	if ex == nil {
 		ex = s.db
 	}
-	_, err := ex.ExecContext(ctx,
-		`INSERT INTO audit_events (id, ts, actor, acting_as, action, target, outcome, source, grant_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	// The row is reported below, so it is exported already (0036); a row
+	// that SQL writes itself keeps exported = 0 for forwardSQLAudit.
+	query := `INSERT INTO audit_events (id, ts, actor, acting_as, action, target, outcome, source, grant_id, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if s.auditExport {
+		query = `INSERT INTO audit_events (id, ts, actor, acting_as, action, target, outcome, source, grant_id, detail, exported) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+	}
+	_, err := ex.ExecContext(ctx, query,
 		row.ID, row.TS, row.Actor, row.ActingAs, row.Action, row.Target, row.Outcome, row.Source, row.GrantID, row.Detail)
 	if err != nil {
 		return fmt.Errorf("store: insert audit event: %w", err)
@@ -70,6 +75,110 @@ func (s *Store) InsertAudit(ctx context.Context, ex Execer, row AuditRow) error 
 		AfterCommit(ex, func() { s.holdEarlyAudit(ctx, row) })
 	}
 	return nil
+}
+
+// auditExportBatch bounds the rows one forwarding step reads and marks.
+const auditExportBatch = 256
+
+// auditExportColumn reports whether audit_events has the exported column of
+// migration 0036 (a database with test migrations may not).
+func auditExportColumn(ctx context.Context, db *sql.DB) (bool, error) {
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('audit_events') WHERE name = 'exported'`).Scan(&n); err != nil {
+		return false, fmt.Errorf("store: read audit schema: %w", err)
+	}
+	return n == 1, nil
+}
+
+// forwardSQLAudit hands the committed audit rows that did not pass
+// [Store.InsertAudit] (exported = 0: the grant triggers of 0034, fired by a
+// demotion, a Worker reassignment or removal) to the audit observer, oldest
+// first, so they reach the log sinks like every other row. [Store.Tx] calls
+// it after each commit and [Store.SetAuditObserver] when the observer is set,
+// so a row written before there was an observer (the start-up reconciliation
+// inside [Open], or a run that stopped first) waits in the table until then.
+//
+// Each row is marked exported in a transaction before the observer sees it,
+// and only a row whose mark changed it is passed on: one row, one export,
+// whatever the number of callers. A caller that finds a forwarding running
+// leaves its rows to that one, which runs once more.
+func (s *Store) forwardSQLAudit() {
+	if !s.auditExport || s.auditObs.Load() == nil {
+		return
+	}
+	s.fwdAgain.Store(true)
+	for s.fwdMu.TryLock() {
+		for s.fwdAgain.Swap(false) {
+			for s.forwardSQLAuditBatch() {
+			}
+		}
+		s.fwdMu.Unlock()
+		if !s.fwdAgain.Load() {
+			return
+		}
+	}
+}
+
+// forwardSQLAuditBatch forwards up to auditExportBatch rows and reports
+// whether more may be waiting. An error leaves the rows for the next call.
+func (s *Store) forwardSQLAuditBatch() bool {
+	obs := s.auditObs.Load()
+	if obs == nil {
+		return false
+	}
+	ctx := context.Background()
+	var (
+		out  []AuditRow
+		more bool
+	)
+	err := Tx(ctx, s.db, func(tx *sql.Tx) error {
+		out = out[:0]
+		rows, err := tx.QueryContext(ctx, `SELECT rowid, id, ts, actor, acting_as, action, target, outcome, source, grant_id, detail
+			FROM audit_events WHERE exported = 0 ORDER BY rowid LIMIT ?`, auditExportBatch)
+		if err != nil {
+			return err
+		}
+		var ids []int64
+		for rows.Next() {
+			var (
+				rid int64
+				r   AuditRow
+			)
+			if err := rows.Scan(&rid, &r.ID, &r.TS, &r.Actor, &r.ActingAs, &r.Action, &r.Target, &r.Outcome, &r.Source, &r.GrantID, &r.Detail); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			ids = append(ids, rid)
+			out = append(out, r)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		more = len(ids) == auditExportBatch
+		kept := out[:0]
+		for i, rid := range ids {
+			res, err := tx.ExecContext(ctx, `UPDATE audit_events SET exported = 1 WHERE rowid = ? AND exported = 0`, rid)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 1 {
+				kept = append(kept, out[i])
+			}
+		}
+		out = kept
+		return nil
+	})
+	if err != nil {
+		return false
+	}
+	for _, r := range out {
+		(*obs)(ctx, r)
+	}
+	return more
 }
 
 // ListAudit returns up to q.Limit rows matching q, newest first.
