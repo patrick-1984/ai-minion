@@ -128,12 +128,18 @@ func held(ctx context.Context, sub subject, res ResolvedResource, pt ports) (ops
 	return acts, nil
 }
 
-// allActions is what an admin holds on every resource.
-var allActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage}
+// allActions is what an admin holds on every resource, the file transfer
+// actions included (files.v1).
+var allActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage, ops.ActionManage,
+	ops.ActionFileRead, ops.ActionFileWrite}
 
 // ownerActions is what the owner of a resource holds. manage is global and
-// admin only, so the owner does not hold it.
-var ownerActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage}
+// admin only, so the owner does not hold it. The owner holds both file
+// transfer actions on their own resources (subject to the user-managed
+// switch in held). An API key gets a file action only when its stored
+// actions name it (scope ∩ base), so a key from before v0.24 has none.
+var ownerActions = []ops.Action{ops.ActionRead, ops.ActionOperate, ops.ActionMessage,
+	ops.ActionFileRead, ops.ActionFileWrite}
 
 // workerActions is what a Worker identity holds on its own Worker and that
 // Worker's sessions. It never holds operate or manage.
@@ -223,14 +229,15 @@ func (a *Authorizer) EffectiveActions(ctx context.Context, p Principal, res Reso
 // state again, like Decide. A direct grant (see [NewWorkerSessionPrincipal])
 // that permits one of the accepted actions counts the same way.
 func (a *Authorizer) GrantedByScope(ctx context.Context, p Principal, accepted ops.ActionSet, res Resource) (bool, error) {
-	if p.Kind != KindWorker || p.Scope == nil && len(p.directList()) == 0 {
+	if p.Kind != KindWorker || p.Scope == nil && len(p.directList()) == 0 && p.files == nil {
 		return false, nil
 	}
 	sub, resolved, ok, err := a.grantSubject(ctx, p, res)
 	if err != nil || !ok {
 		return false, err
 	}
-	return accepted.Permits(append(sub.grantActions(resolved), sub.directActions(resolved)...)...), nil
+	held := append(sub.grantActions(resolved), sub.directActions(resolved)...)
+	return accepted.Permits(append(held, sub.fileActions(resolved)...)...), nil
 }
 
 // grantSubject reads the subject of p and resolves res for a question about
@@ -362,6 +369,7 @@ func (s subject) actions(res ResolvedResource) ops.ActionSet {
 		// A session-control grant adds what it authorizes on its own, and so
 		// does every direct grant that covers res and is valid now.
 		held = append(held, s.grantActions(res)...)
+		held = append(held, s.fileActions(res)...)
 		return canonical(append(held, s.directActions(res)...))
 	}
 	base := s.base(res, s.p.UserID)
