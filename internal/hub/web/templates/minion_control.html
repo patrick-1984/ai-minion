@@ -44,9 +44,9 @@ slave session (default)     ─✕  nothing beyond its own Worker</pre>
     </select></label>
     <noscript><button type="submit" class="btn btn-secondary">Check</button></noscript>
   </form>{{else}}<p class="muted">No shared session is online: nothing to check.</p>{{end}}
-  {{with .Data.Check}}<div class="check-result" role="status"><p><strong>{{.Worker}} / {{.Session}}</strong> can be controlled by {{if .Result.Controllers}}{{len .Result.Controllers}} master {{if eq (len .Result.Controllers) 1}}session{{else}}sessions{{end}}:{{else}}no master session.{{end}}</p>
+  {{with .Data.Check}}{{if .Error}}<div class="check-result" role="status"><p class="form-error"><strong>{{.Worker}} / {{.Session}}</strong>: the check failed, so it is not known who can control this session. {{.Error}}</p></div>{{else}}<div class="check-result" role="status"><p><strong>{{.Worker}} / {{.Session}}</strong> can be controlled by {{if .Result.Controllers}}{{len .Result.Controllers}} master {{if eq (len .Result.Controllers) 1}}session{{else}}sessions{{end}}:{{else}}no master session.{{end}}</p>
   {{if .Result.Controllers}}<ul>{{range .Result.Controllers}}<li>{{.Worker}} / {{.SessionName}}</li>{{end}}</ul>{{end}}
-  <p class="help">{{.Result.Note}}</p></div>{{end}}
+  <p class="help">{{.Result.Note}}</p></div>{{end}}{{end}}
 </section>
 <script src="/static/minion-control.js" defer></script>
 {{end}}

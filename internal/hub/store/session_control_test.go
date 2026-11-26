@@ -447,6 +447,22 @@ func TestRevokeAcceptNeverFallsBackToAcceptAll(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM control_accept WHERE target_worker_id='wB' AND source_worker_id='wA'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("rows after the revoke = %d, %v; want 0", n, err)
 	}
+	// A repeated revoke without accept_all keeps an explicit block, so that
+	// accepting all Workers again does not open that source.
+	block := AcceptRow{TargetWorkerID: "wB", SourceWorkerID: "wA", Sessions: []string{}, CreatedBy: "u"}
+	if err := s.PutAccept(ctx, block); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RevokeAcceptIfOwners(ctx, revoke, oB, oA); err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	if err := s.SetWorkerControl(ctx, "wB", nil, &on); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := s.SessionControl(ctx, "wA", "boss"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("grant after a repeated revoke and accept_all = %+v, %v; want nothing", g, err)
+	}
 	if ok, err := s.RevokeAcceptIfOwners(ctx, revoke, "someone-else", oA); !errors.Is(err, ErrWorkerOwnerChanged) || ok {
 		t.Fatalf("revoke for another owner = %t, %v", ok, err)
 	}
@@ -528,5 +544,30 @@ func TestWorkerContentManagedNeedsTheWorker(t *testing.T) {
 		if ok, err := s.WorkerContentManaged(ctx, id); ok || err != nil {
 			t.Fatalf("%s = %v, %v", id, ok, err)
 		}
+	}
+}
+
+// A name-only revoke of a slot held by an active session-bound master is
+// refused inside the delete's transaction, on both delete paths.
+func TestNameOnlyDeleteRefusesAnActiveBoundSlotInTheTransaction(t *testing.T) {
+	s := openTest(t)
+	ctx := t.Context()
+	w := worker("wA", 4, "alice", "a")
+	if err := s.InsertWorker(ctx, nil, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO bound_master_session
+		(worker_id,owner_id,session_name,incarnation_id,worker_pub,generation,active,legacy_targets_json,changed_at)
+		VALUES (?,?,?,?,?,1,1,'',1)`, w.ID, w.OwnerID, "boss", "inc-1", w.Pub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteMasterSession(ctx, w.ID, "boss"); !errors.Is(err, ErrBoundMasterSlot) {
+		t.Fatalf("DeleteMasterSession = %v, want ErrBoundMasterSlot", err)
+	}
+	if _, err := s.DeleteMasterSessionIfOwner(ctx, w.ID, "boss", w.OwnerID); !errors.Is(err, ErrBoundMasterSlot) {
+		t.Fatalf("DeleteMasterSessionIfOwner = %v, want ErrBoundMasterSlot", err)
+	}
+	if _, err := s.DeleteMasterSession(ctx, w.ID, "other"); err != nil {
+		t.Fatalf("a plain name is deleted as before: %v", err)
 	}
 }
