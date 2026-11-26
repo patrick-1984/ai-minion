@@ -37,8 +37,9 @@ func newGrantHistoryStack(t *testing.T) *kindStack {
 		}
 		return out, nil
 	}
-	// The grant handlers write to the real audit log, which the history reads.
-	alog := audit.New(k.st)
+	// The grant handlers write to the real audit log, which the history reads,
+	// with the namer the Hub gives it.
+	alog := audit.New(k.st, audit.WithNamer(hubAuditNamer(k.st)))
 	if err := RegisterGrants(handlers, k.st, list, k.az, alog); err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +52,30 @@ func newGrantHistoryStack(t *testing.T) *kindStack {
 		t.Fatal(err)
 	}
 	return k
+}
+
+// hubAuditNamer is the namer the Hub gives the audit log (storeNamer of
+// server/mod_audit.go, which this package cannot import): a user id gives the
+// user name; "<worker id>:<session>", "<worker id>/..." and a Worker id give
+// the Worker name followed by the rest, the session name included.
+func hubAuditNamer(st *store.Store) func(context.Context, string) string {
+	return func(ctx context.Context, id string) string {
+		id = strings.TrimPrefix(id, "worker:")
+		rest := ""
+		if i := strings.IndexAny(id, "/:"); i >= 0 {
+			id, rest = id[:i], id[i:]
+		}
+		if !ops.ValidUUIDv7(id) {
+			return ""
+		}
+		if u, err := st.UserByID(ctx, id); err == nil && rest == "" {
+			return u.Username
+		}
+		if w, err := st.WorkerByID(ctx, id); err == nil {
+			return w.Name + rest
+		}
+		return ""
+	}
 }
 
 func (k *kindStack) grantHistory(id string) (int, []ops.AuditEvent) {
@@ -160,11 +185,25 @@ func TestGrantHistoryMasksSessionsOutsideTheCallersVisibility(t *testing.T) {
 	k.as(k.u1)
 	own := k.setGrant(grantArgs(a, a2, ops.GrantLevelView)) // a:agent -> a2:build
 
+	var maskedName func(target string) string
 	check := func(who, id, wantSrc, wantTgt string) {
 		t.Helper()
 		code, evs := k.grantHistory(id)
 		if code != http.StatusOK || len(evs) == 0 {
 			t.Fatalf("%s: history = %d %+v", who, code, evs)
+		}
+		// The whole answer, names given by the Hub's namer included, holds
+		// no masked session name.
+		_, body := k.call(ops.OpGrantHistory, map[string]any{"id": id})
+		for _, w := range []struct{ want, name string }{{wantSrc, "agent"}, {wantTgt, "build"}} {
+			if !strings.HasSuffix(w.want, ":"+w.name) && strings.Contains(body, w.name) {
+				t.Fatalf("%s: the answer names the masked session %q: %s", who, w.name, body)
+			}
+		}
+		for _, e := range evs {
+			if wantName := maskedName(e.Target); e.Target == wantTgt && e.TargetName != wantName {
+				t.Fatalf("%s: target_name = %q, want %q", who, e.TargetName, wantName)
+			}
 		}
 		for _, e := range evs {
 			if e.Source != wantSrc || e.Target != wantTgt {
@@ -173,6 +212,11 @@ func TestGrantHistoryMasksSessionsOutsideTheCallersVisibility(t *testing.T) {
 		}
 	}
 	masked := func(w store.WorkerRow) string { return w.ID + ":a session of another user" }
+	names := map[string]string{a.ID: "a", a2.ID: "a2", b.ID: "b"}
+	maskedName = func(target string) string {
+		id, rest, _ := strings.Cut(target, ":")
+		return names[id] + ":" + rest
+	}
 	for round := 0; round < 2; round++ {
 		k.as(k.admin)
 		check("administrator", cross.ID, a.ID+":agent", b.ID+":build")

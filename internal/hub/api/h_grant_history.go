@@ -129,7 +129,9 @@ func (h grantHistoryHandlers) resource(p authz.Principal, args any) (authz.Resou
 // that carries the grant id for another pair of Workers stays hidden. Then
 // every endpoint ("<worker id>:<session>") whose Worker the caller may not
 // operate (another owner's Worker, a Worker outside the API key's scope, a
-// removed Worker) loses its session name, as grant_list masks it.
+// removed Worker) loses its session name, as grant_list masks it, also in the
+// name the audit log gives the target (target_name). An audit event names
+// its source only by id, so there is no source name to mask.
 func (h grantHistoryHandlers) history(ctx context.Context, c *Call, a ops.GrantHistoryArgs) (ops.GrantHistoryResult, error) {
 	res, err := h.log.ListOp(ctx, ops.AuditListArgs{GrantID: a.ID, Cursor: a.Cursor, Limit: a.Limit})
 	if err != nil {
@@ -190,6 +192,15 @@ func (h grantHistoryHandlers) history(ctx context.Context, c *Call, a ops.GrantH
 			}
 			if !ok {
 				*f = id + ":" + maskedSessionLabel(byID[id])
+				if f == &e.Target {
+					// The audit namer names "<worker id>:<session>" as
+					// "<Worker name>:<session>": named again from the
+					// masked value, never from the stored one.
+					e.TargetName = ""
+					if w := byID[id]; w.Name != "" {
+						e.TargetName = w.Name + ":" + maskedSessionLabel(w)
+					}
+				}
 			}
 		}
 		out.Events = append(out.Events, e)

@@ -409,9 +409,15 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 	}, Receipt: h.grantResultReceipt(ctx, ws, &res, nil)}
 	if p.Kind == authz.KindActAs {
 		// An administrator acting as p.UserID (D4): the grant is decided with
-		// that user's authority, and the administrator must still be one when
-		// it is written.
-		write.ActingAdminID = p.ActorID
+		// that user's authority. The act-as period this request was served
+		// under must still be the live one, and the administrator still one,
+		// when it is written.
+		s := c.Identity.Session
+		if s == nil || s.ActAs == nil || s.ID == "" || s.UserID != p.ActorID || s.ActAs.TargetID != p.UserID {
+			return none, NewError(proto.CodeForbidden, "not allowed")
+		}
+		write.ActAs = &store.ActAsRow{SessionID: s.ID, ActorID: s.UserID, TargetID: s.ActAs.TargetID,
+			StartedAt: store.UnixMS(s.ActAs.StartedAt), ExpiresAt: store.UnixMS(s.ActAs.ExpiresAt)}
 	}
 	var exp *int64
 	if a.ExpiresAt != "" {
@@ -435,13 +441,17 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 		}
 		before := cur
 		*old = &before
+		// Who may edit is decided on the stored grant and the current owners
+		// of its Workers, before any endpoint the caller names is compared:
+		// a caller who may not edit it gets the same answer whatever names
+		// they send, so a masked session name cannot be confirmed.
+		ownsBoth := ws[cur.SourceWorkerID].OwnerID == p.UserID && ws[cur.TargetWorkerID].OwnerID == p.UserID
+		if !admin && (cur.Authority != store.GrantAuthorityOwner || !ownsBoth) {
+			return none, NewError(proto.CodeForbidden, "not allowed")
+		}
 		if cur.SourceWorkerID != a.SourceWorkerID || cur.SourceSession != a.SourceSession ||
 			cur.TargetWorkerID != a.TargetWorkerID || cur.TargetSession != a.TargetSession {
 			return none, NewError(proto.CodeInvalidArgument, "the source and the target of a grant cannot be changed")
-		}
-		ownsBoth := src.OwnerID == p.UserID && tgt.OwnerID == p.UserID
-		if !admin && (cur.Authority != store.GrantAuthorityOwner || !ownsBoth) {
-			return none, NewError(proto.CodeForbidden, "not allowed")
 		}
 		if cur.SuspendedAt != nil {
 			return none, NewError(proto.CodeConflict, "the grant is suspended; an administrator must approve it first")

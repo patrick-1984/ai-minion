@@ -425,3 +425,46 @@ func TestDirectGrantYearOneExpiryIsExpired(t *testing.T) {
 		t.Fatalf("no expiry: actions %v %v, want read, message and operate", got, err)
 	}
 }
+
+// D4: a direct grant does not depend on the role of the calling Worker's
+// owner. An owner who is active but holds no effective role (an IdP refresh
+// took it) still reaches what an administrator's grant allows; the own-Worker
+// rule and a legacy session-control grant need the role and give nothing, and
+// Valid (the check of a running call) fails closed. A deactivated owner gets
+// nothing at all.
+func TestDirectGrantIgnoresTheCallingOwnersRole(t *testing.T) {
+	ctx := context.Background()
+	st := grantStore()
+	st.setRole("alice", "")
+	a := dgAuthz(st)
+	p := authz.NewWorkerSessionPrincipal("A1", "main", grantScope(tW2), []authz.DirectGrant{adminGrant("g", "W3", "build", 3)})
+	for _, c := range []struct {
+		res  authz.Resource
+		want []ops.Action
+	}{
+		{sess("W3", "build"), rwo}, {sess("A1", "s"), nil}, {authz.WorkerResource{ID: "A1"}, nil}, {sess("W2", "x"), nil},
+	} {
+		if got, err := a.EffectiveActions(ctx, p, c.res); err != nil || !slices.Equal([]ops.Action(got), c.want) {
+			t.Errorf("%+v: %v %v, want %v", c.res, got, err, c.want)
+		}
+	}
+	if err := a.Decide(ctx, p, set(ops.ActionOperate), sess("W3", "build")); err != nil {
+		t.Errorf("Decide by the grant: %v", err)
+	}
+	if ids, err := a.GrantIDs(ctx, p, set(ops.ActionMessage), sess("W3", "build")); err != nil || !slices.Equal(ids, []string{"g"}) {
+		t.Errorf("GrantIDs = %v %v", ids, err)
+	}
+	if ok, err := a.Valid(ctx, p); err != nil || ok {
+		t.Errorf("Valid without a role = %v %v", ok, err)
+	}
+	// Without direct grants nothing changes: no subject at all.
+	if err := a.Decide(ctx, authz.NewWorkerSessionPrincipal("A1", "main", nil, nil), set(ops.ActionRead), sess("A1", "s")); err == nil {
+		t.Error("an owner without a role reads its own Worker")
+	}
+	u := st.users["alice"]
+	u.Active = false
+	st.users["alice"] = u
+	if err := a.Decide(ctx, p, set(ops.ActionRead), sess("W3", "build")); err == nil {
+		t.Error("a deactivated owner reaches the target")
+	}
+}

@@ -41,11 +41,14 @@ type GrantWrite struct {
 	// and active state again in the writing transaction; an empty id is
 	// refused there.
 	ActorID string
-	// ActingAdminID is the administrator who acts as ActorID (an act-as
-	// browser session), empty otherwise. It must still be an active
-	// administrator in the writing transaction; the authority of the change
-	// is still that of ActorID.
-	ActingAdminID string
+	// ActAs is the act-as period of the browser session through which an
+	// administrator (ActAs.ActorID) acts as ActorID, as the request observed
+	// it; nil when nobody acts as ActorID. In the writing transaction that
+	// very period must still be stored and not expired, its target must be
+	// ActorID, and its administrator must still be an active administrator; a
+	// period that ended or was replaced cannot commit a change. The authority
+	// of the change is still that of ActorID.
+	ActAs *ActAsRow
 	// Audit builds the audit row of the change: old is the stored grant before
 	// it (nil for a create), now the grant as stored (for a revoke the deleted
 	// grant). An error refuses the change. A nil Audit writes no row. An empty
@@ -109,20 +112,44 @@ func grantUserRole(ctx context.Context, tx *sql.Tx, userID string) (active, anyR
 	return a != 0, r != 0, ad != 0, nil
 }
 
+// grantActAsLive reports, inside tx, whether the act-as period a is still the
+// stored period of its browser session and has not expired at now (unix
+// milliseconds).
+func grantActAsLive(ctx context.Context, tx *sql.Tx, a ActAsRow, now int64) (bool, error) {
+	var live bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM act_as_sessions WHERE session_id = ? AND actor_id = ?
+		AND target_id = ? AND started_at = ? AND expires_at = ? AND expires_at > ?)`,
+		a.SessionID, a.ActorID, a.TargetID, a.StartedAt, a.ExpiresAt, now).Scan(&live)
+	if err != nil {
+		return false, fmt.Errorf("store: session grant act-as: %w", err)
+	}
+	return live, nil
+}
+
 // grantActorMay checks inside the writing transaction that the actor of w may
 // decide g now (D4): an active administrator always; otherwise, unless
 // adminOnly, the active owner of both Workers of an owner grant who still
 // holds an effective role (an account without one has no access at all). When
-// w names an administrator acting as the actor, that administrator must still
-// be an active administrator too. The caller has pinned the owners of g to the
-// current ones.
+// w names an act-as period, that period must still be live and its
+// administrator must still be an active administrator too. The caller has
+// pinned the owners of g to the current ones.
 func grantActorMay(ctx context.Context, tx *sql.Tx, w GrantWrite, g SessionGrantRow, adminOnly bool) error {
 	actorID := w.ActorID
 	if actorID == "" {
 		return ErrGrantAuthority
 	}
-	if w.ActingAdminID != "" {
-		active, _, admin, err := grantUserRole(ctx, tx, w.ActingAdminID)
+	if a := w.ActAs; a != nil {
+		if a.SessionID == "" || a.ActorID == "" || a.TargetID != actorID {
+			return ErrGrantAuthority
+		}
+		live, err := grantActAsLive(ctx, tx, *a, time.Now().UnixMilli())
+		if err != nil {
+			return err
+		}
+		if !live {
+			return ErrGrantAuthority
+		}
+		active, _, admin, err := grantUserRole(ctx, tx, a.ActorID)
 		if err != nil {
 			return err
 		}
@@ -143,6 +170,22 @@ func grantActorMay(ctx context.Context, tx *sql.Tx, w GrantWrite, g SessionGrant
 		return ErrGrantAuthority
 	}
 	return nil
+}
+
+// grantSourceEnrollment checks, inside tx, that the source Worker of a direct
+// grant is enrolled as the caller says (owner, key, approved) and that its
+// owner is an active account. Unlike [masterEnrollment] it asks for no
+// effective role: the authority of a direct grant stands behind the grant
+// (D4), and the owner's role limits only legacy master reach.
+func grantSourceEnrollment(ctx context.Context, tx *sql.Tx, workerID, owner string, pub []byte) error {
+	var ok bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM workers w JOIN users u ON u.id = w.owner_id
+		WHERE w.id = ? AND w.owner_id = ? AND w.worker_pub = ? AND w.approval = 'approved' AND u.active = 1)`,
+		workerID, owner, pub).Scan(&ok)
+	if err == nil && !ok {
+		err = ErrWorkerOwnerChanged
+	}
+	return err
 }
 
 // Grant authorities.

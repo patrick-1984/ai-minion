@@ -457,7 +457,7 @@ func TestSessionGrantWriteNeedsAnEffectiveRole(t *testing.T) {
 	// The role is back: the owner writes again, also through an
 	// administrator acting as them, but not through a former administrator.
 	f.exec(t, `INSERT INTO user_roles(user_id,role,source) VALUES('alice','user','local')`)
-	asAdmin := GrantWrite{ActorID: "alice", ActingAdminID: f.admin}
+	asAdmin := GrantWrite{ActorID: "alice", ActAs: f.actAs(t, "s-root", time.Now().Add(time.Hour))}
 	g, err := f.s.PutSessionGrant(ctx, f.ownerGrant("other"), 0, asAdmin)
 	if err != nil || g.GrantedBy != "alice" || g.Authority != GrantAuthorityOwner {
 		t.Fatalf("create through an acting administrator = %+v, %v", g, err)
@@ -465,6 +465,63 @@ func TestSessionGrantWriteNeedsAnEffectiveRole(t *testing.T) {
 	f.exec(t, `DELETE FROM user_roles WHERE user_id = 'root'`)
 	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: g.ID, Level: 3}, g.Revision, asAdmin); !errors.Is(err, ErrGrantAuthority) {
 		t.Fatalf("widen through a former administrator: %v", err)
+	}
+}
+
+// actAs stores an act-as period of a browser session of the administrator
+// acting as alice, ending at expires, and returns it.
+func (f grantFixture) actAs(t *testing.T, sessionID string, expires time.Time) *ActAsRow {
+	t.Helper()
+	ctx := t.Context()
+	if err := f.s.CreateSession(ctx, SessionRow{ID: sessionID, TokenHash: "h-" + sessionID, UserID: f.admin, CredentialVersion: 1,
+		CreatedAt: 1, ExpiresAt: 1 << 50}, 1); err != nil {
+		t.Fatal(err)
+	}
+	row := ActAsRow{SessionID: sessionID, ActorID: f.admin, TargetID: "alice", StartedAt: 1, ExpiresAt: expires.UnixMilli()}
+	if err := f.s.StartActAs(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	return &row
+}
+
+// A grant write through an act-as period commits only while that very period
+// is stored and not expired: an ended, expired or replaced period, or one
+// for another user, writes nothing.
+func TestSessionGrantWriteNeedsTheLiveActAsPeriod(t *testing.T) {
+	f := newGrantFixture(t)
+	ctx := t.Context()
+	live := f.actAs(t, "s-live", time.Now().Add(time.Hour))
+	g, err := f.s.PutSessionGrant(ctx, f.ownerGrant("boss"), 0, GrantWrite{ActorID: "alice", ActAs: live})
+	if err != nil {
+		t.Fatalf("create through a live period: %v", err)
+	}
+	expired := f.actAs(t, "s-old", time.Now().Add(-time.Second))
+	if _, err := f.s.PutSessionGrant(ctx, f.ownerGrant("other"), 0, GrantWrite{ActorID: "alice", ActAs: expired}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("create through an expired period: %v", err)
+	}
+	other := *live
+	other.TargetID = "bob"
+	if _, err := f.s.PutSessionGrant(ctx, f.ownerGrant("other"), 0, GrantWrite{ActorID: "alice", ActAs: &other}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("create through a period for another user: %v", err)
+	}
+	// The period ends, and a new one starts on the same browser session: the
+	// observed period is gone, so the write is refused.
+	if _, err := f.s.EndActAs(ctx, live.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: g.ID, Level: 3}, g.Revision, GrantWrite{ActorID: "alice", ActAs: live}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("widen after the period ended: %v", err)
+	}
+	next := *live
+	next.StartedAt, next.ExpiresAt = 2, time.Now().Add(2*time.Hour).UnixMilli()
+	if err := f.s.StartActAs(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: g.ID, Level: 3}, g.Revision, GrantWrite{ActorID: "alice", ActAs: live}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("widen through a replaced period: %v", err)
+	}
+	if rows, _ := f.s.ListSessionGrants(ctx, SessionGrantFilter{}); len(rows) != 1 || rows[0].Level != 1 || rows[0].Revision != g.Revision {
+		t.Fatalf("stored = %+v", rows)
 	}
 }
 
@@ -499,5 +556,30 @@ func TestSessionGrantReceiptCommitsWithTheChange(t *testing.T) {
 	}
 	if _, ok, err := f.s.GetOpRequest(ctx, "r2", time.Now().UnixMilli()); err != nil || !ok {
 		t.Fatalf("revoke receipt: %v %v", ok, err)
+	}
+}
+
+// D4: the Verified read of a direct grant needs an enrolled source Worker
+// whose owner is active, not an effective role of that owner: an
+// administrator's grant stands for an owner whose role was taken away. A
+// deactivated owner ends it.
+func TestVerifiedSessionGrantsNeedNoRoleOfTheSourceOwner(t *testing.T) {
+	f := newGrantFixture(t)
+	ctx := t.Context()
+	f.exec(t, `INSERT INTO worker_share(worker_id,mode,names,revision,updated_at) VALUES(?,'all','[]',1,1),(?,'all','[]',1,1)`, f.a.ID, f.c.ID)
+	row := f.adminGrant("s")
+	row.SourceIncarnation = "inc-1"
+	g := f.put(t, row)
+	caller := VerifiedGrantCaller{WorkerID: f.a.ID, OwnerID: "alice", WorkerPub: f.a.Pub, SessionName: "s", IncarnationID: "inc-1"}
+	target := &MasterTarget{WorkerID: f.c.ID, OwnerID: "bob", Sessions: []string{"t"}}
+	now := time.Now().UnixMilli()
+	f.exec(t, `DELETE FROM user_roles WHERE user_id = 'alice'`)
+	got, err := f.s.VerifiedSessionGrants(ctx, caller, target, now)
+	if err != nil || len(got) != 1 || got[0].ID != g.ID {
+		t.Fatalf("an owner without a role: %+v, %v", got, err)
+	}
+	f.exec(t, `UPDATE users SET active = 0 WHERE id = 'alice'`)
+	if _, err := f.s.VerifiedSessionGrants(ctx, caller, target, now); !errors.Is(err, ErrWorkerOwnerChanged) {
+		t.Fatalf("a deactivated owner: %v", err)
 	}
 }

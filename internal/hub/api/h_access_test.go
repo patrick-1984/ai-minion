@@ -304,9 +304,12 @@ func TestAccessExplainAgreesWithTheMatrix(t *testing.T) {
 	if _, ok := AccessExplain(f, "u-bob", false, ops.AccessExplainArgs{SourceWorkerID: "B", SourceSession: "b1", TargetWorkerID: "C", TargetSession: "c1"}); ok {
 		t.Error("bob is told about a pair between alice's Workers")
 	}
-	ex, ok := AccessExplain(f, "u-bob", false, ops.AccessExplainArgs{SourceWorkerID: "A", SourceSession: "helper", TargetWorkerID: "E", TargetSession: "e1"})
-	if !ok || ex.InEffect != ops.AccessLevelMessage || !ex.Source.Masked || ex.Source.Session != "a session of root" || ex.Target.Session != "e1" {
-		t.Errorf("bob asks about his own target: %+v", ex)
+	// Bob owns the target only: the covered pair is not explained to him
+	// (its source is masked in his matrix), the same as a guessed name.
+	for _, ss := range []string{"helper", "nope"} {
+		if ex, ok := AccessExplain(f, "u-bob", false, ops.AccessExplainArgs{SourceWorkerID: "A", SourceSession: ss, TargetWorkerID: "E", TargetSession: "e1"}); ok {
+			t.Errorf("bob asks about %s -> his own target: %+v", ss, ex)
+		}
 	}
 }
 

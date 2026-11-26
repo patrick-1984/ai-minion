@@ -115,7 +115,7 @@ func (s *Store) VerifiedSessionGrants(ctx context.Context, c VerifiedGrantCaller
 	var out []SessionGrantRow
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		out = nil
-		if _, err := masterEnrollment(ctx, tx, c.WorkerID, c.OwnerID, c.WorkerPub); err != nil {
+		if err := grantSourceEnrollment(ctx, tx, c.WorkerID, c.OwnerID, c.WorkerPub); err != nil {
 			return err
 		}
 		if c.IncarnationID == "" {
