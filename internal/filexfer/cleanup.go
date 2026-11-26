@@ -24,7 +24,7 @@ import (
 // It returns the number of removed files.
 func CleanStaleParts(dir *os.File, transferID string, maxAge time.Duration, now time.Time) (int, error) {
 	if !sysSupported {
-		return 0, errUnsupported
+		return 0, errUnsupported()
 	}
 	if _, err := dir.Seek(0, 0); err != nil {
 		return 0, internal("a staging folder cannot be listed")

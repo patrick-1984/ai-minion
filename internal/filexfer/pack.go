@@ -97,7 +97,7 @@ type PackResult struct {
 // trailers: the manifest digest (Manifest.Digest) and the Content-Digest of
 // the coded bytes (WireWriter). A file that changes while it is read fails the
 // transfer with ErrSourceChanged.
-func PackDir(ctx context.Context, w io.Writer, root Root, base string, opts WalkOptions) (PackResult, error) {
+func PackDir(ctx context.Context, w io.Writer, root *Root, base string, opts WalkOptions) (PackResult, error) {
 	tw := NewTarWriter(w)
 	var m Manifest
 	lim := opts.Limits.Normalize()

@@ -98,7 +98,7 @@ func buildTree(t *testing.T) string {
 }
 
 func pullFilter(rootRel string, _ Entry) string {
-	if PullSensitive(rootRel) {
+	if SensitivePath(pathElems(rootRel)) {
 		return proto.SkipSensitive
 	}
 	return ""
@@ -632,7 +632,7 @@ func TestLimitsOnReceive(t *testing.T) {
 	b.manifest()
 	opts := stageOpts()
 	opts.Check = func(rel string, _ bool) error {
-		if PushProtected(rel) {
+		if ProtectedPath(pathElems(rel)) {
 			return proto.NewError(proto.CodePathProtected, "protected")
 		}
 		return nil

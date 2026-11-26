@@ -16,6 +16,24 @@
 // sensitive folders, all by identity) and walks its ancestry to find
 // sensitive and push-protected parents. Windows has no transfer end in v1:
 // every root opener answers files_root_unknown.
+//
+// Formats and commit: wire paths (CheckPath), the folder walk (Walk), the
+// restricted pax tar format (PackDir, Unpack), the content codings, the
+// canonical manifest, staging, verification and the no-replace publication of
+// received files (Stager), limits and the cleanup of stale staging files. The
+// engine reaches the file system only through a *Root (OpenDir, OpenFile) and
+// through file descriptors of directories opened by it. Its errors are
+// *proto.Error values or Refusals; both answer proto.CodeOf, and ProtoError
+// gives the wire error of any of them.
+//
+// The FR-8 name lists are ProtectedPath and SensitivePath (identity.go, on
+// path elements: strings.Split of a wire path); the identity sets are
+// Floor.SensitiveDir and Floor.ProtectedDir. The engine applies none of them
+// itself: the caller passes them as WalkOptions.Filter (pull) and
+// StageOptions.Check (push), where the Worker owner's ProtectedOff applies.
+//
+// Nothing in this package builds an absolute path from a wire path, follows a
+// symbolic link, sets an exec bit or executes content.
 package filexfer
 
 import (
@@ -126,12 +144,29 @@ func (e *Refusal) Unwrap() error { return e.Err }
 // Proto returns the wire error of the refusal.
 func (e *Refusal) Proto() *proto.Error { return proto.NewError(e.Code, e.Msg) }
 
+// As lets errors.As (and so proto.CodeOf) see a Refusal as its wire error,
+// so that the engine's errors and the confinement refusals carry their codes
+// in one way.
+func (e *Refusal) As(target any) bool {
+	if p, ok := target.(**proto.Error); ok {
+		*p = e.Proto()
+		return true
+	}
+	return false
+}
+
 func refuse(code proto.Code, skip, msg string, cause error) *Refusal {
 	return &Refusal{Code: code, Skip: skip, Msg: msg, Err: cause}
 }
 
 func rootUnknown(msg string, cause error) *Refusal {
 	return refuse(proto.CodeFilesRootUnknown, "", msg, cause)
+}
+
+// errUnsupported is the refusal of every root opener and of the engine on an
+// OS without a transfer end (Windows in v1).
+func errUnsupported() error {
+	return rootUnknown("File transfer is not available on Windows Workers in this version.", nil)
 }
 
 func rootRefused(msg string) *Refusal {

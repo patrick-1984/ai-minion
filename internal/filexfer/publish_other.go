@@ -14,17 +14,17 @@ import (
 
 const sysSupported = false
 
-func sysStatAt(int, string) (statInfo, error)           { return statInfo{}, errUnsupported }
-func sysFstat(int) (statInfo, error)                    { return statInfo{}, errUnsupported }
-func sysCreateExcl(int, string) (*os.File, error)       { return nil, errUnsupported }
-func sysSetMTime(int, time.Time) error                  { return errUnsupported }
-func sysRenameNoReplace(int, string, int, string) error { return errUnsupported }
-func sysRenameReplace(int, string, int, string) error   { return errUnsupported }
-func sysMkdirAt(int, string) error                      { return errUnsupported }
-func sysUnlinkAt(int, string) error                     { return errUnsupported }
-func sysFreeBytes(int) (uint64, uint64, error)          { return 0, 0, errUnsupported }
+func sysStatAt(int, string) (statInfo, error)           { return statInfo{}, errUnsupported() }
+func sysFstat(int) (statInfo, error)                    { return statInfo{}, errUnsupported() }
+func sysCreateExcl(int, string) (*os.File, error)       { return nil, errUnsupported() }
+func sysSetMTime(int, time.Time) error                  { return errUnsupported() }
+func sysRenameNoReplace(int, string, int, string) error { return errUnsupported() }
+func sysRenameReplace(int, string, int, string) error   { return errUnsupported() }
+func sysMkdirAt(int, string) error                      { return errUnsupported() }
+func sysUnlinkAt(int, string) error                     { return errUnsupported() }
+func sysFreeBytes(int) (uint64, uint64, error)          { return 0, 0, errUnsupported() }
 func sysUmask() uint32                                  { return 0o022 }
-func sysOpenRootDir(string) (*os.File, error)           { return nil, errUnsupported }
+func sysOpenRootDir(string) (*os.File, error)           { return nil, errUnsupported() }
 
 func isNotExist(err error) bool { return errors.Is(err, os.ErrNotExist) }
 func isNoSpace(error) bool      { return false }

@@ -69,7 +69,7 @@ type stagedEntry struct {
 
 // Stager stages and publishes the received entries of one transfer.
 type Stager struct {
-	root       Root
+	root       *Root
 	transferID string
 	dest       string
 	kind       string
@@ -93,9 +93,9 @@ type Stager struct {
 // the folder that receives the archive's entries. A destination that is an
 // existing non-directory (kind dir) or whose parent chain contains one is
 // conflict.
-func NewStager(root Root, transferID, dest, kind string, opts StageOptions) (*Stager, error) {
+func NewStager(root *Root, transferID, dest, kind string, opts StageOptions) (*Stager, error) {
 	if !sysSupported {
-		return nil, errUnsupported
+		return nil, errUnsupported()
 	}
 	if !ops.ValidUUIDv7(transferID) {
 		return nil, proto.NewError(proto.CodeInvalidArgument, "the transfer id must be a UUIDv7")
@@ -615,7 +615,7 @@ func (s *Stager) abortLocked() error {
 // dirCache keeps the last opened destination directory, since entries of one
 // directory follow each other in walk order.
 type dirCache struct {
-	root Root
+	root *Root
 	rel  string
 	f    *os.File
 }

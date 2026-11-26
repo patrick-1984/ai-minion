@@ -42,23 +42,23 @@ func TestProtectedAndSensitiveNames(t *testing.T) {
 		".env.local", "sub/.bashrc", ".github/workflows/ci.yml", ".vscode/settings.json", ".ssh/authorized_keys",
 		"a/.Git/Hooks/x", ".mcp.json", "x/.config/fish/config.fish", ".hg/hgrc", ".gitlab-ci.yml"}
 	for _, p := range protected {
-		if !PushProtected(p) {
+		if !ProtectedPath(pathElems(p)) {
 			t.Fatalf("%s not push-protected", p)
 		}
 	}
 	for _, p := range []string{"Makefile", ".git/HEAD", ".git/objects/ab/cd", ".github/README.md", ".vscode/launch.json", "src/env.go"} {
-		if PushProtected(p) {
+		if ProtectedPath(pathElems(p)) {
 			t.Fatalf("%s push-protected", p)
 		}
 	}
 	sensitive := []string{".ssh/id_ed25519", "id_rsa", "keys/server.pem", "tls.key", ".aws/credentials", ".netrc", ".git-credentials", "a/.gnupg/x"}
 	for _, p := range sensitive {
-		if !PullSensitive(p) {
+		if !SensitivePath(pathElems(p)) {
 			t.Fatalf("%s not sensitive", p)
 		}
 	}
 	for _, p := range []string{".git/HEAD", "id_rsa.pub", "keyboard.txt", "src/main.go"} {
-		if PullSensitive(p) {
+		if SensitivePath(pathElems(p)) {
 			t.Fatalf("%s sensitive", p)
 		}
 	}

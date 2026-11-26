@@ -18,11 +18,6 @@ var (
 	defaultSystemDeepFolders []string
 )
 
-// errUnsupported is the refusal of every root opener on this OS.
-func errUnsupported() error {
-	return rootUnknown("File transfer is not available on Windows Workers in this version.", nil)
-}
-
 func identityOfInfo(os.FileInfo) (Identity, bool) { return Identity{}, false }
 
 // OpenPaneRoot answers files_root_unknown on this OS.
@@ -54,6 +49,9 @@ func (r *Root) Open(string, int, uint32) (*os.File, error) { return nil, errUnsu
 
 // OpenDir answers files_root_unknown on this OS.
 func (r *Root) OpenDir(string) (*os.File, error) { return nil, errUnsupported() }
+
+// OpenFile answers files_root_unknown on this OS.
+func (r *Root) OpenFile(string) (*os.File, error) { return nil, errUnsupported() }
 
 // OpenParent answers files_root_unknown on this OS.
 func (r *Root) OpenParent(string) (*os.File, string, error) { return nil, "", errUnsupported() }

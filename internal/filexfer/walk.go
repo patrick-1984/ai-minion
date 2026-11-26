@@ -6,34 +6,13 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/patrick-1984/ai-minion/internal/proto"
 )
 
-// Root is the pinned, verified root of one end (BRD FR-2, 5.3). The root files
-// of this package (WP2) implement it with openat2 RESOLVE_BENEATH |
-// RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS on Linux and
-// Android, the per-component O_NOFOLLOW walk with device checks on macOS.
-// The engine never opens a path in any other way.
-type Root interface {
-	// OpenDir opens the directory rel beneath the root ("" is the root
-	// itself) for reading, so that it can be listed and used as the directory
-	// of *at calls (not O_PATH). rel is a checked wire path. A symbolic link
-	// in any component is an error that matches syscall.ELOOP or
-	// syscall.ENOTDIR, a mount crossing one that matches syscall.EXDEV, an
-	// absent directory one that matches os.ErrNotExist (ENOENT).
-	OpenDir(rel string) (*os.File, error)
-	// OpenFile opens the file rel beneath the root read-only with
-	// O_NONBLOCK|O_NOFOLLOW|O_CLOEXEC, under the same rules. The engine
-	// checks the type, link count and device of the result itself.
-	OpenFile(rel string) (*os.File, error)
-}
-
-var (
-	errExists      = errors.New("filexfer: the name exists")
-	errUnsupported = proto.NewError(proto.CodeFilesRootUnknown, "file transfer is not available on this platform in this version")
-)
+var errExists = errors.New("filexfer: the name exists")
 
 // Entry types of statInfo.
 const (
@@ -114,6 +93,65 @@ type WalkOptions struct {
 	Filter func(rootRel string, e Entry) string
 }
 
+// PullFilter returns the WalkOptions.Filter of a folder pull from root (FR-8,
+// FR-3): an entry whose path is pull-sensitive by name (SensitivePath) or a
+// folder that is sensitive by identity (Floor.SensitiveDir of the root's
+// floor) is skipped with proto.SkipSensitive. extra, when not nil, is asked
+// for the kept entries (identity sets of the caller).
+func PullFilter(root *Root, extra func(rootRel string, e Entry) string) func(string, Entry) string {
+	floor := root.Floor()
+	return func(rootRel string, e Entry) string {
+		if SensitivePath(pathElems(rootRel)) {
+			return proto.SkipSensitive
+		}
+		if e.Type == proto.FileTypeDir && floor.SensitiveDir(Identity{Dev: e.Dev, Ino: e.Ino}) {
+			return proto.SkipSensitive
+		}
+		if extra != nil {
+			return extra(rootRel, e)
+		}
+		return ""
+	}
+}
+
+// CheckPull refuses a direct pull of rel (a file or the walked folder itself)
+// with path_sensitive when its path is pull-sensitive by name.
+func CheckPull(rel string) error {
+	if rel != "" && SensitivePath(pathElems(rel)) {
+		return refuse(proto.CodePathSensitive, proto.SkipSensitive, "the path names a sensitive file or folder; it is never sent", nil)
+	}
+	return nil
+}
+
+// PushCheck returns the StageOptions.Check of a push into root (FR-8): every
+// entry is path_protected when the root itself is push-protected
+// (Root.CheckPush) or, unless the floor has ProtectedOff, when its path is
+// push-protected by name (ProtectedPath). extra, when not nil, is asked for
+// the entries that pass.
+func PushCheck(root *Root, extra func(rootRel string, isDir bool) error) func(string, bool) error {
+	off := root.Floor().ProtectedOff()
+	return func(rootRel string, isDir bool) error {
+		if err := root.CheckPush(); err != nil {
+			return err
+		}
+		if !off && ProtectedPath(pathElems(rootRel)) {
+			return refuse(proto.CodePathProtected, proto.SkipProtected, "the path names a protected file or folder; a transfer never writes it", nil)
+		}
+		if extra != nil {
+			return extra(rootRel, isDir)
+		}
+		return nil
+	}
+}
+
+// pathElems splits a wire path into its elements (none for the root).
+func pathElems(rel string) []string {
+	if rel == "" {
+		return nil
+	}
+	return strings.Split(rel, "/")
+}
+
 // WalkStats are the totals of a walk.
 type WalkStats struct {
 	Files, Dirs, Bytes int64
@@ -150,9 +188,9 @@ type visitFunc func(e Entry, f *os.File) error
 // entry, byte, depth and path limits (transfer_too_large). When open is
 // false, files are not opened (counting for an admission) and visit gets a
 // nil file.
-func Walk(ctx context.Context, root Root, base string, opts WalkOptions, open bool, visit visitFunc) (WalkStats, error) {
+func Walk(ctx context.Context, root *Root, base string, opts WalkOptions, open bool, visit visitFunc) (WalkStats, error) {
 	if !sysSupported {
-		return WalkStats{}, errUnsupported
+		return WalkStats{}, errUnsupported()
 	}
 	opts.Limits = opts.Limits.Normalize()
 	if err := CheckPath(base, true); err != nil {
@@ -175,10 +213,15 @@ func Walk(ctx context.Context, root Root, base string, opts WalkOptions, open bo
 	return w.stats, err
 }
 
-// openErr maps an open error of Root to a proto error.
+// openErr maps an open error of a Root to a proto error: a confinement
+// Refusal keeps its code (file_type_refused for a symlink or a mount on the
+// way, path_outside_root, files_root_unknown), an errno is classified.
 func openErr(err error, dir bool) error {
 	var pe *proto.Error
+	var rf *Refusal
 	switch {
+	case errors.As(err, &rf):
+		return rf.Proto()
 	case errors.As(err, &pe):
 		return pe
 	case isNotExist(err):
@@ -198,7 +241,7 @@ func openErr(err error, dir bool) error {
 
 type walker struct {
 	ctx   context.Context
-	root  Root
+	root  *Root
 	base  string
 	opts  WalkOptions
 	open  bool
@@ -359,8 +402,16 @@ func (w *walker) subdir(e Entry, full string, depth int) error {
 	return w.dir(sub, e.Path, depth)
 }
 
-// skipReason maps an open error of Root that a folder walk skips over.
+// skipReason maps an open error of a Root that a folder walk skips over.
 func skipReason(err error) string {
+	var rf *Refusal
+	if errors.As(err, &rf) {
+		switch rf.Skip {
+		case proto.SkipSymlink, proto.SkipMount:
+			return rf.Skip
+		}
+		return ""
+	}
 	switch {
 	case isLoop(err):
 		return proto.SkipSymlink
@@ -389,9 +440,9 @@ type SourceFile struct {
 // OpenSourceFile opens rel beneath root for a single-file send and checks it
 // with fstat: a regular file (file_type_refused otherwise, also for a
 // directory) with one link (file_type_refused, hard link).
-func OpenSourceFile(root Root, rel string) (*SourceFile, error) {
+func OpenSourceFile(root *Root, rel string) (*SourceFile, error) {
 	if !sysSupported {
-		return nil, errUnsupported
+		return nil, errUnsupported()
 	}
 	if err := CheckPath(rel, false); err != nil {
 		return nil, err

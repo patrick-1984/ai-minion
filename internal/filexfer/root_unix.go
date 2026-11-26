@@ -92,6 +92,14 @@ func (r *Root) OpenDir(rel string) (*os.File, error) {
 	return r.Open(rel, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 }
 
+// OpenFile opens the entry rel beneath the root read-only and non-blocking
+// (O_RDONLY|O_NONBLOCK, so that a FIFO swapped in never blocks the open), for
+// the walk and the single-file send. The caller checks the type, link count
+// and device of the result with fstat (FR-6).
+func (r *Root) OpenFile(rel string) (*os.File, error) {
+	return r.Open(rel, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+}
+
 // OpenParent opens the parent directory of rel beneath the root and returns
 // it with the last element of rel, for the *at calls of staging and publish
 // (mkdirat, renameat2, linkat, unlinkat, fstatat with AT_SYMLINK_NOFOLLOW),
