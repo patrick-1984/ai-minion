@@ -1,0 +1,15 @@
+{{/* The Hidden sessions panel of the Worker detail page (v0.23.0): whether new sessions that would be hidden from the person's
+terminal may be created on this Worker. The owner or an administrator changes it; everybody else sees it. */}}
+{{define "worker_hidden_panel"}}{{range .Results}}<div class="result result-{{.Kind}}" role="status"><p class="result-title"><strong>{{.Label}}:</strong> {{.Summary}}</p>{{range .Warnings}}<p class="help">{{.}}</p>{{end}}</div>
+{{end}}<p class="help">A hidden session is one you could not see or join from your own terminal (Windows ConPTY inside the worker, a tmux server that is not your default one, the Android app).{{if .Online}} {{if .SessionsHidden}}New sessions on this worker would be hidden.{{else}}New sessions on this worker are visible now.{{end}}{{end}}</p>
+{{if .HubNote}}<p class="notice notice-info" role="status" data-hidden-hub-note>{{.HubNote}}</p>
+{{end}}{{if .Operate}}<form method="post" action="{{.URL}}" hx-post="{{.URL}}" hx-target="#hidden-panel" hx-swap="innerHTML" hx-disabled-elt="find button" aria-label="Hidden sessions on {{.Worker}}" data-key="hidden-sessions-{{.WorkerID}}">
+  <fieldset><legend>New hidden sessions on this worker</legend>
+    <label><input type="radio" name="hidden_sessions" value="allow"{{if eq .Choice "allow"}} checked{{end}}> Allow</label>
+    <label><input type="radio" name="hidden_sessions" value="refuse"{{if eq .Choice "refuse"}} checked{{end}}> Refuse</label>
+    <label><input type="radio" name="hidden_sessions" value="default"{{if eq .Choice "default"}} checked{{end}}> Each person's account setting{{if .Default}} (for you: {{.Default}}){{end}}</label>
+  </fieldset>
+  <button type="submit" class="btn" data-control="hidden-save">Save</button>
+</form>
+{{else}}<p class="help" data-hidden-choice="{{.Choice}}">New hidden sessions on this worker: <strong>{{if eq .Choice "allow"}}allowed{{else if eq .Choice "refuse"}}refused{{else}}each person's account setting{{if .Default}} (for you: {{.Default}}){{end}}{{end}}</strong>. Only the owner of this worker, or an administrator, can change this.</p>
+{{end}}{{end}}

@@ -94,6 +94,9 @@ func initRoute(ctx context.Context, env *Env) error {
 		UserManaged:    userManaged(st),
 		ContentManaged: contentManaged(st),
 		HiddenSessions: hiddenSessionsPolicy(hubPolicy, st),
+		// Each Worker's own choice (v0.23.0) wins over the caller's
+		// account-wide preference.
+		WorkerHiddenSessions: st,
 	})
 	if err != nil {
 		return fmt.Errorf("route: %w", err)
@@ -125,6 +128,11 @@ func initRoute(ctx context.Context, env *Env) error {
 		return workers.HiddenSessionsPolicy{Hub: hub, UserAllows: user}.Allows()
 	}
 	if err := api.RegisterAccountPrefs(handlers, st, az, hubPolicy, allows); err != nil {
+		return fmt.Errorf("route: %w", err)
+	}
+	// The Worker's own hidden-sessions choice (v0.23.0): its owner or an
+	// administrator.
+	if err := api.RegisterWorkerHiddenSessions(handlers, st, az, hubPolicy); err != nil {
 		return fmt.Errorf("route: %w", err)
 	}
 	// The same router resolves the human form of a target (pi-1:minion-3)

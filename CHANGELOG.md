@@ -2,8 +2,14 @@
 
 ## Unreleased
 
+### Added
+
 - Invitation keys can name the Worker they enroll (`worker_name` in `invitation_create`, shown by `invitation_list`; Hub migration 0037). The Hub stores that name for the new Worker whatever name the Worker announces, so a Worker set up with the key or join token alone (the Android app, or any older Worker) gets the name chosen on the Hub, with the usual owner prefix (a reusable key names the next Workers `-2`, `-3` and so on). The Worker learns the name from the Hub's welcome and `minion worker status` shows it. The name of "Add a Worker in one step" on the Add worker page now sets both the key's label and the Worker's name; the Invitations page has a separate optional "Worker name" field and shows it in the list. Unused one-time keys made before the upgrade keep their name as the Worker name when it is a valid Worker name (no spaces or colons). A key without a Worker name leaves the Worker its own name, as before.
 - Worker page: a **Name** panel renames the Worker (`worker_rename`), for its owner and for administrators (any Worker). The name keeps the owner prefix and must be unique among the owner's Workers; the rename is audited (`worker.rename`) and a connected Worker reconnects to learn the new name. Session links, grants, keys, trust, sharing and pipes name the Worker by its id and keep working.
+
+### Changed
+
+- **Hidden sessions per Worker.** Whether new hidden sessions (Windows ConPTY inside the Worker, a tmux server that is not the person's default one, the Android app) may be created is now a choice of each Worker: Allow, Refuse, or each person's account setting (the default, so nothing changes on upgrade). The owner sets it on their own Workers, an administrator on any Worker, main and infrastructure Workers of other users included, from the Worker's page (panel **Hidden sessions**) or with the new operation `worker_hidden_sessions_set` (`hidden_sessions`: `allow`, `refuse` or `default`; audited with `hidden_sessions=<choice>`). `workers_list` reports the Worker's own choice as `allow_hidden_sessions` (absent without one). The account-wide **Account > Sessions** setting and `account_prefs_set` stay and are the default for Workers without their own choice. The Hub setting `hidden_sessions` (`allowed`, `disabled`) still decides for everybody. Hub-only: no Worker update is needed (migration 0037, table `worker_hidden_sessions`; the choice is dropped when the Worker is reassigned to another owner).
 
 ## v0.22.0
 

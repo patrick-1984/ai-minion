@@ -244,6 +244,10 @@ type RouterConfig struct {
 	// setting hidden_sessions and the caller's own preference, v0.10.0).
 	// Nil means hidden sessions are never refused.
 	HiddenSessions HiddenSessionsPolicyFunc
+	// WorkerHiddenSessions reads each Worker's own hidden-sessions choice
+	// (v0.23.0), which wins over the caller's preference while the Hub
+	// setting is user-controlled. Nil: no Worker has a choice of its own.
+	WorkerHiddenSessions WorkerHiddenSessionsSource
 	// Monitor records the calls routed to Workers for compliance monitoring;
 	// nil: none.
 	Monitor *compliance.Monitor
@@ -254,18 +258,20 @@ type RouterConfig struct {
 
 // Router routes catalog Worker ops to the Workers that run them.
 type Router struct {
-	backend    Backend
-	dir        Directory
-	az         *authz.Authorizer
-	catalog    *ops.Registry
-	ownerName  func(ctx context.Context, ownerID string) string
-	timeout    time.Duration
-	log        *slog.Logger
-	userMgd    func(ctx context.Context, workerID string) (bool, error)
-	hidden     HiddenSessionsPolicyFunc
-	mon        *compliance.Monitor
-	contentMgd func(ctx context.Context, workerID string) (bool, error)
-	telemetry  func() Telemetry
+	backend   Backend
+	dir       Directory
+	az        *authz.Authorizer
+	catalog   *ops.Registry
+	ownerName func(ctx context.Context, ownerID string) string
+	timeout   time.Duration
+	log       *slog.Logger
+	userMgd   func(ctx context.Context, workerID string) (bool, error)
+	hidden    HiddenSessionsPolicyFunc
+	// workerHidden reads the Workers' own hidden-sessions choices.
+	workerHidden WorkerHiddenSessionsSource
+	mon          *compliance.Monitor
+	contentMgd   func(ctx context.Context, workerID string) (bool, error)
+	telemetry    func() Telemetry
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
 	synced atomic.Pointer[func(workerID string) bool]
@@ -288,7 +294,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 	}
 	rt := &Router{
 		telemetry: c.Telemetry,
-		userMgd:   c.UserManaged, hidden: c.HiddenSessions, mon: c.Monitor, contentMgd: c.ContentManaged,
+		userMgd:   c.UserManaged, hidden: c.HiddenSessions, workerHidden: c.WorkerHiddenSessions, mon: c.Monitor, contentMgd: c.ContentManaged,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
 	}
@@ -364,6 +370,15 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 		}
 		return policy
 	}
+	// The Workers' own choices, read once. A failed read shows no choice and
+	// judges the hidden Workers as disabled (fail closed, as the policy).
+	var choices map[string]bool
+	choicesFailed := false
+	if rt.workerHidden != nil {
+		if choices, err = rt.workerHidden.ListWorkerHiddenSessions(ctx); err != nil {
+			choices, choicesFailed = nil, true
+		}
+	}
 	out := make([]ops.WorkerInfo, 0, len(recs))
 	for _, w := range recs {
 		owner, ok := owners[w.OwnerID]
@@ -378,6 +393,9 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			at := ops.Timestamp(w.CreatedAt)
 			info.EnrolledAt = &at
 		}
+		if v, ok := choices[w.ID]; ok {
+			info.AllowHiddenSessions = &v
+		}
 		if on, ok := rt.backend.Get(w.ID); ok {
 			at := ops.Timestamp(on.ConnectedAt)
 			info.Online, info.ProtoVersion, info.ConnectedAt, info.Ops = true, on.Version.String(), &at, on.Ops
@@ -390,7 +408,14 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 			}
 			if newSessionsHost(on.Facts) != hostVisible {
 				if pol := policyFor(); pol != nil {
-					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, *pol)
+					wp := *pol
+					switch {
+					case choicesFailed:
+						wp.Hub = config.HiddenSessionsDisabled
+					case wp.Hub == config.HiddenSessionsUserControlled:
+						wp.Worker = info.AllowHiddenSessions
+					}
+					info.NewSessionRefused = HiddenSessionRefusal(w.Name, on.Facts, wp)
 				}
 			}
 			info.DebugRemote = on.Facts.DebugRemote
