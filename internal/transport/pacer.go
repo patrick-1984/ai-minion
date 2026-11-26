@@ -217,7 +217,9 @@ func (p *Pacer) giveBack(n int) {
 // refill adds the tokens earned since the last refill; mu is held.
 func (p *Pacer) refill(now time.Time) {
 	burst := max(p.rate*pacerBurstTime.Seconds(), 2*proto.LegChunkBytes)
-	if !p.filled.IsZero() {
+	if p.filled.IsZero() {
+		p.tokens = burst
+	} else {
 		p.tokens += p.rate * now.Sub(p.filled).Seconds()
 	}
 	p.tokens = min(p.tokens, burst)

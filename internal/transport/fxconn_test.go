@@ -492,13 +492,13 @@ func TestLegWritesAreChunked(t *testing.T) {
 	}
 }
 
-// The receive window of a stream grows to MaxStreamWindow once read: a sender
-// can then have that much unread data in flight.
-func TestStreamWindowGrowsToMax(t *testing.T) {
-	hub, worker := pairedSessions(t, filesOpts, filesOpts)
+// inFlight returns how many bytes a sender can write on a fresh stream of kind
+// k whose reader has read one byte and then stops.
+func inFlight(t *testing.T, hub, worker *Session, k Kind) int {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testWait)
 	defer cancel()
-	st, err := hub.OpenStream(ctx, KindFiles)
+	st, err := hub.OpenStream(ctx, k)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,8 +525,23 @@ func TestStreamWindowGrowsToMax(t *testing.T) {
 			break
 		}
 	}
-	if total < MaxStreamWindow-len(chunk) || total > MaxStreamWindow+len(chunk) {
-		t.Fatalf("%d bytes in flight, want about %d", total, MaxStreamWindow)
+	return total
+}
+
+// The receive window grows to MaxStreamWindow on a session with data legs (a
+// sender can then have that much unread data in flight), and stays at the
+// yamux default on a session without them.
+func TestStreamWindowGrowsToMaxOnlyWithFiles(t *testing.T) {
+	hub, worker := pairedSessions(t, filesOpts, filesOpts)
+	if got := inFlight(t, hub, worker, KindFiles); got < MaxStreamWindow-(32<<10) || got > MaxStreamWindow+(32<<10) {
+		t.Fatalf("fx: %d bytes in flight, want about %d", got, MaxStreamWindow)
+	}
+	if got := inFlight(t, hub, worker, KindOp); got < MaxStreamWindow-(32<<10) {
+		t.Fatalf("op on a files session: %d bytes in flight", got)
+	}
+	hub2, worker2 := pairedSessions(t, SessionOptions{}, SessionOptions{})
+	if got := inFlight(t, hub2, worker2, KindOp); got > DefaultStreamWindow+(32<<10) {
+		t.Fatalf("op without files: %d bytes in flight, want at most about %d", got, DefaultStreamWindow)
 	}
 }
 

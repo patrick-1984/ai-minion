@@ -31,18 +31,23 @@ const (
 	streamCloseTimeout = 30 * time.Second
 	writeTimeout       = 10 * time.Second
 
-	// MaxStreamWindow is the largest receive window of a stream (yamux
-	// MaxStreamWindowSize, both roles; BRD NFR-2). yamux v0.1.2 starts every
-	// stream at 256 KiB and raises it to this value once the reader has
-	// consumed data, so a stream holds at most this much unread data. It is
-	// a session setting (yamux has no per-stream window), but only a stream
-	// whose peer sends faster than it is read ever buffers that much: frame
-	// streams (op, ca, ev) carry frames of at most proto.StreamFrameLimit and
-	// are read as they come, and every fx write is cut into
-	// proto.LegChunkBytes frames and paced (fxconn.go, pacer.go), so the
-	// larger window does not turn into larger frames in front of a terminal
-	// frame on the shared send path.
+	// MaxStreamWindow is the largest receive window of a stream on a session
+	// with data legs (SessionOptions.Files; yamux MaxStreamWindowSize, both
+	// roles; BRD NFR-2). yamux v0.1.2 starts every stream at 256 KiB
+	// (DefaultStreamWindow) and raises it to this value at the first read, so
+	// a stream holds at most this much unread data. It is a session setting
+	// (yamux has no per-stream window), which is why a session without
+	// files.v1 keeps the default: an older or a Windows-only connection is
+	// unchanged. Only a stream whose peer sends faster than it is read ever
+	// buffers that much: frame streams (op, ca, ev) carry frames of at most
+	// proto.StreamFrameLimit and are read as they come, and every fx write is
+	// cut into proto.LegChunkBytes frames and paced (fxconn.go, pacer.go), so
+	// the larger window never turns into larger frames in front of a
+	// terminal frame on the shared send path.
 	MaxStreamWindow = 4 << 20
+	// DefaultStreamWindow is the receive window of every stream of a session
+	// without data legs (the yamux default).
+	DefaultStreamWindow = 256 << 10
 )
 
 // StreamBudget is a budget that several sessions share (the Hub's global and
@@ -149,7 +154,10 @@ func NewSession(conn net.Conn, role Role, opts SessionOptions) (*Session, error)
 	cfg.StreamOpenTimeout = streamOpenTimeout
 	cfg.StreamCloseTimeout = streamCloseTimeout
 	cfg.ConnectionWriteTimeout = writeTimeout
-	cfg.MaxStreamWindowSize = MaxStreamWindow
+	cfg.MaxStreamWindowSize = DefaultStreamWindow
+	if opts.Files {
+		cfg.MaxStreamWindowSize = MaxStreamWindow
+	}
 
 	var (
 		ys  *yamux.Session
