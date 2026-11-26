@@ -109,44 +109,71 @@ func TestTheRequestCarriesAWellFormedTmuxPane(t *testing.T) {
 	}
 }
 
-// TestTheRequestCarriesTheTmuxServerOfThePane: the socket of $TMUX travels next
-// to the pane id (a pane id is only meaningful on its own tmux server), and
-// only with one. A $TMUX that is not "<absolute socket>,<pid>,<index>" sends
-// the pane with tmux_socket_unknown, so that the Worker does not take the
-// client for one that predates tmux_socket.
+// TestTheRequestCarriesTheTmuxServerOfThePane: the socket and the pid of $TMUX
+// travel next to the pane id (a pane id is only meaningful on its own tmux
+// server), and only with one. A $TMUX that is set but not
+// "<socket>,<pid>,<index>" sends the pane with tmux_socket_unknown, so that
+// the Worker does not take the client for one that predates tmux_socket. A
+// client without $TMUX (a systemd unit or a script with $TMUX_PANE alone) sends
+// the request of before: the pane, no socket and no marker.
 func TestTheRequestCarriesTheTmuxServerOfThePane(t *testing.T) {
 	var got localapi.Request
 	path := startWorker(t, localapi.ExecutorFunc(func(_ context.Context, rq localapi.Request, _ func(json.RawMessage)) (json.RawMessage, error) {
 		got = rq
 		return json.RawMessage(`{}`), nil
 	}))
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	b := Local(WithSocketPath(path))
 	for _, tc := range []struct {
 		tmux, pane, wantPane, wantSocket string
+		wantPID                          int64
 		wantUnknown                      bool
 	}{
-		{"/tmp/tmux-1000/default,4242,0", "%3", "%3", "/tmp/tmux-1000/default", false},
-		{"/tmp/a,b/sock,4242,12", "%0", "%0", "/tmp/a,b/sock", false},
-		{"/tmp/tmux-1000/default,4242,0", "", "", "", false},
-		{"/tmp/tmux-1000/default,4242,0", "3", "", "", false},
-		{"", "%3", "%3", "", true},
-		{"/tmp/tmux-1000/default", "%3", "%3", "", true},
-		{"/tmp/tmux-1000/default,4242", "%3", "%3", "", true},
-		{"/tmp/tmux-1000/default,pid,0", "%3", "%3", "", true},
-		{"/tmp/tmux-1000/default,4242,", "%3", "%3", "", true},
-		{"relative/sock,4242,0", "%3", "%3", "", true},
-		{"/tmp/" + strings.Repeat("a", maxTmuxSocketPath) + ",4242,0", "%3", "%3", "", true},
+		{"/tmp/tmux-1000/default,4242,0", "%3", "%3", "/tmp/tmux-1000/default", 4242, false},
+		{"/tmp/a,b/sock,4242,12", "%0", "%0", "/tmp/a,b/sock", 4242, false},
+		{"/tmp/tmux-1000/default,4242,0", "", "", "", 0, false},
+		{"/tmp/tmux-1000/default,4242,0", "3", "", "", 0, false},
+		{"", "%3", "%3", "", 0, false},
+		{"relative/sock,4242,0", "%3", "%3", wd + string(filepath.Separator) + "relative/sock", 4242, false},
+		{"rel/../sock,7,0", "%3", "%3", wd + string(filepath.Separator) + "rel/../sock", 7, false},
+		{"/tmp/tmux-1000/default", "%3", "%3", "", 0, true},
+		{"/tmp/tmux-1000/default,4242", "%3", "%3", "", 0, true},
+		{"/tmp/tmux-1000/default,pid,0", "%3", "%3", "", 0, true},
+		{"/tmp/tmux-1000/default,0,0", "%3", "%3", "", 0, true},
+		{"/tmp/tmux-1000/default,99999999999999999999,0", "%3", "%3", "", 0, true},
+		{"/tmp/tmux-1000/default,4242,", "%3", "%3", "", 0, true},
+		{",4242,0", "%3", "%3", "", 0, true},
+		{"/tmp/" + strings.Repeat("a", maxTmuxSocketPath) + ",4242,0", "%3", "%3", "", 0, true},
 	} {
 		t.Setenv("TMUX", tc.tmux)
 		t.Setenv("TMUX_PANE", tc.pane)
-		got = localapi.Request{Pane: "unset", TmuxSocket: "unset", TmuxSocketUnknown: !tc.wantUnknown}
+		got = localapi.Request{Pane: "unset", TmuxSocket: "unset", TmuxServerPID: -1, TmuxSocketUnknown: !tc.wantUnknown}
 		if _, err := b.Call(context.Background(), ops.OpWorkersList, nil); err != nil {
 			t.Fatal(err)
 		}
-		if got.Pane != tc.wantPane || got.TmuxSocket != tc.wantSocket || got.TmuxSocketUnknown != tc.wantUnknown {
-			t.Errorf("TMUX=%.40q TMUX_PANE=%q: the Worker got pane %q, socket %.40q, unknown %v, want %q, %q, %v",
-				tc.tmux, tc.pane, got.Pane, got.TmuxSocket, got.TmuxSocketUnknown, tc.wantPane, tc.wantSocket, tc.wantUnknown)
+		if got.Pane != tc.wantPane || got.TmuxSocket != tc.wantSocket || got.TmuxServerPID != tc.wantPID || got.TmuxSocketUnknown != tc.wantUnknown {
+			t.Errorf("TMUX=%.40q TMUX_PANE=%q: the Worker got pane %q, socket %.40q, pid %d, unknown %v, want %q, %q, %d, %v",
+				tc.tmux, tc.pane, got.Pane, got.TmuxSocket, got.TmuxServerPID, got.TmuxSocketUnknown, tc.wantPane, tc.wantSocket, tc.wantPID, tc.wantUnknown)
 		}
+	}
+}
+
+// TestARelativeTmuxSocketIsMadeAbsoluteOrUnknown: a relative socket of $TMUX
+// (tmux -S keeps the path as given) is resolved against the working
+// directory; without a working directory it cannot be told and is unknown.
+func TestARelativeTmuxSocketIsMadeAbsoluteOrUnknown(t *testing.T) {
+	srv, ok := tmuxServerOf("s,12,0", func() (string, error) { return "/work/dir/", nil })
+	if !ok || srv.Socket != "/work/dir"+string(filepath.Separator)+"s" || srv.PID != 12 {
+		t.Fatalf("relative socket: %+v %v", srv, ok)
+	}
+	if srv, ok := tmuxServerOf("s,12,0", func() (string, error) { return "", errors.New("gone") }); ok {
+		t.Fatalf("no working directory: %+v", srv)
+	}
+	if srv, ok := tmuxServerOf("s,12,0", func() (string, error) { return "rel", nil }); ok {
+		t.Fatalf("a relative working directory: %+v", srv)
 	}
 }
 

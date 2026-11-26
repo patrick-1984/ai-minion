@@ -114,17 +114,26 @@ func SocketCandidates(env config.PathEnv) ([]string, error) {
 // calling session otherwise. A client that predates the member sends none;
 // its pane is then mapped as before. A Worker that predates it ignores it.
 //
-// TmuxSocketUnknown is set by a current client that sends a pane but could not
-// tell its tmux server ($TMUX missing or malformed). It tells that client from
-// one that predates tmux_socket: the Worker then names no calling session,
-// except on psmux, which has no socket to compare. A Worker that predates it
-// ignores it.
+// A relative socket path in $TMUX is sent made absolute by the client.
+//
+// TmuxServerPID is the optional pid of that server, from the same $TMUX. A
+// tmux server restarted on the same socket numbers its panes from %0 again, so
+// a process that outlived the old server could name a pane of the new one; the
+// Worker names no calling session when the pid is not the one of the server
+// it serves. A Worker that predates it ignores it.
+//
+// TmuxSocketUnknown is set by a current client that sends a pane and has a
+// $TMUX it cannot read (malformed). It tells that client from one that
+// predates tmux_socket: the Worker then names no calling session, except on
+// psmux, which has no socket to compare. A client without $TMUX sends neither
+// member, as before. A Worker that predates it ignores it.
 type RequestFrame struct {
 	Type              string          `json:"type"`
 	Op                string          `json:"op"`
 	Args              json.RawMessage `json:"args,omitempty"`
 	Pane              string          `json:"pane,omitempty"`
 	TmuxSocket        string          `json:"tmux_socket,omitempty"`
+	TmuxServerPID     int64           `json:"tmux_server_pid,omitempty"`
 	TmuxSocketUnknown bool            `json:"tmux_socket_unknown,omitempty"`
 }
 
@@ -157,6 +166,9 @@ type Request struct {
 	// TmuxSocket is the socket path of the tmux server of Pane as the caller
 	// sent it ([RequestFrame].TmuxSocket), or "" (no pane, or an older client).
 	TmuxSocket string
+	// TmuxServerPID is [RequestFrame].TmuxServerPID: the pid of the tmux
+	// server of Pane as the caller sent it, or 0 (not sent).
+	TmuxServerPID int64
 	// TmuxSocketUnknown is [RequestFrame].TmuxSocketUnknown: the caller sent a
 	// pane and could not tell which tmux server it is of.
 	TmuxSocketUnknown bool
@@ -436,7 +448,7 @@ func parseRequest(body []byte) (Request, *proto.Error) {
 		return Request{}, proto.NewError(proto.CodeInvalidArgument, "op.request needs an op name")
 	}
 	return Request{Op: f.Op, Actions: FullActions(), Args: f.Args, Pane: f.Pane, TmuxSocket: f.TmuxSocket,
-		TmuxSocketUnknown: f.TmuxSocketUnknown}, nil
+		TmuxServerPID: f.TmuxServerPID, TmuxSocketUnknown: f.TmuxSocketUnknown}, nil
 }
 
 // protoErrorer is implemented by errors that know their wire form.

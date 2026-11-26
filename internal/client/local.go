@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -191,27 +192,62 @@ func sourcePane() string {
 // path is longer (a unix socket address holds about a hundred bytes).
 const maxTmuxSocketPath = 4096
 
-// sourceTmuxSocket returns the socket path of the tmux server the pane of
-// [sourcePane] belongs to, from $TMUX, else "". A pane id is only meaningful
-// on that one server (every server numbers its panes from %0), so the socket
-// travels next to the pane and the Worker maps the pane to a session only
-// when it serves that very server.
-func sourceTmuxSocket() string { return tmuxSocketOf(os.Getenv("TMUX")) }
+// tmuxServer is the tmux server the pane of [sourcePane] belongs to, from
+// $TMUX: the absolute path of its socket and its pid. A pane id is only
+// meaningful on that one server (every server numbers its panes from %0), so
+// both travel next to the pane: the Worker maps the pane to a session only
+// when it serves that very server, and the pid tells a server that was
+// restarted on the same socket from the one the caller ran in.
+type tmuxServer struct {
+	Socket string
+	PID    int64
+}
 
-// tmuxSocketOf returns the socket path in a $TMUX value, which tmux sets to
+// sourceTmuxServer reads [tmuxServer] from $TMUX. present is false when $TMUX
+// is not set (or empty): a shell that carries $TMUX_PANE alone (a systemd
+// unit, a script) is then sent as before, without the unknown marker. A $TMUX
+// that is set but not of the form tmux gives it returns ok false.
+func sourceTmuxServer() (srv tmuxServer, present, ok bool) {
+	v := os.Getenv("TMUX")
+	if v == "" {
+		return tmuxServer{}, false, false
+	}
+	srv, ok = tmuxServerOf(v, os.Getwd)
+	return srv, true, ok
+}
+
+// tmuxServerOf parses a $TMUX value, which tmux sets to
 // "<socket>,<server pid>,<session index>". It is read from the right, because
-// a socket path may itself contain a comma. Anything that is not of that form
-// with an absolute path gives "".
-func tmuxSocketOf(v string) string {
+// a socket path may itself contain a comma. A relative socket path (tmux -S
+// keeps the path as given) is made absolute against the working directory
+// from getwd, which is where tmux's own client looks for it. Anything that is
+// not of that form gives ok false.
+func tmuxServerOf(v string, getwd func() (string, error)) (tmuxServer, bool) {
 	rest, index, ok := cutLast(v, ',')
 	if !ok || !allDigits(index) {
-		return ""
+		return tmuxServer{}, false
 	}
-	socket, pid, ok := cutLast(rest, ',')
-	if !ok || !allDigits(pid) || len(socket) > maxTmuxSocketPath || !filepath.IsAbs(socket) || strings.ContainsRune(socket, 0) {
-		return ""
+	socket, pidText, ok := cutLast(rest, ',')
+	if !ok || !allDigits(pidText) || socket == "" || len(socket) > maxTmuxSocketPath || strings.ContainsRune(socket, 0) {
+		return tmuxServer{}, false
 	}
-	return socket
+	pid, err := strconv.ParseInt(pidText, 10, 64)
+	if err != nil || pid <= 0 {
+		return tmuxServer{}, false
+	}
+	if !filepath.IsAbs(socket) {
+		wd, err := getwd()
+		if err != nil || !filepath.IsAbs(wd) {
+			return tmuxServer{}, false
+		}
+		// Joined as text, not cleaned: "link/../sock" is resolved by the file
+		// system on the Worker, as tmux's client resolves it.
+		socket = strings.TrimSuffix(wd, string(filepath.Separator)) + string(filepath.Separator) + socket
+		if len(socket) > maxTmuxSocketPath {
+			return tmuxServer{}, false
+		}
+	}
+	return tmuxServer{Socket: socket, PID: pid}, true
 }
 
 // cutLast cuts s around the last sep.
@@ -237,11 +273,15 @@ func allDigits(s string) bool {
 func exchange(conn net.Conn, op string, args json.RawMessage, onProgress func(json.RawMessage) error) (json.RawMessage, error) {
 	req := localapi.RequestFrame{Type: proto.TypeOpRequest, Op: op, Args: args, Pane: sourcePane()}
 	if req.Pane != "" {
-		// Only with a pane: the socket says which server the pane id is of.
-		// Without one the client says so, so that the Worker does not take it
-		// for a client that predates the member and map the pane anyway.
-		req.TmuxSocket = sourceTmuxSocket()
-		req.TmuxSocketUnknown = req.TmuxSocket == ""
+		// Only with a pane: the socket and pid say which server the pane id is
+		// of. A $TMUX the client cannot read is said, so that the Worker does
+		// not take the client for one that predates the members and map the
+		// pane anyway; without $TMUX the request is the one of before.
+		if srv, present, ok := sourceTmuxServer(); ok {
+			req.TmuxSocket, req.TmuxServerPID = srv.Socket, srv.PID
+		} else if present {
+			req.TmuxSocketUnknown = true
+		}
 	}
 	if err := proto.WriteFrame(conn, proto.StreamFrameLimit, req); err != nil {
 		var pe *proto.Error
