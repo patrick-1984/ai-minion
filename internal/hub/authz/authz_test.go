@@ -208,8 +208,8 @@ func TestEffectiveActions(t *testing.T) {
 		res  authz.Resource
 		want []ops.Action
 	}{
-		{"owner", authz.NewSessionPrincipal("alice"), res, []ops.Action{ops.ActionMessage, ops.ActionOperate, ops.ActionRead}},
-		{"admin", authz.NewSessionPrincipal("admin"), res, []ops.Action{ops.ActionManage, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}},
+		{"owner", authz.NewSessionPrincipal("alice"), res, []ops.Action{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}},
+		{"admin", authz.NewSessionPrincipal("admin"), res, []ops.Action{ops.ActionFileRead, ops.ActionFileWrite, ops.ActionManage, ops.ActionMessage, ops.ActionOperate, ops.ActionRead}},
 		{"foreign", authz.NewSessionPrincipal("bob"), res, nil},
 		{"scoped read", authz.NewAPIKeyPrincipal("alice", everything(ops.ActionRead), ""), res, []ops.Action{ops.ActionRead}},
 		{"missing resource", authz.NewSessionPrincipal("alice"), authz.WorkerResource{ID: "w-none"}, nil},

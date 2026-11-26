@@ -33,6 +33,10 @@ type AcceptRow struct {
 	Sessions       []string
 	CreatedBy      string
 	CreatedAt      int64
+	// FilesPull and FilesPush are the file transfer flags of the row
+	// (files.v1). Read, they are always set. On a put, nil keeps the stored
+	// flag (0 on a new row); a revoke clears both.
+	FilesPull, FilesPush *bool
 }
 
 // WorkerControlRow is the control setting of one Worker; a Worker without a
@@ -129,19 +133,26 @@ func deleteMasterSession(ctx context.Context, tx *sql.Tx, workerID, session stri
 // ListAccepts returns every acceptance, ordered by target and source.
 func (s *Store) ListAccepts(ctx context.Context) ([]AcceptRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT target_worker_id, source_worker_id, sessions_json, created_by, created_at
+		`SELECT target_worker_id, source_worker_id, sessions_json, created_by, created_at, files_pull, files_push
 		 FROM control_accept ORDER BY target_worker_id, source_worker_id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list acceptances: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	return scanAccepts(rows)
+}
+
+// scanAccepts reads acceptance rows of the columns of ListAccepts.
+func scanAccepts(rows *sql.Rows) ([]AcceptRow, error) {
 	var out []AcceptRow
 	for rows.Next() {
 		var a AcceptRow
 		var sess sql.NullString
-		if err := rows.Scan(&a.TargetWorkerID, &a.SourceWorkerID, &sess, &a.CreatedBy, &a.CreatedAt); err != nil {
+		var pull, push bool
+		if err := rows.Scan(&a.TargetWorkerID, &a.SourceWorkerID, &sess, &a.CreatedBy, &a.CreatedAt, &pull, &push); err != nil {
 			return nil, fmt.Errorf("store: list acceptances: %w", err)
 		}
+		a.FilesPull, a.FilesPush = &pull, &push
 		if sess.Valid {
 			_ = json.Unmarshal([]byte(sess.String), &a.Sessions)
 			if a.Sessions == nil {
@@ -151,6 +162,15 @@ func (s *Store) ListAccepts(ctx context.Context) ([]AcceptRow, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// acceptFlag is the value of a file flag on an acceptance put: NULL keeps
+// the stored flag (0 on a new row).
+func acceptFlag(b *bool) any {
+	if b == nil {
+		return nil
+	}
+	return boolInt(*b)
 }
 
 // PutAccept stores an acceptance (replacing its session limit).
@@ -167,9 +187,11 @@ func (s *Store) PutAccept(ctx context.Context, a AcceptRow) error {
 		sess = string(b)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by, created_at = excluded.created_at`,
-		a.TargetWorkerID, a.SourceWorkerID, sess, a.CreatedBy, a.CreatedAt)
+		`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at, files_pull, files_push)
+		 VALUES (?, ?, ?, ?, ?, COALESCE(?6, 0), COALESCE(?7, 0))
+		 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by,
+		 created_at = excluded.created_at, files_pull = COALESCE(?6, control_accept.files_pull), files_push = COALESCE(?7, control_accept.files_push)`,
+		a.TargetWorkerID, a.SourceWorkerID, sess, a.CreatedBy, a.CreatedAt, acceptFlag(a.FilesPull), acceptFlag(a.FilesPush))
 	if err != nil {
 		return fmt.Errorf("store: put acceptance: %w", err)
 	}
@@ -481,7 +503,8 @@ func (s *Store) RevokeAcceptIfState(ctx context.Context, a AcceptRow, targetOwne
 		if all {
 			res, err = tx.ExecContext(ctx,
 				`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at) VALUES (?, ?, '[]', ?, ?)
-				 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by, created_at = excluded.created_at`,
+				 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by,
+				 created_at = excluded.created_at, files_pull = 0, files_push = 0`,
 				a.TargetWorkerID, a.SourceWorkerID, a.CreatedBy, a.CreatedAt)
 		} else {
 			// An explicit block ('[]') stays: it allows nothing already, and
@@ -529,9 +552,11 @@ func (s *Store) PutAcceptIfState(ctx context.Context, a AcceptRow, targetOwner, 
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at) VALUES (?, ?, ?, ?, ?)
-			 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by, created_at = excluded.created_at`,
-			a.TargetWorkerID, a.SourceWorkerID, sess, a.CreatedBy, a.CreatedAt)
+			`INSERT INTO control_accept (target_worker_id, source_worker_id, sessions_json, created_by, created_at, files_pull, files_push)
+			 VALUES (?, ?, ?, ?, ?, COALESCE(?6, 0), COALESCE(?7, 0))
+			 ON CONFLICT (target_worker_id, source_worker_id) DO UPDATE SET sessions_json = excluded.sessions_json, created_by = excluded.created_by,
+			 created_at = excluded.created_at, files_pull = COALESCE(?6, control_accept.files_pull), files_push = COALESCE(?7, control_accept.files_push)`,
+			a.TargetWorkerID, a.SourceWorkerID, sess, a.CreatedBy, a.CreatedAt, acceptFlag(a.FilesPull), acceptFlag(a.FilesPush))
 		if err != nil {
 			return fmt.Errorf("store: put acceptance: %w", err)
 		}
