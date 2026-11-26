@@ -39,7 +39,7 @@ func (s *Store) BindSessionGrant(ctx context.Context, id, incarnation string, if
 		// behind the grant: binding changes the proof of the source only.
 		may := cur
 		may.Authority = GrantAuthorityOwner
-		if err := grantActorMay(ctx, tx, w.ActorID, may, false); err != nil {
+		if err := grantActorMay(ctx, tx, w, may, false); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET source_incarnation = ?, revision = revision + 1,

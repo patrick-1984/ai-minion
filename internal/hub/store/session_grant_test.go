@@ -23,7 +23,8 @@ func newGrantFixture(t *testing.T) grantFixture {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.DB().ExecContext(ctx, `INSERT INTO user_roles(user_id,role,source) VALUES('root','admin','local')`); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO user_roles(user_id,role,source) VALUES('root','admin','local'),
+		('alice','user','local'),('bob','user','local')`); err != nil {
 		t.Fatal(err)
 	}
 	f := grantFixture{s: s, admin: "root", bob: "bob",
@@ -429,5 +430,39 @@ func TestSessionGrantEditDoesNotMoveThePurgeFence(t *testing.T) {
 	}
 	if _, err := f.s.SessionGrant(ctx, lateRow.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An owner whose last role was withdrawn after the caller's own check cannot
+// create, widen or bind a grant: the writing transaction reads the role. An
+// administrator acting as the owner must still be an administrator there.
+func TestSessionGrantWriteNeedsAnEffectiveRole(t *testing.T) {
+	f := newGrantFixture(t)
+	ctx := t.Context()
+	own := f.put(t, f.ownerGrant("boss"))
+	f.exec(t, `DELETE FROM user_roles WHERE user_id = 'alice'`)
+	if _, err := f.s.PutSessionGrant(ctx, f.ownerGrant("other"), 0, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("create by an owner without a role: %v", err)
+	}
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: own.ID, Level: 3}, own.Revision, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("widen by an owner without a role: %v", err)
+	}
+	if _, err := f.s.BindSessionGrant(ctx, own.ID, "inc-1", own.Revision, GrantWrite{ActorID: "alice"}); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("bind by an owner without a role: %v", err)
+	}
+	if rows, _ := f.s.ListSessionGrants(ctx, SessionGrantFilter{}); len(rows) != 1 || rows[0].Revision != own.Revision || rows[0].Level != 1 {
+		t.Fatalf("stored = %+v", rows)
+	}
+	// The role is back: the owner writes again, also through an
+	// administrator acting as them, but not through a former administrator.
+	f.exec(t, `INSERT INTO user_roles(user_id,role,source) VALUES('alice','user','local')`)
+	asAdmin := GrantWrite{ActorID: "alice", ActingAdminID: f.admin}
+	g, err := f.s.PutSessionGrant(ctx, f.ownerGrant("other"), 0, asAdmin)
+	if err != nil || g.GrantedBy != "alice" || g.Authority != GrantAuthorityOwner {
+		t.Fatalf("create through an acting administrator = %+v, %v", g, err)
+	}
+	f.exec(t, `DELETE FROM user_roles WHERE user_id = 'root'`)
+	if _, err := f.s.PutSessionGrant(ctx, SessionGrantRow{ID: g.ID, Level: 3}, g.Revision, asAdmin); !errors.Is(err, ErrGrantAuthority) {
+		t.Fatalf("widen through a former administrator: %v", err)
 	}
 }
