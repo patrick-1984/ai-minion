@@ -353,6 +353,11 @@ func TestSessionGrantRevokeRevisionAndAudit(t *testing.T) {
 	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, 1, GrantWrite{}); !errors.Is(err, ErrGrantRevision) {
 		t.Fatalf("revoke at an old revision: %v", err)
 	}
+	// A revoke without a revision is refused too: it would delete a grant
+	// changed after the caller looked at it.
+	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, 0, GrantWrite{}); !errors.Is(err, ErrGrantRevision) {
+		t.Fatalf("revoke without a revision: %v", err)
+	}
 	if _, err := f.s.SessionGrant(ctx, g.ID); err != nil {
 		t.Fatalf("the grant is gone after a stale revoke: %v", err)
 	}
@@ -384,7 +389,7 @@ func TestSessionGrantRevokeRevisionAndAudit(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].GrantID != g.ID || rows[0].ID == "" || rows[0].TS == 0 {
 		t.Fatalf("audit rows = %+v, %v", rows, err)
 	}
-	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, 0, GrantWrite{}); !errors.Is(err, ErrNotFound) {
+	if _, err := f.s.RevokeSessionGrant(ctx, g.ID, 2, GrantWrite{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second revoke: %v", err)
 	}
 }

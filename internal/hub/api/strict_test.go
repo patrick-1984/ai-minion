@@ -166,7 +166,7 @@ func TestRequestIDOfAnotherRequestConflicts(t *testing.T) {
 	code, body = k.call(ops.OpGrantSet, other)
 	reused("other arguments", code, body)
 	// Another operation with the same id.
-	code, body = k.call(ops.OpGrantRevoke, map[string]any{"request_id": id, "id": first.Grant.ID})
+	code, body = k.call(ops.OpGrantRevoke, map[string]any{"request_id": id, "id": first.Grant.ID, "if_revision": first.Grant.Revision})
 	reused("another operation", code, body)
 	// Another caller with the same id and the same arguments.
 	k.as(k.admin)
@@ -185,7 +185,7 @@ func TestRepeatedGrantRevokeIsAuditedOnce(t *testing.T) {
 	k.as(k.u1)
 	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
 	before := k.auditTotal()
-	args := map[string]any{"request_id": ops.NewUUIDv7(), "id": g.ID}
+	args := map[string]any{"request_id": ops.NewUUIDv7(), "id": g.ID, "if_revision": g.Revision}
 	code1, body1 := k.call(ops.OpGrantRevoke, args)
 	if code1 != http.StatusOK {
 		t.Fatalf("grant_revoke = %d %s", code1, body1)

@@ -164,10 +164,10 @@ func TestGrantBetweenUsersTakesAnAdministrator(t *testing.T) {
 	}
 	// The owner of the target revokes; a second revoke answers not_found.
 	k.as(k.u2)
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by the target's owner = %d %s", code, body)
 	}
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); kindErrCode(t, body) != proto.CodeNotFound {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); kindErrCode(t, body) != proto.CodeNotFound {
 		t.Fatalf("second revoke = %d %s", code, body)
 	}
 }
@@ -400,7 +400,7 @@ func TestGrantDemotedAdministratorCommitsNothing(t *testing.T) {
 		t.Fatalf("create audit = %+v", evs)
 	}
 	// The former grantor, who owns neither Worker, still withdraws the grant.
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": cur.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by the demoted grantor = %d %s", code, body)
 	}
 	if _, err := k.st.SessionGrant(ctx, g.ID); err == nil {
@@ -435,7 +435,7 @@ func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
 	}
 	// A key of the administrator limited to another Worker is refused.
 	key(k.admin, grantKeyScope{c.ID: true})
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code == http.StatusOK {
 		t.Fatalf("revoke by a key of another Worker = %d %s", code, body)
 	}
 	if _, err := k.st.SessionGrant(ctx, g.ID); err != nil {
@@ -443,21 +443,21 @@ func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
 	}
 	// The same key limited to the target Worker alone revokes.
 	key(k.admin, grantKeyScope{b.ID: true})
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by a key of the target Worker = %d %s", code, body)
 	}
 	// The owner of the source revokes a grant on another owner's Worker.
 	k.as(k.admin)
 	g = k.setGrant(grantArgs(a, b, ops.GrantLevelView))
 	k.as(k.u1)
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by the source's owner = %d %s", code, body)
 	}
 	// A user who owns neither Worker of a grant is refused.
 	k.as(k.admin)
 	g = k.setGrant(grantArgs(b, c, ops.GrantLevelView)) // both bob's
 	k.as(k.u1)
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code == http.StatusOK {
 		t.Fatalf("revoke by a stranger = %d %s", code, body)
 	}
 	if _, err := k.st.SessionGrant(ctx, g.ID); err != nil {
@@ -469,11 +469,11 @@ func TestGrantRevokeByScopedKeyAndRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	key(k.u1, grantKeyScope{})
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code == http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code == http.StatusOK {
 		t.Fatalf("revoke by a key of the grantor = %d %s", code, body)
 	}
 	k.as(k.u1)
-	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); code != http.StatusOK {
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusOK {
 		t.Fatalf("revoke by the grantor = %d %s", code, body)
 	}
 	if _, err := k.st.SessionGrant(ctx, g.ID); err == nil {
@@ -519,5 +519,29 @@ func TestGrantListMasksTheOtherOwnersSessionName(t *testing.T) {
 		if strings.Contains(gr.SourceSession+gr.TargetSession, "agent") && gr.SourceMasked {
 			t.Fatalf("a masked row carries the name: %+v", gr)
 		}
+	}
+}
+
+// grant_revoke carries the revision the caller saw (D2): without one it is
+// refused, with a stale one it conflicts, and the grant stays either way.
+func TestGrantRevokeNeedsTheRevision(t *testing.T) {
+	k := newGrantStack(t)
+	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
+	k.as(k.u1)
+	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
+	up := grantArgs(a1, a2, ops.GrantLevelControl)
+	up["id"], up["if_revision"] = g.ID, g.Revision
+	g2 := k.setGrant(up)
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID}); kindErrCode(t, body) != proto.CodeInvalidArgument {
+		t.Fatalf("revoke without a revision = %d %s", code, body)
+	}
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g.Revision}); kindErrCode(t, body) != proto.CodeConflict {
+		t.Fatalf("revoke at a stale revision = %d %s", code, body)
+	}
+	if cur, err := k.st.SessionGrant(context.Background(), g.ID); err != nil || cur.Revision != g2.Revision {
+		t.Fatalf("after the refusals: %+v (%v)", cur, err)
+	}
+	if code, body := k.call(ops.OpGrantRevoke, map[string]any{"id": g.ID, "if_revision": g2.Revision}); code != http.StatusOK {
+		t.Fatalf("revoke = %d %s", code, body)
 	}
 }

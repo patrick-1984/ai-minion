@@ -491,8 +491,8 @@ func (h grantHandlers) revoke(ctx context.Context, c *Call, a ops.GrantRevokeArg
 	}}
 	// The dispatcher audits a refusal; its row names the grant.
 	c.AuditGrantID = a.ID
-	// if_revision is checked by the DELETE itself; zero revokes whatever the
-	// revision is.
+	// if_revision is required (the arguments refuse zero) and checked by the
+	// DELETE itself: a grant changed meanwhile stays.
 	if _, err := h.st.RevokeSessionGrant(ctx, a.ID, a.IfRevision, write); err != nil {
 		return ops.WriteResult{}, grantStoreErr(err)
 	}

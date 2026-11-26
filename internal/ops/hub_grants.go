@@ -211,21 +211,24 @@ type GrantSetResult struct {
 	Grant   Grant   `json:"grant"`
 }
 
-// GrantRevokeArgs revoke one grant. IfRevision is optional: zero revokes the
-// grant whatever its revision.
+// GrantRevokeArgs revoke one grant at the revision the caller looked at
+// (D2: every write carries if_revision). A grant changed meanwhile stays.
 type GrantRevokeArgs struct {
 	WriteArgs
 	ID         string `json:"id"`
-	IfRevision uint64 `json:"if_revision,omitempty"`
+	IfRevision uint64 `json:"if_revision"`
 }
 
-// Validate checks the request id and the grant id.
+// Validate checks the request id, the grant id and the revision.
 func (a GrantRevokeArgs) Validate() error {
 	if err := a.WriteArgs.Validate(); err != nil {
 		return err
 	}
 	if !ValidUUIDv7(a.ID) {
 		return invalid("id", "must be a UUIDv7")
+	}
+	if a.IfRevision == 0 {
+		return invalid("if_revision", "the expected revision is required")
 	}
 	return nil
 }

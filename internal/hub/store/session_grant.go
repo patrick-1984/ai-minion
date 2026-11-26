@@ -299,21 +299,25 @@ func (s *Store) DeleteSessionGrant(ctx context.Context, id string) (bool, error)
 }
 
 // RevokeSessionGrant deletes one grant and writes the audit row of w in the
-// same transaction. A non-zero ifRevision must be the stored revision, which
-// the DELETE itself checks: a grant changed meanwhile stays and the answer is
+// same transaction. ifRevision is required (D2: every write carries it) and
+// must be the stored revision, which the DELETE itself checks: a zero
+// revision, or a grant changed meanwhile, leaves the grant and the answer is
 // [ErrGrantRevision]. A missing grant is [ErrNotFound]. It returns the deleted
 // row. Revoking only narrows, so the acting user's role is not read here.
 func (s *Store) RevokeSessionGrant(ctx context.Context, id string, ifRevision uint64, w GrantWrite) (SessionGrantRow, error) {
+	if ifRevision == 0 {
+		return SessionGrantRow{}, ErrGrantRevision
+	}
 	var out SessionGrantRow
 	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		cur, err := sessionGrantByID(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		if ifRevision != 0 && cur.Revision != ifRevision {
+		if cur.Revision != ifRevision {
 			return ErrGrantRevision
 		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND revision = ?`, id, int64(cur.Revision))
+		res, err := tx.ExecContext(ctx, `DELETE FROM session_grant WHERE id = ? AND revision = ?`, id, int64(ifRevision))
 		if err != nil {
 			return fmt.Errorf("store: revoke session grant: %w", err)
 		}

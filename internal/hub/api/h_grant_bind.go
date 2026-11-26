@@ -81,7 +81,7 @@ func (h grantBindHandler) bind(ctx context.Context, c *Call, a ops.GrantBindArgs
 		// The store wrote nothing: the refusal is audited by itself, with the
 		// grant named when it exists.
 		g, _ := h.st.SessionGrant(ctx, a.ID)
-		h.record(ctx, c, grantBindEvent(a.ID, a.Bind, g), err)
+		h.record(ctx, c, grantBindEvent(a.ID, a.Binds(), g), err)
 	}
 	return res, err
 }
@@ -129,7 +129,7 @@ func (h grantBindHandler) doBind(ctx context.Context, c *Call, a ops.GrantBindAr
 		return ops.GrantSetResult{}, grantStoreErr(store.ErrGrantRevision)
 	}
 	incarnation := ""
-	if a.Bind {
+	if a.Binds() {
 		if cur.SuspendedAt != nil {
 			return ops.GrantSetResult{}, NewError(proto.CodeConflict, "the grant is suspended; an administrator must approve it first")
 		}
@@ -144,7 +144,7 @@ func (h grantBindHandler) doBind(ctx context.Context, c *Call, a ops.GrantBindAr
 		// The store reads the caller's authority again in the transaction
 		// that writes, and writes the audit row there.
 		write := store.GrantWrite{ActorID: p.UserID, Audit: func(_ *store.SessionGrantRow, now store.SessionGrantRow) (store.AuditRow, error) {
-			return grantAuditRow(c, grantBindEvent(now.ID, a.Bind, now))
+			return grantAuditRow(c, grantBindEvent(now.ID, a.Binds(), now))
 		}}
 		if g, err = h.st.BindSessionGrant(ctx, a.ID, incarnation, a.IfRevision, write); err != nil {
 			return ops.GrantSetResult{}, grantStoreErr(err)
