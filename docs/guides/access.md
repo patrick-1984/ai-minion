@@ -171,7 +171,7 @@ What the calling session sees: a target it does not reach answers `not_found` (t
 
 | Event | Effect |
 | --- | --- |
-| The source or target session ends, is renamed or stops being shared | Grants that name that session are deleted. A wildcard target ("every shared session") stays. A session that comes back under the same name starts without grants. |
+| The source or target session ends, is renamed or stops being shared | Grants that name that session are deleted. A wildcard target ("every shared session") stays. A session that comes back under the same name starts without grants: the Hub tells a new terminal by when it first saw the name and, from Workers 0.23.0 on tmux hosts that report an instance id, by the session's instance, also when the name was recreated within one poll, while the Worker was offline or while the Hub was down. A Worker that reports no instance id (older Workers, macOS, psmux, ConPTY) is judged by the name: a session recreated under its name while the Worker was offline, or before the first snapshot after a Hub restart, keeps the grants of the old one. |
 | A Worker is removed | Every grant that touches it is deleted. |
 | A Worker changes owner | Every grant that touches it is deleted, in the same transaction. |
 | The administrator who decided an `admin` grant loses the role or is deactivated | The grant is **suspended** at once. It stays suspended when the role comes back. |

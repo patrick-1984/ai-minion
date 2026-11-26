@@ -733,7 +733,12 @@ func (s *CallServer) authenticate(ctx context.Context, workerID, key, source, op
 }
 
 // lookupGrant returns the stored targets of the session-control grant of the
-// session source on the Worker, or "" when it has none.
+// session source on the Worker, or "" when it has none. The name-only (Claimed)
+// nomination is fenced like a direct grant (sameSessions): the source must be
+// listed now and first seen no later than it was nominated, else it is
+// another terminal under the name and has no grant, also before the session
+// purge has deleted the nomination. A session target of a session-limited
+// acceptance first seen after it was accepted (or not listed) is left out.
 func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (string, error) {
 	if source == "" || s.cfg.Grants == nil {
 		return "", nil
@@ -745,7 +750,17 @@ func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (
 	case err != nil:
 		return "", err
 	}
-	return row.TargetsJSON, nil
+	seen := s.cfg.Sessions
+	if seen == nil {
+		return row.TargetsJSON, nil
+	}
+	if at, ok := seen.FirstSeen(workerID, source); !ok || at > row.CreatedAt {
+		return "", nil
+	}
+	return row.TargetsJSONWithout(func(t store.ControlSessionTarget) bool {
+		at, ok := seen.FirstSeen(t.WorkerID, t.SessionName)
+		return !ok || at > t.NamedAt
+	}), nil
 }
 
 // lookupDirect returns the direct session grants of the session source on the
