@@ -144,3 +144,57 @@ func TestHumanTargetWithoutResolverIsInvalid(t *testing.T) {
 		t.Error("nil registry accepted")
 	}
 }
+
+// codeResolver resolves the code "5-667" (with an optional pane) like a
+// workers.Router with session codes.
+type codeResolver struct {
+	wid   string
+	calls []string
+}
+
+func (f *codeResolver) Resolve(_ context.Context, _ authz.Principal, target string, _ bool) (ops.Target, error) {
+	f.calls = append(f.calls, target)
+	code, pane, ok := ops.ParseSessionCode(target)
+	if !ok || code != (ops.SessionCode{Worker: 5, Session: 667}) {
+		return ops.Target{}, proto.NewError(proto.CodeTargetNotFound, "no Worker of that name is visible to you")
+	}
+	return ops.Target{WorkerID: f.wid, SessionName: "minion-3", Pane: pane}, nil
+}
+
+func TestSessionCodeTargetObjectIsResolved(t *testing.T) {
+	r := newRig(t)
+	wid := ops.NewUUIDv7()
+	fr := &codeResolver{wid: wid}
+	if err := RegisterTargetResolution(r.reg, fr); err != nil {
+		t.Fatal(err)
+	}
+	var got ops.SessionSnapshotArgs
+	mustHandle(t, r.reg, ops.OpSessionSnapshot, func(_ context.Context, c *Call) (any, error) {
+		got = *c.Args.(*ops.SessionSnapshotArgs)
+		return ops.SessionSnapshotResult{}, nil
+	})
+	for _, tc := range []struct{ body, want string }{
+		{`{"target":"5-667"}`, "5-667"},
+		{`{"target":{"session_name":"5-667"}}`, "5-667"},
+		{`{"target":{"session_name":"#5-667","pane":"0.1"}}`, "5-667:0.1"},
+	} {
+		fr.calls = nil
+		w := r.do("POST", "/api/v1/ops/session_snapshot", tc.body)
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", tc.body, w.Code, w.Body)
+		}
+		if len(fr.calls) != 1 || fr.calls[0] != tc.want || got.Target.WorkerID != wid || got.Target.SessionName != "minion-3" {
+			t.Errorf("%s: calls %q, target %+v", tc.body, fr.calls, got.Target)
+		}
+	}
+	// An unknown code is the same not_found as an invisible Worker.
+	if w := r.do("POST", "/api/v1/ops/session_snapshot", `{"target":{"session_name":"5-668"}}`); w.Code != 404 {
+		t.Fatalf("unknown code: %d %s", w.Code, w.Body)
+	}
+	// An object that names its Worker is never read as a code.
+	fr.calls = nil
+	body, _ := json.Marshal(map[string]any{"target": ops.Target{WorkerID: wid, SessionName: "5-667"}})
+	if w := r.do("POST", "/api/v1/ops/session_snapshot", string(body)); w.Code != 200 || len(fr.calls) != 0 || got.Target.SessionName != "5-667" {
+		t.Fatalf("canonical: %d calls %q target %+v", w.Code, fr.calls, got.Target)
+	}
+}

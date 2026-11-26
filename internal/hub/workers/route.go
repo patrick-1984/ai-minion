@@ -254,6 +254,9 @@ type RouterConfig struct {
 	// ContentManaged tells whether the content of a Worker's sessions may be
 	// recorded; it must say no for a Worker it does not know. Nil: UserManaged.
 	ContentManaged func(ctx context.Context, workerID string) (bool, error)
+	// Codes gives out and resolves the short session codes ("5-667"); nil:
+	// no codes, and a code is no target.
+	Codes *SessionCodes
 }
 
 // Router routes catalog Worker ops to the Workers that run them.
@@ -272,6 +275,7 @@ type Router struct {
 	mon          *compliance.Monitor
 	contentMgd   func(ctx context.Context, workerID string) (bool, error)
 	telemetry    func() Telemetry
+	codes        *SessionCodes
 	// synced reports whether a Worker's current connection sent its session
 	// list (the event hub, set after the Router is built).
 	synced atomic.Pointer[func(workerID string) bool]
@@ -297,6 +301,7 @@ func NewRouter(c RouterConfig) (*Router, error) {
 		userMgd:   c.UserManaged, hidden: c.HiddenSessions, workerHidden: c.WorkerHiddenSessions, mon: c.Monitor, contentMgd: c.ContentManaged,
 		backend: c.Backend, dir: c.Directory, az: c.Authz, catalog: c.Catalog,
 		ownerName: c.OwnerName, timeout: c.ResultTimeout, log: c.Logger,
+		codes: c.Codes,
 	}
 	if rt.catalog == nil {
 		rt.catalog = ops.Default
@@ -380,13 +385,14 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 		}
 	}
 	out := make([]ops.WorkerInfo, 0, len(recs))
+	numbers := rt.codes.WorkerNumbers(ctx)
 	for _, w := range recs {
 		owner, ok := owners[w.OwnerID]
 		if !ok {
 			owner = rt.ownerLabel(ctx, w.OwnerID)
 			owners[w.OwnerID] = owner
 		}
-		info := ops.WorkerInfo{ID: w.ID, Name: w.Name, OwnerID: w.OwnerID, Owner: owner, Kind: w.Kind,
+		info := ops.WorkerInfo{ID: w.ID, Number: numbers[w.ID], Name: w.Name, OwnerID: w.OwnerID, Owner: owner, Kind: w.Kind,
 			Pending: w.Pending, Fingerprint: w.Fingerprint, FingerprintWords: identity.Fingerprint(w.Fingerprint).Words(),
 			EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected, HubCheck: w.HubCheck}
 		if !w.CreatedAt.IsZero() {
@@ -454,7 +460,26 @@ func (rt *Router) ListWorkers(ctx context.Context, p authz.Principal, all bool) 
 // target_not_found, which is also what a foreign Worker looks like: the
 // answer never says whether someone else's Worker exists. Whether the session
 // exists is for the Worker to say.
+//
+// A session code ("5-667", "#5-667", "5-667:0.1"; see ops.ParseSessionCode)
+// is read as the Worker and the current name of the session it was given to,
+// and then resolved like that name: the same visibility and the same answer.
+// A code that names no session is target_not_found like a session the
+// principal cannot see.
 func (rt *Router) Resolve(ctx context.Context, p authz.Principal, target string, all bool) (ops.Target, error) {
+	if code, pane, ok := ops.ParseSessionCode(target); ok && rt.codes != nil {
+		workerID, name, found, err := rt.codes.lookup(ctx, code)
+		if err != nil {
+			return ops.Target{}, err
+		}
+		if !found {
+			return ops.Target{}, errNoVisibleWorker()
+		}
+		target = workerID + ":" + name
+		if pane != "" {
+			target += ":" + pane
+		}
+	}
 	ht, qualified, err := parseTarget(target)
 	if err != nil {
 		return ops.Target{}, err
@@ -489,7 +514,7 @@ func (rt *Router) Resolve(ctx context.Context, p authz.Principal, target string,
 	}
 	switch len(matches) {
 	case 0:
-		return ops.Target{}, proto.NewError(proto.CodeTargetNotFound, "no Worker of that name is visible to you")
+		return ops.Target{}, errNoVisibleWorker()
 	case 1:
 		return ht.Resolve(matches[0].ID), nil
 	}
@@ -504,6 +529,13 @@ func (rt *Router) Resolve(ctx context.Context, p authz.Principal, target string,
 		Message: fmt.Sprintf("several Workers match %q; write owner/worker-name:session-name", qualified.literal),
 		Details: details,
 	}
+}
+
+// errNoVisibleWorker is the answer to a target whose Worker the principal
+// cannot see, also to a session code that names nothing: the same answer, so
+// that a code says nothing about a session the principal cannot see.
+func errNoVisibleWorker() error {
+	return proto.NewError(proto.CodeTargetNotFound, "no Worker of that name is visible to you")
 }
 
 // targetForms is how the Worker part of a human target can be read.
@@ -672,6 +704,9 @@ func (rt *Router) call(ctx context.Context, req CallRequest, out **call) (any, e
 			return unknownWrite(), nil
 		}
 		return nil, proto.NewError(proto.CodeInternal, "the Worker sent a result the Hub cannot read")
+	}
+	if lr, ok := res.(ops.SessionsListResult); ok {
+		rt.codes.Annotate(ctx, req.WorkerID, lr.Sessions)
 	}
 	if wr, ok := res.(ops.WriteResult); ok && wr.Validate() != nil {
 		rt.log.Warn("workers: write answered with an invalid result", "op", c.op.Name,

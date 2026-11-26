@@ -97,6 +97,7 @@ func initRoute(ctx context.Context, env *Env) error {
 		// Each Worker's own choice (v0.23.0) wins over the caller's
 		// account-wide preference.
 		WorkerHiddenSessions: st,
+		Codes:                &workers.SessionCodes{Store: st, Log: cfg.logger()},
 	})
 	if err != nil {
 		return fmt.Errorf("route: %w", err)

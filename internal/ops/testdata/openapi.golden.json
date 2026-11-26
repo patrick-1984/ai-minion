@@ -3479,6 +3479,9 @@
           "attached": {
             "type": "boolean"
           },
+          "code": {
+            "type": "string"
+          },
           "created": {
             "format": "date-time",
             "type": "string"
@@ -5771,6 +5774,9 @@
           },
           "new_session_refused": {
             "type": "string"
+          },
+          "number": {
+            "type": "integer"
           },
           "online": {
             "type": "boolean"

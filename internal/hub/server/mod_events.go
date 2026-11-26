@@ -79,7 +79,9 @@ func initEvents(ctx context.Context, env *Env) error {
 		})
 	}
 
+	codes := &workers.SessionCodes{Store: st, Log: cfg.logger()}
 	lister := &api.SessionLister{
+		Codes:       codes.ByName,
 		UserManaged: userManaged(st),
 		Directory:   workers.StoreDirectory{Store: st},
 		State:       hub,

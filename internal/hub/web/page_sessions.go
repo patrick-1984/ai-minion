@@ -88,7 +88,10 @@ const (
 
 // WorkerRow is one Worker of the dashboard.
 type WorkerRow struct {
-	ID     string
+	ID string
+	// Number is the Worker's number on the Hub, the first part of its session
+	// codes; 0 when unknown.
+	Number int64
 	Name   string
 	Owner  string
 	Kind   string
@@ -216,6 +219,9 @@ const maxWorkerSessions = 25
 
 // SessionRow is one session of the dashboard.
 type SessionRow struct {
+	// Code is the session's short code ("5-667"), the first thing a row
+	// shows: the way to name a session aloud; "" when none is known.
+	Code     string
 	WorkerID string
 	Worker   string
 	Owner    string
@@ -1186,6 +1192,7 @@ func NewHandlerSource(c *HandlerCaller) LiveSource { return &handlerSource{c: c}
 
 type sessionsBody struct {
 	Sessions []struct {
+		Code     string `json:"code"`
 		WorkerID string `json:"worker_id"`
 		Worker   string `json:"worker"`
 		Owner    string `json:"owner"`
@@ -1235,7 +1242,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	d.Admin = isAdminRequest(r)
 	for _, w := range wl.Workers {
 		d.Workers = append(d.Workers, WorkerRow{
-			ID: w.ID, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
+			ID: w.ID, Number: w.Number, Name: w.Name, Owner: w.Owner, Kind: w.Kind, Online: w.Online, Version: w.ProtoVersion,
 			Pending: w.Pending, Fingerprint: w.Fingerprint, FingerprintWords: w.FingerprintWords, EnrollAddr: w.EnrollAddr, NeverConnected: w.NeverConnected,
 			HubCheck: w.HubCheck, Build: w.Build, UpdateBlock: w.UpdateBlock,
 			SessionHost: w.SessionHost, SessionsHidden: w.SessionsHidden, SessionHostReason: w.SessionHostReason,
@@ -1252,7 +1259,7 @@ func (s *handlerSource) Snapshot(r *http.Request, all bool) (Dashboard, error) {
 	}
 	for _, x := range sb.Sessions {
 		d.Sessions = append(d.Sessions, SessionRow{
-			WorkerID: x.WorkerID, Worker: x.Worker, Owner: x.Owner, Name: x.Session,
+			Code: x.Code, WorkerID: x.WorkerID, Worker: x.Worker, Owner: x.Owner, Name: x.Session,
 			Kind: x.Kind, State: x.State, Task: x.Task, Online: x.Online, PaneStateDetail: x.PaneStateDetail, HarnessName: x.HarnessName,
 		})
 	}

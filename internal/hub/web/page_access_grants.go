@@ -68,6 +68,8 @@ func (p GrantsPage) OpenAdd() bool { return p.SourceWorker != "" && p.SourceSess
 type GrantWorkerOption struct {
 	ID, Name, Owner string
 	Sessions        []string
+	// Codes are the session codes ("5-667") of Sessions, by name.
+	Codes map[string]string
 }
 
 // GrantRow is one grant of the table.
@@ -385,13 +387,20 @@ func grantWorkers(r *http.Request, u pageUser) (sources, targets []GrantWorkerOp
 		return nil, nil
 	}
 	sessions := map[string][]string{}
+	codes := map[string]map[string]string{}
 	for _, s := range d.Sessions {
 		sessions[s.WorkerID] = append(sessions[s.WorkerID], s.Name)
+		if s.Code != "" {
+			if codes[s.WorkerID] == nil {
+				codes[s.WorkerID] = map[string]string{}
+			}
+			codes[s.WorkerID][s.Name] = s.Code
+		}
 	}
 	for _, w := range d.Workers {
 		names := sessions[w.ID]
 		slices.SortFunc(names, ops.NaturalCompare)
-		o := GrantWorkerOption{ID: w.ID, Name: w.Name, Owner: w.Owner, Sessions: names}
+		o := GrantWorkerOption{ID: w.ID, Name: w.Name, Owner: w.Owner, Sessions: names, Codes: codes[w.ID]}
 		targets = append(targets, o)
 		if u.Admin || w.Owner == u.Username {
 			sources = append(sources, o)

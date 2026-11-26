@@ -33,6 +33,10 @@ type WorkersListArgs struct {
 type WorkerInfo struct {
 	// ID is the Worker's UUIDv7, the canonical form of a target (AD-18).
 	ID string `json:"id"`
+	// Number is the Worker's number on this Hub, the first part of its
+	// session codes ("5" of "5-667"): given once, never given again. Additive
+	// field: absent when unknown.
+	Number int64 `json:"number,omitempty"`
 	// Name is the Worker's name, unique per owner (AD-17).
 	Name string `json:"name"`
 	// OwnerID is the owning user's id.
