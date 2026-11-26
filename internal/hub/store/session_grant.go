@@ -217,6 +217,10 @@ type SessionGrantRow struct {
 	// CommandShell marks the target session as a command shell of the source
 	// session (A116): only on a Control grant that names one target session.
 	CommandShell bool
+	// FilesPull and FilesPush are the file transfer flags (files.v1): only on
+	// a verified grant (SourceIncarnation set), FilesPush only at Control.
+	// Unbinding the grant clears them.
+	FilesPull, FilesPush bool
 }
 
 // SessionGrantFilter narrows [Store.ListSessionGrants]. An empty member does
@@ -228,16 +232,17 @@ type SessionGrantFilter struct {
 
 const sessionGrantCols = `id, source_worker_id, source_session, source_incarnation, target_worker_id, target_session,
 	level, authority, granted_by, source_owner_id, target_owner_id, note, expires_at, revision, created_at, updated_at,
-	suspended_at, suspend_cause, command_shell`
+	suspended_at, suspend_cause, command_shell, files_pull, files_push`
 
 func scanSessionGrant(sc rowScanner) (SessionGrantRow, error) {
 	var g SessionGrantRow
 	var exp, sus sql.NullInt64
-	var rev, shell int64
+	var rev, shell, pull, push int64
 	err := sc.Scan(&g.ID, &g.SourceWorkerID, &g.SourceSession, &g.SourceIncarnation, &g.TargetWorkerID, &g.TargetSession,
 		&g.Level, &g.Authority, &g.GrantedBy, &g.SourceOwnerID, &g.TargetOwnerID, &g.Note, &exp, &rev, &g.CreatedAt,
-		&g.UpdatedAt, &sus, &g.SuspendCause, &shell)
+		&g.UpdatedAt, &sus, &g.SuspendCause, &shell, &pull, &push)
 	g.CommandShell = shell != 0
+	g.FilesPull, g.FilesPush = pull != 0, push != 0
 	if err != nil {
 		return g, err
 	}
@@ -291,7 +296,8 @@ func pinGrantOwners(ctx context.Context, tx *sql.Tx, g SessionGrantRow) error {
 }
 
 // PutSessionGrant creates the grant (ifRevision 0, no row with that id) or
-// changes level, expiry, note and the command_shell flag of the stored one
+// changes level, expiry, note, the command_shell flag and the file transfer
+// flags of the stored one
 // when its revision is ifRevision. Both Workers' owners and approvals, and
 // the authority of the acting user w.ActorID (an active administrator, or the
 // active owner of both Workers of an owner grant), are checked in the same
@@ -331,10 +337,10 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 			}
 			_, err := tx.ExecContext(ctx, `INSERT INTO session_grant (id, source_worker_id, source_session, source_incarnation,
 				target_worker_id, target_session, level, authority, granted_by, source_owner_id, target_owner_id, note,
-				expires_at, revision, created_at, updated_at, command_shell) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)`,
+				expires_at, revision, created_at, updated_at, command_shell, files_pull, files_push) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)`,
 				row.ID, row.SourceWorkerID, row.SourceSession, row.SourceIncarnation, row.TargetWorkerID, row.TargetSession,
 				row.Level, row.Authority, row.GrantedBy, row.SourceOwnerID, row.TargetOwnerID, row.Note,
-				nullInt64(row.ExpiresAt), created, now, boolInt(row.CommandShell))
+				nullInt64(row.ExpiresAt), created, now, boolInt(row.CommandShell), boolInt(row.FilesPull), boolInt(row.FilesPush))
 			if err != nil {
 				msg := err.Error()
 				switch {
@@ -359,8 +365,9 @@ func (s *Store) PutSessionGrant(ctx context.Context, row SessionGrantRow, ifRevi
 			}
 			old = &cur
 			if _, err := tx.ExecContext(ctx, `UPDATE session_grant SET level = ?, expires_at = ?, note = ?, command_shell = ?,
-				revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
-				row.Level, nullInt64(row.ExpiresAt), row.Note, boolInt(row.CommandShell), now, row.ID, int64(ifRevision)); err != nil {
+				files_pull = ?, files_push = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?`,
+				row.Level, nullInt64(row.ExpiresAt), row.Note, boolInt(row.CommandShell), boolInt(row.FilesPull), boolInt(row.FilesPush),
+				now, row.ID, int64(ifRevision)); err != nil {
 				if strings.Contains(err.Error(), "CHECK constraint") {
 					return fmt.Errorf("%w: %v", ErrGrantInvalid, err)
 				}
