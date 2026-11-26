@@ -375,6 +375,12 @@ func (h grantHandlers) doSet(ctx context.Context, c *Call, a ops.GrantSetArgs, o
 	write := store.GrantWrite{ActorID: p.UserID, Audit: func(o *store.SessionGrantRow, now store.SessionGrantRow) (store.AuditRow, error) {
 		return grantAuditRow(c, grantSetEvent(a, o, &now))
 	}}
+	if p.Kind == authz.KindActAs {
+		// An administrator acting as p.UserID (D4): the grant is decided with
+		// that user's authority, and the administrator must still be one when
+		// it is written.
+		write.ActingAdminID = p.ActorID
+	}
 	var exp *int64
 	if a.ExpiresAt != "" {
 		var ts ops.Timestamp

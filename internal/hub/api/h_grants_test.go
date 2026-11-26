@@ -329,22 +329,47 @@ func TestGrantAdministratorBetweenWorkersOfOneOtherUserAndTheAudit(t *testing.T)
 	}
 }
 
-// grant_set is SessionOnly: the dispatcher refuses an act-as session before
-// the handler runs, for the acted user's own Workers and between users alike
-// (even when the actor is an administrator). Nothing is stored.
-func TestGrantActAsIsRefusedBySessionOnly(t *testing.T) {
+// D4: an administrator acting as a user in a browser session creates owner
+// grants between that user's own Workers; the grant is the user's and the
+// audit row names the administrator as acting. Between users it is refused,
+// as are the other SessionOnly grant operations and an act-as API key.
+func TestGrantActAsCreatesOwnerGrantsOnly(t *testing.T) {
 	k := newGrantStack(t)
+	ctx := context.Background()
 	a1, a2 := k.worker(k.u1, "a1", store.WorkerKindPrivate), k.worker(k.u1, "a2", store.WorkerKindPrivate)
 	b := k.worker(k.u2, "b", store.WorkerKindPrivate)
-	k.authn.mu.Lock()
-	k.authn.id = Identity{Principal: authz.NewActAsPrincipal(k.admin, k.u1, time.Now().Add(time.Hour)), Actor: k.admin, ActingAs: k.u1, Via: ViaSession}
-	k.authn.mu.Unlock()
-	for _, args := range []map[string]any{grantArgs(a1, a2, ops.GrantLevelView), grantArgs(a1, b, ops.GrantLevelView)} {
-		if code, body := k.call(ops.OpGrantSet, args); code != http.StatusForbidden {
-			t.Fatalf("act-as grant_set = %d %s, want forbidden", code, body)
+	actAs := func(via string) {
+		k.authn.mu.Lock()
+		k.authn.id = Identity{Principal: authz.NewActAsPrincipal(k.admin, k.u1, time.Now().Add(time.Hour)), Actor: k.admin, ActingAs: k.u1, Via: via}
+		k.authn.mu.Unlock()
+	}
+	actAs(ViaSession)
+	if code, body := k.call(ops.OpGrantSet, grantArgs(a1, b, ops.GrantLevelView)); code != http.StatusForbidden {
+		t.Fatalf("act-as grant_set between users = %d %s, want forbidden", code, body)
+	}
+	g := k.setGrant(grantArgs(a1, a2, ops.GrantLevelView))
+	if g.Authority != ops.GrantAuthorityOwner || g.GrantedBy != k.u1 {
+		t.Fatalf("act-as grant = %+v", g)
+	}
+	var ok *audit.Event
+	for _, ev := range k.grantEvents(AuditActionGrantCreate) {
+		if ev.Outcome == AuditOutcomeSuccess {
+			ok = &ev
 		}
 	}
-	if rows, _ := k.st.ListSessionGrants(context.Background(), store.SessionGrantFilter{}); len(rows) != 0 {
+	if ok == nil || ok.Actor != k.admin || ok.ActingAs != k.u1 || ok.GrantID != g.ID {
+		t.Fatalf("act-as audit = %+v", k.grantEvents(AuditActionGrantCreate))
+	}
+	// grant_approve stays refused to an act-as session; grant_set to an
+	// act-as identity that did not come through a browser session.
+	if code, body := k.call(ops.OpGrantApprove, map[string]any{"id": g.ID, "if_revision": g.Revision}); code != http.StatusForbidden {
+		t.Fatalf("act-as grant_approve = %d %s, want forbidden", code, body)
+	}
+	actAs(ViaAPIKey)
+	if code, body := k.call(ops.OpGrantSet, grantArgs(a2, a1, ops.GrantLevelView)); code != http.StatusForbidden {
+		t.Fatalf("act-as grant_set not via a session = %d %s, want forbidden", code, body)
+	}
+	if rows, _ := k.st.ListSessionGrants(ctx, store.SessionGrantFilter{}); len(rows) != 1 || rows[0].ID != g.ID {
 		t.Fatalf("stored %+v", rows)
 	}
 }

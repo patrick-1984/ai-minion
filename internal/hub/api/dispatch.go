@@ -177,9 +177,10 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 		return
 	}
 
-	if op.SessionOnly && (id.Via != ViaSession || id.Principal.Kind != authz.KindBrowserSession) {
+	if op.SessionOnly && !sessionOnlyAllows(op, id) {
 		// Only a browser session acting as itself may run these (the Hub
-		// identity operations); an API key and an act-as session may not.
+		// identity operations); an API key may not, and an act-as session only
+		// where sessionOnlyActAs says so.
 		d.refused(w, op.Name, "session_only", id.Principal.Kind, NewError(proto.CodeForbidden, "this operation is available only to a signed-in browser session"))
 		return
 	}
@@ -299,6 +300,29 @@ func (d *Dispatcher) serve(w http.ResponseWriter, r *http.Request, rt route) {
 	if err := WriteJSON(w, http.StatusOK, result); err != nil {
 		d.logger().Error("operation result cannot be encoded", "op", op.Name, "error", err)
 	}
+}
+
+// sessionOnlyActAs names the SessionOnly operations that an administrator
+// acting as a user may run in a browser session. grant_set: D4 lets an
+// administrator acting as a user create owner grants for that user only; the
+// handler refuses every other grant (the acted user must own both Workers),
+// and the audit row names the administrator as the actor.
+var sessionOnlyActAs = map[string]bool{ops.OpGrantSet: true}
+
+// sessionOnlyAllows reports whether id may run the SessionOnly operation op:
+// a browser session acting as itself, or an act-as browser session for an
+// operation in sessionOnlyActAs. An API key never may.
+func sessionOnlyAllows(op ops.Op, id Identity) bool {
+	if id.Via != ViaSession {
+		return false
+	}
+	switch id.Principal.Kind {
+	case authz.KindBrowserSession:
+		return true
+	case authz.KindActAs:
+		return sessionOnlyActAs[op.Name]
+	}
+	return false
 }
 
 // dedupKey identifies one request for the de-duplication: the id the caller
