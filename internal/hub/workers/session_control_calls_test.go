@@ -205,8 +205,11 @@ func TestSessionControlGrantedSessionReachesItsTargetsOnly(t *testing.T) {
 	if req.Origin != want {
 		t.Fatalf("origin = %+v, want %+v", req.Origin, want)
 	}
-	if req.TargetWorkerID != wAlicePi2.ID {
-		t.Fatalf("target_worker_id = %q, want the routed Worker", req.TargetWorkerID)
+	// The arguments name the routed Worker, so the redundant member is left
+	// out (review r2) and the Worker checks the argument.
+	var sa ops.SessionSnapshotArgs
+	if err := json.Unmarshal(req.Args, &sa); err != nil || sa.Target.WorkerID != wAlicePi2.ID || req.TargetWorkerID != "" {
+		t.Fatalf("target_worker_id = %q, target %+v (%v), want the routed Worker in the arguments only", req.TargetWorkerID, sa.Target, err)
 	}
 
 	// send_text on bob's pi-1:build, by the human form: resolved among all

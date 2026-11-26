@@ -91,12 +91,13 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 			return res, internalErr("read the result cache", gerr)
 		}
 	}
-	// The request as the cache knows it: what it does, who sent it and a digest
-	// of what it carries. A request id answers only the request it was first
-	// used for, by the caller who used it (audit F13).
+	// The request as the cache knows it: what it does, who sent it (from which
+	// admitted session, when the Hub names it) and a digest of what it
+	// carries. A request id answers only the request it was first used for, by
+	// the caller who used it (audit F13).
 	next := store.ResultRecord{
 		RequestID: wa.RequestID, Op: op.Name, Session: t.SessionName, Force: wa.Force,
-		Caller: writeCaller(ctx), PayloadHash: writePayloadHash(ctx, op),
+		Caller: writeCaller(ctx), CallerSession: writeSourceSession(ctx), PayloadHash: writePayloadHash(ctx, op),
 	}
 	if hit {
 		if !rec.SameRequest(next) {
@@ -187,14 +188,30 @@ const localCaller = "local"
 // writeCaller names who sent a write, for the result cache: the identity
 // members of the Hub-derived origin, or [localCaller]. The members hold no
 // space (proto.Origin.Validate), so the text is unambiguous. It is the caller
-// as far as the origin tells it: two sessions of one source Worker, or two
-// grants of one user, are the same caller here.
+// as far as the origin tells it: two grants of one user are the same caller
+// here. Two sessions of one source Worker are told apart by
+// [writeSourceSession] when the Hub names the admitted session.
 func writeCaller(ctx context.Context) string {
 	o := hubOrigin(ctx)
 	if o == nil {
 		return localCaller
 	}
 	return string(o.Kind) + " user=" + o.UserID + " actor=" + o.ActorID + " key=" + o.KeyID + " worker=" + o.SourceWorkerID
+}
+
+// writeSourceSession is the calling session the Hub admitted a write for (the
+// source_session of its origin), for the result cache: two controller sessions
+// of one Worker that reuse a request id are different callers. It is "" for a
+// local caller and for a Hub that names no session (an older Hub, a call
+// without a calling session); the cache then compares without it. This is the
+// one place where the Worker reads an attribution member of the origin, and it
+// only narrows the cache: another session turns a replay into a conflict and
+// never lets a request run or read what it could not before.
+func writeSourceSession(ctx context.Context) string {
+	if o := hubOrigin(ctx); o != nil {
+		return o.SourceSession
+	}
+	return ""
 }
 
 // writePayloadHash is the SHA-256 digest of the arguments of the write as the

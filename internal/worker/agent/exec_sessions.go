@@ -261,7 +261,32 @@ func (e *Executor) listShared(ctx context.Context, sel store.ShareState) (any, e
 		}(&info, p.Ref, s)
 	}
 	wg.Wait()
-	return ops.SessionsListResult{Sessions: out}, nil
+	return withInstanceIDsThatFit(ops.SessionsListResult{Sessions: out}), nil
+}
+
+// maxListingWithInstanceIDs is the largest encoded session listing that keeps
+// its instance ids: the smallest response limit a listing meets on its way,
+// the bound-master result cap of the Hub (64 KiB, master_calls.go), which is
+// far below the stream frame limit (proto.StreamFrameLimit) with its envelope.
+const maxListingWithInstanceIDs = 64 << 10
+
+// withInstanceIDsThatFit returns res without its instance ids when they would
+// make the encoded listing larger than [maxListingWithInstanceIDs] (review
+// r2). The ids are additive and informational: without them the listing is
+// the one a release before them returned, so a listing that fit before still
+// fits. A Hub filters a listing for a bound master and encodes it again in
+// the same form, so what fits here fits there.
+func withInstanceIDsThatFit(res ops.SessionsListResult) ops.SessionsListResult {
+	if !slices.ContainsFunc(res.Sessions, func(s ops.SessionInfo) bool { return s.InstanceID != "" }) {
+		return res
+	}
+	if b, err := json.Marshal(res); err == nil && len(b) <= maxListingWithInstanceIDs {
+		return res
+	}
+	for i := range res.Sessions {
+		res.Sessions[i].InstanceID = ""
+	}
+	return res
 }
 
 // readTarget is the shared start of snapshot and capture: share check,

@@ -80,6 +80,8 @@ type OpRequest struct {
 	// routed to (CallRequest.WorkerID). It is outside the arguments, so the
 	// digest of a write's arguments does not change. A Worker that knows it
 	// refuses a request that names another Worker; an older Worker ignores it.
+	// It is left out when the arguments already name that Worker where the
+	// Worker checks them ([routedTargetWorker]).
 	TargetWorkerID string `json:"target_worker_id,omitempty"`
 }
 
@@ -944,9 +946,36 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		granted:  req.granted,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
-			Args: args, Actions: actions, Origin: origin, TargetWorkerID: req.WorkerID,
+			Args: args, Actions: actions, Origin: origin, TargetWorkerID: routedTargetWorker(op.Name, args, req.WorkerID),
 		},
 	}, nil
+}
+
+// routedTargetWorker is the target_worker_id of an op.request: workerID, the
+// Worker the request was authorized for, unless the typed arguments already
+// name exactly that Worker where the Worker checks them (target.worker_id, or
+// worker_id of sessions_list and session_create; Executor.requireTargetWorker).
+// Then it is "": the member would be redundant, and its bytes could push a
+// frame that fit before over the stream limit (review r2). Arguments that do
+// not decode, or that name no Worker or another one, keep it.
+func routedTargetWorker(op string, args []byte, workerID string) string {
+	var a struct {
+		WorkerID string `json:"worker_id"`
+		Target   struct {
+			WorkerID string `json:"worker_id"`
+		} `json:"target"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return workerID
+	}
+	named := a.Target.WorkerID
+	if op == ops.OpSessionsList || op == ops.OpSessionCreate {
+		named = a.WorkerID
+	}
+	if named != "" && named == workerID {
+		return ""
+	}
+	return workerID
 }
 
 // userControlOps are the session operations that a Worker which is not

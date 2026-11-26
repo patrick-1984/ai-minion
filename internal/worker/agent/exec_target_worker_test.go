@@ -305,3 +305,38 @@ func TestRoutedDestinationAndArgumentsAreBothChecked(t *testing.T) {
 		t.Fatalf("a local caller is checked as a Hub request: %v", err)
 	}
 }
+
+// Two controller sessions of one source Worker that reuse a request id are two
+// callers when the Hub names the admitted session (review r2): the second gets
+// a conflict, never the first session's outcome, and nothing is sent twice. A
+// request of an older Hub, which names no session, is compared as before.
+func TestRequestIDReusedByAnotherSessionOfTheSameWorkerConflicts(t *testing.T) {
+	e, self, _ := newTargetEnv(t)
+	source := ops.NewUUIDv7()
+	from := func(session string) *proto.Origin {
+		o := workerOrigin(source, "fp", "user-a")
+		o.SourceSession, o.SourceProof = session, proto.OriginProofClaimed
+		return o
+	}
+	args := ops.SendTextArgs{WriteArgs: ops.WriteArgs{RequestID: ops.NewUUIDv7()}, Target: ops.Target{WorkerID: self, SessionName: "work"}, Text: "hello"}
+	first, err := e.callFrom(from("planner"), ops.OpSendText, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := e.callFrom(from("planner"), ops.OpSendText, args)
+	if err != nil || string(again) != string(first) {
+		t.Fatalf("same session: %s, %v; first %s", again, err, first)
+	}
+	_, err = e.callFrom(from("reviewer"), ops.OpSendText, args)
+	wantAPIError(t, err, "conflict", "")
+	// The same Worker through a Hub that names no session: legacy matching.
+	if legacy, err := e.callFrom(workerOrigin(source, "fp", "user-a"), ops.OpSendText, args); err != nil || string(legacy) != string(first) {
+		t.Fatalf("older Hub: %s, %v; first %s", legacy, err, first)
+	}
+	if n := len(e.host.pastes()); n != 1 {
+		t.Fatalf("pastes = %d, want 1", n)
+	}
+	if rec, ok, err := e.st.GetResult(context.Background(), args.RequestID); err != nil || !ok || rec.CallerSession != "planner" {
+		t.Fatalf("stored record = %+v, %v, %v", rec, ok, err)
+	}
+}

@@ -174,8 +174,10 @@ func TestVerifiedMessageGrantSendsARoutedPrompt(t *testing.T) {
 	}
 	// The target audits the session of the bound lease as verified, and the
 	// grant of the final admission (review r1).
+	// The routed Worker is named by the arguments, so the frame leaves out the
+	// redundant target_worker_id (review r2).
 	if o := request.Origin; o.SourceSession != "prepared" || o.SourceProof != proto.OriginProofVerified || o.GrantID != g.ID ||
-		request.TargetWorkerID != r.target.ID {
+		args.Target.WorkerID != r.target.ID || request.TargetWorkerID != "" {
 		t.Fatalf("the routed prompt lost its attribution: %+v, target %q", o, request.TargetWorkerID)
 	}
 }

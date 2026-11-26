@@ -177,10 +177,12 @@ func TestOriginWithUnknownMembersIsAccepted(t *testing.T) {
 // by marshalling the whole origin. A selector on one of them in non-test code
 // of the Worker fails here; if it is a decision, it must not be added. The
 // frame of a local call (call.go) has its own SourceSession member, which is
-// not the origin's.
+// not the origin's. The result cache (exec_write.go) reads the origin's
+// SourceSession only to tell two calling sessions' request ids apart, which can
+// turn a replay into a conflict and never allows anything.
 func TestNoWorkerCodeReadsTheAttributionMembers(t *testing.T) {
 	read := regexp.MustCompile(`\.(SourceSession|SourceProof|GrantID)\b`)
-	other := map[string]string{filepath.Join("..", "agent", "call.go"): "SourceSession"}
+	other := map[string]string{filepath.Join("..", "agent", "call.go"): "SourceSession", filepath.Join("..", "agent", "exec_write.go"): "SourceSession"}
 	files := 0
 	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
