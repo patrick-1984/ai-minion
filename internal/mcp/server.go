@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,12 +31,26 @@ type Config struct {
 	// Trust decides which peers' pipe turns the model may read. Nil trusts no
 	// peer; Solo passes [TrustAll].
 	Trust Trust
+	// Gate, when set, decides every tool call before it is sent: the standing
+	// allow rules of "minion claude allow" (claudeallow.Gate). A refused call
+	// is answered as an error and nothing is sent; an allowed one carries the
+	// id of the rule that allowed it as its client rule, for the Hub audit.
+	// Nil allows every call, as before.
+	Gate Gate
 	// Version is announced to the client.
 	Version string
 	// Logger receives operational messages: tool names and error classes,
 	// never arguments or results (AD-20). Nil discards them. It must not write
 	// to stdout, which carries the protocol.
 	Logger *slog.Logger
+}
+
+// Gate decides a tool call of op with the arguments args before it is sent.
+// It returns the id of the standing allow rule that allowed the call ("" for
+// none: a read, or no allowlist), or the error the model gets instead of the
+// call.
+type Gate interface {
+	Check(op ops.Op, args json.RawMessage) (rule string, err error)
 }
 
 // DefaultOps returns the ops of the Default catalog that run on a Worker, plus
@@ -89,13 +104,18 @@ func New(cfg Config) (*Server, error) {
 	if version == "" {
 		version = "dev"
 	}
+	instructions := "Minion gives access to terminal and agent sessions on this machine. " +
+		"Use sessions_list first, then address a session by its name. " +
+		"Screens are already sanitised. Pipe replies come only from trusted peers."
+	if a, ok := cfg.Gate.(interface{ Active() bool }); ok && a.Active() {
+		instructions += " Write tools reach only the Workers and sessions of the owner's standing allow rules " +
+			"(minion claude status); a write to any other target is refused before it is sent: ask the owner instead."
+	}
 	srv := sdk.NewServer(&sdk.Implementation{Name: ServerName, Version: version}, &sdk.ServerOptions{
-		Logger: log,
-		Instructions: "Minion gives access to terminal and agent sessions on this machine. " +
-			"Use sessions_list first, then address a session by its name. " +
-			"Screens are already sanitised. Pipe replies come only from trusted peers.",
+		Logger:       log,
+		Instructions: instructions,
 	})
-	c := &caller{backend: cfg.Backend, trust: cfg.Trust, log: log}
+	c := &caller{backend: cfg.Backend, trust: cfg.Trust, gate: cfg.Gate, log: log}
 	for _, t := range tools {
 		srv.AddTool(t.def, c.handler(t))
 	}

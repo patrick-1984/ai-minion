@@ -421,6 +421,9 @@ func (b *HubBackend) run(ctx context.Context, op string, args any, onProgress fu
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, application/x-ndjson")
 	req.Header.Set("User-Agent", b.userAgent)
+	if rule := ClientRule(ctx); rule != "" {
+		req.Header.Set(proto.ClientRuleHeader, rule)
+	}
 
 	resp, err := b.hc.Do(req)
 	if err != nil {

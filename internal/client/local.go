@@ -156,7 +156,7 @@ func (b *LocalBackend) Stream(ctx context.Context, op string, args any, onProgre
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 
-	res, err := exchange(conn, wire, raw, onProgress)
+	res, err := exchange(conn, wire, raw, ClientRule(ctx), onProgress)
 	if err != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -270,8 +270,8 @@ func allDigits(s string) bool {
 }
 
 // exchange runs one request on conn.
-func exchange(conn net.Conn, op string, args json.RawMessage, onProgress func(json.RawMessage) error) (json.RawMessage, error) {
-	req := localapi.RequestFrame{Type: proto.TypeOpRequest, Op: op, Args: args, Pane: sourcePane()}
+func exchange(conn net.Conn, op string, args json.RawMessage, rule string, onProgress func(json.RawMessage) error) (json.RawMessage, error) {
+	req := localapi.RequestFrame{Type: proto.TypeOpRequest, Op: op, Args: args, Pane: sourcePane(), ClientRule: rule}
 	if req.Pane != "" {
 		// Only with a pane: the socket and pid say which server the pane id is
 		// of. A $TMUX the client cannot read is said, so that the Worker does
