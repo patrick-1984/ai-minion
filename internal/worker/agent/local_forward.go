@@ -27,6 +27,7 @@ import (
 
 	"github.com/patrick-1984/ai-minion/internal/ops"
 	"github.com/patrick-1984/ai-minion/internal/proto"
+	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
 )
 
 // forwardsToHub reports whether the local request of op with args goes to the
@@ -54,12 +55,13 @@ func forwardsToHub(op string, args json.RawMessage, self string) bool {
 }
 
 // callerPane is the pane a local caller says it runs in: the pane id from its
-// $TMUX_PANE, the socket of the tmux server from its $TMUX, and whether a
-// current client could not tell that server (SocketUnknown). A client that
-// predates the socket sends neither Socket nor SocketUnknown.
+// $TMUX_PANE, the socket and the pid of the tmux server from its $TMUX, and
+// whether a current client could not read its $TMUX (SocketUnknown). A client
+// that predates the socket, or that has no $TMUX, sends none of the three.
 type callerPane struct {
 	Pane          string
 	Socket        string
+	ServerPID     int64
 	SocketUnknown bool
 }
 
@@ -105,12 +107,14 @@ var panesWithoutServer atomic.Int64
 // caller's tmux server (its socket, from its $TMUX) is the one this Worker
 // serves. It returns "" when the caller is on another server, when the host of
 // this Worker is not a tmux server and so cannot be the caller's, when a
-// current client could not tell its server, and in every case
+// current client could not read its $TMUX, when the caller sent the pid of its
+// server and this Worker's server has another one (a server restarted on the
+// same socket: [Executor.servesServerPID]), and in every case
 // [Executor.sessionOfPane] names none.
 //
 // A request with neither a socket nor the unknown marker comes from a client
-// that predates both: its pane is mapped as before, and the debug log counts
-// it. psmux (Windows) has no socket to compare, so there a current client that
+// that predates both, or from one without $TMUX: its pane is mapped as before,
+// and the debug log counts it. psmux (Windows) has no socket to compare, so there a current client that
 // could not tell its server is mapped as before too.
 func (e *Executor) sourceSession(ctx context.Context, c callerPane) string {
 	pane, socket := c.Pane, c.Socket
@@ -134,7 +138,48 @@ func (e *Executor) sourceSession(ctx context.Context, c callerPane) string {
 			"pane", pane, "caller_socket", socket[:min(len(socket), 200)])
 		return ""
 	}
-	return e.sessionOfPane(ctx, pane)
+	name := e.sessionOfPane(ctx, pane)
+	if name != "" && c.ServerPID > 0 && !e.psmuxHost() && !e.servesServerPID(ctx, c.ServerPID) {
+		e.log.Debug("no calling session: the tmux server on the caller's socket is not the one the caller ran in (restarted)",
+			"pane", pane, "caller_server_pid", c.ServerPID)
+		return ""
+	}
+	return name
+}
+
+// tmuxPaneLister is the port of the tmux host that lists the identity of its
+// panes, the pid of its server included.
+type tmuxPaneLister interface {
+	MasterPanes(context.Context) ([]tmux.MasterPane, error)
+}
+
+// servesServerPID reports whether the tmux server this Worker serves can be
+// the one with the pid pid. It lists after [Executor.sessionOfPane], so a
+// server that is restarted in between is never taken for the caller's: the
+// caller's server was alive when the request was sent, and a listing of it
+// after a listing of another server would need it to come back. A listing
+// that names another pid, or no pane at all, is not the caller's server. When
+// the host cannot tell its pid (it has no such listing, or the listing fails,
+// as for a tmux that runs as another user), the pid is not known and the pane
+// is mapped as before.
+func (e *Executor) servesServerPID(ctx context.Context, pid int64) bool {
+	l, ok := e.host.(tmuxPaneLister)
+	if !ok {
+		return true
+	}
+	panes, err := l.MasterPanes(ctx)
+	if err != nil {
+		return true
+	}
+	if len(panes) == 0 {
+		return false
+	}
+	for _, p := range panes {
+		if int64(p.ServerPID) != pid {
+			return false
+		}
+	}
+	return true
 }
 
 // psmuxHost reports whether the terminal host of this Worker is psmux.

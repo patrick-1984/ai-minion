@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/patrick-1984/ai-minion/internal/proto"
 	"github.com/patrick-1984/ai-minion/internal/transport"
 	"github.com/patrick-1984/ai-minion/internal/worker/localapi"
+	"github.com/patrick-1984/ai-minion/internal/worker/term/tmux"
 )
 
 // SC-5: the local socket forwards session-control requests whose target is on
@@ -412,5 +414,71 @@ func TestForwardNamesNoSourceSessionForAPaneOfAnotherTmuxServer(t *testing.T) {
 	}
 	if v, ok := h.requestAt(2)["source_session"]; ok {
 		t.Fatalf("the Hub got source_session %s for a pane of an unknown tmux server", v)
+	}
+}
+
+// pidHost is socketHost with the pane identity listing of the tmux host, which
+// names the pid of its server (or fails with err).
+type pidHost struct {
+	socketHost
+	pid int
+	err error
+}
+
+func (h pidHost) MasterPanes(ctx context.Context) ([]tmux.MasterPane, error) {
+	if h.err != nil {
+		return nil, h.err
+	}
+	all, err := h.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []tmux.MasterPane
+	for _, s := range all {
+		for _, p := range s.Panes {
+			out = append(out, tmux.MasterPane{ServerPID: h.pid, PanePID: 1, PaneID: p.Ref.ID, SessionID: "$0", SessionName: s.Name, WindowID: "@0"})
+		}
+	}
+	return out, nil
+}
+
+// TestSourceSessionOfAPaneOfARestartedTmuxServerIsNone: a process that
+// outlived its tmux server keeps that server's pid in $TMUX. When a new server
+// listens on the same socket, its pane ids start from %0 again, so the pid of
+// the caller must be the one of the server this Worker serves. A pid the
+// caller did not send, or a host that cannot tell its pid, maps as before.
+func TestSourceSessionOfAPaneOfARestartedTmuxServerIsNone(t *testing.T) {
+	own := touch(t, filepath.Join(t.TempDir(), "default"))
+	withPID := func(pid int, err error, psmux bool) func(*Config) {
+		return func(c *Config) {
+			c.Host = pidHost{socketHost: socketHost{fakeHost: c.Host.(*fakeHost), socket: own, psmux: psmux}, pid: pid, err: err}
+		}
+	}
+	of := func(e *env, pane string, pid int64) string {
+		return e.ex.sourceSession(context.Background(), callerPane{Pane: pane, Socket: own, ServerPID: pid})
+	}
+	for _, tc := range []struct {
+		name      string
+		opt       func(*Config)
+		callerPID int64
+		want      string
+	}{
+		{"the same server", withPID(4242, nil, false), 4242, "boss"},
+		{"a restarted server", withPID(5151, nil, false), 4242, ""},
+		{"no pid sent", withPID(5151, nil, false), 0, "boss"},
+		{"a host that cannot list its pid", withPID(0, errors.New("tmux runs as another user"), false), 4242, "boss"},
+		{"a host without the listing", onSocket(own), 4242, "boss"},
+		{"psmux", withPID(5151, nil, true), 4242, "boss"},
+	} {
+		e := newEnv(t, tc.opt)
+		ref := e.host.addSession("boss", "claude")
+		if got := of(e, ref.ID, tc.callerPID); got != tc.want {
+			t.Errorf("%s: sourceSession = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// A listing without the pane's server (it ended in between) is not the
+	// caller's server either.
+	if (&Executor{host: pidHost{socketHost: socketHost{fakeHost: &fakeHost{}, socket: own}, pid: 4242}}).servesServerPID(context.Background(), 4242) {
+		t.Error("an empty listing was taken for the caller's server")
 	}
 }
