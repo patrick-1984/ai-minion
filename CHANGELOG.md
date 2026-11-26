@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Short session codes that are easy to read aloud: every session gets a code `<worker number>-<session number>`, for example `5-667`. The Hub gives every Worker a number (sequential, never given again, also after the Worker is removed; existing Workers are numbered in enrollment order by migration 0037) and every session of a Worker a number the first time it lists the session (never given again within that Worker). On a Worker that reports tmux instance ids the number follows a rename and a session created again under the same name gets a new one; without instance ids (psmux, older Workers) the name is the identity, so a session created again under the same name keeps its number. Mappings not seen for 30 days are pruned; their numbers are not reused.
+- The code is shown first: `code` in `sessions_list` results routed by the Hub and in `GET /api/v1/sessions`, `number` in `workers_list`, a CODE column first in `minion sessions_list`, and a monospace badge before the session and Worker names in the Hub web UI (session lists, Workers page, grant pickers).
+- A session code is a target through the Hub: `--target 5-667` (also `#5-667`, `s5-667`, `5-667:0.1`), a string target `"5-667"` in REST, or `{"session_name":"5-667"}` without a `worker_id` (MCP, CLI). The Hub resolves it to the Worker and the current session name and then decides as for the name; an unknown code and a session the caller cannot see give the same `target_not_found`. Old Workers need nothing. Without a Hub (the local control socket) `5-667` stays an ordinary session name: codes are Hub-only.
 ## v0.22.0
 
 ### Added

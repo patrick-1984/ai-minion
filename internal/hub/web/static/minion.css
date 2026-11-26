@@ -1538,3 +1538,6 @@ main:has(> .access-wide) { max-width: none; }
 .access-why-fail .access-why-mark { color: var(--danger, inherit); }
 .access-why-skip, .access-why-unknown { color: var(--muted); }
 /* end access: why */
+
+/* Session codes ("5-667") and Worker numbers: the short id people read aloud. */
+.session-code { font: 600 13px/1.4 var(--font-mono); padding: 1px 6px; border-radius: 6px; border: 1px solid currentColor; white-space: nowrap; letter-spacing: 0.02em; }

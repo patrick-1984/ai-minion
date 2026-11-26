@@ -597,6 +597,12 @@
       },
       "AccessCheck": {
         "properties": {
+          "code": {
+            "type": "string"
+          },
+          "fix": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -608,6 +614,7 @@
           }
         },
         "required": [
+          "code",
           "id",
           "state",
           "text"
@@ -980,6 +987,9 @@
             "format": "date-time",
             "type": "string"
           },
+          "grant_id": {
+            "type": "string"
+          },
           "limit": {
             "type": "integer"
           },
@@ -1178,6 +1188,9 @@
           "force": {
             "type": "boolean"
           },
+          "if_state": {
+            "type": "string"
+          },
           "request_id": {
             "type": "string"
           },
@@ -1243,6 +1256,9 @@
           "force": {
             "type": "boolean"
           },
+          "if_master": {
+            "type": "boolean"
+          },
           "master": {
             "type": "boolean"
           },
@@ -1271,6 +1287,12 @@
             "type": "boolean"
           },
           "force": {
+            "type": "boolean"
+          },
+          "if_accept_all": {
+            "type": "boolean"
+          },
+          "if_user_managed": {
             "type": "boolean"
           },
           "request_id": {
@@ -1482,6 +1504,9 @@
             "minimum": 0,
             "type": "integer"
           },
+          "source_masked": {
+            "type": "boolean"
+          },
           "source_owner": {
             "type": "string"
           },
@@ -1504,6 +1529,9 @@
             "type": "string"
           },
           "suspended": {
+            "type": "boolean"
+          },
+          "target_masked": {
             "type": "boolean"
           },
           "target_owner": {
@@ -1563,6 +1591,68 @@
         ],
         "type": "object"
       },
+      "GrantBindArgs": {
+        "properties": {
+          "bind": {
+            "type": "boolean"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "if_revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bind",
+          "force",
+          "id",
+          "if_revision",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "GrantHistoryArgs": {
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "GrantHistoryResult": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "type": "object"
+      },
       "GrantListArgs": {
         "properties": {
           "worker_id": {
@@ -1604,6 +1694,7 @@
         "required": [
           "force",
           "id",
+          "if_revision",
           "request_id"
         ],
         "type": "object"
@@ -3379,8 +3470,14 @@
           "attached": {
             "type": "boolean"
           },
+          "code": {
+            "type": "string"
+          },
           "created": {
             "format": "date-time",
+            "type": "string"
+          },
+          "instance_id": {
             "type": "string"
           },
           "name": {
@@ -5643,6 +5740,9 @@
           "new_session_refused": {
             "type": "string"
           },
+          "number": {
+            "type": "integer"
+          },
           "online": {
             "type": "boolean"
           },
@@ -7521,6 +7621,14 @@
           },
           {
             "in": "query",
+            "name": "grant_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
@@ -8456,6 +8564,271 @@
         "x-minion-mutates": true,
         "x-minion-scope": "hub",
         "x-minion-session-only": true,
+        "x-minion-stream": false,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/grant_bind": {
+      "post": {
+        "operationId": "grant_bind",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantBindArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantSetResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "security": [
+          {
+            "csrfHeader": [],
+            "sessionCookie": []
+          }
+        ],
+        "summary": "Bind a session grant to the verified terminal of its source session, or unbind it (owner of both Workers or administrator). Browser session with a fresh sign-in only.",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": true,
+        "x-minion-scope": "hub",
+        "x-minion-session-only": true,
+        "x-minion-stream": false,
+        "x-minion-write": false
+      }
+    },
+    "/api/v1/ops/grant_history": {
+      "get": {
+        "operationId": "grant_history_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantHistoryResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "security": [
+          {
+            "bearerApiKey": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "summary": "List the audit events of one session grant, newest first (owner of a Worker it touches or administrator).",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "hub",
+        "x-minion-session-only": false,
+        "x-minion-stream": false,
+        "x-minion-write": false
+      },
+      "post": {
+        "operationId": "grant_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GrantHistoryArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GrantHistoryResult"
+                }
+              }
+            },
+            "description": "The result of the operation."
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Error405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Error426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error500"
+          },
+          "501": {
+            "$ref": "#/components/responses/Error501"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error502"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "summary": "List the audit events of one session grant, newest first (owner of a Worker it touches or administrator).",
+        "x-minion-actions": [
+          "operate"
+        ],
+        "x-minion-guards": [],
+        "x-minion-mutates": false,
+        "x-minion-scope": "hub",
+        "x-minion-session-only": false,
         "x-minion-stream": false,
         "x-minion-write": false
       }
