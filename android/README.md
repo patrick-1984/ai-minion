@@ -31,8 +31,14 @@ fingerprint, registration and owner before you accept locally.
 
 **Pause** disconnects from the Hub and keeps the terminal sessions running.
 **Resume** reconnects. **Stop Worker** disconnects and closes its terminal
-sessions. Closing the screen leaves a running Worker in the background. You
-can opt into starting it after a reboot and the first device unlock. Android
+sessions. Closing the screen leaves a running Worker in the background:
+**OK, keep running in the background** and Back (Escape on a keyboard) move
+the screen away and say so; they never stop the Worker. After the first
+pairing or join the app asks once **Start Minion when this device turns
+on?** (**Yes, start automatically** is focused for the D-pad, **No** keeps
+it off) and then moves to the background. The same choice stays on the
+screen as **Start Minion automatically when this device turns on**; on some
+devices it takes effect after the first unlock. Android
 or the device vendor may suspend or stop the service. A system force-stop
 requires opening the app and starting the Worker again. The Worker's Go
 connection uses its own TLS and proxy settings.

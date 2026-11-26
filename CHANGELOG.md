@@ -6,6 +6,10 @@
 
 - Android app: optional **Hub address override** in **Pair with a Hub** and **Use a join token** for networks whose DNS cannot resolve the Hub (for example `minion.example` at `10.3.3.6`). Only the dial address changes; TLS SNI, the certificate name check and the HTTP Host stay the hostname. Saved in the app and passed to the Worker on every start (`MINION_HUB_DIAL_ADDRESS`), shown on the status screen, cleared with **Clear Hub address override** or **Forget this Hub**. Android only: other builds ignore the variable.
 
+### Changed
+
+- Android app: after the first pairing or join, the app asks once **Start Minion when this device turns on?** with explicit **Yes, start automatically** (focused by default for a TV remote) and **No** buttons that say what each choice does, then shows "Minion keeps running in the background" and moves itself to the background. The status screen has **OK, keep running in the background**; Back and Escape do the same while the Worker runs and never stop it (stopping stays **Stop Worker**). The start-on-boot option now reads **Start Minion automatically when this device turns on**. App only: no Hub or Worker change.
+
 ## v0.22.0
 
 ### Added

@@ -31,6 +31,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import java.net.URI
 import java.time.Instant
 import java.time.ZoneId
@@ -42,6 +43,7 @@ class MainActivity : Activity() {
     private var model = WorkerView()
     private var drawing = false
     private var television = false
+    private var bootQuestion: AlertDialog? = null
 
     private lateinit var status: TextView
     private lateinit var notice: TextView
@@ -55,6 +57,7 @@ class MainActivity : Activity() {
     private lateinit var usageStatus: TextView
     private lateinit var share: CheckBox
     private lateinit var boot: CheckBox
+    private lateinit var done: Button
     private lateinit var pair: Button
     private lateinit var token: Button
     private lateinit var start: Button
@@ -96,6 +99,62 @@ class MainActivity : Activity() {
         bound = false
         worker = null
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        // A question still open is asked again by the next screen.
+        bootQuestion?.dismiss()
+        bootQuestion = null
+        super.onDestroy()
+    }
+
+    // Back (and Escape, which Android maps to Back) never stops a running
+    // Worker: the screen goes to the background and the service keeps
+    // running. Stopping stays the explicit Stop Worker button.
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (model.wanted || model.busy) {
+            keepRunningInBackground()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
+    private fun keepRunningInBackground() {
+        Toast.makeText(this, "Minion keeps running in the background. Open Minion again to stop it.", Toast.LENGTH_LONG).show()
+        if (!moveTaskToBack(true)) finish()
+    }
+
+    // Asked once after a pairing or a join succeeds (until answered):
+    // whether the Worker starts by itself after a device restart. Either
+    // answer, and Back, leaves the Worker running and moves this screen to
+    // the background.
+    private fun askBootStart() {
+        val answer = { value: Boolean? ->
+            bootQuestion = null
+            workerPreferences(this).edit().putBoolean(BOOT_QUESTION, false).apply()
+            if (value != null) {
+                val target = worker
+                if (target != null) target.boot(value)
+                else workerPreferences(this).edit().putBoolean("boot", value).apply()
+            }
+            keepRunningInBackground()
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Start Minion when this device turns on?")
+            .setMessage(
+                "Minion is set up. It keeps running in the background, so the Hub can reach this device.\n\n" +
+                    "Yes: after this device restarts, Minion starts by itself (on some devices after the first unlock).\n" +
+                    "No: after a restart, Minion stays off until you open it and choose Start Worker.\n\n" +
+                    "You can change this later on the Minion screen."
+            )
+            .setNegativeButton("No") { _, _ -> answer(false) }
+            .setPositiveButton("Yes, start automatically") { _, _ -> answer(true) }
+            .setOnCancelListener { answer(null) }
+            .create()
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus() }
+        bootQuestion = dialog
+        dialog.show()
     }
 
     private fun screen(): View {
@@ -146,6 +205,7 @@ class MainActivity : Activity() {
         usageStatus = label("", 16f, ink)
         details.addView(usageStatus, row(8))
 
+        done = button("OK, keep running in the background") { keepRunningInBackground() }
         pair = button("Pair with a Hub") { showJoin(byToken = false) }
         token = button("Use a join token") { showJoin(byToken = true) }
         start = button("Start Worker") { worker?.start() }
@@ -161,7 +221,7 @@ class MainActivity : Activity() {
                 worker?.stop()
             }
         }
-        for (action in listOf(pair, token, start, pause, stop)) page.addView(action, row(10))
+        for (action in listOf(done, pair, token, start, pause, stop)) page.addView(action, row(10))
 
         share = CheckBox(this).apply {
             text = "Share terminal sessions with the Hub"
@@ -170,7 +230,7 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, value -> if (!drawing) worker?.share(value) }
         }
         boot = CheckBox(this).apply {
-            text = "Restart after reboot and first unlock"
+            text = "Start Minion automatically when this device turns on"
             textSize = if (television) 18f else 16f
             minHeight = dp(48)
             setOnCheckedChangeListener { _, value -> if (!drawing) worker?.boot(value) }
@@ -230,6 +290,7 @@ class MainActivity : Activity() {
             null -> ""
         })
         val configured = value.hub.isNotBlank()
+        done.visible(value.wanted && !value.busy && value.code.isBlank())
         pair.visible(!configured && !value.busy)
         token.visible(!configured && !value.busy)
         start.visible(configured && !value.wanted && !value.busy)
@@ -241,7 +302,7 @@ class MainActivity : Activity() {
         reviewUsage.visible(value.usage?.accepted == false && !value.busy)
         forget.visible(configured && !value.wanted && !value.busy)
         clearOverride.visible(value.dialOverride.isNotBlank() && !value.wanted && !value.busy)
-        val controls = listOf(pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride)
+        val controls = listOf(done, pair, token, start, pause, stop, share, boot, reviewUsage, forget, clearOverride)
         for (control in controls) control.isEnabled = worker != null
         if (television && currentFocus == null) {
             controls.firstOrNull { it.isEnabled && it.visibility == View.VISIBLE }?.requestFocus()
@@ -249,6 +310,11 @@ class MainActivity : Activity() {
         share.isChecked = value.share
         boot.isChecked = value.boot
         drawing = false
+        if (value.wanted && !value.busy && value.paired && value.code.isBlank() && worker != null &&
+            bootQuestion == null && !isFinishing && !isDestroyed &&
+            workerPreferences(this).getBoolean(BOOT_QUESTION, false)) {
+            askBootStart()
+        }
     }
 
     private fun showJoin(byToken: Boolean) {
@@ -345,6 +411,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 val target = worker ?: return@setOnClickListener
+                workerPreferences(this).edit().putBoolean(BOOT_QUESTION, true).apply()
                 val selectionValue = if (selection.isChecked) "all" else "none"
                 if (byToken) target.join(value, selectionValue, usage.isChecked, dialValue)
                 else target.pair(value, selectionValue, usage.isChecked, dialValue)
@@ -436,4 +503,10 @@ class MainActivity : Activity() {
 
     private val mint = Color.parseColor("#83E2BA")
     private val ink = Color.parseColor("#CFD8DA")
+
+    private companion object {
+        // Set when a pairing or a join is submitted, cleared when the
+        // start-on-boot question is answered or dismissed with Back.
+        const val BOOT_QUESTION = "boot_question_pending"
+    }
 }
