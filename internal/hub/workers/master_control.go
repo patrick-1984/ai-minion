@@ -28,6 +28,9 @@ type MasterControl struct {
 	// readRecheck is the re-check interval of a running verified read;
 	// zero means masterReadRecheck.
 	readRecheck time.Duration
+	// grantUse is told the verified grants behind an answered call (nil:
+	// nothing is recorded); see SetGrantUse.
+	grantUse *GrantUse
 
 	mu    sync.Mutex
 	lanes map[string]*masterLane
@@ -67,6 +70,11 @@ func NewMasterControl(db *store.Store, registry *Registry, events *EventHub, rou
 	return &MasterControl{db: db, registry: registry, events: events, router: router, auditor: auditor,
 		now: time.Now, lanes: map[string]*masterLane{}}
 }
+
+// SetGrantUse makes the MasterControl tell u the verified session grants that
+// authorized an answered call (usage count and last use), as the call server
+// does for Claimed grants. Call it before the Hub serves calls.
+func (m *MasterControl) SetGrantUse(u *GrantUse) { m.grantUse = u }
 
 func (m *MasterControl) Bind(ingest *Ingest, service *Service) error {
 	if !ingest.OnStream(proto.TypeMasterOpen, m.serveLane) ||

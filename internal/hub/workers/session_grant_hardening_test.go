@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/patrick-1984/ai-minion/internal/hub/store"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -168,26 +170,26 @@ func TestSessionGrantAdmitComparesTheGrantKey(t *testing.T) {
 	if err != nil || key == "" {
 		t.Fatalf("key %q %v", key, err)
 	}
-	admit := cs.admitGrant(wAlicePi1.ID, "agent", key, true)
-	if err := admit(ctx, Online{}); err != nil {
-		t.Fatalf("unchanged grant: %v", err)
+	admit := cs.admitGrant(wAlicePi1.ID, "", "agent", ops.OpSendText, key)
+	if p, err := admit(ctx, Online{}); err != nil || len(p.DirectGrants()) != 1 {
+		t.Fatalf("unchanged grant: %v (%d grants)", err, len(p.DirectGrants()))
 	}
 	changed := aliceGrant(authz.LevelControl)
 	changed.Revision = 2
 	g.setDirect(wAlicePi1.ID, "agent", changed)
-	if err := admit(ctx, Online{}); code(err) != proto.CodeForbidden {
+	if _, err := admit(ctx, Online{}); code(err) != proto.CodeForbidden {
 		t.Fatalf("changed grant: %v, want forbidden", err)
 	}
 	g.setDirect(wAlicePi1.ID, "agent", aliceGrant(authz.LevelView))
 	g.failDirect(errors.New("store down"))
-	if err := admit(ctx, Online{}); err == nil {
+	if _, err := admit(ctx, Online{}); err == nil {
 		t.Fatal("a failing store admitted the dispatch")
 	}
 }
 
-// One failed re-check of a running call is passed over, the second in a row
-// ends it with forbidden.
-func TestSessionGrantTwoFailedRechecksEndARunningCall(t *testing.T) {
+// A failed re-check of a running call of direct grants ends it with
+// forbidden.
+func TestSessionGrantFailedRecheckEndsARunningCall(t *testing.T) {
 	g := &fakeGrants{}
 	g.setDirect(wAlicePi1.ID, "agent", aliceGrant(authz.LevelView))
 	cs := NewCallServer(CallServerConfig{Grants: g, ReauthInterval: 5 * time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
@@ -211,6 +213,48 @@ func TestSessionGrantTwoFailedRechecksEndARunningCall(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the call was not withdrawn")
+	}
+	if c := proto.CodeOf(context.Cause(ctx)); c != proto.CodeForbidden {
+		t.Fatalf("cause = %v", context.Cause(ctx))
+	}
+}
+
+// onceFailingGrants fails the first read of the direct grants after fail is
+// set, and answers every other one.
+type onceFailingGrants struct {
+	*fakeGrants
+	fail atomic.Bool
+}
+
+func (g *onceFailingGrants) SessionGrantsFor(ctx context.Context, workerID, session string) ([]store.SessionGrantRow, error) {
+	if g.fail.CompareAndSwap(true, false) {
+		return nil, errors.New("store down once")
+	}
+	return g.fakeGrants.SessionGrantsFor(ctx, workerID, session)
+}
+
+// A running call of direct grants ends at the first re-check that cannot be
+// made: one store error is not passed over (fail closed, D5's 30 s bound).
+func TestSessionGrantOneFailedRecheckEndsARunningCallAtOnce(t *testing.T) {
+	g := &onceFailingGrants{fakeGrants: &fakeGrants{}}
+	g.setDirect(wAlicePi1.ID, "agent", aliceGrant(authz.LevelView))
+	cs := NewCallServer(CallServerConfig{Grants: g, ReauthInterval: 5 * time.Millisecond, Logger: slog.New(slog.DiscardHandler)})
+	pr, _, key, err := cs.authenticate(context.Background(), wAlicePi1.ID, "", "agent", ops.OpSessionSnapshot)
+	if err != nil || key == "" {
+		t.Fatalf("key %q %v", key, err)
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cs.reauthorizeWorker(ctx, cancel, pr, "agent", key, true)
+	}()
+	g.fail.Store(true)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("one failed re-check was passed over")
 	}
 	if c := proto.CodeOf(context.Cause(ctx)); c != proto.CodeForbidden {
 		t.Fatalf("cause = %v", context.Cause(ctx))

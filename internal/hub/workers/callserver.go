@@ -132,13 +132,47 @@ type GrantStore interface {
 
 var _ GrantStore = (*store.Store)(nil)
 
-// SessionRemovals reports when the Hub last observed a session go away (unix
-// ms); *EventHub implements it.
-type SessionRemovals interface {
-	RemovedAt(workerID, session string) (int64, bool)
+// SessionGenerations reports when the Hub first observed a session it lists
+// now (unix ms, 0 when it was listed before the Hub could observe it; ok false
+// when it does not list it); *EventHub implements it.
+type SessionGenerations interface {
+	FirstSeen(workerID, session string) (int64, bool)
 }
 
-var _ SessionRemovals = (*EventHub)(nil)
+var _ SessionGenerations = (*EventHub)(nil)
+
+// sameSessions reports whether the sessions that grant g names by name are
+// still the terminals it was made for: each must be listed by the Hub now and
+// have been first observed no later than the grant was created. A session
+// that went away and came back under the name, or one the Hub does not list
+// (unknown first-seen time), is another terminal, for as long as the grant
+// exists: the fence does not lift with time or a reconnect. A wildcard target
+// (every shared session) names none. source is false for a Verified source,
+// which the incarnation identifies, not the name. A nil seen fences nothing.
+func sameSessions(seen SessionGenerations, g store.SessionGrantRow, source bool) bool {
+	if seen == nil {
+		return true
+	}
+	same := func(workerID, session string) bool {
+		at, ok := seen.FirstSeen(workerID, session)
+		return ok && at <= g.CreatedAt
+	}
+	if source && !same(g.SourceWorkerID, g.SourceSession) {
+		return false
+	}
+	return g.TargetSession == "" || same(g.TargetWorkerID, g.TargetSession)
+}
+
+// sameSessionGrants keeps the rows that pass [sameSessions].
+func sameSessionGrants(seen SessionGenerations, rows []store.SessionGrantRow, source bool) []store.SessionGrantRow {
+	var kept []store.SessionGrantRow
+	for _, g := range rows {
+		if sameSessions(seen, g, source) {
+			kept = append(kept, g)
+		}
+	}
+	return kept
+}
 
 // TargetResolver resolves the human form of a target; *Router implements it.
 type TargetResolver interface {
@@ -169,9 +203,9 @@ type CallContext struct {
 	RequestWorkerID string
 	// admit is the dispatch fence of a call that a grant authorized: the
 	// Router runs it on the opened connection, before it writes the request.
-	admit func(context.Context, Online) error
+	admit func(context.Context, Online) (authz.Principal, error)
 	// grantIDs are the direct grants that authorized the routed request, as
-	// the Router read them at its decision; for the audit event of a write
+	// the Router read them at its final admission; for the audit event of a write
 	// and for the usage of the grants.
 	grantIDs []string
 }
@@ -205,12 +239,13 @@ type CallServerConfig struct {
 	Auditor Auditor
 	// Grants reads session-control grants. Nil means no session has one.
 	Grants GrantStore
-	// Removals tells when the Hub observed a session go away (*EventHub
-	// implements it): a name-only grant created before the observed removal
-	// of the session it names as source or target is left out of every
-	// decision and dispatch fence until the session purge deletes it, so it
-	// never reaches a new terminal that took the name. Nil fences nothing.
-	Removals SessionRemovals
+	// Sessions tells when the Hub first observed a session (*EventHub
+	// implements it): a direct grant whose named source or target session
+	// was first observed after the grant was created, or is not listed, is
+	// left out of every decision, dispatch fence and re-check (see
+	// sameSessions), so it never reaches a new terminal that took the name.
+	// Nil fences nothing.
+	Sessions SessionGenerations
 	// GrantUse is told the direct grants that authorized a brokered call
 	// that was allowed and answered (usage count and last use of a grant).
 	// Nil records nothing.
@@ -487,7 +522,7 @@ func (s *CallServer) serveRequest(ctx context.Context, workerID string, st Frame
 		SourceSession: req.SourceSession, RequestWorkerID: reqWorker}
 
 	if grant != "" {
-		c.admit = s.admitGrant(workerID, req.SourceSession, grant, direct)
+		c.admit = s.admitGrant(workerID, key, req.SourceSession, req.Op, grant)
 	}
 
 	cctx, cancel := context.WithCancelCause(ctx)
@@ -695,35 +730,17 @@ func (s *CallServer) lookupGrant(ctx context.Context, workerID, source string) (
 }
 
 // lookupDirect returns the direct session grants of the session source on the
-// Worker (by name), nil when it has none. A grant created before the Hub
-// observed the removal of a session it names (the source, or a named target)
-// is left out: the purge of that removal deletes it, and until then it must
-// not reach a terminal that took the name since.
+// Worker (by name), nil when it has none. A grant whose named sessions are not
+// the terminals it was made for (sameSessions) is left out.
 func (s *CallServer) lookupDirect(ctx context.Context, workerID, source string) ([]store.SessionGrantRow, error) {
 	if source == "" || s.cfg.Grants == nil {
 		return nil, nil
 	}
 	rows, err := s.cfg.Grants.SessionGrantsFor(ctx, workerID, source)
-	if err != nil || s.cfg.Removals == nil {
+	if err != nil || s.cfg.Sessions == nil {
 		return rows, err
 	}
-	var kept []store.SessionGrantRow
-	for _, g := range rows {
-		if s.removedSince(g.SourceWorkerID, g.SourceSession, g.CreatedAt) ||
-			g.TargetSession != "" && s.removedSince(g.TargetWorkerID, g.TargetSession, g.CreatedAt) {
-			continue
-		}
-		kept = append(kept, g)
-	}
-	return kept, nil
-}
-
-// removedSince reports whether the Hub observed the named session go away
-// after created (unix ms), as the purge judges it: a grant created strictly
-// before the removal is purged by it.
-func (s *CallServer) removedSince(workerID, session string, created int64) bool {
-	at, ok := s.cfg.Removals.RemovedAt(workerID, session)
-	return ok && created < at
+	return sameSessionGrants(s.cfg.Sessions, rows, true), nil
 }
 
 // grantKey is the value the re-check of a running call compares: the stored
@@ -787,21 +804,22 @@ func directGrantsOf(rows []store.SessionGrantRow) []authz.DirectGrant {
 }
 
 // admitGrant is the dispatch fence of a call authorized by the grants of the
-// session source: it reads them again, as authenticate did, and refuses when
-// they are not the ones (key grant) the call was authorized with, or when one
-// of them expired since (the key is taken at the clock of the server). A
-// failing store refuses too. direct is as for grantKey.
-func (s *CallServer) admitGrant(workerID, source, grant string, direct bool) func(context.Context, Online) error {
-	return func(ctx context.Context, _ Online) error {
-		cur, err := s.grantKey(ctx, workerID, source, direct)
+// session source: it authenticates the call again, as serveRequest did, and
+// refuses when the grants are not the ones (key grant) the call was
+// authorized with, or when one of them expired since (the key is taken at the
+// clock of the server). A failing store refuses too. It returns the principal
+// built from what it read, which the Router decides the request on again
+// before it writes it (an owner deactivated since, a withdrawn action).
+func (s *CallServer) admitGrant(workerID, key, source, op, grant string) func(context.Context, Online) (authz.Principal, error) {
+	return func(ctx context.Context, _ Online) (authz.Principal, error) {
+		pr, _, cur, err := s.authenticate(ctx, workerID, key, source, op)
 		if err != nil {
-			s.log.Error("workers: cannot re-read the grants before a dispatch", "worker_id", workerID, "error", err.Error())
-			return proto.NewError(proto.CodeInternal, "")
+			return authz.Principal{}, err
 		}
 		if cur != grant {
-			return proto.NewError(proto.CodeForbidden, "the grant was removed, changed or expired")
+			return authz.Principal{}, proto.NewError(proto.CodeForbidden, "the grant was removed, changed or expired")
 		}
-		return nil
+		return pr, nil
 	}
 }
 
@@ -848,7 +866,9 @@ func (s *CallServer) reauthenticate(ctx context.Context, cancel context.CancelCa
 // grant of the session source (stored targets grant) also ends when that
 // grant was removed or changed, or when a direct grant of the session expired
 // (direct is as for grantKey). One failing re-check (a store error) is
-// passed over; the second in a row ends the call.
+// passed over and the second in a row ends the call, except for a call that
+// direct grants authorized: it ends at once (fail closed, D5 bounds the end
+// of a withdrawn grant to 30 s).
 func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.CancelCauseFunc, pr authz.Principal, source, grant string, direct bool) {
 	t := time.NewTicker(s.cfg.ReauthInterval)
 	defer t.Stop()
@@ -883,8 +903,8 @@ func (s *CallServer) reauthorizeWorker(ctx context.Context, cancel context.Cance
 			failures = 0
 			continue
 		}
-		if failures++; failures >= 2 {
-			s.log.Error("workers: a running call could not be re-checked twice in a row and ends", "worker_id", pr.WorkerID)
+		if failures++; failures >= 2 || len(pr.DirectGrants()) > 0 {
+			s.log.Error("workers: a running call could not be re-checked and ends", "worker_id", pr.WorkerID)
 			cancel(proto.NewError(proto.CodeForbidden, "the permission of the call could not be re-checked"))
 			return
 		}

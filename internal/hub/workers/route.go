@@ -540,9 +540,12 @@ type CallRequest struct {
 	// unforced send. The caller (the name-only call handler) builds those
 	// arguments; any other op or shape is an internal error.
 	PromptOnly bool
-	// admit is the last, private check on a scoped master dispatch, after
-	// opening the exact destination connection and before sending any bytes.
-	admit func(context.Context, Online) error
+	// admit is the last, private check on a dispatch that grants authorized,
+	// after opening the exact destination connection and before sending any
+	// bytes. It returns the caller's principal built from what it read now;
+	// the Router decides the request again on it (the same decision as
+	// before the dispatch) and refuses unless it is still allowed.
+	admit func(context.Context, Online) (authz.Principal, error)
 	// granted, when set, is told the direct grants that by themselves
 	// authorize the request (authz.Authorizer.GrantIDs), once the decision
 	// allowed it and before anything is sent; for the audit of the caller.
@@ -737,7 +740,12 @@ type call struct {
 	// check, when set, decides on the connection that gets the op (the
 	// hidden-session refusal of session_create).
 	check func(Online) error
-	admit func(context.Context, Online) error
+	admit func(context.Context, Online) (authz.Principal, error)
+	// accepted and res are what the request was decided on; granted is
+	// CallRequest.granted. The final admission decides again on them.
+	accepted ops.ActionSet
+	res      authz.Resource
+	granted  func(ids []string)
 	// dispatched is set when the Worker's connection took the op (the
 	// stream opened): from then on it counts as an op sent to that Worker.
 	dispatched atomic.Bool
@@ -795,6 +803,39 @@ func promptOnlyRequest(op string, req CallRequest) bool {
 	return a.AgentOnly && a.Submit && !a.Force
 }
 
+// requestDecision is what a request is decided on: the actions it accepts
+// and the resource.
+func requestDecision(op ops.Op, req CallRequest) (ops.ActionSet, authz.Resource, error) {
+	var res authz.Resource = authz.WorkerResource{ID: req.WorkerID}
+	if req.Session != "" {
+		res = authz.SessionResource{WorkerID: req.WorkerID, Name: req.Session}
+	}
+	accepted := op.Actions
+	if req.PromptOnly {
+		if !promptOnlyRequest(op.Name, req) {
+			return ops.ActionSet{}, nil, proto.NewError(proto.CodeInternal, "a prompt-only request must be an agent-only, submitted send_text")
+		}
+		accepted = ops.MustActionSet(ops.ActionOperate, ops.ActionMessage)
+	}
+	return accepted, res, nil
+}
+
+// Redecide decides req again for the principal p, exactly as the Router
+// decided it before the dispatch (the op's accepted actions on its Worker or
+// session); a running call that p no longer may make ends. Only a failing
+// lookup is an error that is not a refusal.
+func (rt *Router) Redecide(ctx context.Context, p authz.Principal, req CallRequest) error {
+	op, ok := rt.catalog.Lookup(req.Op)
+	if !ok || op.Scope != ops.ScopeWorker {
+		return proto.NewError(proto.CodeUnsupportedOp, "not a Worker operation")
+	}
+	accepted, res, err := requestDecision(op, req)
+	if err != nil {
+		return err
+	}
+	return rt.az.Decide(ctx, p, accepted, res)
+}
+
 // prepare validates the request, decides it and computes the request frame.
 // Nothing has been sent yet when it returns an error.
 func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool) (*call, error) {
@@ -808,16 +849,9 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.WorkerID == "" {
 		return nil, proto.NewError(proto.CodeInvalidArgument, "the Worker is not named")
 	}
-	var res authz.Resource = authz.WorkerResource{ID: req.WorkerID}
-	if req.Session != "" {
-		res = authz.SessionResource{WorkerID: req.WorkerID, Name: req.Session}
-	}
-	accepted := op.Actions
-	if req.PromptOnly {
-		if !promptOnlyRequest(op.Name, req) {
-			return nil, proto.NewError(proto.CodeInternal, "a prompt-only request must be an agent-only, submitted send_text")
-		}
-		accepted = ops.MustActionSet(ops.ActionOperate, ops.ActionMessage)
+	accepted, res, err := requestDecision(op, req)
+	if err != nil {
+		return nil, err
 	}
 	if err := rt.az.Decide(ctx, req.Principal, accepted, res); err != nil {
 		return nil, err
@@ -891,6 +925,9 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		need:     requiredFeatures(op.Name, args),
 		check:    check,
 		admit:    req.admit,
+		accepted: accepted,
+		res:      res,
+		granted:  req.granted,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
 			Args: args, Actions: actions, Origin: origin,
@@ -970,6 +1007,28 @@ func (rt *Router) originOf(ctx context.Context, p authz.Principal, accepted ops.
 	return o, nil
 }
 
+// admit runs the final admission of c on the opened destination: the fence
+// of the caller, then the decision of the request again on the principal the
+// fence built from what it read now. The grants that authorize the request
+// at this point are the ones the caller is told (granted).
+func (rt *Router) admit(ctx context.Context, c *call, destination Online) error {
+	p, err := c.admit(ctx, destination)
+	if err != nil {
+		return err
+	}
+	if err := rt.az.Decide(ctx, p, c.accepted, c.res); err != nil {
+		return err
+	}
+	if c.granted != nil {
+		ids, err := rt.az.GrantIDs(ctx, p, c.accepted, c.res)
+		if err != nil {
+			return err
+		}
+		c.granted(ids)
+	}
+	return nil
+}
+
 // lostError means the request was (or may have been) sent and no answer came:
 // the connection ended, the Worker sent something unreadable, or time ran out.
 type lostError struct {
@@ -1027,7 +1086,7 @@ func (rt *Router) exchange(ctx context.Context, c *call, onElement func(json.Raw
 		return &lostError{cause: err, timeout: errors.Is(ctx.Err(), context.DeadlineExceeded)}
 	}
 	if c.admit != nil {
-		if err := c.admit(ctx, destination); err != nil {
+		if err := rt.admit(ctx, c, destination); err != nil {
 			st.Reset()
 			return nil, err
 		}

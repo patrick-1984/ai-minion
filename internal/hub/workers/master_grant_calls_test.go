@@ -90,15 +90,15 @@ func TestVerifiedGrantGetsALeaseAndIsServedOnlyForItsIncarnation(t *testing.T) {
 	// The final fence admits the granted session and refuses another one,
 	// the own Worker and a grant that changed after the decision.
 	c := r.call(ops.OpSessionSnapshot)
-	if err := m.admitMaster(ctx, c, &masterPending{}, r.backend.on, "build", auth); err != nil {
+	if _, err := m.admitMaster(ctx, c, &masterPending{}, r.backend.on, "build", auth); err != nil {
 		t.Fatalf("final fence refused the granted session: %v", err)
 	}
-	if err := m.admitMaster(ctx, c, &masterPending{}, r.backend.on, "elsewhere", auth); err == nil {
+	if _, err := m.admitMaster(ctx, c, &masterPending{}, r.backend.on, "elsewhere", auth); err == nil {
 		t.Fatal("final fence admitted a session without grant")
 	}
 	stale := auth
 	stale.key = "#direct:old"
-	if err := m.admitMaster(ctx, c, &masterPending{}, r.backend.on, "build", stale); err == nil {
+	if _, err := m.admitMaster(ctx, c, &masterPending{}, r.backend.on, "build", stale); err == nil {
 		t.Fatal("final fence admitted grants that changed")
 	}
 	// The name-only path cannot use the verified grant.
@@ -133,7 +133,7 @@ func TestMasterWithVerifiedGrantKeepsBothAuthorities(t *testing.T) {
 		t.Fatalf("authority = %+v, %v", auth, err)
 	}
 	// The nomination reaches nothing (no accept): the grant admits.
-	if err := m.admitMaster(ctx, r.call(ops.OpSessionSnapshot), &masterPending{}, r.backend.on, "build", auth); err != nil {
+	if _, err := m.admitMaster(ctx, r.call(ops.OpSessionSnapshot), &masterPending{}, r.backend.on, "build", auth); err != nil {
 		t.Fatalf("final fence = %v", err)
 	}
 }

@@ -915,10 +915,11 @@ func TestCallStreamLostReplyIsNotASuccess(t *testing.T) {
 	}
 }
 
-// A name-only grant made before the Hub observed the removal of a session it
-// names does not reach the terminal that took the name afterwards, while the
-// session purge has not run yet (its consumer is paused: nothing deletes the
-// grant here). A grant made after the removal does, and a removal observed
+// A name-only grant made before the Hub first observed the session it names
+// does not reach it: a terminal that took the name after the grant's session
+// was removed is another terminal, while the grant exists (the session purge
+// is paused: nothing deletes the grant here), however long that is. A grant
+// made after the new terminal was first seen does, and a removal observed
 // between the decision and the dispatch refuses the dispatch.
 func TestObservedRemovalFencesOlderNameOnlyGrantsBeforeThePurge(t *testing.T) {
 	var clock sync.Mutex
@@ -937,7 +938,7 @@ func TestObservedRemovalFencesOlderNameOnlyGrantsBeforeThePurge(t *testing.T) {
 		feeds[id] = f
 	}
 	r := newSCRig(t)
-	r.cs.cfg.Removals = hub
+	r.cs.cfg.Sessions = hub
 	old := aliceGrant(authz.LevelControl)
 	old.CreatedAt = 9_000
 	r.grants.setDirect(wAlicePi1.ID, "agent", old)
@@ -967,9 +968,18 @@ func TestObservedRemovalFencesOlderNameOnlyGrantsBeforeThePurge(t *testing.T) {
 		t.Fatal("a fenced grant reached a Worker")
 	}
 
-	// A grant made after the removal names the new terminal.
+	// The fence does not lift with time: an hour later the old grant still
+	// does not reach the replacement.
+	setNow(12_000 + time.Hour.Milliseconds())
+	frames, _ = send()
+	if c := errCodeOf(t, frames); c != proto.CodeForbidden {
+		t.Fatalf("the fence lifted with time: %q", c)
+	}
+	setNow(12_000)
+
+	// A grant made after the new terminal was first seen names it.
 	fresh := aliceGrant(authz.LevelControl)
-	fresh.ID, fresh.CreatedAt = "g-2", 11_500
+	fresh.ID, fresh.CreatedAt = "g-2", 12_500
 	r.grants.setDirect(wAlicePi1.ID, "agent", old, fresh)
 	frames, _ = send()
 	resultOf(t, frames, &wr)
@@ -996,9 +1006,11 @@ func TestObservedRemovalFencesOlderNameOnlyGrantsBeforeThePurge(t *testing.T) {
 	}
 }
 
-// A snapshot that no longer lists a session is an observed removal too, and
-// the record ends after removalFenceTTL.
-func TestEventHubRemovedAtFollowsSnapshotsAndExpires(t *testing.T) {
+// The first-seen time of a session: 0 for the first snapshot of this process,
+// kept across a later snapshot that still lists it, new for a name that came
+// back after a snapshot, a session_removed or an unsharing answer, and unknown
+// for a name the Hub does not list. It never lifts with time.
+func TestEventHubFirstSeenFollowsTheLiveSessions(t *testing.T) {
 	now := time.UnixMilli(50_000)
 	hub := NewEventHub(EventHubOptions{Now: func() time.Time { return now }})
 	f, err := hub.Connect("w", "w").NewFeed()
@@ -1008,22 +1020,48 @@ func TestEventHubRemovedAtFollowsSnapshotsAndExpires(t *testing.T) {
 	if err := f.Snapshot(0, []SessionState{{Name: "a"}, {Name: "b"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := hub.RemovedAt("w", "a"); ok {
-		t.Fatal("a listed session counts as removed")
+	if at, ok := hub.FirstSeen("w", "a"); !ok || at != 0 {
+		t.Fatalf("first snapshot: %d, %v", at, ok)
 	}
 	f, _ = hub.Connect("w", "w").NewFeed()
 	now = now.Add(time.Second)
 	if err := f.Snapshot(0, []SessionState{{Name: "b"}}); err != nil {
 		t.Fatal(err)
 	}
-	if at, ok := hub.RemovedAt("w", "a"); !ok || at != now.UnixMilli() {
-		t.Fatalf("removed at %d, %v", at, ok)
+	if _, ok := hub.FirstSeen("w", "a"); ok {
+		t.Fatal("a session the snapshot no longer lists has a first-seen time")
 	}
-	if _, ok := hub.RemovedAt("w", "b"); ok {
-		t.Fatal("a session the snapshot lists counts as removed")
+	if at, ok := hub.FirstSeen("w", "b"); !ok || at != 0 {
+		t.Fatalf("a session listed throughout lost its first-seen time: %d, %v", at, ok)
 	}
-	now = now.Add(removalFenceTTL + time.Second)
-	if _, ok := hub.RemovedAt("w", "a"); ok {
-		t.Fatal("the removal record outlived its time bound")
+	f, _ = hub.Connect("w", "w").NewFeed()
+	now = now.Add(time.Second)
+	if err := f.Snapshot(0, []SessionState{{Name: "a"}, {Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := hub.FirstSeen("w", "a"); !ok || at != now.UnixMilli() {
+		t.Fatalf("a name that came back in a snapshot: %d, %v", at, ok)
+	}
+	now = now.Add(time.Second)
+	if err := f.Apply(Change{Seq: 1, Event: EventSessionRemoved, Session: SessionState{Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if err := f.Apply(Change{Seq: 2, Event: EventSessionAdded, Session: SessionState{Name: "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := hub.FirstSeen("w", "b"); !ok || at != now.UnixMilli() {
+		t.Fatalf("a name that came back after session_removed: %d, %v", at, ok)
+	}
+	hub.ApplyShare("w", []string{"a"})
+	if _, ok := hub.FirstSeen("w", "a"); ok {
+		t.Fatal("an unshared session has a first-seen time")
+	}
+	now = now.Add(time.Hour)
+	if at, ok := hub.FirstSeen("w", "b"); !ok || at != now.Add(-time.Hour).UnixMilli() {
+		t.Fatalf("the first-seen time changed with time: %d, %v", at, ok)
+	}
+	if _, ok := hub.FirstSeen("other", "b"); ok {
+		t.Fatal("an unknown Worker has a first-seen time")
 	}
 }
