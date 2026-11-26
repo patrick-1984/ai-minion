@@ -1,6 +1,6 @@
 package store
 
-// Session codes (v0.23.0, migration 0037): every Worker has a number that the
+// Session codes (v0.23.0, migration 0039): every Worker has a number that the
 // Hub gives once and never again, and every session of a Worker a number the
 // Hub gives the first time it lists the session and never again within that
 // Worker. Together they are the short code "5-667" (ops.SessionCode).
@@ -85,7 +85,7 @@ func (s *Store) assignCodes(ctx context.Context, q codeQueryer, workerID string,
 	dirty := false
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// Every enrolled Worker has a number (migration 0037 and its trigger);
+		// Every enrolled Worker has a number (migration 0039 and its trigger);
 		// a Worker unknown to the table gets the next one.
 		if !write {
 			return 0, nil, true, nil
