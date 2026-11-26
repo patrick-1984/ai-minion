@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v0.22.0
+
+### Added
+
+- The Hub tells the target Worker which session made a brokered call: the request origin carries `source_session`, `source_proof` (claimed or verified) and, when one grant allowed it, `grant_id`. The target Worker keeps them in its local audit. They attribute and never authorize: no Worker decision reads them.
+- Workers on Linux tmux hosts whose kernel boot id is readable report a stable instance id for each tmux session (`instance_id` in `sessions_list`; feature `session.instance_id.list.v1` announced in the hello). A session created again under an old name gets a new id; a renamed session keeps it. It is metadata only: targets are still resolved by name. macOS, psmux and ConPTY Workers report no instance id. The Hub does not use it yet.
+
+### Fixed
+
+- A local caller on another tmux server of the same user is no longer taken for the Worker's session that has the same pane id: the client sends its tmux server socket with the pane, and the Worker names no source session unless both socket paths resolve to the same socket file. A client that cannot tell its tmux server (`$TMUX` missing or malformed) says so, and gets no source session either (psmux keeps the mapping it had). An older client is handled as before.
+- The Worker refuses a session operation from the Hub whose target names another Worker, and a repeated `request_id` from another caller or with another payload answers a conflict instead of the cached result of the first request.
+
+
 ## v0.21.0
 
 ### Added

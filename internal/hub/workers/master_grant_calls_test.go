@@ -154,7 +154,7 @@ func TestVerifiedMessageGrantSendsARoutedPrompt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 	defer cancel()
 	r.endNomination(t)
-	r.verifiedGrant(t, "first") // Message: read and message, no operate
+	g := r.verifiedGrant(t, "first") // Message: read and message, no operate
 	r.backend.on.Features = []string{proto.FeatureSendTextAgentOnly}
 	close(r.backend.goOn)
 	close(r.stream.release)
@@ -171,6 +171,14 @@ func TestVerifiedMessageGrantSendsARoutedPrompt(t *testing.T) {
 	if err := json.Unmarshal(request.Args, &args); err != nil || !args.AgentOnly || !args.Submit || args.Force ||
 		request.RequestID != c.RequestID {
 		t.Fatalf("the routed prompt lost its guard: %+v, %+v", request, args)
+	}
+	// The target audits the session of the bound lease as verified, and the
+	// grant of the final admission (review r1).
+	// The routed Worker is named by the arguments, so the frame leaves out the
+	// redundant target_worker_id (review r2).
+	if o := request.Origin; o.SourceSession != "prepared" || o.SourceProof != proto.OriginProofVerified || o.GrantID != g.ID ||
+		args.Target.WorkerID != r.target.ID || request.TargetWorkerID != "" {
+		t.Fatalf("the routed prompt lost its attribution: %+v, target %q", o, request.TargetWorkerID)
 	}
 }
 

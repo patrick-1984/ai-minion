@@ -224,6 +224,11 @@ func TestMasterRevocationOrdersFinalDispatchAndPreservesAdmittedOutcome(t *testi
 					request.RequestID != c.RequestID || !request.Origin.Grant {
 					t.Fatalf("destination frame omitted the scoped delivery guard: %+v, %+v", request, args)
 				}
+				// A nomination-only master: the bound master principal keeps no
+				// session, the admission names the lease's one, verified.
+				if o := request.Origin; o.SourceSession != "prepared" || o.SourceProof != proto.OriginProofVerified || o.GrantID != "" {
+					t.Fatalf("destination frame lost the verified source: %+v", o)
+				}
 			}
 			if _, err := m.runMasterCall(ctx, c); !errors.Is(err, errMasterDenied) {
 				t.Fatalf("old handle worked after identical re-nomination: %v", err)

@@ -210,6 +210,11 @@ type CallContext struct {
 	grantIDs []string
 }
 
+// source is the calling session of the call as its admission knows it: the
+// source_session the calling Worker named, claimed (the Hub does not verify
+// which of its sessions made the call), whatever grant authorizes it.
+func (c *CallContext) source() originSource { return claimedSource(c.SourceSession) }
+
 // CallFunc executes one operation of a call stream. A streaming operation
 // calls emit for each element and returns a nil result; any other returns its
 // result. A returned error is answered as an error frame (a *proto.Error keeps

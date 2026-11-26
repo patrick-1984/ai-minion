@@ -92,8 +92,18 @@ type SessionInfo struct {
 	// server to learn whether this Worker serves that same server. Additive
 	// field: a Worker that predates it never reports it. Only sessions the
 	// Worker shares are listed, so it exposes nothing of an unshared session.
-	Probe string    `json:"probe,omitempty"`
-	Pane  *PaneInfo `json:"pane"` // the active pane, null when none
+	Probe string `json:"probe,omitempty"`
+	// InstanceID is the host-attested identity of the terminal session behind
+	// the name: it stays the same when the session is renamed and when the
+	// Worker restarts, and it is another value when the name is created again
+	// or the terminal server is another one. Form: "t1-" and 32 lower-case hex
+	// digits for tmux (a hash, see the Worker's tmux adapter); other hosts get
+	// their own prefix. It identifies a terminal and proves nothing about a
+	// caller. Additive field: a Worker that predates it never reports it, and
+	// a Worker that announces proto.FeatureSessionInstanceIDListV1 leaves it out for
+	// a session whose identity its host could not read.
+	InstanceID string    `json:"instance_id,omitempty"`
+	Pane       *PaneInfo `json:"pane"` // the active pane, null when none
 }
 
 // SessionsListResult is the result of sessions_list. Sessions the Worker does

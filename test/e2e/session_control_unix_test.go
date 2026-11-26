@@ -41,6 +41,7 @@ type controller struct {
 	rt                   string
 	home                 string
 	panes                map[string]string // session name -> pane id ($TMUX_PANE)
+	tmux                 map[string]string // pane id -> $TMUX of a process in that pane
 }
 
 // startController enrolls W1 (named name, owned by ownerID) in its state
@@ -70,7 +71,7 @@ func startControllerWith(t *testing.T, ph *shareHub, ownerID, name, share, pathP
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	c := &controller{stateDir: state, pathPrefix: pathPrefix, path: workerPath(t), wid: store.NewID(), home: t.TempDir(), panes: map[string]string{}}
+	c := &controller{stateDir: state, pathPrefix: pathPrefix, path: workerPath(t), wid: store.NewID(), home: t.TempDir(), panes: map[string]string{}, tmux: map[string]string{}}
 	if err := ph.st.InsertWorker(context.Background(), nil, store.WorkerRow{ID: c.wid, Pub: key.Public(), Name: name, OwnerID: ownerID,
 		Kind: store.WorkerKindPrivate, CreatedAt: time.Now().UnixMilli()}); err != nil {
 		t.Fatal(err)
@@ -83,6 +84,18 @@ func startControllerWith(t *testing.T, ph *shareHub, ownerID, name, share, pathP
 			t.Fatal(err)
 		}
 		c.panes[s] = strings.TrimSpace(pane)
+		// $TMUX as tmux sets it in the pane: "<socket>,<server pid>,<session
+		// index>", the index being the number of #{session_id} ("$N").
+		v, err := srv.Tmux("display-message", "-p", "-t", "="+s+":", "#{socket_path},#{pid},#{session_id}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		v = strings.TrimSpace(v)
+		i := strings.LastIndex(v, ",$")
+		if i < 0 {
+			t.Fatalf("tmux printed %q for the $TMUX of %s", v, s)
+		}
+		c.tmux[c.panes[s]] = v[:i+1] + v[i+2:]
 	}
 	// A short runtime directory: unix socket paths are limited.
 	if c.rt, err = os.MkdirTemp("", "sc"); err != nil {
@@ -110,7 +123,8 @@ func startControllerWith(t *testing.T, ph *shareHub, ownerID, name, share, pathP
 }
 
 // env is the environment of a process on W1's host: no Hub URL, no inherited
-// MINION_* or TMUX, and $TMUX_PANE when pane is not empty.
+// MINION_* or TMUX, and $TMUX_PANE with the $TMUX of W1's private tmux server
+// when pane is not empty, as in a process that runs in that pane.
 func (c *controller) env(pane string) []string {
 	path := c.path
 	if c.pathPrefix != "" {
@@ -120,6 +134,9 @@ func (c *controller) env(pane string) []string {
 		"XDG_STATE_HOME=" + filepath.Join(c.home, "state"), "XDG_CONFIG_HOME=" + filepath.Join(c.home, "config")}
 	if pane != "" {
 		env = append(env, "TMUX_PANE="+pane)
+		if v := c.tmux[pane]; v != "" {
+			env = append(env, "TMUX="+v)
+		}
 	}
 	return env
 }

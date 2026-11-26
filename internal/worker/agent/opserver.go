@@ -69,6 +69,11 @@ type OpRequestFrame struct {
 	// It is kept raw so that one of the wrong JSON type is refused as a
 	// malformed origin, not as an unreadable frame.
 	Origin json.RawMessage `json:"origin,omitempty"`
+	// TargetWorkerID is the Worker the Hub authorized the request for and
+	// routed it to; optional (an older Hub sends none). It is outside the
+	// arguments and feeds only the target-Worker check of the session
+	// operations ([Executor.requireTargetWorker]).
+	TargetWorkerID string `json:"target_worker_id,omitempty"`
 }
 
 // OpProgressFrame is an "op.progress" frame: a short status of a long op.
@@ -553,7 +558,7 @@ func (s *OpServer) parse(body json.RawMessage) (rq Request, held []ops.Action, _
 		// only the owner or an administrator, and the Worker its opt-in).
 		eff = held
 	}
-	return Request{Op: f.Op, Actions: eff, Args: args, Origin: origin}, held, nil
+	return Request{Op: f.Op, Actions: eff, Args: args, Origin: origin, TargetWorkerID: f.TargetWorkerID}, held, nil
 }
 
 // OriginRefusalAuditor is the executor as the op server uses it to leave the

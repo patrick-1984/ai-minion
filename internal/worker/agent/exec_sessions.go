@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -110,10 +111,57 @@ func (e *Executor) requireShared(ctx context.Context, session string) error {
 	return nil
 }
 
+// requireTargetWorker refuses a session operation of the Hub that names another
+// Worker (audit B-13, story W5). The terminal host resolves a target by its
+// session name alone, so without this check a request that the Hub authorized
+// for Worker Y and routed to Worker X by mistake would run on X's session of
+// the same name. The refusal is the one of the share operations
+// ([Executor.requireSelf]): forbidden, and nothing is read or written.
+//
+// named is the worker_id of the request's arguments. The Hub also names, in
+// the op.request frame and outside the arguments, the Worker it authorized
+// and routed the request to (target_worker_id, [routedWorker]); the arguments
+// of sessions_list and session_create usually name none. Each that is named
+// must be this Worker; a request that names neither (an older Hub) is served
+// as before. So is a local caller (no Hub origin): the local entry point
+// forwards what names another Worker to the Hub before it gets here. A Worker
+// that has no Hub id cannot compare and serves the request as before; a Hub
+// request reaches only a Worker that the Hub's welcome gave its id.
+func (e *Executor) requireTargetWorker(ctx context.Context, named string) error {
+	routed := routedWorker(ctx)
+	if named == "" && routed == "" || hubOrigin(ctx) == nil {
+		return nil
+	}
+	self := e.policy.WorkerID()
+	if self == "" {
+		return nil
+	}
+	if named != "" && named != self {
+		return apiErr(proto.CodeForbidden, "", "worker_id names another Worker; a Worker only reads and writes its own sessions")
+	}
+	if routed != "" && routed != self {
+		return apiErr(proto.CodeForbidden, "", "the Hub routed a request for another Worker here; a Worker only reads and writes its own sessions")
+	}
+	return nil
+}
+
+// argsWorkerID returns the worker_id member of the arguments of an op whose
+// arguments have no target (sessions_list, session_create), or "".
+func argsWorkerID(raw json.RawMessage) string {
+	var a struct {
+		WorkerID string `json:"worker_id"`
+	}
+	_ = json.Unmarshal(raw, &a) // an absent or malformed member names no Worker
+	return a.WorkerID
+}
+
 // sessionsList lists the shared sessions with their active pane's kind and
 // state. Unshared sessions are omitted whatever the caller holds.
 func (e *Executor) sessionsList(ctx context.Context, rq Request) (any, error) {
 	if _, _, err := prepare[ops.SessionsListArgs](rq); err != nil {
+		return nil, err
+	}
+	if err := e.requireTargetWorker(ctx, argsWorkerID(rq.Args)); err != nil {
 		return nil, err
 	}
 	return readStable(e, ctx, "", func(sel store.ShareState) (any, error) { return e.listShared(ctx, sel) })
@@ -187,7 +235,7 @@ func (e *Executor) listShared(ctx context.Context, sel store.ShareState) (any, e
 	for i, s := range shared {
 		out[i] = ops.SessionInfo{
 			Name: s.Name, Created: ops.Timestamp(s.Created), Windows: s.Windows,
-			Attached: s.Attached, Task: s.Task, Probe: s.Probe,
+			Attached: s.Attached, Task: s.Task, Probe: s.Probe, InstanceID: s.Instance,
 		}
 		p, ok := s.ActivePane()
 		if !ok {
@@ -213,7 +261,32 @@ func (e *Executor) listShared(ctx context.Context, sel store.ShareState) (any, e
 		}(&info, p.Ref, s)
 	}
 	wg.Wait()
-	return ops.SessionsListResult{Sessions: out}, nil
+	return withInstanceIDsThatFit(ops.SessionsListResult{Sessions: out}), nil
+}
+
+// maxListingWithInstanceIDs is the largest encoded session listing that keeps
+// its instance ids: the smallest response limit a listing meets on its way,
+// the bound-master result cap of the Hub (64 KiB, master_calls.go), which is
+// far below the stream frame limit (proto.StreamFrameLimit) with its envelope.
+const maxListingWithInstanceIDs = 64 << 10
+
+// withInstanceIDsThatFit returns res without its instance ids when they would
+// make the encoded listing larger than [maxListingWithInstanceIDs] (review
+// r2). The ids are additive and informational: without them the listing is
+// the one a release before them returned, so a listing that fit before still
+// fits. A Hub filters a listing for a bound master and encodes it again in
+// the same form, so what fits here fits there.
+func withInstanceIDsThatFit(res ops.SessionsListResult) ops.SessionsListResult {
+	if !slices.ContainsFunc(res.Sessions, func(s ops.SessionInfo) bool { return s.InstanceID != "" }) {
+		return res
+	}
+	if b, err := json.Marshal(res); err == nil && len(b) <= maxListingWithInstanceIDs {
+		return res
+	}
+	for i := range res.Sessions {
+		res.Sessions[i].InstanceID = ""
+	}
+	return res
 }
 
 // readTarget is the shared start of snapshot and capture: share check,
@@ -239,6 +312,9 @@ func (e *Executor) sessionSnapshot(ctx context.Context, rq Request) (any, error)
 	if err != nil {
 		return nil, err
 	}
+	if err := e.requireTargetWorker(ctx, args.Target.WorkerID); err != nil {
+		return nil, err
+	}
 	return readStable(e, ctx, args.Target.SessionName, func(store.ShareState) (any, error) {
 		p, err := e.readTarget(ctx, args.Target)
 		if err != nil {
@@ -251,6 +327,9 @@ func (e *Executor) sessionSnapshot(ctx context.Context, rq Request) (any, error)
 func (e *Executor) sessionCapture(ctx context.Context, rq Request) (any, error) {
 	_, args, err := prepare[ops.SessionCaptureArgs](rq)
 	if err != nil {
+		return nil, err
+	}
+	if err := e.requireTargetWorker(ctx, args.Target.WorkerID); err != nil {
 		return nil, err
 	}
 	return readStable(e, ctx, args.Target.SessionName, func(store.ShareState) (any, error) {
@@ -322,6 +401,11 @@ func (e *Executor) sessionCreate(ctx context.Context, rq Request) (any, error) {
 		return a.WriteArgs, ops.Target{SessionName: a.Name}
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := e.requireTargetWorker(ctx, argsWorkerID(rq.Args)); err != nil {
+		// session_create has no target, so the write frame cannot check it.
+		e.record(ctx, op.Name, args.WriteArgs, ops.Target{SessionName: args.Name}, ops.WriteResult{}, err)
 		return nil, err
 	}
 	return e.write(ctx, op, args.WriteArgs, ops.Target{SessionName: args.Name}, false,

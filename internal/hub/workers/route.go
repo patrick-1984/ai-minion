@@ -76,6 +76,13 @@ type OpRequest struct {
 	// mandatory). It is built from the authenticated principal and never from
 	// caller JSON (see [Router.originOf]).
 	Origin proto.Origin `json:"origin"`
+	// TargetWorkerID is the Worker the request was authorized for and is
+	// routed to (CallRequest.WorkerID). It is outside the arguments, so the
+	// digest of a write's arguments does not change. A Worker that knows it
+	// refuses a request that names another Worker; an older Worker ignores it.
+	// It is left out when the arguments already name that Worker where the
+	// Worker checks them ([routedTargetWorker]).
+	TargetWorkerID string `json:"target_worker_id,omitempty"`
 }
 
 // OpProgress is an op.progress frame: one element of a streaming op, or
@@ -550,6 +557,10 @@ type CallRequest struct {
 	// authorize the request (authz.Authorizer.GrantIDs), once the decision
 	// allowed it and before anything is sent; for the audit of the caller.
 	granted func(ids []string)
+	// source is the calling session as the admission path established it
+	// (a verified bound master lease, or a session named on a call stream);
+	// it only attributes the request in its origin.
+	source originSource
 }
 
 // Call routes a non-streaming op and returns its result as a value of the
@@ -898,16 +909,21 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 	if req.Args == nil || (reflect.ValueOf(req.Args).Kind() == reflect.Pointer && reflect.ValueOf(req.Args).IsNil()) {
 		args = []byte("{}")
 	}
-	origin, err := rt.originOf(ctx, req.Principal, accepted, res)
+	// The direct grants that authorize the request, read once by the
+	// admission for the caller's audit; the origin names them from here and
+	// never reads them again.
+	var grantIDs []string
+	if req.granted != nil {
+		if grantIDs, err = rt.az.GrantIDs(ctx, req.Principal, accepted, res); err != nil {
+			return nil, err
+		}
+	}
+	origin, err := rt.originOf(ctx, req.Principal, accepted, res, req.source, grantIDs)
 	if err != nil {
 		return nil, err
 	}
 	if req.granted != nil {
-		ids, err := rt.az.GrantIDs(ctx, req.Principal, accepted, res)
-		if err != nil {
-			return nil, err
-		}
-		req.granted(ids)
+		req.granted(grantIDs)
 	}
 	id := ops.NewUUIDv7()
 	if op.Write {
@@ -930,9 +946,36 @@ func (rt *Router) prepare(ctx context.Context, req CallRequest, wantStream bool)
 		granted:  req.granted,
 		frame: OpRequest{
 			Type: proto.TypeOpRequest, Op: op.WireName(), RequestID: id,
-			Args: args, Actions: actions, Origin: origin,
+			Args: args, Actions: actions, Origin: origin, TargetWorkerID: routedTargetWorker(op.Name, args, req.WorkerID),
 		},
 	}, nil
+}
+
+// routedTargetWorker is the target_worker_id of an op.request: workerID, the
+// Worker the request was authorized for, unless the typed arguments already
+// name exactly that Worker where the Worker checks them (target.worker_id, or
+// worker_id of sessions_list and session_create; Executor.requireTargetWorker).
+// Then it is "": the member would be redundant, and its bytes could push a
+// frame that fit before over the stream limit (review r2). Arguments that do
+// not decode, or that name no Worker or another one, keep it.
+func routedTargetWorker(op string, args []byte, workerID string) string {
+	var a struct {
+		WorkerID string `json:"worker_id"`
+		Target   struct {
+			WorkerID string `json:"worker_id"`
+		} `json:"target"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return workerID
+	}
+	named := a.Target.WorkerID
+	if op == ops.OpSessionsList || op == ops.OpSessionCreate {
+		named = a.WorkerID
+	}
+	if named != "" && named == workerID {
+		return ""
+	}
+	return workerID
 }
 
 // userControlOps are the session operations that a Worker which is not
@@ -970,7 +1013,11 @@ func (rt *Router) checkUserManaged(ctx context.Context, p authz.Principal, op, w
 // is marked Grant (authz.Authorizer.GrantedByScope); the own-Worker rule, a
 // key and a user never are. The origin is validated before it is sent: a
 // request whose origin cannot be derived is not sent.
-func (rt *Router) originOf(ctx context.Context, p authz.Principal, accepted ops.ActionSet, res authz.Resource) (proto.Origin, error) {
+//
+// src and grantIDs are what the admission established of a Worker call: its
+// calling session and the direct grants that authorize it; they only attribute
+// ([Router.originAttribution]).
+func (rt *Router) originOf(ctx context.Context, p authz.Principal, accepted ops.ActionSet, res authz.Resource, src originSource, grantIDs []string) (proto.Origin, error) {
 	var o proto.Origin
 	sourceID := ""
 	switch p.Kind {
@@ -987,6 +1034,7 @@ func (rt *Router) originOf(ctx context.Context, p authz.Principal, accepted ops.
 			return proto.Origin{}, err
 		}
 		o = proto.Origin{Kind: proto.OriginWorker, Grant: granted}
+		rt.originAttribution(&o, p, src, grantIDs)
 		sourceID = p.WorkerID
 	}
 	if sourceID != "" {
@@ -1025,6 +1073,9 @@ func (rt *Router) admit(ctx context.Context, c *call, destination Online) error 
 			return err
 		}
 		c.granted(ids)
+		// The origin names the grant this final admission found, not a
+		// grant of the earlier decision.
+		rt.originGrant(&c.frame.Origin, p, ids)
 	}
 	return nil
 }

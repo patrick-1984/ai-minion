@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -186,9 +188,101 @@ func sourcePane() string {
 	return ""
 }
 
+// maxTmuxSocketPath bounds the socket path taken from $TMUX: no real socket
+// path is longer (a unix socket address holds about a hundred bytes).
+const maxTmuxSocketPath = 4096
+
+// tmuxServer is the tmux server the pane of [sourcePane] belongs to, from
+// $TMUX: the absolute path of its socket and its pid. A pane id is only
+// meaningful on that one server (every server numbers its panes from %0), so
+// both travel next to the pane: the Worker maps the pane to a session only
+// when it serves that very server, and the pid tells a server that was
+// restarted on the same socket from the one the caller ran in.
+type tmuxServer struct {
+	Socket string
+	PID    int64
+}
+
+// sourceTmuxServer reads [tmuxServer] from $TMUX. present is false when $TMUX
+// is not set (or empty): a shell that carries $TMUX_PANE alone (a systemd
+// unit, a script) is then sent as before, without the unknown marker. A $TMUX
+// that is set but not of the form tmux gives it returns ok false.
+func sourceTmuxServer() (srv tmuxServer, present, ok bool) {
+	v := os.Getenv("TMUX")
+	if v == "" {
+		return tmuxServer{}, false, false
+	}
+	srv, ok = tmuxServerOf(v, os.Getwd)
+	return srv, true, ok
+}
+
+// tmuxServerOf parses a $TMUX value, which tmux sets to
+// "<socket>,<server pid>,<session index>". It is read from the right, because
+// a socket path may itself contain a comma. A relative socket path (tmux -S
+// keeps the path as given) is made absolute against the working directory
+// from getwd, which is where tmux's own client looks for it. Anything that is
+// not of that form gives ok false.
+func tmuxServerOf(v string, getwd func() (string, error)) (tmuxServer, bool) {
+	rest, index, ok := cutLast(v, ',')
+	if !ok || !allDigits(index) {
+		return tmuxServer{}, false
+	}
+	socket, pidText, ok := cutLast(rest, ',')
+	if !ok || !allDigits(pidText) || socket == "" || len(socket) > maxTmuxSocketPath || strings.ContainsRune(socket, 0) {
+		return tmuxServer{}, false
+	}
+	pid, err := strconv.ParseInt(pidText, 10, 64)
+	if err != nil || pid <= 0 {
+		return tmuxServer{}, false
+	}
+	if !filepath.IsAbs(socket) {
+		wd, err := getwd()
+		if err != nil || !filepath.IsAbs(wd) {
+			return tmuxServer{}, false
+		}
+		// Joined as text, not cleaned: "link/../sock" is resolved by the file
+		// system on the Worker, as tmux's client resolves it.
+		socket = strings.TrimSuffix(wd, string(filepath.Separator)) + string(filepath.Separator) + socket
+		if len(socket) > maxTmuxSocketPath {
+			return tmuxServer{}, false
+		}
+	}
+	return tmuxServer{Socket: socket, PID: pid}, true
+}
+
+// cutLast cuts s around the last sep.
+func cutLast(s string, sep byte) (before, after string, found bool) {
+	i := strings.LastIndexByte(s, sep)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+1:], true
+}
+
+// allDigits reports whether s is a non-empty run of ASCII digits.
+func allDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
 // exchange runs one request on conn.
 func exchange(conn net.Conn, op string, args json.RawMessage, onProgress func(json.RawMessage) error) (json.RawMessage, error) {
 	req := localapi.RequestFrame{Type: proto.TypeOpRequest, Op: op, Args: args, Pane: sourcePane()}
+	if req.Pane != "" {
+		// Only with a pane: the socket and pid say which server the pane id is
+		// of. A $TMUX the client cannot read is said, so that the Worker does
+		// not take the client for one that predates the members and map the
+		// pane anyway; without $TMUX the request is the one of before.
+		if srv, present, ok := sourceTmuxServer(); ok {
+			req.TmuxSocket, req.TmuxServerPID = srv.Socket, srv.PID
+		} else if present {
+			req.TmuxSocketUnknown = true
+		}
+	}
 	if err := proto.WriteFrame(conn, proto.StreamFrameLimit, req); err != nil {
 		var pe *proto.Error
 		if errors.As(err, &pe) {

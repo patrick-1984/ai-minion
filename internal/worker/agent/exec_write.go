@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -52,6 +55,11 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 		}
 	}()
 
+	// A Hub request for another Worker is refused before anything else, and
+	// leaves its audit row through the deferred record.
+	if err = e.requireTargetWorker(ctx, t.WorkerID); err != nil {
+		return res, err
+	}
 	if err = e.checkPolicy(ctx, t, checkShared); err != nil {
 		return res, err
 	}
@@ -83,8 +91,16 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 			return res, internalErr("read the result cache", gerr)
 		}
 	}
+	// The request as the cache knows it: what it does, who sent it (from which
+	// admitted session, when the Hub names it) and a digest of what it
+	// carries. A request id answers only the request it was first used for, by
+	// the caller who used it (audit F13).
+	next := store.ResultRecord{
+		RequestID: wa.RequestID, Op: op.Name, Session: t.SessionName, Force: wa.Force,
+		Caller: writeCaller(ctx), CallerSession: writeSourceSession(ctx), PayloadHash: writePayloadHash(ctx, op),
+	}
 	if hit {
-		if rec.Op != op.Name || rec.Session != t.SessionName || rec.Force != wa.Force {
+		if !rec.SameRequest(next) {
 			return res, apiErr(proto.CodeConflict, "", "this request_id was already used for a different request")
 		}
 		if jerr := json.Unmarshal(rec.Result, &res); jerr != nil {
@@ -98,7 +114,8 @@ func (e *Executor) write(ctx context.Context, op ops.Op, wa ops.WriteArgs, t ops
 	// result cannot be stored afterwards, a duplicate finds this record and
 	// answers unknown instead of sending again (AD-15). Without the record the
 	// request does not run.
-	rec = store.ResultRecord{RequestID: wa.RequestID, Op: op.Name, Session: t.SessionName, Force: wa.Force, Result: []byte(unfinishedResult)}
+	rec = next
+	rec.Result = []byte(unfinishedResult)
 	if perr := e.state.PutResult(ctx, rec); perr != nil {
 		return res, internalErr("record the request", perr)
 	}
@@ -162,6 +179,99 @@ func (e *Executor) checkPolicy(ctx context.Context, t ops.Target, checkShared bo
 		}
 	}
 	return nil
+}
+
+// localCaller is the caller of a write that came through a local entry point
+// (the local socket, the CLI, MCP on this host): the entry point is the origin.
+const localCaller = "local"
+
+// writeCaller names who sent a write, for the result cache: the identity
+// members of the Hub-derived origin, or [localCaller]. The members hold no
+// space (proto.Origin.Validate), so the text is unambiguous. It is the caller
+// as far as the origin tells it: two grants of one user are the same caller
+// here. Two sessions of one source Worker are told apart by
+// [writeSourceSession] when the Hub names the admitted session.
+func writeCaller(ctx context.Context) string {
+	o := hubOrigin(ctx)
+	if o == nil {
+		return localCaller
+	}
+	return string(o.Kind) + " user=" + o.UserID + " actor=" + o.ActorID + " key=" + o.KeyID + " worker=" + o.SourceWorkerID
+}
+
+// writeSourceSession is the calling session the Hub admitted a write for (the
+// source_session of its origin), for the result cache: two controller sessions
+// of one Worker that reuse a request id are different callers. It is "" for a
+// local caller and for a Hub that names no session (an older Hub, a call
+// without a calling session); the cache then compares without it. This is the
+// one place where the Worker reads an attribution member of the origin, and it
+// only narrows the cache: another session turns a replay into a conflict and
+// never lets a request run or read what it could not before.
+func writeSourceSession(ctx context.Context) string {
+	if o := hubOrigin(ctx); o != nil {
+		return o.SourceSession
+	}
+	return ""
+}
+
+// writePayloadHash is the SHA-256 digest of the arguments of the write as the
+// handler executes them: the raw arguments decoded into the typed arguments of
+// op, exactly as [decode] does, and encoded again. The same request encoded
+// twice (member order, space) has one digest, and two encodings that decode to
+// different effective arguments (a member spelled twice with different case,
+// where the last one wins) have two. Members the Hub assigns per delivery
+// (pipe_send's message_id) are left out: an identical retry gets a fresh one
+// and is still the same request. Arguments that do not decode are digested in
+// their canonical JSON form, or as they are when they are not JSON. It is ""
+// when the entry point did not pass the arguments on (see [withWritePayload]);
+// the payload is then not compared. Only the digest is stored, never the text.
+func writePayloadHash(ctx context.Context, op ops.Op) string {
+	raw, ok := ctx.Value(payloadCtxKey{}).(json.RawMessage)
+	if !ok {
+		return ""
+	}
+	if b, ok := typedPayload(op, raw); ok {
+		raw = b
+	} else {
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err == nil && !dec.More() {
+			if b, merr := json.Marshal(v); merr == nil {
+				raw = b
+			}
+		}
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// typedPayload decodes raw into the argument type of op the way [decode] does
+// and returns the encoding of the typed value, without the members the Hub
+// assigns per delivery. It reports false when op declares no argument type or
+// raw does not decode into it.
+func typedPayload(op ops.Op, raw json.RawMessage) ([]byte, bool) {
+	if op.Args == nil {
+		return nil, false
+	}
+	if t := bytes.TrimSpace(raw); len(t) == 0 || string(t) == "null" {
+		raw = json.RawMessage("{}")
+	}
+	v := op.NewArgs()
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(v); err != nil || dec.More() {
+		return nil, false
+	}
+	if a, ok := v.(*ops.PipeSendArgs); ok {
+		// The Hub gives every attempt its own message id; it names the turn
+		// of the reply, not what the caller asked for.
+		a.MessageID = 0
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }
 
 // unfinishedResult is the result a duplicate gets for a request that was

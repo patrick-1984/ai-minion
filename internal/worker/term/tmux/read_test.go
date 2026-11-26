@@ -60,10 +60,16 @@ func codecFromFormat(format string) paneCodec {
 
 // frame builds list-panes output from rows of exactly paneFields fields,
 // exactly as tmux prints them: raw values, fs between them, rs and a newline
-// after each row.
+// after each row. A row of 13 fields is a fixture without the identity fields
+// (#{pid}, #{start_time}, #{session_id}): it gets them empty in front of the
+// name, which is what a server that does not know them prints. Any other
+// number of fields is framed as it is.
 func (c paneCodec) frame(rows ...[]string) string {
 	var b strings.Builder
 	for _, f := range rows {
+		if len(f) == 13 {
+			f = append(append(append([]string(nil), f[:12]...), "", "", ""), f[12])
+		}
 		b.WriteString(strings.Join(f, c.fs) + c.rs + "\n")
 	}
 	return b.String()

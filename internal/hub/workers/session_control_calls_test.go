@@ -201,9 +201,15 @@ func TestSessionControlGrantedSessionReachesItsTargetsOnly(t *testing.T) {
 	resultOf(t, frames, &snap)
 	req := sent.request(t)
 	want := proto.Origin{Kind: proto.OriginWorker, SourceWorkerID: wRootLab.ID, SourceWorkerFP: wRootLab.Fingerprint,
-		SourceWorkerOwnerID: idRoot, Grant: true}
+		SourceWorkerOwnerID: idRoot, Grant: true, SourceSession: "boss", SourceProof: proto.OriginProofClaimed}
 	if req.Origin != want {
 		t.Fatalf("origin = %+v, want %+v", req.Origin, want)
+	}
+	// The arguments name the routed Worker, so the redundant member is left
+	// out (review r2) and the Worker checks the argument.
+	var sa ops.SessionSnapshotArgs
+	if err := json.Unmarshal(req.Args, &sa); err != nil || sa.Target.WorkerID != wAlicePi2.ID || req.TargetWorkerID != "" {
+		t.Fatalf("target_worker_id = %q, target %+v (%v), want the routed Worker in the arguments only", req.TargetWorkerID, sa.Target, err)
 	}
 
 	// send_text on bob's pi-1:build, by the human form: resolved among all
