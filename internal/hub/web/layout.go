@@ -83,6 +83,13 @@ type NavGroup struct {
 type Crumb struct {
 	Label string
 	Path  string
+	// Current marks the current page when it is a link too (the session page:
+	// a link to itself); a crumb without Path is always the current page.
+	Current bool
+	// Code is a short code shown before the label in a monospace badge ("" for none).
+	Code string
+	// Switch is the id of a popover that the crumb's switch button opens ("" for none).
+	Switch string
 }
 
 // Crumbed is implemented by the Data of a page that knows its own ancestors,

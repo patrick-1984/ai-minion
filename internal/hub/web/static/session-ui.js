@@ -300,4 +300,55 @@
       box.dispatchEvent(new Event('input', { bubbles: true })); // counts as an edit of the draft
     }
   });
+
+  // ---- the quick switcher of the breadcrumb -----------------------------------
+  // A native popover (the Worker and the session crumb open it; Escape closes it
+  // and returns the focus). The script adds type-to-filter and the arrow keys:
+  // Down and Up move through the shown links, Home and End jump, Enter in the
+  // filter opens the first match. Every entry is an ordinary link.
+  var sw = document.querySelector('[data-crumb-switch]');
+  if (sw) {
+    var filter = sw.querySelector('.crumb-switch-filter');
+    var empty = sw.querySelector('.crumb-switch-empty');
+    var links = Array.prototype.slice.call(sw.querySelectorAll('a[href]'));
+    var shown = function () { return links.filter(function (a) { return !a.parentNode.hidden; }); };
+    var apply = function () {
+      var words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
+      links.forEach(function (a) {
+        var text = (a.getAttribute('data-filter') || '').toLowerCase();
+        a.parentNode.hidden = !words.every(function (w) { return text.indexOf(w) !== -1; });
+      });
+      sw.querySelectorAll('.crumb-switch-list').forEach(function (list) {
+        var any = list.querySelector('li:not([hidden])');
+        list.hidden = !any;
+        var head = list.previousElementSibling;
+        if (head && head.classList.contains('crumb-switch-h')) { head.hidden = !any; }
+      });
+      if (empty) { empty.hidden = shown().length > 0; }
+    };
+    if (filter) {
+      filter.hidden = false;
+      filter.addEventListener('input', apply);
+    }
+    sw.addEventListener('toggle', function (ev) {
+      if (ev.newState !== 'open' || !filter) { return; }
+      filter.value = '';
+      apply();
+      filter.focus();
+    });
+    sw.addEventListener('keydown', function (ev) {
+      // Escape in the search field would only clear it: it closes the switcher.
+      if (ev.key === 'Escape' && typeof sw.hidePopover === 'function') { ev.preventDefault(); sw.hidePopover(); return; }
+      var list = shown();
+      if (!list.length) { return; }
+      var at = list.indexOf(document.activeElement);
+      var next = null;
+      if (ev.key === 'ArrowDown') { next = list[at < 0 ? 0 : Math.min(at + 1, list.length - 1)]; }
+      else if (ev.key === 'ArrowUp') { if (at <= 0) { if (filter) { filter.focus(); } ev.preventDefault(); return; } next = list[at - 1]; }
+      else if (ev.key === 'Home' && at >= 0) { next = list[0]; }
+      else if (ev.key === 'End' && at >= 0) { next = list[list.length - 1]; }
+      else if (ev.key === 'Enter' && ev.target === filter) { ev.preventDefault(); window.location.assign(list[0].href); return; }
+      if (next) { ev.preventDefault(); next.focus(); }
+    });
+  }
 })();
